@@ -1,11 +1,15 @@
-torch==2.2.2
-torchvision==0.17.2
-torchaudio==2.2.2
-whisperx
-faster-whisper
-pyannote.audio
-pyannote.pipeline
-gradio
+--extra-index-url https://download.pytorch.org/whl/cpu
+
+torch==2.2.2+cpu
+torchvision==0.17.2+cpu
+torchaudio==2.2.2+cpu
+
+whisperx==3.4.2
+faster-whisper==1.1.1
+pyannote.audio==3.3.2
+pyannote.pipeline==3.0.1
+gradio==5.35.0
+
 transformers
 sentencepiece
 accelerate
@@ -13,3 +17,8 @@ bitsandbytes
 torchmetrics
 emoji
 ollama-python
+
+numpy
+setuptools
+pytest
+pytest-cov
