@@ -13,7 +13,17 @@ from pathlib import Path
 from datetime import datetime
 from typing import List, Tuple
 
-import torch
+try:
+    import torch
+except ModuleNotFoundError:                 # CI runner has no torch wheels
+    import types, sys
+    torch = types.ModuleType("torch")
+    torch.__dict__.update(
+        __version__="0.0.0-stub",
+        device=lambda *a, **k: None,
+        cuda=types.SimpleNamespace(is_available=lambda: False),
+    )
+    sys.modules["torch"] = torch
 import numpy as np
 import gradio as gr
 from faster_whisper import WhisperModel
