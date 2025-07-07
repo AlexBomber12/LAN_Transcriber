@@ -1,0 +1,14 @@
+[Unit]
+Description=LAN Recording-Transcriber (WhisperX + pyannote + Ollama)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+WorkingDirectory=/home/%i/lan-transcriber
+Environment=HF_HUB_ENABLE_XET=0
+Environment=LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu
+ExecStart=/home/%i/asr_env/bin/python web_transcribe.py
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

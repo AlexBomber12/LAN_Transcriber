@@ -1,0 +1,15 @@
+torch --index-url https://download.pytorch.org/whl/cu121
+torchvision
+torchaudio
+whisperx
+faster-whisper
+pyannote.audio
+pyannote.pipeline
+gradio
+transformers
+sentencepiece
+accelerate
+bitsandbytes
+torchmetrics
+emoji
+ollama-python
