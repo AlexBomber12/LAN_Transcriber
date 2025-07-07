@@ -20,12 +20,13 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install deps (CPU build)
+      - name: Install deps (CPU wheels)
         run: |
           python -m pip install --upgrade pip
-          # Install all Python deps from requirements.txt, but
-          # force CPU wheels for torch packages (no CUDA on runner).
-          pip install -r requirements.txt --no-binary torch,torchvision,torchaudio
+          # Install all project requirements *and* pull torch wheels from the
+          # official CPU index so no CUDA build is needed on the runner.
+          pip install -r requirements.txt \
+              --extra-index-url https://download.pytorch.org/whl/cpu
 
       - name: Import smoke-test
         run: |
