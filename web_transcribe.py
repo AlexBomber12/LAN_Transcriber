@@ -37,6 +37,18 @@ except ModuleNotFoundError:                   # CI runner: stub gradio
     gr.File      = lambda *a, **k: None
     gr.launch    = lambda *a, **k: None
     sys.modules["gradio"] = gr
+
+try:
+    from faster_whisper import WhisperModel
+except ModuleNotFoundError:                 # CI runner: stub faster_whisper
+    import types, sys
+    fw_stub = types.ModuleType("faster_whisper")
+    class _Dummy:                 # minimal placeholder
+        def __init__(self, *_, **__): pass
+        def transcribe(self, *a, **k):
+            raise RuntimeError("WhisperModel stub – not available in CI")
+    fw_stub.WhisperModel = _Dummy
+    sys.modules["faster_whisper"] = fw_stub
 import numpy as np
 from faster_whisper import WhisperModel
 from pyannote.audio import Pipeline, Model

@@ -1,5 +1,4 @@
 whisperx
-faster-whisper
 pyannote.audio
 pyannote.pipeline
 transformers
