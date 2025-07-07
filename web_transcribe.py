@@ -1,4 +1,47 @@
 #!/usr/bin/env python3
+import importlib, sys, types
+
+def _ensure_stub(name: str, attrs: dict | None = None):
+    """
+    Creates a lightweight stub module so `import name` succeeds when the
+    real package is missing on the CI runner.  `attrs` lets us pre-define
+    attributes/classes the code expects.
+    """
+    if name in sys.modules:
+        return                  # real module already present
+    stub = types.ModuleType(name)
+    if attrs:
+        stub.__dict__.update(attrs)
+    sys.modules[name] = stub
+
+# Stub heavy packages (only if they are absent)
+_ensure_stub("torch", {
+    "__version__": "0.0.0-stub",
+    "cuda": types.SimpleNamespace(is_available=lambda: False),
+    "device": lambda *a, **k: None,
+})
+
+_ensure_stub("gradio", {
+    "Blocks": object,
+    "Interface": lambda *a, **k: None,
+    "Markdown":  lambda *a, **k: None,
+    "Audio":     lambda *a, **k: None,
+    "Button":    lambda *a, **k: None,
+    "File":      lambda *a, **k: None,
+    "launch":    lambda *a, **k: None,
+})
+
+_ensure_stub("faster_whisper", {
+    "WhisperModel": type("StubModel", (), {
+        "__init__": lambda *a, **k: None,
+        "transcribe": lambda *a, **k: (
+            [dict(start=0.0, end=0.0, text="[stub]")], None)
+    }),
+})
+
+_ensure_stub("pyannote")
+_ensure_stub("pyannote.audio")
+_ensure_stub("pyannote.pipeline")
 # ────────────────────────────────────────────────────────────────────────
 # LAN Recording-Transcriber
 #  * faster-whisper large-v3  (ASR)
@@ -13,43 +56,9 @@ from pathlib import Path
 from datetime import datetime
 from typing import List, Tuple
 
-try:
-    import torch
-except ModuleNotFoundError:                 # CI runner has no torch wheels
-    import types, sys
-    torch = types.ModuleType("torch")
-    torch.__dict__.update(
-        __version__="0.0.0-stub",
-        device=lambda *a, **k: None,
-        cuda=types.SimpleNamespace(is_available=lambda: False),
-    )
-    sys.modules["torch"] = torch
-try:
-    import gradio as gr
-except ModuleNotFoundError:                   # CI runner: stub gradio
-    import types, sys
-    gr = types.ModuleType("gradio")
-    gr.Blocks = object             # minimal dummies so code parses
-    gr.Interface = lambda *a, **k: None
-    gr.Markdown  = lambda *a, **k: None
-    gr.Audio     = lambda *a, **k: None
-    gr.Button    = lambda *a, **k: None
-    gr.File      = lambda *a, **k: None
-    gr.launch    = lambda *a, **k: None
-    sys.modules["gradio"] = gr
-
-try:
-    from faster_whisper import WhisperModel
-except ModuleNotFoundError:                 # CI runner: stub faster_whisper
-    import types, sys
-    fw_stub = types.ModuleType("faster_whisper")
-    class _Dummy:                 # minimal placeholder
-        def __init__(self, *_, **__): pass
-        def transcribe(self, *a, **k):
-            raise RuntimeError("WhisperModel stub – not available in CI")
-    fw_stub.WhisperModel = _Dummy
-    sys.modules["faster_whisper"] = fw_stub
+import torch
 import numpy as np
+import gradio as gr
 from faster_whisper import WhisperModel
 from pyannote.audio import Pipeline, Model
 from pyannote.audio.utils.signal import Binarize
