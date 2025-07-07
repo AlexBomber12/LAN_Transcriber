@@ -12,6 +12,8 @@ env:
 jobs:
   lint-and-test:
     runs-on: ubuntu-latest
+    env:
+      CI: "true"
     steps:
       - uses: actions/checkout@v4
 
@@ -27,13 +29,8 @@ jobs:
           # official CPU index so no CUDA build is needed on the runner.
           pip install -r requirements.txt
 
-      - name: Import smoke-test
-        run: |
-          python - <<'PY'
-          import importlib
-          importlib.import_module('web_transcribe')
-          print("\u2713 web_transcribe imported successfully")
-          PY
+      - name: Run tests
+        run: pytest -q
 
   docker-build-and-push:
     if: github.ref == 'refs/heads/main'

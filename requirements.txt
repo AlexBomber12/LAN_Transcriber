@@ -1,4 +1,11 @@
+torch==2.2.2
+torchvision==0.17.2
+torchaudio==2.2.2
 whisperx
+faster-whisper
+pyannote.audio
+pyannote.pipeline
+gradio
 transformers
 sentencepiece
 accelerate
