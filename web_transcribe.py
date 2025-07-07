@@ -24,8 +24,20 @@ except ModuleNotFoundError:                 # CI runner has no torch wheels
         cuda=types.SimpleNamespace(is_available=lambda: False),
     )
     sys.modules["torch"] = torch
+try:
+    import gradio as gr
+except ModuleNotFoundError:                   # CI runner: stub gradio
+    import types, sys
+    gr = types.ModuleType("gradio")
+    gr.Blocks = object             # minimal dummies so code parses
+    gr.Interface = lambda *a, **k: None
+    gr.Markdown  = lambda *a, **k: None
+    gr.Audio     = lambda *a, **k: None
+    gr.Button    = lambda *a, **k: None
+    gr.File      = lambda *a, **k: None
+    gr.launch    = lambda *a, **k: None
+    sys.modules["gradio"] = gr
 import numpy as np
-import gradio as gr
 from faster_whisper import WhisperModel
 from pyannote.audio import Pipeline, Model
 from pyannote.audio.utils.signal import Binarize

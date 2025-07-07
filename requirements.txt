@@ -2,7 +2,6 @@ whisperx
 faster-whisper
 pyannote.audio
 pyannote.pipeline
-gradio
 transformers
 sentencepiece
 accelerate
