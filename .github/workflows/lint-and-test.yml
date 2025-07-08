@@ -1,0 +1,29 @@
+name: lint-and-test
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('ci-requirements.txt') }}
+          restore-keys: ${{ runner.os }}-pip-
+      - name: Install test deps
+        run: pip install -r ci-requirements.txt
+      - name: Run tests
+        env:
+          CI: "true"
+        run: pytest -q

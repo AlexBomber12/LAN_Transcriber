@@ -1,5 +1,16 @@
 #!/usr/bin/env python3
+# CI stub: fake heavy libs when CI=true so tests can import
 import os, sys, types
+if os.getenv("CI") == "true":
+    def _fake(mod):
+        sys.modules[mod] = types.ModuleType(mod)
+    for m in (
+        "torch", "torchvision", "torchaudio",
+        "faster_whisper", "pyannote", "pyannote.audio",
+        "gradio", "numpy",
+    ):
+        _fake(m)
+
 if os.getenv("CI") == "true":  # running on GitHub Actions
     class _Dummy:
         def __init__(self, *a, **k):
@@ -24,12 +35,11 @@ if os.getenv("CI") == "true":  # running on GitHub Actions
     import importlib.machinery
 
     def _fake(mod, **attrs):
-        if mod not in sys.modules:
-            stub = _Stub(mod)
-            stub.__dict__.update(attrs)
-            stub.__path__ = []
-            stub.__spec__ = importlib.machinery.ModuleSpec(mod, stub, is_package=True)
-            sys.modules[mod] = stub
+        stub = _Stub(mod)
+        stub.__dict__.update(attrs)
+        stub.__path__ = []
+        stub.__spec__ = importlib.machinery.ModuleSpec(mod, stub, is_package=True)
+        sys.modules[mod] = stub
     for name in (
         "torch", "torchvision", "torchaudio",
         "numpy", "gradio", "faster_whisper",
