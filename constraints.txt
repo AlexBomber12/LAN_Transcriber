@@ -1,0 +1,5 @@
+# Pinned dependencies generated via pip-compile
+# torch family pinned to CPU wheels
+torch==2.5.1+cpu
+torchvision==0.20.1+cpu
+torchaudio==2.5.1+cpu
