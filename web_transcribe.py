@@ -1,6 +1,19 @@
 #!/usr/bin/env python3
 # CI stub: fake heavy libs when CI=true so tests can import
 import os, sys, types
+
+try:
+    import ollama  # noqa: F401 - try real package first
+except ModuleNotFoundError:
+    class _FakeOllama:
+        class Client:
+            def __init__(self, *_, **__):
+                pass
+
+            def chat(self, *_, **__):
+                return {"message": {"content": ""}}
+    sys.modules.setdefault("ollama", _FakeOllama())
+
 if os.getenv("CI") == "true":
     def _fake(mod):
         sys.modules[mod] = types.ModuleType(mod)
@@ -47,6 +60,8 @@ if os.getenv("CI") == "true":  # running on GitHub Actions
         "pyannote.audio.utils", "pyannote.audio.utils.signal",
         "ollama", "transformers",
     ):
+        if name == "ollama" and name in sys.modules:
+            continue
         _fake(name, __version__="0.0.0-stub")
 # ────────────────────────────────────────────────────────────────────────
 # LAN Recording-Transcriber
