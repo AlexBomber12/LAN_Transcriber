@@ -1,87 +1,43 @@
 #!/usr/bin/env python3
 import os, sys, types
-if os.getenv("CI") == "true":
-    def _ensure_stub(name: str, attrs: dict | None = None):
-        if name in sys.modules:
-            return
-        stub = types.ModuleType(name)
-        import importlib.machinery
-        is_pkg = "." not in name or name.endswith(('.audio', '.pipeline', '.utils', '.utils.signal'))
-        stub.__spec__ = importlib.machinery.ModuleSpec(name, stub, is_package=is_pkg)
-        if is_pkg:
-            stub.__path__ = []
-        if attrs:
+if os.getenv("CI") == "true":  # running on GitHub Actions
+    class _Dummy:
+        def __init__(self, *a, **k):
+            pass
+
+        def __call__(self, *a, **k):
+            return _Dummy()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def __getattr__(self, name):
+            return _Dummy()
+
+    class _Stub(types.ModuleType):
+        def __getattr__(self, name):
+            return _Dummy()
+
+    import importlib.machinery
+
+    def _fake(mod, **attrs):
+        if mod not in sys.modules:
+            stub = _Stub(mod)
             stub.__dict__.update(attrs)
-        sys.modules[name] = stub
-
-    _ensure_stub("torch", {
-        "__version__": "0.0.0-stub",
-        "cuda": types.SimpleNamespace(is_available=lambda: False),
-        "device": lambda *a, **k: None,
-        "Tensor": object,
-    })
-    _ensure_stub("torch.utils")
-    _ensure_stub("torch.utils._pytree", {"register_pytree_node": lambda *a, **k: None})
-
-    class _UI:
-        def __init__(self, *a, **k): pass
-        def __enter__(self): return self
-        def __exit__(self, exc_type, exc, tb): pass
-        def click(self, *a, **k): return None
-        def load(self, *a, **k): pass
-        def launch(self, *a, **k): pass
-
-    _ensure_stub(
-        "gradio",
-        {
-            "Blocks": _UI,
-            "Interface": lambda *a, **k: None,
-            "Markdown": lambda *a, **k: None,
-            "Audio": _UI,
-            "Button": _UI,
-            "File": _UI,
-            "Textbox": _UI,
-            "Row": _UI,
-            "Accordion": _UI,
-            "Column": _UI,
-            "launch": lambda *a, **k: None,
-        },
-    )
-
-    _ensure_stub("faster_whisper", {
-        "WhisperModel": type("StubModel", (), {
-            "__init__": lambda *a, **k: None,
-            "transcribe": lambda *a, **k: (
-                [dict(start=0.0, end=0.0, text="[stub]")], None)
-        }),
-    })
-
-    _ensure_stub("transformers", {"pipeline": lambda *a, **k: lambda *a2, **k2: []})
-    _ensure_stub("ollama", {"Client": lambda *a, **k: type('Client', (), {'chat': lambda self,*a,**k: {'message': {'content': ''}}})()})
-
-    _ensure_stub("pyannote")
-    _ensure_stub(
-        "pyannote.audio",
-        {
-            "Pipeline": type(
-                "StubPipeline",
-                (),
-                {
-                    "from_pretrained": lambda *a, **k: type(
-                        "_StubP", (), {"to": lambda self, *a, **k: None}
-                    )()
-                },
-            ),
-            "Model": type(
-                "StubModel", (), {"from_pretrained": lambda *a, **k: type("_SM", (), {"to": lambda self, *a, **k: None})()}
-            ),
-        },
-    )
-    _ensure_stub(
-        "pyannote.audio.utils.signal",
-        {"Binarize": lambda *a, **k: None},
-    )
-    _ensure_stub("pyannote.pipeline")
+            stub.__path__ = []
+            stub.__spec__ = importlib.machinery.ModuleSpec(mod, stub, is_package=True)
+            sys.modules[mod] = stub
+    for name in (
+        "torch", "torchvision", "torchaudio",
+        "numpy", "gradio", "faster_whisper",
+        "pyannote", "pyannote.audio", "pyannote.pipeline",
+        "pyannote.audio.utils", "pyannote.audio.utils.signal",
+        "ollama", "transformers",
+    ):
+        _fake(name, __version__="0.0.0-stub")
 # ────────────────────────────────────────────────────────────────────────
 # LAN Recording-Transcriber
 #  * faster-whisper large-v3  (ASR)
