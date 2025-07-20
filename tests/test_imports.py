@@ -1,5 +1,8 @@
-import importlib, sys, pathlib
+import importlib
+import sys
+import pathlib
 import pytest
+
 
 @pytest.mark.parametrize("mod", ["web_transcribe"])
 def test_imports(mod):

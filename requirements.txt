@@ -16,7 +16,9 @@ accelerate
 bitsandbytes
 torchmetrics
 emoji
-ollama-python
+httpx>=0.27
+tenacity>=8.2
+pydantic>=2
 
 numpy
 setuptools
