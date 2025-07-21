@@ -1,0 +1,29 @@
+name: staging-deploy
+on:
+  push:
+    branches: [main]
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Copy compose to VPS
+        uses: appleboy/scp-action@v0.1.4
+        with:
+          host: ${{ secrets.STAGING_HOST }}
+          username: ${{ secrets.STAGING_USER }}
+          key: ${{ secrets.STAGING_SSH_KEY }}
+          source: "infra/staging/*"
+          target: "~/lan-staging"
+      - name: Up containers
+        uses: appleboy/ssh-action@v0.1.4
+        with:
+          host: ${{ secrets.STAGING_HOST }}
+          username: ${{ secrets.STAGING_USER }}
+          key: ${{ secrets.STAGING_SSH_KEY }}
+          script: |
+            cd ~/lan-staging
+            docker compose pull || true
+            docker compose up -d --build
+      - name: Smoke test
+        run: python scripts/smoke_test.py --base-url http://${{ secrets.STAGING_HOST }}:7860 --file tests/fixtures/1_EN.mp3.b64
