@@ -36,7 +36,14 @@ class DummyDiariser:
 @pytest.mark.asyncio
 @respx.mock
 async def test_run_pipeline(tmp_path: Path, monkeypatch):
-    whisperx.transcribe = lambda *a, **k: ([{"start": 0.0, "end": 1.0}], {})
+    whisperx.transcribe = lambda *a, **k: (
+        [
+            {"start": 0.0, "end": 1.0, "text": "hello world."},
+            {"start": 1.0, "end": 2.0, "text": "hello world."},
+            {"start": 2.0, "end": 3.0, "text": "hello world."},
+        ],
+        {},
+    )
 
     respx.post("http://llm:8000/v1/chat/completions").mock(
         return_value=httpx.Response(
@@ -56,6 +63,7 @@ async def test_run_pipeline(tmp_path: Path, monkeypatch):
 
     assert res.summary == "- bullet"
     assert "bullet" in res.summary
+    assert res.body.strip() == "hello world."
     assert 0 <= res.friendly <= 100
     assert len(res.speakers) == 1
 
@@ -63,7 +71,10 @@ async def test_run_pipeline(tmp_path: Path, monkeypatch):
 @pytest.mark.asyncio
 @respx.mock
 async def test_alias_persist(tmp_path: Path, monkeypatch):
-    whisperx.transcribe = lambda *a, **k: ([{"start": 0.0, "end": 1.0}], {})
+    whisperx.transcribe = lambda *a, **k: (
+        [{"start": 0.0, "end": 1.0, "text": "hi"}],
+        {},
+    )
 
     respx.post("http://llm:8000/v1/chat/completions").mock(
         return_value=httpx.Response(
@@ -84,3 +95,24 @@ async def test_alias_persist(tmp_path: Path, monkeypatch):
     assert res.speakers == ["Alice"]
     saved = json.loads(db.read_text())
     assert "S1" in saved
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_empty_asr(tmp_path: Path, monkeypatch):
+    whisperx.transcribe = lambda *a, **k: ([], {})
+    respx.post("http://llm:8000/v1/chat/completions").mock(
+        return_value=httpx.Response(
+            200, json={"choices": [{"message": {"content": "- bullet"}}]}
+        )
+    )
+    monkeypatch.setattr(
+        "transformers.pipeline",
+        lambda *a, **k: lambda text: [{"label": "positive", "score": 0.5}],
+    )
+    cfg = pipeline.Settings(speaker_db=tmp_path / "db.json", tmp_root=tmp_path)
+    res = await pipeline.run_pipeline(
+        tmp_path / "noise.wav", cfg, llm_client.LLMClient(), DummyDiariser()
+    )
+    assert res.summary == "No speech detected"
+    assert res.body == ""

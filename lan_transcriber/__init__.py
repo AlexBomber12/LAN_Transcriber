@@ -3,6 +3,7 @@
 from .llm_client import LLMClient, generate
 from .pipeline import Settings, run_pipeline, Diariser
 from .models import SpeakerSegment, TranscriptResult
+from .normalizer import dedup
 
 __all__ = [
     "LLMClient",
@@ -12,4 +13,5 @@ __all__ = [
     "Diariser",
     "SpeakerSegment",
     "TranscriptResult",
+    "dedup",
 ]
