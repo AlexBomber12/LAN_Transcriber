@@ -23,3 +23,11 @@ docker compose up -d --build
 
 The stack exposes `lan_transcriber_health{env="staging"}` on `/metrics` for
 future monitoring.
+
+## Staging deploy secrets
+
+| Secret | Description | Example |
+|--------|-------------|---------|
+| STAGING_HOST | VPS public IP / DNS | 203.0.113.10 |
+| STAGING_USER | SSH user | ubuntu |
+| STAGING_SSH_KEY | private key PEM (no passphrase) | multiline |
