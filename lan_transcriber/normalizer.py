@@ -8,6 +8,8 @@ from rapidfuzz import fuzz as rfuzz
 def dedup(text: str, *, window: int = 3, fuzz: int = 90) -> str:
     """Collapse consecutive duplicate sentences."""
     text = text.strip()
+    if len(text.split()) < 3 and not re.search(r"[.!?]", text):
+        return ""
 
     sentences = re.split(r"(?<=[.!?])\s+", text)
     if len(sentences) == 1:
