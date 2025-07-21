@@ -10,6 +10,7 @@ from pydantic_settings import BaseSettings
 
 from .llm_client import LLMClient
 from .models import TranscriptResult
+from . import normalizer
 
 
 class Diariser(Protocol):
@@ -87,7 +88,13 @@ async def run_pipeline(
 
     asr_task = asyncio.to_thread(_asr)
     diar_task = diariser(audio_path)
-    segments, diarization = await asyncio.gather(asr_task, diar_task)
+    asr_result, diarization = await asyncio.gather(asr_task, diar_task)
+    segments, _info = asr_result
+
+    asr_text = " ".join(seg.get("text", "").strip() for seg in segments).strip()
+    clean_text = normalizer.dedup(asr_text)
+    if not clean_text:
+        return TranscriptResult.empty("No speech detected")
 
     lines: List[str] = []
     speakers: List[str] = []
@@ -110,7 +117,7 @@ async def run_pipeline(
 
     _save_aliases(cfg.speaker_db, aliases)
     lines = _merge_similar(lines, cfg.merge_similar)
-    body = "\n".join(lines)
+    body = clean_text
 
     friendly = _sentiment_score(body)
 

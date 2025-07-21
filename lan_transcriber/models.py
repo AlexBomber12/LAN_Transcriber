@@ -26,5 +26,18 @@ class TranscriptResult(BaseModel):
     body_path: Path
     unknown_chunks: List[Path]
 
+    @classmethod
+    def empty(cls, summary: str) -> "TranscriptResult":
+        """Return a minimal empty result."""
+        return cls(
+            summary=summary,
+            body="",
+            friendly=0,
+            speakers=[],
+            summary_path=Path(),
+            body_path=Path(),
+            unknown_chunks=[],
+        )
+
 
 __all__ = ["SpeakerSegment", "TranscriptResult"]
