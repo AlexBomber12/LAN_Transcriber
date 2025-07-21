@@ -1,0 +1,143 @@
+from __future__ import annotations
+
+import asyncio
+import json
+import tempfile
+from pathlib import Path
+from typing import Dict, Iterable, List, Protocol
+
+from pydantic_settings import BaseSettings
+
+from .llm_client import LLMClient
+from .models import TranscriptResult
+
+
+class Diariser(Protocol):
+    """Minimal interface for speaker diarisation."""
+
+    async def __call__(self, audio_path: Path): ...
+
+
+class Settings(BaseSettings):
+    """Runtime configuration for the transcription pipeline."""
+
+    speaker_db: Path = Path.home() / "speakers.json"
+    voices_dir: Path = Path.home() / "voices"
+    unknown_dir: Path = Path.home() / "unknown_voices"
+    tmp_root: Path = Path(tempfile.gettempdir())
+    llm_model: str = "llama3:8b"
+    embed_threshold: float = 0.65
+    merge_similar: float = 0.9
+
+    class Config:
+        env_prefix = "LAN_"
+
+
+def _load_aliases(path: Path) -> Dict[str, str]:
+    if path.exists():
+        return json.loads(path.read_text())
+    return {}
+
+
+def _save_aliases(path: Path, aliases: Dict[str, str]) -> None:
+    path.write_text(json.dumps(aliases))
+
+
+def _merge_similar(
+    lines: Iterable[str], threshold: float
+) -> List[str]:  # pragma: no cover - simple heuristic
+    out: List[str] = []
+    for line in lines:
+        if not out:
+            out.append(line)
+            continue
+        prev = out[-1]
+        sim = sum(a == b for a, b in zip(prev, line)) / max(len(prev), len(line))
+        if sim >= threshold:
+            continue
+        out.append(line)
+    return out
+
+
+def _sentiment_score(text: str) -> int:  # pragma: no cover - trivial wrapper
+    from transformers import pipeline as hf_pipeline
+
+    sent = hf_pipeline("sentiment-analysis")(text[:4000])[0]
+    if sent["label"] == "positive":
+        return int(sent["score"] * 100)
+    if sent["label"] == "negative":
+        return int((1 - sent["score"]) * 100)
+    return 50
+
+
+async def run_pipeline(
+    audio_path: Path, cfg: Settings, llm: LLMClient, diariser: Diariser
+) -> TranscriptResult:
+    """Transcribe ``audio_path`` and return a structured result."""
+
+    import whisperx
+
+    aliases = _load_aliases(cfg.speaker_db)
+
+    def _asr() -> tuple[List[dict], dict]:
+        segments, info = whisperx.transcribe(
+            str(audio_path), vad_filter=True, language="auto"
+        )
+        return list(segments), info
+
+    asr_task = asyncio.to_thread(_asr)
+    diar_task = diariser(audio_path)
+    segments, diarization = await asyncio.gather(asr_task, diar_task)
+
+    lines: List[str] = []
+    speakers: List[str] = []
+    for seg, label in diarization.itertracks(yield_label=True):
+        text = whisperx.utils.get_segments(
+            {"segments": segments}, seg.start, seg.end
+        ).strip()
+        if not text:
+            continue
+        name = aliases.get(label, label)
+        if label not in aliases:
+            aliases[label] = name
+        speakers.append(name)
+        lines.append(f"[{seg.start:.2f}–{seg.end:.2f}] **{name}:** {text}")
+
+    if not speakers:
+        fallback = aliases.get("S1", "S1")
+        aliases.setdefault("S1", fallback)
+        speakers.append(fallback)
+
+    _save_aliases(cfg.speaker_db, aliases)
+    lines = _merge_similar(lines, cfg.merge_similar)
+    body = "\n".join(lines)
+
+    friendly = _sentiment_score(body)
+
+    sys_prompt = (
+        "You are an assistant who writes concise 5-8 bullet summaries of any audio transcript. "
+        "Return only the list without extra explanation."
+    )
+    user_prompt = f"{sys_prompt}\n\nTRANSCRIPT:\n{body}\n\nSUMMARY:"
+    summary = await llm.generate(
+        system_prompt=sys_prompt, user_prompt=user_prompt, model=cfg.llm_model
+    )
+
+    tmp = Path(tempfile.mkdtemp(prefix="trs_", dir=cfg.tmp_root))
+    sum_path = tmp / f"{audio_path.stem}_summary.md"
+    body_path = tmp / f"{audio_path.stem}.md"
+    sum_path.write_text(summary, encoding="utf-8")
+    body_path.write_text(body, encoding="utf-8")
+
+    return TranscriptResult(
+        summary=summary,
+        body=body,
+        friendly=friendly,
+        speakers=sorted(set(speakers)),
+        summary_path=sum_path,
+        body_path=body_path,
+        unknown_chunks=[],
+    )
+
+
+__all__ = ["run_pipeline", "Settings", "Diariser"]

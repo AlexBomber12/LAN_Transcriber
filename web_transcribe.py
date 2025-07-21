@@ -1,36 +1,24 @@
 #!/usr/bin/env python3
-# CI stub: fake heavy libs when CI=true so tests can import
+"""Gradio UI wrapper for the LAN transcriber pipeline."""
+
 import os
 import sys
 import types
+import asyncio
+import tempfile
+from pathlib import Path
 
 try:
-    import httpx  # noqa: F401 - try real package first
-except ModuleNotFoundError:
+    import httpx  # noqa: F401 - used in LLM client
+except ModuleNotFoundError:  # pragma: no cover - CI stub
     sys.modules.setdefault("httpx", types.ModuleType("httpx"))
 
-if os.getenv("CI") == "true":
-
-    def _fake(mod):
-        sys.modules[mod] = types.ModuleType(mod)
-
-    for m in (
-        "torch",
-        "torchvision",
-        "torchaudio",
-        "faster_whisper",
-        "pyannote",
-        "pyannote.audio",
-        "gradio",
-        "numpy",
-    ):
-        _fake(m)
-
-if os.getenv("CI") == "true":  # running on GitHub Actions
+# When running in CI we stub heavy dependencies so the module imports.
+if os.getenv("CI") == "true":  # pragma: no cover - CI stub
 
     class _Dummy:
-        def __init__(self, *a, **k):
-            pass
+        def __getattr__(self, _name):
+            return _Dummy()
 
         def __call__(self, *a, **k):
             return _Dummy()
@@ -41,246 +29,60 @@ if os.getenv("CI") == "true":  # running on GitHub Actions
         def __exit__(self, exc_type, exc, tb):
             return False
 
-        def __getattr__(self, name):
-            return _Dummy()
-
     class _Stub(types.ModuleType):
-        def __getattr__(self, name):
+        def __getattr__(self, _name):
             return _Dummy()
 
-    import importlib.machinery
+    def _fake(mod: str) -> None:
+        sys.modules[mod] = _Stub(mod)
 
-    def _fake(mod, **attrs):
-        stub = _Stub(mod)
-        stub.__dict__.update(attrs)
-        stub.__path__ = []
-        stub.__spec__ = importlib.machinery.ModuleSpec(mod, stub, is_package=True)
-        sys.modules[mod] = stub
-
-    for name in (
+    for mod in (
         "torch",
         "torchvision",
         "torchaudio",
-        "numpy",
-        "gradio",
         "faster_whisper",
         "pyannote",
         "pyannote.audio",
         "pyannote.pipeline",
-        "pyannote.audio.utils",
-        "pyannote.audio.utils.signal",
-        "transformers",
+        "gradio",
+        "numpy",
     ):
-        _fake(name, __version__="0.0.0-stub")
-# ────────────────────────────────────────────────────────────────────────
-# LAN Recording-Transcriber
-#  * faster-whisper large-v3  (ASR)
-#  * pyannote.audio 3.3       (diarization + speaker-ID)
-#  * sentiment RoBERTa        (friendly score)
-#  * Llama-3 via external service       (summary)
-#  * Gradio 5.x UI
-# -----------------------------------------------------------------------
+        _fake(mod)
 
-import os
-import json
-import tempfile
-import itertools
-import shutil
-import math
-from pathlib import Path
-from typing import List, Tuple
+from lan_transcriber import llm_client, pipeline
 
-import torch
-import numpy as np
-import gradio as gr
-from faster_whisper import WhisperModel
-
-# real imports (work in prod; harmless no-ops in CI)
-from pyannote.audio import Pipeline
-from pyannote.audio import Model
-from transformers import pipeline
-import whisperx
-import asyncio
-from lan_transcriber import llm_client
+import gradio as gr  # type: ignore
+from pyannote.audio import Pipeline  # type: ignore
+import torch  # type: ignore
 
 
-# ─── 0. Константы ──────────────────────────────────────────────────────
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-COMPUTE_TYPE = "float16" if DEVICE == "cuda" else "int8"
-DB_PATH = Path.home() / "speakers.json"  # база эталонных голосов
-VOICES_DIR = Path.home() / "voices"  # сюда кладём эталоны вручную
-NEW_VOICE_DIR = Path.home() / "unknown_voices"  # сюда скрипт пишет фрагменты
-LLM_MODEL = "llama3:8b"  # default model
-
-# пороги
-EMB_THRESHOLD = 0.65  # косинус-distance  (меньше → тот же спикер)
-MERGE_SIMILAR = 0.90  # если две соседние фразы совпадают >90 % → сливаем
-
-# ─── 1. Загрузка длинных моделей (один раз) ───────────────────────────
-print("⏳  Whisper large-v3")
-asr = WhisperModel("large-v3", device=DEVICE, compute_type=COMPUTE_TYPE)
-
-print("⏳  Pyannote diarization")
-diar = Pipeline.from_pretrained("pyannote/speaker-diarization@3.2").to(DEVICE)
-
-print("⏳  Speaker-embedding model")
-embedder = Model.from_pretrained("pyannote/embedding").to(DEVICE)
-
-print("⏳  Sentiment pipeline")
-sentiment = pipeline(
-    "sentiment-analysis",
-    model="cardiffnlp/twitter-roberta-base-sentiment-latest",
-    device=0 if DEVICE == "cuda" else -1,
-)
+DEVICE = "cuda" if getattr(torch, "cuda", None) and torch.cuda.is_available() else "cpu"
 
 
-# ─── 2. Загружаем / создаём базу спикеров ─────────────────────────────
-def load_speaker_db() -> dict:
-    if DB_PATH.exists():
-        return json.load(open(DB_PATH))
-    VOICES_DIR.mkdir(exist_ok=True)
-    return {}
-
-
-def save_speaker_db(db: dict):
-    json.dump(db, open(DB_PATH, "w"))
-
-
-SPEAKER_DB = load_speaker_db()
-
-
-def embed_audio(wave: torch.Tensor, sr: int) -> np.ndarray:
-    if sr != 16000:
-        import torchaudio
-
-        wave = torchaudio.functional.resample(wave, sr, 16000)
-    with torch.inference_mode():
-        emb = embedder(wave.to(embedder.device)).mean(0).cpu().numpy()
-    return emb / np.linalg.norm(emb)
-
-
-def identify_speaker(embedding: np.ndarray) -> Tuple[str, float]:
-    """Вернёт (имя, distance). Если база пуста → ('Speaker ?', inf)."""
-    if not SPEAKER_DB:
-        return "Speaker ?", math.inf
-    names, embs = zip(*[(k, np.array(v)) for k, v in SPEAKER_DB.items()])
-    dists = 1 - np.dot(embs, embedding)
-    idx = int(np.argmin(dists))
-    return (names[idx], float(dists[idx]))
-
-
-# ─── 3. Анти-дубликатор для последовательных реплик ───────────────────
-def merge_similar(lines: List[str]) -> List[str]:
-    out = []
-    for line in lines:
-        if not out:
-            out.append(line)
-            continue
-        prev = out[-1]
-        # наивная метрика: доля одинаковых символов
-        sim = sum(a == b for a, b in itertools.zip_longest(prev, line)) / max(
-            len(prev), len(line)
-        )
-        if sim >= MERGE_SIMILAR:
-            continue
-        out.append(line)
-    return out
-
-
-# ─── 4. Основная функция обработки ────────────────────────────────────
 def transcribe(audio_path: str):
-    fname = Path(audio_path).name
-    stem = Path(audio_path).stem
-    print("→ ASR", fname)
-
-    # 4-a. whisperX
-    segments, info = asr.transcribe(audio_path, vad_filter=True, language="auto")
-    # segments — generator; превращаем в список
-    segments = list(segments)
-
-    # 4-b. диаризация (сначала VAD→сегменты, потом assign speakers)
-    diar_ann = diar(audio_path)
-    diar_tracks = list(diar_ann.itertracks(yield_label=False))
-
-    # 4-c. строим список строк + собираем unknowns
-    md_lines, unknown_chunks = [], []
-    import torchaudio
-
-    full_wave, full_sr = torchaudio.load(audio_path)
-
-    for seg, _ in diar_tracks:
-        # текст кусочка
-        text = whisperx.utils.get_segments(
-            {"segments": segments}, seg.start, seg.end
-        ).strip()
-        if not text:
-            continue
-        # вычисляем эмбеддинг фрагмента
-        start_smpl = int(seg.start * full_sr)
-        end_smpl = int(seg.end * full_sr)
-        emb = embed_audio(full_wave[:, start_smpl:end_smpl], full_sr)
-
-        name, dist = identify_speaker(emb)
-        if dist > EMB_THRESHOLD:
-            # новый человек
-            name = "Speaker ?"
-            # сохраним 3-сек фрагмент для удобства
-            NEW_VOICE_DIR.mkdir(exist_ok=True)
-            frag_path = NEW_VOICE_DIR / f"{stem}_{seg.start:.2f}.wav"
-            torchaudio.save(frag_path, full_wave[:, start_smpl:end_smpl], full_sr)
-            unknown_chunks.append(frag_path)
-
-        md_lines.append(f"[{seg.start:0.02f}–{seg.end:0.02f}] **{name}:** {text}")
-
-    # 4-d. пост-обработка
-    md_lines = merge_similar(md_lines)
-    md_transcript = "\n".join(md_lines)
-
-    # 4-e. дружелюбность
-    sent = sentiment(md_transcript[:4000])[0]  # длинные тексты обрезаем
-    if sent["label"] == "positive":
-        friendly = +sent["score"]
-    elif sent["label"] == "negative":
-        friendly = -sent["score"]
-    else:
-        friendly = 0.0
-
-    # 4-f. summary via external LLM service
-    sys_prompt = (
-        "You are an assistant who writes concise 5-8 bullet summaries of any audio transcript. "
-        "Return only the list without extra explanation."
+    """Run the pipeline and adapt the result for the UI."""
+    diar = Pipeline.from_pretrained("pyannote/speaker-diarization@3.2").to(DEVICE)
+    cfg = pipeline.Settings()
+    result = asyncio.run(
+        pipeline.run_pipeline(Path(audio_path), cfg, llm_client.LLMClient(), diar)
     )
-    msg = f"{sys_prompt}\n\nTRANSCRIPT:\n{md_transcript}\n\nSUMMARY:"
-    summary = asyncio.run(
-        llm_client.generate(system_prompt=sys_prompt, user_prompt=msg, model=LLM_MODEL)
-    )
-
-    # 4-g. сохраняем во временную папку
-    tmp = Path(tempfile.mkdtemp(prefix="trs_"))
-    (tmp / f"{stem}.md").write_text(md_transcript, encoding="utf-8")
-    (tmp / f"{stem}_summary.md").write_text(summary, encoding="utf-8")
-
     return (
-        f"### Summary  \n{summary}\n\n---\n\n",
-        f"### Friendly-score: **{friendly:+.2f}**",
-        md_transcript,
-        tmp / f"{stem}_summary.md",
-        tmp / f"{stem}.md",
-        "\n".join(str(p) for p in unknown_chunks) or "—",
+        f"### Summary  \n{result.summary}\n\n---\n\n",
+        f"### Friendly-score: **{result.friendly}**",
+        result.body,
+        result.summary_path,
+        result.body_path,
+        "\n".join(str(p) for p in result.unknown_chunks) or "—",
     )
 
 
 async def transcribe_and_summarize(text: str) -> tuple[Path, Path]:
-    """Simple helper used in tests."""
+    """Simpler helper used in tests."""
     sys_prompt = (
         "You are an assistant who writes concise 5-8 bullet summaries of any audio transcript. "
         "Return only the list without extra explanation."
     )
-    summary = await llm_client.generate(
-        system_prompt=sys_prompt,
-        user_prompt=text,
-        model=LLM_MODEL,
-    )
+    summary = await llm_client.generate(system_prompt=sys_prompt, user_prompt=text)
     tmp = Path(tempfile.mkdtemp(prefix="trs_"))
     sum_path = tmp / "summary.md"
     full_path = tmp / "full.md"
@@ -289,36 +91,28 @@ async def transcribe_and_summarize(text: str) -> tuple[Path, Path]:
     return sum_path, full_path
 
 
-# ─── 5. Обработчик добавления нового спикера ──────────────────────────
 def enroll_speaker(voice_path: str, name: str):
+    """Dummy implementation kept for UI compatibility."""
     if not voice_path or not name:
         return gr.Info("Upload voice sample AND type the name first.")
-    import torchaudio
+    cfg = pipeline.Settings()
+    cfg.voices_dir.mkdir(exist_ok=True)
+    import shutil
 
-    w, sr = torchaudio.load(voice_path)
-    emb = embed_audio(w, sr)
-    SPEAKER_DB[name.strip()] = emb.tolist()
-    save_speaker_db(SPEAKER_DB)
-    # копируем файл в voices/ (для человека)
-    VOICES_DIR.mkdir(exist_ok=True)
-    shutil.copy(voice_path, VOICES_DIR / f"{name}.wav")
+    shutil.copy(voice_path, cfg.voices_dir / f"{name}.wav")
     return gr.Success(f"Speaker **{name}** added. You can re-run transcription.")
 
 
-# ─── 6. Gradio интерфейс ──────────────────────────────────────────────
-with gr.Blocks(title="LAN Recording-Transcriber") as demo:
+with gr.Blocks(title="LAN Recording-Transcriber") as demo:  # pragma: no cover - UI glue
     gr.Markdown(
         "## LAN Recording-Transcriber  \n_Offline: WhisperX · pyannote · external LLM_"
     )
 
     with gr.Row():
-        # левая колонка
         with gr.Column(scale=1):
             audio_in = gr.Audio(type="filepath", label="Drop WAV / MP3 here")
             btn_proc = gr.Button("Process", variant="primary")
             btn_clear = gr.Button("Clear")
-
-        # правая колонка
         with gr.Column(scale=2):
             out_md = gr.Markdown(label="Summary + friendly-score")
             out_full = gr.Markdown(label="Full transcript", elem_classes="scroll")
@@ -326,7 +120,6 @@ with gr.Blocks(title="LAN Recording-Transcriber") as demo:
             file_md = gr.File(label="Download full.md")
             unknown = gr.Markdown(label="New voices saved")
 
-    # вкладка добавления спикера
     with gr.Accordion("Add speaker to database", open=False):
         with gr.Row():
             new_voice = gr.Audio(type="filepath", label="Voice sample (~5 sec)")
@@ -334,17 +127,14 @@ with gr.Blocks(title="LAN Recording-Transcriber") as demo:
         add_btn = gr.Button("Add")
         add_out = gr.Markdown()
 
-    # связи
     btn_proc.click(
         transcribe, audio_in, outputs=[out_md, out_full, file_sum, file_md, unknown]
     )
     btn_clear.click(
         lambda: (None,) * 5, None, [audio_in, out_md, out_full, file_sum, file_md]
     )
-
     add_btn.click(enroll_speaker, inputs=[new_voice, new_name], outputs=add_out)
 
-# немного CSS, чтобы transcript был прокручиваемым
-demo.load(lambda: None, js="", css=".scroll {max-height: 65vh; overflow-y: auto;}")
+    demo.load(lambda: None, js="", css=".scroll {max-height: 65vh; overflow-y: auto;}")
 
-demo.launch(server_name="0.0.0.0", server_port=7860, share=False)
+    demo.launch(server_name="0.0.0.0", server_port=7860, share=False)

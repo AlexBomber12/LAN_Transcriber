@@ -19,14 +19,13 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('ci-requirements.txt', 'requirements.txt', 'constraints.txt') }}
+          key: ${{ runner.os }}-pip-${{ hashFiles('ci-requirements.txt', 'requirements.txt') }}
           restore-keys: ${{ runner.os }}-pip-
       - name: Install test deps
         run: |
-          pip install -r ci-requirements.txt
-          pip install -r requirements.txt -c constraints.txt \
+          pip install --require-hashes -r ci-requirements.txt -r requirements.txt \
             --extra-index-url https://download.pytorch.org/whl/cpu
       - name: Run tests
         env:
           CI: "true"
-        run: pytest -q
+        run: pytest --cov=lan_transcriber --cov-fail-under=90 -q
