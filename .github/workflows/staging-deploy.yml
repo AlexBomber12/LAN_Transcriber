@@ -4,37 +4,15 @@ on:
     branches: [main]
 jobs:
   deploy:
+    if: ${{ secrets.STAGING_HOST != '' && secrets.STAGING_USER != '' && secrets.STAGING_SSH_KEY != '' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Check secrets
-        if: >-
-          ${{
-            secrets.STAGING_HOST == '' ||
-            secrets.STAGING_USER == '' ||
-            secrets.STAGING_SSH_KEY == ''
-          }}
-        run: |
-          echo "Skipping staging deploy – secrets missing"
-          exit 0
-
       - name: Setup known_hosts
-        if: >-
-          ${{
-            secrets.STAGING_HOST != '' &&
-            secrets.STAGING_USER != '' &&
-            secrets.STAGING_SSH_KEY != ''
-          }}
         run: ssh-keyscan -H ${{ secrets.STAGING_HOST }} >> ~/.ssh/known_hosts
 
       - name: Copy compose to VPS
-        if: >-
-          ${{
-            secrets.STAGING_HOST != '' &&
-            secrets.STAGING_USER != '' &&
-            secrets.STAGING_SSH_KEY != ''
-          }}
         uses: appleboy/scp-action@v1.0.0
         with:
           host: ${{ secrets.STAGING_HOST }}
@@ -45,12 +23,6 @@ jobs:
           strip_components: 2
 
       - name: Up containers
-        if: >-
-          ${{
-            secrets.STAGING_HOST != '' &&
-            secrets.STAGING_USER != '' &&
-            secrets.STAGING_SSH_KEY != ''
-          }}
         uses: appleboy/ssh-action@v1.0.0
         with:
           host: ${{ secrets.STAGING_HOST }}
@@ -63,10 +35,4 @@ jobs:
             docker compose up -d --build
 
       - name: Smoke test
-        if: >-
-          ${{
-            secrets.STAGING_HOST != '' &&
-            secrets.STAGING_USER != '' &&
-            secrets.STAGING_SSH_KEY != ''
-          }}
         run: python scripts/smoke_test.py --base-url http://${{ secrets.STAGING_HOST }}:7860 --file tests/fixtures/1_EN.mp3.b64
