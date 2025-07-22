@@ -9,7 +9,7 @@ services:
     environment:
       - LLM_BASE_URL=http://llm:8000
     volumes:
-      - lan_cache:/root/.cache
+      - lan_cache:/root/.cache/huggingface
     networks:
       - lan_net
 
@@ -19,6 +19,8 @@ services:
       - MODEL=meta-llama/Meta-Llama-3-8B-Instruct
     ports:
       - "8000:8000"
+    volumes:
+      - lan_cache:/root/.cache/huggingface
     networks:
       - lan_net
 
