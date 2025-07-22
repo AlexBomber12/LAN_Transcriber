@@ -10,6 +10,7 @@ services:
       - LLM_BASE_URL=http://llm:8000
     volumes:
       - lan_cache:/root/.cache
+      - /opt/lan_cache/hf:/root/.cache/huggingface
     networks:
       - lan_net
 
