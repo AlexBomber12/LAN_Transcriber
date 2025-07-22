@@ -13,6 +13,9 @@ docker compose pull
 docker compose up -d --build
 ```
 
+The compose file mounts `/opt/lan_cache/hf` into `/root/.cache/huggingface` so
+models are cached across runs.
+
 `docker-compose.yml` expects a `.env` file with the following variables:
 
 | Variable | Description |
