@@ -6,6 +6,8 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
+      - name: Set CI_RUN
+        run: echo "CI_RUN=${{ env.CI || github.event_name == 'pull_request' }}" >> "$GITHUB_ENV"
       - name: Populate staging env vars
         shell: bash
         run: |
@@ -38,11 +40,17 @@ jobs:
           chmod 700 ~/.ssh
 
       - name: Setup known_hosts
-        if: env.CI != 'true'
+        if: env.CI_RUN != 'true'
         run: ssh-keyscan -H "$STAGING_HOST" >> ~/.ssh/known_hosts
 
+      - name: Mock deploy (CI only)
+        if: env.CI_RUN == 'true'
+        run: |
+          echo "CI run detected – skipping real SSH. Validating paths only."
+          ls -R infra/staging
+
       - name: Copy compose to VPS
-        if: env.CI != 'true'
+        if: env.CI_RUN != 'true'
         uses: appleboy/scp-action@v1.0.0
         with:
           host: ${{ env.STAGING_HOST }}
@@ -52,8 +60,8 @@ jobs:
           target: "~/lan-staging"
           strip_components: 2
 
-      - name: Up containers
-        if: env.CI != 'true'
+      - name: Remote docker compose up
+        if: env.CI_RUN != 'true'
         uses: appleboy/ssh-action@v1.0.0
         with:
           host: ${{ env.STAGING_HOST }}
@@ -65,6 +73,6 @@ jobs:
             docker compose pull || true
             docker compose up -d --build
 
-      - name: Smoke test
-        if: env.CI != 'true'
+      - name: Smoke test via API
+        if: env.CI_RUN != 'true'
         run: python scripts/smoke_test.py --base-url http://$STAGING_HOST:7860 --file tests/fixtures/1_EN.mp3.b64
