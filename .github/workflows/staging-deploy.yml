@@ -6,21 +6,21 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - name: Set CI_RUN
-        run: echo "CI_RUN=${{ env.CI || github.event_name == 'pull_request' }}" >> "$GITHUB_ENV"
       - name: Populate staging env vars
         shell: bash
         run: |
           host="${{ secrets.STAGING_HOST }}"
           user="${{ secrets.STAGING_USER }}"
           key="${{ secrets.STAGING_SSH_KEY }}"
-          if [ "${CI}" = "true" ] && { [ -z "${host}" ] || [ -z "${user}" ] || [ -z "${key}" ]; }; then
+
+          if [ "${CI}" = "true" ]; then  # running in GitHub Actions CI
             host="${host:-localhost}"
             user="${user:-ci-user}"
             key="${key:-dummy}"
           fi
+
           echo "STAGING_HOST=${host}" >> "$GITHUB_ENV"
-          echo "STAGING_USER=${user}" >> "$GITHUB_ENV"
+          echo "STAGING_USER=${user}"  >> "$GITHUB_ENV"
           echo "STAGING_SSH_KEY=${key}" >> "$GITHUB_ENV"
 
       - name: Validate secrets
@@ -40,17 +40,17 @@ jobs:
           chmod 700 ~/.ssh
 
       - name: Setup known_hosts
-        if: env.CI_RUN != 'true'
+        if: env.CI != 'true'
         run: ssh-keyscan -H "$STAGING_HOST" >> ~/.ssh/known_hosts
 
       - name: Mock deploy (CI only)
-        if: env.CI_RUN == 'true'
+        if: env.CI == 'true'
         run: |
           echo "CI run detected – skipping real SSH. Validating paths only."
           ls -R infra/staging
 
       - name: Copy compose to VPS
-        if: env.CI_RUN != 'true'
+        if: env.CI != 'true'
         uses: appleboy/scp-action@v1.0.0
         with:
           host: ${{ env.STAGING_HOST }}
@@ -61,7 +61,7 @@ jobs:
           strip_components: 2
 
       - name: Remote docker compose up
-        if: env.CI_RUN != 'true'
+        if: env.CI != 'true'
         uses: appleboy/ssh-action@v1.0.0
         with:
           host: ${{ env.STAGING_HOST }}
@@ -74,5 +74,5 @@ jobs:
             docker compose up -d --build
 
       - name: Smoke test via API
-        if: env.CI_RUN != 'true'
+        if: env.CI != 'true'
         run: python scripts/smoke_test.py --base-url http://$STAGING_HOST:7860 --file tests/fixtures/1_EN.mp3.b64
