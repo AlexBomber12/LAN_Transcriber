@@ -31,6 +31,12 @@ jobs:
 
       - uses: actions/checkout@v4
 
+      - name: Ensure SSH folder
+        if: env.CI != 'true'
+        run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+
       - name: Setup known_hosts
         if: env.CI != 'true'
         run: ssh-keyscan -H "$STAGING_HOST" >> ~/.ssh/known_hosts
