@@ -5,9 +5,11 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    env:
-      IS_CI: ${{ github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' || env.CI == 'true' }}
     steps:
+      - name: Detect CI
+        run: |
+          if [ "${CI}" = "true" ]; then echo "IS_CI=true"  >> "$GITHUB_ENV";
+          else                       echo "IS_CI=false" >> "$GITHUB_ENV"; fi
       - name: Populate staging env vars
         shell: bash
         run: |
@@ -47,7 +49,7 @@ jobs:
 
       - name: Mock deploy (CI)
         if: env.IS_CI == 'true'
-        run: echo "CI run – skipping remote deployment, workflow syntax validated."
+        run: echo "CI run – remote steps skipped."
 
       - name: Copy compose to VPS
         if: env.IS_CI == 'false'
