@@ -42,3 +42,7 @@ POST `/alias/{speaker_id}` with JSON `{"alias": "Alice"}` updates `speaker_bank.
 
 ![demo](docs/demo.gif)
 
+## Release process
+
+Before tagging a new version run the checklist in [docs/release-checklist.md](docs/release-checklist.md).
+
