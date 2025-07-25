@@ -27,6 +27,8 @@ jobs:
             --extra-index-url https://download.pytorch.org/whl/cpu
       - name: Install package
         run: pip install -e .
+      - name: Verify prometheus_client present
+        run: python -c "import prometheus_client, sys; print('Prometheus OK', prometheus_client.__version__)"
       - name: Run tests
         env:
           CI: "true"

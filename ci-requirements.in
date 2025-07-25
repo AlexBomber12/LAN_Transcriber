@@ -7,6 +7,7 @@ requests>=2.32
 respx==0.22.0
 ruff==0.12.4
 pip-tools==7.4.1
+prometheus_client>=0.19.0
 setuptools==80.9.0
 wheel==0.45.1
 pip==24.3.1
