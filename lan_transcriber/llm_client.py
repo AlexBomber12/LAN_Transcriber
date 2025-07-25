@@ -5,6 +5,9 @@ from __future__ import annotations
 import os
 from typing import Any, Dict, List, Optional
 
+import anyio
+from .metrics import llm_timeouts_total
+
 import httpx
 from tenacity import retry, wait_exponential, stop_after_attempt
 
@@ -30,7 +33,7 @@ class LLMClient:
         system_prompt: str,
         user_prompt: str,
         model: Optional[str] | None = None,
-    ) -> str:
+    ) -> Dict[str, str]:
         """Send a chat completion request and return the assistant message."""
 
         model = model or os.getenv("LLM_MODEL")
@@ -50,10 +53,15 @@ class LLMClient:
             payload["model"] = model
 
         async with httpx.AsyncClient(timeout=self.timeout) as client:
-            resp = await client.post(url, json=payload, headers=headers)
+            try:
+                with anyio.fail_after(30):
+                    resp = await client.post(url, json=payload, headers=headers)
+            except TimeoutError:
+                llm_timeouts_total.inc()
+                return {"content": "**LLM timeout**", "role": "assistant"}
             resp.raise_for_status()
             data = resp.json()
-        return data["choices"][0]["message"]["content"]
+        return data["choices"][0]["message"]
 
 
 _default_client = LLMClient()
@@ -61,10 +69,10 @@ _default_client = LLMClient()
 
 async def generate(
     system_prompt: str, user_prompt: str, model: Optional[str] = None
-) -> str:
+) -> Dict[str, str]:
     """Backwards-compatible helper that proxies to :class:`LLMClient`."""
 
     return await _default_client.generate(system_prompt, user_prompt, model)
 
 
-__all__ = ["LLMClient", "generate"]
+__all__ = ["LLMClient", "generate", "llm_timeouts_total"]

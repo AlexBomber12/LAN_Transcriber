@@ -82,7 +82,8 @@ async def transcribe_and_summarize(text: str) -> tuple[Path, Path]:
         "You are an assistant who writes concise 5-8 bullet summaries of any audio transcript. "
         "Return only the list without extra explanation."
     )
-    summary = await llm_client.generate(system_prompt=sys_prompt, user_prompt=text)
+    msg = await llm_client.generate(system_prompt=sys_prompt, user_prompt=text)
+    summary = msg.get("content", "") if isinstance(msg, dict) else str(msg)
     tmp = Path(tempfile.mkdtemp(prefix="trs_"))
     sum_path = tmp / "summary.md"
     full_path = tmp / "full.md"

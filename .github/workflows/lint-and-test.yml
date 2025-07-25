@@ -27,6 +27,16 @@ jobs:
             --extra-index-url https://download.pytorch.org/whl/cpu
       - name: Install package
         run: pip install -e .
+      - name: Verify prometheus_client import
+        run: python - <<'PY'
+          import importlib, sys
+          try:
+              importlib.import_module("prometheus_client")
+              print("Prometheus import OK")
+          except ImportError as e:
+              print("Prometheus import FAILED", e)
+              sys.exit(1)
+          PY
       - name: Run tests
         env:
           CI: "true"

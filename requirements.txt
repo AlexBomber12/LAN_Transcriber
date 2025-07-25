@@ -1496,6 +1496,10 @@ primepy==1.3 \
     --hash=sha256:25fd7e25344b0789a5984c75d89f054fcf1f180bef20c998e4befbac92de4669 \
     --hash=sha256:5ed443718765be9bf7e2ff4c56cdff71b42140a15b39d054f9d99f0009e2317a
     # via torch-pitch-shift
+prometheus-client==0.22.1 \
+    --hash=sha256:190f1331e783cf21eb60bca559354e0a4d4378facecf78f5428c39b675d20d28 \
+    --hash=sha256:cca895342e308174341b2cbf99a56bef291fbc0ef7b9e5412a0f26d653ba7094
+    # via -r requirements.in
 propcache==0.3.2 \
     --hash=sha256:035e631be25d6975ed87ab23153db6a73426a48db688070d925aa27e996fe93c \
     --hash=sha256:03c89c1b14a5452cf15403e291c0ccd7751d5b9736ecb2c5bab977ad6c5bcd81 \
