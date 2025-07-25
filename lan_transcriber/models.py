@@ -25,6 +25,7 @@ class TranscriptResult(BaseModel):
     summary_path: Path
     body_path: Path
     unknown_chunks: List[Path]
+    segments: List[SpeakerSegment] = []
 
     @classmethod
     def empty(cls, summary: str) -> "TranscriptResult":

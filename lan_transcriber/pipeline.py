@@ -1,15 +1,16 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import tempfile
 from pathlib import Path
 from typing import Dict, Iterable, List, Protocol
 
+from .aliases import load_aliases as _load_aliases, save_aliases as _save_aliases, ALIAS_PATH
+
 from pydantic_settings import BaseSettings
 
 from .llm_client import LLMClient
-from .models import TranscriptResult
+from .models import TranscriptResult, SpeakerSegment
 from . import normalizer
 
 
@@ -22,7 +23,7 @@ class Diariser(Protocol):
 class Settings(BaseSettings):
     """Runtime configuration for the transcription pipeline."""
 
-    speaker_db: Path = Path.home() / "speakers.json"
+    speaker_db: Path = ALIAS_PATH
     voices_dir: Path = Path.home() / "voices"
     unknown_dir: Path = Path.home() / "unknown_voices"
     tmp_root: Path = Path(tempfile.gettempdir())
@@ -32,16 +33,6 @@ class Settings(BaseSettings):
 
     class Config:
         env_prefix = "LAN_"
-
-
-def _load_aliases(path: Path) -> Dict[str, str]:
-    if path.exists():
-        return json.loads(path.read_text())
-    return {}
-
-
-def _save_aliases(path: Path, aliases: Dict[str, str]) -> None:
-    path.write_text(json.dumps(aliases))
 
 
 def _merge_similar(
@@ -71,6 +62,12 @@ def _sentiment_score(text: str) -> int:  # pragma: no cover - trivial wrapper
     return 50
 
 
+def refresh_aliases(result: TranscriptResult, alias_path: Path = ALIAS_PATH) -> None:
+    """Reload aliases from disk and update ``result`` in-place."""
+    aliases = _load_aliases(alias_path)
+    result.speakers = sorted({aliases.get(s.speaker, s.speaker) for s in result.segments})
+
+
 async def run_pipeline(
     audio_path: Path, cfg: Settings, llm: LLMClient, diariser: Diariser
 ) -> TranscriptResult:
@@ -98,12 +95,14 @@ async def run_pipeline(
 
     lines: List[str] = []
     speakers: List[str] = []
+    segs: List[SpeakerSegment] = []
     for seg, label in diarization.itertracks(yield_label=True):
         text = whisperx.utils.get_segments(
             {"segments": segments}, seg.start, seg.end
         ).strip()
         if not text:
             continue
+        segs.append(SpeakerSegment(start=seg.start, end=seg.end, speaker=label, text=text))
         name = aliases.get(label, label)
         if label not in aliases:
             aliases[label] = name
@@ -115,7 +114,7 @@ async def run_pipeline(
         aliases.setdefault("S1", fallback)
         speakers.append(fallback)
 
-    _save_aliases(cfg.speaker_db, aliases)
+    _save_aliases(aliases, cfg.speaker_db)
     lines = _merge_similar(lines, cfg.merge_similar)
     body = clean_text
 
@@ -144,7 +143,8 @@ async def run_pipeline(
         summary_path=sum_path,
         body_path=body_path,
         unknown_chunks=[],
+        segments=segs,
     )
 
 
-__all__ = ["run_pipeline", "Settings", "Diariser"]
+__all__ = ["run_pipeline", "Settings", "Diariser", "refresh_aliases"]
