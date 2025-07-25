@@ -664,10 +664,7 @@ fsspec[http]==2025.7.0 \
     #   lightning
     #   pytorch-lightning
     #   torch
-gradio==5.35.0 \
-    --hash=sha256:781a80df25355861e44fd2819fac4ed43cf08ea77911570fb0682f6ae16b9c7c \
-    --hash=sha256:f3e68ab02cfe0d9f364068883c8caf30b5b6fb62c10a19ccea3583a0c2e50acd
-    # via -r requirements.in
+gradio>=4.29.0,<5.0.0
 gradio-client==1.10.4 \
     --hash=sha256:271018368f4f0a2d2dfb943bbd495277518172be50e44f54d99c62fa5533ae09 \
     --hash=sha256:5dd0ff615f859b8d9fd3ce88555278e3d48bb6ffef79eb956a01e132edbcc1b0

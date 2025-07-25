@@ -104,7 +104,10 @@ def enroll_speaker(voice_path: str, name: str):
     return gr.Success(f"Speaker **{name}** added. You can re-run transcription.")
 
 
-with gr.Blocks(title="LAN Recording-Transcriber") as demo:  # pragma: no cover - UI glue
+with gr.Blocks(
+    title="LAN Recording-Transcriber",
+    css=".scroll {max-height: 65vh; overflow-y: auto;}",
+) as demo:  # pragma: no cover - UI glue
     gr.Markdown(
         "## LAN Recording-Transcriber  \n_Offline: WhisperX · pyannote · external LLM_"
     )
@@ -136,6 +139,6 @@ with gr.Blocks(title="LAN Recording-Transcriber") as demo:  # pragma: no cover -
     )
     add_btn.click(enroll_speaker, inputs=[new_voice, new_name], outputs=add_out)
 
-    demo.load(lambda: None, js="", css=".scroll {max-height: 65vh; overflow-y: auto;}")
+    demo.load(lambda: None)
 
     demo.launch(server_name="0.0.0.0", server_port=7860, share=False)
