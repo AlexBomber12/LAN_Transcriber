@@ -1,6 +1,7 @@
 import asyncio
 import httpx
 import respx
+import pytest
 import sys
 import pathlib
 
@@ -19,4 +20,16 @@ def test_generate():
     )
     result = asyncio.run(llm_client.generate("s", "u", model="m"))
     assert route.called
-    assert result == "the-result"
+    assert result["content"] == "the-result"
+
+
+@pytest.mark.asyncio
+async def test_timeout(monkeypatch):
+    async def slow_post(*_a, **_k):
+        await asyncio.sleep(35)
+        return httpx.Response(200, json={})
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", slow_post)
+    res = await llm_client.generate("s", "u")
+    assert res["content"] == "**LLM timeout**"
+    assert llm_client.llm_timeouts_total._value.get() >= 1
