@@ -1,11 +1,21 @@
 FROM python:3.12-slim
+
+# Рабочая директория в контейнере
 WORKDIR /app
 
+# Установка зависимостей
 COPY requirements.txt .
-RUN pip install --require-hashes --no-cache-dir -r requirements.txt \
-    --extra-index-url https://download.pytorch.org/whl/cpu
+RUN pip install --no-cache-dir -r requirements.txt \
+    --extra-index-url https://download.pytorch.org/whl/cu121
 
-COPY web_transcribe.py .
+# Копируем весь исходный код проекта
+COPY . .
 
-# Default CMD just shows help; real run done via compose/systemd.
-CMD ["python", "web_transcribe.py", "--help"]
+# Обеспечиваем видимость модулей внутри /app
+ENV PYTHONPATH=/app
+
+# Переменная для версии (можно переопределить через ENV)
+ENV TRANSCRIBER_VERSION=0.2.0
+
+# Запуск основного файла
+CMD ["python", "web_transcribe.py"]

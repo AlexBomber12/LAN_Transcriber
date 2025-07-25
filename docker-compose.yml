@@ -1,0 +1,43 @@
+services:
+  lan:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: lan-transcriber
+    restart: unless-stopped
+    ports:
+      - "7860:7860"
+    environment:
+      - PYTHONPATH=/app
+      - LLM_BASE_URL=${LLM_BASE_URL}
+      - LLM_API_KEY=${LLM_API_KEY}
+      - LLM_MODEL=${LLM_MODEL}
+      - FETCH_INTERVAL_SEC=${FETCH_INTERVAL_SEC}
+      - PROM_SNAPSHOT_PATH=${PROM_SNAPSHOT_PATH}
+      - TRANSCRIBER_VERSION=${TRANSCRIBER_VERSION}
+      - LANG_DEFAULT=${LANG_DEFAULT}
+    volumes:
+      - lan_cache:/root/.cache
+      - /opt/lan_cache/hf:/root/.cache/huggingface
+      - /opt/lan_cache/ollama:/root/.ollama
+      - ./data:/data
+    networks:
+      - lan_net
+
+#  plaud_fetcher:
+#   build:
+#      context: ./plaud_fetcher
+#    container_name: plaud-fetcher
+#    restart: unless-stopped
+#    depends_on:
+#      - lan
+#    environment:
+#      - INGEST_URL=http://lan:7860/api/plaud_ingest
+#    networks:
+#      - lan_net
+
+networks:
+  lan_net:
+
+volumes:
+  lan_cache:
