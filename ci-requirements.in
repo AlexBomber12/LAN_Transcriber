@@ -5,7 +5,9 @@ pytest-asyncio==1.1.0
 pytest-cov==5.0.0
 pytest-mock==3.14.1
 requests>=2.32
-respx==0.22.0
+respx[router]==0.22.0
+fastapi==0.116.1
+pyyaml==6.0.2
 ruff==0.12.4
 pip-tools==7.4.1
 setuptools==80.9.0

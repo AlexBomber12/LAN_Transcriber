@@ -125,6 +125,7 @@ anyio==4.9.0 \
     --hash=sha256:673c0c244e15788651a4ff38710fea9675823028a6f08a5eda409e0c9840a028 \
     --hash=sha256:9f76d541cad6e36af7beb62e978876f3b41e3e04f2c1fbf0884604c0a9c4d93c
     # via
+    #   -r requirements.in
     #   gradio
     #   httpx
     #   starlette
@@ -477,7 +478,9 @@ emoji==2.14.1 \
 fastapi==0.116.1 \
     --hash=sha256:c46ac7c312df840f0c9e220f7964bada936781bc4e2e6eb71f1c4d7553786565 \
     --hash=sha256:ed52cbf946abfd70c5a0dccb24673f0670deeb517a88b3544d03c2a6bf283143
-    # via gradio
+    # via
+    #   -r requirements.in
+    #   gradio
 faster-whisper==1.1.1 \
     --hash=sha256:50d27571970c1be0c2b2680a2593d5d12f9f5d2f10484f242a1afbe7cb946604 \
     --hash=sha256:5808dc334fb64fb4336921450abccfe5e313a859b31ba61def0ac7f639383d90
@@ -1868,6 +1871,7 @@ pyyaml==6.0.2 \
     --hash=sha256:f753120cb8181e736c57ef7636e83f31b9c0d1722c516f7e86cf15b7aa57ff12 \
     --hash=sha256:ff3824dc5261f50c9b0dfb3be22b4567a6f938ccce4587b38952d85fd9e9afe4
     # via
+    #   -r requirements.in
     #   accelerate
     #   ctranslate2
     #   gradio
