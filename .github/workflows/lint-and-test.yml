@@ -23,7 +23,7 @@ jobs:
           restore-keys: ${{ runner.os }}-pip-
       - name: Install test deps
         run: |
-          pip install --require-hashes -r ci-requirements.txt -r requirements.txt \
+          pip install -r ci-requirements.txt -r requirements.txt \
             --extra-index-url https://download.pytorch.org/whl/cpu
       - name: Install package
         run: pip install -e .[test]
