@@ -70,7 +70,7 @@ async def test_tripled_dedup(tmp_path: Path, mocker):
         lambda *a, **k: lambda text: [{"label": "positive", "score": 0.8}],
     )
 
-    cfg = pipeline.Settings(speaker_db=tmp_path / "db.json", tmp_root=tmp_path)
+    cfg = pipeline.Settings(speaker_db=tmp_path / "db.yaml", tmp_root=tmp_path)
     res = await pipeline.run_pipeline(
         mp3("3_tripled.mp3"), cfg, llm_client.LLMClient(), DummyDiariser()
     )
@@ -96,14 +96,16 @@ async def test_alias_persist(tmp_path: Path, mocker):
         "transformers.pipeline",
         lambda *a, **k: lambda text: [{"label": "positive", "score": 0.5}],
     )
-    db = tmp_path / "db.json"
-    db.write_text(json.dumps({"S1": "Alice"}))
+    db = tmp_path / "db.yaml"
+    db.write_text("S1: Alice\n")
     cfg = pipeline.Settings(speaker_db=db, tmp_root=tmp_path)
     res = await pipeline.run_pipeline(
         mp3("1_EN.mp3"), cfg, llm_client.LLMClient(), DummyDiariser()
     )
     assert res.speakers == ["Alice"]
-    saved = json.loads(db.read_text())
+    import yaml
+
+    saved = yaml.safe_load(db.read_text())
     assert "S1" in saved
 
 
@@ -122,7 +124,7 @@ async def test_white_noise(tmp_path: Path, mocker):
         lambda *a, **k: lambda text: [{"label": "positive", "score": 0.5}],
     )
 
-    cfg = pipeline.Settings(speaker_db=tmp_path / "db.json", tmp_root=tmp_path)
+    cfg = pipeline.Settings(speaker_db=tmp_path / "db.yaml", tmp_root=tmp_path)
     res = await pipeline.run_pipeline(
         mp3("4_white_noise.mp3"), cfg, llm_client.LLMClient(), DummyDiariser()
     )
@@ -149,7 +151,7 @@ async def test_no_talk(tmp_path: Path, mocker):
         lambda *a, **k: lambda text: [{"label": "positive", "score": 0.0}],
     )
 
-    cfg = pipeline.Settings(speaker_db=tmp_path / "db.json", tmp_root=tmp_path)
+    cfg = pipeline.Settings(speaker_db=tmp_path / "db.yaml", tmp_root=tmp_path)
     res = await pipeline.run_pipeline(
         mp3("5_no_talk.mp3"), cfg, llm_client.LLMClient(), DummyDiariser()
     )

@@ -34,3 +34,11 @@ future monitoring.
 | STAGING_HOST | VPS public IP / DNS | 203.0.113.10 |
 | STAGING_USER | SSH user | ubuntu |
 | STAGING_SSH_KEY | private key PEM (no passphrase) | multiline |
+
+## Speaker alias API
+
+POST `/alias/{speaker_id}` with JSON `{"alias": "Alice"}` updates `speaker_bank.yaml`. Delete the file to reset aliases.
+
+
+![demo](docs/demo.gif)
+
