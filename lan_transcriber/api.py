@@ -3,7 +3,10 @@ from __future__ import annotations
 import asyncio
 from typing import List
 from fastapi import FastAPI
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, Response
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+from pathlib import Path
+from .metrics import write_metrics_snapshot
 from pydantic import BaseModel
 
 from .aliases import load_aliases, save_aliases, ALIAS_PATH
@@ -13,6 +16,11 @@ from .models import TranscriptResult
 app = FastAPI()
 _subscribers: List[asyncio.Queue[str]] = []
 _current_result: TranscriptResult | None = None
+
+
+@app.on_event("startup")
+async def _start_metrics() -> None:
+    asyncio.create_task(write_metrics_snapshot(Path("metrics.snap")))
 
 
 class AliasUpdate(BaseModel):
@@ -29,6 +37,11 @@ async def update_alias(speaker_id: str, upd: AliasUpdate):
     for q in list(_subscribers):
         q.put_nowait("updated")
     return {"speaker": speaker_id, "alias": upd.alias}
+
+
+@app.get("/metrics")
+async def metrics() -> Response:
+    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
 @app.get("/events")

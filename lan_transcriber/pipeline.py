@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import tempfile
+import time
 from pathlib import Path
 from typing import Dict, Iterable, List, Protocol
 
@@ -12,6 +13,7 @@ from pydantic_settings import BaseSettings
 from .llm_client import LLMClient
 from .models import TranscriptResult, SpeakerSegment
 from . import normalizer
+from .metrics import p95_latency_seconds, error_rate_total
 
 
 class Diariser(Protocol):
@@ -72,7 +74,7 @@ async def run_pipeline(
     audio_path: Path, cfg: Settings, llm: LLMClient, diariser: Diariser
 ) -> TranscriptResult:
     """Transcribe ``audio_path`` and return a structured result."""
-
+    start = time.perf_counter()
     import whisperx
 
     aliases = _load_aliases(cfg.speaker_db)
@@ -125,26 +127,35 @@ async def run_pipeline(
         "Return only the list without extra explanation."
     )
     user_prompt = f"{sys_prompt}\n\nTRANSCRIPT:\n{body}\n\nSUMMARY:"
-    summary = await llm.generate(
-        system_prompt=sys_prompt, user_prompt=user_prompt, model=cfg.llm_model
-    )
+    try:
+        msg = await llm.generate(
+            system_prompt=sys_prompt, user_prompt=user_prompt, model=cfg.llm_model
+        )
+        summary = msg.get("content", "") if isinstance(msg, dict) else str(msg)
 
-    tmp = Path(tempfile.mkdtemp(prefix="trs_", dir=cfg.tmp_root))
-    sum_path = tmp / f"{audio_path.stem}_summary.md"
-    body_path = tmp / f"{audio_path.stem}.md"
-    sum_path.write_text(summary, encoding="utf-8")
-    body_path.write_text(body, encoding="utf-8")
+        tmp = Path(tempfile.mkdtemp(prefix="trs_", dir=cfg.tmp_root))
+        sum_path = tmp / f"{audio_path.stem}_summary.md"
+        body_path = tmp / f"{audio_path.stem}.md"
+        sum_path.write_text(summary, encoding="utf-8")
+        body_path.write_text(body, encoding="utf-8")
 
-    return TranscriptResult(
-        summary=summary,
-        body=body,
-        friendly=friendly,
-        speakers=sorted(set(speakers)),
-        summary_path=sum_path,
-        body_path=body_path,
-        unknown_chunks=[],
-        segments=segs,
-    )
+        result = TranscriptResult(
+            summary=summary,
+            body=body,
+            friendly=friendly,
+            speakers=sorted(set(speakers)),
+            summary_path=sum_path,
+            body_path=body_path,
+            unknown_chunks=[],
+            segments=segs,
+        )
+    except Exception:
+        error_rate_total.inc()
+        raise
+    finally:
+        p95_latency_seconds.observe(time.perf_counter() - start)
+
+    return result
 
 
 __all__ = ["run_pipeline", "Settings", "Diariser", "refresh_aliases"]
