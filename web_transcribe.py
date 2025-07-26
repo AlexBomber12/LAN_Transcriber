@@ -138,10 +138,12 @@ with gr.Blocks(
         outputs=[out_md, out_full, file_sum, file_md, unknown, out_voice],
     )
     btn_clear.click(
-        lambda: (None,) * 5, None, [audio_in, out_md, out_full, file_sum, file_md]
+        lambda: (None,) * 6,
+        None,
+        [audio_in, out_md, out_full, file_sum, file_md, out_voice],
     )
     add_btn.click(enroll_speaker, inputs=[new_voice, new_name], outputs=add_out)
 
-    demo.load(lambda: None)
+    demo.load(lambda: "ready")
 
     demo.launch()
