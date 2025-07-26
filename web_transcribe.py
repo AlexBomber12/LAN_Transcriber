@@ -95,13 +95,13 @@ async def transcribe_and_summarize(text: str) -> tuple[Path, Path]:
 def enroll_speaker(voice_path: str, name: str):
     """Dummy implementation kept for UI compatibility."""
     if not voice_path or not name:
-        return gr.Info("Upload voice sample AND type the name first.")
+        return "⚠️ Upload voice sample AND type the name first."
     cfg = pipeline.Settings()
     cfg.voices_dir.mkdir(exist_ok=True)
     import shutil
 
     shutil.copy(voice_path, cfg.voices_dir / f"{name}.wav")
-    return gr.Success(f"Speaker **{name}** added. You can re-run transcription.")
+    return f"✅ Speaker **{name}** added. You can re-run transcription."
 
 
 with gr.Blocks(
