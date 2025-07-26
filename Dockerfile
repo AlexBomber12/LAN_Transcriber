@@ -7,6 +7,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt \
     --extra-index-url https://download.pytorch.org/whl/cu121
+RUN pip install --upgrade pip setuptools wheel
 
 # Копируем весь исходный код проекта
 COPY . .

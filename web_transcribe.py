@@ -53,6 +53,7 @@ from lan_transcriber import llm_client, pipeline
 
 import gradio as gr  # type: ignore
 from pyannote.audio import Pipeline  # type: ignore
+from fastapi import FastAPI  # type: ignore
 import torch  # type: ignore
 
 
@@ -146,4 +147,23 @@ with gr.Blocks(
 
     demo.load(lambda: "ready")
 
-    demo.launch()
+app = FastAPI()
+try:  # pragma: no cover - simple mounting logic
+    if hasattr(gr, "mount_gradio_app"):
+        mounted = gr.mount_gradio_app(app, demo, path="/")
+        if isinstance(mounted, FastAPI):
+            app = mounted
+except Exception:
+    pass
+
+if not any(getattr(r, "path", None) == "/" for r in getattr(app, "routes", [])):
+    @app.get("/")
+    async def root() -> dict[str, str]:
+        return {"status": "ok"}
+
+if __name__ == "__main__":
+    demo.launch(
+        server_name="0.0.0.0",
+        server_port=7860,
+        share=False,
+    )
