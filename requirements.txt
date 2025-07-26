@@ -1,29 +1,29 @@
 # Minimum dependencies for LAN Transcriber
-# Flexible constraints to avoid hash pinning issues
 
-torch>=2.5
-torchvision>=0.20
-torchaudio>=2.5
+torch
+torchvision
+torchaudio
 
-whisperx>=3.4
-faster-whisper>=1.1
-pyannote.audio>=3.3
-pyannote.pipeline>=3.0
+whisperx
+faster-whisper
+pyannote.audio
+pyannote.pipeline
 
-gradio>=4.29.0,<5.0.0
-transformers>=4.53
-sentencepiece>=0.2
-accelerate>=1.9
-bitsandbytes>=0.46
-torchmetrics>=1.7
-emoji>=2.14
-httpx>=0.28
-anyio>=4.9
-tenacity>=9.1
-pydantic>=2.11
-pydantic-settings>=2.10
-rapidfuzz>=3.13
-fastapi>=0.110
-pyyaml>=6.0
+gradio>=4.33
+transformers
+sentencepiece
+accelerate
+bitsandbytes
+torchmetrics
+emoji
+httpx
+anyio
+tenacity
+pydantic
+pydantic-settings
+rapidfuzz
+fastapi>=0.111
+starlette
+pyyaml
 prometheus_client>=0.19
 numpy
