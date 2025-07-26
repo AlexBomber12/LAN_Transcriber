@@ -1,8 +1,6 @@
 services:
   lan:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: ghcr.io/alexbomber12/lan-transcriber:${TRANSCRIBER_VERSION}
     container_name: lan-transcriber
     restart: unless-stopped
     ports:
