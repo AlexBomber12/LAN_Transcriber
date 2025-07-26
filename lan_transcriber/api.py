@@ -18,6 +18,12 @@ _subscribers: List[asyncio.Queue[str]] = []
 _current_result: TranscriptResult | None = None
 
 
+@app.get("/healthz")
+async def healthz() -> dict[str, str]:
+    """Simple health check used by monitoring."""
+    return {"status": "ok"}
+
+
 @app.on_event("startup")
 async def _start_metrics() -> None:
     asyncio.create_task(write_metrics_snapshot(Path("metrics.snap")))
@@ -65,4 +71,4 @@ def set_current_result(result: TranscriptResult | None) -> None:
     _current_result = result
 
 
-__all__ = ["app", "set_current_result"]
+__all__ = ["app", "set_current_result", "healthz"]
