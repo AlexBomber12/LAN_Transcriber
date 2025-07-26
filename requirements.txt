@@ -8,3 +8,5 @@ faster-whisper
 pyannote.audio
 httpx
 tenacity
+
+prometheus_client>=0.22
