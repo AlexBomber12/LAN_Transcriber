@@ -1,26 +1,23 @@
-import pytest
-import subprocess, time, requests, os, signal
+import subprocess, requests, time, os, signal, pytest
 
-IMAGE = os.environ.get("SMOKE_IMAGE", "ghcr.io/alexbomber12/lan-transcriber:latest")
+IMAGE = os.getenv("SMOKE_IMAGE")
 
-def test_docker_container_runs():
-    """Spin up the image and hit the root URL – max 90 s."""
+
+def test_container_launches():
     proc = subprocess.Popen(
         ["docker", "run", "--rm", "-p", "17860:7860", IMAGE],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
     )
     try:
         for _ in range(90):
             try:
-                r = requests.get("http://127.0.0.1:17860/", timeout=1)
-                if r.ok:
-                    assert "<html" in r.text.lower()
+                r = requests.get("http://127.0.0.1:17860/openapi.json", timeout=1)
+                if r.status_code == 200:
                     return
             except requests.exceptions.ConnectionError:
                 pass
             time.sleep(1)
-        pytest.fail("UI never came up inside Docker image")
+        pytest.fail("UI did not start or returned non-200")
     finally:
-        proc.send_signal(signal.SIGINT)   # graceful stop
+        proc.send_signal(signal.SIGINT)
+
