@@ -1,29 +1,10 @@
 # Minimum dependencies for LAN Transcriber
 
-torch
-torchvision
-torchaudio
-
-whisperx
-faster-whisper
-pyannote.audio
-pyannote.pipeline
-
 gradio>=4.33
-transformers
-sentencepiece
-accelerate
-bitsandbytes
-torchmetrics
-emoji
-httpx
-anyio
-tenacity
-pydantic
-pydantic-settings
-rapidfuzz
 fastapi>=0.111
 starlette
-pyyaml
-prometheus_client>=0.19
-numpy
+torch
+faster-whisper
+pyannote.audio
+httpx
+tenacity

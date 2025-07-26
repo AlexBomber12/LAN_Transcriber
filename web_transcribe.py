@@ -54,6 +54,7 @@ from lan_transcriber import llm_client, pipeline
 import gradio as gr  # type: ignore
 from pyannote.audio import Pipeline  # type: ignore
 from fastapi import FastAPI  # type: ignore
+from fastapi.responses import HTMLResponse
 import torch  # type: ignore
 
 
@@ -157,9 +158,10 @@ except Exception:
     pass
 
 if not any(getattr(r, "path", None) == "/" for r in getattr(app, "routes", [])):
-    @app.get("/")
-    async def root() -> dict[str, str]:
-        return {"status": "ok"}
+    @app.get("/", response_class=HTMLResponse)
+    async def root() -> str:
+        """Fallback root route for CI runs with stubbed gradio."""
+        return "<html><body>LAN Transcriber</body></html>"
 
 if __name__ == "__main__":
     demo.launch(
