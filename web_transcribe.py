@@ -123,6 +123,7 @@ with gr.Blocks(
             file_sum = gr.File(label="Download summary.md")
             file_md = gr.File(label="Download full.md")
             unknown = gr.Markdown(label="New voices saved")
+            out_voice = gr.Markdown(label="Unknown speaker chunks")
 
     with gr.Accordion("Add speaker to database", open=False):
         with gr.Row():
@@ -132,7 +133,9 @@ with gr.Blocks(
         add_out = gr.Markdown()
 
     btn_proc.click(
-        transcribe, audio_in, outputs=[out_md, out_full, file_sum, file_md, unknown]
+        transcribe,
+        audio_in,
+        outputs=[out_md, out_full, file_sum, file_md, unknown, out_voice],
     )
     btn_clear.click(
         lambda: (None,) * 5, None, [audio_in, out_md, out_full, file_sum, file_md]
