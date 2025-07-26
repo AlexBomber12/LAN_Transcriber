@@ -26,4 +26,6 @@ jobs:
         with:
           context: .
           push: true
-          tags: ghcr.io/${{ env.OWNER_LC }}/lan-transcriber:latest
+          tags: |
+            ghcr.io/${{ env.OWNER_LC }}/lan-transcriber:latest
+            ghcr.io/${{ env.OWNER_LC }}/lan-transcriber:${{ github.ref_name }}
