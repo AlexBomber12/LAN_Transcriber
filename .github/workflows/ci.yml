@@ -31,8 +31,10 @@ jobs:
         run: python -m pytest -q tests/test_ui.py
       - name: Pull last built image (lightweight smoke)
         run: docker pull ghcr.io/${{ github.repository_owner }}/lan-transcriber:${{ github.ref_name || 'latest' }}
-      - name: Run docker-smoke test (no build)
+      - name: Docker smoke
         env:
           CI: 'true'
-          SMOKE_IMAGE: ghcr.io/${{ github.repository_owner }}/lan-transcriber:${{ github.ref_name || 'latest' }}
-        run: python -m pytest -q tests/test_docker_smoke.py
+        run: |
+          IMAGE_TAG=${{ github.ref_name || 'latest' }}
+          export SMOKE_IMAGE=ghcr.io/${{ github.repository_owner }}/lan-transcriber:$IMAGE_TAG
+          python -m pytest -q tests/test_docker_smoke.py
