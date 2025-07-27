@@ -13,6 +13,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: set lowercase owner
+        run: echo "OWNER_LC=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
+
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -26,9 +29,9 @@ jobs:
         run: pytest -q tests/test_ui.py
 
       - name: Pull already-built image
-        run: docker pull ghcr.io/${{ github.repository_owner }}/lan-transcriber:${{ github.ref_name || 'latest' }}
+        run: docker pull ghcr.io/${{ env.OWNER_LC }}/lan-transcriber:${{ github.ref_name || 'latest' }}
 
       - name: Docker smoke
         env:
-          SMOKE_IMAGE: ghcr.io/${{ github.repository_owner }}/lan-transcriber:${{ github.ref_name || 'latest' }}
+          SMOKE_IMAGE: ghcr.io/${{ env.OWNER_LC }}/lan-transcriber:${{ github.ref_name || 'latest' }}
         run: pytest -q tests/test_docker_smoke.py
