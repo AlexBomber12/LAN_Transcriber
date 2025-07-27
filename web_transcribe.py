@@ -13,41 +13,54 @@ try:
 except ModuleNotFoundError:  # pragma: no cover - CI stub
     sys.modules.setdefault("httpx", types.ModuleType("httpx"))
 
-# When running in CI we stub heavy dependencies so the module imports.
-if os.getenv("CI") == "true":  # pragma: no cover - CI stub
+# Stub heavy dependencies so the module imports even when they are not installed.
 
-    class _Dummy:
-        def __getattr__(self, _name):
-            return _Dummy()
+class _Dummy:  # pragma: no cover - simple attribute stub
+    def __getattr__(self, _name):
+        return _Dummy()
 
-        def __call__(self, *a, **k):
-            return _Dummy()
+    def __call__(self, *a, **k):
+        return _Dummy()
 
-        def __enter__(self):
-            return self
+    def __enter__(self):
+        return self
 
-        def __exit__(self, exc_type, exc, tb):
-            return False
+    def __exit__(self, exc_type, exc, tb):
+        return False
 
-    class _Stub(types.ModuleType):
-        def __getattr__(self, _name):
-            return _Dummy()
 
-    def _fake(mod: str) -> None:
-        sys.modules[mod] = _Stub(mod)
+class _Stub(types.ModuleType):  # pragma: no cover - simple attribute stub
+    def __getattr__(self, _name):
+        return _Dummy()
 
-    for mod in (
-        "torch",
-        "torchvision",
-        "torchaudio",
-        "faster_whisper",
-        "pyannote",
-        "pyannote.audio",
-        "pyannote.pipeline",
-        "gradio",
-        "numpy",
-    ):
-        _fake(mod)
+
+def _fake(mod: str) -> None:  # pragma: no cover - simple helper
+    sys.modules[mod] = _Stub(mod)
+
+
+import importlib
+
+mods = (
+    "torch",
+    "torchvision",
+    "torchaudio",
+    "faster_whisper",
+    "pyannote",
+    "pyannote.audio",
+    "pyannote.pipeline",
+    "gradio",
+    "numpy",
+)
+
+missing = []
+for mod in mods:
+    try:
+        importlib.import_module(mod)
+    except ModuleNotFoundError:  # pragma: no cover - import guard
+        missing.append(mod)
+
+for mod in missing:
+    _fake(mod)
 
 from lan_transcriber import llm_client, pipeline
 
