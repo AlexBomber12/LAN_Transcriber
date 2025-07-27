@@ -13,9 +13,8 @@ try:
 except ModuleNotFoundError:  # pragma: no cover - CI stub
     sys.modules.setdefault("httpx", types.ModuleType("httpx"))
 
-# When running in CI we stub heavy dependencies so the module imports.
-if os.getenv("CI") == "true":  # pragma: no cover - CI stub
-
+# Stub heavy dependencies when running in CI or if they are missing
+def _stub_heavy() -> None:  # pragma: no cover - CI stub
     class _Dummy:
         def __getattr__(self, _name):
             return _Dummy()
@@ -48,6 +47,16 @@ if os.getenv("CI") == "true":  # pragma: no cover - CI stub
         "numpy",
     ):
         _fake(mod)
+
+if os.getenv("CI") == "true":
+    _stub_heavy()
+else:
+    try:
+        import gradio as gr  # type: ignore
+        from pyannote.audio import Pipeline  # type: ignore
+        import torch  # type: ignore
+    except ModuleNotFoundError:
+        _stub_heavy()
 
 from lan_transcriber import llm_client, pipeline
 

@@ -5,6 +5,13 @@ from typing import Deque
 from rapidfuzz import fuzz as rfuzz
 
 
+def normalize_text(text: str) -> str:
+    """Lower-case and strip trailing punctuation."""
+    text = text.strip()
+    text = re.sub(r"[.!?]+$", "", text)
+    return text.lower()
+
+
 def dedup(text: str, *, window: int = 3, fuzz: int = 90) -> str:
     """Collapse consecutive duplicate sentences."""
     text = text.strip()
@@ -31,4 +38,4 @@ def dedup(text: str, *, window: int = 3, fuzz: int = 90) -> str:
     return " ".join(out).strip()
 
 
-__all__ = ["dedup"]
+__all__ = ["dedup", "normalize_text"]

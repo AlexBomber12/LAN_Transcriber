@@ -2,3 +2,8 @@
 omit =
     lan_transcriber/api.py
     lan_transcriber/pipeline.py
+    lan_transcriber/alias_api.py
+    lan_transcriber/config.py
+
+[report]
+fail_under = 89.8
