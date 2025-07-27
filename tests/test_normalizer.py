@@ -22,3 +22,7 @@ def test_dedup_cases(text: str, expected: str) -> None:
 
 def test_whitespace_punctuation() -> None:
     assert normalizer.dedup(" Hello!  Hello!  ") == "Hello!"
+
+
+def test_normalize() -> None:
+    assert normalizer.normalize_text("Different sentences.") == "different sentences"
