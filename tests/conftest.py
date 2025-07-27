@@ -90,6 +90,13 @@ _ensure_stub(
     exceptions=types.SimpleNamespace(ConnectionError=Exception),
 )
 
+_ensure_stub(
+    "tenacity",
+    retry=lambda *a, **k: (lambda f: f),
+    wait_exponential=lambda *a, **k: None,
+    stop_after_attempt=lambda *a, **k: None,
+)
+
 _ensure_stub("anyio")
 
 _ensure_stub(
