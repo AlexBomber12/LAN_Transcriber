@@ -10,3 +10,4 @@ httpx
 tenacity
 prometheus_client>=0.22
 pydantic-settings>=2.2
+rapidfuzz>=3.6
