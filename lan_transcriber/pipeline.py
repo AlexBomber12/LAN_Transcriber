@@ -8,7 +8,7 @@ from typing import Dict, Iterable, List, Protocol
 
 from .aliases import load_aliases as _load_aliases, save_aliases as _save_aliases, ALIAS_PATH
 
-from pydantic_settings import BaseSettings
+from pydantic.v1 import BaseSettings
 
 from .llm_client import LLMClient
 from .models import TranscriptResult, SpeakerSegment
