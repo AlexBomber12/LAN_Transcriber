@@ -1,18 +1,17 @@
 import re
+import string
 from collections import deque
 from typing import Deque
-from string import punctuation
 
 from rapidfuzz import fuzz as rfuzz
 
-PUNCT = punctuation.replace("’", "").replace("'", "")
+PUNCT = string.punctuation.replace("'", "").replace("’", "")
 
 
 def normalize_text(text: str) -> str:
-    text = text.strip().lower()
-    text = re.sub(r"\s+", " ", text)
-    text = text.translate(str.maketrans("", "", PUNCT))
-    return text
+    return re.sub(r"\s+", " ", text.strip().lower()).translate(
+        str.maketrans("", "", PUNCT)
+    )
 
 
 def dedup(text: str, *, window: int = 3, fuzz: int = 90) -> str:
