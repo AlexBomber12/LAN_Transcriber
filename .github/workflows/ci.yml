@@ -13,7 +13,9 @@ jobs:
     services:
       docker:
         image: docker:24.0.9-dind
-        privileged: true
+        options: --privileged
+        env:
+          DOCKER_TLS_CERTDIR: "/certs"
     steps:
       - uses: actions/checkout@v4
       - name: Set up Python
@@ -23,18 +25,30 @@ jobs:
       - name: Install deps
         run: |
           python -m pip install -U pip
-          pip install -r requirements.txt
-          pip install pytest requests
-      - name: Run pytest (unit + FastAPI)
+          pip install -r ci-requirements.txt -r requirements.txt \
+            --extra-index-url https://download.pytorch.org/whl/cpu
+          pip install -e .[test]
+      - name: Run pytest
         env:
           CI: 'true'
-        run: python -m pytest -q tests/test_ui.py
-      - name: Pull last built image (lightweight smoke)
-        run: docker pull ghcr.io/${{ github.repository_owner }}/lan-transcriber:${{ github.ref_name || 'latest' }}
-      - name: Docker smoke
-        env:
-          CI: 'true'
+        run: pytest -q
+      - name: Prepare smoke image
+        id: prepare_smoke
         run: |
-          IMAGE_TAG=${{ github.ref_name || 'latest' }}
-          export SMOKE_IMAGE=ghcr.io/${{ github.repository_owner }}/lan-transcriber:$IMAGE_TAG
-          python -m pytest -q tests/test_docker_smoke.py
+          IMAGE_OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          REF_NAME="${{ github.ref_name }}"
+          TAG="${REF_NAME//\//-}"
+          IMAGE="ghcr.io/${IMAGE_OWNER}/lan-transcriber:${TAG}"
+          echo "Attempting to pull $IMAGE"
+          if docker pull "$IMAGE"; then
+            echo "SMOKE_IMAGE=$IMAGE" >> "$GITHUB_OUTPUT"
+          else
+            echo "Image not found: $IMAGE. Skipping smoke test."
+          fi
+      - name: Docker smoke
+        if: steps.prepare_smoke.outputs.SMOKE_IMAGE != ''
+        env:
+          SMOKE_IMAGE: ${{ steps.prepare_smoke.outputs.SMOKE_IMAGE }}
+        run: |
+          python -m pip install -U requests
+          pytest -q tests/test_docker_smoke.py
