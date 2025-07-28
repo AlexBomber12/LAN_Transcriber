@@ -13,7 +13,9 @@ jobs:
     services:
       docker:
         image: docker:24.0.9-dind
-        privileged: true
+        options: --privileged
+        env:
+          DOCKER_TLS_CERTDIR: "/certs"
     steps:
       - uses: actions/checkout@v4
       - name: Set up Python
@@ -23,12 +25,13 @@ jobs:
       - name: Install deps
         run: |
           python -m pip install -U pip
-          pip install -r requirements.txt
-          pip install pytest requests
-      - name: Run pytest (unit + FastAPI)
+          pip install -r ci-requirements.txt -r requirements.txt \
+            --extra-index-url https://download.pytorch.org/whl/cpu
+          pip install -e .[test]
+      - name: Run pytest
         env:
           CI: 'true'
-        run: python -m pytest -q tests/test_ui.py
+        run: pytest -q
       - name: Pull last built image (lightweight smoke)
         run: docker pull ghcr.io/${{ github.repository_owner }}/lan-transcriber:${{ github.ref_name || 'latest' }}
       - name: Docker smoke
