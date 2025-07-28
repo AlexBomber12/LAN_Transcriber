@@ -41,14 +41,18 @@ jobs:
           IMAGE="ghcr.io/${IMAGE_OWNER}/lan-transcriber:${TAG}"
           echo "Attempting to pull $IMAGE"
           if docker pull "$IMAGE"; then
+            echo "Pulled $IMAGE"
             echo "SMOKE_IMAGE=$IMAGE" >> "$GITHUB_OUTPUT"
           else
-            echo "Image not found: $IMAGE. Skipping smoke test."
+            echo "Image not found; building locally"
+            docker build -t lan-transcriber-ci -f Dockerfile .
+            echo "SMOKE_IMAGE=lan-transcriber-ci" >> "$GITHUB_OUTPUT"
           fi
       - name: Docker smoke
         if: steps.prepare_smoke.outputs.SMOKE_IMAGE != ''
         env:
           SMOKE_IMAGE: ${{ steps.prepare_smoke.outputs.SMOKE_IMAGE }}
+          CI: 'true'
         run: |
           python -m pip install -U requests
           pytest -q tests/test_docker_smoke.py
