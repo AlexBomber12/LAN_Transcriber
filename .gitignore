@@ -10,3 +10,4 @@ __pycache__/
 
 # Generated fixture outputs during tests
 tests/fixtures/*.mp3
+*.Zone.Identifier
