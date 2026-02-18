@@ -17,7 +17,7 @@ Queue (in order)
 - Depends on: none
 
 2) PR-REFRACTOR-CORE-01: Refactor existing code into a stable core pipeline library and /data-backed state
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-REFRACTOR-CORE-01.md
 - Depends on: PR-BOOTSTRAP-01
 

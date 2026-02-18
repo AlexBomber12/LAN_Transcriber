@@ -1,57 +1,93 @@
-diff --git a/.github/pull_request_template.md b/.github/pull_request_template.md
-index 02cc713..0fd84ac 100644
---- a/.github/pull_request_template.md
-+++ b/.github/pull_request_template.md
-@@ -1,25 +1,26 @@
- ## Planned PR Report
+diff --git a/lan_app/__init__.py b/lan_app/__init__.py
+index 54874c9..ffa9f16 100644
+--- a/lan_app/__init__.py
++++ b/lan_app/__init__.py
+@@ -1,6 +1,3 @@
+ """Application-layer package for LAN Transcriber."""
  
--- PR ID:
-+- PR_ID:
-+- TASK_FILE:
- - Branch:
--- Scope delivered:
--- Queue update:
+-from .api import app as api_app
+-from .ui import app as ui_app
+-
+-__all__ = ["api_app", "ui_app"]
++__all__: list[str] = []
+diff --git a/lan_app/config.py b/lan_app/config.py
+index e90fc5c..c159f2f 100644
+--- a/lan_app/config.py
++++ b/lan_app/config.py
+@@ -1,17 +1,14 @@
+ from __future__ import annotations
  
--## Validation
-+## What Changed (1-5 bullets)
+-import os
+ from pathlib import Path
  
--- [ ] `scripts/ci.sh` exits `0`
-+- 
++from pydantic import AliasChoices, Field
+ from pydantic_settings import BaseSettings
+ 
+ from lan_transcriber.runtime_paths import default_data_root
+ 
+ 
+ def _default_metrics_snapshot_path() -> Path:
+-    legacy = os.getenv("PROM_SNAPSHOT_PATH")
+-    if legacy:
+-        return Path(legacy)
+     return default_data_root() / "metrics.snap"
+ 
+ 
+@@ -19,7 +16,14 @@ class AppSettings(BaseSettings):
+     """App-layer runtime settings."""
+ 
+     data_root: Path = default_data_root()
+-    metrics_snapshot_path: Path = _default_metrics_snapshot_path()
++    metrics_snapshot_path: Path = Field(
++        default_factory=_default_metrics_snapshot_path,
++        validation_alias=AliasChoices(
++            "LAN_PROM_SNAPSHOT_PATH",
++            "LAN_METRICS_SNAPSHOT_PATH",
++            "PROM_SNAPSHOT_PATH",
++        ),
++    )
+     db_path: Path = default_data_root() / "db" / "app.db"
+ 
+     class Config:
+diff --git a/tests/test_imports.py b/tests/test_imports.py
+index fdceb20..d203500 100644
+--- a/tests/test_imports.py
++++ b/tests/test_imports.py
+@@ -4,7 +4,7 @@ import pathlib
+ import pytest
+ 
+ 
+-@pytest.mark.parametrize("mod", ["web_transcribe"])
++@pytest.mark.parametrize("mod", ["web_transcribe", "lan_app.api"])
+ def test_imports(mod):
+     sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+     assert importlib.import_module(mod)
+diff --git a/tests/test_app_config.py b/tests/test_app_config.py
+new file mode 100644
+index 0000000..67d1415
+--- /dev/null
++++ b/tests/test_app_config.py
+@@ -0,0 +1,23 @@
++from pathlib import Path
 +
-+## How Verified
++from lan_app.config import AppSettings
 +
-+- Exact command:
- 
- ## Artifacts
- 
--- [ ] `scripts/make-review-artifacts.sh` executed
--- [ ] `artifacts/ci.log` generated
--- [ ] `artifacts/pr.patch` generated
-+- `artifacts/ci.log`
-+- `artifacts/pr.patch`
- 
--## Security
-+## Manual Test Steps (if applicable)
- 
--- [ ] No secrets committed
--- [ ] Runtime mutable data paths use `/data`
-+- 
- 
--## Out Of Scope / Deferred
-+## MCP Usage (if applicable)
- 
---
-+- 
-diff --git a/tasks/QUEUE.md b/tasks/QUEUE.md
-index e500cf6..be6c89b 100644
---- a/tasks/QUEUE.md
-+++ b/tasks/QUEUE.md
-@@ -12,7 +12,7 @@ Status legend
- Queue (in order)
- 
- 1) PR-BOOTSTRAP-01: Repo bootstrap: tasks system, CI scripts, artifacts, runtime data layout
--- Status: DOING
-+- Status: DONE
- - Tasks file: tasks/PR-BOOTSTRAP-01.md
- - Depends on: none
- 
++
++def test_metrics_snapshot_path_from_documented_env(monkeypatch, tmp_path: Path):
++    expected = tmp_path / "metrics.snap"
++    monkeypatch.setenv("LAN_PROM_SNAPSHOT_PATH", str(expected))
++    monkeypatch.delenv("LAN_METRICS_SNAPSHOT_PATH", raising=False)
++    monkeypatch.delenv("PROM_SNAPSHOT_PATH", raising=False)
++
++    cfg = AppSettings()
++    assert cfg.metrics_snapshot_path == expected
++
++
++def test_metrics_snapshot_path_legacy_fallback(monkeypatch, tmp_path: Path):
++    expected = tmp_path / "legacy.snap"
++    monkeypatch.delenv("LAN_PROM_SNAPSHOT_PATH", raising=False)
++    monkeypatch.delenv("LAN_METRICS_SNAPSHOT_PATH", raising=False)
++    monkeypatch.setenv("PROM_SNAPSHOT_PATH", str(expected))
++
++    cfg = AppSettings()
++    assert cfg.metrics_snapshot_path == expected

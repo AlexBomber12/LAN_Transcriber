@@ -1,5 +1,6 @@
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
+import json
 
 import httpx
 import pytest
@@ -69,13 +70,22 @@ async def test_tripled_dedup(tmp_path: Path, mocker):
         lambda *a, **k: lambda text: [{"label": "positive", "score": 0.8}],
     )
 
-    cfg = pipeline.Settings(speaker_db=tmp_path / "db.yaml", tmp_root=tmp_path)
+    cfg = pipeline.Settings(
+        speaker_db=tmp_path / "db.yaml",
+        tmp_root=tmp_path,
+        recordings_root=tmp_path / "recordings",
+    )
     res = await pipeline.run_pipeline(
         mp3("3_tripled.mp3"), cfg, llm_client.LLMClient(), DummyDiariser()
     )
 
     assert res.body.strip() == "hello world."
     assert res.summary.strip() == "- ok"
+    assert res.summary_path.name == "summary.json"
+    assert res.body_path.name == "transcript.txt"
+    assert res.body_path.read_text(encoding="utf-8") == "hello world."
+    summary_data = json.loads(res.summary_path.read_text(encoding="utf-8"))
+    assert summary_data["summary"] == "- ok"
 
 
 @pytest.mark.asyncio
@@ -97,7 +107,11 @@ async def test_alias_persist(tmp_path: Path, mocker):
     )
     db = tmp_path / "db.yaml"
     db.write_text("S1: Alice\n")
-    cfg = pipeline.Settings(speaker_db=db, tmp_root=tmp_path)
+    cfg = pipeline.Settings(
+        speaker_db=db,
+        tmp_root=tmp_path,
+        recordings_root=tmp_path / "recordings",
+    )
     res = await pipeline.run_pipeline(
         mp3("1_EN.mp3"), cfg, llm_client.LLMClient(), DummyDiariser()
     )
@@ -123,7 +137,11 @@ async def test_white_noise(tmp_path: Path, mocker):
         lambda *a, **k: lambda text: [{"label": "positive", "score": 0.5}],
     )
 
-    cfg = pipeline.Settings(speaker_db=tmp_path / "db.yaml", tmp_root=tmp_path)
+    cfg = pipeline.Settings(
+        speaker_db=tmp_path / "db.yaml",
+        tmp_root=tmp_path,
+        recordings_root=tmp_path / "recordings",
+    )
     res = await pipeline.run_pipeline(
         mp3("4_white_noise.mp3"), cfg, llm_client.LLMClient(), DummyDiariser()
     )
@@ -150,7 +168,11 @@ async def test_no_talk(tmp_path: Path, mocker):
         lambda *a, **k: lambda text: [{"label": "positive", "score": 0.0}],
     )
 
-    cfg = pipeline.Settings(speaker_db=tmp_path / "db.yaml", tmp_root=tmp_path)
+    cfg = pipeline.Settings(
+        speaker_db=tmp_path / "db.yaml",
+        tmp_root=tmp_path,
+        recordings_root=tmp_path / "recordings",
+    )
     res = await pipeline.run_pipeline(
         mp3("5_no_talk.mp3"), cfg, llm_client.LLMClient(), DummyDiariser()
     )
