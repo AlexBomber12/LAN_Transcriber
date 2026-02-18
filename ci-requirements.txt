@@ -11,6 +11,7 @@ respx[router]>=0.22
 httpx>=0.28
 tenacity>=9
 fastapi>=0.116
+uvicorn>=0.30
 pyyaml>=6.0
 ruff>=0.12
 pip-tools>=7.4

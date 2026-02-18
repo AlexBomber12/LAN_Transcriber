@@ -1,0 +1,12 @@
+.venv-ci/
+.pytest_cache/
+.ruff_cache/
+.coverage
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+
+# Generated fixture outputs during tests
+tests/fixtures/*.mp3

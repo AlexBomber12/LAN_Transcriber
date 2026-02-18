@@ -59,7 +59,7 @@ async def events():
         try:
             while True:
                 await q.get()
-                yield f"event: speaker_alias_updated\ndata: updated\n\n"
+                yield "event: speaker_alias_updated\ndata: updated\n\n"
         finally:
             _subscribers.remove(q)
 

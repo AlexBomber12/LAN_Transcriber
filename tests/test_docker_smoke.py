@@ -1,4 +1,10 @@
-import subprocess, requests, time, os, signal, pytest
+import os
+import signal
+import subprocess
+import time
+
+import pytest
+import requests
 
 IMAGE = os.getenv("SMOKE_IMAGE")
 if not IMAGE:
@@ -22,4 +28,3 @@ def test_container_launches():
         pytest.fail("UI did not start or returned non-200")
     finally:
         proc.send_signal(signal.SIGINT)
-

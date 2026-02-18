@@ -1,0 +1,581 @@
+diff --git a/.env.example b/.env.example
+index fea852d..c80834c 100644
+--- a/.env.example
++++ b/.env.example
+@@ -5,14 +5,19 @@ PLAUD_PASSWORD=
+ # External LLM (OpenAI-compatible)
+ LLM_BASE_URL=http://192.168.0.4:8000
+ LLM_API_KEY=
+-# LLM_MODEL=
++LLM_MODEL=
+ 
+ # Plaud fetcher (beta)
+-# FETCH_INTERVAL_SEC=300
++FETCH_INTERVAL_SEC=300
+ 
+ # Prometheus fallback
+ PROM_SNAPSHOT_PATH=/data/metrics.snap
+ 
+ # Optional metadata
+-TRANSCRIBER_VERSION=0.7.0
++TRANSCRIBER_VERSION=local
++TRANSCRIBER_DOCKER_TARGET=runtime-lite
++TRANSCRIBER_PULL_POLICY=never
+ LANG_DEFAULT=ru
++
++# Optional prebuilt image (if set, also set TRANSCRIBER_PULL_POLICY=always)
++# TRANSCRIBER_IMAGE=ghcr.io/alexbomber12/lan-transcriber:latest
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+index 2c8a3d4..6de80e6 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -22,16 +22,10 @@ jobs:
+         uses: actions/setup-python@v5
+         with:
+           python-version: '3.12'
+-      - name: Install deps
+-        run: |
+-          python -m pip install -U pip
+-          pip install -r ci-requirements.txt -r requirements.txt \
+-            --extra-index-url https://download.pytorch.org/whl/cpu
+-          pip install -e .[test]
+-      - name: Run pytest
++      - name: Run lint and tests
+         env:
+           CI: 'true'
+-        run: pytest -q
++        run: scripts/ci.sh
+       - name: Prepare smoke image
+         id: prepare_smoke
+         run: |
+diff --git a/.github/workflows/lint-and-test.yml b/.github/workflows/lint-and-test.yml
+index 1384564..0aa4c88 100644
+--- a/.github/workflows/lint-and-test.yml
++++ b/.github/workflows/lint-and-test.yml
+@@ -21,15 +21,7 @@ jobs:
+           path: ~/.cache/pip
+           key: ${{ runner.os }}-pip-${{ hashFiles('ci-requirements.txt', 'requirements.txt') }}
+           restore-keys: ${{ runner.os }}-pip-
+-      - name: Install test deps
+-        run: |
+-          pip install -r ci-requirements.txt -r requirements.txt \
+-            --extra-index-url https://download.pytorch.org/whl/cpu
+-      - name: Install package
+-        run: pip install -e .[test]
+-      - name: Verify prometheus_client import
+-        run: python -c "import prometheus_client, sys; sys.exit(0)"
+-      - name: Run tests
++      - name: Run lint and tests
+         env:
+           CI: "true"
+-        run: pytest --cov=lan_transcriber --cov-fail-under=90 -q
++        run: scripts/ci.sh
+diff --git a/Dockerfile b/Dockerfile
+index 08e802a..e67db3c 100644
+--- a/Dockerfile
++++ b/Dockerfile
+@@ -1,22 +1,20 @@
+-FROM python:3.12-slim
++FROM python:3.12-slim AS base
+ 
+-# Рабочая директория в контейнере
+ WORKDIR /app
+-
+-# Установка зависимостей
+-COPY requirements.txt .
+-RUN pip install --no-cache-dir -r requirements.txt \
+-    --extra-index-url https://download.pytorch.org/whl/cu121
+-RUN pip install --upgrade pip setuptools wheel
+-
+-# Копируем весь исходный код проекта
+-COPY . .
+-
+-# Обеспечиваем видимость модулей внутри /app
++ENV PYTHONUNBUFFERED=1
+ ENV PYTHONPATH=/app
+ 
+-# Переменная для версии (можно переопределить через ENV)
+-ENV TRANSCRIBER_VERSION=0.2.0
++COPY . /app
+ 
+-# Запуск основного файла
++FROM base AS runtime-full
++RUN python -m pip install --upgrade pip setuptools wheel \
++    && python -m pip install --no-cache-dir -r requirements.txt \
++      --extra-index-url https://download.pytorch.org/whl/cu121
+ CMD ["python", "web_transcribe.py"]
++
++FROM base AS runtime-lite
++RUN python -m pip install --upgrade pip setuptools wheel \
++    && python -m pip install --no-cache-dir -r ci-requirements.txt \
++    && python -m pip install --no-cache-dir -e .[test]
++ENV CI=true
++CMD ["uvicorn", "web_transcribe:app", "--host", "0.0.0.0", "--port", "7860"]
+diff --git a/README.md b/README.md
+index 25b0ba2..aa56bcb 100644
+--- a/README.md
++++ b/README.md
+@@ -2,6 +2,45 @@
+ 
+ Offline transcription pipeline with WhisperX and external language model.
+ 
++## Planned PR workflow
++
++Planned work is queue-driven and defined in `tasks/QUEUE.md`.
++
++- Execute PRs in queue order only.
++- Implement only the scope defined in the active `tasks/PR-*.md`.
++- Follow `AGENTS.md` for runbook, branch naming, and handoff gates.
++
++## Local CI and review artifacts
++
++Run the same lint/test gates used by CI:
++
++```bash
++scripts/ci.sh
++```
++
++Generate review artifacts for planned PR handoff:
++
++```bash
++scripts/make-review-artifacts.sh
++```
++
++This produces:
++
++- `artifacts/ci.log`
++- `artifacts/pr.patch`
++
++## Runtime data root
++
++Runtime mutable state must live under `/data` (mounted from `./data` in Docker):
++
++- `/data/artifacts`
++- `/data/msal`
++- `/data/voices`
++- `/data/db`
++- `/data/logs`
++
++Do not commit secrets or runtime-generated state files.
++
+ ## Staging
+ 
+ The staging environment spins up the application and a tiny LLM model using
+@@ -9,10 +48,17 @@ The staging environment spins up the application and a tiny LLM model using
+ 
+ ```bash
+ cd ~/lan-staging
+-docker compose pull
+ docker compose up -d --build
+ ```
+ 
++To use a prebuilt GHCR image instead of a local build, set:
++
++```bash
++TRANSCRIBER_IMAGE=ghcr.io/alexbomber12/lan-transcriber:latest
++TRANSCRIBER_PULL_POLICY=always
++TRANSCRIBER_DOCKER_TARGET=runtime-full
++```
++
+ The compose file mounts `/opt/lan_cache/hf` into `/root/.cache/huggingface` so
+ models are cached across runs.
+ 
+@@ -45,4 +91,3 @@ POST `/alias/{speaker_id}` with JSON `{"alias": "Alice"}` updates `speaker_bank.
+ ## Release process
+ 
+ Before tagging a new version run the checklist in [docs/release-checklist.md](docs/release-checklist.md).
+-
+diff --git a/ci-requirements.in b/ci-requirements.in
+index fbc6d85..11f7958 100644
+--- a/ci-requirements.in
++++ b/ci-requirements.in
+@@ -9,6 +9,7 @@ respx[router]==0.22.0
+ httpx==0.28.1
+ tenacity==9.1.2
+ fastapi==0.116.1
++uvicorn==0.35.0
+ pyyaml==6.0.2
+ ruff==0.12.4
+ pip-tools==7.4.1
+diff --git a/ci-requirements.txt b/ci-requirements.txt
+index a8ae6fc..c5536d6 100644
+--- a/ci-requirements.txt
++++ b/ci-requirements.txt
+@@ -11,6 +11,7 @@ respx[router]>=0.22
+ httpx>=0.28
+ tenacity>=9
+ fastapi>=0.116
++uvicorn>=0.30
+ pyyaml>=6.0
+ ruff>=0.12
+ pip-tools>=7.4
+diff --git a/docker-compose.yml b/docker-compose.yml
+index d69b045..731b615 100644
+--- a/docker-compose.yml
++++ b/docker-compose.yml
+@@ -1,6 +1,11 @@
+ services:
+   lan:
+-    image: ghcr.io/alexbomber12/lan-transcriber:${TRANSCRIBER_VERSION}
++    build:
++      context: .
++      dockerfile: Dockerfile
++      target: ${TRANSCRIBER_DOCKER_TARGET:-runtime-lite}
++    image: ${TRANSCRIBER_IMAGE:-lan-transcriber:${TRANSCRIBER_VERSION:-local}}
++    pull_policy: ${TRANSCRIBER_PULL_POLICY:-never}
+     container_name: lan-transcriber
+     restart: unless-stopped
+     ports:
+@@ -9,11 +14,11 @@ services:
+       - PYTHONPATH=/app
+       - LLM_BASE_URL=${LLM_BASE_URL}
+       - LLM_API_KEY=${LLM_API_KEY}
+-      - LLM_MODEL=${LLM_MODEL}
+-      - FETCH_INTERVAL_SEC=${FETCH_INTERVAL_SEC}
+-      - PROM_SNAPSHOT_PATH=${PROM_SNAPSHOT_PATH}
+-      - TRANSCRIBER_VERSION=${TRANSCRIBER_VERSION}
+-      - LANG_DEFAULT=${LANG_DEFAULT}
++      - LLM_MODEL=${LLM_MODEL:-}
++      - FETCH_INTERVAL_SEC=${FETCH_INTERVAL_SEC:-300}
++      - PROM_SNAPSHOT_PATH=${PROM_SNAPSHOT_PATH:-/data/metrics.snap}
++      - TRANSCRIBER_VERSION=${TRANSCRIBER_VERSION:-local}
++      - LANG_DEFAULT=${LANG_DEFAULT:-en}
+     volumes:
+       - lan_cache:/root/.cache
+       - /opt/lan_cache/hf:/root/.cache/huggingface
+diff --git a/lan_transcriber/__init__.py b/lan_transcriber/__init__.py
+index a1345af..32770c5 100644
+--- a/lan_transcriber/__init__.py
++++ b/lan_transcriber/__init__.py
+@@ -1,22 +1,31 @@
+ """LAN Transcriber package."""
+ 
++from .aliases import ALIAS_PATH, load_aliases, save_aliases
+ from .llm_client import LLMClient, generate
+-from .pipeline import Settings, run_pipeline, Diariser
++from .metrics import (
++    error_rate_total,
++    llm_timeouts_total,
++    p95_latency_seconds,
++    write_metrics_snapshot,
++)
+ from .models import SpeakerSegment, TranscriptResult
+ from .normalizer import dedup
+-from . import aliases, metrics
+-from .aliases import *
+-from .metrics import *
++from .pipeline import Diariser, Settings, run_pipeline
+ 
+ __all__ = [
++    "ALIAS_PATH",
++    "load_aliases",
++    "save_aliases",
+     "LLMClient",
+     "generate",
++    "p95_latency_seconds",
++    "error_rate_total",
++    "llm_timeouts_total",
++    "write_metrics_snapshot",
+     "Settings",
+     "run_pipeline",
+     "Diariser",
+     "SpeakerSegment",
+     "TranscriptResult",
+     "dedup",
+-    *aliases.__all__,
+-    *metrics.__all__,
+ ]
+diff --git a/lan_transcriber/api.py b/lan_transcriber/api.py
+index aafeb74..aaf2b06 100644
+--- a/lan_transcriber/api.py
++++ b/lan_transcriber/api.py
+@@ -59,7 +59,7 @@ async def events():
+         try:
+             while True:
+                 await q.get()
+-                yield f"event: speaker_alias_updated\ndata: updated\n\n"
++                yield "event: speaker_alias_updated\ndata: updated\n\n"
+         finally:
+             _subscribers.remove(q)
+ 
+diff --git a/lan_transcriber/pipeline.py b/lan_transcriber/pipeline.py
+index 68999e0..ab87689 100644
+--- a/lan_transcriber/pipeline.py
++++ b/lan_transcriber/pipeline.py
+@@ -4,7 +4,7 @@ import asyncio
+ import tempfile
+ import time
+ from pathlib import Path
+-from typing import Dict, Iterable, List, Protocol
++from typing import Iterable, List, Protocol
+ 
+ from .aliases import load_aliases as _load_aliases, save_aliases as _save_aliases, ALIAS_PATH
+ 
+diff --git a/tasks/QUEUE.md b/tasks/QUEUE.md
+index 2deb4f6..e500cf6 100644
+--- a/tasks/QUEUE.md
++++ b/tasks/QUEUE.md
+@@ -12,7 +12,7 @@ Status legend
+ Queue (in order)
+ 
+ 1) PR-BOOTSTRAP-01: Repo bootstrap: tasks system, CI scripts, artifacts, runtime data layout
+-- Status: TODO
++- Status: DOING
+ - Tasks file: tasks/PR-BOOTSTRAP-01.md
+ - Depends on: none
+ 
+diff --git a/tests/test_alias.py b/tests/test_alias.py
+index d8c5f00..3c41399 100644
+--- a/tests/test_alias.py
++++ b/tests/test_alias.py
+@@ -1,4 +1,3 @@
+-import yaml
+ from pathlib import Path
+ from lan_transcriber import aliases
+ 
+diff --git a/tests/test_docker_smoke.py b/tests/test_docker_smoke.py
+index b4ae17f..46db9ef 100644
+--- a/tests/test_docker_smoke.py
++++ b/tests/test_docker_smoke.py
+@@ -1,4 +1,10 @@
+-import subprocess, requests, time, os, signal, pytest
++import os
++import signal
++import subprocess
++import time
++
++import pytest
++import requests
+ 
+ IMAGE = os.getenv("SMOKE_IMAGE")
+ if not IMAGE:
+@@ -22,4 +28,3 @@ def test_container_launches():
+         pytest.fail("UI did not start or returned non-200")
+     finally:
+         proc.send_signal(signal.SIGINT)
+-
+diff --git a/tests/test_pipeline.py b/tests/test_pipeline.py
+index 213a972..2735e36 100644
+--- a/tests/test_pipeline.py
++++ b/tests/test_pipeline.py
+@@ -1,4 +1,3 @@
+-import json
+ from pathlib import Path
+ from types import ModuleType, SimpleNamespace
+ 
+diff --git a/.github/pull_request_template.md b/.github/pull_request_template.md
+new file mode 100644
+index 0000000..02cc713
+--- /dev/null
++++ b/.github/pull_request_template.md
+@@ -0,0 +1,25 @@
++## Planned PR Report
++
++- PR ID:
++- Branch:
++- Scope delivered:
++- Queue update:
++
++## Validation
++
++- [ ] `scripts/ci.sh` exits `0`
++
++## Artifacts
++
++- [ ] `scripts/make-review-artifacts.sh` executed
++- [ ] `artifacts/ci.log` generated
++- [ ] `artifacts/pr.patch` generated
++
++## Security
++
++- [ ] No secrets committed
++- [ ] Runtime mutable data paths use `/data`
++
++## Out Of Scope / Deferred
++
++-
+diff --git a/.gitignore b/.gitignore
+new file mode 100644
+index 0000000..d7f3ab2
+--- /dev/null
++++ b/.gitignore
+@@ -0,0 +1,12 @@
++.venv-ci/
++.pytest_cache/
++.ruff_cache/
++.coverage
++__pycache__/
++*.pyc
++*.pyo
++*.pyd
++*.egg-info/
++
++# Generated fixture outputs during tests
++tests/fixtures/*.mp3
+diff --git a/AGENTS.md b/AGENTS.md
+new file mode 100644
+index 0000000..89f54a4
+--- /dev/null
++++ b/AGENTS.md
+@@ -0,0 +1,49 @@
++# AGENTS
++
++## PLANNED PR Runbook
++
++This repository uses a queue-driven PR workflow.
++
++### Source of truth
++- `tasks/QUEUE.md` is the only execution order source.
++- Every queue item must have a matching `tasks/PR-<ID>.md` file.
++- Do not skip queue order. A PR can start only after all dependencies are `DONE`.
++
++### Execution rules
++- Implement one planned PR at a time.
++- Read the PR task file and implement only that scope.
++- Keep changes incremental and keep the app runnable.
++- Preserve Linux-first behavior.
++- Keep existing developer workflows working whenever possible.
++
++### Branch naming
++- Use the exact `Branch:` value declared in the PR task file.
++- Branch names must follow `pr/<topic>-<nn>` (example: `pr/bootstrap-01`).
++- Do not mix multiple planned PR scopes into one branch.
++
++### Security and data location constraints
++- Never commit secrets.
++- Credentials, token caches, keys, and runtime config must live under `/data` (mounted from `./data`) or be passed via environment variables.
++- Runtime mutable state must be under `/data` (for example: artifacts, `msal` token cache, voices, DB, logs).
++
++### Required gates (must pass before handoff)
++1. `scripts/ci.sh` exits with code `0`.
++2. `scripts/make-review-artifacts.sh` runs and produces:
++   - `artifacts/ci.log`
++   - `artifacts/pr.patch`
++3. Submit a minimal final report using the template below.
++
++### Minimal final report template
++- PR ID:
++- Branch:
++- Scope delivered:
++- Queue update:
++- Validation:
++  - `scripts/ci.sh`: PASS/FAIL
++- Artifacts:
++  - `artifacts/ci.log`
++  - `artifacts/pr.patch`
++- Secrets check:
++  - Confirmed no secrets added to repo.
++  - Confirmed runtime mutable data path is `/data`.
++- Out of scope / deferred:
+diff --git a/data/.gitignore b/data/.gitignore
+new file mode 100644
+index 0000000..3012384
+--- /dev/null
++++ b/data/.gitignore
+@@ -0,0 +1,9 @@
++*
++!.gitignore
++!README.md
++!artifacts/
++!msal/
++!voices/
++!db/
++!logs/
++!*/.gitkeep
+diff --git a/data/README.md b/data/README.md
+new file mode 100644
+index 0000000..0946049
+--- /dev/null
++++ b/data/README.md
+@@ -0,0 +1,14 @@
++# Runtime Data Root
++
++`/data` is the runtime state root inside containers. In local development,
++`./data` is mounted to `/data`.
++
++Expected subdirectories:
++
++- `artifacts/` - transcripts, summaries, snippets, and derived outputs
++- `msal/` - Microsoft auth token cache files
++- `voices/` - voice samples and profile assets
++- `db/` - SQLite database files and migrations state
++- `logs/` - runtime and job logs
++
++Do not commit secrets or runtime-generated files from this directory.
+diff --git a/data/artifacts/.gitkeep b/data/artifacts/.gitkeep
+new file mode 100644
+index 0000000..e69de29
+diff --git a/data/db/.gitkeep b/data/db/.gitkeep
+new file mode 100644
+index 0000000..e69de29
+diff --git a/data/logs/.gitkeep b/data/logs/.gitkeep
+new file mode 100644
+index 0000000..e69de29
+diff --git a/data/msal/.gitkeep b/data/msal/.gitkeep
+new file mode 100644
+index 0000000..e69de29
+diff --git a/data/voices/.gitkeep b/data/voices/.gitkeep
+new file mode 100644
+index 0000000..e69de29
+diff --git a/scripts/ci.sh b/scripts/ci.sh
+new file mode 100755
+index 0000000..c0f88b0
+--- /dev/null
++++ b/scripts/ci.sh
+@@ -0,0 +1,28 @@
++#!/usr/bin/env bash
++set -euo pipefail
++
++ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
++cd "$ROOT_DIR"
++
++COVERAGE_THRESHOLD="${COVERAGE_THRESHOLD:-90}"
++INSTALL_DEPS="${INSTALL_DEPS:-1}"
++USE_VENV="${USE_VENV:-1}"
++CI_VENV_DIR="${CI_VENV_DIR:-.venv-ci}"
++export CI="${CI:-true}"
++
++if [ "$USE_VENV" = "1" ] && [ -z "${VIRTUAL_ENV:-}" ]; then
++  if [ ! -x "${CI_VENV_DIR}/bin/python" ]; then
++    python3 -m venv "${CI_VENV_DIR}"
++  fi
++  # shellcheck disable=SC1090
++  . "${CI_VENV_DIR}/bin/activate"
++fi
++
++if [ "$INSTALL_DEPS" = "1" ]; then
++  python -m pip install -U pip
++  python -m pip install -r ci-requirements.txt
++  python -m pip install -e .[test]
++fi
++
++python -m ruff check .
++pytest --cov=lan_transcriber --cov-fail-under="${COVERAGE_THRESHOLD}" -q "$@"
+diff --git a/scripts/make-review-artifacts.sh b/scripts/make-review-artifacts.sh
+new file mode 100755
+index 0000000..472c43b
+--- /dev/null
++++ b/scripts/make-review-artifacts.sh
+@@ -0,0 +1,22 @@
++#!/usr/bin/env bash
++set -euo pipefail
++
++ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
++cd "$ROOT_DIR"
++
++mkdir -p artifacts
++
++./scripts/ci.sh 2>&1 | tee artifacts/ci.log
++
++{
++  git diff --binary HEAD -- . ':(exclude)artifacts/ci.log' ':(exclude)artifacts/pr.patch'
++
++  git ls-files --others --exclude-standard | while IFS= read -r path; do
++    case "$path" in
++      artifacts/ci.log|artifacts/pr.patch)
++        continue
++        ;;
++    esac
++    git diff --binary --no-index -- /dev/null "$path" || true
++  done
++} > artifacts/pr.patch
