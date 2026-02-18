@@ -4,7 +4,7 @@ import asyncio
 import tempfile
 import time
 from pathlib import Path
-from typing import Dict, Iterable, List, Protocol
+from typing import Iterable, List, Protocol
 
 from .aliases import load_aliases as _load_aliases, save_aliases as _save_aliases, ALIAS_PATH
 

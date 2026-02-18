@@ -1,22 +1,20 @@
-FROM python:3.12-slim
+FROM python:3.12-slim AS base
 
-# Рабочая директория в контейнере
 WORKDIR /app
-
-# Установка зависимостей
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt \
-    --extra-index-url https://download.pytorch.org/whl/cu121
-RUN pip install --upgrade pip setuptools wheel
-
-# Копируем весь исходный код проекта
-COPY . .
-
-# Обеспечиваем видимость модулей внутри /app
+ENV PYTHONUNBUFFERED=1
 ENV PYTHONPATH=/app
 
-# Переменная для версии (можно переопределить через ENV)
-ENV TRANSCRIBER_VERSION=0.2.0
+COPY . /app
 
-# Запуск основного файла
+FROM base AS runtime-full
+RUN python -m pip install --upgrade pip setuptools wheel \
+    && python -m pip install --no-cache-dir -r requirements.txt \
+      --extra-index-url https://download.pytorch.org/whl/cu121
 CMD ["python", "web_transcribe.py"]
+
+FROM base AS runtime-lite
+RUN python -m pip install --upgrade pip setuptools wheel \
+    && python -m pip install --no-cache-dir -r ci-requirements.txt \
+    && python -m pip install --no-cache-dir -e .[test]
+ENV CI=true
+CMD ["uvicorn", "web_transcribe:app", "--host", "0.0.0.0", "--port", "7860"]

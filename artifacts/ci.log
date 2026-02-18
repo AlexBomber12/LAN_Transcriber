@@ -1,0 +1,136 @@
+Requirement already satisfied: pip in ./.venv-ci/lib/python3.12/site-packages (26.0.1)
+Requirement already satisfied: pydantic-settings<3.0,>=2.10 in ./.venv-ci/lib/python3.12/site-packages (from -r ci-requirements.txt (line 3)) (2.13.0)
+Requirement already satisfied: prometheus_client>=0.19 in ./.venv-ci/lib/python3.12/site-packages (from -r ci-requirements.txt (line 4)) (0.24.1)
+Requirement already satisfied: pytest>=8.2 in ./.venv-ci/lib/python3.12/site-packages (from -r ci-requirements.txt (line 5)) (9.0.2)
+Requirement already satisfied: pytest-asyncio>=1.1 in ./.venv-ci/lib/python3.12/site-packages (from -r ci-requirements.txt (line 6)) (1.3.0)
+Requirement already satisfied: pytest-cov>=5.0 in ./.venv-ci/lib/python3.12/site-packages (from -r ci-requirements.txt (line 7)) (7.0.0)
+Requirement already satisfied: pytest-mock>=3.14 in ./.venv-ci/lib/python3.12/site-packages (from -r ci-requirements.txt (line 8)) (3.15.1)
+Requirement already satisfied: requests>=2.32 in ./.venv-ci/lib/python3.12/site-packages (from -r ci-requirements.txt (line 9)) (2.32.5)
+Requirement already satisfied: respx>=0.22 in ./.venv-ci/lib/python3.12/site-packages (from respx[router]>=0.22->-r ci-requirements.txt (line 10)) (0.22.0)
+Requirement already satisfied: httpx>=0.28 in ./.venv-ci/lib/python3.12/site-packages (from -r ci-requirements.txt (line 11)) (0.28.1)
+Requirement already satisfied: tenacity>=9 in ./.venv-ci/lib/python3.12/site-packages (from -r ci-requirements.txt (line 12)) (9.1.4)
+Requirement already satisfied: fastapi>=0.116 in ./.venv-ci/lib/python3.12/site-packages (from -r ci-requirements.txt (line 13)) (0.129.0)
+Requirement already satisfied: uvicorn>=0.30 in ./.venv-ci/lib/python3.12/site-packages (from -r ci-requirements.txt (line 14)) (0.41.0)
+Requirement already satisfied: pyyaml>=6.0 in ./.venv-ci/lib/python3.12/site-packages (from -r ci-requirements.txt (line 15)) (6.0.3)
+Requirement already satisfied: ruff>=0.12 in ./.venv-ci/lib/python3.12/site-packages (from -r ci-requirements.txt (line 16)) (0.15.1)
+Requirement already satisfied: pip-tools>=7.4 in ./.venv-ci/lib/python3.12/site-packages (from -r ci-requirements.txt (line 17)) (7.5.3)
+Requirement already satisfied: setuptools>=80.9 in ./.venv-ci/lib/python3.12/site-packages (from -r ci-requirements.txt (line 18)) (82.0.0)
+Requirement already satisfied: wheel>=0.45 in ./.venv-ci/lib/python3.12/site-packages (from -r ci-requirements.txt (line 19)) (0.46.3)
+Requirement already satisfied: pip>=24.3 in ./.venv-ci/lib/python3.12/site-packages (from -r ci-requirements.txt (line 20)) (26.0.1)
+Requirement already satisfied: pydantic>=2.7.0 in ./.venv-ci/lib/python3.12/site-packages (from pydantic-settings<3.0,>=2.10->-r ci-requirements.txt (line 3)) (2.12.5)
+Requirement already satisfied: python-dotenv>=0.21.0 in ./.venv-ci/lib/python3.12/site-packages (from pydantic-settings<3.0,>=2.10->-r ci-requirements.txt (line 3)) (1.2.1)
+Requirement already satisfied: typing-inspection>=0.4.0 in ./.venv-ci/lib/python3.12/site-packages (from pydantic-settings<3.0,>=2.10->-r ci-requirements.txt (line 3)) (0.4.2)
+Requirement already satisfied: iniconfig>=1.0.1 in ./.venv-ci/lib/python3.12/site-packages (from pytest>=8.2->-r ci-requirements.txt (line 5)) (2.3.0)
+Requirement already satisfied: packaging>=22 in ./.venv-ci/lib/python3.12/site-packages (from pytest>=8.2->-r ci-requirements.txt (line 5)) (26.0)
+Requirement already satisfied: pluggy<2,>=1.5 in ./.venv-ci/lib/python3.12/site-packages (from pytest>=8.2->-r ci-requirements.txt (line 5)) (1.6.0)
+Requirement already satisfied: pygments>=2.7.2 in ./.venv-ci/lib/python3.12/site-packages (from pytest>=8.2->-r ci-requirements.txt (line 5)) (2.19.2)
+Requirement already satisfied: typing-extensions>=4.12 in ./.venv-ci/lib/python3.12/site-packages (from pytest-asyncio>=1.1->-r ci-requirements.txt (line 6)) (4.15.0)
+Requirement already satisfied: coverage>=7.10.6 in ./.venv-ci/lib/python3.12/site-packages (from coverage[toml]>=7.10.6->pytest-cov>=5.0->-r ci-requirements.txt (line 7)) (7.13.4)
+Requirement already satisfied: charset_normalizer<4,>=2 in ./.venv-ci/lib/python3.12/site-packages (from requests>=2.32->-r ci-requirements.txt (line 9)) (3.4.4)
+Requirement already satisfied: idna<4,>=2.5 in ./.venv-ci/lib/python3.12/site-packages (from requests>=2.32->-r ci-requirements.txt (line 9)) (3.11)
+Requirement already satisfied: urllib3<3,>=1.21.1 in ./.venv-ci/lib/python3.12/site-packages (from requests>=2.32->-r ci-requirements.txt (line 9)) (2.6.3)
+Requirement already satisfied: certifi>=2017.4.17 in ./.venv-ci/lib/python3.12/site-packages (from requests>=2.32->-r ci-requirements.txt (line 9)) (2026.1.4)
+Requirement already satisfied: anyio in ./.venv-ci/lib/python3.12/site-packages (from httpx>=0.28->-r ci-requirements.txt (line 11)) (4.12.1)
+Requirement already satisfied: httpcore==1.* in ./.venv-ci/lib/python3.12/site-packages (from httpx>=0.28->-r ci-requirements.txt (line 11)) (1.0.9)
+Requirement already satisfied: h11>=0.16 in ./.venv-ci/lib/python3.12/site-packages (from httpcore==1.*->httpx>=0.28->-r ci-requirements.txt (line 11)) (0.16.0)
+Requirement already satisfied: starlette<1.0.0,>=0.40.0 in ./.venv-ci/lib/python3.12/site-packages (from fastapi>=0.116->-r ci-requirements.txt (line 13)) (0.52.1)
+Requirement already satisfied: annotated-doc>=0.0.2 in ./.venv-ci/lib/python3.12/site-packages (from fastapi>=0.116->-r ci-requirements.txt (line 13)) (0.0.4)
+Requirement already satisfied: click>=7.0 in ./.venv-ci/lib/python3.12/site-packages (from uvicorn>=0.30->-r ci-requirements.txt (line 14)) (8.3.1)
+Requirement already satisfied: build>=1.0.0 in ./.venv-ci/lib/python3.12/site-packages (from pip-tools>=7.4->-r ci-requirements.txt (line 17)) (1.4.0)
+Requirement already satisfied: pyproject_hooks in ./.venv-ci/lib/python3.12/site-packages (from pip-tools>=7.4->-r ci-requirements.txt (line 17)) (1.2.0)
+Requirement already satisfied: annotated-types>=0.6.0 in ./.venv-ci/lib/python3.12/site-packages (from pydantic>=2.7.0->pydantic-settings<3.0,>=2.10->-r ci-requirements.txt (line 3)) (0.7.0)
+Requirement already satisfied: pydantic-core==2.41.5 in ./.venv-ci/lib/python3.12/site-packages (from pydantic>=2.7.0->pydantic-settings<3.0,>=2.10->-r ci-requirements.txt (line 3)) (2.41.5)
+WARNING: respx 0.22.0 does not provide the extra 'router'
+Obtaining file:///home/alexey/LAN_Transcriber
+  Installing build dependencies: started
+  Installing build dependencies: finished with status 'done'
+  Checking if build backend supports build_editable: started
+  Checking if build backend supports build_editable: finished with status 'done'
+  Getting requirements to build editable: started
+  Getting requirements to build editable: finished with status 'done'
+  Preparing editable metadata (pyproject.toml): started
+  Preparing editable metadata (pyproject.toml): finished with status 'done'
+Requirement already satisfied: httpx in ./.venv-ci/lib/python3.12/site-packages (from lan-transcriber==0.1.0) (0.28.1)
+Requirement already satisfied: tenacity in ./.venv-ci/lib/python3.12/site-packages (from lan-transcriber==0.1.0) (9.1.4)
+Requirement already satisfied: prometheus_client>=0.19.0 in ./.venv-ci/lib/python3.12/site-packages (from lan-transcriber==0.1.0) (0.24.1)
+Requirement already satisfied: anyio in ./.venv-ci/lib/python3.12/site-packages (from lan-transcriber==0.1.0) (4.12.1)
+Requirement already satisfied: fastapi in ./.venv-ci/lib/python3.12/site-packages (from lan-transcriber==0.1.0) (0.129.0)
+Requirement already satisfied: pyyaml in ./.venv-ci/lib/python3.12/site-packages (from lan-transcriber==0.1.0) (6.0.3)
+Requirement already satisfied: pydantic-settings in ./.venv-ci/lib/python3.12/site-packages (from lan-transcriber==0.1.0) (2.13.0)
+Requirement already satisfied: rapidfuzz in ./.venv-ci/lib/python3.12/site-packages (from lan-transcriber==0.1.0) (3.14.3)
+Requirement already satisfied: pytest in ./.venv-ci/lib/python3.12/site-packages (from lan-transcriber==0.1.0) (9.0.2)
+Requirement already satisfied: pytest-asyncio in ./.venv-ci/lib/python3.12/site-packages (from lan-transcriber==0.1.0) (1.3.0)
+Requirement already satisfied: pytest-cov in ./.venv-ci/lib/python3.12/site-packages (from lan-transcriber==0.1.0) (7.0.0)
+Requirement already satisfied: pytest-mock in ./.venv-ci/lib/python3.12/site-packages (from lan-transcriber==0.1.0) (3.15.1)
+Requirement already satisfied: respx[router] in ./.venv-ci/lib/python3.12/site-packages (from lan-transcriber==0.1.0) (0.22.0)
+Requirement already satisfied: idna>=2.8 in ./.venv-ci/lib/python3.12/site-packages (from anyio->lan-transcriber==0.1.0) (3.11)
+Requirement already satisfied: typing_extensions>=4.5 in ./.venv-ci/lib/python3.12/site-packages (from anyio->lan-transcriber==0.1.0) (4.15.0)
+Requirement already satisfied: starlette<1.0.0,>=0.40.0 in ./.venv-ci/lib/python3.12/site-packages (from fastapi->lan-transcriber==0.1.0) (0.52.1)
+Requirement already satisfied: pydantic>=2.7.0 in ./.venv-ci/lib/python3.12/site-packages (from fastapi->lan-transcriber==0.1.0) (2.12.5)
+Requirement already satisfied: typing-inspection>=0.4.2 in ./.venv-ci/lib/python3.12/site-packages (from fastapi->lan-transcriber==0.1.0) (0.4.2)
+Requirement already satisfied: annotated-doc>=0.0.2 in ./.venv-ci/lib/python3.12/site-packages (from fastapi->lan-transcriber==0.1.0) (0.0.4)
+Requirement already satisfied: annotated-types>=0.6.0 in ./.venv-ci/lib/python3.12/site-packages (from pydantic>=2.7.0->fastapi->lan-transcriber==0.1.0) (0.7.0)
+Requirement already satisfied: pydantic-core==2.41.5 in ./.venv-ci/lib/python3.12/site-packages (from pydantic>=2.7.0->fastapi->lan-transcriber==0.1.0) (2.41.5)
+Requirement already satisfied: certifi in ./.venv-ci/lib/python3.12/site-packages (from httpx->lan-transcriber==0.1.0) (2026.1.4)
+Requirement already satisfied: httpcore==1.* in ./.venv-ci/lib/python3.12/site-packages (from httpx->lan-transcriber==0.1.0) (1.0.9)
+Requirement already satisfied: h11>=0.16 in ./.venv-ci/lib/python3.12/site-packages (from httpcore==1.*->httpx->lan-transcriber==0.1.0) (0.16.0)
+Requirement already satisfied: python-dotenv>=0.21.0 in ./.venv-ci/lib/python3.12/site-packages (from pydantic-settings->lan-transcriber==0.1.0) (1.2.1)
+Requirement already satisfied: iniconfig>=1.0.1 in ./.venv-ci/lib/python3.12/site-packages (from pytest->lan-transcriber==0.1.0) (2.3.0)
+Requirement already satisfied: packaging>=22 in ./.venv-ci/lib/python3.12/site-packages (from pytest->lan-transcriber==0.1.0) (26.0)
+Requirement already satisfied: pluggy<2,>=1.5 in ./.venv-ci/lib/python3.12/site-packages (from pytest->lan-transcriber==0.1.0) (1.6.0)
+Requirement already satisfied: pygments>=2.7.2 in ./.venv-ci/lib/python3.12/site-packages (from pytest->lan-transcriber==0.1.0) (2.19.2)
+Requirement already satisfied: coverage>=7.10.6 in ./.venv-ci/lib/python3.12/site-packages (from coverage[toml]>=7.10.6->pytest-cov->lan-transcriber==0.1.0) (7.13.4)
+WARNING: respx 0.22.0 does not provide the extra 'router'
+Building wheels for collected packages: lan-transcriber
+  Building editable for lan-transcriber (pyproject.toml): started
+  Building editable for lan-transcriber (pyproject.toml): finished with status 'done'
+  Created wheel for lan-transcriber: filename=lan_transcriber-0.1.0-0.editable-py3-none-any.whl size=15302 sha256=4a497d45c246e57db562e836a6708a95f823d93c9f7b8911d682998996e3c001
+  Stored in directory: /tmp/pip-ephem-wheel-cache-gilhkg3_/wheels/d5/8a/5c/f7178f7e49aa5ae12b2320ec66b5c310f4f2f63d1bd301b7fb
+Successfully built lan-transcriber
+Installing collected packages: lan-transcriber
+  Attempting uninstall: lan-transcriber
+    Found existing installation: lan-transcriber 0.1.0
+    Uninstalling lan-transcriber-0.1.0:
+      Successfully uninstalled lan-transcriber-0.1.0
+Successfully installed lan-transcriber-0.1.0
+All checks passed!
+....................                                                     [100%]
+=============================== warnings summary ===============================
+lan_transcriber/pipeline.py:25
+  /home/alexey/LAN_Transcriber/lan_transcriber/pipeline.py:25: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+    class Settings(BaseSettings):
+
+lan_transcriber/api.py:27
+  /home/alexey/LAN_Transcriber/lan_transcriber/api.py:27: DeprecationWarning: 
+          on_event is deprecated, use lifespan event handlers instead.
+  
+          Read more about it in the
+          [FastAPI docs for Lifespan Events](https://fastapi.tiangolo.com/advanced/events/).
+          
+    @app.on_event("startup")
+
+.venv-ci/lib/python3.12/site-packages/fastapi/applications.py:4573
+  /home/alexey/LAN_Transcriber/.venv-ci/lib/python3.12/site-packages/fastapi/applications.py:4573: DeprecationWarning: 
+          on_event is deprecated, use lifespan event handlers instead.
+  
+          Read more about it in the
+          [FastAPI docs for Lifespan Events](https://fastapi.tiangolo.com/advanced/events/).
+          
+    return self.router.on_event(event_type)
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+================================ tests coverage ================================
+_______________ coverage: platform linux, python 3.12.3-final-0 ________________
+
+Name                            Stmts   Miss  Cover
+---------------------------------------------------
+lan_transcriber/__init__.py         7      0   100%
+lan_transcriber/aliases.py         14      0   100%
+lan_transcriber/llm_client.py      37      1    97%
+lan_transcriber/metrics.py         12      0   100%
+lan_transcriber/models.py          22      0   100%
+lan_transcriber/normalizer.py      25      0   100%
+---------------------------------------------------
+TOTAL                             117      1    99%
+Required test coverage of 90% reached. Total coverage: 99.15%
+20 passed, 1 skipped, 3 warnings in 30.71s

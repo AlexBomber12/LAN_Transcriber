@@ -2,6 +2,45 @@
 
 Offline transcription pipeline with WhisperX and external language model.
 
+## Planned PR workflow
+
+Planned work is queue-driven and defined in `tasks/QUEUE.md`.
+
+- Execute PRs in queue order only.
+- Implement only the scope defined in the active `tasks/PR-*.md`.
+- Follow `AGENTS.md` for runbook, branch naming, and handoff gates.
+
+## Local CI and review artifacts
+
+Run the same lint/test gates used by CI:
+
+```bash
+scripts/ci.sh
+```
+
+Generate review artifacts for planned PR handoff:
+
+```bash
+scripts/make-review-artifacts.sh
+```
+
+This produces:
+
+- `artifacts/ci.log`
+- `artifacts/pr.patch`
+
+## Runtime data root
+
+Runtime mutable state must live under `/data` (mounted from `./data` in Docker):
+
+- `/data/artifacts`
+- `/data/msal`
+- `/data/voices`
+- `/data/db`
+- `/data/logs`
+
+Do not commit secrets or runtime-generated state files.
+
 ## Staging
 
 The staging environment spins up the application and a tiny LLM model using
@@ -9,8 +48,15 @@ The staging environment spins up the application and a tiny LLM model using
 
 ```bash
 cd ~/lan-staging
-docker compose pull
 docker compose up -d --build
+```
+
+To use a prebuilt GHCR image instead of a local build, set:
+
+```bash
+TRANSCRIBER_IMAGE=ghcr.io/alexbomber12/lan-transcriber:latest
+TRANSCRIBER_PULL_POLICY=always
+TRANSCRIBER_DOCKER_TARGET=runtime-full
 ```
 
 The compose file mounts `/opt/lan_cache/hf` into `/root/.cache/huggingface` so
@@ -45,4 +91,3 @@ POST `/alias/{speaker_id}` with JSON `{"alias": "Alice"}` updates `speaker_bank.
 ## Release process
 
 Before tagging a new version run the checklist in [docs/release-checklist.md](docs/release-checklist.md).
-

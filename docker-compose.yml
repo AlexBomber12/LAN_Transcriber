@@ -1,6 +1,11 @@
 services:
   lan:
-    image: ghcr.io/alexbomber12/lan-transcriber:${TRANSCRIBER_VERSION}
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: ${TRANSCRIBER_DOCKER_TARGET:-runtime-lite}
+    image: ${TRANSCRIBER_IMAGE:-lan-transcriber:${TRANSCRIBER_VERSION:-local}}
+    pull_policy: ${TRANSCRIBER_PULL_POLICY:-never}
     container_name: lan-transcriber
     restart: unless-stopped
     ports:
@@ -9,11 +14,11 @@ services:
       - PYTHONPATH=/app
       - LLM_BASE_URL=${LLM_BASE_URL}
       - LLM_API_KEY=${LLM_API_KEY}
-      - LLM_MODEL=${LLM_MODEL}
-      - FETCH_INTERVAL_SEC=${FETCH_INTERVAL_SEC}
-      - PROM_SNAPSHOT_PATH=${PROM_SNAPSHOT_PATH}
-      - TRANSCRIBER_VERSION=${TRANSCRIBER_VERSION}
-      - LANG_DEFAULT=${LANG_DEFAULT}
+      - LLM_MODEL=${LLM_MODEL:-}
+      - FETCH_INTERVAL_SEC=${FETCH_INTERVAL_SEC:-300}
+      - PROM_SNAPSHOT_PATH=${PROM_SNAPSHOT_PATH:-/data/metrics.snap}
+      - TRANSCRIBER_VERSION=${TRANSCRIBER_VERSION:-local}
+      - LANG_DEFAULT=${LANG_DEFAULT:-en}
     volumes:
       - lan_cache:/root/.cache
       - /opt/lan_cache/hf:/root/.cache/huggingface

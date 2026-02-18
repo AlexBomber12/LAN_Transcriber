@@ -21,15 +21,7 @@ jobs:
           path: ~/.cache/pip
           key: ${{ runner.os }}-pip-${{ hashFiles('ci-requirements.txt', 'requirements.txt') }}
           restore-keys: ${{ runner.os }}-pip-
-      - name: Install test deps
-        run: |
-          pip install -r ci-requirements.txt -r requirements.txt \
-            --extra-index-url https://download.pytorch.org/whl/cpu
-      - name: Install package
-        run: pip install -e .[test]
-      - name: Verify prometheus_client import
-        run: python -c "import prometheus_client, sys; sys.exit(0)"
-      - name: Run tests
+      - name: Run lint and tests
         env:
           CI: "true"
-        run: pytest --cov=lan_transcriber --cov-fail-under=90 -q
+        run: scripts/ci.sh

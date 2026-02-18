@@ -1,0 +1,9 @@
+*
+!.gitignore
+!README.md
+!artifacts/
+!msal/
+!voices/
+!db/
+!logs/
+!*/.gitkeep
