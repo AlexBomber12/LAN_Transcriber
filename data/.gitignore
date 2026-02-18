@@ -6,4 +6,8 @@
 !voices/
 !db/
 !logs/
+!recordings/
+!auth/
+!secrets/
+!tmp/
 !*/.gitkeep

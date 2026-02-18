@@ -31,13 +31,29 @@ This produces:
 
 ## Runtime data root
 
-Runtime mutable state must live under `/data` (mounted from `./data` in Docker):
+Runtime mutable state must live under `/data` in containers (mounted from `./data` in Docker):
 
-- `/data/artifacts`
-- `/data/msal`
+- `/data/db/app.db`
+- `/data/db/speaker_bank.yaml`
+- `/data/recordings/<recording_id>/...`
+- `/data/auth/msal_cache.bin`
+- `/data/secrets/gdrive_sa.json`
 - `/data/voices`
-- `/data/db`
-- `/data/logs`
+- `/data/tmp`
+
+Canonical artifact layout (v1):
+
+```text
+/data/recordings/<recording_id>/
+  raw/audio.<ext>
+  derived/transcript.json
+  derived/transcript.txt
+  derived/segments.json
+  derived/snippets/
+  derived/summary.json
+  derived/metrics.json
+  logs/step-*.log
+```
 
 Do not commit secrets or runtime-generated state files.
 
@@ -83,7 +99,8 @@ future monitoring.
 
 ## Speaker alias API
 
-POST `/alias/{speaker_id}` with JSON `{"alias": "Alice"}` updates `speaker_bank.yaml`. Delete the file to reset aliases.
+POST `/alias/{speaker_id}` with JSON `{"alias": "Alice"}` updates
+`/data/db/speaker_bank.yaml` (or `LAN_SPEAKER_DB` if overridden).
 
 
 ![demo](docs/demo.gif)

@@ -39,7 +39,11 @@ async def test_metrics_file(tmp_path: Path, monkeypatch):
     respx.post("http://llm:8000/v1/chat/completions").mock(
         return_value=httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
     )
-    cfg = pipeline.Settings(speaker_db=tmp_path / "db.yaml", tmp_root=tmp_path)
+    cfg = pipeline.Settings(
+        speaker_db=tmp_path / "db.yaml",
+        tmp_root=tmp_path,
+        recordings_root=tmp_path / "recordings",
+    )
     await pipeline.run_pipeline(mp3(tmp_path), cfg, llm_client.LLMClient(), DummyDiariser())
 
     path = tmp_path / "metrics.snap"

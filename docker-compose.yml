@@ -12,11 +12,18 @@ services:
       - "7860:7860"
     environment:
       - PYTHONPATH=/app
+      - LAN_DATA_ROOT=${LAN_DATA_ROOT:-/data}
+      - LAN_RECORDINGS_ROOT=${LAN_RECORDINGS_ROOT:-/data/recordings}
+      - LAN_SPEAKER_DB=${LAN_SPEAKER_DB:-/data/db/speaker_bank.yaml}
+      - LAN_VOICES_DIR=${LAN_VOICES_DIR:-/data/voices}
+      - LAN_UNKNOWN_DIR=${LAN_UNKNOWN_DIR:-/data/recordings/unknown}
+      - LAN_TMP_ROOT=${LAN_TMP_ROOT:-/data/tmp}
+      - LAN_PROM_SNAPSHOT_PATH=${LAN_PROM_SNAPSHOT_PATH:-/data/metrics.snap}
+      - LAN_DB_PATH=${LAN_DB_PATH:-/data/db/app.db}
       - LLM_BASE_URL=${LLM_BASE_URL}
       - LLM_API_KEY=${LLM_API_KEY}
       - LLM_MODEL=${LLM_MODEL:-}
       - FETCH_INTERVAL_SEC=${FETCH_INTERVAL_SEC:-300}
-      - PROM_SNAPSHOT_PATH=${PROM_SNAPSHOT_PATH:-/data/metrics.snap}
       - TRANSCRIBER_VERSION=${TRANSCRIBER_VERSION:-local}
       - LANG_DEFAULT=${LANG_DEFAULT:-en}
     volumes:

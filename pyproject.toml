@@ -19,7 +19,7 @@ dependencies = [
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["lan_transcriber*"]
+include = ["lan_transcriber*", "lan_app*"]
 
 [tool.coverage.run]
 source = ["lan_transcriber"]
