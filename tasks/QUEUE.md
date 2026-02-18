@@ -12,7 +12,7 @@ Status legend
 Queue (in order)
 
 1) PR-BOOTSTRAP-01: Repo bootstrap: tasks system, CI scripts, artifacts, runtime data layout
-- Status: DOING
+- Status: DONE
 - Tasks file: tasks/PR-BOOTSTRAP-01.md
 - Depends on: none
 
