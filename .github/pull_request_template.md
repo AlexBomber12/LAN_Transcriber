@@ -1,25 +1,26 @@
 ## Planned PR Report
 
-- PR ID:
+- PR_ID:
+- TASK_FILE:
 - Branch:
-- Scope delivered:
-- Queue update:
 
-## Validation
+## What Changed (1-5 bullets)
 
-- [ ] `scripts/ci.sh` exits `0`
+- 
+
+## How Verified
+
+- Exact command:
 
 ## Artifacts
 
-- [ ] `scripts/make-review-artifacts.sh` executed
-- [ ] `artifacts/ci.log` generated
-- [ ] `artifacts/pr.patch` generated
+- `artifacts/ci.log`
+- `artifacts/pr.patch`
 
-## Security
+## Manual Test Steps (if applicable)
 
-- [ ] No secrets committed
-- [ ] Runtime mutable data paths use `/data`
+- 
 
-## Out Of Scope / Deferred
+## MCP Usage (if applicable)
 
--
+- 

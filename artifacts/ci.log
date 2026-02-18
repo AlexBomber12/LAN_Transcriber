@@ -84,8 +84,8 @@ WARNING: respx 0.22.0 does not provide the extra 'router'
 Building wheels for collected packages: lan-transcriber
   Building editable for lan-transcriber (pyproject.toml): started
   Building editable for lan-transcriber (pyproject.toml): finished with status 'done'
-  Created wheel for lan-transcriber: filename=lan_transcriber-0.1.0-0.editable-py3-none-any.whl size=15302 sha256=4a497d45c246e57db562e836a6708a95f823d93c9f7b8911d682998996e3c001
-  Stored in directory: /tmp/pip-ephem-wheel-cache-gilhkg3_/wheels/d5/8a/5c/f7178f7e49aa5ae12b2320ec66b5c310f4f2f63d1bd301b7fb
+  Created wheel for lan-transcriber: filename=lan_transcriber-0.1.0-0.editable-py3-none-any.whl size=15302 sha256=3727ffb64ed8e51a4fddd853827d192fd33c99ae2e9de699c59060bde3d413ac
+  Stored in directory: /tmp/pip-ephem-wheel-cache-mr1zczfa/wheels/d5/8a/5c/f7178f7e49aa5ae12b2320ec66b5c310f4f2f63d1bd301b7fb
 Successfully built lan-transcriber
 Installing collected packages: lan-transcriber
   Attempting uninstall: lan-transcriber
@@ -133,4 +133,4 @@ lan_transcriber/normalizer.py      25      0   100%
 ---------------------------------------------------
 TOTAL                             117      1    99%
 Required test coverage of 90% reached. Total coverage: 99.15%
-20 passed, 1 skipped, 3 warnings in 30.71s
+20 passed, 1 skipped, 3 warnings in 30.73s
