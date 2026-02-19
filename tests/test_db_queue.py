@@ -13,6 +13,7 @@ from lan_app.constants import (
     JOB_TYPE_PRECHECK,
     RECORDING_STATUS_FAILED,
     RECORDING_STATUS_QUARANTINE,
+    RECORDING_STATUS_QUEUED,
     RECORDING_STATUS_READY,
 )
 from lan_app.db import (
@@ -23,8 +24,9 @@ from lan_app.db import (
     get_recording,
     init_db,
     list_jobs,
+    set_recording_status,
 )
-from lan_app.jobs import RecordingJob, enqueue_recording_job
+from lan_app.jobs import RecordingJob, enqueue_recording_job, purge_pending_recording_jobs
 from lan_app.worker_tasks import process_job
 
 
@@ -106,6 +108,7 @@ def test_recordings_and_jobs_api_actions(tmp_path: Path, monkeypatch):
         "rec-api-1",
         source="test",
         source_filename="api.mp3",
+        status=RECORDING_STATUS_READY,
         settings=cfg,
     )
 
@@ -122,6 +125,11 @@ def test_recordings_and_jobs_api_actions(tmp_path: Path, monkeypatch):
             job_type=job_type,
             settings=effective,
         )
+        set_recording_status(
+            recording_id,
+            RECORDING_STATUS_QUEUED,
+            settings=effective,
+        )
         return RecordingJob(
             job_id="job-api-1",
             recording_id=recording_id,
@@ -129,6 +137,13 @@ def test_recordings_and_jobs_api_actions(tmp_path: Path, monkeypatch):
         )
 
     monkeypatch.setattr(api, "enqueue_recording_job", _fake_enqueue)
+    purged = {"recording_id": None}
+
+    def _fake_purge(recording_id: str, *, settings: AppSettings | None = None) -> int:
+        purged["recording_id"] = recording_id
+        return 1
+
+    monkeypatch.setattr(api, "purge_pending_recording_jobs", _fake_purge)
 
     client = TestClient(api.app)
 
@@ -146,6 +161,9 @@ def test_recordings_and_jobs_api_actions(tmp_path: Path, monkeypatch):
     )
     assert requeue.status_code == 200
     assert requeue.json()["job_id"] == "job-api-1"
+    after_requeue = client.get("/api/recordings/rec-api-1")
+    assert after_requeue.status_code == 200
+    assert after_requeue.json()["status"] == RECORDING_STATUS_QUEUED
 
     jobs = client.get("/api/jobs")
     assert jobs.status_code == 200
@@ -162,6 +180,7 @@ def test_recordings_and_jobs_api_actions(tmp_path: Path, monkeypatch):
     deleted = client.post("/api/recordings/rec-api-1/actions/delete")
     assert deleted.status_code == 200
     assert deleted.json()["deleted"] is True
+    assert purged["recording_id"] == "rec-api-1"
 
     missing = client.get("/api/recordings/rec-api-1")
     assert missing.status_code == 404
@@ -233,3 +252,92 @@ def test_worker_setup_failure_marks_job_and_recording_failed(tmp_path: Path, mon
     assert recording is not None
     assert job["status"] == JOB_STATUS_FAILED
     assert recording["status"] == RECORDING_STATUS_FAILED
+
+
+def test_enqueue_sets_recording_status_to_queued_on_success(tmp_path: Path, monkeypatch):
+    cfg = _test_settings(tmp_path)
+    init_db(cfg)
+    create_recording(
+        "rec-requeue-status-1",
+        source="test",
+        source_filename="retry.mp3",
+        status=RECORDING_STATUS_FAILED,
+        settings=cfg,
+    )
+
+    class _QueueOK:
+        def enqueue(self, *_args, **_kwargs):
+            return None
+
+    monkeypatch.setattr("lan_app.jobs.get_queue", lambda _cfg: _QueueOK())
+
+    enqueue_recording_job(
+        "rec-requeue-status-1",
+        job_type=JOB_TYPE_PRECHECK,
+        settings=cfg,
+    )
+    recording = get_recording("rec-requeue-status-1", settings=cfg)
+    assert recording is not None
+    assert recording["status"] == RECORDING_STATUS_QUEUED
+
+
+def test_purge_pending_recording_jobs_deletes_only_pending(tmp_path: Path, monkeypatch):
+    cfg = _test_settings(tmp_path)
+    init_db(cfg)
+    create_recording(
+        "rec-purge-1",
+        source="test",
+        source_filename="purge.mp3",
+        settings=cfg,
+    )
+    create_job(
+        "job-purge-queued",
+        recording_id="rec-purge-1",
+        job_type=JOB_TYPE_PRECHECK,
+        settings=cfg,
+    )
+    create_job(
+        "job-purge-finished",
+        recording_id="rec-purge-1",
+        job_type=JOB_TYPE_PRECHECK,
+        settings=cfg,
+        status=JOB_STATUS_FINISHED,
+    )
+
+    class _FakeRQJob:
+        def __init__(self, status: str):
+            self._status = status
+            self.deleted = False
+
+        def get_status(self, refresh: bool = False):
+            class _Status:
+                def __init__(self, value: str):
+                    self.value = value
+
+            return _Status(self._status)
+
+        def delete(self, remove_from_queue: bool = True, delete_dependents: bool = False):
+            self.deleted = True
+
+    class _FakeQueue:
+        def __init__(self):
+            self.removed: list[str] = []
+            self.jobs = {
+                "job-purge-queued": _FakeRQJob("queued"),
+                "job-purge-finished": _FakeRQJob("finished"),
+            }
+
+        def fetch_job(self, job_id: str):
+            return self.jobs.get(job_id)
+
+        def remove(self, job_id: str):
+            self.removed.append(job_id)
+
+    fake_queue = _FakeQueue()
+    monkeypatch.setattr("lan_app.jobs.get_queue", lambda _cfg: fake_queue)
+
+    removed = purge_pending_recording_jobs("rec-purge-1", settings=cfg)
+    assert removed == 1
+    assert fake_queue.removed == ["job-purge-queued"]
+    assert fake_queue.jobs["job-purge-queued"].deleted is True
+    assert fake_queue.jobs["job-purge-finished"].deleted is False

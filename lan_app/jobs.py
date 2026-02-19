@@ -6,14 +6,23 @@ from uuid import uuid4
 
 from redis import Redis
 from rq import Queue
+from rq.registry import DeferredJobRegistry, ScheduledJobRegistry
 
 from .config import AppSettings
 from .constants import (
     DEFAULT_REQUEUE_JOB_TYPE,
     JOB_STATUS_QUEUED,
     JOB_TYPES,
+    RECORDING_STATUS_QUEUED,
 )
-from .db import create_job, fail_job, get_recording, init_db
+from .db import (
+    create_job,
+    fail_job,
+    get_recording,
+    init_db,
+    list_jobs,
+    set_recording_status,
+)
 
 
 class RecordingNotFoundError(ValueError):
@@ -39,6 +48,63 @@ def get_queue(settings: AppSettings | None = None) -> Queue:
     cfg = settings or AppSettings()
     connection = Redis.from_url(cfg.redis_url)
     return Queue(name=cfg.rq_queue_name, connection=connection)
+
+
+def _status_value(status: object | None) -> str | None:
+    if status is None:
+        return None
+    return getattr(status, "value", str(status))
+
+
+def _purge_pending_queue_job(queue: Queue, job_id: str) -> bool:
+    job = queue.fetch_job(job_id)
+    if job is None:
+        return False
+
+    status = _status_value(job.get_status(refresh=True))
+    if status not in {"queued", "deferred", "scheduled"}:
+        return False
+
+    if status == "queued":
+        queue.remove(job_id)
+    elif status == "deferred":
+        DeferredJobRegistry(queue=queue).remove(job_id, delete_job=False)
+    elif status == "scheduled":
+        ScheduledJobRegistry(queue=queue).remove(job_id, delete_job=False)
+
+    job.delete(remove_from_queue=True, delete_dependents=True)
+    return True
+
+
+def purge_pending_recording_jobs(
+    recording_id: str,
+    *,
+    settings: AppSettings | None = None,
+) -> int:
+    cfg = settings or AppSettings()
+    init_db(cfg)
+    queue = get_queue(cfg)
+
+    removed = 0
+    offset = 0
+    while True:
+        rows, total = list_jobs(
+            settings=cfg,
+            status=JOB_STATUS_QUEUED,
+            recording_id=recording_id,
+            limit=500,
+            offset=offset,
+        )
+        if not rows:
+            break
+        for row in rows:
+            job_id = str(row["id"])
+            if _purge_pending_queue_job(queue, job_id):
+                removed += 1
+        offset += len(rows)
+        if offset >= total:
+            break
+    return removed
 
 
 def enqueue_recording_job(
@@ -84,6 +150,12 @@ def enqueue_recording_job(
         except Exception:
             pass
         raise
+
+    set_recording_status(
+        recording_id,
+        RECORDING_STATUS_QUEUED,
+        settings=cfg,
+    )
     return RecordingJob(job_id=job_id, recording_id=recording_id, job_type=job_type)
 
 
@@ -92,4 +164,5 @@ __all__ = [
     "RecordingNotFoundError",
     "enqueue_recording_job",
     "get_queue",
+    "purge_pending_recording_jobs",
 ]

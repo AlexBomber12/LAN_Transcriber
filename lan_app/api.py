@@ -31,6 +31,7 @@ from .db import (
     set_recording_status,
 )
 from .jobs import RecordingNotFoundError, enqueue_recording_job
+from .jobs import purge_pending_recording_jobs
 
 app = FastAPI()
 ALIAS_PATH = aliases.ALIAS_PATH
@@ -198,6 +199,17 @@ async def api_quarantine_recording(
 
 @app.post("/api/recordings/{recording_id}/actions/delete")
 async def api_delete_recording(recording_id: str) -> dict[str, object]:
+    if get_recording(recording_id, settings=_settings) is None:
+        raise HTTPException(status_code=404, detail="Recording not found")
+
+    try:
+        purge_pending_recording_jobs(recording_id, settings=_settings)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Queue unavailable: {exc}",
+        )
+
     deleted = delete_recording(recording_id, settings=_settings)
     if not deleted:
         raise HTTPException(status_code=404, detail="Recording not found")

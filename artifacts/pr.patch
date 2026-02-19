@@ -1,234 +1,310 @@
+diff --git a/lan_app/api.py b/lan_app/api.py
+index 5ca2cdf..9fc1ae9 100644
+--- a/lan_app/api.py
++++ b/lan_app/api.py
+@@ -31,6 +31,7 @@ from .db import (
+     set_recording_status,
+ )
+ from .jobs import RecordingNotFoundError, enqueue_recording_job
++from .jobs import purge_pending_recording_jobs
+ 
+ app = FastAPI()
+ ALIAS_PATH = aliases.ALIAS_PATH
+@@ -198,6 +199,17 @@ async def api_quarantine_recording(
+ 
+ @app.post("/api/recordings/{recording_id}/actions/delete")
+ async def api_delete_recording(recording_id: str) -> dict[str, object]:
++    if get_recording(recording_id, settings=_settings) is None:
++        raise HTTPException(status_code=404, detail="Recording not found")
++
++    try:
++        purge_pending_recording_jobs(recording_id, settings=_settings)
++    except Exception as exc:
++        raise HTTPException(
++            status_code=503,
++            detail=f"Queue unavailable: {exc}",
++        )
++
+     deleted = delete_recording(recording_id, settings=_settings)
+     if not deleted:
+         raise HTTPException(status_code=404, detail="Recording not found")
 diff --git a/lan_app/jobs.py b/lan_app/jobs.py
-index d928423..c6652c4 100644
+index c6652c4..f4245f8 100644
 --- a/lan_app/jobs.py
 +++ b/lan_app/jobs.py
-@@ -13,7 +13,7 @@ from .constants import (
+@@ -6,14 +6,23 @@ from uuid import uuid4
+ 
+ from redis import Redis
+ from rq import Queue
++from rq.registry import DeferredJobRegistry, ScheduledJobRegistry
+ 
+ from .config import AppSettings
+ from .constants import (
+     DEFAULT_REQUEUE_JOB_TYPE,
      JOB_STATUS_QUEUED,
      JOB_TYPES,
++    RECORDING_STATUS_QUEUED,
++)
++from .db import (
++    create_job,
++    fail_job,
++    get_recording,
++    init_db,
++    list_jobs,
++    set_recording_status,
  )
--from .db import create_job, get_recording, init_db
-+from .db import create_job, fail_job, get_recording, init_db
+-from .db import create_job, fail_job, get_recording, init_db
  
  
  class RecordingNotFoundError(ValueError):
-@@ -65,13 +65,25 @@ def enqueue_recording_job(
-     from .worker_tasks import process_job
+@@ -41,6 +50,63 @@ def get_queue(settings: AppSettings | None = None) -> Queue:
+     return Queue(name=cfg.rq_queue_name, connection=connection)
  
-     queue = get_queue(cfg)
--    queue.enqueue(
--        process_job,
--        job_id,
--        recording_id,
--        job_type,
--        job_id=job_id,
--    )
-+    try:
-+        queue.enqueue(
-+            process_job,
-+            job_id,
-+            recording_id,
-+            job_type,
-+            job_id=job_id,
+ 
++def _status_value(status: object | None) -> str | None:
++    if status is None:
++        return None
++    return getattr(status, "value", str(status))
++
++
++def _purge_pending_queue_job(queue: Queue, job_id: str) -> bool:
++    job = queue.fetch_job(job_id)
++    if job is None:
++        return False
++
++    status = _status_value(job.get_status(refresh=True))
++    if status not in {"queued", "deferred", "scheduled"}:
++        return False
++
++    if status == "queued":
++        queue.remove(job_id)
++    elif status == "deferred":
++        DeferredJobRegistry(queue=queue).remove(job_id, delete_job=False)
++    elif status == "scheduled":
++        ScheduledJobRegistry(queue=queue).remove(job_id, delete_job=False)
++
++    job.delete(remove_from_queue=True, delete_dependents=True)
++    return True
++
++
++def purge_pending_recording_jobs(
++    recording_id: str,
++    *,
++    settings: AppSettings | None = None,
++) -> int:
++    cfg = settings or AppSettings()
++    init_db(cfg)
++    queue = get_queue(cfg)
++
++    removed = 0
++    offset = 0
++    while True:
++        rows, total = list_jobs(
++            settings=cfg,
++            status=JOB_STATUS_QUEUED,
++            recording_id=recording_id,
++            limit=500,
++            offset=offset,
 +        )
-+    except Exception as exc:
-+        # Keep DB queue state terminal when Redis/RQ enqueue fails.
-+        try:
-+            fail_job(
-+                job_id,
-+                error=f"queue enqueue failed: {exc}",
-+                settings=cfg,
-+            )
-+        except Exception:
-+            pass
-+        raise
++        if not rows:
++            break
++        for row in rows:
++            job_id = str(row["id"])
++            if _purge_pending_queue_job(queue, job_id):
++                removed += 1
++        offset += len(rows)
++        if offset >= total:
++            break
++    return removed
++
++
+ def enqueue_recording_job(
+     recording_id: str,
+     *,
+@@ -84,6 +150,12 @@ def enqueue_recording_job(
+         except Exception:
+             pass
+         raise
++
++    set_recording_status(
++        recording_id,
++        RECORDING_STATUS_QUEUED,
++        settings=cfg,
++    )
      return RecordingJob(job_id=job_id, recording_id=recording_id, job_type=job_type)
  
  
-diff --git a/lan_app/worker_tasks.py b/lan_app/worker_tasks.py
-index f147ec9..dafea7f 100644
---- a/lan_app/worker_tasks.py
-+++ b/lan_app/worker_tasks.py
-@@ -41,6 +41,30 @@ def _success_status(job_type: str) -> str:
-     return RECORDING_STATUS_READY
- 
- 
-+def _record_failure(
-+    *,
-+    job_id: str,
-+    job_type: str,
-+    recording_id: str,
-+    settings: AppSettings,
-+    log_path: Path,
-+    exc: Exception,
-+) -> None:
-+    error = str(exc)
-+    try:
-+        fail_job(job_id, error, settings=settings)
-+    except Exception:
-+        pass
-+    try:
-+        set_recording_status(recording_id, RECORDING_STATUS_FAILED, settings=settings)
-+    except Exception:
-+        pass
-+    try:
-+        _append_step_log(log_path, f"failed job={job_id} type={job_type}: {error}")
-+    except Exception:
-+        pass
-+
-+
- def process_job(job_id: str, recording_id: str, job_type: str) -> dict[str, str]:
-     """
-     Execute a queue job.
-@@ -55,27 +79,35 @@ def process_job(job_id: str, recording_id: str, job_type: str) -> dict[str, str]
-     init_db(settings)
-     log_path = _step_log_path(recording_id, job_type, settings)
- 
--    if not start_job(job_id, settings=settings):
--        raise ValueError(f"Job not found: {job_id}")
--    set_recording_status(
--        recording_id,
--        RECORDING_STATUS_PROCESSING,
--        settings=settings,
--    )
--    _append_step_log(log_path, f"started job={job_id} type={job_type}")
--
-     try:
-+        if not start_job(job_id, settings=settings):
-+            raise ValueError(f"Job not found: {job_id}")
-+        if not set_recording_status(
-+            recording_id,
-+            RECORDING_STATUS_PROCESSING,
-+            settings=settings,
-+        ):
-+            raise ValueError(f"Recording not found: {recording_id}")
-+        _append_step_log(log_path, f"started job={job_id} type={job_type}")
-+
-         final_status = _success_status(job_type)
--        set_recording_status(recording_id, final_status, settings=settings)
--        finish_job(job_id, settings=settings)
-+        if not set_recording_status(recording_id, final_status, settings=settings):
-+            raise ValueError(f"Recording not found: {recording_id}")
-+        if not finish_job(job_id, settings=settings):
-+            raise ValueError(f"Job not found: {job_id}")
-         _append_step_log(
-             log_path,
-             f"finished job={job_id} type={job_type} recording_status={final_status}",
-         )
-     except Exception as exc:
--        fail_job(job_id, str(exc), settings=settings)
--        set_recording_status(recording_id, RECORDING_STATUS_FAILED, settings=settings)
--        _append_step_log(log_path, f"failed job={job_id} type={job_type}: {exc}")
-+        _record_failure(
-+            job_id=job_id,
-+            job_type=job_type,
-+            recording_id=recording_id,
-+            settings=settings,
-+            log_path=log_path,
-+            exc=exc,
-+        )
-         raise
- 
-     return {
+@@ -92,4 +164,5 @@ __all__ = [
+     "RecordingNotFoundError",
+     "enqueue_recording_job",
+     "get_queue",
++    "purge_pending_recording_jobs",
+ ]
 diff --git a/tests/test_db_queue.py b/tests/test_db_queue.py
-index ede652e..9d1fdb6 100644
+index 9d1fdb6..bfa8062 100644
 --- a/tests/test_db_queue.py
 +++ b/tests/test_db_queue.py
-@@ -3,12 +3,15 @@ from __future__ import annotations
- from pathlib import Path
- 
- from fastapi.testclient import TestClient
-+import pytest
- 
- from lan_app import api
- from lan_app.config import AppSettings
- from lan_app.constants import (
-+    JOB_STATUS_FAILED,
-     JOB_STATUS_FINISHED,
+@@ -13,6 +13,7 @@ from lan_app.constants import (
      JOB_TYPE_PRECHECK,
-+    RECORDING_STATUS_FAILED,
+     RECORDING_STATUS_FAILED,
      RECORDING_STATUS_QUARANTINE,
++    RECORDING_STATUS_QUEUED,
      RECORDING_STATUS_READY,
  )
-@@ -19,8 +22,9 @@ from lan_app.db import (
-     get_job,
+ from lan_app.db import (
+@@ -23,8 +24,9 @@ from lan_app.db import (
      get_recording,
      init_db,
-+    list_jobs,
+     list_jobs,
++    set_recording_status,
  )
--from lan_app.jobs import RecordingJob
-+from lan_app.jobs import RecordingJob, enqueue_recording_job
+-from lan_app.jobs import RecordingJob, enqueue_recording_job
++from lan_app.jobs import RecordingJob, enqueue_recording_job, purge_pending_recording_jobs
  from lan_app.worker_tasks import process_job
  
  
-@@ -161,3 +165,71 @@ def test_recordings_and_jobs_api_actions(tmp_path: Path, monkeypatch):
+@@ -106,6 +108,7 @@ def test_recordings_and_jobs_api_actions(tmp_path: Path, monkeypatch):
+         "rec-api-1",
+         source="test",
+         source_filename="api.mp3",
++        status=RECORDING_STATUS_READY,
+         settings=cfg,
+     )
+ 
+@@ -122,6 +125,11 @@ def test_recordings_and_jobs_api_actions(tmp_path: Path, monkeypatch):
+             job_type=job_type,
+             settings=effective,
+         )
++        set_recording_status(
++            recording_id,
++            RECORDING_STATUS_QUEUED,
++            settings=effective,
++        )
+         return RecordingJob(
+             job_id="job-api-1",
+             recording_id=recording_id,
+@@ -129,6 +137,13 @@ def test_recordings_and_jobs_api_actions(tmp_path: Path, monkeypatch):
+         )
+ 
+     monkeypatch.setattr(api, "enqueue_recording_job", _fake_enqueue)
++    purged = {"recording_id": None}
++
++    def _fake_purge(recording_id: str, *, settings: AppSettings | None = None) -> int:
++        purged["recording_id"] = recording_id
++        return 1
++
++    monkeypatch.setattr(api, "purge_pending_recording_jobs", _fake_purge)
+ 
+     client = TestClient(api.app)
+ 
+@@ -146,6 +161,9 @@ def test_recordings_and_jobs_api_actions(tmp_path: Path, monkeypatch):
+     )
+     assert requeue.status_code == 200
+     assert requeue.json()["job_id"] == "job-api-1"
++    after_requeue = client.get("/api/recordings/rec-api-1")
++    assert after_requeue.status_code == 200
++    assert after_requeue.json()["status"] == RECORDING_STATUS_QUEUED
+ 
+     jobs = client.get("/api/jobs")
+     assert jobs.status_code == 200
+@@ -162,6 +180,7 @@ def test_recordings_and_jobs_api_actions(tmp_path: Path, monkeypatch):
+     deleted = client.post("/api/recordings/rec-api-1/actions/delete")
+     assert deleted.status_code == 200
+     assert deleted.json()["deleted"] is True
++    assert purged["recording_id"] == "rec-api-1"
  
      missing = client.get("/api/recordings/rec-api-1")
      assert missing.status_code == 404
+@@ -233,3 +252,92 @@ def test_worker_setup_failure_marks_job_and_recording_failed(tmp_path: Path, mon
+     assert recording is not None
+     assert job["status"] == JOB_STATUS_FAILED
+     assert recording["status"] == RECORDING_STATUS_FAILED
 +
 +
-+def test_enqueue_marks_job_failed_when_redis_enqueue_fails(tmp_path: Path, monkeypatch):
++def test_enqueue_sets_recording_status_to_queued_on_success(tmp_path: Path, monkeypatch):
 +    cfg = _test_settings(tmp_path)
 +    init_db(cfg)
 +    create_recording(
-+        "rec-enqueue-fail-1",
++        "rec-requeue-status-1",
 +        source="test",
-+        source_filename="enqueue.mp3",
++        source_filename="retry.mp3",
++        status=RECORDING_STATUS_FAILED,
 +        settings=cfg,
 +    )
 +
-+    class _BrokenQueue:
++    class _QueueOK:
 +        def enqueue(self, *_args, **_kwargs):
-+            raise RuntimeError("redis down")
++            return None
 +
-+    monkeypatch.setattr("lan_app.jobs.get_queue", lambda _cfg: _BrokenQueue())
++    monkeypatch.setattr("lan_app.jobs.get_queue", lambda _cfg: _QueueOK())
 +
-+    with pytest.raises(RuntimeError) as exc_info:
-+        enqueue_recording_job(
-+            "rec-enqueue-fail-1",
-+            job_type=JOB_TYPE_PRECHECK,
-+            settings=cfg,
-+        )
-+    assert "redis down" in str(exc_info.value)
-+
-+    jobs, total = list_jobs(settings=cfg, recording_id="rec-enqueue-fail-1")
-+    assert total == 1
-+    assert jobs[0]["status"] == JOB_STATUS_FAILED
-+    assert "queue enqueue failed" in jobs[0]["error"]
-+
-+
-+def test_worker_setup_failure_marks_job_and_recording_failed(tmp_path: Path, monkeypatch):
-+    cfg = _test_settings(tmp_path)
-+    monkeypatch.setenv("LAN_DATA_ROOT", str(cfg.data_root))
-+    monkeypatch.setenv("LAN_RECORDINGS_ROOT", str(cfg.recordings_root))
-+    monkeypatch.setenv("LAN_DB_PATH", str(cfg.db_path))
-+    monkeypatch.setenv("LAN_PROM_SNAPSHOT_PATH", str(cfg.metrics_snapshot_path))
-+
-+    init_db(cfg)
-+    create_recording(
-+        "rec-worker-fail-1",
-+        source="test",
-+        source_filename="setup-fail.mp3",
-+        settings=cfg,
-+    )
-+    create_job(
-+        "job-worker-fail-1",
-+        recording_id="rec-worker-fail-1",
++    enqueue_recording_job(
++        "rec-requeue-status-1",
 +        job_type=JOB_TYPE_PRECHECK,
 +        settings=cfg,
 +    )
-+
-+    def _boom(*_args, **_kwargs):
-+        raise OSError("disk full")
-+
-+    monkeypatch.setattr("lan_app.worker_tasks._append_step_log", _boom)
-+
-+    with pytest.raises(OSError) as exc_info:
-+        process_job("job-worker-fail-1", "rec-worker-fail-1", JOB_TYPE_PRECHECK)
-+    assert "disk full" in str(exc_info.value)
-+
-+    job = get_job("job-worker-fail-1", settings=cfg)
-+    recording = get_recording("rec-worker-fail-1", settings=cfg)
-+    assert job is not None
++    recording = get_recording("rec-requeue-status-1", settings=cfg)
 +    assert recording is not None
-+    assert job["status"] == JOB_STATUS_FAILED
-+    assert recording["status"] == RECORDING_STATUS_FAILED
++    assert recording["status"] == RECORDING_STATUS_QUEUED
++
++
++def test_purge_pending_recording_jobs_deletes_only_pending(tmp_path: Path, monkeypatch):
++    cfg = _test_settings(tmp_path)
++    init_db(cfg)
++    create_recording(
++        "rec-purge-1",
++        source="test",
++        source_filename="purge.mp3",
++        settings=cfg,
++    )
++    create_job(
++        "job-purge-queued",
++        recording_id="rec-purge-1",
++        job_type=JOB_TYPE_PRECHECK,
++        settings=cfg,
++    )
++    create_job(
++        "job-purge-finished",
++        recording_id="rec-purge-1",
++        job_type=JOB_TYPE_PRECHECK,
++        settings=cfg,
++        status=JOB_STATUS_FINISHED,
++    )
++
++    class _FakeRQJob:
++        def __init__(self, status: str):
++            self._status = status
++            self.deleted = False
++
++        def get_status(self, refresh: bool = False):
++            class _Status:
++                def __init__(self, value: str):
++                    self.value = value
++
++            return _Status(self._status)
++
++        def delete(self, remove_from_queue: bool = True, delete_dependents: bool = False):
++            self.deleted = True
++
++    class _FakeQueue:
++        def __init__(self):
++            self.removed: list[str] = []
++            self.jobs = {
++                "job-purge-queued": _FakeRQJob("queued"),
++                "job-purge-finished": _FakeRQJob("finished"),
++            }
++
++        def fetch_job(self, job_id: str):
++            return self.jobs.get(job_id)
++
++        def remove(self, job_id: str):
++            self.removed.append(job_id)
++
++    fake_queue = _FakeQueue()
++    monkeypatch.setattr("lan_app.jobs.get_queue", lambda _cfg: fake_queue)
++
++    removed = purge_pending_recording_jobs("rec-purge-1", settings=cfg)
++    assert removed == 1
++    assert fake_queue.removed == ["job-purge-queued"]
++    assert fake_queue.jobs["job-purge-queued"].deleted is True
++    assert fake_queue.jobs["job-purge-finished"].deleted is False
