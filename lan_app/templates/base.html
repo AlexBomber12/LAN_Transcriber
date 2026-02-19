@@ -82,15 +82,15 @@ tr:hover{background:#e8ecf8}
 {% block content %}{% endblock %}
 </main>
 <script>
-function doRecAction(sel, id) {
+function doRecAction(sel) {
   var act = sel.value;
+  var id = sel.dataset.rid;
   sel.value = '';
-  if (!act) return;
-  if (act === 'open') { window.location = '/recordings/' + id; return; }
-  var msgs = {delete: 'Delete recording ' + id + '?', quarantine: 'Quarantine recording ' + id + '?'};
+  if (!act || !id) return;
+  if (act === 'open') { window.location = '/recordings/' + encodeURIComponent(id); return; }
+  var msgs = {delete: 'Delete this recording?', quarantine: 'Quarantine this recording?'};
   if (msgs[act] && !confirm(msgs[act])) return;
-  var form = document.getElementById('hxf-' + act + '-' + id);
-  if (form) htmx.trigger(form, 'submit');
+  htmx.ajax('POST', '/ui/recordings/' + encodeURIComponent(id) + '/' + act, {swap: 'none'});
 }
 </script>
 </body>

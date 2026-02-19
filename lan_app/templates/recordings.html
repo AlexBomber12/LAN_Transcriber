@@ -44,10 +44,7 @@
       <td>{% if r.duration_sec %}{{ r.duration_sec }}s{% else %}—{% endif %}</td>
       <td>{{ r.source }}</td>
       <td>
-        <form id="hxf-requeue-{{ r.id }}" hx-post="/ui/recordings/{{ r.id }}/requeue" hx-swap="none" style="display:none"></form>
-        <form id="hxf-quarantine-{{ r.id }}" hx-post="/ui/recordings/{{ r.id }}/quarantine" hx-swap="none" style="display:none"></form>
-        <form id="hxf-delete-{{ r.id }}" hx-post="/ui/recordings/{{ r.id }}/delete" hx-swap="none" style="display:none"></form>
-        <select class="action-sel" onchange="doRecAction(this, '{{ r.id }}')">
+        <select class="action-sel" data-rid="{{ r.id }}" onchange="doRecAction(this)">
           <option value="">Actions</option>
           <option value="open">Open</option>
           <option value="requeue">Requeue</option>

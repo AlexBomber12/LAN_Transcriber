@@ -7,10 +7,7 @@
 </h1>
 
 <div class="filters" style="margin-bottom:10px">
-  <form id="hxf-requeue-{{ rec.id }}" hx-post="/ui/recordings/{{ rec.id }}/requeue" hx-swap="none" style="display:inline"></form>
-  <form id="hxf-quarantine-{{ rec.id }}" hx-post="/ui/recordings/{{ rec.id }}/quarantine" hx-swap="none" style="display:inline"></form>
-  <form id="hxf-delete-{{ rec.id }}" hx-post="/ui/recordings/{{ rec.id }}/delete" hx-swap="none" style="display:inline"></form>
-  <select class="action-sel" style="font-size:12px" onchange="doRecAction(this, '{{ rec.id }}')">
+  <select class="action-sel" style="font-size:12px" data-rid="{{ rec.id }}" onchange="doRecAction(this)">
     <option value="">Actions…</option>
     <option value="requeue">Requeue</option>
     <option value="quarantine">Quarantine</option>
