@@ -153,9 +153,13 @@ def select_calendar_event(
         selected_confidence = _MANUAL_NO_EVENT_CONFIDENCE
     else:
         selected = _candidate_by_id(candidates, event_id)
-        if selected is None:
-            raise ValueError("Unknown event_id for this recording")
-        selected_confidence = float(selected.get("score") or 0.0)
+        if selected is not None:
+            selected_confidence = float(selected.get("score") or 0.0)
+        else:
+            current_selected = str(current.get("selected_event_id") or "").strip()
+            if current_selected != event_id:
+                raise ValueError("Unknown event_id for this recording")
+            selected_confidence = _as_optional_float(current.get("selected_confidence"))
 
     row = set_calendar_match_selection(
         recording_id=recording_id,
@@ -238,6 +242,15 @@ def _build_context(
     selected_event_id = row.get("selected_event_id")
     selected_confidence = row.get("selected_confidence")
     selected = _candidate_by_id(candidates, selected_event_id)
+    if (
+        selected is None
+        and isinstance(selected_event_id, str)
+        and selected_event_id.strip()
+    ):
+        selected = _selection_placeholder(
+            event_id=selected_event_id.strip(),
+            selected_confidence=selected_confidence,
+        )
     visible_candidates = _visible_candidates(candidates, selected)
 
     return {
@@ -273,9 +286,17 @@ def _resolve_selected_event(
             and selected_confidence == _MANUAL_NO_EVENT_CONFIDENCE
         ):
             return None, _MANUAL_NO_EVENT_CONFIDENCE
-        selected = _candidate_by_id(candidates, selected_event_id)
-        if selected is not None:
-            return str(selected["event_id"]), float(selected.get("score") or 0.0)
+        if isinstance(selected_event_id, str) and selected_event_id.strip():
+            selected_id = selected_event_id.strip()
+        else:
+            selected_id = None
+        if selected_id is not None:
+            selected = _candidate_by_id(candidates, selected_id)
+            if selected is not None:
+                return str(selected["event_id"]), float(selected.get("score") or 0.0)
+            # Preserve prior user choice if the selected event is temporarily
+            # absent from the latest Graph candidate list.
+            return selected_id, _as_optional_float(selected_confidence)
 
     if not candidates:
         return None, None
@@ -376,6 +397,25 @@ def _candidate_by_id(
     return None
 
 
+def _selection_placeholder(
+    *,
+    event_id: str,
+    selected_confidence: float | None,
+) -> dict[str, Any]:
+    return {
+        "event_id": event_id,
+        "subject": "(selected event not present in latest calendar fetch)",
+        "start": None,
+        "end": None,
+        "organizer": None,
+        "attendees": [],
+        "location": None,
+        "title_tokens": [],
+        "score": _as_optional_float(selected_confidence) or 0.0,
+        "rationale": "selection_preserved_missing_from_candidates",
+    }
+
+
 def _visible_candidates(
     candidates: list[dict[str, Any]],
     selected: dict[str, Any] | None,
@@ -389,6 +429,14 @@ def _visible_candidates(
     if any(str(item.get("event_id")) == selected_id for item in visible):
         return visible
     return [*visible, selected]
+
+
+def _as_optional_float(value: Any) -> float | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int | float):
+        return float(value)
+    return None
 
 
 def _extract_party(value: Any) -> str | None:

@@ -376,3 +376,87 @@ def test_proximity_component_point_recording_uses_nearest_event_edge():
     )
     expected = 1.0 - (60.0 / 3600.0)
     assert abs(proximity - expected) < 1e-9
+
+
+def test_refresh_preserves_selected_event_when_missing_from_new_candidates(
+    tmp_path, monkeypatch
+):
+    cfg = _cfg(tmp_path)
+    init_db(cfg)
+    create_recording(
+        "rec-cal-preserve-1",
+        source="drive",
+        source_filename="meeting.mp3",
+        captured_at="2026-02-19T10:00:00Z",
+        settings=cfg,
+    )
+    upsert_calendar_match(
+        recording_id="rec-cal-preserve-1",
+        candidates=[
+            {
+                "event_id": "evt-manual",
+                "subject": "Manual pick",
+                "start": "2026-02-19T09:30:00Z",
+                "end": "2026-02-19T10:30:00Z",
+                "organizer": "Alex",
+                "attendees": [],
+                "location": None,
+                "title_tokens": ["manual"],
+                "score": 0.77,
+                "rationale": "manual",
+            }
+        ],
+        selected_event_id="evt-manual",
+        selected_confidence=0.77,
+        settings=cfg,
+    )
+
+    class _FakeClient:
+        def __init__(self, settings=None):
+            self.settings = settings
+
+        def graph_get(self, _path: str):
+            return {"value": _fake_events()}  # does not include evt-manual
+
+    monkeypatch.setattr(calendar, "MicrosoftGraphClient", _FakeClient)
+
+    context = calendar.refresh_calendar_context("rec-cal-preserve-1", settings=cfg)
+    assert context["selected_event_id"] == "evt-manual"
+    assert context["selected_event"] is not None
+    assert context["selected_event"]["event_id"] == "evt-manual"
+    assert any(c["event_id"] == "evt-manual" for c in context["candidates"])
+
+
+def test_select_allows_preserved_selection_not_in_candidates(tmp_path):
+    cfg = _cfg(tmp_path)
+    init_db(cfg)
+    create_recording(
+        "rec-cal-preserve-2",
+        source="drive",
+        source_filename="meeting.mp3",
+        captured_at="2026-02-19T10:00:00Z",
+        settings=cfg,
+    )
+    upsert_calendar_match(
+        recording_id="rec-cal-preserve-2",
+        candidates=[
+            {
+                "event_id": "evt-new",
+                "subject": "Different event",
+                "start": "2026-02-19T09:50:00Z",
+                "end": "2026-02-19T10:35:00Z",
+                "organizer": "Alex",
+                "attendees": [],
+                "location": None,
+                "title_tokens": ["different"],
+                "score": 0.8,
+                "rationale": "auto",
+            }
+        ],
+        selected_event_id="evt-manual",
+        selected_confidence=0.77,
+        settings=cfg,
+    )
+
+    selected = calendar.select_calendar_event("rec-cal-preserve-2", "evt-manual", settings=cfg)
+    assert selected["selected_event_id"] == "evt-manual"
