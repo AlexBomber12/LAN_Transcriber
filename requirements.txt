@@ -10,3 +10,4 @@ httpx
 tenacity
 redis
 rq
+msal

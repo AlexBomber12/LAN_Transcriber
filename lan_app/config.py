@@ -13,6 +13,10 @@ def _default_metrics_snapshot_path() -> Path:
     return default_data_root() / "metrics.snap"
 
 
+def _default_msal_cache_path() -> Path:
+    return default_data_root() / "auth" / "msal_cache.bin"
+
+
 class AppSettings(BaseSettings):
     """App-layer runtime settings."""
 
@@ -57,6 +61,28 @@ class AppSettings(BaseSettings):
             "GDRIVE_POLL_INTERVAL_SECONDS", "LAN_GDRIVE_POLL_INTERVAL_SECONDS"
         ),
     )
+
+    # Microsoft Graph delegated auth (Device Code Flow)
+    ms_tenant_id: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("MS_TENANT_ID", "LAN_MS_TENANT_ID"),
+    )
+    ms_client_id: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("MS_CLIENT_ID", "LAN_MS_CLIENT_ID"),
+    )
+    ms_scopes: str = Field(
+        default="offline_access User.Read Notes.ReadWrite Calendars.Read",
+        validation_alias=AliasChoices("MS_SCOPES", "LAN_MS_SCOPES"),
+    )
+    msal_cache_path: Path = Field(
+        default_factory=_default_msal_cache_path,
+        validation_alias=AliasChoices("MSAL_CACHE_PATH", "LAN_MSAL_CACHE_PATH"),
+    )
+
+    @property
+    def ms_scopes_list(self) -> list[str]:
+        return [s.strip() for s in self.ms_scopes.replace(",", " ").split() if s.strip()]
 
     class Config:
         env_prefix = "LAN_"

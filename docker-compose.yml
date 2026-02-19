@@ -24,6 +24,9 @@ x-lan-service: &lan-service
     - FETCH_INTERVAL_SEC=${FETCH_INTERVAL_SEC:-300}
     - TRANSCRIBER_VERSION=${TRANSCRIBER_VERSION:-local}
     - LANG_DEFAULT=${LANG_DEFAULT:-en}
+    - MS_TENANT_ID=${MS_TENANT_ID:-}
+    - MS_CLIENT_ID=${MS_CLIENT_ID:-}
+    - "MS_SCOPES=${MS_SCOPES:-offline_access User.Read Notes.ReadWrite Calendars.Read}"
   volumes:
     - lan_cache:/root/.cache
     - /opt/lan_cache/hf:/root/.cache/huggingface
