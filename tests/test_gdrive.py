@@ -18,6 +18,7 @@ from lan_app.gdrive import (
     list_inbox_files,
     parse_plaud_captured_at,
 )
+from lan_app.jobs import RecordingJob
 
 
 def _test_settings(tmp_path: Path) -> AppSettings:
@@ -40,6 +41,37 @@ def _test_settings_no_gdrive(tmp_path: Path) -> AppSettings:
     )
     cfg.metrics_snapshot_path = tmp_path / "metrics.snap"
     return cfg
+
+
+def _stub_enqueue(monkeypatch: Any, cfg: AppSettings) -> None:
+    """Replace enqueue_recording_job with a DB-only stub (no Redis)."""
+    from lan_app.db import create_job, set_recording_status
+    from lan_app.constants import JOB_STATUS_QUEUED, RECORDING_STATUS_QUEUED
+    from uuid import uuid4
+
+    def _fake_enqueue(
+        recording_id: str,
+        *,
+        job_type: str = "precheck",
+        settings: AppSettings | None = None,
+    ) -> RecordingJob:
+        effective = settings or cfg
+        job_id = uuid4().hex
+        create_job(
+            job_id=job_id,
+            recording_id=recording_id,
+            job_type=job_type,
+            status=JOB_STATUS_QUEUED,
+            settings=effective,
+        )
+        set_recording_status(
+            recording_id, RECORDING_STATUS_QUEUED, settings=effective
+        )
+        return RecordingJob(
+            job_id=job_id, recording_id=recording_id, job_type=job_type
+        )
+
+    monkeypatch.setattr("lan_app.jobs.enqueue_recording_job", _fake_enqueue)
 
 
 # --------------------------------------------------------------------------
@@ -230,9 +262,26 @@ def test_ingest_once_raises_when_no_folder_id(tmp_path: Path):
         ingest_once(cfg)
 
 
+def test_ingest_once_raises_when_empty_folder_id(tmp_path: Path):
+    cfg = _test_settings_no_gdrive(tmp_path)
+    cfg.gdrive_sa_json_path = tmp_path / "sa.json"
+    cfg.gdrive_inbox_folder_id = ""
+    with pytest.raises(ValueError, match="GDRIVE_INBOX_FOLDER_ID"):
+        ingest_once(cfg)
+
+
+def test_ingest_once_raises_when_whitespace_folder_id(tmp_path: Path):
+    cfg = _test_settings_no_gdrive(tmp_path)
+    cfg.gdrive_sa_json_path = tmp_path / "sa.json"
+    cfg.gdrive_inbox_folder_id = "   "
+    with pytest.raises(ValueError, match="GDRIVE_INBOX_FOLDER_ID"):
+        ingest_once(cfg)
+
+
 def test_ingest_once_skips_known_files(tmp_path: Path, monkeypatch):
     cfg = _test_settings(tmp_path)
     init_db(cfg)
+    _stub_enqueue(monkeypatch, cfg)
 
     from lan_app.db import create_recording
 
@@ -253,9 +302,6 @@ def test_ingest_once_skips_known_files(tmp_path: Path, monkeypatch):
         },
     ]
     svc = _FakeService([{"files": inbox_files}])
-    monkeypatch.setattr(
-        "lan_app.gdrive.MediaIoBaseDownload", _FakeMediaDownload
-    )
 
     results = ingest_once(cfg, service=svc)
     assert results == []
@@ -264,6 +310,7 @@ def test_ingest_once_skips_known_files(tmp_path: Path, monkeypatch):
 def test_ingest_once_downloads_and_creates_recording(tmp_path: Path, monkeypatch):
     cfg = _test_settings(tmp_path)
     init_db(cfg)
+    _stub_enqueue(monkeypatch, cfg)
 
     inbox_files = [
         {
@@ -304,6 +351,7 @@ def test_ingest_once_downloads_and_creates_recording(tmp_path: Path, monkeypatch
 def test_ingest_once_fallback_captured_at_from_drive(tmp_path: Path, monkeypatch):
     cfg = _test_settings(tmp_path)
     init_db(cfg)
+    _stub_enqueue(monkeypatch, cfg)
 
     inbox_files = [
         {
@@ -328,6 +376,7 @@ def test_ingest_once_fallback_captured_at_from_drive(tmp_path: Path, monkeypatch
 def test_ingest_once_continues_on_download_failure(tmp_path: Path, monkeypatch):
     cfg = _test_settings(tmp_path)
     init_db(cfg)
+    _stub_enqueue(monkeypatch, cfg)
 
     inbox_files = [
         {
@@ -345,6 +394,9 @@ def test_ingest_once_continues_on_download_failure(tmp_path: Path, monkeypatch):
 
     def _download_maybe_fail(svc: Any, fid: str, dest: Path) -> Path:
         if fid == "drive-fail":
+            # Simulate a partial write before failure
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(b"partial")
             raise OSError("network error")
         return _write_fake_download(dest)
 
@@ -355,10 +407,45 @@ def test_ingest_once_continues_on_download_failure(tmp_path: Path, monkeypatch):
     assert results[0]["drive_file_id"] == "drive-ok"
 
 
+def test_ingest_once_cleans_up_partial_files_on_download_failure(
+    tmp_path: Path, monkeypatch
+):
+    """Failed downloads should not leave orphaned recording directories."""
+    cfg = _test_settings(tmp_path)
+    init_db(cfg)
+    _stub_enqueue(monkeypatch, cfg)
+
+    inbox_files = [
+        {
+            "id": "drive-partial",
+            "name": "2026-02-18 10_00_00.mp3",
+            "createdTime": "2026-02-18T10:00:00Z",
+        },
+    ]
+    svc = _FakeService([{"files": inbox_files}])
+
+    created_dirs: list[Path] = []
+
+    def _download_fail(svc: Any, fid: str, dest: Path) -> Path:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(b"partial data")
+        created_dirs.append(dest.parent.parent)  # recordings/<id>
+        raise OSError("network error")
+
+    monkeypatch.setattr("lan_app.gdrive.download_file", _download_fail)
+
+    results = ingest_once(cfg, service=svc)
+    assert results == []
+    assert len(created_dirs) == 1
+    # The orphaned directory should have been cleaned up
+    assert not created_dirs[0].exists()
+
+
 def test_ingest_idempotent(tmp_path: Path, monkeypatch):
     """Running ingest twice with the same files should not duplicate."""
     cfg = _test_settings(tmp_path)
     init_db(cfg)
+    _stub_enqueue(monkeypatch, cfg)
 
     inbox_files = [
         {

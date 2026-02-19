@@ -1,809 +1,234 @@
-diff --git a/.env.example b/.env.example
-index fde2835..a4da94a 100644
---- a/.env.example
-+++ b/.env.example
-@@ -19,6 +19,11 @@ LAN_DB_PATH=/data/db/app.db
- LAN_REDIS_URL=redis://redis:6379/0
- LAN_RQ_QUEUE_NAME=lan-transcriber
- 
-+# Google Drive ingest (Service Account)
-+GDRIVE_SA_JSON_PATH=/data/secrets/gdrive_sa.json
-+GDRIVE_INBOX_FOLDER_ID=
-+GDRIVE_POLL_INTERVAL_SECONDS=60
-+
- # Plaud fetcher (beta)
- FETCH_INTERVAL_SEC=300
- 
-diff --git a/ci-requirements.txt b/ci-requirements.txt
-index 976fc9d..7f18321 100644
---- a/ci-requirements.txt
-+++ b/ci-requirements.txt
-@@ -20,3 +20,5 @@ pip-tools>=7.4
- setuptools>=80.9
- wheel>=0.45
- pip>=24.3
-+google-auth>=2.38
-+google-api-python-client>=2.166
-diff --git a/lan_app/api.py b/lan_app/api.py
-index 675c8d3..ea475ef 100644
---- a/lan_app/api.py
-+++ b/lan_app/api.py
-@@ -246,6 +246,20 @@ async def api_list_jobs(
-     }
- 
- 
-+@app.post("/api/actions/ingest")
-+async def api_ingest_once() -> dict[str, object]:
-+    """Trigger a single Google Drive ingest cycle."""
-+    from .gdrive import ingest_once
-+
-+    try:
-+        results = ingest_once(settings=_settings)
-+    except ValueError as exc:
-+        raise HTTPException(status_code=422, detail=str(exc))
-+    except Exception as exc:
-+        raise HTTPException(status_code=503, detail=f"Ingest failed: {exc}")
-+    return {"ingested": results, "count": len(results)}
-+
-+
- def set_current_result(result: TranscriptResult | None) -> None:
-     global _current_result
-     _current_result = result
-diff --git a/lan_app/config.py b/lan_app/config.py
-index de9c804..d76ee2e 100644
---- a/lan_app/config.py
-+++ b/lan_app/config.py
-@@ -40,6 +40,24 @@ class AppSettings(BaseSettings):
-         validation_alias=AliasChoices("LAN_RQ_WORKER_BURST", "RQ_WORKER_BURST"),
-     )
- 
-+    # Google Drive ingest
-+    gdrive_sa_json_path: Path | None = Field(
-+        default=None,
-+        validation_alias=AliasChoices("GDRIVE_SA_JSON_PATH", "LAN_GDRIVE_SA_JSON_PATH"),
-+    )
-+    gdrive_inbox_folder_id: str | None = Field(
-+        default=None,
-+        validation_alias=AliasChoices(
-+            "GDRIVE_INBOX_FOLDER_ID", "LAN_GDRIVE_INBOX_FOLDER_ID"
-+        ),
-+    )
-+    gdrive_poll_interval_seconds: int = Field(
-+        default=60,
-+        validation_alias=AliasChoices(
-+            "GDRIVE_POLL_INTERVAL_SECONDS", "LAN_GDRIVE_POLL_INTERVAL_SECONDS"
-+        ),
-+    )
-+
-     class Config:
-         env_prefix = "LAN_"
- 
-diff --git a/pyproject.toml b/pyproject.toml
-index 8fff5c5..fe8c808 100644
---- a/pyproject.toml
-+++ b/pyproject.toml
-@@ -19,6 +19,8 @@ dependencies = [
-     "pyyaml",
-     "pydantic-settings",
-     "rapidfuzz",
-+    "google-auth",
-+    "google-api-python-client",
- ]
- 
- [tool.setuptools.packages.find]
-diff --git a/tasks/QUEUE.md b/tasks/QUEUE.md
-index bb3a7bc..b920f28 100644
---- a/tasks/QUEUE.md
-+++ b/tasks/QUEUE.md
-@@ -32,7 +32,7 @@ Queue (in order)
- - Depends on: PR-DB-QUEUE-01
- 
- 5) PR-GDRIVE-INGEST-01: Google Drive API ingest using Service Account + shared folder (Inbox)
--- Status: TODO
-+- Status: DONE
- - Tasks file: tasks/PR-GDRIVE-INGEST-01.md
- - Depends on: PR-DB-QUEUE-01
- 
 diff --git a/lan_app/gdrive.py b/lan_app/gdrive.py
-new file mode 100644
-index 0000000..623e8a1
---- /dev/null
+index 623e8a1..35ec3a2 100644
+--- a/lan_app/gdrive.py
 +++ b/lan_app/gdrive.py
-@@ -0,0 +1,259 @@
-+"""Google Drive ingest: Service Account + shared Inbox folder.
+@@ -28,6 +28,8 @@ from .constants import (
+     JOB_TYPE_METRICS,
+     RECORDING_STATUS_QUEUED,
+ )
++import shutil
 +
-+Polls a shared Drive folder for new audio files, downloads them,
-+creates recording rows and enqueues the processing pipeline.
-+"""
+ from .db import connect, create_recording, init_db
+ 
+ logger = logging.getLogger(__name__)
+@@ -137,15 +139,27 @@ def _enqueue_pipeline_jobs(
+     recording_id: str,
+     settings: AppSettings,
+ ) -> list[str]:
+-    """Create DB job rows for the full processing pipeline.
++    """Enqueue the first pipeline step into Redis/RQ and create DB
++    placeholder rows for the remaining steps.
+ 
+-    Jobs are created as DB records only (queued status).  The RQ worker
+-    picks up the first job; later PRs will chain them.
++    The first step (precheck) is pushed onto the worker queue so
++    processing starts automatically.  Later PRs will chain subsequent
++    steps.
+     """
+     from .db import create_job
++    from .jobs import enqueue_recording_job
+ 
+     job_ids: list[str] = []
+-    for step in _PIPELINE_STEPS:
 +
-+from __future__ import annotations
++    # First step: enqueue into Redis/RQ so the worker picks it up
++    first_step = _PIPELINE_STEPS[0]
++    rj = enqueue_recording_job(
++        recording_id, job_type=first_step, settings=settings
++    )
++    job_ids.append(rj.job_id)
 +
-+import logging
-+import re
-+from datetime import datetime, timezone
-+from pathlib import Path
-+from typing import Any
-+from uuid import uuid4
++    # Remaining steps: DB placeholders only (chaining not yet wired)
++    for step in _PIPELINE_STEPS[1:]:
+         job_id = uuid4().hex
+         create_job(
+             job_id=job_id,
+@@ -168,9 +182,9 @@ def ingest_once(
+     """
+     cfg = settings or AppSettings()
+ 
+-    if cfg.gdrive_sa_json_path is None:
++    if not cfg.gdrive_sa_json_path or not str(cfg.gdrive_sa_json_path).strip():
+         raise ValueError("GDRIVE_SA_JSON_PATH is not configured")
+-    if cfg.gdrive_inbox_folder_id is None:
++    if not cfg.gdrive_inbox_folder_id or not cfg.gdrive_inbox_folder_id.strip():
+         raise ValueError("GDRIVE_INBOX_FOLDER_ID is not configured")
+ 
+     init_db(cfg)
+@@ -198,6 +212,9 @@ def ingest_once(
+             download_file(service, file_id, dest)
+         except Exception:
+             logger.exception("Failed to download %s (%s)", file_name, file_id)
++            # Clean up the partially written recording directory
++            rec_dir = cfg.recordings_root / recording_id
++            shutil.rmtree(rec_dir, ignore_errors=True)
+             continue
+ 
+         # Parse captured_at from Plaud filename; fall back to Drive createdTime
+diff --git a/tests/test_gdrive.py b/tests/test_gdrive.py
+index 65e7b06..f7aea88 100644
+--- a/tests/test_gdrive.py
++++ b/tests/test_gdrive.py
+@@ -18,6 +18,7 @@ from lan_app.gdrive import (
+     list_inbox_files,
+     parse_plaud_captured_at,
+ )
++from lan_app.jobs import RecordingJob
+ 
+ 
+ def _test_settings(tmp_path: Path) -> AppSettings:
+@@ -42,6 +43,37 @@ def _test_settings_no_gdrive(tmp_path: Path) -> AppSettings:
+     return cfg
+ 
+ 
++def _stub_enqueue(monkeypatch: Any, cfg: AppSettings) -> None:
++    """Replace enqueue_recording_job with a DB-only stub (no Redis)."""
++    from lan_app.db import create_job, set_recording_status
++    from lan_app.constants import JOB_STATUS_QUEUED, RECORDING_STATUS_QUEUED
++    from uuid import uuid4
 +
-+from google.oauth2.service_account import Credentials
-+from googleapiclient.discovery import build
-+from googleapiclient.http import MediaIoBaseDownload
-+
-+from .config import AppSettings
-+from .constants import (
-+    JOB_TYPE_PRECHECK,
-+    JOB_TYPE_STT,
-+    JOB_TYPE_DIARIZE,
-+    JOB_TYPE_ALIGN,
-+    JOB_TYPE_LANGUAGE,
-+    JOB_TYPE_LLM,
-+    JOB_TYPE_METRICS,
-+    RECORDING_STATUS_QUEUED,
-+)
-+from .db import connect, create_recording, init_db
-+
-+logger = logging.getLogger(__name__)
-+
-+SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]
-+
-+_PIPELINE_STEPS = (
-+    JOB_TYPE_PRECHECK,
-+    JOB_TYPE_STT,
-+    JOB_TYPE_DIARIZE,
-+    JOB_TYPE_ALIGN,
-+    JOB_TYPE_LANGUAGE,
-+    JOB_TYPE_LLM,
-+    JOB_TYPE_METRICS,
-+)
-+
-+# Plaud filename patterns:
-+#   "2026-02-18 16_01_43.mp3"
-+#   "2026-02-18 16-01-43.mp3"
-+_PLAUD_RE = re.compile(
-+    r"(\d{4})-(\d{2})-(\d{2})\s+(\d{2})[_\-](\d{2})[_\-](\d{2})"
-+)
-+
-+
-+def parse_plaud_captured_at(filename: str) -> str | None:
-+    """Parse captured_at ISO-8601 timestamp from a Plaud-style filename.
-+
-+    Returns ISO-8601 string (UTC) on success, None if no match.
-+    """
-+    m = _PLAUD_RE.search(filename)
-+    if m is None:
-+        return None
-+    year, month, day, hour, minute, second = (int(g) for g in m.groups())
-+    try:
-+        dt = datetime(year, month, day, hour, minute, second, tzinfo=timezone.utc)
-+    except ValueError:
-+        return None
-+    return dt.isoformat().replace("+00:00", "Z")
-+
-+
-+def build_drive_service(sa_json_path: Path) -> Any:
-+    """Create an authenticated Google Drive API v3 service."""
-+    creds = Credentials.from_service_account_file(str(sa_json_path), scopes=SCOPES)
-+    return build("drive", "v3", credentials=creds, cache_discovery=False)
-+
-+
-+def list_inbox_files(service: Any, folder_id: str) -> list[dict[str, Any]]:
-+    """List files in the Inbox folder.
-+
-+    Returns a list of Drive file metadata dicts with id, name,
-+    md5Checksum, mimeType, createdTime.
-+    """
-+    query = f"'{folder_id}' in parents and trashed=false"
-+    fields = "files(id,name,md5Checksum,mimeType,createdTime)"
-+    results: list[dict[str, Any]] = []
-+    page_token: str | None = None
-+
-+    while True:
-+        resp = (
-+            service.files()
-+            .list(
-+                q=query,
-+                fields=f"nextPageToken,{fields}",
-+                pageToken=page_token,
-+                pageSize=100,
-+            )
-+            .execute()
-+        )
-+        results.extend(resp.get("files", []))
-+        page_token = resp.get("nextPageToken")
-+        if not page_token:
-+            break
-+    return results
-+
-+
-+def _known_drive_file_ids(settings: AppSettings) -> set[str]:
-+    """Return set of drive_file_id values already in the DB."""
-+    init_db(settings)
-+    with connect(settings) as conn:
-+        rows = conn.execute(
-+            "SELECT drive_file_id FROM recordings WHERE drive_file_id IS NOT NULL"
-+        ).fetchall()
-+    return {row[0] for row in rows}
-+
-+
-+def download_file(service: Any, file_id: str, dest: Path) -> Path:
-+    """Download a Drive file to *dest*."""
-+    dest.parent.mkdir(parents=True, exist_ok=True)
-+    request = service.files().get_media(fileId=file_id)
-+    with dest.open("wb") as fh:
-+        downloader = MediaIoBaseDownload(fh, request)
-+        done = False
-+        while not done:
-+            _, done = downloader.next_chunk()
-+    return dest
-+
-+
-+def _suffix_from_name(name: str) -> str:
-+    """Extract file extension from filename, default to .mp3."""
-+    idx = name.rfind(".")
-+    if idx > 0:
-+        return name[idx:]
-+    return ".mp3"
-+
-+
-+def _enqueue_pipeline_jobs(
-+    recording_id: str,
-+    settings: AppSettings,
-+) -> list[str]:
-+    """Create DB job rows for the full processing pipeline.
-+
-+    Jobs are created as DB records only (queued status).  The RQ worker
-+    picks up the first job; later PRs will chain them.
-+    """
-+    from .db import create_job
-+
-+    job_ids: list[str] = []
-+    for step in _PIPELINE_STEPS:
++    def _fake_enqueue(
++        recording_id: str,
++        *,
++        job_type: str = "precheck",
++        settings: AppSettings | None = None,
++    ) -> RecordingJob:
++        effective = settings or cfg
 +        job_id = uuid4().hex
 +        create_job(
 +            job_id=job_id,
 +            recording_id=recording_id,
-+            job_type=step,
-+            settings=settings,
++            job_type=job_type,
++            status=JOB_STATUS_QUEUED,
++            settings=effective,
 +        )
-+        job_ids.append(job_id)
-+    return job_ids
-+
-+
-+def ingest_once(
-+    settings: AppSettings | None = None,
-+    *,
-+    service: Any | None = None,
-+) -> list[dict[str, Any]]:
-+    """Run a single ingest cycle.
-+
-+    Returns a list of dicts describing each newly ingested recording.
-+    """
-+    cfg = settings or AppSettings()
-+
-+    if cfg.gdrive_sa_json_path is None:
-+        raise ValueError("GDRIVE_SA_JSON_PATH is not configured")
-+    if cfg.gdrive_inbox_folder_id is None:
-+        raise ValueError("GDRIVE_INBOX_FOLDER_ID is not configured")
-+
-+    init_db(cfg)
-+
-+    if service is None:
-+        service = build_drive_service(cfg.gdrive_sa_json_path)
-+
-+    inbox_files = list_inbox_files(service, cfg.gdrive_inbox_folder_id)
-+    known_ids = _known_drive_file_ids(cfg)
-+    new_files = [f for f in inbox_files if f["id"] not in known_ids]
-+
-+    ingested: list[dict[str, Any]] = []
-+
-+    for drive_file in new_files:
-+        file_id = drive_file["id"]
-+        file_name = drive_file["name"]
-+        drive_md5 = drive_file.get("md5Checksum")
-+
-+        recording_id = f"trs_{uuid4().hex[:8]}"
-+        ext = _suffix_from_name(file_name)
-+        raw_dir = cfg.recordings_root / recording_id / "raw"
-+        dest = raw_dir / f"audio{ext}"
-+
-+        try:
-+            download_file(service, file_id, dest)
-+        except Exception:
-+            logger.exception("Failed to download %s (%s)", file_name, file_id)
-+            continue
-+
-+        # Parse captured_at from Plaud filename; fall back to Drive createdTime
-+        captured_at = parse_plaud_captured_at(file_name)
-+        capture_warning = None
-+        if captured_at is None:
-+            created_time = drive_file.get("createdTime")
-+            if created_time:
-+                captured_at = created_time
-+            else:
-+                captured_at = (
-+                    datetime.now(tz=timezone.utc)
-+                    .replace(microsecond=0)
-+                    .isoformat()
-+                    .replace("+00:00", "Z")
-+                )
-+            capture_warning = "captured_at parsed from Drive createdTime (filename parse failed)"
-+
-+        create_recording(
-+            recording_id,
-+            source="gdrive",
-+            source_filename=file_name,
-+            captured_at=captured_at,
-+            status=RECORDING_STATUS_QUEUED,
-+            drive_file_id=file_id,
-+            drive_md5=drive_md5,
-+            settings=cfg,
++        set_recording_status(
++            recording_id, RECORDING_STATUS_QUEUED, settings=effective
++        )
++        return RecordingJob(
++            job_id=job_id, recording_id=recording_id, job_type=job_type
 +        )
 +
-+        job_ids = _enqueue_pipeline_jobs(recording_id, cfg)
-+
-+        result: dict[str, Any] = {
-+            "recording_id": recording_id,
-+            "drive_file_id": file_id,
-+            "source_filename": file_name,
-+            "captured_at": captured_at,
-+            "jobs_created": len(job_ids),
-+        }
-+        if capture_warning:
-+            result["warning"] = capture_warning
-+
-+        ingested.append(result)
-+        logger.info(
-+            "Ingested %s -> %s (%d jobs)",
-+            file_name,
-+            recording_id,
-+            len(job_ids),
-+        )
-+
-+    return ingested
-+
-+
-+__all__ = [
-+    "build_drive_service",
-+    "download_file",
-+    "ingest_once",
-+    "list_inbox_files",
-+    "parse_plaud_captured_at",
-+]
-diff --git a/tests/test_gdrive.py b/tests/test_gdrive.py
-new file mode 100644
-index 0000000..65e7b06
---- /dev/null
-+++ b/tests/test_gdrive.py
-@@ -0,0 +1,432 @@
-+from __future__ import annotations
-+
-+from pathlib import Path
-+from typing import Any
-+
-+import pytest
-+from fastapi.testclient import TestClient
-+
-+from lan_app import api
-+from lan_app.config import AppSettings
-+from lan_app.db import get_recording, init_db, list_jobs, list_recordings
-+from lan_app.gdrive import (
-+    _PIPELINE_STEPS,
-+    _known_drive_file_ids,
-+    _suffix_from_name,
-+    download_file,
-+    ingest_once,
-+    list_inbox_files,
-+    parse_plaud_captured_at,
-+)
-+
-+
-+def _test_settings(tmp_path: Path) -> AppSettings:
-+    cfg = AppSettings(
-+        data_root=tmp_path,
-+        recordings_root=tmp_path / "recordings",
-+        db_path=tmp_path / "db" / "app.db",
-+    )
-+    cfg.metrics_snapshot_path = tmp_path / "metrics.snap"
-+    cfg.gdrive_sa_json_path = tmp_path / "sa.json"
-+    cfg.gdrive_inbox_folder_id = "folder-abc"
-+    return cfg
-+
-+
-+def _test_settings_no_gdrive(tmp_path: Path) -> AppSettings:
-+    cfg = AppSettings(
-+        data_root=tmp_path,
-+        recordings_root=tmp_path / "recordings",
-+        db_path=tmp_path / "db" / "app.db",
-+    )
-+    cfg.metrics_snapshot_path = tmp_path / "metrics.snap"
-+    return cfg
-+
-+
-+# --------------------------------------------------------------------------
-+# parse_plaud_captured_at
-+# --------------------------------------------------------------------------
-+
-+
-+class TestParsePlaudCapturedAt:
-+    def test_underscore_separator(self):
-+        result = parse_plaud_captured_at("2026-02-18 16_01_43.mp3")
-+        assert result == "2026-02-18T16:01:43Z"
-+
-+    def test_dash_separator(self):
-+        result = parse_plaud_captured_at("2026-02-18 16-01-43.mp3")
-+        assert result == "2026-02-18T16:01:43Z"
-+
-+    def test_mixed_separator(self):
-+        result = parse_plaud_captured_at("2026-02-18 16_01-43.mp3")
-+        assert result == "2026-02-18T16:01:43Z"
-+
-+    def test_no_match_returns_none(self):
-+        assert parse_plaud_captured_at("random_file.mp3") is None
-+
-+    def test_invalid_date_returns_none(self):
-+        assert parse_plaud_captured_at("2026-13-40 99_99_99.mp3") is None
-+
-+    def test_embedded_in_longer_name(self):
-+        result = parse_plaud_captured_at("Plaud_2026-02-18 16_01_43_notes.mp3")
-+        assert result == "2026-02-18T16:01:43Z"
-+
-+
-+# --------------------------------------------------------------------------
-+# _suffix_from_name
-+# --------------------------------------------------------------------------
-+
-+
-+class TestSuffixFromName:
-+    def test_mp3(self):
-+        assert _suffix_from_name("file.mp3") == ".mp3"
-+
-+    def test_wav(self):
-+        assert _suffix_from_name("recording.wav") == ".wav"
-+
-+    def test_no_extension_defaults_mp3(self):
-+        assert _suffix_from_name("noext") == ".mp3"
-+
-+    def test_dotfile_defaults_mp3(self):
-+        assert _suffix_from_name(".hidden") == ".mp3"
-+
-+
-+# --------------------------------------------------------------------------
-+# list_inbox_files
-+# --------------------------------------------------------------------------
-+
-+
-+class _FakeFilesResource:
-+    """Fake Drive files().list() chain."""
-+
-+    def __init__(self, pages: list[dict[str, Any]]):
-+        self._pages = pages
-+        self._call_idx = 0
-+
-+    def list(self, **kwargs: Any) -> "_FakeFilesResource":
-+        return self
-+
-+    def execute(self) -> dict[str, Any]:
-+        page = self._pages[self._call_idx]
-+        self._call_idx += 1
-+        return page
-+
-+
-+class _FakeService:
-+    def __init__(self, pages: list[dict[str, Any]]):
-+        self._files = _FakeFilesResource(pages)
-+
-+    def files(self) -> _FakeFilesResource:
-+        return self._files
-+
-+
-+def test_list_inbox_files_single_page():
-+    files = [{"id": "f1", "name": "a.mp3"}]
-+    svc = _FakeService([{"files": files}])
-+    result = list_inbox_files(svc, "folder-abc")
-+    assert result == files
-+
-+
-+def test_list_inbox_files_pagination():
-+    svc = _FakeService([
-+        {"files": [{"id": "f1"}], "nextPageToken": "tok"},
-+        {"files": [{"id": "f2"}]},
-+    ])
-+    result = list_inbox_files(svc, "folder-abc")
-+    assert len(result) == 2
-+    assert result[0]["id"] == "f1"
-+    assert result[1]["id"] == "f2"
-+
-+
-+# --------------------------------------------------------------------------
-+# _known_drive_file_ids
-+# --------------------------------------------------------------------------
-+
-+
-+def test_known_drive_file_ids(tmp_path: Path):
-+    cfg = _test_settings(tmp_path)
-+    init_db(cfg)
-+    from lan_app.db import create_recording
-+
-+    create_recording(
-+        "rec-1",
-+        source="gdrive",
-+        source_filename="a.mp3",
-+        drive_file_id="drive-1",
-+        settings=cfg,
-+    )
-+    create_recording(
-+        "rec-2",
-+        source="test",
-+        source_filename="b.mp3",
-+        settings=cfg,
-+    )
-+    ids = _known_drive_file_ids(cfg)
-+    assert ids == {"drive-1"}
-+
-+
-+# --------------------------------------------------------------------------
-+# download_file
-+# --------------------------------------------------------------------------
-+
-+
-+class _FakeMediaDownload:
-+    """Simulates MediaIoBaseDownload by writing bytes to the file handle."""
-+
-+    def __init__(self, fh: Any, request: Any):
-+        self._fh = fh
-+        self._data = request._data
-+        self._done = False
-+
-+    def next_chunk(self) -> tuple[None, bool]:
-+        if not self._done:
-+            self._fh.write(self._data)
-+            self._done = True
-+        return None, True
-+
-+
-+class _FakeGetMediaRequest:
-+    def __init__(self, data: bytes):
-+        self._data = data
-+
-+
-+class _FakeDownloadService:
-+    def __init__(self, data: bytes):
-+        self._data = data
-+
-+    def files(self) -> "_FakeDownloadService":
-+        return self
-+
-+    def get_media(self, fileId: str) -> _FakeGetMediaRequest:
-+        return _FakeGetMediaRequest(self._data)
-+
-+
-+def test_download_file(tmp_path: Path, monkeypatch):
-+    monkeypatch.setattr(
-+        "lan_app.gdrive.MediaIoBaseDownload", _FakeMediaDownload
-+    )
-+    svc = _FakeDownloadService(b"hello audio")
-+    dest = tmp_path / "raw" / "audio.mp3"
-+    result = download_file(svc, "file-1", dest)
-+    assert result == dest
-+    assert dest.read_bytes() == b"hello audio"
-+
-+
-+# --------------------------------------------------------------------------
-+# ingest_once
-+# --------------------------------------------------------------------------
-+
-+
-+def test_ingest_once_raises_when_no_sa_path(tmp_path: Path):
-+    cfg = _test_settings_no_gdrive(tmp_path)
-+    cfg.gdrive_inbox_folder_id = "folder-abc"
-+    with pytest.raises(ValueError, match="GDRIVE_SA_JSON_PATH"):
-+        ingest_once(cfg)
-+
-+
-+def test_ingest_once_raises_when_no_folder_id(tmp_path: Path):
++    monkeypatch.setattr("lan_app.jobs.enqueue_recording_job", _fake_enqueue)
++
++
+ # --------------------------------------------------------------------------
+ # parse_plaud_captured_at
+ # --------------------------------------------------------------------------
+@@ -230,9 +262,26 @@ def test_ingest_once_raises_when_no_folder_id(tmp_path: Path):
+         ingest_once(cfg)
+ 
+ 
++def test_ingest_once_raises_when_empty_folder_id(tmp_path: Path):
 +    cfg = _test_settings_no_gdrive(tmp_path)
 +    cfg.gdrive_sa_json_path = tmp_path / "sa.json"
++    cfg.gdrive_inbox_folder_id = ""
 +    with pytest.raises(ValueError, match="GDRIVE_INBOX_FOLDER_ID"):
 +        ingest_once(cfg)
 +
 +
-+def test_ingest_once_skips_known_files(tmp_path: Path, monkeypatch):
++def test_ingest_once_raises_when_whitespace_folder_id(tmp_path: Path):
++    cfg = _test_settings_no_gdrive(tmp_path)
++    cfg.gdrive_sa_json_path = tmp_path / "sa.json"
++    cfg.gdrive_inbox_folder_id = "   "
++    with pytest.raises(ValueError, match="GDRIVE_INBOX_FOLDER_ID"):
++        ingest_once(cfg)
++
++
+ def test_ingest_once_skips_known_files(tmp_path: Path, monkeypatch):
+     cfg = _test_settings(tmp_path)
+     init_db(cfg)
++    _stub_enqueue(monkeypatch, cfg)
+ 
+     from lan_app.db import create_recording
+ 
+@@ -253,9 +302,6 @@ def test_ingest_once_skips_known_files(tmp_path: Path, monkeypatch):
+         },
+     ]
+     svc = _FakeService([{"files": inbox_files}])
+-    monkeypatch.setattr(
+-        "lan_app.gdrive.MediaIoBaseDownload", _FakeMediaDownload
+-    )
+ 
+     results = ingest_once(cfg, service=svc)
+     assert results == []
+@@ -264,6 +310,7 @@ def test_ingest_once_skips_known_files(tmp_path: Path, monkeypatch):
+ def test_ingest_once_downloads_and_creates_recording(tmp_path: Path, monkeypatch):
+     cfg = _test_settings(tmp_path)
+     init_db(cfg)
++    _stub_enqueue(monkeypatch, cfg)
+ 
+     inbox_files = [
+         {
+@@ -304,6 +351,7 @@ def test_ingest_once_downloads_and_creates_recording(tmp_path: Path, monkeypatch
+ def test_ingest_once_fallback_captured_at_from_drive(tmp_path: Path, monkeypatch):
+     cfg = _test_settings(tmp_path)
+     init_db(cfg)
++    _stub_enqueue(monkeypatch, cfg)
+ 
+     inbox_files = [
+         {
+@@ -328,6 +376,7 @@ def test_ingest_once_fallback_captured_at_from_drive(tmp_path: Path, monkeypatch
+ def test_ingest_once_continues_on_download_failure(tmp_path: Path, monkeypatch):
+     cfg = _test_settings(tmp_path)
+     init_db(cfg)
++    _stub_enqueue(monkeypatch, cfg)
+ 
+     inbox_files = [
+         {
+@@ -345,6 +394,9 @@ def test_ingest_once_continues_on_download_failure(tmp_path: Path, monkeypatch):
+ 
+     def _download_maybe_fail(svc: Any, fid: str, dest: Path) -> Path:
+         if fid == "drive-fail":
++            # Simulate a partial write before failure
++            dest.parent.mkdir(parents=True, exist_ok=True)
++            dest.write_bytes(b"partial")
+             raise OSError("network error")
+         return _write_fake_download(dest)
+ 
+@@ -355,10 +407,45 @@ def test_ingest_once_continues_on_download_failure(tmp_path: Path, monkeypatch):
+     assert results[0]["drive_file_id"] == "drive-ok"
+ 
+ 
++def test_ingest_once_cleans_up_partial_files_on_download_failure(
++    tmp_path: Path, monkeypatch
++):
++    """Failed downloads should not leave orphaned recording directories."""
 +    cfg = _test_settings(tmp_path)
 +    init_db(cfg)
-+
-+    from lan_app.db import create_recording
-+
-+    create_recording(
-+        "rec-existing",
-+        source="gdrive",
-+        source_filename="old.mp3",
-+        drive_file_id="drive-known",
-+        settings=cfg,
-+    )
++    _stub_enqueue(monkeypatch, cfg)
 +
 +    inbox_files = [
 +        {
-+            "id": "drive-known",
-+            "name": "old.mp3",
-+            "md5Checksum": "abc",
-+            "createdTime": "2026-01-01T00:00:00Z",
-+        },
-+    ]
-+    svc = _FakeService([{"files": inbox_files}])
-+    monkeypatch.setattr(
-+        "lan_app.gdrive.MediaIoBaseDownload", _FakeMediaDownload
-+    )
-+
-+    results = ingest_once(cfg, service=svc)
-+    assert results == []
-+
-+
-+def test_ingest_once_downloads_and_creates_recording(tmp_path: Path, monkeypatch):
-+    cfg = _test_settings(tmp_path)
-+    init_db(cfg)
-+
-+    inbox_files = [
-+        {
-+            "id": "drive-new-1",
-+            "name": "2026-02-18 16_01_43.mp3",
-+            "md5Checksum": "md5abc",
-+            "createdTime": "2026-02-18T16:01:43Z",
-+        },
-+    ]
-+    svc = _FakeService([{"files": inbox_files}])
-+
-+    monkeypatch.setattr(
-+        "lan_app.gdrive.download_file",
-+        lambda svc, fid, dest: _write_fake_download(dest),
-+    )
-+
-+    results = ingest_once(cfg, service=svc)
-+    assert len(results) == 1
-+    result = results[0]
-+    assert result["drive_file_id"] == "drive-new-1"
-+    assert result["captured_at"] == "2026-02-18T16:01:43Z"
-+    assert result["jobs_created"] == len(_PIPELINE_STEPS)
-+    assert "warning" not in result
-+
-+    # Verify DB recording
-+    rec = get_recording(result["recording_id"], settings=cfg)
-+    assert rec is not None
-+    assert rec["source"] == "gdrive"
-+    assert rec["drive_file_id"] == "drive-new-1"
-+    assert rec["drive_md5"] == "md5abc"
-+    assert rec["captured_at"] == "2026-02-18T16:01:43Z"
-+
-+    # Verify DB jobs
-+    jobs, total = list_jobs(settings=cfg, recording_id=result["recording_id"])
-+    assert total == len(_PIPELINE_STEPS)
-+
-+
-+def test_ingest_once_fallback_captured_at_from_drive(tmp_path: Path, monkeypatch):
-+    cfg = _test_settings(tmp_path)
-+    init_db(cfg)
-+
-+    inbox_files = [
-+        {
-+            "id": "drive-noparse",
-+            "name": "meeting_notes.mp3",
-+            "md5Checksum": "md5xyz",
-+            "createdTime": "2026-03-01T10:00:00Z",
-+        },
-+    ]
-+    svc = _FakeService([{"files": inbox_files}])
-+    monkeypatch.setattr(
-+        "lan_app.gdrive.download_file",
-+        lambda svc, fid, dest: _write_fake_download(dest),
-+    )
-+
-+    results = ingest_once(cfg, service=svc)
-+    assert len(results) == 1
-+    assert results[0]["captured_at"] == "2026-03-01T10:00:00Z"
-+    assert "warning" in results[0]
-+
-+
-+def test_ingest_once_continues_on_download_failure(tmp_path: Path, monkeypatch):
-+    cfg = _test_settings(tmp_path)
-+    init_db(cfg)
-+
-+    inbox_files = [
-+        {
-+            "id": "drive-fail",
++            "id": "drive-partial",
 +            "name": "2026-02-18 10_00_00.mp3",
 +            "createdTime": "2026-02-18T10:00:00Z",
 +        },
-+        {
-+            "id": "drive-ok",
-+            "name": "2026-02-18 11_00_00.mp3",
-+            "createdTime": "2026-02-18T11:00:00Z",
-+        },
 +    ]
 +    svc = _FakeService([{"files": inbox_files}])
 +
-+    def _download_maybe_fail(svc: Any, fid: str, dest: Path) -> Path:
-+        if fid == "drive-fail":
-+            raise OSError("network error")
-+        return _write_fake_download(dest)
++    created_dirs: list[Path] = []
 +
-+    monkeypatch.setattr("lan_app.gdrive.download_file", _download_maybe_fail)
++    def _download_fail(svc: Any, fid: str, dest: Path) -> Path:
++        dest.parent.mkdir(parents=True, exist_ok=True)
++        dest.write_bytes(b"partial data")
++        created_dirs.append(dest.parent.parent)  # recordings/<id>
++        raise OSError("network error")
++
++    monkeypatch.setattr("lan_app.gdrive.download_file", _download_fail)
 +
 +    results = ingest_once(cfg, service=svc)
-+    assert len(results) == 1
-+    assert results[0]["drive_file_id"] == "drive-ok"
++    assert results == []
++    assert len(created_dirs) == 1
++    # The orphaned directory should have been cleaned up
++    assert not created_dirs[0].exists()
 +
 +
-+def test_ingest_idempotent(tmp_path: Path, monkeypatch):
-+    """Running ingest twice with the same files should not duplicate."""
-+    cfg = _test_settings(tmp_path)
-+    init_db(cfg)
-+
-+    inbox_files = [
-+        {
-+            "id": "drive-idem",
-+            "name": "2026-02-18 16_01_43.mp3",
-+            "md5Checksum": "md5idem",
-+            "createdTime": "2026-02-18T16:01:43Z",
-+        },
-+    ]
-+    svc = _FakeService([{"files": inbox_files}])
-+    monkeypatch.setattr(
-+        "lan_app.gdrive.download_file",
-+        lambda svc, fid, dest: _write_fake_download(dest),
-+    )
-+
-+    first = ingest_once(cfg, service=svc)
-+    assert len(first) == 1
-+
-+    # Second call: same file already known
-+    svc2 = _FakeService([{"files": inbox_files}])
-+    second = ingest_once(cfg, service=svc2)
-+    assert len(second) == 0
-+
-+    # Only 1 recording in DB
-+    recs, total = list_recordings(settings=cfg)
-+    assert total == 1
-+
-+
-+# --------------------------------------------------------------------------
-+# API endpoint
-+# --------------------------------------------------------------------------
-+
-+
-+def test_api_ingest_endpoint_returns_422_when_not_configured(
-+    tmp_path: Path, monkeypatch
-+):
-+    cfg = _test_settings_no_gdrive(tmp_path)
-+    monkeypatch.setattr(api, "_settings", cfg)
-+    init_db(cfg)
-+    client = TestClient(api.app)
-+    resp = client.post("/api/actions/ingest")
-+    assert resp.status_code == 422
-+
-+
-+def test_api_ingest_endpoint_success(tmp_path: Path, monkeypatch):
-+    cfg = _test_settings(tmp_path)
-+    monkeypatch.setattr(api, "_settings", cfg)
-+    init_db(cfg)
-+
-+    def _fake_ingest(settings: Any = None, *, service: Any = None) -> list[dict]:
-+        return [{"recording_id": "trs_test1", "drive_file_id": "f1"}]
-+
-+    monkeypatch.setattr("lan_app.gdrive.ingest_once", _fake_ingest)
-+
-+    client = TestClient(api.app)
-+    resp = client.post("/api/actions/ingest")
-+    assert resp.status_code == 200
-+    data = resp.json()
-+    assert data["count"] == 1
-+    assert data["ingested"][0]["recording_id"] == "trs_test1"
-+
-+
-+# --------------------------------------------------------------------------
-+# Helpers
-+# --------------------------------------------------------------------------
-+
-+
-+def _write_fake_download(dest: Path) -> Path:
-+    dest.parent.mkdir(parents=True, exist_ok=True)
-+    dest.write_bytes(b"fake audio data")
-+    return dest
+ def test_ingest_idempotent(tmp_path: Path, monkeypatch):
+     """Running ingest twice with the same files should not duplicate."""
+     cfg = _test_settings(tmp_path)
+     init_db(cfg)
++    _stub_enqueue(monkeypatch, cfg)
+ 
+     inbox_files = [
+         {

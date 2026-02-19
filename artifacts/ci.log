@@ -1,6 +1,6 @@
 All checks passed!
-........................................................................ [ 72%]
-...........................                                              [100%]
+........................................................................ [ 70%]
+..............................                                           [100%]
 =============================== warnings summary ===============================
 lan_transcriber/pipeline.py:35
   /home/alexey/LAN_Transcriber/lan_transcriber/pipeline.py:35: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
@@ -45,4 +45,4 @@ lan_transcriber/runtime_paths.py      21      1    95%
 ------------------------------------------------------
 TOTAL                                207      7    97%
 Required test coverage of 90% reached. Total coverage: 96.62%
-99 passed, 1 skipped, 4 warnings in 36.79s
+102 passed, 1 skipped, 4 warnings in 38.71s

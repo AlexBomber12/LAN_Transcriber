@@ -28,6 +28,8 @@ from .constants import (
     JOB_TYPE_METRICS,
     RECORDING_STATUS_QUEUED,
 )
+import shutil
+
 from .db import connect, create_recording, init_db
 
 logger = logging.getLogger(__name__)
@@ -137,15 +139,27 @@ def _enqueue_pipeline_jobs(
     recording_id: str,
     settings: AppSettings,
 ) -> list[str]:
-    """Create DB job rows for the full processing pipeline.
+    """Enqueue the first pipeline step into Redis/RQ and create DB
+    placeholder rows for the remaining steps.
 
-    Jobs are created as DB records only (queued status).  The RQ worker
-    picks up the first job; later PRs will chain them.
+    The first step (precheck) is pushed onto the worker queue so
+    processing starts automatically.  Later PRs will chain subsequent
+    steps.
     """
     from .db import create_job
+    from .jobs import enqueue_recording_job
 
     job_ids: list[str] = []
-    for step in _PIPELINE_STEPS:
+
+    # First step: enqueue into Redis/RQ so the worker picks it up
+    first_step = _PIPELINE_STEPS[0]
+    rj = enqueue_recording_job(
+        recording_id, job_type=first_step, settings=settings
+    )
+    job_ids.append(rj.job_id)
+
+    # Remaining steps: DB placeholders only (chaining not yet wired)
+    for step in _PIPELINE_STEPS[1:]:
         job_id = uuid4().hex
         create_job(
             job_id=job_id,
@@ -168,9 +182,9 @@ def ingest_once(
     """
     cfg = settings or AppSettings()
 
-    if cfg.gdrive_sa_json_path is None:
+    if not cfg.gdrive_sa_json_path or not str(cfg.gdrive_sa_json_path).strip():
         raise ValueError("GDRIVE_SA_JSON_PATH is not configured")
-    if cfg.gdrive_inbox_folder_id is None:
+    if not cfg.gdrive_inbox_folder_id or not cfg.gdrive_inbox_folder_id.strip():
         raise ValueError("GDRIVE_INBOX_FOLDER_ID is not configured")
 
     init_db(cfg)
@@ -198,6 +212,9 @@ def ingest_once(
             download_file(service, file_id, dest)
         except Exception:
             logger.exception("Failed to download %s (%s)", file_name, file_id)
+            # Clean up the partially written recording directory
+            rec_dir = cfg.recordings_root / recording_id
+            shutil.rmtree(rec_dir, ignore_errors=True)
             continue
 
         # Parse captured_at from Plaud filename; fall back to Drive createdTime
