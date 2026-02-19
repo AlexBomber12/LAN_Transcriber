@@ -238,6 +238,7 @@ def _build_context(
     selected_event_id = row.get("selected_event_id")
     selected_confidence = row.get("selected_confidence")
     selected = _candidate_by_id(candidates, selected_event_id)
+    visible_candidates = _visible_candidates(candidates, selected)
 
     return {
         "recording_id": recording["id"],
@@ -250,7 +251,7 @@ def _build_context(
             "attendees": (selected or {}).get("attendees", []),
             "organizer": (selected or {}).get("organizer"),
         },
-        "candidates": candidates[:_UI_CANDIDATE_LIMIT],
+        "candidates": visible_candidates,
         "candidate_total": len(candidates),
         "manual_no_event": (
             selected_event_id is None and selected_confidence == _MANUAL_NO_EVENT_CONFIDENCE
@@ -372,6 +373,21 @@ def _candidate_by_id(
     return None
 
 
+def _visible_candidates(
+    candidates: list[dict[str, Any]],
+    selected: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    visible = list(candidates[:_UI_CANDIDATE_LIMIT])
+    if selected is None:
+        return visible
+    selected_id = str(selected.get("event_id") or "").strip()
+    if not selected_id:
+        return visible
+    if any(str(item.get("event_id")) == selected_id for item in visible):
+        return visible
+    return [*visible, selected]
+
+
 def _extract_party(value: Any) -> str | None:
     if not isinstance(value, dict):
         return None
@@ -410,7 +426,7 @@ def _parse_event_datetime(value: Any) -> datetime | None:
         time_zone = None
     if not isinstance(date_time, str):
         return None
-    tz_name = str(time_zone).strip() if isinstance(time_zone, str) else None
+    tz_name = str(time_zone).strip() or None if isinstance(time_zone, str) else None
     return _parse_iso_datetime(date_time, default_timezone=tz_name)
 
 
@@ -432,7 +448,12 @@ def _parse_iso_datetime(
     except ValueError:
         return None
     if parsed.tzinfo is None:
-        tz = _timezone_from_name(default_timezone) or timezone.utc
+        if default_timezone is None:
+            tz = timezone.utc
+        else:
+            tz = _timezone_from_name(default_timezone)
+            if tz is None:
+                return None
         parsed = parsed.replace(tzinfo=tz)
     return parsed.astimezone(timezone.utc)
 

@@ -7,7 +7,12 @@ from fastapi.testclient import TestClient
 
 from lan_app import api, calendar, ui_routes
 from lan_app.config import AppSettings
-from lan_app.db import create_recording, get_calendar_match, init_db
+from lan_app.db import (
+    create_recording,
+    get_calendar_match,
+    init_db,
+    upsert_calendar_match,
+)
 from lan_app.ms_graph import GraphNotConfiguredError
 
 
@@ -293,3 +298,56 @@ def test_parse_event_datetime_uses_declared_timezone_for_naive_values():
         }
     )
     assert parsed == datetime(2026, 2, 19, 17, 50, tzinfo=timezone.utc)
+
+
+def test_parse_event_datetime_unknown_timezone_does_not_fallback_to_utc():
+    parsed = calendar._parse_event_datetime(
+        {
+            "dateTime": "2026-02-19T09:50:00.0000000",
+            "timeZone": "Unknown/Timezone",
+        }
+    )
+    assert parsed is None
+
+
+def test_context_keeps_selected_event_when_not_in_top_five(tmp_path):
+    cfg = _cfg(tmp_path)
+    init_db(cfg)
+    create_recording(
+        "rec-cal-top5-1",
+        source="drive",
+        source_filename="meeting.mp3",
+        captured_at="2026-02-19T10:00:00Z",
+        settings=cfg,
+    )
+
+    candidates = []
+    for idx in range(6):
+        candidates.append(
+            {
+                "event_id": f"evt-{idx + 1}",
+                "subject": f"Event {idx + 1}",
+                "start": "2026-02-19T09:00:00Z",
+                "end": "2026-02-19T09:30:00Z",
+                "organizer": "Alex",
+                "attendees": [],
+                "location": None,
+                "title_tokens": [f"event{idx + 1}"],
+                "score": round(0.9 - idx * 0.1, 4),
+                "rationale": "test",
+            }
+        )
+    upsert_calendar_match(
+        recording_id="rec-cal-top5-1",
+        candidates=candidates,
+        selected_event_id="evt-6",
+        selected_confidence=0.4,
+        settings=cfg,
+    )
+
+    context = calendar.load_calendar_context("rec-cal-top5-1", settings=cfg)
+    rendered_ids = [item["event_id"] for item in context["candidates"]]
+    assert context["selected_event_id"] == "evt-6"
+    assert "evt-6" in rendered_ids
+    assert rendered_ids.count("evt-6") == 1
+    assert context["candidate_total"] == 6

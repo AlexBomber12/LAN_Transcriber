@@ -1,155 +1,141 @@
 diff --git a/lan_app/calendar.py b/lan_app/calendar.py
-index e4695e9..ae21477 100644
+index ae21477..f572114 100644
 --- a/lan_app/calendar.py
 +++ b/lan_app/calendar.py
-@@ -2,10 +2,11 @@
+@@ -238,6 +238,7 @@ def _build_context(
+     selected_event_id = row.get("selected_event_id")
+     selected_confidence = row.get("selected_confidence")
+     selected = _candidate_by_id(candidates, selected_event_id)
++    visible_candidates = _visible_candidates(candidates, selected)
  
- from __future__ import annotations
- 
--from datetime import datetime, timedelta, timezone
-+from datetime import datetime, timedelta, timezone, tzinfo
- import re
- from typing import Any
- from urllib.parse import urlencode
-+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
- 
- from .config import AppSettings
- from .db import (
-@@ -17,9 +18,32 @@ from .db import (
- from .ms_graph import MicrosoftGraphClient
- 
- _TOKEN_RE = re.compile(r"[A-Za-z0-9]+")
-+_ISO_FRACTION_RE = re.compile(
-+    r"^(?P<body>.+?)(?P<fraction>\.\d+)(?P<suffix>Z|[+-]\d{2}:\d{2})?$"
-+)
- _MANUAL_NO_EVENT_CONFIDENCE = -1.0
- _GRAPH_CANDIDATE_LIMIT = 25
- _UI_CANDIDATE_LIMIT = 5
-+_WINDOWS_TZ_TO_IANA = {
-+    "UTC": "UTC",
-+    "GMT Standard Time": "Europe/London",
-+    "W. Europe Standard Time": "Europe/Berlin",
-+    "Central Europe Standard Time": "Europe/Budapest",
-+    "Romance Standard Time": "Europe/Paris",
-+    "E. Europe Standard Time": "Europe/Bucharest",
-+    "Russian Standard Time": "Europe/Moscow",
-+    "Turkey Standard Time": "Europe/Istanbul",
-+    "India Standard Time": "Asia/Kolkata",
-+    "China Standard Time": "Asia/Shanghai",
-+    "Tokyo Standard Time": "Asia/Tokyo",
-+    "Korea Standard Time": "Asia/Seoul",
-+    "Pacific Standard Time": "America/Los_Angeles",
-+    "Mountain Standard Time": "America/Denver",
-+    "Central Standard Time": "America/Chicago",
-+    "Eastern Standard Time": "America/New_York",
-+    "AUS Eastern Standard Time": "Australia/Sydney",
-+    "New Zealand Standard Time": "Pacific/Auckland",
-+}
+     return {
+         "recording_id": recording["id"],
+@@ -250,7 +251,7 @@ def _build_context(
+             "attendees": (selected or {}).get("attendees", []),
+             "organizer": (selected or {}).get("organizer"),
+         },
+-        "candidates": candidates[:_UI_CANDIDATE_LIMIT],
++        "candidates": visible_candidates,
+         "candidate_total": len(candidates),
+         "manual_no_event": (
+             selected_event_id is None and selected_confidence == _MANUAL_NO_EVENT_CONFIDENCE
+@@ -372,6 +373,21 @@ def _candidate_by_id(
+     return None
  
  
- def refresh_calendar_context(
-@@ -380,19 +404,27 @@ def _extract_location(value: Any) -> str | None:
- def _parse_event_datetime(value: Any) -> datetime | None:
-     if isinstance(value, dict):
-         date_time = value.get("dateTime")
-+        time_zone = value.get("timeZone")
-     else:
-         date_time = value
-+        time_zone = None
++def _visible_candidates(
++    candidates: list[dict[str, Any]],
++    selected: dict[str, Any] | None,
++) -> list[dict[str, Any]]:
++    visible = list(candidates[:_UI_CANDIDATE_LIMIT])
++    if selected is None:
++        return visible
++    selected_id = str(selected.get("event_id") or "").strip()
++    if not selected_id:
++        return visible
++    if any(str(item.get("event_id")) == selected_id for item in visible):
++        return visible
++    return [*visible, selected]
++
++
+ def _extract_party(value: Any) -> str | None:
+     if not isinstance(value, dict):
+         return None
+@@ -410,7 +426,7 @@ def _parse_event_datetime(value: Any) -> datetime | None:
+         time_zone = None
      if not isinstance(date_time, str):
          return None
--    return _parse_iso_datetime(date_time)
-+    tz_name = str(time_zone).strip() if isinstance(time_zone, str) else None
-+    return _parse_iso_datetime(date_time, default_timezone=tz_name)
+-    tz_name = str(time_zone).strip() if isinstance(time_zone, str) else None
++    tz_name = str(time_zone).strip() or None if isinstance(time_zone, str) else None
+     return _parse_iso_datetime(date_time, default_timezone=tz_name)
  
  
--def _parse_iso_datetime(value: Any) -> datetime | None:
-+def _parse_iso_datetime(
-+    value: Any,
-+    *,
-+    default_timezone: str | None = None,
-+) -> datetime | None:
-     if not isinstance(value, str):
-         return None
-     text = value.strip()
-     if not text:
-         return None
-+    text = _normalize_iso_datetime_text(text)
-     if text.endswith("Z"):
-         text = f"{text[:-1]}+00:00"
-     try:
-@@ -400,10 +432,38 @@ def _parse_iso_datetime(value: Any) -> datetime | None:
+@@ -432,7 +448,12 @@ def _parse_iso_datetime(
      except ValueError:
          return None
      if parsed.tzinfo is None:
--        parsed = parsed.replace(tzinfo=timezone.utc)
-+        tz = _timezone_from_name(default_timezone) or timezone.utc
-+        parsed = parsed.replace(tzinfo=tz)
+-        tz = _timezone_from_name(default_timezone) or timezone.utc
++        if default_timezone is None:
++            tz = timezone.utc
++        else:
++            tz = _timezone_from_name(default_timezone)
++            if tz is None:
++                return None
+         parsed = parsed.replace(tzinfo=tz)
      return parsed.astimezone(timezone.utc)
  
- 
-+def _normalize_iso_datetime_text(text: str) -> str:
-+    match = _ISO_FRACTION_RE.match(text)
-+    if match is None:
-+        return text
-+    fraction = match.group("fraction")
-+    digits = fraction[1:]
-+    if len(digits) <= 6:
-+        return text
-+    suffix = match.group("suffix") or ""
-+    return f"{match.group('body')}.{digits[:6]}{suffix}"
-+
-+
-+def _timezone_from_name(name: str | None) -> tzinfo | None:
-+    if name is None:
-+        return None
-+    cleaned = name.strip()
-+    if not cleaned:
-+        return None
-+    if cleaned.upper() == "UTC":
-+        return timezone.utc
-+    candidate = _WINDOWS_TZ_TO_IANA.get(cleaned, cleaned)
-+    try:
-+        return ZoneInfo(candidate)
-+    except ZoneInfoNotFoundError:
-+        return None
-+
-+
- def _tokenize(value: str) -> set[str]:
-     return {token.lower() for token in _TOKEN_RE.findall(value)}
- 
 diff --git a/tests/test_calendar.py b/tests/test_calendar.py
-index 454a1d2..6b7ebca 100644
+index 6b7ebca..375a9fa 100644
 --- a/tests/test_calendar.py
 +++ b/tests/test_calendar.py
-@@ -1,5 +1,6 @@
- from __future__ import annotations
+@@ -7,7 +7,12 @@ from fastapi.testclient import TestClient
  
-+from datetime import datetime, timezone
- from pathlib import Path
+ from lan_app import api, calendar, ui_routes
+ from lan_app.config import AppSettings
+-from lan_app.db import create_recording, get_calendar_match, init_db
++from lan_app.db import (
++    create_recording,
++    get_calendar_match,
++    init_db,
++    upsert_calendar_match,
++)
+ from lan_app.ms_graph import GraphNotConfiguredError
  
- from fastapi.testclient import TestClient
-@@ -272,3 +273,23 @@ def test_ui_calendar_tab_and_save_selection(tmp_path, monkeypatch):
-     assert post.headers["location"] == "/recordings/rec-cal-ui-1?tab=calendar"
-     assert selected["recording_id"] == "rec-cal-ui-1"
-     assert selected["event_id"] == "evt-1"
+ 
+@@ -293,3 +298,56 @@ def test_parse_event_datetime_uses_declared_timezone_for_naive_values():
+         }
+     )
+     assert parsed == datetime(2026, 2, 19, 17, 50, tzinfo=timezone.utc)
 +
 +
-+def test_parse_event_datetime_accepts_7_digit_graph_precision():
-+    parsed = calendar._parse_event_datetime(
-+        {
-+            "dateTime": "2026-02-19T09:50:00.0000000Z",
-+            "timeZone": "UTC",
-+        }
-+    )
-+    assert parsed == datetime(2026, 2, 19, 9, 50, tzinfo=timezone.utc)
-+
-+
-+def test_parse_event_datetime_uses_declared_timezone_for_naive_values():
++def test_parse_event_datetime_unknown_timezone_does_not_fallback_to_utc():
 +    parsed = calendar._parse_event_datetime(
 +        {
 +            "dateTime": "2026-02-19T09:50:00.0000000",
-+            "timeZone": "Pacific Standard Time",
++            "timeZone": "Unknown/Timezone",
 +        }
 +    )
-+    assert parsed == datetime(2026, 2, 19, 17, 50, tzinfo=timezone.utc)
++    assert parsed is None
++
++
++def test_context_keeps_selected_event_when_not_in_top_five(tmp_path):
++    cfg = _cfg(tmp_path)
++    init_db(cfg)
++    create_recording(
++        "rec-cal-top5-1",
++        source="drive",
++        source_filename="meeting.mp3",
++        captured_at="2026-02-19T10:00:00Z",
++        settings=cfg,
++    )
++
++    candidates = []
++    for idx in range(6):
++        candidates.append(
++            {
++                "event_id": f"evt-{idx + 1}",
++                "subject": f"Event {idx + 1}",
++                "start": "2026-02-19T09:00:00Z",
++                "end": "2026-02-19T09:30:00Z",
++                "organizer": "Alex",
++                "attendees": [],
++                "location": None,
++                "title_tokens": [f"event{idx + 1}"],
++                "score": round(0.9 - idx * 0.1, 4),
++                "rationale": "test",
++            }
++        )
++    upsert_calendar_match(
++        recording_id="rec-cal-top5-1",
++        candidates=candidates,
++        selected_event_id="evt-6",
++        selected_confidence=0.4,
++        settings=cfg,
++    )
++
++    context = calendar.load_calendar_context("rec-cal-top5-1", settings=cfg)
++    rendered_ids = [item["event_id"] for item in context["candidates"]]
++    assert context["selected_event_id"] == "evt-6"
++    assert "evt-6" in rendered_ids
++    assert rendered_ids.count("evt-6") == 1
++    assert context["candidate_total"] == 6
