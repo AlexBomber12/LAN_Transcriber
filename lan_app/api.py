@@ -246,6 +246,20 @@ async def api_list_jobs(
     }
 
 
+@app.post("/api/actions/ingest")
+async def api_ingest_once() -> dict[str, object]:
+    """Trigger a single Google Drive ingest cycle."""
+    from .gdrive import ingest_once
+
+    try:
+        results = ingest_once(settings=_settings)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Ingest failed: {exc}")
+    return {"ingested": results, "count": len(results)}
+
+
 def set_current_result(result: TranscriptResult | None) -> None:
     global _current_result
     _current_result = result

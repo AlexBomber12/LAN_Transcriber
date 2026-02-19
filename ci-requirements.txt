@@ -20,3 +20,5 @@ pip-tools>=7.4
 setuptools>=80.9
 wheel>=0.45
 pip>=24.3
+google-auth>=2.38
+google-api-python-client>=2.166

@@ -32,7 +32,7 @@ Queue (in order)
 - Depends on: PR-DB-QUEUE-01
 
 5) PR-GDRIVE-INGEST-01: Google Drive API ingest using Service Account + shared folder (Inbox)
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-GDRIVE-INGEST-01.md
 - Depends on: PR-DB-QUEUE-01
 
