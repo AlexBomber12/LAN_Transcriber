@@ -35,6 +35,7 @@ from .jobs import RecordingNotFoundError, enqueue_recording_job
 from .jobs import purge_pending_recording_jobs
 from .ms_graph import (
     GraphAuthError,
+    GraphDeviceFlowLimitError,
     GraphNotConfiguredError,
     get_device_flow_session,
     ms_connection_state,
@@ -115,6 +116,8 @@ async def api_start_ms_connection(
         return start_device_flow_session(_settings, reconnect=reconnect)
     except GraphNotConfiguredError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
+    except GraphDeviceFlowLimitError as exc:
+        raise HTTPException(status_code=429, detail=str(exc))
     except GraphAuthError as exc:
         raise HTTPException(status_code=503, detail=str(exc))
 

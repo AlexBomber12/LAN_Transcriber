@@ -26,7 +26,7 @@ x-lan-service: &lan-service
     - LANG_DEFAULT=${LANG_DEFAULT:-en}
     - MS_TENANT_ID=${MS_TENANT_ID:-}
     - MS_CLIENT_ID=${MS_CLIENT_ID:-}
-    - "MS_SCOPES=${MS_SCOPES:-offline_access Notes.ReadWrite Calendars.Read}"
+    - "MS_SCOPES=${MS_SCOPES:-offline_access User.Read Notes.ReadWrite Calendars.Read}"
   volumes:
     - lan_cache:/root/.cache
     - /opt/lan_cache/hf:/root/.cache/huggingface

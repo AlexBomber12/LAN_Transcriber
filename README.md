@@ -89,7 +89,7 @@ models are cached across runs.
 | `LLM_API_KEY` | Optional API key for the LLM |
 | `MS_TENANT_ID` | Microsoft Entra tenant ID for delegated Device Code Flow |
 | `MS_CLIENT_ID` | Microsoft app registration client ID |
-| `MS_SCOPES` | Graph scopes (default: `offline_access Notes.ReadWrite Calendars.Read`) |
+| `MS_SCOPES` | Graph scopes (default: `offline_access User.Read Notes.ReadWrite Calendars.Read`) |
 
 `docker compose up` starts:
 

@@ -1,995 +1,305 @@
 diff --git a/.env.example b/.env.example
-index a4da94a..daec968 100644
+index daec968..30ee885 100644
 --- a/.env.example
 +++ b/.env.example
-@@ -24,6 +24,11 @@ GDRIVE_SA_JSON_PATH=/data/secrets/gdrive_sa.json
- GDRIVE_INBOX_FOLDER_ID=
- GDRIVE_POLL_INTERVAL_SECONDS=60
+@@ -27,7 +27,7 @@ GDRIVE_POLL_INTERVAL_SECONDS=60
+ # Microsoft Graph delegated auth (Device Code Flow)
+ MS_TENANT_ID=
+ MS_CLIENT_ID=
+-MS_SCOPES=offline_access Notes.ReadWrite Calendars.Read
++MS_SCOPES=offline_access User.Read Notes.ReadWrite Calendars.Read
  
-+# Microsoft Graph delegated auth (Device Code Flow)
-+MS_TENANT_ID=
-+MS_CLIENT_ID=
-+MS_SCOPES=offline_access Notes.ReadWrite Calendars.Read
-+
  # Plaud fetcher (beta)
  FETCH_INTERVAL_SEC=300
- 
 diff --git a/README.md b/README.md
-index 593202d..0a91a2e 100644
+index 0a91a2e..54a3c33 100644
 --- a/README.md
 +++ b/README.md
-@@ -87,6 +87,9 @@ models are cached across runs.
- | `LAN_RQ_QUEUE_NAME` | Queue name consumed by the worker |
- | `LLM_BASE_URL` | OpenAI-compatible Spark endpoint |
+@@ -89,7 +89,7 @@ models are cached across runs.
  | `LLM_API_KEY` | Optional API key for the LLM |
-+| `MS_TENANT_ID` | Microsoft Entra tenant ID for delegated Device Code Flow |
-+| `MS_CLIENT_ID` | Microsoft app registration client ID |
-+| `MS_SCOPES` | Graph scopes (default: `offline_access Notes.ReadWrite Calendars.Read`) |
+ | `MS_TENANT_ID` | Microsoft Entra tenant ID for delegated Device Code Flow |
+ | `MS_CLIENT_ID` | Microsoft app registration client ID |
+-| `MS_SCOPES` | Graph scopes (default: `offline_access Notes.ReadWrite Calendars.Read`) |
++| `MS_SCOPES` | Graph scopes (default: `offline_access User.Read Notes.ReadWrite Calendars.Read`) |
  
  `docker compose up` starts:
  
 diff --git a/docker-compose.yml b/docker-compose.yml
-index 1285df1..e499f69 100644
+index e499f69..517934b 100644
 --- a/docker-compose.yml
 +++ b/docker-compose.yml
-@@ -24,6 +24,9 @@ x-lan-service: &lan-service
-     - FETCH_INTERVAL_SEC=${FETCH_INTERVAL_SEC:-300}
-     - TRANSCRIBER_VERSION=${TRANSCRIBER_VERSION:-local}
+@@ -26,7 +26,7 @@ x-lan-service: &lan-service
      - LANG_DEFAULT=${LANG_DEFAULT:-en}
-+    - MS_TENANT_ID=${MS_TENANT_ID:-}
-+    - MS_CLIENT_ID=${MS_CLIENT_ID:-}
-+    - "MS_SCOPES=${MS_SCOPES:-offline_access Notes.ReadWrite Calendars.Read}"
+     - MS_TENANT_ID=${MS_TENANT_ID:-}
+     - MS_CLIENT_ID=${MS_CLIENT_ID:-}
+-    - "MS_SCOPES=${MS_SCOPES:-offline_access Notes.ReadWrite Calendars.Read}"
++    - "MS_SCOPES=${MS_SCOPES:-offline_access User.Read Notes.ReadWrite Calendars.Read}"
    volumes:
      - lan_cache:/root/.cache
      - /opt/lan_cache/hf:/root/.cache/huggingface
 diff --git a/lan_app/api.py b/lan_app/api.py
-index ea475ef..bca03e7 100644
+index bca03e7..6237cab 100644
 --- a/lan_app/api.py
 +++ b/lan_app/api.py
-@@ -33,6 +33,13 @@ from .db import (
- )
- from .jobs import RecordingNotFoundError, enqueue_recording_job
+@@ -35,6 +35,7 @@ from .jobs import RecordingNotFoundError, enqueue_recording_job
  from .jobs import purge_pending_recording_jobs
-+from .ms_graph import (
-+    GraphAuthError,
-+    GraphNotConfiguredError,
-+    get_device_flow_session,
-+    ms_connection_state,
-+    start_device_flow_session,
-+)
- from .ui_routes import _STATIC_DIR, ui_router
+ from .ms_graph import (
+     GraphAuthError,
++    GraphDeviceFlowLimitError,
+     GraphNotConfiguredError,
+     get_device_flow_session,
+     ms_connection_state,
+@@ -115,6 +116,8 @@ async def api_start_ms_connection(
+         return start_device_flow_session(_settings, reconnect=reconnect)
+     except GraphNotConfiguredError as exc:
+         raise HTTPException(status_code=422, detail=str(exc))
++    except GraphDeviceFlowLimitError as exc:
++        raise HTTPException(status_code=429, detail=str(exc))
+     except GraphAuthError as exc:
+         raise HTTPException(status_code=503, detail=str(exc))
  
- app = FastAPI()
-@@ -78,6 +85,48 @@ async def healthz() -> dict[str, str]:
-     return {"status": "ok"}
- 
- 
-+@app.get("/api/connections/ms/verify")
-+async def api_verify_ms_connection() -> dict[str, object]:
-+    """Validate Microsoft Graph auth by calling /me via cached delegated token."""
-+    state = ms_connection_state(_settings)
-+    if state["status"] != "connected":
-+        return {
-+            "ok": False,
-+            "error": state["status"],
-+            "detail": state.get("error"),
-+            "account_display_name": state.get("account_display_name"),
-+            "tenant_id": state.get("tenant_id"),
-+            "granted_scopes": state.get("granted_scopes", []),
-+        }
-+    return {
-+        "ok": True,
-+        "account_display_name": state.get("account_display_name"),
-+        "tenant_id": state.get("tenant_id"),
-+        "granted_scopes": state.get("granted_scopes", []),
-+    }
-+
-+
-+@app.post("/api/connections/ms/connect")
-+async def api_start_ms_connection(
-+    reconnect: bool = Query(default=False),
-+) -> dict[str, object]:
-+    """Start device-code flow and return code/URL details for UI polling."""
-+    try:
-+        return start_device_flow_session(_settings, reconnect=reconnect)
-+    except GraphNotConfiguredError as exc:
-+        raise HTTPException(status_code=422, detail=str(exc))
-+    except GraphAuthError as exc:
-+        raise HTTPException(status_code=503, detail=str(exc))
-+
-+
-+@app.get("/api/connections/ms/connect/{session_id}")
-+async def api_get_ms_connection_status(session_id: str) -> dict[str, object]:
-+    try:
-+        return get_device_flow_session(session_id)
-+    except KeyError:
-+        raise HTTPException(status_code=404, detail="Unknown device-flow session")
-+
-+
- @app.on_event("startup")
- async def _start_metrics() -> None:
-     init_db(_settings)
 diff --git a/lan_app/config.py b/lan_app/config.py
-index d76ee2e..3050468 100644
+index 3050468..831a763 100644
 --- a/lan_app/config.py
 +++ b/lan_app/config.py
-@@ -13,6 +13,10 @@ def _default_metrics_snapshot_path() -> Path:
-     return default_data_root() / "metrics.snap"
- 
- 
-+def _default_msal_cache_path() -> Path:
-+    return default_data_root() / "auth" / "msal_cache.bin"
-+
-+
- class AppSettings(BaseSettings):
-     """App-layer runtime settings."""
- 
-@@ -58,6 +62,28 @@ class AppSettings(BaseSettings):
-         ),
+@@ -72,7 +72,7 @@ class AppSettings(BaseSettings):
+         validation_alias=AliasChoices("MS_CLIENT_ID", "LAN_MS_CLIENT_ID"),
      )
- 
-+    # Microsoft Graph delegated auth (Device Code Flow)
-+    ms_tenant_id: str | None = Field(
-+        default=None,
-+        validation_alias=AliasChoices("MS_TENANT_ID", "LAN_MS_TENANT_ID"),
-+    )
-+    ms_client_id: str | None = Field(
-+        default=None,
-+        validation_alias=AliasChoices("MS_CLIENT_ID", "LAN_MS_CLIENT_ID"),
-+    )
-+    ms_scopes: str = Field(
-+        default="offline_access Notes.ReadWrite Calendars.Read",
-+        validation_alias=AliasChoices("MS_SCOPES", "LAN_MS_SCOPES"),
-+    )
-+    msal_cache_path: Path = Field(
-+        default_factory=_default_msal_cache_path,
-+        validation_alias=AliasChoices("MSAL_CACHE_PATH", "LAN_MSAL_CACHE_PATH"),
-+    )
-+
-+    @property
-+    def ms_scopes_list(self) -> list[str]:
-+        return [s.strip() for s in self.ms_scopes.replace(",", " ").split() if s.strip()]
-+
-     class Config:
-         env_prefix = "LAN_"
- 
-diff --git a/lan_app/templates/base.html b/lan_app/templates/base.html
-index d6fe8ce..68a5797 100644
---- a/lan_app/templates/base.html
-+++ b/lan_app/templates/base.html
-@@ -65,6 +65,8 @@ tr:hover{background:#e8ecf8}
- .conn-card h3{font-size:12px;font-weight:bold;margin-bottom:6px}
- .conn-row{display:flex;gap:8px;align-items:center;font-size:12px;margin-bottom:4px}
- .dot-ok{display:inline-block;width:8px;height:8px;border-radius:50%;background:#4ade80}
-+.dot-warn{display:inline-block;width:8px;height:8px;border-radius:50%;background:#f59e0b}
-+.dot-err{display:inline-block;width:8px;height:8px;border-radius:50%;background:#ef4444}
- .dot-na{display:inline-block;width:8px;height:8px;border-radius:50%;background:#d1d5db}
- </style>
- </head>
-diff --git a/lan_app/templates/connections.html b/lan_app/templates/connections.html
-index 998f259..3a39615 100644
---- a/lan_app/templates/connections.html
-+++ b/lan_app/templates/connections.html
-@@ -17,13 +17,128 @@
- 
- <div class="conn-card">
-   <h3>Microsoft Graph (Work account)</h3>
-+  {% if ms.status == "connected" %}
-+  <div class="conn-row">
-+    <span class="dot-ok"></span>
-+    <span>Connected</span>
-+  </div>
-+  {% elif ms.status == "expired" %}
-+  <div class="conn-row">
-+    <span class="dot-warn"></span>
-+    <span>Expired — reconnect required.</span>
-+  </div>
-+  {% elif ms.status == "error" %}
-+  <div class="conn-row">
-+    <span class="dot-err"></span>
-+    <span>Graph error: {{ ms.error }}</span>
-+  </div>
-+  {% else %}
-   <div class="conn-row">
-     <span class="dot-na"></span>
--    <span style="color:#888">Not configured — available after PR-MS-AUTH-01.</span>
-+    <span style="color:#888">Not configured.</span>
-+  </div>
-+  {% endif %}
-+  <div class="info-grid" style="margin-top:8px">
-+    <div class="k">Tenant</div>
-+    <div class="v">{{ ms.tenant_id or "—" }}</div>
-+    <div class="k">Account</div>
-+    <div class="v">{{ ms.account_display_name or "—" }}</div>
-+    <div class="k">Requested scopes</div>
-+    <div class="v">{{ (ms.requested_scopes or []) | join(" ") or "—" }}</div>
-+    <div class="k">Granted scopes</div>
-+    <div class="v" id="ms-granted-scopes">{{ (ms.granted_scopes or []) | join(" ") or "—" }}</div>
-   </div>
-   <div style="font-size:11px;color:#999;margin-top:4px">
-     Auth: Delegated OAuth via Device Code Flow.<br>
-     Token cache: <code>/data/auth/msal_cache.bin</code>
-   </div>
-+  {% if ms.configured %}
-+  <div class="conn-row" style="margin-top:8px">
-+    <button type="button" class="btn" onclick="startMsConnect(false)">Connect</button>
-+    <button type="button" class="btn" onclick="startMsConnect(true)">Reconnect</button>
-+    <span id="ms-connect-status" style="color:#666"></span>
-+  </div>
-+  <div id="ms-device-flow" style="display:none;border:1px solid #ccd;background:#f8f9ff;padding:8px;margin-top:6px">
-+    <div class="conn-row"><strong>Code:</strong> <code id="ms-user-code"></code></div>
-+    <div class="conn-row"><strong>Verify at:</strong> <a id="ms-verify-link" href="#" target="_blank" rel="noreferrer noopener"></a></div>
-+    <div style="font-size:11px;color:#666" id="ms-flow-message"></div>
-+  </div>
-+  {% else %}
-+  <div style="font-size:11px;color:#999;margin-top:8px">
-+    Set <code>MS_TENANT_ID</code> and <code>MS_CLIENT_ID</code> to enable Microsoft Graph auth.
-+  </div>
-+  {% endif %}
- </div>
-+{% if ms.configured %}
-+<script>
-+let msSessionId = null;
-+let msPollHandle = null;
-+
-+function setMsStatus(message, isError) {
-+  var el = document.getElementById('ms-connect-status');
-+  if (!el) return;
-+  el.textContent = message || '';
-+  el.style.color = isError ? '#b42318' : '#666';
-+}
-+
-+function stopMsPolling() {
-+  if (msPollHandle) {
-+    clearInterval(msPollHandle);
-+    msPollHandle = null;
-+  }
-+}
-+
-+async function startMsConnect(reconnect) {
-+  stopMsPolling();
-+  msSessionId = null;
-+  setMsStatus('Starting device code flow...', false);
-+
-+  var url = '/api/connections/ms/connect?reconnect=' + (reconnect ? 'true' : 'false');
-+  var response = await fetch(url, {method: 'POST'});
-+  var data = await response.json();
-+  if (!response.ok) {
-+    setMsStatus(data.detail || 'Failed to start Microsoft auth.', true);
-+    return;
-+  }
-+
-+  msSessionId = data.session_id;
-+  document.getElementById('ms-device-flow').style.display = 'block';
-+  document.getElementById('ms-user-code').textContent = data.user_code || '';
-+
-+  var verifyUrl = data.verification_uri_complete || data.verification_uri || '';
-+  var link = document.getElementById('ms-verify-link');
-+  link.textContent = verifyUrl;
-+  link.href = verifyUrl || '#';
-+
-+  document.getElementById('ms-flow-message').textContent = data.message || '';
-+  setMsStatus('Waiting for authentication...', false);
-+
-+  msPollHandle = setInterval(pollMsSession, 2000);
-+  await pollMsSession();
-+}
-+
-+async function pollMsSession() {
-+  if (!msSessionId) return;
-+  var response = await fetch('/api/connections/ms/connect/' + encodeURIComponent(msSessionId));
-+  if (!response.ok) {
-+    stopMsPolling();
-+    setMsStatus('Auth polling failed.', true);
-+    return;
-+  }
-+  var data = await response.json();
-+  if (data.status === 'pending') {
-+    return;
-+  }
-+
-+  stopMsPolling();
-+  if (data.status === 'connected') {
-+    setMsStatus('Connected. Refreshing...', false);
-+    window.location.reload();
-+    return;
-+  }
-+
-+  setMsStatus(data.error || 'Authentication failed.', true);
-+}
-+</script>
-+{% endif %}
- {% endblock %}
-diff --git a/lan_app/ui_routes.py b/lan_app/ui_routes.py
-index 9b24a9e..35f27af 100644
---- a/lan_app/ui_routes.py
-+++ b/lan_app/ui_routes.py
-@@ -33,6 +33,7 @@ from .db import (
-     set_recording_status,
- )
- from .jobs import enqueue_recording_job, purge_pending_recording_jobs
-+from .ms_graph import ms_connection_state
- 
- _TEMPLATES_DIR = Path(__file__).parent / "templates"
- _STATIC_DIR = Path(__file__).parent / "static"
-@@ -262,11 +263,13 @@ async def ui_queue(
- 
- @ui_router.get("/connections", response_class=HTMLResponse)
- async def ui_connections(request: Request) -> Any:
-+    ms_state = ms_connection_state(_settings)
-     return templates.TemplateResponse(
-         request,
-         "connections.html",
-         {
-             "active": "connections",
-+            "ms": ms_state,
-         },
+     ms_scopes: str = Field(
+-        default="offline_access Notes.ReadWrite Calendars.Read",
++        default="offline_access User.Read Notes.ReadWrite Calendars.Read",
+         validation_alias=AliasChoices("MS_SCOPES", "LAN_MS_SCOPES"),
      )
+     msal_cache_path: Path = Field(
+diff --git a/lan_app/ms_graph.py b/lan_app/ms_graph.py
+index 493c12e..2a79927 100644
+--- a/lan_app/ms_graph.py
++++ b/lan_app/ms_graph.py
+@@ -22,6 +22,7 @@ from .config import AppSettings
  
-diff --git a/pyproject.toml b/pyproject.toml
-index fe8c808..f399781 100644
---- a/pyproject.toml
-+++ b/pyproject.toml
-@@ -21,6 +21,7 @@ dependencies = [
-     "rapidfuzz",
-     "google-auth",
-     "google-api-python-client",
-+    "msal",
- ]
+ GRAPH_BASE_URL = "https://graph.microsoft.com/v1.0"
+ _DEVICE_FLOW_TTL_SECONDS = 20 * 60
++_MAX_PENDING_DEVICE_FLOWS = 1
  
- [tool.setuptools.packages.find]
-diff --git a/requirements.in b/requirements.in
-index eebdf41..74972ea 100644
---- a/requirements.in
-+++ b/requirements.in
-@@ -20,6 +20,7 @@ tenacity==9.1.2
- pydantic==2.11.7
- pydantic-settings==2.10.1
- rapidfuzz==3.13.0
-+msal==1.31.1
- redis
- rq
  
-diff --git a/requirements.txt b/requirements.txt
-index 6886b24..1ddea94 100644
---- a/requirements.txt
-+++ b/requirements.txt
-@@ -10,3 +10,4 @@ httpx
- tenacity
- redis
- rq
-+msal
-diff --git a/tasks/QUEUE.md b/tasks/QUEUE.md
-index b920f28..3a083d9 100644
---- a/tasks/QUEUE.md
-+++ b/tasks/QUEUE.md
-@@ -37,7 +37,7 @@ Queue (in order)
- - Depends on: PR-DB-QUEUE-01
+ class GraphAuthError(RuntimeError):
+@@ -40,6 +41,10 @@ class GraphRequestError(GraphAuthError):
+     """Raised when Graph responds with a non-retriable request error."""
  
- 6) PR-MS-AUTH-01: Microsoft Graph delegated auth (work) via Device Code Flow + token cache
--- Status: TODO
-+- Status: DONE
- - Tasks file: tasks/PR-MS-AUTH-01.md
- - Depends on: PR-UI-SHELL-01
  
++class GraphDeviceFlowLimitError(GraphAuthError):
++    """Raised when too many device-code sessions are currently pending."""
++
++
+ class _GraphTransientError(RuntimeError):
+     """Raised for transient Graph/transport failures to trigger retries."""
+ 
+@@ -134,6 +139,18 @@ def _session_payload(session_id: str, session: _DeviceFlowSession) -> dict[str,
+     }
+ 
+ 
++def _pending_session_ids_locked() -> list[str]:
++    return [sid for sid, session in _DEVICE_FLOW_SESSIONS.items() if session.status == "pending"]
++
++
++def _first_pending_session_locked() -> tuple[str, _DeviceFlowSession] | None:
++    for session_id in _pending_session_ids_locked():
++        session = _DEVICE_FLOW_SESSIONS.get(session_id)
++        if session is not None:
++            return session_id, session
++    return None
++
++
+ class MicrosoftGraphClient:
+     """Thin wrapper around MSAL + Microsoft Graph REST calls."""
+ 
+@@ -362,6 +379,20 @@ def start_device_flow_session(
+     reconnect: bool = False,
+ ) -> dict[str, Any]:
+     cfg = settings or AppSettings()
++    with _DEVICE_FLOW_LOCK:
++        now = time.time()
++        _prune_sessions_locked(now)
++        existing = _first_pending_session_locked()
++        if existing is not None:
++            existing_id, existing_session = existing
++            payload = _session_payload(existing_id, existing_session)
++            payload["reused"] = True
++            return payload
++        if len(_pending_session_ids_locked()) >= _MAX_PENDING_DEVICE_FLOWS:
++            raise GraphDeviceFlowLimitError(
++                "Too many pending Microsoft connect sessions; try again shortly."
++            )
++
+     client = MicrosoftGraphClient(settings=cfg)
+     if reconnect:
+         client.clear_cache()
+@@ -372,6 +403,16 @@ def start_device_flow_session(
+     with _DEVICE_FLOW_LOCK:
+         now = time.time()
+         _prune_sessions_locked(now)
++        existing = _first_pending_session_locked()
++        if existing is not None:
++            existing_id, existing_session = existing
++            payload = _session_payload(existing_id, existing_session)
++            payload["reused"] = True
++            return payload
++        if len(_pending_session_ids_locked()) >= _MAX_PENDING_DEVICE_FLOWS:
++            raise GraphDeviceFlowLimitError(
++                "Too many pending Microsoft connect sessions; try again shortly."
++            )
+         _DEVICE_FLOW_SESSIONS[session_id] = session
+ 
+     thread = threading.Thread(
+@@ -380,7 +421,9 @@ def start_device_flow_session(
+         daemon=True,
+     )
+     thread.start()
+-    return _session_payload(session_id, session)
++    payload = _session_payload(session_id, session)
++    payload["reused"] = False
++    return payload
+ 
+ 
+ def get_device_flow_session(session_id: str) -> dict[str, Any]:
+@@ -395,6 +438,7 @@ def get_device_flow_session(session_id: str) -> dict[str, Any]:
+ 
+ __all__ = [
+     "GraphAuthError",
++    "GraphDeviceFlowLimitError",
+     "GraphNeedsReconnectError",
+     "GraphNotConfiguredError",
+     "GraphRequestError",
 diff --git a/tests/test_app_config.py b/tests/test_app_config.py
-index 47abe51..22566d0 100644
+index 22566d0..8fc84db 100644
 --- a/tests/test_app_config.py
 +++ b/tests/test_app_config.py
-@@ -27,3 +27,21 @@ def test_redis_url_alias(monkeypatch):
-     monkeypatch.setenv("LAN_REDIS_URL", "redis://localhost:6380/0")
+@@ -33,7 +33,10 @@ def test_ms_auth_settings_from_env(monkeypatch, tmp_path: Path):
+     cache_path = tmp_path / "auth" / "msal_cache.bin"
+     monkeypatch.setenv("MS_TENANT_ID", "tenant-id")
+     monkeypatch.setenv("MS_CLIENT_ID", "client-id")
+-    monkeypatch.setenv("MS_SCOPES", "offline_access Notes.ReadWrite Calendars.Read")
++    monkeypatch.setenv(
++        "MS_SCOPES",
++        "offline_access User.Read Notes.ReadWrite Calendars.Read",
++    )
+     monkeypatch.setenv("MSAL_CACHE_PATH", str(cache_path))
+ 
      cfg = AppSettings()
-     assert cfg.redis_url == "redis://localhost:6380/0"
-+
-+
-+def test_ms_auth_settings_from_env(monkeypatch, tmp_path: Path):
-+    cache_path = tmp_path / "auth" / "msal_cache.bin"
-+    monkeypatch.setenv("MS_TENANT_ID", "tenant-id")
-+    monkeypatch.setenv("MS_CLIENT_ID", "client-id")
-+    monkeypatch.setenv("MS_SCOPES", "offline_access Notes.ReadWrite Calendars.Read")
-+    monkeypatch.setenv("MSAL_CACHE_PATH", str(cache_path))
-+
-+    cfg = AppSettings()
-+    assert cfg.ms_tenant_id == "tenant-id"
-+    assert cfg.ms_client_id == "client-id"
-+    assert cfg.ms_scopes_list == [
-+        "offline_access",
-+        "Notes.ReadWrite",
-+        "Calendars.Read",
-+    ]
-+    assert cfg.msal_cache_path == cache_path
-diff --git a/lan_app/ms_graph.py b/lan_app/ms_graph.py
-new file mode 100644
-index 0000000..493c12e
---- /dev/null
-+++ b/lan_app/ms_graph.py
-@@ -0,0 +1,405 @@
-+"""Microsoft Graph delegated auth via Device Code Flow + token cache."""
-+
-+from __future__ import annotations
-+
-+import threading
-+import time
-+from dataclasses import dataclass, field
-+from pathlib import Path
-+from typing import Any
-+from uuid import uuid4
-+
-+import httpx
-+import msal
-+from tenacity import (
-+    retry,
-+    retry_if_exception_type,
-+    stop_after_attempt,
-+    wait_exponential,
-+)
-+
-+from .config import AppSettings
-+
-+GRAPH_BASE_URL = "https://graph.microsoft.com/v1.0"
-+_DEVICE_FLOW_TTL_SECONDS = 20 * 60
-+
-+
-+class GraphAuthError(RuntimeError):
-+    """Base class for Microsoft Graph auth/connection failures."""
-+
-+
-+class GraphNotConfiguredError(GraphAuthError):
-+    """Raised when Microsoft auth settings are missing."""
-+
-+
-+class GraphNeedsReconnectError(GraphAuthError):
-+    """Raised when cached auth cannot be used and reconnect is required."""
-+
-+
-+class GraphRequestError(GraphAuthError):
-+    """Raised when Graph responds with a non-retriable request error."""
-+
-+
-+class _GraphTransientError(RuntimeError):
-+    """Raised for transient Graph/transport failures to trigger retries."""
-+
-+
-+@dataclass
-+class _DeviceFlowSession:
-+    flow: dict[str, Any]
-+    status: str = "pending"
-+    error: str | None = None
-+    account_display_name: str | None = None
-+    tenant_id: str | None = None
-+    granted_scopes: list[str] = field(default_factory=list)
-+    created_at: float = field(default_factory=time.time)
-+    finished_at: float | None = None
-+
-+
-+_DEVICE_FLOW_LOCK = threading.Lock()
-+_DEVICE_FLOW_SESSIONS: dict[str, _DeviceFlowSession] = {}
-+
-+
-+def _scopes_from_token_result(result: dict[str, Any] | None) -> list[str]:
-+    if not result:
-+        return []
-+    scope = str(result.get("scope", "")).strip()
-+    if not scope:
-+        return []
-+    return [item for item in scope.split(" ") if item]
-+
-+
-+def _load_token_cache(path: Path) -> msal.SerializableTokenCache:
-+    cache = msal.SerializableTokenCache()
-+    if not path.exists():
-+        return cache
-+    try:
-+        cache.deserialize(path.read_text(encoding="utf-8"))
-+    except Exception:
-+        # Corrupted cache should not crash the app; reconnect will recreate it.
-+        return msal.SerializableTokenCache()
-+    return cache
-+
-+
-+def _persist_token_cache(cache: msal.SerializableTokenCache, path: Path) -> None:
-+    if not cache.has_state_changed:
-+        return
-+    path.parent.mkdir(parents=True, exist_ok=True)
-+    path.write_text(cache.serialize(), encoding="utf-8")
-+
-+
-+def _token_display_name(result: dict[str, Any]) -> str | None:
-+    claims = result.get("id_token_claims") or {}
-+    if not isinstance(claims, dict):
-+        return None
-+    return claims.get("name") or claims.get("preferred_username")
-+
-+
-+def _token_tenant_id(result: dict[str, Any]) -> str | None:
-+    claims = result.get("id_token_claims") or {}
-+    if not isinstance(claims, dict):
-+        return None
-+    tid = claims.get("tid")
-+    return str(tid) if tid else None
-+
-+
-+def _prune_sessions_locked(now: float) -> None:
-+    stale: list[str] = []
-+    for session_id, session in _DEVICE_FLOW_SESSIONS.items():
-+        age = now - session.created_at
-+        if age > _DEVICE_FLOW_TTL_SECONDS:
-+            stale.append(session_id)
-+            continue
-+        if session.finished_at is None:
-+            continue
-+        if now - session.finished_at > _DEVICE_FLOW_TTL_SECONDS:
-+            stale.append(session_id)
-+    for session_id in stale:
-+        _DEVICE_FLOW_SESSIONS.pop(session_id, None)
-+
-+
-+def _session_payload(session_id: str, session: _DeviceFlowSession) -> dict[str, Any]:
-+    return {
-+        "session_id": session_id,
-+        "status": session.status,
-+        "error": session.error,
-+        "user_code": session.flow.get("user_code"),
-+        "verification_uri": session.flow.get("verification_uri"),
-+        "verification_uri_complete": session.flow.get("verification_uri_complete"),
-+        "message": session.flow.get("message"),
-+        "expires_in": session.flow.get("expires_in"),
-+        "account_display_name": session.account_display_name,
-+        "tenant_id": session.tenant_id,
-+        "granted_scopes": session.granted_scopes,
-+    }
-+
-+
-+class MicrosoftGraphClient:
-+    """Thin wrapper around MSAL + Microsoft Graph REST calls."""
-+
-+    def __init__(self, settings: AppSettings | None = None) -> None:
-+        self.settings = settings or AppSettings()
-+        self.tenant_id = (self.settings.ms_tenant_id or "").strip()
-+        self.client_id = (self.settings.ms_client_id or "").strip()
-+        self.scopes = self.settings.ms_scopes_list
-+        self.cache_path = self.settings.msal_cache_path
-+        self._cache = _load_token_cache(self.cache_path)
-+        self._last_token_result: dict[str, Any] | None = None
-+        self._app: msal.PublicClientApplication | None = None
-+        if self.is_configured:
-+            authority = f"https://login.microsoftonline.com/{self.tenant_id}"
-+            self._app = msal.PublicClientApplication(
-+                client_id=self.client_id,
-+                authority=authority,
-+                token_cache=self._cache,
-+            )
-+
-+    @property
-+    def is_configured(self) -> bool:
-+        return bool(self.tenant_id and self.client_id and self.scopes)
-+
-+    def _require_app(self) -> msal.PublicClientApplication:
-+        if self._app is None:
-+            missing: list[str] = []
-+            if not self.tenant_id:
-+                missing.append("MS_TENANT_ID")
-+            if not self.client_id:
-+                missing.append("MS_CLIENT_ID")
-+            if not self.scopes:
-+                missing.append("MS_SCOPES")
-+            missing_str = ", ".join(missing) if missing else "settings"
-+            raise GraphNotConfiguredError(
-+                f"Microsoft Graph auth is not configured ({missing_str})."
-+            )
-+        return self._app
-+
-+    def clear_cache(self) -> None:
-+        try:
-+            self.cache_path.unlink()
-+        except FileNotFoundError:
-+            pass
-+
-+    def get_cached_account(self) -> dict[str, Any] | None:
-+        app = self._require_app()
-+        accounts = app.get_accounts()
-+        if not accounts:
-+            return None
-+        account = accounts[0]
-+        return {
-+            "display_name": account.get("name") or account.get("username"),
-+            "username": account.get("username"),
-+            "tenant_id": account.get("tenant_id"),
-+        }
-+
-+    def initiate_device_flow(self) -> dict[str, Any]:
-+        app = self._require_app()
-+        flow = app.initiate_device_flow(scopes=self.scopes)
-+        if "user_code" not in flow:
-+            detail = flow.get("error_description") or flow.get("error") or str(flow)
-+            raise GraphAuthError(f"Failed to start device code flow: {detail}")
-+        return flow
-+
-+    def acquire_token_by_device_flow(self, flow: dict[str, Any]) -> dict[str, Any]:
-+        app = self._require_app()
-+        result = app.acquire_token_by_device_flow(flow)
-+        _persist_token_cache(self._cache, self.cache_path)
-+        if "access_token" not in result:
-+            detail = result.get("error_description") or result.get("error") or str(result)
-+            raise GraphAuthError(f"Device code authentication failed: {detail}")
-+        self._last_token_result = result
-+        return result
-+
-+    def acquire_token_silent(self) -> dict[str, Any]:
-+        app = self._require_app()
-+        accounts = app.get_accounts()
-+        if not accounts:
-+            raise GraphNeedsReconnectError("No cached Microsoft account; reconnect required.")
-+        result = app.acquire_token_silent(self.scopes, account=accounts[0])
-+        _persist_token_cache(self._cache, self.cache_path)
-+        if not result or "access_token" not in result:
-+            raise GraphNeedsReconnectError("Cached Microsoft token expired; reconnect required.")
-+        self._last_token_result = result
-+        return result
-+
-+    @retry(
-+        reraise=True,
-+        stop=stop_after_attempt(3),
-+        wait=wait_exponential(multiplier=1, min=1, max=8),
-+        retry=retry_if_exception_type(
-+            (_GraphTransientError, httpx.TransportError, httpx.TimeoutException)
-+        ),
-+    )
-+    def _graph_request(
-+        self,
-+        method: str,
-+        path: str,
-+        *,
-+        payload: dict[str, Any] | None = None,
-+    ) -> dict[str, Any]:
-+        token = self.acquire_token_silent()
-+        url = f"{GRAPH_BASE_URL}/{path.lstrip('/')}"
-+        headers = {"Authorization": f"Bearer {token['access_token']}"}
-+        with httpx.Client(timeout=20.0) as client:
-+            resp = client.request(method, url, headers=headers, json=payload)
-+
-+        if resp.status_code == 401:
-+            raise GraphNeedsReconnectError("Microsoft token rejected by Graph; reconnect required.")
-+        if resp.status_code in (429, 500, 502, 503, 504):
-+            raise _GraphTransientError(f"Transient Graph error {resp.status_code}")
-+        if resp.status_code >= 400:
-+            raise GraphRequestError(f"Graph {method} {path} failed: {resp.status_code}")
-+        if not resp.content:
-+            return {}
-+        try:
-+            return resp.json()
-+        except ValueError:
-+            return {}
-+
-+    def graph_get(self, path: str) -> dict[str, Any]:
-+        try:
-+            return self._graph_request("GET", path)
-+        except (httpx.TransportError, httpx.TimeoutException, _GraphTransientError) as exc:
-+            raise GraphRequestError(str(exc)) from exc
-+
-+    def graph_post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
-+        try:
-+            return self._graph_request("POST", path, payload=payload)
-+        except (httpx.TransportError, httpx.TimeoutException, _GraphTransientError) as exc:
-+            raise GraphRequestError(str(exc)) from exc
-+
-+    @property
-+    def granted_scopes(self) -> list[str]:
-+        return _scopes_from_token_result(self._last_token_result)
-+
-+
-+def ms_connection_state(settings: AppSettings | None = None) -> dict[str, Any]:
-+    """Return UI/API-friendly Microsoft connection status."""
-+    cfg = settings or AppSettings()
-+    client = MicrosoftGraphClient(cfg)
-+    state: dict[str, Any] = {
-+        "configured": client.is_configured,
-+        "state": "Not configured",
-+        "status": "not_configured",
-+        "requested_scopes": cfg.ms_scopes_list,
-+        "granted_scopes": [],
-+        "tenant_id": cfg.ms_tenant_id,
-+        "account_display_name": None,
-+        "error": None,
-+    }
-+    if not client.is_configured:
-+        state["error"] = "Set MS_TENANT_ID and MS_CLIENT_ID to enable Microsoft Graph."
-+        return state
-+
-+    cached_account = client.get_cached_account()
-+    if cached_account:
-+        state["account_display_name"] = cached_account.get("display_name")
-+        state["tenant_id"] = cached_account.get("tenant_id") or state["tenant_id"]
-+
-+    try:
-+        me = client.graph_get("/me")
-+    except GraphNeedsReconnectError:
-+        state["state"] = "Expired"
-+        state["status"] = "expired"
-+        state["error"] = "Reconnect required."
-+    except GraphRequestError as exc:
-+        state["state"] = "Error"
-+        state["status"] = "error"
-+        state["error"] = str(exc)
-+    else:
-+        state["state"] = "Connected"
-+        state["status"] = "connected"
-+        state["account_display_name"] = (
-+            me.get("displayName")
-+            or me.get("userPrincipalName")
-+            or state["account_display_name"]
-+        )
-+        state["tenant_id"] = _token_tenant_id(client._last_token_result or {}) or state[
-+            "tenant_id"
-+        ]
-+        state["granted_scopes"] = client.granted_scopes or state["requested_scopes"]
-+
-+    return state
-+
-+
-+def _complete_device_flow_in_background(
-+    session_id: str,
-+    *,
-+    settings: AppSettings,
-+    flow: dict[str, Any],
-+) -> None:
-+    status = "connected"
-+    error: str | None = None
-+    account_display_name: str | None = None
-+    tenant_id: str | None = None
-+    granted_scopes: list[str] = []
-+    try:
-+        client = MicrosoftGraphClient(settings=settings)
-+        result = client.acquire_token_by_device_flow(flow)
-+        account_display_name = _token_display_name(result)
-+        tenant_id = _token_tenant_id(result) or settings.ms_tenant_id
-+        granted_scopes = _scopes_from_token_result(result) or settings.ms_scopes_list
-+    except Exception as exc:  # pragma: no cover - tested via API surface
-+        status = "error"
-+        error = str(exc)
-+
-+    with _DEVICE_FLOW_LOCK:
-+        now = time.time()
-+        _prune_sessions_locked(now)
-+        session = _DEVICE_FLOW_SESSIONS.get(session_id)
-+        if session is None:
-+            return
-+        session.status = status
-+        session.error = error
-+        session.account_display_name = account_display_name
-+        session.tenant_id = tenant_id
-+        session.granted_scopes = granted_scopes
-+        session.finished_at = now
-+
-+
-+def start_device_flow_session(
-+    settings: AppSettings | None = None,
-+    *,
-+    reconnect: bool = False,
-+) -> dict[str, Any]:
-+    cfg = settings or AppSettings()
-+    client = MicrosoftGraphClient(settings=cfg)
-+    if reconnect:
-+        client.clear_cache()
-+        client = MicrosoftGraphClient(settings=cfg)
-+    flow = client.initiate_device_flow()
-+    session_id = uuid4().hex
-+    session = _DeviceFlowSession(flow=flow)
-+    with _DEVICE_FLOW_LOCK:
-+        now = time.time()
-+        _prune_sessions_locked(now)
-+        _DEVICE_FLOW_SESSIONS[session_id] = session
-+
-+    thread = threading.Thread(
-+        target=_complete_device_flow_in_background,
-+        kwargs={"session_id": session_id, "settings": cfg, "flow": flow},
-+        daemon=True,
-+    )
-+    thread.start()
-+    return _session_payload(session_id, session)
-+
-+
-+def get_device_flow_session(session_id: str) -> dict[str, Any]:
-+    with _DEVICE_FLOW_LOCK:
-+        now = time.time()
-+        _prune_sessions_locked(now)
-+        session = _DEVICE_FLOW_SESSIONS.get(session_id)
-+        if session is None:
-+            raise KeyError(session_id)
-+        return _session_payload(session_id, session)
-+
-+
-+__all__ = [
-+    "GraphAuthError",
-+    "GraphNeedsReconnectError",
-+    "GraphNotConfiguredError",
-+    "GraphRequestError",
-+    "MicrosoftGraphClient",
-+    "get_device_flow_session",
-+    "ms_connection_state",
-+    "start_device_flow_session",
-+]
+@@ -41,6 +44,7 @@ def test_ms_auth_settings_from_env(monkeypatch, tmp_path: Path):
+     assert cfg.ms_client_id == "client-id"
+     assert cfg.ms_scopes_list == [
+         "offline_access",
++        "User.Read",
+         "Notes.ReadWrite",
+         "Calendars.Read",
+     ]
 diff --git a/tests/test_ms_auth.py b/tests/test_ms_auth.py
-new file mode 100644
-index 0000000..7222c0a
---- /dev/null
+index 7222c0a..b2325c5 100644
+--- a/tests/test_ms_auth.py
 +++ b/tests/test_ms_auth.py
-@@ -0,0 +1,178 @@
-+from __future__ import annotations
-+
-+from pathlib import Path
-+
-+from fastapi.testclient import TestClient
-+
-+from lan_app import api, ui_routes
-+from lan_app.config import AppSettings
-+from lan_app.db import init_db
-+from lan_app.ms_graph import GraphNotConfiguredError
-+
-+
-+def _cfg(tmp_path: Path) -> AppSettings:
-+    cfg = AppSettings(
-+        data_root=tmp_path,
-+        recordings_root=tmp_path / "recordings",
-+        db_path=tmp_path / "db" / "app.db",
-+    )
-+    cfg.metrics_snapshot_path = tmp_path / "metrics.snap"
-+    return cfg
-+
-+
-+def test_api_ms_verify_ok(tmp_path, monkeypatch):
+@@ -4,10 +4,10 @@ from pathlib import Path
+ 
+ from fastapi.testclient import TestClient
+ 
+-from lan_app import api, ui_routes
++from lan_app import api, ms_graph, ui_routes
+ from lan_app.config import AppSettings
+ from lan_app.db import init_db
+-from lan_app.ms_graph import GraphNotConfiguredError
++from lan_app.ms_graph import GraphDeviceFlowLimitError, GraphNotConfiguredError
+ 
+ 
+ def _cfg(tmp_path: Path) -> AppSettings:
+@@ -115,6 +115,22 @@ def test_api_ms_start_connect_not_configured(tmp_path, monkeypatch):
+     assert resp.status_code == 422
+ 
+ 
++def test_api_ms_start_connect_too_many_pending(tmp_path, monkeypatch):
 +    cfg = _cfg(tmp_path)
 +    monkeypatch.setattr(api, "_settings", cfg)
 +    monkeypatch.setattr(ui_routes, "_settings", cfg)
 +    init_db(cfg)
 +
-+    monkeypatch.setattr(
-+        api,
-+        "ms_connection_state",
-+        lambda _settings: {
-+            "status": "connected",
-+            "account_display_name": "Alex Worker",
-+            "tenant_id": "tenant-1",
-+            "granted_scopes": ["offline_access", "Notes.ReadWrite"],
-+        },
-+    )
++    def _raise_too_many(_settings, reconnect=False):
++        raise GraphDeviceFlowLimitError("too many")
 +
-+    client = TestClient(api.app, follow_redirects=True)
-+    resp = client.get("/api/connections/ms/verify")
-+    assert resp.status_code == 200
-+    body = resp.json()
-+    assert body["ok"] is True
-+    assert body["account_display_name"] == "Alex Worker"
-+
-+
-+def test_api_ms_verify_error(tmp_path, monkeypatch):
-+    cfg = _cfg(tmp_path)
-+    monkeypatch.setattr(api, "_settings", cfg)
-+    monkeypatch.setattr(ui_routes, "_settings", cfg)
-+    init_db(cfg)
-+
-+    monkeypatch.setattr(
-+        api,
-+        "ms_connection_state",
-+        lambda _settings: {
-+            "status": "expired",
-+            "error": "Reconnect required.",
-+            "account_display_name": "Alex Worker",
-+            "tenant_id": "tenant-1",
-+            "granted_scopes": [],
-+        },
-+    )
-+
-+    client = TestClient(api.app, follow_redirects=True)
-+    resp = client.get("/api/connections/ms/verify")
-+    assert resp.status_code == 200
-+    body = resp.json()
-+    assert body["ok"] is False
-+    assert body["error"] == "expired"
-+
-+
-+def test_api_ms_start_connect(tmp_path, monkeypatch):
-+    cfg = _cfg(tmp_path)
-+    monkeypatch.setattr(api, "_settings", cfg)
-+    monkeypatch.setattr(ui_routes, "_settings", cfg)
-+    init_db(cfg)
-+
-+    monkeypatch.setattr(
-+        api,
-+        "start_device_flow_session",
-+        lambda _settings, reconnect=False: {
-+            "session_id": "sess-1",
-+            "status": "pending",
-+            "user_code": "ABCD-EFGH",
-+            "verification_uri": "https://microsoft.com/devicelogin",
-+            "message": "Use code ABCD-EFGH",
-+            "expires_in": 900,
-+            "reconnect": reconnect,
-+        },
-+    )
-+
-+    client = TestClient(api.app, follow_redirects=True)
-+    resp = client.post("/api/connections/ms/connect?reconnect=true")
-+    assert resp.status_code == 200
-+    body = resp.json()
-+    assert body["session_id"] == "sess-1"
-+    assert body["reconnect"] is True
-+
-+
-+def test_api_ms_start_connect_not_configured(tmp_path, monkeypatch):
-+    cfg = _cfg(tmp_path)
-+    monkeypatch.setattr(api, "_settings", cfg)
-+    monkeypatch.setattr(ui_routes, "_settings", cfg)
-+    init_db(cfg)
-+
-+    def _raise_not_configured(_settings, reconnect=False):
-+        raise GraphNotConfiguredError("missing env")
-+
-+    monkeypatch.setattr(api, "start_device_flow_session", _raise_not_configured)
++    monkeypatch.setattr(api, "start_device_flow_session", _raise_too_many)
 +
 +    client = TestClient(api.app, follow_redirects=True)
 +    resp = client.post("/api/connections/ms/connect")
-+    assert resp.status_code == 422
++    assert resp.status_code == 429
 +
 +
-+def test_api_ms_connect_poll(tmp_path, monkeypatch):
+ def test_api_ms_connect_poll(tmp_path, monkeypatch):
+     cfg = _cfg(tmp_path)
+     monkeypatch.setattr(api, "_settings", cfg)
+@@ -164,8 +180,13 @@ def test_connections_page_shows_ms_state(tmp_path, monkeypatch):
+             "state": "Connected",
+             "account_display_name": "Alex Worker",
+             "tenant_id": "tenant-1",
+-            "requested_scopes": ["offline_access", "Notes.ReadWrite", "Calendars.Read"],
+-            "granted_scopes": ["offline_access", "Notes.ReadWrite"],
++            "requested_scopes": [
++                "offline_access",
++                "User.Read",
++                "Notes.ReadWrite",
++                "Calendars.Read",
++            ],
++            "granted_scopes": ["offline_access", "User.Read", "Notes.ReadWrite"],
+             "error": None,
+         },
+     )
+@@ -176,3 +197,52 @@ def test_connections_page_shows_ms_state(tmp_path, monkeypatch):
+     assert "Connected" in resp.text
+     assert "Alex Worker" in resp.text
+     assert "Reconnect" in resp.text
++
++
++def test_start_device_flow_session_reuses_pending(monkeypatch, tmp_path):
 +    cfg = _cfg(tmp_path)
-+    monkeypatch.setattr(api, "_settings", cfg)
-+    monkeypatch.setattr(ui_routes, "_settings", cfg)
-+    init_db(cfg)
++    cfg.ms_tenant_id = "tenant-1"
++    cfg.ms_client_id = "client-1"
++    cfg.ms_scopes = "offline_access User.Read Notes.ReadWrite Calendars.Read"
 +
-+    monkeypatch.setattr(
-+        api,
-+        "get_device_flow_session",
-+        lambda _session_id: {"session_id": "sess-1", "status": "pending"},
-+    )
++    with ms_graph._DEVICE_FLOW_LOCK:
++        ms_graph._DEVICE_FLOW_SESSIONS.clear()
 +
-+    client = TestClient(api.app, follow_redirects=True)
-+    resp = client.get("/api/connections/ms/connect/sess-1")
-+    assert resp.status_code == 200
-+    assert resp.json()["status"] == "pending"
++    initiated: list[int] = []
++    started_session_ids: list[str] = []
 +
++    class _FakeClient:
++        def __init__(self, settings=None):
++            self.settings = settings
 +
-+def test_api_ms_connect_poll_not_found(tmp_path, monkeypatch):
-+    cfg = _cfg(tmp_path)
-+    monkeypatch.setattr(api, "_settings", cfg)
-+    monkeypatch.setattr(ui_routes, "_settings", cfg)
-+    init_db(cfg)
++        def clear_cache(self):
++            return None
 +
-+    def _missing(_session_id: str):
-+        raise KeyError(_session_id)
++        def initiate_device_flow(self):
++            initiated.append(1)
++            return {
++                "user_code": "ABCD-EFGH",
++                "verification_uri": "https://microsoft.com/devicelogin",
++                "expires_in": 900,
++            }
 +
-+    monkeypatch.setattr(api, "get_device_flow_session", _missing)
++    class _FakeThread:
++        def __init__(self, target=None, kwargs=None, daemon=None):
++            self._kwargs = kwargs or {}
 +
-+    client = TestClient(api.app, follow_redirects=True)
-+    resp = client.get("/api/connections/ms/connect/missing")
-+    assert resp.status_code == 404
++        def start(self):
++            started_session_ids.append(self._kwargs["session_id"])
 +
++    monkeypatch.setattr(ms_graph, "MicrosoftGraphClient", _FakeClient)
++    monkeypatch.setattr(ms_graph.threading, "Thread", _FakeThread)
 +
-+def test_connections_page_shows_ms_state(tmp_path, monkeypatch):
-+    cfg = _cfg(tmp_path)
-+    monkeypatch.setattr(api, "_settings", cfg)
-+    monkeypatch.setattr(ui_routes, "_settings", cfg)
-+    init_db(cfg)
++    first = ms_graph.start_device_flow_session(cfg)
++    second = ms_graph.start_device_flow_session(cfg)
 +
-+    monkeypatch.setattr(
-+        ui_routes,
-+        "ms_connection_state",
-+        lambda _settings: {
-+            "configured": True,
-+            "status": "connected",
-+            "state": "Connected",
-+            "account_display_name": "Alex Worker",
-+            "tenant_id": "tenant-1",
-+            "requested_scopes": ["offline_access", "Notes.ReadWrite", "Calendars.Read"],
-+            "granted_scopes": ["offline_access", "Notes.ReadWrite"],
-+            "error": None,
-+        },
-+    )
-+
-+    client = TestClient(api.app, follow_redirects=True)
-+    resp = client.get("/connections")
-+    assert resp.status_code == 200
-+    assert "Connected" in resp.text
-+    assert "Alex Worker" in resp.text
-+    assert "Reconnect" in resp.text
++    assert first["status"] == "pending"
++    assert second["status"] == "pending"
++    assert first["session_id"] == second["session_id"]
++    assert first["reused"] is False
++    assert second["reused"] is True
++    assert len(initiated) == 1
++    assert started_session_ids == [first["session_id"]]

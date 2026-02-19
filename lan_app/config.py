@@ -72,7 +72,7 @@ class AppSettings(BaseSettings):
         validation_alias=AliasChoices("MS_CLIENT_ID", "LAN_MS_CLIENT_ID"),
     )
     ms_scopes: str = Field(
-        default="offline_access Notes.ReadWrite Calendars.Read",
+        default="offline_access User.Read Notes.ReadWrite Calendars.Read",
         validation_alias=AliasChoices("MS_SCOPES", "LAN_MS_SCOPES"),
     )
     msal_cache_path: Path = Field(

@@ -22,6 +22,7 @@ from .config import AppSettings
 
 GRAPH_BASE_URL = "https://graph.microsoft.com/v1.0"
 _DEVICE_FLOW_TTL_SECONDS = 20 * 60
+_MAX_PENDING_DEVICE_FLOWS = 1
 
 
 class GraphAuthError(RuntimeError):
@@ -38,6 +39,10 @@ class GraphNeedsReconnectError(GraphAuthError):
 
 class GraphRequestError(GraphAuthError):
     """Raised when Graph responds with a non-retriable request error."""
+
+
+class GraphDeviceFlowLimitError(GraphAuthError):
+    """Raised when too many device-code sessions are currently pending."""
 
 
 class _GraphTransientError(RuntimeError):
@@ -132,6 +137,18 @@ def _session_payload(session_id: str, session: _DeviceFlowSession) -> dict[str, 
         "tenant_id": session.tenant_id,
         "granted_scopes": session.granted_scopes,
     }
+
+
+def _pending_session_ids_locked() -> list[str]:
+    return [sid for sid, session in _DEVICE_FLOW_SESSIONS.items() if session.status == "pending"]
+
+
+def _first_pending_session_locked() -> tuple[str, _DeviceFlowSession] | None:
+    for session_id in _pending_session_ids_locked():
+        session = _DEVICE_FLOW_SESSIONS.get(session_id)
+        if session is not None:
+            return session_id, session
+    return None
 
 
 class MicrosoftGraphClient:
@@ -362,6 +379,20 @@ def start_device_flow_session(
     reconnect: bool = False,
 ) -> dict[str, Any]:
     cfg = settings or AppSettings()
+    with _DEVICE_FLOW_LOCK:
+        now = time.time()
+        _prune_sessions_locked(now)
+        existing = _first_pending_session_locked()
+        if existing is not None:
+            existing_id, existing_session = existing
+            payload = _session_payload(existing_id, existing_session)
+            payload["reused"] = True
+            return payload
+        if len(_pending_session_ids_locked()) >= _MAX_PENDING_DEVICE_FLOWS:
+            raise GraphDeviceFlowLimitError(
+                "Too many pending Microsoft connect sessions; try again shortly."
+            )
+
     client = MicrosoftGraphClient(settings=cfg)
     if reconnect:
         client.clear_cache()
@@ -372,6 +403,16 @@ def start_device_flow_session(
     with _DEVICE_FLOW_LOCK:
         now = time.time()
         _prune_sessions_locked(now)
+        existing = _first_pending_session_locked()
+        if existing is not None:
+            existing_id, existing_session = existing
+            payload = _session_payload(existing_id, existing_session)
+            payload["reused"] = True
+            return payload
+        if len(_pending_session_ids_locked()) >= _MAX_PENDING_DEVICE_FLOWS:
+            raise GraphDeviceFlowLimitError(
+                "Too many pending Microsoft connect sessions; try again shortly."
+            )
         _DEVICE_FLOW_SESSIONS[session_id] = session
 
     thread = threading.Thread(
@@ -380,7 +421,9 @@ def start_device_flow_session(
         daemon=True,
     )
     thread.start()
-    return _session_payload(session_id, session)
+    payload = _session_payload(session_id, session)
+    payload["reused"] = False
+    return payload
 
 
 def get_device_flow_session(session_id: str) -> dict[str, Any]:
@@ -395,6 +438,7 @@ def get_device_flow_session(session_id: str) -> dict[str, Any]:
 
 __all__ = [
     "GraphAuthError",
+    "GraphDeviceFlowLimitError",
     "GraphNeedsReconnectError",
     "GraphNotConfiguredError",
     "GraphRequestError",

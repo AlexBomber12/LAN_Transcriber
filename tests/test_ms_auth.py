@@ -4,10 +4,10 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from lan_app import api, ui_routes
+from lan_app import api, ms_graph, ui_routes
 from lan_app.config import AppSettings
 from lan_app.db import init_db
-from lan_app.ms_graph import GraphNotConfiguredError
+from lan_app.ms_graph import GraphDeviceFlowLimitError, GraphNotConfiguredError
 
 
 def _cfg(tmp_path: Path) -> AppSettings:
@@ -115,6 +115,22 @@ def test_api_ms_start_connect_not_configured(tmp_path, monkeypatch):
     assert resp.status_code == 422
 
 
+def test_api_ms_start_connect_too_many_pending(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    init_db(cfg)
+
+    def _raise_too_many(_settings, reconnect=False):
+        raise GraphDeviceFlowLimitError("too many")
+
+    monkeypatch.setattr(api, "start_device_flow_session", _raise_too_many)
+
+    client = TestClient(api.app, follow_redirects=True)
+    resp = client.post("/api/connections/ms/connect")
+    assert resp.status_code == 429
+
+
 def test_api_ms_connect_poll(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
     monkeypatch.setattr(api, "_settings", cfg)
@@ -164,8 +180,13 @@ def test_connections_page_shows_ms_state(tmp_path, monkeypatch):
             "state": "Connected",
             "account_display_name": "Alex Worker",
             "tenant_id": "tenant-1",
-            "requested_scopes": ["offline_access", "Notes.ReadWrite", "Calendars.Read"],
-            "granted_scopes": ["offline_access", "Notes.ReadWrite"],
+            "requested_scopes": [
+                "offline_access",
+                "User.Read",
+                "Notes.ReadWrite",
+                "Calendars.Read",
+            ],
+            "granted_scopes": ["offline_access", "User.Read", "Notes.ReadWrite"],
             "error": None,
         },
     )
@@ -176,3 +197,52 @@ def test_connections_page_shows_ms_state(tmp_path, monkeypatch):
     assert "Connected" in resp.text
     assert "Alex Worker" in resp.text
     assert "Reconnect" in resp.text
+
+
+def test_start_device_flow_session_reuses_pending(monkeypatch, tmp_path):
+    cfg = _cfg(tmp_path)
+    cfg.ms_tenant_id = "tenant-1"
+    cfg.ms_client_id = "client-1"
+    cfg.ms_scopes = "offline_access User.Read Notes.ReadWrite Calendars.Read"
+
+    with ms_graph._DEVICE_FLOW_LOCK:
+        ms_graph._DEVICE_FLOW_SESSIONS.clear()
+
+    initiated: list[int] = []
+    started_session_ids: list[str] = []
+
+    class _FakeClient:
+        def __init__(self, settings=None):
+            self.settings = settings
+
+        def clear_cache(self):
+            return None
+
+        def initiate_device_flow(self):
+            initiated.append(1)
+            return {
+                "user_code": "ABCD-EFGH",
+                "verification_uri": "https://microsoft.com/devicelogin",
+                "expires_in": 900,
+            }
+
+    class _FakeThread:
+        def __init__(self, target=None, kwargs=None, daemon=None):
+            self._kwargs = kwargs or {}
+
+        def start(self):
+            started_session_ids.append(self._kwargs["session_id"])
+
+    monkeypatch.setattr(ms_graph, "MicrosoftGraphClient", _FakeClient)
+    monkeypatch.setattr(ms_graph.threading, "Thread", _FakeThread)
+
+    first = ms_graph.start_device_flow_session(cfg)
+    second = ms_graph.start_device_flow_session(cfg)
+
+    assert first["status"] == "pending"
+    assert second["status"] == "pending"
+    assert first["session_id"] == second["session_id"]
+    assert first["reused"] is False
+    assert second["reused"] is True
+    assert len(initiated) == 1
+    assert started_session_ids == [first["session_id"]]

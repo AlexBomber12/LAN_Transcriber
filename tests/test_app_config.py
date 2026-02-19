@@ -33,7 +33,10 @@ def test_ms_auth_settings_from_env(monkeypatch, tmp_path: Path):
     cache_path = tmp_path / "auth" / "msal_cache.bin"
     monkeypatch.setenv("MS_TENANT_ID", "tenant-id")
     monkeypatch.setenv("MS_CLIENT_ID", "client-id")
-    monkeypatch.setenv("MS_SCOPES", "offline_access Notes.ReadWrite Calendars.Read")
+    monkeypatch.setenv(
+        "MS_SCOPES",
+        "offline_access User.Read Notes.ReadWrite Calendars.Read",
+    )
     monkeypatch.setenv("MSAL_CACHE_PATH", str(cache_path))
 
     cfg = AppSettings()
@@ -41,6 +44,7 @@ def test_ms_auth_settings_from_env(monkeypatch, tmp_path: Path):
     assert cfg.ms_client_id == "client-id"
     assert cfg.ms_scopes_list == [
         "offline_access",
+        "User.Read",
         "Notes.ReadWrite",
         "Calendars.Read",
     ]
