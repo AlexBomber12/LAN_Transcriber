@@ -370,6 +370,23 @@ def test_ui_action_requeue_failure_returns_503(tmp_path, monkeypatch):
     assert "redis down" in r.text
 
 
+def test_ui_action_delete_purge_failure_returns_503(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    init_db(cfg)
+    create_recording("rec-pf-1", source="drive", source_filename="pf.mp3", settings=cfg)
+
+    def _fail_purge(recording_id: str, *, settings=None) -> int:
+        raise RuntimeError("redis down")
+
+    monkeypatch.setattr(ui_routes, "purge_pending_recording_jobs", _fail_purge)
+    c = TestClient(api.app, follow_redirects=False)
+    r = c.post("/ui/recordings/rec-pf-1/delete")
+    assert r.status_code == 503
+    assert "redis down" in r.text
+
+
 def test_ui_action_delete_removes_disk_artifacts(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
     monkeypatch.setattr(api, "_settings", cfg)

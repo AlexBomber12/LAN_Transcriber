@@ -308,8 +308,8 @@ async def ui_action_delete(recording_id: str) -> Any:
         return HTMLResponse("Not found", status_code=404)
     try:
         purge_pending_recording_jobs(recording_id, settings=_settings)
-    except Exception:
-        pass
+    except Exception as exc:
+        return HTMLResponse(f"Delete failed (queue unavailable): {exc}", status_code=503)
     from .db import delete_recording
 
     delete_recording(recording_id, settings=_settings)
