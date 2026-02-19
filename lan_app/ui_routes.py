@@ -15,6 +15,11 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
+from .calendar import (
+    load_calendar_context,
+    refresh_calendar_context,
+    select_calendar_event,
+)
 from .config import AppSettings
 from .constants import (
     JOB_STATUSES,
@@ -34,7 +39,7 @@ from .db import (
     set_recording_status,
 )
 from .jobs import enqueue_recording_job, purge_pending_recording_jobs
-from .ms_graph import ms_connection_state
+from .ms_graph import GraphAuthError, ms_connection_state
 
 _TEMPLATES_DIR = Path(__file__).parent / "templates"
 _STATIC_DIR = Path(__file__).parent / "static"
@@ -131,6 +136,23 @@ async def ui_recording_detail(
         return HTMLResponse("<h1>404 – Recording not found</h1>", status_code=404)
     jobs, _ = list_jobs(settings=_settings, recording_id=recording_id, limit=100)
     tabs = ["overview", "calendar", "project", "speakers", "language", "metrics", "log"]
+    current_tab = tab if tab in tabs else "overview"
+    calendar: dict[str, Any] | None = None
+    if current_tab == "calendar":
+        try:
+            calendar = await run_in_threadpool(
+                refresh_calendar_context,
+                recording_id,
+                settings=_settings,
+            )
+        except GraphAuthError as exc:
+            calendar = await run_in_threadpool(
+                load_calendar_context,
+                recording_id,
+                settings=_settings,
+            )
+            calendar["fetch_error"] = str(exc)
+
     return templates.TemplateResponse(
         request,
         "recording_detail.html",
@@ -139,7 +161,8 @@ async def ui_recording_detail(
             "rec": rec,
             "jobs": jobs,
             "tabs": tabs,
-            "current_tab": tab if tab in tabs else "overview",
+            "current_tab": current_tab,
+            "calendar": calendar,
         },
     )
 
@@ -323,3 +346,20 @@ async def ui_action_delete(recording_id: str) -> Any:
     resp = HTMLResponse("")
     resp.headers["HX-Redirect"] = "/recordings"
     return resp
+
+
+@ui_router.post("/ui/recordings/{recording_id}/calendar/select")
+async def ui_select_calendar(recording_id: str, event_id: str = Form(default="")) -> Any:
+    if get_recording(recording_id, settings=_settings) is None:
+        return HTMLResponse("Not found", status_code=404)
+    selected_event_id = event_id.strip() or None
+    try:
+        await run_in_threadpool(
+            select_calendar_event,
+            recording_id,
+            selected_event_id,
+            settings=_settings,
+        )
+    except ValueError as exc:
+        return HTMLResponse(str(exc), status_code=422)
+    return RedirectResponse(f"/recordings/{recording_id}?tab=calendar", status_code=303)

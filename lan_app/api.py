@@ -16,6 +16,11 @@ from lan_transcriber.metrics import write_metrics_snapshot
 from lan_transcriber.models import TranscriptResult
 from lan_transcriber.pipeline import refresh_aliases
 
+from .calendar import (
+    load_calendar_context,
+    refresh_calendar_context,
+    select_calendar_event,
+)
 from .config import AppSettings
 from .constants import (
     DEFAULT_REQUEUE_JOB_TYPE,
@@ -63,6 +68,10 @@ class RequeueAction(BaseModel):
 
 class QuarantineAction(BaseModel):
     reason: str | None = None
+
+
+class CalendarSelectAction(BaseModel):
+    event_id: str | None = None
 
 
 def _validate_recording_status(status: str | None) -> str | None:
@@ -203,6 +212,45 @@ async def api_get_recording(recording_id: str) -> dict[str, object]:
     if item is None:
         raise HTTPException(status_code=404, detail="Recording not found")
     return item
+
+
+@app.get("/api/recordings/{recording_id}/calendar")
+async def api_get_recording_calendar(recording_id: str) -> dict[str, object]:
+    if get_recording(recording_id, settings=_settings) is None:
+        raise HTTPException(status_code=404, detail="Recording not found")
+    try:
+        return await run_in_threadpool(
+            refresh_calendar_context,
+            recording_id,
+            settings=_settings,
+        )
+    except GraphAuthError as exc:
+        fallback = await run_in_threadpool(
+            load_calendar_context,
+            recording_id,
+            settings=_settings,
+        )
+        fallback["fetch_error"] = str(exc)
+        return fallback
+
+
+@app.post("/api/recordings/{recording_id}/calendar/select")
+async def api_select_recording_calendar(
+    recording_id: str,
+    action: CalendarSelectAction | None = None,
+) -> dict[str, object]:
+    if get_recording(recording_id, settings=_settings) is None:
+        raise HTTPException(status_code=404, detail="Recording not found")
+    payload = action or CalendarSelectAction()
+    try:
+        return await run_in_threadpool(
+            select_calendar_event,
+            recording_id,
+            payload.event_id,
+            settings=_settings,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
 
 
 @app.post("/api/recordings/{recording_id}/actions/requeue")

@@ -134,8 +134,8 @@ Requirement already satisfied: six>=1.5 in ./.venv-ci/lib/python3.12/site-packag
 Building wheels for collected packages: lan-transcriber
   Building editable for lan-transcriber (pyproject.toml): started
   Building editable for lan-transcriber (pyproject.toml): finished with status 'done'
-  Created wheel for lan-transcriber: filename=lan_transcriber-0.1.0-0.editable-py3-none-any.whl size=15395 sha256=7d323a879645ed7838754e170d0fcae51c1490feb99bd235b6eaa4c674f8333b
-  Stored in directory: /tmp/pip-ephem-wheel-cache-x5lycd58/wheels/d5/8a/5c/f7178f7e49aa5ae12b2320ec66b5c310f4f2f63d1bd301b7fb
+  Created wheel for lan-transcriber: filename=lan_transcriber-0.1.0-0.editable-py3-none-any.whl size=15395 sha256=d6a4d59c37517567abef2953492e710ddc925384d98d3c7f0790763889e9749c
+  Stored in directory: /tmp/pip-ephem-wheel-cache-n52cy1t0/wheels/d5/8a/5c/f7178f7e49aa5ae12b2320ec66b5c310f4f2f63d1bd301b7fb
 Successfully built lan-transcriber
 Installing collected packages: lan-transcriber
   Attempting uninstall: lan-transcriber
@@ -144,8 +144,8 @@ Installing collected packages: lan-transcriber
       Successfully uninstalled lan-transcriber-0.1.0
 Successfully installed lan-transcriber-0.1.0
 All checks passed!
-........................................................................ [ 62%]
-...........................................                              [100%]
+........................................................................ [ 59%]
+..................................................                       [100%]
 =============================== warnings summary ===============================
 lan_transcriber/pipeline.py:35
   /home/alexey/LAN_Transcriber/lan_transcriber/pipeline.py:35: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
@@ -155,8 +155,8 @@ lan_app/config.py:20
   /home/alexey/LAN_Transcriber/lan_app/config.py:20: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
     class AppSettings(BaseSettings):
 
-lan_app/api.py:138
-  /home/alexey/LAN_Transcriber/lan_app/api.py:138: DeprecationWarning: 
+lan_app/api.py:147
+  /home/alexey/LAN_Transcriber/lan_app/api.py:147: DeprecationWarning: 
           on_event is deprecated, use lifespan event handlers instead.
   
           Read more about it in the
@@ -190,4 +190,4 @@ lan_transcriber/runtime_paths.py      21      1    95%
 ------------------------------------------------------
 TOTAL                                207      7    97%
 Required test coverage of 90% reached. Total coverage: 96.62%
-115 passed, 1 skipped, 4 warnings in 37.46s
+122 passed, 1 skipped, 4 warnings in 37.81s

@@ -142,8 +142,15 @@ def test_recording_detail_log_tab(seeded_client):
     assert "precheck" in r.text
 
 
+def test_recording_detail_calendar_tab(seeded_client):
+    r = seeded_client.get("/recordings/rec-ui-1?tab=calendar")
+    assert r.status_code == 200
+    assert "Candidate Events" in r.text
+    assert "Save selection" in r.text
+
+
 def test_recording_detail_placeholder_tabs(seeded_client):
-    for tab in ("calendar", "project", "speakers", "language", "metrics"):
+    for tab in ("project", "speakers", "language", "metrics"):
         r = seeded_client.get(f"/recordings/rec-ui-1?tab={tab}")
         assert r.status_code == 200
         assert "placeholder" in r.text.lower() or "available after" in r.text.lower()

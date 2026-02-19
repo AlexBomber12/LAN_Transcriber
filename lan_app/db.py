@@ -566,6 +566,111 @@ def delete_voice_profile(
     return deleted.rowcount > 0
 
 
+def get_calendar_match(
+    recording_id: str,
+    *,
+    settings: AppSettings | None = None,
+) -> dict[str, Any] | None:
+    init_db(settings)
+    with connect(settings) as conn:
+        row = conn.execute(
+            "SELECT * FROM calendar_matches WHERE recording_id = ?",
+            (recording_id,),
+        ).fetchone()
+    return _as_dict(row)
+
+
+def upsert_calendar_match(
+    *,
+    recording_id: str,
+    candidates: list[dict[str, Any]],
+    selected_event_id: str | None,
+    selected_confidence: float | None,
+    settings: AppSettings | None = None,
+) -> dict[str, Any]:
+    init_db(settings)
+    candidates_json = json.dumps(candidates, ensure_ascii=True)
+    with connect(settings) as conn:
+        conn.execute(
+            """
+            INSERT INTO calendar_matches (
+                recording_id,
+                selected_event_id,
+                selected_confidence,
+                candidates_json
+            )
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(recording_id) DO UPDATE SET
+                selected_event_id = excluded.selected_event_id,
+                selected_confidence = excluded.selected_confidence,
+                candidates_json = excluded.candidates_json
+            """,
+            (
+                recording_id,
+                selected_event_id,
+                selected_confidence,
+                candidates_json,
+            ),
+        )
+        row = conn.execute(
+            "SELECT * FROM calendar_matches WHERE recording_id = ?",
+            (recording_id,),
+        ).fetchone()
+        conn.commit()
+    return _as_dict(row) or {}
+
+
+def set_calendar_match_selection(
+    *,
+    recording_id: str,
+    event_id: str | None,
+    selected_confidence: float | None,
+    settings: AppSettings | None = None,
+) -> dict[str, Any]:
+    init_db(settings)
+    with connect(settings) as conn:
+        existing = conn.execute(
+            "SELECT candidates_json FROM calendar_matches WHERE recording_id = ?",
+            (recording_id,),
+        ).fetchone()
+        if existing is None:
+            conn.execute(
+                """
+                INSERT INTO calendar_matches (
+                    recording_id,
+                    selected_event_id,
+                    selected_confidence,
+                    candidates_json
+                )
+                VALUES (?, ?, ?, '[]')
+                """,
+                (
+                    recording_id,
+                    event_id,
+                    selected_confidence,
+                ),
+            )
+        else:
+            conn.execute(
+                """
+                UPDATE calendar_matches
+                SET selected_event_id = ?, selected_confidence = ?
+                WHERE recording_id = ?
+                """,
+                (
+                    event_id,
+                    selected_confidence,
+                    recording_id,
+                ),
+            )
+        row = conn.execute(
+            "SELECT * FROM calendar_matches WHERE recording_id = ?",
+            (recording_id,),
+        ).fetchone()
+        conn.commit()
+    return _as_dict(row) or {}
+
+
 def _set_job_terminal_state(
     *,
     job_id: str,
@@ -611,4 +716,7 @@ __all__ = [
     "list_voice_profiles",
     "create_voice_profile",
     "delete_voice_profile",
+    "get_calendar_match",
+    "upsert_calendar_match",
+    "set_calendar_match_selection",
 ]

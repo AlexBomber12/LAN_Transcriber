@@ -1,255 +1,1165 @@
+diff --git a/.env.example b/.env.example
+index 30ee885..c28ece7 100644
+--- a/.env.example
++++ b/.env.example
+@@ -28,6 +28,8 @@ GDRIVE_POLL_INTERVAL_SECONDS=60
+ MS_TENANT_ID=
+ MS_CLIENT_ID=
+ MS_SCOPES=offline_access User.Read Notes.ReadWrite Calendars.Read
++CALENDAR_MATCH_WINDOW_MINUTES=45
++CALENDAR_AUTO_MATCH_THRESHOLD=0.6
+ 
+ # Plaud fetcher (beta)
+ FETCH_INTERVAL_SEC=300
 diff --git a/lan_app/api.py b/lan_app/api.py
-index 6237cab..506a420 100644
+index 506a420..0c54093 100644
 --- a/lan_app/api.py
 +++ b/lan_app/api.py
-@@ -5,6 +5,7 @@ import shutil
- from typing import List
+@@ -16,6 +16,11 @@ from lan_transcriber.metrics import write_metrics_snapshot
+ from lan_transcriber.models import TranscriptResult
+ from lan_transcriber.pipeline import refresh_aliases
  
- from fastapi import FastAPI, HTTPException, Query
-+from fastapi.concurrency import run_in_threadpool
- from fastapi.responses import Response, StreamingResponse
- from fastapi.staticfiles import StaticFiles
- from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
-@@ -89,7 +90,7 @@ async def healthz() -> dict[str, str]:
- @app.get("/api/connections/ms/verify")
- async def api_verify_ms_connection() -> dict[str, object]:
-     """Validate Microsoft Graph auth by calling /me via cached delegated token."""
--    state = ms_connection_state(_settings)
-+    state = await run_in_threadpool(ms_connection_state, _settings)
-     if state["status"] != "connected":
-         return {
-             "ok": False,
-@@ -113,7 +114,11 @@ async def api_start_ms_connection(
- ) -> dict[str, object]:
-     """Start device-code flow and return code/URL details for UI polling."""
-     try:
--        return start_device_flow_session(_settings, reconnect=reconnect)
++from .calendar import (
++    load_calendar_context,
++    refresh_calendar_context,
++    select_calendar_event,
++)
+ from .config import AppSettings
+ from .constants import (
+     DEFAULT_REQUEUE_JOB_TYPE,
+@@ -65,6 +70,10 @@ class QuarantineAction(BaseModel):
+     reason: str | None = None
+ 
+ 
++class CalendarSelectAction(BaseModel):
++    event_id: str | None = None
++
++
+ def _validate_recording_status(status: str | None) -> str | None:
+     if status is None:
+         return None
+@@ -205,6 +214,45 @@ async def api_get_recording(recording_id: str) -> dict[str, object]:
+     return item
+ 
+ 
++@app.get("/api/recordings/{recording_id}/calendar")
++async def api_get_recording_calendar(recording_id: str) -> dict[str, object]:
++    if get_recording(recording_id, settings=_settings) is None:
++        raise HTTPException(status_code=404, detail="Recording not found")
++    try:
 +        return await run_in_threadpool(
-+            start_device_flow_session,
-+            _settings,
-+            reconnect=reconnect,
++            refresh_calendar_context,
++            recording_id,
++            settings=_settings,
 +        )
-     except GraphNotConfiguredError as exc:
-         raise HTTPException(status_code=422, detail=str(exc))
-     except GraphDeviceFlowLimitError as exc:
-diff --git a/lan_app/ms_graph.py b/lan_app/ms_graph.py
-index 2a79927..3430f1f 100644
---- a/lan_app/ms_graph.py
-+++ b/lan_app/ms_graph.py
-@@ -393,26 +393,15 @@ def start_device_flow_session(
-                 "Too many pending Microsoft connect sessions; try again shortly."
-             )
++    except GraphAuthError as exc:
++        fallback = await run_in_threadpool(
++            load_calendar_context,
++            recording_id,
++            settings=_settings,
++        )
++        fallback["fetch_error"] = str(exc)
++        return fallback
++
++
++@app.post("/api/recordings/{recording_id}/calendar/select")
++async def api_select_recording_calendar(
++    recording_id: str,
++    action: CalendarSelectAction | None = None,
++) -> dict[str, object]:
++    if get_recording(recording_id, settings=_settings) is None:
++        raise HTTPException(status_code=404, detail="Recording not found")
++    payload = action or CalendarSelectAction()
++    try:
++        return await run_in_threadpool(
++            select_calendar_event,
++            recording_id,
++            payload.event_id,
++            settings=_settings,
++        )
++    except ValueError as exc:
++        raise HTTPException(status_code=422, detail=str(exc))
++
++
+ @app.post("/api/recordings/{recording_id}/actions/requeue")
+ async def api_requeue_recording(
+     recording_id: str,
+diff --git a/lan_app/config.py b/lan_app/config.py
+index 831a763..9e5f483 100644
+--- a/lan_app/config.py
++++ b/lan_app/config.py
+@@ -79,6 +79,24 @@ class AppSettings(BaseSettings):
+         default_factory=_default_msal_cache_path,
+         validation_alias=AliasChoices("MSAL_CACHE_PATH", "LAN_MSAL_CACHE_PATH"),
+     )
++    calendar_match_window_minutes: int = Field(
++        default=45,
++        ge=5,
++        le=24 * 60,
++        validation_alias=AliasChoices(
++            "CALENDAR_MATCH_WINDOW_MINUTES",
++            "LAN_CALENDAR_MATCH_WINDOW_MINUTES",
++        ),
++    )
++    calendar_auto_match_threshold: float = Field(
++        default=0.6,
++        ge=0.0,
++        le=1.0,
++        validation_alias=AliasChoices(
++            "CALENDAR_AUTO_MATCH_THRESHOLD",
++            "LAN_CALENDAR_AUTO_MATCH_THRESHOLD",
++        ),
++    )
  
--    client = MicrosoftGraphClient(settings=cfg)
--    if reconnect:
--        client.clear_cache()
-+        # Keep initiation serialized under lock: this avoids duplicate upstream
-+        # device-code challenges during request bursts.
-         client = MicrosoftGraphClient(settings=cfg)
--    flow = client.initiate_device_flow()
--    session_id = uuid4().hex
--    session = _DeviceFlowSession(flow=flow)
--    with _DEVICE_FLOW_LOCK:
--        now = time.time()
--        _prune_sessions_locked(now)
--        existing = _first_pending_session_locked()
--        if existing is not None:
--            existing_id, existing_session = existing
--            payload = _session_payload(existing_id, existing_session)
--            payload["reused"] = True
--            return payload
--        if len(_pending_session_ids_locked()) >= _MAX_PENDING_DEVICE_FLOWS:
--            raise GraphDeviceFlowLimitError(
--                "Too many pending Microsoft connect sessions; try again shortly."
--            )
-+        if reconnect:
-+            client.clear_cache()
-+            client = MicrosoftGraphClient(settings=cfg)
-+        flow = client.initiate_device_flow()
-+        session_id = uuid4().hex
-+        session = _DeviceFlowSession(flow=flow)
-         _DEVICE_FLOW_SESSIONS[session_id] = session
+     @property
+     def ms_scopes_list(self) -> list[str]:
+diff --git a/lan_app/db.py b/lan_app/db.py
+index 49e97f3..e03b0fb 100644
+--- a/lan_app/db.py
++++ b/lan_app/db.py
+@@ -566,6 +566,111 @@ def delete_voice_profile(
+     return deleted.rowcount > 0
  
-     thread = threading.Thread(
+ 
++def get_calendar_match(
++    recording_id: str,
++    *,
++    settings: AppSettings | None = None,
++) -> dict[str, Any] | None:
++    init_db(settings)
++    with connect(settings) as conn:
++        row = conn.execute(
++            "SELECT * FROM calendar_matches WHERE recording_id = ?",
++            (recording_id,),
++        ).fetchone()
++    return _as_dict(row)
++
++
++def upsert_calendar_match(
++    *,
++    recording_id: str,
++    candidates: list[dict[str, Any]],
++    selected_event_id: str | None,
++    selected_confidence: float | None,
++    settings: AppSettings | None = None,
++) -> dict[str, Any]:
++    init_db(settings)
++    candidates_json = json.dumps(candidates, ensure_ascii=True)
++    with connect(settings) as conn:
++        conn.execute(
++            """
++            INSERT INTO calendar_matches (
++                recording_id,
++                selected_event_id,
++                selected_confidence,
++                candidates_json
++            )
++            VALUES (?, ?, ?, ?)
++            ON CONFLICT(recording_id) DO UPDATE SET
++                selected_event_id = excluded.selected_event_id,
++                selected_confidence = excluded.selected_confidence,
++                candidates_json = excluded.candidates_json
++            """,
++            (
++                recording_id,
++                selected_event_id,
++                selected_confidence,
++                candidates_json,
++            ),
++        )
++        row = conn.execute(
++            "SELECT * FROM calendar_matches WHERE recording_id = ?",
++            (recording_id,),
++        ).fetchone()
++        conn.commit()
++    return _as_dict(row) or {}
++
++
++def set_calendar_match_selection(
++    *,
++    recording_id: str,
++    event_id: str | None,
++    selected_confidence: float | None,
++    settings: AppSettings | None = None,
++) -> dict[str, Any]:
++    init_db(settings)
++    with connect(settings) as conn:
++        existing = conn.execute(
++            "SELECT candidates_json FROM calendar_matches WHERE recording_id = ?",
++            (recording_id,),
++        ).fetchone()
++        if existing is None:
++            conn.execute(
++                """
++                INSERT INTO calendar_matches (
++                    recording_id,
++                    selected_event_id,
++                    selected_confidence,
++                    candidates_json
++                )
++                VALUES (?, ?, ?, '[]')
++                """,
++                (
++                    recording_id,
++                    event_id,
++                    selected_confidence,
++                ),
++            )
++        else:
++            conn.execute(
++                """
++                UPDATE calendar_matches
++                SET selected_event_id = ?, selected_confidence = ?
++                WHERE recording_id = ?
++                """,
++                (
++                    event_id,
++                    selected_confidence,
++                    recording_id,
++                ),
++            )
++        row = conn.execute(
++            "SELECT * FROM calendar_matches WHERE recording_id = ?",
++            (recording_id,),
++        ).fetchone()
++        conn.commit()
++    return _as_dict(row) or {}
++
++
+ def _set_job_terminal_state(
+     *,
+     job_id: str,
+@@ -611,4 +716,7 @@ __all__ = [
+     "list_voice_profiles",
+     "create_voice_profile",
+     "delete_voice_profile",
++    "get_calendar_match",
++    "upsert_calendar_match",
++    "set_calendar_match_selection",
+ ]
+diff --git a/lan_app/templates/recording_detail.html b/lan_app/templates/recording_detail.html
+index 1049d1b..ec11e81 100644
+--- a/lan_app/templates/recording_detail.html
++++ b/lan_app/templates/recording_detail.html
+@@ -43,7 +43,82 @@
+   </div>
+ 
+ {% elif current_tab == 'calendar' %}
+-  <p class="placeholder">Calendar matching — available after PR-CALENDAR-01.</p>
++  {% set cal = calendar or {} %}
++  {% set signals = cal.signals or {} %}
++
++  {% if cal.fetch_error %}
++  <p style="margin-bottom:10px;color:#92400e">
++    Calendar fetch unavailable: {{ cal.fetch_error }}
++  </p>
++  {% endif %}
++
++  <h2>Selected Event</h2>
++  {% if cal.selected_event %}
++  <div class="info-grid">
++    <span class="k">Subject</span><span class="v">{{ cal.selected_event.subject }}</span>
++    <span class="k">Start</span><span class="v">{{ cal.selected_event.start[:19].replace('T',' ') if cal.selected_event.start else '—' }}</span>
++    <span class="k">End</span><span class="v">{{ cal.selected_event.end[:19].replace('T',' ') if cal.selected_event.end else '—' }}</span>
++    <span class="k">Organizer</span><span class="v">{{ cal.selected_event.organizer or '—' }}</span>
++    <span class="k">Attendees</span><span class="v">{{ (cal.selected_event.attendees or []) | join(', ') or '—' }}</span>
++    <span class="k">Location</span><span class="v">{{ cal.selected_event.location or '—' }}</span>
++    <span class="k">Score</span><span class="v">{{ '%.3f'|format(cal.selected_confidence or 0.0) }}</span>
++  </div>
++  {% elif cal.manual_no_event %}
++  <p class="placeholder">No event selected (manual override).</p>
++  {% else %}
++  <p class="placeholder">No event matched yet.</p>
++  {% endif %}
++
++  <h2>Extracted Signals</h2>
++  <div class="info-grid">
++    <span class="k">Title tokens</span><span class="v">{{ (signals.title_tokens or []) | join(', ') or '—' }}</span>
++    <span class="k">Attendees</span><span class="v">{{ (signals.attendees or []) | join(', ') or '—' }}</span>
++    <span class="k">Organizer</span><span class="v">{{ signals.organizer or '—' }}</span>
++  </div>
++
++  <h2>Candidate Events (Top 5)</h2>
++  <form method="post" action="/ui/recordings/{{ rec.id }}/calendar/select">
++    <table>
++      <thead>
++        <tr>
++          <th>Pick</th>
++          <th>Subject</th>
++          <th>Start</th>
++          <th>End</th>
++          <th>Organizer</th>
++          <th>Attendees</th>
++          <th>Location</th>
++          <th>Score</th>
++          <th>Rationale</th>
++        </tr>
++      </thead>
++      <tbody>
++        <tr>
++          <td><input type="radio" name="event_id" value="" {% if not cal.selected_event_id %}checked{% endif %}></td>
++          <td colspan="8"><em>No event</em></td>
++        </tr>
++        {% for c in cal.candidates or [] %}
++        <tr>
++          <td><input type="radio" name="event_id" value="{{ c.event_id }}" {% if cal.selected_event_id == c.event_id %}checked{% endif %}></td>
++          <td title="{{ c.subject }}">{{ c.subject }}</td>
++          <td>{{ c.start[:19].replace('T',' ') if c.start else '—' }}</td>
++          <td>{{ c.end[:19].replace('T',' ') if c.end else '—' }}</td>
++          <td>{{ c.organizer or '—' }}</td>
++          <td title="{{ (c.attendees or []) | join(', ') }}">{{ (c.attendees or []) | join(', ') or '—' }}</td>
++          <td>{{ c.location or '—' }}</td>
++          <td>{{ '%.3f'|format(c.score or 0.0) }}</td>
++          <td title="{{ c.rationale }}">{{ c.rationale }}</td>
++        </tr>
++        {% endfor %}
++      </tbody>
++    </table>
++    {% if not (cal.candidates or []) %}
++    <p class="placeholder">No candidates found in the calendar window.</p>
++    {% endif %}
++    <div class="filters" style="margin-top:8px">
++      <button type="submit" class="btn">Save selection</button>
++    </div>
++  </form>
+ 
+ {% elif current_tab == 'project' %}
+   <p class="placeholder">Project assignment — available after PR-CALENDAR-01.</p>
 diff --git a/lan_app/ui_routes.py b/lan_app/ui_routes.py
-index 35f27af..960ed32 100644
+index 960ed32..51c041b 100644
 --- a/lan_app/ui_routes.py
 +++ b/lan_app/ui_routes.py
-@@ -11,6 +11,7 @@ from pathlib import Path
- from typing import Any
- 
- from fastapi import APIRouter, Form, Query, Request
-+from fastapi.concurrency import run_in_threadpool
+@@ -15,6 +15,11 @@ from fastapi.concurrency import run_in_threadpool
  from fastapi.responses import HTMLResponse, RedirectResponse
  from fastapi.templating import Jinja2Templates
  
-@@ -263,7 +264,7 @@ async def ui_queue(
++from .calendar import (
++    load_calendar_context,
++    refresh_calendar_context,
++    select_calendar_event,
++)
+ from .config import AppSettings
+ from .constants import (
+     JOB_STATUSES,
+@@ -34,7 +39,7 @@ from .db import (
+     set_recording_status,
+ )
+ from .jobs import enqueue_recording_job, purge_pending_recording_jobs
+-from .ms_graph import ms_connection_state
++from .ms_graph import GraphAuthError, ms_connection_state
  
- @ui_router.get("/connections", response_class=HTMLResponse)
- async def ui_connections(request: Request) -> Any:
--    ms_state = ms_connection_state(_settings)
-+    ms_state = await run_in_threadpool(ms_connection_state, _settings)
+ _TEMPLATES_DIR = Path(__file__).parent / "templates"
+ _STATIC_DIR = Path(__file__).parent / "static"
+@@ -131,6 +136,23 @@ async def ui_recording_detail(
+         return HTMLResponse("<h1>404 – Recording not found</h1>", status_code=404)
+     jobs, _ = list_jobs(settings=_settings, recording_id=recording_id, limit=100)
+     tabs = ["overview", "calendar", "project", "speakers", "language", "metrics", "log"]
++    current_tab = tab if tab in tabs else "overview"
++    calendar: dict[str, Any] | None = None
++    if current_tab == "calendar":
++        try:
++            calendar = await run_in_threadpool(
++                refresh_calendar_context,
++                recording_id,
++                settings=_settings,
++            )
++        except GraphAuthError as exc:
++            calendar = await run_in_threadpool(
++                load_calendar_context,
++                recording_id,
++                settings=_settings,
++            )
++            calendar["fetch_error"] = str(exc)
++
      return templates.TemplateResponse(
          request,
-         "connections.html",
-diff --git a/tests/test_ms_auth.py b/tests/test_ms_auth.py
-index b2325c5..51635eb 100644
---- a/tests/test_ms_auth.py
-+++ b/tests/test_ms_auth.py
-@@ -1,5 +1,6 @@
- from __future__ import annotations
+         "recording_detail.html",
+@@ -139,7 +161,8 @@ async def ui_recording_detail(
+             "rec": rec,
+             "jobs": jobs,
+             "tabs": tabs,
+-            "current_tab": tab if tab in tabs else "overview",
++            "current_tab": current_tab,
++            "calendar": calendar,
+         },
+     )
  
-+import threading
- from pathlib import Path
- 
- from fastapi.testclient import TestClient
-@@ -45,6 +46,38 @@ def test_api_ms_verify_ok(tmp_path, monkeypatch):
-     assert body["account_display_name"] == "Alex Worker"
- 
- 
-+def test_api_ms_verify_uses_threadpool(tmp_path, monkeypatch):
-+    cfg = _cfg(tmp_path)
-+    monkeypatch.setattr(api, "_settings", cfg)
-+    monkeypatch.setattr(ui_routes, "_settings", cfg)
-+    init_db(cfg)
+@@ -323,3 +346,20 @@ async def ui_action_delete(recording_id: str) -> Any:
+     resp = HTMLResponse("")
+     resp.headers["HX-Redirect"] = "/recordings"
+     return resp
 +
-+    def _fail_direct(_settings):
-+        raise AssertionError("ms_connection_state should run via threadpool")
 +
-+    calls: dict[str, object] = {}
++@ui_router.post("/ui/recordings/{recording_id}/calendar/select")
++async def ui_select_calendar(recording_id: str, event_id: str = Form(default="")) -> Any:
++    if get_recording(recording_id, settings=_settings) is None:
++        return HTMLResponse("Not found", status_code=404)
++    selected_event_id = event_id.strip() or None
++    try:
++        await run_in_threadpool(
++            select_calendar_event,
++            recording_id,
++            selected_event_id,
++            settings=_settings,
++        )
++    except ValueError as exc:
++        return HTMLResponse(str(exc), status_code=422)
++    return RedirectResponse(f"/recordings/{recording_id}?tab=calendar", status_code=303)
+diff --git a/tasks/QUEUE.md b/tasks/QUEUE.md
+index 3a083d9..2a4385f 100644
+--- a/tasks/QUEUE.md
++++ b/tasks/QUEUE.md
+@@ -42,7 +42,7 @@ Queue (in order)
+ - Depends on: PR-UI-SHELL-01
+ 
+ 7) PR-CALENDAR-01: Read M365 calendar via Graph and match events to recordings; manual override in UI
+-- Status: TODO
++- Status: DOING
+ - Tasks file: tasks/PR-CALENDAR-01.md
+ - Depends on: PR-MS-AUTH-01 and PR-GDRIVE-INGEST-01
+ 
+diff --git a/tests/test_app_config.py b/tests/test_app_config.py
+index 8fc84db..74f15f1 100644
+--- a/tests/test_app_config.py
++++ b/tests/test_app_config.py
+@@ -49,3 +49,12 @@ def test_ms_auth_settings_from_env(monkeypatch, tmp_path: Path):
+         "Calendars.Read",
+     ]
+     assert cfg.msal_cache_path == cache_path
 +
-+    async def _fake_threadpool(fn, *args, **kwargs):
-+        calls["fn"] = fn
-+        calls["args"] = args
-+        calls["kwargs"] = kwargs
-+        return {
-+            "status": "connected",
-+            "account_display_name": "Alex Worker",
-+            "tenant_id": "tenant-1",
-+            "granted_scopes": ["offline_access", "User.Read"],
++
++def test_calendar_match_settings_from_env(monkeypatch):
++    monkeypatch.setenv("CALENDAR_MATCH_WINDOW_MINUTES", "30")
++    monkeypatch.setenv("CALENDAR_AUTO_MATCH_THRESHOLD", "0.7")
++
++    cfg = AppSettings()
++    assert cfg.calendar_match_window_minutes == 30
++    assert cfg.calendar_auto_match_threshold == 0.7
+diff --git a/tests/test_ui_routes.py b/tests/test_ui_routes.py
+index 483954f..adbfddf 100644
+--- a/tests/test_ui_routes.py
++++ b/tests/test_ui_routes.py
+@@ -142,8 +142,15 @@ def test_recording_detail_log_tab(seeded_client):
+     assert "precheck" in r.text
+ 
+ 
++def test_recording_detail_calendar_tab(seeded_client):
++    r = seeded_client.get("/recordings/rec-ui-1?tab=calendar")
++    assert r.status_code == 200
++    assert "Candidate Events" in r.text
++    assert "Save selection" in r.text
++
++
+ def test_recording_detail_placeholder_tabs(seeded_client):
+-    for tab in ("calendar", "project", "speakers", "language", "metrics"):
++    for tab in ("project", "speakers", "language", "metrics"):
+         r = seeded_client.get(f"/recordings/rec-ui-1?tab={tab}")
+         assert r.status_code == 200
+         assert "placeholder" in r.text.lower() or "available after" in r.text.lower()
+diff --git a/lan_app/calendar.py b/lan_app/calendar.py
+new file mode 100644
+index 0000000..e4695e9
+--- /dev/null
++++ b/lan_app/calendar.py
+@@ -0,0 +1,421 @@
++"""Calendar matching for recordings using Microsoft Graph calendarView."""
++
++from __future__ import annotations
++
++from datetime import datetime, timedelta, timezone
++import re
++from typing import Any
++from urllib.parse import urlencode
++
++from .config import AppSettings
++from .db import (
++    get_calendar_match,
++    get_recording,
++    set_calendar_match_selection,
++    upsert_calendar_match,
++)
++from .ms_graph import MicrosoftGraphClient
++
++_TOKEN_RE = re.compile(r"[A-Za-z0-9]+")
++_MANUAL_NO_EVENT_CONFIDENCE = -1.0
++_GRAPH_CANDIDATE_LIMIT = 25
++_UI_CANDIDATE_LIMIT = 5
++
++
++def refresh_calendar_context(
++    recording_id: str,
++    *,
++    settings: AppSettings | None = None,
++) -> dict[str, Any]:
++    cfg = settings or AppSettings()
++    recording = get_recording(recording_id, settings=cfg)
++    if recording is None:
++        raise KeyError(recording_id)
++
++    capture_time = _parse_iso_datetime(recording.get("captured_at"))
++    if capture_time is None:
++        capture_time = datetime.now(tz=timezone.utc)
++
++    window = timedelta(minutes=cfg.calendar_match_window_minutes)
++    window_start = capture_time - window
++    window_end = capture_time + window
++    recording_start, recording_end = _recording_interval(recording, capture_time)
++    recording_tokens = _tokenize(str(recording.get("source_filename") or ""))
++
++    client = MicrosoftGraphClient(cfg)
++    query = urlencode(
++        {
++            "startDateTime": _iso_z(window_start),
++            "endDateTime": _iso_z(window_end),
++            "$top": _GRAPH_CANDIDATE_LIMIT,
++            "$orderby": "start/dateTime",
 +        }
++    )
++    response = client.graph_get(f"/me/calendarView?{query}")
++    events = response.get("value")
++    if not isinstance(events, list):
++        events = []
 +
-+    monkeypatch.setattr(api, "ms_connection_state", _fail_direct)
-+    monkeypatch.setattr(api, "run_in_threadpool", _fake_threadpool)
++    candidates: list[dict[str, Any]] = []
++    window_seconds = max(int(window.total_seconds()), 1)
++    for item in events:
++        if not isinstance(item, dict):
++            continue
++        candidate = _build_candidate(
++            item,
++            recording_start=recording_start,
++            recording_end=recording_end,
++            window_seconds=window_seconds,
++            recording_tokens=recording_tokens,
++        )
++        if candidate is None:
++            continue
++        candidates.append(candidate)
++    candidates.sort(key=lambda c: float(c.get("score") or 0.0), reverse=True)
 +
-+    client = TestClient(api.app, follow_redirects=True)
-+    resp = client.get("/api/connections/ms/verify")
-+    assert resp.status_code == 200
-+    assert resp.json()["ok"] is True
-+    assert calls["fn"] == _fail_direct
++    existing = get_calendar_match(recording_id, settings=cfg)
++    selected_event_id, selected_confidence = _resolve_selected_event(
++        existing=existing,
++        candidates=candidates,
++        threshold=cfg.calendar_auto_match_threshold,
++    )
++    row = upsert_calendar_match(
++        recording_id=recording_id,
++        candidates=candidates,
++        selected_event_id=selected_event_id,
++        selected_confidence=selected_confidence,
++        settings=cfg,
++    )
++    return _build_context(recording, row)
 +
 +
- def test_api_ms_verify_error(tmp_path, monkeypatch):
-     cfg = _cfg(tmp_path)
-     monkeypatch.setattr(api, "_settings", cfg)
-@@ -199,6 +232,47 @@ def test_connections_page_shows_ms_state(tmp_path, monkeypatch):
-     assert "Reconnect" in resp.text
- 
- 
-+def test_connections_page_uses_threadpool(tmp_path, monkeypatch):
-+    cfg = _cfg(tmp_path)
-+    monkeypatch.setattr(api, "_settings", cfg)
-+    monkeypatch.setattr(ui_routes, "_settings", cfg)
-+    init_db(cfg)
++def load_calendar_context(
++    recording_id: str,
++    *,
++    settings: AppSettings | None = None,
++) -> dict[str, Any]:
++    cfg = settings or AppSettings()
++    recording = get_recording(recording_id, settings=cfg)
++    if recording is None:
++        raise KeyError(recording_id)
++    row = get_calendar_match(recording_id, settings=cfg) or {
++        "recording_id": recording_id,
++        "selected_event_id": None,
++        "selected_confidence": None,
++        "candidates_json": [],
++    }
++    return _build_context(recording, row)
 +
-+    def _fail_direct(_settings):
-+        raise AssertionError("ms_connection_state should run via threadpool")
 +
-+    calls: dict[str, object] = {}
++def select_calendar_event(
++    recording_id: str,
++    event_id: str | None,
++    *,
++    settings: AppSettings | None = None,
++) -> dict[str, Any]:
++    cfg = settings or AppSettings()
++    recording = get_recording(recording_id, settings=cfg)
++    if recording is None:
++        raise KeyError(recording_id)
 +
-+    async def _fake_threadpool(fn, *args, **kwargs):
-+        calls["fn"] = fn
-+        calls["args"] = args
-+        calls["kwargs"] = kwargs
-+        return {
-+            "configured": True,
-+            "status": "connected",
-+            "state": "Connected",
-+            "account_display_name": "Alex Worker",
-+            "tenant_id": "tenant-1",
-+            "requested_scopes": [
-+                "offline_access",
-+                "User.Read",
-+                "Notes.ReadWrite",
-+                "Calendars.Read",
++    current = get_calendar_match(recording_id, settings=cfg) or {
++        "recording_id": recording_id,
++        "selected_event_id": None,
++        "selected_confidence": None,
++        "candidates_json": [],
++    }
++    candidates = _candidate_list(current)
++    if event_id is None:
++        selected_confidence = _MANUAL_NO_EVENT_CONFIDENCE
++    else:
++        selected = _candidate_by_id(candidates, event_id)
++        if selected is None:
++            raise ValueError("Unknown event_id for this recording")
++        selected_confidence = float(selected.get("score") or 0.0)
++
++    row = set_calendar_match_selection(
++        recording_id=recording_id,
++        event_id=event_id,
++        selected_confidence=selected_confidence,
++        settings=cfg,
++    )
++    return _build_context(recording, row)
++
++
++def _build_candidate(
++    event: dict[str, Any],
++    *,
++    recording_start: datetime,
++    recording_end: datetime,
++    window_seconds: int,
++    recording_tokens: set[str],
++) -> dict[str, Any] | None:
++    event_id = str(event.get("id") or "").strip()
++    if not event_id:
++        return None
++
++    subject = str(event.get("subject") or "").strip()
++    start = _parse_event_datetime(event.get("start"))
++    end = _parse_event_datetime(event.get("end")) or start
++    if start is None:
++        return None
++    if end is None or end < start:
++        end = start
++
++    overlap_component = _overlap_component(
++        recording_start=recording_start,
++        recording_end=recording_end,
++        event_start=start,
++        event_end=end,
++    )
++    proximity_component = 0.0
++    if overlap_component <= 0:
++        proximity_component = _proximity_component(
++            recording_start=recording_start,
++            recording_end=recording_end,
++            event_start=start,
++            event_end=end,
++            window_seconds=window_seconds,
++        )
++    keyword_component = _keyword_component(recording_tokens, _tokenize(subject))
++    score = min(
++        1.0,
++        max(0.0, 0.7 * overlap_component + 0.2 * proximity_component + 0.1 * keyword_component),
++    )
++
++    title_tokens = sorted(_tokenize(subject))
++    organizer = _extract_party(event.get("organizer"))
++    attendees = _extract_attendees(event.get("attendees"))
++    location = _extract_location(event.get("location"))
++    rationale = (
++        f"time_overlap={overlap_component:.2f}; "
++        f"proximity={proximity_component:.2f}; "
++        f"subject_match={keyword_component:.2f}"
++    )
++    return {
++        "event_id": event_id,
++        "subject": subject or "(no subject)",
++        "start": _iso_z(start),
++        "end": _iso_z(end),
++        "organizer": organizer,
++        "attendees": attendees,
++        "location": location,
++        "title_tokens": title_tokens,
++        "score": round(score, 4),
++        "rationale": rationale,
++    }
++
++
++def _build_context(
++    recording: dict[str, Any],
++    row: dict[str, Any],
++) -> dict[str, Any]:
++    candidates = _candidate_list(row)
++    selected_event_id = row.get("selected_event_id")
++    selected_confidence = row.get("selected_confidence")
++    selected = _candidate_by_id(candidates, selected_event_id)
++
++    return {
++        "recording_id": recording["id"],
++        "captured_at": recording.get("captured_at"),
++        "selected_event_id": selected_event_id,
++        "selected_confidence": selected_confidence,
++        "selected_event": selected,
++        "signals": {
++            "title_tokens": (selected or {}).get("title_tokens", []),
++            "attendees": (selected or {}).get("attendees", []),
++            "organizer": (selected or {}).get("organizer"),
++        },
++        "candidates": candidates[:_UI_CANDIDATE_LIMIT],
++        "candidate_total": len(candidates),
++        "manual_no_event": (
++            selected_event_id is None and selected_confidence == _MANUAL_NO_EVENT_CONFIDENCE
++        ),
++    }
++
++
++def _resolve_selected_event(
++    *,
++    existing: dict[str, Any] | None,
++    candidates: list[dict[str, Any]],
++    threshold: float,
++) -> tuple[str | None, float | None]:
++    if existing:
++        selected_event_id = existing.get("selected_event_id")
++        selected_confidence = existing.get("selected_confidence")
++        if (
++            selected_event_id is None
++            and selected_confidence == _MANUAL_NO_EVENT_CONFIDENCE
++        ):
++            return None, _MANUAL_NO_EVENT_CONFIDENCE
++        selected = _candidate_by_id(candidates, selected_event_id)
++        if selected is not None:
++            return str(selected["event_id"]), float(selected.get("score") or 0.0)
++
++    if not candidates:
++        return None, None
++    best = candidates[0]
++    best_score = float(best.get("score") or 0.0)
++    if best_score >= threshold:
++        return str(best["event_id"]), best_score
++    return None, None
++
++
++def _recording_interval(
++    recording: dict[str, Any],
++    capture_time: datetime,
++) -> tuple[datetime, datetime]:
++    duration_raw = recording.get("duration_sec")
++    duration = int(duration_raw) if isinstance(duration_raw, int | float) else 0
++    if duration <= 0:
++        return capture_time, capture_time
++    return capture_time, capture_time + timedelta(seconds=duration)
++
++
++def _overlap_component(
++    *,
++    recording_start: datetime,
++    recording_end: datetime,
++    event_start: datetime,
++    event_end: datetime,
++) -> float:
++    if recording_end <= recording_start:
++        return 1.0 if event_start <= recording_start <= event_end else 0.0
++    overlap_start = max(recording_start, event_start)
++    overlap_end = min(recording_end, event_end)
++    if overlap_end <= overlap_start:
++        return 0.0
++    overlap_seconds = (overlap_end - overlap_start).total_seconds()
++    recording_seconds = (recording_end - recording_start).total_seconds()
++    if recording_seconds <= 0:
++        return 0.0
++    return min(1.0, max(0.0, overlap_seconds / recording_seconds))
++
++
++def _proximity_component(
++    *,
++    recording_start: datetime,
++    recording_end: datetime,
++    event_start: datetime,
++    event_end: datetime,
++    window_seconds: int,
++) -> float:
++    if window_seconds <= 0:
++        return 0.0
++    if recording_end <= recording_start:
++        distance = abs((recording_start - event_start).total_seconds())
++    else:
++        if event_end <= recording_start:
++            distance = (recording_start - event_end).total_seconds()
++        elif event_start >= recording_end:
++            distance = (event_start - recording_end).total_seconds()
++        else:
++            distance = 0.0
++    normalized = 1.0 - min(max(distance, 0.0), float(window_seconds)) / float(window_seconds)
++    return max(0.0, normalized)
++
++
++def _keyword_component(
++    recording_tokens: set[str],
++    subject_tokens: set[str],
++) -> float:
++    if not recording_tokens or not subject_tokens:
++        return 0.0
++    overlap = len(recording_tokens.intersection(subject_tokens))
++    return overlap / float(len(recording_tokens))
++
++
++def _candidate_list(row: dict[str, Any] | None) -> list[dict[str, Any]]:
++    if row is None:
++        return []
++    raw = row.get("candidates_json")
++    if not isinstance(raw, list):
++        return []
++    out = [item for item in raw if isinstance(item, dict) and item.get("event_id")]
++    out.sort(key=lambda c: float(c.get("score") or 0.0), reverse=True)
++    return out
++
++
++def _candidate_by_id(
++    candidates: list[dict[str, Any]],
++    event_id: str | None,
++) -> dict[str, Any] | None:
++    if not event_id:
++        return None
++    for item in candidates:
++        if str(item.get("event_id")) == event_id:
++            return item
++    return None
++
++
++def _extract_party(value: Any) -> str | None:
++    if not isinstance(value, dict):
++        return None
++    email = value.get("emailAddress")
++    if not isinstance(email, dict):
++        return None
++    name = str(email.get("name") or "").strip()
++    address = str(email.get("address") or "").strip()
++    return name or address or None
++
++
++def _extract_attendees(value: Any) -> list[str]:
++    if not isinstance(value, list):
++        return []
++    attendees: list[str] = []
++    for item in value:
++        entry = _extract_party(item)
++        if entry:
++            attendees.append(entry)
++    return attendees
++
++
++def _extract_location(value: Any) -> str | None:
++    if not isinstance(value, dict):
++        return None
++    display_name = str(value.get("displayName") or "").strip()
++    return display_name or None
++
++
++def _parse_event_datetime(value: Any) -> datetime | None:
++    if isinstance(value, dict):
++        date_time = value.get("dateTime")
++    else:
++        date_time = value
++    if not isinstance(date_time, str):
++        return None
++    return _parse_iso_datetime(date_time)
++
++
++def _parse_iso_datetime(value: Any) -> datetime | None:
++    if not isinstance(value, str):
++        return None
++    text = value.strip()
++    if not text:
++        return None
++    if text.endswith("Z"):
++        text = f"{text[:-1]}+00:00"
++    try:
++        parsed = datetime.fromisoformat(text)
++    except ValueError:
++        return None
++    if parsed.tzinfo is None:
++        parsed = parsed.replace(tzinfo=timezone.utc)
++    return parsed.astimezone(timezone.utc)
++
++
++def _tokenize(value: str) -> set[str]:
++    return {token.lower() for token in _TOKEN_RE.findall(value)}
++
++
++def _iso_z(value: datetime) -> str:
++    return value.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace(
++        "+00:00", "Z"
++    )
++
++
++__all__ = [
++    "load_calendar_context",
++    "refresh_calendar_context",
++    "select_calendar_event",
++]
+diff --git a/tests/test_calendar.py b/tests/test_calendar.py
+new file mode 100644
+index 0000000..454a1d2
+--- /dev/null
++++ b/tests/test_calendar.py
+@@ -0,0 +1,274 @@
++from __future__ import annotations
++
++from pathlib import Path
++
++from fastapi.testclient import TestClient
++
++from lan_app import api, calendar, ui_routes
++from lan_app.config import AppSettings
++from lan_app.db import create_recording, get_calendar_match, init_db
++from lan_app.ms_graph import GraphNotConfiguredError
++
++
++def _cfg(tmp_path: Path) -> AppSettings:
++    cfg = AppSettings(
++        data_root=tmp_path,
++        recordings_root=tmp_path / "recordings",
++        db_path=tmp_path / "db" / "app.db",
++    )
++    cfg.metrics_snapshot_path = tmp_path / "metrics.snap"
++    return cfg
++
++
++def _fake_events() -> list[dict[str, object]]:
++    return [
++        {
++            "id": "evt-1",
++            "subject": "Weekly sync meeting",
++            "start": {"dateTime": "2026-02-19T09:50:00Z"},
++            "end": {"dateTime": "2026-02-19T10:35:00Z"},
++            "organizer": {
++                "emailAddress": {"name": "Alex", "address": "alex@example.com"}
++            },
++            "attendees": [
++                {"emailAddress": {"name": "Priya", "address": "priya@example.com"}},
++                {"emailAddress": {"name": "Lee", "address": "lee@example.com"}},
 +            ],
-+            "granted_scopes": ["offline_access", "User.Read", "Notes.ReadWrite"],
-+            "error": None,
-+        }
-+
-+    monkeypatch.setattr(ui_routes, "ms_connection_state", _fail_direct)
-+    monkeypatch.setattr(ui_routes, "run_in_threadpool", _fake_threadpool)
-+
-+    client = TestClient(api.app, follow_redirects=True)
-+    resp = client.get("/connections")
-+    assert resp.status_code == 200
-+    assert "Alex Worker" in resp.text
-+    assert calls["fn"] == _fail_direct
-+
-+
- def test_start_device_flow_session_reuses_pending(monkeypatch, tmp_path):
-     cfg = _cfg(tmp_path)
-     cfg.ms_tenant_id = "tenant-1"
-@@ -246,3 +320,62 @@ def test_start_device_flow_session_reuses_pending(monkeypatch, tmp_path):
-     assert second["reused"] is True
-     assert len(initiated) == 1
-     assert started_session_ids == [first["session_id"]]
++            "location": {"displayName": "Room 3"},
++        },
++        {
++            "id": "evt-2",
++            "subject": "Unrelated lunch",
++            "start": {"dateTime": "2026-02-19T13:00:00Z"},
++            "end": {"dateTime": "2026-02-19T14:00:00Z"},
++            "organizer": {
++                "emailAddress": {"name": "Taylor", "address": "taylor@example.com"}
++            },
++            "attendees": [],
++            "location": {"displayName": "Cafeteria"},
++        },
++    ]
 +
 +
-+def test_start_device_flow_session_serializes_initiation(monkeypatch, tmp_path):
++def test_refresh_calendar_context_auto_selects_best_candidate(tmp_path, monkeypatch):
 +    cfg = _cfg(tmp_path)
-+    cfg.ms_tenant_id = "tenant-1"
-+    cfg.ms_client_id = "client-1"
-+    cfg.ms_scopes = "offline_access User.Read Notes.ReadWrite Calendars.Read"
++    init_db(cfg)
++    create_recording(
++        "rec-cal-1",
++        source="drive",
++        source_filename="weekly_sync.mp3",
++        captured_at="2026-02-19T10:00:00Z",
++        duration_sec=1800,
++        settings=cfg,
++    )
 +
-+    with ms_graph._DEVICE_FLOW_LOCK:
-+        ms_graph._DEVICE_FLOW_SESSIONS.clear()
-+
-+    initiated: list[int] = []
-+    start_gate = threading.Event()
-+    release_gate = threading.Event()
++    seen_path: dict[str, str] = {}
 +
 +    class _FakeClient:
 +        def __init__(self, settings=None):
 +            self.settings = settings
 +
-+        def clear_cache(self):
-+            return None
++        def graph_get(self, path: str):
++            seen_path["value"] = path
++            return {"value": _fake_events()}
 +
-+        def initiate_device_flow(self):
-+            initiated.append(1)
-+            start_gate.set()
-+            release_gate.wait(timeout=2)
-+            return {
-+                "user_code": "ABCD-EFGH",
-+                "verification_uri": "https://microsoft.com/devicelogin",
-+                "expires_in": 900,
-+            }
++    monkeypatch.setattr(calendar, "MicrosoftGraphClient", _FakeClient)
 +
-+    monkeypatch.setattr(ms_graph, "MicrosoftGraphClient", _FakeClient)
-+    monkeypatch.setattr(ms_graph, "_complete_device_flow_in_background", lambda **_k: None)
++    context = calendar.refresh_calendar_context("rec-cal-1", settings=cfg)
++    assert context["selected_event_id"] == "evt-1"
++    assert context["selected_event"]["subject"] == "Weekly sync meeting"
++    assert context["candidate_total"] == 2
++    assert context["signals"]["organizer"] == "Alex"
++    assert "calendarView" in seen_path["value"]
 +
-+    results: list[dict[str, object]] = []
-+    errors: list[Exception] = []
++    stored = get_calendar_match("rec-cal-1", settings=cfg)
++    assert stored is not None
++    assert stored["selected_event_id"] == "evt-1"
++    assert len(stored["candidates_json"]) == 2
++    assert stored["candidates_json"][0]["rationale"]
 +
-+    def _call_start():
-+        try:
-+            results.append(ms_graph.start_device_flow_session(cfg))
-+        except Exception as exc:  # pragma: no cover - test helper
-+            errors.append(exc)
 +
-+    t1 = threading.Thread(target=_call_start)
-+    t2 = threading.Thread(target=_call_start)
++def test_manual_no_event_override_persists_after_refresh(tmp_path, monkeypatch):
++    cfg = _cfg(tmp_path)
++    init_db(cfg)
++    create_recording(
++        "rec-cal-2",
++        source="drive",
++        source_filename="weekly_sync.mp3",
++        captured_at="2026-02-19T10:00:00Z",
++        duration_sec=1800,
++        settings=cfg,
++    )
 +
-+    t1.start()
-+    assert start_gate.wait(timeout=1), "first initiation did not start in time"
-+    t2.start()
-+    release_gate.set()
-+    t1.join(timeout=2)
-+    t2.join(timeout=2)
++    class _FakeClient:
++        def __init__(self, settings=None):
++            self.settings = settings
 +
-+    assert not errors
-+    assert len(results) == 2
-+    assert len(initiated) == 1
-+    assert results[0]["session_id"] == results[1]["session_id"]
-+    assert sorted([results[0]["reused"], results[1]["reused"]]) == [False, True]
++        def graph_get(self, _path: str):
++            return {"value": _fake_events()}
++
++    monkeypatch.setattr(calendar, "MicrosoftGraphClient", _FakeClient)
++
++    first = calendar.refresh_calendar_context("rec-cal-2", settings=cfg)
++    assert first["selected_event_id"] == "evt-1"
++
++    manual = calendar.select_calendar_event("rec-cal-2", None, settings=cfg)
++    assert manual["manual_no_event"] is True
++    assert manual["selected_event_id"] is None
++
++    refreshed = calendar.refresh_calendar_context("rec-cal-2", settings=cfg)
++    assert refreshed["selected_event_id"] is None
++    assert refreshed["manual_no_event"] is True
++
++
++def test_api_calendar_get_falls_back_to_cached_context(tmp_path, monkeypatch):
++    cfg = _cfg(tmp_path)
++    monkeypatch.setattr(api, "_settings", cfg)
++    monkeypatch.setattr(ui_routes, "_settings", cfg)
++    init_db(cfg)
++    create_recording(
++        "rec-cal-api-1",
++        source="drive",
++        source_filename="meeting.mp3",
++        settings=cfg,
++    )
++
++    def _refresh(_recording_id: str, *, settings=None):
++        raise GraphNotConfiguredError("missing env")
++
++    monkeypatch.setattr(api, "refresh_calendar_context", _refresh)
++    monkeypatch.setattr(
++        api,
++        "load_calendar_context",
++        lambda recording_id, *, settings=None: {
++            "recording_id": recording_id,
++            "selected_event_id": None,
++            "selected_confidence": None,
++            "selected_event": None,
++            "signals": {"title_tokens": [], "attendees": [], "organizer": None},
++            "candidates": [],
++            "candidate_total": 0,
++            "manual_no_event": False,
++        },
++    )
++
++    client = TestClient(api.app, follow_redirects=True)
++    resp = client.get("/api/recordings/rec-cal-api-1/calendar")
++    assert resp.status_code == 200
++    body = resp.json()
++    assert body["recording_id"] == "rec-cal-api-1"
++    assert body["fetch_error"] == "missing env"
++
++
++def test_api_calendar_select_validation_error(tmp_path, monkeypatch):
++    cfg = _cfg(tmp_path)
++    monkeypatch.setattr(api, "_settings", cfg)
++    monkeypatch.setattr(ui_routes, "_settings", cfg)
++    init_db(cfg)
++    create_recording(
++        "rec-cal-api-2",
++        source="drive",
++        source_filename="meeting.mp3",
++        settings=cfg,
++    )
++
++    def _invalid(_recording_id: str, _event_id: str | None, *, settings=None):
++        raise ValueError("Unknown event_id for this recording")
++
++    monkeypatch.setattr(api, "select_calendar_event", _invalid)
++
++    client = TestClient(api.app, follow_redirects=True)
++    resp = client.post(
++        "/api/recordings/rec-cal-api-2/calendar/select",
++        json={"event_id": "missing"},
++    )
++    assert resp.status_code == 422
++    assert "Unknown event_id" in resp.text
++
++
++def test_ui_calendar_tab_and_save_selection(tmp_path, monkeypatch):
++    cfg = _cfg(tmp_path)
++    monkeypatch.setattr(api, "_settings", cfg)
++    monkeypatch.setattr(ui_routes, "_settings", cfg)
++    init_db(cfg)
++    create_recording(
++        "rec-cal-ui-1",
++        source="drive",
++        source_filename="meeting.mp3",
++        settings=cfg,
++    )
++
++    monkeypatch.setattr(
++        ui_routes,
++        "refresh_calendar_context",
++        lambda recording_id, *, settings=None: {
++            "recording_id": recording_id,
++            "selected_event_id": "evt-1",
++            "selected_confidence": 0.92,
++            "selected_event": {
++                "event_id": "evt-1",
++                "subject": "Weekly sync meeting",
++                "start": "2026-02-19T09:50:00Z",
++                "end": "2026-02-19T10:35:00Z",
++                "organizer": "Alex",
++                "attendees": ["Priya", "Lee"],
++                "location": "Room 3",
++                "score": 0.92,
++                "rationale": "time_overlap=1.00; proximity=0.00; subject_match=0.20",
++            },
++            "signals": {
++                "title_tokens": ["meeting", "sync", "weekly"],
++                "attendees": ["Priya", "Lee"],
++                "organizer": "Alex",
++            },
++            "candidates": [
++                {
++                    "event_id": "evt-1",
++                    "subject": "Weekly sync meeting",
++                    "start": "2026-02-19T09:50:00Z",
++                    "end": "2026-02-19T10:35:00Z",
++                    "organizer": "Alex",
++                    "attendees": ["Priya", "Lee"],
++                    "location": "Room 3",
++                    "score": 0.92,
++                    "rationale": "time_overlap=1.00; proximity=0.00; subject_match=0.20",
++                }
++            ],
++            "candidate_total": 1,
++            "manual_no_event": False,
++        },
++    )
++
++    selected: dict[str, str | None] = {}
++
++    def _select(recording_id: str, event_id: str | None, *, settings=None):
++        selected["recording_id"] = recording_id
++        selected["event_id"] = event_id
++        return {
++            "recording_id": recording_id,
++            "selected_event_id": event_id,
++            "selected_confidence": 0.0,
++            "selected_event": None,
++            "signals": {"title_tokens": [], "attendees": [], "organizer": None},
++            "candidates": [],
++            "candidate_total": 0,
++            "manual_no_event": event_id is None,
++        }
++
++    monkeypatch.setattr(ui_routes, "select_calendar_event", _select)
++
++    browser = TestClient(api.app, follow_redirects=True)
++    page = browser.get("/recordings/rec-cal-ui-1?tab=calendar")
++    assert page.status_code == 200
++    assert "Weekly sync meeting" in page.text
++    assert "Save selection" in page.text
++
++    post = browser.post(
++        "/ui/recordings/rec-cal-ui-1/calendar/select",
++        data={"event_id": "evt-1"},
++        follow_redirects=False,
++    )
++    assert post.status_code == 303
++    assert post.headers["location"] == "/recordings/rec-cal-ui-1?tab=calendar"
++    assert selected["recording_id"] == "rec-cal-ui-1"
++    assert selected["event_id"] == "evt-1"
