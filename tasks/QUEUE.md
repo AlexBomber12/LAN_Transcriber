@@ -22,7 +22,7 @@ Queue (in order)
 - Depends on: PR-BOOTSTRAP-01
 
 3) PR-DB-QUEUE-01: Introduce SQLite DB, migrations, job queue, and unified recording/job status model
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-DB-QUEUE-01.md
 - Depends on: PR-REFRACTOR-CORE-01
 

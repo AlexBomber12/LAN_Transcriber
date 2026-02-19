@@ -21,3 +21,9 @@ def test_metrics_snapshot_path_legacy_fallback(monkeypatch, tmp_path: Path):
 
     cfg = AppSettings()
     assert cfg.metrics_snapshot_path == expected
+
+
+def test_redis_url_alias(monkeypatch):
+    monkeypatch.setenv("LAN_REDIS_URL", "redis://localhost:6380/0")
+    cfg = AppSettings()
+    assert cfg.redis_url == "redis://localhost:6380/0"

@@ -82,9 +82,18 @@ models are cached across runs.
 
 | Variable | Description |
 | --- | --- |
-| `PLAUD_EMAIL` | Login for the Plaud fetcher |
-| `PLAUD_PASSWORD` | Password for Plaud fetcher |
+| `LAN_DB_PATH` | SQLite database path (default `/data/db/app.db`) |
+| `LAN_REDIS_URL` | Redis endpoint for the RQ queue |
+| `LAN_RQ_QUEUE_NAME` | Queue name consumed by the worker |
+| `LLM_BASE_URL` | OpenAI-compatible Spark endpoint |
 | `LLM_API_KEY` | Optional API key for the LLM |
+
+`docker compose up` starts:
+
+- `db` (SQLite migration init)
+- `redis` (queue broker)
+- `api` (FastAPI backend)
+- `worker` (RQ worker)
 
 The stack exposes `lan_transcriber_health{env="staging"}` on `/metrics` for
 future monitoring.
