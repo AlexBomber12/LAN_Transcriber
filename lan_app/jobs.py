@@ -13,7 +13,7 @@ from .constants import (
     JOB_STATUS_QUEUED,
     JOB_TYPES,
 )
-from .db import create_job, get_recording, init_db
+from .db import create_job, fail_job, get_recording, init_db
 
 
 class RecordingNotFoundError(ValueError):
@@ -65,13 +65,25 @@ def enqueue_recording_job(
     from .worker_tasks import process_job
 
     queue = get_queue(cfg)
-    queue.enqueue(
-        process_job,
-        job_id,
-        recording_id,
-        job_type,
-        job_id=job_id,
-    )
+    try:
+        queue.enqueue(
+            process_job,
+            job_id,
+            recording_id,
+            job_type,
+            job_id=job_id,
+        )
+    except Exception as exc:
+        # Keep DB queue state terminal when Redis/RQ enqueue fails.
+        try:
+            fail_job(
+                job_id,
+                error=f"queue enqueue failed: {exc}",
+                settings=cfg,
+            )
+        except Exception:
+            pass
+        raise
     return RecordingJob(job_id=job_id, recording_id=recording_id, job_type=job_type)
 
 

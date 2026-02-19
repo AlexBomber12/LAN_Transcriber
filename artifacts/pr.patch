@@ -1,1401 +1,202 @@
-diff --git a/.env.example b/.env.example
-index 71044dc..fde2835 100644
---- a/.env.example
-+++ b/.env.example
-@@ -16,6 +16,8 @@ LAN_UNKNOWN_DIR=/data/recordings/unknown
- LAN_TMP_ROOT=/data/tmp
- LAN_PROM_SNAPSHOT_PATH=/data/metrics.snap
- LAN_DB_PATH=/data/db/app.db
-+LAN_REDIS_URL=redis://redis:6379/0
-+LAN_RQ_QUEUE_NAME=lan-transcriber
- 
- # Plaud fetcher (beta)
- FETCH_INTERVAL_SEC=300
-diff --git a/README.md b/README.md
-index 40329eb..593202d 100644
---- a/README.md
-+++ b/README.md
-@@ -82,10 +82,19 @@ models are cached across runs.
- 
- | Variable | Description |
- | --- | --- |
--| `PLAUD_EMAIL` | Login for the Plaud fetcher |
--| `PLAUD_PASSWORD` | Password for Plaud fetcher |
-+| `LAN_DB_PATH` | SQLite database path (default `/data/db/app.db`) |
-+| `LAN_REDIS_URL` | Redis endpoint for the RQ queue |
-+| `LAN_RQ_QUEUE_NAME` | Queue name consumed by the worker |
-+| `LLM_BASE_URL` | OpenAI-compatible Spark endpoint |
- | `LLM_API_KEY` | Optional API key for the LLM |
- 
-+`docker compose up` starts:
-+
-+- `db` (SQLite migration init)
-+- `redis` (queue broker)
-+- `api` (FastAPI backend)
-+- `worker` (RQ worker)
-+
- The stack exposes `lan_transcriber_health{env="staging"}` on `/metrics` for
- future monitoring.
- 
-diff --git a/docker-compose.yml b/docker-compose.yml
-index c24ef6e..1285df1 100644
---- a/docker-compose.yml
-+++ b/docker-compose.yml
-@@ -1,50 +1,68 @@
-+x-lan-service: &lan-service
-+  build:
-+    context: .
-+    dockerfile: Dockerfile
-+    target: ${TRANSCRIBER_DOCKER_TARGET:-runtime-lite}
-+  image: ${TRANSCRIBER_IMAGE:-lan-transcriber:${TRANSCRIBER_VERSION:-local}}
-+  pull_policy: ${TRANSCRIBER_PULL_POLICY:-never}
-+  restart: unless-stopped
-+  environment: &lan-env
-+    - PYTHONPATH=/app
-+    - LAN_DATA_ROOT=${LAN_DATA_ROOT:-/data}
-+    - LAN_RECORDINGS_ROOT=${LAN_RECORDINGS_ROOT:-/data/recordings}
-+    - LAN_SPEAKER_DB=${LAN_SPEAKER_DB:-/data/db/speaker_bank.yaml}
-+    - LAN_VOICES_DIR=${LAN_VOICES_DIR:-/data/voices}
-+    - LAN_UNKNOWN_DIR=${LAN_UNKNOWN_DIR:-/data/recordings/unknown}
-+    - LAN_TMP_ROOT=${LAN_TMP_ROOT:-/data/tmp}
-+    - LAN_PROM_SNAPSHOT_PATH=${LAN_PROM_SNAPSHOT_PATH:-/data/metrics.snap}
-+    - LAN_DB_PATH=${LAN_DB_PATH:-/data/db/app.db}
-+    - LAN_REDIS_URL=${LAN_REDIS_URL:-redis://redis:6379/0}
-+    - LAN_RQ_QUEUE_NAME=${LAN_RQ_QUEUE_NAME:-lan-transcriber}
-+    - LLM_BASE_URL=${LLM_BASE_URL}
-+    - LLM_API_KEY=${LLM_API_KEY}
-+    - LLM_MODEL=${LLM_MODEL:-}
-+    - FETCH_INTERVAL_SEC=${FETCH_INTERVAL_SEC:-300}
-+    - TRANSCRIBER_VERSION=${TRANSCRIBER_VERSION:-local}
-+    - LANG_DEFAULT=${LANG_DEFAULT:-en}
-+  volumes:
-+    - lan_cache:/root/.cache
-+    - /opt/lan_cache/hf:/root/.cache/huggingface
-+    - /opt/lan_cache/ollama:/root/.ollama
-+    - ./data:/data
-+  networks:
-+    - lan_net
-+
- services:
--  lan:
--    build:
--      context: .
--      dockerfile: Dockerfile
--      target: ${TRANSCRIBER_DOCKER_TARGET:-runtime-lite}
--    image: ${TRANSCRIBER_IMAGE:-lan-transcriber:${TRANSCRIBER_VERSION:-local}}
--    pull_policy: ${TRANSCRIBER_PULL_POLICY:-never}
--    container_name: lan-transcriber
-+  db:
-+    <<: *lan-service
-+    container_name: lan-db
-+    command: ["python", "-m", "lan_app.db_init"]
-+    restart: "no"
-+
-+  redis:
-+    image: redis:7-alpine
-+    container_name: lan-redis
-     restart: unless-stopped
--    ports:
--      - "7860:7860"
--    environment:
--      - PYTHONPATH=/app
--      - LAN_DATA_ROOT=${LAN_DATA_ROOT:-/data}
--      - LAN_RECORDINGS_ROOT=${LAN_RECORDINGS_ROOT:-/data/recordings}
--      - LAN_SPEAKER_DB=${LAN_SPEAKER_DB:-/data/db/speaker_bank.yaml}
--      - LAN_VOICES_DIR=${LAN_VOICES_DIR:-/data/voices}
--      - LAN_UNKNOWN_DIR=${LAN_UNKNOWN_DIR:-/data/recordings/unknown}
--      - LAN_TMP_ROOT=${LAN_TMP_ROOT:-/data/tmp}
--      - LAN_PROM_SNAPSHOT_PATH=${LAN_PROM_SNAPSHOT_PATH:-/data/metrics.snap}
--      - LAN_DB_PATH=${LAN_DB_PATH:-/data/db/app.db}
--      - LLM_BASE_URL=${LLM_BASE_URL}
--      - LLM_API_KEY=${LLM_API_KEY}
--      - LLM_MODEL=${LLM_MODEL:-}
--      - FETCH_INTERVAL_SEC=${FETCH_INTERVAL_SEC:-300}
--      - TRANSCRIBER_VERSION=${TRANSCRIBER_VERSION:-local}
--      - LANG_DEFAULT=${LANG_DEFAULT:-en}
--    volumes:
--      - lan_cache:/root/.cache
--      - /opt/lan_cache/hf:/root/.cache/huggingface
--      - /opt/lan_cache/ollama:/root/.ollama
--      - ./data:/data
-     networks:
-       - lan_net
- 
--#  plaud_fetcher:
--#   build:
--#      context: ./plaud_fetcher
--#    container_name: plaud-fetcher
--#    restart: unless-stopped
--#    depends_on:
--#      - lan
--#    environment:
--#      - INGEST_URL=http://lan:7860/api/plaud_ingest
--#    networks:
--#      - lan_net
-+  api:
-+    <<: *lan-service
-+    container_name: lan-api
-+    command: ["uvicorn", "lan_app.api:app", "--host", "0.0.0.0", "--port", "7860"]
-+    depends_on:
-+      - db
-+      - redis
-+    ports:
-+      - "7860:7860"
-+
-+  worker:
-+    <<: *lan-service
-+    container_name: lan-worker
-+    command: ["python", "-m", "lan_app.worker"]
-+    depends_on:
-+      - db
-+      - redis
- 
- networks:
-   lan_net:
-diff --git a/lan_app/api.py b/lan_app/api.py
-index ac83e1c..5ca2cdf 100644
---- a/lan_app/api.py
-+++ b/lan_app/api.py
-@@ -1,9 +1,10 @@
- from __future__ import annotations
- 
- import asyncio
-+import shutil
- from typing import List
- 
--from fastapi import FastAPI
-+from fastapi import FastAPI, HTTPException, Query
- from fastapi.responses import Response, StreamingResponse
- from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
- from pydantic import BaseModel
-@@ -14,6 +15,22 @@ from lan_transcriber.models import TranscriptResult
- from lan_transcriber.pipeline import refresh_aliases
- 
- from .config import AppSettings
-+from .constants import (
-+    DEFAULT_REQUEUE_JOB_TYPE,
-+    JOB_STATUSES,
-+    JOB_TYPES,
-+    RECORDING_STATUSES,
-+    RECORDING_STATUS_QUARANTINE,
-+)
-+from .db import (
-+    delete_recording,
-+    get_recording,
-+    init_db,
-+    list_jobs,
-+    list_recordings,
-+    set_recording_status,
-+)
-+from .jobs import RecordingNotFoundError, enqueue_recording_job
- 
- app = FastAPI()
- ALIAS_PATH = aliases.ALIAS_PATH
-@@ -22,6 +39,34 @@ _current_result: TranscriptResult | None = None
- _settings = AppSettings()
- 
- 
-+class AliasUpdate(BaseModel):
-+    alias: str
-+
-+
-+class RequeueAction(BaseModel):
-+    job_type: str = DEFAULT_REQUEUE_JOB_TYPE
-+
-+
-+class QuarantineAction(BaseModel):
-+    reason: str | None = None
-+
-+
-+def _validate_recording_status(status: str | None) -> str | None:
-+    if status is None:
-+        return None
-+    if status not in RECORDING_STATUSES:
-+        raise HTTPException(status_code=422, detail=f"Unsupported recording status: {status}")
-+    return status
-+
-+
-+def _validate_job_status(status: str | None) -> str | None:
-+    if status is None:
-+        return None
-+    if status not in JOB_STATUSES:
-+        raise HTTPException(status_code=422, detail=f"Unsupported job status: {status}")
-+    return status
-+
-+
- @app.get("/healthz")
- async def healthz() -> dict[str, str]:
-     """Simple health check used by monitoring."""
-@@ -30,14 +75,11 @@ async def healthz() -> dict[str, str]:
- 
- @app.on_event("startup")
- async def _start_metrics() -> None:
-+    init_db(_settings)
-     _settings.metrics_snapshot_path.parent.mkdir(parents=True, exist_ok=True)
-     asyncio.create_task(write_metrics_snapshot(_settings.metrics_snapshot_path))
- 
- 
--class AliasUpdate(BaseModel):
--    alias: str
--
--
- @app.post("/alias/{speaker_id}")
- async def update_alias(speaker_id: str, upd: AliasUpdate):
-     path = aliases.ALIAS_PATH
-@@ -72,6 +114,122 @@ async def events():
-     return StreamingResponse(gen(), media_type="text/event-stream")
- 
- 
-+@app.get("/api/recordings")
-+async def api_list_recordings(
-+    status: str | None = Query(default=None),
-+    limit: int = Query(default=50, ge=1, le=500),
-+    offset: int = Query(default=0, ge=0),
-+) -> dict[str, object]:
-+    valid_status = _validate_recording_status(status)
-+    items, total = list_recordings(
-+        settings=_settings,
-+        status=valid_status,
-+        limit=limit,
-+        offset=offset,
-+    )
-+    return {
-+        "items": items,
-+        "total": total,
-+        "limit": limit,
-+        "offset": offset,
-+    }
-+
-+
-+@app.get("/api/recordings/{recording_id}")
-+async def api_get_recording(recording_id: str) -> dict[str, object]:
-+    item = get_recording(recording_id, settings=_settings)
-+    if item is None:
-+        raise HTTPException(status_code=404, detail="Recording not found")
-+    return item
-+
-+
-+@app.post("/api/recordings/{recording_id}/actions/requeue")
-+async def api_requeue_recording(
-+    recording_id: str,
-+    action: RequeueAction | None = None,
-+) -> dict[str, str]:
-+    payload = action or RequeueAction()
-+    if payload.job_type not in JOB_TYPES:
-+        raise HTTPException(status_code=422, detail=f"Unsupported job type: {payload.job_type}")
-+
-+    if get_recording(recording_id, settings=_settings) is None:
-+        raise HTTPException(status_code=404, detail="Recording not found")
-+
-+    try:
-+        job = enqueue_recording_job(
-+            recording_id,
-+            job_type=payload.job_type,
-+            settings=_settings,
-+        )
-+    except RecordingNotFoundError:
-+        raise HTTPException(status_code=404, detail="Recording not found")
-+    except ValueError as exc:
-+        raise HTTPException(status_code=422, detail=str(exc))
-+    except Exception as exc:
-+        raise HTTPException(status_code=503, detail=f"Queue unavailable: {exc}")
-+
-+    return {
-+        "recording_id": recording_id,
-+        "job_id": job.job_id,
-+        "job_type": job.job_type,
-+    }
-+
-+
-+@app.post("/api/recordings/{recording_id}/actions/quarantine")
-+async def api_quarantine_recording(
-+    recording_id: str,
-+    action: QuarantineAction | None = None,
-+) -> dict[str, object]:
-+    if get_recording(recording_id, settings=_settings) is None:
-+        raise HTTPException(status_code=404, detail="Recording not found")
-+
-+    payload = action or QuarantineAction()
-+    set_recording_status(
-+        recording_id,
-+        RECORDING_STATUS_QUARANTINE,
-+        settings=_settings,
-+        quarantine_reason=payload.reason,
-+    )
-+    item = get_recording(recording_id, settings=_settings)
-+    if item is None:
-+        raise HTTPException(status_code=404, detail="Recording not found")
-+    return item
-+
-+
-+@app.post("/api/recordings/{recording_id}/actions/delete")
-+async def api_delete_recording(recording_id: str) -> dict[str, object]:
-+    deleted = delete_recording(recording_id, settings=_settings)
-+    if not deleted:
-+        raise HTTPException(status_code=404, detail="Recording not found")
-+
-+    recording_path = _settings.recordings_root / recording_id
-+    shutil.rmtree(recording_path, ignore_errors=True)
-+    return {"recording_id": recording_id, "deleted": True}
-+
-+
-+@app.get("/api/jobs")
-+async def api_list_jobs(
-+    status: str | None = Query(default=None),
-+    recording_id: str | None = Query(default=None),
-+    limit: int = Query(default=50, ge=1, le=500),
-+    offset: int = Query(default=0, ge=0),
-+) -> dict[str, object]:
-+    valid_status = _validate_job_status(status)
-+    items, total = list_jobs(
-+        settings=_settings,
-+        status=valid_status,
-+        recording_id=recording_id,
-+        limit=limit,
-+        offset=offset,
-+    )
-+    return {
-+        "items": items,
-+        "total": total,
-+        "limit": limit,
-+        "offset": offset,
-+    }
-+
-+
- def set_current_result(result: TranscriptResult | None) -> None:
-     global _current_result
-     _current_result = result
-diff --git a/lan_app/config.py b/lan_app/config.py
-index c159f2f..de9c804 100644
---- a/lan_app/config.py
-+++ b/lan_app/config.py
-@@ -5,7 +5,8 @@ from pathlib import Path
- from pydantic import AliasChoices, Field
- from pydantic_settings import BaseSettings
- 
--from lan_transcriber.runtime_paths import default_data_root
-+from lan_app.constants import DEFAULT_RQ_QUEUE_NAME
-+from lan_transcriber.runtime_paths import default_data_root, default_recordings_root
- 
- 
- def _default_metrics_snapshot_path() -> Path:
-@@ -16,6 +17,7 @@ class AppSettings(BaseSettings):
-     """App-layer runtime settings."""
- 
-     data_root: Path = default_data_root()
-+    recordings_root: Path = default_recordings_root()
-     metrics_snapshot_path: Path = Field(
-         default_factory=_default_metrics_snapshot_path,
-         validation_alias=AliasChoices(
-@@ -25,6 +27,18 @@ class AppSettings(BaseSettings):
-         ),
-     )
-     db_path: Path = default_data_root() / "db" / "app.db"
-+    redis_url: str = Field(
-+        default="redis://redis:6379/0",
-+        validation_alias=AliasChoices("LAN_REDIS_URL", "REDIS_URL"),
-+    )
-+    rq_queue_name: str = Field(
-+        default=DEFAULT_RQ_QUEUE_NAME,
-+        validation_alias=AliasChoices("LAN_RQ_QUEUE_NAME", "RQ_QUEUE_NAME"),
-+    )
-+    rq_worker_burst: bool = Field(
-+        default=False,
-+        validation_alias=AliasChoices("LAN_RQ_WORKER_BURST", "RQ_WORKER_BURST"),
-+    )
- 
-     class Config:
-         env_prefix = "LAN_"
-diff --git a/lan_app/db.py b/lan_app/db.py
-index d276fd5..fe0dd4b 100644
---- a/lan_app/db.py
-+++ b/lan_app/db.py
-@@ -1,12 +1,159 @@
- from __future__ import annotations
- 
-+from datetime import datetime, timezone
-+import json
- from pathlib import Path
-+import sqlite3
-+from typing import Any
- 
- from .config import AppSettings
-+from .constants import (
-+    JOB_STATUSES,
-+    JOB_STATUS_FAILED,
-+    JOB_STATUS_FINISHED,
-+    JOB_STATUS_QUEUED,
-+    JOB_STATUS_STARTED,
-+    JOB_TYPES,
-+    RECORDING_STATUSES,
-+    RECORDING_STATUS_QUEUED,
-+    RECORDING_STATUS_QUARANTINE,
-+)
- 
- 
--class DBNotReadyError(RuntimeError):
--    """Raised while DB integration is still intentionally stubbed."""
-+def _quoted(values: tuple[str, ...]) -> str:
-+    return ", ".join(f"'{value}'" for value in values)
-+
-+
-+_RECORDING_STATUSES_SQL = _quoted(RECORDING_STATUSES)
-+_JOB_STATUSES_SQL = _quoted(JOB_STATUSES)
-+_JOB_TYPES_SQL = _quoted(JOB_TYPES)
-+
-+_MIGRATIONS: tuple[str, ...] = (
-+    f"""
-+    CREATE TABLE IF NOT EXISTS recordings (
-+        id TEXT PRIMARY KEY,
-+        source TEXT NOT NULL,
-+        source_filename TEXT NOT NULL,
-+        captured_at TEXT NOT NULL,
-+        duration_sec INTEGER,
-+        status TEXT NOT NULL CHECK(status IN ({_RECORDING_STATUSES_SQL})),
-+        quarantine_reason TEXT,
-+        language_auto TEXT,
-+        language_override TEXT,
-+        project_id INTEGER,
-+        onenote_page_id TEXT,
-+        drive_file_id TEXT,
-+        drive_md5 TEXT,
-+        created_at TEXT NOT NULL,
-+        updated_at TEXT NOT NULL,
-+        FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE SET NULL
-+    );
-+
-+    CREATE TABLE IF NOT EXISTS jobs (
-+        id TEXT PRIMARY KEY,
-+        recording_id TEXT NOT NULL,
-+        type TEXT NOT NULL CHECK(type IN ({_JOB_TYPES_SQL})),
-+        status TEXT NOT NULL CHECK(status IN ({_JOB_STATUSES_SQL})),
-+        attempt INTEGER NOT NULL DEFAULT 0,
-+        error TEXT,
-+        started_at TEXT,
-+        finished_at TEXT,
-+        created_at TEXT NOT NULL,
-+        updated_at TEXT NOT NULL,
-+        FOREIGN KEY(recording_id) REFERENCES recordings(id) ON DELETE CASCADE
-+    );
-+
-+    CREATE TABLE IF NOT EXISTS projects (
-+        id INTEGER PRIMARY KEY AUTOINCREMENT,
-+        name TEXT NOT NULL UNIQUE,
-+        onenote_section_id TEXT,
-+        onenote_notebook_id TEXT,
-+        auto_publish INTEGER NOT NULL DEFAULT 0 CHECK(auto_publish IN (0, 1))
-+    );
-+
-+    CREATE TABLE IF NOT EXISTS voice_profiles (
-+        id INTEGER PRIMARY KEY AUTOINCREMENT,
-+        display_name TEXT NOT NULL,
-+        notes TEXT
-+    );
-+
-+    CREATE TABLE IF NOT EXISTS speaker_assignments (
-+        recording_id TEXT NOT NULL,
-+        diar_speaker_label TEXT NOT NULL,
-+        voice_profile_id INTEGER NOT NULL,
-+        confidence REAL NOT NULL,
-+        PRIMARY KEY(recording_id, diar_speaker_label),
-+        FOREIGN KEY(recording_id) REFERENCES recordings(id) ON DELETE CASCADE,
-+        FOREIGN KEY(voice_profile_id) REFERENCES voice_profiles(id) ON DELETE CASCADE
-+    );
-+
-+    CREATE TABLE IF NOT EXISTS calendar_matches (
-+        recording_id TEXT PRIMARY KEY,
-+        selected_event_id TEXT,
-+        selected_confidence REAL,
-+        candidates_json TEXT NOT NULL DEFAULT '[]',
-+        FOREIGN KEY(recording_id) REFERENCES recordings(id) ON DELETE CASCADE
-+    );
-+
-+    CREATE TABLE IF NOT EXISTS meeting_metrics (
-+        recording_id TEXT PRIMARY KEY,
-+        json TEXT NOT NULL DEFAULT '{{}}',
-+        FOREIGN KEY(recording_id) REFERENCES recordings(id) ON DELETE CASCADE
-+    );
-+
-+    CREATE TABLE IF NOT EXISTS participant_metrics (
-+        id INTEGER PRIMARY KEY AUTOINCREMENT,
-+        recording_id TEXT NOT NULL,
-+        voice_profile_id INTEGER,
-+        diar_speaker_label TEXT NOT NULL,
-+        json TEXT NOT NULL DEFAULT '{{}}',
-+        FOREIGN KEY(recording_id) REFERENCES recordings(id) ON DELETE CASCADE,
-+        FOREIGN KEY(voice_profile_id) REFERENCES voice_profiles(id) ON DELETE SET NULL
-+    );
-+
-+    CREATE INDEX IF NOT EXISTS idx_recordings_status ON recordings(status);
-+    CREATE INDEX IF NOT EXISTS idx_recordings_created_at ON recordings(created_at DESC);
-+    CREATE INDEX IF NOT EXISTS idx_jobs_recording_id ON jobs(recording_id);
-+    CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);
-+    CREATE INDEX IF NOT EXISTS idx_jobs_created_at ON jobs(created_at DESC);
-+    """,
-+)
-+
-+
-+def _utc_now() -> str:
-+    return datetime.now(tz=timezone.utc).replace(microsecond=0).isoformat().replace(
-+        "+00:00", "Z"
-+    )
-+
-+
-+def _as_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
-+    if row is None:
-+        return None
-+    out = dict(row)
-+    for key, value in list(out.items()):
-+        if value is None:
-+            continue
-+        if key.endswith("_json") or key == "json":
-+            try:
-+                out[key] = json.loads(value)
-+            except (TypeError, ValueError):
-+                pass
-+    return out
-+
-+
-+def _validate_recording_status(status: str) -> None:
-+    if status not in RECORDING_STATUSES:
-+        raise ValueError(f"Unsupported recording status: {status}")
-+
-+
-+def _validate_job_status(status: str) -> None:
-+    if status not in JOB_STATUSES:
-+        raise ValueError(f"Unsupported job status: {status}")
-+
-+
-+def _validate_job_type(job_type: str) -> None:
-+    if job_type not in JOB_TYPES:
-+        raise ValueError(f"Unsupported job type: {job_type}")
- 
- 
- def db_path(settings: AppSettings | None = None) -> Path:
-@@ -14,9 +161,366 @@ def db_path(settings: AppSettings | None = None) -> Path:
-     return cfg.db_path
- 
- 
--def connect(_settings: AppSettings | None = None) -> None:
--    """Stub connection hook reserved for PR-DB-QUEUE-01."""
--    raise DBNotReadyError("DB integration is scheduled for PR-DB-QUEUE-01.")
-+def connect(settings: AppSettings | None = None) -> sqlite3.Connection:
-+    cfg = settings or AppSettings()
-+    cfg.db_path.parent.mkdir(parents=True, exist_ok=True)
-+    conn = sqlite3.connect(cfg.db_path, timeout=30)
-+    conn.row_factory = sqlite3.Row
-+    conn.execute("PRAGMA foreign_keys = ON")
-+    conn.execute("PRAGMA journal_mode = WAL")
-+    return conn
-+
-+
-+def init_db(settings: AppSettings | None = None) -> Path:
-+    cfg = settings or AppSettings()
-+    with connect(cfg) as conn:
-+        current_version = int(conn.execute("PRAGMA user_version").fetchone()[0])
-+        for target_version, sql in enumerate(_MIGRATIONS, start=1):
-+            if target_version <= current_version:
-+                continue
-+            conn.executescript(sql)
-+            conn.execute(f"PRAGMA user_version = {target_version}")
-+        conn.commit()
-+    return cfg.db_path
-+
-+
-+def create_recording(
-+    recording_id: str,
-+    source: str,
-+    source_filename: str,
-+    *,
-+    settings: AppSettings | None = None,
-+    captured_at: str | None = None,
-+    duration_sec: int | None = None,
-+    status: str = RECORDING_STATUS_QUEUED,
-+    quarantine_reason: str | None = None,
-+    language_auto: str | None = None,
-+    language_override: str | None = None,
-+    project_id: int | None = None,
-+    onenote_page_id: str | None = None,
-+    drive_file_id: str | None = None,
-+    drive_md5: str | None = None,
-+) -> dict[str, Any]:
-+    init_db(settings)
-+    _validate_recording_status(status)
-+    now = _utc_now()
-+    captured = captured_at or now
-+    with connect(settings) as conn:
-+        conn.execute(
-+            """
-+            INSERT INTO recordings (
-+                id, source, source_filename, captured_at, duration_sec, status,
-+                quarantine_reason, language_auto, language_override, project_id,
-+                onenote_page_id, drive_file_id, drive_md5, created_at, updated_at
-+            )
-+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-+            """,
-+            (
-+                recording_id,
-+                source,
-+                source_filename,
-+                captured,
-+                duration_sec,
-+                status,
-+                quarantine_reason,
-+                language_auto,
-+                language_override,
-+                project_id,
-+                onenote_page_id,
-+                drive_file_id,
-+                drive_md5,
-+                now,
-+                now,
-+            ),
-+        )
-+        row = conn.execute(
-+            "SELECT * FROM recordings WHERE id = ?",
-+            (recording_id,),
-+        ).fetchone()
-+        conn.commit()
-+    return _as_dict(row) or {}
-+
-+
-+def get_recording(
-+    recording_id: str,
-+    *,
-+    settings: AppSettings | None = None,
-+) -> dict[str, Any] | None:
-+    init_db(settings)
-+    with connect(settings) as conn:
-+        row = conn.execute(
-+            "SELECT * FROM recordings WHERE id = ?",
-+            (recording_id,),
-+        ).fetchone()
-+    return _as_dict(row)
-+
-+
-+def list_recordings(
-+    *,
-+    settings: AppSettings | None = None,
-+    status: str | None = None,
-+    limit: int = 50,
-+    offset: int = 0,
-+) -> tuple[list[dict[str, Any]], int]:
-+    init_db(settings)
-+    filters: list[str] = []
-+    params: list[Any] = []
-+    if status is not None:
-+        _validate_recording_status(status)
-+        filters.append("status = ?")
-+        params.append(status)
-+
-+    where_sql = f"WHERE {' AND '.join(filters)}" if filters else ""
-+    safe_limit = max(1, min(limit, 500))
-+    safe_offset = max(offset, 0)
-+
-+    with connect(settings) as conn:
-+        total = int(
-+            conn.execute(
-+                f"SELECT COUNT(*) FROM recordings {where_sql}",
-+                params,
-+            ).fetchone()[0]
-+        )
-+        rows = conn.execute(
-+            f"""
-+            SELECT *
-+            FROM recordings
-+            {where_sql}
-+            ORDER BY created_at DESC
-+            LIMIT ? OFFSET ?
-+            """,
-+            [*params, safe_limit, safe_offset],
-+        ).fetchall()
-+    return [_as_dict(row) or {} for row in rows], total
-+
-+
-+def set_recording_status(
-+    recording_id: str,
-+    status: str,
-+    *,
-+    settings: AppSettings | None = None,
-+    quarantine_reason: str | None = None,
-+) -> bool:
-+    init_db(settings)
-+    _validate_recording_status(status)
-+    now = _utc_now()
-+    with connect(settings) as conn:
-+        updated = conn.execute(
-+            """
-+            UPDATE recordings
-+            SET status = ?, quarantine_reason = ?, updated_at = ?
-+            WHERE id = ?
-+            """,
-+            (
-+                status,
-+                quarantine_reason if status == RECORDING_STATUS_QUARANTINE else None,
-+                now,
-+                recording_id,
-+            ),
-+        )
-+        conn.commit()
-+    return updated.rowcount > 0
-+
-+
-+def delete_recording(
-+    recording_id: str,
-+    *,
-+    settings: AppSettings | None = None,
-+) -> bool:
-+    init_db(settings)
-+    with connect(settings) as conn:
-+        deleted = conn.execute(
-+            "DELETE FROM recordings WHERE id = ?",
-+            (recording_id,),
-+        )
-+        conn.commit()
-+    return deleted.rowcount > 0
-+
-+
-+def create_job(
-+    job_id: str,
-+    recording_id: str,
-+    job_type: str,
-+    *,
-+    settings: AppSettings | None = None,
-+    status: str = JOB_STATUS_QUEUED,
-+    attempt: int = 0,
-+    error: str | None = None,
-+) -> dict[str, Any]:
-+    init_db(settings)
-+    _validate_job_type(job_type)
-+    _validate_job_status(status)
-+    now = _utc_now()
-+    with connect(settings) as conn:
-+        conn.execute(
-+            """
-+            INSERT INTO jobs (
-+                id, recording_id, type, status, attempt, error,
-+                started_at, finished_at, created_at, updated_at
-+            )
-+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-+            """,
-+            (
-+                job_id,
-+                recording_id,
-+                job_type,
-+                status,
-+                attempt,
-+                error,
-+                None,
-+                None,
-+                now,
-+                now,
-+            ),
-+        )
-+        row = conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
-+        conn.commit()
-+    return _as_dict(row) or {}
-+
-+
-+def get_job(
-+    job_id: str,
-+    *,
-+    settings: AppSettings | None = None,
-+) -> dict[str, Any] | None:
-+    init_db(settings)
-+    with connect(settings) as conn:
-+        row = conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
-+    return _as_dict(row)
-+
-+
-+def list_jobs(
-+    *,
-+    settings: AppSettings | None = None,
-+    status: str | None = None,
-+    recording_id: str | None = None,
-+    limit: int = 50,
-+    offset: int = 0,
-+) -> tuple[list[dict[str, Any]], int]:
-+    init_db(settings)
-+    filters: list[str] = []
-+    params: list[Any] = []
-+    if status is not None:
-+        _validate_job_status(status)
-+        filters.append("status = ?")
-+        params.append(status)
-+    if recording_id is not None:
-+        filters.append("recording_id = ?")
-+        params.append(recording_id)
-+
-+    where_sql = f"WHERE {' AND '.join(filters)}" if filters else ""
-+    safe_limit = max(1, min(limit, 500))
-+    safe_offset = max(offset, 0)
-+
-+    with connect(settings) as conn:
-+        total = int(
-+            conn.execute(
-+                f"SELECT COUNT(*) FROM jobs {where_sql}",
-+                params,
-+            ).fetchone()[0]
-+        )
-+        rows = conn.execute(
-+            f"""
-+            SELECT *
-+            FROM jobs
-+            {where_sql}
-+            ORDER BY created_at DESC
-+            LIMIT ? OFFSET ?
-+            """,
-+            [*params, safe_limit, safe_offset],
-+        ).fetchall()
-+    return [_as_dict(row) or {} for row in rows], total
-+
-+
-+def start_job(
-+    job_id: str,
-+    *,
-+    settings: AppSettings | None = None,
-+) -> bool:
-+    init_db(settings)
-+    now = _utc_now()
-+    with connect(settings) as conn:
-+        row = conn.execute("SELECT attempt FROM jobs WHERE id = ?", (job_id,)).fetchone()
-+        if row is None:
-+            return False
-+        next_attempt = int(row["attempt"]) + 1
-+        updated = conn.execute(
-+            """
-+            UPDATE jobs
-+            SET status = ?, attempt = ?, error = NULL, started_at = ?, finished_at = NULL, updated_at = ?
-+            WHERE id = ?
-+            """,
-+            (JOB_STATUS_STARTED, next_attempt, now, now, job_id),
-+        )
-+        conn.commit()
-+    return updated.rowcount > 0
-+
-+
-+def finish_job(
-+    job_id: str,
-+    *,
-+    settings: AppSettings | None = None,
-+    error: str | None = None,
-+) -> bool:
-+    return _set_job_terminal_state(
-+        job_id=job_id,
-+        status=JOB_STATUS_FINISHED,
-+        error=error,
-+        settings=settings,
-+    )
-+
-+
-+def fail_job(
-+    job_id: str,
-+    error: str,
-+    *,
-+    settings: AppSettings | None = None,
-+) -> bool:
-+    return _set_job_terminal_state(
-+        job_id=job_id,
-+        status=JOB_STATUS_FAILED,
-+        error=error,
-+        settings=settings,
-+    )
-+
-+
-+def _set_job_terminal_state(
-+    *,
-+    job_id: str,
-+    status: str,
-+    error: str | None,
-+    settings: AppSettings | None = None,
-+) -> bool:
-+    init_db(settings)
-+    if status not in (JOB_STATUS_FINISHED, JOB_STATUS_FAILED):
-+        raise ValueError(f"Unsupported terminal state: {status}")
-+    now = _utc_now()
-+    with connect(settings) as conn:
-+        updated = conn.execute(
-+            """
-+            UPDATE jobs
-+            SET status = ?, error = ?, finished_at = ?, updated_at = ?
-+            WHERE id = ?
-+            """,
-+            (status, error, now, now, job_id),
-+        )
-+        conn.commit()
-+    return updated.rowcount > 0
- 
- 
--__all__ = ["DBNotReadyError", "db_path", "connect"]
-+__all__ = [
-+    "db_path",
-+    "connect",
-+    "init_db",
-+    "create_recording",
-+    "get_recording",
-+    "list_recordings",
-+    "set_recording_status",
-+    "delete_recording",
-+    "create_job",
-+    "get_job",
-+    "list_jobs",
-+    "start_job",
-+    "finish_job",
-+    "fail_job",
-+]
 diff --git a/lan_app/jobs.py b/lan_app/jobs.py
-index 0db8de6..d928423 100644
+index d928423..c6652c4 100644
 --- a/lan_app/jobs.py
 +++ b/lan_app/jobs.py
-@@ -2,14 +2,82 @@ from __future__ import annotations
- 
- from dataclasses import dataclass
- from pathlib import Path
-+from uuid import uuid4
-+
-+from redis import Redis
-+from rq import Queue
-+
-+from .config import AppSettings
-+from .constants import (
-+    DEFAULT_REQUEUE_JOB_TYPE,
-+    JOB_STATUS_QUEUED,
-+    JOB_TYPES,
-+)
-+from .db import create_job, get_recording, init_db
-+
-+
-+class RecordingNotFoundError(ValueError):
-+    """Raised when trying to enqueue work for an unknown recording."""
-+
-+
-+def _validate_job_type(job_type: str) -> None:
-+    if job_type not in JOB_TYPES:
-+        raise ValueError(f"Unsupported job type: {job_type}")
+@@ -13,7 +13,7 @@ from .constants import (
+     JOB_STATUS_QUEUED,
+     JOB_TYPES,
+ )
+-from .db import create_job, get_recording, init_db
++from .db import create_job, fail_job, get_recording, init_db
  
  
- @dataclass(frozen=True)
- class RecordingJob:
--    """In-memory job envelope until DB-backed queue lands."""
-+    """Queue envelope persisted in DB and mirrored into Redis RQ."""
+ class RecordingNotFoundError(ValueError):
+@@ -65,13 +65,25 @@ def enqueue_recording_job(
+     from .worker_tasks import process_job
  
-+    job_id: str
-     recording_id: str
--    audio_path: Path
-+    job_type: str
-+    audio_path: Path | None = None
-+
-+
-+def get_queue(settings: AppSettings | None = None) -> Queue:
-+    cfg = settings or AppSettings()
-+    connection = Redis.from_url(cfg.redis_url)
-+    return Queue(name=cfg.rq_queue_name, connection=connection)
-+
-+
-+def enqueue_recording_job(
-+    recording_id: str,
+     queue = get_queue(cfg)
+-    queue.enqueue(
+-        process_job,
+-        job_id,
+-        recording_id,
+-        job_type,
+-        job_id=job_id,
+-    )
++    try:
++        queue.enqueue(
++            process_job,
++            job_id,
++            recording_id,
++            job_type,
++            job_id=job_id,
++        )
++    except Exception as exc:
++        # Keep DB queue state terminal when Redis/RQ enqueue fails.
++        try:
++            fail_job(
++                job_id,
++                error=f"queue enqueue failed: {exc}",
++                settings=cfg,
++            )
++        except Exception:
++            pass
++        raise
+     return RecordingJob(job_id=job_id, recording_id=recording_id, job_type=job_type)
+ 
+ 
+diff --git a/lan_app/worker_tasks.py b/lan_app/worker_tasks.py
+index f147ec9..dafea7f 100644
+--- a/lan_app/worker_tasks.py
++++ b/lan_app/worker_tasks.py
+@@ -41,6 +41,30 @@ def _success_status(job_type: str) -> str:
+     return RECORDING_STATUS_READY
+ 
+ 
++def _record_failure(
 +    *,
-+    job_type: str = DEFAULT_REQUEUE_JOB_TYPE,
-+    settings: AppSettings | None = None,
-+) -> RecordingJob:
-+    cfg = settings or AppSettings()
-+    init_db(cfg)
-+    _validate_job_type(job_type)
-+    if get_recording(recording_id, settings=cfg) is None:
-+        raise RecordingNotFoundError(f"Recording not found: {recording_id}")
++    job_id: str,
++    job_type: str,
++    recording_id: str,
++    settings: AppSettings,
++    log_path: Path,
++    exc: Exception,
++) -> None:
++    error = str(exc)
++    try:
++        fail_job(job_id, error, settings=settings)
++    except Exception:
++        pass
++    try:
++        set_recording_status(recording_id, RECORDING_STATUS_FAILED, settings=settings)
++    except Exception:
++        pass
++    try:
++        _append_step_log(log_path, f"failed job={job_id} type={job_type}: {error}")
++    except Exception:
++        pass
 +
-+    job_id = uuid4().hex
-+    create_job(
-+        job_id=job_id,
-+        recording_id=recording_id,
-+        job_type=job_type,
-+        status=JOB_STATUS_QUEUED,
++
+ def process_job(job_id: str, recording_id: str, job_type: str) -> dict[str, str]:
+     """
+     Execute a queue job.
+@@ -55,27 +79,35 @@ def process_job(job_id: str, recording_id: str, job_type: str) -> dict[str, str]
+     init_db(settings)
+     log_path = _step_log_path(recording_id, job_type, settings)
+ 
+-    if not start_job(job_id, settings=settings):
+-        raise ValueError(f"Job not found: {job_id}")
+-    set_recording_status(
+-        recording_id,
+-        RECORDING_STATUS_PROCESSING,
+-        settings=settings,
+-    )
+-    _append_step_log(log_path, f"started job={job_id} type={job_type}")
+-
+     try:
++        if not start_job(job_id, settings=settings):
++            raise ValueError(f"Job not found: {job_id}")
++        if not set_recording_status(
++            recording_id,
++            RECORDING_STATUS_PROCESSING,
++            settings=settings,
++        ):
++            raise ValueError(f"Recording not found: {recording_id}")
++        _append_step_log(log_path, f"started job={job_id} type={job_type}")
++
+         final_status = _success_status(job_type)
+-        set_recording_status(recording_id, final_status, settings=settings)
+-        finish_job(job_id, settings=settings)
++        if not set_recording_status(recording_id, final_status, settings=settings):
++            raise ValueError(f"Recording not found: {recording_id}")
++        if not finish_job(job_id, settings=settings):
++            raise ValueError(f"Job not found: {job_id}")
+         _append_step_log(
+             log_path,
+             f"finished job={job_id} type={job_type} recording_status={final_status}",
+         )
+     except Exception as exc:
+-        fail_job(job_id, str(exc), settings=settings)
+-        set_recording_status(recording_id, RECORDING_STATUS_FAILED, settings=settings)
+-        _append_step_log(log_path, f"failed job={job_id} type={job_type}: {exc}")
++        _record_failure(
++            job_id=job_id,
++            job_type=job_type,
++            recording_id=recording_id,
++            settings=settings,
++            log_path=log_path,
++            exc=exc,
++        )
+         raise
+ 
+     return {
+diff --git a/tests/test_db_queue.py b/tests/test_db_queue.py
+index ede652e..9d1fdb6 100644
+--- a/tests/test_db_queue.py
++++ b/tests/test_db_queue.py
+@@ -3,12 +3,15 @@ from __future__ import annotations
+ from pathlib import Path
+ 
+ from fastapi.testclient import TestClient
++import pytest
+ 
+ from lan_app import api
+ from lan_app.config import AppSettings
+ from lan_app.constants import (
++    JOB_STATUS_FAILED,
+     JOB_STATUS_FINISHED,
+     JOB_TYPE_PRECHECK,
++    RECORDING_STATUS_FAILED,
+     RECORDING_STATUS_QUARANTINE,
+     RECORDING_STATUS_READY,
+ )
+@@ -19,8 +22,9 @@ from lan_app.db import (
+     get_job,
+     get_recording,
+     init_db,
++    list_jobs,
+ )
+-from lan_app.jobs import RecordingJob
++from lan_app.jobs import RecordingJob, enqueue_recording_job
+ from lan_app.worker_tasks import process_job
+ 
+ 
+@@ -161,3 +165,71 @@ def test_recordings_and_jobs_api_actions(tmp_path: Path, monkeypatch):
+ 
+     missing = client.get("/api/recordings/rec-api-1")
+     assert missing.status_code == 404
++
++
++def test_enqueue_marks_job_failed_when_redis_enqueue_fails(tmp_path: Path, monkeypatch):
++    cfg = _test_settings(tmp_path)
++    init_db(cfg)
++    create_recording(
++        "rec-enqueue-fail-1",
++        source="test",
++        source_filename="enqueue.mp3",
 +        settings=cfg,
 +    )
 +
-+    from .worker_tasks import process_job
++    class _BrokenQueue:
++        def enqueue(self, *_args, **_kwargs):
++            raise RuntimeError("redis down")
 +
-+    queue = get_queue(cfg)
-+    queue.enqueue(
-+        process_job,
-+        job_id,
-+        recording_id,
-+        job_type,
-+        job_id=job_id,
-+    )
-+    return RecordingJob(job_id=job_id, recording_id=recording_id, job_type=job_type)
- 
- 
--__all__ = ["RecordingJob"]
-+__all__ = [
-+    "RecordingJob",
-+    "RecordingNotFoundError",
-+    "enqueue_recording_job",
-+    "get_queue",
-+]
-diff --git a/pyproject.toml b/pyproject.toml
-index 20151df..ef253c5 100644
---- a/pyproject.toml
-+++ b/pyproject.toml
-@@ -12,6 +12,8 @@ dependencies = [
-     "prometheus_client>=0.19.0",
-     "anyio",
-     "fastapi",
-+    "redis",
-+    "rq",
-     "pyyaml",
-     "pydantic-settings",
-     "rapidfuzz",
-diff --git a/requirements.in b/requirements.in
-index b00f0f3..eebdf41 100644
---- a/requirements.in
-+++ b/requirements.in
-@@ -20,6 +20,8 @@ tenacity==9.1.2
- pydantic==2.11.7
- pydantic-settings==2.10.1
- rapidfuzz==3.13.0
-+redis
-+rq
- 
- fastapi==0.116.1
- pyyaml==6.0.2
-diff --git a/requirements.txt b/requirements.txt
-index 0a458fe..6886b24 100644
---- a/requirements.txt
-+++ b/requirements.txt
-@@ -8,3 +8,5 @@ faster-whisper
- pyannote.audio
- httpx
- tenacity
-+redis
-+rq
-diff --git a/tasks/QUEUE.md b/tasks/QUEUE.md
-index 01e0be2..6202dc9 100644
---- a/tasks/QUEUE.md
-+++ b/tasks/QUEUE.md
-@@ -22,7 +22,7 @@ Queue (in order)
- - Depends on: PR-BOOTSTRAP-01
- 
- 3) PR-DB-QUEUE-01: Introduce SQLite DB, migrations, job queue, and unified recording/job status model
--- Status: TODO
-+- Status: DONE
- - Tasks file: tasks/PR-DB-QUEUE-01.md
- - Depends on: PR-REFRACTOR-CORE-01
- 
-diff --git a/tests/test_app_config.py b/tests/test_app_config.py
-index 67d1415..47abe51 100644
---- a/tests/test_app_config.py
-+++ b/tests/test_app_config.py
-@@ -21,3 +21,9 @@ def test_metrics_snapshot_path_legacy_fallback(monkeypatch, tmp_path: Path):
- 
-     cfg = AppSettings()
-     assert cfg.metrics_snapshot_path == expected
++    monkeypatch.setattr("lan_app.jobs.get_queue", lambda _cfg: _BrokenQueue())
 +
-+
-+def test_redis_url_alias(monkeypatch):
-+    monkeypatch.setenv("LAN_REDIS_URL", "redis://localhost:6380/0")
-+    cfg = AppSettings()
-+    assert cfg.redis_url == "redis://localhost:6380/0"
-diff --git a/lan_app/constants.py b/lan_app/constants.py
-new file mode 100644
-index 0000000..b478ba7
---- /dev/null
-+++ b/lan_app/constants.py
-@@ -0,0 +1,87 @@
-+from __future__ import annotations
-+
-+RECORDING_STATUS_QUEUED = "Queued"
-+RECORDING_STATUS_PROCESSING = "Processing"
-+RECORDING_STATUS_NEEDS_REVIEW = "NeedsReview"
-+RECORDING_STATUS_READY = "Ready"
-+RECORDING_STATUS_PUBLISHED = "Published"
-+RECORDING_STATUS_QUARANTINE = "Quarantine"
-+RECORDING_STATUS_FAILED = "Failed"
-+
-+RECORDING_STATUSES = (
-+    RECORDING_STATUS_QUEUED,
-+    RECORDING_STATUS_PROCESSING,
-+    RECORDING_STATUS_NEEDS_REVIEW,
-+    RECORDING_STATUS_READY,
-+    RECORDING_STATUS_PUBLISHED,
-+    RECORDING_STATUS_QUARANTINE,
-+    RECORDING_STATUS_FAILED,
-+)
-+
-+JOB_STATUS_QUEUED = "queued"
-+JOB_STATUS_STARTED = "started"
-+JOB_STATUS_FINISHED = "finished"
-+JOB_STATUS_FAILED = "failed"
-+
-+JOB_STATUSES = (
-+    JOB_STATUS_QUEUED,
-+    JOB_STATUS_STARTED,
-+    JOB_STATUS_FINISHED,
-+    JOB_STATUS_FAILED,
-+)
-+
-+JOB_TYPE_INGEST = "ingest"
-+JOB_TYPE_PRECHECK = "precheck"
-+JOB_TYPE_STT = "stt"
-+JOB_TYPE_DIARIZE = "diarize"
-+JOB_TYPE_ALIGN = "align"
-+JOB_TYPE_LANGUAGE = "language"
-+JOB_TYPE_LLM = "llm"
-+JOB_TYPE_METRICS = "metrics"
-+JOB_TYPE_PUBLISH = "publish"
-+JOB_TYPE_CLEANUP = "cleanup"
-+
-+JOB_TYPES = (
-+    JOB_TYPE_INGEST,
-+    JOB_TYPE_PRECHECK,
-+    JOB_TYPE_STT,
-+    JOB_TYPE_DIARIZE,
-+    JOB_TYPE_ALIGN,
-+    JOB_TYPE_LANGUAGE,
-+    JOB_TYPE_LLM,
-+    JOB_TYPE_METRICS,
-+    JOB_TYPE_PUBLISH,
-+    JOB_TYPE_CLEANUP,
-+)
-+
-+DEFAULT_RQ_QUEUE_NAME = "lan-transcriber"
-+DEFAULT_REQUEUE_JOB_TYPE = JOB_TYPE_PRECHECK
-+
-+__all__ = [
-+    "RECORDING_STATUS_QUEUED",
-+    "RECORDING_STATUS_PROCESSING",
-+    "RECORDING_STATUS_NEEDS_REVIEW",
-+    "RECORDING_STATUS_READY",
-+    "RECORDING_STATUS_PUBLISHED",
-+    "RECORDING_STATUS_QUARANTINE",
-+    "RECORDING_STATUS_FAILED",
-+    "RECORDING_STATUSES",
-+    "JOB_STATUS_QUEUED",
-+    "JOB_STATUS_STARTED",
-+    "JOB_STATUS_FINISHED",
-+    "JOB_STATUS_FAILED",
-+    "JOB_STATUSES",
-+    "JOB_TYPE_INGEST",
-+    "JOB_TYPE_PRECHECK",
-+    "JOB_TYPE_STT",
-+    "JOB_TYPE_DIARIZE",
-+    "JOB_TYPE_ALIGN",
-+    "JOB_TYPE_LANGUAGE",
-+    "JOB_TYPE_LLM",
-+    "JOB_TYPE_METRICS",
-+    "JOB_TYPE_PUBLISH",
-+    "JOB_TYPE_CLEANUP",
-+    "JOB_TYPES",
-+    "DEFAULT_RQ_QUEUE_NAME",
-+    "DEFAULT_REQUEUE_JOB_TYPE",
-+]
-diff --git a/lan_app/db_init.py b/lan_app/db_init.py
-new file mode 100644
-index 0000000..da35244
---- /dev/null
-+++ b/lan_app/db_init.py
-@@ -0,0 +1,14 @@
-+from __future__ import annotations
-+
-+from .config import AppSettings
-+from .db import init_db
-+
-+
-+def main() -> None:
-+    settings = AppSettings()
-+    path = init_db(settings)
-+    print(f"Database ready at {path}")
-+
-+
-+if __name__ == "__main__":
-+    main()
-diff --git a/lan_app/worker.py b/lan_app/worker.py
-new file mode 100644
-index 0000000..9f7be66
---- /dev/null
-+++ b/lan_app/worker.py
-@@ -0,0 +1,19 @@
-+from __future__ import annotations
-+
-+from redis import Redis
-+from rq import Worker
-+
-+from .config import AppSettings
-+from .db import init_db
-+
-+
-+def main() -> None:
-+    settings = AppSettings()
-+    init_db(settings)
-+    connection = Redis.from_url(settings.redis_url)
-+    worker = Worker([settings.rq_queue_name], connection=connection)
-+    worker.work(with_scheduler=False, burst=settings.rq_worker_burst)
-+
-+
-+if __name__ == "__main__":
-+    main()
-diff --git a/lan_app/worker_tasks.py b/lan_app/worker_tasks.py
-new file mode 100644
-index 0000000..f147ec9
---- /dev/null
-+++ b/lan_app/worker_tasks.py
-@@ -0,0 +1,89 @@
-+from __future__ import annotations
-+
-+from datetime import datetime, timezone
-+from pathlib import Path
-+
-+from .config import AppSettings
-+from .constants import (
-+    JOB_TYPE_CLEANUP,
-+    JOB_TYPE_PUBLISH,
-+    JOB_TYPES,
-+    RECORDING_STATUS_FAILED,
-+    RECORDING_STATUS_PROCESSING,
-+    RECORDING_STATUS_PUBLISHED,
-+    RECORDING_STATUS_QUARANTINE,
-+    RECORDING_STATUS_READY,
-+)
-+from .db import fail_job, finish_job, init_db, set_recording_status, start_job
-+
-+
-+def _utc_now() -> str:
-+    return datetime.now(tz=timezone.utc).replace(microsecond=0).isoformat().replace(
-+        "+00:00", "Z"
-+    )
-+
-+
-+def _step_log_path(recording_id: str, job_type: str, settings: AppSettings) -> Path:
-+    return settings.recordings_root / recording_id / "logs" / f"step-{job_type}.log"
-+
-+
-+def _append_step_log(path: Path, message: str) -> None:
-+    path.parent.mkdir(parents=True, exist_ok=True)
-+    with path.open("a", encoding="utf-8") as fh:
-+        fh.write(f"[{_utc_now()}] {message}\n")
-+
-+
-+def _success_status(job_type: str) -> str:
-+    if job_type == JOB_TYPE_PUBLISH:
-+        return RECORDING_STATUS_PUBLISHED
-+    if job_type == JOB_TYPE_CLEANUP:
-+        return RECORDING_STATUS_QUARANTINE
-+    return RECORDING_STATUS_READY
-+
-+
-+def process_job(job_id: str, recording_id: str, job_type: str) -> dict[str, str]:
-+    """
-+    Execute a queue job.
-+
-+    MVP behavior intentionally runs a no-op body and only records lifecycle state.
-+    """
-+
-+    if job_type not in JOB_TYPES:
-+        raise ValueError(f"Unsupported job type: {job_type}")
-+
-+    settings = AppSettings()
-+    init_db(settings)
-+    log_path = _step_log_path(recording_id, job_type, settings)
-+
-+    if not start_job(job_id, settings=settings):
-+        raise ValueError(f"Job not found: {job_id}")
-+    set_recording_status(
-+        recording_id,
-+        RECORDING_STATUS_PROCESSING,
-+        settings=settings,
-+    )
-+    _append_step_log(log_path, f"started job={job_id} type={job_type}")
-+
-+    try:
-+        final_status = _success_status(job_type)
-+        set_recording_status(recording_id, final_status, settings=settings)
-+        finish_job(job_id, settings=settings)
-+        _append_step_log(
-+            log_path,
-+            f"finished job={job_id} type={job_type} recording_status={final_status}",
++    with pytest.raises(RuntimeError) as exc_info:
++        enqueue_recording_job(
++            "rec-enqueue-fail-1",
++            job_type=JOB_TYPE_PRECHECK,
++            settings=cfg,
 +        )
-+    except Exception as exc:
-+        fail_job(job_id, str(exc), settings=settings)
-+        set_recording_status(recording_id, RECORDING_STATUS_FAILED, settings=settings)
-+        _append_step_log(log_path, f"failed job={job_id} type={job_type}: {exc}")
-+        raise
++    assert "redis down" in str(exc_info.value)
 +
-+    return {
-+        "job_id": job_id,
-+        "recording_id": recording_id,
-+        "job_type": job_type,
-+        "status": "ok",
-+    }
++    jobs, total = list_jobs(settings=cfg, recording_id="rec-enqueue-fail-1")
++    assert total == 1
++    assert jobs[0]["status"] == JOB_STATUS_FAILED
++    assert "queue enqueue failed" in jobs[0]["error"]
 +
 +
-+__all__ = ["process_job"]
-diff --git a/tests/test_db_queue.py b/tests/test_db_queue.py
-new file mode 100644
-index 0000000..ede652e
---- /dev/null
-+++ b/tests/test_db_queue.py
-@@ -0,0 +1,163 @@
-+from __future__ import annotations
-+
-+from pathlib import Path
-+
-+from fastapi.testclient import TestClient
-+
-+from lan_app import api
-+from lan_app.config import AppSettings
-+from lan_app.constants import (
-+    JOB_STATUS_FINISHED,
-+    JOB_TYPE_PRECHECK,
-+    RECORDING_STATUS_QUARANTINE,
-+    RECORDING_STATUS_READY,
-+)
-+from lan_app.db import (
-+    connect,
-+    create_job,
-+    create_recording,
-+    get_job,
-+    get_recording,
-+    init_db,
-+)
-+from lan_app.jobs import RecordingJob
-+from lan_app.worker_tasks import process_job
-+
-+
-+def _test_settings(tmp_path: Path) -> AppSettings:
-+    cfg = AppSettings(
-+        data_root=tmp_path,
-+        recordings_root=tmp_path / "recordings",
-+        db_path=tmp_path / "db" / "app.db",
-+    )
-+    cfg.metrics_snapshot_path = tmp_path / "metrics.snap"
-+    return cfg
-+
-+
-+def test_init_db_creates_mvp_tables(tmp_path: Path):
-+    cfg = _test_settings(tmp_path)
-+    init_db(cfg)
-+    with connect(cfg) as conn:
-+        names = {
-+            row[0]
-+            for row in conn.execute(
-+                "SELECT name FROM sqlite_master WHERE type = 'table'"
-+            ).fetchall()
-+        }
-+
-+    expected = {
-+        "recordings",
-+        "jobs",
-+        "projects",
-+        "voice_profiles",
-+        "speaker_assignments",
-+        "calendar_matches",
-+        "meeting_metrics",
-+        "participant_metrics",
-+    }
-+    assert expected.issubset(names)
-+
-+
-+def test_worker_noop_updates_job_and_recording_state(tmp_path: Path, monkeypatch):
++def test_worker_setup_failure_marks_job_and_recording_failed(tmp_path: Path, monkeypatch):
 +    cfg = _test_settings(tmp_path)
 +    monkeypatch.setenv("LAN_DATA_ROOT", str(cfg.data_root))
 +    monkeypatch.setenv("LAN_RECORDINGS_ROOT", str(cfg.recordings_root))
@@ -1404,97 +205,30 @@ index 0000000..ede652e
 +
 +    init_db(cfg)
 +    create_recording(
-+        "rec-worker-1",
++        "rec-worker-fail-1",
 +        source="test",
-+        source_filename="sample.mp3",
++        source_filename="setup-fail.mp3",
 +        settings=cfg,
 +    )
 +    create_job(
-+        "job-worker-1",
-+        recording_id="rec-worker-1",
++        "job-worker-fail-1",
++        recording_id="rec-worker-fail-1",
 +        job_type=JOB_TYPE_PRECHECK,
 +        settings=cfg,
 +    )
 +
-+    result = process_job("job-worker-1", "rec-worker-1", JOB_TYPE_PRECHECK)
-+    recording = get_recording("rec-worker-1", settings=cfg)
-+    job = get_job("job-worker-1", settings=cfg)
++    def _boom(*_args, **_kwargs):
++        raise OSError("disk full")
 +
-+    assert result["status"] == "ok"
-+    assert recording is not None
-+    assert recording["status"] == RECORDING_STATUS_READY
++    monkeypatch.setattr("lan_app.worker_tasks._append_step_log", _boom)
++
++    with pytest.raises(OSError) as exc_info:
++        process_job("job-worker-fail-1", "rec-worker-fail-1", JOB_TYPE_PRECHECK)
++    assert "disk full" in str(exc_info.value)
++
++    job = get_job("job-worker-fail-1", settings=cfg)
++    recording = get_recording("rec-worker-fail-1", settings=cfg)
 +    assert job is not None
-+    assert job["status"] == JOB_STATUS_FINISHED
-+
-+    step_log = cfg.recordings_root / "rec-worker-1" / "logs" / "step-precheck.log"
-+    assert step_log.exists()
-+    assert "finished job=job-worker-1" in step_log.read_text(encoding="utf-8")
-+
-+
-+def test_recordings_and_jobs_api_actions(tmp_path: Path, monkeypatch):
-+    cfg = _test_settings(tmp_path)
-+    monkeypatch.setattr(api, "_settings", cfg)
-+    init_db(cfg)
-+    create_recording(
-+        "rec-api-1",
-+        source="test",
-+        source_filename="api.mp3",
-+        settings=cfg,
-+    )
-+
-+    def _fake_enqueue(
-+        recording_id: str,
-+        *,
-+        job_type: str = JOB_TYPE_PRECHECK,
-+        settings: AppSettings | None = None,
-+    ) -> RecordingJob:
-+        effective = settings or cfg
-+        create_job(
-+            "job-api-1",
-+            recording_id=recording_id,
-+            job_type=job_type,
-+            settings=effective,
-+        )
-+        return RecordingJob(
-+            job_id="job-api-1",
-+            recording_id=recording_id,
-+            job_type=job_type,
-+        )
-+
-+    monkeypatch.setattr(api, "enqueue_recording_job", _fake_enqueue)
-+
-+    client = TestClient(api.app)
-+
-+    listed = client.get("/api/recordings")
-+    assert listed.status_code == 200
-+    assert listed.json()["total"] == 1
-+
-+    detail = client.get("/api/recordings/rec-api-1")
-+    assert detail.status_code == 200
-+    assert detail.json()["id"] == "rec-api-1"
-+
-+    requeue = client.post(
-+        "/api/recordings/rec-api-1/actions/requeue",
-+        json={"job_type": JOB_TYPE_PRECHECK},
-+    )
-+    assert requeue.status_code == 200
-+    assert requeue.json()["job_id"] == "job-api-1"
-+
-+    jobs = client.get("/api/jobs")
-+    assert jobs.status_code == 200
-+    assert jobs.json()["total"] == 1
-+
-+    quarantined = client.post(
-+        "/api/recordings/rec-api-1/actions/quarantine",
-+        json={"reason": "manual_review"},
-+    )
-+    assert quarantined.status_code == 200
-+    assert quarantined.json()["status"] == RECORDING_STATUS_QUARANTINE
-+    assert quarantined.json()["quarantine_reason"] == "manual_review"
-+
-+    deleted = client.post("/api/recordings/rec-api-1/actions/delete")
-+    assert deleted.status_code == 200
-+    assert deleted.json()["deleted"] is True
-+
-+    missing = client.get("/api/recordings/rec-api-1")
-+    assert missing.status_code == 404
++    assert recording is not None
++    assert job["status"] == JOB_STATUS_FAILED
++    assert recording["status"] == RECORDING_STATUS_FAILED

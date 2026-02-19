@@ -41,6 +41,30 @@ def _success_status(job_type: str) -> str:
     return RECORDING_STATUS_READY
 
 
+def _record_failure(
+    *,
+    job_id: str,
+    job_type: str,
+    recording_id: str,
+    settings: AppSettings,
+    log_path: Path,
+    exc: Exception,
+) -> None:
+    error = str(exc)
+    try:
+        fail_job(job_id, error, settings=settings)
+    except Exception:
+        pass
+    try:
+        set_recording_status(recording_id, RECORDING_STATUS_FAILED, settings=settings)
+    except Exception:
+        pass
+    try:
+        _append_step_log(log_path, f"failed job={job_id} type={job_type}: {error}")
+    except Exception:
+        pass
+
+
 def process_job(job_id: str, recording_id: str, job_type: str) -> dict[str, str]:
     """
     Execute a queue job.
@@ -55,27 +79,35 @@ def process_job(job_id: str, recording_id: str, job_type: str) -> dict[str, str]
     init_db(settings)
     log_path = _step_log_path(recording_id, job_type, settings)
 
-    if not start_job(job_id, settings=settings):
-        raise ValueError(f"Job not found: {job_id}")
-    set_recording_status(
-        recording_id,
-        RECORDING_STATUS_PROCESSING,
-        settings=settings,
-    )
-    _append_step_log(log_path, f"started job={job_id} type={job_type}")
-
     try:
+        if not start_job(job_id, settings=settings):
+            raise ValueError(f"Job not found: {job_id}")
+        if not set_recording_status(
+            recording_id,
+            RECORDING_STATUS_PROCESSING,
+            settings=settings,
+        ):
+            raise ValueError(f"Recording not found: {recording_id}")
+        _append_step_log(log_path, f"started job={job_id} type={job_type}")
+
         final_status = _success_status(job_type)
-        set_recording_status(recording_id, final_status, settings=settings)
-        finish_job(job_id, settings=settings)
+        if not set_recording_status(recording_id, final_status, settings=settings):
+            raise ValueError(f"Recording not found: {recording_id}")
+        if not finish_job(job_id, settings=settings):
+            raise ValueError(f"Job not found: {job_id}")
         _append_step_log(
             log_path,
             f"finished job={job_id} type={job_type} recording_status={final_status}",
         )
     except Exception as exc:
-        fail_job(job_id, str(exc), settings=settings)
-        set_recording_status(recording_id, RECORDING_STATUS_FAILED, settings=settings)
-        _append_step_log(log_path, f"failed job={job_id} type={job_type}: {exc}")
+        _record_failure(
+            job_id=job_id,
+            job_type=job_type,
+            recording_id=recording_id,
+            settings=settings,
+            log_path=log_path,
+            exc=exc,
+        )
         raise
 
     return {
