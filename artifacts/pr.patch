@@ -1,141 +1,39 @@
 diff --git a/lan_app/calendar.py b/lan_app/calendar.py
-index ae21477..f572114 100644
+index f572114..f2dbedf 100644
 --- a/lan_app/calendar.py
 +++ b/lan_app/calendar.py
-@@ -238,6 +238,7 @@ def _build_context(
-     selected_event_id = row.get("selected_event_id")
-     selected_confidence = row.get("selected_confidence")
-     selected = _candidate_by_id(candidates, selected_event_id)
-+    visible_candidates = _visible_candidates(candidates, selected)
- 
-     return {
-         "recording_id": recording["id"],
-@@ -250,7 +251,7 @@ def _build_context(
-             "attendees": (selected or {}).get("attendees", []),
-             "organizer": (selected or {}).get("organizer"),
-         },
--        "candidates": candidates[:_UI_CANDIDATE_LIMIT],
-+        "candidates": visible_candidates,
-         "candidate_total": len(candidates),
-         "manual_no_event": (
-             selected_event_id is None and selected_confidence == _MANUAL_NO_EVENT_CONFIDENCE
-@@ -372,6 +373,21 @@ def _candidate_by_id(
-     return None
- 
- 
-+def _visible_candidates(
-+    candidates: list[dict[str, Any]],
-+    selected: dict[str, Any] | None,
-+) -> list[dict[str, Any]]:
-+    visible = list(candidates[:_UI_CANDIDATE_LIMIT])
-+    if selected is None:
-+        return visible
-+    selected_id = str(selected.get("event_id") or "").strip()
-+    if not selected_id:
-+        return visible
-+    if any(str(item.get("event_id")) == selected_id for item in visible):
-+        return visible
-+    return [*visible, selected]
-+
-+
- def _extract_party(value: Any) -> str | None:
-     if not isinstance(value, dict):
-         return None
-@@ -410,7 +426,7 @@ def _parse_event_datetime(value: Any) -> datetime | None:
-         time_zone = None
-     if not isinstance(date_time, str):
-         return None
--    tz_name = str(time_zone).strip() if isinstance(time_zone, str) else None
-+    tz_name = str(time_zone).strip() or None if isinstance(time_zone, str) else None
-     return _parse_iso_datetime(date_time, default_timezone=tz_name)
- 
- 
-@@ -432,7 +448,12 @@ def _parse_iso_datetime(
-     except ValueError:
-         return None
-     if parsed.tzinfo is None:
--        tz = _timezone_from_name(default_timezone) or timezone.utc
-+        if default_timezone is None:
-+            tz = timezone.utc
-+        else:
-+            tz = _timezone_from_name(default_timezone)
-+            if tz is None:
-+                return None
-         parsed = parsed.replace(tzinfo=tz)
-     return parsed.astimezone(timezone.utc)
- 
+@@ -328,7 +328,10 @@ def _proximity_component(
+     if window_seconds <= 0:
+         return 0.0
+     if recording_end <= recording_start:
+-        distance = abs((recording_start - event_start).total_seconds())
++        # Point-like recordings (missing/zero duration): score by nearest event edge.
++        distance_to_start = abs((recording_start - event_start).total_seconds())
++        distance_to_end = abs((recording_start - event_end).total_seconds())
++        distance = min(distance_to_start, distance_to_end)
+     else:
+         if event_end <= recording_start:
+             distance = (recording_start - event_end).total_seconds()
 diff --git a/tests/test_calendar.py b/tests/test_calendar.py
-index 6b7ebca..375a9fa 100644
+index 375a9fa..095ae1a 100644
 --- a/tests/test_calendar.py
 +++ b/tests/test_calendar.py
-@@ -7,7 +7,12 @@ from fastapi.testclient import TestClient
- 
- from lan_app import api, calendar, ui_routes
- from lan_app.config import AppSettings
--from lan_app.db import create_recording, get_calendar_match, init_db
-+from lan_app.db import (
-+    create_recording,
-+    get_calendar_match,
-+    init_db,
-+    upsert_calendar_match,
-+)
- from lan_app.ms_graph import GraphNotConfiguredError
- 
- 
-@@ -293,3 +298,56 @@ def test_parse_event_datetime_uses_declared_timezone_for_naive_values():
-         }
-     )
-     assert parsed == datetime(2026, 2, 19, 17, 50, tzinfo=timezone.utc)
+@@ -351,3 +351,18 @@ def test_context_keeps_selected_event_when_not_in_top_five(tmp_path):
+     assert "evt-6" in rendered_ids
+     assert rendered_ids.count("evt-6") == 1
+     assert context["candidate_total"] == 6
 +
 +
-+def test_parse_event_datetime_unknown_timezone_does_not_fallback_to_utc():
-+    parsed = calendar._parse_event_datetime(
-+        {
-+            "dateTime": "2026-02-19T09:50:00.0000000",
-+            "timeZone": "Unknown/Timezone",
-+        }
++def test_proximity_component_point_recording_uses_nearest_event_edge():
++    recording_point = datetime(2026, 2, 19, 10, 0, tzinfo=timezone.utc)
++    event_start = datetime(2026, 2, 19, 9, 0, tzinfo=timezone.utc)
++    event_end = datetime(2026, 2, 19, 9, 59, tzinfo=timezone.utc)
++    proximity = calendar._proximity_component(
++        recording_start=recording_point,
++        recording_end=recording_point,
++        event_start=event_start,
++        event_end=event_end,
++        window_seconds=3600,
 +    )
-+    assert parsed is None
-+
-+
-+def test_context_keeps_selected_event_when_not_in_top_five(tmp_path):
-+    cfg = _cfg(tmp_path)
-+    init_db(cfg)
-+    create_recording(
-+        "rec-cal-top5-1",
-+        source="drive",
-+        source_filename="meeting.mp3",
-+        captured_at="2026-02-19T10:00:00Z",
-+        settings=cfg,
-+    )
-+
-+    candidates = []
-+    for idx in range(6):
-+        candidates.append(
-+            {
-+                "event_id": f"evt-{idx + 1}",
-+                "subject": f"Event {idx + 1}",
-+                "start": "2026-02-19T09:00:00Z",
-+                "end": "2026-02-19T09:30:00Z",
-+                "organizer": "Alex",
-+                "attendees": [],
-+                "location": None,
-+                "title_tokens": [f"event{idx + 1}"],
-+                "score": round(0.9 - idx * 0.1, 4),
-+                "rationale": "test",
-+            }
-+        )
-+    upsert_calendar_match(
-+        recording_id="rec-cal-top5-1",
-+        candidates=candidates,
-+        selected_event_id="evt-6",
-+        selected_confidence=0.4,
-+        settings=cfg,
-+    )
-+
-+    context = calendar.load_calendar_context("rec-cal-top5-1", settings=cfg)
-+    rendered_ids = [item["event_id"] for item in context["candidates"]]
-+    assert context["selected_event_id"] == "evt-6"
-+    assert "evt-6" in rendered_ids
-+    assert rendered_ids.count("evt-6") == 1
-+    assert context["candidate_total"] == 6
++    expected = 1.0 - (60.0 / 3600.0)
++    assert abs(proximity - expected) < 1e-9

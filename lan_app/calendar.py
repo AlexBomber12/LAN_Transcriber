@@ -328,7 +328,10 @@ def _proximity_component(
     if window_seconds <= 0:
         return 0.0
     if recording_end <= recording_start:
-        distance = abs((recording_start - event_start).total_seconds())
+        # Point-like recordings (missing/zero duration): score by nearest event edge.
+        distance_to_start = abs((recording_start - event_start).total_seconds())
+        distance_to_end = abs((recording_start - event_end).total_seconds())
+        distance = min(distance_to_start, distance_to_end)
     else:
         if event_end <= recording_start:
             distance = (recording_start - event_end).total_seconds()

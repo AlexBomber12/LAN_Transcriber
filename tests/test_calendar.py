@@ -351,3 +351,18 @@ def test_context_keeps_selected_event_when_not_in_top_five(tmp_path):
     assert "evt-6" in rendered_ids
     assert rendered_ids.count("evt-6") == 1
     assert context["candidate_total"] == 6
+
+
+def test_proximity_component_point_recording_uses_nearest_event_edge():
+    recording_point = datetime(2026, 2, 19, 10, 0, tzinfo=timezone.utc)
+    event_start = datetime(2026, 2, 19, 9, 0, tzinfo=timezone.utc)
+    event_end = datetime(2026, 2, 19, 9, 59, tzinfo=timezone.utc)
+    proximity = calendar._proximity_component(
+        recording_start=recording_point,
+        recording_end=recording_point,
+        event_start=event_start,
+        event_end=event_end,
+        window_seconds=3600,
+    )
+    expected = 1.0 - (60.0 / 3600.0)
+    assert abs(proximity - expected) < 1e-9
