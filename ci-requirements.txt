@@ -1,6 +1,8 @@
 # Dependencies for linting and tests
 # Flexible versions avoid --require-hashes mode
 pydantic-settings>=2.10,<3.0
+jinja2>=3.1
+python-multipart>=0.0.9
 prometheus_client>=0.19
 pytest>=8.2
 pytest-asyncio>=1.1

@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% block title %}Queue – LAN Transcriber{% endblock %}
+{% block content %}
+<h1>Queue <small style="font-weight:normal;color:#666">({{ total }} total)</small></h1>
+
+<form class="filters" method="get" action="/queue">
+  <label>Status:</label>
+  <select name="status" hx-get="/queue" hx-push-url="true" hx-target="body" hx-trigger="change">
+    <option value="">All</option>
+    {% for s in statuses %}
+    <option value="{{ s }}" {% if status_filter == s %}selected{% endif %}>{{ s }}</option>
+    {% endfor %}
+  </select>
+  <label>Recording ID:</label>
+  <input type="text" name="recording_id" value="{{ recording_id_filter }}" placeholder="filter by rec id" style="width:200px">
+  <input type="hidden" name="offset" value="0">
+  <button class="btn" type="submit">Filter</button>
+</form>
+
+{% if items %}
+<table>
+  <thead>
+    <tr>
+      <th>Job ID</th>
+      <th>Type</th>
+      <th>Status</th>
+      <th>Recording ID</th>
+      <th>Attempt</th>
+      <th>Created</th>
+      <th>Started</th>
+      <th>Finished</th>
+      <th>Error</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for j in items %}
+    <tr>
+      <td title="{{ j.id }}">{{ j.id[:16] }}…</td>
+      <td>{{ j.type }}</td>
+      <td><span class="badge s-{{ j.status }}">{{ j.status }}</span></td>
+      <td><a href="/recordings/{{ j.recording_id }}" style="text-decoration:none;color:#1d4ed8" title="{{ j.recording_id }}">{{ j.recording_id[:16] }}…</a></td>
+      <td>{{ j.attempt }}</td>
+      <td>{{ j.created_at[:19].replace('T',' ') if j.created_at else '—' }}</td>
+      <td>{{ j.started_at[:19].replace('T',' ') if j.started_at else '—' }}</td>
+      <td>{{ j.finished_at[:19].replace('T',' ') if j.finished_at else '—' }}</td>
+      <td title="{{ j.error or '' }}">{{ (j.error or '')[:35] }}{% if j.error and j.error|length > 35 %}…{% endif %}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+<div class="pager">
+  {% if has_prev %}
+  <a href="/queue?status={{ status_filter }}&recording_id={{ recording_id_filter }}&limit={{ limit }}&offset={{ prev_offset }}">&#171; Prev</a>
+  {% endif %}
+  <span>{{ offset + 1 }}–{{ [offset + limit, total] | min }} of {{ total }}</span>
+  {% if has_next %}
+  <a href="/queue?status={{ status_filter }}&recording_id={{ recording_id_filter }}&limit={{ limit }}&offset={{ next_offset }}">Next &#187;</a>
+  {% endif %}
+</div>
+{% else %}
+<p class="placeholder">No jobs{% if status_filter %} with status <strong>{{ status_filter }}</strong>{% endif %}.</p>
+{% endif %}
+{% endblock %}

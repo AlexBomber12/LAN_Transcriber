@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% block title %}Dashboard – LAN Transcriber{% endblock %}
+{% block content %}
+<h1>Dashboard</h1>
+
+<div class="section">
+  <h2>Recordings by status</h2>
+  <div class="stats-row">
+    {% for status, count in rec_counts.items() %}
+    <div class="stat-card">
+      <div class="num">{{ count }}</div>
+      <div class="lbl"><span class="badge s-{{ status }}">{{ status }}</span></div>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+
+<div class="section">
+  <h2>Queue by status</h2>
+  <div class="stats-row">
+    {% for status, count in job_counts.items() %}
+    <div class="stat-card">
+      <div class="num">{{ count }}</div>
+      <div class="lbl"><span class="badge s-{{ status }}">{{ status }}</span></div>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+
+<div class="section">
+  <h2>Recent recordings</h2>
+  {% if recent %}
+  <table>
+    <thead>
+      <tr>
+        <th>ID</th>
+        <th>Filename</th>
+        <th>Status</th>
+        <th>Captured</th>
+        <th>Source</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for r in recent %}
+      <tr>
+        <td><a href="/recordings/{{ r.id }}" style="text-decoration:none;color:#1d4ed8">{{ r.id[:14] }}…</a></td>
+        <td title="{{ r.source_filename }}">{{ r.source_filename }}</td>
+        <td><span class="badge s-{{ r.status }}">{{ r.status }}</span></td>
+        <td>{{ r.captured_at[:19].replace('T',' ') if r.captured_at else '—' }}</td>
+        <td>{{ r.source }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="placeholder">No recordings yet.</p>
+  {% endif %}
+</div>
+{% endblock %}

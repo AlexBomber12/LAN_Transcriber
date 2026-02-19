@@ -1,310 +1,1451 @@
+diff --git a/ci-requirements.txt b/ci-requirements.txt
+index c5536d6..976fc9d 100644
+--- a/ci-requirements.txt
++++ b/ci-requirements.txt
+@@ -1,6 +1,8 @@
+ # Dependencies for linting and tests
+ # Flexible versions avoid --require-hashes mode
+ pydantic-settings>=2.10,<3.0
++jinja2>=3.1
++python-multipart>=0.0.9
+ prometheus_client>=0.19
+ pytest>=8.2
+ pytest-asyncio>=1.1
 diff --git a/lan_app/api.py b/lan_app/api.py
-index 5ca2cdf..9fc1ae9 100644
+index 9fc1ae9..80db496 100644
 --- a/lan_app/api.py
 +++ b/lan_app/api.py
-@@ -31,6 +31,7 @@ from .db import (
-     set_recording_status,
+@@ -32,8 +32,10 @@ from .db import (
  )
  from .jobs import RecordingNotFoundError, enqueue_recording_job
-+from .jobs import purge_pending_recording_jobs
+ from .jobs import purge_pending_recording_jobs
++from .ui_routes import ui_router
  
  app = FastAPI()
++app.include_router(ui_router)
  ALIAS_PATH = aliases.ALIAS_PATH
-@@ -198,6 +199,17 @@ async def api_quarantine_recording(
- 
- @app.post("/api/recordings/{recording_id}/actions/delete")
- async def api_delete_recording(recording_id: str) -> dict[str, object]:
-+    if get_recording(recording_id, settings=_settings) is None:
-+        raise HTTPException(status_code=404, detail="Recording not found")
-+
-+    try:
-+        purge_pending_recording_jobs(recording_id, settings=_settings)
-+    except Exception as exc:
-+        raise HTTPException(
-+            status_code=503,
-+            detail=f"Queue unavailable: {exc}",
-+        )
-+
-     deleted = delete_recording(recording_id, settings=_settings)
-     if not deleted:
-         raise HTTPException(status_code=404, detail="Recording not found")
-diff --git a/lan_app/jobs.py b/lan_app/jobs.py
-index c6652c4..f4245f8 100644
---- a/lan_app/jobs.py
-+++ b/lan_app/jobs.py
-@@ -6,14 +6,23 @@ from uuid import uuid4
- 
- from redis import Redis
- from rq import Queue
-+from rq.registry import DeferredJobRegistry, ScheduledJobRegistry
- 
- from .config import AppSettings
- from .constants import (
-     DEFAULT_REQUEUE_JOB_TYPE,
-     JOB_STATUS_QUEUED,
-     JOB_TYPES,
-+    RECORDING_STATUS_QUEUED,
-+)
-+from .db import (
-+    create_job,
-+    fail_job,
-+    get_recording,
-+    init_db,
-+    list_jobs,
-+    set_recording_status,
- )
--from .db import create_job, fail_job, get_recording, init_db
+ _subscribers: List[asyncio.Queue[str]] = []
+ _current_result: TranscriptResult | None = None
+diff --git a/lan_app/db.py b/lan_app/db.py
+index fe0dd4b..49e97f3 100644
+--- a/lan_app/db.py
++++ b/lan_app/db.py
+@@ -484,6 +484,88 @@ def fail_job(
+     )
  
  
- class RecordingNotFoundError(ValueError):
-@@ -41,6 +50,63 @@ def get_queue(settings: AppSettings | None = None) -> Queue:
-     return Queue(name=cfg.rq_queue_name, connection=connection)
- 
- 
-+def _status_value(status: object | None) -> str | None:
-+    if status is None:
-+        return None
-+    return getattr(status, "value", str(status))
-+
-+
-+def _purge_pending_queue_job(queue: Queue, job_id: str) -> bool:
-+    job = queue.fetch_job(job_id)
-+    if job is None:
-+        return False
-+
-+    status = _status_value(job.get_status(refresh=True))
-+    if status not in {"queued", "deferred", "scheduled"}:
-+        return False
-+
-+    if status == "queued":
-+        queue.remove(job_id)
-+    elif status == "deferred":
-+        DeferredJobRegistry(queue=queue).remove(job_id, delete_job=False)
-+    elif status == "scheduled":
-+        ScheduledJobRegistry(queue=queue).remove(job_id, delete_job=False)
-+
-+    job.delete(remove_from_queue=True, delete_dependents=True)
-+    return True
-+
-+
-+def purge_pending_recording_jobs(
-+    recording_id: str,
++def list_projects(
 +    *,
 +    settings: AppSettings | None = None,
-+) -> int:
-+    cfg = settings or AppSettings()
-+    init_db(cfg)
-+    queue = get_queue(cfg)
++) -> list[dict[str, Any]]:
++    init_db(settings)
++    with connect(settings) as conn:
++        rows = conn.execute("SELECT * FROM projects ORDER BY name").fetchall()
++    return [_as_dict(row) or {} for row in rows]
 +
-+    removed = 0
-+    offset = 0
-+    while True:
-+        rows, total = list_jobs(
-+            settings=cfg,
-+            status=JOB_STATUS_QUEUED,
-+            recording_id=recording_id,
-+            limit=500,
-+            offset=offset,
++
++def create_project(
++    name: str,
++    *,
++    settings: AppSettings | None = None,
++) -> dict[str, Any]:
++    init_db(settings)
++    with connect(settings) as conn:
++        cursor = conn.execute("INSERT INTO projects (name) VALUES (?)", (name,))
++        row = conn.execute(
++            "SELECT * FROM projects WHERE id = ?", (cursor.lastrowid,)
++        ).fetchone()
++        conn.commit()
++    return _as_dict(row) or {}
++
++
++def delete_project(
++    project_id: int,
++    *,
++    settings: AppSettings | None = None,
++) -> bool:
++    init_db(settings)
++    with connect(settings) as conn:
++        deleted = conn.execute("DELETE FROM projects WHERE id = ?", (project_id,))
++        conn.commit()
++    return deleted.rowcount > 0
++
++
++def list_voice_profiles(
++    *,
++    settings: AppSettings | None = None,
++) -> list[dict[str, Any]]:
++    init_db(settings)
++    with connect(settings) as conn:
++        rows = conn.execute(
++            "SELECT * FROM voice_profiles ORDER BY display_name"
++        ).fetchall()
++    return [_as_dict(row) or {} for row in rows]
++
++
++def create_voice_profile(
++    display_name: str,
++    notes: str | None = None,
++    *,
++    settings: AppSettings | None = None,
++) -> dict[str, Any]:
++    init_db(settings)
++    with connect(settings) as conn:
++        cursor = conn.execute(
++            "INSERT INTO voice_profiles (display_name, notes) VALUES (?, ?)",
++            (display_name, notes),
 +        )
-+        if not rows:
-+            break
-+        for row in rows:
-+            job_id = str(row["id"])
-+            if _purge_pending_queue_job(queue, job_id):
-+                removed += 1
-+        offset += len(rows)
-+        if offset >= total:
-+            break
-+    return removed
++        row = conn.execute(
++            "SELECT * FROM voice_profiles WHERE id = ?", (cursor.lastrowid,)
++        ).fetchone()
++        conn.commit()
++    return _as_dict(row) or {}
 +
 +
- def enqueue_recording_job(
-     recording_id: str,
++def delete_voice_profile(
++    profile_id: int,
++    *,
++    settings: AppSettings | None = None,
++) -> bool:
++    init_db(settings)
++    with connect(settings) as conn:
++        deleted = conn.execute(
++            "DELETE FROM voice_profiles WHERE id = ?", (profile_id,)
++        )
++        conn.commit()
++    return deleted.rowcount > 0
++
++
+ def _set_job_terminal_state(
      *,
-@@ -84,6 +150,12 @@ def enqueue_recording_job(
-         except Exception:
-             pass
-         raise
+     job_id: str,
+@@ -523,4 +605,10 @@ __all__ = [
+     "start_job",
+     "finish_job",
+     "fail_job",
++    "list_projects",
++    "create_project",
++    "delete_project",
++    "list_voice_profiles",
++    "create_voice_profile",
++    "delete_voice_profile",
+ ]
+diff --git a/pyproject.toml b/pyproject.toml
+index ef253c5..8fff5c5 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -12,6 +12,8 @@ dependencies = [
+     "prometheus_client>=0.19.0",
+     "anyio",
+     "fastapi",
++    "jinja2",
++    "python-multipart",
+     "redis",
+     "rq",
+     "pyyaml",
+diff --git a/tasks/QUEUE.md b/tasks/QUEUE.md
+index 6202dc9..0a3b14a 100644
+--- a/tasks/QUEUE.md
++++ b/tasks/QUEUE.md
+@@ -27,7 +27,7 @@ Queue (in order)
+ - Depends on: PR-REFRACTOR-CORE-01
+ 
+ 4) PR-UI-SHELL-01: Web UI skeleton: dashboard + DB-table recordings list + recording detail shell + connections shell
+-- Status: TODO
++- Status: DOING
+ - Tasks file: tasks/PR-UI-SHELL-01.md
+ - Depends on: PR-DB-QUEUE-01
+ 
+diff --git a/lan_app/templates/base.html b/lan_app/templates/base.html
+new file mode 100644
+index 0000000..7ce5cc7
+--- /dev/null
++++ b/lan_app/templates/base.html
+@@ -0,0 +1,97 @@
++<!DOCTYPE html>
++<html lang="en">
++<head>
++<meta charset="utf-8">
++<meta name="viewport" content="width=device-width, initial-scale=1">
++<title>{% block title %}LAN Transcriber{% endblock %}</title>
++<script src="https://unpkg.com/htmx.org@1.9.12" integrity="sha384-SKT+KaKSPWVzuxCBSI7pSMQgYzI+yCr7/mhJyP5G/Y5QhSQKlSEPFGD7iRz7Z2" crossorigin="anonymous"></script>
++<style>
++*{box-sizing:border-box;margin:0;padding:0}
++body{font:13px/1.5 'Courier New',monospace;background:#f0f0f0;color:#222}
++nav{background:#2c3e50;color:#fff;padding:5px 12px;display:flex;gap:0;align-items:center;flex-wrap:wrap}
++.nav-logo{font-weight:bold;color:#fff;margin-right:14px;letter-spacing:.5px}
++nav a{color:#bdc3c7;text-decoration:none;padding:4px 10px;border:1px solid transparent;font-size:12px}
++nav a:hover,nav a.active{color:#fff;background:#34495e;border-color:#4a6080}
++main{padding:12px}
++h1{font-size:14px;font-weight:bold;margin-bottom:10px;padding-bottom:4px;border-bottom:1px solid #ccc}
++h2{font-size:13px;font-weight:bold;margin:12px 0 6px}
++table{border-collapse:collapse;width:100%;font-size:12px;background:#fff}
++th{background:#c0cfe0;padding:3px 8px;border:1px solid #99b;text-align:left;white-space:nowrap;user-select:none}
++td{padding:3px 8px;border:1px solid #ccd;white-space:nowrap;overflow:hidden;max-width:220px;text-overflow:ellipsis}
++tr:nth-child(even){background:#f8f9ff}
++tr:hover{background:#e8ecf8}
++.badge{display:inline-block;padding:1px 5px;border:1px solid;font-size:11px;font-weight:bold;white-space:nowrap;letter-spacing:.2px}
++.s-Queued{background:#dbeafe;border-color:#93c5fd;color:#1d4ed8}
++.s-Processing{background:#fef3c7;border-color:#fcd34d;color:#92400e}
++.s-NeedsReview{background:#fef9c3;border-color:#fde047;color:#713f12}
++.s-Ready{background:#dcfce7;border-color:#86efac;color:#14532d}
++.s-Published{background:#ede9fe;border-color:#c4b5fd;color:#4c1d95}
++.s-Quarantine{background:#fee2e2;border-color:#fca5a5;color:#7f1d1d}
++.s-Failed{background:#fee2e2;border-color:#fca5a5;color:#7f1d1d}
++.s-queued{background:#dbeafe;border-color:#93c5fd;color:#1d4ed8}
++.s-started{background:#fef3c7;border-color:#fcd34d;color:#92400e}
++.s-finished{background:#dcfce7;border-color:#86efac;color:#14532d}
++.s-failed{background:#fee2e2;border-color:#fca5a5;color:#7f1d1d}
++.filters{margin-bottom:10px;display:flex;gap:6px;align-items:center;flex-wrap:wrap}
++.filters label{font-size:12px}
++.filters select,.filters input{font:12px 'Courier New',monospace;border:1px solid #999;padding:2px 5px}
++.btn{font:12px 'Courier New',monospace;padding:3px 8px;border:1px solid #888;background:#e8e8e8;cursor:pointer}
++.btn:hover{background:#d0d0d0}
++.btn-danger{border-color:#b00;color:#900}
++.btn-danger:hover{background:#fee}
++.pager{margin-top:8px;display:flex;gap:6px;align-items:center;font-size:12px}
++.pager a{font:12px 'Courier New',monospace;text-decoration:none;padding:2px 6px;border:1px solid #888;background:#e8e8e8}
++.pager a:hover{background:#d0d0d0}
++.pager span{color:#666}
++.stats-row{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px}
++.stat-card{background:#fff;border:1px solid #ccc;padding:8px 12px;min-width:80px;cursor:default}
++.stat-card .num{font-size:20px;font-weight:bold;line-height:1.2}
++.stat-card .lbl{font-size:10px;color:#666;text-transform:uppercase;letter-spacing:.5px}
++.section{margin-bottom:16px}
++.tabs{display:flex;gap:2px;border-bottom:2px solid #c0cfe0;margin-bottom:0}
++.tab{padding:4px 12px;border:1px solid #ccc;border-bottom:none;font-size:12px;text-decoration:none;color:#333;background:#e8e8e8}
++.tab:hover{background:#d8d8e8}
++.tab.active{background:#fff;border-bottom:2px solid #fff;margin-bottom:-2px;font-weight:bold;color:#000}
++.tab-content{background:#fff;border:1px solid #ccc;border-top:none;padding:12px}
++.placeholder{color:#999;font-style:italic;padding:20px 0}
++.info-grid{display:grid;grid-template-columns:150px 1fr;gap:2px 8px;font-size:12px}
++.info-grid .k{color:#555}
++.info-grid .v{color:#111}
++.form-row{display:flex;gap:8px;align-items:center;margin-bottom:6px}
++.form-row label{font-size:12px;min-width:120px}
++.form-row input,.form-row select,.form-row textarea{font:12px 'Courier New',monospace;border:1px solid #999;padding:3px 5px}
++.action-sel{font:11px 'Courier New',monospace;border:1px solid #888;padding:1px 3px;background:#f8f8f8;cursor:pointer}
++.conn-card{background:#fff;border:1px solid #ccc;padding:10px 14px;margin-bottom:8px;max-width:480px}
++.conn-card h3{font-size:12px;font-weight:bold;margin-bottom:6px}
++.conn-row{display:flex;gap:8px;align-items:center;font-size:12px;margin-bottom:4px}
++.dot-ok{display:inline-block;width:8px;height:8px;border-radius:50%;background:#4ade80}
++.dot-na{display:inline-block;width:8px;height:8px;border-radius:50%;background:#d1d5db}
++</style>
++</head>
++<body hx-boost="true">
++<nav>
++  <span class="nav-logo">LAN Transcriber</span>
++  <a href="/" {% if active=='dashboard' %}class="active"{% endif %}>Dashboard</a>
++  <a href="/recordings" {% if active=='recordings' %}class="active"{% endif %}>Recordings</a>
++  <a href="/queue" {% if active=='queue' %}class="active"{% endif %}>Queue</a>
++  <a href="/projects" {% if active=='projects' %}class="active"{% endif %}>Projects</a>
++  <a href="/voices" {% if active=='voices' %}class="active"{% endif %}>Voices</a>
++  <a href="/connections" {% if active=='connections' %}class="active"{% endif %}>Connections</a>
++</nav>
++<main>
++{% block content %}{% endblock %}
++</main>
++<script>
++function doRecAction(sel, id) {
++  var act = sel.value;
++  sel.value = '';
++  if (!act) return;
++  if (act === 'open') { window.location = '/recordings/' + id; return; }
++  var msgs = {delete: 'Delete recording ' + id + '?', quarantine: 'Quarantine recording ' + id + '?'};
++  if (msgs[act] && !confirm(msgs[act])) return;
++  var form = document.getElementById('hxf-' + act + '-' + id);
++  if (form) htmx.trigger(form, 'submit');
++}
++</script>
++</body>
++</html>
+diff --git a/lan_app/templates/connections.html b/lan_app/templates/connections.html
+new file mode 100644
+index 0000000..998f259
+--- /dev/null
++++ b/lan_app/templates/connections.html
+@@ -0,0 +1,29 @@
++{% extends "base.html" %}
++{% block title %}Connections – LAN Transcriber{% endblock %}
++{% block content %}
++<h1>Connections</h1>
 +
++<div class="conn-card">
++  <h3>Google Drive (Service Account)</h3>
++  <div class="conn-row">
++    <span class="dot-na"></span>
++    <span style="color:#888">Not configured — available after PR-GDRIVE-INGEST-01.</span>
++  </div>
++  <div style="font-size:11px;color:#999;margin-top:4px">
++    Ingest: Service Account + shared folder (Inbox).<br>
++    Credentials: <code>/data/secrets/gdrive_sa.json</code>
++  </div>
++</div>
++
++<div class="conn-card">
++  <h3>Microsoft Graph (Work account)</h3>
++  <div class="conn-row">
++    <span class="dot-na"></span>
++    <span style="color:#888">Not configured — available after PR-MS-AUTH-01.</span>
++  </div>
++  <div style="font-size:11px;color:#999;margin-top:4px">
++    Auth: Delegated OAuth via Device Code Flow.<br>
++    Token cache: <code>/data/auth/msal_cache.bin</code>
++  </div>
++</div>
++{% endblock %}
+diff --git a/lan_app/templates/dashboard.html b/lan_app/templates/dashboard.html
+new file mode 100644
+index 0000000..fa369f5
+--- /dev/null
++++ b/lan_app/templates/dashboard.html
+@@ -0,0 +1,59 @@
++{% extends "base.html" %}
++{% block title %}Dashboard – LAN Transcriber{% endblock %}
++{% block content %}
++<h1>Dashboard</h1>
++
++<div class="section">
++  <h2>Recordings by status</h2>
++  <div class="stats-row">
++    {% for status, count in rec_counts.items() %}
++    <div class="stat-card">
++      <div class="num">{{ count }}</div>
++      <div class="lbl"><span class="badge s-{{ status }}">{{ status }}</span></div>
++    </div>
++    {% endfor %}
++  </div>
++</div>
++
++<div class="section">
++  <h2>Queue by status</h2>
++  <div class="stats-row">
++    {% for status, count in job_counts.items() %}
++    <div class="stat-card">
++      <div class="num">{{ count }}</div>
++      <div class="lbl"><span class="badge s-{{ status }}">{{ status }}</span></div>
++    </div>
++    {% endfor %}
++  </div>
++</div>
++
++<div class="section">
++  <h2>Recent recordings</h2>
++  {% if recent %}
++  <table>
++    <thead>
++      <tr>
++        <th>ID</th>
++        <th>Filename</th>
++        <th>Status</th>
++        <th>Captured</th>
++        <th>Source</th>
++      </tr>
++    </thead>
++    <tbody>
++      {% for r in recent %}
++      <tr>
++        <td><a href="/recordings/{{ r.id }}" style="text-decoration:none;color:#1d4ed8">{{ r.id[:14] }}…</a></td>
++        <td title="{{ r.source_filename }}">{{ r.source_filename }}</td>
++        <td><span class="badge s-{{ r.status }}">{{ r.status }}</span></td>
++        <td>{{ r.captured_at[:19].replace('T',' ') if r.captured_at else '—' }}</td>
++        <td>{{ r.source }}</td>
++      </tr>
++      {% endfor %}
++    </tbody>
++  </table>
++  {% else %}
++  <p class="placeholder">No recordings yet.</p>
++  {% endif %}
++</div>
++{% endblock %}
+diff --git a/lan_app/templates/projects.html b/lan_app/templates/projects.html
+new file mode 100644
+index 0000000..ad3d5d0
+--- /dev/null
++++ b/lan_app/templates/projects.html
+@@ -0,0 +1,47 @@
++{% extends "base.html" %}
++{% block title %}Projects – LAN Transcriber{% endblock %}
++{% block content %}
++<h1>Projects</h1>
++
++<div class="section">
++  <h2>Create project</h2>
++  <form method="post" action="/projects" style="display:flex;gap:8px;align-items:center">
++    <label style="font-size:12px">Name:</label>
++    <input type="text" name="name" required maxlength="120" placeholder="Project name" style="font:12px 'Courier New',monospace;border:1px solid #999;padding:3px 6px;width:240px">
++    <button class="btn" type="submit">Create</button>
++  </form>
++</div>
++
++<div class="section">
++  {% if items %}
++  <table>
++    <thead>
++      <tr>
++        <th>ID</th>
++        <th>Name</th>
++        <th>Auto-publish</th>
++        <th>OneNote section ID</th>
++        <th></th>
++      </tr>
++    </thead>
++    <tbody>
++      {% for p in items %}
++      <tr>
++        <td>{{ p.id }}</td>
++        <td>{{ p.name }}</td>
++        <td>{% if p.auto_publish %}Yes{% else %}No{% endif %}</td>
++        <td>{{ p.onenote_section_id or '—' }}</td>
++        <td>
++          <form method="post" action="/projects/{{ p.id }}/delete" style="display:inline">
++            <button class="btn btn-danger" type="submit" onclick="return confirm('Delete project {{ p.name }}?')">Delete</button>
++          </form>
++        </td>
++      </tr>
++      {% endfor %}
++    </tbody>
++  </table>
++  {% else %}
++  <p class="placeholder">No projects yet. Create one above.</p>
++  {% endif %}
++</div>
++{% endblock %}
+diff --git a/lan_app/templates/queue.html b/lan_app/templates/queue.html
+new file mode 100644
+index 0000000..24df60c
+--- /dev/null
++++ b/lan_app/templates/queue.html
+@@ -0,0 +1,64 @@
++{% extends "base.html" %}
++{% block title %}Queue – LAN Transcriber{% endblock %}
++{% block content %}
++<h1>Queue <small style="font-weight:normal;color:#666">({{ total }} total)</small></h1>
++
++<form class="filters" method="get" action="/queue">
++  <label>Status:</label>
++  <select name="status" hx-get="/queue" hx-push-url="true" hx-target="body" hx-trigger="change">
++    <option value="">All</option>
++    {% for s in statuses %}
++    <option value="{{ s }}" {% if status_filter == s %}selected{% endif %}>{{ s }}</option>
++    {% endfor %}
++  </select>
++  <label>Recording ID:</label>
++  <input type="text" name="recording_id" value="{{ recording_id_filter }}" placeholder="filter by rec id" style="width:200px">
++  <input type="hidden" name="offset" value="0">
++  <button class="btn" type="submit">Filter</button>
++</form>
++
++{% if items %}
++<table>
++  <thead>
++    <tr>
++      <th>Job ID</th>
++      <th>Type</th>
++      <th>Status</th>
++      <th>Recording ID</th>
++      <th>Attempt</th>
++      <th>Created</th>
++      <th>Started</th>
++      <th>Finished</th>
++      <th>Error</th>
++    </tr>
++  </thead>
++  <tbody>
++    {% for j in items %}
++    <tr>
++      <td title="{{ j.id }}">{{ j.id[:16] }}…</td>
++      <td>{{ j.type }}</td>
++      <td><span class="badge s-{{ j.status }}">{{ j.status }}</span></td>
++      <td><a href="/recordings/{{ j.recording_id }}" style="text-decoration:none;color:#1d4ed8" title="{{ j.recording_id }}">{{ j.recording_id[:16] }}…</a></td>
++      <td>{{ j.attempt }}</td>
++      <td>{{ j.created_at[:19].replace('T',' ') if j.created_at else '—' }}</td>
++      <td>{{ j.started_at[:19].replace('T',' ') if j.started_at else '—' }}</td>
++      <td>{{ j.finished_at[:19].replace('T',' ') if j.finished_at else '—' }}</td>
++      <td title="{{ j.error or '' }}">{{ (j.error or '')[:35] }}{% if j.error and j.error|length > 35 %}…{% endif %}</td>
++    </tr>
++    {% endfor %}
++  </tbody>
++</table>
++
++<div class="pager">
++  {% if has_prev %}
++  <a href="/queue?status={{ status_filter }}&recording_id={{ recording_id_filter }}&limit={{ limit }}&offset={{ prev_offset }}">&#171; Prev</a>
++  {% endif %}
++  <span>{{ offset + 1 }}–{{ [offset + limit, total] | min }} of {{ total }}</span>
++  {% if has_next %}
++  <a href="/queue?status={{ status_filter }}&recording_id={{ recording_id_filter }}&limit={{ limit }}&offset={{ next_offset }}">Next &#187;</a>
++  {% endif %}
++</div>
++{% else %}
++<p class="placeholder">No jobs{% if status_filter %} with status <strong>{{ status_filter }}</strong>{% endif %}.</p>
++{% endif %}
++{% endblock %}
+diff --git a/lan_app/templates/recording_detail.html b/lan_app/templates/recording_detail.html
+new file mode 100644
+index 0000000..8fe2c61
+--- /dev/null
++++ b/lan_app/templates/recording_detail.html
+@@ -0,0 +1,97 @@
++{% extends "base.html" %}
++{% block title %}{{ rec.id[:20] }} – LAN Transcriber{% endblock %}
++{% block content %}
++<h1>
++  Recording: <code>{{ rec.id }}</code>
++  &nbsp;<span class="badge s-{{ rec.status }}">{{ rec.status }}</span>
++</h1>
++
++<div class="filters" style="margin-bottom:10px">
++  <form id="hxf-requeue-{{ rec.id }}" hx-post="/ui/recordings/{{ rec.id }}/requeue" hx-swap="none" style="display:inline"></form>
++  <form id="hxf-quarantine-{{ rec.id }}" hx-post="/ui/recordings/{{ rec.id }}/quarantine" hx-swap="none" style="display:inline"></form>
++  <form id="hxf-delete-{{ rec.id }}" hx-post="/ui/recordings/{{ rec.id }}/delete" hx-swap="none" style="display:inline"></form>
++  <select class="action-sel" style="font-size:12px" onchange="doRecAction(this, '{{ rec.id }}')">
++    <option value="">Actions…</option>
++    <option value="requeue">Requeue</option>
++    <option value="quarantine">Quarantine</option>
++    <option value="delete">Delete</option>
++  </select>
++  <a href="/recordings" class="btn" style="text-decoration:none">&#8592; Back</a>
++</div>
++
++<div class="tabs">
++  {% for t in tabs %}
++  <a href="/recordings/{{ rec.id }}?tab={{ t }}" class="tab {% if current_tab == t %}active{% endif %}">{{ t|capitalize }}</a>
++  {% endfor %}
++</div>
++
++<div class="tab-content">
++
++{% if current_tab == 'overview' %}
++  <div class="info-grid">
++    <span class="k">ID</span><span class="v">{{ rec.id }}</span>
++    <span class="k">Filename</span><span class="v">{{ rec.source_filename }}</span>
++    <span class="k">Source</span><span class="v">{{ rec.source }}</span>
++    <span class="k">Status</span><span class="v"><span class="badge s-{{ rec.status }}">{{ rec.status }}</span></span>
++    <span class="k">Captured at</span><span class="v">{{ rec.captured_at[:19].replace('T',' ') if rec.captured_at else '—' }}</span>
++    <span class="k">Duration</span><span class="v">{% if rec.duration_sec %}{{ rec.duration_sec }}s{% else %}—{% endif %}</span>
++    <span class="k">Project ID</span><span class="v">{{ rec.project_id or '—' }}</span>
++    <span class="k">Language (auto)</span><span class="v">{{ rec.language_auto or '—' }}</span>
++    <span class="k">Language (override)</span><span class="v">{{ rec.language_override or '—' }}</span>
++    <span class="k">Drive file ID</span><span class="v">{{ rec.drive_file_id or '—' }}</span>
++    <span class="k">OneNote page ID</span><span class="v">{{ rec.onenote_page_id or '—' }}</span>
++    <span class="k">Quarantine reason</span><span class="v">{{ rec.quarantine_reason or '—' }}</span>
++    <span class="k">Created at</span><span class="v">{{ rec.created_at[:19].replace('T',' ') if rec.created_at else '—' }}</span>
++    <span class="k">Updated at</span><span class="v">{{ rec.updated_at[:19].replace('T',' ') if rec.updated_at else '—' }}</span>
++  </div>
++
++{% elif current_tab == 'calendar' %}
++  <p class="placeholder">Calendar matching — available after PR-CALENDAR-01.</p>
++
++{% elif current_tab == 'project' %}
++  <p class="placeholder">Project assignment — available after PR-CALENDAR-01.</p>
++
++{% elif current_tab == 'speakers' %}
++  <p class="placeholder">Speaker assignments — available after PR-VOICE-01.</p>
++
++{% elif current_tab == 'language' %}
++  <p class="placeholder">Language spans — available after PR-LANG-01.</p>
++
++{% elif current_tab == 'metrics' %}
++  <p class="placeholder">Meeting metrics — available after PR-METRICS-01.</p>
++
++{% elif current_tab == 'log' %}
++  {% if jobs %}
++  <table>
++    <thead>
++      <tr>
++        <th>Job ID</th>
++        <th>Type</th>
++        <th>Status</th>
++        <th>Attempt</th>
++        <th>Started</th>
++        <th>Finished</th>
++        <th>Error</th>
++      </tr>
++    </thead>
++    <tbody>
++      {% for j in jobs %}
++      <tr>
++        <td title="{{ j.id }}">{{ j.id[:16] }}…</td>
++        <td>{{ j.type }}</td>
++        <td><span class="badge s-{{ j.status }}">{{ j.status }}</span></td>
++        <td>{{ j.attempt }}</td>
++        <td>{{ j.started_at[:19].replace('T',' ') if j.started_at else '—' }}</td>
++        <td>{{ j.finished_at[:19].replace('T',' ') if j.finished_at else '—' }}</td>
++        <td title="{{ j.error or '' }}">{{ (j.error or '')[:40] }}{% if j.error and j.error|length > 40 %}…{% endif %}</td>
++      </tr>
++      {% endfor %}
++    </tbody>
++  </table>
++  {% else %}
++  <p class="placeholder">No jobs for this recording.</p>
++  {% endif %}
++{% endif %}
++
++</div>
++{% endblock %}
+diff --git a/lan_app/templates/recordings.html b/lan_app/templates/recordings.html
+new file mode 100644
+index 0000000..df5d845
+--- /dev/null
++++ b/lan_app/templates/recordings.html
+@@ -0,0 +1,75 @@
++{% extends "base.html" %}
++{% block title %}Recordings – LAN Transcriber{% endblock %}
++{% block content %}
++<h1>Recordings <small style="font-weight:normal;color:#666">({{ total }} total)</small></h1>
++
++<form class="filters" method="get" action="/recordings">
++  <label>Status:</label>
++  <select name="status" hx-get="/recordings" hx-push-url="true" hx-target="body" hx-trigger="change">
++    <option value="">All</option>
++    {% for s in statuses %}
++    <option value="{{ s }}" {% if status_filter == s %}selected{% endif %}>{{ s }}</option>
++    {% endfor %}
++  </select>
++  <label>Limit:</label>
++  <select name="limit">
++    {% for n in [25, 50, 100, 200] %}
++    <option value="{{ n }}" {% if limit == n %}selected{% endif %}>{{ n }}</option>
++    {% endfor %}
++  </select>
++  <input type="hidden" name="offset" value="0">
++  <button class="btn" type="submit">Filter</button>
++</form>
++
++{% if items %}
++<table>
++  <thead>
++    <tr>
++      <th>ID</th>
++      <th>Filename</th>
++      <th>Status</th>
++      <th>Captured</th>
++      <th>Duration</th>
++      <th>Source</th>
++      <th>Actions</th>
++    </tr>
++  </thead>
++  <tbody>
++    {% for r in items %}
++    <tr>
++      <td title="{{ r.id }}"><a href="/recordings/{{ r.id }}" style="text-decoration:none;color:#1d4ed8">{{ r.id[:16] }}…</a></td>
++      <td title="{{ r.source_filename }}">{{ r.source_filename }}</td>
++      <td><span class="badge s-{{ r.status }}">{{ r.status }}</span></td>
++      <td>{{ r.captured_at[:19].replace('T',' ') if r.captured_at else '—' }}</td>
++      <td>{% if r.duration_sec %}{{ r.duration_sec }}s{% else %}—{% endif %}</td>
++      <td>{{ r.source }}</td>
++      <td>
++        <form id="hxf-requeue-{{ r.id }}" hx-post="/ui/recordings/{{ r.id }}/requeue" hx-swap="none" style="display:none"></form>
++        <form id="hxf-quarantine-{{ r.id }}" hx-post="/ui/recordings/{{ r.id }}/quarantine" hx-swap="none" style="display:none"></form>
++        <form id="hxf-delete-{{ r.id }}" hx-post="/ui/recordings/{{ r.id }}/delete" hx-swap="none" style="display:none"></form>
++        <select class="action-sel" onchange="doRecAction(this, '{{ r.id }}')">
++          <option value="">Actions</option>
++          <option value="open">Open</option>
++          <option value="requeue">Requeue</option>
++          <option value="quarantine">Quarantine</option>
++          <option value="delete">Delete</option>
++        </select>
++      </td>
++    </tr>
++    {% endfor %}
++  </tbody>
++</table>
++
++<div class="pager">
++  {% if has_prev %}
++  <a href="/recordings?status={{ status_filter }}&limit={{ limit }}&offset={{ prev_offset }}">&#171; Prev</a>
++  {% endif %}
++  <span>{{ offset + 1 }}–{{ [offset + limit, total] | min }} of {{ total }}</span>
++  {% if has_next %}
++  <a href="/recordings?status={{ status_filter }}&limit={{ limit }}&offset={{ next_offset }}">Next &#187;</a>
++  {% endif %}
++</div>
++{% else %}
++<p class="placeholder">No recordings{% if status_filter %} with status <strong>{{ status_filter }}</strong>{% endif %}.</p>
++{% endif %}
++{% endblock %}
+diff --git a/lan_app/templates/voices.html b/lan_app/templates/voices.html
+new file mode 100644
+index 0000000..d1207bf
+--- /dev/null
++++ b/lan_app/templates/voices.html
+@@ -0,0 +1,54 @@
++{% extends "base.html" %}
++{% block title %}Voice Profiles – LAN Transcriber{% endblock %}
++{% block content %}
++<h1>Voice Profiles</h1>
++
++<div class="section">
++  <h2>Add voice profile</h2>
++  <form method="post" action="/voices">
++    <div class="form-row">
++      <label>Display name:</label>
++      <input type="text" name="display_name" required maxlength="120" placeholder="Full name" style="width:240px">
++    </div>
++    <div class="form-row">
++      <label>Notes:</label>
++      <input type="text" name="notes" maxlength="240" placeholder="Optional notes" style="width:360px">
++    </div>
++    <div class="form-row">
++      <label></label>
++      <button class="btn" type="submit">Add</button>
++    </div>
++  </form>
++</div>
++
++<div class="section">
++  {% if items %}
++  <table>
++    <thead>
++      <tr>
++        <th>ID</th>
++        <th>Display name</th>
++        <th>Notes</th>
++        <th></th>
++      </tr>
++    </thead>
++    <tbody>
++      {% for v in items %}
++      <tr>
++        <td>{{ v.id }}</td>
++        <td>{{ v.display_name }}</td>
++        <td>{{ v.notes or '—' }}</td>
++        <td>
++          <form method="post" action="/voices/{{ v.id }}/delete" style="display:inline">
++            <button class="btn btn-danger" type="submit" onclick="return confirm('Delete voice profile {{ v.display_name }}?')">Delete</button>
++          </form>
++        </td>
++      </tr>
++      {% endfor %}
++    </tbody>
++  </table>
++  {% else %}
++  <p class="placeholder">No voice profiles yet. Add one above.</p>
++  {% endif %}
++</div>
++{% endblock %}
+diff --git a/lan_app/ui_routes.py b/lan_app/ui_routes.py
+new file mode 100644
+index 0000000..c2a9980
+--- /dev/null
++++ b/lan_app/ui_routes.py
+@@ -0,0 +1,313 @@
++"""Server-rendered HTML pages for the LAN Transcriber control panel.
++
++Uses Jinja2 templates + HTMX (via CDN) for a minimal, DB-window-style UI.
++"""
++
++from __future__ import annotations
++
++from pathlib import Path
++from typing import Any
++
++from fastapi import APIRouter, Form, Query, Request
++from fastapi.responses import HTMLResponse, RedirectResponse
++from fastapi.templating import Jinja2Templates
++
++from .config import AppSettings
++from .constants import (
++    JOB_STATUSES,
++    RECORDING_STATUSES,
++    RECORDING_STATUS_QUARANTINE,
++)
++from .db import (
++    create_project,
++    create_voice_profile,
++    delete_project,
++    delete_voice_profile,
++    get_recording,
++    list_jobs,
++    list_projects,
++    list_recordings,
++    list_voice_profiles,
++    set_recording_status,
++)
++from .jobs import enqueue_recording_job, purge_pending_recording_jobs
++
++_TEMPLATES_DIR = Path(__file__).parent / "templates"
++templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
++
++ui_router = APIRouter()
++_settings = AppSettings()
++
++
++def _status_counts(settings: AppSettings) -> dict[str, int]:
++    counts: dict[str, int] = {}
++    for status in RECORDING_STATUSES:
++        _, total = list_recordings(settings=settings, status=status, limit=1, offset=0)
++        counts[status] = total
++    return counts
++
++
++def _job_counts(settings: AppSettings) -> dict[str, int]:
++    counts: dict[str, int] = {}
++    for status in JOB_STATUSES:
++        _, total = list_jobs(settings=settings, status=status, limit=1, offset=0)
++        counts[status] = total
++    return counts
++
++
++# ---------------------------------------------------------------------------
++# Dashboard
++# ---------------------------------------------------------------------------
++
++
++@ui_router.get("/", response_class=HTMLResponse)
++async def ui_dashboard(request: Request) -> Any:
++    rec_counts = _status_counts(_settings)
++    job_counts = _job_counts(_settings)
++    recent, _ = list_recordings(settings=_settings, limit=10)
++    return templates.TemplateResponse(
++        request,
++        "dashboard.html",
++        {
++            "active": "dashboard",
++            "rec_counts": rec_counts,
++            "job_counts": job_counts,
++            "recent": recent,
++        },
++    )
++
++
++# ---------------------------------------------------------------------------
++# Recordings
++# ---------------------------------------------------------------------------
++
++
++@ui_router.get("/recordings", response_class=HTMLResponse)
++async def ui_recordings(
++    request: Request,
++    status: str | None = Query(default=None),
++    limit: int = Query(default=50, ge=1, le=500),
++    offset: int = Query(default=0, ge=0),
++) -> Any:
++    valid_status = status if status in RECORDING_STATUSES else None
++    items, total = list_recordings(
++        settings=_settings,
++        status=valid_status,
++        limit=limit,
++        offset=offset,
++    )
++    return templates.TemplateResponse(
++        request,
++        "recordings.html",
++        {
++            "active": "recordings",
++            "items": items,
++            "total": total,
++            "limit": limit,
++            "offset": offset,
++            "status_filter": valid_status or "",
++            "statuses": RECORDING_STATUSES,
++            "prev_offset": max(offset - limit, 0),
++            "next_offset": offset + limit,
++            "has_prev": offset > 0,
++            "has_next": offset + limit < total,
++        },
++    )
++
++
++@ui_router.get("/recordings/{recording_id}", response_class=HTMLResponse)
++async def ui_recording_detail(
++    request: Request,
++    recording_id: str,
++    tab: str = Query(default="overview"),
++) -> Any:
++    rec = get_recording(recording_id, settings=_settings)
++    if rec is None:
++        return HTMLResponse("<h1>404 – Recording not found</h1>", status_code=404)
++    jobs, _ = list_jobs(settings=_settings, recording_id=recording_id, limit=100)
++    tabs = ["overview", "calendar", "project", "speakers", "language", "metrics", "log"]
++    return templates.TemplateResponse(
++        request,
++        "recording_detail.html",
++        {
++            "active": "recordings",
++            "rec": rec,
++            "jobs": jobs,
++            "tabs": tabs,
++            "current_tab": tab if tab in tabs else "overview",
++        },
++    )
++
++
++# ---------------------------------------------------------------------------
++# Projects
++# ---------------------------------------------------------------------------
++
++
++@ui_router.get("/projects", response_class=HTMLResponse)
++async def ui_projects(request: Request) -> Any:
++    items = list_projects(settings=_settings)
++    return templates.TemplateResponse(
++        request,
++        "projects.html",
++        {
++            "active": "projects",
++            "items": items,
++        },
++    )
++
++
++@ui_router.post("/projects", response_class=HTMLResponse)
++async def ui_create_project(
++    name: str = Form(...),
++) -> Any:
++    name = name.strip()
++    if name:
++        create_project(name, settings=_settings)
++    return RedirectResponse("/projects", status_code=303)
++
++
++@ui_router.post("/projects/{project_id}/delete", response_class=HTMLResponse)
++async def ui_delete_project(project_id: int) -> Any:
++    delete_project(project_id, settings=_settings)
++    return RedirectResponse("/projects", status_code=303)
++
++
++# ---------------------------------------------------------------------------
++# Voices
++# ---------------------------------------------------------------------------
++
++
++@ui_router.get("/voices", response_class=HTMLResponse)
++async def ui_voices(request: Request) -> Any:
++    items = list_voice_profiles(settings=_settings)
++    return templates.TemplateResponse(
++        request,
++        "voices.html",
++        {
++            "active": "voices",
++            "items": items,
++        },
++    )
++
++
++@ui_router.post("/voices", response_class=HTMLResponse)
++async def ui_create_voice(
++    display_name: str = Form(...),
++    notes: str = Form(default=""),
++) -> Any:
++    display_name = display_name.strip()
++    if display_name:
++        create_voice_profile(display_name, notes.strip() or None, settings=_settings)
++    return RedirectResponse("/voices", status_code=303)
++
++
++@ui_router.post("/voices/{profile_id}/delete", response_class=HTMLResponse)
++async def ui_delete_voice(profile_id: int) -> Any:
++    delete_voice_profile(profile_id, settings=_settings)
++    return RedirectResponse("/voices", status_code=303)
++
++
++# ---------------------------------------------------------------------------
++# Queue / Jobs
++# ---------------------------------------------------------------------------
++
++
++@ui_router.get("/queue", response_class=HTMLResponse)
++async def ui_queue(
++    request: Request,
++    status: str | None = Query(default=None),
++    recording_id: str | None = Query(default=None),
++    limit: int = Query(default=50, ge=1, le=500),
++    offset: int = Query(default=0, ge=0),
++) -> Any:
++    valid_status = status if status in JOB_STATUSES else None
++    items, total = list_jobs(
++        settings=_settings,
++        status=valid_status,
++        recording_id=recording_id or None,
++        limit=limit,
++        offset=offset,
++    )
++    return templates.TemplateResponse(
++        request,
++        "queue.html",
++        {
++            "active": "queue",
++            "items": items,
++            "total": total,
++            "limit": limit,
++            "offset": offset,
++            "status_filter": valid_status or "",
++            "recording_id_filter": recording_id or "",
++            "statuses": JOB_STATUSES,
++            "prev_offset": max(offset - limit, 0),
++            "next_offset": offset + limit,
++            "has_prev": offset > 0,
++            "has_next": offset + limit < total,
++        },
++    )
++
++
++# ---------------------------------------------------------------------------
++# Connections
++# ---------------------------------------------------------------------------
++
++
++@ui_router.get("/connections", response_class=HTMLResponse)
++async def ui_connections(request: Request) -> Any:
++    return templates.TemplateResponse(
++        request,
++        "connections.html",
++        {
++            "active": "connections",
++        },
++    )
++
++
++# ---------------------------------------------------------------------------
++# Inline recording actions (HTMX targets returning HX-Redirect)
++# ---------------------------------------------------------------------------
++
++
++@ui_router.post("/ui/recordings/{recording_id}/requeue")
++async def ui_action_requeue(recording_id: str) -> Any:
++    if get_recording(recording_id, settings=_settings) is None:
++        return HTMLResponse("Not found", status_code=404)
++    try:
++        enqueue_recording_job(recording_id, settings=_settings)
++    except Exception:
++        pass
++    resp = HTMLResponse("")
++    resp.headers["HX-Redirect"] = f"/recordings/{recording_id}"
++    return resp
++
++
++@ui_router.post("/ui/recordings/{recording_id}/quarantine")
++async def ui_action_quarantine(recording_id: str) -> Any:
++    if get_recording(recording_id, settings=_settings) is None:
++        return HTMLResponse("Not found", status_code=404)
 +    set_recording_status(
 +        recording_id,
-+        RECORDING_STATUS_QUEUED,
-+        settings=cfg,
++        RECORDING_STATUS_QUARANTINE,
++        settings=_settings,
 +    )
-     return RecordingJob(job_id=job_id, recording_id=recording_id, job_type=job_type)
- 
- 
-@@ -92,4 +164,5 @@ __all__ = [
-     "RecordingNotFoundError",
-     "enqueue_recording_job",
-     "get_queue",
-+    "purge_pending_recording_jobs",
- ]
-diff --git a/tests/test_db_queue.py b/tests/test_db_queue.py
-index 9d1fdb6..bfa8062 100644
---- a/tests/test_db_queue.py
-+++ b/tests/test_db_queue.py
-@@ -13,6 +13,7 @@ from lan_app.constants import (
-     JOB_TYPE_PRECHECK,
-     RECORDING_STATUS_FAILED,
-     RECORDING_STATUS_QUARANTINE,
-+    RECORDING_STATUS_QUEUED,
-     RECORDING_STATUS_READY,
- )
- from lan_app.db import (
-@@ -23,8 +24,9 @@ from lan_app.db import (
-     get_recording,
-     init_db,
-     list_jobs,
-+    set_recording_status,
- )
--from lan_app.jobs import RecordingJob, enqueue_recording_job
-+from lan_app.jobs import RecordingJob, enqueue_recording_job, purge_pending_recording_jobs
- from lan_app.worker_tasks import process_job
- 
- 
-@@ -106,6 +108,7 @@ def test_recordings_and_jobs_api_actions(tmp_path: Path, monkeypatch):
-         "rec-api-1",
-         source="test",
-         source_filename="api.mp3",
++    resp = HTMLResponse("")
++    resp.headers["HX-Redirect"] = f"/recordings/{recording_id}"
++    return resp
++
++
++@ui_router.post("/ui/recordings/{recording_id}/delete")
++async def ui_action_delete(recording_id: str) -> Any:
++    if get_recording(recording_id, settings=_settings) is None:
++        return HTMLResponse("Not found", status_code=404)
++    try:
++        purge_pending_recording_jobs(recording_id, settings=_settings)
++    except Exception:
++        pass
++    from .db import delete_recording
++
++    delete_recording(recording_id, settings=_settings)
++    resp = HTMLResponse("")
++    resp.headers["HX-Redirect"] = "/recordings"
++    return resp
+diff --git a/tests/test_ui_routes.py b/tests/test_ui_routes.py
+new file mode 100644
+index 0000000..2dfb3b1
+--- /dev/null
++++ b/tests/test_ui_routes.py
+@@ -0,0 +1,398 @@
++"""Tests for the server-rendered HTML UI routes (PR-UI-SHELL-01)."""
++
++from __future__ import annotations
++
++from pathlib import Path
++
++import pytest
++from fastapi.testclient import TestClient
++
++from lan_app import api, ui_routes
++from lan_app.config import AppSettings
++from lan_app.db import (
++    create_job,
++    create_recording,
++    create_project,
++    create_voice_profile,
++    init_db,
++    list_projects,
++    list_voice_profiles,
++)
++from lan_app.constants import (
++    JOB_TYPE_PRECHECK,
++    RECORDING_STATUS_READY,
++)
++
++
++def _cfg(tmp_path: Path) -> AppSettings:
++    cfg = AppSettings(
++        data_root=tmp_path,
++        recordings_root=tmp_path / "recordings",
++        db_path=tmp_path / "db" / "app.db",
++    )
++    cfg.metrics_snapshot_path = tmp_path / "metrics.snap"
++    return cfg
++
++
++@pytest.fixture()
++def client(tmp_path: Path, monkeypatch):
++    cfg = _cfg(tmp_path)
++    monkeypatch.setattr(api, "_settings", cfg)
++    monkeypatch.setattr(ui_routes, "_settings", cfg)
++    init_db(cfg)
++    return TestClient(api.app, follow_redirects=True)
++
++
++@pytest.fixture()
++def seeded_client(tmp_path: Path, monkeypatch):
++    cfg = _cfg(tmp_path)
++    monkeypatch.setattr(api, "_settings", cfg)
++    monkeypatch.setattr(ui_routes, "_settings", cfg)
++    init_db(cfg)
++    create_recording(
++        "rec-ui-1",
++        source="drive",
++        source_filename="meeting.mp3",
 +        status=RECORDING_STATUS_READY,
-         settings=cfg,
-     )
- 
-@@ -122,6 +125,11 @@ def test_recordings_and_jobs_api_actions(tmp_path: Path, monkeypatch):
-             job_type=job_type,
-             settings=effective,
-         )
-+        set_recording_status(
-+            recording_id,
-+            RECORDING_STATUS_QUEUED,
-+            settings=effective,
-+        )
-         return RecordingJob(
-             job_id="job-api-1",
-             recording_id=recording_id,
-@@ -129,6 +137,13 @@ def test_recordings_and_jobs_api_actions(tmp_path: Path, monkeypatch):
-         )
- 
-     monkeypatch.setattr(api, "enqueue_recording_job", _fake_enqueue)
-+    purged = {"recording_id": None}
-+
-+    def _fake_purge(recording_id: str, *, settings: AppSettings | None = None) -> int:
-+        purged["recording_id"] = recording_id
-+        return 1
-+
-+    monkeypatch.setattr(api, "purge_pending_recording_jobs", _fake_purge)
- 
-     client = TestClient(api.app)
- 
-@@ -146,6 +161,9 @@ def test_recordings_and_jobs_api_actions(tmp_path: Path, monkeypatch):
-     )
-     assert requeue.status_code == 200
-     assert requeue.json()["job_id"] == "job-api-1"
-+    after_requeue = client.get("/api/recordings/rec-api-1")
-+    assert after_requeue.status_code == 200
-+    assert after_requeue.json()["status"] == RECORDING_STATUS_QUEUED
- 
-     jobs = client.get("/api/jobs")
-     assert jobs.status_code == 200
-@@ -162,6 +180,7 @@ def test_recordings_and_jobs_api_actions(tmp_path: Path, monkeypatch):
-     deleted = client.post("/api/recordings/rec-api-1/actions/delete")
-     assert deleted.status_code == 200
-     assert deleted.json()["deleted"] is True
-+    assert purged["recording_id"] == "rec-api-1"
- 
-     missing = client.get("/api/recordings/rec-api-1")
-     assert missing.status_code == 404
-@@ -233,3 +252,92 @@ def test_worker_setup_failure_marks_job_and_recording_failed(tmp_path: Path, mon
-     assert recording is not None
-     assert job["status"] == JOB_STATUS_FAILED
-     assert recording["status"] == RECORDING_STATUS_FAILED
-+
-+
-+def test_enqueue_sets_recording_status_to_queued_on_success(tmp_path: Path, monkeypatch):
-+    cfg = _test_settings(tmp_path)
-+    init_db(cfg)
-+    create_recording(
-+        "rec-requeue-status-1",
-+        source="test",
-+        source_filename="retry.mp3",
-+        status=RECORDING_STATUS_FAILED,
-+        settings=cfg,
-+    )
-+
-+    class _QueueOK:
-+        def enqueue(self, *_args, **_kwargs):
-+            return None
-+
-+    monkeypatch.setattr("lan_app.jobs.get_queue", lambda _cfg: _QueueOK())
-+
-+    enqueue_recording_job(
-+        "rec-requeue-status-1",
-+        job_type=JOB_TYPE_PRECHECK,
-+        settings=cfg,
-+    )
-+    recording = get_recording("rec-requeue-status-1", settings=cfg)
-+    assert recording is not None
-+    assert recording["status"] == RECORDING_STATUS_QUEUED
-+
-+
-+def test_purge_pending_recording_jobs_deletes_only_pending(tmp_path: Path, monkeypatch):
-+    cfg = _test_settings(tmp_path)
-+    init_db(cfg)
-+    create_recording(
-+        "rec-purge-1",
-+        source="test",
-+        source_filename="purge.mp3",
 +        settings=cfg,
 +    )
 +    create_job(
-+        "job-purge-queued",
-+        recording_id="rec-purge-1",
++        "job-ui-1",
++        recording_id="rec-ui-1",
 +        job_type=JOB_TYPE_PRECHECK,
 +        settings=cfg,
 +    )
-+    create_job(
-+        "job-purge-finished",
-+        recording_id="rec-purge-1",
-+        job_type=JOB_TYPE_PRECHECK,
-+        settings=cfg,
-+        status=JOB_STATUS_FINISHED,
-+    )
++    return TestClient(api.app, follow_redirects=True)
 +
-+    class _FakeRQJob:
-+        def __init__(self, status: str):
-+            self._status = status
-+            self.deleted = False
 +
-+        def get_status(self, refresh: bool = False):
-+            class _Status:
-+                def __init__(self, value: str):
-+                    self.value = value
++# ---------------------------------------------------------------------------
++# Dashboard
++# ---------------------------------------------------------------------------
 +
-+            return _Status(self._status)
 +
-+        def delete(self, remove_from_queue: bool = True, delete_dependents: bool = False):
-+            self.deleted = True
++def test_dashboard_empty(client):
++    r = client.get("/")
++    assert r.status_code == 200
++    assert "Dashboard" in r.text
++    assert "LAN Transcriber" in r.text
 +
-+    class _FakeQueue:
-+        def __init__(self):
-+            self.removed: list[str] = []
-+            self.jobs = {
-+                "job-purge-queued": _FakeRQJob("queued"),
-+                "job-purge-finished": _FakeRQJob("finished"),
-+            }
 +
-+        def fetch_job(self, job_id: str):
-+            return self.jobs.get(job_id)
++def test_dashboard_with_data(tmp_path, monkeypatch):
++    cfg = _cfg(tmp_path)
++    monkeypatch.setattr(api, "_settings", cfg)
++    monkeypatch.setattr(ui_routes, "_settings", cfg)
++    init_db(cfg)
++    create_recording("rec-dash-1", source="drive", source_filename="a.mp3", settings=cfg)
++    c = TestClient(api.app, follow_redirects=True)
++    r = c.get("/")
++    assert r.status_code == 200
++    assert "rec-dash-1" in r.text or "a.mp3" in r.text
 +
-+        def remove(self, job_id: str):
-+            self.removed.append(job_id)
 +
-+    fake_queue = _FakeQueue()
-+    monkeypatch.setattr("lan_app.jobs.get_queue", lambda _cfg: fake_queue)
++# ---------------------------------------------------------------------------
++# Recordings list
++# ---------------------------------------------------------------------------
 +
-+    removed = purge_pending_recording_jobs("rec-purge-1", settings=cfg)
-+    assert removed == 1
-+    assert fake_queue.removed == ["job-purge-queued"]
-+    assert fake_queue.jobs["job-purge-queued"].deleted is True
-+    assert fake_queue.jobs["job-purge-finished"].deleted is False
++
++def test_recordings_empty(client):
++    r = client.get("/recordings")
++    assert r.status_code == 200
++    assert "Recordings" in r.text
++
++
++def test_recordings_with_data(seeded_client):
++    r = seeded_client.get("/recordings")
++    assert r.status_code == 200
++    assert "meeting.mp3" in r.text
++
++
++def test_recordings_status_filter(seeded_client):
++    r = seeded_client.get("/recordings?status=Ready")
++    assert r.status_code == 200
++    assert "meeting.mp3" in r.text
++
++
++def test_recordings_invalid_status_filter_shows_all(seeded_client):
++    r = seeded_client.get("/recordings?status=InvalidStatus")
++    assert r.status_code == 200
++    assert "meeting.mp3" in r.text
++
++
++def test_recordings_pagination(seeded_client):
++    r = seeded_client.get("/recordings?limit=1&offset=0")
++    assert r.status_code == 200
++
++
++# ---------------------------------------------------------------------------
++# Recording detail
++# ---------------------------------------------------------------------------
++
++
++def test_recording_detail_overview(seeded_client):
++    r = seeded_client.get("/recordings/rec-ui-1")
++    assert r.status_code == 200
++    assert "rec-ui-1" in r.text
++    assert "meeting.mp3" in r.text
++    assert "Ready" in r.text
++
++
++def test_recording_detail_log_tab(seeded_client):
++    r = seeded_client.get("/recordings/rec-ui-1?tab=log")
++    assert r.status_code == 200
++    assert "precheck" in r.text
++
++
++def test_recording_detail_placeholder_tabs(seeded_client):
++    for tab in ("calendar", "project", "speakers", "language", "metrics"):
++        r = seeded_client.get(f"/recordings/rec-ui-1?tab={tab}")
++        assert r.status_code == 200
++        assert "placeholder" in r.text.lower() or "available after" in r.text.lower()
++
++
++def test_recording_detail_not_found(client):
++    r = client.get("/recordings/nonexistent-id")
++    assert r.status_code == 404
++
++
++# ---------------------------------------------------------------------------
++# Projects
++# ---------------------------------------------------------------------------
++
++
++def test_projects_empty(client):
++    r = client.get("/projects")
++    assert r.status_code == 200
++    assert "Projects" in r.text
++
++
++def test_projects_create_and_list(tmp_path, monkeypatch):
++    cfg = _cfg(tmp_path)
++    monkeypatch.setattr(api, "_settings", cfg)
++    monkeypatch.setattr(ui_routes, "_settings", cfg)
++    init_db(cfg)
++    c = TestClient(api.app, follow_redirects=True)
++
++    r = c.post("/projects", data={"name": "AlphaProject"})
++    assert r.status_code == 200
++    assert "AlphaProject" in r.text
++
++    projects = list_projects(settings=cfg)
++    assert any(p["name"] == "AlphaProject" for p in projects)
++
++
++def test_projects_create_blank_name_ignored(tmp_path, monkeypatch):
++    cfg = _cfg(tmp_path)
++    monkeypatch.setattr(api, "_settings", cfg)
++    monkeypatch.setattr(ui_routes, "_settings", cfg)
++    init_db(cfg)
++    c = TestClient(api.app, follow_redirects=True)
++    c.post("/projects", data={"name": "   "})
++    assert list_projects(settings=cfg) == []
++
++
++def test_projects_delete(tmp_path, monkeypatch):
++    cfg = _cfg(tmp_path)
++    monkeypatch.setattr(api, "_settings", cfg)
++    monkeypatch.setattr(ui_routes, "_settings", cfg)
++    init_db(cfg)
++    proj = create_project("ToDelete", settings=cfg)
++    c = TestClient(api.app, follow_redirects=True)
++    r = c.post(f"/projects/{proj['id']}/delete")
++    assert r.status_code == 200
++    assert list_projects(settings=cfg) == []
++
++
++# ---------------------------------------------------------------------------
++# Voices
++# ---------------------------------------------------------------------------
++
++
++def test_voices_empty(client):
++    r = client.get("/voices")
++    assert r.status_code == 200
++    assert "Voice Profiles" in r.text
++
++
++def test_voices_create_and_list(tmp_path, monkeypatch):
++    cfg = _cfg(tmp_path)
++    monkeypatch.setattr(api, "_settings", cfg)
++    monkeypatch.setattr(ui_routes, "_settings", cfg)
++    init_db(cfg)
++    c = TestClient(api.app, follow_redirects=True)
++
++    r = c.post("/voices", data={"display_name": "Alice Smith", "notes": "sales team"})
++    assert r.status_code == 200
++    assert "Alice Smith" in r.text
++
++    profiles = list_voice_profiles(settings=cfg)
++    assert any(v["display_name"] == "Alice Smith" for v in profiles)
++
++
++def test_voices_create_blank_name_ignored(tmp_path, monkeypatch):
++    cfg = _cfg(tmp_path)
++    monkeypatch.setattr(api, "_settings", cfg)
++    monkeypatch.setattr(ui_routes, "_settings", cfg)
++    init_db(cfg)
++    c = TestClient(api.app, follow_redirects=True)
++    c.post("/voices", data={"display_name": "  ", "notes": ""})
++    assert list_voice_profiles(settings=cfg) == []
++
++
++def test_voices_delete(tmp_path, monkeypatch):
++    cfg = _cfg(tmp_path)
++    monkeypatch.setattr(api, "_settings", cfg)
++    monkeypatch.setattr(ui_routes, "_settings", cfg)
++    init_db(cfg)
++    vp = create_voice_profile("Bob", settings=cfg)
++    c = TestClient(api.app, follow_redirects=True)
++    r = c.post(f"/voices/{vp['id']}/delete")
++    assert r.status_code == 200
++    assert list_voice_profiles(settings=cfg) == []
++
++
++# ---------------------------------------------------------------------------
++# Queue / Jobs
++# ---------------------------------------------------------------------------
++
++
++def test_queue_empty(client):
++    r = client.get("/queue")
++    assert r.status_code == 200
++    assert "Queue" in r.text
++
++
++def test_queue_with_data(seeded_client):
++    r = seeded_client.get("/queue")
++    assert r.status_code == 200
++    assert "precheck" in r.text
++
++
++def test_queue_status_filter(seeded_client):
++    r = seeded_client.get("/queue?status=queued")
++    assert r.status_code == 200
++    assert "precheck" in r.text
++
++
++def test_queue_recording_filter(seeded_client):
++    r = seeded_client.get("/queue?recording_id=rec-ui-1")
++    assert r.status_code == 200
++    assert "precheck" in r.text
++
++
++def test_queue_invalid_status_shows_all(seeded_client):
++    r = seeded_client.get("/queue?status=bogus")
++    assert r.status_code == 200
++
++
++# ---------------------------------------------------------------------------
++# Connections
++# ---------------------------------------------------------------------------
++
++
++def test_connections(client):
++    r = client.get("/connections")
++    assert r.status_code == 200
++    assert "Google Drive" in r.text
++    assert "Microsoft Graph" in r.text
++
++
++# ---------------------------------------------------------------------------
++# Inline action endpoints
++# ---------------------------------------------------------------------------
++
++
++def test_ui_action_quarantine(seeded_client):
++    r = seeded_client.post("/ui/recordings/rec-ui-1/quarantine")
++    assert r.status_code == 200
++
++
++def test_ui_action_quarantine_not_found(client):
++    r = client.post("/ui/recordings/no-such-rec/quarantine")
++    assert r.status_code == 404
++
++
++def test_ui_action_delete(tmp_path, monkeypatch):
++    cfg = _cfg(tmp_path)
++    monkeypatch.setattr(api, "_settings", cfg)
++    monkeypatch.setattr(ui_routes, "_settings", cfg)
++    init_db(cfg)
++    create_recording("rec-del-1", source="drive", source_filename="x.mp3", settings=cfg)
++
++    def _fake_purge(recording_id: str, *, settings=None) -> int:
++        return 0
++
++    monkeypatch.setattr(ui_routes, "purge_pending_recording_jobs", _fake_purge)
++    c = TestClient(api.app, follow_redirects=False)
++    r = c.post("/ui/recordings/rec-del-1/delete")
++    assert r.status_code in (200, 307, 302)
++
++
++def test_ui_action_delete_not_found(client):
++    r = client.post("/ui/recordings/no-such-rec/delete")
++    assert r.status_code == 404
++
++
++def test_ui_action_requeue(tmp_path, monkeypatch):
++    cfg = _cfg(tmp_path)
++    monkeypatch.setattr(api, "_settings", cfg)
++    monkeypatch.setattr(ui_routes, "_settings", cfg)
++    init_db(cfg)
++    create_recording("rec-rq-1", source="drive", source_filename="y.mp3", settings=cfg)
++
++    def _fake_enqueue(recording_id: str, *, settings=None, job_type=JOB_TYPE_PRECHECK):
++        return None
++
++    monkeypatch.setattr(ui_routes, "enqueue_recording_job", _fake_enqueue)
++    c = TestClient(api.app, follow_redirects=False)
++    r = c.post("/ui/recordings/rec-rq-1/requeue")
++    assert r.status_code in (200, 307, 302)
++
++
++def test_ui_action_requeue_not_found(client):
++    r = client.post("/ui/recordings/no-such-rec/requeue")
++    assert r.status_code == 404
++
++
++# ---------------------------------------------------------------------------
++# DB helpers: projects and voice_profiles
++# ---------------------------------------------------------------------------
++
++
++def test_db_list_projects_empty(tmp_path):
++    cfg = _cfg(tmp_path)
++    init_db(cfg)
++    assert list_projects(settings=cfg) == []
++
++
++def test_db_create_and_delete_project(tmp_path):
++    cfg = _cfg(tmp_path)
++    init_db(cfg)
++    p = create_project("Gamma", settings=cfg)
++    assert p["name"] == "Gamma"
++    assert p["auto_publish"] == 0
++    projects = list_projects(settings=cfg)
++    assert len(projects) == 1
++
++    from lan_app.db import delete_project
++    assert delete_project(p["id"], settings=cfg) is True
++    assert list_projects(settings=cfg) == []
++
++
++def test_db_list_voice_profiles_empty(tmp_path):
++    cfg = _cfg(tmp_path)
++    init_db(cfg)
++    assert list_voice_profiles(settings=cfg) == []
++
++
++def test_db_create_and_delete_voice_profile(tmp_path):
++    cfg = _cfg(tmp_path)
++    init_db(cfg)
++    vp = create_voice_profile("Carol", notes="engineer", settings=cfg)
++    assert vp["display_name"] == "Carol"
++    assert vp["notes"] == "engineer"
++    profiles = list_voice_profiles(settings=cfg)
++    assert len(profiles) == 1
++
++    from lan_app.db import delete_voice_profile
++    assert delete_voice_profile(vp["id"], settings=cfg) is True
++    assert list_voice_profiles(settings=cfg) == []

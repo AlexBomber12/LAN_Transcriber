@@ -32,8 +32,10 @@ from .db import (
 )
 from .jobs import RecordingNotFoundError, enqueue_recording_job
 from .jobs import purge_pending_recording_jobs
+from .ui_routes import ui_router
 
 app = FastAPI()
+app.include_router(ui_router)
 ALIAS_PATH = aliases.ALIAS_PATH
 _subscribers: List[asyncio.Queue[str]] = []
 _current_result: TranscriptResult | None = None

@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block title %}Voice Profiles – LAN Transcriber{% endblock %}
+{% block content %}
+<h1>Voice Profiles</h1>
+
+<div class="section">
+  <h2>Add voice profile</h2>
+  <form method="post" action="/voices">
+    <div class="form-row">
+      <label>Display name:</label>
+      <input type="text" name="display_name" required maxlength="120" placeholder="Full name" style="width:240px">
+    </div>
+    <div class="form-row">
+      <label>Notes:</label>
+      <input type="text" name="notes" maxlength="240" placeholder="Optional notes" style="width:360px">
+    </div>
+    <div class="form-row">
+      <label></label>
+      <button class="btn" type="submit">Add</button>
+    </div>
+  </form>
+</div>
+
+<div class="section">
+  {% if items %}
+  <table>
+    <thead>
+      <tr>
+        <th>ID</th>
+        <th>Display name</th>
+        <th>Notes</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for v in items %}
+      <tr>
+        <td>{{ v.id }}</td>
+        <td>{{ v.display_name }}</td>
+        <td>{{ v.notes or '—' }}</td>
+        <td>
+          <form method="post" action="/voices/{{ v.id }}/delete" style="display:inline">
+            <button class="btn btn-danger" type="submit" onclick="return confirm('Delete voice profile {{ v.display_name }}?')">Delete</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="placeholder">No voice profiles yet. Add one above.</p>
+  {% endif %}
+</div>
+{% endblock %}

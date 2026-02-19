@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}LAN Transcriber{% endblock %}</title>
+<script src="https://unpkg.com/htmx.org@1.9.12" integrity="sha384-SKT+KaKSPWVzuxCBSI7pSMQgYzI+yCr7/mhJyP5G/Y5QhSQKlSEPFGD7iRz7Z2" crossorigin="anonymous"></script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font:13px/1.5 'Courier New',monospace;background:#f0f0f0;color:#222}
+nav{background:#2c3e50;color:#fff;padding:5px 12px;display:flex;gap:0;align-items:center;flex-wrap:wrap}
+.nav-logo{font-weight:bold;color:#fff;margin-right:14px;letter-spacing:.5px}
+nav a{color:#bdc3c7;text-decoration:none;padding:4px 10px;border:1px solid transparent;font-size:12px}
+nav a:hover,nav a.active{color:#fff;background:#34495e;border-color:#4a6080}
+main{padding:12px}
+h1{font-size:14px;font-weight:bold;margin-bottom:10px;padding-bottom:4px;border-bottom:1px solid #ccc}
+h2{font-size:13px;font-weight:bold;margin:12px 0 6px}
+table{border-collapse:collapse;width:100%;font-size:12px;background:#fff}
+th{background:#c0cfe0;padding:3px 8px;border:1px solid #99b;text-align:left;white-space:nowrap;user-select:none}
+td{padding:3px 8px;border:1px solid #ccd;white-space:nowrap;overflow:hidden;max-width:220px;text-overflow:ellipsis}
+tr:nth-child(even){background:#f8f9ff}
+tr:hover{background:#e8ecf8}
+.badge{display:inline-block;padding:1px 5px;border:1px solid;font-size:11px;font-weight:bold;white-space:nowrap;letter-spacing:.2px}
+.s-Queued{background:#dbeafe;border-color:#93c5fd;color:#1d4ed8}
+.s-Processing{background:#fef3c7;border-color:#fcd34d;color:#92400e}
+.s-NeedsReview{background:#fef9c3;border-color:#fde047;color:#713f12}
+.s-Ready{background:#dcfce7;border-color:#86efac;color:#14532d}
+.s-Published{background:#ede9fe;border-color:#c4b5fd;color:#4c1d95}
+.s-Quarantine{background:#fee2e2;border-color:#fca5a5;color:#7f1d1d}
+.s-Failed{background:#fee2e2;border-color:#fca5a5;color:#7f1d1d}
+.s-queued{background:#dbeafe;border-color:#93c5fd;color:#1d4ed8}
+.s-started{background:#fef3c7;border-color:#fcd34d;color:#92400e}
+.s-finished{background:#dcfce7;border-color:#86efac;color:#14532d}
+.s-failed{background:#fee2e2;border-color:#fca5a5;color:#7f1d1d}
+.filters{margin-bottom:10px;display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+.filters label{font-size:12px}
+.filters select,.filters input{font:12px 'Courier New',monospace;border:1px solid #999;padding:2px 5px}
+.btn{font:12px 'Courier New',monospace;padding:3px 8px;border:1px solid #888;background:#e8e8e8;cursor:pointer}
+.btn:hover{background:#d0d0d0}
+.btn-danger{border-color:#b00;color:#900}
+.btn-danger:hover{background:#fee}
+.pager{margin-top:8px;display:flex;gap:6px;align-items:center;font-size:12px}
+.pager a{font:12px 'Courier New',monospace;text-decoration:none;padding:2px 6px;border:1px solid #888;background:#e8e8e8}
+.pager a:hover{background:#d0d0d0}
+.pager span{color:#666}
+.stats-row{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px}
+.stat-card{background:#fff;border:1px solid #ccc;padding:8px 12px;min-width:80px;cursor:default}
+.stat-card .num{font-size:20px;font-weight:bold;line-height:1.2}
+.stat-card .lbl{font-size:10px;color:#666;text-transform:uppercase;letter-spacing:.5px}
+.section{margin-bottom:16px}
+.tabs{display:flex;gap:2px;border-bottom:2px solid #c0cfe0;margin-bottom:0}
+.tab{padding:4px 12px;border:1px solid #ccc;border-bottom:none;font-size:12px;text-decoration:none;color:#333;background:#e8e8e8}
+.tab:hover{background:#d8d8e8}
+.tab.active{background:#fff;border-bottom:2px solid #fff;margin-bottom:-2px;font-weight:bold;color:#000}
+.tab-content{background:#fff;border:1px solid #ccc;border-top:none;padding:12px}
+.placeholder{color:#999;font-style:italic;padding:20px 0}
+.info-grid{display:grid;grid-template-columns:150px 1fr;gap:2px 8px;font-size:12px}
+.info-grid .k{color:#555}
+.info-grid .v{color:#111}
+.form-row{display:flex;gap:8px;align-items:center;margin-bottom:6px}
+.form-row label{font-size:12px;min-width:120px}
+.form-row input,.form-row select,.form-row textarea{font:12px 'Courier New',monospace;border:1px solid #999;padding:3px 5px}
+.action-sel{font:11px 'Courier New',monospace;border:1px solid #888;padding:1px 3px;background:#f8f8f8;cursor:pointer}
+.conn-card{background:#fff;border:1px solid #ccc;padding:10px 14px;margin-bottom:8px;max-width:480px}
+.conn-card h3{font-size:12px;font-weight:bold;margin-bottom:6px}
+.conn-row{display:flex;gap:8px;align-items:center;font-size:12px;margin-bottom:4px}
+.dot-ok{display:inline-block;width:8px;height:8px;border-radius:50%;background:#4ade80}
+.dot-na{display:inline-block;width:8px;height:8px;border-radius:50%;background:#d1d5db}
+</style>
+</head>
+<body hx-boost="true">
+<nav>
+  <span class="nav-logo">LAN Transcriber</span>
+  <a href="/" {% if active=='dashboard' %}class="active"{% endif %}>Dashboard</a>
+  <a href="/recordings" {% if active=='recordings' %}class="active"{% endif %}>Recordings</a>
+  <a href="/queue" {% if active=='queue' %}class="active"{% endif %}>Queue</a>
+  <a href="/projects" {% if active=='projects' %}class="active"{% endif %}>Projects</a>
+  <a href="/voices" {% if active=='voices' %}class="active"{% endif %}>Voices</a>
+  <a href="/connections" {% if active=='connections' %}class="active"{% endif %}>Connections</a>
+</nav>
+<main>
+{% block content %}{% endblock %}
+</main>
+<script>
+function doRecAction(sel, id) {
+  var act = sel.value;
+  sel.value = '';
+  if (!act) return;
+  if (act === 'open') { window.location = '/recordings/' + id; return; }
+  var msgs = {delete: 'Delete recording ' + id + '?', quarantine: 'Quarantine recording ' + id + '?'};
+  if (msgs[act] && !confirm(msgs[act])) return;
+  var form = document.getElementById('hxf-' + act + '-' + id);
+  if (form) htmx.trigger(form, 'submit');
+}
+</script>
+</body>
+</html>
