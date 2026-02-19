@@ -5,6 +5,8 @@ Uses Jinja2 templates + HTMX (via CDN) for a minimal, DB-window-style UI.
 
 from __future__ import annotations
 
+import shutil
+import sqlite3
 from pathlib import Path
 from typing import Any
 
@@ -163,7 +165,10 @@ async def ui_create_project(
 ) -> Any:
     name = name.strip()
     if name:
-        create_project(name, settings=_settings)
+        try:
+            create_project(name, settings=_settings)
+        except sqlite3.IntegrityError:
+            pass  # duplicate name — silently redirect back
     return RedirectResponse("/projects", status_code=303)
 
 
@@ -276,8 +281,8 @@ async def ui_action_requeue(recording_id: str) -> Any:
         return HTMLResponse("Not found", status_code=404)
     try:
         enqueue_recording_job(recording_id, settings=_settings)
-    except Exception:
-        pass
+    except Exception as exc:
+        return HTMLResponse(f"Requeue failed: {exc}", status_code=503)
     resp = HTMLResponse("")
     resp.headers["HX-Redirect"] = f"/recordings/{recording_id}"
     return resp
@@ -308,6 +313,8 @@ async def ui_action_delete(recording_id: str) -> Any:
     from .db import delete_recording
 
     delete_recording(recording_id, settings=_settings)
+    recording_path = _settings.recordings_root / recording_id
+    shutil.rmtree(recording_path, ignore_errors=True)
     resp = HTMLResponse("")
     resp.headers["HX-Redirect"] = "/recordings"
     return resp

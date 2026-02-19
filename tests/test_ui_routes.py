@@ -353,6 +353,55 @@ def test_ui_action_requeue_not_found(client):
     assert r.status_code == 404
 
 
+def test_ui_action_requeue_failure_returns_503(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    init_db(cfg)
+    create_recording("rec-rqf-1", source="drive", source_filename="z.mp3", settings=cfg)
+
+    def _fail_enqueue(recording_id: str, *, settings=None, job_type=JOB_TYPE_PRECHECK):
+        raise RuntimeError("redis down")
+
+    monkeypatch.setattr(ui_routes, "enqueue_recording_job", _fail_enqueue)
+    c = TestClient(api.app, follow_redirects=False)
+    r = c.post("/ui/recordings/rec-rqf-1/requeue")
+    assert r.status_code == 503
+    assert "redis down" in r.text
+
+
+def test_ui_action_delete_removes_disk_artifacts(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    init_db(cfg)
+    create_recording("rec-disk-1", source="drive", source_filename="w.mp3", settings=cfg)
+    rec_dir = cfg.recordings_root / "rec-disk-1"
+    rec_dir.mkdir(parents=True)
+    (rec_dir / "audio.mp3").write_text("fake")
+
+    def _fake_purge(recording_id: str, *, settings=None) -> int:
+        return 0
+
+    monkeypatch.setattr(ui_routes, "purge_pending_recording_jobs", _fake_purge)
+    c = TestClient(api.app, follow_redirects=False)
+    c.post("/ui/recordings/rec-disk-1/delete")
+    assert not rec_dir.exists()
+
+
+def test_projects_duplicate_name_handled(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    init_db(cfg)
+    create_project("DupeTest", settings=cfg)
+    c = TestClient(api.app, follow_redirects=True)
+    r = c.post("/projects", data={"name": "DupeTest"})
+    assert r.status_code == 200
+    projects = list_projects(settings=cfg)
+    assert len(projects) == 1
+
+
 # ---------------------------------------------------------------------------
 # DB helpers: projects and voice_profiles
 # ---------------------------------------------------------------------------
