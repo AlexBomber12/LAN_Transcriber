@@ -456,7 +456,9 @@ def _parse_iso_datetime(
         else:
             tz = _timezone_from_name(default_timezone)
             if tz is None:
-                return None
+                tz = _graph_timezone_fallback(default_timezone)
+                if tz is None:
+                    return None
         parsed = parsed.replace(tzinfo=tz)
     return parsed.astimezone(timezone.utc)
 
@@ -486,6 +488,20 @@ def _timezone_from_name(name: str | None) -> tzinfo | None:
         return ZoneInfo(candidate)
     except ZoneInfoNotFoundError:
         return None
+
+
+def _graph_timezone_fallback(name: str) -> tzinfo | None:
+    cleaned = name.strip()
+    if not cleaned:
+        return None
+    upper = cleaned.upper()
+    if upper.endswith("STANDARD TIME") or upper.endswith("DAYLIGHT TIME"):
+        # Graph frequently returns Windows zone IDs; if an ID is valid but not
+        # in our map, keep the event instead of dropping it entirely.
+        return timezone.utc
+    if upper.startswith("UTC") or upper.startswith("GMT"):
+        return timezone.utc
+    return None
 
 
 def _tokenize(value: str) -> set[str]:

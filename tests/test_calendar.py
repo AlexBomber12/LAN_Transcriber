@@ -310,6 +310,16 @@ def test_parse_event_datetime_unknown_timezone_does_not_fallback_to_utc():
     assert parsed is None
 
 
+def test_parse_event_datetime_unknown_windows_timezone_falls_back_to_utc():
+    parsed = calendar._parse_event_datetime(
+        {
+            "dateTime": "2026-02-19T09:50:00.0000000",
+            "timeZone": "Myanmar Standard Time",
+        }
+    )
+    assert parsed == datetime(2026, 2, 19, 9, 50, tzinfo=timezone.utc)
+
+
 def test_context_keeps_selected_event_when_not_in_top_five(tmp_path):
     cfg = _cfg(tmp_path)
     init_db(cfg)
