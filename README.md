@@ -87,6 +87,9 @@ models are cached across runs.
 | `LAN_RQ_QUEUE_NAME` | Queue name consumed by the worker |
 | `LLM_BASE_URL` | OpenAI-compatible Spark endpoint |
 | `LLM_API_KEY` | Optional API key for the LLM |
+| `MS_TENANT_ID` | Microsoft Entra tenant ID for delegated Device Code Flow |
+| `MS_CLIENT_ID` | Microsoft app registration client ID |
+| `MS_SCOPES` | Graph scopes (default: `offline_access Notes.ReadWrite Calendars.Read`) |
 
 `docker compose up` starts:
 

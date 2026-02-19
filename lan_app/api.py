@@ -33,6 +33,13 @@ from .db import (
 )
 from .jobs import RecordingNotFoundError, enqueue_recording_job
 from .jobs import purge_pending_recording_jobs
+from .ms_graph import (
+    GraphAuthError,
+    GraphNotConfiguredError,
+    get_device_flow_session,
+    ms_connection_state,
+    start_device_flow_session,
+)
 from .ui_routes import _STATIC_DIR, ui_router
 
 app = FastAPI()
@@ -76,6 +83,48 @@ def _validate_job_status(status: str | None) -> str | None:
 async def healthz() -> dict[str, str]:
     """Simple health check used by monitoring."""
     return {"status": "ok"}
+
+
+@app.get("/api/connections/ms/verify")
+async def api_verify_ms_connection() -> dict[str, object]:
+    """Validate Microsoft Graph auth by calling /me via cached delegated token."""
+    state = ms_connection_state(_settings)
+    if state["status"] != "connected":
+        return {
+            "ok": False,
+            "error": state["status"],
+            "detail": state.get("error"),
+            "account_display_name": state.get("account_display_name"),
+            "tenant_id": state.get("tenant_id"),
+            "granted_scopes": state.get("granted_scopes", []),
+        }
+    return {
+        "ok": True,
+        "account_display_name": state.get("account_display_name"),
+        "tenant_id": state.get("tenant_id"),
+        "granted_scopes": state.get("granted_scopes", []),
+    }
+
+
+@app.post("/api/connections/ms/connect")
+async def api_start_ms_connection(
+    reconnect: bool = Query(default=False),
+) -> dict[str, object]:
+    """Start device-code flow and return code/URL details for UI polling."""
+    try:
+        return start_device_flow_session(_settings, reconnect=reconnect)
+    except GraphNotConfiguredError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except GraphAuthError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+
+
+@app.get("/api/connections/ms/connect/{session_id}")
+async def api_get_ms_connection_status(session_id: str) -> dict[str, object]:
+    try:
+        return get_device_flow_session(session_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Unknown device-flow session")
 
 
 @app.on_event("startup")

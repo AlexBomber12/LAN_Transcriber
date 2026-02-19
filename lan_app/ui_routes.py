@@ -33,6 +33,7 @@ from .db import (
     set_recording_status,
 )
 from .jobs import enqueue_recording_job, purge_pending_recording_jobs
+from .ms_graph import ms_connection_state
 
 _TEMPLATES_DIR = Path(__file__).parent / "templates"
 _STATIC_DIR = Path(__file__).parent / "static"
@@ -262,11 +263,13 @@ async def ui_queue(
 
 @ui_router.get("/connections", response_class=HTMLResponse)
 async def ui_connections(request: Request) -> Any:
+    ms_state = ms_connection_state(_settings)
     return templates.TemplateResponse(
         request,
         "connections.html",
         {
             "active": "connections",
+            "ms": ms_state,
         },
     )
 

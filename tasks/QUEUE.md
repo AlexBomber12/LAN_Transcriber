@@ -37,7 +37,7 @@ Queue (in order)
 - Depends on: PR-DB-QUEUE-01
 
 6) PR-MS-AUTH-01: Microsoft Graph delegated auth (work) via Device Code Flow + token cache
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-MS-AUTH-01.md
 - Depends on: PR-UI-SHELL-01
 
