@@ -1,43 +1,30 @@
-diff --git a/lan_app/ui_routes.py b/lan_app/ui_routes.py
-index 7a7ed93..0bf00a8 100644
---- a/lan_app/ui_routes.py
-+++ b/lan_app/ui_routes.py
-@@ -308,8 +308,8 @@ async def ui_action_delete(recording_id: str) -> Any:
-         return HTMLResponse("Not found", status_code=404)
-     try:
-         purge_pending_recording_jobs(recording_id, settings=_settings)
--    except Exception:
--        pass
-+    except Exception as exc:
-+        return HTMLResponse(f"Delete failed (queue unavailable): {exc}", status_code=503)
-     from .db import delete_recording
- 
-     delete_recording(recording_id, settings=_settings)
-diff --git a/tests/test_ui_routes.py b/tests/test_ui_routes.py
-index 393a478..ca0fab4 100644
---- a/tests/test_ui_routes.py
-+++ b/tests/test_ui_routes.py
-@@ -370,6 +370,23 @@ def test_ui_action_requeue_failure_returns_503(tmp_path, monkeypatch):
-     assert "redis down" in r.text
- 
- 
-+def test_ui_action_delete_purge_failure_returns_503(tmp_path, monkeypatch):
-+    cfg = _cfg(tmp_path)
-+    monkeypatch.setattr(api, "_settings", cfg)
-+    monkeypatch.setattr(ui_routes, "_settings", cfg)
-+    init_db(cfg)
-+    create_recording("rec-pf-1", source="drive", source_filename="pf.mp3", settings=cfg)
-+
-+    def _fail_purge(recording_id: str, *, settings=None) -> int:
-+        raise RuntimeError("redis down")
-+
-+    monkeypatch.setattr(ui_routes, "purge_pending_recording_jobs", _fail_purge)
-+    c = TestClient(api.app, follow_redirects=False)
-+    r = c.post("/ui/recordings/rec-pf-1/delete")
-+    assert r.status_code == 503
-+    assert "redis down" in r.text
-+
-+
- def test_ui_action_delete_removes_disk_artifacts(tmp_path, monkeypatch):
-     cfg = _cfg(tmp_path)
-     monkeypatch.setattr(api, "_settings", cfg)
+diff --git a/lan_app/templates/projects.html b/lan_app/templates/projects.html
+index ad3d5d0..4f7f771 100644
+--- a/lan_app/templates/projects.html
++++ b/lan_app/templates/projects.html
+@@ -32,8 +32,8 @@
+         <td>{% if p.auto_publish %}Yes{% else %}No{% endif %}</td>
+         <td>{{ p.onenote_section_id or '—' }}</td>
+         <td>
+-          <form method="post" action="/projects/{{ p.id }}/delete" style="display:inline">
+-            <button class="btn btn-danger" type="submit" onclick="return confirm('Delete project {{ p.name }}?')">Delete</button>
++          <form method="post" action="/projects/{{ p.id }}/delete" style="display:inline" onsubmit="return confirm('Delete project ' + this.dataset.name + '?')" data-name="{{ p.name }}">
++            <button class="btn btn-danger" type="submit">Delete</button>
+           </form>
+         </td>
+       </tr>
+diff --git a/lan_app/templates/voices.html b/lan_app/templates/voices.html
+index d1207bf..cbfc009 100644
+--- a/lan_app/templates/voices.html
++++ b/lan_app/templates/voices.html
+@@ -39,8 +39,8 @@
+         <td>{{ v.display_name }}</td>
+         <td>{{ v.notes or '—' }}</td>
+         <td>
+-          <form method="post" action="/voices/{{ v.id }}/delete" style="display:inline">
+-            <button class="btn btn-danger" type="submit" onclick="return confirm('Delete voice profile {{ v.display_name }}?')">Delete</button>
++          <form method="post" action="/voices/{{ v.id }}/delete" style="display:inline" onsubmit="return confirm('Delete voice profile ' + this.dataset.name + '?')" data-name="{{ v.display_name }}">
++            <button class="btn btn-danger" type="submit">Delete</button>
+           </form>
+         </td>
+       </tr>

@@ -32,8 +32,8 @@
         <td>{% if p.auto_publish %}Yes{% else %}No{% endif %}</td>
         <td>{{ p.onenote_section_id or '—' }}</td>
         <td>
-          <form method="post" action="/projects/{{ p.id }}/delete" style="display:inline">
-            <button class="btn btn-danger" type="submit" onclick="return confirm('Delete project {{ p.name }}?')">Delete</button>
+          <form method="post" action="/projects/{{ p.id }}/delete" style="display:inline" onsubmit="return confirm('Delete project ' + this.dataset.name + '?')" data-name="{{ p.name }}">
+            <button class="btn btn-danger" type="submit">Delete</button>
           </form>
         </td>
       </tr>

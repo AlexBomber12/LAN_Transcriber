@@ -39,8 +39,8 @@
         <td>{{ v.display_name }}</td>
         <td>{{ v.notes or '—' }}</td>
         <td>
-          <form method="post" action="/voices/{{ v.id }}/delete" style="display:inline">
-            <button class="btn btn-danger" type="submit" onclick="return confirm('Delete voice profile {{ v.display_name }}?')">Delete</button>
+          <form method="post" action="/voices/{{ v.id }}/delete" style="display:inline" onsubmit="return confirm('Delete voice profile ' + this.dataset.name + '?')" data-name="{{ v.display_name }}">
+            <button class="btn btn-danger" type="submit">Delete</button>
           </form>
         </td>
       </tr>
