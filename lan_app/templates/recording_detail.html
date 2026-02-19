@@ -1,0 +1,94 @@
+{% extends "base.html" %}
+{% block title %}{{ rec.id[:20] }} – LAN Transcriber{% endblock %}
+{% block content %}
+<h1>
+  Recording: <code>{{ rec.id }}</code>
+  &nbsp;<span class="badge s-{{ rec.status }}">{{ rec.status }}</span>
+</h1>
+
+<div class="filters" style="margin-bottom:10px">
+  <select class="action-sel" style="font-size:12px" data-rid="{{ rec.id }}" onchange="doRecAction(this)">
+    <option value="">Actions…</option>
+    <option value="requeue">Requeue</option>
+    <option value="quarantine">Quarantine</option>
+    <option value="delete">Delete</option>
+  </select>
+  <a href="/recordings" class="btn" style="text-decoration:none">&#8592; Back</a>
+</div>
+
+<div class="tabs">
+  {% for t in tabs %}
+  <a href="/recordings/{{ rec.id }}?tab={{ t }}" class="tab {% if current_tab == t %}active{% endif %}">{{ t|capitalize }}</a>
+  {% endfor %}
+</div>
+
+<div class="tab-content">
+
+{% if current_tab == 'overview' %}
+  <div class="info-grid">
+    <span class="k">ID</span><span class="v">{{ rec.id }}</span>
+    <span class="k">Filename</span><span class="v">{{ rec.source_filename }}</span>
+    <span class="k">Source</span><span class="v">{{ rec.source }}</span>
+    <span class="k">Status</span><span class="v"><span class="badge s-{{ rec.status }}">{{ rec.status }}</span></span>
+    <span class="k">Captured at</span><span class="v">{{ rec.captured_at[:19].replace('T',' ') if rec.captured_at else '—' }}</span>
+    <span class="k">Duration</span><span class="v">{% if rec.duration_sec %}{{ rec.duration_sec }}s{% else %}—{% endif %}</span>
+    <span class="k">Project ID</span><span class="v">{{ rec.project_id or '—' }}</span>
+    <span class="k">Language (auto)</span><span class="v">{{ rec.language_auto or '—' }}</span>
+    <span class="k">Language (override)</span><span class="v">{{ rec.language_override or '—' }}</span>
+    <span class="k">Drive file ID</span><span class="v">{{ rec.drive_file_id or '—' }}</span>
+    <span class="k">OneNote page ID</span><span class="v">{{ rec.onenote_page_id or '—' }}</span>
+    <span class="k">Quarantine reason</span><span class="v">{{ rec.quarantine_reason or '—' }}</span>
+    <span class="k">Created at</span><span class="v">{{ rec.created_at[:19].replace('T',' ') if rec.created_at else '—' }}</span>
+    <span class="k">Updated at</span><span class="v">{{ rec.updated_at[:19].replace('T',' ') if rec.updated_at else '—' }}</span>
+  </div>
+
+{% elif current_tab == 'calendar' %}
+  <p class="placeholder">Calendar matching — available after PR-CALENDAR-01.</p>
+
+{% elif current_tab == 'project' %}
+  <p class="placeholder">Project assignment — available after PR-CALENDAR-01.</p>
+
+{% elif current_tab == 'speakers' %}
+  <p class="placeholder">Speaker assignments — available after PR-VOICE-01.</p>
+
+{% elif current_tab == 'language' %}
+  <p class="placeholder">Language spans — available after PR-LANG-01.</p>
+
+{% elif current_tab == 'metrics' %}
+  <p class="placeholder">Meeting metrics — available after PR-METRICS-01.</p>
+
+{% elif current_tab == 'log' %}
+  {% if jobs %}
+  <table>
+    <thead>
+      <tr>
+        <th>Job ID</th>
+        <th>Type</th>
+        <th>Status</th>
+        <th>Attempt</th>
+        <th>Started</th>
+        <th>Finished</th>
+        <th>Error</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for j in jobs %}
+      <tr>
+        <td title="{{ j.id }}">{{ j.id[:16] }}…</td>
+        <td>{{ j.type }}</td>
+        <td><span class="badge s-{{ j.status }}">{{ j.status }}</span></td>
+        <td>{{ j.attempt }}</td>
+        <td>{{ j.started_at[:19].replace('T',' ') if j.started_at else '—' }}</td>
+        <td>{{ j.finished_at[:19].replace('T',' ') if j.finished_at else '—' }}</td>
+        <td title="{{ j.error or '' }}">{{ (j.error or '')[:40] }}{% if j.error and j.error|length > 40 %}…{% endif %}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="placeholder">No jobs for this recording.</p>
+  {% endif %}
+{% endif %}
+
+</div>
+{% endblock %}

@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block title %}Projects – LAN Transcriber{% endblock %}
+{% block content %}
+<h1>Projects</h1>
+
+<div class="section">
+  <h2>Create project</h2>
+  <form method="post" action="/projects" style="display:flex;gap:8px;align-items:center">
+    <label style="font-size:12px">Name:</label>
+    <input type="text" name="name" required maxlength="120" placeholder="Project name" style="font:12px 'Courier New',monospace;border:1px solid #999;padding:3px 6px;width:240px">
+    <button class="btn" type="submit">Create</button>
+  </form>
+</div>
+
+<div class="section">
+  {% if items %}
+  <table>
+    <thead>
+      <tr>
+        <th>ID</th>
+        <th>Name</th>
+        <th>Auto-publish</th>
+        <th>OneNote section ID</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for p in items %}
+      <tr>
+        <td>{{ p.id }}</td>
+        <td>{{ p.name }}</td>
+        <td>{% if p.auto_publish %}Yes{% else %}No{% endif %}</td>
+        <td>{{ p.onenote_section_id or '—' }}</td>
+        <td>
+          <form method="post" action="/projects/{{ p.id }}/delete" style="display:inline" onsubmit="return confirm('Delete project ' + this.dataset.name + '?')" data-name="{{ p.name }}">
+            <button class="btn btn-danger" type="submit">Delete</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="placeholder">No projects yet. Create one above.</p>
+  {% endif %}
+</div>
+{% endblock %}

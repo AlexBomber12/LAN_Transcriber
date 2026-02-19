@@ -6,6 +6,7 @@ from typing import List
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import Response, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from pydantic import BaseModel
 
@@ -32,8 +33,11 @@ from .db import (
 )
 from .jobs import RecordingNotFoundError, enqueue_recording_job
 from .jobs import purge_pending_recording_jobs
+from .ui_routes import _STATIC_DIR, ui_router
 
 app = FastAPI()
+app.include_router(ui_router)
+app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
 ALIAS_PATH = aliases.ALIAS_PATH
 _subscribers: List[asyncio.Queue[str]] = []
 _current_result: TranscriptResult | None = None

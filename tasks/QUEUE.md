@@ -27,7 +27,7 @@ Queue (in order)
 - Depends on: PR-REFRACTOR-CORE-01
 
 4) PR-UI-SHELL-01: Web UI skeleton: dashboard + DB-table recordings list + recording detail shell + connections shell
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-UI-SHELL-01.md
 - Depends on: PR-DB-QUEUE-01
 

@@ -484,6 +484,88 @@ def fail_job(
     )
 
 
+def list_projects(
+    *,
+    settings: AppSettings | None = None,
+) -> list[dict[str, Any]]:
+    init_db(settings)
+    with connect(settings) as conn:
+        rows = conn.execute("SELECT * FROM projects ORDER BY name").fetchall()
+    return [_as_dict(row) or {} for row in rows]
+
+
+def create_project(
+    name: str,
+    *,
+    settings: AppSettings | None = None,
+) -> dict[str, Any]:
+    init_db(settings)
+    with connect(settings) as conn:
+        cursor = conn.execute("INSERT INTO projects (name) VALUES (?)", (name,))
+        row = conn.execute(
+            "SELECT * FROM projects WHERE id = ?", (cursor.lastrowid,)
+        ).fetchone()
+        conn.commit()
+    return _as_dict(row) or {}
+
+
+def delete_project(
+    project_id: int,
+    *,
+    settings: AppSettings | None = None,
+) -> bool:
+    init_db(settings)
+    with connect(settings) as conn:
+        deleted = conn.execute("DELETE FROM projects WHERE id = ?", (project_id,))
+        conn.commit()
+    return deleted.rowcount > 0
+
+
+def list_voice_profiles(
+    *,
+    settings: AppSettings | None = None,
+) -> list[dict[str, Any]]:
+    init_db(settings)
+    with connect(settings) as conn:
+        rows = conn.execute(
+            "SELECT * FROM voice_profiles ORDER BY display_name"
+        ).fetchall()
+    return [_as_dict(row) or {} for row in rows]
+
+
+def create_voice_profile(
+    display_name: str,
+    notes: str | None = None,
+    *,
+    settings: AppSettings | None = None,
+) -> dict[str, Any]:
+    init_db(settings)
+    with connect(settings) as conn:
+        cursor = conn.execute(
+            "INSERT INTO voice_profiles (display_name, notes) VALUES (?, ?)",
+            (display_name, notes),
+        )
+        row = conn.execute(
+            "SELECT * FROM voice_profiles WHERE id = ?", (cursor.lastrowid,)
+        ).fetchone()
+        conn.commit()
+    return _as_dict(row) or {}
+
+
+def delete_voice_profile(
+    profile_id: int,
+    *,
+    settings: AppSettings | None = None,
+) -> bool:
+    init_db(settings)
+    with connect(settings) as conn:
+        deleted = conn.execute(
+            "DELETE FROM voice_profiles WHERE id = ?", (profile_id,)
+        )
+        conn.commit()
+    return deleted.rowcount > 0
+
+
 def _set_job_terminal_state(
     *,
     job_id: str,
@@ -523,4 +605,10 @@ __all__ = [
     "start_job",
     "finish_job",
     "fail_job",
+    "list_projects",
+    "create_project",
+    "delete_project",
+    "list_voice_profiles",
+    "create_voice_profile",
+    "delete_voice_profile",
 ]

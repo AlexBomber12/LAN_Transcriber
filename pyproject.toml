@@ -12,6 +12,8 @@ dependencies = [
     "prometheus_client>=0.19.0",
     "anyio",
     "fastapi",
+    "jinja2",
+    "python-multipart",
     "redis",
     "rq",
     "pyyaml",

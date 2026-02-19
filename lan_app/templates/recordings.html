@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+{% block title %}Recordings – LAN Transcriber{% endblock %}
+{% block content %}
+<h1>Recordings <small style="font-weight:normal;color:#666">({{ total }} total)</small></h1>
+
+<form class="filters" method="get" action="/recordings">
+  <label>Status:</label>
+  <select name="status" hx-get="/recordings" hx-push-url="true" hx-target="body" hx-trigger="change">
+    <option value="">All</option>
+    {% for s in statuses %}
+    <option value="{{ s }}" {% if status_filter == s %}selected{% endif %}>{{ s }}</option>
+    {% endfor %}
+  </select>
+  <label>Limit:</label>
+  <select name="limit">
+    {% for n in [25, 50, 100, 200] %}
+    <option value="{{ n }}" {% if limit == n %}selected{% endif %}>{{ n }}</option>
+    {% endfor %}
+  </select>
+  <input type="hidden" name="offset" value="0">
+  <button class="btn" type="submit">Filter</button>
+</form>
+
+{% if items %}
+<table>
+  <thead>
+    <tr>
+      <th>ID</th>
+      <th>Filename</th>
+      <th>Status</th>
+      <th>Captured</th>
+      <th>Duration</th>
+      <th>Source</th>
+      <th>Actions</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for r in items %}
+    <tr>
+      <td title="{{ r.id }}"><a href="/recordings/{{ r.id }}" style="text-decoration:none;color:#1d4ed8">{{ r.id[:16] }}…</a></td>
+      <td title="{{ r.source_filename }}">{{ r.source_filename }}</td>
+      <td><span class="badge s-{{ r.status }}">{{ r.status }}</span></td>
+      <td>{{ r.captured_at[:19].replace('T',' ') if r.captured_at else '—' }}</td>
+      <td>{% if r.duration_sec %}{{ r.duration_sec }}s{% else %}—{% endif %}</td>
+      <td>{{ r.source }}</td>
+      <td>
+        <select class="action-sel" data-rid="{{ r.id }}" onchange="doRecAction(this)">
+          <option value="">Actions</option>
+          <option value="open">Open</option>
+          <option value="requeue">Requeue</option>
+          <option value="quarantine">Quarantine</option>
+          <option value="delete">Delete</option>
+        </select>
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+<div class="pager">
+  {% if has_prev %}
+  <a href="/recordings?status={{ status_filter }}&limit={{ limit }}&offset={{ prev_offset }}">&#171; Prev</a>
+  {% endif %}
+  <span>{{ offset + 1 }}–{{ [offset + limit, total] | min }} of {{ total }}</span>
+  {% if has_next %}
+  <a href="/recordings?status={{ status_filter }}&limit={{ limit }}&offset={{ next_offset }}">Next &#187;</a>
+  {% endif %}
+</div>
+{% else %}
+<p class="placeholder">No recordings{% if status_filter %} with status <strong>{{ status_filter }}</strong>{% endif %}.</p>
+{% endif %}
+{% endblock %}
