@@ -420,6 +420,24 @@ def test_projects_duplicate_name_handled(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Static assets
+# ---------------------------------------------------------------------------
+
+
+def test_static_htmx_served(client):
+    r = client.get("/static/htmx.min.js")
+    assert r.status_code == 200
+    assert "htmx" in r.text
+
+
+def test_dashboard_references_local_htmx(client):
+    r = client.get("/")
+    assert r.status_code == 200
+    assert "/static/htmx.min.js" in r.text
+    assert "unpkg.com" not in r.text
+
+
+# ---------------------------------------------------------------------------
 # DB helpers: projects and voice_profiles
 # ---------------------------------------------------------------------------
 

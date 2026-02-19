@@ -1,6 +1,6 @@
 """Server-rendered HTML pages for the LAN Transcriber control panel.
 
-Uses Jinja2 templates + HTMX (via CDN) for a minimal, DB-window-style UI.
+Uses Jinja2 templates + HTMX (bundled locally) for a minimal, DB-window-style UI.
 """
 
 from __future__ import annotations
@@ -35,6 +35,7 @@ from .db import (
 from .jobs import enqueue_recording_job, purge_pending_recording_jobs
 
 _TEMPLATES_DIR = Path(__file__).parent / "templates"
+_STATIC_DIR = Path(__file__).parent / "static"
 templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
 
 ui_router = APIRouter()
