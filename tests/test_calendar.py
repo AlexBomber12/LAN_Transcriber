@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -272,3 +273,23 @@ def test_ui_calendar_tab_and_save_selection(tmp_path, monkeypatch):
     assert post.headers["location"] == "/recordings/rec-cal-ui-1?tab=calendar"
     assert selected["recording_id"] == "rec-cal-ui-1"
     assert selected["event_id"] == "evt-1"
+
+
+def test_parse_event_datetime_accepts_7_digit_graph_precision():
+    parsed = calendar._parse_event_datetime(
+        {
+            "dateTime": "2026-02-19T09:50:00.0000000Z",
+            "timeZone": "UTC",
+        }
+    )
+    assert parsed == datetime(2026, 2, 19, 9, 50, tzinfo=timezone.utc)
+
+
+def test_parse_event_datetime_uses_declared_timezone_for_naive_values():
+    parsed = calendar._parse_event_datetime(
+        {
+            "dateTime": "2026-02-19T09:50:00.0000000",
+            "timeZone": "Pacific Standard Time",
+        }
+    )
+    assert parsed == datetime(2026, 2, 19, 17, 50, tzinfo=timezone.utc)

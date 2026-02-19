@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, tzinfo
 import re
 from typing import Any
 from urllib.parse import urlencode
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .config import AppSettings
 from .db import (
@@ -17,9 +18,32 @@ from .db import (
 from .ms_graph import MicrosoftGraphClient
 
 _TOKEN_RE = re.compile(r"[A-Za-z0-9]+")
+_ISO_FRACTION_RE = re.compile(
+    r"^(?P<body>.+?)(?P<fraction>\.\d+)(?P<suffix>Z|[+-]\d{2}:\d{2})?$"
+)
 _MANUAL_NO_EVENT_CONFIDENCE = -1.0
 _GRAPH_CANDIDATE_LIMIT = 25
 _UI_CANDIDATE_LIMIT = 5
+_WINDOWS_TZ_TO_IANA = {
+    "UTC": "UTC",
+    "GMT Standard Time": "Europe/London",
+    "W. Europe Standard Time": "Europe/Berlin",
+    "Central Europe Standard Time": "Europe/Budapest",
+    "Romance Standard Time": "Europe/Paris",
+    "E. Europe Standard Time": "Europe/Bucharest",
+    "Russian Standard Time": "Europe/Moscow",
+    "Turkey Standard Time": "Europe/Istanbul",
+    "India Standard Time": "Asia/Kolkata",
+    "China Standard Time": "Asia/Shanghai",
+    "Tokyo Standard Time": "Asia/Tokyo",
+    "Korea Standard Time": "Asia/Seoul",
+    "Pacific Standard Time": "America/Los_Angeles",
+    "Mountain Standard Time": "America/Denver",
+    "Central Standard Time": "America/Chicago",
+    "Eastern Standard Time": "America/New_York",
+    "AUS Eastern Standard Time": "Australia/Sydney",
+    "New Zealand Standard Time": "Pacific/Auckland",
+}
 
 
 def refresh_calendar_context(
@@ -380,19 +404,27 @@ def _extract_location(value: Any) -> str | None:
 def _parse_event_datetime(value: Any) -> datetime | None:
     if isinstance(value, dict):
         date_time = value.get("dateTime")
+        time_zone = value.get("timeZone")
     else:
         date_time = value
+        time_zone = None
     if not isinstance(date_time, str):
         return None
-    return _parse_iso_datetime(date_time)
+    tz_name = str(time_zone).strip() if isinstance(time_zone, str) else None
+    return _parse_iso_datetime(date_time, default_timezone=tz_name)
 
 
-def _parse_iso_datetime(value: Any) -> datetime | None:
+def _parse_iso_datetime(
+    value: Any,
+    *,
+    default_timezone: str | None = None,
+) -> datetime | None:
     if not isinstance(value, str):
         return None
     text = value.strip()
     if not text:
         return None
+    text = _normalize_iso_datetime_text(text)
     if text.endswith("Z"):
         text = f"{text[:-1]}+00:00"
     try:
@@ -400,8 +432,36 @@ def _parse_iso_datetime(value: Any) -> datetime | None:
     except ValueError:
         return None
     if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
+        tz = _timezone_from_name(default_timezone) or timezone.utc
+        parsed = parsed.replace(tzinfo=tz)
     return parsed.astimezone(timezone.utc)
+
+
+def _normalize_iso_datetime_text(text: str) -> str:
+    match = _ISO_FRACTION_RE.match(text)
+    if match is None:
+        return text
+    fraction = match.group("fraction")
+    digits = fraction[1:]
+    if len(digits) <= 6:
+        return text
+    suffix = match.group("suffix") or ""
+    return f"{match.group('body')}.{digits[:6]}{suffix}"
+
+
+def _timezone_from_name(name: str | None) -> tzinfo | None:
+    if name is None:
+        return None
+    cleaned = name.strip()
+    if not cleaned:
+        return None
+    if cleaned.upper() == "UTC":
+        return timezone.utc
+    candidate = _WINDOWS_TZ_TO_IANA.get(cleaned, cleaned)
+    try:
+        return ZoneInfo(candidate)
+    except ZoneInfoNotFoundError:
+        return None
 
 
 def _tokenize(value: str) -> set[str]:
