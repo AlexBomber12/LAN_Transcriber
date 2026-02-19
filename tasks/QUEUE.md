@@ -42,7 +42,7 @@ Queue (in order)
 - Depends on: PR-UI-SHELL-01
 
 7) PR-CALENDAR-01: Read M365 calendar via Graph and match events to recordings; manual override in UI
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-CALENDAR-01.md
 - Depends on: PR-MS-AUTH-01 and PR-GDRIVE-INGEST-01
 

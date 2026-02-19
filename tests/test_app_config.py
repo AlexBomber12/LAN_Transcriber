@@ -49,3 +49,12 @@ def test_ms_auth_settings_from_env(monkeypatch, tmp_path: Path):
         "Calendars.Read",
     ]
     assert cfg.msal_cache_path == cache_path
+
+
+def test_calendar_match_settings_from_env(monkeypatch):
+    monkeypatch.setenv("CALENDAR_MATCH_WINDOW_MINUTES", "30")
+    monkeypatch.setenv("CALENDAR_AUTO_MATCH_THRESHOLD", "0.7")
+
+    cfg = AppSettings()
+    assert cfg.calendar_match_window_minutes == 30
+    assert cfg.calendar_auto_match_threshold == 0.7

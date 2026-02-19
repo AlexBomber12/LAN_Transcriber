@@ -43,7 +43,82 @@
   </div>
 
 {% elif current_tab == 'calendar' %}
-  <p class="placeholder">Calendar matching — available after PR-CALENDAR-01.</p>
+  {% set cal = calendar or {} %}
+  {% set signals = cal.signals or {} %}
+
+  {% if cal.fetch_error %}
+  <p style="margin-bottom:10px;color:#92400e">
+    Calendar fetch unavailable: {{ cal.fetch_error }}
+  </p>
+  {% endif %}
+
+  <h2>Selected Event</h2>
+  {% if cal.selected_event %}
+  <div class="info-grid">
+    <span class="k">Subject</span><span class="v">{{ cal.selected_event.subject }}</span>
+    <span class="k">Start</span><span class="v">{{ cal.selected_event.start[:19].replace('T',' ') if cal.selected_event.start else '—' }}</span>
+    <span class="k">End</span><span class="v">{{ cal.selected_event.end[:19].replace('T',' ') if cal.selected_event.end else '—' }}</span>
+    <span class="k">Organizer</span><span class="v">{{ cal.selected_event.organizer or '—' }}</span>
+    <span class="k">Attendees</span><span class="v">{{ (cal.selected_event.attendees or []) | join(', ') or '—' }}</span>
+    <span class="k">Location</span><span class="v">{{ cal.selected_event.location or '—' }}</span>
+    <span class="k">Score</span><span class="v">{{ '%.3f'|format(cal.selected_confidence or 0.0) }}</span>
+  </div>
+  {% elif cal.manual_no_event %}
+  <p class="placeholder">No event selected (manual override).</p>
+  {% else %}
+  <p class="placeholder">No event matched yet.</p>
+  {% endif %}
+
+  <h2>Extracted Signals</h2>
+  <div class="info-grid">
+    <span class="k">Title tokens</span><span class="v">{{ (signals.title_tokens or []) | join(', ') or '—' }}</span>
+    <span class="k">Attendees</span><span class="v">{{ (signals.attendees or []) | join(', ') or '—' }}</span>
+    <span class="k">Organizer</span><span class="v">{{ signals.organizer or '—' }}</span>
+  </div>
+
+  <h2>Candidate Events (Top 5)</h2>
+  <form method="post" action="/ui/recordings/{{ rec.id }}/calendar/select">
+    <table>
+      <thead>
+        <tr>
+          <th>Pick</th>
+          <th>Subject</th>
+          <th>Start</th>
+          <th>End</th>
+          <th>Organizer</th>
+          <th>Attendees</th>
+          <th>Location</th>
+          <th>Score</th>
+          <th>Rationale</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><input type="radio" name="event_id" value="" {% if not cal.selected_event_id %}checked{% endif %}></td>
+          <td colspan="8"><em>No event</em></td>
+        </tr>
+        {% for c in cal.candidates or [] %}
+        <tr>
+          <td><input type="radio" name="event_id" value="{{ c.event_id }}" {% if cal.selected_event_id == c.event_id %}checked{% endif %}></td>
+          <td title="{{ c.subject }}">{{ c.subject }}</td>
+          <td>{{ c.start[:19].replace('T',' ') if c.start else '—' }}</td>
+          <td>{{ c.end[:19].replace('T',' ') if c.end else '—' }}</td>
+          <td>{{ c.organizer or '—' }}</td>
+          <td title="{{ (c.attendees or []) | join(', ') }}">{{ (c.attendees or []) | join(', ') or '—' }}</td>
+          <td>{{ c.location or '—' }}</td>
+          <td>{{ '%.3f'|format(c.score or 0.0) }}</td>
+          <td title="{{ c.rationale }}">{{ c.rationale }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% if not (cal.candidates or []) %}
+    <p class="placeholder">No candidates found in the calendar window.</p>
+    {% endif %}
+    <div class="filters" style="margin-top:8px">
+      <button type="submit" class="btn">Save selection</button>
+    </div>
+  </form>
 
 {% elif current_tab == 'project' %}
   <p class="placeholder">Project assignment — available after PR-CALENDAR-01.</p>

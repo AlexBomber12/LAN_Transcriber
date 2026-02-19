@@ -1,255 +1,191 @@
-diff --git a/lan_app/api.py b/lan_app/api.py
-index 6237cab..506a420 100644
---- a/lan_app/api.py
-+++ b/lan_app/api.py
-@@ -5,6 +5,7 @@ import shutil
- from typing import List
+diff --git a/lan_app/calendar.py b/lan_app/calendar.py
+index 42ebff9..f78556d 100644
+--- a/lan_app/calendar.py
++++ b/lan_app/calendar.py
+@@ -153,9 +153,13 @@ def select_calendar_event(
+         selected_confidence = _MANUAL_NO_EVENT_CONFIDENCE
+     else:
+         selected = _candidate_by_id(candidates, event_id)
+-        if selected is None:
+-            raise ValueError("Unknown event_id for this recording")
+-        selected_confidence = float(selected.get("score") or 0.0)
++        if selected is not None:
++            selected_confidence = float(selected.get("score") or 0.0)
++        else:
++            current_selected = str(current.get("selected_event_id") or "").strip()
++            if current_selected != event_id:
++                raise ValueError("Unknown event_id for this recording")
++            selected_confidence = _as_optional_float(current.get("selected_confidence"))
  
- from fastapi import FastAPI, HTTPException, Query
-+from fastapi.concurrency import run_in_threadpool
- from fastapi.responses import Response, StreamingResponse
- from fastapi.staticfiles import StaticFiles
- from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
-@@ -89,7 +90,7 @@ async def healthz() -> dict[str, str]:
- @app.get("/api/connections/ms/verify")
- async def api_verify_ms_connection() -> dict[str, object]:
-     """Validate Microsoft Graph auth by calling /me via cached delegated token."""
--    state = ms_connection_state(_settings)
-+    state = await run_in_threadpool(ms_connection_state, _settings)
-     if state["status"] != "connected":
-         return {
-             "ok": False,
-@@ -113,7 +114,11 @@ async def api_start_ms_connection(
- ) -> dict[str, object]:
-     """Start device-code flow and return code/URL details for UI polling."""
-     try:
--        return start_device_flow_session(_settings, reconnect=reconnect)
-+        return await run_in_threadpool(
-+            start_device_flow_session,
-+            _settings,
-+            reconnect=reconnect,
+     row = set_calendar_match_selection(
+         recording_id=recording_id,
+@@ -238,6 +242,15 @@ def _build_context(
+     selected_event_id = row.get("selected_event_id")
+     selected_confidence = row.get("selected_confidence")
+     selected = _candidate_by_id(candidates, selected_event_id)
++    if (
++        selected is None
++        and isinstance(selected_event_id, str)
++        and selected_event_id.strip()
++    ):
++        selected = _selection_placeholder(
++            event_id=selected_event_id.strip(),
++            selected_confidence=selected_confidence,
 +        )
-     except GraphNotConfiguredError as exc:
-         raise HTTPException(status_code=422, detail=str(exc))
-     except GraphDeviceFlowLimitError as exc:
-diff --git a/lan_app/ms_graph.py b/lan_app/ms_graph.py
-index 2a79927..3430f1f 100644
---- a/lan_app/ms_graph.py
-+++ b/lan_app/ms_graph.py
-@@ -393,26 +393,15 @@ def start_device_flow_session(
-                 "Too many pending Microsoft connect sessions; try again shortly."
-             )
+     visible_candidates = _visible_candidates(candidates, selected)
  
--    client = MicrosoftGraphClient(settings=cfg)
--    if reconnect:
--        client.clear_cache()
-+        # Keep initiation serialized under lock: this avoids duplicate upstream
-+        # device-code challenges during request bursts.
-         client = MicrosoftGraphClient(settings=cfg)
--    flow = client.initiate_device_flow()
--    session_id = uuid4().hex
--    session = _DeviceFlowSession(flow=flow)
--    with _DEVICE_FLOW_LOCK:
--        now = time.time()
--        _prune_sessions_locked(now)
--        existing = _first_pending_session_locked()
--        if existing is not None:
--            existing_id, existing_session = existing
--            payload = _session_payload(existing_id, existing_session)
--            payload["reused"] = True
--            return payload
--        if len(_pending_session_ids_locked()) >= _MAX_PENDING_DEVICE_FLOWS:
--            raise GraphDeviceFlowLimitError(
--                "Too many pending Microsoft connect sessions; try again shortly."
--            )
-+        if reconnect:
-+            client.clear_cache()
-+            client = MicrosoftGraphClient(settings=cfg)
-+        flow = client.initiate_device_flow()
-+        session_id = uuid4().hex
-+        session = _DeviceFlowSession(flow=flow)
-         _DEVICE_FLOW_SESSIONS[session_id] = session
+     return {
+@@ -273,9 +286,17 @@ def _resolve_selected_event(
+             and selected_confidence == _MANUAL_NO_EVENT_CONFIDENCE
+         ):
+             return None, _MANUAL_NO_EVENT_CONFIDENCE
+-        selected = _candidate_by_id(candidates, selected_event_id)
+-        if selected is not None:
+-            return str(selected["event_id"]), float(selected.get("score") or 0.0)
++        if isinstance(selected_event_id, str) and selected_event_id.strip():
++            selected_id = selected_event_id.strip()
++        else:
++            selected_id = None
++        if selected_id is not None:
++            selected = _candidate_by_id(candidates, selected_id)
++            if selected is not None:
++                return str(selected["event_id"]), float(selected.get("score") or 0.0)
++            # Preserve prior user choice if the selected event is temporarily
++            # absent from the latest Graph candidate list.
++            return selected_id, _as_optional_float(selected_confidence)
  
-     thread = threading.Thread(
-diff --git a/lan_app/ui_routes.py b/lan_app/ui_routes.py
-index 35f27af..960ed32 100644
---- a/lan_app/ui_routes.py
-+++ b/lan_app/ui_routes.py
-@@ -11,6 +11,7 @@ from pathlib import Path
- from typing import Any
- 
- from fastapi import APIRouter, Form, Query, Request
-+from fastapi.concurrency import run_in_threadpool
- from fastapi.responses import HTMLResponse, RedirectResponse
- from fastapi.templating import Jinja2Templates
- 
-@@ -263,7 +264,7 @@ async def ui_queue(
- 
- @ui_router.get("/connections", response_class=HTMLResponse)
- async def ui_connections(request: Request) -> Any:
--    ms_state = ms_connection_state(_settings)
-+    ms_state = await run_in_threadpool(ms_connection_state, _settings)
-     return templates.TemplateResponse(
-         request,
-         "connections.html",
-diff --git a/tests/test_ms_auth.py b/tests/test_ms_auth.py
-index b2325c5..51635eb 100644
---- a/tests/test_ms_auth.py
-+++ b/tests/test_ms_auth.py
-@@ -1,5 +1,6 @@
- from __future__ import annotations
- 
-+import threading
- from pathlib import Path
- 
- from fastapi.testclient import TestClient
-@@ -45,6 +46,38 @@ def test_api_ms_verify_ok(tmp_path, monkeypatch):
-     assert body["account_display_name"] == "Alex Worker"
+     if not candidates:
+         return None, None
+@@ -376,6 +397,25 @@ def _candidate_by_id(
+     return None
  
  
-+def test_api_ms_verify_uses_threadpool(tmp_path, monkeypatch):
++def _selection_placeholder(
++    *,
++    event_id: str,
++    selected_confidence: float | None,
++) -> dict[str, Any]:
++    return {
++        "event_id": event_id,
++        "subject": "(selected event not present in latest calendar fetch)",
++        "start": None,
++        "end": None,
++        "organizer": None,
++        "attendees": [],
++        "location": None,
++        "title_tokens": [],
++        "score": _as_optional_float(selected_confidence) or 0.0,
++        "rationale": "selection_preserved_missing_from_candidates",
++    }
++
++
+ def _visible_candidates(
+     candidates: list[dict[str, Any]],
+     selected: dict[str, Any] | None,
+@@ -391,6 +431,14 @@ def _visible_candidates(
+     return [*visible, selected]
+ 
+ 
++def _as_optional_float(value: Any) -> float | None:
++    if isinstance(value, bool):
++        return None
++    if isinstance(value, int | float):
++        return float(value)
++    return None
++
++
+ def _extract_party(value: Any) -> str | None:
+     if not isinstance(value, dict):
+         return None
+diff --git a/tests/test_calendar.py b/tests/test_calendar.py
+index bdf547d..f270e9e 100644
+--- a/tests/test_calendar.py
++++ b/tests/test_calendar.py
+@@ -376,3 +376,87 @@ def test_proximity_component_point_recording_uses_nearest_event_edge():
+     )
+     expected = 1.0 - (60.0 / 3600.0)
+     assert abs(proximity - expected) < 1e-9
++
++
++def test_refresh_preserves_selected_event_when_missing_from_new_candidates(
++    tmp_path, monkeypatch
++):
 +    cfg = _cfg(tmp_path)
-+    monkeypatch.setattr(api, "_settings", cfg)
-+    monkeypatch.setattr(ui_routes, "_settings", cfg)
 +    init_db(cfg)
-+
-+    def _fail_direct(_settings):
-+        raise AssertionError("ms_connection_state should run via threadpool")
-+
-+    calls: dict[str, object] = {}
-+
-+    async def _fake_threadpool(fn, *args, **kwargs):
-+        calls["fn"] = fn
-+        calls["args"] = args
-+        calls["kwargs"] = kwargs
-+        return {
-+            "status": "connected",
-+            "account_display_name": "Alex Worker",
-+            "tenant_id": "tenant-1",
-+            "granted_scopes": ["offline_access", "User.Read"],
-+        }
-+
-+    monkeypatch.setattr(api, "ms_connection_state", _fail_direct)
-+    monkeypatch.setattr(api, "run_in_threadpool", _fake_threadpool)
-+
-+    client = TestClient(api.app, follow_redirects=True)
-+    resp = client.get("/api/connections/ms/verify")
-+    assert resp.status_code == 200
-+    assert resp.json()["ok"] is True
-+    assert calls["fn"] == _fail_direct
-+
-+
- def test_api_ms_verify_error(tmp_path, monkeypatch):
-     cfg = _cfg(tmp_path)
-     monkeypatch.setattr(api, "_settings", cfg)
-@@ -199,6 +232,47 @@ def test_connections_page_shows_ms_state(tmp_path, monkeypatch):
-     assert "Reconnect" in resp.text
- 
- 
-+def test_connections_page_uses_threadpool(tmp_path, monkeypatch):
-+    cfg = _cfg(tmp_path)
-+    monkeypatch.setattr(api, "_settings", cfg)
-+    monkeypatch.setattr(ui_routes, "_settings", cfg)
-+    init_db(cfg)
-+
-+    def _fail_direct(_settings):
-+        raise AssertionError("ms_connection_state should run via threadpool")
-+
-+    calls: dict[str, object] = {}
-+
-+    async def _fake_threadpool(fn, *args, **kwargs):
-+        calls["fn"] = fn
-+        calls["args"] = args
-+        calls["kwargs"] = kwargs
-+        return {
-+            "configured": True,
-+            "status": "connected",
-+            "state": "Connected",
-+            "account_display_name": "Alex Worker",
-+            "tenant_id": "tenant-1",
-+            "requested_scopes": [
-+                "offline_access",
-+                "User.Read",
-+                "Notes.ReadWrite",
-+                "Calendars.Read",
-+            ],
-+            "granted_scopes": ["offline_access", "User.Read", "Notes.ReadWrite"],
-+            "error": None,
-+        }
-+
-+    monkeypatch.setattr(ui_routes, "ms_connection_state", _fail_direct)
-+    monkeypatch.setattr(ui_routes, "run_in_threadpool", _fake_threadpool)
-+
-+    client = TestClient(api.app, follow_redirects=True)
-+    resp = client.get("/connections")
-+    assert resp.status_code == 200
-+    assert "Alex Worker" in resp.text
-+    assert calls["fn"] == _fail_direct
-+
-+
- def test_start_device_flow_session_reuses_pending(monkeypatch, tmp_path):
-     cfg = _cfg(tmp_path)
-     cfg.ms_tenant_id = "tenant-1"
-@@ -246,3 +320,62 @@ def test_start_device_flow_session_reuses_pending(monkeypatch, tmp_path):
-     assert second["reused"] is True
-     assert len(initiated) == 1
-     assert started_session_ids == [first["session_id"]]
-+
-+
-+def test_start_device_flow_session_serializes_initiation(monkeypatch, tmp_path):
-+    cfg = _cfg(tmp_path)
-+    cfg.ms_tenant_id = "tenant-1"
-+    cfg.ms_client_id = "client-1"
-+    cfg.ms_scopes = "offline_access User.Read Notes.ReadWrite Calendars.Read"
-+
-+    with ms_graph._DEVICE_FLOW_LOCK:
-+        ms_graph._DEVICE_FLOW_SESSIONS.clear()
-+
-+    initiated: list[int] = []
-+    start_gate = threading.Event()
-+    release_gate = threading.Event()
++    create_recording(
++        "rec-cal-preserve-1",
++        source="drive",
++        source_filename="meeting.mp3",
++        captured_at="2026-02-19T10:00:00Z",
++        settings=cfg,
++    )
++    upsert_calendar_match(
++        recording_id="rec-cal-preserve-1",
++        candidates=[
++            {
++                "event_id": "evt-manual",
++                "subject": "Manual pick",
++                "start": "2026-02-19T09:30:00Z",
++                "end": "2026-02-19T10:30:00Z",
++                "organizer": "Alex",
++                "attendees": [],
++                "location": None,
++                "title_tokens": ["manual"],
++                "score": 0.77,
++                "rationale": "manual",
++            }
++        ],
++        selected_event_id="evt-manual",
++        selected_confidence=0.77,
++        settings=cfg,
++    )
 +
 +    class _FakeClient:
 +        def __init__(self, settings=None):
 +            self.settings = settings
 +
-+        def clear_cache(self):
-+            return None
++        def graph_get(self, _path: str):
++            return {"value": _fake_events()}  # does not include evt-manual
 +
-+        def initiate_device_flow(self):
-+            initiated.append(1)
-+            start_gate.set()
-+            release_gate.wait(timeout=2)
-+            return {
-+                "user_code": "ABCD-EFGH",
-+                "verification_uri": "https://microsoft.com/devicelogin",
-+                "expires_in": 900,
++    monkeypatch.setattr(calendar, "MicrosoftGraphClient", _FakeClient)
++
++    context = calendar.refresh_calendar_context("rec-cal-preserve-1", settings=cfg)
++    assert context["selected_event_id"] == "evt-manual"
++    assert context["selected_event"] is not None
++    assert context["selected_event"]["event_id"] == "evt-manual"
++    assert any(c["event_id"] == "evt-manual" for c in context["candidates"])
++
++
++def test_select_allows_preserved_selection_not_in_candidates(tmp_path):
++    cfg = _cfg(tmp_path)
++    init_db(cfg)
++    create_recording(
++        "rec-cal-preserve-2",
++        source="drive",
++        source_filename="meeting.mp3",
++        captured_at="2026-02-19T10:00:00Z",
++        settings=cfg,
++    )
++    upsert_calendar_match(
++        recording_id="rec-cal-preserve-2",
++        candidates=[
++            {
++                "event_id": "evt-new",
++                "subject": "Different event",
++                "start": "2026-02-19T09:50:00Z",
++                "end": "2026-02-19T10:35:00Z",
++                "organizer": "Alex",
++                "attendees": [],
++                "location": None,
++                "title_tokens": ["different"],
++                "score": 0.8,
++                "rationale": "auto",
 +            }
++        ],
++        selected_event_id="evt-manual",
++        selected_confidence=0.77,
++        settings=cfg,
++    )
 +
-+    monkeypatch.setattr(ms_graph, "MicrosoftGraphClient", _FakeClient)
-+    monkeypatch.setattr(ms_graph, "_complete_device_flow_in_background", lambda **_k: None)
-+
-+    results: list[dict[str, object]] = []
-+    errors: list[Exception] = []
-+
-+    def _call_start():
-+        try:
-+            results.append(ms_graph.start_device_flow_session(cfg))
-+        except Exception as exc:  # pragma: no cover - test helper
-+            errors.append(exc)
-+
-+    t1 = threading.Thread(target=_call_start)
-+    t2 = threading.Thread(target=_call_start)
-+
-+    t1.start()
-+    assert start_gate.wait(timeout=1), "first initiation did not start in time"
-+    t2.start()
-+    release_gate.set()
-+    t1.join(timeout=2)
-+    t2.join(timeout=2)
-+
-+    assert not errors
-+    assert len(results) == 2
-+    assert len(initiated) == 1
-+    assert results[0]["session_id"] == results[1]["session_id"]
-+    assert sorted([results[0]["reused"], results[1]["reused"]]) == [False, True]
++    selected = calendar.select_calendar_event("rec-cal-preserve-2", "evt-manual", settings=cfg)
++    assert selected["selected_event_id"] == "evt-manual"

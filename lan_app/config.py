@@ -79,6 +79,24 @@ class AppSettings(BaseSettings):
         default_factory=_default_msal_cache_path,
         validation_alias=AliasChoices("MSAL_CACHE_PATH", "LAN_MSAL_CACHE_PATH"),
     )
+    calendar_match_window_minutes: int = Field(
+        default=45,
+        ge=5,
+        le=24 * 60,
+        validation_alias=AliasChoices(
+            "CALENDAR_MATCH_WINDOW_MINUTES",
+            "LAN_CALENDAR_MATCH_WINDOW_MINUTES",
+        ),
+    )
+    calendar_auto_match_threshold: float = Field(
+        default=0.6,
+        ge=0.0,
+        le=1.0,
+        validation_alias=AliasChoices(
+            "CALENDAR_AUTO_MATCH_THRESHOLD",
+            "LAN_CALENDAR_AUTO_MATCH_THRESHOLD",
+        ),
+    )
 
     @property
     def ms_scopes_list(self) -> list[str]:
