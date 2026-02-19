@@ -393,26 +393,15 @@ def start_device_flow_session(
                 "Too many pending Microsoft connect sessions; try again shortly."
             )
 
-    client = MicrosoftGraphClient(settings=cfg)
-    if reconnect:
-        client.clear_cache()
+        # Keep initiation serialized under lock: this avoids duplicate upstream
+        # device-code challenges during request bursts.
         client = MicrosoftGraphClient(settings=cfg)
-    flow = client.initiate_device_flow()
-    session_id = uuid4().hex
-    session = _DeviceFlowSession(flow=flow)
-    with _DEVICE_FLOW_LOCK:
-        now = time.time()
-        _prune_sessions_locked(now)
-        existing = _first_pending_session_locked()
-        if existing is not None:
-            existing_id, existing_session = existing
-            payload = _session_payload(existing_id, existing_session)
-            payload["reused"] = True
-            return payload
-        if len(_pending_session_ids_locked()) >= _MAX_PENDING_DEVICE_FLOWS:
-            raise GraphDeviceFlowLimitError(
-                "Too many pending Microsoft connect sessions; try again shortly."
-            )
+        if reconnect:
+            client.clear_cache()
+            client = MicrosoftGraphClient(settings=cfg)
+        flow = client.initiate_device_flow()
+        session_id = uuid4().hex
+        session = _DeviceFlowSession(flow=flow)
         _DEVICE_FLOW_SESSIONS[session_id] = session
 
     thread = threading.Thread(

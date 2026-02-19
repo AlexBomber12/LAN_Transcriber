@@ -5,6 +5,7 @@ import shutil
 from typing import List
 
 from fastapi import FastAPI, HTTPException, Query
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
@@ -89,7 +90,7 @@ async def healthz() -> dict[str, str]:
 @app.get("/api/connections/ms/verify")
 async def api_verify_ms_connection() -> dict[str, object]:
     """Validate Microsoft Graph auth by calling /me via cached delegated token."""
-    state = ms_connection_state(_settings)
+    state = await run_in_threadpool(ms_connection_state, _settings)
     if state["status"] != "connected":
         return {
             "ok": False,
@@ -113,7 +114,11 @@ async def api_start_ms_connection(
 ) -> dict[str, object]:
     """Start device-code flow and return code/URL details for UI polling."""
     try:
-        return start_device_flow_session(_settings, reconnect=reconnect)
+        return await run_in_threadpool(
+            start_device_flow_session,
+            _settings,
+            reconnect=reconnect,
+        )
     except GraphNotConfiguredError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
     except GraphDeviceFlowLimitError as exc:

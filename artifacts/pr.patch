@@ -1,245 +1,172 @@
-diff --git a/.env.example b/.env.example
-index daec968..30ee885 100644
---- a/.env.example
-+++ b/.env.example
-@@ -27,7 +27,7 @@ GDRIVE_POLL_INTERVAL_SECONDS=60
- # Microsoft Graph delegated auth (Device Code Flow)
- MS_TENANT_ID=
- MS_CLIENT_ID=
--MS_SCOPES=offline_access Notes.ReadWrite Calendars.Read
-+MS_SCOPES=offline_access User.Read Notes.ReadWrite Calendars.Read
- 
- # Plaud fetcher (beta)
- FETCH_INTERVAL_SEC=300
-diff --git a/README.md b/README.md
-index 0a91a2e..54a3c33 100644
---- a/README.md
-+++ b/README.md
-@@ -89,7 +89,7 @@ models are cached across runs.
- | `LLM_API_KEY` | Optional API key for the LLM |
- | `MS_TENANT_ID` | Microsoft Entra tenant ID for delegated Device Code Flow |
- | `MS_CLIENT_ID` | Microsoft app registration client ID |
--| `MS_SCOPES` | Graph scopes (default: `offline_access Notes.ReadWrite Calendars.Read`) |
-+| `MS_SCOPES` | Graph scopes (default: `offline_access User.Read Notes.ReadWrite Calendars.Read`) |
- 
- `docker compose up` starts:
- 
-diff --git a/docker-compose.yml b/docker-compose.yml
-index e499f69..517934b 100644
---- a/docker-compose.yml
-+++ b/docker-compose.yml
-@@ -26,7 +26,7 @@ x-lan-service: &lan-service
-     - LANG_DEFAULT=${LANG_DEFAULT:-en}
-     - MS_TENANT_ID=${MS_TENANT_ID:-}
-     - MS_CLIENT_ID=${MS_CLIENT_ID:-}
--    - "MS_SCOPES=${MS_SCOPES:-offline_access Notes.ReadWrite Calendars.Read}"
-+    - "MS_SCOPES=${MS_SCOPES:-offline_access User.Read Notes.ReadWrite Calendars.Read}"
-   volumes:
-     - lan_cache:/root/.cache
-     - /opt/lan_cache/hf:/root/.cache/huggingface
 diff --git a/lan_app/api.py b/lan_app/api.py
-index bca03e7..6237cab 100644
+index 6237cab..506a420 100644
 --- a/lan_app/api.py
 +++ b/lan_app/api.py
-@@ -35,6 +35,7 @@ from .jobs import RecordingNotFoundError, enqueue_recording_job
- from .jobs import purge_pending_recording_jobs
- from .ms_graph import (
-     GraphAuthError,
-+    GraphDeviceFlowLimitError,
-     GraphNotConfiguredError,
-     get_device_flow_session,
-     ms_connection_state,
-@@ -115,6 +116,8 @@ async def api_start_ms_connection(
-         return start_device_flow_session(_settings, reconnect=reconnect)
+@@ -5,6 +5,7 @@ import shutil
+ from typing import List
+ 
+ from fastapi import FastAPI, HTTPException, Query
++from fastapi.concurrency import run_in_threadpool
+ from fastapi.responses import Response, StreamingResponse
+ from fastapi.staticfiles import StaticFiles
+ from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+@@ -89,7 +90,7 @@ async def healthz() -> dict[str, str]:
+ @app.get("/api/connections/ms/verify")
+ async def api_verify_ms_connection() -> dict[str, object]:
+     """Validate Microsoft Graph auth by calling /me via cached delegated token."""
+-    state = ms_connection_state(_settings)
++    state = await run_in_threadpool(ms_connection_state, _settings)
+     if state["status"] != "connected":
+         return {
+             "ok": False,
+@@ -113,7 +114,11 @@ async def api_start_ms_connection(
+ ) -> dict[str, object]:
+     """Start device-code flow and return code/URL details for UI polling."""
+     try:
+-        return start_device_flow_session(_settings, reconnect=reconnect)
++        return await run_in_threadpool(
++            start_device_flow_session,
++            _settings,
++            reconnect=reconnect,
++        )
      except GraphNotConfiguredError as exc:
          raise HTTPException(status_code=422, detail=str(exc))
-+    except GraphDeviceFlowLimitError as exc:
-+        raise HTTPException(status_code=429, detail=str(exc))
-     except GraphAuthError as exc:
-         raise HTTPException(status_code=503, detail=str(exc))
- 
-diff --git a/lan_app/config.py b/lan_app/config.py
-index 3050468..831a763 100644
---- a/lan_app/config.py
-+++ b/lan_app/config.py
-@@ -72,7 +72,7 @@ class AppSettings(BaseSettings):
-         validation_alias=AliasChoices("MS_CLIENT_ID", "LAN_MS_CLIENT_ID"),
-     )
-     ms_scopes: str = Field(
--        default="offline_access Notes.ReadWrite Calendars.Read",
-+        default="offline_access User.Read Notes.ReadWrite Calendars.Read",
-         validation_alias=AliasChoices("MS_SCOPES", "LAN_MS_SCOPES"),
-     )
-     msal_cache_path: Path = Field(
+     except GraphDeviceFlowLimitError as exc:
 diff --git a/lan_app/ms_graph.py b/lan_app/ms_graph.py
-index 493c12e..2a79927 100644
+index 2a79927..3430f1f 100644
 --- a/lan_app/ms_graph.py
 +++ b/lan_app/ms_graph.py
-@@ -22,6 +22,7 @@ from .config import AppSettings
+@@ -393,26 +393,15 @@ def start_device_flow_session(
+                 "Too many pending Microsoft connect sessions; try again shortly."
+             )
  
- GRAPH_BASE_URL = "https://graph.microsoft.com/v1.0"
- _DEVICE_FLOW_TTL_SECONDS = 20 * 60
-+_MAX_PENDING_DEVICE_FLOWS = 1
- 
- 
- class GraphAuthError(RuntimeError):
-@@ -40,6 +41,10 @@ class GraphRequestError(GraphAuthError):
-     """Raised when Graph responds with a non-retriable request error."""
- 
- 
-+class GraphDeviceFlowLimitError(GraphAuthError):
-+    """Raised when too many device-code sessions are currently pending."""
-+
-+
- class _GraphTransientError(RuntimeError):
-     """Raised for transient Graph/transport failures to trigger retries."""
- 
-@@ -134,6 +139,18 @@ def _session_payload(session_id: str, session: _DeviceFlowSession) -> dict[str,
-     }
- 
- 
-+def _pending_session_ids_locked() -> list[str]:
-+    return [sid for sid, session in _DEVICE_FLOW_SESSIONS.items() if session.status == "pending"]
-+
-+
-+def _first_pending_session_locked() -> tuple[str, _DeviceFlowSession] | None:
-+    for session_id in _pending_session_ids_locked():
-+        session = _DEVICE_FLOW_SESSIONS.get(session_id)
-+        if session is not None:
-+            return session_id, session
-+    return None
-+
-+
- class MicrosoftGraphClient:
-     """Thin wrapper around MSAL + Microsoft Graph REST calls."""
- 
-@@ -362,6 +379,20 @@ def start_device_flow_session(
-     reconnect: bool = False,
- ) -> dict[str, Any]:
-     cfg = settings or AppSettings()
-+    with _DEVICE_FLOW_LOCK:
-+        now = time.time()
-+        _prune_sessions_locked(now)
-+        existing = _first_pending_session_locked()
-+        if existing is not None:
-+            existing_id, existing_session = existing
-+            payload = _session_payload(existing_id, existing_session)
-+            payload["reused"] = True
-+            return payload
-+        if len(_pending_session_ids_locked()) >= _MAX_PENDING_DEVICE_FLOWS:
-+            raise GraphDeviceFlowLimitError(
-+                "Too many pending Microsoft connect sessions; try again shortly."
-+            )
-+
-     client = MicrosoftGraphClient(settings=cfg)
-     if reconnect:
-         client.clear_cache()
-@@ -372,6 +403,16 @@ def start_device_flow_session(
-     with _DEVICE_FLOW_LOCK:
-         now = time.time()
-         _prune_sessions_locked(now)
-+        existing = _first_pending_session_locked()
-+        if existing is not None:
-+            existing_id, existing_session = existing
-+            payload = _session_payload(existing_id, existing_session)
-+            payload["reused"] = True
-+            return payload
-+        if len(_pending_session_ids_locked()) >= _MAX_PENDING_DEVICE_FLOWS:
-+            raise GraphDeviceFlowLimitError(
-+                "Too many pending Microsoft connect sessions; try again shortly."
-+            )
+-    client = MicrosoftGraphClient(settings=cfg)
+-    if reconnect:
+-        client.clear_cache()
++        # Keep initiation serialized under lock: this avoids duplicate upstream
++        # device-code challenges during request bursts.
+         client = MicrosoftGraphClient(settings=cfg)
+-    flow = client.initiate_device_flow()
+-    session_id = uuid4().hex
+-    session = _DeviceFlowSession(flow=flow)
+-    with _DEVICE_FLOW_LOCK:
+-        now = time.time()
+-        _prune_sessions_locked(now)
+-        existing = _first_pending_session_locked()
+-        if existing is not None:
+-            existing_id, existing_session = existing
+-            payload = _session_payload(existing_id, existing_session)
+-            payload["reused"] = True
+-            return payload
+-        if len(_pending_session_ids_locked()) >= _MAX_PENDING_DEVICE_FLOWS:
+-            raise GraphDeviceFlowLimitError(
+-                "Too many pending Microsoft connect sessions; try again shortly."
+-            )
++        if reconnect:
++            client.clear_cache()
++            client = MicrosoftGraphClient(settings=cfg)
++        flow = client.initiate_device_flow()
++        session_id = uuid4().hex
++        session = _DeviceFlowSession(flow=flow)
          _DEVICE_FLOW_SESSIONS[session_id] = session
  
      thread = threading.Thread(
-@@ -380,7 +421,9 @@ def start_device_flow_session(
-         daemon=True,
-     )
-     thread.start()
--    return _session_payload(session_id, session)
-+    payload = _session_payload(session_id, session)
-+    payload["reused"] = False
-+    return payload
+diff --git a/lan_app/ui_routes.py b/lan_app/ui_routes.py
+index 35f27af..960ed32 100644
+--- a/lan_app/ui_routes.py
++++ b/lan_app/ui_routes.py
+@@ -11,6 +11,7 @@ from pathlib import Path
+ from typing import Any
  
+ from fastapi import APIRouter, Form, Query, Request
++from fastapi.concurrency import run_in_threadpool
+ from fastapi.responses import HTMLResponse, RedirectResponse
+ from fastapi.templating import Jinja2Templates
  
- def get_device_flow_session(session_id: str) -> dict[str, Any]:
-@@ -395,6 +438,7 @@ def get_device_flow_session(session_id: str) -> dict[str, Any]:
+@@ -263,7 +264,7 @@ async def ui_queue(
  
- __all__ = [
-     "GraphAuthError",
-+    "GraphDeviceFlowLimitError",
-     "GraphNeedsReconnectError",
-     "GraphNotConfiguredError",
-     "GraphRequestError",
-diff --git a/tests/test_app_config.py b/tests/test_app_config.py
-index 22566d0..8fc84db 100644
---- a/tests/test_app_config.py
-+++ b/tests/test_app_config.py
-@@ -33,7 +33,10 @@ def test_ms_auth_settings_from_env(monkeypatch, tmp_path: Path):
-     cache_path = tmp_path / "auth" / "msal_cache.bin"
-     monkeypatch.setenv("MS_TENANT_ID", "tenant-id")
-     monkeypatch.setenv("MS_CLIENT_ID", "client-id")
--    monkeypatch.setenv("MS_SCOPES", "offline_access Notes.ReadWrite Calendars.Read")
-+    monkeypatch.setenv(
-+        "MS_SCOPES",
-+        "offline_access User.Read Notes.ReadWrite Calendars.Read",
-+    )
-     monkeypatch.setenv("MSAL_CACHE_PATH", str(cache_path))
- 
-     cfg = AppSettings()
-@@ -41,6 +44,7 @@ def test_ms_auth_settings_from_env(monkeypatch, tmp_path: Path):
-     assert cfg.ms_client_id == "client-id"
-     assert cfg.ms_scopes_list == [
-         "offline_access",
-+        "User.Read",
-         "Notes.ReadWrite",
-         "Calendars.Read",
-     ]
+ @ui_router.get("/connections", response_class=HTMLResponse)
+ async def ui_connections(request: Request) -> Any:
+-    ms_state = ms_connection_state(_settings)
++    ms_state = await run_in_threadpool(ms_connection_state, _settings)
+     return templates.TemplateResponse(
+         request,
+         "connections.html",
 diff --git a/tests/test_ms_auth.py b/tests/test_ms_auth.py
-index 7222c0a..b2325c5 100644
+index b2325c5..51635eb 100644
 --- a/tests/test_ms_auth.py
 +++ b/tests/test_ms_auth.py
-@@ -4,10 +4,10 @@ from pathlib import Path
+@@ -1,5 +1,6 @@
+ from __future__ import annotations
+ 
++import threading
+ from pathlib import Path
  
  from fastapi.testclient import TestClient
- 
--from lan_app import api, ui_routes
-+from lan_app import api, ms_graph, ui_routes
- from lan_app.config import AppSettings
- from lan_app.db import init_db
--from lan_app.ms_graph import GraphNotConfiguredError
-+from lan_app.ms_graph import GraphDeviceFlowLimitError, GraphNotConfiguredError
+@@ -45,6 +46,38 @@ def test_api_ms_verify_ok(tmp_path, monkeypatch):
+     assert body["account_display_name"] == "Alex Worker"
  
  
- def _cfg(tmp_path: Path) -> AppSettings:
-@@ -115,6 +115,22 @@ def test_api_ms_start_connect_not_configured(tmp_path, monkeypatch):
-     assert resp.status_code == 422
- 
- 
-+def test_api_ms_start_connect_too_many_pending(tmp_path, monkeypatch):
++def test_api_ms_verify_uses_threadpool(tmp_path, monkeypatch):
 +    cfg = _cfg(tmp_path)
 +    monkeypatch.setattr(api, "_settings", cfg)
 +    monkeypatch.setattr(ui_routes, "_settings", cfg)
 +    init_db(cfg)
 +
-+    def _raise_too_many(_settings, reconnect=False):
-+        raise GraphDeviceFlowLimitError("too many")
++    def _fail_direct(_settings):
++        raise AssertionError("ms_connection_state should run via threadpool")
 +
-+    monkeypatch.setattr(api, "start_device_flow_session", _raise_too_many)
++    calls: dict[str, object] = {}
++
++    async def _fake_threadpool(fn, *args, **kwargs):
++        calls["fn"] = fn
++        calls["args"] = args
++        calls["kwargs"] = kwargs
++        return {
++            "status": "connected",
++            "account_display_name": "Alex Worker",
++            "tenant_id": "tenant-1",
++            "granted_scopes": ["offline_access", "User.Read"],
++        }
++
++    monkeypatch.setattr(api, "ms_connection_state", _fail_direct)
++    monkeypatch.setattr(api, "run_in_threadpool", _fake_threadpool)
 +
 +    client = TestClient(api.app, follow_redirects=True)
-+    resp = client.post("/api/connections/ms/connect")
-+    assert resp.status_code == 429
++    resp = client.get("/api/connections/ms/verify")
++    assert resp.status_code == 200
++    assert resp.json()["ok"] is True
++    assert calls["fn"] == _fail_direct
 +
 +
- def test_api_ms_connect_poll(tmp_path, monkeypatch):
+ def test_api_ms_verify_error(tmp_path, monkeypatch):
      cfg = _cfg(tmp_path)
      monkeypatch.setattr(api, "_settings", cfg)
-@@ -164,8 +180,13 @@ def test_connections_page_shows_ms_state(tmp_path, monkeypatch):
-             "state": "Connected",
-             "account_display_name": "Alex Worker",
-             "tenant_id": "tenant-1",
--            "requested_scopes": ["offline_access", "Notes.ReadWrite", "Calendars.Read"],
--            "granted_scopes": ["offline_access", "Notes.ReadWrite"],
+@@ -199,6 +232,47 @@ def test_connections_page_shows_ms_state(tmp_path, monkeypatch):
+     assert "Reconnect" in resp.text
+ 
+ 
++def test_connections_page_uses_threadpool(tmp_path, monkeypatch):
++    cfg = _cfg(tmp_path)
++    monkeypatch.setattr(api, "_settings", cfg)
++    monkeypatch.setattr(ui_routes, "_settings", cfg)
++    init_db(cfg)
++
++    def _fail_direct(_settings):
++        raise AssertionError("ms_connection_state should run via threadpool")
++
++    calls: dict[str, object] = {}
++
++    async def _fake_threadpool(fn, *args, **kwargs):
++        calls["fn"] = fn
++        calls["args"] = args
++        calls["kwargs"] = kwargs
++        return {
++            "configured": True,
++            "status": "connected",
++            "state": "Connected",
++            "account_display_name": "Alex Worker",
++            "tenant_id": "tenant-1",
 +            "requested_scopes": [
 +                "offline_access",
 +                "User.Read",
@@ -247,16 +174,29 @@ index 7222c0a..b2325c5 100644
 +                "Calendars.Read",
 +            ],
 +            "granted_scopes": ["offline_access", "User.Read", "Notes.ReadWrite"],
-             "error": None,
-         },
-     )
-@@ -176,3 +197,52 @@ def test_connections_page_shows_ms_state(tmp_path, monkeypatch):
-     assert "Connected" in resp.text
-     assert "Alex Worker" in resp.text
-     assert "Reconnect" in resp.text
++            "error": None,
++        }
++
++    monkeypatch.setattr(ui_routes, "ms_connection_state", _fail_direct)
++    monkeypatch.setattr(ui_routes, "run_in_threadpool", _fake_threadpool)
++
++    client = TestClient(api.app, follow_redirects=True)
++    resp = client.get("/connections")
++    assert resp.status_code == 200
++    assert "Alex Worker" in resp.text
++    assert calls["fn"] == _fail_direct
 +
 +
-+def test_start_device_flow_session_reuses_pending(monkeypatch, tmp_path):
+ def test_start_device_flow_session_reuses_pending(monkeypatch, tmp_path):
+     cfg = _cfg(tmp_path)
+     cfg.ms_tenant_id = "tenant-1"
+@@ -246,3 +320,62 @@ def test_start_device_flow_session_reuses_pending(monkeypatch, tmp_path):
+     assert second["reused"] is True
+     assert len(initiated) == 1
+     assert started_session_ids == [first["session_id"]]
++
++
++def test_start_device_flow_session_serializes_initiation(monkeypatch, tmp_path):
 +    cfg = _cfg(tmp_path)
 +    cfg.ms_tenant_id = "tenant-1"
 +    cfg.ms_client_id = "client-1"
@@ -266,7 +206,8 @@ index 7222c0a..b2325c5 100644
 +        ms_graph._DEVICE_FLOW_SESSIONS.clear()
 +
 +    initiated: list[int] = []
-+    started_session_ids: list[str] = []
++    start_gate = threading.Event()
++    release_gate = threading.Event()
 +
 +    class _FakeClient:
 +        def __init__(self, settings=None):
@@ -277,29 +218,38 @@ index 7222c0a..b2325c5 100644
 +
 +        def initiate_device_flow(self):
 +            initiated.append(1)
++            start_gate.set()
++            release_gate.wait(timeout=2)
 +            return {
 +                "user_code": "ABCD-EFGH",
 +                "verification_uri": "https://microsoft.com/devicelogin",
 +                "expires_in": 900,
 +            }
 +
-+    class _FakeThread:
-+        def __init__(self, target=None, kwargs=None, daemon=None):
-+            self._kwargs = kwargs or {}
-+
-+        def start(self):
-+            started_session_ids.append(self._kwargs["session_id"])
-+
 +    monkeypatch.setattr(ms_graph, "MicrosoftGraphClient", _FakeClient)
-+    monkeypatch.setattr(ms_graph.threading, "Thread", _FakeThread)
++    monkeypatch.setattr(ms_graph, "_complete_device_flow_in_background", lambda **_k: None)
 +
-+    first = ms_graph.start_device_flow_session(cfg)
-+    second = ms_graph.start_device_flow_session(cfg)
++    results: list[dict[str, object]] = []
++    errors: list[Exception] = []
 +
-+    assert first["status"] == "pending"
-+    assert second["status"] == "pending"
-+    assert first["session_id"] == second["session_id"]
-+    assert first["reused"] is False
-+    assert second["reused"] is True
++    def _call_start():
++        try:
++            results.append(ms_graph.start_device_flow_session(cfg))
++        except Exception as exc:  # pragma: no cover - test helper
++            errors.append(exc)
++
++    t1 = threading.Thread(target=_call_start)
++    t2 = threading.Thread(target=_call_start)
++
++    t1.start()
++    assert start_gate.wait(timeout=1), "first initiation did not start in time"
++    t2.start()
++    release_gate.set()
++    t1.join(timeout=2)
++    t2.join(timeout=2)
++
++    assert not errors
++    assert len(results) == 2
 +    assert len(initiated) == 1
-+    assert started_session_ids == [first["session_id"]]
++    assert results[0]["session_id"] == results[1]["session_id"]
++    assert sorted([results[0]["reused"], results[1]["reused"]]) == [False, True]

@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Form, Query, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
@@ -263,7 +264,7 @@ async def ui_queue(
 
 @ui_router.get("/connections", response_class=HTMLResponse)
 async def ui_connections(request: Request) -> Any:
-    ms_state = ms_connection_state(_settings)
+    ms_state = await run_in_threadpool(ms_connection_state, _settings)
     return templates.TemplateResponse(
         request,
         "connections.html",
