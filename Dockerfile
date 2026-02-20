@@ -15,6 +15,7 @@ CMD ["python", "web_transcribe.py"]
 FROM base AS runtime-lite
 RUN python -m pip install --upgrade pip setuptools wheel \
     && python -m pip install --no-cache-dir -r ci-requirements.txt \
-    && python -m pip install --no-cache-dir -e .[test]
+    && python -m pip install --no-cache-dir -e .[test] \
+    && python -m pip install --no-cache-dir whisperx==3.4.2
 ENV CI=true
 CMD ["uvicorn", "web_transcribe:app", "--host", "0.0.0.0", "--port", "7860"]
