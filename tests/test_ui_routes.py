@@ -195,6 +195,42 @@ def test_recording_detail_language_tab_renders_spans(tmp_path, monkeypatch):
     assert "Re-summarize (LLM only)" in r.text
 
 
+def test_recording_detail_language_tab_keeps_auto_target_selected_when_unset(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    init_db(cfg)
+    create_recording(
+        "rec-lang-auto-1",
+        source="drive",
+        source_filename="lang.mp3",
+        status=RECORDING_STATUS_READY,
+        settings=cfg,
+    )
+    derived = cfg.recordings_root / "rec-lang-auto-1" / "derived"
+    derived.mkdir(parents=True, exist_ok=True)
+    (derived / "transcript.json").write_text(
+        json.dumps(
+            {
+                "text": "hola equipo",
+                "language": {"detected": "es", "confidence": 0.95},
+                "dominant_language": "es",
+                "language_distribution": {"es": 100.0},
+                "language_spans": [{"start": 0.0, "end": 2.0, "lang": "es"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    c = TestClient(api.app, follow_redirects=True)
+    r = c.get("/recordings/rec-lang-auto-1?tab=language")
+    assert r.status_code == 200
+    target_select = r.text.split('id="target_summary_language"', 1)[1].split("</select>", 1)[0]
+    assert 'value="" selected>Auto (dominant language)</option>' in target_select
+    assert 'value="es" selected' not in target_select
+    assert "Spanish (es)" in r.text
+
+
 def test_recording_detail_not_found(client):
     r = client.get("/recordings/nonexistent-id")
     assert r.status_code == 404

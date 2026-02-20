@@ -244,7 +244,8 @@ def _language_tab_context(recording_id: str, rec: dict[str, Any], settings: AppS
         rec.get("target_summary_language")
     ) or _normalise_language_code(
         transcript_payload.get("target_summary_language")
-    ) or dominant
+    )
+    resolved_target_summary_language = target_summary_language or dominant
     transcript_language_override = _normalise_language_code(
         rec.get("language_override")
     ) or _normalise_language_code(
@@ -263,14 +264,14 @@ def _language_tab_context(recording_id: str, rec: dict[str, Any], settings: AppS
         "spans": span_rows,
         "is_mixed": len(set(non_unknown_distribution)) >= 2,
         "target_summary_language": target_summary_language or "",
-        "target_summary_language_label": _language_display_name(target_summary_language),
+        "target_summary_language_label": _language_display_name(resolved_target_summary_language),
         "transcript_language_override": transcript_language_override or "",
         "transcript_language_override_label": _language_display_name(transcript_language_override),
         "summary_preview": str(summary_payload.get("summary") or "").strip(),
         "summary_model": str(summary_payload.get("model") or ""),
         "options": _language_options(
             distribution_codes=distribution_codes,
-            target_summary_language=target_summary_language,
+            target_summary_language=resolved_target_summary_language,
             transcript_language_override=transcript_language_override,
         ),
     }

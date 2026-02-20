@@ -190,7 +190,7 @@
     <div class="form-row">
       <label for="target_summary_language">target_summary_language</label>
       <select id="target_summary_language" name="target_summary_language">
-        <option value="">Auto (dominant language)</option>
+        <option value="" {% if not lang.target_summary_language %}selected{% endif %}>Auto (dominant language)</option>
         {% for opt in lang.options or [] %}
         <option value="{{ opt.code }}" {% if lang.target_summary_language == opt.code %}selected{% endif %}>{{ opt.label }}</option>
         {% endfor %}

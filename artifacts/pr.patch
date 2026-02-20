@@ -1,98 +1,91 @@
-diff --git a/lan_app/worker_tasks.py b/lan_app/worker_tasks.py
-index 5e45d04..a0397bc 100644
---- a/lan_app/worker_tasks.py
-+++ b/lan_app/worker_tasks.py
-@@ -174,6 +174,7 @@ def _run_precheck_pipeline(
-     recording = get_recording(recording_id, settings=settings) or {}
-     transcript_language_override = _clean_language_value(recording.get("language_override"))
-     target_summary_language = _clean_language_value(recording.get("target_summary_language"))
-+    has_explicit_summary_target = target_summary_language is not None
+diff --git a/lan_app/templates/recording_detail.html b/lan_app/templates/recording_detail.html
+index 22be248..a6e8a6f 100644
+--- a/lan_app/templates/recording_detail.html
++++ b/lan_app/templates/recording_detail.html
+@@ -190,7 +190,7 @@
+     <div class="form-row">
+       <label for="target_summary_language">target_summary_language</label>
+       <select id="target_summary_language" name="target_summary_language">
+-        <option value="">Auto (dominant language)</option>
++        <option value="" {% if not lang.target_summary_language %}selected{% endif %}>Auto (dominant language)</option>
+         {% for opt in lang.options or [] %}
+         <option value="{{ opt.code }}" {% if lang.target_summary_language == opt.code %}selected{% endif %}>{{ opt.label }}</option>
+         {% endfor %}
+diff --git a/lan_app/ui_routes.py b/lan_app/ui_routes.py
+index 71295d9..7789c18 100644
+--- a/lan_app/ui_routes.py
++++ b/lan_app/ui_routes.py
+@@ -244,7 +244,8 @@ def _language_tab_context(recording_id: str, rec: dict[str, Any], settings: AppS
+         rec.get("target_summary_language")
+     ) or _normalise_language_code(
+         transcript_payload.get("target_summary_language")
+-    ) or dominant
++    )
++    resolved_target_summary_language = target_summary_language or dominant
+     transcript_language_override = _normalise_language_code(
+         rec.get("language_override")
+     ) or _normalise_language_code(
+@@ -263,14 +264,14 @@ def _language_tab_context(recording_id: str, rec: dict[str, Any], settings: AppS
+         "spans": span_rows,
+         "is_mixed": len(set(non_unknown_distribution)) >= 2,
+         "target_summary_language": target_summary_language or "",
+-        "target_summary_language_label": _language_display_name(target_summary_language),
++        "target_summary_language_label": _language_display_name(resolved_target_summary_language),
+         "transcript_language_override": transcript_language_override or "",
+         "transcript_language_override_label": _language_display_name(transcript_language_override),
+         "summary_preview": str(summary_payload.get("summary") or "").strip(),
+         "summary_model": str(summary_payload.get("model") or ""),
+         "options": _language_options(
+             distribution_codes=distribution_codes,
+-            target_summary_language=target_summary_language,
++            target_summary_language=resolved_target_summary_language,
+             transcript_language_override=transcript_language_override,
+         ),
+     }
+diff --git a/tests/test_ui_routes.py b/tests/test_ui_routes.py
+index e3007fe..9afeab3 100644
+--- a/tests/test_ui_routes.py
++++ b/tests/test_ui_routes.py
+@@ -195,6 +195,42 @@ def test_recording_detail_language_tab_renders_spans(tmp_path, monkeypatch):
+     assert "Re-summarize (LLM only)" in r.text
  
-     audio_path = _resolve_raw_audio_path(recording_id, settings)
-     if audio_path is None:
-@@ -213,7 +214,7 @@ def _run_precheck_pipeline(
-     update_payload: dict[str, str] = {}
-     if dominant_language:
-         update_payload["language_auto"] = dominant_language
--    if resolved_target_language:
-+    if has_explicit_summary_target and resolved_target_language:
-         update_payload["target_summary_language"] = resolved_target_language
-     if update_payload:
-         set_recording_language_settings(
-diff --git a/tests/test_db_queue.py b/tests/test_db_queue.py
-index 58f2bf1..e2707e6 100644
---- a/tests/test_db_queue.py
-+++ b/tests/test_db_queue.py
-@@ -521,6 +521,72 @@ def test_worker_precheck_runs_pipeline_when_safe(tmp_path: Path, monkeypatch):
-     assert job["status"] == JOB_STATUS_FINISHED
  
- 
-+def test_worker_precheck_keeps_auto_summary_target_unset(tmp_path: Path, monkeypatch):
-+    cfg = _test_settings(tmp_path)
-+    monkeypatch.setenv("LAN_DATA_ROOT", str(cfg.data_root))
-+    monkeypatch.setenv("LAN_RECORDINGS_ROOT", str(cfg.recordings_root))
-+    monkeypatch.setenv("LAN_DB_PATH", str(cfg.db_path))
-+    monkeypatch.setenv("LAN_PROM_SNAPSHOT_PATH", str(cfg.metrics_snapshot_path))
-+
++def test_recording_detail_language_tab_keeps_auto_target_selected_when_unset(tmp_path, monkeypatch):
++    cfg = _cfg(tmp_path)
++    monkeypatch.setattr(api, "_settings", cfg)
++    monkeypatch.setattr(ui_routes, "_settings", cfg)
 +    init_db(cfg)
 +    create_recording(
-+        "rec-precheck-auto-target-1",
-+        source="test",
-+        source_filename="normal.wav",
++        "rec-lang-auto-1",
++        source="drive",
++        source_filename="lang.mp3",
++        status=RECORDING_STATUS_READY,
 +        settings=cfg,
 +    )
-+    create_job(
-+        "job-precheck-auto-target-1",
-+        recording_id="rec-precheck-auto-target-1",
-+        job_type=JOB_TYPE_PRECHECK,
-+        settings=cfg,
-+    )
-+
-+    raw_audio = cfg.recordings_root / "rec-precheck-auto-target-1" / "raw" / "audio.wav"
-+    raw_audio.parent.mkdir(parents=True, exist_ok=True)
-+    raw_audio.write_bytes(b"\x00")
-+
-+    monkeypatch.setattr("lan_app.worker_tasks._resolve_raw_audio_path", lambda *_a, **_k: raw_audio)
-+    monkeypatch.setattr(
-+        "lan_app.worker_tasks.run_precheck",
-+        lambda *_a, **_k: PrecheckResult(
-+            duration_sec=40.0,
-+            speech_ratio=0.8,
-+            quarantine_reason=None,
++    derived = cfg.recordings_root / "rec-lang-auto-1" / "derived"
++    derived.mkdir(parents=True, exist_ok=True)
++    (derived / "transcript.json").write_text(
++        json.dumps(
++            {
++                "text": "hola equipo",
++                "language": {"detected": "es", "confidence": 0.95},
++                "dominant_language": "es",
++                "language_distribution": {"es": 100.0},
++                "language_spans": [{"start": 0.0, "end": 2.0, "lang": "es"}],
++            }
 +        ),
++        encoding="utf-8",
 +    )
 +
-+    async def _fake_run_pipeline(*_args, **_kwargs):
-+        return None
-+
-+    monkeypatch.setattr("lan_app.worker_tasks.run_pipeline", _fake_run_pipeline)
-+    monkeypatch.setattr(
-+        "lan_app.worker_tasks._load_transcript_language_payload",
-+        lambda *_a, **_k: ("es", "es"),
-+    )
-+
-+    observed_updates: dict[str, object] = {}
-+
-+    def _capture_language_settings(recording_id: str, *, settings=None, **kwargs):
-+        observed_updates["recording_id"] = recording_id
-+        observed_updates["kwargs"] = kwargs
-+        return True
-+
-+    monkeypatch.setattr(
-+        "lan_app.worker_tasks.set_recording_language_settings",
-+        _capture_language_settings,
-+    )
-+
-+    result = process_job(
-+        "job-precheck-auto-target-1",
-+        "rec-precheck-auto-target-1",
-+        JOB_TYPE_PRECHECK,
-+    )
-+    assert result["status"] == "ok"
-+    assert observed_updates["recording_id"] == "rec-precheck-auto-target-1"
-+    assert observed_updates["kwargs"] == {"language_auto": "es"}
++    c = TestClient(api.app, follow_redirects=True)
++    r = c.get("/recordings/rec-lang-auto-1?tab=language")
++    assert r.status_code == 200
++    target_select = r.text.split('id="target_summary_language"', 1)[1].split("</select>", 1)[0]
++    assert 'value="" selected>Auto (dominant language)</option>' in target_select
++    assert 'value="es" selected' not in target_select
++    assert "Spanish (es)" in r.text
 +
 +
- def test_build_diariser_wraps_sync_pyannote_pipeline(monkeypatch):
-     from lan_app import worker_tasks
- 
+ def test_recording_detail_not_found(client):
+     r = client.get("/recordings/nonexistent-id")
+     assert r.status_code == 404
