@@ -348,7 +348,7 @@ def test_purge_pending_recording_jobs_deletes_only_pending(tmp_path: Path, monke
     assert fake_queue.jobs["job-purge-finished"].deleted is False
 
 
-def test_worker_precheck_quarantines_and_skips_pipeline(tmp_path: Path, monkeypatch):
+def test_worker_precheck_quarantines_and_writes_artifacts(tmp_path: Path, monkeypatch):
     cfg = _test_settings(tmp_path)
     monkeypatch.setenv("LAN_DATA_ROOT", str(cfg.data_root))
     monkeypatch.setenv("LAN_RECORDINGS_ROOT", str(cfg.recordings_root))
@@ -383,13 +383,17 @@ def test_worker_precheck_quarantines_and_skips_pipeline(tmp_path: Path, monkeypa
         ),
     )
 
-    async def _should_not_run(*_args, **_kwargs):
-        raise AssertionError("run_pipeline should be skipped for quarantined recordings")
+    called = {"value": False}
 
-    monkeypatch.setattr("lan_app.worker_tasks.run_pipeline", _should_not_run)
+    async def _fake_run_pipeline(*_args, **_kwargs):
+        called["value"] = True
+        return None
+
+    monkeypatch.setattr("lan_app.worker_tasks.run_pipeline", _fake_run_pipeline)
 
     result = process_job("job-precheck-q-1", "rec-precheck-q-1", JOB_TYPE_PRECHECK)
     assert result["status"] == "ok"
+    assert called["value"] is True
 
     recording = get_recording("rec-precheck-q-1", settings=cfg)
     job = get_job("job-precheck-q-1", settings=cfg)

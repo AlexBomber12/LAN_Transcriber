@@ -531,3 +531,23 @@ def test_run_precheck_quarantine_rules(tmp_path: Path):
     voiced_result = pipeline.run_precheck(voiced_audio, cfg)
     assert voiced_result.quarantine_reason is None
     assert voiced_result.speech_ratio is not None and voiced_result.speech_ratio > 0.10
+
+
+def test_run_precheck_quarantines_when_metrics_unavailable(tmp_path: Path, monkeypatch):
+    cfg = pipeline.Settings(
+        speaker_db=tmp_path / "db.yaml",
+        tmp_root=tmp_path,
+        recordings_root=tmp_path / "recordings",
+    )
+    audio = tmp_path / "probe-fail.mp3"
+    audio.write_bytes(b"not-real-audio")
+
+    monkeypatch.setattr(pipeline, "_audio_duration_from_wave", lambda _path: None)
+    monkeypatch.setattr(pipeline, "_audio_duration_from_ffprobe", lambda _path: None)
+    monkeypatch.setattr(pipeline, "_speech_ratio_from_wave", lambda _path: None)
+    monkeypatch.setattr(pipeline, "_speech_ratio_from_ffmpeg", lambda _path: None)
+
+    result = pipeline.run_precheck(audio, cfg)
+    assert result.quarantine_reason == "precheck_metrics_unavailable"
+    assert result.duration_sec is None
+    assert result.speech_ratio is None

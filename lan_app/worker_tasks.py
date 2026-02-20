@@ -156,13 +156,6 @@ def _run_precheck_pipeline(
             f"speech_ratio={precheck.speech_ratio}"
         ),
     )
-    if precheck.quarantine_reason:
-        _append_step_log(
-            log_path,
-            f"quarantined reason={precheck.quarantine_reason}",
-        )
-        return RECORDING_STATUS_QUARANTINE, precheck.quarantine_reason
-
     diariser = _build_diariser(precheck.duration_sec)
     asyncio.run(
         run_pipeline(
@@ -175,6 +168,12 @@ def _run_precheck_pipeline(
         )
     )
     _append_step_log(log_path, "pipeline artifacts generated")
+    if precheck.quarantine_reason:
+        _append_step_log(
+            log_path,
+            f"quarantined reason={precheck.quarantine_reason}",
+        )
+        return RECORDING_STATUS_QUARANTINE, precheck.quarantine_reason
     return RECORDING_STATUS_READY, None
 
 

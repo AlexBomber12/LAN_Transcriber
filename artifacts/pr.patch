@@ -1,140 +1,114 @@
 diff --git a/lan_app/worker_tasks.py b/lan_app/worker_tasks.py
-index 799bf15..d3d99a8 100644
+index d3d99a8..5f907f8 100644
 --- a/lan_app/worker_tasks.py
 +++ b/lan_app/worker_tasks.py
-@@ -144,7 +144,7 @@ def _run_precheck_pipeline(
-     audio_path = _resolve_raw_audio_path(recording_id, settings)
-     if audio_path is None:
-         _append_step_log(log_path, "precheck skipped: raw audio not found")
--        return RECORDING_STATUS_READY, None
-+        return RECORDING_STATUS_QUARANTINE, "raw_audio_missing"
+@@ -156,13 +156,6 @@ def _run_precheck_pipeline(
+             f"speech_ratio={precheck.speech_ratio}"
+         ),
+     )
+-    if precheck.quarantine_reason:
+-        _append_step_log(
+-            log_path,
+-            f"quarantined reason={precheck.quarantine_reason}",
+-        )
+-        return RECORDING_STATUS_QUARANTINE, precheck.quarantine_reason
+-
+     diariser = _build_diariser(precheck.duration_sec)
+     asyncio.run(
+         run_pipeline(
+@@ -175,6 +168,12 @@ def _run_precheck_pipeline(
+         )
+     )
+     _append_step_log(log_path, "pipeline artifacts generated")
++    if precheck.quarantine_reason:
++        _append_step_log(
++            log_path,
++            f"quarantined reason={precheck.quarantine_reason}",
++        )
++        return RECORDING_STATUS_QUARANTINE, precheck.quarantine_reason
+     return RECORDING_STATUS_READY, None
  
-     pipeline_settings = _build_pipeline_settings(settings)
-     precheck = run_precheck(audio_path, pipeline_settings)
+ 
 diff --git a/lan_transcriber/pipeline.py b/lan_transcriber/pipeline.py
-index 96e7195..7adcf79 100644
+index 7adcf79..c4b7d8d 100644
 --- a/lan_transcriber/pipeline.py
 +++ b/lan_transcriber/pipeline.py
-@@ -738,6 +738,7 @@ async def run_pipeline(
-     )
+@@ -673,12 +673,11 @@ def run_precheck(audio_path: Path, cfg: Settings | None = None) -> PrecheckResul
+         speech_ratio = _speech_ratio_from_ffmpeg(audio_path)
  
-     if precheck_result.quarantine_reason:
-+        _clear_dir(artifact_paths.snippets_dir)
-         atomic_write_text(artifact_paths.transcript_txt_path, "")
-         atomic_write_json(
-             artifact_paths.transcript_json_path,
+     quarantine_reason: str | None = None
+-    if duration_sec is not None and duration_sec < settings.precheck_min_duration_sec:
++    if duration_sec is None or speech_ratio is None:
++        quarantine_reason = "precheck_metrics_unavailable"
++    elif duration_sec < settings.precheck_min_duration_sec:
+         quarantine_reason = f"duration_lt_{settings.precheck_min_duration_sec:.0f}s"
+-    elif (
+-        speech_ratio is not None
+-        and speech_ratio < settings.precheck_min_speech_ratio
+-    ):
++    elif speech_ratio < settings.precheck_min_speech_ratio:
+         quarantine_reason = (
+             f"speech_ratio_lt_{settings.precheck_min_speech_ratio:.2f}"
+         )
 diff --git a/tests/test_db_queue.py b/tests/test_db_queue.py
-index ba6a78e..412ddbc 100644
+index 412ddbc..df23ea8 100644
 --- a/tests/test_db_queue.py
 +++ b/tests/test_db_queue.py
-@@ -95,7 +95,8 @@ def test_worker_noop_updates_job_and_recording_state(tmp_path: Path, monkeypatch
- 
-     assert result["status"] == "ok"
-     assert recording is not None
--    assert recording["status"] == RECORDING_STATUS_READY
-+    assert recording["status"] == RECORDING_STATUS_QUARANTINE
-+    assert recording["quarantine_reason"] == "raw_audio_missing"
-     assert job is not None
-     assert job["status"] == JOB_STATUS_FINISHED
- 
-@@ -399,6 +400,53 @@ def test_worker_precheck_quarantines_and_skips_pipeline(tmp_path: Path, monkeypa
-     assert job["status"] == JOB_STATUS_FINISHED
+@@ -348,7 +348,7 @@ def test_purge_pending_recording_jobs_deletes_only_pending(tmp_path: Path, monke
+     assert fake_queue.jobs["job-purge-finished"].deleted is False
  
  
-+def test_worker_precheck_missing_audio_quarantines_recording(tmp_path: Path, monkeypatch):
-+    cfg = _test_settings(tmp_path)
-+    monkeypatch.setenv("LAN_DATA_ROOT", str(cfg.data_root))
-+    monkeypatch.setenv("LAN_RECORDINGS_ROOT", str(cfg.recordings_root))
-+    monkeypatch.setenv("LAN_DB_PATH", str(cfg.db_path))
-+    monkeypatch.setenv("LAN_PROM_SNAPSHOT_PATH", str(cfg.metrics_snapshot_path))
-+
-+    init_db(cfg)
-+    create_recording(
-+        "rec-precheck-missing-audio-1",
-+        source="test",
-+        source_filename="missing.wav",
-+        settings=cfg,
-+    )
-+    create_job(
-+        "job-precheck-missing-audio-1",
-+        recording_id="rec-precheck-missing-audio-1",
-+        job_type=JOB_TYPE_PRECHECK,
-+        settings=cfg,
-+    )
-+
-+    monkeypatch.setattr(
-+        "lan_app.worker_tasks._resolve_raw_audio_path",
-+        lambda *_a, **_k: None,
-+    )
-+
-+    def _should_not_precheck(*_args, **_kwargs):
-+        raise AssertionError("run_precheck should be skipped when audio is missing")
-+
-+    monkeypatch.setattr("lan_app.worker_tasks.run_precheck", _should_not_precheck)
-+
-+    result = process_job(
-+        "job-precheck-missing-audio-1",
-+        "rec-precheck-missing-audio-1",
-+        JOB_TYPE_PRECHECK,
-+    )
-+    assert result["status"] == "ok"
-+
-+    recording = get_recording("rec-precheck-missing-audio-1", settings=cfg)
-+    job = get_job("job-precheck-missing-audio-1", settings=cfg)
-+    assert recording is not None
-+    assert recording["status"] == RECORDING_STATUS_QUARANTINE
-+    assert recording["quarantine_reason"] == "raw_audio_missing"
-+    assert job is not None
-+    assert job["status"] == JOB_STATUS_FINISHED
-+
-+
- def test_worker_precheck_runs_pipeline_when_safe(tmp_path: Path, monkeypatch):
+-def test_worker_precheck_quarantines_and_skips_pipeline(tmp_path: Path, monkeypatch):
++def test_worker_precheck_quarantines_and_writes_artifacts(tmp_path: Path, monkeypatch):
      cfg = _test_settings(tmp_path)
      monkeypatch.setenv("LAN_DATA_ROOT", str(cfg.data_root))
+     monkeypatch.setenv("LAN_RECORDINGS_ROOT", str(cfg.recordings_root))
+@@ -383,13 +383,17 @@ def test_worker_precheck_quarantines_and_skips_pipeline(tmp_path: Path, monkeypa
+         ),
+     )
+ 
+-    async def _should_not_run(*_args, **_kwargs):
+-        raise AssertionError("run_pipeline should be skipped for quarantined recordings")
++    called = {"value": False}
+ 
+-    monkeypatch.setattr("lan_app.worker_tasks.run_pipeline", _should_not_run)
++    async def _fake_run_pipeline(*_args, **_kwargs):
++        called["value"] = True
++        return None
++
++    monkeypatch.setattr("lan_app.worker_tasks.run_pipeline", _fake_run_pipeline)
+ 
+     result = process_job("job-precheck-q-1", "rec-precheck-q-1", JOB_TYPE_PRECHECK)
+     assert result["status"] == "ok"
++    assert called["value"] is True
+ 
+     recording = get_recording("rec-precheck-q-1", settings=cfg)
+     job = get_job("job-precheck-q-1", settings=cfg)
 diff --git a/tests/test_pipeline.py b/tests/test_pipeline.py
-index 01f7ae6..06a8928 100644
+index 06a8928..14e988f 100644
 --- a/tests/test_pipeline.py
 +++ b/tests/test_pipeline.py
-@@ -459,6 +459,42 @@ async def test_pipeline_accepts_pyannote_triplet_itertracks(tmp_path: Path, mock
-     assert [row["speaker"] for row in diar_data] == ["S1", "S2"]
- 
- 
-+@pytest.mark.asyncio
-+async def test_pipeline_quarantine_clears_stale_snippets(tmp_path: Path):
+@@ -531,3 +531,23 @@ def test_run_precheck_quarantine_rules(tmp_path: Path):
+     voiced_result = pipeline.run_precheck(voiced_audio, cfg)
+     assert voiced_result.quarantine_reason is None
+     assert voiced_result.speech_ratio is not None and voiced_result.speech_ratio > 0.10
++
++
++def test_run_precheck_quarantines_when_metrics_unavailable(tmp_path: Path, monkeypatch):
 +    cfg = pipeline.Settings(
 +        speaker_db=tmp_path / "db.yaml",
 +        tmp_root=tmp_path,
 +        recordings_root=tmp_path / "recordings",
 +    )
-+    audio = wav_audio(
-+        tmp_path,
-+        name="quarantine.wav",
-+        duration_sec=24.0,
-+        speech=True,
-+    )
-+    snippets_root = cfg.recordings_root / "rec-quarantine-1" / "derived" / "snippets"
-+    stale_snippet = snippets_root / "S1" / "old.wav"
-+    stale_snippet.parent.mkdir(parents=True, exist_ok=True)
-+    stale_snippet.write_bytes(b"stale")
++    audio = tmp_path / "probe-fail.mp3"
++    audio.write_bytes(b"not-real-audio")
 +
-+    result = await pipeline.run_pipeline(
-+        audio_path=audio,
-+        cfg=cfg,
-+        llm=llm_client.LLMClient(),
-+        diariser=TwoSpeakerDiariser(),
-+        recording_id="rec-quarantine-1",
-+        precheck=pipeline.PrecheckResult(
-+            duration_sec=5.0,
-+            speech_ratio=0.0,
-+            quarantine_reason="duration_lt_20s",
-+        ),
-+    )
++    monkeypatch.setattr(pipeline, "_audio_duration_from_wave", lambda _path: None)
++    monkeypatch.setattr(pipeline, "_audio_duration_from_ffprobe", lambda _path: None)
++    monkeypatch.setattr(pipeline, "_speech_ratio_from_wave", lambda _path: None)
++    monkeypatch.setattr(pipeline, "_speech_ratio_from_ffmpeg", lambda _path: None)
 +
-+    assert result.summary == "Quarantined"
-+    assert snippets_root.exists()
-+    assert list(snippets_root.iterdir()) == []
-+
-+
- def test_run_precheck_quarantine_rules(tmp_path: Path):
-     cfg = pipeline.Settings(
-         speaker_db=tmp_path / "db.yaml",
++    result = pipeline.run_precheck(audio, cfg)
++    assert result.quarantine_reason == "precheck_metrics_unavailable"
++    assert result.duration_sec is None
++    assert result.speech_ratio is None

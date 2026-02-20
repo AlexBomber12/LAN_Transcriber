@@ -673,12 +673,11 @@ def run_precheck(audio_path: Path, cfg: Settings | None = None) -> PrecheckResul
         speech_ratio = _speech_ratio_from_ffmpeg(audio_path)
 
     quarantine_reason: str | None = None
-    if duration_sec is not None and duration_sec < settings.precheck_min_duration_sec:
+    if duration_sec is None or speech_ratio is None:
+        quarantine_reason = "precheck_metrics_unavailable"
+    elif duration_sec < settings.precheck_min_duration_sec:
         quarantine_reason = f"duration_lt_{settings.precheck_min_duration_sec:.0f}s"
-    elif (
-        speech_ratio is not None
-        and speech_ratio < settings.precheck_min_speech_ratio
-    ):
+    elif speech_ratio < settings.precheck_min_speech_ratio:
         quarantine_reason = (
             f"speech_ratio_lt_{settings.precheck_min_speech_ratio:.2f}"
         )
