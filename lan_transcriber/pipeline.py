@@ -914,7 +914,7 @@ async def run_pipeline(
             SpeakerSegment(
                 start=_safe_float(turn["start"]),
                 end=_safe_float(turn["end"]),
-                speaker=aliases.get(turn["speaker"], turn["speaker"]),
+                speaker=str(turn["speaker"]),
                 text=str(turn["text"]),
             )
             for turn in speaker_turns

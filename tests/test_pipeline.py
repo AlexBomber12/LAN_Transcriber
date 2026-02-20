@@ -195,6 +195,10 @@ async def test_alias_persist(tmp_path: Path, mocker):
         precheck=precheck_ok(),
     )
     assert res.speakers == ["Alice"]
+    assert res.segments[0].speaker == "S1"
+    db.write_text("S1: Bob\n", encoding="utf-8")
+    pipeline.refresh_aliases(res, db)
+    assert res.speakers == ["Bob"]
 
     import yaml
 

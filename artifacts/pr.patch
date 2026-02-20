@@ -1,119 +1,28 @@
 diff --git a/lan_transcriber/pipeline.py b/lan_transcriber/pipeline.py
-index dfd6146..418a48b 100644
+index 418a48b..96e7195 100644
 --- a/lan_transcriber/pipeline.py
 +++ b/lan_transcriber/pipeline.py
-@@ -187,9 +187,13 @@ def _safe_diarization_segments(diarization: Any) -> list[dict[str, Any]]:
-     except Exception:
-         return out
-     for item in tracks:
--        if not isinstance(item, tuple) or len(item) != 2:
-+        if not isinstance(item, tuple) or len(item) < 2:
-             continue
--        seg, label = item
-+        seg = item[0]
-+        if len(item) == 2:
-+            label = item[1]
-+        else:
-+            label = item[-1]
-         start = _safe_float(getattr(seg, "start", 0.0), default=0.0)
-         end = _safe_float(getattr(seg, "end", start), default=start)
-         if end < start:
+@@ -914,7 +914,7 @@ async def run_pipeline(
+             SpeakerSegment(
+                 start=_safe_float(turn["start"]),
+                 end=_safe_float(turn["end"]),
+-                speaker=aliases.get(turn["speaker"], turn["speaker"]),
++                speaker=str(turn["speaker"]),
+                 text=str(turn["text"]),
+             )
+             for turn in speaker_turns
 diff --git a/tests/test_pipeline.py b/tests/test_pipeline.py
-index 48a13bd..31621d9 100644
+index 31621d9..01f7ae6 100644
 --- a/tests/test_pipeline.py
 +++ b/tests/test_pipeline.py
-@@ -97,6 +97,22 @@ class TwoSpeakerDiariser:
-         return Ann()
+@@ -195,6 +195,10 @@ async def test_alias_persist(tmp_path: Path, mocker):
+         precheck=precheck_ok(),
+     )
+     assert res.speakers == ["Alice"]
++    assert res.segments[0].speaker == "S1"
++    db.write_text("S1: Bob\n", encoding="utf-8")
++    pipeline.refresh_aliases(res, db)
++    assert res.speakers == ["Bob"]
  
+     import yaml
  
-+class TwoSpeakerTripletDiariser:
-+    async def __call__(self, audio_path: Path):
-+        class Ann:
-+            def itertracks(self, yield_label: bool = False):
-+                from types import SimpleNamespace
-+
-+                if yield_label:
-+                    yield (SimpleNamespace(start=0.0, end=12.0), "track-1", "S1")
-+                    yield (SimpleNamespace(start=12.0, end=24.0), "track-2", "S2")
-+                else:
-+                    yield (SimpleNamespace(start=0.0, end=12.0),)
-+                    yield (SimpleNamespace(start=12.0, end=24.0),)
-+
-+        return Ann()
-+
-+
- @pytest.mark.asyncio
- @respx.mock
- async def test_tripled_dedup(tmp_path: Path, mocker):
-@@ -374,6 +390,71 @@ async def test_pipeline_writes_required_artifacts(tmp_path: Path, mocker):
-     assert len(result.unknown_chunks) >= 2
- 
- 
-+@pytest.mark.asyncio
-+@respx.mock
-+async def test_pipeline_accepts_pyannote_triplet_itertracks(tmp_path: Path, mocker):
-+    mocker.patch(
-+        "whisperx.transcribe",
-+        return_value=(
-+            [
-+                {
-+                    "start": 0.0,
-+                    "end": 5.0,
-+                    "text": "hello team",
-+                    "words": [
-+                        {"start": 0.2, "end": 0.7, "word": "hello"},
-+                        {"start": 0.8, "end": 1.4, "word": "team"},
-+                    ],
-+                },
-+                {
-+                    "start": 12.0,
-+                    "end": 17.0,
-+                    "text": "status update",
-+                    "words": [
-+                        {"start": 12.1, "end": 12.6, "word": "status"},
-+                        {"start": 12.7, "end": 13.2, "word": "update"},
-+                    ],
-+                },
-+            ],
-+            {"language": "en", "language_probability": 0.98},
-+        ),
-+    )
-+    mocker.patch(
-+        "transformers.pipeline",
-+        lambda *a, **k: lambda text: [{"label": "positive", "score": 0.6}],
-+    )
-+    respx.post("http://llm:8000/v1/chat/completions").mock(
-+        return_value=httpx.Response(
-+            200,
-+            json={"choices": [{"message": {"content": "- summary"}}]},
-+        ),
-+    )
-+
-+    cfg = pipeline.Settings(
-+        speaker_db=tmp_path / "db.yaml",
-+        tmp_root=tmp_path,
-+        recordings_root=tmp_path / "recordings",
-+    )
-+    audio = wav_audio(
-+        tmp_path,
-+        name="triplet.wav",
-+        duration_sec=24.0,
-+        speech=True,
-+    )
-+    await pipeline.run_pipeline(
-+        audio_path=audio,
-+        cfg=cfg,
-+        llm=llm_client.LLMClient(),
-+        diariser=TwoSpeakerTripletDiariser(),
-+        recording_id="rec-triplet-1",
-+        precheck=precheck_ok(),
-+    )
-+
-+    derived = cfg.recordings_root / "rec-triplet-1" / "derived"
-+    diar_data = json.loads((derived / "segments.json").read_text(encoding="utf-8"))
-+    assert [row["speaker"] for row in diar_data] == ["S1", "S2"]
-+
-+
- def test_run_precheck_quarantine_rules(tmp_path: Path):
-     cfg = pipeline.Settings(
-         speaker_db=tmp_path / "db.yaml",
