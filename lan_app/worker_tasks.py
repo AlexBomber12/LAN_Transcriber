@@ -174,6 +174,7 @@ def _run_precheck_pipeline(
     recording = get_recording(recording_id, settings=settings) or {}
     transcript_language_override = _clean_language_value(recording.get("language_override"))
     target_summary_language = _clean_language_value(recording.get("target_summary_language"))
+    has_explicit_summary_target = target_summary_language is not None
 
     audio_path = _resolve_raw_audio_path(recording_id, settings)
     if audio_path is None:
@@ -213,7 +214,7 @@ def _run_precheck_pipeline(
     update_payload: dict[str, str] = {}
     if dominant_language:
         update_payload["language_auto"] = dominant_language
-    if resolved_target_language:
+    if has_explicit_summary_target and resolved_target_language:
         update_payload["target_summary_language"] = resolved_target_language
     if update_payload:
         set_recording_language_settings(

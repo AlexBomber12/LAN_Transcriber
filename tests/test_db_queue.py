@@ -521,6 +521,72 @@ def test_worker_precheck_runs_pipeline_when_safe(tmp_path: Path, monkeypatch):
     assert job["status"] == JOB_STATUS_FINISHED
 
 
+def test_worker_precheck_keeps_auto_summary_target_unset(tmp_path: Path, monkeypatch):
+    cfg = _test_settings(tmp_path)
+    monkeypatch.setenv("LAN_DATA_ROOT", str(cfg.data_root))
+    monkeypatch.setenv("LAN_RECORDINGS_ROOT", str(cfg.recordings_root))
+    monkeypatch.setenv("LAN_DB_PATH", str(cfg.db_path))
+    monkeypatch.setenv("LAN_PROM_SNAPSHOT_PATH", str(cfg.metrics_snapshot_path))
+
+    init_db(cfg)
+    create_recording(
+        "rec-precheck-auto-target-1",
+        source="test",
+        source_filename="normal.wav",
+        settings=cfg,
+    )
+    create_job(
+        "job-precheck-auto-target-1",
+        recording_id="rec-precheck-auto-target-1",
+        job_type=JOB_TYPE_PRECHECK,
+        settings=cfg,
+    )
+
+    raw_audio = cfg.recordings_root / "rec-precheck-auto-target-1" / "raw" / "audio.wav"
+    raw_audio.parent.mkdir(parents=True, exist_ok=True)
+    raw_audio.write_bytes(b"\x00")
+
+    monkeypatch.setattr("lan_app.worker_tasks._resolve_raw_audio_path", lambda *_a, **_k: raw_audio)
+    monkeypatch.setattr(
+        "lan_app.worker_tasks.run_precheck",
+        lambda *_a, **_k: PrecheckResult(
+            duration_sec=40.0,
+            speech_ratio=0.8,
+            quarantine_reason=None,
+        ),
+    )
+
+    async def _fake_run_pipeline(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr("lan_app.worker_tasks.run_pipeline", _fake_run_pipeline)
+    monkeypatch.setattr(
+        "lan_app.worker_tasks._load_transcript_language_payload",
+        lambda *_a, **_k: ("es", "es"),
+    )
+
+    observed_updates: dict[str, object] = {}
+
+    def _capture_language_settings(recording_id: str, *, settings=None, **kwargs):
+        observed_updates["recording_id"] = recording_id
+        observed_updates["kwargs"] = kwargs
+        return True
+
+    monkeypatch.setattr(
+        "lan_app.worker_tasks.set_recording_language_settings",
+        _capture_language_settings,
+    )
+
+    result = process_job(
+        "job-precheck-auto-target-1",
+        "rec-precheck-auto-target-1",
+        JOB_TYPE_PRECHECK,
+    )
+    assert result["status"] == "ok"
+    assert observed_updates["recording_id"] == "rec-precheck-auto-target-1"
+    assert observed_updates["kwargs"] == {"language_auto": "es"}
+
+
 def test_build_diariser_wraps_sync_pyannote_pipeline(monkeypatch):
     from lan_app import worker_tasks
 
