@@ -124,11 +124,10 @@ def _build_pipeline_settings(settings: AppSettings) -> PipelineSettings:
 def _build_diariser(duration_sec: float | None):
     try:
         from pyannote.audio import Pipeline  # type: ignore
-
-        model = Pipeline.from_pretrained("pyannote/speaker-diarization@3.2")
-        return _PyannoteDiariser(model)
     except Exception:
         return _FallbackDiariser(duration_sec)
+    model = Pipeline.from_pretrained("pyannote/speaker-diarization@3.2")
+    return _PyannoteDiariser(model)
 
 
 def _run_precheck_pipeline(

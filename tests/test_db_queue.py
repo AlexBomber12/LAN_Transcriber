@@ -550,3 +550,22 @@ def test_build_diariser_wraps_sync_pyannote_pipeline(monkeypatch):
 
     assert result == {"ok": True}
     assert fake_model.calls == ["/tmp/fake.wav"]
+
+
+def test_build_diariser_surfaces_pyannote_model_load_errors(monkeypatch):
+    from lan_app import worker_tasks
+
+    class _BrokenPipeline:
+        @staticmethod
+        def from_pretrained(_name: str):
+            raise RuntimeError("auth failed")
+
+    pyannote_audio = ModuleType("pyannote.audio")
+    pyannote_audio.Pipeline = _BrokenPipeline  # type: ignore[attr-defined]
+    pyannote_pkg = ModuleType("pyannote")
+    pyannote_pkg.audio = pyannote_audio  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "pyannote", pyannote_pkg)
+    monkeypatch.setitem(sys.modules, "pyannote.audio", pyannote_audio)
+
+    with pytest.raises(RuntimeError, match="auth failed"):
+        worker_tasks._build_diariser(duration_sec=30.0)

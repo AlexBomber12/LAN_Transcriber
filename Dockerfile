@@ -12,7 +12,8 @@ COPY . /app
 FROM base AS runtime-full
 RUN python -m pip install --upgrade pip setuptools wheel \
     && python -m pip install --no-cache-dir -r requirements.txt \
-      --extra-index-url https://download.pytorch.org/whl/cu121
+      --extra-index-url https://download.pytorch.org/whl/cu121 \
+    && python -m pip install --no-cache-dir whisperx==3.4.2
 CMD ["python", "web_transcribe.py"]
 
 FROM base AS runtime-lite

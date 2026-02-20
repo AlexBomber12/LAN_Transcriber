@@ -1,66 +1,59 @@
+diff --git a/Dockerfile b/Dockerfile
+index 60cc73b..3138f42 100644
+--- a/Dockerfile
++++ b/Dockerfile
+@@ -12,7 +12,8 @@ COPY . /app
+ FROM base AS runtime-full
+ RUN python -m pip install --upgrade pip setuptools wheel \
+     && python -m pip install --no-cache-dir -r requirements.txt \
+-      --extra-index-url https://download.pytorch.org/whl/cu121
++      --extra-index-url https://download.pytorch.org/whl/cu121 \
++    && python -m pip install --no-cache-dir whisperx==3.4.2
+ CMD ["python", "web_transcribe.py"]
+ 
+ FROM base AS runtime-lite
 diff --git a/lan_app/worker_tasks.py b/lan_app/worker_tasks.py
-index ba42ff1..2693c3e 100644
+index 2693c3e..3449800 100644
 --- a/lan_app/worker_tasks.py
 +++ b/lan_app/worker_tasks.py
-@@ -6,6 +6,7 @@ from pathlib import Path
- from types import SimpleNamespace
- from typing import Any
- 
-+from lan_transcriber.llm_client import LLMClient
- from lan_transcriber.pipeline import Settings as PipelineSettings
- from lan_transcriber.pipeline import run_pipeline, run_precheck
- 
-@@ -80,11 +81,6 @@ def _resolve_raw_audio_path(recording_id: str, settings: AppSettings) -> Path |
-     return candidates[0]
- 
- 
--class _NoopLLMClient:
--    async def generate(self, **_kwargs: Any) -> dict[str, str]:
--        return {"content": ""}
+@@ -124,11 +124,10 @@ def _build_pipeline_settings(settings: AppSettings) -> PipelineSettings:
+ def _build_diariser(duration_sec: float | None):
+     try:
+         from pyannote.audio import Pipeline  # type: ignore
 -
--
- class _FallbackDiariser:
-     def __init__(self, duration_sec: float | None) -> None:
-         self._duration_sec = max(duration_sec or 0.1, 0.1)
-@@ -164,7 +160,7 @@ def _run_precheck_pipeline(
-         run_pipeline(
-             audio_path=audio_path,
-             cfg=pipeline_settings,
--            llm=_NoopLLMClient(),
-+            llm=LLMClient(),
-             diariser=diariser,
-             recording_id=recording_id,
-             precheck=precheck,
+-        model = Pipeline.from_pretrained("pyannote/speaker-diarization@3.2")
+-        return _PyannoteDiariser(model)
+     except Exception:
+         return _FallbackDiariser(duration_sec)
++    model = Pipeline.from_pretrained("pyannote/speaker-diarization@3.2")
++    return _PyannoteDiariser(model)
+ 
+ 
+ def _run_precheck_pipeline(
 diff --git a/tests/test_db_queue.py b/tests/test_db_queue.py
-index 5941c68..def2884 100644
+index def2884..f0d938b 100644
 --- a/tests/test_db_queue.py
 +++ b/tests/test_db_queue.py
-@@ -31,6 +31,7 @@ from lan_app.db import (
- )
- from lan_app.jobs import RecordingJob, enqueue_recording_job, purge_pending_recording_jobs
- from lan_app.worker_tasks import process_job
-+from lan_transcriber.llm_client import LLMClient
- from lan_transcriber.pipeline import PrecheckResult
+@@ -550,3 +550,22 @@ def test_build_diariser_wraps_sync_pyannote_pipeline(monkeypatch):
  
- 
-@@ -497,9 +498,11 @@ def test_worker_precheck_runs_pipeline_when_safe(tmp_path: Path, monkeypatch):
-         ),
-     )
-     called = {"value": False}
-+    observed_llm: dict[str, object] = {}
- 
--    async def _fake_run_pipeline(*_args, **_kwargs):
-+    async def _fake_run_pipeline(*_args, **kwargs):
-         called["value"] = True
-+        observed_llm["value"] = kwargs.get("llm")
-         return None
- 
-     monkeypatch.setattr("lan_app.worker_tasks.run_pipeline", _fake_run_pipeline)
-@@ -507,6 +510,7 @@ def test_worker_precheck_runs_pipeline_when_safe(tmp_path: Path, monkeypatch):
-     result = process_job("job-precheck-ok-1", "rec-precheck-ok-1", JOB_TYPE_PRECHECK)
-     assert result["status"] == "ok"
-     assert called["value"] is True
-+    assert isinstance(observed_llm["value"], LLMClient)
- 
-     recording = get_recording("rec-precheck-ok-1", settings=cfg)
-     job = get_job("job-precheck-ok-1", settings=cfg)
+     assert result == {"ok": True}
+     assert fake_model.calls == ["/tmp/fake.wav"]
++
++
++def test_build_diariser_surfaces_pyannote_model_load_errors(monkeypatch):
++    from lan_app import worker_tasks
++
++    class _BrokenPipeline:
++        @staticmethod
++        def from_pretrained(_name: str):
++            raise RuntimeError("auth failed")
++
++    pyannote_audio = ModuleType("pyannote.audio")
++    pyannote_audio.Pipeline = _BrokenPipeline  # type: ignore[attr-defined]
++    pyannote_pkg = ModuleType("pyannote")
++    pyannote_pkg.audio = pyannote_audio  # type: ignore[attr-defined]
++    monkeypatch.setitem(sys.modules, "pyannote", pyannote_pkg)
++    monkeypatch.setitem(sys.modules, "pyannote.audio", pyannote_audio)
++
++    with pytest.raises(RuntimeError, match="auth failed"):
++        worker_tasks._build_diariser(duration_sec=30.0)
