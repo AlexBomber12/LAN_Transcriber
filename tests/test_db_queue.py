@@ -95,7 +95,8 @@ def test_worker_noop_updates_job_and_recording_state(tmp_path: Path, monkeypatch
 
     assert result["status"] == "ok"
     assert recording is not None
-    assert recording["status"] == RECORDING_STATUS_READY
+    assert recording["status"] == RECORDING_STATUS_QUARANTINE
+    assert recording["quarantine_reason"] == "raw_audio_missing"
     assert job is not None
     assert job["status"] == JOB_STATUS_FINISHED
 
@@ -395,6 +396,53 @@ def test_worker_precheck_quarantines_and_skips_pipeline(tmp_path: Path, monkeypa
     assert recording is not None
     assert recording["status"] == RECORDING_STATUS_QUARANTINE
     assert recording["quarantine_reason"] == "duration_lt_20s"
+    assert job is not None
+    assert job["status"] == JOB_STATUS_FINISHED
+
+
+def test_worker_precheck_missing_audio_quarantines_recording(tmp_path: Path, monkeypatch):
+    cfg = _test_settings(tmp_path)
+    monkeypatch.setenv("LAN_DATA_ROOT", str(cfg.data_root))
+    monkeypatch.setenv("LAN_RECORDINGS_ROOT", str(cfg.recordings_root))
+    monkeypatch.setenv("LAN_DB_PATH", str(cfg.db_path))
+    monkeypatch.setenv("LAN_PROM_SNAPSHOT_PATH", str(cfg.metrics_snapshot_path))
+
+    init_db(cfg)
+    create_recording(
+        "rec-precheck-missing-audio-1",
+        source="test",
+        source_filename="missing.wav",
+        settings=cfg,
+    )
+    create_job(
+        "job-precheck-missing-audio-1",
+        recording_id="rec-precheck-missing-audio-1",
+        job_type=JOB_TYPE_PRECHECK,
+        settings=cfg,
+    )
+
+    monkeypatch.setattr(
+        "lan_app.worker_tasks._resolve_raw_audio_path",
+        lambda *_a, **_k: None,
+    )
+
+    def _should_not_precheck(*_args, **_kwargs):
+        raise AssertionError("run_precheck should be skipped when audio is missing")
+
+    monkeypatch.setattr("lan_app.worker_tasks.run_precheck", _should_not_precheck)
+
+    result = process_job(
+        "job-precheck-missing-audio-1",
+        "rec-precheck-missing-audio-1",
+        JOB_TYPE_PRECHECK,
+    )
+    assert result["status"] == "ok"
+
+    recording = get_recording("rec-precheck-missing-audio-1", settings=cfg)
+    job = get_job("job-precheck-missing-audio-1", settings=cfg)
+    assert recording is not None
+    assert recording["status"] == RECORDING_STATUS_QUARANTINE
+    assert recording["quarantine_reason"] == "raw_audio_missing"
     assert job is not None
     assert job["status"] == JOB_STATUS_FINISHED
 

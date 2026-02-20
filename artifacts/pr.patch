@@ -1,28 +1,140 @@
+diff --git a/lan_app/worker_tasks.py b/lan_app/worker_tasks.py
+index 799bf15..d3d99a8 100644
+--- a/lan_app/worker_tasks.py
++++ b/lan_app/worker_tasks.py
+@@ -144,7 +144,7 @@ def _run_precheck_pipeline(
+     audio_path = _resolve_raw_audio_path(recording_id, settings)
+     if audio_path is None:
+         _append_step_log(log_path, "precheck skipped: raw audio not found")
+-        return RECORDING_STATUS_READY, None
++        return RECORDING_STATUS_QUARANTINE, "raw_audio_missing"
+ 
+     pipeline_settings = _build_pipeline_settings(settings)
+     precheck = run_precheck(audio_path, pipeline_settings)
 diff --git a/lan_transcriber/pipeline.py b/lan_transcriber/pipeline.py
-index 418a48b..96e7195 100644
+index 96e7195..7adcf79 100644
 --- a/lan_transcriber/pipeline.py
 +++ b/lan_transcriber/pipeline.py
-@@ -914,7 +914,7 @@ async def run_pipeline(
-             SpeakerSegment(
-                 start=_safe_float(turn["start"]),
-                 end=_safe_float(turn["end"]),
--                speaker=aliases.get(turn["speaker"], turn["speaker"]),
-+                speaker=str(turn["speaker"]),
-                 text=str(turn["text"]),
-             )
-             for turn in speaker_turns
+@@ -738,6 +738,7 @@ async def run_pipeline(
+     )
+ 
+     if precheck_result.quarantine_reason:
++        _clear_dir(artifact_paths.snippets_dir)
+         atomic_write_text(artifact_paths.transcript_txt_path, "")
+         atomic_write_json(
+             artifact_paths.transcript_json_path,
+diff --git a/tests/test_db_queue.py b/tests/test_db_queue.py
+index ba6a78e..412ddbc 100644
+--- a/tests/test_db_queue.py
++++ b/tests/test_db_queue.py
+@@ -95,7 +95,8 @@ def test_worker_noop_updates_job_and_recording_state(tmp_path: Path, monkeypatch
+ 
+     assert result["status"] == "ok"
+     assert recording is not None
+-    assert recording["status"] == RECORDING_STATUS_READY
++    assert recording["status"] == RECORDING_STATUS_QUARANTINE
++    assert recording["quarantine_reason"] == "raw_audio_missing"
+     assert job is not None
+     assert job["status"] == JOB_STATUS_FINISHED
+ 
+@@ -399,6 +400,53 @@ def test_worker_precheck_quarantines_and_skips_pipeline(tmp_path: Path, monkeypa
+     assert job["status"] == JOB_STATUS_FINISHED
+ 
+ 
++def test_worker_precheck_missing_audio_quarantines_recording(tmp_path: Path, monkeypatch):
++    cfg = _test_settings(tmp_path)
++    monkeypatch.setenv("LAN_DATA_ROOT", str(cfg.data_root))
++    monkeypatch.setenv("LAN_RECORDINGS_ROOT", str(cfg.recordings_root))
++    monkeypatch.setenv("LAN_DB_PATH", str(cfg.db_path))
++    monkeypatch.setenv("LAN_PROM_SNAPSHOT_PATH", str(cfg.metrics_snapshot_path))
++
++    init_db(cfg)
++    create_recording(
++        "rec-precheck-missing-audio-1",
++        source="test",
++        source_filename="missing.wav",
++        settings=cfg,
++    )
++    create_job(
++        "job-precheck-missing-audio-1",
++        recording_id="rec-precheck-missing-audio-1",
++        job_type=JOB_TYPE_PRECHECK,
++        settings=cfg,
++    )
++
++    monkeypatch.setattr(
++        "lan_app.worker_tasks._resolve_raw_audio_path",
++        lambda *_a, **_k: None,
++    )
++
++    def _should_not_precheck(*_args, **_kwargs):
++        raise AssertionError("run_precheck should be skipped when audio is missing")
++
++    monkeypatch.setattr("lan_app.worker_tasks.run_precheck", _should_not_precheck)
++
++    result = process_job(
++        "job-precheck-missing-audio-1",
++        "rec-precheck-missing-audio-1",
++        JOB_TYPE_PRECHECK,
++    )
++    assert result["status"] == "ok"
++
++    recording = get_recording("rec-precheck-missing-audio-1", settings=cfg)
++    job = get_job("job-precheck-missing-audio-1", settings=cfg)
++    assert recording is not None
++    assert recording["status"] == RECORDING_STATUS_QUARANTINE
++    assert recording["quarantine_reason"] == "raw_audio_missing"
++    assert job is not None
++    assert job["status"] == JOB_STATUS_FINISHED
++
++
+ def test_worker_precheck_runs_pipeline_when_safe(tmp_path: Path, monkeypatch):
+     cfg = _test_settings(tmp_path)
+     monkeypatch.setenv("LAN_DATA_ROOT", str(cfg.data_root))
 diff --git a/tests/test_pipeline.py b/tests/test_pipeline.py
-index 31621d9..01f7ae6 100644
+index 01f7ae6..06a8928 100644
 --- a/tests/test_pipeline.py
 +++ b/tests/test_pipeline.py
-@@ -195,6 +195,10 @@ async def test_alias_persist(tmp_path: Path, mocker):
-         precheck=precheck_ok(),
-     )
-     assert res.speakers == ["Alice"]
-+    assert res.segments[0].speaker == "S1"
-+    db.write_text("S1: Bob\n", encoding="utf-8")
-+    pipeline.refresh_aliases(res, db)
-+    assert res.speakers == ["Bob"]
+@@ -459,6 +459,42 @@ async def test_pipeline_accepts_pyannote_triplet_itertracks(tmp_path: Path, mock
+     assert [row["speaker"] for row in diar_data] == ["S1", "S2"]
  
-     import yaml
  
++@pytest.mark.asyncio
++async def test_pipeline_quarantine_clears_stale_snippets(tmp_path: Path):
++    cfg = pipeline.Settings(
++        speaker_db=tmp_path / "db.yaml",
++        tmp_root=tmp_path,
++        recordings_root=tmp_path / "recordings",
++    )
++    audio = wav_audio(
++        tmp_path,
++        name="quarantine.wav",
++        duration_sec=24.0,
++        speech=True,
++    )
++    snippets_root = cfg.recordings_root / "rec-quarantine-1" / "derived" / "snippets"
++    stale_snippet = snippets_root / "S1" / "old.wav"
++    stale_snippet.parent.mkdir(parents=True, exist_ok=True)
++    stale_snippet.write_bytes(b"stale")
++
++    result = await pipeline.run_pipeline(
++        audio_path=audio,
++        cfg=cfg,
++        llm=llm_client.LLMClient(),
++        diariser=TwoSpeakerDiariser(),
++        recording_id="rec-quarantine-1",
++        precheck=pipeline.PrecheckResult(
++            duration_sec=5.0,
++            speech_ratio=0.0,
++            quarantine_reason="duration_lt_20s",
++        ),
++    )
++
++    assert result.summary == "Quarantined"
++    assert snippets_root.exists()
++    assert list(snippets_root.iterdir()) == []
++
++
+ def test_run_precheck_quarantine_rules(tmp_path: Path):
+     cfg = pipeline.Settings(
+         speaker_db=tmp_path / "db.yaml",

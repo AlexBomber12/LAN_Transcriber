@@ -738,6 +738,7 @@ async def run_pipeline(
     )
 
     if precheck_result.quarantine_reason:
+        _clear_dir(artifact_paths.snippets_dir)
         atomic_write_text(artifact_paths.transcript_txt_path, "")
         atomic_write_json(
             artifact_paths.transcript_json_path,

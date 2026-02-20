@@ -144,7 +144,7 @@ def _run_precheck_pipeline(
     audio_path = _resolve_raw_audio_path(recording_id, settings)
     if audio_path is None:
         _append_step_log(log_path, "precheck skipped: raw audio not found")
-        return RECORDING_STATUS_READY, None
+        return RECORDING_STATUS_QUARANTINE, "raw_audio_missing"
 
     pipeline_settings = _build_pipeline_settings(settings)
     precheck = run_precheck(audio_path, pipeline_settings)

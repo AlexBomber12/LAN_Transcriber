@@ -459,6 +459,42 @@ async def test_pipeline_accepts_pyannote_triplet_itertracks(tmp_path: Path, mock
     assert [row["speaker"] for row in diar_data] == ["S1", "S2"]
 
 
+@pytest.mark.asyncio
+async def test_pipeline_quarantine_clears_stale_snippets(tmp_path: Path):
+    cfg = pipeline.Settings(
+        speaker_db=tmp_path / "db.yaml",
+        tmp_root=tmp_path,
+        recordings_root=tmp_path / "recordings",
+    )
+    audio = wav_audio(
+        tmp_path,
+        name="quarantine.wav",
+        duration_sec=24.0,
+        speech=True,
+    )
+    snippets_root = cfg.recordings_root / "rec-quarantine-1" / "derived" / "snippets"
+    stale_snippet = snippets_root / "S1" / "old.wav"
+    stale_snippet.parent.mkdir(parents=True, exist_ok=True)
+    stale_snippet.write_bytes(b"stale")
+
+    result = await pipeline.run_pipeline(
+        audio_path=audio,
+        cfg=cfg,
+        llm=llm_client.LLMClient(),
+        diariser=TwoSpeakerDiariser(),
+        recording_id="rec-quarantine-1",
+        precheck=pipeline.PrecheckResult(
+            duration_sec=5.0,
+            speech_ratio=0.0,
+            quarantine_reason="duration_lt_20s",
+        ),
+    )
+
+    assert result.summary == "Quarantined"
+    assert snippets_root.exists()
+    assert list(snippets_root.iterdir()) == []
+
+
 def test_run_precheck_quarantine_rules(tmp_path: Path):
     cfg = pipeline.Settings(
         speaker_db=tmp_path / "db.yaml",
