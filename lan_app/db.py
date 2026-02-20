@@ -117,7 +117,12 @@ _MIGRATIONS: tuple[str, ...] = (
     CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);
     CREATE INDEX IF NOT EXISTS idx_jobs_created_at ON jobs(created_at DESC);
     """,
+    """
+    ALTER TABLE recordings ADD COLUMN target_summary_language TEXT;
+    """,
 )
+
+_UNSET = object()
 
 
 def _utc_now() -> str:
@@ -196,6 +201,7 @@ def create_recording(
     quarantine_reason: str | None = None,
     language_auto: str | None = None,
     language_override: str | None = None,
+    target_summary_language: str | None = None,
     project_id: int | None = None,
     onenote_page_id: str | None = None,
     drive_file_id: str | None = None,
@@ -210,10 +216,10 @@ def create_recording(
             """
             INSERT INTO recordings (
                 id, source, source_filename, captured_at, duration_sec, status,
-                quarantine_reason, language_auto, language_override, project_id,
+                quarantine_reason, language_auto, language_override, target_summary_language, project_id,
                 onenote_page_id, drive_file_id, drive_md5, created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 recording_id,
@@ -225,6 +231,7 @@ def create_recording(
                 quarantine_reason,
                 language_auto,
                 language_override,
+                target_summary_language,
                 project_id,
                 onenote_page_id,
                 drive_file_id,
@@ -317,6 +324,49 @@ def set_recording_status(
                 now,
                 recording_id,
             ),
+        )
+        conn.commit()
+    return updated.rowcount > 0
+
+
+def set_recording_language_settings(
+    recording_id: str,
+    *,
+    settings: AppSettings | None = None,
+    language_auto: str | None | object = _UNSET,
+    transcript_language_override: str | None | object = _UNSET,
+    target_summary_language: str | None | object = _UNSET,
+) -> bool:
+    init_db(settings)
+    now = _utc_now()
+    updates: list[str] = []
+    params: list[Any] = []
+
+    if language_auto is not _UNSET:
+        updates.append("language_auto = ?")
+        params.append(language_auto)
+    if transcript_language_override is not _UNSET:
+        updates.append("language_override = ?")
+        params.append(transcript_language_override)
+    if target_summary_language is not _UNSET:
+        updates.append("target_summary_language = ?")
+        params.append(target_summary_language)
+
+    if not updates:
+        return False
+
+    updates.append("updated_at = ?")
+    params.append(now)
+    params.append(recording_id)
+
+    with connect(settings) as conn:
+        updated = conn.execute(
+            f"""
+            UPDATE recordings
+            SET {", ".join(updates)}
+            WHERE id = ?
+            """,
+            params,
         )
         conn.commit()
     return updated.rowcount > 0
@@ -703,6 +753,7 @@ __all__ = [
     "get_recording",
     "list_recordings",
     "set_recording_status",
+    "set_recording_language_settings",
     "delete_recording",
     "create_job",
     "get_job",

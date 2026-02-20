@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import audioop
+import re
 import shutil
 import subprocess
 import time
@@ -155,13 +156,251 @@ def _normalise_asr_segments(raw_segments: Sequence[dict[str, Any]]) -> list[dict
     return out
 
 
+_LANGUAGE_NAME_MAP: dict[str, str] = {
+    "ar": "Arabic",
+    "de": "German",
+    "en": "English",
+    "es": "Spanish",
+    "fr": "French",
+    "hi": "Hindi",
+    "it": "Italian",
+    "ja": "Japanese",
+    "ko": "Korean",
+    "nl": "Dutch",
+    "pl": "Polish",
+    "pt": "Portuguese",
+    "ru": "Russian",
+    "tr": "Turkish",
+    "uk": "Ukrainian",
+    "zh": "Chinese",
+}
+
+_LANGUAGE_CODE_MAP: dict[str, str] = {
+    "eng": "en",
+    "spa": "es",
+    "fra": "fr",
+    "fre": "fr",
+    "deu": "de",
+    "ger": "de",
+    "ita": "it",
+    "por": "pt",
+    "rus": "ru",
+    "ukr": "uk",
+    "jpn": "ja",
+    "kor": "ko",
+    "zho": "zh",
+    "chi": "zh",
+}
+
+_EN_STOPWORDS = {
+    "the",
+    "and",
+    "to",
+    "of",
+    "in",
+    "for",
+    "with",
+    "on",
+    "is",
+    "are",
+    "we",
+    "you",
+    "hello",
+    "thanks",
+    "meeting",
+    "team",
+    "today",
+}
+
+_ES_STOPWORDS = {
+    "el",
+    "la",
+    "los",
+    "las",
+    "de",
+    "que",
+    "y",
+    "en",
+    "para",
+    "con",
+    "es",
+    "somos",
+    "hola",
+    "gracias",
+    "reunion",
+    "equipo",
+    "hoy",
+}
+
+
+def _normalise_language_code(value: object | None) -> str | None:
+    if not isinstance(value, str):
+        return None
+    raw = value.strip().lower()
+    if not raw:
+        return None
+    cleaned = raw.replace("_", "-")
+    base = cleaned.split("-", 1)[0]
+    if not base.isalpha():
+        return None
+    if len(base) == 2:
+        return base
+    if len(base) == 3:
+        return _LANGUAGE_CODE_MAP.get(base, None)
+    return None
+
+
+def _language_name(code: str) -> str:
+    return _LANGUAGE_NAME_MAP.get(code, code.upper())
+
+
+def _guess_language_from_text(text: str) -> str | None:
+    sample = text.strip().lower()
+    if not sample:
+        return None
+    tokens = re.findall(r"[a-zA-Z\u00c0-\u017f]+", sample)
+    if not tokens:
+        return None
+    en_score = sum(1 for token in tokens if token in _EN_STOPWORDS)
+    es_score = sum(1 for token in tokens if token in _ES_STOPWORDS)
+    if any(ch in sample for ch in "áéíóúñ¿¡"):
+        es_score += 2
+    if en_score == 0 and es_score == 0:
+        return None
+    if es_score > en_score:
+        return "es"
+    if en_score > es_score:
+        return "en"
+    return None
+
+
+def _segment_language(
+    segment: dict[str, Any],
+    *,
+    detected_language: str | None,
+    transcript_language_override: str | None,
+) -> str:
+    if transcript_language_override:
+        return transcript_language_override
+    seg_language = _normalise_language_code(segment.get("language"))
+    if seg_language:
+        return seg_language
+    if detected_language:
+        return detected_language
+    text_language = _guess_language_from_text(str(segment.get("text") or ""))
+    if text_language:
+        return text_language
+    return "unknown"
+
+
+def _duration_weight(start: float, end: float, text: str) -> float:
+    duration = max(0.0, end - start)
+    if duration > 0:
+        return duration
+    tokens = max(len(text.split()), 1)
+    return tokens * 0.01
+
+
+def _language_stats(
+    asr_segments: Sequence[dict[str, Any]],
+    *,
+    detected_language: str | None,
+    transcript_language_override: str | None,
+) -> tuple[list[dict[str, Any]], str, dict[str, float], list[dict[str, Any]]]:
+    if not asr_segments:
+        fallback = transcript_language_override or detected_language or "unknown"
+        return [], fallback, {}, []
+
+    enriched = sorted(
+        (dict(seg) for seg in asr_segments),
+        key=lambda row: (
+            _safe_float(row.get("start"), default=0.0),
+            _safe_float(row.get("end"), default=0.0),
+        ),
+    )
+
+    weighted_totals: dict[str, float] = {}
+    spans: list[dict[str, Any]] = []
+    for segment in enriched:
+        start = _safe_float(segment.get("start"), default=0.0)
+        end = _safe_float(segment.get("end"), default=start)
+        if end < start:
+            end = start
+        text = str(segment.get("text") or "").strip()
+        lang = _segment_language(
+            segment,
+            detected_language=detected_language,
+            transcript_language_override=transcript_language_override,
+        )
+        segment["language"] = lang
+
+        weight = _duration_weight(start, end, text)
+        weighted_totals[lang] = weighted_totals.get(lang, 0.0) + weight
+
+        if spans and spans[-1]["lang"] == lang and start <= _safe_float(spans[-1]["end"]) + 0.5:
+            spans[-1]["end"] = round(max(_safe_float(spans[-1]["end"]), end), 3)
+        else:
+            spans.append(
+                {
+                    "start": round(start, 3),
+                    "end": round(end, 3),
+                    "lang": lang,
+                }
+            )
+
+    ordered = sorted(weighted_totals.items(), key=lambda row: (-row[1], row[0]))
+    dominant = "unknown"
+    for lang, _weight in ordered:
+        if lang != "unknown":
+            dominant = lang
+            break
+    if dominant == "unknown" and ordered:
+        dominant = ordered[0][0]
+
+    total_weight = sum(weighted_totals.values())
+    distribution: dict[str, float] = {}
+    if total_weight > 0:
+        for lang, weight in ordered:
+            distribution[lang] = round((weight / total_weight) * 100.0, 2)
+
+    return enriched, dominant, distribution, spans
+
+
+def _resolve_target_summary_language(
+    requested_language: str | None,
+    *,
+    dominant_language: str,
+    detected_language: str | None,
+) -> str:
+    requested = _normalise_language_code(requested_language)
+    if requested:
+        return requested
+    if dominant_language and dominant_language != "unknown":
+        return dominant_language
+    if detected_language:
+        return detected_language
+    return "en"
+
+
+def build_summary_prompts(clean_text: str, target_summary_language: str) -> tuple[str, str]:
+    language_name = _language_name(target_summary_language)
+    sys_prompt = (
+        "You are an assistant who writes concise 5-8 bullet summaries of any audio transcript. "
+        f"Write the summary in {language_name}. "
+        "Return only the list without extra explanation."
+    )
+    user_prompt = f"{sys_prompt}\n\nTRANSCRIPT:\n{clean_text}\n\nSUMMARY:"
+    return sys_prompt, user_prompt
+
+
 def _language_payload(info: dict[str, Any]) -> dict[str, Any]:
-    detected = str(
+    detected_raw = str(
         info.get("language")
         or info.get("detected_language")
         or info.get("lang")
         or "unknown"
     )
+    detected = _normalise_language_code(detected_raw) or "unknown"
     confidence_raw = None
     for key in (
         "language_probability",
@@ -708,6 +947,8 @@ async def run_pipeline(
     diariser: Diariser,
     recording_id: str | None = None,
     precheck: PrecheckResult | None = None,
+    target_summary_language: str | None = None,
+    transcript_language_override: str | None = None,
 ) -> TranscriptResult:
     """Transcribe ``audio_path`` and return a structured result."""
     start = time.perf_counter()
@@ -720,6 +961,14 @@ async def run_pipeline(
     stage_raw_audio(audio_path, artifact_paths.raw_audio_path)
 
     precheck_result = precheck or run_precheck(audio_path, cfg)
+    normalized_transcript_language_override = _normalise_language_code(
+        transcript_language_override
+    )
+    resolved_summary_language = _resolve_target_summary_language(
+        target_summary_language,
+        dominant_language=normalized_transcript_language_override or "unknown",
+        detected_language=None,
+    )
 
     atomic_write_json(
         artifact_paths.metrics_json_path,
@@ -742,6 +991,11 @@ async def run_pipeline(
             {
                 "recording_id": artifact_paths.recording_id,
                 "language": {"detected": "unknown", "confidence": None},
+                "dominant_language": normalized_transcript_language_override or "unknown",
+                "language_distribution": {},
+                "language_spans": [],
+                "target_summary_language": resolved_summary_language,
+                "transcript_language_override": normalized_transcript_language_override,
                 "segments": [],
                 "speakers": [],
                 "text": "",
@@ -823,7 +1077,8 @@ async def run_pipeline(
         import whisperx
 
         def _asr() -> tuple[list[dict[str, Any]], dict[str, Any]]:
-            kwargs: dict[str, Any] = {"vad_filter": True, "language": "auto"}
+            asr_language = normalized_transcript_language_override or "auto"
+            kwargs: dict[str, Any] = {"vad_filter": True, "language": asr_language}
             try:
                 segments, info = whisperx.transcribe(
                     str(audio_path),
@@ -840,7 +1095,28 @@ async def run_pipeline(
 
         asr_segments = _normalise_asr_segments(raw_segments)
         language_info = _language_payload(info)
-        detected_language = language_info["detected"] if language_info["detected"] != "unknown" else None
+        detected_language = (
+            _normalise_language_code(language_info["detected"])
+            if language_info["detected"] != "unknown"
+            else None
+        )
+        (
+            asr_segments,
+            dominant_language,
+            language_distribution,
+            language_spans,
+        ) = _language_stats(
+            asr_segments,
+            detected_language=detected_language,
+            transcript_language_override=normalized_transcript_language_override,
+        )
+        if language_info["detected"] == "unknown" and dominant_language != "unknown":
+            language_info["detected"] = dominant_language
+        resolved_summary_language = _resolve_target_summary_language(
+            target_summary_language,
+            dominant_language=dominant_language,
+            detected_language=detected_language,
+        )
 
         asr_text = " ".join(seg.get("text", "").strip() for seg in asr_segments).strip()
         clean_text = normalizer.dedup(asr_text)
@@ -854,7 +1130,7 @@ async def run_pipeline(
         speaker_turns = _build_speaker_turns(
             asr_segments,
             diar_segments,
-            default_language=detected_language,
+            default_language=dominant_language if dominant_language != "unknown" else detected_language,
         )
 
         aliases = _load_aliases(cfg.speaker_db)
@@ -875,6 +1151,11 @@ async def run_pipeline(
             {
                 "recording_id": artifact_paths.recording_id,
                 "language": language_info,
+                "dominant_language": dominant_language,
+                "language_distribution": language_distribution,
+                "language_spans": language_spans,
+                "target_summary_language": resolved_summary_language,
+                "transcript_language_override": normalized_transcript_language_override,
                 "segments": asr_segments,
                 "speakers": sorted({aliases.get(row["speaker"], row["speaker"]) for row in diar_segments}),
                 "text": "",
@@ -887,6 +1168,7 @@ async def run_pipeline(
             {
                 "friendly": 0,
                 "model": cfg.llm_model,
+                "target_summary_language": resolved_summary_language,
                 "summary": "No speech detected",
             },
         )
@@ -932,11 +1214,10 @@ async def run_pipeline(
     speaker_lines = _merge_similar(speaker_lines, cfg.merge_similar)
 
     friendly = _sentiment_score(clean_text)
-    sys_prompt = (
-        "You are an assistant who writes concise 5-8 bullet summaries of any audio transcript. "
-        "Return only the list without extra explanation."
+    sys_prompt, user_prompt = build_summary_prompts(
+        clean_text,
+        resolved_summary_language,
     )
-    user_prompt = f"{sys_prompt}\n\nTRANSCRIPT:\n{clean_text}\n\nSUMMARY:"
 
     try:
         msg = await llm.generate(
@@ -961,6 +1242,11 @@ async def run_pipeline(
             {
                 "recording_id": artifact_paths.recording_id,
                 "language": language_info,
+                "dominant_language": dominant_language,
+                "language_distribution": language_distribution,
+                "language_spans": language_spans,
+                "target_summary_language": resolved_summary_language,
+                "transcript_language_override": normalized_transcript_language_override,
                 "segments": asr_segments,
                 "speaker_lines": speaker_lines,
                 "speakers": sorted(set(aliases.get(turn["speaker"], turn["speaker"]) for turn in speaker_turns)),
@@ -974,6 +1260,7 @@ async def run_pipeline(
             {
                 "friendly": friendly,
                 "model": cfg.llm_model,
+                "target_summary_language": resolved_summary_language,
                 "summary": summary,
             },
         )
@@ -1029,4 +1316,5 @@ __all__ = [
     "Settings",
     "Diariser",
     "refresh_aliases",
+    "build_summary_prompts",
 ]

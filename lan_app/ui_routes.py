@@ -5,6 +5,8 @@ Uses Jinja2 templates + HTMX (bundled locally) for a minimal, DB-window-style UI
 
 from __future__ import annotations
 
+import asyncio
+import json
 import shutil
 import sqlite3
 from pathlib import Path
@@ -23,6 +25,7 @@ from .calendar import (
 from .config import AppSettings
 from .constants import (
     JOB_STATUSES,
+    JOB_TYPE_PRECHECK,
     RECORDING_STATUSES,
     RECORDING_STATUS_QUARANTINE,
 )
@@ -36,10 +39,15 @@ from .db import (
     list_projects,
     list_recordings,
     list_voice_profiles,
+    set_recording_language_settings,
     set_recording_status,
 )
 from .jobs import enqueue_recording_job, purge_pending_recording_jobs
 from .ms_graph import GraphAuthError, ms_connection_state
+from lan_transcriber.artifacts import atomic_write_json
+from lan_transcriber.llm_client import LLMClient
+from lan_transcriber.pipeline import Settings as PipelineSettings
+from lan_transcriber.pipeline import build_summary_prompts
 
 _TEMPLATES_DIR = Path(__file__).parent / "templates"
 _STATIC_DIR = Path(__file__).parent / "static"
@@ -47,6 +55,288 @@ templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
 
 ui_router = APIRouter()
 _settings = AppSettings()
+
+_LANGUAGE_NAME_MAP: dict[str, str] = {
+    "ar": "Arabic",
+    "de": "German",
+    "en": "English",
+    "es": "Spanish",
+    "fr": "French",
+    "hi": "Hindi",
+    "it": "Italian",
+    "ja": "Japanese",
+    "ko": "Korean",
+    "nl": "Dutch",
+    "pl": "Polish",
+    "pt": "Portuguese",
+    "ru": "Russian",
+    "tr": "Turkish",
+    "uk": "Ukrainian",
+    "zh": "Chinese",
+}
+
+_LANGUAGE_CODE_MAP: dict[str, str] = {
+    "eng": "en",
+    "spa": "es",
+    "fra": "fr",
+    "fre": "fr",
+    "deu": "de",
+    "ger": "de",
+    "ita": "it",
+    "por": "pt",
+    "rus": "ru",
+    "ukr": "uk",
+    "jpn": "ja",
+    "kor": "ko",
+    "zho": "zh",
+    "chi": "zh",
+}
+
+_COMMON_LANGUAGE_CODES = ("en", "es", "fr", "de", "pt", "it", "zh", "ja", "ko", "ru")
+
+
+def _normalise_language_code(value: object | None) -> str | None:
+    if not isinstance(value, str):
+        return None
+    raw = value.strip().lower()
+    if not raw:
+        return None
+    token = raw.replace("_", "-").split("-", 1)[0]
+    if len(token) == 2 and token.isalpha():
+        return token
+    if len(token) == 3 and token.isalpha():
+        return _LANGUAGE_CODE_MAP.get(token, None)
+    return None
+
+
+def _language_display_name(code: str | None) -> str:
+    if not code:
+        return "—"
+    if code == "unknown":
+        return "Unknown"
+    return f"{_LANGUAGE_NAME_MAP.get(code, code.upper())} ({code})"
+
+
+def _parse_language_form_value(value: str, *, field_name: str) -> str | None:
+    stripped = value.strip()
+    if not stripped:
+        return None
+    parsed = _normalise_language_code(stripped)
+    if parsed is None:
+        raise ValueError(f"{field_name} must be a language code such as en or es")
+    return parsed
+
+
+def _load_json_dict(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    return payload
+
+
+def _recording_derived_paths(recording_id: str, settings: AppSettings) -> tuple[Path, Path]:
+    derived = settings.recordings_root / recording_id / "derived"
+    return derived / "transcript.json", derived / "summary.json"
+
+
+def _sync_transcript_language_settings(
+    recording_id: str,
+    *,
+    settings: AppSettings,
+    target_summary_language: str | None,
+    transcript_language_override: str | None,
+) -> None:
+    transcript_path, _summary_path = _recording_derived_paths(recording_id, settings)
+    payload = _load_json_dict(transcript_path)
+    if not payload:
+        return
+    payload["target_summary_language"] = target_summary_language
+    payload["transcript_language_override"] = transcript_language_override
+    atomic_write_json(transcript_path, payload)
+
+
+def _language_options(
+    *,
+    distribution_codes: list[str],
+    target_summary_language: str | None,
+    transcript_language_override: str | None,
+) -> list[dict[str, str]]:
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for code in distribution_codes:
+        if code == "unknown":
+            continue
+        if code not in seen:
+            ordered.append(code)
+            seen.add(code)
+    for code in (target_summary_language, transcript_language_override):
+        if code and code not in seen:
+            ordered.append(code)
+            seen.add(code)
+    for code in _COMMON_LANGUAGE_CODES:
+        if code not in seen:
+            ordered.append(code)
+            seen.add(code)
+    return [
+        {"code": code, "label": _language_display_name(code)}
+        for code in ordered
+    ]
+
+
+def _language_tab_context(recording_id: str, rec: dict[str, Any], settings: AppSettings) -> dict[str, Any]:
+    transcript_path, summary_path = _recording_derived_paths(recording_id, settings)
+    transcript_payload = _load_json_dict(transcript_path)
+    summary_payload = _load_json_dict(summary_path)
+
+    language_payload = transcript_payload.get("language")
+    language_obj = language_payload if isinstance(language_payload, dict) else {}
+    detected = _normalise_language_code(language_obj.get("detected")) or _normalise_language_code(
+        rec.get("language_auto")
+    )
+    dominant = _normalise_language_code(transcript_payload.get("dominant_language")) or detected
+
+    distribution_payload = transcript_payload.get("language_distribution")
+    distribution_obj = distribution_payload if isinstance(distribution_payload, dict) else {}
+    distribution_rows: list[dict[str, Any]] = []
+    for code_raw, pct_raw in distribution_obj.items():
+        code = _normalise_language_code(code_raw) or str(code_raw)
+        try:
+            percent = float(pct_raw)
+        except (TypeError, ValueError):
+            continue
+        distribution_rows.append(
+            {
+                "code": code,
+                "label": _language_display_name(code),
+                "percent": round(percent, 2),
+            }
+        )
+    distribution_rows.sort(key=lambda row: (-row["percent"], row["code"]))
+
+    spans_payload = transcript_payload.get("language_spans")
+    spans_raw = spans_payload if isinstance(spans_payload, list) else []
+    span_rows: list[dict[str, Any]] = []
+    for row in spans_raw:
+        if not isinstance(row, dict):
+            continue
+        try:
+            start = float(row.get("start", 0.0))
+            end = float(row.get("end", start))
+        except (TypeError, ValueError):
+            continue
+        code = _normalise_language_code(row.get("lang")) or str(row.get("lang") or "unknown")
+        span_rows.append(
+            {
+                "start": round(start, 3),
+                "end": round(max(end, start), 3),
+                "code": code,
+                "label": _language_display_name(code),
+            }
+        )
+    span_rows.sort(key=lambda row: (row["start"], row["end"]))
+
+    target_summary_language = _normalise_language_code(rec.get("target_summary_language"))
+    transcript_target_summary_language = _normalise_language_code(
+        transcript_payload.get("target_summary_language")
+    )
+    resolved_target_summary_language = (
+        target_summary_language or transcript_target_summary_language or dominant
+    )
+    transcript_language_override = _normalise_language_code(
+        rec.get("language_override")
+    ) or _normalise_language_code(
+        transcript_payload.get("transcript_language_override")
+    )
+
+    distribution_codes = [str(row["code"]) for row in distribution_rows]
+    non_unknown_distribution = [code for code in distribution_codes if code != "unknown"]
+
+    return {
+        "detected": detected,
+        "detected_label": _language_display_name(detected),
+        "dominant": dominant,
+        "dominant_label": _language_display_name(dominant),
+        "distribution": distribution_rows,
+        "spans": span_rows,
+        "is_mixed": len(set(non_unknown_distribution)) >= 2,
+        "target_summary_language": target_summary_language or "",
+        "target_summary_language_label": _language_display_name(resolved_target_summary_language),
+        "transcript_language_override": transcript_language_override or "",
+        "transcript_language_override_label": _language_display_name(transcript_language_override),
+        "summary_preview": str(summary_payload.get("summary") or "").strip(),
+        "summary_model": str(summary_payload.get("model") or ""),
+        "options": _language_options(
+            distribution_codes=distribution_codes,
+            target_summary_language=resolved_target_summary_language,
+            transcript_language_override=transcript_language_override,
+        ),
+    }
+
+
+def _resummarize_recording(
+    recording_id: str,
+    *,
+    settings: AppSettings,
+    target_summary_language: str | None,
+) -> None:
+    transcript_path, summary_path = _recording_derived_paths(recording_id, settings)
+    transcript_payload = _load_json_dict(transcript_path)
+    if not transcript_payload:
+        raise ValueError("No transcript.json found for this recording")
+
+    transcript_text = str(transcript_payload.get("text") or "").strip()
+    if not transcript_text:
+        raise ValueError("Transcript text is empty; re-transcribe first")
+
+    language_payload = transcript_payload.get("language")
+    language_obj = language_payload if isinstance(language_payload, dict) else {}
+    resolved_target = (
+        target_summary_language
+        or _normalise_language_code(transcript_payload.get("target_summary_language"))
+        or _normalise_language_code(transcript_payload.get("dominant_language"))
+        or _normalise_language_code(language_obj.get("detected"))
+        or "en"
+    )
+    pipeline_settings = PipelineSettings(
+        recordings_root=settings.recordings_root,
+        voices_dir=settings.data_root / "voices",
+        unknown_dir=settings.recordings_root / "unknown",
+        tmp_root=settings.data_root / "tmp",
+    )
+    system_prompt, user_prompt = build_summary_prompts(
+        transcript_text,
+        resolved_target,
+    )
+    message = asyncio.run(
+        LLMClient().generate(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            model=pipeline_settings.llm_model,
+        )
+    )
+    summary_text = message.get("content", "") if isinstance(message, dict) else str(message)
+
+    summary_payload = _load_json_dict(summary_path)
+    friendly = summary_payload.get("friendly")
+    if not isinstance(friendly, int):
+        friendly = 0
+    summary_payload.update(
+        {
+            "friendly": friendly,
+            "model": pipeline_settings.llm_model,
+            "summary": summary_text,
+            "target_summary_language": resolved_target,
+        }
+    )
+    atomic_write_json(summary_path, summary_payload)
+
+    transcript_payload["target_summary_language"] = resolved_target
+    atomic_write_json(transcript_path, transcript_payload)
 
 
 def _status_counts(settings: AppSettings) -> dict[str, int]:
@@ -138,6 +428,7 @@ async def ui_recording_detail(
     tabs = ["overview", "calendar", "project", "speakers", "language", "metrics", "log"]
     current_tab = tab if tab in tabs else "overview"
     calendar: dict[str, Any] | None = None
+    language: dict[str, Any] | None = None
     if current_tab == "calendar":
         try:
             calendar = await run_in_threadpool(
@@ -152,6 +443,8 @@ async def ui_recording_detail(
                 settings=_settings,
             )
             calendar["fetch_error"] = str(exc)
+    if current_tab == "language":
+        language = _language_tab_context(recording_id, rec, _settings)
 
     return templates.TemplateResponse(
         request,
@@ -163,6 +456,7 @@ async def ui_recording_detail(
             "tabs": tabs,
             "current_tab": current_tab,
             "calendar": calendar,
+            "language": language,
         },
     )
 
@@ -346,6 +640,107 @@ async def ui_action_delete(recording_id: str) -> Any:
     resp = HTMLResponse("")
     resp.headers["HX-Redirect"] = "/recordings"
     return resp
+
+
+def _save_language_settings(
+    recording_id: str,
+    *,
+    target_summary_language: str,
+    transcript_language_override: str,
+) -> tuple[str | None, str | None]:
+    target = _parse_language_form_value(
+        target_summary_language,
+        field_name="target_summary_language",
+    )
+    transcript_override = _parse_language_form_value(
+        transcript_language_override,
+        field_name="transcript_language_override",
+    )
+    set_recording_language_settings(
+        recording_id,
+        settings=_settings,
+        target_summary_language=target,
+        transcript_language_override=transcript_override,
+    )
+    _sync_transcript_language_settings(
+        recording_id,
+        settings=_settings,
+        target_summary_language=target,
+        transcript_language_override=transcript_override,
+    )
+    return target, transcript_override
+
+
+@ui_router.post("/ui/recordings/{recording_id}/language/settings")
+async def ui_save_language_settings(
+    recording_id: str,
+    target_summary_language: str = Form(default=""),
+    transcript_language_override: str = Form(default=""),
+) -> Any:
+    if get_recording(recording_id, settings=_settings) is None:
+        return HTMLResponse("Not found", status_code=404)
+    try:
+        _save_language_settings(
+            recording_id,
+            target_summary_language=target_summary_language,
+            transcript_language_override=transcript_language_override,
+        )
+    except ValueError as exc:
+        return HTMLResponse(str(exc), status_code=422)
+    return RedirectResponse(f"/recordings/{recording_id}?tab=language", status_code=303)
+
+
+@ui_router.post("/ui/recordings/{recording_id}/language/resummarize")
+async def ui_resummarize_language(
+    recording_id: str,
+    target_summary_language: str = Form(default=""),
+    transcript_language_override: str = Form(default=""),
+) -> Any:
+    if get_recording(recording_id, settings=_settings) is None:
+        return HTMLResponse("Not found", status_code=404)
+    try:
+        target, _transcript_override = _save_language_settings(
+            recording_id,
+            target_summary_language=target_summary_language,
+            transcript_language_override=transcript_language_override,
+        )
+        await run_in_threadpool(
+            _resummarize_recording,
+            recording_id,
+            settings=_settings,
+            target_summary_language=target,
+        )
+    except ValueError as exc:
+        return HTMLResponse(str(exc), status_code=422)
+    except Exception as exc:
+        return HTMLResponse(f"Re-summarize failed: {exc}", status_code=503)
+    return RedirectResponse(f"/recordings/{recording_id}?tab=language", status_code=303)
+
+
+@ui_router.post("/ui/recordings/{recording_id}/language/retranscribe")
+async def ui_retranscribe_language(
+    recording_id: str,
+    target_summary_language: str = Form(default=""),
+    transcript_language_override: str = Form(default=""),
+) -> Any:
+    if get_recording(recording_id, settings=_settings) is None:
+        return HTMLResponse("Not found", status_code=404)
+    try:
+        _save_language_settings(
+            recording_id,
+            target_summary_language=target_summary_language,
+            transcript_language_override=transcript_language_override,
+        )
+        enqueue_recording_job(
+            recording_id,
+            job_type=JOB_TYPE_PRECHECK,
+            settings=_settings,
+        )
+    except ValueError as exc:
+        return HTMLResponse(str(exc), status_code=422)
+    except Exception as exc:
+        return HTMLResponse(f"Re-transcribe failed: {exc}", status_code=503)
+    return RedirectResponse(f"/recordings/{recording_id}?tab=log", status_code=303)
 
 
 @ui_router.post("/ui/recordings/{recording_id}/calendar/select")

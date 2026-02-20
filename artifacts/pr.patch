@@ -1,84 +1,60 @@
 diff --git a/lan_transcriber/pipeline.py b/lan_transcriber/pipeline.py
-index acba096..20accea 100644
+index 7430c53..67ddebb 100644
 --- a/lan_transcriber/pipeline.py
 +++ b/lan_transcriber/pipeline.py
-@@ -182,10 +182,7 @@ def _safe_diarization_segments(diarization: Any) -> list[dict[str, Any]]:
-     out: list[dict[str, Any]] = []
-     if diarization is None or not hasattr(diarization, "itertracks"):
-         return out
--    try:
--        tracks = diarization.itertracks(yield_label=True)
--    except Exception:
--        return out
-+    tracks = diarization.itertracks(yield_label=True)
-     for item in tracks:
-         if not isinstance(item, tuple) or len(item) < 2:
-             continue
+@@ -285,11 +285,11 @@ def _segment_language(
+     seg_language = _normalise_language_code(segment.get("language"))
+     if seg_language:
+         return seg_language
++    if detected_language:
++        return detected_language
+     text_language = _guess_language_from_text(str(segment.get("text") or ""))
+     if text_language:
+         return text_language
+-    if detected_language:
+-        return detected_language
+     return "unknown"
+ 
+ 
 diff --git a/tests/test_pipeline.py b/tests/test_pipeline.py
-index 702a38a..962db07 100644
+index 2780c98..5303b62 100644
 --- a/tests/test_pipeline.py
 +++ b/tests/test_pipeline.py
-@@ -119,6 +119,15 @@ class FailingDiariser:
-         raise RuntimeError("diariser boom")
+@@ -416,8 +416,18 @@ async def test_pipeline_writes_language_spans_for_mixed_language_segments(tmp_pa
+         "whisperx.transcribe",
+         return_value=(
+             [
+-                {"start": 0.0, "end": 4.0, "text": "hello team and thanks"},
+-                {"start": 4.0, "end": 12.0, "text": "hola equipo y gracias por venir"},
++                {
++                    "start": 0.0,
++                    "end": 4.0,
++                    "text": "hello team and thanks",
++                    "language": "en",
++                },
++                {
++                    "start": 4.0,
++                    "end": 12.0,
++                    "text": "hola equipo y gracias por venir",
++                    "language": "es",
++                },
+             ],
+             {"language": "en", "language_probability": 0.91},
+         ),
+@@ -456,6 +466,16 @@ async def test_pipeline_writes_language_spans_for_mixed_language_segments(tmp_pa
+     assert transcript_data["language_spans"][1]["lang"] == "es"
  
  
-+class FailingItertracksDiariser:
-+    async def __call__(self, audio_path: Path):
-+        class Ann:
-+            def itertracks(self, yield_label: bool = False):
-+                raise RuntimeError("itertracks boom")
-+
-+        return Ann()
++def test_segment_language_prefers_detected_over_text_guess():
++    segment = {"text": "the and to of in"}
++    resolved = pipeline._segment_language(
++        segment,
++        detected_language="fr",
++        transcript_language_override=None,
++    )
++    assert resolved == "fr"
 +
 +
  @pytest.mark.asyncio
- @respx.mock
- async def test_tripled_dedup(tmp_path: Path, mocker):
-@@ -700,6 +709,47 @@ async def test_pipeline_diariser_error_marks_metrics_failed(tmp_path: Path, mock
-     assert metrics_data["error"] == "diariser boom"
- 
- 
-+@pytest.mark.asyncio
-+async def test_pipeline_itertracks_error_marks_metrics_failed(tmp_path: Path, mocker):
-+    mocker.patch(
-+        "whisperx.transcribe",
-+        return_value=(
-+            [{"start": 0.0, "end": 1.0, "text": "hello world today"}],
-+            {"language": "en", "language_probability": 0.9},
-+        ),
-+    )
-+
-+    cfg = pipeline.Settings(
-+        speaker_db=tmp_path / "db.yaml",
-+        tmp_root=tmp_path,
-+        recordings_root=tmp_path / "recordings",
-+    )
-+    audio = wav_audio(
-+        tmp_path,
-+        name="itertracks-fail.wav",
-+        duration_sec=24.0,
-+        speech=True,
-+    )
-+
-+    with pytest.raises(RuntimeError, match="itertracks boom"):
-+        await pipeline.run_pipeline(
-+            audio_path=audio,
-+            cfg=cfg,
-+            llm=llm_client.LLMClient(),
-+            diariser=FailingItertracksDiariser(),
-+            recording_id="rec-itertracks-fail-1",
-+            precheck=precheck_ok(),
-+        )
-+
-+    derived = cfg.recordings_root / "rec-itertracks-fail-1" / "derived"
-+    summary_data = json.loads((derived / "summary.json").read_text(encoding="utf-8"))
-+    metrics_data = json.loads((derived / "metrics.json").read_text(encoding="utf-8"))
-+
-+    assert summary_data["status"] == "failed"
-+    assert metrics_data["status"] == "failed"
-+    assert metrics_data["error"] == "itertracks boom"
-+
-+
- def test_run_precheck_quarantine_rules(tmp_path: Path):
-     cfg = pipeline.Settings(
-         speaker_db=tmp_path / "db.yaml",
+ async def test_pipeline_summary_language_override_changes_prompt(tmp_path: Path, mocker):
+     mocker.patch(
