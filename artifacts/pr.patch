@@ -1,136 +1,86 @@
-diff --git a/lan_app/worker_tasks.py b/lan_app/worker_tasks.py
-index 24aa1f0..799bf15 100644
---- a/lan_app/worker_tasks.py
-+++ b/lan_app/worker_tasks.py
-@@ -102,6 +102,20 @@ class _FallbackDiariser:
-         return _Annotation()
- 
- 
-+class _PyannoteDiariser:
-+    def __init__(self, pipeline_model: Any) -> None:
-+        self._pipeline_model = pipeline_model
-+
-+    async def __call__(self, audio_path: Path):
-+        def _run_sync():
-+            try:
-+                return self._pipeline_model(str(audio_path))
-+            except Exception:
-+                return self._pipeline_model({"audio": str(audio_path)})
-+
-+        return await asyncio.to_thread(_run_sync)
-+
-+
- def _build_pipeline_settings(settings: AppSettings) -> PipelineSettings:
-     return PipelineSettings(
-         recordings_root=settings.recordings_root,
-@@ -115,7 +129,8 @@ def _build_diariser(duration_sec: float | None):
-     try:
-         from pyannote.audio import Pipeline  # type: ignore
- 
--        return Pipeline.from_pretrained("pyannote/speaker-diarization@3.2")
-+        model = Pipeline.from_pretrained("pyannote/speaker-diarization@3.2")
-+        return _PyannoteDiariser(model)
-     except Exception:
-         return _FallbackDiariser(duration_sec)
- 
 diff --git a/lan_transcriber/pipeline.py b/lan_transcriber/pipeline.py
-index 1da675f..dfd6146 100644
+index dfd6146..418a48b 100644
 --- a/lan_transcriber/pipeline.py
 +++ b/lan_transcriber/pipeline.py
-@@ -162,12 +162,16 @@ def _language_payload(info: dict[str, Any]) -> dict[str, Any]:
-         or info.get("lang")
-         or "unknown"
-     )
--    confidence_raw = (
--        info.get("language_probability")
--        or info.get("language_confidence")
--        or info.get("language_score")
--        or info.get("probability")
--    )
-+    confidence_raw = None
-+    for key in (
-+        "language_probability",
-+        "language_confidence",
-+        "language_score",
-+        "probability",
-+    ):
-+        if key in info and info[key] is not None:
-+            confidence_raw = info[key]
-+            break
-     confidence = None
-     if confidence_raw is not None:
-         confidence = round(_safe_float(confidence_raw, default=0.0), 4)
-diff --git a/tests/test_db_queue.py b/tests/test_db_queue.py
-index 4253183..ba6a78e 100644
---- a/tests/test_db_queue.py
-+++ b/tests/test_db_queue.py
-@@ -1,6 +1,9 @@
- from __future__ import annotations
- 
-+import asyncio
- from pathlib import Path
-+import sys
-+from types import ModuleType
- 
- from fastapi.testclient import TestClient
- import pytest
-@@ -448,3 +451,35 @@ def test_worker_precheck_runs_pipeline_when_safe(tmp_path: Path, monkeypatch):
-     assert recording["status"] == RECORDING_STATUS_READY
-     assert job is not None
-     assert job["status"] == JOB_STATUS_FINISHED
-+
-+
-+def test_build_diariser_wraps_sync_pyannote_pipeline(monkeypatch):
-+    from lan_app import worker_tasks
-+
-+    class _FakeModel:
-+        def __init__(self):
-+            self.calls: list[object] = []
-+
-+        def __call__(self, input_payload: object):
-+            self.calls.append(input_payload)
-+            return {"ok": True}
-+
-+    fake_model = _FakeModel()
-+
-+    class _FakePipeline:
-+        @staticmethod
-+        def from_pretrained(_name: str):
-+            return fake_model
-+
-+    pyannote_audio = ModuleType("pyannote.audio")
-+    pyannote_audio.Pipeline = _FakePipeline  # type: ignore[attr-defined]
-+    pyannote_pkg = ModuleType("pyannote")
-+    pyannote_pkg.audio = pyannote_audio  # type: ignore[attr-defined]
-+    monkeypatch.setitem(sys.modules, "pyannote", pyannote_pkg)
-+    monkeypatch.setitem(sys.modules, "pyannote.audio", pyannote_audio)
-+
-+    diariser = worker_tasks._build_diariser(duration_sec=30.0)
-+    result = asyncio.run(diariser(Path("/tmp/fake.wav")))
-+
-+    assert result == {"ok": True}
-+    assert fake_model.calls == ["/tmp/fake.wav"]
+@@ -187,9 +187,13 @@ def _safe_diarization_segments(diarization: Any) -> list[dict[str, Any]]:
+     except Exception:
+         return out
+     for item in tracks:
+-        if not isinstance(item, tuple) or len(item) != 2:
++        if not isinstance(item, tuple) or len(item) < 2:
+             continue
+-        seg, label = item
++        seg = item[0]
++        if len(item) == 2:
++            label = item[1]
++        else:
++            label = item[-1]
+         start = _safe_float(getattr(seg, "start", 0.0), default=0.0)
+         end = _safe_float(getattr(seg, "end", start), default=start)
+         if end < start:
 diff --git a/tests/test_pipeline.py b/tests/test_pipeline.py
-index d4e08c4..48a13bd 100644
+index 48a13bd..31621d9 100644
 --- a/tests/test_pipeline.py
 +++ b/tests/test_pipeline.py
-@@ -255,6 +255,46 @@ async def test_no_talk(tmp_path: Path, mocker):
-     assert res.summary.strip() == ""
+@@ -97,6 +97,22 @@ class TwoSpeakerDiariser:
+         return Ann()
+ 
+ 
++class TwoSpeakerTripletDiariser:
++    async def __call__(self, audio_path: Path):
++        class Ann:
++            def itertracks(self, yield_label: bool = False):
++                from types import SimpleNamespace
++
++                if yield_label:
++                    yield (SimpleNamespace(start=0.0, end=12.0), "track-1", "S1")
++                    yield (SimpleNamespace(start=12.0, end=24.0), "track-2", "S2")
++                else:
++                    yield (SimpleNamespace(start=0.0, end=12.0),)
++                    yield (SimpleNamespace(start=12.0, end=24.0),)
++
++        return Ann()
++
++
+ @pytest.mark.asyncio
+ @respx.mock
+ async def test_tripled_dedup(tmp_path: Path, mocker):
+@@ -374,6 +390,71 @@ async def test_pipeline_writes_required_artifacts(tmp_path: Path, mocker):
+     assert len(result.unknown_chunks) >= 2
  
  
 +@pytest.mark.asyncio
 +@respx.mock
-+async def test_pipeline_preserves_zero_language_confidence(tmp_path: Path, mocker):
++async def test_pipeline_accepts_pyannote_triplet_itertracks(tmp_path: Path, mocker):
 +    mocker.patch(
 +        "whisperx.transcribe",
 +        return_value=(
-+            [{"start": 0.0, "end": 1.0, "text": "hello"}],
-+            {"language": "en", "language_probability": 0.0},
++            [
++                {
++                    "start": 0.0,
++                    "end": 5.0,
++                    "text": "hello team",
++                    "words": [
++                        {"start": 0.2, "end": 0.7, "word": "hello"},
++                        {"start": 0.8, "end": 1.4, "word": "team"},
++                    ],
++                },
++                {
++                    "start": 12.0,
++                    "end": 17.0,
++                    "text": "status update",
++                    "words": [
++                        {"start": 12.1, "end": 12.6, "word": "status"},
++                        {"start": 12.7, "end": 13.2, "word": "update"},
++                    ],
++                },
++            ],
++            {"language": "en", "language_probability": 0.98},
 +        ),
 +    )
 +    mocker.patch(
 +        "transformers.pipeline",
-+        lambda *a, **k: lambda text: [{"label": "positive", "score": 0.5}],
++        lambda *a, **k: lambda text: [{"label": "positive", "score": 0.6}],
 +    )
 +    respx.post("http://llm:8000/v1/chat/completions").mock(
 +        return_value=httpx.Response(
@@ -144,20 +94,26 @@ index d4e08c4..48a13bd 100644
 +        tmp_root=tmp_path,
 +        recordings_root=tmp_path / "recordings",
 +    )
++    audio = wav_audio(
++        tmp_path,
++        name="triplet.wav",
++        duration_sec=24.0,
++        speech=True,
++    )
 +    await pipeline.run_pipeline(
-+        audio_path=fake_audio(tmp_path, "zero-confidence.mp3"),
++        audio_path=audio,
 +        cfg=cfg,
 +        llm=llm_client.LLMClient(),
-+        diariser=DummyDiariser(),
-+        recording_id="rec-zero-conf",
++        diariser=TwoSpeakerTripletDiariser(),
++        recording_id="rec-triplet-1",
 +        precheck=precheck_ok(),
 +    )
 +
-+    transcript_path = cfg.recordings_root / "rec-zero-conf" / "derived" / "transcript.json"
-+    payload = json.loads(transcript_path.read_text(encoding="utf-8"))
-+    assert payload["language"]["confidence"] == 0.0
++    derived = cfg.recordings_root / "rec-triplet-1" / "derived"
++    diar_data = json.loads((derived / "segments.json").read_text(encoding="utf-8"))
++    assert [row["speaker"] for row in diar_data] == ["S1", "S2"]
 +
 +
- @pytest.mark.asyncio
- @respx.mock
- async def test_pipeline_writes_required_artifacts(tmp_path: Path, mocker):
+ def test_run_precheck_quarantine_rules(tmp_path: Path):
+     cfg = pipeline.Settings(
+         speaker_db=tmp_path / "db.yaml",

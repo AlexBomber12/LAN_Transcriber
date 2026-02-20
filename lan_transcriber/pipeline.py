@@ -187,9 +187,13 @@ def _safe_diarization_segments(diarization: Any) -> list[dict[str, Any]]:
     except Exception:
         return out
     for item in tracks:
-        if not isinstance(item, tuple) or len(item) != 2:
+        if not isinstance(item, tuple) or len(item) < 2:
             continue
-        seg, label = item
+        seg = item[0]
+        if len(item) == 2:
+            label = item[1]
+        else:
+            label = item[-1]
         start = _safe_float(getattr(seg, "start", 0.0), default=0.0)
         end = _safe_float(getattr(seg, "end", start), default=start)
         if end < start:
