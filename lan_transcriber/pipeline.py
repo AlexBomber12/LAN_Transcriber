@@ -285,11 +285,11 @@ def _segment_language(
     seg_language = _normalise_language_code(segment.get("language"))
     if seg_language:
         return seg_language
+    if detected_language:
+        return detected_language
     text_language = _guess_language_from_text(str(segment.get("text") or ""))
     if text_language:
         return text_language
-    if detected_language:
-        return detected_language
     return "unknown"
 
 

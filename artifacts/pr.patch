@@ -1,34 +1,60 @@
-diff --git a/lan_app/ui_routes.py b/lan_app/ui_routes.py
-index 7789c18..a7e1053 100644
---- a/lan_app/ui_routes.py
-+++ b/lan_app/ui_routes.py
-@@ -240,12 +240,13 @@ def _language_tab_context(recording_id: str, rec: dict[str, Any], settings: AppS
-         )
-     span_rows.sort(key=lambda row: (row["start"], row["end"]))
+diff --git a/lan_transcriber/pipeline.py b/lan_transcriber/pipeline.py
+index 7430c53..67ddebb 100644
+--- a/lan_transcriber/pipeline.py
++++ b/lan_transcriber/pipeline.py
+@@ -285,11 +285,11 @@ def _segment_language(
+     seg_language = _normalise_language_code(segment.get("language"))
+     if seg_language:
+         return seg_language
++    if detected_language:
++        return detected_language
+     text_language = _guess_language_from_text(str(segment.get("text") or ""))
+     if text_language:
+         return text_language
+-    if detected_language:
+-        return detected_language
+     return "unknown"
  
--    target_summary_language = _normalise_language_code(
--        rec.get("target_summary_language")
--    ) or _normalise_language_code(
-+    target_summary_language = _normalise_language_code(rec.get("target_summary_language"))
-+    transcript_target_summary_language = _normalise_language_code(
-         transcript_payload.get("target_summary_language")
-     )
--    resolved_target_summary_language = target_summary_language or dominant
-+    resolved_target_summary_language = (
-+        target_summary_language or transcript_target_summary_language or dominant
+ 
+diff --git a/tests/test_pipeline.py b/tests/test_pipeline.py
+index 2780c98..5303b62 100644
+--- a/tests/test_pipeline.py
++++ b/tests/test_pipeline.py
+@@ -416,8 +416,18 @@ async def test_pipeline_writes_language_spans_for_mixed_language_segments(tmp_pa
+         "whisperx.transcribe",
+         return_value=(
+             [
+-                {"start": 0.0, "end": 4.0, "text": "hello team and thanks"},
+-                {"start": 4.0, "end": 12.0, "text": "hola equipo y gracias por venir"},
++                {
++                    "start": 0.0,
++                    "end": 4.0,
++                    "text": "hello team and thanks",
++                    "language": "en",
++                },
++                {
++                    "start": 4.0,
++                    "end": 12.0,
++                    "text": "hola equipo y gracias por venir",
++                    "language": "es",
++                },
+             ],
+             {"language": "en", "language_probability": 0.91},
+         ),
+@@ -456,6 +466,16 @@ async def test_pipeline_writes_language_spans_for_mixed_language_segments(tmp_pa
+     assert transcript_data["language_spans"][1]["lang"] == "es"
+ 
+ 
++def test_segment_language_prefers_detected_over_text_guess():
++    segment = {"text": "the and to of in"}
++    resolved = pipeline._segment_language(
++        segment,
++        detected_language="fr",
++        transcript_language_override=None,
 +    )
-     transcript_language_override = _normalise_language_code(
-         rec.get("language_override")
-     ) or _normalise_language_code(
-diff --git a/tests/test_ui_routes.py b/tests/test_ui_routes.py
-index 9afeab3..e33f90f 100644
---- a/tests/test_ui_routes.py
-+++ b/tests/test_ui_routes.py
-@@ -215,6 +215,7 @@ def test_recording_detail_language_tab_keeps_auto_target_selected_when_unset(tmp
-                 "text": "hola equipo",
-                 "language": {"detected": "es", "confidence": 0.95},
-                 "dominant_language": "es",
-+                "target_summary_language": "es",
-                 "language_distribution": {"es": 100.0},
-                 "language_spans": [{"start": 0.0, "end": 2.0, "lang": "es"}],
-             }
++    assert resolved == "fr"
++
++
+ @pytest.mark.asyncio
+ async def test_pipeline_summary_language_override_changes_prompt(tmp_path: Path, mocker):
+     mocker.patch(

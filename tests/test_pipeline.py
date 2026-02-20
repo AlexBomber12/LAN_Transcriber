@@ -416,8 +416,18 @@ async def test_pipeline_writes_language_spans_for_mixed_language_segments(tmp_pa
         "whisperx.transcribe",
         return_value=(
             [
-                {"start": 0.0, "end": 4.0, "text": "hello team and thanks"},
-                {"start": 4.0, "end": 12.0, "text": "hola equipo y gracias por venir"},
+                {
+                    "start": 0.0,
+                    "end": 4.0,
+                    "text": "hello team and thanks",
+                    "language": "en",
+                },
+                {
+                    "start": 4.0,
+                    "end": 12.0,
+                    "text": "hola equipo y gracias por venir",
+                    "language": "es",
+                },
             ],
             {"language": "en", "language_probability": 0.91},
         ),
@@ -454,6 +464,16 @@ async def test_pipeline_writes_language_spans_for_mixed_language_segments(tmp_pa
     assert len(transcript_data["language_spans"]) >= 2
     assert transcript_data["language_spans"][0]["lang"] == "en"
     assert transcript_data["language_spans"][1]["lang"] == "es"
+
+
+def test_segment_language_prefers_detected_over_text_guess():
+    segment = {"text": "the and to of in"}
+    resolved = pipeline._segment_language(
+        segment,
+        detected_language="fr",
+        transcript_language_override=None,
+    )
+    assert resolved == "fr"
 
 
 @pytest.mark.asyncio
