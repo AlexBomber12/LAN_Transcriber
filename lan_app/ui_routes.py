@@ -240,12 +240,13 @@ def _language_tab_context(recording_id: str, rec: dict[str, Any], settings: AppS
         )
     span_rows.sort(key=lambda row: (row["start"], row["end"]))
 
-    target_summary_language = _normalise_language_code(
-        rec.get("target_summary_language")
-    ) or _normalise_language_code(
+    target_summary_language = _normalise_language_code(rec.get("target_summary_language"))
+    transcript_target_summary_language = _normalise_language_code(
         transcript_payload.get("target_summary_language")
     )
-    resolved_target_summary_language = target_summary_language or dominant
+    resolved_target_summary_language = (
+        target_summary_language or transcript_target_summary_language or dominant
+    )
     transcript_language_override = _normalise_language_code(
         rec.get("language_override")
     ) or _normalise_language_code(

@@ -1,91 +1,34 @@
-diff --git a/lan_app/templates/recording_detail.html b/lan_app/templates/recording_detail.html
-index 22be248..a6e8a6f 100644
---- a/lan_app/templates/recording_detail.html
-+++ b/lan_app/templates/recording_detail.html
-@@ -190,7 +190,7 @@
-     <div class="form-row">
-       <label for="target_summary_language">target_summary_language</label>
-       <select id="target_summary_language" name="target_summary_language">
--        <option value="">Auto (dominant language)</option>
-+        <option value="" {% if not lang.target_summary_language %}selected{% endif %}>Auto (dominant language)</option>
-         {% for opt in lang.options or [] %}
-         <option value="{{ opt.code }}" {% if lang.target_summary_language == opt.code %}selected{% endif %}>{{ opt.label }}</option>
-         {% endfor %}
 diff --git a/lan_app/ui_routes.py b/lan_app/ui_routes.py
-index 71295d9..7789c18 100644
+index 7789c18..a7e1053 100644
 --- a/lan_app/ui_routes.py
 +++ b/lan_app/ui_routes.py
-@@ -244,7 +244,8 @@ def _language_tab_context(recording_id: str, rec: dict[str, Any], settings: AppS
-         rec.get("target_summary_language")
-     ) or _normalise_language_code(
+@@ -240,12 +240,13 @@ def _language_tab_context(recording_id: str, rec: dict[str, Any], settings: AppS
+         )
+     span_rows.sort(key=lambda row: (row["start"], row["end"]))
+ 
+-    target_summary_language = _normalise_language_code(
+-        rec.get("target_summary_language")
+-    ) or _normalise_language_code(
++    target_summary_language = _normalise_language_code(rec.get("target_summary_language"))
++    transcript_target_summary_language = _normalise_language_code(
          transcript_payload.get("target_summary_language")
--    ) or dominant
+     )
+-    resolved_target_summary_language = target_summary_language or dominant
++    resolved_target_summary_language = (
++        target_summary_language or transcript_target_summary_language or dominant
 +    )
-+    resolved_target_summary_language = target_summary_language or dominant
      transcript_language_override = _normalise_language_code(
          rec.get("language_override")
      ) or _normalise_language_code(
-@@ -263,14 +264,14 @@ def _language_tab_context(recording_id: str, rec: dict[str, Any], settings: AppS
-         "spans": span_rows,
-         "is_mixed": len(set(non_unknown_distribution)) >= 2,
-         "target_summary_language": target_summary_language or "",
--        "target_summary_language_label": _language_display_name(target_summary_language),
-+        "target_summary_language_label": _language_display_name(resolved_target_summary_language),
-         "transcript_language_override": transcript_language_override or "",
-         "transcript_language_override_label": _language_display_name(transcript_language_override),
-         "summary_preview": str(summary_payload.get("summary") or "").strip(),
-         "summary_model": str(summary_payload.get("model") or ""),
-         "options": _language_options(
-             distribution_codes=distribution_codes,
--            target_summary_language=target_summary_language,
-+            target_summary_language=resolved_target_summary_language,
-             transcript_language_override=transcript_language_override,
-         ),
-     }
 diff --git a/tests/test_ui_routes.py b/tests/test_ui_routes.py
-index e3007fe..9afeab3 100644
+index 9afeab3..e33f90f 100644
 --- a/tests/test_ui_routes.py
 +++ b/tests/test_ui_routes.py
-@@ -195,6 +195,42 @@ def test_recording_detail_language_tab_renders_spans(tmp_path, monkeypatch):
-     assert "Re-summarize (LLM only)" in r.text
- 
- 
-+def test_recording_detail_language_tab_keeps_auto_target_selected_when_unset(tmp_path, monkeypatch):
-+    cfg = _cfg(tmp_path)
-+    monkeypatch.setattr(api, "_settings", cfg)
-+    monkeypatch.setattr(ui_routes, "_settings", cfg)
-+    init_db(cfg)
-+    create_recording(
-+        "rec-lang-auto-1",
-+        source="drive",
-+        source_filename="lang.mp3",
-+        status=RECORDING_STATUS_READY,
-+        settings=cfg,
-+    )
-+    derived = cfg.recordings_root / "rec-lang-auto-1" / "derived"
-+    derived.mkdir(parents=True, exist_ok=True)
-+    (derived / "transcript.json").write_text(
-+        json.dumps(
-+            {
-+                "text": "hola equipo",
-+                "language": {"detected": "es", "confidence": 0.95},
-+                "dominant_language": "es",
-+                "language_distribution": {"es": 100.0},
-+                "language_spans": [{"start": 0.0, "end": 2.0, "lang": "es"}],
-+            }
-+        ),
-+        encoding="utf-8",
-+    )
-+
-+    c = TestClient(api.app, follow_redirects=True)
-+    r = c.get("/recordings/rec-lang-auto-1?tab=language")
-+    assert r.status_code == 200
-+    target_select = r.text.split('id="target_summary_language"', 1)[1].split("</select>", 1)[0]
-+    assert 'value="" selected>Auto (dominant language)</option>' in target_select
-+    assert 'value="es" selected' not in target_select
-+    assert "Spanish (es)" in r.text
-+
-+
- def test_recording_detail_not_found(client):
-     r = client.get("/recordings/nonexistent-id")
-     assert r.status_code == 404
+@@ -215,6 +215,7 @@ def test_recording_detail_language_tab_keeps_auto_target_selected_when_unset(tmp
+                 "text": "hola equipo",
+                 "language": {"detected": "es", "confidence": 0.95},
+                 "dominant_language": "es",
++                "target_summary_language": "es",
+                 "language_distribution": {"es": 100.0},
+                 "language_spans": [{"start": 0.0, "end": 2.0, "lang": "es"}],
+             }

@@ -215,6 +215,7 @@ def test_recording_detail_language_tab_keeps_auto_target_selected_when_unset(tmp
                 "text": "hola equipo",
                 "language": {"detected": "es", "confidence": 0.95},
                 "dominant_language": "es",
+                "target_summary_language": "es",
                 "language_distribution": {"es": 100.0},
                 "language_spans": [{"start": 0.0, "end": 2.0, "lang": "es"}],
             }
