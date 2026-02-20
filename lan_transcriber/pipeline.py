@@ -786,54 +786,95 @@ async def run_pipeline(
             segments=[],
         )
 
-    import whisperx
+    def _write_failed_artifacts(
+        exc: Exception,
+        *,
+        friendly_score: int = 0,
+        language_payload: dict[str, Any] | None = None,
+        asr_count: int = 0,
+        diar_count: int = 0,
+        speaker_turn_count: int = 0,
+    ) -> None:
+        atomic_write_json(
+            artifact_paths.summary_json_path,
+            {
+                "friendly": friendly_score,
+                "model": cfg.llm_model,
+                "summary": "",
+                "status": "failed",
+            },
+        )
+        atomic_write_json(
+            artifact_paths.metrics_json_path,
+            {
+                "status": "failed",
+                "version": 1,
+                "precheck": {
+                    "duration_sec": precheck_result.duration_sec,
+                    "speech_ratio": precheck_result.speech_ratio,
+                    "quarantine_reason": None,
+                },
+                "language": language_payload or {"detected": "unknown", "confidence": None},
+                "asr_segments": asr_count,
+                "diar_segments": diar_count,
+                "speaker_turns": speaker_turn_count,
+                "error": str(exc) or exc.__class__.__name__,
+            },
+        )
 
-    def _asr() -> tuple[list[dict[str, Any]], dict[str, Any]]:
-        kwargs: dict[str, Any] = {"vad_filter": True, "language": "auto"}
-        try:
-            segments, info = whisperx.transcribe(
-                str(audio_path),
-                word_timestamps=True,
-                **kwargs,
-            )
-        except TypeError:
-            segments, info = whisperx.transcribe(str(audio_path), **kwargs)
-        return list(segments), dict(info or {})
+    try:
+        import whisperx
 
-    async def _safe_diarise() -> Any:
-        try:
-            return await diariser(audio_path)
-        except Exception:
-            return _fallback_diarization(precheck_result.duration_sec)
+        def _asr() -> tuple[list[dict[str, Any]], dict[str, Any]]:
+            kwargs: dict[str, Any] = {"vad_filter": True, "language": "auto"}
+            try:
+                segments, info = whisperx.transcribe(
+                    str(audio_path),
+                    word_timestamps=True,
+                    **kwargs,
+                )
+            except TypeError:
+                segments, info = whisperx.transcribe(str(audio_path), **kwargs)
+            return list(segments), dict(info or {})
 
-    asr_task = asyncio.to_thread(_asr)
-    diar_task = _safe_diarise()
-    (raw_segments, info), diarization = await asyncio.gather(asr_task, diar_task)
+        async def _safe_diarise() -> Any:
+            try:
+                return await diariser(audio_path)
+            except Exception:
+                return _fallback_diarization(precheck_result.duration_sec)
 
-    asr_segments = _normalise_asr_segments(raw_segments)
-    language_info = _language_payload(info)
-    detected_language = language_info["detected"] if language_info["detected"] != "unknown" else None
+        asr_task = asyncio.to_thread(_asr)
+        diar_task = _safe_diarise()
+        (raw_segments, info), diarization = await asyncio.gather(asr_task, diar_task)
 
-    asr_text = " ".join(seg.get("text", "").strip() for seg in asr_segments).strip()
-    clean_text = normalizer.dedup(asr_text)
-    diar_segments = _safe_diarization_segments(diarization)
-    if not diar_segments and asr_segments:
-        fallback_end = max(_safe_float(seg.get("end")) for seg in asr_segments)
-        diar_segments = [
-            {"start": 0.0, "end": round(max(fallback_end, 0.1), 3), "speaker": "S1"}
-        ]
+        asr_segments = _normalise_asr_segments(raw_segments)
+        language_info = _language_payload(info)
+        detected_language = language_info["detected"] if language_info["detected"] != "unknown" else None
 
-    speaker_turns = _build_speaker_turns(
-        asr_segments,
-        diar_segments,
-        default_language=detected_language,
-    )
+        asr_text = " ".join(seg.get("text", "").strip() for seg in asr_segments).strip()
+        clean_text = normalizer.dedup(asr_text)
+        diar_segments = _safe_diarization_segments(diarization)
+        if not diar_segments and asr_segments:
+            fallback_end = max(_safe_float(seg.get("end")) for seg in asr_segments)
+            diar_segments = [
+                {"start": 0.0, "end": round(max(fallback_end, 0.1), 3), "speaker": "S1"}
+            ]
 
-    aliases = _load_aliases(cfg.speaker_db)
-    for row in diar_segments:
-        label = str(row["speaker"])
-        aliases.setdefault(label, label)
-    _save_aliases(aliases, cfg.speaker_db)
+        speaker_turns = _build_speaker_turns(
+            asr_segments,
+            diar_segments,
+            default_language=detected_language,
+        )
+
+        aliases = _load_aliases(cfg.speaker_db)
+        for row in diar_segments:
+            label = str(row["speaker"])
+            aliases.setdefault(label, label)
+        _save_aliases(aliases, cfg.speaker_db)
+    except Exception as exc:
+        error_rate_total.inc()
+        _write_failed_artifacts(exc)
+        raise
 
     if not clean_text:
         _clear_dir(artifact_paths.snippets_dir)
@@ -975,31 +1016,13 @@ async def run_pipeline(
         )
     except Exception as exc:
         error_rate_total.inc()
-        atomic_write_json(
-            artifact_paths.summary_json_path,
-            {
-                "friendly": friendly,
-                "model": cfg.llm_model,
-                "summary": "",
-                "status": "failed",
-            },
-        )
-        atomic_write_json(
-            artifact_paths.metrics_json_path,
-            {
-                "status": "failed",
-                "version": 1,
-                "precheck": {
-                    "duration_sec": precheck_result.duration_sec,
-                    "speech_ratio": precheck_result.speech_ratio,
-                    "quarantine_reason": None,
-                },
-                "language": language_info,
-                "asr_segments": len(asr_segments),
-                "diar_segments": len(diar_segments),
-                "speaker_turns": len(speaker_turns),
-                "error": str(exc) or exc.__class__.__name__,
-            },
+        _write_failed_artifacts(
+            exc,
+            friendly_score=friendly,
+            language_payload=language_info,
+            asr_count=len(asr_segments),
+            diar_count=len(diar_segments),
+            speaker_turn_count=len(speaker_turns),
         )
         raise
     finally:

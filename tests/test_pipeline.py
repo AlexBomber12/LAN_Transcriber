@@ -619,6 +619,41 @@ async def test_pipeline_error_marks_metrics_failed(tmp_path: Path, mocker):
     assert metrics_data["error"] == "llm boom"
 
 
+@pytest.mark.asyncio
+async def test_pipeline_pre_llm_error_marks_metrics_failed(tmp_path: Path, mocker):
+    mocker.patch("whisperx.transcribe", side_effect=RuntimeError("asr boom"))
+
+    cfg = pipeline.Settings(
+        speaker_db=tmp_path / "db.yaml",
+        tmp_root=tmp_path,
+        recordings_root=tmp_path / "recordings",
+    )
+    audio = wav_audio(
+        tmp_path,
+        name="asr-fail.wav",
+        duration_sec=24.0,
+        speech=True,
+    )
+
+    with pytest.raises(RuntimeError, match="asr boom"):
+        await pipeline.run_pipeline(
+            audio_path=audio,
+            cfg=cfg,
+            llm=llm_client.LLMClient(),
+            diariser=DummyDiariser(),
+            recording_id="rec-asr-fail-1",
+            precheck=precheck_ok(),
+        )
+
+    derived = cfg.recordings_root / "rec-asr-fail-1" / "derived"
+    summary_data = json.loads((derived / "summary.json").read_text(encoding="utf-8"))
+    metrics_data = json.loads((derived / "metrics.json").read_text(encoding="utf-8"))
+
+    assert summary_data["status"] == "failed"
+    assert metrics_data["status"] == "failed"
+    assert metrics_data["error"] == "asr boom"
+
+
 def test_run_precheck_quarantine_rules(tmp_path: Path):
     cfg = pipeline.Settings(
         speaker_db=tmp_path / "db.yaml",
