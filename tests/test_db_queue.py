@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
+import sys
+from types import ModuleType
 
 from fastapi.testclient import TestClient
 import pytest
@@ -448,3 +451,35 @@ def test_worker_precheck_runs_pipeline_when_safe(tmp_path: Path, monkeypatch):
     assert recording["status"] == RECORDING_STATUS_READY
     assert job is not None
     assert job["status"] == JOB_STATUS_FINISHED
+
+
+def test_build_diariser_wraps_sync_pyannote_pipeline(monkeypatch):
+    from lan_app import worker_tasks
+
+    class _FakeModel:
+        def __init__(self):
+            self.calls: list[object] = []
+
+        def __call__(self, input_payload: object):
+            self.calls.append(input_payload)
+            return {"ok": True}
+
+    fake_model = _FakeModel()
+
+    class _FakePipeline:
+        @staticmethod
+        def from_pretrained(_name: str):
+            return fake_model
+
+    pyannote_audio = ModuleType("pyannote.audio")
+    pyannote_audio.Pipeline = _FakePipeline  # type: ignore[attr-defined]
+    pyannote_pkg = ModuleType("pyannote")
+    pyannote_pkg.audio = pyannote_audio  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "pyannote", pyannote_pkg)
+    monkeypatch.setitem(sys.modules, "pyannote.audio", pyannote_audio)
+
+    diariser = worker_tasks._build_diariser(duration_sec=30.0)
+    result = asyncio.run(diariser(Path("/tmp/fake.wav")))
+
+    assert result == {"ok": True}
+    assert fake_model.calls == ["/tmp/fake.wav"]

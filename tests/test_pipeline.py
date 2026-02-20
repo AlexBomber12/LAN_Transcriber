@@ -257,6 +257,46 @@ async def test_no_talk(tmp_path: Path, mocker):
 
 @pytest.mark.asyncio
 @respx.mock
+async def test_pipeline_preserves_zero_language_confidence(tmp_path: Path, mocker):
+    mocker.patch(
+        "whisperx.transcribe",
+        return_value=(
+            [{"start": 0.0, "end": 1.0, "text": "hello"}],
+            {"language": "en", "language_probability": 0.0},
+        ),
+    )
+    mocker.patch(
+        "transformers.pipeline",
+        lambda *a, **k: lambda text: [{"label": "positive", "score": 0.5}],
+    )
+    respx.post("http://llm:8000/v1/chat/completions").mock(
+        return_value=httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": "- summary"}}]},
+        ),
+    )
+
+    cfg = pipeline.Settings(
+        speaker_db=tmp_path / "db.yaml",
+        tmp_root=tmp_path,
+        recordings_root=tmp_path / "recordings",
+    )
+    await pipeline.run_pipeline(
+        audio_path=fake_audio(tmp_path, "zero-confidence.mp3"),
+        cfg=cfg,
+        llm=llm_client.LLMClient(),
+        diariser=DummyDiariser(),
+        recording_id="rec-zero-conf",
+        precheck=precheck_ok(),
+    )
+
+    transcript_path = cfg.recordings_root / "rec-zero-conf" / "derived" / "transcript.json"
+    payload = json.loads(transcript_path.read_text(encoding="utf-8"))
+    assert payload["language"]["confidence"] == 0.0
+
+
+@pytest.mark.asyncio
+@respx.mock
 async def test_pipeline_writes_required_artifacts(tmp_path: Path, mocker):
     mocker.patch(
         "whisperx.transcribe",

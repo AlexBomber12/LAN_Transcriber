@@ -102,6 +102,20 @@ class _FallbackDiariser:
         return _Annotation()
 
 
+class _PyannoteDiariser:
+    def __init__(self, pipeline_model: Any) -> None:
+        self._pipeline_model = pipeline_model
+
+    async def __call__(self, audio_path: Path):
+        def _run_sync():
+            try:
+                return self._pipeline_model(str(audio_path))
+            except Exception:
+                return self._pipeline_model({"audio": str(audio_path)})
+
+        return await asyncio.to_thread(_run_sync)
+
+
 def _build_pipeline_settings(settings: AppSettings) -> PipelineSettings:
     return PipelineSettings(
         recordings_root=settings.recordings_root,
@@ -115,7 +129,8 @@ def _build_diariser(duration_sec: float | None):
     try:
         from pyannote.audio import Pipeline  # type: ignore
 
-        return Pipeline.from_pretrained("pyannote/speaker-diarization@3.2")
+        model = Pipeline.from_pretrained("pyannote/speaker-diarization@3.2")
+        return _PyannoteDiariser(model)
     except Exception:
         return _FallbackDiariser(duration_sec)
 

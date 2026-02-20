@@ -162,12 +162,16 @@ def _language_payload(info: dict[str, Any]) -> dict[str, Any]:
         or info.get("lang")
         or "unknown"
     )
-    confidence_raw = (
-        info.get("language_probability")
-        or info.get("language_confidence")
-        or info.get("language_score")
-        or info.get("probability")
-    )
+    confidence_raw = None
+    for key in (
+        "language_probability",
+        "language_confidence",
+        "language_score",
+        "probability",
+    ):
+        if key in info and info[key] is not None:
+            confidence_raw = info[key]
+            break
     confidence = None
     if confidence_raw is not None:
         confidence = round(_safe_float(confidence_raw, default=0.0), 4)
