@@ -837,14 +837,8 @@ async def run_pipeline(
                 segments, info = whisperx.transcribe(str(audio_path), **kwargs)
             return list(segments), dict(info or {})
 
-        async def _safe_diarise() -> Any:
-            try:
-                return await diariser(audio_path)
-            except Exception:
-                return _fallback_diarization(precheck_result.duration_sec)
-
         asr_task = asyncio.to_thread(_asr)
-        diar_task = _safe_diarise()
+        diar_task = diariser(audio_path)
         (raw_segments, info), diarization = await asyncio.gather(asr_task, diar_task)
 
         asr_segments = _normalise_asr_segments(raw_segments)

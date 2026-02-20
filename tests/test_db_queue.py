@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import builtins
 from pathlib import Path
 import sys
 from types import ModuleType
@@ -568,4 +569,22 @@ def test_build_diariser_surfaces_pyannote_model_load_errors(monkeypatch):
     monkeypatch.setitem(sys.modules, "pyannote.audio", pyannote_audio)
 
     with pytest.raises(RuntimeError, match="auth failed"):
+        worker_tasks._build_diariser(duration_sec=30.0)
+
+
+def test_build_diariser_surfaces_non_pyannote_import_errors(monkeypatch):
+    from lan_app import worker_tasks
+
+    real_import = builtins.__import__
+
+    def _fake_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "pyannote.audio":
+            err = ModuleNotFoundError("No module named 'torch'")
+            err.name = "torch"
+            raise err
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", _fake_import)
+
+    with pytest.raises(ModuleNotFoundError, match="torch"):
         worker_tasks._build_diariser(duration_sec=30.0)

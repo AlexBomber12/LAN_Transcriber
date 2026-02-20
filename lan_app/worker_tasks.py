@@ -124,8 +124,11 @@ def _build_pipeline_settings(settings: AppSettings) -> PipelineSettings:
 def _build_diariser(duration_sec: float | None):
     try:
         from pyannote.audio import Pipeline  # type: ignore
-    except Exception:
-        return _FallbackDiariser(duration_sec)
+    except ModuleNotFoundError as exc:
+        missing = (exc.name or "").split(".", 1)[0]
+        if missing == "pyannote":
+            return _FallbackDiariser(duration_sec)
+        raise
     model = Pipeline.from_pretrained("pyannote/speaker-diarization@3.2")
     return _PyannoteDiariser(model)
 
