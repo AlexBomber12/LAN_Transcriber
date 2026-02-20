@@ -182,10 +182,7 @@ def _safe_diarization_segments(diarization: Any) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     if diarization is None or not hasattr(diarization, "itertracks"):
         return out
-    try:
-        tracks = diarization.itertracks(yield_label=True)
-    except Exception:
-        return out
+    tracks = diarization.itertracks(yield_label=True)
     for item in tracks:
         if not isinstance(item, tuple) or len(item) < 2:
             continue

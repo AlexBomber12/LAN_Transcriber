@@ -134,8 +134,8 @@ Requirement already satisfied: six>=1.5 in ./.venv-ci/lib/python3.12/site-packag
 Building wheels for collected packages: lan-transcriber
   Building editable for lan-transcriber (pyproject.toml): started
   Building editable for lan-transcriber (pyproject.toml): finished with status 'done'
-  Created wheel for lan-transcriber: filename=lan_transcriber-0.1.0-0.editable-py3-none-any.whl size=15395 sha256=01306bf668812882701ef5a84e8c0e6dee671a0f9e77e01a5237748c1c254f3c
-  Stored in directory: /tmp/pip-ephem-wheel-cache-kdna1woo/wheels/d5/8a/5c/f7178f7e49aa5ae12b2320ec66b5c310f4f2f63d1bd301b7fb
+  Created wheel for lan-transcriber: filename=lan_transcriber-0.1.0-0.editable-py3-none-any.whl size=15395 sha256=1f9800ddc76ce6b891d735dc14694309eb1d724c60493940f952f0f53b268c17
+  Stored in directory: /tmp/pip-ephem-wheel-cache-0d4cimex/wheels/d5/8a/5c/f7178f7e49aa5ae12b2320ec66b5c310f4f2f63d1bd301b7fb
 Successfully built lan-transcriber
 Installing collected packages: lan-transcriber
   Attempting uninstall: lan-transcriber
@@ -145,8 +145,8 @@ Installing collected packages: lan-transcriber
 Successfully installed lan-transcriber-0.1.0
 All checks passed!
 ........................................................................ [ 48%]
-........................................................................ [ 97%]
-....                                                                     [100%]
+........................................................................ [ 96%]
+.....                                                                    [100%]
 =============================== warnings summary ===============================
 lan_transcriber/pipeline.py:4
   /home/alexey/LAN_Transcriber/lan_transcriber/pipeline.py:4: DeprecationWarning: 'audioop' is deprecated and slated for removal in Python 3.13
@@ -195,4 +195,4 @@ lan_transcriber/runtime_paths.py      21      1    95%
 ------------------------------------------------------
 TOTAL                                208      7    97%
 Required test coverage of 90% reached. Total coverage: 96.63%
-148 passed, 1 skipped, 5 warnings in 43.63s
+149 passed, 1 skipped, 5 warnings in 44.01s
