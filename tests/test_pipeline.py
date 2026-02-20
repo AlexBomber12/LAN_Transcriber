@@ -509,6 +509,48 @@ async def test_pipeline_summary_language_override_changes_prompt(tmp_path: Path,
 
 @pytest.mark.asyncio
 @respx.mock
+async def test_pipeline_transcript_language_override_is_used_for_asr(tmp_path: Path, mocker):
+    captured: dict[str, object] = {}
+
+    def _fake_transcribe(*_args, **kwargs):
+        captured["language"] = kwargs.get("language")
+        return (
+            [{"start": 0.0, "end": 1.0, "text": "hola equipo hoy."}],
+            {"language": "es", "language_probability": 0.9},
+        )
+
+    mocker.patch("whisperx.transcribe", side_effect=_fake_transcribe)
+    mocker.patch(
+        "transformers.pipeline",
+        lambda *a, **k: lambda text: [{"label": "positive", "score": 0.6}],
+    )
+    respx.post("http://llm:8000/v1/chat/completions").mock(
+        return_value=httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": "- resumen"}}]},
+        ),
+    )
+
+    cfg = pipeline.Settings(
+        speaker_db=tmp_path / "db.yaml",
+        tmp_root=tmp_path,
+        recordings_root=tmp_path / "recordings",
+    )
+    await pipeline.run_pipeline(
+        audio_path=fake_audio(tmp_path, "override-asr.mp3"),
+        cfg=cfg,
+        llm=llm_client.LLMClient(),
+        diariser=DummyDiariser(),
+        recording_id="rec-override-asr-1",
+        precheck=precheck_ok(),
+        transcript_language_override="es",
+    )
+
+    assert captured["language"] == "es"
+
+
+@pytest.mark.asyncio
+@respx.mock
 async def test_pipeline_accepts_pyannote_triplet_itertracks(tmp_path: Path, mocker):
     mocker.patch(
         "whisperx.transcribe",

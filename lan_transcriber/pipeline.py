@@ -1077,7 +1077,8 @@ async def run_pipeline(
         import whisperx
 
         def _asr() -> tuple[list[dict[str, Any]], dict[str, Any]]:
-            kwargs: dict[str, Any] = {"vad_filter": True, "language": "auto"}
+            asr_language = normalized_transcript_language_override or "auto"
+            kwargs: dict[str, Any] = {"vad_filter": True, "language": asr_language}
             try:
                 segments, info = whisperx.transcribe(
                     str(audio_path),
