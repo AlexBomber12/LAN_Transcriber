@@ -1,41 +1,27 @@
 diff --git a/lan_transcriber/pipeline.py b/lan_transcriber/pipeline.py
-index c4b7d8d..0f5702f 100644
+index 0f5702f..80e5715 100644
 --- a/lan_transcriber/pipeline.py
 +++ b/lan_transcriber/pipeline.py
-@@ -712,7 +712,6 @@ async def run_pipeline(
- ) -> TranscriptResult:
-     """Transcribe ``audio_path`` and return a structured result."""
-     start = time.perf_counter()
--    import whisperx
+@@ -834,6 +834,7 @@ async def run_pipeline(
+     _save_aliases(aliases, cfg.speaker_db)
  
-     artifact_paths = build_recording_artifacts(
-         cfg.recordings_root,
-@@ -785,6 +784,8 @@ async def run_pipeline(
-             segments=[],
-         )
- 
-+    import whisperx
-+
-     def _asr() -> tuple[list[dict[str, Any]], dict[str, Any]]:
-         kwargs: dict[str, Any] = {"vad_filter": True, "language": "auto"}
-         try:
+     if not clean_text:
++        _clear_dir(artifact_paths.snippets_dir)
+         atomic_write_text(artifact_paths.transcript_txt_path, "")
+         atomic_write_json(
+             artifact_paths.transcript_json_path,
 diff --git a/tests/test_pipeline.py b/tests/test_pipeline.py
-index 14e988f..b3716ff 100644
+index b3716ff..38158cb 100644
 --- a/tests/test_pipeline.py
 +++ b/tests/test_pipeline.py
-@@ -1,5 +1,6 @@
- from __future__ import annotations
- 
-+import builtins
- import json
- import math
- from pathlib import Path
-@@ -495,6 +496,46 @@ async def test_pipeline_quarantine_clears_stale_snippets(tmp_path: Path):
-     assert list(snippets_root.iterdir()) == []
+@@ -536,6 +536,40 @@ async def test_pipeline_quarantine_skips_whisperx_import(tmp_path: Path, monkeyp
+     assert result.summary == "Quarantined"
  
  
 +@pytest.mark.asyncio
-+async def test_pipeline_quarantine_skips_whisperx_import(tmp_path: Path, monkeypatch):
++async def test_pipeline_no_speech_clears_stale_snippets(tmp_path: Path, mocker):
++    mocker.patch("whisperx.transcribe", return_value=([], {"language": "en"}))
++
 +    cfg = pipeline.Settings(
 +        speaker_db=tmp_path / "db.yaml",
 +        tmp_root=tmp_path,
@@ -43,35 +29,27 @@ index 14e988f..b3716ff 100644
 +    )
 +    audio = wav_audio(
 +        tmp_path,
-+        name="quarantine-no-whisperx.wav",
++        name="no-speech.wav",
 +        duration_sec=24.0,
-+        speech=True,
++        speech=False,
 +    )
-+
-+    original_import = builtins.__import__
-+
-+    def _guarded_import(name, globals=None, locals=None, fromlist=(), level=0):
-+        if name == "whisperx":
-+            raise AssertionError("whisperx should not be imported for quarantined runs")
-+        return original_import(name, globals, locals, fromlist, level)
-+
-+    monkeypatch.delitem(sys.modules, "whisperx", raising=False)
-+    monkeypatch.setattr(builtins, "__import__", _guarded_import)
++    snippets_root = cfg.recordings_root / "rec-no-speech-1" / "derived" / "snippets"
++    stale_snippet = snippets_root / "S1" / "old.wav"
++    stale_snippet.parent.mkdir(parents=True, exist_ok=True)
++    stale_snippet.write_bytes(b"stale")
 +
 +    result = await pipeline.run_pipeline(
 +        audio_path=audio,
 +        cfg=cfg,
 +        llm=llm_client.LLMClient(),
 +        diariser=DummyDiariser(),
-+        recording_id="rec-quarantine-no-whisperx",
-+        precheck=pipeline.PrecheckResult(
-+            duration_sec=5.0,
-+            speech_ratio=0.0,
-+            quarantine_reason="duration_lt_20s",
-+        ),
++        recording_id="rec-no-speech-1",
++        precheck=precheck_ok(),
 +    )
 +
-+    assert result.summary == "Quarantined"
++    assert result.summary == "No speech detected"
++    assert snippets_root.exists()
++    assert list(snippets_root.iterdir()) == []
 +
 +
  def test_run_precheck_quarantine_rules(tmp_path: Path):

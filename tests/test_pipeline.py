@@ -536,6 +536,40 @@ async def test_pipeline_quarantine_skips_whisperx_import(tmp_path: Path, monkeyp
     assert result.summary == "Quarantined"
 
 
+@pytest.mark.asyncio
+async def test_pipeline_no_speech_clears_stale_snippets(tmp_path: Path, mocker):
+    mocker.patch("whisperx.transcribe", return_value=([], {"language": "en"}))
+
+    cfg = pipeline.Settings(
+        speaker_db=tmp_path / "db.yaml",
+        tmp_root=tmp_path,
+        recordings_root=tmp_path / "recordings",
+    )
+    audio = wav_audio(
+        tmp_path,
+        name="no-speech.wav",
+        duration_sec=24.0,
+        speech=False,
+    )
+    snippets_root = cfg.recordings_root / "rec-no-speech-1" / "derived" / "snippets"
+    stale_snippet = snippets_root / "S1" / "old.wav"
+    stale_snippet.parent.mkdir(parents=True, exist_ok=True)
+    stale_snippet.write_bytes(b"stale")
+
+    result = await pipeline.run_pipeline(
+        audio_path=audio,
+        cfg=cfg,
+        llm=llm_client.LLMClient(),
+        diariser=DummyDiariser(),
+        recording_id="rec-no-speech-1",
+        precheck=precheck_ok(),
+    )
+
+    assert result.summary == "No speech detected"
+    assert snippets_root.exists()
+    assert list(snippets_root.iterdir()) == []
+
+
 def test_run_precheck_quarantine_rules(tmp_path: Path):
     cfg = pipeline.Settings(
         speaker_db=tmp_path / "db.yaml",

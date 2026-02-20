@@ -834,6 +834,7 @@ async def run_pipeline(
     _save_aliases(aliases, cfg.speaker_db)
 
     if not clean_text:
+        _clear_dir(artifact_paths.snippets_dir)
         atomic_write_text(artifact_paths.transcript_txt_path, "")
         atomic_write_json(
             artifact_paths.transcript_json_path,
