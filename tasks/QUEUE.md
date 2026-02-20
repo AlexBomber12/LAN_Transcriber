@@ -52,7 +52,7 @@ Queue (in order)
 - Depends on: PR-GDRIVE-INGEST-01 and PR-REFRACTOR-CORE-01 and PR-DB-QUEUE-01
 
 9) PR-LANG-01: Multi-language support (2 languages): language spans, dominant language, UI override + reprocess hooks
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-LANG-01.md
 - Depends on: PR-PIPELINE-01
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -14,6 +15,7 @@ from lan_app.db import (
     create_recording,
     create_project,
     create_voice_profile,
+    get_recording,
     init_db,
     list_projects,
     list_voice_profiles,
@@ -150,10 +152,47 @@ def test_recording_detail_calendar_tab(seeded_client):
 
 
 def test_recording_detail_placeholder_tabs(seeded_client):
-    for tab in ("project", "speakers", "language", "metrics"):
+    for tab in ("project", "speakers", "metrics"):
         r = seeded_client.get(f"/recordings/rec-ui-1?tab={tab}")
         assert r.status_code == 200
         assert "placeholder" in r.text.lower() or "available after" in r.text.lower()
+
+
+def test_recording_detail_language_tab_renders_spans(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    init_db(cfg)
+    create_recording(
+        "rec-lang-tab-1",
+        source="drive",
+        source_filename="lang.mp3",
+        status=RECORDING_STATUS_READY,
+        settings=cfg,
+    )
+    derived = cfg.recordings_root / "rec-lang-tab-1" / "derived"
+    derived.mkdir(parents=True, exist_ok=True)
+    (derived / "transcript.json").write_text(
+        json.dumps(
+            {
+                "text": "hello hola",
+                "language": {"detected": "en", "confidence": 0.9},
+                "dominant_language": "es",
+                "language_distribution": {"en": 40.0, "es": 60.0},
+                "language_spans": [
+                    {"start": 0.0, "end": 1.0, "lang": "en"},
+                    {"start": 1.0, "end": 2.0, "lang": "es"},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    c = TestClient(api.app, follow_redirects=True)
+    r = c.get("/recordings/rec-lang-tab-1?tab=language")
+    assert r.status_code == 200
+    assert "Language Distribution" in r.text
+    assert "Language Spans" in r.text
+    assert "Re-summarize (LLM only)" in r.text
 
 
 def test_recording_detail_not_found(client):
@@ -375,6 +414,108 @@ def test_ui_action_requeue_failure_returns_503(tmp_path, monkeypatch):
     r = c.post("/ui/recordings/rec-rqf-1/requeue")
     assert r.status_code == 503
     assert "redis down" in r.text
+
+
+def test_ui_language_resummarize_uses_target_language_override(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    init_db(cfg)
+    create_recording(
+        "rec-lang-rsum-1",
+        source="drive",
+        source_filename="lang.mp3",
+        status=RECORDING_STATUS_READY,
+        settings=cfg,
+    )
+
+    derived = cfg.recordings_root / "rec-lang-rsum-1" / "derived"
+    derived.mkdir(parents=True, exist_ok=True)
+    (derived / "transcript.json").write_text(
+        json.dumps(
+            {
+                "text": "hello team and hola equipo",
+                "language": {"detected": "en", "confidence": 0.9},
+                "dominant_language": "en",
+                "language_distribution": {"en": 55.0, "es": 45.0},
+                "language_spans": [
+                    {"start": 0.0, "end": 2.0, "lang": "en"},
+                    {"start": 2.0, "end": 4.0, "lang": "es"},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (derived / "summary.json").write_text(
+        json.dumps({"friendly": 0, "model": "llama3:8b", "summary": "- old"}),
+        encoding="utf-8",
+    )
+
+    captured: dict[str, str] = {}
+
+    async def _fake_generate(self, system_prompt: str, user_prompt: str, model: str | None = None):
+        captured["system_prompt"] = system_prompt
+        captured["model"] = model or ""
+        return {"content": "- resumen actualizado"}
+
+    monkeypatch.setattr(ui_routes.LLMClient, "generate", _fake_generate)
+    c = TestClient(api.app, follow_redirects=False)
+    r = c.post(
+        "/ui/recordings/rec-lang-rsum-1/language/resummarize",
+        data={
+            "target_summary_language": "es",
+            "transcript_language_override": "en",
+        },
+    )
+    assert r.status_code == 303
+
+    recording = get_recording("rec-lang-rsum-1", settings=cfg)
+    assert recording is not None
+    assert recording["target_summary_language"] == "es"
+    assert recording["language_override"] == "en"
+
+    summary_payload = json.loads((derived / "summary.json").read_text(encoding="utf-8"))
+    assert summary_payload["summary"] == "- resumen actualizado"
+    assert summary_payload["target_summary_language"] == "es"
+    assert "Write the summary in Spanish." in captured["system_prompt"]
+
+
+def test_ui_language_retranscribe_enqueues_precheck_and_saves_overrides(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    init_db(cfg)
+    create_recording(
+        "rec-lang-rtr-1",
+        source="drive",
+        source_filename="lang.mp3",
+        status=RECORDING_STATUS_READY,
+        settings=cfg,
+    )
+    called: dict[str, str] = {}
+
+    def _fake_enqueue(recording_id: str, *, settings=None, job_type=JOB_TYPE_PRECHECK):
+        called["recording_id"] = recording_id
+        called["job_type"] = job_type
+        return None
+
+    monkeypatch.setattr(ui_routes, "enqueue_recording_job", _fake_enqueue)
+    c = TestClient(api.app, follow_redirects=False)
+    r = c.post(
+        "/ui/recordings/rec-lang-rtr-1/language/retranscribe",
+        data={
+            "target_summary_language": "es",
+            "transcript_language_override": "en",
+        },
+    )
+    assert r.status_code == 303
+    assert called["recording_id"] == "rec-lang-rtr-1"
+    assert called["job_type"] == JOB_TYPE_PRECHECK
+
+    recording = get_recording("rec-lang-rtr-1", settings=cfg)
+    assert recording is not None
+    assert recording["target_summary_language"] == "es"
+    assert recording["language_override"] == "en"
 
 
 def test_ui_action_delete_purge_failure_returns_503(tmp_path, monkeypatch):

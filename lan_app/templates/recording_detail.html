@@ -34,7 +34,8 @@
     <span class="k">Duration</span><span class="v">{% if rec.duration_sec %}{{ rec.duration_sec }}s{% else %}—{% endif %}</span>
     <span class="k">Project ID</span><span class="v">{{ rec.project_id or '—' }}</span>
     <span class="k">Language (auto)</span><span class="v">{{ rec.language_auto or '—' }}</span>
-    <span class="k">Language (override)</span><span class="v">{{ rec.language_override or '—' }}</span>
+    <span class="k">Transcript language override</span><span class="v">{{ rec.language_override or '—' }}</span>
+    <span class="k">Target summary language</span><span class="v">{{ rec.target_summary_language or '—' }}</span>
     <span class="k">Drive file ID</span><span class="v">{{ rec.drive_file_id or '—' }}</span>
     <span class="k">OneNote page ID</span><span class="v">{{ rec.onenote_page_id or '—' }}</span>
     <span class="k">Quarantine reason</span><span class="v">{{ rec.quarantine_reason or '—' }}</span>
@@ -127,7 +128,107 @@
   <p class="placeholder">Speaker assignments — available after PR-VOICE-01.</p>
 
 {% elif current_tab == 'language' %}
-  <p class="placeholder">Language spans — available after PR-LANG-01.</p>
+  {% set lang = language or {} %}
+
+  <h2>Detected Languages</h2>
+  <div class="info-grid">
+    <span class="k">Detected language</span><span class="v">{{ lang.detected_label or '—' }}</span>
+    <span class="k">Dominant language</span><span class="v">{{ lang.dominant_label or '—' }}</span>
+    <span class="k">Mixed-language meeting</span><span class="v">{{ 'Yes' if lang.is_mixed else 'No' }}</span>
+    <span class="k">Current summary target</span><span class="v">{{ lang.target_summary_language_label or '—' }}</span>
+    <span class="k">Transcript override</span><span class="v">{{ lang.transcript_language_override_label or '—' }}</span>
+  </div>
+
+  <h2>Language Distribution</h2>
+  {% if lang.distribution %}
+  <table>
+    <thead>
+      <tr>
+        <th>Language</th>
+        <th>Share (%)</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in lang.distribution %}
+      <tr>
+        <td>{{ row.label }}</td>
+        <td>{{ '%.2f'|format(row.percent) }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="placeholder">No language distribution available yet.</p>
+  {% endif %}
+
+  <h2>Language Spans</h2>
+  {% if lang.spans %}
+  <table>
+    <thead>
+      <tr>
+        <th>Start</th>
+        <th>End</th>
+        <th>Language</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for span in lang.spans %}
+      <tr>
+        <td>{{ '%.3f'|format(span.start) }}</td>
+        <td>{{ '%.3f'|format(span.end) }}</td>
+        <td>{{ span.label }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="placeholder">No language spans available yet.</p>
+  {% endif %}
+
+  <h2>Overrides and Reprocess</h2>
+  <form method="post" action="/ui/recordings/{{ rec.id }}/language/settings">
+    <div class="form-row">
+      <label for="target_summary_language">target_summary_language</label>
+      <select id="target_summary_language" name="target_summary_language">
+        <option value="">Auto (dominant language)</option>
+        {% for opt in lang.options or [] %}
+        <option value="{{ opt.code }}" {% if lang.target_summary_language == opt.code %}selected{% endif %}>{{ opt.label }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="form-row">
+      <label for="transcript_language_override">transcript_language_override</label>
+      <select id="transcript_language_override" name="transcript_language_override">
+        <option value="">None (auto detect)</option>
+        {% for opt in lang.options or [] %}
+        <option value="{{ opt.code }}" {% if lang.transcript_language_override == opt.code %}selected{% endif %}>{{ opt.label }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="filters" style="margin-top:8px">
+      <button type="submit" class="btn">Save overrides</button>
+      <button
+        type="submit"
+        class="btn"
+        formaction="/ui/recordings/{{ rec.id }}/language/resummarize"
+      >
+        Re-summarize (LLM only)
+      </button>
+      <button
+        type="submit"
+        class="btn btn-danger"
+        formaction="/ui/recordings/{{ rec.id }}/language/retranscribe"
+        onclick="return confirm('Re-transcribe reruns STT and diarization. Continue?')"
+      >
+        Re-transcribe (STT again)
+      </button>
+    </div>
+  </form>
+
+  {% if lang.summary_preview %}
+  <h2>Latest Summary</h2>
+  <pre style="white-space:pre-wrap;background:#f8f9ff;border:1px solid #ccd;padding:8px;font:12px/1.4 'Courier New',monospace;max-height:240px;overflow:auto">{{ lang.summary_preview }}</pre>
+  {% endif %}
 
 {% elif current_tab == 'metrics' %}
   <p class="placeholder">Meeting metrics — available after PR-METRICS-01.</p>

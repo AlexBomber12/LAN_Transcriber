@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timezone
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -22,7 +23,15 @@ from .constants import (
     RECORDING_STATUS_QUARANTINE,
     RECORDING_STATUS_READY,
 )
-from .db import fail_job, finish_job, init_db, set_recording_status, start_job
+from .db import (
+    fail_job,
+    finish_job,
+    get_recording,
+    init_db,
+    set_recording_language_settings,
+    set_recording_status,
+    start_job,
+)
 
 
 def _utc_now() -> str:
@@ -79,6 +88,29 @@ def _resolve_raw_audio_path(recording_id: str, settings: AppSettings) -> Path | 
     if not candidates:
         return None
     return candidates[0]
+
+
+def _clean_language_value(value: object | None) -> str | None:
+    if not isinstance(value, str):
+        return None
+    cleaned = value.strip()
+    return cleaned or None
+
+
+def _load_transcript_language_payload(
+    recording_id: str,
+    settings: AppSettings,
+) -> tuple[str | None, str | None]:
+    transcript_path = settings.recordings_root / recording_id / "derived" / "transcript.json"
+    if not transcript_path.exists():
+        return None, None
+    try:
+        payload = json.loads(transcript_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None, None
+    dominant = _clean_language_value(payload.get("dominant_language"))
+    target = _clean_language_value(payload.get("target_summary_language"))
+    return dominant, target
 
 
 class _FallbackDiariser:
@@ -139,6 +171,10 @@ def _run_precheck_pipeline(
     settings: AppSettings,
     log_path: Path,
 ) -> tuple[str, str | None]:
+    recording = get_recording(recording_id, settings=settings) or {}
+    transcript_language_override = _clean_language_value(recording.get("language_override"))
+    target_summary_language = _clean_language_value(recording.get("target_summary_language"))
+
     audio_path = _resolve_raw_audio_path(recording_id, settings)
     if audio_path is None:
         _append_step_log(log_path, "precheck skipped: raw audio not found")
@@ -166,8 +202,25 @@ def _run_precheck_pipeline(
             diariser=diariser,
             recording_id=recording_id,
             precheck=precheck,
+            target_summary_language=target_summary_language,
+            transcript_language_override=transcript_language_override,
         )
     )
+    dominant_language, resolved_target_language = _load_transcript_language_payload(
+        recording_id,
+        settings,
+    )
+    update_payload: dict[str, str] = {}
+    if dominant_language:
+        update_payload["language_auto"] = dominant_language
+    if resolved_target_language:
+        update_payload["target_summary_language"] = resolved_target_language
+    if update_payload:
+        set_recording_language_settings(
+            recording_id,
+            settings=settings,
+            **update_payload,
+        )
     _append_step_log(log_path, "pipeline artifacts generated")
     if precheck.quarantine_reason:
         _append_step_log(

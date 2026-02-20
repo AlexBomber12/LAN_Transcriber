@@ -411,6 +411,104 @@ async def test_pipeline_writes_required_artifacts(tmp_path: Path, mocker):
 
 @pytest.mark.asyncio
 @respx.mock
+async def test_pipeline_writes_language_spans_for_mixed_language_segments(tmp_path: Path, mocker):
+    mocker.patch(
+        "whisperx.transcribe",
+        return_value=(
+            [
+                {"start": 0.0, "end": 4.0, "text": "hello team and thanks"},
+                {"start": 4.0, "end": 12.0, "text": "hola equipo y gracias por venir"},
+            ],
+            {"language": "en", "language_probability": 0.91},
+        ),
+    )
+    mocker.patch(
+        "transformers.pipeline",
+        lambda *a, **k: lambda text: [{"label": "positive", "score": 0.6}],
+    )
+    respx.post("http://llm:8000/v1/chat/completions").mock(
+        return_value=httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": "- summary"}}]},
+        ),
+    )
+
+    cfg = pipeline.Settings(
+        speaker_db=tmp_path / "db.yaml",
+        tmp_root=tmp_path,
+        recordings_root=tmp_path / "recordings",
+    )
+    await pipeline.run_pipeline(
+        audio_path=fake_audio(tmp_path, "mixed.mp3"),
+        cfg=cfg,
+        llm=llm_client.LLMClient(),
+        diariser=TwoSpeakerDiariser(),
+        recording_id="rec-mixed-lang-1",
+        precheck=precheck_ok(),
+    )
+
+    derived = cfg.recordings_root / "rec-mixed-lang-1" / "derived"
+    transcript_data = json.loads((derived / "transcript.json").read_text(encoding="utf-8"))
+    assert transcript_data["dominant_language"] == "es"
+    assert set(transcript_data["language_distribution"]).issuperset({"en", "es"})
+    assert len(transcript_data["language_spans"]) >= 2
+    assert transcript_data["language_spans"][0]["lang"] == "en"
+    assert transcript_data["language_spans"][1]["lang"] == "es"
+
+
+@pytest.mark.asyncio
+async def test_pipeline_summary_language_override_changes_prompt(tmp_path: Path, mocker):
+    mocker.patch(
+        "whisperx.transcribe",
+        return_value=(
+            [{"start": 0.0, "end": 1.0, "text": "hello team today."}],
+            {"language": "en", "language_probability": 0.9},
+        ),
+    )
+    mocker.patch(
+        "transformers.pipeline",
+        lambda *a, **k: lambda text: [{"label": "positive", "score": 0.6}],
+    )
+
+    captured: dict[str, str] = {}
+
+    async def _fake_generate(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        model: str | None = None,
+    ):
+        captured["system"] = system_prompt
+        return {"content": "- resumen"}
+
+    mocker.patch.object(llm_client.LLMClient, "generate", _fake_generate)
+
+    cfg = pipeline.Settings(
+        speaker_db=tmp_path / "db.yaml",
+        tmp_root=tmp_path,
+        recordings_root=tmp_path / "recordings",
+    )
+    await pipeline.run_pipeline(
+        audio_path=fake_audio(tmp_path, "summary-lang.mp3"),
+        cfg=cfg,
+        llm=llm_client.LLMClient(),
+        diariser=DummyDiariser(),
+        recording_id="rec-summary-lang-1",
+        precheck=precheck_ok(),
+        target_summary_language="es",
+    )
+
+    assert "Write the summary in Spanish." in captured["system"]
+    summary_data = json.loads(
+        (cfg.recordings_root / "rec-summary-lang-1" / "derived" / "summary.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert summary_data["target_summary_language"] == "es"
+
+
+@pytest.mark.asyncio
+@respx.mock
 async def test_pipeline_accepts_pyannote_triplet_itertracks(tmp_path: Path, mocker):
     mocker.patch(
         "whisperx.transcribe",
