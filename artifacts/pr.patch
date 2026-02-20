@@ -1,60 +1,97 @@
 diff --git a/lan_transcriber/pipeline.py b/lan_transcriber/pipeline.py
-index 80e5715..6932635 100644
+index 6932635..5910e0f 100644
 --- a/lan_transcriber/pipeline.py
 +++ b/lan_transcriber/pipeline.py
-@@ -651,7 +651,9 @@ def _speech_ratio_from_ffmpeg(audio_path: Path) -> float | None:
-                 total += 1
-                 if audioop.rms(chunk, 2) >= 300:
-                     voiced += 1
--            proc.wait(timeout=60)
-+            # Avoid a fixed wait cap; long/slower ffmpeg runs should not
-+            # downgrade valid audio into "metrics unavailable" quarantine.
-+            proc.wait()
-             if proc.returncode != 0:
-                 return None
-             if total == 0:
+@@ -973,7 +973,7 @@ async def run_pipeline(
+             unknown_chunks=snippet_paths,
+             segments=serialised_segments,
+         )
+-    except Exception:
++    except Exception as exc:
+         error_rate_total.inc()
+         atomic_write_json(
+             artifact_paths.summary_json_path,
+@@ -984,6 +984,23 @@ async def run_pipeline(
+                 "status": "failed",
+             },
+         )
++        atomic_write_json(
++            artifact_paths.metrics_json_path,
++            {
++                "status": "failed",
++                "version": 1,
++                "precheck": {
++                    "duration_sec": precheck_result.duration_sec,
++                    "speech_ratio": precheck_result.speech_ratio,
++                    "quarantine_reason": None,
++                },
++                "language": language_info,
++                "asr_segments": len(asr_segments),
++                "diar_segments": len(diar_segments),
++                "speaker_turns": len(speaker_turns),
++                "error": str(exc) or exc.__class__.__name__,
++            },
++        )
+         raise
+     finally:
+         p95_latency_seconds.observe(time.perf_counter() - start)
 diff --git a/tests/test_pipeline.py b/tests/test_pipeline.py
-index 38158cb..5a5c8c5 100644
+index 5a5c8c5..4709f03 100644
 --- a/tests/test_pipeline.py
 +++ b/tests/test_pipeline.py
-@@ -626,3 +626,40 @@ def test_run_precheck_quarantines_when_metrics_unavailable(tmp_path: Path, monke
-     assert result.quarantine_reason == "precheck_metrics_unavailable"
-     assert result.duration_sec is None
-     assert result.speech_ratio is None
+@@ -570,6 +570,55 @@ async def test_pipeline_no_speech_clears_stale_snippets(tmp_path: Path, mocker):
+     assert list(snippets_root.iterdir()) == []
+ 
+ 
++@pytest.mark.asyncio
++async def test_pipeline_error_marks_metrics_failed(tmp_path: Path, mocker):
++    mocker.patch(
++        "whisperx.transcribe",
++        return_value=(
++            [{"start": 0.0, "end": 1.0, "text": "hello world today"}],
++            {"language": "en", "language_probability": 0.9},
++        ),
++    )
++    mocker.patch(
++        "transformers.pipeline",
++        lambda *a, **k: lambda text: [{"label": "positive", "score": 0.7}],
++    )
++
++    class _FailingLLM:
++        async def generate(self, **_kwargs):
++            raise RuntimeError("llm boom")
++
++    cfg = pipeline.Settings(
++        speaker_db=tmp_path / "db.yaml",
++        tmp_root=tmp_path,
++        recordings_root=tmp_path / "recordings",
++    )
++    audio = wav_audio(
++        tmp_path,
++        name="llm-fail.wav",
++        duration_sec=24.0,
++        speech=True,
++    )
++
++    with pytest.raises(RuntimeError, match="llm boom"):
++        await pipeline.run_pipeline(
++            audio_path=audio,
++            cfg=cfg,
++            llm=_FailingLLM(),
++            diariser=DummyDiariser(),
++            recording_id="rec-llm-fail-1",
++            precheck=precheck_ok(),
++        )
++
++    derived = cfg.recordings_root / "rec-llm-fail-1" / "derived"
++    summary_data = json.loads((derived / "summary.json").read_text(encoding="utf-8"))
++    metrics_data = json.loads((derived / "metrics.json").read_text(encoding="utf-8"))
++
++    assert summary_data["status"] == "failed"
++    assert metrics_data["status"] == "failed"
++    assert metrics_data["error"] == "llm boom"
 +
 +
-+def test_speech_ratio_from_ffmpeg_uses_unbounded_wait(tmp_path: Path, monkeypatch):
-+    audio = tmp_path / "ffmpeg-input.mp3"
-+    audio.write_bytes(b"audio")
-+
-+    monkeypatch.setattr(pipeline.shutil, "which", lambda _name: "/usr/bin/ffmpeg")
-+
-+    class _Stdout:
-+        def __init__(self):
-+            self._chunks = [b"\x00" * 960, b"\x00" * 960, b""]
-+
-+        def read(self, _size: int) -> bytes:
-+            return self._chunks.pop(0)
-+
-+    class _Proc:
-+        def __init__(self):
-+            self.stdout = _Stdout()
-+            self.returncode = 0
-+            self.wait_timeout = "unset"
-+
-+        def wait(self, timeout=None):
-+            self.wait_timeout = timeout
-+            self.returncode = 0
-+
-+        def __enter__(self):
-+            return self
-+
-+        def __exit__(self, exc_type, exc, tb):
-+            return False
-+
-+    proc = _Proc()
-+    monkeypatch.setattr(pipeline.subprocess, "Popen", lambda *_args, **_kwargs: proc)
-+
-+    ratio = pipeline._speech_ratio_from_ffmpeg(audio)
-+    assert ratio == 0.0
-+    assert proc.wait_timeout is None
+ def test_run_precheck_quarantine_rules(tmp_path: Path):
+     cfg = pipeline.Settings(
+         speaker_db=tmp_path / "db.yaml",

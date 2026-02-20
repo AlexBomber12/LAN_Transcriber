@@ -570,6 +570,55 @@ async def test_pipeline_no_speech_clears_stale_snippets(tmp_path: Path, mocker):
     assert list(snippets_root.iterdir()) == []
 
 
+@pytest.mark.asyncio
+async def test_pipeline_error_marks_metrics_failed(tmp_path: Path, mocker):
+    mocker.patch(
+        "whisperx.transcribe",
+        return_value=(
+            [{"start": 0.0, "end": 1.0, "text": "hello world today"}],
+            {"language": "en", "language_probability": 0.9},
+        ),
+    )
+    mocker.patch(
+        "transformers.pipeline",
+        lambda *a, **k: lambda text: [{"label": "positive", "score": 0.7}],
+    )
+
+    class _FailingLLM:
+        async def generate(self, **_kwargs):
+            raise RuntimeError("llm boom")
+
+    cfg = pipeline.Settings(
+        speaker_db=tmp_path / "db.yaml",
+        tmp_root=tmp_path,
+        recordings_root=tmp_path / "recordings",
+    )
+    audio = wav_audio(
+        tmp_path,
+        name="llm-fail.wav",
+        duration_sec=24.0,
+        speech=True,
+    )
+
+    with pytest.raises(RuntimeError, match="llm boom"):
+        await pipeline.run_pipeline(
+            audio_path=audio,
+            cfg=cfg,
+            llm=_FailingLLM(),
+            diariser=DummyDiariser(),
+            recording_id="rec-llm-fail-1",
+            precheck=precheck_ok(),
+        )
+
+    derived = cfg.recordings_root / "rec-llm-fail-1" / "derived"
+    summary_data = json.loads((derived / "summary.json").read_text(encoding="utf-8"))
+    metrics_data = json.loads((derived / "metrics.json").read_text(encoding="utf-8"))
+
+    assert summary_data["status"] == "failed"
+    assert metrics_data["status"] == "failed"
+    assert metrics_data["error"] == "llm boom"
+
+
 def test_run_precheck_quarantine_rules(tmp_path: Path):
     cfg = pipeline.Settings(
         speaker_db=tmp_path / "db.yaml",

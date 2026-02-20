@@ -973,7 +973,7 @@ async def run_pipeline(
             unknown_chunks=snippet_paths,
             segments=serialised_segments,
         )
-    except Exception:
+    except Exception as exc:
         error_rate_total.inc()
         atomic_write_json(
             artifact_paths.summary_json_path,
@@ -982,6 +982,23 @@ async def run_pipeline(
                 "model": cfg.llm_model,
                 "summary": "",
                 "status": "failed",
+            },
+        )
+        atomic_write_json(
+            artifact_paths.metrics_json_path,
+            {
+                "status": "failed",
+                "version": 1,
+                "precheck": {
+                    "duration_sec": precheck_result.duration_sec,
+                    "speech_ratio": precheck_result.speech_ratio,
+                    "quarantine_reason": None,
+                },
+                "language": language_info,
+                "asr_segments": len(asr_segments),
+                "diar_segments": len(diar_segments),
+                "speaker_turns": len(speaker_turns),
+                "error": str(exc) or exc.__class__.__name__,
             },
         )
         raise
