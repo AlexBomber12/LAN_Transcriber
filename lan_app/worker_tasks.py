@@ -6,6 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+from lan_transcriber.llm_client import LLMClient
 from lan_transcriber.pipeline import Settings as PipelineSettings
 from lan_transcriber.pipeline import run_pipeline, run_precheck
 
@@ -78,11 +79,6 @@ def _resolve_raw_audio_path(recording_id: str, settings: AppSettings) -> Path | 
     if not candidates:
         return None
     return candidates[0]
-
-
-class _NoopLLMClient:
-    async def generate(self, **_kwargs: Any) -> dict[str, str]:
-        return {"content": ""}
 
 
 class _FallbackDiariser:
@@ -164,7 +160,7 @@ def _run_precheck_pipeline(
         run_pipeline(
             audio_path=audio_path,
             cfg=pipeline_settings,
-            llm=_NoopLLMClient(),
+            llm=LLMClient(),
             diariser=diariser,
             recording_id=recording_id,
             precheck=precheck,

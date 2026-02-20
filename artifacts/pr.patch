@@ -1,231 +1,66 @@
-diff --git a/lan_transcriber/pipeline.py b/lan_transcriber/pipeline.py
-index 5910e0f..aac7412 100644
---- a/lan_transcriber/pipeline.py
-+++ b/lan_transcriber/pipeline.py
-@@ -786,54 +786,95 @@ async def run_pipeline(
-             segments=[],
-         )
+diff --git a/lan_app/worker_tasks.py b/lan_app/worker_tasks.py
+index ba42ff1..2693c3e 100644
+--- a/lan_app/worker_tasks.py
++++ b/lan_app/worker_tasks.py
+@@ -6,6 +6,7 @@ from pathlib import Path
+ from types import SimpleNamespace
+ from typing import Any
  
--    import whisperx
++from lan_transcriber.llm_client import LLMClient
+ from lan_transcriber.pipeline import Settings as PipelineSettings
+ from lan_transcriber.pipeline import run_pipeline, run_precheck
+ 
+@@ -80,11 +81,6 @@ def _resolve_raw_audio_path(recording_id: str, settings: AppSettings) -> Path |
+     return candidates[0]
+ 
+ 
+-class _NoopLLMClient:
+-    async def generate(self, **_kwargs: Any) -> dict[str, str]:
+-        return {"content": ""}
 -
--    def _asr() -> tuple[list[dict[str, Any]], dict[str, Any]]:
--        kwargs: dict[str, Any] = {"vad_filter": True, "language": "auto"}
--        try:
--            segments, info = whisperx.transcribe(
--                str(audio_path),
--                word_timestamps=True,
--                **kwargs,
--            )
--        except TypeError:
--            segments, info = whisperx.transcribe(str(audio_path), **kwargs)
--        return list(segments), dict(info or {})
 -
--    async def _safe_diarise() -> Any:
--        try:
--            return await diariser(audio_path)
--        except Exception:
--            return _fallback_diarization(precheck_result.duration_sec)
--
--    asr_task = asyncio.to_thread(_asr)
--    diar_task = _safe_diarise()
--    (raw_segments, info), diarization = await asyncio.gather(asr_task, diar_task)
--
--    asr_segments = _normalise_asr_segments(raw_segments)
--    language_info = _language_payload(info)
--    detected_language = language_info["detected"] if language_info["detected"] != "unknown" else None
--
--    asr_text = " ".join(seg.get("text", "").strip() for seg in asr_segments).strip()
--    clean_text = normalizer.dedup(asr_text)
--    diar_segments = _safe_diarization_segments(diarization)
--    if not diar_segments and asr_segments:
--        fallback_end = max(_safe_float(seg.get("end")) for seg in asr_segments)
--        diar_segments = [
--            {"start": 0.0, "end": round(max(fallback_end, 0.1), 3), "speaker": "S1"}
--        ]
-+    def _write_failed_artifacts(
-+        exc: Exception,
-+        *,
-+        friendly_score: int = 0,
-+        language_payload: dict[str, Any] | None = None,
-+        asr_count: int = 0,
-+        diar_count: int = 0,
-+        speaker_turn_count: int = 0,
-+    ) -> None:
-+        atomic_write_json(
-+            artifact_paths.summary_json_path,
-+            {
-+                "friendly": friendly_score,
-+                "model": cfg.llm_model,
-+                "summary": "",
-+                "status": "failed",
-+            },
-+        )
-+        atomic_write_json(
-+            artifact_paths.metrics_json_path,
-+            {
-+                "status": "failed",
-+                "version": 1,
-+                "precheck": {
-+                    "duration_sec": precheck_result.duration_sec,
-+                    "speech_ratio": precheck_result.speech_ratio,
-+                    "quarantine_reason": None,
-+                },
-+                "language": language_payload or {"detected": "unknown", "confidence": None},
-+                "asr_segments": asr_count,
-+                "diar_segments": diar_count,
-+                "speaker_turns": speaker_turn_count,
-+                "error": str(exc) or exc.__class__.__name__,
-+            },
-+        )
- 
--    speaker_turns = _build_speaker_turns(
--        asr_segments,
--        diar_segments,
--        default_language=detected_language,
--    )
-+    try:
-+        import whisperx
-+
-+        def _asr() -> tuple[list[dict[str, Any]], dict[str, Any]]:
-+            kwargs: dict[str, Any] = {"vad_filter": True, "language": "auto"}
-+            try:
-+                segments, info = whisperx.transcribe(
-+                    str(audio_path),
-+                    word_timestamps=True,
-+                    **kwargs,
-+                )
-+            except TypeError:
-+                segments, info = whisperx.transcribe(str(audio_path), **kwargs)
-+            return list(segments), dict(info or {})
-+
-+        async def _safe_diarise() -> Any:
-+            try:
-+                return await diariser(audio_path)
-+            except Exception:
-+                return _fallback_diarization(precheck_result.duration_sec)
-+
-+        asr_task = asyncio.to_thread(_asr)
-+        diar_task = _safe_diarise()
-+        (raw_segments, info), diarization = await asyncio.gather(asr_task, diar_task)
-+
-+        asr_segments = _normalise_asr_segments(raw_segments)
-+        language_info = _language_payload(info)
-+        detected_language = language_info["detected"] if language_info["detected"] != "unknown" else None
-+
-+        asr_text = " ".join(seg.get("text", "").strip() for seg in asr_segments).strip()
-+        clean_text = normalizer.dedup(asr_text)
-+        diar_segments = _safe_diarization_segments(diarization)
-+        if not diar_segments and asr_segments:
-+            fallback_end = max(_safe_float(seg.get("end")) for seg in asr_segments)
-+            diar_segments = [
-+                {"start": 0.0, "end": round(max(fallback_end, 0.1), 3), "speaker": "S1"}
-+            ]
- 
--    aliases = _load_aliases(cfg.speaker_db)
--    for row in diar_segments:
--        label = str(row["speaker"])
--        aliases.setdefault(label, label)
--    _save_aliases(aliases, cfg.speaker_db)
-+        speaker_turns = _build_speaker_turns(
-+            asr_segments,
-+            diar_segments,
-+            default_language=detected_language,
-+        )
-+
-+        aliases = _load_aliases(cfg.speaker_db)
-+        for row in diar_segments:
-+            label = str(row["speaker"])
-+            aliases.setdefault(label, label)
-+        _save_aliases(aliases, cfg.speaker_db)
-+    except Exception as exc:
-+        error_rate_total.inc()
-+        _write_failed_artifacts(exc)
-+        raise
- 
-     if not clean_text:
-         _clear_dir(artifact_paths.snippets_dir)
-@@ -975,31 +1016,13 @@ async def run_pipeline(
-         )
-     except Exception as exc:
-         error_rate_total.inc()
--        atomic_write_json(
--            artifact_paths.summary_json_path,
--            {
--                "friendly": friendly,
--                "model": cfg.llm_model,
--                "summary": "",
--                "status": "failed",
--            },
--        )
--        atomic_write_json(
--            artifact_paths.metrics_json_path,
--            {
--                "status": "failed",
--                "version": 1,
--                "precheck": {
--                    "duration_sec": precheck_result.duration_sec,
--                    "speech_ratio": precheck_result.speech_ratio,
--                    "quarantine_reason": None,
--                },
--                "language": language_info,
--                "asr_segments": len(asr_segments),
--                "diar_segments": len(diar_segments),
--                "speaker_turns": len(speaker_turns),
--                "error": str(exc) or exc.__class__.__name__,
--            },
-+        _write_failed_artifacts(
-+            exc,
-+            friendly_score=friendly,
-+            language_payload=language_info,
-+            asr_count=len(asr_segments),
-+            diar_count=len(diar_segments),
-+            speaker_turn_count=len(speaker_turns),
-         )
-         raise
-     finally:
-diff --git a/tests/test_pipeline.py b/tests/test_pipeline.py
-index 4709f03..882c52b 100644
---- a/tests/test_pipeline.py
-+++ b/tests/test_pipeline.py
-@@ -619,6 +619,41 @@ async def test_pipeline_error_marks_metrics_failed(tmp_path: Path, mocker):
-     assert metrics_data["error"] == "llm boom"
+ class _FallbackDiariser:
+     def __init__(self, duration_sec: float | None) -> None:
+         self._duration_sec = max(duration_sec or 0.1, 0.1)
+@@ -164,7 +160,7 @@ def _run_precheck_pipeline(
+         run_pipeline(
+             audio_path=audio_path,
+             cfg=pipeline_settings,
+-            llm=_NoopLLMClient(),
++            llm=LLMClient(),
+             diariser=diariser,
+             recording_id=recording_id,
+             precheck=precheck,
+diff --git a/tests/test_db_queue.py b/tests/test_db_queue.py
+index 5941c68..def2884 100644
+--- a/tests/test_db_queue.py
++++ b/tests/test_db_queue.py
+@@ -31,6 +31,7 @@ from lan_app.db import (
+ )
+ from lan_app.jobs import RecordingJob, enqueue_recording_job, purge_pending_recording_jobs
+ from lan_app.worker_tasks import process_job
++from lan_transcriber.llm_client import LLMClient
+ from lan_transcriber.pipeline import PrecheckResult
  
  
-+@pytest.mark.asyncio
-+async def test_pipeline_pre_llm_error_marks_metrics_failed(tmp_path: Path, mocker):
-+    mocker.patch("whisperx.transcribe", side_effect=RuntimeError("asr boom"))
-+
-+    cfg = pipeline.Settings(
-+        speaker_db=tmp_path / "db.yaml",
-+        tmp_root=tmp_path,
-+        recordings_root=tmp_path / "recordings",
-+    )
-+    audio = wav_audio(
-+        tmp_path,
-+        name="asr-fail.wav",
-+        duration_sec=24.0,
-+        speech=True,
-+    )
-+
-+    with pytest.raises(RuntimeError, match="asr boom"):
-+        await pipeline.run_pipeline(
-+            audio_path=audio,
-+            cfg=cfg,
-+            llm=llm_client.LLMClient(),
-+            diariser=DummyDiariser(),
-+            recording_id="rec-asr-fail-1",
-+            precheck=precheck_ok(),
-+        )
-+
-+    derived = cfg.recordings_root / "rec-asr-fail-1" / "derived"
-+    summary_data = json.loads((derived / "summary.json").read_text(encoding="utf-8"))
-+    metrics_data = json.loads((derived / "metrics.json").read_text(encoding="utf-8"))
-+
-+    assert summary_data["status"] == "failed"
-+    assert metrics_data["status"] == "failed"
-+    assert metrics_data["error"] == "asr boom"
-+
-+
- def test_run_precheck_quarantine_rules(tmp_path: Path):
-     cfg = pipeline.Settings(
-         speaker_db=tmp_path / "db.yaml",
+@@ -497,9 +498,11 @@ def test_worker_precheck_runs_pipeline_when_safe(tmp_path: Path, monkeypatch):
+         ),
+     )
+     called = {"value": False}
++    observed_llm: dict[str, object] = {}
+ 
+-    async def _fake_run_pipeline(*_args, **_kwargs):
++    async def _fake_run_pipeline(*_args, **kwargs):
+         called["value"] = True
++        observed_llm["value"] = kwargs.get("llm")
+         return None
+ 
+     monkeypatch.setattr("lan_app.worker_tasks.run_pipeline", _fake_run_pipeline)
+@@ -507,6 +510,7 @@ def test_worker_precheck_runs_pipeline_when_safe(tmp_path: Path, monkeypatch):
+     result = process_job("job-precheck-ok-1", "rec-precheck-ok-1", JOB_TYPE_PRECHECK)
+     assert result["status"] == "ok"
+     assert called["value"] is True
++    assert isinstance(observed_llm["value"], LLMClient)
+ 
+     recording = get_recording("rec-precheck-ok-1", settings=cfg)
+     job = get_job("job-precheck-ok-1", settings=cfg)

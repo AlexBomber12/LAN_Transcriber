@@ -31,6 +31,7 @@ from lan_app.db import (
 )
 from lan_app.jobs import RecordingJob, enqueue_recording_job, purge_pending_recording_jobs
 from lan_app.worker_tasks import process_job
+from lan_transcriber.llm_client import LLMClient
 from lan_transcriber.pipeline import PrecheckResult
 
 
@@ -497,9 +498,11 @@ def test_worker_precheck_runs_pipeline_when_safe(tmp_path: Path, monkeypatch):
         ),
     )
     called = {"value": False}
+    observed_llm: dict[str, object] = {}
 
-    async def _fake_run_pipeline(*_args, **_kwargs):
+    async def _fake_run_pipeline(*_args, **kwargs):
         called["value"] = True
+        observed_llm["value"] = kwargs.get("llm")
         return None
 
     monkeypatch.setattr("lan_app.worker_tasks.run_pipeline", _fake_run_pipeline)
@@ -507,6 +510,7 @@ def test_worker_precheck_runs_pipeline_when_safe(tmp_path: Path, monkeypatch):
     result = process_job("job-precheck-ok-1", "rec-precheck-ok-1", JOB_TYPE_PRECHECK)
     assert result["status"] == "ok"
     assert called["value"] is True
+    assert isinstance(observed_llm["value"], LLMClient)
 
     recording = get_recording("rec-precheck-ok-1", settings=cfg)
     job = get_job("job-precheck-ok-1", settings=cfg)
