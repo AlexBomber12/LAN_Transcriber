@@ -651,7 +651,9 @@ def _speech_ratio_from_ffmpeg(audio_path: Path) -> float | None:
                 total += 1
                 if audioop.rms(chunk, 2) >= 300:
                     voiced += 1
-            proc.wait(timeout=60)
+            # Avoid a fixed wait cap; long/slower ffmpeg runs should not
+            # downgrade valid audio into "metrics unavailable" quarantine.
+            proc.wait()
             if proc.returncode != 0:
                 return None
             if total == 0:

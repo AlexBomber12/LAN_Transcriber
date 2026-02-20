@@ -626,3 +626,40 @@ def test_run_precheck_quarantines_when_metrics_unavailable(tmp_path: Path, monke
     assert result.quarantine_reason == "precheck_metrics_unavailable"
     assert result.duration_sec is None
     assert result.speech_ratio is None
+
+
+def test_speech_ratio_from_ffmpeg_uses_unbounded_wait(tmp_path: Path, monkeypatch):
+    audio = tmp_path / "ffmpeg-input.mp3"
+    audio.write_bytes(b"audio")
+
+    monkeypatch.setattr(pipeline.shutil, "which", lambda _name: "/usr/bin/ffmpeg")
+
+    class _Stdout:
+        def __init__(self):
+            self._chunks = [b"\x00" * 960, b"\x00" * 960, b""]
+
+        def read(self, _size: int) -> bytes:
+            return self._chunks.pop(0)
+
+    class _Proc:
+        def __init__(self):
+            self.stdout = _Stdout()
+            self.returncode = 0
+            self.wait_timeout = "unset"
+
+        def wait(self, timeout=None):
+            self.wait_timeout = timeout
+            self.returncode = 0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    proc = _Proc()
+    monkeypatch.setattr(pipeline.subprocess, "Popen", lambda *_args, **_kwargs: proc)
+
+    ratio = pipeline._speech_ratio_from_ffmpeg(audio)
+    assert ratio == 0.0
+    assert proc.wait_timeout is None
