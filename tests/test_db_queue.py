@@ -382,6 +382,16 @@ def test_worker_precheck_quarantines_and_writes_artifacts(tmp_path: Path, monkey
             quarantine_reason="duration_lt_20s",
         ),
     )
+    build_called = {"value": False}
+
+    def _should_not_build_diariser(*_args, **_kwargs):
+        build_called["value"] = True
+        raise AssertionError("_build_diariser should be skipped for quarantined precheck")
+
+    monkeypatch.setattr(
+        "lan_app.worker_tasks._build_diariser",
+        _should_not_build_diariser,
+    )
 
     called = {"value": False}
 
@@ -394,6 +404,7 @@ def test_worker_precheck_quarantines_and_writes_artifacts(tmp_path: Path, monkey
     result = process_job("job-precheck-q-1", "rec-precheck-q-1", JOB_TYPE_PRECHECK)
     assert result["status"] == "ok"
     assert called["value"] is True
+    assert build_called["value"] is False
 
     recording = get_recording("rec-precheck-q-1", settings=cfg)
     job = get_job("job-precheck-q-1", settings=cfg)

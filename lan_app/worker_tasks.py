@@ -156,7 +156,10 @@ def _run_precheck_pipeline(
             f"speech_ratio={precheck.speech_ratio}"
         ),
     )
-    diariser = _build_diariser(precheck.duration_sec)
+    if precheck.quarantine_reason:
+        diariser = _FallbackDiariser(precheck.duration_sec)
+    else:
+        diariser = _build_diariser(precheck.duration_sec)
     asyncio.run(
         run_pipeline(
             audio_path=audio_path,
