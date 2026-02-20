@@ -17,7 +17,7 @@ from .metrics import (
 )
 from .models import SpeakerSegment, TranscriptResult
 from .normalizer import dedup
-from .pipeline import Diariser, Settings, run_pipeline
+from .pipeline import Diariser, PrecheckResult, Settings, run_pipeline, run_precheck
 
 __all__ = [
     "ALIAS_PATH",
@@ -36,6 +36,8 @@ __all__ = [
     "write_metrics_snapshot",
     "Settings",
     "run_pipeline",
+    "run_precheck",
+    "PrecheckResult",
     "Diariser",
     "SpeakerSegment",
     "TranscriptResult",

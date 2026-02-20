@@ -134,8 +134,8 @@ Requirement already satisfied: six>=1.5 in ./.venv-ci/lib/python3.12/site-packag
 Building wheels for collected packages: lan-transcriber
   Building editable for lan-transcriber (pyproject.toml): started
   Building editable for lan-transcriber (pyproject.toml): finished with status 'done'
-  Created wheel for lan-transcriber: filename=lan_transcriber-0.1.0-0.editable-py3-none-any.whl size=15395 sha256=fc46f06ec336a9ebf2172bf57dad9ec25a67c5933a4cdbeff6ae2b5251af9692
-  Stored in directory: /tmp/pip-ephem-wheel-cache-x2ttkl00/wheels/d5/8a/5c/f7178f7e49aa5ae12b2320ec66b5c310f4f2f63d1bd301b7fb
+  Created wheel for lan-transcriber: filename=lan_transcriber-0.1.0-0.editable-py3-none-any.whl size=15395 sha256=611e30f36a992cf4049b0a8ce4f3560417d9260fe8fd7abc7588bd470c071099
+  Stored in directory: /tmp/pip-ephem-wheel-cache-pxvenfho/wheels/d5/8a/5c/f7178f7e49aa5ae12b2320ec66b5c310f4f2f63d1bd301b7fb
 Successfully built lan-transcriber
 Installing collected packages: lan-transcriber
   Attempting uninstall: lan-transcriber
@@ -144,11 +144,15 @@ Installing collected packages: lan-transcriber
       Successfully uninstalled lan-transcriber-0.1.0
 Successfully installed lan-transcriber-0.1.0
 All checks passed!
-........................................................................ [ 55%]
-..........................................................               [100%]
+........................................................................ [ 53%]
+..............................................................           [100%]
 =============================== warnings summary ===============================
-lan_transcriber/pipeline.py:35
-  /home/alexey/LAN_Transcriber/lan_transcriber/pipeline.py:35: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+lan_transcriber/pipeline.py:4
+  /home/alexey/LAN_Transcriber/lan_transcriber/pipeline.py:4: DeprecationWarning: 'audioop' is deprecated and slated for removal in Python 3.13
+    import audioop
+
+lan_transcriber/pipeline.py:48
+  /home/alexey/LAN_Transcriber/lan_transcriber/pipeline.py:48: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
     class Settings(BaseSettings):
 
 lan_app/config.py:20
@@ -181,13 +185,13 @@ Name                               Stmts   Miss  Cover
 ------------------------------------------------------
 lan_transcriber/__init__.py            8      0   100%
 lan_transcriber/aliases.py            17      0   100%
-lan_transcriber/artifacts.py          65      4    94%
+lan_transcriber/artifacts.py          66      4    94%
 lan_transcriber/llm_client.py         37      1    97%
 lan_transcriber/metrics.py            12      0   100%
 lan_transcriber/models.py             22      1    95%
 lan_transcriber/normalizer.py         25      0   100%
 lan_transcriber/runtime_paths.py      21      1    95%
 ------------------------------------------------------
-TOTAL                                207      7    97%
-Required test coverage of 90% reached. Total coverage: 96.62%
-130 passed, 1 skipped, 4 warnings in 39.38s
+TOTAL                                208      7    97%
+Required test coverage of 90% reached. Total coverage: 96.63%
+134 passed, 1 skipped, 5 warnings in 41.11s

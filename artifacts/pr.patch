@@ -1,191 +1,1649 @@
-diff --git a/lan_app/calendar.py b/lan_app/calendar.py
-index 42ebff9..f78556d 100644
---- a/lan_app/calendar.py
-+++ b/lan_app/calendar.py
-@@ -153,9 +153,13 @@ def select_calendar_event(
-         selected_confidence = _MANUAL_NO_EVENT_CONFIDENCE
-     else:
-         selected = _candidate_by_id(candidates, event_id)
--        if selected is None:
--            raise ValueError("Unknown event_id for this recording")
--        selected_confidence = float(selected.get("score") or 0.0)
-+        if selected is not None:
-+            selected_confidence = float(selected.get("score") or 0.0)
-+        else:
-+            current_selected = str(current.get("selected_event_id") or "").strip()
-+            if current_selected != event_id:
-+                raise ValueError("Unknown event_id for this recording")
-+            selected_confidence = _as_optional_float(current.get("selected_confidence"))
+diff --git a/data/README.md b/data/README.md
+index ae7dd99..9045b36 100644
+--- a/data/README.md
++++ b/data/README.md
+@@ -11,6 +11,7 @@ Expected subdirectories:
+   - `derived/transcript.json`
+   - `derived/transcript.txt`
+   - `derived/segments.json`
++  - `derived/speaker_turns.json`
+   - `derived/snippets/`
+   - `derived/summary.json`
+   - `derived/metrics.json`
+diff --git a/lan_app/worker_tasks.py b/lan_app/worker_tasks.py
+index dafea7f..24aa1f0 100644
+--- a/lan_app/worker_tasks.py
++++ b/lan_app/worker_tasks.py
+@@ -1,11 +1,18 @@
+ from __future__ import annotations
  
-     row = set_calendar_match_selection(
-         recording_id=recording_id,
-@@ -238,6 +242,15 @@ def _build_context(
-     selected_event_id = row.get("selected_event_id")
-     selected_confidence = row.get("selected_confidence")
-     selected = _candidate_by_id(candidates, selected_event_id)
-+    if (
-+        selected is None
-+        and isinstance(selected_event_id, str)
-+        and selected_event_id.strip()
-+    ):
-+        selected = _selection_placeholder(
-+            event_id=selected_event_id.strip(),
-+            selected_confidence=selected_confidence,
-+        )
-     visible_candidates = _visible_candidates(candidates, selected)
++import asyncio
+ from datetime import datetime, timezone
+ from pathlib import Path
++from types import SimpleNamespace
++from typing import Any
++
++from lan_transcriber.pipeline import Settings as PipelineSettings
++from lan_transcriber.pipeline import run_pipeline, run_precheck
  
-     return {
-@@ -273,9 +286,17 @@ def _resolve_selected_event(
-             and selected_confidence == _MANUAL_NO_EVENT_CONFIDENCE
-         ):
-             return None, _MANUAL_NO_EVENT_CONFIDENCE
--        selected = _candidate_by_id(candidates, selected_event_id)
--        if selected is not None:
--            return str(selected["event_id"]), float(selected.get("score") or 0.0)
-+        if isinstance(selected_event_id, str) and selected_event_id.strip():
-+            selected_id = selected_event_id.strip()
-+        else:
-+            selected_id = None
-+        if selected_id is not None:
-+            selected = _candidate_by_id(candidates, selected_id)
-+            if selected is not None:
-+                return str(selected["event_id"]), float(selected.get("score") or 0.0)
-+            # Preserve prior user choice if the selected event is temporarily
-+            # absent from the latest Graph candidate list.
-+            return selected_id, _as_optional_float(selected_confidence)
- 
-     if not candidates:
-         return None, None
-@@ -376,6 +397,25 @@ def _candidate_by_id(
-     return None
+ from .config import AppSettings
+ from .constants import (
+     JOB_TYPE_CLEANUP,
++    JOB_TYPE_PRECHECK,
+     JOB_TYPE_PUBLISH,
+     JOB_TYPES,
+     RECORDING_STATUS_FAILED,
+@@ -65,12 +72,99 @@ def _record_failure(
+         pass
  
  
-+def _selection_placeholder(
+-def process_job(job_id: str, recording_id: str, job_type: str) -> dict[str, str]:
+-    """
+-    Execute a queue job.
++def _resolve_raw_audio_path(recording_id: str, settings: AppSettings) -> Path | None:
++    raw_dir = settings.recordings_root / recording_id / "raw"
++    candidates = sorted(raw_dir.glob("audio.*"))
++    if not candidates:
++        return None
++    return candidates[0]
++
++
++class _NoopLLMClient:
++    async def generate(self, **_kwargs: Any) -> dict[str, str]:
++        return {"content": ""}
++
+ 
+-    MVP behavior intentionally runs a no-op body and only records lifecycle state.
+-    """
++class _FallbackDiariser:
++    def __init__(self, duration_sec: float | None) -> None:
++        self._duration_sec = max(duration_sec or 0.1, 0.1)
++
++    async def __call__(self, _audio_path: Path):
++        duration = self._duration_sec
++
++        class _Annotation:
++            def itertracks(self, yield_label: bool = False):
++                if yield_label:
++                    yield SimpleNamespace(start=0.0, end=duration), "S1"
++                else:  # pragma: no cover - legacy branch
++                    yield (SimpleNamespace(start=0.0, end=duration),)
++
++        return _Annotation()
++
++
++def _build_pipeline_settings(settings: AppSettings) -> PipelineSettings:
++    return PipelineSettings(
++        recordings_root=settings.recordings_root,
++        voices_dir=settings.data_root / "voices",
++        unknown_dir=settings.recordings_root / "unknown",
++        tmp_root=settings.data_root / "tmp",
++    )
++
++
++def _build_diariser(duration_sec: float | None):
++    try:
++        from pyannote.audio import Pipeline  # type: ignore
++
++        return Pipeline.from_pretrained("pyannote/speaker-diarization@3.2")
++    except Exception:
++        return _FallbackDiariser(duration_sec)
++
++
++def _run_precheck_pipeline(
 +    *,
-+    event_id: str,
-+    selected_confidence: float | None,
-+) -> dict[str, Any]:
++    recording_id: str,
++    settings: AppSettings,
++    log_path: Path,
++) -> tuple[str, str | None]:
++    audio_path = _resolve_raw_audio_path(recording_id, settings)
++    if audio_path is None:
++        _append_step_log(log_path, "precheck skipped: raw audio not found")
++        return RECORDING_STATUS_READY, None
++
++    pipeline_settings = _build_pipeline_settings(settings)
++    precheck = run_precheck(audio_path, pipeline_settings)
++    _append_step_log(
++        log_path,
++        (
++            "precheck "
++            f"duration_sec={precheck.duration_sec} "
++            f"speech_ratio={precheck.speech_ratio}"
++        ),
++    )
++    if precheck.quarantine_reason:
++        _append_step_log(
++            log_path,
++            f"quarantined reason={precheck.quarantine_reason}",
++        )
++        return RECORDING_STATUS_QUARANTINE, precheck.quarantine_reason
++
++    diariser = _build_diariser(precheck.duration_sec)
++    asyncio.run(
++        run_pipeline(
++            audio_path=audio_path,
++            cfg=pipeline_settings,
++            llm=_NoopLLMClient(),
++            diariser=diariser,
++            recording_id=recording_id,
++            precheck=precheck,
++        )
++    )
++    _append_step_log(log_path, "pipeline artifacts generated")
++    return RECORDING_STATUS_READY, None
++
++
++def process_job(job_id: str, recording_id: str, job_type: str) -> dict[str, str]:
++    """Execute a queue job and persist lifecycle state transitions."""
+ 
+     if job_type not in JOB_TYPES:
+         raise ValueError(f"Unsupported job type: {job_type}")
+@@ -90,8 +184,22 @@ def process_job(job_id: str, recording_id: str, job_type: str) -> dict[str, str]
+             raise ValueError(f"Recording not found: {recording_id}")
+         _append_step_log(log_path, f"started job={job_id} type={job_type}")
+ 
+-        final_status = _success_status(job_type)
+-        if not set_recording_status(recording_id, final_status, settings=settings):
++        quarantine_reason: str | None = None
++        if job_type == JOB_TYPE_PRECHECK:
++            final_status, quarantine_reason = _run_precheck_pipeline(
++                recording_id=recording_id,
++                settings=settings,
++                log_path=log_path,
++            )
++        else:
++            final_status = _success_status(job_type)
++
++        if not set_recording_status(
++            recording_id,
++            final_status,
++            settings=settings,
++            quarantine_reason=quarantine_reason,
++        ):
+             raise ValueError(f"Recording not found: {recording_id}")
+         if not finish_job(job_id, settings=settings):
+             raise ValueError(f"Job not found: {job_id}")
+diff --git a/lan_transcriber/__init__.py b/lan_transcriber/__init__.py
+index e324364..11e5164 100644
+--- a/lan_transcriber/__init__.py
++++ b/lan_transcriber/__init__.py
+@@ -17,7 +17,7 @@ from .metrics import (
+ )
+ from .models import SpeakerSegment, TranscriptResult
+ from .normalizer import dedup
+-from .pipeline import Diariser, Settings, run_pipeline
++from .pipeline import Diariser, PrecheckResult, Settings, run_pipeline, run_precheck
+ 
+ __all__ = [
+     "ALIAS_PATH",
+@@ -36,6 +36,8 @@ __all__ = [
+     "write_metrics_snapshot",
+     "Settings",
+     "run_pipeline",
++    "run_precheck",
++    "PrecheckResult",
+     "Diariser",
+     "SpeakerSegment",
+     "TranscriptResult",
+diff --git a/lan_transcriber/artifacts.py b/lan_transcriber/artifacts.py
+index 8358263..7bb5a28 100644
+--- a/lan_transcriber/artifacts.py
++++ b/lan_transcriber/artifacts.py
+@@ -19,6 +19,7 @@ class RecordingArtifacts:
+     transcript_json_path: Path
+     transcript_txt_path: Path
+     segments_json_path: Path
++    speaker_turns_json_path: Path
+     snippets_dir: Path
+     summary_json_path: Path
+     metrics_json_path: Path
+@@ -63,6 +64,7 @@ def build_recording_artifacts(
+         transcript_json_path=derived_dir / "transcript.json",
+         transcript_txt_path=derived_dir / "transcript.txt",
+         segments_json_path=derived_dir / "segments.json",
++        speaker_turns_json_path=derived_dir / "speaker_turns.json",
+         snippets_dir=snippets_dir,
+         summary_json_path=derived_dir / "summary.json",
+         metrics_json_path=derived_dir / "metrics.json",
+diff --git a/lan_transcriber/pipeline.py b/lan_transcriber/pipeline.py
+index fd3b260..1da675f 100644
+--- a/lan_transcriber/pipeline.py
++++ b/lan_transcriber/pipeline.py
+@@ -1,9 +1,15 @@
+ from __future__ import annotations
+ 
+ import asyncio
++import audioop
++import shutil
++import subprocess
+ import time
++import wave
++from dataclasses import dataclass
+ from pathlib import Path
+-from typing import Iterable, List, Protocol
++from types import SimpleNamespace
++from typing import Any, Iterable, List, Protocol, Sequence
+ 
+ from pydantic_settings import BaseSettings
+ 
+@@ -26,6 +32,13 @@ from .runtime_paths import (
+ )
+ 
+ 
++@dataclass(frozen=True)
++class PrecheckResult:
++    duration_sec: float | None
++    speech_ratio: float | None
++    quarantine_reason: str | None = None
++
++
+ class Diariser(Protocol):
+     """Minimal interface for speaker diarisation."""
+ 
+@@ -43,6 +56,8 @@ class Settings(BaseSettings):
+     llm_model: str = "llama3:8b"
+     embed_threshold: float = 0.65
+     merge_similar: float = 0.9
++    precheck_min_duration_sec: float = 20.0
++    precheck_min_speech_ratio: float = 0.10
+ 
+     class Config:
+         env_prefix = "LAN_"
+@@ -86,12 +101,607 @@ def _default_recording_id(audio_path: Path) -> str:
+     return stem or "recording"
+ 
+ 
++def _safe_float(value: object, default: float = 0.0) -> float:
++    try:
++        return float(value)
++    except (TypeError, ValueError):
++        return default
++
++
++def _normalise_word(word: dict[str, Any], seg_start: float, seg_end: float) -> dict[str, Any] | None:
++    text = str(word.get("word") or word.get("text") or "").strip()
++    if not text:
++        return None
++    start = _safe_float(word.get("start"), default=seg_start)
++    end = _safe_float(word.get("end"), default=max(start, seg_end))
++    if end < start:
++        end = start
 +    return {
-+        "event_id": event_id,
-+        "subject": "(selected event not present in latest calendar fetch)",
-+        "start": None,
-+        "end": None,
-+        "organizer": None,
-+        "attendees": [],
-+        "location": None,
-+        "title_tokens": [],
-+        "score": _as_optional_float(selected_confidence) or 0.0,
-+        "rationale": "selection_preserved_missing_from_candidates",
++        "start": round(start, 3),
++        "end": round(end, 3),
++        "word": text,
 +    }
 +
 +
- def _visible_candidates(
-     candidates: list[dict[str, Any]],
-     selected: dict[str, Any] | None,
-@@ -391,6 +431,14 @@ def _visible_candidates(
-     return [*visible, selected]
- 
- 
-+def _as_optional_float(value: Any) -> float | None:
-+    if isinstance(value, bool):
++def _normalise_asr_segments(raw_segments: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
++    out: list[dict[str, Any]] = []
++    for idx, raw in enumerate(raw_segments):
++        start = _safe_float(raw.get("start"), default=float(idx))
++        end = _safe_float(raw.get("end"), default=start)
++        if end < start:
++            end = start
++        text = str(raw.get("text") or "").strip()
++        words_raw = raw.get("words")
++        words: list[dict[str, Any]] = []
++        if isinstance(words_raw, list):
++            for word in words_raw:
++                if not isinstance(word, dict):
++                    continue
++                normalised = _normalise_word(word, start, end)
++                if normalised is not None:
++                    words.append(normalised)
++        if not words and text:
++            words = [{"start": round(start, 3), "end": round(end, 3), "word": text}]
++        payload: dict[str, Any] = {
++            "start": round(start, 3),
++            "end": round(end, 3),
++            "text": text,
++            "words": words,
++        }
++        language = raw.get("language")
++        if isinstance(language, str) and language.strip():
++            payload["language"] = language.strip()
++        out.append(payload)
++    return out
++
++
++def _language_payload(info: dict[str, Any]) -> dict[str, Any]:
++    detected = str(
++        info.get("language")
++        or info.get("detected_language")
++        or info.get("lang")
++        or "unknown"
++    )
++    confidence_raw = (
++        info.get("language_probability")
++        or info.get("language_confidence")
++        or info.get("language_score")
++        or info.get("probability")
++    )
++    confidence = None
++    if confidence_raw is not None:
++        confidence = round(_safe_float(confidence_raw, default=0.0), 4)
++    return {"detected": detected, "confidence": confidence}
++
++
++def _safe_diarization_segments(diarization: Any) -> list[dict[str, Any]]:
++    out: list[dict[str, Any]] = []
++    if diarization is None or not hasattr(diarization, "itertracks"):
++        return out
++    try:
++        tracks = diarization.itertracks(yield_label=True)
++    except Exception:
++        return out
++    for item in tracks:
++        if not isinstance(item, tuple) or len(item) != 2:
++            continue
++        seg, label = item
++        start = _safe_float(getattr(seg, "start", 0.0), default=0.0)
++        end = _safe_float(getattr(seg, "end", start), default=start)
++        if end < start:
++            end = start
++        out.append(
++            {
++                "start": round(start, 3),
++                "end": round(end, 3),
++                "speaker": str(label),
++            }
++        )
++    out.sort(key=lambda row: (row["start"], row["end"], row["speaker"]))
++    return out
++
++
++def _overlap_seconds(
++    left_start: float,
++    left_end: float,
++    right_start: float,
++    right_end: float,
++) -> float:
++    return max(0.0, min(left_end, right_end) - max(left_start, right_start))
++
++
++def _pick_speaker(start: float, end: float, diar_segments: Sequence[dict[str, Any]]) -> str:
++    if not diar_segments:
++        return "S1"
++    best_speaker = str(diar_segments[0]["speaker"])
++    best_overlap = -1.0
++    midpoint = (start + end) / 2.0
++    best_distance = float("inf")
++    for seg in diar_segments:
++        d_start = _safe_float(seg.get("start"), default=0.0)
++        d_end = _safe_float(seg.get("end"), default=d_start)
++        overlap = _overlap_seconds(start, end, d_start, d_end)
++        if overlap > best_overlap:
++            best_overlap = overlap
++            best_speaker = str(seg.get("speaker", "S1"))
++        if overlap == 0.0:
++            if midpoint < d_start:
++                distance = d_start - midpoint
++            elif midpoint > d_end:
++                distance = midpoint - d_end
++            else:
++                distance = 0.0
++            if best_overlap <= 0.0 and distance < best_distance:
++                best_distance = distance
++                best_speaker = str(seg.get("speaker", "S1"))
++    return best_speaker
++
++
++def _words_from_segments(
++    asr_segments: Sequence[dict[str, Any]],
++    *,
++    default_language: str | None,
++) -> list[dict[str, Any]]:
++    words: list[dict[str, Any]] = []
++    for seg in asr_segments:
++        seg_start = _safe_float(seg.get("start"), default=0.0)
++        seg_end = _safe_float(seg.get("end"), default=seg_start)
++        seg_language = seg.get("language")
++        language = (
++            str(seg_language)
++            if isinstance(seg_language, str) and seg_language.strip()
++            else default_language
++        )
++        seg_words = seg.get("words")
++        if not isinstance(seg_words, list):
++            seg_words = []
++        if not seg_words and seg.get("text"):
++            seg_words = [
++                {
++                    "start": seg_start,
++                    "end": seg_end,
++                    "word": str(seg.get("text")),
++                }
++            ]
++        for raw_word in seg_words:
++            if not isinstance(raw_word, dict):
++                continue
++            text = str(raw_word.get("word") or "").strip()
++            if not text:
++                continue
++            start = _safe_float(raw_word.get("start"), default=seg_start)
++            end = _safe_float(raw_word.get("end"), default=max(start, seg_end))
++            if end < start:
++                end = start
++            payload: dict[str, Any] = {
++                "start": round(start, 3),
++                "end": round(end, 3),
++                "word": text,
++            }
++            if language:
++                payload["language"] = language
++            words.append(payload)
++    words.sort(key=lambda row: (row["start"], row["end"], row["word"]))
++    return words
++
++
++def _build_speaker_turns(
++    asr_segments: Sequence[dict[str, Any]],
++    diar_segments: Sequence[dict[str, Any]],
++    *,
++    default_language: str | None,
++) -> list[dict[str, Any]]:
++    words = _words_from_segments(asr_segments, default_language=default_language)
++    if not words:
++        return []
++
++    turns: list[dict[str, Any]] = []
++    current: dict[str, Any] | None = None
++    for word in words:
++        start = _safe_float(word.get("start"), default=0.0)
++        end = _safe_float(word.get("end"), default=start)
++        speaker = _pick_speaker(start, end, diar_segments)
++        language = word.get("language")
++        if (
++            current is not None
++            and current["speaker"] == speaker
++            and start - _safe_float(current["end"], default=start) <= 1.0
++        ):
++            current["end"] = round(max(_safe_float(current["end"]), end), 3)
++            current["text"] = f"{current['text']} {word['word']}".strip()
++        else:
++            if current is not None:
++                turns.append(current)
++            current = {
++                "start": round(start, 3),
++                "end": round(end, 3),
++                "speaker": speaker,
++                "text": str(word["word"]),
++            }
++            if isinstance(language, str) and language:
++                current["language"] = language
++    if current is not None:
++        turns.append(current)
++    return turns
++
++
++def _speaker_slug(label: str) -> str:
++    slug = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in label)
++    slug = slug.strip("_")
++    return slug or "speaker"
++
++
++def _clear_dir(path: Path) -> None:
++    if not path.exists():
++        path.mkdir(parents=True, exist_ok=True)
++        return
++    for child in path.iterdir():
++        if child.is_dir():
++            shutil.rmtree(child)
++        else:
++            child.unlink(missing_ok=True)
++
++
++def _snippet_window(
++    start: float,
++    end: float,
++    *,
++    duration_sec: float | None,
++) -> tuple[float, float]:
++    seg_duration = max(0.0, end - start)
++    target = min(20.0, max(10.0, seg_duration if seg_duration > 0 else 10.0))
++    center = start + (seg_duration / 2.0 if seg_duration > 0 else 0.0)
++    clip_start = max(0.0, center - (target / 2.0))
++    clip_end = clip_start + target
++    if duration_sec is not None and duration_sec > 0:
++        if clip_end > duration_sec:
++            clip_end = duration_sec
++            clip_start = max(0.0, clip_end - target)
++    if clip_end <= clip_start:
++        clip_end = clip_start + min(target, 1.0)
++    return round(clip_start, 3), round(clip_end, 3)
++
++
++def _extract_wav_snippet_with_wave(
++    audio_path: Path,
++    out_path: Path,
++    *,
++    start_sec: float,
++    end_sec: float,
++) -> bool:
++    if audio_path.suffix.lower() != ".wav":
++        return False
++    try:
++        with wave.open(str(audio_path), "rb") as src:
++            rate = src.getframerate()
++            channels = src.getnchannels()
++            sampwidth = src.getsampwidth()
++            start_frame = max(0, int(start_sec * rate))
++            end_frame = max(start_frame + 1, int(end_sec * rate))
++            src.setpos(min(start_frame, src.getnframes()))
++            frames = src.readframes(max(0, end_frame - start_frame))
++        if not frames:
++            return False
++        out_path.parent.mkdir(parents=True, exist_ok=True)
++        with wave.open(str(out_path), "wb") as dst:
++            dst.setnchannels(channels)
++            dst.setsampwidth(sampwidth)
++            dst.setframerate(rate)
++            dst.writeframes(frames)
++        return True
++    except Exception:
++        return False
++
++
++def _extract_wav_snippet_with_ffmpeg(
++    audio_path: Path,
++    out_path: Path,
++    *,
++    start_sec: float,
++    end_sec: float,
++) -> bool:
++    ffmpeg = shutil.which("ffmpeg")
++    if ffmpeg is None:
++        return False
++    duration = max(0.1, end_sec - start_sec)
++    out_path.parent.mkdir(parents=True, exist_ok=True)
++    cmd = [
++        ffmpeg,
++        "-nostdin",
++        "-hide_banner",
++        "-loglevel",
++        "error",
++        "-y",
++        "-ss",
++        f"{start_sec:.3f}",
++        "-t",
++        f"{duration:.3f}",
++        "-i",
++        str(audio_path),
++        "-ac",
++        "1",
++        "-ar",
++        "16000",
++        "-c:a",
++        "pcm_s16le",
++        str(out_path),
++    ]
++    try:
++        proc = subprocess.run(cmd, check=False, capture_output=True, text=True)
++    except Exception:
++        return False
++    return proc.returncode == 0 and out_path.exists() and out_path.stat().st_size > 44
++
++
++def _write_silence_wav(path: Path, duration_sec: float = 1.0) -> None:
++    samples = max(int(16000 * max(duration_sec, 0.1)), 1)
++    payload = b"\x00\x00" * samples
++    path.parent.mkdir(parents=True, exist_ok=True)
++    with wave.open(str(path), "wb") as wav_out:
++        wav_out.setnchannels(1)
++        wav_out.setsampwidth(2)
++        wav_out.setframerate(16000)
++        wav_out.writeframes(payload)
++
++
++def _export_speaker_snippets(
++    *,
++    audio_path: Path,
++    diar_segments: Sequence[dict[str, Any]],
++    snippets_dir: Path,
++    duration_sec: float | None,
++) -> list[Path]:
++    _clear_dir(snippets_dir)
++
++    by_speaker: dict[str, list[dict[str, Any]]] = {}
++    for segment in diar_segments:
++        speaker = str(segment.get("speaker", "S1"))
++        by_speaker.setdefault(speaker, []).append(segment)
++
++    all_outputs: list[Path] = []
++    for speaker in sorted(by_speaker):
++        ranked = sorted(
++            by_speaker[speaker],
++            key=lambda row: (
++                -(_safe_float(row.get("end")) - _safe_float(row.get("start"))),
++                _safe_float(row.get("start")),
++                _safe_float(row.get("end")),
++            ),
++        )
++        chosen: list[dict[str, Any]] = []
++        for candidate in ranked:
++            start = _safe_float(candidate.get("start"))
++            end = _safe_float(candidate.get("end"), default=start)
++            if end <= start:
++                continue
++            overlaps = any(
++                _overlap_seconds(
++                    start,
++                    end,
++                    _safe_float(existing.get("start")),
++                    _safe_float(existing.get("end")),
++                )
++                > 0.5
++                for existing in chosen
++            )
++            if overlaps:
++                continue
++            chosen.append(candidate)
++            if len(chosen) == 3:
++                break
++        if len(chosen) < 2:
++            for candidate in ranked:
++                if candidate in chosen:
++                    continue
++                chosen.append(candidate)
++                if len(chosen) == 2:
++                    break
++
++        speaker_dir = snippets_dir / _speaker_slug(speaker)
++        for idx, segment in enumerate(
++            sorted(chosen, key=lambda row: _safe_float(row.get("start"))), start=1
++        ):
++            seg_start = _safe_float(segment.get("start"))
++            seg_end = _safe_float(segment.get("end"), default=seg_start)
++            clip_start, clip_end = _snippet_window(
++                seg_start,
++                seg_end,
++                duration_sec=duration_sec,
++            )
++            out_path = speaker_dir / f"{idx}.wav"
++            written = _extract_wav_snippet_with_wave(
++                audio_path,
++                out_path,
++                start_sec=clip_start,
++                end_sec=clip_end,
++            )
++            if not written:
++                written = _extract_wav_snippet_with_ffmpeg(
++                    audio_path,
++                    out_path,
++                    start_sec=clip_start,
++                    end_sec=clip_end,
++                )
++            if not written:
++                _write_silence_wav(out_path, duration_sec=min(max(clip_end - clip_start, 1.0), 2.0))
++            all_outputs.append(out_path)
++    all_outputs.sort()
++    return all_outputs
++
++
++def _audio_duration_from_wave(audio_path: Path) -> float | None:
++    if audio_path.suffix.lower() != ".wav":
 +        return None
-+    if isinstance(value, int | float):
-+        return float(value)
-+    return None
++    try:
++        with wave.open(str(audio_path), "rb") as src:
++            rate = src.getframerate()
++            frames = src.getnframes()
++        if rate <= 0:
++            return None
++        return frames / float(rate)
++    except Exception:
++        return None
 +
 +
- def _extract_party(value: Any) -> str | None:
-     if not isinstance(value, dict):
-         return None
-diff --git a/tests/test_calendar.py b/tests/test_calendar.py
-index bdf547d..f270e9e 100644
---- a/tests/test_calendar.py
-+++ b/tests/test_calendar.py
-@@ -376,3 +376,87 @@ def test_proximity_component_point_recording_uses_nearest_event_edge():
++def _audio_duration_from_ffprobe(audio_path: Path) -> float | None:
++    ffprobe = shutil.which("ffprobe")
++    if ffprobe is None:
++        return None
++    cmd = [
++        ffprobe,
++        "-v",
++        "error",
++        "-show_entries",
++        "format=duration",
++        "-of",
++        "default=noprint_wrappers=1:nokey=1",
++        str(audio_path),
++    ]
++    try:
++        proc = subprocess.run(cmd, check=False, capture_output=True, text=True)
++    except Exception:
++        return None
++    if proc.returncode != 0:
++        return None
++    raw = proc.stdout.strip()
++    if not raw:
++        return None
++    try:
++        value = float(raw)
++    except ValueError:
++        return None
++    if value <= 0:
++        return None
++    return value
++
++
++def _speech_ratio_from_wave(audio_path: Path) -> float | None:
++    if audio_path.suffix.lower() != ".wav":
++        return None
++    try:
++        with wave.open(str(audio_path), "rb") as src:
++            rate = src.getframerate()
++            channels = src.getnchannels()
++            sample_width = src.getsampwidth()
++            frame_samples = max(int(rate * 0.03), 1)
++            frame_bytes = frame_samples * channels * sample_width
++            voiced = 0
++            total = 0
++            while True:
++                chunk = src.readframes(frame_samples)
++                if not chunk:
++                    break
++                if len(chunk) < frame_bytes // 2:
++                    break
++                total += 1
++                if audioop.rms(chunk, sample_width) >= 350:
++                    voiced += 1
++            if total == 0:
++                return 0.0
++            return voiced / float(total)
++    except Exception:
++        return None
++
++
++def _speech_ratio_from_ffmpeg(audio_path: Path) -> float | None:
++    ffmpeg = shutil.which("ffmpeg")
++    if ffmpeg is None:
++        return None
++    cmd = [
++        ffmpeg,
++        "-nostdin",
++        "-hide_banner",
++        "-loglevel",
++        "error",
++        "-i",
++        str(audio_path),
++        "-f",
++        "s16le",
++        "-ac",
++        "1",
++        "-ar",
++        "16000",
++        "-",
++    ]
++    try:
++        with subprocess.Popen(
++            cmd,
++            stdout=subprocess.PIPE,
++            stderr=subprocess.DEVNULL,
++        ) as proc:
++            if proc.stdout is None:
++                return None
++            frame_bytes = 960  # 30ms @ 16kHz * 2 bytes sample
++            voiced = 0
++            total = 0
++            while True:
++                chunk = proc.stdout.read(frame_bytes)
++                if not chunk:
++                    break
++                if len(chunk) < frame_bytes:
++                    break
++                total += 1
++                if audioop.rms(chunk, 2) >= 300:
++                    voiced += 1
++            proc.wait(timeout=60)
++            if proc.returncode != 0:
++                return None
++            if total == 0:
++                return 0.0
++            return voiced / float(total)
++    except Exception:
++        return None
++
++
++def run_precheck(audio_path: Path, cfg: Settings | None = None) -> PrecheckResult:
++    """Compute duration + VAD speech ratio and decide quarantine status."""
++    settings = cfg or Settings()
++    duration_sec = _audio_duration_from_wave(audio_path)
++    if duration_sec is None:
++        duration_sec = _audio_duration_from_ffprobe(audio_path)
++
++    speech_ratio = _speech_ratio_from_wave(audio_path)
++    if speech_ratio is None:
++        speech_ratio = _speech_ratio_from_ffmpeg(audio_path)
++
++    quarantine_reason: str | None = None
++    if duration_sec is not None and duration_sec < settings.precheck_min_duration_sec:
++        quarantine_reason = f"duration_lt_{settings.precheck_min_duration_sec:.0f}s"
++    elif (
++        speech_ratio is not None
++        and speech_ratio < settings.precheck_min_speech_ratio
++    ):
++        quarantine_reason = (
++            f"speech_ratio_lt_{settings.precheck_min_speech_ratio:.2f}"
++        )
++
++    return PrecheckResult(
++        duration_sec=round(duration_sec, 3) if duration_sec is not None else None,
++        speech_ratio=round(speech_ratio, 4) if speech_ratio is not None else None,
++        quarantine_reason=quarantine_reason,
++    )
++
++
++def _fallback_diarization(duration_sec: float | None) -> Any:
++    duration = max(duration_sec or 0.0, 0.1)
++
++    class _Annotation:
++        def itertracks(self, yield_label: bool = False):
++            if yield_label:
++                yield SimpleNamespace(start=0.0, end=duration), "S1"
++            else:  # pragma: no cover - legacy compatibility branch
++                yield (SimpleNamespace(start=0.0, end=duration),)
++
++    return _Annotation()
++
++
+ async def run_pipeline(
+     audio_path: Path,
+     cfg: Settings,
+     llm: LLMClient,
+     diariser: Diariser,
+     recording_id: str | None = None,
++    precheck: PrecheckResult | None = None,
+ ) -> TranscriptResult:
+     """Transcribe ``audio_path`` and return a structured result."""
+     start = time.perf_counter()
+@@ -103,33 +713,131 @@ async def run_pipeline(
+         audio_ext=audio_path.suffix,
      )
-     expected = 1.0 - (60.0 / 3600.0)
-     assert abs(proximity - expected) < 1e-9
+     stage_raw_audio(audio_path, artifact_paths.raw_audio_path)
++
++    precheck_result = precheck or run_precheck(audio_path, cfg)
++
+     atomic_write_json(
+         artifact_paths.metrics_json_path,
+         {
+-            "status": "placeholder",
++            "status": "running",
+             "version": 1,
++            "precheck": {
++                "duration_sec": precheck_result.duration_sec,
++                "speech_ratio": precheck_result.speech_ratio,
++                "quarantine_reason": precheck_result.quarantine_reason,
++            },
+         },
+     )
+ 
+-    aliases = _load_aliases(cfg.speaker_db)
+-
+-    def _asr() -> tuple[List[dict], dict]:
+-        segments, info = whisperx.transcribe(
+-            str(audio_path), vad_filter=True, language="auto"
++    if precheck_result.quarantine_reason:
++        atomic_write_text(artifact_paths.transcript_txt_path, "")
++        atomic_write_json(
++            artifact_paths.transcript_json_path,
++            {
++                "recording_id": artifact_paths.recording_id,
++                "language": {"detected": "unknown", "confidence": None},
++                "segments": [],
++                "speakers": [],
++                "text": "",
++            },
++        )
++        atomic_write_json(artifact_paths.segments_json_path, [])
++        atomic_write_json(artifact_paths.speaker_turns_json_path, [])
++        atomic_write_json(
++            artifact_paths.summary_json_path,
++            {
++                "friendly": 0,
++                "model": cfg.llm_model,
++                "summary": "",
++                "status": "quarantined",
++                "reason": precheck_result.quarantine_reason,
++            },
++        )
++        atomic_write_json(
++            artifact_paths.metrics_json_path,
++            {
++                "status": "quarantined",
++                "version": 1,
++                "precheck": {
++                    "duration_sec": precheck_result.duration_sec,
++                    "speech_ratio": precheck_result.speech_ratio,
++                    "quarantine_reason": precheck_result.quarantine_reason,
++                },
++            },
++        )
++        p95_latency_seconds.observe(time.perf_counter() - start)
++        return TranscriptResult(
++            summary="Quarantined",
++            body="",
++            friendly=0,
++            speakers=[],
++            summary_path=artifact_paths.summary_json_path,
++            body_path=artifact_paths.transcript_txt_path,
++            unknown_chunks=[],
++            segments=[],
+         )
+-        return list(segments), info
++
++    def _asr() -> tuple[list[dict[str, Any]], dict[str, Any]]:
++        kwargs: dict[str, Any] = {"vad_filter": True, "language": "auto"}
++        try:
++            segments, info = whisperx.transcribe(
++                str(audio_path),
++                word_timestamps=True,
++                **kwargs,
++            )
++        except TypeError:
++            segments, info = whisperx.transcribe(str(audio_path), **kwargs)
++        return list(segments), dict(info or {})
++
++    async def _safe_diarise() -> Any:
++        try:
++            return await diariser(audio_path)
++        except Exception:
++            return _fallback_diarization(precheck_result.duration_sec)
+ 
+     asr_task = asyncio.to_thread(_asr)
+-    diar_task = diariser(audio_path)
+-    asr_result, diarization = await asyncio.gather(asr_task, diar_task)
+-    segments, _info = asr_result
++    diar_task = _safe_diarise()
++    (raw_segments, info), diarization = await asyncio.gather(asr_task, diar_task)
++
++    asr_segments = _normalise_asr_segments(raw_segments)
++    language_info = _language_payload(info)
++    detected_language = language_info["detected"] if language_info["detected"] != "unknown" else None
+ 
+-    asr_text = " ".join(seg.get("text", "").strip() for seg in segments).strip()
++    asr_text = " ".join(seg.get("text", "").strip() for seg in asr_segments).strip()
+     clean_text = normalizer.dedup(asr_text)
++    diar_segments = _safe_diarization_segments(diarization)
++    if not diar_segments and asr_segments:
++        fallback_end = max(_safe_float(seg.get("end")) for seg in asr_segments)
++        diar_segments = [
++            {"start": 0.0, "end": round(max(fallback_end, 0.1), 3), "speaker": "S1"}
++        ]
++
++    speaker_turns = _build_speaker_turns(
++        asr_segments,
++        diar_segments,
++        default_language=detected_language,
++    )
++
++    aliases = _load_aliases(cfg.speaker_db)
++    for row in diar_segments:
++        label = str(row["speaker"])
++        aliases.setdefault(label, label)
++    _save_aliases(aliases, cfg.speaker_db)
++
+     if not clean_text:
+         atomic_write_text(artifact_paths.transcript_txt_path, "")
+-        atomic_write_json(artifact_paths.transcript_json_path, {"recording_id": artifact_paths.recording_id, "speakers": [], "text": ""})
+-        atomic_write_json(artifact_paths.segments_json_path, [])
++        atomic_write_json(
++            artifact_paths.transcript_json_path,
++            {
++                "recording_id": artifact_paths.recording_id,
++                "language": language_info,
++                "segments": asr_segments,
++                "speakers": sorted({aliases.get(row["speaker"], row["speaker"]) for row in diar_segments}),
++                "text": "",
++            },
++        )
++        atomic_write_json(artifact_paths.segments_json_path, diar_segments)
++        atomic_write_json(artifact_paths.speaker_turns_json_path, speaker_turns)
+         atomic_write_json(
+             artifact_paths.summary_json_path,
+             {
+@@ -138,67 +846,85 @@ async def run_pipeline(
+                 "summary": "No speech detected",
+             },
+         )
++        atomic_write_json(
++            artifact_paths.metrics_json_path,
++            {
++                "status": "no_speech",
++                "version": 1,
++                "precheck": {
++                    "duration_sec": precheck_result.duration_sec,
++                    "speech_ratio": precheck_result.speech_ratio,
++                    "quarantine_reason": None,
++                },
++                "language": language_info,
++                "asr_segments": len(asr_segments),
++                "diar_segments": len(diar_segments),
++                "speaker_turns": len(speaker_turns),
++            },
++        )
+         p95_latency_seconds.observe(time.perf_counter() - start)
+         return TranscriptResult(
+             summary="No speech detected",
+             body="",
+             friendly=0,
+-            speakers=[],
++            speakers=sorted({aliases.get(row["speaker"], row["speaker"]) for row in diar_segments}),
+             summary_path=artifact_paths.summary_json_path,
+             body_path=artifact_paths.transcript_txt_path,
+             unknown_chunks=[],
+             segments=[],
+         )
+ 
+-    lines: List[str] = []
+-    speakers: List[str] = []
+-    segs: List[SpeakerSegment] = []
+-    for seg, label in diarization.itertracks(yield_label=True):
+-        text = whisperx.utils.get_segments(
+-            {"segments": segments}, seg.start, seg.end
+-        ).strip()
+-        if not text:
+-            continue
+-        segs.append(SpeakerSegment(start=seg.start, end=seg.end, speaker=label, text=text))
+-        name = aliases.get(label, label)
+-        if label not in aliases:
+-            aliases[label] = name
+-        speakers.append(name)
+-        lines.append(f"[{seg.start:.2f}–{seg.end:.2f}] **{name}:** {text}")
+-
+-    if not speakers:
+-        fallback = aliases.get("S1", "S1")
+-        aliases.setdefault("S1", fallback)
+-        speakers.append(fallback)
++    snippet_paths = _export_speaker_snippets(
++        audio_path=audio_path,
++        diar_segments=diar_segments,
++        snippets_dir=artifact_paths.snippets_dir,
++        duration_sec=precheck_result.duration_sec,
++    )
+ 
+-    _save_aliases(aliases, cfg.speaker_db)
+-    lines = _merge_similar(lines, cfg.merge_similar)
+-    body = clean_text
+-    friendly = _sentiment_score(body)
++    speaker_lines = [
++        f"[{turn['start']:.2f}-{turn['end']:.2f}] **{aliases.get(turn['speaker'], turn['speaker'])}:** {turn['text']}"
++        for turn in speaker_turns
++    ]
++    speaker_lines = _merge_similar(speaker_lines, cfg.merge_similar)
+ 
++    friendly = _sentiment_score(clean_text)
+     sys_prompt = (
+         "You are an assistant who writes concise 5-8 bullet summaries of any audio transcript. "
+         "Return only the list without extra explanation."
+     )
+-    user_prompt = f"{sys_prompt}\n\nTRANSCRIPT:\n{body}\n\nSUMMARY:"
++    user_prompt = f"{sys_prompt}\n\nTRANSCRIPT:\n{clean_text}\n\nSUMMARY:"
++
+     try:
+         msg = await llm.generate(
+-            system_prompt=sys_prompt, user_prompt=user_prompt, model=cfg.llm_model
++            system_prompt=sys_prompt,
++            user_prompt=user_prompt,
++            model=cfg.llm_model,
+         )
+         summary = msg.get("content", "") if isinstance(msg, dict) else str(msg)
+ 
+-        serialised_segments = [segment.model_dump() for segment in segs]
+-        atomic_write_text(artifact_paths.transcript_txt_path, body)
++        serialised_segments = [
++            SpeakerSegment(
++                start=_safe_float(turn["start"]),
++                end=_safe_float(turn["end"]),
++                speaker=aliases.get(turn["speaker"], turn["speaker"]),
++                text=str(turn["text"]),
++            )
++            for turn in speaker_turns
++        ]
++        atomic_write_text(artifact_paths.transcript_txt_path, clean_text)
+         atomic_write_json(
+             artifact_paths.transcript_json_path,
+             {
+                 "recording_id": artifact_paths.recording_id,
+-                "speaker_lines": lines,
+-                "speakers": sorted(set(speakers)),
+-                "text": body,
++                "language": language_info,
++                "segments": asr_segments,
++                "speaker_lines": speaker_lines,
++                "speakers": sorted(set(aliases.get(turn["speaker"], turn["speaker"]) for turn in speaker_turns)),
++                "text": clean_text,
+             },
+         )
+-        atomic_write_json(artifact_paths.segments_json_path, serialised_segments)
++        atomic_write_json(artifact_paths.segments_json_path, diar_segments)
++        atomic_write_json(artifact_paths.speaker_turns_json_path, speaker_turns)
+         atomic_write_json(
+             artifact_paths.summary_json_path,
+             {
+@@ -207,16 +933,33 @@ async def run_pipeline(
+                 "summary": summary,
+             },
+         )
++        atomic_write_json(
++            artifact_paths.metrics_json_path,
++            {
++                "status": "ok",
++                "version": 1,
++                "precheck": {
++                    "duration_sec": precheck_result.duration_sec,
++                    "speech_ratio": precheck_result.speech_ratio,
++                    "quarantine_reason": None,
++                },
++                "language": language_info,
++                "asr_segments": len(asr_segments),
++                "diar_segments": len(diar_segments),
++                "speaker_turns": len(speaker_turns),
++                "snippets": len(snippet_paths),
++            },
++        )
+ 
+         result = TranscriptResult(
+             summary=summary,
+-            body=body,
++            body=clean_text,
+             friendly=friendly,
+-            speakers=sorted(set(speakers)),
++            speakers=sorted(set(aliases.get(turn["speaker"], turn["speaker"]) for turn in speaker_turns)),
+             summary_path=artifact_paths.summary_json_path,
+             body_path=artifact_paths.transcript_txt_path,
+-            unknown_chunks=[],
+-            segments=segs,
++            unknown_chunks=snippet_paths,
++            segments=serialised_segments,
+         )
+     except Exception:
+         error_rate_total.inc()
+@@ -236,4 +979,11 @@ async def run_pipeline(
+     return result
+ 
+ 
+-__all__ = ["run_pipeline", "Settings", "Diariser", "refresh_aliases"]
++__all__ = [
++    "run_pipeline",
++    "run_precheck",
++    "PrecheckResult",
++    "Settings",
++    "Diariser",
++    "refresh_aliases",
++]
+diff --git a/tasks/QUEUE.md b/tasks/QUEUE.md
+index e52dce0..cf1f140 100644
+--- a/tasks/QUEUE.md
++++ b/tasks/QUEUE.md
+@@ -47,7 +47,7 @@ Queue (in order)
+ - Depends on: PR-MS-AUTH-01 and PR-GDRIVE-INGEST-01
+ 
+ 8) PR-PIPELINE-01: STT + diarization + word timestamps + speaker-attributed transcript + speaker snippets
+-- Status: TODO
++- Status: DOING
+ - Tasks file: tasks/PR-PIPELINE-01.md
+ - Depends on: PR-GDRIVE-INGEST-01 and PR-REFRACTOR-CORE-01 and PR-DB-QUEUE-01
+ 
+diff --git a/tests/test_artifacts.py b/tests/test_artifacts.py
+index f748a2a..1d0013d 100644
+--- a/tests/test_artifacts.py
++++ b/tests/test_artifacts.py
+@@ -29,6 +29,7 @@ def test_recording_artifact_layout_and_writes(tmp_path: Path) -> None:
+     assert artifacts.transcript_txt_path.read_text(encoding="utf-8") == "hello world"
+     assert json.loads(artifacts.summary_json_path.read_text(encoding="utf-8"))["summary"] == "- one"
+     assert json.loads(artifacts.segments_json_path.read_text(encoding="utf-8"))[0]["speaker"] == "S1"
++    assert artifacts.speaker_turns_json_path.name == "speaker_turns.json"
+ 
+ 
+ def test_stage_raw_audio_is_noop_when_source_equals_destination(tmp_path: Path) -> None:
+diff --git a/tests/test_db_queue.py b/tests/test_db_queue.py
+index bfa8062..4253183 100644
+--- a/tests/test_db_queue.py
++++ b/tests/test_db_queue.py
+@@ -28,6 +28,7 @@ from lan_app.db import (
+ )
+ from lan_app.jobs import RecordingJob, enqueue_recording_job, purge_pending_recording_jobs
+ from lan_app.worker_tasks import process_job
++from lan_transcriber.pipeline import PrecheckResult
+ 
+ 
+ def _test_settings(tmp_path: Path) -> AppSettings:
+@@ -341,3 +342,109 @@ def test_purge_pending_recording_jobs_deletes_only_pending(tmp_path: Path, monke
+     assert fake_queue.removed == ["job-purge-queued"]
+     assert fake_queue.jobs["job-purge-queued"].deleted is True
+     assert fake_queue.jobs["job-purge-finished"].deleted is False
 +
 +
-+def test_refresh_preserves_selected_event_when_missing_from_new_candidates(
-+    tmp_path, monkeypatch
-+):
-+    cfg = _cfg(tmp_path)
++def test_worker_precheck_quarantines_and_skips_pipeline(tmp_path: Path, monkeypatch):
++    cfg = _test_settings(tmp_path)
++    monkeypatch.setenv("LAN_DATA_ROOT", str(cfg.data_root))
++    monkeypatch.setenv("LAN_RECORDINGS_ROOT", str(cfg.recordings_root))
++    monkeypatch.setenv("LAN_DB_PATH", str(cfg.db_path))
++    monkeypatch.setenv("LAN_PROM_SNAPSHOT_PATH", str(cfg.metrics_snapshot_path))
++
 +    init_db(cfg)
 +    create_recording(
-+        "rec-cal-preserve-1",
-+        source="drive",
-+        source_filename="meeting.mp3",
-+        captured_at="2026-02-19T10:00:00Z",
++        "rec-precheck-q-1",
++        source="test",
++        source_filename="short.wav",
 +        settings=cfg,
 +    )
-+    upsert_calendar_match(
-+        recording_id="rec-cal-preserve-1",
-+        candidates=[
-+            {
-+                "event_id": "evt-manual",
-+                "subject": "Manual pick",
-+                "start": "2026-02-19T09:30:00Z",
-+                "end": "2026-02-19T10:30:00Z",
-+                "organizer": "Alex",
-+                "attendees": [],
-+                "location": None,
-+                "title_tokens": ["manual"],
-+                "score": 0.77,
-+                "rationale": "manual",
-+            }
-+        ],
-+        selected_event_id="evt-manual",
-+        selected_confidence=0.77,
++    create_job(
++        "job-precheck-q-1",
++        recording_id="rec-precheck-q-1",
++        job_type=JOB_TYPE_PRECHECK,
 +        settings=cfg,
 +    )
 +
-+    class _FakeClient:
-+        def __init__(self, settings=None):
-+            self.settings = settings
++    raw_audio = cfg.recordings_root / "rec-precheck-q-1" / "raw" / "audio.wav"
++    raw_audio.parent.mkdir(parents=True, exist_ok=True)
++    raw_audio.write_bytes(b"\x00")
 +
-+        def graph_get(self, _path: str):
-+            return {"value": _fake_events()}  # does not include evt-manual
++    monkeypatch.setattr("lan_app.worker_tasks._resolve_raw_audio_path", lambda *_a, **_k: raw_audio)
++    monkeypatch.setattr(
++        "lan_app.worker_tasks.run_precheck",
++        lambda *_a, **_k: PrecheckResult(
++            duration_sec=5.0,
++            speech_ratio=0.5,
++            quarantine_reason="duration_lt_20s",
++        ),
++    )
 +
-+    monkeypatch.setattr(calendar, "MicrosoftGraphClient", _FakeClient)
++    async def _should_not_run(*_args, **_kwargs):
++        raise AssertionError("run_pipeline should be skipped for quarantined recordings")
 +
-+    context = calendar.refresh_calendar_context("rec-cal-preserve-1", settings=cfg)
-+    assert context["selected_event_id"] == "evt-manual"
-+    assert context["selected_event"] is not None
-+    assert context["selected_event"]["event_id"] == "evt-manual"
-+    assert any(c["event_id"] == "evt-manual" for c in context["candidates"])
++    monkeypatch.setattr("lan_app.worker_tasks.run_pipeline", _should_not_run)
++
++    result = process_job("job-precheck-q-1", "rec-precheck-q-1", JOB_TYPE_PRECHECK)
++    assert result["status"] == "ok"
++
++    recording = get_recording("rec-precheck-q-1", settings=cfg)
++    job = get_job("job-precheck-q-1", settings=cfg)
++    assert recording is not None
++    assert recording["status"] == RECORDING_STATUS_QUARANTINE
++    assert recording["quarantine_reason"] == "duration_lt_20s"
++    assert job is not None
++    assert job["status"] == JOB_STATUS_FINISHED
 +
 +
-+def test_select_allows_preserved_selection_not_in_candidates(tmp_path):
-+    cfg = _cfg(tmp_path)
++def test_worker_precheck_runs_pipeline_when_safe(tmp_path: Path, monkeypatch):
++    cfg = _test_settings(tmp_path)
++    monkeypatch.setenv("LAN_DATA_ROOT", str(cfg.data_root))
++    monkeypatch.setenv("LAN_RECORDINGS_ROOT", str(cfg.recordings_root))
++    monkeypatch.setenv("LAN_DB_PATH", str(cfg.db_path))
++    monkeypatch.setenv("LAN_PROM_SNAPSHOT_PATH", str(cfg.metrics_snapshot_path))
++
 +    init_db(cfg)
 +    create_recording(
-+        "rec-cal-preserve-2",
-+        source="drive",
-+        source_filename="meeting.mp3",
-+        captured_at="2026-02-19T10:00:00Z",
++        "rec-precheck-ok-1",
++        source="test",
++        source_filename="normal.wav",
 +        settings=cfg,
 +    )
-+    upsert_calendar_match(
-+        recording_id="rec-cal-preserve-2",
-+        candidates=[
-+            {
-+                "event_id": "evt-new",
-+                "subject": "Different event",
-+                "start": "2026-02-19T09:50:00Z",
-+                "end": "2026-02-19T10:35:00Z",
-+                "organizer": "Alex",
-+                "attendees": [],
-+                "location": None,
-+                "title_tokens": ["different"],
-+                "score": 0.8,
-+                "rationale": "auto",
-+            }
-+        ],
-+        selected_event_id="evt-manual",
-+        selected_confidence=0.77,
++    create_job(
++        "job-precheck-ok-1",
++        recording_id="rec-precheck-ok-1",
++        job_type=JOB_TYPE_PRECHECK,
 +        settings=cfg,
 +    )
 +
-+    selected = calendar.select_calendar_event("rec-cal-preserve-2", "evt-manual", settings=cfg)
-+    assert selected["selected_event_id"] == "evt-manual"
++    raw_audio = cfg.recordings_root / "rec-precheck-ok-1" / "raw" / "audio.wav"
++    raw_audio.parent.mkdir(parents=True, exist_ok=True)
++    raw_audio.write_bytes(b"\x00")
++
++    monkeypatch.setattr("lan_app.worker_tasks._resolve_raw_audio_path", lambda *_a, **_k: raw_audio)
++    monkeypatch.setattr(
++        "lan_app.worker_tasks.run_precheck",
++        lambda *_a, **_k: PrecheckResult(
++            duration_sec=35.0,
++            speech_ratio=0.7,
++            quarantine_reason=None,
++        ),
++    )
++    called = {"value": False}
++
++    async def _fake_run_pipeline(*_args, **_kwargs):
++        called["value"] = True
++        return None
++
++    monkeypatch.setattr("lan_app.worker_tasks.run_pipeline", _fake_run_pipeline)
++
++    result = process_job("job-precheck-ok-1", "rec-precheck-ok-1", JOB_TYPE_PRECHECK)
++    assert result["status"] == "ok"
++    assert called["value"] is True
++
++    recording = get_recording("rec-precheck-ok-1", settings=cfg)
++    job = get_job("job-precheck-ok-1", settings=cfg)
++    assert recording is not None
++    assert recording["status"] == RECORDING_STATUS_READY
++    assert job is not None
++    assert job["status"] == JOB_STATUS_FINISHED
+diff --git a/tests/test_pipeline.py b/tests/test_pipeline.py
+index 45cd1e0..d4e08c4 100644
+--- a/tests/test_pipeline.py
++++ b/tests/test_pipeline.py
+@@ -1,6 +1,10 @@
++from __future__ import annotations
++
++import json
++import math
+ from pathlib import Path
+ from types import ModuleType, SimpleNamespace
+-import json
++import wave
+ 
+ import httpx
+ import pytest
+@@ -21,26 +25,74 @@ transformers.pipeline = lambda *a, **k: lambda text: [
+ ]
+ sys.modules["transformers"] = transformers
+ 
+-from lan_transcriber import pipeline, llm_client  # noqa: E402
++from lan_transcriber import llm_client, pipeline  # noqa: E402
++
++
++def fake_audio(tmp_path: Path, name: str = "sample.mp3") -> Path:
++    path = tmp_path / name
++    path.write_bytes(b"\x00")
++    return path
++
++
++def wav_audio(
++    tmp_path: Path,
++    *,
++    name: str,
++    duration_sec: float,
++    speech: bool,
++) -> Path:
++    path = tmp_path / name
++    rate = 16000
++    samples = int(rate * duration_sec)
++    frames = bytearray()
++    for idx in range(samples):
++        if speech:
++            value = int(9000 * math.sin((2.0 * math.pi * 220.0 * idx) / rate))
++        else:
++            value = 0
++        frames.extend(int(value).to_bytes(2, byteorder="little", signed=True))
++    with wave.open(str(path), "wb") as wav_file:
++        wav_file.setnchannels(1)
++        wav_file.setsampwidth(2)
++        wav_file.setframerate(rate)
++        wav_file.writeframes(bytes(frames))
++    return path
++
++
++def precheck_ok() -> pipeline.PrecheckResult:
++    return pipeline.PrecheckResult(
++        duration_sec=30.0,
++        speech_ratio=0.5,
++        quarantine_reason=None,
++    )
+ 
+ 
+-FIX = Path(__file__).with_suffix("").parent / "fixtures"
++class DummyDiariser:
++    async def __call__(self, audio_path: Path):
++        class Ann:
++            def itertracks(self, yield_label: bool = False):
++                from types import SimpleNamespace
+ 
++                if yield_label:
++                    yield SimpleNamespace(start=0.0, end=1.0), "S1"
++                else:
++                    yield (SimpleNamespace(start=0.0, end=1.0),)
+ 
+-def mp3(name: str) -> Path:
+-    """Return a temporary audio path for ``name``."""
+-    p = FIX / name
+-    p.write_bytes(b"\x00")
+-    return p
++        return Ann()
+ 
+ 
+-class DummyDiariser:
++class TwoSpeakerDiariser:
+     async def __call__(self, audio_path: Path):
+         class Ann:
+-            def itertracks(self, yield_label=False):
++            def itertracks(self, yield_label: bool = False):
+                 from types import SimpleNamespace
+ 
+-                yield SimpleNamespace(start=0.0, end=1.0), "S1"
++                if yield_label:
++                    yield SimpleNamespace(start=0.0, end=12.0), "S1"
++                    yield SimpleNamespace(start=12.0, end=24.0), "S2"
++                else:
++                    yield (SimpleNamespace(start=0.0, end=12.0),)
++                    yield (SimpleNamespace(start=12.0, end=24.0),)
+ 
+         return Ann()
+ 
+@@ -56,7 +108,7 @@ async def test_tripled_dedup(tmp_path: Path, mocker):
+                 {"start": 1.0, "end": 2.0, "text": "hello world."},
+                 {"start": 2.0, "end": 3.0, "text": "hello world."},
+             ],
+-            {},
++            {"language": "en", "language_probability": 0.95},
+         ),
+     )
+ 
+@@ -76,7 +128,11 @@ async def test_tripled_dedup(tmp_path: Path, mocker):
+         recordings_root=tmp_path / "recordings",
+     )
+     res = await pipeline.run_pipeline(
+-        mp3("3_tripled.mp3"), cfg, llm_client.LLMClient(), DummyDiariser()
++        fake_audio(tmp_path, "tripled.mp3"),
++        cfg,
++        llm_client.LLMClient(),
++        DummyDiariser(),
++        precheck=precheck_ok(),
+     )
+ 
+     assert res.body.strip() == "hello world."
+@@ -93,7 +149,10 @@ async def test_tripled_dedup(tmp_path: Path, mocker):
+ async def test_alias_persist(tmp_path: Path, mocker):
+     mocker.patch(
+         "whisperx.transcribe",
+-        return_value=([{"start": 0.0, "end": 1.0, "text": "hi there friend"}], {}),
++        return_value=(
++            [{"start": 0.0, "end": 1.0, "text": "hi there friend"}],
++            {"language": "en", "language_probability": 0.7},
++        ),
+     )
+ 
+     respx.post("http://llm:8000/v1/chat/completions").mock(
+@@ -106,27 +165,31 @@ async def test_alias_persist(tmp_path: Path, mocker):
+         lambda *a, **k: lambda text: [{"label": "positive", "score": 0.5}],
+     )
+     db = tmp_path / "db.yaml"
+-    db.write_text("S1: Alice\n")
++    db.write_text("S1: Alice\n", encoding="utf-8")
+     cfg = pipeline.Settings(
+         speaker_db=db,
+         tmp_root=tmp_path,
+         recordings_root=tmp_path / "recordings",
+     )
+     res = await pipeline.run_pipeline(
+-        mp3("1_EN.mp3"), cfg, llm_client.LLMClient(), DummyDiariser()
++        fake_audio(tmp_path, "one.mp3"),
++        cfg,
++        llm_client.LLMClient(),
++        DummyDiariser(),
++        precheck=precheck_ok(),
+     )
+     assert res.speakers == ["Alice"]
++
+     import yaml
+ 
+-    saved = yaml.safe_load(db.read_text())
++    saved = yaml.safe_load(db.read_text(encoding="utf-8"))
+     assert "S1" in saved
+ 
+ 
+ @pytest.mark.asyncio
+ @respx.mock
+ async def test_white_noise(tmp_path: Path, mocker):
+-    mocker.patch("whisperx.transcribe", return_value=([], {}))
+-
++    mocker.patch("whisperx.transcribe", return_value=([], {"language": "en"}))
+     respx.post("http://llm:8000/v1/chat/completions").mock(
+         return_value=httpx.Response(
+             200, json={"choices": [{"message": {"content": ""}}]}
+@@ -143,7 +206,11 @@ async def test_white_noise(tmp_path: Path, mocker):
+         recordings_root=tmp_path / "recordings",
+     )
+     res = await pipeline.run_pipeline(
+-        mp3("4_white_noise.mp3"), cfg, llm_client.LLMClient(), DummyDiariser()
++        fake_audio(tmp_path, "noise.mp3"),
++        cfg,
++        llm_client.LLMClient(),
++        DummyDiariser(),
++        precheck=precheck_ok(),
+     )
+ 
+     assert res.summary == "No speech detected"
+@@ -155,7 +222,10 @@ async def test_white_noise(tmp_path: Path, mocker):
+ async def test_no_talk(tmp_path: Path, mocker):
+     mocker.patch(
+         "whisperx.transcribe",
+-        return_value=([{"start": 0.0, "end": 1.0, "text": "long silence indeed"}], {}),
++        return_value=(
++            [{"start": 0.0, "end": 1.0, "text": "long silence indeed"}],
++            {"language": "en"},
++        ),
+     )
+ 
+     respx.post("http://llm:8000/v1/chat/completions").mock(
+@@ -174,8 +244,129 @@ async def test_no_talk(tmp_path: Path, mocker):
+         recordings_root=tmp_path / "recordings",
+     )
+     res = await pipeline.run_pipeline(
+-        mp3("5_no_talk.mp3"), cfg, llm_client.LLMClient(), DummyDiariser()
++        fake_audio(tmp_path, "notalk.mp3"),
++        cfg,
++        llm_client.LLMClient(),
++        DummyDiariser(),
++        precheck=precheck_ok(),
+     )
+ 
+     assert res.friendly == 0
+     assert res.summary.strip() == ""
++
++
++@pytest.mark.asyncio
++@respx.mock
++async def test_pipeline_writes_required_artifacts(tmp_path: Path, mocker):
++    mocker.patch(
++        "whisperx.transcribe",
++        return_value=(
++            [
++                {
++                    "start": 0.0,
++                    "end": 5.0,
++                    "text": "hello team",
++                    "words": [
++                        {"start": 0.2, "end": 0.7, "word": "hello"},
++                        {"start": 0.8, "end": 1.4, "word": "team"},
++                    ],
++                },
++                {
++                    "start": 12.0,
++                    "end": 17.0,
++                    "text": "status update",
++                    "words": [
++                        {"start": 12.1, "end": 12.6, "word": "status"},
++                        {"start": 12.7, "end": 13.2, "word": "update"},
++                    ],
++                },
++            ],
++            {"language": "en", "language_probability": 0.98},
++        ),
++    )
++    mocker.patch(
++        "transformers.pipeline",
++        lambda *a, **k: lambda text: [{"label": "positive", "score": 0.6}],
++    )
++    respx.post("http://llm:8000/v1/chat/completions").mock(
++        return_value=httpx.Response(
++            200,
++            json={"choices": [{"message": {"content": "- summary"}}]},
++        ),
++    )
++
++    cfg = pipeline.Settings(
++        speaker_db=tmp_path / "db.yaml",
++        tmp_root=tmp_path,
++        recordings_root=tmp_path / "recordings",
++    )
++    audio = wav_audio(
++        tmp_path,
++        name="pipeline.wav",
++        duration_sec=24.0,
++        speech=True,
++    )
++    result = await pipeline.run_pipeline(
++        audio_path=audio,
++        cfg=cfg,
++        llm=llm_client.LLMClient(),
++        diariser=TwoSpeakerDiariser(),
++        recording_id="rec-pipe-1",
++        precheck=precheck_ok(),
++    )
++
++    derived = cfg.recordings_root / "rec-pipe-1" / "derived"
++    transcript_data = json.loads((derived / "transcript.json").read_text(encoding="utf-8"))
++    diar_data = json.loads((derived / "segments.json").read_text(encoding="utf-8"))
++    speaker_turns = json.loads((derived / "speaker_turns.json").read_text(encoding="utf-8"))
++
++    assert transcript_data["language"]["detected"] == "en"
++    assert transcript_data["language"]["confidence"] == 0.98
++    assert transcript_data["segments"][0]["words"][0]["word"] == "hello"
++    assert diar_data[0]["speaker"] == "S1"
++    assert diar_data[1]["speaker"] == "S2"
++    assert speaker_turns[0]["speaker"] == "S1"
++    assert speaker_turns[-1]["speaker"] == "S2"
++
++    snippets = sorted((derived / "snippets").glob("*/*.wav"))
++    assert len(snippets) >= 2
++    assert all(path.stat().st_size > 44 for path in snippets)
++    assert len(result.unknown_chunks) >= 2
++
++
++def test_run_precheck_quarantine_rules(tmp_path: Path):
++    cfg = pipeline.Settings(
++        speaker_db=tmp_path / "db.yaml",
++        tmp_root=tmp_path,
++        recordings_root=tmp_path / "recordings",
++    )
++
++    short_audio = wav_audio(
++        tmp_path,
++        name="short.wav",
++        duration_sec=5.0,
++        speech=True,
++    )
++    short_result = pipeline.run_precheck(short_audio, cfg)
++    assert short_result.quarantine_reason == "duration_lt_20s"
++    assert short_result.duration_sec is not None and short_result.duration_sec < 20.0
++
++    silent_audio = wav_audio(
++        tmp_path,
++        name="silent.wav",
++        duration_sec=30.0,
++        speech=False,
++    )
++    silent_result = pipeline.run_precheck(silent_audio, cfg)
++    assert silent_result.quarantine_reason == "speech_ratio_lt_0.10"
++    assert silent_result.speech_ratio is not None and silent_result.speech_ratio < 0.10
++
++    voiced_audio = wav_audio(
++        tmp_path,
++        name="voiced.wav",
++        duration_sec=30.0,
++        speech=True,
++    )
++    voiced_result = pipeline.run_precheck(voiced_audio, cfg)
++    assert voiced_result.quarantine_reason is None
++    assert voiced_result.speech_ratio is not None and voiced_result.speech_ratio > 0.10

@@ -11,6 +11,7 @@ Expected subdirectories:
   - `derived/transcript.json`
   - `derived/transcript.txt`
   - `derived/segments.json`
+  - `derived/speaker_turns.json`
   - `derived/snippets/`
   - `derived/summary.json`
   - `derived/metrics.json`
