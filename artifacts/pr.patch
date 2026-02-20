@@ -1,45 +1,79 @@
-diff --git a/lan_app/worker_tasks.py b/lan_app/worker_tasks.py
-index 5f907f8..ba42ff1 100644
---- a/lan_app/worker_tasks.py
-+++ b/lan_app/worker_tasks.py
-@@ -156,7 +156,10 @@ def _run_precheck_pipeline(
-             f"speech_ratio={precheck.speech_ratio}"
-         ),
-     )
--    diariser = _build_diariser(precheck.duration_sec)
-+    if precheck.quarantine_reason:
-+        diariser = _FallbackDiariser(precheck.duration_sec)
-+    else:
-+        diariser = _build_diariser(precheck.duration_sec)
-     asyncio.run(
-         run_pipeline(
-             audio_path=audio_path,
-diff --git a/tests/test_db_queue.py b/tests/test_db_queue.py
-index df23ea8..5941c68 100644
---- a/tests/test_db_queue.py
-+++ b/tests/test_db_queue.py
-@@ -382,6 +382,16 @@ def test_worker_precheck_quarantines_and_writes_artifacts(tmp_path: Path, monkey
-             quarantine_reason="duration_lt_20s",
-         ),
-     )
-+    build_called = {"value": False}
+diff --git a/lan_transcriber/pipeline.py b/lan_transcriber/pipeline.py
+index c4b7d8d..0f5702f 100644
+--- a/lan_transcriber/pipeline.py
++++ b/lan_transcriber/pipeline.py
+@@ -712,7 +712,6 @@ async def run_pipeline(
+ ) -> TranscriptResult:
+     """Transcribe ``audio_path`` and return a structured result."""
+     start = time.perf_counter()
+-    import whisperx
+ 
+     artifact_paths = build_recording_artifacts(
+         cfg.recordings_root,
+@@ -785,6 +784,8 @@ async def run_pipeline(
+             segments=[],
+         )
+ 
++    import whisperx
 +
-+    def _should_not_build_diariser(*_args, **_kwargs):
-+        build_called["value"] = True
-+        raise AssertionError("_build_diariser should be skipped for quarantined precheck")
-+
-+    monkeypatch.setattr(
-+        "lan_app.worker_tasks._build_diariser",
-+        _should_not_build_diariser,
+     def _asr() -> tuple[list[dict[str, Any]], dict[str, Any]]:
+         kwargs: dict[str, Any] = {"vad_filter": True, "language": "auto"}
+         try:
+diff --git a/tests/test_pipeline.py b/tests/test_pipeline.py
+index 14e988f..b3716ff 100644
+--- a/tests/test_pipeline.py
++++ b/tests/test_pipeline.py
+@@ -1,5 +1,6 @@
+ from __future__ import annotations
+ 
++import builtins
+ import json
+ import math
+ from pathlib import Path
+@@ -495,6 +496,46 @@ async def test_pipeline_quarantine_clears_stale_snippets(tmp_path: Path):
+     assert list(snippets_root.iterdir()) == []
+ 
+ 
++@pytest.mark.asyncio
++async def test_pipeline_quarantine_skips_whisperx_import(tmp_path: Path, monkeypatch):
++    cfg = pipeline.Settings(
++        speaker_db=tmp_path / "db.yaml",
++        tmp_root=tmp_path,
++        recordings_root=tmp_path / "recordings",
 +    )
- 
-     called = {"value": False}
- 
-@@ -394,6 +404,7 @@ def test_worker_precheck_quarantines_and_writes_artifacts(tmp_path: Path, monkey
-     result = process_job("job-precheck-q-1", "rec-precheck-q-1", JOB_TYPE_PRECHECK)
-     assert result["status"] == "ok"
-     assert called["value"] is True
-+    assert build_called["value"] is False
- 
-     recording = get_recording("rec-precheck-q-1", settings=cfg)
-     job = get_job("job-precheck-q-1", settings=cfg)
++    audio = wav_audio(
++        tmp_path,
++        name="quarantine-no-whisperx.wav",
++        duration_sec=24.0,
++        speech=True,
++    )
++
++    original_import = builtins.__import__
++
++    def _guarded_import(name, globals=None, locals=None, fromlist=(), level=0):
++        if name == "whisperx":
++            raise AssertionError("whisperx should not be imported for quarantined runs")
++        return original_import(name, globals, locals, fromlist, level)
++
++    monkeypatch.delitem(sys.modules, "whisperx", raising=False)
++    monkeypatch.setattr(builtins, "__import__", _guarded_import)
++
++    result = await pipeline.run_pipeline(
++        audio_path=audio,
++        cfg=cfg,
++        llm=llm_client.LLMClient(),
++        diariser=DummyDiariser(),
++        recording_id="rec-quarantine-no-whisperx",
++        precheck=pipeline.PrecheckResult(
++            duration_sec=5.0,
++            speech_ratio=0.0,
++            quarantine_reason="duration_lt_20s",
++        ),
++    )
++
++    assert result.summary == "Quarantined"
++
++
+ def test_run_precheck_quarantine_rules(tmp_path: Path):
+     cfg = pipeline.Settings(
+         speaker_db=tmp_path / "db.yaml",

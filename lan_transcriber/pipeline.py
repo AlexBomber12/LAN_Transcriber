@@ -712,7 +712,6 @@ async def run_pipeline(
 ) -> TranscriptResult:
     """Transcribe ``audio_path`` and return a structured result."""
     start = time.perf_counter()
-    import whisperx
 
     artifact_paths = build_recording_artifacts(
         cfg.recordings_root,
@@ -784,6 +783,8 @@ async def run_pipeline(
             unknown_chunks=[],
             segments=[],
         )
+
+    import whisperx
 
     def _asr() -> tuple[list[dict[str, Any]], dict[str, Any]]:
         kwargs: dict[str, Any] = {"vad_filter": True, "language": "auto"}

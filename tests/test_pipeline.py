@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import builtins
 import json
 import math
 from pathlib import Path
@@ -493,6 +494,46 @@ async def test_pipeline_quarantine_clears_stale_snippets(tmp_path: Path):
     assert result.summary == "Quarantined"
     assert snippets_root.exists()
     assert list(snippets_root.iterdir()) == []
+
+
+@pytest.mark.asyncio
+async def test_pipeline_quarantine_skips_whisperx_import(tmp_path: Path, monkeypatch):
+    cfg = pipeline.Settings(
+        speaker_db=tmp_path / "db.yaml",
+        tmp_root=tmp_path,
+        recordings_root=tmp_path / "recordings",
+    )
+    audio = wav_audio(
+        tmp_path,
+        name="quarantine-no-whisperx.wav",
+        duration_sec=24.0,
+        speech=True,
+    )
+
+    original_import = builtins.__import__
+
+    def _guarded_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "whisperx":
+            raise AssertionError("whisperx should not be imported for quarantined runs")
+        return original_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.delitem(sys.modules, "whisperx", raising=False)
+    monkeypatch.setattr(builtins, "__import__", _guarded_import)
+
+    result = await pipeline.run_pipeline(
+        audio_path=audio,
+        cfg=cfg,
+        llm=llm_client.LLMClient(),
+        diariser=DummyDiariser(),
+        recording_id="rec-quarantine-no-whisperx",
+        precheck=pipeline.PrecheckResult(
+            duration_sec=5.0,
+            speech_ratio=0.0,
+            quarantine_reason="duration_lt_20s",
+        ),
+    )
+
+    assert result.summary == "Quarantined"
 
 
 def test_run_precheck_quarantine_rules(tmp_path: Path):
