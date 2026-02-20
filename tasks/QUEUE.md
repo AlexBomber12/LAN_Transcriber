@@ -47,7 +47,7 @@ Queue (in order)
 - Depends on: PR-MS-AUTH-01 and PR-GDRIVE-INGEST-01
 
 8) PR-PIPELINE-01: STT + diarization + word timestamps + speaker-attributed transcript + speaker snippets
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-PIPELINE-01.md
 - Depends on: PR-GDRIVE-INGEST-01 and PR-REFRACTOR-CORE-01 and PR-DB-QUEUE-01
 

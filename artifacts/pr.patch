@@ -1,191 +1,84 @@
-diff --git a/lan_app/calendar.py b/lan_app/calendar.py
-index 42ebff9..f78556d 100644
---- a/lan_app/calendar.py
-+++ b/lan_app/calendar.py
-@@ -153,9 +153,13 @@ def select_calendar_event(
-         selected_confidence = _MANUAL_NO_EVENT_CONFIDENCE
-     else:
-         selected = _candidate_by_id(candidates, event_id)
--        if selected is None:
--            raise ValueError("Unknown event_id for this recording")
--        selected_confidence = float(selected.get("score") or 0.0)
-+        if selected is not None:
-+            selected_confidence = float(selected.get("score") or 0.0)
-+        else:
-+            current_selected = str(current.get("selected_event_id") or "").strip()
-+            if current_selected != event_id:
-+                raise ValueError("Unknown event_id for this recording")
-+            selected_confidence = _as_optional_float(current.get("selected_confidence"))
+diff --git a/lan_transcriber/pipeline.py b/lan_transcriber/pipeline.py
+index acba096..20accea 100644
+--- a/lan_transcriber/pipeline.py
++++ b/lan_transcriber/pipeline.py
+@@ -182,10 +182,7 @@ def _safe_diarization_segments(diarization: Any) -> list[dict[str, Any]]:
+     out: list[dict[str, Any]] = []
+     if diarization is None or not hasattr(diarization, "itertracks"):
+         return out
+-    try:
+-        tracks = diarization.itertracks(yield_label=True)
+-    except Exception:
+-        return out
++    tracks = diarization.itertracks(yield_label=True)
+     for item in tracks:
+         if not isinstance(item, tuple) or len(item) < 2:
+             continue
+diff --git a/tests/test_pipeline.py b/tests/test_pipeline.py
+index 702a38a..962db07 100644
+--- a/tests/test_pipeline.py
++++ b/tests/test_pipeline.py
+@@ -119,6 +119,15 @@ class FailingDiariser:
+         raise RuntimeError("diariser boom")
  
-     row = set_calendar_match_selection(
-         recording_id=recording_id,
-@@ -238,6 +242,15 @@ def _build_context(
-     selected_event_id = row.get("selected_event_id")
-     selected_confidence = row.get("selected_confidence")
-     selected = _candidate_by_id(candidates, selected_event_id)
-+    if (
-+        selected is None
-+        and isinstance(selected_event_id, str)
-+        and selected_event_id.strip()
-+    ):
-+        selected = _selection_placeholder(
-+            event_id=selected_event_id.strip(),
-+            selected_confidence=selected_confidence,
+ 
++class FailingItertracksDiariser:
++    async def __call__(self, audio_path: Path):
++        class Ann:
++            def itertracks(self, yield_label: bool = False):
++                raise RuntimeError("itertracks boom")
++
++        return Ann()
++
++
+ @pytest.mark.asyncio
+ @respx.mock
+ async def test_tripled_dedup(tmp_path: Path, mocker):
+@@ -700,6 +709,47 @@ async def test_pipeline_diariser_error_marks_metrics_failed(tmp_path: Path, mock
+     assert metrics_data["error"] == "diariser boom"
+ 
+ 
++@pytest.mark.asyncio
++async def test_pipeline_itertracks_error_marks_metrics_failed(tmp_path: Path, mocker):
++    mocker.patch(
++        "whisperx.transcribe",
++        return_value=(
++            [{"start": 0.0, "end": 1.0, "text": "hello world today"}],
++            {"language": "en", "language_probability": 0.9},
++        ),
++    )
++
++    cfg = pipeline.Settings(
++        speaker_db=tmp_path / "db.yaml",
++        tmp_root=tmp_path,
++        recordings_root=tmp_path / "recordings",
++    )
++    audio = wav_audio(
++        tmp_path,
++        name="itertracks-fail.wav",
++        duration_sec=24.0,
++        speech=True,
++    )
++
++    with pytest.raises(RuntimeError, match="itertracks boom"):
++        await pipeline.run_pipeline(
++            audio_path=audio,
++            cfg=cfg,
++            llm=llm_client.LLMClient(),
++            diariser=FailingItertracksDiariser(),
++            recording_id="rec-itertracks-fail-1",
++            precheck=precheck_ok(),
 +        )
-     visible_candidates = _visible_candidates(candidates, selected)
- 
-     return {
-@@ -273,9 +286,17 @@ def _resolve_selected_event(
-             and selected_confidence == _MANUAL_NO_EVENT_CONFIDENCE
-         ):
-             return None, _MANUAL_NO_EVENT_CONFIDENCE
--        selected = _candidate_by_id(candidates, selected_event_id)
--        if selected is not None:
--            return str(selected["event_id"]), float(selected.get("score") or 0.0)
-+        if isinstance(selected_event_id, str) and selected_event_id.strip():
-+            selected_id = selected_event_id.strip()
-+        else:
-+            selected_id = None
-+        if selected_id is not None:
-+            selected = _candidate_by_id(candidates, selected_id)
-+            if selected is not None:
-+                return str(selected["event_id"]), float(selected.get("score") or 0.0)
-+            # Preserve prior user choice if the selected event is temporarily
-+            # absent from the latest Graph candidate list.
-+            return selected_id, _as_optional_float(selected_confidence)
- 
-     if not candidates:
-         return None, None
-@@ -376,6 +397,25 @@ def _candidate_by_id(
-     return None
- 
- 
-+def _selection_placeholder(
-+    *,
-+    event_id: str,
-+    selected_confidence: float | None,
-+) -> dict[str, Any]:
-+    return {
-+        "event_id": event_id,
-+        "subject": "(selected event not present in latest calendar fetch)",
-+        "start": None,
-+        "end": None,
-+        "organizer": None,
-+        "attendees": [],
-+        "location": None,
-+        "title_tokens": [],
-+        "score": _as_optional_float(selected_confidence) or 0.0,
-+        "rationale": "selection_preserved_missing_from_candidates",
-+    }
++
++    derived = cfg.recordings_root / "rec-itertracks-fail-1" / "derived"
++    summary_data = json.loads((derived / "summary.json").read_text(encoding="utf-8"))
++    metrics_data = json.loads((derived / "metrics.json").read_text(encoding="utf-8"))
++
++    assert summary_data["status"] == "failed"
++    assert metrics_data["status"] == "failed"
++    assert metrics_data["error"] == "itertracks boom"
 +
 +
- def _visible_candidates(
-     candidates: list[dict[str, Any]],
-     selected: dict[str, Any] | None,
-@@ -391,6 +431,14 @@ def _visible_candidates(
-     return [*visible, selected]
- 
- 
-+def _as_optional_float(value: Any) -> float | None:
-+    if isinstance(value, bool):
-+        return None
-+    if isinstance(value, int | float):
-+        return float(value)
-+    return None
-+
-+
- def _extract_party(value: Any) -> str | None:
-     if not isinstance(value, dict):
-         return None
-diff --git a/tests/test_calendar.py b/tests/test_calendar.py
-index bdf547d..f270e9e 100644
---- a/tests/test_calendar.py
-+++ b/tests/test_calendar.py
-@@ -376,3 +376,87 @@ def test_proximity_component_point_recording_uses_nearest_event_edge():
-     )
-     expected = 1.0 - (60.0 / 3600.0)
-     assert abs(proximity - expected) < 1e-9
-+
-+
-+def test_refresh_preserves_selected_event_when_missing_from_new_candidates(
-+    tmp_path, monkeypatch
-+):
-+    cfg = _cfg(tmp_path)
-+    init_db(cfg)
-+    create_recording(
-+        "rec-cal-preserve-1",
-+        source="drive",
-+        source_filename="meeting.mp3",
-+        captured_at="2026-02-19T10:00:00Z",
-+        settings=cfg,
-+    )
-+    upsert_calendar_match(
-+        recording_id="rec-cal-preserve-1",
-+        candidates=[
-+            {
-+                "event_id": "evt-manual",
-+                "subject": "Manual pick",
-+                "start": "2026-02-19T09:30:00Z",
-+                "end": "2026-02-19T10:30:00Z",
-+                "organizer": "Alex",
-+                "attendees": [],
-+                "location": None,
-+                "title_tokens": ["manual"],
-+                "score": 0.77,
-+                "rationale": "manual",
-+            }
-+        ],
-+        selected_event_id="evt-manual",
-+        selected_confidence=0.77,
-+        settings=cfg,
-+    )
-+
-+    class _FakeClient:
-+        def __init__(self, settings=None):
-+            self.settings = settings
-+
-+        def graph_get(self, _path: str):
-+            return {"value": _fake_events()}  # does not include evt-manual
-+
-+    monkeypatch.setattr(calendar, "MicrosoftGraphClient", _FakeClient)
-+
-+    context = calendar.refresh_calendar_context("rec-cal-preserve-1", settings=cfg)
-+    assert context["selected_event_id"] == "evt-manual"
-+    assert context["selected_event"] is not None
-+    assert context["selected_event"]["event_id"] == "evt-manual"
-+    assert any(c["event_id"] == "evt-manual" for c in context["candidates"])
-+
-+
-+def test_select_allows_preserved_selection_not_in_candidates(tmp_path):
-+    cfg = _cfg(tmp_path)
-+    init_db(cfg)
-+    create_recording(
-+        "rec-cal-preserve-2",
-+        source="drive",
-+        source_filename="meeting.mp3",
-+        captured_at="2026-02-19T10:00:00Z",
-+        settings=cfg,
-+    )
-+    upsert_calendar_match(
-+        recording_id="rec-cal-preserve-2",
-+        candidates=[
-+            {
-+                "event_id": "evt-new",
-+                "subject": "Different event",
-+                "start": "2026-02-19T09:50:00Z",
-+                "end": "2026-02-19T10:35:00Z",
-+                "organizer": "Alex",
-+                "attendees": [],
-+                "location": None,
-+                "title_tokens": ["different"],
-+                "score": 0.8,
-+                "rationale": "auto",
-+            }
-+        ],
-+        selected_event_id="evt-manual",
-+        selected_confidence=0.77,
-+        settings=cfg,
-+    )
-+
-+    selected = calendar.select_calendar_event("rec-cal-preserve-2", "evt-manual", settings=cfg)
-+    assert selected["selected_event_id"] == "evt-manual"
+ def test_run_precheck_quarantine_rules(tmp_path: Path):
+     cfg = pipeline.Settings(
+         speaker_db=tmp_path / "db.yaml",

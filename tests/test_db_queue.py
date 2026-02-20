@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import asyncio
+import builtins
 from pathlib import Path
+import sys
+from types import ModuleType
 
 from fastapi.testclient import TestClient
 import pytest
@@ -28,6 +32,8 @@ from lan_app.db import (
 )
 from lan_app.jobs import RecordingJob, enqueue_recording_job, purge_pending_recording_jobs
 from lan_app.worker_tasks import process_job
+from lan_transcriber.llm_client import LLMClient
+from lan_transcriber.pipeline import PrecheckResult
 
 
 def _test_settings(tmp_path: Path) -> AppSettings:
@@ -91,7 +97,8 @@ def test_worker_noop_updates_job_and_recording_state(tmp_path: Path, monkeypatch
 
     assert result["status"] == "ok"
     assert recording is not None
-    assert recording["status"] == RECORDING_STATUS_READY
+    assert recording["status"] == RECORDING_STATUS_QUARANTINE
+    assert recording["quarantine_reason"] == "raw_audio_missing"
     assert job is not None
     assert job["status"] == JOB_STATUS_FINISHED
 
@@ -341,3 +348,243 @@ def test_purge_pending_recording_jobs_deletes_only_pending(tmp_path: Path, monke
     assert fake_queue.removed == ["job-purge-queued"]
     assert fake_queue.jobs["job-purge-queued"].deleted is True
     assert fake_queue.jobs["job-purge-finished"].deleted is False
+
+
+def test_worker_precheck_quarantines_and_writes_artifacts(tmp_path: Path, monkeypatch):
+    cfg = _test_settings(tmp_path)
+    monkeypatch.setenv("LAN_DATA_ROOT", str(cfg.data_root))
+    monkeypatch.setenv("LAN_RECORDINGS_ROOT", str(cfg.recordings_root))
+    monkeypatch.setenv("LAN_DB_PATH", str(cfg.db_path))
+    monkeypatch.setenv("LAN_PROM_SNAPSHOT_PATH", str(cfg.metrics_snapshot_path))
+
+    init_db(cfg)
+    create_recording(
+        "rec-precheck-q-1",
+        source="test",
+        source_filename="short.wav",
+        settings=cfg,
+    )
+    create_job(
+        "job-precheck-q-1",
+        recording_id="rec-precheck-q-1",
+        job_type=JOB_TYPE_PRECHECK,
+        settings=cfg,
+    )
+
+    raw_audio = cfg.recordings_root / "rec-precheck-q-1" / "raw" / "audio.wav"
+    raw_audio.parent.mkdir(parents=True, exist_ok=True)
+    raw_audio.write_bytes(b"\x00")
+
+    monkeypatch.setattr("lan_app.worker_tasks._resolve_raw_audio_path", lambda *_a, **_k: raw_audio)
+    monkeypatch.setattr(
+        "lan_app.worker_tasks.run_precheck",
+        lambda *_a, **_k: PrecheckResult(
+            duration_sec=5.0,
+            speech_ratio=0.5,
+            quarantine_reason="duration_lt_20s",
+        ),
+    )
+    build_called = {"value": False}
+
+    def _should_not_build_diariser(*_args, **_kwargs):
+        build_called["value"] = True
+        raise AssertionError("_build_diariser should be skipped for quarantined precheck")
+
+    monkeypatch.setattr(
+        "lan_app.worker_tasks._build_diariser",
+        _should_not_build_diariser,
+    )
+
+    called = {"value": False}
+
+    async def _fake_run_pipeline(*_args, **_kwargs):
+        called["value"] = True
+        return None
+
+    monkeypatch.setattr("lan_app.worker_tasks.run_pipeline", _fake_run_pipeline)
+
+    result = process_job("job-precheck-q-1", "rec-precheck-q-1", JOB_TYPE_PRECHECK)
+    assert result["status"] == "ok"
+    assert called["value"] is True
+    assert build_called["value"] is False
+
+    recording = get_recording("rec-precheck-q-1", settings=cfg)
+    job = get_job("job-precheck-q-1", settings=cfg)
+    assert recording is not None
+    assert recording["status"] == RECORDING_STATUS_QUARANTINE
+    assert recording["quarantine_reason"] == "duration_lt_20s"
+    assert job is not None
+    assert job["status"] == JOB_STATUS_FINISHED
+
+
+def test_worker_precheck_missing_audio_quarantines_recording(tmp_path: Path, monkeypatch):
+    cfg = _test_settings(tmp_path)
+    monkeypatch.setenv("LAN_DATA_ROOT", str(cfg.data_root))
+    monkeypatch.setenv("LAN_RECORDINGS_ROOT", str(cfg.recordings_root))
+    monkeypatch.setenv("LAN_DB_PATH", str(cfg.db_path))
+    monkeypatch.setenv("LAN_PROM_SNAPSHOT_PATH", str(cfg.metrics_snapshot_path))
+
+    init_db(cfg)
+    create_recording(
+        "rec-precheck-missing-audio-1",
+        source="test",
+        source_filename="missing.wav",
+        settings=cfg,
+    )
+    create_job(
+        "job-precheck-missing-audio-1",
+        recording_id="rec-precheck-missing-audio-1",
+        job_type=JOB_TYPE_PRECHECK,
+        settings=cfg,
+    )
+
+    monkeypatch.setattr(
+        "lan_app.worker_tasks._resolve_raw_audio_path",
+        lambda *_a, **_k: None,
+    )
+
+    def _should_not_precheck(*_args, **_kwargs):
+        raise AssertionError("run_precheck should be skipped when audio is missing")
+
+    monkeypatch.setattr("lan_app.worker_tasks.run_precheck", _should_not_precheck)
+
+    result = process_job(
+        "job-precheck-missing-audio-1",
+        "rec-precheck-missing-audio-1",
+        JOB_TYPE_PRECHECK,
+    )
+    assert result["status"] == "ok"
+
+    recording = get_recording("rec-precheck-missing-audio-1", settings=cfg)
+    job = get_job("job-precheck-missing-audio-1", settings=cfg)
+    assert recording is not None
+    assert recording["status"] == RECORDING_STATUS_QUARANTINE
+    assert recording["quarantine_reason"] == "raw_audio_missing"
+    assert job is not None
+    assert job["status"] == JOB_STATUS_FINISHED
+
+
+def test_worker_precheck_runs_pipeline_when_safe(tmp_path: Path, monkeypatch):
+    cfg = _test_settings(tmp_path)
+    monkeypatch.setenv("LAN_DATA_ROOT", str(cfg.data_root))
+    monkeypatch.setenv("LAN_RECORDINGS_ROOT", str(cfg.recordings_root))
+    monkeypatch.setenv("LAN_DB_PATH", str(cfg.db_path))
+    monkeypatch.setenv("LAN_PROM_SNAPSHOT_PATH", str(cfg.metrics_snapshot_path))
+
+    init_db(cfg)
+    create_recording(
+        "rec-precheck-ok-1",
+        source="test",
+        source_filename="normal.wav",
+        settings=cfg,
+    )
+    create_job(
+        "job-precheck-ok-1",
+        recording_id="rec-precheck-ok-1",
+        job_type=JOB_TYPE_PRECHECK,
+        settings=cfg,
+    )
+
+    raw_audio = cfg.recordings_root / "rec-precheck-ok-1" / "raw" / "audio.wav"
+    raw_audio.parent.mkdir(parents=True, exist_ok=True)
+    raw_audio.write_bytes(b"\x00")
+
+    monkeypatch.setattr("lan_app.worker_tasks._resolve_raw_audio_path", lambda *_a, **_k: raw_audio)
+    monkeypatch.setattr(
+        "lan_app.worker_tasks.run_precheck",
+        lambda *_a, **_k: PrecheckResult(
+            duration_sec=35.0,
+            speech_ratio=0.7,
+            quarantine_reason=None,
+        ),
+    )
+    called = {"value": False}
+    observed_llm: dict[str, object] = {}
+
+    async def _fake_run_pipeline(*_args, **kwargs):
+        called["value"] = True
+        observed_llm["value"] = kwargs.get("llm")
+        return None
+
+    monkeypatch.setattr("lan_app.worker_tasks.run_pipeline", _fake_run_pipeline)
+
+    result = process_job("job-precheck-ok-1", "rec-precheck-ok-1", JOB_TYPE_PRECHECK)
+    assert result["status"] == "ok"
+    assert called["value"] is True
+    assert isinstance(observed_llm["value"], LLMClient)
+
+    recording = get_recording("rec-precheck-ok-1", settings=cfg)
+    job = get_job("job-precheck-ok-1", settings=cfg)
+    assert recording is not None
+    assert recording["status"] == RECORDING_STATUS_READY
+    assert job is not None
+    assert job["status"] == JOB_STATUS_FINISHED
+
+
+def test_build_diariser_wraps_sync_pyannote_pipeline(monkeypatch):
+    from lan_app import worker_tasks
+
+    class _FakeModel:
+        def __init__(self):
+            self.calls: list[object] = []
+
+        def __call__(self, input_payload: object):
+            self.calls.append(input_payload)
+            return {"ok": True}
+
+    fake_model = _FakeModel()
+
+    class _FakePipeline:
+        @staticmethod
+        def from_pretrained(_name: str):
+            return fake_model
+
+    pyannote_audio = ModuleType("pyannote.audio")
+    pyannote_audio.Pipeline = _FakePipeline  # type: ignore[attr-defined]
+    pyannote_pkg = ModuleType("pyannote")
+    pyannote_pkg.audio = pyannote_audio  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "pyannote", pyannote_pkg)
+    monkeypatch.setitem(sys.modules, "pyannote.audio", pyannote_audio)
+
+    diariser = worker_tasks._build_diariser(duration_sec=30.0)
+    result = asyncio.run(diariser(Path("/tmp/fake.wav")))
+
+    assert result == {"ok": True}
+    assert fake_model.calls == ["/tmp/fake.wav"]
+
+
+def test_build_diariser_surfaces_pyannote_model_load_errors(monkeypatch):
+    from lan_app import worker_tasks
+
+    class _BrokenPipeline:
+        @staticmethod
+        def from_pretrained(_name: str):
+            raise RuntimeError("auth failed")
+
+    pyannote_audio = ModuleType("pyannote.audio")
+    pyannote_audio.Pipeline = _BrokenPipeline  # type: ignore[attr-defined]
+    pyannote_pkg = ModuleType("pyannote")
+    pyannote_pkg.audio = pyannote_audio  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "pyannote", pyannote_pkg)
+    monkeypatch.setitem(sys.modules, "pyannote.audio", pyannote_audio)
+
+    with pytest.raises(RuntimeError, match="auth failed"):
+        worker_tasks._build_diariser(duration_sec=30.0)
+
+
+def test_build_diariser_surfaces_non_pyannote_import_errors(monkeypatch):
+    from lan_app import worker_tasks
+
+    real_import = builtins.__import__
+
+    def _fake_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "pyannote.audio":
+            err = ModuleNotFoundError("No module named 'torch'")
+            err.name = "torch"
+            raise err
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", _fake_import)
+
+    with pytest.raises(ModuleNotFoundError, match="torch"):
+        worker_tasks._build_diariser(duration_sec=30.0)
