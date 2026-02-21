@@ -549,6 +549,17 @@ def test_build_summary_payload_normalises_non_finite_action_item_confidence():
     assert payload["action_items"][0]["confidence"] == 0.5
 
 
+def test_build_summary_payload_normalises_non_finite_question_counts():
+    payload = pipeline.build_summary_payload(
+        raw_llm_content='{"topic":"T","summary_bullets":["one"],"decisions":[],"action_items":[],"emotional_summary":"ok","questions":{"total_count":NaN,"types":{"open":NaN},"extracted":[]}}',
+        model="m",
+        target_summary_language="en",
+        friendly=0,
+    )
+    assert payload["questions"]["total_count"] == 0
+    assert payload["questions"]["types"]["open"] == 0
+
+
 def test_build_structured_summary_prompts_preserves_long_turn_text():
     long_text = " ".join(f"word{i}" for i in range(300))
     expected = " ".join(long_text.split())

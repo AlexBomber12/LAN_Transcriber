@@ -1,40 +1,38 @@
 diff --git a/lan_transcriber/pipeline.py b/lan_transcriber/pipeline.py
-index 91e093d..7f8c5f3 100644
+index 7f8c5f3..e5e2321 100644
 --- a/lan_transcriber/pipeline.py
 +++ b/lan_transcriber/pipeline.py
-@@ -3,6 +3,7 @@ from __future__ import annotations
- import asyncio
- import audioop
- import json
-+import math
- import re
- import shutil
- import subprocess
-@@ -566,6 +567,8 @@ def _normalise_confidence(value: Any, *, default: float = 0.5) -> float:
-         confidence = float(value)
+@@ -106,9 +106,12 @@ def _default_recording_id(audio_path: Path) -> str:
+ 
+ def _safe_float(value: object, default: float = 0.0) -> float:
+     try:
+-        return float(value)
++        parsed = float(value)
      except (TypeError, ValueError):
-         confidence = default
-+    if not math.isfinite(confidence):
-+        confidence = default
-     return round(min(max(confidence, 0.0), 1.0), 2)
+         return default
++    if not math.isfinite(parsed):
++        return default
++    return parsed
  
  
+ def _normalise_word(word: dict[str, Any], seg_start: float, seg_end: float) -> dict[str, Any] | None:
 diff --git a/tests/test_pipeline.py b/tests/test_pipeline.py
-index 5509447..07dd82a 100644
+index 07dd82a..3c673d7 100644
 --- a/tests/test_pipeline.py
 +++ b/tests/test_pipeline.py
-@@ -539,6 +539,16 @@ def test_build_summary_payload_prefers_parsed_summary_field():
-     assert payload["summary"] == "- one\n- two"
+@@ -549,6 +549,17 @@ def test_build_summary_payload_normalises_non_finite_action_item_confidence():
+     assert payload["action_items"][0]["confidence"] == 0.5
  
  
-+def test_build_summary_payload_normalises_non_finite_action_item_confidence():
++def test_build_summary_payload_normalises_non_finite_question_counts():
 +    payload = pipeline.build_summary_payload(
-+        raw_llm_content='{"topic":"T","summary_bullets":["one"],"decisions":[],"action_items":[{"task":"Do thing","confidence":NaN}],"emotional_summary":"ok","questions":{"total_count":0,"types":{},"extracted":[]}}',
++        raw_llm_content='{"topic":"T","summary_bullets":["one"],"decisions":[],"action_items":[],"emotional_summary":"ok","questions":{"total_count":NaN,"types":{"open":NaN},"extracted":[]}}',
 +        model="m",
 +        target_summary_language="en",
 +        friendly=0,
 +    )
-+    assert payload["action_items"][0]["confidence"] == 0.5
++    assert payload["questions"]["total_count"] == 0
++    assert payload["questions"]["types"]["open"] == 0
 +
 +
  def test_build_structured_summary_prompts_preserves_long_turn_text():

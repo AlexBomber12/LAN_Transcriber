@@ -106,9 +106,12 @@ def _default_recording_id(audio_path: Path) -> str:
 
 def _safe_float(value: object, default: float = 0.0) -> float:
     try:
-        return float(value)
+        parsed = float(value)
     except (TypeError, ValueError):
         return default
+    if not math.isfinite(parsed):
+        return default
+    return parsed
 
 
 def _normalise_word(word: dict[str, Any], seg_start: float, seg_end: float) -> dict[str, Any] | None:
