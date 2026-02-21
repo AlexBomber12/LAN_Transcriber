@@ -1,46 +1,98 @@
-diff --git a/lan_app/conversation_metrics.py b/lan_app/conversation_metrics.py
-index 222704a..c025ea5 100644
---- a/lan_app/conversation_metrics.py
-+++ b/lan_app/conversation_metrics.py
-@@ -509,7 +509,7 @@ def build_conversation_metrics(
+diff --git a/lan_app/db.py b/lan_app/db.py
+index c321886..3875c34 100644
+--- a/lan_app/db.py
++++ b/lan_app/db.py
+@@ -129,7 +129,7 @@ _MIGRATIONS: tuple[str, ...] = (
+         snippet_path TEXT NOT NULL,
+         created_at TEXT NOT NULL,
+         FOREIGN KEY(voice_profile_id) REFERENCES voice_profiles(id) ON DELETE CASCADE,
+-        FOREIGN KEY(recording_id) REFERENCES recordings(id) ON DELETE SET NULL
++        FOREIGN KEY(recording_id) REFERENCES recordings(id) ON DELETE CASCADE
+     );
  
-     merged_turns = merge_speaker_turns(turns_source, gap_threshold=gap_threshold_sec)
-     interruption_stats = count_interruptions(
--        merged_turns,
-+        turns_source,
-         overlap_threshold=interruption_overlap_sec,
-     )
- 
-diff --git a/tests/test_conversation_metrics.py b/tests/test_conversation_metrics.py
-index d41bdaf..46b9cd3 100644
---- a/tests/test_conversation_metrics.py
-+++ b/tests/test_conversation_metrics.py
-@@ -88,6 +88,28 @@ def test_build_conversation_metrics_heuristic_questions_count_punctuation_for_un
-     assert payload["participants"][0]["questions_count"] == 1
- 
- 
-+def test_build_conversation_metrics_interruptions_use_raw_turns_not_gap_merged_turns():
-+    payload = build_conversation_metrics(
-+        transcript_payload={},
-+        summary_payload={},
-+        speaker_turns=[
-+            {"start": 0.0, "end": 1.0, "speaker": "S1", "text": "first thought"},
-+            {"start": 1.3, "end": 2.2, "speaker": "S2", "text": "response starts"},
-+            {"start": 1.8, "end": 3.0, "speaker": "S1", "text": "continues after pause"},
-+        ],
-+        gap_threshold_sec=1.0,
-+        interruption_overlap_sec=0.3,
+     CREATE INDEX IF NOT EXISTS idx_speaker_assignments_recording_id
+@@ -137,6 +137,42 @@ _MIGRATIONS: tuple[str, ...] = (
+     CREATE INDEX IF NOT EXISTS idx_voice_samples_profile_id ON voice_samples(voice_profile_id);
+     CREATE INDEX IF NOT EXISTS idx_voice_samples_recording_id ON voice_samples(recording_id);
+     """,
++    """
++    ALTER TABLE voice_samples RENAME TO voice_samples_old;
++
++    CREATE TABLE voice_samples (
++        id INTEGER PRIMARY KEY AUTOINCREMENT,
++        voice_profile_id INTEGER NOT NULL,
++        recording_id TEXT,
++        diar_speaker_label TEXT,
++        snippet_path TEXT NOT NULL,
++        created_at TEXT NOT NULL,
++        FOREIGN KEY(voice_profile_id) REFERENCES voice_profiles(id) ON DELETE CASCADE,
++        FOREIGN KEY(recording_id) REFERENCES recordings(id) ON DELETE CASCADE
++    );
++
++    INSERT INTO voice_samples (
++        id,
++        voice_profile_id,
++        recording_id,
++        diar_speaker_label,
++        snippet_path,
++        created_at
 +    )
++    SELECT
++        id,
++        voice_profile_id,
++        recording_id,
++        diar_speaker_label,
++        snippet_path,
++        created_at
++    FROM voice_samples_old;
 +
-+    # S2 starts during S1's silent gap and should not count as interrupting S1.
-+    # S1's third turn does overlap S2 and counts as one interruption.
-+    assert payload["meeting"]["total_interruptions"] == 1
-+    by_speaker = {row["speaker"]: row for row in payload["participants"]}
-+    assert by_speaker["S2"]["interruptions_done"] == 0
-+    assert by_speaker["S2"]["interruptions_received"] == 1
-+    assert by_speaker["S1"]["interruptions_done"] == 1
++    DROP TABLE voice_samples_old;
++
++    CREATE INDEX IF NOT EXISTS idx_voice_samples_profile_id ON voice_samples(voice_profile_id);
++    CREATE INDEX IF NOT EXISTS idx_voice_samples_recording_id ON voice_samples(recording_id);
++    """,
+ )
+ 
+ _UNSET = object()
+diff --git a/tests/test_ui_routes.py b/tests/test_ui_routes.py
+index edabf72..0e46780 100644
+--- a/tests/test_ui_routes.py
++++ b/tests/test_ui_routes.py
+@@ -1031,6 +1031,37 @@ def test_ui_action_delete_removes_disk_artifacts(tmp_path, monkeypatch):
+     assert not rec_dir.exists()
+ 
+ 
++def test_ui_action_delete_cascades_voice_samples_for_recording(tmp_path, monkeypatch):
++    cfg = _cfg(tmp_path)
++    monkeypatch.setattr(api, "_settings", cfg)
++    monkeypatch.setattr(ui_routes, "_settings", cfg)
++    init_db(cfg)
++    create_recording(
++        "rec-del-sample-1",
++        source="drive",
++        source_filename="del-sample.mp3",
++        settings=cfg,
++    )
++    profile = create_voice_profile("Voice Owner", settings=cfg)
++    create_voice_sample(
++        voice_profile_id=profile["id"],
++        recording_id="rec-del-sample-1",
++        diar_speaker_label="S1",
++        snippet_path="recordings/rec-del-sample-1/derived/snippets/S1/1.wav",
++        settings=cfg,
++    )
++    assert len(list_voice_samples(settings=cfg)) == 1
++
++    def _fake_purge(recording_id: str, *, settings=None) -> int:
++        return 0
++
++    monkeypatch.setattr(ui_routes, "purge_pending_recording_jobs", _fake_purge)
++    c = TestClient(api.app, follow_redirects=False)
++    r = c.post("/ui/recordings/rec-del-sample-1/delete")
++    assert r.status_code in (200, 307, 302)
++    assert list_voice_samples(settings=cfg) == []
 +
 +
- def test_refresh_recording_metrics_persists_json_and_db(tmp_path: Path):
-     cfg = AppSettings(
-         data_root=tmp_path,
+ def test_projects_duplicate_name_handled(tmp_path, monkeypatch):
+     cfg = _cfg(tmp_path)
+     monkeypatch.setattr(api, "_settings", cfg)

@@ -120,6 +120,59 @@ _MIGRATIONS: tuple[str, ...] = (
     """
     ALTER TABLE recordings ADD COLUMN target_summary_language TEXT;
     """,
+    """
+    CREATE TABLE IF NOT EXISTS voice_samples (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        voice_profile_id INTEGER NOT NULL,
+        recording_id TEXT,
+        diar_speaker_label TEXT,
+        snippet_path TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY(voice_profile_id) REFERENCES voice_profiles(id) ON DELETE CASCADE,
+        FOREIGN KEY(recording_id) REFERENCES recordings(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_speaker_assignments_recording_id
+        ON speaker_assignments(recording_id);
+    CREATE INDEX IF NOT EXISTS idx_voice_samples_profile_id ON voice_samples(voice_profile_id);
+    CREATE INDEX IF NOT EXISTS idx_voice_samples_recording_id ON voice_samples(recording_id);
+    """,
+    """
+    ALTER TABLE voice_samples RENAME TO voice_samples_old;
+
+    CREATE TABLE voice_samples (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        voice_profile_id INTEGER NOT NULL,
+        recording_id TEXT,
+        diar_speaker_label TEXT,
+        snippet_path TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY(voice_profile_id) REFERENCES voice_profiles(id) ON DELETE CASCADE,
+        FOREIGN KEY(recording_id) REFERENCES recordings(id) ON DELETE CASCADE
+    );
+
+    INSERT INTO voice_samples (
+        id,
+        voice_profile_id,
+        recording_id,
+        diar_speaker_label,
+        snippet_path,
+        created_at
+    )
+    SELECT
+        id,
+        voice_profile_id,
+        recording_id,
+        diar_speaker_label,
+        snippet_path,
+        created_at
+    FROM voice_samples_old;
+
+    DROP TABLE voice_samples_old;
+
+    CREATE INDEX IF NOT EXISTS idx_voice_samples_profile_id ON voice_samples(voice_profile_id);
+    CREATE INDEX IF NOT EXISTS idx_voice_samples_recording_id ON voice_samples(recording_id);
+    """,
 )
 
 _UNSET = object()
@@ -616,6 +669,190 @@ def delete_voice_profile(
     return deleted.rowcount > 0
 
 
+def list_speaker_assignments(
+    recording_id: str,
+    *,
+    settings: AppSettings | None = None,
+) -> list[dict[str, Any]]:
+    init_db(settings)
+    with connect(settings) as conn:
+        rows = conn.execute(
+            """
+            SELECT
+                sa.recording_id,
+                sa.diar_speaker_label,
+                sa.voice_profile_id,
+                sa.confidence,
+                vp.display_name AS voice_profile_name
+            FROM speaker_assignments AS sa
+            LEFT JOIN voice_profiles AS vp ON vp.id = sa.voice_profile_id
+            WHERE sa.recording_id = ?
+            ORDER BY sa.diar_speaker_label
+            """,
+            (recording_id,),
+        ).fetchall()
+    return [_as_dict(row) or {} for row in rows]
+
+
+def set_speaker_assignment(
+    *,
+    recording_id: str,
+    diar_speaker_label: str,
+    voice_profile_id: int | None,
+    confidence: float = 1.0,
+    settings: AppSettings | None = None,
+) -> dict[str, Any] | None:
+    init_db(settings)
+    diar_label = str(diar_speaker_label).strip()
+    if not diar_label:
+        raise ValueError("diar_speaker_label is required")
+    with connect(settings) as conn:
+        if voice_profile_id is None:
+            conn.execute(
+                """
+                DELETE FROM speaker_assignments
+                WHERE recording_id = ? AND diar_speaker_label = ?
+                """,
+                (recording_id, diar_label),
+            )
+            conn.commit()
+            return None
+        profile_id = int(voice_profile_id)
+        score = max(0.0, min(float(confidence), 1.0))
+        conn.execute(
+            """
+            INSERT INTO speaker_assignments (
+                recording_id,
+                diar_speaker_label,
+                voice_profile_id,
+                confidence
+            )
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(recording_id, diar_speaker_label) DO UPDATE SET
+                voice_profile_id = excluded.voice_profile_id,
+                confidence = excluded.confidence
+            """,
+            (recording_id, diar_label, profile_id, score),
+        )
+        row = conn.execute(
+            """
+            SELECT
+                sa.recording_id,
+                sa.diar_speaker_label,
+                sa.voice_profile_id,
+                sa.confidence,
+                vp.display_name AS voice_profile_name
+            FROM speaker_assignments AS sa
+            LEFT JOIN voice_profiles AS vp ON vp.id = sa.voice_profile_id
+            WHERE sa.recording_id = ? AND sa.diar_speaker_label = ?
+            """,
+            (recording_id, diar_label),
+        ).fetchone()
+        conn.commit()
+    return _as_dict(row)
+
+
+def list_voice_samples(
+    *,
+    voice_profile_id: int | None = None,
+    recording_id: str | None = None,
+    settings: AppSettings | None = None,
+) -> list[dict[str, Any]]:
+    init_db(settings)
+    clauses: list[str] = []
+    params: list[Any] = []
+    if voice_profile_id is not None:
+        clauses.append("vs.voice_profile_id = ?")
+        params.append(int(voice_profile_id))
+    if recording_id is not None:
+        clauses.append("vs.recording_id = ?")
+        params.append(recording_id)
+    where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    query = f"""
+        SELECT
+            vs.*,
+            vp.display_name AS voice_profile_name
+        FROM voice_samples AS vs
+        LEFT JOIN voice_profiles AS vp ON vp.id = vs.voice_profile_id
+        {where_sql}
+        ORDER BY vs.created_at DESC, vs.id DESC
+    """
+    with connect(settings) as conn:
+        rows = conn.execute(query, tuple(params)).fetchall()
+    return [_as_dict(row) or {} for row in rows]
+
+
+def create_voice_sample(
+    *,
+    voice_profile_id: int,
+    snippet_path: str,
+    recording_id: str | None = None,
+    diar_speaker_label: str | None = None,
+    settings: AppSettings | None = None,
+) -> dict[str, Any]:
+    init_db(settings)
+    snippet = str(snippet_path).strip()
+    if not snippet:
+        raise ValueError("snippet_path is required")
+    clean_recording = str(recording_id).strip() if recording_id is not None else None
+    clean_label = str(diar_speaker_label).strip() if diar_speaker_label is not None else None
+    now = _utc_now()
+    with connect(settings) as conn:
+        cursor = conn.execute(
+            """
+            INSERT INTO voice_samples (
+                voice_profile_id,
+                recording_id,
+                diar_speaker_label,
+                snippet_path,
+                created_at
+            )
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                int(voice_profile_id),
+                clean_recording or None,
+                clean_label or None,
+                snippet,
+                now,
+            ),
+        )
+        row = conn.execute(
+            """
+            SELECT
+                vs.*,
+                vp.display_name AS voice_profile_name
+            FROM voice_samples AS vs
+            LEFT JOIN voice_profiles AS vp ON vp.id = vs.voice_profile_id
+            WHERE vs.id = ?
+            """,
+            (cursor.lastrowid,),
+        ).fetchone()
+        conn.commit()
+    return _as_dict(row) or {}
+
+
+def get_voice_sample(
+    sample_id: int,
+    *,
+    settings: AppSettings | None = None,
+) -> dict[str, Any] | None:
+    init_db(settings)
+    with connect(settings) as conn:
+        row = conn.execute(
+            """
+            SELECT
+                vs.*,
+                vp.display_name AS voice_profile_name
+            FROM voice_samples AS vs
+            LEFT JOIN voice_profiles AS vp ON vp.id = vs.voice_profile_id
+            WHERE vs.id = ?
+            """,
+            (sample_id,),
+        ).fetchone()
+    return _as_dict(row)
+
+
 def get_calendar_match(
     recording_id: str,
     *,
@@ -883,6 +1120,11 @@ __all__ = [
     "list_voice_profiles",
     "create_voice_profile",
     "delete_voice_profile",
+    "list_speaker_assignments",
+    "set_speaker_assignment",
+    "list_voice_samples",
+    "create_voice_sample",
+    "get_voice_sample",
     "get_calendar_match",
     "upsert_calendar_match",
     "set_calendar_match_selection",

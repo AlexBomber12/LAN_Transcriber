@@ -29,6 +29,7 @@
         <th>ID</th>
         <th>Display name</th>
         <th>Notes</th>
+        <th>Samples</th>
         <th></th>
       </tr>
     </thead>
@@ -38,6 +39,7 @@
         <td>{{ v.id }}</td>
         <td>{{ v.display_name }}</td>
         <td>{{ v.notes or '—' }}</td>
+        <td>{{ v.sample_count or 0 }}</td>
         <td>
           <form method="post" action="/voices/{{ v.id }}/delete" style="display:inline" onsubmit="return confirm('Delete voice profile ' + this.dataset.name + '?')" data-name="{{ v.display_name }}">
             <button class="btn btn-danger" type="submit">Delete</button>
@@ -49,6 +51,44 @@
   </table>
   {% else %}
   <p class="placeholder">No voice profiles yet. Add one above.</p>
+  {% endif %}
+</div>
+
+<div class="section">
+  <h2>Linked Samples</h2>
+  {% if samples %}
+  <table>
+    <thead>
+      <tr>
+        <th>ID</th>
+        <th>Profile</th>
+        <th>Recording</th>
+        <th>Speaker label</th>
+        <th>Snippet path</th>
+        <th>Created</th>
+        <th>Audio</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for s in samples %}
+      <tr>
+        <td>{{ s.id }}</td>
+        <td>{{ s.voice_profile_name or ('#' ~ s.voice_profile_id) }}</td>
+        <td>{{ s.recording_id or '—' }}</td>
+        <td>{{ s.diar_speaker_label or '—' }}</td>
+        <td title="{{ s.snippet_path }}" style="white-space:normal;max-width:320px">{{ s.snippet_path }}</td>
+        <td>{{ s.created_at[:19].replace('T',' ') if s.created_at else '—' }}</td>
+        <td>
+          <audio controls preload="none" style="height:26px;max-width:220px">
+            <source src="{{ s.audio_url }}" type="audio/wav">
+          </audio>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="placeholder">No linked samples yet. Add samples from a recording speaker row.</p>
   {% endif %}
 </div>
 {% endblock %}

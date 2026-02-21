@@ -11,15 +11,19 @@ from fastapi.testclient import TestClient
 from lan_app import api, ui_routes
 from lan_app.config import AppSettings
 from lan_app.db import (
+    create_voice_sample,
     create_job,
     create_recording,
     create_project,
     create_voice_profile,
     get_recording,
+    list_speaker_assignments,
+    list_voice_samples,
     init_db,
     list_projects,
     replace_participant_metrics,
     list_voice_profiles,
+    set_speaker_assignment,
     upsert_meeting_metrics,
 )
 from lan_app.constants import (
@@ -67,6 +71,30 @@ def seeded_client(tmp_path: Path, monkeypatch):
         settings=cfg,
     )
     return TestClient(api.app, follow_redirects=True)
+
+
+def _seed_speaker_artifacts(cfg: AppSettings, recording_id: str) -> None:
+    derived = cfg.recordings_root / recording_id / "derived"
+    derived.mkdir(parents=True, exist_ok=True)
+    (derived / "transcript.json").write_text(
+        json.dumps({"text": "hello from S1 and S2"}),
+        encoding="utf-8",
+    )
+    (derived / "speaker_turns.json").write_text(
+        json.dumps(
+            [
+                {"start": 0.0, "end": 1.2, "speaker": "S1", "text": "hello team"},
+                {"start": 1.3, "end": 2.1, "speaker": "S2", "text": "hi there"},
+                {"start": 2.2, "end": 3.8, "speaker": "S1", "text": "next topic"},
+            ]
+        ),
+        encoding="utf-8",
+    )
+    snippets = derived / "snippets"
+    (snippets / "S1").mkdir(parents=True, exist_ok=True)
+    (snippets / "S2").mkdir(parents=True, exist_ok=True)
+    (snippets / "S1" / "1.wav").write_bytes(b"fake-wav-s1")
+    (snippets / "S2" / "1.wav").write_bytes(b"fake-wav-s2")
 
 
 # ---------------------------------------------------------------------------
@@ -154,10 +182,132 @@ def test_recording_detail_calendar_tab(seeded_client):
 
 
 def test_recording_detail_placeholder_tabs(seeded_client):
-    for tab in ("project", "speakers"):
-        r = seeded_client.get(f"/recordings/rec-ui-1?tab={tab}")
-        assert r.status_code == 200
-        assert "placeholder" in r.text.lower() or "available after" in r.text.lower()
+    r = seeded_client.get("/recordings/rec-ui-1?tab=project")
+    assert r.status_code == 200
+    assert "placeholder" in r.text.lower() or "available after" in r.text.lower()
+
+
+def test_recording_detail_speakers_tab_assignment_persists(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    init_db(cfg)
+    create_recording(
+        "rec-speakers-1",
+        source="drive",
+        source_filename="speakers.mp3",
+        status=RECORDING_STATUS_READY,
+        settings=cfg,
+    )
+    _seed_speaker_artifacts(cfg, "rec-speakers-1")
+    profile = create_voice_profile("Alice Example", settings=cfg)
+
+    c = TestClient(api.app, follow_redirects=False)
+    r = c.post(
+        "/ui/recordings/rec-speakers-1/speakers/assign",
+        data={
+            "diar_speaker_label": "S1",
+            "voice_profile_id": str(profile["id"]),
+        },
+    )
+    assert r.status_code == 303
+
+    assignments = list_speaker_assignments("rec-speakers-1", settings=cfg)
+    assert len(assignments) == 1
+    assert assignments[0]["diar_speaker_label"] == "S1"
+    assert assignments[0]["voice_profile_id"] == profile["id"]
+
+    page = TestClient(api.app, follow_redirects=True).get(
+        "/recordings/rec-speakers-1?tab=speakers"
+    )
+    assert page.status_code == 200
+    assert "Speaker Assignments" in page.text
+    assert "Alice Example" in page.text
+    assert "Add sample from this recording" in page.text
+
+
+def test_recording_detail_speakers_create_and_assign(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    init_db(cfg)
+    create_recording(
+        "rec-speakers-create-1",
+        source="drive",
+        source_filename="speakers-create.mp3",
+        status=RECORDING_STATUS_READY,
+        settings=cfg,
+    )
+    _seed_speaker_artifacts(cfg, "rec-speakers-create-1")
+
+    c = TestClient(api.app, follow_redirects=False)
+    r = c.post(
+        "/ui/recordings/rec-speakers-create-1/speakers/create-and-assign",
+        data={
+            "diar_speaker_label": "S2",
+            "display_name": "Bob New",
+            "notes": "ops",
+        },
+    )
+    assert r.status_code == 303
+
+    profiles = list_voice_profiles(settings=cfg)
+    assert any(row["display_name"] == "Bob New" for row in profiles)
+    assignments = list_speaker_assignments("rec-speakers-create-1", settings=cfg)
+    assert len(assignments) == 1
+    assert assignments[0]["diar_speaker_label"] == "S2"
+    assert assignments[0]["voice_profile_name"] == "Bob New"
+
+
+def test_recording_detail_speakers_add_sample_links_snippet_and_audio_route(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    init_db(cfg)
+    create_recording(
+        "rec-speakers-sample-1",
+        source="drive",
+        source_filename="speakers-sample.mp3",
+        status=RECORDING_STATUS_READY,
+        settings=cfg,
+    )
+    _seed_speaker_artifacts(cfg, "rec-speakers-sample-1")
+    profile = create_voice_profile("Cara Sample", settings=cfg)
+    set_speaker_assignment(
+        recording_id="rec-speakers-sample-1",
+        diar_speaker_label="S1",
+        voice_profile_id=profile["id"],
+        settings=cfg,
+    )
+
+    c = TestClient(api.app, follow_redirects=False)
+    r = c.post(
+        "/ui/recordings/rec-speakers-sample-1/speakers/add-sample",
+        data={
+            "diar_speaker_label": "S1",
+            "voice_profile_id": str(profile["id"]),
+        },
+    )
+    assert r.status_code == 303
+
+    samples = list_voice_samples(settings=cfg)
+    assert len(samples) == 1
+    sample = samples[0]
+    assert sample["voice_profile_id"] == profile["id"]
+    assert sample["recording_id"] == "rec-speakers-sample-1"
+    assert sample["snippet_path"].startswith("recordings/rec-speakers-sample-1/derived/snippets/S1/")
+
+    snippet_resp = TestClient(api.app, follow_redirects=True).get(
+        "/ui/recordings/rec-speakers-sample-1/snippets/S1/1.wav"
+    )
+    assert snippet_resp.status_code == 200
+    assert snippet_resp.headers["content-type"].startswith("audio/wav")
+
+    audio_resp = TestClient(api.app, follow_redirects=True).get(
+        f"/ui/voice-samples/{sample['id']}/audio"
+    )
+    assert audio_resp.status_code == 200
+    assert audio_resp.headers["content-type"].startswith("audio/wav")
 
 
 def test_recording_detail_metrics_tab_uses_summary_payload(tmp_path, monkeypatch):
@@ -881,6 +1031,37 @@ def test_ui_action_delete_removes_disk_artifacts(tmp_path, monkeypatch):
     assert not rec_dir.exists()
 
 
+def test_ui_action_delete_cascades_voice_samples_for_recording(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    init_db(cfg)
+    create_recording(
+        "rec-del-sample-1",
+        source="drive",
+        source_filename="del-sample.mp3",
+        settings=cfg,
+    )
+    profile = create_voice_profile("Voice Owner", settings=cfg)
+    create_voice_sample(
+        voice_profile_id=profile["id"],
+        recording_id="rec-del-sample-1",
+        diar_speaker_label="S1",
+        snippet_path="recordings/rec-del-sample-1/derived/snippets/S1/1.wav",
+        settings=cfg,
+    )
+    assert len(list_voice_samples(settings=cfg)) == 1
+
+    def _fake_purge(recording_id: str, *, settings=None) -> int:
+        return 0
+
+    monkeypatch.setattr(ui_routes, "purge_pending_recording_jobs", _fake_purge)
+    c = TestClient(api.app, follow_redirects=False)
+    r = c.post("/ui/recordings/rec-del-sample-1/delete")
+    assert r.status_code in (200, 307, 302)
+    assert list_voice_samples(settings=cfg) == []
+
+
 def test_projects_duplicate_name_handled(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
     monkeypatch.setattr(api, "_settings", cfg)
@@ -955,3 +1136,62 @@ def test_db_create_and_delete_voice_profile(tmp_path):
     from lan_app.db import delete_voice_profile
     assert delete_voice_profile(vp["id"], settings=cfg) is True
     assert list_voice_profiles(settings=cfg) == []
+
+
+def test_db_set_and_clear_speaker_assignment(tmp_path):
+    cfg = _cfg(tmp_path)
+    init_db(cfg)
+    create_recording(
+        "rec-assignment-1",
+        source="drive",
+        source_filename="assignment.mp3",
+        settings=cfg,
+    )
+    profile = create_voice_profile("Dana", settings=cfg)
+
+    set_speaker_assignment(
+        recording_id="rec-assignment-1",
+        diar_speaker_label="S1",
+        voice_profile_id=profile["id"],
+        settings=cfg,
+    )
+    rows = list_speaker_assignments("rec-assignment-1", settings=cfg)
+    assert len(rows) == 1
+    assert rows[0]["voice_profile_name"] == "Dana"
+
+    set_speaker_assignment(
+        recording_id="rec-assignment-1",
+        diar_speaker_label="S1",
+        voice_profile_id=None,
+        settings=cfg,
+    )
+    assert list_speaker_assignments("rec-assignment-1", settings=cfg) == []
+
+
+def test_db_create_and_list_voice_samples(tmp_path):
+    cfg = _cfg(tmp_path)
+    init_db(cfg)
+    create_recording(
+        "rec-sample-1",
+        source="drive",
+        source_filename="sample.mp3",
+        settings=cfg,
+    )
+    profile = create_voice_profile("Evan", settings=cfg)
+
+    sample = create_voice_sample(
+        voice_profile_id=profile["id"],
+        recording_id="rec-sample-1",
+        diar_speaker_label="S1",
+        snippet_path="recordings/rec-sample-1/derived/snippets/S1/1.wav",
+        settings=cfg,
+    )
+    assert sample["voice_profile_name"] == "Evan"
+
+    rows = list_voice_samples(settings=cfg)
+    assert len(rows) == 1
+    assert rows[0]["recording_id"] == "rec-sample-1"
+
+    filtered = list_voice_samples(voice_profile_id=profile["id"], settings=cfg)
+    assert len(filtered) == 1
+    assert filtered[0]["diar_speaker_label"] == "S1"
