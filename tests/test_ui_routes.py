@@ -1031,6 +1031,37 @@ def test_ui_action_delete_removes_disk_artifacts(tmp_path, monkeypatch):
     assert not rec_dir.exists()
 
 
+def test_ui_action_delete_cascades_voice_samples_for_recording(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    init_db(cfg)
+    create_recording(
+        "rec-del-sample-1",
+        source="drive",
+        source_filename="del-sample.mp3",
+        settings=cfg,
+    )
+    profile = create_voice_profile("Voice Owner", settings=cfg)
+    create_voice_sample(
+        voice_profile_id=profile["id"],
+        recording_id="rec-del-sample-1",
+        diar_speaker_label="S1",
+        snippet_path="recordings/rec-del-sample-1/derived/snippets/S1/1.wav",
+        settings=cfg,
+    )
+    assert len(list_voice_samples(settings=cfg)) == 1
+
+    def _fake_purge(recording_id: str, *, settings=None) -> int:
+        return 0
+
+    monkeypatch.setattr(ui_routes, "purge_pending_recording_jobs", _fake_purge)
+    c = TestClient(api.app, follow_redirects=False)
+    r = c.post("/ui/recordings/rec-del-sample-1/delete")
+    assert r.status_code in (200, 307, 302)
+    assert list_voice_samples(settings=cfg) == []
+
+
 def test_projects_duplicate_name_handled(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
     monkeypatch.setattr(api, "_settings", cfg)
