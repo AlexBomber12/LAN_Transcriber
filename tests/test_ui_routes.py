@@ -152,10 +152,93 @@ def test_recording_detail_calendar_tab(seeded_client):
 
 
 def test_recording_detail_placeholder_tabs(seeded_client):
-    for tab in ("project", "speakers", "metrics"):
+    for tab in ("project", "speakers"):
         r = seeded_client.get(f"/recordings/rec-ui-1?tab={tab}")
         assert r.status_code == 200
         assert "placeholder" in r.text.lower() or "available after" in r.text.lower()
+
+
+def test_recording_detail_metrics_tab_uses_summary_payload(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    init_db(cfg)
+    create_recording(
+        "rec-metrics-tab-1",
+        source="drive",
+        source_filename="metrics.mp3",
+        status=RECORDING_STATUS_READY,
+        settings=cfg,
+    )
+    derived = cfg.recordings_root / "rec-metrics-tab-1" / "derived"
+    derived.mkdir(parents=True, exist_ok=True)
+    (derived / "summary.json").write_text(
+        json.dumps(
+            {
+                "topic": "Weekly sync",
+                "summary_bullets": ["Reviewed blockers"],
+                "decisions": ["Ship on Friday"],
+                "action_items": [
+                    {"task": "Send notes", "owner": "Alex", "deadline": "2026-02-23", "confidence": 0.9}
+                ],
+                "emotional_summary": "Focused.",
+                "questions": {
+                    "total_count": 1,
+                    "types": {
+                        "open": 0,
+                        "yes_no": 0,
+                        "clarification": 0,
+                        "status": 1,
+                        "decision_seeking": 0,
+                    },
+                    "extracted": ["Is QA complete?"],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    c = TestClient(api.app, follow_redirects=True)
+    r = c.get("/recordings/rec-metrics-tab-1?tab=metrics")
+    assert r.status_code == 200
+    assert "Decisions" in r.text
+    assert "Ship on Friday" in r.text
+    assert "Send notes" in r.text
+    assert "Is QA complete?" in r.text
+
+
+def test_recording_detail_overview_shows_topic_and_emotional_summary(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    init_db(cfg)
+    create_recording(
+        "rec-overview-summary-1",
+        source="drive",
+        source_filename="overview.mp3",
+        status=RECORDING_STATUS_READY,
+        settings=cfg,
+    )
+    derived = cfg.recordings_root / "rec-overview-summary-1" / "derived"
+    derived.mkdir(parents=True, exist_ok=True)
+    (derived / "summary.json").write_text(
+        json.dumps(
+            {
+                "topic": "Quarterly roadmap",
+                "summary_bullets": ["Roadmap reviewed"],
+                "summary": "- Roadmap reviewed",
+                "emotional_summary": "Calm and constructive.",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    c = TestClient(api.app, follow_redirects=True)
+    r = c.get("/recordings/rec-overview-summary-1")
+    assert r.status_code == 200
+    assert "Quarterly roadmap" in r.text
+    assert "Roadmap reviewed" in r.text
+    assert "Calm and constructive." in r.text
 
 
 def test_recording_detail_language_tab_renders_spans(tmp_path, monkeypatch):
@@ -490,10 +573,44 @@ def test_ui_language_resummarize_uses_target_language_override(tmp_path, monkeyp
 
     captured: dict[str, str] = {}
 
-    async def _fake_generate(self, system_prompt: str, user_prompt: str, model: str | None = None):
+    async def _fake_generate(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        model: str | None = None,
+        response_format: dict[str, object] | None = None,
+    ):
         captured["system_prompt"] = system_prompt
         captured["model"] = model or ""
-        return {"content": "- resumen actualizado"}
+        return {
+            "content": json.dumps(
+                {
+                    "topic": "Resumen semanal",
+                    "summary_bullets": ["Bloqueadores revisados."],
+                    "decisions": ["Publicar el viernes."],
+                    "action_items": [
+                        {
+                            "task": "Enviar notas",
+                            "owner": "Alex",
+                            "deadline": "2026-02-23",
+                            "confidence": 0.85,
+                        }
+                    ],
+                    "emotional_summary": "Enfoque positivo.",
+                    "questions": {
+                        "total_count": 1,
+                        "types": {
+                            "open": 0,
+                            "yes_no": 0,
+                            "clarification": 1,
+                            "status": 0,
+                            "decision_seeking": 0,
+                        },
+                        "extracted": ["Quien valida QA?"],
+                    },
+                }
+            )
+        }
 
     monkeypatch.setattr(ui_routes.LLMClient, "generate", _fake_generate)
     c = TestClient(api.app, follow_redirects=False)
@@ -512,9 +629,83 @@ def test_ui_language_resummarize_uses_target_language_override(tmp_path, monkeyp
     assert recording["language_override"] == "en"
 
     summary_payload = json.loads((derived / "summary.json").read_text(encoding="utf-8"))
-    assert summary_payload["summary"] == "- resumen actualizado"
+    assert summary_payload["summary_bullets"] == ["Bloqueadores revisados."]
+    assert summary_payload["topic"] == "Resumen semanal"
     assert summary_payload["target_summary_language"] == "es"
-    assert "Write the summary in Spanish." in captured["system_prompt"]
+    assert "in Spanish." in captured["system_prompt"]
+
+
+def test_ui_language_resummarize_without_speaker_turns_uses_full_transcript(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    init_db(cfg)
+    create_recording(
+        "rec-lang-rsum-legacy-1",
+        source="drive",
+        source_filename="legacy.mp3",
+        status=RECORDING_STATUS_READY,
+        settings=cfg,
+    )
+
+    derived = cfg.recordings_root / "rec-lang-rsum-legacy-1" / "derived"
+    derived.mkdir(parents=True, exist_ok=True)
+    long_text = " ".join(f"token{i}" for i in range(260))
+    normalized_long_text = " ".join(long_text.split())
+    (derived / "transcript.json").write_text(
+        json.dumps(
+            {
+                "text": long_text,
+                "language": {"detected": "en", "confidence": 0.9},
+                "dominant_language": "en",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (derived / "summary.json").write_text(
+        json.dumps({"friendly": 0, "model": "llama3:8b", "summary": "- old"}),
+        encoding="utf-8",
+    )
+
+    captured: dict[str, str] = {}
+
+    async def _fake_generate(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        model: str | None = None,
+        response_format: dict[str, object] | None = None,
+    ):
+        captured["user_prompt"] = user_prompt
+        return {
+            "content": json.dumps(
+                {
+                    "topic": "Legacy",
+                    "summary_bullets": ["ok"],
+                    "decisions": [],
+                    "action_items": [],
+                    "emotional_summary": "Neutral.",
+                    "questions": {"total_count": 0, "types": {}, "extracted": []},
+                }
+            )
+        }
+
+    monkeypatch.setattr(ui_routes.LLMClient, "generate", _fake_generate)
+    c = TestClient(api.app, follow_redirects=False)
+    r = c.post(
+        "/ui/recordings/rec-lang-rsum-legacy-1/language/resummarize",
+        data={
+            "target_summary_language": "en",
+            "transcript_language_override": "",
+        },
+    )
+    assert r.status_code == 303
+
+    prompt_payload = json.loads(captured["user_prompt"])
+    speaker_turns = prompt_payload["speaker_turns"]
+    assert len(speaker_turns) > 1
+    reconstructed = " ".join(str(turn["text"]) for turn in speaker_turns)
+    assert reconstructed == normalized_long_text
 
 
 def test_ui_language_retranscribe_enqueues_precheck_and_saves_overrides(tmp_path, monkeypatch):

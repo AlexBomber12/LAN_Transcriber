@@ -26,6 +26,7 @@ from .constants import (
 from .db import (
     fail_job,
     finish_job,
+    get_calendar_match,
     get_recording,
     init_db,
     set_recording_language_settings,
@@ -113,6 +114,50 @@ def _load_transcript_language_payload(
     return dominant, target
 
 
+def _load_calendar_summary_context(
+    recording_id: str,
+    settings: AppSettings,
+) -> tuple[str | None, list[str]]:
+    row = get_calendar_match(recording_id, settings=settings) or {}
+    selected_event_id = str(row.get("selected_event_id") or "").strip()
+    if not selected_event_id:
+        return None, []
+    raw_candidates = row.get("candidates_json")
+    if isinstance(raw_candidates, list):
+        candidates = raw_candidates
+    elif isinstance(raw_candidates, str):
+        try:
+            parsed = json.loads(raw_candidates or "[]")
+        except ValueError:
+            return None, []
+        if not isinstance(parsed, list):
+            return None, []
+        candidates = parsed
+    else:
+        return None, []
+
+    selected: dict[str, Any] | None = None
+    for item in candidates:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("event_id") or "").strip() == selected_event_id:
+            selected = item
+            break
+    if selected is None:
+        return None, []
+
+    title = str(selected.get("subject") or "").strip() or None
+    attendees_raw = selected.get("attendees")
+    attendees = []
+    if isinstance(attendees_raw, list):
+        attendees = [
+            str(attendee).strip()
+            for attendee in attendees_raw
+            if str(attendee).strip()
+        ]
+    return title, attendees
+
+
 class _FallbackDiariser:
     def __init__(self, duration_sec: float | None) -> None:
         self._duration_sec = max(duration_sec or 0.1, 0.1)
@@ -195,6 +240,10 @@ def _run_precheck_pipeline(
         diariser = _FallbackDiariser(precheck.duration_sec)
     else:
         diariser = _build_diariser(precheck.duration_sec)
+    calendar_title, calendar_attendees = _load_calendar_summary_context(
+        recording_id,
+        settings,
+    )
     asyncio.run(
         run_pipeline(
             audio_path=audio_path,
@@ -205,6 +254,8 @@ def _run_precheck_pipeline(
             precheck=precheck,
             target_summary_language=target_summary_language,
             transcript_language_override=transcript_language_override,
+            calendar_title=calendar_title,
+            calendar_attendees=calendar_attendees,
         )
     )
     dominant_language, resolved_target_language = _load_transcript_language_payload(

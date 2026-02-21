@@ -287,7 +287,7 @@ async def test_no_talk(tmp_path: Path, mocker):
     )
 
     assert res.friendly == 0
-    assert res.summary.strip() == ""
+    assert res.summary.strip() == "- No summary available."
 
 
 @pytest.mark.asyncio
@@ -497,6 +497,7 @@ async def test_pipeline_summary_language_override_changes_prompt(tmp_path: Path,
         system_prompt: str,
         user_prompt: str,
         model: str | None = None,
+        response_format: dict[str, object] | None = None,
     ):
         captured["system"] = system_prompt
         return {"content": "- resumen"}
@@ -518,13 +519,208 @@ async def test_pipeline_summary_language_override_changes_prompt(tmp_path: Path,
         target_summary_language="es",
     )
 
-    assert "Write the summary in Spanish." in captured["system"]
+    assert "in Spanish." in captured["system"]
     summary_data = json.loads(
         (cfg.recordings_root / "rec-summary-lang-1" / "derived" / "summary.json").read_text(
             encoding="utf-8"
         )
     )
     assert summary_data["target_summary_language"] == "es"
+
+
+def test_build_summary_payload_prefers_parsed_summary_field():
+    payload = pipeline.build_summary_payload(
+        raw_llm_content='{"topic":"T","summary":"- one\\n- two","decisions":[],"action_items":[],"emotional_summary":"ok","questions":{"total_count":0,"types":{},"extracted":[]}}',
+        model="m",
+        target_summary_language="en",
+        friendly=0,
+    )
+    assert payload["summary_bullets"] == ["one", "two"]
+    assert payload["summary"] == "- one\n- two"
+
+
+def test_build_summary_payload_normalises_non_finite_action_item_confidence():
+    payload = pipeline.build_summary_payload(
+        raw_llm_content='{"topic":"T","summary_bullets":["one"],"decisions":[],"action_items":[{"task":"Do thing","confidence":NaN}],"emotional_summary":"ok","questions":{"total_count":0,"types":{},"extracted":[]}}',
+        model="m",
+        target_summary_language="en",
+        friendly=0,
+    )
+    assert payload["action_items"][0]["confidence"] == 0.5
+
+
+def test_build_summary_payload_normalises_non_finite_question_counts():
+    payload = pipeline.build_summary_payload(
+        raw_llm_content='{"topic":"T","summary_bullets":["one"],"decisions":[],"action_items":[],"emotional_summary":"ok","questions":{"total_count":NaN,"types":{"open":NaN},"extracted":[]}}',
+        model="m",
+        target_summary_language="en",
+        friendly=0,
+    )
+    assert payload["questions"]["total_count"] == 0
+    assert payload["questions"]["types"]["open"] == 0
+
+
+def test_build_structured_summary_prompts_preserves_long_turn_text():
+    long_text = " ".join(f"word{i}" for i in range(300))
+    expected = " ".join(long_text.split())
+    _system_prompt, user_prompt = pipeline.build_structured_summary_prompts(
+        [
+            {
+                "start": 0.0,
+                "end": 120.0,
+                "speaker": "S1",
+                "text": long_text,
+                "language": "en",
+            }
+        ],
+        "en",
+    )
+    payload = json.loads(user_prompt)
+    turns = payload["speaker_turns"]
+    assert len(turns) > 1
+    reconstructed = " ".join(str(turn["text"]) for turn in turns)
+    assert reconstructed == expected
+
+
+def test_build_structured_summary_prompts_keeps_turns_beyond_legacy_cap():
+    speaker_turns = [
+        {"start": float(i), "end": float(i) + 0.5, "speaker": "S1", "text": f"turn {i}"}
+        for i in range(350)
+    ]
+    _system_prompt, user_prompt = pipeline.build_structured_summary_prompts(speaker_turns, "en")
+    payload = json.loads(user_prompt)
+    turns = payload["speaker_turns"]
+    assert len(turns) == len(speaker_turns)
+    assert turns[-1]["text"] == "turn 349"
+
+
+@pytest.mark.asyncio
+async def test_pipeline_writes_structured_summary_payload(tmp_path: Path, mocker):
+    mocker.patch(
+        "whisperx.transcribe",
+        return_value=(
+            [{"start": 0.0, "end": 1.0, "text": "hello team, we ship on Friday."}],
+            {"language": "en", "language_probability": 0.9},
+        ),
+    )
+    mocker.patch(
+        "transformers.pipeline",
+        lambda *a, **k: lambda text: [{"label": "positive", "score": 0.7}],
+    )
+
+    async def _fake_generate(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        model: str | None = None,
+        response_format: dict[str, object] | None = None,
+    ):
+        return {
+            "content": json.dumps(
+                {
+                    "topic": "Weekly release sync",
+                    "summary_bullets": ["Team confirmed release scope for Friday."],
+                    "decisions": ["Release window is Friday 16:00 UTC."],
+                    "action_items": [
+                        {
+                            "task": "Send release notes",
+                            "owner": "Alex",
+                            "deadline": "2026-02-23",
+                            "confidence": 0.92,
+                        }
+                    ],
+                    "emotional_summary": "Focused and optimistic.",
+                    "questions": {
+                        "total_count": 1,
+                        "types": {
+                            "open": 0,
+                            "yes_no": 0,
+                            "clarification": 0,
+                            "status": 1,
+                            "decision_seeking": 0,
+                        },
+                        "extracted": ["Is QA complete?"],
+                    },
+                }
+            )
+        }
+
+    mocker.patch.object(llm_client.LLMClient, "generate", _fake_generate)
+
+    cfg = pipeline.Settings(
+        speaker_db=tmp_path / "db.yaml",
+        tmp_root=tmp_path,
+        recordings_root=tmp_path / "recordings",
+    )
+    await pipeline.run_pipeline(
+        audio_path=fake_audio(tmp_path, "structured.mp3"),
+        cfg=cfg,
+        llm=llm_client.LLMClient(),
+        diariser=DummyDiariser(),
+        recording_id="rec-structured-1",
+        precheck=precheck_ok(),
+    )
+
+    summary_data = json.loads(
+        (cfg.recordings_root / "rec-structured-1" / "derived" / "summary.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert summary_data["topic"] == "Weekly release sync"
+    assert summary_data["decisions"] == ["Release window is Friday 16:00 UTC."]
+    assert summary_data["action_items"][0]["owner"] == "Alex"
+    assert summary_data["action_items"][0]["confidence"] == 0.92
+    assert summary_data["questions"]["types"]["status"] == 1
+    assert summary_data["summary_bullets"] == ["Team confirmed release scope for Friday."]
+
+
+@pytest.mark.asyncio
+async def test_pipeline_prompt_includes_calendar_context(tmp_path: Path, mocker):
+    mocker.patch(
+        "whisperx.transcribe",
+        return_value=(
+            [{"start": 0.0, "end": 1.0, "text": "status update for roadmap"}],
+            {"language": "en", "language_probability": 0.8},
+        ),
+    )
+    mocker.patch(
+        "transformers.pipeline",
+        lambda *a, **k: lambda text: [{"label": "positive", "score": 0.6}],
+    )
+
+    captured: dict[str, str] = {}
+
+    async def _fake_generate(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        model: str | None = None,
+        response_format: dict[str, object] | None = None,
+    ):
+        captured["user_prompt"] = user_prompt
+        return {"content": '{"summary_bullets":["ok"],"decisions":[],"action_items":[],"questions":{"total_count":0,"types":{},"extracted":[]},"topic":"A","emotional_summary":"Neutral."}'}
+
+    mocker.patch.object(llm_client.LLMClient, "generate", _fake_generate)
+
+    cfg = pipeline.Settings(
+        speaker_db=tmp_path / "db.yaml",
+        tmp_root=tmp_path,
+        recordings_root=tmp_path / "recordings",
+    )
+    await pipeline.run_pipeline(
+        audio_path=fake_audio(tmp_path, "calendar.mp3"),
+        cfg=cfg,
+        llm=llm_client.LLMClient(),
+        diariser=DummyDiariser(),
+        recording_id="rec-calendar-1",
+        precheck=precheck_ok(),
+        calendar_title="Roadmap Review",
+        calendar_attendees=["Alex", "Priya"],
+    )
+
+    prompt_payload = json.loads(captured["user_prompt"])
+    assert prompt_payload["calendar"]["title"] == "Roadmap Review"
+    assert prompt_payload["calendar"]["attendees"] == ["Alex", "Priya"]
 
 
 @pytest.mark.asyncio
