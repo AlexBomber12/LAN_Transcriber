@@ -238,15 +238,7 @@ class MicrosoftGraphClient:
         self._last_token_result = result
         return result
 
-    @retry(
-        reraise=True,
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=1, max=8),
-        retry=retry_if_exception_type(
-            (_GraphTransientError, httpx.TransportError, httpx.TimeoutException)
-        ),
-    )
-    def _graph_request_response(
+    def _graph_request_response_once(
         self,
         method: str,
         path: str,
@@ -275,6 +267,31 @@ class MicrosoftGraphClient:
         if resp.status_code >= 400:
             raise GraphRequestError(f"Graph {method} {path} failed: {resp.status_code}")
         return resp
+
+    @retry(
+        reraise=True,
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=1, max=8),
+        retry=retry_if_exception_type(
+            (_GraphTransientError, httpx.TransportError, httpx.TimeoutException)
+        ),
+    )
+    def _graph_request_response(
+        self,
+        method: str,
+        path: str,
+        *,
+        payload: dict[str, Any] | None = None,
+        content: str | bytes | None = None,
+        extra_headers: dict[str, str] | None = None,
+    ) -> httpx.Response:
+        return self._graph_request_response_once(
+            method,
+            path,
+            payload=payload,
+            content=content,
+            extra_headers=extra_headers,
+        )
 
     def _graph_request(
         self,
@@ -308,7 +325,7 @@ class MicrosoftGraphClient:
         if not payload:
             raise ValueError("html payload is required")
         try:
-            response = self._graph_request_response(
+            response = self._graph_request_response_once(
                 "POST",
                 path,
                 content=payload.encode("utf-8"),

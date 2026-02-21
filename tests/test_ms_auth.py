@@ -4,6 +4,7 @@ import threading
 from pathlib import Path
 
 from fastapi.testclient import TestClient
+import pytest
 
 from lan_app import api, ms_graph, ui_routes
 from lan_app.config import AppSettings
@@ -379,3 +380,61 @@ def test_start_device_flow_session_serializes_initiation(monkeypatch, tmp_path):
     assert len(initiated) == 1
     assert results[0]["session_id"] == results[1]["session_id"]
     assert sorted([results[0]["reused"], results[1]["reused"]]) == [False, True]
+
+
+def test_graph_post_html_does_not_retry_non_idempotent_page_creation(monkeypatch, tmp_path):
+    cfg = _cfg(tmp_path)
+    cfg.ms_tenant_id = "tenant-1"
+    cfg.ms_client_id = "client-1"
+    cfg.ms_scopes = "offline_access User.Read Notes.ReadWrite Calendars.Read"
+
+    class _FakePublicClientApplication:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def get_accounts(self):
+            return []
+
+    monkeypatch.setattr(
+        ms_graph.msal,
+        "PublicClientApplication",
+        _FakePublicClientApplication,
+    )
+    client = ms_graph.MicrosoftGraphClient(cfg)
+
+    monkeypatch.setattr(
+        client,
+        "acquire_token_silent",
+        lambda: {"access_token": "token-1"},
+    )
+
+    calls: list[tuple[str, str]] = []
+
+    class _FakeResponse:
+        status_code = 503
+        content = b""
+        headers: dict[str, str] = {}
+
+        def json(self):  # pragma: no cover - not used in this test
+            return {}
+
+    class _FakeHttpClient:
+        def __init__(self, timeout: float):
+            self.timeout = timeout
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def request(self, method: str, url: str, **kwargs):
+            calls.append((method, url))
+            return _FakeResponse()
+
+    monkeypatch.setattr(ms_graph.httpx, "Client", _FakeHttpClient)
+
+    with pytest.raises(ms_graph.GraphRequestError):
+        client.graph_post_html("/me/onenote/sections/sec-1/pages", "<html></html>")
+
+    assert len(calls) == 1

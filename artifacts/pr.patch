@@ -1,53 +1,136 @@
-diff --git a/lan_app/ui_routes.py b/lan_app/ui_routes.py
-index 1f129d3..893ad62 100644
---- a/lan_app/ui_routes.py
-+++ b/lan_app/ui_routes.py
-@@ -522,12 +522,7 @@ def _as_data_relative_path(path: Path, *, settings: AppSettings) -> str | None:
+diff --git a/lan_app/ms_graph.py b/lan_app/ms_graph.py
+index d216842..89b4ce3 100644
+--- a/lan_app/ms_graph.py
++++ b/lan_app/ms_graph.py
+@@ -238,15 +238,7 @@ class MicrosoftGraphClient:
+         self._last_token_result = result
+         return result
  
- def _recording_onenote_page_url(recording: dict[str, Any]) -> str | None:
-     explicit = str(recording.get("onenote_page_url") or "").strip()
--    if explicit:
--        return explicit
--    page_id = str(recording.get("onenote_page_id") or "").strip()
--    if not page_id:
--        return None
--    return f"https://graph.microsoft.com/v1.0/me/onenote/pages/{quote(page_id, safe='')}"
-+    return explicit or None
+-    @retry(
+-        reraise=True,
+-        stop=stop_after_attempt(3),
+-        wait=wait_exponential(multiplier=1, min=1, max=8),
+-        retry=retry_if_exception_type(
+-            (_GraphTransientError, httpx.TransportError, httpx.TimeoutException)
+-        ),
+-    )
+-    def _graph_request_response(
++    def _graph_request_response_once(
+         self,
+         method: str,
+         path: str,
+@@ -276,6 +268,31 @@ class MicrosoftGraphClient:
+             raise GraphRequestError(f"Graph {method} {path} failed: {resp.status_code}")
+         return resp
  
++    @retry(
++        reraise=True,
++        stop=stop_after_attempt(3),
++        wait=wait_exponential(multiplier=1, min=1, max=8),
++        retry=retry_if_exception_type(
++            (_GraphTransientError, httpx.TransportError, httpx.TimeoutException)
++        ),
++    )
++    def _graph_request_response(
++        self,
++        method: str,
++        path: str,
++        *,
++        payload: dict[str, Any] | None = None,
++        content: str | bytes | None = None,
++        extra_headers: dict[str, str] | None = None,
++    ) -> httpx.Response:
++        return self._graph_request_response_once(
++            method,
++            path,
++            payload=payload,
++            content=content,
++            extra_headers=extra_headers,
++        )
++
+     def _graph_request(
+         self,
+         method: str,
+@@ -308,7 +325,7 @@ class MicrosoftGraphClient:
+         if not payload:
+             raise ValueError("html payload is required")
+         try:
+-            response = self._graph_request_response(
++            response = self._graph_request_response_once(
+                 "POST",
+                 path,
+                 content=payload.encode("utf-8"),
+diff --git a/tests/test_ms_auth.py b/tests/test_ms_auth.py
+index 51635eb..e80dd9c 100644
+--- a/tests/test_ms_auth.py
++++ b/tests/test_ms_auth.py
+@@ -4,6 +4,7 @@ import threading
+ from pathlib import Path
  
- def _speakers_tab_context(recording_id: str, settings: AppSettings) -> dict[str, Any]:
-diff --git a/tests/test_onenote.py b/tests/test_onenote.py
-index 674d5ef..f80408d 100644
---- a/tests/test_onenote.py
-+++ b/tests/test_onenote.py
-@@ -273,6 +273,30 @@ def test_recording_overview_publish_controls(tmp_path: Path, monkeypatch):
-     assert "Open OneNote page" in after.text
+ from fastapi.testclient import TestClient
++import pytest
  
- 
-+def test_recording_overview_does_not_link_graph_api_when_page_url_missing(
-+    tmp_path: Path, monkeypatch
-+):
+ from lan_app import api, ms_graph, ui_routes
+ from lan_app.config import AppSettings
+@@ -379,3 +380,61 @@ def test_start_device_flow_session_serializes_initiation(monkeypatch, tmp_path):
+     assert len(initiated) == 1
+     assert results[0]["session_id"] == results[1]["session_id"]
+     assert sorted([results[0]["reused"], results[1]["reused"]]) == [False, True]
++
++
++def test_graph_post_html_does_not_retry_non_idempotent_page_creation(monkeypatch, tmp_path):
 +    cfg = _cfg(tmp_path)
-+    monkeypatch.setattr(api, "_settings", cfg)
-+    monkeypatch.setattr(ui_routes, "_settings", cfg)
-+    init_db(cfg)
-+    create_recording(
-+        "rec-ui-publish-no-url-1",
-+        source="drive",
-+        source_filename="ui-publish-no-url.mp3",
-+        status=RECORDING_STATUS_PUBLISHED,
-+        onenote_page_id="page-id-only",
-+        settings=cfg,
++    cfg.ms_tenant_id = "tenant-1"
++    cfg.ms_client_id = "client-1"
++    cfg.ms_scopes = "offline_access User.Read Notes.ReadWrite Calendars.Read"
++
++    class _FakePublicClientApplication:
++        def __init__(self, *args, **kwargs):
++            pass
++
++        def get_accounts(self):
++            return []
++
++    monkeypatch.setattr(
++        ms_graph.msal,
++        "PublicClientApplication",
++        _FakePublicClientApplication,
++    )
++    client = ms_graph.MicrosoftGraphClient(cfg)
++
++    monkeypatch.setattr(
++        client,
++        "acquire_token_silent",
++        lambda: {"access_token": "token-1"},
 +    )
 +
-+    client = TestClient(api.app, follow_redirects=True)
-+    page = client.get("/recordings/rec-ui-publish-no-url-1?tab=overview")
-+    assert page.status_code == 200
-+    assert "https://graph.microsoft.com/v1.0/me/onenote/pages/" not in page.text
-+    assert "Open OneNote page" not in page.text
-+    assert "page-id-only" in page.text
++    calls: list[tuple[str, str]] = []
 +
++    class _FakeResponse:
++        status_code = 503
++        content = b""
++        headers: dict[str, str] = {}
 +
- def test_ui_publish_action_redirects_on_success(tmp_path: Path, monkeypatch):
-     cfg = _cfg(tmp_path)
-     monkeypatch.setattr(api, "_settings", cfg)
++        def json(self):  # pragma: no cover - not used in this test
++            return {}
++
++    class _FakeHttpClient:
++        def __init__(self, timeout: float):
++            self.timeout = timeout
++
++        def __enter__(self):
++            return self
++
++        def __exit__(self, exc_type, exc, tb):
++            return False
++
++        def request(self, method: str, url: str, **kwargs):
++            calls.append((method, url))
++            return _FakeResponse()
++
++    monkeypatch.setattr(ms_graph.httpx, "Client", _FakeHttpClient)
++
++    with pytest.raises(ms_graph.GraphRequestError):
++        client.graph_post_html("/me/onenote/sections/sec-1/pages", "<html></html>")
++
++    assert len(calls) == 1
