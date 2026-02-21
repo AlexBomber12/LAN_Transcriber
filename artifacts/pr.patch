@@ -1,136 +1,113 @@
-diff --git a/lan_app/ms_graph.py b/lan_app/ms_graph.py
-index d216842..89b4ce3 100644
---- a/lan_app/ms_graph.py
-+++ b/lan_app/ms_graph.py
-@@ -238,15 +238,7 @@ class MicrosoftGraphClient:
-         self._last_token_result = result
-         return result
+diff --git a/lan_app/onenote.py b/lan_app/onenote.py
+index d8ec4dc..e33566e 100644
+--- a/lan_app/onenote.py
++++ b/lan_app/onenote.py
+@@ -277,7 +277,7 @@ def _load_metrics_context(recording_id: str, settings: AppSettings) -> dict[str,
+             for key, value in meeting_raw.items():
+                 meeting_payload.setdefault(key, value)
+         participants_raw = fallback.get("participants")
+-        if isinstance(participants_raw, list):
++        if not participants_payload and isinstance(participants_raw, list):
+             for row in participants_raw:
+                 if not isinstance(row, dict):
+                     continue
+@@ -648,15 +648,19 @@ def _extract_page_url(payload: dict[str, Any]) -> str | None:
+             href = str(web.get("href") or "").strip()
+             if href:
+                 return href
++        elif isinstance(web, str):
++            href = web.strip()
++            if href:
++                return href
+     one_note_web_url = payload.get("oneNoteWebUrl")
+     if isinstance(one_note_web_url, dict):
+         href = str(one_note_web_url.get("href") or "").strip()
+         if href:
+             return href
+-    for key in ("contentUrl", "webUrl", "location", "content_location"):
+-        candidate = str(payload.get(key) or "").strip()
+-        if candidate:
+-            return candidate
++    elif isinstance(one_note_web_url, str):
++        href = one_note_web_url.strip()
++        if href:
++            return href
+     return None
  
--    @retry(
--        reraise=True,
--        stop=stop_after_attempt(3),
--        wait=wait_exponential(multiplier=1, min=1, max=8),
--        retry=retry_if_exception_type(
--            (_GraphTransientError, httpx.TransportError, httpx.TimeoutException)
--        ),
--    )
--    def _graph_request_response(
-+    def _graph_request_response_once(
-         self,
-         method: str,
-         path: str,
-@@ -276,6 +268,31 @@ class MicrosoftGraphClient:
-             raise GraphRequestError(f"Graph {method} {path} failed: {resp.status_code}")
-         return resp
  
-+    @retry(
-+        reraise=True,
-+        stop=stop_after_attempt(3),
-+        wait=wait_exponential(multiplier=1, min=1, max=8),
-+        retry=retry_if_exception_type(
-+            (_GraphTransientError, httpx.TransportError, httpx.TimeoutException)
-+        ),
-+    )
-+    def _graph_request_response(
-+        self,
-+        method: str,
-+        path: str,
-+        *,
-+        payload: dict[str, Any] | None = None,
-+        content: str | bytes | None = None,
-+        extra_headers: dict[str, str] | None = None,
-+    ) -> httpx.Response:
-+        return self._graph_request_response_once(
-+            method,
-+            path,
-+            payload=payload,
-+            content=content,
-+            extra_headers=extra_headers,
-+        )
-+
-     def _graph_request(
-         self,
-         method: str,
-@@ -308,7 +325,7 @@ class MicrosoftGraphClient:
-         if not payload:
-             raise ValueError("html payload is required")
-         try:
--            response = self._graph_request_response(
-+            response = self._graph_request_response_once(
-                 "POST",
-                 path,
-                 content=payload.encode("utf-8"),
-diff --git a/tests/test_ms_auth.py b/tests/test_ms_auth.py
-index 51635eb..e80dd9c 100644
---- a/tests/test_ms_auth.py
-+++ b/tests/test_ms_auth.py
-@@ -4,6 +4,7 @@ import threading
- from pathlib import Path
+diff --git a/tests/test_onenote.py b/tests/test_onenote.py
+index f80408d..3062895 100644
+--- a/tests/test_onenote.py
++++ b/tests/test_onenote.py
+@@ -131,6 +131,71 @@ def test_publish_recording_to_onenote_success(tmp_path: Path, monkeypatch):
+     assert rec["onenote_page_url"] == "https://onenote.local/page-xyz"
  
- from fastapi.testclient import TestClient
-+import pytest
  
- from lan_app import api, ms_graph, ui_routes
- from lan_app.config import AppSettings
-@@ -379,3 +380,61 @@ def test_start_device_flow_session_serializes_initiation(monkeypatch, tmp_path):
-     assert len(initiated) == 1
-     assert results[0]["session_id"] == results[1]["session_id"]
-     assert sorted([results[0]["reused"], results[1]["reused"]]) == [False, True]
++def test_extract_page_url_ignores_graph_resource_links():
++    payload = {
++        "location": "https://graph.microsoft.com/v1.0/me/onenote/pages/page-123",
++        "content_location": "https://graph.microsoft.com/v1.0/me/onenote/pages/page-123/content",
++        "webUrl": "https://graph.microsoft.com/v1.0/me/onenote/pages/page-123",
++        "contentUrl": "https://graph.microsoft.com/v1.0/me/onenote/pages/page-123/content",
++    }
++    assert onenote._extract_page_url(payload) is None
 +
 +
-+def test_graph_post_html_does_not_retry_non_idempotent_page_creation(monkeypatch, tmp_path):
++def test_load_metrics_context_does_not_duplicate_fallback_participants(
++    tmp_path: Path, monkeypatch
++):
 +    cfg = _cfg(tmp_path)
-+    cfg.ms_tenant_id = "tenant-1"
-+    cfg.ms_client_id = "client-1"
-+    cfg.ms_scopes = "offline_access User.Read Notes.ReadWrite Calendars.Read"
-+
-+    class _FakePublicClientApplication:
-+        def __init__(self, *args, **kwargs):
-+            pass
-+
-+        def get_accounts(self):
-+            return []
-+
-+    monkeypatch.setattr(
-+        ms_graph.msal,
-+        "PublicClientApplication",
-+        _FakePublicClientApplication,
++    recording_id = "rec-metrics-no-dup-1"
++    derived = cfg.recordings_root / recording_id / "derived"
++    derived.mkdir(parents=True, exist_ok=True)
++    (derived / "metrics.json").write_text(
++        json.dumps(
++            {
++                "meeting": {"total_questions": 3},
++                "participants": [
++                    {
++                        "speaker": "Speaker From Artifact",
++                        "airtime_seconds": 20,
++                        "airtime_share": 0.2,
++                        "turns": 2,
++                        "interruptions_done": 0,
++                        "interruptions_received": 0,
++                        "questions_count": 1,
++                        "role_hint": "observer",
++                    }
++                ],
++            }
++        ),
++        encoding="utf-8",
 +    )
-+    client = ms_graph.MicrosoftGraphClient(cfg)
 +
++    monkeypatch.setattr(onenote, "get_meeting_metrics", lambda *_args, **_kwargs: {})
 +    monkeypatch.setattr(
-+        client,
-+        "acquire_token_silent",
-+        lambda: {"access_token": "token-1"},
++        onenote,
++        "list_participant_metrics",
++        lambda *_args, **_kwargs: [
++            {
++                "diar_speaker_label": "Speaker From DB",
++                "json": {
++                    "speaker": "Speaker From DB",
++                    "airtime_seconds": 120,
++                    "airtime_share": 0.8,
++                    "turns": 8,
++                    "interruptions_done": 1,
++                    "interruptions_received": 0,
++                    "questions_count": 2,
++                    "role_hint": "host",
++                },
++            }
++        ],
 +    )
 +
-+    calls: list[tuple[str, str]] = []
++    metrics = onenote._load_metrics_context(recording_id, settings=cfg)
++    speakers = [row["speaker"] for row in metrics["participants"]]
++    assert speakers == ["Speaker From DB"]
++    assert metrics["meeting"]["total_questions"] == 3
 +
-+    class _FakeResponse:
-+        status_code = 503
-+        content = b""
-+        headers: dict[str, str] = {}
 +
-+        def json(self):  # pragma: no cover - not used in this test
-+            return {}
-+
-+    class _FakeHttpClient:
-+        def __init__(self, timeout: float):
-+            self.timeout = timeout
-+
-+        def __enter__(self):
-+            return self
-+
-+        def __exit__(self, exc_type, exc, tb):
-+            return False
-+
-+        def request(self, method: str, url: str, **kwargs):
-+            calls.append((method, url))
-+            return _FakeResponse()
-+
-+    monkeypatch.setattr(ms_graph.httpx, "Client", _FakeHttpClient)
-+
-+    with pytest.raises(ms_graph.GraphRequestError):
-+        client.graph_post_html("/me/onenote/sections/sec-1/pages", "<html></html>")
-+
-+    assert len(calls) == 1
+ def test_publish_recording_to_onenote_requires_ready_or_needs_review(tmp_path: Path):
+     cfg = _cfg(tmp_path)
+     init_db(cfg)

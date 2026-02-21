@@ -131,6 +131,71 @@ def test_publish_recording_to_onenote_success(tmp_path: Path, monkeypatch):
     assert rec["onenote_page_url"] == "https://onenote.local/page-xyz"
 
 
+def test_extract_page_url_ignores_graph_resource_links():
+    payload = {
+        "location": "https://graph.microsoft.com/v1.0/me/onenote/pages/page-123",
+        "content_location": "https://graph.microsoft.com/v1.0/me/onenote/pages/page-123/content",
+        "webUrl": "https://graph.microsoft.com/v1.0/me/onenote/pages/page-123",
+        "contentUrl": "https://graph.microsoft.com/v1.0/me/onenote/pages/page-123/content",
+    }
+    assert onenote._extract_page_url(payload) is None
+
+
+def test_load_metrics_context_does_not_duplicate_fallback_participants(
+    tmp_path: Path, monkeypatch
+):
+    cfg = _cfg(tmp_path)
+    recording_id = "rec-metrics-no-dup-1"
+    derived = cfg.recordings_root / recording_id / "derived"
+    derived.mkdir(parents=True, exist_ok=True)
+    (derived / "metrics.json").write_text(
+        json.dumps(
+            {
+                "meeting": {"total_questions": 3},
+                "participants": [
+                    {
+                        "speaker": "Speaker From Artifact",
+                        "airtime_seconds": 20,
+                        "airtime_share": 0.2,
+                        "turns": 2,
+                        "interruptions_done": 0,
+                        "interruptions_received": 0,
+                        "questions_count": 1,
+                        "role_hint": "observer",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(onenote, "get_meeting_metrics", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(
+        onenote,
+        "list_participant_metrics",
+        lambda *_args, **_kwargs: [
+            {
+                "diar_speaker_label": "Speaker From DB",
+                "json": {
+                    "speaker": "Speaker From DB",
+                    "airtime_seconds": 120,
+                    "airtime_share": 0.8,
+                    "turns": 8,
+                    "interruptions_done": 1,
+                    "interruptions_received": 0,
+                    "questions_count": 2,
+                    "role_hint": "host",
+                },
+            }
+        ],
+    )
+
+    metrics = onenote._load_metrics_context(recording_id, settings=cfg)
+    speakers = [row["speaker"] for row in metrics["participants"]]
+    assert speakers == ["Speaker From DB"]
+    assert metrics["meeting"]["total_questions"] == 3
+
+
 def test_publish_recording_to_onenote_requires_ready_or_needs_review(tmp_path: Path):
     cfg = _cfg(tmp_path)
     init_db(cfg)

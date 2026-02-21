@@ -277,7 +277,7 @@ def _load_metrics_context(recording_id: str, settings: AppSettings) -> dict[str,
             for key, value in meeting_raw.items():
                 meeting_payload.setdefault(key, value)
         participants_raw = fallback.get("participants")
-        if isinstance(participants_raw, list):
+        if not participants_payload and isinstance(participants_raw, list):
             for row in participants_raw:
                 if not isinstance(row, dict):
                     continue
@@ -648,15 +648,19 @@ def _extract_page_url(payload: dict[str, Any]) -> str | None:
             href = str(web.get("href") or "").strip()
             if href:
                 return href
+        elif isinstance(web, str):
+            href = web.strip()
+            if href:
+                return href
     one_note_web_url = payload.get("oneNoteWebUrl")
     if isinstance(one_note_web_url, dict):
         href = str(one_note_web_url.get("href") or "").strip()
         if href:
             return href
-    for key in ("contentUrl", "webUrl", "location", "content_location"):
-        candidate = str(payload.get(key) or "").strip()
-        if candidate:
-            return candidate
+    elif isinstance(one_note_web_url, str):
+        href = one_note_web_url.strip()
+        if href:
+            return href
     return None
 
 
