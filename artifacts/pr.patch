@@ -1,200 +1,46 @@
 diff --git a/lan_app/conversation_metrics.py b/lan_app/conversation_metrics.py
-index 7903f92..222704a 100644
+index 222704a..c025ea5 100644
 --- a/lan_app/conversation_metrics.py
 +++ b/lan_app/conversation_metrics.py
-@@ -45,26 +45,6 @@ _TASK_CUES = (
-     "we need",
- )
+@@ -509,7 +509,7 @@ def build_conversation_metrics(
  
--_QUESTION_PUNCT_LANGS = {
--    "ar",
--    "de",
--    "en",
--    "es",
--    "fr",
--    "hi",
--    "it",
--    "ja",
--    "ko",
--    "nl",
--    "pl",
--    "pt",
--    "ru",
--    "tr",
--    "uk",
--    "zh",
--}
--
--
- def _safe_float(value: Any, *, default: float = 0.0) -> float:
-     try:
-         out = float(value)
-@@ -284,9 +264,7 @@ def _normalise_question_types(value: Any) -> dict[str, int]:
-     return out
+     merged_turns = merge_speaker_turns(turns_source, gap_threshold=gap_threshold_sec)
+     interruption_stats = count_interruptions(
+-        merged_turns,
++        turns_source,
+         overlap_threshold=interruption_overlap_sec,
+     )
  
- 
--def _count_question_punctuation(text: str, language: str | None) -> int:
--    if language and language not in _QUESTION_PUNCT_LANGS:
--        return 0
-+def _count_question_punctuation(text: str, _language: str | None) -> int:
-     return text.count("?") + text.count("？")
- 
- 
-diff --git a/lan_app/ui_routes.py b/lan_app/ui_routes.py
-index 6ae39be..859f629 100644
---- a/lan_app/ui_routes.py
-+++ b/lan_app/ui_routes.py
-@@ -289,15 +289,40 @@ def _metrics_tab_context(recording_id: str, settings: AppSettings) -> dict[str,
-         normalized["speaker"] = speaker
-         participants_payload.append(normalized)
- 
--    if not meeting_payload and not participants_payload:
-+    metrics_payload: dict[str, Any] = {}
-+    if not meeting_payload or not participants_payload:
-         derived = settings.recordings_root / recording_id / "derived"
-         metrics_payload = _load_json_dict(derived / "metrics.json")
-         meeting_raw = metrics_payload.get("meeting")
-         participants_raw = metrics_payload.get("participants")
-         if isinstance(meeting_raw, dict):
--            meeting_payload = dict(meeting_raw)
-+            if not meeting_payload:
-+                meeting_payload = dict(meeting_raw)
-+            else:
-+                for key, value in meeting_raw.items():
-+                    meeting_payload.setdefault(key, value)
-         if isinstance(participants_raw, list):
--            participants_payload = [row for row in participants_raw if isinstance(row, dict)]
-+            artifact_participants = [row for row in participants_raw if isinstance(row, dict)]
-+            if not participants_payload:
-+                participants_payload = artifact_participants
-+            else:
-+                by_speaker: dict[str, dict[str, Any]] = {}
-+                for row in participants_payload:
-+                    speaker = str(row.get("speaker") or "").strip()
-+                    if not speaker:
-+                        continue
-+                    by_speaker[speaker] = row
-+                for row in artifact_participants:
-+                    speaker = str(row.get("speaker") or "").strip()
-+                    if not speaker:
-+                        continue
-+                    existing = by_speaker.get(speaker)
-+                    if existing is None:
-+                        participants_payload.append(row)
-+                        by_speaker[speaker] = row
-+                        continue
-+                    for key, value in row.items():
-+                        existing.setdefault(key, value)
- 
-     meeting = {
-         "total_interruptions": _to_int(meeting_payload.get("total_interruptions")),
 diff --git a/tests/test_conversation_metrics.py b/tests/test_conversation_metrics.py
-index e823a06..d41bdaf 100644
+index d41bdaf..46b9cd3 100644
 --- a/tests/test_conversation_metrics.py
 +++ b/tests/test_conversation_metrics.py
-@@ -4,6 +4,7 @@ import json
- from pathlib import Path
- 
- from lan_app.conversation_metrics import (
-+    build_conversation_metrics,
-     compute_actionability_ratio,
-     count_interruptions,
-     merge_speaker_turns,
-@@ -67,6 +68,26 @@ def test_compute_actionability_ratio_uses_owner_and_deadline_presence():
-     assert ratio == 0.5
+@@ -88,6 +88,28 @@ def test_build_conversation_metrics_heuristic_questions_count_punctuation_for_un
+     assert payload["participants"][0]["questions_count"] == 1
  
  
-+def test_build_conversation_metrics_heuristic_questions_count_punctuation_for_unknown_language():
++def test_build_conversation_metrics_interruptions_use_raw_turns_not_gap_merged_turns():
 +    payload = build_conversation_metrics(
 +        transcript_payload={},
-+        summary_payload={"questions": {}},
++        summary_payload={},
 +        speaker_turns=[
-+            {
-+                "start": 0.0,
-+                "end": 1.5,
-+                "speaker": "S1",
-+                "text": "Should we proceed?",
-+                "language": "xx",
-+            }
++            {"start": 0.0, "end": 1.0, "speaker": "S1", "text": "first thought"},
++            {"start": 1.3, "end": 2.2, "speaker": "S2", "text": "response starts"},
++            {"start": 1.8, "end": 3.0, "speaker": "S1", "text": "continues after pause"},
 +        ],
++        gap_threshold_sec=1.0,
++        interruption_overlap_sec=0.3,
 +    )
 +
-+    assert payload["meeting"]["questions_source"] == "heuristic"
-+    assert payload["meeting"]["total_questions"] == 1
-+    assert payload["participants"][0]["questions_count"] == 1
++    # S2 starts during S1's silent gap and should not count as interrupting S1.
++    # S1's third turn does overlap S2 and counts as one interruption.
++    assert payload["meeting"]["total_interruptions"] == 1
++    by_speaker = {row["speaker"]: row for row in payload["participants"]}
++    assert by_speaker["S2"]["interruptions_done"] == 0
++    assert by_speaker["S2"]["interruptions_received"] == 1
++    assert by_speaker["S1"]["interruptions_done"] == 1
 +
 +
  def test_refresh_recording_metrics_persists_json_and_db(tmp_path: Path):
      cfg = AppSettings(
          data_root=tmp_path,
-diff --git a/tests/test_ui_routes.py b/tests/test_ui_routes.py
-index d62d6fd..ace3883 100644
---- a/tests/test_ui_routes.py
-+++ b/tests/test_ui_routes.py
-@@ -246,6 +246,66 @@ def test_recording_detail_metrics_tab_uses_summary_payload(tmp_path, monkeypatch
-     assert "Is QA complete?" in r.text
- 
- 
-+def test_recording_detail_metrics_tab_backfills_missing_db_side_from_artifact(tmp_path, monkeypatch):
-+    cfg = _cfg(tmp_path)
-+    monkeypatch.setattr(api, "_settings", cfg)
-+    monkeypatch.setattr(ui_routes, "_settings", cfg)
-+    init_db(cfg)
-+    create_recording(
-+        "rec-metrics-backfill-1",
-+        source="drive",
-+        source_filename="metrics-backfill.mp3",
-+        status=RECORDING_STATUS_READY,
-+        settings=cfg,
-+    )
-+
-+    derived = cfg.recordings_root / "rec-metrics-backfill-1" / "derived"
-+    derived.mkdir(parents=True, exist_ok=True)
-+    (derived / "summary.json").write_text(json.dumps({}), encoding="utf-8")
-+    (derived / "metrics.json").write_text(
-+        json.dumps(
-+            {
-+                "meeting": {
-+                    "total_interruptions": 3,
-+                    "total_questions": 5,
-+                    "decisions_count": 2,
-+                    "action_items_count": 4,
-+                    "actionability_ratio": 0.75,
-+                    "emotional_summary": "Constructive.",
-+                    "total_speech_time_seconds": 60.0,
-+                },
-+                "participants": [
-+                    {
-+                        "speaker": "S2",
-+                        "airtime_seconds": 21.0,
-+                        "airtime_share": 0.35,
-+                        "turns": 4,
-+                        "interruptions_done": 2,
-+                        "interruptions_received": 1,
-+                        "questions_count": 2,
-+                        "role_hint": "Facilitator",
-+                    }
-+                ],
-+            }
-+        ),
-+        encoding="utf-8",
-+    )
-+
-+    # Simulate partial DB persistence: meeting row exists but is incomplete, participant rows missing.
-+    upsert_meeting_metrics(
-+        recording_id="rec-metrics-backfill-1",
-+        payload={"total_interruptions": 3},
-+        settings=cfg,
-+    )
-+
-+    c = TestClient(api.app, follow_redirects=True)
-+    r = c.get("/recordings/rec-metrics-backfill-1?tab=metrics")
-+    assert r.status_code == 200
-+    assert "Constructive." in r.text
-+    assert "75.0%" in r.text
-+    assert "Facilitator" in r.text  # participant row backfilled from artifact
-+
-+
- def test_recording_detail_overview_shows_topic_and_emotional_summary(tmp_path, monkeypatch):
-     cfg = _cfg(tmp_path)
-     monkeypatch.setattr(api, "_settings", cfg)

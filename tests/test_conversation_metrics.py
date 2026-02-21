@@ -88,6 +88,28 @@ def test_build_conversation_metrics_heuristic_questions_count_punctuation_for_un
     assert payload["participants"][0]["questions_count"] == 1
 
 
+def test_build_conversation_metrics_interruptions_use_raw_turns_not_gap_merged_turns():
+    payload = build_conversation_metrics(
+        transcript_payload={},
+        summary_payload={},
+        speaker_turns=[
+            {"start": 0.0, "end": 1.0, "speaker": "S1", "text": "first thought"},
+            {"start": 1.3, "end": 2.2, "speaker": "S2", "text": "response starts"},
+            {"start": 1.8, "end": 3.0, "speaker": "S1", "text": "continues after pause"},
+        ],
+        gap_threshold_sec=1.0,
+        interruption_overlap_sec=0.3,
+    )
+
+    # S2 starts during S1's silent gap and should not count as interrupting S1.
+    # S1's third turn does overlap S2 and counts as one interruption.
+    assert payload["meeting"]["total_interruptions"] == 1
+    by_speaker = {row["speaker"]: row for row in payload["participants"]}
+    assert by_speaker["S2"]["interruptions_done"] == 0
+    assert by_speaker["S2"]["interruptions_received"] == 1
+    assert by_speaker["S1"]["interruptions_done"] == 1
+
+
 def test_refresh_recording_metrics_persists_json_and_db(tmp_path: Path):
     cfg = AppSettings(
         data_root=tmp_path,

@@ -509,7 +509,7 @@ def build_conversation_metrics(
 
     merged_turns = merge_speaker_turns(turns_source, gap_threshold=gap_threshold_sec)
     interruption_stats = count_interruptions(
-        merged_turns,
+        turns_source,
         overlap_threshold=interruption_overlap_sec,
     )
 
