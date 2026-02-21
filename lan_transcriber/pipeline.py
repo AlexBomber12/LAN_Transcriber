@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import audioop
+import json
 import re
 import shutil
 import subprocess
@@ -382,15 +383,314 @@ def _resolve_target_summary_language(
     return "en"
 
 
-def build_summary_prompts(clean_text: str, target_summary_language: str) -> tuple[str, str]:
+_QUESTION_TYPE_KEYS = (
+    "open",
+    "yes_no",
+    "clarification",
+    "status",
+    "decision_seeking",
+)
+
+
+def _truncate_for_prompt(text: str, *, max_chars: int = 500) -> str:
+    if len(text) <= max_chars:
+        return text
+    return f"{text[: max_chars - 3].rstrip()}..."
+
+
+def _normalise_prompt_speaker_turns(
+    speaker_turns: Sequence[dict[str, Any]],
+    *,
+    max_turns: int = 300,
+) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for row in speaker_turns:
+        if len(out) >= max_turns:
+            break
+        text = _truncate_for_prompt(str(row.get("text") or "").strip())
+        if not text:
+            continue
+        payload: dict[str, Any] = {
+            "start": round(_safe_float(row.get("start"), default=0.0), 3),
+            "end": round(_safe_float(row.get("end"), default=0.0), 3),
+            "speaker": str(row.get("speaker") or "S1"),
+            "text": text,
+        }
+        lang = _normalise_language_code(row.get("language"))
+        if lang:
+            payload["language"] = lang
+        out.append(payload)
+    return out
+
+
+def build_structured_summary_prompts(
+    speaker_turns: Sequence[dict[str, Any]],
+    target_summary_language: str,
+    *,
+    calendar_title: str | None = None,
+    calendar_attendees: Sequence[str] | None = None,
+) -> tuple[str, str]:
     language_name = _language_name(target_summary_language)
     sys_prompt = (
-        "You are an assistant who writes concise 5-8 bullet summaries of any audio transcript. "
-        f"Write the summary in {language_name}. "
-        "Return only the list without extra explanation."
+        "You are an assistant that summarizes meeting transcripts. "
+        f"Write topic, summary_bullets, decisions, action_items, emotional_summary, and questions in {language_name}. "
+        "Keep names, quotes, and domain terms in their original language when needed. "
+        "Return strict JSON only, with no markdown fences."
     )
-    user_prompt = f"{sys_prompt}\n\nTRANSCRIPT:\n{clean_text}\n\nSUMMARY:"
+    prompt_payload = {
+        "target_summary_language": target_summary_language,
+        "calendar": {
+            "title": (calendar_title or "").strip() or None,
+            "attendees": [str(item).strip() for item in (calendar_attendees or []) if str(item).strip()],
+        },
+        "speaker_turns": _normalise_prompt_speaker_turns(speaker_turns),
+        "required_schema": {
+            "topic": "string",
+            "summary_bullets": ["string"],
+            "decisions": ["string"],
+            "action_items": [
+                {
+                    "task": "string",
+                    "owner": "string|null",
+                    "deadline": "string|null",
+                    "confidence": "number [0,1]",
+                }
+            ],
+            "emotional_summary": "1-3 short lines as a string",
+            "questions": {
+                "total_count": "integer >= 0",
+                "types": {key: "integer >= 0" for key in _QUESTION_TYPE_KEYS},
+                "extracted": ["string"],
+            },
+        },
+    }
+    user_prompt = json.dumps(prompt_payload, ensure_ascii=False, indent=2)
     return sys_prompt, user_prompt
+
+
+def build_summary_prompts(clean_text: str, target_summary_language: str) -> tuple[str, str]:
+    pseudo_turns = []
+    stripped = clean_text.strip()
+    if stripped:
+        pseudo_turns.append({"start": 0.0, "end": 0.0, "speaker": "S1", "text": stripped})
+    return build_structured_summary_prompts(
+        pseudo_turns,
+        target_summary_language,
+    )
+
+
+def _normalise_text_list(value: Any, *, max_items: int) -> list[str]:
+    rows: list[Any]
+    if isinstance(value, list):
+        rows = value
+    elif isinstance(value, str):
+        rows = [line.strip() for line in value.splitlines() if line.strip()]
+    else:
+        return []
+
+    out: list[str] = []
+    for item in rows:
+        if len(out) >= max_items:
+            break
+        text = str(item).strip()
+        if not text:
+            continue
+        text = re.sub(r"^[\-\*\u2022]+\s*", "", text).strip()
+        if text:
+            out.append(text)
+    return out
+
+
+def _extract_json_dict(raw_content: str) -> dict[str, Any] | None:
+    text = raw_content.strip()
+    if not text:
+        return None
+
+    candidates: list[str] = [text]
+    fenced_matches = re.findall(r"```(?:json)?\s*(.*?)```", text, flags=re.IGNORECASE | re.DOTALL)
+    candidates.extend(match.strip() for match in fenced_matches if match.strip())
+
+    first_brace = text.find("{")
+    last_brace = text.rfind("}")
+    if first_brace != -1 and last_brace > first_brace:
+        candidates.append(text[first_brace : last_brace + 1].strip())
+
+    seen: set[str] = set()
+    for candidate in candidates:
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        try:
+            payload = json.loads(candidate)
+        except ValueError:
+            continue
+        if isinstance(payload, dict):
+            return payload
+    return None
+
+
+def _normalise_confidence(value: Any, *, default: float = 0.5) -> float:
+    try:
+        confidence = float(value)
+    except (TypeError, ValueError):
+        confidence = default
+    return round(min(max(confidence, 0.0), 1.0), 2)
+
+
+def _normalise_action_items(value: Any) -> list[dict[str, Any]]:
+    rows: list[Any]
+    if isinstance(value, list):
+        rows = value
+    elif value is None:
+        rows = []
+    else:
+        rows = [value]
+
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        if len(out) >= 30:
+            break
+        if isinstance(row, dict):
+            task = str(row.get("task") or row.get("action") or row.get("title") or "").strip()
+            owner_raw = row.get("owner")
+            deadline_raw = row.get("deadline") or row.get("due")
+            confidence_raw = row.get("confidence", row.get("score"))
+        else:
+            task = str(row).strip()
+            owner_raw = None
+            deadline_raw = None
+            confidence_raw = None
+        if not task:
+            continue
+        owner = str(owner_raw).strip() if owner_raw is not None else ""
+        deadline = str(deadline_raw).strip() if deadline_raw is not None else ""
+        out.append(
+            {
+                "task": task,
+                "owner": owner or None,
+                "deadline": deadline or None,
+                "confidence": _normalise_confidence(confidence_raw),
+            }
+        )
+    return out
+
+
+def _normalise_question_types(value: Any) -> dict[str, int]:
+    out = {key: 0 for key in _QUESTION_TYPE_KEYS}
+    if not isinstance(value, dict):
+        return out
+    for key in _QUESTION_TYPE_KEYS:
+        out[key] = max(0, int(_safe_float(value.get(key), default=0.0)))
+    return out
+
+
+def _normalise_questions(value: Any) -> dict[str, Any]:
+    total_count = 0
+    question_types = {key: 0 for key in _QUESTION_TYPE_KEYS}
+    extracted: list[str] = []
+
+    if isinstance(value, dict):
+        total_count = max(0, int(_safe_float(value.get("total_count"), default=0.0)))
+        question_types = _normalise_question_types(value.get("types"))
+        if sum(question_types.values()) == 0:
+            question_types = _normalise_question_types(value)
+        extracted = _normalise_text_list(value.get("extracted"), max_items=20)
+
+    inferred_total = max(sum(question_types.values()), len(extracted))
+    if total_count == 0:
+        total_count = inferred_total
+
+    return {
+        "total_count": total_count,
+        "types": question_types,
+        "extracted": extracted,
+    }
+
+
+def _normalise_emotional_summary(value: Any) -> str:
+    if isinstance(value, str):
+        lines = [line.strip() for line in value.splitlines() if line.strip()]
+    elif isinstance(value, list):
+        lines = _normalise_text_list(value, max_items=3)
+    else:
+        lines = []
+    if not lines:
+        lines = ["Neutral and focused discussion."]
+    return "\n".join(lines[:3])
+
+
+def _summary_text_from_bullets(summary_bullets: Sequence[str]) -> str:
+    return "\n".join(f"- {bullet}" for bullet in summary_bullets)
+
+
+def _build_structured_summary_payload(
+    *,
+    model: str,
+    target_summary_language: str,
+    friendly: int,
+    topic: str,
+    summary_bullets: Sequence[str],
+    decisions: Sequence[str],
+    action_items: Sequence[dict[str, Any]],
+    emotional_summary: str,
+    questions: dict[str, Any],
+    status: str | None = None,
+    reason: str | None = None,
+    error: str | None = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "friendly": int(friendly),
+        "model": model,
+        "target_summary_language": target_summary_language,
+        "topic": topic,
+        "summary_bullets": list(summary_bullets),
+        "summary": _summary_text_from_bullets(summary_bullets),
+        "decisions": list(decisions),
+        "action_items": list(action_items),
+        "emotional_summary": emotional_summary,
+        "questions": questions,
+    }
+    if status:
+        payload["status"] = status
+    if reason:
+        payload["reason"] = reason
+    if error:
+        payload["error"] = error
+    return payload
+
+
+def build_summary_payload(
+    *,
+    raw_llm_content: str,
+    model: str,
+    target_summary_language: str,
+    friendly: int,
+    default_topic: str = "Meeting summary",
+) -> dict[str, Any]:
+    parsed = _extract_json_dict(raw_llm_content) or {}
+
+    summary_bullets = _normalise_text_list(parsed.get("summary_bullets"), max_items=12)
+    if not summary_bullets:
+        summary_bullets = _normalise_text_list(raw_llm_content, max_items=12)
+    if not summary_bullets:
+        summary_bullets = ["No summary available."]
+
+    topic = str(parsed.get("topic") or "").strip()
+    if not topic:
+        topic = summary_bullets[0][:120] if summary_bullets else default_topic
+    topic = topic or default_topic
+
+    return _build_structured_summary_payload(
+        model=model,
+        target_summary_language=target_summary_language,
+        friendly=friendly,
+        topic=topic,
+        summary_bullets=summary_bullets,
+        decisions=_normalise_text_list(parsed.get("decisions"), max_items=20),
+        action_items=_normalise_action_items(parsed.get("action_items")),
+        emotional_summary=_normalise_emotional_summary(parsed.get("emotional_summary")),
+        questions=_normalise_questions(parsed.get("questions")),
+    )
 
 
 def _language_payload(info: dict[str, Any]) -> dict[str, Any]:
@@ -949,6 +1249,8 @@ async def run_pipeline(
     precheck: PrecheckResult | None = None,
     target_summary_language: str | None = None,
     transcript_language_override: str | None = None,
+    calendar_title: str | None = None,
+    calendar_attendees: Sequence[str] | None = None,
 ) -> TranscriptResult:
     """Transcribe ``audio_path`` and return a structured result."""
     start = time.perf_counter()
@@ -969,6 +1271,12 @@ async def run_pipeline(
         dominant_language=normalized_transcript_language_override or "unknown",
         detected_language=None,
     )
+    normalized_calendar_title = str(calendar_title or "").strip() or None
+    normalized_calendar_attendees = [
+        str(attendee).strip()
+        for attendee in (calendar_attendees or [])
+        if str(attendee).strip()
+    ]
 
     atomic_write_json(
         artifact_paths.metrics_json_path,
@@ -996,6 +1304,8 @@ async def run_pipeline(
                 "language_spans": [],
                 "target_summary_language": resolved_summary_language,
                 "transcript_language_override": normalized_transcript_language_override,
+                "calendar_title": normalized_calendar_title,
+                "calendar_attendees": normalized_calendar_attendees,
                 "segments": [],
                 "speakers": [],
                 "text": "",
@@ -1005,13 +1315,19 @@ async def run_pipeline(
         atomic_write_json(artifact_paths.speaker_turns_json_path, [])
         atomic_write_json(
             artifact_paths.summary_json_path,
-            {
-                "friendly": 0,
-                "model": cfg.llm_model,
-                "summary": "",
-                "status": "quarantined",
-                "reason": precheck_result.quarantine_reason,
-            },
+            _build_structured_summary_payload(
+                model=cfg.llm_model,
+                target_summary_language=resolved_summary_language,
+                friendly=0,
+                topic="Quarantined recording",
+                summary_bullets=["Recording was quarantined before transcription."],
+                decisions=[],
+                action_items=[],
+                emotional_summary="No emotional summary available.",
+                questions=_normalise_questions(None),
+                status="quarantined",
+                reason=precheck_result.quarantine_reason,
+            ),
         )
         atomic_write_json(
             artifact_paths.metrics_json_path,
@@ -1048,12 +1364,19 @@ async def run_pipeline(
     ) -> None:
         atomic_write_json(
             artifact_paths.summary_json_path,
-            {
-                "friendly": friendly_score,
-                "model": cfg.llm_model,
-                "summary": "",
-                "status": "failed",
-            },
+            _build_structured_summary_payload(
+                model=cfg.llm_model,
+                target_summary_language=resolved_summary_language,
+                friendly=friendly_score,
+                topic="Summary generation failed",
+                summary_bullets=["Unable to produce a summary due to a processing error."],
+                decisions=[],
+                action_items=[],
+                emotional_summary="No emotional summary available.",
+                questions=_normalise_questions(None),
+                status="failed",
+                error=str(exc) or exc.__class__.__name__,
+            ),
         )
         atomic_write_json(
             artifact_paths.metrics_json_path,
@@ -1156,6 +1479,8 @@ async def run_pipeline(
                 "language_spans": language_spans,
                 "target_summary_language": resolved_summary_language,
                 "transcript_language_override": normalized_transcript_language_override,
+                "calendar_title": normalized_calendar_title,
+                "calendar_attendees": normalized_calendar_attendees,
                 "segments": asr_segments,
                 "speakers": sorted({aliases.get(row["speaker"], row["speaker"]) for row in diar_segments}),
                 "text": "",
@@ -1165,12 +1490,18 @@ async def run_pipeline(
         atomic_write_json(artifact_paths.speaker_turns_json_path, speaker_turns)
         atomic_write_json(
             artifact_paths.summary_json_path,
-            {
-                "friendly": 0,
-                "model": cfg.llm_model,
-                "target_summary_language": resolved_summary_language,
-                "summary": "No speech detected",
-            },
+            _build_structured_summary_payload(
+                model=cfg.llm_model,
+                target_summary_language=resolved_summary_language,
+                friendly=0,
+                topic="No speech detected",
+                summary_bullets=["No speech detected."],
+                decisions=[],
+                action_items=[],
+                emotional_summary="No emotional summary available.",
+                questions=_normalise_questions(None),
+                status="no_speech",
+            ),
         )
         atomic_write_json(
             artifact_paths.metrics_json_path,
@@ -1214,9 +1545,11 @@ async def run_pipeline(
     speaker_lines = _merge_similar(speaker_lines, cfg.merge_similar)
 
     friendly = _sentiment_score(clean_text)
-    sys_prompt, user_prompt = build_summary_prompts(
-        clean_text,
+    sys_prompt, user_prompt = build_structured_summary_prompts(
+        speaker_turns,
         resolved_summary_language,
+        calendar_title=normalized_calendar_title,
+        calendar_attendees=normalized_calendar_attendees,
     )
 
     try:
@@ -1224,8 +1557,17 @@ async def run_pipeline(
             system_prompt=sys_prompt,
             user_prompt=user_prompt,
             model=cfg.llm_model,
+            response_format={"type": "json_object"},
         )
-        summary = msg.get("content", "") if isinstance(msg, dict) else str(msg)
+        raw_summary = msg.get("content", "") if isinstance(msg, dict) else str(msg)
+        summary_payload = build_summary_payload(
+            raw_llm_content=raw_summary,
+            model=cfg.llm_model,
+            target_summary_language=resolved_summary_language,
+            friendly=friendly,
+            default_topic=normalized_calendar_title or "Meeting summary",
+        )
+        summary = str(summary_payload.get("summary") or "")
 
         serialised_segments = [
             SpeakerSegment(
@@ -1247,6 +1589,8 @@ async def run_pipeline(
                 "language_spans": language_spans,
                 "target_summary_language": resolved_summary_language,
                 "transcript_language_override": normalized_transcript_language_override,
+                "calendar_title": normalized_calendar_title,
+                "calendar_attendees": normalized_calendar_attendees,
                 "segments": asr_segments,
                 "speaker_lines": speaker_lines,
                 "speakers": sorted(set(aliases.get(turn["speaker"], turn["speaker"]) for turn in speaker_turns)),
@@ -1257,12 +1601,7 @@ async def run_pipeline(
         atomic_write_json(artifact_paths.speaker_turns_json_path, speaker_turns)
         atomic_write_json(
             artifact_paths.summary_json_path,
-            {
-                "friendly": friendly,
-                "model": cfg.llm_model,
-                "target_summary_language": resolved_summary_language,
-                "summary": summary,
-            },
+            summary_payload,
         )
         atomic_write_json(
             artifact_paths.metrics_json_path,
@@ -1317,4 +1656,6 @@ __all__ = [
     "Diariser",
     "refresh_aliases",
     "build_summary_prompts",
+    "build_structured_summary_prompts",
+    "build_summary_payload",
 ]
