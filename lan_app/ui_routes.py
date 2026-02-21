@@ -23,6 +23,7 @@ from .calendar import (
     select_calendar_event,
 )
 from .config import AppSettings
+from .conversation_metrics import refresh_recording_metrics
 from .constants import (
     JOB_STATUSES,
     JOB_TYPE_PRECHECK,
@@ -34,7 +35,9 @@ from .db import (
     create_voice_profile,
     delete_project,
     delete_voice_profile,
+    get_meeting_metrics,
     get_recording,
+    list_participant_metrics,
     list_jobs,
     list_projects,
     list_recordings,
@@ -249,6 +252,110 @@ def _summary_context(recording_id: str, settings: AppSettings) -> dict[str, Any]
             "types": question_types,
             "extracted": extracted_questions,
         },
+    }
+
+
+def _metrics_tab_context(recording_id: str, settings: AppSettings) -> dict[str, Any]:
+    def _to_int(value: Any, *, default: int = 0) -> int:
+        try:
+            return int(float(value))
+        except (TypeError, ValueError):
+            return default
+
+    def _to_float(value: Any, *, default: float = 0.0) -> float:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
+    meeting_payload: dict[str, Any] = {}
+    participants_payload: list[dict[str, Any]] = []
+
+    meeting_row = get_meeting_metrics(recording_id, settings=settings) or {}
+    meeting_json = meeting_row.get("json")
+    if isinstance(meeting_json, dict):
+        meeting_payload = dict(meeting_json)
+
+    participant_rows = list_participant_metrics(recording_id, settings=settings)
+    for row in participant_rows:
+        payload = row.get("json")
+        participant = payload if isinstance(payload, dict) else {}
+        if not participant:
+            continue
+        normalized = dict(participant)
+        speaker = str(normalized.get("speaker") or row.get("diar_speaker_label") or "").strip()
+        if not speaker:
+            continue
+        normalized["speaker"] = speaker
+        participants_payload.append(normalized)
+
+    metrics_payload: dict[str, Any] = {}
+    if not meeting_payload or not participants_payload:
+        derived = settings.recordings_root / recording_id / "derived"
+        metrics_payload = _load_json_dict(derived / "metrics.json")
+        meeting_raw = metrics_payload.get("meeting")
+        participants_raw = metrics_payload.get("participants")
+        if isinstance(meeting_raw, dict):
+            if not meeting_payload:
+                meeting_payload = dict(meeting_raw)
+            else:
+                for key, value in meeting_raw.items():
+                    meeting_payload.setdefault(key, value)
+        if isinstance(participants_raw, list):
+            artifact_participants = [row for row in participants_raw if isinstance(row, dict)]
+            if not participants_payload:
+                participants_payload = artifact_participants
+            else:
+                by_speaker: dict[str, dict[str, Any]] = {}
+                for row in participants_payload:
+                    speaker = str(row.get("speaker") or "").strip()
+                    if not speaker:
+                        continue
+                    by_speaker[speaker] = row
+                for row in artifact_participants:
+                    speaker = str(row.get("speaker") or "").strip()
+                    if not speaker:
+                        continue
+                    existing = by_speaker.get(speaker)
+                    if existing is None:
+                        participants_payload.append(row)
+                        by_speaker[speaker] = row
+                        continue
+                    for key, value in row.items():
+                        existing.setdefault(key, value)
+
+    meeting = {
+        "total_interruptions": _to_int(meeting_payload.get("total_interruptions")),
+        "total_questions": _to_int(meeting_payload.get("total_questions")),
+        "decisions_count": _to_int(meeting_payload.get("decisions_count")),
+        "action_items_count": _to_int(meeting_payload.get("action_items_count")),
+        "actionability_ratio": _to_float(meeting_payload.get("actionability_ratio")),
+        "emotional_summary": str(meeting_payload.get("emotional_summary") or "—"),
+        "total_speech_time_seconds": _to_float(meeting_payload.get("total_speech_time_seconds")),
+    }
+
+    participants: list[dict[str, Any]] = []
+    for row in participants_payload:
+        speaker = str(row.get("speaker") or "").strip()
+        if not speaker:
+            continue
+        participants.append(
+            {
+                "speaker": speaker,
+                "airtime_seconds": round(_to_float(row.get("airtime_seconds")), 3),
+                "airtime_share": round(_to_float(row.get("airtime_share")), 4),
+                "turns": _to_int(row.get("turns")),
+                "interruptions_done": _to_int(row.get("interruptions_done")),
+                "interruptions_received": _to_int(row.get("interruptions_received")),
+                "questions_count": _to_int(row.get("questions_count")),
+                "role_hint": str(row.get("role_hint") or "—"),
+            }
+        )
+    participants.sort(key=lambda item: (-item["airtime_seconds"], item["speaker"]))
+
+    return {
+        "meeting": meeting,
+        "participants": participants,
     }
 
 
@@ -554,6 +661,7 @@ def _resummarize_recording(
 
     transcript_payload["target_summary_language"] = resolved_target
     atomic_write_json(transcript_path, transcript_payload)
+    refresh_recording_metrics(recording_id, settings=settings)
 
 
 def _status_counts(settings: AppSettings) -> dict[str, int]:
@@ -647,6 +755,7 @@ async def ui_recording_detail(
     calendar: dict[str, Any] | None = None
     language: dict[str, Any] | None = None
     summary: dict[str, Any] | None = None
+    metrics: dict[str, Any] | None = None
     if current_tab == "calendar":
         try:
             calendar = await run_in_threadpool(
@@ -665,6 +774,8 @@ async def ui_recording_detail(
         language = _language_tab_context(recording_id, rec, _settings)
     if current_tab in {"overview", "metrics"}:
         summary = _summary_context(recording_id, _settings)
+    if current_tab == "metrics":
+        metrics = _metrics_tab_context(recording_id, _settings)
 
     return templates.TemplateResponse(
         request,
@@ -678,6 +789,7 @@ async def ui_recording_detail(
             "calendar": calendar,
             "language": language,
             "summary": summary,
+            "metrics": metrics,
         },
     )
 

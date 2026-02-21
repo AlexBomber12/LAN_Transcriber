@@ -1,40 +1,46 @@
-diff --git a/lan_transcriber/pipeline.py b/lan_transcriber/pipeline.py
-index 7f8c5f3..e5e2321 100644
---- a/lan_transcriber/pipeline.py
-+++ b/lan_transcriber/pipeline.py
-@@ -106,9 +106,12 @@ def _default_recording_id(audio_path: Path) -> str:
+diff --git a/lan_app/conversation_metrics.py b/lan_app/conversation_metrics.py
+index 222704a..c025ea5 100644
+--- a/lan_app/conversation_metrics.py
++++ b/lan_app/conversation_metrics.py
+@@ -509,7 +509,7 @@ def build_conversation_metrics(
  
- def _safe_float(value: object, default: float = 0.0) -> float:
-     try:
--        return float(value)
-+        parsed = float(value)
-     except (TypeError, ValueError):
-         return default
-+    if not math.isfinite(parsed):
-+        return default
-+    return parsed
+     merged_turns = merge_speaker_turns(turns_source, gap_threshold=gap_threshold_sec)
+     interruption_stats = count_interruptions(
+-        merged_turns,
++        turns_source,
+         overlap_threshold=interruption_overlap_sec,
+     )
  
- 
- def _normalise_word(word: dict[str, Any], seg_start: float, seg_end: float) -> dict[str, Any] | None:
-diff --git a/tests/test_pipeline.py b/tests/test_pipeline.py
-index 07dd82a..3c673d7 100644
---- a/tests/test_pipeline.py
-+++ b/tests/test_pipeline.py
-@@ -549,6 +549,17 @@ def test_build_summary_payload_normalises_non_finite_action_item_confidence():
-     assert payload["action_items"][0]["confidence"] == 0.5
+diff --git a/tests/test_conversation_metrics.py b/tests/test_conversation_metrics.py
+index d41bdaf..46b9cd3 100644
+--- a/tests/test_conversation_metrics.py
++++ b/tests/test_conversation_metrics.py
+@@ -88,6 +88,28 @@ def test_build_conversation_metrics_heuristic_questions_count_punctuation_for_un
+     assert payload["participants"][0]["questions_count"] == 1
  
  
-+def test_build_summary_payload_normalises_non_finite_question_counts():
-+    payload = pipeline.build_summary_payload(
-+        raw_llm_content='{"topic":"T","summary_bullets":["one"],"decisions":[],"action_items":[],"emotional_summary":"ok","questions":{"total_count":NaN,"types":{"open":NaN},"extracted":[]}}',
-+        model="m",
-+        target_summary_language="en",
-+        friendly=0,
++def test_build_conversation_metrics_interruptions_use_raw_turns_not_gap_merged_turns():
++    payload = build_conversation_metrics(
++        transcript_payload={},
++        summary_payload={},
++        speaker_turns=[
++            {"start": 0.0, "end": 1.0, "speaker": "S1", "text": "first thought"},
++            {"start": 1.3, "end": 2.2, "speaker": "S2", "text": "response starts"},
++            {"start": 1.8, "end": 3.0, "speaker": "S1", "text": "continues after pause"},
++        ],
++        gap_threshold_sec=1.0,
++        interruption_overlap_sec=0.3,
 +    )
-+    assert payload["questions"]["total_count"] == 0
-+    assert payload["questions"]["types"]["open"] == 0
++
++    # S2 starts during S1's silent gap and should not count as interrupting S1.
++    # S1's third turn does overlap S2 and counts as one interruption.
++    assert payload["meeting"]["total_interruptions"] == 1
++    by_speaker = {row["speaker"]: row for row in payload["participants"]}
++    assert by_speaker["S2"]["interruptions_done"] == 0
++    assert by_speaker["S2"]["interruptions_received"] == 1
++    assert by_speaker["S1"]["interruptions_done"] == 1
 +
 +
- def test_build_structured_summary_prompts_preserves_long_turn_text():
-     long_text = " ".join(f"word{i}" for i in range(300))
-     expected = " ".join(long_text.split())
+ def test_refresh_recording_metrics_persists_json_and_db(tmp_path: Path):
+     cfg = AppSettings(
+         data_root=tmp_path,

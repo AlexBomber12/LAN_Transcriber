@@ -252,8 +252,56 @@
 
 {% elif current_tab == 'metrics' %}
   {% set summary_data = summary or {} %}
+  {% set metrics_data = metrics or {} %}
+  {% set meeting = metrics_data.meeting or {} %}
+  {% set participants = metrics_data.participants or [] %}
   {% set questions = summary_data.questions or {} %}
   {% set question_types = questions.types or {} %}
+
+  <h2>Meeting Metrics</h2>
+  <div class="info-grid">
+    <span class="k">Total speech time</span><span class="v">{{ '%.1f'|format(meeting.total_speech_time_seconds or 0.0) }}s</span>
+    <span class="k">Interruptions</span><span class="v">{{ meeting.total_interruptions or 0 }}</span>
+    <span class="k">Questions</span><span class="v">{{ meeting.total_questions or 0 }}</span>
+    <span class="k">Decisions</span><span class="v">{{ meeting.decisions_count or 0 }}</span>
+    <span class="k">Action items</span><span class="v">{{ meeting.action_items_count or 0 }}</span>
+    <span class="k">Actionability</span><span class="v">{{ '%.1f'|format((meeting.actionability_ratio or 0.0) * 100.0) }}%</span>
+    <span class="k">Emotional summary</span><span class="v">{{ meeting.emotional_summary or '—' }}</span>
+  </div>
+
+  <h2>Participants</h2>
+  {% if participants %}
+  <table>
+    <thead>
+      <tr>
+        <th>Speaker</th>
+        <th>Airtime (s)</th>
+        <th>Share (%)</th>
+        <th>Turns</th>
+        <th>Interruptions done</th>
+        <th>Interruptions received</th>
+        <th>Questions</th>
+        <th>Role</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in participants %}
+      <tr>
+        <td>{{ row.speaker }}</td>
+        <td>{{ '%.2f'|format(row.airtime_seconds or 0.0) }}</td>
+        <td>{{ '%.2f'|format((row.airtime_share or 0.0) * 100.0) }}</td>
+        <td>{{ row.turns or 0 }}</td>
+        <td>{{ row.interruptions_done or 0 }}</td>
+        <td>{{ row.interruptions_received or 0 }}</td>
+        <td>{{ row.questions_count or 0 }}</td>
+        <td>{{ row.role_hint or '—' }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="placeholder">No participant metrics available yet.</p>
+  {% endif %}
 
   <h2>Decisions</h2>
   {% if summary_data.decisions %}

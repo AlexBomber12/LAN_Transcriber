@@ -18,7 +18,9 @@ from lan_app.db import (
     get_recording,
     init_db,
     list_projects,
+    replace_participant_metrics,
     list_voice_profiles,
+    upsert_meeting_metrics,
 )
 from lan_app.constants import (
     JOB_TYPE_PRECHECK,
@@ -197,14 +199,111 @@ def test_recording_detail_metrics_tab_uses_summary_payload(tmp_path, monkeypatch
         ),
         encoding="utf-8",
     )
+    upsert_meeting_metrics(
+        recording_id="rec-metrics-tab-1",
+        payload={
+            "total_interruptions": 2,
+            "total_questions": 1,
+            "decisions_count": 1,
+            "action_items_count": 1,
+            "actionability_ratio": 1.0,
+            "emotional_summary": "Focused.",
+            "total_speech_time_seconds": 42.5,
+        },
+        settings=cfg,
+    )
+    replace_participant_metrics(
+        recording_id="rec-metrics-tab-1",
+        rows=[
+            {
+                "diar_speaker_label": "S1",
+                "voice_profile_id": None,
+                "payload": {
+                    "speaker": "S1",
+                    "airtime_seconds": 24.0,
+                    "airtime_share": 0.56,
+                    "turns": 6,
+                    "interruptions_done": 1,
+                    "interruptions_received": 0,
+                    "questions_count": 1,
+                    "role_hint": "Leader",
+                },
+            }
+        ],
+        settings=cfg,
+    )
 
     c = TestClient(api.app, follow_redirects=True)
     r = c.get("/recordings/rec-metrics-tab-1?tab=metrics")
     assert r.status_code == 200
+    assert "Meeting Metrics" in r.text
+    assert "Participants" in r.text
+    assert "42.5s" in r.text
+    assert "Leader" in r.text
     assert "Decisions" in r.text
     assert "Ship on Friday" in r.text
     assert "Send notes" in r.text
     assert "Is QA complete?" in r.text
+
+
+def test_recording_detail_metrics_tab_backfills_missing_db_side_from_artifact(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    init_db(cfg)
+    create_recording(
+        "rec-metrics-backfill-1",
+        source="drive",
+        source_filename="metrics-backfill.mp3",
+        status=RECORDING_STATUS_READY,
+        settings=cfg,
+    )
+
+    derived = cfg.recordings_root / "rec-metrics-backfill-1" / "derived"
+    derived.mkdir(parents=True, exist_ok=True)
+    (derived / "summary.json").write_text(json.dumps({}), encoding="utf-8")
+    (derived / "metrics.json").write_text(
+        json.dumps(
+            {
+                "meeting": {
+                    "total_interruptions": 3,
+                    "total_questions": 5,
+                    "decisions_count": 2,
+                    "action_items_count": 4,
+                    "actionability_ratio": 0.75,
+                    "emotional_summary": "Constructive.",
+                    "total_speech_time_seconds": 60.0,
+                },
+                "participants": [
+                    {
+                        "speaker": "S2",
+                        "airtime_seconds": 21.0,
+                        "airtime_share": 0.35,
+                        "turns": 4,
+                        "interruptions_done": 2,
+                        "interruptions_received": 1,
+                        "questions_count": 2,
+                        "role_hint": "Facilitator",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    # Simulate partial DB persistence: meeting row exists but is incomplete, participant rows missing.
+    upsert_meeting_metrics(
+        recording_id="rec-metrics-backfill-1",
+        payload={"total_interruptions": 3},
+        settings=cfg,
+    )
+
+    c = TestClient(api.app, follow_redirects=True)
+    r = c.get("/recordings/rec-metrics-backfill-1?tab=metrics")
+    assert r.status_code == 200
+    assert "Constructive." in r.text
+    assert "75.0%" in r.text
+    assert "Facilitator" in r.text  # participant row backfilled from artifact
 
 
 def test_recording_detail_overview_shows_topic_and_emotional_summary(tmp_path, monkeypatch):

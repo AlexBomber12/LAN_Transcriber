@@ -62,7 +62,7 @@ Queue (in order)
 - Depends on: PR-PIPELINE-01 and PR-LANG-01
 
 11) PR-METRICS-01: Conversation analytics metrics per participant and per meeting + UI rendering + exports
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-METRICS-01.md
 - Depends on: PR-PIPELINE-01 and PR-LLM-01
 
