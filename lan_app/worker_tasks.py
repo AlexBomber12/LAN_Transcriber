@@ -12,6 +12,7 @@ from lan_transcriber.pipeline import Settings as PipelineSettings
 from lan_transcriber.pipeline import run_pipeline, run_precheck
 
 from .config import AppSettings
+from .conversation_metrics import refresh_recording_metrics
 from .constants import (
     JOB_TYPE_CLEANUP,
     JOB_TYPE_PRECHECK,
@@ -257,6 +258,18 @@ def _run_precheck_pipeline(
             calendar_title=calendar_title,
             calendar_attendees=calendar_attendees,
         )
+    )
+    metrics_payload = refresh_recording_metrics(
+        recording_id,
+        settings=settings,
+    )
+    _append_step_log(
+        log_path,
+        (
+            "metrics refreshed "
+            f"participants={len(metrics_payload.get('participants', []))} "
+            f"interruptions={metrics_payload.get('meeting', {}).get('total_interruptions', 0)}"
+        ),
     )
     dominant_language, resolved_target_language = _load_transcript_language_payload(
         recording_id,

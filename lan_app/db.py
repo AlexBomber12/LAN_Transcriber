@@ -721,6 +721,122 @@ def set_calendar_match_selection(
     return _as_dict(row) or {}
 
 
+def get_meeting_metrics(
+    recording_id: str,
+    *,
+    settings: AppSettings | None = None,
+) -> dict[str, Any] | None:
+    init_db(settings)
+    with connect(settings) as conn:
+        row = conn.execute(
+            "SELECT * FROM meeting_metrics WHERE recording_id = ?",
+            (recording_id,),
+        ).fetchone()
+    return _as_dict(row)
+
+
+def upsert_meeting_metrics(
+    *,
+    recording_id: str,
+    payload: dict[str, Any],
+    settings: AppSettings | None = None,
+) -> dict[str, Any]:
+    init_db(settings)
+    encoded = json.dumps(payload, ensure_ascii=True)
+    with connect(settings) as conn:
+        conn.execute(
+            """
+            INSERT INTO meeting_metrics (recording_id, json)
+            VALUES (?, ?)
+            ON CONFLICT(recording_id) DO UPDATE SET
+                json = excluded.json
+            """,
+            (recording_id, encoded),
+        )
+        row = conn.execute(
+            "SELECT * FROM meeting_metrics WHERE recording_id = ?",
+            (recording_id,),
+        ).fetchone()
+        conn.commit()
+    return _as_dict(row) or {}
+
+
+def list_participant_metrics(
+    recording_id: str,
+    *,
+    settings: AppSettings | None = None,
+) -> list[dict[str, Any]]:
+    init_db(settings)
+    with connect(settings) as conn:
+        rows = conn.execute(
+            """
+            SELECT *
+            FROM participant_metrics
+            WHERE recording_id = ?
+            ORDER BY diar_speaker_label, id
+            """,
+            (recording_id,),
+        ).fetchall()
+    return [_as_dict(row) or {} for row in rows]
+
+
+def replace_participant_metrics(
+    *,
+    recording_id: str,
+    rows: list[dict[str, Any]],
+    settings: AppSettings | None = None,
+) -> list[dict[str, Any]]:
+    init_db(settings)
+    with connect(settings) as conn:
+        conn.execute(
+            "DELETE FROM participant_metrics WHERE recording_id = ?",
+            (recording_id,),
+        )
+        for row in rows:
+            diar_label = str(row.get("diar_speaker_label") or "").strip()
+            if not diar_label:
+                continue
+            voice_profile_id_raw = row.get("voice_profile_id")
+            if voice_profile_id_raw is None:
+                voice_profile_id = None
+            else:
+                try:
+                    voice_profile_id = int(voice_profile_id_raw)
+                except (TypeError, ValueError):
+                    voice_profile_id = None
+            payload = row.get("payload")
+            if not isinstance(payload, dict):
+                payload = {}
+            conn.execute(
+                """
+                INSERT INTO participant_metrics (
+                    recording_id,
+                    voice_profile_id,
+                    diar_speaker_label,
+                    json
+                )
+                VALUES (?, ?, ?, ?)
+                """,
+                (
+                    recording_id,
+                    voice_profile_id,
+                    diar_label,
+                    json.dumps(payload, ensure_ascii=True),
+                ),
+            )
+        out_rows = conn.execute(
+            """
+            SELECT *
+            FROM participant_metrics
+            WHERE recording_id = ?
+            ORDER BY diar_speaker_label, id
+            """,
+            (recording_id,),
+        ).fetchall()
+        conn.commit()
+    return [_as_dict(row) or {} for row in out_rows]
+
+
 def _set_job_terminal_state(
     *,
     job_id: str,
@@ -770,4 +886,8 @@ __all__ = [
     "get_calendar_match",
     "upsert_calendar_match",
     "set_calendar_match_selection",
+    "get_meeting_metrics",
+    "upsert_meeting_metrics",
+    "list_participant_metrics",
+    "replace_participant_metrics",
 ]

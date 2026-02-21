@@ -18,7 +18,9 @@ from lan_app.db import (
     get_recording,
     init_db,
     list_projects,
+    replace_participant_metrics,
     list_voice_profiles,
+    upsert_meeting_metrics,
 )
 from lan_app.constants import (
     JOB_TYPE_PRECHECK,
@@ -197,10 +199,47 @@ def test_recording_detail_metrics_tab_uses_summary_payload(tmp_path, monkeypatch
         ),
         encoding="utf-8",
     )
+    upsert_meeting_metrics(
+        recording_id="rec-metrics-tab-1",
+        payload={
+            "total_interruptions": 2,
+            "total_questions": 1,
+            "decisions_count": 1,
+            "action_items_count": 1,
+            "actionability_ratio": 1.0,
+            "emotional_summary": "Focused.",
+            "total_speech_time_seconds": 42.5,
+        },
+        settings=cfg,
+    )
+    replace_participant_metrics(
+        recording_id="rec-metrics-tab-1",
+        rows=[
+            {
+                "diar_speaker_label": "S1",
+                "voice_profile_id": None,
+                "payload": {
+                    "speaker": "S1",
+                    "airtime_seconds": 24.0,
+                    "airtime_share": 0.56,
+                    "turns": 6,
+                    "interruptions_done": 1,
+                    "interruptions_received": 0,
+                    "questions_count": 1,
+                    "role_hint": "Leader",
+                },
+            }
+        ],
+        settings=cfg,
+    )
 
     c = TestClient(api.app, follow_redirects=True)
     r = c.get("/recordings/rec-metrics-tab-1?tab=metrics")
     assert r.status_code == 200
+    assert "Meeting Metrics" in r.text
+    assert "Participants" in r.text
+    assert "42.5s" in r.text
+    assert "Leader" in r.text
     assert "Decisions" in r.text
     assert "Ship on Friday" in r.text
     assert "Send notes" in r.text
