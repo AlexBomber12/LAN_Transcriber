@@ -1,46 +1,1102 @@
-diff --git a/lan_app/conversation_metrics.py b/lan_app/conversation_metrics.py
-index 222704a..c025ea5 100644
---- a/lan_app/conversation_metrics.py
-+++ b/lan_app/conversation_metrics.py
-@@ -509,7 +509,7 @@ def build_conversation_metrics(
+diff --git a/lan_app/db.py b/lan_app/db.py
+index f53d66b..c321886 100644
+--- a/lan_app/db.py
++++ b/lan_app/db.py
+@@ -120,6 +120,23 @@ _MIGRATIONS: tuple[str, ...] = (
+     """
+     ALTER TABLE recordings ADD COLUMN target_summary_language TEXT;
+     """,
++    """
++    CREATE TABLE IF NOT EXISTS voice_samples (
++        id INTEGER PRIMARY KEY AUTOINCREMENT,
++        voice_profile_id INTEGER NOT NULL,
++        recording_id TEXT,
++        diar_speaker_label TEXT,
++        snippet_path TEXT NOT NULL,
++        created_at TEXT NOT NULL,
++        FOREIGN KEY(voice_profile_id) REFERENCES voice_profiles(id) ON DELETE CASCADE,
++        FOREIGN KEY(recording_id) REFERENCES recordings(id) ON DELETE SET NULL
++    );
++
++    CREATE INDEX IF NOT EXISTS idx_speaker_assignments_recording_id
++        ON speaker_assignments(recording_id);
++    CREATE INDEX IF NOT EXISTS idx_voice_samples_profile_id ON voice_samples(voice_profile_id);
++    CREATE INDEX IF NOT EXISTS idx_voice_samples_recording_id ON voice_samples(recording_id);
++    """,
+ )
  
-     merged_turns = merge_speaker_turns(turns_source, gap_threshold=gap_threshold_sec)
-     interruption_stats = count_interruptions(
--        merged_turns,
-+        turns_source,
-         overlap_threshold=interruption_overlap_sec,
+ _UNSET = object()
+@@ -616,6 +633,190 @@ def delete_voice_profile(
+     return deleted.rowcount > 0
+ 
+ 
++def list_speaker_assignments(
++    recording_id: str,
++    *,
++    settings: AppSettings | None = None,
++) -> list[dict[str, Any]]:
++    init_db(settings)
++    with connect(settings) as conn:
++        rows = conn.execute(
++            """
++            SELECT
++                sa.recording_id,
++                sa.diar_speaker_label,
++                sa.voice_profile_id,
++                sa.confidence,
++                vp.display_name AS voice_profile_name
++            FROM speaker_assignments AS sa
++            LEFT JOIN voice_profiles AS vp ON vp.id = sa.voice_profile_id
++            WHERE sa.recording_id = ?
++            ORDER BY sa.diar_speaker_label
++            """,
++            (recording_id,),
++        ).fetchall()
++    return [_as_dict(row) or {} for row in rows]
++
++
++def set_speaker_assignment(
++    *,
++    recording_id: str,
++    diar_speaker_label: str,
++    voice_profile_id: int | None,
++    confidence: float = 1.0,
++    settings: AppSettings | None = None,
++) -> dict[str, Any] | None:
++    init_db(settings)
++    diar_label = str(diar_speaker_label).strip()
++    if not diar_label:
++        raise ValueError("diar_speaker_label is required")
++    with connect(settings) as conn:
++        if voice_profile_id is None:
++            conn.execute(
++                """
++                DELETE FROM speaker_assignments
++                WHERE recording_id = ? AND diar_speaker_label = ?
++                """,
++                (recording_id, diar_label),
++            )
++            conn.commit()
++            return None
++        profile_id = int(voice_profile_id)
++        score = max(0.0, min(float(confidence), 1.0))
++        conn.execute(
++            """
++            INSERT INTO speaker_assignments (
++                recording_id,
++                diar_speaker_label,
++                voice_profile_id,
++                confidence
++            )
++            VALUES (?, ?, ?, ?)
++            ON CONFLICT(recording_id, diar_speaker_label) DO UPDATE SET
++                voice_profile_id = excluded.voice_profile_id,
++                confidence = excluded.confidence
++            """,
++            (recording_id, diar_label, profile_id, score),
++        )
++        row = conn.execute(
++            """
++            SELECT
++                sa.recording_id,
++                sa.diar_speaker_label,
++                sa.voice_profile_id,
++                sa.confidence,
++                vp.display_name AS voice_profile_name
++            FROM speaker_assignments AS sa
++            LEFT JOIN voice_profiles AS vp ON vp.id = sa.voice_profile_id
++            WHERE sa.recording_id = ? AND sa.diar_speaker_label = ?
++            """,
++            (recording_id, diar_label),
++        ).fetchone()
++        conn.commit()
++    return _as_dict(row)
++
++
++def list_voice_samples(
++    *,
++    voice_profile_id: int | None = None,
++    recording_id: str | None = None,
++    settings: AppSettings | None = None,
++) -> list[dict[str, Any]]:
++    init_db(settings)
++    clauses: list[str] = []
++    params: list[Any] = []
++    if voice_profile_id is not None:
++        clauses.append("vs.voice_profile_id = ?")
++        params.append(int(voice_profile_id))
++    if recording_id is not None:
++        clauses.append("vs.recording_id = ?")
++        params.append(recording_id)
++    where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
++    query = f"""
++        SELECT
++            vs.*,
++            vp.display_name AS voice_profile_name
++        FROM voice_samples AS vs
++        LEFT JOIN voice_profiles AS vp ON vp.id = vs.voice_profile_id
++        {where_sql}
++        ORDER BY vs.created_at DESC, vs.id DESC
++    """
++    with connect(settings) as conn:
++        rows = conn.execute(query, tuple(params)).fetchall()
++    return [_as_dict(row) or {} for row in rows]
++
++
++def create_voice_sample(
++    *,
++    voice_profile_id: int,
++    snippet_path: str,
++    recording_id: str | None = None,
++    diar_speaker_label: str | None = None,
++    settings: AppSettings | None = None,
++) -> dict[str, Any]:
++    init_db(settings)
++    snippet = str(snippet_path).strip()
++    if not snippet:
++        raise ValueError("snippet_path is required")
++    clean_recording = str(recording_id).strip() if recording_id is not None else None
++    clean_label = str(diar_speaker_label).strip() if diar_speaker_label is not None else None
++    now = _utc_now()
++    with connect(settings) as conn:
++        cursor = conn.execute(
++            """
++            INSERT INTO voice_samples (
++                voice_profile_id,
++                recording_id,
++                diar_speaker_label,
++                snippet_path,
++                created_at
++            )
++            VALUES (?, ?, ?, ?, ?)
++            """,
++            (
++                int(voice_profile_id),
++                clean_recording or None,
++                clean_label or None,
++                snippet,
++                now,
++            ),
++        )
++        row = conn.execute(
++            """
++            SELECT
++                vs.*,
++                vp.display_name AS voice_profile_name
++            FROM voice_samples AS vs
++            LEFT JOIN voice_profiles AS vp ON vp.id = vs.voice_profile_id
++            WHERE vs.id = ?
++            """,
++            (cursor.lastrowid,),
++        ).fetchone()
++        conn.commit()
++    return _as_dict(row) or {}
++
++
++def get_voice_sample(
++    sample_id: int,
++    *,
++    settings: AppSettings | None = None,
++) -> dict[str, Any] | None:
++    init_db(settings)
++    with connect(settings) as conn:
++        row = conn.execute(
++            """
++            SELECT
++                vs.*,
++                vp.display_name AS voice_profile_name
++            FROM voice_samples AS vs
++            LEFT JOIN voice_profiles AS vp ON vp.id = vs.voice_profile_id
++            WHERE vs.id = ?
++            """,
++            (sample_id,),
++        ).fetchone()
++    return _as_dict(row)
++
++
+ def get_calendar_match(
+     recording_id: str,
+     *,
+@@ -883,6 +1084,11 @@ __all__ = [
+     "list_voice_profiles",
+     "create_voice_profile",
+     "delete_voice_profile",
++    "list_speaker_assignments",
++    "set_speaker_assignment",
++    "list_voice_samples",
++    "create_voice_sample",
++    "get_voice_sample",
+     "get_calendar_match",
+     "upsert_calendar_match",
+     "set_calendar_match_selection",
+diff --git a/lan_app/templates/recording_detail.html b/lan_app/templates/recording_detail.html
+index 89aeb9d..bdbfe50 100644
+--- a/lan_app/templates/recording_detail.html
++++ b/lan_app/templates/recording_detail.html
+@@ -145,7 +145,113 @@
+   <p class="placeholder">Project assignment — available after PR-CALENDAR-01.</p>
+ 
+ {% elif current_tab == 'speakers' %}
+-  <p class="placeholder">Speaker assignments — available after PR-VOICE-01.</p>
++  {% set sp = speakers or {} %}
++  {% set rows = sp.speaker_rows or [] %}
++  {% set profiles = sp.voice_profiles or [] %}
++
++  <h2>Speaker Assignments</h2>
++  {% if rows %}
++  <table>
++    <thead>
++      <tr>
++        <th>Speaker</th>
++        <th>Turns</th>
++        <th>Duration (s)</th>
++        <th>Preview</th>
++        <th>Snippets</th>
++        <th>Assignment</th>
++        <th>Samples</th>
++      </tr>
++    </thead>
++    <tbody>
++      {% for row in rows %}
++      <tr>
++        <td><code>{{ row.speaker }}</code></td>
++        <td>{{ row.turn_count }}</td>
++        <td>{{ '%.2f'|format(row.duration_sec or 0.0) }}</td>
++        <td title="{{ row.preview_text }}" style="white-space:normal;max-width:300px">{{ row.preview_text or '—' }}</td>
++        <td style="white-space:normal;max-width:320px">
++          {% if row.snippet_urls %}
++            {% for src in row.snippet_urls %}
++            <div style="margin-bottom:4px">
++              <audio controls preload="none" style="height:26px;max-width:280px">
++                <source src="{{ src }}" type="audio/wav">
++              </audio>
++            </div>
++            {% endfor %}
++          {% else %}
++          <span class="placeholder" style="padding:0">No snippets found.</span>
++          {% endif %}
++        </td>
++        <td style="white-space:normal;max-width:260px">
++          {% if profiles %}
++          <form method="post" action="/ui/recordings/{{ rec.id }}/speakers/assign">
++            <input type="hidden" name="diar_speaker_label" value="{{ row.speaker }}">
++            <select name="voice_profile_id" style="width:180px">
++              <option value="">Unassigned</option>
++              {% for vp in profiles %}
++              <option value="{{ vp.id }}" {% if row.voice_profile_id == vp.id %}selected{% endif %}>{{ vp.display_name }}</option>
++              {% endfor %}
++            </select>
++            <button class="btn" type="submit">Save</button>
++          </form>
++          {% if row.voice_profile_name %}
++          <div style="margin-top:4px;color:#555">Current: {{ row.voice_profile_name }} ({{ '%.2f'|format(row.confidence or 0.0) }})</div>
++          {% endif %}
++          {% else %}
++          <span class="placeholder" style="padding:0">No voice profiles yet.</span>
++          {% endif %}
++        </td>
++        <td style="white-space:normal;max-width:260px">
++          {% if profiles %}
++          <form method="post" action="/ui/recordings/{{ rec.id }}/speakers/add-sample">
++            <input type="hidden" name="diar_speaker_label" value="{{ row.speaker }}">
++            <select name="voice_profile_id" style="width:180px">
++              {% for vp in profiles %}
++              <option value="{{ vp.id }}" {% if row.voice_profile_id == vp.id %}selected{% endif %}>{{ vp.display_name }}</option>
++              {% endfor %}
++            </select>
++            <button class="btn" type="submit" {% if not row.snippet_urls %}disabled{% endif %}>Add sample from this recording</button>
++          </form>
++          {% else %}
++          <span class="placeholder" style="padding:0">Create a profile first.</span>
++          {% endif %}
++        </td>
++      </tr>
++      {% endfor %}
++    </tbody>
++  </table>
++  {% else %}
++  <p class="placeholder">No speaker turns available yet. Run diarization first.</p>
++  {% endif %}
++
++  <h2>Create and Assign New Profile</h2>
++  {% if rows %}
++  <form method="post" action="/ui/recordings/{{ rec.id }}/speakers/create-and-assign">
++    <div class="form-row">
++      <label for="diar_speaker_label">Speaker label</label>
++      <select id="diar_speaker_label" name="diar_speaker_label" style="width:180px">
++        {% for row in rows %}
++        <option value="{{ row.speaker }}">{{ row.speaker }}</option>
++        {% endfor %}
++      </select>
++    </div>
++    <div class="form-row">
++      <label for="display_name">Display name</label>
++      <input id="display_name" type="text" name="display_name" maxlength="120" required placeholder="Person name" style="width:260px">
++    </div>
++    <div class="form-row">
++      <label for="notes">Notes</label>
++      <input id="notes" type="text" name="notes" maxlength="240" placeholder="Optional notes" style="width:360px">
++    </div>
++    <div class="form-row">
++      <label></label>
++      <button class="btn" type="submit">Create and assign</button>
++    </div>
++  </form>
++  {% else %}
++  <p class="placeholder">No diarization labels available for assignment.</p>
++  {% endif %}
+ 
+ {% elif current_tab == 'language' %}
+   {% set lang = language or {} %}
+diff --git a/lan_app/templates/voices.html b/lan_app/templates/voices.html
+index cbfc009..93e3a40 100644
+--- a/lan_app/templates/voices.html
++++ b/lan_app/templates/voices.html
+@@ -29,6 +29,7 @@
+         <th>ID</th>
+         <th>Display name</th>
+         <th>Notes</th>
++        <th>Samples</th>
+         <th></th>
+       </tr>
+     </thead>
+@@ -38,6 +39,7 @@
+         <td>{{ v.id }}</td>
+         <td>{{ v.display_name }}</td>
+         <td>{{ v.notes or '—' }}</td>
++        <td>{{ v.sample_count or 0 }}</td>
+         <td>
+           <form method="post" action="/voices/{{ v.id }}/delete" style="display:inline" onsubmit="return confirm('Delete voice profile ' + this.dataset.name + '?')" data-name="{{ v.display_name }}">
+             <button class="btn btn-danger" type="submit">Delete</button>
+@@ -51,4 +53,42 @@
+   <p class="placeholder">No voice profiles yet. Add one above.</p>
+   {% endif %}
+ </div>
++
++<div class="section">
++  <h2>Linked Samples</h2>
++  {% if samples %}
++  <table>
++    <thead>
++      <tr>
++        <th>ID</th>
++        <th>Profile</th>
++        <th>Recording</th>
++        <th>Speaker label</th>
++        <th>Snippet path</th>
++        <th>Created</th>
++        <th>Audio</th>
++      </tr>
++    </thead>
++    <tbody>
++      {% for s in samples %}
++      <tr>
++        <td>{{ s.id }}</td>
++        <td>{{ s.voice_profile_name or ('#' ~ s.voice_profile_id) }}</td>
++        <td>{{ s.recording_id or '—' }}</td>
++        <td>{{ s.diar_speaker_label or '—' }}</td>
++        <td title="{{ s.snippet_path }}" style="white-space:normal;max-width:320px">{{ s.snippet_path }}</td>
++        <td>{{ s.created_at[:19].replace('T',' ') if s.created_at else '—' }}</td>
++        <td>
++          <audio controls preload="none" style="height:26px;max-width:220px">
++            <source src="{{ s.audio_url }}" type="audio/wav">
++          </audio>
++        </td>
++      </tr>
++      {% endfor %}
++    </tbody>
++  </table>
++  {% else %}
++  <p class="placeholder">No linked samples yet. Add samples from a recording speaker row.</p>
++  {% endif %}
++</div>
+ {% endblock %}
+diff --git a/lan_app/ui_routes.py b/lan_app/ui_routes.py
+index 859f629..2c7283b 100644
+--- a/lan_app/ui_routes.py
++++ b/lan_app/ui_routes.py
+@@ -11,10 +11,11 @@ import shutil
+ import sqlite3
+ from pathlib import Path
+ from typing import Any
++from urllib.parse import quote
+ 
+ from fastapi import APIRouter, Form, Query, Request
+ from fastapi.concurrency import run_in_threadpool
+-from fastapi.responses import HTMLResponse, RedirectResponse
++from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
+ from fastapi.templating import Jinja2Templates
+ 
+ from .calendar import (
+@@ -31,17 +32,22 @@ from .constants import (
+     RECORDING_STATUS_QUARANTINE,
+ )
+ from .db import (
++    create_voice_sample,
+     create_project,
+     create_voice_profile,
+     delete_project,
+     delete_voice_profile,
+     get_meeting_metrics,
+     get_recording,
++    get_voice_sample,
+     list_participant_metrics,
+     list_jobs,
+     list_projects,
+     list_recordings,
++    list_speaker_assignments,
++    list_voice_samples,
+     list_voice_profiles,
++    set_speaker_assignment,
+     set_recording_language_settings,
+     set_recording_status,
+ )
+@@ -447,6 +453,151 @@ def _recording_derived_paths(recording_id: str, settings: AppSettings) -> tuple[
+     return derived / "transcript.json", derived / "summary.json"
+ 
+ 
++def _speaker_slug(label: str) -> str:
++    slug = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in label)
++    slug = slug.strip("_")
++    return slug or "speaker"
++
++
++def _safe_path(candidate: Path, *, root: Path) -> Path | None:
++    try:
++        resolved = candidate.resolve()
++        root_resolved = root.resolve()
++    except OSError:
++        return None
++    try:
++        resolved.relative_to(root_resolved)
++    except ValueError:
++        return None
++    return resolved
++
++
++def _safe_audio_path(candidate: Path, *, root: Path) -> Path | None:
++    resolved = _safe_path(candidate, root=root)
++    if resolved is None:
++        return None
++    if resolved.suffix.lower() != ".wav":
++        return None
++    return resolved
++
++
++def _speaker_snippet_files(
++    recording_id: str,
++    speaker_label: str,
++    *,
++    settings: AppSettings,
++) -> list[Path]:
++    snippets_root = settings.recordings_root / recording_id / "derived" / "snippets"
++    speaker_dir = snippets_root / _speaker_slug(speaker_label)
++    safe_dir = _safe_path(speaker_dir, root=snippets_root)
++    if safe_dir is None or not safe_dir.exists() or not safe_dir.is_dir():
++        return []
++
++    out: list[Path] = []
++    for child in safe_dir.iterdir():
++        if not child.is_file():
++            continue
++        safe_audio = _safe_audio_path(child, root=snippets_root)
++        if safe_audio is None:
++            continue
++        out.append(safe_audio)
++    out.sort(key=lambda path: path.name)
++    return out
++
++
++def _as_data_relative_path(path: Path, *, settings: AppSettings) -> str | None:
++    safe = _safe_path(path, root=settings.data_root)
++    if safe is None:
++        return None
++    root_resolved = settings.data_root.resolve()
++    return safe.relative_to(root_resolved).as_posix()
++
++
++def _speakers_tab_context(recording_id: str, settings: AppSettings) -> dict[str, Any]:
++    transcript_path, _summary_path = _recording_derived_paths(recording_id, settings)
++    speaker_turns_path = transcript_path.parent / "speaker_turns.json"
++    transcript_payload = _load_json_dict(transcript_path)
++
++    speaker_turns_raw = _load_json_list(speaker_turns_path)
++    speaker_turns = [row for row in speaker_turns_raw if isinstance(row, dict)]
++    if not speaker_turns:
++        speaker_turns = _fallback_speaker_turns_from_transcript(transcript_payload)
++
++    per_speaker: dict[str, dict[str, Any]] = {}
++    for row in speaker_turns:
++        speaker = str(row.get("speaker") or "S1").strip() or "S1"
++        slot = per_speaker.setdefault(
++            speaker,
++            {
++                "speaker": speaker,
++                "turn_count": 0,
++                "duration_sec": 0.0,
++                "preview_text": "",
++            },
++        )
++        slot["turn_count"] += 1
++        text = str(row.get("text") or "").strip()
++        if text and not slot["preview_text"]:
++            slot["preview_text"] = text
++        try:
++            start = float(row.get("start") or 0.0)
++        except (TypeError, ValueError):
++            start = 0.0
++        try:
++            end = float(row.get("end") or start)
++        except (TypeError, ValueError):
++            end = start
++        slot["duration_sec"] += max(0.0, end - start)
++
++    assignments = list_speaker_assignments(recording_id, settings=settings)
++    assignment_by_speaker = {
++        str(row.get("diar_speaker_label") or ""): row
++        for row in assignments
++    }
++    voice_profiles = list_voice_profiles(settings=settings)
++
++    speaker_rows: list[dict[str, Any]] = []
++    recording_token = quote(recording_id, safe="")
++    for speaker in sorted(per_speaker):
++        row = per_speaker[speaker]
++        snippets = _speaker_snippet_files(recording_id, speaker, settings=settings)
++        speaker_token = quote(_speaker_slug(speaker), safe="")
++        snippet_urls = [
++            (
++                f"/ui/recordings/{recording_token}/snippets/"
++                f"{speaker_token}/{quote(path.name, safe='')}"
++            )
++            for path in snippets
++        ]
++        assignment = assignment_by_speaker.get(speaker, {})
++        profile_id_raw = assignment.get("voice_profile_id")
++        try:
++            profile_id = int(profile_id_raw) if profile_id_raw is not None else None
++        except (TypeError, ValueError):
++            profile_id = None
++        try:
++            confidence = float(assignment.get("confidence"))
++        except (TypeError, ValueError):
++            confidence = 0.0
++        speaker_rows.append(
++            {
++                "speaker": speaker,
++                "turn_count": int(row["turn_count"]),
++                "duration_sec": round(float(row["duration_sec"]), 3),
++                "preview_text": str(row["preview_text"]),
++                "snippet_urls": snippet_urls,
++                "voice_profile_id": profile_id,
++                "voice_profile_name": str(assignment.get("voice_profile_name") or ""),
++                "confidence": max(0.0, min(confidence, 1.0)),
++            }
++        )
++
++    return {
++        "speaker_rows": speaker_rows,
++        "voice_profiles": voice_profiles,
++    }
++
++
+ def _sync_transcript_language_settings(
+     recording_id: str,
+     *,
+@@ -756,6 +907,7 @@ async def ui_recording_detail(
+     language: dict[str, Any] | None = None
+     summary: dict[str, Any] | None = None
+     metrics: dict[str, Any] | None = None
++    speakers: dict[str, Any] | None = None
+     if current_tab == "calendar":
+         try:
+             calendar = await run_in_threadpool(
+@@ -772,6 +924,8 @@ async def ui_recording_detail(
+             calendar["fetch_error"] = str(exc)
+     if current_tab == "language":
+         language = _language_tab_context(recording_id, rec, _settings)
++    if current_tab == "speakers":
++        speakers = _speakers_tab_context(recording_id, _settings)
+     if current_tab in {"overview", "metrics"}:
+         summary = _summary_context(recording_id, _settings)
+     if current_tab == "metrics":
+@@ -790,10 +944,144 @@ async def ui_recording_detail(
+             "language": language,
+             "summary": summary,
+             "metrics": metrics,
++            "speakers": speakers,
+         },
      )
  
-diff --git a/tests/test_conversation_metrics.py b/tests/test_conversation_metrics.py
-index d41bdaf..46b9cd3 100644
---- a/tests/test_conversation_metrics.py
-+++ b/tests/test_conversation_metrics.py
-@@ -88,6 +88,28 @@ def test_build_conversation_metrics_heuristic_questions_count_punctuation_for_un
-     assert payload["participants"][0]["questions_count"] == 1
+ 
++# ---------------------------------------------------------------------------
++# Recording speaker assignment + snippet audio
++# ---------------------------------------------------------------------------
++
++
++@ui_router.get("/ui/recordings/{recording_id}/snippets/{speaker_slug}/{filename}")
++async def ui_recording_snippet_audio(
++    recording_id: str,
++    speaker_slug: str,
++    filename: str,
++) -> Any:
++    if get_recording(recording_id, settings=_settings) is None:
++        return HTMLResponse("Not found", status_code=404)
++    snippets_root = _settings.recordings_root / recording_id / "derived" / "snippets"
++    safe_file = _safe_audio_path(
++        snippets_root / speaker_slug / filename,
++        root=snippets_root,
++    )
++    if safe_file is None or not safe_file.exists() or not safe_file.is_file():
++        return HTMLResponse("Snippet not found", status_code=404)
++    return FileResponse(path=str(safe_file), media_type="audio/wav", filename=safe_file.name)
++
++
++@ui_router.post("/ui/recordings/{recording_id}/speakers/assign")
++async def ui_assign_speaker(
++    recording_id: str,
++    diar_speaker_label: str = Form(...),
++    voice_profile_id: str = Form(default=""),
++) -> Any:
++    if get_recording(recording_id, settings=_settings) is None:
++        return HTMLResponse("Not found", status_code=404)
++    diar_label = diar_speaker_label.strip()
++    if not diar_label:
++        return HTMLResponse("diar_speaker_label is required", status_code=422)
++
++    profile_token = voice_profile_id.strip()
++    profile_id: int | None = None
++    if profile_token:
++        try:
++            profile_id = int(profile_token)
++        except ValueError:
++            return HTMLResponse("voice_profile_id must be an integer", status_code=422)
++    try:
++        set_speaker_assignment(
++            recording_id=recording_id,
++            diar_speaker_label=diar_label,
++            voice_profile_id=profile_id,
++            confidence=1.0,
++            settings=_settings,
++        )
++    except sqlite3.IntegrityError:
++        return HTMLResponse("Voice profile not found", status_code=404)
++    except ValueError as exc:
++        return HTMLResponse(str(exc), status_code=422)
++    return RedirectResponse(f"/recordings/{recording_id}?tab=speakers", status_code=303)
++
++
++@ui_router.post("/ui/recordings/{recording_id}/speakers/create-and-assign")
++async def ui_create_and_assign_speaker(
++    recording_id: str,
++    diar_speaker_label: str = Form(...),
++    display_name: str = Form(...),
++    notes: str = Form(default=""),
++) -> Any:
++    if get_recording(recording_id, settings=_settings) is None:
++        return HTMLResponse("Not found", status_code=404)
++    diar_label = diar_speaker_label.strip()
++    if not diar_label:
++        return HTMLResponse("diar_speaker_label is required", status_code=422)
++    clean_name = display_name.strip()
++    if not clean_name:
++        return HTMLResponse("display_name is required", status_code=422)
++
++    profile = create_voice_profile(clean_name, notes.strip() or None, settings=_settings)
++    try:
++        profile_id = int(profile.get("id"))
++    except (TypeError, ValueError):
++        return HTMLResponse("Voice profile create failed", status_code=503)
++    set_speaker_assignment(
++        recording_id=recording_id,
++        diar_speaker_label=diar_label,
++        voice_profile_id=profile_id,
++        confidence=1.0,
++        settings=_settings,
++    )
++    return RedirectResponse(f"/recordings/{recording_id}?tab=speakers", status_code=303)
++
++
++@ui_router.post("/ui/recordings/{recording_id}/speakers/add-sample")
++async def ui_add_speaker_sample(
++    recording_id: str,
++    diar_speaker_label: str = Form(...),
++    voice_profile_id: str = Form(default=""),
++) -> Any:
++    if get_recording(recording_id, settings=_settings) is None:
++        return HTMLResponse("Not found", status_code=404)
++    diar_label = diar_speaker_label.strip()
++    if not diar_label:
++        return HTMLResponse("diar_speaker_label is required", status_code=422)
++    profile_token = voice_profile_id.strip()
++    if not profile_token:
++        return HTMLResponse("voice_profile_id is required", status_code=422)
++    try:
++        profile_id = int(profile_token)
++    except ValueError:
++        return HTMLResponse("voice_profile_id must be an integer", status_code=422)
++
++    snippet_files = _speaker_snippet_files(
++        recording_id,
++        diar_label,
++        settings=_settings,
++    )
++    if not snippet_files:
++        return HTMLResponse("No snippets available for this speaker", status_code=422)
++
++    rel_path = _as_data_relative_path(snippet_files[0], settings=_settings)
++    if rel_path is None:
++        return HTMLResponse("Snippet path is outside runtime data root", status_code=422)
++    try:
++        create_voice_sample(
++            voice_profile_id=profile_id,
++            snippet_path=rel_path,
++            recording_id=recording_id,
++            diar_speaker_label=diar_label,
++            settings=_settings,
++        )
++    except sqlite3.IntegrityError:
++        return HTMLResponse("Voice profile not found", status_code=404)
++    except ValueError as exc:
++        return HTMLResponse(str(exc), status_code=422)
++    return RedirectResponse(f"/recordings/{recording_id}?tab=speakers", status_code=303)
++
++
+ # ---------------------------------------------------------------------------
+ # Projects
+ # ---------------------------------------------------------------------------
+@@ -839,12 +1127,30 @@ async def ui_delete_project(project_id: int) -> Any:
+ @ui_router.get("/voices", response_class=HTMLResponse)
+ async def ui_voices(request: Request) -> Any:
+     items = list_voice_profiles(settings=_settings)
++    samples = list_voice_samples(settings=_settings)
++    for sample in samples:
++        sample_id = sample.get("id")
++        sample["audio_url"] = f"/ui/voice-samples/{sample_id}/audio"
++    samples_by_profile: dict[int, list[dict[str, Any]]] = {}
++    for sample in samples:
++        try:
++            profile_id = int(sample.get("voice_profile_id"))
++        except (TypeError, ValueError):
++            continue
++        samples_by_profile.setdefault(profile_id, []).append(sample)
++    for item in items:
++        try:
++            profile_id = int(item.get("id"))
++        except (TypeError, ValueError):
++            continue
++        item["sample_count"] = len(samples_by_profile.get(profile_id, []))
+     return templates.TemplateResponse(
+         request,
+         "voices.html",
+         {
+             "active": "voices",
+             "items": items,
++            "samples": samples,
+         },
+     )
+ 
+@@ -866,6 +1172,23 @@ async def ui_delete_voice(profile_id: int) -> Any:
+     return RedirectResponse("/voices", status_code=303)
  
  
-+def test_build_conversation_metrics_interruptions_use_raw_turns_not_gap_merged_turns():
-+    payload = build_conversation_metrics(
-+        transcript_payload={},
-+        summary_payload={},
-+        speaker_turns=[
-+            {"start": 0.0, "end": 1.0, "speaker": "S1", "text": "first thought"},
-+            {"start": 1.3, "end": 2.2, "speaker": "S2", "text": "response starts"},
-+            {"start": 1.8, "end": 3.0, "speaker": "S1", "text": "continues after pause"},
-+        ],
-+        gap_threshold_sec=1.0,
-+        interruption_overlap_sec=0.3,
++@ui_router.get("/ui/voice-samples/{sample_id}/audio")
++async def ui_voice_sample_audio(sample_id: int) -> Any:
++    sample = get_voice_sample(sample_id, settings=_settings)
++    if sample is None:
++        return HTMLResponse("Voice sample not found", status_code=404)
++    snippet_raw = str(sample.get("snippet_path") or "").strip()
++    if not snippet_raw:
++        return HTMLResponse("Voice sample has no snippet path", status_code=404)
++    source_path = Path(snippet_raw)
++    if not source_path.is_absolute():
++        source_path = _settings.data_root / source_path
++    safe_path = _safe_audio_path(source_path, root=_settings.data_root)
++    if safe_path is None or not safe_path.exists() or not safe_path.is_file():
++        return HTMLResponse("Snippet not found", status_code=404)
++    return FileResponse(path=str(safe_path), media_type="audio/wav", filename=safe_path.name)
++
++
+ # ---------------------------------------------------------------------------
+ # Queue / Jobs
+ # ---------------------------------------------------------------------------
+diff --git a/tasks/QUEUE.md b/tasks/QUEUE.md
+index 3ac2074..bc833fe 100644
+--- a/tasks/QUEUE.md
++++ b/tasks/QUEUE.md
+@@ -67,7 +67,7 @@ Queue (in order)
+ - Depends on: PR-PIPELINE-01 and PR-LLM-01
+ 
+ 12) PR-VOICE-01: Voice profiles + mapping diarization speakers to known people (human-in-the-loop UI)
+-- Status: TODO
++- Status: DOING
+ - Tasks file: tasks/PR-VOICE-01.md
+ - Depends on: PR-PIPELINE-01 and PR-UI-SHELL-01
+ 
+diff --git a/tests/test_db_queue.py b/tests/test_db_queue.py
+index eab0133..50fd239 100644
+--- a/tests/test_db_queue.py
++++ b/tests/test_db_queue.py
+@@ -64,6 +64,7 @@ def test_init_db_creates_mvp_tables(tmp_path: Path):
+         "projects",
+         "voice_profiles",
+         "speaker_assignments",
++        "voice_samples",
+         "calendar_matches",
+         "meeting_metrics",
+         "participant_metrics",
+diff --git a/tests/test_ui_routes.py b/tests/test_ui_routes.py
+index ace3883..edabf72 100644
+--- a/tests/test_ui_routes.py
++++ b/tests/test_ui_routes.py
+@@ -11,15 +11,19 @@ from fastapi.testclient import TestClient
+ from lan_app import api, ui_routes
+ from lan_app.config import AppSettings
+ from lan_app.db import (
++    create_voice_sample,
+     create_job,
+     create_recording,
+     create_project,
+     create_voice_profile,
+     get_recording,
++    list_speaker_assignments,
++    list_voice_samples,
+     init_db,
+     list_projects,
+     replace_participant_metrics,
+     list_voice_profiles,
++    set_speaker_assignment,
+     upsert_meeting_metrics,
+ )
+ from lan_app.constants import (
+@@ -69,6 +73,30 @@ def seeded_client(tmp_path: Path, monkeypatch):
+     return TestClient(api.app, follow_redirects=True)
+ 
+ 
++def _seed_speaker_artifacts(cfg: AppSettings, recording_id: str) -> None:
++    derived = cfg.recordings_root / recording_id / "derived"
++    derived.mkdir(parents=True, exist_ok=True)
++    (derived / "transcript.json").write_text(
++        json.dumps({"text": "hello from S1 and S2"}),
++        encoding="utf-8",
++    )
++    (derived / "speaker_turns.json").write_text(
++        json.dumps(
++            [
++                {"start": 0.0, "end": 1.2, "speaker": "S1", "text": "hello team"},
++                {"start": 1.3, "end": 2.1, "speaker": "S2", "text": "hi there"},
++                {"start": 2.2, "end": 3.8, "speaker": "S1", "text": "next topic"},
++            ]
++        ),
++        encoding="utf-8",
++    )
++    snippets = derived / "snippets"
++    (snippets / "S1").mkdir(parents=True, exist_ok=True)
++    (snippets / "S2").mkdir(parents=True, exist_ok=True)
++    (snippets / "S1" / "1.wav").write_bytes(b"fake-wav-s1")
++    (snippets / "S2" / "1.wav").write_bytes(b"fake-wav-s2")
++
++
+ # ---------------------------------------------------------------------------
+ # Dashboard
+ # ---------------------------------------------------------------------------
+@@ -154,10 +182,132 @@ def test_recording_detail_calendar_tab(seeded_client):
+ 
+ 
+ def test_recording_detail_placeholder_tabs(seeded_client):
+-    for tab in ("project", "speakers"):
+-        r = seeded_client.get(f"/recordings/rec-ui-1?tab={tab}")
+-        assert r.status_code == 200
+-        assert "placeholder" in r.text.lower() or "available after" in r.text.lower()
++    r = seeded_client.get("/recordings/rec-ui-1?tab=project")
++    assert r.status_code == 200
++    assert "placeholder" in r.text.lower() or "available after" in r.text.lower()
++
++
++def test_recording_detail_speakers_tab_assignment_persists(tmp_path, monkeypatch):
++    cfg = _cfg(tmp_path)
++    monkeypatch.setattr(api, "_settings", cfg)
++    monkeypatch.setattr(ui_routes, "_settings", cfg)
++    init_db(cfg)
++    create_recording(
++        "rec-speakers-1",
++        source="drive",
++        source_filename="speakers.mp3",
++        status=RECORDING_STATUS_READY,
++        settings=cfg,
++    )
++    _seed_speaker_artifacts(cfg, "rec-speakers-1")
++    profile = create_voice_profile("Alice Example", settings=cfg)
++
++    c = TestClient(api.app, follow_redirects=False)
++    r = c.post(
++        "/ui/recordings/rec-speakers-1/speakers/assign",
++        data={
++            "diar_speaker_label": "S1",
++            "voice_profile_id": str(profile["id"]),
++        },
++    )
++    assert r.status_code == 303
++
++    assignments = list_speaker_assignments("rec-speakers-1", settings=cfg)
++    assert len(assignments) == 1
++    assert assignments[0]["diar_speaker_label"] == "S1"
++    assert assignments[0]["voice_profile_id"] == profile["id"]
++
++    page = TestClient(api.app, follow_redirects=True).get(
++        "/recordings/rec-speakers-1?tab=speakers"
++    )
++    assert page.status_code == 200
++    assert "Speaker Assignments" in page.text
++    assert "Alice Example" in page.text
++    assert "Add sample from this recording" in page.text
++
++
++def test_recording_detail_speakers_create_and_assign(tmp_path, monkeypatch):
++    cfg = _cfg(tmp_path)
++    monkeypatch.setattr(api, "_settings", cfg)
++    monkeypatch.setattr(ui_routes, "_settings", cfg)
++    init_db(cfg)
++    create_recording(
++        "rec-speakers-create-1",
++        source="drive",
++        source_filename="speakers-create.mp3",
++        status=RECORDING_STATUS_READY,
++        settings=cfg,
++    )
++    _seed_speaker_artifacts(cfg, "rec-speakers-create-1")
++
++    c = TestClient(api.app, follow_redirects=False)
++    r = c.post(
++        "/ui/recordings/rec-speakers-create-1/speakers/create-and-assign",
++        data={
++            "diar_speaker_label": "S2",
++            "display_name": "Bob New",
++            "notes": "ops",
++        },
++    )
++    assert r.status_code == 303
++
++    profiles = list_voice_profiles(settings=cfg)
++    assert any(row["display_name"] == "Bob New" for row in profiles)
++    assignments = list_speaker_assignments("rec-speakers-create-1", settings=cfg)
++    assert len(assignments) == 1
++    assert assignments[0]["diar_speaker_label"] == "S2"
++    assert assignments[0]["voice_profile_name"] == "Bob New"
++
++
++def test_recording_detail_speakers_add_sample_links_snippet_and_audio_route(tmp_path, monkeypatch):
++    cfg = _cfg(tmp_path)
++    monkeypatch.setattr(api, "_settings", cfg)
++    monkeypatch.setattr(ui_routes, "_settings", cfg)
++    init_db(cfg)
++    create_recording(
++        "rec-speakers-sample-1",
++        source="drive",
++        source_filename="speakers-sample.mp3",
++        status=RECORDING_STATUS_READY,
++        settings=cfg,
++    )
++    _seed_speaker_artifacts(cfg, "rec-speakers-sample-1")
++    profile = create_voice_profile("Cara Sample", settings=cfg)
++    set_speaker_assignment(
++        recording_id="rec-speakers-sample-1",
++        diar_speaker_label="S1",
++        voice_profile_id=profile["id"],
++        settings=cfg,
 +    )
 +
-+    # S2 starts during S1's silent gap and should not count as interrupting S1.
-+    # S1's third turn does overlap S2 and counts as one interruption.
-+    assert payload["meeting"]["total_interruptions"] == 1
-+    by_speaker = {row["speaker"]: row for row in payload["participants"]}
-+    assert by_speaker["S2"]["interruptions_done"] == 0
-+    assert by_speaker["S2"]["interruptions_received"] == 1
-+    assert by_speaker["S1"]["interruptions_done"] == 1
++    c = TestClient(api.app, follow_redirects=False)
++    r = c.post(
++        "/ui/recordings/rec-speakers-sample-1/speakers/add-sample",
++        data={
++            "diar_speaker_label": "S1",
++            "voice_profile_id": str(profile["id"]),
++        },
++    )
++    assert r.status_code == 303
++
++    samples = list_voice_samples(settings=cfg)
++    assert len(samples) == 1
++    sample = samples[0]
++    assert sample["voice_profile_id"] == profile["id"]
++    assert sample["recording_id"] == "rec-speakers-sample-1"
++    assert sample["snippet_path"].startswith("recordings/rec-speakers-sample-1/derived/snippets/S1/")
++
++    snippet_resp = TestClient(api.app, follow_redirects=True).get(
++        "/ui/recordings/rec-speakers-sample-1/snippets/S1/1.wav"
++    )
++    assert snippet_resp.status_code == 200
++    assert snippet_resp.headers["content-type"].startswith("audio/wav")
++
++    audio_resp = TestClient(api.app, follow_redirects=True).get(
++        f"/ui/voice-samples/{sample['id']}/audio"
++    )
++    assert audio_resp.status_code == 200
++    assert audio_resp.headers["content-type"].startswith("audio/wav")
+ 
+ 
+ def test_recording_detail_metrics_tab_uses_summary_payload(tmp_path, monkeypatch):
+@@ -955,3 +1105,62 @@ def test_db_create_and_delete_voice_profile(tmp_path):
+     from lan_app.db import delete_voice_profile
+     assert delete_voice_profile(vp["id"], settings=cfg) is True
+     assert list_voice_profiles(settings=cfg) == []
 +
 +
- def test_refresh_recording_metrics_persists_json_and_db(tmp_path: Path):
-     cfg = AppSettings(
-         data_root=tmp_path,
++def test_db_set_and_clear_speaker_assignment(tmp_path):
++    cfg = _cfg(tmp_path)
++    init_db(cfg)
++    create_recording(
++        "rec-assignment-1",
++        source="drive",
++        source_filename="assignment.mp3",
++        settings=cfg,
++    )
++    profile = create_voice_profile("Dana", settings=cfg)
++
++    set_speaker_assignment(
++        recording_id="rec-assignment-1",
++        diar_speaker_label="S1",
++        voice_profile_id=profile["id"],
++        settings=cfg,
++    )
++    rows = list_speaker_assignments("rec-assignment-1", settings=cfg)
++    assert len(rows) == 1
++    assert rows[0]["voice_profile_name"] == "Dana"
++
++    set_speaker_assignment(
++        recording_id="rec-assignment-1",
++        diar_speaker_label="S1",
++        voice_profile_id=None,
++        settings=cfg,
++    )
++    assert list_speaker_assignments("rec-assignment-1", settings=cfg) == []
++
++
++def test_db_create_and_list_voice_samples(tmp_path):
++    cfg = _cfg(tmp_path)
++    init_db(cfg)
++    create_recording(
++        "rec-sample-1",
++        source="drive",
++        source_filename="sample.mp3",
++        settings=cfg,
++    )
++    profile = create_voice_profile("Evan", settings=cfg)
++
++    sample = create_voice_sample(
++        voice_profile_id=profile["id"],
++        recording_id="rec-sample-1",
++        diar_speaker_label="S1",
++        snippet_path="recordings/rec-sample-1/derived/snippets/S1/1.wav",
++        settings=cfg,
++    )
++    assert sample["voice_profile_name"] == "Evan"
++
++    rows = list_voice_samples(settings=cfg)
++    assert len(rows) == 1
++    assert rows[0]["recording_id"] == "rec-sample-1"
++
++    filtered = list_voice_samples(voice_profile_id=profile["id"], settings=cfg)
++    assert len(filtered) == 1
++    assert filtered[0]["diar_speaker_label"] == "S1"

@@ -64,6 +64,7 @@ def test_init_db_creates_mvp_tables(tmp_path: Path):
         "projects",
         "voice_profiles",
         "speaker_assignments",
+        "voice_samples",
         "calendar_matches",
         "meeting_metrics",
         "participant_metrics",

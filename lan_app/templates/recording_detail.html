@@ -145,7 +145,113 @@
   <p class="placeholder">Project assignment — available after PR-CALENDAR-01.</p>
 
 {% elif current_tab == 'speakers' %}
-  <p class="placeholder">Speaker assignments — available after PR-VOICE-01.</p>
+  {% set sp = speakers or {} %}
+  {% set rows = sp.speaker_rows or [] %}
+  {% set profiles = sp.voice_profiles or [] %}
+
+  <h2>Speaker Assignments</h2>
+  {% if rows %}
+  <table>
+    <thead>
+      <tr>
+        <th>Speaker</th>
+        <th>Turns</th>
+        <th>Duration (s)</th>
+        <th>Preview</th>
+        <th>Snippets</th>
+        <th>Assignment</th>
+        <th>Samples</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in rows %}
+      <tr>
+        <td><code>{{ row.speaker }}</code></td>
+        <td>{{ row.turn_count }}</td>
+        <td>{{ '%.2f'|format(row.duration_sec or 0.0) }}</td>
+        <td title="{{ row.preview_text }}" style="white-space:normal;max-width:300px">{{ row.preview_text or '—' }}</td>
+        <td style="white-space:normal;max-width:320px">
+          {% if row.snippet_urls %}
+            {% for src in row.snippet_urls %}
+            <div style="margin-bottom:4px">
+              <audio controls preload="none" style="height:26px;max-width:280px">
+                <source src="{{ src }}" type="audio/wav">
+              </audio>
+            </div>
+            {% endfor %}
+          {% else %}
+          <span class="placeholder" style="padding:0">No snippets found.</span>
+          {% endif %}
+        </td>
+        <td style="white-space:normal;max-width:260px">
+          {% if profiles %}
+          <form method="post" action="/ui/recordings/{{ rec.id }}/speakers/assign">
+            <input type="hidden" name="diar_speaker_label" value="{{ row.speaker }}">
+            <select name="voice_profile_id" style="width:180px">
+              <option value="">Unassigned</option>
+              {% for vp in profiles %}
+              <option value="{{ vp.id }}" {% if row.voice_profile_id == vp.id %}selected{% endif %}>{{ vp.display_name }}</option>
+              {% endfor %}
+            </select>
+            <button class="btn" type="submit">Save</button>
+          </form>
+          {% if row.voice_profile_name %}
+          <div style="margin-top:4px;color:#555">Current: {{ row.voice_profile_name }} ({{ '%.2f'|format(row.confidence or 0.0) }})</div>
+          {% endif %}
+          {% else %}
+          <span class="placeholder" style="padding:0">No voice profiles yet.</span>
+          {% endif %}
+        </td>
+        <td style="white-space:normal;max-width:260px">
+          {% if profiles %}
+          <form method="post" action="/ui/recordings/{{ rec.id }}/speakers/add-sample">
+            <input type="hidden" name="diar_speaker_label" value="{{ row.speaker }}">
+            <select name="voice_profile_id" style="width:180px">
+              {% for vp in profiles %}
+              <option value="{{ vp.id }}" {% if row.voice_profile_id == vp.id %}selected{% endif %}>{{ vp.display_name }}</option>
+              {% endfor %}
+            </select>
+            <button class="btn" type="submit" {% if not row.snippet_urls %}disabled{% endif %}>Add sample from this recording</button>
+          </form>
+          {% else %}
+          <span class="placeholder" style="padding:0">Create a profile first.</span>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="placeholder">No speaker turns available yet. Run diarization first.</p>
+  {% endif %}
+
+  <h2>Create and Assign New Profile</h2>
+  {% if rows %}
+  <form method="post" action="/ui/recordings/{{ rec.id }}/speakers/create-and-assign">
+    <div class="form-row">
+      <label for="diar_speaker_label">Speaker label</label>
+      <select id="diar_speaker_label" name="diar_speaker_label" style="width:180px">
+        {% for row in rows %}
+        <option value="{{ row.speaker }}">{{ row.speaker }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="form-row">
+      <label for="display_name">Display name</label>
+      <input id="display_name" type="text" name="display_name" maxlength="120" required placeholder="Person name" style="width:260px">
+    </div>
+    <div class="form-row">
+      <label for="notes">Notes</label>
+      <input id="notes" type="text" name="notes" maxlength="240" placeholder="Optional notes" style="width:360px">
+    </div>
+    <div class="form-row">
+      <label></label>
+      <button class="btn" type="submit">Create and assign</button>
+    </div>
+  </form>
+  {% else %}
+  <p class="placeholder">No diarization labels available for assignment.</p>
+  {% endif %}
 
 {% elif current_tab == 'language' %}
   {% set lang = language or {} %}

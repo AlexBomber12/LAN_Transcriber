@@ -67,7 +67,7 @@ Queue (in order)
 - Depends on: PR-PIPELINE-01 and PR-LLM-01
 
 12) PR-VOICE-01: Voice profiles + mapping diarization speakers to known people (human-in-the-loop UI)
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-VOICE-01.md
 - Depends on: PR-PIPELINE-01 and PR-UI-SHELL-01
 

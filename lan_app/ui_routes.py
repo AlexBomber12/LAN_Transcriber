@@ -11,10 +11,11 @@ import shutil
 import sqlite3
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 from fastapi import APIRouter, Form, Query, Request
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 from .calendar import (
@@ -31,17 +32,22 @@ from .constants import (
     RECORDING_STATUS_QUARANTINE,
 )
 from .db import (
+    create_voice_sample,
     create_project,
     create_voice_profile,
     delete_project,
     delete_voice_profile,
     get_meeting_metrics,
     get_recording,
+    get_voice_sample,
     list_participant_metrics,
     list_jobs,
     list_projects,
     list_recordings,
+    list_speaker_assignments,
+    list_voice_samples,
     list_voice_profiles,
+    set_speaker_assignment,
     set_recording_language_settings,
     set_recording_status,
 )
@@ -447,6 +453,151 @@ def _recording_derived_paths(recording_id: str, settings: AppSettings) -> tuple[
     return derived / "transcript.json", derived / "summary.json"
 
 
+def _speaker_slug(label: str) -> str:
+    slug = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in label)
+    slug = slug.strip("_")
+    return slug or "speaker"
+
+
+def _safe_path(candidate: Path, *, root: Path) -> Path | None:
+    try:
+        resolved = candidate.resolve()
+        root_resolved = root.resolve()
+    except OSError:
+        return None
+    try:
+        resolved.relative_to(root_resolved)
+    except ValueError:
+        return None
+    return resolved
+
+
+def _safe_audio_path(candidate: Path, *, root: Path) -> Path | None:
+    resolved = _safe_path(candidate, root=root)
+    if resolved is None:
+        return None
+    if resolved.suffix.lower() != ".wav":
+        return None
+    return resolved
+
+
+def _speaker_snippet_files(
+    recording_id: str,
+    speaker_label: str,
+    *,
+    settings: AppSettings,
+) -> list[Path]:
+    snippets_root = settings.recordings_root / recording_id / "derived" / "snippets"
+    speaker_dir = snippets_root / _speaker_slug(speaker_label)
+    safe_dir = _safe_path(speaker_dir, root=snippets_root)
+    if safe_dir is None or not safe_dir.exists() or not safe_dir.is_dir():
+        return []
+
+    out: list[Path] = []
+    for child in safe_dir.iterdir():
+        if not child.is_file():
+            continue
+        safe_audio = _safe_audio_path(child, root=snippets_root)
+        if safe_audio is None:
+            continue
+        out.append(safe_audio)
+    out.sort(key=lambda path: path.name)
+    return out
+
+
+def _as_data_relative_path(path: Path, *, settings: AppSettings) -> str | None:
+    safe = _safe_path(path, root=settings.data_root)
+    if safe is None:
+        return None
+    root_resolved = settings.data_root.resolve()
+    return safe.relative_to(root_resolved).as_posix()
+
+
+def _speakers_tab_context(recording_id: str, settings: AppSettings) -> dict[str, Any]:
+    transcript_path, _summary_path = _recording_derived_paths(recording_id, settings)
+    speaker_turns_path = transcript_path.parent / "speaker_turns.json"
+    transcript_payload = _load_json_dict(transcript_path)
+
+    speaker_turns_raw = _load_json_list(speaker_turns_path)
+    speaker_turns = [row for row in speaker_turns_raw if isinstance(row, dict)]
+    if not speaker_turns:
+        speaker_turns = _fallback_speaker_turns_from_transcript(transcript_payload)
+
+    per_speaker: dict[str, dict[str, Any]] = {}
+    for row in speaker_turns:
+        speaker = str(row.get("speaker") or "S1").strip() or "S1"
+        slot = per_speaker.setdefault(
+            speaker,
+            {
+                "speaker": speaker,
+                "turn_count": 0,
+                "duration_sec": 0.0,
+                "preview_text": "",
+            },
+        )
+        slot["turn_count"] += 1
+        text = str(row.get("text") or "").strip()
+        if text and not slot["preview_text"]:
+            slot["preview_text"] = text
+        try:
+            start = float(row.get("start") or 0.0)
+        except (TypeError, ValueError):
+            start = 0.0
+        try:
+            end = float(row.get("end") or start)
+        except (TypeError, ValueError):
+            end = start
+        slot["duration_sec"] += max(0.0, end - start)
+
+    assignments = list_speaker_assignments(recording_id, settings=settings)
+    assignment_by_speaker = {
+        str(row.get("diar_speaker_label") or ""): row
+        for row in assignments
+    }
+    voice_profiles = list_voice_profiles(settings=settings)
+
+    speaker_rows: list[dict[str, Any]] = []
+    recording_token = quote(recording_id, safe="")
+    for speaker in sorted(per_speaker):
+        row = per_speaker[speaker]
+        snippets = _speaker_snippet_files(recording_id, speaker, settings=settings)
+        speaker_token = quote(_speaker_slug(speaker), safe="")
+        snippet_urls = [
+            (
+                f"/ui/recordings/{recording_token}/snippets/"
+                f"{speaker_token}/{quote(path.name, safe='')}"
+            )
+            for path in snippets
+        ]
+        assignment = assignment_by_speaker.get(speaker, {})
+        profile_id_raw = assignment.get("voice_profile_id")
+        try:
+            profile_id = int(profile_id_raw) if profile_id_raw is not None else None
+        except (TypeError, ValueError):
+            profile_id = None
+        try:
+            confidence = float(assignment.get("confidence"))
+        except (TypeError, ValueError):
+            confidence = 0.0
+        speaker_rows.append(
+            {
+                "speaker": speaker,
+                "turn_count": int(row["turn_count"]),
+                "duration_sec": round(float(row["duration_sec"]), 3),
+                "preview_text": str(row["preview_text"]),
+                "snippet_urls": snippet_urls,
+                "voice_profile_id": profile_id,
+                "voice_profile_name": str(assignment.get("voice_profile_name") or ""),
+                "confidence": max(0.0, min(confidence, 1.0)),
+            }
+        )
+
+    return {
+        "speaker_rows": speaker_rows,
+        "voice_profiles": voice_profiles,
+    }
+
+
 def _sync_transcript_language_settings(
     recording_id: str,
     *,
@@ -756,6 +907,7 @@ async def ui_recording_detail(
     language: dict[str, Any] | None = None
     summary: dict[str, Any] | None = None
     metrics: dict[str, Any] | None = None
+    speakers: dict[str, Any] | None = None
     if current_tab == "calendar":
         try:
             calendar = await run_in_threadpool(
@@ -772,6 +924,8 @@ async def ui_recording_detail(
             calendar["fetch_error"] = str(exc)
     if current_tab == "language":
         language = _language_tab_context(recording_id, rec, _settings)
+    if current_tab == "speakers":
+        speakers = _speakers_tab_context(recording_id, _settings)
     if current_tab in {"overview", "metrics"}:
         summary = _summary_context(recording_id, _settings)
     if current_tab == "metrics":
@@ -790,8 +944,142 @@ async def ui_recording_detail(
             "language": language,
             "summary": summary,
             "metrics": metrics,
+            "speakers": speakers,
         },
     )
+
+
+# ---------------------------------------------------------------------------
+# Recording speaker assignment + snippet audio
+# ---------------------------------------------------------------------------
+
+
+@ui_router.get("/ui/recordings/{recording_id}/snippets/{speaker_slug}/{filename}")
+async def ui_recording_snippet_audio(
+    recording_id: str,
+    speaker_slug: str,
+    filename: str,
+) -> Any:
+    if get_recording(recording_id, settings=_settings) is None:
+        return HTMLResponse("Not found", status_code=404)
+    snippets_root = _settings.recordings_root / recording_id / "derived" / "snippets"
+    safe_file = _safe_audio_path(
+        snippets_root / speaker_slug / filename,
+        root=snippets_root,
+    )
+    if safe_file is None or not safe_file.exists() or not safe_file.is_file():
+        return HTMLResponse("Snippet not found", status_code=404)
+    return FileResponse(path=str(safe_file), media_type="audio/wav", filename=safe_file.name)
+
+
+@ui_router.post("/ui/recordings/{recording_id}/speakers/assign")
+async def ui_assign_speaker(
+    recording_id: str,
+    diar_speaker_label: str = Form(...),
+    voice_profile_id: str = Form(default=""),
+) -> Any:
+    if get_recording(recording_id, settings=_settings) is None:
+        return HTMLResponse("Not found", status_code=404)
+    diar_label = diar_speaker_label.strip()
+    if not diar_label:
+        return HTMLResponse("diar_speaker_label is required", status_code=422)
+
+    profile_token = voice_profile_id.strip()
+    profile_id: int | None = None
+    if profile_token:
+        try:
+            profile_id = int(profile_token)
+        except ValueError:
+            return HTMLResponse("voice_profile_id must be an integer", status_code=422)
+    try:
+        set_speaker_assignment(
+            recording_id=recording_id,
+            diar_speaker_label=diar_label,
+            voice_profile_id=profile_id,
+            confidence=1.0,
+            settings=_settings,
+        )
+    except sqlite3.IntegrityError:
+        return HTMLResponse("Voice profile not found", status_code=404)
+    except ValueError as exc:
+        return HTMLResponse(str(exc), status_code=422)
+    return RedirectResponse(f"/recordings/{recording_id}?tab=speakers", status_code=303)
+
+
+@ui_router.post("/ui/recordings/{recording_id}/speakers/create-and-assign")
+async def ui_create_and_assign_speaker(
+    recording_id: str,
+    diar_speaker_label: str = Form(...),
+    display_name: str = Form(...),
+    notes: str = Form(default=""),
+) -> Any:
+    if get_recording(recording_id, settings=_settings) is None:
+        return HTMLResponse("Not found", status_code=404)
+    diar_label = diar_speaker_label.strip()
+    if not diar_label:
+        return HTMLResponse("diar_speaker_label is required", status_code=422)
+    clean_name = display_name.strip()
+    if not clean_name:
+        return HTMLResponse("display_name is required", status_code=422)
+
+    profile = create_voice_profile(clean_name, notes.strip() or None, settings=_settings)
+    try:
+        profile_id = int(profile.get("id"))
+    except (TypeError, ValueError):
+        return HTMLResponse("Voice profile create failed", status_code=503)
+    set_speaker_assignment(
+        recording_id=recording_id,
+        diar_speaker_label=diar_label,
+        voice_profile_id=profile_id,
+        confidence=1.0,
+        settings=_settings,
+    )
+    return RedirectResponse(f"/recordings/{recording_id}?tab=speakers", status_code=303)
+
+
+@ui_router.post("/ui/recordings/{recording_id}/speakers/add-sample")
+async def ui_add_speaker_sample(
+    recording_id: str,
+    diar_speaker_label: str = Form(...),
+    voice_profile_id: str = Form(default=""),
+) -> Any:
+    if get_recording(recording_id, settings=_settings) is None:
+        return HTMLResponse("Not found", status_code=404)
+    diar_label = diar_speaker_label.strip()
+    if not diar_label:
+        return HTMLResponse("diar_speaker_label is required", status_code=422)
+    profile_token = voice_profile_id.strip()
+    if not profile_token:
+        return HTMLResponse("voice_profile_id is required", status_code=422)
+    try:
+        profile_id = int(profile_token)
+    except ValueError:
+        return HTMLResponse("voice_profile_id must be an integer", status_code=422)
+
+    snippet_files = _speaker_snippet_files(
+        recording_id,
+        diar_label,
+        settings=_settings,
+    )
+    if not snippet_files:
+        return HTMLResponse("No snippets available for this speaker", status_code=422)
+
+    rel_path = _as_data_relative_path(snippet_files[0], settings=_settings)
+    if rel_path is None:
+        return HTMLResponse("Snippet path is outside runtime data root", status_code=422)
+    try:
+        create_voice_sample(
+            voice_profile_id=profile_id,
+            snippet_path=rel_path,
+            recording_id=recording_id,
+            diar_speaker_label=diar_label,
+            settings=_settings,
+        )
+    except sqlite3.IntegrityError:
+        return HTMLResponse("Voice profile not found", status_code=404)
+    except ValueError as exc:
+        return HTMLResponse(str(exc), status_code=422)
+    return RedirectResponse(f"/recordings/{recording_id}?tab=speakers", status_code=303)
 
 
 # ---------------------------------------------------------------------------
@@ -839,12 +1127,30 @@ async def ui_delete_project(project_id: int) -> Any:
 @ui_router.get("/voices", response_class=HTMLResponse)
 async def ui_voices(request: Request) -> Any:
     items = list_voice_profiles(settings=_settings)
+    samples = list_voice_samples(settings=_settings)
+    for sample in samples:
+        sample_id = sample.get("id")
+        sample["audio_url"] = f"/ui/voice-samples/{sample_id}/audio"
+    samples_by_profile: dict[int, list[dict[str, Any]]] = {}
+    for sample in samples:
+        try:
+            profile_id = int(sample.get("voice_profile_id"))
+        except (TypeError, ValueError):
+            continue
+        samples_by_profile.setdefault(profile_id, []).append(sample)
+    for item in items:
+        try:
+            profile_id = int(item.get("id"))
+        except (TypeError, ValueError):
+            continue
+        item["sample_count"] = len(samples_by_profile.get(profile_id, []))
     return templates.TemplateResponse(
         request,
         "voices.html",
         {
             "active": "voices",
             "items": items,
+            "samples": samples,
         },
     )
 
@@ -864,6 +1170,23 @@ async def ui_create_voice(
 async def ui_delete_voice(profile_id: int) -> Any:
     delete_voice_profile(profile_id, settings=_settings)
     return RedirectResponse("/voices", status_code=303)
+
+
+@ui_router.get("/ui/voice-samples/{sample_id}/audio")
+async def ui_voice_sample_audio(sample_id: int) -> Any:
+    sample = get_voice_sample(sample_id, settings=_settings)
+    if sample is None:
+        return HTMLResponse("Voice sample not found", status_code=404)
+    snippet_raw = str(sample.get("snippet_path") or "").strip()
+    if not snippet_raw:
+        return HTMLResponse("Voice sample has no snippet path", status_code=404)
+    source_path = Path(snippet_raw)
+    if not source_path.is_absolute():
+        source_path = _settings.data_root / source_path
+    safe_path = _safe_audio_path(source_path, root=_settings.data_root)
+    if safe_path is None or not safe_path.exists() or not safe_path.is_file():
+        return HTMLResponse("Snippet not found", status_code=404)
+    return FileResponse(path=str(safe_path), media_type="audio/wav", filename=safe_path.name)
 
 
 # ---------------------------------------------------------------------------
