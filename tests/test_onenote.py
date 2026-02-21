@@ -273,6 +273,30 @@ def test_recording_overview_publish_controls(tmp_path: Path, monkeypatch):
     assert "Open OneNote page" in after.text
 
 
+def test_recording_overview_does_not_link_graph_api_when_page_url_missing(
+    tmp_path: Path, monkeypatch
+):
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    init_db(cfg)
+    create_recording(
+        "rec-ui-publish-no-url-1",
+        source="drive",
+        source_filename="ui-publish-no-url.mp3",
+        status=RECORDING_STATUS_PUBLISHED,
+        onenote_page_id="page-id-only",
+        settings=cfg,
+    )
+
+    client = TestClient(api.app, follow_redirects=True)
+    page = client.get("/recordings/rec-ui-publish-no-url-1?tab=overview")
+    assert page.status_code == 200
+    assert "https://graph.microsoft.com/v1.0/me/onenote/pages/" not in page.text
+    assert "Open OneNote page" not in page.text
+    assert "page-id-only" in page.text
+
+
 def test_ui_publish_action_redirects_on_success(tmp_path: Path, monkeypatch):
     cfg = _cfg(tmp_path)
     monkeypatch.setattr(api, "_settings", cfg)

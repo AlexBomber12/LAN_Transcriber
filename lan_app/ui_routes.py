@@ -522,12 +522,7 @@ def _as_data_relative_path(path: Path, *, settings: AppSettings) -> str | None:
 
 def _recording_onenote_page_url(recording: dict[str, Any]) -> str | None:
     explicit = str(recording.get("onenote_page_url") or "").strip()
-    if explicit:
-        return explicit
-    page_id = str(recording.get("onenote_page_id") or "").strip()
-    if not page_id:
-        return None
-    return f"https://graph.microsoft.com/v1.0/me/onenote/pages/{quote(page_id, safe='')}"
+    return explicit or None
 
 
 def _speakers_tab_context(recording_id: str, settings: AppSettings) -> dict[str, Any]:
