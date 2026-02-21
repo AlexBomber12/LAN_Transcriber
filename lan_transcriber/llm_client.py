@@ -27,7 +27,16 @@ def _timeout_seconds(value: str | None, *, default: float) -> float:
 
 
 def _is_retryable_exception(exc: BaseException) -> bool:
-    if isinstance(exc, (httpx.ConnectError, httpx.ReadError, httpx.RemoteProtocolError)):
+    if isinstance(
+        exc,
+        (
+            httpx.ConnectError,
+            httpx.ReadError,
+            httpx.RemoteProtocolError,
+            httpx.TimeoutException,
+            TimeoutError,
+        ),
+    ):
         return True
     if isinstance(exc, httpx.HTTPStatusError):
         status = exc.response.status_code

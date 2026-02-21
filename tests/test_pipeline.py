@@ -561,6 +561,18 @@ def test_build_structured_summary_prompts_preserves_long_turn_text():
     assert reconstructed == expected
 
 
+def test_build_structured_summary_prompts_keeps_turns_beyond_legacy_cap():
+    speaker_turns = [
+        {"start": float(i), "end": float(i) + 0.5, "speaker": "S1", "text": f"turn {i}"}
+        for i in range(350)
+    ]
+    _system_prompt, user_prompt = pipeline.build_structured_summary_prompts(speaker_turns, "en")
+    payload = json.loads(user_prompt)
+    turns = payload["speaker_turns"]
+    assert len(turns) == len(speaker_turns)
+    assert turns[-1]["text"] == "turn 349"
+
+
 @pytest.mark.asyncio
 async def test_pipeline_writes_structured_summary_payload(tmp_path: Path, mocker):
     mocker.patch(

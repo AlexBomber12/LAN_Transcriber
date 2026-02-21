@@ -432,7 +432,7 @@ def _chunk_text_for_prompt(text: str, *, max_chars: int = 500) -> list[str]:
 def _normalise_prompt_speaker_turns(
     speaker_turns: Sequence[dict[str, Any]],
     *,
-    max_turns: int = 300,
+    max_turns: int | None = None,
 ) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for row in speaker_turns:
@@ -441,7 +441,7 @@ def _normalise_prompt_speaker_turns(
         speaker = str(row.get("speaker") or "S1")
         lang = _normalise_language_code(row.get("language"))
         for chunk in _chunk_text_for_prompt(str(row.get("text") or "").strip()):
-            if len(out) >= max_turns:
+            if max_turns is not None and max_turns >= 0 and len(out) >= max_turns:
                 return out
             payload: dict[str, Any] = {
                 "start": start,

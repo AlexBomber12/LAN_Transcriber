@@ -10,6 +10,11 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from lan_transcriber import llm_client
 
 
+def test_retry_predicate_includes_timeout_exceptions():
+    assert llm_client._is_retryable_exception(httpx.ReadTimeout("read timeout"))
+    assert llm_client._is_retryable_exception(TimeoutError())
+
+
 @respx.mock
 def test_generate():
     route = respx.post("http://llm:8000/v1/chat/completions").mock(

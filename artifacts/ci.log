@@ -134,8 +134,8 @@ Requirement already satisfied: six>=1.5 in ./.venv-ci/lib/python3.12/site-packag
 Building wheels for collected packages: lan-transcriber
   Building editable for lan-transcriber (pyproject.toml): started
   Building editable for lan-transcriber (pyproject.toml): finished with status 'done'
-  Created wheel for lan-transcriber: filename=lan_transcriber-0.1.0-0.editable-py3-none-any.whl size=15395 sha256=90122235137b0fdda5659787f0c94330644edde9c248a024f6e8a0a9cc72b661
-  Stored in directory: /tmp/pip-ephem-wheel-cache-o0qgddmz/wheels/d5/8a/5c/f7178f7e49aa5ae12b2320ec66b5c310f4f2f63d1bd301b7fb
+  Created wheel for lan-transcriber: filename=lan_transcriber-0.1.0-0.editable-py3-none-any.whl size=15395 sha256=103cc63cfe4bc4dddbd92776b557877f8fe7237677582557392b66b0dae1ef60
+  Stored in directory: /tmp/pip-ephem-wheel-cache-qav3glzy/wheels/d5/8a/5c/f7178f7e49aa5ae12b2320ec66b5c310f4f2f63d1bd301b7fb
 Successfully built lan-transcriber
 Installing collected packages: lan-transcriber
   Attempting uninstall: lan-transcriber
@@ -145,8 +145,8 @@ Installing collected packages: lan-transcriber
 Successfully installed lan-transcriber-0.1.0
 All checks passed!
 ........................................................................ [ 42%]
-........................................................................ [ 85%]
-........................                                                 [100%]
+........................................................................ [ 84%]
+..........................                                               [100%]
 =============================== warnings summary ===============================
 lan_transcriber/pipeline.py:4
   /home/alexey/LAN_Transcriber/lan_transcriber/pipeline.py:4: DeprecationWarning: 'audioop' is deprecated and slated for removal in Python 3.13
@@ -187,12 +187,12 @@ Name                               Stmts   Miss  Cover
 lan_transcriber/__init__.py            8      0   100%
 lan_transcriber/aliases.py            17      0   100%
 lan_transcriber/artifacts.py          66      4    94%
-lan_transcriber/llm_client.py        100     20    80%
+lan_transcriber/llm_client.py        100     21    79%
 lan_transcriber/metrics.py            12      0   100%
 lan_transcriber/models.py             22      1    95%
 lan_transcriber/normalizer.py         25      0   100%
 lan_transcriber/runtime_paths.py      21      1    95%
 ------------------------------------------------------
-TOTAL                                271     26    90%
-Required test coverage of 90% reached. Total coverage: 90.41%
-168 passed, 1 skipped, 5 warnings in 13.52s
+TOTAL                                271     27    90%
+Required test coverage of 90% reached. Total coverage: 90.04%
+170 passed, 1 skipped, 5 warnings in 15.99s
