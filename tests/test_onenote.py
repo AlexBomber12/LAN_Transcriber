@@ -314,11 +314,13 @@ def test_recording_overview_publish_controls(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(api, "_settings", cfg)
     monkeypatch.setattr(ui_routes, "_settings", cfg)
     init_db(cfg)
+    project = create_project("UI Publish", settings=cfg)
     create_recording(
         "rec-ui-publish-1",
         source="drive",
         source_filename="ui-publish.mp3",
         status=RECORDING_STATUS_READY,
+        project_id=project["id"],
         settings=cfg,
     )
 
@@ -336,6 +338,28 @@ def test_recording_overview_publish_controls(tmp_path: Path, monkeypatch):
     after = client.get("/recordings/rec-ui-publish-1?tab=overview")
     assert after.status_code == 200
     assert "Open OneNote page" in after.text
+
+
+def test_recording_overview_hides_publish_without_project_assignment(
+    tmp_path: Path, monkeypatch
+):
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    init_db(cfg)
+    create_recording(
+        "rec-ui-no-project-1",
+        source="drive",
+        source_filename="ui-no-project.mp3",
+        status=RECORDING_STATUS_READY,
+        settings=cfg,
+    )
+
+    client = TestClient(api.app, follow_redirects=True)
+    page = client.get("/recordings/rec-ui-no-project-1?tab=overview")
+    assert page.status_code == 200
+    assert "Publish to OneNote" not in page.text
+    assert "Assign this recording to a project before publishing to OneNote." in page.text
 
 
 def test_recording_overview_does_not_link_graph_api_when_page_url_missing(

@@ -63,10 +63,12 @@
       {% endif %}
     </p>
     {% endif %}
-    {% if rec.status in ['Ready', 'NeedsReview'] %}
+    {% if rec.status in ['Ready', 'NeedsReview'] and rec.project_id %}
     <form method="post" action="/ui/recordings/{{ rec.id }}/publish">
       <button type="submit" class="btn">Publish to OneNote</button>
     </form>
+    {% elif rec.status in ['Ready', 'NeedsReview'] %}
+    <p class="placeholder">Assign this recording to a project before publishing to OneNote.</p>
     {% else %}
     <p class="placeholder">Publish is available only for Ready or NeedsReview recordings.</p>
     {% endif %}

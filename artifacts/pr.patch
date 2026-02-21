@@ -1,113 +1,65 @@
-diff --git a/lan_app/onenote.py b/lan_app/onenote.py
-index d8ec4dc..e33566e 100644
---- a/lan_app/onenote.py
-+++ b/lan_app/onenote.py
-@@ -277,7 +277,7 @@ def _load_metrics_context(recording_id: str, settings: AppSettings) -> dict[str,
-             for key, value in meeting_raw.items():
-                 meeting_payload.setdefault(key, value)
-         participants_raw = fallback.get("participants")
--        if isinstance(participants_raw, list):
-+        if not participants_payload and isinstance(participants_raw, list):
-             for row in participants_raw:
-                 if not isinstance(row, dict):
-                     continue
-@@ -648,15 +648,19 @@ def _extract_page_url(payload: dict[str, Any]) -> str | None:
-             href = str(web.get("href") or "").strip()
-             if href:
-                 return href
-+        elif isinstance(web, str):
-+            href = web.strip()
-+            if href:
-+                return href
-     one_note_web_url = payload.get("oneNoteWebUrl")
-     if isinstance(one_note_web_url, dict):
-         href = str(one_note_web_url.get("href") or "").strip()
-         if href:
-             return href
--    for key in ("contentUrl", "webUrl", "location", "content_location"):
--        candidate = str(payload.get(key) or "").strip()
--        if candidate:
--            return candidate
-+    elif isinstance(one_note_web_url, str):
-+        href = one_note_web_url.strip()
-+        if href:
-+            return href
-     return None
- 
- 
+diff --git a/lan_app/templates/recording_detail.html b/lan_app/templates/recording_detail.html
+index 91b9eb3..be788ad 100644
+--- a/lan_app/templates/recording_detail.html
++++ b/lan_app/templates/recording_detail.html
+@@ -63,10 +63,12 @@
+       {% endif %}
+     </p>
+     {% endif %}
+-    {% if rec.status in ['Ready', 'NeedsReview'] %}
++    {% if rec.status in ['Ready', 'NeedsReview'] and rec.project_id %}
+     <form method="post" action="/ui/recordings/{{ rec.id }}/publish">
+       <button type="submit" class="btn">Publish to OneNote</button>
+     </form>
++    {% elif rec.status in ['Ready', 'NeedsReview'] %}
++    <p class="placeholder">Assign this recording to a project before publishing to OneNote.</p>
+     {% else %}
+     <p class="placeholder">Publish is available only for Ready or NeedsReview recordings.</p>
+     {% endif %}
 diff --git a/tests/test_onenote.py b/tests/test_onenote.py
-index f80408d..3062895 100644
+index 3062895..acd7f1c 100644
 --- a/tests/test_onenote.py
 +++ b/tests/test_onenote.py
-@@ -131,6 +131,71 @@ def test_publish_recording_to_onenote_success(tmp_path: Path, monkeypatch):
-     assert rec["onenote_page_url"] == "https://onenote.local/page-xyz"
+@@ -314,11 +314,13 @@ def test_recording_overview_publish_controls(tmp_path: Path, monkeypatch):
+     monkeypatch.setattr(api, "_settings", cfg)
+     monkeypatch.setattr(ui_routes, "_settings", cfg)
+     init_db(cfg)
++    project = create_project("UI Publish", settings=cfg)
+     create_recording(
+         "rec-ui-publish-1",
+         source="drive",
+         source_filename="ui-publish.mp3",
+         status=RECORDING_STATUS_READY,
++        project_id=project["id"],
+         settings=cfg,
+     )
+ 
+@@ -338,6 +340,28 @@ def test_recording_overview_publish_controls(tmp_path: Path, monkeypatch):
+     assert "Open OneNote page" in after.text
  
  
-+def test_extract_page_url_ignores_graph_resource_links():
-+    payload = {
-+        "location": "https://graph.microsoft.com/v1.0/me/onenote/pages/page-123",
-+        "content_location": "https://graph.microsoft.com/v1.0/me/onenote/pages/page-123/content",
-+        "webUrl": "https://graph.microsoft.com/v1.0/me/onenote/pages/page-123",
-+        "contentUrl": "https://graph.microsoft.com/v1.0/me/onenote/pages/page-123/content",
-+    }
-+    assert onenote._extract_page_url(payload) is None
-+
-+
-+def test_load_metrics_context_does_not_duplicate_fallback_participants(
++def test_recording_overview_hides_publish_without_project_assignment(
 +    tmp_path: Path, monkeypatch
 +):
 +    cfg = _cfg(tmp_path)
-+    recording_id = "rec-metrics-no-dup-1"
-+    derived = cfg.recordings_root / recording_id / "derived"
-+    derived.mkdir(parents=True, exist_ok=True)
-+    (derived / "metrics.json").write_text(
-+        json.dumps(
-+            {
-+                "meeting": {"total_questions": 3},
-+                "participants": [
-+                    {
-+                        "speaker": "Speaker From Artifact",
-+                        "airtime_seconds": 20,
-+                        "airtime_share": 0.2,
-+                        "turns": 2,
-+                        "interruptions_done": 0,
-+                        "interruptions_received": 0,
-+                        "questions_count": 1,
-+                        "role_hint": "observer",
-+                    }
-+                ],
-+            }
-+        ),
-+        encoding="utf-8",
++    monkeypatch.setattr(api, "_settings", cfg)
++    monkeypatch.setattr(ui_routes, "_settings", cfg)
++    init_db(cfg)
++    create_recording(
++        "rec-ui-no-project-1",
++        source="drive",
++        source_filename="ui-no-project.mp3",
++        status=RECORDING_STATUS_READY,
++        settings=cfg,
 +    )
 +
-+    monkeypatch.setattr(onenote, "get_meeting_metrics", lambda *_args, **_kwargs: {})
-+    monkeypatch.setattr(
-+        onenote,
-+        "list_participant_metrics",
-+        lambda *_args, **_kwargs: [
-+            {
-+                "diar_speaker_label": "Speaker From DB",
-+                "json": {
-+                    "speaker": "Speaker From DB",
-+                    "airtime_seconds": 120,
-+                    "airtime_share": 0.8,
-+                    "turns": 8,
-+                    "interruptions_done": 1,
-+                    "interruptions_received": 0,
-+                    "questions_count": 2,
-+                    "role_hint": "host",
-+                },
-+            }
-+        ],
-+    )
-+
-+    metrics = onenote._load_metrics_context(recording_id, settings=cfg)
-+    speakers = [row["speaker"] for row in metrics["participants"]]
-+    assert speakers == ["Speaker From DB"]
-+    assert metrics["meeting"]["total_questions"] == 3
++    client = TestClient(api.app, follow_redirects=True)
++    page = client.get("/recordings/rec-ui-no-project-1?tab=overview")
++    assert page.status_code == 200
++    assert "Publish to OneNote" not in page.text
++    assert "Assign this recording to a project before publishing to OneNote." in page.text
 +
 +
- def test_publish_recording_to_onenote_requires_ready_or_needs_review(tmp_path: Path):
-     cfg = _cfg(tmp_path)
-     init_db(cfg)
+ def test_recording_overview_does_not_link_graph_api_when_page_url_missing(
+     tmp_path: Path, monkeypatch
+ ):
