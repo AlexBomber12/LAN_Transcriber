@@ -47,7 +47,7 @@ from .ms_graph import GraphAuthError, ms_connection_state
 from lan_transcriber.artifacts import atomic_write_json
 from lan_transcriber.llm_client import LLMClient
 from lan_transcriber.pipeline import Settings as PipelineSettings
-from lan_transcriber.pipeline import build_summary_prompts
+from lan_transcriber.pipeline import build_structured_summary_prompts, build_summary_payload
 
 _TEMPLATES_DIR = Path(__file__).parent / "templates"
 _STATIC_DIR = Path(__file__).parent / "static"
@@ -137,6 +137,202 @@ def _load_json_dict(path: Path) -> dict[str, Any]:
     if not isinstance(payload, dict):
         return {}
     return payload
+
+
+def _load_json_list(path: Path) -> list[Any]:
+    if not path.exists():
+        return []
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    if not isinstance(payload, list):
+        return []
+    return payload
+
+
+def _normalise_text_items(value: Any, *, max_items: int) -> list[str]:
+    if isinstance(value, list):
+        rows = value
+    elif isinstance(value, str):
+        rows = [line.strip() for line in value.splitlines() if line.strip()]
+    else:
+        return []
+
+    out: list[str] = []
+    for row in rows:
+        if len(out) >= max_items:
+            break
+        text = str(row).strip()
+        if not text:
+            continue
+        if text.startswith("- "):
+            text = text[2:].strip()
+        if text:
+            out.append(text)
+    return out
+
+
+def _summary_context(recording_id: str, settings: AppSettings) -> dict[str, Any]:
+    _transcript_path, summary_path = _recording_derived_paths(recording_id, settings)
+    payload = _load_json_dict(summary_path)
+    summary_text = str(payload.get("summary") or "").strip()
+    summary_bullets = _normalise_text_items(payload.get("summary_bullets"), max_items=12)
+    if not summary_bullets:
+        summary_bullets = _normalise_text_items(summary_text, max_items=12)
+
+    decisions = _normalise_text_items(payload.get("decisions"), max_items=20)
+    raw_action_items = payload.get("action_items")
+    action_items: list[dict[str, Any]] = []
+    if isinstance(raw_action_items, list):
+        for row in raw_action_items[:30]:
+            if not isinstance(row, dict):
+                continue
+            task = str(row.get("task") or "").strip()
+            if not task:
+                continue
+            owner = str(row.get("owner") or "").strip()
+            deadline = str(row.get("deadline") or "").strip()
+            try:
+                confidence = float(row.get("confidence"))
+            except (TypeError, ValueError):
+                confidence = 0.5
+            action_items.append(
+                {
+                    "task": task,
+                    "owner": owner or None,
+                    "deadline": deadline or None,
+                    "confidence": max(0.0, min(confidence, 1.0)),
+                }
+            )
+
+    question_types = {
+        "open": 0,
+        "yes_no": 0,
+        "clarification": 0,
+        "status": 0,
+        "decision_seeking": 0,
+    }
+    questions_total = 0
+    extracted_questions: list[str] = []
+    questions_payload = payload.get("questions")
+    if isinstance(questions_payload, dict):
+        types_payload = questions_payload.get("types")
+        if isinstance(types_payload, dict):
+            for key in question_types:
+                try:
+                    question_types[key] = max(0, int(types_payload.get(key, 0)))
+                except (TypeError, ValueError):
+                    question_types[key] = 0
+        try:
+            questions_total = max(0, int(questions_payload.get("total_count", 0)))
+        except (TypeError, ValueError):
+            questions_total = 0
+        extracted_questions = _normalise_text_items(
+            questions_payload.get("extracted"),
+            max_items=20,
+        )
+    if questions_total == 0:
+        questions_total = max(sum(question_types.values()), len(extracted_questions))
+
+    topic = str(payload.get("topic") or "").strip()
+    emotional_summary = str(payload.get("emotional_summary") or "").strip()
+    return {
+        "topic": topic or "—",
+        "summary_bullets": summary_bullets,
+        "summary_text": summary_text,
+        "decisions": decisions,
+        "action_items": action_items,
+        "emotional_summary": emotional_summary or "—",
+        "questions": {
+            "total_count": questions_total,
+            "types": question_types,
+            "extracted": extracted_questions,
+        },
+    }
+
+
+def _chunk_text_for_turns(text: str, *, chunk_size: int = 450) -> list[str]:
+    normalized = " ".join(text.split())
+    if not normalized:
+        return []
+    if len(normalized) <= chunk_size:
+        return [normalized]
+
+    chunks: list[str] = []
+    words = normalized.split(" ")
+    current: list[str] = []
+    current_len = 0
+    for word in words:
+        word_len = len(word)
+        sep = 1 if current else 0
+        if current and current_len + sep + word_len > chunk_size:
+            chunks.append(" ".join(current))
+            current = [word]
+            current_len = word_len
+            continue
+        if not current and word_len > chunk_size:
+            start = 0
+            while start < word_len:
+                end = min(start + chunk_size, word_len)
+                chunks.append(word[start:end])
+                start = end
+            current = []
+            current_len = 0
+            continue
+        if sep:
+            current_len += 1
+        current.append(word)
+        current_len += word_len
+
+    if current:
+        chunks.append(" ".join(current))
+    return chunks
+
+
+def _fallback_speaker_turns_from_transcript(transcript_payload: dict[str, Any]) -> list[dict[str, Any]]:
+    segments_payload = transcript_payload.get("segments")
+    if isinstance(segments_payload, list):
+        segment_turns: list[dict[str, Any]] = []
+        for row in segments_payload:
+            if not isinstance(row, dict):
+                continue
+            text = str(row.get("text") or "").strip()
+            if not text:
+                continue
+            try:
+                start = float(row.get("start") or 0.0)
+            except (TypeError, ValueError):
+                start = 0.0
+            try:
+                end = float(row.get("end") or row.get("start") or start)
+            except (TypeError, ValueError):
+                end = start
+            segment_turns.append(
+                {
+                    "start": start,
+                    "end": max(end, start),
+                    "speaker": "S1",
+                    "text": text,
+                    "language": row.get("language"),
+                }
+            )
+        if segment_turns:
+            return segment_turns
+
+    transcript_text = str(transcript_payload.get("text") or "").strip()
+    chunks = _chunk_text_for_turns(transcript_text)
+    turns: list[dict[str, Any]] = []
+    for idx, chunk in enumerate(chunks):
+        turns.append(
+            {
+                "start": float(idx),
+                "end": float(idx + 1),
+                "speaker": "S1",
+                "text": chunk,
+            }
+        )
+    return turns
 
 
 def _recording_derived_paths(recording_id: str, settings: AppSettings) -> tuple[Path, Path]:
@@ -285,6 +481,7 @@ def _resummarize_recording(
     target_summary_language: str | None,
 ) -> None:
     transcript_path, summary_path = _recording_derived_paths(recording_id, settings)
+    speaker_turns_path = transcript_path.parent / "speaker_turns.json"
     transcript_payload = _load_json_dict(transcript_path)
     if not transcript_payload:
         raise ValueError("No transcript.json found for this recording")
@@ -308,31 +505,51 @@ def _resummarize_recording(
         unknown_dir=settings.recordings_root / "unknown",
         tmp_root=settings.data_root / "tmp",
     )
-    system_prompt, user_prompt = build_summary_prompts(
-        transcript_text,
+    speaker_turns_raw = _load_json_list(speaker_turns_path)
+    speaker_turns = [row for row in speaker_turns_raw if isinstance(row, dict)]
+    if not speaker_turns:
+        speaker_turns = _fallback_speaker_turns_from_transcript(transcript_payload)
+    if not speaker_turns:
+        speaker_turns = [{"start": 0.0, "end": 0.0, "speaker": "S1", "text": transcript_text}]
+
+    calendar_title = str(transcript_payload.get("calendar_title") or "").strip() or None
+    attendees_payload = transcript_payload.get("calendar_attendees")
+    calendar_attendees: list[str] = []
+    if isinstance(attendees_payload, list):
+        calendar_attendees = [
+            str(attendee).strip()
+            for attendee in attendees_payload
+            if str(attendee).strip()
+        ]
+
+    system_prompt, user_prompt = build_structured_summary_prompts(
+        speaker_turns,
         resolved_target,
+        calendar_title=calendar_title,
+        calendar_attendees=calendar_attendees,
     )
     message = asyncio.run(
         LLMClient().generate(
             system_prompt=system_prompt,
             user_prompt=user_prompt,
             model=pipeline_settings.llm_model,
+            response_format={"type": "json_object"},
         )
     )
-    summary_text = message.get("content", "") if isinstance(message, dict) else str(message)
+    raw_summary = message.get("content", "") if isinstance(message, dict) else str(message)
 
     summary_payload = _load_json_dict(summary_path)
     friendly = summary_payload.get("friendly")
     if not isinstance(friendly, int):
         friendly = 0
-    summary_payload.update(
-        {
-            "friendly": friendly,
-            "model": pipeline_settings.llm_model,
-            "summary": summary_text,
-            "target_summary_language": resolved_target,
-        }
+    structured_payload = build_summary_payload(
+        raw_llm_content=raw_summary,
+        model=pipeline_settings.llm_model,
+        target_summary_language=resolved_target,
+        friendly=friendly,
+        default_topic=calendar_title or "Meeting summary",
     )
+    summary_payload.update(structured_payload)
     atomic_write_json(summary_path, summary_payload)
 
     transcript_payload["target_summary_language"] = resolved_target
@@ -429,6 +646,7 @@ async def ui_recording_detail(
     current_tab = tab if tab in tabs else "overview"
     calendar: dict[str, Any] | None = None
     language: dict[str, Any] | None = None
+    summary: dict[str, Any] | None = None
     if current_tab == "calendar":
         try:
             calendar = await run_in_threadpool(
@@ -445,6 +663,8 @@ async def ui_recording_detail(
             calendar["fetch_error"] = str(exc)
     if current_tab == "language":
         language = _language_tab_context(recording_id, rec, _settings)
+    if current_tab in {"overview", "metrics"}:
+        summary = _summary_context(recording_id, _settings)
 
     return templates.TemplateResponse(
         request,
@@ -457,6 +677,7 @@ async def ui_recording_detail(
             "current_tab": current_tab,
             "calendar": calendar,
             "language": language,
+            "summary": summary,
         },
     )
 

@@ -25,6 +25,7 @@
 <div class="tab-content">
 
 {% if current_tab == 'overview' %}
+  {% set summary_data = summary or {} %}
   <div class="info-grid">
     <span class="k">ID</span><span class="v">{{ rec.id }}</span>
     <span class="k">Filename</span><span class="v">{{ rec.source_filename }}</span>
@@ -42,6 +43,25 @@
     <span class="k">Created at</span><span class="v">{{ rec.created_at[:19].replace('T',' ') if rec.created_at else '—' }}</span>
     <span class="k">Updated at</span><span class="v">{{ rec.updated_at[:19].replace('T',' ') if rec.updated_at else '—' }}</span>
   </div>
+
+  <h2>Topic</h2>
+  <p>{{ summary_data.topic or '—' }}</p>
+
+  <h2>Summary</h2>
+  {% if summary_data.summary_bullets %}
+  <ul>
+    {% for bullet in summary_data.summary_bullets %}
+    <li>{{ bullet }}</li>
+    {% endfor %}
+  </ul>
+  {% elif summary_data.summary_text %}
+  <pre style="white-space:pre-wrap;background:#f8f9ff;border:1px solid #ccd;padding:8px;font:12px/1.4 'Courier New',monospace;max-height:240px;overflow:auto">{{ summary_data.summary_text }}</pre>
+  {% else %}
+  <p class="placeholder">No summary available yet.</p>
+  {% endif %}
+
+  <h2>Emotional Summary</h2>
+  <p style="white-space:pre-wrap">{{ summary_data.emotional_summary or '—' }}</p>
 
 {% elif current_tab == 'calendar' %}
   {% set cal = calendar or {} %}
@@ -231,7 +251,64 @@
   {% endif %}
 
 {% elif current_tab == 'metrics' %}
-  <p class="placeholder">Meeting metrics — available after PR-METRICS-01.</p>
+  {% set summary_data = summary or {} %}
+  {% set questions = summary_data.questions or {} %}
+  {% set question_types = questions.types or {} %}
+
+  <h2>Decisions</h2>
+  {% if summary_data.decisions %}
+  <ul>
+    {% for decision in summary_data.decisions %}
+    <li>{{ decision }}</li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p class="placeholder">No decisions extracted.</p>
+  {% endif %}
+
+  <h2>Action Items</h2>
+  {% if summary_data.action_items %}
+  <table>
+    <thead>
+      <tr>
+        <th>Task</th>
+        <th>Owner</th>
+        <th>Deadline</th>
+        <th>Confidence</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for item in summary_data.action_items %}
+      <tr>
+        <td>{{ item.task }}</td>
+        <td>{{ item.owner or '—' }}</td>
+        <td>{{ item.deadline or '—' }}</td>
+        <td>{{ '%.2f'|format(item.confidence or 0.0) }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="placeholder">No action items extracted.</p>
+  {% endif %}
+
+  <h2>Questions</h2>
+  <div class="info-grid">
+    <span class="k">Total</span><span class="v">{{ questions.total_count or 0 }}</span>
+    <span class="k">Open</span><span class="v">{{ question_types.open or 0 }}</span>
+    <span class="k">Yes/No</span><span class="v">{{ question_types.yes_no or 0 }}</span>
+    <span class="k">Clarification</span><span class="v">{{ question_types.clarification or 0 }}</span>
+    <span class="k">Status</span><span class="v">{{ question_types.status or 0 }}</span>
+    <span class="k">Decision-seeking</span><span class="v">{{ question_types.decision_seeking or 0 }}</span>
+  </div>
+  {% if questions.extracted %}
+  <h3>Extracted Questions</h3>
+  <ul>
+    {% for question in questions.extracted %}
+    <li>{{ question }}</li>
+    {% endfor %}
+  </ul>
+  {% endif %}
 
 {% elif current_tab == 'log' %}
   {% if jobs %}

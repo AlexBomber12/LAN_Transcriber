@@ -87,6 +87,8 @@ models are cached across runs.
 | `LAN_RQ_QUEUE_NAME` | Queue name consumed by the worker |
 | `LLM_BASE_URL` | OpenAI-compatible Spark endpoint |
 | `LLM_API_KEY` | Optional API key for the LLM |
+| `LLM_MODEL` | Model name passed to the OpenAI-compatible endpoint |
+| `LLM_TIMEOUT_SECONDS` | Per-request timeout for LLM calls (default `30`) |
 | `MS_TENANT_ID` | Microsoft Entra tenant ID for delegated Device Code Flow |
 | `MS_CLIENT_ID` | Microsoft app registration client ID |
 | `MS_SCOPES` | Graph scopes (default: `offline_access User.Read Notes.ReadWrite Calendars.Read`) |

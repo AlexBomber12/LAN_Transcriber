@@ -57,7 +57,7 @@ Queue (in order)
 - Depends on: PR-PIPELINE-01
 
 10) PR-LLM-01: Spark LLM: topic, summary, decisions, actions (owner/deadline), emotional summary, question typing
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-LLM-01.md
 - Depends on: PR-PIPELINE-01 and PR-LANG-01
 
