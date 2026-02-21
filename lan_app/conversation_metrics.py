@@ -188,7 +188,10 @@ def count_interruptions(
             if receiver == interrupter or receiver in seen_receivers:
                 continue
 
+            previous_start = _safe_float(previous.get("start"), default=0.0)
             previous_end = _safe_float(previous.get("end"), default=_safe_float(previous.get("start")))
+            if turn_start <= previous_start:
+                continue
             if turn_start >= previous_end:
                 continue
 

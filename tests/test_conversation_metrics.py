@@ -55,6 +55,23 @@ def test_count_interruptions_counts_done_and_received_with_overlap_threshold():
     assert stats["received"]["S3"] == 1
 
 
+def test_count_interruptions_ignores_simultaneous_starts():
+    turns = [
+        {"start": 0.0, "end": 2.0, "speaker": "S1", "text": "start"},
+        {"start": 0.0, "end": 1.5, "speaker": "S2", "text": "same start"},
+        {"start": 1.2, "end": 2.5, "speaker": "S3", "text": "later overlap"},
+    ]
+
+    stats = count_interruptions(turns, overlap_threshold=0.3)
+
+    # S1/S2 same start should not create interruption by ordering alone.
+    assert stats["done"]["S1"] == 0
+    assert stats["done"]["S2"] == 0
+    assert stats["received"]["S1"] == 1
+    assert stats["received"]["S2"] == 1
+    assert stats["done"]["S3"] == 2
+
+
 def test_compute_actionability_ratio_uses_owner_and_deadline_presence():
     action_items = [
         {"task": "Send notes", "owner": "Alex", "deadline": "2026-02-25"},
