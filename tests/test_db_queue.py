@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 import pytest
 
 from lan_app import api
+from lan_app import worker_tasks
 from lan_app.config import AppSettings
 from lan_app.constants import (
     JOB_STATUS_FAILED,
@@ -105,6 +106,28 @@ def test_worker_noop_updates_job_and_recording_state(tmp_path: Path, monkeypatch
     step_log = cfg.recordings_root / "rec-worker-1" / "logs" / "step-precheck.log"
     assert step_log.exists()
     assert "finished job=job-worker-1" in step_log.read_text(encoding="utf-8")
+
+
+def test_load_calendar_summary_context_uses_preparsed_candidates(tmp_path: Path, monkeypatch):
+    cfg = _test_settings(tmp_path)
+    monkeypatch.setattr(
+        worker_tasks,
+        "get_calendar_match",
+        lambda *_a, **_k: {
+            "selected_event_id": "evt-1",
+            "candidates_json": [
+                {
+                    "event_id": "evt-1",
+                    "subject": "Roadmap Review",
+                    "attendees": ["Alex", " Priya ", ""],
+                }
+            ],
+        },
+    )
+
+    title, attendees = worker_tasks._load_calendar_summary_context("rec-cal-ctx-1", settings=cfg)
+    assert title == "Roadmap Review"
+    assert attendees == ["Alex", "Priya"]
 
 
 def test_recordings_and_jobs_api_actions(tmp_path: Path, monkeypatch):

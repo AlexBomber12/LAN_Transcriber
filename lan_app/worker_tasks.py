@@ -122,11 +122,18 @@ def _load_calendar_summary_context(
     selected_event_id = str(row.get("selected_event_id") or "").strip()
     if not selected_event_id:
         return None, []
-    try:
-        candidates = json.loads(str(row.get("candidates_json") or "[]"))
-    except ValueError:
-        return None, []
-    if not isinstance(candidates, list):
+    raw_candidates = row.get("candidates_json")
+    if isinstance(raw_candidates, list):
+        candidates = raw_candidates
+    elif isinstance(raw_candidates, str):
+        try:
+            parsed = json.loads(raw_candidates or "[]")
+        except ValueError:
+            return None, []
+        if not isinstance(parsed, list):
+            return None, []
+        candidates = parsed
+    else:
         return None, []
 
     selected: dict[str, Any] | None = None

@@ -1,83 +1,69 @@
-diff --git a/lan_transcriber/llm_client.py b/lan_transcriber/llm_client.py
-index f70785c..22dc1b5 100644
---- a/lan_transcriber/llm_client.py
-+++ b/lan_transcriber/llm_client.py
-@@ -27,7 +27,16 @@ def _timeout_seconds(value: str | None, *, default: float) -> float:
+diff --git a/lan_app/worker_tasks.py b/lan_app/worker_tasks.py
+index cb7b5b1..b71f567 100644
+--- a/lan_app/worker_tasks.py
++++ b/lan_app/worker_tasks.py
+@@ -122,11 +122,18 @@ def _load_calendar_summary_context(
+     selected_event_id = str(row.get("selected_event_id") or "").strip()
+     if not selected_event_id:
+         return None, []
+-    try:
+-        candidates = json.loads(str(row.get("candidates_json") or "[]"))
+-    except ValueError:
+-        return None, []
+-    if not isinstance(candidates, list):
++    raw_candidates = row.get("candidates_json")
++    if isinstance(raw_candidates, list):
++        candidates = raw_candidates
++    elif isinstance(raw_candidates, str):
++        try:
++            parsed = json.loads(raw_candidates or "[]")
++        except ValueError:
++            return None, []
++        if not isinstance(parsed, list):
++            return None, []
++        candidates = parsed
++    else:
+         return None, []
+ 
+     selected: dict[str, Any] | None = None
+diff --git a/tests/test_db_queue.py b/tests/test_db_queue.py
+index e2707e6..eab0133 100644
+--- a/tests/test_db_queue.py
++++ b/tests/test_db_queue.py
+@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
+ import pytest
+ 
+ from lan_app import api
++from lan_app import worker_tasks
+ from lan_app.config import AppSettings
+ from lan_app.constants import (
+     JOB_STATUS_FAILED,
+@@ -107,6 +108,28 @@ def test_worker_noop_updates_job_and_recording_state(tmp_path: Path, monkeypatch
+     assert "finished job=job-worker-1" in step_log.read_text(encoding="utf-8")
  
  
- def _is_retryable_exception(exc: BaseException) -> bool:
--    if isinstance(exc, (httpx.ConnectError, httpx.ReadError, httpx.RemoteProtocolError)):
-+    if isinstance(
-+        exc,
-+        (
-+            httpx.ConnectError,
-+            httpx.ReadError,
-+            httpx.RemoteProtocolError,
-+            httpx.TimeoutException,
-+            TimeoutError,
-+        ),
-+    ):
-         return True
-     if isinstance(exc, httpx.HTTPStatusError):
-         status = exc.response.status_code
-diff --git a/lan_transcriber/pipeline.py b/lan_transcriber/pipeline.py
-index 7c32e38..91e093d 100644
---- a/lan_transcriber/pipeline.py
-+++ b/lan_transcriber/pipeline.py
-@@ -432,7 +432,7 @@ def _chunk_text_for_prompt(text: str, *, max_chars: int = 500) -> list[str]:
- def _normalise_prompt_speaker_turns(
-     speaker_turns: Sequence[dict[str, Any]],
-     *,
--    max_turns: int = 300,
-+    max_turns: int | None = None,
- ) -> list[dict[str, Any]]:
-     out: list[dict[str, Any]] = []
-     for row in speaker_turns:
-@@ -441,7 +441,7 @@ def _normalise_prompt_speaker_turns(
-         speaker = str(row.get("speaker") or "S1")
-         lang = _normalise_language_code(row.get("language"))
-         for chunk in _chunk_text_for_prompt(str(row.get("text") or "").strip()):
--            if len(out) >= max_turns:
-+            if max_turns is not None and max_turns >= 0 and len(out) >= max_turns:
-                 return out
-             payload: dict[str, Any] = {
-                 "start": start,
-diff --git a/tests/test_llm_client.py b/tests/test_llm_client.py
-index ba2f48d..fd41896 100644
---- a/tests/test_llm_client.py
-+++ b/tests/test_llm_client.py
-@@ -10,6 +10,11 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
- from lan_transcriber import llm_client
- 
- 
-+def test_retry_predicate_includes_timeout_exceptions():
-+    assert llm_client._is_retryable_exception(httpx.ReadTimeout("read timeout"))
-+    assert llm_client._is_retryable_exception(TimeoutError())
++def test_load_calendar_summary_context_uses_preparsed_candidates(tmp_path: Path, monkeypatch):
++    cfg = _test_settings(tmp_path)
++    monkeypatch.setattr(
++        worker_tasks,
++        "get_calendar_match",
++        lambda *_a, **_k: {
++            "selected_event_id": "evt-1",
++            "candidates_json": [
++                {
++                    "event_id": "evt-1",
++                    "subject": "Roadmap Review",
++                    "attendees": ["Alex", " Priya ", ""],
++                }
++            ],
++        },
++    )
++
++    title, attendees = worker_tasks._load_calendar_summary_context("rec-cal-ctx-1", settings=cfg)
++    assert title == "Roadmap Review"
++    assert attendees == ["Alex", "Priya"]
 +
 +
- @respx.mock
- def test_generate():
-     route = respx.post("http://llm:8000/v1/chat/completions").mock(
-diff --git a/tests/test_pipeline.py b/tests/test_pipeline.py
-index 8a67340..5509447 100644
---- a/tests/test_pipeline.py
-+++ b/tests/test_pipeline.py
-@@ -561,6 +561,18 @@ def test_build_structured_summary_prompts_preserves_long_turn_text():
-     assert reconstructed == expected
- 
- 
-+def test_build_structured_summary_prompts_keeps_turns_beyond_legacy_cap():
-+    speaker_turns = [
-+        {"start": float(i), "end": float(i) + 0.5, "speaker": "S1", "text": f"turn {i}"}
-+        for i in range(350)
-+    ]
-+    _system_prompt, user_prompt = pipeline.build_structured_summary_prompts(speaker_turns, "en")
-+    payload = json.loads(user_prompt)
-+    turns = payload["speaker_turns"]
-+    assert len(turns) == len(speaker_turns)
-+    assert turns[-1]["text"] == "turn 349"
-+
-+
- @pytest.mark.asyncio
- async def test_pipeline_writes_structured_summary_payload(tmp_path: Path, mocker):
-     mocker.patch(
+ def test_recordings_and_jobs_api_actions(tmp_path: Path, monkeypatch):
+     cfg = _test_settings(tmp_path)
+     monkeypatch.setattr(api, "_settings", cfg)
