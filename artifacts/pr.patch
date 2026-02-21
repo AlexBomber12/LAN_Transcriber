@@ -1,1317 +1,200 @@
-diff --git a/lan_app/db.py b/lan_app/db.py
-index d0ceaa0..f53d66b 100644
---- a/lan_app/db.py
-+++ b/lan_app/db.py
-@@ -721,6 +721,122 @@ def set_calendar_match_selection(
-     return _as_dict(row) or {}
+diff --git a/lan_app/conversation_metrics.py b/lan_app/conversation_metrics.py
+index 7903f92..222704a 100644
+--- a/lan_app/conversation_metrics.py
++++ b/lan_app/conversation_metrics.py
+@@ -45,26 +45,6 @@ _TASK_CUES = (
+     "we need",
+ )
+ 
+-_QUESTION_PUNCT_LANGS = {
+-    "ar",
+-    "de",
+-    "en",
+-    "es",
+-    "fr",
+-    "hi",
+-    "it",
+-    "ja",
+-    "ko",
+-    "nl",
+-    "pl",
+-    "pt",
+-    "ru",
+-    "tr",
+-    "uk",
+-    "zh",
+-}
+-
+-
+ def _safe_float(value: Any, *, default: float = 0.0) -> float:
+     try:
+         out = float(value)
+@@ -284,9 +264,7 @@ def _normalise_question_types(value: Any) -> dict[str, int]:
+     return out
  
  
-+def get_meeting_metrics(
-+    recording_id: str,
-+    *,
-+    settings: AppSettings | None = None,
-+) -> dict[str, Any] | None:
-+    init_db(settings)
-+    with connect(settings) as conn:
-+        row = conn.execute(
-+            "SELECT * FROM meeting_metrics WHERE recording_id = ?",
-+            (recording_id,),
-+        ).fetchone()
-+    return _as_dict(row)
-+
-+
-+def upsert_meeting_metrics(
-+    *,
-+    recording_id: str,
-+    payload: dict[str, Any],
-+    settings: AppSettings | None = None,
-+) -> dict[str, Any]:
-+    init_db(settings)
-+    encoded = json.dumps(payload, ensure_ascii=True)
-+    with connect(settings) as conn:
-+        conn.execute(
-+            """
-+            INSERT INTO meeting_metrics (recording_id, json)
-+            VALUES (?, ?)
-+            ON CONFLICT(recording_id) DO UPDATE SET
-+                json = excluded.json
-+            """,
-+            (recording_id, encoded),
-+        )
-+        row = conn.execute(
-+            "SELECT * FROM meeting_metrics WHERE recording_id = ?",
-+            (recording_id,),
-+        ).fetchone()
-+        conn.commit()
-+    return _as_dict(row) or {}
-+
-+
-+def list_participant_metrics(
-+    recording_id: str,
-+    *,
-+    settings: AppSettings | None = None,
-+) -> list[dict[str, Any]]:
-+    init_db(settings)
-+    with connect(settings) as conn:
-+        rows = conn.execute(
-+            """
-+            SELECT *
-+            FROM participant_metrics
-+            WHERE recording_id = ?
-+            ORDER BY diar_speaker_label, id
-+            """,
-+            (recording_id,),
-+        ).fetchall()
-+    return [_as_dict(row) or {} for row in rows]
-+
-+
-+def replace_participant_metrics(
-+    *,
-+    recording_id: str,
-+    rows: list[dict[str, Any]],
-+    settings: AppSettings | None = None,
-+) -> list[dict[str, Any]]:
-+    init_db(settings)
-+    with connect(settings) as conn:
-+        conn.execute(
-+            "DELETE FROM participant_metrics WHERE recording_id = ?",
-+            (recording_id,),
-+        )
-+        for row in rows:
-+            diar_label = str(row.get("diar_speaker_label") or "").strip()
-+            if not diar_label:
-+                continue
-+            voice_profile_id_raw = row.get("voice_profile_id")
-+            if voice_profile_id_raw is None:
-+                voice_profile_id = None
-+            else:
-+                try:
-+                    voice_profile_id = int(voice_profile_id_raw)
-+                except (TypeError, ValueError):
-+                    voice_profile_id = None
-+            payload = row.get("payload")
-+            if not isinstance(payload, dict):
-+                payload = {}
-+            conn.execute(
-+                """
-+                INSERT INTO participant_metrics (
-+                    recording_id,
-+                    voice_profile_id,
-+                    diar_speaker_label,
-+                    json
-+                )
-+                VALUES (?, ?, ?, ?)
-+                """,
-+                (
-+                    recording_id,
-+                    voice_profile_id,
-+                    diar_label,
-+                    json.dumps(payload, ensure_ascii=True),
-+                ),
-+            )
-+        out_rows = conn.execute(
-+            """
-+            SELECT *
-+            FROM participant_metrics
-+            WHERE recording_id = ?
-+            ORDER BY diar_speaker_label, id
-+            """,
-+            (recording_id,),
-+        ).fetchall()
-+        conn.commit()
-+    return [_as_dict(row) or {} for row in out_rows]
-+
-+
- def _set_job_terminal_state(
-     *,
-     job_id: str,
-@@ -770,4 +886,8 @@ __all__ = [
-     "get_calendar_match",
-     "upsert_calendar_match",
-     "set_calendar_match_selection",
-+    "get_meeting_metrics",
-+    "upsert_meeting_metrics",
-+    "list_participant_metrics",
-+    "replace_participant_metrics",
- ]
-diff --git a/lan_app/templates/recording_detail.html b/lan_app/templates/recording_detail.html
-index 883a0bc..89aeb9d 100644
---- a/lan_app/templates/recording_detail.html
-+++ b/lan_app/templates/recording_detail.html
-@@ -252,9 +252,57 @@
+-def _count_question_punctuation(text: str, language: str | None) -> int:
+-    if language and language not in _QUESTION_PUNCT_LANGS:
+-        return 0
++def _count_question_punctuation(text: str, _language: str | None) -> int:
+     return text.count("?") + text.count("？")
  
- {% elif current_tab == 'metrics' %}
-   {% set summary_data = summary or {} %}
-+  {% set metrics_data = metrics or {} %}
-+  {% set meeting = metrics_data.meeting or {} %}
-+  {% set participants = metrics_data.participants or [] %}
-   {% set questions = summary_data.questions or {} %}
-   {% set question_types = questions.types or {} %}
  
-+  <h2>Meeting Metrics</h2>
-+  <div class="info-grid">
-+    <span class="k">Total speech time</span><span class="v">{{ '%.1f'|format(meeting.total_speech_time_seconds or 0.0) }}s</span>
-+    <span class="k">Interruptions</span><span class="v">{{ meeting.total_interruptions or 0 }}</span>
-+    <span class="k">Questions</span><span class="v">{{ meeting.total_questions or 0 }}</span>
-+    <span class="k">Decisions</span><span class="v">{{ meeting.decisions_count or 0 }}</span>
-+    <span class="k">Action items</span><span class="v">{{ meeting.action_items_count or 0 }}</span>
-+    <span class="k">Actionability</span><span class="v">{{ '%.1f'|format((meeting.actionability_ratio or 0.0) * 100.0) }}%</span>
-+    <span class="k">Emotional summary</span><span class="v">{{ meeting.emotional_summary or '—' }}</span>
-+  </div>
-+
-+  <h2>Participants</h2>
-+  {% if participants %}
-+  <table>
-+    <thead>
-+      <tr>
-+        <th>Speaker</th>
-+        <th>Airtime (s)</th>
-+        <th>Share (%)</th>
-+        <th>Turns</th>
-+        <th>Interruptions done</th>
-+        <th>Interruptions received</th>
-+        <th>Questions</th>
-+        <th>Role</th>
-+      </tr>
-+    </thead>
-+    <tbody>
-+      {% for row in participants %}
-+      <tr>
-+        <td>{{ row.speaker }}</td>
-+        <td>{{ '%.2f'|format(row.airtime_seconds or 0.0) }}</td>
-+        <td>{{ '%.2f'|format((row.airtime_share or 0.0) * 100.0) }}</td>
-+        <td>{{ row.turns or 0 }}</td>
-+        <td>{{ row.interruptions_done or 0 }}</td>
-+        <td>{{ row.interruptions_received or 0 }}</td>
-+        <td>{{ row.questions_count or 0 }}</td>
-+        <td>{{ row.role_hint or '—' }}</td>
-+      </tr>
-+      {% endfor %}
-+    </tbody>
-+  </table>
-+  {% else %}
-+  <p class="placeholder">No participant metrics available yet.</p>
-+  {% endif %}
-+
-   <h2>Decisions</h2>
-   {% if summary_data.decisions %}
-   <ul>
 diff --git a/lan_app/ui_routes.py b/lan_app/ui_routes.py
-index 1edcdd0..6ae39be 100644
+index 6ae39be..859f629 100644
 --- a/lan_app/ui_routes.py
 +++ b/lan_app/ui_routes.py
-@@ -23,6 +23,7 @@ from .calendar import (
-     select_calendar_event,
- )
- from .config import AppSettings
-+from .conversation_metrics import refresh_recording_metrics
- from .constants import (
-     JOB_STATUSES,
-     JOB_TYPE_PRECHECK,
-@@ -34,7 +35,9 @@ from .db import (
-     create_voice_profile,
-     delete_project,
-     delete_voice_profile,
-+    get_meeting_metrics,
-     get_recording,
-+    list_participant_metrics,
-     list_jobs,
-     list_projects,
-     list_recordings,
-@@ -252,6 +255,85 @@ def _summary_context(recording_id: str, settings: AppSettings) -> dict[str, Any]
-     }
+@@ -289,15 +289,40 @@ def _metrics_tab_context(recording_id: str, settings: AppSettings) -> dict[str,
+         normalized["speaker"] = speaker
+         participants_payload.append(normalized)
+ 
+-    if not meeting_payload and not participants_payload:
++    metrics_payload: dict[str, Any] = {}
++    if not meeting_payload or not participants_payload:
+         derived = settings.recordings_root / recording_id / "derived"
+         metrics_payload = _load_json_dict(derived / "metrics.json")
+         meeting_raw = metrics_payload.get("meeting")
+         participants_raw = metrics_payload.get("participants")
+         if isinstance(meeting_raw, dict):
+-            meeting_payload = dict(meeting_raw)
++            if not meeting_payload:
++                meeting_payload = dict(meeting_raw)
++            else:
++                for key, value in meeting_raw.items():
++                    meeting_payload.setdefault(key, value)
+         if isinstance(participants_raw, list):
+-            participants_payload = [row for row in participants_raw if isinstance(row, dict)]
++            artifact_participants = [row for row in participants_raw if isinstance(row, dict)]
++            if not participants_payload:
++                participants_payload = artifact_participants
++            else:
++                by_speaker: dict[str, dict[str, Any]] = {}
++                for row in participants_payload:
++                    speaker = str(row.get("speaker") or "").strip()
++                    if not speaker:
++                        continue
++                    by_speaker[speaker] = row
++                for row in artifact_participants:
++                    speaker = str(row.get("speaker") or "").strip()
++                    if not speaker:
++                        continue
++                    existing = by_speaker.get(speaker)
++                    if existing is None:
++                        participants_payload.append(row)
++                        by_speaker[speaker] = row
++                        continue
++                    for key, value in row.items():
++                        existing.setdefault(key, value)
+ 
+     meeting = {
+         "total_interruptions": _to_int(meeting_payload.get("total_interruptions")),
+diff --git a/tests/test_conversation_metrics.py b/tests/test_conversation_metrics.py
+index e823a06..d41bdaf 100644
+--- a/tests/test_conversation_metrics.py
++++ b/tests/test_conversation_metrics.py
+@@ -4,6 +4,7 @@ import json
+ from pathlib import Path
+ 
+ from lan_app.conversation_metrics import (
++    build_conversation_metrics,
+     compute_actionability_ratio,
+     count_interruptions,
+     merge_speaker_turns,
+@@ -67,6 +68,26 @@ def test_compute_actionability_ratio_uses_owner_and_deadline_presence():
+     assert ratio == 0.5
  
  
-+def _metrics_tab_context(recording_id: str, settings: AppSettings) -> dict[str, Any]:
-+    def _to_int(value: Any, *, default: int = 0) -> int:
-+        try:
-+            return int(float(value))
-+        except (TypeError, ValueError):
-+            return default
-+
-+    def _to_float(value: Any, *, default: float = 0.0) -> float:
-+        try:
-+            return float(value)
-+        except (TypeError, ValueError):
-+            return default
-+
-+    meeting_payload: dict[str, Any] = {}
-+    participants_payload: list[dict[str, Any]] = []
-+
-+    meeting_row = get_meeting_metrics(recording_id, settings=settings) or {}
-+    meeting_json = meeting_row.get("json")
-+    if isinstance(meeting_json, dict):
-+        meeting_payload = dict(meeting_json)
-+
-+    participant_rows = list_participant_metrics(recording_id, settings=settings)
-+    for row in participant_rows:
-+        payload = row.get("json")
-+        participant = payload if isinstance(payload, dict) else {}
-+        if not participant:
-+            continue
-+        normalized = dict(participant)
-+        speaker = str(normalized.get("speaker") or row.get("diar_speaker_label") or "").strip()
-+        if not speaker:
-+            continue
-+        normalized["speaker"] = speaker
-+        participants_payload.append(normalized)
-+
-+    if not meeting_payload and not participants_payload:
-+        derived = settings.recordings_root / recording_id / "derived"
-+        metrics_payload = _load_json_dict(derived / "metrics.json")
-+        meeting_raw = metrics_payload.get("meeting")
-+        participants_raw = metrics_payload.get("participants")
-+        if isinstance(meeting_raw, dict):
-+            meeting_payload = dict(meeting_raw)
-+        if isinstance(participants_raw, list):
-+            participants_payload = [row for row in participants_raw if isinstance(row, dict)]
-+
-+    meeting = {
-+        "total_interruptions": _to_int(meeting_payload.get("total_interruptions")),
-+        "total_questions": _to_int(meeting_payload.get("total_questions")),
-+        "decisions_count": _to_int(meeting_payload.get("decisions_count")),
-+        "action_items_count": _to_int(meeting_payload.get("action_items_count")),
-+        "actionability_ratio": _to_float(meeting_payload.get("actionability_ratio")),
-+        "emotional_summary": str(meeting_payload.get("emotional_summary") or "—"),
-+        "total_speech_time_seconds": _to_float(meeting_payload.get("total_speech_time_seconds")),
-+    }
-+
-+    participants: list[dict[str, Any]] = []
-+    for row in participants_payload:
-+        speaker = str(row.get("speaker") or "").strip()
-+        if not speaker:
-+            continue
-+        participants.append(
++def test_build_conversation_metrics_heuristic_questions_count_punctuation_for_unknown_language():
++    payload = build_conversation_metrics(
++        transcript_payload={},
++        summary_payload={"questions": {}},
++        speaker_turns=[
 +            {
-+                "speaker": speaker,
-+                "airtime_seconds": round(_to_float(row.get("airtime_seconds")), 3),
-+                "airtime_share": round(_to_float(row.get("airtime_share")), 4),
-+                "turns": _to_int(row.get("turns")),
-+                "interruptions_done": _to_int(row.get("interruptions_done")),
-+                "interruptions_received": _to_int(row.get("interruptions_received")),
-+                "questions_count": _to_int(row.get("questions_count")),
-+                "role_hint": str(row.get("role_hint") or "—"),
++                "start": 0.0,
++                "end": 1.5,
++                "speaker": "S1",
++                "text": "Should we proceed?",
++                "language": "xx",
 +            }
-+        )
-+    participants.sort(key=lambda item: (-item["airtime_seconds"], item["speaker"]))
-+
-+    return {
-+        "meeting": meeting,
-+        "participants": participants,
-+    }
-+
-+
- def _chunk_text_for_turns(text: str, *, chunk_size: int = 450) -> list[str]:
-     normalized = " ".join(text.split())
-     if not normalized:
-@@ -554,6 +636,7 @@ def _resummarize_recording(
- 
-     transcript_payload["target_summary_language"] = resolved_target
-     atomic_write_json(transcript_path, transcript_payload)
-+    refresh_recording_metrics(recording_id, settings=settings)
- 
- 
- def _status_counts(settings: AppSettings) -> dict[str, int]:
-@@ -647,6 +730,7 @@ async def ui_recording_detail(
-     calendar: dict[str, Any] | None = None
-     language: dict[str, Any] | None = None
-     summary: dict[str, Any] | None = None
-+    metrics: dict[str, Any] | None = None
-     if current_tab == "calendar":
-         try:
-             calendar = await run_in_threadpool(
-@@ -665,6 +749,8 @@ async def ui_recording_detail(
-         language = _language_tab_context(recording_id, rec, _settings)
-     if current_tab in {"overview", "metrics"}:
-         summary = _summary_context(recording_id, _settings)
-+    if current_tab == "metrics":
-+        metrics = _metrics_tab_context(recording_id, _settings)
- 
-     return templates.TemplateResponse(
-         request,
-@@ -678,6 +764,7 @@ async def ui_recording_detail(
-             "calendar": calendar,
-             "language": language,
-             "summary": summary,
-+            "metrics": metrics,
-         },
-     )
- 
-diff --git a/lan_app/worker_tasks.py b/lan_app/worker_tasks.py
-index b71f567..73111fb 100644
---- a/lan_app/worker_tasks.py
-+++ b/lan_app/worker_tasks.py
-@@ -12,6 +12,7 @@ from lan_transcriber.pipeline import Settings as PipelineSettings
- from lan_transcriber.pipeline import run_pipeline, run_precheck
- 
- from .config import AppSettings
-+from .conversation_metrics import refresh_recording_metrics
- from .constants import (
-     JOB_TYPE_CLEANUP,
-     JOB_TYPE_PRECHECK,
-@@ -258,6 +259,18 @@ def _run_precheck_pipeline(
-             calendar_attendees=calendar_attendees,
-         )
-     )
-+    metrics_payload = refresh_recording_metrics(
-+        recording_id,
-+        settings=settings,
++        ],
 +    )
-+    _append_step_log(
-+        log_path,
-+        (
-+            "metrics refreshed "
-+            f"participants={len(metrics_payload.get('participants', []))} "
-+            f"interruptions={metrics_payload.get('meeting', {}).get('total_interruptions', 0)}"
-+        ),
-+    )
-     dominant_language, resolved_target_language = _load_transcript_language_payload(
-         recording_id,
-         settings,
-diff --git a/tasks/QUEUE.md b/tasks/QUEUE.md
-index 8876355..3ac2074 100644
---- a/tasks/QUEUE.md
-+++ b/tasks/QUEUE.md
-@@ -62,7 +62,7 @@ Queue (in order)
- - Depends on: PR-PIPELINE-01 and PR-LANG-01
- 
- 11) PR-METRICS-01: Conversation analytics metrics per participant and per meeting + UI rendering + exports
--- Status: TODO
-+- Status: DONE
- - Tasks file: tasks/PR-METRICS-01.md
- - Depends on: PR-PIPELINE-01 and PR-LLM-01
- 
++
++    assert payload["meeting"]["questions_source"] == "heuristic"
++    assert payload["meeting"]["total_questions"] == 1
++    assert payload["participants"][0]["questions_count"] == 1
++
++
+ def test_refresh_recording_metrics_persists_json_and_db(tmp_path: Path):
+     cfg = AppSettings(
+         data_root=tmp_path,
 diff --git a/tests/test_ui_routes.py b/tests/test_ui_routes.py
-index 14a5261..d62d6fd 100644
+index d62d6fd..ace3883 100644
 --- a/tests/test_ui_routes.py
 +++ b/tests/test_ui_routes.py
-@@ -18,7 +18,9 @@ from lan_app.db import (
-     get_recording,
-     init_db,
-     list_projects,
-+    replace_participant_metrics,
-     list_voice_profiles,
-+    upsert_meeting_metrics,
- )
- from lan_app.constants import (
-     JOB_TYPE_PRECHECK,
-@@ -197,10 +199,47 @@ def test_recording_detail_metrics_tab_uses_summary_payload(tmp_path, monkeypatch
-         ),
-         encoding="utf-8",
-     )
-+    upsert_meeting_metrics(
-+        recording_id="rec-metrics-tab-1",
-+        payload={
-+            "total_interruptions": 2,
-+            "total_questions": 1,
-+            "decisions_count": 1,
-+            "action_items_count": 1,
-+            "actionability_ratio": 1.0,
-+            "emotional_summary": "Focused.",
-+            "total_speech_time_seconds": 42.5,
-+        },
-+        settings=cfg,
-+    )
-+    replace_participant_metrics(
-+        recording_id="rec-metrics-tab-1",
-+        rows=[
-+            {
-+                "diar_speaker_label": "S1",
-+                "voice_profile_id": None,
-+                "payload": {
-+                    "speaker": "S1",
-+                    "airtime_seconds": 24.0,
-+                    "airtime_share": 0.56,
-+                    "turns": 6,
-+                    "interruptions_done": 1,
-+                    "interruptions_received": 0,
-+                    "questions_count": 1,
-+                    "role_hint": "Leader",
-+                },
-+            }
-+        ],
-+        settings=cfg,
-+    )
+@@ -246,6 +246,66 @@ def test_recording_detail_metrics_tab_uses_summary_payload(tmp_path, monkeypatch
+     assert "Is QA complete?" in r.text
  
-     c = TestClient(api.app, follow_redirects=True)
-     r = c.get("/recordings/rec-metrics-tab-1?tab=metrics")
-     assert r.status_code == 200
-+    assert "Meeting Metrics" in r.text
-+    assert "Participants" in r.text
-+    assert "42.5s" in r.text
-+    assert "Leader" in r.text
-     assert "Decisions" in r.text
-     assert "Ship on Friday" in r.text
-     assert "Send notes" in r.text
-diff --git a/lan_app/conversation_metrics.py b/lan_app/conversation_metrics.py
-new file mode 100644
-index 0000000..7903f92
---- /dev/null
-+++ b/lan_app/conversation_metrics.py
-@@ -0,0 +1,714 @@
-+from __future__ import annotations
-+
-+import json
-+import re
-+from pathlib import Path
-+from typing import Any, Sequence
-+
-+from lan_transcriber.artifacts import atomic_write_json
-+
-+from .config import AppSettings
-+from .db import replace_participant_metrics, upsert_meeting_metrics
-+
-+DEFAULT_GAP_THRESHOLD_SEC = 1.0
-+DEFAULT_INTERRUPTION_OVERLAP_SEC = 0.3
-+
-+_QUESTION_TYPE_KEYS = (
-+    "open",
-+    "yes_no",
-+    "clarification",
-+    "status",
-+    "decision_seeking",
-+)
-+
-+_DECISION_CUES = (
-+    "decide",
-+    "decision",
-+    "agree",
-+    "approved",
-+    "approve",
-+    "commit",
-+    "resolved",
-+    "finalize",
-+)
-+
-+_TASK_CUES = (
-+    "action item",
-+    "follow up",
-+    "todo",
-+    "to-do",
-+    "next step",
-+    "owner",
-+    "deadline",
-+    "i will",
-+    "we will",
-+    "we need",
-+)
-+
-+_QUESTION_PUNCT_LANGS = {
-+    "ar",
-+    "de",
-+    "en",
-+    "es",
-+    "fr",
-+    "hi",
-+    "it",
-+    "ja",
-+    "ko",
-+    "nl",
-+    "pl",
-+    "pt",
-+    "ru",
-+    "tr",
-+    "uk",
-+    "zh",
-+}
-+
-+
-+def _safe_float(value: Any, *, default: float = 0.0) -> float:
-+    try:
-+        out = float(value)
-+    except (TypeError, ValueError):
-+        return default
-+    if out < 0:
-+        return default
-+    return out
-+
-+
-+def _normalise_language_code(value: Any) -> str | None:
-+    if not isinstance(value, str):
-+        return None
-+    raw = value.strip().lower()
-+    if not raw:
-+        return None
-+    token = raw.replace("_", "-").split("-", 1)[0]
-+    if len(token) == 2 and token.isalpha():
-+        return token
-+    return None
-+
-+
-+def _normalise_turns(turns: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
-+    out: list[dict[str, Any]] = []
-+    for row in turns:
-+        if not isinstance(row, dict):
-+            continue
-+        text = str(row.get("text") or "").strip()
-+        if not text:
-+            continue
-+        start = _safe_float(row.get("start"), default=0.0)
-+        end = _safe_float(row.get("end"), default=start)
-+        if end < start:
-+            end = start
-+        speaker = str(row.get("speaker") or "S1").strip() or "S1"
-+        payload: dict[str, Any] = {
-+            "start": round(start, 3),
-+            "end": round(end, 3),
-+            "speaker": speaker,
-+            "text": text,
-+        }
-+        language = _normalise_language_code(row.get("language"))
-+        if language:
-+            payload["language"] = language
-+        out.append(payload)
-+    out.sort(key=lambda item: (item["start"], item["end"], item["speaker"]))
-+    return out
-+
-+
-+def _fallback_speaker_turns_from_transcript(transcript_payload: dict[str, Any]) -> list[dict[str, Any]]:
-+    raw_segments = transcript_payload.get("segments")
-+    if isinstance(raw_segments, list):
-+        turns: list[dict[str, Any]] = []
-+        for row in raw_segments:
-+            if not isinstance(row, dict):
-+                continue
-+            text = str(row.get("text") or "").strip()
-+            if not text:
-+                continue
-+            start = _safe_float(row.get("start"), default=0.0)
-+            end = _safe_float(row.get("end"), default=start)
-+            if end < start:
-+                end = start
-+            payload: dict[str, Any] = {
-+                "start": round(start, 3),
-+                "end": round(end, 3),
-+                "speaker": "S1",
-+                "text": text,
-+            }
-+            language = _normalise_language_code(row.get("language"))
-+            if language:
-+                payload["language"] = language
-+            turns.append(payload)
-+        if turns:
-+            return turns
-+
-+    text = str(transcript_payload.get("text") or "").strip()
-+    if not text:
-+        return []
-+    return [{"start": 0.0, "end": 0.0, "speaker": "S1", "text": text}]
-+
-+
-+def merge_speaker_turns(
-+    speaker_turns: Sequence[dict[str, Any]],
-+    *,
-+    gap_threshold: float = DEFAULT_GAP_THRESHOLD_SEC,
-+) -> list[dict[str, Any]]:
-+    """Merge adjacent turns from the same speaker with tiny gaps."""
-+    turns = _normalise_turns(speaker_turns)
-+    if not turns:
-+        return []
-+
-+    safe_gap = max(gap_threshold, 0.0)
-+    merged: list[dict[str, Any]] = []
-+    current = dict(turns[0])
-+
-+    for row in turns[1:]:
-+        same_speaker = str(row["speaker"]) == str(current["speaker"])
-+        if same_speaker and _safe_float(row.get("start")) <= _safe_float(current.get("end")) + safe_gap:
-+            current["end"] = round(
-+                max(_safe_float(current.get("end")), _safe_float(row.get("end"))),
-+                3,
-+            )
-+            current["text"] = f"{current['text']} {row['text']}".strip()
-+            if "language" not in current and "language" in row:
-+                current["language"] = row["language"]
-+            continue
-+        merged.append(current)
-+        current = dict(row)
-+
-+    merged.append(current)
-+    return merged
-+
-+
-+def count_interruptions(
-+    speaker_turns: Sequence[dict[str, Any]],
-+    *,
-+    overlap_threshold: float = DEFAULT_INTERRUPTION_OVERLAP_SEC,
-+) -> dict[str, Any]:
-+    """Count interruption events and per-speaker done/received counters."""
-+    turns = _normalise_turns(speaker_turns)
-+    safe_overlap = max(overlap_threshold, 0.0)
-+
-+    done: dict[str, int] = {}
-+    received: dict[str, int] = {}
-+    total = 0
-+
-+    for idx, turn in enumerate(turns):
-+        interrupter = str(turn["speaker"])
-+        done.setdefault(interrupter, 0)
-+        received.setdefault(interrupter, 0)
-+
-+        turn_start = _safe_float(turn.get("start"))
-+        turn_end = _safe_float(turn.get("end"), default=turn_start)
-+        if turn_end <= turn_start:
-+            continue
-+
-+        seen_receivers: set[str] = set()
-+        for previous in turns[:idx]:
-+            receiver = str(previous["speaker"])
-+            if receiver == interrupter or receiver in seen_receivers:
-+                continue
-+
-+            previous_end = _safe_float(previous.get("end"), default=_safe_float(previous.get("start")))
-+            if turn_start >= previous_end:
-+                continue
-+
-+            overlap = min(previous_end, turn_end) - turn_start
-+            if overlap < safe_overlap:
-+                continue
-+
-+            done[interrupter] = done.get(interrupter, 0) + 1
-+            received[receiver] = received.get(receiver, 0) + 1
-+            total += 1
-+            seen_receivers.add(receiver)
-+
-+    return {
-+        "total": total,
-+        "done": done,
-+        "received": received,
-+    }
-+
-+
-+def _normalise_text_items(value: Any, *, max_items: int) -> list[str]:
-+    rows: list[Any]
-+    if isinstance(value, list):
-+        rows = value
-+    elif isinstance(value, str):
-+        rows = [line.strip() for line in value.splitlines() if line.strip()]
-+    else:
-+        return []
-+
-+    out: list[str] = []
-+    for row in rows:
-+        if len(out) >= max_items:
-+            break
-+        text = str(row).strip()
-+        if not text:
-+            continue
-+        if text.startswith("- "):
-+            text = text[2:].strip()
-+        if text:
-+            out.append(text)
-+    return out
-+
-+
-+def _normalise_action_items(value: Any) -> list[dict[str, Any]]:
-+    rows = value if isinstance(value, list) else []
-+    out: list[dict[str, Any]] = []
-+    for row in rows:
-+        if not isinstance(row, dict):
-+            continue
-+        task = str(row.get("task") or "").strip()
-+        if not task:
-+            continue
-+        owner = str(row.get("owner") or "").strip() or None
-+        deadline = str(row.get("deadline") or "").strip() or None
-+        out.append(
-+            {
-+                "task": task,
-+                "owner": owner,
-+                "deadline": deadline,
-+            }
-+        )
-+    return out
-+
-+
-+def _normalise_question_types(value: Any) -> dict[str, int]:
-+    out = {key: 0 for key in _QUESTION_TYPE_KEYS}
-+    if not isinstance(value, dict):
-+        return out
-+    for key in _QUESTION_TYPE_KEYS:
-+        try:
-+            out[key] = max(0, int(value.get(key, 0)))
-+        except (TypeError, ValueError):
-+            out[key] = 0
-+    return out
-+
-+
-+def _count_question_punctuation(text: str, language: str | None) -> int:
-+    if language and language not in _QUESTION_PUNCT_LANGS:
-+        return 0
-+    return text.count("?") + text.count("？")
-+
-+
-+def _tokenize_words(text: str) -> list[str]:
-+    return [token.lower() for token in re.findall(r"\b[\w-]{2,}\b", text, flags=re.UNICODE)]
-+
-+
-+def _tokenize_terms(text: str) -> set[str]:
-+    return {
-+        token.lower()
-+        for token in re.findall(r"\b[\w-]{5,}\b", text, flags=re.UNICODE)
-+    }
-+
-+
-+def _allocate_by_weight(total: int, weights: dict[str, int]) -> dict[str, int]:
-+    keys = sorted(weights)
-+    if total <= 0 or not keys:
-+        return {key: 0 for key in keys}
-+
-+    positive_weights = {key: max(int(weights.get(key, 0)), 0) for key in keys}
-+    weight_sum = sum(positive_weights.values())
-+    if weight_sum == 0:
-+        out = {key: 0 for key in keys}
-+        for idx in range(total):
-+            out[keys[idx % len(keys)]] += 1
-+        return out
-+
-+    raw: dict[str, float] = {
-+        key: total * (positive_weights[key] / weight_sum)
-+        for key in keys
-+    }
-+    out = {key: int(value) for key, value in raw.items()}
-+    remainder = total - sum(out.values())
-+    ranked = sorted(
-+        keys,
-+        key=lambda key: (raw[key] - out[key], positive_weights[key], key),
-+        reverse=True,
-+    )
-+    for key in ranked[:remainder]:
-+        out[key] += 1
-+    return out
-+
-+
-+def _question_counts_by_speaker(
-+    merged_turns: Sequence[dict[str, Any]],
-+    summary_payload: dict[str, Any],
-+) -> tuple[dict[str, int], int, str, dict[str, int]]:
-+    speakers = sorted({str(row.get("speaker") or "S1") for row in merged_turns})
-+    heuristic = {speaker: 0 for speaker in speakers}
-+    for row in merged_turns:
-+        speaker = str(row.get("speaker") or "S1")
-+        text = str(row.get("text") or "")
-+        language = _normalise_language_code(row.get("language"))
-+        heuristic[speaker] = heuristic.get(speaker, 0) + _count_question_punctuation(
-+            text,
-+            language,
-+        )
-+
-+    questions_payload = summary_payload.get("questions")
-+    questions_obj = questions_payload if isinstance(questions_payload, dict) else {}
-+    llm_extracted = _normalise_text_items(questions_obj.get("extracted"), max_items=100)
-+    question_types = _normalise_question_types(questions_obj.get("types"))
-+    try:
-+        llm_total = max(0, int(questions_obj.get("total_count", 0)))
-+    except (TypeError, ValueError):
-+        llm_total = 0
-+
-+    if llm_total == 0 and llm_extracted:
-+        llm_total = len(llm_extracted)
-+
-+    llm_counts = {speaker: 0 for speaker in speakers}
-+    normalized_turns: list[tuple[str, str, set[str]]] = []
-+    for row in merged_turns:
-+        speaker = str(row.get("speaker") or "S1")
-+        text = " ".join(str(row.get("text") or "").lower().split())
-+        normalized_turns.append((speaker, text, set(_tokenize_words(text))))
-+
-+    for question in llm_extracted:
-+        q_text = " ".join(question.lower().split())
-+        q_text = q_text.strip("?？ ")
-+        if not q_text:
-+            continue
-+        q_tokens = set(_tokenize_words(q_text))
-+        best_speaker: str | None = None
-+        best_score = 0.0
-+
-+        for speaker, turn_text, turn_tokens in normalized_turns:
-+            if q_text in turn_text:
-+                score = 2.0
-+            elif q_tokens:
-+                overlap = len(q_tokens & turn_tokens)
-+                score = overlap / float(max(len(q_tokens), 1))
-+            else:
-+                score = 0.0
-+
-+            if score > best_score:
-+                best_score = score
-+                best_speaker = speaker
-+
-+        if best_speaker is not None and best_score >= 0.5:
-+            llm_counts[best_speaker] = llm_counts.get(best_speaker, 0) + 1
-+
-+    llm_assigned = sum(llm_counts.values())
-+    llm_available = llm_total > 0 or bool(llm_extracted)
-+
-+    if llm_available:
-+        target_total = llm_total or llm_assigned
-+        counts = dict(llm_counts)
-+        if target_total > llm_assigned:
-+            weight_source = {
-+                speaker: max(1, heuristic.get(speaker, 0))
-+                for speaker in speakers
-+            }
-+            extra = _allocate_by_weight(target_total - llm_assigned, weight_source)
-+            for speaker in speakers:
-+                counts[speaker] = counts.get(speaker, 0) + extra.get(speaker, 0)
-+        return counts, target_total, "llm", question_types
-+
-+    heuristic_total = sum(heuristic.values())
-+    if heuristic_total > 0 and sum(question_types.values()) == 0:
-+        question_types["open"] = heuristic_total
-+    return heuristic, heuristic_total, "heuristic", question_types
-+
-+
-+def _speaker_signal_counts(merged_turns: Sequence[dict[str, Any]]) -> dict[str, int]:
-+    out: dict[str, int] = {}
-+    for row in merged_turns:
-+        speaker = str(row.get("speaker") or "S1")
-+        text = str(row.get("text") or "").lower()
-+        signals = 0
-+        if any(cue in text for cue in _DECISION_CUES):
-+            signals += 1
-+        if any(cue in text for cue in _TASK_CUES):
-+            signals += 1
-+        out[speaker] = out.get(speaker, 0) + signals
-+    return out
-+
-+
-+def _domain_terms_from_summary(summary_payload: dict[str, Any]) -> set[str]:
-+    decisions = _normalise_text_items(summary_payload.get("decisions"), max_items=50)
-+    action_items = _normalise_action_items(summary_payload.get("action_items"))
-+    questions_payload = summary_payload.get("questions")
-+    questions_obj = questions_payload if isinstance(questions_payload, dict) else {}
-+    extracted_questions = _normalise_text_items(questions_obj.get("extracted"), max_items=50)
-+
-+    chunks: list[str] = [
-+        str(summary_payload.get("topic") or ""),
-+        *decisions,
-+        *[str(row.get("task") or "") for row in action_items],
-+        *extracted_questions,
-+    ]
-+
-+    terms: set[str] = set()
-+    for chunk in chunks:
-+        terms.update(_tokenize_terms(chunk))
-+    return terms
-+
-+
-+def _terminology_density_by_speaker(
-+    merged_turns: Sequence[dict[str, Any]],
-+    *,
-+    domain_terms: set[str],
-+) -> dict[str, float]:
-+    totals: dict[str, int] = {}
-+    hits: dict[str, int] = {}
-+
-+    for row in merged_turns:
-+        speaker = str(row.get("speaker") or "S1")
-+        tokens = _tokenize_terms(str(row.get("text") or ""))
-+        totals[speaker] = totals.get(speaker, 0) + len(tokens)
-+        hits[speaker] = hits.get(speaker, 0) + len(tokens & domain_terms)
-+
-+    density: dict[str, float] = {}
-+    for speaker in totals:
-+        token_total = totals[speaker]
-+        if token_total <= 0:
-+            density[speaker] = 0.0
-+            continue
-+        density[speaker] = round(hits.get(speaker, 0) / float(token_total), 4)
-+    return density
-+
-+
-+def compute_actionability_ratio(action_items: Sequence[dict[str, Any]]) -> float:
-+    normalized = _normalise_action_items(list(action_items))
-+    if not normalized:
-+        return 0.0
-+    actionable = sum(
-+        1
-+        for row in normalized
-+        if str(row.get("owner") or "").strip() and str(row.get("deadline") or "").strip()
-+    )
-+    return round(actionable / float(len(normalized)), 4)
-+
-+
-+def _infer_role_hint(
-+    *,
-+    airtime_share: float,
-+    turns: int,
-+    questions_count: int,
-+    decision_task_signals: int,
-+    avg_turn_duration_sec: float,
-+    terminology_density: float,
-+    avg_turns: float,
-+    avg_turn_duration: float,
-+    meeting_questions: int,
-+) -> str:
-+    passive_turn_limit = max(1, int(round(avg_turns * 0.6)))
-+    facilitator_turn_limit = max(3, int(round(avg_turns * 1.15)))
-+    facilitator_question_limit = max(1, int(round(meeting_questions * 0.3)))
-+
-+    if airtime_share <= 0.15 and turns <= passive_turn_limit:
-+        return "Passive"
-+    if airtime_share >= 0.35 and decision_task_signals >= 1:
-+        return "Leader"
-+    if turns >= facilitator_turn_limit and questions_count >= facilitator_question_limit:
-+        return "Facilitator"
-+    if avg_turn_duration_sec >= max(4.0, avg_turn_duration * 1.2) and terminology_density >= 0.08:
-+        return "Expert"
-+
-+    scores = {
-+        "Leader": airtime_share * 1.8 + min(decision_task_signals, 4) * 0.6,
-+        "Facilitator": (turns / max(avg_turns, 1.0)) * 0.9 + questions_count * 0.45,
-+        "Expert": (avg_turn_duration_sec / max(avg_turn_duration, 1.0)) * 0.8
-+        + terminology_density * 4.0,
-+        "Passive": (1.0 - airtime_share) + max(0.0, 1.0 - (turns / max(avg_turns, 1.0))),
-+    }
-+    ordered_roles = ("Leader", "Facilitator", "Expert", "Passive")
-+    return max(ordered_roles, key=lambda role: (scores[role], -ordered_roles.index(role)))
-+
-+
-+def build_conversation_metrics(
-+    *,
-+    transcript_payload: dict[str, Any],
-+    summary_payload: dict[str, Any],
-+    speaker_turns: Sequence[dict[str, Any]],
-+    gap_threshold_sec: float = DEFAULT_GAP_THRESHOLD_SEC,
-+    interruption_overlap_sec: float = DEFAULT_INTERRUPTION_OVERLAP_SEC,
-+) -> dict[str, Any]:
-+    turns_source = list(speaker_turns)
-+    if not turns_source:
-+        turns_source = _fallback_speaker_turns_from_transcript(transcript_payload)
-+
-+    merged_turns = merge_speaker_turns(turns_source, gap_threshold=gap_threshold_sec)
-+    interruption_stats = count_interruptions(
-+        merged_turns,
-+        overlap_threshold=interruption_overlap_sec,
-+    )
-+
-+    by_speaker: dict[str, list[dict[str, Any]]] = {}
-+    for row in merged_turns:
-+        speaker = str(row.get("speaker") or "S1")
-+        by_speaker.setdefault(speaker, []).append(row)
-+
-+    speakers = sorted(by_speaker)
-+    airtime_seconds: dict[str, float] = {}
-+    for speaker in speakers:
-+        total = sum(
-+            max(0.0, _safe_float(row.get("end")) - _safe_float(row.get("start")))
-+            for row in by_speaker[speaker]
-+        )
-+        airtime_seconds[speaker] = round(total, 3)
-+
-+    total_speech_time = round(sum(airtime_seconds.values()), 3)
-+    question_counts, total_questions, questions_source, question_types = _question_counts_by_speaker(
-+        merged_turns,
-+        summary_payload,
-+    )
-+    signal_counts = _speaker_signal_counts(merged_turns)
-+    terminology_density = _terminology_density_by_speaker(
-+        merged_turns,
-+        domain_terms=_domain_terms_from_summary(summary_payload),
-+    )
-+
-+    turns_per_speaker = {speaker: len(by_speaker[speaker]) for speaker in speakers}
-+    avg_turns = sum(turns_per_speaker.values()) / float(max(len(speakers), 1))
-+
-+    avg_turn_duration_by_speaker: dict[str, float] = {}
-+    for speaker in speakers:
-+        turns = max(turns_per_speaker.get(speaker, 0), 1)
-+        avg_turn_duration_by_speaker[speaker] = round(
-+            airtime_seconds.get(speaker, 0.0) / float(turns),
-+            3,
-+        )
-+    avg_turn_duration = sum(avg_turn_duration_by_speaker.values()) / float(max(len(speakers), 1))
-+
-+    participants: list[dict[str, Any]] = []
-+    for speaker in speakers:
-+        speaker_airtime = airtime_seconds.get(speaker, 0.0)
-+        share = 0.0
-+        if total_speech_time > 0:
-+            share = speaker_airtime / total_speech_time
-+
-+        participant = {
-+            "speaker": speaker,
-+            "airtime_seconds": round(speaker_airtime, 3),
-+            "airtime_share": round(share, 4),
-+            "turns": int(turns_per_speaker.get(speaker, 0)),
-+            "interruptions_done": int(interruption_stats["done"].get(speaker, 0)),
-+            "interruptions_received": int(interruption_stats["received"].get(speaker, 0)),
-+            "questions_count": int(question_counts.get(speaker, 0)),
-+        }
-+        participant["role_hint"] = _infer_role_hint(
-+            airtime_share=participant["airtime_share"],
-+            turns=participant["turns"],
-+            questions_count=participant["questions_count"],
-+            decision_task_signals=signal_counts.get(speaker, 0),
-+            avg_turn_duration_sec=avg_turn_duration_by_speaker.get(speaker, 0.0),
-+            terminology_density=terminology_density.get(speaker, 0.0),
-+            avg_turns=avg_turns,
-+            avg_turn_duration=avg_turn_duration,
-+            meeting_questions=total_questions,
-+        )
-+        participants.append(participant)
-+
-+    participants.sort(key=lambda row: (-row["airtime_seconds"], row["speaker"]))
-+
-+    decisions = _normalise_text_items(summary_payload.get("decisions"), max_items=100)
-+    action_items = _normalise_action_items(summary_payload.get("action_items"))
-+    emotional_summary = str(summary_payload.get("emotional_summary") or "").strip() or "—"
-+
-+    meeting = {
-+        "participants_count": len(participants),
-+        "total_speech_time_seconds": total_speech_time,
-+        "total_interruptions": int(interruption_stats["total"]),
-+        "total_questions": int(total_questions),
-+        "question_types": question_types,
-+        "decisions_count": len(decisions),
-+        "action_items_count": len(action_items),
-+        "actionability_ratio": compute_actionability_ratio(action_items),
-+        "emotional_summary": emotional_summary,
-+        "questions_source": questions_source,
-+    }
-+
-+    return {
-+        "version": 1,
-+        "config": {
-+            "gap_threshold_sec": float(gap_threshold_sec),
-+            "interruption_overlap_sec": float(interruption_overlap_sec),
-+        },
-+        "meeting": meeting,
-+        "participants": participants,
-+    }
-+
-+
-+def _load_json_dict(path: Path) -> dict[str, Any]:
-+    if not path.exists():
-+        return {}
-+    try:
-+        payload = json.loads(path.read_text(encoding="utf-8"))
-+    except (OSError, ValueError):
-+        return {}
-+    return payload if isinstance(payload, dict) else {}
-+
-+
-+def _load_json_list(path: Path) -> list[dict[str, Any]]:
-+    if not path.exists():
-+        return []
-+    try:
-+        payload = json.loads(path.read_text(encoding="utf-8"))
-+    except (OSError, ValueError):
-+        return []
-+    if not isinstance(payload, list):
-+        return []
-+    return [row for row in payload if isinstance(row, dict)]
-+
-+
-+def refresh_recording_metrics(
-+    recording_id: str,
-+    *,
-+    settings: AppSettings,
-+) -> dict[str, Any]:
-+    """Compute and persist meeting+participant metrics for a recording."""
-+    derived = settings.recordings_root / recording_id / "derived"
-+    transcript_path = derived / "transcript.json"
-+    summary_path = derived / "summary.json"
-+    speaker_turns_path = derived / "speaker_turns.json"
-+    metrics_path = derived / "metrics.json"
-+
-+    transcript_payload = _load_json_dict(transcript_path)
-+    summary_payload = _load_json_dict(summary_path)
-+    speaker_turns = _load_json_list(speaker_turns_path)
-+
-+    computed = build_conversation_metrics(
-+        transcript_payload=transcript_payload,
-+        summary_payload=summary_payload,
-+        speaker_turns=speaker_turns,
-+    )
-+
-+    existing_metrics = _load_json_dict(metrics_path)
-+    merged_metrics = dict(existing_metrics)
-+    merged_metrics["conversation_version"] = computed["version"]
-+    merged_metrics["conversation_config"] = computed["config"]
-+    merged_metrics["meeting"] = computed["meeting"]
-+    merged_metrics["participants"] = computed["participants"]
-+    atomic_write_json(metrics_path, merged_metrics)
-+
-+    upsert_meeting_metrics(
-+        recording_id=recording_id,
-+        payload=computed["meeting"],
-+        settings=settings,
-+    )
-+    replace_participant_metrics(
-+        recording_id=recording_id,
-+        rows=[
-+            {
-+                "voice_profile_id": None,
-+                "diar_speaker_label": str(row.get("speaker") or "S1"),
-+                "payload": row,
-+            }
-+            for row in computed["participants"]
-+        ],
-+        settings=settings,
-+    )
-+    return computed
-+
-+
-+__all__ = [
-+    "DEFAULT_GAP_THRESHOLD_SEC",
-+    "DEFAULT_INTERRUPTION_OVERLAP_SEC",
-+    "merge_speaker_turns",
-+    "count_interruptions",
-+    "compute_actionability_ratio",
-+    "build_conversation_metrics",
-+    "refresh_recording_metrics",
-+]
-diff --git a/tests/test_conversation_metrics.py b/tests/test_conversation_metrics.py
-new file mode 100644
-index 0000000..e823a06
---- /dev/null
-+++ b/tests/test_conversation_metrics.py
-@@ -0,0 +1,146 @@
-+from __future__ import annotations
-+
-+import json
-+from pathlib import Path
-+
-+from lan_app.conversation_metrics import (
-+    compute_actionability_ratio,
-+    count_interruptions,
-+    merge_speaker_turns,
-+    refresh_recording_metrics,
-+)
-+from lan_app.config import AppSettings
-+from lan_app.db import (
-+    create_recording,
-+    get_meeting_metrics,
-+    init_db,
-+    list_participant_metrics,
-+)
-+
-+
-+def test_merge_speaker_turns_merges_tiny_gaps_only_for_adjacent_same_speaker():
-+    turns = [
-+        {"start": 0.0, "end": 1.0, "speaker": "S1", "text": "hello"},
-+        {"start": 1.6, "end": 2.1, "speaker": "S1", "text": "team"},
-+        {"start": 2.2, "end": 2.8, "speaker": "S2", "text": "hi"},
-+        {"start": 2.9, "end": 3.2, "speaker": "S1", "text": "again"},
-+    ]
-+
-+    merged = merge_speaker_turns(turns, gap_threshold=1.0)
-+
-+    assert len(merged) == 3
-+    assert merged[0]["speaker"] == "S1"
-+    assert merged[0]["start"] == 0.0
-+    assert merged[0]["end"] == 2.1
-+    assert merged[0]["text"] == "hello team"
-+    assert merged[2]["speaker"] == "S1"
-+    assert merged[2]["text"] == "again"
-+
-+
-+def test_count_interruptions_counts_done_and_received_with_overlap_threshold():
-+    turns = [
-+        {"start": 0.0, "end": 5.0, "speaker": "S1", "text": "long turn"},
-+        {"start": 4.6, "end": 6.0, "speaker": "S2", "text": "interruption"},
-+        {"start": 5.8, "end": 7.0, "speaker": "S3", "text": "tiny overlap only"},
-+        {"start": 6.5, "end": 8.0, "speaker": "S1", "text": "interrupts S3"},
-+    ]
-+
-+    stats = count_interruptions(turns, overlap_threshold=0.3)
-+
-+    assert stats["total"] == 2
-+    assert stats["done"]["S2"] == 1
-+    assert stats["done"]["S1"] == 1
-+    assert stats["received"]["S1"] == 1
-+    assert stats["received"]["S3"] == 1
-+
-+
-+def test_compute_actionability_ratio_uses_owner_and_deadline_presence():
-+    action_items = [
-+        {"task": "Send notes", "owner": "Alex", "deadline": "2026-02-25"},
-+        {"task": "Prepare demo", "owner": "", "deadline": "2026-02-26"},
-+        {"task": "Review metrics", "owner": "Mina", "deadline": None},
-+        {"task": "Close tickets", "owner": "Mina", "deadline": "2026-03-01"},
-+    ]
-+
-+    ratio = compute_actionability_ratio(action_items)
-+
-+    assert ratio == 0.5
-+
-+
-+def test_refresh_recording_metrics_persists_json_and_db(tmp_path: Path):
-+    cfg = AppSettings(
-+        data_root=tmp_path,
-+        recordings_root=tmp_path / "recordings",
-+        db_path=tmp_path / "db" / "app.db",
-+    )
+ 
++def test_recording_detail_metrics_tab_backfills_missing_db_side_from_artifact(tmp_path, monkeypatch):
++    cfg = _cfg(tmp_path)
++    monkeypatch.setattr(api, "_settings", cfg)
++    monkeypatch.setattr(ui_routes, "_settings", cfg)
 +    init_db(cfg)
 +    create_recording(
-+        "rec-metrics-refresh-1",
++        "rec-metrics-backfill-1",
 +        source="drive",
-+        source_filename="meeting.mp3",
++        source_filename="metrics-backfill.mp3",
++        status=RECORDING_STATUS_READY,
 +        settings=cfg,
 +    )
 +
-+    derived = cfg.recordings_root / "rec-metrics-refresh-1" / "derived"
++    derived = cfg.recordings_root / "rec-metrics-backfill-1" / "derived"
 +    derived.mkdir(parents=True, exist_ok=True)
-+    (derived / "transcript.json").write_text(
-+        json.dumps(
-+            {
-+                "text": "Do we have a final owner? We should decide now.",
-+                "segments": [],
-+            }
-+        ),
-+        encoding="utf-8",
-+    )
-+    (derived / "speaker_turns.json").write_text(
-+        json.dumps(
-+            [
-+                {"start": 0.0, "end": 3.0, "speaker": "S1", "text": "Do we have a final owner?"},
-+                {"start": 2.8, "end": 5.0, "speaker": "S2", "text": "Yes, I will own it."},
-+                {"start": 5.2, "end": 7.0, "speaker": "S1", "text": "Great, we decided."},
-+            ]
-+        ),
-+        encoding="utf-8",
-+    )
-+    (derived / "summary.json").write_text(
-+        json.dumps(
-+            {
-+                "decisions": ["Ship this week"],
-+                "action_items": [
-+                    {"task": "Send recap", "owner": "S2", "deadline": "2026-03-01"},
-+                ],
-+                "emotional_summary": "Focused and decisive.",
-+                "questions": {
-+                    "total_count": 1,
-+                    "types": {
-+                        "open": 1,
-+                        "yes_no": 0,
-+                        "clarification": 0,
-+                        "status": 0,
-+                        "decision_seeking": 0,
-+                    },
-+                    "extracted": ["Do we have a final owner?"],
-+                },
-+            }
-+        ),
-+        encoding="utf-8",
-+    )
++    (derived / "summary.json").write_text(json.dumps({}), encoding="utf-8")
 +    (derived / "metrics.json").write_text(
-+        json.dumps({"status": "ok", "version": 1}),
++        json.dumps(
++            {
++                "meeting": {
++                    "total_interruptions": 3,
++                    "total_questions": 5,
++                    "decisions_count": 2,
++                    "action_items_count": 4,
++                    "actionability_ratio": 0.75,
++                    "emotional_summary": "Constructive.",
++                    "total_speech_time_seconds": 60.0,
++                },
++                "participants": [
++                    {
++                        "speaker": "S2",
++                        "airtime_seconds": 21.0,
++                        "airtime_share": 0.35,
++                        "turns": 4,
++                        "interruptions_done": 2,
++                        "interruptions_received": 1,
++                        "questions_count": 2,
++                        "role_hint": "Facilitator",
++                    }
++                ],
++            }
++        ),
 +        encoding="utf-8",
 +    )
 +
-+    payload = refresh_recording_metrics("rec-metrics-refresh-1", settings=cfg)
-+    assert payload["meeting"]["total_questions"] == 1
-+    assert payload["meeting"]["actionability_ratio"] == 1.0
-+    assert len(payload["participants"]) == 2
++    # Simulate partial DB persistence: meeting row exists but is incomplete, participant rows missing.
++    upsert_meeting_metrics(
++        recording_id="rec-metrics-backfill-1",
++        payload={"total_interruptions": 3},
++        settings=cfg,
++    )
 +
-+    stored_metrics = json.loads((derived / "metrics.json").read_text(encoding="utf-8"))
-+    assert stored_metrics["status"] == "ok"
-+    assert stored_metrics["meeting"]["total_interruptions"] >= 0
++    c = TestClient(api.app, follow_redirects=True)
++    r = c.get("/recordings/rec-metrics-backfill-1?tab=metrics")
++    assert r.status_code == 200
++    assert "Constructive." in r.text
++    assert "75.0%" in r.text
++    assert "Facilitator" in r.text  # participant row backfilled from artifact
 +
-+    meeting_row = get_meeting_metrics("rec-metrics-refresh-1", settings=cfg)
-+    participant_rows = list_participant_metrics("rec-metrics-refresh-1", settings=cfg)
-+    assert meeting_row is not None
-+    assert meeting_row["json"]["total_questions"] == 1
-+    assert len(participant_rows) == 2
++
+ def test_recording_detail_overview_shows_topic_and_emotional_summary(tmp_path, monkeypatch):
+     cfg = _cfg(tmp_path)
+     monkeypatch.setattr(api, "_settings", cfg)

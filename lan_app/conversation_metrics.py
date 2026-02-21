@@ -45,26 +45,6 @@ _TASK_CUES = (
     "we need",
 )
 
-_QUESTION_PUNCT_LANGS = {
-    "ar",
-    "de",
-    "en",
-    "es",
-    "fr",
-    "hi",
-    "it",
-    "ja",
-    "ko",
-    "nl",
-    "pl",
-    "pt",
-    "ru",
-    "tr",
-    "uk",
-    "zh",
-}
-
-
 def _safe_float(value: Any, *, default: float = 0.0) -> float:
     try:
         out = float(value)
@@ -284,9 +264,7 @@ def _normalise_question_types(value: Any) -> dict[str, int]:
     return out
 
 
-def _count_question_punctuation(text: str, language: str | None) -> int:
-    if language and language not in _QUESTION_PUNCT_LANGS:
-        return 0
+def _count_question_punctuation(text: str, _language: str | None) -> int:
     return text.count("?") + text.count("？")
 
 

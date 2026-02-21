@@ -289,15 +289,40 @@ def _metrics_tab_context(recording_id: str, settings: AppSettings) -> dict[str, 
         normalized["speaker"] = speaker
         participants_payload.append(normalized)
 
-    if not meeting_payload and not participants_payload:
+    metrics_payload: dict[str, Any] = {}
+    if not meeting_payload or not participants_payload:
         derived = settings.recordings_root / recording_id / "derived"
         metrics_payload = _load_json_dict(derived / "metrics.json")
         meeting_raw = metrics_payload.get("meeting")
         participants_raw = metrics_payload.get("participants")
         if isinstance(meeting_raw, dict):
-            meeting_payload = dict(meeting_raw)
+            if not meeting_payload:
+                meeting_payload = dict(meeting_raw)
+            else:
+                for key, value in meeting_raw.items():
+                    meeting_payload.setdefault(key, value)
         if isinstance(participants_raw, list):
-            participants_payload = [row for row in participants_raw if isinstance(row, dict)]
+            artifact_participants = [row for row in participants_raw if isinstance(row, dict)]
+            if not participants_payload:
+                participants_payload = artifact_participants
+            else:
+                by_speaker: dict[str, dict[str, Any]] = {}
+                for row in participants_payload:
+                    speaker = str(row.get("speaker") or "").strip()
+                    if not speaker:
+                        continue
+                    by_speaker[speaker] = row
+                for row in artifact_participants:
+                    speaker = str(row.get("speaker") or "").strip()
+                    if not speaker:
+                        continue
+                    existing = by_speaker.get(speaker)
+                    if existing is None:
+                        participants_payload.append(row)
+                        by_speaker[speaker] = row
+                        continue
+                    for key, value in row.items():
+                        existing.setdefault(key, value)
 
     meeting = {
         "total_interruptions": _to_int(meeting_payload.get("total_interruptions")),

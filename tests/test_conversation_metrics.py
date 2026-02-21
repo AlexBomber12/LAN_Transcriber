@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 from lan_app.conversation_metrics import (
+    build_conversation_metrics,
     compute_actionability_ratio,
     count_interruptions,
     merge_speaker_turns,
@@ -65,6 +66,26 @@ def test_compute_actionability_ratio_uses_owner_and_deadline_presence():
     ratio = compute_actionability_ratio(action_items)
 
     assert ratio == 0.5
+
+
+def test_build_conversation_metrics_heuristic_questions_count_punctuation_for_unknown_language():
+    payload = build_conversation_metrics(
+        transcript_payload={},
+        summary_payload={"questions": {}},
+        speaker_turns=[
+            {
+                "start": 0.0,
+                "end": 1.5,
+                "speaker": "S1",
+                "text": "Should we proceed?",
+                "language": "xx",
+            }
+        ],
+    )
+
+    assert payload["meeting"]["questions_source"] == "heuristic"
+    assert payload["meeting"]["total_questions"] == 1
+    assert payload["participants"][0]["questions_count"] == 1
 
 
 def test_refresh_recording_metrics_persists_json_and_db(tmp_path: Path):
