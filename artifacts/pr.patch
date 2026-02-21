@@ -1,98 +1,1633 @@
+diff --git a/lan_app/api.py b/lan_app/api.py
+index 0c54093..6fb6147 100644
+--- a/lan_app/api.py
++++ b/lan_app/api.py
+@@ -47,6 +47,7 @@ from .ms_graph import (
+     ms_connection_state,
+     start_device_flow_session,
+ )
++from .onenote import PublishPreconditionError, publish_recording_to_onenote
+ from .ui_routes import _STATIC_DIR, ui_router
+ 
+ app = FastAPI()
+@@ -253,6 +254,26 @@ async def api_select_recording_calendar(
+         raise HTTPException(status_code=422, detail=str(exc))
+ 
+ 
++@app.post("/api/recordings/{recording_id}/publish")
++async def api_publish_recording(recording_id: str) -> dict[str, object]:
++    if get_recording(recording_id, settings=_settings) is None:
++        raise HTTPException(status_code=404, detail="Recording not found")
++    try:
++        return await run_in_threadpool(
++            publish_recording_to_onenote,
++            recording_id,
++            settings=_settings,
++        )
++    except PublishPreconditionError as exc:
++        raise HTTPException(status_code=422, detail=str(exc))
++    except GraphNotConfiguredError as exc:
++        raise HTTPException(status_code=422, detail=str(exc))
++    except GraphAuthError as exc:
++        raise HTTPException(status_code=503, detail=str(exc))
++    except RuntimeError as exc:
++        raise HTTPException(status_code=503, detail=str(exc))
++
++
+ @app.post("/api/recordings/{recording_id}/actions/requeue")
+ async def api_requeue_recording(
+     recording_id: str,
 diff --git a/lan_app/db.py b/lan_app/db.py
-index c321886..3875c34 100644
+index 3875c34..4968ae1 100644
 --- a/lan_app/db.py
 +++ b/lan_app/db.py
-@@ -129,7 +129,7 @@ _MIGRATIONS: tuple[str, ...] = (
-         snippet_path TEXT NOT NULL,
-         created_at TEXT NOT NULL,
-         FOREIGN KEY(voice_profile_id) REFERENCES voice_profiles(id) ON DELETE CASCADE,
--        FOREIGN KEY(recording_id) REFERENCES recordings(id) ON DELETE SET NULL
-+        FOREIGN KEY(recording_id) REFERENCES recordings(id) ON DELETE CASCADE
-     );
- 
-     CREATE INDEX IF NOT EXISTS idx_speaker_assignments_recording_id
-@@ -137,6 +137,42 @@ _MIGRATIONS: tuple[str, ...] = (
+@@ -15,6 +15,7 @@ from .constants import (
+     JOB_STATUS_STARTED,
+     JOB_TYPES,
+     RECORDING_STATUSES,
++    RECORDING_STATUS_PUBLISHED,
+     RECORDING_STATUS_QUEUED,
+     RECORDING_STATUS_QUARANTINE,
+ )
+@@ -173,6 +174,9 @@ _MIGRATIONS: tuple[str, ...] = (
      CREATE INDEX IF NOT EXISTS idx_voice_samples_profile_id ON voice_samples(voice_profile_id);
      CREATE INDEX IF NOT EXISTS idx_voice_samples_recording_id ON voice_samples(recording_id);
      """,
 +    """
-+    ALTER TABLE voice_samples RENAME TO voice_samples_old;
-+
-+    CREATE TABLE voice_samples (
-+        id INTEGER PRIMARY KEY AUTOINCREMENT,
-+        voice_profile_id INTEGER NOT NULL,
-+        recording_id TEXT,
-+        diar_speaker_label TEXT,
-+        snippet_path TEXT NOT NULL,
-+        created_at TEXT NOT NULL,
-+        FOREIGN KEY(voice_profile_id) REFERENCES voice_profiles(id) ON DELETE CASCADE,
-+        FOREIGN KEY(recording_id) REFERENCES recordings(id) ON DELETE CASCADE
-+    );
-+
-+    INSERT INTO voice_samples (
-+        id,
-+        voice_profile_id,
-+        recording_id,
-+        diar_speaker_label,
-+        snippet_path,
-+        created_at
-+    )
-+    SELECT
-+        id,
-+        voice_profile_id,
-+        recording_id,
-+        diar_speaker_label,
-+        snippet_path,
-+        created_at
-+    FROM voice_samples_old;
-+
-+    DROP TABLE voice_samples_old;
-+
-+    CREATE INDEX IF NOT EXISTS idx_voice_samples_profile_id ON voice_samples(voice_profile_id);
-+    CREATE INDEX IF NOT EXISTS idx_voice_samples_recording_id ON voice_samples(recording_id);
++    ALTER TABLE recordings ADD COLUMN onenote_page_url TEXT;
 +    """,
  )
  
  _UNSET = object()
-diff --git a/tests/test_ui_routes.py b/tests/test_ui_routes.py
-index edabf72..0e46780 100644
---- a/tests/test_ui_routes.py
-+++ b/tests/test_ui_routes.py
-@@ -1031,6 +1031,37 @@ def test_ui_action_delete_removes_disk_artifacts(tmp_path, monkeypatch):
-     assert not rec_dir.exists()
+@@ -425,6 +429,38 @@ def set_recording_language_settings(
+     return updated.rowcount > 0
  
  
-+def test_ui_action_delete_cascades_voice_samples_for_recording(tmp_path, monkeypatch):
++def set_recording_publish_result(
++    recording_id: str,
++    *,
++    onenote_page_id: str,
++    onenote_page_url: str | None = None,
++    settings: AppSettings | None = None,
++) -> bool:
++    init_db(settings)
++    page_id = str(onenote_page_id).strip()
++    if not page_id:
++        raise ValueError("onenote_page_id is required")
++    page_url = str(onenote_page_url).strip() if onenote_page_url is not None else ""
++    now = _utc_now()
++    with connect(settings) as conn:
++        updated = conn.execute(
++            """
++            UPDATE recordings
++            SET status = ?, quarantine_reason = NULL, onenote_page_id = ?, onenote_page_url = ?, updated_at = ?
++            WHERE id = ?
++            """,
++            (
++                RECORDING_STATUS_PUBLISHED,
++                page_id,
++                page_url or None,
++                now,
++                recording_id,
++            ),
++        )
++        conn.commit()
++    return updated.rowcount > 0
++
++
+ def delete_recording(
+     recording_id: str,
+     *,
+@@ -597,6 +633,20 @@ def list_projects(
+     return [_as_dict(row) or {} for row in rows]
+ 
+ 
++def get_project(
++    project_id: int,
++    *,
++    settings: AppSettings | None = None,
++) -> dict[str, Any] | None:
++    init_db(settings)
++    with connect(settings) as conn:
++        row = conn.execute(
++            "SELECT * FROM projects WHERE id = ?",
++            (project_id,),
++        ).fetchone()
++    return _as_dict(row)
++
++
+ def create_project(
+     name: str,
+     *,
+@@ -612,6 +662,40 @@ def create_project(
+     return _as_dict(row) or {}
+ 
+ 
++def update_project_onenote_mapping(
++    project_id: int,
++    *,
++    onenote_notebook_id: str | None = None,
++    onenote_section_id: str | None = None,
++    settings: AppSettings | None = None,
++) -> dict[str, Any] | None:
++    init_db(settings)
++    notebook_id = str(onenote_notebook_id or "").strip() or None
++    section_id = str(onenote_section_id or "").strip() or None
++    with connect(settings) as conn:
++        updated = conn.execute(
++            """
++            UPDATE projects
++            SET onenote_notebook_id = ?, onenote_section_id = ?
++            WHERE id = ?
++            """,
++            (
++                notebook_id,
++                section_id,
++                project_id,
++            ),
++        )
++        if updated.rowcount < 1:
++            conn.commit()
++            return None
++        row = conn.execute(
++            "SELECT * FROM projects WHERE id = ?",
++            (project_id,),
++        ).fetchone()
++        conn.commit()
++    return _as_dict(row) or {}
++
++
+ def delete_project(
+     project_id: int,
+     *,
+@@ -1107,6 +1191,7 @@ __all__ = [
+     "list_recordings",
+     "set_recording_status",
+     "set_recording_language_settings",
++    "set_recording_publish_result",
+     "delete_recording",
+     "create_job",
+     "get_job",
+@@ -1115,7 +1200,9 @@ __all__ = [
+     "finish_job",
+     "fail_job",
+     "list_projects",
++    "get_project",
+     "create_project",
++    "update_project_onenote_mapping",
+     "delete_project",
+     "list_voice_profiles",
+     "create_voice_profile",
+diff --git a/lan_app/ms_graph.py b/lan_app/ms_graph.py
+index 3430f1f..d216842 100644
+--- a/lan_app/ms_graph.py
++++ b/lan_app/ms_graph.py
+@@ -246,18 +246,27 @@ class MicrosoftGraphClient:
+             (_GraphTransientError, httpx.TransportError, httpx.TimeoutException)
+         ),
+     )
+-    def _graph_request(
++    def _graph_request_response(
+         self,
+         method: str,
+         path: str,
+         *,
+         payload: dict[str, Any] | None = None,
+-    ) -> dict[str, Any]:
++        content: str | bytes | None = None,
++        extra_headers: dict[str, str] | None = None,
++    ) -> httpx.Response:
+         token = self.acquire_token_silent()
+         url = f"{GRAPH_BASE_URL}/{path.lstrip('/')}"
+         headers = {"Authorization": f"Bearer {token['access_token']}"}
++        if extra_headers:
++            headers.update(extra_headers)
++        request_kwargs: dict[str, Any] = {"headers": headers}
++        if payload is not None:
++            request_kwargs["json"] = payload
++        if content is not None:
++            request_kwargs["content"] = content
+         with httpx.Client(timeout=20.0) as client:
+-            resp = client.request(method, url, headers=headers, json=payload)
++            resp = client.request(method, url, **request_kwargs)
+ 
+         if resp.status_code == 401:
+             raise GraphNeedsReconnectError("Microsoft token rejected by Graph; reconnect required.")
+@@ -265,6 +274,16 @@ class MicrosoftGraphClient:
+             raise _GraphTransientError(f"Transient Graph error {resp.status_code}")
+         if resp.status_code >= 400:
+             raise GraphRequestError(f"Graph {method} {path} failed: {resp.status_code}")
++        return resp
++
++    def _graph_request(
++        self,
++        method: str,
++        path: str,
++        *,
++        payload: dict[str, Any] | None = None,
++    ) -> dict[str, Any]:
++        resp = self._graph_request_response(method, path, payload=payload)
+         if not resp.content:
+             return {}
+         try:
+@@ -284,6 +303,36 @@ class MicrosoftGraphClient:
+         except (httpx.TransportError, httpx.TimeoutException, _GraphTransientError) as exc:
+             raise GraphRequestError(str(exc)) from exc
+ 
++    def graph_post_html(self, path: str, html: str) -> dict[str, Any]:
++        payload = html.strip()
++        if not payload:
++            raise ValueError("html payload is required")
++        try:
++            response = self._graph_request_response(
++                "POST",
++                path,
++                content=payload.encode("utf-8"),
++                extra_headers={"Content-Type": "text/html"},
++            )
++        except (httpx.TransportError, httpx.TimeoutException, _GraphTransientError) as exc:
++            raise GraphRequestError(str(exc)) from exc
++
++        out: dict[str, Any] = {}
++        if response.content:
++            try:
++                parsed = response.json()
++            except ValueError:
++                parsed = None
++            if isinstance(parsed, dict):
++                out.update(parsed)
++        location = response.headers.get("Location")
++        if location:
++            out.setdefault("location", location)
++        content_location = response.headers.get("Content-Location")
++        if content_location:
++            out.setdefault("content_location", content_location)
++        return out
++
+     @property
+     def granted_scopes(self) -> list[str]:
+         return _scopes_from_token_result(self._last_token_result)
+diff --git a/lan_app/templates/projects.html b/lan_app/templates/projects.html
+index 4f7f771..22be07d 100644
+--- a/lan_app/templates/projects.html
++++ b/lan_app/templates/projects.html
+@@ -19,7 +19,7 @@
+       <tr>
+         <th>ID</th>
+         <th>Name</th>
+-        <th>Auto-publish</th>
++        <th>OneNote notebook ID</th>
+         <th>OneNote section ID</th>
+         <th></th>
+       </tr>
+@@ -29,9 +29,34 @@
+       <tr>
+         <td>{{ p.id }}</td>
+         <td>{{ p.name }}</td>
+-        <td>{% if p.auto_publish %}Yes{% else %}No{% endif %}</td>
+-        <td>{{ p.onenote_section_id or '—' }}</td>
+         <td>
++          <form method="post" action="/projects/{{ p.id }}/onenote" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
++            <input
++              type="text"
++              name="onenote_notebook_id"
++              value="{{ p.onenote_notebook_id or '' }}"
++              placeholder="Notebook ID"
++              style="font:12px 'Courier New',monospace;border:1px solid #999;padding:3px 6px;width:240px"
++            >
++            <input type="hidden" name="onenote_section_id" value="{{ p.onenote_section_id or '' }}">
++            <button class="btn" type="submit">Save mapping</button>
++          </form>
++        </td>
++        <td>
++          <form method="post" action="/projects/{{ p.id }}/onenote" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
++            <input type="hidden" name="onenote_notebook_id" value="{{ p.onenote_notebook_id or '' }}">
++            <input
++              type="text"
++              name="onenote_section_id"
++              value="{{ p.onenote_section_id or '' }}"
++              placeholder="Section ID"
++              style="font:12px 'Courier New',monospace;border:1px solid #999;padding:3px 6px;width:240px"
++            >
++            <button class="btn" type="submit">Save mapping</button>
++          </form>
++        </td>
++        <td style="white-space:nowrap">
++          <a class="btn" href="/projects?browse_project_id={{ p.id }}">Browse OneNote</a>
+           <form method="post" action="/projects/{{ p.id }}/delete" style="display:inline" onsubmit="return confirm('Delete project ' + this.dataset.name + '?')" data-name="{{ p.name }}">
+             <button class="btn btn-danger" type="submit">Delete</button>
+           </form>
+@@ -44,4 +69,88 @@
+   <p class="placeholder">No projects yet. Create one above.</p>
+   {% endif %}
+ </div>
++
++{% if browse_selected_project %}
++<div class="section">
++  <h2>OneNote Browser for {{ browse_selected_project.name }}</h2>
++  {% if browse_error %}
++  <p style="margin-bottom:10px;color:#92400e">{{ browse_error }}</p>
++  {% endif %}
++
++  {% if browse_notebooks %}
++  <h3 style="margin-top:0">Notebooks</h3>
++  <table>
++    <thead>
++      <tr>
++        <th>Name</th>
++        <th>ID</th>
++        <th>Open sections</th>
++        <th>Link</th>
++      </tr>
++    </thead>
++    <tbody>
++      {% for nb in browse_notebooks %}
++      <tr>
++        <td>{{ nb.display_name }}</td>
++        <td><code>{{ nb.id }}</code></td>
++        <td>
++          <a class="btn" href="/projects?browse_project_id={{ browse_selected_project.id }}&browse_notebook_id={{ nb.id|urlencode }}">Sections</a>
++          {% if browse_selected_notebook_id == nb.id %}
++          <span style="margin-left:6px;color:#2563eb">Selected</span>
++          {% endif %}
++        </td>
++        <td>
++          {% if nb.web_url %}
++          <a href="{{ nb.web_url }}" target="_blank" rel="noreferrer">Open</a>
++          {% else %}
++          —
++          {% endif %}
++        </td>
++      </tr>
++      {% endfor %}
++    </tbody>
++  </table>
++  {% else %}
++  <p class="placeholder">No notebooks visible, or Graph is not connected yet.</p>
++  {% endif %}
++
++  {% if browse_sections %}
++  <h3>Sections</h3>
++  <table>
++    <thead>
++      <tr>
++        <th>Name</th>
++        <th>ID</th>
++        <th>Use for project</th>
++        <th>Link</th>
++      </tr>
++    </thead>
++    <tbody>
++      {% for sec in browse_sections %}
++      <tr>
++        <td>{{ sec.display_name }}</td>
++        <td><code>{{ sec.id }}</code></td>
++        <td>
++          <form method="post" action="/projects/{{ browse_selected_project.id }}/onenote" style="display:inline">
++            <input type="hidden" name="onenote_notebook_id" value="{{ browse_selected_notebook_id }}">
++            <input type="hidden" name="onenote_section_id" value="{{ sec.id }}">
++            <button class="btn" type="submit">Use this section</button>
++          </form>
++        </td>
++        <td>
++          {% if sec.web_url %}
++          <a href="{{ sec.web_url }}" target="_blank" rel="noreferrer">Open</a>
++          {% else %}
++          —
++          {% endif %}
++        </td>
++      </tr>
++      {% endfor %}
++    </tbody>
++  </table>
++  {% elif browse_selected_notebook_id %}
++  <p class="placeholder">No sections visible for notebook <code>{{ browse_selected_notebook_id }}</code>.</p>
++  {% endif %}
++</div>
++{% endif %}
+ {% endblock %}
+diff --git a/lan_app/templates/recording_detail.html b/lan_app/templates/recording_detail.html
+index bdbfe50..91b9eb3 100644
+--- a/lan_app/templates/recording_detail.html
++++ b/lan_app/templates/recording_detail.html
+@@ -38,12 +38,40 @@
+     <span class="k">Transcript language override</span><span class="v">{{ rec.language_override or '—' }}</span>
+     <span class="k">Target summary language</span><span class="v">{{ rec.target_summary_language or '—' }}</span>
+     <span class="k">Drive file ID</span><span class="v">{{ rec.drive_file_id or '—' }}</span>
+-    <span class="k">OneNote page ID</span><span class="v">{{ rec.onenote_page_id or '—' }}</span>
++    <span class="k">OneNote page</span>
++    <span class="v">
++      {% if rec.onenote_page_id and onenote_page_url %}
++      <a href="{{ onenote_page_url }}" target="_blank" rel="noreferrer"><code>{{ rec.onenote_page_id }}</code></a>
++      {% elif rec.onenote_page_id %}
++      <code>{{ rec.onenote_page_id }}</code>
++      {% else %}
++      —
++      {% endif %}
++    </span>
+     <span class="k">Quarantine reason</span><span class="v">{{ rec.quarantine_reason or '—' }}</span>
+     <span class="k">Created at</span><span class="v">{{ rec.created_at[:19].replace('T',' ') if rec.created_at else '—' }}</span>
+     <span class="k">Updated at</span><span class="v">{{ rec.updated_at[:19].replace('T',' ') if rec.updated_at else '—' }}</span>
+   </div>
+ 
++  <div class="section" style="margin-top:10px">
++    <h2 style="margin-top:0">OneNote Publish</h2>
++    {% if rec.status == 'Published' and rec.onenote_page_id %}
++    <p>
++      <span class="badge s-Published">Published</span>
++      {% if onenote_page_url %}
++      <a href="{{ onenote_page_url }}" target="_blank" rel="noreferrer">Open OneNote page</a>
++      {% endif %}
++    </p>
++    {% endif %}
++    {% if rec.status in ['Ready', 'NeedsReview'] %}
++    <form method="post" action="/ui/recordings/{{ rec.id }}/publish">
++      <button type="submit" class="btn">Publish to OneNote</button>
++    </form>
++    {% else %}
++    <p class="placeholder">Publish is available only for Ready or NeedsReview recordings.</p>
++    {% endif %}
++  </div>
++
+   <h2>Topic</h2>
+   <p>{{ summary_data.topic or '—' }}</p>
+ 
+diff --git a/lan_app/ui_routes.py b/lan_app/ui_routes.py
+index 2c7283b..1f129d3 100644
+--- a/lan_app/ui_routes.py
++++ b/lan_app/ui_routes.py
+@@ -47,12 +47,19 @@ from .db import (
+     list_speaker_assignments,
+     list_voice_samples,
+     list_voice_profiles,
++    update_project_onenote_mapping,
+     set_speaker_assignment,
+     set_recording_language_settings,
+     set_recording_status,
+ )
+ from .jobs import enqueue_recording_job, purge_pending_recording_jobs
+ from .ms_graph import GraphAuthError, ms_connection_state
++from .onenote import (
++    PublishPreconditionError,
++    list_onenote_notebooks,
++    list_onenote_sections,
++    publish_recording_to_onenote,
++)
+ from lan_transcriber.artifacts import atomic_write_json
+ from lan_transcriber.llm_client import LLMClient
+ from lan_transcriber.pipeline import Settings as PipelineSettings
+@@ -513,6 +520,16 @@ def _as_data_relative_path(path: Path, *, settings: AppSettings) -> str | None:
+     return safe.relative_to(root_resolved).as_posix()
+ 
+ 
++def _recording_onenote_page_url(recording: dict[str, Any]) -> str | None:
++    explicit = str(recording.get("onenote_page_url") or "").strip()
++    if explicit:
++        return explicit
++    page_id = str(recording.get("onenote_page_id") or "").strip()
++    if not page_id:
++        return None
++    return f"https://graph.microsoft.com/v1.0/me/onenote/pages/{quote(page_id, safe='')}"
++
++
+ def _speakers_tab_context(recording_id: str, settings: AppSettings) -> dict[str, Any]:
+     transcript_path, _summary_path = _recording_derived_paths(recording_id, settings)
+     speaker_turns_path = transcript_path.parent / "speaker_turns.json"
+@@ -900,6 +917,7 @@ async def ui_recording_detail(
+     rec = get_recording(recording_id, settings=_settings)
+     if rec is None:
+         return HTMLResponse("<h1>404 – Recording not found</h1>", status_code=404)
++    onenote_page_url = _recording_onenote_page_url(rec)
+     jobs, _ = list_jobs(settings=_settings, recording_id=recording_id, limit=100)
+     tabs = ["overview", "calendar", "project", "speakers", "language", "metrics", "log"]
+     current_tab = tab if tab in tabs else "overview"
+@@ -945,6 +963,7 @@ async def ui_recording_detail(
+             "summary": summary,
+             "metrics": metrics,
+             "speakers": speakers,
++            "onenote_page_url": onenote_page_url,
+         },
+     )
+ 
+@@ -1088,14 +1107,60 @@ async def ui_add_speaker_sample(
+ 
+ 
+ @ui_router.get("/projects", response_class=HTMLResponse)
+-async def ui_projects(request: Request) -> Any:
++async def ui_projects(
++    request: Request,
++    browse_project_id: int | None = Query(default=None),
++    browse_notebook_id: str | None = Query(default=None),
++) -> Any:
+     items = list_projects(settings=_settings)
++    selected_project: dict[str, Any] | None = None
++    selected_notebook_id = ""
++    notebooks: list[dict[str, Any]] = []
++    sections: list[dict[str, Any]] = []
++    browse_error: str | None = None
++
++    if browse_project_id is not None:
++        selected_project = next(
++            (
++                item
++                for item in items
++                if int(item.get("id", -1)) == browse_project_id
++            ),
++            None,
++        )
++        if selected_project is None:
++            browse_error = f"Project {browse_project_id} not found."
++        else:
++            try:
++                notebooks = await run_in_threadpool(
++                    list_onenote_notebooks,
++                    settings=_settings,
++                )
++                selected_notebook_id = (
++                    (browse_notebook_id or "").strip()
++                    or str(selected_project.get("onenote_notebook_id") or "").strip()
++                )
++                if selected_notebook_id:
++                    sections = await run_in_threadpool(
++                        list_onenote_sections,
++                        selected_notebook_id,
++                        settings=_settings,
++                    )
++            except (GraphAuthError, ValueError, RuntimeError) as exc:
++                browse_error = str(exc)
++
+     return templates.TemplateResponse(
+         request,
+         "projects.html",
+         {
+             "active": "projects",
+             "items": items,
++            "browse_project_id": browse_project_id,
++            "browse_selected_project": selected_project,
++            "browse_selected_notebook_id": selected_notebook_id,
++            "browse_notebooks": notebooks,
++            "browse_sections": sections,
++            "browse_error": browse_error,
+         },
+     )
+ 
+@@ -1113,6 +1178,25 @@ async def ui_create_project(
+     return RedirectResponse("/projects", status_code=303)
+ 
+ 
++@ui_router.post("/projects/{project_id}/onenote", response_class=HTMLResponse)
++async def ui_update_project_onenote(
++    project_id: int,
++    onenote_notebook_id: str = Form(default=""),
++    onenote_section_id: str = Form(default=""),
++) -> Any:
++    update_project_onenote_mapping(
++        project_id,
++        onenote_notebook_id=onenote_notebook_id,
++        onenote_section_id=onenote_section_id,
++        settings=_settings,
++    )
++    redirect_url = f"/projects?browse_project_id={project_id}"
++    notebook = onenote_notebook_id.strip()
++    if notebook:
++        redirect_url = f"{redirect_url}&browse_notebook_id={quote(notebook)}"
++    return RedirectResponse(redirect_url, status_code=303)
++
++
+ @ui_router.post("/projects/{project_id}/delete", response_class=HTMLResponse)
+ async def ui_delete_project(project_id: int) -> Any:
+     delete_project(project_id, settings=_settings)
+@@ -1280,6 +1364,25 @@ async def ui_action_quarantine(recording_id: str) -> Any:
+     return resp
+ 
+ 
++@ui_router.post("/ui/recordings/{recording_id}/publish")
++async def ui_action_publish(recording_id: str) -> Any:
++    if get_recording(recording_id, settings=_settings) is None:
++        return HTMLResponse("Not found", status_code=404)
++    try:
++        await run_in_threadpool(
++            publish_recording_to_onenote,
++            recording_id,
++            settings=_settings,
++        )
++    except PublishPreconditionError as exc:
++        return HTMLResponse(str(exc), status_code=422)
++    except GraphAuthError as exc:
++        return HTMLResponse(str(exc), status_code=503)
++    except RuntimeError as exc:
++        return HTMLResponse(str(exc), status_code=503)
++    return RedirectResponse(f"/recordings/{recording_id}?tab=overview", status_code=303)
++
++
+ @ui_router.post("/ui/recordings/{recording_id}/delete")
+ async def ui_action_delete(recording_id: str) -> Any:
+     if get_recording(recording_id, settings=_settings) is None:
+diff --git a/tasks/QUEUE.md b/tasks/QUEUE.md
+index fa6613b..0927f44 100644
+--- a/tasks/QUEUE.md
++++ b/tasks/QUEUE.md
+@@ -72,7 +72,7 @@ Queue (in order)
+ - Depends on: PR-PIPELINE-01 and PR-UI-SHELL-01
+ 
+ 13) PR-ONENOTE-01: Projects mapping to OneNote sections + Publish to OneNote (work)
+-- Status: TODO
++- Status: DONE
+ - Tasks file: tasks/PR-ONENOTE-01.md
+ - Depends on: PR-MS-AUTH-01 and PR-LLM-01 and PR-METRICS-01
+ 
+diff --git a/lan_app/onenote.py b/lan_app/onenote.py
+new file mode 100644
+index 0000000..d8ec4dc
+--- /dev/null
++++ b/lan_app/onenote.py
+@@ -0,0 +1,686 @@
++"""OneNote project browsing and publish helpers."""
++
++from __future__ import annotations
++
++from datetime import datetime, timezone
++from html import escape
++import json
++from pathlib import Path
++import re
++from typing import Any
++from urllib.parse import quote, unquote
++
++from .config import AppSettings
++from .constants import RECORDING_STATUS_NEEDS_REVIEW, RECORDING_STATUS_READY
++from .db import (
++    get_calendar_match,
++    get_meeting_metrics,
++    get_project,
++    get_recording,
++    list_participant_metrics,
++    set_recording_publish_result,
++)
++from .ms_graph import MicrosoftGraphClient
++
++_ALLOWED_PUBLISH_STATUSES = {
++    RECORDING_STATUS_READY,
++    RECORDING_STATUS_NEEDS_REVIEW,
++}
++_PAGE_ID_RE = re.compile(r"/pages/([^/?#]+)", re.IGNORECASE)
++
++
++class PublishPreconditionError(ValueError):
++    """Raised when publish preconditions are not met."""
++
++
++def list_onenote_notebooks(
++    *,
++    settings: AppSettings | None = None,
++) -> list[dict[str, Any]]:
++    cfg = settings or AppSettings()
++    client = MicrosoftGraphClient(cfg)
++    response = client.graph_get("/me/onenote/notebooks?$top=200")
++    items = response.get("value")
++    if not isinstance(items, list):
++        return []
++    notebooks = [_normalise_onenote_item(item) for item in items]
++    out = [item for item in notebooks if item is not None]
++    out.sort(key=lambda row: (row["display_name"].lower(), row["id"]))
++    return out
++
++
++def list_onenote_sections(
++    notebook_id: str,
++    *,
++    settings: AppSettings | None = None,
++) -> list[dict[str, Any]]:
++    clean_notebook_id = str(notebook_id).strip()
++    if not clean_notebook_id:
++        raise ValueError("notebook_id is required")
++    cfg = settings or AppSettings()
++    client = MicrosoftGraphClient(cfg)
++    encoded_notebook_id = quote(clean_notebook_id, safe="")
++    response = client.graph_get(
++        f"/me/onenote/notebooks/{encoded_notebook_id}/sections?$top=200"
++    )
++    items = response.get("value")
++    if not isinstance(items, list):
++        return []
++    sections = [_normalise_onenote_item(item) for item in items]
++    out = [item for item in sections if item is not None]
++    out.sort(key=lambda row: (row["display_name"].lower(), row["id"]))
++    return out
++
++
++def publish_recording_to_onenote(
++    recording_id: str,
++    *,
++    settings: AppSettings | None = None,
++) -> dict[str, Any]:
++    cfg = settings or AppSettings()
++    recording = get_recording(recording_id, settings=cfg)
++    if recording is None:
++        raise KeyError(recording_id)
++
++    status = str(recording.get("status") or "").strip()
++    if status not in _ALLOWED_PUBLISH_STATUSES:
++        allowed = ", ".join(sorted(_ALLOWED_PUBLISH_STATUSES))
++        raise PublishPreconditionError(
++            f"Recording status must be one of: {allowed} (current: {status or 'unknown'})"
++        )
++
++    project_id_raw = recording.get("project_id")
++    if project_id_raw is None:
++        raise PublishPreconditionError("Recording has no project assigned.")
++    try:
++        project_id = int(project_id_raw)
++    except (TypeError, ValueError) as exc:
++        raise PublishPreconditionError("Recording project_id is invalid.") from exc
++    project = get_project(project_id, settings=cfg)
++    if project is None:
++        raise PublishPreconditionError("Recording project mapping does not exist.")
++
++    section_id = str(project.get("onenote_section_id") or "").strip()
++    if not section_id:
++        raise PublishPreconditionError("Project OneNote section_id is not configured.")
++    notebook_id = str(project.get("onenote_notebook_id") or "").strip() or None
++
++    summary = _load_summary_context(recording_id, cfg)
++    metrics = _load_metrics_context(recording_id, cfg)
++    calendar = _load_calendar_context(recording_id, cfg)
++    links = _build_link_context(recording, cfg)
++
++    participants = _participants_for_title(metrics, calendar)
++    title = _build_publish_title(recording, summary, participants)
++    html_payload = _build_onenote_html(
++        title=title,
++        summary=summary,
++        metrics=metrics,
++        calendar=calendar,
++        links=links,
++    )
++
++    client = MicrosoftGraphClient(cfg)
++    encoded_section_id = quote(section_id, safe="")
++    response = client.graph_post_html(
++        f"/me/onenote/sections/{encoded_section_id}/pages",
++        html_payload,
++    )
++    page_id = _extract_page_id(response)
++    if not page_id:
++        raise RuntimeError("Graph publish succeeded but page ID was not returned.")
++    page_url = _extract_page_url(response)
++
++    saved = set_recording_publish_result(
++        recording_id,
++        onenote_page_id=page_id,
++        onenote_page_url=page_url,
++        settings=cfg,
++    )
++    if not saved:
++        raise KeyError(recording_id)
++
++    return {
++        "recording_id": recording_id,
++        "project_id": project_id,
++        "onenote_notebook_id": notebook_id,
++        "onenote_section_id": section_id,
++        "onenote_page_id": page_id,
++        "onenote_page_url": page_url,
++        "title": title,
++    }
++
++
++def _normalise_onenote_item(item: Any) -> dict[str, Any] | None:
++    if not isinstance(item, dict):
++        return None
++    item_id = str(item.get("id") or "").strip()
++    if not item_id:
++        return None
++    name = str(item.get("displayName") or "").strip() or item_id
++    return {
++        "id": item_id,
++        "display_name": name,
++        "web_url": _extract_page_url(item),
++    }
++
++
++def _load_json_dict(path: Path) -> dict[str, Any]:
++    if not path.exists():
++        return {}
++    try:
++        payload = json.loads(path.read_text(encoding="utf-8"))
++    except (OSError, ValueError):
++        return {}
++    if not isinstance(payload, dict):
++        return {}
++    return payload
++
++
++def _normalise_text_items(value: Any, *, max_items: int) -> list[str]:
++    if isinstance(value, list):
++        rows = value
++    elif isinstance(value, str):
++        rows = value.splitlines()
++    else:
++        return []
++
++    out: list[str] = []
++    for row in rows:
++        if len(out) >= max_items:
++            break
++        text = str(row).strip()
++        if not text:
++            continue
++        if text.startswith("- "):
++            text = text[2:].strip()
++        if text:
++            out.append(text)
++    return out
++
++
++def _load_summary_context(recording_id: str, settings: AppSettings) -> dict[str, Any]:
++    summary_path = settings.recordings_root / recording_id / "derived" / "summary.json"
++    payload = _load_json_dict(summary_path)
++    summary_bullets = _normalise_text_items(payload.get("summary_bullets"), max_items=20)
++    if not summary_bullets:
++        summary_bullets = _normalise_text_items(payload.get("summary"), max_items=20)
++    decisions = _normalise_text_items(payload.get("decisions"), max_items=30)
++
++    action_items: list[dict[str, str | None]] = []
++    raw_action_items = payload.get("action_items")
++    if isinstance(raw_action_items, list):
++        for row in raw_action_items[:40]:
++            if not isinstance(row, dict):
++                continue
++            task = str(row.get("task") or "").strip()
++            if not task:
++                continue
++            owner = str(row.get("owner") or "").strip() or None
++            deadline = str(row.get("deadline") or "").strip() or None
++            action_items.append(
++                {
++                    "task": task,
++                    "owner": owner,
++                    "deadline": deadline,
++                }
++            )
++
++    topic = str(payload.get("topic") or "").strip()
++    return {
++        "topic": topic or "Untitled",
++        "summary_bullets": summary_bullets,
++        "decisions": decisions,
++        "action_items": action_items,
++    }
++
++
++def _load_metrics_context(recording_id: str, settings: AppSettings) -> dict[str, Any]:
++    meeting_payload: dict[str, Any] = {}
++    participants_payload: list[dict[str, Any]] = []
++
++    meeting_row = get_meeting_metrics(recording_id, settings=settings) or {}
++    meeting_json = meeting_row.get("json")
++    if isinstance(meeting_json, dict):
++        meeting_payload = dict(meeting_json)
++
++    for row in list_participant_metrics(recording_id, settings=settings):
++        payload = row.get("json")
++        participant = payload if isinstance(payload, dict) else {}
++        if not participant:
++            continue
++        speaker = str(
++            participant.get("speaker") or row.get("diar_speaker_label") or ""
++        ).strip()
++        if not speaker:
++            continue
++        participants_payload.append(
++            {
++                "speaker": speaker,
++                "airtime_seconds": _to_float(participant.get("airtime_seconds")),
++                "airtime_share": _to_float(participant.get("airtime_share")),
++                "turns": _to_int(participant.get("turns")),
++                "interruptions_done": _to_int(participant.get("interruptions_done")),
++                "interruptions_received": _to_int(
++                    participant.get("interruptions_received")
++                ),
++                "questions_count": _to_int(participant.get("questions_count")),
++                "role_hint": str(participant.get("role_hint") or "").strip() or None,
++            }
++        )
++
++    if not meeting_payload or not participants_payload:
++        metrics_path = settings.recordings_root / recording_id / "derived" / "metrics.json"
++        fallback = _load_json_dict(metrics_path)
++        meeting_raw = fallback.get("meeting")
++        if isinstance(meeting_raw, dict):
++            for key, value in meeting_raw.items():
++                meeting_payload.setdefault(key, value)
++        participants_raw = fallback.get("participants")
++        if isinstance(participants_raw, list):
++            for row in participants_raw:
++                if not isinstance(row, dict):
++                    continue
++                speaker = str(row.get("speaker") or "").strip()
++                if not speaker:
++                    continue
++                participants_payload.append(
++                    {
++                        "speaker": speaker,
++                        "airtime_seconds": _to_float(row.get("airtime_seconds")),
++                        "airtime_share": _to_float(row.get("airtime_share")),
++                        "turns": _to_int(row.get("turns")),
++                        "interruptions_done": _to_int(row.get("interruptions_done")),
++                        "interruptions_received": _to_int(
++                            row.get("interruptions_received")
++                        ),
++                        "questions_count": _to_int(row.get("questions_count")),
++                        "role_hint": str(row.get("role_hint") or "").strip() or None,
++                    }
++                )
++
++    participants_payload.sort(
++        key=lambda row: (-float(row.get("airtime_seconds") or 0.0), row["speaker"])
++    )
++
++    meeting = {
++        "total_interruptions": _to_int(meeting_payload.get("total_interruptions")),
++        "total_questions": _to_int(meeting_payload.get("total_questions")),
++        "decisions_count": _to_int(meeting_payload.get("decisions_count")),
++        "action_items_count": _to_int(meeting_payload.get("action_items_count")),
++        "actionability_ratio": _to_float(meeting_payload.get("actionability_ratio")),
++        "total_speech_time_seconds": _to_float(
++            meeting_payload.get("total_speech_time_seconds")
++        ),
++        "emotional_summary": str(meeting_payload.get("emotional_summary") or "").strip()
++        or None,
++    }
++    return {"meeting": meeting, "participants": participants_payload}
++
++
++def _load_calendar_context(recording_id: str, settings: AppSettings) -> dict[str, Any]:
++    row = get_calendar_match(recording_id, settings=settings) or {}
++    selected_event_id = str(row.get("selected_event_id") or "").strip()
++    selected_confidence = row.get("selected_confidence")
++    if not selected_event_id:
++        return {
++            "selected_event_id": None,
++            "selected_confidence": selected_confidence,
++            "selected_event": None,
++        }
++    candidates = row.get("candidates_json")
++    if not isinstance(candidates, list):
++        candidates = []
++    selected_event: dict[str, Any] | None = None
++    for item in candidates:
++        if not isinstance(item, dict):
++            continue
++        if str(item.get("event_id") or "").strip() != selected_event_id:
++            continue
++        selected_event = {
++            "subject": str(item.get("subject") or "").strip() or "(no subject)",
++            "start": str(item.get("start") or "").strip() or None,
++            "end": str(item.get("end") or "").strip() or None,
++            "organizer": str(item.get("organizer") or "").strip() or None,
++            "attendees": [
++                str(attendee).strip()
++                for attendee in (item.get("attendees") or [])
++                if str(attendee).strip()
++            ],
++            "location": str(item.get("location") or "").strip() or None,
++        }
++        break
++    return {
++        "selected_event_id": selected_event_id,
++        "selected_confidence": selected_confidence,
++        "selected_event": selected_event,
++    }
++
++
++def _build_link_context(recording: dict[str, Any], settings: AppSettings) -> dict[str, str | None]:
++    recording_id = str(recording.get("id") or "").strip()
++    recording_dir = settings.recordings_root / recording_id
++    links: dict[str, str | None] = {
++        "drive_artifact_folder_url": None,
++        "drive_source_file_url": None,
++        "local_artifacts_path": None,
++        "local_artifacts_url": None,
++        "raw_audio_path": None,
++        "raw_audio_url": None,
++    }
++
++    drive_folder_url = str(recording.get("drive_artifact_folder_url") or "").strip()
++    if drive_folder_url:
++        links["drive_artifact_folder_url"] = drive_folder_url
++    drive_folder_id = str(recording.get("drive_artifact_folder_id") or "").strip()
++    if drive_folder_id and links["drive_artifact_folder_url"] is None:
++        links["drive_artifact_folder_url"] = (
++            f"https://drive.google.com/drive/folders/{drive_folder_id}"
++        )
++
++    drive_file_id = str(recording.get("drive_file_id") or "").strip()
++    if drive_file_id:
++        links["drive_source_file_url"] = f"https://drive.google.com/file/d/{drive_file_id}/view"
++
++    if recording_dir.exists():
++        resolved_dir = recording_dir.resolve()
++        links["local_artifacts_path"] = str(resolved_dir)
++        links["local_artifacts_url"] = resolved_dir.as_uri()
++
++    raw_dir = recording_dir / "raw"
++    for candidate in sorted(raw_dir.glob("audio.*")):
++        if not candidate.is_file():
++            continue
++        resolved_file = candidate.resolve()
++        links["raw_audio_path"] = str(resolved_file)
++        links["raw_audio_url"] = resolved_file.as_uri()
++        break
++    return links
++
++
++def _participants_for_title(
++    metrics: dict[str, Any],
++    calendar: dict[str, Any],
++) -> list[str]:
++    names: list[str] = []
++    for row in metrics.get("participants") or []:
++        if not isinstance(row, dict):
++            continue
++        speaker = str(row.get("speaker") or "").strip()
++        if speaker and speaker not in names:
++            names.append(speaker)
++    if not names:
++        selected_event = calendar.get("selected_event")
++        if isinstance(selected_event, dict):
++            for attendee in selected_event.get("attendees") or []:
++                text = str(attendee).strip()
++                if text and text not in names:
++                    names.append(text)
++    if not names:
++        return ["Participants unavailable"]
++    return names[:4]
++
++
++def _build_publish_title(
++    recording: dict[str, Any],
++    summary: dict[str, Any],
++    participants: list[str],
++) -> str:
++    captured = _parse_iso_datetime(str(recording.get("captured_at") or ""))
++    if captured is None:
++        captured = datetime.now(tz=timezone.utc)
++    timestamp = captured.strftime("%Y-%m-%d %H:%M")
++    topic = str(summary.get("topic") or "").strip() or "Untitled"
++    people = ", ".join(participants) if participants else "Participants unavailable"
++    duration = _format_duration(recording.get("duration_sec"))
++    return f"{timestamp} | {topic} | {people} | {duration}"
++
++
++def _build_onenote_html(
++    *,
++    title: str,
++    summary: dict[str, Any],
++    metrics: dict[str, Any],
++    calendar: dict[str, Any],
++    links: dict[str, str | None],
++) -> str:
++    rows: list[str] = [
++        "<!DOCTYPE html>",
++        "<html>",
++        "<head>",
++        '<meta charset="utf-8" />',
++        f"<title>{escape(title)}</title>",
++        "</head>",
++        "<body>",
++        f"<h1>{escape(title)}</h1>",
++        "<h2>Summary</h2>",
++    ]
++
++    summary_bullets = summary.get("summary_bullets") or []
++    if summary_bullets:
++        rows.append("<ul>")
++        for bullet in summary_bullets:
++            rows.append(f"<li>{escape(str(bullet))}</li>")
++        rows.append("</ul>")
++    else:
++        rows.append("<p>No summary available.</p>")
++
++    rows.append("<h2>Decisions</h2>")
++    decisions = summary.get("decisions") or []
++    if decisions:
++        rows.append("<ul>")
++        for decision in decisions:
++            rows.append(f"<li>{escape(str(decision))}</li>")
++        rows.append("</ul>")
++    else:
++        rows.append("<p>No decisions captured.</p>")
++
++    rows.append("<h2>Action items</h2>")
++    action_items = summary.get("action_items") or []
++    if action_items:
++        rows.extend(
++            [
++                '<table border="1" cellpadding="6" cellspacing="0">',
++                "<tr><th>Task</th><th>Owner</th><th>Deadline</th></tr>",
++            ]
++        )
++        for row in action_items:
++            if not isinstance(row, dict):
++                continue
++            rows.append(
++                "<tr>"
++                f"<td>{escape(str(row.get('task') or ''))}</td>"
++                f"<td>{escape(str(row.get('owner') or '—'))}</td>"
++                f"<td>{escape(str(row.get('deadline') or '—'))}</td>"
++                "</tr>"
++            )
++        rows.append("</table>")
++    else:
++        rows.append("<p>No action items captured.</p>")
++
++    rows.append("<h2>Metrics</h2>")
++    meeting = metrics.get("meeting") if isinstance(metrics.get("meeting"), dict) else {}
++    rows.extend(
++        [
++            "<ul>",
++            f"<li>Total interruptions: {escape(str(meeting.get('total_interruptions', 0)))}</li>",
++            f"<li>Total questions: {escape(str(meeting.get('total_questions', 0)))}</li>",
++            f"<li>Decisions count: {escape(str(meeting.get('decisions_count', 0)))}</li>",
++            f"<li>Action items count: {escape(str(meeting.get('action_items_count', 0)))}</li>",
++            (
++                "<li>Actionability ratio: "
++                f"{escape(_format_decimal(meeting.get('actionability_ratio')))}</li>"
++            ),
++            (
++                "<li>Total speech time (sec): "
++                f"{escape(_format_decimal(meeting.get('total_speech_time_seconds')))}</li>"
++            ),
++            "</ul>",
++        ]
++    )
++
++    participants = metrics.get("participants") or []
++    if participants:
++        rows.extend(
++            [
++                '<table border="1" cellpadding="6" cellspacing="0">',
++                (
++                    "<tr><th>Participant</th><th>Airtime (s)</th><th>Airtime share</th>"
++                    "<th>Turns</th><th>Questions</th></tr>"
++                ),
++            ]
++        )
++        for participant in participants:
++            if not isinstance(participant, dict):
++                continue
++            rows.append(
++                "<tr>"
++                f"<td>{escape(str(participant.get('speaker') or '—'))}</td>"
++                f"<td>{escape(_format_decimal(participant.get('airtime_seconds')))}</td>"
++                f"<td>{escape(_format_decimal(participant.get('airtime_share')))}</td>"
++                f"<td>{escape(str(participant.get('turns') or 0))}</td>"
++                f"<td>{escape(str(participant.get('questions_count') or 0))}</td>"
++                "</tr>"
++            )
++        rows.append("</table>")
++    else:
++        rows.append("<p>No participant metrics available.</p>")
++
++    rows.append("<h2>Calendar context</h2>")
++    selected_event = (
++        calendar.get("selected_event") if isinstance(calendar.get("selected_event"), dict) else None
++    )
++    if selected_event:
++        rows.extend(
++            [
++                "<ul>",
++                f"<li>Subject: {escape(str(selected_event.get('subject') or '—'))}</li>",
++                f"<li>Start: {escape(str(selected_event.get('start') or '—'))}</li>",
++                f"<li>End: {escape(str(selected_event.get('end') or '—'))}</li>",
++                f"<li>Organizer: {escape(str(selected_event.get('organizer') or '—'))}</li>",
++                (
++                    "<li>Attendees: "
++                    f"{escape(', '.join(selected_event.get('attendees') or []) or '—')}</li>"
++                ),
++                f"<li>Location: {escape(str(selected_event.get('location') or '—'))}</li>",
++                (
++                    "<li>Match score: "
++                    f"{escape(_format_decimal(calendar.get('selected_confidence')))}</li>"
++                ),
++                "</ul>",
++            ]
++        )
++    else:
++        rows.append("<p>No calendar event selected.</p>")
++
++    rows.append("<h2>Links</h2>")
++    rows.append("<ul>")
++    if links.get("drive_artifact_folder_url"):
++        url = str(links["drive_artifact_folder_url"])
++        rows.append(
++            f'<li>Drive artifact folder: <a href="{escape(url)}">{escape(url)}</a></li>'
++        )
++    if links.get("drive_source_file_url"):
++        url = str(links["drive_source_file_url"])
++        rows.append(f'<li>Drive source file: <a href="{escape(url)}">{escape(url)}</a></li>')
++    if links.get("local_artifacts_path"):
++        path = str(links["local_artifacts_path"])
++        rows.append(f"<li>Local artifact folder: {escape(path)}</li>")
++    if links.get("raw_audio_path"):
++        path = str(links["raw_audio_path"])
++        if links.get("raw_audio_url"):
++            url = str(links["raw_audio_url"])
++            rows.append(f'<li>Raw audio path: <a href="{escape(url)}">{escape(path)}</a></li>')
++        else:
++            rows.append(f"<li>Raw audio path: {escape(path)}</li>")
++    rows.append("</ul>")
++
++    rows.extend(["</body>", "</html>"])
++    return "\n".join(rows)
++
++
++def _parse_iso_datetime(value: str) -> datetime | None:
++    text = str(value or "").strip()
++    if not text:
++        return None
++    try:
++        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
++    except ValueError:
++        return None
++    if parsed.tzinfo is None:
++        return parsed.replace(tzinfo=timezone.utc)
++    return parsed.astimezone(timezone.utc)
++
++
++def _format_duration(value: Any) -> str:
++    try:
++        duration_sec = int(float(value))
++    except (TypeError, ValueError):
++        duration_sec = 0
++    if duration_sec <= 0:
++        return "n/a"
++    minutes, seconds = divmod(duration_sec, 60)
++    hours, minutes = divmod(minutes, 60)
++    if hours:
++        return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
++    return f"{minutes:02d}:{seconds:02d}"
++
++
++def _extract_page_id(payload: dict[str, Any]) -> str | None:
++    candidate = str(payload.get("id") or "").strip()
++    if candidate:
++        return candidate
++    for key in ("location", "content_location", "self"):
++        url = str(payload.get(key) or "").strip()
++        if not url:
++            continue
++        match = _PAGE_ID_RE.search(url)
++        if match:
++            return unquote(match.group(1))
++    return None
++
++
++def _extract_page_url(payload: dict[str, Any]) -> str | None:
++    links = payload.get("links")
++    if isinstance(links, dict):
++        web = links.get("oneNoteWebUrl")
++        if isinstance(web, dict):
++            href = str(web.get("href") or "").strip()
++            if href:
++                return href
++    one_note_web_url = payload.get("oneNoteWebUrl")
++    if isinstance(one_note_web_url, dict):
++        href = str(one_note_web_url.get("href") or "").strip()
++        if href:
++            return href
++    for key in ("contentUrl", "webUrl", "location", "content_location"):
++        candidate = str(payload.get(key) or "").strip()
++        if candidate:
++            return candidate
++    return None
++
++
++def _to_int(value: Any) -> int:
++    try:
++        return int(float(value))
++    except (TypeError, ValueError):
++        return 0
++
++
++def _to_float(value: Any) -> float:
++    try:
++        return float(value)
++    except (TypeError, ValueError):
++        return 0.0
++
++
++def _format_decimal(value: Any) -> str:
++    return f"{_to_float(value):.3f}"
++
++
++__all__ = [
++    "PublishPreconditionError",
++    "list_onenote_notebooks",
++    "list_onenote_sections",
++    "publish_recording_to_onenote",
++]
+diff --git a/tests/test_onenote.py b/tests/test_onenote.py
+new file mode 100644
+index 0000000..674d5ef
+--- /dev/null
++++ b/tests/test_onenote.py
+@@ -0,0 +1,297 @@
++from __future__ import annotations
++
++import json
++from pathlib import Path
++
++from fastapi.testclient import TestClient
++import pytest
++
++from lan_app import api, onenote, ui_routes
++from lan_app.config import AppSettings
++from lan_app.constants import (
++    RECORDING_STATUS_PUBLISHED,
++    RECORDING_STATUS_QUEUED,
++    RECORDING_STATUS_READY,
++)
++from lan_app.db import (
++    create_project,
++    create_recording,
++    get_project,
++    get_recording,
++    init_db,
++    set_recording_publish_result,
++    update_project_onenote_mapping,
++)
++
++
++def _cfg(tmp_path: Path) -> AppSettings:
++    cfg = AppSettings(
++        data_root=tmp_path,
++        recordings_root=tmp_path / "recordings",
++        db_path=tmp_path / "db" / "app.db",
++    )
++    cfg.metrics_snapshot_path = tmp_path / "metrics.snap"
++    return cfg
++
++
++def test_db_project_mapping_and_publish_result(tmp_path: Path):
++    cfg = _cfg(tmp_path)
++    init_db(cfg)
++    project = create_project("Ops", settings=cfg)
++    updated = update_project_onenote_mapping(
++        project["id"],
++        onenote_notebook_id="nb-100",
++        onenote_section_id="sec-100",
++        settings=cfg,
++    )
++    assert updated is not None
++    assert updated["onenote_notebook_id"] == "nb-100"
++    assert updated["onenote_section_id"] == "sec-100"
++    check = get_project(project["id"], settings=cfg)
++    assert check is not None
++    assert check["onenote_section_id"] == "sec-100"
++
++    create_recording(
++        "rec-published-1",
++        source="drive",
++        source_filename="published.mp3",
++        status=RECORDING_STATUS_READY,
++        settings=cfg,
++    )
++    assert set_recording_publish_result(
++        "rec-published-1",
++        onenote_page_id="page-100",
++        onenote_page_url="https://onenote.local/page-100",
++        settings=cfg,
++    )
++    rec = get_recording("rec-published-1", settings=cfg)
++    assert rec is not None
++    assert rec["status"] == RECORDING_STATUS_PUBLISHED
++    assert rec["onenote_page_id"] == "page-100"
++    assert rec["onenote_page_url"] == "https://onenote.local/page-100"
++
++
++def test_publish_recording_to_onenote_success(tmp_path: Path, monkeypatch):
++    cfg = _cfg(tmp_path)
++    init_db(cfg)
++    project = create_project("Finance", settings=cfg)
++    update_project_onenote_mapping(
++        project["id"],
++        onenote_notebook_id="nb-1",
++        onenote_section_id="sec-1",
++        settings=cfg,
++    )
++    create_recording(
++        "rec-pub-1",
++        source="drive",
++        source_filename="finance.mp3",
++        status=RECORDING_STATUS_READY,
++        project_id=project["id"],
++        drive_file_id="drive-123",
++        settings=cfg,
++    )
++    derived = cfg.recordings_root / "rec-pub-1" / "derived"
++    derived.mkdir(parents=True, exist_ok=True)
++    (derived / "summary.json").write_text(
++        json.dumps(
++            {
++                "topic": "Budget Review",
++                "summary_bullets": ["Discussed Q2 targets"],
++                "decisions": ["Approve spending freeze"],
++                "action_items": [
++                    {"task": "Draft budget", "owner": "Alex", "deadline": "2026-03-01"}
++                ],
++            }
++        ),
++        encoding="utf-8",
++    )
++
++    class _FakeGraphClient:
++        def __init__(self, settings=None):
++            self.settings = settings
++
++        def graph_post_html(self, path: str, html: str):
++            assert path.endswith("/me/onenote/sections/sec-1/pages")
++            assert "<h2>Summary</h2>" in html
++            return {
++                "id": "page-xyz",
++                "links": {"oneNoteWebUrl": {"href": "https://onenote.local/page-xyz"}},
++            }
++
++    monkeypatch.setattr(onenote, "MicrosoftGraphClient", _FakeGraphClient)
++
++    published = onenote.publish_recording_to_onenote("rec-pub-1", settings=cfg)
++    assert published["onenote_page_id"] == "page-xyz"
++    assert published["onenote_page_url"] == "https://onenote.local/page-xyz"
++
++    rec = get_recording("rec-pub-1", settings=cfg)
++    assert rec is not None
++    assert rec["status"] == RECORDING_STATUS_PUBLISHED
++    assert rec["onenote_page_id"] == "page-xyz"
++    assert rec["onenote_page_url"] == "https://onenote.local/page-xyz"
++
++
++def test_publish_recording_to_onenote_requires_ready_or_needs_review(tmp_path: Path):
++    cfg = _cfg(tmp_path)
++    init_db(cfg)
++    project = create_project("Sales", settings=cfg)
++    update_project_onenote_mapping(
++        project["id"],
++        onenote_notebook_id="nb-1",
++        onenote_section_id="sec-1",
++        settings=cfg,
++    )
++    create_recording(
++        "rec-not-ready-1",
++        source="drive",
++        source_filename="not-ready.mp3",
++        status=RECORDING_STATUS_QUEUED,
++        project_id=project["id"],
++        settings=cfg,
++    )
++    with pytest.raises(onenote.PublishPreconditionError):
++        onenote.publish_recording_to_onenote("rec-not-ready-1", settings=cfg)
++
++
++def test_api_publish_endpoint(tmp_path: Path, monkeypatch):
 +    cfg = _cfg(tmp_path)
 +    monkeypatch.setattr(api, "_settings", cfg)
 +    monkeypatch.setattr(ui_routes, "_settings", cfg)
 +    init_db(cfg)
 +    create_recording(
-+        "rec-del-sample-1",
++        "rec-api-publish-1",
 +        source="drive",
-+        source_filename="del-sample.mp3",
++        source_filename="publish.mp3",
++        status=RECORDING_STATUS_READY,
 +        settings=cfg,
 +    )
-+    profile = create_voice_profile("Voice Owner", settings=cfg)
-+    create_voice_sample(
-+        voice_profile_id=profile["id"],
-+        recording_id="rec-del-sample-1",
-+        diar_speaker_label="S1",
-+        snippet_path="recordings/rec-del-sample-1/derived/snippets/S1/1.wav",
++
++    monkeypatch.setattr(
++        api,
++        "publish_recording_to_onenote",
++        lambda recording_id, *, settings=None: {
++            "recording_id": recording_id,
++            "onenote_page_id": "page-api-1",
++        },
++    )
++
++    client = TestClient(api.app, follow_redirects=True)
++    resp = client.post("/api/recordings/rec-api-publish-1/publish")
++    assert resp.status_code == 200
++    assert resp.json()["onenote_page_id"] == "page-api-1"
++
++
++def test_api_publish_endpoint_returns_422_on_precondition(tmp_path: Path, monkeypatch):
++    cfg = _cfg(tmp_path)
++    monkeypatch.setattr(api, "_settings", cfg)
++    monkeypatch.setattr(ui_routes, "_settings", cfg)
++    init_db(cfg)
++    create_recording(
++        "rec-api-publish-2",
++        source="drive",
++        source_filename="publish-2.mp3",
++        status=RECORDING_STATUS_READY,
 +        settings=cfg,
 +    )
-+    assert len(list_voice_samples(settings=cfg)) == 1
 +
-+    def _fake_purge(recording_id: str, *, settings=None) -> int:
-+        return 0
++    def _fail(_recording_id: str, *, settings=None):
++        raise onenote.PublishPreconditionError("project mapping missing")
 +
-+    monkeypatch.setattr(ui_routes, "purge_pending_recording_jobs", _fake_purge)
-+    c = TestClient(api.app, follow_redirects=False)
-+    r = c.post("/ui/recordings/rec-del-sample-1/delete")
-+    assert r.status_code in (200, 307, 302)
-+    assert list_voice_samples(settings=cfg) == []
++    monkeypatch.setattr(api, "publish_recording_to_onenote", _fail)
++    client = TestClient(api.app, follow_redirects=True)
++    resp = client.post("/api/recordings/rec-api-publish-2/publish")
++    assert resp.status_code == 422
++    assert "project mapping missing" in resp.text
 +
 +
- def test_projects_duplicate_name_handled(tmp_path, monkeypatch):
-     cfg = _cfg(tmp_path)
-     monkeypatch.setattr(api, "_settings", cfg)
++def test_projects_page_browses_and_updates_mapping(tmp_path: Path, monkeypatch):
++    cfg = _cfg(tmp_path)
++    monkeypatch.setattr(api, "_settings", cfg)
++    monkeypatch.setattr(ui_routes, "_settings", cfg)
++    init_db(cfg)
++    project = create_project("BrowseProject", settings=cfg)
++
++    monkeypatch.setattr(
++        ui_routes,
++        "list_onenote_notebooks",
++        lambda *, settings=None: [
++            {"id": "nb-1", "display_name": "Notebook A", "web_url": "https://onenote/notebook"}
++        ],
++    )
++    monkeypatch.setattr(
++        ui_routes,
++        "list_onenote_sections",
++        lambda notebook_id, *, settings=None: [
++            {"id": "sec-1", "display_name": "Section A", "web_url": "https://onenote/section"}
++        ],
++    )
++
++    client = TestClient(api.app, follow_redirects=True)
++    page = client.get(f"/projects?browse_project_id={project['id']}&browse_notebook_id=nb-1")
++    assert page.status_code == 200
++    assert "OneNote Browser for BrowseProject" in page.text
++    assert "Notebook A" in page.text
++    assert "Section A" in page.text
++
++    updated = client.post(
++        f"/projects/{project['id']}/onenote",
++        data={"onenote_notebook_id": "nb-1", "onenote_section_id": "sec-1"},
++    )
++    assert updated.status_code == 200
++    project_after = get_project(project["id"], settings=cfg)
++    assert project_after is not None
++    assert project_after["onenote_notebook_id"] == "nb-1"
++    assert project_after["onenote_section_id"] == "sec-1"
++
++
++def test_recording_overview_publish_controls(tmp_path: Path, monkeypatch):
++    cfg = _cfg(tmp_path)
++    monkeypatch.setattr(api, "_settings", cfg)
++    monkeypatch.setattr(ui_routes, "_settings", cfg)
++    init_db(cfg)
++    create_recording(
++        "rec-ui-publish-1",
++        source="drive",
++        source_filename="ui-publish.mp3",
++        status=RECORDING_STATUS_READY,
++        settings=cfg,
++    )
++
++    client = TestClient(api.app, follow_redirects=True)
++    before = client.get("/recordings/rec-ui-publish-1?tab=overview")
++    assert before.status_code == 200
++    assert "Publish to OneNote" in before.text
++
++    set_recording_publish_result(
++        "rec-ui-publish-1",
++        onenote_page_id="page-ui-1",
++        onenote_page_url="https://onenote.local/page-ui-1",
++        settings=cfg,
++    )
++    after = client.get("/recordings/rec-ui-publish-1?tab=overview")
++    assert after.status_code == 200
++    assert "Open OneNote page" in after.text
++
++
++def test_ui_publish_action_redirects_on_success(tmp_path: Path, monkeypatch):
++    cfg = _cfg(tmp_path)
++    monkeypatch.setattr(api, "_settings", cfg)
++    monkeypatch.setattr(ui_routes, "_settings", cfg)
++    init_db(cfg)
++    create_recording(
++        "rec-ui-publish-2",
++        source="drive",
++        source_filename="ui-publish-2.mp3",
++        status=RECORDING_STATUS_READY,
++        settings=cfg,
++    )
++
++    monkeypatch.setattr(
++        ui_routes,
++        "publish_recording_to_onenote",
++        lambda recording_id, *, settings=None: {"recording_id": recording_id},
++    )
++    client = TestClient(api.app, follow_redirects=False)
++    resp = client.post("/ui/recordings/rec-ui-publish-2/publish")
++    assert resp.status_code == 303
++    assert resp.headers["location"] == "/recordings/rec-ui-publish-2?tab=overview"

@@ -72,7 +72,7 @@ Queue (in order)
 - Depends on: PR-PIPELINE-01 and PR-UI-SHELL-01
 
 13) PR-ONENOTE-01: Projects mapping to OneNote sections + Publish to OneNote (work)
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-ONENOTE-01.md
 - Depends on: PR-MS-AUTH-01 and PR-LLM-01 and PR-METRICS-01
 

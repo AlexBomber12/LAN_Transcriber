@@ -47,6 +47,7 @@ from .ms_graph import (
     ms_connection_state,
     start_device_flow_session,
 )
+from .onenote import PublishPreconditionError, publish_recording_to_onenote
 from .ui_routes import _STATIC_DIR, ui_router
 
 app = FastAPI()
@@ -251,6 +252,26 @@ async def api_select_recording_calendar(
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
+
+
+@app.post("/api/recordings/{recording_id}/publish")
+async def api_publish_recording(recording_id: str) -> dict[str, object]:
+    if get_recording(recording_id, settings=_settings) is None:
+        raise HTTPException(status_code=404, detail="Recording not found")
+    try:
+        return await run_in_threadpool(
+            publish_recording_to_onenote,
+            recording_id,
+            settings=_settings,
+        )
+    except PublishPreconditionError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except GraphNotConfiguredError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except GraphAuthError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
 
 
 @app.post("/api/recordings/{recording_id}/actions/requeue")
