@@ -539,6 +539,28 @@ def test_build_summary_payload_prefers_parsed_summary_field():
     assert payload["summary"] == "- one\n- two"
 
 
+def test_build_structured_summary_prompts_preserves_long_turn_text():
+    long_text = " ".join(f"word{i}" for i in range(300))
+    expected = " ".join(long_text.split())
+    _system_prompt, user_prompt = pipeline.build_structured_summary_prompts(
+        [
+            {
+                "start": 0.0,
+                "end": 120.0,
+                "speaker": "S1",
+                "text": long_text,
+                "language": "en",
+            }
+        ],
+        "en",
+    )
+    payload = json.loads(user_prompt)
+    turns = payload["speaker_turns"]
+    assert len(turns) > 1
+    reconstructed = " ".join(str(turn["text"]) for turn in turns)
+    assert reconstructed == expected
+
+
 @pytest.mark.asyncio
 async def test_pipeline_writes_structured_summary_payload(tmp_path: Path, mocker):
     mocker.patch(

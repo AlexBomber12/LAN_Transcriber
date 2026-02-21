@@ -392,10 +392,41 @@ _QUESTION_TYPE_KEYS = (
 )
 
 
-def _truncate_for_prompt(text: str, *, max_chars: int = 500) -> str:
-    if len(text) <= max_chars:
-        return text
-    return f"{text[: max_chars - 3].rstrip()}..."
+def _chunk_text_for_prompt(text: str, *, max_chars: int = 500) -> list[str]:
+    normalized = " ".join(text.split())
+    if not normalized:
+        return []
+    if len(normalized) <= max_chars:
+        return [normalized]
+
+    chunks: list[str] = []
+    words = normalized.split(" ")
+    current: list[str] = []
+    current_len = 0
+
+    for word in words:
+        word_len = len(word)
+        if not current:
+            if word_len > max_chars:
+                for start in range(0, word_len, max_chars):
+                    chunks.append(word[start : start + max_chars])
+                continue
+            current = [word]
+            current_len = word_len
+            continue
+
+        next_len = current_len + 1 + word_len
+        if next_len > max_chars:
+            chunks.append(" ".join(current))
+            current = [word]
+            current_len = word_len
+        else:
+            current.append(word)
+            current_len = next_len
+
+    if current:
+        chunks.append(" ".join(current))
+    return chunks
 
 
 def _normalise_prompt_speaker_turns(
@@ -405,21 +436,22 @@ def _normalise_prompt_speaker_turns(
 ) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for row in speaker_turns:
-        if len(out) >= max_turns:
-            break
-        text = _truncate_for_prompt(str(row.get("text") or "").strip())
-        if not text:
-            continue
-        payload: dict[str, Any] = {
-            "start": round(_safe_float(row.get("start"), default=0.0), 3),
-            "end": round(_safe_float(row.get("end"), default=0.0), 3),
-            "speaker": str(row.get("speaker") or "S1"),
-            "text": text,
-        }
+        start = round(_safe_float(row.get("start"), default=0.0), 3)
+        end = round(_safe_float(row.get("end"), default=0.0), 3)
+        speaker = str(row.get("speaker") or "S1")
         lang = _normalise_language_code(row.get("language"))
-        if lang:
-            payload["language"] = lang
-        out.append(payload)
+        for chunk in _chunk_text_for_prompt(str(row.get("text") or "").strip()):
+            if len(out) >= max_turns:
+                return out
+            payload: dict[str, Any] = {
+                "start": start,
+                "end": end,
+                "speaker": speaker,
+                "text": chunk,
+            }
+            if lang:
+                payload["language"] = lang
+            out.append(payload)
     return out
 
 

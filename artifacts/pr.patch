@@ -1,222 +1,120 @@
-diff --git a/lan_app/ui_routes.py b/lan_app/ui_routes.py
-index 1f7b9ce..1edcdd0 100644
---- a/lan_app/ui_routes.py
-+++ b/lan_app/ui_routes.py
-@@ -252,6 +252,89 @@ def _summary_context(recording_id: str, settings: AppSettings) -> dict[str, Any]
-     }
+diff --git a/lan_transcriber/pipeline.py b/lan_transcriber/pipeline.py
+index 0e48b06..7c32e38 100644
+--- a/lan_transcriber/pipeline.py
++++ b/lan_transcriber/pipeline.py
+@@ -392,10 +392,41 @@ _QUESTION_TYPE_KEYS = (
+ )
  
  
-+def _chunk_text_for_turns(text: str, *, chunk_size: int = 450) -> list[str]:
+-def _truncate_for_prompt(text: str, *, max_chars: int = 500) -> str:
+-    if len(text) <= max_chars:
+-        return text
+-    return f"{text[: max_chars - 3].rstrip()}..."
++def _chunk_text_for_prompt(text: str, *, max_chars: int = 500) -> list[str]:
 +    normalized = " ".join(text.split())
 +    if not normalized:
 +        return []
-+    if len(normalized) <= chunk_size:
++    if len(normalized) <= max_chars:
 +        return [normalized]
 +
 +    chunks: list[str] = []
 +    words = normalized.split(" ")
 +    current: list[str] = []
 +    current_len = 0
++
 +    for word in words:
 +        word_len = len(word)
-+        sep = 1 if current else 0
-+        if current and current_len + sep + word_len > chunk_size:
-+            chunks.append(" ".join(current))
++        if not current:
++            if word_len > max_chars:
++                for start in range(0, word_len, max_chars):
++                    chunks.append(word[start : start + max_chars])
++                continue
 +            current = [word]
 +            current_len = word_len
 +            continue
-+        if not current and word_len > chunk_size:
-+            start = 0
-+            while start < word_len:
-+                end = min(start + chunk_size, word_len)
-+                chunks.append(word[start:end])
-+                start = end
-+            current = []
-+            current_len = 0
-+            continue
-+        if sep:
-+            current_len += 1
-+        current.append(word)
-+        current_len += word_len
++
++        next_len = current_len + 1 + word_len
++        if next_len > max_chars:
++            chunks.append(" ".join(current))
++            current = [word]
++            current_len = word_len
++        else:
++            current.append(word)
++            current_len = next_len
 +
 +    if current:
 +        chunks.append(" ".join(current))
 +    return chunks
-+
-+
-+def _fallback_speaker_turns_from_transcript(transcript_payload: dict[str, Any]) -> list[dict[str, Any]]:
-+    segments_payload = transcript_payload.get("segments")
-+    if isinstance(segments_payload, list):
-+        segment_turns: list[dict[str, Any]] = []
-+        for row in segments_payload:
-+            if not isinstance(row, dict):
-+                continue
-+            text = str(row.get("text") or "").strip()
-+            if not text:
-+                continue
-+            try:
-+                start = float(row.get("start") or 0.0)
-+            except (TypeError, ValueError):
-+                start = 0.0
-+            try:
-+                end = float(row.get("end") or row.get("start") or start)
-+            except (TypeError, ValueError):
-+                end = start
-+            segment_turns.append(
-+                {
-+                    "start": start,
-+                    "end": max(end, start),
-+                    "speaker": "S1",
-+                    "text": text,
-+                    "language": row.get("language"),
-+                }
-+            )
-+        if segment_turns:
-+            return segment_turns
-+
-+    transcript_text = str(transcript_payload.get("text") or "").strip()
-+    chunks = _chunk_text_for_turns(transcript_text)
-+    turns: list[dict[str, Any]] = []
-+    for idx, chunk in enumerate(chunks):
-+        turns.append(
-+            {
-+                "start": float(idx),
-+                "end": float(idx + 1),
-+                "speaker": "S1",
+ 
+ 
+ def _normalise_prompt_speaker_turns(
+@@ -405,21 +436,22 @@ def _normalise_prompt_speaker_turns(
+ ) -> list[dict[str, Any]]:
+     out: list[dict[str, Any]] = []
+     for row in speaker_turns:
+-        if len(out) >= max_turns:
+-            break
+-        text = _truncate_for_prompt(str(row.get("text") or "").strip())
+-        if not text:
+-            continue
+-        payload: dict[str, Any] = {
+-            "start": round(_safe_float(row.get("start"), default=0.0), 3),
+-            "end": round(_safe_float(row.get("end"), default=0.0), 3),
+-            "speaker": str(row.get("speaker") or "S1"),
+-            "text": text,
+-        }
++        start = round(_safe_float(row.get("start"), default=0.0), 3)
++        end = round(_safe_float(row.get("end"), default=0.0), 3)
++        speaker = str(row.get("speaker") or "S1")
+         lang = _normalise_language_code(row.get("language"))
+-        if lang:
+-            payload["language"] = lang
+-        out.append(payload)
++        for chunk in _chunk_text_for_prompt(str(row.get("text") or "").strip()):
++            if len(out) >= max_turns:
++                return out
++            payload: dict[str, Any] = {
++                "start": start,
++                "end": end,
++                "speaker": speaker,
 +                "text": chunk,
 +            }
-+        )
-+    return turns
-+
-+
- def _recording_derived_paths(recording_id: str, settings: AppSettings) -> tuple[Path, Path]:
-     derived = settings.recordings_root / recording_id / "derived"
-     return derived / "transcript.json", derived / "summary.json"
-@@ -424,6 +507,8 @@ def _resummarize_recording(
-     )
-     speaker_turns_raw = _load_json_list(speaker_turns_path)
-     speaker_turns = [row for row in speaker_turns_raw if isinstance(row, dict)]
-+    if not speaker_turns:
-+        speaker_turns = _fallback_speaker_turns_from_transcript(transcript_payload)
-     if not speaker_turns:
-         speaker_turns = [{"start": 0.0, "end": 0.0, "speaker": "S1", "text": transcript_text}]
++            if lang:
++                payload["language"] = lang
++            out.append(payload)
+     return out
  
-diff --git a/lan_transcriber/pipeline.py b/lan_transcriber/pipeline.py
-index 7e6779d..0e48b06 100644
---- a/lan_transcriber/pipeline.py
-+++ b/lan_transcriber/pipeline.py
-@@ -670,6 +670,8 @@ def build_summary_payload(
-     parsed = _extract_json_dict(raw_llm_content) or {}
  
-     summary_bullets = _normalise_text_list(parsed.get("summary_bullets"), max_items=12)
-+    if not summary_bullets:
-+        summary_bullets = _normalise_text_list(parsed.get("summary"), max_items=12)
-     if not summary_bullets:
-         summary_bullets = _normalise_text_list(raw_llm_content, max_items=12)
-     if not summary_bullets:
 diff --git a/tests/test_pipeline.py b/tests/test_pipeline.py
-index 32b345d..71aa492 100644
+index 71aa492..8a67340 100644
 --- a/tests/test_pipeline.py
 +++ b/tests/test_pipeline.py
-@@ -528,6 +528,17 @@ async def test_pipeline_summary_language_override_changes_prompt(tmp_path: Path,
-     assert summary_data["target_summary_language"] == "es"
+@@ -539,6 +539,28 @@ def test_build_summary_payload_prefers_parsed_summary_field():
+     assert payload["summary"] == "- one\n- two"
  
  
-+def test_build_summary_payload_prefers_parsed_summary_field():
-+    payload = pipeline.build_summary_payload(
-+        raw_llm_content='{"topic":"T","summary":"- one\\n- two","decisions":[],"action_items":[],"emotional_summary":"ok","questions":{"total_count":0,"types":{},"extracted":[]}}',
-+        model="m",
-+        target_summary_language="en",
-+        friendly=0,
++def test_build_structured_summary_prompts_preserves_long_turn_text():
++    long_text = " ".join(f"word{i}" for i in range(300))
++    expected = " ".join(long_text.split())
++    _system_prompt, user_prompt = pipeline.build_structured_summary_prompts(
++        [
++            {
++                "start": 0.0,
++                "end": 120.0,
++                "speaker": "S1",
++                "text": long_text,
++                "language": "en",
++            }
++        ],
++        "en",
 +    )
-+    assert payload["summary_bullets"] == ["one", "two"]
-+    assert payload["summary"] == "- one\n- two"
++    payload = json.loads(user_prompt)
++    turns = payload["speaker_turns"]
++    assert len(turns) > 1
++    reconstructed = " ".join(str(turn["text"]) for turn in turns)
++    assert reconstructed == expected
 +
 +
  @pytest.mark.asyncio
  async def test_pipeline_writes_structured_summary_payload(tmp_path: Path, mocker):
      mocker.patch(
-diff --git a/tests/test_ui_routes.py b/tests/test_ui_routes.py
-index 0bbaa11..14a5261 100644
---- a/tests/test_ui_routes.py
-+++ b/tests/test_ui_routes.py
-@@ -635,6 +635,79 @@ def test_ui_language_resummarize_uses_target_language_override(tmp_path, monkeyp
-     assert "in Spanish." in captured["system_prompt"]
- 
- 
-+def test_ui_language_resummarize_without_speaker_turns_uses_full_transcript(tmp_path, monkeypatch):
-+    cfg = _cfg(tmp_path)
-+    monkeypatch.setattr(api, "_settings", cfg)
-+    monkeypatch.setattr(ui_routes, "_settings", cfg)
-+    init_db(cfg)
-+    create_recording(
-+        "rec-lang-rsum-legacy-1",
-+        source="drive",
-+        source_filename="legacy.mp3",
-+        status=RECORDING_STATUS_READY,
-+        settings=cfg,
-+    )
-+
-+    derived = cfg.recordings_root / "rec-lang-rsum-legacy-1" / "derived"
-+    derived.mkdir(parents=True, exist_ok=True)
-+    long_text = " ".join(f"token{i}" for i in range(260))
-+    normalized_long_text = " ".join(long_text.split())
-+    (derived / "transcript.json").write_text(
-+        json.dumps(
-+            {
-+                "text": long_text,
-+                "language": {"detected": "en", "confidence": 0.9},
-+                "dominant_language": "en",
-+            }
-+        ),
-+        encoding="utf-8",
-+    )
-+    (derived / "summary.json").write_text(
-+        json.dumps({"friendly": 0, "model": "llama3:8b", "summary": "- old"}),
-+        encoding="utf-8",
-+    )
-+
-+    captured: dict[str, str] = {}
-+
-+    async def _fake_generate(
-+        self,
-+        system_prompt: str,
-+        user_prompt: str,
-+        model: str | None = None,
-+        response_format: dict[str, object] | None = None,
-+    ):
-+        captured["user_prompt"] = user_prompt
-+        return {
-+            "content": json.dumps(
-+                {
-+                    "topic": "Legacy",
-+                    "summary_bullets": ["ok"],
-+                    "decisions": [],
-+                    "action_items": [],
-+                    "emotional_summary": "Neutral.",
-+                    "questions": {"total_count": 0, "types": {}, "extracted": []},
-+                }
-+            )
-+        }
-+
-+    monkeypatch.setattr(ui_routes.LLMClient, "generate", _fake_generate)
-+    c = TestClient(api.app, follow_redirects=False)
-+    r = c.post(
-+        "/ui/recordings/rec-lang-rsum-legacy-1/language/resummarize",
-+        data={
-+            "target_summary_language": "en",
-+            "transcript_language_override": "",
-+        },
-+    )
-+    assert r.status_code == 303
-+
-+    prompt_payload = json.loads(captured["user_prompt"])
-+    speaker_turns = prompt_payload["speaker_turns"]
-+    assert len(speaker_turns) > 1
-+    reconstructed = " ".join(str(turn["text"]) for turn in speaker_turns)
-+    assert reconstructed == normalized_long_text
-+
-+
- def test_ui_language_retranscribe_enqueues_precheck_and_saves_overrides(tmp_path, monkeypatch):
-     cfg = _cfg(tmp_path)
-     monkeypatch.setattr(api, "_settings", cfg)
