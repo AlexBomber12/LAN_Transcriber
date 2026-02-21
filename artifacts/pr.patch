@@ -1,69 +1,42 @@
-diff --git a/lan_app/worker_tasks.py b/lan_app/worker_tasks.py
-index cb7b5b1..b71f567 100644
---- a/lan_app/worker_tasks.py
-+++ b/lan_app/worker_tasks.py
-@@ -122,11 +122,18 @@ def _load_calendar_summary_context(
-     selected_event_id = str(row.get("selected_event_id") or "").strip()
-     if not selected_event_id:
-         return None, []
--    try:
--        candidates = json.loads(str(row.get("candidates_json") or "[]"))
--    except ValueError:
--        return None, []
--    if not isinstance(candidates, list):
-+    raw_candidates = row.get("candidates_json")
-+    if isinstance(raw_candidates, list):
-+        candidates = raw_candidates
-+    elif isinstance(raw_candidates, str):
-+        try:
-+            parsed = json.loads(raw_candidates or "[]")
-+        except ValueError:
-+            return None, []
-+        if not isinstance(parsed, list):
-+            return None, []
-+        candidates = parsed
-+    else:
-         return None, []
- 
-     selected: dict[str, Any] | None = None
-diff --git a/tests/test_db_queue.py b/tests/test_db_queue.py
-index e2707e6..eab0133 100644
---- a/tests/test_db_queue.py
-+++ b/tests/test_db_queue.py
-@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
- import pytest
- 
- from lan_app import api
-+from lan_app import worker_tasks
- from lan_app.config import AppSettings
- from lan_app.constants import (
-     JOB_STATUS_FAILED,
-@@ -107,6 +108,28 @@ def test_worker_noop_updates_job_and_recording_state(tmp_path: Path, monkeypatch
-     assert "finished job=job-worker-1" in step_log.read_text(encoding="utf-8")
+diff --git a/lan_transcriber/pipeline.py b/lan_transcriber/pipeline.py
+index 91e093d..7f8c5f3 100644
+--- a/lan_transcriber/pipeline.py
++++ b/lan_transcriber/pipeline.py
+@@ -3,6 +3,7 @@ from __future__ import annotations
+ import asyncio
+ import audioop
+ import json
++import math
+ import re
+ import shutil
+ import subprocess
+@@ -566,6 +567,8 @@ def _normalise_confidence(value: Any, *, default: float = 0.5) -> float:
+         confidence = float(value)
+     except (TypeError, ValueError):
+         confidence = default
++    if not math.isfinite(confidence):
++        confidence = default
+     return round(min(max(confidence, 0.0), 1.0), 2)
  
  
-+def test_load_calendar_summary_context_uses_preparsed_candidates(tmp_path: Path, monkeypatch):
-+    cfg = _test_settings(tmp_path)
-+    monkeypatch.setattr(
-+        worker_tasks,
-+        "get_calendar_match",
-+        lambda *_a, **_k: {
-+            "selected_event_id": "evt-1",
-+            "candidates_json": [
-+                {
-+                    "event_id": "evt-1",
-+                    "subject": "Roadmap Review",
-+                    "attendees": ["Alex", " Priya ", ""],
-+                }
-+            ],
-+        },
+diff --git a/tests/test_pipeline.py b/tests/test_pipeline.py
+index 5509447..07dd82a 100644
+--- a/tests/test_pipeline.py
++++ b/tests/test_pipeline.py
+@@ -539,6 +539,16 @@ def test_build_summary_payload_prefers_parsed_summary_field():
+     assert payload["summary"] == "- one\n- two"
+ 
+ 
++def test_build_summary_payload_normalises_non_finite_action_item_confidence():
++    payload = pipeline.build_summary_payload(
++        raw_llm_content='{"topic":"T","summary_bullets":["one"],"decisions":[],"action_items":[{"task":"Do thing","confidence":NaN}],"emotional_summary":"ok","questions":{"total_count":0,"types":{},"extracted":[]}}',
++        model="m",
++        target_summary_language="en",
++        friendly=0,
 +    )
-+
-+    title, attendees = worker_tasks._load_calendar_summary_context("rec-cal-ctx-1", settings=cfg)
-+    assert title == "Roadmap Review"
-+    assert attendees == ["Alex", "Priya"]
++    assert payload["action_items"][0]["confidence"] == 0.5
 +
 +
- def test_recordings_and_jobs_api_actions(tmp_path: Path, monkeypatch):
-     cfg = _test_settings(tmp_path)
-     monkeypatch.setattr(api, "_settings", cfg)
+ def test_build_structured_summary_prompts_preserves_long_turn_text():
+     long_text = " ".join(f"word{i}" for i in range(300))
+     expected = " ".join(long_text.split())

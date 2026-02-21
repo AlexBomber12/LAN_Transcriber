@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import audioop
 import json
+import math
 import re
 import shutil
 import subprocess
@@ -565,6 +566,8 @@ def _normalise_confidence(value: Any, *, default: float = 0.5) -> float:
     try:
         confidence = float(value)
     except (TypeError, ValueError):
+        confidence = default
+    if not math.isfinite(confidence):
         confidence = default
     return round(min(max(confidence, 0.0), 1.0), 2)
 

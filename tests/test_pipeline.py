@@ -539,6 +539,16 @@ def test_build_summary_payload_prefers_parsed_summary_field():
     assert payload["summary"] == "- one\n- two"
 
 
+def test_build_summary_payload_normalises_non_finite_action_item_confidence():
+    payload = pipeline.build_summary_payload(
+        raw_llm_content='{"topic":"T","summary_bullets":["one"],"decisions":[],"action_items":[{"task":"Do thing","confidence":NaN}],"emotional_summary":"ok","questions":{"total_count":0,"types":{},"extracted":[]}}',
+        model="m",
+        target_summary_language="en",
+        friendly=0,
+    )
+    assert payload["action_items"][0]["confidence"] == 0.5
+
+
 def test_build_structured_summary_prompts_preserves_long_turn_text():
     long_text = " ".join(f"word{i}" for i in range(300))
     expected = " ".join(long_text.split())
