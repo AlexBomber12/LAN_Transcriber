@@ -1,1352 +1,179 @@
-diff --git a/.env.example b/.env.example
-index c28ece7..e3659c0 100644
---- a/.env.example
-+++ b/.env.example
-@@ -6,6 +6,9 @@ PLAUD_PASSWORD=
- LLM_BASE_URL=http://192.168.0.4:8000
- LLM_API_KEY=
- LLM_MODEL=
-+LLM_TIMEOUT_SECONDS=30
-+# Optional local test stub (file with plain text or JSON response payload)
-+# LLM_MOCK_RESPONSE_PATH=/data/secrets/mock_llm_response.json
- 
- # Runtime paths (LAN_ prefixed)
- LAN_DATA_ROOT=/data
-diff --git a/README.md b/README.md
-index 54a3c33..c43b0ce 100644
---- a/README.md
-+++ b/README.md
-@@ -87,6 +87,8 @@ models are cached across runs.
- | `LAN_RQ_QUEUE_NAME` | Queue name consumed by the worker |
- | `LLM_BASE_URL` | OpenAI-compatible Spark endpoint |
- | `LLM_API_KEY` | Optional API key for the LLM |
-+| `LLM_MODEL` | Model name passed to the OpenAI-compatible endpoint |
-+| `LLM_TIMEOUT_SECONDS` | Per-request timeout for LLM calls (default `30`) |
- | `MS_TENANT_ID` | Microsoft Entra tenant ID for delegated Device Code Flow |
- | `MS_CLIENT_ID` | Microsoft app registration client ID |
- | `MS_SCOPES` | Graph scopes (default: `offline_access User.Read Notes.ReadWrite Calendars.Read`) |
-diff --git a/docker-compose.yml b/docker-compose.yml
-index 517934b..cd891dd 100644
---- a/docker-compose.yml
-+++ b/docker-compose.yml
-@@ -21,6 +21,7 @@ x-lan-service: &lan-service
-     - LLM_BASE_URL=${LLM_BASE_URL}
-     - LLM_API_KEY=${LLM_API_KEY}
-     - LLM_MODEL=${LLM_MODEL:-}
-+    - LLM_TIMEOUT_SECONDS=${LLM_TIMEOUT_SECONDS:-30}
-     - FETCH_INTERVAL_SEC=${FETCH_INTERVAL_SEC:-300}
-     - TRANSCRIBER_VERSION=${TRANSCRIBER_VERSION:-local}
-     - LANG_DEFAULT=${LANG_DEFAULT:-en}
-diff --git a/lan_app/templates/recording_detail.html b/lan_app/templates/recording_detail.html
-index a6e8a6f..883a0bc 100644
---- a/lan_app/templates/recording_detail.html
-+++ b/lan_app/templates/recording_detail.html
-@@ -25,6 +25,7 @@
- <div class="tab-content">
- 
- {% if current_tab == 'overview' %}
-+  {% set summary_data = summary or {} %}
-   <div class="info-grid">
-     <span class="k">ID</span><span class="v">{{ rec.id }}</span>
-     <span class="k">Filename</span><span class="v">{{ rec.source_filename }}</span>
-@@ -43,6 +44,25 @@
-     <span class="k">Updated at</span><span class="v">{{ rec.updated_at[:19].replace('T',' ') if rec.updated_at else '—' }}</span>
-   </div>
- 
-+  <h2>Topic</h2>
-+  <p>{{ summary_data.topic or '—' }}</p>
-+
-+  <h2>Summary</h2>
-+  {% if summary_data.summary_bullets %}
-+  <ul>
-+    {% for bullet in summary_data.summary_bullets %}
-+    <li>{{ bullet }}</li>
-+    {% endfor %}
-+  </ul>
-+  {% elif summary_data.summary_text %}
-+  <pre style="white-space:pre-wrap;background:#f8f9ff;border:1px solid #ccd;padding:8px;font:12px/1.4 'Courier New',monospace;max-height:240px;overflow:auto">{{ summary_data.summary_text }}</pre>
-+  {% else %}
-+  <p class="placeholder">No summary available yet.</p>
-+  {% endif %}
-+
-+  <h2>Emotional Summary</h2>
-+  <p style="white-space:pre-wrap">{{ summary_data.emotional_summary or '—' }}</p>
-+
- {% elif current_tab == 'calendar' %}
-   {% set cal = calendar or {} %}
-   {% set signals = cal.signals or {} %}
-@@ -231,7 +251,64 @@
-   {% endif %}
- 
- {% elif current_tab == 'metrics' %}
--  <p class="placeholder">Meeting metrics — available after PR-METRICS-01.</p>
-+  {% set summary_data = summary or {} %}
-+  {% set questions = summary_data.questions or {} %}
-+  {% set question_types = questions.types or {} %}
-+
-+  <h2>Decisions</h2>
-+  {% if summary_data.decisions %}
-+  <ul>
-+    {% for decision in summary_data.decisions %}
-+    <li>{{ decision }}</li>
-+    {% endfor %}
-+  </ul>
-+  {% else %}
-+  <p class="placeholder">No decisions extracted.</p>
-+  {% endif %}
-+
-+  <h2>Action Items</h2>
-+  {% if summary_data.action_items %}
-+  <table>
-+    <thead>
-+      <tr>
-+        <th>Task</th>
-+        <th>Owner</th>
-+        <th>Deadline</th>
-+        <th>Confidence</th>
-+      </tr>
-+    </thead>
-+    <tbody>
-+      {% for item in summary_data.action_items %}
-+      <tr>
-+        <td>{{ item.task }}</td>
-+        <td>{{ item.owner or '—' }}</td>
-+        <td>{{ item.deadline or '—' }}</td>
-+        <td>{{ '%.2f'|format(item.confidence or 0.0) }}</td>
-+      </tr>
-+      {% endfor %}
-+    </tbody>
-+  </table>
-+  {% else %}
-+  <p class="placeholder">No action items extracted.</p>
-+  {% endif %}
-+
-+  <h2>Questions</h2>
-+  <div class="info-grid">
-+    <span class="k">Total</span><span class="v">{{ questions.total_count or 0 }}</span>
-+    <span class="k">Open</span><span class="v">{{ question_types.open or 0 }}</span>
-+    <span class="k">Yes/No</span><span class="v">{{ question_types.yes_no or 0 }}</span>
-+    <span class="k">Clarification</span><span class="v">{{ question_types.clarification or 0 }}</span>
-+    <span class="k">Status</span><span class="v">{{ question_types.status or 0 }}</span>
-+    <span class="k">Decision-seeking</span><span class="v">{{ question_types.decision_seeking or 0 }}</span>
-+  </div>
-+  {% if questions.extracted %}
-+  <h3>Extracted Questions</h3>
-+  <ul>
-+    {% for question in questions.extracted %}
-+    <li>{{ question }}</li>
-+    {% endfor %}
-+  </ul>
-+  {% endif %}
- 
- {% elif current_tab == 'log' %}
-   {% if jobs %}
 diff --git a/lan_app/ui_routes.py b/lan_app/ui_routes.py
-index a7e1053..1f7b9ce 100644
+index 1f7b9ce..1edcdd0 100644
 --- a/lan_app/ui_routes.py
 +++ b/lan_app/ui_routes.py
-@@ -47,7 +47,7 @@ from .ms_graph import GraphAuthError, ms_connection_state
- from lan_transcriber.artifacts import atomic_write_json
- from lan_transcriber.llm_client import LLMClient
- from lan_transcriber.pipeline import Settings as PipelineSettings
--from lan_transcriber.pipeline import build_summary_prompts
-+from lan_transcriber.pipeline import build_structured_summary_prompts, build_summary_payload
- 
- _TEMPLATES_DIR = Path(__file__).parent / "templates"
- _STATIC_DIR = Path(__file__).parent / "static"
-@@ -139,6 +139,119 @@ def _load_json_dict(path: Path) -> dict[str, Any]:
-     return payload
+@@ -252,6 +252,89 @@ def _summary_context(recording_id: str, settings: AppSettings) -> dict[str, Any]
+     }
  
  
-+def _load_json_list(path: Path) -> list[Any]:
-+    if not path.exists():
++def _chunk_text_for_turns(text: str, *, chunk_size: int = 450) -> list[str]:
++    normalized = " ".join(text.split())
++    if not normalized:
 +        return []
-+    try:
-+        payload = json.loads(path.read_text(encoding="utf-8"))
-+    except (OSError, ValueError):
-+        return []
-+    if not isinstance(payload, list):
-+        return []
-+    return payload
++    if len(normalized) <= chunk_size:
++        return [normalized]
 +
-+
-+def _normalise_text_items(value: Any, *, max_items: int) -> list[str]:
-+    if isinstance(value, list):
-+        rows = value
-+    elif isinstance(value, str):
-+        rows = [line.strip() for line in value.splitlines() if line.strip()]
-+    else:
-+        return []
-+
-+    out: list[str] = []
-+    for row in rows:
-+        if len(out) >= max_items:
-+            break
-+        text = str(row).strip()
-+        if not text:
++    chunks: list[str] = []
++    words = normalized.split(" ")
++    current: list[str] = []
++    current_len = 0
++    for word in words:
++        word_len = len(word)
++        sep = 1 if current else 0
++        if current and current_len + sep + word_len > chunk_size:
++            chunks.append(" ".join(current))
++            current = [word]
++            current_len = word_len
 +            continue
-+        if text.startswith("- "):
-+            text = text[2:].strip()
-+        if text:
-+            out.append(text)
-+    return out
++        if not current and word_len > chunk_size:
++            start = 0
++            while start < word_len:
++                end = min(start + chunk_size, word_len)
++                chunks.append(word[start:end])
++                start = end
++            current = []
++            current_len = 0
++            continue
++        if sep:
++            current_len += 1
++        current.append(word)
++        current_len += word_len
++
++    if current:
++        chunks.append(" ".join(current))
++    return chunks
 +
 +
-+def _summary_context(recording_id: str, settings: AppSettings) -> dict[str, Any]:
-+    _transcript_path, summary_path = _recording_derived_paths(recording_id, settings)
-+    payload = _load_json_dict(summary_path)
-+    summary_text = str(payload.get("summary") or "").strip()
-+    summary_bullets = _normalise_text_items(payload.get("summary_bullets"), max_items=12)
-+    if not summary_bullets:
-+        summary_bullets = _normalise_text_items(summary_text, max_items=12)
-+
-+    decisions = _normalise_text_items(payload.get("decisions"), max_items=20)
-+    raw_action_items = payload.get("action_items")
-+    action_items: list[dict[str, Any]] = []
-+    if isinstance(raw_action_items, list):
-+        for row in raw_action_items[:30]:
++def _fallback_speaker_turns_from_transcript(transcript_payload: dict[str, Any]) -> list[dict[str, Any]]:
++    segments_payload = transcript_payload.get("segments")
++    if isinstance(segments_payload, list):
++        segment_turns: list[dict[str, Any]] = []
++        for row in segments_payload:
 +            if not isinstance(row, dict):
 +                continue
-+            task = str(row.get("task") or "").strip()
-+            if not task:
++            text = str(row.get("text") or "").strip()
++            if not text:
 +                continue
-+            owner = str(row.get("owner") or "").strip()
-+            deadline = str(row.get("deadline") or "").strip()
 +            try:
-+                confidence = float(row.get("confidence"))
++                start = float(row.get("start") or 0.0)
 +            except (TypeError, ValueError):
-+                confidence = 0.5
-+            action_items.append(
++                start = 0.0
++            try:
++                end = float(row.get("end") or row.get("start") or start)
++            except (TypeError, ValueError):
++                end = start
++            segment_turns.append(
 +                {
-+                    "task": task,
-+                    "owner": owner or None,
-+                    "deadline": deadline or None,
-+                    "confidence": max(0.0, min(confidence, 1.0)),
++                    "start": start,
++                    "end": max(end, start),
++                    "speaker": "S1",
++                    "text": text,
++                    "language": row.get("language"),
 +                }
 +            )
++        if segment_turns:
++            return segment_turns
 +
-+    question_types = {
-+        "open": 0,
-+        "yes_no": 0,
-+        "clarification": 0,
-+        "status": 0,
-+        "decision_seeking": 0,
-+    }
-+    questions_total = 0
-+    extracted_questions: list[str] = []
-+    questions_payload = payload.get("questions")
-+    if isinstance(questions_payload, dict):
-+        types_payload = questions_payload.get("types")
-+        if isinstance(types_payload, dict):
-+            for key in question_types:
-+                try:
-+                    question_types[key] = max(0, int(types_payload.get(key, 0)))
-+                except (TypeError, ValueError):
-+                    question_types[key] = 0
-+        try:
-+            questions_total = max(0, int(questions_payload.get("total_count", 0)))
-+        except (TypeError, ValueError):
-+            questions_total = 0
-+        extracted_questions = _normalise_text_items(
-+            questions_payload.get("extracted"),
-+            max_items=20,
++    transcript_text = str(transcript_payload.get("text") or "").strip()
++    chunks = _chunk_text_for_turns(transcript_text)
++    turns: list[dict[str, Any]] = []
++    for idx, chunk in enumerate(chunks):
++        turns.append(
++            {
++                "start": float(idx),
++                "end": float(idx + 1),
++                "speaker": "S1",
++                "text": chunk,
++            }
 +        )
-+    if questions_total == 0:
-+        questions_total = max(sum(question_types.values()), len(extracted_questions))
-+
-+    topic = str(payload.get("topic") or "").strip()
-+    emotional_summary = str(payload.get("emotional_summary") or "").strip()
-+    return {
-+        "topic": topic or "—",
-+        "summary_bullets": summary_bullets,
-+        "summary_text": summary_text,
-+        "decisions": decisions,
-+        "action_items": action_items,
-+        "emotional_summary": emotional_summary or "—",
-+        "questions": {
-+            "total_count": questions_total,
-+            "types": question_types,
-+            "extracted": extracted_questions,
-+        },
-+    }
++    return turns
 +
 +
  def _recording_derived_paths(recording_id: str, settings: AppSettings) -> tuple[Path, Path]:
      derived = settings.recordings_root / recording_id / "derived"
      return derived / "transcript.json", derived / "summary.json"
-@@ -285,6 +398,7 @@ def _resummarize_recording(
-     target_summary_language: str | None,
- ) -> None:
-     transcript_path, summary_path = _recording_derived_paths(recording_id, settings)
-+    speaker_turns_path = transcript_path.parent / "speaker_turns.json"
-     transcript_payload = _load_json_dict(transcript_path)
-     if not transcript_payload:
-         raise ValueError("No transcript.json found for this recording")
-@@ -308,31 +422,49 @@ def _resummarize_recording(
-         unknown_dir=settings.recordings_root / "unknown",
-         tmp_root=settings.data_root / "tmp",
+@@ -424,6 +507,8 @@ def _resummarize_recording(
      )
--    system_prompt, user_prompt = build_summary_prompts(
--        transcript_text,
-+    speaker_turns_raw = _load_json_list(speaker_turns_path)
-+    speaker_turns = [row for row in speaker_turns_raw if isinstance(row, dict)]
+     speaker_turns_raw = _load_json_list(speaker_turns_path)
+     speaker_turns = [row for row in speaker_turns_raw if isinstance(row, dict)]
 +    if not speaker_turns:
-+        speaker_turns = [{"start": 0.0, "end": 0.0, "speaker": "S1", "text": transcript_text}]
-+
-+    calendar_title = str(transcript_payload.get("calendar_title") or "").strip() or None
-+    attendees_payload = transcript_payload.get("calendar_attendees")
-+    calendar_attendees: list[str] = []
-+    if isinstance(attendees_payload, list):
-+        calendar_attendees = [
-+            str(attendee).strip()
-+            for attendee in attendees_payload
-+            if str(attendee).strip()
-+        ]
-+
-+    system_prompt, user_prompt = build_structured_summary_prompts(
-+        speaker_turns,
-         resolved_target,
-+        calendar_title=calendar_title,
-+        calendar_attendees=calendar_attendees,
-     )
-     message = asyncio.run(
-         LLMClient().generate(
-             system_prompt=system_prompt,
-             user_prompt=user_prompt,
-             model=pipeline_settings.llm_model,
-+            response_format={"type": "json_object"},
-         )
-     )
--    summary_text = message.get("content", "") if isinstance(message, dict) else str(message)
-+    raw_summary = message.get("content", "") if isinstance(message, dict) else str(message)
++        speaker_turns = _fallback_speaker_turns_from_transcript(transcript_payload)
+     if not speaker_turns:
+         speaker_turns = [{"start": 0.0, "end": 0.0, "speaker": "S1", "text": transcript_text}]
  
-     summary_payload = _load_json_dict(summary_path)
-     friendly = summary_payload.get("friendly")
-     if not isinstance(friendly, int):
-         friendly = 0
--    summary_payload.update(
--        {
--            "friendly": friendly,
--            "model": pipeline_settings.llm_model,
--            "summary": summary_text,
--            "target_summary_language": resolved_target,
--        }
-+    structured_payload = build_summary_payload(
-+        raw_llm_content=raw_summary,
-+        model=pipeline_settings.llm_model,
-+        target_summary_language=resolved_target,
-+        friendly=friendly,
-+        default_topic=calendar_title or "Meeting summary",
-     )
-+    summary_payload.update(structured_payload)
-     atomic_write_json(summary_path, summary_payload)
- 
-     transcript_payload["target_summary_language"] = resolved_target
-@@ -429,6 +561,7 @@ async def ui_recording_detail(
-     current_tab = tab if tab in tabs else "overview"
-     calendar: dict[str, Any] | None = None
-     language: dict[str, Any] | None = None
-+    summary: dict[str, Any] | None = None
-     if current_tab == "calendar":
-         try:
-             calendar = await run_in_threadpool(
-@@ -445,6 +578,8 @@ async def ui_recording_detail(
-             calendar["fetch_error"] = str(exc)
-     if current_tab == "language":
-         language = _language_tab_context(recording_id, rec, _settings)
-+    if current_tab in {"overview", "metrics"}:
-+        summary = _summary_context(recording_id, _settings)
- 
-     return templates.TemplateResponse(
-         request,
-@@ -457,6 +592,7 @@ async def ui_recording_detail(
-             "current_tab": current_tab,
-             "calendar": calendar,
-             "language": language,
-+            "summary": summary,
-         },
-     )
- 
-diff --git a/lan_app/worker_tasks.py b/lan_app/worker_tasks.py
-index a0397bc..cb7b5b1 100644
---- a/lan_app/worker_tasks.py
-+++ b/lan_app/worker_tasks.py
-@@ -26,6 +26,7 @@ from .constants import (
- from .db import (
-     fail_job,
-     finish_job,
-+    get_calendar_match,
-     get_recording,
-     init_db,
-     set_recording_language_settings,
-@@ -113,6 +114,43 @@ def _load_transcript_language_payload(
-     return dominant, target
- 
- 
-+def _load_calendar_summary_context(
-+    recording_id: str,
-+    settings: AppSettings,
-+) -> tuple[str | None, list[str]]:
-+    row = get_calendar_match(recording_id, settings=settings) or {}
-+    selected_event_id = str(row.get("selected_event_id") or "").strip()
-+    if not selected_event_id:
-+        return None, []
-+    try:
-+        candidates = json.loads(str(row.get("candidates_json") or "[]"))
-+    except ValueError:
-+        return None, []
-+    if not isinstance(candidates, list):
-+        return None, []
-+
-+    selected: dict[str, Any] | None = None
-+    for item in candidates:
-+        if not isinstance(item, dict):
-+            continue
-+        if str(item.get("event_id") or "").strip() == selected_event_id:
-+            selected = item
-+            break
-+    if selected is None:
-+        return None, []
-+
-+    title = str(selected.get("subject") or "").strip() or None
-+    attendees_raw = selected.get("attendees")
-+    attendees = []
-+    if isinstance(attendees_raw, list):
-+        attendees = [
-+            str(attendee).strip()
-+            for attendee in attendees_raw
-+            if str(attendee).strip()
-+        ]
-+    return title, attendees
-+
-+
- class _FallbackDiariser:
-     def __init__(self, duration_sec: float | None) -> None:
-         self._duration_sec = max(duration_sec or 0.1, 0.1)
-@@ -195,6 +233,10 @@ def _run_precheck_pipeline(
-         diariser = _FallbackDiariser(precheck.duration_sec)
-     else:
-         diariser = _build_diariser(precheck.duration_sec)
-+    calendar_title, calendar_attendees = _load_calendar_summary_context(
-+        recording_id,
-+        settings,
-+    )
-     asyncio.run(
-         run_pipeline(
-             audio_path=audio_path,
-@@ -205,6 +247,8 @@ def _run_precheck_pipeline(
-             precheck=precheck,
-             target_summary_language=target_summary_language,
-             transcript_language_override=transcript_language_override,
-+            calendar_title=calendar_title,
-+            calendar_attendees=calendar_attendees,
-         )
-     )
-     dominant_language, resolved_target_language = _load_transcript_language_payload(
-diff --git a/lan_transcriber/llm_client.py b/lan_transcriber/llm_client.py
-index 669400e..f70785c 100644
---- a/lan_transcriber/llm_client.py
-+++ b/lan_transcriber/llm_client.py
-@@ -2,14 +2,37 @@
- 
- from __future__ import annotations
- 
-+import json
- import os
-+from pathlib import Path
- from typing import Any, Dict, List, Optional
- 
- import anyio
-+import httpx
-+from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
-+
- from .metrics import llm_timeouts_total
- 
--import httpx
--from tenacity import retry, wait_exponential, stop_after_attempt
-+_RETRYABLE_STATUS_CODES = {408, 409, 425, 429}
-+
-+
-+def _timeout_seconds(value: str | None, *, default: float) -> float:
-+    if value is None:
-+        return default
-+    try:
-+        timeout = float(value)
-+    except ValueError:
-+        return default
-+    return timeout if timeout > 0 else default
-+
-+
-+def _is_retryable_exception(exc: BaseException) -> bool:
-+    if isinstance(exc, (httpx.ConnectError, httpx.ReadError, httpx.RemoteProtocolError)):
-+        return True
-+    if isinstance(exc, httpx.HTTPStatusError):
-+        status = exc.response.status_code
-+        return status in _RETRYABLE_STATUS_CODES or status >= 500
-+    return False
- 
- 
- class LLMClient:
-@@ -19,24 +42,87 @@ class LLMClient:
-         self,
-         base_url: str | None = None,
-         api_key: str | None = None,
--        timeout: int = 30,
-+        timeout: float | None = None,
-+        mock_response_path: str | Path | None = None,
-     ) -> None:
-         self.base_url = base_url or os.getenv("LLM_BASE_URL", "http://llm:8000")
-         self.api_key = api_key or os.getenv("LLM_API_KEY")
--        self.timeout = timeout
-+        self.default_model = os.getenv("LLM_MODEL")
-+        self.timeout = (
-+            timeout
-+            if timeout is not None
-+            else _timeout_seconds(os.getenv("LLM_TIMEOUT_SECONDS"), default=30.0)
-+        )
-+        configured_mock_path = mock_response_path or os.getenv("LLM_MOCK_RESPONSE_PATH")
-+        self.mock_response_path = Path(configured_mock_path) if configured_mock_path else None
- 
-     @retry(
--        wait=wait_exponential(multiplier=1, min=1, max=10), stop=stop_after_attempt(3)
-+        wait=wait_exponential(multiplier=1, min=1, max=8),
-+        stop=stop_after_attempt(3),
-+        retry=retry_if_exception(_is_retryable_exception),
-+        reraise=True,
-     )
-+    async def _post_chat_completion(
-+        self,
-+        *,
-+        url: str,
-+        payload: Dict[str, Any],
-+        headers: Dict[str, str],
-+    ) -> Dict[str, Any]:
-+        async with httpx.AsyncClient(timeout=self.timeout) as client:
-+            with anyio.fail_after(self.timeout):
-+                resp = await client.post(url, json=payload, headers=headers)
-+            resp.raise_for_status()
-+            data = resp.json()
-+            if not isinstance(data, dict):
-+                raise ValueError("LLM response must be a JSON object")
-+            return data
-+
-+    def _load_mock_message(self) -> Dict[str, str] | None:
-+        if self.mock_response_path is None:
-+            return None
-+        text = self.mock_response_path.read_text(encoding="utf-8").strip()
-+        if not text:
-+            return {"role": "assistant", "content": ""}
-+        try:
-+            payload = json.loads(text)
-+        except ValueError:
-+            return {"role": "assistant", "content": text}
-+
-+        if isinstance(payload, dict):
-+            choices = payload.get("choices")
-+            if isinstance(choices, list) and choices:
-+                first = choices[0]
-+                if isinstance(first, dict):
-+                    message = first.get("message")
-+                    if isinstance(message, dict):
-+                        return {
-+                            "role": str(message.get("role") or "assistant"),
-+                            "content": str(message.get("content") or ""),
-+                        }
-+            if "content" in payload:
-+                return {
-+                    "role": str(payload.get("role") or "assistant"),
-+                    "content": str(payload.get("content") or ""),
-+                }
-+        if isinstance(payload, str):
-+            return {"role": "assistant", "content": payload}
-+        return {"role": "assistant", "content": json.dumps(payload, ensure_ascii=False)}
-+
-     async def generate(
-         self,
-         system_prompt: str,
-         user_prompt: str,
-         model: Optional[str] | None = None,
-+        response_format: Dict[str, Any] | None = None,
-     ) -> Dict[str, str]:
-         """Send a chat completion request and return the assistant message."""
- 
--        model = model or os.getenv("LLM_MODEL")
-+        mock_message = self._load_mock_message()
-+        if mock_message is not None:
-+            return mock_message
-+
-+        model = model or self.default_model
- 
-         url = f"{self.base_url}/v1/chat/completions"
-         headers: Dict[str, str] = {}
-@@ -51,28 +137,48 @@ class LLMClient:
-         payload: Dict[str, Any] = {"messages": messages}
-         if model is not None:
-             payload["model"] = model
--
--        async with httpx.AsyncClient(timeout=self.timeout) as client:
--            try:
--                with anyio.fail_after(30):
--                    resp = await client.post(url, json=payload, headers=headers)
--            except TimeoutError:
--                llm_timeouts_total.inc()
--                return {"content": "**LLM timeout**", "role": "assistant"}
--            resp.raise_for_status()
--            data = resp.json()
--        return data["choices"][0]["message"]
-+        if response_format is not None:
-+            payload["response_format"] = response_format
-+
-+        try:
-+            data = await self._post_chat_completion(url=url, payload=payload, headers=headers)
-+        except (TimeoutError, httpx.TimeoutException):
-+            llm_timeouts_total.inc()
-+            return {"content": "**LLM timeout**", "role": "assistant"}
-+
-+        choices = data.get("choices")
-+        if isinstance(choices, list) and choices:
-+            first = choices[0]
-+            if isinstance(first, dict):
-+                message = first.get("message")
-+                if isinstance(message, dict):
-+                    return {
-+                        "role": str(message.get("role") or "assistant"),
-+                        "content": str(message.get("content") or ""),
-+                    }
-+
-+        if "content" in data:
-+            return {"role": "assistant", "content": str(data.get("content") or "")}
-+        raise ValueError("LLM response missing choices[0].message.content")
- 
- 
- _default_client = LLMClient()
- 
- 
- async def generate(
--    system_prompt: str, user_prompt: str, model: Optional[str] = None
-+    system_prompt: str,
-+    user_prompt: str,
-+    model: Optional[str] = None,
-+    response_format: Dict[str, Any] | None = None,
- ) -> Dict[str, str]:
-     """Backwards-compatible helper that proxies to :class:`LLMClient`."""
- 
--    return await _default_client.generate(system_prompt, user_prompt, model)
-+    return await _default_client.generate(
-+        system_prompt=system_prompt,
-+        user_prompt=user_prompt,
-+        model=model,
-+        response_format=response_format,
-+    )
- 
- 
- __all__ = ["LLMClient", "generate", "llm_timeouts_total"]
 diff --git a/lan_transcriber/pipeline.py b/lan_transcriber/pipeline.py
-index 67ddebb..7e6779d 100644
+index 7e6779d..0e48b06 100644
 --- a/lan_transcriber/pipeline.py
 +++ b/lan_transcriber/pipeline.py
-@@ -2,6 +2,7 @@ from __future__ import annotations
+@@ -670,6 +670,8 @@ def build_summary_payload(
+     parsed = _extract_json_dict(raw_llm_content) or {}
  
- import asyncio
- import audioop
-+import json
- import re
- import shutil
- import subprocess
-@@ -382,17 +383,316 @@ def _resolve_target_summary_language(
-     return "en"
- 
- 
--def build_summary_prompts(clean_text: str, target_summary_language: str) -> tuple[str, str]:
-+_QUESTION_TYPE_KEYS = (
-+    "open",
-+    "yes_no",
-+    "clarification",
-+    "status",
-+    "decision_seeking",
-+)
-+
-+
-+def _truncate_for_prompt(text: str, *, max_chars: int = 500) -> str:
-+    if len(text) <= max_chars:
-+        return text
-+    return f"{text[: max_chars - 3].rstrip()}..."
-+
-+
-+def _normalise_prompt_speaker_turns(
-+    speaker_turns: Sequence[dict[str, Any]],
-+    *,
-+    max_turns: int = 300,
-+) -> list[dict[str, Any]]:
-+    out: list[dict[str, Any]] = []
-+    for row in speaker_turns:
-+        if len(out) >= max_turns:
-+            break
-+        text = _truncate_for_prompt(str(row.get("text") or "").strip())
-+        if not text:
-+            continue
-+        payload: dict[str, Any] = {
-+            "start": round(_safe_float(row.get("start"), default=0.0), 3),
-+            "end": round(_safe_float(row.get("end"), default=0.0), 3),
-+            "speaker": str(row.get("speaker") or "S1"),
-+            "text": text,
-+        }
-+        lang = _normalise_language_code(row.get("language"))
-+        if lang:
-+            payload["language"] = lang
-+        out.append(payload)
-+    return out
-+
-+
-+def build_structured_summary_prompts(
-+    speaker_turns: Sequence[dict[str, Any]],
-+    target_summary_language: str,
-+    *,
-+    calendar_title: str | None = None,
-+    calendar_attendees: Sequence[str] | None = None,
-+) -> tuple[str, str]:
-     language_name = _language_name(target_summary_language)
-     sys_prompt = (
--        "You are an assistant who writes concise 5-8 bullet summaries of any audio transcript. "
--        f"Write the summary in {language_name}. "
--        "Return only the list without extra explanation."
-+        "You are an assistant that summarizes meeting transcripts. "
-+        f"Write topic, summary_bullets, decisions, action_items, emotional_summary, and questions in {language_name}. "
-+        "Keep names, quotes, and domain terms in their original language when needed. "
-+        "Return strict JSON only, with no markdown fences."
-     )
--    user_prompt = f"{sys_prompt}\n\nTRANSCRIPT:\n{clean_text}\n\nSUMMARY:"
-+    prompt_payload = {
-+        "target_summary_language": target_summary_language,
-+        "calendar": {
-+            "title": (calendar_title or "").strip() or None,
-+            "attendees": [str(item).strip() for item in (calendar_attendees or []) if str(item).strip()],
-+        },
-+        "speaker_turns": _normalise_prompt_speaker_turns(speaker_turns),
-+        "required_schema": {
-+            "topic": "string",
-+            "summary_bullets": ["string"],
-+            "decisions": ["string"],
-+            "action_items": [
-+                {
-+                    "task": "string",
-+                    "owner": "string|null",
-+                    "deadline": "string|null",
-+                    "confidence": "number [0,1]",
-+                }
-+            ],
-+            "emotional_summary": "1-3 short lines as a string",
-+            "questions": {
-+                "total_count": "integer >= 0",
-+                "types": {key: "integer >= 0" for key in _QUESTION_TYPE_KEYS},
-+                "extracted": ["string"],
-+            },
-+        },
-+    }
-+    user_prompt = json.dumps(prompt_payload, ensure_ascii=False, indent=2)
-     return sys_prompt, user_prompt
- 
- 
-+def build_summary_prompts(clean_text: str, target_summary_language: str) -> tuple[str, str]:
-+    pseudo_turns = []
-+    stripped = clean_text.strip()
-+    if stripped:
-+        pseudo_turns.append({"start": 0.0, "end": 0.0, "speaker": "S1", "text": stripped})
-+    return build_structured_summary_prompts(
-+        pseudo_turns,
-+        target_summary_language,
-+    )
-+
-+
-+def _normalise_text_list(value: Any, *, max_items: int) -> list[str]:
-+    rows: list[Any]
-+    if isinstance(value, list):
-+        rows = value
-+    elif isinstance(value, str):
-+        rows = [line.strip() for line in value.splitlines() if line.strip()]
-+    else:
-+        return []
-+
-+    out: list[str] = []
-+    for item in rows:
-+        if len(out) >= max_items:
-+            break
-+        text = str(item).strip()
-+        if not text:
-+            continue
-+        text = re.sub(r"^[\-\*\u2022]+\s*", "", text).strip()
-+        if text:
-+            out.append(text)
-+    return out
-+
-+
-+def _extract_json_dict(raw_content: str) -> dict[str, Any] | None:
-+    text = raw_content.strip()
-+    if not text:
-+        return None
-+
-+    candidates: list[str] = [text]
-+    fenced_matches = re.findall(r"```(?:json)?\s*(.*?)```", text, flags=re.IGNORECASE | re.DOTALL)
-+    candidates.extend(match.strip() for match in fenced_matches if match.strip())
-+
-+    first_brace = text.find("{")
-+    last_brace = text.rfind("}")
-+    if first_brace != -1 and last_brace > first_brace:
-+        candidates.append(text[first_brace : last_brace + 1].strip())
-+
-+    seen: set[str] = set()
-+    for candidate in candidates:
-+        if candidate in seen:
-+            continue
-+        seen.add(candidate)
-+        try:
-+            payload = json.loads(candidate)
-+        except ValueError:
-+            continue
-+        if isinstance(payload, dict):
-+            return payload
-+    return None
-+
-+
-+def _normalise_confidence(value: Any, *, default: float = 0.5) -> float:
-+    try:
-+        confidence = float(value)
-+    except (TypeError, ValueError):
-+        confidence = default
-+    return round(min(max(confidence, 0.0), 1.0), 2)
-+
-+
-+def _normalise_action_items(value: Any) -> list[dict[str, Any]]:
-+    rows: list[Any]
-+    if isinstance(value, list):
-+        rows = value
-+    elif value is None:
-+        rows = []
-+    else:
-+        rows = [value]
-+
-+    out: list[dict[str, Any]] = []
-+    for row in rows:
-+        if len(out) >= 30:
-+            break
-+        if isinstance(row, dict):
-+            task = str(row.get("task") or row.get("action") or row.get("title") or "").strip()
-+            owner_raw = row.get("owner")
-+            deadline_raw = row.get("deadline") or row.get("due")
-+            confidence_raw = row.get("confidence", row.get("score"))
-+        else:
-+            task = str(row).strip()
-+            owner_raw = None
-+            deadline_raw = None
-+            confidence_raw = None
-+        if not task:
-+            continue
-+        owner = str(owner_raw).strip() if owner_raw is not None else ""
-+        deadline = str(deadline_raw).strip() if deadline_raw is not None else ""
-+        out.append(
-+            {
-+                "task": task,
-+                "owner": owner or None,
-+                "deadline": deadline or None,
-+                "confidence": _normalise_confidence(confidence_raw),
-+            }
-+        )
-+    return out
-+
-+
-+def _normalise_question_types(value: Any) -> dict[str, int]:
-+    out = {key: 0 for key in _QUESTION_TYPE_KEYS}
-+    if not isinstance(value, dict):
-+        return out
-+    for key in _QUESTION_TYPE_KEYS:
-+        out[key] = max(0, int(_safe_float(value.get(key), default=0.0)))
-+    return out
-+
-+
-+def _normalise_questions(value: Any) -> dict[str, Any]:
-+    total_count = 0
-+    question_types = {key: 0 for key in _QUESTION_TYPE_KEYS}
-+    extracted: list[str] = []
-+
-+    if isinstance(value, dict):
-+        total_count = max(0, int(_safe_float(value.get("total_count"), default=0.0)))
-+        question_types = _normalise_question_types(value.get("types"))
-+        if sum(question_types.values()) == 0:
-+            question_types = _normalise_question_types(value)
-+        extracted = _normalise_text_list(value.get("extracted"), max_items=20)
-+
-+    inferred_total = max(sum(question_types.values()), len(extracted))
-+    if total_count == 0:
-+        total_count = inferred_total
-+
-+    return {
-+        "total_count": total_count,
-+        "types": question_types,
-+        "extracted": extracted,
-+    }
-+
-+
-+def _normalise_emotional_summary(value: Any) -> str:
-+    if isinstance(value, str):
-+        lines = [line.strip() for line in value.splitlines() if line.strip()]
-+    elif isinstance(value, list):
-+        lines = _normalise_text_list(value, max_items=3)
-+    else:
-+        lines = []
-+    if not lines:
-+        lines = ["Neutral and focused discussion."]
-+    return "\n".join(lines[:3])
-+
-+
-+def _summary_text_from_bullets(summary_bullets: Sequence[str]) -> str:
-+    return "\n".join(f"- {bullet}" for bullet in summary_bullets)
-+
-+
-+def _build_structured_summary_payload(
-+    *,
-+    model: str,
-+    target_summary_language: str,
-+    friendly: int,
-+    topic: str,
-+    summary_bullets: Sequence[str],
-+    decisions: Sequence[str],
-+    action_items: Sequence[dict[str, Any]],
-+    emotional_summary: str,
-+    questions: dict[str, Any],
-+    status: str | None = None,
-+    reason: str | None = None,
-+    error: str | None = None,
-+) -> dict[str, Any]:
-+    payload: dict[str, Any] = {
-+        "friendly": int(friendly),
-+        "model": model,
-+        "target_summary_language": target_summary_language,
-+        "topic": topic,
-+        "summary_bullets": list(summary_bullets),
-+        "summary": _summary_text_from_bullets(summary_bullets),
-+        "decisions": list(decisions),
-+        "action_items": list(action_items),
-+        "emotional_summary": emotional_summary,
-+        "questions": questions,
-+    }
-+    if status:
-+        payload["status"] = status
-+    if reason:
-+        payload["reason"] = reason
-+    if error:
-+        payload["error"] = error
-+    return payload
-+
-+
-+def build_summary_payload(
-+    *,
-+    raw_llm_content: str,
-+    model: str,
-+    target_summary_language: str,
-+    friendly: int,
-+    default_topic: str = "Meeting summary",
-+) -> dict[str, Any]:
-+    parsed = _extract_json_dict(raw_llm_content) or {}
-+
-+    summary_bullets = _normalise_text_list(parsed.get("summary_bullets"), max_items=12)
+     summary_bullets = _normalise_text_list(parsed.get("summary_bullets"), max_items=12)
 +    if not summary_bullets:
-+        summary_bullets = _normalise_text_list(raw_llm_content, max_items=12)
-+    if not summary_bullets:
-+        summary_bullets = ["No summary available."]
-+
-+    topic = str(parsed.get("topic") or "").strip()
-+    if not topic:
-+        topic = summary_bullets[0][:120] if summary_bullets else default_topic
-+    topic = topic or default_topic
-+
-+    return _build_structured_summary_payload(
-+        model=model,
-+        target_summary_language=target_summary_language,
-+        friendly=friendly,
-+        topic=topic,
-+        summary_bullets=summary_bullets,
-+        decisions=_normalise_text_list(parsed.get("decisions"), max_items=20),
-+        action_items=_normalise_action_items(parsed.get("action_items")),
-+        emotional_summary=_normalise_emotional_summary(parsed.get("emotional_summary")),
-+        questions=_normalise_questions(parsed.get("questions")),
-+    )
-+
-+
- def _language_payload(info: dict[str, Any]) -> dict[str, Any]:
-     detected_raw = str(
-         info.get("language")
-@@ -949,6 +1249,8 @@ async def run_pipeline(
-     precheck: PrecheckResult | None = None,
-     target_summary_language: str | None = None,
-     transcript_language_override: str | None = None,
-+    calendar_title: str | None = None,
-+    calendar_attendees: Sequence[str] | None = None,
- ) -> TranscriptResult:
-     """Transcribe ``audio_path`` and return a structured result."""
-     start = time.perf_counter()
-@@ -969,6 +1271,12 @@ async def run_pipeline(
-         dominant_language=normalized_transcript_language_override or "unknown",
-         detected_language=None,
-     )
-+    normalized_calendar_title = str(calendar_title or "").strip() or None
-+    normalized_calendar_attendees = [
-+        str(attendee).strip()
-+        for attendee in (calendar_attendees or [])
-+        if str(attendee).strip()
-+    ]
- 
-     atomic_write_json(
-         artifact_paths.metrics_json_path,
-@@ -996,6 +1304,8 @@ async def run_pipeline(
-                 "language_spans": [],
-                 "target_summary_language": resolved_summary_language,
-                 "transcript_language_override": normalized_transcript_language_override,
-+                "calendar_title": normalized_calendar_title,
-+                "calendar_attendees": normalized_calendar_attendees,
-                 "segments": [],
-                 "speakers": [],
-                 "text": "",
-@@ -1005,13 +1315,19 @@ async def run_pipeline(
-         atomic_write_json(artifact_paths.speaker_turns_json_path, [])
-         atomic_write_json(
-             artifact_paths.summary_json_path,
--            {
--                "friendly": 0,
--                "model": cfg.llm_model,
--                "summary": "",
--                "status": "quarantined",
--                "reason": precheck_result.quarantine_reason,
--            },
-+            _build_structured_summary_payload(
-+                model=cfg.llm_model,
-+                target_summary_language=resolved_summary_language,
-+                friendly=0,
-+                topic="Quarantined recording",
-+                summary_bullets=["Recording was quarantined before transcription."],
-+                decisions=[],
-+                action_items=[],
-+                emotional_summary="No emotional summary available.",
-+                questions=_normalise_questions(None),
-+                status="quarantined",
-+                reason=precheck_result.quarantine_reason,
-+            ),
-         )
-         atomic_write_json(
-             artifact_paths.metrics_json_path,
-@@ -1048,12 +1364,19 @@ async def run_pipeline(
-     ) -> None:
-         atomic_write_json(
-             artifact_paths.summary_json_path,
--            {
--                "friendly": friendly_score,
--                "model": cfg.llm_model,
--                "summary": "",
--                "status": "failed",
--            },
-+            _build_structured_summary_payload(
-+                model=cfg.llm_model,
-+                target_summary_language=resolved_summary_language,
-+                friendly=friendly_score,
-+                topic="Summary generation failed",
-+                summary_bullets=["Unable to produce a summary due to a processing error."],
-+                decisions=[],
-+                action_items=[],
-+                emotional_summary="No emotional summary available.",
-+                questions=_normalise_questions(None),
-+                status="failed",
-+                error=str(exc) or exc.__class__.__name__,
-+            ),
-         )
-         atomic_write_json(
-             artifact_paths.metrics_json_path,
-@@ -1156,6 +1479,8 @@ async def run_pipeline(
-                 "language_spans": language_spans,
-                 "target_summary_language": resolved_summary_language,
-                 "transcript_language_override": normalized_transcript_language_override,
-+                "calendar_title": normalized_calendar_title,
-+                "calendar_attendees": normalized_calendar_attendees,
-                 "segments": asr_segments,
-                 "speakers": sorted({aliases.get(row["speaker"], row["speaker"]) for row in diar_segments}),
-                 "text": "",
-@@ -1165,12 +1490,18 @@ async def run_pipeline(
-         atomic_write_json(artifact_paths.speaker_turns_json_path, speaker_turns)
-         atomic_write_json(
-             artifact_paths.summary_json_path,
--            {
--                "friendly": 0,
--                "model": cfg.llm_model,
--                "target_summary_language": resolved_summary_language,
--                "summary": "No speech detected",
--            },
-+            _build_structured_summary_payload(
-+                model=cfg.llm_model,
-+                target_summary_language=resolved_summary_language,
-+                friendly=0,
-+                topic="No speech detected",
-+                summary_bullets=["No speech detected."],
-+                decisions=[],
-+                action_items=[],
-+                emotional_summary="No emotional summary available.",
-+                questions=_normalise_questions(None),
-+                status="no_speech",
-+            ),
-         )
-         atomic_write_json(
-             artifact_paths.metrics_json_path,
-@@ -1214,9 +1545,11 @@ async def run_pipeline(
-     speaker_lines = _merge_similar(speaker_lines, cfg.merge_similar)
- 
-     friendly = _sentiment_score(clean_text)
--    sys_prompt, user_prompt = build_summary_prompts(
--        clean_text,
-+    sys_prompt, user_prompt = build_structured_summary_prompts(
-+        speaker_turns,
-         resolved_summary_language,
-+        calendar_title=normalized_calendar_title,
-+        calendar_attendees=normalized_calendar_attendees,
-     )
- 
-     try:
-@@ -1224,8 +1557,17 @@ async def run_pipeline(
-             system_prompt=sys_prompt,
-             user_prompt=user_prompt,
-             model=cfg.llm_model,
-+            response_format={"type": "json_object"},
-         )
--        summary = msg.get("content", "") if isinstance(msg, dict) else str(msg)
-+        raw_summary = msg.get("content", "") if isinstance(msg, dict) else str(msg)
-+        summary_payload = build_summary_payload(
-+            raw_llm_content=raw_summary,
-+            model=cfg.llm_model,
-+            target_summary_language=resolved_summary_language,
-+            friendly=friendly,
-+            default_topic=normalized_calendar_title or "Meeting summary",
-+        )
-+        summary = str(summary_payload.get("summary") or "")
- 
-         serialised_segments = [
-             SpeakerSegment(
-@@ -1247,6 +1589,8 @@ async def run_pipeline(
-                 "language_spans": language_spans,
-                 "target_summary_language": resolved_summary_language,
-                 "transcript_language_override": normalized_transcript_language_override,
-+                "calendar_title": normalized_calendar_title,
-+                "calendar_attendees": normalized_calendar_attendees,
-                 "segments": asr_segments,
-                 "speaker_lines": speaker_lines,
-                 "speakers": sorted(set(aliases.get(turn["speaker"], turn["speaker"]) for turn in speaker_turns)),
-@@ -1257,12 +1601,7 @@ async def run_pipeline(
-         atomic_write_json(artifact_paths.speaker_turns_json_path, speaker_turns)
-         atomic_write_json(
-             artifact_paths.summary_json_path,
--            {
--                "friendly": friendly,
--                "model": cfg.llm_model,
--                "target_summary_language": resolved_summary_language,
--                "summary": summary,
--            },
-+            summary_payload,
-         )
-         atomic_write_json(
-             artifact_paths.metrics_json_path,
-@@ -1317,4 +1656,6 @@ __all__ = [
-     "Diariser",
-     "refresh_aliases",
-     "build_summary_prompts",
-+    "build_structured_summary_prompts",
-+    "build_summary_payload",
- ]
-diff --git a/tasks/QUEUE.md b/tasks/QUEUE.md
-index 378c539..8876355 100644
---- a/tasks/QUEUE.md
-+++ b/tasks/QUEUE.md
-@@ -57,7 +57,7 @@ Queue (in order)
- - Depends on: PR-PIPELINE-01
- 
- 10) PR-LLM-01: Spark LLM: topic, summary, decisions, actions (owner/deadline), emotional summary, question typing
--- Status: TODO
-+- Status: DONE
- - Tasks file: tasks/PR-LLM-01.md
- - Depends on: PR-PIPELINE-01 and PR-LANG-01
- 
-diff --git a/tests/test_llm_client.py b/tests/test_llm_client.py
-index b4adc84..ba2f48d 100644
---- a/tests/test_llm_client.py
-+++ b/tests/test_llm_client.py
-@@ -26,10 +26,45 @@ def test_generate():
- @pytest.mark.asyncio
- async def test_timeout(monkeypatch):
-     async def slow_post(*_a, **_k):
--        await asyncio.sleep(35)
-+        await asyncio.sleep(0.2)
-         return httpx.Response(200, json={})
- 
-     monkeypatch.setattr(httpx.AsyncClient, "post", slow_post)
--    res = await llm_client.generate("s", "u")
-+    client = llm_client.LLMClient(timeout=0.05)
-+    res = await client.generate("s", "u")
-     assert res["content"] == "**LLM timeout**"
-     assert llm_client.llm_timeouts_total._value.get() >= 1
-+
-+
-+@pytest.mark.asyncio
-+async def test_mock_response_path(tmp_path):
-+    mock_path = tmp_path / "mock-response.json"
-+    mock_path.write_text(
-+        '{"topic":"Weekly sync","summary_bullets":["Launched v2"],"decisions":[],"action_items":[],"emotional_summary":"Positive","questions":{"total_count":0,"types":{"open":0,"yes_no":0,"clarification":0,"status":0,"decision_seeking":0},"extracted":[]}}',
-+        encoding="utf-8",
-+    )
-+    client = llm_client.LLMClient(mock_response_path=mock_path)
-+    res = await client.generate("system", "user")
-+    assert "Weekly sync" in res["content"]
-+
-+
-+@pytest.mark.asyncio
-+async def test_mock_response_path_with_content_field(tmp_path):
-+    mock_path = tmp_path / "mock-content.json"
-+    mock_path.write_text(
-+        '{"role":"assistant","content":"from-mock"}',
-+        encoding="utf-8",
-+    )
-+    client = llm_client.LLMClient(mock_response_path=mock_path)
-+    res = await client.generate("system", "user")
-+    assert res["content"] == "from-mock"
-+
-+
-+@respx.mock
-+def test_generate_with_content_only_response():
-+    route = respx.post("http://llm:8000/v1/chat/completions").mock(
-+        return_value=httpx.Response(200, json={"content": "fallback-content"})
-+    )
-+    result = asyncio.run(llm_client.generate("s", "u", model="m"))
-+    assert route.called
-+    assert result["content"] == "fallback-content"
++        summary_bullets = _normalise_text_list(parsed.get("summary"), max_items=12)
+     if not summary_bullets:
+         summary_bullets = _normalise_text_list(raw_llm_content, max_items=12)
+     if not summary_bullets:
 diff --git a/tests/test_pipeline.py b/tests/test_pipeline.py
-index 5303b62..32b345d 100644
+index 32b345d..71aa492 100644
 --- a/tests/test_pipeline.py
 +++ b/tests/test_pipeline.py
-@@ -287,7 +287,7 @@ async def test_no_talk(tmp_path: Path, mocker):
-     )
- 
-     assert res.friendly == 0
--    assert res.summary.strip() == ""
-+    assert res.summary.strip() == "- No summary available."
- 
- 
- @pytest.mark.asyncio
-@@ -497,6 +497,7 @@ async def test_pipeline_summary_language_override_changes_prompt(tmp_path: Path,
-         system_prompt: str,
-         user_prompt: str,
-         model: str | None = None,
-+        response_format: dict[str, object] | None = None,
-     ):
-         captured["system"] = system_prompt
-         return {"content": "- resumen"}
-@@ -518,7 +519,7 @@ async def test_pipeline_summary_language_override_changes_prompt(tmp_path: Path,
-         target_summary_language="es",
-     )
- 
--    assert "Write the summary in Spanish." in captured["system"]
-+    assert "in Spanish." in captured["system"]
-     summary_data = json.loads(
-         (cfg.recordings_root / "rec-summary-lang-1" / "derived" / "summary.json").read_text(
-             encoding="utf-8"
-@@ -527,6 +528,135 @@ async def test_pipeline_summary_language_override_changes_prompt(tmp_path: Path,
+@@ -528,6 +528,17 @@ async def test_pipeline_summary_language_override_changes_prompt(tmp_path: Path,
      assert summary_data["target_summary_language"] == "es"
  
  
-+@pytest.mark.asyncio
-+async def test_pipeline_writes_structured_summary_payload(tmp_path: Path, mocker):
-+    mocker.patch(
-+        "whisperx.transcribe",
-+        return_value=(
-+            [{"start": 0.0, "end": 1.0, "text": "hello team, we ship on Friday."}],
-+            {"language": "en", "language_probability": 0.9},
++def test_build_summary_payload_prefers_parsed_summary_field():
++    payload = pipeline.build_summary_payload(
++        raw_llm_content='{"topic":"T","summary":"- one\\n- two","decisions":[],"action_items":[],"emotional_summary":"ok","questions":{"total_count":0,"types":{},"extracted":[]}}',
++        model="m",
++        target_summary_language="en",
++        friendly=0,
++    )
++    assert payload["summary_bullets"] == ["one", "two"]
++    assert payload["summary"] == "- one\n- two"
++
++
+ @pytest.mark.asyncio
+ async def test_pipeline_writes_structured_summary_payload(tmp_path: Path, mocker):
+     mocker.patch(
+diff --git a/tests/test_ui_routes.py b/tests/test_ui_routes.py
+index 0bbaa11..14a5261 100644
+--- a/tests/test_ui_routes.py
++++ b/tests/test_ui_routes.py
+@@ -635,6 +635,79 @@ def test_ui_language_resummarize_uses_target_language_override(tmp_path, monkeyp
+     assert "in Spanish." in captured["system_prompt"]
+ 
+ 
++def test_ui_language_resummarize_without_speaker_turns_uses_full_transcript(tmp_path, monkeypatch):
++    cfg = _cfg(tmp_path)
++    monkeypatch.setattr(api, "_settings", cfg)
++    monkeypatch.setattr(ui_routes, "_settings", cfg)
++    init_db(cfg)
++    create_recording(
++        "rec-lang-rsum-legacy-1",
++        source="drive",
++        source_filename="legacy.mp3",
++        status=RECORDING_STATUS_READY,
++        settings=cfg,
++    )
++
++    derived = cfg.recordings_root / "rec-lang-rsum-legacy-1" / "derived"
++    derived.mkdir(parents=True, exist_ok=True)
++    long_text = " ".join(f"token{i}" for i in range(260))
++    normalized_long_text = " ".join(long_text.split())
++    (derived / "transcript.json").write_text(
++        json.dumps(
++            {
++                "text": long_text,
++                "language": {"detected": "en", "confidence": 0.9},
++                "dominant_language": "en",
++            }
 +        ),
++        encoding="utf-8",
 +    )
-+    mocker.patch(
-+        "transformers.pipeline",
-+        lambda *a, **k: lambda text: [{"label": "positive", "score": 0.7}],
-+    )
-+
-+    async def _fake_generate(
-+        self,
-+        system_prompt: str,
-+        user_prompt: str,
-+        model: str | None = None,
-+        response_format: dict[str, object] | None = None,
-+    ):
-+        return {
-+            "content": json.dumps(
-+                {
-+                    "topic": "Weekly release sync",
-+                    "summary_bullets": ["Team confirmed release scope for Friday."],
-+                    "decisions": ["Release window is Friday 16:00 UTC."],
-+                    "action_items": [
-+                        {
-+                            "task": "Send release notes",
-+                            "owner": "Alex",
-+                            "deadline": "2026-02-23",
-+                            "confidence": 0.92,
-+                        }
-+                    ],
-+                    "emotional_summary": "Focused and optimistic.",
-+                    "questions": {
-+                        "total_count": 1,
-+                        "types": {
-+                            "open": 0,
-+                            "yes_no": 0,
-+                            "clarification": 0,
-+                            "status": 1,
-+                            "decision_seeking": 0,
-+                        },
-+                        "extracted": ["Is QA complete?"],
-+                    },
-+                }
-+            )
-+        }
-+
-+    mocker.patch.object(llm_client.LLMClient, "generate", _fake_generate)
-+
-+    cfg = pipeline.Settings(
-+        speaker_db=tmp_path / "db.yaml",
-+        tmp_root=tmp_path,
-+        recordings_root=tmp_path / "recordings",
-+    )
-+    await pipeline.run_pipeline(
-+        audio_path=fake_audio(tmp_path, "structured.mp3"),
-+        cfg=cfg,
-+        llm=llm_client.LLMClient(),
-+        diariser=DummyDiariser(),
-+        recording_id="rec-structured-1",
-+        precheck=precheck_ok(),
-+    )
-+
-+    summary_data = json.loads(
-+        (cfg.recordings_root / "rec-structured-1" / "derived" / "summary.json").read_text(
-+            encoding="utf-8"
-+        )
-+    )
-+    assert summary_data["topic"] == "Weekly release sync"
-+    assert summary_data["decisions"] == ["Release window is Friday 16:00 UTC."]
-+    assert summary_data["action_items"][0]["owner"] == "Alex"
-+    assert summary_data["action_items"][0]["confidence"] == 0.92
-+    assert summary_data["questions"]["types"]["status"] == 1
-+    assert summary_data["summary_bullets"] == ["Team confirmed release scope for Friday."]
-+
-+
-+@pytest.mark.asyncio
-+async def test_pipeline_prompt_includes_calendar_context(tmp_path: Path, mocker):
-+    mocker.patch(
-+        "whisperx.transcribe",
-+        return_value=(
-+            [{"start": 0.0, "end": 1.0, "text": "status update for roadmap"}],
-+            {"language": "en", "language_probability": 0.8},
-+        ),
-+    )
-+    mocker.patch(
-+        "transformers.pipeline",
-+        lambda *a, **k: lambda text: [{"label": "positive", "score": 0.6}],
++    (derived / "summary.json").write_text(
++        json.dumps({"friendly": 0, "model": "llama3:8b", "summary": "- old"}),
++        encoding="utf-8",
 +    )
 +
 +    captured: dict[str, str] = {}
@@ -1359,192 +186,37 @@ index 5303b62..32b345d 100644
 +        response_format: dict[str, object] | None = None,
 +    ):
 +        captured["user_prompt"] = user_prompt
-+        return {"content": '{"summary_bullets":["ok"],"decisions":[],"action_items":[],"questions":{"total_count":0,"types":{},"extracted":[]},"topic":"A","emotional_summary":"Neutral."}'}
-+
-+    mocker.patch.object(llm_client.LLMClient, "generate", _fake_generate)
-+
-+    cfg = pipeline.Settings(
-+        speaker_db=tmp_path / "db.yaml",
-+        tmp_root=tmp_path,
-+        recordings_root=tmp_path / "recordings",
-+    )
-+    await pipeline.run_pipeline(
-+        audio_path=fake_audio(tmp_path, "calendar.mp3"),
-+        cfg=cfg,
-+        llm=llm_client.LLMClient(),
-+        diariser=DummyDiariser(),
-+        recording_id="rec-calendar-1",
-+        precheck=precheck_ok(),
-+        calendar_title="Roadmap Review",
-+        calendar_attendees=["Alex", "Priya"],
-+    )
-+
-+    prompt_payload = json.loads(captured["user_prompt"])
-+    assert prompt_payload["calendar"]["title"] == "Roadmap Review"
-+    assert prompt_payload["calendar"]["attendees"] == ["Alex", "Priya"]
-+
-+
- @pytest.mark.asyncio
- @respx.mock
- async def test_pipeline_transcript_language_override_is_used_for_asr(tmp_path: Path, mocker):
-diff --git a/tests/test_ui_routes.py b/tests/test_ui_routes.py
-index e33f90f..0bbaa11 100644
---- a/tests/test_ui_routes.py
-+++ b/tests/test_ui_routes.py
-@@ -152,12 +152,95 @@ def test_recording_detail_calendar_tab(seeded_client):
- 
- 
- def test_recording_detail_placeholder_tabs(seeded_client):
--    for tab in ("project", "speakers", "metrics"):
-+    for tab in ("project", "speakers"):
-         r = seeded_client.get(f"/recordings/rec-ui-1?tab={tab}")
-         assert r.status_code == 200
-         assert "placeholder" in r.text.lower() or "available after" in r.text.lower()
- 
- 
-+def test_recording_detail_metrics_tab_uses_summary_payload(tmp_path, monkeypatch):
-+    cfg = _cfg(tmp_path)
-+    monkeypatch.setattr(api, "_settings", cfg)
-+    monkeypatch.setattr(ui_routes, "_settings", cfg)
-+    init_db(cfg)
-+    create_recording(
-+        "rec-metrics-tab-1",
-+        source="drive",
-+        source_filename="metrics.mp3",
-+        status=RECORDING_STATUS_READY,
-+        settings=cfg,
-+    )
-+    derived = cfg.recordings_root / "rec-metrics-tab-1" / "derived"
-+    derived.mkdir(parents=True, exist_ok=True)
-+    (derived / "summary.json").write_text(
-+        json.dumps(
-+            {
-+                "topic": "Weekly sync",
-+                "summary_bullets": ["Reviewed blockers"],
-+                "decisions": ["Ship on Friday"],
-+                "action_items": [
-+                    {"task": "Send notes", "owner": "Alex", "deadline": "2026-02-23", "confidence": 0.9}
-+                ],
-+                "emotional_summary": "Focused.",
-+                "questions": {
-+                    "total_count": 1,
-+                    "types": {
-+                        "open": 0,
-+                        "yes_no": 0,
-+                        "clarification": 0,
-+                        "status": 1,
-+                        "decision_seeking": 0,
-+                    },
-+                    "extracted": ["Is QA complete?"],
-+                },
-+            }
-+        ),
-+        encoding="utf-8",
-+    )
-+
-+    c = TestClient(api.app, follow_redirects=True)
-+    r = c.get("/recordings/rec-metrics-tab-1?tab=metrics")
-+    assert r.status_code == 200
-+    assert "Decisions" in r.text
-+    assert "Ship on Friday" in r.text
-+    assert "Send notes" in r.text
-+    assert "Is QA complete?" in r.text
-+
-+
-+def test_recording_detail_overview_shows_topic_and_emotional_summary(tmp_path, monkeypatch):
-+    cfg = _cfg(tmp_path)
-+    monkeypatch.setattr(api, "_settings", cfg)
-+    monkeypatch.setattr(ui_routes, "_settings", cfg)
-+    init_db(cfg)
-+    create_recording(
-+        "rec-overview-summary-1",
-+        source="drive",
-+        source_filename="overview.mp3",
-+        status=RECORDING_STATUS_READY,
-+        settings=cfg,
-+    )
-+    derived = cfg.recordings_root / "rec-overview-summary-1" / "derived"
-+    derived.mkdir(parents=True, exist_ok=True)
-+    (derived / "summary.json").write_text(
-+        json.dumps(
-+            {
-+                "topic": "Quarterly roadmap",
-+                "summary_bullets": ["Roadmap reviewed"],
-+                "summary": "- Roadmap reviewed",
-+                "emotional_summary": "Calm and constructive.",
-+            }
-+        ),
-+        encoding="utf-8",
-+    )
-+
-+    c = TestClient(api.app, follow_redirects=True)
-+    r = c.get("/recordings/rec-overview-summary-1")
-+    assert r.status_code == 200
-+    assert "Quarterly roadmap" in r.text
-+    assert "Roadmap reviewed" in r.text
-+    assert "Calm and constructive." in r.text
-+
-+
- def test_recording_detail_language_tab_renders_spans(tmp_path, monkeypatch):
-     cfg = _cfg(tmp_path)
-     monkeypatch.setattr(api, "_settings", cfg)
-@@ -490,10 +573,44 @@ def test_ui_language_resummarize_uses_target_language_override(tmp_path, monkeyp
- 
-     captured: dict[str, str] = {}
- 
--    async def _fake_generate(self, system_prompt: str, user_prompt: str, model: str | None = None):
-+    async def _fake_generate(
-+        self,
-+        system_prompt: str,
-+        user_prompt: str,
-+        model: str | None = None,
-+        response_format: dict[str, object] | None = None,
-+    ):
-         captured["system_prompt"] = system_prompt
-         captured["model"] = model or ""
--        return {"content": "- resumen actualizado"}
 +        return {
 +            "content": json.dumps(
 +                {
-+                    "topic": "Resumen semanal",
-+                    "summary_bullets": ["Bloqueadores revisados."],
-+                    "decisions": ["Publicar el viernes."],
-+                    "action_items": [
-+                        {
-+                            "task": "Enviar notas",
-+                            "owner": "Alex",
-+                            "deadline": "2026-02-23",
-+                            "confidence": 0.85,
-+                        }
-+                    ],
-+                    "emotional_summary": "Enfoque positivo.",
-+                    "questions": {
-+                        "total_count": 1,
-+                        "types": {
-+                            "open": 0,
-+                            "yes_no": 0,
-+                            "clarification": 1,
-+                            "status": 0,
-+                            "decision_seeking": 0,
-+                        },
-+                        "extracted": ["Quien valida QA?"],
-+                    },
++                    "topic": "Legacy",
++                    "summary_bullets": ["ok"],
++                    "decisions": [],
++                    "action_items": [],
++                    "emotional_summary": "Neutral.",
++                    "questions": {"total_count": 0, "types": {}, "extracted": []},
 +                }
 +            )
 +        }
- 
-     monkeypatch.setattr(ui_routes.LLMClient, "generate", _fake_generate)
-     c = TestClient(api.app, follow_redirects=False)
-@@ -512,9 +629,10 @@ def test_ui_language_resummarize_uses_target_language_override(tmp_path, monkeyp
-     assert recording["language_override"] == "en"
- 
-     summary_payload = json.loads((derived / "summary.json").read_text(encoding="utf-8"))
--    assert summary_payload["summary"] == "- resumen actualizado"
-+    assert summary_payload["summary_bullets"] == ["Bloqueadores revisados."]
-+    assert summary_payload["topic"] == "Resumen semanal"
-     assert summary_payload["target_summary_language"] == "es"
--    assert "Write the summary in Spanish." in captured["system_prompt"]
-+    assert "in Spanish." in captured["system_prompt"]
- 
- 
++
++    monkeypatch.setattr(ui_routes.LLMClient, "generate", _fake_generate)
++    c = TestClient(api.app, follow_redirects=False)
++    r = c.post(
++        "/ui/recordings/rec-lang-rsum-legacy-1/language/resummarize",
++        data={
++            "target_summary_language": "en",
++            "transcript_language_override": "",
++        },
++    )
++    assert r.status_code == 303
++
++    prompt_payload = json.loads(captured["user_prompt"])
++    speaker_turns = prompt_payload["speaker_turns"]
++    assert len(speaker_turns) > 1
++    reconstructed = " ".join(str(turn["text"]) for turn in speaker_turns)
++    assert reconstructed == normalized_long_text
++
++
  def test_ui_language_retranscribe_enqueues_precheck_and_saves_overrides(tmp_path, monkeypatch):
+     cfg = _cfg(tmp_path)
+     monkeypatch.setattr(api, "_settings", cfg)

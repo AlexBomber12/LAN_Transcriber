@@ -252,6 +252,89 @@ def _summary_context(recording_id: str, settings: AppSettings) -> dict[str, Any]
     }
 
 
+def _chunk_text_for_turns(text: str, *, chunk_size: int = 450) -> list[str]:
+    normalized = " ".join(text.split())
+    if not normalized:
+        return []
+    if len(normalized) <= chunk_size:
+        return [normalized]
+
+    chunks: list[str] = []
+    words = normalized.split(" ")
+    current: list[str] = []
+    current_len = 0
+    for word in words:
+        word_len = len(word)
+        sep = 1 if current else 0
+        if current and current_len + sep + word_len > chunk_size:
+            chunks.append(" ".join(current))
+            current = [word]
+            current_len = word_len
+            continue
+        if not current and word_len > chunk_size:
+            start = 0
+            while start < word_len:
+                end = min(start + chunk_size, word_len)
+                chunks.append(word[start:end])
+                start = end
+            current = []
+            current_len = 0
+            continue
+        if sep:
+            current_len += 1
+        current.append(word)
+        current_len += word_len
+
+    if current:
+        chunks.append(" ".join(current))
+    return chunks
+
+
+def _fallback_speaker_turns_from_transcript(transcript_payload: dict[str, Any]) -> list[dict[str, Any]]:
+    segments_payload = transcript_payload.get("segments")
+    if isinstance(segments_payload, list):
+        segment_turns: list[dict[str, Any]] = []
+        for row in segments_payload:
+            if not isinstance(row, dict):
+                continue
+            text = str(row.get("text") or "").strip()
+            if not text:
+                continue
+            try:
+                start = float(row.get("start") or 0.0)
+            except (TypeError, ValueError):
+                start = 0.0
+            try:
+                end = float(row.get("end") or row.get("start") or start)
+            except (TypeError, ValueError):
+                end = start
+            segment_turns.append(
+                {
+                    "start": start,
+                    "end": max(end, start),
+                    "speaker": "S1",
+                    "text": text,
+                    "language": row.get("language"),
+                }
+            )
+        if segment_turns:
+            return segment_turns
+
+    transcript_text = str(transcript_payload.get("text") or "").strip()
+    chunks = _chunk_text_for_turns(transcript_text)
+    turns: list[dict[str, Any]] = []
+    for idx, chunk in enumerate(chunks):
+        turns.append(
+            {
+                "start": float(idx),
+                "end": float(idx + 1),
+                "speaker": "S1",
+                "text": chunk,
+            }
+        )
+    return turns
+
+
 def _recording_derived_paths(recording_id: str, settings: AppSettings) -> tuple[Path, Path]:
     derived = settings.recordings_root / recording_id / "derived"
     return derived / "transcript.json", derived / "summary.json"
@@ -424,6 +507,8 @@ def _resummarize_recording(
     )
     speaker_turns_raw = _load_json_list(speaker_turns_path)
     speaker_turns = [row for row in speaker_turns_raw if isinstance(row, dict)]
+    if not speaker_turns:
+        speaker_turns = _fallback_speaker_turns_from_transcript(transcript_payload)
     if not speaker_turns:
         speaker_turns = [{"start": 0.0, "end": 0.0, "speaker": "S1", "text": transcript_text}]
 

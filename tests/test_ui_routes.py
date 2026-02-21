@@ -635,6 +635,79 @@ def test_ui_language_resummarize_uses_target_language_override(tmp_path, monkeyp
     assert "in Spanish." in captured["system_prompt"]
 
 
+def test_ui_language_resummarize_without_speaker_turns_uses_full_transcript(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    init_db(cfg)
+    create_recording(
+        "rec-lang-rsum-legacy-1",
+        source="drive",
+        source_filename="legacy.mp3",
+        status=RECORDING_STATUS_READY,
+        settings=cfg,
+    )
+
+    derived = cfg.recordings_root / "rec-lang-rsum-legacy-1" / "derived"
+    derived.mkdir(parents=True, exist_ok=True)
+    long_text = " ".join(f"token{i}" for i in range(260))
+    normalized_long_text = " ".join(long_text.split())
+    (derived / "transcript.json").write_text(
+        json.dumps(
+            {
+                "text": long_text,
+                "language": {"detected": "en", "confidence": 0.9},
+                "dominant_language": "en",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (derived / "summary.json").write_text(
+        json.dumps({"friendly": 0, "model": "llama3:8b", "summary": "- old"}),
+        encoding="utf-8",
+    )
+
+    captured: dict[str, str] = {}
+
+    async def _fake_generate(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        model: str | None = None,
+        response_format: dict[str, object] | None = None,
+    ):
+        captured["user_prompt"] = user_prompt
+        return {
+            "content": json.dumps(
+                {
+                    "topic": "Legacy",
+                    "summary_bullets": ["ok"],
+                    "decisions": [],
+                    "action_items": [],
+                    "emotional_summary": "Neutral.",
+                    "questions": {"total_count": 0, "types": {}, "extracted": []},
+                }
+            )
+        }
+
+    monkeypatch.setattr(ui_routes.LLMClient, "generate", _fake_generate)
+    c = TestClient(api.app, follow_redirects=False)
+    r = c.post(
+        "/ui/recordings/rec-lang-rsum-legacy-1/language/resummarize",
+        data={
+            "target_summary_language": "en",
+            "transcript_language_override": "",
+        },
+    )
+    assert r.status_code == 303
+
+    prompt_payload = json.loads(captured["user_prompt"])
+    speaker_turns = prompt_payload["speaker_turns"]
+    assert len(speaker_turns) > 1
+    reconstructed = " ".join(str(turn["text"]) for turn in speaker_turns)
+    assert reconstructed == normalized_long_text
+
+
 def test_ui_language_retranscribe_enqueues_precheck_and_saves_overrides(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
     monkeypatch.setattr(api, "_settings", cfg)

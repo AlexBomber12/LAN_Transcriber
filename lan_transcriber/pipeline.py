@@ -671,6 +671,8 @@ def build_summary_payload(
 
     summary_bullets = _normalise_text_list(parsed.get("summary_bullets"), max_items=12)
     if not summary_bullets:
+        summary_bullets = _normalise_text_list(parsed.get("summary"), max_items=12)
+    if not summary_bullets:
         summary_bullets = _normalise_text_list(raw_llm_content, max_items=12)
     if not summary_bullets:
         summary_bullets = ["No summary available."]

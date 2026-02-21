@@ -528,6 +528,17 @@ async def test_pipeline_summary_language_override_changes_prompt(tmp_path: Path,
     assert summary_data["target_summary_language"] == "es"
 
 
+def test_build_summary_payload_prefers_parsed_summary_field():
+    payload = pipeline.build_summary_payload(
+        raw_llm_content='{"topic":"T","summary":"- one\\n- two","decisions":[],"action_items":[],"emotional_summary":"ok","questions":{"total_count":0,"types":{},"extracted":[]}}',
+        model="m",
+        target_summary_language="en",
+        friendly=0,
+    )
+    assert payload["summary_bullets"] == ["one", "two"]
+    assert payload["summary"] == "- one\n- two"
+
+
 @pytest.mark.asyncio
 async def test_pipeline_writes_structured_summary_payload(tmp_path: Path, mocker):
     mocker.patch(
