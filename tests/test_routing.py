@@ -93,12 +93,82 @@ def test_refresh_recording_routing_auto_selects_when_confident(tmp_path: Path):
 
     assert decision["suggested_project_id"] == roadmap["id"]
     assert decision["confidence"] >= cfg.routing_auto_select_threshold
+    assert decision["auto_selected"] is True
     assert decision["status_after_routing"] == RECORDING_STATUS_READY
 
     recording = get_recording("rec-route-auto-1", settings=cfg)
     assert recording is not None
     assert recording["project_id"] == roadmap["id"]
+    assert recording["project_assignment_source"] == "auto"
     assert recording["suggested_project_id"] == roadmap["id"]
+
+
+def test_refresh_recording_routing_preserves_manual_assignment_when_confident(
+    tmp_path: Path,
+):
+    cfg = _cfg(tmp_path)
+    cfg.routing_auto_select_threshold = 0.3
+    init_db(cfg)
+    roadmap = create_project("Roadmap", settings=cfg)
+    budget = create_project("Budget", settings=cfg)
+    create_recording(
+        "rec-route-manual-keep-1",
+        source="drive",
+        source_filename="roadmap-sync.mp3",
+        status=RECORDING_STATUS_READY,
+        project_id=budget["id"],
+        project_assignment_source="manual",
+        settings=cfg,
+    )
+    upsert_calendar_match(
+        recording_id="rec-route-manual-keep-1",
+        candidates=[
+            {
+                "event_id": "evt-roadmap",
+                "subject": "Roadmap sync",
+                "organizer": "Alex",
+                "attendees": ["Priya"],
+                "score": 0.95,
+                "rationale": "manual",
+            }
+        ],
+        selected_event_id="evt-roadmap",
+        selected_confidence=0.95,
+        settings=cfg,
+    )
+    _write_summary(
+        cfg,
+        "rec-route-manual-keep-1",
+        {
+            "topic": "Roadmap planning",
+            "summary_bullets": ["Roadmap priorities and milestones"],
+        },
+    )
+    increment_project_keyword_weights(
+        project_id=roadmap["id"],
+        keyword_deltas={
+            "cal:roadmap": 3.0,
+            "tag:roadmap": 3.0,
+            "party:alex": 2.0,
+        },
+        settings=cfg,
+    )
+
+    decision = refresh_recording_routing(
+        "rec-route-manual-keep-1",
+        settings=cfg,
+        apply_workflow=True,
+    )
+
+    assert decision["suggested_project_id"] == roadmap["id"]
+    assert decision["confidence"] >= cfg.routing_auto_select_threshold
+    assert decision["auto_selected"] is False
+    assert decision["status_after_routing"] == RECORDING_STATUS_READY
+
+    recording = get_recording("rec-route-manual-keep-1", settings=cfg)
+    assert recording is not None
+    assert recording["project_id"] == budget["id"]
+    assert recording["project_assignment_source"] == "manual"
 
 
 def test_refresh_recording_routing_marks_needs_review_when_low_confidence(tmp_path: Path):

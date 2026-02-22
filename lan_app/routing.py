@@ -72,6 +72,9 @@ def refresh_recording_routing(
     current_assignment_source = str(
         recording.get("project_assignment_source") or ""
     ).strip().lower()
+    has_manual_project_override = (
+        current_project_id is not None and current_assignment_source == "manual"
+    )
 
     projects = list_projects(settings=cfg)
     signals = _build_routing_signals(recording_id, settings=cfg)
@@ -170,13 +173,14 @@ def refresh_recording_routing(
     status_after_routing: str = str(recording.get("status") or RECORDING_STATUS_READY)
     if apply_workflow:
         if suggested_project_id is not None and confidence >= threshold:
-            set_recording_project(
-                recording_id,
-                suggested_project_id,
-                settings=cfg,
-                assignment_source="auto",
-            )
-            auto_selected = True
+            if not has_manual_project_override:
+                set_recording_project(
+                    recording_id,
+                    suggested_project_id,
+                    settings=cfg,
+                    assignment_source="auto",
+                )
+                auto_selected = True
             status_after_routing = RECORDING_STATUS_READY
         else:
             if current_project_id is not None and current_assignment_source == "auto":
