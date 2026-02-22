@@ -100,3 +100,33 @@ Queue (in order)
 - Status: DONE
 - Tasks file: tasks/PR-STAGING-01.md
 - Depends on: PR-ENTRYPOINT-01
+
+19) PR-SECURITY-01: Optional bearer auth + abuse guards (rate limit, dedupe) for ingest/requeue/delete
+- Status: TODO
+- Tasks file: tasks/PR-SECURITY-01.md
+- Depends on: PR-STAGING-01
+
+20) PR-WORKER-ROBUST-01: Worker robustness: graceful shutdown, timeouts, stuck job recovery, terminal failures
+- Status: TODO
+- Tasks file: tasks/PR-WORKER-ROBUST-01.md
+- Depends on: PR-SECURITY-01
+
+21) PR-PIPELINE-MODULAR-01: Split pipeline.py into testable modules + consolidate utils + robust LLM parsing with schema and raw artifacts
+- Status: TODO
+- Tasks file: tasks/PR-PIPELINE-MODULAR-01.md
+- Depends on: PR-WORKER-ROBUST-01
+
+22) PR-DB-RESILIENCE-01: SQLite resilience: busy timeout, retry-on-locked, migration files, safer connection management
+- Status: TODO
+- Tasks file: tasks/PR-DB-RESILIENCE-01.md
+- Depends on: PR-PIPELINE-MODULAR-01
+
+23) PR-UI-PROGRESS-01: UI feedback: pipeline progress/stage + Connections page real status and Run ingest button
+- Status: TODO
+- Tasks file: tasks/PR-UI-PROGRESS-01.md
+- Depends on: PR-DB-RESILIENCE-01
+
+24) PR-RUNTIME-CONFIG-01: Runtime hardening: fail-fast config for staging/prod + FastAPI lifespan + docs alignment
+- Status: TODO
+- Tasks file: tasks/PR-RUNTIME-CONFIG-01.md
+- Depends on: PR-UI-PROGRESS-01
