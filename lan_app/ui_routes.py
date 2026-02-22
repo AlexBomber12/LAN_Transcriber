@@ -26,6 +26,7 @@ from .calendar import (
 from .config import AppSettings
 from .conversation_metrics import refresh_recording_metrics
 from .constants import (
+    DEFAULT_REQUEUE_JOB_TYPE,
     JOB_STATUS_FAILED,
     JOB_STATUSES,
     JOB_TYPE_PRECHECK,
@@ -1471,13 +1472,10 @@ async def ui_action_retry_failed_step(recording_id: str, job_id: str) -> Any:
         return HTMLResponse("Job not found", status_code=404)
     if str(job.get("status") or "") != JOB_STATUS_FAILED:
         return HTMLResponse("Only failed jobs can be retried", status_code=422)
-    job_type = str(job.get("type") or "").strip()
-    if not job_type:
-        return HTMLResponse("Job type is missing", status_code=422)
     try:
         enqueue_recording_job(
             recording_id,
-            job_type=job_type,
+            job_type=DEFAULT_REQUEUE_JOB_TYPE,
             settings=_settings,
         )
     except Exception as exc:

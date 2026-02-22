@@ -33,6 +33,7 @@ from lan_app.constants import (
     JOB_STATUS_FAILED,
     JOB_STATUS_QUEUED,
     JOB_TYPE_PRECHECK,
+    JOB_TYPE_STT,
     RECORDING_STATUS_NEEDS_REVIEW,
     RECORDING_STATUS_READY,
 )
@@ -876,7 +877,7 @@ def test_ui_action_retry_failed_step(tmp_path, monkeypatch):
     create_job(
         "job-rtry-1",
         recording_id="rec-rtry-1",
-        job_type=JOB_TYPE_PRECHECK,
+        job_type=JOB_TYPE_STT,
         settings=cfg,
         status=JOB_STATUS_FAILED,
     )

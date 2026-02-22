@@ -16,7 +16,13 @@ from lan_app.constants import (
     JOB_STATUS_FAILED,
     JOB_STATUS_FINISHED,
     JOB_STATUS_QUEUED,
+    JOB_TYPE_ALIGN,
+    JOB_TYPE_DIARIZE,
+    JOB_TYPE_LANGUAGE,
+    JOB_TYPE_LLM,
+    JOB_TYPE_METRICS,
     JOB_TYPE_PRECHECK,
+    JOB_TYPE_STT,
     RECORDING_STATUS_FAILED,
     RECORDING_STATUS_QUARANTINE,
     RECORDING_STATUS_QUEUED,
@@ -77,6 +83,96 @@ def test_init_db_creates_mvp_tables(tmp_path: Path):
     assert expected.issubset(names)
 
 
+def test_placeholder_cleanup_migration_only_removes_legacy_placeholders(tmp_path: Path):
+    cfg = _test_settings(tmp_path)
+    init_db(cfg)
+    create_recording(
+        "rec-mig-placeholder-1",
+        source="test",
+        source_filename="placeholder.mp3",
+        status=RECORDING_STATUS_QUEUED,
+        settings=cfg,
+    )
+    create_recording(
+        "rec-mig-real-queued-1",
+        source="test",
+        source_filename="queued.mp3",
+        status=RECORDING_STATUS_QUEUED,
+        settings=cfg,
+    )
+    placeholder_types = (
+        JOB_TYPE_STT,
+        JOB_TYPE_DIARIZE,
+        JOB_TYPE_ALIGN,
+        JOB_TYPE_LANGUAGE,
+        JOB_TYPE_LLM,
+        JOB_TYPE_METRICS,
+    )
+    for job_type in placeholder_types:
+        create_job(
+            f"job-mig-placeholder-{job_type}-1",
+            recording_id="rec-mig-placeholder-1",
+            job_type=job_type,
+            settings=cfg,
+            status=JOB_STATUS_QUEUED,
+        )
+
+    with connect(cfg) as conn:
+        conn.execute(
+            """
+            UPDATE recordings
+            SET created_at = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            ("2020-01-02T00:00:00Z", "2020-01-02T00:00:00Z", "rec-mig-placeholder-1"),
+        )
+        conn.execute(
+            """
+            UPDATE jobs
+            SET created_at = ?, updated_at = ?
+            WHERE recording_id = ?
+            """,
+            ("2020-01-02T00:00:08Z", "2020-01-02T00:00:08Z", "rec-mig-placeholder-1"),
+        )
+        conn.commit()
+
+    # Simulate a recording where all six legacy jobs were intentionally enqueued later.
+    with connect(cfg) as conn:
+        conn.execute(
+            """
+            UPDATE recordings
+            SET created_at = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            ("2020-01-01T00:00:00Z", "2020-01-01T00:00:00Z", "rec-mig-real-queued-1"),
+        )
+        conn.commit()
+
+    for job_type in placeholder_types:
+        create_job(
+            f"job-mig-real-{job_type}-1",
+            recording_id="rec-mig-real-queued-1",
+            job_type=job_type,
+            settings=cfg,
+            status=JOB_STATUS_QUEUED,
+        )
+
+    with connect(cfg) as conn:
+        current_version = int(conn.execute("PRAGMA user_version").fetchone()[0])
+        conn.execute(f"PRAGMA user_version = {current_version - 1}")
+        conn.commit()
+
+    init_db(cfg)
+
+    for job_type in placeholder_types:
+        assert get_job(f"job-mig-placeholder-{job_type}-1", settings=cfg) is None
+
+    for job_type in placeholder_types:
+        queued_job = get_job(f"job-mig-real-{job_type}-1", settings=cfg)
+        assert queued_job is not None
+        assert queued_job["status"] == JOB_STATUS_QUEUED
+
+
 def test_worker_noop_updates_job_and_recording_state(tmp_path: Path, monkeypatch):
     cfg = _test_settings(tmp_path)
     monkeypatch.setenv("LAN_DATA_ROOT", str(cfg.data_root))
@@ -112,6 +208,177 @@ def test_worker_noop_updates_job_and_recording_state(tmp_path: Path, monkeypatch
     step_log = cfg.recordings_root / "rec-worker-1" / "logs" / "step-precheck.log"
     assert step_log.exists()
     assert "finished job=job-worker-1" in step_log.read_text(encoding="utf-8")
+
+
+def test_worker_legacy_job_restores_status_from_precheck_log(tmp_path: Path, monkeypatch):
+    cfg = _test_settings(tmp_path)
+    monkeypatch.setenv("LAN_DATA_ROOT", str(cfg.data_root))
+    monkeypatch.setenv("LAN_RECORDINGS_ROOT", str(cfg.recordings_root))
+    monkeypatch.setenv("LAN_DB_PATH", str(cfg.db_path))
+    monkeypatch.setenv("LAN_PROM_SNAPSHOT_PATH", str(cfg.metrics_snapshot_path))
+
+    init_db(cfg)
+    create_recording(
+        "rec-worker-legacy-1",
+        source="test",
+        source_filename="legacy.mp3",
+        status=RECORDING_STATUS_QUEUED,
+        settings=cfg,
+    )
+    create_job(
+        "job-worker-legacy-1",
+        recording_id="rec-worker-legacy-1",
+        job_type=JOB_TYPE_STT,
+        settings=cfg,
+    )
+
+    precheck_log = cfg.recordings_root / "rec-worker-legacy-1" / "logs" / "step-precheck.log"
+    precheck_log.parent.mkdir(parents=True, exist_ok=True)
+    precheck_log.write_text(
+        "[2026-02-22T00:00:00Z] finished job=job-precheck-1 type=precheck recording_status=Ready\n",
+        encoding="utf-8",
+    )
+
+    result = process_job("job-worker-legacy-1", "rec-worker-legacy-1", JOB_TYPE_STT)
+    recording = get_recording("rec-worker-legacy-1", settings=cfg)
+    job = get_job("job-worker-legacy-1", settings=cfg)
+
+    assert result["status"] == "ignored"
+    assert recording is not None
+    assert recording["status"] == RECORDING_STATUS_READY
+    assert job is not None
+    assert job["status"] == JOB_STATUS_FAILED
+    assert "unsupported legacy job type under single-job pipeline" in str(job["error"])
+
+
+def test_worker_legacy_job_keeps_queued_when_precheck_pending(tmp_path: Path, monkeypatch):
+    cfg = _test_settings(tmp_path)
+    monkeypatch.setenv("LAN_DATA_ROOT", str(cfg.data_root))
+    monkeypatch.setenv("LAN_RECORDINGS_ROOT", str(cfg.recordings_root))
+    monkeypatch.setenv("LAN_DB_PATH", str(cfg.db_path))
+    monkeypatch.setenv("LAN_PROM_SNAPSHOT_PATH", str(cfg.metrics_snapshot_path))
+
+    init_db(cfg)
+    create_recording(
+        "rec-worker-legacy-pending-1",
+        source="test",
+        source_filename="legacy-pending.mp3",
+        status=RECORDING_STATUS_QUEUED,
+        settings=cfg,
+    )
+    create_job(
+        "job-worker-legacy-pending-precheck-1",
+        recording_id="rec-worker-legacy-pending-1",
+        job_type=JOB_TYPE_PRECHECK,
+        settings=cfg,
+    )
+    create_job(
+        "job-worker-legacy-pending-stt-1",
+        recording_id="rec-worker-legacy-pending-1",
+        job_type=JOB_TYPE_STT,
+        settings=cfg,
+    )
+
+    precheck_log = (
+        cfg.recordings_root
+        / "rec-worker-legacy-pending-1"
+        / "logs"
+        / "step-precheck.log"
+    )
+    precheck_log.parent.mkdir(parents=True, exist_ok=True)
+    precheck_log.write_text(
+        "[2026-02-22T00:00:00Z] finished job=job-precheck-old type=precheck recording_status=Ready\n",
+        encoding="utf-8",
+    )
+
+    result = process_job(
+        "job-worker-legacy-pending-stt-1",
+        "rec-worker-legacy-pending-1",
+        JOB_TYPE_STT,
+    )
+    recording = get_recording("rec-worker-legacy-pending-1", settings=cfg)
+
+    assert result["status"] == "ignored"
+    assert recording is not None
+    assert recording["status"] == RECORDING_STATUS_QUEUED
+
+
+def test_worker_legacy_job_restores_quarantine_reason(tmp_path: Path, monkeypatch):
+    cfg = _test_settings(tmp_path)
+    monkeypatch.setenv("LAN_DATA_ROOT", str(cfg.data_root))
+    monkeypatch.setenv("LAN_RECORDINGS_ROOT", str(cfg.recordings_root))
+    monkeypatch.setenv("LAN_DB_PATH", str(cfg.db_path))
+    monkeypatch.setenv("LAN_PROM_SNAPSHOT_PATH", str(cfg.metrics_snapshot_path))
+
+    init_db(cfg)
+    create_recording(
+        "rec-worker-legacy-q-1",
+        source="test",
+        source_filename="legacy-q.mp3",
+        status=RECORDING_STATUS_QUEUED,
+        settings=cfg,
+    )
+    create_job(
+        "job-worker-legacy-q-1",
+        recording_id="rec-worker-legacy-q-1",
+        job_type=JOB_TYPE_STT,
+        settings=cfg,
+    )
+
+    precheck_log = cfg.recordings_root / "rec-worker-legacy-q-1" / "logs" / "step-precheck.log"
+    precheck_log.parent.mkdir(parents=True, exist_ok=True)
+    precheck_log.write_text(
+        (
+            "[2026-02-22T00:00:00Z] quarantined reason=duration_lt_20s\n"
+            "[2026-02-22T00:00:01Z] finished job=job-precheck-q-1 "
+            "type=precheck recording_status=Quarantine\n"
+        ),
+        encoding="utf-8",
+    )
+
+    result = process_job("job-worker-legacy-q-1", "rec-worker-legacy-q-1", JOB_TYPE_STT)
+    recording = get_recording("rec-worker-legacy-q-1", settings=cfg)
+
+    assert result["status"] == "ignored"
+    assert recording is not None
+    assert recording["status"] == RECORDING_STATUS_QUARANTINE
+    assert recording["quarantine_reason"] == "duration_lt_20s"
+
+
+def test_worker_legacy_job_falls_back_to_failed_without_precheck_log(
+    tmp_path: Path, monkeypatch
+):
+    cfg = _test_settings(tmp_path)
+    monkeypatch.setenv("LAN_DATA_ROOT", str(cfg.data_root))
+    monkeypatch.setenv("LAN_RECORDINGS_ROOT", str(cfg.recordings_root))
+    monkeypatch.setenv("LAN_DB_PATH", str(cfg.db_path))
+    monkeypatch.setenv("LAN_PROM_SNAPSHOT_PATH", str(cfg.metrics_snapshot_path))
+
+    init_db(cfg)
+    create_recording(
+        "rec-worker-legacy-fallback-1",
+        source="test",
+        source_filename="legacy-fallback.mp3",
+        status=RECORDING_STATUS_QUEUED,
+        settings=cfg,
+    )
+    create_job(
+        "job-worker-legacy-fallback-1",
+        recording_id="rec-worker-legacy-fallback-1",
+        job_type=JOB_TYPE_STT,
+        settings=cfg,
+    )
+
+    result = process_job(
+        "job-worker-legacy-fallback-1",
+        "rec-worker-legacy-fallback-1",
+        JOB_TYPE_STT,
+    )
+    recording = get_recording("rec-worker-legacy-fallback-1", settings=cfg)
+
+    assert result["status"] == "ignored"
+    assert recording is not None
+    assert recording["status"] == RECORDING_STATUS_FAILED
 
 
 def test_load_calendar_summary_context_uses_preparsed_candidates(tmp_path: Path, monkeypatch):
@@ -220,6 +487,29 @@ def test_recordings_and_jobs_api_actions(tmp_path: Path, monkeypatch):
 
     missing = client.get("/api/recordings/rec-api-1")
     assert missing.status_code == 404
+
+
+def test_api_requeue_rejects_non_precheck_job_type(tmp_path: Path, monkeypatch):
+    cfg = _test_settings(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    init_db(cfg)
+    create_recording(
+        "rec-api-rq-legacy-1",
+        source="test",
+        source_filename="legacy.mp3",
+        settings=cfg,
+    )
+
+    client = TestClient(api.app)
+    response = client.post(
+        "/api/recordings/rec-api-rq-legacy-1/actions/requeue",
+        json={"job_type": JOB_TYPE_STT},
+    )
+
+    assert response.status_code == 422
+    assert response.json() == {
+        "detail": "Only precheck is supported in single-job pipeline mode"
+    }
 
 
 def test_enqueue_marks_job_failed_when_redis_enqueue_fails(tmp_path: Path, monkeypatch):

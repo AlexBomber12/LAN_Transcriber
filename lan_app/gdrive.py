@@ -20,12 +20,6 @@ from googleapiclient.http import MediaIoBaseDownload
 from .config import AppSettings
 from .constants import (
     JOB_TYPE_PRECHECK,
-    JOB_TYPE_STT,
-    JOB_TYPE_DIARIZE,
-    JOB_TYPE_ALIGN,
-    JOB_TYPE_LANGUAGE,
-    JOB_TYPE_LLM,
-    JOB_TYPE_METRICS,
     RECORDING_STATUS_QUEUED,
 )
 import shutil
@@ -38,12 +32,6 @@ SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]
 
 _PIPELINE_STEPS = (
     JOB_TYPE_PRECHECK,
-    JOB_TYPE_STT,
-    JOB_TYPE_DIARIZE,
-    JOB_TYPE_ALIGN,
-    JOB_TYPE_LANGUAGE,
-    JOB_TYPE_LLM,
-    JOB_TYPE_METRICS,
 )
 
 # Plaud filename patterns:
@@ -139,36 +127,15 @@ def _enqueue_pipeline_jobs(
     recording_id: str,
     settings: AppSettings,
 ) -> list[str]:
-    """Enqueue the first pipeline step into Redis/RQ and create DB
-    placeholder rows for the remaining steps.
-
-    The first step (precheck) is pushed onto the worker queue so
-    processing starts automatically.  Later PRs will chain subsequent
-    steps.
-    """
-    from .db import create_job
+    """Enqueue the single full-pipeline job into Redis/RQ."""
     from .jobs import enqueue_recording_job
 
-    job_ids: list[str] = []
-
-    # First step: enqueue into Redis/RQ so the worker picks it up
-    first_step = _PIPELINE_STEPS[0]
     rj = enqueue_recording_job(
-        recording_id, job_type=first_step, settings=settings
+        recording_id,
+        job_type=JOB_TYPE_PRECHECK,
+        settings=settings,
     )
-    job_ids.append(rj.job_id)
-
-    # Remaining steps: DB placeholders only (chaining not yet wired)
-    for step in _PIPELINE_STEPS[1:]:
-        job_id = uuid4().hex
-        create_job(
-            job_id=job_id,
-            recording_id=recording_id,
-            job_type=step,
-            settings=settings,
-        )
-        job_ids.append(job_id)
-    return job_ids
+    return [rj.job_id]
 
 
 def ingest_once(
