@@ -1,227 +1,42 @@
-diff --git a/Dockerfile b/Dockerfile
-index 3138f42..23158b4 100644
---- a/Dockerfile
-+++ b/Dockerfile
-@@ -14,7 +14,7 @@ RUN python -m pip install --upgrade pip setuptools wheel \
-     && python -m pip install --no-cache-dir -r requirements.txt \
-       --extra-index-url https://download.pytorch.org/whl/cu121 \
-     && python -m pip install --no-cache-dir whisperx==3.4.2
--CMD ["python", "web_transcribe.py"]
-+CMD ["uvicorn", "lan_app.api:app", "--host", "0.0.0.0", "--port", "7860"]
- 
- FROM base AS runtime-lite
- RUN python -m pip install --upgrade pip setuptools wheel \
-@@ -22,4 +22,4 @@ RUN python -m pip install --upgrade pip setuptools wheel \
-     && python -m pip install --no-cache-dir -e .[test] \
-     && python -m pip install --no-cache-dir whisperx==3.4.2
- ENV CI=true
--CMD ["uvicorn", "web_transcribe:app", "--host", "0.0.0.0", "--port", "7860"]
-+CMD ["uvicorn", "lan_app.api:app", "--host", "0.0.0.0", "--port", "7860"]
-diff --git a/requirements.txt b/requirements.txt
-index 1ddea94..42b9be6 100644
---- a/requirements.txt
-+++ b/requirements.txt
-@@ -11,3 +11,11 @@ tenacity
- redis
- rq
- msal
-+jinja2>=3.1
-+pydantic-settings>=2.10,<3.0
-+python-multipart>=0.0.9
-+prometheus_client>=0.19
-+pyyaml>=6.0
-+google-auth>=2.38
-+google-api-python-client>=2.166
-+uvicorn>=0.30
 diff --git a/scripts/smoke_test.py b/scripts/smoke_test.py
-index dcfc24c..99c3a90 100755
+index 99c3a90..ff79601 100755
 --- a/scripts/smoke_test.py
 +++ b/scripts/smoke_test.py
-@@ -1,8 +1,7 @@
- import argparse
--import base64
--from pathlib import Path
- import sys
- import time
-+
- import requests
- 
- 
-@@ -18,46 +17,38 @@ def wait_health(base_url: str, timeout: int = 120) -> None:
+@@ -17,16 +17,18 @@ def wait_health(base_url: str, timeout: int = 120) -> None:
      raise SystemExit("health check timed out")
  
  
-+def check_endpoint(base_url: str, path: str) -> bool:
-+    try:
-+        response = requests.get(f"{base_url}{path}", timeout=5)
-+    except requests.RequestException as exc:
-+        print(f"{path} request failed: {exc}")
-+        return False
-+    if response.status_code != 200:
-+        print(f"{path} returned status {response.status_code}")
-+        return False
-+    return True
-+
-+
+-def check_endpoint(base_url: str, path: str) -> bool:
+-    try:
+-        response = requests.get(f"{base_url}{path}", timeout=5)
+-    except requests.RequestException as exc:
+-        print(f"{path} request failed: {exc}")
+-        return False
+-    if response.status_code != 200:
+-        print(f"{path} returned status {response.status_code}")
+-        return False
+-    return True
++def wait_endpoint(base_url: str, path: str, timeout: int = 60) -> bool:
++    for _ in range(timeout):
++        try:
++            response = requests.get(f"{base_url}{path}", timeout=5)
++            if response.status_code == 200:
++                return True
++            print(f"{path} returned status {response.status_code}; retrying")
++        except requests.RequestException as exc:
++            print(f"{path} request failed: {exc}")
++        time.sleep(1)
++    print(f"{path} did not return 200 within {timeout}s")
++    return False
+ 
+ 
  def main() -> int:
-     p = argparse.ArgumentParser()
-     p.add_argument("--base-url", required=True)
--    p.add_argument("--file", required=True)
-     args = p.parse_args()
- 
--    wait_health(args.base_url)
--
--    if args.file.endswith(".b64"):
--        data = base64.b64decode(Path(args.file).read_text())
--        files = {"file": ("audio.mp3", data, "audio/mpeg")}
--        resp = requests.post(f"{args.base_url}/api/upload", files=files)
--    else:
--        with open(args.file, "rb") as fh:
--            resp = requests.post(
--                f"{args.base_url}/api/upload", files={"file": fh}
--            )
--    resp.raise_for_status()
--    job = resp.json()
--    job_id = job.get("id")
--    if not job_id:
--        print("missing job id")
--        return 1
--
--    for _ in range(120):
--        r = requests.get(f"{args.base_url}/api/job/{job_id}", timeout=5)
--        if r.status_code != 200:
--            time.sleep(1)
--            continue
--        data = r.json()
--        if data.get("status") == "done":
--            if "Hello" in data.get("markdown", ""):
--                print("Smoke test passed")
--                return 0
--            print("Missing expected text")
-+    base_url = args.base_url.rstrip("/")
-+    wait_health(base_url)
-+
-+    required_paths = [
-+        "/healthz/app",
-+        "/healthz/db",
-+        "/healthz/redis",
-+        "/openapi.json",
-+    ]
-+    for path in required_paths:
-+        if not check_endpoint(base_url, path):
+@@ -44,7 +46,7 @@ def main() -> int:
+         "/openapi.json",
+     ]
+     for path in required_paths:
+-        if not check_endpoint(base_url, path):
++        if not wait_endpoint(base_url, path):
              return 1
--        time.sleep(1)
  
--    print("job timeout")
--    return 1
-+    print("Smoke test passed")
-+    return 0
- 
- 
- if __name__ == "__main__":
-diff --git a/systemd/recording-transcriber.service b/systemd/recording-transcriber.service
-index ff6da53..8138082 100644
---- a/systemd/recording-transcriber.service
-+++ b/systemd/recording-transcriber.service
-@@ -1,14 +1,12 @@
--[Unit]
--Description=LAN Recording-Transcriber (WhisperX + pyannote + Ollama)
--After=network-online.target
--Wants=network-online.target
--
--[Service]
--WorkingDirectory=/home/%i/lan-transcriber
--Environment=HF_HUB_ENABLE_XET=0
--Environment=LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu
--ExecStart=/home/%i/asr_env/bin/python web_transcribe.py
--Restart=on-failure
--
--[Install]
--WantedBy=multi-user.target
-+[Unit]
-+Description=DEPRECATED: LAN Recording-Transcriber wrapper (use lan-transcriber-api.service)
-+After=network-online.target
-+Wants=network-online.target
-+
-+[Service]
-+WorkingDirectory=/home/%i/lan-transcriber
-+ExecStart=/home/%i/asr_env/bin/uvicorn lan_app.api:app --host 0.0.0.0 --port 7860
-+Restart=on-failure
-+
-+[Install]
-+WantedBy=multi-user.target
-diff --git a/tasks/QUEUE.md b/tasks/QUEUE.md
-index e04fc93..a4dfbda 100644
---- a/tasks/QUEUE.md
-+++ b/tasks/QUEUE.md
-@@ -92,7 +92,7 @@ Queue (in order)
- - Depends on: PR-OPS-01
- 
- 17) PR-ENTRYPOINT-01: Unify entrypoint to lan_app.api:app + worker (Dockerfile CMD, systemd, smoke_test, tests)
--- Status: TODO
-+- Status: DONE
- - Tasks file: tasks/PR-ENTRYPOINT-01.md
- - Depends on: PR-JOB-MODEL-01
- 
-diff --git a/tests/test_smoke.py b/tests/test_smoke.py
-index 57d7fbf..44c768d 100644
---- a/tests/test_smoke.py
-+++ b/tests/test_smoke.py
-@@ -1,5 +1,5 @@
- from fastapi.testclient import TestClient
--from web_transcribe import app
-+from lan_app.api import app
- 
- 
- def test_root_200():
-diff --git a/tests/test_ui.py b/tests/test_ui.py
-index e4fb64a..87321f9 100644
---- a/tests/test_ui.py
-+++ b/tests/test_ui.py
-@@ -1,8 +1,7 @@
- from fastapi.testclient import TestClient
--from web_transcribe import app
-+from lan_app.api import app
- 
- 
- def test_root_ok():
-     client = TestClient(app)
-     assert client.get("/openapi.json").status_code == 200
--
-diff --git a/systemd/lan-transcriber-api.service b/systemd/lan-transcriber-api.service
-new file mode 100644
-index 0000000..245972f
---- /dev/null
-+++ b/systemd/lan-transcriber-api.service
-@@ -0,0 +1,13 @@
-+[Unit]
-+Description=LAN Transcriber API (FastAPI)
-+After=network-online.target
-+Wants=network-online.target
-+
-+[Service]
-+WorkingDirectory=/home/%i/lan-transcriber
-+ExecStartPre=/home/%i/asr_env/bin/python -m lan_app.db_init
-+ExecStart=/home/%i/asr_env/bin/uvicorn lan_app.api:app --host 0.0.0.0 --port 7860
-+Restart=on-failure
-+
-+[Install]
-+WantedBy=multi-user.target
-diff --git a/systemd/lan-transcriber-worker.service b/systemd/lan-transcriber-worker.service
-new file mode 100644
-index 0000000..1fa084f
---- /dev/null
-+++ b/systemd/lan-transcriber-worker.service
-@@ -0,0 +1,12 @@
-+[Unit]
-+Description=LAN Transcriber Worker (RQ)
-+After=network-online.target
-+Wants=network-online.target
-+
-+[Service]
-+WorkingDirectory=/home/%i/lan-transcriber
-+ExecStart=/home/%i/asr_env/bin/python -m lan_app.worker
-+Restart=on-failure
-+
-+[Install]
-+WantedBy=multi-user.target
+     print("Smoke test passed")

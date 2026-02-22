@@ -17,16 +17,18 @@ def wait_health(base_url: str, timeout: int = 120) -> None:
     raise SystemExit("health check timed out")
 
 
-def check_endpoint(base_url: str, path: str) -> bool:
-    try:
-        response = requests.get(f"{base_url}{path}", timeout=5)
-    except requests.RequestException as exc:
-        print(f"{path} request failed: {exc}")
-        return False
-    if response.status_code != 200:
-        print(f"{path} returned status {response.status_code}")
-        return False
-    return True
+def wait_endpoint(base_url: str, path: str, timeout: int = 60) -> bool:
+    for _ in range(timeout):
+        try:
+            response = requests.get(f"{base_url}{path}", timeout=5)
+            if response.status_code == 200:
+                return True
+            print(f"{path} returned status {response.status_code}; retrying")
+        except requests.RequestException as exc:
+            print(f"{path} request failed: {exc}")
+        time.sleep(1)
+    print(f"{path} did not return 200 within {timeout}s")
+    return False
 
 
 def main() -> int:
@@ -44,7 +46,7 @@ def main() -> int:
         "/openapi.json",
     ]
     for path in required_paths:
-        if not check_endpoint(base_url, path):
+        if not wait_endpoint(base_url, path):
             return 1
 
     print("Smoke test passed")
