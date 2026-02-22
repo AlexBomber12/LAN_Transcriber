@@ -87,7 +87,7 @@ Queue (in order)
 - Depends on: PR-ONENOTE-01 and PR-ROUTING-01
 
 16) PR-JOB-MODEL-01: Single job pipeline model (remove placeholder jobs; restrict requeue/retry)
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-JOB-MODEL-01.md
 - Depends on: PR-OPS-01
 

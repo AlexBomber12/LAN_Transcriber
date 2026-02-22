@@ -134,8 +134,8 @@ Requirement already satisfied: six>=1.5 in ./.venv-ci/lib/python3.12/site-packag
 Building wheels for collected packages: lan-transcriber
   Building editable for lan-transcriber (pyproject.toml): started
   Building editable for lan-transcriber (pyproject.toml): finished with status 'done'
-  Created wheel for lan-transcriber: filename=lan_transcriber-0.1.0-0.editable-py3-none-any.whl size=15395 sha256=4a8acd4eaa2e1249603f3c0250ec0870f4e110550a36e1bd695bd7b503aa2659
-  Stored in directory: /tmp/pip-ephem-wheel-cache-gtrwxaz9/wheels/d5/8a/5c/f7178f7e49aa5ae12b2320ec66b5c310f4f2f63d1bd301b7fb
+  Created wheel for lan-transcriber: filename=lan_transcriber-0.1.0-0.editable-py3-none-any.whl size=15395 sha256=1fb876ab65a4c1ca2e2c295536c80b3a2bf94ed37961d2bdd333b65aae83b9fd
+  Stored in directory: /tmp/pip-ephem-wheel-cache-al_chjf8/wheels/d5/8a/5c/f7178f7e49aa5ae12b2320ec66b5c310f4f2f63d1bd301b7fb
 Successfully built lan-transcriber
 Installing collected packages: lan-transcriber
   Attempting uninstall: lan-transcriber
@@ -146,7 +146,7 @@ Successfully installed lan-transcriber-0.1.0
 All checks passed!
 ........................................................................ [ 33%]
 ........................................................................ [ 66%]
-.......................................................................  [100%]
+........................................................................ [100%]
 =============================== warnings summary ===============================
 lan_transcriber/pipeline.py:4
   /home/alexey/LAN_Transcriber/lan_transcriber/pipeline.py:4: DeprecationWarning: 'audioop' is deprecated and slated for removal in Python 3.13
@@ -160,8 +160,8 @@ lan_app/config.py:20
   /home/alexey/LAN_Transcriber/lan_app/config.py:20: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
     class AppSettings(BaseSettings):
 
-lan_app/api.py:196
-  /home/alexey/LAN_Transcriber/lan_app/api.py:196: DeprecationWarning: 
+lan_app/api.py:195
+  /home/alexey/LAN_Transcriber/lan_app/api.py:195: DeprecationWarning: 
           on_event is deprecated, use lifespan event handlers instead.
   
           Read more about it in the
@@ -179,8 +179,8 @@ lan_app/api.py:196
           
     return self.router.on_event(event_type)
 
-lan_app/api.py:205
-  /home/alexey/LAN_Transcriber/lan_app/api.py:205: DeprecationWarning: 
+lan_app/api.py:204
+  /home/alexey/LAN_Transcriber/lan_app/api.py:204: DeprecationWarning: 
           on_event is deprecated, use lifespan event handlers instead.
   
           Read more about it in the
@@ -205,4 +205,4 @@ lan_transcriber/runtime_paths.py      21      1    95%
 ------------------------------------------------------
 TOTAL                                271     27    90%
 Required test coverage of 90% reached. Total coverage: 90.04%
-215 passed, 1 skipped, 7 warnings in 40.71s
+216 passed, 1 skipped, 7 warnings in 39.91s

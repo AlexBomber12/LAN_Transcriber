@@ -407,6 +407,30 @@ def process_job(job_id: str, recording_id: str, job_type: str) -> dict[str, str]
     settings = AppSettings()
     init_db(settings)
     log_path = _step_log_path(recording_id, job_type, settings)
+
+    if job_type != JOB_TYPE_PRECHECK:
+        if not start_job(job_id, settings=settings):
+            raise ValueError(f"Job not found: {job_id}")
+        unsupported_error = (
+            f"unsupported legacy job type under single-job pipeline: {job_type}"
+        )
+        _append_step_log(
+            log_path,
+            (
+                "unsupported job type under single-job mode; "
+                "requeue precheck instead "
+                f"(job={job_id} type={job_type})"
+            ),
+        )
+        if not fail_job(job_id, unsupported_error, settings=settings):
+            raise ValueError(f"Job not found: {job_id}")
+        return {
+            "job_id": job_id,
+            "recording_id": recording_id,
+            "job_type": job_type,
+            "status": "ignored",
+        }
+
     retry_policy = _retry_policy(job_type)
 
     while True:
@@ -421,15 +445,11 @@ def process_job(job_id: str, recording_id: str, job_type: str) -> dict[str, str]
                 raise ValueError(f"Recording not found: {recording_id}")
             _append_step_log(log_path, f"started job={job_id} type={job_type}")
 
-            quarantine_reason: str | None = None
-            if job_type == JOB_TYPE_PRECHECK:
-                final_status, quarantine_reason = _run_precheck_pipeline(
-                    recording_id=recording_id,
-                    settings=settings,
-                    log_path=log_path,
-                )
-            else:
-                final_status = _success_status(job_type)
+            final_status, quarantine_reason = _run_precheck_pipeline(
+                recording_id=recording_id,
+                settings=settings,
+                log_path=log_path,
+            )
 
             if not set_recording_status(
                 recording_id,

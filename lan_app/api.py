@@ -27,7 +27,6 @@ from .config import AppSettings
 from .constants import (
     DEFAULT_REQUEUE_JOB_TYPE,
     JOB_STATUSES,
-    JOB_TYPES,
     RECORDING_STATUSES,
     RECORDING_STATUS_QUARANTINE,
 )
@@ -341,8 +340,11 @@ async def api_requeue_recording(
     action: RequeueAction | None = None,
 ) -> dict[str, str]:
     payload = action or RequeueAction()
-    if payload.job_type not in JOB_TYPES:
-        raise HTTPException(status_code=422, detail=f"Unsupported job type: {payload.job_type}")
+    if payload.job_type != DEFAULT_REQUEUE_JOB_TYPE:
+        raise HTTPException(
+            status_code=422,
+            detail="Only precheck is supported in single-job pipeline mode",
+        )
 
     if get_recording(recording_id, settings=_settings) is None:
         raise HTTPException(status_code=404, detail="Recording not found")
@@ -350,7 +352,7 @@ async def api_requeue_recording(
     try:
         job = enqueue_recording_job(
             recording_id,
-            job_type=payload.job_type,
+            job_type=DEFAULT_REQUEUE_JOB_TYPE,
             settings=_settings,
         )
     except RecordingNotFoundError:

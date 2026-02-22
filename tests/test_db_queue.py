@@ -17,6 +17,7 @@ from lan_app.constants import (
     JOB_STATUS_FINISHED,
     JOB_STATUS_QUEUED,
     JOB_TYPE_PRECHECK,
+    JOB_TYPE_STT,
     RECORDING_STATUS_FAILED,
     RECORDING_STATUS_QUARANTINE,
     RECORDING_STATUS_QUEUED,
@@ -220,6 +221,29 @@ def test_recordings_and_jobs_api_actions(tmp_path: Path, monkeypatch):
 
     missing = client.get("/api/recordings/rec-api-1")
     assert missing.status_code == 404
+
+
+def test_api_requeue_rejects_non_precheck_job_type(tmp_path: Path, monkeypatch):
+    cfg = _test_settings(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    init_db(cfg)
+    create_recording(
+        "rec-api-rq-legacy-1",
+        source="test",
+        source_filename="legacy.mp3",
+        settings=cfg,
+    )
+
+    client = TestClient(api.app)
+    response = client.post(
+        "/api/recordings/rec-api-rq-legacy-1/actions/requeue",
+        json={"job_type": JOB_TYPE_STT},
+    )
+
+    assert response.status_code == 422
+    assert response.json() == {
+        "detail": "Only precheck is supported in single-job pipeline mode"
+    }
 
 
 def test_enqueue_marks_job_failed_when_redis_enqueue_fails(tmp_path: Path, monkeypatch):
