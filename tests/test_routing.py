@@ -104,13 +104,14 @@ def test_refresh_recording_routing_auto_selects_when_confident(tmp_path: Path):
 def test_refresh_recording_routing_marks_needs_review_when_low_confidence(tmp_path: Path):
     cfg = _cfg(tmp_path)
     init_db(cfg)
-    create_project("Roadmap", settings=cfg)
+    roadmap = create_project("Roadmap", settings=cfg)
     create_project("Budget", settings=cfg)
     create_recording(
         "rec-route-review-1",
         source="drive",
         source_filename="generic-meeting.mp3",
         status=RECORDING_STATUS_READY,
+        project_id=roadmap["id"],
         settings=cfg,
     )
     _write_summary(

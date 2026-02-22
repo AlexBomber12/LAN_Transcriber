@@ -1,174 +1,36 @@
-diff --git a/lan_app/db.py b/lan_app/db.py
-index 6d052d0..7335589 100644
---- a/lan_app/db.py
-+++ b/lan_app/db.py
-@@ -817,8 +817,17 @@ def delete_project(
-     settings: AppSettings | None = None,
- ) -> bool:
-     init_db(settings)
-+    target_project_id = int(project_id)
-     with connect(settings) as conn:
--        deleted = conn.execute("DELETE FROM projects WHERE id = ?", (project_id,))
-+        conn.execute(
-+            """
-+            UPDATE recordings
-+            SET suggested_project_id = NULL
-+            WHERE suggested_project_id = ?
-+            """,
-+            (target_project_id,),
-+        )
-+        deleted = conn.execute("DELETE FROM projects WHERE id = ?", (target_project_id,))
-         conn.commit()
-     return deleted.rowcount > 0
- 
 diff --git a/lan_app/routing.py b/lan_app/routing.py
-index ca9a373..8c7ef51 100644
+index 8c7ef51..e4ea537 100644
 --- a/lan_app/routing.py
 +++ b/lan_app/routing.py
-@@ -76,7 +76,7 @@ def refresh_recording_routing(
-     if not projects:
-         rationale = [
-             "No projects exist yet, so routing cannot suggest a project.",
--            "Create projects first to enable routing suggestions.",
-+            f"Confidence 0.00 is below threshold {threshold:.2f}; manual review required.",
-         ]
-         set_recording_routing_suggestion(
-             recording_id,
-@@ -92,7 +92,9 @@ def refresh_recording_routing(
-             "confidence": 0.0,
-             "threshold": threshold,
-             "rationale": rationale,
--            "status_after_routing": recording.get("status"),
-+            "status_after_routing": (
-+                RECORDING_STATUS_NEEDS_REVIEW if apply_workflow else recording.get("status")
-+            ),
-             "auto_selected": False,
-             "training_examples_total": 0,
-         }
-diff --git a/tests/test_db_queue.py b/tests/test_db_queue.py
-index 41fa9cc..96a85a0 100644
---- a/tests/test_db_queue.py
-+++ b/tests/test_db_queue.py
-@@ -24,12 +24,14 @@ from lan_app.constants import (
- from lan_app.db import (
-     connect,
-     create_job,
-+    create_project,
-     create_recording,
-     get_job,
-     get_recording,
-     init_db,
-     list_jobs,
-     set_recording_status,
-+    upsert_calendar_match,
- )
- from lan_app.jobs import RecordingJob, enqueue_recording_job, purge_pending_recording_jobs
- from lan_app.worker_tasks import process_job
-@@ -496,8 +498,10 @@ def test_worker_precheck_runs_pipeline_when_safe(tmp_path: Path, monkeypatch):
-     monkeypatch.setenv("LAN_RECORDINGS_ROOT", str(cfg.recordings_root))
-     monkeypatch.setenv("LAN_DB_PATH", str(cfg.db_path))
-     monkeypatch.setenv("LAN_PROM_SNAPSHOT_PATH", str(cfg.metrics_snapshot_path))
-+    monkeypatch.setenv("ROUTING_AUTO_SELECT_THRESHOLD", "0.1")
+@@ -174,6 +174,11 @@ def refresh_recording_routing(
+             auto_selected = True
+             status_after_routing = RECORDING_STATUS_READY
+         else:
++            set_recording_project(
++                recording_id,
++                None,
++                settings=cfg,
++            )
+             status_after_routing = RECORDING_STATUS_NEEDS_REVIEW
  
-     init_db(cfg)
-+    create_project("Normal", settings=cfg)
-     create_recording(
-         "rec-precheck-ok-1",
-         source="test",
-@@ -510,6 +514,22 @@ def test_worker_precheck_runs_pipeline_when_safe(tmp_path: Path, monkeypatch):
-         job_type=JOB_TYPE_PRECHECK,
-         settings=cfg,
-     )
-+    upsert_calendar_match(
-+        recording_id="rec-precheck-ok-1",
-+        candidates=[
-+            {
-+                "event_id": "evt-normal",
-+                "subject": "Normal sync",
-+                "organizer": "Alex",
-+                "attendees": ["Priya"],
-+                "score": 0.9,
-+                "rationale": "test",
-+            }
-+        ],
-+        selected_event_id="evt-normal",
-+        selected_confidence=0.9,
-+        settings=cfg,
-+    )
- 
-     raw_audio = cfg.recordings_root / "rec-precheck-ok-1" / "raw" / "audio.wav"
-     raw_audio.parent.mkdir(parents=True, exist_ok=True)
+     return {
 diff --git a/tests/test_routing.py b/tests/test_routing.py
-index 9646047..4fe55a6 100644
+index 4fe55a6..c8d6128 100644
 --- a/tests/test_routing.py
 +++ b/tests/test_routing.py
-@@ -10,10 +10,12 @@ from lan_app.db import (
-     create_project,
-     create_recording,
-     create_voice_profile,
-+    delete_project,
-     get_recording,
-     increment_project_keyword_weights,
-     init_db,
-     list_project_keyword_weights,
-+    set_recording_routing_suggestion,
-     set_speaker_assignment,
-     upsert_calendar_match,
- )
-@@ -131,6 +133,56 @@ def test_refresh_recording_routing_marks_needs_review_when_low_confidence(tmp_pa
-     assert recording["routing_confidence"] < cfg.routing_auto_select_threshold
- 
- 
-+def test_refresh_recording_routing_without_projects_forces_needs_review(tmp_path: Path):
-+    cfg = _cfg(tmp_path)
-+    init_db(cfg)
-+    create_recording(
-+        "rec-route-no-projects-1",
-+        source="drive",
-+        source_filename="setup.mp3",
-+        status=RECORDING_STATUS_READY,
-+        settings=cfg,
-+    )
-+
-+    decision = refresh_recording_routing(
-+        "rec-route-no-projects-1",
-+        settings=cfg,
-+        apply_workflow=True,
-+    )
-+
-+    assert decision["suggested_project_id"] is None
-+    assert decision["confidence"] == 0.0
-+    assert decision["status_after_routing"] == RECORDING_STATUS_NEEDS_REVIEW
-+
-+
-+def test_delete_project_clears_recording_suggested_project_id(tmp_path: Path):
-+    cfg = _cfg(tmp_path)
-+    init_db(cfg)
-+    project = create_project("Cleanup", settings=cfg)
-+    create_recording(
-+        "rec-route-cleanup-1",
-+        source="drive",
-+        source_filename="cleanup.mp3",
-+        status=RECORDING_STATUS_READY,
-+        settings=cfg,
-+    )
-+    set_recording_routing_suggestion(
-+        "rec-route-cleanup-1",
-+        suggested_project_id=project["id"],
-+        routing_confidence=0.8,
-+        routing_rationale=["test"],
-+        settings=cfg,
-+    )
-+    before = get_recording("rec-route-cleanup-1", settings=cfg)
-+    assert before is not None
-+    assert before["suggested_project_id"] == project["id"]
-+
-+    assert delete_project(project["id"], settings=cfg) is True
-+    after = get_recording("rec-route-cleanup-1", settings=cfg)
-+    assert after is not None
-+    assert after["suggested_project_id"] is None
-+
-+
- def test_train_routing_from_manual_selection_persists_weights(tmp_path: Path):
+@@ -104,13 +104,14 @@ def test_refresh_recording_routing_auto_selects_when_confident(tmp_path: Path):
+ def test_refresh_recording_routing_marks_needs_review_when_low_confidence(tmp_path: Path):
      cfg = _cfg(tmp_path)
      init_db(cfg)
+-    create_project("Roadmap", settings=cfg)
++    roadmap = create_project("Roadmap", settings=cfg)
+     create_project("Budget", settings=cfg)
+     create_recording(
+         "rec-route-review-1",
+         source="drive",
+         source_filename="generic-meeting.mp3",
+         status=RECORDING_STATUS_READY,
++        project_id=roadmap["id"],
+         settings=cfg,
+     )
+     _write_summary(

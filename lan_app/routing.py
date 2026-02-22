@@ -174,6 +174,11 @@ def refresh_recording_routing(
             auto_selected = True
             status_after_routing = RECORDING_STATUS_READY
         else:
+            set_recording_project(
+                recording_id,
+                None,
+                settings=cfg,
+            )
             status_after_routing = RECORDING_STATUS_NEEDS_REVIEW
 
     return {
