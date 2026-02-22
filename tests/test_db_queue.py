@@ -132,7 +132,7 @@ def test_placeholder_cleanup_migration_only_removes_legacy_placeholders(tmp_path
             SET created_at = ?, updated_at = ?
             WHERE recording_id = ?
             """,
-            ("2020-01-02T00:00:00Z", "2020-01-02T00:00:00Z", "rec-mig-placeholder-1"),
+            ("2020-01-02T00:00:08Z", "2020-01-02T00:00:08Z", "rec-mig-placeholder-1"),
         )
         conn.commit()
 
