@@ -10,10 +10,12 @@ from lan_app.db import (
     create_project,
     create_recording,
     create_voice_profile,
+    delete_project,
     get_recording,
     increment_project_keyword_weights,
     init_db,
     list_project_keyword_weights,
+    set_recording_routing_suggestion,
     set_speaker_assignment,
     upsert_calendar_match,
 )
@@ -129,6 +131,56 @@ def test_refresh_recording_routing_marks_needs_review_when_low_confidence(tmp_pa
     assert recording is not None
     assert recording["project_id"] is None
     assert recording["routing_confidence"] < cfg.routing_auto_select_threshold
+
+
+def test_refresh_recording_routing_without_projects_forces_needs_review(tmp_path: Path):
+    cfg = _cfg(tmp_path)
+    init_db(cfg)
+    create_recording(
+        "rec-route-no-projects-1",
+        source="drive",
+        source_filename="setup.mp3",
+        status=RECORDING_STATUS_READY,
+        settings=cfg,
+    )
+
+    decision = refresh_recording_routing(
+        "rec-route-no-projects-1",
+        settings=cfg,
+        apply_workflow=True,
+    )
+
+    assert decision["suggested_project_id"] is None
+    assert decision["confidence"] == 0.0
+    assert decision["status_after_routing"] == RECORDING_STATUS_NEEDS_REVIEW
+
+
+def test_delete_project_clears_recording_suggested_project_id(tmp_path: Path):
+    cfg = _cfg(tmp_path)
+    init_db(cfg)
+    project = create_project("Cleanup", settings=cfg)
+    create_recording(
+        "rec-route-cleanup-1",
+        source="drive",
+        source_filename="cleanup.mp3",
+        status=RECORDING_STATUS_READY,
+        settings=cfg,
+    )
+    set_recording_routing_suggestion(
+        "rec-route-cleanup-1",
+        suggested_project_id=project["id"],
+        routing_confidence=0.8,
+        routing_rationale=["test"],
+        settings=cfg,
+    )
+    before = get_recording("rec-route-cleanup-1", settings=cfg)
+    assert before is not None
+    assert before["suggested_project_id"] == project["id"]
+
+    assert delete_project(project["id"], settings=cfg) is True
+    after = get_recording("rec-route-cleanup-1", settings=cfg)
+    assert after is not None
+    assert after["suggested_project_id"] is None
 
 
 def test_train_routing_from_manual_selection_persists_weights(tmp_path: Path):

@@ -76,7 +76,7 @@ def refresh_recording_routing(
     if not projects:
         rationale = [
             "No projects exist yet, so routing cannot suggest a project.",
-            "Create projects first to enable routing suggestions.",
+            f"Confidence 0.00 is below threshold {threshold:.2f}; manual review required.",
         ]
         set_recording_routing_suggestion(
             recording_id,
@@ -92,7 +92,9 @@ def refresh_recording_routing(
             "confidence": 0.0,
             "threshold": threshold,
             "rationale": rationale,
-            "status_after_routing": recording.get("status"),
+            "status_after_routing": (
+                RECORDING_STATUS_NEEDS_REVIEW if apply_workflow else recording.get("status")
+            ),
             "auto_selected": False,
             "training_examples_total": 0,
         }

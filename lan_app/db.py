@@ -817,8 +817,17 @@ def delete_project(
     settings: AppSettings | None = None,
 ) -> bool:
     init_db(settings)
+    target_project_id = int(project_id)
     with connect(settings) as conn:
-        deleted = conn.execute("DELETE FROM projects WHERE id = ?", (project_id,))
+        conn.execute(
+            """
+            UPDATE recordings
+            SET suggested_project_id = NULL
+            WHERE suggested_project_id = ?
+            """,
+            (target_project_id,),
+        )
+        deleted = conn.execute("DELETE FROM projects WHERE id = ?", (target_project_id,))
         conn.commit()
     return deleted.rowcount > 0
 

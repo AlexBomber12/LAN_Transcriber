@@ -24,12 +24,14 @@ from lan_app.constants import (
 from lan_app.db import (
     connect,
     create_job,
+    create_project,
     create_recording,
     get_job,
     get_recording,
     init_db,
     list_jobs,
     set_recording_status,
+    upsert_calendar_match,
 )
 from lan_app.jobs import RecordingJob, enqueue_recording_job, purge_pending_recording_jobs
 from lan_app.worker_tasks import process_job
@@ -496,8 +498,10 @@ def test_worker_precheck_runs_pipeline_when_safe(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("LAN_RECORDINGS_ROOT", str(cfg.recordings_root))
     monkeypatch.setenv("LAN_DB_PATH", str(cfg.db_path))
     monkeypatch.setenv("LAN_PROM_SNAPSHOT_PATH", str(cfg.metrics_snapshot_path))
+    monkeypatch.setenv("ROUTING_AUTO_SELECT_THRESHOLD", "0.1")
 
     init_db(cfg)
+    create_project("Normal", settings=cfg)
     create_recording(
         "rec-precheck-ok-1",
         source="test",
@@ -508,6 +512,22 @@ def test_worker_precheck_runs_pipeline_when_safe(tmp_path: Path, monkeypatch):
         "job-precheck-ok-1",
         recording_id="rec-precheck-ok-1",
         job_type=JOB_TYPE_PRECHECK,
+        settings=cfg,
+    )
+    upsert_calendar_match(
+        recording_id="rec-precheck-ok-1",
+        candidates=[
+            {
+                "event_id": "evt-normal",
+                "subject": "Normal sync",
+                "organizer": "Alex",
+                "attendees": ["Priya"],
+                "score": 0.9,
+                "rationale": "test",
+            }
+        ],
+        selected_event_id="evt-normal",
+        selected_confidence=0.9,
         settings=cfg,
     )
 
