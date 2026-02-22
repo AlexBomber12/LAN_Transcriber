@@ -6,9 +6,9 @@ import logging
 import shutil
 from typing import List
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import Response, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from pydantic import BaseModel
@@ -23,6 +23,7 @@ from .calendar import (
     refresh_calendar_context,
     select_calendar_event,
 )
+from .auth import auth_enabled, request_is_authenticated, request_requires_auth
 from .config import AppSettings
 from .constants import (
     DEFAULT_REQUEUE_JOB_TYPE,
@@ -38,7 +39,11 @@ from .db import (
     list_recordings,
     set_recording_status,
 )
-from .jobs import RecordingNotFoundError, enqueue_recording_job
+from .jobs import (
+    DuplicateRecordingJobError,
+    RecordingNotFoundError,
+    enqueue_recording_job,
+)
 from .jobs import purge_pending_recording_jobs
 from .healthchecks import (
     check_app_health,
@@ -47,6 +52,7 @@ from .healthchecks import (
     check_worker_health,
     collect_health_checks,
 )
+from .locks import release_ingest_lock, try_acquire_ingest_lock
 from .ms_graph import (
     GraphAuthError,
     GraphDeviceFlowLimitError,
@@ -101,6 +107,30 @@ def _validate_job_status(status: str | None) -> str | None:
     if status not in JOB_STATUSES:
         raise HTTPException(status_code=422, detail=f"Unsupported job status: {status}")
     return status
+
+
+def _is_public_auth_exempt(request: Request) -> bool:
+    if request.method.upper() != "GET":
+        return False
+    path = request.url.path
+    if path == "/healthz" or path.startswith("/healthz/"):
+        return True
+    if path in {"/metrics", "/openapi.json"}:
+        return True
+    return False
+
+
+@app.middleware("http")
+async def _enforce_optional_bearer_auth(request: Request, call_next):
+    if not auth_enabled(_settings):
+        return await call_next(request)
+    if _is_public_auth_exempt(request):
+        return await call_next(request)
+    if not request_requires_auth(request):
+        return await call_next(request)
+    if request_is_authenticated(request, _settings):
+        return await call_next(request)
+    return JSONResponse(status_code=401, content={"detail": "Unauthorized"})
 
 
 @app.get("/healthz")
@@ -338,7 +368,7 @@ async def api_publish_recording(recording_id: str) -> dict[str, object]:
 async def api_requeue_recording(
     recording_id: str,
     action: RequeueAction | None = None,
-) -> dict[str, str]:
+) -> dict[str, object]:
     payload = action or RequeueAction()
     if payload.job_type != DEFAULT_REQUEUE_JOB_TYPE:
         raise HTTPException(
@@ -354,6 +384,14 @@ async def api_requeue_recording(
             recording_id,
             job_type=DEFAULT_REQUEUE_JOB_TYPE,
             settings=_settings,
+        )
+    except DuplicateRecordingJobError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "A precheck job is already queued or started for this recording.",
+                "existing_job_id": exc.job_id,
+            },
         )
     except RecordingNotFoundError:
         raise HTTPException(status_code=404, detail="Recording not found")
@@ -441,11 +479,28 @@ async def api_ingest_once() -> dict[str, object]:
     from .gdrive import ingest_once
 
     try:
+        acquired, retry_after = try_acquire_ingest_lock(_settings)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Ingest lock unavailable: {exc}")
+
+    if not acquired:
+        return JSONResponse(
+            status_code=409,
+            content={
+                "detail": "Ingest is already running.",
+                "retry_after_seconds": retry_after,
+            },
+        )
+
+    try:
         results = ingest_once(settings=_settings)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"Ingest failed: {exc}")
+    finally:
+        with suppress(Exception):
+            release_ingest_lock(_settings)
     return {"ingested": results, "count": len(results)}
 
 

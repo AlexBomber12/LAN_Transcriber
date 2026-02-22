@@ -134,8 +134,8 @@ Requirement already satisfied: six>=1.5 in ./.venv-ci/lib/python3.12/site-packag
 Building wheels for collected packages: lan-transcriber
   Building editable for lan-transcriber (pyproject.toml): started
   Building editable for lan-transcriber (pyproject.toml): finished with status 'done'
-  Created wheel for lan-transcriber: filename=lan_transcriber-0.1.0-0.editable-py3-none-any.whl size=15395 sha256=d5a1f1238d76dcfe01220b380ffd2331198e695d7ef886e053d7c027afffd63d
-  Stored in directory: /tmp/pip-ephem-wheel-cache-ye4jghhx/wheels/d5/8a/5c/f7178f7e49aa5ae12b2320ec66b5c310f4f2f63d1bd301b7fb
+  Created wheel for lan-transcriber: filename=lan_transcriber-0.1.0-0.editable-py3-none-any.whl size=15395 sha256=b21bac69275f3872df6613b5ebdc5efdeaace22352aed73ef67a5f4ea91f3363
+  Stored in directory: /tmp/pip-ephem-wheel-cache-o95q0572/wheels/d5/8a/5c/f7178f7e49aa5ae12b2320ec66b5c310f4f2f63d1bd301b7fb
 Successfully built lan-transcriber
 Installing collected packages: lan-transcriber
   Attempting uninstall: lan-transcriber
@@ -144,10 +144,10 @@ Installing collected packages: lan-transcriber
       Successfully uninstalled lan-transcriber-0.1.0
 Successfully installed lan-transcriber-0.1.0
 All checks passed!
-........................................................................ [ 32%]
-........................................................................ [ 65%]
-........................................................................ [ 97%]
-.....                                                                    [100%]
+........................................................................ [ 31%]
+........................................................................ [ 62%]
+........................................................................ [ 93%]
+................                                                         [100%]
 =============================== warnings summary ===============================
 lan_transcriber/pipeline.py:4
   /home/alexey/LAN_Transcriber/lan_transcriber/pipeline.py:4: DeprecationWarning: 'audioop' is deprecated and slated for removal in Python 3.13
@@ -161,8 +161,8 @@ lan_app/config.py:20
   /home/alexey/LAN_Transcriber/lan_app/config.py:20: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
     class AppSettings(BaseSettings):
 
-lan_app/api.py:195
-  /home/alexey/LAN_Transcriber/lan_app/api.py:195: DeprecationWarning: 
+lan_app/api.py:225
+  /home/alexey/LAN_Transcriber/lan_app/api.py:225: DeprecationWarning: 
           on_event is deprecated, use lifespan event handlers instead.
   
           Read more about it in the
@@ -180,8 +180,8 @@ lan_app/api.py:195
           
     return self.router.on_event(event_type)
 
-lan_app/api.py:204
-  /home/alexey/LAN_Transcriber/lan_app/api.py:204: DeprecationWarning: 
+lan_app/api.py:234
+  /home/alexey/LAN_Transcriber/lan_app/api.py:234: DeprecationWarning: 
           on_event is deprecated, use lifespan event handlers instead.
   
           Read more about it in the
@@ -206,4 +206,4 @@ lan_transcriber/runtime_paths.py      21      1    95%
 ------------------------------------------------------
 TOTAL                                271     27    90%
 Required test coverage of 90% reached. Total coverage: 90.04%
-221 passed, 1 skipped, 7 warnings in 39.41s
+232 passed, 1 skipped, 7 warnings in 40.91s

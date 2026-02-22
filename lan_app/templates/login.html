@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block title %}Login - LAN Transcriber{% endblock %}
+{% block content %}
+<h1>Login</h1>
+<div class="conn-card" style="max-width:420px">
+  <h3>API token required</h3>
+  <p style="margin-bottom:8px">Enter the bearer token to unlock protected actions.</p>
+  {% if error %}
+  <p style="margin-bottom:8px;color:#b00020">{{ error }}</p>
+  {% endif %}
+  <form method="post" action="/ui/login">
+    <input type="hidden" name="next" value="{{ next }}">
+    <div class="form-row">
+      <label for="token">Token</label>
+      <input id="token" name="token" type="password" required autocomplete="off" style="width:260px">
+    </div>
+    <div class="form-row">
+      <label></label>
+      <button type="submit" class="btn">Log in</button>
+    </div>
+  </form>
+</div>
+{% endblock %}

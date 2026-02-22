@@ -90,6 +90,8 @@ models are cached across runs.
 | `LAN_DB_PATH` | SQLite database path (default `/data/db/app.db`) |
 | `LAN_REDIS_URL` | Redis endpoint for the RQ queue |
 | `LAN_RQ_QUEUE_NAME` | Queue name consumed by the worker |
+| `LAN_API_BEARER_TOKEN` | Optional bearer token for protected POST actions (`/api` and UI POST routes) |
+| `LAN_INGEST_LOCK_TTL_SECONDS` | Redis ingest lock TTL in seconds (default `300`) |
 | `QUARANTINE_RETENTION_DAYS` | Retention period for quarantined recording cleanup (default `7`) |
 | `LAN_API_BIND_HOST` | Published API bind host (default `127.0.0.1`) |
 | `LAN_API_PORT` | Published API port (default `7860`) |
@@ -110,6 +112,12 @@ models are cached across runs.
 
 The stack exposes `lan_transcriber_health{env="staging"}` on `/metrics` for
 future monitoring.
+
+When `LAN_API_BEARER_TOKEN` is set:
+
+- Protected endpoints accept either `Authorization: Bearer <token>` or the HttpOnly cookie from `POST /ui/login`.
+- `GET /healthz`, `GET /healthz/{component}`, `GET /metrics`, and `GET /openapi.json` remain public.
+- `POST /api/actions/ingest` is guarded by a Redis lock (`lan:ingest:lock`) to prevent concurrent ingest runs.
 
 ## Staging deploy secrets
 

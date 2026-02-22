@@ -484,6 +484,8 @@ def test_api_ingest_endpoint_returns_422_when_not_configured(
 ):
     cfg = _test_settings_no_gdrive(tmp_path)
     monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(api, "try_acquire_ingest_lock", lambda *_args, **_kwargs: (True, 300))
+    monkeypatch.setattr(api, "release_ingest_lock", lambda *_args, **_kwargs: None)
     init_db(cfg)
     client = TestClient(api.app)
     resp = client.post("/api/actions/ingest")
@@ -493,6 +495,8 @@ def test_api_ingest_endpoint_returns_422_when_not_configured(
 def test_api_ingest_endpoint_success(tmp_path: Path, monkeypatch):
     cfg = _test_settings(tmp_path)
     monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(api, "try_acquire_ingest_lock", lambda *_args, **_kwargs: (True, 300))
+    monkeypatch.setattr(api, "release_ingest_lock", lambda *_args, **_kwargs: None)
     init_db(cfg)
 
     def _fake_ingest(settings: Any = None, *, service: Any = None) -> list[dict]:
@@ -506,6 +510,58 @@ def test_api_ingest_endpoint_success(tmp_path: Path, monkeypatch):
     data = resp.json()
     assert data["count"] == 1
     assert data["ingested"][0]["recording_id"] == "trs_test1"
+
+
+def test_api_ingest_requires_auth_when_token_configured(tmp_path: Path, monkeypatch):
+    cfg = _test_settings(tmp_path)
+    cfg.api_bearer_token = "top-secret"
+    monkeypatch.setattr(api, "_settings", cfg)
+    init_db(cfg)
+
+    client = TestClient(api.app)
+    resp = client.post("/api/actions/ingest")
+    assert resp.status_code == 401
+
+
+def test_api_ingest_with_auth_succeeds_when_lock_acquired(tmp_path: Path, monkeypatch):
+    cfg = _test_settings(tmp_path)
+    cfg.api_bearer_token = "top-secret"
+    monkeypatch.setattr(api, "_settings", cfg)
+    init_db(cfg)
+
+    monkeypatch.setattr(api, "try_acquire_ingest_lock", lambda *_args, **_kwargs: (True, 300))
+    monkeypatch.setattr(api, "release_ingest_lock", lambda *_args, **_kwargs: None)
+
+    def _fake_ingest(settings: Any = None, *, service: Any = None) -> list[dict]:
+        return [{"recording_id": "trs_auth_1"}]
+
+    monkeypatch.setattr("lan_app.gdrive.ingest_once", _fake_ingest)
+
+    client = TestClient(api.app)
+    resp = client.post(
+        "/api/actions/ingest",
+        headers={"Authorization": "Bearer top-secret"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["count"] == 1
+
+
+def test_api_ingest_with_auth_returns_409_when_lock_held(tmp_path: Path, monkeypatch):
+    cfg = _test_settings(tmp_path)
+    cfg.api_bearer_token = "top-secret"
+    monkeypatch.setattr(api, "_settings", cfg)
+    init_db(cfg)
+
+    monkeypatch.setattr(api, "try_acquire_ingest_lock", lambda *_args, **_kwargs: (False, 19))
+
+    client = TestClient(api.app)
+    resp = client.post(
+        "/api/actions/ingest",
+        headers={"Authorization": "Bearer top-secret"},
+    )
+    assert resp.status_code == 409
+    payload = resp.json()
+    assert payload["retry_after_seconds"] == 19
 
 
 # --------------------------------------------------------------------------

@@ -90,9 +90,16 @@ function doRecAction(sel) {
   sel.value = '';
   if (!act || !id) return;
   if (act === 'open') { window.location = '/recordings/' + encodeURIComponent(id); return; }
-  var msgs = {delete: 'Delete this recording?', quarantine: 'Quarantine this recording?'};
-  if (msgs[act] && !confirm(msgs[act])) return;
-  htmx.ajax('POST', '/ui/recordings/' + encodeURIComponent(id) + '/' + act, {swap: 'none'});
+  var request = {swap: 'none'};
+  if (act === 'delete') {
+    var typed = prompt('Type DELETE to confirm deletion.');
+    if (typed === null) return;
+    if (typed.trim().toUpperCase() !== 'DELETE') return;
+    request.values = {confirm_delete: typed};
+  } else if (act === 'quarantine' && !confirm('Quarantine this recording?')) {
+    return;
+  }
+  htmx.ajax('POST', '/ui/recordings/' + encodeURIComponent(id) + '/' + act, request);
 }
 </script>
 </body>

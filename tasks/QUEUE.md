@@ -102,7 +102,7 @@ Queue (in order)
 - Depends on: PR-ENTRYPOINT-01
 
 19) PR-SECURITY-01: Optional bearer auth + abuse guards (rate limit, dedupe) for ingest/requeue/delete
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-SECURITY-01.md
 - Depends on: PR-STAGING-01
 

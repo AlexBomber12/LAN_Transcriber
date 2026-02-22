@@ -115,6 +115,21 @@ class AppSettings(BaseSettings):
             "LAN_QUARANTINE_RETENTION_DAYS",
         ),
     )
+    api_bearer_token: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "LAN_API_BEARER_TOKEN",
+            "API_BEARER_TOKEN",
+        ),
+    )
+    ingest_lock_ttl_seconds: int = Field(
+        default=300,
+        ge=1,
+        validation_alias=AliasChoices(
+            "LAN_INGEST_LOCK_TTL_SECONDS",
+            "INGEST_LOCK_TTL_SECONDS",
+        ),
+    )
 
     @property
     def ms_scopes_list(self) -> list[str]:

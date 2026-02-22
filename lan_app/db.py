@@ -739,6 +739,33 @@ def list_jobs(
     return [_as_dict(row) or {} for row in rows], total
 
 
+def find_active_job_for_recording(
+    recording_id: str,
+    *,
+    job_type: str,
+    settings: AppSettings | None = None,
+) -> dict[str, Any] | None:
+    init_db(settings)
+    _validate_job_type(job_type)
+    with connect(settings) as conn:
+        row = conn.execute(
+            """
+            SELECT *
+            FROM jobs
+            WHERE recording_id = ? AND type = ? AND status IN (?, ?)
+            ORDER BY created_at ASC
+            LIMIT 1
+            """,
+            (
+                recording_id,
+                job_type,
+                JOB_STATUS_QUEUED,
+                JOB_STATUS_STARTED,
+            ),
+        ).fetchone()
+    return _as_dict(row)
+
+
 def start_job(
     job_id: str,
     *,
@@ -1534,6 +1561,7 @@ __all__ = [
     "create_job",
     "get_job",
     "list_jobs",
+    "find_active_job_for_recording",
     "start_job",
     "requeue_job",
     "finish_job",

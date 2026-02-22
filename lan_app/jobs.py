@@ -18,6 +18,7 @@ from .constants import (
 from .db import (
     create_job,
     fail_job,
+    find_active_job_for_recording,
     get_recording,
     init_db,
     list_jobs,
@@ -27,6 +28,17 @@ from .db import (
 
 class RecordingNotFoundError(ValueError):
     """Raised when trying to enqueue work for an unknown recording."""
+
+
+class DuplicateRecordingJobError(ValueError):
+    """Raised when an active precheck job already exists for a recording."""
+
+    def __init__(self, *, recording_id: str, job_id: str):
+        self.recording_id = recording_id
+        self.job_id = job_id
+        super().__init__(
+            f"recording {recording_id} already has queued/started job {job_id}"
+        )
 
 
 def _validate_job_type(job_type: str) -> None:
@@ -118,6 +130,19 @@ def enqueue_recording_job(
     _validate_job_type(job_type)
     if get_recording(recording_id, settings=cfg) is None:
         raise RecordingNotFoundError(f"Recording not found: {recording_id}")
+    if job_type == DEFAULT_REQUEUE_JOB_TYPE:
+        existing = find_active_job_for_recording(
+            recording_id,
+            job_type=job_type,
+            settings=cfg,
+        )
+        if existing is not None:
+            existing_job_id = str(existing.get("id") or "").strip()
+            if existing_job_id:
+                raise DuplicateRecordingJobError(
+                    recording_id=recording_id,
+                    job_id=existing_job_id,
+                )
 
     job_id = uuid4().hex
     create_job(
@@ -160,6 +185,7 @@ def enqueue_recording_job(
 
 
 __all__ = [
+    "DuplicateRecordingJobError",
     "RecordingJob",
     "RecordingNotFoundError",
     "enqueue_recording_job",
