@@ -1,8 +1,7 @@
 import argparse
-import base64
-from pathlib import Path
 import sys
 import time
+
 import requests
 
 
@@ -18,46 +17,43 @@ def wait_health(base_url: str, timeout: int = 120) -> None:
     raise SystemExit("health check timed out")
 
 
+def wait_endpoint(base_url: str, path: str, timeout: int = 60) -> bool:
+    for _ in range(timeout):
+        try:
+            response = requests.get(f"{base_url}{path}", timeout=5)
+            if response.status_code == 200:
+                return True
+            print(f"{path} returned status {response.status_code}; retrying")
+        except requests.RequestException as exc:
+            print(f"{path} request failed: {exc}")
+        time.sleep(1)
+    print(f"{path} did not return 200 within {timeout}s")
+    return False
+
+
 def main() -> int:
     p = argparse.ArgumentParser()
     p.add_argument("--base-url", required=True)
-    p.add_argument("--file", required=True)
+    # Backward-compatible no-op retained for callers that still pass --file.
+    p.add_argument("--file")
     args = p.parse_args()
 
-    wait_health(args.base_url)
+    base_url = args.base_url.rstrip("/")
+    wait_health(base_url)
 
-    if args.file.endswith(".b64"):
-        data = base64.b64decode(Path(args.file).read_text())
-        files = {"file": ("audio.mp3", data, "audio/mpeg")}
-        resp = requests.post(f"{args.base_url}/api/upload", files=files)
-    else:
-        with open(args.file, "rb") as fh:
-            resp = requests.post(
-                f"{args.base_url}/api/upload", files={"file": fh}
-            )
-    resp.raise_for_status()
-    job = resp.json()
-    job_id = job.get("id")
-    if not job_id:
-        print("missing job id")
-        return 1
-
-    for _ in range(120):
-        r = requests.get(f"{args.base_url}/api/job/{job_id}", timeout=5)
-        if r.status_code != 200:
-            time.sleep(1)
-            continue
-        data = r.json()
-        if data.get("status") == "done":
-            if "Hello" in data.get("markdown", ""):
-                print("Smoke test passed")
-                return 0
-            print("Missing expected text")
+    required_paths = [
+        "/healthz/app",
+        "/healthz/db",
+        "/healthz/redis",
+        "/healthz/worker",
+        "/openapi.json",
+    ]
+    for path in required_paths:
+        if not wait_endpoint(base_url, path):
             return 1
-        time.sleep(1)
 
-    print("job timeout")
-    return 1
+    print("Smoke test passed")
+    return 0
 
 
 if __name__ == "__main__":

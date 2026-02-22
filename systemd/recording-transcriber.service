@@ -1,13 +1,13 @@
 [Unit]
-Description=LAN Recording-Transcriber (WhisperX + pyannote + Ollama)
+Description=DEPRECATED: LAN Recording-Transcriber wrapper (use lan-transcriber-api.service)
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 WorkingDirectory=/home/%i/lan-transcriber
-Environment=HF_HUB_ENABLE_XET=0
-Environment=LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu
-ExecStart=/home/%i/asr_env/bin/python web_transcribe.py
+Environment=PYTHONPATH=/home/%i/lan-transcriber
+Environment=LAN_REDIS_URL=redis://127.0.0.1:6379/0
+ExecStart=/home/%i/asr_env/bin/python -m uvicorn lan_app.api:app --host 0.0.0.0 --port 7860
 Restart=on-failure
 
 [Install]
