@@ -45,6 +45,7 @@ def main() -> int:
         "/healthz/app",
         "/healthz/db",
         "/healthz/redis",
+        "/healthz/worker",
         "/openapi.json",
     ]
     for path in required_paths:

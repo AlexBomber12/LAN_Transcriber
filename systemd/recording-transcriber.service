@@ -4,10 +4,10 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-WorkingDirectory=/opt/lan-transcriber
-Environment=PYTHONPATH=/opt/lan-transcriber
+WorkingDirectory=/home/%i/lan-transcriber
+Environment=PYTHONPATH=/home/%i/lan-transcriber
 Environment=LAN_REDIS_URL=redis://127.0.0.1:6379/0
-ExecStart=/usr/bin/python3 -m uvicorn lan_app.api:app --host 0.0.0.0 --port 7860
+ExecStart=/home/%i/asr_env/bin/python -m uvicorn lan_app.api:app --host 0.0.0.0 --port 7860
 Restart=on-failure
 
 [Install]

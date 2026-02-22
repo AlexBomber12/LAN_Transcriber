@@ -1,13 +1,30 @@
 diff --git a/scripts/smoke_test.py b/scripts/smoke_test.py
-index ff79601..0d6fd53 100755
+index 0d6fd53..01dfcdf 100755
 --- a/scripts/smoke_test.py
 +++ b/scripts/smoke_test.py
-@@ -34,6 +34,8 @@ def wait_endpoint(base_url: str, path: str, timeout: int = 60) -> bool:
- def main() -> int:
-     p = argparse.ArgumentParser()
-     p.add_argument("--base-url", required=True)
-+    # Backward-compatible no-op retained for callers that still pass --file.
-+    p.add_argument("--file")
-     args = p.parse_args()
+@@ -45,6 +45,7 @@ def main() -> int:
+         "/healthz/app",
+         "/healthz/db",
+         "/healthz/redis",
++        "/healthz/worker",
+         "/openapi.json",
+     ]
+     for path in required_paths:
+diff --git a/systemd/recording-transcriber.service b/systemd/recording-transcriber.service
+index 7f9e8cc..f078d96 100644
+--- a/systemd/recording-transcriber.service
++++ b/systemd/recording-transcriber.service
+@@ -4,10 +4,10 @@ After=network-online.target
+ Wants=network-online.target
  
-     base_url = args.base_url.rstrip("/")
+ [Service]
+-WorkingDirectory=/opt/lan-transcriber
+-Environment=PYTHONPATH=/opt/lan-transcriber
++WorkingDirectory=/home/%i/lan-transcriber
++Environment=PYTHONPATH=/home/%i/lan-transcriber
+ Environment=LAN_REDIS_URL=redis://127.0.0.1:6379/0
+-ExecStart=/usr/bin/python3 -m uvicorn lan_app.api:app --host 0.0.0.0 --port 7860
++ExecStart=/home/%i/asr_env/bin/python -m uvicorn lan_app.api:app --host 0.0.0.0 --port 7860
+ Restart=on-failure
+ 
+ [Install]
