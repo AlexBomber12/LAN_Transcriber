@@ -1,5 +1,5 @@
 from fastapi.testclient import TestClient
-from web_transcribe import app
+from lan_app.api import app
 
 
 def test_root_200():

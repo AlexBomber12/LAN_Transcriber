@@ -14,7 +14,7 @@ RUN python -m pip install --upgrade pip setuptools wheel \
     && python -m pip install --no-cache-dir -r requirements.txt \
       --extra-index-url https://download.pytorch.org/whl/cu121 \
     && python -m pip install --no-cache-dir whisperx==3.4.2
-CMD ["python", "web_transcribe.py"]
+CMD ["uvicorn", "lan_app.api:app", "--host", "0.0.0.0", "--port", "7860"]
 
 FROM base AS runtime-lite
 RUN python -m pip install --upgrade pip setuptools wheel \
@@ -22,4 +22,4 @@ RUN python -m pip install --upgrade pip setuptools wheel \
     && python -m pip install --no-cache-dir -e .[test] \
     && python -m pip install --no-cache-dir whisperx==3.4.2
 ENV CI=true
-CMD ["uvicorn", "web_transcribe:app", "--host", "0.0.0.0", "--port", "7860"]
+CMD ["uvicorn", "lan_app.api:app", "--host", "0.0.0.0", "--port", "7860"]

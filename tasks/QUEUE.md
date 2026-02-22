@@ -92,7 +92,7 @@ Queue (in order)
 - Depends on: PR-OPS-01
 
 17) PR-ENTRYPOINT-01: Unify entrypoint to lan_app.api:app + worker (Dockerfile CMD, systemd, smoke_test, tests)
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-ENTRYPOINT-01.md
 - Depends on: PR-JOB-MODEL-01
 

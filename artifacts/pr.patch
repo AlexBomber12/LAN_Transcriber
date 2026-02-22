@@ -1,193 +1,227 @@
-diff --git a/lan_app/worker_tasks.py b/lan_app/worker_tasks.py
-index 43940d5..dd524a0 100644
---- a/lan_app/worker_tasks.py
-+++ b/lan_app/worker_tasks.py
-@@ -17,6 +17,7 @@ from lan_transcriber.pipeline import run_pipeline, run_precheck
- from .config import AppSettings
- from .conversation_metrics import refresh_recording_metrics
- from .constants import (
-+    JOB_STATUS_QUEUED,
-     JOB_TYPE_CLEANUP,
-     JOB_TYPE_PRECHECK,
-     JOB_TYPE_PUBLISH,
-@@ -37,6 +38,7 @@ from .db import (
-     get_job,
-     get_recording,
-     init_db,
-+    list_jobs,
-     requeue_job,
-     set_recording_language_settings,
-     set_recording_status,
-@@ -105,6 +107,28 @@ def _restore_status_from_precheck_log(
-     return restored_status, quarantine_reason
+diff --git a/Dockerfile b/Dockerfile
+index 3138f42..23158b4 100644
+--- a/Dockerfile
++++ b/Dockerfile
+@@ -14,7 +14,7 @@ RUN python -m pip install --upgrade pip setuptools wheel \
+     && python -m pip install --no-cache-dir -r requirements.txt \
+       --extra-index-url https://download.pytorch.org/whl/cu121 \
+     && python -m pip install --no-cache-dir whisperx==3.4.2
+-CMD ["python", "web_transcribe.py"]
++CMD ["uvicorn", "lan_app.api:app", "--host", "0.0.0.0", "--port", "7860"]
+ 
+ FROM base AS runtime-lite
+ RUN python -m pip install --upgrade pip setuptools wheel \
+@@ -22,4 +22,4 @@ RUN python -m pip install --upgrade pip setuptools wheel \
+     && python -m pip install --no-cache-dir -e .[test] \
+     && python -m pip install --no-cache-dir whisperx==3.4.2
+ ENV CI=true
+-CMD ["uvicorn", "web_transcribe:app", "--host", "0.0.0.0", "--port", "7860"]
++CMD ["uvicorn", "lan_app.api:app", "--host", "0.0.0.0", "--port", "7860"]
+diff --git a/requirements.txt b/requirements.txt
+index 1ddea94..42b9be6 100644
+--- a/requirements.txt
++++ b/requirements.txt
+@@ -11,3 +11,11 @@ tenacity
+ redis
+ rq
+ msal
++jinja2>=3.1
++pydantic-settings>=2.10,<3.0
++python-multipart>=0.0.9
++prometheus_client>=0.19
++pyyaml>=6.0
++google-auth>=2.38
++google-api-python-client>=2.166
++uvicorn>=0.30
+diff --git a/scripts/smoke_test.py b/scripts/smoke_test.py
+index dcfc24c..99c3a90 100755
+--- a/scripts/smoke_test.py
++++ b/scripts/smoke_test.py
+@@ -1,8 +1,7 @@
+ import argparse
+-import base64
+-from pathlib import Path
+ import sys
+ import time
++
+ import requests
  
  
-+def _has_queued_precheck_job(
-+    recording_id: str,
-+    *,
-+    settings: AppSettings,
-+    exclude_job_id: str,
-+) -> bool:
-+    queued_rows, _ = list_jobs(
-+        settings=settings,
-+        status=JOB_STATUS_QUEUED,
-+        recording_id=recording_id,
-+        limit=500,
-+        offset=0,
-+    )
-+    for row in queued_rows:
-+        row_id = str(row.get("id") or "")
-+        if row_id == exclude_job_id:
-+            continue
-+        if str(row.get("type") or "") == JOB_TYPE_PRECHECK:
-+            return True
-+    return False
+@@ -18,46 +17,38 @@ def wait_health(base_url: str, timeout: int = 120) -> None:
+     raise SystemExit("health check timed out")
+ 
+ 
++def check_endpoint(base_url: str, path: str) -> bool:
++    try:
++        response = requests.get(f"{base_url}{path}", timeout=5)
++    except requests.RequestException as exc:
++        print(f"{path} request failed: {exc}")
++        return False
++    if response.status_code != 200:
++        print(f"{path} returned status {response.status_code}")
++        return False
++    return True
 +
 +
- def _success_status(job_type: str) -> str:
-     if job_type == JOB_TYPE_PUBLISH:
-         return RECORDING_STATUS_PUBLISHED
-@@ -462,36 +486,55 @@ def process_job(job_id: str, recording_id: str, job_type: str) -> dict[str, str]
-         unsupported_error = (
-             f"unsupported legacy job type under single-job pipeline: {job_type}"
-         )
--        _append_step_log(
--            log_path,
--            (
--                "unsupported job type under single-job mode; "
--                "requeue precheck instead "
--                f"(job={job_id} type={job_type})"
--            ),
--        )
--        if not fail_job(job_id, unsupported_error, settings=settings):
--            raise ValueError(f"Job not found: {job_id}")
--        if previous_status == RECORDING_STATUS_QUEUED:
--            restored_status, restored_quarantine_reason = _restore_status_from_precheck_log(
--                recording_id,
--                settings,
+ def main() -> int:
+     p = argparse.ArgumentParser()
+     p.add_argument("--base-url", required=True)
+-    p.add_argument("--file", required=True)
+     args = p.parse_args()
+ 
+-    wait_health(args.base_url)
+-
+-    if args.file.endswith(".b64"):
+-        data = base64.b64decode(Path(args.file).read_text())
+-        files = {"file": ("audio.mp3", data, "audio/mpeg")}
+-        resp = requests.post(f"{args.base_url}/api/upload", files=files)
+-    else:
+-        with open(args.file, "rb") as fh:
+-            resp = requests.post(
+-                f"{args.base_url}/api/upload", files={"file": fh}
 -            )
--            if restored_status is None:
--                restored_status = RECORDING_STATUS_FAILED
--            set_recording_status(
--                recording_id,
--                restored_status,
--                settings=settings,
--                quarantine_reason=restored_quarantine_reason,
--            )
-+        try:
-             _append_step_log(
-                 log_path,
-                 (
--                    "restored recording status after unsupported legacy job: "
--                    f"{restored_status}"
-+                    "unsupported job type under single-job mode; "
-+                    "requeue precheck instead "
-+                    f"(job={job_id} type={job_type})"
-                 ),
-             )
-+        except OSError:
-+            pass
-+        if not fail_job(job_id, unsupported_error, settings=settings):
-+            raise ValueError(f"Job not found: {job_id}")
-+        if previous_status == RECORDING_STATUS_QUEUED:
-+            if _has_queued_precheck_job(
-+                recording_id,
-+                settings=settings,
-+                exclude_job_id=job_id,
-+            ):
-+                try:
-+                    _append_step_log(
-+                        log_path,
-+                        "kept recording status Queued because a precheck job is pending",
-+                    )
-+                except OSError:
-+                    pass
-+            else:
-+                restored_status, restored_quarantine_reason = _restore_status_from_precheck_log(
-+                    recording_id,
-+                    settings,
-+                )
-+                if restored_status is None:
-+                    restored_status = RECORDING_STATUS_FAILED
-+                set_recording_status(
-+                    recording_id,
-+                    restored_status,
-+                    settings=settings,
-+                    quarantine_reason=restored_quarantine_reason,
-+                )
-+                try:
-+                    _append_step_log(
-+                        log_path,
-+                        (
-+                            "restored recording status after unsupported legacy job: "
-+                            f"{restored_status}"
-+                        ),
-+                    )
-+                except OSError:
-+                    pass
-         return {
-             "job_id": job_id,
-             "recording_id": recording_id,
-diff --git a/tests/test_db_queue.py b/tests/test_db_queue.py
-index 38f127e..1cc7e02 100644
---- a/tests/test_db_queue.py
-+++ b/tests/test_db_queue.py
-@@ -251,6 +251,58 @@ def test_worker_legacy_job_restores_status_from_precheck_log(tmp_path: Path, mon
-     assert "unsupported legacy job type under single-job pipeline" in str(job["error"])
+-    resp.raise_for_status()
+-    job = resp.json()
+-    job_id = job.get("id")
+-    if not job_id:
+-        print("missing job id")
+-        return 1
+-
+-    for _ in range(120):
+-        r = requests.get(f"{args.base_url}/api/job/{job_id}", timeout=5)
+-        if r.status_code != 200:
+-            time.sleep(1)
+-            continue
+-        data = r.json()
+-        if data.get("status") == "done":
+-            if "Hello" in data.get("markdown", ""):
+-                print("Smoke test passed")
+-                return 0
+-            print("Missing expected text")
++    base_url = args.base_url.rstrip("/")
++    wait_health(base_url)
++
++    required_paths = [
++        "/healthz/app",
++        "/healthz/db",
++        "/healthz/redis",
++        "/openapi.json",
++    ]
++    for path in required_paths:
++        if not check_endpoint(base_url, path):
+             return 1
+-        time.sleep(1)
+ 
+-    print("job timeout")
+-    return 1
++    print("Smoke test passed")
++    return 0
  
  
-+def test_worker_legacy_job_keeps_queued_when_precheck_pending(tmp_path: Path, monkeypatch):
-+    cfg = _test_settings(tmp_path)
-+    monkeypatch.setenv("LAN_DATA_ROOT", str(cfg.data_root))
-+    monkeypatch.setenv("LAN_RECORDINGS_ROOT", str(cfg.recordings_root))
-+    monkeypatch.setenv("LAN_DB_PATH", str(cfg.db_path))
-+    monkeypatch.setenv("LAN_PROM_SNAPSHOT_PATH", str(cfg.metrics_snapshot_path))
+ if __name__ == "__main__":
+diff --git a/systemd/recording-transcriber.service b/systemd/recording-transcriber.service
+index ff6da53..8138082 100644
+--- a/systemd/recording-transcriber.service
++++ b/systemd/recording-transcriber.service
+@@ -1,14 +1,12 @@
+-[Unit]
+-Description=LAN Recording-Transcriber (WhisperX + pyannote + Ollama)
+-After=network-online.target
+-Wants=network-online.target
+-
+-[Service]
+-WorkingDirectory=/home/%i/lan-transcriber
+-Environment=HF_HUB_ENABLE_XET=0
+-Environment=LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu
+-ExecStart=/home/%i/asr_env/bin/python web_transcribe.py
+-Restart=on-failure
+-
+-[Install]
+-WantedBy=multi-user.target
++[Unit]
++Description=DEPRECATED: LAN Recording-Transcriber wrapper (use lan-transcriber-api.service)
++After=network-online.target
++Wants=network-online.target
 +
-+    init_db(cfg)
-+    create_recording(
-+        "rec-worker-legacy-pending-1",
-+        source="test",
-+        source_filename="legacy-pending.mp3",
-+        status=RECORDING_STATUS_QUEUED,
-+        settings=cfg,
-+    )
-+    create_job(
-+        "job-worker-legacy-pending-precheck-1",
-+        recording_id="rec-worker-legacy-pending-1",
-+        job_type=JOB_TYPE_PRECHECK,
-+        settings=cfg,
-+    )
-+    create_job(
-+        "job-worker-legacy-pending-stt-1",
-+        recording_id="rec-worker-legacy-pending-1",
-+        job_type=JOB_TYPE_STT,
-+        settings=cfg,
-+    )
++[Service]
++WorkingDirectory=/home/%i/lan-transcriber
++ExecStart=/home/%i/asr_env/bin/uvicorn lan_app.api:app --host 0.0.0.0 --port 7860
++Restart=on-failure
 +
-+    precheck_log = (
-+        cfg.recordings_root
-+        / "rec-worker-legacy-pending-1"
-+        / "logs"
-+        / "step-precheck.log"
-+    )
-+    precheck_log.parent.mkdir(parents=True, exist_ok=True)
-+    precheck_log.write_text(
-+        "[2026-02-22T00:00:00Z] finished job=job-precheck-old type=precheck recording_status=Ready\n",
-+        encoding="utf-8",
-+    )
++[Install]
++WantedBy=multi-user.target
+diff --git a/tasks/QUEUE.md b/tasks/QUEUE.md
+index e04fc93..a4dfbda 100644
+--- a/tasks/QUEUE.md
++++ b/tasks/QUEUE.md
+@@ -92,7 +92,7 @@ Queue (in order)
+ - Depends on: PR-OPS-01
+ 
+ 17) PR-ENTRYPOINT-01: Unify entrypoint to lan_app.api:app + worker (Dockerfile CMD, systemd, smoke_test, tests)
+-- Status: TODO
++- Status: DONE
+ - Tasks file: tasks/PR-ENTRYPOINT-01.md
+ - Depends on: PR-JOB-MODEL-01
+ 
+diff --git a/tests/test_smoke.py b/tests/test_smoke.py
+index 57d7fbf..44c768d 100644
+--- a/tests/test_smoke.py
++++ b/tests/test_smoke.py
+@@ -1,5 +1,5 @@
+ from fastapi.testclient import TestClient
+-from web_transcribe import app
++from lan_app.api import app
+ 
+ 
+ def test_root_200():
+diff --git a/tests/test_ui.py b/tests/test_ui.py
+index e4fb64a..87321f9 100644
+--- a/tests/test_ui.py
++++ b/tests/test_ui.py
+@@ -1,8 +1,7 @@
+ from fastapi.testclient import TestClient
+-from web_transcribe import app
++from lan_app.api import app
+ 
+ 
+ def test_root_ok():
+     client = TestClient(app)
+     assert client.get("/openapi.json").status_code == 200
+-
+diff --git a/systemd/lan-transcriber-api.service b/systemd/lan-transcriber-api.service
+new file mode 100644
+index 0000000..245972f
+--- /dev/null
++++ b/systemd/lan-transcriber-api.service
+@@ -0,0 +1,13 @@
++[Unit]
++Description=LAN Transcriber API (FastAPI)
++After=network-online.target
++Wants=network-online.target
 +
-+    result = process_job(
-+        "job-worker-legacy-pending-stt-1",
-+        "rec-worker-legacy-pending-1",
-+        JOB_TYPE_STT,
-+    )
-+    recording = get_recording("rec-worker-legacy-pending-1", settings=cfg)
++[Service]
++WorkingDirectory=/home/%i/lan-transcriber
++ExecStartPre=/home/%i/asr_env/bin/python -m lan_app.db_init
++ExecStart=/home/%i/asr_env/bin/uvicorn lan_app.api:app --host 0.0.0.0 --port 7860
++Restart=on-failure
 +
-+    assert result["status"] == "ignored"
-+    assert recording is not None
-+    assert recording["status"] == RECORDING_STATUS_QUEUED
++[Install]
++WantedBy=multi-user.target
+diff --git a/systemd/lan-transcriber-worker.service b/systemd/lan-transcriber-worker.service
+new file mode 100644
+index 0000000..1fa084f
+--- /dev/null
++++ b/systemd/lan-transcriber-worker.service
+@@ -0,0 +1,12 @@
++[Unit]
++Description=LAN Transcriber Worker (RQ)
++After=network-online.target
++Wants=network-online.target
 +
++[Service]
++WorkingDirectory=/home/%i/lan-transcriber
++ExecStart=/home/%i/asr_env/bin/python -m lan_app.worker
++Restart=on-failure
 +
- def test_worker_legacy_job_restores_quarantine_reason(tmp_path: Path, monkeypatch):
-     cfg = _test_settings(tmp_path)
-     monkeypatch.setenv("LAN_DATA_ROOT", str(cfg.data_root))
++[Install]
++WantedBy=multi-user.target

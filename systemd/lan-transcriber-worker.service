@@ -1,0 +1,12 @@
+[Unit]
+Description=LAN Transcriber Worker (RQ)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+WorkingDirectory=/home/%i/lan-transcriber
+ExecStart=/home/%i/asr_env/bin/python -m lan_app.worker
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

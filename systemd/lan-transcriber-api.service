@@ -1,10 +1,11 @@
 [Unit]
-Description=DEPRECATED: LAN Recording-Transcriber wrapper (use lan-transcriber-api.service)
+Description=LAN Transcriber API (FastAPI)
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 WorkingDirectory=/home/%i/lan-transcriber
+ExecStartPre=/home/%i/asr_env/bin/python -m lan_app.db_init
 ExecStart=/home/%i/asr_env/bin/uvicorn lan_app.api:app --host 0.0.0.0 --port 7860
 Restart=on-failure
 
