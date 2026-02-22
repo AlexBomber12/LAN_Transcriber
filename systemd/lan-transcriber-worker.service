@@ -4,6 +4,8 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
+WorkingDirectory=/opt/lan-transcriber
+Environment=PYTHONPATH=/opt/lan-transcriber
 ExecStart=/usr/bin/python3 -m lan_app.worker
 Restart=on-failure
 
