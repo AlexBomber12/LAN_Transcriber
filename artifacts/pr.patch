@@ -1,326 +1,53 @@
-diff --git a/.github/workflows/staging-deploy.yml b/.github/workflows/staging-deploy.yml
-index ccca5b3..66fe112 100644
---- a/.github/workflows/staging-deploy.yml
-+++ b/.github/workflows/staging-deploy.yml
-@@ -1,80 +1,74 @@
- name: staging-deploy
-+
- on:
-   push:
-     branches: [main]
-+
- jobs:
-   deploy:
-     runs-on: ubuntu-latest
-     steps:
--      - name: Detect CI
--        run: |
--          if [ "${CI}" = "true" ]; then echo "IS_CI=true"  >> "$GITHUB_ENV";
--          else                       echo "IS_CI=false" >> "$GITHUB_ENV"; fi
--      - name: Populate staging env vars
--        shell: bash
--        run: |
--          host="${{ secrets.STAGING_HOST }}"
--          user="${{ secrets.STAGING_USER }}"
--          key="${{ secrets.STAGING_SSH_KEY }}"
--
--          if [ "${IS_CI}" = "true" ]; then  # running in GitHub Actions CI
--            host="${host:-localhost}"
--            user="${user:-ci-user}"
--            key="${key:-dummy}"
--          fi
--
--          echo "STAGING_HOST=${host}" >> "$GITHUB_ENV"
--          echo "STAGING_USER=${user}"  >> "$GITHUB_ENV"
--          echo "STAGING_SSH_KEY=${key}" >> "$GITHUB_ENV"
--
-       - name: Validate secrets
-         shell: bash
-+        env:
-+          STAGING_HOST: ${{ secrets.STAGING_HOST }}
-+          STAGING_USER: ${{ secrets.STAGING_USER }}
-+          STAGING_SSH_KEY: ${{ secrets.STAGING_SSH_KEY }}
-         run: |
--          if [ "${IS_CI}" != "true" ] && { [ -z "$STAGING_HOST" ] || [ -z "$STAGING_USER" ] || [ -z "$STAGING_SSH_KEY" ]; }; then
-+          if [ -z "$STAGING_HOST" ] || [ -z "$STAGING_USER" ] || [ -z "$STAGING_SSH_KEY" ]; then
-             echo "::error::Missing required secrets STAGING_HOST, STAGING_USER, and STAGING_SSH_KEY"
-             exit 1
-           fi
+diff --git a/lan_app/auth.py b/lan_app/auth.py
+index 6acbcc4..e28d2bb 100644
+--- a/lan_app/auth.py
++++ b/lan_app/auth.py
+@@ -65,17 +65,12 @@ def request_requires_auth(request: Request) -> bool:
  
-       - uses: actions/checkout@v4
  
-+      - name: Setup Python
-+        uses: actions/setup-python@v5
-+        with:
-+          python-version: "3.11"
-+
-+      - name: Install smoke test dependency
-+        run: python -m pip install --disable-pip-version-check requests
-+
-       - name: Ensure SSH folder
--        if: env.IS_CI == 'false'
-         run: |
-           mkdir -p ~/.ssh
-           chmod 700 ~/.ssh
+ def cookie_secure_flag(request: Request) -> bool:
+-    host = str(request.url.hostname or "").strip().lower()
+-    if host in {"localhost", "127.0.0.1", "::1"}:
+-        return False
+     forwarded_proto = request.headers.get("x-forwarded-proto", "")
+     if forwarded_proto:
+         scheme = forwarded_proto.split(",", 1)[0].strip().lower()
+     else:
+         scheme = str(request.url.scheme or "").strip().lower()
+-    if scheme == "https":
+-        return True
+-    return host not in {"", "testserver"}
++    return scheme == "https"
  
-       - name: Setup known_hosts
--        if: env.IS_CI == 'false'
--        run: ssh-keyscan -H "$STAGING_HOST" >> ~/.ssh/known_hosts
--
--      - name: Mock deploy (CI)
--        if: env.IS_CI == 'true'
--        run: echo "CI run – remote steps skipped."
-+        run: ssh-keyscan -H "${{ secrets.STAGING_HOST }}" >> ~/.ssh/known_hosts
  
--      - name: Copy compose to VPS
--        if: env.IS_CI == 'false'
-+      - name: Copy compose files to VPS
-         uses: appleboy/scp-action@v1.0.0
-         with:
--          host: ${{ env.STAGING_HOST }}
--          username: ${{ env.STAGING_USER }}
--          key: ${{ env.STAGING_SSH_KEY }}
--          source: "infra/staging/*"
-+          host: ${{ secrets.STAGING_HOST }}
-+          username: ${{ secrets.STAGING_USER }}
-+          key: ${{ secrets.STAGING_SSH_KEY }}
-+          source: "infra/staging/*,infra/staging/.env.staging.example"
-           target: "~/lan-staging"
-           strip_components: 2
+ def set_auth_cookie(response: Response, token: str, *, secure: bool) -> None:
+diff --git a/tests/test_ui_routes.py b/tests/test_ui_routes.py
+index 497a248..d659949 100644
+--- a/tests/test_ui_routes.py
++++ b/tests/test_ui_routes.py
+@@ -862,6 +862,25 @@ def test_ui_login_sets_secure_cookie_for_https_host(tmp_path, monkeypatch):
+     assert "Secure" in set_cookie
  
-       - name: Remote docker compose up
--        if: env.IS_CI == 'false'
-         uses: appleboy/ssh-action@v1.0.0
-+        env:
-+          STAGING_GHCR_USERNAME: ${{ secrets.STAGING_GHCR_USERNAME }}
-+          STAGING_GHCR_TOKEN: ${{ secrets.STAGING_GHCR_TOKEN }}
-         with:
--          host: ${{ env.STAGING_HOST }}
--          username: ${{ env.STAGING_USER }}
--          key: ${{ env.STAGING_SSH_KEY }}
-+          host: ${{ secrets.STAGING_HOST }}
-+          username: ${{ secrets.STAGING_USER }}
-+          key: ${{ secrets.STAGING_SSH_KEY }}
-+          envs: STAGING_GHCR_USERNAME,STAGING_GHCR_TOKEN
-           script: |
--            set -e
-+            set -euo pipefail
-             cd ~/lan-staging
--            docker compose pull || true
--            docker compose up -d --build
-+            mkdir -p data
-+            if [ -n "${STAGING_GHCR_TOKEN:-}" ]; then
-+              printf '%s' "$STAGING_GHCR_TOKEN" | docker login ghcr.io -u "${STAGING_GHCR_USERNAME:-alexbomber12}" --password-stdin
-+            fi
-+            docker compose pull
-+            docker compose up -d --remove-orphans
  
-       - name: Smoke test via API
--        if: env.IS_CI == 'false'
--        run: python scripts/smoke_test.py --base-url http://$STAGING_HOST:7860 --file tests/fixtures/1_EN.mp3.b64
-+        env:
-+          STAGING_HOST: ${{ secrets.STAGING_HOST }}
-+        run: python scripts/smoke_test.py --base-url "http://${STAGING_HOST}:7860"
-diff --git a/tasks/QUEUE.md b/tasks/QUEUE.md
-index a4dfbda..debe4b0 100644
---- a/tasks/QUEUE.md
-+++ b/tasks/QUEUE.md
-@@ -97,6 +97,6 @@ Queue (in order)
- - Depends on: PR-JOB-MODEL-01
- 
- 18) PR-STAGING-01: Fix staging deploy workflow and add infra/staging (compose + env template + real smoke)
--- Status: TODO
-+- Status: DONE
- - Tasks file: tasks/PR-STAGING-01.md
- - Depends on: PR-ENTRYPOINT-01
-diff --git a/infra/staging/.env.staging.example b/infra/staging/.env.staging.example
-new file mode 100644
-index 0000000..ce2a7dd
---- /dev/null
-+++ b/infra/staging/.env.staging.example
-@@ -0,0 +1,40 @@
-+# Container image
-+TRANSCRIBER_IMAGE=ghcr.io/alexbomber12/lan-transcriber:latest
-+TRANSCRIBER_VERSION=latest
++def test_ui_login_does_not_set_secure_cookie_for_http_lan_host(tmp_path, monkeypatch):
++    cfg = _cfg(tmp_path)
++    cfg.api_bearer_token = "secret-ui-token"
++    monkeypatch.setattr(api, "_settings", cfg)
++    monkeypatch.setattr(ui_routes, "_settings", cfg)
++    init_db(cfg)
 +
-+# API publish settings
-+LAN_API_BIND_HOST=0.0.0.0
-+LAN_API_PORT=7860
++    c = TestClient(api.app, follow_redirects=False, base_url="http://192.168.1.10")
++    login = c.post(
++        "/ui/login",
++        data={"token": "secret-ui-token", "next": "/ui"},
++    )
 +
-+# Runtime paths
-+LAN_DATA_ROOT=/data
-+LAN_RECORDINGS_ROOT=/data/recordings
-+LAN_SPEAKER_DB=/data/db/speaker_bank.yaml
-+LAN_VOICES_DIR=/data/voices
-+LAN_UNKNOWN_DIR=/data/recordings/unknown
-+LAN_TMP_ROOT=/data/tmp
-+LAN_PROM_SNAPSHOT_PATH=/data/metrics.snap
-+LAN_DB_PATH=/data/db/app.db
-+LAN_REDIS_URL=redis://redis:6379/0
-+LAN_RQ_QUEUE_NAME=lan-transcriber
-+QUARANTINE_RETENTION_DAYS=7
-+LANG_DEFAULT=en
++    assert login.status_code == 303
++    set_cookie = login.headers.get("set-cookie", "")
++    assert AUTH_COOKIE_NAME in set_cookie
++    assert "Secure" not in set_cookie
 +
-+# LLM (OpenAI-compatible)
-+LLM_BASE_URL=
-+LLM_API_KEY=
-+LLM_MODEL=
-+LLM_TIMEOUT_SECONDS=30
 +
-+# Microsoft Graph delegated auth (Device Code Flow)
-+MS_TENANT_ID=
-+MS_CLIENT_ID=
-+MS_SCOPES=offline_access User.Read Notes.ReadWrite Calendars.Read
-+
-+# Google Drive ingest (Service Account)
-+GDRIVE_SA_JSON_PATH=/data/secrets/gdrive_sa.json
-+GDRIVE_INBOX_FOLDER_ID=
-+GDRIVE_POLL_INTERVAL_SECONDS=60
-+
-+# Misc
-+FETCH_INTERVAL_SEC=300
-diff --git a/infra/staging/README.md b/infra/staging/README.md
-new file mode 100644
-index 0000000..e057dd2
---- /dev/null
-+++ b/infra/staging/README.md
-@@ -0,0 +1,36 @@
-+# Staging deployment files
-+
-+This directory contains the docker compose stack used by `.github/workflows/staging-deploy.yml`.
-+
-+## VPS steps
-+
-+1. Copy the environment template:
-+
-+```bash
-+cp .env.staging.example .env
-+```
-+
-+2. Ensure the runtime data directory exists:
-+
-+```bash
-+mkdir -p data
-+```
-+
-+3. Pull the latest images:
-+
-+```bash
-+docker compose pull
-+```
-+
-+4. Start or update the stack:
-+
-+```bash
-+docker compose up -d --remove-orphans
-+```
-+
-+5. Run smoke endpoint checks:
-+
-+```bash
-+curl -fsS http://127.0.0.1:7860/healthz/app
-+curl -fsS http://127.0.0.1:7860/openapi.json >/dev/null
-+```
-diff --git a/infra/staging/docker-compose.yml b/infra/staging/docker-compose.yml
-new file mode 100644
-index 0000000..1239827
---- /dev/null
-+++ b/infra/staging/docker-compose.yml
-@@ -0,0 +1,97 @@
-+x-lan-service: &lan-service
-+  image: ${TRANSCRIBER_IMAGE:-ghcr.io/alexbomber12/lan-transcriber:latest}
-+  pull_policy: always
-+  restart: unless-stopped
-+  environment: &lan-env
-+    - PYTHONPATH=/app
-+    - LAN_DATA_ROOT=${LAN_DATA_ROOT:-/data}
-+    - LAN_RECORDINGS_ROOT=${LAN_RECORDINGS_ROOT:-/data/recordings}
-+    - LAN_SPEAKER_DB=${LAN_SPEAKER_DB:-/data/db/speaker_bank.yaml}
-+    - LAN_VOICES_DIR=${LAN_VOICES_DIR:-/data/voices}
-+    - LAN_UNKNOWN_DIR=${LAN_UNKNOWN_DIR:-/data/recordings/unknown}
-+    - LAN_TMP_ROOT=${LAN_TMP_ROOT:-/data/tmp}
-+    - LAN_PROM_SNAPSHOT_PATH=${LAN_PROM_SNAPSHOT_PATH:-/data/metrics.snap}
-+    - LAN_DB_PATH=${LAN_DB_PATH:-/data/db/app.db}
-+    - LAN_REDIS_URL=${LAN_REDIS_URL:-redis://redis:6379/0}
-+    - LAN_RQ_QUEUE_NAME=${LAN_RQ_QUEUE_NAME:-lan-transcriber}
-+    - LLM_BASE_URL=${LLM_BASE_URL}
-+    - LLM_API_KEY=${LLM_API_KEY}
-+    - LLM_MODEL=${LLM_MODEL:-}
-+    - LLM_TIMEOUT_SECONDS=${LLM_TIMEOUT_SECONDS:-30}
-+    - FETCH_INTERVAL_SEC=${FETCH_INTERVAL_SEC:-300}
-+    - TRANSCRIBER_VERSION=${TRANSCRIBER_VERSION:-latest}
-+    - LANG_DEFAULT=${LANG_DEFAULT:-en}
-+    - MS_TENANT_ID=${MS_TENANT_ID:-}
-+    - MS_CLIENT_ID=${MS_CLIENT_ID:-}
-+    - "MS_SCOPES=${MS_SCOPES:-offline_access User.Read Notes.ReadWrite Calendars.Read}"
-+    - GDRIVE_SA_JSON_PATH=${GDRIVE_SA_JSON_PATH:-/data/secrets/gdrive_sa.json}
-+    - GDRIVE_INBOX_FOLDER_ID=${GDRIVE_INBOX_FOLDER_ID:-}
-+    - GDRIVE_POLL_INTERVAL_SECONDS=${GDRIVE_POLL_INTERVAL_SECONDS:-60}
-+    - QUARANTINE_RETENTION_DAYS=${QUARANTINE_RETENTION_DAYS:-7}
-+  volumes:
-+    - ./data:/data
-+  networks:
-+    - lan_net
-+
-+services:
-+  db:
-+    <<: *lan-service
-+    container_name: lan-db
-+    command: ["python", "-m", "lan_app.db_init"]
-+    restart: "no"
-+    healthcheck:
-+      test: ["CMD", "python", "-m", "lan_app.healthchecks", "db"]
-+      interval: 30s
-+      timeout: 5s
-+      retries: 3
-+
-+  redis:
-+    image: redis:7-alpine
-+    container_name: lan-redis
-+    restart: unless-stopped
-+    networks:
-+      - lan_net
-+    healthcheck:
-+      test: ["CMD", "redis-cli", "ping"]
-+      interval: 10s
-+      timeout: 3s
-+      retries: 5
-+
-+  api:
-+    <<: *lan-service
-+    container_name: lan-api
-+    command: ["uvicorn", "lan_app.api:app", "--host", "0.0.0.0", "--port", "7860"]
-+    depends_on:
-+      - db
-+      - redis
-+    ports:
-+      - "${LAN_API_BIND_HOST:-0.0.0.0}:${LAN_API_PORT:-7860}:7860"
-+    healthcheck:
-+      test:
-+        [
-+          "CMD",
-+          "python",
-+          "-c",
-+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:7860/healthz/app', timeout=5)",
-+        ]
-+      interval: 30s
-+      timeout: 5s
-+      retries: 3
-+      start_period: 20s
-+
-+  worker:
-+    <<: *lan-service
-+    container_name: lan-worker
-+    command: ["python", "-m", "lan_app.worker"]
-+    depends_on:
-+      - db
-+      - redis
-+    healthcheck:
-+      test: ["CMD", "python", "-m", "lan_app.healthchecks", "worker"]
-+      interval: 30s
-+      timeout: 5s
-+      retries: 3
-+      start_period: 20s
-+
-+networks:
-+  lan_net:
+ # ---------------------------------------------------------------------------
+ # Inline action endpoints
+ # ---------------------------------------------------------------------------

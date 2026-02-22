@@ -18,6 +18,15 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
+from .auth import (
+    auth_enabled,
+    cookie_secure_flag,
+    clear_auth_cookie,
+    expected_bearer_token,
+    request_is_authenticated,
+    safe_next_path,
+    set_auth_cookie,
+)
 from .calendar import (
     load_calendar_context,
     refresh_calendar_context,
@@ -57,7 +66,11 @@ from .db import (
     set_recording_language_settings,
     set_recording_status,
 )
-from .jobs import enqueue_recording_job, purge_pending_recording_jobs
+from .jobs import (
+    DuplicateRecordingJobError,
+    enqueue_recording_job,
+    purge_pending_recording_jobs,
+)
 from .ms_graph import GraphAuthError, ms_connection_state
 from .onenote import (
     PublishPreconditionError,
@@ -911,6 +924,80 @@ def _job_counts(settings: AppSettings) -> dict[str, int]:
 
 
 # ---------------------------------------------------------------------------
+# UI auth shell
+# ---------------------------------------------------------------------------
+
+
+@ui_router.get("/ui")
+async def ui_root(request: Request) -> Any:
+    if auth_enabled(_settings) and not request_is_authenticated(request, _settings):
+        return RedirectResponse("/ui/login?next=%2Fui", status_code=303)
+    return RedirectResponse("/", status_code=303)
+
+
+@ui_router.get("/ui/login", response_class=HTMLResponse)
+async def ui_login(
+    request: Request,
+    next: str = Query(default="/ui"),
+) -> Any:
+    if not auth_enabled(_settings):
+        return RedirectResponse("/", status_code=303)
+    target = safe_next_path(next, default="/ui")
+    if request_is_authenticated(request, _settings):
+        return RedirectResponse(target, status_code=303)
+    return templates.TemplateResponse(
+        request,
+        "login.html",
+        {
+            "active": "",
+            "next": target,
+            "error": "",
+        },
+    )
+
+
+@ui_router.post("/ui/login", response_class=HTMLResponse)
+async def ui_login_submit(
+    request: Request,
+    token: str = Form(default=""),
+    next: str = Form(default="/ui"),
+) -> Any:
+    if not auth_enabled(_settings):
+        return RedirectResponse("/", status_code=303)
+
+    expected = expected_bearer_token(_settings) or ""
+    submitted = token.strip()
+    target = safe_next_path(next, default="/ui")
+    if not submitted or submitted != expected:
+        return templates.TemplateResponse(
+            request,
+            "login.html",
+            {
+                "active": "",
+                "next": target,
+                "error": "Invalid token.",
+            },
+            status_code=401,
+        )
+
+    response = RedirectResponse(target, status_code=303)
+    set_auth_cookie(
+        response,
+        submitted,
+        secure=cookie_secure_flag(request),
+    )
+    return response
+
+
+@ui_router.get("/ui/logout")
+async def ui_logout() -> Any:
+    target = "/ui/login" if auth_enabled(_settings) else "/"
+    response = RedirectResponse(target, status_code=303)
+    clear_auth_cookie(response)
+    return response
+
+
+# ---------------------------------------------------------------------------
 # Dashboard
 # ---------------------------------------------------------------------------
 
@@ -1456,6 +1543,11 @@ async def ui_action_requeue(recording_id: str) -> Any:
         return HTMLResponse("Not found", status_code=404)
     try:
         enqueue_recording_job(recording_id, settings=_settings)
+    except DuplicateRecordingJobError as exc:
+        return HTMLResponse(
+            f"Requeue skipped: precheck job already active ({exc.job_id}).",
+            status_code=409,
+        )
     except Exception as exc:
         return HTMLResponse(f"Requeue failed: {exc}", status_code=503)
     resp = HTMLResponse("")
@@ -1477,6 +1569,11 @@ async def ui_action_retry_failed_step(recording_id: str, job_id: str) -> Any:
             recording_id,
             job_type=DEFAULT_REQUEUE_JOB_TYPE,
             settings=_settings,
+        )
+    except DuplicateRecordingJobError as exc:
+        return HTMLResponse(
+            f"Retry skipped: precheck job already active ({exc.job_id}).",
+            status_code=409,
         )
     except Exception as exc:
         return HTMLResponse(f"Retry failed: {exc}", status_code=503)
@@ -1517,9 +1614,14 @@ async def ui_action_publish(recording_id: str) -> Any:
 
 
 @ui_router.post("/ui/recordings/{recording_id}/delete")
-async def ui_action_delete(recording_id: str) -> Any:
+async def ui_action_delete(
+    recording_id: str,
+    confirm_delete: str = Form(default=""),
+) -> Any:
     if get_recording(recording_id, settings=_settings) is None:
         return HTMLResponse("Not found", status_code=404)
+    if confirm_delete.strip().upper() != "DELETE":
+        return HTMLResponse('Type "DELETE" to confirm deletion.', status_code=422)
     try:
         purge_pending_recording_jobs(recording_id, settings=_settings)
     except Exception as exc:

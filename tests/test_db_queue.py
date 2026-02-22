@@ -42,6 +42,7 @@ from lan_app.db import (
 )
 from lan_app.jobs import RecordingJob, enqueue_recording_job, purge_pending_recording_jobs
 from lan_app.worker_tasks import process_job
+from lan_transcriber import aliases
 from lan_transcriber.llm_client import LLMClient
 from lan_transcriber.pipeline import PrecheckResult
 
@@ -510,6 +511,64 @@ def test_api_requeue_rejects_non_precheck_job_type(tmp_path: Path, monkeypatch):
     assert response.json() == {
         "detail": "Only precheck is supported in single-job pipeline mode"
     }
+
+
+def test_api_requeue_dedupes_active_precheck_job(tmp_path: Path, monkeypatch):
+    cfg = _test_settings(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    init_db(cfg)
+    create_recording(
+        "rec-api-rq-dedupe-1",
+        source="test",
+        source_filename="dedupe.mp3",
+        settings=cfg,
+    )
+
+    class _FakeQueue:
+        def enqueue(self, *_args, **_kwargs):
+            return None
+
+    monkeypatch.setattr("lan_app.jobs.get_queue", lambda _cfg: _FakeQueue())
+
+    client = TestClient(api.app)
+    first = client.post(
+        "/api/recordings/rec-api-rq-dedupe-1/actions/requeue",
+        json={"job_type": JOB_TYPE_PRECHECK},
+    )
+    assert first.status_code == 200
+    first_job_id = first.json()["job_id"]
+
+    second = client.post(
+        "/api/recordings/rec-api-rq-dedupe-1/actions/requeue",
+        json={"job_type": JOB_TYPE_PRECHECK},
+    )
+    assert second.status_code == 409
+    detail = second.json()["detail"]
+    assert detail["existing_job_id"] == first_job_id
+    assert "already queued or started" in detail["message"].lower()
+
+
+def test_api_alias_requires_auth_when_token_enabled(tmp_path: Path, monkeypatch):
+    cfg = _test_settings(tmp_path)
+    cfg.api_bearer_token = "alias-secret"
+    monkeypatch.setattr(api, "_settings", cfg)
+    init_db(cfg)
+
+    alias_path = tmp_path / "db" / "speaker_bank.yaml"
+    aliases.save_aliases({}, alias_path)
+    monkeypatch.setattr(aliases, "ALIAS_PATH", alias_path)
+
+    client = TestClient(api.app)
+    blocked = client.post("/alias/S1", json={"alias": "Alice"})
+    assert blocked.status_code == 401
+
+    allowed = client.post(
+        "/alias/S1",
+        json={"alias": "Alice"},
+        headers={"Authorization": "Bearer alias-secret"},
+    )
+    assert allowed.status_code == 200
+    assert aliases.load_aliases(alias_path).get("S1") == "Alice"
 
 
 def test_enqueue_marks_job_failed_when_redis_enqueue_fails(tmp_path: Path, monkeypatch):
