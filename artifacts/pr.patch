@@ -1,125 +1,1300 @@
-diff --git a/lan_app/routing.py b/lan_app/routing.py
-index ef32f8d..84459e7 100644
---- a/lan_app/routing.py
-+++ b/lan_app/routing.py
-@@ -72,6 +72,9 @@ def refresh_recording_routing(
-     current_assignment_source = str(
-         recording.get("project_assignment_source") or ""
-     ).strip().lower()
-+    has_manual_project_override = (
-+        current_project_id is not None and current_assignment_source == "manual"
+diff --git a/.env.example b/.env.example
+index 01f4c11..d003e1b 100644
+--- a/.env.example
++++ b/.env.example
+@@ -21,6 +21,7 @@ LAN_PROM_SNAPSHOT_PATH=/data/metrics.snap
+ LAN_DB_PATH=/data/db/app.db
+ LAN_REDIS_URL=redis://redis:6379/0
+ LAN_RQ_QUEUE_NAME=lan-transcriber
++QUARANTINE_RETENTION_DAYS=7
+ 
+ # Google Drive ingest (Service Account)
+ GDRIVE_SA_JSON_PATH=/data/secrets/gdrive_sa.json
+@@ -44,6 +45,10 @@ TRANSCRIBER_DOCKER_TARGET=runtime-lite
+ TRANSCRIBER_PULL_POLICY=never
+ LANG_DEFAULT=ru
+ 
++# LAN binding hardening (bind published API port to loopback by default)
++LAN_API_BIND_HOST=127.0.0.1
++LAN_API_PORT=7860
++
+ # Legacy fallback (kept for backwards compatibility)
+ # PROM_SNAPSHOT_PATH=/data/metrics.snap
+ 
+diff --git a/README.md b/README.md
+index c43b0ce..e3ba34d 100644
+--- a/README.md
++++ b/README.md
+@@ -29,6 +29,11 @@ This produces:
+ - `artifacts/ci.log`
+ - `artifacts/pr.patch`
+ 
++## Operations runbook
++
++Operational setup, failure handling, backup/restore, and upgrade steps are documented in
++[`docs/runbook.md`](docs/runbook.md).
++
+ ## Runtime data root
+ 
+ Runtime mutable state must live under `/data` in containers (mounted from `./data` in Docker):
+@@ -85,6 +90,9 @@ models are cached across runs.
+ | `LAN_DB_PATH` | SQLite database path (default `/data/db/app.db`) |
+ | `LAN_REDIS_URL` | Redis endpoint for the RQ queue |
+ | `LAN_RQ_QUEUE_NAME` | Queue name consumed by the worker |
++| `QUARANTINE_RETENTION_DAYS` | Retention period for quarantined recording cleanup (default `7`) |
++| `LAN_API_BIND_HOST` | Published API bind host (default `127.0.0.1`) |
++| `LAN_API_PORT` | Published API port (default `7860`) |
+ | `LLM_BASE_URL` | OpenAI-compatible Spark endpoint |
+ | `LLM_API_KEY` | Optional API key for the LLM |
+ | `LLM_MODEL` | Model name passed to the OpenAI-compatible endpoint |
+diff --git a/docker-compose.yml b/docker-compose.yml
+index cd891dd..6b4afab 100644
+--- a/docker-compose.yml
++++ b/docker-compose.yml
+@@ -28,6 +28,7 @@ x-lan-service: &lan-service
+     - MS_TENANT_ID=${MS_TENANT_ID:-}
+     - MS_CLIENT_ID=${MS_CLIENT_ID:-}
+     - "MS_SCOPES=${MS_SCOPES:-offline_access User.Read Notes.ReadWrite Calendars.Read}"
++    - QUARANTINE_RETENTION_DAYS=${QUARANTINE_RETENTION_DAYS:-7}
+   volumes:
+     - lan_cache:/root/.cache
+     - /opt/lan_cache/hf:/root/.cache/huggingface
+@@ -42,6 +43,11 @@ services:
+     container_name: lan-db
+     command: ["python", "-m", "lan_app.db_init"]
+     restart: "no"
++    healthcheck:
++      test: ["CMD", "python", "-m", "lan_app.healthchecks", "db"]
++      interval: 30s
++      timeout: 5s
++      retries: 3
+ 
+   redis:
+     image: redis:7-alpine
+@@ -49,6 +55,11 @@ services:
+     restart: unless-stopped
+     networks:
+       - lan_net
++    healthcheck:
++      test: ["CMD", "redis-cli", "ping"]
++      interval: 10s
++      timeout: 3s
++      retries: 5
+ 
+   api:
+     <<: *lan-service
+@@ -58,7 +69,19 @@ services:
+       - db
+       - redis
+     ports:
+-      - "7860:7860"
++      - "${LAN_API_BIND_HOST:-127.0.0.1}:${LAN_API_PORT:-7860}:7860"
++    healthcheck:
++      test:
++        [
++          "CMD",
++          "python",
++          "-c",
++          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:7860/healthz/app', timeout=5)",
++        ]
++      interval: 30s
++      timeout: 5s
++      retries: 3
++      start_period: 20s
+ 
+   worker:
+     <<: *lan-service
+@@ -67,6 +90,12 @@ services:
+     depends_on:
+       - db
+       - redis
++    healthcheck:
++      test: ["CMD", "python", "-m", "lan_app.healthchecks", "worker"]
++      interval: 30s
++      timeout: 5s
++      retries: 3
++      start_period: 20s
+ 
+ networks:
+   lan_net:
+diff --git a/lan_app/api.py b/lan_app/api.py
+index 6fb6147..0d660be 100644
+--- a/lan_app/api.py
++++ b/lan_app/api.py
+@@ -1,6 +1,8 @@
+ from __future__ import annotations
+ 
+ import asyncio
++from contextlib import suppress
++import logging
+ import shutil
+ from typing import List
+ 
+@@ -39,6 +41,13 @@ from .db import (
+ )
+ from .jobs import RecordingNotFoundError, enqueue_recording_job
+ from .jobs import purge_pending_recording_jobs
++from .healthchecks import (
++    check_app_health,
++    check_db_health,
++    check_redis_health,
++    check_worker_health,
++    collect_health_checks,
++)
+ from .ms_graph import (
+     GraphAuthError,
+     GraphDeviceFlowLimitError,
+@@ -48,6 +57,7 @@ from .ms_graph import (
+     start_device_flow_session,
+ )
+ from .onenote import PublishPreconditionError, publish_recording_to_onenote
++from .ops import run_retention_cleanup
+ from .ui_routes import _STATIC_DIR, ui_router
+ 
+ app = FastAPI()
+@@ -57,6 +67,9 @@ ALIAS_PATH = aliases.ALIAS_PATH
+ _subscribers: List[asyncio.Queue[str]] = []
+ _current_result: TranscriptResult | None = None
+ _settings = AppSettings()
++_cleanup_task: asyncio.Task[None] | None = None
++_CLEANUP_INTERVAL_SECONDS = 3600
++_logger = logging.getLogger(__name__)
+ 
+ 
+ class AliasUpdate(BaseModel):
+@@ -92,9 +105,44 @@ def _validate_job_status(status: str | None) -> str | None:
+ 
+ 
+ @app.get("/healthz")
+-async def healthz() -> dict[str, str]:
+-    """Simple health check used by monitoring."""
+-    return {"status": "ok"}
++async def healthz() -> dict[str, object]:
++    checks = await run_in_threadpool(collect_health_checks, _settings)
++    return {
++        "status": "ok" if all(item["ok"] for item in checks.values()) else "degraded",
++        "checks": checks,
++    }
++
++
++def _health_check_by_component(component: str, settings: AppSettings) -> dict[str, object]:
++    if component == "app":
++        return check_app_health()
++    if component == "db":
++        return check_db_health(settings)
++    if component == "redis":
++        return check_redis_health(settings)
++    if component == "worker":
++        return check_worker_health(settings)
++    raise KeyError(component)
++
++
++@app.get("/healthz/{component}")
++async def healthz_component(component: str) -> dict[str, object]:
++    try:
++        payload = await run_in_threadpool(_health_check_by_component, component, _settings)
++    except KeyError:
++        raise HTTPException(status_code=404, detail="Unknown health component")
++    if not payload["ok"]:
++        raise HTTPException(status_code=503, detail=str(payload["detail"]))
++    return payload
++
++
++async def _retention_cleanup_loop() -> None:
++    while True:
++        try:
++            await run_in_threadpool(run_retention_cleanup, settings=_settings)
++        except Exception:
++            _logger.exception("Retention cleanup job failed")
++        await asyncio.sleep(_CLEANUP_INTERVAL_SECONDS)
+ 
+ 
+ @app.get("/api/connections/ms/verify")
+@@ -147,9 +195,22 @@ async def api_get_ms_connection_status(session_id: str) -> dict[str, object]:
+ 
+ @app.on_event("startup")
+ async def _start_metrics() -> None:
++    global _cleanup_task
+     init_db(_settings)
+     _settings.metrics_snapshot_path.parent.mkdir(parents=True, exist_ok=True)
+     asyncio.create_task(write_metrics_snapshot(_settings.metrics_snapshot_path))
++    _cleanup_task = asyncio.create_task(_retention_cleanup_loop())
++
++
++@app.on_event("shutdown")
++async def _stop_background_tasks() -> None:
++    global _cleanup_task
++    if _cleanup_task is None:
++        return
++    _cleanup_task.cancel()
++    with suppress(asyncio.CancelledError):
++        await _cleanup_task
++    _cleanup_task = None
+ 
+ 
+ @app.post("/alias/{speaker_id}")
+diff --git a/lan_app/config.py b/lan_app/config.py
+index 29dc89f..d6eefbf 100644
+--- a/lan_app/config.py
++++ b/lan_app/config.py
+@@ -106,6 +106,15 @@ class AppSettings(BaseSettings):
+             "LAN_ROUTING_AUTO_SELECT_THRESHOLD",
+         ),
+     )
++    quarantine_retention_days: int = Field(
++        default=7,
++        ge=1,
++        le=3650,
++        validation_alias=AliasChoices(
++            "QUARANTINE_RETENTION_DAYS",
++            "LAN_QUARANTINE_RETENTION_DAYS",
++        ),
 +    )
  
-     projects = list_projects(settings=cfg)
-     signals = _build_routing_signals(recording_id, settings=cfg)
-@@ -170,13 +173,14 @@ def refresh_recording_routing(
-     status_after_routing: str = str(recording.get("status") or RECORDING_STATUS_READY)
-     if apply_workflow:
-         if suggested_project_id is not None and confidence >= threshold:
--            set_recording_project(
--                recording_id,
--                suggested_project_id,
--                settings=cfg,
--                assignment_source="auto",
--            )
--            auto_selected = True
-+            if not has_manual_project_override:
-+                set_recording_project(
-+                    recording_id,
-+                    suggested_project_id,
-+                    settings=cfg,
-+                    assignment_source="auto",
+     @property
+     def ms_scopes_list(self) -> list[str]:
+diff --git a/lan_app/templates/recording_detail.html b/lan_app/templates/recording_detail.html
+index 5358aa9..c32e7c0 100644
+--- a/lan_app/templates/recording_detail.html
++++ b/lan_app/templates/recording_detail.html
+@@ -563,6 +563,7 @@
+         <th>Started</th>
+         <th>Finished</th>
+         <th>Error</th>
++        <th>Action</th>
+       </tr>
+     </thead>
+     <tbody>
+@@ -575,6 +576,15 @@
+         <td>{{ j.started_at[:19].replace('T',' ') if j.started_at else '—' }}</td>
+         <td>{{ j.finished_at[:19].replace('T',' ') if j.finished_at else '—' }}</td>
+         <td title="{{ j.error or '' }}">{{ (j.error or '')[:40] }}{% if j.error and j.error|length > 40 %}…{% endif %}</td>
++        <td>
++          {% if j.status == 'failed' %}
++          <form method="post" action="/ui/recordings/{{ rec.id }}/jobs/{{ j.id }}/retry">
++            <button type="submit" class="btn">Retry step</button>
++          </form>
++          {% else %}
++          <span class="placeholder">—</span>
++          {% endif %}
++        </td>
+       </tr>
+       {% endfor %}
+     </tbody>
+diff --git a/lan_app/ui_routes.py b/lan_app/ui_routes.py
+index 12c049c..9ce3287 100644
+--- a/lan_app/ui_routes.py
++++ b/lan_app/ui_routes.py
+@@ -26,6 +26,7 @@ from .calendar import (
+ from .config import AppSettings
+ from .conversation_metrics import refresh_recording_metrics
+ from .constants import (
++    JOB_STATUS_FAILED,
+     JOB_STATUSES,
+     JOB_TYPE_PRECHECK,
+     RECORDING_STATUSES,
+@@ -39,6 +40,7 @@ from .db import (
+     delete_project,
+     delete_voice_profile,
+     get_meeting_metrics,
++    get_job,
+     get_recording,
+     get_voice_sample,
+     list_participant_metrics,
+@@ -1460,6 +1462,29 @@ async def ui_action_requeue(recording_id: str) -> Any:
+     return resp
+ 
+ 
++@ui_router.post("/ui/recordings/{recording_id}/jobs/{job_id}/retry")
++async def ui_action_retry_failed_step(recording_id: str, job_id: str) -> Any:
++    if get_recording(recording_id, settings=_settings) is None:
++        return HTMLResponse("Not found", status_code=404)
++    job = get_job(job_id, settings=_settings)
++    if job is None or str(job.get("recording_id") or "") != recording_id:
++        return HTMLResponse("Job not found", status_code=404)
++    if str(job.get("status") or "") != JOB_STATUS_FAILED:
++        return HTMLResponse("Only failed jobs can be retried", status_code=422)
++    job_type = str(job.get("type") or "").strip()
++    if not job_type:
++        return HTMLResponse("Job type is missing", status_code=422)
++    try:
++        enqueue_recording_job(
++            recording_id,
++            job_type=job_type,
++            settings=_settings,
++        )
++    except Exception as exc:
++        return HTMLResponse(f"Retry failed: {exc}", status_code=503)
++    return RedirectResponse(f"/recordings/{recording_id}?tab=log", status_code=303)
++
++
+ @ui_router.post("/ui/recordings/{recording_id}/quarantine")
+ async def ui_action_quarantine(recording_id: str) -> Any:
+     if get_recording(recording_id, settings=_settings) is None:
+diff --git a/lan_app/worker_tasks.py b/lan_app/worker_tasks.py
+index dd77683..bfff4b1 100644
+--- a/lan_app/worker_tasks.py
++++ b/lan_app/worker_tasks.py
+@@ -1,9 +1,11 @@
+ from __future__ import annotations
+ 
+ import asyncio
++from dataclasses import dataclass
+ from datetime import datetime, timezone
+ import json
+ from pathlib import Path
++import time
+ from types import SimpleNamespace
+ from typing import Any
+ 
+@@ -23,12 +25,14 @@ from .constants import (
+     RECORDING_STATUS_PROCESSING,
+     RECORDING_STATUS_PUBLISHED,
+     RECORDING_STATUS_QUARANTINE,
++    RECORDING_STATUS_QUEUED,
+     RECORDING_STATUS_READY,
+ )
+ from .db import (
+     fail_job,
+     finish_job,
+     get_calendar_match,
++    get_job,
+     get_recording,
+     init_db,
+     set_recording_language_settings,
+@@ -62,6 +66,83 @@ def _success_status(job_type: str) -> str:
+     return RECORDING_STATUS_READY
+ 
+ 
++@dataclass(frozen=True)
++class RetryPolicy:
++    max_attempts: int
++    backoff_seconds: tuple[int, ...]
++
++
++_DEFAULT_RETRY_POLICY = RetryPolicy(max_attempts=2, backoff_seconds=(2,))
++_JOB_RETRY_POLICIES: dict[str, RetryPolicy] = {
++    JOB_TYPE_PRECHECK: RetryPolicy(max_attempts=3, backoff_seconds=(1, 2)),
++    JOB_TYPE_PUBLISH: RetryPolicy(max_attempts=2, backoff_seconds=(3,)),
++    JOB_TYPE_CLEANUP: RetryPolicy(max_attempts=2, backoff_seconds=(5,)),
++}
++
++
++def _retry_policy(job_type: str) -> RetryPolicy:
++    return _JOB_RETRY_POLICIES.get(job_type, _DEFAULT_RETRY_POLICY)
++
++
++def _is_retryable_exception(exc: Exception) -> bool:
++    return isinstance(exc, (TimeoutError, ConnectionError, RuntimeError))
++
++
++def _job_attempt(job_id: str, settings: AppSettings) -> int:
++    row = get_job(job_id, settings=settings) or {}
++    try:
++        return int(row.get("attempt") or 0)
++    except (TypeError, ValueError):
++        return 0
++
++
++def _retry_delay_seconds(policy: RetryPolicy, attempt: int) -> int:
++    if attempt <= 0:
++        return 0
++    index = attempt - 1
++    if index >= len(policy.backoff_seconds):
++        return 0
++    return max(int(policy.backoff_seconds[index]), 0)
++
++
++def _record_retry(
++    *,
++    job_id: str,
++    job_type: str,
++    recording_id: str,
++    attempt: int,
++    max_attempts: int,
++    delay_seconds: int,
++    settings: AppSettings,
++    log_path: Path,
++    exc: Exception,
++) -> None:
++    error = str(exc)
++    try:
++        fail_job(
++            job_id,
++            f"retryable failure attempt {attempt}/{max_attempts}: {error}",
++            settings=settings,
++        )
++    except Exception:
++        pass
++    try:
++        set_recording_status(recording_id, RECORDING_STATUS_QUEUED, settings=settings)
++    except Exception:
++        pass
++    try:
++        _append_step_log(
++            log_path,
++            (
++                f"retrying job={job_id} type={job_type} "
++                f"attempt={attempt}/{max_attempts} "
++                f"delay_seconds={delay_seconds} error={error}"
++            ),
++        )
++    except Exception:
++        pass
++
++
+ def _record_failure(
+     *,
+     job_id: str,
+@@ -325,51 +406,75 @@ def process_job(job_id: str, recording_id: str, job_type: str) -> dict[str, str]
+     settings = AppSettings()
+     init_db(settings)
+     log_path = _step_log_path(recording_id, job_type, settings)
++    retry_policy = _retry_policy(job_type)
+ 
+-    try:
+-        if not start_job(job_id, settings=settings):
+-            raise ValueError(f"Job not found: {job_id}")
+-        if not set_recording_status(
+-            recording_id,
+-            RECORDING_STATUS_PROCESSING,
+-            settings=settings,
+-        ):
+-            raise ValueError(f"Recording not found: {recording_id}")
+-        _append_step_log(log_path, f"started job={job_id} type={job_type}")
+-
+-        quarantine_reason: str | None = None
+-        if job_type == JOB_TYPE_PRECHECK:
+-            final_status, quarantine_reason = _run_precheck_pipeline(
++    while True:
++        try:
++            if not start_job(job_id, settings=settings):
++                raise ValueError(f"Job not found: {job_id}")
++            if not set_recording_status(
++                recording_id,
++                RECORDING_STATUS_PROCESSING,
++                settings=settings,
++            ):
++                raise ValueError(f"Recording not found: {recording_id}")
++            _append_step_log(log_path, f"started job={job_id} type={job_type}")
++
++            quarantine_reason: str | None = None
++            if job_type == JOB_TYPE_PRECHECK:
++                final_status, quarantine_reason = _run_precheck_pipeline(
++                    recording_id=recording_id,
++                    settings=settings,
++                    log_path=log_path,
 +                )
-+                auto_selected = True
-             status_after_routing = RECORDING_STATUS_READY
-         else:
-             if current_project_id is not None and current_assignment_source == "auto":
-diff --git a/tests/test_routing.py b/tests/test_routing.py
-index 762227b..9e64fee 100644
---- a/tests/test_routing.py
-+++ b/tests/test_routing.py
-@@ -93,14 +93,84 @@ def test_refresh_recording_routing_auto_selects_when_confident(tmp_path: Path):
++            else:
++                final_status = _success_status(job_type)
++
++            if not set_recording_status(
++                recording_id,
++                final_status,
++                settings=settings,
++                quarantine_reason=quarantine_reason,
++            ):
++                raise ValueError(f"Recording not found: {recording_id}")
++            if not finish_job(job_id, settings=settings):
++                raise ValueError(f"Job not found: {job_id}")
++            _append_step_log(
++                log_path,
++                f"finished job={job_id} type={job_type} recording_status={final_status}",
++            )
++            break
++        except Exception as exc:
++            attempt = _job_attempt(job_id, settings)
++            if (
++                _is_retryable_exception(exc)
++                and attempt > 0
++                and attempt < retry_policy.max_attempts
++            ):
++                delay_seconds = _retry_delay_seconds(retry_policy, attempt)
++                _record_retry(
++                    job_id=job_id,
++                    job_type=job_type,
++                    recording_id=recording_id,
++                    attempt=attempt,
++                    max_attempts=retry_policy.max_attempts,
++                    delay_seconds=delay_seconds,
++                    settings=settings,
++                    log_path=log_path,
++                    exc=exc,
++                )
++                if delay_seconds > 0:
++                    time.sleep(delay_seconds)
++                continue
++            _record_failure(
++                job_id=job_id,
++                job_type=job_type,
+                 recording_id=recording_id,
+                 settings=settings,
+                 log_path=log_path,
++                exc=exc,
+             )
+-        else:
+-            final_status = _success_status(job_type)
+-
+-        if not set_recording_status(
+-            recording_id,
+-            final_status,
+-            settings=settings,
+-            quarantine_reason=quarantine_reason,
+-        ):
+-            raise ValueError(f"Recording not found: {recording_id}")
+-        if not finish_job(job_id, settings=settings):
+-            raise ValueError(f"Job not found: {job_id}")
+-        _append_step_log(
+-            log_path,
+-            f"finished job={job_id} type={job_type} recording_status={final_status}",
+-        )
+-    except Exception as exc:
+-        _record_failure(
+-            job_id=job_id,
+-            job_type=job_type,
+-            recording_id=recording_id,
+-            settings=settings,
+-            log_path=log_path,
+-            exc=exc,
+-        )
+-        raise
++            raise
  
-     assert decision["suggested_project_id"] == roadmap["id"]
-     assert decision["confidence"] >= cfg.routing_auto_select_threshold
-+    assert decision["auto_selected"] is True
-     assert decision["status_after_routing"] == RECORDING_STATUS_READY
+     return {
+         "job_id": job_id,
+diff --git a/tasks/QUEUE.md b/tasks/QUEUE.md
+index ea16dfc..77d4479 100644
+--- a/tasks/QUEUE.md
++++ b/tasks/QUEUE.md
+@@ -82,6 +82,6 @@ Queue (in order)
+ - Depends on: PR-CALENDAR-01 and PR-VOICE-01 and PR-ONENOTE-01
  
-     recording = get_recording("rec-route-auto-1", settings=cfg)
-     assert recording is not None
-     assert recording["project_id"] == roadmap["id"]
-+    assert recording["project_assignment_source"] == "auto"
-     assert recording["suggested_project_id"] == roadmap["id"]
+ 15) PR-OPS-01: Retention, quarantine cleanup, retries, runbook, and production hardening for LAN deployment
+-- Status: TODO
++- Status: DONE
+ - Tasks file: tasks/PR-OPS-01.md
+ - Depends on: PR-ONENOTE-01 and PR-ROUTING-01
+diff --git a/tests/test_db_queue.py b/tests/test_db_queue.py
+index 96a85a0..daa29e5 100644
+--- a/tests/test_db_queue.py
++++ b/tests/test_db_queue.py
+@@ -289,6 +289,58 @@ def test_worker_setup_failure_marks_job_and_recording_failed(tmp_path: Path, mon
+     assert recording["status"] == RECORDING_STATUS_FAILED
  
  
-+def test_refresh_recording_routing_preserves_manual_assignment_when_confident(
-+    tmp_path: Path,
++def test_worker_retryable_failure_retries_before_marking_failed(
++    tmp_path: Path, monkeypatch
 +):
-+    cfg = _cfg(tmp_path)
-+    cfg.routing_auto_select_threshold = 0.3
++    cfg = _test_settings(tmp_path)
++    monkeypatch.setenv("LAN_DATA_ROOT", str(cfg.data_root))
++    monkeypatch.setenv("LAN_RECORDINGS_ROOT", str(cfg.recordings_root))
++    monkeypatch.setenv("LAN_DB_PATH", str(cfg.db_path))
++    monkeypatch.setenv("LAN_PROM_SNAPSHOT_PATH", str(cfg.metrics_snapshot_path))
++
 +    init_db(cfg)
-+    roadmap = create_project("Roadmap", settings=cfg)
-+    budget = create_project("Budget", settings=cfg)
 +    create_recording(
-+        "rec-route-manual-keep-1",
-+        source="drive",
-+        source_filename="roadmap-sync.mp3",
-+        status=RECORDING_STATUS_READY,
-+        project_id=budget["id"],
-+        project_assignment_source="manual",
++        "rec-worker-retry-1",
++        source="test",
++        source_filename="retryable.wav",
 +        settings=cfg,
 +    )
-+    upsert_calendar_match(
-+        recording_id="rec-route-manual-keep-1",
-+        candidates=[
-+            {
-+                "event_id": "evt-roadmap",
-+                "subject": "Roadmap sync",
-+                "organizer": "Alex",
-+                "attendees": ["Priya"],
-+                "score": 0.95,
-+                "rationale": "manual",
-+            }
-+        ],
-+        selected_event_id="evt-roadmap",
-+        selected_confidence=0.95,
-+        settings=cfg,
-+    )
-+    _write_summary(
-+        cfg,
-+        "rec-route-manual-keep-1",
-+        {
-+            "topic": "Roadmap planning",
-+            "summary_bullets": ["Roadmap priorities and milestones"],
-+        },
-+    )
-+    increment_project_keyword_weights(
-+        project_id=roadmap["id"],
-+        keyword_deltas={
-+            "cal:roadmap": 3.0,
-+            "tag:roadmap": 3.0,
-+            "party:alex": 2.0,
-+        },
++    create_job(
++        "job-worker-retry-1",
++        recording_id="rec-worker-retry-1",
++        job_type=JOB_TYPE_PRECHECK,
 +        settings=cfg,
 +    )
 +
-+    decision = refresh_recording_routing(
-+        "rec-route-manual-keep-1",
-+        settings=cfg,
-+        apply_workflow=True,
-+    )
++    raw_audio = cfg.recordings_root / "rec-worker-retry-1" / "raw" / "audio.wav"
++    raw_audio.parent.mkdir(parents=True, exist_ok=True)
++    raw_audio.write_bytes(b"\x00")
++    monkeypatch.setattr("lan_app.worker_tasks._resolve_raw_audio_path", lambda *_a, **_k: raw_audio)
 +
-+    assert decision["suggested_project_id"] == roadmap["id"]
-+    assert decision["confidence"] >= cfg.routing_auto_select_threshold
-+    assert decision["auto_selected"] is False
-+    assert decision["status_after_routing"] == RECORDING_STATUS_READY
++    attempts = {"count": 0}
 +
-+    recording = get_recording("rec-route-manual-keep-1", settings=cfg)
++    def _retryable_failure(*_args, **_kwargs):
++        attempts["count"] += 1
++        raise RuntimeError("transient failure")
++
++    monkeypatch.setattr("lan_app.worker_tasks.run_precheck", _retryable_failure)
++    sleeps: list[int] = []
++    monkeypatch.setattr("lan_app.worker_tasks.time.sleep", lambda seconds: sleeps.append(seconds))
++
++    with pytest.raises(RuntimeError, match="transient failure"):
++        process_job("job-worker-retry-1", "rec-worker-retry-1", JOB_TYPE_PRECHECK)
++
++    job = get_job("job-worker-retry-1", settings=cfg)
++    recording = get_recording("rec-worker-retry-1", settings=cfg)
++    assert attempts["count"] == 3
++    assert sleeps == [1, 2]
++    assert job is not None
 +    assert recording is not None
-+    assert recording["project_id"] == budget["id"]
-+    assert recording["project_assignment_source"] == "manual"
++    assert job["attempt"] == 3
++    assert job["status"] == JOB_STATUS_FAILED
++    assert recording["status"] == RECORDING_STATUS_FAILED
 +
 +
- def test_refresh_recording_routing_marks_needs_review_when_low_confidence(tmp_path: Path):
-     cfg = _cfg(tmp_path)
+ def test_enqueue_sets_recording_status_to_queued_on_success(tmp_path: Path, monkeypatch):
+     cfg = _test_settings(tmp_path)
      init_db(cfg)
+diff --git a/tests/test_ui_routes.py b/tests/test_ui_routes.py
+index 6adba3e..036d27a 100644
+--- a/tests/test_ui_routes.py
++++ b/tests/test_ui_routes.py
+@@ -30,6 +30,8 @@ from lan_app.db import (
+     upsert_meeting_metrics,
+ )
+ from lan_app.constants import (
++    JOB_STATUS_FAILED,
++    JOB_STATUS_QUEUED,
+     JOB_TYPE_PRECHECK,
+     RECORDING_STATUS_NEEDS_REVIEW,
+     RECORDING_STATUS_READY,
+@@ -865,6 +867,59 @@ def test_ui_action_requeue_failure_returns_503(tmp_path, monkeypatch):
+     assert "redis down" in r.text
+ 
+ 
++def test_ui_action_retry_failed_step(tmp_path, monkeypatch):
++    cfg = _cfg(tmp_path)
++    monkeypatch.setattr(api, "_settings", cfg)
++    monkeypatch.setattr(ui_routes, "_settings", cfg)
++    init_db(cfg)
++    create_recording("rec-rtry-1", source="drive", source_filename="retry-step.mp3", settings=cfg)
++    create_job(
++        "job-rtry-1",
++        recording_id="rec-rtry-1",
++        job_type=JOB_TYPE_PRECHECK,
++        settings=cfg,
++        status=JOB_STATUS_FAILED,
++    )
++
++    observed: dict[str, str] = {}
++
++    def _fake_enqueue(recording_id: str, *, settings=None, job_type=JOB_TYPE_PRECHECK):
++        observed["recording_id"] = recording_id
++        observed["job_type"] = job_type
++        return None
++
++    monkeypatch.setattr(ui_routes, "enqueue_recording_job", _fake_enqueue)
++    c = TestClient(api.app, follow_redirects=False)
++
++    r = c.post("/ui/recordings/rec-rtry-1/jobs/job-rtry-1/retry")
++    assert r.status_code == 303
++    assert r.headers["location"] == "/recordings/rec-rtry-1?tab=log"
++    assert observed == {
++        "recording_id": "rec-rtry-1",
++        "job_type": JOB_TYPE_PRECHECK,
++    }
++
++
++def test_ui_action_retry_failed_step_rejects_non_failed_job(tmp_path, monkeypatch):
++    cfg = _cfg(tmp_path)
++    monkeypatch.setattr(api, "_settings", cfg)
++    monkeypatch.setattr(ui_routes, "_settings", cfg)
++    init_db(cfg)
++    create_recording("rec-rtry-2", source="drive", source_filename="retry-step.mp3", settings=cfg)
++    create_job(
++        "job-rtry-2",
++        recording_id="rec-rtry-2",
++        job_type=JOB_TYPE_PRECHECK,
++        settings=cfg,
++        status=JOB_STATUS_QUEUED,
++    )
++
++    c = TestClient(api.app, follow_redirects=False)
++    r = c.post("/ui/recordings/rec-rtry-2/jobs/job-rtry-2/retry")
++    assert r.status_code == 422
++    assert "failed jobs" in r.text
++
++
+ def test_ui_language_resummarize_uses_target_language_override(tmp_path, monkeypatch):
+     cfg = _cfg(tmp_path)
+     monkeypatch.setattr(api, "_settings", cfg)
+diff --git a/docs/runbook.md b/docs/runbook.md
+new file mode 100644
+index 0000000..30c6ca6
+--- /dev/null
++++ b/docs/runbook.md
+@@ -0,0 +1,184 @@
++# LAN Transcriber Runbook
++
++## Scope
++
++This runbook covers day-2 operations for LAN deployment:
++
++- initial setup
++- health verification
++- common failure recovery
++- backup and restore
++- upgrade procedure
++
++## 1) Initial setup
++
++### 1.1 Spark LLM (OpenAI-compatible)
++
++1. Set `LLM_BASE_URL` to the Spark-compatible endpoint.
++2. Set `LLM_API_KEY` if the endpoint requires auth.
++3. Set `LLM_MODEL` if your endpoint requires explicit model name.
++4. Validate connectivity:
++
++```bash
++docker compose run --rm api python -m lan_app.healthchecks app
++```
++
++### 1.2 Google Drive Service Account ingest
++
++1. Place Service Account JSON under `/data/secrets/gdrive_sa.json`.
++2. Share the Drive Inbox folder with the Service Account principal.
++3. Configure:
++   - `GDRIVE_SA_JSON_PATH=/data/secrets/gdrive_sa.json`
++   - `GDRIVE_INBOX_FOLDER_ID=<shared-folder-id>`
++4. Trigger one ingest cycle:
++
++```bash
++curl -fsS -X POST http://127.0.0.1:7860/api/actions/ingest
++```
++
++### 1.3 Microsoft Graph delegated auth (Device Code Flow)
++
++1. Register an Entra app with delegated Graph scopes:
++   - `offline_access`
++   - `User.Read`
++   - `Calendars.Read`
++   - `Notes.ReadWrite`
++2. Configure `MS_TENANT_ID` and `MS_CLIENT_ID`.
++3. Open `/connections` and complete device-code auth.
++4. Verify:
++
++```bash
++curl -fsS http://127.0.0.1:7860/api/connections/ms/verify
++```
++
++## 2) Runtime safety defaults
++
++- Store runtime secrets only under `/data/secrets` or environment variables.
++- Do not commit any credentials, key files, or token caches.
++- API publish port is loopback-bound by default via:
++  - `LAN_API_BIND_HOST=127.0.0.1`
++  - `LAN_API_PORT=7860`
++- Keep remote access behind SSH tunnel, reverse proxy auth, or a LAN gateway ACL.
++
++## 3) Health checks
++
++Component endpoints:
++
++- `GET /healthz`
++- `GET /healthz/app`
++- `GET /healthz/db`
++- `GET /healthz/redis`
++- `GET /healthz/worker`
++
++Container checks:
++
++```bash
++docker compose ps
++docker compose logs --tail=200 api worker redis
++```
++
++## 4) Common failures and fixes
++
++### 4.1 `redis unavailable` / queue failures
++
++Symptoms:
++- enqueue/retry returns HTTP 503
++- `/healthz/redis` fails
++
++Actions:
++1. `docker compose restart redis`
++2. Confirm with `docker compose exec redis redis-cli ping`
++3. Confirm API check with `curl -fsS http://127.0.0.1:7860/healthz/redis`
++
++### 4.2 Worker missing or stale heartbeat
++
++Symptoms:
++- `/healthz/worker` returns 503
++- jobs remain `queued`
++
++Actions:
++1. `docker compose restart worker`
++2. Confirm with `curl -fsS http://127.0.0.1:7860/healthz/worker`
++3. Open `/queue` and verify `started`/`finished` transitions resume
++
++### 4.3 Microsoft Graph auth expired
++
++Symptoms:
++- publish/calendar calls fail with auth errors
++
++Actions:
++1. Re-run Device Code Flow in `/connections`
++2. If policy requires hard re-auth, remove cache:
++
++```bash
++rm -f /data/auth/msal_cache.bin
++```
++
++3. Reconnect in `/connections`
++
++### 4.4 Quarantine growth
++
++Symptoms:
++- many recordings in `Quarantine`
++- disk growth under `/data/recordings`
++
++Actions:
++1. Validate cleanup loop runs (API logs).
++2. Confirm retention: `QUARANTINE_RETENTION_DAYS` (default `7`).
++3. Manually trigger one pass:
++
++```bash
++docker compose exec api python -c "from lan_app.ops import run_retention_cleanup; print(run_retention_cleanup())"
++```
++
++## 5) Backup and restore (`/data`)
++
++### 5.1 Backup
++
++Stop writes first:
++
++```bash
++docker compose stop api worker
++```
++
++Create archive:
++
++```bash
++tar -C / -czf lan-transcriber-data-$(date +%Y%m%d-%H%M%S).tgz data
++```
++
++Restart services:
++
++```bash
++docker compose start api worker
++```
++
++### 5.2 Restore
++
++1. Stop stack: `docker compose down`
++2. Restore archive to host `/data` mount source (`./data` in this repo)
++3. Start stack: `docker compose up -d --build`
++4. Verify with:
++   - `curl -fsS http://127.0.0.1:7860/healthz`
++   - check recordings list in UI
++
++## 6) Upgrade steps
++
++1. Pull new code and review `.env.example` diff.
++2. Ensure secrets still resolve from `/data/secrets` or env.
++3. Build and restart:
++
++```bash
++docker compose up -d --build
++```
++
++4. Verify:
++   - `scripts/ci.sh` on the branch used for release prep
++   - `curl -fsS http://127.0.0.1:7860/healthz`
++   - enqueue and process one test recording
++
++## 7) Retry and failure operations
++
++- Failed step retries are available in recording detail, `Log` tab, button `Retry step`.
++- `NeedsReview` is not a failure; it indicates manual review workflow.
++- `Failed` is terminal after retry policy is exhausted for that step.
+diff --git a/lan_app/healthchecks.py b/lan_app/healthchecks.py
+new file mode 100644
+index 0000000..c698346
+--- /dev/null
++++ b/lan_app/healthchecks.py
+@@ -0,0 +1,130 @@
++from __future__ import annotations
++
++from datetime import datetime, timezone
++import json
++from typing import Any
++
++from redis import Redis
++from rq import Worker as RQWorker
++
++from .config import AppSettings
++from .db import connect, init_db
++
++_WORKER_HEARTBEAT_STALE_SECONDS = 180
++
++
++def _ok(component: str, detail: str = "ok") -> dict[str, Any]:
++    return {"component": component, "ok": True, "detail": detail}
++
++
++def _fail(component: str, detail: str) -> dict[str, Any]:
++    return {"component": component, "ok": False, "detail": detail}
++
++
++def check_app_health() -> dict[str, Any]:
++    return _ok("app")
++
++
++def check_db_health(settings: AppSettings | None = None) -> dict[str, Any]:
++    cfg = settings or AppSettings()
++    try:
++        init_db(cfg)
++        with connect(cfg) as conn:
++            conn.execute("SELECT 1").fetchone()
++    except Exception as exc:
++        return _fail("db", str(exc))
++    return _ok("db")
++
++
++def check_redis_health(settings: AppSettings | None = None) -> dict[str, Any]:
++    cfg = settings or AppSettings()
++    try:
++        redis = Redis.from_url(cfg.redis_url)
++        redis.ping()
++    except Exception as exc:
++        return _fail("redis", str(exc))
++    return _ok("redis")
++
++
++def _worker_queue_names(worker: object) -> set[str]:
++    queue_names = getattr(worker, "queue_names", None)
++    if callable(queue_names):
++        try:
++            names = queue_names()
++        except TypeError:
++            names = queue_names  # pragma: no cover
++        if isinstance(names, (list, tuple, set)):
++            return {str(name) for name in names}
++
++    queues = getattr(worker, "queues", None)
++    if isinstance(queues, (list, tuple, set)):
++        out: set[str] = set()
++        for queue in queues:
++            out.add(str(getattr(queue, "name", queue)))
++        return out
++    return set()
++
++
++def check_worker_health(settings: AppSettings | None = None) -> dict[str, Any]:
++    cfg = settings or AppSettings()
++    redis_health = check_redis_health(cfg)
++    if not redis_health["ok"]:
++        return _fail("worker", f"redis unavailable: {redis_health['detail']}")
++
++    try:
++        connection = Redis.from_url(cfg.redis_url)
++        workers = RQWorker.all(connection=connection)
++    except Exception as exc:
++        return _fail("worker", str(exc))
++
++    matching = []
++    for worker in workers:
++        if cfg.rq_queue_name in _worker_queue_names(worker):
++            matching.append(worker)
++
++    if not matching:
++        return _fail("worker", f"no worker registered for queue '{cfg.rq_queue_name}'")
++
++    now = datetime.now(tz=timezone.utc)
++    for worker in matching:
++        heartbeat = getattr(worker, "last_heartbeat", None)
++        if heartbeat is None:
++            continue
++        if heartbeat.tzinfo is None:
++            heartbeat = heartbeat.replace(tzinfo=timezone.utc)
++        age = (now - heartbeat).total_seconds()
++        if age <= _WORKER_HEARTBEAT_STALE_SECONDS:
++            return _ok("worker", f"worker '{worker.name}' heartbeat {int(age)}s ago")
++
++    return _fail("worker", "worker heartbeat is stale")
++
++
++def collect_health_checks(settings: AppSettings | None = None) -> dict[str, dict[str, Any]]:
++    cfg = settings or AppSettings()
++    return {
++        "app": check_app_health(),
++        "db": check_db_health(cfg),
++        "redis": check_redis_health(cfg),
++        "worker": check_worker_health(cfg),
++    }
++
++
++def main(argv: list[str] | None = None) -> int:
++    args = argv or []
++    target = args[0] if args else "all"
++    if target not in {"all", "app", "db", "redis", "worker"}:
++        print(f"unsupported target: {target}")
++        return 2
++
++    checks = collect_health_checks()
++    if target == "all":
++        print(json.dumps(checks, ensure_ascii=True))
++        return 0 if all(item["ok"] for item in checks.values()) else 1
++
++    payload = checks[target]
++    print(json.dumps(payload, ensure_ascii=True))
++    return 0 if payload["ok"] else 1
++
++
++if __name__ == "__main__":
++    raise SystemExit(main(__import__("sys").argv[1:]))
+diff --git a/lan_app/ops.py b/lan_app/ops.py
+new file mode 100644
+index 0000000..f25f0cd
+--- /dev/null
++++ b/lan_app/ops.py
+@@ -0,0 +1,113 @@
++from __future__ import annotations
++
++from datetime import datetime, timedelta, timezone
++from pathlib import Path
++import shutil
++from typing import Any
++
++from .config import AppSettings
++from .constants import RECORDING_STATUS_QUARANTINE
++from .db import delete_recording, list_recordings
++
++
++def _parse_utc(value: object) -> datetime | None:
++    if not isinstance(value, str):
++        return None
++    raw = value.strip()
++    if not raw:
++        return None
++    normalised = raw.replace("Z", "+00:00")
++    try:
++        parsed = datetime.fromisoformat(normalised)
++    except ValueError:
++        return None
++    if parsed.tzinfo is None:
++        return parsed.replace(tzinfo=timezone.utc)
++    return parsed.astimezone(timezone.utc)
++
++
++def _iter_recordings(
++    *,
++    settings: AppSettings,
++    status: str | None = None,
++) -> list[dict[str, Any]]:
++    out: list[dict[str, Any]] = []
++    offset = 0
++    while True:
++        rows, total = list_recordings(
++            settings=settings,
++            status=status,
++            limit=500,
++            offset=offset,
++        )
++        if not rows:
++            break
++        out.extend(rows)
++        offset += len(rows)
++        if offset >= total:
++            break
++    return out
++
++
++def _delete_path(path: Path) -> bool:
++    if not path.exists():
++        return False
++    if path.is_dir():
++        shutil.rmtree(path, ignore_errors=True)
++    else:
++        try:
++            path.unlink(missing_ok=True)
++        except TypeError:  # pragma: no cover - Python < 3.8 compatibility shim
++            if path.exists():
++                path.unlink()
++    return True
++
++
++def run_retention_cleanup(
++    *,
++    settings: AppSettings | None = None,
++) -> dict[str, int]:
++    """Delete old quarantine recordings and stale temporary artifacts."""
++
++    cfg = settings or AppSettings()
++    cutoff = datetime.now(tz=timezone.utc) - timedelta(days=cfg.quarantine_retention_days)
++
++    summary = {
++        "quarantine_recordings_deleted": 0,
++        "quarantine_directories_deleted": 0,
++        "tmp_entries_deleted": 0,
++    }
++
++    quarantined = _iter_recordings(settings=cfg, status=RECORDING_STATUS_QUARANTINE)
++    for row in quarantined:
++        recording_id = str(row.get("id") or "").strip()
++        if not recording_id:
++            continue
++        updated_at = _parse_utc(row.get("updated_at")) or _parse_utc(row.get("created_at"))
++        if updated_at is None or updated_at > cutoff:
++            continue
++        recording_root = cfg.recordings_root / recording_id
++        if _delete_path(recording_root):
++            summary["quarantine_directories_deleted"] += 1
++        if delete_recording(recording_id, settings=cfg):
++            summary["quarantine_recordings_deleted"] += 1
++
++    tmp_root = cfg.data_root / "tmp"
++    if tmp_root.exists() and tmp_root.is_dir():
++        for entry in tmp_root.iterdir():
++            try:
++                modified = datetime.fromtimestamp(
++                    entry.stat().st_mtime,
++                    tz=timezone.utc,
++                )
++            except OSError:
++                continue
++            if modified > cutoff:
++                continue
++            if _delete_path(entry):
++                summary["tmp_entries_deleted"] += 1
++
++    return summary
++
++
++__all__ = ["run_retention_cleanup"]
+diff --git a/tests/test_ops.py b/tests/test_ops.py
+new file mode 100644
+index 0000000..88c5e3d
+--- /dev/null
++++ b/tests/test_ops.py
+@@ -0,0 +1,137 @@
++from __future__ import annotations
++
++from datetime import datetime, timedelta, timezone
++import os
++from pathlib import Path
++
++from fastapi.testclient import TestClient
++
++from lan_app import api, ui_routes
++from lan_app.config import AppSettings
++from lan_app.constants import RECORDING_STATUS_QUARANTINE
++from lan_app.db import connect, create_recording, get_recording, init_db
++from lan_app.ops import run_retention_cleanup
++
++
++def _cfg(tmp_path: Path) -> AppSettings:
++    cfg = AppSettings(
++        data_root=tmp_path,
++        recordings_root=tmp_path / "recordings",
++        db_path=tmp_path / "db" / "app.db",
++    )
++    cfg.metrics_snapshot_path = tmp_path / "metrics.snap"
++    return cfg
++
++
++def _iso_utc(dt: datetime) -> str:
++    return dt.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace(
++        "+00:00",
++        "Z",
++    )
++
++
++def test_run_retention_cleanup_deletes_old_quarantine_and_tmp_entries(tmp_path: Path):
++    cfg = _cfg(tmp_path)
++    init_db(cfg)
++    create_recording(
++        "rec-quarantine-old-1",
++        source="drive",
++        source_filename="old.wav",
++        status=RECORDING_STATUS_QUARANTINE,
++        settings=cfg,
++    )
++    create_recording(
++        "rec-quarantine-fresh-1",
++        source="drive",
++        source_filename="fresh.wav",
++        status=RECORDING_STATUS_QUARANTINE,
++        settings=cfg,
++    )
++
++    now = datetime.now(tz=timezone.utc)
++    old_ts = _iso_utc(now - timedelta(days=10))
++    fresh_ts = _iso_utc(now - timedelta(days=1))
++    with connect(cfg) as conn:
++        conn.execute(
++            "UPDATE recordings SET updated_at = ? WHERE id = ?",
++            (old_ts, "rec-quarantine-old-1"),
++        )
++        conn.execute(
++            "UPDATE recordings SET updated_at = ? WHERE id = ?",
++            (fresh_ts, "rec-quarantine-fresh-1"),
++        )
++        conn.commit()
++
++    old_rec_path = cfg.recordings_root / "rec-quarantine-old-1" / "raw"
++    old_rec_path.mkdir(parents=True, exist_ok=True)
++    (old_rec_path / "audio.wav").write_bytes(b"\x00")
++    fresh_rec_path = cfg.recordings_root / "rec-quarantine-fresh-1" / "raw"
++    fresh_rec_path.mkdir(parents=True, exist_ok=True)
++    (fresh_rec_path / "audio.wav").write_bytes(b"\x00")
++
++    tmp_root = cfg.data_root / "tmp"
++    tmp_root.mkdir(parents=True, exist_ok=True)
++    stale_tmp = tmp_root / "stale.tmp"
++    stale_tmp.write_text("stale", encoding="utf-8")
++    fresh_tmp = tmp_root / "fresh.tmp"
++    fresh_tmp.write_text("fresh", encoding="utf-8")
++
++    stale_mtime = (now - timedelta(days=9)).timestamp()
++    fresh_mtime = (now - timedelta(hours=6)).timestamp()
++    os.utime(stale_tmp, (stale_mtime, stale_mtime))
++    os.utime(fresh_tmp, (fresh_mtime, fresh_mtime))
++
++    summary = run_retention_cleanup(settings=cfg)
++    assert summary["quarantine_recordings_deleted"] == 1
++    assert summary["quarantine_directories_deleted"] == 1
++    assert summary["tmp_entries_deleted"] == 1
++
++    assert get_recording("rec-quarantine-old-1", settings=cfg) is None
++    assert get_recording("rec-quarantine-fresh-1", settings=cfg) is not None
++    assert not (cfg.recordings_root / "rec-quarantine-old-1").exists()
++    assert (cfg.recordings_root / "rec-quarantine-fresh-1").exists()
++    assert not stale_tmp.exists()
++    assert fresh_tmp.exists()
++
++
++def test_healthz_component_endpoints(tmp_path: Path, monkeypatch):
++    cfg = _cfg(tmp_path)
++    monkeypatch.setattr(api, "_settings", cfg)
++    monkeypatch.setattr(ui_routes, "_settings", cfg)
++    init_db(cfg)
++
++    monkeypatch.setattr(api, "check_db_health", lambda _settings: {"component": "db", "ok": True, "detail": "ok"})
++    monkeypatch.setattr(
++        api,
++        "check_redis_health",
++        lambda _settings: {"component": "redis", "ok": True, "detail": "ok"},
++    )
++    monkeypatch.setattr(
++        api,
++        "check_worker_health",
++        lambda _settings: {"component": "worker", "ok": False, "detail": "stale"},
++    )
++    monkeypatch.setattr(
++        api,
++        "collect_health_checks",
++        lambda _settings: {
++            "app": {"component": "app", "ok": True, "detail": "ok"},
++            "db": {"component": "db", "ok": True, "detail": "ok"},
++            "redis": {"component": "redis", "ok": True, "detail": "ok"},
++            "worker": {"component": "worker", "ok": False, "detail": "stale"},
++        },
++    )
++
++    client = TestClient(api.app)
++    all_health = client.get("/healthz")
++    assert all_health.status_code == 200
++    payload = all_health.json()
++    assert payload["status"] == "degraded"
++    assert payload["checks"]["worker"]["ok"] is False
++
++    app_health = client.get("/healthz/app")
++    assert app_health.status_code == 200
++    assert app_health.json()["component"] == "app"
++
++    worker_health = client.get("/healthz/worker")
++    assert worker_health.status_code == 503

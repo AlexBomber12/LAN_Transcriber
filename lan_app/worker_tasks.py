@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
 from pathlib import Path
+import time
 from types import SimpleNamespace
 from typing import Any
 
@@ -23,12 +25,14 @@ from .constants import (
     RECORDING_STATUS_PROCESSING,
     RECORDING_STATUS_PUBLISHED,
     RECORDING_STATUS_QUARANTINE,
+    RECORDING_STATUS_QUEUED,
     RECORDING_STATUS_READY,
 )
 from .db import (
     fail_job,
     finish_job,
     get_calendar_match,
+    get_job,
     get_recording,
     init_db,
     set_recording_language_settings,
@@ -60,6 +64,83 @@ def _success_status(job_type: str) -> str:
     if job_type == JOB_TYPE_CLEANUP:
         return RECORDING_STATUS_QUARANTINE
     return RECORDING_STATUS_READY
+
+
+@dataclass(frozen=True)
+class RetryPolicy:
+    max_attempts: int
+    backoff_seconds: tuple[int, ...]
+
+
+_DEFAULT_RETRY_POLICY = RetryPolicy(max_attempts=2, backoff_seconds=(2,))
+_JOB_RETRY_POLICIES: dict[str, RetryPolicy] = {
+    JOB_TYPE_PRECHECK: RetryPolicy(max_attempts=3, backoff_seconds=(1, 2)),
+    JOB_TYPE_PUBLISH: RetryPolicy(max_attempts=2, backoff_seconds=(3,)),
+    JOB_TYPE_CLEANUP: RetryPolicy(max_attempts=2, backoff_seconds=(5,)),
+}
+
+
+def _retry_policy(job_type: str) -> RetryPolicy:
+    return _JOB_RETRY_POLICIES.get(job_type, _DEFAULT_RETRY_POLICY)
+
+
+def _is_retryable_exception(exc: Exception) -> bool:
+    return isinstance(exc, (TimeoutError, ConnectionError, RuntimeError))
+
+
+def _job_attempt(job_id: str, settings: AppSettings) -> int:
+    row = get_job(job_id, settings=settings) or {}
+    try:
+        return int(row.get("attempt") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _retry_delay_seconds(policy: RetryPolicy, attempt: int) -> int:
+    if attempt <= 0:
+        return 0
+    index = attempt - 1
+    if index >= len(policy.backoff_seconds):
+        return 0
+    return max(int(policy.backoff_seconds[index]), 0)
+
+
+def _record_retry(
+    *,
+    job_id: str,
+    job_type: str,
+    recording_id: str,
+    attempt: int,
+    max_attempts: int,
+    delay_seconds: int,
+    settings: AppSettings,
+    log_path: Path,
+    exc: Exception,
+) -> None:
+    error = str(exc)
+    try:
+        fail_job(
+            job_id,
+            f"retryable failure attempt {attempt}/{max_attempts}: {error}",
+            settings=settings,
+        )
+    except Exception:
+        pass
+    try:
+        set_recording_status(recording_id, RECORDING_STATUS_QUEUED, settings=settings)
+    except Exception:
+        pass
+    try:
+        _append_step_log(
+            log_path,
+            (
+                f"retrying job={job_id} type={job_type} "
+                f"attempt={attempt}/{max_attempts} "
+                f"delay_seconds={delay_seconds} error={error}"
+            ),
+        )
+    except Exception:
+        pass
 
 
 def _record_failure(
@@ -325,51 +406,75 @@ def process_job(job_id: str, recording_id: str, job_type: str) -> dict[str, str]
     settings = AppSettings()
     init_db(settings)
     log_path = _step_log_path(recording_id, job_type, settings)
+    retry_policy = _retry_policy(job_type)
 
-    try:
-        if not start_job(job_id, settings=settings):
-            raise ValueError(f"Job not found: {job_id}")
-        if not set_recording_status(
-            recording_id,
-            RECORDING_STATUS_PROCESSING,
-            settings=settings,
-        ):
-            raise ValueError(f"Recording not found: {recording_id}")
-        _append_step_log(log_path, f"started job={job_id} type={job_type}")
+    while True:
+        try:
+            if not start_job(job_id, settings=settings):
+                raise ValueError(f"Job not found: {job_id}")
+            if not set_recording_status(
+                recording_id,
+                RECORDING_STATUS_PROCESSING,
+                settings=settings,
+            ):
+                raise ValueError(f"Recording not found: {recording_id}")
+            _append_step_log(log_path, f"started job={job_id} type={job_type}")
 
-        quarantine_reason: str | None = None
-        if job_type == JOB_TYPE_PRECHECK:
-            final_status, quarantine_reason = _run_precheck_pipeline(
+            quarantine_reason: str | None = None
+            if job_type == JOB_TYPE_PRECHECK:
+                final_status, quarantine_reason = _run_precheck_pipeline(
+                    recording_id=recording_id,
+                    settings=settings,
+                    log_path=log_path,
+                )
+            else:
+                final_status = _success_status(job_type)
+
+            if not set_recording_status(
+                recording_id,
+                final_status,
+                settings=settings,
+                quarantine_reason=quarantine_reason,
+            ):
+                raise ValueError(f"Recording not found: {recording_id}")
+            if not finish_job(job_id, settings=settings):
+                raise ValueError(f"Job not found: {job_id}")
+            _append_step_log(
+                log_path,
+                f"finished job={job_id} type={job_type} recording_status={final_status}",
+            )
+            break
+        except Exception as exc:
+            attempt = _job_attempt(job_id, settings)
+            if (
+                _is_retryable_exception(exc)
+                and attempt > 0
+                and attempt < retry_policy.max_attempts
+            ):
+                delay_seconds = _retry_delay_seconds(retry_policy, attempt)
+                _record_retry(
+                    job_id=job_id,
+                    job_type=job_type,
+                    recording_id=recording_id,
+                    attempt=attempt,
+                    max_attempts=retry_policy.max_attempts,
+                    delay_seconds=delay_seconds,
+                    settings=settings,
+                    log_path=log_path,
+                    exc=exc,
+                )
+                if delay_seconds > 0:
+                    time.sleep(delay_seconds)
+                continue
+            _record_failure(
+                job_id=job_id,
+                job_type=job_type,
                 recording_id=recording_id,
                 settings=settings,
                 log_path=log_path,
+                exc=exc,
             )
-        else:
-            final_status = _success_status(job_type)
-
-        if not set_recording_status(
-            recording_id,
-            final_status,
-            settings=settings,
-            quarantine_reason=quarantine_reason,
-        ):
-            raise ValueError(f"Recording not found: {recording_id}")
-        if not finish_job(job_id, settings=settings):
-            raise ValueError(f"Job not found: {job_id}")
-        _append_step_log(
-            log_path,
-            f"finished job={job_id} type={job_type} recording_status={final_status}",
-        )
-    except Exception as exc:
-        _record_failure(
-            job_id=job_id,
-            job_type=job_type,
-            recording_id=recording_id,
-            settings=settings,
-            log_path=log_path,
-            exc=exc,
-        )
-        raise
+            raise
 
     return {
         "job_id": job_id,

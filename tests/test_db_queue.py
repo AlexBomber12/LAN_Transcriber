@@ -289,6 +289,58 @@ def test_worker_setup_failure_marks_job_and_recording_failed(tmp_path: Path, mon
     assert recording["status"] == RECORDING_STATUS_FAILED
 
 
+def test_worker_retryable_failure_retries_before_marking_failed(
+    tmp_path: Path, monkeypatch
+):
+    cfg = _test_settings(tmp_path)
+    monkeypatch.setenv("LAN_DATA_ROOT", str(cfg.data_root))
+    monkeypatch.setenv("LAN_RECORDINGS_ROOT", str(cfg.recordings_root))
+    monkeypatch.setenv("LAN_DB_PATH", str(cfg.db_path))
+    monkeypatch.setenv("LAN_PROM_SNAPSHOT_PATH", str(cfg.metrics_snapshot_path))
+
+    init_db(cfg)
+    create_recording(
+        "rec-worker-retry-1",
+        source="test",
+        source_filename="retryable.wav",
+        settings=cfg,
+    )
+    create_job(
+        "job-worker-retry-1",
+        recording_id="rec-worker-retry-1",
+        job_type=JOB_TYPE_PRECHECK,
+        settings=cfg,
+    )
+
+    raw_audio = cfg.recordings_root / "rec-worker-retry-1" / "raw" / "audio.wav"
+    raw_audio.parent.mkdir(parents=True, exist_ok=True)
+    raw_audio.write_bytes(b"\x00")
+    monkeypatch.setattr("lan_app.worker_tasks._resolve_raw_audio_path", lambda *_a, **_k: raw_audio)
+
+    attempts = {"count": 0}
+
+    def _retryable_failure(*_args, **_kwargs):
+        attempts["count"] += 1
+        raise RuntimeError("transient failure")
+
+    monkeypatch.setattr("lan_app.worker_tasks.run_precheck", _retryable_failure)
+    sleeps: list[int] = []
+    monkeypatch.setattr("lan_app.worker_tasks.time.sleep", lambda seconds: sleeps.append(seconds))
+
+    with pytest.raises(RuntimeError, match="transient failure"):
+        process_job("job-worker-retry-1", "rec-worker-retry-1", JOB_TYPE_PRECHECK)
+
+    job = get_job("job-worker-retry-1", settings=cfg)
+    recording = get_recording("rec-worker-retry-1", settings=cfg)
+    assert attempts["count"] == 3
+    assert sleeps == [1, 2]
+    assert job is not None
+    assert recording is not None
+    assert job["attempt"] == 3
+    assert job["status"] == JOB_STATUS_FAILED
+    assert recording["status"] == RECORDING_STATUS_FAILED
+
+
 def test_enqueue_sets_recording_status_to_queued_on_success(tmp_path: Path, monkeypatch):
     cfg = _test_settings(tmp_path)
     init_db(cfg)
