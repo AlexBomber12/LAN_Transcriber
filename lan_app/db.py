@@ -228,28 +228,16 @@ _MIGRATIONS: tuple[str, ...] = (
     WHERE project_id IS NOT NULL AND project_assignment_source IS NULL;
     """,
     """
-    WITH candidate_recordings AS (
-        SELECT recording_id
-        FROM jobs
-        WHERE type IN ('stt', 'diarize', 'align', 'language', 'llm', 'metrics')
-          AND status = 'queued'
-          AND started_at IS NULL
-          AND finished_at IS NULL
-        GROUP BY recording_id
-        HAVING COUNT(DISTINCT type) = 6
-    ),
-    placeholder_rows AS (
-        SELECT MIN(rowid) AS row_id
-        FROM jobs
-        WHERE recording_id IN (SELECT recording_id FROM candidate_recordings)
-          AND type IN ('stt', 'diarize', 'align', 'language', 'llm', 'metrics')
-          AND status = 'queued'
-          AND started_at IS NULL
-          AND finished_at IS NULL
-        GROUP BY recording_id, type
-    )
     DELETE FROM jobs
-    WHERE rowid IN (SELECT row_id FROM placeholder_rows);
+    WHERE type IN ('stt', 'diarize', 'align', 'language', 'llm', 'metrics')
+      AND status = 'queued'
+      AND started_at IS NULL
+      AND finished_at IS NULL
+      AND created_at = (
+          SELECT recordings.created_at
+          FROM recordings
+          WHERE recordings.id = jobs.recording_id
+      );
     """,
 )
 

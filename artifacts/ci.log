@@ -134,8 +134,8 @@ Requirement already satisfied: six>=1.5 in ./.venv-ci/lib/python3.12/site-packag
 Building wheels for collected packages: lan-transcriber
   Building editable for lan-transcriber (pyproject.toml): started
   Building editable for lan-transcriber (pyproject.toml): finished with status 'done'
-  Created wheel for lan-transcriber: filename=lan_transcriber-0.1.0-0.editable-py3-none-any.whl size=15395 sha256=289bf8f62b120690346051312c6e3283036ed8432e565cce8b5dd84ea63c8bf7
-  Stored in directory: /tmp/pip-ephem-wheel-cache-3fxg9z0w/wheels/d5/8a/5c/f7178f7e49aa5ae12b2320ec66b5c310f4f2f63d1bd301b7fb
+  Created wheel for lan-transcriber: filename=lan_transcriber-0.1.0-0.editable-py3-none-any.whl size=15395 sha256=d180a7e9663aacc8ea396ca7b8dfa9950d39b5c0f38f1a0180b463246871acd8
+  Stored in directory: /tmp/pip-ephem-wheel-cache-4_ky_eyq/wheels/d5/8a/5c/f7178f7e49aa5ae12b2320ec66b5c310f4f2f63d1bd301b7fb
 Successfully built lan-transcriber
 Installing collected packages: lan-transcriber
   Attempting uninstall: lan-transcriber
@@ -144,10 +144,10 @@ Installing collected packages: lan-transcriber
       Successfully uninstalled lan-transcriber-0.1.0
 Successfully installed lan-transcriber-0.1.0
 All checks passed!
-........................................................................ [ 33%]
-........................................................................ [ 66%]
-........................................................................ [ 99%]
-..                                                                       [100%]
+........................................................................ [ 32%]
+........................................................................ [ 65%]
+........................................................................ [ 98%]
+....                                                                     [100%]
 =============================== warnings summary ===============================
 lan_transcriber/pipeline.py:4
   /home/alexey/LAN_Transcriber/lan_transcriber/pipeline.py:4: DeprecationWarning: 'audioop' is deprecated and slated for removal in Python 3.13
@@ -206,4 +206,4 @@ lan_transcriber/runtime_paths.py      21      1    95%
 ------------------------------------------------------
 TOTAL                                271     27    90%
 Required test coverage of 90% reached. Total coverage: 90.04%
-218 passed, 1 skipped, 7 warnings in 39.76s
+220 passed, 1 skipped, 7 warnings in 36.49s

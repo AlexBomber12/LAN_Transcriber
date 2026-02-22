@@ -78,22 +78,31 @@ def _restore_status_from_precheck_log(
     except OSError:
         return None, None
 
+    restored_status: str | None = None
     quarantine_reason: str | None = None
     for line in reversed(lines):
         if quarantine_reason is None:
             reason_match = _QUARANTINE_REASON_RE.search(line)
             if reason_match is not None:
                 quarantine_reason = reason_match.group(1).strip() or None
-        status_match = _TERMINAL_STATUS_RE.search(line)
-        if status_match is None:
-            continue
-        status = status_match.group(1).strip()
+        if restored_status is None:
+            status_match = _TERMINAL_STATUS_RE.search(line)
+            if status_match is not None:
+                status = status_match.group(1).strip()
+                if (
+                    status in RECORDING_STATUSES
+                    and status
+                    not in {RECORDING_STATUS_QUEUED, RECORDING_STATUS_PROCESSING}
+                ):
+                    restored_status = status
+                    if restored_status != RECORDING_STATUS_QUARANTINE:
+                        return restored_status, None
         if (
-            status in RECORDING_STATUSES
-            and status not in {RECORDING_STATUS_QUEUED, RECORDING_STATUS_PROCESSING}
+            restored_status == RECORDING_STATUS_QUARANTINE
+            and quarantine_reason is not None
         ):
-            return status, quarantine_reason
-    return None, None
+            return restored_status, quarantine_reason
+    return restored_status, quarantine_reason
 
 
 def _success_status(job_type: str) -> str:
@@ -468,20 +477,21 @@ def process_job(job_id: str, recording_id: str, job_type: str) -> dict[str, str]
                 recording_id,
                 settings,
             )
-            if restored_status is not None:
-                set_recording_status(
-                    recording_id,
-                    restored_status,
-                    settings=settings,
-                    quarantine_reason=restored_quarantine_reason,
-                )
-                _append_step_log(
-                    log_path,
-                    (
-                        "restored recording status from precheck log "
-                        f"after unsupported legacy job: {restored_status}"
-                    ),
-                )
+            if restored_status is None:
+                restored_status = RECORDING_STATUS_FAILED
+            set_recording_status(
+                recording_id,
+                restored_status,
+                settings=settings,
+                quarantine_reason=restored_quarantine_reason,
+            )
+            _append_step_log(
+                log_path,
+                (
+                    "restored recording status after unsupported legacy job: "
+                    f"{restored_status}"
+                ),
+            )
         return {
             "job_id": job_id,
             "recording_id": recording_id,
