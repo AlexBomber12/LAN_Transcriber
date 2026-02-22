@@ -16,6 +16,11 @@ from lan_app.constants import (
     JOB_STATUS_FAILED,
     JOB_STATUS_FINISHED,
     JOB_STATUS_QUEUED,
+    JOB_TYPE_ALIGN,
+    JOB_TYPE_DIARIZE,
+    JOB_TYPE_LANGUAGE,
+    JOB_TYPE_LLM,
+    JOB_TYPE_METRICS,
     JOB_TYPE_PRECHECK,
     JOB_TYPE_STT,
     RECORDING_STATUS_FAILED,
@@ -78,33 +83,52 @@ def test_init_db_creates_mvp_tables(tmp_path: Path):
     assert expected.issubset(names)
 
 
-def test_placeholder_cleanup_migration_preserves_queued_legacy_jobs(tmp_path: Path):
+def test_placeholder_cleanup_migration_only_removes_legacy_placeholders(tmp_path: Path):
     cfg = _test_settings(tmp_path)
     init_db(cfg)
     create_recording(
-        "rec-mig-ready-1",
+        "rec-mig-placeholder-1",
         source="test",
-        source_filename="ready.mp3",
-        status=RECORDING_STATUS_READY,
+        source_filename="placeholder.mp3",
+        status=RECORDING_STATUS_QUEUED,
         settings=cfg,
     )
     create_recording(
-        "rec-mig-queued-1",
+        "rec-mig-real-queued-1",
         source="test",
         source_filename="queued.mp3",
         status=RECORDING_STATUS_QUEUED,
         settings=cfg,
     )
+    placeholder_types = (
+        JOB_TYPE_STT,
+        JOB_TYPE_DIARIZE,
+        JOB_TYPE_ALIGN,
+        JOB_TYPE_LANGUAGE,
+        JOB_TYPE_LLM,
+        JOB_TYPE_METRICS,
+    )
+    for job_type in placeholder_types:
+        create_job(
+            f"job-mig-placeholder-{job_type}-1",
+            recording_id="rec-mig-placeholder-1",
+            job_type=job_type,
+            settings=cfg,
+            status=JOB_STATUS_QUEUED,
+        )
+
+    # Simulate a real queue-enqueued legacy job for the same recording.
     create_job(
-        "job-mig-ready-stt-1",
-        recording_id="rec-mig-ready-1",
+        "job-mig-real-extra-stt-1",
+        recording_id="rec-mig-placeholder-1",
         job_type=JOB_TYPE_STT,
         settings=cfg,
         status=JOB_STATUS_QUEUED,
     )
+
     create_job(
-        "job-mig-queued-stt-1",
-        recording_id="rec-mig-queued-1",
+        "job-mig-real-queued-stt-1",
+        recording_id="rec-mig-real-queued-1",
         job_type=JOB_TYPE_STT,
         settings=cfg,
         status=JOB_STATUS_QUEUED,
@@ -117,8 +141,14 @@ def test_placeholder_cleanup_migration_preserves_queued_legacy_jobs(tmp_path: Pa
 
     init_db(cfg)
 
-    assert get_job("job-mig-ready-stt-1", settings=cfg) is None
-    queued_job = get_job("job-mig-queued-stt-1", settings=cfg)
+    for job_type in placeholder_types:
+        assert get_job(f"job-mig-placeholder-{job_type}-1", settings=cfg) is None
+
+    extra_job = get_job("job-mig-real-extra-stt-1", settings=cfg)
+    assert extra_job is not None
+    assert extra_job["status"] == JOB_STATUS_QUEUED
+
+    queued_job = get_job("job-mig-real-queued-stt-1", settings=cfg)
     assert queued_job is not None
     assert queued_job["status"] == JOB_STATUS_QUEUED
 
