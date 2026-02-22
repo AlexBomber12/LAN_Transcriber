@@ -85,3 +85,18 @@ Queue (in order)
 - Status: DONE
 - Tasks file: tasks/PR-OPS-01.md
 - Depends on: PR-ONENOTE-01 and PR-ROUTING-01
+
+16) PR-JOB-MODEL-01: Single job pipeline model (remove placeholder jobs; restrict requeue/retry)
+- Status: TODO
+- Tasks file: tasks/PR-JOB-MODEL-01.md
+- Depends on: PR-OPS-01
+
+17) PR-ENTRYPOINT-01: Unify entrypoint to lan_app.api:app + worker (Dockerfile CMD, systemd, smoke_test, tests)
+- Status: TODO
+- Tasks file: tasks/PR-ENTRYPOINT-01.md
+- Depends on: PR-JOB-MODEL-01
+
+18) PR-STAGING-01: Fix staging deploy workflow and add infra/staging (compose + env template + real smoke)
+- Status: TODO
+- Tasks file: tasks/PR-STAGING-01.md
+- Depends on: PR-ENTRYPOINT-01
