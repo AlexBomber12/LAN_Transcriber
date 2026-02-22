@@ -35,6 +35,7 @@ from .db import (
     get_job,
     get_recording,
     init_db,
+    requeue_job,
     set_recording_language_settings,
     set_recording_status,
     start_job,
@@ -119,9 +120,9 @@ def _record_retry(
 ) -> None:
     error = str(exc)
     try:
-        fail_job(
+        requeue_job(
             job_id,
-            f"retryable failure attempt {attempt}/{max_attempts}: {error}",
+            error=f"retryable failure attempt {attempt}/{max_attempts}: {error}",
             settings=settings,
         )
     except Exception:

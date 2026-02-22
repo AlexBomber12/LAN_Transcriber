@@ -109,6 +109,23 @@ def collect_health_checks(settings: AppSettings | None = None) -> dict[str, dict
     }
 
 
+def check_health_component(
+    component: str,
+    *,
+    settings: AppSettings | None = None,
+) -> dict[str, Any]:
+    cfg = settings or AppSettings()
+    if component == "app":
+        return check_app_health()
+    if component == "db":
+        return check_db_health(cfg)
+    if component == "redis":
+        return check_redis_health(cfg)
+    if component == "worker":
+        return check_worker_health(cfg)
+    raise ValueError(f"unsupported component: {component}")
+
+
 def main(argv: list[str] | None = None) -> int:
     args = argv or []
     target = args[0] if args else "all"
@@ -116,12 +133,12 @@ def main(argv: list[str] | None = None) -> int:
         print(f"unsupported target: {target}")
         return 2
 
-    checks = collect_health_checks()
     if target == "all":
+        checks = collect_health_checks()
         print(json.dumps(checks, ensure_ascii=True))
         return 0 if all(item["ok"] for item in checks.values()) else 1
 
-    payload = checks[target]
+    payload = check_health_component(target)
     print(json.dumps(payload, ensure_ascii=True))
     return 0 if payload["ok"] else 1
 

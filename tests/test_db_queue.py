@@ -15,6 +15,7 @@ from lan_app.config import AppSettings
 from lan_app.constants import (
     JOB_STATUS_FAILED,
     JOB_STATUS_FINISHED,
+    JOB_STATUS_QUEUED,
     JOB_TYPE_PRECHECK,
     RECORDING_STATUS_FAILED,
     RECORDING_STATUS_QUARANTINE,
@@ -325,7 +326,15 @@ def test_worker_retryable_failure_retries_before_marking_failed(
 
     monkeypatch.setattr("lan_app.worker_tasks.run_precheck", _retryable_failure)
     sleeps: list[int] = []
-    monkeypatch.setattr("lan_app.worker_tasks.time.sleep", lambda seconds: sleeps.append(seconds))
+    retry_job_statuses: list[str] = []
+
+    def _capture_sleep(seconds: int) -> None:
+        sleeps.append(seconds)
+        in_retry = get_job("job-worker-retry-1", settings=cfg)
+        assert in_retry is not None
+        retry_job_statuses.append(str(in_retry["status"]))
+
+    monkeypatch.setattr("lan_app.worker_tasks.time.sleep", _capture_sleep)
 
     with pytest.raises(RuntimeError, match="transient failure"):
         process_job("job-worker-retry-1", "rec-worker-retry-1", JOB_TYPE_PRECHECK)
@@ -334,6 +343,7 @@ def test_worker_retryable_failure_retries_before_marking_failed(
     recording = get_recording("rec-worker-retry-1", settings=cfg)
     assert attempts["count"] == 3
     assert sleeps == [1, 2]
+    assert retry_job_statuses == [JOB_STATUS_QUEUED, JOB_STATUS_QUEUED]
     assert job is not None
     assert recording is not None
     assert job["attempt"] == 3

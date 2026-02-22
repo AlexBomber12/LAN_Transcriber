@@ -10,6 +10,7 @@ from lan_app import api, ui_routes
 from lan_app.config import AppSettings
 from lan_app.constants import RECORDING_STATUS_QUARANTINE
 from lan_app.db import connect, create_recording, get_recording, init_db
+from lan_app import healthchecks
 from lan_app.ops import run_retention_cleanup
 
 
@@ -135,3 +136,19 @@ def test_healthz_component_endpoints(tmp_path: Path, monkeypatch):
 
     worker_health = client.get("/healthz/worker")
     assert worker_health.status_code == 503
+
+
+def test_healthchecks_main_runs_only_requested_component(monkeypatch):
+    monkeypatch.setattr(
+        healthchecks,
+        "collect_health_checks",
+        lambda settings=None: (_ for _ in ()).throw(AssertionError("unexpected collect")),
+    )
+    monkeypatch.setattr(
+        healthchecks,
+        "check_db_health",
+        lambda settings=None: {"component": "db", "ok": True, "detail": "ok"},
+    )
+
+    exit_code = healthchecks.main(["db"])
+    assert exit_code == 0
