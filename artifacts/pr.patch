@@ -1,39 +1,36 @@
 diff --git a/systemd/lan-transcriber-api.service b/systemd/lan-transcriber-api.service
-index 1a73636..6c8ac50 100644
+index 6c8ac50..442f2b5 100644
 --- a/systemd/lan-transcriber-api.service
 +++ b/systemd/lan-transcriber-api.service
-@@ -4,6 +4,8 @@ After=network-online.target
- Wants=network-online.target
- 
+@@ -6,6 +6,7 @@ Wants=network-online.target
  [Service]
-+WorkingDirectory=/opt/lan-transcriber
-+Environment=PYTHONPATH=/opt/lan-transcriber
+ WorkingDirectory=/opt/lan-transcriber
+ Environment=PYTHONPATH=/opt/lan-transcriber
++Environment=LAN_REDIS_URL=redis://127.0.0.1:6379/0
  ExecStartPre=/usr/bin/python3 -m lan_app.db_init
  ExecStart=/usr/bin/python3 -m uvicorn lan_app.api:app --host 0.0.0.0 --port 7860
  Restart=on-failure
 diff --git a/systemd/lan-transcriber-worker.service b/systemd/lan-transcriber-worker.service
-index ec50e82..0c2df98 100644
+index 0c2df98..2e66ae4 100644
 --- a/systemd/lan-transcriber-worker.service
 +++ b/systemd/lan-transcriber-worker.service
-@@ -4,6 +4,8 @@ After=network-online.target
- Wants=network-online.target
- 
+@@ -6,6 +6,7 @@ Wants=network-online.target
  [Service]
-+WorkingDirectory=/opt/lan-transcriber
-+Environment=PYTHONPATH=/opt/lan-transcriber
+ WorkingDirectory=/opt/lan-transcriber
+ Environment=PYTHONPATH=/opt/lan-transcriber
++Environment=LAN_REDIS_URL=redis://127.0.0.1:6379/0
  ExecStart=/usr/bin/python3 -m lan_app.worker
  Restart=on-failure
  
 diff --git a/systemd/recording-transcriber.service b/systemd/recording-transcriber.service
-index 5bbb8e1..d354cd7 100644
+index d354cd7..7f9e8cc 100644
 --- a/systemd/recording-transcriber.service
 +++ b/systemd/recording-transcriber.service
-@@ -4,6 +4,8 @@ After=network-online.target
- Wants=network-online.target
- 
+@@ -6,6 +6,7 @@ Wants=network-online.target
  [Service]
-+WorkingDirectory=/opt/lan-transcriber
-+Environment=PYTHONPATH=/opt/lan-transcriber
+ WorkingDirectory=/opt/lan-transcriber
+ Environment=PYTHONPATH=/opt/lan-transcriber
++Environment=LAN_REDIS_URL=redis://127.0.0.1:6379/0
  ExecStart=/usr/bin/python3 -m uvicorn lan_app.api:app --host 0.0.0.0 --port 7860
  Restart=on-failure
  
