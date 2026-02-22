@@ -238,6 +238,36 @@ class MicrosoftGraphClient:
         self._last_token_result = result
         return result
 
+    def _graph_request_response_once(
+        self,
+        method: str,
+        path: str,
+        *,
+        payload: dict[str, Any] | None = None,
+        content: str | bytes | None = None,
+        extra_headers: dict[str, str] | None = None,
+    ) -> httpx.Response:
+        token = self.acquire_token_silent()
+        url = f"{GRAPH_BASE_URL}/{path.lstrip('/')}"
+        headers = {"Authorization": f"Bearer {token['access_token']}"}
+        if extra_headers:
+            headers.update(extra_headers)
+        request_kwargs: dict[str, Any] = {"headers": headers}
+        if payload is not None:
+            request_kwargs["json"] = payload
+        if content is not None:
+            request_kwargs["content"] = content
+        with httpx.Client(timeout=20.0) as client:
+            resp = client.request(method, url, **request_kwargs)
+
+        if resp.status_code == 401:
+            raise GraphNeedsReconnectError("Microsoft token rejected by Graph; reconnect required.")
+        if resp.status_code in (429, 500, 502, 503, 504):
+            raise _GraphTransientError(f"Transient Graph error {resp.status_code}")
+        if resp.status_code >= 400:
+            raise GraphRequestError(f"Graph {method} {path} failed: {resp.status_code}")
+        return resp
+
     @retry(
         reraise=True,
         stop=stop_after_attempt(3),
@@ -246,6 +276,23 @@ class MicrosoftGraphClient:
             (_GraphTransientError, httpx.TransportError, httpx.TimeoutException)
         ),
     )
+    def _graph_request_response(
+        self,
+        method: str,
+        path: str,
+        *,
+        payload: dict[str, Any] | None = None,
+        content: str | bytes | None = None,
+        extra_headers: dict[str, str] | None = None,
+    ) -> httpx.Response:
+        return self._graph_request_response_once(
+            method,
+            path,
+            payload=payload,
+            content=content,
+            extra_headers=extra_headers,
+        )
+
     def _graph_request(
         self,
         method: str,
@@ -253,18 +300,7 @@ class MicrosoftGraphClient:
         *,
         payload: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        token = self.acquire_token_silent()
-        url = f"{GRAPH_BASE_URL}/{path.lstrip('/')}"
-        headers = {"Authorization": f"Bearer {token['access_token']}"}
-        with httpx.Client(timeout=20.0) as client:
-            resp = client.request(method, url, headers=headers, json=payload)
-
-        if resp.status_code == 401:
-            raise GraphNeedsReconnectError("Microsoft token rejected by Graph; reconnect required.")
-        if resp.status_code in (429, 500, 502, 503, 504):
-            raise _GraphTransientError(f"Transient Graph error {resp.status_code}")
-        if resp.status_code >= 400:
-            raise GraphRequestError(f"Graph {method} {path} failed: {resp.status_code}")
+        resp = self._graph_request_response(method, path, payload=payload)
         if not resp.content:
             return {}
         try:
@@ -283,6 +319,36 @@ class MicrosoftGraphClient:
             return self._graph_request("POST", path, payload=payload)
         except (httpx.TransportError, httpx.TimeoutException, _GraphTransientError) as exc:
             raise GraphRequestError(str(exc)) from exc
+
+    def graph_post_html(self, path: str, html: str) -> dict[str, Any]:
+        payload = html.strip()
+        if not payload:
+            raise ValueError("html payload is required")
+        try:
+            response = self._graph_request_response_once(
+                "POST",
+                path,
+                content=payload.encode("utf-8"),
+                extra_headers={"Content-Type": "text/html"},
+            )
+        except (httpx.TransportError, httpx.TimeoutException, _GraphTransientError) as exc:
+            raise GraphRequestError(str(exc)) from exc
+
+        out: dict[str, Any] = {}
+        if response.content:
+            try:
+                parsed = response.json()
+            except ValueError:
+                parsed = None
+            if isinstance(parsed, dict):
+                out.update(parsed)
+        location = response.headers.get("Location")
+        if location:
+            out.setdefault("location", location)
+        content_location = response.headers.get("Content-Location")
+        if content_location:
+            out.setdefault("content_location", content_location)
+        return out
 
     @property
     def granted_scopes(self) -> list[str]:

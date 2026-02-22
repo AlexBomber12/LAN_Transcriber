@@ -1,98 +1,65 @@
-diff --git a/lan_app/db.py b/lan_app/db.py
-index c321886..3875c34 100644
---- a/lan_app/db.py
-+++ b/lan_app/db.py
-@@ -129,7 +129,7 @@ _MIGRATIONS: tuple[str, ...] = (
-         snippet_path TEXT NOT NULL,
-         created_at TEXT NOT NULL,
-         FOREIGN KEY(voice_profile_id) REFERENCES voice_profiles(id) ON DELETE CASCADE,
--        FOREIGN KEY(recording_id) REFERENCES recordings(id) ON DELETE SET NULL
-+        FOREIGN KEY(recording_id) REFERENCES recordings(id) ON DELETE CASCADE
-     );
+diff --git a/lan_app/templates/recording_detail.html b/lan_app/templates/recording_detail.html
+index 91b9eb3..be788ad 100644
+--- a/lan_app/templates/recording_detail.html
++++ b/lan_app/templates/recording_detail.html
+@@ -63,10 +63,12 @@
+       {% endif %}
+     </p>
+     {% endif %}
+-    {% if rec.status in ['Ready', 'NeedsReview'] %}
++    {% if rec.status in ['Ready', 'NeedsReview'] and rec.project_id %}
+     <form method="post" action="/ui/recordings/{{ rec.id }}/publish">
+       <button type="submit" class="btn">Publish to OneNote</button>
+     </form>
++    {% elif rec.status in ['Ready', 'NeedsReview'] %}
++    <p class="placeholder">Assign this recording to a project before publishing to OneNote.</p>
+     {% else %}
+     <p class="placeholder">Publish is available only for Ready or NeedsReview recordings.</p>
+     {% endif %}
+diff --git a/tests/test_onenote.py b/tests/test_onenote.py
+index 3062895..acd7f1c 100644
+--- a/tests/test_onenote.py
++++ b/tests/test_onenote.py
+@@ -314,11 +314,13 @@ def test_recording_overview_publish_controls(tmp_path: Path, monkeypatch):
+     monkeypatch.setattr(api, "_settings", cfg)
+     monkeypatch.setattr(ui_routes, "_settings", cfg)
+     init_db(cfg)
++    project = create_project("UI Publish", settings=cfg)
+     create_recording(
+         "rec-ui-publish-1",
+         source="drive",
+         source_filename="ui-publish.mp3",
+         status=RECORDING_STATUS_READY,
++        project_id=project["id"],
+         settings=cfg,
+     )
  
-     CREATE INDEX IF NOT EXISTS idx_speaker_assignments_recording_id
-@@ -137,6 +137,42 @@ _MIGRATIONS: tuple[str, ...] = (
-     CREATE INDEX IF NOT EXISTS idx_voice_samples_profile_id ON voice_samples(voice_profile_id);
-     CREATE INDEX IF NOT EXISTS idx_voice_samples_recording_id ON voice_samples(recording_id);
-     """,
-+    """
-+    ALTER TABLE voice_samples RENAME TO voice_samples_old;
-+
-+    CREATE TABLE voice_samples (
-+        id INTEGER PRIMARY KEY AUTOINCREMENT,
-+        voice_profile_id INTEGER NOT NULL,
-+        recording_id TEXT,
-+        diar_speaker_label TEXT,
-+        snippet_path TEXT NOT NULL,
-+        created_at TEXT NOT NULL,
-+        FOREIGN KEY(voice_profile_id) REFERENCES voice_profiles(id) ON DELETE CASCADE,
-+        FOREIGN KEY(recording_id) REFERENCES recordings(id) ON DELETE CASCADE
-+    );
-+
-+    INSERT INTO voice_samples (
-+        id,
-+        voice_profile_id,
-+        recording_id,
-+        diar_speaker_label,
-+        snippet_path,
-+        created_at
-+    )
-+    SELECT
-+        id,
-+        voice_profile_id,
-+        recording_id,
-+        diar_speaker_label,
-+        snippet_path,
-+        created_at
-+    FROM voice_samples_old;
-+
-+    DROP TABLE voice_samples_old;
-+
-+    CREATE INDEX IF NOT EXISTS idx_voice_samples_profile_id ON voice_samples(voice_profile_id);
-+    CREATE INDEX IF NOT EXISTS idx_voice_samples_recording_id ON voice_samples(recording_id);
-+    """,
- )
- 
- _UNSET = object()
-diff --git a/tests/test_ui_routes.py b/tests/test_ui_routes.py
-index edabf72..0e46780 100644
---- a/tests/test_ui_routes.py
-+++ b/tests/test_ui_routes.py
-@@ -1031,6 +1031,37 @@ def test_ui_action_delete_removes_disk_artifacts(tmp_path, monkeypatch):
-     assert not rec_dir.exists()
+@@ -338,6 +340,28 @@ def test_recording_overview_publish_controls(tmp_path: Path, monkeypatch):
+     assert "Open OneNote page" in after.text
  
  
-+def test_ui_action_delete_cascades_voice_samples_for_recording(tmp_path, monkeypatch):
++def test_recording_overview_hides_publish_without_project_assignment(
++    tmp_path: Path, monkeypatch
++):
 +    cfg = _cfg(tmp_path)
 +    monkeypatch.setattr(api, "_settings", cfg)
 +    monkeypatch.setattr(ui_routes, "_settings", cfg)
 +    init_db(cfg)
 +    create_recording(
-+        "rec-del-sample-1",
++        "rec-ui-no-project-1",
 +        source="drive",
-+        source_filename="del-sample.mp3",
++        source_filename="ui-no-project.mp3",
++        status=RECORDING_STATUS_READY,
 +        settings=cfg,
 +    )
-+    profile = create_voice_profile("Voice Owner", settings=cfg)
-+    create_voice_sample(
-+        voice_profile_id=profile["id"],
-+        recording_id="rec-del-sample-1",
-+        diar_speaker_label="S1",
-+        snippet_path="recordings/rec-del-sample-1/derived/snippets/S1/1.wav",
-+        settings=cfg,
-+    )
-+    assert len(list_voice_samples(settings=cfg)) == 1
 +
-+    def _fake_purge(recording_id: str, *, settings=None) -> int:
-+        return 0
-+
-+    monkeypatch.setattr(ui_routes, "purge_pending_recording_jobs", _fake_purge)
-+    c = TestClient(api.app, follow_redirects=False)
-+    r = c.post("/ui/recordings/rec-del-sample-1/delete")
-+    assert r.status_code in (200, 307, 302)
-+    assert list_voice_samples(settings=cfg) == []
++    client = TestClient(api.app, follow_redirects=True)
++    page = client.get("/recordings/rec-ui-no-project-1?tab=overview")
++    assert page.status_code == 200
++    assert "Publish to OneNote" not in page.text
++    assert "Assign this recording to a project before publishing to OneNote." in page.text
 +
 +
- def test_projects_duplicate_name_handled(tmp_path, monkeypatch):
-     cfg = _cfg(tmp_path)
-     monkeypatch.setattr(api, "_settings", cfg)
+ def test_recording_overview_does_not_link_graph_api_when_page_url_missing(
+     tmp_path: Path, monkeypatch
+ ):

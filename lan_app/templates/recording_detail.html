@@ -38,10 +38,40 @@
     <span class="k">Transcript language override</span><span class="v">{{ rec.language_override or '—' }}</span>
     <span class="k">Target summary language</span><span class="v">{{ rec.target_summary_language or '—' }}</span>
     <span class="k">Drive file ID</span><span class="v">{{ rec.drive_file_id or '—' }}</span>
-    <span class="k">OneNote page ID</span><span class="v">{{ rec.onenote_page_id or '—' }}</span>
+    <span class="k">OneNote page</span>
+    <span class="v">
+      {% if rec.onenote_page_id and onenote_page_url %}
+      <a href="{{ onenote_page_url }}" target="_blank" rel="noreferrer"><code>{{ rec.onenote_page_id }}</code></a>
+      {% elif rec.onenote_page_id %}
+      <code>{{ rec.onenote_page_id }}</code>
+      {% else %}
+      —
+      {% endif %}
+    </span>
     <span class="k">Quarantine reason</span><span class="v">{{ rec.quarantine_reason or '—' }}</span>
     <span class="k">Created at</span><span class="v">{{ rec.created_at[:19].replace('T',' ') if rec.created_at else '—' }}</span>
     <span class="k">Updated at</span><span class="v">{{ rec.updated_at[:19].replace('T',' ') if rec.updated_at else '—' }}</span>
+  </div>
+
+  <div class="section" style="margin-top:10px">
+    <h2 style="margin-top:0">OneNote Publish</h2>
+    {% if rec.status == 'Published' and rec.onenote_page_id %}
+    <p>
+      <span class="badge s-Published">Published</span>
+      {% if onenote_page_url %}
+      <a href="{{ onenote_page_url }}" target="_blank" rel="noreferrer">Open OneNote page</a>
+      {% endif %}
+    </p>
+    {% endif %}
+    {% if rec.status in ['Ready', 'NeedsReview'] and rec.project_id %}
+    <form method="post" action="/ui/recordings/{{ rec.id }}/publish">
+      <button type="submit" class="btn">Publish to OneNote</button>
+    </form>
+    {% elif rec.status in ['Ready', 'NeedsReview'] %}
+    <p class="placeholder">Assign this recording to a project before publishing to OneNote.</p>
+    {% else %}
+    <p class="placeholder">Publish is available only for Ready or NeedsReview recordings.</p>
+    {% endif %}
   </div>
 
   <h2>Topic</h2>

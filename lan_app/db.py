@@ -15,6 +15,7 @@ from .constants import (
     JOB_STATUS_STARTED,
     JOB_TYPES,
     RECORDING_STATUSES,
+    RECORDING_STATUS_PUBLISHED,
     RECORDING_STATUS_QUEUED,
     RECORDING_STATUS_QUARANTINE,
 )
@@ -172,6 +173,9 @@ _MIGRATIONS: tuple[str, ...] = (
 
     CREATE INDEX IF NOT EXISTS idx_voice_samples_profile_id ON voice_samples(voice_profile_id);
     CREATE INDEX IF NOT EXISTS idx_voice_samples_recording_id ON voice_samples(recording_id);
+    """,
+    """
+    ALTER TABLE recordings ADD COLUMN onenote_page_url TEXT;
     """,
 )
 
@@ -425,6 +429,38 @@ def set_recording_language_settings(
     return updated.rowcount > 0
 
 
+def set_recording_publish_result(
+    recording_id: str,
+    *,
+    onenote_page_id: str,
+    onenote_page_url: str | None = None,
+    settings: AppSettings | None = None,
+) -> bool:
+    init_db(settings)
+    page_id = str(onenote_page_id).strip()
+    if not page_id:
+        raise ValueError("onenote_page_id is required")
+    page_url = str(onenote_page_url).strip() if onenote_page_url is not None else ""
+    now = _utc_now()
+    with connect(settings) as conn:
+        updated = conn.execute(
+            """
+            UPDATE recordings
+            SET status = ?, quarantine_reason = NULL, onenote_page_id = ?, onenote_page_url = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                RECORDING_STATUS_PUBLISHED,
+                page_id,
+                page_url or None,
+                now,
+                recording_id,
+            ),
+        )
+        conn.commit()
+    return updated.rowcount > 0
+
+
 def delete_recording(
     recording_id: str,
     *,
@@ -597,6 +633,20 @@ def list_projects(
     return [_as_dict(row) or {} for row in rows]
 
 
+def get_project(
+    project_id: int,
+    *,
+    settings: AppSettings | None = None,
+) -> dict[str, Any] | None:
+    init_db(settings)
+    with connect(settings) as conn:
+        row = conn.execute(
+            "SELECT * FROM projects WHERE id = ?",
+            (project_id,),
+        ).fetchone()
+    return _as_dict(row)
+
+
 def create_project(
     name: str,
     *,
@@ -607,6 +657,40 @@ def create_project(
         cursor = conn.execute("INSERT INTO projects (name) VALUES (?)", (name,))
         row = conn.execute(
             "SELECT * FROM projects WHERE id = ?", (cursor.lastrowid,)
+        ).fetchone()
+        conn.commit()
+    return _as_dict(row) or {}
+
+
+def update_project_onenote_mapping(
+    project_id: int,
+    *,
+    onenote_notebook_id: str | None = None,
+    onenote_section_id: str | None = None,
+    settings: AppSettings | None = None,
+) -> dict[str, Any] | None:
+    init_db(settings)
+    notebook_id = str(onenote_notebook_id or "").strip() or None
+    section_id = str(onenote_section_id or "").strip() or None
+    with connect(settings) as conn:
+        updated = conn.execute(
+            """
+            UPDATE projects
+            SET onenote_notebook_id = ?, onenote_section_id = ?
+            WHERE id = ?
+            """,
+            (
+                notebook_id,
+                section_id,
+                project_id,
+            ),
+        )
+        if updated.rowcount < 1:
+            conn.commit()
+            return None
+        row = conn.execute(
+            "SELECT * FROM projects WHERE id = ?",
+            (project_id,),
         ).fetchone()
         conn.commit()
     return _as_dict(row) or {}
@@ -1107,6 +1191,7 @@ __all__ = [
     "list_recordings",
     "set_recording_status",
     "set_recording_language_settings",
+    "set_recording_publish_result",
     "delete_recording",
     "create_job",
     "get_job",
@@ -1115,7 +1200,9 @@ __all__ = [
     "finish_job",
     "fail_job",
     "list_projects",
+    "get_project",
     "create_project",
+    "update_project_onenote_mapping",
     "delete_project",
     "list_voice_profiles",
     "create_voice_profile",

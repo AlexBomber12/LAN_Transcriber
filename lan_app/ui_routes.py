@@ -47,12 +47,19 @@ from .db import (
     list_speaker_assignments,
     list_voice_samples,
     list_voice_profiles,
+    update_project_onenote_mapping,
     set_speaker_assignment,
     set_recording_language_settings,
     set_recording_status,
 )
 from .jobs import enqueue_recording_job, purge_pending_recording_jobs
 from .ms_graph import GraphAuthError, ms_connection_state
+from .onenote import (
+    PublishPreconditionError,
+    list_onenote_notebooks,
+    list_onenote_sections,
+    publish_recording_to_onenote,
+)
 from lan_transcriber.artifacts import atomic_write_json
 from lan_transcriber.llm_client import LLMClient
 from lan_transcriber.pipeline import Settings as PipelineSettings
@@ -513,6 +520,11 @@ def _as_data_relative_path(path: Path, *, settings: AppSettings) -> str | None:
     return safe.relative_to(root_resolved).as_posix()
 
 
+def _recording_onenote_page_url(recording: dict[str, Any]) -> str | None:
+    explicit = str(recording.get("onenote_page_url") or "").strip()
+    return explicit or None
+
+
 def _speakers_tab_context(recording_id: str, settings: AppSettings) -> dict[str, Any]:
     transcript_path, _summary_path = _recording_derived_paths(recording_id, settings)
     speaker_turns_path = transcript_path.parent / "speaker_turns.json"
@@ -900,6 +912,7 @@ async def ui_recording_detail(
     rec = get_recording(recording_id, settings=_settings)
     if rec is None:
         return HTMLResponse("<h1>404 – Recording not found</h1>", status_code=404)
+    onenote_page_url = _recording_onenote_page_url(rec)
     jobs, _ = list_jobs(settings=_settings, recording_id=recording_id, limit=100)
     tabs = ["overview", "calendar", "project", "speakers", "language", "metrics", "log"]
     current_tab = tab if tab in tabs else "overview"
@@ -945,6 +958,7 @@ async def ui_recording_detail(
             "summary": summary,
             "metrics": metrics,
             "speakers": speakers,
+            "onenote_page_url": onenote_page_url,
         },
     )
 
@@ -1088,14 +1102,60 @@ async def ui_add_speaker_sample(
 
 
 @ui_router.get("/projects", response_class=HTMLResponse)
-async def ui_projects(request: Request) -> Any:
+async def ui_projects(
+    request: Request,
+    browse_project_id: int | None = Query(default=None),
+    browse_notebook_id: str | None = Query(default=None),
+) -> Any:
     items = list_projects(settings=_settings)
+    selected_project: dict[str, Any] | None = None
+    selected_notebook_id = ""
+    notebooks: list[dict[str, Any]] = []
+    sections: list[dict[str, Any]] = []
+    browse_error: str | None = None
+
+    if browse_project_id is not None:
+        selected_project = next(
+            (
+                item
+                for item in items
+                if int(item.get("id", -1)) == browse_project_id
+            ),
+            None,
+        )
+        if selected_project is None:
+            browse_error = f"Project {browse_project_id} not found."
+        else:
+            try:
+                notebooks = await run_in_threadpool(
+                    list_onenote_notebooks,
+                    settings=_settings,
+                )
+                selected_notebook_id = (
+                    (browse_notebook_id or "").strip()
+                    or str(selected_project.get("onenote_notebook_id") or "").strip()
+                )
+                if selected_notebook_id:
+                    sections = await run_in_threadpool(
+                        list_onenote_sections,
+                        selected_notebook_id,
+                        settings=_settings,
+                    )
+            except (GraphAuthError, ValueError, RuntimeError) as exc:
+                browse_error = str(exc)
+
     return templates.TemplateResponse(
         request,
         "projects.html",
         {
             "active": "projects",
             "items": items,
+            "browse_project_id": browse_project_id,
+            "browse_selected_project": selected_project,
+            "browse_selected_notebook_id": selected_notebook_id,
+            "browse_notebooks": notebooks,
+            "browse_sections": sections,
+            "browse_error": browse_error,
         },
     )
 
@@ -1111,6 +1171,25 @@ async def ui_create_project(
         except sqlite3.IntegrityError:
             pass  # duplicate name — silently redirect back
     return RedirectResponse("/projects", status_code=303)
+
+
+@ui_router.post("/projects/{project_id}/onenote", response_class=HTMLResponse)
+async def ui_update_project_onenote(
+    project_id: int,
+    onenote_notebook_id: str = Form(default=""),
+    onenote_section_id: str = Form(default=""),
+) -> Any:
+    update_project_onenote_mapping(
+        project_id,
+        onenote_notebook_id=onenote_notebook_id,
+        onenote_section_id=onenote_section_id,
+        settings=_settings,
+    )
+    redirect_url = f"/projects?browse_project_id={project_id}"
+    notebook = onenote_notebook_id.strip()
+    if notebook:
+        redirect_url = f"{redirect_url}&browse_notebook_id={quote(notebook)}"
+    return RedirectResponse(redirect_url, status_code=303)
 
 
 @ui_router.post("/projects/{project_id}/delete", response_class=HTMLResponse)
@@ -1278,6 +1357,25 @@ async def ui_action_quarantine(recording_id: str) -> Any:
     resp = HTMLResponse("")
     resp.headers["HX-Redirect"] = f"/recordings/{recording_id}"
     return resp
+
+
+@ui_router.post("/ui/recordings/{recording_id}/publish")
+async def ui_action_publish(recording_id: str) -> Any:
+    if get_recording(recording_id, settings=_settings) is None:
+        return HTMLResponse("Not found", status_code=404)
+    try:
+        await run_in_threadpool(
+            publish_recording_to_onenote,
+            recording_id,
+            settings=_settings,
+        )
+    except PublishPreconditionError as exc:
+        return HTMLResponse(str(exc), status_code=422)
+    except GraphAuthError as exc:
+        return HTMLResponse(str(exc), status_code=503)
+    except RuntimeError as exc:
+        return HTMLResponse(str(exc), status_code=503)
+    return RedirectResponse(f"/recordings/{recording_id}?tab=overview", status_code=303)
 
 
 @ui_router.post("/ui/recordings/{recording_id}/delete")
