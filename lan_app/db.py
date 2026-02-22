@@ -232,7 +232,19 @@ _MIGRATIONS: tuple[str, ...] = (
     WHERE type IN ('stt', 'diarize', 'align', 'language', 'llm', 'metrics')
       AND status = 'queued'
       AND started_at IS NULL
-      AND finished_at IS NULL;
+      AND finished_at IS NULL
+      AND EXISTS (
+        SELECT 1
+        FROM recordings
+        WHERE recordings.id = jobs.recording_id
+          AND recordings.status IN (
+            'NeedsReview',
+            'Ready',
+            'Published',
+            'Quarantine',
+            'Failed'
+          )
+      );
     """,
 )
 

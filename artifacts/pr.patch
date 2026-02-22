@@ -1,284 +1,81 @@
-diff --git a/lan_app/api.py b/lan_app/api.py
-index 0d660be..f60369e 100644
---- a/lan_app/api.py
-+++ b/lan_app/api.py
-@@ -27,7 +27,6 @@ from .config import AppSettings
- from .constants import (
-     DEFAULT_REQUEUE_JOB_TYPE,
-     JOB_STATUSES,
--    JOB_TYPES,
-     RECORDING_STATUSES,
-     RECORDING_STATUS_QUARANTINE,
- )
-@@ -341,8 +340,11 @@ async def api_requeue_recording(
-     action: RequeueAction | None = None,
- ) -> dict[str, str]:
-     payload = action or RequeueAction()
--    if payload.job_type not in JOB_TYPES:
--        raise HTTPException(status_code=422, detail=f"Unsupported job type: {payload.job_type}")
-+    if payload.job_type != DEFAULT_REQUEUE_JOB_TYPE:
-+        raise HTTPException(
-+            status_code=422,
-+            detail="Only precheck is supported in single-job pipeline mode",
-+        )
- 
-     if get_recording(recording_id, settings=_settings) is None:
-         raise HTTPException(status_code=404, detail="Recording not found")
-@@ -350,7 +352,7 @@ async def api_requeue_recording(
-     try:
-         job = enqueue_recording_job(
-             recording_id,
--            job_type=payload.job_type,
-+            job_type=DEFAULT_REQUEUE_JOB_TYPE,
-             settings=_settings,
-         )
-     except RecordingNotFoundError:
 diff --git a/lan_app/db.py b/lan_app/db.py
-index f24b043..18c5efd 100644
+index 18c5efd..c04ce43 100644
 --- a/lan_app/db.py
 +++ b/lan_app/db.py
-@@ -227,6 +227,13 @@ _MIGRATIONS: tuple[str, ...] = (
-     SET project_assignment_source = 'manual'
-     WHERE project_id IS NOT NULL AND project_assignment_source IS NULL;
+@@ -232,7 +232,19 @@ _MIGRATIONS: tuple[str, ...] = (
+     WHERE type IN ('stt', 'diarize', 'align', 'language', 'llm', 'metrics')
+       AND status = 'queued'
+       AND started_at IS NULL
+-      AND finished_at IS NULL;
++      AND finished_at IS NULL
++      AND EXISTS (
++        SELECT 1
++        FROM recordings
++        WHERE recordings.id = jobs.recording_id
++          AND recordings.status IN (
++            'NeedsReview',
++            'Ready',
++            'Published',
++            'Quarantine',
++            'Failed'
++          )
++      );
      """,
-+    """
-+    DELETE FROM jobs
-+    WHERE type IN ('stt', 'diarize', 'align', 'language', 'llm', 'metrics')
-+      AND status = 'queued'
-+      AND started_at IS NULL
-+      AND finished_at IS NULL;
-+    """,
  )
- 
- _UNSET = object()
-diff --git a/lan_app/gdrive.py b/lan_app/gdrive.py
-index 35ec3a2..fda4ff5 100644
---- a/lan_app/gdrive.py
-+++ b/lan_app/gdrive.py
-@@ -20,12 +20,6 @@ from googleapiclient.http import MediaIoBaseDownload
- from .config import AppSettings
- from .constants import (
-     JOB_TYPE_PRECHECK,
--    JOB_TYPE_STT,
--    JOB_TYPE_DIARIZE,
--    JOB_TYPE_ALIGN,
--    JOB_TYPE_LANGUAGE,
--    JOB_TYPE_LLM,
--    JOB_TYPE_METRICS,
-     RECORDING_STATUS_QUEUED,
- )
- import shutil
-@@ -38,12 +32,6 @@ SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]
- 
- _PIPELINE_STEPS = (
-     JOB_TYPE_PRECHECK,
--    JOB_TYPE_STT,
--    JOB_TYPE_DIARIZE,
--    JOB_TYPE_ALIGN,
--    JOB_TYPE_LANGUAGE,
--    JOB_TYPE_LLM,
--    JOB_TYPE_METRICS,
- )
- 
- # Plaud filename patterns:
-@@ -139,36 +127,15 @@ def _enqueue_pipeline_jobs(
-     recording_id: str,
-     settings: AppSettings,
- ) -> list[str]:
--    """Enqueue the first pipeline step into Redis/RQ and create DB
--    placeholder rows for the remaining steps.
--
--    The first step (precheck) is pushed onto the worker queue so
--    processing starts automatically.  Later PRs will chain subsequent
--    steps.
--    """
--    from .db import create_job
-+    """Enqueue the single full-pipeline job into Redis/RQ."""
-     from .jobs import enqueue_recording_job
- 
--    job_ids: list[str] = []
--
--    # First step: enqueue into Redis/RQ so the worker picks it up
--    first_step = _PIPELINE_STEPS[0]
-     rj = enqueue_recording_job(
--        recording_id, job_type=first_step, settings=settings
-+        recording_id,
-+        job_type=JOB_TYPE_PRECHECK,
-+        settings=settings,
-     )
--    job_ids.append(rj.job_id)
--
--    # Remaining steps: DB placeholders only (chaining not yet wired)
--    for step in _PIPELINE_STEPS[1:]:
--        job_id = uuid4().hex
--        create_job(
--            job_id=job_id,
--            recording_id=recording_id,
--            job_type=step,
--            settings=settings,
--        )
--        job_ids.append(job_id)
--    return job_ids
-+    return [rj.job_id]
- 
- 
- def ingest_once(
-diff --git a/lan_app/ui_routes.py b/lan_app/ui_routes.py
-index 9ce3287..6e3cd99 100644
---- a/lan_app/ui_routes.py
-+++ b/lan_app/ui_routes.py
-@@ -26,6 +26,7 @@ from .calendar import (
- from .config import AppSettings
- from .conversation_metrics import refresh_recording_metrics
- from .constants import (
-+    DEFAULT_REQUEUE_JOB_TYPE,
-     JOB_STATUS_FAILED,
-     JOB_STATUSES,
-     JOB_TYPE_PRECHECK,
-@@ -1471,13 +1472,10 @@ async def ui_action_retry_failed_step(recording_id: str, job_id: str) -> Any:
-         return HTMLResponse("Job not found", status_code=404)
-     if str(job.get("status") or "") != JOB_STATUS_FAILED:
-         return HTMLResponse("Only failed jobs can be retried", status_code=422)
--    job_type = str(job.get("type") or "").strip()
--    if not job_type:
--        return HTMLResponse("Job type is missing", status_code=422)
-     try:
-         enqueue_recording_job(
-             recording_id,
--            job_type=job_type,
-+            job_type=DEFAULT_REQUEUE_JOB_TYPE,
-             settings=_settings,
-         )
-     except Exception as exc:
-diff --git a/lan_app/worker_tasks.py b/lan_app/worker_tasks.py
-index 77348b6..4afdb84 100644
---- a/lan_app/worker_tasks.py
-+++ b/lan_app/worker_tasks.py
-@@ -407,6 +407,30 @@ def process_job(job_id: str, recording_id: str, job_type: str) -> dict[str, str]
-     settings = AppSettings()
-     init_db(settings)
-     log_path = _step_log_path(recording_id, job_type, settings)
-+
-+    if job_type != JOB_TYPE_PRECHECK:
-+        if not start_job(job_id, settings=settings):
-+            raise ValueError(f"Job not found: {job_id}")
-+        unsupported_error = (
-+            f"unsupported legacy job type under single-job pipeline: {job_type}"
-+        )
-+        _append_step_log(
-+            log_path,
-+            (
-+                "unsupported job type under single-job mode; "
-+                "requeue precheck instead "
-+                f"(job={job_id} type={job_type})"
-+            ),
-+        )
-+        if not fail_job(job_id, unsupported_error, settings=settings):
-+            raise ValueError(f"Job not found: {job_id}")
-+        return {
-+            "job_id": job_id,
-+            "recording_id": recording_id,
-+            "job_type": job_type,
-+            "status": "ignored",
-+        }
-+
-     retry_policy = _retry_policy(job_type)
- 
-     while True:
-@@ -421,15 +445,11 @@ def process_job(job_id: str, recording_id: str, job_type: str) -> dict[str, str]
-                 raise ValueError(f"Recording not found: {recording_id}")
-             _append_step_log(log_path, f"started job={job_id} type={job_type}")
- 
--            quarantine_reason: str | None = None
--            if job_type == JOB_TYPE_PRECHECK:
--                final_status, quarantine_reason = _run_precheck_pipeline(
--                    recording_id=recording_id,
--                    settings=settings,
--                    log_path=log_path,
--                )
--            else:
--                final_status = _success_status(job_type)
-+            final_status, quarantine_reason = _run_precheck_pipeline(
-+                recording_id=recording_id,
-+                settings=settings,
-+                log_path=log_path,
-+            )
- 
-             if not set_recording_status(
-                 recording_id,
-diff --git a/tasks/QUEUE.md b/tasks/QUEUE.md
-index 6153f36..e04fc93 100644
---- a/tasks/QUEUE.md
-+++ b/tasks/QUEUE.md
-@@ -87,7 +87,7 @@ Queue (in order)
- - Depends on: PR-ONENOTE-01 and PR-ROUTING-01
- 
- 16) PR-JOB-MODEL-01: Single job pipeline model (remove placeholder jobs; restrict requeue/retry)
--- Status: TODO
-+- Status: DONE
- - Tasks file: tasks/PR-JOB-MODEL-01.md
- - Depends on: PR-OPS-01
  
 diff --git a/tests/test_db_queue.py b/tests/test_db_queue.py
-index 73f83e4..51b266d 100644
+index 51b266d..ccd27c7 100644
 --- a/tests/test_db_queue.py
 +++ b/tests/test_db_queue.py
-@@ -17,6 +17,7 @@ from lan_app.constants import (
-     JOB_STATUS_FINISHED,
-     JOB_STATUS_QUEUED,
-     JOB_TYPE_PRECHECK,
-+    JOB_TYPE_STT,
-     RECORDING_STATUS_FAILED,
-     RECORDING_STATUS_QUARANTINE,
-     RECORDING_STATUS_QUEUED,
-@@ -222,6 +223,29 @@ def test_recordings_and_jobs_api_actions(tmp_path: Path, monkeypatch):
-     assert missing.status_code == 404
+@@ -78,6 +78,51 @@ def test_init_db_creates_mvp_tables(tmp_path: Path):
+     assert expected.issubset(names)
  
  
-+def test_api_requeue_rejects_non_precheck_job_type(tmp_path: Path, monkeypatch):
++def test_placeholder_cleanup_migration_preserves_queued_legacy_jobs(tmp_path: Path):
 +    cfg = _test_settings(tmp_path)
-+    monkeypatch.setattr(api, "_settings", cfg)
 +    init_db(cfg)
 +    create_recording(
-+        "rec-api-rq-legacy-1",
++        "rec-mig-ready-1",
 +        source="test",
-+        source_filename="legacy.mp3",
++        source_filename="ready.mp3",
++        status=RECORDING_STATUS_READY,
 +        settings=cfg,
 +    )
-+
-+    client = TestClient(api.app)
-+    response = client.post(
-+        "/api/recordings/rec-api-rq-legacy-1/actions/requeue",
-+        json={"job_type": JOB_TYPE_STT},
++    create_recording(
++        "rec-mig-queued-1",
++        source="test",
++        source_filename="queued.mp3",
++        status=RECORDING_STATUS_QUEUED,
++        settings=cfg,
++    )
++    create_job(
++        "job-mig-ready-stt-1",
++        recording_id="rec-mig-ready-1",
++        job_type=JOB_TYPE_STT,
++        settings=cfg,
++        status=JOB_STATUS_QUEUED,
++    )
++    create_job(
++        "job-mig-queued-stt-1",
++        recording_id="rec-mig-queued-1",
++        job_type=JOB_TYPE_STT,
++        settings=cfg,
++        status=JOB_STATUS_QUEUED,
 +    )
 +
-+    assert response.status_code == 422
-+    assert response.json() == {
-+        "detail": "Only precheck is supported in single-job pipeline mode"
-+    }
++    with connect(cfg) as conn:
++        current_version = int(conn.execute("PRAGMA user_version").fetchone()[0])
++        conn.execute(f"PRAGMA user_version = {current_version - 1}")
++        conn.commit()
++
++    init_db(cfg)
++
++    assert get_job("job-mig-ready-stt-1", settings=cfg) is None
++    queued_job = get_job("job-mig-queued-stt-1", settings=cfg)
++    assert queued_job is not None
++    assert queued_job["status"] == JOB_STATUS_QUEUED
 +
 +
- def test_enqueue_marks_job_failed_when_redis_enqueue_fails(tmp_path: Path, monkeypatch):
+ def test_worker_noop_updates_job_and_recording_state(tmp_path: Path, monkeypatch):
      cfg = _test_settings(tmp_path)
-     init_db(cfg)
-diff --git a/tests/test_ui_routes.py b/tests/test_ui_routes.py
-index 036d27a..8bd7080 100644
---- a/tests/test_ui_routes.py
-+++ b/tests/test_ui_routes.py
-@@ -33,6 +33,7 @@ from lan_app.constants import (
-     JOB_STATUS_FAILED,
-     JOB_STATUS_QUEUED,
-     JOB_TYPE_PRECHECK,
-+    JOB_TYPE_STT,
-     RECORDING_STATUS_NEEDS_REVIEW,
-     RECORDING_STATUS_READY,
- )
-@@ -876,7 +877,7 @@ def test_ui_action_retry_failed_step(tmp_path, monkeypatch):
-     create_job(
-         "job-rtry-1",
-         recording_id="rec-rtry-1",
--        job_type=JOB_TYPE_PRECHECK,
-+        job_type=JOB_TYPE_STT,
-         settings=cfg,
-         status=JOB_STATUS_FAILED,
-     )
+     monkeypatch.setenv("LAN_DATA_ROOT", str(cfg.data_root))

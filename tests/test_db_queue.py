@@ -78,6 +78,51 @@ def test_init_db_creates_mvp_tables(tmp_path: Path):
     assert expected.issubset(names)
 
 
+def test_placeholder_cleanup_migration_preserves_queued_legacy_jobs(tmp_path: Path):
+    cfg = _test_settings(tmp_path)
+    init_db(cfg)
+    create_recording(
+        "rec-mig-ready-1",
+        source="test",
+        source_filename="ready.mp3",
+        status=RECORDING_STATUS_READY,
+        settings=cfg,
+    )
+    create_recording(
+        "rec-mig-queued-1",
+        source="test",
+        source_filename="queued.mp3",
+        status=RECORDING_STATUS_QUEUED,
+        settings=cfg,
+    )
+    create_job(
+        "job-mig-ready-stt-1",
+        recording_id="rec-mig-ready-1",
+        job_type=JOB_TYPE_STT,
+        settings=cfg,
+        status=JOB_STATUS_QUEUED,
+    )
+    create_job(
+        "job-mig-queued-stt-1",
+        recording_id="rec-mig-queued-1",
+        job_type=JOB_TYPE_STT,
+        settings=cfg,
+        status=JOB_STATUS_QUEUED,
+    )
+
+    with connect(cfg) as conn:
+        current_version = int(conn.execute("PRAGMA user_version").fetchone()[0])
+        conn.execute(f"PRAGMA user_version = {current_version - 1}")
+        conn.commit()
+
+    init_db(cfg)
+
+    assert get_job("job-mig-ready-stt-1", settings=cfg) is None
+    queued_job = get_job("job-mig-queued-stt-1", settings=cfg)
+    assert queued_job is not None
+    assert queued_job["status"] == JOB_STATUS_QUEUED
+
+
 def test_worker_noop_updates_job_and_recording_state(tmp_path: Path, monkeypatch):
     cfg = _test_settings(tmp_path)
     monkeypatch.setenv("LAN_DATA_ROOT", str(cfg.data_root))
