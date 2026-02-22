@@ -17,6 +17,7 @@ from lan_transcriber.pipeline import run_pipeline, run_precheck
 from .config import AppSettings
 from .conversation_metrics import refresh_recording_metrics
 from .constants import (
+    JOB_STATUS_QUEUED,
     JOB_TYPE_CLEANUP,
     JOB_TYPE_PRECHECK,
     JOB_TYPE_PUBLISH,
@@ -37,6 +38,7 @@ from .db import (
     get_job,
     get_recording,
     init_db,
+    list_jobs,
     requeue_job,
     set_recording_language_settings,
     set_recording_status,
@@ -103,6 +105,28 @@ def _restore_status_from_precheck_log(
         ):
             return restored_status, quarantine_reason
     return restored_status, quarantine_reason
+
+
+def _has_queued_precheck_job(
+    recording_id: str,
+    *,
+    settings: AppSettings,
+    exclude_job_id: str,
+) -> bool:
+    queued_rows, _ = list_jobs(
+        settings=settings,
+        status=JOB_STATUS_QUEUED,
+        recording_id=recording_id,
+        limit=500,
+        offset=0,
+    )
+    for row in queued_rows:
+        row_id = str(row.get("id") or "")
+        if row_id == exclude_job_id:
+            continue
+        if str(row.get("type") or "") == JOB_TYPE_PRECHECK:
+            return True
+    return False
 
 
 def _success_status(job_type: str) -> str:
@@ -462,36 +486,55 @@ def process_job(job_id: str, recording_id: str, job_type: str) -> dict[str, str]
         unsupported_error = (
             f"unsupported legacy job type under single-job pipeline: {job_type}"
         )
-        _append_step_log(
-            log_path,
-            (
-                "unsupported job type under single-job mode; "
-                "requeue precheck instead "
-                f"(job={job_id} type={job_type})"
-            ),
-        )
-        if not fail_job(job_id, unsupported_error, settings=settings):
-            raise ValueError(f"Job not found: {job_id}")
-        if previous_status == RECORDING_STATUS_QUEUED:
-            restored_status, restored_quarantine_reason = _restore_status_from_precheck_log(
-                recording_id,
-                settings,
-            )
-            if restored_status is None:
-                restored_status = RECORDING_STATUS_FAILED
-            set_recording_status(
-                recording_id,
-                restored_status,
-                settings=settings,
-                quarantine_reason=restored_quarantine_reason,
-            )
+        try:
             _append_step_log(
                 log_path,
                 (
-                    "restored recording status after unsupported legacy job: "
-                    f"{restored_status}"
+                    "unsupported job type under single-job mode; "
+                    "requeue precheck instead "
+                    f"(job={job_id} type={job_type})"
                 ),
             )
+        except OSError:
+            pass
+        if not fail_job(job_id, unsupported_error, settings=settings):
+            raise ValueError(f"Job not found: {job_id}")
+        if previous_status == RECORDING_STATUS_QUEUED:
+            if _has_queued_precheck_job(
+                recording_id,
+                settings=settings,
+                exclude_job_id=job_id,
+            ):
+                try:
+                    _append_step_log(
+                        log_path,
+                        "kept recording status Queued because a precheck job is pending",
+                    )
+                except OSError:
+                    pass
+            else:
+                restored_status, restored_quarantine_reason = _restore_status_from_precheck_log(
+                    recording_id,
+                    settings,
+                )
+                if restored_status is None:
+                    restored_status = RECORDING_STATUS_FAILED
+                set_recording_status(
+                    recording_id,
+                    restored_status,
+                    settings=settings,
+                    quarantine_reason=restored_quarantine_reason,
+                )
+                try:
+                    _append_step_log(
+                        log_path,
+                        (
+                            "restored recording status after unsupported legacy job: "
+                            f"{restored_status}"
+                        ),
+                    )
+                except OSError:
+                    pass
         return {
             "job_id": job_id,
             "recording_id": recording_id,
