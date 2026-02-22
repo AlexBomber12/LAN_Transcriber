@@ -82,6 +82,6 @@ Queue (in order)
 - Depends on: PR-CALENDAR-01 and PR-VOICE-01 and PR-ONENOTE-01
 
 15) PR-OPS-01: Retention, quarantine cleanup, retries, runbook, and production hardening for LAN deployment
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-OPS-01.md
 - Depends on: PR-ONENOTE-01 and PR-ROUTING-01

@@ -30,6 +30,8 @@ from lan_app.db import (
     upsert_meeting_metrics,
 )
 from lan_app.constants import (
+    JOB_STATUS_FAILED,
+    JOB_STATUS_QUEUED,
     JOB_TYPE_PRECHECK,
     RECORDING_STATUS_NEEDS_REVIEW,
     RECORDING_STATUS_READY,
@@ -863,6 +865,59 @@ def test_ui_action_requeue_failure_returns_503(tmp_path, monkeypatch):
     r = c.post("/ui/recordings/rec-rqf-1/requeue")
     assert r.status_code == 503
     assert "redis down" in r.text
+
+
+def test_ui_action_retry_failed_step(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    init_db(cfg)
+    create_recording("rec-rtry-1", source="drive", source_filename="retry-step.mp3", settings=cfg)
+    create_job(
+        "job-rtry-1",
+        recording_id="rec-rtry-1",
+        job_type=JOB_TYPE_PRECHECK,
+        settings=cfg,
+        status=JOB_STATUS_FAILED,
+    )
+
+    observed: dict[str, str] = {}
+
+    def _fake_enqueue(recording_id: str, *, settings=None, job_type=JOB_TYPE_PRECHECK):
+        observed["recording_id"] = recording_id
+        observed["job_type"] = job_type
+        return None
+
+    monkeypatch.setattr(ui_routes, "enqueue_recording_job", _fake_enqueue)
+    c = TestClient(api.app, follow_redirects=False)
+
+    r = c.post("/ui/recordings/rec-rtry-1/jobs/job-rtry-1/retry")
+    assert r.status_code == 303
+    assert r.headers["location"] == "/recordings/rec-rtry-1?tab=log"
+    assert observed == {
+        "recording_id": "rec-rtry-1",
+        "job_type": JOB_TYPE_PRECHECK,
+    }
+
+
+def test_ui_action_retry_failed_step_rejects_non_failed_job(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    init_db(cfg)
+    create_recording("rec-rtry-2", source="drive", source_filename="retry-step.mp3", settings=cfg)
+    create_job(
+        "job-rtry-2",
+        recording_id="rec-rtry-2",
+        job_type=JOB_TYPE_PRECHECK,
+        settings=cfg,
+        status=JOB_STATUS_QUEUED,
+    )
+
+    c = TestClient(api.app, follow_redirects=False)
+    r = c.post("/ui/recordings/rec-rtry-2/jobs/job-rtry-2/retry")
+    assert r.status_code == 422
+    assert "failed jobs" in r.text
 
 
 def test_ui_language_resummarize_uses_target_language_override(tmp_path, monkeypatch):

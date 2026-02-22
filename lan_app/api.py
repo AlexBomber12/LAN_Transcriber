@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import suppress
+import logging
 import shutil
 from typing import List
 
@@ -39,6 +41,13 @@ from .db import (
 )
 from .jobs import RecordingNotFoundError, enqueue_recording_job
 from .jobs import purge_pending_recording_jobs
+from .healthchecks import (
+    check_app_health,
+    check_db_health,
+    check_redis_health,
+    check_worker_health,
+    collect_health_checks,
+)
 from .ms_graph import (
     GraphAuthError,
     GraphDeviceFlowLimitError,
@@ -48,6 +57,7 @@ from .ms_graph import (
     start_device_flow_session,
 )
 from .onenote import PublishPreconditionError, publish_recording_to_onenote
+from .ops import run_retention_cleanup
 from .ui_routes import _STATIC_DIR, ui_router
 
 app = FastAPI()
@@ -57,6 +67,9 @@ ALIAS_PATH = aliases.ALIAS_PATH
 _subscribers: List[asyncio.Queue[str]] = []
 _current_result: TranscriptResult | None = None
 _settings = AppSettings()
+_cleanup_task: asyncio.Task[None] | None = None
+_CLEANUP_INTERVAL_SECONDS = 3600
+_logger = logging.getLogger(__name__)
 
 
 class AliasUpdate(BaseModel):
@@ -92,9 +105,44 @@ def _validate_job_status(status: str | None) -> str | None:
 
 
 @app.get("/healthz")
-async def healthz() -> dict[str, str]:
-    """Simple health check used by monitoring."""
-    return {"status": "ok"}
+async def healthz() -> dict[str, object]:
+    checks = await run_in_threadpool(collect_health_checks, _settings)
+    return {
+        "status": "ok" if all(item["ok"] for item in checks.values()) else "degraded",
+        "checks": checks,
+    }
+
+
+def _health_check_by_component(component: str, settings: AppSettings) -> dict[str, object]:
+    if component == "app":
+        return check_app_health()
+    if component == "db":
+        return check_db_health(settings)
+    if component == "redis":
+        return check_redis_health(settings)
+    if component == "worker":
+        return check_worker_health(settings)
+    raise KeyError(component)
+
+
+@app.get("/healthz/{component}")
+async def healthz_component(component: str) -> dict[str, object]:
+    try:
+        payload = await run_in_threadpool(_health_check_by_component, component, _settings)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Unknown health component")
+    if not payload["ok"]:
+        raise HTTPException(status_code=503, detail=str(payload["detail"]))
+    return payload
+
+
+async def _retention_cleanup_loop() -> None:
+    while True:
+        try:
+            await run_in_threadpool(run_retention_cleanup, settings=_settings)
+        except Exception:
+            _logger.exception("Retention cleanup job failed")
+        await asyncio.sleep(_CLEANUP_INTERVAL_SECONDS)
 
 
 @app.get("/api/connections/ms/verify")
@@ -147,9 +195,22 @@ async def api_get_ms_connection_status(session_id: str) -> dict[str, object]:
 
 @app.on_event("startup")
 async def _start_metrics() -> None:
+    global _cleanup_task
     init_db(_settings)
     _settings.metrics_snapshot_path.parent.mkdir(parents=True, exist_ok=True)
     asyncio.create_task(write_metrics_snapshot(_settings.metrics_snapshot_path))
+    _cleanup_task = asyncio.create_task(_retention_cleanup_loop())
+
+
+@app.on_event("shutdown")
+async def _stop_background_tasks() -> None:
+    global _cleanup_task
+    if _cleanup_task is None:
+        return
+    _cleanup_task.cancel()
+    with suppress(asyncio.CancelledError):
+        await _cleanup_task
+    _cleanup_task = None
 
 
 @app.post("/alias/{speaker_id}")

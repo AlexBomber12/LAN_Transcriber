@@ -106,6 +106,15 @@ class AppSettings(BaseSettings):
             "LAN_ROUTING_AUTO_SELECT_THRESHOLD",
         ),
     )
+    quarantine_retention_days: int = Field(
+        default=7,
+        ge=1,
+        le=3650,
+        validation_alias=AliasChoices(
+            "QUARANTINE_RETENTION_DAYS",
+            "LAN_QUARANTINE_RETENTION_DAYS",
+        ),
+    )
 
     @property
     def ms_scopes_list(self) -> list[str]:

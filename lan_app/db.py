@@ -751,6 +751,27 @@ def start_job(
     return updated.rowcount > 0
 
 
+def requeue_job(
+    job_id: str,
+    *,
+    error: str | None = None,
+    settings: AppSettings | None = None,
+) -> bool:
+    init_db(settings)
+    now = _utc_now()
+    with connect(settings) as conn:
+        updated = conn.execute(
+            """
+            UPDATE jobs
+            SET status = ?, error = ?, started_at = NULL, finished_at = NULL, updated_at = ?
+            WHERE id = ?
+            """,
+            (JOB_STATUS_QUEUED, error, now, job_id),
+        )
+        conn.commit()
+    return updated.rowcount > 0
+
+
 def finish_job(
     job_id: str,
     *,
@@ -1502,6 +1523,7 @@ __all__ = [
     "get_job",
     "list_jobs",
     "start_job",
+    "requeue_job",
     "finish_job",
     "fail_job",
     "list_projects",

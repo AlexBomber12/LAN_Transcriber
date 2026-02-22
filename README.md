@@ -29,6 +29,11 @@ This produces:
 - `artifacts/ci.log`
 - `artifacts/pr.patch`
 
+## Operations runbook
+
+Operational setup, failure handling, backup/restore, and upgrade steps are documented in
+[`docs/runbook.md`](docs/runbook.md).
+
 ## Runtime data root
 
 Runtime mutable state must live under `/data` in containers (mounted from `./data` in Docker):
@@ -85,6 +90,9 @@ models are cached across runs.
 | `LAN_DB_PATH` | SQLite database path (default `/data/db/app.db`) |
 | `LAN_REDIS_URL` | Redis endpoint for the RQ queue |
 | `LAN_RQ_QUEUE_NAME` | Queue name consumed by the worker |
+| `QUARANTINE_RETENTION_DAYS` | Retention period for quarantined recording cleanup (default `7`) |
+| `LAN_API_BIND_HOST` | Published API bind host (default `127.0.0.1`) |
+| `LAN_API_PORT` | Published API port (default `7860`) |
 | `LLM_BASE_URL` | OpenAI-compatible Spark endpoint |
 | `LLM_API_KEY` | Optional API key for the LLM |
 | `LLM_MODEL` | Model name passed to the OpenAI-compatible endpoint |

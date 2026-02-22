@@ -26,6 +26,7 @@ from .calendar import (
 from .config import AppSettings
 from .conversation_metrics import refresh_recording_metrics
 from .constants import (
+    JOB_STATUS_FAILED,
     JOB_STATUSES,
     JOB_TYPE_PRECHECK,
     RECORDING_STATUSES,
@@ -39,6 +40,7 @@ from .db import (
     delete_project,
     delete_voice_profile,
     get_meeting_metrics,
+    get_job,
     get_recording,
     get_voice_sample,
     list_participant_metrics,
@@ -1458,6 +1460,29 @@ async def ui_action_requeue(recording_id: str) -> Any:
     resp = HTMLResponse("")
     resp.headers["HX-Redirect"] = f"/recordings/{recording_id}"
     return resp
+
+
+@ui_router.post("/ui/recordings/{recording_id}/jobs/{job_id}/retry")
+async def ui_action_retry_failed_step(recording_id: str, job_id: str) -> Any:
+    if get_recording(recording_id, settings=_settings) is None:
+        return HTMLResponse("Not found", status_code=404)
+    job = get_job(job_id, settings=_settings)
+    if job is None or str(job.get("recording_id") or "") != recording_id:
+        return HTMLResponse("Job not found", status_code=404)
+    if str(job.get("status") or "") != JOB_STATUS_FAILED:
+        return HTMLResponse("Only failed jobs can be retried", status_code=422)
+    job_type = str(job.get("type") or "").strip()
+    if not job_type:
+        return HTMLResponse("Job type is missing", status_code=422)
+    try:
+        enqueue_recording_job(
+            recording_id,
+            job_type=job_type,
+            settings=_settings,
+        )
+    except Exception as exc:
+        return HTMLResponse(f"Retry failed: {exc}", status_code=503)
+    return RedirectResponse(f"/recordings/{recording_id}?tab=log", status_code=303)
 
 
 @ui_router.post("/ui/recordings/{recording_id}/quarantine")

@@ -28,6 +28,7 @@ x-lan-service: &lan-service
     - MS_TENANT_ID=${MS_TENANT_ID:-}
     - MS_CLIENT_ID=${MS_CLIENT_ID:-}
     - "MS_SCOPES=${MS_SCOPES:-offline_access User.Read Notes.ReadWrite Calendars.Read}"
+    - QUARANTINE_RETENTION_DAYS=${QUARANTINE_RETENTION_DAYS:-7}
   volumes:
     - lan_cache:/root/.cache
     - /opt/lan_cache/hf:/root/.cache/huggingface
@@ -42,6 +43,11 @@ services:
     container_name: lan-db
     command: ["python", "-m", "lan_app.db_init"]
     restart: "no"
+    healthcheck:
+      test: ["CMD", "python", "-m", "lan_app.healthchecks", "db"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
 
   redis:
     image: redis:7-alpine
@@ -49,6 +55,11 @@ services:
     restart: unless-stopped
     networks:
       - lan_net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
 
   api:
     <<: *lan-service
@@ -58,7 +69,19 @@ services:
       - db
       - redis
     ports:
-      - "7860:7860"
+      - "${LAN_API_BIND_HOST:-127.0.0.1}:${LAN_API_PORT:-7860}:7860"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:7860/healthz/app', timeout=5)",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
 
   worker:
     <<: *lan-service
@@ -67,6 +90,12 @@ services:
     depends_on:
       - db
       - redis
+    healthcheck:
+      test: ["CMD", "python", "-m", "lan_app.healthchecks", "worker"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
 
 networks:
   lan_net:
