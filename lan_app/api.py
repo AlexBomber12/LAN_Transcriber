@@ -479,7 +479,7 @@ async def api_ingest_once() -> dict[str, object]:
     from .gdrive import ingest_once
 
     try:
-        acquired, retry_after = try_acquire_ingest_lock(_settings)
+        acquired, retry_after, lock_token = try_acquire_ingest_lock(_settings)
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"Ingest lock unavailable: {exc}")
 
@@ -499,8 +499,9 @@ async def api_ingest_once() -> dict[str, object]:
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"Ingest failed: {exc}")
     finally:
-        with suppress(Exception):
-            release_ingest_lock(_settings)
+        if lock_token is not None:
+            with suppress(Exception):
+                release_ingest_lock(_settings, token=lock_token)
     return {"ingested": results, "count": len(results)}
 
 

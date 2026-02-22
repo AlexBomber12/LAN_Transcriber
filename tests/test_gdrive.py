@@ -484,7 +484,11 @@ def test_api_ingest_endpoint_returns_422_when_not_configured(
 ):
     cfg = _test_settings_no_gdrive(tmp_path)
     monkeypatch.setattr(api, "_settings", cfg)
-    monkeypatch.setattr(api, "try_acquire_ingest_lock", lambda *_args, **_kwargs: (True, 300))
+    monkeypatch.setattr(
+        api,
+        "try_acquire_ingest_lock",
+        lambda *_args, **_kwargs: (True, 300, "lock-token"),
+    )
     monkeypatch.setattr(api, "release_ingest_lock", lambda *_args, **_kwargs: None)
     init_db(cfg)
     client = TestClient(api.app)
@@ -495,7 +499,11 @@ def test_api_ingest_endpoint_returns_422_when_not_configured(
 def test_api_ingest_endpoint_success(tmp_path: Path, monkeypatch):
     cfg = _test_settings(tmp_path)
     monkeypatch.setattr(api, "_settings", cfg)
-    monkeypatch.setattr(api, "try_acquire_ingest_lock", lambda *_args, **_kwargs: (True, 300))
+    monkeypatch.setattr(
+        api,
+        "try_acquire_ingest_lock",
+        lambda *_args, **_kwargs: (True, 300, "lock-token"),
+    )
     monkeypatch.setattr(api, "release_ingest_lock", lambda *_args, **_kwargs: None)
     init_db(cfg)
 
@@ -529,7 +537,11 @@ def test_api_ingest_with_auth_succeeds_when_lock_acquired(tmp_path: Path, monkey
     monkeypatch.setattr(api, "_settings", cfg)
     init_db(cfg)
 
-    monkeypatch.setattr(api, "try_acquire_ingest_lock", lambda *_args, **_kwargs: (True, 300))
+    monkeypatch.setattr(
+        api,
+        "try_acquire_ingest_lock",
+        lambda *_args, **_kwargs: (True, 300, "lock-token"),
+    )
     monkeypatch.setattr(api, "release_ingest_lock", lambda *_args, **_kwargs: None)
 
     def _fake_ingest(settings: Any = None, *, service: Any = None) -> list[dict]:
@@ -552,7 +564,11 @@ def test_api_ingest_with_auth_returns_409_when_lock_held(tmp_path: Path, monkeyp
     monkeypatch.setattr(api, "_settings", cfg)
     init_db(cfg)
 
-    monkeypatch.setattr(api, "try_acquire_ingest_lock", lambda *_args, **_kwargs: (False, 19))
+    monkeypatch.setattr(
+        api,
+        "try_acquire_ingest_lock",
+        lambda *_args, **_kwargs: (False, 19, None),
+    )
 
     client = TestClient(api.app)
     resp = client.post(

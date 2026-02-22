@@ -1,1029 +1,417 @@
-diff --git a/README.md b/README.md
-index e3ba34d..8d7269b 100644
---- a/README.md
-+++ b/README.md
-@@ -90,6 +90,8 @@ models are cached across runs.
- | `LAN_DB_PATH` | SQLite database path (default `/data/db/app.db`) |
- | `LAN_REDIS_URL` | Redis endpoint for the RQ queue |
- | `LAN_RQ_QUEUE_NAME` | Queue name consumed by the worker |
-+| `LAN_API_BEARER_TOKEN` | Optional bearer token for protected POST actions (`/api` and UI POST routes) |
-+| `LAN_INGEST_LOCK_TTL_SECONDS` | Redis ingest lock TTL in seconds (default `300`) |
- | `QUARANTINE_RETENTION_DAYS` | Retention period for quarantined recording cleanup (default `7`) |
- | `LAN_API_BIND_HOST` | Published API bind host (default `127.0.0.1`) |
- | `LAN_API_PORT` | Published API port (default `7860`) |
-@@ -111,6 +113,12 @@ models are cached across runs.
- The stack exposes `lan_transcriber_health{env="staging"}` on `/metrics` for
- future monitoring.
- 
-+When `LAN_API_BEARER_TOKEN` is set:
-+
-+- Protected endpoints accept either `Authorization: Bearer <token>` or the HttpOnly cookie from `POST /ui/login`.
-+- `GET /healthz`, `GET /healthz/{component}`, `GET /metrics`, and `GET /openapi.json` remain public.
-+- `POST /api/actions/ingest` is guarded by a Redis lock (`lan:ingest:lock`) to prevent concurrent ingest runs.
-+
- ## Staging deploy secrets
- 
- | Secret | Description | Example |
-diff --git a/infra/staging/.env.staging.example b/infra/staging/.env.staging.example
-index ce2a7dd..48a413b 100644
---- a/infra/staging/.env.staging.example
-+++ b/infra/staging/.env.staging.example
-@@ -17,6 +17,8 @@ LAN_PROM_SNAPSHOT_PATH=/data/metrics.snap
- LAN_DB_PATH=/data/db/app.db
- LAN_REDIS_URL=redis://redis:6379/0
- LAN_RQ_QUEUE_NAME=lan-transcriber
-+LAN_API_BEARER_TOKEN=
-+LAN_INGEST_LOCK_TTL_SECONDS=300
- QUARANTINE_RETENTION_DAYS=7
- LANG_DEFAULT=en
- 
 diff --git a/lan_app/api.py b/lan_app/api.py
-index f60369e..0e8b659 100644
+index 0e8b659..5f0f368 100644
 --- a/lan_app/api.py
 +++ b/lan_app/api.py
-@@ -6,9 +6,9 @@ import logging
- import shutil
- from typing import List
- 
--from fastapi import FastAPI, HTTPException, Query
-+from fastapi import FastAPI, HTTPException, Query, Request
- from fastapi.concurrency import run_in_threadpool
--from fastapi.responses import Response, StreamingResponse
-+from fastapi.responses import JSONResponse, Response, StreamingResponse
- from fastapi.staticfiles import StaticFiles
- from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
- from pydantic import BaseModel
-@@ -23,6 +23,7 @@ from .calendar import (
-     refresh_calendar_context,
-     select_calendar_event,
- )
-+from .auth import auth_enabled, request_is_authenticated, request_requires_auth
- from .config import AppSettings
- from .constants import (
-     DEFAULT_REQUEUE_JOB_TYPE,
-@@ -38,7 +39,11 @@ from .db import (
-     list_recordings,
-     set_recording_status,
- )
--from .jobs import RecordingNotFoundError, enqueue_recording_job
-+from .jobs import (
-+    DuplicateRecordingJobError,
-+    RecordingNotFoundError,
-+    enqueue_recording_job,
-+)
- from .jobs import purge_pending_recording_jobs
- from .healthchecks import (
-     check_app_health,
-@@ -47,6 +52,7 @@ from .healthchecks import (
-     check_worker_health,
-     collect_health_checks,
- )
-+from .locks import release_ingest_lock, try_acquire_ingest_lock
- from .ms_graph import (
-     GraphAuthError,
-     GraphDeviceFlowLimitError,
-@@ -103,6 +109,30 @@ def _validate_job_status(status: str | None) -> str | None:
-     return status
- 
- 
-+def _is_public_auth_exempt(request: Request) -> bool:
-+    if request.method.upper() != "GET":
-+        return False
-+    path = request.url.path
-+    if path == "/healthz" or path.startswith("/healthz/"):
-+        return True
-+    if path in {"/metrics", "/openapi.json"}:
-+        return True
-+    return False
-+
-+
-+@app.middleware("http")
-+async def _enforce_optional_bearer_auth(request: Request, call_next):
-+    if not auth_enabled(_settings):
-+        return await call_next(request)
-+    if _is_public_auth_exempt(request):
-+        return await call_next(request)
-+    if not request_requires_auth(request):
-+        return await call_next(request)
-+    if request_is_authenticated(request, _settings):
-+        return await call_next(request)
-+    return JSONResponse(status_code=401, content={"detail": "Unauthorized"})
-+
-+
- @app.get("/healthz")
- async def healthz() -> dict[str, object]:
-     checks = await run_in_threadpool(collect_health_checks, _settings)
-@@ -338,7 +368,7 @@ async def api_publish_recording(recording_id: str) -> dict[str, object]:
- async def api_requeue_recording(
-     recording_id: str,
-     action: RequeueAction | None = None,
--) -> dict[str, str]:
-+) -> dict[str, object]:
-     payload = action or RequeueAction()
-     if payload.job_type != DEFAULT_REQUEUE_JOB_TYPE:
-         raise HTTPException(
-@@ -355,6 +385,14 @@ async def api_requeue_recording(
-             job_type=DEFAULT_REQUEUE_JOB_TYPE,
-             settings=_settings,
-         )
-+    except DuplicateRecordingJobError as exc:
-+        raise HTTPException(
-+            status_code=409,
-+            detail={
-+                "message": "A precheck job is already queued or started for this recording.",
-+                "existing_job_id": exc.job_id,
-+            },
-+        )
-     except RecordingNotFoundError:
-         raise HTTPException(status_code=404, detail="Recording not found")
-     except ValueError as exc:
-@@ -440,12 +478,29 @@ async def api_ingest_once() -> dict[str, object]:
-     """Trigger a single Google Drive ingest cycle."""
+@@ -479,7 +479,7 @@ async def api_ingest_once() -> dict[str, object]:
      from .gdrive import ingest_once
  
-+    try:
-+        acquired, retry_after = try_acquire_ingest_lock(_settings)
-+    except Exception as exc:
-+        raise HTTPException(status_code=503, detail=f"Ingest lock unavailable: {exc}")
-+
-+    if not acquired:
-+        return JSONResponse(
-+            status_code=409,
-+            content={
-+                "detail": "Ingest is already running.",
-+                "retry_after_seconds": retry_after,
-+            },
-+        )
-+
      try:
-         results = ingest_once(settings=_settings)
-     except ValueError as exc:
-         raise HTTPException(status_code=422, detail=str(exc))
+-        acquired, retry_after = try_acquire_ingest_lock(_settings)
++        acquired, retry_after, lock_token = try_acquire_ingest_lock(_settings)
+     except Exception as exc:
+         raise HTTPException(status_code=503, detail=f"Ingest lock unavailable: {exc}")
+ 
+@@ -499,8 +499,9 @@ async def api_ingest_once() -> dict[str, object]:
      except Exception as exc:
          raise HTTPException(status_code=503, detail=f"Ingest failed: {exc}")
-+    finally:
-+        with suppress(Exception):
-+            release_ingest_lock(_settings)
+     finally:
+-        with suppress(Exception):
+-            release_ingest_lock(_settings)
++        if lock_token is not None:
++            with suppress(Exception):
++                release_ingest_lock(_settings, token=lock_token)
      return {"ingested": results, "count": len(results)}
  
  
-diff --git a/lan_app/config.py b/lan_app/config.py
-index d6eefbf..2dc5664 100644
---- a/lan_app/config.py
-+++ b/lan_app/config.py
-@@ -115,6 +115,21 @@ class AppSettings(BaseSettings):
-             "LAN_QUARANTINE_RETENTION_DAYS",
-         ),
-     )
-+    api_bearer_token: str | None = Field(
-+        default=None,
-+        validation_alias=AliasChoices(
-+            "LAN_API_BEARER_TOKEN",
-+            "API_BEARER_TOKEN",
-+        ),
-+    )
-+    ingest_lock_ttl_seconds: int = Field(
-+        default=300,
-+        ge=1,
-+        validation_alias=AliasChoices(
-+            "LAN_INGEST_LOCK_TTL_SECONDS",
-+            "INGEST_LOCK_TTL_SECONDS",
-+        ),
-+    )
- 
-     @property
-     def ms_scopes_list(self) -> list[str]:
 diff --git a/lan_app/db.py b/lan_app/db.py
-index f83837f..4ae84f0 100644
+index 4ae84f0..64d8f2d 100644
 --- a/lan_app/db.py
 +++ b/lan_app/db.py
-@@ -739,6 +739,33 @@ def list_jobs(
+@@ -739,6 +739,29 @@ def list_jobs(
      return [_as_dict(row) or {} for row in rows], total
  
  
-+def find_active_job_for_recording(
-+    recording_id: str,
++def _find_active_job_for_recording_row(
++    conn: sqlite3.Connection,
 +    *,
++    recording_id: str,
 +    job_type: str,
-+    settings: AppSettings | None = None,
-+) -> dict[str, Any] | None:
-+    init_db(settings)
-+    _validate_job_type(job_type)
-+    with connect(settings) as conn:
-+        row = conn.execute(
-+            """
-+            SELECT *
-+            FROM jobs
-+            WHERE recording_id = ? AND type = ? AND status IN (?, ?)
-+            ORDER BY created_at ASC
-+            LIMIT 1
-+            """,
-+            (
-+                recording_id,
-+                job_type,
-+                JOB_STATUS_QUEUED,
-+                JOB_STATUS_STARTED,
-+            ),
-+        ).fetchone()
++) -> sqlite3.Row | None:
++    return conn.execute(
++        """
++        SELECT *
++        FROM jobs
++        WHERE recording_id = ? AND type = ? AND status IN (?, ?)
++        ORDER BY created_at ASC
++        LIMIT 1
++        """,
++        (
++            recording_id,
++            job_type,
++            JOB_STATUS_QUEUED,
++            JOB_STATUS_STARTED,
++        ),
++    ).fetchone()
++
++
+ def find_active_job_for_recording(
+     recording_id: str,
+     *,
+@@ -748,22 +771,63 @@ def find_active_job_for_recording(
+     init_db(settings)
+     _validate_job_type(job_type)
+     with connect(settings) as conn:
+-        row = conn.execute(
++        row = _find_active_job_for_recording_row(
++            conn,
++            recording_id=recording_id,
++            job_type=job_type,
++        )
 +    return _as_dict(row)
 +
 +
++def create_job_if_no_active_for_recording(
++    *,
++    job_id: str,
++    recording_id: str,
++    job_type: str,
++    settings: AppSettings | None = None,
++    status: str = JOB_STATUS_QUEUED,
++    attempt: int = 0,
++    error: str | None = None,
++) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
++    init_db(settings)
++    _validate_job_type(job_type)
++    _validate_job_status(status)
++    now = _utc_now()
++    with connect(settings) as conn:
++        conn.execute("BEGIN IMMEDIATE")
++        existing = _find_active_job_for_recording_row(
++            conn,
++            recording_id=recording_id,
++            job_type=job_type,
++        )
++        if existing is not None:
++            conn.rollback()
++            return None, _as_dict(existing)
++
++        conn.execute(
+             """
+-            SELECT *
+-            FROM jobs
+-            WHERE recording_id = ? AND type = ? AND status IN (?, ?)
+-            ORDER BY created_at ASC
+-            LIMIT 1
++            INSERT INTO jobs (
++                id, recording_id, type, status, attempt, error,
++                started_at, finished_at, created_at, updated_at
++            )
++            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             """,
+             (
++                job_id,
+                 recording_id,
+                 job_type,
+-                JOB_STATUS_QUEUED,
+-                JOB_STATUS_STARTED,
++                status,
++                attempt,
++                error,
++                None,
++                None,
++                now,
++                now,
+             ),
+-        ).fetchone()
+-    return _as_dict(row)
++        )
++        created = conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
++        conn.commit()
++    return _as_dict(created) or {}, None
+ 
+ 
  def start_job(
-     job_id: str,
-     *,
-@@ -1534,6 +1561,7 @@ __all__ = [
-     "create_job",
+@@ -1562,6 +1626,7 @@ __all__ = [
      "get_job",
      "list_jobs",
-+    "find_active_job_for_recording",
+     "find_active_job_for_recording",
++    "create_job_if_no_active_for_recording",
      "start_job",
      "requeue_job",
      "finish_job",
 diff --git a/lan_app/jobs.py b/lan_app/jobs.py
-index f4245f8..efb7536 100644
+index efb7536..ae645f2 100644
 --- a/lan_app/jobs.py
 +++ b/lan_app/jobs.py
-@@ -18,6 +18,7 @@ from .constants import (
+@@ -16,9 +16,9 @@ from .constants import (
+     RECORDING_STATUS_QUEUED,
+ )
  from .db import (
++    create_job_if_no_active_for_recording,
      create_job,
      fail_job,
-+    find_active_job_for_recording,
+-    find_active_job_for_recording,
      get_recording,
      init_db,
      list_jobs,
-@@ -29,6 +30,17 @@ class RecordingNotFoundError(ValueError):
-     """Raised when trying to enqueue work for an unknown recording."""
- 
- 
-+class DuplicateRecordingJobError(ValueError):
-+    """Raised when an active precheck job already exists for a recording."""
-+
-+    def __init__(self, *, recording_id: str, job_id: str):
-+        self.recording_id = recording_id
-+        self.job_id = job_id
-+        super().__init__(
-+            f"recording {recording_id} already has queued/started job {job_id}"
-+        )
-+
-+
- def _validate_job_type(job_type: str) -> None:
-     if job_type not in JOB_TYPES:
-         raise ValueError(f"Unsupported job type: {job_type}")
-@@ -118,6 +130,19 @@ def enqueue_recording_job(
+@@ -130,11 +130,14 @@ def enqueue_recording_job(
      _validate_job_type(job_type)
      if get_recording(recording_id, settings=cfg) is None:
          raise RecordingNotFoundError(f"Recording not found: {recording_id}")
-+    if job_type == DEFAULT_REQUEUE_JOB_TYPE:
-+        existing = find_active_job_for_recording(
-+            recording_id,
++    job_id = uuid4().hex
+     if job_type == DEFAULT_REQUEUE_JOB_TYPE:
+-        existing = find_active_job_for_recording(
+-            recording_id,
++        _created, existing = create_job_if_no_active_for_recording(
++            job_id=job_id,
++            recording_id=recording_id,
+             job_type=job_type,
+             settings=cfg,
++            status=JOB_STATUS_QUEUED,
+         )
+         if existing is not None:
+             existing_job_id = str(existing.get("id") or "").strip()
+@@ -143,15 +146,14 @@ def enqueue_recording_job(
+                     recording_id=recording_id,
+                     job_id=existing_job_id,
+                 )
+-
+-    job_id = uuid4().hex
+-    create_job(
+-        job_id=job_id,
+-        recording_id=recording_id,
+-        job_type=job_type,
+-        status=JOB_STATUS_QUEUED,
+-        settings=cfg,
+-    )
++    else:
++        create_job(
++            job_id=job_id,
++            recording_id=recording_id,
 +            job_type=job_type,
++            status=JOB_STATUS_QUEUED,
 +            settings=cfg,
 +        )
-+        if existing is not None:
-+            existing_job_id = str(existing.get("id") or "").strip()
-+            if existing_job_id:
-+                raise DuplicateRecordingJobError(
-+                    recording_id=recording_id,
-+                    job_id=existing_job_id,
-+                )
  
-     job_id = uuid4().hex
-     create_job(
-@@ -160,6 +185,7 @@ def enqueue_recording_job(
+     from .worker_tasks import process_job
+ 
+diff --git a/lan_app/locks.py b/lan_app/locks.py
+index 7cce1d0..d296870 100644
+--- a/lan_app/locks.py
++++ b/lan_app/locks.py
+@@ -1,10 +1,18 @@
+ from __future__ import annotations
+ 
++from uuid import uuid4
++
+ from redis import Redis
+ 
+ from .config import AppSettings
+ 
+ INGEST_LOCK_KEY = "lan:ingest:lock"
++_RELEASE_IF_VALUE_MATCHES_SCRIPT = """
++if redis.call("GET", KEYS[1]) == ARGV[1] then
++    return redis.call("DEL", KEYS[1])
++end
++return 0
++"""
+ 
+ 
+ def _ingest_lock_ttl(settings: AppSettings) -> int:
+@@ -20,27 +28,32 @@ def try_acquire_ingest_lock(
+     *,
+     redis_client: Redis | None = None,
+     key: str = INGEST_LOCK_KEY,
+-) -> tuple[bool, int]:
++) -> tuple[bool, int, str | None]:
+     client = redis_client or _redis_client(settings)
+     ttl_seconds = _ingest_lock_ttl(settings)
+-    acquired = bool(client.set(key, "1", nx=True, ex=ttl_seconds))
++    lock_token = uuid4().hex
++    acquired = bool(client.set(key, lock_token, nx=True, ex=ttl_seconds))
+     if acquired:
+-        return True, ttl_seconds
++        return True, ttl_seconds, lock_token
+ 
+     retry_after = client.ttl(key)
+     if retry_after is None or int(retry_after) <= 0:
+-        return False, ttl_seconds
+-    return False, int(retry_after)
++        return False, ttl_seconds, None
++    return False, int(retry_after), None
+ 
+ 
+ def release_ingest_lock(
+     settings: AppSettings,
+     *,
++    token: str | None,
+     redis_client: Redis | None = None,
+     key: str = INGEST_LOCK_KEY,
+-) -> None:
++) -> bool:
++    if token is None:
++        return False
+     client = redis_client or _redis_client(settings)
+-    client.delete(key)
++    result = client.eval(_RELEASE_IF_VALUE_MATCHES_SCRIPT, 1, key, token)
++    return int(result) == 1
  
  
  __all__ = [
-+    "DuplicateRecordingJobError",
-     "RecordingJob",
-     "RecordingNotFoundError",
-     "enqueue_recording_job",
-diff --git a/lan_app/templates/base.html b/lan_app/templates/base.html
-index 68a5797..c84a3d2 100644
---- a/lan_app/templates/base.html
-+++ b/lan_app/templates/base.html
-@@ -90,9 +90,16 @@ function doRecAction(sel) {
-   sel.value = '';
-   if (!act || !id) return;
-   if (act === 'open') { window.location = '/recordings/' + encodeURIComponent(id); return; }
--  var msgs = {delete: 'Delete this recording?', quarantine: 'Quarantine this recording?'};
--  if (msgs[act] && !confirm(msgs[act])) return;
--  htmx.ajax('POST', '/ui/recordings/' + encodeURIComponent(id) + '/' + act, {swap: 'none'});
-+  var request = {swap: 'none'};
-+  if (act === 'delete') {
-+    var typed = prompt('Type DELETE to confirm deletion.');
-+    if (typed === null) return;
-+    if (typed.trim().toUpperCase() !== 'DELETE') return;
-+    request.values = {confirm_delete: typed};
-+  } else if (act === 'quarantine' && !confirm('Quarantine this recording?')) {
-+    return;
-+  }
-+  htmx.ajax('POST', '/ui/recordings/' + encodeURIComponent(id) + '/' + act, request);
- }
- </script>
- </body>
-diff --git a/lan_app/ui_routes.py b/lan_app/ui_routes.py
-index 6e3cd99..2e54026 100644
---- a/lan_app/ui_routes.py
-+++ b/lan_app/ui_routes.py
-@@ -18,6 +18,14 @@ from fastapi.concurrency import run_in_threadpool
- from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
- from fastapi.templating import Jinja2Templates
- 
-+from .auth import (
-+    auth_enabled,
-+    clear_auth_cookie,
-+    expected_bearer_token,
-+    request_is_authenticated,
-+    safe_next_path,
-+    set_auth_cookie,
-+)
- from .calendar import (
-     load_calendar_context,
-     refresh_calendar_context,
-@@ -57,7 +65,11 @@ from .db import (
-     set_recording_language_settings,
-     set_recording_status,
- )
--from .jobs import enqueue_recording_job, purge_pending_recording_jobs
-+from .jobs import (
-+    DuplicateRecordingJobError,
-+    enqueue_recording_job,
-+    purge_pending_recording_jobs,
-+)
- from .ms_graph import GraphAuthError, ms_connection_state
- from .onenote import (
-     PublishPreconditionError,
-@@ -910,6 +922,76 @@ def _job_counts(settings: AppSettings) -> dict[str, int]:
-     return counts
- 
- 
-+# ---------------------------------------------------------------------------
-+# UI auth shell
-+# ---------------------------------------------------------------------------
-+
-+
-+@ui_router.get("/ui")
-+async def ui_root(request: Request) -> Any:
-+    if auth_enabled(_settings) and not request_is_authenticated(request, _settings):
-+        return RedirectResponse("/ui/login?next=%2Fui", status_code=303)
-+    return RedirectResponse("/", status_code=303)
-+
-+
-+@ui_router.get("/ui/login", response_class=HTMLResponse)
-+async def ui_login(
-+    request: Request,
-+    next: str = Query(default="/ui"),
-+) -> Any:
-+    if not auth_enabled(_settings):
-+        return RedirectResponse("/", status_code=303)
-+    target = safe_next_path(next, default="/ui")
-+    if request_is_authenticated(request, _settings):
-+        return RedirectResponse(target, status_code=303)
-+    return templates.TemplateResponse(
-+        request,
-+        "login.html",
-+        {
-+            "active": "",
-+            "next": target,
-+            "error": "",
-+        },
-+    )
-+
-+
-+@ui_router.post("/ui/login", response_class=HTMLResponse)
-+async def ui_login_submit(
-+    request: Request,
-+    token: str = Form(default=""),
-+    next: str = Form(default="/ui"),
-+) -> Any:
-+    if not auth_enabled(_settings):
-+        return RedirectResponse("/", status_code=303)
-+
-+    expected = expected_bearer_token(_settings) or ""
-+    submitted = token.strip()
-+    target = safe_next_path(next, default="/ui")
-+    if not submitted or submitted != expected:
-+        return templates.TemplateResponse(
-+            request,
-+            "login.html",
-+            {
-+                "active": "",
-+                "next": target,
-+                "error": "Invalid token.",
-+            },
-+            status_code=401,
-+        )
-+
-+    response = RedirectResponse(target, status_code=303)
-+    set_auth_cookie(response, submitted)
-+    return response
-+
-+
-+@ui_router.get("/ui/logout")
-+async def ui_logout() -> Any:
-+    target = "/ui/login" if auth_enabled(_settings) else "/"
-+    response = RedirectResponse(target, status_code=303)
-+    clear_auth_cookie(response)
-+    return response
-+
-+
- # ---------------------------------------------------------------------------
- # Dashboard
- # ---------------------------------------------------------------------------
-@@ -1456,6 +1538,11 @@ async def ui_action_requeue(recording_id: str) -> Any:
-         return HTMLResponse("Not found", status_code=404)
-     try:
-         enqueue_recording_job(recording_id, settings=_settings)
-+    except DuplicateRecordingJobError as exc:
-+        return HTMLResponse(
-+            f"Requeue skipped: precheck job already active ({exc.job_id}).",
-+            status_code=409,
-+        )
-     except Exception as exc:
-         return HTMLResponse(f"Requeue failed: {exc}", status_code=503)
-     resp = HTMLResponse("")
-@@ -1478,6 +1565,11 @@ async def ui_action_retry_failed_step(recording_id: str, job_id: str) -> Any:
-             job_type=DEFAULT_REQUEUE_JOB_TYPE,
-             settings=_settings,
-         )
-+    except DuplicateRecordingJobError as exc:
-+        return HTMLResponse(
-+            f"Retry skipped: precheck job already active ({exc.job_id}).",
-+            status_code=409,
-+        )
-     except Exception as exc:
-         return HTMLResponse(f"Retry failed: {exc}", status_code=503)
-     return RedirectResponse(f"/recordings/{recording_id}?tab=log", status_code=303)
-@@ -1517,9 +1609,14 @@ async def ui_action_publish(recording_id: str) -> Any:
- 
- 
- @ui_router.post("/ui/recordings/{recording_id}/delete")
--async def ui_action_delete(recording_id: str) -> Any:
-+async def ui_action_delete(
-+    recording_id: str,
-+    confirm_delete: str = Form(default=""),
-+) -> Any:
-     if get_recording(recording_id, settings=_settings) is None:
-         return HTMLResponse("Not found", status_code=404)
-+    if confirm_delete.strip().upper() != "DELETE":
-+        return HTMLResponse('Type "DELETE" to confirm deletion.', status_code=422)
-     try:
-         purge_pending_recording_jobs(recording_id, settings=_settings)
-     except Exception as exc:
-diff --git a/tasks/QUEUE.md b/tasks/QUEUE.md
-index 1dc64d4..748cca1 100644
---- a/tasks/QUEUE.md
-+++ b/tasks/QUEUE.md
-@@ -102,7 +102,7 @@ Queue (in order)
- - Depends on: PR-ENTRYPOINT-01
- 
- 19) PR-SECURITY-01: Optional bearer auth + abuse guards (rate limit, dedupe) for ingest/requeue/delete
--- Status: TODO
-+- Status: DONE
- - Tasks file: tasks/PR-SECURITY-01.md
- - Depends on: PR-STAGING-01
- 
-diff --git a/tests/test_app_config.py b/tests/test_app_config.py
-index 29a3fc2..b7615b0 100644
---- a/tests/test_app_config.py
-+++ b/tests/test_app_config.py
-@@ -65,3 +65,12 @@ def test_routing_threshold_from_env(monkeypatch):
- 
-     cfg = AppSettings()
-     assert cfg.routing_auto_select_threshold == 0.73
-+
-+
-+def test_security_settings_from_env(monkeypatch):
-+    monkeypatch.setenv("LAN_API_BEARER_TOKEN", "secret-token")
-+    monkeypatch.setenv("LAN_INGEST_LOCK_TTL_SECONDS", "123")
-+
-+    cfg = AppSettings()
-+    assert cfg.api_bearer_token == "secret-token"
-+    assert cfg.ingest_lock_ttl_seconds == 123
-diff --git a/tests/test_db_queue.py b/tests/test_db_queue.py
-index 1cc7e02..30e6627 100644
---- a/tests/test_db_queue.py
-+++ b/tests/test_db_queue.py
-@@ -512,6 +512,41 @@ def test_api_requeue_rejects_non_precheck_job_type(tmp_path: Path, monkeypatch):
-     }
- 
- 
-+def test_api_requeue_dedupes_active_precheck_job(tmp_path: Path, monkeypatch):
-+    cfg = _test_settings(tmp_path)
-+    monkeypatch.setattr(api, "_settings", cfg)
-+    init_db(cfg)
-+    create_recording(
-+        "rec-api-rq-dedupe-1",
-+        source="test",
-+        source_filename="dedupe.mp3",
-+        settings=cfg,
-+    )
-+
-+    class _FakeQueue:
-+        def enqueue(self, *_args, **_kwargs):
-+            return None
-+
-+    monkeypatch.setattr("lan_app.jobs.get_queue", lambda _cfg: _FakeQueue())
-+
-+    client = TestClient(api.app)
-+    first = client.post(
-+        "/api/recordings/rec-api-rq-dedupe-1/actions/requeue",
-+        json={"job_type": JOB_TYPE_PRECHECK},
-+    )
-+    assert first.status_code == 200
-+    first_job_id = first.json()["job_id"]
-+
-+    second = client.post(
-+        "/api/recordings/rec-api-rq-dedupe-1/actions/requeue",
-+        json={"job_type": JOB_TYPE_PRECHECK},
-+    )
-+    assert second.status_code == 409
-+    detail = second.json()["detail"]
-+    assert detail["existing_job_id"] == first_job_id
-+    assert "already queued or started" in detail["message"].lower()
-+
-+
- def test_enqueue_marks_job_failed_when_redis_enqueue_fails(tmp_path: Path, monkeypatch):
-     cfg = _test_settings(tmp_path)
-     init_db(cfg)
 diff --git a/tests/test_gdrive.py b/tests/test_gdrive.py
-index f7aea88..4db8b69 100644
+index 4db8b69..031adaa 100644
 --- a/tests/test_gdrive.py
 +++ b/tests/test_gdrive.py
-@@ -484,6 +484,8 @@ def test_api_ingest_endpoint_returns_422_when_not_configured(
+@@ -484,7 +484,11 @@ def test_api_ingest_endpoint_returns_422_when_not_configured(
  ):
      cfg = _test_settings_no_gdrive(tmp_path)
      monkeypatch.setattr(api, "_settings", cfg)
-+    monkeypatch.setattr(api, "try_acquire_ingest_lock", lambda *_args, **_kwargs: (True, 300))
-+    monkeypatch.setattr(api, "release_ingest_lock", lambda *_args, **_kwargs: None)
+-    monkeypatch.setattr(api, "try_acquire_ingest_lock", lambda *_args, **_kwargs: (True, 300))
++    monkeypatch.setattr(
++        api,
++        "try_acquire_ingest_lock",
++        lambda *_args, **_kwargs: (True, 300, "lock-token"),
++    )
+     monkeypatch.setattr(api, "release_ingest_lock", lambda *_args, **_kwargs: None)
      init_db(cfg)
      client = TestClient(api.app)
-     resp = client.post("/api/actions/ingest")
-@@ -493,6 +495,8 @@ def test_api_ingest_endpoint_returns_422_when_not_configured(
+@@ -495,7 +499,11 @@ def test_api_ingest_endpoint_returns_422_when_not_configured(
  def test_api_ingest_endpoint_success(tmp_path: Path, monkeypatch):
      cfg = _test_settings(tmp_path)
      monkeypatch.setattr(api, "_settings", cfg)
-+    monkeypatch.setattr(api, "try_acquire_ingest_lock", lambda *_args, **_kwargs: (True, 300))
-+    monkeypatch.setattr(api, "release_ingest_lock", lambda *_args, **_kwargs: None)
+-    monkeypatch.setattr(api, "try_acquire_ingest_lock", lambda *_args, **_kwargs: (True, 300))
++    monkeypatch.setattr(
++        api,
++        "try_acquire_ingest_lock",
++        lambda *_args, **_kwargs: (True, 300, "lock-token"),
++    )
+     monkeypatch.setattr(api, "release_ingest_lock", lambda *_args, **_kwargs: None)
      init_db(cfg)
  
-     def _fake_ingest(settings: Any = None, *, service: Any = None) -> list[dict]:
-@@ -508,6 +512,58 @@ def test_api_ingest_endpoint_success(tmp_path: Path, monkeypatch):
-     assert data["ingested"][0]["recording_id"] == "trs_test1"
- 
- 
-+def test_api_ingest_requires_auth_when_token_configured(tmp_path: Path, monkeypatch):
-+    cfg = _test_settings(tmp_path)
-+    cfg.api_bearer_token = "top-secret"
-+    monkeypatch.setattr(api, "_settings", cfg)
-+    init_db(cfg)
-+
-+    client = TestClient(api.app)
-+    resp = client.post("/api/actions/ingest")
-+    assert resp.status_code == 401
-+
-+
-+def test_api_ingest_with_auth_succeeds_when_lock_acquired(tmp_path: Path, monkeypatch):
-+    cfg = _test_settings(tmp_path)
-+    cfg.api_bearer_token = "top-secret"
-+    monkeypatch.setattr(api, "_settings", cfg)
-+    init_db(cfg)
-+
-+    monkeypatch.setattr(api, "try_acquire_ingest_lock", lambda *_args, **_kwargs: (True, 300))
-+    monkeypatch.setattr(api, "release_ingest_lock", lambda *_args, **_kwargs: None)
-+
-+    def _fake_ingest(settings: Any = None, *, service: Any = None) -> list[dict]:
-+        return [{"recording_id": "trs_auth_1"}]
-+
-+    monkeypatch.setattr("lan_app.gdrive.ingest_once", _fake_ingest)
-+
-+    client = TestClient(api.app)
-+    resp = client.post(
-+        "/api/actions/ingest",
-+        headers={"Authorization": "Bearer top-secret"},
-+    )
-+    assert resp.status_code == 200
-+    assert resp.json()["count"] == 1
-+
-+
-+def test_api_ingest_with_auth_returns_409_when_lock_held(tmp_path: Path, monkeypatch):
-+    cfg = _test_settings(tmp_path)
-+    cfg.api_bearer_token = "top-secret"
-+    monkeypatch.setattr(api, "_settings", cfg)
-+    init_db(cfg)
-+
-+    monkeypatch.setattr(api, "try_acquire_ingest_lock", lambda *_args, **_kwargs: (False, 19))
-+
-+    client = TestClient(api.app)
-+    resp = client.post(
-+        "/api/actions/ingest",
-+        headers={"Authorization": "Bearer top-secret"},
-+    )
-+    assert resp.status_code == 409
-+    payload = resp.json()
-+    assert payload["retry_after_seconds"] == 19
-+
-+
- # --------------------------------------------------------------------------
- # Helpers
- # --------------------------------------------------------------------------
-diff --git a/tests/test_ui_routes.py b/tests/test_ui_routes.py
-index 8bd7080..e6b5c02 100644
---- a/tests/test_ui_routes.py
-+++ b/tests/test_ui_routes.py
-@@ -9,6 +9,7 @@ import pytest
- from fastapi.testclient import TestClient
- 
- from lan_app import api, ui_routes
-+from lan_app.auth import AUTH_COOKIE_NAME
- from lan_app.config import AppSettings
- from lan_app.db import (
-     count_routing_training_examples,
-@@ -794,6 +795,54 @@ def test_connections(client):
-     assert "Microsoft Graph" in r.text
- 
- 
-+def test_ui_root_redirects_to_login_when_auth_enabled(tmp_path, monkeypatch):
-+    cfg = _cfg(tmp_path)
-+    cfg.api_bearer_token = "secret-ui-token"
-+    monkeypatch.setattr(api, "_settings", cfg)
-+    monkeypatch.setattr(ui_routes, "_settings", cfg)
-+    init_db(cfg)
-+
-+    c = TestClient(api.app, follow_redirects=False)
-+    r = c.get("/ui")
-+    assert r.status_code == 303
-+    assert r.headers["location"].startswith("/ui/login")
-+
-+
-+def test_ui_login_sets_cookie_and_allows_protected_post(tmp_path, monkeypatch):
-+    cfg = _cfg(tmp_path)
-+    cfg.api_bearer_token = "secret-ui-token"
-+    monkeypatch.setattr(api, "_settings", cfg)
-+    monkeypatch.setattr(ui_routes, "_settings", cfg)
-+    init_db(cfg)
-+    create_recording("rec-auth-ui-1", source="drive", source_filename="auth.mp3", settings=cfg)
-+
-+    monkeypatch.setattr(
-+        ui_routes,
-+        "purge_pending_recording_jobs",
-+        lambda *_args, **_kwargs: 0,
-+    )
-+
-+    c = TestClient(api.app, follow_redirects=False)
-+    blocked = c.post(
-+        "/ui/recordings/rec-auth-ui-1/delete",
-+        data={"confirm_delete": "DELETE"},
-+    )
-+    assert blocked.status_code == 401
-+
-+    login = c.post(
-+        "/ui/login",
-+        data={"token": "secret-ui-token", "next": "/ui"},
-+    )
-+    assert login.status_code == 303
-+    assert AUTH_COOKIE_NAME in login.headers.get("set-cookie", "")
-+
-+    allowed = c.post(
-+        "/ui/recordings/rec-auth-ui-1/delete",
-+        data={"confirm_delete": "DELETE"},
-+    )
-+    assert allowed.status_code == 200
-+
-+
- # ---------------------------------------------------------------------------
- # Inline action endpoints
- # ---------------------------------------------------------------------------
-@@ -821,7 +870,7 @@ def test_ui_action_delete(tmp_path, monkeypatch):
- 
-     monkeypatch.setattr(ui_routes, "purge_pending_recording_jobs", _fake_purge)
-     c = TestClient(api.app, follow_redirects=False)
--    r = c.post("/ui/recordings/rec-del-1/delete")
-+    r = c.post("/ui/recordings/rec-del-1/delete", data={"confirm_delete": "DELETE"})
-     assert r.status_code in (200, 307, 302)
- 
- 
-@@ -830,6 +879,24 @@ def test_ui_action_delete_not_found(client):
-     assert r.status_code == 404
- 
- 
-+def test_ui_action_delete_requires_confirmation(tmp_path, monkeypatch):
-+    cfg = _cfg(tmp_path)
-+    monkeypatch.setattr(api, "_settings", cfg)
-+    monkeypatch.setattr(ui_routes, "_settings", cfg)
-+    init_db(cfg)
-+    create_recording("rec-del-confirm-1", source="drive", source_filename="x.mp3", settings=cfg)
-+    monkeypatch.setattr(
-+        ui_routes,
-+        "purge_pending_recording_jobs",
-+        lambda *_args, **_kwargs: 0,
-+    )
-+
-+    c = TestClient(api.app, follow_redirects=False)
-+    r = c.post("/ui/recordings/rec-del-confirm-1/delete")
-+    assert r.status_code == 422
-+    assert 'Type "DELETE"' in r.text
-+
-+
- def test_ui_action_requeue(tmp_path, monkeypatch):
-     cfg = _cfg(tmp_path)
+@@ -529,7 +537,11 @@ def test_api_ingest_with_auth_succeeds_when_lock_acquired(tmp_path: Path, monkey
      monkeypatch.setattr(api, "_settings", cfg)
-@@ -1143,7 +1210,7 @@ def test_ui_action_delete_purge_failure_returns_503(tmp_path, monkeypatch):
+     init_db(cfg)
  
-     monkeypatch.setattr(ui_routes, "purge_pending_recording_jobs", _fail_purge)
-     c = TestClient(api.app, follow_redirects=False)
--    r = c.post("/ui/recordings/rec-pf-1/delete")
-+    r = c.post("/ui/recordings/rec-pf-1/delete", data={"confirm_delete": "DELETE"})
-     assert r.status_code == 503
-     assert "redis down" in r.text
- 
-@@ -1163,7 +1230,7 @@ def test_ui_action_delete_removes_disk_artifacts(tmp_path, monkeypatch):
- 
-     monkeypatch.setattr(ui_routes, "purge_pending_recording_jobs", _fake_purge)
-     c = TestClient(api.app, follow_redirects=False)
--    c.post("/ui/recordings/rec-disk-1/delete")
-+    c.post("/ui/recordings/rec-disk-1/delete", data={"confirm_delete": "DELETE"})
-     assert not rec_dir.exists()
- 
- 
-@@ -1193,7 +1260,7 @@ def test_ui_action_delete_cascades_voice_samples_for_recording(tmp_path, monkeyp
- 
-     monkeypatch.setattr(ui_routes, "purge_pending_recording_jobs", _fake_purge)
-     c = TestClient(api.app, follow_redirects=False)
--    r = c.post("/ui/recordings/rec-del-sample-1/delete")
-+    r = c.post("/ui/recordings/rec-del-sample-1/delete", data={"confirm_delete": "DELETE"})
-     assert r.status_code in (200, 307, 302)
-     assert list_voice_samples(settings=cfg) == []
- 
-diff --git a/lan_app/auth.py b/lan_app/auth.py
-new file mode 100644
-index 0000000..71e1669
---- /dev/null
-+++ b/lan_app/auth.py
-@@ -0,0 +1,109 @@
-+from __future__ import annotations
-+
-+import secrets
-+
-+from fastapi import Request, Response
-+
-+from .config import AppSettings
-+
-+AUTH_COOKIE_NAME = "lan_api_auth"
-+_MUTATING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
-+
-+
-+def _normalize_token(value: str | None) -> str | None:
-+    if value is None:
-+        return None
-+    token = value.strip()
-+    return token or None
-+
-+
-+def expected_bearer_token(settings: AppSettings) -> str | None:
-+    return _normalize_token(settings.api_bearer_token)
-+
-+
-+def auth_enabled(settings: AppSettings) -> bool:
-+    return expected_bearer_token(settings) is not None
-+
-+
-+def _token_from_authorization_header(request: Request) -> str | None:
-+    raw = request.headers.get("Authorization")
-+    if not raw:
-+        return None
-+    scheme, sep, token = raw.partition(" ")
-+    if not sep or scheme.lower() != "bearer":
-+        return None
-+    return _normalize_token(token)
-+
-+
-+def _token_from_cookie(request: Request) -> str | None:
-+    return _normalize_token(request.cookies.get(AUTH_COOKIE_NAME))
-+
-+
-+def request_is_authenticated(request: Request, settings: AppSettings) -> bool:
-+    expected = expected_bearer_token(settings)
-+    if expected is None:
-+        return True
-+
-+    candidates = (
-+        _token_from_authorization_header(request),
-+        _token_from_cookie(request),
+-    monkeypatch.setattr(api, "try_acquire_ingest_lock", lambda *_args, **_kwargs: (True, 300))
++    monkeypatch.setattr(
++        api,
++        "try_acquire_ingest_lock",
++        lambda *_args, **_kwargs: (True, 300, "lock-token"),
 +    )
-+    for candidate in candidates:
-+        if candidate and secrets.compare_digest(candidate, expected):
-+            return True
-+    return False
-+
-+
-+def request_requires_auth(request: Request) -> bool:
-+    path = request.url.path
-+    method = request.method.upper()
-+    if method not in _MUTATING_METHODS:
-+        return False
-+    if path == "/ui/login":
-+        return False
-+    if path.startswith("/api/"):
-+        return True
-+    if path.startswith("/ui/"):
-+        return True
-+    if path == "/projects" or path.startswith("/projects/"):
-+        return True
-+    if path == "/voices" or path.startswith("/voices/"):
-+        return True
-+    return False
-+
-+
-+def set_auth_cookie(response: Response, token: str) -> None:
-+    response.set_cookie(
-+        key=AUTH_COOKIE_NAME,
-+        value=token,
-+        httponly=True,
-+        samesite="lax",
-+        secure=False,
-+        path="/",
+     monkeypatch.setattr(api, "release_ingest_lock", lambda *_args, **_kwargs: None)
+ 
+     def _fake_ingest(settings: Any = None, *, service: Any = None) -> list[dict]:
+@@ -552,7 +564,11 @@ def test_api_ingest_with_auth_returns_409_when_lock_held(tmp_path: Path, monkeyp
+     monkeypatch.setattr(api, "_settings", cfg)
+     init_db(cfg)
+ 
+-    monkeypatch.setattr(api, "try_acquire_ingest_lock", lambda *_args, **_kwargs: (False, 19))
++    monkeypatch.setattr(
++        api,
++        "try_acquire_ingest_lock",
++        lambda *_args, **_kwargs: (False, 19, None),
 +    )
-+
-+
-+def clear_auth_cookie(response: Response) -> None:
-+    response.delete_cookie(
-+        key=AUTH_COOKIE_NAME,
-+        path="/",
-+    )
-+
-+
-+def safe_next_path(next_path: str | None, *, default: str = "/ui") -> str:
-+    target = (next_path or "").strip()
-+    if not target or not target.startswith("/") or target.startswith("//"):
-+        return default
-+    return target
-+
-+
-+__all__ = [
-+    "AUTH_COOKIE_NAME",
-+    "auth_enabled",
-+    "clear_auth_cookie",
-+    "expected_bearer_token",
-+    "request_is_authenticated",
-+    "request_requires_auth",
-+    "safe_next_path",
-+    "set_auth_cookie",
-+]
-diff --git a/lan_app/locks.py b/lan_app/locks.py
-new file mode 100644
-index 0000000..7cce1d0
---- /dev/null
-+++ b/lan_app/locks.py
-@@ -0,0 +1,50 @@
-+from __future__ import annotations
-+
-+from redis import Redis
-+
-+from .config import AppSettings
-+
-+INGEST_LOCK_KEY = "lan:ingest:lock"
-+
-+
-+def _ingest_lock_ttl(settings: AppSettings) -> int:
-+    return max(1, int(settings.ingest_lock_ttl_seconds))
-+
-+
-+def _redis_client(settings: AppSettings) -> Redis:
-+    return Redis.from_url(settings.redis_url)
-+
-+
-+def try_acquire_ingest_lock(
-+    settings: AppSettings,
-+    *,
-+    redis_client: Redis | None = None,
-+    key: str = INGEST_LOCK_KEY,
-+) -> tuple[bool, int]:
-+    client = redis_client or _redis_client(settings)
-+    ttl_seconds = _ingest_lock_ttl(settings)
-+    acquired = bool(client.set(key, "1", nx=True, ex=ttl_seconds))
-+    if acquired:
-+        return True, ttl_seconds
-+
-+    retry_after = client.ttl(key)
-+    if retry_after is None or int(retry_after) <= 0:
-+        return False, ttl_seconds
-+    return False, int(retry_after)
-+
-+
-+def release_ingest_lock(
-+    settings: AppSettings,
-+    *,
-+    redis_client: Redis | None = None,
-+    key: str = INGEST_LOCK_KEY,
-+) -> None:
-+    client = redis_client or _redis_client(settings)
-+    client.delete(key)
-+
-+
-+__all__ = [
-+    "INGEST_LOCK_KEY",
-+    "release_ingest_lock",
-+    "try_acquire_ingest_lock",
-+]
-diff --git a/lan_app/templates/login.html b/lan_app/templates/login.html
-new file mode 100644
-index 0000000..18ca517
---- /dev/null
-+++ b/lan_app/templates/login.html
-@@ -0,0 +1,23 @@
-+{% extends "base.html" %}
-+{% block title %}Login - LAN Transcriber{% endblock %}
-+{% block content %}
-+<h1>Login</h1>
-+<div class="conn-card" style="max-width:420px">
-+  <h3>API token required</h3>
-+  <p style="margin-bottom:8px">Enter the bearer token to unlock protected actions.</p>
-+  {% if error %}
-+  <p style="margin-bottom:8px;color:#b00020">{{ error }}</p>
-+  {% endif %}
-+  <form method="post" action="/ui/login">
-+    <input type="hidden" name="next" value="{{ next }}">
-+    <div class="form-row">
-+      <label for="token">Token</label>
-+      <input id="token" name="token" type="password" required autocomplete="off" style="width:260px">
-+    </div>
-+    <div class="form-row">
-+      <label></label>
-+      <button type="submit" class="btn">Log in</button>
-+    </div>
-+  </form>
-+</div>
-+{% endblock %}
+ 
+     client = TestClient(api.app)
+     resp = client.post(
 diff --git a/tests/test_locks.py b/tests/test_locks.py
-new file mode 100644
-index 0000000..0ba3660
---- /dev/null
+index 0ba3660..340059f 100644
+--- a/tests/test_locks.py
 +++ b/tests/test_locks.py
-@@ -0,0 +1,66 @@
-+from __future__ import annotations
+@@ -8,20 +8,36 @@ from lan_app.locks import release_ingest_lock, try_acquire_ingest_lock
+ 
+ class _FakeRedis:
+     def __init__(self):
+-        self._store: dict[str, int] = {}
++        self._store: dict[str, tuple[str, int]] = {}
+ 
+-    def set(self, key: str, _value: str, *, nx: bool, ex: int) -> bool:
++    def set(self, key: str, value: str, *, nx: bool, ex: int) -> bool:
+         if nx and key in self._store:
+             return False
+-        self._store[key] = ex
++        self._store[key] = (str(value), int(ex))
+         return True
+ 
+     def ttl(self, key: str) -> int:
+-        return self._store.get(key, -2)
++        row = self._store.get(key)
++        if row is None:
++            return -2
++        return row[1]
 +
-+from pathlib import Path
++    def get(self, key: str) -> str | None:
++        row = self._store.get(key)
++        if row is None:
++            return None
++        return row[0]
+ 
+     def delete(self, key: str) -> int:
+         return int(self._store.pop(key, None) is not None)
+ 
++    def eval(self, _script: str, _numkeys: int, key: str, token: str) -> int:
++        current = self.get(key)
++        if current == token:
++            self.delete(key)
++            return 1
++        return 0
 +
-+from lan_app.config import AppSettings
-+from lan_app.locks import release_ingest_lock, try_acquire_ingest_lock
-+
-+
-+class _FakeRedis:
-+    def __init__(self):
-+        self._store: dict[str, int] = {}
-+
-+    def set(self, key: str, _value: str, *, nx: bool, ex: int) -> bool:
-+        if nx and key in self._store:
-+            return False
-+        self._store[key] = ex
-+        return True
-+
-+    def ttl(self, key: str) -> int:
-+        return self._store.get(key, -2)
-+
-+    def delete(self, key: str) -> int:
-+        return int(self._store.pop(key, None) is not None)
-+
-+
-+def _cfg(tmp_path: Path) -> AppSettings:
-+    cfg = AppSettings(
-+        data_root=tmp_path,
-+        recordings_root=tmp_path / "recordings",
-+        db_path=tmp_path / "db" / "app.db",
-+    )
-+    cfg.ingest_lock_ttl_seconds = 123
-+    return cfg
-+
-+
-+def test_try_acquire_ingest_lock_returns_true_when_free(tmp_path: Path):
-+    cfg = _cfg(tmp_path)
-+    redis = _FakeRedis()
-+
-+    acquired, retry_after = try_acquire_ingest_lock(cfg, redis_client=redis)
-+
+ 
+ def _cfg(tmp_path: Path) -> AppSettings:
+     cfg = AppSettings(
+@@ -37,30 +53,49 @@ def test_try_acquire_ingest_lock_returns_true_when_free(tmp_path: Path):
+     cfg = _cfg(tmp_path)
+     redis = _FakeRedis()
+ 
+-    acquired, retry_after = try_acquire_ingest_lock(cfg, redis_client=redis)
++    acquired, retry_after, token = try_acquire_ingest_lock(cfg, redis_client=redis)
+ 
+     assert acquired is True
+     assert retry_after == 123
++    assert token is not None
+ 
+ 
+ def test_try_acquire_ingest_lock_returns_retry_after_when_held(tmp_path: Path):
+     cfg = _cfg(tmp_path)
+     redis = _FakeRedis()
+-    redis.set("lan:ingest:lock", "1", nx=True, ex=31)
++    redis.set("lan:ingest:lock", "owned", nx=True, ex=31)
+ 
+-    acquired, retry_after = try_acquire_ingest_lock(cfg, redis_client=redis)
++    acquired, retry_after, token = try_acquire_ingest_lock(cfg, redis_client=redis)
+ 
+     assert acquired is False
+     assert retry_after == 31
++    assert token is None
+ 
+ 
+ def test_release_ingest_lock_deletes_key(tmp_path: Path):
+     cfg = _cfg(tmp_path)
+     redis = _FakeRedis()
+-    redis.set("lan:ingest:lock", "1", nx=True, ex=31)
++    acquired, _retry_after, token = try_acquire_ingest_lock(cfg, redis_client=redis)
 +    assert acquired is True
-+    assert retry_after == 123
++    assert token is not None
+ 
+-    release_ingest_lock(cfg, redis_client=redis)
++    released = release_ingest_lock(cfg, token=token, redis_client=redis)
++    assert released is True
+ 
+-    acquired, retry_after = try_acquire_ingest_lock(cfg, redis_client=redis)
++    acquired, retry_after, _token = try_acquire_ingest_lock(cfg, redis_client=redis)
+     assert acquired is True
+     assert retry_after == 123
 +
 +
-+def test_try_acquire_ingest_lock_returns_retry_after_when_held(tmp_path: Path):
++def test_release_ingest_lock_does_not_delete_new_owner_lock(tmp_path: Path):
 +    cfg = _cfg(tmp_path)
 +    redis = _FakeRedis()
-+    redis.set("lan:ingest:lock", "1", nx=True, ex=31)
-+
-+    acquired, retry_after = try_acquire_ingest_lock(cfg, redis_client=redis)
-+
-+    assert acquired is False
-+    assert retry_after == 31
-+
-+
-+def test_release_ingest_lock_deletes_key(tmp_path: Path):
-+    cfg = _cfg(tmp_path)
-+    redis = _FakeRedis()
-+    redis.set("lan:ingest:lock", "1", nx=True, ex=31)
-+
-+    release_ingest_lock(cfg, redis_client=redis)
-+
-+    acquired, retry_after = try_acquire_ingest_lock(cfg, redis_client=redis)
++    acquired, _retry_after, token = try_acquire_ingest_lock(cfg, redis_client=redis)
 +    assert acquired is True
-+    assert retry_after == 123
++    assert token is not None
++    redis._store["lan:ingest:lock"] = ("other-owner", 31)
++
++    released = release_ingest_lock(cfg, token=token, redis_client=redis)
++
++    assert released is False
++    assert redis.get("lan:ingest:lock") == "other-owner"

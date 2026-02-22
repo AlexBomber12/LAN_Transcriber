@@ -1,10 +1,18 @@
 from __future__ import annotations
 
+from uuid import uuid4
+
 from redis import Redis
 
 from .config import AppSettings
 
 INGEST_LOCK_KEY = "lan:ingest:lock"
+_RELEASE_IF_VALUE_MATCHES_SCRIPT = """
+if redis.call("GET", KEYS[1]) == ARGV[1] then
+    return redis.call("DEL", KEYS[1])
+end
+return 0
+"""
 
 
 def _ingest_lock_ttl(settings: AppSettings) -> int:
@@ -20,27 +28,32 @@ def try_acquire_ingest_lock(
     *,
     redis_client: Redis | None = None,
     key: str = INGEST_LOCK_KEY,
-) -> tuple[bool, int]:
+) -> tuple[bool, int, str | None]:
     client = redis_client or _redis_client(settings)
     ttl_seconds = _ingest_lock_ttl(settings)
-    acquired = bool(client.set(key, "1", nx=True, ex=ttl_seconds))
+    lock_token = uuid4().hex
+    acquired = bool(client.set(key, lock_token, nx=True, ex=ttl_seconds))
     if acquired:
-        return True, ttl_seconds
+        return True, ttl_seconds, lock_token
 
     retry_after = client.ttl(key)
     if retry_after is None or int(retry_after) <= 0:
-        return False, ttl_seconds
-    return False, int(retry_after)
+        return False, ttl_seconds, None
+    return False, int(retry_after), None
 
 
 def release_ingest_lock(
     settings: AppSettings,
     *,
+    token: str | None,
     redis_client: Redis | None = None,
     key: str = INGEST_LOCK_KEY,
-) -> None:
+) -> bool:
+    if token is None:
+        return False
     client = redis_client or _redis_client(settings)
-    client.delete(key)
+    result = client.eval(_RELEASE_IF_VALUE_MATCHES_SCRIPT, 1, key, token)
+    return int(result) == 1
 
 
 __all__ = [

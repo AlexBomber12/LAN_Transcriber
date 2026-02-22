@@ -739,6 +739,29 @@ def list_jobs(
     return [_as_dict(row) or {} for row in rows], total
 
 
+def _find_active_job_for_recording_row(
+    conn: sqlite3.Connection,
+    *,
+    recording_id: str,
+    job_type: str,
+) -> sqlite3.Row | None:
+    return conn.execute(
+        """
+        SELECT *
+        FROM jobs
+        WHERE recording_id = ? AND type = ? AND status IN (?, ?)
+        ORDER BY created_at ASC
+        LIMIT 1
+        """,
+        (
+            recording_id,
+            job_type,
+            JOB_STATUS_QUEUED,
+            JOB_STATUS_STARTED,
+        ),
+    ).fetchone()
+
+
 def find_active_job_for_recording(
     recording_id: str,
     *,
@@ -748,22 +771,63 @@ def find_active_job_for_recording(
     init_db(settings)
     _validate_job_type(job_type)
     with connect(settings) as conn:
-        row = conn.execute(
+        row = _find_active_job_for_recording_row(
+            conn,
+            recording_id=recording_id,
+            job_type=job_type,
+        )
+    return _as_dict(row)
+
+
+def create_job_if_no_active_for_recording(
+    *,
+    job_id: str,
+    recording_id: str,
+    job_type: str,
+    settings: AppSettings | None = None,
+    status: str = JOB_STATUS_QUEUED,
+    attempt: int = 0,
+    error: str | None = None,
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    init_db(settings)
+    _validate_job_type(job_type)
+    _validate_job_status(status)
+    now = _utc_now()
+    with connect(settings) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        existing = _find_active_job_for_recording_row(
+            conn,
+            recording_id=recording_id,
+            job_type=job_type,
+        )
+        if existing is not None:
+            conn.rollback()
+            return None, _as_dict(existing)
+
+        conn.execute(
             """
-            SELECT *
-            FROM jobs
-            WHERE recording_id = ? AND type = ? AND status IN (?, ?)
-            ORDER BY created_at ASC
-            LIMIT 1
+            INSERT INTO jobs (
+                id, recording_id, type, status, attempt, error,
+                started_at, finished_at, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
+                job_id,
                 recording_id,
                 job_type,
-                JOB_STATUS_QUEUED,
-                JOB_STATUS_STARTED,
+                status,
+                attempt,
+                error,
+                None,
+                None,
+                now,
+                now,
             ),
-        ).fetchone()
-    return _as_dict(row)
+        )
+        created = conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
+        conn.commit()
+    return _as_dict(created) or {}, None
 
 
 def start_job(
@@ -1562,6 +1626,7 @@ __all__ = [
     "get_job",
     "list_jobs",
     "find_active_job_for_recording",
+    "create_job_if_no_active_for_recording",
     "start_job",
     "requeue_job",
     "finish_job",
