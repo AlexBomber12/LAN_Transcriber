@@ -1,144 +1,149 @@
-diff --git a/lan_app/db.py b/lan_app/db.py
-index c04ce43..5f8720f 100644
---- a/lan_app/db.py
-+++ b/lan_app/db.py
-@@ -228,23 +228,28 @@ _MIGRATIONS: tuple[str, ...] = (
-     WHERE project_id IS NOT NULL AND project_assignment_source IS NULL;
-     """,
-     """
-+    WITH candidate_recordings AS (
-+        SELECT recording_id
-+        FROM jobs
-+        WHERE type IN ('stt', 'diarize', 'align', 'language', 'llm', 'metrics')
-+          AND status = 'queued'
-+          AND started_at IS NULL
-+          AND finished_at IS NULL
-+        GROUP BY recording_id
-+        HAVING COUNT(DISTINCT type) = 6
-+    ),
-+    placeholder_rows AS (
-+        SELECT MIN(rowid) AS row_id
-+        FROM jobs
-+        WHERE recording_id IN (SELECT recording_id FROM candidate_recordings)
-+          AND type IN ('stt', 'diarize', 'align', 'language', 'llm', 'metrics')
-+          AND status = 'queued'
-+          AND started_at IS NULL
-+          AND finished_at IS NULL
-+        GROUP BY recording_id, type
-+    )
-     DELETE FROM jobs
--    WHERE type IN ('stt', 'diarize', 'align', 'language', 'llm', 'metrics')
--      AND status = 'queued'
--      AND started_at IS NULL
--      AND finished_at IS NULL
--      AND EXISTS (
--        SELECT 1
--        FROM recordings
--        WHERE recordings.id = jobs.recording_id
--          AND recordings.status IN (
--            'NeedsReview',
--            'Ready',
--            'Published',
--            'Quarantine',
--            'Failed'
--          )
--      );
-+    WHERE rowid IN (SELECT row_id FROM placeholder_rows);
-     """,
- )
+diff --git a/lan_app/worker_tasks.py b/lan_app/worker_tasks.py
+index 4afdb84..9b9abbc 100644
+--- a/lan_app/worker_tasks.py
++++ b/lan_app/worker_tasks.py
+@@ -5,6 +5,7 @@ from dataclasses import dataclass
+ from datetime import datetime, timezone
+ import json
+ from pathlib import Path
++import re
+ import time
+ from types import SimpleNamespace
+ from typing import Any
+@@ -20,6 +21,7 @@ from .constants import (
+     JOB_TYPE_PRECHECK,
+     JOB_TYPE_PUBLISH,
+     JOB_TYPES,
++    RECORDING_STATUSES,
+     RECORDING_STATUS_FAILED,
+     RECORDING_STATUS_NEEDS_REVIEW,
+     RECORDING_STATUS_PROCESSING,
+@@ -59,6 +61,41 @@ def _append_step_log(path: Path, message: str) -> None:
+         fh.write(f"[{_utc_now()}] {message}\n")
  
+ 
++_TERMINAL_STATUS_RE = re.compile(r"recording_status=([A-Za-z]+)")
++_QUARANTINE_REASON_RE = re.compile(r"quarantined reason=([^\s]+)")
++
++
++def _restore_status_from_precheck_log(
++    recording_id: str,
++    settings: AppSettings,
++) -> tuple[str | None, str | None]:
++    """Best-effort recovery of pre-legacy terminal status from precheck logs."""
++    precheck_log = _step_log_path(recording_id, JOB_TYPE_PRECHECK, settings)
++    if not precheck_log.exists():
++        return None, None
++    try:
++        lines = precheck_log.read_text(encoding="utf-8").splitlines()
++    except OSError:
++        return None, None
++
++    quarantine_reason: str | None = None
++    for line in reversed(lines):
++        if quarantine_reason is None:
++            reason_match = _QUARANTINE_REASON_RE.search(line)
++            if reason_match is not None:
++                quarantine_reason = reason_match.group(1).strip() or None
++        status_match = _TERMINAL_STATUS_RE.search(line)
++        if status_match is None:
++            continue
++        status = status_match.group(1).strip()
++        if (
++            status in RECORDING_STATUSES
++            and status not in {RECORDING_STATUS_QUEUED, RECORDING_STATUS_PROCESSING}
++        ):
++            return status, quarantine_reason
++    return None, None
++
++
+ def _success_status(job_type: str) -> str:
+     if job_type == JOB_TYPE_PUBLISH:
+         return RECORDING_STATUS_PUBLISHED
+@@ -409,6 +446,8 @@ def process_job(job_id: str, recording_id: str, job_type: str) -> dict[str, str]
+     log_path = _step_log_path(recording_id, job_type, settings)
+ 
+     if job_type != JOB_TYPE_PRECHECK:
++        recording_before = get_recording(recording_id, settings=settings) or {}
++        previous_status = str(recording_before.get("status") or "").strip()
+         if not start_job(job_id, settings=settings):
+             raise ValueError(f"Job not found: {job_id}")
+         unsupported_error = (
+@@ -424,6 +463,25 @@ def process_job(job_id: str, recording_id: str, job_type: str) -> dict[str, str]
+         )
+         if not fail_job(job_id, unsupported_error, settings=settings):
+             raise ValueError(f"Job not found: {job_id}")
++        if previous_status == RECORDING_STATUS_QUEUED:
++            restored_status, restored_quarantine_reason = _restore_status_from_precheck_log(
++                recording_id,
++                settings,
++            )
++            if restored_status is not None:
++                set_recording_status(
++                    recording_id,
++                    restored_status,
++                    settings=settings,
++                    quarantine_reason=restored_quarantine_reason,
++                )
++                _append_step_log(
++                    log_path,
++                    (
++                        "restored recording status from precheck log "
++                        f"after unsupported legacy job: {restored_status}"
++                    ),
++                )
+         return {
+             "job_id": job_id,
+             "recording_id": recording_id,
 diff --git a/tests/test_db_queue.py b/tests/test_db_queue.py
-index ccd27c7..adada1b 100644
+index adada1b..e831261 100644
 --- a/tests/test_db_queue.py
 +++ b/tests/test_db_queue.py
-@@ -16,6 +16,11 @@ from lan_app.constants import (
-     JOB_STATUS_FAILED,
-     JOB_STATUS_FINISHED,
-     JOB_STATUS_QUEUED,
-+    JOB_TYPE_ALIGN,
-+    JOB_TYPE_DIARIZE,
-+    JOB_TYPE_LANGUAGE,
-+    JOB_TYPE_LLM,
-+    JOB_TYPE_METRICS,
-     JOB_TYPE_PRECHECK,
-     JOB_TYPE_STT,
-     RECORDING_STATUS_FAILED,
-@@ -78,33 +83,52 @@ def test_init_db_creates_mvp_tables(tmp_path: Path):
-     assert expected.issubset(names)
+@@ -190,6 +190,47 @@ def test_worker_noop_updates_job_and_recording_state(tmp_path: Path, monkeypatch
+     assert "finished job=job-worker-1" in step_log.read_text(encoding="utf-8")
  
  
--def test_placeholder_cleanup_migration_preserves_queued_legacy_jobs(tmp_path: Path):
-+def test_placeholder_cleanup_migration_only_removes_legacy_placeholders(tmp_path: Path):
-     cfg = _test_settings(tmp_path)
-     init_db(cfg)
-     create_recording(
--        "rec-mig-ready-1",
-+        "rec-mig-placeholder-1",
-         source="test",
--        source_filename="ready.mp3",
--        status=RECORDING_STATUS_READY,
-+        source_filename="placeholder.mp3",
++def test_worker_legacy_job_restores_status_from_precheck_log(tmp_path: Path, monkeypatch):
++    cfg = _test_settings(tmp_path)
++    monkeypatch.setenv("LAN_DATA_ROOT", str(cfg.data_root))
++    monkeypatch.setenv("LAN_RECORDINGS_ROOT", str(cfg.recordings_root))
++    monkeypatch.setenv("LAN_DB_PATH", str(cfg.db_path))
++    monkeypatch.setenv("LAN_PROM_SNAPSHOT_PATH", str(cfg.metrics_snapshot_path))
++
++    init_db(cfg)
++    create_recording(
++        "rec-worker-legacy-1",
++        source="test",
++        source_filename="legacy.mp3",
 +        status=RECORDING_STATUS_QUEUED,
-         settings=cfg,
-     )
-     create_recording(
--        "rec-mig-queued-1",
-+        "rec-mig-real-queued-1",
-         source="test",
-         source_filename="queued.mp3",
-         status=RECORDING_STATUS_QUEUED,
-         settings=cfg,
-     )
-+    placeholder_types = (
-+        JOB_TYPE_STT,
-+        JOB_TYPE_DIARIZE,
-+        JOB_TYPE_ALIGN,
-+        JOB_TYPE_LANGUAGE,
-+        JOB_TYPE_LLM,
-+        JOB_TYPE_METRICS,
++        settings=cfg,
 +    )
-+    for job_type in placeholder_types:
-+        create_job(
-+            f"job-mig-placeholder-{job_type}-1",
-+            recording_id="rec-mig-placeholder-1",
-+            job_type=job_type,
-+            settings=cfg,
-+            status=JOB_STATUS_QUEUED,
-+        )
++    create_job(
++        "job-worker-legacy-1",
++        recording_id="rec-worker-legacy-1",
++        job_type=JOB_TYPE_STT,
++        settings=cfg,
++    )
 +
-+    # Simulate a real queue-enqueued legacy job for the same recording.
-     create_job(
--        "job-mig-ready-stt-1",
--        recording_id="rec-mig-ready-1",
-+        "job-mig-real-extra-stt-1",
-+        recording_id="rec-mig-placeholder-1",
-         job_type=JOB_TYPE_STT,
-         settings=cfg,
-         status=JOB_STATUS_QUEUED,
-     )
++    precheck_log = cfg.recordings_root / "rec-worker-legacy-1" / "logs" / "step-precheck.log"
++    precheck_log.parent.mkdir(parents=True, exist_ok=True)
++    precheck_log.write_text(
++        "[2026-02-22T00:00:00Z] finished job=job-precheck-1 type=precheck recording_status=Ready\n",
++        encoding="utf-8",
++    )
 +
-     create_job(
--        "job-mig-queued-stt-1",
--        recording_id="rec-mig-queued-1",
-+        "job-mig-real-queued-stt-1",
-+        recording_id="rec-mig-real-queued-1",
-         job_type=JOB_TYPE_STT,
-         settings=cfg,
-         status=JOB_STATUS_QUEUED,
-@@ -117,8 +141,14 @@ def test_placeholder_cleanup_migration_preserves_queued_legacy_jobs(tmp_path: Pa
- 
-     init_db(cfg)
- 
--    assert get_job("job-mig-ready-stt-1", settings=cfg) is None
--    queued_job = get_job("job-mig-queued-stt-1", settings=cfg)
-+    for job_type in placeholder_types:
-+        assert get_job(f"job-mig-placeholder-{job_type}-1", settings=cfg) is None
++    result = process_job("job-worker-legacy-1", "rec-worker-legacy-1", JOB_TYPE_STT)
++    recording = get_recording("rec-worker-legacy-1", settings=cfg)
++    job = get_job("job-worker-legacy-1", settings=cfg)
 +
-+    extra_job = get_job("job-mig-real-extra-stt-1", settings=cfg)
-+    assert extra_job is not None
-+    assert extra_job["status"] == JOB_STATUS_QUEUED
++    assert result["status"] == "ignored"
++    assert recording is not None
++    assert recording["status"] == RECORDING_STATUS_READY
++    assert job is not None
++    assert job["status"] == JOB_STATUS_FAILED
++    assert "unsupported legacy job type under single-job pipeline" in str(job["error"])
 +
-+    queued_job = get_job("job-mig-real-queued-stt-1", settings=cfg)
-     assert queued_job is not None
-     assert queued_job["status"] == JOB_STATUS_QUEUED
- 
++
+ def test_load_calendar_summary_context_uses_preparsed_candidates(tmp_path: Path, monkeypatch):
+     cfg = _test_settings(tmp_path)
+     monkeypatch.setattr(

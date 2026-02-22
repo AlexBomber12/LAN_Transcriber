@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
 from pathlib import Path
+import re
 import time
 from types import SimpleNamespace
 from typing import Any
@@ -20,6 +21,7 @@ from .constants import (
     JOB_TYPE_PRECHECK,
     JOB_TYPE_PUBLISH,
     JOB_TYPES,
+    RECORDING_STATUSES,
     RECORDING_STATUS_FAILED,
     RECORDING_STATUS_NEEDS_REVIEW,
     RECORDING_STATUS_PROCESSING,
@@ -57,6 +59,41 @@ def _append_step_log(path: Path, message: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as fh:
         fh.write(f"[{_utc_now()}] {message}\n")
+
+
+_TERMINAL_STATUS_RE = re.compile(r"recording_status=([A-Za-z]+)")
+_QUARANTINE_REASON_RE = re.compile(r"quarantined reason=([^\s]+)")
+
+
+def _restore_status_from_precheck_log(
+    recording_id: str,
+    settings: AppSettings,
+) -> tuple[str | None, str | None]:
+    """Best-effort recovery of pre-legacy terminal status from precheck logs."""
+    precheck_log = _step_log_path(recording_id, JOB_TYPE_PRECHECK, settings)
+    if not precheck_log.exists():
+        return None, None
+    try:
+        lines = precheck_log.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None, None
+
+    quarantine_reason: str | None = None
+    for line in reversed(lines):
+        if quarantine_reason is None:
+            reason_match = _QUARANTINE_REASON_RE.search(line)
+            if reason_match is not None:
+                quarantine_reason = reason_match.group(1).strip() or None
+        status_match = _TERMINAL_STATUS_RE.search(line)
+        if status_match is None:
+            continue
+        status = status_match.group(1).strip()
+        if (
+            status in RECORDING_STATUSES
+            and status not in {RECORDING_STATUS_QUEUED, RECORDING_STATUS_PROCESSING}
+        ):
+            return status, quarantine_reason
+    return None, None
 
 
 def _success_status(job_type: str) -> str:
@@ -409,6 +446,8 @@ def process_job(job_id: str, recording_id: str, job_type: str) -> dict[str, str]
     log_path = _step_log_path(recording_id, job_type, settings)
 
     if job_type != JOB_TYPE_PRECHECK:
+        recording_before = get_recording(recording_id, settings=settings) or {}
+        previous_status = str(recording_before.get("status") or "").strip()
         if not start_job(job_id, settings=settings):
             raise ValueError(f"Job not found: {job_id}")
         unsupported_error = (
@@ -424,6 +463,25 @@ def process_job(job_id: str, recording_id: str, job_type: str) -> dict[str, str]
         )
         if not fail_job(job_id, unsupported_error, settings=settings):
             raise ValueError(f"Job not found: {job_id}")
+        if previous_status == RECORDING_STATUS_QUEUED:
+            restored_status, restored_quarantine_reason = _restore_status_from_precheck_log(
+                recording_id,
+                settings,
+            )
+            if restored_status is not None:
+                set_recording_status(
+                    recording_id,
+                    restored_status,
+                    settings=settings,
+                    quarantine_reason=restored_quarantine_reason,
+                )
+                _append_step_log(
+                    log_path,
+                    (
+                        "restored recording status from precheck log "
+                        f"after unsupported legacy job: {restored_status}"
+                    ),
+                )
         return {
             "job_id": job_id,
             "recording_id": recording_id,

@@ -190,6 +190,47 @@ def test_worker_noop_updates_job_and_recording_state(tmp_path: Path, monkeypatch
     assert "finished job=job-worker-1" in step_log.read_text(encoding="utf-8")
 
 
+def test_worker_legacy_job_restores_status_from_precheck_log(tmp_path: Path, monkeypatch):
+    cfg = _test_settings(tmp_path)
+    monkeypatch.setenv("LAN_DATA_ROOT", str(cfg.data_root))
+    monkeypatch.setenv("LAN_RECORDINGS_ROOT", str(cfg.recordings_root))
+    monkeypatch.setenv("LAN_DB_PATH", str(cfg.db_path))
+    monkeypatch.setenv("LAN_PROM_SNAPSHOT_PATH", str(cfg.metrics_snapshot_path))
+
+    init_db(cfg)
+    create_recording(
+        "rec-worker-legacy-1",
+        source="test",
+        source_filename="legacy.mp3",
+        status=RECORDING_STATUS_QUEUED,
+        settings=cfg,
+    )
+    create_job(
+        "job-worker-legacy-1",
+        recording_id="rec-worker-legacy-1",
+        job_type=JOB_TYPE_STT,
+        settings=cfg,
+    )
+
+    precheck_log = cfg.recordings_root / "rec-worker-legacy-1" / "logs" / "step-precheck.log"
+    precheck_log.parent.mkdir(parents=True, exist_ok=True)
+    precheck_log.write_text(
+        "[2026-02-22T00:00:00Z] finished job=job-precheck-1 type=precheck recording_status=Ready\n",
+        encoding="utf-8",
+    )
+
+    result = process_job("job-worker-legacy-1", "rec-worker-legacy-1", JOB_TYPE_STT)
+    recording = get_recording("rec-worker-legacy-1", settings=cfg)
+    job = get_job("job-worker-legacy-1", settings=cfg)
+
+    assert result["status"] == "ignored"
+    assert recording is not None
+    assert recording["status"] == RECORDING_STATUS_READY
+    assert job is not None
+    assert job["status"] == JOB_STATUS_FAILED
+    assert "unsupported legacy job type under single-job pipeline" in str(job["error"])
+
+
 def test_load_calendar_summary_context_uses_preparsed_candidates(tmp_path: Path, monkeypatch):
     cfg = _test_settings(tmp_path)
     monkeypatch.setattr(
