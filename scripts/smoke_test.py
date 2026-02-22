@@ -34,6 +34,8 @@ def wait_endpoint(base_url: str, path: str, timeout: int = 60) -> bool:
 def main() -> int:
     p = argparse.ArgumentParser()
     p.add_argument("--base-url", required=True)
+    # Backward-compatible no-op retained for callers that still pass --file.
+    p.add_argument("--file")
     args = p.parse_args()
 
     base_url = args.base_url.rstrip("/")

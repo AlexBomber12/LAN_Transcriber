@@ -1,36 +1,13 @@
-diff --git a/systemd/lan-transcriber-api.service b/systemd/lan-transcriber-api.service
-index 6c8ac50..442f2b5 100644
---- a/systemd/lan-transcriber-api.service
-+++ b/systemd/lan-transcriber-api.service
-@@ -6,6 +6,7 @@ Wants=network-online.target
- [Service]
- WorkingDirectory=/opt/lan-transcriber
- Environment=PYTHONPATH=/opt/lan-transcriber
-+Environment=LAN_REDIS_URL=redis://127.0.0.1:6379/0
- ExecStartPre=/usr/bin/python3 -m lan_app.db_init
- ExecStart=/usr/bin/python3 -m uvicorn lan_app.api:app --host 0.0.0.0 --port 7860
- Restart=on-failure
-diff --git a/systemd/lan-transcriber-worker.service b/systemd/lan-transcriber-worker.service
-index 0c2df98..2e66ae4 100644
---- a/systemd/lan-transcriber-worker.service
-+++ b/systemd/lan-transcriber-worker.service
-@@ -6,6 +6,7 @@ Wants=network-online.target
- [Service]
- WorkingDirectory=/opt/lan-transcriber
- Environment=PYTHONPATH=/opt/lan-transcriber
-+Environment=LAN_REDIS_URL=redis://127.0.0.1:6379/0
- ExecStart=/usr/bin/python3 -m lan_app.worker
- Restart=on-failure
+diff --git a/scripts/smoke_test.py b/scripts/smoke_test.py
+index ff79601..0d6fd53 100755
+--- a/scripts/smoke_test.py
++++ b/scripts/smoke_test.py
+@@ -34,6 +34,8 @@ def wait_endpoint(base_url: str, path: str, timeout: int = 60) -> bool:
+ def main() -> int:
+     p = argparse.ArgumentParser()
+     p.add_argument("--base-url", required=True)
++    # Backward-compatible no-op retained for callers that still pass --file.
++    p.add_argument("--file")
+     args = p.parse_args()
  
-diff --git a/systemd/recording-transcriber.service b/systemd/recording-transcriber.service
-index d354cd7..7f9e8cc 100644
---- a/systemd/recording-transcriber.service
-+++ b/systemd/recording-transcriber.service
-@@ -6,6 +6,7 @@ Wants=network-online.target
- [Service]
- WorkingDirectory=/opt/lan-transcriber
- Environment=PYTHONPATH=/opt/lan-transcriber
-+Environment=LAN_REDIS_URL=redis://127.0.0.1:6379/0
- ExecStart=/usr/bin/python3 -m uvicorn lan_app.api:app --host 0.0.0.0 --port 7860
- Restart=on-failure
- 
+     base_url = args.base_url.rstrip("/")
