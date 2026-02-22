@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 from lan_app import api, ui_routes
 from lan_app.config import AppSettings
 from lan_app.db import (
+    count_routing_training_examples,
     create_voice_sample,
     create_job,
     create_recording,
@@ -21,13 +22,16 @@ from lan_app.db import (
     list_voice_samples,
     init_db,
     list_projects,
+    list_project_keyword_weights,
     replace_participant_metrics,
     list_voice_profiles,
     set_speaker_assignment,
+    upsert_calendar_match,
     upsert_meeting_metrics,
 )
 from lan_app.constants import (
     JOB_TYPE_PRECHECK,
+    RECORDING_STATUS_NEEDS_REVIEW,
     RECORDING_STATUS_READY,
 )
 
@@ -181,10 +185,86 @@ def test_recording_detail_calendar_tab(seeded_client):
     assert "Save selection" in r.text
 
 
-def test_recording_detail_placeholder_tabs(seeded_client):
+def test_recording_detail_project_tab(seeded_client):
     r = seeded_client.get("/recordings/rec-ui-1?tab=project")
     assert r.status_code == 200
-    assert "placeholder" in r.text.lower() or "available after" in r.text.lower()
+    assert "Project Assignment" in r.text
+    assert "Save project" in r.text
+    assert "Routing Rationale" in r.text
+
+
+def test_recording_detail_project_assignment_trains_routing(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    init_db(cfg)
+    project = create_project("Roadmap", settings=cfg)
+    create_recording(
+        "rec-project-assign-1",
+        source="drive",
+        source_filename="roadmap-sync.mp3",
+        status=RECORDING_STATUS_READY,
+        settings=cfg,
+    )
+    profile = create_voice_profile("Alex", settings=cfg)
+    set_speaker_assignment(
+        recording_id="rec-project-assign-1",
+        diar_speaker_label="S1",
+        voice_profile_id=profile["id"],
+        confidence=1.0,
+        settings=cfg,
+    )
+    upsert_calendar_match(
+        recording_id="rec-project-assign-1",
+        candidates=[
+            {
+                "event_id": "evt-1",
+                "subject": "Roadmap weekly sync",
+                "organizer": "Alex",
+                "attendees": ["Priya"],
+                "score": 0.95,
+                "rationale": "manual-test",
+            }
+        ],
+        selected_event_id="evt-1",
+        selected_confidence=0.95,
+        settings=cfg,
+    )
+    derived = cfg.recordings_root / "rec-project-assign-1" / "derived"
+    derived.mkdir(parents=True, exist_ok=True)
+    (derived / "summary.json").write_text(
+        json.dumps(
+            {
+                "topic": "Roadmap status update",
+                "summary_bullets": ["Roadmap milestones reviewed"],
+                "decisions": ["Ship Q2 beta"],
+                "action_items": [{"task": "Finalize roadmap", "owner": "Alex"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    c = TestClient(api.app, follow_redirects=False)
+    resp = c.post(
+        "/ui/recordings/rec-project-assign-1/project",
+        data={
+            "project_id": str(project["id"]),
+            "train_routing": "1",
+        },
+    )
+    assert resp.status_code == 303
+    assert resp.headers["location"] == "/recordings/rec-project-assign-1?tab=project"
+
+    recording = get_recording("rec-project-assign-1", settings=cfg)
+    assert recording is not None
+    assert recording["project_id"] == project["id"]
+    assert count_routing_training_examples(project_id=project["id"], settings=cfg) == 1
+    keyword_rows = list_project_keyword_weights(project_id=project["id"], settings=cfg)
+    keywords = {row["keyword"] for row in keyword_rows}
+    assert "cal:roadmap" in keywords
+    assert "tag:roadmap" in keywords
+    assert f"voice:{profile['id']}" in keywords
+    assert recording["status"] in {RECORDING_STATUS_READY, RECORDING_STATUS_NEEDS_REVIEW}
 
 
 def test_recording_detail_speakers_tab_assignment_persists(tmp_path, monkeypatch):

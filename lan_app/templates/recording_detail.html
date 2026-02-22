@@ -33,7 +33,16 @@
     <span class="k">Status</span><span class="v"><span class="badge s-{{ rec.status }}">{{ rec.status }}</span></span>
     <span class="k">Captured at</span><span class="v">{{ rec.captured_at[:19].replace('T',' ') if rec.captured_at else '—' }}</span>
     <span class="k">Duration</span><span class="v">{% if rec.duration_sec %}{{ rec.duration_sec }}s{% else %}—{% endif %}</span>
-    <span class="k">Project ID</span><span class="v">{{ rec.project_id or '—' }}</span>
+    <span class="k">Project</span><span class="v">{{ rec.project_name or (rec.project_id and ('#' ~ rec.project_id)) or '—' }}</span>
+    <span class="k">Suggested project</span><span class="v">{{ rec.suggested_project_name or (rec.suggested_project_id and ('#' ~ rec.suggested_project_id)) or '—' }}</span>
+    <span class="k">Routing confidence</span>
+    <span class="v">
+      {% if rec.routing_confidence is not none %}
+      {{ '%.2f'|format(rec.routing_confidence) }}
+      {% else %}
+      —
+      {% endif %}
+    </span>
     <span class="k">Language (auto)</span><span class="v">{{ rec.language_auto or '—' }}</span>
     <span class="k">Transcript language override</span><span class="v">{{ rec.language_override or '—' }}</span>
     <span class="k">Target summary language</span><span class="v">{{ rec.target_summary_language or '—' }}</span>
@@ -172,7 +181,55 @@
   </form>
 
 {% elif current_tab == 'project' %}
-  <p class="placeholder">Project assignment — available after PR-CALENDAR-01.</p>
+  {% set prj = project or {} %}
+  {% set project_items = prj.projects or [] %}
+
+  <h2>Project Assignment</h2>
+  <div class="info-grid">
+    <span class="k">Current project</span><span class="v">{{ prj.selected_project_name or (prj.selected_project_id and ('#' ~ prj.selected_project_id)) or 'Unassigned' }}</span>
+    <span class="k">Suggested project</span><span class="v">{{ prj.suggested_project_name or (prj.suggested_project_id and ('#' ~ prj.suggested_project_id)) or '—' }}</span>
+    <span class="k">Confidence</span><span class="v">{{ '%.2f'|format(prj.confidence or 0.0) }}</span>
+    <span class="k">Auto-select threshold</span><span class="v">{{ '%.2f'|format(prj.threshold or 0.0) }}</span>
+    <span class="k">Training examples (total)</span><span class="v">{{ prj.training_examples_total or 0 }}</span>
+    <span class="k">Training examples (this project)</span><span class="v">{{ prj.training_examples_selected_project or 0 }}</span>
+  </div>
+
+  {% if (prj.confidence or 0.0) < (prj.threshold or 0.0) %}
+  <p style="margin-top:8px;color:#92400e">
+    Confidence is below threshold; this recording should remain in manual review.
+  </p>
+  {% endif %}
+
+  <form method="post" action="/ui/recordings/{{ rec.id }}/project" style="margin-top:10px">
+    <div class="form-row">
+      <label for="project_id">Project</label>
+      <select id="project_id" name="project_id" style="width:280px">
+        <option value="">Unassigned</option>
+        {% for p in project_items %}
+        <option value="{{ p.id }}" {% if prj.selected_project_id == p.id %}selected{% endif %}>{{ p.name }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="form-row">
+      <label for="train_routing">Train routing</label>
+      <input id="train_routing" type="checkbox" name="train_routing" value="1" checked>
+      <span style="font-size:12px;color:#555">Store this manual choice as a routing training example.</span>
+    </div>
+    <div class="filters" style="margin-top:8px">
+      <button type="submit" class="btn">Save project</button>
+    </div>
+  </form>
+
+  <h2>Routing Rationale</h2>
+  {% if prj.rationale %}
+  <ul>
+    {% for reason in prj.rationale %}
+    <li>{{ reason }}</li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p class="placeholder">No routing rationale available yet.</p>
+  {% endif %}
 
 {% elif current_tab == 'speakers' %}
   {% set sp = speakers or {} %}

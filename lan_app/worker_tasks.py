@@ -19,6 +19,7 @@ from .constants import (
     JOB_TYPE_PUBLISH,
     JOB_TYPES,
     RECORDING_STATUS_FAILED,
+    RECORDING_STATUS_NEEDS_REVIEW,
     RECORDING_STATUS_PROCESSING,
     RECORDING_STATUS_PUBLISHED,
     RECORDING_STATUS_QUARANTINE,
@@ -34,6 +35,7 @@ from .db import (
     set_recording_status,
     start_job,
 )
+from .routing import refresh_recording_routing
 
 
 def _utc_now() -> str:
@@ -293,6 +295,24 @@ def _run_precheck_pipeline(
             f"quarantined reason={precheck.quarantine_reason}",
         )
         return RECORDING_STATUS_QUARANTINE, precheck.quarantine_reason
+    routing = refresh_recording_routing(
+        recording_id,
+        settings=settings,
+        apply_workflow=True,
+    )
+    _append_step_log(
+        log_path,
+        (
+            "routing "
+            f"suggested_project_id={routing.get('suggested_project_id')} "
+            f"confidence={float(routing.get('confidence') or 0.0):.2f} "
+            f"threshold={float(routing.get('threshold') or 0.0):.2f} "
+            f"auto_selected={bool(routing.get('auto_selected'))} "
+            f"status_after={routing.get('status_after_routing')}"
+        ),
+    )
+    if routing.get("status_after_routing") == RECORDING_STATUS_NEEDS_REVIEW:
+        return RECORDING_STATUS_NEEDS_REVIEW, None
     return RECORDING_STATUS_READY, None
 
 

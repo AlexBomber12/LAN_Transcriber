@@ -32,6 +32,7 @@ from .constants import (
     RECORDING_STATUS_QUARANTINE,
 )
 from .db import (
+    count_routing_training_examples,
     create_voice_sample,
     create_project,
     create_voice_profile,
@@ -48,6 +49,7 @@ from .db import (
     list_voice_samples,
     list_voice_profiles,
     update_project_onenote_mapping,
+    set_recording_project,
     set_speaker_assignment,
     set_recording_language_settings,
     set_recording_status,
@@ -60,6 +62,7 @@ from .onenote import (
     list_onenote_sections,
     publish_recording_to_onenote,
 )
+from .routing import refresh_recording_routing, train_routing_from_manual_selection
 from lan_transcriber.artifacts import atomic_write_json
 from lan_transcriber.llm_client import LLMClient
 from lan_transcriber.pipeline import Settings as PipelineSettings
@@ -610,6 +613,67 @@ def _speakers_tab_context(recording_id: str, settings: AppSettings) -> dict[str,
     }
 
 
+def _as_int(value: Any) -> int | None:
+    try:
+        if value is None:
+            return None
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _project_tab_context(recording_id: str, rec: dict[str, Any], settings: AppSettings) -> dict[str, Any]:
+    decision = refresh_recording_routing(
+        recording_id,
+        settings=settings,
+        apply_workflow=False,
+    )
+    refreshed = get_recording(recording_id, settings=settings) or rec
+    projects = list_projects(settings=settings)
+    selected_project_id = _as_int(refreshed.get("project_id"))
+    selected_project = None
+    for project in projects:
+        if _as_int(project.get("id")) == selected_project_id:
+            selected_project = project
+            break
+
+    suggested_project_id = _as_int(decision.get("suggested_project_id"))
+    if suggested_project_id is None:
+        suggested_project_id = _as_int(refreshed.get("suggested_project_id"))
+    suggested_project_name = str(decision.get("suggested_project_name") or "").strip()
+    if not suggested_project_name:
+        suggested_project_name = str(refreshed.get("suggested_project_name") or "").strip()
+    confidence_raw = decision.get("confidence", refreshed.get("routing_confidence"))
+    try:
+        confidence = max(0.0, min(float(confidence_raw), 1.0))
+    except (TypeError, ValueError):
+        confidence = 0.0
+    threshold = float(decision.get("threshold") or settings.routing_auto_select_threshold)
+
+    rationale_payload = decision.get("rationale")
+    if not isinstance(rationale_payload, list):
+        rationale_payload = refreshed.get("routing_rationale_json")
+    rationale = [str(item).strip() for item in (rationale_payload or []) if str(item).strip()]
+
+    selected_training_examples = (
+        count_routing_training_examples(project_id=selected_project_id, settings=settings)
+        if selected_project_id is not None
+        else 0
+    )
+    return {
+        "projects": projects,
+        "selected_project_id": selected_project_id,
+        "selected_project_name": str((selected_project or {}).get("name") or "").strip(),
+        "suggested_project_id": suggested_project_id,
+        "suggested_project_name": suggested_project_name,
+        "confidence": confidence,
+        "threshold": threshold,
+        "rationale": rationale,
+        "training_examples_total": count_routing_training_examples(settings=settings),
+        "training_examples_selected_project": selected_training_examples,
+    }
+
+
 def _sync_transcript_language_settings(
     recording_id: str,
     *,
@@ -921,6 +985,7 @@ async def ui_recording_detail(
     summary: dict[str, Any] | None = None
     metrics: dict[str, Any] | None = None
     speakers: dict[str, Any] | None = None
+    project: dict[str, Any] | None = None
     if current_tab == "calendar":
         try:
             calendar = await run_in_threadpool(
@@ -939,6 +1004,9 @@ async def ui_recording_detail(
         language = _language_tab_context(recording_id, rec, _settings)
     if current_tab == "speakers":
         speakers = _speakers_tab_context(recording_id, _settings)
+    if current_tab == "project":
+        project = _project_tab_context(recording_id, rec, _settings)
+        rec = get_recording(recording_id, settings=_settings) or rec
     if current_tab in {"overview", "metrics"}:
         summary = _summary_context(recording_id, _settings)
     if current_tab == "metrics":
@@ -958,6 +1026,7 @@ async def ui_recording_detail(
             "summary": summary,
             "metrics": metrics,
             "speakers": speakers,
+            "project": project,
             "onenote_page_url": onenote_page_url,
         },
     )
@@ -1094,6 +1163,52 @@ async def ui_add_speaker_sample(
     except ValueError as exc:
         return HTMLResponse(str(exc), status_code=422)
     return RedirectResponse(f"/recordings/{recording_id}?tab=speakers", status_code=303)
+
+
+@ui_router.post("/ui/recordings/{recording_id}/project")
+async def ui_set_recording_project(
+    recording_id: str,
+    project_id: str = Form(default=""),
+    train_routing: str = Form(default=""),
+) -> Any:
+    if get_recording(recording_id, settings=_settings) is None:
+        return HTMLResponse("Not found", status_code=404)
+
+    token = project_id.strip()
+    resolved_project_id: int | None = None
+    if token:
+        try:
+            resolved_project_id = int(token)
+        except ValueError:
+            return HTMLResponse("project_id must be an integer", status_code=422)
+
+    try:
+        updated = set_recording_project(
+            recording_id,
+            resolved_project_id,
+            settings=_settings,
+        )
+    except sqlite3.IntegrityError:
+        return HTMLResponse("Project not found", status_code=404)
+    if not updated:
+        return HTMLResponse("Not found", status_code=404)
+
+    should_train = train_routing.strip().lower() in {"1", "true", "on", "yes"}
+    if should_train and resolved_project_id is not None:
+        try:
+            train_routing_from_manual_selection(
+                recording_id,
+                resolved_project_id,
+                settings=_settings,
+            )
+        except KeyError:
+            return HTMLResponse("Project not found", status_code=404)
+    refresh_recording_routing(
+        recording_id,
+        settings=_settings,
+        apply_workflow=False,
+    )
+    return RedirectResponse(f"/recordings/{recording_id}?tab=project", status_code=303)
 
 
 # ---------------------------------------------------------------------------
