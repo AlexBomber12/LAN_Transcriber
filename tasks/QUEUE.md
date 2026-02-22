@@ -77,7 +77,7 @@ Queue (in order)
 - Depends on: PR-MS-AUTH-01 and PR-LLM-01 and PR-METRICS-01
 
 14) PR-ROUTING-01: Project suggestion (calendar + voices + text) with confidence + NeedsReview workflow
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-ROUTING-01.md
 - Depends on: PR-CALENDAR-01 and PR-VOICE-01 and PR-ONENOTE-01
 

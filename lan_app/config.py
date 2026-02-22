@@ -97,6 +97,15 @@ class AppSettings(BaseSettings):
             "LAN_CALENDAR_AUTO_MATCH_THRESHOLD",
         ),
     )
+    routing_auto_select_threshold: float = Field(
+        default=0.65,
+        ge=0.0,
+        le=1.0,
+        validation_alias=AliasChoices(
+            "ROUTING_AUTO_SELECT_THRESHOLD",
+            "LAN_ROUTING_AUTO_SELECT_THRESHOLD",
+        ),
+    )
 
     @property
     def ms_scopes_list(self) -> list[str]:

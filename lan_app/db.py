@@ -28,6 +28,7 @@ def _quoted(values: tuple[str, ...]) -> str:
 _RECORDING_STATUSES_SQL = _quoted(RECORDING_STATUSES)
 _JOB_STATUSES_SQL = _quoted(JOB_STATUSES)
 _JOB_TYPES_SQL = _quoted(JOB_TYPES)
+_PROJECT_ASSIGNMENT_SOURCES = {"manual", "auto"}
 
 _MIGRATIONS: tuple[str, ...] = (
     f"""
@@ -177,9 +178,68 @@ _MIGRATIONS: tuple[str, ...] = (
     """
     ALTER TABLE recordings ADD COLUMN onenote_page_url TEXT;
     """,
+    """
+    ALTER TABLE recordings ADD COLUMN suggested_project_id INTEGER;
+    """,
+    """
+    ALTER TABLE recordings ADD COLUMN routing_confidence REAL;
+    """,
+    """
+    ALTER TABLE recordings ADD COLUMN routing_rationale_json TEXT NOT NULL DEFAULT '[]';
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_recordings_suggested_project_id
+        ON recordings(suggested_project_id);
+
+    CREATE TABLE IF NOT EXISTS routing_training_examples (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        recording_id TEXT NOT NULL,
+        project_id INTEGER NOT NULL,
+        calendar_subject_tokens_json TEXT NOT NULL DEFAULT '[]',
+        tags_json TEXT NOT NULL DEFAULT '[]',
+        voice_profile_ids_json TEXT NOT NULL DEFAULT '[]',
+        created_at TEXT NOT NULL,
+        FOREIGN KEY(recording_id) REFERENCES recordings(id) ON DELETE CASCADE,
+        FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_routing_training_examples_project_id
+        ON routing_training_examples(project_id);
+    CREATE INDEX IF NOT EXISTS idx_routing_training_examples_recording_id
+        ON routing_training_examples(recording_id);
+
+    CREATE TABLE IF NOT EXISTS routing_project_keyword_weights (
+        project_id INTEGER NOT NULL,
+        keyword TEXT NOT NULL,
+        weight REAL NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY(project_id, keyword),
+        FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_routing_project_keyword_weights_project_id
+        ON routing_project_keyword_weights(project_id);
+    """,
+    """
+    ALTER TABLE recordings ADD COLUMN project_assignment_source TEXT;
+
+    UPDATE recordings
+    SET project_assignment_source = 'manual'
+    WHERE project_id IS NOT NULL AND project_assignment_source IS NULL;
+    """,
 )
 
 _UNSET = object()
+
+_RECORDING_SELECT_SQL = """
+SELECT
+    r.*,
+    p.name AS project_name,
+    sp.name AS suggested_project_name
+FROM recordings AS r
+LEFT JOIN projects AS p ON p.id = r.project_id
+LEFT JOIN projects AS sp ON sp.id = r.suggested_project_id
+"""
 
 
 def _utc_now() -> str:
@@ -216,6 +276,22 @@ def _validate_job_status(status: str) -> None:
 def _validate_job_type(job_type: str) -> None:
     if job_type not in JOB_TYPES:
         raise ValueError(f"Unsupported job type: {job_type}")
+
+
+def _normalise_project_assignment_source(source: str | None) -> str | None:
+    if source is None:
+        return None
+    value = str(source).strip().lower()
+    if not value:
+        return None
+    if value not in _PROJECT_ASSIGNMENT_SOURCES:
+        options = ", ".join(sorted(_PROJECT_ASSIGNMENT_SOURCES))
+        raise ValueError(f"Unsupported project assignment source: {value} ({options})")
+    return value
+
+
+def _normalise_keyword(value: object) -> str:
+    return " ".join(str(value).strip().lower().split())
 
 
 def db_path(settings: AppSettings | None = None) -> Path:
@@ -260,6 +336,7 @@ def create_recording(
     language_override: str | None = None,
     target_summary_language: str | None = None,
     project_id: int | None = None,
+    project_assignment_source: str | None = None,
     onenote_page_id: str | None = None,
     drive_file_id: str | None = None,
     drive_md5: str | None = None,
@@ -268,15 +345,23 @@ def create_recording(
     _validate_recording_status(status)
     now = _utc_now()
     captured = captured_at or now
+    resolved_assignment_source = _normalise_project_assignment_source(
+        project_assignment_source
+    )
+    if project_id is None:
+        resolved_assignment_source = None
+    elif resolved_assignment_source is None:
+        resolved_assignment_source = "manual"
     with connect(settings) as conn:
         conn.execute(
             """
             INSERT INTO recordings (
                 id, source, source_filename, captured_at, duration_sec, status,
                 quarantine_reason, language_auto, language_override, target_summary_language, project_id,
+                project_assignment_source,
                 onenote_page_id, drive_file_id, drive_md5, created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 recording_id,
@@ -290,6 +375,7 @@ def create_recording(
                 language_override,
                 target_summary_language,
                 project_id,
+                resolved_assignment_source,
                 onenote_page_id,
                 drive_file_id,
                 drive_md5,
@@ -298,7 +384,7 @@ def create_recording(
             ),
         )
         row = conn.execute(
-            "SELECT * FROM recordings WHERE id = ?",
+            f"{_RECORDING_SELECT_SQL} WHERE r.id = ?",
             (recording_id,),
         ).fetchone()
         conn.commit()
@@ -313,7 +399,7 @@ def get_recording(
     init_db(settings)
     with connect(settings) as conn:
         row = conn.execute(
-            "SELECT * FROM recordings WHERE id = ?",
+            f"{_RECORDING_SELECT_SQL} WHERE r.id = ?",
             (recording_id,),
         ).fetchone()
     return _as_dict(row)
@@ -331,7 +417,7 @@ def list_recordings(
     params: list[Any] = []
     if status is not None:
         _validate_recording_status(status)
-        filters.append("status = ?")
+        filters.append("r.status = ?")
         params.append(status)
 
     where_sql = f"WHERE {' AND '.join(filters)}" if filters else ""
@@ -341,16 +427,15 @@ def list_recordings(
     with connect(settings) as conn:
         total = int(
             conn.execute(
-                f"SELECT COUNT(*) FROM recordings {where_sql}",
+                f"SELECT COUNT(*) FROM recordings AS r {where_sql}",
                 params,
             ).fetchone()[0]
         )
         rows = conn.execute(
             f"""
-            SELECT *
-            FROM recordings
+            {_RECORDING_SELECT_SQL}
             {where_sql}
-            ORDER BY created_at DESC
+            ORDER BY r.created_at DESC
             LIMIT ? OFFSET ?
             """,
             [*params, safe_limit, safe_offset],
@@ -378,6 +463,77 @@ def set_recording_status(
             (
                 status,
                 quarantine_reason if status == RECORDING_STATUS_QUARANTINE else None,
+                now,
+                recording_id,
+            ),
+        )
+        conn.commit()
+    return updated.rowcount > 0
+
+
+def set_recording_project(
+    recording_id: str,
+    project_id: int | None,
+    *,
+    settings: AppSettings | None = None,
+    assignment_source: str | None = None,
+) -> bool:
+    init_db(settings)
+    now = _utc_now()
+    resolved_project_id = None if project_id is None else int(project_id)
+    resolved_assignment_source = _normalise_project_assignment_source(assignment_source)
+    if resolved_project_id is None:
+        resolved_assignment_source = None
+    elif resolved_assignment_source is None:
+        resolved_assignment_source = "manual"
+    with connect(settings) as conn:
+        updated = conn.execute(
+            """
+            UPDATE recordings
+            SET project_id = ?, project_assignment_source = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                resolved_project_id,
+                resolved_assignment_source,
+                now,
+                recording_id,
+            ),
+        )
+        conn.commit()
+    return updated.rowcount > 0
+
+
+def set_recording_routing_suggestion(
+    recording_id: str,
+    *,
+    suggested_project_id: int | None,
+    routing_confidence: float | None,
+    routing_rationale: list[str] | None,
+    settings: AppSettings | None = None,
+) -> bool:
+    init_db(settings)
+    now = _utc_now()
+    resolved_project_id = (
+        None if suggested_project_id is None else int(suggested_project_id)
+    )
+    if routing_confidence is None:
+        confidence_value = None
+    else:
+        confidence_value = max(0.0, min(float(routing_confidence), 1.0))
+    rationale_rows = [str(item).strip() for item in (routing_rationale or [])]
+    rationale = [item for item in rationale_rows if item]
+    with connect(settings) as conn:
+        updated = conn.execute(
+            """
+            UPDATE recordings
+            SET suggested_project_id = ?, routing_confidence = ?, routing_rationale_json = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                resolved_project_id,
+                confidence_value,
+                json.dumps(rationale, ensure_ascii=True),
                 now,
                 recording_id,
             ),
@@ -702,10 +858,157 @@ def delete_project(
     settings: AppSettings | None = None,
 ) -> bool:
     init_db(settings)
+    target_project_id = int(project_id)
+    now = _utc_now()
     with connect(settings) as conn:
-        deleted = conn.execute("DELETE FROM projects WHERE id = ?", (project_id,))
+        conn.execute(
+            """
+            UPDATE recordings
+            SET
+                suggested_project_id = NULL,
+                routing_confidence = NULL,
+                routing_rationale_json = '[]',
+                updated_at = ?
+            WHERE suggested_project_id = ?
+            """,
+            (now, target_project_id),
+        )
+        deleted = conn.execute("DELETE FROM projects WHERE id = ?", (target_project_id,))
         conn.commit()
     return deleted.rowcount > 0
+
+
+def create_routing_training_example(
+    *,
+    recording_id: str,
+    project_id: int,
+    calendar_subject_tokens: list[str],
+    tags: list[str],
+    voice_profile_ids: list[int],
+    settings: AppSettings | None = None,
+) -> dict[str, Any]:
+    init_db(settings)
+    now = _utc_now()
+    normalized_calendar = sorted(
+        {_normalise_keyword(token) for token in calendar_subject_tokens if _normalise_keyword(token)}
+    )
+    normalized_tags = sorted({_normalise_keyword(token) for token in tags if _normalise_keyword(token)})
+    normalized_voice_ids = sorted({int(value) for value in voice_profile_ids})
+    with connect(settings) as conn:
+        cursor = conn.execute(
+            """
+            INSERT INTO routing_training_examples (
+                recording_id,
+                project_id,
+                calendar_subject_tokens_json,
+                tags_json,
+                voice_profile_ids_json,
+                created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                recording_id,
+                int(project_id),
+                json.dumps(normalized_calendar, ensure_ascii=True),
+                json.dumps(normalized_tags, ensure_ascii=True),
+                json.dumps(normalized_voice_ids, ensure_ascii=True),
+                now,
+            ),
+        )
+        row = conn.execute(
+            "SELECT * FROM routing_training_examples WHERE id = ?",
+            (cursor.lastrowid,),
+        ).fetchone()
+        conn.commit()
+    return _as_dict(row) or {}
+
+
+def count_routing_training_examples(
+    *,
+    project_id: int | None = None,
+    settings: AppSettings | None = None,
+) -> int:
+    init_db(settings)
+    clauses: list[str] = []
+    params: list[Any] = []
+    if project_id is not None:
+        clauses.append("project_id = ?")
+        params.append(int(project_id))
+    where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    with connect(settings) as conn:
+        row = conn.execute(
+            f"SELECT COUNT(*) FROM routing_training_examples {where_sql}",
+            tuple(params),
+        ).fetchone()
+    return int(row[0]) if row is not None else 0
+
+
+def increment_project_keyword_weights(
+    *,
+    project_id: int,
+    keyword_deltas: dict[str, float],
+    settings: AppSettings | None = None,
+) -> int:
+    init_db(settings)
+    now = _utc_now()
+    updates = 0
+    with connect(settings) as conn:
+        for raw_keyword, raw_delta in keyword_deltas.items():
+            keyword = _normalise_keyword(raw_keyword)
+            if not keyword:
+                continue
+            delta = float(raw_delta)
+            if delta == 0.0:
+                continue
+            conn.execute(
+                """
+                INSERT INTO routing_project_keyword_weights (
+                    project_id,
+                    keyword,
+                    weight,
+                    updated_at
+                )
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(project_id, keyword) DO UPDATE SET
+                    weight = routing_project_keyword_weights.weight + excluded.weight,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    int(project_id),
+                    keyword,
+                    delta,
+                    now,
+                ),
+            )
+            updates += 1
+        conn.commit()
+    return updates
+
+
+def list_project_keyword_weights(
+    *,
+    project_id: int | None = None,
+    settings: AppSettings | None = None,
+) -> list[dict[str, Any]]:
+    init_db(settings)
+    clauses: list[str] = []
+    params: list[Any] = []
+    if project_id is not None:
+        clauses.append("project_id = ?")
+        params.append(int(project_id))
+    where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    with connect(settings) as conn:
+        rows = conn.execute(
+            f"""
+            SELECT *
+            FROM routing_project_keyword_weights
+            {where_sql}
+            ORDER BY project_id, keyword
+            """,
+            tuple(params),
+        ).fetchall()
+    return [_as_dict(row) or {} for row in rows]
 
 
 def list_voice_profiles(
@@ -1190,6 +1493,8 @@ __all__ = [
     "get_recording",
     "list_recordings",
     "set_recording_status",
+    "set_recording_project",
+    "set_recording_routing_suggestion",
     "set_recording_language_settings",
     "set_recording_publish_result",
     "delete_recording",
@@ -1204,6 +1509,10 @@ __all__ = [
     "create_project",
     "update_project_onenote_mapping",
     "delete_project",
+    "create_routing_training_example",
+    "count_routing_training_examples",
+    "increment_project_keyword_weights",
+    "list_project_keyword_weights",
     "list_voice_profiles",
     "create_voice_profile",
     "delete_voice_profile",

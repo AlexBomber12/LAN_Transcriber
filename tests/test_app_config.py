@@ -58,3 +58,10 @@ def test_calendar_match_settings_from_env(monkeypatch):
     cfg = AppSettings()
     assert cfg.calendar_match_window_minutes == 30
     assert cfg.calendar_auto_match_threshold == 0.7
+
+
+def test_routing_threshold_from_env(monkeypatch):
+    monkeypatch.setenv("ROUTING_AUTO_SELECT_THRESHOLD", "0.73")
+
+    cfg = AppSettings()
+    assert cfg.routing_auto_select_threshold == 0.73
