@@ -1,139 +1,42 @@
 diff --git a/lan_app/auth.py b/lan_app/auth.py
-index 71e1669..6acbcc4 100644
+index 6acbcc4..e28d2bb 100644
 --- a/lan_app/auth.py
 +++ b/lan_app/auth.py
-@@ -61,24 +61,30 @@ def request_requires_auth(request: Request) -> bool:
-         return False
-     if path == "/ui/login":
-         return False
--    if path.startswith("/api/"):
+@@ -65,17 +65,12 @@ def request_requires_auth(request: Request) -> bool:
+ 
+ 
+ def cookie_secure_flag(request: Request) -> bool:
+-    host = str(request.url.hostname or "").strip().lower()
+-    if host in {"localhost", "127.0.0.1", "::1"}:
+-        return False
+     forwarded_proto = request.headers.get("x-forwarded-proto", "")
+     if forwarded_proto:
+         scheme = forwarded_proto.split(",", 1)[0].strip().lower()
+     else:
+         scheme = str(request.url.scheme or "").strip().lower()
+-    if scheme == "https":
 -        return True
--    if path.startswith("/ui/"):
--        return True
--    if path == "/projects" or path.startswith("/projects/"):
--        return True
--    if path == "/voices" or path.startswith("/voices/"):
-+    return True
-+
-+
-+def cookie_secure_flag(request: Request) -> bool:
-+    host = str(request.url.hostname or "").strip().lower()
-+    if host in {"localhost", "127.0.0.1", "::1"}:
-+        return False
-+    forwarded_proto = request.headers.get("x-forwarded-proto", "")
-+    if forwarded_proto:
-+        scheme = forwarded_proto.split(",", 1)[0].strip().lower()
-+    else:
-+        scheme = str(request.url.scheme or "").strip().lower()
-+    if scheme == "https":
-         return True
--    return False
-+    return host not in {"", "testserver"}
+-    return host not in {"", "testserver"}
++    return scheme == "https"
  
  
--def set_auth_cookie(response: Response, token: str) -> None:
-+def set_auth_cookie(response: Response, token: str, *, secure: bool) -> None:
-     response.set_cookie(
-         key=AUTH_COOKIE_NAME,
-         value=token,
-         httponly=True,
-         samesite="lax",
--        secure=False,
-+        secure=secure,
-         path="/",
-     )
- 
-@@ -101,6 +107,7 @@ __all__ = [
-     "AUTH_COOKIE_NAME",
-     "auth_enabled",
-     "clear_auth_cookie",
-+    "cookie_secure_flag",
-     "expected_bearer_token",
-     "request_is_authenticated",
-     "request_requires_auth",
-diff --git a/lan_app/ui_routes.py b/lan_app/ui_routes.py
-index 2e54026..514a3d9 100644
---- a/lan_app/ui_routes.py
-+++ b/lan_app/ui_routes.py
-@@ -20,6 +20,7 @@ from fastapi.templating import Jinja2Templates
- 
- from .auth import (
-     auth_enabled,
-+    cookie_secure_flag,
-     clear_auth_cookie,
-     expected_bearer_token,
-     request_is_authenticated,
-@@ -980,7 +981,11 @@ async def ui_login_submit(
-         )
- 
-     response = RedirectResponse(target, status_code=303)
--    set_auth_cookie(response, submitted)
-+    set_auth_cookie(
-+        response,
-+        submitted,
-+        secure=cookie_secure_flag(request),
-+    )
-     return response
- 
- 
-diff --git a/tests/test_db_queue.py b/tests/test_db_queue.py
-index 30e6627..a6ca6ff 100644
---- a/tests/test_db_queue.py
-+++ b/tests/test_db_queue.py
-@@ -42,6 +42,7 @@ from lan_app.db import (
- )
- from lan_app.jobs import RecordingJob, enqueue_recording_job, purge_pending_recording_jobs
- from lan_app.worker_tasks import process_job
-+from lan_transcriber import aliases
- from lan_transcriber.llm_client import LLMClient
- from lan_transcriber.pipeline import PrecheckResult
- 
-@@ -547,6 +548,29 @@ def test_api_requeue_dedupes_active_precheck_job(tmp_path: Path, monkeypatch):
-     assert "already queued or started" in detail["message"].lower()
- 
- 
-+def test_api_alias_requires_auth_when_token_enabled(tmp_path: Path, monkeypatch):
-+    cfg = _test_settings(tmp_path)
-+    cfg.api_bearer_token = "alias-secret"
-+    monkeypatch.setattr(api, "_settings", cfg)
-+    init_db(cfg)
-+
-+    alias_path = tmp_path / "db" / "speaker_bank.yaml"
-+    aliases.save_aliases({}, alias_path)
-+    monkeypatch.setattr(aliases, "ALIAS_PATH", alias_path)
-+
-+    client = TestClient(api.app)
-+    blocked = client.post("/alias/S1", json={"alias": "Alice"})
-+    assert blocked.status_code == 401
-+
-+    allowed = client.post(
-+        "/alias/S1",
-+        json={"alias": "Alice"},
-+        headers={"Authorization": "Bearer alias-secret"},
-+    )
-+    assert allowed.status_code == 200
-+    assert aliases.load_aliases(alias_path).get("S1") == "Alice"
-+
-+
- def test_enqueue_marks_job_failed_when_redis_enqueue_fails(tmp_path: Path, monkeypatch):
-     cfg = _test_settings(tmp_path)
-     init_db(cfg)
+ def set_auth_cookie(response: Response, token: str, *, secure: bool) -> None:
 diff --git a/tests/test_ui_routes.py b/tests/test_ui_routes.py
-index e6b5c02..497a248 100644
+index 497a248..d659949 100644
 --- a/tests/test_ui_routes.py
 +++ b/tests/test_ui_routes.py
-@@ -843,6 +843,25 @@ def test_ui_login_sets_cookie_and_allows_protected_post(tmp_path, monkeypatch):
-     assert allowed.status_code == 200
+@@ -862,6 +862,25 @@ def test_ui_login_sets_secure_cookie_for_https_host(tmp_path, monkeypatch):
+     assert "Secure" in set_cookie
  
  
-+def test_ui_login_sets_secure_cookie_for_https_host(tmp_path, monkeypatch):
++def test_ui_login_does_not_set_secure_cookie_for_http_lan_host(tmp_path, monkeypatch):
 +    cfg = _cfg(tmp_path)
 +    cfg.api_bearer_token = "secret-ui-token"
 +    monkeypatch.setattr(api, "_settings", cfg)
 +    monkeypatch.setattr(ui_routes, "_settings", cfg)
 +    init_db(cfg)
 +
-+    c = TestClient(api.app, follow_redirects=False, base_url="https://staging.example")
++    c = TestClient(api.app, follow_redirects=False, base_url="http://192.168.1.10")
 +    login = c.post(
 +        "/ui/login",
 +        data={"token": "secret-ui-token", "next": "/ui"},
@@ -142,7 +45,7 @@ index e6b5c02..497a248 100644
 +    assert login.status_code == 303
 +    set_cookie = login.headers.get("set-cookie", "")
 +    assert AUTH_COOKIE_NAME in set_cookie
-+    assert "Secure" in set_cookie
++    assert "Secure" not in set_cookie
 +
 +
  # ---------------------------------------------------------------------------
