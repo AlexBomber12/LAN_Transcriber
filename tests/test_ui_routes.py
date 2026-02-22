@@ -843,6 +843,25 @@ def test_ui_login_sets_cookie_and_allows_protected_post(tmp_path, monkeypatch):
     assert allowed.status_code == 200
 
 
+def test_ui_login_sets_secure_cookie_for_https_host(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    cfg.api_bearer_token = "secret-ui-token"
+    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    init_db(cfg)
+
+    c = TestClient(api.app, follow_redirects=False, base_url="https://staging.example")
+    login = c.post(
+        "/ui/login",
+        data={"token": "secret-ui-token", "next": "/ui"},
+    )
+
+    assert login.status_code == 303
+    set_cookie = login.headers.get("set-cookie", "")
+    assert AUTH_COOKIE_NAME in set_cookie
+    assert "Secure" in set_cookie
+
+
 # ---------------------------------------------------------------------------
 # Inline action endpoints
 # ---------------------------------------------------------------------------

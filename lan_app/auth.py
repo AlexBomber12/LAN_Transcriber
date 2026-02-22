@@ -61,24 +61,30 @@ def request_requires_auth(request: Request) -> bool:
         return False
     if path == "/ui/login":
         return False
-    if path.startswith("/api/"):
-        return True
-    if path.startswith("/ui/"):
-        return True
-    if path == "/projects" or path.startswith("/projects/"):
-        return True
-    if path == "/voices" or path.startswith("/voices/"):
-        return True
-    return False
+    return True
 
 
-def set_auth_cookie(response: Response, token: str) -> None:
+def cookie_secure_flag(request: Request) -> bool:
+    host = str(request.url.hostname or "").strip().lower()
+    if host in {"localhost", "127.0.0.1", "::1"}:
+        return False
+    forwarded_proto = request.headers.get("x-forwarded-proto", "")
+    if forwarded_proto:
+        scheme = forwarded_proto.split(",", 1)[0].strip().lower()
+    else:
+        scheme = str(request.url.scheme or "").strip().lower()
+    if scheme == "https":
+        return True
+    return host not in {"", "testserver"}
+
+
+def set_auth_cookie(response: Response, token: str, *, secure: bool) -> None:
     response.set_cookie(
         key=AUTH_COOKIE_NAME,
         value=token,
         httponly=True,
         samesite="lax",
-        secure=False,
+        secure=secure,
         path="/",
     )
 
@@ -101,6 +107,7 @@ __all__ = [
     "AUTH_COOKIE_NAME",
     "auth_enabled",
     "clear_auth_cookie",
+    "cookie_secure_flag",
     "expected_bearer_token",
     "request_is_authenticated",
     "request_requires_auth",

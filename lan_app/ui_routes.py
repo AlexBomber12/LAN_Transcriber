@@ -20,6 +20,7 @@ from fastapi.templating import Jinja2Templates
 
 from .auth import (
     auth_enabled,
+    cookie_secure_flag,
     clear_auth_cookie,
     expected_bearer_token,
     request_is_authenticated,
@@ -980,7 +981,11 @@ async def ui_login_submit(
         )
 
     response = RedirectResponse(target, status_code=303)
-    set_auth_cookie(response, submitted)
+    set_auth_cookie(
+        response,
+        submitted,
+        secure=cookie_secure_flag(request),
+    )
     return response
 
 
