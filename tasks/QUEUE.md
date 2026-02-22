@@ -97,6 +97,6 @@ Queue (in order)
 - Depends on: PR-JOB-MODEL-01
 
 18) PR-STAGING-01: Fix staging deploy workflow and add infra/staging (compose + env template + real smoke)
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-STAGING-01.md
 - Depends on: PR-ENTRYPOINT-01

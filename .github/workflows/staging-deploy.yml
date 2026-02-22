@@ -1,80 +1,74 @@
 name: staging-deploy
+
 on:
   push:
     branches: [main]
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - name: Detect CI
-        run: |
-          if [ "${CI}" = "true" ]; then echo "IS_CI=true"  >> "$GITHUB_ENV";
-          else                       echo "IS_CI=false" >> "$GITHUB_ENV"; fi
-      - name: Populate staging env vars
-        shell: bash
-        run: |
-          host="${{ secrets.STAGING_HOST }}"
-          user="${{ secrets.STAGING_USER }}"
-          key="${{ secrets.STAGING_SSH_KEY }}"
-
-          if [ "${IS_CI}" = "true" ]; then  # running in GitHub Actions CI
-            host="${host:-localhost}"
-            user="${user:-ci-user}"
-            key="${key:-dummy}"
-          fi
-
-          echo "STAGING_HOST=${host}" >> "$GITHUB_ENV"
-          echo "STAGING_USER=${user}"  >> "$GITHUB_ENV"
-          echo "STAGING_SSH_KEY=${key}" >> "$GITHUB_ENV"
-
       - name: Validate secrets
         shell: bash
+        env:
+          STAGING_HOST: ${{ secrets.STAGING_HOST }}
+          STAGING_USER: ${{ secrets.STAGING_USER }}
+          STAGING_SSH_KEY: ${{ secrets.STAGING_SSH_KEY }}
         run: |
-          if [ "${IS_CI}" != "true" ] && { [ -z "$STAGING_HOST" ] || [ -z "$STAGING_USER" ] || [ -z "$STAGING_SSH_KEY" ]; }; then
+          if [ -z "$STAGING_HOST" ] || [ -z "$STAGING_USER" ] || [ -z "$STAGING_SSH_KEY" ]; then
             echo "::error::Missing required secrets STAGING_HOST, STAGING_USER, and STAGING_SSH_KEY"
             exit 1
           fi
 
       - uses: actions/checkout@v4
 
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install smoke test dependency
+        run: python -m pip install --disable-pip-version-check requests
+
       - name: Ensure SSH folder
-        if: env.IS_CI == 'false'
         run: |
           mkdir -p ~/.ssh
           chmod 700 ~/.ssh
 
       - name: Setup known_hosts
-        if: env.IS_CI == 'false'
-        run: ssh-keyscan -H "$STAGING_HOST" >> ~/.ssh/known_hosts
+        run: ssh-keyscan -H "${{ secrets.STAGING_HOST }}" >> ~/.ssh/known_hosts
 
-      - name: Mock deploy (CI)
-        if: env.IS_CI == 'true'
-        run: echo "CI run – remote steps skipped."
-
-      - name: Copy compose to VPS
-        if: env.IS_CI == 'false'
+      - name: Copy compose files to VPS
         uses: appleboy/scp-action@v1.0.0
         with:
-          host: ${{ env.STAGING_HOST }}
-          username: ${{ env.STAGING_USER }}
-          key: ${{ env.STAGING_SSH_KEY }}
-          source: "infra/staging/*"
+          host: ${{ secrets.STAGING_HOST }}
+          username: ${{ secrets.STAGING_USER }}
+          key: ${{ secrets.STAGING_SSH_KEY }}
+          source: "infra/staging/*,infra/staging/.env.staging.example"
           target: "~/lan-staging"
           strip_components: 2
 
       - name: Remote docker compose up
-        if: env.IS_CI == 'false'
         uses: appleboy/ssh-action@v1.0.0
+        env:
+          STAGING_GHCR_USERNAME: ${{ secrets.STAGING_GHCR_USERNAME }}
+          STAGING_GHCR_TOKEN: ${{ secrets.STAGING_GHCR_TOKEN }}
         with:
-          host: ${{ env.STAGING_HOST }}
-          username: ${{ env.STAGING_USER }}
-          key: ${{ env.STAGING_SSH_KEY }}
+          host: ${{ secrets.STAGING_HOST }}
+          username: ${{ secrets.STAGING_USER }}
+          key: ${{ secrets.STAGING_SSH_KEY }}
+          envs: STAGING_GHCR_USERNAME,STAGING_GHCR_TOKEN
           script: |
-            set -e
+            set -euo pipefail
             cd ~/lan-staging
-            docker compose pull || true
-            docker compose up -d --build
+            mkdir -p data
+            if [ -n "${STAGING_GHCR_TOKEN:-}" ]; then
+              printf '%s' "$STAGING_GHCR_TOKEN" | docker login ghcr.io -u "${STAGING_GHCR_USERNAME:-alexbomber12}" --password-stdin
+            fi
+            docker compose pull
+            docker compose up -d --remove-orphans
 
       - name: Smoke test via API
-        if: env.IS_CI == 'false'
-        run: python scripts/smoke_test.py --base-url http://$STAGING_HOST:7860 --file tests/fixtures/1_EN.mp3.b64
+        env:
+          STAGING_HOST: ${{ secrets.STAGING_HOST }}
+        run: python scripts/smoke_test.py --base-url "http://${STAGING_HOST}:7860"

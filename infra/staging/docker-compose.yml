@@ -1,0 +1,97 @@
+x-lan-service: &lan-service
+  image: ${TRANSCRIBER_IMAGE:-ghcr.io/alexbomber12/lan-transcriber:latest}
+  pull_policy: always
+  restart: unless-stopped
+  environment: &lan-env
+    - PYTHONPATH=/app
+    - LAN_DATA_ROOT=${LAN_DATA_ROOT:-/data}
+    - LAN_RECORDINGS_ROOT=${LAN_RECORDINGS_ROOT:-/data/recordings}
+    - LAN_SPEAKER_DB=${LAN_SPEAKER_DB:-/data/db/speaker_bank.yaml}
+    - LAN_VOICES_DIR=${LAN_VOICES_DIR:-/data/voices}
+    - LAN_UNKNOWN_DIR=${LAN_UNKNOWN_DIR:-/data/recordings/unknown}
+    - LAN_TMP_ROOT=${LAN_TMP_ROOT:-/data/tmp}
+    - LAN_PROM_SNAPSHOT_PATH=${LAN_PROM_SNAPSHOT_PATH:-/data/metrics.snap}
+    - LAN_DB_PATH=${LAN_DB_PATH:-/data/db/app.db}
+    - LAN_REDIS_URL=${LAN_REDIS_URL:-redis://redis:6379/0}
+    - LAN_RQ_QUEUE_NAME=${LAN_RQ_QUEUE_NAME:-lan-transcriber}
+    - LLM_BASE_URL=${LLM_BASE_URL}
+    - LLM_API_KEY=${LLM_API_KEY}
+    - LLM_MODEL=${LLM_MODEL:-}
+    - LLM_TIMEOUT_SECONDS=${LLM_TIMEOUT_SECONDS:-30}
+    - FETCH_INTERVAL_SEC=${FETCH_INTERVAL_SEC:-300}
+    - TRANSCRIBER_VERSION=${TRANSCRIBER_VERSION:-latest}
+    - LANG_DEFAULT=${LANG_DEFAULT:-en}
+    - MS_TENANT_ID=${MS_TENANT_ID:-}
+    - MS_CLIENT_ID=${MS_CLIENT_ID:-}
+    - "MS_SCOPES=${MS_SCOPES:-offline_access User.Read Notes.ReadWrite Calendars.Read}"
+    - GDRIVE_SA_JSON_PATH=${GDRIVE_SA_JSON_PATH:-/data/secrets/gdrive_sa.json}
+    - GDRIVE_INBOX_FOLDER_ID=${GDRIVE_INBOX_FOLDER_ID:-}
+    - GDRIVE_POLL_INTERVAL_SECONDS=${GDRIVE_POLL_INTERVAL_SECONDS:-60}
+    - QUARANTINE_RETENTION_DAYS=${QUARANTINE_RETENTION_DAYS:-7}
+  volumes:
+    - ./data:/data
+  networks:
+    - lan_net
+
+services:
+  db:
+    <<: *lan-service
+    container_name: lan-db
+    command: ["python", "-m", "lan_app.db_init"]
+    restart: "no"
+    healthcheck:
+      test: ["CMD", "python", "-m", "lan_app.healthchecks", "db"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  redis:
+    image: redis:7-alpine
+    container_name: lan-redis
+    restart: unless-stopped
+    networks:
+      - lan_net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  api:
+    <<: *lan-service
+    container_name: lan-api
+    command: ["uvicorn", "lan_app.api:app", "--host", "0.0.0.0", "--port", "7860"]
+    depends_on:
+      - db
+      - redis
+    ports:
+      - "${LAN_API_BIND_HOST:-0.0.0.0}:${LAN_API_PORT:-7860}:7860"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:7860/healthz/app', timeout=5)",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  worker:
+    <<: *lan-service
+    container_name: lan-worker
+    command: ["python", "-m", "lan_app.worker"]
+    depends_on:
+      - db
+      - redis
+    healthcheck:
+      test: ["CMD", "python", "-m", "lan_app.healthchecks", "worker"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+networks:
+  lan_net:
