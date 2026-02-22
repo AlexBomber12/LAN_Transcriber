@@ -68,6 +68,10 @@ def refresh_recording_routing(
     recording = get_recording(recording_id, settings=cfg)
     if recording is None:
         raise KeyError(recording_id)
+    current_project_id = recording.get("project_id")
+    current_assignment_source = str(
+        recording.get("project_assignment_source") or ""
+    ).strip().lower()
 
     projects = list_projects(settings=cfg)
     signals = _build_routing_signals(recording_id, settings=cfg)
@@ -170,15 +174,17 @@ def refresh_recording_routing(
                 recording_id,
                 suggested_project_id,
                 settings=cfg,
+                assignment_source="auto",
             )
             auto_selected = True
             status_after_routing = RECORDING_STATUS_READY
         else:
-            set_recording_project(
-                recording_id,
-                None,
-                settings=cfg,
-            )
+            if current_project_id is not None and current_assignment_source == "auto":
+                set_recording_project(
+                    recording_id,
+                    None,
+                    settings=cfg,
+                )
             status_after_routing = RECORDING_STATUS_NEEDS_REVIEW
 
     return {

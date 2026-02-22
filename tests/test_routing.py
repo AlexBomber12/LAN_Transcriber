@@ -130,8 +130,52 @@ def test_refresh_recording_routing_marks_needs_review_when_low_confidence(tmp_pa
 
     recording = get_recording("rec-route-review-1", settings=cfg)
     assert recording is not None
-    assert recording["project_id"] is None
+    assert recording["project_id"] == roadmap["id"]
+    assert recording["project_assignment_source"] == "manual"
     assert recording["routing_confidence"] < cfg.routing_auto_select_threshold
+
+
+def test_refresh_recording_routing_clears_auto_assignment_when_low_confidence(
+    tmp_path: Path,
+):
+    cfg = _cfg(tmp_path)
+    init_db(cfg)
+    roadmap = create_project("Roadmap", settings=cfg)
+    create_project("Budget", settings=cfg)
+    create_recording(
+        "rec-route-auto-clear-1",
+        source="drive",
+        source_filename="generic-meeting.mp3",
+        status=RECORDING_STATUS_READY,
+        project_id=roadmap["id"],
+        project_assignment_source="auto",
+        settings=cfg,
+    )
+    set_recording_routing_suggestion(
+        "rec-route-auto-clear-1",
+        suggested_project_id=roadmap["id"],
+        routing_confidence=0.95,
+        routing_rationale=["Auto-selected previously"],
+        settings=cfg,
+    )
+    _write_summary(
+        cfg,
+        "rec-route-auto-clear-1",
+        {"topic": "General discussion", "summary_bullets": ["Open items"]},
+    )
+
+    decision = refresh_recording_routing(
+        "rec-route-auto-clear-1",
+        settings=cfg,
+        apply_workflow=True,
+    )
+    assert decision["confidence"] < cfg.routing_auto_select_threshold
+    assert decision["status_after_routing"] == RECORDING_STATUS_NEEDS_REVIEW
+
+    recording = get_recording("rec-route-auto-clear-1", settings=cfg)
+    assert recording is not None
+    assert recording["project_id"] is None
+    assert recording["project_assignment_source"] is None
 
 
 def test_refresh_recording_routing_without_projects_forces_needs_review(tmp_path: Path):
@@ -182,6 +226,8 @@ def test_delete_project_clears_recording_suggested_project_id(tmp_path: Path):
     after = get_recording("rec-route-cleanup-1", settings=cfg)
     assert after is not None
     assert after["suggested_project_id"] is None
+    assert after["routing_confidence"] is None
+    assert after["routing_rationale_json"] == []
 
 
 def test_train_routing_from_manual_selection_persists_weights(tmp_path: Path):

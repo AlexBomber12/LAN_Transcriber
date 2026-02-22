@@ -28,6 +28,7 @@ def _quoted(values: tuple[str, ...]) -> str:
 _RECORDING_STATUSES_SQL = _quoted(RECORDING_STATUSES)
 _JOB_STATUSES_SQL = _quoted(JOB_STATUSES)
 _JOB_TYPES_SQL = _quoted(JOB_TYPES)
+_PROJECT_ASSIGNMENT_SOURCES = {"manual", "auto"}
 
 _MIGRATIONS: tuple[str, ...] = (
     f"""
@@ -219,6 +220,13 @@ _MIGRATIONS: tuple[str, ...] = (
     CREATE INDEX IF NOT EXISTS idx_routing_project_keyword_weights_project_id
         ON routing_project_keyword_weights(project_id);
     """,
+    """
+    ALTER TABLE recordings ADD COLUMN project_assignment_source TEXT;
+
+    UPDATE recordings
+    SET project_assignment_source = 'manual'
+    WHERE project_id IS NOT NULL AND project_assignment_source IS NULL;
+    """,
 )
 
 _UNSET = object()
@@ -270,6 +278,18 @@ def _validate_job_type(job_type: str) -> None:
         raise ValueError(f"Unsupported job type: {job_type}")
 
 
+def _normalise_project_assignment_source(source: str | None) -> str | None:
+    if source is None:
+        return None
+    value = str(source).strip().lower()
+    if not value:
+        return None
+    if value not in _PROJECT_ASSIGNMENT_SOURCES:
+        options = ", ".join(sorted(_PROJECT_ASSIGNMENT_SOURCES))
+        raise ValueError(f"Unsupported project assignment source: {value} ({options})")
+    return value
+
+
 def _normalise_keyword(value: object) -> str:
     return " ".join(str(value).strip().lower().split())
 
@@ -316,6 +336,7 @@ def create_recording(
     language_override: str | None = None,
     target_summary_language: str | None = None,
     project_id: int | None = None,
+    project_assignment_source: str | None = None,
     onenote_page_id: str | None = None,
     drive_file_id: str | None = None,
     drive_md5: str | None = None,
@@ -324,15 +345,23 @@ def create_recording(
     _validate_recording_status(status)
     now = _utc_now()
     captured = captured_at or now
+    resolved_assignment_source = _normalise_project_assignment_source(
+        project_assignment_source
+    )
+    if project_id is None:
+        resolved_assignment_source = None
+    elif resolved_assignment_source is None:
+        resolved_assignment_source = "manual"
     with connect(settings) as conn:
         conn.execute(
             """
             INSERT INTO recordings (
                 id, source, source_filename, captured_at, duration_sec, status,
                 quarantine_reason, language_auto, language_override, target_summary_language, project_id,
+                project_assignment_source,
                 onenote_page_id, drive_file_id, drive_md5, created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 recording_id,
@@ -346,6 +375,7 @@ def create_recording(
                 language_override,
                 target_summary_language,
                 project_id,
+                resolved_assignment_source,
                 onenote_page_id,
                 drive_file_id,
                 drive_md5,
@@ -446,18 +476,29 @@ def set_recording_project(
     project_id: int | None,
     *,
     settings: AppSettings | None = None,
+    assignment_source: str | None = None,
 ) -> bool:
     init_db(settings)
     now = _utc_now()
     resolved_project_id = None if project_id is None else int(project_id)
+    resolved_assignment_source = _normalise_project_assignment_source(assignment_source)
+    if resolved_project_id is None:
+        resolved_assignment_source = None
+    elif resolved_assignment_source is None:
+        resolved_assignment_source = "manual"
     with connect(settings) as conn:
         updated = conn.execute(
             """
             UPDATE recordings
-            SET project_id = ?, updated_at = ?
+            SET project_id = ?, project_assignment_source = ?, updated_at = ?
             WHERE id = ?
             """,
-            (resolved_project_id, now, recording_id),
+            (
+                resolved_project_id,
+                resolved_assignment_source,
+                now,
+                recording_id,
+            ),
         )
         conn.commit()
     return updated.rowcount > 0
@@ -818,14 +859,19 @@ def delete_project(
 ) -> bool:
     init_db(settings)
     target_project_id = int(project_id)
+    now = _utc_now()
     with connect(settings) as conn:
         conn.execute(
             """
             UPDATE recordings
-            SET suggested_project_id = NULL
+            SET
+                suggested_project_id = NULL,
+                routing_confidence = NULL,
+                routing_rationale_json = '[]',
+                updated_at = ?
             WHERE suggested_project_id = ?
             """,
-            (target_project_id,),
+            (now, target_project_id),
         )
         deleted = conn.execute("DELETE FROM projects WHERE id = ?", (target_project_id,))
         conn.commit()
