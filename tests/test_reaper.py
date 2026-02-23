@@ -76,6 +76,56 @@ def test_reaper_recovers_stale_started_job(tmp_path: Path):
     assert "stuck job recovery applied" in step_log.read_text(encoding="utf-8")
 
 
+def test_reaper_skips_stale_started_job_when_it_already_transitioned(
+    tmp_path: Path,
+    monkeypatch,
+):
+    cfg = _test_settings(tmp_path)
+    init_db(cfg)
+    create_recording(
+        "rec-reaper-race-1",
+        source="test",
+        source_filename="race.wav",
+        status=RECORDING_STATUS_PROCESSING,
+        settings=cfg,
+    )
+    create_job(
+        "job-reaper-race-1",
+        recording_id="rec-reaper-race-1",
+        job_type=JOB_TYPE_PRECHECK,
+        status=JOB_STATUS_STARTED,
+        settings=cfg,
+        attempt=1,
+    )
+    with connect(cfg) as conn:
+        conn.execute(
+            """
+            UPDATE jobs
+            SET started_at = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            ("2026-02-22T00:00:00Z", "2026-02-22T00:00:00Z", "job-reaper-race-1"),
+        )
+        conn.commit()
+
+    monkeypatch.setattr("lan_app.reaper.fail_job_if_started", lambda *_a, **_k: False)
+
+    summary = run_stuck_job_reaper_once(
+        settings=cfg,
+        now=datetime(2026, 2, 23, 0, 0, 0, tzinfo=timezone.utc),
+    )
+
+    job = get_job("job-reaper-race-1", settings=cfg)
+    recording = get_recording("rec-reaper-race-1", settings=cfg)
+    assert job is not None
+    assert recording is not None
+    assert summary["stale_started_jobs"] == 1
+    assert summary["recovered_jobs"] == 0
+    assert summary["recovered_recordings"] == 0
+    assert job["status"] == JOB_STATUS_STARTED
+    assert recording["status"] == RECORDING_STATUS_PROCESSING
+
+
 def test_reaper_recovers_processing_recording_without_started_job(tmp_path: Path):
     cfg = _test_settings(tmp_path)
     init_db(cfg)

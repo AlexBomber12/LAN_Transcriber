@@ -8,6 +8,7 @@ from .config import AppSettings
 from .constants import DEFAULT_REQUEUE_JOB_TYPE, RECORDING_STATUS_NEEDS_REVIEW
 from .db import (
     fail_job,
+    fail_job_if_started,
     list_processing_recordings_without_started_job,
     list_stale_started_jobs,
     set_recording_status,
@@ -59,7 +60,9 @@ def run_stuck_job_reaper_once(
         job_type = str(row.get("type") or "").strip() or DEFAULT_REQUEUE_JOB_TYPE
         if not job_id or not recording_id:
             continue
-        fail_job(job_id, _RECOVERY_ERROR, settings=cfg)
+        if not fail_job_if_started(job_id, _RECOVERY_ERROR, settings=cfg):
+            # Job completed or moved to another state after selection.
+            continue
         set_recording_status(recording_id, RECORDING_STATUS_NEEDS_REVIEW, settings=cfg)
         _append_step_log(
             _step_log_path(recording_id, job_type, cfg),

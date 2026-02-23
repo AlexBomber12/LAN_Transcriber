@@ -134,8 +134,8 @@ Requirement already satisfied: six>=1.5 in ./.venv-ci/lib/python3.12/site-packag
 Building wheels for collected packages: lan-transcriber
   Building editable for lan-transcriber (pyproject.toml): started
   Building editable for lan-transcriber (pyproject.toml): finished with status 'done'
-  Created wheel for lan-transcriber: filename=lan_transcriber-0.1.0-0.editable-py3-none-any.whl size=15395 sha256=77cc034b18c27feb3ac15f443bf000fe7904e5deb481f2b931a0e4c558061f3b
-  Stored in directory: /tmp/pip-ephem-wheel-cache-7qrf2gas/wheels/d5/8a/5c/f7178f7e49aa5ae12b2320ec66b5c310f4f2f63d1bd301b7fb
+  Created wheel for lan-transcriber: filename=lan_transcriber-0.1.0-0.editable-py3-none-any.whl size=15395 sha256=9783d6dfe6ab44a25b46861deddf7201f08185bc03b90f1f00d39526fb8e667a
+  Stored in directory: /tmp/pip-ephem-wheel-cache-9udqp38a/wheels/d5/8a/5c/f7178f7e49aa5ae12b2320ec66b5c310f4f2f63d1bd301b7fb
 Successfully built lan-transcriber
 Installing collected packages: lan-transcriber
   Attempting uninstall: lan-transcriber
@@ -147,7 +147,7 @@ All checks passed!
 ........................................................................ [ 29%]
 ........................................................................ [ 59%]
 ........................................................................ [ 88%]
-...........................                                              [100%]
+............................                                             [100%]
 =============================== warnings summary ===============================
 lan_transcriber/pipeline.py:4
   /home/alexey/LAN_Transcriber/lan_transcriber/pipeline.py:4: DeprecationWarning: 'audioop' is deprecated and slated for removal in Python 3.13
@@ -206,4 +206,4 @@ lan_transcriber/runtime_paths.py      21      1    95%
 ------------------------------------------------------
 TOTAL                                271     27    90%
 Required test coverage of 90% reached. Total coverage: 90.04%
-243 passed, 1 skipped, 7 warnings in 35.41s
+244 passed, 1 skipped, 7 warnings in 37.72s
