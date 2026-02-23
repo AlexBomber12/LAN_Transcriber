@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -14,6 +15,8 @@ from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponen
 from .metrics import llm_timeouts_total
 
 _RETRYABLE_STATUS_CODES = {408, 409, 425, 429}
+_DEV_DEFAULT_LLM_BASE_URL = "http://127.0.0.1:8000"
+_logger = logging.getLogger(__name__)
 
 
 def _timeout_seconds(value: str | None, *, default: float) -> float:
@@ -44,6 +47,25 @@ def _is_retryable_exception(exc: BaseException) -> bool:
     return False
 
 
+def _resolve_base_url(base_url: str | None) -> str:
+    configured = (base_url or os.getenv("LLM_BASE_URL") or "").strip()
+    if configured:
+        return configured
+
+    lan_env = (os.getenv("LAN_ENV") or "dev").strip().lower() or "dev"
+    if lan_env in {"staging", "prod"}:
+        raise ValueError(
+            f"Missing required environment variable for LAN_ENV={lan_env}: LLM_BASE_URL"
+        )
+
+    _logger.warning(
+        "LLM_BASE_URL is not set in LAN_ENV=%s; defaulting to %s",
+        lan_env,
+        _DEV_DEFAULT_LLM_BASE_URL,
+    )
+    return _DEV_DEFAULT_LLM_BASE_URL
+
+
 class LLMClient:
     """Simple asynchronous client for the language model API."""
 
@@ -54,7 +76,7 @@ class LLMClient:
         timeout: float | None = None,
         mock_response_path: str | Path | None = None,
     ) -> None:
-        self.base_url = base_url or os.getenv("LLM_BASE_URL", "http://llm:8000")
+        self.base_url = _resolve_base_url(base_url)
         self.api_key = api_key or os.getenv("LLM_API_KEY")
         self.default_model = os.getenv("LLM_MODEL")
         self.timeout = (

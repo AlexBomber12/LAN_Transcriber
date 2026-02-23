@@ -20,7 +20,7 @@ import web_transcribe  # noqa: E402
 
 @respx.mock
 def test_transcribe_and_summarize(tmp_path: Path):
-    respx.post("http://llm:8000/v1/chat/completions").mock(
+    respx.post("http://127.0.0.1:8000/v1/chat/completions").mock(
         return_value=httpx.Response(
             200,
             json={"choices": [{"message": {"content": "summary"}}]},

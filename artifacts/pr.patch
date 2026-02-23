@@ -1,983 +1,590 @@
-diff --git a/lan_app/db.py b/lan_app/db.py
-index 9f86d7e..c1e2ffc 100644
---- a/lan_app/db.py
-+++ b/lan_app/db.py
-@@ -139,6 +139,30 @@ def _read_user_version(conn: sqlite3.Connection) -> int:
-     return int(conn.execute("PRAGMA user_version").fetchone()[0])
+diff --git a/.env.example b/.env.example
+index 8e1fc22..88dd210 100644
+--- a/.env.example
++++ b/.env.example
+@@ -11,6 +11,7 @@ LLM_TIMEOUT_SECONDS=30
+ # LLM_MOCK_RESPONSE_PATH=/data/secrets/mock_llm_response.json
  
+ # Runtime paths (LAN_ prefixed)
++LAN_ENV=dev
+ LAN_DATA_ROOT=/data
+ LAN_RECORDINGS_ROOT=/data/recordings
+ LAN_SPEAKER_DB=/data/db/speaker_bank.yaml
+diff --git a/README.md b/README.md
+index 8d7269b..2106685 100644
+--- a/README.md
++++ b/README.md
+@@ -87,6 +87,7 @@ models are cached across runs.
  
-+def _executescript_allowing_duplicate_columns(
-+    conn: sqlite3.Connection,
-+    migration_sql: str,
-+) -> None:
-+    try:
-+        conn.executescript(migration_sql)
-+    except sqlite3.OperationalError as error:
-+        if "duplicate column name" not in str(error).strip().lower():
-+            raise
-+        for statement in migration_sql.split(";"):
-+            sql = statement.strip()
-+            if not sql:
-+                continue
-+            try:
-+                conn.execute(sql)
-+            except sqlite3.OperationalError as statement_error:
-+                if (
-+                    "duplicate column name"
-+                    in str(statement_error).strip().lower()
-+                ):
-+                    continue
-+                raise
-+
-+
- def connect_db(
-     path: Path,
-     *,
-@@ -190,7 +214,7 @@ def init_db(settings: AppSettings | None = None) -> Path:
-                 live_version = _read_user_version(conn)
-                 if live_version >= target_version:
-                     return live_version
--                conn.executescript(migration_sql)
-+                _executescript_allowing_duplicate_columns(conn, migration_sql)
-                 conn.execute(f"PRAGMA user_version = {target_version}")
-                 conn.commit()
-                 return target_version
-@@ -320,6 +344,77 @@ def list_recordings(
-     return [_as_dict(row) or {} for row in rows], total
+ | Variable | Description |
+ | --- | --- |
++| `LAN_ENV` | Runtime mode: `dev` (default), `staging`, or `prod` |
+ | `LAN_DB_PATH` | SQLite database path (default `/data/db/app.db`) |
+ | `LAN_REDIS_URL` | Redis endpoint for the RQ queue |
+ | `LAN_RQ_QUEUE_NAME` | Queue name consumed by the worker |
+@@ -103,6 +104,13 @@ models are cached across runs.
+ | `MS_CLIENT_ID` | Microsoft app registration client ID |
+ | `MS_SCOPES` | Graph scopes (default: `offline_access User.Read Notes.ReadWrite Calendars.Read`) |
  
++`LAN_ENV` controls startup validation:
++
++- `LAN_ENV=dev`: missing `LAN_REDIS_URL` and/or `LLM_BASE_URL` is allowed with warnings; dev defaults are used (`redis://127.0.0.1:6379/0`, `http://127.0.0.1:8000`).
++- `LAN_ENV=staging` or `LAN_ENV=prod`: `LAN_REDIS_URL` and `LLM_BASE_URL` are required; startup fails fast if either is missing.
++
++If API auth is enabled, set `LAN_API_BEARER_TOKEN` to a non-empty value in your env file.
++
+ `docker compose up` starts:
  
-+def set_recording_progress(
-+    recording_id: str,
-+    stage: str,
-+    progress: float,
-+    *,
-+    settings: AppSettings | None = None,
-+) -> bool:
-+    init_db(settings)
-+    stage_name = str(stage).strip()
-+    if not stage_name:
-+        raise ValueError("stage is required")
-+    progress_value = max(0.0, min(float(progress), 1.0))
-+    now = _utc_now()
-+
-+    def _update() -> bool:
-+        with connect(settings) as conn:
-+            updated = conn.execute(
-+                """
-+                UPDATE recordings
-+                SET
-+                    pipeline_stage = ?,
-+                    pipeline_progress = ?,
-+                    pipeline_updated_at = ?,
-+                    updated_at = ?
-+                WHERE id = ?
-+                """,
-+                (
-+                    stage_name,
-+                    progress_value,
-+                    now,
-+                    now,
-+                    recording_id,
-+                ),
-+            )
-+            conn.commit()
-+            return updated.rowcount > 0
-+
-+    return with_db_retry(_update)
-+
-+
-+def clear_recording_progress(
-+    recording_id: str,
-+    *,
-+    settings: AppSettings | None = None,
-+) -> bool:
-+    init_db(settings)
-+    now = _utc_now()
-+
-+    def _clear() -> bool:
-+        with connect(settings) as conn:
-+            updated = conn.execute(
-+                """
-+                UPDATE recordings
-+                SET
-+                    pipeline_stage = NULL,
-+                    pipeline_progress = NULL,
-+                    pipeline_updated_at = NULL,
-+                    updated_at = ?
-+                WHERE id = ?
-+                """,
-+                (
-+                    now,
-+                    recording_id,
-+                ),
-+            )
-+            conn.commit()
-+            return updated.rowcount > 0
-+
-+    return with_db_retry(_clear)
-+
-+
- def set_recording_status(
-     recording_id: str,
-     status: str,
-@@ -1859,6 +1954,8 @@ __all__ = [
-     "create_recording",
-     "get_recording",
-     "list_recordings",
-+    "set_recording_progress",
-+    "clear_recording_progress",
-     "set_recording_status",
-     "set_recording_status_if_current_in",
-     "set_recording_status_if_current_in_and_no_started_job",
-diff --git a/lan_app/templates/connections.html b/lan_app/templates/connections.html
-index 3a39615..97cf29c 100644
---- a/lan_app/templates/connections.html
-+++ b/lan_app/templates/connections.html
-@@ -5,16 +5,86 @@
+ - `db` (SQLite migration init)
+diff --git a/docker-compose.yml b/docker-compose.yml
+index 6b4afab..468613d 100644
+--- a/docker-compose.yml
++++ b/docker-compose.yml
+@@ -16,7 +16,8 @@ x-lan-service: &lan-service
+     - LAN_TMP_ROOT=${LAN_TMP_ROOT:-/data/tmp}
+     - LAN_PROM_SNAPSHOT_PATH=${LAN_PROM_SNAPSHOT_PATH:-/data/metrics.snap}
+     - LAN_DB_PATH=${LAN_DB_PATH:-/data/db/app.db}
+-    - LAN_REDIS_URL=${LAN_REDIS_URL:-redis://redis:6379/0}
++    - LAN_ENV=${LAN_ENV:-dev}
++    - LAN_REDIS_URL=${LAN_REDIS_URL}
+     - LAN_RQ_QUEUE_NAME=${LAN_RQ_QUEUE_NAME:-lan-transcriber}
+     - LLM_BASE_URL=${LLM_BASE_URL}
+     - LLM_API_KEY=${LLM_API_KEY}
+diff --git a/infra/staging/.env.staging.example b/infra/staging/.env.staging.example
+index 48a413b..c9dd324 100644
+--- a/infra/staging/.env.staging.example
++++ b/infra/staging/.env.staging.example
+@@ -7,6 +7,7 @@ LAN_API_BIND_HOST=0.0.0.0
+ LAN_API_PORT=7860
  
- <div class="conn-card">
-   <h3>Google Drive (Service Account)</h3>
-+  {% if gdrive.configured %}
-+  <div class="conn-row">
-+    <span class="dot-ok"></span>
-+    <span>Configured</span>
-+  </div>
-+  <div class="info-grid" style="margin-top:8px">
-+    <div class="k">Service account key</div>
-+    <div class="v"><code>{{ gdrive.sa_path }}</code></div>
-+    <div class="k">Inbox folder ID</div>
-+    <div class="v"><code>{{ gdrive.folder_id }}</code></div>
-+  </div>
-+  <div class="conn-row" style="margin-top:8px">
-+    <button
-+      type="button"
-+      class="btn"
-+      hx-post="/ui/connections/gdrive/test"
-+      hx-target="#gdrive-test-result"
-+      hx-swap="innerHTML"
-+    >
-+      Test connection
-+    </button>
-+    <button type="button" class="btn" onclick="runIngestNow()">Run ingest now</button>
-+  </div>
-+  <div id="gdrive-test-result" style="font-size:11px;color:#666;margin-top:4px"></div>
-+  <div id="gdrive-ingest-result" style="font-size:11px;color:#666;margin-top:2px"></div>
-+  {% else %}
-   <div class="conn-row">
-     <span class="dot-na"></span>
--    <span style="color:#888">Not configured — available after PR-GDRIVE-INGEST-01.</span>
-+    <span style="color:#888">Not configured.</span>
-   </div>
-+  <div style="font-size:11px;color:#999;margin-top:4px">
-+    Set <code>GDRIVE_SA_JSON_PATH</code> and <code>GDRIVE_INBOX_FOLDER_ID</code>.
-+  </div>
-+  {% endif %}
-   <div style="font-size:11px;color:#999;margin-top:4px">
-     Ingest: Service Account + shared folder (Inbox).<br>
-     Credentials: <code>/data/secrets/gdrive_sa.json</code>
-   </div>
- </div>
+ # Runtime paths
++LAN_ENV=staging
+ LAN_DATA_ROOT=/data
+ LAN_RECORDINGS_ROOT=/data/recordings
+ LAN_SPEAKER_DB=/data/db/speaker_bank.yaml
+diff --git a/infra/staging/README.md b/infra/staging/README.md
+index e057dd2..d2e476f 100644
+--- a/infra/staging/README.md
++++ b/infra/staging/README.md
+@@ -10,25 +10,32 @@ This directory contains the docker compose stack used by `.github/workflows/stag
+ cp .env.staging.example .env
+ ```
  
-+<script>
-+async function runIngestNow() {
-+  var out = document.getElementById('gdrive-ingest-result');
-+  if (!out) return;
-+  out.style.color = '#666';
-+  out.textContent = 'Running ingest...';
+-2. Ensure the runtime data directory exists:
++2. Edit `.env` and set required runtime values:
 +
-+  var response = null;
-+  var data = {};
-+  try {
-+    response = await fetch('/api/actions/ingest', {method: 'POST'});
-+    data = await response.json();
-+  } catch (_err) {
-+    out.style.color = '#b42318';
-+    out.textContent = 'Ingest request failed.';
-+    return;
-+  }
++- `LAN_ENV=staging`
++- `LAN_REDIS_URL` (for this compose stack: `redis://redis:6379/0`)
++- `LLM_BASE_URL` (your Spark/OpenAI-compatible endpoint)
++- `LAN_API_BEARER_TOKEN` when auth is enabled
 +
-+  if (response.status === 409) {
-+    out.style.color = '#92400e';
-+    var retryAfter = data.retry_after_seconds;
-+    if (typeof retryAfter === 'number') {
-+      out.textContent = 'Ingest is already running. Retry in ' + retryAfter + 's.';
-+    } else {
-+      out.textContent = 'Ingest is already running.';
-+    }
-+    return;
-+  }
-+
-+  if (!response.ok) {
-+    out.style.color = '#b42318';
-+    out.textContent = data.detail || 'Ingest failed.';
-+    return;
-+  }
-+
-+  out.style.color = '#14532d';
-+  out.textContent = 'Ingest completed. New recordings: ' + (data.count || 0) + '.';
-+}
-+</script>
-+
- <div class="conn-card">
-   <h3>Microsoft Graph (Work account)</h3>
-   {% if ms.status == "connected" %}
-diff --git a/lan_app/templates/recording_detail.html b/lan_app/templates/recording_detail.html
-index 66b6592..ab04ffc 100644
---- a/lan_app/templates/recording_detail.html
-+++ b/lan_app/templates/recording_detail.html
-@@ -22,6 +22,18 @@
- </p>
- {% endif %}
++3. Ensure the runtime data directory exists:
  
-+{% if rec.status == 'Processing' %}
-+<div
-+  id="recording-progress"
-+  hx-get="/ui/recordings/{{ rec.id }}/progress"
-+  hx-trigger="load, every 2s"
-+  hx-swap="innerHTML"
-+  style="margin:0 0 10px 0"
-+>
-+  <div class="placeholder" style="padding:8px 10px">Loading pipeline progress…</div>
-+</div>
-+{% endif %}
-+
- <div class="tabs">
-   {% for t in tabs %}
-   <a href="/recordings/{{ rec.id }}?tab={{ t }}" class="tab {% if current_tab == t %}active{% endif %}">{{ t|capitalize }}</a>
-diff --git a/lan_app/ui_routes.py b/lan_app/ui_routes.py
-index d15c24b..d2e4128 100644
---- a/lan_app/ui_routes.py
-+++ b/lan_app/ui_routes.py
-@@ -40,6 +40,7 @@ from .constants import (
-     JOB_STATUSES,
-     JOB_TYPE_PRECHECK,
-     RECORDING_STATUSES,
-+    RECORDING_STATUS_PROCESSING,
-     RECORDING_STATUS_QUARANTINE,
- )
- from .db import (
-@@ -66,6 +67,7 @@ from .db import (
-     set_recording_language_settings,
-     set_recording_status,
- )
-+from .gdrive import build_drive_service
- from .jobs import (
-     DuplicateRecordingJobError,
-     enqueue_recording_job,
-@@ -152,6 +154,63 @@ def _recording_recovery_warning(jobs: list[dict[str, Any]]) -> str | None:
-     return None
+ ```bash
+ mkdir -p data
+ ```
  
+-3. Pull the latest images:
++4. Pull the latest images:
  
-+def _safe_pipeline_progress(value: object) -> float:
-+    try:
-+        progress = float(value)
-+    except (TypeError, ValueError):
-+        return 0.0
-+    return max(0.0, min(progress, 1.0))
-+
-+
-+def _pipeline_stage_label(stage: object) -> str:
-+    text = str(stage or "").strip()
-+    if not text:
-+        return "Waiting"
-+    return text.replace("_", " ").title()
-+
-+
-+def _gdrive_connection_state(settings: AppSettings) -> dict[str, Any]:
-+    sa_path_value = str(settings.gdrive_sa_json_path or "").strip()
-+    folder_id_value = str(settings.gdrive_inbox_folder_id or "").strip()
-+    return {
-+        "configured": bool(sa_path_value and folder_id_value),
-+        "sa_path": sa_path_value,
-+        "folder_id": folder_id_value,
-+    }
-+
-+
-+def _test_gdrive_connection(settings: AppSettings) -> dict[str, Any]:
-+    state = _gdrive_connection_state(settings)
-+    if not state["configured"]:
-+        raise ValueError("Google Drive is not configured.")
-+    sa_path = Path(str(state["sa_path"]))
-+    folder_id = str(state["folder_id"])
-+    service = build_drive_service(sa_path)
-+    query = f"'{folder_id}' in parents and trashed=false"
-+    response = (
-+        service.files()
-+        .list(
-+            q=query,
-+            fields="files(id,name,createdTime)",
-+            pageSize=1,
-+        )
-+        .execute()
-+    )
-+    rows = response.get("files", []) or []
-+    if rows:
-+        first = rows[0]
-+        name = str(first.get("name") or "").strip() or "(unnamed)"
-+        file_id = str(first.get("id") or "").strip() or "unknown-id"
-+        return {
-+            "ok": True,
-+            "message": f"Connected. Sample file: {name} ({file_id}).",
-+        }
-+    return {
-+        "ok": True,
-+        "message": "Connected. Inbox is reachable, but no files were found.",
-+    }
-+
-+
- def _load_json_dict(path: Path) -> dict[str, Any]:
-     if not path.exists():
-         return {}
-@@ -1114,6 +1173,29 @@ async def ui_recording_detail(
-     )
+ ```bash
+ docker compose pull
+ ```
  
+-4. Start or update the stack:
++5. Start or update the stack:
  
-+@ui_router.get("/ui/recordings/{recording_id}/progress", response_class=HTMLResponse)
-+async def ui_recording_progress(request: Request, recording_id: str) -> Any:
-+    rec = get_recording(recording_id, settings=_settings)
-+    if rec is None:
-+        return HTMLResponse("Not found", status_code=404)
-+    progress_ratio = _safe_pipeline_progress(rec.get("pipeline_progress"))
-+    progress_percent = int(round(progress_ratio * 100))
-+    return templates.TemplateResponse(
-+        request,
-+        "partials/recording_progress.html",
-+        {
-+            "rec": rec,
-+            "progress_ratio": progress_ratio,
-+            "progress_percent": progress_percent,
-+            "stage_code": str(rec.get("pipeline_stage") or "").strip() or "waiting",
-+            "stage_label": _pipeline_stage_label(rec.get("pipeline_stage")),
-+            "updated_at": str(rec.get("pipeline_updated_at") or "").strip(),
-+            "warning": str(rec.get("last_warning") or "").strip(),
-+            "is_processing": str(rec.get("status") or "") == RECORDING_STATUS_PROCESSING,
-+        },
-+    )
-+
-+
- # ---------------------------------------------------------------------------
- # Recording speaker assignment + snippet audio
- # ---------------------------------------------------------------------------
-@@ -1514,16 +1596,29 @@ async def ui_queue(
- @ui_router.get("/connections", response_class=HTMLResponse)
- async def ui_connections(request: Request) -> Any:
-     ms_state = await run_in_threadpool(ms_connection_state, _settings)
-+    gdrive_state = _gdrive_connection_state(_settings)
-     return templates.TemplateResponse(
-         request,
-         "connections.html",
-         {
-             "active": "connections",
-             "ms": ms_state,
-+            "gdrive": gdrive_state,
-         },
-     )
+ ```bash
+ docker compose up -d --remove-orphans
+ ```
  
+-5. Run smoke endpoint checks:
++6. Run smoke endpoint checks:
  
-+@ui_router.post("/ui/connections/gdrive/test", response_class=HTMLResponse)
-+async def ui_test_gdrive_connection() -> Any:
-+    try:
-+        result = await run_in_threadpool(_test_gdrive_connection, _settings)
-+    except ValueError as exc:
-+        return HTMLResponse(f"<span style='color:#92400e'>{exc}</span>")
-+    except Exception as exc:
-+        return HTMLResponse(f"<span style='color:#b42318'>Google Drive test failed: {exc}</span>")
-+    return HTMLResponse(f"<span style='color:#14532d'>{result['message']}</span>")
-+
-+
- # ---------------------------------------------------------------------------
- # Inline recording actions (HTMX targets returning HX-Redirect)
- # ---------------------------------------------------------------------------
-diff --git a/lan_app/worker_tasks.py b/lan_app/worker_tasks.py
-index 15306bc..a2c9fc7 100644
---- a/lan_app/worker_tasks.py
-+++ b/lan_app/worker_tasks.py
-@@ -33,6 +33,7 @@ from .constants import (
-     RECORDING_STATUS_READY,
- )
- from .db import (
-+    clear_recording_progress,
-     fail_job,
-     fail_job_if_started,
-     finish_job_if_started,
-@@ -42,6 +43,7 @@ from .db import (
-     init_db,
-     list_jobs,
-     requeue_job_if_started,
-+    set_recording_progress,
-     set_recording_language_settings,
-     set_recording_status,
-     set_recording_status_if_current_in_and_job_started,
-@@ -498,6 +500,15 @@ def _run_precheck_pipeline(
-         recording_id,
-         settings,
-     )
-+
-+    def _progress_callback(stage: str, progress: float) -> None:
-+        set_recording_progress(
-+            recording_id,
-+            stage=stage,
-+            progress=progress,
-+            settings=settings,
-+        )
-+
-     asyncio.run(
-         run_pipeline(
-             audio_path=audio_path,
-@@ -510,6 +521,7 @@ def _run_precheck_pipeline(
-             transcript_language_override=transcript_language_override,
-             calendar_title=calendar_title,
-             calendar_attendees=calendar_attendees,
-+            progress_callback=_progress_callback,
-         )
-     )
-     metrics_payload = refresh_recording_metrics(
-@@ -732,12 +744,14 @@ def process_job(job_id: str, recording_id: str, job_type: str) -> dict[str, str]
-                     )
-                     return _ignored_result(job_id, recording_id, job_type)
-                 raise ValueError(f"Job not found: {job_id}")
-+            clear_recording_progress(recording_id, settings=settings)
-             _append_step_log(
-                 log_path,
-                 f"finished job={job_id} type={job_type} recording_status={final_status}",
-             )
-             break
-         except Exception as exc:
-+            clear_recording_progress(recording_id, settings=settings)
-             current_job_status = _job_status(job_id, settings)
-             if current_job_status and current_job_status != JOB_STATUS_STARTED:
-                 _log_stale_inflight_execution(
-diff --git a/lan_transcriber/pipeline_steps/orchestrator.py b/lan_transcriber/pipeline_steps/orchestrator.py
-index 73fcc24..a16a91e 100644
---- a/lan_transcriber/pipeline_steps/orchestrator.py
-+++ b/lan_transcriber/pipeline_steps/orchestrator.py
-@@ -1,11 +1,12 @@
+ ```bash
+ curl -fsS http://127.0.0.1:7860/healthz/app
+diff --git a/infra/staging/docker-compose.yml b/infra/staging/docker-compose.yml
+index 1239827..dae10cf 100644
+--- a/infra/staging/docker-compose.yml
++++ b/infra/staging/docker-compose.yml
+@@ -12,7 +12,8 @@ x-lan-service: &lan-service
+     - LAN_TMP_ROOT=${LAN_TMP_ROOT:-/data/tmp}
+     - LAN_PROM_SNAPSHOT_PATH=${LAN_PROM_SNAPSHOT_PATH:-/data/metrics.snap}
+     - LAN_DB_PATH=${LAN_DB_PATH:-/data/db/app.db}
+-    - LAN_REDIS_URL=${LAN_REDIS_URL:-redis://redis:6379/0}
++    - LAN_ENV=${LAN_ENV:-staging}
++    - LAN_REDIS_URL=${LAN_REDIS_URL}
+     - LAN_RQ_QUEUE_NAME=${LAN_RQ_QUEUE_NAME:-lan-transcriber}
+     - LLM_BASE_URL=${LLM_BASE_URL}
+     - LLM_API_KEY=${LLM_API_KEY}
+diff --git a/lan_app/api.py b/lan_app/api.py
+index d7877e5..5ea63e6 100644
+--- a/lan_app/api.py
++++ b/lan_app/api.py
+@@ -1,7 +1,7 @@
  from __future__ import annotations
  
  import asyncio
-+import inspect
+-from contextlib import suppress
++from contextlib import asynccontextmanager, suppress
+ import logging
  import shutil
- import time
- from pathlib import Path
- from types import SimpleNamespace
--from typing import Any, Iterable, List, Protocol, Sequence
-+from typing import Any, Awaitable, Callable, Iterable, List, Protocol, Sequence
+ from typing import List
+@@ -66,19 +66,38 @@ from .ops import run_retention_cleanup
+ from .reaper import run_stuck_job_reaper_once
+ from .ui_routes import _STATIC_DIR, ui_router
  
+-app = FastAPI()
+-app.include_router(ui_router)
+-app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
+ ALIAS_PATH = aliases.ALIAS_PATH
+ _subscribers: List[asyncio.Queue[str]] = []
+ _current_result: TranscriptResult | None = None
+ _settings = AppSettings()
+-_cleanup_task: asyncio.Task[None] | None = None
+-_reaper_task: asyncio.Task[None] | None = None
+ _CLEANUP_INTERVAL_SECONDS = 3600
+ _logger = logging.getLogger(__name__)
+ 
+ 
++@asynccontextmanager
++async def _lifespan(_: FastAPI):
++    init_db(_settings)
++    _settings.metrics_snapshot_path.parent.mkdir(parents=True, exist_ok=True)
++
++    metrics_task = asyncio.create_task(write_metrics_snapshot(_settings.metrics_snapshot_path))
++    cleanup_task = asyncio.create_task(_retention_cleanup_loop())
++    reaper_task = asyncio.create_task(_stuck_job_reaper_loop())
++
++    try:
++        yield
++    finally:
++        for task in (reaper_task, cleanup_task, metrics_task):
++            task.cancel()
++        for task in (reaper_task, cleanup_task, metrics_task):
++            with suppress(asyncio.CancelledError):
++                await task
++
++
++app = FastAPI(lifespan=_lifespan)
++app.include_router(ui_router)
++app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
++
++
+ class AliasUpdate(BaseModel):
+     alias: str
+ 
+@@ -243,33 +262,6 @@ async def api_get_ms_connection_status(session_id: str) -> dict[str, object]:
+         raise HTTPException(status_code=404, detail="Unknown device-flow session")
+ 
+ 
+-@app.on_event("startup")
+-async def _start_metrics() -> None:
+-    global _cleanup_task, _reaper_task
+-    init_db(_settings)
+-    _settings.metrics_snapshot_path.parent.mkdir(parents=True, exist_ok=True)
+-    asyncio.create_task(write_metrics_snapshot(_settings.metrics_snapshot_path))
+-    _cleanup_task = asyncio.create_task(_retention_cleanup_loop())
+-    _reaper_task = asyncio.create_task(_stuck_job_reaper_loop())
+-
+-
+-@app.on_event("shutdown")
+-async def _stop_background_tasks() -> None:
+-    global _cleanup_task, _reaper_task
+-
+-    if _cleanup_task is not None:
+-        _cleanup_task.cancel()
+-        with suppress(asyncio.CancelledError):
+-            await _cleanup_task
+-        _cleanup_task = None
+-
+-    if _reaper_task is not None:
+-        _reaper_task.cancel()
+-        with suppress(asyncio.CancelledError):
+-            await _reaper_task
+-        _reaper_task = None
+-
+-
+ @app.post("/alias/{speaker_id}")
+ async def update_alias(speaker_id: str, upd: AliasUpdate):
+     path = aliases.ALIAS_PATH
+diff --git a/lan_app/config.py b/lan_app/config.py
+index 836801c..525d95d 100644
+--- a/lan_app/config.py
++++ b/lan_app/config.py
+@@ -1,13 +1,19 @@
+ from __future__ import annotations
+ 
++import logging
+ from pathlib import Path
++from typing import Literal
+ 
+-from pydantic import AliasChoices, Field
++from pydantic import AliasChoices, Field, model_validator
  from pydantic_settings import BaseSettings
  
-@@ -173,6 +174,26 @@ def run_precheck(audio_path: Path, cfg: Settings | None = None) -> PrecheckResul
+ from lan_app.constants import DEFAULT_RQ_QUEUE_NAME
+ from lan_transcriber.runtime_paths import default_data_root, default_recordings_root
+ 
++_DEV_DEFAULT_REDIS_URL = "redis://127.0.0.1:6379/0"
++_DEV_DEFAULT_LLM_BASE_URL = "http://127.0.0.1:8000"
++_logger = logging.getLogger(__name__)
++
+ 
+ def _default_metrics_snapshot_path() -> Path:
+     return default_data_root() / "metrics.snap"
+@@ -17,9 +23,20 @@ def _default_msal_cache_path() -> Path:
+     return default_data_root() / "auth" / "msal_cache.bin"
+ 
+ 
++def _normalize_optional_env(value: str | None) -> str | None:
++    if value is None:
++        return None
++    normalized = value.strip()
++    return normalized or None
++
++
+ class AppSettings(BaseSettings):
+     """App-layer runtime settings."""
+ 
++    lan_env: Literal["dev", "staging", "prod"] = Field(
++        default="dev",
++        validation_alias=AliasChoices("LAN_ENV"),
++    )
+     data_root: Path = default_data_root()
+     recordings_root: Path = default_recordings_root()
+     metrics_snapshot_path: Path = Field(
+@@ -39,10 +56,14 @@ class AppSettings(BaseSettings):
+             "SQLITE_BUSY_TIMEOUT_MS",
+         ),
      )
- 
- 
-+ProgressCallback = Callable[[str, float], Any | Awaitable[Any]]
-+
-+
-+async def _emit_progress(
-+    callback: ProgressCallback | None,
-+    *,
-+    stage: str,
-+    progress: float,
-+) -> None:
-+    if callback is None:
-+        return
-+    try:
-+        out = callback(stage, progress)
-+        if inspect.isawaitable(out):
-+            await out
-+    except Exception:
-+        # Progress reporting is best-effort and must not break processing.
-+        return
-+
-+
- async def run_pipeline(
-     audio_path: Path,
-     cfg: Settings,
-@@ -184,11 +205,13 @@ async def run_pipeline(
-     transcript_language_override: str | None = None,
-     calendar_title: str | None = None,
-     calendar_attendees: Sequence[str] | None = None,
-+    progress_callback: ProgressCallback | None = None,
- ) -> TranscriptResult:
-     start = time.perf_counter()
-     artifacts = build_recording_artifacts(cfg.recordings_root, recording_id or _default_recording_id(audio_path), audio_path.suffix)
-     stage_raw_audio(audio_path, artifacts.raw_audio_path)
- 
-+    await _emit_progress(progress_callback, stage="precheck", progress=0.05)
-     precheck_result = precheck or run_precheck(audio_path, cfg)
-     override_lang = normalise_language_code(transcript_language_override)
-     summary_lang = resolve_target_summary_language(target_summary_language, dominant_language=override_lang or "unknown", detected_language=None)
-@@ -201,6 +224,7 @@ async def run_pipeline(
+-    redis_url: str = Field(
+-        default="redis://redis:6379/0",
++    redis_url: str | None = Field(
++        default=None,
+         validation_alias=AliasChoices("LAN_REDIS_URL", "REDIS_URL"),
      )
++    llm_base_url: str | None = Field(
++        default=None,
++        validation_alias=AliasChoices("LLM_BASE_URL"),
++    )
+     rq_queue_name: str = Field(
+         default=DEFAULT_RQ_QUEUE_NAME,
+         validation_alias=AliasChoices("LAN_RQ_QUEUE_NAME", "RQ_QUEUE_NAME"),
+@@ -175,6 +196,38 @@ class AppSettings(BaseSettings):
+     def ms_scopes_list(self) -> list[str]:
+         return [s.strip() for s in self.ms_scopes.replace(",", " ").split() if s.strip()]
  
-     if precheck_result.quarantine_reason:
-+        await _emit_progress(progress_callback, stage="metrics", progress=0.95)
-         _clear_dir(artifacts.snippets_dir)
-         atomic_write_text(artifacts.transcript_txt_path, "")
-         atomic_write_json(
-@@ -239,10 +263,12 @@ async def run_pipeline(
-             ),
-         )
-         atomic_write_json(artifacts.metrics_json_path, {"status": "quarantined", "version": 1, "precheck": precheck_result.__dict__})
-+        await _emit_progress(progress_callback, stage="done", progress=1.0)
-         p95_latency_seconds.observe(time.perf_counter() - start)
-         return TranscriptResult(summary="Quarantined", body="", friendly=0, speakers=[], summary_path=artifacts.summary_json_path, body_path=artifacts.transcript_txt_path, unknown_chunks=[], segments=[])
++    @model_validator(mode="after")
++    def validate_runtime_environment(self) -> "AppSettings":
++        self.redis_url = _normalize_optional_env(self.redis_url)
++        self.llm_base_url = _normalize_optional_env(self.llm_base_url)
++
++        if self.lan_env == "dev":
++            if self.redis_url is None:
++                _logger.warning(
++                    "LAN_REDIS_URL is not set in LAN_ENV=dev; defaulting to %s",
++                    _DEV_DEFAULT_REDIS_URL,
++                )
++                self.redis_url = _DEV_DEFAULT_REDIS_URL
++            if self.llm_base_url is None:
++                _logger.warning(
++                    "LLM_BASE_URL is not set in LAN_ENV=dev; defaulting to %s",
++                    _DEV_DEFAULT_LLM_BASE_URL,
++                )
++                self.llm_base_url = _DEV_DEFAULT_LLM_BASE_URL
++            return self
++
++        missing: list[str] = []
++        if self.redis_url is None:
++            missing.append("LAN_REDIS_URL")
++        if self.llm_base_url is None:
++            missing.append("LLM_BASE_URL")
++        if missing:
++            vars_text = ", ".join(missing)
++            raise ValueError(
++                f"Missing required environment variable(s) for LAN_ENV={self.lan_env}: {vars_text}"
++            )
++        return self
++
+     class Config:
+         env_prefix = "LAN_"
  
-     try:
-+        await _emit_progress(progress_callback, stage="stt", progress=0.30)
-         import whisperx
+diff --git a/lan_transcriber/llm_client.py b/lan_transcriber/llm_client.py
+index 22dc1b5..2f54188 100644
+--- a/lan_transcriber/llm_client.py
++++ b/lan_transcriber/llm_client.py
+@@ -3,6 +3,7 @@
+ from __future__ import annotations
  
-         def _asr() -> tuple[list[dict[str, Any]], dict[str, Any]]:
-@@ -254,9 +280,12 @@ async def run_pipeline(
-                 segments, info = whisperx.transcribe(str(audio_path), **kwargs)
-             return list(segments), dict(info or {})
+ import json
++import logging
+ import os
+ from pathlib import Path
+ from typing import Any, Dict, List, Optional
+@@ -14,6 +15,8 @@ from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponen
+ from .metrics import llm_timeouts_total
  
-+        await _emit_progress(progress_callback, stage="diarize", progress=0.50)
-         (raw_segments, info), diarization = await asyncio.gather(asyncio.to_thread(_asr), diariser(audio_path))
-+        await _emit_progress(progress_callback, stage="align", progress=0.60)
-         asr_segments = normalise_asr_segments(raw_segments)
-         language_info = _language_payload(info)
-+        await _emit_progress(progress_callback, stage="language", progress=0.70)
-         detected_language = normalise_language_code(language_info["detected"]) if language_info["detected"] != "unknown" else None
-         language_analysis = analyse_languages(asr_segments, detected_language=detected_language, transcript_language_override=override_lang)
-         if language_info["detected"] == "unknown" and language_analysis.dominant_language != "unknown":
-@@ -341,7 +370,9 @@ async def run_pipeline(
-                 status="no_speech",
-             ),
-         )
-+        await _emit_progress(progress_callback, stage="metrics", progress=0.95)
-         atomic_write_json(artifacts.metrics_json_path, {"status": "no_speech", "version": 1, "precheck": {**precheck_result.__dict__, "quarantine_reason": None}, "language": language_info, "asr_segments": len(language_analysis.segments), "diar_segments": len(diar_segments), "speaker_turns": len(speaker_turns)})
-+        await _emit_progress(progress_callback, stage="done", progress=1.0)
-         p95_latency_seconds.observe(time.perf_counter() - start)
-         return TranscriptResult(summary="No speech detected", body="", friendly=0, speakers=speakers, summary_path=artifacts.summary_json_path, body_path=artifacts.transcript_txt_path, unknown_chunks=[], segments=[])
+ _RETRYABLE_STATUS_CODES = {408, 409, 425, 429}
++_DEV_DEFAULT_LLM_BASE_URL = "http://127.0.0.1:8000"
++_logger = logging.getLogger(__name__)
  
-@@ -357,6 +388,7 @@ async def run_pipeline(
-     sys_prompt, user_prompt = build_structured_summary_prompts(speaker_turns, summary_lang, calendar_title=cal_title, calendar_attendees=cal_attendees)
  
-     try:
-+        await _emit_progress(progress_callback, stage="llm", progress=0.85)
-         msg = await llm.generate(system_prompt=sys_prompt, user_prompt=user_prompt, model=cfg.llm_model, response_format={"type": "json_object"})
-         raw_summary = msg.get("content", "") if isinstance(msg, dict) else str(msg)
-         summary_payload = build_summary_payload(
-@@ -389,7 +421,9 @@ async def run_pipeline(
-         atomic_write_json(artifacts.segments_json_path, diar_segments)
-         atomic_write_json(artifacts.speaker_turns_json_path, speaker_turns)
-         atomic_write_json(artifacts.summary_json_path, summary_payload)
-+        await _emit_progress(progress_callback, stage="metrics", progress=0.95)
-         atomic_write_json(artifacts.metrics_json_path, {"status": "ok", "version": 1, "precheck": {**precheck_result.__dict__, "quarantine_reason": None}, "language": language_info, "asr_segments": len(language_analysis.segments), "diar_segments": len(diar_segments), "speaker_turns": len(speaker_turns), "snippets": len(snippet_paths)})
-+        await _emit_progress(progress_callback, stage="done", progress=1.0)
-         return TranscriptResult(summary=str(summary_payload.get("summary") or ""), body=clean_text, friendly=friendly, speakers=speakers, summary_path=artifacts.summary_json_path, body_path=artifacts.transcript_txt_path, unknown_chunks=snippet_paths, segments=serialised_segments)
-     except Exception as exc:
-         error_rate_total.inc()
+ def _timeout_seconds(value: str | None, *, default: float) -> float:
+@@ -44,6 +47,25 @@ def _is_retryable_exception(exc: BaseException) -> bool:
+     return False
+ 
+ 
++def _resolve_base_url(base_url: str | None) -> str:
++    configured = (base_url or os.getenv("LLM_BASE_URL") or "").strip()
++    if configured:
++        return configured
++
++    lan_env = (os.getenv("LAN_ENV") or "dev").strip().lower() or "dev"
++    if lan_env in {"staging", "prod"}:
++        raise ValueError(
++            f"Missing required environment variable for LAN_ENV={lan_env}: LLM_BASE_URL"
++        )
++
++    _logger.warning(
++        "LLM_BASE_URL is not set in LAN_ENV=%s; defaulting to %s",
++        lan_env,
++        _DEV_DEFAULT_LLM_BASE_URL,
++    )
++    return _DEV_DEFAULT_LLM_BASE_URL
++
++
+ class LLMClient:
+     """Simple asynchronous client for the language model API."""
+ 
+@@ -54,7 +76,7 @@ class LLMClient:
+         timeout: float | None = None,
+         mock_response_path: str | Path | None = None,
+     ) -> None:
+-        self.base_url = base_url or os.getenv("LLM_BASE_URL", "http://llm:8000")
++        self.base_url = _resolve_base_url(base_url)
+         self.api_key = api_key or os.getenv("LLM_API_KEY")
+         self.default_model = os.getenv("LLM_MODEL")
+         self.timeout = (
 diff --git a/tasks/QUEUE.md b/tasks/QUEUE.md
-index d584481..a158031 100644
+index a158031..052a226 100644
 --- a/tasks/QUEUE.md
 +++ b/tasks/QUEUE.md
-@@ -122,7 +122,7 @@ Queue (in order)
- - Depends on: PR-PIPELINE-MODULAR-01
- 
- 23) PR-UI-PROGRESS-01: UI feedback: pipeline progress/stage + Connections page real status and Run ingest button
--- Status: TODO
-+- Status: DONE
- - Tasks file: tasks/PR-UI-PROGRESS-01.md
+@@ -127,6 +127,6 @@ Queue (in order)
  - Depends on: PR-DB-RESILIENCE-01
  
-diff --git a/tests/test_db_queue.py b/tests/test_db_queue.py
-index bca1de7..27056df 100644
---- a/tests/test_db_queue.py
-+++ b/tests/test_db_queue.py
-@@ -36,6 +36,7 @@ from lan_app.constants import (
-     RECORDING_STATUS_READY,
- )
- from lan_app.db import (
-+    clear_recording_progress,
-     connect,
-     connect_db,
-     create_job,
-@@ -46,6 +47,7 @@ from lan_app.db import (
-     get_recording,
-     init_db,
-     list_jobs,
-+    set_recording_progress,
-     set_recording_status,
-     start_job,
-     upsert_calendar_match,
-@@ -120,6 +122,34 @@ def test_connect_sets_wal_and_busy_timeout(tmp_path: Path):
-     assert busy_timeout == 4321
+ 24) PR-RUNTIME-CONFIG-01: Runtime hardening: fail-fast config for staging/prod + FastAPI lifespan + docs alignment
+-- Status: TODO
++- Status: DONE
+ - Tasks file: tasks/PR-RUNTIME-CONFIG-01.md
+ - Depends on: PR-UI-PROGRESS-01
+diff --git a/tests/test_app_config.py b/tests/test_app_config.py
+index 5e5eb96..7279b86 100644
+--- a/tests/test_app_config.py
++++ b/tests/test_app_config.py
+@@ -1,4 +1,7 @@
++import os
+ from pathlib import Path
++import subprocess
++import sys
  
+ from lan_app.config import AppSettings
  
-+def test_recording_progress_helpers_set_and_clear(tmp_path: Path):
-+    cfg = _test_settings(tmp_path)
-+    init_db(cfg)
-+    create_recording(
-+        "rec-progress-helpers-1",
-+        source="test",
-+        source_filename="progress.mp3",
-+        settings=cfg,
+@@ -93,3 +96,55 @@ def test_worker_and_reaper_settings_from_env(monkeypatch):
+     assert cfg.max_job_attempts == 5
+     assert cfg.stuck_job_seconds == 900
+     assert cfg.reaper_interval_seconds == 60
++
++
++def test_lan_env_dev_defaults_with_warnings(monkeypatch, caplog):
++    monkeypatch.setenv("LAN_ENV", "dev")
++    monkeypatch.delenv("LAN_REDIS_URL", raising=False)
++    monkeypatch.delenv("REDIS_URL", raising=False)
++    monkeypatch.delenv("LLM_BASE_URL", raising=False)
++
++    with caplog.at_level("WARNING"):
++        cfg = AppSettings()
++
++    assert cfg.redis_url == "redis://127.0.0.1:6379/0"
++    assert cfg.llm_base_url == "http://127.0.0.1:8000"
++    assert "LAN_REDIS_URL is not set in LAN_ENV=dev" in caplog.text
++    assert "LLM_BASE_URL is not set in LAN_ENV=dev" in caplog.text
++
++
++def test_staging_missing_redis_url_fails_import():
++    env = os.environ.copy()
++    env["LAN_ENV"] = "staging"
++    env["LLM_BASE_URL"] = "http://127.0.0.1:8000"
++    env.pop("LAN_REDIS_URL", None)
++    env.pop("REDIS_URL", None)
++
++    result = subprocess.run(
++        [sys.executable, "-c", "import lan_app.api"],
++        capture_output=True,
++        text=True,
++        env=env,
++        check=False,
 +    )
 +
-+    assert set_recording_progress(
-+        "rec-progress-helpers-1",
-+        stage="stt",
-+        progress=0.3,
-+        settings=cfg,
++    assert result.returncode != 0
++    assert "LAN_REDIS_URL" in f"{result.stdout}\n{result.stderr}"
++
++
++def test_dev_missing_urls_allows_import():
++    env = os.environ.copy()
++    env["LAN_ENV"] = "dev"
++    env.pop("LAN_REDIS_URL", None)
++    env.pop("REDIS_URL", None)
++    env.pop("LLM_BASE_URL", None)
++
++    result = subprocess.run(
++        [sys.executable, "-c", "import lan_app.api"],
++        capture_output=True,
++        text=True,
++        env=env,
++        check=False,
 +    )
-+    after_set = get_recording("rec-progress-helpers-1", settings=cfg) or {}
-+    assert after_set["pipeline_stage"] == "stt"
-+    assert after_set["pipeline_progress"] == 0.3
-+    assert after_set["pipeline_updated_at"]
 +
-+    assert clear_recording_progress("rec-progress-helpers-1", settings=cfg)
-+    after_clear = get_recording("rec-progress-helpers-1", settings=cfg) or {}
-+    assert after_clear["pipeline_stage"] is None
-+    assert after_clear["pipeline_progress"] is None
-+    assert after_clear["pipeline_updated_at"] is None
-+
-+
- def test_with_db_retry_retries_on_forced_lock(tmp_path: Path):
-     db_file = tmp_path / "db" / "locked.db"
-     with connect_db(db_file, timeout=0.01, busy_timeout_ms=1) as conn:
-@@ -237,9 +267,10 @@ def test_placeholder_cleanup_migration_only_removes_legacy_placeholders(tmp_path
-             status=JOB_STATUS_QUEUED,
-         )
++    assert result.returncode == 0, f"{result.stdout}\n{result.stderr}"
+diff --git a/tests/test_llm_client.py b/tests/test_llm_client.py
+index fd41896..26d4c1a 100644
+--- a/tests/test_llm_client.py
++++ b/tests/test_llm_client.py
+@@ -17,7 +17,7 @@ def test_retry_predicate_includes_timeout_exceptions():
  
-+    # Force re-running migration 011 (legacy placeholder cleanup) even when
-+    # newer migrations exist.
-     with connect(cfg) as conn:
--        current_version = int(conn.execute("PRAGMA user_version").fetchone()[0])
--        conn.execute(f"PRAGMA user_version = {current_version - 1}")
-+        conn.execute("PRAGMA user_version = 10")
-         conn.commit()
+ @respx.mock
+ def test_generate():
+-    route = respx.post("http://llm:8000/v1/chat/completions").mock(
++    route = respx.post("http://127.0.0.1:8000/v1/chat/completions").mock(
+         return_value=httpx.Response(
+             200,
+             json={"choices": [{"message": {"content": "the-result"}}]},
+@@ -67,7 +67,7 @@ async def test_mock_response_path_with_content_field(tmp_path):
  
-     init_db(cfg)
-@@ -1527,10 +1558,18 @@ def test_worker_precheck_runs_pipeline_when_safe(tmp_path: Path, monkeypatch):
+ @respx.mock
+ def test_generate_with_content_only_response():
+-    route = respx.post("http://llm:8000/v1/chat/completions").mock(
++    route = respx.post("http://127.0.0.1:8000/v1/chat/completions").mock(
+         return_value=httpx.Response(200, json={"content": "fallback-content"})
      )
-     called = {"value": False}
-     observed_llm: dict[str, object] = {}
-+    observed_progress: dict[str, object] = {}
- 
-     async def _fake_run_pipeline(*_args, **kwargs):
-         called["value"] = True
-         observed_llm["value"] = kwargs.get("llm")
-+        progress_callback = kwargs.get("progress_callback")
-+        observed_progress["has_callback"] = callable(progress_callback)
-+        if callable(progress_callback):
-+            progress_callback("stt", 0.3)
-+            mid = get_recording("rec-precheck-ok-1", settings=cfg) or {}
-+            observed_progress["stage"] = mid.get("pipeline_stage")
-+            observed_progress["progress"] = mid.get("pipeline_progress")
-         return None
- 
-     monkeypatch.setattr("lan_app.worker_tasks.run_pipeline", _fake_run_pipeline)
-@@ -1539,15 +1578,75 @@ def test_worker_precheck_runs_pipeline_when_safe(tmp_path: Path, monkeypatch):
-     assert result["status"] == "ok"
-     assert called["value"] is True
-     assert isinstance(observed_llm["value"], LLMClient)
-+    assert observed_progress["has_callback"] is True
-+    assert observed_progress["stage"] == "stt"
-+    assert observed_progress["progress"] == 0.3
- 
-     recording = get_recording("rec-precheck-ok-1", settings=cfg)
-     job = get_job("job-precheck-ok-1", settings=cfg)
-     assert recording is not None
-     assert recording["status"] == RECORDING_STATUS_READY
-+    assert recording["pipeline_stage"] is None
-+    assert recording["pipeline_progress"] is None
-+    assert recording["pipeline_updated_at"] is None
-     assert job is not None
-     assert job["status"] == JOB_STATUS_FINISHED
- 
- 
-+def test_worker_clears_progress_when_pipeline_fails(tmp_path: Path, monkeypatch):
-+    cfg = _test_settings(tmp_path)
-+    monkeypatch.setenv("LAN_DATA_ROOT", str(cfg.data_root))
-+    monkeypatch.setenv("LAN_RECORDINGS_ROOT", str(cfg.recordings_root))
-+    monkeypatch.setenv("LAN_DB_PATH", str(cfg.db_path))
-+    monkeypatch.setenv("LAN_PROM_SNAPSHOT_PATH", str(cfg.metrics_snapshot_path))
-+    monkeypatch.setenv("LAN_MAX_JOB_ATTEMPTS", "1")
-+
-+    init_db(cfg)
-+    create_recording(
-+        "rec-progress-fail-1",
-+        source="test",
-+        source_filename="broken.wav",
-+        settings=cfg,
-+    )
-+    create_job(
-+        "job-progress-fail-1",
-+        recording_id="rec-progress-fail-1",
-+        job_type=JOB_TYPE_PRECHECK,
-+        settings=cfg,
-+    )
-+
-+    raw_audio = cfg.recordings_root / "rec-progress-fail-1" / "raw" / "audio.wav"
-+    raw_audio.parent.mkdir(parents=True, exist_ok=True)
-+    raw_audio.write_bytes(b"\x00")
-+
-+    monkeypatch.setattr("lan_app.worker_tasks._resolve_raw_audio_path", lambda *_a, **_k: raw_audio)
-+    monkeypatch.setattr(
-+        "lan_app.worker_tasks.run_precheck",
-+        lambda *_a, **_k: PrecheckResult(
-+            duration_sec=60.0,
-+            speech_ratio=0.8,
-+            quarantine_reason=None,
-+        ),
-+    )
-+
-+    async def _failing_run_pipeline(*_args, **kwargs):
-+        progress_callback = kwargs.get("progress_callback")
-+        if callable(progress_callback):
-+            progress_callback("stt", 0.3)
-+        raise RuntimeError("pipeline boom")
-+
-+    monkeypatch.setattr("lan_app.worker_tasks.run_pipeline", _failing_run_pipeline)
-+
-+    with pytest.raises(RuntimeError, match="pipeline boom"):
-+        process_job("job-progress-fail-1", "rec-progress-fail-1", JOB_TYPE_PRECHECK)
-+
-+    recording = get_recording("rec-progress-fail-1", settings=cfg)
-+    assert recording is not None
-+    assert recording["pipeline_stage"] is None
-+    assert recording["pipeline_progress"] is None
-+    assert recording["pipeline_updated_at"] is None
-+
-+
- def test_worker_precheck_keeps_auto_summary_target_unset(tmp_path: Path, monkeypatch):
-     cfg = _test_settings(tmp_path)
-     monkeypatch.setenv("LAN_DATA_ROOT", str(cfg.data_root))
-diff --git a/tests/test_pipeline.py b/tests/test_pipeline.py
-index 5f74550..392f21e 100644
---- a/tests/test_pipeline.py
-+++ b/tests/test_pipeline.py
-@@ -176,6 +176,57 @@ async def test_tripled_dedup(tmp_path: Path, mocker):
-     assert summary_data["summary"] == "- ok"
- 
- 
-+@pytest.mark.asyncio
-+@respx.mock
-+async def test_pipeline_emits_progress_stages_in_order(tmp_path: Path, mocker):
-+    mocker.patch(
-+        "whisperx.transcribe",
-+        return_value=(
-+            [{"start": 0.0, "end": 1.0, "text": "hello world team"}],
-+            {"language": "en", "language_probability": 0.95},
-+        ),
-+    )
-+    respx.post("http://llm:8000/v1/chat/completions").mock(
-+        return_value=httpx.Response(
-+            200,
-+            json={"choices": [{"message": {"content": "- summary"}}]},
-+        ),
-+    )
-+    mocker.patch(
-+        "transformers.pipeline",
-+        lambda *a, **k: lambda text: [{"label": "positive", "score": 0.7}],
-+    )
-+    cfg = pipeline.Settings(
-+        speaker_db=tmp_path / "db.yaml",
-+        tmp_root=tmp_path,
-+        recordings_root=tmp_path / "recordings",
-+    )
-+    events: list[tuple[str, float]] = []
-+
-+    def _progress(stage: str, progress: float) -> None:
-+        events.append((stage, progress))
-+
-+    await pipeline.run_pipeline(
-+        fake_audio(tmp_path, "progress.mp3"),
-+        cfg,
-+        llm_client.LLMClient(),
-+        DummyDiariser(),
-+        precheck=precheck_ok(),
-+        progress_callback=_progress,
-+    )
-+
-+    assert events == [
-+        ("precheck", 0.05),
-+        ("stt", 0.30),
-+        ("diarize", 0.50),
-+        ("align", 0.60),
-+        ("language", 0.70),
-+        ("llm", 0.85),
-+        ("metrics", 0.95),
-+        ("done", 1.0),
-+    ]
-+
-+
+     result = asyncio.run(llm_client.generate("s", "u", model="m"))
+diff --git a/tests/test_metrics.py b/tests/test_metrics.py
+index 2e2e01c..56475c6 100644
+--- a/tests/test_metrics.py
++++ b/tests/test_metrics.py
+@@ -36,7 +36,7 @@ def mp3(tmp: Path) -> Path:
  @pytest.mark.asyncio
  @respx.mock
- async def test_alias_persist(tmp_path: Path, mocker):
-diff --git a/tests/test_ui_routes.py b/tests/test_ui_routes.py
-index 625ca7b..cfa561e 100644
---- a/tests/test_ui_routes.py
-+++ b/tests/test_ui_routes.py
-@@ -26,6 +26,7 @@ from lan_app.db import (
-     list_project_keyword_weights,
-     replace_participant_metrics,
-     list_voice_profiles,
-+    set_recording_progress,
-     set_speaker_assignment,
-     upsert_calendar_match,
-     upsert_meeting_metrics,
-@@ -36,6 +37,7 @@ from lan_app.constants import (
-     JOB_TYPE_PRECHECK,
-     JOB_TYPE_STT,
-     RECORDING_STATUS_NEEDS_REVIEW,
-+    RECORDING_STATUS_PROCESSING,
-     RECORDING_STATUS_READY,
- )
+ async def test_metrics_file(tmp_path: Path, monkeypatch):
+-    respx.post("http://llm:8000/v1/chat/completions").mock(
++    respx.post("http://127.0.0.1:8000/v1/chat/completions").mock(
+         return_value=httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
+     )
+     cfg = pipeline.Settings(
+diff --git a/tests/test_pipeline.py b/tests/test_pipeline.py
+index 392f21e..abad51b 100644
+--- a/tests/test_pipeline.py
++++ b/tests/test_pipeline.py
+@@ -144,7 +144,7 @@ async def test_tripled_dedup(tmp_path: Path, mocker):
+         ),
+     )
  
-@@ -176,6 +178,54 @@ def test_recording_detail_overview(seeded_client):
-     assert "Ready" in r.text
+-    respx.post("http://llm:8000/v1/chat/completions").mock(
++    respx.post("http://127.0.0.1:8000/v1/chat/completions").mock(
+         return_value=httpx.Response(
+             200, json={"choices": [{"message": {"content": "- ok"}}]}
+         ),
+@@ -186,7 +186,7 @@ async def test_pipeline_emits_progress_stages_in_order(tmp_path: Path, mocker):
+             {"language": "en", "language_probability": 0.95},
+         ),
+     )
+-    respx.post("http://llm:8000/v1/chat/completions").mock(
++    respx.post("http://127.0.0.1:8000/v1/chat/completions").mock(
+         return_value=httpx.Response(
+             200,
+             json={"choices": [{"message": {"content": "- summary"}}]},
+@@ -238,7 +238,7 @@ async def test_alias_persist(tmp_path: Path, mocker):
+         ),
+     )
  
+-    respx.post("http://llm:8000/v1/chat/completions").mock(
++    respx.post("http://127.0.0.1:8000/v1/chat/completions").mock(
+         return_value=httpx.Response(
+             200, json={"choices": [{"message": {"content": "- sum"}}]}
+         ),
+@@ -277,7 +277,7 @@ async def test_alias_persist(tmp_path: Path, mocker):
+ @respx.mock
+ async def test_white_noise(tmp_path: Path, mocker):
+     mocker.patch("whisperx.transcribe", return_value=([], {"language": "en"}))
+-    respx.post("http://llm:8000/v1/chat/completions").mock(
++    respx.post("http://127.0.0.1:8000/v1/chat/completions").mock(
+         return_value=httpx.Response(
+             200, json={"choices": [{"message": {"content": ""}}]}
+         ),
+@@ -315,7 +315,7 @@ async def test_no_talk(tmp_path: Path, mocker):
+         ),
+     )
  
-+def test_recording_detail_processing_polls_progress(tmp_path, monkeypatch):
-+    cfg = _cfg(tmp_path)
-+    monkeypatch.setattr(api, "_settings", cfg)
-+    monkeypatch.setattr(ui_routes, "_settings", cfg)
-+    init_db(cfg)
-+    create_recording(
-+        "rec-ui-processing-1",
-+        source="drive",
-+        source_filename="processing.mp3",
-+        status=RECORDING_STATUS_PROCESSING,
-+        settings=cfg,
-+    )
-+
-+    c = TestClient(api.app, follow_redirects=True)
-+    r = c.get("/recordings/rec-ui-processing-1")
-+    assert r.status_code == 200
-+    assert "/ui/recordings/rec-ui-processing-1/progress" in r.text
-+    assert "every 2s" in r.text
-+
-+
-+def test_recording_progress_endpoint_renders_expected_html(tmp_path, monkeypatch):
-+    cfg = _cfg(tmp_path)
-+    monkeypatch.setattr(api, "_settings", cfg)
-+    monkeypatch.setattr(ui_routes, "_settings", cfg)
-+    init_db(cfg)
-+    create_recording(
-+        "rec-ui-progress-1",
-+        source="drive",
-+        source_filename="progress.mp3",
-+        status=RECORDING_STATUS_PROCESSING,
-+        settings=cfg,
-+    )
-+    set_recording_progress(
-+        "rec-ui-progress-1",
-+        stage="diarize",
-+        progress=0.5,
-+        settings=cfg,
-+    )
-+
-+    c = TestClient(api.app, follow_redirects=True)
-+    r = c.get("/ui/recordings/rec-ui-progress-1/progress")
-+    assert r.status_code == 200
-+    assert "Pipeline:" in r.text
-+    assert "Diarize" in r.text
-+    assert "50%" in r.text
-+    assert "stage=<code>diarize</code>" in r.text
-+
-+
- def test_recording_detail_log_tab(seeded_client):
-     r = seeded_client.get("/recordings/rec-ui-1?tab=log")
-     assert r.status_code == 200
-@@ -822,6 +872,62 @@ def test_connections(client):
-     assert "Microsoft Graph" in r.text
+-    respx.post("http://llm:8000/v1/chat/completions").mock(
++    respx.post("http://127.0.0.1:8000/v1/chat/completions").mock(
+         return_value=httpx.Response(
+             200, json={"choices": [{"message": {"content": ""}}]}
+         ),
+@@ -356,7 +356,7 @@ async def test_pipeline_preserves_zero_language_confidence(tmp_path: Path, mocke
+         "transformers.pipeline",
+         lambda *a, **k: lambda text: [{"label": "positive", "score": 0.5}],
+     )
+-    respx.post("http://llm:8000/v1/chat/completions").mock(
++    respx.post("http://127.0.0.1:8000/v1/chat/completions").mock(
+         return_value=httpx.Response(
+             200,
+             json={"choices": [{"message": {"content": "- summary"}}]},
+@@ -415,7 +415,7 @@ async def test_pipeline_writes_required_artifacts(tmp_path: Path, mocker):
+         "transformers.pipeline",
+         lambda *a, **k: lambda text: [{"label": "positive", "score": 0.6}],
+     )
+-    respx.post("http://llm:8000/v1/chat/completions").mock(
++    respx.post("http://127.0.0.1:8000/v1/chat/completions").mock(
+         return_value=httpx.Response(
+             200,
+             json={"choices": [{"message": {"content": "- summary"}}]},
+@@ -488,7 +488,7 @@ async def test_pipeline_writes_language_spans_for_mixed_language_segments(tmp_pa
+         "transformers.pipeline",
+         lambda *a, **k: lambda text: [{"label": "positive", "score": 0.6}],
+     )
+-    respx.post("http://llm:8000/v1/chat/completions").mock(
++    respx.post("http://127.0.0.1:8000/v1/chat/completions").mock(
+         return_value=httpx.Response(
+             200,
+             json={"choices": [{"message": {"content": "- summary"}}]},
+@@ -792,7 +792,7 @@ async def test_pipeline_transcript_language_override_is_used_for_asr(tmp_path: P
+         "transformers.pipeline",
+         lambda *a, **k: lambda text: [{"label": "positive", "score": 0.6}],
+     )
+-    respx.post("http://llm:8000/v1/chat/completions").mock(
++    respx.post("http://127.0.0.1:8000/v1/chat/completions").mock(
+         return_value=httpx.Response(
+             200,
+             json={"choices": [{"message": {"content": "- resumen"}}]},
+@@ -850,7 +850,7 @@ async def test_pipeline_accepts_pyannote_triplet_itertracks(tmp_path: Path, mock
+         "transformers.pipeline",
+         lambda *a, **k: lambda text: [{"label": "positive", "score": 0.6}],
+     )
+-    respx.post("http://llm:8000/v1/chat/completions").mock(
++    respx.post("http://127.0.0.1:8000/v1/chat/completions").mock(
+         return_value=httpx.Response(
+             200,
+             json={"choices": [{"message": {"content": "- summary"}}]},
+diff --git a/tests/test_transcribe_and_summarize.py b/tests/test_transcribe_and_summarize.py
+index 1f8a1ed..7d5b85b 100644
+--- a/tests/test_transcribe_and_summarize.py
++++ b/tests/test_transcribe_and_summarize.py
+@@ -20,7 +20,7 @@ import web_transcribe  # noqa: E402
  
- 
-+def test_connections_shows_configured_gdrive(tmp_path, monkeypatch):
-+    cfg = _cfg(tmp_path)
-+    cfg.gdrive_sa_json_path = cfg.data_root / "secrets" / "gdrive_sa.json"
-+    cfg.gdrive_inbox_folder_id = "folder-abc"
-+    monkeypatch.setattr(api, "_settings", cfg)
-+    monkeypatch.setattr(ui_routes, "_settings", cfg)
-+    monkeypatch.setattr(
-+        ui_routes,
-+        "ms_connection_state",
-+        lambda _settings: {"configured": False, "status": "not_configured"},
-+    )
-+    init_db(cfg)
-+
-+    client = TestClient(api.app, follow_redirects=True)
-+    resp = client.get("/connections")
-+    assert resp.status_code == 200
-+    assert "Configured" in resp.text
-+    assert "folder-abc" in resp.text
-+    assert "Test connection" in resp.text
-+    assert "Run ingest now" in resp.text
-+
-+
-+def test_ui_test_gdrive_connection_endpoint_success(tmp_path, monkeypatch):
-+    cfg = _cfg(tmp_path)
-+    monkeypatch.setattr(api, "_settings", cfg)
-+    monkeypatch.setattr(ui_routes, "_settings", cfg)
-+    init_db(cfg)
-+    monkeypatch.setattr(
-+        ui_routes,
-+        "_test_gdrive_connection",
-+        lambda _settings: {"ok": True, "message": "Connected. Sample file: demo.mp3 (id-1)."},
-+    )
-+
-+    client = TestClient(api.app, follow_redirects=True)
-+    resp = client.post("/ui/connections/gdrive/test")
-+    assert resp.status_code == 200
-+    assert "Connected. Sample file: demo.mp3 (id-1)." in resp.text
-+
-+
-+def test_ui_test_gdrive_connection_endpoint_not_configured(tmp_path, monkeypatch):
-+    cfg = _cfg(tmp_path)
-+    monkeypatch.setattr(api, "_settings", cfg)
-+    monkeypatch.setattr(ui_routes, "_settings", cfg)
-+    init_db(cfg)
-+
-+    def _boom(_settings):
-+        raise ValueError("Google Drive is not configured.")
-+
-+    monkeypatch.setattr(ui_routes, "_test_gdrive_connection", _boom)
-+
-+    client = TestClient(api.app, follow_redirects=True)
-+    resp = client.post("/ui/connections/gdrive/test")
-+    assert resp.status_code == 200
-+    assert "Google Drive is not configured." in resp.text
-+
-+
- def test_ui_root_redirects_to_login_when_auth_enabled(tmp_path, monkeypatch):
-     cfg = _cfg(tmp_path)
-     cfg.api_bearer_token = "secret-ui-token"
-diff --git a/lan_app/migrations/012_add_recording_pipeline_progress.sql b/lan_app/migrations/012_add_recording_pipeline_progress.sql
-new file mode 100644
-index 0000000..f2cf005
---- /dev/null
-+++ b/lan_app/migrations/012_add_recording_pipeline_progress.sql
-@@ -0,0 +1,4 @@
-+ALTER TABLE recordings ADD COLUMN pipeline_stage TEXT;
-+ALTER TABLE recordings ADD COLUMN pipeline_progress REAL;
-+ALTER TABLE recordings ADD COLUMN pipeline_updated_at TEXT;
-+ALTER TABLE recordings ADD COLUMN last_warning TEXT;
-diff --git a/lan_app/templates/partials/recording_progress.html b/lan_app/templates/partials/recording_progress.html
-new file mode 100644
-index 0000000..4554ad7
---- /dev/null
-+++ b/lan_app/templates/partials/recording_progress.html
-@@ -0,0 +1,21 @@
-+<div style="border:1px solid #ccd;background:#fff;padding:8px 10px">
-+  <div style="display:flex;gap:8px;align-items:center;justify-content:space-between;margin-bottom:6px;font-size:12px">
-+    <span><strong>Pipeline:</strong> {{ stage_label }}</span>
-+    <span>{{ progress_percent }}%</span>
-+  </div>
-+  <div style="width:100%;max-width:520px;height:14px;border:1px solid #99b;background:#eef2ff">
-+    <div style="height:100%;background:#4a6080;width:{{ progress_percent }}%"></div>
-+  </div>
-+  <div style="font-size:11px;color:#555;margin-top:5px">
-+    stage=<code>{{ stage_code }}</code>
-+    {% if updated_at %}
-+    &nbsp;updated={{ updated_at[:19].replace('T', ' ') }}
-+    {% endif %}
-+    {% if warning %}
-+    &nbsp;warning={{ warning }}
-+    {% endif %}
-+    {% if not is_processing %}
-+    &nbsp;status={{ rec.status }}
-+    {% endif %}
-+  </div>
-+</div>
+ @respx.mock
+ def test_transcribe_and_summarize(tmp_path: Path):
+-    respx.post("http://llm:8000/v1/chat/completions").mock(
++    respx.post("http://127.0.0.1:8000/v1/chat/completions").mock(
+         return_value=httpx.Response(
+             200,
+             json={"choices": [{"message": {"content": "summary"}}]},

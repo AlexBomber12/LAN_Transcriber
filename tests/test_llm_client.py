@@ -17,7 +17,7 @@ def test_retry_predicate_includes_timeout_exceptions():
 
 @respx.mock
 def test_generate():
-    route = respx.post("http://llm:8000/v1/chat/completions").mock(
+    route = respx.post("http://127.0.0.1:8000/v1/chat/completions").mock(
         return_value=httpx.Response(
             200,
             json={"choices": [{"message": {"content": "the-result"}}]},
@@ -67,7 +67,7 @@ async def test_mock_response_path_with_content_field(tmp_path):
 
 @respx.mock
 def test_generate_with_content_only_response():
-    route = respx.post("http://llm:8000/v1/chat/completions").mock(
+    route = respx.post("http://127.0.0.1:8000/v1/chat/completions").mock(
         return_value=httpx.Response(200, json={"content": "fallback-content"})
     )
     result = asyncio.run(llm_client.generate("s", "u", model="m"))
