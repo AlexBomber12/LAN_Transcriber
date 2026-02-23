@@ -332,6 +332,73 @@ def test_worker_ignores_stale_inflight_execution_for_recovered_started_job(
     assert "ignored stale in-flight execution" in step_log.read_text(encoding="utf-8")
 
 
+def test_worker_finalizes_started_job_when_recording_leaves_processing_mid_run(
+    tmp_path: Path,
+    monkeypatch,
+):
+    cfg = _test_settings(tmp_path)
+    monkeypatch.setenv("LAN_DATA_ROOT", str(cfg.data_root))
+    monkeypatch.setenv("LAN_RECORDINGS_ROOT", str(cfg.recordings_root))
+    monkeypatch.setenv("LAN_DB_PATH", str(cfg.db_path))
+    monkeypatch.setenv("LAN_PROM_SNAPSHOT_PATH", str(cfg.metrics_snapshot_path))
+
+    init_db(cfg)
+    create_recording(
+        "rec-worker-recording-race-1",
+        source="test",
+        source_filename="recording-race.wav",
+        status=RECORDING_STATUS_QUEUED,
+        settings=cfg,
+    )
+    create_job(
+        "job-worker-recording-race-1",
+        recording_id="rec-worker-recording-race-1",
+        job_type=JOB_TYPE_PRECHECK,
+        settings=cfg,
+    )
+
+    def _simulate_manual_status_change(*_args, **_kwargs):
+        assert (
+            set_recording_status(
+                "rec-worker-recording-race-1",
+                RECORDING_STATUS_QUARANTINE,
+                settings=cfg,
+                quarantine_reason="manual_override",
+            )
+            is True
+        )
+        return RECORDING_STATUS_READY, None
+
+    monkeypatch.setattr(
+        "lan_app.worker_tasks._run_precheck_pipeline",
+        _simulate_manual_status_change,
+    )
+
+    result = process_job(
+        "job-worker-recording-race-1",
+        "rec-worker-recording-race-1",
+        JOB_TYPE_PRECHECK,
+    )
+
+    job = get_job("job-worker-recording-race-1", settings=cfg)
+    recording = get_recording("rec-worker-recording-race-1", settings=cfg)
+    assert result["status"] == "ignored"
+    assert job is not None
+    assert recording is not None
+    assert job["status"] == JOB_STATUS_FAILED
+    assert "stale in-flight execution ignored" in str(job["error"])
+    assert recording["status"] == RECORDING_STATUS_QUARANTINE
+    assert recording["quarantine_reason"] == "manual_override"
+    step_log = (
+        cfg.recordings_root
+        / "rec-worker-recording-race-1"
+        / "logs"
+        / "step-precheck.log"
+    )
+    assert step_log.exists()
+    assert "ignored stale in-flight execution" in step_log.read_text(encoding="utf-8")
+
+
 def test_worker_noop_updates_job_and_recording_state(tmp_path: Path, monkeypatch):
     cfg = _test_settings(tmp_path)
     monkeypatch.setenv("LAN_DATA_ROOT", str(cfg.data_root))

@@ -34,6 +34,7 @@ from .constants import (
 )
 from .db import (
     fail_job,
+    fail_job_if_started,
     finish_job_if_started,
     get_calendar_match,
     get_job,
@@ -691,6 +692,17 @@ def process_job(job_id: str, recording_id: str, job_type: str) -> dict[str, str]
                 recording_row = get_recording(recording_id, settings=settings) or {}
                 recording_status = str(recording_row.get("status") or "").strip()
                 if recording_status and recording_status != RECORDING_STATUS_PROCESSING:
+                    try:
+                        fail_job_if_started(
+                            job_id,
+                            (
+                                "stale in-flight execution ignored: "
+                                f"recording status changed to {recording_status}"
+                            ),
+                            settings=settings,
+                        )
+                    except Exception:
+                        pass
                     _log_stale_inflight_execution(
                         job_id=job_id,
                         job_type=job_type,
