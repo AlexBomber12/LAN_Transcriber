@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 import json
 from pathlib import Path
 import sqlite3
-from typing import Any
+from typing import Any, Sequence
 
 from .config import AppSettings
 from .constants import (
@@ -478,6 +478,43 @@ def set_recording_status(
                 quarantine_reason if status == RECORDING_STATUS_QUARANTINE else None,
                 now,
                 recording_id,
+            ),
+        )
+        conn.commit()
+    return updated.rowcount > 0
+
+
+def set_recording_status_if_current_in(
+    recording_id: str,
+    status: str,
+    *,
+    current_statuses: Sequence[str],
+    settings: AppSettings | None = None,
+    quarantine_reason: str | None = None,
+) -> bool:
+    init_db(settings)
+    _validate_recording_status(status)
+    expected_statuses = tuple(dict.fromkeys(str(value) for value in current_statuses))
+    if not expected_statuses:
+        return False
+    for value in expected_statuses:
+        _validate_recording_status(value)
+    placeholders = ", ".join("?" for _ in expected_statuses)
+    now = _utc_now()
+    with connect(settings) as conn:
+        updated = conn.execute(
+            f"""
+            UPDATE recordings
+            SET status = ?, quarantine_reason = ?, updated_at = ?
+            WHERE id = ?
+              AND status IN ({placeholders})
+            """,
+            (
+                status,
+                quarantine_reason if status == RECORDING_STATUS_QUARANTINE else None,
+                now,
+                recording_id,
+                *expected_statuses,
             ),
         )
         conn.commit()
@@ -1773,6 +1810,7 @@ __all__ = [
     "get_recording",
     "list_recordings",
     "set_recording_status",
+    "set_recording_status_if_current_in",
     "set_recording_project",
     "set_recording_routing_suggestion",
     "set_recording_language_settings",

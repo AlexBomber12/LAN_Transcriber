@@ -17,14 +17,15 @@ from .db import (
     list_processing_recordings_without_started_job,
     list_stale_started_jobs,
     set_recording_status,
+    set_recording_status_if_current_in,
 )
 
 _RECOVERY_ERROR = "stuck job recovered"
-_STALE_DOWNGRADE_STATUSES = {
+_STALE_DOWNGRADE_STATUSES = (
     RECORDING_STATUS_QUEUED,
     RECORDING_STATUS_PROCESSING,
     RECORDING_STATUS_NEEDS_REVIEW,
-}
+)
 
 
 def _utc_now() -> datetime:
@@ -67,19 +68,18 @@ def run_stuck_job_reaper_once(
     for row in stale_rows:
         job_id = str(row.get("id") or "").strip()
         recording_id = str(row.get("recording_id") or "").strip()
-        recording_status = str(row.get("recording_status") or "").strip()
         job_type = str(row.get("type") or "").strip() or DEFAULT_REQUEUE_JOB_TYPE
         if not job_id or not recording_id:
             continue
         if not fail_job_if_started(job_id, _RECOVERY_ERROR, settings=cfg):
             # Job completed or moved to another state after selection.
             continue
-        if recording_status in _STALE_DOWNGRADE_STATUSES:
-            set_recording_status(
-                recording_id,
-                RECORDING_STATUS_NEEDS_REVIEW,
-                settings=cfg,
-            )
+        if set_recording_status_if_current_in(
+            recording_id,
+            RECORDING_STATUS_NEEDS_REVIEW,
+            current_statuses=_STALE_DOWNGRADE_STATUSES,
+            settings=cfg,
+        ):
             recovered_recording_ids.add(recording_id)
         _append_step_log(
             _step_log_path(recording_id, job_type, cfg),

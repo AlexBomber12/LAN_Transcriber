@@ -14,7 +14,16 @@ from lan_app.constants import (
     RECORDING_STATUS_QUEUED,
     RECORDING_STATUS_READY,
 )
-from lan_app.db import connect, create_job, create_recording, get_job, get_recording, init_db
+from lan_app import db as db_module
+from lan_app.db import (
+    connect,
+    create_job,
+    create_recording,
+    get_job,
+    get_recording,
+    init_db,
+    set_recording_status,
+)
 from lan_app.reaper import run_stuck_job_reaper_once
 
 
@@ -221,6 +230,70 @@ def test_reaper_does_not_downgrade_ready_recording_when_clearing_stale_started_j
 
     job = get_job("job-reaper-stale-ready-1", settings=cfg)
     recording = get_recording("rec-reaper-stale-ready-1", settings=cfg)
+    assert job is not None
+    assert recording is not None
+    assert summary["stale_started_jobs"] == 1
+    assert summary["recovered_jobs"] == 1
+    assert summary["recovered_recordings"] == 0
+    assert job["status"] == JOB_STATUS_FAILED
+    assert recording["status"] == RECORDING_STATUS_READY
+
+
+def test_reaper_skips_stale_downgrade_if_status_changes_after_selection(
+    tmp_path: Path,
+    monkeypatch,
+):
+    cfg = _test_settings(tmp_path)
+    init_db(cfg)
+    create_recording(
+        "rec-reaper-stale-race-1",
+        source="test",
+        source_filename="stale-race.wav",
+        status=RECORDING_STATUS_PROCESSING,
+        settings=cfg,
+    )
+    create_job(
+        "job-reaper-stale-race-1",
+        recording_id="rec-reaper-stale-race-1",
+        job_type=JOB_TYPE_PRECHECK,
+        status=JOB_STATUS_STARTED,
+        settings=cfg,
+        attempt=1,
+    )
+    with connect(cfg) as conn:
+        conn.execute(
+            """
+            UPDATE jobs
+            SET started_at = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                "2026-02-22T00:00:00Z",
+                "2026-02-22T00:00:00Z",
+                "job-reaper-stale-race-1",
+            ),
+        )
+        conn.commit()
+
+    original = db_module.set_recording_status_if_current_in
+
+    def _racy_set_status(*args, **kwargs):
+        set_recording_status(
+            "rec-reaper-stale-race-1",
+            RECORDING_STATUS_READY,
+            settings=cfg,
+        )
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr("lan_app.reaper.set_recording_status_if_current_in", _racy_set_status)
+
+    summary = run_stuck_job_reaper_once(
+        settings=cfg,
+        now=datetime(2026, 2, 23, 0, 0, 0, tzinfo=timezone.utc),
+    )
+
+    job = get_job("job-reaper-stale-race-1", settings=cfg)
+    recording = get_recording("rec-reaper-stale-race-1", settings=cfg)
     assert job is not None
     assert recording is not None
     assert summary["stale_started_jobs"] == 1
