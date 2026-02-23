@@ -565,6 +565,53 @@ def set_recording_status_if_current_in_and_no_started_job(
     return updated.rowcount > 0
 
 
+def set_recording_status_if_current_in_and_job_started(
+    recording_id: str,
+    status: str,
+    *,
+    job_id: str,
+    current_statuses: Sequence[str],
+    settings: AppSettings | None = None,
+    quarantine_reason: str | None = None,
+) -> bool:
+    init_db(settings)
+    _validate_recording_status(status)
+    expected_statuses = tuple(dict.fromkeys(str(value) for value in current_statuses))
+    if not expected_statuses:
+        return False
+    for value in expected_statuses:
+        _validate_recording_status(value)
+    placeholders = ", ".join("?" for _ in expected_statuses)
+    now = _utc_now()
+    with connect(settings) as conn:
+        updated = conn.execute(
+            f"""
+            UPDATE recordings
+            SET status = ?, quarantine_reason = ?, updated_at = ?
+            WHERE id = ?
+              AND status IN ({placeholders})
+              AND EXISTS (
+                    SELECT 1
+                    FROM jobs
+                    WHERE jobs.id = ?
+                      AND jobs.recording_id = recordings.id
+                      AND jobs.status = ?
+              )
+            """,
+            (
+                status,
+                quarantine_reason if status == RECORDING_STATUS_QUARANTINE else None,
+                now,
+                recording_id,
+                *expected_statuses,
+                job_id,
+                JOB_STATUS_STARTED,
+            ),
+        )
+        conn.commit()
+    return updated.rowcount > 0
+
+
 def set_recording_project(
     recording_id: str,
     project_id: int | None,
@@ -1933,6 +1980,7 @@ __all__ = [
     "set_recording_status",
     "set_recording_status_if_current_in",
     "set_recording_status_if_current_in_and_no_started_job",
+    "set_recording_status_if_current_in_and_job_started",
     "set_recording_project",
     "set_recording_routing_suggestion",
     "set_recording_language_settings",

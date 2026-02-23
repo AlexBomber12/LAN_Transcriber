@@ -44,7 +44,7 @@ from .db import (
     requeue_job_if_started,
     set_recording_language_settings,
     set_recording_status,
-    set_recording_status_if_current_in,
+    set_recording_status_if_current_in_and_job_started,
     start_job,
 )
 from .routing import refresh_recording_routing
@@ -682,13 +682,23 @@ def process_job(job_id: str, recording_id: str, job_type: str) -> dict[str, str]
                 )
                 return _ignored_result(job_id, recording_id, job_type)
 
-            if not set_recording_status_if_current_in(
+            if not set_recording_status_if_current_in_and_job_started(
                 recording_id,
                 final_status,
+                job_id=job_id,
                 current_statuses=(RECORDING_STATUS_PROCESSING,),
                 settings=settings,
                 quarantine_reason=quarantine_reason,
             ):
+                current_job_status = _job_status(job_id, settings)
+                if current_job_status != JOB_STATUS_STARTED:
+                    _log_stale_inflight_execution(
+                        job_id=job_id,
+                        job_type=job_type,
+                        log_path=log_path,
+                        detail=f"status={current_job_status or 'missing'}",
+                    )
+                    return _ignored_result(job_id, recording_id, job_type)
                 recording_row = get_recording(recording_id, settings=settings) or {}
                 recording_status = str(recording_row.get("status") or "").strip()
                 if recording_status and recording_status != RECORDING_STATUS_PROCESSING:

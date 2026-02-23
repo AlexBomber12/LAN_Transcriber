@@ -27,6 +27,7 @@ from lan_app.constants import (
     JOB_TYPE_STT,
     RECORDING_STATUS_FAILED,
     RECORDING_STATUS_NEEDS_REVIEW,
+    RECORDING_STATUS_PROCESSING,
     RECORDING_STATUS_QUARANTINE,
     RECORDING_STATUS_QUEUED,
     RECORDING_STATUS_READY,
@@ -325,6 +326,72 @@ def test_worker_ignores_stale_inflight_execution_for_recovered_started_job(
     step_log = (
         cfg.recordings_root
         / "rec-worker-stale-inflight-1"
+        / "logs"
+        / "step-precheck.log"
+    )
+    assert step_log.exists()
+    assert "ignored stale in-flight execution" in step_log.read_text(encoding="utf-8")
+
+
+def test_worker_does_not_write_terminal_status_after_job_recovered_mid_run(
+    tmp_path: Path,
+    monkeypatch,
+):
+    cfg = _test_settings(tmp_path)
+    monkeypatch.setenv("LAN_DATA_ROOT", str(cfg.data_root))
+    monkeypatch.setenv("LAN_RECORDINGS_ROOT", str(cfg.recordings_root))
+    monkeypatch.setenv("LAN_DB_PATH", str(cfg.db_path))
+    monkeypatch.setenv("LAN_PROM_SNAPSHOT_PATH", str(cfg.metrics_snapshot_path))
+
+    init_db(cfg)
+    create_recording(
+        "rec-worker-midrun-race-1",
+        source="test",
+        source_filename="midrun-race.wav",
+        status=RECORDING_STATUS_QUEUED,
+        settings=cfg,
+    )
+    create_job(
+        "job-worker-midrun-race-1",
+        recording_id="rec-worker-midrun-race-1",
+        job_type=JOB_TYPE_PRECHECK,
+        settings=cfg,
+    )
+
+    def _simulate_reaper_job_recovery(*_args, **_kwargs):
+        assert (
+            fail_job_if_started(
+                "job-worker-midrun-race-1",
+                "stuck job recovered",
+                settings=cfg,
+            )
+            is True
+        )
+        # Reaper has recovered the job; worker must not commit terminal recording state.
+        return RECORDING_STATUS_READY, None
+
+    monkeypatch.setattr(
+        "lan_app.worker_tasks._run_precheck_pipeline",
+        _simulate_reaper_job_recovery,
+    )
+
+    result = process_job(
+        "job-worker-midrun-race-1",
+        "rec-worker-midrun-race-1",
+        JOB_TYPE_PRECHECK,
+    )
+
+    job = get_job("job-worker-midrun-race-1", settings=cfg)
+    recording = get_recording("rec-worker-midrun-race-1", settings=cfg)
+    assert result["status"] == "ignored"
+    assert job is not None
+    assert recording is not None
+    assert job["status"] == JOB_STATUS_FAILED
+    assert job["error"] == "stuck job recovered"
+    assert recording["status"] == RECORDING_STATUS_PROCESSING
+    step_log = (
+        cfg.recordings_root
+        / "rec-worker-midrun-race-1"
         / "logs"
         / "step-precheck.log"
     )
