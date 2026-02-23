@@ -1,108 +1,174 @@
-diff --git a/lan_app/worker_tasks.py b/lan_app/worker_tasks.py
-index 5f8c5f9..f3236af 100644
---- a/lan_app/worker_tasks.py
-+++ b/lan_app/worker_tasks.py
-@@ -34,6 +34,7 @@ from .constants import (
+diff --git a/lan_app/reaper.py b/lan_app/reaper.py
+index 2cd12fe..85ed8bb 100644
+--- a/lan_app/reaper.py
++++ b/lan_app/reaper.py
+@@ -1,6 +1,7 @@
+ from __future__ import annotations
+ 
+ from datetime import datetime, timedelta, timezone
++import logging
+ from pathlib import Path
+ from typing import Any
+ 
+@@ -20,6 +21,7 @@ from .db import (
  )
- from .db import (
-     fail_job,
-+    fail_job_if_started,
-     finish_job_if_started,
-     get_calendar_match,
-     get_job,
-@@ -691,6 +692,17 @@ def process_job(job_id: str, recording_id: str, job_type: str) -> dict[str, str]
-                 recording_row = get_recording(recording_id, settings=settings) or {}
-                 recording_status = str(recording_row.get("status") or "").strip()
-                 if recording_status and recording_status != RECORDING_STATUS_PROCESSING:
-+                    try:
-+                        fail_job_if_started(
-+                            job_id,
-+                            (
-+                                "stale in-flight execution ignored: "
-+                                f"recording status changed to {recording_status}"
-+                            ),
-+                            settings=settings,
-+                        )
-+                    except Exception:
-+                        pass
-                     _log_stale_inflight_execution(
-                         job_id=job_id,
-                         job_type=job_type,
-diff --git a/tests/test_db_queue.py b/tests/test_db_queue.py
-index 5a3cbfc..1308a49 100644
---- a/tests/test_db_queue.py
-+++ b/tests/test_db_queue.py
-@@ -332,6 +332,73 @@ def test_worker_ignores_stale_inflight_execution_for_recovered_started_job(
-     assert "ignored stale in-flight execution" in step_log.read_text(encoding="utf-8")
+ from .jobs import cancel_pending_queue_job
+ 
++_LOG = logging.getLogger(__name__)
+ _RECOVERY_ERROR = "stuck job recovered"
+ _STALE_DOWNGRADE_STATUSES = (
+     RECORDING_STATUS_QUEUED,
+@@ -50,6 +52,17 @@ def _append_step_log(path: Path, message: str, *, now: datetime) -> None:
+         fh.write(f"[{_iso_z(now)}] {message}\n")
  
  
-+def test_worker_finalizes_started_job_when_recording_leaves_processing_mid_run(
-+    tmp_path: Path,
-+    monkeypatch,
-+):
-+    cfg = _test_settings(tmp_path)
-+    monkeypatch.setenv("LAN_DATA_ROOT", str(cfg.data_root))
-+    monkeypatch.setenv("LAN_RECORDINGS_ROOT", str(cfg.recordings_root))
-+    monkeypatch.setenv("LAN_DB_PATH", str(cfg.db_path))
-+    monkeypatch.setenv("LAN_PROM_SNAPSHOT_PATH", str(cfg.metrics_snapshot_path))
++def _append_step_log_best_effort(path: Path, message: str, *, now: datetime) -> None:
++    try:
++        _append_step_log(path, message, now=now)
++    except OSError:
++        _LOG.warning(
++            "stuck job recovery step-log append failed path=%s",
++            path,
++            exc_info=True,
++        )
 +
++
+ def run_stuck_job_reaper_once(
+     *,
+     settings: AppSettings | None = None,
+@@ -82,7 +95,7 @@ def run_stuck_job_reaper_once(
+             settings=cfg,
+         ):
+             recovered_recording_ids.add(recording_id)
+-        _append_step_log(
++        _append_step_log_best_effort(
+             _step_log_path(recording_id, job_type, cfg),
+             f"stuck job recovery applied job={job_id}",
+             now=current_time,
+@@ -115,7 +128,7 @@ def run_stuck_job_reaper_once(
+             settings=cfg,
+         ):
+             recovered_recording_ids.add(recording_id)
+-        _append_step_log(
++        _append_step_log_best_effort(
+             _step_log_path(recording_id, active_job_type, cfg),
+             (
+                 "stuck job recovery applied "
+diff --git a/tests/test_reaper.py b/tests/test_reaper.py
+index a74ea04..e2ca9b4 100644
+--- a/tests/test_reaper.py
++++ b/tests/test_reaper.py
+@@ -506,3 +506,113 @@ def test_reaper_skips_orphan_downgrade_if_status_changes_after_selection(
+     assert summary["recovered_recordings"] == 0
+     assert job["status"] == JOB_STATUS_FAILED
+     assert recording["status"] == RECORDING_STATUS_READY
++
++
++def test_reaper_continues_when_step_log_append_fails(tmp_path: Path, monkeypatch):
++    cfg = _test_settings(tmp_path)
 +    init_db(cfg)
++
 +    create_recording(
-+        "rec-worker-recording-race-1",
++        "rec-reaper-logfail-stale-1",
 +        source="test",
-+        source_filename="recording-race.wav",
-+        status=RECORDING_STATUS_QUEUED,
++        source_filename="logfail-stale-1.wav",
++        status=RECORDING_STATUS_PROCESSING,
 +        settings=cfg,
 +    )
 +    create_job(
-+        "job-worker-recording-race-1",
-+        recording_id="rec-worker-recording-race-1",
++        "job-reaper-logfail-stale-1",
++        recording_id="rec-reaper-logfail-stale-1",
 +        job_type=JOB_TYPE_PRECHECK,
++        status=JOB_STATUS_STARTED,
++        settings=cfg,
++        attempt=1,
++    )
++    create_recording(
++        "rec-reaper-logfail-stale-2",
++        source="test",
++        source_filename="logfail-stale-2.wav",
++        status=RECORDING_STATUS_PROCESSING,
 +        settings=cfg,
 +    )
++    create_job(
++        "job-reaper-logfail-stale-2",
++        recording_id="rec-reaper-logfail-stale-2",
++        job_type=JOB_TYPE_PRECHECK,
++        status=JOB_STATUS_STARTED,
++        settings=cfg,
++        attempt=1,
++    )
++    create_recording(
++        "rec-reaper-logfail-orphan-1",
++        source="test",
++        source_filename="logfail-orphan.wav",
++        status=RECORDING_STATUS_PROCESSING,
++        settings=cfg,
++    )
++    create_job(
++        "job-reaper-logfail-orphan-1",
++        recording_id="rec-reaper-logfail-orphan-1",
++        job_type=JOB_TYPE_PRECHECK,
++        status=JOB_STATUS_QUEUED,
++        settings=cfg,
++        attempt=1,
++    )
 +
-+    def _simulate_manual_status_change(*_args, **_kwargs):
-+        assert (
-+            set_recording_status(
-+                "rec-worker-recording-race-1",
-+                RECORDING_STATUS_QUARANTINE,
-+                settings=cfg,
-+                quarantine_reason="manual_override",
-+            )
-+            is True
++    with connect(cfg) as conn:
++        conn.execute(
++            """
++            UPDATE jobs
++            SET started_at = ?, updated_at = ?
++            WHERE id IN (?, ?)
++            """,
++            (
++                "2026-02-22T00:00:00Z",
++                "2026-02-22T00:00:00Z",
++                "job-reaper-logfail-stale-1",
++                "job-reaper-logfail-stale-2",
++            ),
 +        )
-+        return RECORDING_STATUS_READY, None
++        conn.execute(
++            """
++            UPDATE recordings
++            SET updated_at = ?
++            WHERE id = ?
++            """,
++            ("2026-02-22T00:00:00Z", "rec-reaper-logfail-orphan-1"),
++        )
++        conn.commit()
 +
-+    monkeypatch.setattr(
-+        "lan_app.worker_tasks._run_precheck_pipeline",
-+        _simulate_manual_status_change,
++    def _boom(*_args, **_kwargs):
++        raise OSError("disk full")
++
++    monkeypatch.setattr("lan_app.reaper._append_step_log", _boom)
++    monkeypatch.setattr("lan_app.reaper.cancel_pending_queue_job", lambda *_a, **_k: True)
++
++    summary = run_stuck_job_reaper_once(
++        settings=cfg,
++        now=datetime(2026, 2, 23, 0, 0, 1, tzinfo=timezone.utc),
 +    )
 +
-+    result = process_job(
-+        "job-worker-recording-race-1",
-+        "rec-worker-recording-race-1",
-+        JOB_TYPE_PRECHECK,
-+    )
++    stale_job_1 = get_job("job-reaper-logfail-stale-1", settings=cfg)
++    stale_job_2 = get_job("job-reaper-logfail-stale-2", settings=cfg)
++    orphan_job = get_job("job-reaper-logfail-orphan-1", settings=cfg)
++    stale_rec_1 = get_recording("rec-reaper-logfail-stale-1", settings=cfg)
++    stale_rec_2 = get_recording("rec-reaper-logfail-stale-2", settings=cfg)
++    orphan_rec = get_recording("rec-reaper-logfail-orphan-1", settings=cfg)
 +
-+    job = get_job("job-worker-recording-race-1", settings=cfg)
-+    recording = get_recording("rec-worker-recording-race-1", settings=cfg)
-+    assert result["status"] == "ignored"
-+    assert job is not None
-+    assert recording is not None
-+    assert job["status"] == JOB_STATUS_FAILED
-+    assert "stale in-flight execution ignored" in str(job["error"])
-+    assert recording["status"] == RECORDING_STATUS_QUARANTINE
-+    assert recording["quarantine_reason"] == "manual_override"
-+    step_log = (
-+        cfg.recordings_root
-+        / "rec-worker-recording-race-1"
-+        / "logs"
-+        / "step-precheck.log"
-+    )
-+    assert step_log.exists()
-+    assert "ignored stale in-flight execution" in step_log.read_text(encoding="utf-8")
-+
-+
- def test_worker_noop_updates_job_and_recording_state(tmp_path: Path, monkeypatch):
-     cfg = _test_settings(tmp_path)
-     monkeypatch.setenv("LAN_DATA_ROOT", str(cfg.data_root))
++    assert stale_job_1 is not None
++    assert stale_job_2 is not None
++    assert orphan_job is not None
++    assert stale_rec_1 is not None
++    assert stale_rec_2 is not None
++    assert orphan_rec is not None
++    assert summary["stale_started_jobs"] == 2
++    assert summary["processing_without_started"] == 1
++    assert summary["recovered_jobs"] == 3
++    assert summary["recovered_recordings"] == 3
++    assert stale_job_1["status"] == JOB_STATUS_FAILED
++    assert stale_job_2["status"] == JOB_STATUS_FAILED
++    assert orphan_job["status"] == JOB_STATUS_FAILED
++    assert stale_rec_1["status"] == RECORDING_STATUS_NEEDS_REVIEW
++    assert stale_rec_2["status"] == RECORDING_STATUS_NEEDS_REVIEW
++    assert orphan_rec["status"] == RECORDING_STATUS_NEEDS_REVIEW

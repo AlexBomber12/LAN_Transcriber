@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +21,7 @@ from .db import (
 )
 from .jobs import cancel_pending_queue_job
 
+_LOG = logging.getLogger(__name__)
 _RECOVERY_ERROR = "stuck job recovered"
 _STALE_DOWNGRADE_STATUSES = (
     RECORDING_STATUS_QUEUED,
@@ -48,6 +50,17 @@ def _append_step_log(path: Path, message: str, *, now: datetime) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as fh:
         fh.write(f"[{_iso_z(now)}] {message}\n")
+
+
+def _append_step_log_best_effort(path: Path, message: str, *, now: datetime) -> None:
+    try:
+        _append_step_log(path, message, now=now)
+    except OSError:
+        _LOG.warning(
+            "stuck job recovery step-log append failed path=%s",
+            path,
+            exc_info=True,
+        )
 
 
 def run_stuck_job_reaper_once(
@@ -82,7 +95,7 @@ def run_stuck_job_reaper_once(
             settings=cfg,
         ):
             recovered_recording_ids.add(recording_id)
-        _append_step_log(
+        _append_step_log_best_effort(
             _step_log_path(recording_id, job_type, cfg),
             f"stuck job recovery applied job={job_id}",
             now=current_time,
@@ -115,7 +128,7 @@ def run_stuck_job_reaper_once(
             settings=cfg,
         ):
             recovered_recording_ids.add(recording_id)
-        _append_step_log(
+        _append_step_log_best_effort(
             _step_log_path(recording_id, active_job_type, cfg),
             (
                 "stuck job recovery applied "
