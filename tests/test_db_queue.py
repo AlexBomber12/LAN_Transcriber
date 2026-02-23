@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 import pytest
 
 from lan_app import api
+from lan_app import db as db_module
 from lan_app import worker_tasks
 from lan_app.config import AppSettings
 from lan_app.constants import (
@@ -856,6 +857,85 @@ def test_worker_retryable_failure_retries_before_marking_failed(
     assert job["status"] == JOB_STATUS_FAILED
     assert job["error"] == "max attempts exceeded"
     assert recording["status"] == RECORDING_STATUS_NEEDS_REVIEW
+
+
+def test_worker_retry_does_not_revive_recovered_started_job(
+    tmp_path: Path,
+    monkeypatch,
+):
+    cfg = _test_settings(tmp_path)
+    monkeypatch.setenv("LAN_DATA_ROOT", str(cfg.data_root))
+    monkeypatch.setenv("LAN_RECORDINGS_ROOT", str(cfg.recordings_root))
+    monkeypatch.setenv("LAN_DB_PATH", str(cfg.db_path))
+    monkeypatch.setenv("LAN_PROM_SNAPSHOT_PATH", str(cfg.metrics_snapshot_path))
+
+    init_db(cfg)
+    create_recording(
+        "rec-worker-retry-race-1",
+        source="test",
+        source_filename="retry-race.wav",
+        settings=cfg,
+    )
+    create_job(
+        "job-worker-retry-race-1",
+        recording_id="rec-worker-retry-race-1",
+        job_type=JOB_TYPE_PRECHECK,
+        settings=cfg,
+    )
+
+    raw_audio = cfg.recordings_root / "rec-worker-retry-race-1" / "raw" / "audio.wav"
+    raw_audio.parent.mkdir(parents=True, exist_ok=True)
+    raw_audio.write_bytes(b"\x00")
+    monkeypatch.setattr("lan_app.worker_tasks._resolve_raw_audio_path", lambda *_a, **_k: raw_audio)
+    monkeypatch.setattr(
+        "lan_app.worker_tasks.run_precheck",
+        lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("retry failure")),
+    )
+
+    def _requeue_after_recovery(job_id: str, *, error: str | None = None, settings=None) -> bool:
+        assert fail_job_if_started(job_id, "stuck job recovered", settings=cfg) is True
+        assert (
+            set_recording_status(
+                "rec-worker-retry-race-1",
+                RECORDING_STATUS_NEEDS_REVIEW,
+                settings=cfg,
+            )
+            is True
+        )
+        return db_module.requeue_job_if_started(
+            job_id,
+            error=error,
+            settings=settings or cfg,
+        )
+
+    monkeypatch.setattr(
+        "lan_app.worker_tasks.requeue_job_if_started",
+        _requeue_after_recovery,
+    )
+    monkeypatch.setattr("lan_app.worker_tasks.time.sleep", lambda _seconds: None)
+
+    result = process_job(
+        "job-worker-retry-race-1",
+        "rec-worker-retry-race-1",
+        JOB_TYPE_PRECHECK,
+    )
+
+    job = get_job("job-worker-retry-race-1", settings=cfg)
+    recording = get_recording("rec-worker-retry-race-1", settings=cfg)
+    assert result["status"] == "ignored"
+    assert job is not None
+    assert recording is not None
+    assert job["status"] == JOB_STATUS_FAILED
+    assert job["error"] == "stuck job recovered"
+    assert recording["status"] == RECORDING_STATUS_NEEDS_REVIEW
+    step_log = (
+        cfg.recordings_root
+        / "rec-worker-retry-race-1"
+        / "logs"
+        / "step-precheck.log"
+    )
+    assert step_log.exists()
+    assert "ignored stale in-flight execution" in step_log.read_text(encoding="utf-8")
 
 
 def test_worker_retry_terminal_uses_effective_max_attempts_cap(

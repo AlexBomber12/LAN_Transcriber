@@ -40,7 +40,7 @@ from .db import (
     get_recording,
     init_db,
     list_jobs,
-    requeue_job,
+    requeue_job_if_started,
     set_recording_language_settings,
     set_recording_status,
     set_recording_status_if_current_in,
@@ -250,16 +250,18 @@ def _record_retry(
     settings: AppSettings,
     log_path: Path,
     exc: Exception,
-) -> None:
+) -> bool:
     error = str(exc)
     try:
-        requeue_job(
+        requeued = requeue_job_if_started(
             job_id,
             error=f"retryable failure attempt {attempt}/{max_attempts}: {error}",
             settings=settings,
         )
     except Exception:
-        pass
+        return False
+    if not requeued:
+        return False
     try:
         set_recording_status(recording_id, RECORDING_STATUS_QUEUED, settings=settings)
     except Exception:
@@ -275,6 +277,7 @@ def _record_retry(
         )
     except Exception:
         pass
+    return True
 
 
 def _record_failure(
@@ -738,7 +741,7 @@ def process_job(job_id: str, recording_id: str, job_type: str) -> dict[str, str]
                 and attempt < max_attempts
             ):
                 delay_seconds = _retry_delay_seconds(retry_policy, attempt)
-                _record_retry(
+                if _record_retry(
                     job_id=job_id,
                     job_type=job_type,
                     recording_id=recording_id,
@@ -748,10 +751,19 @@ def process_job(job_id: str, recording_id: str, job_type: str) -> dict[str, str]
                     settings=settings,
                     log_path=log_path,
                     exc=exc,
-                )
-                if delay_seconds > 0:
-                    time.sleep(delay_seconds)
-                continue
+                ):
+                    if delay_seconds > 0:
+                        time.sleep(delay_seconds)
+                    continue
+                current_job_status = _job_status(job_id, settings)
+                if current_job_status and current_job_status != JOB_STATUS_STARTED:
+                    _log_stale_inflight_execution(
+                        job_id=job_id,
+                        job_type=job_type,
+                        log_path=log_path,
+                        detail=f"status={current_job_status}",
+                    )
+                    return _ignored_result(job_id, recording_id, job_type)
             _record_failure(
                 job_id=job_id,
                 job_type=job_type,

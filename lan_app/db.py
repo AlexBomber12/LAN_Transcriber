@@ -1014,6 +1014,33 @@ def requeue_job(
     return updated.rowcount > 0
 
 
+def requeue_job_if_started(
+    job_id: str,
+    *,
+    error: str | None = None,
+    settings: AppSettings | None = None,
+) -> bool:
+    init_db(settings)
+    now = _utc_now()
+    with connect(settings) as conn:
+        updated = conn.execute(
+            """
+            UPDATE jobs
+            SET status = ?, error = ?, started_at = NULL, finished_at = NULL, updated_at = ?
+            WHERE id = ? AND status = ?
+            """,
+            (
+                JOB_STATUS_QUEUED,
+                error,
+                now,
+                job_id,
+                JOB_STATUS_STARTED,
+            ),
+        )
+        conn.commit()
+    return updated.rowcount > 0
+
+
 def finish_job(
     job_id: str,
     *,
@@ -1855,6 +1882,7 @@ __all__ = [
     "create_job_if_no_active_for_recording",
     "start_job",
     "requeue_job",
+    "requeue_job_if_started",
     "finish_job",
     "finish_job_if_started",
     "fail_job",
