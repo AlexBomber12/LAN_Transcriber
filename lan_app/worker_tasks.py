@@ -18,6 +18,7 @@ from .config import AppSettings
 from .conversation_metrics import refresh_recording_metrics
 from .constants import (
     JOB_STATUS_QUEUED,
+    JOB_STATUS_STARTED,
     JOB_TYPE_CLEANUP,
     JOB_TYPE_PRECHECK,
     JOB_TYPE_PUBLISH,
@@ -33,7 +34,7 @@ from .constants import (
 )
 from .db import (
     fail_job,
-    finish_job,
+    finish_job_if_started,
     get_calendar_match,
     get_job,
     get_recording,
@@ -42,6 +43,7 @@ from .db import (
     requeue_job,
     set_recording_language_settings,
     set_recording_status,
+    set_recording_status_if_current_in,
     start_job,
 )
 from .routing import refresh_recording_routing
@@ -166,6 +168,39 @@ def _job_attempt(job_id: str, settings: AppSettings) -> int:
         return int(row.get("attempt") or 0)
     except (TypeError, ValueError):
         return 0
+
+
+def _job_status(job_id: str, settings: AppSettings) -> str:
+    row = get_job(job_id, settings=settings) or {}
+    return str(row.get("status") or "").strip()
+
+
+def _ignored_result(job_id: str, recording_id: str, job_type: str) -> dict[str, str]:
+    return {
+        "job_id": job_id,
+        "recording_id": recording_id,
+        "job_type": job_type,
+        "status": "ignored",
+    }
+
+
+def _log_stale_inflight_execution(
+    *,
+    job_id: str,
+    job_type: str,
+    log_path: Path,
+    detail: str,
+) -> None:
+    try:
+        _append_step_log(
+            log_path,
+            (
+                "ignored stale in-flight execution "
+                f"job={job_id} type={job_type} {detail}"
+            ),
+        )
+    except OSError:
+        pass
 
 
 def _start_job_or_ignore_stale_execution(
@@ -548,12 +583,7 @@ def process_job(job_id: str, recording_id: str, job_type: str) -> dict[str, str]
             settings=settings,
             log_path=log_path,
         ):
-            return {
-                "job_id": job_id,
-                "recording_id": recording_id,
-                "job_type": job_type,
-                "status": "ignored",
-            }
+            return _ignored_result(job_id, recording_id, job_type)
         unsupported_error = (
             f"unsupported legacy job type under single-job pipeline: {job_type}"
         )
@@ -606,12 +636,7 @@ def process_job(job_id: str, recording_id: str, job_type: str) -> dict[str, str]
                     )
                 except OSError:
                     pass
-        return {
-            "job_id": job_id,
-            "recording_id": recording_id,
-            "job_type": job_type,
-            "status": "ignored",
-        }
+        return _ignored_result(job_id, recording_id, job_type)
 
     retry_policy = _retry_policy(job_type)
     max_attempts = max(1, min(retry_policy.max_attempts, settings.max_job_attempts))
@@ -625,14 +650,9 @@ def process_job(job_id: str, recording_id: str, job_type: str) -> dict[str, str]
                 settings=settings,
                 log_path=log_path,
             ):
-                return {
-                    "job_id": job_id,
-                    "recording_id": recording_id,
-                    "job_type": job_type,
-                    "status": "ignored",
-                }
+                return _ignored_result(job_id, recording_id, job_type)
             attempt = _job_attempt(job_id, settings)
-            if attempt > settings.max_job_attempts:
+            if attempt > max_attempts:
                 raise RuntimeError(_MAX_ATTEMPTS_ERROR)
             if not set_recording_status(
                 recording_id,
@@ -648,14 +668,44 @@ def process_job(job_id: str, recording_id: str, job_type: str) -> dict[str, str]
                 log_path=log_path,
             )
 
-            if not set_recording_status(
+            current_job_status = _job_status(job_id, settings)
+            if current_job_status != JOB_STATUS_STARTED:
+                _log_stale_inflight_execution(
+                    job_id=job_id,
+                    job_type=job_type,
+                    log_path=log_path,
+                    detail=f"status={current_job_status or 'missing'}",
+                )
+                return _ignored_result(job_id, recording_id, job_type)
+
+            if not set_recording_status_if_current_in(
                 recording_id,
                 final_status,
+                current_statuses=(RECORDING_STATUS_PROCESSING,),
                 settings=settings,
                 quarantine_reason=quarantine_reason,
             ):
+                recording_row = get_recording(recording_id, settings=settings) or {}
+                recording_status = str(recording_row.get("status") or "").strip()
+                if recording_status and recording_status != RECORDING_STATUS_PROCESSING:
+                    _log_stale_inflight_execution(
+                        job_id=job_id,
+                        job_type=job_type,
+                        log_path=log_path,
+                        detail=f"recording_status={recording_status}",
+                    )
+                    return _ignored_result(job_id, recording_id, job_type)
                 raise ValueError(f"Recording not found: {recording_id}")
-            if not finish_job(job_id, settings=settings):
+            if not finish_job_if_started(job_id, settings=settings):
+                job_status = _job_status(job_id, settings)
+                if job_status and job_status != JOB_STATUS_STARTED:
+                    _log_stale_inflight_execution(
+                        job_id=job_id,
+                        job_type=job_type,
+                        log_path=log_path,
+                        detail=f"status={job_status}",
+                    )
+                    return _ignored_result(job_id, recording_id, job_type)
                 raise ValueError(f"Job not found: {job_id}")
             _append_step_log(
                 log_path,
@@ -663,8 +713,17 @@ def process_job(job_id: str, recording_id: str, job_type: str) -> dict[str, str]
             )
             break
         except Exception as exc:
+            current_job_status = _job_status(job_id, settings)
+            if current_job_status and current_job_status != JOB_STATUS_STARTED:
+                _log_stale_inflight_execution(
+                    job_id=job_id,
+                    job_type=job_type,
+                    log_path=log_path,
+                    detail=f"status={current_job_status}",
+                )
+                return _ignored_result(job_id, recording_id, job_type)
             attempt = _job_attempt(job_id, settings)
-            if attempt >= settings.max_job_attempts:
+            if attempt >= max_attempts:
                 _record_max_attempts_exceeded(
                     job_id=job_id,
                     job_type=job_type,

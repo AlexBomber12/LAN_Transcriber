@@ -1,94 +1,250 @@
+diff --git a/lan_app/db.py b/lan_app/db.py
+index 18632b1..201f51e 100644
+--- a/lan_app/db.py
++++ b/lan_app/db.py
+@@ -1028,6 +1028,34 @@ def finish_job(
+     )
+ 
+ 
++def finish_job_if_started(
++    job_id: str,
++    *,
++    settings: AppSettings | None = None,
++    error: str | None = None,
++) -> bool:
++    init_db(settings)
++    now = _utc_now()
++    with connect(settings) as conn:
++        updated = conn.execute(
++            """
++            UPDATE jobs
++            SET status = ?, error = ?, finished_at = ?, updated_at = ?
++            WHERE id = ? AND status = ?
++            """,
++            (
++                JOB_STATUS_FINISHED,
++                error,
++                now,
++                now,
++                job_id,
++                JOB_STATUS_STARTED,
++            ),
++        )
++        conn.commit()
++    return updated.rowcount > 0
++
++
+ def fail_job(
+     job_id: str,
+     error: str,
+@@ -1828,6 +1856,7 @@ __all__ = [
+     "start_job",
+     "requeue_job",
+     "finish_job",
++    "finish_job_if_started",
+     "fail_job",
+     "fail_job_if_started",
+     "fail_job_if_queued",
 diff --git a/lan_app/worker_tasks.py b/lan_app/worker_tasks.py
-index 87da3d5..02b67eb 100644
+index 02b67eb..f80e32f 100644
 --- a/lan_app/worker_tasks.py
 +++ b/lan_app/worker_tasks.py
-@@ -168,6 +168,33 @@ def _job_attempt(job_id: str, settings: AppSettings) -> int:
+@@ -18,6 +18,7 @@ from .config import AppSettings
+ from .conversation_metrics import refresh_recording_metrics
+ from .constants import (
+     JOB_STATUS_QUEUED,
++    JOB_STATUS_STARTED,
+     JOB_TYPE_CLEANUP,
+     JOB_TYPE_PRECHECK,
+     JOB_TYPE_PUBLISH,
+@@ -33,7 +34,7 @@ from .constants import (
+ )
+ from .db import (
+     fail_job,
+-    finish_job,
++    finish_job_if_started,
+     get_calendar_match,
+     get_job,
+     get_recording,
+@@ -42,6 +43,7 @@ from .db import (
+     requeue_job,
+     set_recording_language_settings,
+     set_recording_status,
++    set_recording_status_if_current_in,
+     start_job,
+ )
+ from .routing import refresh_recording_routing
+@@ -168,6 +170,39 @@ def _job_attempt(job_id: str, settings: AppSettings) -> int:
          return 0
  
  
-+def _start_job_or_ignore_stale_execution(
++def _job_status(job_id: str, settings: AppSettings) -> str:
++    row = get_job(job_id, settings=settings) or {}
++    return str(row.get("status") or "").strip()
++
++
++def _ignored_result(job_id: str, recording_id: str, job_type: str) -> dict[str, str]:
++    return {
++        "job_id": job_id,
++        "recording_id": recording_id,
++        "job_type": job_type,
++        "status": "ignored",
++    }
++
++
++def _log_stale_inflight_execution(
 +    *,
 +    job_id: str,
-+    recording_id: str,
 +    job_type: str,
-+    settings: AppSettings,
 +    log_path: Path,
-+) -> bool:
-+    if start_job(job_id, settings=settings):
-+        return True
-+    job_row = get_job(job_id, settings=settings) or {}
-+    status = str(job_row.get("status") or "").strip()
-+    if status and status != JOB_STATUS_QUEUED:
-+        try:
-+            _append_step_log(
-+                log_path,
-+                (
-+                    "ignored stale queue execution "
-+                    f"job={job_id} type={job_type} status={status}"
-+                ),
-+            )
-+        except OSError:
-+            pass
-+        return False
-+    raise ValueError(f"Job not found: {job_id}")
++    detail: str,
++) -> None:
++    try:
++        _append_step_log(
++            log_path,
++            (
++                "ignored stale in-flight execution "
++                f"job={job_id} type={job_type} {detail}"
++            ),
++        )
++    except OSError:
++        pass
 +
 +
- def _retry_delay_seconds(policy: RetryPolicy, attempt: int) -> int:
-     if attempt <= 0:
-         return 0
-@@ -514,8 +541,19 @@ def process_job(job_id: str, recording_id: str, job_type: str) -> dict[str, str]
-     if job_type != JOB_TYPE_PRECHECK:
-         recording_before = get_recording(recording_id, settings=settings) or {}
-         previous_status = str(recording_before.get("status") or "").strip()
--        if not start_job(job_id, settings=settings):
--            raise ValueError(f"Job not found: {job_id}")
-+        if not _start_job_or_ignore_stale_execution(
-+            job_id=job_id,
-+            recording_id=recording_id,
-+            job_type=job_type,
-+            settings=settings,
-+            log_path=log_path,
-+        ):
-+            return {
-+                "job_id": job_id,
-+                "recording_id": recording_id,
-+                "job_type": job_type,
-+                "status": "ignored",
-+            }
+ def _start_job_or_ignore_stale_execution(
+     *,
+     job_id: str,
+@@ -548,12 +583,7 @@ def process_job(job_id: str, recording_id: str, job_type: str) -> dict[str, str]
+             settings=settings,
+             log_path=log_path,
+         ):
+-            return {
+-                "job_id": job_id,
+-                "recording_id": recording_id,
+-                "job_type": job_type,
+-                "status": "ignored",
+-            }
++            return _ignored_result(job_id, recording_id, job_type)
          unsupported_error = (
              f"unsupported legacy job type under single-job pipeline: {job_type}"
          )
-@@ -580,8 +618,19 @@ def process_job(job_id: str, recording_id: str, job_type: str) -> dict[str, str]
+@@ -606,12 +636,7 @@ def process_job(job_id: str, recording_id: str, job_type: str) -> dict[str, str]
+                     )
+                 except OSError:
+                     pass
+-        return {
+-            "job_id": job_id,
+-            "recording_id": recording_id,
+-            "job_type": job_type,
+-            "status": "ignored",
+-        }
++        return _ignored_result(job_id, recording_id, job_type)
  
-     while True:
-         try:
--            if not start_job(job_id, settings=settings):
--                raise ValueError(f"Job not found: {job_id}")
-+            if not _start_job_or_ignore_stale_execution(
-+                job_id=job_id,
-+                recording_id=recording_id,
-+                job_type=job_type,
-+                settings=settings,
-+                log_path=log_path,
-+            ):
-+                return {
-+                    "job_id": job_id,
-+                    "recording_id": recording_id,
-+                    "job_type": job_type,
-+                    "status": "ignored",
-+                }
+     retry_policy = _retry_policy(job_type)
+     max_attempts = max(1, min(retry_policy.max_attempts, settings.max_job_attempts))
+@@ -625,14 +650,9 @@ def process_job(job_id: str, recording_id: str, job_type: str) -> dict[str, str]
+                 settings=settings,
+                 log_path=log_path,
+             ):
+-                return {
+-                    "job_id": job_id,
+-                    "recording_id": recording_id,
+-                    "job_type": job_type,
+-                    "status": "ignored",
+-                }
++                return _ignored_result(job_id, recording_id, job_type)
              attempt = _job_attempt(job_id, settings)
-             if attempt > settings.max_job_attempts:
+-            if attempt > settings.max_job_attempts:
++            if attempt > max_attempts:
                  raise RuntimeError(_MAX_ATTEMPTS_ERROR)
+             if not set_recording_status(
+                 recording_id,
+@@ -648,14 +668,44 @@ def process_job(job_id: str, recording_id: str, job_type: str) -> dict[str, str]
+                 log_path=log_path,
+             )
+ 
+-            if not set_recording_status(
++            current_job_status = _job_status(job_id, settings)
++            if current_job_status != JOB_STATUS_STARTED:
++                _log_stale_inflight_execution(
++                    job_id=job_id,
++                    job_type=job_type,
++                    log_path=log_path,
++                    detail=f"status={current_job_status or 'missing'}",
++                )
++                return _ignored_result(job_id, recording_id, job_type)
++
++            if not set_recording_status_if_current_in(
+                 recording_id,
+                 final_status,
++                current_statuses=(RECORDING_STATUS_PROCESSING,),
+                 settings=settings,
+                 quarantine_reason=quarantine_reason,
+             ):
++                recording_row = get_recording(recording_id, settings=settings) or {}
++                recording_status = str(recording_row.get("status") or "").strip()
++                if recording_status and recording_status != RECORDING_STATUS_PROCESSING:
++                    _log_stale_inflight_execution(
++                        job_id=job_id,
++                        job_type=job_type,
++                        log_path=log_path,
++                        detail=f"recording_status={recording_status}",
++                    )
++                    return _ignored_result(job_id, recording_id, job_type)
+                 raise ValueError(f"Recording not found: {recording_id}")
+-            if not finish_job(job_id, settings=settings):
++            if not finish_job_if_started(job_id, settings=settings):
++                job_status = _job_status(job_id, settings)
++                if job_status and job_status != JOB_STATUS_STARTED:
++                    _log_stale_inflight_execution(
++                        job_id=job_id,
++                        job_type=job_type,
++                        log_path=log_path,
++                        detail=f"status={job_status}",
++                    )
++                    return _ignored_result(job_id, recording_id, job_type)
+                 raise ValueError(f"Job not found: {job_id}")
+             _append_step_log(
+                 log_path,
+@@ -663,8 +713,17 @@ def process_job(job_id: str, recording_id: str, job_type: str) -> dict[str, str]
+             )
+             break
+         except Exception as exc:
++            current_job_status = _job_status(job_id, settings)
++            if current_job_status and current_job_status != JOB_STATUS_STARTED:
++                _log_stale_inflight_execution(
++                    job_id=job_id,
++                    job_type=job_type,
++                    log_path=log_path,
++                    detail=f"status={current_job_status}",
++                )
++                return _ignored_result(job_id, recording_id, job_type)
+             attempt = _job_attempt(job_id, settings)
+-            if attempt >= settings.max_job_attempts:
++            if attempt >= max_attempts:
+                 _record_max_attempts_exceeded(
+                     job_id=job_id,
+                     job_type=job_type,
 diff --git a/tests/test_db_queue.py b/tests/test_db_queue.py
-index 70c948c..fce8616 100644
+index fce8616..c317adf 100644
 --- a/tests/test_db_queue.py
 +++ b/tests/test_db_queue.py
-@@ -214,6 +214,52 @@ def test_start_job_only_transitions_queued_jobs(tmp_path: Path):
-     assert int(failed_job["attempt"]) == 0
+@@ -35,6 +35,7 @@ from lan_app.db import (
+     create_job,
+     create_project,
+     create_recording,
++    fail_job_if_started,
+     get_job,
+     get_recording,
+     init_db,
+@@ -260,6 +261,76 @@ def test_worker_ignores_stale_execution_for_non_queued_job(tmp_path: Path, monke
+     assert "ignored stale queue execution" in step_log.read_text(encoding="utf-8")
  
  
-+def test_worker_ignores_stale_execution_for_non_queued_job(tmp_path: Path, monkeypatch):
++def test_worker_ignores_stale_inflight_execution_for_recovered_started_job(
++    tmp_path: Path,
++    monkeypatch,
++):
 +    cfg = _test_settings(tmp_path)
 +    monkeypatch.setenv("LAN_DATA_ROOT", str(cfg.data_root))
 +    monkeypatch.setenv("LAN_RECORDINGS_ROOT", str(cfg.recordings_root))
@@ -97,43 +253,119 @@ index 70c948c..fce8616 100644
 +
 +    init_db(cfg)
 +    create_recording(
-+        "rec-worker-stale-exec-1",
++        "rec-worker-stale-inflight-1",
 +        source="test",
-+        source_filename="stale-exec.wav",
-+        status=RECORDING_STATUS_NEEDS_REVIEW,
++        source_filename="stale-inflight.wav",
++        status=RECORDING_STATUS_QUEUED,
 +        settings=cfg,
 +    )
 +    create_job(
-+        "job-worker-stale-exec-1",
-+        recording_id="rec-worker-stale-exec-1",
++        "job-worker-stale-inflight-1",
++        recording_id="rec-worker-stale-inflight-1",
 +        job_type=JOB_TYPE_PRECHECK,
-+        status=JOB_STATUS_FAILED,
 +        settings=cfg,
 +    )
 +
++    def _simulate_reaper(*_args, **_kwargs):
++        assert (
++            fail_job_if_started(
++                "job-worker-stale-inflight-1",
++                "stuck job recovered",
++                settings=cfg,
++            )
++            is True
++        )
++        assert (
++            set_recording_status(
++                "rec-worker-stale-inflight-1",
++                RECORDING_STATUS_NEEDS_REVIEW,
++                settings=cfg,
++            )
++            is True
++        )
++        return RECORDING_STATUS_READY, None
++
++    monkeypatch.setattr("lan_app.worker_tasks._run_precheck_pipeline", _simulate_reaper)
++
 +    result = process_job(
-+        "job-worker-stale-exec-1",
-+        "rec-worker-stale-exec-1",
++        "job-worker-stale-inflight-1",
++        "rec-worker-stale-inflight-1",
 +        JOB_TYPE_PRECHECK,
 +    )
 +
-+    job = get_job("job-worker-stale-exec-1", settings=cfg)
-+    recording = get_recording("rec-worker-stale-exec-1", settings=cfg)
++    job = get_job("job-worker-stale-inflight-1", settings=cfg)
++    recording = get_recording("rec-worker-stale-inflight-1", settings=cfg)
 +    assert result["status"] == "ignored"
 +    assert job is not None
 +    assert recording is not None
 +    assert job["status"] == JOB_STATUS_FAILED
++    assert job["error"] == "stuck job recovered"
 +    assert recording["status"] == RECORDING_STATUS_NEEDS_REVIEW
 +    step_log = (
 +        cfg.recordings_root
-+        / "rec-worker-stale-exec-1"
++        / "rec-worker-stale-inflight-1"
 +        / "logs"
 +        / "step-precheck.log"
 +    )
 +    assert step_log.exists()
-+    assert "ignored stale queue execution" in step_log.read_text(encoding="utf-8")
++    assert "ignored stale in-flight execution" in step_log.read_text(encoding="utf-8")
 +
 +
  def test_worker_noop_updates_job_and_recording_state(tmp_path: Path, monkeypatch):
      cfg = _test_settings(tmp_path)
      monkeypatch.setenv("LAN_DATA_ROOT", str(cfg.data_root))
+@@ -787,6 +858,54 @@ def test_worker_retryable_failure_retries_before_marking_failed(
+     assert recording["status"] == RECORDING_STATUS_NEEDS_REVIEW
+ 
+ 
++def test_worker_retry_terminal_uses_effective_max_attempts_cap(
++    tmp_path: Path,
++    monkeypatch,
++):
++    cfg = _test_settings(tmp_path)
++    monkeypatch.setenv("LAN_DATA_ROOT", str(cfg.data_root))
++    monkeypatch.setenv("LAN_RECORDINGS_ROOT", str(cfg.recordings_root))
++    monkeypatch.setenv("LAN_DB_PATH", str(cfg.db_path))
++    monkeypatch.setenv("LAN_PROM_SNAPSHOT_PATH", str(cfg.metrics_snapshot_path))
++    monkeypatch.setenv("LAN_MAX_JOB_ATTEMPTS", "5")
++
++    init_db(cfg)
++    create_recording(
++        "rec-worker-retry-cap-1",
++        source="test",
++        source_filename="retry-cap.wav",
++        settings=cfg,
++    )
++    create_job(
++        "job-worker-retry-cap-1",
++        recording_id="rec-worker-retry-cap-1",
++        job_type=JOB_TYPE_PRECHECK,
++        settings=cfg,
++    )
++
++    raw_audio = cfg.recordings_root / "rec-worker-retry-cap-1" / "raw" / "audio.wav"
++    raw_audio.parent.mkdir(parents=True, exist_ok=True)
++    raw_audio.write_bytes(b"\x00")
++    monkeypatch.setattr("lan_app.worker_tasks._resolve_raw_audio_path", lambda *_a, **_k: raw_audio)
++    monkeypatch.setattr(
++        "lan_app.worker_tasks.run_precheck",
++        lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("retry failure")),
++    )
++    monkeypatch.setattr("lan_app.worker_tasks.time.sleep", lambda _seconds: None)
++
++    with pytest.raises(RuntimeError, match="retry failure"):
++        process_job("job-worker-retry-cap-1", "rec-worker-retry-cap-1", JOB_TYPE_PRECHECK)
++
++    job = get_job("job-worker-retry-cap-1", settings=cfg)
++    recording = get_recording("rec-worker-retry-cap-1", settings=cfg)
++    assert job is not None
++    assert recording is not None
++    assert int(job["attempt"]) == 3
++    assert job["status"] == JOB_STATUS_FAILED
++    assert job["error"] == "max attempts exceeded"
++    assert recording["status"] == RECORDING_STATUS_NEEDS_REVIEW
++
++
+ def test_worker_max_attempts_exceeded_before_processing_sets_terminal_state(
+     tmp_path: Path,
+     monkeypatch,
