@@ -1,4 +1,3 @@
 [run]
 omit =
     lan_transcriber/api.py
-    lan_transcriber/pipeline.py

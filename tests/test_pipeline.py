@@ -27,6 +27,7 @@ transformers.pipeline = lambda *a, **k: lambda text: [
 sys.modules["transformers"] = transformers
 
 from lan_transcriber import llm_client, pipeline  # noqa: E402
+from lan_transcriber.pipeline_steps import precheck as precheck_step  # noqa: E402
 
 
 def fake_audio(tmp_path: Path, name: str = "sample.mp3") -> Path:
@@ -1153,10 +1154,10 @@ def test_run_precheck_quarantines_when_metrics_unavailable(tmp_path: Path, monke
     audio = tmp_path / "probe-fail.mp3"
     audio.write_bytes(b"not-real-audio")
 
-    monkeypatch.setattr(pipeline, "_audio_duration_from_wave", lambda _path: None)
-    monkeypatch.setattr(pipeline, "_audio_duration_from_ffprobe", lambda _path: None)
-    monkeypatch.setattr(pipeline, "_speech_ratio_from_wave", lambda _path: None)
-    monkeypatch.setattr(pipeline, "_speech_ratio_from_ffmpeg", lambda _path: None)
+    monkeypatch.setattr(precheck_step, "_audio_duration_from_wave", lambda _path: None)
+    monkeypatch.setattr(precheck_step, "_audio_duration_from_ffprobe", lambda _path: None)
+    monkeypatch.setattr(precheck_step, "_speech_ratio_from_wave", lambda _path: None)
+    monkeypatch.setattr(precheck_step, "_speech_ratio_from_ffmpeg", lambda _path: None)
 
     result = pipeline.run_precheck(audio, cfg)
     assert result.quarantine_reason == "precheck_metrics_unavailable"
@@ -1168,7 +1169,7 @@ def test_speech_ratio_from_ffmpeg_uses_unbounded_wait(tmp_path: Path, monkeypatc
     audio = tmp_path / "ffmpeg-input.mp3"
     audio.write_bytes(b"audio")
 
-    monkeypatch.setattr(pipeline.shutil, "which", lambda _name: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(precheck_step.shutil, "which", lambda _name: "/usr/bin/ffmpeg")
 
     class _Stdout:
         def __init__(self):
@@ -1194,8 +1195,8 @@ def test_speech_ratio_from_ffmpeg_uses_unbounded_wait(tmp_path: Path, monkeypatc
             return False
 
     proc = _Proc()
-    monkeypatch.setattr(pipeline.subprocess, "Popen", lambda *_args, **_kwargs: proc)
+    monkeypatch.setattr(precheck_step.subprocess, "Popen", lambda *_args, **_kwargs: proc)
 
-    ratio = pipeline._speech_ratio_from_ffmpeg(audio)
+    ratio = precheck_step._speech_ratio_from_ffmpeg(audio)
     assert ratio == 0.0
     assert proc.wait_timeout is None

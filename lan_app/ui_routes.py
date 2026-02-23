@@ -83,6 +83,7 @@ from lan_transcriber.artifacts import atomic_write_json
 from lan_transcriber.llm_client import LLMClient
 from lan_transcriber.pipeline import Settings as PipelineSettings
 from lan_transcriber.pipeline import build_structured_summary_prompts, build_summary_payload
+from lan_transcriber.utils import normalise_language_code as _normalise_language_code_shared
 
 _TEMPLATES_DIR = Path(__file__).parent / "templates"
 _STATIC_DIR = Path(__file__).parent / "static"
@@ -110,39 +111,12 @@ _LANGUAGE_NAME_MAP: dict[str, str] = {
     "zh": "Chinese",
 }
 
-_LANGUAGE_CODE_MAP: dict[str, str] = {
-    "eng": "en",
-    "spa": "es",
-    "fra": "fr",
-    "fre": "fr",
-    "deu": "de",
-    "ger": "de",
-    "ita": "it",
-    "por": "pt",
-    "rus": "ru",
-    "ukr": "uk",
-    "jpn": "ja",
-    "kor": "ko",
-    "zho": "zh",
-    "chi": "zh",
-}
-
 _COMMON_LANGUAGE_CODES = ("en", "es", "fr", "de", "pt", "it", "zh", "ja", "ko", "ru")
 _STUCK_JOB_RECOVERY_ERROR = "stuck job recovered"
 
 
 def _normalise_language_code(value: object | None) -> str | None:
-    if not isinstance(value, str):
-        return None
-    raw = value.strip().lower()
-    if not raw:
-        return None
-    token = raw.replace("_", "-").split("-", 1)[0]
-    if len(token) == 2 and token.isalpha():
-        return token
-    if len(token) == 3 and token.isalpha():
-        return _LANGUAGE_CODE_MAP.get(token, None)
-    return None
+    return _normalise_language_code_shared(value)
 
 
 def _language_display_name(code: str | None) -> str:
