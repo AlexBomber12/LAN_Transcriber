@@ -16,6 +16,12 @@
   <a href="/recordings" class="btn" style="text-decoration:none">&#8592; Back</a>
 </div>
 
+{% if recovery_warning %}
+<p style="margin:0 0 10px 0;padding:8px 10px;border:1px solid #f59e0b;background:#fffbeb;color:#92400e">
+  {{ recovery_warning }}
+</p>
+{% endif %}
+
 <div class="tabs">
   {% for t in tabs %}
   <a href="/recordings/{{ rec.id }}?tab={{ t }}" class="tab {% if current_tab == t %}active{% endif %}">{{ t|capitalize }}</a>

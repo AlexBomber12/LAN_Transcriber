@@ -10,12 +10,14 @@ from fastapi.testclient import TestClient
 import pytest
 
 from lan_app import api
+from lan_app import db as db_module
 from lan_app import worker_tasks
 from lan_app.config import AppSettings
 from lan_app.constants import (
     JOB_STATUS_FAILED,
     JOB_STATUS_FINISHED,
     JOB_STATUS_QUEUED,
+    JOB_STATUS_STARTED,
     JOB_TYPE_ALIGN,
     JOB_TYPE_DIARIZE,
     JOB_TYPE_LANGUAGE,
@@ -24,6 +26,8 @@ from lan_app.constants import (
     JOB_TYPE_PRECHECK,
     JOB_TYPE_STT,
     RECORDING_STATUS_FAILED,
+    RECORDING_STATUS_NEEDS_REVIEW,
+    RECORDING_STATUS_PROCESSING,
     RECORDING_STATUS_QUARANTINE,
     RECORDING_STATUS_QUEUED,
     RECORDING_STATUS_READY,
@@ -33,11 +37,13 @@ from lan_app.db import (
     create_job,
     create_project,
     create_recording,
+    fail_job_if_started,
     get_job,
     get_recording,
     init_db,
     list_jobs,
     set_recording_status,
+    start_job,
     upsert_calendar_match,
 )
 from lan_app.jobs import RecordingJob, enqueue_recording_job, purge_pending_recording_jobs
@@ -172,6 +178,292 @@ def test_placeholder_cleanup_migration_only_removes_legacy_placeholders(tmp_path
         queued_job = get_job(f"job-mig-real-{job_type}-1", settings=cfg)
         assert queued_job is not None
         assert queued_job["status"] == JOB_STATUS_QUEUED
+
+
+def test_start_job_only_transitions_queued_jobs(tmp_path: Path):
+    cfg = _test_settings(tmp_path)
+    init_db(cfg)
+    create_recording(
+        "rec-start-job-1",
+        source="test",
+        source_filename="start-job.wav",
+        settings=cfg,
+    )
+    create_job(
+        "job-start-job-queued-1",
+        recording_id="rec-start-job-1",
+        job_type=JOB_TYPE_PRECHECK,
+        settings=cfg,
+        status=JOB_STATUS_QUEUED,
+    )
+    create_job(
+        "job-start-job-failed-1",
+        recording_id="rec-start-job-1",
+        job_type=JOB_TYPE_PRECHECK,
+        settings=cfg,
+        status=JOB_STATUS_FAILED,
+    )
+
+    assert start_job("job-start-job-queued-1", settings=cfg) is True
+    assert start_job("job-start-job-failed-1", settings=cfg) is False
+
+    queued_job = get_job("job-start-job-queued-1", settings=cfg)
+    failed_job = get_job("job-start-job-failed-1", settings=cfg)
+    assert queued_job is not None
+    assert failed_job is not None
+    assert queued_job["status"] == JOB_STATUS_STARTED
+    assert int(queued_job["attempt"]) == 1
+    assert failed_job["status"] == JOB_STATUS_FAILED
+    assert int(failed_job["attempt"]) == 0
+
+
+def test_worker_ignores_stale_execution_for_non_queued_job(tmp_path: Path, monkeypatch):
+    cfg = _test_settings(tmp_path)
+    monkeypatch.setenv("LAN_DATA_ROOT", str(cfg.data_root))
+    monkeypatch.setenv("LAN_RECORDINGS_ROOT", str(cfg.recordings_root))
+    monkeypatch.setenv("LAN_DB_PATH", str(cfg.db_path))
+    monkeypatch.setenv("LAN_PROM_SNAPSHOT_PATH", str(cfg.metrics_snapshot_path))
+
+    init_db(cfg)
+    create_recording(
+        "rec-worker-stale-exec-1",
+        source="test",
+        source_filename="stale-exec.wav",
+        status=RECORDING_STATUS_NEEDS_REVIEW,
+        settings=cfg,
+    )
+    create_job(
+        "job-worker-stale-exec-1",
+        recording_id="rec-worker-stale-exec-1",
+        job_type=JOB_TYPE_PRECHECK,
+        status=JOB_STATUS_FAILED,
+        settings=cfg,
+    )
+
+    result = process_job(
+        "job-worker-stale-exec-1",
+        "rec-worker-stale-exec-1",
+        JOB_TYPE_PRECHECK,
+    )
+
+    job = get_job("job-worker-stale-exec-1", settings=cfg)
+    recording = get_recording("rec-worker-stale-exec-1", settings=cfg)
+    assert result["status"] == "ignored"
+    assert job is not None
+    assert recording is not None
+    assert job["status"] == JOB_STATUS_FAILED
+    assert recording["status"] == RECORDING_STATUS_NEEDS_REVIEW
+    step_log = (
+        cfg.recordings_root
+        / "rec-worker-stale-exec-1"
+        / "logs"
+        / "step-precheck.log"
+    )
+    assert step_log.exists()
+    assert "ignored stale queue execution" in step_log.read_text(encoding="utf-8")
+
+
+def test_worker_ignores_stale_inflight_execution_for_recovered_started_job(
+    tmp_path: Path,
+    monkeypatch,
+):
+    cfg = _test_settings(tmp_path)
+    monkeypatch.setenv("LAN_DATA_ROOT", str(cfg.data_root))
+    monkeypatch.setenv("LAN_RECORDINGS_ROOT", str(cfg.recordings_root))
+    monkeypatch.setenv("LAN_DB_PATH", str(cfg.db_path))
+    monkeypatch.setenv("LAN_PROM_SNAPSHOT_PATH", str(cfg.metrics_snapshot_path))
+
+    init_db(cfg)
+    create_recording(
+        "rec-worker-stale-inflight-1",
+        source="test",
+        source_filename="stale-inflight.wav",
+        status=RECORDING_STATUS_QUEUED,
+        settings=cfg,
+    )
+    create_job(
+        "job-worker-stale-inflight-1",
+        recording_id="rec-worker-stale-inflight-1",
+        job_type=JOB_TYPE_PRECHECK,
+        settings=cfg,
+    )
+
+    def _simulate_reaper(*_args, **_kwargs):
+        assert (
+            fail_job_if_started(
+                "job-worker-stale-inflight-1",
+                "stuck job recovered",
+                settings=cfg,
+            )
+            is True
+        )
+        assert (
+            set_recording_status(
+                "rec-worker-stale-inflight-1",
+                RECORDING_STATUS_NEEDS_REVIEW,
+                settings=cfg,
+            )
+            is True
+        )
+        return RECORDING_STATUS_READY, None
+
+    monkeypatch.setattr("lan_app.worker_tasks._run_precheck_pipeline", _simulate_reaper)
+
+    result = process_job(
+        "job-worker-stale-inflight-1",
+        "rec-worker-stale-inflight-1",
+        JOB_TYPE_PRECHECK,
+    )
+
+    job = get_job("job-worker-stale-inflight-1", settings=cfg)
+    recording = get_recording("rec-worker-stale-inflight-1", settings=cfg)
+    assert result["status"] == "ignored"
+    assert job is not None
+    assert recording is not None
+    assert job["status"] == JOB_STATUS_FAILED
+    assert job["error"] == "stuck job recovered"
+    assert recording["status"] == RECORDING_STATUS_NEEDS_REVIEW
+    step_log = (
+        cfg.recordings_root
+        / "rec-worker-stale-inflight-1"
+        / "logs"
+        / "step-precheck.log"
+    )
+    assert step_log.exists()
+    assert "ignored stale in-flight execution" in step_log.read_text(encoding="utf-8")
+
+
+def test_worker_does_not_write_terminal_status_after_job_recovered_mid_run(
+    tmp_path: Path,
+    monkeypatch,
+):
+    cfg = _test_settings(tmp_path)
+    monkeypatch.setenv("LAN_DATA_ROOT", str(cfg.data_root))
+    monkeypatch.setenv("LAN_RECORDINGS_ROOT", str(cfg.recordings_root))
+    monkeypatch.setenv("LAN_DB_PATH", str(cfg.db_path))
+    monkeypatch.setenv("LAN_PROM_SNAPSHOT_PATH", str(cfg.metrics_snapshot_path))
+
+    init_db(cfg)
+    create_recording(
+        "rec-worker-midrun-race-1",
+        source="test",
+        source_filename="midrun-race.wav",
+        status=RECORDING_STATUS_QUEUED,
+        settings=cfg,
+    )
+    create_job(
+        "job-worker-midrun-race-1",
+        recording_id="rec-worker-midrun-race-1",
+        job_type=JOB_TYPE_PRECHECK,
+        settings=cfg,
+    )
+
+    def _simulate_reaper_job_recovery(*_args, **_kwargs):
+        assert (
+            fail_job_if_started(
+                "job-worker-midrun-race-1",
+                "stuck job recovered",
+                settings=cfg,
+            )
+            is True
+        )
+        # Reaper has recovered the job; worker must not commit terminal recording state.
+        return RECORDING_STATUS_READY, None
+
+    monkeypatch.setattr(
+        "lan_app.worker_tasks._run_precheck_pipeline",
+        _simulate_reaper_job_recovery,
+    )
+
+    result = process_job(
+        "job-worker-midrun-race-1",
+        "rec-worker-midrun-race-1",
+        JOB_TYPE_PRECHECK,
+    )
+
+    job = get_job("job-worker-midrun-race-1", settings=cfg)
+    recording = get_recording("rec-worker-midrun-race-1", settings=cfg)
+    assert result["status"] == "ignored"
+    assert job is not None
+    assert recording is not None
+    assert job["status"] == JOB_STATUS_FAILED
+    assert job["error"] == "stuck job recovered"
+    assert recording["status"] == RECORDING_STATUS_PROCESSING
+    step_log = (
+        cfg.recordings_root
+        / "rec-worker-midrun-race-1"
+        / "logs"
+        / "step-precheck.log"
+    )
+    assert step_log.exists()
+    assert "ignored stale in-flight execution" in step_log.read_text(encoding="utf-8")
+
+
+def test_worker_finalizes_started_job_when_recording_leaves_processing_mid_run(
+    tmp_path: Path,
+    monkeypatch,
+):
+    cfg = _test_settings(tmp_path)
+    monkeypatch.setenv("LAN_DATA_ROOT", str(cfg.data_root))
+    monkeypatch.setenv("LAN_RECORDINGS_ROOT", str(cfg.recordings_root))
+    monkeypatch.setenv("LAN_DB_PATH", str(cfg.db_path))
+    monkeypatch.setenv("LAN_PROM_SNAPSHOT_PATH", str(cfg.metrics_snapshot_path))
+
+    init_db(cfg)
+    create_recording(
+        "rec-worker-recording-race-1",
+        source="test",
+        source_filename="recording-race.wav",
+        status=RECORDING_STATUS_QUEUED,
+        settings=cfg,
+    )
+    create_job(
+        "job-worker-recording-race-1",
+        recording_id="rec-worker-recording-race-1",
+        job_type=JOB_TYPE_PRECHECK,
+        settings=cfg,
+    )
+
+    def _simulate_manual_status_change(*_args, **_kwargs):
+        assert (
+            set_recording_status(
+                "rec-worker-recording-race-1",
+                RECORDING_STATUS_QUARANTINE,
+                settings=cfg,
+                quarantine_reason="manual_override",
+            )
+            is True
+        )
+        return RECORDING_STATUS_READY, None
+
+    monkeypatch.setattr(
+        "lan_app.worker_tasks._run_precheck_pipeline",
+        _simulate_manual_status_change,
+    )
+
+    result = process_job(
+        "job-worker-recording-race-1",
+        "rec-worker-recording-race-1",
+        JOB_TYPE_PRECHECK,
+    )
+
+    job = get_job("job-worker-recording-race-1", settings=cfg)
+    recording = get_recording("rec-worker-recording-race-1", settings=cfg)
+    assert result["status"] == "ignored"
+    assert job is not None
+    assert recording is not None
+    assert job["status"] == JOB_STATUS_FAILED
+    assert "stale in-flight execution ignored" in str(job["error"])
+    assert recording["status"] == RECORDING_STATUS_QUARANTINE
+    assert recording["quarantine_reason"] == "manual_override"
+    step_log = (
+        cfg.recordings_root
+        / "rec-worker-recording-race-1"
+        / "logs"
+        / "step-precheck.log"
+    )
+    assert step_log.exists()
+    assert "ignored stale in-flight execution" in step_log.read_text(encoding="utf-8")
 
 
 def test_worker_noop_updates_job_and_recording_state(tmp_path: Path, monkeypatch):
@@ -697,7 +989,183 @@ def test_worker_retryable_failure_retries_before_marking_failed(
     assert recording is not None
     assert job["attempt"] == 3
     assert job["status"] == JOB_STATUS_FAILED
-    assert recording["status"] == RECORDING_STATUS_FAILED
+    assert job["error"] == "max attempts exceeded"
+    assert recording["status"] == RECORDING_STATUS_NEEDS_REVIEW
+
+
+def test_worker_retry_does_not_revive_recovered_started_job(
+    tmp_path: Path,
+    monkeypatch,
+):
+    cfg = _test_settings(tmp_path)
+    monkeypatch.setenv("LAN_DATA_ROOT", str(cfg.data_root))
+    monkeypatch.setenv("LAN_RECORDINGS_ROOT", str(cfg.recordings_root))
+    monkeypatch.setenv("LAN_DB_PATH", str(cfg.db_path))
+    monkeypatch.setenv("LAN_PROM_SNAPSHOT_PATH", str(cfg.metrics_snapshot_path))
+
+    init_db(cfg)
+    create_recording(
+        "rec-worker-retry-race-1",
+        source="test",
+        source_filename="retry-race.wav",
+        settings=cfg,
+    )
+    create_job(
+        "job-worker-retry-race-1",
+        recording_id="rec-worker-retry-race-1",
+        job_type=JOB_TYPE_PRECHECK,
+        settings=cfg,
+    )
+
+    raw_audio = cfg.recordings_root / "rec-worker-retry-race-1" / "raw" / "audio.wav"
+    raw_audio.parent.mkdir(parents=True, exist_ok=True)
+    raw_audio.write_bytes(b"\x00")
+    monkeypatch.setattr("lan_app.worker_tasks._resolve_raw_audio_path", lambda *_a, **_k: raw_audio)
+    monkeypatch.setattr(
+        "lan_app.worker_tasks.run_precheck",
+        lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("retry failure")),
+    )
+
+    def _requeue_after_recovery(job_id: str, *, error: str | None = None, settings=None) -> bool:
+        assert fail_job_if_started(job_id, "stuck job recovered", settings=cfg) is True
+        assert (
+            set_recording_status(
+                "rec-worker-retry-race-1",
+                RECORDING_STATUS_NEEDS_REVIEW,
+                settings=cfg,
+            )
+            is True
+        )
+        return db_module.requeue_job_if_started(
+            job_id,
+            error=error,
+            settings=settings or cfg,
+        )
+
+    monkeypatch.setattr(
+        "lan_app.worker_tasks.requeue_job_if_started",
+        _requeue_after_recovery,
+    )
+    monkeypatch.setattr("lan_app.worker_tasks.time.sleep", lambda _seconds: None)
+
+    result = process_job(
+        "job-worker-retry-race-1",
+        "rec-worker-retry-race-1",
+        JOB_TYPE_PRECHECK,
+    )
+
+    job = get_job("job-worker-retry-race-1", settings=cfg)
+    recording = get_recording("rec-worker-retry-race-1", settings=cfg)
+    assert result["status"] == "ignored"
+    assert job is not None
+    assert recording is not None
+    assert job["status"] == JOB_STATUS_FAILED
+    assert job["error"] == "stuck job recovered"
+    assert recording["status"] == RECORDING_STATUS_NEEDS_REVIEW
+    step_log = (
+        cfg.recordings_root
+        / "rec-worker-retry-race-1"
+        / "logs"
+        / "step-precheck.log"
+    )
+    assert step_log.exists()
+    assert "ignored stale in-flight execution" in step_log.read_text(encoding="utf-8")
+
+
+def test_worker_retry_terminal_uses_effective_max_attempts_cap(
+    tmp_path: Path,
+    monkeypatch,
+):
+    cfg = _test_settings(tmp_path)
+    monkeypatch.setenv("LAN_DATA_ROOT", str(cfg.data_root))
+    monkeypatch.setenv("LAN_RECORDINGS_ROOT", str(cfg.recordings_root))
+    monkeypatch.setenv("LAN_DB_PATH", str(cfg.db_path))
+    monkeypatch.setenv("LAN_PROM_SNAPSHOT_PATH", str(cfg.metrics_snapshot_path))
+    monkeypatch.setenv("LAN_MAX_JOB_ATTEMPTS", "5")
+
+    init_db(cfg)
+    create_recording(
+        "rec-worker-retry-cap-1",
+        source="test",
+        source_filename="retry-cap.wav",
+        settings=cfg,
+    )
+    create_job(
+        "job-worker-retry-cap-1",
+        recording_id="rec-worker-retry-cap-1",
+        job_type=JOB_TYPE_PRECHECK,
+        settings=cfg,
+    )
+
+    raw_audio = cfg.recordings_root / "rec-worker-retry-cap-1" / "raw" / "audio.wav"
+    raw_audio.parent.mkdir(parents=True, exist_ok=True)
+    raw_audio.write_bytes(b"\x00")
+    monkeypatch.setattr("lan_app.worker_tasks._resolve_raw_audio_path", lambda *_a, **_k: raw_audio)
+    monkeypatch.setattr(
+        "lan_app.worker_tasks.run_precheck",
+        lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("retry failure")),
+    )
+    monkeypatch.setattr("lan_app.worker_tasks.time.sleep", lambda _seconds: None)
+
+    with pytest.raises(RuntimeError, match="retry failure"):
+        process_job("job-worker-retry-cap-1", "rec-worker-retry-cap-1", JOB_TYPE_PRECHECK)
+
+    job = get_job("job-worker-retry-cap-1", settings=cfg)
+    recording = get_recording("rec-worker-retry-cap-1", settings=cfg)
+    assert job is not None
+    assert recording is not None
+    assert int(job["attempt"]) == 3
+    assert job["status"] == JOB_STATUS_FAILED
+    assert job["error"] == "max attempts exceeded"
+    assert recording["status"] == RECORDING_STATUS_NEEDS_REVIEW
+
+
+def test_worker_max_attempts_exceeded_before_processing_sets_terminal_state(
+    tmp_path: Path,
+    monkeypatch,
+):
+    cfg = _test_settings(tmp_path)
+    monkeypatch.setenv("LAN_DATA_ROOT", str(cfg.data_root))
+    monkeypatch.setenv("LAN_RECORDINGS_ROOT", str(cfg.recordings_root))
+    monkeypatch.setenv("LAN_DB_PATH", str(cfg.db_path))
+    monkeypatch.setenv("LAN_PROM_SNAPSHOT_PATH", str(cfg.metrics_snapshot_path))
+    monkeypatch.setenv("LAN_MAX_JOB_ATTEMPTS", "3")
+
+    init_db(cfg)
+    create_recording(
+        "rec-worker-max-attempts-1",
+        source="test",
+        source_filename="max-attempts.wav",
+        settings=cfg,
+    )
+    create_job(
+        "job-worker-max-attempts-1",
+        recording_id="rec-worker-max-attempts-1",
+        job_type=JOB_TYPE_PRECHECK,
+        settings=cfg,
+        attempt=3,
+    )
+
+    def _should_not_run_pipeline(*_args, **_kwargs):
+        raise AssertionError("pipeline execution should not run after max attempts")
+
+    monkeypatch.setattr("lan_app.worker_tasks._run_precheck_pipeline", _should_not_run_pipeline)
+
+    with pytest.raises(RuntimeError, match="max attempts exceeded"):
+        process_job(
+            "job-worker-max-attempts-1",
+            "rec-worker-max-attempts-1",
+            JOB_TYPE_PRECHECK,
+        )
+
+    job = get_job("job-worker-max-attempts-1", settings=cfg)
+    recording = get_recording("rec-worker-max-attempts-1", settings=cfg)
+    assert job is not None
+    assert recording is not None
+    assert job["attempt"] == 4
+    assert job["status"] == JOB_STATUS_FAILED
+    assert job["error"] == "max attempts exceeded"
+    assert recording["status"] == RECORDING_STATUS_NEEDS_REVIEW
 
 
 def test_enqueue_sets_recording_status_to_queued_on_success(tmp_path: Path, monkeypatch):
@@ -725,6 +1193,35 @@ def test_enqueue_sets_recording_status_to_queued_on_success(tmp_path: Path, monk
     recording = get_recording("rec-requeue-status-1", settings=cfg)
     assert recording is not None
     assert recording["status"] == RECORDING_STATUS_QUEUED
+
+
+def test_enqueue_uses_configured_rq_job_timeout(tmp_path: Path, monkeypatch):
+    cfg = _test_settings(tmp_path)
+    cfg.rq_job_timeout_seconds = 321
+    init_db(cfg)
+    create_recording(
+        "rec-rq-timeout-1",
+        source="test",
+        source_filename="timeout.mp3",
+        settings=cfg,
+    )
+
+    captured: dict[str, object] = {}
+
+    class _QueueCapture:
+        def enqueue(self, *_args, **kwargs):
+            captured.update(kwargs)
+            return None
+
+    monkeypatch.setattr("lan_app.jobs.get_queue", lambda _cfg: _QueueCapture())
+
+    enqueue_recording_job(
+        "rec-rq-timeout-1",
+        job_type=JOB_TYPE_PRECHECK,
+        settings=cfg,
+    )
+
+    assert captured["job_timeout"] == 321
 
 
 def test_purge_pending_recording_jobs_deletes_only_pending(tmp_path: Path, monkeypatch):

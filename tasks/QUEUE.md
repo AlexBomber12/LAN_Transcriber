@@ -107,7 +107,7 @@ Queue (in order)
 - Depends on: PR-STAGING-01
 
 20) PR-WORKER-ROBUST-01: Worker robustness: graceful shutdown, timeouts, stuck job recovery, terminal failures
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-WORKER-ROBUST-01.md
 - Depends on: PR-SECURITY-01
 

@@ -74,3 +74,16 @@ def test_security_settings_from_env(monkeypatch):
     cfg = AppSettings()
     assert cfg.api_bearer_token == "secret-token"
     assert cfg.ingest_lock_ttl_seconds == 123
+
+
+def test_worker_and_reaper_settings_from_env(monkeypatch):
+    monkeypatch.setenv("LAN_RQ_JOB_TIMEOUT_SECONDS", "1800")
+    monkeypatch.setenv("LAN_MAX_JOB_ATTEMPTS", "5")
+    monkeypatch.setenv("LAN_STUCK_JOB_SECONDS", "900")
+    monkeypatch.setenv("LAN_REAPER_INTERVAL_SECONDS", "60")
+
+    cfg = AppSettings()
+    assert cfg.rq_job_timeout_seconds == 1800
+    assert cfg.max_job_attempts == 5
+    assert cfg.stuck_job_seconds == 900
+    assert cfg.reaper_interval_seconds == 60

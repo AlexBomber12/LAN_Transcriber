@@ -63,6 +63,7 @@ from .ms_graph import (
 )
 from .onenote import PublishPreconditionError, publish_recording_to_onenote
 from .ops import run_retention_cleanup
+from .reaper import run_stuck_job_reaper_once
 from .ui_routes import _STATIC_DIR, ui_router
 
 app = FastAPI()
@@ -73,6 +74,7 @@ _subscribers: List[asyncio.Queue[str]] = []
 _current_result: TranscriptResult | None = None
 _settings = AppSettings()
 _cleanup_task: asyncio.Task[None] | None = None
+_reaper_task: asyncio.Task[None] | None = None
 _CLEANUP_INTERVAL_SECONDS = 3600
 _logger = logging.getLogger(__name__)
 
@@ -174,6 +176,25 @@ async def _retention_cleanup_loop() -> None:
         await asyncio.sleep(_CLEANUP_INTERVAL_SECONDS)
 
 
+async def _stuck_job_reaper_loop() -> None:
+    while True:
+        try:
+            summary = await run_in_threadpool(
+                run_stuck_job_reaper_once,
+                settings=_settings,
+            )
+            recovered_jobs = int(summary.get("recovered_jobs") or 0)
+            if recovered_jobs > 0:
+                _logger.warning(
+                    "Recovered %s stuck jobs for %s recordings",
+                    recovered_jobs,
+                    int(summary.get("recovered_recordings") or 0),
+                )
+        except Exception:
+            _logger.exception("Stuck-job reaper failed")
+        await asyncio.sleep(_settings.reaper_interval_seconds)
+
+
 @app.get("/api/connections/ms/verify")
 async def api_verify_ms_connection() -> dict[str, object]:
     """Validate Microsoft Graph auth by calling /me via cached delegated token."""
@@ -224,22 +245,29 @@ async def api_get_ms_connection_status(session_id: str) -> dict[str, object]:
 
 @app.on_event("startup")
 async def _start_metrics() -> None:
-    global _cleanup_task
+    global _cleanup_task, _reaper_task
     init_db(_settings)
     _settings.metrics_snapshot_path.parent.mkdir(parents=True, exist_ok=True)
     asyncio.create_task(write_metrics_snapshot(_settings.metrics_snapshot_path))
     _cleanup_task = asyncio.create_task(_retention_cleanup_loop())
+    _reaper_task = asyncio.create_task(_stuck_job_reaper_loop())
 
 
 @app.on_event("shutdown")
 async def _stop_background_tasks() -> None:
-    global _cleanup_task
-    if _cleanup_task is None:
-        return
-    _cleanup_task.cancel()
-    with suppress(asyncio.CancelledError):
-        await _cleanup_task
-    _cleanup_task = None
+    global _cleanup_task, _reaper_task
+
+    if _cleanup_task is not None:
+        _cleanup_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await _cleanup_task
+        _cleanup_task = None
+
+    if _reaper_task is not None:
+        _reaper_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await _reaper_task
+        _reaper_task = None
 
 
 @app.post("/alias/{speaker_id}")

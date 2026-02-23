@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 import json
 from pathlib import Path
 import sqlite3
-from typing import Any
+from typing import Any, Sequence
 
 from .config import AppSettings
 from .constants import (
@@ -15,6 +15,7 @@ from .constants import (
     JOB_STATUS_STARTED,
     JOB_TYPES,
     RECORDING_STATUSES,
+    RECORDING_STATUS_PROCESSING,
     RECORDING_STATUS_PUBLISHED,
     RECORDING_STATUS_QUEUED,
     RECORDING_STATUS_QUARANTINE,
@@ -483,6 +484,134 @@ def set_recording_status(
     return updated.rowcount > 0
 
 
+def set_recording_status_if_current_in(
+    recording_id: str,
+    status: str,
+    *,
+    current_statuses: Sequence[str],
+    settings: AppSettings | None = None,
+    quarantine_reason: str | None = None,
+) -> bool:
+    init_db(settings)
+    _validate_recording_status(status)
+    expected_statuses = tuple(dict.fromkeys(str(value) for value in current_statuses))
+    if not expected_statuses:
+        return False
+    for value in expected_statuses:
+        _validate_recording_status(value)
+    placeholders = ", ".join("?" for _ in expected_statuses)
+    now = _utc_now()
+    with connect(settings) as conn:
+        updated = conn.execute(
+            f"""
+            UPDATE recordings
+            SET status = ?, quarantine_reason = ?, updated_at = ?
+            WHERE id = ?
+              AND status IN ({placeholders})
+            """,
+            (
+                status,
+                quarantine_reason if status == RECORDING_STATUS_QUARANTINE else None,
+                now,
+                recording_id,
+                *expected_statuses,
+            ),
+        )
+        conn.commit()
+    return updated.rowcount > 0
+
+
+def set_recording_status_if_current_in_and_no_started_job(
+    recording_id: str,
+    status: str,
+    *,
+    current_statuses: Sequence[str],
+    settings: AppSettings | None = None,
+    quarantine_reason: str | None = None,
+) -> bool:
+    init_db(settings)
+    _validate_recording_status(status)
+    expected_statuses = tuple(dict.fromkeys(str(value) for value in current_statuses))
+    if not expected_statuses:
+        return False
+    for value in expected_statuses:
+        _validate_recording_status(value)
+    placeholders = ", ".join("?" for _ in expected_statuses)
+    now = _utc_now()
+    with connect(settings) as conn:
+        updated = conn.execute(
+            f"""
+            UPDATE recordings
+            SET status = ?, quarantine_reason = ?, updated_at = ?
+            WHERE id = ?
+              AND status IN ({placeholders})
+              AND NOT EXISTS (
+                    SELECT 1
+                    FROM jobs
+                    WHERE jobs.recording_id = recordings.id
+                      AND jobs.status = ?
+              )
+            """,
+            (
+                status,
+                quarantine_reason if status == RECORDING_STATUS_QUARANTINE else None,
+                now,
+                recording_id,
+                *expected_statuses,
+                JOB_STATUS_STARTED,
+            ),
+        )
+        conn.commit()
+    return updated.rowcount > 0
+
+
+def set_recording_status_if_current_in_and_job_started(
+    recording_id: str,
+    status: str,
+    *,
+    job_id: str,
+    current_statuses: Sequence[str],
+    settings: AppSettings | None = None,
+    quarantine_reason: str | None = None,
+) -> bool:
+    init_db(settings)
+    _validate_recording_status(status)
+    expected_statuses = tuple(dict.fromkeys(str(value) for value in current_statuses))
+    if not expected_statuses:
+        return False
+    for value in expected_statuses:
+        _validate_recording_status(value)
+    placeholders = ", ".join("?" for _ in expected_statuses)
+    now = _utc_now()
+    with connect(settings) as conn:
+        updated = conn.execute(
+            f"""
+            UPDATE recordings
+            SET status = ?, quarantine_reason = ?, updated_at = ?
+            WHERE id = ?
+              AND status IN ({placeholders})
+              AND EXISTS (
+                    SELECT 1
+                    FROM jobs
+                    WHERE jobs.id = ?
+                      AND jobs.recording_id = recordings.id
+                      AND jobs.status = ?
+              )
+            """,
+            (
+                status,
+                quarantine_reason if status == RECORDING_STATUS_QUARANTINE else None,
+                now,
+                recording_id,
+                *expected_statuses,
+                job_id,
+                JOB_STATUS_STARTED,
+            ),
+        )
+        conn.commit()
+    return updated.rowcount > 0
+
+
 def set_recording_project(
     recording_id: str,
     project_id: int | None,
@@ -739,6 +868,125 @@ def list_jobs(
     return [_as_dict(row) or {} for row in rows], total
 
 
+def list_stale_started_jobs(
+    *,
+    before_started_at: str,
+    settings: AppSettings | None = None,
+    limit: int = 500,
+) -> list[dict[str, Any]]:
+    init_db(settings)
+    safe_limit = max(1, min(limit, 500))
+    with connect(settings) as conn:
+        rows = conn.execute(
+            """
+            SELECT
+                j.*,
+                r.status AS recording_status
+            FROM jobs AS j
+            JOIN recordings AS r ON r.id = j.recording_id
+            WHERE j.status = ?
+              AND j.started_at IS NOT NULL
+              AND j.started_at < ?
+            ORDER BY j.started_at ASC, j.created_at ASC
+            LIMIT ?
+            """,
+            (
+                JOB_STATUS_STARTED,
+                before_started_at,
+                safe_limit,
+            ),
+        ).fetchall()
+    return [_as_dict(row) or {} for row in rows]
+
+
+def list_processing_recordings_without_started_job(
+    *,
+    before_updated_at: str | None = None,
+    settings: AppSettings | None = None,
+    limit: int = 500,
+) -> list[dict[str, Any]]:
+    init_db(settings)
+    safe_limit = max(1, min(limit, 500))
+    with connect(settings) as conn:
+        rows = conn.execute(
+            """
+            SELECT
+                r.*,
+                p.name AS project_name,
+                sp.name AS suggested_project_name,
+            (
+                SELECT j.id
+                FROM jobs AS j
+                WHERE j.recording_id = r.id
+                  AND j.status IN (?, ?)
+                ORDER BY
+                    CASE WHEN j.status = ? THEN 0 ELSE 1 END ASC,
+                    j.updated_at DESC,
+                    j.created_at DESC
+                LIMIT 1
+            ) AS active_job_id,
+            (
+                SELECT j.type
+                FROM jobs AS j
+                WHERE j.recording_id = r.id
+                  AND j.status IN (?, ?)
+                ORDER BY
+                    CASE WHEN j.status = ? THEN 0 ELSE 1 END ASC,
+                    j.updated_at DESC,
+                    j.created_at DESC
+                LIMIT 1
+            ) AS active_job_type
+            FROM recordings AS r
+            LEFT JOIN projects AS p ON p.id = r.project_id
+            LEFT JOIN projects AS sp ON sp.id = r.suggested_project_id
+            WHERE r.status = ?
+              AND (? IS NULL OR r.updated_at < ?)
+              AND NOT EXISTS (
+                    SELECT 1
+                    FROM jobs AS sj
+                    WHERE sj.recording_id = r.id
+                      AND sj.status = ?
+              )
+            ORDER BY r.updated_at ASC, r.created_at ASC
+            LIMIT ?
+            """,
+            (
+                JOB_STATUS_STARTED,
+                JOB_STATUS_QUEUED,
+                JOB_STATUS_STARTED,
+                JOB_STATUS_STARTED,
+                JOB_STATUS_QUEUED,
+                JOB_STATUS_STARTED,
+                RECORDING_STATUS_PROCESSING,
+                before_updated_at,
+                before_updated_at,
+                JOB_STATUS_STARTED,
+                safe_limit,
+            ),
+        ).fetchall()
+    return [_as_dict(row) or {} for row in rows]
+
+
+def has_started_job_for_recording(
+    recording_id: str,
+    *,
+    settings: AppSettings | None = None,
+) -> bool:
+    init_db(settings)
+    with connect(settings) as conn:
+        row = conn.execute(
+            """
+            SELECT 1
+            FROM jobs
+            WHERE recording_id = ?
+              AND status = ?
+            LIMIT 1
+            """,
+            (recording_id, JOB_STATUS_STARTED),
+        ).fetchone()
+    return row is not None
+
+
 def _find_active_job_for_recording_row(
     conn: sqlite3.Connection,
     *,
@@ -838,17 +1086,19 @@ def start_job(
     init_db(settings)
     now = _utc_now()
     with connect(settings) as conn:
-        row = conn.execute("SELECT attempt FROM jobs WHERE id = ?", (job_id,)).fetchone()
-        if row is None:
-            return False
-        next_attempt = int(row["attempt"]) + 1
         updated = conn.execute(
             """
             UPDATE jobs
-            SET status = ?, attempt = ?, error = NULL, started_at = ?, finished_at = NULL, updated_at = ?
-            WHERE id = ?
+            SET status = ?, attempt = attempt + 1, error = NULL, started_at = ?, finished_at = NULL, updated_at = ?
+            WHERE id = ? AND status = ?
             """,
-            (JOB_STATUS_STARTED, next_attempt, now, now, job_id),
+            (
+                JOB_STATUS_STARTED,
+                now,
+                now,
+                job_id,
+                JOB_STATUS_QUEUED,
+            ),
         )
         conn.commit()
     return updated.rowcount > 0
@@ -875,6 +1125,33 @@ def requeue_job(
     return updated.rowcount > 0
 
 
+def requeue_job_if_started(
+    job_id: str,
+    *,
+    error: str | None = None,
+    settings: AppSettings | None = None,
+) -> bool:
+    init_db(settings)
+    now = _utc_now()
+    with connect(settings) as conn:
+        updated = conn.execute(
+            """
+            UPDATE jobs
+            SET status = ?, error = ?, started_at = NULL, finished_at = NULL, updated_at = ?
+            WHERE id = ? AND status = ?
+            """,
+            (
+                JOB_STATUS_QUEUED,
+                error,
+                now,
+                job_id,
+                JOB_STATUS_STARTED,
+            ),
+        )
+        conn.commit()
+    return updated.rowcount > 0
+
+
 def finish_job(
     job_id: str,
     *,
@@ -889,6 +1166,34 @@ def finish_job(
     )
 
 
+def finish_job_if_started(
+    job_id: str,
+    *,
+    settings: AppSettings | None = None,
+    error: str | None = None,
+) -> bool:
+    init_db(settings)
+    now = _utc_now()
+    with connect(settings) as conn:
+        updated = conn.execute(
+            """
+            UPDATE jobs
+            SET status = ?, error = ?, finished_at = ?, updated_at = ?
+            WHERE id = ? AND status = ?
+            """,
+            (
+                JOB_STATUS_FINISHED,
+                error,
+                now,
+                now,
+                job_id,
+                JOB_STATUS_STARTED,
+            ),
+        )
+        conn.commit()
+    return updated.rowcount > 0
+
+
 def fail_job(
     job_id: str,
     error: str,
@@ -901,6 +1206,62 @@ def fail_job(
         error=error,
         settings=settings,
     )
+
+
+def fail_job_if_started(
+    job_id: str,
+    error: str,
+    *,
+    settings: AppSettings | None = None,
+) -> bool:
+    init_db(settings)
+    now = _utc_now()
+    with connect(settings) as conn:
+        updated = conn.execute(
+            """
+            UPDATE jobs
+            SET status = ?, error = ?, finished_at = ?, updated_at = ?
+            WHERE id = ? AND status = ?
+            """,
+            (
+                JOB_STATUS_FAILED,
+                error,
+                now,
+                now,
+                job_id,
+                JOB_STATUS_STARTED,
+            ),
+        )
+        conn.commit()
+    return updated.rowcount > 0
+
+
+def fail_job_if_queued(
+    job_id: str,
+    error: str,
+    *,
+    settings: AppSettings | None = None,
+) -> bool:
+    init_db(settings)
+    now = _utc_now()
+    with connect(settings) as conn:
+        updated = conn.execute(
+            """
+            UPDATE jobs
+            SET status = ?, error = ?, finished_at = ?, updated_at = ?
+            WHERE id = ? AND status = ?
+            """,
+            (
+                JOB_STATUS_FAILED,
+                error,
+                now,
+                now,
+                job_id,
+                JOB_STATUS_QUEUED,
+            ),
+        )
+        conn.commit()
+    return updated.rowcount > 0
 
 
 def list_projects(
@@ -1617,6 +1978,9 @@ __all__ = [
     "get_recording",
     "list_recordings",
     "set_recording_status",
+    "set_recording_status_if_current_in",
+    "set_recording_status_if_current_in_and_no_started_job",
+    "set_recording_status_if_current_in_and_job_started",
     "set_recording_project",
     "set_recording_routing_suggestion",
     "set_recording_language_settings",
@@ -1625,12 +1989,19 @@ __all__ = [
     "create_job",
     "get_job",
     "list_jobs",
+    "list_stale_started_jobs",
+    "list_processing_recordings_without_started_job",
+    "has_started_job_for_recording",
     "find_active_job_for_recording",
     "create_job_if_no_active_for_recording",
     "start_job",
     "requeue_job",
+    "requeue_job_if_started",
     "finish_job",
+    "finish_job_if_started",
     "fail_job",
+    "fail_job_if_started",
+    "fail_job_if_queued",
     "list_projects",
     "get_project",
     "create_project",
