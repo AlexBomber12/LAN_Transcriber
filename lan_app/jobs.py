@@ -119,6 +119,22 @@ def purge_pending_recording_jobs(
     return removed
 
 
+def cancel_pending_queue_job(
+    job_id: str,
+    *,
+    settings: AppSettings | None = None,
+) -> bool:
+    cfg = settings or AppSettings()
+    try:
+        queue = get_queue(cfg)
+    except Exception:
+        return False
+    try:
+        return _purge_pending_queue_job(queue, job_id)
+    except Exception:
+        return False
+
+
 def enqueue_recording_job(
     recording_id: str,
     *,
@@ -188,6 +204,7 @@ def enqueue_recording_job(
 
 
 __all__ = [
+    "cancel_pending_queue_job",
     "DuplicateRecordingJobError",
     "RecordingJob",
     "RecordingNotFoundError",

@@ -303,7 +303,10 @@ def test_reaper_skips_stale_downgrade_if_status_changes_after_selection(
     assert recording["status"] == RECORDING_STATUS_READY
 
 
-def test_reaper_recovers_processing_recording_without_started_job(tmp_path: Path):
+def test_reaper_recovers_processing_recording_without_started_job(
+    tmp_path: Path,
+    monkeypatch,
+):
     cfg = _test_settings(tmp_path)
     init_db(cfg)
     create_recording(
@@ -331,6 +334,14 @@ def test_reaper_recovers_processing_recording_without_started_job(tmp_path: Path
         )
         conn.commit()
 
+    cancelled_job_ids: list[str] = []
+
+    def _cancel_pending(job_id: str, *, settings=None) -> bool:
+        cancelled_job_ids.append(job_id)
+        return True
+
+    monkeypatch.setattr("lan_app.reaper.cancel_pending_queue_job", _cancel_pending)
+
     summary = run_stuck_job_reaper_once(
         settings=cfg,
         now=datetime(2026, 2, 23, 0, 0, 0, tzinfo=timezone.utc) + timedelta(seconds=1),
@@ -345,6 +356,7 @@ def test_reaper_recovers_processing_recording_without_started_job(tmp_path: Path
     assert job["status"] == JOB_STATUS_FAILED
     assert job["error"] == "stuck job recovered"
     assert recording["status"] == RECORDING_STATUS_NEEDS_REVIEW
+    assert cancelled_job_ids == ["job-reaper-orphan-1"]
 
     step_log = cfg.recordings_root / "rec-reaper-orphan-1" / "logs" / "step-precheck.log"
     assert step_log.exists()
@@ -431,3 +443,66 @@ def test_reaper_skips_orphan_recovery_when_active_job_is_no_longer_queued(
     assert summary["recovered_recordings"] == 0
     assert job["status"] == JOB_STATUS_QUEUED
     assert recording["status"] == RECORDING_STATUS_PROCESSING
+
+
+def test_reaper_skips_orphan_downgrade_if_status_changes_after_selection(
+    tmp_path: Path,
+    monkeypatch,
+):
+    cfg = _test_settings(tmp_path)
+    init_db(cfg)
+    create_recording(
+        "rec-reaper-race-downgrade-1",
+        source="test",
+        source_filename="race-downgrade.wav",
+        status=RECORDING_STATUS_PROCESSING,
+        settings=cfg,
+    )
+    create_job(
+        "job-reaper-race-downgrade-1",
+        recording_id="rec-reaper-race-downgrade-1",
+        job_type=JOB_TYPE_PRECHECK,
+        status=JOB_STATUS_QUEUED,
+        settings=cfg,
+    )
+    with connect(cfg) as conn:
+        conn.execute(
+            """
+            UPDATE recordings
+            SET updated_at = ?
+            WHERE id = ?
+            """,
+            ("2026-02-22T00:00:00Z", "rec-reaper-race-downgrade-1"),
+        )
+        conn.commit()
+
+    monkeypatch.setattr(
+        "lan_app.reaper.cancel_pending_queue_job",
+        lambda *_a, **_k: True,
+    )
+    original = db_module.set_recording_status_if_current_in
+
+    def _racy_set_status(*args, **kwargs):
+        set_recording_status(
+            "rec-reaper-race-downgrade-1",
+            RECORDING_STATUS_READY,
+            settings=cfg,
+        )
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr("lan_app.reaper.set_recording_status_if_current_in", _racy_set_status)
+
+    summary = run_stuck_job_reaper_once(
+        settings=cfg,
+        now=datetime(2026, 2, 23, 0, 0, 1, tzinfo=timezone.utc),
+    )
+
+    job = get_job("job-reaper-race-downgrade-1", settings=cfg)
+    recording = get_recording("rec-reaper-race-downgrade-1", settings=cfg)
+    assert job is not None
+    assert recording is not None
+    assert summary["processing_without_started"] == 1
+    assert summary["recovered_jobs"] == 1
+    assert summary["recovered_recordings"] == 0
+    assert job["status"] == JOB_STATUS_FAILED
+    assert recording["status"] == RECORDING_STATUS_READY

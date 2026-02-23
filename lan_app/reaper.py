@@ -16,9 +16,9 @@ from .db import (
     fail_job_if_started,
     list_processing_recordings_without_started_job,
     list_stale_started_jobs,
-    set_recording_status,
     set_recording_status_if_current_in,
 )
+from .jobs import cancel_pending_queue_job
 
 _RECOVERY_ERROR = "stuck job recovered"
 _STALE_DOWNGRADE_STATUSES = (
@@ -26,6 +26,7 @@ _STALE_DOWNGRADE_STATUSES = (
     RECORDING_STATUS_PROCESSING,
     RECORDING_STATUS_NEEDS_REVIEW,
 )
+_ORPHAN_DOWNGRADE_STATUSES = (RECORDING_STATUS_PROCESSING,)
 
 
 def _utc_now() -> datetime:
@@ -104,8 +105,16 @@ def run_stuck_job_reaper_once(
             if not fail_job_if_queued(active_job_id, _RECOVERY_ERROR, settings=cfg):
                 # Job transitioned after selection; skip this recovery pass.
                 continue
+            # Best-effort dequeue to avoid executing a recovered queued job later.
+            cancel_pending_queue_job(active_job_id, settings=cfg)
             recovered_job_ids.append(active_job_id)
-        set_recording_status(recording_id, RECORDING_STATUS_NEEDS_REVIEW, settings=cfg)
+        if set_recording_status_if_current_in(
+            recording_id,
+            RECORDING_STATUS_NEEDS_REVIEW,
+            current_statuses=_ORPHAN_DOWNGRADE_STATUSES,
+            settings=cfg,
+        ):
+            recovered_recording_ids.add(recording_id)
         _append_step_log(
             _step_log_path(recording_id, active_job_type, cfg),
             (
@@ -115,7 +124,6 @@ def run_stuck_job_reaper_once(
             ),
             now=current_time,
         )
-        recovered_recording_ids.add(recording_id)
 
     return {
         "stale_started_jobs": len(stale_rows),

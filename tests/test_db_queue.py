@@ -16,6 +16,7 @@ from lan_app.constants import (
     JOB_STATUS_FAILED,
     JOB_STATUS_FINISHED,
     JOB_STATUS_QUEUED,
+    JOB_STATUS_STARTED,
     JOB_TYPE_ALIGN,
     JOB_TYPE_DIARIZE,
     JOB_TYPE_LANGUAGE,
@@ -39,6 +40,7 @@ from lan_app.db import (
     init_db,
     list_jobs,
     set_recording_status,
+    start_job,
     upsert_calendar_match,
 )
 from lan_app.jobs import RecordingJob, enqueue_recording_job, purge_pending_recording_jobs
@@ -173,6 +175,43 @@ def test_placeholder_cleanup_migration_only_removes_legacy_placeholders(tmp_path
         queued_job = get_job(f"job-mig-real-{job_type}-1", settings=cfg)
         assert queued_job is not None
         assert queued_job["status"] == JOB_STATUS_QUEUED
+
+
+def test_start_job_only_transitions_queued_jobs(tmp_path: Path):
+    cfg = _test_settings(tmp_path)
+    init_db(cfg)
+    create_recording(
+        "rec-start-job-1",
+        source="test",
+        source_filename="start-job.wav",
+        settings=cfg,
+    )
+    create_job(
+        "job-start-job-queued-1",
+        recording_id="rec-start-job-1",
+        job_type=JOB_TYPE_PRECHECK,
+        settings=cfg,
+        status=JOB_STATUS_QUEUED,
+    )
+    create_job(
+        "job-start-job-failed-1",
+        recording_id="rec-start-job-1",
+        job_type=JOB_TYPE_PRECHECK,
+        settings=cfg,
+        status=JOB_STATUS_FAILED,
+    )
+
+    assert start_job("job-start-job-queued-1", settings=cfg) is True
+    assert start_job("job-start-job-failed-1", settings=cfg) is False
+
+    queued_job = get_job("job-start-job-queued-1", settings=cfg)
+    failed_job = get_job("job-start-job-failed-1", settings=cfg)
+    assert queued_job is not None
+    assert failed_job is not None
+    assert queued_job["status"] == JOB_STATUS_STARTED
+    assert int(queued_job["attempt"]) == 1
+    assert failed_job["status"] == JOB_STATUS_FAILED
+    assert int(failed_job["attempt"]) == 0
 
 
 def test_worker_noop_updates_job_and_recording_state(tmp_path: Path, monkeypatch):

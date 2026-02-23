@@ -975,17 +975,19 @@ def start_job(
     init_db(settings)
     now = _utc_now()
     with connect(settings) as conn:
-        row = conn.execute("SELECT attempt FROM jobs WHERE id = ?", (job_id,)).fetchone()
-        if row is None:
-            return False
-        next_attempt = int(row["attempt"]) + 1
         updated = conn.execute(
             """
             UPDATE jobs
-            SET status = ?, attempt = ?, error = NULL, started_at = ?, finished_at = NULL, updated_at = ?
-            WHERE id = ?
+            SET status = ?, attempt = attempt + 1, error = NULL, started_at = ?, finished_at = NULL, updated_at = ?
+            WHERE id = ? AND status = ?
             """,
-            (JOB_STATUS_STARTED, next_attempt, now, now, job_id),
+            (
+                JOB_STATUS_STARTED,
+                now,
+                now,
+                job_id,
+                JOB_STATUS_QUEUED,
+            ),
         )
         conn.commit()
     return updated.rowcount > 0
