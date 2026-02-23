@@ -144,7 +144,7 @@ async def test_tripled_dedup(tmp_path: Path, mocker):
         ),
     )
 
-    respx.post("http://llm:8000/v1/chat/completions").mock(
+    respx.post("http://127.0.0.1:8000/v1/chat/completions").mock(
         return_value=httpx.Response(
             200, json={"choices": [{"message": {"content": "- ok"}}]}
         ),
@@ -186,7 +186,7 @@ async def test_pipeline_emits_progress_stages_in_order(tmp_path: Path, mocker):
             {"language": "en", "language_probability": 0.95},
         ),
     )
-    respx.post("http://llm:8000/v1/chat/completions").mock(
+    respx.post("http://127.0.0.1:8000/v1/chat/completions").mock(
         return_value=httpx.Response(
             200,
             json={"choices": [{"message": {"content": "- summary"}}]},
@@ -238,7 +238,7 @@ async def test_alias_persist(tmp_path: Path, mocker):
         ),
     )
 
-    respx.post("http://llm:8000/v1/chat/completions").mock(
+    respx.post("http://127.0.0.1:8000/v1/chat/completions").mock(
         return_value=httpx.Response(
             200, json={"choices": [{"message": {"content": "- sum"}}]}
         ),
@@ -277,7 +277,7 @@ async def test_alias_persist(tmp_path: Path, mocker):
 @respx.mock
 async def test_white_noise(tmp_path: Path, mocker):
     mocker.patch("whisperx.transcribe", return_value=([], {"language": "en"}))
-    respx.post("http://llm:8000/v1/chat/completions").mock(
+    respx.post("http://127.0.0.1:8000/v1/chat/completions").mock(
         return_value=httpx.Response(
             200, json={"choices": [{"message": {"content": ""}}]}
         ),
@@ -315,7 +315,7 @@ async def test_no_talk(tmp_path: Path, mocker):
         ),
     )
 
-    respx.post("http://llm:8000/v1/chat/completions").mock(
+    respx.post("http://127.0.0.1:8000/v1/chat/completions").mock(
         return_value=httpx.Response(
             200, json={"choices": [{"message": {"content": ""}}]}
         ),
@@ -356,7 +356,7 @@ async def test_pipeline_preserves_zero_language_confidence(tmp_path: Path, mocke
         "transformers.pipeline",
         lambda *a, **k: lambda text: [{"label": "positive", "score": 0.5}],
     )
-    respx.post("http://llm:8000/v1/chat/completions").mock(
+    respx.post("http://127.0.0.1:8000/v1/chat/completions").mock(
         return_value=httpx.Response(
             200,
             json={"choices": [{"message": {"content": "- summary"}}]},
@@ -415,7 +415,7 @@ async def test_pipeline_writes_required_artifacts(tmp_path: Path, mocker):
         "transformers.pipeline",
         lambda *a, **k: lambda text: [{"label": "positive", "score": 0.6}],
     )
-    respx.post("http://llm:8000/v1/chat/completions").mock(
+    respx.post("http://127.0.0.1:8000/v1/chat/completions").mock(
         return_value=httpx.Response(
             200,
             json={"choices": [{"message": {"content": "- summary"}}]},
@@ -488,7 +488,7 @@ async def test_pipeline_writes_language_spans_for_mixed_language_segments(tmp_pa
         "transformers.pipeline",
         lambda *a, **k: lambda text: [{"label": "positive", "score": 0.6}],
     )
-    respx.post("http://llm:8000/v1/chat/completions").mock(
+    respx.post("http://127.0.0.1:8000/v1/chat/completions").mock(
         return_value=httpx.Response(
             200,
             json={"choices": [{"message": {"content": "- summary"}}]},
@@ -792,7 +792,7 @@ async def test_pipeline_transcript_language_override_is_used_for_asr(tmp_path: P
         "transformers.pipeline",
         lambda *a, **k: lambda text: [{"label": "positive", "score": 0.6}],
     )
-    respx.post("http://llm:8000/v1/chat/completions").mock(
+    respx.post("http://127.0.0.1:8000/v1/chat/completions").mock(
         return_value=httpx.Response(
             200,
             json={"choices": [{"message": {"content": "- resumen"}}]},
@@ -850,7 +850,7 @@ async def test_pipeline_accepts_pyannote_triplet_itertracks(tmp_path: Path, mock
         "transformers.pipeline",
         lambda *a, **k: lambda text: [{"label": "positive", "score": 0.6}],
     )
-    respx.post("http://llm:8000/v1/chat/completions").mock(
+    respx.post("http://127.0.0.1:8000/v1/chat/completions").mock(
         return_value=httpx.Response(
             200,
             json={"choices": [{"message": {"content": "- summary"}}]},

@@ -127,6 +127,6 @@ Queue (in order)
 - Depends on: PR-DB-RESILIENCE-01
 
 24) PR-RUNTIME-CONFIG-01: Runtime hardening: fail-fast config for staging/prod + FastAPI lifespan + docs alignment
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-RUNTIME-CONFIG-01.md
 - Depends on: PR-UI-PROGRESS-01

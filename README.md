@@ -87,6 +87,7 @@ models are cached across runs.
 
 | Variable | Description |
 | --- | --- |
+| `LAN_ENV` | Runtime mode: `dev` (default), `staging`, or `prod` |
 | `LAN_DB_PATH` | SQLite database path (default `/data/db/app.db`) |
 | `LAN_REDIS_URL` | Redis endpoint for the RQ queue |
 | `LAN_RQ_QUEUE_NAME` | Queue name consumed by the worker |
@@ -102,6 +103,13 @@ models are cached across runs.
 | `MS_TENANT_ID` | Microsoft Entra tenant ID for delegated Device Code Flow |
 | `MS_CLIENT_ID` | Microsoft app registration client ID |
 | `MS_SCOPES` | Graph scopes (default: `offline_access User.Read Notes.ReadWrite Calendars.Read`) |
+
+`LAN_ENV` controls startup validation:
+
+- `LAN_ENV=dev`: missing `LAN_REDIS_URL` and/or `LLM_BASE_URL` is allowed with warnings; dev defaults are used (`redis://127.0.0.1:6379/0`, `http://127.0.0.1:8000`).
+- `LAN_ENV=staging` or `LAN_ENV=prod`: `LAN_REDIS_URL` and `LLM_BASE_URL` are required; startup fails fast if either is missing.
+
+If API auth is enabled, set `LAN_API_BEARER_TOKEN` to a non-empty value in your env file.
 
 `docker compose up` starts:
 

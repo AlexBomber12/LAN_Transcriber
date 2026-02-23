@@ -36,7 +36,7 @@ def mp3(tmp: Path) -> Path:
 @pytest.mark.asyncio
 @respx.mock
 async def test_metrics_file(tmp_path: Path, monkeypatch):
-    respx.post("http://llm:8000/v1/chat/completions").mock(
+    respx.post("http://127.0.0.1:8000/v1/chat/completions").mock(
         return_value=httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
     )
     cfg = pipeline.Settings(

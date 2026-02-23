@@ -134,8 +134,8 @@ Requirement already satisfied: six>=1.5 in ./.venv-ci/lib/python3.12/site-packag
 Building wheels for collected packages: lan-transcriber
   Building editable for lan-transcriber (pyproject.toml): started
   Building editable for lan-transcriber (pyproject.toml): finished with status 'done'
-  Created wheel for lan-transcriber: filename=lan_transcriber-0.1.0-0.editable-py3-none-any.whl size=15420 sha256=88ef2e201f4f1d7c4cf6b8395bf76ac1f8da3626f30b8306585dba4dfa7d42bc
-  Stored in directory: /tmp/pip-ephem-wheel-cache-ozijopq8/wheels/d5/8a/5c/f7178f7e49aa5ae12b2320ec66b5c310f4f2f63d1bd301b7fb
+  Created wheel for lan-transcriber: filename=lan_transcriber-0.1.0-0.editable-py3-none-any.whl size=15420 sha256=6a484be0f476626277e7013541e7ae55df1d81599a9201d7cb02c34b08141c3d
+  Stored in directory: /tmp/pip-ephem-wheel-cache-daa8simz/wheels/d5/8a/5c/f7178f7e49aa5ae12b2320ec66b5c310f4f2f63d1bd301b7fb
 Successfully built lan-transcriber
 Installing collected packages: lan-transcriber
   Attempting uninstall: lan-transcriber
@@ -147,8 +147,8 @@ All checks passed!
 ........................................................................ [ 24%]
 ........................................................................ [ 48%]
 ........................................................................ [ 72%]
-........................................................................ [ 97%]
-........                                                                 [100%]
+........................................................................ [ 96%]
+...........                                                              [100%]
 =============================== warnings summary ===============================
 lan_transcriber/pipeline_steps/precheck.py:3
   /home/alexey/LAN_Transcriber/lan_transcriber/pipeline_steps/precheck.py:3: DeprecationWarning: 'audioop' is deprecated and slated for removal in Python 3.13
@@ -158,37 +158,9 @@ lan_transcriber/pipeline_steps/orchestrator.py:43
   /home/alexey/LAN_Transcriber/lan_transcriber/pipeline_steps/orchestrator.py:43: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
     class Settings(BaseSettings):
 
-lan_app/config.py:20
-  /home/alexey/LAN_Transcriber/lan_app/config.py:20: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+lan_app/config.py:33
+  /home/alexey/LAN_Transcriber/lan_app/config.py:33: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
     class AppSettings(BaseSettings):
-
-lan_app/api.py:246
-  /home/alexey/LAN_Transcriber/lan_app/api.py:246: DeprecationWarning: 
-          on_event is deprecated, use lifespan event handlers instead.
-  
-          Read more about it in the
-          [FastAPI docs for Lifespan Events](https://fastapi.tiangolo.com/advanced/events/).
-          
-    @app.on_event("startup")
-
-.venv-ci/lib/python3.12/site-packages/fastapi/applications.py:4573
-.venv-ci/lib/python3.12/site-packages/fastapi/applications.py:4573
-  /home/alexey/LAN_Transcriber/.venv-ci/lib/python3.12/site-packages/fastapi/applications.py:4573: DeprecationWarning: 
-          on_event is deprecated, use lifespan event handlers instead.
-  
-          Read more about it in the
-          [FastAPI docs for Lifespan Events](https://fastapi.tiangolo.com/advanced/events/).
-          
-    return self.router.on_event(event_type)
-
-lan_app/api.py:256
-  /home/alexey/LAN_Transcriber/lan_app/api.py:256: DeprecationWarning: 
-          on_event is deprecated, use lifespan event handlers instead.
-  
-          Read more about it in the
-          [FastAPI docs for Lifespan Events](https://fastapi.tiangolo.com/advanced/events/).
-          
-    @app.on_event("shutdown")
 
 -- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
 ================================ tests coverage ================================
@@ -199,7 +171,7 @@ Name                                                Stmts   Miss  Cover
 lan_transcriber/__init__.py                             8      0   100%
 lan_transcriber/aliases.py                             17      0   100%
 lan_transcriber/artifacts.py                           66      4    94%
-lan_transcriber/llm_client.py                         100     21    79%
+lan_transcriber/llm_client.py                         112     23    79%
 lan_transcriber/metrics.py                             12      0   100%
 lan_transcriber/models.py                              22      1    95%
 lan_transcriber/normalizer.py                          25      0   100%
@@ -215,6 +187,6 @@ lan_transcriber/pipeline_steps/summary_builder.py     276     25    91%
 lan_transcriber/runtime_paths.py                       21      1    95%
 lan_transcriber/utils.py                               50      2    96%
 -----------------------------------------------------------------------
-TOTAL                                                1347    125    91%
-Required test coverage of 90% reached. Total coverage: 90.72%
-296 passed, 1 skipped, 7 warnings in 13.96s
+TOTAL                                                1359    127    91%
+Required test coverage of 90% reached. Total coverage: 90.65%
+299 passed, 1 skipped, 3 warnings in 15.57s

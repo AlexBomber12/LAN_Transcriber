@@ -16,7 +16,8 @@ x-lan-service: &lan-service
     - LAN_TMP_ROOT=${LAN_TMP_ROOT:-/data/tmp}
     - LAN_PROM_SNAPSHOT_PATH=${LAN_PROM_SNAPSHOT_PATH:-/data/metrics.snap}
     - LAN_DB_PATH=${LAN_DB_PATH:-/data/db/app.db}
-    - LAN_REDIS_URL=${LAN_REDIS_URL:-redis://redis:6379/0}
+    - LAN_ENV=${LAN_ENV:-dev}
+    - LAN_REDIS_URL=${LAN_REDIS_URL}
     - LAN_RQ_QUEUE_NAME=${LAN_RQ_QUEUE_NAME:-lan-transcriber}
     - LLM_BASE_URL=${LLM_BASE_URL}
     - LLM_API_KEY=${LLM_API_KEY}

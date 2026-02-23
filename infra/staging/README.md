@@ -10,25 +10,32 @@ This directory contains the docker compose stack used by `.github/workflows/stag
 cp .env.staging.example .env
 ```
 
-2. Ensure the runtime data directory exists:
+2. Edit `.env` and set required runtime values:
+
+- `LAN_ENV=staging`
+- `LAN_REDIS_URL` (for this compose stack: `redis://redis:6379/0`)
+- `LLM_BASE_URL` (your Spark/OpenAI-compatible endpoint)
+- `LAN_API_BEARER_TOKEN` when auth is enabled
+
+3. Ensure the runtime data directory exists:
 
 ```bash
 mkdir -p data
 ```
 
-3. Pull the latest images:
+4. Pull the latest images:
 
 ```bash
 docker compose pull
 ```
 
-4. Start or update the stack:
+5. Start or update the stack:
 
 ```bash
 docker compose up -d --remove-orphans
 ```
 
-5. Run smoke endpoint checks:
+6. Run smoke endpoint checks:
 
 ```bash
 curl -fsS http://127.0.0.1:7860/healthz/app

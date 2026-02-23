@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import suppress
+from contextlib import asynccontextmanager, suppress
 import logging
 import shutil
 from typing import List
@@ -66,17 +66,36 @@ from .ops import run_retention_cleanup
 from .reaper import run_stuck_job_reaper_once
 from .ui_routes import _STATIC_DIR, ui_router
 
-app = FastAPI()
-app.include_router(ui_router)
-app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
 ALIAS_PATH = aliases.ALIAS_PATH
 _subscribers: List[asyncio.Queue[str]] = []
 _current_result: TranscriptResult | None = None
 _settings = AppSettings()
-_cleanup_task: asyncio.Task[None] | None = None
-_reaper_task: asyncio.Task[None] | None = None
 _CLEANUP_INTERVAL_SECONDS = 3600
 _logger = logging.getLogger(__name__)
+
+
+@asynccontextmanager
+async def _lifespan(_: FastAPI):
+    init_db(_settings)
+    _settings.metrics_snapshot_path.parent.mkdir(parents=True, exist_ok=True)
+
+    metrics_task = asyncio.create_task(write_metrics_snapshot(_settings.metrics_snapshot_path))
+    cleanup_task = asyncio.create_task(_retention_cleanup_loop())
+    reaper_task = asyncio.create_task(_stuck_job_reaper_loop())
+
+    try:
+        yield
+    finally:
+        for task in (reaper_task, cleanup_task, metrics_task):
+            task.cancel()
+        for task in (reaper_task, cleanup_task, metrics_task):
+            with suppress(asyncio.CancelledError):
+                await task
+
+
+app = FastAPI(lifespan=_lifespan)
+app.include_router(ui_router)
+app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
 
 
 class AliasUpdate(BaseModel):
@@ -241,33 +260,6 @@ async def api_get_ms_connection_status(session_id: str) -> dict[str, object]:
         return get_device_flow_session(session_id)
     except KeyError:
         raise HTTPException(status_code=404, detail="Unknown device-flow session")
-
-
-@app.on_event("startup")
-async def _start_metrics() -> None:
-    global _cleanup_task, _reaper_task
-    init_db(_settings)
-    _settings.metrics_snapshot_path.parent.mkdir(parents=True, exist_ok=True)
-    asyncio.create_task(write_metrics_snapshot(_settings.metrics_snapshot_path))
-    _cleanup_task = asyncio.create_task(_retention_cleanup_loop())
-    _reaper_task = asyncio.create_task(_stuck_job_reaper_loop())
-
-
-@app.on_event("shutdown")
-async def _stop_background_tasks() -> None:
-    global _cleanup_task, _reaper_task
-
-    if _cleanup_task is not None:
-        _cleanup_task.cancel()
-        with suppress(asyncio.CancelledError):
-            await _cleanup_task
-        _cleanup_task = None
-
-    if _reaper_task is not None:
-        _reaper_task.cancel()
-        with suppress(asyncio.CancelledError):
-            await _reaper_task
-        _reaper_task = None
 
 
 @app.post("/alias/{speaker_id}")
