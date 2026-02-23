@@ -69,7 +69,10 @@ def run_stuck_job_reaper_once(
         recovered_job_ids.append(job_id)
         recovered_recording_ids.add(recording_id)
 
-    processing_rows = list_processing_recordings_without_started_job(settings=cfg)
+    processing_rows = list_processing_recordings_without_started_job(
+        settings=cfg,
+        before_updated_at=stale_before,
+    )
     for row in processing_rows:
         recording_id = str(row.get("id") or "").strip()
         if not recording_id:

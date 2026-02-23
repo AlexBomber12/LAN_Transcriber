@@ -93,6 +93,16 @@ def test_reaper_recovers_processing_recording_without_started_job(tmp_path: Path
         status=JOB_STATUS_QUEUED,
         settings=cfg,
     )
+    with connect(cfg) as conn:
+        conn.execute(
+            """
+            UPDATE recordings
+            SET updated_at = ?
+            WHERE id = ?
+            """,
+            ("2026-02-22T00:00:00Z", "rec-reaper-orphan-1"),
+        )
+        conn.commit()
 
     summary = run_stuck_job_reaper_once(
         settings=cfg,
@@ -112,3 +122,36 @@ def test_reaper_recovers_processing_recording_without_started_job(tmp_path: Path
     step_log = cfg.recordings_root / "rec-reaper-orphan-1" / "logs" / "step-precheck.log"
     assert step_log.exists()
     assert "stuck job recovery applied" in step_log.read_text(encoding="utf-8")
+
+
+def test_reaper_does_not_recover_recent_processing_without_started_job(tmp_path: Path):
+    cfg = _test_settings(tmp_path)
+    init_db(cfg)
+    create_recording(
+        "rec-reaper-recent-1",
+        source="test",
+        source_filename="recent.wav",
+        status=RECORDING_STATUS_PROCESSING,
+        settings=cfg,
+    )
+    create_job(
+        "job-reaper-recent-1",
+        recording_id="rec-reaper-recent-1",
+        job_type=JOB_TYPE_PRECHECK,
+        status=JOB_STATUS_QUEUED,
+        settings=cfg,
+    )
+
+    summary = run_stuck_job_reaper_once(
+        settings=cfg,
+        now=datetime.now(tz=timezone.utc),
+    )
+
+    job = get_job("job-reaper-recent-1", settings=cfg)
+    recording = get_recording("rec-reaper-recent-1", settings=cfg)
+    assert job is not None
+    assert recording is not None
+    assert summary["processing_without_started"] == 0
+    assert summary["recovered_jobs"] == 0
+    assert job["status"] == JOB_STATUS_QUEUED
+    assert recording["status"] == RECORDING_STATUS_PROCESSING
