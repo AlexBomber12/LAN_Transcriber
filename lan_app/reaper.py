@@ -7,7 +7,7 @@ from typing import Any
 from .config import AppSettings
 from .constants import DEFAULT_REQUEUE_JOB_TYPE, RECORDING_STATUS_NEEDS_REVIEW
 from .db import (
-    fail_job,
+    fail_job_if_queued,
     fail_job_if_started,
     list_processing_recordings_without_started_job,
     list_stale_started_jobs,
@@ -85,7 +85,9 @@ def run_stuck_job_reaper_once(
             str(row.get("active_job_type") or "").strip() or DEFAULT_REQUEUE_JOB_TYPE
         )
         if active_job_id:
-            fail_job(active_job_id, _RECOVERY_ERROR, settings=cfg)
+            if not fail_job_if_queued(active_job_id, _RECOVERY_ERROR, settings=cfg):
+                # Job transitioned after selection; skip this recovery pass.
+                continue
             recovered_job_ids.append(active_job_id)
         set_recording_status(recording_id, RECORDING_STATUS_NEEDS_REVIEW, settings=cfg)
         _append_step_log(

@@ -1033,6 +1033,34 @@ def fail_job_if_started(
     return updated.rowcount > 0
 
 
+def fail_job_if_queued(
+    job_id: str,
+    error: str,
+    *,
+    settings: AppSettings | None = None,
+) -> bool:
+    init_db(settings)
+    now = _utc_now()
+    with connect(settings) as conn:
+        updated = conn.execute(
+            """
+            UPDATE jobs
+            SET status = ?, error = ?, finished_at = ?, updated_at = ?
+            WHERE id = ? AND status = ?
+            """,
+            (
+                JOB_STATUS_FAILED,
+                error,
+                now,
+                now,
+                job_id,
+                JOB_STATUS_QUEUED,
+            ),
+        )
+        conn.commit()
+    return updated.rowcount > 0
+
+
 def list_projects(
     *,
     settings: AppSettings | None = None,
@@ -1764,6 +1792,7 @@ __all__ = [
     "finish_job",
     "fail_job",
     "fail_job_if_started",
+    "fail_job_if_queued",
     "list_projects",
     "get_project",
     "create_project",

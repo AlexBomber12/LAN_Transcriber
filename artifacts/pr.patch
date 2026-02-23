@@ -1,12 +1,12 @@
 diff --git a/lan_app/db.py b/lan_app/db.py
-index 239952c..e7d8cf3 100644
+index e7d8cf3..2d2c826 100644
 --- a/lan_app/db.py
 +++ b/lan_app/db.py
-@@ -1005,6 +1005,34 @@ def fail_job(
-     )
+@@ -1033,6 +1033,34 @@ def fail_job_if_started(
+     return updated.rowcount > 0
  
  
-+def fail_job_if_started(
++def fail_job_if_queued(
 +    job_id: str,
 +    error: str,
 +    *,
@@ -27,7 +27,7 @@ index 239952c..e7d8cf3 100644
 +                now,
 +                now,
 +                job_id,
-+                JOB_STATUS_STARTED,
++                JOB_STATUS_QUEUED,
 +            ),
 +        )
 +        conn.commit()
@@ -37,95 +37,92 @@ index 239952c..e7d8cf3 100644
  def list_projects(
      *,
      settings: AppSettings | None = None,
-@@ -1735,6 +1763,7 @@ __all__ = [
-     "requeue_job",
+@@ -1764,6 +1792,7 @@ __all__ = [
      "finish_job",
      "fail_job",
-+    "fail_job_if_started",
+     "fail_job_if_started",
++    "fail_job_if_queued",
      "list_projects",
      "get_project",
      "create_project",
 diff --git a/lan_app/reaper.py b/lan_app/reaper.py
-index 9ab15a7..40e3e99 100644
+index 40e3e99..eb6cfb8 100644
 --- a/lan_app/reaper.py
 +++ b/lan_app/reaper.py
-@@ -8,6 +8,7 @@ from .config import AppSettings
+@@ -7,7 +7,7 @@ from typing import Any
+ from .config import AppSettings
  from .constants import DEFAULT_REQUEUE_JOB_TYPE, RECORDING_STATUS_NEEDS_REVIEW
  from .db import (
-     fail_job,
-+    fail_job_if_started,
+-    fail_job,
++    fail_job_if_queued,
+     fail_job_if_started,
      list_processing_recordings_without_started_job,
      list_stale_started_jobs,
-     set_recording_status,
-@@ -59,7 +60,9 @@ def run_stuck_job_reaper_once(
-         job_type = str(row.get("type") or "").strip() or DEFAULT_REQUEUE_JOB_TYPE
-         if not job_id or not recording_id:
-             continue
--        fail_job(job_id, _RECOVERY_ERROR, settings=cfg)
-+        if not fail_job_if_started(job_id, _RECOVERY_ERROR, settings=cfg):
-+            # Job completed or moved to another state after selection.
-+            continue
+@@ -85,7 +85,9 @@ def run_stuck_job_reaper_once(
+             str(row.get("active_job_type") or "").strip() or DEFAULT_REQUEUE_JOB_TYPE
+         )
+         if active_job_id:
+-            fail_job(active_job_id, _RECOVERY_ERROR, settings=cfg)
++            if not fail_job_if_queued(active_job_id, _RECOVERY_ERROR, settings=cfg):
++                # Job transitioned after selection; skip this recovery pass.
++                continue
+             recovered_job_ids.append(active_job_id)
          set_recording_status(recording_id, RECORDING_STATUS_NEEDS_REVIEW, settings=cfg)
          _append_step_log(
-             _step_log_path(recording_id, job_type, cfg),
 diff --git a/tests/test_reaper.py b/tests/test_reaper.py
-index cccb561..943baac 100644
+index 943baac..b9e3f0d 100644
 --- a/tests/test_reaper.py
 +++ b/tests/test_reaper.py
-@@ -76,6 +76,56 @@ def test_reaper_recovers_stale_started_job(tmp_path: Path):
-     assert "stuck job recovery applied" in step_log.read_text(encoding="utf-8")
- 
- 
-+def test_reaper_skips_stale_started_job_when_it_already_transitioned(
+@@ -205,3 +205,52 @@ def test_reaper_does_not_recover_recent_processing_without_started_job(tmp_path:
+     assert summary["recovered_jobs"] == 0
+     assert job["status"] == JOB_STATUS_QUEUED
+     assert recording["status"] == RECORDING_STATUS_PROCESSING
++
++
++def test_reaper_skips_orphan_recovery_when_active_job_is_no_longer_queued(
 +    tmp_path: Path,
 +    monkeypatch,
 +):
 +    cfg = _test_settings(tmp_path)
 +    init_db(cfg)
 +    create_recording(
-+        "rec-reaper-race-1",
++        "rec-reaper-race-queued-1",
 +        source="test",
-+        source_filename="race.wav",
++        source_filename="race-queued.wav",
 +        status=RECORDING_STATUS_PROCESSING,
 +        settings=cfg,
 +    )
 +    create_job(
-+        "job-reaper-race-1",
-+        recording_id="rec-reaper-race-1",
++        "job-reaper-race-queued-1",
++        recording_id="rec-reaper-race-queued-1",
 +        job_type=JOB_TYPE_PRECHECK,
-+        status=JOB_STATUS_STARTED,
++        status=JOB_STATUS_QUEUED,
 +        settings=cfg,
-+        attempt=1,
 +    )
 +    with connect(cfg) as conn:
 +        conn.execute(
 +            """
-+            UPDATE jobs
-+            SET started_at = ?, updated_at = ?
++            UPDATE recordings
++            SET updated_at = ?
 +            WHERE id = ?
 +            """,
-+            ("2026-02-22T00:00:00Z", "2026-02-22T00:00:00Z", "job-reaper-race-1"),
++            ("2026-02-22T00:00:00Z", "rec-reaper-race-queued-1"),
 +        )
 +        conn.commit()
 +
-+    monkeypatch.setattr("lan_app.reaper.fail_job_if_started", lambda *_a, **_k: False)
++    monkeypatch.setattr("lan_app.reaper.fail_job_if_queued", lambda *_a, **_k: False)
 +
 +    summary = run_stuck_job_reaper_once(
 +        settings=cfg,
-+        now=datetime(2026, 2, 23, 0, 0, 0, tzinfo=timezone.utc),
++        now=datetime(2026, 2, 23, 0, 0, 1, tzinfo=timezone.utc),
 +    )
 +
-+    job = get_job("job-reaper-race-1", settings=cfg)
-+    recording = get_recording("rec-reaper-race-1", settings=cfg)
++    job = get_job("job-reaper-race-queued-1", settings=cfg)
++    recording = get_recording("rec-reaper-race-queued-1", settings=cfg)
 +    assert job is not None
 +    assert recording is not None
-+    assert summary["stale_started_jobs"] == 1
++    assert summary["processing_without_started"] == 1
 +    assert summary["recovered_jobs"] == 0
 +    assert summary["recovered_recordings"] == 0
-+    assert job["status"] == JOB_STATUS_STARTED
++    assert job["status"] == JOB_STATUS_QUEUED
 +    assert recording["status"] == RECORDING_STATUS_PROCESSING
-+
-+
- def test_reaper_recovers_processing_recording_without_started_job(tmp_path: Path):
-     cfg = _test_settings(tmp_path)
-     init_db(cfg)

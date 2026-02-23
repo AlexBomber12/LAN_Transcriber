@@ -205,3 +205,52 @@ def test_reaper_does_not_recover_recent_processing_without_started_job(tmp_path:
     assert summary["recovered_jobs"] == 0
     assert job["status"] == JOB_STATUS_QUEUED
     assert recording["status"] == RECORDING_STATUS_PROCESSING
+
+
+def test_reaper_skips_orphan_recovery_when_active_job_is_no_longer_queued(
+    tmp_path: Path,
+    monkeypatch,
+):
+    cfg = _test_settings(tmp_path)
+    init_db(cfg)
+    create_recording(
+        "rec-reaper-race-queued-1",
+        source="test",
+        source_filename="race-queued.wav",
+        status=RECORDING_STATUS_PROCESSING,
+        settings=cfg,
+    )
+    create_job(
+        "job-reaper-race-queued-1",
+        recording_id="rec-reaper-race-queued-1",
+        job_type=JOB_TYPE_PRECHECK,
+        status=JOB_STATUS_QUEUED,
+        settings=cfg,
+    )
+    with connect(cfg) as conn:
+        conn.execute(
+            """
+            UPDATE recordings
+            SET updated_at = ?
+            WHERE id = ?
+            """,
+            ("2026-02-22T00:00:00Z", "rec-reaper-race-queued-1"),
+        )
+        conn.commit()
+
+    monkeypatch.setattr("lan_app.reaper.fail_job_if_queued", lambda *_a, **_k: False)
+
+    summary = run_stuck_job_reaper_once(
+        settings=cfg,
+        now=datetime(2026, 2, 23, 0, 0, 1, tzinfo=timezone.utc),
+    )
+
+    job = get_job("job-reaper-race-queued-1", settings=cfg)
+    recording = get_recording("rec-reaper-race-queued-1", settings=cfg)
+    assert job is not None
+    assert recording is not None
+    assert summary["processing_without_started"] == 1
+    assert summary["recovered_jobs"] == 0
+    assert summary["recovered_recordings"] == 0
+    assert job["status"] == JOB_STATUS_QUEUED
+    assert recording["status"] == RECORDING_STATUS_PROCESSING
