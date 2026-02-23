@@ -3,7 +3,10 @@ from __future__ import annotations
 import asyncio
 import builtins
 from pathlib import Path
+import sqlite3
 import sys
+import threading
+import time
 from types import ModuleType
 
 from fastapi.testclient import TestClient
@@ -34,6 +37,7 @@ from lan_app.constants import (
 )
 from lan_app.db import (
     connect,
+    connect_db,
     create_job,
     create_project,
     create_recording,
@@ -45,6 +49,7 @@ from lan_app.db import (
     set_recording_status,
     start_job,
     upsert_calendar_match,
+    with_db_retry,
 )
 from lan_app.jobs import RecordingJob, enqueue_recording_job, purge_pending_recording_jobs
 from lan_app.worker_tasks import process_job
@@ -88,6 +93,74 @@ def test_init_db_creates_mvp_tables(tmp_path: Path):
         "routing_project_keyword_weights",
     }
     assert expected.issubset(names)
+
+
+def test_init_db_applies_file_migrations_and_sets_user_version(tmp_path: Path):
+    cfg = _test_settings(tmp_path)
+    init_db(cfg)
+    migrations_dir = Path(db_module.__file__).resolve().with_name("migrations")
+    versions = []
+    for path in migrations_dir.glob("*.sql"):
+        prefix = path.name.split("_", 1)[0]
+        if prefix.isdigit():
+            versions.append(int(prefix))
+    assert versions
+    with connect(cfg) as conn:
+        user_version = int(conn.execute("PRAGMA user_version").fetchone()[0])
+    assert user_version == max(versions)
+
+
+def test_connect_sets_wal_and_busy_timeout(tmp_path: Path):
+    cfg = _test_settings(tmp_path)
+    cfg.sqlite_busy_timeout_ms = 4321
+    with connect(cfg) as conn:
+        journal_mode = str(conn.execute("PRAGMA journal_mode").fetchone()[0]).lower()
+        busy_timeout = int(conn.execute("PRAGMA busy_timeout").fetchone()[0])
+    assert journal_mode == "wal"
+    assert busy_timeout == 4321
+
+
+def test_with_db_retry_retries_on_forced_lock(tmp_path: Path):
+    db_file = tmp_path / "db" / "locked.db"
+    with connect_db(db_file, timeout=0.01, busy_timeout_ms=1) as conn:
+        conn.execute("CREATE TABLE IF NOT EXISTS retry_test (id INTEGER PRIMARY KEY)")
+        conn.commit()
+
+    write_conn = connect_db(db_file, timeout=0.01, busy_timeout_ms=1)
+    attempts = 0
+    lock_started = threading.Event()
+
+    def _hold_lock() -> None:
+        with connect_db(db_file, timeout=0.01, busy_timeout_ms=1) as lock_conn:
+            lock_conn.execute("BEGIN EXCLUSIVE")
+            lock_started.set()
+            time.sleep(0.15)
+            lock_conn.commit()
+
+    release_thread = threading.Thread(target=_hold_lock, daemon=True)
+    release_thread.start()
+    assert lock_started.wait(timeout=1.0)
+
+    try:
+        def _write_once() -> None:
+            nonlocal attempts
+            attempts += 1
+            try:
+                write_conn.execute("INSERT INTO retry_test (id) VALUES (?)", (attempts,))
+                write_conn.commit()
+            except sqlite3.OperationalError:
+                write_conn.rollback()
+                raise
+
+        with_db_retry(_write_once, retries=10, base_sleep_ms=20)
+    finally:
+        release_thread.join(timeout=1.0)
+        write_conn.close()
+
+    with connect_db(db_file, timeout=0.01, busy_timeout_ms=1) as conn:
+        row_count = int(conn.execute("SELECT COUNT(*) FROM retry_test").fetchone()[0])
+    assert attempts >= 2
+    assert row_count == 1
 
 
 def test_placeholder_cleanup_migration_only_removes_legacy_placeholders(tmp_path: Path):

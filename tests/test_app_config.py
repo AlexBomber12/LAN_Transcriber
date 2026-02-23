@@ -29,6 +29,12 @@ def test_redis_url_alias(monkeypatch):
     assert cfg.redis_url == "redis://localhost:6380/0"
 
 
+def test_sqlite_busy_timeout_from_env(monkeypatch):
+    monkeypatch.setenv("LAN_SQLITE_BUSY_TIMEOUT_MS", "12345")
+    cfg = AppSettings()
+    assert cfg.sqlite_busy_timeout_ms == 12345
+
+
 def test_ms_auth_settings_from_env(monkeypatch, tmp_path: Path):
     cache_path = tmp_path / "auth" / "msal_cache.bin"
     monkeypatch.setenv("MS_TENANT_ID", "tenant-id")

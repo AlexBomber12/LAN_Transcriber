@@ -28,6 +28,9 @@ dependencies = [
 where = ["."]
 include = ["lan_transcriber*", "lan_app*"]
 
+[tool.setuptools.package-data]
+lan_app = ["migrations/*.sql"]
+
 [tool.coverage.run]
 source = ["lan_transcriber"]
 
