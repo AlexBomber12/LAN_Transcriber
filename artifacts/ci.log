@@ -134,8 +134,8 @@ Requirement already satisfied: six>=1.5 in ./.venv-ci/lib/python3.12/site-packag
 Building wheels for collected packages: lan-transcriber
   Building editable for lan-transcriber (pyproject.toml): started
   Building editable for lan-transcriber (pyproject.toml): finished with status 'done'
-  Created wheel for lan-transcriber: filename=lan_transcriber-0.1.0-0.editable-py3-none-any.whl size=15395 sha256=c3a9ce31b5b3dfad73d24417f1fa6efd383329c06bb19c8a764dc9382d40c8ed
-  Stored in directory: /tmp/pip-ephem-wheel-cache-i6c4m8uu/wheels/d5/8a/5c/f7178f7e49aa5ae12b2320ec66b5c310f4f2f63d1bd301b7fb
+  Created wheel for lan-transcriber: filename=lan_transcriber-0.1.0-0.editable-py3-none-any.whl size=15395 sha256=b555a5384c9ae727c2dccfff3ead44ff3d420b0f7596446c71bbb9651d1d6cd0
+  Stored in directory: /tmp/pip-ephem-wheel-cache-170w9vl8/wheels/d5/8a/5c/f7178f7e49aa5ae12b2320ec66b5c310f4f2f63d1bd301b7fb
 Successfully built lan-transcriber
 Installing collected packages: lan-transcriber
   Attempting uninstall: lan-transcriber
@@ -206,4 +206,4 @@ lan_transcriber/runtime_paths.py      21      1    95%
 ------------------------------------------------------
 TOTAL                                271     27    90%
 Required test coverage of 90% reached. Total coverage: 90.04%
-242 passed, 1 skipped, 7 warnings in 34.72s
+242 passed, 1 skipped, 7 warnings in 36.90s
