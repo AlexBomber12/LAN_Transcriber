@@ -275,7 +275,7 @@ def test_reaper_skips_stale_downgrade_if_status_changes_after_selection(
         )
         conn.commit()
 
-    original = db_module.set_recording_status_if_current_in
+    original = db_module.set_recording_status_if_current_in_and_no_started_job
 
     def _racy_set_status(*args, **kwargs):
         set_recording_status(
@@ -285,7 +285,10 @@ def test_reaper_skips_stale_downgrade_if_status_changes_after_selection(
         )
         return original(*args, **kwargs)
 
-    monkeypatch.setattr("lan_app.reaper.set_recording_status_if_current_in", _racy_set_status)
+    monkeypatch.setattr(
+        "lan_app.reaper.set_recording_status_if_current_in_and_no_started_job",
+        _racy_set_status,
+    )
 
     summary = run_stuck_job_reaper_once(
         settings=cfg,
@@ -301,6 +304,78 @@ def test_reaper_skips_stale_downgrade_if_status_changes_after_selection(
     assert summary["recovered_recordings"] == 0
     assert job["status"] == JOB_STATUS_FAILED
     assert recording["status"] == RECORDING_STATUS_READY
+
+
+def test_reaper_does_not_downgrade_when_other_started_job_exists(tmp_path: Path):
+    cfg = _test_settings(tmp_path)
+    init_db(cfg)
+    create_recording(
+        "rec-reaper-stale-other-started-1",
+        source="test",
+        source_filename="stale-other-started.wav",
+        status=RECORDING_STATUS_PROCESSING,
+        settings=cfg,
+    )
+    create_job(
+        "job-reaper-stale-other-started-1",
+        recording_id="rec-reaper-stale-other-started-1",
+        job_type=JOB_TYPE_PRECHECK,
+        status=JOB_STATUS_STARTED,
+        settings=cfg,
+        attempt=1,
+    )
+    create_job(
+        "job-reaper-stale-other-started-2",
+        recording_id="rec-reaper-stale-other-started-1",
+        job_type=JOB_TYPE_PRECHECK,
+        status=JOB_STATUS_STARTED,
+        settings=cfg,
+        attempt=1,
+    )
+    with connect(cfg) as conn:
+        conn.execute(
+            """
+            UPDATE jobs
+            SET started_at = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                "2026-02-22T00:00:00Z",
+                "2026-02-22T00:00:00Z",
+                "job-reaper-stale-other-started-1",
+            ),
+        )
+        conn.execute(
+            """
+            UPDATE jobs
+            SET started_at = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                "2026-02-22T23:59:30Z",
+                "2026-02-22T23:59:30Z",
+                "job-reaper-stale-other-started-2",
+            ),
+        )
+        conn.commit()
+
+    summary = run_stuck_job_reaper_once(
+        settings=cfg,
+        now=datetime(2026, 2, 23, 0, 0, 0, tzinfo=timezone.utc),
+    )
+
+    stale_job = get_job("job-reaper-stale-other-started-1", settings=cfg)
+    active_job = get_job("job-reaper-stale-other-started-2", settings=cfg)
+    recording = get_recording("rec-reaper-stale-other-started-1", settings=cfg)
+    assert stale_job is not None
+    assert active_job is not None
+    assert recording is not None
+    assert summary["stale_started_jobs"] == 1
+    assert summary["recovered_jobs"] == 1
+    assert summary["recovered_recordings"] == 0
+    assert stale_job["status"] == JOB_STATUS_FAILED
+    assert active_job["status"] == JOB_STATUS_STARTED
+    assert recording["status"] == RECORDING_STATUS_PROCESSING
 
 
 def test_reaper_recovers_processing_recording_without_started_job(

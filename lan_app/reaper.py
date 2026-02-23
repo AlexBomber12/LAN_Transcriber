@@ -17,7 +17,6 @@ from .db import (
     fail_job_if_started,
     list_processing_recordings_without_started_job,
     list_stale_started_jobs,
-    set_recording_status_if_current_in,
     set_recording_status_if_current_in_and_no_started_job,
 )
 from .jobs import cancel_pending_queue_job
@@ -89,7 +88,7 @@ def run_stuck_job_reaper_once(
         if not fail_job_if_started(job_id, _RECOVERY_ERROR, settings=cfg):
             # Job completed or moved to another state after selection.
             continue
-        if set_recording_status_if_current_in(
+        if set_recording_status_if_current_in_and_no_started_job(
             recording_id,
             RECORDING_STATUS_NEEDS_REVIEW,
             current_statuses=_STALE_DOWNGRADE_STATUSES,
