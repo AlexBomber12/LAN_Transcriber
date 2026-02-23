@@ -168,6 +168,33 @@ def _job_attempt(job_id: str, settings: AppSettings) -> int:
         return 0
 
 
+def _start_job_or_ignore_stale_execution(
+    *,
+    job_id: str,
+    recording_id: str,
+    job_type: str,
+    settings: AppSettings,
+    log_path: Path,
+) -> bool:
+    if start_job(job_id, settings=settings):
+        return True
+    job_row = get_job(job_id, settings=settings) or {}
+    status = str(job_row.get("status") or "").strip()
+    if status and status != JOB_STATUS_QUEUED:
+        try:
+            _append_step_log(
+                log_path,
+                (
+                    "ignored stale queue execution "
+                    f"job={job_id} type={job_type} status={status}"
+                ),
+            )
+        except OSError:
+            pass
+        return False
+    raise ValueError(f"Job not found: {job_id}")
+
+
 def _retry_delay_seconds(policy: RetryPolicy, attempt: int) -> int:
     if attempt <= 0:
         return 0
@@ -514,8 +541,19 @@ def process_job(job_id: str, recording_id: str, job_type: str) -> dict[str, str]
     if job_type != JOB_TYPE_PRECHECK:
         recording_before = get_recording(recording_id, settings=settings) or {}
         previous_status = str(recording_before.get("status") or "").strip()
-        if not start_job(job_id, settings=settings):
-            raise ValueError(f"Job not found: {job_id}")
+        if not _start_job_or_ignore_stale_execution(
+            job_id=job_id,
+            recording_id=recording_id,
+            job_type=job_type,
+            settings=settings,
+            log_path=log_path,
+        ):
+            return {
+                "job_id": job_id,
+                "recording_id": recording_id,
+                "job_type": job_type,
+                "status": "ignored",
+            }
         unsupported_error = (
             f"unsupported legacy job type under single-job pipeline: {job_type}"
         )
@@ -580,8 +618,19 @@ def process_job(job_id: str, recording_id: str, job_type: str) -> dict[str, str]
 
     while True:
         try:
-            if not start_job(job_id, settings=settings):
-                raise ValueError(f"Job not found: {job_id}")
+            if not _start_job_or_ignore_stale_execution(
+                job_id=job_id,
+                recording_id=recording_id,
+                job_type=job_type,
+                settings=settings,
+                log_path=log_path,
+            ):
+                return {
+                    "job_id": job_id,
+                    "recording_id": recording_id,
+                    "job_type": job_type,
+                    "status": "ignored",
+                }
             attempt = _job_attempt(job_id, settings)
             if attempt > settings.max_job_attempts:
                 raise RuntimeError(_MAX_ATTEMPTS_ERROR)

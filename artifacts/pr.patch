@@ -1,285 +1,139 @@
-diff --git a/lan_app/db.py b/lan_app/db.py
-index 834917b..18632b1 100644
---- a/lan_app/db.py
-+++ b/lan_app/db.py
-@@ -975,17 +975,19 @@ def start_job(
-     init_db(settings)
-     now = _utc_now()
-     with connect(settings) as conn:
--        row = conn.execute("SELECT attempt FROM jobs WHERE id = ?", (job_id,)).fetchone()
--        if row is None:
--            return False
--        next_attempt = int(row["attempt"]) + 1
-         updated = conn.execute(
-             """
-             UPDATE jobs
--            SET status = ?, attempt = ?, error = NULL, started_at = ?, finished_at = NULL, updated_at = ?
--            WHERE id = ?
-+            SET status = ?, attempt = attempt + 1, error = NULL, started_at = ?, finished_at = NULL, updated_at = ?
-+            WHERE id = ? AND status = ?
-             """,
--            (JOB_STATUS_STARTED, next_attempt, now, now, job_id),
-+            (
-+                JOB_STATUS_STARTED,
-+                now,
-+                now,
-+                job_id,
-+                JOB_STATUS_QUEUED,
-+            ),
-         )
-         conn.commit()
-     return updated.rowcount > 0
-diff --git a/lan_app/jobs.py b/lan_app/jobs.py
-index 7739837..4a1ed45 100644
---- a/lan_app/jobs.py
-+++ b/lan_app/jobs.py
-@@ -119,6 +119,22 @@ def purge_pending_recording_jobs(
-     return removed
+diff --git a/lan_app/worker_tasks.py b/lan_app/worker_tasks.py
+index 87da3d5..02b67eb 100644
+--- a/lan_app/worker_tasks.py
++++ b/lan_app/worker_tasks.py
+@@ -168,6 +168,33 @@ def _job_attempt(job_id: str, settings: AppSettings) -> int:
+         return 0
  
  
-+def cancel_pending_queue_job(
-+    job_id: str,
++def _start_job_or_ignore_stale_execution(
 +    *,
-+    settings: AppSettings | None = None,
++    job_id: str,
++    recording_id: str,
++    job_type: str,
++    settings: AppSettings,
++    log_path: Path,
 +) -> bool:
-+    cfg = settings or AppSettings()
-+    try:
-+        queue = get_queue(cfg)
-+    except Exception:
++    if start_job(job_id, settings=settings):
++        return True
++    job_row = get_job(job_id, settings=settings) or {}
++    status = str(job_row.get("status") or "").strip()
++    if status and status != JOB_STATUS_QUEUED:
++        try:
++            _append_step_log(
++                log_path,
++                (
++                    "ignored stale queue execution "
++                    f"job={job_id} type={job_type} status={status}"
++                ),
++            )
++        except OSError:
++            pass
 +        return False
-+    try:
-+        return _purge_pending_queue_job(queue, job_id)
-+    except Exception:
-+        return False
++    raise ValueError(f"Job not found: {job_id}")
 +
 +
- def enqueue_recording_job(
-     recording_id: str,
-     *,
-@@ -188,6 +204,7 @@ def enqueue_recording_job(
- 
- 
- __all__ = [
-+    "cancel_pending_queue_job",
-     "DuplicateRecordingJobError",
-     "RecordingJob",
-     "RecordingNotFoundError",
-diff --git a/lan_app/reaper.py b/lan_app/reaper.py
-index b783679..2cd12fe 100644
---- a/lan_app/reaper.py
-+++ b/lan_app/reaper.py
-@@ -16,9 +16,9 @@ from .db import (
-     fail_job_if_started,
-     list_processing_recordings_without_started_job,
-     list_stale_started_jobs,
--    set_recording_status,
-     set_recording_status_if_current_in,
- )
-+from .jobs import cancel_pending_queue_job
- 
- _RECOVERY_ERROR = "stuck job recovered"
- _STALE_DOWNGRADE_STATUSES = (
-@@ -26,6 +26,7 @@ _STALE_DOWNGRADE_STATUSES = (
-     RECORDING_STATUS_PROCESSING,
-     RECORDING_STATUS_NEEDS_REVIEW,
- )
-+_ORPHAN_DOWNGRADE_STATUSES = (RECORDING_STATUS_PROCESSING,)
- 
- 
- def _utc_now() -> datetime:
-@@ -104,8 +105,16 @@ def run_stuck_job_reaper_once(
-             if not fail_job_if_queued(active_job_id, _RECOVERY_ERROR, settings=cfg):
-                 # Job transitioned after selection; skip this recovery pass.
-                 continue
-+            # Best-effort dequeue to avoid executing a recovered queued job later.
-+            cancel_pending_queue_job(active_job_id, settings=cfg)
-             recovered_job_ids.append(active_job_id)
--        set_recording_status(recording_id, RECORDING_STATUS_NEEDS_REVIEW, settings=cfg)
-+        if set_recording_status_if_current_in(
-+            recording_id,
-+            RECORDING_STATUS_NEEDS_REVIEW,
-+            current_statuses=_ORPHAN_DOWNGRADE_STATUSES,
-+            settings=cfg,
+ def _retry_delay_seconds(policy: RetryPolicy, attempt: int) -> int:
+     if attempt <= 0:
+         return 0
+@@ -514,8 +541,19 @@ def process_job(job_id: str, recording_id: str, job_type: str) -> dict[str, str]
+     if job_type != JOB_TYPE_PRECHECK:
+         recording_before = get_recording(recording_id, settings=settings) or {}
+         previous_status = str(recording_before.get("status") or "").strip()
+-        if not start_job(job_id, settings=settings):
+-            raise ValueError(f"Job not found: {job_id}")
++        if not _start_job_or_ignore_stale_execution(
++            job_id=job_id,
++            recording_id=recording_id,
++            job_type=job_type,
++            settings=settings,
++            log_path=log_path,
 +        ):
-+            recovered_recording_ids.add(recording_id)
-         _append_step_log(
-             _step_log_path(recording_id, active_job_type, cfg),
-             (
-@@ -115,7 +124,6 @@ def run_stuck_job_reaper_once(
-             ),
-             now=current_time,
++            return {
++                "job_id": job_id,
++                "recording_id": recording_id,
++                "job_type": job_type,
++                "status": "ignored",
++            }
+         unsupported_error = (
+             f"unsupported legacy job type under single-job pipeline: {job_type}"
          )
--        recovered_recording_ids.add(recording_id)
+@@ -580,8 +618,19 @@ def process_job(job_id: str, recording_id: str, job_type: str) -> dict[str, str]
  
-     return {
-         "stale_started_jobs": len(stale_rows),
+     while True:
+         try:
+-            if not start_job(job_id, settings=settings):
+-                raise ValueError(f"Job not found: {job_id}")
++            if not _start_job_or_ignore_stale_execution(
++                job_id=job_id,
++                recording_id=recording_id,
++                job_type=job_type,
++                settings=settings,
++                log_path=log_path,
++            ):
++                return {
++                    "job_id": job_id,
++                    "recording_id": recording_id,
++                    "job_type": job_type,
++                    "status": "ignored",
++                }
+             attempt = _job_attempt(job_id, settings)
+             if attempt > settings.max_job_attempts:
+                 raise RuntimeError(_MAX_ATTEMPTS_ERROR)
 diff --git a/tests/test_db_queue.py b/tests/test_db_queue.py
-index f09dc31..70c948c 100644
+index 70c948c..fce8616 100644
 --- a/tests/test_db_queue.py
 +++ b/tests/test_db_queue.py
-@@ -16,6 +16,7 @@ from lan_app.constants import (
-     JOB_STATUS_FAILED,
-     JOB_STATUS_FINISHED,
-     JOB_STATUS_QUEUED,
-+    JOB_STATUS_STARTED,
-     JOB_TYPE_ALIGN,
-     JOB_TYPE_DIARIZE,
-     JOB_TYPE_LANGUAGE,
-@@ -39,6 +40,7 @@ from lan_app.db import (
-     init_db,
-     list_jobs,
-     set_recording_status,
-+    start_job,
-     upsert_calendar_match,
- )
- from lan_app.jobs import RecordingJob, enqueue_recording_job, purge_pending_recording_jobs
-@@ -175,6 +177,43 @@ def test_placeholder_cleanup_migration_only_removes_legacy_placeholders(tmp_path
-         assert queued_job["status"] == JOB_STATUS_QUEUED
+@@ -214,6 +214,52 @@ def test_start_job_only_transitions_queued_jobs(tmp_path: Path):
+     assert int(failed_job["attempt"]) == 0
  
  
-+def test_start_job_only_transitions_queued_jobs(tmp_path: Path):
++def test_worker_ignores_stale_execution_for_non_queued_job(tmp_path: Path, monkeypatch):
 +    cfg = _test_settings(tmp_path)
++    monkeypatch.setenv("LAN_DATA_ROOT", str(cfg.data_root))
++    monkeypatch.setenv("LAN_RECORDINGS_ROOT", str(cfg.recordings_root))
++    monkeypatch.setenv("LAN_DB_PATH", str(cfg.db_path))
++    monkeypatch.setenv("LAN_PROM_SNAPSHOT_PATH", str(cfg.metrics_snapshot_path))
++
 +    init_db(cfg)
 +    create_recording(
-+        "rec-start-job-1",
++        "rec-worker-stale-exec-1",
 +        source="test",
-+        source_filename="start-job.wav",
++        source_filename="stale-exec.wav",
++        status=RECORDING_STATUS_NEEDS_REVIEW,
 +        settings=cfg,
 +    )
 +    create_job(
-+        "job-start-job-queued-1",
-+        recording_id="rec-start-job-1",
++        "job-worker-stale-exec-1",
++        recording_id="rec-worker-stale-exec-1",
 +        job_type=JOB_TYPE_PRECHECK,
-+        settings=cfg,
-+        status=JOB_STATUS_QUEUED,
-+    )
-+    create_job(
-+        "job-start-job-failed-1",
-+        recording_id="rec-start-job-1",
-+        job_type=JOB_TYPE_PRECHECK,
-+        settings=cfg,
 +        status=JOB_STATUS_FAILED,
++        settings=cfg,
 +    )
 +
-+    assert start_job("job-start-job-queued-1", settings=cfg) is True
-+    assert start_job("job-start-job-failed-1", settings=cfg) is False
++    result = process_job(
++        "job-worker-stale-exec-1",
++        "rec-worker-stale-exec-1",
++        JOB_TYPE_PRECHECK,
++    )
 +
-+    queued_job = get_job("job-start-job-queued-1", settings=cfg)
-+    failed_job = get_job("job-start-job-failed-1", settings=cfg)
-+    assert queued_job is not None
-+    assert failed_job is not None
-+    assert queued_job["status"] == JOB_STATUS_STARTED
-+    assert int(queued_job["attempt"]) == 1
-+    assert failed_job["status"] == JOB_STATUS_FAILED
-+    assert int(failed_job["attempt"]) == 0
++    job = get_job("job-worker-stale-exec-1", settings=cfg)
++    recording = get_recording("rec-worker-stale-exec-1", settings=cfg)
++    assert result["status"] == "ignored"
++    assert job is not None
++    assert recording is not None
++    assert job["status"] == JOB_STATUS_FAILED
++    assert recording["status"] == RECORDING_STATUS_NEEDS_REVIEW
++    step_log = (
++        cfg.recordings_root
++        / "rec-worker-stale-exec-1"
++        / "logs"
++        / "step-precheck.log"
++    )
++    assert step_log.exists()
++    assert "ignored stale queue execution" in step_log.read_text(encoding="utf-8")
 +
 +
  def test_worker_noop_updates_job_and_recording_state(tmp_path: Path, monkeypatch):
      cfg = _test_settings(tmp_path)
      monkeypatch.setenv("LAN_DATA_ROOT", str(cfg.data_root))
-diff --git a/tests/test_reaper.py b/tests/test_reaper.py
-index a71ee73..a74ea04 100644
---- a/tests/test_reaper.py
-+++ b/tests/test_reaper.py
-@@ -303,7 +303,10 @@ def test_reaper_skips_stale_downgrade_if_status_changes_after_selection(
-     assert recording["status"] == RECORDING_STATUS_READY
- 
- 
--def test_reaper_recovers_processing_recording_without_started_job(tmp_path: Path):
-+def test_reaper_recovers_processing_recording_without_started_job(
-+    tmp_path: Path,
-+    monkeypatch,
-+):
-     cfg = _test_settings(tmp_path)
-     init_db(cfg)
-     create_recording(
-@@ -331,6 +334,14 @@ def test_reaper_recovers_processing_recording_without_started_job(tmp_path: Path
-         )
-         conn.commit()
- 
-+    cancelled_job_ids: list[str] = []
-+
-+    def _cancel_pending(job_id: str, *, settings=None) -> bool:
-+        cancelled_job_ids.append(job_id)
-+        return True
-+
-+    monkeypatch.setattr("lan_app.reaper.cancel_pending_queue_job", _cancel_pending)
-+
-     summary = run_stuck_job_reaper_once(
-         settings=cfg,
-         now=datetime(2026, 2, 23, 0, 0, 0, tzinfo=timezone.utc) + timedelta(seconds=1),
-@@ -345,6 +356,7 @@ def test_reaper_recovers_processing_recording_without_started_job(tmp_path: Path
-     assert job["status"] == JOB_STATUS_FAILED
-     assert job["error"] == "stuck job recovered"
-     assert recording["status"] == RECORDING_STATUS_NEEDS_REVIEW
-+    assert cancelled_job_ids == ["job-reaper-orphan-1"]
- 
-     step_log = cfg.recordings_root / "rec-reaper-orphan-1" / "logs" / "step-precheck.log"
-     assert step_log.exists()
-@@ -431,3 +443,66 @@ def test_reaper_skips_orphan_recovery_when_active_job_is_no_longer_queued(
-     assert summary["recovered_recordings"] == 0
-     assert job["status"] == JOB_STATUS_QUEUED
-     assert recording["status"] == RECORDING_STATUS_PROCESSING
-+
-+
-+def test_reaper_skips_orphan_downgrade_if_status_changes_after_selection(
-+    tmp_path: Path,
-+    monkeypatch,
-+):
-+    cfg = _test_settings(tmp_path)
-+    init_db(cfg)
-+    create_recording(
-+        "rec-reaper-race-downgrade-1",
-+        source="test",
-+        source_filename="race-downgrade.wav",
-+        status=RECORDING_STATUS_PROCESSING,
-+        settings=cfg,
-+    )
-+    create_job(
-+        "job-reaper-race-downgrade-1",
-+        recording_id="rec-reaper-race-downgrade-1",
-+        job_type=JOB_TYPE_PRECHECK,
-+        status=JOB_STATUS_QUEUED,
-+        settings=cfg,
-+    )
-+    with connect(cfg) as conn:
-+        conn.execute(
-+            """
-+            UPDATE recordings
-+            SET updated_at = ?
-+            WHERE id = ?
-+            """,
-+            ("2026-02-22T00:00:00Z", "rec-reaper-race-downgrade-1"),
-+        )
-+        conn.commit()
-+
-+    monkeypatch.setattr(
-+        "lan_app.reaper.cancel_pending_queue_job",
-+        lambda *_a, **_k: True,
-+    )
-+    original = db_module.set_recording_status_if_current_in
-+
-+    def _racy_set_status(*args, **kwargs):
-+        set_recording_status(
-+            "rec-reaper-race-downgrade-1",
-+            RECORDING_STATUS_READY,
-+            settings=cfg,
-+        )
-+        return original(*args, **kwargs)
-+
-+    monkeypatch.setattr("lan_app.reaper.set_recording_status_if_current_in", _racy_set_status)
-+
-+    summary = run_stuck_job_reaper_once(
-+        settings=cfg,
-+        now=datetime(2026, 2, 23, 0, 0, 1, tzinfo=timezone.utc),
-+    )
-+
-+    job = get_job("job-reaper-race-downgrade-1", settings=cfg)
-+    recording = get_recording("rec-reaper-race-downgrade-1", settings=cfg)
-+    assert job is not None
-+    assert recording is not None
-+    assert summary["processing_without_started"] == 1
-+    assert summary["recovered_jobs"] == 1
-+    assert summary["recovered_recordings"] == 0
-+    assert job["status"] == JOB_STATUS_FAILED
-+    assert recording["status"] == RECORDING_STATUS_READY

@@ -214,6 +214,52 @@ def test_start_job_only_transitions_queued_jobs(tmp_path: Path):
     assert int(failed_job["attempt"]) == 0
 
 
+def test_worker_ignores_stale_execution_for_non_queued_job(tmp_path: Path, monkeypatch):
+    cfg = _test_settings(tmp_path)
+    monkeypatch.setenv("LAN_DATA_ROOT", str(cfg.data_root))
+    monkeypatch.setenv("LAN_RECORDINGS_ROOT", str(cfg.recordings_root))
+    monkeypatch.setenv("LAN_DB_PATH", str(cfg.db_path))
+    monkeypatch.setenv("LAN_PROM_SNAPSHOT_PATH", str(cfg.metrics_snapshot_path))
+
+    init_db(cfg)
+    create_recording(
+        "rec-worker-stale-exec-1",
+        source="test",
+        source_filename="stale-exec.wav",
+        status=RECORDING_STATUS_NEEDS_REVIEW,
+        settings=cfg,
+    )
+    create_job(
+        "job-worker-stale-exec-1",
+        recording_id="rec-worker-stale-exec-1",
+        job_type=JOB_TYPE_PRECHECK,
+        status=JOB_STATUS_FAILED,
+        settings=cfg,
+    )
+
+    result = process_job(
+        "job-worker-stale-exec-1",
+        "rec-worker-stale-exec-1",
+        JOB_TYPE_PRECHECK,
+    )
+
+    job = get_job("job-worker-stale-exec-1", settings=cfg)
+    recording = get_recording("rec-worker-stale-exec-1", settings=cfg)
+    assert result["status"] == "ignored"
+    assert job is not None
+    assert recording is not None
+    assert job["status"] == JOB_STATUS_FAILED
+    assert recording["status"] == RECORDING_STATUS_NEEDS_REVIEW
+    step_log = (
+        cfg.recordings_root
+        / "rec-worker-stale-exec-1"
+        / "logs"
+        / "step-precheck.log"
+    )
+    assert step_log.exists()
+    assert "ignored stale queue execution" in step_log.read_text(encoding="utf-8")
+
+
 def test_worker_noop_updates_job_and_recording_state(tmp_path: Path, monkeypatch):
     cfg = _test_settings(tmp_path)
     monkeypatch.setenv("LAN_DATA_ROOT", str(cfg.data_root))
