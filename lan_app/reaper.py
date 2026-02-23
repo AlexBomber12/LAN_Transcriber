@@ -1,0 +1,106 @@
+from __future__ import annotations
+
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Any
+
+from .config import AppSettings
+from .constants import DEFAULT_REQUEUE_JOB_TYPE, RECORDING_STATUS_NEEDS_REVIEW
+from .db import (
+    fail_job,
+    list_processing_recordings_without_started_job,
+    list_stale_started_jobs,
+    set_recording_status,
+)
+
+_RECOVERY_ERROR = "stuck job recovered"
+
+
+def _utc_now() -> datetime:
+    return datetime.now(tz=timezone.utc).replace(microsecond=0)
+
+
+def _iso_z(value: datetime) -> str:
+    return value.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace(
+        "+00:00",
+        "Z",
+    )
+
+
+def _step_log_path(recording_id: str, job_type: str, settings: AppSettings) -> Path:
+    return settings.recordings_root / recording_id / "logs" / f"step-{job_type}.log"
+
+
+def _append_step_log(path: Path, message: str, *, now: datetime) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(f"[{_iso_z(now)}] {message}\n")
+
+
+def run_stuck_job_reaper_once(
+    *,
+    settings: AppSettings | None = None,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    cfg = settings or AppSettings()
+    current_time = now or _utc_now()
+    threshold = max(int(cfg.stuck_job_seconds), 1)
+    stale_before = _iso_z(current_time - timedelta(seconds=threshold))
+
+    recovered_job_ids: list[str] = []
+    recovered_recording_ids: set[str] = set()
+    stale_rows = list_stale_started_jobs(
+        before_started_at=stale_before,
+        settings=cfg,
+    )
+    for row in stale_rows:
+        job_id = str(row.get("id") or "").strip()
+        recording_id = str(row.get("recording_id") or "").strip()
+        job_type = str(row.get("type") or "").strip() or DEFAULT_REQUEUE_JOB_TYPE
+        if not job_id or not recording_id:
+            continue
+        fail_job(job_id, _RECOVERY_ERROR, settings=cfg)
+        set_recording_status(recording_id, RECORDING_STATUS_NEEDS_REVIEW, settings=cfg)
+        _append_step_log(
+            _step_log_path(recording_id, job_type, cfg),
+            f"stuck job recovery applied job={job_id}",
+            now=current_time,
+        )
+        recovered_job_ids.append(job_id)
+        recovered_recording_ids.add(recording_id)
+
+    processing_rows = list_processing_recordings_without_started_job(settings=cfg)
+    for row in processing_rows:
+        recording_id = str(row.get("id") or "").strip()
+        if not recording_id:
+            continue
+        active_job_id = str(row.get("active_job_id") or "").strip()
+        active_job_type = (
+            str(row.get("active_job_type") or "").strip() or DEFAULT_REQUEUE_JOB_TYPE
+        )
+        if active_job_id:
+            fail_job(active_job_id, _RECOVERY_ERROR, settings=cfg)
+            recovered_job_ids.append(active_job_id)
+        set_recording_status(recording_id, RECORDING_STATUS_NEEDS_REVIEW, settings=cfg)
+        _append_step_log(
+            _step_log_path(recording_id, active_job_type, cfg),
+            (
+                "stuck job recovery applied "
+                f"recording={recording_id} "
+                f"job={active_job_id or 'none'}"
+            ),
+            now=current_time,
+        )
+        recovered_recording_ids.add(recording_id)
+
+    return {
+        "stale_started_jobs": len(stale_rows),
+        "processing_without_started": len(processing_rows),
+        "recovered_jobs": len(recovered_job_ids),
+        "recovered_recordings": len(recovered_recording_ids),
+        "job_ids": recovered_job_ids,
+        "recording_ids": sorted(recovered_recording_ids),
+    }
+
+
+__all__ = ["run_stuck_job_reaper_once"]

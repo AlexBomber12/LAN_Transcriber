@@ -149,6 +149,7 @@ _JOB_RETRY_POLICIES: dict[str, RetryPolicy] = {
     JOB_TYPE_PUBLISH: RetryPolicy(max_attempts=2, backoff_seconds=(3,)),
     JOB_TYPE_CLEANUP: RetryPolicy(max_attempts=2, backoff_seconds=(5,)),
 }
+_MAX_ATTEMPTS_ERROR = "max attempts exceeded"
 
 
 def _retry_policy(job_type: str) -> RetryPolicy:
@@ -234,6 +235,38 @@ def _record_failure(
         pass
     try:
         _append_step_log(log_path, f"failed job={job_id} type={job_type}: {error}")
+    except Exception:
+        pass
+
+
+def _record_max_attempts_exceeded(
+    *,
+    job_id: str,
+    job_type: str,
+    recording_id: str,
+    settings: AppSettings,
+    log_path: Path,
+) -> None:
+    try:
+        fail_job(job_id, _MAX_ATTEMPTS_ERROR, settings=settings)
+    except Exception:
+        pass
+    try:
+        set_recording_status(
+            recording_id,
+            RECORDING_STATUS_NEEDS_REVIEW,
+            settings=settings,
+        )
+    except Exception:
+        pass
+    try:
+        _append_step_log(
+            log_path,
+            (
+                f"terminal failure job={job_id} type={job_type}: "
+                f"{_MAX_ATTEMPTS_ERROR}"
+            ),
+        )
     except Exception:
         pass
 
@@ -543,11 +576,15 @@ def process_job(job_id: str, recording_id: str, job_type: str) -> dict[str, str]
         }
 
     retry_policy = _retry_policy(job_type)
+    max_attempts = max(1, min(retry_policy.max_attempts, settings.max_job_attempts))
 
     while True:
         try:
             if not start_job(job_id, settings=settings):
                 raise ValueError(f"Job not found: {job_id}")
+            attempt = _job_attempt(job_id, settings)
+            if attempt > settings.max_job_attempts:
+                raise RuntimeError(_MAX_ATTEMPTS_ERROR)
             if not set_recording_status(
                 recording_id,
                 RECORDING_STATUS_PROCESSING,
@@ -578,10 +615,19 @@ def process_job(job_id: str, recording_id: str, job_type: str) -> dict[str, str]
             break
         except Exception as exc:
             attempt = _job_attempt(job_id, settings)
+            if attempt >= settings.max_job_attempts:
+                _record_max_attempts_exceeded(
+                    job_id=job_id,
+                    job_type=job_type,
+                    recording_id=recording_id,
+                    settings=settings,
+                    log_path=log_path,
+                )
+                raise
             if (
                 _is_retryable_exception(exc)
                 and attempt > 0
-                and attempt < retry_policy.max_attempts
+                and attempt < max_attempts
             ):
                 delay_seconds = _retry_delay_seconds(retry_policy, attempt)
                 _record_retry(
@@ -589,7 +635,7 @@ def process_job(job_id: str, recording_id: str, job_type: str) -> dict[str, str]
                     job_type=job_type,
                     recording_id=recording_id,
                     attempt=attempt,
-                    max_attempts=retry_policy.max_attempts,
+                    max_attempts=max_attempts,
                     delay_seconds=delay_seconds,
                     settings=settings,
                     log_path=log_path,

@@ -43,6 +43,38 @@ class AppSettings(BaseSettings):
         default=False,
         validation_alias=AliasChoices("LAN_RQ_WORKER_BURST", "RQ_WORKER_BURST"),
     )
+    rq_job_timeout_seconds: int = Field(
+        default=7200,
+        ge=1,
+        validation_alias=AliasChoices(
+            "LAN_RQ_JOB_TIMEOUT_SECONDS",
+            "RQ_JOB_TIMEOUT_SECONDS",
+        ),
+    )
+    max_job_attempts: int = Field(
+        default=3,
+        ge=1,
+        validation_alias=AliasChoices(
+            "LAN_MAX_JOB_ATTEMPTS",
+            "MAX_JOB_ATTEMPTS",
+        ),
+    )
+    stuck_job_seconds: int = Field(
+        default=7200,
+        ge=1,
+        validation_alias=AliasChoices(
+            "LAN_STUCK_JOB_SECONDS",
+            "STUCK_JOB_SECONDS",
+        ),
+    )
+    reaper_interval_seconds: int = Field(
+        default=300,
+        ge=1,
+        validation_alias=AliasChoices(
+            "LAN_REAPER_INTERVAL_SECONDS",
+            "REAPER_INTERVAL_SECONDS",
+        ),
+    )
 
     # Google Drive ingest
     gdrive_sa_json_path: Path | None = Field(

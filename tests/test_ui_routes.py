@@ -197,6 +197,33 @@ def test_recording_detail_project_tab(seeded_client):
     assert "Routing Rationale" in r.text
 
 
+def test_recording_detail_shows_stuck_recovery_warning(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    init_db(cfg)
+    create_recording(
+        "rec-ui-stuck-1",
+        source="drive",
+        source_filename="stuck.mp3",
+        status=RECORDING_STATUS_NEEDS_REVIEW,
+        settings=cfg,
+    )
+    create_job(
+        "job-ui-stuck-1",
+        recording_id="rec-ui-stuck-1",
+        job_type=JOB_TYPE_PRECHECK,
+        status=JOB_STATUS_FAILED,
+        error="stuck job recovered",
+        settings=cfg,
+    )
+
+    c = TestClient(api.app, follow_redirects=True)
+    r = c.get("/recordings/rec-ui-stuck-1")
+    assert r.status_code == 200
+    assert "recovered from a stuck job" in r.text
+
+
 def test_recording_detail_project_assignment_trains_routing(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
     monkeypatch.setattr(api, "_settings", cfg)

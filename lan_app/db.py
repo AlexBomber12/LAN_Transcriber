@@ -15,6 +15,7 @@ from .constants import (
     JOB_STATUS_STARTED,
     JOB_TYPES,
     RECORDING_STATUSES,
+    RECORDING_STATUS_PROCESSING,
     RECORDING_STATUS_PUBLISHED,
     RECORDING_STATUS_QUEUED,
     RECORDING_STATUS_QUARANTINE,
@@ -737,6 +738,97 @@ def list_jobs(
             [*params, safe_limit, safe_offset],
         ).fetchall()
     return [_as_dict(row) or {} for row in rows], total
+
+
+def list_stale_started_jobs(
+    *,
+    before_started_at: str,
+    settings: AppSettings | None = None,
+    limit: int = 500,
+) -> list[dict[str, Any]]:
+    init_db(settings)
+    safe_limit = max(1, min(limit, 500))
+    with connect(settings) as conn:
+        rows = conn.execute(
+            """
+            SELECT
+                j.*,
+                r.status AS recording_status
+            FROM jobs AS j
+            JOIN recordings AS r ON r.id = j.recording_id
+            WHERE j.status = ?
+              AND j.started_at IS NOT NULL
+              AND j.started_at < ?
+            ORDER BY j.started_at ASC, j.created_at ASC
+            LIMIT ?
+            """,
+            (JOB_STATUS_STARTED, before_started_at, safe_limit),
+        ).fetchall()
+    return [_as_dict(row) or {} for row in rows]
+
+
+def list_processing_recordings_without_started_job(
+    *,
+    settings: AppSettings | None = None,
+    limit: int = 500,
+) -> list[dict[str, Any]]:
+    init_db(settings)
+    safe_limit = max(1, min(limit, 500))
+    with connect(settings) as conn:
+        rows = conn.execute(
+            """
+            SELECT
+                r.*,
+                p.name AS project_name,
+                sp.name AS suggested_project_name,
+            (
+                SELECT j.id
+                FROM jobs AS j
+                WHERE j.recording_id = r.id
+                  AND j.status IN (?, ?)
+                ORDER BY
+                    CASE WHEN j.status = ? THEN 0 ELSE 1 END ASC,
+                    j.updated_at DESC,
+                    j.created_at DESC
+                LIMIT 1
+            ) AS active_job_id,
+            (
+                SELECT j.type
+                FROM jobs AS j
+                WHERE j.recording_id = r.id
+                  AND j.status IN (?, ?)
+                ORDER BY
+                    CASE WHEN j.status = ? THEN 0 ELSE 1 END ASC,
+                    j.updated_at DESC,
+                    j.created_at DESC
+                LIMIT 1
+            ) AS active_job_type
+            FROM recordings AS r
+            LEFT JOIN projects AS p ON p.id = r.project_id
+            LEFT JOIN projects AS sp ON sp.id = r.suggested_project_id
+            WHERE r.status = ?
+              AND NOT EXISTS (
+                    SELECT 1
+                    FROM jobs AS sj
+                    WHERE sj.recording_id = r.id
+                      AND sj.status = ?
+              )
+            ORDER BY r.updated_at ASC, r.created_at ASC
+            LIMIT ?
+            """,
+            (
+                JOB_STATUS_STARTED,
+                JOB_STATUS_QUEUED,
+                JOB_STATUS_STARTED,
+                JOB_STATUS_STARTED,
+                JOB_STATUS_QUEUED,
+                JOB_STATUS_STARTED,
+                RECORDING_STATUS_PROCESSING,
+                JOB_STATUS_STARTED,
+                safe_limit,
+            ),
+        ).fetchall()
+    return [_as_dict(row) or {} for row in rows]
 
 
 def _find_active_job_for_recording_row(
@@ -1625,6 +1717,8 @@ __all__ = [
     "create_job",
     "get_job",
     "list_jobs",
+    "list_stale_started_jobs",
+    "list_processing_recordings_without_started_job",
     "find_active_job_for_recording",
     "create_job_if_no_active_for_recording",
     "start_job",

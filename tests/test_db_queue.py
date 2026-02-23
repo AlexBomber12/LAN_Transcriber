@@ -24,6 +24,7 @@ from lan_app.constants import (
     JOB_TYPE_PRECHECK,
     JOB_TYPE_STT,
     RECORDING_STATUS_FAILED,
+    RECORDING_STATUS_NEEDS_REVIEW,
     RECORDING_STATUS_QUARANTINE,
     RECORDING_STATUS_QUEUED,
     RECORDING_STATUS_READY,
@@ -697,7 +698,56 @@ def test_worker_retryable_failure_retries_before_marking_failed(
     assert recording is not None
     assert job["attempt"] == 3
     assert job["status"] == JOB_STATUS_FAILED
-    assert recording["status"] == RECORDING_STATUS_FAILED
+    assert job["error"] == "max attempts exceeded"
+    assert recording["status"] == RECORDING_STATUS_NEEDS_REVIEW
+
+
+def test_worker_max_attempts_exceeded_before_processing_sets_terminal_state(
+    tmp_path: Path,
+    monkeypatch,
+):
+    cfg = _test_settings(tmp_path)
+    monkeypatch.setenv("LAN_DATA_ROOT", str(cfg.data_root))
+    monkeypatch.setenv("LAN_RECORDINGS_ROOT", str(cfg.recordings_root))
+    monkeypatch.setenv("LAN_DB_PATH", str(cfg.db_path))
+    monkeypatch.setenv("LAN_PROM_SNAPSHOT_PATH", str(cfg.metrics_snapshot_path))
+    monkeypatch.setenv("LAN_MAX_JOB_ATTEMPTS", "3")
+
+    init_db(cfg)
+    create_recording(
+        "rec-worker-max-attempts-1",
+        source="test",
+        source_filename="max-attempts.wav",
+        settings=cfg,
+    )
+    create_job(
+        "job-worker-max-attempts-1",
+        recording_id="rec-worker-max-attempts-1",
+        job_type=JOB_TYPE_PRECHECK,
+        settings=cfg,
+        attempt=3,
+    )
+
+    def _should_not_run_pipeline(*_args, **_kwargs):
+        raise AssertionError("pipeline execution should not run after max attempts")
+
+    monkeypatch.setattr("lan_app.worker_tasks._run_precheck_pipeline", _should_not_run_pipeline)
+
+    with pytest.raises(RuntimeError, match="max attempts exceeded"):
+        process_job(
+            "job-worker-max-attempts-1",
+            "rec-worker-max-attempts-1",
+            JOB_TYPE_PRECHECK,
+        )
+
+    job = get_job("job-worker-max-attempts-1", settings=cfg)
+    recording = get_recording("rec-worker-max-attempts-1", settings=cfg)
+    assert job is not None
+    assert recording is not None
+    assert job["attempt"] == 4
+    assert job["status"] == JOB_STATUS_FAILED
+    assert job["error"] == "max attempts exceeded"
+    assert recording["status"] == RECORDING_STATUS_NEEDS_REVIEW
 
 
 def test_enqueue_sets_recording_status_to_queued_on_success(tmp_path: Path, monkeypatch):
@@ -725,6 +775,35 @@ def test_enqueue_sets_recording_status_to_queued_on_success(tmp_path: Path, monk
     recording = get_recording("rec-requeue-status-1", settings=cfg)
     assert recording is not None
     assert recording["status"] == RECORDING_STATUS_QUEUED
+
+
+def test_enqueue_uses_configured_rq_job_timeout(tmp_path: Path, monkeypatch):
+    cfg = _test_settings(tmp_path)
+    cfg.rq_job_timeout_seconds = 321
+    init_db(cfg)
+    create_recording(
+        "rec-rq-timeout-1",
+        source="test",
+        source_filename="timeout.mp3",
+        settings=cfg,
+    )
+
+    captured: dict[str, object] = {}
+
+    class _QueueCapture:
+        def enqueue(self, *_args, **kwargs):
+            captured.update(kwargs)
+            return None
+
+    monkeypatch.setattr("lan_app.jobs.get_queue", lambda _cfg: _QueueCapture())
+
+    enqueue_recording_job(
+        "rec-rq-timeout-1",
+        job_type=JOB_TYPE_PRECHECK,
+        settings=cfg,
+    )
+
+    assert captured["job_timeout"] == 321
 
 
 def test_purge_pending_recording_jobs_deletes_only_pending(tmp_path: Path, monkeypatch):

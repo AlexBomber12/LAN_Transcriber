@@ -165,6 +165,7 @@ def enqueue_recording_job(
             recording_id,
             job_type,
             job_id=job_id,
+            job_timeout=cfg.rq_job_timeout_seconds,
         )
     except Exception as exc:
         # Keep DB queue state terminal when Redis/RQ enqueue fails.

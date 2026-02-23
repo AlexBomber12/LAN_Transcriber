@@ -128,6 +128,7 @@ _LANGUAGE_CODE_MAP: dict[str, str] = {
 }
 
 _COMMON_LANGUAGE_CODES = ("en", "es", "fr", "de", "pt", "it", "zh", "ja", "ko", "ru")
+_STUCK_JOB_RECOVERY_ERROR = "stuck job recovered"
 
 
 def _normalise_language_code(value: object | None) -> str | None:
@@ -160,6 +161,21 @@ def _parse_language_form_value(value: str, *, field_name: str) -> str | None:
     if parsed is None:
         raise ValueError(f"{field_name} must be a language code such as en or es")
     return parsed
+
+
+def _recording_recovery_warning(jobs: list[dict[str, Any]]) -> str | None:
+    for job in jobs:
+        error = str(job.get("error") or "").strip().lower()
+        if error != _STUCK_JOB_RECOVERY_ERROR:
+            continue
+        finished_at = str(job.get("finished_at") or "").strip()
+        if finished_at:
+            return (
+                "Warning: this recording was recovered from a stuck job at "
+                f"{finished_at[:19].replace('T', ' ')} UTC."
+            )
+        return "Warning: this recording was recovered from a stuck job."
+    return None
 
 
 def _load_json_dict(path: Path) -> dict[str, Any]:
@@ -1068,6 +1084,7 @@ async def ui_recording_detail(
         return HTMLResponse("<h1>404 – Recording not found</h1>", status_code=404)
     onenote_page_url = _recording_onenote_page_url(rec)
     jobs, _ = list_jobs(settings=_settings, recording_id=recording_id, limit=100)
+    recovery_warning = _recording_recovery_warning(jobs)
     tabs = ["overview", "calendar", "project", "speakers", "language", "metrics", "log"]
     current_tab = tab if tab in tabs else "overview"
     calendar: dict[str, Any] | None = None
@@ -1109,6 +1126,7 @@ async def ui_recording_detail(
             "active": "recordings",
             "rec": rec,
             "jobs": jobs,
+            "recovery_warning": recovery_warning,
             "tabs": tabs,
             "current_tab": current_tab,
             "calendar": calendar,
