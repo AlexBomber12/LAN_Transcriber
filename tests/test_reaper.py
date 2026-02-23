@@ -445,6 +445,78 @@ def test_reaper_skips_orphan_recovery_when_active_job_is_no_longer_queued(
     assert recording["status"] == RECORDING_STATUS_PROCESSING
 
 
+def test_reaper_skips_orphan_downgrade_when_another_job_starts_mid_recovery(
+    tmp_path: Path,
+    monkeypatch,
+):
+    cfg = _test_settings(tmp_path)
+    init_db(cfg)
+    create_recording(
+        "rec-reaper-race-started-1",
+        source="test",
+        source_filename="race-started.wav",
+        status=RECORDING_STATUS_PROCESSING,
+        settings=cfg,
+    )
+    create_job(
+        "job-reaper-race-started-1",
+        recording_id="rec-reaper-race-started-1",
+        job_type=JOB_TYPE_PRECHECK,
+        status=JOB_STATUS_QUEUED,
+        settings=cfg,
+    )
+    create_job(
+        "job-reaper-race-started-2",
+        recording_id="rec-reaper-race-started-1",
+        job_type=JOB_TYPE_PRECHECK,
+        status=JOB_STATUS_QUEUED,
+        settings=cfg,
+    )
+    with connect(cfg) as conn:
+        conn.execute(
+            """
+            UPDATE recordings
+            SET updated_at = ?
+            WHERE id = ?
+            """,
+            ("2026-02-22T00:00:00Z", "rec-reaper-race-started-1"),
+        )
+        conn.commit()
+
+    monkeypatch.setattr("lan_app.reaper.cancel_pending_queue_job", lambda *_a, **_k: True)
+    original_fail_if_queued = db_module.fail_job_if_queued
+
+    def _racy_fail_if_queued(job_id: str, error: str, *, settings=None):
+        changed = original_fail_if_queued(job_id, error, settings=settings)
+        if changed:
+            other_job_id = (
+                "job-reaper-race-started-2"
+                if job_id == "job-reaper-race-started-1"
+                else "job-reaper-race-started-1"
+            )
+            assert db_module.start_job(other_job_id, settings=settings or cfg)
+        return changed
+
+    monkeypatch.setattr("lan_app.reaper.fail_job_if_queued", _racy_fail_if_queued)
+
+    summary = run_stuck_job_reaper_once(
+        settings=cfg,
+        now=datetime(2026, 2, 23, 0, 0, 1, tzinfo=timezone.utc),
+    )
+
+    job_1 = get_job("job-reaper-race-started-1", settings=cfg)
+    job_2 = get_job("job-reaper-race-started-2", settings=cfg)
+    recording = get_recording("rec-reaper-race-started-1", settings=cfg)
+    assert job_1 is not None
+    assert job_2 is not None
+    assert recording is not None
+    assert summary["processing_without_started"] == 1
+    assert summary["recovered_jobs"] == 1
+    assert summary["recovered_recordings"] == 0
+    assert {job_1["status"], job_2["status"]} == {JOB_STATUS_FAILED, JOB_STATUS_STARTED}
+    assert recording["status"] == RECORDING_STATUS_PROCESSING
+
+
 def test_reaper_skips_orphan_downgrade_if_status_changes_after_selection(
     tmp_path: Path,
     monkeypatch,

@@ -876,6 +876,26 @@ def list_processing_recordings_without_started_job(
     return [_as_dict(row) or {} for row in rows]
 
 
+def has_started_job_for_recording(
+    recording_id: str,
+    *,
+    settings: AppSettings | None = None,
+) -> bool:
+    init_db(settings)
+    with connect(settings) as conn:
+        row = conn.execute(
+            """
+            SELECT 1
+            FROM jobs
+            WHERE recording_id = ?
+              AND status = ?
+            LIMIT 1
+            """,
+            (recording_id, JOB_STATUS_STARTED),
+        ).fetchone()
+    return row is not None
+
+
 def _find_active_job_for_recording_row(
     conn: sqlite3.Connection,
     *,
@@ -1878,6 +1898,7 @@ __all__ = [
     "list_jobs",
     "list_stale_started_jobs",
     "list_processing_recordings_without_started_job",
+    "has_started_job_for_recording",
     "find_active_job_for_recording",
     "create_job_if_no_active_for_recording",
     "start_job",
