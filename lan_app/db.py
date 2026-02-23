@@ -139,6 +139,30 @@ def _read_user_version(conn: sqlite3.Connection) -> int:
     return int(conn.execute("PRAGMA user_version").fetchone()[0])
 
 
+def _executescript_allowing_duplicate_columns(
+    conn: sqlite3.Connection,
+    migration_sql: str,
+) -> None:
+    try:
+        conn.executescript(migration_sql)
+    except sqlite3.OperationalError as error:
+        if "duplicate column name" not in str(error).strip().lower():
+            raise
+        for statement in migration_sql.split(";"):
+            sql = statement.strip()
+            if not sql:
+                continue
+            try:
+                conn.execute(sql)
+            except sqlite3.OperationalError as statement_error:
+                if (
+                    "duplicate column name"
+                    in str(statement_error).strip().lower()
+                ):
+                    continue
+                raise
+
+
 def connect_db(
     path: Path,
     *,
@@ -190,7 +214,7 @@ def init_db(settings: AppSettings | None = None) -> Path:
                 live_version = _read_user_version(conn)
                 if live_version >= target_version:
                     return live_version
-                conn.executescript(migration_sql)
+                _executescript_allowing_duplicate_columns(conn, migration_sql)
                 conn.execute(f"PRAGMA user_version = {target_version}")
                 conn.commit()
                 return target_version
@@ -318,6 +342,77 @@ def list_recordings(
             [*params, safe_limit, safe_offset],
         ).fetchall()
     return [_as_dict(row) or {} for row in rows], total
+
+
+def set_recording_progress(
+    recording_id: str,
+    stage: str,
+    progress: float,
+    *,
+    settings: AppSettings | None = None,
+) -> bool:
+    init_db(settings)
+    stage_name = str(stage).strip()
+    if not stage_name:
+        raise ValueError("stage is required")
+    progress_value = max(0.0, min(float(progress), 1.0))
+    now = _utc_now()
+
+    def _update() -> bool:
+        with connect(settings) as conn:
+            updated = conn.execute(
+                """
+                UPDATE recordings
+                SET
+                    pipeline_stage = ?,
+                    pipeline_progress = ?,
+                    pipeline_updated_at = ?,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    stage_name,
+                    progress_value,
+                    now,
+                    now,
+                    recording_id,
+                ),
+            )
+            conn.commit()
+            return updated.rowcount > 0
+
+    return with_db_retry(_update)
+
+
+def clear_recording_progress(
+    recording_id: str,
+    *,
+    settings: AppSettings | None = None,
+) -> bool:
+    init_db(settings)
+    now = _utc_now()
+
+    def _clear() -> bool:
+        with connect(settings) as conn:
+            updated = conn.execute(
+                """
+                UPDATE recordings
+                SET
+                    pipeline_stage = NULL,
+                    pipeline_progress = NULL,
+                    pipeline_updated_at = NULL,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    now,
+                    recording_id,
+                ),
+            )
+            conn.commit()
+            return updated.rowcount > 0
+
+    return with_db_retry(_clear)
 
 
 def set_recording_status(
@@ -1859,6 +1954,8 @@ __all__ = [
     "create_recording",
     "get_recording",
     "list_recordings",
+    "set_recording_progress",
+    "clear_recording_progress",
     "set_recording_status",
     "set_recording_status_if_current_in",
     "set_recording_status_if_current_in_and_no_started_job",

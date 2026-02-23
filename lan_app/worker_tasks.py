@@ -33,6 +33,7 @@ from .constants import (
     RECORDING_STATUS_READY,
 )
 from .db import (
+    clear_recording_progress,
     fail_job,
     fail_job_if_started,
     finish_job_if_started,
@@ -42,6 +43,7 @@ from .db import (
     init_db,
     list_jobs,
     requeue_job_if_started,
+    set_recording_progress,
     set_recording_language_settings,
     set_recording_status,
     set_recording_status_if_current_in_and_job_started,
@@ -498,6 +500,15 @@ def _run_precheck_pipeline(
         recording_id,
         settings,
     )
+
+    def _progress_callback(stage: str, progress: float) -> None:
+        set_recording_progress(
+            recording_id,
+            stage=stage,
+            progress=progress,
+            settings=settings,
+        )
+
     asyncio.run(
         run_pipeline(
             audio_path=audio_path,
@@ -510,6 +521,7 @@ def _run_precheck_pipeline(
             transcript_language_override=transcript_language_override,
             calendar_title=calendar_title,
             calendar_attendees=calendar_attendees,
+            progress_callback=_progress_callback,
         )
     )
     metrics_payload = refresh_recording_metrics(
@@ -732,12 +744,14 @@ def process_job(job_id: str, recording_id: str, job_type: str) -> dict[str, str]
                     )
                     return _ignored_result(job_id, recording_id, job_type)
                 raise ValueError(f"Job not found: {job_id}")
+            clear_recording_progress(recording_id, settings=settings)
             _append_step_log(
                 log_path,
                 f"finished job={job_id} type={job_type} recording_status={final_status}",
             )
             break
         except Exception as exc:
+            clear_recording_progress(recording_id, settings=settings)
             current_job_status = _job_status(job_id, settings)
             if current_job_status and current_job_status != JOB_STATUS_STARTED:
                 _log_stale_inflight_execution(

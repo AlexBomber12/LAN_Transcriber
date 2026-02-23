@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import shutil
 import time
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Iterable, List, Protocol, Sequence
+from typing import Any, Awaitable, Callable, Iterable, List, Protocol, Sequence
 
 from pydantic_settings import BaseSettings
 
@@ -173,6 +174,26 @@ def run_precheck(audio_path: Path, cfg: Settings | None = None) -> PrecheckResul
     )
 
 
+ProgressCallback = Callable[[str, float], Any | Awaitable[Any]]
+
+
+async def _emit_progress(
+    callback: ProgressCallback | None,
+    *,
+    stage: str,
+    progress: float,
+) -> None:
+    if callback is None:
+        return
+    try:
+        out = callback(stage, progress)
+        if inspect.isawaitable(out):
+            await out
+    except Exception:
+        # Progress reporting is best-effort and must not break processing.
+        return
+
+
 async def run_pipeline(
     audio_path: Path,
     cfg: Settings,
@@ -184,11 +205,13 @@ async def run_pipeline(
     transcript_language_override: str | None = None,
     calendar_title: str | None = None,
     calendar_attendees: Sequence[str] | None = None,
+    progress_callback: ProgressCallback | None = None,
 ) -> TranscriptResult:
     start = time.perf_counter()
     artifacts = build_recording_artifacts(cfg.recordings_root, recording_id or _default_recording_id(audio_path), audio_path.suffix)
     stage_raw_audio(audio_path, artifacts.raw_audio_path)
 
+    await _emit_progress(progress_callback, stage="precheck", progress=0.05)
     precheck_result = precheck or run_precheck(audio_path, cfg)
     override_lang = normalise_language_code(transcript_language_override)
     summary_lang = resolve_target_summary_language(target_summary_language, dominant_language=override_lang or "unknown", detected_language=None)
@@ -201,6 +224,7 @@ async def run_pipeline(
     )
 
     if precheck_result.quarantine_reason:
+        await _emit_progress(progress_callback, stage="metrics", progress=0.95)
         _clear_dir(artifacts.snippets_dir)
         atomic_write_text(artifacts.transcript_txt_path, "")
         atomic_write_json(
@@ -239,10 +263,12 @@ async def run_pipeline(
             ),
         )
         atomic_write_json(artifacts.metrics_json_path, {"status": "quarantined", "version": 1, "precheck": precheck_result.__dict__})
+        await _emit_progress(progress_callback, stage="done", progress=1.0)
         p95_latency_seconds.observe(time.perf_counter() - start)
         return TranscriptResult(summary="Quarantined", body="", friendly=0, speakers=[], summary_path=artifacts.summary_json_path, body_path=artifacts.transcript_txt_path, unknown_chunks=[], segments=[])
 
     try:
+        await _emit_progress(progress_callback, stage="stt", progress=0.30)
         import whisperx
 
         def _asr() -> tuple[list[dict[str, Any]], dict[str, Any]]:
@@ -254,9 +280,12 @@ async def run_pipeline(
                 segments, info = whisperx.transcribe(str(audio_path), **kwargs)
             return list(segments), dict(info or {})
 
+        await _emit_progress(progress_callback, stage="diarize", progress=0.50)
         (raw_segments, info), diarization = await asyncio.gather(asyncio.to_thread(_asr), diariser(audio_path))
+        await _emit_progress(progress_callback, stage="align", progress=0.60)
         asr_segments = normalise_asr_segments(raw_segments)
         language_info = _language_payload(info)
+        await _emit_progress(progress_callback, stage="language", progress=0.70)
         detected_language = normalise_language_code(language_info["detected"]) if language_info["detected"] != "unknown" else None
         language_analysis = analyse_languages(asr_segments, detected_language=detected_language, transcript_language_override=override_lang)
         if language_info["detected"] == "unknown" and language_analysis.dominant_language != "unknown":
@@ -341,7 +370,9 @@ async def run_pipeline(
                 status="no_speech",
             ),
         )
+        await _emit_progress(progress_callback, stage="metrics", progress=0.95)
         atomic_write_json(artifacts.metrics_json_path, {"status": "no_speech", "version": 1, "precheck": {**precheck_result.__dict__, "quarantine_reason": None}, "language": language_info, "asr_segments": len(language_analysis.segments), "diar_segments": len(diar_segments), "speaker_turns": len(speaker_turns)})
+        await _emit_progress(progress_callback, stage="done", progress=1.0)
         p95_latency_seconds.observe(time.perf_counter() - start)
         return TranscriptResult(summary="No speech detected", body="", friendly=0, speakers=speakers, summary_path=artifacts.summary_json_path, body_path=artifacts.transcript_txt_path, unknown_chunks=[], segments=[])
 
@@ -357,6 +388,7 @@ async def run_pipeline(
     sys_prompt, user_prompt = build_structured_summary_prompts(speaker_turns, summary_lang, calendar_title=cal_title, calendar_attendees=cal_attendees)
 
     try:
+        await _emit_progress(progress_callback, stage="llm", progress=0.85)
         msg = await llm.generate(system_prompt=sys_prompt, user_prompt=user_prompt, model=cfg.llm_model, response_format={"type": "json_object"})
         raw_summary = msg.get("content", "") if isinstance(msg, dict) else str(msg)
         summary_payload = build_summary_payload(
@@ -389,7 +421,9 @@ async def run_pipeline(
         atomic_write_json(artifacts.segments_json_path, diar_segments)
         atomic_write_json(artifacts.speaker_turns_json_path, speaker_turns)
         atomic_write_json(artifacts.summary_json_path, summary_payload)
+        await _emit_progress(progress_callback, stage="metrics", progress=0.95)
         atomic_write_json(artifacts.metrics_json_path, {"status": "ok", "version": 1, "precheck": {**precheck_result.__dict__, "quarantine_reason": None}, "language": language_info, "asr_segments": len(language_analysis.segments), "diar_segments": len(diar_segments), "speaker_turns": len(speaker_turns), "snippets": len(snippet_paths)})
+        await _emit_progress(progress_callback, stage="done", progress=1.0)
         return TranscriptResult(summary=str(summary_payload.get("summary") or ""), body=clean_text, friendly=friendly, speakers=speakers, summary_path=artifacts.summary_json_path, body_path=artifacts.transcript_txt_path, unknown_chunks=snippet_paths, segments=serialised_segments)
     except Exception as exc:
         error_rate_total.inc()

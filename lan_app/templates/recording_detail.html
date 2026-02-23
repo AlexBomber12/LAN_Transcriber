@@ -22,6 +22,18 @@
 </p>
 {% endif %}
 
+{% if rec.status == 'Processing' %}
+<div
+  id="recording-progress"
+  hx-get="/ui/recordings/{{ rec.id }}/progress"
+  hx-trigger="load, every 2s"
+  hx-swap="innerHTML"
+  style="margin:0 0 10px 0"
+>
+  <div class="placeholder" style="padding:8px 10px">Loading pipeline progress…</div>
+</div>
+{% endif %}
+
 <div class="tabs">
   {% for t in tabs %}
   <a href="/recordings/{{ rec.id }}?tab={{ t }}" class="tab {% if current_tab == t %}active{% endif %}">{{ t|capitalize }}</a>

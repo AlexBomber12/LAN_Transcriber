@@ -122,7 +122,7 @@ Queue (in order)
 - Depends on: PR-PIPELINE-MODULAR-01
 
 23) PR-UI-PROGRESS-01: UI feedback: pipeline progress/stage + Connections page real status and Run ingest button
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-UI-PROGRESS-01.md
 - Depends on: PR-DB-RESILIENCE-01
 

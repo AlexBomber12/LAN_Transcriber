@@ -40,6 +40,7 @@ from .constants import (
     JOB_STATUSES,
     JOB_TYPE_PRECHECK,
     RECORDING_STATUSES,
+    RECORDING_STATUS_PROCESSING,
     RECORDING_STATUS_QUARANTINE,
 )
 from .db import (
@@ -66,6 +67,7 @@ from .db import (
     set_recording_language_settings,
     set_recording_status,
 )
+from .gdrive import build_drive_service
 from .jobs import (
     DuplicateRecordingJobError,
     enqueue_recording_job,
@@ -150,6 +152,63 @@ def _recording_recovery_warning(jobs: list[dict[str, Any]]) -> str | None:
             )
         return "Warning: this recording was recovered from a stuck job."
     return None
+
+
+def _safe_pipeline_progress(value: object) -> float:
+    try:
+        progress = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    return max(0.0, min(progress, 1.0))
+
+
+def _pipeline_stage_label(stage: object) -> str:
+    text = str(stage or "").strip()
+    if not text:
+        return "Waiting"
+    return text.replace("_", " ").title()
+
+
+def _gdrive_connection_state(settings: AppSettings) -> dict[str, Any]:
+    sa_path_value = str(settings.gdrive_sa_json_path or "").strip()
+    folder_id_value = str(settings.gdrive_inbox_folder_id or "").strip()
+    return {
+        "configured": bool(sa_path_value and folder_id_value),
+        "sa_path": sa_path_value,
+        "folder_id": folder_id_value,
+    }
+
+
+def _test_gdrive_connection(settings: AppSettings) -> dict[str, Any]:
+    state = _gdrive_connection_state(settings)
+    if not state["configured"]:
+        raise ValueError("Google Drive is not configured.")
+    sa_path = Path(str(state["sa_path"]))
+    folder_id = str(state["folder_id"])
+    service = build_drive_service(sa_path)
+    query = f"'{folder_id}' in parents and trashed=false"
+    response = (
+        service.files()
+        .list(
+            q=query,
+            fields="files(id,name,createdTime)",
+            pageSize=1,
+        )
+        .execute()
+    )
+    rows = response.get("files", []) or []
+    if rows:
+        first = rows[0]
+        name = str(first.get("name") or "").strip() or "(unnamed)"
+        file_id = str(first.get("id") or "").strip() or "unknown-id"
+        return {
+            "ok": True,
+            "message": f"Connected. Sample file: {name} ({file_id}).",
+        }
+    return {
+        "ok": True,
+        "message": "Connected. Inbox is reachable, but no files were found.",
+    }
 
 
 def _load_json_dict(path: Path) -> dict[str, Any]:
@@ -1114,6 +1173,29 @@ async def ui_recording_detail(
     )
 
 
+@ui_router.get("/ui/recordings/{recording_id}/progress", response_class=HTMLResponse)
+async def ui_recording_progress(request: Request, recording_id: str) -> Any:
+    rec = get_recording(recording_id, settings=_settings)
+    if rec is None:
+        return HTMLResponse("Not found", status_code=404)
+    progress_ratio = _safe_pipeline_progress(rec.get("pipeline_progress"))
+    progress_percent = int(round(progress_ratio * 100))
+    return templates.TemplateResponse(
+        request,
+        "partials/recording_progress.html",
+        {
+            "rec": rec,
+            "progress_ratio": progress_ratio,
+            "progress_percent": progress_percent,
+            "stage_code": str(rec.get("pipeline_stage") or "").strip() or "waiting",
+            "stage_label": _pipeline_stage_label(rec.get("pipeline_stage")),
+            "updated_at": str(rec.get("pipeline_updated_at") or "").strip(),
+            "warning": str(rec.get("last_warning") or "").strip(),
+            "is_processing": str(rec.get("status") or "") == RECORDING_STATUS_PROCESSING,
+        },
+    )
+
+
 # ---------------------------------------------------------------------------
 # Recording speaker assignment + snippet audio
 # ---------------------------------------------------------------------------
@@ -1514,14 +1596,27 @@ async def ui_queue(
 @ui_router.get("/connections", response_class=HTMLResponse)
 async def ui_connections(request: Request) -> Any:
     ms_state = await run_in_threadpool(ms_connection_state, _settings)
+    gdrive_state = _gdrive_connection_state(_settings)
     return templates.TemplateResponse(
         request,
         "connections.html",
         {
             "active": "connections",
             "ms": ms_state,
+            "gdrive": gdrive_state,
         },
     )
+
+
+@ui_router.post("/ui/connections/gdrive/test", response_class=HTMLResponse)
+async def ui_test_gdrive_connection() -> Any:
+    try:
+        result = await run_in_threadpool(_test_gdrive_connection, _settings)
+    except ValueError as exc:
+        return HTMLResponse(f"<span style='color:#92400e'>{exc}</span>")
+    except Exception as exc:
+        return HTMLResponse(f"<span style='color:#b42318'>Google Drive test failed: {exc}</span>")
+    return HTMLResponse(f"<span style='color:#14532d'>{result['message']}</span>")
 
 
 # ---------------------------------------------------------------------------

@@ -134,8 +134,8 @@ Requirement already satisfied: six>=1.5 in ./.venv-ci/lib/python3.12/site-packag
 Building wheels for collected packages: lan-transcriber
   Building editable for lan-transcriber (pyproject.toml): started
   Building editable for lan-transcriber (pyproject.toml): finished with status 'done'
-  Created wheel for lan-transcriber: filename=lan_transcriber-0.1.0-0.editable-py3-none-any.whl size=15408 sha256=e232c94b994a626b8ad63c4576a0f7268912b3ea645b1d7c6171eb0dd2e2380f
-  Stored in directory: /tmp/pip-ephem-wheel-cache-77giik7c/wheels/d5/8a/5c/f7178f7e49aa5ae12b2320ec66b5c310f4f2f63d1bd301b7fb
+  Created wheel for lan-transcriber: filename=lan_transcriber-0.1.0-0.editable-py3-none-any.whl size=15420 sha256=88ef2e201f4f1d7c4cf6b8395bf76ac1f8da3626f30b8306585dba4dfa7d42bc
+  Stored in directory: /tmp/pip-ephem-wheel-cache-ozijopq8/wheels/d5/8a/5c/f7178f7e49aa5ae12b2320ec66b5c310f4f2f63d1bd301b7fb
 Successfully built lan-transcriber
 Installing collected packages: lan-transcriber
   Attempting uninstall: lan-transcriber
@@ -144,17 +144,18 @@ Installing collected packages: lan-transcriber
       Successfully uninstalled lan-transcriber-0.1.0
 Successfully installed lan-transcriber-0.1.0
 All checks passed!
-........................................................................ [ 25%]
-........................................................................ [ 50%]
-........................................................................ [ 75%]
-........................................................................ [100%]
+........................................................................ [ 24%]
+........................................................................ [ 48%]
+........................................................................ [ 72%]
+........................................................................ [ 97%]
+........                                                                 [100%]
 =============================== warnings summary ===============================
 lan_transcriber/pipeline_steps/precheck.py:3
   /home/alexey/LAN_Transcriber/lan_transcriber/pipeline_steps/precheck.py:3: DeprecationWarning: 'audioop' is deprecated and slated for removal in Python 3.13
     import audioop
 
-lan_transcriber/pipeline_steps/orchestrator.py:42
-  /home/alexey/LAN_Transcriber/lan_transcriber/pipeline_steps/orchestrator.py:42: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+lan_transcriber/pipeline_steps/orchestrator.py:43
+  /home/alexey/LAN_Transcriber/lan_transcriber/pipeline_steps/orchestrator.py:43: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
     class Settings(BaseSettings):
 
 lan_app/config.py:20
@@ -206,7 +207,7 @@ lan_transcriber/pipeline.py                             5      0   100%
 lan_transcriber/pipeline_steps/__init__.py              7      0   100%
 lan_transcriber/pipeline_steps/artifacts.py            19      0   100%
 lan_transcriber/pipeline_steps/language.py             93     12    87%
-lan_transcriber/pipeline_steps/orchestrator.py        174     11    94%
+lan_transcriber/pipeline_steps/orchestrator.py        197     14    93%
 lan_transcriber/pipeline_steps/precheck.py            116     13    89%
 lan_transcriber/pipeline_steps/snippets.py            128     11    91%
 lan_transcriber/pipeline_steps/speaker_turns.py       185     21    89%
@@ -214,6 +215,6 @@ lan_transcriber/pipeline_steps/summary_builder.py     276     25    91%
 lan_transcriber/runtime_paths.py                       21      1    95%
 lan_transcriber/utils.py                               50      2    96%
 -----------------------------------------------------------------------
-TOTAL                                                1324    122    91%
-Required test coverage of 90% reached. Total coverage: 90.79%
-288 passed, 1 skipped, 7 warnings in 13.70s
+TOTAL                                                1347    125    91%
+Required test coverage of 90% reached. Total coverage: 90.72%
+296 passed, 1 skipped, 7 warnings in 13.96s

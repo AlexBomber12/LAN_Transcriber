@@ -36,6 +36,7 @@ from lan_app.constants import (
     RECORDING_STATUS_READY,
 )
 from lan_app.db import (
+    clear_recording_progress,
     connect,
     connect_db,
     create_job,
@@ -46,6 +47,7 @@ from lan_app.db import (
     get_recording,
     init_db,
     list_jobs,
+    set_recording_progress,
     set_recording_status,
     start_job,
     upsert_calendar_match,
@@ -118,6 +120,34 @@ def test_connect_sets_wal_and_busy_timeout(tmp_path: Path):
         busy_timeout = int(conn.execute("PRAGMA busy_timeout").fetchone()[0])
     assert journal_mode == "wal"
     assert busy_timeout == 4321
+
+
+def test_recording_progress_helpers_set_and_clear(tmp_path: Path):
+    cfg = _test_settings(tmp_path)
+    init_db(cfg)
+    create_recording(
+        "rec-progress-helpers-1",
+        source="test",
+        source_filename="progress.mp3",
+        settings=cfg,
+    )
+
+    assert set_recording_progress(
+        "rec-progress-helpers-1",
+        stage="stt",
+        progress=0.3,
+        settings=cfg,
+    )
+    after_set = get_recording("rec-progress-helpers-1", settings=cfg) or {}
+    assert after_set["pipeline_stage"] == "stt"
+    assert after_set["pipeline_progress"] == 0.3
+    assert after_set["pipeline_updated_at"]
+
+    assert clear_recording_progress("rec-progress-helpers-1", settings=cfg)
+    after_clear = get_recording("rec-progress-helpers-1", settings=cfg) or {}
+    assert after_clear["pipeline_stage"] is None
+    assert after_clear["pipeline_progress"] is None
+    assert after_clear["pipeline_updated_at"] is None
 
 
 def test_with_db_retry_retries_on_forced_lock(tmp_path: Path):
@@ -237,9 +267,10 @@ def test_placeholder_cleanup_migration_only_removes_legacy_placeholders(tmp_path
             status=JOB_STATUS_QUEUED,
         )
 
+    # Force re-running migration 011 (legacy placeholder cleanup) even when
+    # newer migrations exist.
     with connect(cfg) as conn:
-        current_version = int(conn.execute("PRAGMA user_version").fetchone()[0])
-        conn.execute(f"PRAGMA user_version = {current_version - 1}")
+        conn.execute("PRAGMA user_version = 10")
         conn.commit()
 
     init_db(cfg)
@@ -1527,10 +1558,18 @@ def test_worker_precheck_runs_pipeline_when_safe(tmp_path: Path, monkeypatch):
     )
     called = {"value": False}
     observed_llm: dict[str, object] = {}
+    observed_progress: dict[str, object] = {}
 
     async def _fake_run_pipeline(*_args, **kwargs):
         called["value"] = True
         observed_llm["value"] = kwargs.get("llm")
+        progress_callback = kwargs.get("progress_callback")
+        observed_progress["has_callback"] = callable(progress_callback)
+        if callable(progress_callback):
+            progress_callback("stt", 0.3)
+            mid = get_recording("rec-precheck-ok-1", settings=cfg) or {}
+            observed_progress["stage"] = mid.get("pipeline_stage")
+            observed_progress["progress"] = mid.get("pipeline_progress")
         return None
 
     monkeypatch.setattr("lan_app.worker_tasks.run_pipeline", _fake_run_pipeline)
@@ -1539,13 +1578,73 @@ def test_worker_precheck_runs_pipeline_when_safe(tmp_path: Path, monkeypatch):
     assert result["status"] == "ok"
     assert called["value"] is True
     assert isinstance(observed_llm["value"], LLMClient)
+    assert observed_progress["has_callback"] is True
+    assert observed_progress["stage"] == "stt"
+    assert observed_progress["progress"] == 0.3
 
     recording = get_recording("rec-precheck-ok-1", settings=cfg)
     job = get_job("job-precheck-ok-1", settings=cfg)
     assert recording is not None
     assert recording["status"] == RECORDING_STATUS_READY
+    assert recording["pipeline_stage"] is None
+    assert recording["pipeline_progress"] is None
+    assert recording["pipeline_updated_at"] is None
     assert job is not None
     assert job["status"] == JOB_STATUS_FINISHED
+
+
+def test_worker_clears_progress_when_pipeline_fails(tmp_path: Path, monkeypatch):
+    cfg = _test_settings(tmp_path)
+    monkeypatch.setenv("LAN_DATA_ROOT", str(cfg.data_root))
+    monkeypatch.setenv("LAN_RECORDINGS_ROOT", str(cfg.recordings_root))
+    monkeypatch.setenv("LAN_DB_PATH", str(cfg.db_path))
+    monkeypatch.setenv("LAN_PROM_SNAPSHOT_PATH", str(cfg.metrics_snapshot_path))
+    monkeypatch.setenv("LAN_MAX_JOB_ATTEMPTS", "1")
+
+    init_db(cfg)
+    create_recording(
+        "rec-progress-fail-1",
+        source="test",
+        source_filename="broken.wav",
+        settings=cfg,
+    )
+    create_job(
+        "job-progress-fail-1",
+        recording_id="rec-progress-fail-1",
+        job_type=JOB_TYPE_PRECHECK,
+        settings=cfg,
+    )
+
+    raw_audio = cfg.recordings_root / "rec-progress-fail-1" / "raw" / "audio.wav"
+    raw_audio.parent.mkdir(parents=True, exist_ok=True)
+    raw_audio.write_bytes(b"\x00")
+
+    monkeypatch.setattr("lan_app.worker_tasks._resolve_raw_audio_path", lambda *_a, **_k: raw_audio)
+    monkeypatch.setattr(
+        "lan_app.worker_tasks.run_precheck",
+        lambda *_a, **_k: PrecheckResult(
+            duration_sec=60.0,
+            speech_ratio=0.8,
+            quarantine_reason=None,
+        ),
+    )
+
+    async def _failing_run_pipeline(*_args, **kwargs):
+        progress_callback = kwargs.get("progress_callback")
+        if callable(progress_callback):
+            progress_callback("stt", 0.3)
+        raise RuntimeError("pipeline boom")
+
+    monkeypatch.setattr("lan_app.worker_tasks.run_pipeline", _failing_run_pipeline)
+
+    with pytest.raises(RuntimeError, match="pipeline boom"):
+        process_job("job-progress-fail-1", "rec-progress-fail-1", JOB_TYPE_PRECHECK)
+
+    recording = get_recording("rec-progress-fail-1", settings=cfg)
+    assert recording is not None
+    assert recording["pipeline_stage"] is None
+    assert recording["pipeline_progress"] is None
+    assert recording["pipeline_updated_at"] is None
 
 
 def test_worker_precheck_keeps_auto_summary_target_unset(tmp_path: Path, monkeypatch):
