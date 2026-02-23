@@ -112,7 +112,7 @@ Queue (in order)
 - Depends on: PR-SECURITY-01
 
 21) PR-PIPELINE-MODULAR-01: Split pipeline.py into testable modules + consolidate utils + robust LLM parsing with schema and raw artifacts
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-PIPELINE-MODULAR-01.md
 - Depends on: PR-WORKER-ROBUST-01
 

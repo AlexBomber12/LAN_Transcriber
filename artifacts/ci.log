@@ -134,8 +134,8 @@ Requirement already satisfied: six>=1.5 in ./.venv-ci/lib/python3.12/site-packag
 Building wheels for collected packages: lan-transcriber
   Building editable for lan-transcriber (pyproject.toml): started
   Building editable for lan-transcriber (pyproject.toml): finished with status 'done'
-  Created wheel for lan-transcriber: filename=lan_transcriber-0.1.0-0.editable-py3-none-any.whl size=15395 sha256=0e7d37b3e08fe4be2785d0a832c4570021cc87c47012da60a560ee2a96a86803
-  Stored in directory: /tmp/pip-ephem-wheel-cache-dccr4o76/wheels/d5/8a/5c/f7178f7e49aa5ae12b2320ec66b5c310f4f2f63d1bd301b7fb
+  Created wheel for lan-transcriber: filename=lan_transcriber-0.1.0-0.editable-py3-none-any.whl size=15395 sha256=cb651f28fc1befe0eecee9f68cb89827566e9fbc26bd12dc4962b15946004476
+  Stored in directory: /tmp/pip-ephem-wheel-cache-4_24t7df/wheels/d5/8a/5c/f7178f7e49aa5ae12b2320ec66b5c310f4f2f63d1bd301b7fb
 Successfully built lan-transcriber
 Installing collected packages: lan-transcriber
   Attempting uninstall: lan-transcriber
@@ -144,17 +144,17 @@ Installing collected packages: lan-transcriber
       Successfully uninstalled lan-transcriber-0.1.0
 Successfully installed lan-transcriber-0.1.0
 All checks passed!
-........................................................................ [ 27%]
-........................................................................ [ 55%]
-........................................................................ [ 83%]
-...........................................                              [100%]
+........................................................................ [ 25%]
+........................................................................ [ 50%]
+........................................................................ [ 76%]
+....................................................................     [100%]
 =============================== warnings summary ===============================
-lan_transcriber/pipeline.py:4
-  /home/alexey/LAN_Transcriber/lan_transcriber/pipeline.py:4: DeprecationWarning: 'audioop' is deprecated and slated for removal in Python 3.13
+lan_transcriber/pipeline_steps/precheck.py:3
+  /home/alexey/LAN_Transcriber/lan_transcriber/pipeline_steps/precheck.py:3: DeprecationWarning: 'audioop' is deprecated and slated for removal in Python 3.13
     import audioop
 
-lan_transcriber/pipeline.py:51
-  /home/alexey/LAN_Transcriber/lan_transcriber/pipeline.py:51: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+lan_transcriber/pipeline_steps/orchestrator.py:42
+  /home/alexey/LAN_Transcriber/lan_transcriber/pipeline_steps/orchestrator.py:42: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
     class Settings(BaseSettings):
 
 lan_app/config.py:20
@@ -193,17 +193,27 @@ lan_app/api.py:256
 ================================ tests coverage ================================
 _______________ coverage: platform linux, python 3.12.3-final-0 ________________
 
-Name                               Stmts   Miss  Cover
-------------------------------------------------------
-lan_transcriber/__init__.py            8      0   100%
-lan_transcriber/aliases.py            17      0   100%
-lan_transcriber/artifacts.py          66      4    94%
-lan_transcriber/llm_client.py        100     21    79%
-lan_transcriber/metrics.py            12      0   100%
-lan_transcriber/models.py             22      1    95%
-lan_transcriber/normalizer.py         25      0   100%
-lan_transcriber/runtime_paths.py      21      1    95%
-------------------------------------------------------
-TOTAL                                271     27    90%
-Required test coverage of 90% reached. Total coverage: 90.04%
-259 passed, 1 skipped, 7 warnings in 52.86s
+Name                                                Stmts   Miss  Cover
+-----------------------------------------------------------------------
+lan_transcriber/__init__.py                             8      0   100%
+lan_transcriber/aliases.py                             17      0   100%
+lan_transcriber/artifacts.py                           66      4    94%
+lan_transcriber/llm_client.py                         100     21    79%
+lan_transcriber/metrics.py                             12      0   100%
+lan_transcriber/models.py                              22      1    95%
+lan_transcriber/normalizer.py                          25      0   100%
+lan_transcriber/pipeline.py                             5      0   100%
+lan_transcriber/pipeline_steps/__init__.py              7      0   100%
+lan_transcriber/pipeline_steps/artifacts.py            19      0   100%
+lan_transcriber/pipeline_steps/language.py             93     12    87%
+lan_transcriber/pipeline_steps/orchestrator.py        174     11    94%
+lan_transcriber/pipeline_steps/precheck.py            116     13    89%
+lan_transcriber/pipeline_steps/snippets.py            128     11    91%
+lan_transcriber/pipeline_steps/speaker_turns.py       185     21    89%
+lan_transcriber/pipeline_steps/summary_builder.py     276     25    91%
+lan_transcriber/runtime_paths.py                       21      1    95%
+lan_transcriber/utils.py                               50      2    96%
+-----------------------------------------------------------------------
+TOTAL                                                1324    122    91%
+Required test coverage of 90% reached. Total coverage: 90.79%
+284 passed, 1 skipped, 7 warnings in 48.62s

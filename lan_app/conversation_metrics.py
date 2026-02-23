@@ -6,6 +6,8 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from lan_transcriber.artifacts import atomic_write_json
+from lan_transcriber.utils import normalise_language_code as _normalise_language_code_shared
+from lan_transcriber.utils import safe_float as _safe_float_shared
 
 from .config import AppSettings
 from .db import replace_participant_metrics, upsert_meeting_metrics
@@ -46,25 +48,11 @@ _TASK_CUES = (
 )
 
 def _safe_float(value: Any, *, default: float = 0.0) -> float:
-    try:
-        out = float(value)
-    except (TypeError, ValueError):
-        return default
-    if out < 0:
-        return default
-    return out
+    return _safe_float_shared(value, default=default, min_value=0.0)
 
 
 def _normalise_language_code(value: Any) -> str | None:
-    if not isinstance(value, str):
-        return None
-    raw = value.strip().lower()
-    if not raw:
-        return None
-    token = raw.replace("_", "-").split("-", 1)[0]
-    if len(token) == 2 and token.isalpha():
-        return token
-    return None
+    return _normalise_language_code_shared(value)
 
 
 def _normalise_turns(turns: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
