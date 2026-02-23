@@ -11,6 +11,8 @@ from lan_app.constants import (
     JOB_TYPE_PRECHECK,
     RECORDING_STATUS_NEEDS_REVIEW,
     RECORDING_STATUS_PROCESSING,
+    RECORDING_STATUS_QUEUED,
+    RECORDING_STATUS_READY,
 )
 from lan_app.db import connect, create_job, create_recording, get_job, get_recording, init_db
 from lan_app.reaper import run_stuck_job_reaper_once
@@ -124,6 +126,108 @@ def test_reaper_skips_stale_started_job_when_it_already_transitioned(
     assert summary["recovered_recordings"] == 0
     assert job["status"] == JOB_STATUS_STARTED
     assert recording["status"] == RECORDING_STATUS_PROCESSING
+
+
+def test_reaper_recovers_stale_started_job_when_recording_status_is_queued(
+    tmp_path: Path,
+):
+    cfg = _test_settings(tmp_path)
+    init_db(cfg)
+    create_recording(
+        "rec-reaper-stale-queued-1",
+        source="test",
+        source_filename="stale-queued.wav",
+        status=RECORDING_STATUS_QUEUED,
+        settings=cfg,
+    )
+    create_job(
+        "job-reaper-stale-queued-1",
+        recording_id="rec-reaper-stale-queued-1",
+        job_type=JOB_TYPE_PRECHECK,
+        status=JOB_STATUS_STARTED,
+        settings=cfg,
+        attempt=1,
+    )
+    with connect(cfg) as conn:
+        conn.execute(
+            """
+            UPDATE jobs
+            SET started_at = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                "2026-02-22T00:00:00Z",
+                "2026-02-22T00:00:00Z",
+                "job-reaper-stale-queued-1",
+            ),
+        )
+        conn.commit()
+
+    summary = run_stuck_job_reaper_once(
+        settings=cfg,
+        now=datetime(2026, 2, 23, 0, 0, 0, tzinfo=timezone.utc),
+    )
+
+    job = get_job("job-reaper-stale-queued-1", settings=cfg)
+    recording = get_recording("rec-reaper-stale-queued-1", settings=cfg)
+    assert job is not None
+    assert recording is not None
+    assert summary["stale_started_jobs"] == 1
+    assert summary["recovered_jobs"] == 1
+    assert summary["recovered_recordings"] == 1
+    assert job["status"] == JOB_STATUS_FAILED
+    assert recording["status"] == RECORDING_STATUS_NEEDS_REVIEW
+
+
+def test_reaper_does_not_downgrade_ready_recording_when_clearing_stale_started_job(
+    tmp_path: Path,
+):
+    cfg = _test_settings(tmp_path)
+    init_db(cfg)
+    create_recording(
+        "rec-reaper-stale-ready-1",
+        source="test",
+        source_filename="stale-ready.wav",
+        status=RECORDING_STATUS_READY,
+        settings=cfg,
+    )
+    create_job(
+        "job-reaper-stale-ready-1",
+        recording_id="rec-reaper-stale-ready-1",
+        job_type=JOB_TYPE_PRECHECK,
+        status=JOB_STATUS_STARTED,
+        settings=cfg,
+        attempt=1,
+    )
+    with connect(cfg) as conn:
+        conn.execute(
+            """
+            UPDATE jobs
+            SET started_at = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                "2026-02-22T00:00:00Z",
+                "2026-02-22T00:00:00Z",
+                "job-reaper-stale-ready-1",
+            ),
+        )
+        conn.commit()
+
+    summary = run_stuck_job_reaper_once(
+        settings=cfg,
+        now=datetime(2026, 2, 23, 0, 0, 0, tzinfo=timezone.utc),
+    )
+
+    job = get_job("job-reaper-stale-ready-1", settings=cfg)
+    recording = get_recording("rec-reaper-stale-ready-1", settings=cfg)
+    assert job is not None
+    assert recording is not None
+    assert summary["stale_started_jobs"] == 1
+    assert summary["recovered_jobs"] == 1
+    assert summary["recovered_recordings"] == 0
+    assert job["status"] == JOB_STATUS_FAILED
+    assert recording["status"] == RECORDING_STATUS_READY
 
 
 def test_reaper_recovers_processing_recording_without_started_job(tmp_path: Path):

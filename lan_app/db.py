@@ -757,7 +757,6 @@ def list_stale_started_jobs(
             FROM jobs AS j
             JOIN recordings AS r ON r.id = j.recording_id
             WHERE j.status = ?
-              AND r.status = ?
               AND j.started_at IS NOT NULL
               AND j.started_at < ?
             ORDER BY j.started_at ASC, j.created_at ASC
@@ -765,7 +764,6 @@ def list_stale_started_jobs(
             """,
             (
                 JOB_STATUS_STARTED,
-                RECORDING_STATUS_PROCESSING,
                 before_started_at,
                 safe_limit,
             ),
