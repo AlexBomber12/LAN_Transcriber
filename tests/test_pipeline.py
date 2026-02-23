@@ -178,6 +178,57 @@ async def test_tripled_dedup(tmp_path: Path, mocker):
 
 @pytest.mark.asyncio
 @respx.mock
+async def test_pipeline_emits_progress_stages_in_order(tmp_path: Path, mocker):
+    mocker.patch(
+        "whisperx.transcribe",
+        return_value=(
+            [{"start": 0.0, "end": 1.0, "text": "hello world team"}],
+            {"language": "en", "language_probability": 0.95},
+        ),
+    )
+    respx.post("http://llm:8000/v1/chat/completions").mock(
+        return_value=httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": "- summary"}}]},
+        ),
+    )
+    mocker.patch(
+        "transformers.pipeline",
+        lambda *a, **k: lambda text: [{"label": "positive", "score": 0.7}],
+    )
+    cfg = pipeline.Settings(
+        speaker_db=tmp_path / "db.yaml",
+        tmp_root=tmp_path,
+        recordings_root=tmp_path / "recordings",
+    )
+    events: list[tuple[str, float]] = []
+
+    def _progress(stage: str, progress: float) -> None:
+        events.append((stage, progress))
+
+    await pipeline.run_pipeline(
+        fake_audio(tmp_path, "progress.mp3"),
+        cfg,
+        llm_client.LLMClient(),
+        DummyDiariser(),
+        precheck=precheck_ok(),
+        progress_callback=_progress,
+    )
+
+    assert events == [
+        ("precheck", 0.05),
+        ("stt", 0.30),
+        ("diarize", 0.50),
+        ("align", 0.60),
+        ("language", 0.70),
+        ("llm", 0.85),
+        ("metrics", 0.95),
+        ("done", 1.0),
+    ]
+
+
+@pytest.mark.asyncio
+@respx.mock
 async def test_alias_persist(tmp_path: Path, mocker):
     mocker.patch(
         "whisperx.transcribe",

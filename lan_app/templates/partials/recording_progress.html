@@ -1,0 +1,21 @@
+<div style="border:1px solid #ccd;background:#fff;padding:8px 10px">
+  <div style="display:flex;gap:8px;align-items:center;justify-content:space-between;margin-bottom:6px;font-size:12px">
+    <span><strong>Pipeline:</strong> {{ stage_label }}</span>
+    <span>{{ progress_percent }}%</span>
+  </div>
+  <div style="width:100%;max-width:520px;height:14px;border:1px solid #99b;background:#eef2ff">
+    <div style="height:100%;background:#4a6080;width:{{ progress_percent }}%"></div>
+  </div>
+  <div style="font-size:11px;color:#555;margin-top:5px">
+    stage=<code>{{ stage_code }}</code>
+    {% if updated_at %}
+    &nbsp;updated={{ updated_at[:19].replace('T', ' ') }}
+    {% endif %}
+    {% if warning %}
+    &nbsp;warning={{ warning }}
+    {% endif %}
+    {% if not is_processing %}
+    &nbsp;status={{ rec.status }}
+    {% endif %}
+  </div>
+</div>

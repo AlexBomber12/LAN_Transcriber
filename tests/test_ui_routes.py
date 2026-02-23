@@ -26,6 +26,7 @@ from lan_app.db import (
     list_project_keyword_weights,
     replace_participant_metrics,
     list_voice_profiles,
+    set_recording_progress,
     set_speaker_assignment,
     upsert_calendar_match,
     upsert_meeting_metrics,
@@ -36,6 +37,7 @@ from lan_app.constants import (
     JOB_TYPE_PRECHECK,
     JOB_TYPE_STT,
     RECORDING_STATUS_NEEDS_REVIEW,
+    RECORDING_STATUS_PROCESSING,
     RECORDING_STATUS_READY,
 )
 
@@ -174,6 +176,54 @@ def test_recording_detail_overview(seeded_client):
     assert "rec-ui-1" in r.text
     assert "meeting.mp3" in r.text
     assert "Ready" in r.text
+
+
+def test_recording_detail_processing_polls_progress(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    init_db(cfg)
+    create_recording(
+        "rec-ui-processing-1",
+        source="drive",
+        source_filename="processing.mp3",
+        status=RECORDING_STATUS_PROCESSING,
+        settings=cfg,
+    )
+
+    c = TestClient(api.app, follow_redirects=True)
+    r = c.get("/recordings/rec-ui-processing-1")
+    assert r.status_code == 200
+    assert "/ui/recordings/rec-ui-processing-1/progress" in r.text
+    assert "every 2s" in r.text
+
+
+def test_recording_progress_endpoint_renders_expected_html(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    init_db(cfg)
+    create_recording(
+        "rec-ui-progress-1",
+        source="drive",
+        source_filename="progress.mp3",
+        status=RECORDING_STATUS_PROCESSING,
+        settings=cfg,
+    )
+    set_recording_progress(
+        "rec-ui-progress-1",
+        stage="diarize",
+        progress=0.5,
+        settings=cfg,
+    )
+
+    c = TestClient(api.app, follow_redirects=True)
+    r = c.get("/ui/recordings/rec-ui-progress-1/progress")
+    assert r.status_code == 200
+    assert "Pipeline:" in r.text
+    assert "Diarize" in r.text
+    assert "50%" in r.text
+    assert "stage=<code>diarize</code>" in r.text
 
 
 def test_recording_detail_log_tab(seeded_client):
@@ -820,6 +870,62 @@ def test_connections(client):
     assert r.status_code == 200
     assert "Google Drive" in r.text
     assert "Microsoft Graph" in r.text
+
+
+def test_connections_shows_configured_gdrive(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    cfg.gdrive_sa_json_path = cfg.data_root / "secrets" / "gdrive_sa.json"
+    cfg.gdrive_inbox_folder_id = "folder-abc"
+    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    monkeypatch.setattr(
+        ui_routes,
+        "ms_connection_state",
+        lambda _settings: {"configured": False, "status": "not_configured"},
+    )
+    init_db(cfg)
+
+    client = TestClient(api.app, follow_redirects=True)
+    resp = client.get("/connections")
+    assert resp.status_code == 200
+    assert "Configured" in resp.text
+    assert "folder-abc" in resp.text
+    assert "Test connection" in resp.text
+    assert "Run ingest now" in resp.text
+
+
+def test_ui_test_gdrive_connection_endpoint_success(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    init_db(cfg)
+    monkeypatch.setattr(
+        ui_routes,
+        "_test_gdrive_connection",
+        lambda _settings: {"ok": True, "message": "Connected. Sample file: demo.mp3 (id-1)."},
+    )
+
+    client = TestClient(api.app, follow_redirects=True)
+    resp = client.post("/ui/connections/gdrive/test")
+    assert resp.status_code == 200
+    assert "Connected. Sample file: demo.mp3 (id-1)." in resp.text
+
+
+def test_ui_test_gdrive_connection_endpoint_not_configured(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    init_db(cfg)
+
+    def _boom(_settings):
+        raise ValueError("Google Drive is not configured.")
+
+    monkeypatch.setattr(ui_routes, "_test_gdrive_connection", _boom)
+
+    client = TestClient(api.app, follow_redirects=True)
+    resp = client.post("/ui/connections/gdrive/test")
+    assert resp.status_code == 200
+    assert "Google Drive is not configured." in resp.text
 
 
 def test_ui_root_redirects_to_login_when_auth_enabled(tmp_path, monkeypatch):
