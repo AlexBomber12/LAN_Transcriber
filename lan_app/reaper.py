@@ -15,10 +15,10 @@ from .constants import (
 from .db import (
     fail_job_if_queued,
     fail_job_if_started,
-    has_started_job_for_recording,
     list_processing_recordings_without_started_job,
     list_stale_started_jobs,
     set_recording_status_if_current_in,
+    set_recording_status_if_current_in_and_no_started_job,
 )
 from .jobs import cancel_pending_queue_job
 
@@ -122,10 +122,7 @@ def run_stuck_job_reaper_once(
             # Best-effort dequeue to avoid executing a recovered queued job later.
             cancel_pending_queue_job(active_job_id, settings=cfg)
             recovered_job_ids.append(active_job_id)
-        if has_started_job_for_recording(recording_id, settings=cfg):
-            # Another worker started processing after selection; avoid downgrading it.
-            continue
-        if set_recording_status_if_current_in(
+        if set_recording_status_if_current_in_and_no_started_job(
             recording_id,
             RECORDING_STATUS_NEEDS_REVIEW,
             current_statuses=_ORPHAN_DOWNGRADE_STATUSES,

@@ -552,7 +552,7 @@ def test_reaper_skips_orphan_downgrade_if_status_changes_after_selection(
         "lan_app.reaper.cancel_pending_queue_job",
         lambda *_a, **_k: True,
     )
-    original = db_module.set_recording_status_if_current_in
+    original = db_module.set_recording_status_if_current_in_and_no_started_job
 
     def _racy_set_status(*args, **kwargs):
         set_recording_status(
@@ -562,7 +562,10 @@ def test_reaper_skips_orphan_downgrade_if_status_changes_after_selection(
         )
         return original(*args, **kwargs)
 
-    monkeypatch.setattr("lan_app.reaper.set_recording_status_if_current_in", _racy_set_status)
+    monkeypatch.setattr(
+        "lan_app.reaper.set_recording_status_if_current_in_and_no_started_job",
+        _racy_set_status,
+    )
 
     summary = run_stuck_job_reaper_once(
         settings=cfg,
