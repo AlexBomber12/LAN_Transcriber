@@ -31,6 +31,14 @@ class AppSettings(BaseSettings):
         ),
     )
     db_path: Path = default_data_root() / "db" / "app.db"
+    sqlite_busy_timeout_ms: int = Field(
+        default=30000,
+        ge=0,
+        validation_alias=AliasChoices(
+            "LAN_SQLITE_BUSY_TIMEOUT_MS",
+            "SQLITE_BUSY_TIMEOUT_MS",
+        ),
+    )
     redis_url: str = Field(
         default="redis://redis:6379/0",
         validation_alias=AliasChoices("LAN_REDIS_URL", "REDIS_URL"),

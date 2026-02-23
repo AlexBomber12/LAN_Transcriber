@@ -4,7 +4,8 @@ from datetime import datetime, timezone
 import json
 from pathlib import Path
 import sqlite3
-from typing import Any, Sequence
+import time
+from typing import Any, Callable, Sequence, TypeVar
 
 from .config import AppSettings
 from .constants import (
@@ -21,226 +22,14 @@ from .constants import (
     RECORDING_STATUS_QUARANTINE,
 )
 
-
-def _quoted(values: tuple[str, ...]) -> str:
-    return ", ".join(f"'{value}'" for value in values)
-
-
-_RECORDING_STATUSES_SQL = _quoted(RECORDING_STATUSES)
-_JOB_STATUSES_SQL = _quoted(JOB_STATUSES)
-_JOB_TYPES_SQL = _quoted(JOB_TYPES)
 _PROJECT_ASSIGNMENT_SOURCES = {"manual", "auto"}
-
-_MIGRATIONS: tuple[str, ...] = (
-    f"""
-    CREATE TABLE IF NOT EXISTS recordings (
-        id TEXT PRIMARY KEY,
-        source TEXT NOT NULL,
-        source_filename TEXT NOT NULL,
-        captured_at TEXT NOT NULL,
-        duration_sec INTEGER,
-        status TEXT NOT NULL CHECK(status IN ({_RECORDING_STATUSES_SQL})),
-        quarantine_reason TEXT,
-        language_auto TEXT,
-        language_override TEXT,
-        project_id INTEGER,
-        onenote_page_id TEXT,
-        drive_file_id TEXT,
-        drive_md5 TEXT,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL,
-        FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE SET NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS jobs (
-        id TEXT PRIMARY KEY,
-        recording_id TEXT NOT NULL,
-        type TEXT NOT NULL CHECK(type IN ({_JOB_TYPES_SQL})),
-        status TEXT NOT NULL CHECK(status IN ({_JOB_STATUSES_SQL})),
-        attempt INTEGER NOT NULL DEFAULT 0,
-        error TEXT,
-        started_at TEXT,
-        finished_at TEXT,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL,
-        FOREIGN KEY(recording_id) REFERENCES recordings(id) ON DELETE CASCADE
-    );
-
-    CREATE TABLE IF NOT EXISTS projects (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        name TEXT NOT NULL UNIQUE,
-        onenote_section_id TEXT,
-        onenote_notebook_id TEXT,
-        auto_publish INTEGER NOT NULL DEFAULT 0 CHECK(auto_publish IN (0, 1))
-    );
-
-    CREATE TABLE IF NOT EXISTS voice_profiles (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        display_name TEXT NOT NULL,
-        notes TEXT
-    );
-
-    CREATE TABLE IF NOT EXISTS speaker_assignments (
-        recording_id TEXT NOT NULL,
-        diar_speaker_label TEXT NOT NULL,
-        voice_profile_id INTEGER NOT NULL,
-        confidence REAL NOT NULL,
-        PRIMARY KEY(recording_id, diar_speaker_label),
-        FOREIGN KEY(recording_id) REFERENCES recordings(id) ON DELETE CASCADE,
-        FOREIGN KEY(voice_profile_id) REFERENCES voice_profiles(id) ON DELETE CASCADE
-    );
-
-    CREATE TABLE IF NOT EXISTS calendar_matches (
-        recording_id TEXT PRIMARY KEY,
-        selected_event_id TEXT,
-        selected_confidence REAL,
-        candidates_json TEXT NOT NULL DEFAULT '[]',
-        FOREIGN KEY(recording_id) REFERENCES recordings(id) ON DELETE CASCADE
-    );
-
-    CREATE TABLE IF NOT EXISTS meeting_metrics (
-        recording_id TEXT PRIMARY KEY,
-        json TEXT NOT NULL DEFAULT '{{}}',
-        FOREIGN KEY(recording_id) REFERENCES recordings(id) ON DELETE CASCADE
-    );
-
-    CREATE TABLE IF NOT EXISTS participant_metrics (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        recording_id TEXT NOT NULL,
-        voice_profile_id INTEGER,
-        diar_speaker_label TEXT NOT NULL,
-        json TEXT NOT NULL DEFAULT '{{}}',
-        FOREIGN KEY(recording_id) REFERENCES recordings(id) ON DELETE CASCADE,
-        FOREIGN KEY(voice_profile_id) REFERENCES voice_profiles(id) ON DELETE SET NULL
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_recordings_status ON recordings(status);
-    CREATE INDEX IF NOT EXISTS idx_recordings_created_at ON recordings(created_at DESC);
-    CREATE INDEX IF NOT EXISTS idx_jobs_recording_id ON jobs(recording_id);
-    CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);
-    CREATE INDEX IF NOT EXISTS idx_jobs_created_at ON jobs(created_at DESC);
-    """,
-    """
-    ALTER TABLE recordings ADD COLUMN target_summary_language TEXT;
-    """,
-    """
-    CREATE TABLE IF NOT EXISTS voice_samples (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        voice_profile_id INTEGER NOT NULL,
-        recording_id TEXT,
-        diar_speaker_label TEXT,
-        snippet_path TEXT NOT NULL,
-        created_at TEXT NOT NULL,
-        FOREIGN KEY(voice_profile_id) REFERENCES voice_profiles(id) ON DELETE CASCADE,
-        FOREIGN KEY(recording_id) REFERENCES recordings(id) ON DELETE CASCADE
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_speaker_assignments_recording_id
-        ON speaker_assignments(recording_id);
-    CREATE INDEX IF NOT EXISTS idx_voice_samples_profile_id ON voice_samples(voice_profile_id);
-    CREATE INDEX IF NOT EXISTS idx_voice_samples_recording_id ON voice_samples(recording_id);
-    """,
-    """
-    ALTER TABLE voice_samples RENAME TO voice_samples_old;
-
-    CREATE TABLE voice_samples (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        voice_profile_id INTEGER NOT NULL,
-        recording_id TEXT,
-        diar_speaker_label TEXT,
-        snippet_path TEXT NOT NULL,
-        created_at TEXT NOT NULL,
-        FOREIGN KEY(voice_profile_id) REFERENCES voice_profiles(id) ON DELETE CASCADE,
-        FOREIGN KEY(recording_id) REFERENCES recordings(id) ON DELETE CASCADE
-    );
-
-    INSERT INTO voice_samples (
-        id,
-        voice_profile_id,
-        recording_id,
-        diar_speaker_label,
-        snippet_path,
-        created_at
-    )
-    SELECT
-        id,
-        voice_profile_id,
-        recording_id,
-        diar_speaker_label,
-        snippet_path,
-        created_at
-    FROM voice_samples_old;
-
-    DROP TABLE voice_samples_old;
-
-    CREATE INDEX IF NOT EXISTS idx_voice_samples_profile_id ON voice_samples(voice_profile_id);
-    CREATE INDEX IF NOT EXISTS idx_voice_samples_recording_id ON voice_samples(recording_id);
-    """,
-    """
-    ALTER TABLE recordings ADD COLUMN onenote_page_url TEXT;
-    """,
-    """
-    ALTER TABLE recordings ADD COLUMN suggested_project_id INTEGER;
-    """,
-    """
-    ALTER TABLE recordings ADD COLUMN routing_confidence REAL;
-    """,
-    """
-    ALTER TABLE recordings ADD COLUMN routing_rationale_json TEXT NOT NULL DEFAULT '[]';
-    """,
-    """
-    CREATE INDEX IF NOT EXISTS idx_recordings_suggested_project_id
-        ON recordings(suggested_project_id);
-
-    CREATE TABLE IF NOT EXISTS routing_training_examples (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        recording_id TEXT NOT NULL,
-        project_id INTEGER NOT NULL,
-        calendar_subject_tokens_json TEXT NOT NULL DEFAULT '[]',
-        tags_json TEXT NOT NULL DEFAULT '[]',
-        voice_profile_ids_json TEXT NOT NULL DEFAULT '[]',
-        created_at TEXT NOT NULL,
-        FOREIGN KEY(recording_id) REFERENCES recordings(id) ON DELETE CASCADE,
-        FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_routing_training_examples_project_id
-        ON routing_training_examples(project_id);
-    CREATE INDEX IF NOT EXISTS idx_routing_training_examples_recording_id
-        ON routing_training_examples(recording_id);
-
-    CREATE TABLE IF NOT EXISTS routing_project_keyword_weights (
-        project_id INTEGER NOT NULL,
-        keyword TEXT NOT NULL,
-        weight REAL NOT NULL,
-        updated_at TEXT NOT NULL,
-        PRIMARY KEY(project_id, keyword),
-        FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_routing_project_keyword_weights_project_id
-        ON routing_project_keyword_weights(project_id);
-    """,
-    """
-    ALTER TABLE recordings ADD COLUMN project_assignment_source TEXT;
-
-    UPDATE recordings
-    SET project_assignment_source = 'manual'
-    WHERE project_id IS NOT NULL AND project_assignment_source IS NULL;
-    """,
-    """
-    DELETE FROM jobs
-    WHERE type IN ('stt', 'diarize', 'align', 'language', 'llm', 'metrics')
-      AND status = 'queued'
-      AND started_at IS NULL
-      AND finished_at IS NULL
-      AND (
-          SELECT (julianday(jobs.created_at) - julianday(recordings.created_at)) * 86400.0
-          FROM recordings
-          WHERE recordings.id = jobs.recording_id
-      ) BETWEEN 0.0 AND 30.0;
-    """,
-)
+_MIGRATIONS_DIR = Path(__file__).with_name("migrations")
+_SQLITE_CONNECT_TIMEOUT_SECONDS = 30
+_DEFAULT_SQLITE_BUSY_TIMEOUT_MS = 30_000
+_DEFAULT_DB_RETRIES = 5
+_DEFAULT_DB_BASE_SLEEP_MS = 50
+_LOCK_ERROR_MARKERS = ("locked", "busy")
+_T = TypeVar("_T")
 
 _UNSET = object()
 
@@ -307,31 +96,106 @@ def _normalise_keyword(value: object) -> str:
     return " ".join(str(value).strip().lower().split())
 
 
+def _is_lock_or_busy_error(error: sqlite3.OperationalError) -> bool:
+    message = str(error).strip().lower()
+    return any(marker in message for marker in _LOCK_ERROR_MARKERS)
+
+
+def with_db_retry(
+    fn: Callable[[], _T],
+    *,
+    retries: int = _DEFAULT_DB_RETRIES,
+    base_sleep_ms: int = _DEFAULT_DB_BASE_SLEEP_MS,
+) -> _T:
+    attempts = max(0, int(retries))
+    sleep_ms = max(0, int(base_sleep_ms))
+    for attempt in range(attempts + 1):
+        try:
+            return fn()
+        except sqlite3.OperationalError as error:
+            if attempt >= attempts or not _is_lock_or_busy_error(error):
+                raise
+            delay_seconds = (sleep_ms * (attempt + 1)) / 1000.0
+            time.sleep(delay_seconds)
+    raise RuntimeError("unreachable")
+
+
+def _migration_files() -> list[tuple[int, Path]]:
+    if not _MIGRATIONS_DIR.exists():
+        raise FileNotFoundError(f"Migrations directory not found: {_MIGRATIONS_DIR}")
+    out: list[tuple[int, Path]] = []
+    for path in sorted(_MIGRATIONS_DIR.glob("*.sql")):
+        prefix, _, _ = path.name.partition("_")
+        if not prefix.isdigit():
+            continue
+        out.append((int(prefix), path))
+    versions = [version for version, _ in out]
+    if len(set(versions)) != len(versions):
+        raise ValueError("Duplicate migration version detected")
+    return sorted(out, key=lambda item: item[0])
+
+
+def _read_user_version(conn: sqlite3.Connection) -> int:
+    return int(conn.execute("PRAGMA user_version").fetchone()[0])
+
+
+def connect_db(
+    path: Path,
+    *,
+    timeout: float = _SQLITE_CONNECT_TIMEOUT_SECONDS,
+    busy_timeout_ms: int = _DEFAULT_SQLITE_BUSY_TIMEOUT_MS,
+) -> sqlite3.Connection:
+    db_file = Path(path)
+    db_file.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(db_file, timeout=timeout)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA journal_mode = WAL")
+    conn.execute("PRAGMA synchronous = NORMAL")
+    conn.execute(f"PRAGMA busy_timeout = {max(0, int(busy_timeout_ms))}")
+    return conn
+
+
 def db_path(settings: AppSettings | None = None) -> Path:
     cfg = settings or AppSettings()
     return cfg.db_path
 
 
-def connect(settings: AppSettings | None = None) -> sqlite3.Connection:
+def connect(
+    settings: AppSettings | None = None,
+    *,
+    timeout: float = _SQLITE_CONNECT_TIMEOUT_SECONDS,
+) -> sqlite3.Connection:
     cfg = settings or AppSettings()
-    cfg.db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(cfg.db_path, timeout=30)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
-    conn.execute("PRAGMA journal_mode = WAL")
-    return conn
+    return connect_db(
+        cfg.db_path,
+        timeout=timeout,
+        busy_timeout_ms=cfg.sqlite_busy_timeout_ms,
+    )
 
 
 def init_db(settings: AppSettings | None = None) -> Path:
     cfg = settings or AppSettings()
+    migrations = _migration_files()
     with connect(cfg) as conn:
-        current_version = int(conn.execute("PRAGMA user_version").fetchone()[0])
-        for target_version, sql in enumerate(_MIGRATIONS, start=1):
-            if target_version <= current_version:
-                continue
-            conn.executescript(sql)
-            conn.execute(f"PRAGMA user_version = {target_version}")
-        conn.commit()
+        current_version = _read_user_version(conn)
+
+    for target_version, migration_path in migrations:
+        if target_version <= current_version:
+            continue
+        migration_sql = migration_path.read_text(encoding="utf-8")
+
+        def _apply_migration() -> int:
+            with connect(cfg) as conn:
+                live_version = _read_user_version(conn)
+                if live_version >= target_version:
+                    return live_version
+                conn.executescript(migration_sql)
+                conn.execute(f"PRAGMA user_version = {target_version}")
+                conn.commit()
+                return target_version
+
+        current_version = with_db_retry(_apply_migration)
     return cfg.db_path
 
 
@@ -466,22 +330,26 @@ def set_recording_status(
     init_db(settings)
     _validate_recording_status(status)
     now = _utc_now()
-    with connect(settings) as conn:
-        updated = conn.execute(
-            """
-            UPDATE recordings
-            SET status = ?, quarantine_reason = ?, updated_at = ?
-            WHERE id = ?
-            """,
-            (
-                status,
-                quarantine_reason if status == RECORDING_STATUS_QUARANTINE else None,
-                now,
-                recording_id,
-            ),
-        )
-        conn.commit()
-    return updated.rowcount > 0
+
+    def _update() -> bool:
+        with connect(settings) as conn:
+            updated = conn.execute(
+                """
+                UPDATE recordings
+                SET status = ?, quarantine_reason = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    status,
+                    quarantine_reason if status == RECORDING_STATUS_QUARANTINE else None,
+                    now,
+                    recording_id,
+                ),
+            )
+            conn.commit()
+            return updated.rowcount > 0
+
+    return with_db_retry(_update)
 
 
 def set_recording_status_if_current_in(
@@ -787,31 +655,35 @@ def create_job(
     _validate_job_type(job_type)
     _validate_job_status(status)
     now = _utc_now()
-    with connect(settings) as conn:
-        conn.execute(
-            """
-            INSERT INTO jobs (
-                id, recording_id, type, status, attempt, error,
-                started_at, finished_at, created_at, updated_at
+
+    def _create() -> dict[str, Any]:
+        with connect(settings) as conn:
+            conn.execute(
+                """
+                INSERT INTO jobs (
+                    id, recording_id, type, status, attempt, error,
+                    started_at, finished_at, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    job_id,
+                    recording_id,
+                    job_type,
+                    status,
+                    attempt,
+                    error,
+                    None,
+                    None,
+                    now,
+                    now,
+                ),
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                job_id,
-                recording_id,
-                job_type,
-                status,
-                attempt,
-                error,
-                None,
-                None,
-                now,
-                now,
-            ),
-        )
-        row = conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
-        conn.commit()
-    return _as_dict(row) or {}
+            row = conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
+            conn.commit()
+            return _as_dict(row) or {}
+
+    return with_db_retry(_create)
 
 
 def get_job(
@@ -1085,23 +957,27 @@ def start_job(
 ) -> bool:
     init_db(settings)
     now = _utc_now()
-    with connect(settings) as conn:
-        updated = conn.execute(
-            """
-            UPDATE jobs
-            SET status = ?, attempt = attempt + 1, error = NULL, started_at = ?, finished_at = NULL, updated_at = ?
-            WHERE id = ? AND status = ?
-            """,
-            (
-                JOB_STATUS_STARTED,
-                now,
-                now,
-                job_id,
-                JOB_STATUS_QUEUED,
-            ),
-        )
-        conn.commit()
-    return updated.rowcount > 0
+
+    def _start() -> bool:
+        with connect(settings) as conn:
+            updated = conn.execute(
+                """
+                UPDATE jobs
+                SET status = ?, attempt = attempt + 1, error = NULL, started_at = ?, finished_at = NULL, updated_at = ?
+                WHERE id = ? AND status = ?
+                """,
+                (
+                    JOB_STATUS_STARTED,
+                    now,
+                    now,
+                    job_id,
+                    JOB_STATUS_QUEUED,
+                ),
+            )
+            conn.commit()
+            return updated.rowcount > 0
+
+    return with_db_retry(_start)
 
 
 def requeue_job(
@@ -1957,22 +1833,28 @@ def _set_job_terminal_state(
     if status not in (JOB_STATUS_FINISHED, JOB_STATUS_FAILED):
         raise ValueError(f"Unsupported terminal state: {status}")
     now = _utc_now()
-    with connect(settings) as conn:
-        updated = conn.execute(
-            """
-            UPDATE jobs
-            SET status = ?, error = ?, finished_at = ?, updated_at = ?
-            WHERE id = ?
-            """,
-            (status, error, now, now, job_id),
-        )
-        conn.commit()
-    return updated.rowcount > 0
+
+    def _set_state() -> bool:
+        with connect(settings) as conn:
+            updated = conn.execute(
+                """
+                UPDATE jobs
+                SET status = ?, error = ?, finished_at = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (status, error, now, now, job_id),
+            )
+            conn.commit()
+            return updated.rowcount > 0
+
+    return with_db_retry(_set_state)
 
 
 __all__ = [
     "db_path",
+    "connect_db",
     "connect",
+    "with_db_retry",
     "init_db",
     "create_recording",
     "get_recording",

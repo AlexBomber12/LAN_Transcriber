@@ -117,7 +117,7 @@ Queue (in order)
 - Depends on: PR-WORKER-ROBUST-01
 
 22) PR-DB-RESILIENCE-01: SQLite resilience: busy timeout, retry-on-locked, migration files, safer connection management
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-DB-RESILIENCE-01.md
 - Depends on: PR-PIPELINE-MODULAR-01
 
