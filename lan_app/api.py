@@ -5,8 +5,9 @@ from contextlib import asynccontextmanager, suppress
 import logging
 import shutil
 from typing import List
+from uuid import uuid4
 
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -28,10 +29,13 @@ from .config import AppSettings
 from .constants import (
     DEFAULT_REQUEUE_JOB_TYPE,
     JOB_STATUSES,
+    JOB_TYPE_PRECHECK,
     RECORDING_STATUSES,
+    RECORDING_STATUS_QUEUED,
     RECORDING_STATUS_QUARANTINE,
 )
 from .db import (
+    create_recording,
     delete_recording,
     get_recording,
     init_db,
@@ -64,6 +68,13 @@ from .ms_graph import (
 from .onenote import PublishPreconditionError, publish_recording_to_onenote
 from .ops import run_retention_cleanup
 from .reaper import run_stuck_job_reaper_once
+from .uploads import (
+    ALLOWED_UPLOAD_EXTENSIONS,
+    infer_captured_at,
+    safe_filename,
+    suffix_from_name,
+    write_upload_to_path,
+)
 from .ui_routes import _STATIC_DIR, ui_router
 
 ALIAS_PATH = aliases.ALIAS_PATH
@@ -491,6 +502,64 @@ async def api_list_jobs(
         "limit": limit,
         "offset": offset,
     }
+
+
+@app.post("/api/uploads")
+async def api_upload_file(file: UploadFile = File(...)) -> dict[str, object]:
+    recording_id = f"trs_{uuid4().hex[:8]}"
+    ext = suffix_from_name(file.filename or "")
+    if ext not in ALLOWED_UPLOAD_EXTENSIONS:
+        raise HTTPException(status_code=422, detail=f"Unsupported file extension: {ext}")
+
+    recording_dir = _settings.recordings_root / recording_id
+    raw_dir = recording_dir / "raw"
+    dest = raw_dir / f"audio{ext}"
+    completed = False
+
+    try:
+        bytes_written = write_upload_to_path(
+            file,
+            dest,
+            max_bytes=_settings.upload_max_bytes,
+        )
+        captured_at = infer_captured_at(file.filename or "")
+        create_recording(
+            recording_id,
+            source="upload",
+            source_filename=safe_filename(file.filename or ""),
+            captured_at=captured_at,
+            status=RECORDING_STATUS_QUEUED,
+            settings=_settings,
+        )
+        try:
+            job = enqueue_recording_job(
+                recording_id,
+                job_type=JOB_TYPE_PRECHECK,
+                settings=_settings,
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail=f"Queue unavailable: {exc}")
+
+        completed = True
+        return {
+            "recording_id": recording_id,
+            "job_id": job.job_id,
+            "captured_at": captured_at,
+            "bytes_written": bytes_written,
+        }
+    except ValueError as exc:
+        message = str(exc)
+        if message == "max upload size exceeded":
+            raise HTTPException(status_code=413, detail=message)
+        raise HTTPException(status_code=422, detail=message)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Upload failed: {exc}")
+    finally:
+        await file.close()
+        if not completed and recording_dir.exists():
+            shutil.rmtree(recording_dir, ignore_errors=True)
 
 
 @app.post("/api/actions/ingest")

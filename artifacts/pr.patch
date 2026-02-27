@@ -1,590 +1,382 @@
-diff --git a/.env.example b/.env.example
-index 8e1fc22..88dd210 100644
---- a/.env.example
-+++ b/.env.example
-@@ -11,6 +11,7 @@ LLM_TIMEOUT_SECONDS=30
- # LLM_MOCK_RESPONSE_PATH=/data/secrets/mock_llm_response.json
- 
- # Runtime paths (LAN_ prefixed)
-+LAN_ENV=dev
- LAN_DATA_ROOT=/data
- LAN_RECORDINGS_ROOT=/data/recordings
- LAN_SPEAKER_DB=/data/db/speaker_bank.yaml
-diff --git a/README.md b/README.md
-index 8d7269b..2106685 100644
---- a/README.md
-+++ b/README.md
-@@ -87,6 +87,7 @@ models are cached across runs.
- 
- | Variable | Description |
- | --- | --- |
-+| `LAN_ENV` | Runtime mode: `dev` (default), `staging`, or `prod` |
- | `LAN_DB_PATH` | SQLite database path (default `/data/db/app.db`) |
- | `LAN_REDIS_URL` | Redis endpoint for the RQ queue |
- | `LAN_RQ_QUEUE_NAME` | Queue name consumed by the worker |
-@@ -103,6 +104,13 @@ models are cached across runs.
- | `MS_CLIENT_ID` | Microsoft app registration client ID |
- | `MS_SCOPES` | Graph scopes (default: `offline_access User.Read Notes.ReadWrite Calendars.Read`) |
- 
-+`LAN_ENV` controls startup validation:
-+
-+- `LAN_ENV=dev`: missing `LAN_REDIS_URL` and/or `LLM_BASE_URL` is allowed with warnings; dev defaults are used (`redis://127.0.0.1:6379/0`, `http://127.0.0.1:8000`).
-+- `LAN_ENV=staging` or `LAN_ENV=prod`: `LAN_REDIS_URL` and `LLM_BASE_URL` are required; startup fails fast if either is missing.
-+
-+If API auth is enabled, set `LAN_API_BEARER_TOKEN` to a non-empty value in your env file.
-+
- `docker compose up` starts:
- 
- - `db` (SQLite migration init)
-diff --git a/docker-compose.yml b/docker-compose.yml
-index 6b4afab..468613d 100644
---- a/docker-compose.yml
-+++ b/docker-compose.yml
-@@ -16,7 +16,8 @@ x-lan-service: &lan-service
-     - LAN_TMP_ROOT=${LAN_TMP_ROOT:-/data/tmp}
-     - LAN_PROM_SNAPSHOT_PATH=${LAN_PROM_SNAPSHOT_PATH:-/data/metrics.snap}
-     - LAN_DB_PATH=${LAN_DB_PATH:-/data/db/app.db}
--    - LAN_REDIS_URL=${LAN_REDIS_URL:-redis://redis:6379/0}
-+    - LAN_ENV=${LAN_ENV:-dev}
-+    - LAN_REDIS_URL=${LAN_REDIS_URL}
-     - LAN_RQ_QUEUE_NAME=${LAN_RQ_QUEUE_NAME:-lan-transcriber}
-     - LLM_BASE_URL=${LLM_BASE_URL}
-     - LLM_API_KEY=${LLM_API_KEY}
-diff --git a/infra/staging/.env.staging.example b/infra/staging/.env.staging.example
-index 48a413b..c9dd324 100644
---- a/infra/staging/.env.staging.example
-+++ b/infra/staging/.env.staging.example
-@@ -7,6 +7,7 @@ LAN_API_BIND_HOST=0.0.0.0
- LAN_API_PORT=7860
- 
- # Runtime paths
-+LAN_ENV=staging
- LAN_DATA_ROOT=/data
- LAN_RECORDINGS_ROOT=/data/recordings
- LAN_SPEAKER_DB=/data/db/speaker_bank.yaml
-diff --git a/infra/staging/README.md b/infra/staging/README.md
-index e057dd2..d2e476f 100644
---- a/infra/staging/README.md
-+++ b/infra/staging/README.md
-@@ -10,25 +10,32 @@ This directory contains the docker compose stack used by `.github/workflows/stag
- cp .env.staging.example .env
- ```
- 
--2. Ensure the runtime data directory exists:
-+2. Edit `.env` and set required runtime values:
-+
-+- `LAN_ENV=staging`
-+- `LAN_REDIS_URL` (for this compose stack: `redis://redis:6379/0`)
-+- `LLM_BASE_URL` (your Spark/OpenAI-compatible endpoint)
-+- `LAN_API_BEARER_TOKEN` when auth is enabled
-+
-+3. Ensure the runtime data directory exists:
- 
- ```bash
- mkdir -p data
- ```
- 
--3. Pull the latest images:
-+4. Pull the latest images:
- 
- ```bash
- docker compose pull
- ```
- 
--4. Start or update the stack:
-+5. Start or update the stack:
- 
- ```bash
- docker compose up -d --remove-orphans
- ```
- 
--5. Run smoke endpoint checks:
-+6. Run smoke endpoint checks:
- 
- ```bash
- curl -fsS http://127.0.0.1:7860/healthz/app
-diff --git a/infra/staging/docker-compose.yml b/infra/staging/docker-compose.yml
-index 1239827..dae10cf 100644
---- a/infra/staging/docker-compose.yml
-+++ b/infra/staging/docker-compose.yml
-@@ -12,7 +12,8 @@ x-lan-service: &lan-service
-     - LAN_TMP_ROOT=${LAN_TMP_ROOT:-/data/tmp}
-     - LAN_PROM_SNAPSHOT_PATH=${LAN_PROM_SNAPSHOT_PATH:-/data/metrics.snap}
-     - LAN_DB_PATH=${LAN_DB_PATH:-/data/db/app.db}
--    - LAN_REDIS_URL=${LAN_REDIS_URL:-redis://redis:6379/0}
-+    - LAN_ENV=${LAN_ENV:-staging}
-+    - LAN_REDIS_URL=${LAN_REDIS_URL}
-     - LAN_RQ_QUEUE_NAME=${LAN_RQ_QUEUE_NAME:-lan-transcriber}
-     - LLM_BASE_URL=${LLM_BASE_URL}
-     - LLM_API_KEY=${LLM_API_KEY}
 diff --git a/lan_app/api.py b/lan_app/api.py
-index d7877e5..5ea63e6 100644
+index 5ea63e6..947c902 100644
 --- a/lan_app/api.py
 +++ b/lan_app/api.py
-@@ -1,7 +1,7 @@
- from __future__ import annotations
- 
- import asyncio
--from contextlib import suppress
-+from contextlib import asynccontextmanager, suppress
+@@ -5,8 +5,9 @@ from contextlib import asynccontextmanager, suppress
  import logging
  import shutil
  from typing import List
-@@ -66,19 +66,38 @@ from .ops import run_retention_cleanup
++from uuid import uuid4
+ 
+-from fastapi import FastAPI, HTTPException, Query, Request
++from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile
+ from fastapi.concurrency import run_in_threadpool
+ from fastapi.responses import JSONResponse, Response, StreamingResponse
+ from fastapi.staticfiles import StaticFiles
+@@ -28,10 +29,13 @@ from .config import AppSettings
+ from .constants import (
+     DEFAULT_REQUEUE_JOB_TYPE,
+     JOB_STATUSES,
++    JOB_TYPE_PRECHECK,
+     RECORDING_STATUSES,
++    RECORDING_STATUS_QUEUED,
+     RECORDING_STATUS_QUARANTINE,
+ )
+ from .db import (
++    create_recording,
+     delete_recording,
+     get_recording,
+     init_db,
+@@ -64,6 +68,13 @@ from .ms_graph import (
+ from .onenote import PublishPreconditionError, publish_recording_to_onenote
+ from .ops import run_retention_cleanup
  from .reaper import run_stuck_job_reaper_once
++from .uploads import (
++    ALLOWED_UPLOAD_EXTENSIONS,
++    infer_captured_at,
++    safe_filename,
++    suffix_from_name,
++    write_upload_to_path,
++)
  from .ui_routes import _STATIC_DIR, ui_router
  
--app = FastAPI()
--app.include_router(ui_router)
--app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
  ALIAS_PATH = aliases.ALIAS_PATH
- _subscribers: List[asyncio.Queue[str]] = []
- _current_result: TranscriptResult | None = None
- _settings = AppSettings()
--_cleanup_task: asyncio.Task[None] | None = None
--_reaper_task: asyncio.Task[None] | None = None
- _CLEANUP_INTERVAL_SECONDS = 3600
- _logger = logging.getLogger(__name__)
+@@ -493,6 +504,64 @@ async def api_list_jobs(
+     }
  
  
-+@asynccontextmanager
-+async def _lifespan(_: FastAPI):
-+    init_db(_settings)
-+    _settings.metrics_snapshot_path.parent.mkdir(parents=True, exist_ok=True)
++@app.post("/api/uploads")
++async def api_upload_file(file: UploadFile = File(...)) -> dict[str, object]:
++    recording_id = f"trs_{uuid4().hex[:8]}"
++    ext = suffix_from_name(file.filename or "")
++    if ext not in ALLOWED_UPLOAD_EXTENSIONS:
++        raise HTTPException(status_code=422, detail=f"Unsupported file extension: {ext}")
 +
-+    metrics_task = asyncio.create_task(write_metrics_snapshot(_settings.metrics_snapshot_path))
-+    cleanup_task = asyncio.create_task(_retention_cleanup_loop())
-+    reaper_task = asyncio.create_task(_stuck_job_reaper_loop())
++    recording_dir = _settings.recordings_root / recording_id
++    raw_dir = recording_dir / "raw"
++    dest = raw_dir / f"audio{ext}"
++    completed = False
 +
 +    try:
-+        yield
++        bytes_written = write_upload_to_path(
++            file,
++            dest,
++            max_bytes=_settings.upload_max_bytes,
++        )
++        captured_at = infer_captured_at(file.filename or "")
++        create_recording(
++            recording_id,
++            source="upload",
++            source_filename=safe_filename(file.filename or ""),
++            captured_at=captured_at,
++            status=RECORDING_STATUS_QUEUED,
++            settings=_settings,
++        )
++        try:
++            job = enqueue_recording_job(
++                recording_id,
++                job_type=JOB_TYPE_PRECHECK,
++                settings=_settings,
++            )
++        except Exception as exc:
++            raise HTTPException(status_code=503, detail=f"Queue unavailable: {exc}")
++
++        completed = True
++        return {
++            "recording_id": recording_id,
++            "job_id": job.job_id,
++            "captured_at": captured_at,
++            "bytes_written": bytes_written,
++        }
++    except ValueError as exc:
++        message = str(exc)
++        if message == "max upload size exceeded":
++            raise HTTPException(status_code=413, detail=message)
++        raise HTTPException(status_code=422, detail=message)
++    except HTTPException:
++        raise
++    except Exception as exc:
++        raise HTTPException(status_code=503, detail=f"Upload failed: {exc}")
 +    finally:
-+        for task in (reaper_task, cleanup_task, metrics_task):
-+            task.cancel()
-+        for task in (reaper_task, cleanup_task, metrics_task):
-+            with suppress(asyncio.CancelledError):
-+                await task
++        await file.close()
++        if not completed and recording_dir.exists():
++            shutil.rmtree(recording_dir, ignore_errors=True)
 +
 +
-+app = FastAPI(lifespan=_lifespan)
-+app.include_router(ui_router)
-+app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
-+
-+
- class AliasUpdate(BaseModel):
-     alias: str
- 
-@@ -243,33 +262,6 @@ async def api_get_ms_connection_status(session_id: str) -> dict[str, object]:
-         raise HTTPException(status_code=404, detail="Unknown device-flow session")
- 
- 
--@app.on_event("startup")
--async def _start_metrics() -> None:
--    global _cleanup_task, _reaper_task
--    init_db(_settings)
--    _settings.metrics_snapshot_path.parent.mkdir(parents=True, exist_ok=True)
--    asyncio.create_task(write_metrics_snapshot(_settings.metrics_snapshot_path))
--    _cleanup_task = asyncio.create_task(_retention_cleanup_loop())
--    _reaper_task = asyncio.create_task(_stuck_job_reaper_loop())
--
--
--@app.on_event("shutdown")
--async def _stop_background_tasks() -> None:
--    global _cleanup_task, _reaper_task
--
--    if _cleanup_task is not None:
--        _cleanup_task.cancel()
--        with suppress(asyncio.CancelledError):
--            await _cleanup_task
--        _cleanup_task = None
--
--    if _reaper_task is not None:
--        _reaper_task.cancel()
--        with suppress(asyncio.CancelledError):
--            await _reaper_task
--        _reaper_task = None
--
--
- @app.post("/alias/{speaker_id}")
- async def update_alias(speaker_id: str, upd: AliasUpdate):
-     path = aliases.ALIAS_PATH
+ @app.post("/api/actions/ingest")
+ async def api_ingest_once() -> dict[str, object]:
+     """Trigger a single Google Drive ingest cycle."""
 diff --git a/lan_app/config.py b/lan_app/config.py
-index 836801c..525d95d 100644
+index 525d95d..c0bb81c 100644
 --- a/lan_app/config.py
 +++ b/lan_app/config.py
-@@ -1,13 +1,19 @@
- from __future__ import annotations
- 
-+import logging
- from pathlib import Path
-+from typing import Literal
- 
--from pydantic import AliasChoices, Field
-+from pydantic import AliasChoices, Field, model_validator
- from pydantic_settings import BaseSettings
- 
- from lan_app.constants import DEFAULT_RQ_QUEUE_NAME
- from lan_transcriber.runtime_paths import default_data_root, default_recordings_root
- 
-+_DEV_DEFAULT_REDIS_URL = "redis://127.0.0.1:6379/0"
-+_DEV_DEFAULT_LLM_BASE_URL = "http://127.0.0.1:8000"
-+_logger = logging.getLogger(__name__)
-+
- 
- def _default_metrics_snapshot_path() -> Path:
-     return default_data_root() / "metrics.snap"
-@@ -17,9 +23,20 @@ def _default_msal_cache_path() -> Path:
-     return default_data_root() / "auth" / "msal_cache.bin"
- 
- 
-+def _normalize_optional_env(value: str | None) -> str | None:
-+    if value is None:
-+        return None
-+    normalized = value.strip()
-+    return normalized or None
-+
-+
- class AppSettings(BaseSettings):
-     """App-layer runtime settings."""
- 
-+    lan_env: Literal["dev", "staging", "prod"] = Field(
-+        default="dev",
-+        validation_alias=AliasChoices("LAN_ENV"),
-+    )
-     data_root: Path = default_data_root()
-     recordings_root: Path = default_recordings_root()
-     metrics_snapshot_path: Path = Field(
-@@ -39,10 +56,14 @@ class AppSettings(BaseSettings):
-             "SQLITE_BUSY_TIMEOUT_MS",
+@@ -191,6 +191,11 @@ class AppSettings(BaseSettings):
+             "INGEST_LOCK_TTL_SECONDS",
          ),
      )
--    redis_url: str = Field(
--        default="redis://redis:6379/0",
-+    redis_url: str | None = Field(
++    upload_max_bytes: int | None = Field(
 +        default=None,
-         validation_alias=AliasChoices("LAN_REDIS_URL", "REDIS_URL"),
-     )
-+    llm_base_url: str | None = Field(
-+        default=None,
-+        validation_alias=AliasChoices("LLM_BASE_URL"),
++        ge=1,
++        validation_alias=AliasChoices("UPLOAD_MAX_BYTES"),
 +    )
-     rq_queue_name: str = Field(
-         default=DEFAULT_RQ_QUEUE_NAME,
-         validation_alias=AliasChoices("LAN_RQ_QUEUE_NAME", "RQ_QUEUE_NAME"),
-@@ -175,6 +196,38 @@ class AppSettings(BaseSettings):
+ 
+     @property
      def ms_scopes_list(self) -> list[str]:
-         return [s.strip() for s in self.ms_scopes.replace(",", " ").split() if s.strip()]
- 
-+    @model_validator(mode="after")
-+    def validate_runtime_environment(self) -> "AppSettings":
-+        self.redis_url = _normalize_optional_env(self.redis_url)
-+        self.llm_base_url = _normalize_optional_env(self.llm_base_url)
-+
-+        if self.lan_env == "dev":
-+            if self.redis_url is None:
-+                _logger.warning(
-+                    "LAN_REDIS_URL is not set in LAN_ENV=dev; defaulting to %s",
-+                    _DEV_DEFAULT_REDIS_URL,
-+                )
-+                self.redis_url = _DEV_DEFAULT_REDIS_URL
-+            if self.llm_base_url is None:
-+                _logger.warning(
-+                    "LLM_BASE_URL is not set in LAN_ENV=dev; defaulting to %s",
-+                    _DEV_DEFAULT_LLM_BASE_URL,
-+                )
-+                self.llm_base_url = _DEV_DEFAULT_LLM_BASE_URL
-+            return self
-+
-+        missing: list[str] = []
-+        if self.redis_url is None:
-+            missing.append("LAN_REDIS_URL")
-+        if self.llm_base_url is None:
-+            missing.append("LLM_BASE_URL")
-+        if missing:
-+            vars_text = ", ".join(missing)
-+            raise ValueError(
-+                f"Missing required environment variable(s) for LAN_ENV={self.lan_env}: {vars_text}"
-+            )
-+        return self
-+
-     class Config:
-         env_prefix = "LAN_"
- 
-diff --git a/lan_transcriber/llm_client.py b/lan_transcriber/llm_client.py
-index 22dc1b5..2f54188 100644
---- a/lan_transcriber/llm_client.py
-+++ b/lan_transcriber/llm_client.py
-@@ -3,6 +3,7 @@
- from __future__ import annotations
- 
- import json
-+import logging
- import os
- from pathlib import Path
- from typing import Any, Dict, List, Optional
-@@ -14,6 +15,8 @@ from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponen
- from .metrics import llm_timeouts_total
- 
- _RETRYABLE_STATUS_CODES = {408, 409, 425, 429}
-+_DEV_DEFAULT_LLM_BASE_URL = "http://127.0.0.1:8000"
-+_logger = logging.getLogger(__name__)
- 
- 
- def _timeout_seconds(value: str | None, *, default: float) -> float:
-@@ -44,6 +47,25 @@ def _is_retryable_exception(exc: BaseException) -> bool:
-     return False
- 
- 
-+def _resolve_base_url(base_url: str | None) -> str:
-+    configured = (base_url or os.getenv("LLM_BASE_URL") or "").strip()
-+    if configured:
-+        return configured
-+
-+    lan_env = (os.getenv("LAN_ENV") or "dev").strip().lower() or "dev"
-+    if lan_env in {"staging", "prod"}:
-+        raise ValueError(
-+            f"Missing required environment variable for LAN_ENV={lan_env}: LLM_BASE_URL"
-+        )
-+
-+    _logger.warning(
-+        "LLM_BASE_URL is not set in LAN_ENV=%s; defaulting to %s",
-+        lan_env,
-+        _DEV_DEFAULT_LLM_BASE_URL,
-+    )
-+    return _DEV_DEFAULT_LLM_BASE_URL
-+
-+
- class LLMClient:
-     """Simple asynchronous client for the language model API."""
- 
-@@ -54,7 +76,7 @@ class LLMClient:
-         timeout: float | None = None,
-         mock_response_path: str | Path | None = None,
-     ) -> None:
--        self.base_url = base_url or os.getenv("LLM_BASE_URL", "http://llm:8000")
-+        self.base_url = _resolve_base_url(base_url)
-         self.api_key = api_key or os.getenv("LLM_API_KEY")
-         self.default_model = os.getenv("LLM_MODEL")
-         self.timeout = (
 diff --git a/tasks/QUEUE.md b/tasks/QUEUE.md
-index a158031..052a226 100644
+index 0da7b9a..b2666e3 100644
 --- a/tasks/QUEUE.md
 +++ b/tasks/QUEUE.md
-@@ -127,6 +127,6 @@ Queue (in order)
- - Depends on: PR-DB-RESILIENCE-01
- 
- 24) PR-RUNTIME-CONFIG-01: Runtime hardening: fail-fast config for staging/prod + FastAPI lifespan + docs alignment
--- Status: TODO
-+- Status: DONE
- - Tasks file: tasks/PR-RUNTIME-CONFIG-01.md
+@@ -132,7 +132,7 @@ Queue (in order)
  - Depends on: PR-UI-PROGRESS-01
-diff --git a/tests/test_app_config.py b/tests/test_app_config.py
-index 5e5eb96..7279b86 100644
---- a/tests/test_app_config.py
-+++ b/tests/test_app_config.py
-@@ -1,4 +1,7 @@
-+import os
- from pathlib import Path
-+import subprocess
-+import sys
  
- from lan_app.config import AppSettings
+ 25) PR-UI-UPLOAD-01: Upload ingest API (multipart) create recordings from UI uploads
+-- Status: TODO
++- Status: DOING
+ - Tasks file: tasks/PR-UI-UPLOAD-01.md
+ - Depends on: PR-RUNTIME-CONFIG-01
  
-@@ -93,3 +96,55 @@ def test_worker_and_reaper_settings_from_env(monkeypatch):
-     assert cfg.max_job_attempts == 5
-     assert cfg.stuck_job_seconds == 900
-     assert cfg.reaper_interval_seconds == 60
+diff --git a/lan_app/uploads.py b/lan_app/uploads.py
+new file mode 100644
+index 0000000..545a0bf
+--- /dev/null
++++ b/lan_app/uploads.py
+@@ -0,0 +1,104 @@
++from __future__ import annotations
++
++from datetime import datetime, timezone
++from pathlib import Path
++import re
++from typing import BinaryIO
++
++ALLOWED_UPLOAD_EXTENSIONS = {
++    ".mp3",
++    ".wav",
++    ".m4a",
++    ".mp4",
++    ".aac",
++    ".ogg",
++    ".flac",
++}
++
++_DEFAULT_SUFFIX = ".mp3"
++_FILENAME_SAFE_CHARS_RE = re.compile(r"[^A-Za-z0-9._-]+")
++_PLAUD_RE = re.compile(
++    r"(\d{4})-(\d{2})-(\d{2})\s+(\d{2})[_\-](\d{2})[_\-](\d{2})"
++)
++_COPY_CHUNK_SIZE = 1024 * 1024
 +
 +
-+def test_lan_env_dev_defaults_with_warnings(monkeypatch, caplog):
-+    monkeypatch.setenv("LAN_ENV", "dev")
-+    monkeypatch.delenv("LAN_REDIS_URL", raising=False)
-+    monkeypatch.delenv("REDIS_URL", raising=False)
-+    monkeypatch.delenv("LLM_BASE_URL", raising=False)
-+
-+    with caplog.at_level("WARNING"):
-+        cfg = AppSettings()
-+
-+    assert cfg.redis_url == "redis://127.0.0.1:6379/0"
-+    assert cfg.llm_base_url == "http://127.0.0.1:8000"
-+    assert "LAN_REDIS_URL is not set in LAN_ENV=dev" in caplog.text
-+    assert "LLM_BASE_URL is not set in LAN_ENV=dev" in caplog.text
++def suffix_from_name(filename: str) -> str:
++    name = str(filename or "")
++    suffix = Path(name).suffix.strip().lower()
++    if suffix:
++        return suffix
++    return _DEFAULT_SUFFIX
 +
 +
-+def test_staging_missing_redis_url_fails_import():
-+    env = os.environ.copy()
-+    env["LAN_ENV"] = "staging"
-+    env["LLM_BASE_URL"] = "http://127.0.0.1:8000"
-+    env.pop("LAN_REDIS_URL", None)
-+    env.pop("REDIS_URL", None)
++def safe_filename(filename: str) -> str:
++    raw = str(filename or "").replace("\\", "/").split("/")[-1].strip()
++    if not raw:
++        return "upload"
++    sanitized = _FILENAME_SAFE_CHARS_RE.sub("_", raw).strip("._- ")
++    return sanitized or "upload"
 +
-+    result = subprocess.run(
-+        [sys.executable, "-c", "import lan_app.api"],
-+        capture_output=True,
-+        text=True,
-+        env=env,
-+        check=False,
++
++def parse_plaud_captured_at(filename: str) -> str | None:
++    match = _PLAUD_RE.search(str(filename or ""))
++    if match is None:
++        return None
++    year, month, day, hour, minute, second = (int(group) for group in match.groups())
++    try:
++        parsed = datetime(
++            year,
++            month,
++            day,
++            hour,
++            minute,
++            second,
++            tzinfo=timezone.utc,
++        )
++    except ValueError:
++        return None
++    return parsed.isoformat().replace("+00:00", "Z")
++
++
++def infer_captured_at(filename: str) -> str:
++    parsed = parse_plaud_captured_at(filename)
++    if parsed is not None:
++        return parsed
++    return datetime.now(tz=timezone.utc).replace(microsecond=0).isoformat().replace(
++        "+00:00", "Z"
 +    )
 +
-+    assert result.returncode != 0
-+    assert "LAN_REDIS_URL" in f"{result.stdout}\n{result.stderr}"
++
++def write_upload_to_path(upload, dest: Path, *, max_bytes: int | None) -> int:
++    dest.parent.mkdir(parents=True, exist_ok=True)
++    bytes_written = 0
++    fh: BinaryIO
++    try:
++        upload.file.seek(0)
++    except Exception:
++        pass
++
++    try:
++        with dest.open("wb") as fh:
++            while True:
++                chunk = upload.file.read(_COPY_CHUNK_SIZE)
++                if not chunk:
++                    break
++                bytes_written += len(chunk)
++                if max_bytes is not None and bytes_written > max_bytes:
++                    raise ValueError("max upload size exceeded")
++                fh.write(chunk)
++    except Exception:
++        dest.unlink(missing_ok=True)
++        raise
++
++    return bytes_written
 +
 +
-+def test_dev_missing_urls_allows_import():
-+    env = os.environ.copy()
-+    env["LAN_ENV"] = "dev"
-+    env.pop("LAN_REDIS_URL", None)
-+    env.pop("REDIS_URL", None)
-+    env.pop("LLM_BASE_URL", None)
++__all__ = [
++    "ALLOWED_UPLOAD_EXTENSIONS",
++    "infer_captured_at",
++    "parse_plaud_captured_at",
++    "safe_filename",
++    "suffix_from_name",
++    "write_upload_to_path",
++]
+diff --git a/tests/test_upload.py b/tests/test_upload.py
+new file mode 100644
+index 0000000..3029142
+--- /dev/null
++++ b/tests/test_upload.py
+@@ -0,0 +1,129 @@
++from __future__ import annotations
 +
-+    result = subprocess.run(
-+        [sys.executable, "-c", "import lan_app.api"],
-+        capture_output=True,
-+        text=True,
-+        env=env,
-+        check=False,
++from pathlib import Path
++from uuid import uuid4
++
++from fastapi.testclient import TestClient
++
++from lan_app import api
++from lan_app.config import AppSettings
++from lan_app.constants import JOB_STATUS_QUEUED, JOB_TYPE_PRECHECK, RECORDING_STATUS_QUEUED
++from lan_app.db import (
++    create_job,
++    get_recording,
++    init_db,
++    list_jobs,
++    list_recordings,
++    set_recording_status,
++)
++from lan_app.jobs import RecordingJob
++
++
++def _cfg(tmp_path: Path) -> AppSettings:
++    cfg = AppSettings(
++        data_root=tmp_path,
++        recordings_root=tmp_path / "recordings",
++        db_path=tmp_path / "db" / "app.db",
 +    )
++    cfg.metrics_snapshot_path = tmp_path / "metrics.snap"
++    return cfg
 +
-+    assert result.returncode == 0, f"{result.stdout}\n{result.stderr}"
-diff --git a/tests/test_llm_client.py b/tests/test_llm_client.py
-index fd41896..26d4c1a 100644
---- a/tests/test_llm_client.py
-+++ b/tests/test_llm_client.py
-@@ -17,7 +17,7 @@ def test_retry_predicate_includes_timeout_exceptions():
- 
- @respx.mock
- def test_generate():
--    route = respx.post("http://llm:8000/v1/chat/completions").mock(
-+    route = respx.post("http://127.0.0.1:8000/v1/chat/completions").mock(
-         return_value=httpx.Response(
-             200,
-             json={"choices": [{"message": {"content": "the-result"}}]},
-@@ -67,7 +67,7 @@ async def test_mock_response_path_with_content_field(tmp_path):
- 
- @respx.mock
- def test_generate_with_content_only_response():
--    route = respx.post("http://llm:8000/v1/chat/completions").mock(
-+    route = respx.post("http://127.0.0.1:8000/v1/chat/completions").mock(
-         return_value=httpx.Response(200, json={"content": "fallback-content"})
-     )
-     result = asyncio.run(llm_client.generate("s", "u", model="m"))
-diff --git a/tests/test_metrics.py b/tests/test_metrics.py
-index 2e2e01c..56475c6 100644
---- a/tests/test_metrics.py
-+++ b/tests/test_metrics.py
-@@ -36,7 +36,7 @@ def mp3(tmp: Path) -> Path:
- @pytest.mark.asyncio
- @respx.mock
- async def test_metrics_file(tmp_path: Path, monkeypatch):
--    respx.post("http://llm:8000/v1/chat/completions").mock(
-+    respx.post("http://127.0.0.1:8000/v1/chat/completions").mock(
-         return_value=httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}]})
-     )
-     cfg = pipeline.Settings(
-diff --git a/tests/test_pipeline.py b/tests/test_pipeline.py
-index 392f21e..abad51b 100644
---- a/tests/test_pipeline.py
-+++ b/tests/test_pipeline.py
-@@ -144,7 +144,7 @@ async def test_tripled_dedup(tmp_path: Path, mocker):
-         ),
-     )
- 
--    respx.post("http://llm:8000/v1/chat/completions").mock(
-+    respx.post("http://127.0.0.1:8000/v1/chat/completions").mock(
-         return_value=httpx.Response(
-             200, json={"choices": [{"message": {"content": "- ok"}}]}
-         ),
-@@ -186,7 +186,7 @@ async def test_pipeline_emits_progress_stages_in_order(tmp_path: Path, mocker):
-             {"language": "en", "language_probability": 0.95},
-         ),
-     )
--    respx.post("http://llm:8000/v1/chat/completions").mock(
-+    respx.post("http://127.0.0.1:8000/v1/chat/completions").mock(
-         return_value=httpx.Response(
-             200,
-             json={"choices": [{"message": {"content": "- summary"}}]},
-@@ -238,7 +238,7 @@ async def test_alias_persist(tmp_path: Path, mocker):
-         ),
-     )
- 
--    respx.post("http://llm:8000/v1/chat/completions").mock(
-+    respx.post("http://127.0.0.1:8000/v1/chat/completions").mock(
-         return_value=httpx.Response(
-             200, json={"choices": [{"message": {"content": "- sum"}}]}
-         ),
-@@ -277,7 +277,7 @@ async def test_alias_persist(tmp_path: Path, mocker):
- @respx.mock
- async def test_white_noise(tmp_path: Path, mocker):
-     mocker.patch("whisperx.transcribe", return_value=([], {"language": "en"}))
--    respx.post("http://llm:8000/v1/chat/completions").mock(
-+    respx.post("http://127.0.0.1:8000/v1/chat/completions").mock(
-         return_value=httpx.Response(
-             200, json={"choices": [{"message": {"content": ""}}]}
-         ),
-@@ -315,7 +315,7 @@ async def test_no_talk(tmp_path: Path, mocker):
-         ),
-     )
- 
--    respx.post("http://llm:8000/v1/chat/completions").mock(
-+    respx.post("http://127.0.0.1:8000/v1/chat/completions").mock(
-         return_value=httpx.Response(
-             200, json={"choices": [{"message": {"content": ""}}]}
-         ),
-@@ -356,7 +356,7 @@ async def test_pipeline_preserves_zero_language_confidence(tmp_path: Path, mocke
-         "transformers.pipeline",
-         lambda *a, **k: lambda text: [{"label": "positive", "score": 0.5}],
-     )
--    respx.post("http://llm:8000/v1/chat/completions").mock(
-+    respx.post("http://127.0.0.1:8000/v1/chat/completions").mock(
-         return_value=httpx.Response(
-             200,
-             json={"choices": [{"message": {"content": "- summary"}}]},
-@@ -415,7 +415,7 @@ async def test_pipeline_writes_required_artifacts(tmp_path: Path, mocker):
-         "transformers.pipeline",
-         lambda *a, **k: lambda text: [{"label": "positive", "score": 0.6}],
-     )
--    respx.post("http://llm:8000/v1/chat/completions").mock(
-+    respx.post("http://127.0.0.1:8000/v1/chat/completions").mock(
-         return_value=httpx.Response(
-             200,
-             json={"choices": [{"message": {"content": "- summary"}}]},
-@@ -488,7 +488,7 @@ async def test_pipeline_writes_language_spans_for_mixed_language_segments(tmp_pa
-         "transformers.pipeline",
-         lambda *a, **k: lambda text: [{"label": "positive", "score": 0.6}],
-     )
--    respx.post("http://llm:8000/v1/chat/completions").mock(
-+    respx.post("http://127.0.0.1:8000/v1/chat/completions").mock(
-         return_value=httpx.Response(
-             200,
-             json={"choices": [{"message": {"content": "- summary"}}]},
-@@ -792,7 +792,7 @@ async def test_pipeline_transcript_language_override_is_used_for_asr(tmp_path: P
-         "transformers.pipeline",
-         lambda *a, **k: lambda text: [{"label": "positive", "score": 0.6}],
-     )
--    respx.post("http://llm:8000/v1/chat/completions").mock(
-+    respx.post("http://127.0.0.1:8000/v1/chat/completions").mock(
-         return_value=httpx.Response(
-             200,
-             json={"choices": [{"message": {"content": "- resumen"}}]},
-@@ -850,7 +850,7 @@ async def test_pipeline_accepts_pyannote_triplet_itertracks(tmp_path: Path, mock
-         "transformers.pipeline",
-         lambda *a, **k: lambda text: [{"label": "positive", "score": 0.6}],
-     )
--    respx.post("http://llm:8000/v1/chat/completions").mock(
-+    respx.post("http://127.0.0.1:8000/v1/chat/completions").mock(
-         return_value=httpx.Response(
-             200,
-             json={"choices": [{"message": {"content": "- summary"}}]},
-diff --git a/tests/test_transcribe_and_summarize.py b/tests/test_transcribe_and_summarize.py
-index 1f8a1ed..7d5b85b 100644
---- a/tests/test_transcribe_and_summarize.py
-+++ b/tests/test_transcribe_and_summarize.py
-@@ -20,7 +20,7 @@ import web_transcribe  # noqa: E402
- 
- @respx.mock
- def test_transcribe_and_summarize(tmp_path: Path):
--    respx.post("http://llm:8000/v1/chat/completions").mock(
-+    respx.post("http://127.0.0.1:8000/v1/chat/completions").mock(
-         return_value=httpx.Response(
-             200,
-             json={"choices": [{"message": {"content": "summary"}}]},
++
++def _stub_enqueue(monkeypatch, cfg: AppSettings) -> None:
++    def _fake_enqueue(
++        recording_id: str,
++        *,
++        job_type: str = JOB_TYPE_PRECHECK,
++        settings: AppSettings | None = None,
++    ) -> RecordingJob:
++        effective = settings or cfg
++        job_id = f"job-upload-{uuid4().hex[:8]}"
++        create_job(
++            job_id=job_id,
++            recording_id=recording_id,
++            job_type=job_type,
++            status=JOB_STATUS_QUEUED,
++            settings=effective,
++        )
++        set_recording_status(
++            recording_id,
++            RECORDING_STATUS_QUEUED,
++            settings=effective,
++        )
++        return RecordingJob(
++            job_id=job_id,
++            recording_id=recording_id,
++            job_type=job_type,
++        )
++
++    monkeypatch.setattr(api, "enqueue_recording_job", _fake_enqueue)
++
++
++def test_upload_success_creates_recording_and_job(tmp_path: Path, monkeypatch):
++    cfg = _cfg(tmp_path)
++    monkeypatch.setattr(api, "_settings", cfg)
++    init_db(cfg)
++    _stub_enqueue(monkeypatch, cfg)
++
++    client = TestClient(api.app)
++    response = client.post(
++        "/api/uploads",
++        files={"file": ("2026-02-18 16_01_43.mp3", b"abc", "audio/mpeg")},
++    )
++    assert response.status_code == 200
++    payload = response.json()
++
++    recording_id = payload["recording_id"]
++    assert recording_id.startswith("trs_")
++    assert payload["captured_at"] == "2026-02-18T16:01:43Z"
++    assert payload["bytes_written"] == 3
++
++    raw_file = cfg.recordings_root / recording_id / "raw" / "audio.mp3"
++    assert raw_file.exists()
++    assert raw_file.read_bytes() == b"abc"
++
++    recording = get_recording(recording_id, settings=cfg)
++    assert recording is not None
++    assert recording["source"] == "upload"
++    assert ".mp3" in str(recording["source_filename"])
++    assert recording["captured_at"] == "2026-02-18T16:01:43Z"
++
++    jobs, total = list_jobs(settings=cfg, recording_id=recording_id)
++    assert total == 1
++    assert jobs[0]["status"] == JOB_STATUS_QUEUED
++    assert jobs[0]["type"] == JOB_TYPE_PRECHECK
++
++
++def test_upload_unsupported_extension_returns_422(tmp_path: Path, monkeypatch):
++    cfg = _cfg(tmp_path)
++    monkeypatch.setattr(api, "_settings", cfg)
++    init_db(cfg)
++    _stub_enqueue(monkeypatch, cfg)
++
++    client = TestClient(api.app)
++    response = client.post(
++        "/api/uploads",
++        files={"file": ("bad.exe", b"abc", "application/octet-stream")},
++    )
++    assert response.status_code == 422
++    assert "Unsupported file extension" in response.json()["detail"]
++
++
++def test_upload_max_bytes_returns_413(tmp_path: Path, monkeypatch):
++    cfg = _cfg(tmp_path)
++    cfg.upload_max_bytes = 2
++    monkeypatch.setattr(api, "_settings", cfg)
++    init_db(cfg)
++    _stub_enqueue(monkeypatch, cfg)
++
++    client = TestClient(api.app)
++    response = client.post(
++        "/api/uploads",
++        files={"file": ("tiny.mp3", b"abc", "audio/mpeg")},
++    )
++    assert response.status_code == 413
++    assert response.json()["detail"] == "max upload size exceeded"
++
++    items, total = list_recordings(settings=cfg)
++    assert total == 0
++    assert items == []
