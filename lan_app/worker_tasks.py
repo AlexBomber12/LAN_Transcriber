@@ -49,6 +49,7 @@ from .db import (
     set_recording_status_if_current_in_and_job_started,
     start_job,
 )
+from .hf_repo import split_repo_id_and_revision
 from .routing import refresh_recording_routing
 
 
@@ -462,7 +463,14 @@ def _build_diariser(duration_sec: float | None):
         if missing == "pyannote":
             return _FallbackDiariser(duration_sec)
         raise
-    model = Pipeline.from_pretrained("pyannote/speaker-diarization@3.2")
+    repo_id, revision = split_repo_id_and_revision("pyannote/speaker-diarization@3.2")
+    kwargs = {"revision": revision} if revision else {}
+    try:
+        model = Pipeline.from_pretrained(repo_id, **kwargs)
+    except TypeError:
+        model = Pipeline.from_pretrained(
+            f"{repo_id}@{revision}" if revision else repo_id
+        )
     return _PyannoteDiariser(model)
 
 
@@ -495,7 +503,17 @@ def _run_precheck_pipeline(
     if precheck.quarantine_reason:
         diariser = _FallbackDiariser(precheck.duration_sec)
     else:
-        diariser = _build_diariser(precheck.duration_sec)
+        try:
+            diariser = _build_diariser(precheck.duration_sec)
+        except Exception as exc:
+            _append_step_log(
+                log_path,
+                (
+                    "diariser init failed, falling back: "
+                    f"{type(exc).__name__}: {exc}"
+                ),
+            )
+            diariser = _FallbackDiariser(precheck.duration_sec)
     calendar_title, calendar_attendees = _load_calendar_summary_context(
         recording_id,
         settings,
