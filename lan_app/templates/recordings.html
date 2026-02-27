@@ -28,6 +28,7 @@
       <th>ID</th>
       <th>Filename</th>
       <th>Status</th>
+      <th style="width:140px">Progress</th>
       <th>Suggested Project</th>
       <th>Confidence</th>
       <th>Captured</th>
@@ -42,6 +43,19 @@
       <td title="{{ r.id }}"><a href="/recordings/{{ r.id }}" style="text-decoration:none;color:#1d4ed8">{{ r.id[:16] }}…</a></td>
       <td title="{{ r.source_filename }}">{{ r.source_filename }}</td>
       <td><span class="badge s-{{ r.status }}">{{ r.status }}</span></td>
+      <td style="max-width:140px">
+        {% if r.status == "Processing" %}
+        {{ r.progress_percent }}% {{ r.progress_stage_label }}
+        {% elif r.status == "Queued" %}
+        {{ r.progress_percent }}% {{ r.progress_stage_label }}
+        {% elif r.status in ["Ready", "NeedsReview", "Published"] %}
+        100% Done
+        {% elif r.pipeline_progress is not none %}
+        {{ r.progress_percent }}% {{ r.progress_stage_label }}
+        {% else %}
+        —
+        {% endif %}
+      </td>
       <td>
         {% if r.suggested_project_name %}
         {{ r.suggested_project_name }}

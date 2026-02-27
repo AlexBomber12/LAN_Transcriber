@@ -147,7 +147,7 @@ Queue (in order)
 - Depends on: PR-UI-UPLOAD-02
 
 28) PR-UI-PROGRESS-02: Show pipeline progress on Recordings list table
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-UI-PROGRESS-02.md
 - Depends on: PR-EXPORT-01
 
