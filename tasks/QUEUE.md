@@ -170,3 +170,8 @@ Queue (in order)
 - Status: DONE
 - Tasks file: tasks/PR-FIX-DIARIZATION-REVISION-01.md
 - Depends on: PR-DOCS-EXPORT-ONLY-01
+
+33) PR-FIX-WHISPERX-API-01: Fix WhisperX API usage (no whisperx.transcribe) and add modern-path unit test
+- Status: TODO
+- Tasks file: tasks/PR-FIX-WHISPERX-API-01.md
+- Depends on: PR-FIX-DIARIZATION-REVISION-01
