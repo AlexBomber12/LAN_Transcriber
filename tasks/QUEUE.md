@@ -142,7 +142,7 @@ Queue (in order)
 - Depends on: PR-UI-UPLOAD-01
 
 27) PR-EXPORT-01: Export-only output: OneNote-ready markdown + Download ZIP per recording
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-EXPORT-01.md
 - Depends on: PR-UI-UPLOAD-02
 

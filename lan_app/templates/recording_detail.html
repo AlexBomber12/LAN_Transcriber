@@ -81,6 +81,51 @@
   </div>
 
   <div class="section" style="margin-top:10px">
+    <h2 style="margin-top:0">Export</h2>
+    <div class="filters" style="margin-bottom:6px">
+      <button type="button" class="btn" onclick="copyExportText()">Copy</button>
+      <a href="/ui/recordings/{{ rec.id }}/export.zip" class="btn" style="text-decoration:none">Download ZIP</a>
+    </div>
+    <textarea
+      id="export-text"
+      readonly
+      style="width:100%;min-height:220px;resize:vertical"
+    >{{ export_text or '' }}</textarea>
+    <p id="export-copy-status" class="placeholder" style="padding:6px 0 0 0">
+      Copy the markdown or download a ZIP with the available artifacts.
+    </p>
+  </div>
+
+  <script>
+  function copyExportText() {
+    var textarea = document.getElementById('export-text');
+    var status = document.getElementById('export-copy-status');
+    if (!textarea) return;
+    var setStatus = function(msg) {
+      if (status) status.textContent = msg;
+    };
+    var fallback = function() {
+      textarea.focus();
+      textarea.select();
+      try {
+        document.execCommand('copy');
+        setStatus('Copied export markdown.');
+      } catch (_err) {
+        setStatus('Copy failed. Select the text and copy manually.');
+      }
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(textarea.value).then(
+        function() { setStatus('Copied export markdown.'); },
+        fallback
+      );
+      return;
+    }
+    fallback();
+  }
+  </script>
+
+  <div class="section" style="margin-top:10px">
     <h2 style="margin-top:0">OneNote Publish</h2>
     {% if rec.status == 'Published' and rec.onenote_page_id %}
     <p>
