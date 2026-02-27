@@ -891,68 +891,6 @@ def test_upload_page(client):
     assert 'id="file-input"' in r.text
 
 
-# ---------------------------------------------------------------------------
-# Connections
-# ---------------------------------------------------------------------------
-
-
-def test_connections(client):
-    r = client.get("/connections")
-    assert r.status_code == 200
-    assert "Google Drive" in r.text
-
-
-def test_connections_shows_configured_gdrive(tmp_path, monkeypatch):
-    cfg = _cfg(tmp_path)
-    cfg.gdrive_sa_json_path = cfg.data_root / "secrets" / "gdrive_sa.json"
-    cfg.gdrive_inbox_folder_id = "folder-abc"
-    monkeypatch.setattr(api, "_settings", cfg)
-    monkeypatch.setattr(ui_routes, "_settings", cfg)
-    init_db(cfg)
-
-    client = TestClient(api.app, follow_redirects=True)
-    resp = client.get("/connections")
-    assert resp.status_code == 200
-    assert "Configured" in resp.text
-    assert "folder-abc" in resp.text
-    assert "Test connection" in resp.text
-    assert "Run ingest now" in resp.text
-
-
-def test_ui_test_gdrive_connection_endpoint_success(tmp_path, monkeypatch):
-    cfg = _cfg(tmp_path)
-    monkeypatch.setattr(api, "_settings", cfg)
-    monkeypatch.setattr(ui_routes, "_settings", cfg)
-    init_db(cfg)
-    monkeypatch.setattr(
-        ui_routes,
-        "_test_gdrive_connection",
-        lambda _settings: {"ok": True, "message": "Connected. Sample file: demo.mp3 (id-1)."},
-    )
-
-    client = TestClient(api.app, follow_redirects=True)
-    resp = client.post("/ui/connections/gdrive/test")
-    assert resp.status_code == 200
-    assert "Connected. Sample file: demo.mp3 (id-1)." in resp.text
-
-
-def test_ui_test_gdrive_connection_endpoint_not_configured(tmp_path, monkeypatch):
-    cfg = _cfg(tmp_path)
-    monkeypatch.setattr(api, "_settings", cfg)
-    monkeypatch.setattr(ui_routes, "_settings", cfg)
-    init_db(cfg)
-
-    def _boom(_settings):
-        raise ValueError("Google Drive is not configured.")
-
-    monkeypatch.setattr(ui_routes, "_test_gdrive_connection", _boom)
-
-    client = TestClient(api.app, follow_redirects=True)
-    resp = client.post("/ui/connections/gdrive/test")
-    assert resp.status_code == 200
-    assert "Google Drive is not configured." in resp.text
-
-
 def test_ui_root_redirects_to_login_when_auth_enabled(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
     cfg.api_bearer_token = "secret-ui-token"

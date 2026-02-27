@@ -101,24 +101,6 @@ class AppSettings(BaseSettings):
         ),
     )
 
-    # Google Drive ingest
-    gdrive_sa_json_path: Path | None = Field(
-        default=None,
-        validation_alias=AliasChoices("GDRIVE_SA_JSON_PATH", "LAN_GDRIVE_SA_JSON_PATH"),
-    )
-    gdrive_inbox_folder_id: str | None = Field(
-        default=None,
-        validation_alias=AliasChoices(
-            "GDRIVE_INBOX_FOLDER_ID", "LAN_GDRIVE_INBOX_FOLDER_ID"
-        ),
-    )
-    gdrive_poll_interval_seconds: int = Field(
-        default=60,
-        validation_alias=AliasChoices(
-            "GDRIVE_POLL_INTERVAL_SECONDS", "LAN_GDRIVE_POLL_INTERVAL_SECONDS"
-        ),
-    )
-
     routing_auto_select_threshold: float = Field(
         default=0.65,
         ge=0.0,
@@ -142,14 +124,6 @@ class AppSettings(BaseSettings):
         validation_alias=AliasChoices(
             "LAN_API_BEARER_TOKEN",
             "API_BEARER_TOKEN",
-        ),
-    )
-    ingest_lock_ttl_seconds: int = Field(
-        default=300,
-        ge=1,
-        validation_alias=AliasChoices(
-            "LAN_INGEST_LOCK_TTL_SECONDS",
-            "INGEST_LOCK_TTL_SECONDS",
         ),
     )
     upload_max_bytes: int | None = Field(

@@ -62,7 +62,6 @@ from .db import (
     set_recording_status,
 )
 from .exporter import build_export_zip_bytes, build_onenote_markdown
-from .gdrive import build_drive_service
 from .jobs import (
     DuplicateRecordingJobError,
     enqueue_recording_job,
@@ -155,48 +154,6 @@ def _pipeline_stage_label(stage: object) -> str:
     if not text:
         return "Waiting"
     return text.replace("_", " ").title()
-
-
-def _gdrive_connection_state(settings: AppSettings) -> dict[str, Any]:
-    sa_path_value = str(settings.gdrive_sa_json_path or "").strip()
-    folder_id_value = str(settings.gdrive_inbox_folder_id or "").strip()
-    return {
-        "configured": bool(sa_path_value and folder_id_value),
-        "sa_path": sa_path_value,
-        "folder_id": folder_id_value,
-    }
-
-
-def _test_gdrive_connection(settings: AppSettings) -> dict[str, Any]:
-    state = _gdrive_connection_state(settings)
-    if not state["configured"]:
-        raise ValueError("Google Drive is not configured.")
-    sa_path = Path(str(state["sa_path"]))
-    folder_id = str(state["folder_id"])
-    service = build_drive_service(sa_path)
-    query = f"'{folder_id}' in parents and trashed=false"
-    response = (
-        service.files()
-        .list(
-            q=query,
-            fields="files(id,name,createdTime)",
-            pageSize=1,
-        )
-        .execute()
-    )
-    rows = response.get("files", []) or []
-    if rows:
-        first = rows[0]
-        name = str(first.get("name") or "").strip() or "(unnamed)"
-        file_id = str(first.get("id") or "").strip() or "unknown-id"
-        return {
-            "ok": True,
-            "message": f"Connected. Sample file: {name} ({file_id}).",
-        }
-    return {
-        "ok": True,
-        "message": "Connected. Inbox is reachable, but no files were found.",
-    }
 
 
 def _load_json_dict(path: Path) -> dict[str, Any]:
@@ -1534,35 +1491,6 @@ async def ui_upload(request: Request) -> Any:
 
 
 # ---------------------------------------------------------------------------
-# Connections
-# ---------------------------------------------------------------------------
-
-
-@ui_router.get("/connections", response_class=HTMLResponse)
-async def ui_connections(request: Request) -> Any:
-    gdrive_state = _gdrive_connection_state(_settings)
-    return templates.TemplateResponse(
-        request,
-        "connections.html",
-        {
-            "active": "connections",
-            "gdrive": gdrive_state,
-        },
-    )
-
-
-@ui_router.post("/ui/connections/gdrive/test", response_class=HTMLResponse)
-async def ui_test_gdrive_connection() -> Any:
-    try:
-        result = await run_in_threadpool(_test_gdrive_connection, _settings)
-    except ValueError as exc:
-        return HTMLResponse(f"<span style='color:#92400e'>{exc}</span>")
-    except Exception as exc:
-        return HTMLResponse(f"<span style='color:#b42318'>Google Drive test failed: {exc}</span>")
-    return HTMLResponse(f"<span style='color:#14532d'>{result['message']}</span>")
-
-
-# ---------------------------------------------------------------------------
 # Inline recording actions (HTMX targets returning HX-Redirect)
 # ---------------------------------------------------------------------------
 
@@ -1746,4 +1674,3 @@ async def ui_retranscribe_language(
     except Exception as exc:
         return HTMLResponse(f"Re-transcribe failed: {exc}", status_code=503)
     return RedirectResponse(f"/recordings/{recording_id}?tab=log", status_code=303)
-

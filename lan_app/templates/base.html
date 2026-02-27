@@ -74,12 +74,11 @@ tr:hover{background:#e8ecf8}
 <nav>
   <span class="nav-logo">LAN Transcriber</span>
   <a href="/" {% if active=='dashboard' %}class="active"{% endif %}>Dashboard</a>
-  <a href="/recordings" {% if active=='recordings' %}class="active"{% endif %}>Recordings</a>
   <a href="/upload" {% if active=='upload' %}class="active"{% endif %}>Upload</a>
+  <a href="/recordings" {% if active=='recordings' %}class="active"{% endif %}>Recordings</a>
   <a href="/queue" {% if active=='queue' %}class="active"{% endif %}>Queue</a>
   <a href="/projects" {% if active=='projects' %}class="active"{% endif %}>Projects</a>
   <a href="/voices" {% if active=='voices' %}class="active"{% endif %}>Voices</a>
-  <a href="/connections" {% if active=='connections' %}class="active"{% endif %}>Connections</a>
 </nav>
 <main>
 {% block content %}{% endblock %}
