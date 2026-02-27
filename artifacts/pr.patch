@@ -1,382 +1,62 @@
 diff --git a/lan_app/api.py b/lan_app/api.py
-index 5ea63e6..947c902 100644
+index 947c902..1df68c9 100644
 --- a/lan_app/api.py
 +++ b/lan_app/api.py
-@@ -5,8 +5,9 @@ from contextlib import asynccontextmanager, suppress
- import logging
- import shutil
- from typing import List
-+from uuid import uuid4
+@@ -515,6 +515,7 @@ async def api_upload_file(file: UploadFile = File(...)) -> dict[str, object]:
+     raw_dir = recording_dir / "raw"
+     dest = raw_dir / f"audio{ext}"
+     completed = False
++    recording_created = False
  
--from fastapi import FastAPI, HTTPException, Query, Request
-+from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile
- from fastapi.concurrency import run_in_threadpool
- from fastapi.responses import JSONResponse, Response, StreamingResponse
- from fastapi.staticfiles import StaticFiles
-@@ -28,10 +29,13 @@ from .config import AppSettings
- from .constants import (
-     DEFAULT_REQUEUE_JOB_TYPE,
-     JOB_STATUSES,
-+    JOB_TYPE_PRECHECK,
-     RECORDING_STATUSES,
-+    RECORDING_STATUS_QUEUED,
-     RECORDING_STATUS_QUARANTINE,
- )
- from .db import (
-+    create_recording,
-     delete_recording,
-     get_recording,
-     init_db,
-@@ -64,6 +68,13 @@ from .ms_graph import (
- from .onenote import PublishPreconditionError, publish_recording_to_onenote
- from .ops import run_retention_cleanup
- from .reaper import run_stuck_job_reaper_once
-+from .uploads import (
-+    ALLOWED_UPLOAD_EXTENSIONS,
-+    infer_captured_at,
-+    safe_filename,
-+    suffix_from_name,
-+    write_upload_to_path,
-+)
- from .ui_routes import _STATIC_DIR, ui_router
- 
- ALIAS_PATH = aliases.ALIAS_PATH
-@@ -493,6 +504,64 @@ async def api_list_jobs(
-     }
+     try:
+         bytes_written = write_upload_to_path(
+@@ -531,6 +532,7 @@ async def api_upload_file(file: UploadFile = File(...)) -> dict[str, object]:
+             status=RECORDING_STATUS_QUEUED,
+             settings=_settings,
+         )
++        recording_created = True
+         try:
+             job = enqueue_recording_job(
+                 recording_id,
+@@ -560,6 +562,9 @@ async def api_upload_file(file: UploadFile = File(...)) -> dict[str, object]:
+         await file.close()
+         if not completed and recording_dir.exists():
+             shutil.rmtree(recording_dir, ignore_errors=True)
++        if not completed and recording_created:
++            with suppress(Exception):
++                delete_recording(recording_id, settings=_settings)
  
  
-+@app.post("/api/uploads")
-+async def api_upload_file(file: UploadFile = File(...)) -> dict[str, object]:
-+    recording_id = f"trs_{uuid4().hex[:8]}"
-+    ext = suffix_from_name(file.filename or "")
-+    if ext not in ALLOWED_UPLOAD_EXTENSIONS:
-+        raise HTTPException(status_code=422, detail=f"Unsupported file extension: {ext}")
-+
-+    recording_dir = _settings.recordings_root / recording_id
-+    raw_dir = recording_dir / "raw"
-+    dest = raw_dir / f"audio{ext}"
-+    completed = False
-+
-+    try:
-+        bytes_written = write_upload_to_path(
-+            file,
-+            dest,
-+            max_bytes=_settings.upload_max_bytes,
-+        )
-+        captured_at = infer_captured_at(file.filename or "")
-+        create_recording(
-+            recording_id,
-+            source="upload",
-+            source_filename=safe_filename(file.filename or ""),
-+            captured_at=captured_at,
-+            status=RECORDING_STATUS_QUEUED,
-+            settings=_settings,
-+        )
-+        try:
-+            job = enqueue_recording_job(
-+                recording_id,
-+                job_type=JOB_TYPE_PRECHECK,
-+                settings=_settings,
-+            )
-+        except Exception as exc:
-+            raise HTTPException(status_code=503, detail=f"Queue unavailable: {exc}")
-+
-+        completed = True
-+        return {
-+            "recording_id": recording_id,
-+            "job_id": job.job_id,
-+            "captured_at": captured_at,
-+            "bytes_written": bytes_written,
-+        }
-+    except ValueError as exc:
-+        message = str(exc)
-+        if message == "max upload size exceeded":
-+            raise HTTPException(status_code=413, detail=message)
-+        raise HTTPException(status_code=422, detail=message)
-+    except HTTPException:
-+        raise
-+    except Exception as exc:
-+        raise HTTPException(status_code=503, detail=f"Upload failed: {exc}")
-+    finally:
-+        await file.close()
-+        if not completed and recording_dir.exists():
-+            shutil.rmtree(recording_dir, ignore_errors=True)
-+
-+
  @app.post("/api/actions/ingest")
- async def api_ingest_once() -> dict[str, object]:
-     """Trigger a single Google Drive ingest cycle."""
-diff --git a/lan_app/config.py b/lan_app/config.py
-index 525d95d..c0bb81c 100644
---- a/lan_app/config.py
-+++ b/lan_app/config.py
-@@ -191,6 +191,11 @@ class AppSettings(BaseSettings):
-             "INGEST_LOCK_TTL_SECONDS",
-         ),
-     )
-+    upload_max_bytes: int | None = Field(
-+        default=None,
-+        ge=1,
-+        validation_alias=AliasChoices("UPLOAD_MAX_BYTES"),
-+    )
- 
-     @property
-     def ms_scopes_list(self) -> list[str]:
-diff --git a/tasks/QUEUE.md b/tasks/QUEUE.md
-index 0da7b9a..b2666e3 100644
---- a/tasks/QUEUE.md
-+++ b/tasks/QUEUE.md
-@@ -132,7 +132,7 @@ Queue (in order)
- - Depends on: PR-UI-PROGRESS-01
- 
- 25) PR-UI-UPLOAD-01: Upload ingest API (multipart) create recordings from UI uploads
--- Status: TODO
-+- Status: DOING
- - Tasks file: tasks/PR-UI-UPLOAD-01.md
- - Depends on: PR-RUNTIME-CONFIG-01
- 
-diff --git a/lan_app/uploads.py b/lan_app/uploads.py
-new file mode 100644
-index 0000000..545a0bf
---- /dev/null
-+++ b/lan_app/uploads.py
-@@ -0,0 +1,104 @@
-+from __future__ import annotations
-+
-+from datetime import datetime, timezone
-+from pathlib import Path
-+import re
-+from typing import BinaryIO
-+
-+ALLOWED_UPLOAD_EXTENSIONS = {
-+    ".mp3",
-+    ".wav",
-+    ".m4a",
-+    ".mp4",
-+    ".aac",
-+    ".ogg",
-+    ".flac",
-+}
-+
-+_DEFAULT_SUFFIX = ".mp3"
-+_FILENAME_SAFE_CHARS_RE = re.compile(r"[^A-Za-z0-9._-]+")
-+_PLAUD_RE = re.compile(
-+    r"(\d{4})-(\d{2})-(\d{2})\s+(\d{2})[_\-](\d{2})[_\-](\d{2})"
-+)
-+_COPY_CHUNK_SIZE = 1024 * 1024
-+
-+
-+def suffix_from_name(filename: str) -> str:
-+    name = str(filename or "")
-+    suffix = Path(name).suffix.strip().lower()
-+    if suffix:
-+        return suffix
-+    return _DEFAULT_SUFFIX
-+
-+
-+def safe_filename(filename: str) -> str:
-+    raw = str(filename or "").replace("\\", "/").split("/")[-1].strip()
-+    if not raw:
-+        return "upload"
-+    sanitized = _FILENAME_SAFE_CHARS_RE.sub("_", raw).strip("._- ")
-+    return sanitized or "upload"
-+
-+
-+def parse_plaud_captured_at(filename: str) -> str | None:
-+    match = _PLAUD_RE.search(str(filename or ""))
-+    if match is None:
-+        return None
-+    year, month, day, hour, minute, second = (int(group) for group in match.groups())
-+    try:
-+        parsed = datetime(
-+            year,
-+            month,
-+            day,
-+            hour,
-+            minute,
-+            second,
-+            tzinfo=timezone.utc,
-+        )
-+    except ValueError:
-+        return None
-+    return parsed.isoformat().replace("+00:00", "Z")
-+
-+
-+def infer_captured_at(filename: str) -> str:
-+    parsed = parse_plaud_captured_at(filename)
-+    if parsed is not None:
-+        return parsed
-+    return datetime.now(tz=timezone.utc).replace(microsecond=0).isoformat().replace(
-+        "+00:00", "Z"
-+    )
-+
-+
-+def write_upload_to_path(upload, dest: Path, *, max_bytes: int | None) -> int:
-+    dest.parent.mkdir(parents=True, exist_ok=True)
-+    bytes_written = 0
-+    fh: BinaryIO
-+    try:
-+        upload.file.seek(0)
-+    except Exception:
-+        pass
-+
-+    try:
-+        with dest.open("wb") as fh:
-+            while True:
-+                chunk = upload.file.read(_COPY_CHUNK_SIZE)
-+                if not chunk:
-+                    break
-+                bytes_written += len(chunk)
-+                if max_bytes is not None and bytes_written > max_bytes:
-+                    raise ValueError("max upload size exceeded")
-+                fh.write(chunk)
-+    except Exception:
-+        dest.unlink(missing_ok=True)
-+        raise
-+
-+    return bytes_written
-+
-+
-+__all__ = [
-+    "ALLOWED_UPLOAD_EXTENSIONS",
-+    "infer_captured_at",
-+    "parse_plaud_captured_at",
-+    "safe_filename",
-+    "suffix_from_name",
-+    "write_upload_to_path",
-+]
 diff --git a/tests/test_upload.py b/tests/test_upload.py
-new file mode 100644
-index 0000000..3029142
---- /dev/null
+index 3029142..555ed8e 100644
+--- a/tests/test_upload.py
 +++ b/tests/test_upload.py
-@@ -0,0 +1,129 @@
-+from __future__ import annotations
-+
-+from pathlib import Path
-+from uuid import uuid4
-+
-+from fastapi.testclient import TestClient
-+
-+from lan_app import api
-+from lan_app.config import AppSettings
-+from lan_app.constants import JOB_STATUS_QUEUED, JOB_TYPE_PRECHECK, RECORDING_STATUS_QUEUED
-+from lan_app.db import (
-+    create_job,
-+    get_recording,
-+    init_db,
-+    list_jobs,
-+    list_recordings,
-+    set_recording_status,
-+)
-+from lan_app.jobs import RecordingJob
+@@ -127,3 +127,27 @@ def test_upload_max_bytes_returns_413(tmp_path: Path, monkeypatch):
+     items, total = list_recordings(settings=cfg)
+     assert total == 0
+     assert items == []
 +
 +
-+def _cfg(tmp_path: Path) -> AppSettings:
-+    cfg = AppSettings(
-+        data_root=tmp_path,
-+        recordings_root=tmp_path / "recordings",
-+        db_path=tmp_path / "db" / "app.db",
-+    )
-+    cfg.metrics_snapshot_path = tmp_path / "metrics.snap"
-+    return cfg
-+
-+
-+def _stub_enqueue(monkeypatch, cfg: AppSettings) -> None:
-+    def _fake_enqueue(
-+        recording_id: str,
-+        *,
-+        job_type: str = JOB_TYPE_PRECHECK,
-+        settings: AppSettings | None = None,
-+    ) -> RecordingJob:
-+        effective = settings or cfg
-+        job_id = f"job-upload-{uuid4().hex[:8]}"
-+        create_job(
-+            job_id=job_id,
-+            recording_id=recording_id,
-+            job_type=job_type,
-+            status=JOB_STATUS_QUEUED,
-+            settings=effective,
-+        )
-+        set_recording_status(
-+            recording_id,
-+            RECORDING_STATUS_QUEUED,
-+            settings=effective,
-+        )
-+        return RecordingJob(
-+            job_id=job_id,
-+            recording_id=recording_id,
-+            job_type=job_type,
-+        )
-+
-+    monkeypatch.setattr(api, "enqueue_recording_job", _fake_enqueue)
-+
-+
-+def test_upload_success_creates_recording_and_job(tmp_path: Path, monkeypatch):
++def test_upload_queue_failure_rolls_back_recording(tmp_path: Path, monkeypatch):
 +    cfg = _cfg(tmp_path)
 +    monkeypatch.setattr(api, "_settings", cfg)
 +    init_db(cfg)
-+    _stub_enqueue(monkeypatch, cfg)
++
++    def _fail_enqueue(*_args, **_kwargs):
++        raise RuntimeError("redis down")
++
++    monkeypatch.setattr(api, "enqueue_recording_job", _fail_enqueue)
 +
 +    client = TestClient(api.app)
 +    response = client.post(
 +        "/api/uploads",
 +        files={"file": ("2026-02-18 16_01_43.mp3", b"abc", "audio/mpeg")},
 +    )
-+    assert response.status_code == 200
-+    payload = response.json()
-+
-+    recording_id = payload["recording_id"]
-+    assert recording_id.startswith("trs_")
-+    assert payload["captured_at"] == "2026-02-18T16:01:43Z"
-+    assert payload["bytes_written"] == 3
-+
-+    raw_file = cfg.recordings_root / recording_id / "raw" / "audio.mp3"
-+    assert raw_file.exists()
-+    assert raw_file.read_bytes() == b"abc"
-+
-+    recording = get_recording(recording_id, settings=cfg)
-+    assert recording is not None
-+    assert recording["source"] == "upload"
-+    assert ".mp3" in str(recording["source_filename"])
-+    assert recording["captured_at"] == "2026-02-18T16:01:43Z"
-+
-+    jobs, total = list_jobs(settings=cfg, recording_id=recording_id)
-+    assert total == 1
-+    assert jobs[0]["status"] == JOB_STATUS_QUEUED
-+    assert jobs[0]["type"] == JOB_TYPE_PRECHECK
-+
-+
-+def test_upload_unsupported_extension_returns_422(tmp_path: Path, monkeypatch):
-+    cfg = _cfg(tmp_path)
-+    monkeypatch.setattr(api, "_settings", cfg)
-+    init_db(cfg)
-+    _stub_enqueue(monkeypatch, cfg)
-+
-+    client = TestClient(api.app)
-+    response = client.post(
-+        "/api/uploads",
-+        files={"file": ("bad.exe", b"abc", "application/octet-stream")},
-+    )
-+    assert response.status_code == 422
-+    assert "Unsupported file extension" in response.json()["detail"]
-+
-+
-+def test_upload_max_bytes_returns_413(tmp_path: Path, monkeypatch):
-+    cfg = _cfg(tmp_path)
-+    cfg.upload_max_bytes = 2
-+    monkeypatch.setattr(api, "_settings", cfg)
-+    init_db(cfg)
-+    _stub_enqueue(monkeypatch, cfg)
-+
-+    client = TestClient(api.app)
-+    response = client.post(
-+        "/api/uploads",
-+        files={"file": ("tiny.mp3", b"abc", "audio/mpeg")},
-+    )
-+    assert response.status_code == 413
-+    assert response.json()["detail"] == "max upload size exceeded"
++    assert response.status_code == 503
++    assert "Queue unavailable" in response.json()["detail"]
 +
 +    items, total = list_recordings(settings=cfg)
 +    assert total == 0
 +    assert items == []
++    assert list(cfg.recordings_root.glob("trs_*")) == []

@@ -127,3 +127,27 @@ def test_upload_max_bytes_returns_413(tmp_path: Path, monkeypatch):
     items, total = list_recordings(settings=cfg)
     assert total == 0
     assert items == []
+
+
+def test_upload_queue_failure_rolls_back_recording(tmp_path: Path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    init_db(cfg)
+
+    def _fail_enqueue(*_args, **_kwargs):
+        raise RuntimeError("redis down")
+
+    monkeypatch.setattr(api, "enqueue_recording_job", _fail_enqueue)
+
+    client = TestClient(api.app)
+    response = client.post(
+        "/api/uploads",
+        files={"file": ("2026-02-18 16_01_43.mp3", b"abc", "audio/mpeg")},
+    )
+    assert response.status_code == 503
+    assert "Queue unavailable" in response.json()["detail"]
+
+    items, total = list_recordings(settings=cfg)
+    assert total == 0
+    assert items == []
+    assert list(cfg.recordings_root.glob("trs_*")) == []

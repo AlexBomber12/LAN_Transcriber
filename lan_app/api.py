@@ -515,6 +515,7 @@ async def api_upload_file(file: UploadFile = File(...)) -> dict[str, object]:
     raw_dir = recording_dir / "raw"
     dest = raw_dir / f"audio{ext}"
     completed = False
+    recording_created = False
 
     try:
         bytes_written = write_upload_to_path(
@@ -531,6 +532,7 @@ async def api_upload_file(file: UploadFile = File(...)) -> dict[str, object]:
             status=RECORDING_STATUS_QUEUED,
             settings=_settings,
         )
+        recording_created = True
         try:
             job = enqueue_recording_job(
                 recording_id,
@@ -560,6 +562,9 @@ async def api_upload_file(file: UploadFile = File(...)) -> dict[str, object]:
         await file.close()
         if not completed and recording_dir.exists():
             shutil.rmtree(recording_dir, ignore_errors=True)
+        if not completed and recording_created:
+            with suppress(Exception):
+                delete_recording(recording_id, settings=_settings)
 
 
 @app.post("/api/actions/ingest")
