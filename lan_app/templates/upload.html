@@ -1,0 +1,409 @@
+{% extends "base.html" %}
+{% block title %}Upload – LAN Transcriber{% endblock %}
+{% block content %}
+<h1>Upload</h1>
+
+<div class="section">
+  <div class="form-row" style="margin-bottom:8px">
+    <label for="file-input">Files</label>
+    <input type="file" id="file-input" multiple>
+    <button type="button" class="btn" id="pick-files-btn">Choose files</button>
+  </div>
+  <div
+    id="dropzone"
+    style="background:#fff;border:2px dashed #99b;padding:14px;max-width:720px;color:#555;user-select:none"
+    tabindex="0"
+  >
+    Drop files here to upload (or use the file picker).
+  </div>
+</div>
+
+<div class="section">
+  <table>
+    <thead>
+      <tr>
+        <th>Filename</th>
+        <th>Size</th>
+        <th>Upload progress</th>
+        <th>Processing progress</th>
+        <th>Status</th>
+        <th>Link</th>
+      </tr>
+    </thead>
+    <tbody id="upload-rows">
+      <tr id="upload-empty">
+        <td colspan="6" class="placeholder">No files queued.</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<script>
+var TERMINAL_STATUSES = new Set([
+  "Ready",
+  "NeedsReview",
+  "Published",
+  "Quarantine",
+  "Failed",
+]);
+var uploadQueue = [];
+var queueRunning = false;
+
+function formatSize(bytes) {
+  var value = Number(bytes);
+  if (!Number.isFinite(value) || value < 0) {
+    return "—";
+  }
+  if (value < 1024) {
+    return String(value) + " B";
+  }
+  var kb = value / 1024;
+  if (kb < 1024) {
+    return kb.toFixed(1) + " KB";
+  }
+  var mb = kb / 1024;
+  if (mb < 1024) {
+    return mb.toFixed(1) + " MB";
+  }
+  var gb = mb / 1024;
+  return gb.toFixed(2) + " GB";
+}
+
+function makeProgressCell() {
+  var wrap = document.createElement("div");
+  wrap.style.display = "flex";
+  wrap.style.alignItems = "center";
+  wrap.style.gap = "6px";
+  wrap.style.minWidth = "140px";
+
+  var bar = document.createElement("div");
+  bar.style.width = "90px";
+  bar.style.height = "8px";
+  bar.style.border = "1px solid #99b";
+  bar.style.background = "#f3f4f6";
+  bar.style.position = "relative";
+
+  var fill = document.createElement("div");
+  fill.style.position = "absolute";
+  fill.style.left = "0";
+  fill.style.top = "0";
+  fill.style.bottom = "0";
+  fill.style.width = "0%";
+  fill.style.background = "#4a6080";
+  bar.appendChild(fill);
+
+  var label = document.createElement("span");
+  label.textContent = "0%";
+  label.style.fontSize = "11px";
+
+  wrap.appendChild(bar);
+  wrap.appendChild(label);
+  return {node: wrap, fill: fill, label: label};
+}
+
+function setPercent(progress, percent) {
+  var value = Number(percent);
+  if (!Number.isFinite(value)) {
+    value = 0;
+  }
+  if (value < 0) {
+    value = 0;
+  }
+  if (value > 100) {
+    value = 100;
+  }
+  var rounded = Math.round(value);
+  progress.fill.style.width = String(rounded) + "%";
+  progress.label.textContent = String(rounded) + "%";
+}
+
+function removePlaceholderRow() {
+  var row = document.getElementById("upload-empty");
+  if (row) {
+    row.remove();
+  }
+}
+
+function addFileRow(file) {
+  removePlaceholderRow();
+  var rows = document.getElementById("upload-rows");
+  var tr = document.createElement("tr");
+
+  var nameCell = document.createElement("td");
+  nameCell.textContent = file.name || "(unnamed)";
+  nameCell.title = file.name || "";
+
+  var sizeCell = document.createElement("td");
+  sizeCell.textContent = formatSize(file.size);
+
+  var uploadCell = document.createElement("td");
+  var uploadProgress = makeProgressCell();
+  uploadCell.appendChild(uploadProgress.node);
+
+  var processCell = document.createElement("td");
+  var processProgress = makeProgressCell();
+  processCell.appendChild(processProgress.node);
+
+  var statusCell = document.createElement("td");
+  statusCell.textContent = "Queued for upload";
+
+  var linkCell = document.createElement("td");
+  linkCell.textContent = "—";
+
+  tr.appendChild(nameCell);
+  tr.appendChild(sizeCell);
+  tr.appendChild(uploadCell);
+  tr.appendChild(processCell);
+  tr.appendChild(statusCell);
+  tr.appendChild(linkCell);
+  rows.appendChild(tr);
+
+  return {
+    file: file,
+    statusCell: statusCell,
+    linkCell: linkCell,
+    uploadProgress: uploadProgress,
+    processProgress: processProgress,
+  };
+}
+
+function normaliseProcessingPercent(value) {
+  var number = Number(value);
+  if (!Number.isFinite(number)) {
+    return 0;
+  }
+  if (number < 0) {
+    number = 0;
+  }
+  if (number > 1) {
+    number = 1;
+  }
+  return Math.round(number * 100);
+}
+
+function parseJsonPayload(text) {
+  var body = String(text || "").trim();
+  if (!body) {
+    return {};
+  }
+  try {
+    var parsed = JSON.parse(body);
+    if (parsed && typeof parsed === "object") {
+      return parsed;
+    }
+  } catch (_err) {
+    return {};
+  }
+  return {};
+}
+
+function payloadDetail(payload) {
+  if (!payload || typeof payload !== "object") {
+    return "";
+  }
+  if (typeof payload.detail === "string") {
+    return payload.detail;
+  }
+  if (payload.detail && typeof payload.detail === "object") {
+    return JSON.stringify(payload.detail);
+  }
+  return "";
+}
+
+function attachRecordingLink(item, recordingId) {
+  item.linkCell.textContent = "";
+  var link = document.createElement("a");
+  link.href = "/recordings/" + encodeURIComponent(recordingId);
+  link.textContent = "Open recording";
+  link.style.textDecoration = "none";
+  link.style.color = "#1d4ed8";
+  item.linkCell.appendChild(link);
+}
+
+function startPolling(item, recordingId) {
+  var stopped = false;
+  var timer = null;
+
+  function stop() {
+    stopped = true;
+    if (timer !== null) {
+      clearInterval(timer);
+      timer = null;
+    }
+  }
+
+  async function pollOnce() {
+    if (stopped) {
+      return;
+    }
+
+    var response = null;
+    try {
+      response = await fetch("/api/recordings/" + encodeURIComponent(recordingId));
+    } catch (_err) {
+      item.statusCell.textContent = "polling failed";
+      stop();
+      return;
+    }
+
+    if (!response.ok) {
+      item.statusCell.textContent = "polling failed";
+      stop();
+      return;
+    }
+
+    var recording = null;
+    try {
+      recording = await response.json();
+    } catch (_err) {
+      item.statusCell.textContent = "polling failed";
+      stop();
+      return;
+    }
+
+    var status = String(recording.status || "").trim() || "Unknown";
+    var stage = String(recording.pipeline_stage || "").trim() || "Waiting";
+    var processPercent = normaliseProcessingPercent(recording.pipeline_progress);
+
+    setPercent(item.processProgress, processPercent);
+    item.statusCell.textContent = status + " (" + stage + ")";
+
+    if (TERMINAL_STATUSES.has(status)) {
+      stop();
+    }
+  }
+
+  pollOnce();
+  timer = setInterval(pollOnce, 2000);
+}
+
+function uploadFile(item) {
+  return new Promise(function(resolve) {
+    var xhr = new XMLHttpRequest();
+    xhr.open("POST", "/api/uploads");
+    xhr.withCredentials = true;
+
+    xhr.upload.onprogress = function(event) {
+      if (!event.lengthComputable || event.total <= 0) {
+        return;
+      }
+      var percent = (event.loaded / event.total) * 100;
+      setPercent(item.uploadProgress, percent);
+    };
+
+    xhr.onerror = function() {
+      item.statusCell.textContent = "Upload failed";
+      resolve();
+    };
+
+    xhr.onload = function() {
+      var payload = parseJsonPayload(xhr.responseText);
+      if (xhr.status < 200 || xhr.status >= 300) {
+        var reason = payloadDetail(payload) || ("HTTP " + xhr.status);
+        item.statusCell.textContent = "Upload failed: " + reason;
+        resolve();
+        return;
+      }
+
+      var recordingId = String(payload.recording_id || "").trim();
+      if (!recordingId) {
+        item.statusCell.textContent = "Upload failed: missing recording_id";
+        resolve();
+        return;
+      }
+
+      setPercent(item.uploadProgress, 100);
+      item.statusCell.textContent = "Uploaded";
+      attachRecordingLink(item, recordingId);
+      startPolling(item, recordingId);
+      resolve();
+    };
+
+    var formData = new FormData();
+    formData.append("file", item.file);
+    xhr.send(formData);
+  });
+}
+
+async function drainUploadQueue() {
+  if (queueRunning) {
+    return;
+  }
+  queueRunning = true;
+  while (uploadQueue.length > 0) {
+    var item = uploadQueue.shift();
+    await uploadFile(item);
+  }
+  queueRunning = false;
+}
+
+function enqueueFiles(fileList) {
+  if (!fileList || fileList.length === 0) {
+    return;
+  }
+  for (var i = 0; i < fileList.length; i += 1) {
+    var file = fileList[i];
+    var row = addFileRow(file);
+    uploadQueue.push(row);
+  }
+  drainUploadQueue();
+}
+
+var fileInput = document.getElementById("file-input");
+var pickFilesButton = document.getElementById("pick-files-btn");
+var dropzone = document.getElementById("dropzone");
+
+fileInput.addEventListener("change", function() {
+  enqueueFiles(fileInput.files);
+  fileInput.value = "";
+});
+
+pickFilesButton.addEventListener("click", function() {
+  fileInput.click();
+});
+
+function stopDragDefaults(event) {
+  event.preventDefault();
+  event.stopPropagation();
+}
+
+dropzone.addEventListener("dragenter", function(event) {
+  stopDragDefaults(event);
+  dropzone.style.borderColor = "#4a6080";
+  dropzone.style.background = "#eef2ff";
+});
+
+dropzone.addEventListener("dragover", function(event) {
+  stopDragDefaults(event);
+  dropzone.style.borderColor = "#4a6080";
+  dropzone.style.background = "#eef2ff";
+});
+
+dropzone.addEventListener("dragleave", function(event) {
+  stopDragDefaults(event);
+  dropzone.style.borderColor = "#99b";
+  dropzone.style.background = "#fff";
+});
+
+dropzone.addEventListener("drop", function(event) {
+  stopDragDefaults(event);
+  dropzone.style.borderColor = "#99b";
+  dropzone.style.background = "#fff";
+  if (!event.dataTransfer) {
+    return;
+  }
+  enqueueFiles(event.dataTransfer.files);
+});
+
+dropzone.addEventListener("click", function() {
+  fileInput.click();
+});
+
+dropzone.addEventListener("keydown", function(event) {
+  if (event.key === "Enter" || event.key === " ") {
+    event.preventDefault();
+    fileInput.click();
+  }
+});
+</script>
+{% endblock %}

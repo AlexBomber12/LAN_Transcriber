@@ -137,7 +137,7 @@ Queue (in order)
 - Depends on: PR-RUNTIME-CONFIG-01
 
 26) PR-UI-UPLOAD-02: Upload page UI: multi-file upload + per-file upload progress + processing polling
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-UI-UPLOAD-02.md
 - Depends on: PR-UI-UPLOAD-01
 

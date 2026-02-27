@@ -861,6 +861,18 @@ def test_queue_invalid_status_shows_all(seeded_client):
 
 
 # ---------------------------------------------------------------------------
+# Upload
+# ---------------------------------------------------------------------------
+
+
+def test_upload_page(client):
+    r = client.get("/upload")
+    assert r.status_code == 200
+    assert "Upload" in r.text
+    assert 'id="file-input"' in r.text
+
+
+# ---------------------------------------------------------------------------
 # Connections
 # ---------------------------------------------------------------------------
 
