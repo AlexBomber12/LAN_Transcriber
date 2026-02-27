@@ -1593,6 +1593,87 @@ def test_worker_precheck_runs_pipeline_when_safe(tmp_path: Path, monkeypatch):
     assert job["status"] == JOB_STATUS_FINISHED
 
 
+def test_worker_precheck_falls_back_when_diariser_init_fails(tmp_path: Path, monkeypatch):
+    cfg = _test_settings(tmp_path)
+    monkeypatch.setenv("LAN_DATA_ROOT", str(cfg.data_root))
+    monkeypatch.setenv("LAN_RECORDINGS_ROOT", str(cfg.recordings_root))
+    monkeypatch.setenv("LAN_DB_PATH", str(cfg.db_path))
+    monkeypatch.setenv("LAN_PROM_SNAPSHOT_PATH", str(cfg.metrics_snapshot_path))
+
+    init_db(cfg)
+    create_recording(
+        "rec-precheck-fallback-1",
+        source="test",
+        source_filename="fallback.wav",
+        settings=cfg,
+    )
+    create_job(
+        "job-precheck-fallback-1",
+        recording_id="rec-precheck-fallback-1",
+        job_type=JOB_TYPE_PRECHECK,
+        settings=cfg,
+    )
+
+    raw_audio = cfg.recordings_root / "rec-precheck-fallback-1" / "raw" / "audio.wav"
+    raw_audio.parent.mkdir(parents=True, exist_ok=True)
+    raw_audio.write_bytes(b"\x00")
+
+    monkeypatch.setattr("lan_app.worker_tasks._resolve_raw_audio_path", lambda *_a, **_k: raw_audio)
+    monkeypatch.setattr(
+        "lan_app.worker_tasks.run_precheck",
+        lambda *_a, **_k: PrecheckResult(
+            duration_sec=45.0,
+            speech_ratio=0.8,
+            quarantine_reason=None,
+        ),
+    )
+    def _raise_build_error(*_args, **_kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(
+        "lan_app.worker_tasks._build_diariser",
+        _raise_build_error,
+    )
+    monkeypatch.setattr(
+        "lan_app.worker_tasks.refresh_recording_metrics",
+        lambda *_a, **_k: {"participants": [], "meeting": {"total_interruptions": 0}},
+    )
+    monkeypatch.setattr(
+        "lan_app.worker_tasks.refresh_recording_routing",
+        lambda *_a, **_k: {
+            "suggested_project_id": None,
+            "confidence": 0.0,
+            "threshold": 0.5,
+            "auto_selected": False,
+            "status_after_routing": RECORDING_STATUS_READY,
+        },
+    )
+
+    seen_diariser: dict[str, object] = {}
+
+    async def _fake_run_pipeline(*_args, **kwargs):
+        seen_diariser["value"] = kwargs.get("diariser")
+        return None
+
+    monkeypatch.setattr("lan_app.worker_tasks.run_pipeline", _fake_run_pipeline)
+
+    result = process_job(
+        "job-precheck-fallback-1",
+        "rec-precheck-fallback-1",
+        JOB_TYPE_PRECHECK,
+    )
+    assert result["status"] == "ok"
+    assert isinstance(seen_diariser["value"], worker_tasks._FallbackDiariser)
+
+    recording = get_recording("rec-precheck-fallback-1", settings=cfg)
+    assert recording is not None
+    assert recording["status"] == RECORDING_STATUS_READY
+
+    log_path = cfg.recordings_root / "rec-precheck-fallback-1" / "logs" / "step-precheck.log"
+    log_text = log_path.read_text(encoding="utf-8")
+    assert "diariser init failed, falling back: RuntimeError: boom" in log_text
+
+
 def test_worker_clears_progress_when_pipeline_fails(tmp_path: Path, monkeypatch):
     cfg = _test_settings(tmp_path)
     monkeypatch.setenv("LAN_DATA_ROOT", str(cfg.data_root))
@@ -1726,9 +1807,13 @@ def test_build_diariser_wraps_sync_pyannote_pipeline(monkeypatch):
 
     fake_model = _FakeModel()
 
+    from_pretrained_call: dict[str, object] = {}
+
     class _FakePipeline:
         @staticmethod
-        def from_pretrained(_name: str):
+        def from_pretrained(name: str, **kwargs):
+            from_pretrained_call["name"] = name
+            from_pretrained_call["kwargs"] = kwargs
             return fake_model
 
     pyannote_audio = ModuleType("pyannote.audio")
@@ -1743,6 +1828,8 @@ def test_build_diariser_wraps_sync_pyannote_pipeline(monkeypatch):
 
     assert result == {"ok": True}
     assert fake_model.calls == ["/tmp/fake.wav"]
+    assert from_pretrained_call["name"] == "pyannote/speaker-diarization"
+    assert from_pretrained_call["kwargs"] == {"revision": "3.2"}
 
 
 def test_build_diariser_surfaces_pyannote_model_load_errors(monkeypatch):

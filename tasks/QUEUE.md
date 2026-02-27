@@ -167,6 +167,6 @@ Queue (in order)
 - Depends on: PR-REMOVE-GDRIVE-01
 
 32) PR-FIX-DIARIZATION-REVISION-01: Fix pyannote diarization revision handling and fallback (avoid failed recordings)
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-FIX-DIARIZATION-REVISION-01.md
 - Depends on: PR-DOCS-EXPORT-ONLY-01
