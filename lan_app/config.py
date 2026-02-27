@@ -19,10 +19,6 @@ def _default_metrics_snapshot_path() -> Path:
     return default_data_root() / "metrics.snap"
 
 
-def _default_msal_cache_path() -> Path:
-    return default_data_root() / "auth" / "msal_cache.bin"
-
-
 def _normalize_optional_env(value: str | None) -> str | None:
     if value is None:
         return None
@@ -123,41 +119,6 @@ class AppSettings(BaseSettings):
         ),
     )
 
-    # Microsoft Graph delegated auth (Device Code Flow)
-    ms_tenant_id: str | None = Field(
-        default=None,
-        validation_alias=AliasChoices("MS_TENANT_ID", "LAN_MS_TENANT_ID"),
-    )
-    ms_client_id: str | None = Field(
-        default=None,
-        validation_alias=AliasChoices("MS_CLIENT_ID", "LAN_MS_CLIENT_ID"),
-    )
-    ms_scopes: str = Field(
-        default="offline_access User.Read Notes.ReadWrite Calendars.Read",
-        validation_alias=AliasChoices("MS_SCOPES", "LAN_MS_SCOPES"),
-    )
-    msal_cache_path: Path = Field(
-        default_factory=_default_msal_cache_path,
-        validation_alias=AliasChoices("MSAL_CACHE_PATH", "LAN_MSAL_CACHE_PATH"),
-    )
-    calendar_match_window_minutes: int = Field(
-        default=45,
-        ge=5,
-        le=24 * 60,
-        validation_alias=AliasChoices(
-            "CALENDAR_MATCH_WINDOW_MINUTES",
-            "LAN_CALENDAR_MATCH_WINDOW_MINUTES",
-        ),
-    )
-    calendar_auto_match_threshold: float = Field(
-        default=0.6,
-        ge=0.0,
-        le=1.0,
-        validation_alias=AliasChoices(
-            "CALENDAR_AUTO_MATCH_THRESHOLD",
-            "LAN_CALENDAR_AUTO_MATCH_THRESHOLD",
-        ),
-    )
     routing_auto_select_threshold: float = Field(
         default=0.65,
         ge=0.0,
@@ -196,10 +157,6 @@ class AppSettings(BaseSettings):
         ge=1,
         validation_alias=AliasChoices("UPLOAD_MAX_BYTES"),
     )
-
-    @property
-    def ms_scopes_list(self) -> list[str]:
-        return [s.strip() for s in self.ms_scopes.replace(",", " ").split() if s.strip()]
 
     @model_validator(mode="after")
     def validate_runtime_environment(self) -> "AppSettings":

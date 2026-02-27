@@ -19,8 +19,6 @@
       <tr>
         <th>ID</th>
         <th>Name</th>
-        <th>OneNote notebook ID</th>
-        <th>OneNote section ID</th>
         <th></th>
       </tr>
     </thead>
@@ -29,34 +27,7 @@
       <tr>
         <td>{{ p.id }}</td>
         <td>{{ p.name }}</td>
-        <td>
-          <form method="post" action="/projects/{{ p.id }}/onenote" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-            <input
-              type="text"
-              name="onenote_notebook_id"
-              value="{{ p.onenote_notebook_id or '' }}"
-              placeholder="Notebook ID"
-              style="font:12px 'Courier New',monospace;border:1px solid #999;padding:3px 6px;width:240px"
-            >
-            <input type="hidden" name="onenote_section_id" value="{{ p.onenote_section_id or '' }}">
-            <button class="btn" type="submit">Save mapping</button>
-          </form>
-        </td>
-        <td>
-          <form method="post" action="/projects/{{ p.id }}/onenote" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-            <input type="hidden" name="onenote_notebook_id" value="{{ p.onenote_notebook_id or '' }}">
-            <input
-              type="text"
-              name="onenote_section_id"
-              value="{{ p.onenote_section_id or '' }}"
-              placeholder="Section ID"
-              style="font:12px 'Courier New',monospace;border:1px solid #999;padding:3px 6px;width:240px"
-            >
-            <button class="btn" type="submit">Save mapping</button>
-          </form>
-        </td>
         <td style="white-space:nowrap">
-          <a class="btn" href="/projects?browse_project_id={{ p.id }}">Browse OneNote</a>
           <form method="post" action="/projects/{{ p.id }}/delete" style="display:inline" onsubmit="return confirm('Delete project ' + this.dataset.name + '?')" data-name="{{ p.name }}">
             <button class="btn btn-danger" type="submit">Delete</button>
           </form>
@@ -69,88 +40,4 @@
   <p class="placeholder">No projects yet. Create one above.</p>
   {% endif %}
 </div>
-
-{% if browse_selected_project %}
-<div class="section">
-  <h2>OneNote Browser for {{ browse_selected_project.name }}</h2>
-  {% if browse_error %}
-  <p style="margin-bottom:10px;color:#92400e">{{ browse_error }}</p>
-  {% endif %}
-
-  {% if browse_notebooks %}
-  <h3 style="margin-top:0">Notebooks</h3>
-  <table>
-    <thead>
-      <tr>
-        <th>Name</th>
-        <th>ID</th>
-        <th>Open sections</th>
-        <th>Link</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for nb in browse_notebooks %}
-      <tr>
-        <td>{{ nb.display_name }}</td>
-        <td><code>{{ nb.id }}</code></td>
-        <td>
-          <a class="btn" href="/projects?browse_project_id={{ browse_selected_project.id }}&browse_notebook_id={{ nb.id|urlencode }}">Sections</a>
-          {% if browse_selected_notebook_id == nb.id %}
-          <span style="margin-left:6px;color:#2563eb">Selected</span>
-          {% endif %}
-        </td>
-        <td>
-          {% if nb.web_url %}
-          <a href="{{ nb.web_url }}" target="_blank" rel="noreferrer">Open</a>
-          {% else %}
-          —
-          {% endif %}
-        </td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
-  {% else %}
-  <p class="placeholder">No notebooks visible, or Graph is not connected yet.</p>
-  {% endif %}
-
-  {% if browse_sections %}
-  <h3>Sections</h3>
-  <table>
-    <thead>
-      <tr>
-        <th>Name</th>
-        <th>ID</th>
-        <th>Use for project</th>
-        <th>Link</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for sec in browse_sections %}
-      <tr>
-        <td>{{ sec.display_name }}</td>
-        <td><code>{{ sec.id }}</code></td>
-        <td>
-          <form method="post" action="/projects/{{ browse_selected_project.id }}/onenote" style="display:inline">
-            <input type="hidden" name="onenote_notebook_id" value="{{ browse_selected_notebook_id }}">
-            <input type="hidden" name="onenote_section_id" value="{{ sec.id }}">
-            <button class="btn" type="submit">Use this section</button>
-          </form>
-        </td>
-        <td>
-          {% if sec.web_url %}
-          <a href="{{ sec.web_url }}" target="_blank" rel="noreferrer">Open</a>
-          {% else %}
-          —
-          {% endif %}
-        </td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
-  {% elif browse_selected_notebook_id %}
-  <p class="placeholder">No sections visible for notebook <code>{{ browse_selected_notebook_id }}</code>.</p>
-  {% endif %}
-</div>
-{% endif %}
 {% endblock %}

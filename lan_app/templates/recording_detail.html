@@ -65,16 +65,6 @@
     <span class="k">Transcript language override</span><span class="v">{{ rec.language_override or '—' }}</span>
     <span class="k">Target summary language</span><span class="v">{{ rec.target_summary_language or '—' }}</span>
     <span class="k">Drive file ID</span><span class="v">{{ rec.drive_file_id or '—' }}</span>
-    <span class="k">OneNote page</span>
-    <span class="v">
-      {% if rec.onenote_page_id and onenote_page_url %}
-      <a href="{{ onenote_page_url }}" target="_blank" rel="noreferrer"><code>{{ rec.onenote_page_id }}</code></a>
-      {% elif rec.onenote_page_id %}
-      <code>{{ rec.onenote_page_id }}</code>
-      {% else %}
-      —
-      {% endif %}
-    </span>
     <span class="k">Quarantine reason</span><span class="v">{{ rec.quarantine_reason or '—' }}</span>
     <span class="k">Created at</span><span class="v">{{ rec.created_at[:19].replace('T',' ') if rec.created_at else '—' }}</span>
     <span class="k">Updated at</span><span class="v">{{ rec.updated_at[:19].replace('T',' ') if rec.updated_at else '—' }}</span>
@@ -125,27 +115,6 @@
   }
   </script>
 
-  <div class="section" style="margin-top:10px">
-    <h2 style="margin-top:0">OneNote Publish</h2>
-    {% if rec.status == 'Published' and rec.onenote_page_id %}
-    <p>
-      <span class="badge s-Published">Published</span>
-      {% if onenote_page_url %}
-      <a href="{{ onenote_page_url }}" target="_blank" rel="noreferrer">Open OneNote page</a>
-      {% endif %}
-    </p>
-    {% endif %}
-    {% if rec.status in ['Ready', 'NeedsReview'] and rec.project_id %}
-    <form method="post" action="/ui/recordings/{{ rec.id }}/publish">
-      <button type="submit" class="btn">Publish to OneNote</button>
-    </form>
-    {% elif rec.status in ['Ready', 'NeedsReview'] %}
-    <p class="placeholder">Assign this recording to a project before publishing to OneNote.</p>
-    {% else %}
-    <p class="placeholder">Publish is available only for Ready or NeedsReview recordings.</p>
-    {% endif %}
-  </div>
-
   <h2>Topic</h2>
   <p>{{ summary_data.topic or '—' }}</p>
 
@@ -164,84 +133,6 @@
 
   <h2>Emotional Summary</h2>
   <p style="white-space:pre-wrap">{{ summary_data.emotional_summary or '—' }}</p>
-
-{% elif current_tab == 'calendar' %}
-  {% set cal = calendar or {} %}
-  {% set signals = cal.signals or {} %}
-
-  {% if cal.fetch_error %}
-  <p style="margin-bottom:10px;color:#92400e">
-    Calendar fetch unavailable: {{ cal.fetch_error }}
-  </p>
-  {% endif %}
-
-  <h2>Selected Event</h2>
-  {% if cal.selected_event %}
-  <div class="info-grid">
-    <span class="k">Subject</span><span class="v">{{ cal.selected_event.subject }}</span>
-    <span class="k">Start</span><span class="v">{{ cal.selected_event.start[:19].replace('T',' ') if cal.selected_event.start else '—' }}</span>
-    <span class="k">End</span><span class="v">{{ cal.selected_event.end[:19].replace('T',' ') if cal.selected_event.end else '—' }}</span>
-    <span class="k">Organizer</span><span class="v">{{ cal.selected_event.organizer or '—' }}</span>
-    <span class="k">Attendees</span><span class="v">{{ (cal.selected_event.attendees or []) | join(', ') or '—' }}</span>
-    <span class="k">Location</span><span class="v">{{ cal.selected_event.location or '—' }}</span>
-    <span class="k">Score</span><span class="v">{{ '%.3f'|format(cal.selected_confidence or 0.0) }}</span>
-  </div>
-  {% elif cal.manual_no_event %}
-  <p class="placeholder">No event selected (manual override).</p>
-  {% else %}
-  <p class="placeholder">No event matched yet.</p>
-  {% endif %}
-
-  <h2>Extracted Signals</h2>
-  <div class="info-grid">
-    <span class="k">Title tokens</span><span class="v">{{ (signals.title_tokens or []) | join(', ') or '—' }}</span>
-    <span class="k">Attendees</span><span class="v">{{ (signals.attendees or []) | join(', ') or '—' }}</span>
-    <span class="k">Organizer</span><span class="v">{{ signals.organizer or '—' }}</span>
-  </div>
-
-  <h2>Candidate Events (Top 5)</h2>
-  <form method="post" action="/ui/recordings/{{ rec.id }}/calendar/select">
-    <table>
-      <thead>
-        <tr>
-          <th>Pick</th>
-          <th>Subject</th>
-          <th>Start</th>
-          <th>End</th>
-          <th>Organizer</th>
-          <th>Attendees</th>
-          <th>Location</th>
-          <th>Score</th>
-          <th>Rationale</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr>
-          <td><input type="radio" name="event_id" value="" {% if not cal.selected_event_id %}checked{% endif %}></td>
-          <td colspan="8"><em>No event</em></td>
-        </tr>
-        {% for c in cal.candidates or [] %}
-        <tr>
-          <td><input type="radio" name="event_id" value="{{ c.event_id }}" {% if cal.selected_event_id == c.event_id %}checked{% endif %}></td>
-          <td title="{{ c.subject }}">{{ c.subject }}</td>
-          <td>{{ c.start[:19].replace('T',' ') if c.start else '—' }}</td>
-          <td>{{ c.end[:19].replace('T',' ') if c.end else '—' }}</td>
-          <td>{{ c.organizer or '—' }}</td>
-          <td title="{{ (c.attendees or []) | join(', ') }}">{{ (c.attendees or []) | join(', ') or '—' }}</td>
-          <td>{{ c.location or '—' }}</td>
-          <td>{{ '%.3f'|format(c.score or 0.0) }}</td>
-          <td title="{{ c.rationale }}">{{ c.rationale }}</td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-    {% if not (cal.candidates or []) %}
-    <p class="placeholder">No candidates found in the calendar window.</p>
-    {% endif %}
-    <div class="filters" style="margin-top:8px">
-      <button type="submit" class="btn">Save selection</button>
-    </div>
-  </form>
 
 {% elif current_tab == 'project' %}
   {% set prj = project or {} %}

@@ -1,97 +1,4126 @@
-diff --git a/lan_app/templates/recordings.html b/lan_app/templates/recordings.html
-index 3a48fa4..ee4a053 100644
---- a/lan_app/templates/recordings.html
-+++ b/lan_app/templates/recordings.html
-@@ -28,6 +28,7 @@
-       <th>ID</th>
-       <th>Filename</th>
-       <th>Status</th>
-+      <th style="width:140px">Progress</th>
-       <th>Suggested Project</th>
-       <th>Confidence</th>
-       <th>Captured</th>
-@@ -42,6 +43,19 @@
-       <td title="{{ r.id }}"><a href="/recordings/{{ r.id }}" style="text-decoration:none;color:#1d4ed8">{{ r.id[:16] }}…</a></td>
-       <td title="{{ r.source_filename }}">{{ r.source_filename }}</td>
-       <td><span class="badge s-{{ r.status }}">{{ r.status }}</span></td>
-+      <td style="max-width:140px">
-+        {% if r.status == "Processing" %}
-+        {{ r.progress_percent }}% {{ r.progress_stage_label }}
-+        {% elif r.status == "Queued" %}
-+        {{ r.progress_percent }}% {{ r.progress_stage_label }}
-+        {% elif r.status in ["Ready", "NeedsReview", "Published"] %}
-+        100% Done
-+        {% elif r.pipeline_progress is not none %}
-+        {{ r.progress_percent }}% {{ r.progress_stage_label }}
-+        {% else %}
-+        —
-+        {% endif %}
-+      </td>
-       <td>
-         {% if r.suggested_project_name %}
-         {{ r.suggested_project_name }}
+diff --git a/lan_app/api.py b/lan_app/api.py
+index 1df68c9..c18888e 100644
+--- a/lan_app/api.py
++++ b/lan_app/api.py
+@@ -19,11 +19,6 @@ from lan_transcriber.metrics import write_metrics_snapshot
+ from lan_transcriber.models import TranscriptResult
+ from lan_transcriber.pipeline import refresh_aliases
+ 
+-from .calendar import (
+-    load_calendar_context,
+-    refresh_calendar_context,
+-    select_calendar_event,
+-)
+ from .auth import auth_enabled, request_is_authenticated, request_requires_auth
+ from .config import AppSettings
+ from .constants import (
+@@ -57,15 +52,6 @@ from .healthchecks import (
+     collect_health_checks,
+ )
+ from .locks import release_ingest_lock, try_acquire_ingest_lock
+-from .ms_graph import (
+-    GraphAuthError,
+-    GraphDeviceFlowLimitError,
+-    GraphNotConfiguredError,
+-    get_device_flow_session,
+-    ms_connection_state,
+-    start_device_flow_session,
+-)
+-from .onenote import PublishPreconditionError, publish_recording_to_onenote
+ from .ops import run_retention_cleanup
+ from .reaper import run_stuck_job_reaper_once
+ from .uploads import (
+@@ -121,10 +107,6 @@ class QuarantineAction(BaseModel):
+     reason: str | None = None
+ 
+ 
+-class CalendarSelectAction(BaseModel):
+-    event_id: str | None = None
+-
+-
+ def _validate_recording_status(status: str | None) -> str | None:
+     if status is None:
+         return None
+@@ -225,54 +207,6 @@ async def _stuck_job_reaper_loop() -> None:
+         await asyncio.sleep(_settings.reaper_interval_seconds)
+ 
+ 
+-@app.get("/api/connections/ms/verify")
+-async def api_verify_ms_connection() -> dict[str, object]:
+-    """Validate Microsoft Graph auth by calling /me via cached delegated token."""
+-    state = await run_in_threadpool(ms_connection_state, _settings)
+-    if state["status"] != "connected":
+-        return {
+-            "ok": False,
+-            "error": state["status"],
+-            "detail": state.get("error"),
+-            "account_display_name": state.get("account_display_name"),
+-            "tenant_id": state.get("tenant_id"),
+-            "granted_scopes": state.get("granted_scopes", []),
+-        }
+-    return {
+-        "ok": True,
+-        "account_display_name": state.get("account_display_name"),
+-        "tenant_id": state.get("tenant_id"),
+-        "granted_scopes": state.get("granted_scopes", []),
+-    }
+-
+-
+-@app.post("/api/connections/ms/connect")
+-async def api_start_ms_connection(
+-    reconnect: bool = Query(default=False),
+-) -> dict[str, object]:
+-    """Start device-code flow and return code/URL details for UI polling."""
+-    try:
+-        return await run_in_threadpool(
+-            start_device_flow_session,
+-            _settings,
+-            reconnect=reconnect,
+-        )
+-    except GraphNotConfiguredError as exc:
+-        raise HTTPException(status_code=422, detail=str(exc))
+-    except GraphDeviceFlowLimitError as exc:
+-        raise HTTPException(status_code=429, detail=str(exc))
+-    except GraphAuthError as exc:
+-        raise HTTPException(status_code=503, detail=str(exc))
+-
+-
+-@app.get("/api/connections/ms/connect/{session_id}")
+-async def api_get_ms_connection_status(session_id: str) -> dict[str, object]:
+-    try:
+-        return get_device_flow_session(session_id)
+-    except KeyError:
+-        raise HTTPException(status_code=404, detail="Unknown device-flow session")
+-
+-
+ @app.post("/alias/{speaker_id}")
+ async def update_alias(speaker_id: str, upd: AliasUpdate):
+     path = aliases.ALIAS_PATH
+@@ -336,65 +270,6 @@ async def api_get_recording(recording_id: str) -> dict[str, object]:
+     return item
+ 
+ 
+-@app.get("/api/recordings/{recording_id}/calendar")
+-async def api_get_recording_calendar(recording_id: str) -> dict[str, object]:
+-    if get_recording(recording_id, settings=_settings) is None:
+-        raise HTTPException(status_code=404, detail="Recording not found")
+-    try:
+-        return await run_in_threadpool(
+-            refresh_calendar_context,
+-            recording_id,
+-            settings=_settings,
+-        )
+-    except GraphAuthError as exc:
+-        fallback = await run_in_threadpool(
+-            load_calendar_context,
+-            recording_id,
+-            settings=_settings,
+-        )
+-        fallback["fetch_error"] = str(exc)
+-        return fallback
+-
+-
+-@app.post("/api/recordings/{recording_id}/calendar/select")
+-async def api_select_recording_calendar(
+-    recording_id: str,
+-    action: CalendarSelectAction | None = None,
+-) -> dict[str, object]:
+-    if get_recording(recording_id, settings=_settings) is None:
+-        raise HTTPException(status_code=404, detail="Recording not found")
+-    payload = action or CalendarSelectAction()
+-    try:
+-        return await run_in_threadpool(
+-            select_calendar_event,
+-            recording_id,
+-            payload.event_id,
+-            settings=_settings,
+-        )
+-    except ValueError as exc:
+-        raise HTTPException(status_code=422, detail=str(exc))
+-
+-
+-@app.post("/api/recordings/{recording_id}/publish")
+-async def api_publish_recording(recording_id: str) -> dict[str, object]:
+-    if get_recording(recording_id, settings=_settings) is None:
+-        raise HTTPException(status_code=404, detail="Recording not found")
+-    try:
+-        return await run_in_threadpool(
+-            publish_recording_to_onenote,
+-            recording_id,
+-            settings=_settings,
+-        )
+-    except PublishPreconditionError as exc:
+-        raise HTTPException(status_code=422, detail=str(exc))
+-    except GraphNotConfiguredError as exc:
+-        raise HTTPException(status_code=422, detail=str(exc))
+-    except GraphAuthError as exc:
+-        raise HTTPException(status_code=503, detail=str(exc))
+-    except RuntimeError as exc:
+-        raise HTTPException(status_code=503, detail=str(exc))
+-
+-
+ @app.post("/api/recordings/{recording_id}/actions/requeue")
+ async def api_requeue_recording(
+     recording_id: str,
+diff --git a/lan_app/calendar.py b/lan_app/calendar.py
+deleted file mode 100644
+index f78556d..0000000
+--- a/lan_app/calendar.py
++++ /dev/null
+@@ -1,569 +0,0 @@
+-"""Calendar matching for recordings using Microsoft Graph calendarView."""
+-
+-from __future__ import annotations
+-
+-from datetime import datetime, timedelta, timezone, tzinfo
+-import re
+-from typing import Any
+-from urllib.parse import urlencode
+-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+-
+-from .config import AppSettings
+-from .db import (
+-    get_calendar_match,
+-    get_recording,
+-    set_calendar_match_selection,
+-    upsert_calendar_match,
+-)
+-from .ms_graph import MicrosoftGraphClient
+-
+-_TOKEN_RE = re.compile(r"[A-Za-z0-9]+")
+-_ISO_FRACTION_RE = re.compile(
+-    r"^(?P<body>.+?)(?P<fraction>\.\d+)(?P<suffix>Z|[+-]\d{2}:\d{2})?$"
+-)
+-_MANUAL_NO_EVENT_CONFIDENCE = -1.0
+-_GRAPH_CANDIDATE_LIMIT = 25
+-_UI_CANDIDATE_LIMIT = 5
+-_WINDOWS_TZ_TO_IANA = {
+-    "UTC": "UTC",
+-    "GMT Standard Time": "Europe/London",
+-    "W. Europe Standard Time": "Europe/Berlin",
+-    "Central Europe Standard Time": "Europe/Budapest",
+-    "Romance Standard Time": "Europe/Paris",
+-    "E. Europe Standard Time": "Europe/Bucharest",
+-    "Russian Standard Time": "Europe/Moscow",
+-    "Turkey Standard Time": "Europe/Istanbul",
+-    "India Standard Time": "Asia/Kolkata",
+-    "China Standard Time": "Asia/Shanghai",
+-    "Tokyo Standard Time": "Asia/Tokyo",
+-    "Korea Standard Time": "Asia/Seoul",
+-    "Pacific Standard Time": "America/Los_Angeles",
+-    "Mountain Standard Time": "America/Denver",
+-    "Central Standard Time": "America/Chicago",
+-    "Eastern Standard Time": "America/New_York",
+-    "AUS Eastern Standard Time": "Australia/Sydney",
+-    "New Zealand Standard Time": "Pacific/Auckland",
+-}
+-
+-
+-def refresh_calendar_context(
+-    recording_id: str,
+-    *,
+-    settings: AppSettings | None = None,
+-) -> dict[str, Any]:
+-    cfg = settings or AppSettings()
+-    recording = get_recording(recording_id, settings=cfg)
+-    if recording is None:
+-        raise KeyError(recording_id)
+-
+-    capture_time = _parse_iso_datetime(recording.get("captured_at"))
+-    if capture_time is None:
+-        capture_time = datetime.now(tz=timezone.utc)
+-
+-    window = timedelta(minutes=cfg.calendar_match_window_minutes)
+-    window_start = capture_time - window
+-    window_end = capture_time + window
+-    recording_start, recording_end = _recording_interval(recording, capture_time)
+-    recording_tokens = _tokenize(str(recording.get("source_filename") or ""))
+-
+-    client = MicrosoftGraphClient(cfg)
+-    query = urlencode(
+-        {
+-            "startDateTime": _iso_z(window_start),
+-            "endDateTime": _iso_z(window_end),
+-            "$top": _GRAPH_CANDIDATE_LIMIT,
+-            "$orderby": "start/dateTime",
+-        }
+-    )
+-    response = client.graph_get(f"/me/calendarView?{query}")
+-    events = response.get("value")
+-    if not isinstance(events, list):
+-        events = []
+-
+-    candidates: list[dict[str, Any]] = []
+-    window_seconds = max(int(window.total_seconds()), 1)
+-    for item in events:
+-        if not isinstance(item, dict):
+-            continue
+-        candidate = _build_candidate(
+-            item,
+-            recording_start=recording_start,
+-            recording_end=recording_end,
+-            window_seconds=window_seconds,
+-            recording_tokens=recording_tokens,
+-        )
+-        if candidate is None:
+-            continue
+-        candidates.append(candidate)
+-    candidates.sort(key=lambda c: float(c.get("score") or 0.0), reverse=True)
+-
+-    existing = get_calendar_match(recording_id, settings=cfg)
+-    selected_event_id, selected_confidence = _resolve_selected_event(
+-        existing=existing,
+-        candidates=candidates,
+-        threshold=cfg.calendar_auto_match_threshold,
+-    )
+-    row = upsert_calendar_match(
+-        recording_id=recording_id,
+-        candidates=candidates,
+-        selected_event_id=selected_event_id,
+-        selected_confidence=selected_confidence,
+-        settings=cfg,
+-    )
+-    return _build_context(recording, row)
+-
+-
+-def load_calendar_context(
+-    recording_id: str,
+-    *,
+-    settings: AppSettings | None = None,
+-) -> dict[str, Any]:
+-    cfg = settings or AppSettings()
+-    recording = get_recording(recording_id, settings=cfg)
+-    if recording is None:
+-        raise KeyError(recording_id)
+-    row = get_calendar_match(recording_id, settings=cfg) or {
+-        "recording_id": recording_id,
+-        "selected_event_id": None,
+-        "selected_confidence": None,
+-        "candidates_json": [],
+-    }
+-    return _build_context(recording, row)
+-
+-
+-def select_calendar_event(
+-    recording_id: str,
+-    event_id: str | None,
+-    *,
+-    settings: AppSettings | None = None,
+-) -> dict[str, Any]:
+-    cfg = settings or AppSettings()
+-    recording = get_recording(recording_id, settings=cfg)
+-    if recording is None:
+-        raise KeyError(recording_id)
+-
+-    current = get_calendar_match(recording_id, settings=cfg) or {
+-        "recording_id": recording_id,
+-        "selected_event_id": None,
+-        "selected_confidence": None,
+-        "candidates_json": [],
+-    }
+-    candidates = _candidate_list(current)
+-    if event_id is None:
+-        selected_confidence = _MANUAL_NO_EVENT_CONFIDENCE
+-    else:
+-        selected = _candidate_by_id(candidates, event_id)
+-        if selected is not None:
+-            selected_confidence = float(selected.get("score") or 0.0)
+-        else:
+-            current_selected = str(current.get("selected_event_id") or "").strip()
+-            if current_selected != event_id:
+-                raise ValueError("Unknown event_id for this recording")
+-            selected_confidence = _as_optional_float(current.get("selected_confidence"))
+-
+-    row = set_calendar_match_selection(
+-        recording_id=recording_id,
+-        event_id=event_id,
+-        selected_confidence=selected_confidence,
+-        settings=cfg,
+-    )
+-    return _build_context(recording, row)
+-
+-
+-def _build_candidate(
+-    event: dict[str, Any],
+-    *,
+-    recording_start: datetime,
+-    recording_end: datetime,
+-    window_seconds: int,
+-    recording_tokens: set[str],
+-) -> dict[str, Any] | None:
+-    event_id = str(event.get("id") or "").strip()
+-    if not event_id:
+-        return None
+-
+-    subject = str(event.get("subject") or "").strip()
+-    start = _parse_event_datetime(event.get("start"))
+-    end = _parse_event_datetime(event.get("end")) or start
+-    if start is None:
+-        return None
+-    if end is None or end < start:
+-        end = start
+-
+-    overlap_component = _overlap_component(
+-        recording_start=recording_start,
+-        recording_end=recording_end,
+-        event_start=start,
+-        event_end=end,
+-    )
+-    proximity_component = 0.0
+-    if overlap_component <= 0:
+-        proximity_component = _proximity_component(
+-            recording_start=recording_start,
+-            recording_end=recording_end,
+-            event_start=start,
+-            event_end=end,
+-            window_seconds=window_seconds,
+-        )
+-    keyword_component = _keyword_component(recording_tokens, _tokenize(subject))
+-    score = min(
+-        1.0,
+-        max(0.0, 0.7 * overlap_component + 0.2 * proximity_component + 0.1 * keyword_component),
+-    )
+-
+-    title_tokens = sorted(_tokenize(subject))
+-    organizer = _extract_party(event.get("organizer"))
+-    attendees = _extract_attendees(event.get("attendees"))
+-    location = _extract_location(event.get("location"))
+-    rationale = (
+-        f"time_overlap={overlap_component:.2f}; "
+-        f"proximity={proximity_component:.2f}; "
+-        f"subject_match={keyword_component:.2f}"
+-    )
+-    return {
+-        "event_id": event_id,
+-        "subject": subject or "(no subject)",
+-        "start": _iso_z(start),
+-        "end": _iso_z(end),
+-        "organizer": organizer,
+-        "attendees": attendees,
+-        "location": location,
+-        "title_tokens": title_tokens,
+-        "score": round(score, 4),
+-        "rationale": rationale,
+-    }
+-
+-
+-def _build_context(
+-    recording: dict[str, Any],
+-    row: dict[str, Any],
+-) -> dict[str, Any]:
+-    candidates = _candidate_list(row)
+-    selected_event_id = row.get("selected_event_id")
+-    selected_confidence = row.get("selected_confidence")
+-    selected = _candidate_by_id(candidates, selected_event_id)
+-    if (
+-        selected is None
+-        and isinstance(selected_event_id, str)
+-        and selected_event_id.strip()
+-    ):
+-        selected = _selection_placeholder(
+-            event_id=selected_event_id.strip(),
+-            selected_confidence=selected_confidence,
+-        )
+-    visible_candidates = _visible_candidates(candidates, selected)
+-
+-    return {
+-        "recording_id": recording["id"],
+-        "captured_at": recording.get("captured_at"),
+-        "selected_event_id": selected_event_id,
+-        "selected_confidence": selected_confidence,
+-        "selected_event": selected,
+-        "signals": {
+-            "title_tokens": (selected or {}).get("title_tokens", []),
+-            "attendees": (selected or {}).get("attendees", []),
+-            "organizer": (selected or {}).get("organizer"),
+-        },
+-        "candidates": visible_candidates,
+-        "candidate_total": len(candidates),
+-        "manual_no_event": (
+-            selected_event_id is None and selected_confidence == _MANUAL_NO_EVENT_CONFIDENCE
+-        ),
+-    }
+-
+-
+-def _resolve_selected_event(
+-    *,
+-    existing: dict[str, Any] | None,
+-    candidates: list[dict[str, Any]],
+-    threshold: float,
+-) -> tuple[str | None, float | None]:
+-    if existing:
+-        selected_event_id = existing.get("selected_event_id")
+-        selected_confidence = existing.get("selected_confidence")
+-        if (
+-            selected_event_id is None
+-            and selected_confidence == _MANUAL_NO_EVENT_CONFIDENCE
+-        ):
+-            return None, _MANUAL_NO_EVENT_CONFIDENCE
+-        if isinstance(selected_event_id, str) and selected_event_id.strip():
+-            selected_id = selected_event_id.strip()
+-        else:
+-            selected_id = None
+-        if selected_id is not None:
+-            selected = _candidate_by_id(candidates, selected_id)
+-            if selected is not None:
+-                return str(selected["event_id"]), float(selected.get("score") or 0.0)
+-            # Preserve prior user choice if the selected event is temporarily
+-            # absent from the latest Graph candidate list.
+-            return selected_id, _as_optional_float(selected_confidence)
+-
+-    if not candidates:
+-        return None, None
+-    best = candidates[0]
+-    best_score = float(best.get("score") or 0.0)
+-    if best_score >= threshold:
+-        return str(best["event_id"]), best_score
+-    return None, None
+-
+-
+-def _recording_interval(
+-    recording: dict[str, Any],
+-    capture_time: datetime,
+-) -> tuple[datetime, datetime]:
+-    duration_raw = recording.get("duration_sec")
+-    duration = int(duration_raw) if isinstance(duration_raw, int | float) else 0
+-    if duration <= 0:
+-        return capture_time, capture_time
+-    return capture_time, capture_time + timedelta(seconds=duration)
+-
+-
+-def _overlap_component(
+-    *,
+-    recording_start: datetime,
+-    recording_end: datetime,
+-    event_start: datetime,
+-    event_end: datetime,
+-) -> float:
+-    if recording_end <= recording_start:
+-        return 1.0 if event_start <= recording_start <= event_end else 0.0
+-    overlap_start = max(recording_start, event_start)
+-    overlap_end = min(recording_end, event_end)
+-    if overlap_end <= overlap_start:
+-        return 0.0
+-    overlap_seconds = (overlap_end - overlap_start).total_seconds()
+-    recording_seconds = (recording_end - recording_start).total_seconds()
+-    if recording_seconds <= 0:
+-        return 0.0
+-    return min(1.0, max(0.0, overlap_seconds / recording_seconds))
+-
+-
+-def _proximity_component(
+-    *,
+-    recording_start: datetime,
+-    recording_end: datetime,
+-    event_start: datetime,
+-    event_end: datetime,
+-    window_seconds: int,
+-) -> float:
+-    if window_seconds <= 0:
+-        return 0.0
+-    if recording_end <= recording_start:
+-        # Point-like recordings (missing/zero duration): score by nearest event edge.
+-        distance_to_start = abs((recording_start - event_start).total_seconds())
+-        distance_to_end = abs((recording_start - event_end).total_seconds())
+-        distance = min(distance_to_start, distance_to_end)
+-    else:
+-        if event_end <= recording_start:
+-            distance = (recording_start - event_end).total_seconds()
+-        elif event_start >= recording_end:
+-            distance = (event_start - recording_end).total_seconds()
+-        else:
+-            distance = 0.0
+-    normalized = 1.0 - min(max(distance, 0.0), float(window_seconds)) / float(window_seconds)
+-    return max(0.0, normalized)
+-
+-
+-def _keyword_component(
+-    recording_tokens: set[str],
+-    subject_tokens: set[str],
+-) -> float:
+-    if not recording_tokens or not subject_tokens:
+-        return 0.0
+-    overlap = len(recording_tokens.intersection(subject_tokens))
+-    return overlap / float(len(recording_tokens))
+-
+-
+-def _candidate_list(row: dict[str, Any] | None) -> list[dict[str, Any]]:
+-    if row is None:
+-        return []
+-    raw = row.get("candidates_json")
+-    if not isinstance(raw, list):
+-        return []
+-    out = [item for item in raw if isinstance(item, dict) and item.get("event_id")]
+-    out.sort(key=lambda c: float(c.get("score") or 0.0), reverse=True)
+-    return out
+-
+-
+-def _candidate_by_id(
+-    candidates: list[dict[str, Any]],
+-    event_id: str | None,
+-) -> dict[str, Any] | None:
+-    if not event_id:
+-        return None
+-    for item in candidates:
+-        if str(item.get("event_id")) == event_id:
+-            return item
+-    return None
+-
+-
+-def _selection_placeholder(
+-    *,
+-    event_id: str,
+-    selected_confidence: float | None,
+-) -> dict[str, Any]:
+-    return {
+-        "event_id": event_id,
+-        "subject": "(selected event not present in latest calendar fetch)",
+-        "start": None,
+-        "end": None,
+-        "organizer": None,
+-        "attendees": [],
+-        "location": None,
+-        "title_tokens": [],
+-        "score": _as_optional_float(selected_confidence) or 0.0,
+-        "rationale": "selection_preserved_missing_from_candidates",
+-    }
+-
+-
+-def _visible_candidates(
+-    candidates: list[dict[str, Any]],
+-    selected: dict[str, Any] | None,
+-) -> list[dict[str, Any]]:
+-    visible = list(candidates[:_UI_CANDIDATE_LIMIT])
+-    if selected is None:
+-        return visible
+-    selected_id = str(selected.get("event_id") or "").strip()
+-    if not selected_id:
+-        return visible
+-    if any(str(item.get("event_id")) == selected_id for item in visible):
+-        return visible
+-    return [*visible, selected]
+-
+-
+-def _as_optional_float(value: Any) -> float | None:
+-    if isinstance(value, bool):
+-        return None
+-    if isinstance(value, int | float):
+-        return float(value)
+-    return None
+-
+-
+-def _extract_party(value: Any) -> str | None:
+-    if not isinstance(value, dict):
+-        return None
+-    email = value.get("emailAddress")
+-    if not isinstance(email, dict):
+-        return None
+-    name = str(email.get("name") or "").strip()
+-    address = str(email.get("address") or "").strip()
+-    return name or address or None
+-
+-
+-def _extract_attendees(value: Any) -> list[str]:
+-    if not isinstance(value, list):
+-        return []
+-    attendees: list[str] = []
+-    for item in value:
+-        entry = _extract_party(item)
+-        if entry:
+-            attendees.append(entry)
+-    return attendees
+-
+-
+-def _extract_location(value: Any) -> str | None:
+-    if not isinstance(value, dict):
+-        return None
+-    display_name = str(value.get("displayName") or "").strip()
+-    return display_name or None
+-
+-
+-def _parse_event_datetime(value: Any) -> datetime | None:
+-    if isinstance(value, dict):
+-        date_time = value.get("dateTime")
+-        time_zone = value.get("timeZone")
+-    else:
+-        date_time = value
+-        time_zone = None
+-    if not isinstance(date_time, str):
+-        return None
+-    tz_name = str(time_zone).strip() or None if isinstance(time_zone, str) else None
+-    return _parse_iso_datetime(date_time, default_timezone=tz_name)
+-
+-
+-def _parse_iso_datetime(
+-    value: Any,
+-    *,
+-    default_timezone: str | None = None,
+-) -> datetime | None:
+-    if not isinstance(value, str):
+-        return None
+-    text = value.strip()
+-    if not text:
+-        return None
+-    text = _normalize_iso_datetime_text(text)
+-    if text.endswith("Z"):
+-        text = f"{text[:-1]}+00:00"
+-    try:
+-        parsed = datetime.fromisoformat(text)
+-    except ValueError:
+-        return None
+-    if parsed.tzinfo is None:
+-        if default_timezone is None:
+-            tz = timezone.utc
+-        else:
+-            tz = _timezone_from_name(default_timezone)
+-            if tz is None:
+-                tz = _graph_timezone_fallback(default_timezone)
+-                if tz is None:
+-                    return None
+-        parsed = parsed.replace(tzinfo=tz)
+-    return parsed.astimezone(timezone.utc)
+-
+-
+-def _normalize_iso_datetime_text(text: str) -> str:
+-    match = _ISO_FRACTION_RE.match(text)
+-    if match is None:
+-        return text
+-    fraction = match.group("fraction")
+-    digits = fraction[1:]
+-    if len(digits) <= 6:
+-        return text
+-    suffix = match.group("suffix") or ""
+-    return f"{match.group('body')}.{digits[:6]}{suffix}"
+-
+-
+-def _timezone_from_name(name: str | None) -> tzinfo | None:
+-    if name is None:
+-        return None
+-    cleaned = name.strip()
+-    if not cleaned:
+-        return None
+-    if cleaned.upper() == "UTC":
+-        return timezone.utc
+-    candidate = _WINDOWS_TZ_TO_IANA.get(cleaned, cleaned)
+-    try:
+-        return ZoneInfo(candidate)
+-    except ZoneInfoNotFoundError:
+-        return None
+-
+-
+-def _graph_timezone_fallback(name: str) -> tzinfo | None:
+-    cleaned = name.strip()
+-    if not cleaned:
+-        return None
+-    upper = cleaned.upper()
+-    if upper.endswith("STANDARD TIME") or upper.endswith("DAYLIGHT TIME"):
+-        # Graph frequently returns Windows zone IDs; if an ID is valid but not
+-        # in our map, keep the event instead of dropping it entirely.
+-        return timezone.utc
+-    if upper.startswith("UTC") or upper.startswith("GMT"):
+-        return timezone.utc
+-    return None
+-
+-
+-def _tokenize(value: str) -> set[str]:
+-    return {token.lower() for token in _TOKEN_RE.findall(value)}
+-
+-
+-def _iso_z(value: datetime) -> str:
+-    return value.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace(
+-        "+00:00", "Z"
+-    )
+-
+-
+-__all__ = [
+-    "load_calendar_context",
+-    "refresh_calendar_context",
+-    "select_calendar_event",
+-]
+diff --git a/lan_app/config.py b/lan_app/config.py
+index c0bb81c..7b47dc3 100644
+--- a/lan_app/config.py
++++ b/lan_app/config.py
+@@ -19,10 +19,6 @@ def _default_metrics_snapshot_path() -> Path:
+     return default_data_root() / "metrics.snap"
+ 
+ 
+-def _default_msal_cache_path() -> Path:
+-    return default_data_root() / "auth" / "msal_cache.bin"
+-
+-
+ def _normalize_optional_env(value: str | None) -> str | None:
+     if value is None:
+         return None
+@@ -123,41 +119,6 @@ class AppSettings(BaseSettings):
+         ),
+     )
+ 
+-    # Microsoft Graph delegated auth (Device Code Flow)
+-    ms_tenant_id: str | None = Field(
+-        default=None,
+-        validation_alias=AliasChoices("MS_TENANT_ID", "LAN_MS_TENANT_ID"),
+-    )
+-    ms_client_id: str | None = Field(
+-        default=None,
+-        validation_alias=AliasChoices("MS_CLIENT_ID", "LAN_MS_CLIENT_ID"),
+-    )
+-    ms_scopes: str = Field(
+-        default="offline_access User.Read Notes.ReadWrite Calendars.Read",
+-        validation_alias=AliasChoices("MS_SCOPES", "LAN_MS_SCOPES"),
+-    )
+-    msal_cache_path: Path = Field(
+-        default_factory=_default_msal_cache_path,
+-        validation_alias=AliasChoices("MSAL_CACHE_PATH", "LAN_MSAL_CACHE_PATH"),
+-    )
+-    calendar_match_window_minutes: int = Field(
+-        default=45,
+-        ge=5,
+-        le=24 * 60,
+-        validation_alias=AliasChoices(
+-            "CALENDAR_MATCH_WINDOW_MINUTES",
+-            "LAN_CALENDAR_MATCH_WINDOW_MINUTES",
+-        ),
+-    )
+-    calendar_auto_match_threshold: float = Field(
+-        default=0.6,
+-        ge=0.0,
+-        le=1.0,
+-        validation_alias=AliasChoices(
+-            "CALENDAR_AUTO_MATCH_THRESHOLD",
+-            "LAN_CALENDAR_AUTO_MATCH_THRESHOLD",
+-        ),
+-    )
+     routing_auto_select_threshold: float = Field(
+         default=0.65,
+         ge=0.0,
+@@ -197,10 +158,6 @@ class AppSettings(BaseSettings):
+         validation_alias=AliasChoices("UPLOAD_MAX_BYTES"),
+     )
+ 
+-    @property
+-    def ms_scopes_list(self) -> list[str]:
+-        return [s.strip() for s in self.ms_scopes.replace(",", " ").split() if s.strip()]
+-
+     @model_validator(mode="after")
+     def validate_runtime_environment(self) -> "AppSettings":
+         self.redis_url = _normalize_optional_env(self.redis_url)
+diff --git a/lan_app/ms_graph.py b/lan_app/ms_graph.py
+deleted file mode 100644
+index 89b4ce3..0000000
+--- a/lan_app/ms_graph.py
++++ /dev/null
+@@ -1,504 +0,0 @@
+-"""Microsoft Graph delegated auth via Device Code Flow + token cache."""
+-
+-from __future__ import annotations
+-
+-import threading
+-import time
+-from dataclasses import dataclass, field
+-from pathlib import Path
+-from typing import Any
+-from uuid import uuid4
+-
+-import httpx
+-import msal
+-from tenacity import (
+-    retry,
+-    retry_if_exception_type,
+-    stop_after_attempt,
+-    wait_exponential,
+-)
+-
+-from .config import AppSettings
+-
+-GRAPH_BASE_URL = "https://graph.microsoft.com/v1.0"
+-_DEVICE_FLOW_TTL_SECONDS = 20 * 60
+-_MAX_PENDING_DEVICE_FLOWS = 1
+-
+-
+-class GraphAuthError(RuntimeError):
+-    """Base class for Microsoft Graph auth/connection failures."""
+-
+-
+-class GraphNotConfiguredError(GraphAuthError):
+-    """Raised when Microsoft auth settings are missing."""
+-
+-
+-class GraphNeedsReconnectError(GraphAuthError):
+-    """Raised when cached auth cannot be used and reconnect is required."""
+-
+-
+-class GraphRequestError(GraphAuthError):
+-    """Raised when Graph responds with a non-retriable request error."""
+-
+-
+-class GraphDeviceFlowLimitError(GraphAuthError):
+-    """Raised when too many device-code sessions are currently pending."""
+-
+-
+-class _GraphTransientError(RuntimeError):
+-    """Raised for transient Graph/transport failures to trigger retries."""
+-
+-
+-@dataclass
+-class _DeviceFlowSession:
+-    flow: dict[str, Any]
+-    status: str = "pending"
+-    error: str | None = None
+-    account_display_name: str | None = None
+-    tenant_id: str | None = None
+-    granted_scopes: list[str] = field(default_factory=list)
+-    created_at: float = field(default_factory=time.time)
+-    finished_at: float | None = None
+-
+-
+-_DEVICE_FLOW_LOCK = threading.Lock()
+-_DEVICE_FLOW_SESSIONS: dict[str, _DeviceFlowSession] = {}
+-
+-
+-def _scopes_from_token_result(result: dict[str, Any] | None) -> list[str]:
+-    if not result:
+-        return []
+-    scope = str(result.get("scope", "")).strip()
+-    if not scope:
+-        return []
+-    return [item for item in scope.split(" ") if item]
+-
+-
+-def _load_token_cache(path: Path) -> msal.SerializableTokenCache:
+-    cache = msal.SerializableTokenCache()
+-    if not path.exists():
+-        return cache
+-    try:
+-        cache.deserialize(path.read_text(encoding="utf-8"))
+-    except Exception:
+-        # Corrupted cache should not crash the app; reconnect will recreate it.
+-        return msal.SerializableTokenCache()
+-    return cache
+-
+-
+-def _persist_token_cache(cache: msal.SerializableTokenCache, path: Path) -> None:
+-    if not cache.has_state_changed:
+-        return
+-    path.parent.mkdir(parents=True, exist_ok=True)
+-    path.write_text(cache.serialize(), encoding="utf-8")
+-
+-
+-def _token_display_name(result: dict[str, Any]) -> str | None:
+-    claims = result.get("id_token_claims") or {}
+-    if not isinstance(claims, dict):
+-        return None
+-    return claims.get("name") or claims.get("preferred_username")
+-
+-
+-def _token_tenant_id(result: dict[str, Any]) -> str | None:
+-    claims = result.get("id_token_claims") or {}
+-    if not isinstance(claims, dict):
+-        return None
+-    tid = claims.get("tid")
+-    return str(tid) if tid else None
+-
+-
+-def _prune_sessions_locked(now: float) -> None:
+-    stale: list[str] = []
+-    for session_id, session in _DEVICE_FLOW_SESSIONS.items():
+-        age = now - session.created_at
+-        if age > _DEVICE_FLOW_TTL_SECONDS:
+-            stale.append(session_id)
+-            continue
+-        if session.finished_at is None:
+-            continue
+-        if now - session.finished_at > _DEVICE_FLOW_TTL_SECONDS:
+-            stale.append(session_id)
+-    for session_id in stale:
+-        _DEVICE_FLOW_SESSIONS.pop(session_id, None)
+-
+-
+-def _session_payload(session_id: str, session: _DeviceFlowSession) -> dict[str, Any]:
+-    return {
+-        "session_id": session_id,
+-        "status": session.status,
+-        "error": session.error,
+-        "user_code": session.flow.get("user_code"),
+-        "verification_uri": session.flow.get("verification_uri"),
+-        "verification_uri_complete": session.flow.get("verification_uri_complete"),
+-        "message": session.flow.get("message"),
+-        "expires_in": session.flow.get("expires_in"),
+-        "account_display_name": session.account_display_name,
+-        "tenant_id": session.tenant_id,
+-        "granted_scopes": session.granted_scopes,
+-    }
+-
+-
+-def _pending_session_ids_locked() -> list[str]:
+-    return [sid for sid, session in _DEVICE_FLOW_SESSIONS.items() if session.status == "pending"]
+-
+-
+-def _first_pending_session_locked() -> tuple[str, _DeviceFlowSession] | None:
+-    for session_id in _pending_session_ids_locked():
+-        session = _DEVICE_FLOW_SESSIONS.get(session_id)
+-        if session is not None:
+-            return session_id, session
+-    return None
+-
+-
+-class MicrosoftGraphClient:
+-    """Thin wrapper around MSAL + Microsoft Graph REST calls."""
+-
+-    def __init__(self, settings: AppSettings | None = None) -> None:
+-        self.settings = settings or AppSettings()
+-        self.tenant_id = (self.settings.ms_tenant_id or "").strip()
+-        self.client_id = (self.settings.ms_client_id or "").strip()
+-        self.scopes = self.settings.ms_scopes_list
+-        self.cache_path = self.settings.msal_cache_path
+-        self._cache = _load_token_cache(self.cache_path)
+-        self._last_token_result: dict[str, Any] | None = None
+-        self._app: msal.PublicClientApplication | None = None
+-        if self.is_configured:
+-            authority = f"https://login.microsoftonline.com/{self.tenant_id}"
+-            self._app = msal.PublicClientApplication(
+-                client_id=self.client_id,
+-                authority=authority,
+-                token_cache=self._cache,
+-            )
+-
+-    @property
+-    def is_configured(self) -> bool:
+-        return bool(self.tenant_id and self.client_id and self.scopes)
+-
+-    def _require_app(self) -> msal.PublicClientApplication:
+-        if self._app is None:
+-            missing: list[str] = []
+-            if not self.tenant_id:
+-                missing.append("MS_TENANT_ID")
+-            if not self.client_id:
+-                missing.append("MS_CLIENT_ID")
+-            if not self.scopes:
+-                missing.append("MS_SCOPES")
+-            missing_str = ", ".join(missing) if missing else "settings"
+-            raise GraphNotConfiguredError(
+-                f"Microsoft Graph auth is not configured ({missing_str})."
+-            )
+-        return self._app
+-
+-    def clear_cache(self) -> None:
+-        try:
+-            self.cache_path.unlink()
+-        except FileNotFoundError:
+-            pass
+-
+-    def get_cached_account(self) -> dict[str, Any] | None:
+-        app = self._require_app()
+-        accounts = app.get_accounts()
+-        if not accounts:
+-            return None
+-        account = accounts[0]
+-        return {
+-            "display_name": account.get("name") or account.get("username"),
+-            "username": account.get("username"),
+-            "tenant_id": account.get("tenant_id"),
+-        }
+-
+-    def initiate_device_flow(self) -> dict[str, Any]:
+-        app = self._require_app()
+-        flow = app.initiate_device_flow(scopes=self.scopes)
+-        if "user_code" not in flow:
+-            detail = flow.get("error_description") or flow.get("error") or str(flow)
+-            raise GraphAuthError(f"Failed to start device code flow: {detail}")
+-        return flow
+-
+-    def acquire_token_by_device_flow(self, flow: dict[str, Any]) -> dict[str, Any]:
+-        app = self._require_app()
+-        result = app.acquire_token_by_device_flow(flow)
+-        _persist_token_cache(self._cache, self.cache_path)
+-        if "access_token" not in result:
+-            detail = result.get("error_description") or result.get("error") or str(result)
+-            raise GraphAuthError(f"Device code authentication failed: {detail}")
+-        self._last_token_result = result
+-        return result
+-
+-    def acquire_token_silent(self) -> dict[str, Any]:
+-        app = self._require_app()
+-        accounts = app.get_accounts()
+-        if not accounts:
+-            raise GraphNeedsReconnectError("No cached Microsoft account; reconnect required.")
+-        result = app.acquire_token_silent(self.scopes, account=accounts[0])
+-        _persist_token_cache(self._cache, self.cache_path)
+-        if not result or "access_token" not in result:
+-            raise GraphNeedsReconnectError("Cached Microsoft token expired; reconnect required.")
+-        self._last_token_result = result
+-        return result
+-
+-    def _graph_request_response_once(
+-        self,
+-        method: str,
+-        path: str,
+-        *,
+-        payload: dict[str, Any] | None = None,
+-        content: str | bytes | None = None,
+-        extra_headers: dict[str, str] | None = None,
+-    ) -> httpx.Response:
+-        token = self.acquire_token_silent()
+-        url = f"{GRAPH_BASE_URL}/{path.lstrip('/')}"
+-        headers = {"Authorization": f"Bearer {token['access_token']}"}
+-        if extra_headers:
+-            headers.update(extra_headers)
+-        request_kwargs: dict[str, Any] = {"headers": headers}
+-        if payload is not None:
+-            request_kwargs["json"] = payload
+-        if content is not None:
+-            request_kwargs["content"] = content
+-        with httpx.Client(timeout=20.0) as client:
+-            resp = client.request(method, url, **request_kwargs)
+-
+-        if resp.status_code == 401:
+-            raise GraphNeedsReconnectError("Microsoft token rejected by Graph; reconnect required.")
+-        if resp.status_code in (429, 500, 502, 503, 504):
+-            raise _GraphTransientError(f"Transient Graph error {resp.status_code}")
+-        if resp.status_code >= 400:
+-            raise GraphRequestError(f"Graph {method} {path} failed: {resp.status_code}")
+-        return resp
+-
+-    @retry(
+-        reraise=True,
+-        stop=stop_after_attempt(3),
+-        wait=wait_exponential(multiplier=1, min=1, max=8),
+-        retry=retry_if_exception_type(
+-            (_GraphTransientError, httpx.TransportError, httpx.TimeoutException)
+-        ),
+-    )
+-    def _graph_request_response(
+-        self,
+-        method: str,
+-        path: str,
+-        *,
+-        payload: dict[str, Any] | None = None,
+-        content: str | bytes | None = None,
+-        extra_headers: dict[str, str] | None = None,
+-    ) -> httpx.Response:
+-        return self._graph_request_response_once(
+-            method,
+-            path,
+-            payload=payload,
+-            content=content,
+-            extra_headers=extra_headers,
+-        )
+-
+-    def _graph_request(
+-        self,
+-        method: str,
+-        path: str,
+-        *,
+-        payload: dict[str, Any] | None = None,
+-    ) -> dict[str, Any]:
+-        resp = self._graph_request_response(method, path, payload=payload)
+-        if not resp.content:
+-            return {}
+-        try:
+-            return resp.json()
+-        except ValueError:
+-            return {}
+-
+-    def graph_get(self, path: str) -> dict[str, Any]:
+-        try:
+-            return self._graph_request("GET", path)
+-        except (httpx.TransportError, httpx.TimeoutException, _GraphTransientError) as exc:
+-            raise GraphRequestError(str(exc)) from exc
+-
+-    def graph_post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+-        try:
+-            return self._graph_request("POST", path, payload=payload)
+-        except (httpx.TransportError, httpx.TimeoutException, _GraphTransientError) as exc:
+-            raise GraphRequestError(str(exc)) from exc
+-
+-    def graph_post_html(self, path: str, html: str) -> dict[str, Any]:
+-        payload = html.strip()
+-        if not payload:
+-            raise ValueError("html payload is required")
+-        try:
+-            response = self._graph_request_response_once(
+-                "POST",
+-                path,
+-                content=payload.encode("utf-8"),
+-                extra_headers={"Content-Type": "text/html"},
+-            )
+-        except (httpx.TransportError, httpx.TimeoutException, _GraphTransientError) as exc:
+-            raise GraphRequestError(str(exc)) from exc
+-
+-        out: dict[str, Any] = {}
+-        if response.content:
+-            try:
+-                parsed = response.json()
+-            except ValueError:
+-                parsed = None
+-            if isinstance(parsed, dict):
+-                out.update(parsed)
+-        location = response.headers.get("Location")
+-        if location:
+-            out.setdefault("location", location)
+-        content_location = response.headers.get("Content-Location")
+-        if content_location:
+-            out.setdefault("content_location", content_location)
+-        return out
+-
+-    @property
+-    def granted_scopes(self) -> list[str]:
+-        return _scopes_from_token_result(self._last_token_result)
+-
+-
+-def ms_connection_state(settings: AppSettings | None = None) -> dict[str, Any]:
+-    """Return UI/API-friendly Microsoft connection status."""
+-    cfg = settings or AppSettings()
+-    client = MicrosoftGraphClient(cfg)
+-    state: dict[str, Any] = {
+-        "configured": client.is_configured,
+-        "state": "Not configured",
+-        "status": "not_configured",
+-        "requested_scopes": cfg.ms_scopes_list,
+-        "granted_scopes": [],
+-        "tenant_id": cfg.ms_tenant_id,
+-        "account_display_name": None,
+-        "error": None,
+-    }
+-    if not client.is_configured:
+-        state["error"] = "Set MS_TENANT_ID and MS_CLIENT_ID to enable Microsoft Graph."
+-        return state
+-
+-    cached_account = client.get_cached_account()
+-    if cached_account:
+-        state["account_display_name"] = cached_account.get("display_name")
+-        state["tenant_id"] = cached_account.get("tenant_id") or state["tenant_id"]
+-
+-    try:
+-        me = client.graph_get("/me")
+-    except GraphNeedsReconnectError:
+-        state["state"] = "Expired"
+-        state["status"] = "expired"
+-        state["error"] = "Reconnect required."
+-    except GraphRequestError as exc:
+-        state["state"] = "Error"
+-        state["status"] = "error"
+-        state["error"] = str(exc)
+-    else:
+-        state["state"] = "Connected"
+-        state["status"] = "connected"
+-        state["account_display_name"] = (
+-            me.get("displayName")
+-            or me.get("userPrincipalName")
+-            or state["account_display_name"]
+-        )
+-        state["tenant_id"] = _token_tenant_id(client._last_token_result or {}) or state[
+-            "tenant_id"
+-        ]
+-        state["granted_scopes"] = client.granted_scopes or state["requested_scopes"]
+-
+-    return state
+-
+-
+-def _complete_device_flow_in_background(
+-    session_id: str,
+-    *,
+-    settings: AppSettings,
+-    flow: dict[str, Any],
+-) -> None:
+-    status = "connected"
+-    error: str | None = None
+-    account_display_name: str | None = None
+-    tenant_id: str | None = None
+-    granted_scopes: list[str] = []
+-    try:
+-        client = MicrosoftGraphClient(settings=settings)
+-        result = client.acquire_token_by_device_flow(flow)
+-        account_display_name = _token_display_name(result)
+-        tenant_id = _token_tenant_id(result) or settings.ms_tenant_id
+-        granted_scopes = _scopes_from_token_result(result) or settings.ms_scopes_list
+-    except Exception as exc:  # pragma: no cover - tested via API surface
+-        status = "error"
+-        error = str(exc)
+-
+-    with _DEVICE_FLOW_LOCK:
+-        now = time.time()
+-        _prune_sessions_locked(now)
+-        session = _DEVICE_FLOW_SESSIONS.get(session_id)
+-        if session is None:
+-            return
+-        session.status = status
+-        session.error = error
+-        session.account_display_name = account_display_name
+-        session.tenant_id = tenant_id
+-        session.granted_scopes = granted_scopes
+-        session.finished_at = now
+-
+-
+-def start_device_flow_session(
+-    settings: AppSettings | None = None,
+-    *,
+-    reconnect: bool = False,
+-) -> dict[str, Any]:
+-    cfg = settings or AppSettings()
+-    with _DEVICE_FLOW_LOCK:
+-        now = time.time()
+-        _prune_sessions_locked(now)
+-        existing = _first_pending_session_locked()
+-        if existing is not None:
+-            existing_id, existing_session = existing
+-            payload = _session_payload(existing_id, existing_session)
+-            payload["reused"] = True
+-            return payload
+-        if len(_pending_session_ids_locked()) >= _MAX_PENDING_DEVICE_FLOWS:
+-            raise GraphDeviceFlowLimitError(
+-                "Too many pending Microsoft connect sessions; try again shortly."
+-            )
+-
+-        # Keep initiation serialized under lock: this avoids duplicate upstream
+-        # device-code challenges during request bursts.
+-        client = MicrosoftGraphClient(settings=cfg)
+-        if reconnect:
+-            client.clear_cache()
+-            client = MicrosoftGraphClient(settings=cfg)
+-        flow = client.initiate_device_flow()
+-        session_id = uuid4().hex
+-        session = _DeviceFlowSession(flow=flow)
+-        _DEVICE_FLOW_SESSIONS[session_id] = session
+-
+-    thread = threading.Thread(
+-        target=_complete_device_flow_in_background,
+-        kwargs={"session_id": session_id, "settings": cfg, "flow": flow},
+-        daemon=True,
+-    )
+-    thread.start()
+-    payload = _session_payload(session_id, session)
+-    payload["reused"] = False
+-    return payload
+-
+-
+-def get_device_flow_session(session_id: str) -> dict[str, Any]:
+-    with _DEVICE_FLOW_LOCK:
+-        now = time.time()
+-        _prune_sessions_locked(now)
+-        session = _DEVICE_FLOW_SESSIONS.get(session_id)
+-        if session is None:
+-            raise KeyError(session_id)
+-        return _session_payload(session_id, session)
+-
+-
+-__all__ = [
+-    "GraphAuthError",
+-    "GraphDeviceFlowLimitError",
+-    "GraphNeedsReconnectError",
+-    "GraphNotConfiguredError",
+-    "GraphRequestError",
+-    "MicrosoftGraphClient",
+-    "get_device_flow_session",
+-    "ms_connection_state",
+-    "start_device_flow_session",
+-]
+diff --git a/lan_app/onenote.py b/lan_app/onenote.py
+deleted file mode 100644
+index e33566e..0000000
+--- a/lan_app/onenote.py
++++ /dev/null
+@@ -1,690 +0,0 @@
+-"""OneNote project browsing and publish helpers."""
+-
+-from __future__ import annotations
+-
+-from datetime import datetime, timezone
+-from html import escape
+-import json
+-from pathlib import Path
+-import re
+-from typing import Any
+-from urllib.parse import quote, unquote
+-
+-from .config import AppSettings
+-from .constants import RECORDING_STATUS_NEEDS_REVIEW, RECORDING_STATUS_READY
+-from .db import (
+-    get_calendar_match,
+-    get_meeting_metrics,
+-    get_project,
+-    get_recording,
+-    list_participant_metrics,
+-    set_recording_publish_result,
+-)
+-from .ms_graph import MicrosoftGraphClient
+-
+-_ALLOWED_PUBLISH_STATUSES = {
+-    RECORDING_STATUS_READY,
+-    RECORDING_STATUS_NEEDS_REVIEW,
+-}
+-_PAGE_ID_RE = re.compile(r"/pages/([^/?#]+)", re.IGNORECASE)
+-
+-
+-class PublishPreconditionError(ValueError):
+-    """Raised when publish preconditions are not met."""
+-
+-
+-def list_onenote_notebooks(
+-    *,
+-    settings: AppSettings | None = None,
+-) -> list[dict[str, Any]]:
+-    cfg = settings or AppSettings()
+-    client = MicrosoftGraphClient(cfg)
+-    response = client.graph_get("/me/onenote/notebooks?$top=200")
+-    items = response.get("value")
+-    if not isinstance(items, list):
+-        return []
+-    notebooks = [_normalise_onenote_item(item) for item in items]
+-    out = [item for item in notebooks if item is not None]
+-    out.sort(key=lambda row: (row["display_name"].lower(), row["id"]))
+-    return out
+-
+-
+-def list_onenote_sections(
+-    notebook_id: str,
+-    *,
+-    settings: AppSettings | None = None,
+-) -> list[dict[str, Any]]:
+-    clean_notebook_id = str(notebook_id).strip()
+-    if not clean_notebook_id:
+-        raise ValueError("notebook_id is required")
+-    cfg = settings or AppSettings()
+-    client = MicrosoftGraphClient(cfg)
+-    encoded_notebook_id = quote(clean_notebook_id, safe="")
+-    response = client.graph_get(
+-        f"/me/onenote/notebooks/{encoded_notebook_id}/sections?$top=200"
+-    )
+-    items = response.get("value")
+-    if not isinstance(items, list):
+-        return []
+-    sections = [_normalise_onenote_item(item) for item in items]
+-    out = [item for item in sections if item is not None]
+-    out.sort(key=lambda row: (row["display_name"].lower(), row["id"]))
+-    return out
+-
+-
+-def publish_recording_to_onenote(
+-    recording_id: str,
+-    *,
+-    settings: AppSettings | None = None,
+-) -> dict[str, Any]:
+-    cfg = settings or AppSettings()
+-    recording = get_recording(recording_id, settings=cfg)
+-    if recording is None:
+-        raise KeyError(recording_id)
+-
+-    status = str(recording.get("status") or "").strip()
+-    if status not in _ALLOWED_PUBLISH_STATUSES:
+-        allowed = ", ".join(sorted(_ALLOWED_PUBLISH_STATUSES))
+-        raise PublishPreconditionError(
+-            f"Recording status must be one of: {allowed} (current: {status or 'unknown'})"
+-        )
+-
+-    project_id_raw = recording.get("project_id")
+-    if project_id_raw is None:
+-        raise PublishPreconditionError("Recording has no project assigned.")
+-    try:
+-        project_id = int(project_id_raw)
+-    except (TypeError, ValueError) as exc:
+-        raise PublishPreconditionError("Recording project_id is invalid.") from exc
+-    project = get_project(project_id, settings=cfg)
+-    if project is None:
+-        raise PublishPreconditionError("Recording project mapping does not exist.")
+-
+-    section_id = str(project.get("onenote_section_id") or "").strip()
+-    if not section_id:
+-        raise PublishPreconditionError("Project OneNote section_id is not configured.")
+-    notebook_id = str(project.get("onenote_notebook_id") or "").strip() or None
+-
+-    summary = _load_summary_context(recording_id, cfg)
+-    metrics = _load_metrics_context(recording_id, cfg)
+-    calendar = _load_calendar_context(recording_id, cfg)
+-    links = _build_link_context(recording, cfg)
+-
+-    participants = _participants_for_title(metrics, calendar)
+-    title = _build_publish_title(recording, summary, participants)
+-    html_payload = _build_onenote_html(
+-        title=title,
+-        summary=summary,
+-        metrics=metrics,
+-        calendar=calendar,
+-        links=links,
+-    )
+-
+-    client = MicrosoftGraphClient(cfg)
+-    encoded_section_id = quote(section_id, safe="")
+-    response = client.graph_post_html(
+-        f"/me/onenote/sections/{encoded_section_id}/pages",
+-        html_payload,
+-    )
+-    page_id = _extract_page_id(response)
+-    if not page_id:
+-        raise RuntimeError("Graph publish succeeded but page ID was not returned.")
+-    page_url = _extract_page_url(response)
+-
+-    saved = set_recording_publish_result(
+-        recording_id,
+-        onenote_page_id=page_id,
+-        onenote_page_url=page_url,
+-        settings=cfg,
+-    )
+-    if not saved:
+-        raise KeyError(recording_id)
+-
+-    return {
+-        "recording_id": recording_id,
+-        "project_id": project_id,
+-        "onenote_notebook_id": notebook_id,
+-        "onenote_section_id": section_id,
+-        "onenote_page_id": page_id,
+-        "onenote_page_url": page_url,
+-        "title": title,
+-    }
+-
+-
+-def _normalise_onenote_item(item: Any) -> dict[str, Any] | None:
+-    if not isinstance(item, dict):
+-        return None
+-    item_id = str(item.get("id") or "").strip()
+-    if not item_id:
+-        return None
+-    name = str(item.get("displayName") or "").strip() or item_id
+-    return {
+-        "id": item_id,
+-        "display_name": name,
+-        "web_url": _extract_page_url(item),
+-    }
+-
+-
+-def _load_json_dict(path: Path) -> dict[str, Any]:
+-    if not path.exists():
+-        return {}
+-    try:
+-        payload = json.loads(path.read_text(encoding="utf-8"))
+-    except (OSError, ValueError):
+-        return {}
+-    if not isinstance(payload, dict):
+-        return {}
+-    return payload
+-
+-
+-def _normalise_text_items(value: Any, *, max_items: int) -> list[str]:
+-    if isinstance(value, list):
+-        rows = value
+-    elif isinstance(value, str):
+-        rows = value.splitlines()
+-    else:
+-        return []
+-
+-    out: list[str] = []
+-    for row in rows:
+-        if len(out) >= max_items:
+-            break
+-        text = str(row).strip()
+-        if not text:
+-            continue
+-        if text.startswith("- "):
+-            text = text[2:].strip()
+-        if text:
+-            out.append(text)
+-    return out
+-
+-
+-def _load_summary_context(recording_id: str, settings: AppSettings) -> dict[str, Any]:
+-    summary_path = settings.recordings_root / recording_id / "derived" / "summary.json"
+-    payload = _load_json_dict(summary_path)
+-    summary_bullets = _normalise_text_items(payload.get("summary_bullets"), max_items=20)
+-    if not summary_bullets:
+-        summary_bullets = _normalise_text_items(payload.get("summary"), max_items=20)
+-    decisions = _normalise_text_items(payload.get("decisions"), max_items=30)
+-
+-    action_items: list[dict[str, str | None]] = []
+-    raw_action_items = payload.get("action_items")
+-    if isinstance(raw_action_items, list):
+-        for row in raw_action_items[:40]:
+-            if not isinstance(row, dict):
+-                continue
+-            task = str(row.get("task") or "").strip()
+-            if not task:
+-                continue
+-            owner = str(row.get("owner") or "").strip() or None
+-            deadline = str(row.get("deadline") or "").strip() or None
+-            action_items.append(
+-                {
+-                    "task": task,
+-                    "owner": owner,
+-                    "deadline": deadline,
+-                }
+-            )
+-
+-    topic = str(payload.get("topic") or "").strip()
+-    return {
+-        "topic": topic or "Untitled",
+-        "summary_bullets": summary_bullets,
+-        "decisions": decisions,
+-        "action_items": action_items,
+-    }
+-
+-
+-def _load_metrics_context(recording_id: str, settings: AppSettings) -> dict[str, Any]:
+-    meeting_payload: dict[str, Any] = {}
+-    participants_payload: list[dict[str, Any]] = []
+-
+-    meeting_row = get_meeting_metrics(recording_id, settings=settings) or {}
+-    meeting_json = meeting_row.get("json")
+-    if isinstance(meeting_json, dict):
+-        meeting_payload = dict(meeting_json)
+-
+-    for row in list_participant_metrics(recording_id, settings=settings):
+-        payload = row.get("json")
+-        participant = payload if isinstance(payload, dict) else {}
+-        if not participant:
+-            continue
+-        speaker = str(
+-            participant.get("speaker") or row.get("diar_speaker_label") or ""
+-        ).strip()
+-        if not speaker:
+-            continue
+-        participants_payload.append(
+-            {
+-                "speaker": speaker,
+-                "airtime_seconds": _to_float(participant.get("airtime_seconds")),
+-                "airtime_share": _to_float(participant.get("airtime_share")),
+-                "turns": _to_int(participant.get("turns")),
+-                "interruptions_done": _to_int(participant.get("interruptions_done")),
+-                "interruptions_received": _to_int(
+-                    participant.get("interruptions_received")
+-                ),
+-                "questions_count": _to_int(participant.get("questions_count")),
+-                "role_hint": str(participant.get("role_hint") or "").strip() or None,
+-            }
+-        )
+-
+-    if not meeting_payload or not participants_payload:
+-        metrics_path = settings.recordings_root / recording_id / "derived" / "metrics.json"
+-        fallback = _load_json_dict(metrics_path)
+-        meeting_raw = fallback.get("meeting")
+-        if isinstance(meeting_raw, dict):
+-            for key, value in meeting_raw.items():
+-                meeting_payload.setdefault(key, value)
+-        participants_raw = fallback.get("participants")
+-        if not participants_payload and isinstance(participants_raw, list):
+-            for row in participants_raw:
+-                if not isinstance(row, dict):
+-                    continue
+-                speaker = str(row.get("speaker") or "").strip()
+-                if not speaker:
+-                    continue
+-                participants_payload.append(
+-                    {
+-                        "speaker": speaker,
+-                        "airtime_seconds": _to_float(row.get("airtime_seconds")),
+-                        "airtime_share": _to_float(row.get("airtime_share")),
+-                        "turns": _to_int(row.get("turns")),
+-                        "interruptions_done": _to_int(row.get("interruptions_done")),
+-                        "interruptions_received": _to_int(
+-                            row.get("interruptions_received")
+-                        ),
+-                        "questions_count": _to_int(row.get("questions_count")),
+-                        "role_hint": str(row.get("role_hint") or "").strip() or None,
+-                    }
+-                )
+-
+-    participants_payload.sort(
+-        key=lambda row: (-float(row.get("airtime_seconds") or 0.0), row["speaker"])
+-    )
+-
+-    meeting = {
+-        "total_interruptions": _to_int(meeting_payload.get("total_interruptions")),
+-        "total_questions": _to_int(meeting_payload.get("total_questions")),
+-        "decisions_count": _to_int(meeting_payload.get("decisions_count")),
+-        "action_items_count": _to_int(meeting_payload.get("action_items_count")),
+-        "actionability_ratio": _to_float(meeting_payload.get("actionability_ratio")),
+-        "total_speech_time_seconds": _to_float(
+-            meeting_payload.get("total_speech_time_seconds")
+-        ),
+-        "emotional_summary": str(meeting_payload.get("emotional_summary") or "").strip()
+-        or None,
+-    }
+-    return {"meeting": meeting, "participants": participants_payload}
+-
+-
+-def _load_calendar_context(recording_id: str, settings: AppSettings) -> dict[str, Any]:
+-    row = get_calendar_match(recording_id, settings=settings) or {}
+-    selected_event_id = str(row.get("selected_event_id") or "").strip()
+-    selected_confidence = row.get("selected_confidence")
+-    if not selected_event_id:
+-        return {
+-            "selected_event_id": None,
+-            "selected_confidence": selected_confidence,
+-            "selected_event": None,
+-        }
+-    candidates = row.get("candidates_json")
+-    if not isinstance(candidates, list):
+-        candidates = []
+-    selected_event: dict[str, Any] | None = None
+-    for item in candidates:
+-        if not isinstance(item, dict):
+-            continue
+-        if str(item.get("event_id") or "").strip() != selected_event_id:
+-            continue
+-        selected_event = {
+-            "subject": str(item.get("subject") or "").strip() or "(no subject)",
+-            "start": str(item.get("start") or "").strip() or None,
+-            "end": str(item.get("end") or "").strip() or None,
+-            "organizer": str(item.get("organizer") or "").strip() or None,
+-            "attendees": [
+-                str(attendee).strip()
+-                for attendee in (item.get("attendees") or [])
+-                if str(attendee).strip()
+-            ],
+-            "location": str(item.get("location") or "").strip() or None,
+-        }
+-        break
+-    return {
+-        "selected_event_id": selected_event_id,
+-        "selected_confidence": selected_confidence,
+-        "selected_event": selected_event,
+-    }
+-
+-
+-def _build_link_context(recording: dict[str, Any], settings: AppSettings) -> dict[str, str | None]:
+-    recording_id = str(recording.get("id") or "").strip()
+-    recording_dir = settings.recordings_root / recording_id
+-    links: dict[str, str | None] = {
+-        "drive_artifact_folder_url": None,
+-        "drive_source_file_url": None,
+-        "local_artifacts_path": None,
+-        "local_artifacts_url": None,
+-        "raw_audio_path": None,
+-        "raw_audio_url": None,
+-    }
+-
+-    drive_folder_url = str(recording.get("drive_artifact_folder_url") or "").strip()
+-    if drive_folder_url:
+-        links["drive_artifact_folder_url"] = drive_folder_url
+-    drive_folder_id = str(recording.get("drive_artifact_folder_id") or "").strip()
+-    if drive_folder_id and links["drive_artifact_folder_url"] is None:
+-        links["drive_artifact_folder_url"] = (
+-            f"https://drive.google.com/drive/folders/{drive_folder_id}"
+-        )
+-
+-    drive_file_id = str(recording.get("drive_file_id") or "").strip()
+-    if drive_file_id:
+-        links["drive_source_file_url"] = f"https://drive.google.com/file/d/{drive_file_id}/view"
+-
+-    if recording_dir.exists():
+-        resolved_dir = recording_dir.resolve()
+-        links["local_artifacts_path"] = str(resolved_dir)
+-        links["local_artifacts_url"] = resolved_dir.as_uri()
+-
+-    raw_dir = recording_dir / "raw"
+-    for candidate in sorted(raw_dir.glob("audio.*")):
+-        if not candidate.is_file():
+-            continue
+-        resolved_file = candidate.resolve()
+-        links["raw_audio_path"] = str(resolved_file)
+-        links["raw_audio_url"] = resolved_file.as_uri()
+-        break
+-    return links
+-
+-
+-def _participants_for_title(
+-    metrics: dict[str, Any],
+-    calendar: dict[str, Any],
+-) -> list[str]:
+-    names: list[str] = []
+-    for row in metrics.get("participants") or []:
+-        if not isinstance(row, dict):
+-            continue
+-        speaker = str(row.get("speaker") or "").strip()
+-        if speaker and speaker not in names:
+-            names.append(speaker)
+-    if not names:
+-        selected_event = calendar.get("selected_event")
+-        if isinstance(selected_event, dict):
+-            for attendee in selected_event.get("attendees") or []:
+-                text = str(attendee).strip()
+-                if text and text not in names:
+-                    names.append(text)
+-    if not names:
+-        return ["Participants unavailable"]
+-    return names[:4]
+-
+-
+-def _build_publish_title(
+-    recording: dict[str, Any],
+-    summary: dict[str, Any],
+-    participants: list[str],
+-) -> str:
+-    captured = _parse_iso_datetime(str(recording.get("captured_at") or ""))
+-    if captured is None:
+-        captured = datetime.now(tz=timezone.utc)
+-    timestamp = captured.strftime("%Y-%m-%d %H:%M")
+-    topic = str(summary.get("topic") or "").strip() or "Untitled"
+-    people = ", ".join(participants) if participants else "Participants unavailable"
+-    duration = _format_duration(recording.get("duration_sec"))
+-    return f"{timestamp} | {topic} | {people} | {duration}"
+-
+-
+-def _build_onenote_html(
+-    *,
+-    title: str,
+-    summary: dict[str, Any],
+-    metrics: dict[str, Any],
+-    calendar: dict[str, Any],
+-    links: dict[str, str | None],
+-) -> str:
+-    rows: list[str] = [
+-        "<!DOCTYPE html>",
+-        "<html>",
+-        "<head>",
+-        '<meta charset="utf-8" />',
+-        f"<title>{escape(title)}</title>",
+-        "</head>",
+-        "<body>",
+-        f"<h1>{escape(title)}</h1>",
+-        "<h2>Summary</h2>",
+-    ]
+-
+-    summary_bullets = summary.get("summary_bullets") or []
+-    if summary_bullets:
+-        rows.append("<ul>")
+-        for bullet in summary_bullets:
+-            rows.append(f"<li>{escape(str(bullet))}</li>")
+-        rows.append("</ul>")
+-    else:
+-        rows.append("<p>No summary available.</p>")
+-
+-    rows.append("<h2>Decisions</h2>")
+-    decisions = summary.get("decisions") or []
+-    if decisions:
+-        rows.append("<ul>")
+-        for decision in decisions:
+-            rows.append(f"<li>{escape(str(decision))}</li>")
+-        rows.append("</ul>")
+-    else:
+-        rows.append("<p>No decisions captured.</p>")
+-
+-    rows.append("<h2>Action items</h2>")
+-    action_items = summary.get("action_items") or []
+-    if action_items:
+-        rows.extend(
+-            [
+-                '<table border="1" cellpadding="6" cellspacing="0">',
+-                "<tr><th>Task</th><th>Owner</th><th>Deadline</th></tr>",
+-            ]
+-        )
+-        for row in action_items:
+-            if not isinstance(row, dict):
+-                continue
+-            rows.append(
+-                "<tr>"
+-                f"<td>{escape(str(row.get('task') or ''))}</td>"
+-                f"<td>{escape(str(row.get('owner') or '—'))}</td>"
+-                f"<td>{escape(str(row.get('deadline') or '—'))}</td>"
+-                "</tr>"
+-            )
+-        rows.append("</table>")
+-    else:
+-        rows.append("<p>No action items captured.</p>")
+-
+-    rows.append("<h2>Metrics</h2>")
+-    meeting = metrics.get("meeting") if isinstance(metrics.get("meeting"), dict) else {}
+-    rows.extend(
+-        [
+-            "<ul>",
+-            f"<li>Total interruptions: {escape(str(meeting.get('total_interruptions', 0)))}</li>",
+-            f"<li>Total questions: {escape(str(meeting.get('total_questions', 0)))}</li>",
+-            f"<li>Decisions count: {escape(str(meeting.get('decisions_count', 0)))}</li>",
+-            f"<li>Action items count: {escape(str(meeting.get('action_items_count', 0)))}</li>",
+-            (
+-                "<li>Actionability ratio: "
+-                f"{escape(_format_decimal(meeting.get('actionability_ratio')))}</li>"
+-            ),
+-            (
+-                "<li>Total speech time (sec): "
+-                f"{escape(_format_decimal(meeting.get('total_speech_time_seconds')))}</li>"
+-            ),
+-            "</ul>",
+-        ]
+-    )
+-
+-    participants = metrics.get("participants") or []
+-    if participants:
+-        rows.extend(
+-            [
+-                '<table border="1" cellpadding="6" cellspacing="0">',
+-                (
+-                    "<tr><th>Participant</th><th>Airtime (s)</th><th>Airtime share</th>"
+-                    "<th>Turns</th><th>Questions</th></tr>"
+-                ),
+-            ]
+-        )
+-        for participant in participants:
+-            if not isinstance(participant, dict):
+-                continue
+-            rows.append(
+-                "<tr>"
+-                f"<td>{escape(str(participant.get('speaker') or '—'))}</td>"
+-                f"<td>{escape(_format_decimal(participant.get('airtime_seconds')))}</td>"
+-                f"<td>{escape(_format_decimal(participant.get('airtime_share')))}</td>"
+-                f"<td>{escape(str(participant.get('turns') or 0))}</td>"
+-                f"<td>{escape(str(participant.get('questions_count') or 0))}</td>"
+-                "</tr>"
+-            )
+-        rows.append("</table>")
+-    else:
+-        rows.append("<p>No participant metrics available.</p>")
+-
+-    rows.append("<h2>Calendar context</h2>")
+-    selected_event = (
+-        calendar.get("selected_event") if isinstance(calendar.get("selected_event"), dict) else None
+-    )
+-    if selected_event:
+-        rows.extend(
+-            [
+-                "<ul>",
+-                f"<li>Subject: {escape(str(selected_event.get('subject') or '—'))}</li>",
+-                f"<li>Start: {escape(str(selected_event.get('start') or '—'))}</li>",
+-                f"<li>End: {escape(str(selected_event.get('end') or '—'))}</li>",
+-                f"<li>Organizer: {escape(str(selected_event.get('organizer') or '—'))}</li>",
+-                (
+-                    "<li>Attendees: "
+-                    f"{escape(', '.join(selected_event.get('attendees') or []) or '—')}</li>"
+-                ),
+-                f"<li>Location: {escape(str(selected_event.get('location') or '—'))}</li>",
+-                (
+-                    "<li>Match score: "
+-                    f"{escape(_format_decimal(calendar.get('selected_confidence')))}</li>"
+-                ),
+-                "</ul>",
+-            ]
+-        )
+-    else:
+-        rows.append("<p>No calendar event selected.</p>")
+-
+-    rows.append("<h2>Links</h2>")
+-    rows.append("<ul>")
+-    if links.get("drive_artifact_folder_url"):
+-        url = str(links["drive_artifact_folder_url"])
+-        rows.append(
+-            f'<li>Drive artifact folder: <a href="{escape(url)}">{escape(url)}</a></li>'
+-        )
+-    if links.get("drive_source_file_url"):
+-        url = str(links["drive_source_file_url"])
+-        rows.append(f'<li>Drive source file: <a href="{escape(url)}">{escape(url)}</a></li>')
+-    if links.get("local_artifacts_path"):
+-        path = str(links["local_artifacts_path"])
+-        rows.append(f"<li>Local artifact folder: {escape(path)}</li>")
+-    if links.get("raw_audio_path"):
+-        path = str(links["raw_audio_path"])
+-        if links.get("raw_audio_url"):
+-            url = str(links["raw_audio_url"])
+-            rows.append(f'<li>Raw audio path: <a href="{escape(url)}">{escape(path)}</a></li>')
+-        else:
+-            rows.append(f"<li>Raw audio path: {escape(path)}</li>")
+-    rows.append("</ul>")
+-
+-    rows.extend(["</body>", "</html>"])
+-    return "\n".join(rows)
+-
+-
+-def _parse_iso_datetime(value: str) -> datetime | None:
+-    text = str(value or "").strip()
+-    if not text:
+-        return None
+-    try:
+-        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+-    except ValueError:
+-        return None
+-    if parsed.tzinfo is None:
+-        return parsed.replace(tzinfo=timezone.utc)
+-    return parsed.astimezone(timezone.utc)
+-
+-
+-def _format_duration(value: Any) -> str:
+-    try:
+-        duration_sec = int(float(value))
+-    except (TypeError, ValueError):
+-        duration_sec = 0
+-    if duration_sec <= 0:
+-        return "n/a"
+-    minutes, seconds = divmod(duration_sec, 60)
+-    hours, minutes = divmod(minutes, 60)
+-    if hours:
+-        return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+-    return f"{minutes:02d}:{seconds:02d}"
+-
+-
+-def _extract_page_id(payload: dict[str, Any]) -> str | None:
+-    candidate = str(payload.get("id") or "").strip()
+-    if candidate:
+-        return candidate
+-    for key in ("location", "content_location", "self"):
+-        url = str(payload.get(key) or "").strip()
+-        if not url:
+-            continue
+-        match = _PAGE_ID_RE.search(url)
+-        if match:
+-            return unquote(match.group(1))
+-    return None
+-
+-
+-def _extract_page_url(payload: dict[str, Any]) -> str | None:
+-    links = payload.get("links")
+-    if isinstance(links, dict):
+-        web = links.get("oneNoteWebUrl")
+-        if isinstance(web, dict):
+-            href = str(web.get("href") or "").strip()
+-            if href:
+-                return href
+-        elif isinstance(web, str):
+-            href = web.strip()
+-            if href:
+-                return href
+-    one_note_web_url = payload.get("oneNoteWebUrl")
+-    if isinstance(one_note_web_url, dict):
+-        href = str(one_note_web_url.get("href") or "").strip()
+-        if href:
+-            return href
+-    elif isinstance(one_note_web_url, str):
+-        href = one_note_web_url.strip()
+-        if href:
+-            return href
+-    return None
+-
+-
+-def _to_int(value: Any) -> int:
+-    try:
+-        return int(float(value))
+-    except (TypeError, ValueError):
+-        return 0
+-
+-
+-def _to_float(value: Any) -> float:
+-    try:
+-        return float(value)
+-    except (TypeError, ValueError):
+-        return 0.0
+-
+-
+-def _format_decimal(value: Any) -> str:
+-    return f"{_to_float(value):.3f}"
+-
+-
+-__all__ = [
+-    "PublishPreconditionError",
+-    "list_onenote_notebooks",
+-    "list_onenote_sections",
+-    "publish_recording_to_onenote",
+-]
+diff --git a/lan_app/templates/connections.html b/lan_app/templates/connections.html
+index 97cf29c..53042f5 100644
+--- a/lan_app/templates/connections.html
++++ b/lan_app/templates/connections.html
+@@ -84,131 +84,4 @@ async function runIngestNow() {
+   out.textContent = 'Ingest completed. New recordings: ' + (data.count || 0) + '.';
+ }
+ </script>
+-
+-<div class="conn-card">
+-  <h3>Microsoft Graph (Work account)</h3>
+-  {% if ms.status == "connected" %}
+-  <div class="conn-row">
+-    <span class="dot-ok"></span>
+-    <span>Connected</span>
+-  </div>
+-  {% elif ms.status == "expired" %}
+-  <div class="conn-row">
+-    <span class="dot-warn"></span>
+-    <span>Expired — reconnect required.</span>
+-  </div>
+-  {% elif ms.status == "error" %}
+-  <div class="conn-row">
+-    <span class="dot-err"></span>
+-    <span>Graph error: {{ ms.error }}</span>
+-  </div>
+-  {% else %}
+-  <div class="conn-row">
+-    <span class="dot-na"></span>
+-    <span style="color:#888">Not configured.</span>
+-  </div>
+-  {% endif %}
+-  <div class="info-grid" style="margin-top:8px">
+-    <div class="k">Tenant</div>
+-    <div class="v">{{ ms.tenant_id or "—" }}</div>
+-    <div class="k">Account</div>
+-    <div class="v">{{ ms.account_display_name or "—" }}</div>
+-    <div class="k">Requested scopes</div>
+-    <div class="v">{{ (ms.requested_scopes or []) | join(" ") or "—" }}</div>
+-    <div class="k">Granted scopes</div>
+-    <div class="v" id="ms-granted-scopes">{{ (ms.granted_scopes or []) | join(" ") or "—" }}</div>
+-  </div>
+-  <div style="font-size:11px;color:#999;margin-top:4px">
+-    Auth: Delegated OAuth via Device Code Flow.<br>
+-    Token cache: <code>/data/auth/msal_cache.bin</code>
+-  </div>
+-  {% if ms.configured %}
+-  <div class="conn-row" style="margin-top:8px">
+-    <button type="button" class="btn" onclick="startMsConnect(false)">Connect</button>
+-    <button type="button" class="btn" onclick="startMsConnect(true)">Reconnect</button>
+-    <span id="ms-connect-status" style="color:#666"></span>
+-  </div>
+-  <div id="ms-device-flow" style="display:none;border:1px solid #ccd;background:#f8f9ff;padding:8px;margin-top:6px">
+-    <div class="conn-row"><strong>Code:</strong> <code id="ms-user-code"></code></div>
+-    <div class="conn-row"><strong>Verify at:</strong> <a id="ms-verify-link" href="#" target="_blank" rel="noreferrer noopener"></a></div>
+-    <div style="font-size:11px;color:#666" id="ms-flow-message"></div>
+-  </div>
+-  {% else %}
+-  <div style="font-size:11px;color:#999;margin-top:8px">
+-    Set <code>MS_TENANT_ID</code> and <code>MS_CLIENT_ID</code> to enable Microsoft Graph auth.
+-  </div>
+-  {% endif %}
+-</div>
+-{% if ms.configured %}
+-<script>
+-let msSessionId = null;
+-let msPollHandle = null;
+-
+-function setMsStatus(message, isError) {
+-  var el = document.getElementById('ms-connect-status');
+-  if (!el) return;
+-  el.textContent = message || '';
+-  el.style.color = isError ? '#b42318' : '#666';
+-}
+-
+-function stopMsPolling() {
+-  if (msPollHandle) {
+-    clearInterval(msPollHandle);
+-    msPollHandle = null;
+-  }
+-}
+-
+-async function startMsConnect(reconnect) {
+-  stopMsPolling();
+-  msSessionId = null;
+-  setMsStatus('Starting device code flow...', false);
+-
+-  var url = '/api/connections/ms/connect?reconnect=' + (reconnect ? 'true' : 'false');
+-  var response = await fetch(url, {method: 'POST'});
+-  var data = await response.json();
+-  if (!response.ok) {
+-    setMsStatus(data.detail || 'Failed to start Microsoft auth.', true);
+-    return;
+-  }
+-
+-  msSessionId = data.session_id;
+-  document.getElementById('ms-device-flow').style.display = 'block';
+-  document.getElementById('ms-user-code').textContent = data.user_code || '';
+-
+-  var verifyUrl = data.verification_uri_complete || data.verification_uri || '';
+-  var link = document.getElementById('ms-verify-link');
+-  link.textContent = verifyUrl;
+-  link.href = verifyUrl || '#';
+-
+-  document.getElementById('ms-flow-message').textContent = data.message || '';
+-  setMsStatus('Waiting for authentication...', false);
+-
+-  msPollHandle = setInterval(pollMsSession, 2000);
+-  await pollMsSession();
+-}
+-
+-async function pollMsSession() {
+-  if (!msSessionId) return;
+-  var response = await fetch('/api/connections/ms/connect/' + encodeURIComponent(msSessionId));
+-  if (!response.ok) {
+-    stopMsPolling();
+-    setMsStatus('Auth polling failed.', true);
+-    return;
+-  }
+-  var data = await response.json();
+-  if (data.status === 'pending') {
+-    return;
+-  }
+-
+-  stopMsPolling();
+-  if (data.status === 'connected') {
+-    setMsStatus('Connected. Refreshing...', false);
+-    window.location.reload();
+-    return;
+-  }
+-
+-  setMsStatus(data.error || 'Authentication failed.', true);
+-}
+-</script>
+-{% endif %}
+ {% endblock %}
+diff --git a/lan_app/templates/projects.html b/lan_app/templates/projects.html
+index 22be07d..8e571e3 100644
+--- a/lan_app/templates/projects.html
++++ b/lan_app/templates/projects.html
+@@ -19,8 +19,6 @@
+       <tr>
+         <th>ID</th>
+         <th>Name</th>
+-        <th>OneNote notebook ID</th>
+-        <th>OneNote section ID</th>
+         <th></th>
+       </tr>
+     </thead>
+@@ -29,34 +27,7 @@
+       <tr>
+         <td>{{ p.id }}</td>
+         <td>{{ p.name }}</td>
+-        <td>
+-          <form method="post" action="/projects/{{ p.id }}/onenote" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+-            <input
+-              type="text"
+-              name="onenote_notebook_id"
+-              value="{{ p.onenote_notebook_id or '' }}"
+-              placeholder="Notebook ID"
+-              style="font:12px 'Courier New',monospace;border:1px solid #999;padding:3px 6px;width:240px"
+-            >
+-            <input type="hidden" name="onenote_section_id" value="{{ p.onenote_section_id or '' }}">
+-            <button class="btn" type="submit">Save mapping</button>
+-          </form>
+-        </td>
+-        <td>
+-          <form method="post" action="/projects/{{ p.id }}/onenote" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+-            <input type="hidden" name="onenote_notebook_id" value="{{ p.onenote_notebook_id or '' }}">
+-            <input
+-              type="text"
+-              name="onenote_section_id"
+-              value="{{ p.onenote_section_id or '' }}"
+-              placeholder="Section ID"
+-              style="font:12px 'Courier New',monospace;border:1px solid #999;padding:3px 6px;width:240px"
+-            >
+-            <button class="btn" type="submit">Save mapping</button>
+-          </form>
+-        </td>
+         <td style="white-space:nowrap">
+-          <a class="btn" href="/projects?browse_project_id={{ p.id }}">Browse OneNote</a>
+           <form method="post" action="/projects/{{ p.id }}/delete" style="display:inline" onsubmit="return confirm('Delete project ' + this.dataset.name + '?')" data-name="{{ p.name }}">
+             <button class="btn btn-danger" type="submit">Delete</button>
+           </form>
+@@ -69,88 +40,4 @@
+   <p class="placeholder">No projects yet. Create one above.</p>
+   {% endif %}
+ </div>
+-
+-{% if browse_selected_project %}
+-<div class="section">
+-  <h2>OneNote Browser for {{ browse_selected_project.name }}</h2>
+-  {% if browse_error %}
+-  <p style="margin-bottom:10px;color:#92400e">{{ browse_error }}</p>
+-  {% endif %}
+-
+-  {% if browse_notebooks %}
+-  <h3 style="margin-top:0">Notebooks</h3>
+-  <table>
+-    <thead>
+-      <tr>
+-        <th>Name</th>
+-        <th>ID</th>
+-        <th>Open sections</th>
+-        <th>Link</th>
+-      </tr>
+-    </thead>
+-    <tbody>
+-      {% for nb in browse_notebooks %}
+-      <tr>
+-        <td>{{ nb.display_name }}</td>
+-        <td><code>{{ nb.id }}</code></td>
+-        <td>
+-          <a class="btn" href="/projects?browse_project_id={{ browse_selected_project.id }}&browse_notebook_id={{ nb.id|urlencode }}">Sections</a>
+-          {% if browse_selected_notebook_id == nb.id %}
+-          <span style="margin-left:6px;color:#2563eb">Selected</span>
+-          {% endif %}
+-        </td>
+-        <td>
+-          {% if nb.web_url %}
+-          <a href="{{ nb.web_url }}" target="_blank" rel="noreferrer">Open</a>
+-          {% else %}
+-          —
+-          {% endif %}
+-        </td>
+-      </tr>
+-      {% endfor %}
+-    </tbody>
+-  </table>
+-  {% else %}
+-  <p class="placeholder">No notebooks visible, or Graph is not connected yet.</p>
+-  {% endif %}
+-
+-  {% if browse_sections %}
+-  <h3>Sections</h3>
+-  <table>
+-    <thead>
+-      <tr>
+-        <th>Name</th>
+-        <th>ID</th>
+-        <th>Use for project</th>
+-        <th>Link</th>
+-      </tr>
+-    </thead>
+-    <tbody>
+-      {% for sec in browse_sections %}
+-      <tr>
+-        <td>{{ sec.display_name }}</td>
+-        <td><code>{{ sec.id }}</code></td>
+-        <td>
+-          <form method="post" action="/projects/{{ browse_selected_project.id }}/onenote" style="display:inline">
+-            <input type="hidden" name="onenote_notebook_id" value="{{ browse_selected_notebook_id }}">
+-            <input type="hidden" name="onenote_section_id" value="{{ sec.id }}">
+-            <button class="btn" type="submit">Use this section</button>
+-          </form>
+-        </td>
+-        <td>
+-          {% if sec.web_url %}
+-          <a href="{{ sec.web_url }}" target="_blank" rel="noreferrer">Open</a>
+-          {% else %}
+-          —
+-          {% endif %}
+-        </td>
+-      </tr>
+-      {% endfor %}
+-    </tbody>
+-  </table>
+-  {% elif browse_selected_notebook_id %}
+-  <p class="placeholder">No sections visible for notebook <code>{{ browse_selected_notebook_id }}</code>.</p>
+-  {% endif %}
+-</div>
+-{% endif %}
+ {% endblock %}
+diff --git a/lan_app/templates/recording_detail.html b/lan_app/templates/recording_detail.html
+index 1f1dc9e..e67987b 100644
+--- a/lan_app/templates/recording_detail.html
++++ b/lan_app/templates/recording_detail.html
+@@ -65,16 +65,6 @@
+     <span class="k">Transcript language override</span><span class="v">{{ rec.language_override or '—' }}</span>
+     <span class="k">Target summary language</span><span class="v">{{ rec.target_summary_language or '—' }}</span>
+     <span class="k">Drive file ID</span><span class="v">{{ rec.drive_file_id or '—' }}</span>
+-    <span class="k">OneNote page</span>
+-    <span class="v">
+-      {% if rec.onenote_page_id and onenote_page_url %}
+-      <a href="{{ onenote_page_url }}" target="_blank" rel="noreferrer"><code>{{ rec.onenote_page_id }}</code></a>
+-      {% elif rec.onenote_page_id %}
+-      <code>{{ rec.onenote_page_id }}</code>
+-      {% else %}
+-      —
+-      {% endif %}
+-    </span>
+     <span class="k">Quarantine reason</span><span class="v">{{ rec.quarantine_reason or '—' }}</span>
+     <span class="k">Created at</span><span class="v">{{ rec.created_at[:19].replace('T',' ') if rec.created_at else '—' }}</span>
+     <span class="k">Updated at</span><span class="v">{{ rec.updated_at[:19].replace('T',' ') if rec.updated_at else '—' }}</span>
+@@ -125,27 +115,6 @@
+   }
+   </script>
+ 
+-  <div class="section" style="margin-top:10px">
+-    <h2 style="margin-top:0">OneNote Publish</h2>
+-    {% if rec.status == 'Published' and rec.onenote_page_id %}
+-    <p>
+-      <span class="badge s-Published">Published</span>
+-      {% if onenote_page_url %}
+-      <a href="{{ onenote_page_url }}" target="_blank" rel="noreferrer">Open OneNote page</a>
+-      {% endif %}
+-    </p>
+-    {% endif %}
+-    {% if rec.status in ['Ready', 'NeedsReview'] and rec.project_id %}
+-    <form method="post" action="/ui/recordings/{{ rec.id }}/publish">
+-      <button type="submit" class="btn">Publish to OneNote</button>
+-    </form>
+-    {% elif rec.status in ['Ready', 'NeedsReview'] %}
+-    <p class="placeholder">Assign this recording to a project before publishing to OneNote.</p>
+-    {% else %}
+-    <p class="placeholder">Publish is available only for Ready or NeedsReview recordings.</p>
+-    {% endif %}
+-  </div>
+-
+   <h2>Topic</h2>
+   <p>{{ summary_data.topic or '—' }}</p>
+ 
+@@ -165,84 +134,6 @@
+   <h2>Emotional Summary</h2>
+   <p style="white-space:pre-wrap">{{ summary_data.emotional_summary or '—' }}</p>
+ 
+-{% elif current_tab == 'calendar' %}
+-  {% set cal = calendar or {} %}
+-  {% set signals = cal.signals or {} %}
+-
+-  {% if cal.fetch_error %}
+-  <p style="margin-bottom:10px;color:#92400e">
+-    Calendar fetch unavailable: {{ cal.fetch_error }}
+-  </p>
+-  {% endif %}
+-
+-  <h2>Selected Event</h2>
+-  {% if cal.selected_event %}
+-  <div class="info-grid">
+-    <span class="k">Subject</span><span class="v">{{ cal.selected_event.subject }}</span>
+-    <span class="k">Start</span><span class="v">{{ cal.selected_event.start[:19].replace('T',' ') if cal.selected_event.start else '—' }}</span>
+-    <span class="k">End</span><span class="v">{{ cal.selected_event.end[:19].replace('T',' ') if cal.selected_event.end else '—' }}</span>
+-    <span class="k">Organizer</span><span class="v">{{ cal.selected_event.organizer or '—' }}</span>
+-    <span class="k">Attendees</span><span class="v">{{ (cal.selected_event.attendees or []) | join(', ') or '—' }}</span>
+-    <span class="k">Location</span><span class="v">{{ cal.selected_event.location or '—' }}</span>
+-    <span class="k">Score</span><span class="v">{{ '%.3f'|format(cal.selected_confidence or 0.0) }}</span>
+-  </div>
+-  {% elif cal.manual_no_event %}
+-  <p class="placeholder">No event selected (manual override).</p>
+-  {% else %}
+-  <p class="placeholder">No event matched yet.</p>
+-  {% endif %}
+-
+-  <h2>Extracted Signals</h2>
+-  <div class="info-grid">
+-    <span class="k">Title tokens</span><span class="v">{{ (signals.title_tokens or []) | join(', ') or '—' }}</span>
+-    <span class="k">Attendees</span><span class="v">{{ (signals.attendees or []) | join(', ') or '—' }}</span>
+-    <span class="k">Organizer</span><span class="v">{{ signals.organizer or '—' }}</span>
+-  </div>
+-
+-  <h2>Candidate Events (Top 5)</h2>
+-  <form method="post" action="/ui/recordings/{{ rec.id }}/calendar/select">
+-    <table>
+-      <thead>
+-        <tr>
+-          <th>Pick</th>
+-          <th>Subject</th>
+-          <th>Start</th>
+-          <th>End</th>
+-          <th>Organizer</th>
+-          <th>Attendees</th>
+-          <th>Location</th>
+-          <th>Score</th>
+-          <th>Rationale</th>
+-        </tr>
+-      </thead>
+-      <tbody>
+-        <tr>
+-          <td><input type="radio" name="event_id" value="" {% if not cal.selected_event_id %}checked{% endif %}></td>
+-          <td colspan="8"><em>No event</em></td>
+-        </tr>
+-        {% for c in cal.candidates or [] %}
+-        <tr>
+-          <td><input type="radio" name="event_id" value="{{ c.event_id }}" {% if cal.selected_event_id == c.event_id %}checked{% endif %}></td>
+-          <td title="{{ c.subject }}">{{ c.subject }}</td>
+-          <td>{{ c.start[:19].replace('T',' ') if c.start else '—' }}</td>
+-          <td>{{ c.end[:19].replace('T',' ') if c.end else '—' }}</td>
+-          <td>{{ c.organizer or '—' }}</td>
+-          <td title="{{ (c.attendees or []) | join(', ') }}">{{ (c.attendees or []) | join(', ') or '—' }}</td>
+-          <td>{{ c.location or '—' }}</td>
+-          <td>{{ '%.3f'|format(c.score or 0.0) }}</td>
+-          <td title="{{ c.rationale }}">{{ c.rationale }}</td>
+-        </tr>
+-        {% endfor %}
+-      </tbody>
+-    </table>
+-    {% if not (cal.candidates or []) %}
+-    <p class="placeholder">No candidates found in the calendar window.</p>
+-    {% endif %}
+-    <div class="filters" style="margin-top:8px">
+-      <button type="submit" class="btn">Save selection</button>
+-    </div>
+-  </form>
+-
+ {% elif current_tab == 'project' %}
+   {% set prj = project or {} %}
+   {% set project_items = prj.projects or [] %}
 diff --git a/lan_app/ui_routes.py b/lan_app/ui_routes.py
-index 6212a71..aed076a 100644
+index aed076a..2a52d31 100644
 --- a/lan_app/ui_routes.py
 +++ b/lan_app/ui_routes.py
-@@ -1088,6 +1088,10 @@ async def ui_recordings(
-         limit=limit,
-         offset=offset,
+@@ -27,11 +27,6 @@ from .auth import (
+     safe_next_path,
+     set_auth_cookie,
+ )
+-from .calendar import (
+-    load_calendar_context,
+-    refresh_calendar_context,
+-    select_calendar_event,
+-)
+ from .config import AppSettings
+ from .conversation_metrics import refresh_recording_metrics
+ from .constants import (
+@@ -61,7 +56,6 @@ from .db import (
+     list_speaker_assignments,
+     list_voice_samples,
+     list_voice_profiles,
+-    update_project_onenote_mapping,
+     set_recording_project,
+     set_speaker_assignment,
+     set_recording_language_settings,
+@@ -74,13 +68,6 @@ from .jobs import (
+     enqueue_recording_job,
+     purge_pending_recording_jobs,
+ )
+-from .ms_graph import GraphAuthError, ms_connection_state
+-from .onenote import (
+-    PublishPreconditionError,
+-    list_onenote_notebooks,
+-    list_onenote_sections,
+-    publish_recording_to_onenote,
+-)
+ from .routing import refresh_recording_routing, train_routing_from_manual_selection
+ from lan_transcriber.artifacts import atomic_write_json
+ from lan_transcriber.llm_client import LLMClient
+@@ -589,11 +576,6 @@ def _as_data_relative_path(path: Path, *, settings: AppSettings) -> str | None:
+     return safe.relative_to(root_resolved).as_posix()
+ 
+ 
+-def _recording_onenote_page_url(recording: dict[str, Any]) -> str | None:
+-    explicit = str(recording.get("onenote_page_url") or "").strip()
+-    return explicit or None
+-
+-
+ def _speakers_tab_context(recording_id: str, settings: AppSettings) -> dict[str, Any]:
+     transcript_path, _summary_path = _recording_derived_paths(recording_id, settings)
+     speaker_turns_path = transcript_path.parent / "speaker_turns.json"
+@@ -1120,32 +1102,16 @@ async def ui_recording_detail(
+     rec = get_recording(recording_id, settings=_settings)
+     if rec is None:
+         return HTMLResponse("<h1>404 – Recording not found</h1>", status_code=404)
+-    onenote_page_url = _recording_onenote_page_url(rec)
+     jobs, _ = list_jobs(settings=_settings, recording_id=recording_id, limit=100)
+     recovery_warning = _recording_recovery_warning(jobs)
+-    tabs = ["overview", "calendar", "project", "speakers", "language", "metrics", "log"]
++    tabs = ["overview", "project", "speakers", "language", "metrics", "log"]
+     current_tab = tab if tab in tabs else "overview"
+-    calendar: dict[str, Any] | None = None
+     language: dict[str, Any] | None = None
+     summary: dict[str, Any] | None = None
+     metrics: dict[str, Any] | None = None
+     speakers: dict[str, Any] | None = None
+     project: dict[str, Any] | None = None
+     export_text = ""
+-    if current_tab == "calendar":
+-        try:
+-            calendar = await run_in_threadpool(
+-                refresh_calendar_context,
+-                recording_id,
+-                settings=_settings,
+-            )
+-        except GraphAuthError as exc:
+-            calendar = await run_in_threadpool(
+-                load_calendar_context,
+-                recording_id,
+-                settings=_settings,
+-            )
+-            calendar["fetch_error"] = str(exc)
+     if current_tab == "language":
+         language = _language_tab_context(recording_id, rec, _settings)
+     if current_tab == "speakers":
+@@ -1170,13 +1136,11 @@ async def ui_recording_detail(
+             "recovery_warning": recovery_warning,
+             "tabs": tabs,
+             "current_tab": current_tab,
+-            "calendar": calendar,
+             "language": language,
+             "summary": summary,
+             "metrics": metrics,
+             "speakers": speakers,
+             "project": project,
+-            "onenote_page_url": onenote_page_url,
+             "export_text": export_text,
+         },
      )
-+    for item in items:
-+        progress_ratio = _safe_pipeline_progress(item.get("pipeline_progress"))
-+        item["progress_percent"] = int(round(progress_ratio * 100))
-+        item["progress_stage_label"] = _pipeline_stage_label(item.get("pipeline_stage"))
+@@ -1411,60 +1375,14 @@ async def ui_set_recording_project(
+ 
+ 
+ @ui_router.get("/projects", response_class=HTMLResponse)
+-async def ui_projects(
+-    request: Request,
+-    browse_project_id: int | None = Query(default=None),
+-    browse_notebook_id: str | None = Query(default=None),
+-) -> Any:
++async def ui_projects(request: Request) -> Any:
+     items = list_projects(settings=_settings)
+-    selected_project: dict[str, Any] | None = None
+-    selected_notebook_id = ""
+-    notebooks: list[dict[str, Any]] = []
+-    sections: list[dict[str, Any]] = []
+-    browse_error: str | None = None
+-
+-    if browse_project_id is not None:
+-        selected_project = next(
+-            (
+-                item
+-                for item in items
+-                if int(item.get("id", -1)) == browse_project_id
+-            ),
+-            None,
+-        )
+-        if selected_project is None:
+-            browse_error = f"Project {browse_project_id} not found."
+-        else:
+-            try:
+-                notebooks = await run_in_threadpool(
+-                    list_onenote_notebooks,
+-                    settings=_settings,
+-                )
+-                selected_notebook_id = (
+-                    (browse_notebook_id or "").strip()
+-                    or str(selected_project.get("onenote_notebook_id") or "").strip()
+-                )
+-                if selected_notebook_id:
+-                    sections = await run_in_threadpool(
+-                        list_onenote_sections,
+-                        selected_notebook_id,
+-                        settings=_settings,
+-                    )
+-            except (GraphAuthError, ValueError, RuntimeError) as exc:
+-                browse_error = str(exc)
+-
      return templates.TemplateResponse(
          request,
-         "recordings.html",
+         "projects.html",
+         {
+             "active": "projects",
+             "items": items,
+-            "browse_project_id": browse_project_id,
+-            "browse_selected_project": selected_project,
+-            "browse_selected_notebook_id": selected_notebook_id,
+-            "browse_notebooks": notebooks,
+-            "browse_sections": sections,
+-            "browse_error": browse_error,
+         },
+     )
+ 
+@@ -1482,25 +1400,6 @@ async def ui_create_project(
+     return RedirectResponse("/projects", status_code=303)
+ 
+ 
+-@ui_router.post("/projects/{project_id}/onenote", response_class=HTMLResponse)
+-async def ui_update_project_onenote(
+-    project_id: int,
+-    onenote_notebook_id: str = Form(default=""),
+-    onenote_section_id: str = Form(default=""),
+-) -> Any:
+-    update_project_onenote_mapping(
+-        project_id,
+-        onenote_notebook_id=onenote_notebook_id,
+-        onenote_section_id=onenote_section_id,
+-        settings=_settings,
+-    )
+-    redirect_url = f"/projects?browse_project_id={project_id}"
+-    notebook = onenote_notebook_id.strip()
+-    if notebook:
+-        redirect_url = f"{redirect_url}&browse_notebook_id={quote(notebook)}"
+-    return RedirectResponse(redirect_url, status_code=303)
+-
+-
+ @ui_router.post("/projects/{project_id}/delete", response_class=HTMLResponse)
+ async def ui_delete_project(project_id: int) -> Any:
+     delete_project(project_id, settings=_settings)
+@@ -1641,14 +1540,12 @@ async def ui_upload(request: Request) -> Any:
+ 
+ @ui_router.get("/connections", response_class=HTMLResponse)
+ async def ui_connections(request: Request) -> Any:
+-    ms_state = await run_in_threadpool(ms_connection_state, _settings)
+     gdrive_state = _gdrive_connection_state(_settings)
+     return templates.TemplateResponse(
+         request,
+         "connections.html",
+         {
+             "active": "connections",
+-            "ms": ms_state,
+             "gdrive": gdrive_state,
+         },
+     )
+@@ -1727,25 +1624,6 @@ async def ui_action_quarantine(recording_id: str) -> Any:
+     return resp
+ 
+ 
+-@ui_router.post("/ui/recordings/{recording_id}/publish")
+-async def ui_action_publish(recording_id: str) -> Any:
+-    if get_recording(recording_id, settings=_settings) is None:
+-        return HTMLResponse("Not found", status_code=404)
+-    try:
+-        await run_in_threadpool(
+-            publish_recording_to_onenote,
+-            recording_id,
+-            settings=_settings,
+-        )
+-    except PublishPreconditionError as exc:
+-        return HTMLResponse(str(exc), status_code=422)
+-    except GraphAuthError as exc:
+-        return HTMLResponse(str(exc), status_code=503)
+-    except RuntimeError as exc:
+-        return HTMLResponse(str(exc), status_code=503)
+-    return RedirectResponse(f"/recordings/{recording_id}?tab=overview", status_code=303)
+-
+-
+ @ui_router.post("/ui/recordings/{recording_id}/delete")
+ async def ui_action_delete(
+     recording_id: str,
+@@ -1869,19 +1747,3 @@ async def ui_retranscribe_language(
+         return HTMLResponse(f"Re-transcribe failed: {exc}", status_code=503)
+     return RedirectResponse(f"/recordings/{recording_id}?tab=log", status_code=303)
+ 
+-
+-@ui_router.post("/ui/recordings/{recording_id}/calendar/select")
+-async def ui_select_calendar(recording_id: str, event_id: str = Form(default="")) -> Any:
+-    if get_recording(recording_id, settings=_settings) is None:
+-        return HTMLResponse("Not found", status_code=404)
+-    selected_event_id = event_id.strip() or None
+-    try:
+-        await run_in_threadpool(
+-            select_calendar_event,
+-            recording_id,
+-            selected_event_id,
+-            settings=_settings,
+-        )
+-    except ValueError as exc:
+-        return HTMLResponse(str(exc), status_code=422)
+-    return RedirectResponse(f"/recordings/{recording_id}?tab=calendar", status_code=303)
+diff --git a/pyproject.toml b/pyproject.toml
+index 882dd7d..147b222 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -21,7 +21,6 @@ dependencies = [
+     "rapidfuzz",
+     "google-auth",
+     "google-api-python-client",
+-    "msal",
+ ]
+ 
+ [tool.setuptools.packages.find]
+diff --git a/requirements.in b/requirements.in
+index 74972ea..eebdf41 100644
+--- a/requirements.in
++++ b/requirements.in
+@@ -20,7 +20,6 @@ tenacity==9.1.2
+ pydantic==2.11.7
+ pydantic-settings==2.10.1
+ rapidfuzz==3.13.0
+-msal==1.31.1
+ redis
+ rq
+ 
+diff --git a/requirements.txt b/requirements.txt
+index 42b9be6..7ec8d56 100644
+--- a/requirements.txt
++++ b/requirements.txt
+@@ -10,7 +10,6 @@ httpx
+ tenacity
+ redis
+ rq
+-msal
+ jinja2>=3.1
+ pydantic-settings>=2.10,<3.0
+ python-multipart>=0.0.9
 diff --git a/tasks/QUEUE.md b/tasks/QUEUE.md
-index 4e8881f..263dc90 100644
+index 5b5bc4a..93a4c3d 100644
 --- a/tasks/QUEUE.md
 +++ b/tasks/QUEUE.md
-@@ -147,7 +147,7 @@ Queue (in order)
- - Depends on: PR-UI-UPLOAD-02
- 
- 28) PR-UI-PROGRESS-02: Show pipeline progress on Recordings list table
--- Status: TODO
-+- Status: DOING
- - Tasks file: tasks/PR-UI-PROGRESS-02.md
+@@ -152,7 +152,7 @@ Queue (in order)
  - Depends on: PR-EXPORT-01
  
+ 29) PR-REMOVE-MS-01: Remove Microsoft Graph, calendar matching UI, OneNote publish UI and msal dependency
+-- Status: TODO
++- Status: DOING
+ - Tasks file: tasks/PR-REMOVE-MS-01.md
+ - Depends on: PR-UI-PROGRESS-02
+ 
+diff --git a/tests/test_app_config.py b/tests/test_app_config.py
+index 7279b86..9f0ce65 100644
+--- a/tests/test_app_config.py
++++ b/tests/test_app_config.py
+@@ -38,37 +38,6 @@ def test_sqlite_busy_timeout_from_env(monkeypatch):
+     assert cfg.sqlite_busy_timeout_ms == 12345
+ 
+ 
+-def test_ms_auth_settings_from_env(monkeypatch, tmp_path: Path):
+-    cache_path = tmp_path / "auth" / "msal_cache.bin"
+-    monkeypatch.setenv("MS_TENANT_ID", "tenant-id")
+-    monkeypatch.setenv("MS_CLIENT_ID", "client-id")
+-    monkeypatch.setenv(
+-        "MS_SCOPES",
+-        "offline_access User.Read Notes.ReadWrite Calendars.Read",
+-    )
+-    monkeypatch.setenv("MSAL_CACHE_PATH", str(cache_path))
+-
+-    cfg = AppSettings()
+-    assert cfg.ms_tenant_id == "tenant-id"
+-    assert cfg.ms_client_id == "client-id"
+-    assert cfg.ms_scopes_list == [
+-        "offline_access",
+-        "User.Read",
+-        "Notes.ReadWrite",
+-        "Calendars.Read",
+-    ]
+-    assert cfg.msal_cache_path == cache_path
+-
+-
+-def test_calendar_match_settings_from_env(monkeypatch):
+-    monkeypatch.setenv("CALENDAR_MATCH_WINDOW_MINUTES", "30")
+-    monkeypatch.setenv("CALENDAR_AUTO_MATCH_THRESHOLD", "0.7")
+-
+-    cfg = AppSettings()
+-    assert cfg.calendar_match_window_minutes == 30
+-    assert cfg.calendar_auto_match_threshold == 0.7
+-
+-
+ def test_routing_threshold_from_env(monkeypatch):
+     monkeypatch.setenv("ROUTING_AUTO_SELECT_THRESHOLD", "0.73")
+ 
+diff --git a/tests/test_calendar.py b/tests/test_calendar.py
+deleted file mode 100644
+index f270e9e..0000000
+--- a/tests/test_calendar.py
++++ /dev/null
+@@ -1,462 +0,0 @@
+-from __future__ import annotations
+-
+-from datetime import datetime, timezone
+-from pathlib import Path
+-
+-from fastapi.testclient import TestClient
+-
+-from lan_app import api, calendar, ui_routes
+-from lan_app.config import AppSettings
+-from lan_app.db import (
+-    create_recording,
+-    get_calendar_match,
+-    init_db,
+-    upsert_calendar_match,
+-)
+-from lan_app.ms_graph import GraphNotConfiguredError
+-
+-
+-def _cfg(tmp_path: Path) -> AppSettings:
+-    cfg = AppSettings(
+-        data_root=tmp_path,
+-        recordings_root=tmp_path / "recordings",
+-        db_path=tmp_path / "db" / "app.db",
+-    )
+-    cfg.metrics_snapshot_path = tmp_path / "metrics.snap"
+-    return cfg
+-
+-
+-def _fake_events() -> list[dict[str, object]]:
+-    return [
+-        {
+-            "id": "evt-1",
+-            "subject": "Weekly sync meeting",
+-            "start": {"dateTime": "2026-02-19T09:50:00Z"},
+-            "end": {"dateTime": "2026-02-19T10:35:00Z"},
+-            "organizer": {
+-                "emailAddress": {"name": "Alex", "address": "alex@example.com"}
+-            },
+-            "attendees": [
+-                {"emailAddress": {"name": "Priya", "address": "priya@example.com"}},
+-                {"emailAddress": {"name": "Lee", "address": "lee@example.com"}},
+-            ],
+-            "location": {"displayName": "Room 3"},
+-        },
+-        {
+-            "id": "evt-2",
+-            "subject": "Unrelated lunch",
+-            "start": {"dateTime": "2026-02-19T13:00:00Z"},
+-            "end": {"dateTime": "2026-02-19T14:00:00Z"},
+-            "organizer": {
+-                "emailAddress": {"name": "Taylor", "address": "taylor@example.com"}
+-            },
+-            "attendees": [],
+-            "location": {"displayName": "Cafeteria"},
+-        },
+-    ]
+-
+-
+-def test_refresh_calendar_context_auto_selects_best_candidate(tmp_path, monkeypatch):
+-    cfg = _cfg(tmp_path)
+-    init_db(cfg)
+-    create_recording(
+-        "rec-cal-1",
+-        source="drive",
+-        source_filename="weekly_sync.mp3",
+-        captured_at="2026-02-19T10:00:00Z",
+-        duration_sec=1800,
+-        settings=cfg,
+-    )
+-
+-    seen_path: dict[str, str] = {}
+-
+-    class _FakeClient:
+-        def __init__(self, settings=None):
+-            self.settings = settings
+-
+-        def graph_get(self, path: str):
+-            seen_path["value"] = path
+-            return {"value": _fake_events()}
+-
+-    monkeypatch.setattr(calendar, "MicrosoftGraphClient", _FakeClient)
+-
+-    context = calendar.refresh_calendar_context("rec-cal-1", settings=cfg)
+-    assert context["selected_event_id"] == "evt-1"
+-    assert context["selected_event"]["subject"] == "Weekly sync meeting"
+-    assert context["candidate_total"] == 2
+-    assert context["signals"]["organizer"] == "Alex"
+-    assert "calendarView" in seen_path["value"]
+-
+-    stored = get_calendar_match("rec-cal-1", settings=cfg)
+-    assert stored is not None
+-    assert stored["selected_event_id"] == "evt-1"
+-    assert len(stored["candidates_json"]) == 2
+-    assert stored["candidates_json"][0]["rationale"]
+-
+-
+-def test_manual_no_event_override_persists_after_refresh(tmp_path, monkeypatch):
+-    cfg = _cfg(tmp_path)
+-    init_db(cfg)
+-    create_recording(
+-        "rec-cal-2",
+-        source="drive",
+-        source_filename="weekly_sync.mp3",
+-        captured_at="2026-02-19T10:00:00Z",
+-        duration_sec=1800,
+-        settings=cfg,
+-    )
+-
+-    class _FakeClient:
+-        def __init__(self, settings=None):
+-            self.settings = settings
+-
+-        def graph_get(self, _path: str):
+-            return {"value": _fake_events()}
+-
+-    monkeypatch.setattr(calendar, "MicrosoftGraphClient", _FakeClient)
+-
+-    first = calendar.refresh_calendar_context("rec-cal-2", settings=cfg)
+-    assert first["selected_event_id"] == "evt-1"
+-
+-    manual = calendar.select_calendar_event("rec-cal-2", None, settings=cfg)
+-    assert manual["manual_no_event"] is True
+-    assert manual["selected_event_id"] is None
+-
+-    refreshed = calendar.refresh_calendar_context("rec-cal-2", settings=cfg)
+-    assert refreshed["selected_event_id"] is None
+-    assert refreshed["manual_no_event"] is True
+-
+-
+-def test_api_calendar_get_falls_back_to_cached_context(tmp_path, monkeypatch):
+-    cfg = _cfg(tmp_path)
+-    monkeypatch.setattr(api, "_settings", cfg)
+-    monkeypatch.setattr(ui_routes, "_settings", cfg)
+-    init_db(cfg)
+-    create_recording(
+-        "rec-cal-api-1",
+-        source="drive",
+-        source_filename="meeting.mp3",
+-        settings=cfg,
+-    )
+-
+-    def _refresh(_recording_id: str, *, settings=None):
+-        raise GraphNotConfiguredError("missing env")
+-
+-    monkeypatch.setattr(api, "refresh_calendar_context", _refresh)
+-    monkeypatch.setattr(
+-        api,
+-        "load_calendar_context",
+-        lambda recording_id, *, settings=None: {
+-            "recording_id": recording_id,
+-            "selected_event_id": None,
+-            "selected_confidence": None,
+-            "selected_event": None,
+-            "signals": {"title_tokens": [], "attendees": [], "organizer": None},
+-            "candidates": [],
+-            "candidate_total": 0,
+-            "manual_no_event": False,
+-        },
+-    )
+-
+-    client = TestClient(api.app, follow_redirects=True)
+-    resp = client.get("/api/recordings/rec-cal-api-1/calendar")
+-    assert resp.status_code == 200
+-    body = resp.json()
+-    assert body["recording_id"] == "rec-cal-api-1"
+-    assert body["fetch_error"] == "missing env"
+-
+-
+-def test_api_calendar_select_validation_error(tmp_path, monkeypatch):
+-    cfg = _cfg(tmp_path)
+-    monkeypatch.setattr(api, "_settings", cfg)
+-    monkeypatch.setattr(ui_routes, "_settings", cfg)
+-    init_db(cfg)
+-    create_recording(
+-        "rec-cal-api-2",
+-        source="drive",
+-        source_filename="meeting.mp3",
+-        settings=cfg,
+-    )
+-
+-    def _invalid(_recording_id: str, _event_id: str | None, *, settings=None):
+-        raise ValueError("Unknown event_id for this recording")
+-
+-    monkeypatch.setattr(api, "select_calendar_event", _invalid)
+-
+-    client = TestClient(api.app, follow_redirects=True)
+-    resp = client.post(
+-        "/api/recordings/rec-cal-api-2/calendar/select",
+-        json={"event_id": "missing"},
+-    )
+-    assert resp.status_code == 422
+-    assert "Unknown event_id" in resp.text
+-
+-
+-def test_ui_calendar_tab_and_save_selection(tmp_path, monkeypatch):
+-    cfg = _cfg(tmp_path)
+-    monkeypatch.setattr(api, "_settings", cfg)
+-    monkeypatch.setattr(ui_routes, "_settings", cfg)
+-    init_db(cfg)
+-    create_recording(
+-        "rec-cal-ui-1",
+-        source="drive",
+-        source_filename="meeting.mp3",
+-        settings=cfg,
+-    )
+-
+-    monkeypatch.setattr(
+-        ui_routes,
+-        "refresh_calendar_context",
+-        lambda recording_id, *, settings=None: {
+-            "recording_id": recording_id,
+-            "selected_event_id": "evt-1",
+-            "selected_confidence": 0.92,
+-            "selected_event": {
+-                "event_id": "evt-1",
+-                "subject": "Weekly sync meeting",
+-                "start": "2026-02-19T09:50:00Z",
+-                "end": "2026-02-19T10:35:00Z",
+-                "organizer": "Alex",
+-                "attendees": ["Priya", "Lee"],
+-                "location": "Room 3",
+-                "score": 0.92,
+-                "rationale": "time_overlap=1.00; proximity=0.00; subject_match=0.20",
+-            },
+-            "signals": {
+-                "title_tokens": ["meeting", "sync", "weekly"],
+-                "attendees": ["Priya", "Lee"],
+-                "organizer": "Alex",
+-            },
+-            "candidates": [
+-                {
+-                    "event_id": "evt-1",
+-                    "subject": "Weekly sync meeting",
+-                    "start": "2026-02-19T09:50:00Z",
+-                    "end": "2026-02-19T10:35:00Z",
+-                    "organizer": "Alex",
+-                    "attendees": ["Priya", "Lee"],
+-                    "location": "Room 3",
+-                    "score": 0.92,
+-                    "rationale": "time_overlap=1.00; proximity=0.00; subject_match=0.20",
+-                }
+-            ],
+-            "candidate_total": 1,
+-            "manual_no_event": False,
+-        },
+-    )
+-
+-    selected: dict[str, str | None] = {}
+-
+-    def _select(recording_id: str, event_id: str | None, *, settings=None):
+-        selected["recording_id"] = recording_id
+-        selected["event_id"] = event_id
+-        return {
+-            "recording_id": recording_id,
+-            "selected_event_id": event_id,
+-            "selected_confidence": 0.0,
+-            "selected_event": None,
+-            "signals": {"title_tokens": [], "attendees": [], "organizer": None},
+-            "candidates": [],
+-            "candidate_total": 0,
+-            "manual_no_event": event_id is None,
+-        }
+-
+-    monkeypatch.setattr(ui_routes, "select_calendar_event", _select)
+-
+-    browser = TestClient(api.app, follow_redirects=True)
+-    page = browser.get("/recordings/rec-cal-ui-1?tab=calendar")
+-    assert page.status_code == 200
+-    assert "Weekly sync meeting" in page.text
+-    assert "Save selection" in page.text
+-
+-    post = browser.post(
+-        "/ui/recordings/rec-cal-ui-1/calendar/select",
+-        data={"event_id": "evt-1"},
+-        follow_redirects=False,
+-    )
+-    assert post.status_code == 303
+-    assert post.headers["location"] == "/recordings/rec-cal-ui-1?tab=calendar"
+-    assert selected["recording_id"] == "rec-cal-ui-1"
+-    assert selected["event_id"] == "evt-1"
+-
+-
+-def test_parse_event_datetime_accepts_7_digit_graph_precision():
+-    parsed = calendar._parse_event_datetime(
+-        {
+-            "dateTime": "2026-02-19T09:50:00.0000000Z",
+-            "timeZone": "UTC",
+-        }
+-    )
+-    assert parsed == datetime(2026, 2, 19, 9, 50, tzinfo=timezone.utc)
+-
+-
+-def test_parse_event_datetime_uses_declared_timezone_for_naive_values():
+-    parsed = calendar._parse_event_datetime(
+-        {
+-            "dateTime": "2026-02-19T09:50:00.0000000",
+-            "timeZone": "Pacific Standard Time",
+-        }
+-    )
+-    assert parsed == datetime(2026, 2, 19, 17, 50, tzinfo=timezone.utc)
+-
+-
+-def test_parse_event_datetime_unknown_timezone_does_not_fallback_to_utc():
+-    parsed = calendar._parse_event_datetime(
+-        {
+-            "dateTime": "2026-02-19T09:50:00.0000000",
+-            "timeZone": "Unknown/Timezone",
+-        }
+-    )
+-    assert parsed is None
+-
+-
+-def test_parse_event_datetime_unknown_windows_timezone_falls_back_to_utc():
+-    parsed = calendar._parse_event_datetime(
+-        {
+-            "dateTime": "2026-02-19T09:50:00.0000000",
+-            "timeZone": "Myanmar Standard Time",
+-        }
+-    )
+-    assert parsed == datetime(2026, 2, 19, 9, 50, tzinfo=timezone.utc)
+-
+-
+-def test_context_keeps_selected_event_when_not_in_top_five(tmp_path):
+-    cfg = _cfg(tmp_path)
+-    init_db(cfg)
+-    create_recording(
+-        "rec-cal-top5-1",
+-        source="drive",
+-        source_filename="meeting.mp3",
+-        captured_at="2026-02-19T10:00:00Z",
+-        settings=cfg,
+-    )
+-
+-    candidates = []
+-    for idx in range(6):
+-        candidates.append(
+-            {
+-                "event_id": f"evt-{idx + 1}",
+-                "subject": f"Event {idx + 1}",
+-                "start": "2026-02-19T09:00:00Z",
+-                "end": "2026-02-19T09:30:00Z",
+-                "organizer": "Alex",
+-                "attendees": [],
+-                "location": None,
+-                "title_tokens": [f"event{idx + 1}"],
+-                "score": round(0.9 - idx * 0.1, 4),
+-                "rationale": "test",
+-            }
+-        )
+-    upsert_calendar_match(
+-        recording_id="rec-cal-top5-1",
+-        candidates=candidates,
+-        selected_event_id="evt-6",
+-        selected_confidence=0.4,
+-        settings=cfg,
+-    )
+-
+-    context = calendar.load_calendar_context("rec-cal-top5-1", settings=cfg)
+-    rendered_ids = [item["event_id"] for item in context["candidates"]]
+-    assert context["selected_event_id"] == "evt-6"
+-    assert "evt-6" in rendered_ids
+-    assert rendered_ids.count("evt-6") == 1
+-    assert context["candidate_total"] == 6
+-
+-
+-def test_proximity_component_point_recording_uses_nearest_event_edge():
+-    recording_point = datetime(2026, 2, 19, 10, 0, tzinfo=timezone.utc)
+-    event_start = datetime(2026, 2, 19, 9, 0, tzinfo=timezone.utc)
+-    event_end = datetime(2026, 2, 19, 9, 59, tzinfo=timezone.utc)
+-    proximity = calendar._proximity_component(
+-        recording_start=recording_point,
+-        recording_end=recording_point,
+-        event_start=event_start,
+-        event_end=event_end,
+-        window_seconds=3600,
+-    )
+-    expected = 1.0 - (60.0 / 3600.0)
+-    assert abs(proximity - expected) < 1e-9
+-
+-
+-def test_refresh_preserves_selected_event_when_missing_from_new_candidates(
+-    tmp_path, monkeypatch
+-):
+-    cfg = _cfg(tmp_path)
+-    init_db(cfg)
+-    create_recording(
+-        "rec-cal-preserve-1",
+-        source="drive",
+-        source_filename="meeting.mp3",
+-        captured_at="2026-02-19T10:00:00Z",
+-        settings=cfg,
+-    )
+-    upsert_calendar_match(
+-        recording_id="rec-cal-preserve-1",
+-        candidates=[
+-            {
+-                "event_id": "evt-manual",
+-                "subject": "Manual pick",
+-                "start": "2026-02-19T09:30:00Z",
+-                "end": "2026-02-19T10:30:00Z",
+-                "organizer": "Alex",
+-                "attendees": [],
+-                "location": None,
+-                "title_tokens": ["manual"],
+-                "score": 0.77,
+-                "rationale": "manual",
+-            }
+-        ],
+-        selected_event_id="evt-manual",
+-        selected_confidence=0.77,
+-        settings=cfg,
+-    )
+-
+-    class _FakeClient:
+-        def __init__(self, settings=None):
+-            self.settings = settings
+-
+-        def graph_get(self, _path: str):
+-            return {"value": _fake_events()}  # does not include evt-manual
+-
+-    monkeypatch.setattr(calendar, "MicrosoftGraphClient", _FakeClient)
+-
+-    context = calendar.refresh_calendar_context("rec-cal-preserve-1", settings=cfg)
+-    assert context["selected_event_id"] == "evt-manual"
+-    assert context["selected_event"] is not None
+-    assert context["selected_event"]["event_id"] == "evt-manual"
+-    assert any(c["event_id"] == "evt-manual" for c in context["candidates"])
+-
+-
+-def test_select_allows_preserved_selection_not_in_candidates(tmp_path):
+-    cfg = _cfg(tmp_path)
+-    init_db(cfg)
+-    create_recording(
+-        "rec-cal-preserve-2",
+-        source="drive",
+-        source_filename="meeting.mp3",
+-        captured_at="2026-02-19T10:00:00Z",
+-        settings=cfg,
+-    )
+-    upsert_calendar_match(
+-        recording_id="rec-cal-preserve-2",
+-        candidates=[
+-            {
+-                "event_id": "evt-new",
+-                "subject": "Different event",
+-                "start": "2026-02-19T09:50:00Z",
+-                "end": "2026-02-19T10:35:00Z",
+-                "organizer": "Alex",
+-                "attendees": [],
+-                "location": None,
+-                "title_tokens": ["different"],
+-                "score": 0.8,
+-                "rationale": "auto",
+-            }
+-        ],
+-        selected_event_id="evt-manual",
+-        selected_confidence=0.77,
+-        settings=cfg,
+-    )
+-
+-    selected = calendar.select_calendar_event("rec-cal-preserve-2", "evt-manual", settings=cfg)
+-    assert selected["selected_event_id"] == "evt-manual"
+diff --git a/tests/test_ms_auth.py b/tests/test_ms_auth.py
+deleted file mode 100644
+index e80dd9c..0000000
+--- a/tests/test_ms_auth.py
++++ /dev/null
+@@ -1,440 +0,0 @@
+-from __future__ import annotations
+-
+-import threading
+-from pathlib import Path
+-
+-from fastapi.testclient import TestClient
+-import pytest
+-
+-from lan_app import api, ms_graph, ui_routes
+-from lan_app.config import AppSettings
+-from lan_app.db import init_db
+-from lan_app.ms_graph import GraphDeviceFlowLimitError, GraphNotConfiguredError
+-
+-
+-def _cfg(tmp_path: Path) -> AppSettings:
+-    cfg = AppSettings(
+-        data_root=tmp_path,
+-        recordings_root=tmp_path / "recordings",
+-        db_path=tmp_path / "db" / "app.db",
+-    )
+-    cfg.metrics_snapshot_path = tmp_path / "metrics.snap"
+-    return cfg
+-
+-
+-def test_api_ms_verify_ok(tmp_path, monkeypatch):
+-    cfg = _cfg(tmp_path)
+-    monkeypatch.setattr(api, "_settings", cfg)
+-    monkeypatch.setattr(ui_routes, "_settings", cfg)
+-    init_db(cfg)
+-
+-    monkeypatch.setattr(
+-        api,
+-        "ms_connection_state",
+-        lambda _settings: {
+-            "status": "connected",
+-            "account_display_name": "Alex Worker",
+-            "tenant_id": "tenant-1",
+-            "granted_scopes": ["offline_access", "Notes.ReadWrite"],
+-        },
+-    )
+-
+-    client = TestClient(api.app, follow_redirects=True)
+-    resp = client.get("/api/connections/ms/verify")
+-    assert resp.status_code == 200
+-    body = resp.json()
+-    assert body["ok"] is True
+-    assert body["account_display_name"] == "Alex Worker"
+-
+-
+-def test_api_ms_verify_uses_threadpool(tmp_path, monkeypatch):
+-    cfg = _cfg(tmp_path)
+-    monkeypatch.setattr(api, "_settings", cfg)
+-    monkeypatch.setattr(ui_routes, "_settings", cfg)
+-    init_db(cfg)
+-
+-    def _fail_direct(_settings):
+-        raise AssertionError("ms_connection_state should run via threadpool")
+-
+-    calls: dict[str, object] = {}
+-
+-    async def _fake_threadpool(fn, *args, **kwargs):
+-        calls["fn"] = fn
+-        calls["args"] = args
+-        calls["kwargs"] = kwargs
+-        return {
+-            "status": "connected",
+-            "account_display_name": "Alex Worker",
+-            "tenant_id": "tenant-1",
+-            "granted_scopes": ["offline_access", "User.Read"],
+-        }
+-
+-    monkeypatch.setattr(api, "ms_connection_state", _fail_direct)
+-    monkeypatch.setattr(api, "run_in_threadpool", _fake_threadpool)
+-
+-    client = TestClient(api.app, follow_redirects=True)
+-    resp = client.get("/api/connections/ms/verify")
+-    assert resp.status_code == 200
+-    assert resp.json()["ok"] is True
+-    assert calls["fn"] == _fail_direct
+-
+-
+-def test_api_ms_verify_error(tmp_path, monkeypatch):
+-    cfg = _cfg(tmp_path)
+-    monkeypatch.setattr(api, "_settings", cfg)
+-    monkeypatch.setattr(ui_routes, "_settings", cfg)
+-    init_db(cfg)
+-
+-    monkeypatch.setattr(
+-        api,
+-        "ms_connection_state",
+-        lambda _settings: {
+-            "status": "expired",
+-            "error": "Reconnect required.",
+-            "account_display_name": "Alex Worker",
+-            "tenant_id": "tenant-1",
+-            "granted_scopes": [],
+-        },
+-    )
+-
+-    client = TestClient(api.app, follow_redirects=True)
+-    resp = client.get("/api/connections/ms/verify")
+-    assert resp.status_code == 200
+-    body = resp.json()
+-    assert body["ok"] is False
+-    assert body["error"] == "expired"
+-
+-
+-def test_api_ms_start_connect(tmp_path, monkeypatch):
+-    cfg = _cfg(tmp_path)
+-    monkeypatch.setattr(api, "_settings", cfg)
+-    monkeypatch.setattr(ui_routes, "_settings", cfg)
+-    init_db(cfg)
+-
+-    monkeypatch.setattr(
+-        api,
+-        "start_device_flow_session",
+-        lambda _settings, reconnect=False: {
+-            "session_id": "sess-1",
+-            "status": "pending",
+-            "user_code": "ABCD-EFGH",
+-            "verification_uri": "https://microsoft.com/devicelogin",
+-            "message": "Use code ABCD-EFGH",
+-            "expires_in": 900,
+-            "reconnect": reconnect,
+-        },
+-    )
+-
+-    client = TestClient(api.app, follow_redirects=True)
+-    resp = client.post("/api/connections/ms/connect?reconnect=true")
+-    assert resp.status_code == 200
+-    body = resp.json()
+-    assert body["session_id"] == "sess-1"
+-    assert body["reconnect"] is True
+-
+-
+-def test_api_ms_start_connect_not_configured(tmp_path, monkeypatch):
+-    cfg = _cfg(tmp_path)
+-    monkeypatch.setattr(api, "_settings", cfg)
+-    monkeypatch.setattr(ui_routes, "_settings", cfg)
+-    init_db(cfg)
+-
+-    def _raise_not_configured(_settings, reconnect=False):
+-        raise GraphNotConfiguredError("missing env")
+-
+-    monkeypatch.setattr(api, "start_device_flow_session", _raise_not_configured)
+-
+-    client = TestClient(api.app, follow_redirects=True)
+-    resp = client.post("/api/connections/ms/connect")
+-    assert resp.status_code == 422
+-
+-
+-def test_api_ms_start_connect_too_many_pending(tmp_path, monkeypatch):
+-    cfg = _cfg(tmp_path)
+-    monkeypatch.setattr(api, "_settings", cfg)
+-    monkeypatch.setattr(ui_routes, "_settings", cfg)
+-    init_db(cfg)
+-
+-    def _raise_too_many(_settings, reconnect=False):
+-        raise GraphDeviceFlowLimitError("too many")
+-
+-    monkeypatch.setattr(api, "start_device_flow_session", _raise_too_many)
+-
+-    client = TestClient(api.app, follow_redirects=True)
+-    resp = client.post("/api/connections/ms/connect")
+-    assert resp.status_code == 429
+-
+-
+-def test_api_ms_connect_poll(tmp_path, monkeypatch):
+-    cfg = _cfg(tmp_path)
+-    monkeypatch.setattr(api, "_settings", cfg)
+-    monkeypatch.setattr(ui_routes, "_settings", cfg)
+-    init_db(cfg)
+-
+-    monkeypatch.setattr(
+-        api,
+-        "get_device_flow_session",
+-        lambda _session_id: {"session_id": "sess-1", "status": "pending"},
+-    )
+-
+-    client = TestClient(api.app, follow_redirects=True)
+-    resp = client.get("/api/connections/ms/connect/sess-1")
+-    assert resp.status_code == 200
+-    assert resp.json()["status"] == "pending"
+-
+-
+-def test_api_ms_connect_poll_not_found(tmp_path, monkeypatch):
+-    cfg = _cfg(tmp_path)
+-    monkeypatch.setattr(api, "_settings", cfg)
+-    monkeypatch.setattr(ui_routes, "_settings", cfg)
+-    init_db(cfg)
+-
+-    def _missing(_session_id: str):
+-        raise KeyError(_session_id)
+-
+-    monkeypatch.setattr(api, "get_device_flow_session", _missing)
+-
+-    client = TestClient(api.app, follow_redirects=True)
+-    resp = client.get("/api/connections/ms/connect/missing")
+-    assert resp.status_code == 404
+-
+-
+-def test_connections_page_shows_ms_state(tmp_path, monkeypatch):
+-    cfg = _cfg(tmp_path)
+-    monkeypatch.setattr(api, "_settings", cfg)
+-    monkeypatch.setattr(ui_routes, "_settings", cfg)
+-    init_db(cfg)
+-
+-    monkeypatch.setattr(
+-        ui_routes,
+-        "ms_connection_state",
+-        lambda _settings: {
+-            "configured": True,
+-            "status": "connected",
+-            "state": "Connected",
+-            "account_display_name": "Alex Worker",
+-            "tenant_id": "tenant-1",
+-            "requested_scopes": [
+-                "offline_access",
+-                "User.Read",
+-                "Notes.ReadWrite",
+-                "Calendars.Read",
+-            ],
+-            "granted_scopes": ["offline_access", "User.Read", "Notes.ReadWrite"],
+-            "error": None,
+-        },
+-    )
+-
+-    client = TestClient(api.app, follow_redirects=True)
+-    resp = client.get("/connections")
+-    assert resp.status_code == 200
+-    assert "Connected" in resp.text
+-    assert "Alex Worker" in resp.text
+-    assert "Reconnect" in resp.text
+-
+-
+-def test_connections_page_uses_threadpool(tmp_path, monkeypatch):
+-    cfg = _cfg(tmp_path)
+-    monkeypatch.setattr(api, "_settings", cfg)
+-    monkeypatch.setattr(ui_routes, "_settings", cfg)
+-    init_db(cfg)
+-
+-    def _fail_direct(_settings):
+-        raise AssertionError("ms_connection_state should run via threadpool")
+-
+-    calls: dict[str, object] = {}
+-
+-    async def _fake_threadpool(fn, *args, **kwargs):
+-        calls["fn"] = fn
+-        calls["args"] = args
+-        calls["kwargs"] = kwargs
+-        return {
+-            "configured": True,
+-            "status": "connected",
+-            "state": "Connected",
+-            "account_display_name": "Alex Worker",
+-            "tenant_id": "tenant-1",
+-            "requested_scopes": [
+-                "offline_access",
+-                "User.Read",
+-                "Notes.ReadWrite",
+-                "Calendars.Read",
+-            ],
+-            "granted_scopes": ["offline_access", "User.Read", "Notes.ReadWrite"],
+-            "error": None,
+-        }
+-
+-    monkeypatch.setattr(ui_routes, "ms_connection_state", _fail_direct)
+-    monkeypatch.setattr(ui_routes, "run_in_threadpool", _fake_threadpool)
+-
+-    client = TestClient(api.app, follow_redirects=True)
+-    resp = client.get("/connections")
+-    assert resp.status_code == 200
+-    assert "Alex Worker" in resp.text
+-    assert calls["fn"] == _fail_direct
+-
+-
+-def test_start_device_flow_session_reuses_pending(monkeypatch, tmp_path):
+-    cfg = _cfg(tmp_path)
+-    cfg.ms_tenant_id = "tenant-1"
+-    cfg.ms_client_id = "client-1"
+-    cfg.ms_scopes = "offline_access User.Read Notes.ReadWrite Calendars.Read"
+-
+-    with ms_graph._DEVICE_FLOW_LOCK:
+-        ms_graph._DEVICE_FLOW_SESSIONS.clear()
+-
+-    initiated: list[int] = []
+-    started_session_ids: list[str] = []
+-
+-    class _FakeClient:
+-        def __init__(self, settings=None):
+-            self.settings = settings
+-
+-        def clear_cache(self):
+-            return None
+-
+-        def initiate_device_flow(self):
+-            initiated.append(1)
+-            return {
+-                "user_code": "ABCD-EFGH",
+-                "verification_uri": "https://microsoft.com/devicelogin",
+-                "expires_in": 900,
+-            }
+-
+-    class _FakeThread:
+-        def __init__(self, target=None, kwargs=None, daemon=None):
+-            self._kwargs = kwargs or {}
+-
+-        def start(self):
+-            started_session_ids.append(self._kwargs["session_id"])
+-
+-    monkeypatch.setattr(ms_graph, "MicrosoftGraphClient", _FakeClient)
+-    monkeypatch.setattr(ms_graph.threading, "Thread", _FakeThread)
+-
+-    first = ms_graph.start_device_flow_session(cfg)
+-    second = ms_graph.start_device_flow_session(cfg)
+-
+-    assert first["status"] == "pending"
+-    assert second["status"] == "pending"
+-    assert first["session_id"] == second["session_id"]
+-    assert first["reused"] is False
+-    assert second["reused"] is True
+-    assert len(initiated) == 1
+-    assert started_session_ids == [first["session_id"]]
+-
+-
+-def test_start_device_flow_session_serializes_initiation(monkeypatch, tmp_path):
+-    cfg = _cfg(tmp_path)
+-    cfg.ms_tenant_id = "tenant-1"
+-    cfg.ms_client_id = "client-1"
+-    cfg.ms_scopes = "offline_access User.Read Notes.ReadWrite Calendars.Read"
+-
+-    with ms_graph._DEVICE_FLOW_LOCK:
+-        ms_graph._DEVICE_FLOW_SESSIONS.clear()
+-
+-    initiated: list[int] = []
+-    start_gate = threading.Event()
+-    release_gate = threading.Event()
+-
+-    class _FakeClient:
+-        def __init__(self, settings=None):
+-            self.settings = settings
+-
+-        def clear_cache(self):
+-            return None
+-
+-        def initiate_device_flow(self):
+-            initiated.append(1)
+-            start_gate.set()
+-            release_gate.wait(timeout=2)
+-            return {
+-                "user_code": "ABCD-EFGH",
+-                "verification_uri": "https://microsoft.com/devicelogin",
+-                "expires_in": 900,
+-            }
+-
+-    monkeypatch.setattr(ms_graph, "MicrosoftGraphClient", _FakeClient)
+-    monkeypatch.setattr(ms_graph, "_complete_device_flow_in_background", lambda **_k: None)
+-
+-    results: list[dict[str, object]] = []
+-    errors: list[Exception] = []
+-
+-    def _call_start():
+-        try:
+-            results.append(ms_graph.start_device_flow_session(cfg))
+-        except Exception as exc:  # pragma: no cover - test helper
+-            errors.append(exc)
+-
+-    t1 = threading.Thread(target=_call_start)
+-    t2 = threading.Thread(target=_call_start)
+-
+-    t1.start()
+-    assert start_gate.wait(timeout=1), "first initiation did not start in time"
+-    t2.start()
+-    release_gate.set()
+-    t1.join(timeout=2)
+-    t2.join(timeout=2)
+-
+-    assert not errors
+-    assert len(results) == 2
+-    assert len(initiated) == 1
+-    assert results[0]["session_id"] == results[1]["session_id"]
+-    assert sorted([results[0]["reused"], results[1]["reused"]]) == [False, True]
+-
+-
+-def test_graph_post_html_does_not_retry_non_idempotent_page_creation(monkeypatch, tmp_path):
+-    cfg = _cfg(tmp_path)
+-    cfg.ms_tenant_id = "tenant-1"
+-    cfg.ms_client_id = "client-1"
+-    cfg.ms_scopes = "offline_access User.Read Notes.ReadWrite Calendars.Read"
+-
+-    class _FakePublicClientApplication:
+-        def __init__(self, *args, **kwargs):
+-            pass
+-
+-        def get_accounts(self):
+-            return []
+-
+-    monkeypatch.setattr(
+-        ms_graph.msal,
+-        "PublicClientApplication",
+-        _FakePublicClientApplication,
+-    )
+-    client = ms_graph.MicrosoftGraphClient(cfg)
+-
+-    monkeypatch.setattr(
+-        client,
+-        "acquire_token_silent",
+-        lambda: {"access_token": "token-1"},
+-    )
+-
+-    calls: list[tuple[str, str]] = []
+-
+-    class _FakeResponse:
+-        status_code = 503
+-        content = b""
+-        headers: dict[str, str] = {}
+-
+-        def json(self):  # pragma: no cover - not used in this test
+-            return {}
+-
+-    class _FakeHttpClient:
+-        def __init__(self, timeout: float):
+-            self.timeout = timeout
+-
+-        def __enter__(self):
+-            return self
+-
+-        def __exit__(self, exc_type, exc, tb):
+-            return False
+-
+-        def request(self, method: str, url: str, **kwargs):
+-            calls.append((method, url))
+-            return _FakeResponse()
+-
+-    monkeypatch.setattr(ms_graph.httpx, "Client", _FakeHttpClient)
+-
+-    with pytest.raises(ms_graph.GraphRequestError):
+-        client.graph_post_html("/me/onenote/sections/sec-1/pages", "<html></html>")
+-
+-    assert len(calls) == 1
+diff --git a/tests/test_onenote.py b/tests/test_onenote.py
+deleted file mode 100644
+index acd7f1c..0000000
+--- a/tests/test_onenote.py
++++ /dev/null
+@@ -1,410 +0,0 @@
+-from __future__ import annotations
+-
+-import json
+-from pathlib import Path
+-
+-from fastapi.testclient import TestClient
+-import pytest
+-
+-from lan_app import api, onenote, ui_routes
+-from lan_app.config import AppSettings
+-from lan_app.constants import (
+-    RECORDING_STATUS_PUBLISHED,
+-    RECORDING_STATUS_QUEUED,
+-    RECORDING_STATUS_READY,
+-)
+-from lan_app.db import (
+-    create_project,
+-    create_recording,
+-    get_project,
+-    get_recording,
+-    init_db,
+-    set_recording_publish_result,
+-    update_project_onenote_mapping,
+-)
+-
+-
+-def _cfg(tmp_path: Path) -> AppSettings:
+-    cfg = AppSettings(
+-        data_root=tmp_path,
+-        recordings_root=tmp_path / "recordings",
+-        db_path=tmp_path / "db" / "app.db",
+-    )
+-    cfg.metrics_snapshot_path = tmp_path / "metrics.snap"
+-    return cfg
+-
+-
+-def test_db_project_mapping_and_publish_result(tmp_path: Path):
+-    cfg = _cfg(tmp_path)
+-    init_db(cfg)
+-    project = create_project("Ops", settings=cfg)
+-    updated = update_project_onenote_mapping(
+-        project["id"],
+-        onenote_notebook_id="nb-100",
+-        onenote_section_id="sec-100",
+-        settings=cfg,
+-    )
+-    assert updated is not None
+-    assert updated["onenote_notebook_id"] == "nb-100"
+-    assert updated["onenote_section_id"] == "sec-100"
+-    check = get_project(project["id"], settings=cfg)
+-    assert check is not None
+-    assert check["onenote_section_id"] == "sec-100"
+-
+-    create_recording(
+-        "rec-published-1",
+-        source="drive",
+-        source_filename="published.mp3",
+-        status=RECORDING_STATUS_READY,
+-        settings=cfg,
+-    )
+-    assert set_recording_publish_result(
+-        "rec-published-1",
+-        onenote_page_id="page-100",
+-        onenote_page_url="https://onenote.local/page-100",
+-        settings=cfg,
+-    )
+-    rec = get_recording("rec-published-1", settings=cfg)
+-    assert rec is not None
+-    assert rec["status"] == RECORDING_STATUS_PUBLISHED
+-    assert rec["onenote_page_id"] == "page-100"
+-    assert rec["onenote_page_url"] == "https://onenote.local/page-100"
+-
+-
+-def test_publish_recording_to_onenote_success(tmp_path: Path, monkeypatch):
+-    cfg = _cfg(tmp_path)
+-    init_db(cfg)
+-    project = create_project("Finance", settings=cfg)
+-    update_project_onenote_mapping(
+-        project["id"],
+-        onenote_notebook_id="nb-1",
+-        onenote_section_id="sec-1",
+-        settings=cfg,
+-    )
+-    create_recording(
+-        "rec-pub-1",
+-        source="drive",
+-        source_filename="finance.mp3",
+-        status=RECORDING_STATUS_READY,
+-        project_id=project["id"],
+-        drive_file_id="drive-123",
+-        settings=cfg,
+-    )
+-    derived = cfg.recordings_root / "rec-pub-1" / "derived"
+-    derived.mkdir(parents=True, exist_ok=True)
+-    (derived / "summary.json").write_text(
+-        json.dumps(
+-            {
+-                "topic": "Budget Review",
+-                "summary_bullets": ["Discussed Q2 targets"],
+-                "decisions": ["Approve spending freeze"],
+-                "action_items": [
+-                    {"task": "Draft budget", "owner": "Alex", "deadline": "2026-03-01"}
+-                ],
+-            }
+-        ),
+-        encoding="utf-8",
+-    )
+-
+-    class _FakeGraphClient:
+-        def __init__(self, settings=None):
+-            self.settings = settings
+-
+-        def graph_post_html(self, path: str, html: str):
+-            assert path.endswith("/me/onenote/sections/sec-1/pages")
+-            assert "<h2>Summary</h2>" in html
+-            return {
+-                "id": "page-xyz",
+-                "links": {"oneNoteWebUrl": {"href": "https://onenote.local/page-xyz"}},
+-            }
+-
+-    monkeypatch.setattr(onenote, "MicrosoftGraphClient", _FakeGraphClient)
+-
+-    published = onenote.publish_recording_to_onenote("rec-pub-1", settings=cfg)
+-    assert published["onenote_page_id"] == "page-xyz"
+-    assert published["onenote_page_url"] == "https://onenote.local/page-xyz"
+-
+-    rec = get_recording("rec-pub-1", settings=cfg)
+-    assert rec is not None
+-    assert rec["status"] == RECORDING_STATUS_PUBLISHED
+-    assert rec["onenote_page_id"] == "page-xyz"
+-    assert rec["onenote_page_url"] == "https://onenote.local/page-xyz"
+-
+-
+-def test_extract_page_url_ignores_graph_resource_links():
+-    payload = {
+-        "location": "https://graph.microsoft.com/v1.0/me/onenote/pages/page-123",
+-        "content_location": "https://graph.microsoft.com/v1.0/me/onenote/pages/page-123/content",
+-        "webUrl": "https://graph.microsoft.com/v1.0/me/onenote/pages/page-123",
+-        "contentUrl": "https://graph.microsoft.com/v1.0/me/onenote/pages/page-123/content",
+-    }
+-    assert onenote._extract_page_url(payload) is None
+-
+-
+-def test_load_metrics_context_does_not_duplicate_fallback_participants(
+-    tmp_path: Path, monkeypatch
+-):
+-    cfg = _cfg(tmp_path)
+-    recording_id = "rec-metrics-no-dup-1"
+-    derived = cfg.recordings_root / recording_id / "derived"
+-    derived.mkdir(parents=True, exist_ok=True)
+-    (derived / "metrics.json").write_text(
+-        json.dumps(
+-            {
+-                "meeting": {"total_questions": 3},
+-                "participants": [
+-                    {
+-                        "speaker": "Speaker From Artifact",
+-                        "airtime_seconds": 20,
+-                        "airtime_share": 0.2,
+-                        "turns": 2,
+-                        "interruptions_done": 0,
+-                        "interruptions_received": 0,
+-                        "questions_count": 1,
+-                        "role_hint": "observer",
+-                    }
+-                ],
+-            }
+-        ),
+-        encoding="utf-8",
+-    )
+-
+-    monkeypatch.setattr(onenote, "get_meeting_metrics", lambda *_args, **_kwargs: {})
+-    monkeypatch.setattr(
+-        onenote,
+-        "list_participant_metrics",
+-        lambda *_args, **_kwargs: [
+-            {
+-                "diar_speaker_label": "Speaker From DB",
+-                "json": {
+-                    "speaker": "Speaker From DB",
+-                    "airtime_seconds": 120,
+-                    "airtime_share": 0.8,
+-                    "turns": 8,
+-                    "interruptions_done": 1,
+-                    "interruptions_received": 0,
+-                    "questions_count": 2,
+-                    "role_hint": "host",
+-                },
+-            }
+-        ],
+-    )
+-
+-    metrics = onenote._load_metrics_context(recording_id, settings=cfg)
+-    speakers = [row["speaker"] for row in metrics["participants"]]
+-    assert speakers == ["Speaker From DB"]
+-    assert metrics["meeting"]["total_questions"] == 3
+-
+-
+-def test_publish_recording_to_onenote_requires_ready_or_needs_review(tmp_path: Path):
+-    cfg = _cfg(tmp_path)
+-    init_db(cfg)
+-    project = create_project("Sales", settings=cfg)
+-    update_project_onenote_mapping(
+-        project["id"],
+-        onenote_notebook_id="nb-1",
+-        onenote_section_id="sec-1",
+-        settings=cfg,
+-    )
+-    create_recording(
+-        "rec-not-ready-1",
+-        source="drive",
+-        source_filename="not-ready.mp3",
+-        status=RECORDING_STATUS_QUEUED,
+-        project_id=project["id"],
+-        settings=cfg,
+-    )
+-    with pytest.raises(onenote.PublishPreconditionError):
+-        onenote.publish_recording_to_onenote("rec-not-ready-1", settings=cfg)
+-
+-
+-def test_api_publish_endpoint(tmp_path: Path, monkeypatch):
+-    cfg = _cfg(tmp_path)
+-    monkeypatch.setattr(api, "_settings", cfg)
+-    monkeypatch.setattr(ui_routes, "_settings", cfg)
+-    init_db(cfg)
+-    create_recording(
+-        "rec-api-publish-1",
+-        source="drive",
+-        source_filename="publish.mp3",
+-        status=RECORDING_STATUS_READY,
+-        settings=cfg,
+-    )
+-
+-    monkeypatch.setattr(
+-        api,
+-        "publish_recording_to_onenote",
+-        lambda recording_id, *, settings=None: {
+-            "recording_id": recording_id,
+-            "onenote_page_id": "page-api-1",
+-        },
+-    )
+-
+-    client = TestClient(api.app, follow_redirects=True)
+-    resp = client.post("/api/recordings/rec-api-publish-1/publish")
+-    assert resp.status_code == 200
+-    assert resp.json()["onenote_page_id"] == "page-api-1"
+-
+-
+-def test_api_publish_endpoint_returns_422_on_precondition(tmp_path: Path, monkeypatch):
+-    cfg = _cfg(tmp_path)
+-    monkeypatch.setattr(api, "_settings", cfg)
+-    monkeypatch.setattr(ui_routes, "_settings", cfg)
+-    init_db(cfg)
+-    create_recording(
+-        "rec-api-publish-2",
+-        source="drive",
+-        source_filename="publish-2.mp3",
+-        status=RECORDING_STATUS_READY,
+-        settings=cfg,
+-    )
+-
+-    def _fail(_recording_id: str, *, settings=None):
+-        raise onenote.PublishPreconditionError("project mapping missing")
+-
+-    monkeypatch.setattr(api, "publish_recording_to_onenote", _fail)
+-    client = TestClient(api.app, follow_redirects=True)
+-    resp = client.post("/api/recordings/rec-api-publish-2/publish")
+-    assert resp.status_code == 422
+-    assert "project mapping missing" in resp.text
+-
+-
+-def test_projects_page_browses_and_updates_mapping(tmp_path: Path, monkeypatch):
+-    cfg = _cfg(tmp_path)
+-    monkeypatch.setattr(api, "_settings", cfg)
+-    monkeypatch.setattr(ui_routes, "_settings", cfg)
+-    init_db(cfg)
+-    project = create_project("BrowseProject", settings=cfg)
+-
+-    monkeypatch.setattr(
+-        ui_routes,
+-        "list_onenote_notebooks",
+-        lambda *, settings=None: [
+-            {"id": "nb-1", "display_name": "Notebook A", "web_url": "https://onenote/notebook"}
+-        ],
+-    )
+-    monkeypatch.setattr(
+-        ui_routes,
+-        "list_onenote_sections",
+-        lambda notebook_id, *, settings=None: [
+-            {"id": "sec-1", "display_name": "Section A", "web_url": "https://onenote/section"}
+-        ],
+-    )
+-
+-    client = TestClient(api.app, follow_redirects=True)
+-    page = client.get(f"/projects?browse_project_id={project['id']}&browse_notebook_id=nb-1")
+-    assert page.status_code == 200
+-    assert "OneNote Browser for BrowseProject" in page.text
+-    assert "Notebook A" in page.text
+-    assert "Section A" in page.text
+-
+-    updated = client.post(
+-        f"/projects/{project['id']}/onenote",
+-        data={"onenote_notebook_id": "nb-1", "onenote_section_id": "sec-1"},
+-    )
+-    assert updated.status_code == 200
+-    project_after = get_project(project["id"], settings=cfg)
+-    assert project_after is not None
+-    assert project_after["onenote_notebook_id"] == "nb-1"
+-    assert project_after["onenote_section_id"] == "sec-1"
+-
+-
+-def test_recording_overview_publish_controls(tmp_path: Path, monkeypatch):
+-    cfg = _cfg(tmp_path)
+-    monkeypatch.setattr(api, "_settings", cfg)
+-    monkeypatch.setattr(ui_routes, "_settings", cfg)
+-    init_db(cfg)
+-    project = create_project("UI Publish", settings=cfg)
+-    create_recording(
+-        "rec-ui-publish-1",
+-        source="drive",
+-        source_filename="ui-publish.mp3",
+-        status=RECORDING_STATUS_READY,
+-        project_id=project["id"],
+-        settings=cfg,
+-    )
+-
+-    client = TestClient(api.app, follow_redirects=True)
+-    before = client.get("/recordings/rec-ui-publish-1?tab=overview")
+-    assert before.status_code == 200
+-    assert "Publish to OneNote" in before.text
+-
+-    set_recording_publish_result(
+-        "rec-ui-publish-1",
+-        onenote_page_id="page-ui-1",
+-        onenote_page_url="https://onenote.local/page-ui-1",
+-        settings=cfg,
+-    )
+-    after = client.get("/recordings/rec-ui-publish-1?tab=overview")
+-    assert after.status_code == 200
+-    assert "Open OneNote page" in after.text
+-
+-
+-def test_recording_overview_hides_publish_without_project_assignment(
+-    tmp_path: Path, monkeypatch
+-):
+-    cfg = _cfg(tmp_path)
+-    monkeypatch.setattr(api, "_settings", cfg)
+-    monkeypatch.setattr(ui_routes, "_settings", cfg)
+-    init_db(cfg)
+-    create_recording(
+-        "rec-ui-no-project-1",
+-        source="drive",
+-        source_filename="ui-no-project.mp3",
+-        status=RECORDING_STATUS_READY,
+-        settings=cfg,
+-    )
+-
+-    client = TestClient(api.app, follow_redirects=True)
+-    page = client.get("/recordings/rec-ui-no-project-1?tab=overview")
+-    assert page.status_code == 200
+-    assert "Publish to OneNote" not in page.text
+-    assert "Assign this recording to a project before publishing to OneNote." in page.text
+-
+-
+-def test_recording_overview_does_not_link_graph_api_when_page_url_missing(
+-    tmp_path: Path, monkeypatch
+-):
+-    cfg = _cfg(tmp_path)
+-    monkeypatch.setattr(api, "_settings", cfg)
+-    monkeypatch.setattr(ui_routes, "_settings", cfg)
+-    init_db(cfg)
+-    create_recording(
+-        "rec-ui-publish-no-url-1",
+-        source="drive",
+-        source_filename="ui-publish-no-url.mp3",
+-        status=RECORDING_STATUS_PUBLISHED,
+-        onenote_page_id="page-id-only",
+-        settings=cfg,
+-    )
+-
+-    client = TestClient(api.app, follow_redirects=True)
+-    page = client.get("/recordings/rec-ui-publish-no-url-1?tab=overview")
+-    assert page.status_code == 200
+-    assert "https://graph.microsoft.com/v1.0/me/onenote/pages/" not in page.text
+-    assert "Open OneNote page" not in page.text
+-    assert "page-id-only" in page.text
+-
+-
+-def test_ui_publish_action_redirects_on_success(tmp_path: Path, monkeypatch):
+-    cfg = _cfg(tmp_path)
+-    monkeypatch.setattr(api, "_settings", cfg)
+-    monkeypatch.setattr(ui_routes, "_settings", cfg)
+-    init_db(cfg)
+-    create_recording(
+-        "rec-ui-publish-2",
+-        source="drive",
+-        source_filename="ui-publish-2.mp3",
+-        status=RECORDING_STATUS_READY,
+-        settings=cfg,
+-    )
+-
+-    monkeypatch.setattr(
+-        ui_routes,
+-        "publish_recording_to_onenote",
+-        lambda recording_id, *, settings=None: {"recording_id": recording_id},
+-    )
+-    client = TestClient(api.app, follow_redirects=False)
+-    resp = client.post("/ui/recordings/rec-ui-publish-2/publish")
+-    assert resp.status_code == 303
+-    assert resp.headers["location"] == "/recordings/rec-ui-publish-2?tab=overview"
 diff --git a/tests/test_ui_routes.py b/tests/test_ui_routes.py
-index e131053..e863d26 100644
+index e863d26..fefabea 100644
 --- a/tests/test_ui_routes.py
 +++ b/tests/test_ui_routes.py
-@@ -148,6 +148,32 @@ def test_recordings_with_data(seeded_client):
-     assert "meeting.mp3" in r.text
+@@ -258,13 +258,6 @@ def test_recording_detail_log_tab(seeded_client):
+     assert "precheck" in r.text
  
  
-+def test_recordings_list_shows_progress_column_and_percent(tmp_path, monkeypatch):
-+    cfg = _cfg(tmp_path)
-+    monkeypatch.setattr(api, "_settings", cfg)
-+    monkeypatch.setattr(ui_routes, "_settings", cfg)
-+    init_db(cfg)
-+    create_recording(
-+        "rec-ui-list-progress-1",
-+        source="drive",
-+        source_filename="list-progress.mp3",
-+        status=RECORDING_STATUS_PROCESSING,
-+        settings=cfg,
-+    )
-+    set_recording_progress(
-+        "rec-ui-list-progress-1",
-+        stage="diarize",
-+        progress=0.5,
-+        settings=cfg,
-+    )
-+
-+    c = TestClient(api.app, follow_redirects=True)
-+    r = c.get("/recordings")
-+    assert r.status_code == 200
-+    assert "Progress" in r.text
-+    assert "50%" in r.text
-+
-+
- def test_recordings_status_filter(seeded_client):
-     r = seeded_client.get("/recordings?status=Ready")
+-def test_recording_detail_calendar_tab(seeded_client):
+-    r = seeded_client.get("/recordings/rec-ui-1?tab=calendar")
+-    assert r.status_code == 200
+-    assert "Candidate Events" in r.text
+-    assert "Save selection" in r.text
+-
+-
+ def test_recording_detail_project_tab(seeded_client):
+     r = seeded_client.get("/recordings/rec-ui-1?tab=project")
      assert r.status_code == 200
+@@ -907,7 +900,6 @@ def test_connections(client):
+     r = client.get("/connections")
+     assert r.status_code == 200
+     assert "Google Drive" in r.text
+-    assert "Microsoft Graph" in r.text
+ 
+ 
+ def test_connections_shows_configured_gdrive(tmp_path, monkeypatch):
+@@ -916,11 +908,6 @@ def test_connections_shows_configured_gdrive(tmp_path, monkeypatch):
+     cfg.gdrive_inbox_folder_id = "folder-abc"
+     monkeypatch.setattr(api, "_settings", cfg)
+     monkeypatch.setattr(ui_routes, "_settings", cfg)
+-    monkeypatch.setattr(
+-        ui_routes,
+-        "ms_connection_state",
+-        lambda _settings: {"configured": False, "status": "not_configured"},
+-    )
+     init_db(cfg)
+ 
+     client = TestClient(api.app, follow_redirects=True)

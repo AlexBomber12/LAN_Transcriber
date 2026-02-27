@@ -258,13 +258,6 @@ def test_recording_detail_log_tab(seeded_client):
     assert "precheck" in r.text
 
 
-def test_recording_detail_calendar_tab(seeded_client):
-    r = seeded_client.get("/recordings/rec-ui-1?tab=calendar")
-    assert r.status_code == 200
-    assert "Candidate Events" in r.text
-    assert "Save selection" in r.text
-
-
 def test_recording_detail_project_tab(seeded_client):
     r = seeded_client.get("/recordings/rec-ui-1?tab=project")
     assert r.status_code == 200
@@ -907,7 +900,6 @@ def test_connections(client):
     r = client.get("/connections")
     assert r.status_code == 200
     assert "Google Drive" in r.text
-    assert "Microsoft Graph" in r.text
 
 
 def test_connections_shows_configured_gdrive(tmp_path, monkeypatch):
@@ -916,11 +908,6 @@ def test_connections_shows_configured_gdrive(tmp_path, monkeypatch):
     cfg.gdrive_inbox_folder_id = "folder-abc"
     monkeypatch.setattr(api, "_settings", cfg)
     monkeypatch.setattr(ui_routes, "_settings", cfg)
-    monkeypatch.setattr(
-        ui_routes,
-        "ms_connection_state",
-        lambda _settings: {"configured": False, "status": "not_configured"},
-    )
     init_db(cfg)
 
     client = TestClient(api.app, follow_redirects=True)
