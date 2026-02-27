@@ -1589,6 +1589,22 @@ async def ui_queue(
 
 
 # ---------------------------------------------------------------------------
+# Upload
+# ---------------------------------------------------------------------------
+
+
+@ui_router.get("/upload", response_class=HTMLResponse)
+async def ui_upload(request: Request) -> Any:
+    return templates.TemplateResponse(
+        request,
+        "upload.html",
+        {
+            "active": "upload",
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
 # Connections
 # ---------------------------------------------------------------------------
 
