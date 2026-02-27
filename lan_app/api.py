@@ -19,11 +19,6 @@ from lan_transcriber.metrics import write_metrics_snapshot
 from lan_transcriber.models import TranscriptResult
 from lan_transcriber.pipeline import refresh_aliases
 
-from .calendar import (
-    load_calendar_context,
-    refresh_calendar_context,
-    select_calendar_event,
-)
 from .auth import auth_enabled, request_is_authenticated, request_requires_auth
 from .config import AppSettings
 from .constants import (
@@ -57,15 +52,6 @@ from .healthchecks import (
     collect_health_checks,
 )
 from .locks import release_ingest_lock, try_acquire_ingest_lock
-from .ms_graph import (
-    GraphAuthError,
-    GraphDeviceFlowLimitError,
-    GraphNotConfiguredError,
-    get_device_flow_session,
-    ms_connection_state,
-    start_device_flow_session,
-)
-from .onenote import PublishPreconditionError, publish_recording_to_onenote
 from .ops import run_retention_cleanup
 from .reaper import run_stuck_job_reaper_once
 from .uploads import (
@@ -119,10 +105,6 @@ class RequeueAction(BaseModel):
 
 class QuarantineAction(BaseModel):
     reason: str | None = None
-
-
-class CalendarSelectAction(BaseModel):
-    event_id: str | None = None
 
 
 def _validate_recording_status(status: str | None) -> str | None:
@@ -225,54 +207,6 @@ async def _stuck_job_reaper_loop() -> None:
         await asyncio.sleep(_settings.reaper_interval_seconds)
 
 
-@app.get("/api/connections/ms/verify")
-async def api_verify_ms_connection() -> dict[str, object]:
-    """Validate Microsoft Graph auth by calling /me via cached delegated token."""
-    state = await run_in_threadpool(ms_connection_state, _settings)
-    if state["status"] != "connected":
-        return {
-            "ok": False,
-            "error": state["status"],
-            "detail": state.get("error"),
-            "account_display_name": state.get("account_display_name"),
-            "tenant_id": state.get("tenant_id"),
-            "granted_scopes": state.get("granted_scopes", []),
-        }
-    return {
-        "ok": True,
-        "account_display_name": state.get("account_display_name"),
-        "tenant_id": state.get("tenant_id"),
-        "granted_scopes": state.get("granted_scopes", []),
-    }
-
-
-@app.post("/api/connections/ms/connect")
-async def api_start_ms_connection(
-    reconnect: bool = Query(default=False),
-) -> dict[str, object]:
-    """Start device-code flow and return code/URL details for UI polling."""
-    try:
-        return await run_in_threadpool(
-            start_device_flow_session,
-            _settings,
-            reconnect=reconnect,
-        )
-    except GraphNotConfiguredError as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
-    except GraphDeviceFlowLimitError as exc:
-        raise HTTPException(status_code=429, detail=str(exc))
-    except GraphAuthError as exc:
-        raise HTTPException(status_code=503, detail=str(exc))
-
-
-@app.get("/api/connections/ms/connect/{session_id}")
-async def api_get_ms_connection_status(session_id: str) -> dict[str, object]:
-    try:
-        return get_device_flow_session(session_id)
-    except KeyError:
-        raise HTTPException(status_code=404, detail="Unknown device-flow session")
-
-
 @app.post("/alias/{speaker_id}")
 async def update_alias(speaker_id: str, upd: AliasUpdate):
     path = aliases.ALIAS_PATH
@@ -334,65 +268,6 @@ async def api_get_recording(recording_id: str) -> dict[str, object]:
     if item is None:
         raise HTTPException(status_code=404, detail="Recording not found")
     return item
-
-
-@app.get("/api/recordings/{recording_id}/calendar")
-async def api_get_recording_calendar(recording_id: str) -> dict[str, object]:
-    if get_recording(recording_id, settings=_settings) is None:
-        raise HTTPException(status_code=404, detail="Recording not found")
-    try:
-        return await run_in_threadpool(
-            refresh_calendar_context,
-            recording_id,
-            settings=_settings,
-        )
-    except GraphAuthError as exc:
-        fallback = await run_in_threadpool(
-            load_calendar_context,
-            recording_id,
-            settings=_settings,
-        )
-        fallback["fetch_error"] = str(exc)
-        return fallback
-
-
-@app.post("/api/recordings/{recording_id}/calendar/select")
-async def api_select_recording_calendar(
-    recording_id: str,
-    action: CalendarSelectAction | None = None,
-) -> dict[str, object]:
-    if get_recording(recording_id, settings=_settings) is None:
-        raise HTTPException(status_code=404, detail="Recording not found")
-    payload = action or CalendarSelectAction()
-    try:
-        return await run_in_threadpool(
-            select_calendar_event,
-            recording_id,
-            payload.event_id,
-            settings=_settings,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
-
-
-@app.post("/api/recordings/{recording_id}/publish")
-async def api_publish_recording(recording_id: str) -> dict[str, object]:
-    if get_recording(recording_id, settings=_settings) is None:
-        raise HTTPException(status_code=404, detail="Recording not found")
-    try:
-        return await run_in_threadpool(
-            publish_recording_to_onenote,
-            recording_id,
-            settings=_settings,
-        )
-    except PublishPreconditionError as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
-    except GraphNotConfiguredError as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
-    except GraphAuthError as exc:
-        raise HTTPException(status_code=503, detail=str(exc))
-    except RuntimeError as exc:
-        raise HTTPException(status_code=503, detail=str(exc))
 
 
 @app.post("/api/recordings/{recording_id}/actions/requeue")

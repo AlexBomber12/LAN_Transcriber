@@ -152,7 +152,7 @@ Queue (in order)
 - Depends on: PR-EXPORT-01
 
 29) PR-REMOVE-MS-01: Remove Microsoft Graph, calendar matching UI, OneNote publish UI and msal dependency
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-REMOVE-MS-01.md
 - Depends on: PR-UI-PROGRESS-02
 

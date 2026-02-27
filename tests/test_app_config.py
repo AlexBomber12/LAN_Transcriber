@@ -38,37 +38,6 @@ def test_sqlite_busy_timeout_from_env(monkeypatch):
     assert cfg.sqlite_busy_timeout_ms == 12345
 
 
-def test_ms_auth_settings_from_env(monkeypatch, tmp_path: Path):
-    cache_path = tmp_path / "auth" / "msal_cache.bin"
-    monkeypatch.setenv("MS_TENANT_ID", "tenant-id")
-    monkeypatch.setenv("MS_CLIENT_ID", "client-id")
-    monkeypatch.setenv(
-        "MS_SCOPES",
-        "offline_access User.Read Notes.ReadWrite Calendars.Read",
-    )
-    monkeypatch.setenv("MSAL_CACHE_PATH", str(cache_path))
-
-    cfg = AppSettings()
-    assert cfg.ms_tenant_id == "tenant-id"
-    assert cfg.ms_client_id == "client-id"
-    assert cfg.ms_scopes_list == [
-        "offline_access",
-        "User.Read",
-        "Notes.ReadWrite",
-        "Calendars.Read",
-    ]
-    assert cfg.msal_cache_path == cache_path
-
-
-def test_calendar_match_settings_from_env(monkeypatch):
-    monkeypatch.setenv("CALENDAR_MATCH_WINDOW_MINUTES", "30")
-    monkeypatch.setenv("CALENDAR_AUTO_MATCH_THRESHOLD", "0.7")
-
-    cfg = AppSettings()
-    assert cfg.calendar_match_window_minutes == 30
-    assert cfg.calendar_auto_match_threshold == 0.7
-
-
 def test_routing_threshold_from_env(monkeypatch):
     monkeypatch.setenv("ROUTING_AUTO_SELECT_THRESHOLD", "0.73")
 

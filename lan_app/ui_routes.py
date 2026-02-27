@@ -27,11 +27,6 @@ from .auth import (
     safe_next_path,
     set_auth_cookie,
 )
-from .calendar import (
-    load_calendar_context,
-    refresh_calendar_context,
-    select_calendar_event,
-)
 from .config import AppSettings
 from .conversation_metrics import refresh_recording_metrics
 from .constants import (
@@ -61,7 +56,6 @@ from .db import (
     list_speaker_assignments,
     list_voice_samples,
     list_voice_profiles,
-    update_project_onenote_mapping,
     set_recording_project,
     set_speaker_assignment,
     set_recording_language_settings,
@@ -73,13 +67,6 @@ from .jobs import (
     DuplicateRecordingJobError,
     enqueue_recording_job,
     purge_pending_recording_jobs,
-)
-from .ms_graph import GraphAuthError, ms_connection_state
-from .onenote import (
-    PublishPreconditionError,
-    list_onenote_notebooks,
-    list_onenote_sections,
-    publish_recording_to_onenote,
 )
 from .routing import refresh_recording_routing, train_routing_from_manual_selection
 from lan_transcriber.artifacts import atomic_write_json
@@ -587,11 +574,6 @@ def _as_data_relative_path(path: Path, *, settings: AppSettings) -> str | None:
         return None
     root_resolved = settings.data_root.resolve()
     return safe.relative_to(root_resolved).as_posix()
-
-
-def _recording_onenote_page_url(recording: dict[str, Any]) -> str | None:
-    explicit = str(recording.get("onenote_page_url") or "").strip()
-    return explicit or None
 
 
 def _speakers_tab_context(recording_id: str, settings: AppSettings) -> dict[str, Any]:
@@ -1120,32 +1102,16 @@ async def ui_recording_detail(
     rec = get_recording(recording_id, settings=_settings)
     if rec is None:
         return HTMLResponse("<h1>404 – Recording not found</h1>", status_code=404)
-    onenote_page_url = _recording_onenote_page_url(rec)
     jobs, _ = list_jobs(settings=_settings, recording_id=recording_id, limit=100)
     recovery_warning = _recording_recovery_warning(jobs)
-    tabs = ["overview", "calendar", "project", "speakers", "language", "metrics", "log"]
+    tabs = ["overview", "project", "speakers", "language", "metrics", "log"]
     current_tab = tab if tab in tabs else "overview"
-    calendar: dict[str, Any] | None = None
     language: dict[str, Any] | None = None
     summary: dict[str, Any] | None = None
     metrics: dict[str, Any] | None = None
     speakers: dict[str, Any] | None = None
     project: dict[str, Any] | None = None
     export_text = ""
-    if current_tab == "calendar":
-        try:
-            calendar = await run_in_threadpool(
-                refresh_calendar_context,
-                recording_id,
-                settings=_settings,
-            )
-        except GraphAuthError as exc:
-            calendar = await run_in_threadpool(
-                load_calendar_context,
-                recording_id,
-                settings=_settings,
-            )
-            calendar["fetch_error"] = str(exc)
     if current_tab == "language":
         language = _language_tab_context(recording_id, rec, _settings)
     if current_tab == "speakers":
@@ -1170,13 +1136,11 @@ async def ui_recording_detail(
             "recovery_warning": recovery_warning,
             "tabs": tabs,
             "current_tab": current_tab,
-            "calendar": calendar,
             "language": language,
             "summary": summary,
             "metrics": metrics,
             "speakers": speakers,
             "project": project,
-            "onenote_page_url": onenote_page_url,
             "export_text": export_text,
         },
     )
@@ -1411,60 +1375,14 @@ async def ui_set_recording_project(
 
 
 @ui_router.get("/projects", response_class=HTMLResponse)
-async def ui_projects(
-    request: Request,
-    browse_project_id: int | None = Query(default=None),
-    browse_notebook_id: str | None = Query(default=None),
-) -> Any:
+async def ui_projects(request: Request) -> Any:
     items = list_projects(settings=_settings)
-    selected_project: dict[str, Any] | None = None
-    selected_notebook_id = ""
-    notebooks: list[dict[str, Any]] = []
-    sections: list[dict[str, Any]] = []
-    browse_error: str | None = None
-
-    if browse_project_id is not None:
-        selected_project = next(
-            (
-                item
-                for item in items
-                if int(item.get("id", -1)) == browse_project_id
-            ),
-            None,
-        )
-        if selected_project is None:
-            browse_error = f"Project {browse_project_id} not found."
-        else:
-            try:
-                notebooks = await run_in_threadpool(
-                    list_onenote_notebooks,
-                    settings=_settings,
-                )
-                selected_notebook_id = (
-                    (browse_notebook_id or "").strip()
-                    or str(selected_project.get("onenote_notebook_id") or "").strip()
-                )
-                if selected_notebook_id:
-                    sections = await run_in_threadpool(
-                        list_onenote_sections,
-                        selected_notebook_id,
-                        settings=_settings,
-                    )
-            except (GraphAuthError, ValueError, RuntimeError) as exc:
-                browse_error = str(exc)
-
     return templates.TemplateResponse(
         request,
         "projects.html",
         {
             "active": "projects",
             "items": items,
-            "browse_project_id": browse_project_id,
-            "browse_selected_project": selected_project,
-            "browse_selected_notebook_id": selected_notebook_id,
-            "browse_notebooks": notebooks,
-            "browse_sections": sections,
-            "browse_error": browse_error,
         },
     )
 
@@ -1480,25 +1398,6 @@ async def ui_create_project(
         except sqlite3.IntegrityError:
             pass  # duplicate name — silently redirect back
     return RedirectResponse("/projects", status_code=303)
-
-
-@ui_router.post("/projects/{project_id}/onenote", response_class=HTMLResponse)
-async def ui_update_project_onenote(
-    project_id: int,
-    onenote_notebook_id: str = Form(default=""),
-    onenote_section_id: str = Form(default=""),
-) -> Any:
-    update_project_onenote_mapping(
-        project_id,
-        onenote_notebook_id=onenote_notebook_id,
-        onenote_section_id=onenote_section_id,
-        settings=_settings,
-    )
-    redirect_url = f"/projects?browse_project_id={project_id}"
-    notebook = onenote_notebook_id.strip()
-    if notebook:
-        redirect_url = f"{redirect_url}&browse_notebook_id={quote(notebook)}"
-    return RedirectResponse(redirect_url, status_code=303)
 
 
 @ui_router.post("/projects/{project_id}/delete", response_class=HTMLResponse)
@@ -1641,14 +1540,12 @@ async def ui_upload(request: Request) -> Any:
 
 @ui_router.get("/connections", response_class=HTMLResponse)
 async def ui_connections(request: Request) -> Any:
-    ms_state = await run_in_threadpool(ms_connection_state, _settings)
     gdrive_state = _gdrive_connection_state(_settings)
     return templates.TemplateResponse(
         request,
         "connections.html",
         {
             "active": "connections",
-            "ms": ms_state,
             "gdrive": gdrive_state,
         },
     )
@@ -1725,25 +1622,6 @@ async def ui_action_quarantine(recording_id: str) -> Any:
     resp = HTMLResponse("")
     resp.headers["HX-Redirect"] = f"/recordings/{recording_id}"
     return resp
-
-
-@ui_router.post("/ui/recordings/{recording_id}/publish")
-async def ui_action_publish(recording_id: str) -> Any:
-    if get_recording(recording_id, settings=_settings) is None:
-        return HTMLResponse("Not found", status_code=404)
-    try:
-        await run_in_threadpool(
-            publish_recording_to_onenote,
-            recording_id,
-            settings=_settings,
-        )
-    except PublishPreconditionError as exc:
-        return HTMLResponse(str(exc), status_code=422)
-    except GraphAuthError as exc:
-        return HTMLResponse(str(exc), status_code=503)
-    except RuntimeError as exc:
-        return HTMLResponse(str(exc), status_code=503)
-    return RedirectResponse(f"/recordings/{recording_id}?tab=overview", status_code=303)
 
 
 @ui_router.post("/ui/recordings/{recording_id}/delete")
@@ -1869,19 +1747,3 @@ async def ui_retranscribe_language(
         return HTMLResponse(f"Re-transcribe failed: {exc}", status_code=503)
     return RedirectResponse(f"/recordings/{recording_id}?tab=log", status_code=303)
 
-
-@ui_router.post("/ui/recordings/{recording_id}/calendar/select")
-async def ui_select_calendar(recording_id: str, event_id: str = Form(default="")) -> Any:
-    if get_recording(recording_id, settings=_settings) is None:
-        return HTMLResponse("Not found", status_code=404)
-    selected_event_id = event_id.strip() or None
-    try:
-        await run_in_threadpool(
-            select_calendar_event,
-            recording_id,
-            selected_event_id,
-            settings=_settings,
-        )
-    except ValueError as exc:
-        return HTMLResponse(str(exc), status_code=422)
-    return RedirectResponse(f"/recordings/{recording_id}?tab=calendar", status_code=303)

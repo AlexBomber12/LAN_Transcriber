@@ -10,7 +10,6 @@ httpx
 tenacity
 redis
 rq
-msal
 jinja2>=3.1
 pydantic-settings>=2.10,<3.0
 python-multipart>=0.0.9

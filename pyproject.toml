@@ -21,7 +21,6 @@ dependencies = [
     "rapidfuzz",
     "google-auth",
     "google-api-python-client",
-    "msal",
 ]
 
 [tool.setuptools.packages.find]
