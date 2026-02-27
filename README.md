@@ -34,6 +34,15 @@ This produces:
 Operational setup, failure handling, backup/restore, and upgrade steps are documented in
 [`docs/runbook.md`](docs/runbook.md).
 
+## Workflow (Upload -> Processing -> Export)
+
+1. Open `/upload` and add one or more audio files.
+2. Track per-file upload progress and processing progress on the same page.
+3. Open the recording detail page at `/recordings/{recording_id}`.
+4. Export results:
+   - Copy markdown from the export tab for manual OneNote paste.
+   - Download ZIP from `/ui/recordings/{recording_id}/export.zip`.
+
 ## Runtime data root
 
 Runtime mutable state must live under `/data` in containers (mounted from `./data` in Docker):
@@ -41,8 +50,7 @@ Runtime mutable state must live under `/data` in containers (mounted from `./dat
 - `/data/db/app.db`
 - `/data/db/speaker_bank.yaml`
 - `/data/recordings/<recording_id>/...`
-- `/data/auth/msal_cache.bin`
-- `/data/secrets/gdrive_sa.json`
+- `/data/secrets/...` (optional runtime secrets)
 - `/data/voices`
 - `/data/tmp`
 
@@ -61,6 +69,14 @@ Canonical artifact layout (v1):
 ```
 
 Do not commit secrets or runtime-generated state files.
+
+## LAN deployment notes
+
+- Use a persistent host volume for `/data` (for Docker Compose, `./data:/data` by default).
+- Size disk for model cache + uploads + derived artifacts. A practical baseline is:
+  - small teams: 50-100 GB
+  - medium usage with longer recordings: 200 GB+
+- Monitor free space under `/data/recordings` and `/opt/lan_cache/hf`.
 
 ## Staging
 
@@ -92,7 +108,7 @@ models are cached across runs.
 | `LAN_REDIS_URL` | Redis endpoint for the RQ queue |
 | `LAN_RQ_QUEUE_NAME` | Queue name consumed by the worker |
 | `LAN_API_BEARER_TOKEN` | Optional bearer token for protected POST actions (`/api` and UI POST routes) |
-| `LAN_INGEST_LOCK_TTL_SECONDS` | Redis ingest lock TTL in seconds (default `300`) |
+| `UPLOAD_MAX_BYTES` | Optional max size per uploaded file in bytes (`413` when exceeded) |
 | `QUARANTINE_RETENTION_DAYS` | Retention period for quarantined recording cleanup (default `7`) |
 | `LAN_API_BIND_HOST` | Published API bind host (default `127.0.0.1`) |
 | `LAN_API_PORT` | Published API port (default `7860`) |
@@ -100,9 +116,6 @@ models are cached across runs.
 | `LLM_API_KEY` | Optional API key for the LLM |
 | `LLM_MODEL` | Model name passed to the OpenAI-compatible endpoint |
 | `LLM_TIMEOUT_SECONDS` | Per-request timeout for LLM calls (default `30`) |
-| `MS_TENANT_ID` | Microsoft Entra tenant ID for delegated Device Code Flow |
-| `MS_CLIENT_ID` | Microsoft app registration client ID |
-| `MS_SCOPES` | Graph scopes (default: `offline_access User.Read Notes.ReadWrite Calendars.Read`) |
 
 `LAN_ENV` controls startup validation:
 
@@ -125,7 +138,7 @@ When `LAN_API_BEARER_TOKEN` is set:
 
 - Protected endpoints accept either `Authorization: Bearer <token>` or the HttpOnly cookie from `POST /ui/login`.
 - `GET /healthz`, `GET /healthz/{component}`, `GET /metrics`, and `GET /openapi.json` remain public.
-- `POST /api/actions/ingest` is guarded by a Redis lock (`lan:ingest:lock`) to prevent concurrent ingest runs.
+- Upload and recording action POST routes require auth (for example `POST /api/uploads` and `/ui/recordings/{id}/...`).
 
 ## Staging deploy secrets
 

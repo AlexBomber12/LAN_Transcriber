@@ -23,33 +23,18 @@ This runbook covers day-2 operations for LAN deployment:
 docker compose run --rm api python -m lan_app.healthchecks app
 ```
 
-### 1.2 Google Drive Service Account ingest
+### 1.2 Upload and export flow
 
-1. Place Service Account JSON under `/data/secrets/gdrive_sa.json`.
-2. Share the Drive Inbox folder with the Service Account principal.
-3. Configure:
-   - `GDRIVE_SA_JSON_PATH=/data/secrets/gdrive_sa.json`
-   - `GDRIVE_INBOX_FOLDER_ID=<shared-folder-id>`
-4. Trigger one ingest cycle:
+1. Open `/upload` and upload one or more files (UI sends multipart to `POST /api/uploads`).
+2. Track upload and processing progress per file on `/upload`.
+3. Open `/recordings/{recording_id}` for transcript, summary, and export actions.
+4. Download export bundle from `GET /ui/recordings/{recording_id}/export.zip`.
 
-```bash
-curl -fsS -X POST http://127.0.0.1:7860/api/actions/ingest
-```
+### 1.3 Upload size controls
 
-### 1.3 Microsoft Graph delegated auth (Device Code Flow)
-
-1. Register an Entra app with delegated Graph scopes:
-   - `offline_access`
-   - `User.Read`
-   - `Calendars.Read`
-   - `Notes.ReadWrite`
-2. Configure `MS_TENANT_ID` and `MS_CLIENT_ID`.
-3. Open `/connections` and complete device-code auth.
-4. Verify:
-
-```bash
-curl -fsS http://127.0.0.1:7860/api/connections/ms/verify
-```
+1. Optionally set `UPLOAD_MAX_BYTES` to cap a single uploaded file size.
+2. If set, uploads above this limit are rejected with HTTP `413`.
+3. Keep app and reverse-proxy limits consistent to avoid mismatched failures.
 
 ## 2) Runtime safety defaults
 
@@ -101,20 +86,15 @@ Actions:
 2. Confirm with `curl -fsS http://127.0.0.1:7860/healthz/worker`
 3. Open `/queue` and verify `started`/`finished` transitions resume
 
-### 4.3 Microsoft Graph auth expired
+### 4.3 Upload rejected (`413`)
 
 Symptoms:
-- publish/calendar calls fail with auth errors
+- upload fails with HTTP `413 Request Entity Too Large`
 
 Actions:
-1. Re-run Device Code Flow in `/connections`
-2. If policy requires hard re-auth, remove cache:
-
-```bash
-rm -f /data/auth/msal_cache.bin
-```
-
-3. Reconnect in `/connections`
+1. Confirm application limit: `UPLOAD_MAX_BYTES` in `.env` (if set).
+2. Confirm reverse-proxy size limit (`client_max_body_size`) allows intended file sizes.
+3. Re-test with a file below the configured limits.
 
 ### 4.4 Quarantine growth
 
@@ -131,9 +111,34 @@ Actions:
 docker compose exec api python -c "from lan_app.ops import run_retention_cleanup; print(run_retention_cleanup())"
 ```
 
-## 5) Backup and restore (`/data`)
+## 5) Nginx reverse proxy for large uploads
 
-### 5.1 Backup
+Set size and timeout directives high enough for your expected media files.
+
+Example:
+
+```nginx
+server {
+    listen 80;
+    server_name _;
+
+    client_max_body_size 1024m;
+
+    location / {
+        proxy_pass http://127.0.0.1:7860;
+        proxy_read_timeout 600s;
+        proxy_send_timeout 600s;
+    }
+}
+```
+
+Notes:
+- `client_max_body_size` gates request body size before traffic reaches the app.
+- `proxy_read_timeout` and `proxy_send_timeout` should cover long upload/processing responses.
+
+## 6) Backup and restore (`/data`)
+
+### 6.1 Backup
 
 Stop writes first:
 
@@ -153,7 +158,7 @@ Restart services:
 docker compose start api worker
 ```
 
-### 5.2 Restore
+### 6.2 Restore
 
 1. Stop stack: `docker compose down`
 2. Restore archive to host `/data` mount source (`./data` in this repo)
@@ -162,7 +167,7 @@ docker compose start api worker
    - `curl -fsS http://127.0.0.1:7860/healthz`
    - check recordings list in UI
 
-## 6) Upgrade steps
+## 7) Upgrade steps
 
 1. Pull new code and review `.env.example` diff.
 2. Ensure secrets still resolve from `/data/secrets` or env.
@@ -177,7 +182,7 @@ docker compose up -d --build
    - `curl -fsS http://127.0.0.1:7860/healthz`
    - enqueue and process one test recording
 
-## 7) Retry and failure operations
+## 8) Retry and failure operations
 
 - Failed step retries are available in recording detail, `Log` tab, button `Retry step`.
 - `NeedsReview` is not a failure; it indicates manual review workflow.

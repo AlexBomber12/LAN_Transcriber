@@ -19,6 +19,7 @@ x-lan-service: &lan-service
     - LAN_ENV=${LAN_ENV:-dev}
     - LAN_REDIS_URL=${LAN_REDIS_URL}
     - LAN_RQ_QUEUE_NAME=${LAN_RQ_QUEUE_NAME:-lan-transcriber}
+    - UPLOAD_MAX_BYTES
     - LLM_BASE_URL=${LLM_BASE_URL}
     - LLM_API_KEY=${LLM_API_KEY}
     - LLM_MODEL=${LLM_MODEL:-}
@@ -26,14 +27,12 @@ x-lan-service: &lan-service
     - FETCH_INTERVAL_SEC=${FETCH_INTERVAL_SEC:-300}
     - TRANSCRIBER_VERSION=${TRANSCRIBER_VERSION:-local}
     - LANG_DEFAULT=${LANG_DEFAULT:-en}
-    - MS_TENANT_ID=${MS_TENANT_ID:-}
-    - MS_CLIENT_ID=${MS_CLIENT_ID:-}
-    - "MS_SCOPES=${MS_SCOPES:-offline_access User.Read Notes.ReadWrite Calendars.Read}"
     - QUARANTINE_RETENTION_DAYS=${QUARANTINE_RETENTION_DAYS:-7}
   volumes:
     - lan_cache:/root/.cache
     - /opt/lan_cache/hf:/root/.cache/huggingface
     - /opt/lan_cache/ollama:/root/.ollama
+    # Persistent runtime state root: DB, uploads, derived artifacts, logs.
     - ./data:/data
   networks:
     - lan_net

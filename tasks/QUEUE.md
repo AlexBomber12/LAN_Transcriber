@@ -162,6 +162,6 @@ Queue (in order)
 - Depends on: PR-REMOVE-MS-01
 
 31) PR-DOCS-EXPORT-ONLY-01: Docs update for upload + export-only mode (README, runbook, env example, nginx notes)
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-DOCS-EXPORT-ONLY-01.md
 - Depends on: PR-REMOVE-GDRIVE-01
