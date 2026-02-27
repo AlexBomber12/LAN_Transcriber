@@ -132,7 +132,7 @@ Queue (in order)
 - Depends on: PR-UI-PROGRESS-01
 
 25) PR-UI-UPLOAD-01: Upload ingest API (multipart) create recordings from UI uploads
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-UI-UPLOAD-01.md
 - Depends on: PR-RUNTIME-CONFIG-01
 

@@ -191,6 +191,11 @@ class AppSettings(BaseSettings):
             "INGEST_LOCK_TTL_SECONDS",
         ),
     )
+    upload_max_bytes: int | None = Field(
+        default=None,
+        ge=1,
+        validation_alias=AliasChoices("UPLOAD_MAX_BYTES"),
+    )
 
     @property
     def ms_scopes_list(self) -> list[str]:
