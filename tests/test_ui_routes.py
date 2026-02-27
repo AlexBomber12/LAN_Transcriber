@@ -148,6 +148,32 @@ def test_recordings_with_data(seeded_client):
     assert "meeting.mp3" in r.text
 
 
+def test_recordings_list_shows_progress_column_and_percent(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    init_db(cfg)
+    create_recording(
+        "rec-ui-list-progress-1",
+        source="drive",
+        source_filename="list-progress.mp3",
+        status=RECORDING_STATUS_PROCESSING,
+        settings=cfg,
+    )
+    set_recording_progress(
+        "rec-ui-list-progress-1",
+        stage="diarize",
+        progress=0.5,
+        settings=cfg,
+    )
+
+    c = TestClient(api.app, follow_redirects=True)
+    r = c.get("/recordings")
+    assert r.status_code == 200
+    assert "Progress" in r.text
+    assert "50%" in r.text
+
+
 def test_recordings_status_filter(seeded_client):
     r = seeded_client.get("/recordings?status=Ready")
     assert r.status_code == 200

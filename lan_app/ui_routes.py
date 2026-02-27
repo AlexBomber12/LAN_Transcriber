@@ -1088,6 +1088,10 @@ async def ui_recordings(
         limit=limit,
         offset=offset,
     )
+    for item in items:
+        progress_ratio = _safe_pipeline_progress(item.get("pipeline_progress"))
+        item["progress_percent"] = int(round(progress_ratio * 100))
+        item["progress_stage_label"] = _pipeline_stage_label(item.get("pipeline_stage"))
     return templates.TemplateResponse(
         request,
         "recordings.html",
