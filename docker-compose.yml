@@ -19,6 +19,7 @@ x-lan-service: &lan-service
     - LAN_ENV=${LAN_ENV:-dev}
     - LAN_REDIS_URL=${LAN_REDIS_URL}
     - LAN_RQ_QUEUE_NAME=${LAN_RQ_QUEUE_NAME:-lan-transcriber}
+    - UPLOAD_MAX_BYTES
     - LLM_BASE_URL=${LLM_BASE_URL}
     - LLM_API_KEY=${LLM_API_KEY}
     - LLM_MODEL=${LLM_MODEL:-}
