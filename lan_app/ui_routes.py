@@ -15,7 +15,7 @@ from urllib.parse import quote
 
 from fastapi import APIRouter, Form, Query, Request
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 
 from .auth import (
@@ -67,6 +67,7 @@ from .db import (
     set_recording_language_settings,
     set_recording_status,
 )
+from .exporter import build_export_zip_bytes, build_onenote_markdown
 from .gdrive import build_drive_service
 from .jobs import (
     DuplicateRecordingJobError,
@@ -1126,6 +1127,7 @@ async def ui_recording_detail(
     metrics: dict[str, Any] | None = None
     speakers: dict[str, Any] | None = None
     project: dict[str, Any] | None = None
+    export_text = ""
     if current_tab == "calendar":
         try:
             calendar = await run_in_threadpool(
@@ -1149,6 +1151,8 @@ async def ui_recording_detail(
         rec = get_recording(recording_id, settings=_settings) or rec
     if current_tab in {"overview", "metrics"}:
         summary = _summary_context(recording_id, _settings)
+    if current_tab == "overview":
+        export_text = build_onenote_markdown(rec, settings=_settings)
     if current_tab == "metrics":
         metrics = _metrics_tab_context(recording_id, _settings)
 
@@ -1169,6 +1173,7 @@ async def ui_recording_detail(
             "speakers": speakers,
             "project": project,
             "onenote_page_url": onenote_page_url,
+            "export_text": export_text,
         },
     )
 
@@ -1192,6 +1197,27 @@ async def ui_recording_progress(request: Request, recording_id: str) -> Any:
             "updated_at": str(rec.get("pipeline_updated_at") or "").strip(),
             "warning": str(rec.get("last_warning") or "").strip(),
             "is_processing": str(rec.get("status") or "") == RECORDING_STATUS_PROCESSING,
+        },
+    )
+
+
+@ui_router.get("/ui/recordings/{recording_id}/export.zip")
+async def ui_recording_export_zip(
+    recording_id: str,
+    include_snippets: int = Query(default=0),
+) -> Any:
+    if get_recording(recording_id, settings=_settings) is None:
+        return HTMLResponse("Not found", status_code=404)
+    zip_bytes = build_export_zip_bytes(
+        recording_id,
+        settings=_settings,
+        include_snippets=include_snippets == 1,
+    )
+    return Response(
+        content=zip_bytes,
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f'attachment; filename="export_{recording_id}.zip"',
         },
     )
 

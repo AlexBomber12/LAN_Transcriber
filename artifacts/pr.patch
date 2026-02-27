@@ -1,490 +1,555 @@
-diff --git a/lan_app/templates/base.html b/lan_app/templates/base.html
-index c84a3d2..8ba1e1a 100644
---- a/lan_app/templates/base.html
-+++ b/lan_app/templates/base.html
-@@ -75,6 +75,7 @@ tr:hover{background:#e8ecf8}
-   <span class="nav-logo">LAN Transcriber</span>
-   <a href="/" {% if active=='dashboard' %}class="active"{% endif %}>Dashboard</a>
-   <a href="/recordings" {% if active=='recordings' %}class="active"{% endif %}>Recordings</a>
-+  <a href="/upload" {% if active=='upload' %}class="active"{% endif %}>Upload</a>
-   <a href="/queue" {% if active=='queue' %}class="active"{% endif %}>Queue</a>
-   <a href="/projects" {% if active=='projects' %}class="active"{% endif %}>Projects</a>
-   <a href="/voices" {% if active=='voices' %}class="active"{% endif %}>Voices</a>
+diff --git a/lan_app/templates/recording_detail.html b/lan_app/templates/recording_detail.html
+index ab04ffc..1f1dc9e 100644
+--- a/lan_app/templates/recording_detail.html
++++ b/lan_app/templates/recording_detail.html
+@@ -80,6 +80,51 @@
+     <span class="k">Updated at</span><span class="v">{{ rec.updated_at[:19].replace('T',' ') if rec.updated_at else '—' }}</span>
+   </div>
+ 
++  <div class="section" style="margin-top:10px">
++    <h2 style="margin-top:0">Export</h2>
++    <div class="filters" style="margin-bottom:6px">
++      <button type="button" class="btn" onclick="copyExportText()">Copy</button>
++      <a href="/ui/recordings/{{ rec.id }}/export.zip" class="btn" style="text-decoration:none">Download ZIP</a>
++    </div>
++    <textarea
++      id="export-text"
++      readonly
++      style="width:100%;min-height:220px;resize:vertical"
++    >{{ export_text or '' }}</textarea>
++    <p id="export-copy-status" class="placeholder" style="padding:6px 0 0 0">
++      Copy the markdown or download a ZIP with the available artifacts.
++    </p>
++  </div>
++
++  <script>
++  function copyExportText() {
++    var textarea = document.getElementById('export-text');
++    var status = document.getElementById('export-copy-status');
++    if (!textarea) return;
++    var setStatus = function(msg) {
++      if (status) status.textContent = msg;
++    };
++    var fallback = function() {
++      textarea.focus();
++      textarea.select();
++      try {
++        document.execCommand('copy');
++        setStatus('Copied export markdown.');
++      } catch (_err) {
++        setStatus('Copy failed. Select the text and copy manually.');
++      }
++    };
++    if (navigator.clipboard && navigator.clipboard.writeText) {
++      navigator.clipboard.writeText(textarea.value).then(
++        function() { setStatus('Copied export markdown.'); },
++        fallback
++      );
++      return;
++    }
++    fallback();
++  }
++  </script>
++
+   <div class="section" style="margin-top:10px">
+     <h2 style="margin-top:0">OneNote Publish</h2>
+     {% if rec.status == 'Published' and rec.onenote_page_id %}
 diff --git a/lan_app/ui_routes.py b/lan_app/ui_routes.py
-index d2e4128..c6b72a4 100644
+index c6b72a4..6212a71 100644
 --- a/lan_app/ui_routes.py
 +++ b/lan_app/ui_routes.py
-@@ -1588,6 +1588,22 @@ async def ui_queue(
+@@ -15,7 +15,7 @@ from urllib.parse import quote
+ 
+ from fastapi import APIRouter, Form, Query, Request
+ from fastapi.concurrency import run_in_threadpool
+-from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
++from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response
+ from fastapi.templating import Jinja2Templates
+ 
+ from .auth import (
+@@ -67,6 +67,7 @@ from .db import (
+     set_recording_language_settings,
+     set_recording_status,
+ )
++from .exporter import build_export_zip_bytes, build_onenote_markdown
+ from .gdrive import build_drive_service
+ from .jobs import (
+     DuplicateRecordingJobError,
+@@ -1126,6 +1127,7 @@ async def ui_recording_detail(
+     metrics: dict[str, Any] | None = None
+     speakers: dict[str, Any] | None = None
+     project: dict[str, Any] | None = None
++    export_text = ""
+     if current_tab == "calendar":
+         try:
+             calendar = await run_in_threadpool(
+@@ -1149,6 +1151,8 @@ async def ui_recording_detail(
+         rec = get_recording(recording_id, settings=_settings) or rec
+     if current_tab in {"overview", "metrics"}:
+         summary = _summary_context(recording_id, _settings)
++    if current_tab == "overview":
++        export_text = build_onenote_markdown(rec, settings=_settings)
+     if current_tab == "metrics":
+         metrics = _metrics_tab_context(recording_id, _settings)
+ 
+@@ -1169,6 +1173,7 @@ async def ui_recording_detail(
+             "speakers": speakers,
+             "project": project,
+             "onenote_page_url": onenote_page_url,
++            "export_text": export_text,
+         },
+     )
+ 
+@@ -1196,6 +1201,27 @@ async def ui_recording_progress(request: Request, recording_id: str) -> Any:
      )
  
  
-+# ---------------------------------------------------------------------------
-+# Upload
-+# ---------------------------------------------------------------------------
-+
-+
-+@ui_router.get("/upload", response_class=HTMLResponse)
-+async def ui_upload(request: Request) -> Any:
-+    return templates.TemplateResponse(
-+        request,
-+        "upload.html",
-+        {
-+            "active": "upload",
++@ui_router.get("/ui/recordings/{recording_id}/export.zip")
++async def ui_recording_export_zip(
++    recording_id: str,
++    include_snippets: int = Query(default=0),
++) -> Any:
++    if get_recording(recording_id, settings=_settings) is None:
++        return HTMLResponse("Not found", status_code=404)
++    zip_bytes = build_export_zip_bytes(
++        recording_id,
++        settings=_settings,
++        include_snippets=include_snippets == 1,
++    )
++    return Response(
++        content=zip_bytes,
++        media_type="application/zip",
++        headers={
++            "Content-Disposition": f'attachment; filename="export_{recording_id}.zip"',
 +        },
 +    )
 +
 +
  # ---------------------------------------------------------------------------
- # Connections
+ # Recording speaker assignment + snippet audio
  # ---------------------------------------------------------------------------
 diff --git a/tasks/QUEUE.md b/tasks/QUEUE.md
-index 8313cc9..49d7151 100644
+index 49d7151..4e8881f 100644
 --- a/tasks/QUEUE.md
 +++ b/tasks/QUEUE.md
-@@ -137,7 +137,7 @@ Queue (in order)
- - Depends on: PR-RUNTIME-CONFIG-01
- 
- 26) PR-UI-UPLOAD-02: Upload page UI: multi-file upload + per-file upload progress + processing polling
--- Status: TODO
-+- Status: DONE
- - Tasks file: tasks/PR-UI-UPLOAD-02.md
+@@ -142,7 +142,7 @@ Queue (in order)
  - Depends on: PR-UI-UPLOAD-01
  
-diff --git a/tests/test_ui_routes.py b/tests/test_ui_routes.py
-index cfa561e..e131053 100644
---- a/tests/test_ui_routes.py
-+++ b/tests/test_ui_routes.py
-@@ -860,6 +860,18 @@ def test_queue_invalid_status_shows_all(seeded_client):
-     assert r.status_code == 200
+ 27) PR-EXPORT-01: Export-only output: OneNote-ready markdown + Download ZIP per recording
+-- Status: TODO
++- Status: DONE
+ - Tasks file: tasks/PR-EXPORT-01.md
+ - Depends on: PR-UI-UPLOAD-02
  
- 
-+# ---------------------------------------------------------------------------
-+# Upload
-+# ---------------------------------------------------------------------------
-+
-+
-+def test_upload_page(client):
-+    r = client.get("/upload")
-+    assert r.status_code == 200
-+    assert "Upload" in r.text
-+    assert 'id="file-input"' in r.text
-+
-+
- # ---------------------------------------------------------------------------
- # Connections
- # ---------------------------------------------------------------------------
-diff --git a/lan_app/templates/upload.html b/lan_app/templates/upload.html
+diff --git a/lan_app/exporter.py b/lan_app/exporter.py
 new file mode 100644
-index 0000000..ebc7777
+index 0000000..9d2dabf
 --- /dev/null
-+++ b/lan_app/templates/upload.html
-@@ -0,0 +1,409 @@
-+{% extends "base.html" %}
-+{% block title %}Upload – LAN Transcriber{% endblock %}
-+{% block content %}
-+<h1>Upload</h1>
++++ b/lan_app/exporter.py
+@@ -0,0 +1,317 @@
++"""Export helpers for OneNote-ready markdown and ZIP bundles."""
 +
-+<div class="section">
-+  <div class="form-row" style="margin-bottom:8px">
-+    <label for="file-input">Files</label>
-+    <input type="file" id="file-input" multiple>
-+    <button type="button" class="btn" id="pick-files-btn">Choose files</button>
-+  </div>
-+  <div
-+    id="dropzone"
-+    style="background:#fff;border:2px dashed #99b;padding:14px;max-width:720px;color:#555;user-select:none"
-+    tabindex="0"
-+  >
-+    Drop files here to upload (or use the file picker).
-+  </div>
-+</div>
++from __future__ import annotations
 +
-+<div class="section">
-+  <table>
-+    <thead>
-+      <tr>
-+        <th>Filename</th>
-+        <th>Size</th>
-+        <th>Upload progress</th>
-+        <th>Processing progress</th>
-+        <th>Status</th>
-+        <th>Link</th>
-+      </tr>
-+    </thead>
-+    <tbody id="upload-rows">
-+      <tr id="upload-empty">
-+        <td colspan="6" class="placeholder">No files queued.</td>
-+      </tr>
-+    </tbody>
-+  </table>
-+</div>
++from datetime import datetime, timezone
++import io
++import json
++from pathlib import Path
++import zipfile
++from typing import Any
 +
-+<script>
-+var TERMINAL_STATUSES = new Set([
-+  "Ready",
-+  "NeedsReview",
-+  "Published",
-+  "Quarantine",
-+  "Failed",
-+]);
-+var uploadQueue = [];
-+var queueRunning = false;
++from .config import AppSettings
++from .db import get_recording
 +
-+function formatSize(bytes) {
-+  var value = Number(bytes);
-+  if (!Number.isFinite(value) || value < 0) {
-+    return "—";
-+  }
-+  if (value < 1024) {
-+    return String(value) + " B";
-+  }
-+  var kb = value / 1024;
-+  if (kb < 1024) {
-+    return kb.toFixed(1) + " KB";
-+  }
-+  var mb = kb / 1024;
-+  if (mb < 1024) {
-+    return mb.toFixed(1) + " MB";
-+  }
-+  var gb = mb / 1024;
-+  return gb.toFixed(2) + " GB";
-+}
++_OPTIONAL_DERIVED_FILES = (
++    "summary.json",
++    "transcript.json",
++    "speaker_turns.json",
++    "metrics.json",
++    "segments.json",
++    "lang_spans.json",
++)
 +
-+function makeProgressCell() {
-+  var wrap = document.createElement("div");
-+  wrap.style.display = "flex";
-+  wrap.style.alignItems = "center";
-+  wrap.style.gap = "6px";
-+  wrap.style.minWidth = "140px";
 +
-+  var bar = document.createElement("div");
-+  bar.style.width = "90px";
-+  bar.style.height = "8px";
-+  bar.style.border = "1px solid #99b";
-+  bar.style.background = "#f3f4f6";
-+  bar.style.position = "relative";
++def _utc_now_iso() -> str:
++    return datetime.now(tz=timezone.utc).replace(microsecond=0).isoformat().replace(
++        "+00:00", "Z"
++    )
 +
-+  var fill = document.createElement("div");
-+  fill.style.position = "absolute";
-+  fill.style.left = "0";
-+  fill.style.top = "0";
-+  fill.style.bottom = "0";
-+  fill.style.width = "0%";
-+  fill.style.background = "#4a6080";
-+  bar.appendChild(fill);
 +
-+  var label = document.createElement("span");
-+  label.textContent = "0%";
-+  label.style.fontSize = "11px";
++def _load_json_dict(path: Path) -> dict[str, Any]:
++    if not path.exists():
++        return {}
++    try:
++        payload = json.loads(path.read_text(encoding="utf-8"))
++    except (OSError, ValueError):
++        return {}
++    if not isinstance(payload, dict):
++        return {}
++    return payload
 +
-+  wrap.appendChild(bar);
-+  wrap.appendChild(label);
-+  return {node: wrap, fill: fill, label: label};
-+}
 +
-+function setPercent(progress, percent) {
-+  var value = Number(percent);
-+  if (!Number.isFinite(value)) {
-+    value = 0;
-+  }
-+  if (value < 0) {
-+    value = 0;
-+  }
-+  if (value > 100) {
-+    value = 100;
-+  }
-+  var rounded = Math.round(value);
-+  progress.fill.style.width = String(rounded) + "%";
-+  progress.label.textContent = String(rounded) + "%";
-+}
++def _load_json_list(path: Path) -> list[Any]:
++    if not path.exists():
++        return []
++    try:
++        payload = json.loads(path.read_text(encoding="utf-8"))
++    except (OSError, ValueError):
++        return []
++    if not isinstance(payload, list):
++        return []
++    return payload
 +
-+function removePlaceholderRow() {
-+  var row = document.getElementById("upload-empty");
-+  if (row) {
-+    row.remove();
-+  }
-+}
 +
-+function addFileRow(file) {
-+  removePlaceholderRow();
-+  var rows = document.getElementById("upload-rows");
-+  var tr = document.createElement("tr");
++def _normalize_text(value: object) -> str:
++    return " ".join(str(value).split()).strip()
 +
-+  var nameCell = document.createElement("td");
-+  nameCell.textContent = file.name || "(unnamed)";
-+  nameCell.title = file.name || "";
 +
-+  var sizeCell = document.createElement("td");
-+  sizeCell.textContent = formatSize(file.size);
++def _normalise_text_items(value: Any, *, max_items: int) -> list[str]:
++    if isinstance(value, list):
++        rows = value
++    elif isinstance(value, str):
++        rows = value.splitlines()
++    else:
++        return []
 +
-+  var uploadCell = document.createElement("td");
-+  var uploadProgress = makeProgressCell();
-+  uploadCell.appendChild(uploadProgress.node);
++    out: list[str] = []
++    for row in rows:
++        if len(out) >= max_items:
++            break
++        text = _normalize_text(row)
++        if not text:
++            continue
++        if text.startswith("- "):
++            text = text[2:].strip()
++        if text:
++            out.append(text)
++    return out
 +
-+  var processCell = document.createElement("td");
-+  var processProgress = makeProgressCell();
-+  processCell.appendChild(processProgress.node);
 +
-+  var statusCell = document.createElement("td");
-+  statusCell.textContent = "Queued for upload";
++def _metadata_lines(recording: dict[str, Any], *, language: str | None) -> list[str]:
++    recording_id = str(recording.get("id") or "").strip() or "unknown"
++    filename = str(recording.get("source_filename") or "").strip() or "unknown"
++    duration_raw = recording.get("duration_sec")
++    try:
++        duration = f"{int(duration_raw)} sec" if duration_raw is not None else "unknown"
++    except (TypeError, ValueError):
++        duration = str(duration_raw).strip() or "unknown"
 +
-+  var linkCell = document.createElement("td");
-+  linkCell.textContent = "—";
++    lines = [
++        "## Metadata",
++        f"- Recording ID: `{recording_id}`",
++        f"- Filename: `{filename}`",
++        f"- Duration: {duration}",
++    ]
++    if language:
++        lines.append(f"- Language: {language}")
++    return lines
 +
-+  tr.appendChild(nameCell);
-+  tr.appendChild(sizeCell);
-+  tr.appendChild(uploadCell);
-+  tr.appendChild(processCell);
-+  tr.appendChild(statusCell);
-+  tr.appendChild(linkCell);
-+  rows.appendChild(tr);
 +
-+  return {
-+    file: file,
-+    statusCell: statusCell,
-+    linkCell: linkCell,
-+    uploadProgress: uploadProgress,
-+    processProgress: processProgress,
-+  };
-+}
++def _summary_section(summary_payload: dict[str, Any]) -> list[str]:
++    summary_bullets = _normalise_text_items(summary_payload.get("summary_bullets"), max_items=30)
++    if not summary_bullets:
++        summary_bullets = _normalise_text_items(summary_payload.get("summary"), max_items=30)
++    if not summary_bullets:
++        return ["## Summary", "Summary is not available yet."]
++    return ["## Summary", *[f"- {bullet}" for bullet in summary_bullets]]
 +
-+function normaliseProcessingPercent(value) {
-+  var number = Number(value);
-+  if (!Number.isFinite(number)) {
-+    return 0;
-+  }
-+  if (number < 0) {
-+    number = 0;
-+  }
-+  if (number > 1) {
-+    number = 1;
-+  }
-+  return Math.round(number * 100);
-+}
 +
-+function parseJsonPayload(text) {
-+  var body = String(text || "").trim();
-+  if (!body) {
-+    return {};
-+  }
-+  try {
-+    var parsed = JSON.parse(body);
-+    if (parsed && typeof parsed === "object") {
-+      return parsed;
-+    }
-+  } catch (_err) {
-+    return {};
-+  }
-+  return {};
-+}
++def _decisions_section(summary_payload: dict[str, Any]) -> list[str]:
++    decisions = _normalise_text_items(summary_payload.get("decisions"), max_items=40)
++    if not decisions:
++        return []
++    return ["## Decisions", *[f"- {decision}" for decision in decisions]]
 +
-+function payloadDetail(payload) {
-+  if (!payload || typeof payload !== "object") {
-+    return "";
-+  }
-+  if (typeof payload.detail === "string") {
-+    return payload.detail;
-+  }
-+  if (payload.detail && typeof payload.detail === "object") {
-+    return JSON.stringify(payload.detail);
-+  }
-+  return "";
-+}
 +
-+function attachRecordingLink(item, recordingId) {
-+  item.linkCell.textContent = "";
-+  var link = document.createElement("a");
-+  link.href = "/recordings/" + encodeURIComponent(recordingId);
-+  link.textContent = "Open recording";
-+  link.style.textDecoration = "none";
-+  link.style.color = "#1d4ed8";
-+  item.linkCell.appendChild(link);
-+}
++def _action_items_section(summary_payload: dict[str, Any]) -> list[str]:
++    raw_items = summary_payload.get("action_items")
++    if not isinstance(raw_items, list):
++        return []
 +
-+function startPolling(item, recordingId) {
-+  var stopped = false;
-+  var timer = null;
++    lines = ["## Action Items"]
++    wrote_any = False
++    for row in raw_items[:50]:
++        if isinstance(row, dict):
++            task = _normalize_text(row.get("task") or "")
++            owner = _normalize_text(row.get("owner") or "")
++            deadline = _normalize_text(row.get("deadline") or "")
++            if not task:
++                continue
++            details: list[str] = []
++            if owner:
++                details.append(f"owner: {owner}")
++            if deadline:
++                details.append(f"deadline: {deadline}")
++            suffix = f" ({'; '.join(details)})" if details else ""
++            lines.append(f"- [ ] {task}{suffix}")
++            wrote_any = True
++            continue
++        task_text = _normalize_text(row)
++        if task_text:
++            lines.append(f"- [ ] {task_text}")
++            wrote_any = True
++    return lines if wrote_any else []
 +
-+  function stop() {
-+    stopped = true;
-+    if (timer !== null) {
-+      clearInterval(timer);
-+      timer = null;
-+    }
-+  }
 +
-+  async function pollOnce() {
-+    if (stopped) {
-+      return;
-+    }
++def _questions_section(summary_payload: dict[str, Any]) -> list[str]:
++    questions_payload = summary_payload.get("questions")
++    extracted: list[str] = []
++    if isinstance(questions_payload, dict):
++        extracted = _normalise_text_items(questions_payload.get("extracted"), max_items=40)
++    else:
++        extracted = _normalise_text_items(questions_payload, max_items=40)
++    if not extracted:
++        return []
++    return ["## Questions", *[f"- {question}" for question in extracted]]
 +
-+    var response = null;
-+    try {
-+      response = await fetch("/api/recordings/" + encodeURIComponent(recordingId));
-+    } catch (_err) {
-+      item.statusCell.textContent = "polling failed";
-+      stop();
-+      return;
-+    }
 +
-+    if (!response.ok) {
-+      item.statusCell.textContent = "polling failed";
-+      stop();
-+      return;
-+    }
++def _emotion_section(summary_payload: dict[str, Any]) -> list[str]:
++    emotional_summary = _normalize_text(summary_payload.get("emotional_summary") or "")
++    if not emotional_summary:
++        return []
++    return ["## Emotional Summary", emotional_summary]
 +
-+    var recording = null;
-+    try {
-+      recording = await response.json();
-+    } catch (_err) {
-+      item.statusCell.textContent = "polling failed";
-+      stop();
-+      return;
-+    }
 +
-+    var status = String(recording.status || "").trim() || "Unknown";
-+    var stage = String(recording.pipeline_stage || "").trim() || "Waiting";
-+    var processPercent = normaliseProcessingPercent(recording.pipeline_progress);
++def _metrics_section(metrics_payload: dict[str, Any]) -> list[str]:
++    meeting_payload = metrics_payload.get("meeting")
++    if not isinstance(meeting_payload, dict):
++        return []
 +
-+    setPercent(item.processProgress, processPercent);
-+    item.statusCell.textContent = status + " (" + stage + ")";
++    rows: list[tuple[str, Any]] = [
++        ("Interruptions", meeting_payload.get("total_interruptions")),
++        ("Questions", meeting_payload.get("total_questions")),
++        ("Decisions", meeting_payload.get("decisions_count")),
++        ("Action items", meeting_payload.get("action_items_count")),
++    ]
++    present = [(label, value) for label, value in rows if value is not None]
++    if not present:
++        return []
 +
-+    if (TERMINAL_STATUSES.has(status)) {
-+      stop();
-+    }
-+  }
++    return ["## Metrics", *[f"- {label}: {value}" for label, value in present]]
 +
-+  pollOnce();
-+  timer = setInterval(pollOnce, 2000);
-+}
 +
-+function uploadFile(item) {
-+  return new Promise(function(resolve) {
-+    var xhr = new XMLHttpRequest();
-+    xhr.open("POST", "/api/uploads");
-+    xhr.withCredentials = true;
++def _transcript_section(
++    transcript_payload: dict[str, Any],
++    speaker_turns_payload: list[dict[str, Any]],
++) -> list[str]:
++    if speaker_turns_payload:
++        lines = ["## Transcript"]
++        wrote_any = False
++        for turn in speaker_turns_payload:
++            speaker = _normalize_text(turn.get("speaker") or "S1") or "S1"
++            text = _normalize_text(turn.get("text") or "")
++            if not text:
++                continue
++            lines.append(f"- **{speaker}:** {text}")
++            wrote_any = True
++        if wrote_any:
++            return lines
 +
-+    xhr.upload.onprogress = function(event) {
-+      if (!event.lengthComputable || event.total <= 0) {
-+        return;
-+      }
-+      var percent = (event.loaded / event.total) * 100;
-+      setPercent(item.uploadProgress, percent);
-+    };
++    transcript_text = str(transcript_payload.get("text") or "").strip()
++    if transcript_text:
++        return ["## Transcript", transcript_text]
++    return ["## Transcript", "Transcript is not available yet."]
 +
-+    xhr.onerror = function() {
-+      item.statusCell.textContent = "Upload failed";
-+      resolve();
-+    };
 +
-+    xhr.onload = function() {
-+      var payload = parseJsonPayload(xhr.responseText);
-+      if (xhr.status < 200 || xhr.status >= 300) {
-+        var reason = payloadDetail(payload) || ("HTTP " + xhr.status);
-+        item.statusCell.textContent = "Upload failed: " + reason;
-+        resolve();
-+        return;
-+      }
++def build_onenote_markdown(recording: dict[str, Any], *, settings: AppSettings) -> str:
++    """Build an export markdown note from recording metadata + derived artifacts."""
 +
-+      var recordingId = String(payload.recording_id || "").trim();
-+      if (!recordingId) {
-+        item.statusCell.textContent = "Upload failed: missing recording_id";
-+        resolve();
-+        return;
-+      }
++    recording_id = str(recording.get("id") or "").strip()
++    derived = settings.recordings_root / recording_id / "derived"
 +
-+      setPercent(item.uploadProgress, 100);
-+      item.statusCell.textContent = "Uploaded";
-+      attachRecordingLink(item, recordingId);
-+      startPolling(item, recordingId);
-+      resolve();
-+    };
++    summary_payload = _load_json_dict(derived / "summary.json")
++    transcript_payload = _load_json_dict(derived / "transcript.json")
++    speaker_turns_raw = _load_json_list(derived / "speaker_turns.json")
++    speaker_turns_payload = [row for row in speaker_turns_raw if isinstance(row, dict)]
++    metrics_payload = _load_json_dict(derived / "metrics.json")
 +
-+    var formData = new FormData();
-+    formData.append("file", item.file);
-+    xhr.send(formData);
-+  });
-+}
++    topic = _normalize_text(summary_payload.get("topic") or "")
++    fallback_title = _normalize_text(recording.get("source_filename") or "")
++    title = topic or fallback_title or (recording_id or "Recording")
++    captured_at = _normalize_text(recording.get("captured_at") or "")
++    title_line = f"# {title} ({captured_at})" if captured_at else f"# {title}"
 +
-+async function drainUploadQueue() {
-+  if (queueRunning) {
-+    return;
-+  }
-+  queueRunning = true;
-+  while (uploadQueue.length > 0) {
-+    var item = uploadQueue.shift();
-+    await uploadFile(item);
-+  }
-+  queueRunning = false;
-+}
++    language = _normalize_text(recording.get("language_auto") or "")
++    if not language:
++        language_payload = transcript_payload.get("language")
++        if isinstance(language_payload, dict):
++            language = _normalize_text(language_payload.get("detected") or "")
++    if not language:
++        language = _normalize_text(transcript_payload.get("dominant_language") or "")
++    language = language or None
 +
-+function enqueueFiles(fileList) {
-+  if (!fileList || fileList.length === 0) {
-+    return;
-+  }
-+  for (var i = 0; i < fileList.length; i += 1) {
-+    var file = fileList[i];
-+    var row = addFileRow(file);
-+    uploadQueue.push(row);
-+  }
-+  drainUploadQueue();
-+}
++    sections: list[str] = [title_line, "\n".join(_metadata_lines(recording, language=language))]
 +
-+var fileInput = document.getElementById("file-input");
-+var pickFilesButton = document.getElementById("pick-files-btn");
-+var dropzone = document.getElementById("dropzone");
++    for block in (
++        _summary_section(summary_payload),
++        _decisions_section(summary_payload),
++        _action_items_section(summary_payload),
++        _questions_section(summary_payload),
++        _emotion_section(summary_payload),
++        _metrics_section(metrics_payload),
++        _transcript_section(transcript_payload, speaker_turns_payload),
++    ):
++        if block:
++            sections.append("\n".join(block))
 +
-+fileInput.addEventListener("change", function() {
-+  enqueueFiles(fileInput.files);
-+  fileInput.value = "";
-+});
++    return "\n\n".join(sections).strip() + "\n"
 +
-+pickFilesButton.addEventListener("click", function() {
-+  fileInput.click();
-+});
 +
-+function stopDragDefaults(event) {
-+  event.preventDefault();
-+  event.stopPropagation();
-+}
++def _try_read_bytes(path: Path) -> bytes | None:
++    if not path.exists() or not path.is_file():
++        return None
++    try:
++        return path.read_bytes()
++    except OSError:
++        return None
 +
-+dropzone.addEventListener("dragenter", function(event) {
-+  stopDragDefaults(event);
-+  dropzone.style.borderColor = "#4a6080";
-+  dropzone.style.background = "#eef2ff";
-+});
 +
-+dropzone.addEventListener("dragover", function(event) {
-+  stopDragDefaults(event);
-+  dropzone.style.borderColor = "#4a6080";
-+  dropzone.style.background = "#eef2ff";
-+});
++def build_export_zip_bytes(
++    recording_id: str,
++    *,
++    settings: AppSettings,
++    include_snippets: bool = False,
++) -> bytes:
++    """Build a ZIP bundle with markdown export + available derived artifacts."""
 +
-+dropzone.addEventListener("dragleave", function(event) {
-+  stopDragDefaults(event);
-+  dropzone.style.borderColor = "#99b";
-+  dropzone.style.background = "#fff";
-+});
++    recording = get_recording(recording_id, settings=settings)
++    if recording is None:
++        raise KeyError(recording_id)
 +
-+dropzone.addEventListener("drop", function(event) {
-+  stopDragDefaults(event);
-+  dropzone.style.borderColor = "#99b";
-+  dropzone.style.background = "#fff";
-+  if (!event.dataTransfer) {
-+    return;
-+  }
-+  enqueueFiles(event.dataTransfer.files);
-+});
++    recording_root = settings.recordings_root / recording_id
++    derived_root = recording_root / "derived"
++    markdown = build_onenote_markdown(recording, settings=settings)
 +
-+dropzone.addEventListener("click", function() {
-+  fileInput.click();
-+});
++    included_files: list[str] = ["onenote.md"]
++    payload_buffer = io.BytesIO()
++    with zipfile.ZipFile(payload_buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
++        archive.writestr("onenote.md", markdown)
 +
-+dropzone.addEventListener("keydown", function(event) {
-+  if (event.key === "Enter" || event.key === " ") {
-+    event.preventDefault();
-+    fileInput.click();
-+  }
-+});
-+</script>
-+{% endblock %}
++        for filename in _OPTIONAL_DERIVED_FILES:
++            source = derived_root / filename
++            data = _try_read_bytes(source)
++            if data is None:
++                continue
++            arcname = f"derived/{filename}"
++            archive.writestr(arcname, data)
++            included_files.append(arcname)
++
++        if include_snippets:
++            snippets_root = derived_root / "snippets"
++            if snippets_root.exists() and snippets_root.is_dir():
++                for path in sorted(snippets_root.rglob("*.wav")):
++                    data = _try_read_bytes(path)
++                    if data is None:
++                        continue
++                    try:
++                        arcname = path.relative_to(recording_root).as_posix()
++                    except ValueError:
++                        continue
++                    archive.writestr(arcname, data)
++                    included_files.append(arcname)
++
++        manifest = {
++            "recording_id": recording_id,
++            "created_at": _utc_now_iso(),
++            "filenames_included": sorted([*included_files, "manifest.json"]),
++        }
++        archive.writestr(
++            "manifest.json",
++            json.dumps(manifest, ensure_ascii=True, indent=2, sort_keys=True),
++        )
++
++    return payload_buffer.getvalue()
++
++
++__all__ = ["build_onenote_markdown", "build_export_zip_bytes"]
+diff --git a/tests/test_export.py b/tests/test_export.py
+new file mode 100644
+index 0000000..8134851
+--- /dev/null
++++ b/tests/test_export.py
+@@ -0,0 +1,83 @@
++from __future__ import annotations
++
++import io
++import json
++from pathlib import Path
++import zipfile
++
++from fastapi.testclient import TestClient
++
++from lan_app import api, ui_routes
++from lan_app.config import AppSettings
++from lan_app.constants import RECORDING_STATUS_READY
++from lan_app.db import create_recording, init_db
++
++
++def _cfg(tmp_path: Path) -> AppSettings:
++    cfg = AppSettings(
++        data_root=tmp_path,
++        recordings_root=tmp_path / "recordings",
++        db_path=tmp_path / "db" / "app.db",
++    )
++    cfg.metrics_snapshot_path = tmp_path / "metrics.snap"
++    return cfg
++
++
++def test_ui_recording_export_zip_contains_markdown_and_manifest(tmp_path: Path, monkeypatch) -> None:
++    cfg = _cfg(tmp_path)
++    monkeypatch.setattr(api, "_settings", cfg)
++    monkeypatch.setattr(ui_routes, "_settings", cfg)
++    init_db(cfg)
++
++    recording_id = "rec-export-1"
++    create_recording(
++        recording_id,
++        source="upload",
++        source_filename="team-sync.wav",
++        status=RECORDING_STATUS_READY,
++        settings=cfg,
++    )
++
++    derived = cfg.recordings_root / recording_id / "derived"
++    derived.mkdir(parents=True, exist_ok=True)
++    (derived / "summary.json").write_text(
++        json.dumps(
++            {
++                "topic": "Budget sync",
++                "summary_bullets": ["Reviewed monthly spend."],
++                "decisions": ["Freeze non-critical purchases."],
++                "action_items": [
++                    {
++                        "task": "Draft revised budget",
++                        "owner": "Alex",
++                        "deadline": "2026-03-05",
++                    }
++                ],
++            }
++        ),
++        encoding="utf-8",
++    )
++    (derived / "speaker_turns.json").write_text(
++        json.dumps(
++            [
++                {"speaker": "S1", "text": "Let's review the budget."},
++                {"speaker": "S2", "text": "We should freeze discretionary spend."},
++            ]
++        ),
++        encoding="utf-8",
++    )
++
++    client = TestClient(api.app, follow_redirects=True)
++    response = client.get(f"/ui/recordings/{recording_id}/export.zip")
++    assert response.status_code == 200
++
++    archive = zipfile.ZipFile(io.BytesIO(response.content))
++    names = set(archive.namelist())
++    assert "onenote.md" in names
++    assert "manifest.json" in names
++    assert "derived/summary.json" in names
++
++    markdown = archive.read("onenote.md").decode("utf-8")
++    assert "Budget sync" in markdown
++    manifest = json.loads(archive.read("manifest.json").decode("utf-8"))
++    assert manifest["recording_id"] == recording_id
