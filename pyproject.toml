@@ -19,8 +19,6 @@ dependencies = [
     "pyyaml",
     "pydantic-settings",
     "rapidfuzz",
-    "google-auth",
-    "google-api-python-client",
 ]
 
 [tool.setuptools.packages.find]

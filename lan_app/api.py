@@ -51,7 +51,6 @@ from .healthchecks import (
     check_worker_health,
     collect_health_checks,
 )
-from .locks import release_ingest_lock, try_acquire_ingest_lock
 from .ops import run_retention_cleanup
 from .reaper import run_stuck_job_reaper_once
 from .uploads import (
@@ -440,38 +439,6 @@ async def api_upload_file(file: UploadFile = File(...)) -> dict[str, object]:
         if not completed and recording_created:
             with suppress(Exception):
                 delete_recording(recording_id, settings=_settings)
-
-
-@app.post("/api/actions/ingest")
-async def api_ingest_once() -> dict[str, object]:
-    """Trigger a single Google Drive ingest cycle."""
-    from .gdrive import ingest_once
-
-    try:
-        acquired, retry_after, lock_token = try_acquire_ingest_lock(_settings)
-    except Exception as exc:
-        raise HTTPException(status_code=503, detail=f"Ingest lock unavailable: {exc}")
-
-    if not acquired:
-        return JSONResponse(
-            status_code=409,
-            content={
-                "detail": "Ingest is already running.",
-                "retry_after_seconds": retry_after,
-            },
-        )
-
-    try:
-        results = ingest_once(settings=_settings)
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
-    except Exception as exc:
-        raise HTTPException(status_code=503, detail=f"Ingest failed: {exc}")
-    finally:
-        if lock_token is not None:
-            with suppress(Exception):
-                release_ingest_lock(_settings, token=lock_token)
-    return {"ingested": results, "count": len(results)}
 
 
 def set_current_result(result: TranscriptResult | None) -> None:

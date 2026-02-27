@@ -157,7 +157,7 @@ Queue (in order)
 - Depends on: PR-UI-PROGRESS-02
 
 30) PR-REMOVE-GDRIVE-01: Remove Google Drive ingest, Connections page, ingest lock, and Google API deps
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-REMOVE-GDRIVE-01.md
 - Depends on: PR-REMOVE-MS-01
 

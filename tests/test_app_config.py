@@ -47,11 +47,9 @@ def test_routing_threshold_from_env(monkeypatch):
 
 def test_security_settings_from_env(monkeypatch):
     monkeypatch.setenv("LAN_API_BEARER_TOKEN", "secret-token")
-    monkeypatch.setenv("LAN_INGEST_LOCK_TTL_SECONDS", "123")
 
     cfg = AppSettings()
     assert cfg.api_bearer_token == "secret-token"
-    assert cfg.ingest_lock_ttl_seconds == 123
 
 
 def test_worker_and_reaper_settings_from_env(monkeypatch):
