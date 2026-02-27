@@ -49,6 +49,11 @@ class Settings(BaseSettings):
     unknown_dir: Path = default_unknown_dir()
     tmp_root: Path = default_tmp_root()
     llm_model: str = "llama3:8b"
+    asr_model: str = "large-v3"
+    asr_device: str = "auto"
+    asr_compute_type: str | None = None
+    asr_batch_size: int = 16
+    asr_enable_align: bool = True
     embed_threshold: float = 0.65
     merge_similar: float = 0.9
     precheck_min_duration_sec: float = 20.0
@@ -115,6 +120,82 @@ def _language_payload(info: dict[str, Any]) -> dict[str, Any]:
             break
     confidence = None if confidence_raw is None else round(safe_float(confidence_raw, default=0.0), 4)
     return {"detected": detected, "confidence": confidence}
+
+
+def _select_asr_device(cfg: Settings) -> str:
+    preferred = str(cfg.asr_device or "auto").strip().lower()
+    if preferred in {"cpu", "cuda"}:
+        return preferred
+    try:
+        import torch
+    except Exception:
+        return "cpu"
+    return "cuda" if torch.cuda.is_available() else "cpu"
+
+
+def _select_compute_type(cfg: Settings, device: str) -> str:
+    configured = str(cfg.asr_compute_type or "").strip()
+    if configured:
+        return configured
+    return "float16" if device == "cuda" else "int8"
+
+
+def _whisperx_asr(
+    audio_path: Path,
+    *,
+    override_lang: str | None,
+    cfg: Settings,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    import whisperx
+
+    if hasattr(whisperx, "transcribe"):
+        kwargs: dict[str, Any] = {
+            "vad_filter": True,
+            "language": override_lang or "auto",
+        }
+        try:
+            segments, info = whisperx.transcribe(str(audio_path), word_timestamps=True, **kwargs)
+        except TypeError:
+            segments, info = whisperx.transcribe(str(audio_path), **kwargs)
+        return list(segments), dict(info or {})
+
+    device = _select_asr_device(cfg)
+    compute_type = _select_compute_type(cfg, device)
+    audio = whisperx.load_audio(str(audio_path))
+    try:
+        model = whisperx.load_model(cfg.asr_model, device, compute_type=compute_type)
+    except TypeError:
+        model = whisperx.load_model(cfg.asr_model, device)
+
+    result = model.transcribe(
+        audio,
+        batch_size=cfg.asr_batch_size,
+        vad_filter=True,
+        language=(override_lang if override_lang else None),
+    )
+    segments = list(result.get("segments", []))
+    info: dict[str, Any] = {"language": result.get("language") or (override_lang or "unknown")}
+
+    if cfg.asr_enable_align:
+        try:
+            align_lang = normalise_language_code(info.get("language")) or "en"
+            model_a, metadata = whisperx.load_align_model(language_code=align_lang, device=device)
+            try:
+                aligned = whisperx.align(
+                    segments,
+                    model_a,
+                    metadata,
+                    audio,
+                    device,
+                    return_char_alignments=False,
+                )
+            except TypeError:
+                aligned = whisperx.align(segments, model_a, metadata, audio, device)
+            segments = list(aligned.get("segments", segments))
+        except Exception:
+            pass
+
+    return segments, info
 
 
 def _empty_questions() -> dict[str, Any]:
@@ -269,19 +350,12 @@ async def run_pipeline(
 
     try:
         await _emit_progress(progress_callback, stage="stt", progress=0.30)
-        import whisperx
-
-        def _asr() -> tuple[list[dict[str, Any]], dict[str, Any]]:
-            asr_language = override_lang or "auto"
-            kwargs: dict[str, Any] = {"vad_filter": True, "language": asr_language}
-            try:
-                segments, info = whisperx.transcribe(str(audio_path), word_timestamps=True, **kwargs)
-            except TypeError:
-                segments, info = whisperx.transcribe(str(audio_path), **kwargs)
-            return list(segments), dict(info or {})
 
         await _emit_progress(progress_callback, stage="diarize", progress=0.50)
-        (raw_segments, info), diarization = await asyncio.gather(asyncio.to_thread(_asr), diariser(audio_path))
+        (raw_segments, info), diarization = await asyncio.gather(
+            asyncio.to_thread(_whisperx_asr, audio_path, override_lang=override_lang, cfg=cfg),
+            diariser(audio_path),
+        )
         await _emit_progress(progress_callback, stage="align", progress=0.60)
         asr_segments = normalise_asr_segments(raw_segments)
         language_info = _language_payload(info)
