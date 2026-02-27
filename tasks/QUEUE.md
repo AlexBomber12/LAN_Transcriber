@@ -130,3 +130,38 @@ Queue (in order)
 - Status: DONE
 - Tasks file: tasks/PR-RUNTIME-CONFIG-01.md
 - Depends on: PR-UI-PROGRESS-01
+
+25) PR-UI-UPLOAD-01: Upload ingest API (multipart) create recordings from UI uploads
+- Status: TODO
+- Tasks file: tasks/PR-UI-UPLOAD-01.md
+- Depends on: PR-RUNTIME-CONFIG-01
+
+26) PR-UI-UPLOAD-02: Upload page UI: multi-file upload + per-file upload progress + processing polling
+- Status: TODO
+- Tasks file: tasks/PR-UI-UPLOAD-02.md
+- Depends on: PR-UI-UPLOAD-01
+
+27) PR-EXPORT-01: Export-only output: OneNote-ready markdown + Download ZIP per recording
+- Status: TODO
+- Tasks file: tasks/PR-EXPORT-01.md
+- Depends on: PR-UI-UPLOAD-02
+
+28) PR-UI-PROGRESS-02: Show pipeline progress on Recordings list table
+- Status: TODO
+- Tasks file: tasks/PR-UI-PROGRESS-02.md
+- Depends on: PR-EXPORT-01
+
+29) PR-REMOVE-MS-01: Remove Microsoft Graph, calendar matching UI, OneNote publish UI and msal dependency
+- Status: TODO
+- Tasks file: tasks/PR-REMOVE-MS-01.md
+- Depends on: PR-UI-PROGRESS-02
+
+30) PR-REMOVE-GDRIVE-01: Remove Google Drive ingest, Connections page, ingest lock, and Google API deps
+- Status: TODO
+- Tasks file: tasks/PR-REMOVE-GDRIVE-01.md
+- Depends on: PR-REMOVE-MS-01
+
+31) PR-DOCS-EXPORT-ONLY-01: Docs update for upload + export-only mode (README, runbook, env example, nginx notes)
+- Status: TODO
+- Tasks file: tasks/PR-DOCS-EXPORT-ONLY-01.md
+- Depends on: PR-REMOVE-GDRIVE-01
