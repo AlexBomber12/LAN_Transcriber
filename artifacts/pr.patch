@@ -1,3 +1,562 @@
+diff --git a/artifacts/ci.log b/artifacts/ci.log
+index 72c688e..7f2810e 100644
+--- a/artifacts/ci.log
++++ b/artifacts/ci.log
+@@ -97,8 +97,8 @@ Requirement already satisfied: six>=1.5 in ./.venv-ci/lib/python3.12/site-packag
+ Building wheels for collected packages: lan-transcriber
+   Building editable for lan-transcriber (pyproject.toml): started
+   Building editable for lan-transcriber (pyproject.toml): finished with status 'done'
+-  Created wheel for lan-transcriber: filename=lan_transcriber-0.1.0-0.editable-py3-none-any.whl size=15397 sha256=21a7a76ba1ce89a68a06c08e7dbff085ac2acc40e8d9ba5722ba6bd3e83cc4cc
+-  Stored in directory: /tmp/pip-ephem-wheel-cache-k_mtrdqf/wheels/d5/8a/5c/f7178f7e49aa5ae12b2320ec66b5c310f4f2f63d1bd301b7fb
++  Created wheel for lan-transcriber: filename=lan_transcriber-0.1.0-0.editable-py3-none-any.whl size=15397 sha256=dfd54fe99cd0731cb9c8650582bc5887ae243143bbeeee4b5033a41b823cb119
++  Stored in directory: /tmp/pip-ephem-wheel-cache-y2rrz0ce/wheels/d5/8a/5c/f7178f7e49aa5ae12b2320ec66b5c310f4f2f63d1bd301b7fb
+ Successfully built lan-transcriber
+ Installing collected packages: lan-transcriber
+   Attempting uninstall: lan-transcriber
+@@ -107,17 +107,17 @@ Installing collected packages: lan-transcriber
+       Successfully uninstalled lan-transcriber-0.1.0
+ Successfully installed lan-transcriber-0.1.0
+ All checks passed!
+-........................................................................ [ 31%]
+-........................................................................ [ 62%]
+-........................................................................ [ 93%]
+-..............                                                           [100%]
++........................................................................ [ 30%]
++........................................................................ [ 60%]
++........................................................................ [ 90%]
++........................                                                 [100%]
+ =============================== warnings summary ===============================
+ lan_transcriber/pipeline_steps/precheck.py:3
+   /home/alexey/LAN_Transcriber/lan_transcriber/pipeline_steps/precheck.py:3: DeprecationWarning: 'audioop' is deprecated and slated for removal in Python 3.13
+     import audioop
+ 
+-lan_transcriber/pipeline_steps/orchestrator.py:43
+-  /home/alexey/LAN_Transcriber/lan_transcriber/pipeline_steps/orchestrator.py:43: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
++lan_transcriber/pipeline_steps/orchestrator.py:44
++  /home/alexey/LAN_Transcriber/lan_transcriber/pipeline_steps/orchestrator.py:44: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+     class Settings(BaseSettings):
+ 
+ lan_app/config.py:29
+@@ -136,12 +136,13 @@ lan_transcriber/artifacts.py                           66      4    94%
+ lan_transcriber/llm_client.py                         112     23    79%
+ lan_transcriber/metrics.py                             12      0   100%
+ lan_transcriber/models.py                              22      1    95%
++lan_transcriber/native_fixups.py                      102      6    94%
+ lan_transcriber/normalizer.py                          25      0   100%
+ lan_transcriber/pipeline.py                             5      0   100%
+ lan_transcriber/pipeline_steps/__init__.py              7      0   100%
+ lan_transcriber/pipeline_steps/artifacts.py            19      0   100%
+ lan_transcriber/pipeline_steps/language.py             93     12    87%
+-lan_transcriber/pipeline_steps/orchestrator.py        238     26    89%
++lan_transcriber/pipeline_steps/orchestrator.py        247     32    87%
+ lan_transcriber/pipeline_steps/precheck.py            116     13    89%
+ lan_transcriber/pipeline_steps/snippets.py            128     11    91%
+ lan_transcriber/pipeline_steps/speaker_turns.py       185     21    89%
+@@ -149,6 +150,6 @@ lan_transcriber/pipeline_steps/summary_builder.py     276     25    91%
+ lan_transcriber/runtime_paths.py                       21      1    95%
+ lan_transcriber/utils.py                               50      2    96%
+ -----------------------------------------------------------------------
+-TOTAL                                                1400    139    90%
+-Required test coverage of 90% reached. Total coverage: 90.07%
+-230 passed, 1 skipped, 3 warnings in 13.12s
++TOTAL                                                1511    151    90%
++Required test coverage of 90% reached. Total coverage: 90.01%
++240 passed, 1 skipped, 3 warnings in 13.57s
+diff --git a/artifacts/pr.patch b/artifacts/pr.patch
+index c6a4862..eec9b2c 100644
+--- a/artifacts/pr.patch
++++ b/artifacts/pr.patch
+@@ -1,35 +1,456 @@
+-diff --git a/.github/workflows/staging-deploy.yml b/.github/workflows/staging-deploy.yml
+-index 691f6f1..9c6445c 100644
+---- a/.github/workflows/staging-deploy.yml
+-+++ b/.github/workflows/staging-deploy.yml
+-@@ -6,8 +6,29 @@ on:
+-     branches: [main]
++diff --git a/lan_app/worker_tasks.py b/lan_app/worker_tasks.py
++index 829ae12..9c018a7 100644
++--- a/lan_app/worker_tasks.py
+++++ b/lan_app/worker_tasks.py
++@@ -527,6 +527,9 @@ def _run_precheck_pipeline(
++             settings=settings,
++         )
+  
+- jobs:
+-+  check-secrets:
+-+    runs-on: ubuntu-latest
+-+    outputs:
+-+      ready: ${{ steps.check.outputs.ready }}
+-+    steps:
+-+      - name: Check required staging secrets
+-+        id: check
+-+        shell: bash
+-+        env:
+-+          STAGING_HOST: ${{ secrets.STAGING_HOST }}
+-+          STAGING_USER: ${{ secrets.STAGING_USER }}
+-+          STAGING_SSH_KEY: ${{ secrets.STAGING_SSH_KEY }}
+-+        run: |
+-+          if [ -n "$STAGING_HOST" ] && [ -n "$STAGING_USER" ] && [ -n "$STAGING_SSH_KEY" ]; then
+-+            echo "ready=true" >> "$GITHUB_OUTPUT"
+-+          else
+-+            echo "ready=false" >> "$GITHUB_OUTPUT"
+-+            echo "Staging deploy skipped: STAGING_HOST/STAGING_USER/STAGING_SSH_KEY are not fully configured."
+-+          fi
+-+
+-   deploy:
+--    if: ${{ secrets.STAGING_HOST != '' && secrets.STAGING_USER != '' && secrets.STAGING_SSH_KEY != '' }}
+-+    needs: [check-secrets]
+-+    if: needs.check-secrets.outputs.ready == 'true'
+-     runs-on: ubuntu-latest
+-     steps:
+-       - uses: actions/checkout@v4
+++    def _step_log_callback(message: str) -> None:
+++        _append_step_log(log_path, message)
+++
++     asyncio.run(
++         run_pipeline(
++             audio_path=audio_path,
++@@ -540,6 +543,7 @@ def _run_precheck_pipeline(
++             calendar_title=calendar_title,
++             calendar_attendees=calendar_attendees,
++             progress_callback=_progress_callback,
+++            step_log_callback=_step_log_callback,
++         )
++     )
++     metrics_payload = refresh_recording_metrics(
++diff --git a/lan_transcriber/pipeline_steps/orchestrator.py b/lan_transcriber/pipeline_steps/orchestrator.py
++index d30b8a1..1df1cf5 100644
++--- a/lan_transcriber/pipeline_steps/orchestrator.py
+++++ b/lan_transcriber/pipeline_steps/orchestrator.py
++@@ -16,6 +16,7 @@ from ..artifacts import atomic_write_json, atomic_write_text, build_recording_ar
++ from ..llm_client import LLMClient
++ from ..metrics import error_rate_total, p95_latency_seconds
++ from ..models import SpeakerSegment, TranscriptResult
+++from ..native_fixups import ensure_ctranslate2_no_execstack
++ from .language import analyse_languages, resolve_target_summary_language, segment_language
++ from .precheck import PrecheckResult, run_precheck as _run_precheck
++ from .snippets import SnippetExportRequest, export_speaker_snippets
++@@ -145,7 +146,20 @@ def _whisperx_asr(
++     *,
++     override_lang: str | None,
++     cfg: Settings,
+++    step_log_callback: Callable[[str], Any] | None = None,
++ ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+++    patched_paths = ensure_ctranslate2_no_execstack()
+++    if patched_paths and step_log_callback is not None:
+++        try:
+++            count = len(patched_paths)
+++            noun = "library" if count == 1 else "libraries"
+++            step_log_callback(
+++                f"native fixup: cleared executable-stack flag on {count} ctranslate2 {noun}"
+++            )
+++        except Exception:
+++            # Step log append is best-effort and must not break processing.
+++            pass
+++
++     import whisperx
++ 
++     if hasattr(whisperx, "transcribe"):
++@@ -287,6 +301,7 @@ async def run_pipeline(
++     calendar_title: str | None = None,
++     calendar_attendees: Sequence[str] | None = None,
++     progress_callback: ProgressCallback | None = None,
+++    step_log_callback: Callable[[str], Any] | None = None,
++ ) -> TranscriptResult:
++     start = time.perf_counter()
++     artifacts = build_recording_artifacts(cfg.recordings_root, recording_id or _default_recording_id(audio_path), audio_path.suffix)
++@@ -353,7 +368,13 @@ async def run_pipeline(
++ 
++         await _emit_progress(progress_callback, stage="diarize", progress=0.50)
++         (raw_segments, info), diarization = await asyncio.gather(
++-            asyncio.to_thread(_whisperx_asr, audio_path, override_lang=override_lang, cfg=cfg),
+++            asyncio.to_thread(
+++                _whisperx_asr,
+++                audio_path,
+++                override_lang=override_lang,
+++                cfg=cfg,
+++                step_log_callback=step_log_callback,
+++            ),
++             diariser(audio_path),
++         )
++         await _emit_progress(progress_callback, stage="align", progress=0.60)
++diff --git a/tasks/QUEUE.md b/tasks/QUEUE.md
++index 99bd46a..3ce1584 100644
++--- a/tasks/QUEUE.md
+++++ b/tasks/QUEUE.md
++@@ -183,7 +183,7 @@ Queue (in order)
++ - Depends on: PR-FIX-WHISPERX-API-01
++ 
++ 35) PR-FIX-CTRANSLATE2-EXECSTACK-01: Fix ctranslate2 executable-stack loader failure
++-- Status: TODO
+++- Status: DONE
++ - Tasks file: tasks/PR-FIX-CTRANSLATE2-EXECSTACK-01.md
++ - Depends on: PR-FIX-WHISPERX-API-01
++ 
++diff --git a/lan_transcriber/native_fixups.py b/lan_transcriber/native_fixups.py
++new file mode 100644
++index 0000000..7c7ffbc
++--- /dev/null
+++++ b/lan_transcriber/native_fixups.py
++@@ -0,0 +1,143 @@
+++from __future__ import annotations
+++
+++import logging
+++import site
+++import struct
+++import threading
+++from pathlib import Path
+++
+++_LOG = logging.getLogger(__name__)
+++
+++_ELF_MAGIC = b"\x7fELF"
+++_ELFCLASS32 = 1
+++_ELFCLASS64 = 2
+++_ELFDATA2LSB = 1
+++
+++_PT_GNU_STACK = 0x6474E551
+++_PF_X = 0x1
+++
+++_PATCH_LOCK = threading.Lock()
+++_PATCH_RAN = False
+++_PATCHED_PATHS: tuple[str, ...] = ()
+++
+++
+++def clear_execstack_flag(path: Path) -> bool:
+++    """Clear PF_X from PT_GNU_STACK in an ELF file.
+++
+++    Returns True when a patch was applied; otherwise False.
+++    """
+++
+++    try:
+++        with path.open("r+b") as fh:
+++            ident = fh.read(16)
+++            if len(ident) < 16 or ident[:4] != _ELF_MAGIC:
+++                return False
+++            ei_class = ident[4]
+++            ei_data = ident[5]
+++            if ei_data != _ELFDATA2LSB:
+++                return False
+++
+++            if ei_class == _ELFCLASS64:
+++                header_fmt = "<HHIQQQIHHHHHH"
+++                p_type_off = 0
+++                p_flags_off = 4
+++            elif ei_class == _ELFCLASS32:
+++                header_fmt = "<HHIIIIIHHHHHH"
+++                p_type_off = 0
+++                p_flags_off = 24
+++            else:
+++                return False
+++
+++            header_size = struct.calcsize(header_fmt)
+++            header_data = fh.read(header_size)
+++            if len(header_data) != header_size:
+++                return False
+++
+++            header = struct.unpack(header_fmt, header_data)
+++            e_phoff = int(header[4])
+++            e_phentsize = int(header[8])
+++            e_phnum = int(header[9])
+++
+++            min_entry_size = max(p_type_off + 4, p_flags_off + 4)
+++            if e_phoff <= 0 or e_phentsize < min_entry_size or e_phnum <= 0:
+++                return False
+++
+++            patched = False
+++            for idx in range(e_phnum):
+++                base = e_phoff + idx * e_phentsize
+++                fh.seek(base + p_type_off)
+++                p_type_data = fh.read(4)
+++                if len(p_type_data) != 4:
+++                    return patched
+++                p_type = struct.unpack("<I", p_type_data)[0]
+++                if p_type != _PT_GNU_STACK:
+++                    continue
+++
+++                fh.seek(base + p_flags_off)
+++                p_flags_data = fh.read(4)
+++                if len(p_flags_data) != 4:
+++                    return patched
+++                p_flags = struct.unpack("<I", p_flags_data)[0]
+++                if p_flags & _PF_X:
+++                    fh.seek(base + p_flags_off)
+++                    fh.write(struct.pack("<I", p_flags & ~_PF_X))
+++                    patched = True
+++            return patched
+++    except (OSError, struct.error):
+++        return False
+++
+++
+++def find_libctranslate2_candidates() -> list[Path]:
+++    """Find libctranslate2 shared objects installed in site-packages."""
+++
+++    found: set[Path] = set()
+++    try:
+++        package_roots = [Path(root) for root in site.getsitepackages()]
+++    except Exception:
+++        return []
+++    for root in package_roots:
+++        if not root.exists():
+++            continue
+++        for candidate in root.glob("**/libctranslate2*.so*"):
+++            if not candidate.is_file():
+++                continue
+++            found.add(candidate.resolve(strict=False))
+++    return sorted(found, key=lambda item: str(item))
+++
+++
+++def ensure_ctranslate2_no_execstack() -> list[str]:
+++    """Patch ctranslate2 shared objects once per process."""
+++
+++    global _PATCH_RAN, _PATCHED_PATHS
+++    with _PATCH_LOCK:
+++        if _PATCH_RAN:
+++            return list(_PATCHED_PATHS)
+++
+++        patched: list[str] = []
+++        try:
+++            candidates = find_libctranslate2_candidates()
+++        except Exception:
+++            _LOG.exception("failed to enumerate ctranslate2 candidates")
+++            candidates = []
+++
+++        for candidate in candidates:
+++            try:
+++                if clear_execstack_flag(candidate):
+++                    patched.append(str(candidate))
+++            except Exception:
+++                _LOG.warning(
+++                    "failed to clear executable-stack flag for %s",
+++                    candidate,
+++                    exc_info=True,
+++                )
+++
+++        _PATCHED_PATHS = tuple(sorted(set(patched)))
+++        _PATCH_RAN = True
+++        return list(_PATCHED_PATHS)
+++
+++
+++__all__ = [
+++    "clear_execstack_flag",
+++    "find_libctranslate2_candidates",
+++    "ensure_ctranslate2_no_execstack",
+++]
++diff --git a/tests/test_native_fixups_execstack.py b/tests/test_native_fixups_execstack.py
++new file mode 100644
++index 0000000..66c4f64
++--- /dev/null
+++++ b/tests/test_native_fixups_execstack.py
++@@ -0,0 +1,210 @@
+++from __future__ import annotations
+++
+++import struct
+++from pathlib import Path
+++
+++from lan_transcriber import native_fixups
+++from lan_transcriber.native_fixups import clear_execstack_flag
+++
+++_PT_GNU_STACK = 0x6474E551
+++_PF_RWX = 0x7
+++_PF_RW = 0x6
+++
+++
+++def _write_synthetic_elf64(path: Path, *, p_flags: int, p_type: int = _PT_GNU_STACK) -> None:
+++    e_ident = b"\x7fELF" + bytes([2, 1, 1, 0, 0]) + bytes(7)
+++    elf_header = struct.pack(
+++        "<HHIQQQIHHHHHH",
+++        2,  # e_type
+++        62,  # e_machine (x86_64)
+++        1,  # e_version
+++        0,  # e_entry
+++        64,  # e_phoff
+++        0,  # e_shoff
+++        0,  # e_flags
+++        64,  # e_ehsize
+++        56,  # e_phentsize
+++        1,  # e_phnum
+++        0,  # e_shentsize
+++        0,  # e_shnum
+++        0,  # e_shstrndx
+++    )
+++    program_header = struct.pack(
+++        "<IIQQQQQQ",
+++        p_type,
+++        p_flags,
+++        0,
+++        0,
+++        0,
+++        0,
+++        0,
+++        0,
+++    )
+++    path.write_bytes(e_ident + elf_header + program_header)
+++
+++
+++def _read_elf64_program_flags(path: Path) -> int:
+++    payload = path.read_bytes()
+++    # p_flags is the second 32-bit field in the first ELF64 program header.
+++    return struct.unpack("<I", payload[68:72])[0]
+++
+++
+++def _write_synthetic_elf32(path: Path, *, p_flags: int) -> None:
+++    e_ident = b"\x7fELF" + bytes([1, 1, 1, 0, 0]) + bytes(7)
+++    elf_header = struct.pack(
+++        "<HHIIIIIHHHHHH",
+++        2,  # e_type
+++        3,  # e_machine (x86)
+++        1,  # e_version
+++        0,  # e_entry
+++        52,  # e_phoff
+++        0,  # e_shoff
+++        0,  # e_flags
+++        52,  # e_ehsize
+++        32,  # e_phentsize
+++        1,  # e_phnum
+++        0,  # e_shentsize
+++        0,  # e_shnum
+++        0,  # e_shstrndx
+++    )
+++    program_header = struct.pack(
+++        "<IIIIIIII",
+++        _PT_GNU_STACK,
+++        0,
+++        0,
+++        0,
+++        0,
+++        0,
+++        p_flags,
+++        0,
+++    )
+++    path.write_bytes(e_ident + elf_header + program_header)
+++
+++
+++def test_clear_execstack_flag_patches_synthetic_elf64(tmp_path: Path) -> None:
+++    shared_obj = tmp_path / "libctranslate2.so.test"
+++    _write_synthetic_elf64(shared_obj, p_flags=_PF_RWX)
+++
+++    changed = clear_execstack_flag(shared_obj)
+++
+++    assert changed is True
+++    assert _read_elf64_program_flags(shared_obj) == _PF_RW
+++
+++
+++def test_clear_execstack_flag_noop_when_exec_bit_already_cleared(tmp_path: Path) -> None:
+++    shared_obj = tmp_path / "libctranslate2.so.test"
+++    _write_synthetic_elf64(shared_obj, p_flags=_PF_RW)
+++
+++    changed = clear_execstack_flag(shared_obj)
+++
+++    assert changed is False
+++    assert _read_elf64_program_flags(shared_obj) == _PF_RW
+++
+++
+++def test_clear_execstack_flag_noop_on_non_elf(tmp_path: Path) -> None:
+++    payload = tmp_path / "not-elf.bin"
+++    payload.write_bytes(b"not an elf")
+++
+++    changed = clear_execstack_flag(payload)
+++
+++    assert changed is False
+++
+++
+++def test_clear_execstack_flag_noop_when_program_header_is_not_gnu_stack(tmp_path: Path) -> None:
+++    shared_obj = tmp_path / "libctranslate2.so.non-gnu-stack"
+++    _write_synthetic_elf64(shared_obj, p_flags=_PF_RWX, p_type=1)
+++
+++    changed = clear_execstack_flag(shared_obj)
+++
+++    assert changed is False
+++    assert _read_elf64_program_flags(shared_obj) == _PF_RWX
+++
+++
+++def test_clear_execstack_flag_patches_synthetic_elf32(tmp_path: Path) -> None:
+++    shared_obj = tmp_path / "libctranslate2.so.elf32"
+++    _write_synthetic_elf32(shared_obj, p_flags=_PF_RWX)
+++
+++    changed = clear_execstack_flag(shared_obj)
+++
+++    assert changed is True
+++    payload = shared_obj.read_bytes()
+++    # ELF32 p_flags is the seventh 32-bit field in the first program header.
+++    assert struct.unpack("<I", payload[76:80])[0] == _PF_RW
+++
+++
+++def test_clear_execstack_flag_returns_false_for_missing_file(tmp_path: Path) -> None:
+++    missing = tmp_path / "does-not-exist.so"
+++    assert clear_execstack_flag(missing) is False
+++
+++
+++def test_find_libctranslate2_candidates_filters_and_sorts(tmp_path: Path, monkeypatch) -> None:
+++    site_a = tmp_path / "site-a"
+++    site_b = tmp_path / "site-b"
+++    file_b = site_b / "pkg" / "libctranslate2.so.4"
+++    file_a = site_a / "nested" / "libctranslate2-cuda.so.4.1"
+++    file_a.parent.mkdir(parents=True, exist_ok=True)
+++    file_b.parent.mkdir(parents=True, exist_ok=True)
+++    file_a.write_bytes(b"x")
+++    file_b.write_bytes(b"x")
+++    (site_a / "nested" / "libctranslate2-dir.so").mkdir(parents=True, exist_ok=True)
+++
+++    monkeypatch.setattr(
+++        native_fixups.site,
+++        "getsitepackages",
+++        lambda: [str(site_b), str(site_a), str(tmp_path / "missing-site")],
+++    )
+++
+++    candidates = native_fixups.find_libctranslate2_candidates()
+++
+++    assert candidates == sorted([file_a.resolve(), file_b.resolve()], key=lambda item: str(item))
+++
+++
+++def test_find_libctranslate2_candidates_returns_empty_on_site_failure(monkeypatch) -> None:
+++    def _boom() -> list[str]:
+++        raise RuntimeError("site broken")
+++
+++    monkeypatch.setattr(native_fixups.site, "getsitepackages", _boom)
+++    assert native_fixups.find_libctranslate2_candidates() == []
+++
+++
+++def test_ensure_ctranslate2_no_execstack_patches_once_and_ignores_errors(
+++    tmp_path: Path,
+++    monkeypatch,
+++) -> None:
+++    target_ok = tmp_path / "libctranslate2-ok.so"
+++    target_fail = tmp_path / "libctranslate2-fail.so"
+++    target_ok.write_bytes(b"x")
+++    target_fail.write_bytes(b"x")
+++
+++    monkeypatch.setattr(native_fixups, "_PATCH_RAN", False)
+++    monkeypatch.setattr(native_fixups, "_PATCHED_PATHS", ())
+++    monkeypatch.setattr(
+++        native_fixups,
+++        "find_libctranslate2_candidates",
+++        lambda: [target_ok, target_fail],
+++    )
+++
+++    def _fake_clear(path: Path) -> bool:
+++        if path == target_fail:
+++            raise RuntimeError("patch failed")
+++        return True
+++
+++    monkeypatch.setattr(native_fixups, "clear_execstack_flag", _fake_clear)
+++
+++    patched_first = native_fixups.ensure_ctranslate2_no_execstack()
+++    patched_second = native_fixups.ensure_ctranslate2_no_execstack()
+++
+++    assert patched_first == [str(target_ok)]
+++    assert patched_second == [str(target_ok)]
+++
+++
+++def test_ensure_ctranslate2_no_execstack_handles_candidate_scan_failure(monkeypatch) -> None:
+++    monkeypatch.setattr(native_fixups, "_PATCH_RAN", False)
+++    monkeypatch.setattr(native_fixups, "_PATCHED_PATHS", ())
+++
+++    def _boom() -> list[Path]:
+++        raise RuntimeError("scan failed")
+++
+++    monkeypatch.setattr(native_fixups, "find_libctranslate2_candidates", _boom)
+++
+++    assert native_fixups.ensure_ctranslate2_no_execstack() == []
 diff --git a/lan_app/worker_tasks.py b/lan_app/worker_tasks.py
 index 829ae12..9c018a7 100644
 --- a/lan_app/worker_tasks.py
@@ -20,75 +579,6 @@ index 829ae12..9c018a7 100644
          )
      )
      metrics_payload = refresh_recording_metrics(
-diff --git a/lan_transcriber/pipeline_steps/orchestrator.py b/lan_transcriber/pipeline_steps/orchestrator.py
-index d30b8a1..1df1cf5 100644
---- a/lan_transcriber/pipeline_steps/orchestrator.py
-+++ b/lan_transcriber/pipeline_steps/orchestrator.py
-@@ -16,6 +16,7 @@ from ..artifacts import atomic_write_json, atomic_write_text, build_recording_ar
- from ..llm_client import LLMClient
- from ..metrics import error_rate_total, p95_latency_seconds
- from ..models import SpeakerSegment, TranscriptResult
-+from ..native_fixups import ensure_ctranslate2_no_execstack
- from .language import analyse_languages, resolve_target_summary_language, segment_language
- from .precheck import PrecheckResult, run_precheck as _run_precheck
- from .snippets import SnippetExportRequest, export_speaker_snippets
-@@ -145,7 +146,20 @@ def _whisperx_asr(
-     *,
-     override_lang: str | None,
-     cfg: Settings,
-+    step_log_callback: Callable[[str], Any] | None = None,
- ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-+    patched_paths = ensure_ctranslate2_no_execstack()
-+    if patched_paths and step_log_callback is not None:
-+        try:
-+            count = len(patched_paths)
-+            noun = "library" if count == 1 else "libraries"
-+            step_log_callback(
-+                f"native fixup: cleared executable-stack flag on {count} ctranslate2 {noun}"
-+            )
-+        except Exception:
-+            # Step log append is best-effort and must not break processing.
-+            pass
-+
-     import whisperx
- 
-     if hasattr(whisperx, "transcribe"):
-@@ -287,6 +301,7 @@ async def run_pipeline(
-     calendar_title: str | None = None,
-     calendar_attendees: Sequence[str] | None = None,
-     progress_callback: ProgressCallback | None = None,
-+    step_log_callback: Callable[[str], Any] | None = None,
- ) -> TranscriptResult:
-     start = time.perf_counter()
-     artifacts = build_recording_artifacts(cfg.recordings_root, recording_id or _default_recording_id(audio_path), audio_path.suffix)
-@@ -353,7 +368,13 @@ async def run_pipeline(
- 
-         await _emit_progress(progress_callback, stage="diarize", progress=0.50)
-         (raw_segments, info), diarization = await asyncio.gather(
--            asyncio.to_thread(_whisperx_asr, audio_path, override_lang=override_lang, cfg=cfg),
-+            asyncio.to_thread(
-+                _whisperx_asr,
-+                audio_path,
-+                override_lang=override_lang,
-+                cfg=cfg,
-+                step_log_callback=step_log_callback,
-+            ),
-             diariser(audio_path),
-         )
-         await _emit_progress(progress_callback, stage="align", progress=0.60)
-diff --git a/tasks/QUEUE.md b/tasks/QUEUE.md
-index 99bd46a..3ce1584 100644
---- a/tasks/QUEUE.md
-+++ b/tasks/QUEUE.md
-@@ -183,7 +183,7 @@ Queue (in order)
- - Depends on: PR-FIX-WHISPERX-API-01
- 
- 35) PR-FIX-CTRANSLATE2-EXECSTACK-01: Fix ctranslate2 executable-stack loader failure
--- Status: TODO
-+- Status: DONE
- - Tasks file: tasks/PR-FIX-CTRANSLATE2-EXECSTACK-01.md
- - Depends on: PR-FIX-WHISPERX-API-01
- 
 diff --git a/lan_transcriber/native_fixups.py b/lan_transcriber/native_fixups.py
 new file mode 100644
 index 0000000..7c7ffbc
@@ -238,6 +728,75 @@ index 0000000..7c7ffbc
 +    "find_libctranslate2_candidates",
 +    "ensure_ctranslate2_no_execstack",
 +]
+diff --git a/lan_transcriber/pipeline_steps/orchestrator.py b/lan_transcriber/pipeline_steps/orchestrator.py
+index d30b8a1..1df1cf5 100644
+--- a/lan_transcriber/pipeline_steps/orchestrator.py
++++ b/lan_transcriber/pipeline_steps/orchestrator.py
+@@ -16,6 +16,7 @@ from ..artifacts import atomic_write_json, atomic_write_text, build_recording_ar
+ from ..llm_client import LLMClient
+ from ..metrics import error_rate_total, p95_latency_seconds
+ from ..models import SpeakerSegment, TranscriptResult
++from ..native_fixups import ensure_ctranslate2_no_execstack
+ from .language import analyse_languages, resolve_target_summary_language, segment_language
+ from .precheck import PrecheckResult, run_precheck as _run_precheck
+ from .snippets import SnippetExportRequest, export_speaker_snippets
+@@ -145,7 +146,20 @@ def _whisperx_asr(
+     *,
+     override_lang: str | None,
+     cfg: Settings,
++    step_log_callback: Callable[[str], Any] | None = None,
+ ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
++    patched_paths = ensure_ctranslate2_no_execstack()
++    if patched_paths and step_log_callback is not None:
++        try:
++            count = len(patched_paths)
++            noun = "library" if count == 1 else "libraries"
++            step_log_callback(
++                f"native fixup: cleared executable-stack flag on {count} ctranslate2 {noun}"
++            )
++        except Exception:
++            # Step log append is best-effort and must not break processing.
++            pass
++
+     import whisperx
+ 
+     if hasattr(whisperx, "transcribe"):
+@@ -287,6 +301,7 @@ async def run_pipeline(
+     calendar_title: str | None = None,
+     calendar_attendees: Sequence[str] | None = None,
+     progress_callback: ProgressCallback | None = None,
++    step_log_callback: Callable[[str], Any] | None = None,
+ ) -> TranscriptResult:
+     start = time.perf_counter()
+     artifacts = build_recording_artifacts(cfg.recordings_root, recording_id or _default_recording_id(audio_path), audio_path.suffix)
+@@ -353,7 +368,13 @@ async def run_pipeline(
+ 
+         await _emit_progress(progress_callback, stage="diarize", progress=0.50)
+         (raw_segments, info), diarization = await asyncio.gather(
+-            asyncio.to_thread(_whisperx_asr, audio_path, override_lang=override_lang, cfg=cfg),
++            asyncio.to_thread(
++                _whisperx_asr,
++                audio_path,
++                override_lang=override_lang,
++                cfg=cfg,
++                step_log_callback=step_log_callback,
++            ),
+             diariser(audio_path),
+         )
+         await _emit_progress(progress_callback, stage="align", progress=0.60)
+diff --git a/tasks/QUEUE.md b/tasks/QUEUE.md
+index 99bd46a..3ce1584 100644
+--- a/tasks/QUEUE.md
++++ b/tasks/QUEUE.md
+@@ -183,7 +183,7 @@ Queue (in order)
+ - Depends on: PR-FIX-WHISPERX-API-01
+ 
+ 35) PR-FIX-CTRANSLATE2-EXECSTACK-01: Fix ctranslate2 executable-stack loader failure
+-- Status: TODO
++- Status: DONE
+ - Tasks file: tasks/PR-FIX-CTRANSLATE2-EXECSTACK-01.md
+ - Depends on: PR-FIX-WHISPERX-API-01
+ 
 diff --git a/tests/test_native_fixups_execstack.py b/tests/test_native_fixups_execstack.py
 new file mode 100644
 index 0000000..66c4f64
