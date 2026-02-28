@@ -252,6 +252,6 @@ Queue (in order)
 - Depends on: PR-FIX-WHISPERX-TRANSCRIBE-KWARGS-01
 
 49) PR-DEPS-WHISPERX-DETERMINISM-01: Make WhisperX stack deterministic (single resolver pass, pinned versions, pip check) to reduce API drift
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-DEPS-WHISPERX-DETERMINISM-01.md
 - Depends on: PR-TEST-WHISPERX-CONTRACT-01

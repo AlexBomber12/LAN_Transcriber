@@ -23,6 +23,7 @@ if [ "$INSTALL_DEPS" = "1" ]; then
   python -m pip install -U pip
   python -m pip install -r ci-requirements.txt
   python -m pip install -e .[test]
+  python -m pip check
 fi
 
 python -m ruff check .
