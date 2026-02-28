@@ -176,7 +176,6 @@ Queue (in order)
 - Tasks file: tasks/PR-FIX-WHISPERX-API-01.md
 - Depends on: PR-FIX-DIARIZATION-REVISION-01
 
-
 34) PR-CI-01: Fix GitHub Actions failures (docker smoke pytest, staging deploy secrets) and remove duplicate CI workflow
 - Status: DONE
 - Tasks file: tasks/PR-CI-01.md
@@ -236,3 +235,8 @@ Queue (in order)
 - Status: DONE
 - Tasks file: tasks/PR-CALENDAR-ICS-01.md
 - Depends on: PR-UI-DELETE-CONFIRM-01
+
+46) PR-FIX-PYANNOTE-USEAUTH-01: Fix whisperx VAD crash with pyannote (ignore unsupported use_auth_token)
+- Status: TODO
+- Tasks file: tasks/PR-FIX-PYANNOTE-USEAUTH-01.md
+- Depends on: PR-FIX-WHISPERX-API-01
