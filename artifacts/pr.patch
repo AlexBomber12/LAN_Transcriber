@@ -1,130 +1,130 @@
-diff --git a/lan_app/calendar/ics.py b/lan_app/calendar/ics.py
-index 3afeca8..1748a26 100644
---- a/lan_app/calendar/ics.py
-+++ b/lan_app/calendar/ics.py
-@@ -5,6 +5,7 @@ import ipaddress
- import socket
- from typing import Any
- from urllib.parse import urljoin, urlsplit
-+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
- 
- import httpx
- from icalendar import Calendar
-@@ -28,10 +29,11 @@ def _utc_iso(value: datetime) -> str:
-     )
- 
- 
--def _coerce_utc_datetime(value: date | datetime) -> datetime:
-+def _coerce_utc_datetime(value: date | datetime, *, default_tz: ZoneInfo | None = None) -> datetime:
-     if isinstance(value, datetime):
-         if value.tzinfo is None:
--            return value.replace(tzinfo=timezone.utc)
-+            tzinfo = default_tz or timezone.utc
-+            return value.replace(tzinfo=tzinfo).astimezone(timezone.utc)
-         return value.astimezone(timezone.utc)
-     return datetime.combine(value, time.min, tzinfo=timezone.utc)
- 
-@@ -159,7 +161,12 @@ def _updated_at_text(component: Any, *, fallback: str) -> str:
-     return fallback
- 
- 
--def _normalise_event(component: Any, *, fallback_updated_at: str) -> dict[str, Any] | None:
-+def _normalise_event(
-+    component: Any,
-+    *,
-+    fallback_updated_at: str,
-+    default_tz: ZoneInfo | None = None,
-+) -> dict[str, Any] | None:
-     uid = str(component.get("UID") or "").strip()
-     if not uid:
-         return None
-@@ -175,7 +182,7 @@ def _normalise_event(component: Any, *, fallback_updated_at: str) -> dict[str, A
-         raise CalendarParseError("Unable to decode DTSTART") from exc
- 
-     all_day = isinstance(dtstart_raw, date) and not isinstance(dtstart_raw, datetime)
--    starts_at = _coerce_utc_datetime(dtstart_raw)
-+    starts_at = _coerce_utc_datetime(dtstart_raw, default_tz=default_tz)
- 
-     dtend_raw: date | datetime | None = None
-     try:
-@@ -189,12 +196,12 @@ def _normalise_event(component: Any, *, fallback_updated_at: str) -> dict[str, A
-         if dtend_raw is None:
-             ends_at = starts_at + timedelta(days=1)
-         else:
--            ends_at = _coerce_utc_datetime(dtend_raw)
-+            ends_at = _coerce_utc_datetime(dtend_raw, default_tz=default_tz)
-             if ends_at <= starts_at:
-                 ends_at = starts_at + timedelta(days=1)
-     else:
-         if dtend_raw is not None:
--            ends_at = _coerce_utc_datetime(dtend_raw)
-+            ends_at = _coerce_utc_datetime(dtend_raw, default_tz=default_tz)
-         else:
-             duration_raw = None
-             try:
-@@ -240,6 +247,14 @@ def parse_ics_events(
-     except Exception as exc:
-         raise CalendarParseError("ICS payload could not be parsed") from exc
- 
-+    default_tz: ZoneInfo | None = None
-+    timezone_raw = str(calendar.get("X-WR-TIMEZONE") or "").strip()
-+    if timezone_raw:
+diff --git a/lan_transcriber/pipeline_steps/orchestrator.py b/lan_transcriber/pipeline_steps/orchestrator.py
+index 1df1cf5..f606c26 100644
+--- a/lan_transcriber/pipeline_steps/orchestrator.py
++++ b/lan_transcriber/pipeline_steps/orchestrator.py
+@@ -13,6 +13,7 @@ from pydantic_settings import BaseSettings
+ from .. import normalizer
+ from ..aliases import ALIAS_PATH, load_aliases as _load_aliases, save_aliases as _save_aliases
+ from ..artifacts import atomic_write_json, atomic_write_text, build_recording_artifacts, stage_raw_audio
++from ..compat.pyannote_compat import patch_pyannote_inference_ignore_use_auth_token
+ from ..llm_client import LLMClient
+ from ..metrics import error_rate_total, p95_latency_seconds
+ from ..models import SpeakerSegment, TranscriptResult
+@@ -159,6 +160,12 @@ def _whisperx_asr(
+         except Exception:
+             # Step log append is best-effort and must not break processing.
+             pass
++    if patch_pyannote_inference_ignore_use_auth_token() and step_log_callback is not None:
 +        try:
-+            default_tz = ZoneInfo(timezone_raw)
-+        except ZoneInfoNotFoundError:
-+            default_tz = None
-+
-     try:
-         expanded_events = recurring_ical_events.of(calendar).between(start_utc, end_utc)
-     except Exception as exc:
-@@ -250,7 +265,11 @@ def parse_ics_events(
-     for component in expanded_events:
-         if str(getattr(component, "name", "")).upper() != "VEVENT":
-             continue
--        row = _normalise_event(component, fallback_updated_at=fallback_updated_at)
-+        row = _normalise_event(
-+            component,
-+            fallback_updated_at=fallback_updated_at,
-+            default_tz=default_tz,
-+        )
-         if row is None:
-             continue
-         key = (str(row["uid"]), str(row["starts_at"]))
-diff --git a/tests/test_calendar_ics.py b/tests/test_calendar_ics.py
-index afa4dcc..0d8840b 100644
---- a/tests/test_calendar_ics.py
-+++ b/tests/test_calendar_ics.py
-@@ -58,6 +58,33 @@ def test_parse_ics_recurrence_fixture_expands_weekly_instances():
-     ]
++            step_log_callback("pyannote compat: ignore unsupported Inference use_auth_token")
++        except Exception:
++            # Step log append is best-effort and must not break processing.
++            pass
  
+     import whisperx
  
-+def test_parse_ics_floating_datetimes_use_calendar_timezone():
-+    payload = "\n".join(
-+        [
-+            "BEGIN:VCALENDAR",
-+            "VERSION:2.0",
-+            "PRODID:-//LAN Transcriber//Calendar Floating Time Test//EN",
-+            "X-WR-TIMEZONE:Europe/Berlin",
-+            "BEGIN:VEVENT",
-+            "UID:floating-berlin-1",
-+            "DTSTAMP:20260201T120000Z",
-+            "DTSTART:20260210T090000",
-+            "DTEND:20260210T100000",
-+            "SUMMARY:Floating Time Event",
-+            "END:VEVENT",
-+            "END:VCALENDAR",
-+        ]
-+    )
-+    events = parse_ics_events(
-+        payload,
-+        window_start=datetime(2026, 2, 1, tzinfo=timezone.utc),
-+        window_end=datetime(2026, 2, 20, tzinfo=timezone.utc),
-+    )
-+    assert len(events) == 1
-+    assert events[0]["starts_at"] == "2026-02-10T08:00:00Z"
-+    assert events[0]["ends_at"] == "2026-02-10T09:00:00Z"
+diff --git a/tasks/QUEUE.md b/tasks/QUEUE.md
+index db2db29..3f18d98 100644
+--- a/tasks/QUEUE.md
++++ b/tasks/QUEUE.md
+@@ -237,6 +237,6 @@ Queue (in order)
+ - Depends on: PR-UI-DELETE-CONFIRM-01
+ 
+ 46) PR-FIX-PYANNOTE-USEAUTH-01: Fix whisperx VAD crash with pyannote (ignore unsupported use_auth_token)
+-- Status: TODO
++- Status: DONE
+ - Tasks file: tasks/PR-FIX-PYANNOTE-USEAUTH-01.md
+-- Depends on: PR-FIX-WHISPERX-API-01
+\ No newline at end of file
++- Depends on: PR-FIX-WHISPERX-API-01
+diff --git a/lan_transcriber/compat/__init__.py b/lan_transcriber/compat/__init__.py
+new file mode 100644
+index 0000000..bb694a8
+--- /dev/null
++++ b/lan_transcriber/compat/__init__.py
+@@ -0,0 +1 @@
++"""Compatibility helpers for third-party library version differences."""
+diff --git a/lan_transcriber/compat/pyannote_compat.py b/lan_transcriber/compat/pyannote_compat.py
+new file mode 100644
+index 0000000..f0d5826
+--- /dev/null
++++ b/lan_transcriber/compat/pyannote_compat.py
+@@ -0,0 +1,42 @@
++from __future__ import annotations
++
++import inspect
++from typing import Any
++
++_PATCH_SENTINEL = "_lan_ignore_use_auth_token"
 +
 +
- @pytest.fixture()
- def calendar_client(tmp_path: Path, monkeypatch):
-     cfg = _cfg(tmp_path)
++def patch_pyannote_inference_ignore_use_auth_token() -> bool:
++    """Patch pyannote Inference.__init__ to accept and ignore use_auth_token.
++
++    Returns True only when a patch was applied in this call.
++    """
++
++    try:
++        from pyannote.audio import Inference
++    except Exception:
++        return False
++
++    init = getattr(Inference, "__init__", None)
++    if init is None:
++        return False
++    if getattr(init, _PATCH_SENTINEL, False):
++        return False
++
++    try:
++        signature = inspect.signature(init)
++    except (TypeError, ValueError):
++        return False
++
++    if "use_auth_token" in signature.parameters:
++        return False
++
++    original_init = init
++
++    def patched_init(self: Any, *args: Any, use_auth_token: Any = None, **kwargs: Any) -> Any:
++        del use_auth_token
++        return original_init(self, *args, **kwargs)
++
++    setattr(patched_init, _PATCH_SENTINEL, True)
++    Inference.__init__ = patched_init  # type: ignore[assignment]
++    return True
+diff --git a/tests/test_pyannote_compat.py b/tests/test_pyannote_compat.py
+new file mode 100644
+index 0000000..df26167
+--- /dev/null
++++ b/tests/test_pyannote_compat.py
+@@ -0,0 +1,30 @@
++from __future__ import annotations
++
++import sys
++from types import ModuleType
++
++from lan_transcriber.compat.pyannote_compat import patch_pyannote_inference_ignore_use_auth_token
++
++
++def test_patch_pyannote_inference_ignore_use_auth_token(monkeypatch):
++    fake_pyannote = ModuleType("pyannote")
++    fake_audio = ModuleType("pyannote.audio")
++
++    class DummyInference:
++        def __init__(self, *args, **kwargs):
++            assert "use_auth_token" not in kwargs
++            self.args = args
++            self.kwargs = kwargs
++
++    fake_audio.Inference = DummyInference
++    fake_pyannote.audio = fake_audio
++    monkeypatch.setitem(sys.modules, "pyannote", fake_pyannote)
++    monkeypatch.setitem(sys.modules, "pyannote.audio", fake_audio)
++
++    assert patch_pyannote_inference_ignore_use_auth_token() is True
++
++    instance = DummyInference("model-id", use_auth_token=None, sample_rate=16000)
++    assert instance.args == ("model-id",)
++    assert instance.kwargs == {"sample_rate": 16000}
++
++    assert patch_pyannote_inference_ignore_use_auth_token() is False
