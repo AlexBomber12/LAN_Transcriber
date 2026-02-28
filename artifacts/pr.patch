@@ -1,35 +1,159 @@
-diff --git a/tests/test_imports.py b/tests/test_imports.py
-index 1f5b739..cc539d8 100644
---- a/tests/test_imports.py
-+++ b/tests/test_imports.py
-@@ -31,26 +31,24 @@ def _pop_module_tree(module_name: str) -> dict[str, object]:
- def test_imports(mod):
-     sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
-     previous_modules = _pop_module_tree(mod)
--    previous_whisperx = sys.modules.pop("whisperx", None)
-+    previous_whisperx_modules = _pop_module_tree("whisperx")
-     try:
-         importlib.invalidate_caches()
-         assert importlib.import_module(mod)
-         assert "whisperx" not in sys.modules
-     finally:
-         sys.modules.update(previous_modules)
--        if previous_whisperx is not None:
--            sys.modules["whisperx"] = previous_whisperx
-+        sys.modules.update(previous_whisperx_modules)
+diff --git a/tasks/QUEUE.md b/tasks/QUEUE.md
+index aad8919..0bf8503 100644
+--- a/tasks/QUEUE.md
++++ b/tasks/QUEUE.md
+@@ -198,7 +198,7 @@ Queue (in order)
+ - Depends on: PR-DEV-01
  
+ 38) PR-TEST-PIPELINE-RESILIENCE-01: Add worker-level resilience tests for external dependency failures
+-- Status: TODO
++- Status: DOING
+ - Tasks file: tasks/PR-TEST-PIPELINE-RESILIENCE-01.md
+ - Depends on: PR-TEST-IMPORTS-01
  
- def test_orchestrator_import_does_not_import_whisperx():
-     sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
-     previous_orchestrator_modules = _pop_module_tree("lan_transcriber.pipeline_steps.orchestrator")
--    previous_whisperx = sys.modules.pop("whisperx", None)
-+    previous_whisperx_modules = _pop_module_tree("whisperx")
-     try:
-         importlib.invalidate_caches()
-         assert importlib.import_module("lan_transcriber.pipeline_steps.orchestrator")
-         assert "whisperx" not in sys.modules
-     finally:
-         sys.modules.update(previous_orchestrator_modules)
--        if previous_whisperx is not None:
--            sys.modules["whisperx"] = previous_whisperx
-+        sys.modules.update(previous_whisperx_modules)
+diff --git a/tests/test_worker_resilience.py b/tests/test_worker_resilience.py
+new file mode 100644
+index 0000000..6a3bcd8
+--- /dev/null
++++ b/tests/test_worker_resilience.py
+@@ -0,0 +1,140 @@
++from __future__ import annotations
++
++from pathlib import Path
++
++import pytest
++
++from lan_app import worker_tasks
++from lan_app.config import AppSettings
++from lan_app.constants import (
++    JOB_STATUS_FAILED,
++    JOB_TYPE_PRECHECK,
++    RECORDING_STATUS_FAILED,
++    RECORDING_STATUS_NEEDS_REVIEW,
++)
++from lan_app.db import create_job, create_recording, get_job, get_recording, init_db
++from lan_app.worker_tasks import process_job
++from lan_transcriber.pipeline import PrecheckResult
++
++
++def _cfg(tmp_path: Path) -> AppSettings:
++    cfg = AppSettings(
++        data_root=tmp_path,
++        recordings_root=tmp_path / "recordings",
++        db_path=tmp_path / "db" / "app.db",
++    )
++    cfg.metrics_snapshot_path = tmp_path / "metrics.snap"
++    return cfg
++
++
++def _set_worker_env(monkeypatch, cfg: AppSettings) -> None:
++    monkeypatch.setenv("LAN_DATA_ROOT", str(cfg.data_root))
++    monkeypatch.setenv("LAN_RECORDINGS_ROOT", str(cfg.recordings_root))
++    monkeypatch.setenv("LAN_DB_PATH", str(cfg.db_path))
++    monkeypatch.setenv("LAN_PROM_SNAPSHOT_PATH", str(cfg.metrics_snapshot_path))
++
++
++def _seed_precheck_job(cfg: AppSettings, *, recording_id: str, job_id: str) -> None:
++    init_db(cfg)
++    create_recording(
++        recording_id,
++        source="upload",
++        source_filename="meeting.wav",
++        settings=cfg,
++    )
++    create_job(
++        job_id,
++        recording_id=recording_id,
++        job_type=JOB_TYPE_PRECHECK,
++        settings=cfg,
++    )
++    raw_audio = cfg.recordings_root / recording_id / "raw" / "audio.wav"
++    raw_audio.parent.mkdir(parents=True, exist_ok=True)
++    raw_audio.write_bytes(b"\x00")
++
++
++def test_process_job_pipeline_exception_marks_job_failed_and_updates_recording_status(
++    tmp_path: Path, monkeypatch
++):
++    cfg = _cfg(tmp_path)
++    _set_worker_env(monkeypatch, cfg)
++    _seed_precheck_job(cfg, recording_id="rec-worker-resilience-1", job_id="job-worker-resilience-1")
++
++    monkeypatch.setattr(
++        worker_tasks,
++        "run_precheck",
++        lambda *_a, **_k: PrecheckResult(
++            duration_sec=60.0,
++            speech_ratio=0.8,
++            quarantine_reason=None,
++        ),
++    )
++    monkeypatch.setattr(worker_tasks, "_is_retryable_exception", lambda _exc: False)
++
++    async def _failing_run_pipeline(*_args, **_kwargs):
++        raise RuntimeError("dep failure")
++
++    monkeypatch.setattr(worker_tasks, "run_pipeline", _failing_run_pipeline)
++
++    with pytest.raises(RuntimeError, match="dep failure"):
++        process_job("job-worker-resilience-1", "rec-worker-resilience-1", JOB_TYPE_PRECHECK)
++
++    job = get_job("job-worker-resilience-1", settings=cfg) or {}
++    assert job.get("status") == JOB_STATUS_FAILED
++    assert "dep failure" in str(job.get("error") or "")
++
++    recording = get_recording("rec-worker-resilience-1", settings=cfg) or {}
++    assert recording.get("status") in {
++        RECORDING_STATUS_FAILED,
++        RECORDING_STATUS_NEEDS_REVIEW,
++    }
++
++
++def test_progress_update_failures_do_not_hide_original_pipeline_error(
++    tmp_path: Path, monkeypatch
++):
++    cfg = _cfg(tmp_path)
++    _set_worker_env(monkeypatch, cfg)
++    _seed_precheck_job(cfg, recording_id="rec-worker-resilience-2", job_id="job-worker-resilience-2")
++
++    monkeypatch.setattr(
++        worker_tasks,
++        "run_precheck",
++        lambda *_a, **_k: PrecheckResult(
++            duration_sec=45.0,
++            speech_ratio=0.75,
++            quarantine_reason=None,
++        ),
++    )
++    monkeypatch.setattr(worker_tasks, "_is_retryable_exception", lambda _exc: False)
++
++    original_set_progress = worker_tasks.set_recording_progress
++    calls = {"count": 0}
++
++    def _flaky_set_recording_progress(*args, **kwargs):
++        calls["count"] += 1
++        if calls["count"] == 1:
++            raise RuntimeError("progress write failure")
++        return original_set_progress(*args, **kwargs)
++
++    monkeypatch.setattr(worker_tasks, "set_recording_progress", _flaky_set_recording_progress)
++
++    async def _pipeline_with_progress_then_failure(*_args, **kwargs):
++        progress_callback = kwargs.get("progress_callback")
++        if callable(progress_callback):
++            try:
++                progress_callback("stt", 0.2)
++            except RuntimeError:
++                pass
++        raise RuntimeError("dep failure")
++
++    monkeypatch.setattr(worker_tasks, "run_pipeline", _pipeline_with_progress_then_failure)
++
++    with pytest.raises(RuntimeError, match="dep failure"):
++        process_job("job-worker-resilience-2", "rec-worker-resilience-2", JOB_TYPE_PRECHECK)
++
++    assert calls["count"] >= 1
++    job = get_job("job-worker-resilience-2", settings=cfg) or {}
++    assert job.get("status") == JOB_STATUS_FAILED
++    assert "dep failure" in str(job.get("error") or "")
++
