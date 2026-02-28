@@ -219,6 +219,6 @@ Queue (in order)
 
 
 42) PR-FIX-OMEGACONF-01: Add missing omegaconf dependency (runtime + CI) and a dependency smoke test
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-FIX-OMEGACONF-01.md
 - Depends on: PR-COVERAGE-01
