@@ -172,6 +172,47 @@ Queue (in order)
 - Depends on: PR-DOCS-EXPORT-ONLY-01
 
 33) PR-FIX-WHISPERX-API-01: Fix WhisperX API usage (no whisperx.transcribe) and add modern-path unit test
-- Status: DONE
+- Status: TODO
 - Tasks file: tasks/PR-FIX-WHISPERX-API-01.md
 - Depends on: PR-FIX-DIARIZATION-REVISION-01
+
+
+34) PR-CI-01: Fix GitHub Actions failures (docker smoke pytest, staging deploy secrets) and remove duplicate CI workflow
+- Status: TODO
+- Tasks file: tasks/PR-CI-01.md
+- Depends on: PR-FIX-WHISPERX-API-01
+
+35) PR-FIX-CTRANSLATE2-EXECSTACK-01: Fix ctranslate2 executable-stack loader failure
+- Status: TODO
+- Tasks file: tasks/PR-FIX-CTRANSLATE2-EXECSTACK-01.md
+- Depends on: PR-FIX-WHISPERX-API-01
+
+36) PR-DEV-01: Add docker-compose.dev.yml for fast iteration without rebuilding images
+- Status: TODO
+- Tasks file: tasks/PR-DEV-01.md
+- Depends on: PR-FIX-CTRANSLATE2-EXECSTACK-01
+
+37) PR-TEST-IMPORTS-01: Expand import smoke tests to cover critical modules
+- Status: TODO
+- Tasks file: tasks/PR-TEST-IMPORTS-01.md
+- Depends on: PR-DEV-01
+
+38) PR-TEST-PIPELINE-RESILIENCE-01: Add worker-level resilience tests for external dependency failures
+- Status: TODO
+- Tasks file: tasks/PR-TEST-PIPELINE-RESILIENCE-01.md
+- Depends on: PR-TEST-IMPORTS-01
+
+39) PR-TEST-API-UI-01: Add end-to-end API and UI route tests for Upload and Export workflow
+- Status: TODO
+- Tasks file: tasks/PR-TEST-API-UI-01.md
+- Depends on: PR-TEST-PIPELINE-RESILIENCE-01
+
+40) PR-SMOKE-DOCKER-01: Strengthen Docker smoke test to catch native dependency loader issues (ctranslate2)
+- Status: TODO
+- Tasks file: tasks/PR-SMOKE-DOCKER-01.md
+- Depends on: PR-TEST-API-UI-01
+
+41) PR-COVERAGE-01: Expand coverage to include lan_app and enforce coverage thresholds
+- Status: TODO
+- Tasks file: tasks/PR-COVERAGE-01.md
+- Depends on: PR-SMOKE-DOCKER-01
