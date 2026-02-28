@@ -188,7 +188,7 @@ Queue (in order)
 - Depends on: PR-FIX-WHISPERX-API-01
 
 36) PR-DEV-01: Add docker-compose.dev.yml for fast iteration without rebuilding images
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-DEV-01.md
 - Depends on: PR-FIX-CTRANSLATE2-EXECSTACK-01
 
