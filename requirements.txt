@@ -6,6 +6,7 @@ starlette
 torch
 faster-whisper
 pyannote.audio
+omegaconf>=2.3.0
 httpx
 tenacity
 redis

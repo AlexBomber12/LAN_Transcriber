@@ -50,7 +50,7 @@ def test_container_launches():
                 "lan-smoke",
                 "python",
                 "-c",
-                "import ctranslate2; import faster_whisper; import whisperx",
+                "import ctranslate2; import faster_whisper; import whisperx; from omegaconf import OmegaConf; OmegaConf.create({'ok': 1})",
             ],
             check=False,
             capture_output=True,
