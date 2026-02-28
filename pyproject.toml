@@ -19,6 +19,8 @@ dependencies = [
     "pyyaml",
     "pydantic-settings",
     "rapidfuzz",
+    "icalendar>=6.0",
+    "recurring-ical-events>=3.6",
 ]
 
 [tool.setuptools.packages.find]

@@ -6,6 +6,7 @@ Uses Jinja2 templates + HTMX (bundled locally) for a minimal, DB-window-style UI
 from __future__ import annotations
 
 import asyncio
+from datetime import date, datetime, time, timedelta, timezone
 import json
 import shutil
 import sqlite3
@@ -28,6 +29,8 @@ from .auth import (
     set_auth_cookie,
 )
 from .config import AppSettings
+from .calendar.ics import validate_ics_url
+from .calendar.service import CalendarSyncError, redacted_calendar_source, sync_calendar_source
 from .conversation_metrics import refresh_recording_metrics
 from .constants import (
     DEFAULT_REQUEUE_JOB_TYPE,
@@ -39,16 +42,20 @@ from .constants import (
     RECORDING_STATUS_QUARANTINE,
 )
 from .db import (
+    create_calendar_source,
     count_routing_training_examples,
     create_voice_sample,
     create_project,
     create_voice_profile,
+    get_calendar_source,
     delete_project,
     delete_voice_profile,
     get_meeting_metrics,
     get_job,
     get_recording,
     get_voice_sample,
+    list_calendar_events,
+    list_calendar_sources,
     list_participant_metrics,
     list_jobs,
     list_projects,
@@ -912,6 +919,74 @@ def _job_counts(settings: AppSettings) -> dict[str, int]:
     return counts
 
 
+def _utc_iso(value: datetime) -> str:
+    return value.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace(
+        "+00:00", "Z"
+    )
+
+
+def _parse_iso_datetime(value: str, *, field_name: str) -> datetime:
+    text = str(value or "").strip()
+    if not text:
+        raise ValueError(f"{field_name} is required")
+    normalized = text[:-1] + "+00:00" if text.endswith("Z") else text
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError as exc:
+        raise ValueError(f"{field_name} must be ISO-8601 datetime") from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _parse_ymd_date(value: str, *, field_name: str) -> date:
+    text = str(value or "").strip()
+    if not text:
+        raise ValueError(f"{field_name} is required")
+    try:
+        return date.fromisoformat(text)
+    except ValueError as exc:
+        raise ValueError(f"{field_name} must be YYYY-MM-DD") from exc
+
+
+def _calendar_date_range_defaults() -> tuple[str, str]:
+    today = datetime.now(tz=timezone.utc).date()
+    end = today + timedelta(days=7)
+    return today.isoformat(), end.isoformat()
+
+
+def _calendar_page_data(
+    *,
+    date_from: str,
+    date_to: str,
+    source_id: int | None,
+    settings: AppSettings,
+) -> dict[str, Any]:
+    start_date = _parse_ymd_date(date_from, field_name="from")
+    end_date = _parse_ymd_date(date_to, field_name="to")
+    if end_date <= start_date:
+        raise ValueError("to must be after from")
+
+    start_dt = datetime.combine(start_date, time.min, tzinfo=timezone.utc)
+    end_dt = datetime.combine(end_date, time.min, tzinfo=timezone.utc)
+
+    sources_raw = list_calendar_sources(settings=settings)
+    sources = [redacted_calendar_source(row) for row in sources_raw]
+    events = list_calendar_events(
+        starts_from=_utc_iso(start_dt),
+        ends_to=_utc_iso(end_dt),
+        source_id=source_id,
+        settings=settings,
+    )
+    return {
+        "sources": sources,
+        "events": events,
+        "date_from": start_date.isoformat(),
+        "date_to": end_date.isoformat(),
+        "selected_source_id": source_id,
+    }
+
+
 # ---------------------------------------------------------------------------
 # UI auth shell
 # ---------------------------------------------------------------------------
@@ -1488,6 +1563,94 @@ async def ui_upload(request: Request) -> Any:
             "active": "upload",
         },
     )
+
+
+# ---------------------------------------------------------------------------
+# Calendars
+# ---------------------------------------------------------------------------
+
+
+@ui_router.get("/calendars", response_class=HTMLResponse)
+async def ui_calendars(
+    request: Request,
+    from_: str | None = Query(default=None, alias="from"),
+    to: str | None = Query(default=None, alias="to"),
+    source_id: int | None = Query(default=None),
+    error: str = Query(default=""),
+) -> Any:
+    default_from, default_to = _calendar_date_range_defaults()
+    requested_from = from_ or default_from
+    requested_to = to or default_to
+    error_message = error.strip()
+    try:
+        context = _calendar_page_data(
+            date_from=requested_from,
+            date_to=requested_to,
+            source_id=source_id,
+            settings=_settings,
+        )
+    except ValueError as exc:
+        error_message = str(exc)
+        context = _calendar_page_data(
+            date_from=default_from,
+            date_to=default_to,
+            source_id=None,
+            settings=_settings,
+        )
+    context.update(
+        {
+            "active": "calendars",
+            "error_message": error_message,
+        }
+    )
+    return templates.TemplateResponse(request, "calendars.html", context)
+
+
+@ui_router.post("/calendars/sources", response_class=HTMLResponse)
+async def ui_create_calendar_source(
+    name: str = Form(...),
+    kind: str = Form(default="url"),
+    url: str = Form(default=""),
+    file: str = Form(default=""),
+) -> Any:
+    try:
+        normalized_url: str | None = None
+        if kind.strip().lower() == "url":
+            normalized_url = validate_ics_url(url.strip())
+        source = create_calendar_source(
+            name=name.strip(),
+            kind=kind,
+            url=normalized_url,
+            file_ics=file,
+            settings=_settings,
+        )
+        return RedirectResponse(
+            f"/calendars?source_id={int(source.get('id'))}",
+            status_code=303,
+        )
+    except ValueError as exc:
+        return RedirectResponse(
+            f"/calendars?error={quote(str(exc), safe='')}",
+            status_code=303,
+        )
+
+
+@ui_router.post("/calendars/sources/{source_id}/sync", response_class=HTMLResponse)
+async def ui_sync_calendar_source(source_id: int) -> Any:
+    if get_calendar_source(source_id, settings=_settings) is None:
+        return HTMLResponse("Calendar source not found", status_code=404)
+    try:
+        await run_in_threadpool(
+            sync_calendar_source,
+            source_id,
+            settings=_settings,
+        )
+    except CalendarSyncError as exc:
+        return RedirectResponse(
+            f"/calendars?source_id={source_id}&error={quote(str(exc), safe='')}",
+            status_code=303,
+        )
+    return RedirectResponse(f"/calendars?source_id={source_id}", status_code=303)
 
 
 # ---------------------------------------------------------------------------

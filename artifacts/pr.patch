@@ -1,337 +1,1798 @@
+diff --git a/.env.example b/.env.example
+index 9624c6b..02b3ed7 100644
+--- a/.env.example
++++ b/.env.example
+@@ -25,6 +25,11 @@ LAN_REDIS_URL=redis://redis:6379/0
+ LAN_RQ_QUEUE_NAME=lan-transcriber
+ # Optional upload cap per file in bytes (set to enable)
+ # UPLOAD_MAX_BYTES=1073741824
++LAN_CALENDAR_EXPAND_PAST_DAYS=30
++LAN_CALENDAR_EXPAND_FUTURE_DAYS=180
++LAN_CALENDAR_FETCH_TIMEOUT_SECONDS=15
++LAN_CALENDAR_FETCH_MAX_BYTES=2000000
++LAN_CALENDAR_FETCH_MAX_REDIRECTS=5
+ QUARANTINE_RETENTION_DAYS=7
+ 
+ ROUTING_AUTO_SELECT_THRESHOLD=0.65
+diff --git a/ci-requirements.in b/ci-requirements.in
+index 11f7958..c4ab36b 100644
+--- a/ci-requirements.in
++++ b/ci-requirements.in
+@@ -11,6 +11,8 @@ tenacity==9.1.2
+ fastapi==0.116.1
+ uvicorn==0.35.0
+ pyyaml==6.0.2
++icalendar==6.3.1
++recurring-ical-events==3.8.0
+ ruff==0.12.4
+ pip-tools==7.4.1
+ setuptools==80.9.0
+diff --git a/ci-requirements.txt b/ci-requirements.txt
+index cfd0b1d..333db43 100644
+--- a/ci-requirements.txt
++++ b/ci-requirements.txt
+@@ -15,6 +15,8 @@ tenacity>=9
+ fastapi>=0.116
+ uvicorn>=0.30
+ pyyaml>=6.0
++icalendar>=6.0
++recurring-ical-events>=3.6
+ omegaconf>=2.3.0
+ ruff>=0.12
+ pip-tools>=7.4
+diff --git a/lan_app/api.py b/lan_app/api.py
+index 4ff6995..380b640 100644
+--- a/lan_app/api.py
++++ b/lan_app/api.py
+@@ -2,9 +2,10 @@ from __future__ import annotations
+ 
+ import asyncio
+ from contextlib import asynccontextmanager, suppress
++from datetime import datetime, timezone
+ import logging
+ import shutil
+-from typing import List
++from typing import List, Literal
+ from uuid import uuid4
+ 
+ from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile
+@@ -29,11 +30,16 @@ from .constants import (
+     RECORDING_STATUS_QUEUED,
+     RECORDING_STATUS_QUARANTINE,
+ )
++from .calendar.ics import validate_ics_url
++from .calendar.service import CalendarSyncError, redacted_calendar_source, sync_calendar_source
+ from .db import (
++    create_calendar_source,
+     create_recording,
+     delete_recording,
+     get_recording,
+     init_db,
++    list_calendar_events,
++    list_calendar_sources,
+     list_jobs,
+     list_recordings,
+     set_recording_status,
+@@ -106,6 +112,13 @@ class QuarantineAction(BaseModel):
+     reason: str | None = None
+ 
+ 
++class CalendarSourceCreate(BaseModel):
++    name: str
++    kind: Literal["url", "file"] = "url"
++    url: str | None = None
++    file: str | None = None
++
++
+ def _validate_recording_status(status: str | None) -> str | None:
+     if status is None:
+         return None
+@@ -133,6 +146,26 @@ def _is_public_auth_exempt(request: Request) -> bool:
+     return False
+ 
+ 
++def _parse_iso_datetime(value: str, *, field_name: str) -> datetime:
++    text = str(value or "").strip()
++    if not text:
++        raise ValueError(f"{field_name} is required")
++    normalized = text[:-1] + "+00:00" if text.endswith("Z") else text
++    try:
++        parsed = datetime.fromisoformat(normalized)
++    except ValueError as exc:
++        raise ValueError(f"{field_name} must be ISO-8601 datetime") from exc
++    if parsed.tzinfo is None:
++        parsed = parsed.replace(tzinfo=timezone.utc)
++    return parsed.astimezone(timezone.utc)
++
++
++def _utc_iso(value: datetime) -> str:
++    return value.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace(
++        "+00:00", "Z"
++    )
++
++
+ @app.middleware("http")
+ async def _enforce_optional_bearer_auth(request: Request, call_next):
+     if not auth_enabled(_settings):
+@@ -378,6 +411,79 @@ async def api_list_jobs(
+     }
+ 
+ 
++@app.post("/api/calendar/sources")
++async def api_create_calendar_source(payload: CalendarSourceCreate) -> dict[str, object]:
++    name = payload.name.strip()
++    if not name:
++        raise HTTPException(status_code=422, detail="name is required")
++    normalized_url: str | None = None
++    if payload.kind == "url":
++        raw_url = str(payload.url or "").strip()
++        if not raw_url:
++            raise HTTPException(status_code=422, detail="url is required for kind=url")
++        try:
++            normalized_url = validate_ics_url(raw_url)
++        except ValueError as exc:
++            raise HTTPException(status_code=422, detail=str(exc))
++    if payload.kind == "file":
++        if not str(payload.file or "").strip():
++            raise HTTPException(status_code=422, detail="file is required for kind=file")
++    try:
++        source = create_calendar_source(
++            name=name,
++            kind=payload.kind,
++            url=normalized_url,
++            file_ics=payload.file,
++            settings=_settings,
++        )
++    except ValueError as exc:
++        raise HTTPException(status_code=422, detail=str(exc))
++    return redacted_calendar_source(source)
++
++
++@app.get("/api/calendar/sources")
++async def api_list_calendar_sources() -> dict[str, object]:
++    items = [redacted_calendar_source(row) for row in list_calendar_sources(settings=_settings)]
++    return {"items": items, "total": len(items)}
++
++
++@app.post("/api/calendar/sources/{source_id}/sync")
++async def api_sync_calendar_source(source_id: int) -> dict[str, object]:
++    try:
++        summary = await run_in_threadpool(
++            sync_calendar_source,
++            source_id,
++            settings=_settings,
++        )
++    except KeyError:
++        raise HTTPException(status_code=404, detail="Calendar source not found")
++    except CalendarSyncError as exc:
++        raise HTTPException(status_code=422, detail=str(exc))
++    return summary
++
++
++@app.get("/api/calendar/events")
++async def api_list_calendar_events(
++    from_: str = Query(..., alias="from"),
++    to: str = Query(..., alias="to"),
++    source_id: int | None = Query(default=None),
++) -> dict[str, object]:
++    try:
++        start = _parse_iso_datetime(from_, field_name="from")
++        end = _parse_iso_datetime(to, field_name="to")
++    except ValueError as exc:
++        raise HTTPException(status_code=422, detail=str(exc))
++    if end <= start:
++        raise HTTPException(status_code=422, detail="to must be after from")
++    items = list_calendar_events(
++        starts_from=_utc_iso(start),
++        ends_to=_utc_iso(end),
++        source_id=source_id,
++        settings=_settings,
++    )
++    return {"items": items, "total": len(items)}
++
++
+ @app.post("/api/uploads")
+ async def api_upload_file(file: UploadFile = File(...)) -> dict[str, object]:
+     recording_id = f"trs_{uuid4().hex[:8]}"
+diff --git a/lan_app/config.py b/lan_app/config.py
+index 8e25753..892e138 100644
+--- a/lan_app/config.py
++++ b/lan_app/config.py
+@@ -131,6 +131,48 @@ class AppSettings(BaseSettings):
+         ge=1,
+         validation_alias=AliasChoices("UPLOAD_MAX_BYTES"),
+     )
++    calendar_expand_past_days: int = Field(
++        default=30,
++        ge=0,
++        validation_alias=AliasChoices(
++            "LAN_CALENDAR_EXPAND_PAST_DAYS",
++            "CALENDAR_EXPAND_PAST_DAYS",
++        ),
++    )
++    calendar_expand_future_days: int = Field(
++        default=180,
++        ge=1,
++        validation_alias=AliasChoices(
++            "LAN_CALENDAR_EXPAND_FUTURE_DAYS",
++            "CALENDAR_EXPAND_FUTURE_DAYS",
++        ),
++    )
++    calendar_fetch_timeout_seconds: float = Field(
++        default=15.0,
++        gt=0.0,
++        le=120.0,
++        validation_alias=AliasChoices(
++            "LAN_CALENDAR_FETCH_TIMEOUT_SECONDS",
++            "CALENDAR_FETCH_TIMEOUT_SECONDS",
++        ),
++    )
++    calendar_fetch_max_bytes: int = Field(
++        default=2_000_000,
++        ge=1024,
++        validation_alias=AliasChoices(
++            "LAN_CALENDAR_FETCH_MAX_BYTES",
++            "CALENDAR_FETCH_MAX_BYTES",
++        ),
++    )
++    calendar_fetch_max_redirects: int = Field(
++        default=5,
++        ge=0,
++        le=20,
++        validation_alias=AliasChoices(
++            "LAN_CALENDAR_FETCH_MAX_REDIRECTS",
++            "CALENDAR_FETCH_MAX_REDIRECTS",
++        ),
++    )
+ 
+     @model_validator(mode="after")
+     def validate_runtime_environment(self) -> "AppSettings":
+diff --git a/lan_app/db.py b/lan_app/db.py
+index c1e2ffc..f078508 100644
+--- a/lan_app/db.py
++++ b/lan_app/db.py
+@@ -23,6 +23,7 @@ from .constants import (
+ )
+ 
+ _PROJECT_ASSIGNMENT_SOURCES = {"manual", "auto"}
++_CALENDAR_SOURCE_KINDS = {"url", "file"}
+ _MIGRATIONS_DIR = Path(__file__).with_name("migrations")
+ _SQLITE_CONNECT_TIMEOUT_SECONDS = 30
+ _DEFAULT_SQLITE_BUSY_TIMEOUT_MS = 30_000
+@@ -92,6 +93,14 @@ def _normalise_project_assignment_source(source: str | None) -> str | None:
+     return value
+ 
+ 
++def _normalise_calendar_source_kind(kind: str) -> str:
++    value = str(kind or "").strip().lower()
++    if value not in _CALENDAR_SOURCE_KINDS:
++        options = ", ".join(sorted(_CALENDAR_SOURCE_KINDS))
++        raise ValueError(f"Unsupported calendar source kind: {value} ({options})")
++    return value
++
++
+ def _normalise_keyword(value: object) -> str:
+     return " ".join(str(value).strip().lower().split())
+ 
+@@ -1696,6 +1705,249 @@ def get_voice_sample(
+     return _as_dict(row)
+ 
+ 
++def create_calendar_source(
++    name: str,
++    *,
++    kind: str,
++    url: str | None = None,
++    file_ics: str | None = None,
++    settings: AppSettings | None = None,
++) -> dict[str, Any]:
++    init_db(settings)
++    clean_name = str(name).strip()
++    if not clean_name:
++        raise ValueError("name is required")
++    source_kind = _normalise_calendar_source_kind(kind)
++    clean_url = str(url or "").strip() or None
++    clean_file_ics = str(file_ics or "").strip() or None
++    if source_kind == "url" and clean_url is None:
++        raise ValueError("url is required for kind=url")
++    if source_kind == "file" and clean_file_ics is None:
++        raise ValueError("file_ics is required for kind=file")
++    if source_kind == "url":
++        clean_file_ics = None
++    else:
++        clean_url = None
++    now = _utc_now()
++    with connect(settings) as conn:
++        cursor = conn.execute(
++            """
++            INSERT INTO calendar_sources (
++                name,
++                kind,
++                url,
++                file_ics,
++                created_at,
++                last_synced_at,
++                last_error
++            )
++            VALUES (?, ?, ?, ?, ?, NULL, NULL)
++            """,
++            (
++                clean_name,
++                source_kind,
++                clean_url,
++                clean_file_ics,
++                now,
++            ),
++        )
++        row = conn.execute(
++            "SELECT * FROM calendar_sources WHERE id = ?",
++            (cursor.lastrowid,),
++        ).fetchone()
++        conn.commit()
++    return _as_dict(row) or {}
++
++
++def get_calendar_source(
++    source_id: int,
++    *,
++    settings: AppSettings | None = None,
++) -> dict[str, Any] | None:
++    init_db(settings)
++    with connect(settings) as conn:
++        row = conn.execute(
++            "SELECT * FROM calendar_sources WHERE id = ?",
++            (int(source_id),),
++        ).fetchone()
++    return _as_dict(row)
++
++
++def list_calendar_sources(
++    *,
++    settings: AppSettings | None = None,
++) -> list[dict[str, Any]]:
++    init_db(settings)
++    with connect(settings) as conn:
++        rows = conn.execute(
++            """
++            SELECT *
++            FROM calendar_sources
++            ORDER BY created_at DESC, id DESC
++            """
++        ).fetchall()
++    return [_as_dict(row) or {} for row in rows]
++
++
++def update_calendar_source_sync_state(
++    source_id: int,
++    *,
++    last_synced_at: str | None | object = _UNSET,
++    last_error: str | None | object = _UNSET,
++    settings: AppSettings | None = None,
++) -> dict[str, Any] | None:
++    init_db(settings)
++    assignments: list[str] = []
++    params: list[Any] = []
++    if last_synced_at is not _UNSET:
++        assignments.append("last_synced_at = ?")
++        params.append(last_synced_at)
++    if last_error is not _UNSET:
++        assignments.append("last_error = ?")
++        params.append(last_error)
++    if not assignments:
++        raise ValueError("at least one field must be provided for calendar source update")
++    params.append(int(source_id))
++    with connect(settings) as conn:
++        updated = conn.execute(
++            f"""
++            UPDATE calendar_sources
++            SET {', '.join(assignments)}
++            WHERE id = ?
++            """,
++            tuple(params),
++        )
++        if updated.rowcount < 1:
++            conn.commit()
++            return None
++        row = conn.execute(
++            "SELECT * FROM calendar_sources WHERE id = ?",
++            (int(source_id),),
++        ).fetchone()
++        conn.commit()
++    return _as_dict(row)
++
++
++def replace_calendar_events_for_window(
++    *,
++    source_id: int,
++    window_start: str,
++    window_end: str,
++    events: list[dict[str, Any]],
++    settings: AppSettings | None = None,
++) -> int:
++    init_db(settings)
++    clean_window_start = str(window_start).strip()
++    clean_window_end = str(window_end).strip()
++    if not clean_window_start or not clean_window_end:
++        raise ValueError("window_start and window_end are required")
++    now = _utc_now()
++
++    def _write_events() -> int:
++        with connect(settings) as conn:
++            conn.execute(
++                """
++                DELETE FROM calendar_events
++                WHERE source_id = ? AND starts_at >= ? AND starts_at < ?
++                """,
++                (
++                    int(source_id),
++                    clean_window_start,
++                    clean_window_end,
++                ),
++            )
++            inserted = 0
++            for event in events:
++                uid = str(event.get("uid") or "").strip()
++                starts_at = str(event.get("starts_at") or "").strip()
++                ends_at = str(event.get("ends_at") or "").strip()
++                if not uid or not starts_at or not ends_at:
++                    continue
++                summary = str(event.get("summary") or "").strip() or None
++                description = str(event.get("description") or "").strip() or None
++                location = str(event.get("location") or "").strip() or None
++                organizer = str(event.get("organizer") or "").strip() or None
++                updated_at = str(event.get("updated_at") or "").strip() or now
++                all_day = 1 if bool(event.get("all_day")) else 0
++                conn.execute(
++                    """
++                    INSERT INTO calendar_events (
++                        source_id,
++                        uid,
++                        starts_at,
++                        ends_at,
++                        all_day,
++                        summary,
++                        description,
++                        location,
++                        organizer,
++                        updated_at
++                    )
++                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
++                    ON CONFLICT(source_id, uid, starts_at) DO UPDATE SET
++                        ends_at = excluded.ends_at,
++                        all_day = excluded.all_day,
++                        summary = excluded.summary,
++                        description = excluded.description,
++                        location = excluded.location,
++                        organizer = excluded.organizer,
++                        updated_at = excluded.updated_at
++                    """,
++                    (
++                        int(source_id),
++                        uid,
++                        starts_at,
++                        ends_at,
++                        all_day,
++                        summary,
++                        description,
++                        location,
++                        organizer,
++                        updated_at,
++                    ),
++                )
++                inserted += 1
++            conn.commit()
++            return inserted
++
++    return with_db_retry(_write_events)
++
++
++def list_calendar_events(
++    *,
++    starts_from: str,
++    ends_to: str,
++    source_id: int | None = None,
++    settings: AppSettings | None = None,
++) -> list[dict[str, Any]]:
++    init_db(settings)
++    clean_starts_from = str(starts_from).strip()
++    clean_ends_to = str(ends_to).strip()
++    if not clean_starts_from or not clean_ends_to:
++        raise ValueError("starts_from and ends_to are required")
++    clauses = ["ce.starts_at < ?", "ce.ends_at > ?"]
++    params: list[Any] = [clean_ends_to, clean_starts_from]
++    if source_id is not None:
++        clauses.append("ce.source_id = ?")
++        params.append(int(source_id))
++    where_sql = " AND ".join(clauses)
++    with connect(settings) as conn:
++        rows = conn.execute(
++            f"""
++            SELECT
++                ce.*,
++                cs.name AS source_name,
++                cs.kind AS source_kind
++            FROM calendar_events AS ce
++            JOIN calendar_sources AS cs ON cs.id = ce.source_id
++            WHERE {where_sql}
++            ORDER BY ce.starts_at, ce.id
++            """,
++            tuple(params),
++        ).fetchall()
++    return [_as_dict(row) or {} for row in rows]
++
++
+ def get_calendar_match(
+     recording_id: str,
+     *,
+@@ -1998,6 +2250,12 @@ __all__ = [
+     "list_voice_samples",
+     "create_voice_sample",
+     "get_voice_sample",
++    "create_calendar_source",
++    "get_calendar_source",
++    "list_calendar_sources",
++    "update_calendar_source_sync_state",
++    "replace_calendar_events_for_window",
++    "list_calendar_events",
+     "get_calendar_match",
+     "upsert_calendar_match",
+     "set_calendar_match_selection",
 diff --git a/lan_app/templates/base.html b/lan_app/templates/base.html
-index 47c2e55..6f12824 100644
+index 6f12824..351ea64 100644
 --- a/lan_app/templates/base.html
 +++ b/lan_app/templates/base.html
-@@ -68,6 +68,14 @@ tr:hover{background:#e8ecf8}
- .dot-warn{display:inline-block;width:8px;height:8px;border-radius:50%;background:#f59e0b}
- .dot-err{display:inline-block;width:8px;height:8px;border-radius:50%;background:#ef4444}
- .dot-na{display:inline-block;width:8px;height:8px;border-radius:50%;background:#d1d5db}
-+.modal-backdrop{position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;padding:12px;z-index:1000}
-+.modal-backdrop[hidden]{display:none}
-+.modal{background:#fff;border:1px solid #999;max-width:420px;width:100%;padding:12px;box-shadow:0 8px 24px rgba(0,0,0,.25)}
-+.modal h2{margin:0 0 8px 0;font-size:14px}
-+.modal-copy{font-size:12px;color:#333;margin-bottom:8px}
-+.modal-context{font-size:12px;color:#555;margin-bottom:10px;white-space:normal;word-break:break-word}
-+.modal-error{font-size:12px;color:#b00;min-height:18px;margin-bottom:8px}
-+.modal-actions{display:flex;justify-content:flex-end;gap:6px}
- </style>
- </head>
- <body hx-boost="true">
-@@ -83,23 +91,143 @@ tr:hover{background:#e8ecf8}
- <main>
- {% block content %}{% endblock %}
- </main>
-+<div
-+  id="delete-confirm-backdrop"
-+  class="modal-backdrop"
-+  hidden
-+  onclick="if (event.target === this) closeDeleteDialog();"
-+>
-+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="delete-confirm-title">
-+    <h2 id="delete-confirm-title">Delete record?</h2>
-+    <p class="modal-copy">This action can&apos;t be undone.</p>
-+    <p id="delete-confirm-context" class="modal-context"></p>
-+    <p id="delete-confirm-error" class="modal-error"></p>
-+    <div class="modal-actions">
-+      <button id="delete-cancel-btn" class="btn" type="button" onclick="closeDeleteDialog()">Cancel</button>
-+      <button id="delete-confirm-btn" class="btn btn-danger" type="button" onclick="confirmDeleteDialog()">Delete</button>
-+    </div>
-+  </div>
-+</div>
- <script>
-+var deleteDialogState = {recordingId: '', inFlight: false, returnFocus: null};
-+
-+function _deleteDialogElements() {
-+  return {
-+    backdrop: document.getElementById('delete-confirm-backdrop'),
-+    context: document.getElementById('delete-confirm-context'),
-+    error: document.getElementById('delete-confirm-error'),
-+    cancelBtn: document.getElementById('delete-cancel-btn'),
-+    confirmBtn: document.getElementById('delete-confirm-btn')
-+  };
-+}
-+
-+function _deleteDialogContext(meta) {
-+  var details = [];
-+  if (meta.recordingLabel) details.push(meta.recordingLabel);
-+  if (meta.capturedAt) details.push(meta.capturedAt);
-+  details.push('ID: ' + meta.recordingId);
-+  return details.join(' | ');
-+}
-+
-+function openDeleteDialog(meta) {
-+  if (!meta || !meta.recordingId) return;
-+  var el = _deleteDialogElements();
-+  if (!el.backdrop) return;
-+  deleteDialogState.recordingId = meta.recordingId;
-+  deleteDialogState.inFlight = false;
-+  deleteDialogState.returnFocus = meta.returnFocus || null;
-+  el.context.textContent = _deleteDialogContext(meta);
-+  el.error.textContent = '';
-+  el.confirmBtn.disabled = false;
-+  el.cancelBtn.disabled = false;
-+  el.confirmBtn.textContent = 'Delete';
-+  el.backdrop.hidden = false;
-+  window.setTimeout(function() {
-+    el.cancelBtn.focus();
-+  }, 0);
-+}
-+
-+function closeDeleteDialog() {
-+  var el = _deleteDialogElements();
-+  if (!el.backdrop || deleteDialogState.inFlight) return;
-+  var focusTarget = deleteDialogState.returnFocus;
-+  el.backdrop.hidden = true;
-+  deleteDialogState.recordingId = '';
-+  deleteDialogState.returnFocus = null;
-+  if (focusTarget && typeof focusTarget.focus === 'function') {
-+    focusTarget.focus();
-+  }
-+}
-+
-+function confirmDeleteDialog() {
-+  var el = _deleteDialogElements();
-+  if (!deleteDialogState.recordingId || deleteDialogState.inFlight) return;
-+  var targetId = deleteDialogState.recordingId;
-+  deleteDialogState.inFlight = true;
-+  el.error.textContent = '';
-+  el.confirmBtn.disabled = true;
-+  el.cancelBtn.disabled = true;
-+  el.confirmBtn.textContent = 'Deleting...';
-+
-+  fetch('/ui/recordings/' + encodeURIComponent(targetId) + '/delete', {
-+    method: 'POST',
-+    headers: {'HX-Request': 'true'}
-+  })
-+    .then(function(resp) {
-+      return resp.text().then(function(body) {
-+        return {resp: resp, body: body};
-+      });
-+    })
-+    .then(function(result) {
-+      if (!result.resp.ok) {
-+        throw new Error(result.body || ('Delete failed (' + result.resp.status + ').'));
-+      }
-+      var redirect = result.resp.headers.get('HX-Redirect');
-+      if (redirect) {
-+        window.location = redirect;
-+        return;
-+      }
-+      window.location = '/recordings';
-+    })
-+    .catch(function(err) {
-+      deleteDialogState.inFlight = false;
-+      el.confirmBtn.disabled = false;
-+      el.cancelBtn.disabled = false;
-+      el.confirmBtn.textContent = 'Delete';
-+      el.error.textContent = err && err.message ? err.message : 'Delete failed.';
-+      el.cancelBtn.focus();
-+    });
-+}
-+
-+if (!window.__deleteDialogEscapeBound) {
-+  document.addEventListener('keydown', function(evt) {
-+    var el = _deleteDialogElements();
-+    if (evt.key === 'Escape' && el.backdrop && !el.backdrop.hidden) {
-+      evt.preventDefault();
-+      closeDeleteDialog();
-+    }
-+  });
-+  window.__deleteDialogEscapeBound = true;
-+}
-+
- function doRecAction(sel) {
-   var act = sel.value;
-   var id = sel.dataset.rid;
-   sel.value = '';
-   if (!act || !id) return;
-   if (act === 'open') { window.location = '/recordings/' + encodeURIComponent(id); return; }
--  var request = {swap: 'none'};
-   if (act === 'delete') {
--    var typed = prompt('Type DELETE to confirm deletion.');
--    if (typed === null) return;
--    if (typed.trim().toUpperCase() !== 'DELETE') return;
--    request.values = {confirm_delete: typed};
-+    openDeleteDialog({
-+      recordingId: id,
-+      recordingLabel: sel.dataset.rlabel || '',
-+      capturedAt: sel.dataset.rcaptured || '',
-+      returnFocus: sel
-+    });
-+    return;
-   } else if (act === 'quarantine' && !confirm('Quarantine this recording?')) {
-     return;
-   }
--  htmx.ajax('POST', '/ui/recordings/' + encodeURIComponent(id) + '/' + act, request);
-+  htmx.ajax('POST', '/ui/recordings/' + encodeURIComponent(id) + '/' + act, {swap: 'none'});
- }
- </script>
- </body>
-diff --git a/lan_app/templates/recording_detail.html b/lan_app/templates/recording_detail.html
-index e67987b..f03ea54 100644
---- a/lan_app/templates/recording_detail.html
-+++ b/lan_app/templates/recording_detail.html
-@@ -7,7 +7,14 @@
- </h1>
- 
- <div class="filters" style="margin-bottom:10px">
--  <select class="action-sel" style="font-size:12px" data-rid="{{ rec.id }}" onchange="doRecAction(this)">
-+  <select
-+    class="action-sel"
-+    style="font-size:12px"
-+    data-rid="{{ rec.id }}"
-+    data-rlabel="{{ rec.source_filename or rec.id }}"
-+    data-rcaptured="{{ rec.captured_at[:19].replace('T',' ') if rec.captured_at else '' }}"
-+    onchange="doRecAction(this)"
-+  >
-     <option value="">Actions…</option>
-     <option value="requeue">Requeue</option>
-     <option value="quarantine">Quarantine</option>
-diff --git a/lan_app/templates/recordings.html b/lan_app/templates/recordings.html
-index ee4a053..fac82e6 100644
---- a/lan_app/templates/recordings.html
-+++ b/lan_app/templates/recordings.html
-@@ -76,7 +76,13 @@
-       <td>{% if r.duration_sec %}{{ r.duration_sec }}s{% else %}—{% endif %}</td>
-       <td>{{ r.source }}</td>
-       <td>
--        <select class="action-sel" data-rid="{{ r.id }}" onchange="doRecAction(this)">
-+        <select
-+          class="action-sel"
-+          data-rid="{{ r.id }}"
-+          data-rlabel="{{ r.source_filename or r.id }}"
-+          data-rcaptured="{{ r.captured_at[:19].replace('T',' ') if r.captured_at else '' }}"
-+          onchange="doRecAction(this)"
-+        >
-           <option value="">Actions</option>
-           <option value="open">Open</option>
-           <option value="requeue">Requeue</option>
+@@ -84,6 +84,7 @@ tr:hover{background:#e8ecf8}
+   <a href="/" {% if active=='dashboard' %}class="active"{% endif %}>Dashboard</a>
+   <a href="/upload" {% if active=='upload' %}class="active"{% endif %}>Upload</a>
+   <a href="/recordings" {% if active=='recordings' %}class="active"{% endif %}>Recordings</a>
++  <a href="/calendars" {% if active=='calendars' %}class="active"{% endif %}>Calendars</a>
+   <a href="/queue" {% if active=='queue' %}class="active"{% endif %}>Queue</a>
+   <a href="/projects" {% if active=='projects' %}class="active"{% endif %}>Projects</a>
+   <a href="/voices" {% if active=='voices' %}class="active"{% endif %}>Voices</a>
 diff --git a/lan_app/ui_routes.py b/lan_app/ui_routes.py
-index 9915cee..75abd81 100644
+index 75abd81..96acbc7 100644
 --- a/lan_app/ui_routes.py
 +++ b/lan_app/ui_routes.py
-@@ -1553,14 +1553,9 @@ async def ui_action_quarantine(recording_id: str) -> Any:
+@@ -6,6 +6,7 @@ Uses Jinja2 templates + HTMX (bundled locally) for a minimal, DB-window-style UI
+ from __future__ import annotations
+ 
+ import asyncio
++from datetime import date, datetime, time, timedelta, timezone
+ import json
+ import shutil
+ import sqlite3
+@@ -28,6 +29,8 @@ from .auth import (
+     set_auth_cookie,
+ )
+ from .config import AppSettings
++from .calendar.ics import validate_ics_url
++from .calendar.service import CalendarSyncError, redacted_calendar_source, sync_calendar_source
+ from .conversation_metrics import refresh_recording_metrics
+ from .constants import (
+     DEFAULT_REQUEUE_JOB_TYPE,
+@@ -39,16 +42,20 @@ from .constants import (
+     RECORDING_STATUS_QUARANTINE,
+ )
+ from .db import (
++    create_calendar_source,
+     count_routing_training_examples,
+     create_voice_sample,
+     create_project,
+     create_voice_profile,
++    get_calendar_source,
+     delete_project,
+     delete_voice_profile,
+     get_meeting_metrics,
+     get_job,
+     get_recording,
+     get_voice_sample,
++    list_calendar_events,
++    list_calendar_sources,
+     list_participant_metrics,
+     list_jobs,
+     list_projects,
+@@ -912,6 +919,74 @@ def _job_counts(settings: AppSettings) -> dict[str, int]:
+     return counts
  
  
- @ui_router.post("/ui/recordings/{recording_id}/delete")
--async def ui_action_delete(
--    recording_id: str,
--    confirm_delete: str = Form(default=""),
--) -> Any:
-+async def ui_action_delete(recording_id: str) -> Any:
-     if get_recording(recording_id, settings=_settings) is None:
-         return HTMLResponse("Not found", status_code=404)
--    if confirm_delete.strip().upper() != "DELETE":
--        return HTMLResponse('Type "DELETE" to confirm deletion.', status_code=422)
-     try:
-         purge_pending_recording_jobs(recording_id, settings=_settings)
-     except Exception as exc:
++def _utc_iso(value: datetime) -> str:
++    return value.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace(
++        "+00:00", "Z"
++    )
++
++
++def _parse_iso_datetime(value: str, *, field_name: str) -> datetime:
++    text = str(value or "").strip()
++    if not text:
++        raise ValueError(f"{field_name} is required")
++    normalized = text[:-1] + "+00:00" if text.endswith("Z") else text
++    try:
++        parsed = datetime.fromisoformat(normalized)
++    except ValueError as exc:
++        raise ValueError(f"{field_name} must be ISO-8601 datetime") from exc
++    if parsed.tzinfo is None:
++        parsed = parsed.replace(tzinfo=timezone.utc)
++    return parsed.astimezone(timezone.utc)
++
++
++def _parse_ymd_date(value: str, *, field_name: str) -> date:
++    text = str(value or "").strip()
++    if not text:
++        raise ValueError(f"{field_name} is required")
++    try:
++        return date.fromisoformat(text)
++    except ValueError as exc:
++        raise ValueError(f"{field_name} must be YYYY-MM-DD") from exc
++
++
++def _calendar_date_range_defaults() -> tuple[str, str]:
++    today = datetime.now(tz=timezone.utc).date()
++    end = today + timedelta(days=7)
++    return today.isoformat(), end.isoformat()
++
++
++def _calendar_page_data(
++    *,
++    date_from: str,
++    date_to: str,
++    source_id: int | None,
++    settings: AppSettings,
++) -> dict[str, Any]:
++    start_date = _parse_ymd_date(date_from, field_name="from")
++    end_date = _parse_ymd_date(date_to, field_name="to")
++    if end_date <= start_date:
++        raise ValueError("to must be after from")
++
++    start_dt = datetime.combine(start_date, time.min, tzinfo=timezone.utc)
++    end_dt = datetime.combine(end_date, time.min, tzinfo=timezone.utc)
++
++    sources_raw = list_calendar_sources(settings=settings)
++    sources = [redacted_calendar_source(row) for row in sources_raw]
++    events = list_calendar_events(
++        starts_from=_utc_iso(start_dt),
++        ends_to=_utc_iso(end_dt),
++        source_id=source_id,
++        settings=settings,
++    )
++    return {
++        "sources": sources,
++        "events": events,
++        "date_from": start_date.isoformat(),
++        "date_to": end_date.isoformat(),
++        "selected_source_id": source_id,
++    }
++
++
+ # ---------------------------------------------------------------------------
+ # UI auth shell
+ # ---------------------------------------------------------------------------
+@@ -1490,6 +1565,94 @@ async def ui_upload(request: Request) -> Any:
+     )
+ 
+ 
++# ---------------------------------------------------------------------------
++# Calendars
++# ---------------------------------------------------------------------------
++
++
++@ui_router.get("/calendars", response_class=HTMLResponse)
++async def ui_calendars(
++    request: Request,
++    from_: str | None = Query(default=None, alias="from"),
++    to: str | None = Query(default=None, alias="to"),
++    source_id: int | None = Query(default=None),
++    error: str = Query(default=""),
++) -> Any:
++    default_from, default_to = _calendar_date_range_defaults()
++    requested_from = from_ or default_from
++    requested_to = to or default_to
++    error_message = error.strip()
++    try:
++        context = _calendar_page_data(
++            date_from=requested_from,
++            date_to=requested_to,
++            source_id=source_id,
++            settings=_settings,
++        )
++    except ValueError as exc:
++        error_message = str(exc)
++        context = _calendar_page_data(
++            date_from=default_from,
++            date_to=default_to,
++            source_id=None,
++            settings=_settings,
++        )
++    context.update(
++        {
++            "active": "calendars",
++            "error_message": error_message,
++        }
++    )
++    return templates.TemplateResponse(request, "calendars.html", context)
++
++
++@ui_router.post("/calendars/sources", response_class=HTMLResponse)
++async def ui_create_calendar_source(
++    name: str = Form(...),
++    kind: str = Form(default="url"),
++    url: str = Form(default=""),
++    file: str = Form(default=""),
++) -> Any:
++    try:
++        normalized_url: str | None = None
++        if kind.strip().lower() == "url":
++            normalized_url = validate_ics_url(url.strip())
++        source = create_calendar_source(
++            name=name.strip(),
++            kind=kind,
++            url=normalized_url,
++            file_ics=file,
++            settings=_settings,
++        )
++        return RedirectResponse(
++            f"/calendars?source_id={int(source.get('id'))}",
++            status_code=303,
++        )
++    except ValueError as exc:
++        return RedirectResponse(
++            f"/calendars?error={quote(str(exc), safe='')}",
++            status_code=303,
++        )
++
++
++@ui_router.post("/calendars/sources/{source_id}/sync", response_class=HTMLResponse)
++async def ui_sync_calendar_source(source_id: int) -> Any:
++    if get_calendar_source(source_id, settings=_settings) is None:
++        return HTMLResponse("Calendar source not found", status_code=404)
++    try:
++        await run_in_threadpool(
++            sync_calendar_source,
++            source_id,
++            settings=_settings,
++        )
++    except CalendarSyncError as exc:
++        return RedirectResponse(
++            f"/calendars?source_id={source_id}&error={quote(str(exc), safe='')}",
++            status_code=303,
++        )
++    return RedirectResponse(f"/calendars?source_id={source_id}", status_code=303)
++
++
+ # ---------------------------------------------------------------------------
+ # Inline recording actions (HTMX targets returning HX-Redirect)
+ # ---------------------------------------------------------------------------
+diff --git a/pyproject.toml b/pyproject.toml
+index 7da418c..18754fa 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -19,6 +19,8 @@ dependencies = [
+     "pyyaml",
+     "pydantic-settings",
+     "rapidfuzz",
++    "icalendar>=6.0",
++    "recurring-ical-events>=3.6",
+ ]
+ 
+ [tool.setuptools.packages.find]
+diff --git a/requirements.in b/requirements.in
+index 7e936da..78d1ef3 100644
+--- a/requirements.in
++++ b/requirements.in
+@@ -21,6 +21,8 @@ tenacity==9.1.2
+ pydantic==2.11.7
+ pydantic-settings==2.10.1
+ rapidfuzz==3.13.0
++icalendar==6.3.1
++recurring-ical-events==3.8.0
+ redis
+ rq
+ 
+diff --git a/requirements.txt b/requirements.txt
+index bd04aee..726bb5c 100644
+--- a/requirements.txt
++++ b/requirements.txt
+@@ -13,6 +13,8 @@ redis
+ rq
+ jinja2>=3.1
+ pydantic-settings>=2.10,<3.0
++icalendar>=6.0
++recurring-ical-events>=3.6
+ python-multipart>=0.0.9
+ prometheus_client>=0.19
+ pyyaml>=6.0
 diff --git a/tasks/QUEUE.md b/tasks/QUEUE.md
-index 98476ea..0b0daa5 100644
+index 0b0daa5..f34f788 100644
 --- a/tasks/QUEUE.md
 +++ b/tasks/QUEUE.md
-@@ -228,7 +228,7 @@ Queue (in order)
- - Depends on: PR-FIX-OMEGACONF-01
- 
- 44) PR-UI-DELETE-CONFIRM-01: Simplify delete confirmation dialog (Yes/No, remove typing DELETE)
--- Status: TODO
-+- Status: DONE
- - Tasks file: tasks/PR-UI-DELETE-CONFIRM-01.md
+@@ -233,6 +233,6 @@ Queue (in order)
  - Depends on: PR-FIX-CTRANSLATE2-EXECSTACK-02
  
+ 45) PR-CALENDAR-ICS-01: Calendar import via ICS (URL subscription and optional file upload)
+-- Status: TODO
++- Status: DOING
+ - Tasks file: tasks/PR-CALENDAR-ICS-01.md
+ - Depends on: PR-UI-DELETE-CONFIRM-01
+diff --git a/tests/test_db_queue.py b/tests/test_db_queue.py
+index 88be666..f4d5310 100644
+--- a/tests/test_db_queue.py
++++ b/tests/test_db_queue.py
+@@ -88,6 +88,8 @@ def test_init_db_creates_mvp_tables(tmp_path: Path):
+         "voice_profiles",
+         "speaker_assignments",
+         "voice_samples",
++        "calendar_sources",
++        "calendar_events",
+         "calendar_matches",
+         "meeting_metrics",
+         "participant_metrics",
 diff --git a/tests/test_ui_routes.py b/tests/test_ui_routes.py
-index d47f26c..d12fa85 100644
+index d12fa85..0cc5a38 100644
 --- a/tests/test_ui_routes.py
 +++ b/tests/test_ui_routes.py
-@@ -146,6 +146,10 @@ def test_recordings_with_data(seeded_client):
-     r = seeded_client.get("/recordings")
-     assert r.status_code == 200
-     assert "meeting.mp3" in r.text
-+    assert "Delete record?" in r.text
-+    assert 'id="delete-confirm-backdrop"' in r.text
-+    assert 'data-rlabel="meeting.mp3"' in r.text
-+    assert "Type DELETE to confirm deletion." not in r.text
+@@ -2,6 +2,7 @@
  
+ from __future__ import annotations
  
- def test_recordings_list_shows_progress_column_and_percent(tmp_path, monkeypatch):
-@@ -202,6 +206,8 @@ def test_recording_detail_overview(seeded_client):
-     assert "rec-ui-1" in r.text
-     assert "meeting.mp3" in r.text
-     assert "Ready" in r.text
-+    assert 'data-rid="rec-ui-1"' in r.text
-+    assert 'data-rlabel="meeting.mp3"' in r.text
++from datetime import datetime, timedelta, timezone
+ import json
+ from pathlib import Path
  
- 
- def test_recording_detail_processing_polls_progress(tmp_path, monkeypatch):
-@@ -921,7 +927,6 @@ def test_ui_login_sets_cookie_and_allows_protected_post(tmp_path, monkeypatch):
-     c = TestClient(api.app, follow_redirects=False)
-     blocked = c.post(
-         "/ui/recordings/rec-auth-ui-1/delete",
--        data={"confirm_delete": "DELETE"},
-     )
-     assert blocked.status_code == 401
- 
-@@ -934,7 +939,6 @@ def test_ui_login_sets_cookie_and_allows_protected_post(tmp_path, monkeypatch):
- 
-     allowed = c.post(
-         "/ui/recordings/rec-auth-ui-1/delete",
--        data={"confirm_delete": "DELETE"},
-     )
-     assert allowed.status_code == 200
- 
-@@ -1004,7 +1008,7 @@ def test_ui_action_delete(tmp_path, monkeypatch):
- 
-     monkeypatch.setattr(ui_routes, "purge_pending_recording_jobs", _fake_purge)
-     c = TestClient(api.app, follow_redirects=False)
--    r = c.post("/ui/recordings/rec-del-1/delete", data={"confirm_delete": "DELETE"})
-+    r = c.post("/ui/recordings/rec-del-1/delete")
-     assert r.status_code in (200, 307, 302)
- 
- 
-@@ -1013,7 +1017,7 @@ def test_ui_action_delete_not_found(client):
-     assert r.status_code == 404
- 
- 
--def test_ui_action_delete_requires_confirmation(tmp_path, monkeypatch):
-+def test_ui_action_delete_does_not_require_confirmation(tmp_path, monkeypatch):
-     cfg = _cfg(tmp_path)
-     monkeypatch.setattr(api, "_settings", cfg)
-     monkeypatch.setattr(ui_routes, "_settings", cfg)
-@@ -1027,8 +1031,8 @@ def test_ui_action_delete_requires_confirmation(tmp_path, monkeypatch):
- 
-     c = TestClient(api.app, follow_redirects=False)
-     r = c.post("/ui/recordings/rec-del-confirm-1/delete")
--    assert r.status_code == 422
--    assert 'Type "DELETE"' in r.text
-+    assert r.status_code in (200, 307, 302)
-+    assert get_recording("rec-del-confirm-1", settings=cfg) is None
- 
- 
- def test_ui_action_requeue(tmp_path, monkeypatch):
-@@ -1344,7 +1348,7 @@ def test_ui_action_delete_purge_failure_returns_503(tmp_path, monkeypatch):
- 
-     monkeypatch.setattr(ui_routes, "purge_pending_recording_jobs", _fail_purge)
-     c = TestClient(api.app, follow_redirects=False)
--    r = c.post("/ui/recordings/rec-pf-1/delete", data={"confirm_delete": "DELETE"})
-+    r = c.post("/ui/recordings/rec-pf-1/delete")
-     assert r.status_code == 503
-     assert "redis down" in r.text
- 
-@@ -1364,7 +1368,7 @@ def test_ui_action_delete_removes_disk_artifacts(tmp_path, monkeypatch):
- 
-     monkeypatch.setattr(ui_routes, "purge_pending_recording_jobs", _fake_purge)
-     c = TestClient(api.app, follow_redirects=False)
--    c.post("/ui/recordings/rec-disk-1/delete", data={"confirm_delete": "DELETE"})
-+    c.post("/ui/recordings/rec-disk-1/delete")
-     assert not rec_dir.exists()
- 
- 
-@@ -1394,7 +1398,7 @@ def test_ui_action_delete_cascades_voice_samples_for_recording(tmp_path, monkeyp
- 
-     monkeypatch.setattr(ui_routes, "purge_pending_recording_jobs", _fake_purge)
-     c = TestClient(api.app, follow_redirects=False)
--    r = c.post("/ui/recordings/rec-del-sample-1/delete", data={"confirm_delete": "DELETE"})
-+    r = c.post("/ui/recordings/rec-del-sample-1/delete")
-     assert r.status_code in (200, 307, 302)
-     assert list_voice_samples(settings=cfg) == []
- 
+@@ -12,6 +13,7 @@ from lan_app import api, ui_routes
+ from lan_app.auth import AUTH_COOKIE_NAME
+ from lan_app.config import AppSettings
+ from lan_app.db import (
++    create_calendar_source,
+     count_routing_training_examples,
+     create_voice_sample,
+     create_job,
+@@ -23,7 +25,9 @@ from lan_app.db import (
+     list_voice_samples,
+     init_db,
+     list_projects,
++    list_calendar_sources,
+     list_project_keyword_weights,
++    replace_calendar_events_for_window,
+     replace_participant_metrics,
+     list_voice_profiles,
+     set_recording_progress,
+@@ -1536,3 +1540,94 @@ def test_db_create_and_list_voice_samples(tmp_path):
+     filtered = list_voice_samples(voice_profile_id=profile["id"], settings=cfg)
+     assert len(filtered) == 1
+     assert filtered[0]["diar_speaker_label"] == "S1"
++
++
++def test_calendars_page_renders_seeded_sources_and_events(tmp_path, monkeypatch):
++    cfg = _cfg(tmp_path)
++    monkeypatch.setattr(api, "_settings", cfg)
++    monkeypatch.setattr(ui_routes, "_settings", cfg)
++    init_db(cfg)
++    source = create_calendar_source(
++        name="Local Team Calendar",
++        kind="file",
++        file_ics="BEGIN:VCALENDAR\nEND:VCALENDAR",
++        settings=cfg,
++    )
++    replace_calendar_events_for_window(
++        source_id=int(source["id"]),
++        window_start="2026-02-01T00:00:00Z",
++        window_end="2026-02-10T00:00:00Z",
++        events=[
++            {
++                "uid": "evt-seeded-1",
++                "starts_at": "2026-02-03T10:00:00Z",
++                "ends_at": "2026-02-03T11:00:00Z",
++                "all_day": False,
++                "summary": "Seeded calendar event",
++                "location": "Room 5",
++                "description": "fixture",
++                "organizer": "Alex",
++                "updated_at": "2026-02-01T00:00:00Z",
++            }
++        ],
++        settings=cfg,
++    )
++
++    c = TestClient(api.app, follow_redirects=True)
++    response = c.get("/calendars?from=2026-02-01&to=2026-02-10")
++    assert response.status_code == 200
++    assert "Calendars" in response.text
++    assert "Local Team Calendar" in response.text
++    assert "Seeded calendar event" in response.text
++
++
++def test_calendars_create_and_sync_file_source(tmp_path, monkeypatch):
++    cfg = _cfg(tmp_path)
++    monkeypatch.setattr(api, "_settings", cfg)
++    monkeypatch.setattr(ui_routes, "_settings", cfg)
++    init_db(cfg)
++    now = datetime.now(tz=timezone.utc).replace(minute=0, second=0, microsecond=0)
++    starts_at = now + timedelta(days=1)
++    ends_at = starts_at + timedelta(hours=1)
++    file_payload = "\n".join(
++        [
++            "BEGIN:VCALENDAR",
++            "VERSION:2.0",
++            "PRODID:-//LAN Transcriber//UI Calendar Test//EN",
++            "BEGIN:VEVENT",
++            "UID:ui-event-1",
++            f"DTSTART:{starts_at.strftime('%Y%m%dT%H%M%SZ')}",
++            f"DTEND:{ends_at.strftime('%Y%m%dT%H%M%SZ')}",
++            "SUMMARY:UI Sync Event",
++            "LOCATION:Room 2",
++            "END:VEVENT",
++            "END:VCALENDAR",
++        ]
++    )
++
++    c = TestClient(api.app, follow_redirects=False)
++    created = c.post(
++        "/calendars/sources",
++        data={
++            "name": "UI File Calendar",
++            "kind": "file",
++            "file": file_payload,
++        },
++    )
++    assert created.status_code == 303
++    assert created.headers["location"].startswith("/calendars?source_id=")
++
++    sources = list_calendar_sources(settings=cfg)
++    assert len(sources) == 1
++    source_id = int(sources[0]["id"])
++
++    synced = c.post(f"/calendars/sources/{source_id}/sync")
++    assert synced.status_code == 303
++    assert synced.headers["location"] == f"/calendars?source_id={source_id}"
++
++    sources_after = list_calendar_sources(settings=cfg)
++    assert sources_after[0]["last_synced_at"]
++
++    page = TestClient(api.app, follow_redirects=True).get("/calendars")
++    assert page.status_code == 200
++    assert "UI Sync Event" in page.text
+diff --git a/lan_app/calendar/__init__.py b/lan_app/calendar/__init__.py
+new file mode 100644
+index 0000000..7fa9ca6
+--- /dev/null
++++ b/lan_app/calendar/__init__.py
+@@ -0,0 +1,19 @@
++from .ics import CalendarFetchError, CalendarParseError, fetch_ics_url, parse_ics_events, validate_ics_url
++from .service import (
++    CalendarSyncError,
++    calendar_expansion_window,
++    redacted_calendar_source,
++    sync_calendar_source,
++)
++
++__all__ = [
++    "CalendarFetchError",
++    "CalendarParseError",
++    "CalendarSyncError",
++    "fetch_ics_url",
++    "parse_ics_events",
++    "validate_ics_url",
++    "calendar_expansion_window",
++    "redacted_calendar_source",
++    "sync_calendar_source",
++]
+diff --git a/lan_app/calendar/ics.py b/lan_app/calendar/ics.py
+new file mode 100644
+index 0000000..bee671a
+--- /dev/null
++++ b/lan_app/calendar/ics.py
+@@ -0,0 +1,274 @@
++from __future__ import annotations
++
++from datetime import date, datetime, time, timedelta, timezone
++import ipaddress
++import socket
++from typing import Any
++from urllib.parse import urljoin, urlsplit
++
++import httpx
++from icalendar import Calendar
++import recurring_ical_events
++
++
++class CalendarFetchError(RuntimeError):
++    """Raised when calendar content cannot be fetched from a URL source."""
++
++
++class CalendarParseError(ValueError):
++    """Raised when ICS content cannot be parsed into event instances."""
++
++
++_REDIRECT_STATUS_CODES = {301, 302, 303, 307, 308}
++
++
++def _utc_iso(value: datetime) -> str:
++    return value.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace(
++        "+00:00", "Z"
++    )
++
++
++def _coerce_utc_datetime(value: date | datetime) -> datetime:
++    if isinstance(value, datetime):
++        if value.tzinfo is None:
++            return value.replace(tzinfo=timezone.utc)
++        return value.astimezone(timezone.utc)
++    return datetime.combine(value, time.min, tzinfo=timezone.utc)
++
++
++def _is_loopback_hostname(hostname: str) -> bool:
++    normalized = hostname.strip().lower().rstrip(".")
++    if normalized == "localhost" or normalized.endswith(".localhost"):
++        return True
++    try:
++        return ipaddress.ip_address(normalized).is_loopback
++    except ValueError:
++        return False
++
++
++def _resolves_only_loopback(hostname: str) -> bool:
++    try:
++        addr_info = socket.getaddrinfo(hostname, None)
++    except socket.gaierror:
++        return False
++    seen: list[ipaddress.IPv4Address | ipaddress.IPv6Address] = []
++    for _family, _socktype, _proto, _canonname, sockaddr in addr_info:
++        raw_ip = str(sockaddr[0]).split("%", 1)[0]
++        try:
++            seen.append(ipaddress.ip_address(raw_ip))
++        except ValueError:
++            continue
++    return bool(seen) and all(item.is_loopback for item in seen)
++
++
++def validate_ics_url(raw_url: str) -> str:
++    url = str(raw_url or "").strip()
++    if not url:
++        raise ValueError("ICS URL is required")
++    parts = urlsplit(url)
++    scheme = parts.scheme.lower()
++    if scheme not in {"http", "https"}:
++        raise ValueError("ICS URL must use http or https")
++    if parts.username or parts.password:
++        raise ValueError("ICS URL must not include credentials")
++    if not parts.hostname:
++        raise ValueError("ICS URL must include a host")
++    if _is_loopback_hostname(parts.hostname) or _resolves_only_loopback(parts.hostname):
++        raise ValueError("ICS URL host must not resolve to localhost/loopback")
++    return parts.geturl()
++
++
++def fetch_ics_url(
++    url: str,
++    *,
++    timeout_seconds: float,
++    max_bytes: int,
++    max_redirects: int,
++) -> bytes:
++    current_url = validate_ics_url(url)
++    redirects = 0
++    timeout = httpx.Timeout(timeout_seconds)
++    headers = {"Accept": "text/calendar,text/plain;q=0.9,*/*;q=0.8"}
++    with httpx.Client(timeout=timeout, follow_redirects=False) as client:
++        while True:
++            try:
++                with client.stream("GET", current_url, headers=headers) as response:
++                    if response.status_code in _REDIRECT_STATUS_CODES:
++                        location = response.headers.get("location")
++                        if not location:
++                            raise CalendarFetchError("Calendar redirect did not provide a location")
++                        if redirects >= max_redirects:
++                            raise CalendarFetchError("Calendar fetch exceeded redirect limit")
++                        current_url = validate_ics_url(urljoin(current_url, location))
++                        redirects += 1
++                        continue
++                    response.raise_for_status()
++                    chunks: list[bytes] = []
++                    total_bytes = 0
++                    for chunk in response.iter_bytes():
++                        if not chunk:
++                            continue
++                        total_bytes += len(chunk)
++                        if total_bytes > max_bytes:
++                            raise CalendarFetchError("Calendar feed exceeded maximum allowed size")
++                        chunks.append(chunk)
++                    return b"".join(chunks)
++            except httpx.TimeoutException as exc:
++                raise CalendarFetchError("Calendar fetch timed out") from exc
++            except httpx.HTTPStatusError as exc:
++                status_code = int(exc.response.status_code)
++                raise CalendarFetchError(f"Calendar fetch failed with HTTP {status_code}") from exc
++            except httpx.HTTPError as exc:
++                raise CalendarFetchError("Calendar fetch failed") from exc
++
++
++def _property_text(component: Any, key: str) -> str | None:
++    value = component.get(key)
++    if value is None:
++        return None
++    text = str(value).strip()
++    return text or None
++
++
++def _organizer_text(component: Any) -> str | None:
++    organizer = component.get("ORGANIZER")
++    if organizer is None:
++        return None
++    params = getattr(organizer, "params", {})
++    cn = params.get("CN")
++    if cn:
++        value = str(cn).strip()
++        if value:
++            return value
++    raw = str(organizer).strip()
++    if raw.lower().startswith("mailto:"):
++        raw = raw[7:]
++    return raw or None
++
++
++def _updated_at_text(component: Any, *, fallback: str) -> str:
++    for key in ("LAST-MODIFIED", "DTSTAMP"):
++        try:
++            decoded = component.decoded(key)
++        except KeyError:
++            continue
++        except Exception:
++            continue
++        if isinstance(decoded, (date, datetime)):
++            return _utc_iso(_coerce_utc_datetime(decoded))
++    return fallback
++
++
++def _normalise_event(component: Any, *, fallback_updated_at: str) -> dict[str, Any] | None:
++    uid = str(component.get("UID") or "").strip()
++    if not uid:
++        return None
++    status = str(component.get("STATUS") or "").strip().upper()
++    if status == "CANCELLED":
++        return None
++
++    try:
++        dtstart_raw = component.decoded("DTSTART")
++    except KeyError:
++        return None
++    except Exception as exc:  # pragma: no cover - defensive parsing
++        raise CalendarParseError("Unable to decode DTSTART") from exc
++
++    all_day = isinstance(dtstart_raw, date) and not isinstance(dtstart_raw, datetime)
++    starts_at = _coerce_utc_datetime(dtstart_raw)
++
++    dtend_raw: date | datetime | None = None
++    try:
++        dtend_raw = component.decoded("DTEND")
++    except KeyError:
++        dtend_raw = None
++    except Exception as exc:  # pragma: no cover - defensive parsing
++        raise CalendarParseError("Unable to decode DTEND") from exc
++
++    if all_day:
++        if dtend_raw is None:
++            ends_at = starts_at + timedelta(days=1)
++        else:
++            ends_at = _coerce_utc_datetime(dtend_raw)
++            if ends_at <= starts_at:
++                ends_at = starts_at + timedelta(days=1)
++    else:
++        if dtend_raw is not None:
++            ends_at = _coerce_utc_datetime(dtend_raw)
++        else:
++            duration_raw = None
++            try:
++                duration_raw = component.decoded("DURATION")
++            except KeyError:
++                duration_raw = None
++            except Exception as exc:  # pragma: no cover - defensive parsing
++                raise CalendarParseError("Unable to decode DURATION") from exc
++            if isinstance(duration_raw, timedelta):
++                ends_at = starts_at + duration_raw
++            else:
++                ends_at = starts_at + timedelta(hours=1)
++            if ends_at <= starts_at:
++                ends_at = starts_at + timedelta(minutes=1)
++
++    return {
++        "uid": uid,
++        "starts_at": _utc_iso(starts_at),
++        "ends_at": _utc_iso(ends_at),
++        "all_day": all_day,
++        "summary": _property_text(component, "SUMMARY"),
++        "description": _property_text(component, "DESCRIPTION"),
++        "location": _property_text(component, "LOCATION"),
++        "organizer": _organizer_text(component),
++        "updated_at": _updated_at_text(component, fallback=fallback_updated_at),
++    }
++
++
++def parse_ics_events(
++    payload: str | bytes,
++    *,
++    window_start: datetime,
++    window_end: datetime,
++    synced_at: datetime | None = None,
++) -> list[dict[str, Any]]:
++    start_utc = _coerce_utc_datetime(window_start)
++    end_utc = _coerce_utc_datetime(window_end)
++    if end_utc <= start_utc:
++        raise ValueError("window_end must be after window_start")
++
++    try:
++        calendar = Calendar.from_ical(payload)
++    except Exception as exc:
++        raise CalendarParseError("ICS payload could not be parsed") from exc
++
++    try:
++        expanded_events = recurring_ical_events.of(calendar).between(start_utc, end_utc)
++    except Exception as exc:
++        raise CalendarParseError("ICS recurrence expansion failed") from exc
++
++    fallback_updated_at = _utc_iso(synced_at or datetime.now(tz=timezone.utc))
++    by_key: dict[tuple[str, str], dict[str, Any]] = {}
++    for component in expanded_events:
++        if str(getattr(component, "name", "")).upper() != "VEVENT":
++            continue
++        row = _normalise_event(component, fallback_updated_at=fallback_updated_at)
++        if row is None:
++            continue
++        key = (str(row["uid"]), str(row["starts_at"]))
++        by_key[key] = row
++
++    return sorted(
++        by_key.values(),
++        key=lambda row: (
++            str(row.get("starts_at") or ""),
++            str(row.get("uid") or ""),
++        ),
++    )
++
++
++__all__ = [
++    "CalendarFetchError",
++    "CalendarParseError",
++    "fetch_ics_url",
++    "parse_ics_events",
++    "validate_ics_url",
++]
+diff --git a/lan_app/calendar/service.py b/lan_app/calendar/service.py
+new file mode 100644
+index 0000000..5f46bc7
+--- /dev/null
++++ b/lan_app/calendar/service.py
+@@ -0,0 +1,157 @@
++from __future__ import annotations
++
++from datetime import datetime, timedelta, timezone
++from typing import Any
++from urllib.parse import urlsplit
++
++from lan_app.config import AppSettings
++from lan_app.db import (
++    get_calendar_source,
++    replace_calendar_events_for_window,
++    update_calendar_source_sync_state,
++)
++
++from .ics import CalendarFetchError, CalendarParseError, fetch_ics_url, parse_ics_events, validate_ics_url
++
++
++class CalendarSyncError(RuntimeError):
++    """Raised when a source sync cannot complete."""
++
++
++def _utc_iso(value: datetime) -> str:
++    return value.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace(
++        "+00:00", "Z"
++    )
++
++
++def calendar_expansion_window(
++    settings: AppSettings,
++    *,
++    now: datetime | None = None,
++) -> tuple[datetime, datetime]:
++    anchor = (now or datetime.now(tz=timezone.utc)).astimezone(timezone.utc)
++    past_days = max(0, int(settings.calendar_expand_past_days))
++    future_days = max(1, int(settings.calendar_expand_future_days))
++    start = (anchor - timedelta(days=past_days)).replace(
++        hour=0,
++        minute=0,
++        second=0,
++        microsecond=0,
++    )
++    end = (anchor + timedelta(days=future_days + 1)).replace(
++        hour=0,
++        minute=0,
++        second=0,
++        microsecond=0,
++    )
++    return start, end
++
++
++def redacted_calendar_source(source: dict[str, Any]) -> dict[str, Any]:
++    kind = str(source.get("kind") or "").strip().lower()
++    url_raw = str(source.get("url") or "").strip()
++    url_host = ""
++    if url_raw:
++        try:
++            url_host = str(urlsplit(url_raw).hostname or "").strip()
++        except ValueError:
++            url_host = ""
++    return {
++        "id": source.get("id"),
++        "name": source.get("name"),
++        "kind": kind,
++        "created_at": source.get("created_at"),
++        "last_synced_at": source.get("last_synced_at"),
++        "last_error": source.get("last_error"),
++        "url_configured": bool(url_raw),
++        "url_host": url_host or None,
++        "file_configured": bool(str(source.get("file_ics") or "").strip()),
++    }
++
++
++def _source_payload_for_sync(source: dict[str, Any], settings: AppSettings) -> bytes:
++    kind = str(source.get("kind") or "").strip().lower()
++    if kind == "url":
++        raw_url = str(source.get("url") or "").strip()
++        if not raw_url:
++            raise CalendarSyncError("Calendar source URL is not configured")
++        valid_url = validate_ics_url(raw_url)
++        try:
++            return fetch_ics_url(
++                valid_url,
++                timeout_seconds=float(settings.calendar_fetch_timeout_seconds),
++                max_bytes=int(settings.calendar_fetch_max_bytes),
++                max_redirects=int(settings.calendar_fetch_max_redirects),
++            )
++        except CalendarFetchError as exc:
++            raise CalendarSyncError(str(exc)) from exc
++    if kind == "file":
++        payload = str(source.get("file_ics") or "").strip()
++        if not payload:
++            raise CalendarSyncError("Calendar source file payload is empty")
++        return payload.encode("utf-8")
++    raise CalendarSyncError("Calendar source kind is unsupported")
++
++
++def sync_calendar_source(
++    source_id: int,
++    *,
++    settings: AppSettings,
++) -> dict[str, Any]:
++    source = get_calendar_source(source_id, settings=settings)
++    if source is None:
++        raise KeyError(source_id)
++
++    now = datetime.now(tz=timezone.utc)
++    window_start_dt, window_end_dt = calendar_expansion_window(settings, now=now)
++    window_start = _utc_iso(window_start_dt)
++    window_end = _utc_iso(window_end_dt)
++    synced_at = _utc_iso(now)
++
++    try:
++        payload = _source_payload_for_sync(source, settings)
++        try:
++            events = parse_ics_events(
++                payload,
++                window_start=window_start_dt,
++                window_end=window_end_dt,
++                synced_at=now,
++            )
++        except CalendarParseError as exc:
++            raise CalendarSyncError(str(exc)) from exc
++        stored_count = replace_calendar_events_for_window(
++            source_id=int(source_id),
++            window_start=window_start,
++            window_end=window_end,
++            events=events,
++            settings=settings,
++        )
++        update_calendar_source_sync_state(
++            int(source_id),
++            last_synced_at=synced_at,
++            last_error=None,
++            settings=settings,
++        )
++    except CalendarSyncError as exc:
++        update_calendar_source_sync_state(
++            int(source_id),
++            last_error=str(exc)[:1000],
++            settings=settings,
++        )
++        raise
++
++    return {
++        "source_id": int(source_id),
++        "window_start": window_start,
++        "window_end": window_end,
++        "events_count": stored_count,
++        "synced_at": synced_at,
++    }
++
++
++__all__ = [
++    "CalendarSyncError",
++    "calendar_expansion_window",
++    "redacted_calendar_source",
++    "sync_calendar_source",
++]
+diff --git a/lan_app/migrations/013_add_calendar_ics_tables.sql b/lan_app/migrations/013_add_calendar_ics_tables.sql
+new file mode 100644
+index 0000000..f859f5a
+--- /dev/null
++++ b/lan_app/migrations/013_add_calendar_ics_tables.sql
+@@ -0,0 +1,35 @@
++CREATE TABLE IF NOT EXISTS calendar_sources (
++    id INTEGER PRIMARY KEY AUTOINCREMENT,
++    name TEXT NOT NULL,
++    kind TEXT NOT NULL CHECK(kind IN ('url', 'file')),
++    url TEXT,
++    file_ics TEXT,
++    created_at TEXT NOT NULL,
++    last_synced_at TEXT,
++    last_error TEXT,
++    CHECK(
++        (kind = 'url' AND url IS NOT NULL AND LENGTH(TRIM(url)) > 0)
++        OR (kind = 'file' AND file_ics IS NOT NULL AND LENGTH(file_ics) > 0)
++    )
++);
++
++CREATE TABLE IF NOT EXISTS calendar_events (
++    id INTEGER PRIMARY KEY AUTOINCREMENT,
++    source_id INTEGER NOT NULL,
++    uid TEXT NOT NULL,
++    starts_at TEXT NOT NULL,
++    ends_at TEXT NOT NULL,
++    all_day INTEGER NOT NULL CHECK(all_day IN (0, 1)),
++    summary TEXT,
++    description TEXT,
++    location TEXT,
++    organizer TEXT,
++    updated_at TEXT NOT NULL,
++    FOREIGN KEY(source_id) REFERENCES calendar_sources(id) ON DELETE CASCADE,
++    UNIQUE(source_id, uid, starts_at)
++);
++
++CREATE INDEX IF NOT EXISTS idx_calendar_events_source_starts
++    ON calendar_events(source_id, starts_at);
++CREATE INDEX IF NOT EXISTS idx_calendar_events_starts
++    ON calendar_events(starts_at);
+diff --git a/lan_app/templates/calendars.html b/lan_app/templates/calendars.html
+new file mode 100644
+index 0000000..3557932
+--- /dev/null
++++ b/lan_app/templates/calendars.html
+@@ -0,0 +1,137 @@
++{% extends "base.html" %}
++{% block title %}Calendars – LAN Transcriber{% endblock %}
++{% block content %}
++<h1>Calendars</h1>
++
++{% if error_message %}
++<div style="background:#fee;border:1px solid #f99;color:#700;padding:8px 10px;margin-bottom:10px;max-width:780px">
++  {{ error_message }}
++</div>
++{% endif %}
++
++<div class="section">
++  <h2>Add Source</h2>
++  <form method="post" action="/calendars/sources" style="background:#fff;border:1px solid #ccc;padding:10px;max-width:780px">
++    <div class="form-row">
++      <label for="calendar-source-name">Name</label>
++      <input id="calendar-source-name" name="name" type="text" required style="min-width:320px">
++    </div>
++    <div class="form-row">
++      <label for="calendar-source-kind">Type</label>
++      <select id="calendar-source-kind" name="kind" onchange="toggleCalendarSourceFields(this.value)">
++        <option value="url" selected>URL</option>
++        <option value="file">File Text</option>
++      </select>
++    </div>
++    <div class="form-row" id="calendar-source-url-row">
++      <label for="calendar-source-url">URL</label>
++      <input id="calendar-source-url" name="url" type="url" placeholder="https://example.com/calendar.ics" style="min-width:520px">
++    </div>
++    <div class="form-row" id="calendar-source-file-row" style="display:none;align-items:flex-start">
++      <label for="calendar-source-file">ICS text</label>
++      <textarea id="calendar-source-file" name="file" rows="6" style="min-width:520px"></textarea>
++    </div>
++    <button class="btn" type="submit">Save source</button>
++  </form>
++</div>
++
++<div class="section">
++  <h2>Sources</h2>
++  {% if sources %}
++  <table>
++    <thead>
++      <tr>
++        <th>Name</th>
++        <th>Type</th>
++        <th>Configured</th>
++        <th>Last sync</th>
++        <th>Last error</th>
++        <th>Action</th>
++      </tr>
++    </thead>
++    <tbody>
++      {% for source in sources %}
++      <tr>
++        <td>{{ source.name }}</td>
++        <td>{{ source.kind }}</td>
++        <td>
++          {% if source.kind == "url" %}
++          {% if source.url_configured %}{{ source.url_host or "Configured" }}{% else %}Missing{% endif %}
++          {% else %}
++          {% if source.file_configured %}Configured{% else %}Missing{% endif %}
++          {% endif %}
++        </td>
++        <td>{{ source.last_synced_at[:19].replace('T', ' ') if source.last_synced_at else '—' }}</td>
++        <td title="{{ source.last_error or '' }}">{{ source.last_error or '—' }}</td>
++        <td>
++          <form method="post" action="/calendars/sources/{{ source.id }}/sync">
++            <button class="btn" type="submit">Sync now</button>
++          </form>
++        </td>
++      </tr>
++      {% endfor %}
++    </tbody>
++  </table>
++  {% else %}
++  <p class="placeholder">No calendar sources configured.</p>
++  {% endif %}
++</div>
++
++<div class="section">
++  <h2>Events</h2>
++  <form class="filters" method="get" action="/calendars">
++    <label for="events-from">From</label>
++    <input id="events-from" type="date" name="from" value="{{ date_from }}">
++    <label for="events-to">To</label>
++    <input id="events-to" type="date" name="to" value="{{ date_to }}">
++    <label for="events-source-id">Source</label>
++    <select id="events-source-id" name="source_id">
++      <option value="">All</option>
++      {% for source in sources %}
++      <option value="{{ source.id }}" {% if selected_source_id == source.id %}selected{% endif %}>{{ source.name }}</option>
++      {% endfor %}
++    </select>
++    <button class="btn" type="submit">Load</button>
++  </form>
++
++  {% if events %}
++  <table>
++    <thead>
++      <tr>
++        <th>Start</th>
++        <th>End</th>
++        <th>Summary</th>
++        <th>Location</th>
++        <th>Source</th>
++      </tr>
++    </thead>
++    <tbody>
++      {% for event in events %}
++      <tr>
++        <td>{{ event.starts_at[:19].replace('T', ' ') }}</td>
++        <td>{{ event.ends_at[:19].replace('T', ' ') }}</td>
++        <td title="{{ event.summary or '' }}">{{ event.summary or '—' }}</td>
++        <td title="{{ event.location or '' }}">{{ event.location or '—' }}</td>
++        <td>{{ event.source_name or ('#' ~ event.source_id) }}</td>
++      </tr>
++      {% endfor %}
++    </tbody>
++  </table>
++  {% else %}
++  <p class="placeholder">No events in this date range.</p>
++  {% endif %}
++</div>
++
++<script>
++function toggleCalendarSourceFields(kind) {
++  var isFile = kind === "file";
++  var urlRow = document.getElementById("calendar-source-url-row");
++  var fileRow = document.getElementById("calendar-source-file-row");
++  if (!urlRow || !fileRow) {
++    return;
++  }
++  urlRow.style.display = isFile ? "none" : "flex";
++  fileRow.style.display = isFile ? "flex" : "none";
++}
++</script>
++{% endblock %}
+diff --git a/tests/fixtures/calendar_recurrence.ics b/tests/fixtures/calendar_recurrence.ics
+new file mode 100644
+index 0000000..5d044db
+--- /dev/null
++++ b/tests/fixtures/calendar_recurrence.ics
+@@ -0,0 +1,13 @@
++BEGIN:VCALENDAR
++VERSION:2.0
++PRODID:-//LAN Transcriber//Calendar Test//EN
++BEGIN:VEVENT
++UID:weekly-event-1
++DTSTAMP:20260120T090000Z
++DTSTART:20260201T120000Z
++DTEND:20260201T123000Z
++RRULE:FREQ=WEEKLY;COUNT=6
++SUMMARY:Weekly Planning
++LOCATION:Call
++END:VEVENT
++END:VCALENDAR
+diff --git a/tests/fixtures/calendar_timezone.ics b/tests/fixtures/calendar_timezone.ics
+new file mode 100644
+index 0000000..dc69f98
+--- /dev/null
++++ b/tests/fixtures/calendar_timezone.ics
+@@ -0,0 +1,14 @@
++BEGIN:VCALENDAR
++VERSION:2.0
++PRODID:-//LAN Transcriber//Calendar Test//EN
++BEGIN:VEVENT
++UID:tz-event-1
++DTSTAMP:20260201T120000Z
++DTSTART;TZID=Europe/Berlin:20260210T090000
++DTEND;TZID=Europe/Berlin:20260210T100000
++SUMMARY:Berlin Sync
++DESCRIPTION:Timezone test fixture
++LOCATION:Room 7
++ORGANIZER;CN=Alice Example:mailto:alice@example.com
++END:VEVENT
++END:VCALENDAR
+diff --git a/tests/test_calendar_ics.py b/tests/test_calendar_ics.py
+new file mode 100644
+index 0000000..6cad55d
+--- /dev/null
++++ b/tests/test_calendar_ics.py
+@@ -0,0 +1,149 @@
++from __future__ import annotations
++
++from datetime import datetime, timedelta, timezone
++from pathlib import Path
++
++from fastapi.testclient import TestClient
++import pytest
++
++from lan_app import api
++from lan_app.calendar import service as calendar_service
++from lan_app.calendar.ics import parse_ics_events
++from lan_app.config import AppSettings
++from lan_app.db import init_db
++
++
++def _cfg(tmp_path: Path) -> AppSettings:
++    cfg = AppSettings(
++        data_root=tmp_path,
++        recordings_root=tmp_path / "recordings",
++        db_path=tmp_path / "db" / "app.db",
++    )
++    cfg.metrics_snapshot_path = tmp_path / "metrics.snap"
++    return cfg
++
++
++def test_parse_ics_timezone_fixture_expands_to_utc():
++    payload = (Path(__file__).parent / "fixtures" / "calendar_timezone.ics").read_text(
++        encoding="utf-8"
++    )
++    events = parse_ics_events(
++        payload,
++        window_start=datetime(2026, 2, 1, tzinfo=timezone.utc),
++        window_end=datetime(2026, 2, 20, tzinfo=timezone.utc),
++    )
++    assert len(events) == 1
++    assert events[0]["uid"] == "tz-event-1"
++    assert events[0]["starts_at"] == "2026-02-10T08:00:00Z"
++    assert events[0]["ends_at"] == "2026-02-10T09:00:00Z"
++    assert events[0]["organizer"] == "Alice Example"
++
++
++def test_parse_ics_recurrence_fixture_expands_weekly_instances():
++    payload = (Path(__file__).parent / "fixtures" / "calendar_recurrence.ics").read_text(
++        encoding="utf-8"
++    )
++    events = parse_ics_events(
++        payload,
++        window_start=datetime(2026, 2, 1, tzinfo=timezone.utc),
++        window_end=datetime(2026, 3, 1, tzinfo=timezone.utc),
++    )
++    starts = [row["starts_at"] for row in events]
++    assert len(events) == 4
++    assert starts == [
++        "2026-02-01T12:00:00Z",
++        "2026-02-08T12:00:00Z",
++        "2026-02-15T12:00:00Z",
++        "2026-02-22T12:00:00Z",
++    ]
++
++
++@pytest.fixture()
++def calendar_client(tmp_path: Path, monkeypatch):
++    cfg = _cfg(tmp_path)
++    monkeypatch.setattr(api, "_settings", cfg)
++    init_db(cfg)
++    return TestClient(api.app, follow_redirects=True)
++
++
++def test_calendar_source_create_sync_and_events(calendar_client: TestClient, monkeypatch):
++    now = datetime.now(tz=timezone.utc).replace(minute=0, second=0, microsecond=0)
++    starts_at = now + timedelta(days=1)
++    ends_at = starts_at + timedelta(hours=1)
++    payload = "\n".join(
++        [
++            "BEGIN:VCALENDAR",
++            "VERSION:2.0",
++            "PRODID:-//LAN Transcriber//Calendar API Test//EN",
++            "BEGIN:VEVENT",
++            "UID:api-event-1",
++            "DTSTAMP:20260201T120000Z",
++            f"DTSTART:{starts_at.strftime('%Y%m%dT%H%M%SZ')}",
++            f"DTEND:{ends_at.strftime('%Y%m%dT%H%M%SZ')}",
++            "SUMMARY:API Calendar Event",
++            "LOCATION:Room A",
++            "END:VEVENT",
++            "END:VCALENDAR",
++        ]
++    ).encode("utf-8")
++
++    def _fake_fetch(*_args, **_kwargs) -> bytes:
++        return payload
++
++    monkeypatch.setattr(calendar_service, "fetch_ics_url", _fake_fetch)
++
++    create = calendar_client.post(
++        "/api/calendar/sources",
++        json={
++            "name": "Team Calendar",
++            "kind": "url",
++            "url": "https://calendar.example.com/team.ics",
++        },
++    )
++    assert create.status_code == 200
++    source = create.json()
++    assert "url" not in source
++    assert source["name"] == "Team Calendar"
++    assert source["url_configured"] is True
++    source_id = int(source["id"])
++
++    sync = calendar_client.post(f"/api/calendar/sources/{source_id}/sync")
++    assert sync.status_code == 200
++    assert sync.json()["events_count"] == 1
++
++    # Re-sync should remain idempotent due bounded-window replace.
++    resync = calendar_client.post(f"/api/calendar/sources/{source_id}/sync")
++    assert resync.status_code == 200
++    assert resync.json()["events_count"] == 1
++
++    sources = calendar_client.get("/api/calendar/sources")
++    assert sources.status_code == 200
++    listed = sources.json()["items"]
++    assert listed and listed[0]["id"] == source_id
++    assert "url" not in listed[0]
++
++    events = calendar_client.get(
++        "/api/calendar/events",
++        params={
++            "from": now.isoformat().replace("+00:00", "Z"),
++            "to": (now + timedelta(days=3)).isoformat().replace("+00:00", "Z"),
++            "source_id": source_id,
++        },
++    )
++    assert events.status_code == 200
++    body = events.json()
++    assert body["total"] == 1
++    assert body["items"][0]["summary"] == "API Calendar Event"
++
++
++def test_calendar_source_rejects_non_http_url(calendar_client: TestClient):
++    response = calendar_client.post(
++        "/api/calendar/sources",
++        json={
++            "name": "Bad Calendar",
++            "kind": "url",
++            "url": "file:///tmp/test.ics",
++        },
++    )
++    assert response.status_code == 422
++    assert "http or https" in response.json()["detail"]

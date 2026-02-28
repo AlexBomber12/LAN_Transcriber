@@ -13,6 +13,8 @@ redis
 rq
 jinja2>=3.1
 pydantic-settings>=2.10,<3.0
+icalendar>=6.0
+recurring-ical-events>=3.6
 python-multipart>=0.0.9
 prometheus_client>=0.19
 pyyaml>=6.0
