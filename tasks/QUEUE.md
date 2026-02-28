@@ -226,3 +226,13 @@ Queue (in order)
 - Status: DONE
 - Tasks file: tasks/PR-FIX-CTRANSLATE2-EXECSTACK-02.md
 - Depends on: PR-FIX-OMEGACONF-01
+
+44) PR-UI-DELETE-CONFIRM-01: Simplify delete confirmation dialog (Yes/No, remove typing DELETE)
+- Status: TODO
+- Tasks file: tasks/PR-UI-DELETE-CONFIRM-01.md
+- Depends on: PR-FIX-CTRANSLATE2-EXECSTACK-02
+
+45) PR-CALENDAR-ICS-01: Calendar import via ICS (URL subscription and optional file upload)
+- Status: TODO
+- Tasks file: tasks/PR-CALENDAR-ICS-01.md
+- Depends on: PR-UI-DELETE-CONFIRM-01
