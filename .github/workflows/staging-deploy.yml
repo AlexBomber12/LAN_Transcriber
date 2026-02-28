@@ -1,25 +1,36 @@
 name: staging-deploy
 
 on:
+  workflow_dispatch:
   push:
     branches: [main]
 
 jobs:
-  deploy:
+  check-secrets:
     runs-on: ubuntu-latest
+    outputs:
+      ready: ${{ steps.check.outputs.ready }}
     steps:
-      - name: Validate secrets
+      - name: Check required staging secrets
+        id: check
         shell: bash
         env:
           STAGING_HOST: ${{ secrets.STAGING_HOST }}
           STAGING_USER: ${{ secrets.STAGING_USER }}
           STAGING_SSH_KEY: ${{ secrets.STAGING_SSH_KEY }}
         run: |
-          if [ -z "$STAGING_HOST" ] || [ -z "$STAGING_USER" ] || [ -z "$STAGING_SSH_KEY" ]; then
-            echo "::error::Missing required secrets STAGING_HOST, STAGING_USER, and STAGING_SSH_KEY"
-            exit 1
+          if [ -n "$STAGING_HOST" ] && [ -n "$STAGING_USER" ] && [ -n "$STAGING_SSH_KEY" ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "Staging deploy skipped: STAGING_HOST/STAGING_USER/STAGING_SSH_KEY are not fully configured."
           fi
 
+  deploy:
+    needs: [check-secrets]
+    if: needs.check-secrets.outputs.ready == 'true'
+    runs-on: ubuntu-latest
+    steps:
       - uses: actions/checkout@v4
 
       - name: Setup Python

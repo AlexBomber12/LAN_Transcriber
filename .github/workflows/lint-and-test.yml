@@ -1,10 +1,7 @@
-name: lint-and-test
+name: lint-and-test (manual)
 
 on:
-  push:
-    branches: [ main ]
-  pull_request:
-    branches: [ main ]
+  workflow_dispatch:
 
 jobs:
   lint-and-test:
