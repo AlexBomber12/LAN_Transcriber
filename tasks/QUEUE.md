@@ -217,8 +217,12 @@ Queue (in order)
 - Tasks file: tasks/PR-COVERAGE-01.md
 - Depends on: PR-SMOKE-DOCKER-01
 
-
 42) PR-FIX-OMEGACONF-01: Add missing omegaconf dependency (runtime + CI) and a dependency smoke test
 - Status: TODO
 - Tasks file: tasks/PR-FIX-OMEGACONF-01.md
 - Depends on: PR-COVERAGE-01
+
+43) PR-FIX-CTRANSLATE2-EXECSTACK-02: Ensure runtime images are patched (no execstack) and Docker smoke runs on built image digest (no tag races)
+- Status: TODO
+- Tasks file: tasks/PR-FIX-CTRANSLATE2-EXECSTACK-02.md
+- Depends on: PR-FIX-OMEGACONF-01
