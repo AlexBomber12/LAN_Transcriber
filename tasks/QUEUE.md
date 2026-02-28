@@ -242,7 +242,7 @@ Queue (in order)
 - Depends on: PR-FIX-WHISPERX-API-01
 
 47) PR-FIX-WHISPERX-TRANSCRIBE-KWARGS-01: Make WhisperX transcribe calls signature-compatible (avoid unexpected kwargs like vad_filter)
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-FIX-WHISPERX-TRANSCRIBE-KWARGS-01.md
 - Depends on: PR-RUNTIME-CONFIG-01
 

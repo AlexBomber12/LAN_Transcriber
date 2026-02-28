@@ -1,130 +1,76 @@
 diff --git a/lan_transcriber/pipeline_steps/orchestrator.py b/lan_transcriber/pipeline_steps/orchestrator.py
-index 1df1cf5..f606c26 100644
+index ee4de12..afb8e96 100644
 --- a/lan_transcriber/pipeline_steps/orchestrator.py
 +++ b/lan_transcriber/pipeline_steps/orchestrator.py
-@@ -13,6 +13,7 @@ from pydantic_settings import BaseSettings
- from .. import normalizer
- from ..aliases import ALIAS_PATH, load_aliases as _load_aliases, save_aliases as _save_aliases
- from ..artifacts import atomic_write_json, atomic_write_text, build_recording_artifacts, stage_raw_audio
-+from ..compat.pyannote_compat import patch_pyannote_inference_ignore_use_auth_token
- from ..llm_client import LLMClient
- from ..metrics import error_rate_total, p95_latency_seconds
- from ..models import SpeakerSegment, TranscriptResult
-@@ -159,6 +160,12 @@ def _whisperx_asr(
-         except Exception:
-             # Step log append is best-effort and must not break processing.
-             pass
-+    if patch_pyannote_inference_ignore_use_auth_token() and step_log_callback is not None:
+@@ -202,7 +202,18 @@ def _whisperx_asr(
+             attempted=kwargs,
+             filtered=filtered_kwargs,
+         )
+-        segments, info = call_with_supported_kwargs(whisperx.transcribe, str(audio_path), **kwargs)
 +        try:
-+            step_log_callback("pyannote compat: ignore unsupported Inference use_auth_token")
-+        except Exception:
-+            # Step log append is best-effort and must not break processing.
-+            pass
++            segments, info = call_with_supported_kwargs(whisperx.transcribe, str(audio_path), **kwargs)
++        except TypeError:
++            retry_kwargs = dict(kwargs)
++            retry_kwargs.pop("word_timestamps", None)
++            _log_dropped_kwargs(
++                callback=step_log_callback,
++                scope="whisperx transcribe",
++                attempted=kwargs,
++                filtered=retry_kwargs,
++            )
++            segments, info = call_with_supported_kwargs(whisperx.transcribe, str(audio_path), **retry_kwargs)
+         return list(segments), dict(info or {})
  
-     import whisperx
+     device = _select_asr_device(cfg)
+diff --git a/tests/test_whisperx_api.py b/tests/test_whisperx_api.py
+index c3e23b4..e69d43f 100644
+--- a/tests/test_whisperx_api.py
++++ b/tests/test_whisperx_api.py
+@@ -136,6 +136,47 @@ def test_whisperx_asr_modern_path_drops_unsupported_kwargs(tmp_path: Path, monke
+     assert any("dropped unsupported kwargs: vad_filter" in line for line in step_log)
  
-diff --git a/tasks/QUEUE.md b/tasks/QUEUE.md
-index db2db29..3f18d98 100644
---- a/tasks/QUEUE.md
-+++ b/tasks/QUEUE.md
-@@ -237,6 +237,6 @@ Queue (in order)
- - Depends on: PR-UI-DELETE-CONFIRM-01
  
- 46) PR-FIX-PYANNOTE-USEAUTH-01: Fix whisperx VAD crash with pyannote (ignore unsupported use_auth_token)
--- Status: TODO
-+- Status: DONE
- - Tasks file: tasks/PR-FIX-PYANNOTE-USEAUTH-01.md
--- Depends on: PR-FIX-WHISPERX-API-01
-\ No newline at end of file
-+- Depends on: PR-FIX-WHISPERX-API-01
-diff --git a/lan_transcriber/compat/__init__.py b/lan_transcriber/compat/__init__.py
-new file mode 100644
-index 0000000..bb694a8
---- /dev/null
-+++ b/lan_transcriber/compat/__init__.py
-@@ -0,0 +1 @@
-+"""Compatibility helpers for third-party library version differences."""
-diff --git a/lan_transcriber/compat/pyannote_compat.py b/lan_transcriber/compat/pyannote_compat.py
-new file mode 100644
-index 0000000..f0d5826
---- /dev/null
-+++ b/lan_transcriber/compat/pyannote_compat.py
-@@ -0,0 +1,42 @@
-+from __future__ import annotations
++def test_whisperx_asr_retry_without_word_timestamps_on_typeerror(tmp_path: Path, monkeypatch):
++    fake_whisperx = ModuleType("whisperx")
++    calls: list[dict[str, object]] = []
 +
-+import inspect
-+from typing import Any
++    def _transcribe(audio_path: str, *args: object, **kwargs: object) -> tuple[list[dict[str, object]], dict[str, object]]:
++        del args
++        calls.append(dict(kwargs))
++        if "word_timestamps" in kwargs:
++            raise TypeError("unexpected keyword argument 'word_timestamps'")
++        assert audio_path.endswith("a.wav")
++        assert kwargs == {"vad_filter": True, "language": "auto"}
++        return ([{"start": 0.0, "end": 1.0, "text": "hello"}], {"language": "en"})
 +
-+_PATCH_SENTINEL = "_lan_ignore_use_auth_token"
++    fake_whisperx.transcribe = _transcribe
++    monkeypatch.setitem(sys.modules, "whisperx", fake_whisperx)
 +
++    audio_path = tmp_path / "a.wav"
++    audio_path.write_bytes(b"")
++    cfg = pipeline.Settings(
++        asr_device="cpu",
++        asr_enable_align=False,
++        tmp_root=tmp_path,
++        recordings_root=tmp_path / "recordings",
++    )
++    step_log: list[str] = []
 +
-+def patch_pyannote_inference_ignore_use_auth_token() -> bool:
-+    """Patch pyannote Inference.__init__ to accept and ignore use_auth_token.
++    segments, info = pipeline._whisperx_asr(
++        audio_path,
++        override_lang=None,
++        cfg=cfg,
++        step_log_callback=step_log.append,
++    )
 +
-+    Returns True only when a patch was applied in this call.
-+    """
-+
-+    try:
-+        from pyannote.audio import Inference
-+    except Exception:
-+        return False
-+
-+    init = getattr(Inference, "__init__", None)
-+    if init is None:
-+        return False
-+    if getattr(init, _PATCH_SENTINEL, False):
-+        return False
-+
-+    try:
-+        signature = inspect.signature(init)
-+    except (TypeError, ValueError):
-+        return False
-+
-+    if "use_auth_token" in signature.parameters:
-+        return False
-+
-+    original_init = init
-+
-+    def patched_init(self: Any, *args: Any, use_auth_token: Any = None, **kwargs: Any) -> Any:
-+        del use_auth_token
-+        return original_init(self, *args, **kwargs)
-+
-+    setattr(patched_init, _PATCH_SENTINEL, True)
-+    Inference.__init__ = patched_init  # type: ignore[assignment]
-+    return True
-diff --git a/tests/test_pyannote_compat.py b/tests/test_pyannote_compat.py
-new file mode 100644
-index 0000000..df26167
---- /dev/null
-+++ b/tests/test_pyannote_compat.py
-@@ -0,0 +1,30 @@
-+from __future__ import annotations
-+
-+import sys
-+from types import ModuleType
-+
-+from lan_transcriber.compat.pyannote_compat import patch_pyannote_inference_ignore_use_auth_token
++    assert segments and segments[0]["text"] == "hello"
++    assert info["language"] == "en"
++    assert len(calls) == 2
++    assert "word_timestamps" in calls[0]
++    assert "word_timestamps" not in calls[1]
++    assert any("dropped unsupported kwargs: word_timestamps" in line for line in step_log)
 +
 +
-+def test_patch_pyannote_inference_ignore_use_auth_token(monkeypatch):
-+    fake_pyannote = ModuleType("pyannote")
-+    fake_audio = ModuleType("pyannote.audio")
-+
-+    class DummyInference:
-+        def __init__(self, *args, **kwargs):
-+            assert "use_auth_token" not in kwargs
-+            self.args = args
-+            self.kwargs = kwargs
-+
-+    fake_audio.Inference = DummyInference
-+    fake_pyannote.audio = fake_audio
-+    monkeypatch.setitem(sys.modules, "pyannote", fake_pyannote)
-+    monkeypatch.setitem(sys.modules, "pyannote.audio", fake_audio)
-+
-+    assert patch_pyannote_inference_ignore_use_auth_token() is True
-+
-+    instance = DummyInference("model-id", use_auth_token=None, sample_rate=16000)
-+    assert instance.args == ("model-id",)
-+    assert instance.kwargs == {"sample_rate": 16000}
-+
-+    assert patch_pyannote_inference_ignore_use_auth_token() is False
+ def test_log_dropped_kwargs_returns_early_when_nothing_dropped() -> None:
+     messages: list[str] = []
+ 

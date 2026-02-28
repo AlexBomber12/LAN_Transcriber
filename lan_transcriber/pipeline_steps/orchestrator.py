@@ -13,6 +13,7 @@ from pydantic_settings import BaseSettings
 from .. import normalizer
 from ..aliases import ALIAS_PATH, load_aliases as _load_aliases, save_aliases as _save_aliases
 from ..artifacts import atomic_write_json, atomic_write_text, build_recording_artifacts, stage_raw_audio
+from ..compat.call_compat import call_with_supported_kwargs, filter_kwargs_for_callable
 from ..compat.pyannote_compat import patch_pyannote_inference_ignore_use_auth_token
 from ..llm_client import LLMClient
 from ..metrics import error_rate_total, p95_latency_seconds
@@ -142,6 +143,25 @@ def _select_compute_type(cfg: Settings, device: str) -> str:
     return "float16" if device == "cuda" else "int8"
 
 
+def _log_dropped_kwargs(
+    *,
+    callback: Callable[[str], Any] | None,
+    scope: str,
+    attempted: dict[str, Any],
+    filtered: dict[str, Any],
+) -> None:
+    if callback is None:
+        return
+    dropped = [key for key in attempted if key not in filtered]
+    if not dropped:
+        return
+    try:
+        callback(f"{scope}: dropped unsupported kwargs: {', '.join(dropped)}")
+    except Exception:
+        # Step log append is best-effort and must not break processing.
+        pass
+
+
 def _whisperx_asr(
     audio_path: Path,
     *,
@@ -173,11 +193,27 @@ def _whisperx_asr(
         kwargs: dict[str, Any] = {
             "vad_filter": True,
             "language": override_lang or "auto",
+            "word_timestamps": True,
         }
+        filtered_kwargs = filter_kwargs_for_callable(whisperx.transcribe, kwargs)
+        _log_dropped_kwargs(
+            callback=step_log_callback,
+            scope="whisperx transcribe",
+            attempted=kwargs,
+            filtered=filtered_kwargs,
+        )
         try:
-            segments, info = whisperx.transcribe(str(audio_path), word_timestamps=True, **kwargs)
+            segments, info = call_with_supported_kwargs(whisperx.transcribe, str(audio_path), **kwargs)
         except TypeError:
-            segments, info = whisperx.transcribe(str(audio_path), **kwargs)
+            retry_kwargs = dict(kwargs)
+            retry_kwargs.pop("word_timestamps", None)
+            _log_dropped_kwargs(
+                callback=step_log_callback,
+                scope="whisperx transcribe",
+                attempted=kwargs,
+                filtered=retry_kwargs,
+            )
+            segments, info = call_with_supported_kwargs(whisperx.transcribe, str(audio_path), **retry_kwargs)
         return list(segments), dict(info or {})
 
     device = _select_asr_device(cfg)
@@ -188,12 +224,19 @@ def _whisperx_asr(
     except TypeError:
         model = whisperx.load_model(cfg.asr_model, device)
 
-    result = model.transcribe(
-        audio,
-        batch_size=cfg.asr_batch_size,
-        vad_filter=True,
-        language=(override_lang if override_lang else None),
+    transcribe_kwargs: dict[str, Any] = {
+        "batch_size": cfg.asr_batch_size,
+        "vad_filter": True,
+        "language": (override_lang if override_lang else None),
+    }
+    filtered_kwargs = filter_kwargs_for_callable(model.transcribe, transcribe_kwargs)
+    _log_dropped_kwargs(
+        callback=step_log_callback,
+        scope="whisperx transcribe",
+        attempted=transcribe_kwargs,
+        filtered=filtered_kwargs,
     )
+    result = call_with_supported_kwargs(model.transcribe, audio, **transcribe_kwargs)
     segments = list(result.get("segments", []))
     info: dict[str, Any] = {"language": result.get("language") or (override_lang or "unknown")}
 

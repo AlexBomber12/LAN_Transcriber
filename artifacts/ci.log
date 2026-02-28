@@ -109,8 +109,8 @@ Requirement already satisfied: pytz>2021.1 in ./.venv-ci/lib/python3.12/site-pac
 Building wheels for collected packages: lan-transcriber
   Building editable for lan-transcriber (pyproject.toml): started
   Building editable for lan-transcriber (pyproject.toml): finished with status 'done'
-  Created wheel for lan-transcriber: filename=lan_transcriber-0.1.0-0.editable-py3-none-any.whl size=15425 sha256=1668a49b00efee45bef5577ec47383c3e914f63edf84188323f554c5c68482e4
-  Stored in directory: /tmp/pip-ephem-wheel-cache-0dh27pqu/wheels/d5/8a/5c/f7178f7e49aa5ae12b2320ec66b5c310f4f2f63d1bd301b7fb
+  Created wheel for lan-transcriber: filename=lan_transcriber-0.1.0-0.editable-py3-none-any.whl size=15425 sha256=54978611adead5f65e01bd3b02cc3bdd14f0444abb54550b77797c4f732856e7
+  Stored in directory: /tmp/pip-ephem-wheel-cache-tihaf3sm/wheels/d5/8a/5c/f7178f7e49aa5ae12b2320ec66b5c310f4f2f63d1bd301b7fb
 Successfully built lan-transcriber
 Installing collected packages: lan-transcriber
   Attempting uninstall: lan-transcriber
@@ -119,19 +119,19 @@ Installing collected packages: lan-transcriber
       Successfully uninstalled lan-transcriber-0.1.0
 Successfully installed lan-transcriber-0.1.0
 All checks passed!
-........................................................................ [ 27%]
-........................................................................ [ 54%]
-........................................................................ [ 81%]
-.................................................                        [100%]
+........................................................................ [ 26%]
+........................................................................ [ 52%]
+........................................................................ [ 78%]
+..........................................................               [100%]
 =============================== warnings summary ===============================
 lan_transcriber/pipeline_steps/precheck.py:3
   /home/alexey/LAN_Transcriber/lan_transcriber/pipeline_steps/precheck.py:3: DeprecationWarning: 'audioop' is deprecated and slated for removal in Python 3.13
     import audioop
 
-lan_transcriber/pipeline_steps/orchestrator.py:45
+lan_transcriber/pipeline_steps/orchestrator.py:46
 tests/test_imports.py::test_imports[lan_transcriber.pipeline_steps.orchestrator]
 tests/test_imports.py::test_orchestrator_import_does_not_import_whisperx
-  /home/alexey/LAN_Transcriber/lan_transcriber/pipeline_steps/orchestrator.py:45: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+  /home/alexey/LAN_Transcriber/lan_transcriber/pipeline_steps/orchestrator.py:46: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
     class Settings(BaseSettings):
 
 lan_app/config.py:29
@@ -147,7 +147,8 @@ Name                                                Stmts   Miss  Cover
 lan_transcriber/__init__.py                             8      0   100%
 lan_transcriber/aliases.py                             17      0   100%
 lan_transcriber/artifacts.py                           66      4    94%
-lan_transcriber/compat/__init__.py                      0      0   100%
+lan_transcriber/compat/__init__.py                      2      0   100%
+lan_transcriber/compat/call_compat.py                  16      0   100%
 lan_transcriber/compat/pyannote_compat.py              27      6    78%
 lan_transcriber/llm_client.py                         112     23    79%
 lan_transcriber/metrics.py                             12      0   100%
@@ -158,7 +159,7 @@ lan_transcriber/pipeline.py                             5      0   100%
 lan_transcriber/pipeline_steps/__init__.py              7      0   100%
 lan_transcriber/pipeline_steps/artifacts.py            19      0   100%
 lan_transcriber/pipeline_steps/language.py             93     12    87%
-lan_transcriber/pipeline_steps/orchestrator.py        253     36    86%
+lan_transcriber/pipeline_steps/orchestrator.py        272     31    89%
 lan_transcriber/pipeline_steps/precheck.py            116     13    89%
 lan_transcriber/pipeline_steps/snippets.py            128     11    91%
 lan_transcriber/pipeline_steps/speaker_turns.py       185     21    89%
@@ -166,22 +167,22 @@ lan_transcriber/pipeline_steps/summary_builder.py     276     25    91%
 lan_transcriber/runtime_paths.py                       21      1    95%
 lan_transcriber/utils.py                               50      2    96%
 -----------------------------------------------------------------------
-TOTAL                                                1544    161    90%
-FAIL Required test coverage of 90% not reached. Total coverage: 89.57%
-265 passed, 1 skipped, 5 warnings in 14.51s
-........................................................................ [ 27%]
-........................................................................ [ 54%]
-........................................................................ [ 81%]
-.................................................                        [100%]
+TOTAL                                                1581    156    90%
+Required test coverage of 90% reached. Total coverage: 90.13%
+274 passed, 1 skipped, 5 warnings in 15.86s
+........................................................................ [ 26%]
+........................................................................ [ 52%]
+........................................................................ [ 78%]
+..........................................................               [100%]
 =============================== warnings summary ===============================
 lan_transcriber/pipeline_steps/precheck.py:3
   /home/alexey/LAN_Transcriber/lan_transcriber/pipeline_steps/precheck.py:3: DeprecationWarning: 'audioop' is deprecated and slated for removal in Python 3.13
     import audioop
 
-lan_transcriber/pipeline_steps/orchestrator.py:45
+lan_transcriber/pipeline_steps/orchestrator.py:46
 tests/test_imports.py::test_imports[lan_transcriber.pipeline_steps.orchestrator]
 tests/test_imports.py::test_orchestrator_import_does_not_import_whisperx
-  /home/alexey/LAN_Transcriber/lan_transcriber/pipeline_steps/orchestrator.py:45: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+  /home/alexey/LAN_Transcriber/lan_transcriber/pipeline_steps/orchestrator.py:46: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
     class Settings(BaseSettings):
 
 lan_app/config.py:29
@@ -221,4 +222,4 @@ lan_app/workers.py                   10      3    70%
 -----------------------------------------------------
 TOTAL                              4219    889    79%
 Required test coverage of 75% reached. Total coverage: 78.93%
-265 passed, 1 skipped, 5 warnings in 15.51s
+274 passed, 1 skipped, 5 warnings in 15.71s
