@@ -1,74 +1,35 @@
-diff --git a/README.md b/README.md
-index 850b288..4aaeeb4 100644
---- a/README.md
-+++ b/README.md
-@@ -29,6 +29,24 @@ This produces:
- - `artifacts/ci.log`
- - `artifacts/pr.patch`
+diff --git a/tests/test_imports.py b/tests/test_imports.py
+index 1f5b739..cc539d8 100644
+--- a/tests/test_imports.py
++++ b/tests/test_imports.py
+@@ -31,26 +31,24 @@ def _pop_module_tree(module_name: str) -> dict[str, object]:
+ def test_imports(mod):
+     sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+     previous_modules = _pop_module_tree(mod)
+-    previous_whisperx = sys.modules.pop("whisperx", None)
++    previous_whisperx_modules = _pop_module_tree("whisperx")
+     try:
+         importlib.invalidate_caches()
+         assert importlib.import_module(mod)
+         assert "whisperx" not in sys.modules
+     finally:
+         sys.modules.update(previous_modules)
+-        if previous_whisperx is not None:
+-            sys.modules["whisperx"] = previous_whisperx
++        sys.modules.update(previous_whisperx_modules)
  
-+## Dev mode
-+
-+Use a compose overlay for fast code iteration without image rebuilds.
-+
-+Build once:
-+
-+```bash
-+docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
-+```
-+
-+After code changes:
-+
-+```bash
-+docker compose restart api worker
-+```
-+
-+Rebuild images only when dependencies change (for example `requirements.txt` updates).
-+
- ## Operations runbook
  
- Operational setup, failure handling, backup/restore, and upgrade steps are documented in
-diff --git a/tasks/QUEUE.md b/tasks/QUEUE.md
-index 3ce1584..fdc0564 100644
---- a/tasks/QUEUE.md
-+++ b/tasks/QUEUE.md
-@@ -188,7 +188,7 @@ Queue (in order)
- - Depends on: PR-FIX-WHISPERX-API-01
- 
- 36) PR-DEV-01: Add docker-compose.dev.yml for fast iteration without rebuilding images
--- Status: TODO
-+- Status: DONE
- - Tasks file: tasks/PR-DEV-01.md
- - Depends on: PR-FIX-CTRANSLATE2-EXECSTACK-01
- 
-diff --git a/docker-compose.dev.yml b/docker-compose.dev.yml
-new file mode 100644
-index 0000000..38f09a8
---- /dev/null
-+++ b/docker-compose.dev.yml
-@@ -0,0 +1,26 @@
-+services:
-+  db:
-+    volumes:
-+      - ./:/app
-+
-+  api:
-+    command:
-+      [
-+        "uvicorn",
-+        "lan_app.api:app",
-+        "--host",
-+        "0.0.0.0",
-+        "--port",
-+        "7860",
-+        "--reload",
-+        "--reload-dir",
-+        "/app/lan_app",
-+        "--reload-dir",
-+        "/app/lan_transcriber",
-+      ]
-+    volumes:
-+      - ./:/app
-+
-+  worker:
-+    volumes:
-+      - ./:/app
+ def test_orchestrator_import_does_not_import_whisperx():
+     sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+     previous_orchestrator_modules = _pop_module_tree("lan_transcriber.pipeline_steps.orchestrator")
+-    previous_whisperx = sys.modules.pop("whisperx", None)
++    previous_whisperx_modules = _pop_module_tree("whisperx")
+     try:
+         importlib.invalidate_caches()
+         assert importlib.import_module("lan_transcriber.pipeline_steps.orchestrator")
+         assert "whisperx" not in sys.modules
+     finally:
+         sys.modules.update(previous_orchestrator_modules)
+-        if previous_whisperx is not None:
+-            sys.modules["whisperx"] = previous_whisperx
++        sys.modules.update(previous_whisperx_modules)
