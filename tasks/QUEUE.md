@@ -183,7 +183,7 @@ Queue (in order)
 - Depends on: PR-FIX-WHISPERX-API-01
 
 35) PR-FIX-CTRANSLATE2-EXECSTACK-01: Fix ctranslate2 executable-stack loader failure
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-FIX-CTRANSLATE2-EXECSTACK-01.md
 - Depends on: PR-FIX-WHISPERX-API-01
 

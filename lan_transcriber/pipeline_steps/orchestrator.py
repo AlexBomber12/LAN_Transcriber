@@ -16,6 +16,7 @@ from ..artifacts import atomic_write_json, atomic_write_text, build_recording_ar
 from ..llm_client import LLMClient
 from ..metrics import error_rate_total, p95_latency_seconds
 from ..models import SpeakerSegment, TranscriptResult
+from ..native_fixups import ensure_ctranslate2_no_execstack
 from .language import analyse_languages, resolve_target_summary_language, segment_language
 from .precheck import PrecheckResult, run_precheck as _run_precheck
 from .snippets import SnippetExportRequest, export_speaker_snippets
@@ -145,7 +146,20 @@ def _whisperx_asr(
     *,
     override_lang: str | None,
     cfg: Settings,
+    step_log_callback: Callable[[str], Any] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    patched_paths = ensure_ctranslate2_no_execstack()
+    if patched_paths and step_log_callback is not None:
+        try:
+            count = len(patched_paths)
+            noun = "library" if count == 1 else "libraries"
+            step_log_callback(
+                f"native fixup: cleared executable-stack flag on {count} ctranslate2 {noun}"
+            )
+        except Exception:
+            # Step log append is best-effort and must not break processing.
+            pass
+
     import whisperx
 
     if hasattr(whisperx, "transcribe"):
@@ -287,6 +301,7 @@ async def run_pipeline(
     calendar_title: str | None = None,
     calendar_attendees: Sequence[str] | None = None,
     progress_callback: ProgressCallback | None = None,
+    step_log_callback: Callable[[str], Any] | None = None,
 ) -> TranscriptResult:
     start = time.perf_counter()
     artifacts = build_recording_artifacts(cfg.recordings_root, recording_id or _default_recording_id(audio_path), audio_path.suffix)
@@ -353,7 +368,13 @@ async def run_pipeline(
 
         await _emit_progress(progress_callback, stage="diarize", progress=0.50)
         (raw_segments, info), diarization = await asyncio.gather(
-            asyncio.to_thread(_whisperx_asr, audio_path, override_lang=override_lang, cfg=cfg),
+            asyncio.to_thread(
+                _whisperx_asr,
+                audio_path,
+                override_lang=override_lang,
+                cfg=cfg,
+                step_log_callback=step_log_callback,
+            ),
             diariser(audio_path),
         )
         await _emit_progress(progress_callback, stage="align", progress=0.60)

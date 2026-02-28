@@ -97,8 +97,8 @@ Requirement already satisfied: six>=1.5 in ./.venv-ci/lib/python3.12/site-packag
 Building wheels for collected packages: lan-transcriber
   Building editable for lan-transcriber (pyproject.toml): started
   Building editable for lan-transcriber (pyproject.toml): finished with status 'done'
-  Created wheel for lan-transcriber: filename=lan_transcriber-0.1.0-0.editable-py3-none-any.whl size=15397 sha256=21a7a76ba1ce89a68a06c08e7dbff085ac2acc40e8d9ba5722ba6bd3e83cc4cc
-  Stored in directory: /tmp/pip-ephem-wheel-cache-k_mtrdqf/wheels/d5/8a/5c/f7178f7e49aa5ae12b2320ec66b5c310f4f2f63d1bd301b7fb
+  Created wheel for lan-transcriber: filename=lan_transcriber-0.1.0-0.editable-py3-none-any.whl size=15397 sha256=744d67cf2b57cbd8e275fd505da8633e8e06f88629d8eb0d6e35e67a2b4a81f9
+  Stored in directory: /tmp/pip-ephem-wheel-cache-4gla4q1i/wheels/d5/8a/5c/f7178f7e49aa5ae12b2320ec66b5c310f4f2f63d1bd301b7fb
 Successfully built lan-transcriber
 Installing collected packages: lan-transcriber
   Attempting uninstall: lan-transcriber
@@ -107,17 +107,17 @@ Installing collected packages: lan-transcriber
       Successfully uninstalled lan-transcriber-0.1.0
 Successfully installed lan-transcriber-0.1.0
 All checks passed!
-........................................................................ [ 31%]
-........................................................................ [ 62%]
-........................................................................ [ 93%]
-..............                                                           [100%]
+........................................................................ [ 30%]
+........................................................................ [ 60%]
+........................................................................ [ 90%]
+........................                                                 [100%]
 =============================== warnings summary ===============================
 lan_transcriber/pipeline_steps/precheck.py:3
   /home/alexey/LAN_Transcriber/lan_transcriber/pipeline_steps/precheck.py:3: DeprecationWarning: 'audioop' is deprecated and slated for removal in Python 3.13
     import audioop
 
-lan_transcriber/pipeline_steps/orchestrator.py:43
-  /home/alexey/LAN_Transcriber/lan_transcriber/pipeline_steps/orchestrator.py:43: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+lan_transcriber/pipeline_steps/orchestrator.py:44
+  /home/alexey/LAN_Transcriber/lan_transcriber/pipeline_steps/orchestrator.py:44: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
     class Settings(BaseSettings):
 
 lan_app/config.py:29
@@ -136,12 +136,13 @@ lan_transcriber/artifacts.py                           66      4    94%
 lan_transcriber/llm_client.py                         112     23    79%
 lan_transcriber/metrics.py                             12      0   100%
 lan_transcriber/models.py                              22      1    95%
+lan_transcriber/native_fixups.py                      102      6    94%
 lan_transcriber/normalizer.py                          25      0   100%
 lan_transcriber/pipeline.py                             5      0   100%
 lan_transcriber/pipeline_steps/__init__.py              7      0   100%
 lan_transcriber/pipeline_steps/artifacts.py            19      0   100%
 lan_transcriber/pipeline_steps/language.py             93     12    87%
-lan_transcriber/pipeline_steps/orchestrator.py        238     26    89%
+lan_transcriber/pipeline_steps/orchestrator.py        247     32    87%
 lan_transcriber/pipeline_steps/precheck.py            116     13    89%
 lan_transcriber/pipeline_steps/snippets.py            128     11    91%
 lan_transcriber/pipeline_steps/speaker_turns.py       185     21    89%
@@ -149,6 +150,6 @@ lan_transcriber/pipeline_steps/summary_builder.py     276     25    91%
 lan_transcriber/runtime_paths.py                       21      1    95%
 lan_transcriber/utils.py                               50      2    96%
 -----------------------------------------------------------------------
-TOTAL                                                1400    139    90%
-Required test coverage of 90% reached. Total coverage: 90.07%
-230 passed, 1 skipped, 3 warnings in 13.12s
+TOTAL                                                1511    151    90%
+Required test coverage of 90% reached. Total coverage: 90.01%
+240 passed, 1 skipped, 3 warnings in 13.12s
