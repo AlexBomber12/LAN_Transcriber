@@ -198,7 +198,7 @@ Queue (in order)
 - Depends on: PR-DEV-01
 
 38) PR-TEST-PIPELINE-RESILIENCE-01: Add worker-level resilience tests for external dependency failures
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-TEST-PIPELINE-RESILIENCE-01.md
 - Depends on: PR-TEST-IMPORTS-01
 
