@@ -82,3 +82,80 @@ def test_whisperx_asr_modern_path(tmp_path: Path, monkeypatch):
     assert all("start" in segment and "end" in segment and "text" in segment for segment in segments)
     assert any(segment.get("words") for segment in segments)
     assert info["language"] == "en"
+
+
+def test_whisperx_asr_modern_path_drops_unsupported_kwargs(tmp_path: Path, monkeypatch):
+    fake_whisperx = ModuleType("whisperx")
+
+    class _FakeModel:
+        def transcribe(
+            self,
+            audio: str,
+            *,
+            batch_size: int,
+            language: str | None,
+        ) -> dict[str, object]:
+            assert audio == "audio"
+            assert batch_size == 16
+            assert language == "es"
+            return {"segments": [{"start": 0.0, "end": 1.0, "text": "hola"}], "language": "es"}
+
+    def _load_audio(path: str) -> str:
+        assert path.endswith("a.wav")
+        return "audio"
+
+    # Intentionally omit compute_type to exercise the fallback load_model branch.
+    def _load_model(model_name: str, device: str) -> _FakeModel:
+        assert model_name == "large-v3"
+        assert device == "cpu"
+        return _FakeModel()
+
+    fake_whisperx.load_audio = _load_audio
+    fake_whisperx.load_model = _load_model
+    monkeypatch.setitem(sys.modules, "whisperx", fake_whisperx)
+
+    audio_path = tmp_path / "a.wav"
+    audio_path.write_bytes(b"")
+    cfg = pipeline.Settings(
+        asr_device="cpu",
+        asr_enable_align=False,
+        tmp_root=tmp_path,
+        recordings_root=tmp_path / "recordings",
+    )
+    step_log: list[str] = []
+
+    segments, info = pipeline._whisperx_asr(
+        audio_path,
+        override_lang="es",
+        cfg=cfg,
+        step_log_callback=step_log.append,
+    )
+
+    assert segments and segments[0]["text"] == "hola"
+    assert info["language"] == "es"
+    assert any("dropped unsupported kwargs: vad_filter" in line for line in step_log)
+
+
+def test_log_dropped_kwargs_returns_early_when_nothing_dropped() -> None:
+    messages: list[str] = []
+
+    pipeline._log_dropped_kwargs(
+        callback=messages.append,
+        scope="whisperx transcribe",
+        attempted={"vad_filter": True},
+        filtered={"vad_filter": True},
+    )
+
+    assert messages == []
+
+
+def test_log_dropped_kwargs_ignores_callback_errors() -> None:
+    def _raise(_message: str) -> None:
+        raise RuntimeError("boom")
+
+    pipeline._log_dropped_kwargs(
+        callback=_raise,
+        scope="whisperx transcribe",
+        attempted={"vad_filter": True},
+        filtered={},
+    )
