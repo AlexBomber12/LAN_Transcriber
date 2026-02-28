@@ -7,7 +7,14 @@
 </h1>
 
 <div class="filters" style="margin-bottom:10px">
-  <select class="action-sel" style="font-size:12px" data-rid="{{ rec.id }}" onchange="doRecAction(this)">
+  <select
+    class="action-sel"
+    style="font-size:12px"
+    data-rid="{{ rec.id }}"
+    data-rlabel="{{ rec.source_filename or rec.id }}"
+    data-rcaptured="{{ rec.captured_at[:19].replace('T',' ') if rec.captured_at else '' }}"
+    onchange="doRecAction(this)"
+  >
     <option value="">Actions…</option>
     <option value="requeue">Requeue</option>
     <option value="quarantine">Quarantine</option>

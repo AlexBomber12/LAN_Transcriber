@@ -68,6 +68,14 @@ tr:hover{background:#e8ecf8}
 .dot-warn{display:inline-block;width:8px;height:8px;border-radius:50%;background:#f59e0b}
 .dot-err{display:inline-block;width:8px;height:8px;border-radius:50%;background:#ef4444}
 .dot-na{display:inline-block;width:8px;height:8px;border-radius:50%;background:#d1d5db}
+.modal-backdrop{position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;padding:12px;z-index:1000}
+.modal-backdrop[hidden]{display:none}
+.modal{background:#fff;border:1px solid #999;max-width:420px;width:100%;padding:12px;box-shadow:0 8px 24px rgba(0,0,0,.25)}
+.modal h2{margin:0 0 8px 0;font-size:14px}
+.modal-copy{font-size:12px;color:#333;margin-bottom:8px}
+.modal-context{font-size:12px;color:#555;margin-bottom:10px;white-space:normal;word-break:break-word}
+.modal-error{font-size:12px;color:#b00;min-height:18px;margin-bottom:8px}
+.modal-actions{display:flex;justify-content:flex-end;gap:6px}
 </style>
 </head>
 <body hx-boost="true">
@@ -83,23 +91,143 @@ tr:hover{background:#e8ecf8}
 <main>
 {% block content %}{% endblock %}
 </main>
+<div
+  id="delete-confirm-backdrop"
+  class="modal-backdrop"
+  hidden
+  onclick="if (event.target === this) closeDeleteDialog();"
+>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="delete-confirm-title">
+    <h2 id="delete-confirm-title">Delete record?</h2>
+    <p class="modal-copy">This action can&apos;t be undone.</p>
+    <p id="delete-confirm-context" class="modal-context"></p>
+    <p id="delete-confirm-error" class="modal-error"></p>
+    <div class="modal-actions">
+      <button id="delete-cancel-btn" class="btn" type="button" onclick="closeDeleteDialog()">Cancel</button>
+      <button id="delete-confirm-btn" class="btn btn-danger" type="button" onclick="confirmDeleteDialog()">Delete</button>
+    </div>
+  </div>
+</div>
 <script>
+var deleteDialogState = {recordingId: '', inFlight: false, returnFocus: null};
+
+function _deleteDialogElements() {
+  return {
+    backdrop: document.getElementById('delete-confirm-backdrop'),
+    context: document.getElementById('delete-confirm-context'),
+    error: document.getElementById('delete-confirm-error'),
+    cancelBtn: document.getElementById('delete-cancel-btn'),
+    confirmBtn: document.getElementById('delete-confirm-btn')
+  };
+}
+
+function _deleteDialogContext(meta) {
+  var details = [];
+  if (meta.recordingLabel) details.push(meta.recordingLabel);
+  if (meta.capturedAt) details.push(meta.capturedAt);
+  details.push('ID: ' + meta.recordingId);
+  return details.join(' | ');
+}
+
+function openDeleteDialog(meta) {
+  if (!meta || !meta.recordingId) return;
+  var el = _deleteDialogElements();
+  if (!el.backdrop) return;
+  deleteDialogState.recordingId = meta.recordingId;
+  deleteDialogState.inFlight = false;
+  deleteDialogState.returnFocus = meta.returnFocus || null;
+  el.context.textContent = _deleteDialogContext(meta);
+  el.error.textContent = '';
+  el.confirmBtn.disabled = false;
+  el.cancelBtn.disabled = false;
+  el.confirmBtn.textContent = 'Delete';
+  el.backdrop.hidden = false;
+  window.setTimeout(function() {
+    el.cancelBtn.focus();
+  }, 0);
+}
+
+function closeDeleteDialog() {
+  var el = _deleteDialogElements();
+  if (!el.backdrop || deleteDialogState.inFlight) return;
+  var focusTarget = deleteDialogState.returnFocus;
+  el.backdrop.hidden = true;
+  deleteDialogState.recordingId = '';
+  deleteDialogState.returnFocus = null;
+  if (focusTarget && typeof focusTarget.focus === 'function') {
+    focusTarget.focus();
+  }
+}
+
+function confirmDeleteDialog() {
+  var el = _deleteDialogElements();
+  if (!deleteDialogState.recordingId || deleteDialogState.inFlight) return;
+  var targetId = deleteDialogState.recordingId;
+  deleteDialogState.inFlight = true;
+  el.error.textContent = '';
+  el.confirmBtn.disabled = true;
+  el.cancelBtn.disabled = true;
+  el.confirmBtn.textContent = 'Deleting...';
+
+  fetch('/ui/recordings/' + encodeURIComponent(targetId) + '/delete', {
+    method: 'POST',
+    headers: {'HX-Request': 'true'}
+  })
+    .then(function(resp) {
+      return resp.text().then(function(body) {
+        return {resp: resp, body: body};
+      });
+    })
+    .then(function(result) {
+      if (!result.resp.ok) {
+        throw new Error(result.body || ('Delete failed (' + result.resp.status + ').'));
+      }
+      var redirect = result.resp.headers.get('HX-Redirect');
+      if (redirect) {
+        window.location = redirect;
+        return;
+      }
+      window.location = '/recordings';
+    })
+    .catch(function(err) {
+      deleteDialogState.inFlight = false;
+      el.confirmBtn.disabled = false;
+      el.cancelBtn.disabled = false;
+      el.confirmBtn.textContent = 'Delete';
+      el.error.textContent = err && err.message ? err.message : 'Delete failed.';
+      el.cancelBtn.focus();
+    });
+}
+
+if (!window.__deleteDialogEscapeBound) {
+  document.addEventListener('keydown', function(evt) {
+    var el = _deleteDialogElements();
+    if (evt.key === 'Escape' && el.backdrop && !el.backdrop.hidden) {
+      evt.preventDefault();
+      closeDeleteDialog();
+    }
+  });
+  window.__deleteDialogEscapeBound = true;
+}
+
 function doRecAction(sel) {
   var act = sel.value;
   var id = sel.dataset.rid;
   sel.value = '';
   if (!act || !id) return;
   if (act === 'open') { window.location = '/recordings/' + encodeURIComponent(id); return; }
-  var request = {swap: 'none'};
   if (act === 'delete') {
-    var typed = prompt('Type DELETE to confirm deletion.');
-    if (typed === null) return;
-    if (typed.trim().toUpperCase() !== 'DELETE') return;
-    request.values = {confirm_delete: typed};
+    openDeleteDialog({
+      recordingId: id,
+      recordingLabel: sel.dataset.rlabel || '',
+      capturedAt: sel.dataset.rcaptured || '',
+      returnFocus: sel
+    });
+    return;
   } else if (act === 'quarantine' && !confirm('Quarantine this recording?')) {
     return;
   }
-  htmx.ajax('POST', '/ui/recordings/' + encodeURIComponent(id) + '/' + act, request);
+  htmx.ajax('POST', '/ui/recordings/' + encodeURIComponent(id) + '/' + act, {swap: 'none'});
 }
 </script>
 </body>

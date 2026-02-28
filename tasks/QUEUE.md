@@ -228,7 +228,7 @@ Queue (in order)
 - Depends on: PR-FIX-OMEGACONF-01
 
 44) PR-UI-DELETE-CONFIRM-01: Simplify delete confirmation dialog (Yes/No, remove typing DELETE)
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-UI-DELETE-CONFIRM-01.md
 - Depends on: PR-FIX-CTRANSLATE2-EXECSTACK-02
 
