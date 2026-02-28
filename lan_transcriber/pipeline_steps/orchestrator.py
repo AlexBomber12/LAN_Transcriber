@@ -13,6 +13,7 @@ from pydantic_settings import BaseSettings
 from .. import normalizer
 from ..aliases import ALIAS_PATH, load_aliases as _load_aliases, save_aliases as _save_aliases
 from ..artifacts import atomic_write_json, atomic_write_text, build_recording_artifacts, stage_raw_audio
+from ..compat.pyannote_compat import patch_pyannote_inference_ignore_use_auth_token
 from ..llm_client import LLMClient
 from ..metrics import error_rate_total, p95_latency_seconds
 from ..models import SpeakerSegment, TranscriptResult
@@ -156,6 +157,12 @@ def _whisperx_asr(
             step_log_callback(
                 f"native fixup: cleared executable-stack flag on {count} ctranslate2 {noun}"
             )
+        except Exception:
+            # Step log append is best-effort and must not break processing.
+            pass
+    if patch_pyannote_inference_ignore_use_auth_token() and step_log_callback is not None:
+        try:
+            step_log_callback("pyannote compat: ignore unsupported Inference use_auth_token")
         except Exception:
             # Step log append is best-effort and must not break processing.
             pass

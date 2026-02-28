@@ -237,6 +237,6 @@ Queue (in order)
 - Depends on: PR-UI-DELETE-CONFIRM-01
 
 46) PR-FIX-PYANNOTE-USEAUTH-01: Fix whisperx VAD crash with pyannote (ignore unsupported use_auth_token)
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-FIX-PYANNOTE-USEAUTH-01.md
 - Depends on: PR-FIX-WHISPERX-API-01
