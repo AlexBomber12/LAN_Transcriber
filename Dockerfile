@@ -14,7 +14,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends patchelf binutils \
     && rm -rf /var/lib/apt/lists/* \
     && python -m pip install --upgrade pip setuptools wheel \
-    && python -m pip install --no-cache-dir -r requirements.txt \
+    && python -m pip install --no-cache-dir -r requirements-cu121.txt \
     && python -m pip check
 RUN python - <<'PY'
 import glob, site, subprocess, sys
