@@ -58,6 +58,33 @@ def test_parse_ics_recurrence_fixture_expands_weekly_instances():
     ]
 
 
+def test_parse_ics_floating_datetimes_use_calendar_timezone():
+    payload = "\n".join(
+        [
+            "BEGIN:VCALENDAR",
+            "VERSION:2.0",
+            "PRODID:-//LAN Transcriber//Calendar Floating Time Test//EN",
+            "X-WR-TIMEZONE:Europe/Berlin",
+            "BEGIN:VEVENT",
+            "UID:floating-berlin-1",
+            "DTSTAMP:20260201T120000Z",
+            "DTSTART:20260210T090000",
+            "DTEND:20260210T100000",
+            "SUMMARY:Floating Time Event",
+            "END:VEVENT",
+            "END:VCALENDAR",
+        ]
+    )
+    events = parse_ics_events(
+        payload,
+        window_start=datetime(2026, 2, 1, tzinfo=timezone.utc),
+        window_end=datetime(2026, 2, 20, tzinfo=timezone.utc),
+    )
+    assert len(events) == 1
+    assert events[0]["starts_at"] == "2026-02-10T08:00:00Z"
+    assert events[0]["ends_at"] == "2026-02-10T09:00:00Z"
+
+
 @pytest.fixture()
 def calendar_client(tmp_path: Path, monkeypatch):
     cfg = _cfg(tmp_path)

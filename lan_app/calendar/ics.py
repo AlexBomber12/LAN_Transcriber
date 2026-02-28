@@ -5,6 +5,7 @@ import ipaddress
 import socket
 from typing import Any
 from urllib.parse import urljoin, urlsplit
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
 from icalendar import Calendar
@@ -28,10 +29,11 @@ def _utc_iso(value: datetime) -> str:
     )
 
 
-def _coerce_utc_datetime(value: date | datetime) -> datetime:
+def _coerce_utc_datetime(value: date | datetime, *, default_tz: ZoneInfo | None = None) -> datetime:
     if isinstance(value, datetime):
         if value.tzinfo is None:
-            return value.replace(tzinfo=timezone.utc)
+            tzinfo = default_tz or timezone.utc
+            return value.replace(tzinfo=tzinfo).astimezone(timezone.utc)
         return value.astimezone(timezone.utc)
     return datetime.combine(value, time.min, tzinfo=timezone.utc)
 
@@ -159,7 +161,12 @@ def _updated_at_text(component: Any, *, fallback: str) -> str:
     return fallback
 
 
-def _normalise_event(component: Any, *, fallback_updated_at: str) -> dict[str, Any] | None:
+def _normalise_event(
+    component: Any,
+    *,
+    fallback_updated_at: str,
+    default_tz: ZoneInfo | None = None,
+) -> dict[str, Any] | None:
     uid = str(component.get("UID") or "").strip()
     if not uid:
         return None
@@ -175,7 +182,7 @@ def _normalise_event(component: Any, *, fallback_updated_at: str) -> dict[str, A
         raise CalendarParseError("Unable to decode DTSTART") from exc
 
     all_day = isinstance(dtstart_raw, date) and not isinstance(dtstart_raw, datetime)
-    starts_at = _coerce_utc_datetime(dtstart_raw)
+    starts_at = _coerce_utc_datetime(dtstart_raw, default_tz=default_tz)
 
     dtend_raw: date | datetime | None = None
     try:
@@ -189,12 +196,12 @@ def _normalise_event(component: Any, *, fallback_updated_at: str) -> dict[str, A
         if dtend_raw is None:
             ends_at = starts_at + timedelta(days=1)
         else:
-            ends_at = _coerce_utc_datetime(dtend_raw)
+            ends_at = _coerce_utc_datetime(dtend_raw, default_tz=default_tz)
             if ends_at <= starts_at:
                 ends_at = starts_at + timedelta(days=1)
     else:
         if dtend_raw is not None:
-            ends_at = _coerce_utc_datetime(dtend_raw)
+            ends_at = _coerce_utc_datetime(dtend_raw, default_tz=default_tz)
         else:
             duration_raw = None
             try:
@@ -240,6 +247,14 @@ def parse_ics_events(
     except Exception as exc:
         raise CalendarParseError("ICS payload could not be parsed") from exc
 
+    default_tz: ZoneInfo | None = None
+    timezone_raw = str(calendar.get("X-WR-TIMEZONE") or "").strip()
+    if timezone_raw:
+        try:
+            default_tz = ZoneInfo(timezone_raw)
+        except ZoneInfoNotFoundError:
+            default_tz = None
+
     try:
         expanded_events = recurring_ical_events.of(calendar).between(start_utc, end_utc)
     except Exception as exc:
@@ -250,7 +265,11 @@ def parse_ics_events(
     for component in expanded_events:
         if str(getattr(component, "name", "")).upper() != "VEVENT":
             continue
-        row = _normalise_event(component, fallback_updated_at=fallback_updated_at)
+        row = _normalise_event(
+            component,
+            fallback_updated_at=fallback_updated_at,
+            default_tz=default_tz,
+        )
         if row is None:
             continue
         key = (str(row["uid"]), str(row["starts_at"]))

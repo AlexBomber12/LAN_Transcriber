@@ -1,92 +1,130 @@
 diff --git a/lan_app/calendar/ics.py b/lan_app/calendar/ics.py
-index bee671a..3afeca8 100644
+index 3afeca8..1748a26 100644
 --- a/lan_app/calendar/ics.py
 +++ b/lan_app/calendar/ics.py
-@@ -58,7 +58,7 @@ def _resolves_only_loopback(hostname: str) -> bool:
-             seen.append(ipaddress.ip_address(raw_ip))
-         except ValueError:
+@@ -5,6 +5,7 @@ import ipaddress
+ import socket
+ from typing import Any
+ from urllib.parse import urljoin, urlsplit
++from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+ 
+ import httpx
+ from icalendar import Calendar
+@@ -28,10 +29,11 @@ def _utc_iso(value: datetime) -> str:
+     )
+ 
+ 
+-def _coerce_utc_datetime(value: date | datetime) -> datetime:
++def _coerce_utc_datetime(value: date | datetime, *, default_tz: ZoneInfo | None = None) -> datetime:
+     if isinstance(value, datetime):
+         if value.tzinfo is None:
+-            return value.replace(tzinfo=timezone.utc)
++            tzinfo = default_tz or timezone.utc
++            return value.replace(tzinfo=tzinfo).astimezone(timezone.utc)
+         return value.astimezone(timezone.utc)
+     return datetime.combine(value, time.min, tzinfo=timezone.utc)
+ 
+@@ -159,7 +161,12 @@ def _updated_at_text(component: Any, *, fallback: str) -> str:
+     return fallback
+ 
+ 
+-def _normalise_event(component: Any, *, fallback_updated_at: str) -> dict[str, Any] | None:
++def _normalise_event(
++    component: Any,
++    *,
++    fallback_updated_at: str,
++    default_tz: ZoneInfo | None = None,
++) -> dict[str, Any] | None:
+     uid = str(component.get("UID") or "").strip()
+     if not uid:
+         return None
+@@ -175,7 +182,7 @@ def _normalise_event(component: Any, *, fallback_updated_at: str) -> dict[str, A
+         raise CalendarParseError("Unable to decode DTSTART") from exc
+ 
+     all_day = isinstance(dtstart_raw, date) and not isinstance(dtstart_raw, datetime)
+-    starts_at = _coerce_utc_datetime(dtstart_raw)
++    starts_at = _coerce_utc_datetime(dtstart_raw, default_tz=default_tz)
+ 
+     dtend_raw: date | datetime | None = None
+     try:
+@@ -189,12 +196,12 @@ def _normalise_event(component: Any, *, fallback_updated_at: str) -> dict[str, A
+         if dtend_raw is None:
+             ends_at = starts_at + timedelta(days=1)
+         else:
+-            ends_at = _coerce_utc_datetime(dtend_raw)
++            ends_at = _coerce_utc_datetime(dtend_raw, default_tz=default_tz)
+             if ends_at <= starts_at:
+                 ends_at = starts_at + timedelta(days=1)
+     else:
+         if dtend_raw is not None:
+-            ends_at = _coerce_utc_datetime(dtend_raw)
++            ends_at = _coerce_utc_datetime(dtend_raw, default_tz=default_tz)
+         else:
+             duration_raw = None
+             try:
+@@ -240,6 +247,14 @@ def parse_ics_events(
+     except Exception as exc:
+         raise CalendarParseError("ICS payload could not be parsed") from exc
+ 
++    default_tz: ZoneInfo | None = None
++    timezone_raw = str(calendar.get("X-WR-TIMEZONE") or "").strip()
++    if timezone_raw:
++        try:
++            default_tz = ZoneInfo(timezone_raw)
++        except ZoneInfoNotFoundError:
++            default_tz = None
++
+     try:
+         expanded_events = recurring_ical_events.of(calendar).between(start_utc, end_utc)
+     except Exception as exc:
+@@ -250,7 +265,11 @@ def parse_ics_events(
+     for component in expanded_events:
+         if str(getattr(component, "name", "")).upper() != "VEVENT":
              continue
--    return bool(seen) and all(item.is_loopback for item in seen)
-+    return any(item.is_loopback for item in seen)
- 
- 
- def validate_ics_url(raw_url: str) -> str:
-diff --git a/lan_app/ui_routes.py b/lan_app/ui_routes.py
-index 96acbc7..3431385 100644
---- a/lan_app/ui_routes.py
-+++ b/lan_app/ui_routes.py
-@@ -964,11 +964,12 @@ def _calendar_page_data(
- ) -> dict[str, Any]:
-     start_date = _parse_ymd_date(date_from, field_name="from")
-     end_date = _parse_ymd_date(date_to, field_name="to")
--    if end_date <= start_date:
-+    if end_date < start_date:
-         raise ValueError("to must be after from")
- 
-     start_dt = datetime.combine(start_date, time.min, tzinfo=timezone.utc)
--    end_dt = datetime.combine(end_date, time.min, tzinfo=timezone.utc)
-+    # `to` is user-facing inclusive date, while DB query upper bound is exclusive.
-+    end_dt = datetime.combine(end_date + timedelta(days=1), time.min, tzinfo=timezone.utc)
- 
-     sources_raw = list_calendar_sources(settings=settings)
-     sources = [redacted_calendar_source(row) for row in sources_raw]
+-        row = _normalise_event(component, fallback_updated_at=fallback_updated_at)
++        row = _normalise_event(
++            component,
++            fallback_updated_at=fallback_updated_at,
++            default_tz=default_tz,
++        )
+         if row is None:
+             continue
+         key = (str(row["uid"]), str(row["starts_at"]))
 diff --git a/tests/test_calendar_ics.py b/tests/test_calendar_ics.py
-index 6cad55d..afa4dcc 100644
+index afa4dcc..0d8840b 100644
 --- a/tests/test_calendar_ics.py
 +++ b/tests/test_calendar_ics.py
-@@ -147,3 +147,23 @@ def test_calendar_source_rejects_non_http_url(calendar_client: TestClient):
-     )
-     assert response.status_code == 422
-     assert "http or https" in response.json()["detail"]
-+
-+
-+def test_calendar_source_rejects_mixed_loopback_dns_answers(calendar_client: TestClient, monkeypatch):
-+    def _fake_getaddrinfo(*_args, **_kwargs):
-+        return [
-+            (0, 0, 0, "", ("127.0.0.1", 443)),
-+            (0, 0, 0, "", ("203.0.113.10", 443)),
+@@ -58,6 +58,33 @@ def test_parse_ics_recurrence_fixture_expands_weekly_instances():
+     ]
+ 
+ 
++def test_parse_ics_floating_datetimes_use_calendar_timezone():
++    payload = "\n".join(
++        [
++            "BEGIN:VCALENDAR",
++            "VERSION:2.0",
++            "PRODID:-//LAN Transcriber//Calendar Floating Time Test//EN",
++            "X-WR-TIMEZONE:Europe/Berlin",
++            "BEGIN:VEVENT",
++            "UID:floating-berlin-1",
++            "DTSTAMP:20260201T120000Z",
++            "DTSTART:20260210T090000",
++            "DTEND:20260210T100000",
++            "SUMMARY:Floating Time Event",
++            "END:VEVENT",
++            "END:VCALENDAR",
 +        ]
-+
-+    monkeypatch.setattr("lan_app.calendar.ics.socket.getaddrinfo", _fake_getaddrinfo)
-+    response = calendar_client.post(
-+        "/api/calendar/sources",
-+        json={
-+            "name": "Mixed DNS Calendar",
-+            "kind": "url",
-+            "url": "https://calendar.example.com/team.ics",
-+        },
 +    )
-+    assert response.status_code == 422
-+    assert "localhost/loopback" in response.json()["detail"]
-diff --git a/tests/test_ui_routes.py b/tests/test_ui_routes.py
-index 0cc5a38..0653f00 100644
---- a/tests/test_ui_routes.py
-+++ b/tests/test_ui_routes.py
-@@ -1568,7 +1568,18 @@ def test_calendars_page_renders_seeded_sources_and_events(tmp_path, monkeypatch)
-                 "description": "fixture",
-                 "organizer": "Alex",
-                 "updated_at": "2026-02-01T00:00:00Z",
--            }
-+            },
-+            {
-+                "uid": "evt-seeded-end-date-1",
-+                "starts_at": "2026-02-10T15:00:00Z",
-+                "ends_at": "2026-02-10T16:00:00Z",
-+                "all_day": False,
-+                "summary": "End date event",
-+                "location": "Room 9",
-+                "description": "fixture",
-+                "organizer": "Alex",
-+                "updated_at": "2026-02-01T00:00:00Z",
-+            },
-         ],
-         settings=cfg,
-     )
-@@ -1579,6 +1590,7 @@ def test_calendars_page_renders_seeded_sources_and_events(tmp_path, monkeypatch)
-     assert "Calendars" in response.text
-     assert "Local Team Calendar" in response.text
-     assert "Seeded calendar event" in response.text
-+    assert "End date event" in response.text
- 
- 
- def test_calendars_create_and_sync_file_source(tmp_path, monkeypatch):
++    events = parse_ics_events(
++        payload,
++        window_start=datetime(2026, 2, 1, tzinfo=timezone.utc),
++        window_end=datetime(2026, 2, 20, tzinfo=timezone.utc),
++    )
++    assert len(events) == 1
++    assert events[0]["starts_at"] == "2026-02-10T08:00:00Z"
++    assert events[0]["ends_at"] == "2026-02-10T09:00:00Z"
++
++
+ @pytest.fixture()
+ def calendar_client(tmp_path: Path, monkeypatch):
+     cfg = _cfg(tmp_path)
