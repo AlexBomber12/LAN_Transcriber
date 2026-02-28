@@ -1,129 +1,96 @@
 diff --git a/tasks/QUEUE.md b/tasks/QUEUE.md
-index 5000324..5843f57 100644
+index 5843f57..b439ad1 100644
 --- a/tasks/QUEUE.md
 +++ b/tasks/QUEUE.md
-@@ -203,7 +203,7 @@ Queue (in order)
- - Depends on: PR-TEST-IMPORTS-01
- 
- 39) PR-TEST-API-UI-01: Add end-to-end API and UI route tests for Upload and Export workflow
--- Status: TODO
-+- Status: DONE
- - Tasks file: tasks/PR-TEST-API-UI-01.md
+@@ -208,7 +208,7 @@ Queue (in order)
  - Depends on: PR-TEST-PIPELINE-RESILIENCE-01
  
-diff --git a/tests/test_upload_export_flow.py b/tests/test_upload_export_flow.py
-new file mode 100644
-index 0000000..7819a3e
---- /dev/null
-+++ b/tests/test_upload_export_flow.py
-@@ -0,0 +1,110 @@
-+from __future__ import annotations
+ 40) PR-SMOKE-DOCKER-01: Strengthen Docker smoke test to catch native dependency loader issues (ctranslate2)
+-- Status: TODO
++- Status: DONE
+ - Tasks file: tasks/PR-SMOKE-DOCKER-01.md
+ - Depends on: PR-TEST-API-UI-01
+ 
+diff --git a/tests/test_docker_smoke.py b/tests/test_docker_smoke.py
+index 46db9ef..2e4df68 100644
+--- a/tests/test_docker_smoke.py
++++ b/tests/test_docker_smoke.py
+@@ -1,5 +1,4 @@
+ import os
+-import signal
+ import subprocess
+ import time
+ 
+@@ -12,19 +11,61 @@ if not IMAGE:
+ 
+ 
+ def test_container_launches():
+-    proc = subprocess.Popen(
+-        ["docker", "run", "--rm", "-p", "17860:7860", IMAGE],
+-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
++    subprocess.run(
++        ["docker", "run", "-d", "--rm", "--name", "lan-smoke", "-p", "17860:7860", IMAGE],
++        check=True,
++        capture_output=True,
++        text=True,
+     )
++    ready = False
+     try:
+         for _ in range(90):
+-            try:
+-                r = requests.get("http://127.0.0.1:17860/openapi.json", timeout=1)
+-                if r.status_code == 200:
+-                    return
+-            except requests.exceptions.ConnectionError:
+-                pass
++            for path in ("healthz/app", "openapi.json"):
++                try:
++                    r = requests.get(f"http://127.0.0.1:17860/{path}", timeout=1)
++                    if r.status_code == 200:
++                        ready = True
++                        break
++                except requests.exceptions.ConnectionError:
++                    pass
++            if ready:
++                break
+             time.sleep(1)
+-        pytest.fail("UI did not start or returned non-200")
++        if not ready:
++            logs = subprocess.run(
++                ["docker", "logs", "lan-smoke"],
++                check=False,
++                capture_output=True,
++                text=True,
++            )
++            pytest.fail(
++                "Container did not become ready within 90 seconds.\n"
++                f"docker logs:\n{logs.stdout}\n{logs.stderr}"
++            )
 +
-+import io
-+from pathlib import Path
-+from uuid import uuid4
-+import zipfile
-+
-+import pytest
-+from fastapi.testclient import TestClient
-+
-+from lan_app import api, ui_routes
-+from lan_app.config import AppSettings
-+from lan_app.constants import JOB_STATUS_QUEUED, JOB_TYPE_PRECHECK
-+from lan_app.db import create_job, init_db
-+from lan_app.jobs import RecordingJob
-+
-+
-+def _cfg(tmp_path: Path) -> AppSettings:
-+    cfg = AppSettings(
-+        data_root=tmp_path,
-+        recordings_root=tmp_path / "recordings",
-+        db_path=tmp_path / "db" / "app.db",
-+    )
-+    cfg.metrics_snapshot_path = tmp_path / "metrics.snap"
-+    return cfg
-+
-+
-+@pytest.fixture()
-+def cfg(tmp_path: Path, monkeypatch):
-+    app_settings = _cfg(tmp_path)
-+    monkeypatch.setattr(api, "_settings", app_settings)
-+    monkeypatch.setattr(ui_routes, "_settings", app_settings)
-+    init_db(app_settings)
-+
-+    def _fake_enqueue(
-+        recording_id: str,
-+        *,
-+        job_type: str = JOB_TYPE_PRECHECK,
-+        settings: AppSettings | None = None,
-+    ) -> RecordingJob:
-+        effective = settings or app_settings
-+        job_id = f"job-upload-{uuid4().hex[:8]}"
-+        create_job(
-+            job_id=job_id,
-+            recording_id=recording_id,
-+            job_type=job_type,
-+            status=JOB_STATUS_QUEUED,
-+            settings=effective,
++        dep_check = subprocess.run(
++            [
++                "docker",
++                "exec",
++                "lan-smoke",
++                "python",
++                "-c",
++                "import ctranslate2; import faster_whisper; import whisperx",
++            ],
++            check=False,
++            capture_output=True,
++            text=True,
 +        )
-+        return RecordingJob(
-+            job_id=job_id,
-+            recording_id=recording_id,
-+            job_type=job_type,
++        if dep_check.returncode != 0:
++            pytest.fail(
++                "Dependency import check failed inside runtime container.\n"
++                f"stdout:\n{dep_check.stdout}\n"
++                f"stderr:\n{dep_check.stderr}"
++            )
+     finally:
+-        proc.send_signal(signal.SIGINT)
++        subprocess.run(
++            ["docker", "stop", "lan-smoke"],
++            check=False,
++            capture_output=True,
++            text=True,
 +        )
-+
-+    monkeypatch.setattr(api, "enqueue_recording_job", _fake_enqueue)
-+    return app_settings
-+
-+
-+@pytest.fixture()
-+def client(cfg: AppSettings):
-+    return TestClient(api.app, follow_redirects=True)
-+
-+
-+def _upload_recording(client: TestClient) -> dict[str, object]:
-+    response = client.post(
-+        "/api/uploads",
-+        files={"file": ("meeting-flow.mp3", b"fake-mp3", "audio/mpeg")},
-+    )
-+    assert response.status_code == 200
-+    return response.json()
-+
-+
-+def test_upload_creates_recording_and_file(client: TestClient, cfg: AppSettings):
-+    payload = _upload_recording(client)
-+    recording_id = str(payload["recording_id"])
-+
-+    assert recording_id
-+    raw_audio = cfg.recordings_root / recording_id / "raw" / "audio.mp3"
-+    assert raw_audio.exists()
-+    assert raw_audio.read_bytes() == b"fake-mp3"
-+
-+
-+def test_ui_pages_render_for_new_recording(client: TestClient):
-+    payload = _upload_recording(client)
-+    recording_id = str(payload["recording_id"])
-+
-+    upload_page = client.get("/upload")
-+    assert upload_page.status_code == 200
-+    assert 'id="file-input"' in upload_page.text
-+
-+    recordings_page = client.get("/recordings")
-+    assert recordings_page.status_code == 200
-+    assert recording_id in recordings_page.text or "meeting-flow.mp3" in recordings_page.text
-+
-+    detail_page = client.get(f"/recordings/{recording_id}")
-+    assert detail_page.status_code == 200
-+
-+
-+def test_export_zip_downloads_required_files(client: TestClient):
-+    payload = _upload_recording(client)
-+    recording_id = str(payload["recording_id"])
-+
-+    response = client.get(f"/ui/recordings/{recording_id}/export.zip")
-+    assert response.status_code == 200
-+
-+    archive = zipfile.ZipFile(io.BytesIO(response.content))
-+    names = set(archive.namelist())
-+    assert "onenote.md" in names
-+    assert "manifest.json" in names
