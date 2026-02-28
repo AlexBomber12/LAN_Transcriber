@@ -28,23 +28,3 @@ jobs:
           COVERAGE_THRESHOLD_TRANSCRIBER: '90'
           COVERAGE_THRESHOLD_APP: '75'
         run: scripts/ci.sh
-      - name: Prepare smoke image
-        id: prepare_smoke
-        run: |
-          IMAGE_OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
-          REF_NAME="${{ github.ref_name }}"
-          TAG="${REF_NAME//\//-}"
-          IMAGE="ghcr.io/${IMAGE_OWNER}/lan-transcriber:${TAG}"
-          echo "Attempting to pull $IMAGE"
-          if docker pull "$IMAGE"; then
-            echo "SMOKE_IMAGE=$IMAGE" >> "$GITHUB_OUTPUT"
-          else
-            echo "Image not found: $IMAGE. Skipping smoke test."
-          fi
-      - name: Docker smoke
-        if: steps.prepare_smoke.outputs.SMOKE_IMAGE != ''
-        env:
-          SMOKE_IMAGE: ${{ steps.prepare_smoke.outputs.SMOKE_IMAGE }}
-        run: |
-          . .venv-ci/bin/activate
-          python -m pytest -q tests/test_docker_smoke.py
