@@ -29,6 +29,24 @@ This produces:
 - `artifacts/ci.log`
 - `artifacts/pr.patch`
 
+## Dev mode
+
+Use a compose overlay for fast code iteration without image rebuilds.
+
+Build once:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
+```
+
+After code changes:
+
+```bash
+docker compose restart api worker
+```
+
+Rebuild images only when dependencies change (for example `requirements.txt` updates).
+
 ## Operations runbook
 
 Operational setup, failure handling, backup/restore, and upgrade steps are documented in
