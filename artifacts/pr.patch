@@ -1,148 +1,49 @@
-diff --git a/lan_transcriber/compat/__init__.py b/lan_transcriber/compat/__init__.py
-index bb694a8..ba24d99 100644
---- a/lan_transcriber/compat/__init__.py
-+++ b/lan_transcriber/compat/__init__.py
-@@ -1 +1,5 @@
- """Compatibility helpers for third-party library version differences."""
-+
-+from .call_compat import call_with_supported_kwargs, filter_kwargs_for_callable
-+
-+__all__ = ["call_with_supported_kwargs", "filter_kwargs_for_callable"]
 diff --git a/lan_transcriber/pipeline_steps/orchestrator.py b/lan_transcriber/pipeline_steps/orchestrator.py
-index f606c26..ee4de12 100644
+index ee4de12..afb8e96 100644
 --- a/lan_transcriber/pipeline_steps/orchestrator.py
 +++ b/lan_transcriber/pipeline_steps/orchestrator.py
-@@ -13,6 +13,7 @@ from pydantic_settings import BaseSettings
- from .. import normalizer
- from ..aliases import ALIAS_PATH, load_aliases as _load_aliases, save_aliases as _save_aliases
- from ..artifacts import atomic_write_json, atomic_write_text, build_recording_artifacts, stage_raw_audio
-+from ..compat.call_compat import call_with_supported_kwargs, filter_kwargs_for_callable
- from ..compat.pyannote_compat import patch_pyannote_inference_ignore_use_auth_token
- from ..llm_client import LLMClient
- from ..metrics import error_rate_total, p95_latency_seconds
-@@ -142,6 +143,25 @@ def _select_compute_type(cfg: Settings, device: str) -> str:
-     return "float16" if device == "cuda" else "int8"
- 
- 
-+def _log_dropped_kwargs(
-+    *,
-+    callback: Callable[[str], Any] | None,
-+    scope: str,
-+    attempted: dict[str, Any],
-+    filtered: dict[str, Any],
-+) -> None:
-+    if callback is None:
-+        return
-+    dropped = [key for key in attempted if key not in filtered]
-+    if not dropped:
-+        return
-+    try:
-+        callback(f"{scope}: dropped unsupported kwargs: {', '.join(dropped)}")
-+    except Exception:
-+        # Step log append is best-effort and must not break processing.
-+        pass
-+
-+
- def _whisperx_asr(
-     audio_path: Path,
-     *,
-@@ -173,11 +193,16 @@ def _whisperx_asr(
-         kwargs: dict[str, Any] = {
-             "vad_filter": True,
-             "language": override_lang or "auto",
-+            "word_timestamps": True,
-         }
--        try:
--            segments, info = whisperx.transcribe(str(audio_path), word_timestamps=True, **kwargs)
--        except TypeError:
--            segments, info = whisperx.transcribe(str(audio_path), **kwargs)
-+        filtered_kwargs = filter_kwargs_for_callable(whisperx.transcribe, kwargs)
-+        _log_dropped_kwargs(
-+            callback=step_log_callback,
-+            scope="whisperx transcribe",
-+            attempted=kwargs,
-+            filtered=filtered_kwargs,
-+        )
-+        segments, info = call_with_supported_kwargs(whisperx.transcribe, str(audio_path), **kwargs)
+@@ -202,7 +202,18 @@ def _whisperx_asr(
+             attempted=kwargs,
+             filtered=filtered_kwargs,
+         )
+-        segments, info = call_with_supported_kwargs(whisperx.transcribe, str(audio_path), **kwargs)
++        try:
++            segments, info = call_with_supported_kwargs(whisperx.transcribe, str(audio_path), **kwargs)
++        except TypeError:
++            retry_kwargs = dict(kwargs)
++            retry_kwargs.pop("word_timestamps", None)
++            _log_dropped_kwargs(
++                callback=step_log_callback,
++                scope="whisperx transcribe",
++                attempted=kwargs,
++                filtered=retry_kwargs,
++            )
++            segments, info = call_with_supported_kwargs(whisperx.transcribe, str(audio_path), **retry_kwargs)
          return list(segments), dict(info or {})
  
      device = _select_asr_device(cfg)
-@@ -188,12 +213,19 @@ def _whisperx_asr(
-     except TypeError:
-         model = whisperx.load_model(cfg.asr_model, device)
- 
--    result = model.transcribe(
--        audio,
--        batch_size=cfg.asr_batch_size,
--        vad_filter=True,
--        language=(override_lang if override_lang else None),
-+    transcribe_kwargs: dict[str, Any] = {
-+        "batch_size": cfg.asr_batch_size,
-+        "vad_filter": True,
-+        "language": (override_lang if override_lang else None),
-+    }
-+    filtered_kwargs = filter_kwargs_for_callable(model.transcribe, transcribe_kwargs)
-+    _log_dropped_kwargs(
-+        callback=step_log_callback,
-+        scope="whisperx transcribe",
-+        attempted=transcribe_kwargs,
-+        filtered=filtered_kwargs,
-     )
-+    result = call_with_supported_kwargs(model.transcribe, audio, **transcribe_kwargs)
-     segments = list(result.get("segments", []))
-     info: dict[str, Any] = {"language": result.get("language") or (override_lang or "unknown")}
- 
-diff --git a/tasks/QUEUE.md b/tasks/QUEUE.md
-index 73f413f..ca9ab45 100644
---- a/tasks/QUEUE.md
-+++ b/tasks/QUEUE.md
-@@ -242,7 +242,7 @@ Queue (in order)
- - Depends on: PR-FIX-WHISPERX-API-01
- 
- 47) PR-FIX-WHISPERX-TRANSCRIBE-KWARGS-01: Make WhisperX transcribe calls signature-compatible (avoid unexpected kwargs like vad_filter)
--- Status: TODO
-+- Status: DONE
- - Tasks file: tasks/PR-FIX-WHISPERX-TRANSCRIBE-KWARGS-01.md
- - Depends on: PR-RUNTIME-CONFIG-01
- 
 diff --git a/tests/test_whisperx_api.py b/tests/test_whisperx_api.py
-index 6fb37e1..c3e23b4 100644
+index c3e23b4..e69d43f 100644
 --- a/tests/test_whisperx_api.py
 +++ b/tests/test_whisperx_api.py
-@@ -82,3 +82,80 @@ def test_whisperx_asr_modern_path(tmp_path: Path, monkeypatch):
-     assert all("start" in segment and "end" in segment and "text" in segment for segment in segments)
-     assert any(segment.get("words") for segment in segments)
-     assert info["language"] == "en"
-+
-+
-+def test_whisperx_asr_modern_path_drops_unsupported_kwargs(tmp_path: Path, monkeypatch):
+@@ -136,6 +136,47 @@ def test_whisperx_asr_modern_path_drops_unsupported_kwargs(tmp_path: Path, monke
+     assert any("dropped unsupported kwargs: vad_filter" in line for line in step_log)
+ 
+ 
++def test_whisperx_asr_retry_without_word_timestamps_on_typeerror(tmp_path: Path, monkeypatch):
 +    fake_whisperx = ModuleType("whisperx")
++    calls: list[dict[str, object]] = []
 +
-+    class _FakeModel:
-+        def transcribe(
-+            self,
-+            audio: str,
-+            *,
-+            batch_size: int,
-+            language: str | None,
-+        ) -> dict[str, object]:
-+            assert audio == "audio"
-+            assert batch_size == 16
-+            assert language == "es"
-+            return {"segments": [{"start": 0.0, "end": 1.0, "text": "hola"}], "language": "es"}
++    def _transcribe(audio_path: str, *args: object, **kwargs: object) -> tuple[list[dict[str, object]], dict[str, object]]:
++        del args
++        calls.append(dict(kwargs))
++        if "word_timestamps" in kwargs:
++            raise TypeError("unexpected keyword argument 'word_timestamps'")
++        assert audio_path.endswith("a.wav")
++        assert kwargs == {"vad_filter": True, "language": "auto"}
++        return ([{"start": 0.0, "end": 1.0, "text": "hello"}], {"language": "en"})
 +
-+    def _load_audio(path: str) -> str:
-+        assert path.endswith("a.wav")
-+        return "audio"
-+
-+    # Intentionally omit compute_type to exercise the fallback load_model branch.
-+    def _load_model(model_name: str, device: str) -> _FakeModel:
-+        assert model_name == "large-v3"
-+        assert device == "cpu"
-+        return _FakeModel()
-+
-+    fake_whisperx.load_audio = _load_audio
-+    fake_whisperx.load_model = _load_model
++    fake_whisperx.transcribe = _transcribe
 +    monkeypatch.setitem(sys.modules, "whisperx", fake_whisperx)
 +
 +    audio_path = tmp_path / "a.wav"
@@ -157,152 +58,19 @@ index 6fb37e1..c3e23b4 100644
 +
 +    segments, info = pipeline._whisperx_asr(
 +        audio_path,
-+        override_lang="es",
++        override_lang=None,
 +        cfg=cfg,
 +        step_log_callback=step_log.append,
 +    )
 +
-+    assert segments and segments[0]["text"] == "hola"
-+    assert info["language"] == "es"
-+    assert any("dropped unsupported kwargs: vad_filter" in line for line in step_log)
++    assert segments and segments[0]["text"] == "hello"
++    assert info["language"] == "en"
++    assert len(calls) == 2
++    assert "word_timestamps" in calls[0]
++    assert "word_timestamps" not in calls[1]
++    assert any("dropped unsupported kwargs: word_timestamps" in line for line in step_log)
 +
 +
-+def test_log_dropped_kwargs_returns_early_when_nothing_dropped() -> None:
-+    messages: list[str] = []
-+
-+    pipeline._log_dropped_kwargs(
-+        callback=messages.append,
-+        scope="whisperx transcribe",
-+        attempted={"vad_filter": True},
-+        filtered={"vad_filter": True},
-+    )
-+
-+    assert messages == []
-+
-+
-+def test_log_dropped_kwargs_ignores_callback_errors() -> None:
-+    def _raise(_message: str) -> None:
-+        raise RuntimeError("boom")
-+
-+    pipeline._log_dropped_kwargs(
-+        callback=_raise,
-+        scope="whisperx transcribe",
-+        attempted={"vad_filter": True},
-+        filtered={},
-+    )
-diff --git a/lan_transcriber/compat/call_compat.py b/lan_transcriber/compat/call_compat.py
-new file mode 100644
-index 0000000..71398a1
---- /dev/null
-+++ b/lan_transcriber/compat/call_compat.py
-@@ -0,0 +1,32 @@
-+from __future__ import annotations
-+
-+import inspect
-+from typing import Any, Callable
-+
-+
-+def filter_kwargs_for_callable(fn: Callable[..., Any], kwargs: dict[str, Any]) -> dict[str, Any]:
-+    """Keep only keyword arguments accepted by ``fn``.
-+
-+    If ``fn`` accepts ``**kwargs`` or its signature cannot be inspected,
-+    the input kwargs are returned unchanged.
-+    """
-+
-+    if not kwargs:
-+        return {}
-+
-+    try:
-+        signature = inspect.signature(fn)
-+    except (TypeError, ValueError):
-+        return dict(kwargs)
-+
-+    if any(param.kind == inspect.Parameter.VAR_KEYWORD for param in signature.parameters.values()):
-+        return dict(kwargs)
-+
-+    return {key: value for key, value in kwargs.items() if key in signature.parameters}
-+
-+
-+def call_with_supported_kwargs(fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
-+    """Invoke ``fn`` with kwargs filtered to signature-supported keys."""
-+
-+    filtered = filter_kwargs_for_callable(fn, kwargs)
-+    return fn(*args, **filtered)
-diff --git a/tests/test_call_compat.py b/tests/test_call_compat.py
-new file mode 100644
-index 0000000..ca582cb
---- /dev/null
-+++ b/tests/test_call_compat.py
-@@ -0,0 +1,72 @@
-+from __future__ import annotations
-+
-+from typing import Any
-+
-+from lan_transcriber.compat import call_compat
-+from lan_transcriber.compat.call_compat import call_with_supported_kwargs, filter_kwargs_for_callable
-+
-+
-+def test_filter_kwargs_drops_unsupported_keys_without_var_kwargs() -> None:
-+    def _fn(audio: str, *, batch_size: int, language: str | None = None) -> None:
-+        del audio, batch_size, language
-+
-+    filtered = filter_kwargs_for_callable(
-+        _fn,
-+        {"batch_size": 16, "language": "en", "vad_filter": True},
-+    )
-+
-+    assert filtered == {"batch_size": 16, "language": "en"}
-+
-+
-+def test_filter_kwargs_keeps_keys_with_var_kwargs() -> None:
-+    def _fn(audio: str, **kwargs: object) -> None:
-+        del audio, kwargs
-+
-+    filtered = filter_kwargs_for_callable(
-+        _fn,
-+        {"batch_size": 16, "language": "en", "vad_filter": True},
-+    )
-+
-+    assert filtered == {"batch_size": 16, "language": "en", "vad_filter": True}
-+
-+
-+def test_filter_kwargs_returns_empty_dict_for_empty_input() -> None:
-+    def _fn(audio: str, *, batch_size: int) -> None:
-+        del audio, batch_size
-+
-+    assert filter_kwargs_for_callable(_fn, {}) == {}
-+
-+
-+def test_filter_kwargs_keeps_input_when_signature_introspection_fails(monkeypatch) -> None:
-+    def _raise_signature_error(*_args: Any, **_kwargs: Any) -> Any:
-+        raise TypeError("signature unavailable")
-+
-+    monkeypatch.setattr(call_compat.inspect, "signature", _raise_signature_error)
-+
-+    kwargs = {"vad_filter": True}
-+    assert filter_kwargs_for_callable(object(), kwargs) == kwargs
-+
-+
-+def test_call_with_supported_kwargs_filters_before_call() -> None:
-+    captured: dict[str, object] = {}
-+
-+    def _fn(audio: str, *, batch_size: int, language: str | None = None) -> str:
-+        captured["audio"] = audio
-+        captured["batch_size"] = batch_size
-+        captured["language"] = language
-+        return "ok"
-+
-+    result = call_with_supported_kwargs(
-+        _fn,
-+        "audio-bytes",
-+        batch_size=8,
-+        language="es",
-+        vad_filter=True,
-+    )
-+
-+    assert result == "ok"
-+    assert captured == {
-+        "audio": "audio-bytes",
-+        "batch_size": 8,
-+        "language": "es",
-+    }
+ def test_log_dropped_kwargs_returns_early_when_nothing_dropped() -> None:
+     messages: list[str] = []
+ 

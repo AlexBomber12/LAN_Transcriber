@@ -202,7 +202,18 @@ def _whisperx_asr(
             attempted=kwargs,
             filtered=filtered_kwargs,
         )
-        segments, info = call_with_supported_kwargs(whisperx.transcribe, str(audio_path), **kwargs)
+        try:
+            segments, info = call_with_supported_kwargs(whisperx.transcribe, str(audio_path), **kwargs)
+        except TypeError:
+            retry_kwargs = dict(kwargs)
+            retry_kwargs.pop("word_timestamps", None)
+            _log_dropped_kwargs(
+                callback=step_log_callback,
+                scope="whisperx transcribe",
+                attempted=kwargs,
+                filtered=retry_kwargs,
+            )
+            segments, info = call_with_supported_kwargs(whisperx.transcribe, str(audio_path), **retry_kwargs)
         return list(segments), dict(info or {})
 
     device = _select_asr_device(cfg)
