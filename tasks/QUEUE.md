@@ -213,6 +213,6 @@ Queue (in order)
 - Depends on: PR-TEST-API-UI-01
 
 41) PR-COVERAGE-01: Expand coverage to include lan_app and enforce coverage thresholds
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-COVERAGE-01.md
 - Depends on: PR-SMOKE-DOCKER-01

@@ -97,8 +97,8 @@ Requirement already satisfied: six>=1.5 in ./.venv-ci/lib/python3.12/site-packag
 Building wheels for collected packages: lan-transcriber
   Building editable for lan-transcriber (pyproject.toml): started
   Building editable for lan-transcriber (pyproject.toml): finished with status 'done'
-  Created wheel for lan-transcriber: filename=lan_transcriber-0.1.0-0.editable-py3-none-any.whl size=15397 sha256=9757443832654cde8a42dd6d3667d4edbb3a4cade67d570692721a5c59c8ff6f
-  Stored in directory: /tmp/pip-ephem-wheel-cache-q2fbv34v/wheels/d5/8a/5c/f7178f7e49aa5ae12b2320ec66b5c310f4f2f63d1bd301b7fb
+  Created wheel for lan-transcriber: filename=lan_transcriber-0.1.0-0.editable-py3-none-any.whl size=15397 sha256=62248ce770cd39c569031005887de89978f01fb47df3f2a33bdde2139f050f30
+  Stored in directory: /tmp/pip-ephem-wheel-cache-fdcwcgml/wheels/d5/8a/5c/f7178f7e49aa5ae12b2320ec66b5c310f4f2f63d1bd301b7fb
 Successfully built lan-transcriber
 Installing collected packages: lan-transcriber
   Attempting uninstall: lan-transcriber
@@ -154,4 +154,54 @@ lan_transcriber/utils.py                               50      2    96%
 -----------------------------------------------------------------------
 TOTAL                                                1511    151    90%
 Required test coverage of 90% reached. Total coverage: 90.01%
-255 passed, 1 skipped, 5 warnings in 13.48s
+255 passed, 1 skipped, 5 warnings in 13.86s
+........................................................................ [ 28%]
+........................................................................ [ 56%]
+........................................................................ [ 84%]
+.......................................                                  [100%]
+=============================== warnings summary ===============================
+lan_transcriber/pipeline_steps/precheck.py:3
+  /home/alexey/LAN_Transcriber/lan_transcriber/pipeline_steps/precheck.py:3: DeprecationWarning: 'audioop' is deprecated and slated for removal in Python 3.13
+    import audioop
+
+lan_transcriber/pipeline_steps/orchestrator.py:44
+tests/test_imports.py::test_imports[lan_transcriber.pipeline_steps.orchestrator]
+tests/test_imports.py::test_orchestrator_import_does_not_import_whisperx
+  /home/alexey/LAN_Transcriber/lan_transcriber/pipeline_steps/orchestrator.py:44: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+    class Settings(BaseSettings):
+
+lan_app/config.py:29
+  /home/alexey/LAN_Transcriber/lan_app/config.py:29: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+    class AppSettings(BaseSettings):
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+================================ tests coverage ================================
+_______________ coverage: platform linux, python 3.12.3-final-0 ________________
+
+Name                              Stmts   Miss  Cover
+-----------------------------------------------------
+lan_app/__init__.py                   1      0   100%
+lan_app/api.py                      252     70    72%
+lan_app/auth.py                      58      5    91%
+lan_app/config.py                    61      9    85%
+lan_app/constants.py                 28      0   100%
+lan_app/conversation_metrics.py     380     48    87%
+lan_app/db.py                       669     97    86%
+lan_app/db_init.py                    9      9     0%
+lan_app/exporter.py                 212     43    80%
+lan_app/healthchecks.py             103     70    32%
+lan_app/hf_repo.py                    9      1    89%
+lan_app/jobs.py                     103     25    76%
+lan_app/ops.py                       72     10    86%
+lan_app/reaper.py                    65      3    95%
+lan_app/routing.py                  255     22    91%
+lan_app/ui.py                        63     24    62%
+lan_app/ui_routes.py                881    196    78%
+lan_app/uploads.py                   59      6    90%
+lan_app/worker.py                    28     16    43%
+lan_app/worker_tasks.py             393     87    78%
+lan_app/workers.py                   10      3    70%
+-----------------------------------------------------
+TOTAL                              3711    744    80%
+Required test coverage of 75% reached. Total coverage: 79.95%
+255 passed, 1 skipped, 5 warnings in 15.25s

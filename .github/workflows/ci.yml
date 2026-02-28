@@ -25,6 +25,8 @@ jobs:
       - name: Run lint and tests
         env:
           CI: 'true'
+          COVERAGE_THRESHOLD_TRANSCRIBER: '90'
+          COVERAGE_THRESHOLD_APP: '75'
         run: scripts/ci.sh
       - name: Prepare smoke image
         id: prepare_smoke
