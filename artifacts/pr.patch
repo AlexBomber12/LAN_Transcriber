@@ -1,0 +1,71 @@
+diff --git a/ci-requirements.txt b/ci-requirements.txt
+index 976fc9d..cfd0b1d 100644
+--- a/ci-requirements.txt
++++ b/ci-requirements.txt
+@@ -15,6 +15,7 @@ tenacity>=9
+ fastapi>=0.116
+ uvicorn>=0.30
+ pyyaml>=6.0
++omegaconf>=2.3.0
+ ruff>=0.12
+ pip-tools>=7.4
+ setuptools>=80.9
+diff --git a/requirements.in b/requirements.in
+index eebdf41..7e936da 100644
+--- a/requirements.in
++++ b/requirements.in
+@@ -6,6 +6,7 @@ whisperx==3.4.2
+ faster-whisper==1.1.1
+ pyannote.audio==3.3.2
+ pyannote.pipeline==3.0.1
++omegaconf==2.3.0
+ gradio==5.35.0
+ 
+ transformers==4.53.2
+diff --git a/requirements.txt b/requirements.txt
+index 20bd54e..bd04aee 100644
+--- a/requirements.txt
++++ b/requirements.txt
+@@ -6,6 +6,7 @@ starlette
+ torch
+ faster-whisper
+ pyannote.audio
++omegaconf>=2.3.0
+ httpx
+ tenacity
+ redis
+diff --git a/tasks/QUEUE.md b/tasks/QUEUE.md
+index 808fb09..dc9902c 100644
+--- a/tasks/QUEUE.md
++++ b/tasks/QUEUE.md
+@@ -219,6 +219,6 @@ Queue (in order)
+ 
+ 
+ 42) PR-FIX-OMEGACONF-01: Add missing omegaconf dependency (runtime + CI) and a dependency smoke test
+-- Status: TODO
++- Status: DONE
+ - Tasks file: tasks/PR-FIX-OMEGACONF-01.md
+ - Depends on: PR-COVERAGE-01
+diff --git a/tests/test_docker_smoke.py b/tests/test_docker_smoke.py
+index 2e4df68..3406318 100644
+--- a/tests/test_docker_smoke.py
++++ b/tests/test_docker_smoke.py
+@@ -50,7 +50,7 @@ def test_container_launches():
+                 "lan-smoke",
+                 "python",
+                 "-c",
+-                "import ctranslate2; import faster_whisper; import whisperx",
++                "import ctranslate2; import faster_whisper; import whisperx; from omegaconf import OmegaConf; OmegaConf.create({'ok': 1})",
+             ],
+             check=False,
+             capture_output=True,
+diff --git a/tests/test_dependency_smoke.py b/tests/test_dependency_smoke.py
+new file mode 100644
+index 0000000..1278008
+--- /dev/null
++++ b/tests/test_dependency_smoke.py
+@@ -0,0 +1,4 @@
++def test_omegaconf_importable():
++    from omegaconf import OmegaConf
++
++    assert hasattr(OmegaConf, "create")
