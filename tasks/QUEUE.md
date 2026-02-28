@@ -247,7 +247,7 @@ Queue (in order)
 - Depends on: PR-RUNTIME-CONFIG-01
 
 48) PR-TEST-WHISPERX-CONTRACT-01: Add contract tests for WhisperX transcribe API drift (with or without vad_filter)
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-TEST-WHISPERX-CONTRACT-01.md
 - Depends on: PR-FIX-WHISPERX-TRANSCRIBE-KWARGS-01
 

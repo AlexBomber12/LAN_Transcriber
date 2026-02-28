@@ -1,0 +1,146 @@
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+from types import ModuleType
+from typing import Any
+
+from lan_transcriber.compat.call_compat import call_with_supported_kwargs as compat_call_with_supported_kwargs
+from lan_transcriber.pipeline_steps import orchestrator as pipeline
+
+
+def _make_cfg(tmp_path: Path) -> pipeline.Settings:
+    return pipeline.Settings(
+        asr_device="cpu",
+        asr_enable_align=False,
+        tmp_root=tmp_path,
+        recordings_root=tmp_path / "recordings",
+    )
+
+
+def _patch_call_with_supported_kwargs(monkeypatch: Any) -> list[dict[str, Any]]:
+    calls: list[dict[str, Any]] = []
+
+    def _spy(fn: Any, *args: Any, **kwargs: Any) -> Any:
+        calls.append({"fn": fn, "args": args, "kwargs": dict(kwargs)})
+        return compat_call_with_supported_kwargs(fn, *args, **kwargs)
+
+    monkeypatch.setattr(pipeline, "call_with_supported_kwargs", _spy)
+    return calls
+
+
+def test_transcribe_contract_without_vad_filter(tmp_path: Path, monkeypatch: Any) -> None:
+    fake_whisperx = ModuleType("whisperx")
+    call_spy = _patch_call_with_supported_kwargs(monkeypatch)
+
+    class _FakeModel:
+        def transcribe(self, audio: str, *, batch_size: int, language: str | None) -> dict[str, object]:
+            assert audio == "AUDIO"
+            assert batch_size == 16
+            assert language is None
+            return {"segments": [{"start": 0.0, "end": 1.0, "text": "hello"}], "language": "en"}
+
+    def _load_audio(path: str) -> str:
+        assert path.endswith("a.wav")
+        return "AUDIO"
+
+    def _load_model(model_name: str, device: str, compute_type: str = "int8") -> _FakeModel:
+        assert model_name == "large-v3"
+        assert device == "cpu"
+        assert compute_type == "int8"
+        return _FakeModel()
+
+    fake_whisperx.load_audio = _load_audio
+    fake_whisperx.load_model = _load_model
+    monkeypatch.setitem(sys.modules, "whisperx", fake_whisperx)
+
+    audio_path = tmp_path / "a.wav"
+    audio_path.write_bytes(b"")
+    segments, info = pipeline._whisperx_asr(audio_path, override_lang=None, cfg=_make_cfg(tmp_path))
+
+    assert segments and segments[0]["text"] == "hello"
+    assert info["language"] == "en"
+    assert len(call_spy) == 1
+    assert call_spy[0]["kwargs"]["vad_filter"] is True
+
+
+def test_transcribe_contract_with_vad_filter(tmp_path: Path, monkeypatch: Any) -> None:
+    fake_whisperx = ModuleType("whisperx")
+    call_spy = _patch_call_with_supported_kwargs(monkeypatch)
+
+    class _FakeModel:
+        def transcribe(
+            self,
+            audio: str,
+            *,
+            batch_size: int,
+            vad_filter: bool,
+            language: str | None,
+        ) -> dict[str, object]:
+            assert audio == "AUDIO"
+            assert batch_size == 16
+            assert vad_filter is True
+            assert language is None
+            return {"segments": [{"start": 0.0, "end": 1.0, "text": "hi"}], "language": "en"}
+
+    def _load_audio(_path: str) -> str:
+        return "AUDIO"
+
+    def _load_model(_model_name: str, _device: str, compute_type: str = "int8") -> _FakeModel:
+        assert compute_type == "int8"
+        return _FakeModel()
+
+    fake_whisperx.load_audio = _load_audio
+    fake_whisperx.load_model = _load_model
+    monkeypatch.setitem(sys.modules, "whisperx", fake_whisperx)
+
+    audio_path = tmp_path / "a.wav"
+    audio_path.write_bytes(b"")
+    segments, info = pipeline._whisperx_asr(audio_path, override_lang=None, cfg=_make_cfg(tmp_path))
+
+    assert segments and segments[0]["text"] == "hi"
+    assert info["language"] == "en"
+    assert len(call_spy) == 1
+    assert call_spy[0]["kwargs"]["vad_filter"] is True
+
+
+def test_transcribe_contract_with_var_kwargs(tmp_path: Path, monkeypatch: Any) -> None:
+    fake_whisperx = ModuleType("whisperx")
+    call_spy = _patch_call_with_supported_kwargs(monkeypatch)
+    seen_kwargs: dict[str, object] = {}
+
+    class _FakeModel:
+        def transcribe(
+            self,
+            audio: str,
+            *,
+            batch_size: int,
+            language: str | None,
+            **kwargs: object,
+        ) -> dict[str, object]:
+            assert audio == "AUDIO"
+            assert batch_size == 16
+            assert language is None
+            seen_kwargs.update(kwargs)
+            return {"segments": [{"start": 0.0, "end": 1.0, "text": "yo"}], "language": "en"}
+
+    def _load_audio(_path: str) -> str:
+        return "AUDIO"
+
+    def _load_model(_model_name: str, _device: str, compute_type: str = "int8") -> _FakeModel:
+        assert compute_type == "int8"
+        return _FakeModel()
+
+    fake_whisperx.load_audio = _load_audio
+    fake_whisperx.load_model = _load_model
+    monkeypatch.setitem(sys.modules, "whisperx", fake_whisperx)
+
+    audio_path = tmp_path / "a.wav"
+    audio_path.write_bytes(b"")
+    segments, info = pipeline._whisperx_asr(audio_path, override_lang=None, cfg=_make_cfg(tmp_path))
+
+    assert segments and segments[0]["text"] == "yo"
+    assert info["language"] == "en"
+    assert seen_kwargs["vad_filter"] is True
+    assert len(call_spy) == 1
+    assert call_spy[0]["kwargs"]["vad_filter"] is True
