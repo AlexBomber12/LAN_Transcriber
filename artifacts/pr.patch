@@ -1,76 +1,165 @@
-diff --git a/lan_transcriber/pipeline_steps/orchestrator.py b/lan_transcriber/pipeline_steps/orchestrator.py
-index ee4de12..afb8e96 100644
---- a/lan_transcriber/pipeline_steps/orchestrator.py
-+++ b/lan_transcriber/pipeline_steps/orchestrator.py
-@@ -202,7 +202,18 @@ def _whisperx_asr(
-             attempted=kwargs,
-             filtered=filtered_kwargs,
-         )
--        segments, info = call_with_supported_kwargs(whisperx.transcribe, str(audio_path), **kwargs)
-+        try:
-+            segments, info = call_with_supported_kwargs(whisperx.transcribe, str(audio_path), **kwargs)
-+        except TypeError:
-+            retry_kwargs = dict(kwargs)
-+            retry_kwargs.pop("word_timestamps", None)
-+            _log_dropped_kwargs(
-+                callback=step_log_callback,
-+                scope="whisperx transcribe",
-+                attempted=kwargs,
-+                filtered=retry_kwargs,
-+            )
-+            segments, info = call_with_supported_kwargs(whisperx.transcribe, str(audio_path), **retry_kwargs)
-         return list(segments), dict(info or {})
+diff --git a/tasks/QUEUE.md b/tasks/QUEUE.md
+index ca9ab45..392af51 100644
+--- a/tasks/QUEUE.md
++++ b/tasks/QUEUE.md
+@@ -247,7 +247,7 @@ Queue (in order)
+ - Depends on: PR-RUNTIME-CONFIG-01
  
-     device = _select_asr_device(cfg)
-diff --git a/tests/test_whisperx_api.py b/tests/test_whisperx_api.py
-index c3e23b4..e69d43f 100644
---- a/tests/test_whisperx_api.py
-+++ b/tests/test_whisperx_api.py
-@@ -136,6 +136,47 @@ def test_whisperx_asr_modern_path_drops_unsupported_kwargs(tmp_path: Path, monke
-     assert any("dropped unsupported kwargs: vad_filter" in line for line in step_log)
+ 48) PR-TEST-WHISPERX-CONTRACT-01: Add contract tests for WhisperX transcribe API drift (with or without vad_filter)
+-- Status: TODO
++- Status: DONE
+ - Tasks file: tasks/PR-TEST-WHISPERX-CONTRACT-01.md
+ - Depends on: PR-FIX-WHISPERX-TRANSCRIBE-KWARGS-01
  
- 
-+def test_whisperx_asr_retry_without_word_timestamps_on_typeerror(tmp_path: Path, monkeypatch):
-+    fake_whisperx = ModuleType("whisperx")
-+    calls: list[dict[str, object]] = []
+diff --git a/tests/test_whisperx_contract.py b/tests/test_whisperx_contract.py
+new file mode 100644
+index 0000000..43da312
+--- /dev/null
++++ b/tests/test_whisperx_contract.py
+@@ -0,0 +1,146 @@
++from __future__ import annotations
 +
-+    def _transcribe(audio_path: str, *args: object, **kwargs: object) -> tuple[list[dict[str, object]], dict[str, object]]:
-+        del args
-+        calls.append(dict(kwargs))
-+        if "word_timestamps" in kwargs:
-+            raise TypeError("unexpected keyword argument 'word_timestamps'")
-+        assert audio_path.endswith("a.wav")
-+        assert kwargs == {"vad_filter": True, "language": "auto"}
-+        return ([{"start": 0.0, "end": 1.0, "text": "hello"}], {"language": "en"})
++import sys
++from pathlib import Path
++from types import ModuleType
++from typing import Any
 +
-+    fake_whisperx.transcribe = _transcribe
-+    monkeypatch.setitem(sys.modules, "whisperx", fake_whisperx)
++from lan_transcriber.compat.call_compat import call_with_supported_kwargs as compat_call_with_supported_kwargs
++from lan_transcriber.pipeline_steps import orchestrator as pipeline
 +
-+    audio_path = tmp_path / "a.wav"
-+    audio_path.write_bytes(b"")
-+    cfg = pipeline.Settings(
++
++def _make_cfg(tmp_path: Path) -> pipeline.Settings:
++    return pipeline.Settings(
 +        asr_device="cpu",
 +        asr_enable_align=False,
 +        tmp_root=tmp_path,
 +        recordings_root=tmp_path / "recordings",
 +    )
-+    step_log: list[str] = []
 +
-+    segments, info = pipeline._whisperx_asr(
-+        audio_path,
-+        override_lang=None,
-+        cfg=cfg,
-+        step_log_callback=step_log.append,
-+    )
++
++def _patch_call_with_supported_kwargs(monkeypatch: Any) -> list[dict[str, Any]]:
++    calls: list[dict[str, Any]] = []
++
++    def _spy(fn: Any, *args: Any, **kwargs: Any) -> Any:
++        calls.append({"fn": fn, "args": args, "kwargs": dict(kwargs)})
++        return compat_call_with_supported_kwargs(fn, *args, **kwargs)
++
++    monkeypatch.setattr(pipeline, "call_with_supported_kwargs", _spy)
++    return calls
++
++
++def test_transcribe_contract_without_vad_filter(tmp_path: Path, monkeypatch: Any) -> None:
++    fake_whisperx = ModuleType("whisperx")
++    call_spy = _patch_call_with_supported_kwargs(monkeypatch)
++
++    class _FakeModel:
++        def transcribe(self, audio: str, *, batch_size: int, language: str | None) -> dict[str, object]:
++            assert audio == "AUDIO"
++            assert batch_size == 16
++            assert language is None
++            return {"segments": [{"start": 0.0, "end": 1.0, "text": "hello"}], "language": "en"}
++
++    def _load_audio(path: str) -> str:
++        assert path.endswith("a.wav")
++        return "AUDIO"
++
++    def _load_model(model_name: str, device: str, compute_type: str = "int8") -> _FakeModel:
++        assert model_name == "large-v3"
++        assert device == "cpu"
++        assert compute_type == "int8"
++        return _FakeModel()
++
++    fake_whisperx.load_audio = _load_audio
++    fake_whisperx.load_model = _load_model
++    monkeypatch.setitem(sys.modules, "whisperx", fake_whisperx)
++
++    audio_path = tmp_path / "a.wav"
++    audio_path.write_bytes(b"")
++    segments, info = pipeline._whisperx_asr(audio_path, override_lang=None, cfg=_make_cfg(tmp_path))
 +
 +    assert segments and segments[0]["text"] == "hello"
 +    assert info["language"] == "en"
-+    assert len(calls) == 2
-+    assert "word_timestamps" in calls[0]
-+    assert "word_timestamps" not in calls[1]
-+    assert any("dropped unsupported kwargs: word_timestamps" in line for line in step_log)
++    assert len(call_spy) == 1
++    assert call_spy[0]["kwargs"]["vad_filter"] is True
 +
 +
- def test_log_dropped_kwargs_returns_early_when_nothing_dropped() -> None:
-     messages: list[str] = []
- 
++def test_transcribe_contract_with_vad_filter(tmp_path: Path, monkeypatch: Any) -> None:
++    fake_whisperx = ModuleType("whisperx")
++    call_spy = _patch_call_with_supported_kwargs(monkeypatch)
++
++    class _FakeModel:
++        def transcribe(
++            self,
++            audio: str,
++            *,
++            batch_size: int,
++            vad_filter: bool,
++            language: str | None,
++        ) -> dict[str, object]:
++            assert audio == "AUDIO"
++            assert batch_size == 16
++            assert vad_filter is True
++            assert language is None
++            return {"segments": [{"start": 0.0, "end": 1.0, "text": "hi"}], "language": "en"}
++
++    def _load_audio(_path: str) -> str:
++        return "AUDIO"
++
++    def _load_model(_model_name: str, _device: str, compute_type: str = "int8") -> _FakeModel:
++        assert compute_type == "int8"
++        return _FakeModel()
++
++    fake_whisperx.load_audio = _load_audio
++    fake_whisperx.load_model = _load_model
++    monkeypatch.setitem(sys.modules, "whisperx", fake_whisperx)
++
++    audio_path = tmp_path / "a.wav"
++    audio_path.write_bytes(b"")
++    segments, info = pipeline._whisperx_asr(audio_path, override_lang=None, cfg=_make_cfg(tmp_path))
++
++    assert segments and segments[0]["text"] == "hi"
++    assert info["language"] == "en"
++    assert len(call_spy) == 1
++    assert call_spy[0]["kwargs"]["vad_filter"] is True
++
++
++def test_transcribe_contract_with_var_kwargs(tmp_path: Path, monkeypatch: Any) -> None:
++    fake_whisperx = ModuleType("whisperx")
++    call_spy = _patch_call_with_supported_kwargs(monkeypatch)
++    seen_kwargs: dict[str, object] = {}
++
++    class _FakeModel:
++        def transcribe(
++            self,
++            audio: str,
++            *,
++            batch_size: int,
++            language: str | None,
++            **kwargs: object,
++        ) -> dict[str, object]:
++            assert audio == "AUDIO"
++            assert batch_size == 16
++            assert language is None
++            seen_kwargs.update(kwargs)
++            return {"segments": [{"start": 0.0, "end": 1.0, "text": "yo"}], "language": "en"}
++
++    def _load_audio(_path: str) -> str:
++        return "AUDIO"
++
++    def _load_model(_model_name: str, _device: str, compute_type: str = "int8") -> _FakeModel:
++        assert compute_type == "int8"
++        return _FakeModel()
++
++    fake_whisperx.load_audio = _load_audio
++    fake_whisperx.load_model = _load_model
++    monkeypatch.setitem(sys.modules, "whisperx", fake_whisperx)
++
++    audio_path = tmp_path / "a.wav"
++    audio_path.write_bytes(b"")
++    segments, info = pipeline._whisperx_asr(audio_path, override_lang=None, cfg=_make_cfg(tmp_path))
++
++    assert segments and segments[0]["text"] == "yo"
++    assert info["language"] == "en"
++    assert seen_kwargs["vad_filter"] is True
++    assert len(call_spy) == 1
++    assert call_spy[0]["kwargs"]["vad_filter"] is True
