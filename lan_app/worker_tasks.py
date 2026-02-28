@@ -527,6 +527,9 @@ def _run_precheck_pipeline(
             settings=settings,
         )
 
+    def _step_log_callback(message: str) -> None:
+        _append_step_log(log_path, message)
+
     asyncio.run(
         run_pipeline(
             audio_path=audio_path,
@@ -540,6 +543,7 @@ def _run_precheck_pipeline(
             calendar_title=calendar_title,
             calendar_attendees=calendar_attendees,
             progress_callback=_progress_callback,
+            step_log_callback=_step_log_callback,
         )
     )
     metrics_payload = refresh_recording_metrics(
