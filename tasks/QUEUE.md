@@ -193,7 +193,7 @@ Queue (in order)
 - Depends on: PR-FIX-CTRANSLATE2-EXECSTACK-01
 
 37) PR-TEST-IMPORTS-01: Expand import smoke tests to cover critical modules
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-TEST-IMPORTS-01.md
 - Depends on: PR-DEV-01
 
