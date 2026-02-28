@@ -964,11 +964,12 @@ def _calendar_page_data(
 ) -> dict[str, Any]:
     start_date = _parse_ymd_date(date_from, field_name="from")
     end_date = _parse_ymd_date(date_to, field_name="to")
-    if end_date <= start_date:
+    if end_date < start_date:
         raise ValueError("to must be after from")
 
     start_dt = datetime.combine(start_date, time.min, tzinfo=timezone.utc)
-    end_dt = datetime.combine(end_date, time.min, tzinfo=timezone.utc)
+    # `to` is user-facing inclusive date, while DB query upper bound is exclusive.
+    end_dt = datetime.combine(end_date + timedelta(days=1), time.min, tzinfo=timezone.utc)
 
     sources_raw = list_calendar_sources(settings=settings)
     sources = [redacted_calendar_source(row) for row in sources_raw]

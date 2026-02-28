@@ -147,3 +147,23 @@ def test_calendar_source_rejects_non_http_url(calendar_client: TestClient):
     )
     assert response.status_code == 422
     assert "http or https" in response.json()["detail"]
+
+
+def test_calendar_source_rejects_mixed_loopback_dns_answers(calendar_client: TestClient, monkeypatch):
+    def _fake_getaddrinfo(*_args, **_kwargs):
+        return [
+            (0, 0, 0, "", ("127.0.0.1", 443)),
+            (0, 0, 0, "", ("203.0.113.10", 443)),
+        ]
+
+    monkeypatch.setattr("lan_app.calendar.ics.socket.getaddrinfo", _fake_getaddrinfo)
+    response = calendar_client.post(
+        "/api/calendar/sources",
+        json={
+            "name": "Mixed DNS Calendar",
+            "kind": "url",
+            "url": "https://calendar.example.com/team.ics",
+        },
+    )
+    assert response.status_code == 422
+    assert "localhost/loopback" in response.json()["detail"]

@@ -58,7 +58,7 @@ def _resolves_only_loopback(hostname: str) -> bool:
             seen.append(ipaddress.ip_address(raw_ip))
         except ValueError:
             continue
-    return bool(seen) and all(item.is_loopback for item in seen)
+    return any(item.is_loopback for item in seen)
 
 
 def validate_ics_url(raw_url: str) -> str:

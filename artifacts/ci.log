@@ -109,8 +109,8 @@ Requirement already satisfied: pytz>2021.1 in ./.venv-ci/lib/python3.12/site-pac
 Building wheels for collected packages: lan-transcriber
   Building editable for lan-transcriber (pyproject.toml): started
   Building editable for lan-transcriber (pyproject.toml): finished with status 'done'
-  Created wheel for lan-transcriber: filename=lan_transcriber-0.1.0-0.editable-py3-none-any.whl size=15425 sha256=034e2b0cdacbc1f87160f69fac920bcf7cab9e0d4c3746de90a5a760fb66edf4
-  Stored in directory: /tmp/pip-ephem-wheel-cache-wzektqiw/wheels/d5/8a/5c/f7178f7e49aa5ae12b2320ec66b5c310f4f2f63d1bd301b7fb
+  Created wheel for lan-transcriber: filename=lan_transcriber-0.1.0-0.editable-py3-none-any.whl size=15425 sha256=7b4e167a1177a7950903d0385181653ee3655a74c3962e5e7ffb9e11a064d0a4
+  Stored in directory: /tmp/pip-ephem-wheel-cache-o8qinc09/wheels/d5/8a/5c/f7178f7e49aa5ae12b2320ec66b5c310f4f2f63d1bd301b7fb
 Successfully built lan-transcriber
 Installing collected packages: lan-transcriber
   Attempting uninstall: lan-transcriber
@@ -122,7 +122,7 @@ All checks passed!
 ........................................................................ [ 27%]
 ........................................................................ [ 54%]
 ........................................................................ [ 82%]
-..............................................                           [100%]
+...............................................                          [100%]
 =============================== warnings summary ===============================
 lan_transcriber/pipeline_steps/precheck.py:3
   /home/alexey/LAN_Transcriber/lan_transcriber/pipeline_steps/precheck.py:3: DeprecationWarning: 'audioop' is deprecated and slated for removal in Python 3.13
@@ -166,11 +166,11 @@ lan_transcriber/utils.py                               50      2    96%
 -----------------------------------------------------------------------
 TOTAL                                                1511    151    90%
 Required test coverage of 90% reached. Total coverage: 90.01%
-262 passed, 1 skipped, 5 warnings in 15.49s
+263 passed, 1 skipped, 5 warnings in 14.63s
 ........................................................................ [ 27%]
 ........................................................................ [ 54%]
 ........................................................................ [ 82%]
-..............................................                           [100%]
+...............................................                          [100%]
 =============================== warnings summary ===============================
 lan_transcriber/pipeline_steps/precheck.py:3
   /home/alexey/LAN_Transcriber/lan_transcriber/pipeline_steps/precheck.py:3: DeprecationWarning: 'audioop' is deprecated and slated for removal in Python 3.13
@@ -196,7 +196,7 @@ lan_app/__init__.py                   1      0   100%
 lan_app/api.py                      320     87    73%
 lan_app/auth.py                      58      5    91%
 lan_app/calendar/__init__.py          3      0   100%
-lan_app/calendar/ics.py             185     84    55%
+lan_app/calendar/ics.py             185     77    58%
 lan_app/calendar/service.py          66     13    80%
 lan_app/config.py                    66      9    86%
 lan_app/constants.py                 28      0   100%
@@ -217,6 +217,6 @@ lan_app/worker.py                    28     16    43%
 lan_app/worker_tasks.py             393     87    78%
 lan_app/workers.py                   10      3    70%
 -----------------------------------------------------
-TOTAL                              4210    893    79%
-Required test coverage of 75% reached. Total coverage: 78.79%
-262 passed, 1 skipped, 5 warnings in 16.22s
+TOTAL                              4210    886    79%
+Required test coverage of 75% reached. Total coverage: 78.95%
+263 passed, 1 skipped, 5 warnings in 13.85s

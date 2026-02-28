@@ -1568,7 +1568,18 @@ def test_calendars_page_renders_seeded_sources_and_events(tmp_path, monkeypatch)
                 "description": "fixture",
                 "organizer": "Alex",
                 "updated_at": "2026-02-01T00:00:00Z",
-            }
+            },
+            {
+                "uid": "evt-seeded-end-date-1",
+                "starts_at": "2026-02-10T15:00:00Z",
+                "ends_at": "2026-02-10T16:00:00Z",
+                "all_day": False,
+                "summary": "End date event",
+                "location": "Room 9",
+                "description": "fixture",
+                "organizer": "Alex",
+                "updated_at": "2026-02-01T00:00:00Z",
+            },
         ],
         settings=cfg,
     )
@@ -1579,6 +1590,7 @@ def test_calendars_page_renders_seeded_sources_and_events(tmp_path, monkeypatch)
     assert "Calendars" in response.text
     assert "Local Team Calendar" in response.text
     assert "Seeded calendar event" in response.text
+    assert "End date event" in response.text
 
 
 def test_calendars_create_and_sync_file_source(tmp_path, monkeypatch):
