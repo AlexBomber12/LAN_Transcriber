@@ -15,8 +15,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/* \
     && python -m pip install --upgrade pip setuptools wheel \
     && python -m pip install --no-cache-dir -r requirements.txt \
-      --extra-index-url https://download.pytorch.org/whl/cu121 \
-    && python -m pip install --no-cache-dir whisperx==3.4.2
+    && python -m pip check
 RUN python - <<'PY'
 import glob, site, subprocess, sys
 root = site.getsitepackages()[0]
@@ -32,7 +31,7 @@ for p in libs:
     if "RWE" in gnu:
         raise SystemExit(f"GNU_STACK still RWE for {p}")
 PY
-RUN python -c "import ctranslate2; print('ctranslate2', ctranslate2.__version__)"
+RUN python -c "import whisperx; import faster_whisper; import ctranslate2; print('deps ok')"
 CMD ["uvicorn", "lan_app.api:app", "--host", "0.0.0.0", "--port", "7860"]
 
 FROM base AS runtime-lite
@@ -40,9 +39,8 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends patchelf binutils \
     && rm -rf /var/lib/apt/lists/* \
     && python -m pip install --upgrade pip setuptools wheel \
-    && python -m pip install --no-cache-dir -r ci-requirements.txt \
-    && python -m pip install --no-cache-dir -e .[test] \
-    && python -m pip install --no-cache-dir whisperx==3.4.2
+    && python -m pip install --no-cache-dir -r requirements.txt \
+    && python -m pip check
 RUN python - <<'PY'
 import glob, site, subprocess, sys
 root = site.getsitepackages()[0]
@@ -58,6 +56,6 @@ for p in libs:
     if "RWE" in gnu:
         raise SystemExit(f"GNU_STACK still RWE for {p}")
 PY
-RUN python -c "import ctranslate2; print('ctranslate2', ctranslate2.__version__)"
+RUN python -c "import whisperx; import faster_whisper; import ctranslate2; print('deps ok')"
 ENV CI=true
 CMD ["uvicorn", "lan_app.api:app", "--host", "0.0.0.0", "--port", "7860"]
