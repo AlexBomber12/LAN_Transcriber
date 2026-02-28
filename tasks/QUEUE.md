@@ -208,7 +208,7 @@ Queue (in order)
 - Depends on: PR-TEST-PIPELINE-RESILIENCE-01
 
 40) PR-SMOKE-DOCKER-01: Strengthen Docker smoke test to catch native dependency loader issues (ctranslate2)
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-SMOKE-DOCKER-01.md
 - Depends on: PR-TEST-API-UI-01
 
