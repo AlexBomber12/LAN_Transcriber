@@ -240,3 +240,18 @@ Queue (in order)
 - Status: DONE
 - Tasks file: tasks/PR-FIX-PYANNOTE-USEAUTH-01.md
 - Depends on: PR-FIX-WHISPERX-API-01
+
+47) PR-FIX-WHISPERX-TRANSCRIBE-KWARGS-01: Make WhisperX transcribe calls signature-compatible (avoid unexpected kwargs like vad_filter)
+- Status: TODO
+- Tasks file: tasks/PR-FIX-WHISPERX-TRANSCRIBE-KWARGS-01.md
+- Depends on: PR-RUNTIME-CONFIG-01
+
+48) PR-TEST-WHISPERX-CONTRACT-01: Add contract tests for WhisperX transcribe API drift (with or without vad_filter)
+- Status: TODO
+- Tasks file: tasks/PR-TEST-WHISPERX-CONTRACT-01.md
+- Depends on: PR-FIX-WHISPERX-TRANSCRIBE-KWARGS-01
+
+49) PR-DEPS-WHISPERX-DETERMINISM-01: Make WhisperX stack deterministic (single resolver pass, pinned versions, pip check) to reduce API drift
+- Status: TODO
+- Tasks file: tasks/PR-DEPS-WHISPERX-DETERMINISM-01.md
+- Depends on: PR-TEST-WHISPERX-CONTRACT-01
