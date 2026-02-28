@@ -21,6 +21,8 @@ tenacity==9.1.2
 pydantic==2.11.7
 pydantic-settings==2.10.1
 rapidfuzz==3.13.0
+icalendar==6.3.1
+recurring-ical-events==3.8.0
 redis
 rq
 

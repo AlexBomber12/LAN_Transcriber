@@ -131,6 +131,48 @@ class AppSettings(BaseSettings):
         ge=1,
         validation_alias=AliasChoices("UPLOAD_MAX_BYTES"),
     )
+    calendar_expand_past_days: int = Field(
+        default=30,
+        ge=0,
+        validation_alias=AliasChoices(
+            "LAN_CALENDAR_EXPAND_PAST_DAYS",
+            "CALENDAR_EXPAND_PAST_DAYS",
+        ),
+    )
+    calendar_expand_future_days: int = Field(
+        default=180,
+        ge=1,
+        validation_alias=AliasChoices(
+            "LAN_CALENDAR_EXPAND_FUTURE_DAYS",
+            "CALENDAR_EXPAND_FUTURE_DAYS",
+        ),
+    )
+    calendar_fetch_timeout_seconds: float = Field(
+        default=15.0,
+        gt=0.0,
+        le=120.0,
+        validation_alias=AliasChoices(
+            "LAN_CALENDAR_FETCH_TIMEOUT_SECONDS",
+            "CALENDAR_FETCH_TIMEOUT_SECONDS",
+        ),
+    )
+    calendar_fetch_max_bytes: int = Field(
+        default=2_000_000,
+        ge=1024,
+        validation_alias=AliasChoices(
+            "LAN_CALENDAR_FETCH_MAX_BYTES",
+            "CALENDAR_FETCH_MAX_BYTES",
+        ),
+    )
+    calendar_fetch_max_redirects: int = Field(
+        default=5,
+        ge=0,
+        le=20,
+        validation_alias=AliasChoices(
+            "LAN_CALENDAR_FETCH_MAX_REDIRECTS",
+            "CALENDAR_FETCH_MAX_REDIRECTS",
+        ),
+    )
 
     @model_validator(mode="after")
     def validate_runtime_environment(self) -> "AppSettings":

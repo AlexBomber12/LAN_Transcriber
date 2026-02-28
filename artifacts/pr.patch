@@ -1,337 +1,130 @@
-diff --git a/lan_app/templates/base.html b/lan_app/templates/base.html
-index 47c2e55..6f12824 100644
---- a/lan_app/templates/base.html
-+++ b/lan_app/templates/base.html
-@@ -68,6 +68,14 @@ tr:hover{background:#e8ecf8}
- .dot-warn{display:inline-block;width:8px;height:8px;border-radius:50%;background:#f59e0b}
- .dot-err{display:inline-block;width:8px;height:8px;border-radius:50%;background:#ef4444}
- .dot-na{display:inline-block;width:8px;height:8px;border-radius:50%;background:#d1d5db}
-+.modal-backdrop{position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;padding:12px;z-index:1000}
-+.modal-backdrop[hidden]{display:none}
-+.modal{background:#fff;border:1px solid #999;max-width:420px;width:100%;padding:12px;box-shadow:0 8px 24px rgba(0,0,0,.25)}
-+.modal h2{margin:0 0 8px 0;font-size:14px}
-+.modal-copy{font-size:12px;color:#333;margin-bottom:8px}
-+.modal-context{font-size:12px;color:#555;margin-bottom:10px;white-space:normal;word-break:break-word}
-+.modal-error{font-size:12px;color:#b00;min-height:18px;margin-bottom:8px}
-+.modal-actions{display:flex;justify-content:flex-end;gap:6px}
- </style>
- </head>
- <body hx-boost="true">
-@@ -83,23 +91,143 @@ tr:hover{background:#e8ecf8}
- <main>
- {% block content %}{% endblock %}
- </main>
-+<div
-+  id="delete-confirm-backdrop"
-+  class="modal-backdrop"
-+  hidden
-+  onclick="if (event.target === this) closeDeleteDialog();"
-+>
-+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="delete-confirm-title">
-+    <h2 id="delete-confirm-title">Delete record?</h2>
-+    <p class="modal-copy">This action can&apos;t be undone.</p>
-+    <p id="delete-confirm-context" class="modal-context"></p>
-+    <p id="delete-confirm-error" class="modal-error"></p>
-+    <div class="modal-actions">
-+      <button id="delete-cancel-btn" class="btn" type="button" onclick="closeDeleteDialog()">Cancel</button>
-+      <button id="delete-confirm-btn" class="btn btn-danger" type="button" onclick="confirmDeleteDialog()">Delete</button>
-+    </div>
-+  </div>
-+</div>
- <script>
-+var deleteDialogState = {recordingId: '', inFlight: false, returnFocus: null};
-+
-+function _deleteDialogElements() {
-+  return {
-+    backdrop: document.getElementById('delete-confirm-backdrop'),
-+    context: document.getElementById('delete-confirm-context'),
-+    error: document.getElementById('delete-confirm-error'),
-+    cancelBtn: document.getElementById('delete-cancel-btn'),
-+    confirmBtn: document.getElementById('delete-confirm-btn')
-+  };
-+}
-+
-+function _deleteDialogContext(meta) {
-+  var details = [];
-+  if (meta.recordingLabel) details.push(meta.recordingLabel);
-+  if (meta.capturedAt) details.push(meta.capturedAt);
-+  details.push('ID: ' + meta.recordingId);
-+  return details.join(' | ');
-+}
-+
-+function openDeleteDialog(meta) {
-+  if (!meta || !meta.recordingId) return;
-+  var el = _deleteDialogElements();
-+  if (!el.backdrop) return;
-+  deleteDialogState.recordingId = meta.recordingId;
-+  deleteDialogState.inFlight = false;
-+  deleteDialogState.returnFocus = meta.returnFocus || null;
-+  el.context.textContent = _deleteDialogContext(meta);
-+  el.error.textContent = '';
-+  el.confirmBtn.disabled = false;
-+  el.cancelBtn.disabled = false;
-+  el.confirmBtn.textContent = 'Delete';
-+  el.backdrop.hidden = false;
-+  window.setTimeout(function() {
-+    el.cancelBtn.focus();
-+  }, 0);
-+}
-+
-+function closeDeleteDialog() {
-+  var el = _deleteDialogElements();
-+  if (!el.backdrop || deleteDialogState.inFlight) return;
-+  var focusTarget = deleteDialogState.returnFocus;
-+  el.backdrop.hidden = true;
-+  deleteDialogState.recordingId = '';
-+  deleteDialogState.returnFocus = null;
-+  if (focusTarget && typeof focusTarget.focus === 'function') {
-+    focusTarget.focus();
-+  }
-+}
-+
-+function confirmDeleteDialog() {
-+  var el = _deleteDialogElements();
-+  if (!deleteDialogState.recordingId || deleteDialogState.inFlight) return;
-+  var targetId = deleteDialogState.recordingId;
-+  deleteDialogState.inFlight = true;
-+  el.error.textContent = '';
-+  el.confirmBtn.disabled = true;
-+  el.cancelBtn.disabled = true;
-+  el.confirmBtn.textContent = 'Deleting...';
-+
-+  fetch('/ui/recordings/' + encodeURIComponent(targetId) + '/delete', {
-+    method: 'POST',
-+    headers: {'HX-Request': 'true'}
-+  })
-+    .then(function(resp) {
-+      return resp.text().then(function(body) {
-+        return {resp: resp, body: body};
-+      });
-+    })
-+    .then(function(result) {
-+      if (!result.resp.ok) {
-+        throw new Error(result.body || ('Delete failed (' + result.resp.status + ').'));
-+      }
-+      var redirect = result.resp.headers.get('HX-Redirect');
-+      if (redirect) {
-+        window.location = redirect;
-+        return;
-+      }
-+      window.location = '/recordings';
-+    })
-+    .catch(function(err) {
-+      deleteDialogState.inFlight = false;
-+      el.confirmBtn.disabled = false;
-+      el.cancelBtn.disabled = false;
-+      el.confirmBtn.textContent = 'Delete';
-+      el.error.textContent = err && err.message ? err.message : 'Delete failed.';
-+      el.cancelBtn.focus();
-+    });
-+}
-+
-+if (!window.__deleteDialogEscapeBound) {
-+  document.addEventListener('keydown', function(evt) {
-+    var el = _deleteDialogElements();
-+    if (evt.key === 'Escape' && el.backdrop && !el.backdrop.hidden) {
-+      evt.preventDefault();
-+      closeDeleteDialog();
-+    }
-+  });
-+  window.__deleteDialogEscapeBound = true;
-+}
-+
- function doRecAction(sel) {
-   var act = sel.value;
-   var id = sel.dataset.rid;
-   sel.value = '';
-   if (!act || !id) return;
-   if (act === 'open') { window.location = '/recordings/' + encodeURIComponent(id); return; }
--  var request = {swap: 'none'};
-   if (act === 'delete') {
--    var typed = prompt('Type DELETE to confirm deletion.');
--    if (typed === null) return;
--    if (typed.trim().toUpperCase() !== 'DELETE') return;
--    request.values = {confirm_delete: typed};
-+    openDeleteDialog({
-+      recordingId: id,
-+      recordingLabel: sel.dataset.rlabel || '',
-+      capturedAt: sel.dataset.rcaptured || '',
-+      returnFocus: sel
-+    });
-+    return;
-   } else if (act === 'quarantine' && !confirm('Quarantine this recording?')) {
-     return;
-   }
--  htmx.ajax('POST', '/ui/recordings/' + encodeURIComponent(id) + '/' + act, request);
-+  htmx.ajax('POST', '/ui/recordings/' + encodeURIComponent(id) + '/' + act, {swap: 'none'});
- }
- </script>
- </body>
-diff --git a/lan_app/templates/recording_detail.html b/lan_app/templates/recording_detail.html
-index e67987b..f03ea54 100644
---- a/lan_app/templates/recording_detail.html
-+++ b/lan_app/templates/recording_detail.html
-@@ -7,7 +7,14 @@
- </h1>
+diff --git a/lan_app/calendar/ics.py b/lan_app/calendar/ics.py
+index 3afeca8..1748a26 100644
+--- a/lan_app/calendar/ics.py
++++ b/lan_app/calendar/ics.py
+@@ -5,6 +5,7 @@ import ipaddress
+ import socket
+ from typing import Any
+ from urllib.parse import urljoin, urlsplit
++from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
  
- <div class="filters" style="margin-bottom:10px">
--  <select class="action-sel" style="font-size:12px" data-rid="{{ rec.id }}" onchange="doRecAction(this)">
-+  <select
-+    class="action-sel"
-+    style="font-size:12px"
-+    data-rid="{{ rec.id }}"
-+    data-rlabel="{{ rec.source_filename or rec.id }}"
-+    data-rcaptured="{{ rec.captured_at[:19].replace('T',' ') if rec.captured_at else '' }}"
-+    onchange="doRecAction(this)"
-+  >
-     <option value="">Actions…</option>
-     <option value="requeue">Requeue</option>
-     <option value="quarantine">Quarantine</option>
-diff --git a/lan_app/templates/recordings.html b/lan_app/templates/recordings.html
-index ee4a053..fac82e6 100644
---- a/lan_app/templates/recordings.html
-+++ b/lan_app/templates/recordings.html
-@@ -76,7 +76,13 @@
-       <td>{% if r.duration_sec %}{{ r.duration_sec }}s{% else %}—{% endif %}</td>
-       <td>{{ r.source }}</td>
-       <td>
--        <select class="action-sel" data-rid="{{ r.id }}" onchange="doRecAction(this)">
-+        <select
-+          class="action-sel"
-+          data-rid="{{ r.id }}"
-+          data-rlabel="{{ r.source_filename or r.id }}"
-+          data-rcaptured="{{ r.captured_at[:19].replace('T',' ') if r.captured_at else '' }}"
-+          onchange="doRecAction(this)"
-+        >
-           <option value="">Actions</option>
-           <option value="open">Open</option>
-           <option value="requeue">Requeue</option>
-diff --git a/lan_app/ui_routes.py b/lan_app/ui_routes.py
-index 9915cee..75abd81 100644
---- a/lan_app/ui_routes.py
-+++ b/lan_app/ui_routes.py
-@@ -1553,14 +1553,9 @@ async def ui_action_quarantine(recording_id: str) -> Any:
+ import httpx
+ from icalendar import Calendar
+@@ -28,10 +29,11 @@ def _utc_iso(value: datetime) -> str:
+     )
  
  
- @ui_router.post("/ui/recordings/{recording_id}/delete")
--async def ui_action_delete(
--    recording_id: str,
--    confirm_delete: str = Form(default=""),
--) -> Any:
-+async def ui_action_delete(recording_id: str) -> Any:
-     if get_recording(recording_id, settings=_settings) is None:
-         return HTMLResponse("Not found", status_code=404)
--    if confirm_delete.strip().upper() != "DELETE":
--        return HTMLResponse('Type "DELETE" to confirm deletion.', status_code=422)
+-def _coerce_utc_datetime(value: date | datetime) -> datetime:
++def _coerce_utc_datetime(value: date | datetime, *, default_tz: ZoneInfo | None = None) -> datetime:
+     if isinstance(value, datetime):
+         if value.tzinfo is None:
+-            return value.replace(tzinfo=timezone.utc)
++            tzinfo = default_tz or timezone.utc
++            return value.replace(tzinfo=tzinfo).astimezone(timezone.utc)
+         return value.astimezone(timezone.utc)
+     return datetime.combine(value, time.min, tzinfo=timezone.utc)
+ 
+@@ -159,7 +161,12 @@ def _updated_at_text(component: Any, *, fallback: str) -> str:
+     return fallback
+ 
+ 
+-def _normalise_event(component: Any, *, fallback_updated_at: str) -> dict[str, Any] | None:
++def _normalise_event(
++    component: Any,
++    *,
++    fallback_updated_at: str,
++    default_tz: ZoneInfo | None = None,
++) -> dict[str, Any] | None:
+     uid = str(component.get("UID") or "").strip()
+     if not uid:
+         return None
+@@ -175,7 +182,7 @@ def _normalise_event(component: Any, *, fallback_updated_at: str) -> dict[str, A
+         raise CalendarParseError("Unable to decode DTSTART") from exc
+ 
+     all_day = isinstance(dtstart_raw, date) and not isinstance(dtstart_raw, datetime)
+-    starts_at = _coerce_utc_datetime(dtstart_raw)
++    starts_at = _coerce_utc_datetime(dtstart_raw, default_tz=default_tz)
+ 
+     dtend_raw: date | datetime | None = None
      try:
-         purge_pending_recording_jobs(recording_id, settings=_settings)
+@@ -189,12 +196,12 @@ def _normalise_event(component: Any, *, fallback_updated_at: str) -> dict[str, A
+         if dtend_raw is None:
+             ends_at = starts_at + timedelta(days=1)
+         else:
+-            ends_at = _coerce_utc_datetime(dtend_raw)
++            ends_at = _coerce_utc_datetime(dtend_raw, default_tz=default_tz)
+             if ends_at <= starts_at:
+                 ends_at = starts_at + timedelta(days=1)
+     else:
+         if dtend_raw is not None:
+-            ends_at = _coerce_utc_datetime(dtend_raw)
++            ends_at = _coerce_utc_datetime(dtend_raw, default_tz=default_tz)
+         else:
+             duration_raw = None
+             try:
+@@ -240,6 +247,14 @@ def parse_ics_events(
      except Exception as exc:
-diff --git a/tasks/QUEUE.md b/tasks/QUEUE.md
-index 98476ea..0b0daa5 100644
---- a/tasks/QUEUE.md
-+++ b/tasks/QUEUE.md
-@@ -228,7 +228,7 @@ Queue (in order)
- - Depends on: PR-FIX-OMEGACONF-01
+         raise CalendarParseError("ICS payload could not be parsed") from exc
  
- 44) PR-UI-DELETE-CONFIRM-01: Simplify delete confirmation dialog (Yes/No, remove typing DELETE)
--- Status: TODO
-+- Status: DONE
- - Tasks file: tasks/PR-UI-DELETE-CONFIRM-01.md
- - Depends on: PR-FIX-CTRANSLATE2-EXECSTACK-02
- 
-diff --git a/tests/test_ui_routes.py b/tests/test_ui_routes.py
-index d47f26c..d12fa85 100644
---- a/tests/test_ui_routes.py
-+++ b/tests/test_ui_routes.py
-@@ -146,6 +146,10 @@ def test_recordings_with_data(seeded_client):
-     r = seeded_client.get("/recordings")
-     assert r.status_code == 200
-     assert "meeting.mp3" in r.text
-+    assert "Delete record?" in r.text
-+    assert 'id="delete-confirm-backdrop"' in r.text
-+    assert 'data-rlabel="meeting.mp3"' in r.text
-+    assert "Type DELETE to confirm deletion." not in r.text
- 
- 
- def test_recordings_list_shows_progress_column_and_percent(tmp_path, monkeypatch):
-@@ -202,6 +206,8 @@ def test_recording_detail_overview(seeded_client):
-     assert "rec-ui-1" in r.text
-     assert "meeting.mp3" in r.text
-     assert "Ready" in r.text
-+    assert 'data-rid="rec-ui-1"' in r.text
-+    assert 'data-rlabel="meeting.mp3"' in r.text
++    default_tz: ZoneInfo | None = None
++    timezone_raw = str(calendar.get("X-WR-TIMEZONE") or "").strip()
++    if timezone_raw:
++        try:
++            default_tz = ZoneInfo(timezone_raw)
++        except ZoneInfoNotFoundError:
++            default_tz = None
++
+     try:
+         expanded_events = recurring_ical_events.of(calendar).between(start_utc, end_utc)
+     except Exception as exc:
+@@ -250,7 +265,11 @@ def parse_ics_events(
+     for component in expanded_events:
+         if str(getattr(component, "name", "")).upper() != "VEVENT":
+             continue
+-        row = _normalise_event(component, fallback_updated_at=fallback_updated_at)
++        row = _normalise_event(
++            component,
++            fallback_updated_at=fallback_updated_at,
++            default_tz=default_tz,
++        )
+         if row is None:
+             continue
+         key = (str(row["uid"]), str(row["starts_at"]))
+diff --git a/tests/test_calendar_ics.py b/tests/test_calendar_ics.py
+index afa4dcc..0d8840b 100644
+--- a/tests/test_calendar_ics.py
++++ b/tests/test_calendar_ics.py
+@@ -58,6 +58,33 @@ def test_parse_ics_recurrence_fixture_expands_weekly_instances():
+     ]
  
  
- def test_recording_detail_processing_polls_progress(tmp_path, monkeypatch):
-@@ -921,7 +927,6 @@ def test_ui_login_sets_cookie_and_allows_protected_post(tmp_path, monkeypatch):
-     c = TestClient(api.app, follow_redirects=False)
-     blocked = c.post(
-         "/ui/recordings/rec-auth-ui-1/delete",
--        data={"confirm_delete": "DELETE"},
-     )
-     assert blocked.status_code == 401
- 
-@@ -934,7 +939,6 @@ def test_ui_login_sets_cookie_and_allows_protected_post(tmp_path, monkeypatch):
- 
-     allowed = c.post(
-         "/ui/recordings/rec-auth-ui-1/delete",
--        data={"confirm_delete": "DELETE"},
-     )
-     assert allowed.status_code == 200
- 
-@@ -1004,7 +1008,7 @@ def test_ui_action_delete(tmp_path, monkeypatch):
- 
-     monkeypatch.setattr(ui_routes, "purge_pending_recording_jobs", _fake_purge)
-     c = TestClient(api.app, follow_redirects=False)
--    r = c.post("/ui/recordings/rec-del-1/delete", data={"confirm_delete": "DELETE"})
-+    r = c.post("/ui/recordings/rec-del-1/delete")
-     assert r.status_code in (200, 307, 302)
- 
- 
-@@ -1013,7 +1017,7 @@ def test_ui_action_delete_not_found(client):
-     assert r.status_code == 404
- 
- 
--def test_ui_action_delete_requires_confirmation(tmp_path, monkeypatch):
-+def test_ui_action_delete_does_not_require_confirmation(tmp_path, monkeypatch):
++def test_parse_ics_floating_datetimes_use_calendar_timezone():
++    payload = "\n".join(
++        [
++            "BEGIN:VCALENDAR",
++            "VERSION:2.0",
++            "PRODID:-//LAN Transcriber//Calendar Floating Time Test//EN",
++            "X-WR-TIMEZONE:Europe/Berlin",
++            "BEGIN:VEVENT",
++            "UID:floating-berlin-1",
++            "DTSTAMP:20260201T120000Z",
++            "DTSTART:20260210T090000",
++            "DTEND:20260210T100000",
++            "SUMMARY:Floating Time Event",
++            "END:VEVENT",
++            "END:VCALENDAR",
++        ]
++    )
++    events = parse_ics_events(
++        payload,
++        window_start=datetime(2026, 2, 1, tzinfo=timezone.utc),
++        window_end=datetime(2026, 2, 20, tzinfo=timezone.utc),
++    )
++    assert len(events) == 1
++    assert events[0]["starts_at"] == "2026-02-10T08:00:00Z"
++    assert events[0]["ends_at"] == "2026-02-10T09:00:00Z"
++
++
+ @pytest.fixture()
+ def calendar_client(tmp_path: Path, monkeypatch):
      cfg = _cfg(tmp_path)
-     monkeypatch.setattr(api, "_settings", cfg)
-     monkeypatch.setattr(ui_routes, "_settings", cfg)
-@@ -1027,8 +1031,8 @@ def test_ui_action_delete_requires_confirmation(tmp_path, monkeypatch):
- 
-     c = TestClient(api.app, follow_redirects=False)
-     r = c.post("/ui/recordings/rec-del-confirm-1/delete")
--    assert r.status_code == 422
--    assert 'Type "DELETE"' in r.text
-+    assert r.status_code in (200, 307, 302)
-+    assert get_recording("rec-del-confirm-1", settings=cfg) is None
- 
- 
- def test_ui_action_requeue(tmp_path, monkeypatch):
-@@ -1344,7 +1348,7 @@ def test_ui_action_delete_purge_failure_returns_503(tmp_path, monkeypatch):
- 
-     monkeypatch.setattr(ui_routes, "purge_pending_recording_jobs", _fail_purge)
-     c = TestClient(api.app, follow_redirects=False)
--    r = c.post("/ui/recordings/rec-pf-1/delete", data={"confirm_delete": "DELETE"})
-+    r = c.post("/ui/recordings/rec-pf-1/delete")
-     assert r.status_code == 503
-     assert "redis down" in r.text
- 
-@@ -1364,7 +1368,7 @@ def test_ui_action_delete_removes_disk_artifacts(tmp_path, monkeypatch):
- 
-     monkeypatch.setattr(ui_routes, "purge_pending_recording_jobs", _fake_purge)
-     c = TestClient(api.app, follow_redirects=False)
--    c.post("/ui/recordings/rec-disk-1/delete", data={"confirm_delete": "DELETE"})
-+    c.post("/ui/recordings/rec-disk-1/delete")
-     assert not rec_dir.exists()
- 
- 
-@@ -1394,7 +1398,7 @@ def test_ui_action_delete_cascades_voice_samples_for_recording(tmp_path, monkeyp
- 
-     monkeypatch.setattr(ui_routes, "purge_pending_recording_jobs", _fake_purge)
-     c = TestClient(api.app, follow_redirects=False)
--    r = c.post("/ui/recordings/rec-del-sample-1/delete", data={"confirm_delete": "DELETE"})
-+    r = c.post("/ui/recordings/rec-del-sample-1/delete")
-     assert r.status_code in (200, 307, 302)
-     assert list_voice_samples(settings=cfg) == []
- 

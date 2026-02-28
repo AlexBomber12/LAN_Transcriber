@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager, suppress
+from datetime import datetime, timezone
 import logging
 import shutil
-from typing import List
+from typing import List, Literal
 from uuid import uuid4
 
 from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile
@@ -29,11 +30,16 @@ from .constants import (
     RECORDING_STATUS_QUEUED,
     RECORDING_STATUS_QUARANTINE,
 )
+from .calendar.ics import validate_ics_url
+from .calendar.service import CalendarSyncError, redacted_calendar_source, sync_calendar_source
 from .db import (
+    create_calendar_source,
     create_recording,
     delete_recording,
     get_recording,
     init_db,
+    list_calendar_events,
+    list_calendar_sources,
     list_jobs,
     list_recordings,
     set_recording_status,
@@ -106,6 +112,13 @@ class QuarantineAction(BaseModel):
     reason: str | None = None
 
 
+class CalendarSourceCreate(BaseModel):
+    name: str
+    kind: Literal["url", "file"] = "url"
+    url: str | None = None
+    file: str | None = None
+
+
 def _validate_recording_status(status: str | None) -> str | None:
     if status is None:
         return None
@@ -131,6 +144,26 @@ def _is_public_auth_exempt(request: Request) -> bool:
     if path in {"/metrics", "/openapi.json"}:
         return True
     return False
+
+
+def _parse_iso_datetime(value: str, *, field_name: str) -> datetime:
+    text = str(value or "").strip()
+    if not text:
+        raise ValueError(f"{field_name} is required")
+    normalized = text[:-1] + "+00:00" if text.endswith("Z") else text
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError as exc:
+        raise ValueError(f"{field_name} must be ISO-8601 datetime") from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _utc_iso(value: datetime) -> str:
+    return value.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace(
+        "+00:00", "Z"
+    )
 
 
 @app.middleware("http")
@@ -376,6 +409,79 @@ async def api_list_jobs(
         "limit": limit,
         "offset": offset,
     }
+
+
+@app.post("/api/calendar/sources")
+async def api_create_calendar_source(payload: CalendarSourceCreate) -> dict[str, object]:
+    name = payload.name.strip()
+    if not name:
+        raise HTTPException(status_code=422, detail="name is required")
+    normalized_url: str | None = None
+    if payload.kind == "url":
+        raw_url = str(payload.url or "").strip()
+        if not raw_url:
+            raise HTTPException(status_code=422, detail="url is required for kind=url")
+        try:
+            normalized_url = validate_ics_url(raw_url)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+    if payload.kind == "file":
+        if not str(payload.file or "").strip():
+            raise HTTPException(status_code=422, detail="file is required for kind=file")
+    try:
+        source = create_calendar_source(
+            name=name,
+            kind=payload.kind,
+            url=normalized_url,
+            file_ics=payload.file,
+            settings=_settings,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    return redacted_calendar_source(source)
+
+
+@app.get("/api/calendar/sources")
+async def api_list_calendar_sources() -> dict[str, object]:
+    items = [redacted_calendar_source(row) for row in list_calendar_sources(settings=_settings)]
+    return {"items": items, "total": len(items)}
+
+
+@app.post("/api/calendar/sources/{source_id}/sync")
+async def api_sync_calendar_source(source_id: int) -> dict[str, object]:
+    try:
+        summary = await run_in_threadpool(
+            sync_calendar_source,
+            source_id,
+            settings=_settings,
+        )
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Calendar source not found")
+    except CalendarSyncError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    return summary
+
+
+@app.get("/api/calendar/events")
+async def api_list_calendar_events(
+    from_: str = Query(..., alias="from"),
+    to: str = Query(..., alias="to"),
+    source_id: int | None = Query(default=None),
+) -> dict[str, object]:
+    try:
+        start = _parse_iso_datetime(from_, field_name="from")
+        end = _parse_iso_datetime(to, field_name="to")
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    if end <= start:
+        raise HTTPException(status_code=422, detail="to must be after from")
+    items = list_calendar_events(
+        starts_from=_utc_iso(start),
+        ends_to=_utc_iso(end),
+        source_id=source_id,
+        settings=_settings,
+    )
+    return {"items": items, "total": len(items)}
 
 
 @app.post("/api/uploads")

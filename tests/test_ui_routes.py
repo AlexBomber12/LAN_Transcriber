@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 
@@ -12,6 +13,7 @@ from lan_app import api, ui_routes
 from lan_app.auth import AUTH_COOKIE_NAME
 from lan_app.config import AppSettings
 from lan_app.db import (
+    create_calendar_source,
     count_routing_training_examples,
     create_voice_sample,
     create_job,
@@ -23,7 +25,9 @@ from lan_app.db import (
     list_voice_samples,
     init_db,
     list_projects,
+    list_calendar_sources,
     list_project_keyword_weights,
+    replace_calendar_events_for_window,
     replace_participant_metrics,
     list_voice_profiles,
     set_recording_progress,
@@ -1536,3 +1540,106 @@ def test_db_create_and_list_voice_samples(tmp_path):
     filtered = list_voice_samples(voice_profile_id=profile["id"], settings=cfg)
     assert len(filtered) == 1
     assert filtered[0]["diar_speaker_label"] == "S1"
+
+
+def test_calendars_page_renders_seeded_sources_and_events(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    init_db(cfg)
+    source = create_calendar_source(
+        name="Local Team Calendar",
+        kind="file",
+        file_ics="BEGIN:VCALENDAR\nEND:VCALENDAR",
+        settings=cfg,
+    )
+    replace_calendar_events_for_window(
+        source_id=int(source["id"]),
+        window_start="2026-02-01T00:00:00Z",
+        window_end="2026-02-10T00:00:00Z",
+        events=[
+            {
+                "uid": "evt-seeded-1",
+                "starts_at": "2026-02-03T10:00:00Z",
+                "ends_at": "2026-02-03T11:00:00Z",
+                "all_day": False,
+                "summary": "Seeded calendar event",
+                "location": "Room 5",
+                "description": "fixture",
+                "organizer": "Alex",
+                "updated_at": "2026-02-01T00:00:00Z",
+            },
+            {
+                "uid": "evt-seeded-end-date-1",
+                "starts_at": "2026-02-10T15:00:00Z",
+                "ends_at": "2026-02-10T16:00:00Z",
+                "all_day": False,
+                "summary": "End date event",
+                "location": "Room 9",
+                "description": "fixture",
+                "organizer": "Alex",
+                "updated_at": "2026-02-01T00:00:00Z",
+            },
+        ],
+        settings=cfg,
+    )
+
+    c = TestClient(api.app, follow_redirects=True)
+    response = c.get("/calendars?from=2026-02-01&to=2026-02-10")
+    assert response.status_code == 200
+    assert "Calendars" in response.text
+    assert "Local Team Calendar" in response.text
+    assert "Seeded calendar event" in response.text
+    assert "End date event" in response.text
+
+
+def test_calendars_create_and_sync_file_source(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    init_db(cfg)
+    now = datetime.now(tz=timezone.utc).replace(minute=0, second=0, microsecond=0)
+    starts_at = now + timedelta(days=1)
+    ends_at = starts_at + timedelta(hours=1)
+    file_payload = "\n".join(
+        [
+            "BEGIN:VCALENDAR",
+            "VERSION:2.0",
+            "PRODID:-//LAN Transcriber//UI Calendar Test//EN",
+            "BEGIN:VEVENT",
+            "UID:ui-event-1",
+            f"DTSTART:{starts_at.strftime('%Y%m%dT%H%M%SZ')}",
+            f"DTEND:{ends_at.strftime('%Y%m%dT%H%M%SZ')}",
+            "SUMMARY:UI Sync Event",
+            "LOCATION:Room 2",
+            "END:VEVENT",
+            "END:VCALENDAR",
+        ]
+    )
+
+    c = TestClient(api.app, follow_redirects=False)
+    created = c.post(
+        "/calendars/sources",
+        data={
+            "name": "UI File Calendar",
+            "kind": "file",
+            "file": file_payload,
+        },
+    )
+    assert created.status_code == 303
+    assert created.headers["location"].startswith("/calendars?source_id=")
+
+    sources = list_calendar_sources(settings=cfg)
+    assert len(sources) == 1
+    source_id = int(sources[0]["id"])
+
+    synced = c.post(f"/calendars/sources/{source_id}/sync")
+    assert synced.status_code == 303
+    assert synced.headers["location"] == f"/calendars?source_id={source_id}"
+
+    sources_after = list_calendar_sources(settings=cfg)
+    assert sources_after[0]["last_synced_at"]
+
+    page = TestClient(api.app, follow_redirects=True).get("/calendars")
+    assert page.status_code == 200
+    assert "UI Sync Event" in page.text

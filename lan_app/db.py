@@ -23,6 +23,7 @@ from .constants import (
 )
 
 _PROJECT_ASSIGNMENT_SOURCES = {"manual", "auto"}
+_CALENDAR_SOURCE_KINDS = {"url", "file"}
 _MIGRATIONS_DIR = Path(__file__).with_name("migrations")
 _SQLITE_CONNECT_TIMEOUT_SECONDS = 30
 _DEFAULT_SQLITE_BUSY_TIMEOUT_MS = 30_000
@@ -89,6 +90,14 @@ def _normalise_project_assignment_source(source: str | None) -> str | None:
     if value not in _PROJECT_ASSIGNMENT_SOURCES:
         options = ", ".join(sorted(_PROJECT_ASSIGNMENT_SOURCES))
         raise ValueError(f"Unsupported project assignment source: {value} ({options})")
+    return value
+
+
+def _normalise_calendar_source_kind(kind: str) -> str:
+    value = str(kind or "").strip().lower()
+    if value not in _CALENDAR_SOURCE_KINDS:
+        options = ", ".join(sorted(_CALENDAR_SOURCE_KINDS))
+        raise ValueError(f"Unsupported calendar source kind: {value} ({options})")
     return value
 
 
@@ -1696,6 +1705,249 @@ def get_voice_sample(
     return _as_dict(row)
 
 
+def create_calendar_source(
+    name: str,
+    *,
+    kind: str,
+    url: str | None = None,
+    file_ics: str | None = None,
+    settings: AppSettings | None = None,
+) -> dict[str, Any]:
+    init_db(settings)
+    clean_name = str(name).strip()
+    if not clean_name:
+        raise ValueError("name is required")
+    source_kind = _normalise_calendar_source_kind(kind)
+    clean_url = str(url or "").strip() or None
+    clean_file_ics = str(file_ics or "").strip() or None
+    if source_kind == "url" and clean_url is None:
+        raise ValueError("url is required for kind=url")
+    if source_kind == "file" and clean_file_ics is None:
+        raise ValueError("file_ics is required for kind=file")
+    if source_kind == "url":
+        clean_file_ics = None
+    else:
+        clean_url = None
+    now = _utc_now()
+    with connect(settings) as conn:
+        cursor = conn.execute(
+            """
+            INSERT INTO calendar_sources (
+                name,
+                kind,
+                url,
+                file_ics,
+                created_at,
+                last_synced_at,
+                last_error
+            )
+            VALUES (?, ?, ?, ?, ?, NULL, NULL)
+            """,
+            (
+                clean_name,
+                source_kind,
+                clean_url,
+                clean_file_ics,
+                now,
+            ),
+        )
+        row = conn.execute(
+            "SELECT * FROM calendar_sources WHERE id = ?",
+            (cursor.lastrowid,),
+        ).fetchone()
+        conn.commit()
+    return _as_dict(row) or {}
+
+
+def get_calendar_source(
+    source_id: int,
+    *,
+    settings: AppSettings | None = None,
+) -> dict[str, Any] | None:
+    init_db(settings)
+    with connect(settings) as conn:
+        row = conn.execute(
+            "SELECT * FROM calendar_sources WHERE id = ?",
+            (int(source_id),),
+        ).fetchone()
+    return _as_dict(row)
+
+
+def list_calendar_sources(
+    *,
+    settings: AppSettings | None = None,
+) -> list[dict[str, Any]]:
+    init_db(settings)
+    with connect(settings) as conn:
+        rows = conn.execute(
+            """
+            SELECT *
+            FROM calendar_sources
+            ORDER BY created_at DESC, id DESC
+            """
+        ).fetchall()
+    return [_as_dict(row) or {} for row in rows]
+
+
+def update_calendar_source_sync_state(
+    source_id: int,
+    *,
+    last_synced_at: str | None | object = _UNSET,
+    last_error: str | None | object = _UNSET,
+    settings: AppSettings | None = None,
+) -> dict[str, Any] | None:
+    init_db(settings)
+    assignments: list[str] = []
+    params: list[Any] = []
+    if last_synced_at is not _UNSET:
+        assignments.append("last_synced_at = ?")
+        params.append(last_synced_at)
+    if last_error is not _UNSET:
+        assignments.append("last_error = ?")
+        params.append(last_error)
+    if not assignments:
+        raise ValueError("at least one field must be provided for calendar source update")
+    params.append(int(source_id))
+    with connect(settings) as conn:
+        updated = conn.execute(
+            f"""
+            UPDATE calendar_sources
+            SET {', '.join(assignments)}
+            WHERE id = ?
+            """,
+            tuple(params),
+        )
+        if updated.rowcount < 1:
+            conn.commit()
+            return None
+        row = conn.execute(
+            "SELECT * FROM calendar_sources WHERE id = ?",
+            (int(source_id),),
+        ).fetchone()
+        conn.commit()
+    return _as_dict(row)
+
+
+def replace_calendar_events_for_window(
+    *,
+    source_id: int,
+    window_start: str,
+    window_end: str,
+    events: list[dict[str, Any]],
+    settings: AppSettings | None = None,
+) -> int:
+    init_db(settings)
+    clean_window_start = str(window_start).strip()
+    clean_window_end = str(window_end).strip()
+    if not clean_window_start or not clean_window_end:
+        raise ValueError("window_start and window_end are required")
+    now = _utc_now()
+
+    def _write_events() -> int:
+        with connect(settings) as conn:
+            conn.execute(
+                """
+                DELETE FROM calendar_events
+                WHERE source_id = ? AND starts_at >= ? AND starts_at < ?
+                """,
+                (
+                    int(source_id),
+                    clean_window_start,
+                    clean_window_end,
+                ),
+            )
+            inserted = 0
+            for event in events:
+                uid = str(event.get("uid") or "").strip()
+                starts_at = str(event.get("starts_at") or "").strip()
+                ends_at = str(event.get("ends_at") or "").strip()
+                if not uid or not starts_at or not ends_at:
+                    continue
+                summary = str(event.get("summary") or "").strip() or None
+                description = str(event.get("description") or "").strip() or None
+                location = str(event.get("location") or "").strip() or None
+                organizer = str(event.get("organizer") or "").strip() or None
+                updated_at = str(event.get("updated_at") or "").strip() or now
+                all_day = 1 if bool(event.get("all_day")) else 0
+                conn.execute(
+                    """
+                    INSERT INTO calendar_events (
+                        source_id,
+                        uid,
+                        starts_at,
+                        ends_at,
+                        all_day,
+                        summary,
+                        description,
+                        location,
+                        organizer,
+                        updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(source_id, uid, starts_at) DO UPDATE SET
+                        ends_at = excluded.ends_at,
+                        all_day = excluded.all_day,
+                        summary = excluded.summary,
+                        description = excluded.description,
+                        location = excluded.location,
+                        organizer = excluded.organizer,
+                        updated_at = excluded.updated_at
+                    """,
+                    (
+                        int(source_id),
+                        uid,
+                        starts_at,
+                        ends_at,
+                        all_day,
+                        summary,
+                        description,
+                        location,
+                        organizer,
+                        updated_at,
+                    ),
+                )
+                inserted += 1
+            conn.commit()
+            return inserted
+
+    return with_db_retry(_write_events)
+
+
+def list_calendar_events(
+    *,
+    starts_from: str,
+    ends_to: str,
+    source_id: int | None = None,
+    settings: AppSettings | None = None,
+) -> list[dict[str, Any]]:
+    init_db(settings)
+    clean_starts_from = str(starts_from).strip()
+    clean_ends_to = str(ends_to).strip()
+    if not clean_starts_from or not clean_ends_to:
+        raise ValueError("starts_from and ends_to are required")
+    clauses = ["ce.starts_at < ?", "ce.ends_at > ?"]
+    params: list[Any] = [clean_ends_to, clean_starts_from]
+    if source_id is not None:
+        clauses.append("ce.source_id = ?")
+        params.append(int(source_id))
+    where_sql = " AND ".join(clauses)
+    with connect(settings) as conn:
+        rows = conn.execute(
+            f"""
+            SELECT
+                ce.*,
+                cs.name AS source_name,
+                cs.kind AS source_kind
+            FROM calendar_events AS ce
+            JOIN calendar_sources AS cs ON cs.id = ce.source_id
+            WHERE {where_sql}
+            ORDER BY ce.starts_at, ce.id
+            """,
+            tuple(params),
+        ).fetchall()
+    return [_as_dict(row) or {} for row in rows]
+
+
 def get_calendar_match(
     recording_id: str,
     *,
@@ -1998,6 +2250,12 @@ __all__ = [
     "list_voice_samples",
     "create_voice_sample",
     "get_voice_sample",
+    "create_calendar_source",
+    "get_calendar_source",
+    "list_calendar_sources",
+    "update_calendar_source_sync_state",
+    "replace_calendar_events_for_window",
+    "list_calendar_events",
     "get_calendar_match",
     "upsert_calendar_match",
     "set_calendar_match_selection",

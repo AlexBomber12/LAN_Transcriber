@@ -233,6 +233,6 @@ Queue (in order)
 - Depends on: PR-FIX-CTRANSLATE2-EXECSTACK-02
 
 45) PR-CALENDAR-ICS-01: Calendar import via ICS (URL subscription and optional file upload)
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-CALENDAR-ICS-01.md
 - Depends on: PR-UI-DELETE-CONFIRM-01

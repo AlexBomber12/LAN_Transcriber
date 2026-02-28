@@ -14,12 +14,14 @@ Requirement already satisfied: tenacity>=9 in ./.venv-ci/lib/python3.12/site-pac
 Requirement already satisfied: fastapi>=0.116 in ./.venv-ci/lib/python3.12/site-packages (from -r ci-requirements.txt (line 15)) (0.129.0)
 Requirement already satisfied: uvicorn>=0.30 in ./.venv-ci/lib/python3.12/site-packages (from -r ci-requirements.txt (line 16)) (0.41.0)
 Requirement already satisfied: pyyaml>=6.0 in ./.venv-ci/lib/python3.12/site-packages (from -r ci-requirements.txt (line 17)) (6.0.3)
-Requirement already satisfied: omegaconf>=2.3.0 in ./.venv-ci/lib/python3.12/site-packages (from -r ci-requirements.txt (line 18)) (2.3.0)
-Requirement already satisfied: ruff>=0.12 in ./.venv-ci/lib/python3.12/site-packages (from -r ci-requirements.txt (line 19)) (0.15.1)
-Requirement already satisfied: pip-tools>=7.4 in ./.venv-ci/lib/python3.12/site-packages (from -r ci-requirements.txt (line 20)) (7.5.3)
-Requirement already satisfied: setuptools>=80.9 in ./.venv-ci/lib/python3.12/site-packages (from -r ci-requirements.txt (line 21)) (82.0.0)
-Requirement already satisfied: wheel>=0.45 in ./.venv-ci/lib/python3.12/site-packages (from -r ci-requirements.txt (line 22)) (0.46.3)
-Requirement already satisfied: pip>=24.3 in ./.venv-ci/lib/python3.12/site-packages (from -r ci-requirements.txt (line 23)) (26.0.1)
+Requirement already satisfied: icalendar>=6.0 in ./.venv-ci/lib/python3.12/site-packages (from -r ci-requirements.txt (line 18)) (7.0.2)
+Requirement already satisfied: recurring-ical-events>=3.6 in ./.venv-ci/lib/python3.12/site-packages (from -r ci-requirements.txt (line 19)) (3.8.1)
+Requirement already satisfied: omegaconf>=2.3.0 in ./.venv-ci/lib/python3.12/site-packages (from -r ci-requirements.txt (line 20)) (2.3.0)
+Requirement already satisfied: ruff>=0.12 in ./.venv-ci/lib/python3.12/site-packages (from -r ci-requirements.txt (line 21)) (0.15.1)
+Requirement already satisfied: pip-tools>=7.4 in ./.venv-ci/lib/python3.12/site-packages (from -r ci-requirements.txt (line 22)) (7.5.3)
+Requirement already satisfied: setuptools>=80.9 in ./.venv-ci/lib/python3.12/site-packages (from -r ci-requirements.txt (line 23)) (82.0.0)
+Requirement already satisfied: wheel>=0.45 in ./.venv-ci/lib/python3.12/site-packages (from -r ci-requirements.txt (line 24)) (0.46.3)
+Requirement already satisfied: pip>=24.3 in ./.venv-ci/lib/python3.12/site-packages (from -r ci-requirements.txt (line 25)) (26.0.1)
 Requirement already satisfied: pydantic>=2.7.0 in ./.venv-ci/lib/python3.12/site-packages (from pydantic-settings<3.0,>=2.10->-r ci-requirements.txt (line 3)) (2.12.5)
 Requirement already satisfied: python-dotenv>=0.21.0 in ./.venv-ci/lib/python3.12/site-packages (from pydantic-settings<3.0,>=2.10->-r ci-requirements.txt (line 3)) (1.2.1)
 Requirement already satisfied: typing-inspection>=0.4.0 in ./.venv-ci/lib/python3.12/site-packages (from pydantic-settings<3.0,>=2.10->-r ci-requirements.txt (line 3)) (0.4.2)
@@ -40,9 +42,13 @@ Requirement already satisfied: h11>=0.16 in ./.venv-ci/lib/python3.12/site-packa
 Requirement already satisfied: starlette<1.0.0,>=0.40.0 in ./.venv-ci/lib/python3.12/site-packages (from fastapi>=0.116->-r ci-requirements.txt (line 15)) (0.52.1)
 Requirement already satisfied: annotated-doc>=0.0.2 in ./.venv-ci/lib/python3.12/site-packages (from fastapi>=0.116->-r ci-requirements.txt (line 15)) (0.0.4)
 Requirement already satisfied: click>=7.0 in ./.venv-ci/lib/python3.12/site-packages (from uvicorn>=0.30->-r ci-requirements.txt (line 16)) (8.3.1)
-Requirement already satisfied: antlr4-python3-runtime==4.9.* in ./.venv-ci/lib/python3.12/site-packages (from omegaconf>=2.3.0->-r ci-requirements.txt (line 18)) (4.9.3)
-Requirement already satisfied: build>=1.0.0 in ./.venv-ci/lib/python3.12/site-packages (from pip-tools>=7.4->-r ci-requirements.txt (line 20)) (1.4.0)
-Requirement already satisfied: pyproject_hooks in ./.venv-ci/lib/python3.12/site-packages (from pip-tools>=7.4->-r ci-requirements.txt (line 20)) (1.2.0)
+Requirement already satisfied: python-dateutil in ./.venv-ci/lib/python3.12/site-packages (from icalendar>=6.0->-r ci-requirements.txt (line 18)) (2.9.0.post0)
+Requirement already satisfied: tzdata>=2025.3 in ./.venv-ci/lib/python3.12/site-packages (from icalendar>=6.0->-r ci-requirements.txt (line 18)) (2025.3)
+Requirement already satisfied: x-wr-timezone<3.0.0,>=1.0.0 in ./.venv-ci/lib/python3.12/site-packages (from recurring-ical-events>=3.6->-r ci-requirements.txt (line 19)) (2.0.1)
+Requirement already satisfied: six>=1.5 in ./.venv-ci/lib/python3.12/site-packages (from python-dateutil->icalendar>=6.0->-r ci-requirements.txt (line 18)) (1.17.0)
+Requirement already satisfied: antlr4-python3-runtime==4.9.* in ./.venv-ci/lib/python3.12/site-packages (from omegaconf>=2.3.0->-r ci-requirements.txt (line 20)) (4.9.3)
+Requirement already satisfied: build>=1.0.0 in ./.venv-ci/lib/python3.12/site-packages (from pip-tools>=7.4->-r ci-requirements.txt (line 22)) (1.4.0)
+Requirement already satisfied: pyproject_hooks in ./.venv-ci/lib/python3.12/site-packages (from pip-tools>=7.4->-r ci-requirements.txt (line 22)) (1.2.0)
 Requirement already satisfied: annotated-types>=0.6.0 in ./.venv-ci/lib/python3.12/site-packages (from pydantic>=2.7.0->pydantic-settings<3.0,>=2.10->-r ci-requirements.txt (line 3)) (0.7.0)
 Requirement already satisfied: pydantic-core==2.41.5 in ./.venv-ci/lib/python3.12/site-packages (from pydantic>=2.7.0->pydantic-settings<3.0,>=2.10->-r ci-requirements.txt (line 3)) (2.41.5)
 WARNING: respx 0.22.0 does not provide the extra 'router'
@@ -67,13 +73,20 @@ Requirement already satisfied: rq in ./.venv-ci/lib/python3.12/site-packages (fr
 Requirement already satisfied: pyyaml in ./.venv-ci/lib/python3.12/site-packages (from lan-transcriber==0.1.0) (6.0.3)
 Requirement already satisfied: pydantic-settings in ./.venv-ci/lib/python3.12/site-packages (from lan-transcriber==0.1.0) (2.13.0)
 Requirement already satisfied: rapidfuzz in ./.venv-ci/lib/python3.12/site-packages (from lan-transcriber==0.1.0) (3.14.3)
+Requirement already satisfied: icalendar>=6.0 in ./.venv-ci/lib/python3.12/site-packages (from lan-transcriber==0.1.0) (7.0.2)
+Requirement already satisfied: recurring-ical-events>=3.6 in ./.venv-ci/lib/python3.12/site-packages (from lan-transcriber==0.1.0) (3.8.1)
 Requirement already satisfied: pytest in ./.venv-ci/lib/python3.12/site-packages (from lan-transcriber==0.1.0) (9.0.2)
 Requirement already satisfied: pytest-asyncio in ./.venv-ci/lib/python3.12/site-packages (from lan-transcriber==0.1.0) (1.3.0)
 Requirement already satisfied: pytest-cov in ./.venv-ci/lib/python3.12/site-packages (from lan-transcriber==0.1.0) (7.0.0)
 Requirement already satisfied: pytest-mock in ./.venv-ci/lib/python3.12/site-packages (from lan-transcriber==0.1.0) (3.15.1)
 Requirement already satisfied: respx[router] in ./.venv-ci/lib/python3.12/site-packages (from lan-transcriber==0.1.0) (0.22.0)
+Requirement already satisfied: python-dateutil in ./.venv-ci/lib/python3.12/site-packages (from icalendar>=6.0->lan-transcriber==0.1.0) (2.9.0.post0)
+Requirement already satisfied: typing-extensions~=4.10 in ./.venv-ci/lib/python3.12/site-packages (from icalendar>=6.0->lan-transcriber==0.1.0) (4.15.0)
+Requirement already satisfied: tzdata>=2025.3 in ./.venv-ci/lib/python3.12/site-packages (from icalendar>=6.0->lan-transcriber==0.1.0) (2025.3)
+Requirement already satisfied: x-wr-timezone<3.0.0,>=1.0.0 in ./.venv-ci/lib/python3.12/site-packages (from recurring-ical-events>=3.6->lan-transcriber==0.1.0) (2.0.1)
+Requirement already satisfied: six>=1.5 in ./.venv-ci/lib/python3.12/site-packages (from python-dateutil->icalendar>=6.0->lan-transcriber==0.1.0) (1.17.0)
+Requirement already satisfied: click in ./.venv-ci/lib/python3.12/site-packages (from x-wr-timezone<3.0.0,>=1.0.0->recurring-ical-events>=3.6->lan-transcriber==0.1.0) (8.3.1)
 Requirement already satisfied: idna>=2.8 in ./.venv-ci/lib/python3.12/site-packages (from anyio->lan-transcriber==0.1.0) (3.11)
-Requirement already satisfied: typing_extensions>=4.5 in ./.venv-ci/lib/python3.12/site-packages (from anyio->lan-transcriber==0.1.0) (4.15.0)
 Requirement already satisfied: starlette<1.0.0,>=0.40.0 in ./.venv-ci/lib/python3.12/site-packages (from fastapi->lan-transcriber==0.1.0) (0.52.1)
 Requirement already satisfied: pydantic>=2.7.0 in ./.venv-ci/lib/python3.12/site-packages (from fastapi->lan-transcriber==0.1.0) (2.12.5)
 Requirement already satisfied: typing-inspection>=0.4.2 in ./.venv-ci/lib/python3.12/site-packages (from fastapi->lan-transcriber==0.1.0) (0.4.2)
@@ -91,16 +104,13 @@ Requirement already satisfied: pluggy<2,>=1.5 in ./.venv-ci/lib/python3.12/site-
 Requirement already satisfied: pygments>=2.7.2 in ./.venv-ci/lib/python3.12/site-packages (from pytest->lan-transcriber==0.1.0) (2.19.2)
 Requirement already satisfied: coverage>=7.10.6 in ./.venv-ci/lib/python3.12/site-packages (from coverage[toml]>=7.10.6->pytest-cov->lan-transcriber==0.1.0) (7.13.4)
 WARNING: respx 0.22.0 does not provide the extra 'router'
-Requirement already satisfied: click>=5 in ./.venv-ci/lib/python3.12/site-packages (from rq->lan-transcriber==0.1.0) (8.3.1)
 Requirement already satisfied: croniter in ./.venv-ci/lib/python3.12/site-packages (from rq->lan-transcriber==0.1.0) (6.0.0)
-Requirement already satisfied: python-dateutil in ./.venv-ci/lib/python3.12/site-packages (from croniter->rq->lan-transcriber==0.1.0) (2.9.0.post0)
 Requirement already satisfied: pytz>2021.1 in ./.venv-ci/lib/python3.12/site-packages (from croniter->rq->lan-transcriber==0.1.0) (2025.2)
-Requirement already satisfied: six>=1.5 in ./.venv-ci/lib/python3.12/site-packages (from python-dateutil->croniter->rq->lan-transcriber==0.1.0) (1.17.0)
 Building wheels for collected packages: lan-transcriber
   Building editable for lan-transcriber (pyproject.toml): started
   Building editable for lan-transcriber (pyproject.toml): finished with status 'done'
-  Created wheel for lan-transcriber: filename=lan_transcriber-0.1.0-0.editable-py3-none-any.whl size=15397 sha256=f83b30a608bc578275e4de585d71fe5a29265730c0f0fe3d10d0454e232019bc
-  Stored in directory: /tmp/pip-ephem-wheel-cache-5df0_gzk/wheels/d5/8a/5c/f7178f7e49aa5ae12b2320ec66b5c310f4f2f63d1bd301b7fb
+  Created wheel for lan-transcriber: filename=lan_transcriber-0.1.0-0.editable-py3-none-any.whl size=15425 sha256=38c0bb06656d5aae7f4e5421ab09f2717b8168190ebaa478464b9814cbbdf706
+  Stored in directory: /tmp/pip-ephem-wheel-cache-jr7ni08y/wheels/d5/8a/5c/f7178f7e49aa5ae12b2320ec66b5c310f4f2f63d1bd301b7fb
 Successfully built lan-transcriber
 Installing collected packages: lan-transcriber
   Attempting uninstall: lan-transcriber
@@ -109,10 +119,10 @@ Installing collected packages: lan-transcriber
       Successfully uninstalled lan-transcriber-0.1.0
 Successfully installed lan-transcriber-0.1.0
 All checks passed!
-........................................................................ [ 28%]
-........................................................................ [ 56%]
-........................................................................ [ 84%]
-........................................                                 [100%]
+........................................................................ [ 27%]
+........................................................................ [ 54%]
+........................................................................ [ 81%]
+................................................                         [100%]
 =============================== warnings summary ===============================
 lan_transcriber/pipeline_steps/precheck.py:3
   /home/alexey/LAN_Transcriber/lan_transcriber/pipeline_steps/precheck.py:3: DeprecationWarning: 'audioop' is deprecated and slated for removal in Python 3.13
@@ -156,11 +166,11 @@ lan_transcriber/utils.py                               50      2    96%
 -----------------------------------------------------------------------
 TOTAL                                                1511    151    90%
 Required test coverage of 90% reached. Total coverage: 90.01%
-256 passed, 1 skipped, 5 warnings in 14.27s
-........................................................................ [ 28%]
-........................................................................ [ 56%]
-........................................................................ [ 84%]
-........................................                                 [100%]
+264 passed, 1 skipped, 5 warnings in 14.03s
+........................................................................ [ 27%]
+........................................................................ [ 54%]
+........................................................................ [ 81%]
+................................................                         [100%]
 =============================== warnings summary ===============================
 lan_transcriber/pipeline_steps/precheck.py:3
   /home/alexey/LAN_Transcriber/lan_transcriber/pipeline_steps/precheck.py:3: DeprecationWarning: 'audioop' is deprecated and slated for removal in Python 3.13
@@ -183,12 +193,15 @@ _______________ coverage: platform linux, python 3.12.3-final-0 ________________
 Name                              Stmts   Miss  Cover
 -----------------------------------------------------
 lan_app/__init__.py                   1      0   100%
-lan_app/api.py                      252     70    72%
+lan_app/api.py                      320     87    73%
 lan_app/auth.py                      58      5    91%
-lan_app/config.py                    61      9    85%
+lan_app/calendar/__init__.py          3      0   100%
+lan_app/calendar/ics.py             194     80    59%
+lan_app/calendar/service.py          66     13    80%
+lan_app/config.py                    66      9    86%
 lan_app/constants.py                 28      0   100%
 lan_app/conversation_metrics.py     380     48    87%
-lan_app/db.py                       669     97    86%
+lan_app/db.py                       771    108    86%
 lan_app/db_init.py                    9      9     0%
 lan_app/exporter.py                 212     43    80%
 lan_app/healthchecks.py             103     70    32%
@@ -198,12 +211,12 @@ lan_app/ops.py                       72     10    86%
 lan_app/reaper.py                    65      3    95%
 lan_app/routing.py                  255     22    91%
 lan_app/ui.py                        63     24    62%
-lan_app/ui_routes.py                879    196    78%
+lan_app/ui_routes.py                951    220    77%
 lan_app/uploads.py                   59      6    90%
 lan_app/worker.py                    28     16    43%
 lan_app/worker_tasks.py             393     87    78%
 lan_app/workers.py                   10      3    70%
 -----------------------------------------------------
-TOTAL                              3709    744    80%
-Required test coverage of 75% reached. Total coverage: 79.94%
-256 passed, 1 skipped, 5 warnings in 14.17s
+TOTAL                              4219    889    79%
+Required test coverage of 75% reached. Total coverage: 78.93%
+264 passed, 1 skipped, 5 warnings in 13.48s
