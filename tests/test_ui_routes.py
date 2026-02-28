@@ -146,6 +146,10 @@ def test_recordings_with_data(seeded_client):
     r = seeded_client.get("/recordings")
     assert r.status_code == 200
     assert "meeting.mp3" in r.text
+    assert "Delete record?" in r.text
+    assert 'id="delete-confirm-backdrop"' in r.text
+    assert 'data-rlabel="meeting.mp3"' in r.text
+    assert "Type DELETE to confirm deletion." not in r.text
 
 
 def test_recordings_list_shows_progress_column_and_percent(tmp_path, monkeypatch):
@@ -202,6 +206,8 @@ def test_recording_detail_overview(seeded_client):
     assert "rec-ui-1" in r.text
     assert "meeting.mp3" in r.text
     assert "Ready" in r.text
+    assert 'data-rid="rec-ui-1"' in r.text
+    assert 'data-rlabel="meeting.mp3"' in r.text
 
 
 def test_recording_detail_processing_polls_progress(tmp_path, monkeypatch):
@@ -921,7 +927,6 @@ def test_ui_login_sets_cookie_and_allows_protected_post(tmp_path, monkeypatch):
     c = TestClient(api.app, follow_redirects=False)
     blocked = c.post(
         "/ui/recordings/rec-auth-ui-1/delete",
-        data={"confirm_delete": "DELETE"},
     )
     assert blocked.status_code == 401
 
@@ -934,7 +939,6 @@ def test_ui_login_sets_cookie_and_allows_protected_post(tmp_path, monkeypatch):
 
     allowed = c.post(
         "/ui/recordings/rec-auth-ui-1/delete",
-        data={"confirm_delete": "DELETE"},
     )
     assert allowed.status_code == 200
 
@@ -1004,7 +1008,7 @@ def test_ui_action_delete(tmp_path, monkeypatch):
 
     monkeypatch.setattr(ui_routes, "purge_pending_recording_jobs", _fake_purge)
     c = TestClient(api.app, follow_redirects=False)
-    r = c.post("/ui/recordings/rec-del-1/delete", data={"confirm_delete": "DELETE"})
+    r = c.post("/ui/recordings/rec-del-1/delete")
     assert r.status_code in (200, 307, 302)
 
 
@@ -1013,7 +1017,7 @@ def test_ui_action_delete_not_found(client):
     assert r.status_code == 404
 
 
-def test_ui_action_delete_requires_confirmation(tmp_path, monkeypatch):
+def test_ui_action_delete_does_not_require_confirmation(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
     monkeypatch.setattr(api, "_settings", cfg)
     monkeypatch.setattr(ui_routes, "_settings", cfg)
@@ -1027,8 +1031,8 @@ def test_ui_action_delete_requires_confirmation(tmp_path, monkeypatch):
 
     c = TestClient(api.app, follow_redirects=False)
     r = c.post("/ui/recordings/rec-del-confirm-1/delete")
-    assert r.status_code == 422
-    assert 'Type "DELETE"' in r.text
+    assert r.status_code in (200, 307, 302)
+    assert get_recording("rec-del-confirm-1", settings=cfg) is None
 
 
 def test_ui_action_requeue(tmp_path, monkeypatch):
@@ -1344,7 +1348,7 @@ def test_ui_action_delete_purge_failure_returns_503(tmp_path, monkeypatch):
 
     monkeypatch.setattr(ui_routes, "purge_pending_recording_jobs", _fail_purge)
     c = TestClient(api.app, follow_redirects=False)
-    r = c.post("/ui/recordings/rec-pf-1/delete", data={"confirm_delete": "DELETE"})
+    r = c.post("/ui/recordings/rec-pf-1/delete")
     assert r.status_code == 503
     assert "redis down" in r.text
 
@@ -1364,7 +1368,7 @@ def test_ui_action_delete_removes_disk_artifacts(tmp_path, monkeypatch):
 
     monkeypatch.setattr(ui_routes, "purge_pending_recording_jobs", _fake_purge)
     c = TestClient(api.app, follow_redirects=False)
-    c.post("/ui/recordings/rec-disk-1/delete", data={"confirm_delete": "DELETE"})
+    c.post("/ui/recordings/rec-disk-1/delete")
     assert not rec_dir.exists()
 
 
@@ -1394,7 +1398,7 @@ def test_ui_action_delete_cascades_voice_samples_for_recording(tmp_path, monkeyp
 
     monkeypatch.setattr(ui_routes, "purge_pending_recording_jobs", _fake_purge)
     c = TestClient(api.app, follow_redirects=False)
-    r = c.post("/ui/recordings/rec-del-sample-1/delete", data={"confirm_delete": "DELETE"})
+    r = c.post("/ui/recordings/rec-del-sample-1/delete")
     assert r.status_code in (200, 307, 302)
     assert list_voice_samples(settings=cfg) == []
 

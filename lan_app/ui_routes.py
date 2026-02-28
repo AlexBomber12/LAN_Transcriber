@@ -1553,14 +1553,9 @@ async def ui_action_quarantine(recording_id: str) -> Any:
 
 
 @ui_router.post("/ui/recordings/{recording_id}/delete")
-async def ui_action_delete(
-    recording_id: str,
-    confirm_delete: str = Form(default=""),
-) -> Any:
+async def ui_action_delete(recording_id: str) -> Any:
     if get_recording(recording_id, settings=_settings) is None:
         return HTMLResponse("Not found", status_code=404)
-    if confirm_delete.strip().upper() != "DELETE":
-        return HTMLResponse('Type "DELETE" to confirm deletion.', status_code=422)
     try:
         purge_pending_recording_jobs(recording_id, settings=_settings)
     except Exception as exc:

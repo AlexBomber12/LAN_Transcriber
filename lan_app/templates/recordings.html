@@ -76,7 +76,13 @@
       <td>{% if r.duration_sec %}{{ r.duration_sec }}s{% else %}—{% endif %}</td>
       <td>{{ r.source }}</td>
       <td>
-        <select class="action-sel" data-rid="{{ r.id }}" onchange="doRecAction(this)">
+        <select
+          class="action-sel"
+          data-rid="{{ r.id }}"
+          data-rlabel="{{ r.source_filename or r.id }}"
+          data-rcaptured="{{ r.captured_at[:19].replace('T',' ') if r.captured_at else '' }}"
+          onchange="doRecAction(this)"
+        >
           <option value="">Actions</option>
           <option value="open">Open</option>
           <option value="requeue">Requeue</option>
