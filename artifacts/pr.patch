@@ -1,39 +1,37 @@
 diff --git a/tasks/QUEUE.md b/tasks/QUEUE.md
-index aad8919..0bf8503 100644
+index 5000324..5843f57 100644
 --- a/tasks/QUEUE.md
 +++ b/tasks/QUEUE.md
-@@ -198,7 +198,7 @@ Queue (in order)
- - Depends on: PR-DEV-01
- 
- 38) PR-TEST-PIPELINE-RESILIENCE-01: Add worker-level resilience tests for external dependency failures
--- Status: TODO
-+- Status: DOING
- - Tasks file: tasks/PR-TEST-PIPELINE-RESILIENCE-01.md
+@@ -203,7 +203,7 @@ Queue (in order)
  - Depends on: PR-TEST-IMPORTS-01
  
-diff --git a/tests/test_worker_resilience.py b/tests/test_worker_resilience.py
+ 39) PR-TEST-API-UI-01: Add end-to-end API and UI route tests for Upload and Export workflow
+-- Status: TODO
++- Status: DONE
+ - Tasks file: tasks/PR-TEST-API-UI-01.md
+ - Depends on: PR-TEST-PIPELINE-RESILIENCE-01
+ 
+diff --git a/tests/test_upload_export_flow.py b/tests/test_upload_export_flow.py
 new file mode 100644
-index 0000000..6a3bcd8
+index 0000000..7819a3e
 --- /dev/null
-+++ b/tests/test_worker_resilience.py
-@@ -0,0 +1,140 @@
++++ b/tests/test_upload_export_flow.py
+@@ -0,0 +1,110 @@
 +from __future__ import annotations
 +
++import io
 +from pathlib import Path
++from uuid import uuid4
++import zipfile
 +
 +import pytest
++from fastapi.testclient import TestClient
 +
-+from lan_app import worker_tasks
++from lan_app import api, ui_routes
 +from lan_app.config import AppSettings
-+from lan_app.constants import (
-+    JOB_STATUS_FAILED,
-+    JOB_TYPE_PRECHECK,
-+    RECORDING_STATUS_FAILED,
-+    RECORDING_STATUS_NEEDS_REVIEW,
-+)
-+from lan_app.db import create_job, create_recording, get_job, get_recording, init_db
-+from lan_app.worker_tasks import process_job
-+from lan_transcriber.pipeline import PrecheckResult
++from lan_app.constants import JOB_STATUS_QUEUED, JOB_TYPE_PRECHECK
++from lan_app.db import create_job, init_db
++from lan_app.jobs import RecordingJob
 +
 +
 +def _cfg(tmp_path: Path) -> AppSettings:
@@ -46,114 +44,86 @@ index 0000000..6a3bcd8
 +    return cfg
 +
 +
-+def _set_worker_env(monkeypatch, cfg: AppSettings) -> None:
-+    monkeypatch.setenv("LAN_DATA_ROOT", str(cfg.data_root))
-+    monkeypatch.setenv("LAN_RECORDINGS_ROOT", str(cfg.recordings_root))
-+    monkeypatch.setenv("LAN_DB_PATH", str(cfg.db_path))
-+    monkeypatch.setenv("LAN_PROM_SNAPSHOT_PATH", str(cfg.metrics_snapshot_path))
++@pytest.fixture()
++def cfg(tmp_path: Path, monkeypatch):
++    app_settings = _cfg(tmp_path)
++    monkeypatch.setattr(api, "_settings", app_settings)
++    monkeypatch.setattr(ui_routes, "_settings", app_settings)
++    init_db(app_settings)
++
++    def _fake_enqueue(
++        recording_id: str,
++        *,
++        job_type: str = JOB_TYPE_PRECHECK,
++        settings: AppSettings | None = None,
++    ) -> RecordingJob:
++        effective = settings or app_settings
++        job_id = f"job-upload-{uuid4().hex[:8]}"
++        create_job(
++            job_id=job_id,
++            recording_id=recording_id,
++            job_type=job_type,
++            status=JOB_STATUS_QUEUED,
++            settings=effective,
++        )
++        return RecordingJob(
++            job_id=job_id,
++            recording_id=recording_id,
++            job_type=job_type,
++        )
++
++    monkeypatch.setattr(api, "enqueue_recording_job", _fake_enqueue)
++    return app_settings
 +
 +
-+def _seed_precheck_job(cfg: AppSettings, *, recording_id: str, job_id: str) -> None:
-+    init_db(cfg)
-+    create_recording(
-+        recording_id,
-+        source="upload",
-+        source_filename="meeting.wav",
-+        settings=cfg,
++@pytest.fixture()
++def client(cfg: AppSettings):
++    return TestClient(api.app, follow_redirects=True)
++
++
++def _upload_recording(client: TestClient) -> dict[str, object]:
++    response = client.post(
++        "/api/uploads",
++        files={"file": ("meeting-flow.mp3", b"fake-mp3", "audio/mpeg")},
 +    )
-+    create_job(
-+        job_id,
-+        recording_id=recording_id,
-+        job_type=JOB_TYPE_PRECHECK,
-+        settings=cfg,
-+    )
-+    raw_audio = cfg.recordings_root / recording_id / "raw" / "audio.wav"
-+    raw_audio.parent.mkdir(parents=True, exist_ok=True)
-+    raw_audio.write_bytes(b"\x00")
++    assert response.status_code == 200
++    return response.json()
 +
 +
-+def test_process_job_pipeline_exception_marks_job_failed_and_updates_recording_status(
-+    tmp_path: Path, monkeypatch
-+):
-+    cfg = _cfg(tmp_path)
-+    _set_worker_env(monkeypatch, cfg)
-+    _seed_precheck_job(cfg, recording_id="rec-worker-resilience-1", job_id="job-worker-resilience-1")
++def test_upload_creates_recording_and_file(client: TestClient, cfg: AppSettings):
++    payload = _upload_recording(client)
++    recording_id = str(payload["recording_id"])
 +
-+    monkeypatch.setattr(
-+        worker_tasks,
-+        "run_precheck",
-+        lambda *_a, **_k: PrecheckResult(
-+            duration_sec=60.0,
-+            speech_ratio=0.8,
-+            quarantine_reason=None,
-+        ),
-+    )
-+    monkeypatch.setattr(worker_tasks, "_is_retryable_exception", lambda _exc: False)
-+
-+    async def _failing_run_pipeline(*_args, **_kwargs):
-+        raise RuntimeError("dep failure")
-+
-+    monkeypatch.setattr(worker_tasks, "run_pipeline", _failing_run_pipeline)
-+
-+    with pytest.raises(RuntimeError, match="dep failure"):
-+        process_job("job-worker-resilience-1", "rec-worker-resilience-1", JOB_TYPE_PRECHECK)
-+
-+    job = get_job("job-worker-resilience-1", settings=cfg) or {}
-+    assert job.get("status") == JOB_STATUS_FAILED
-+    assert "dep failure" in str(job.get("error") or "")
-+
-+    recording = get_recording("rec-worker-resilience-1", settings=cfg) or {}
-+    assert recording.get("status") in {
-+        RECORDING_STATUS_FAILED,
-+        RECORDING_STATUS_NEEDS_REVIEW,
-+    }
++    assert recording_id
++    raw_audio = cfg.recordings_root / recording_id / "raw" / "audio.mp3"
++    assert raw_audio.exists()
++    assert raw_audio.read_bytes() == b"fake-mp3"
 +
 +
-+def test_progress_update_failures_do_not_hide_original_pipeline_error(
-+    tmp_path: Path, monkeypatch
-+):
-+    cfg = _cfg(tmp_path)
-+    _set_worker_env(monkeypatch, cfg)
-+    _seed_precheck_job(cfg, recording_id="rec-worker-resilience-2", job_id="job-worker-resilience-2")
++def test_ui_pages_render_for_new_recording(client: TestClient):
++    payload = _upload_recording(client)
++    recording_id = str(payload["recording_id"])
 +
-+    monkeypatch.setattr(
-+        worker_tasks,
-+        "run_precheck",
-+        lambda *_a, **_k: PrecheckResult(
-+            duration_sec=45.0,
-+            speech_ratio=0.75,
-+            quarantine_reason=None,
-+        ),
-+    )
-+    monkeypatch.setattr(worker_tasks, "_is_retryable_exception", lambda _exc: False)
++    upload_page = client.get("/upload")
++    assert upload_page.status_code == 200
++    assert 'id="file-input"' in upload_page.text
 +
-+    original_set_progress = worker_tasks.set_recording_progress
-+    calls = {"count": 0}
++    recordings_page = client.get("/recordings")
++    assert recordings_page.status_code == 200
++    assert recording_id in recordings_page.text or "meeting-flow.mp3" in recordings_page.text
 +
-+    def _flaky_set_recording_progress(*args, **kwargs):
-+        calls["count"] += 1
-+        if calls["count"] == 1:
-+            raise RuntimeError("progress write failure")
-+        return original_set_progress(*args, **kwargs)
++    detail_page = client.get(f"/recordings/{recording_id}")
++    assert detail_page.status_code == 200
 +
-+    monkeypatch.setattr(worker_tasks, "set_recording_progress", _flaky_set_recording_progress)
 +
-+    async def _pipeline_with_progress_then_failure(*_args, **kwargs):
-+        progress_callback = kwargs.get("progress_callback")
-+        if callable(progress_callback):
-+            try:
-+                progress_callback("stt", 0.2)
-+            except RuntimeError:
-+                pass
-+        raise RuntimeError("dep failure")
++def test_export_zip_downloads_required_files(client: TestClient):
++    payload = _upload_recording(client)
++    recording_id = str(payload["recording_id"])
 +
-+    monkeypatch.setattr(worker_tasks, "run_pipeline", _pipeline_with_progress_then_failure)
++    response = client.get(f"/ui/recordings/{recording_id}/export.zip")
++    assert response.status_code == 200
 +
-+    with pytest.raises(RuntimeError, match="dep failure"):
-+        process_job("job-worker-resilience-2", "rec-worker-resilience-2", JOB_TYPE_PRECHECK)
-+
-+    assert calls["count"] >= 1
-+    job = get_job("job-worker-resilience-2", settings=cfg) or {}
-+    assert job.get("status") == JOB_STATUS_FAILED
-+    assert "dep failure" in str(job.get("error") or "")
-+
++    archive = zipfile.ZipFile(io.BytesIO(response.content))
++    names = set(archive.namelist())
++    assert "onenote.md" in names
++    assert "manifest.json" in names

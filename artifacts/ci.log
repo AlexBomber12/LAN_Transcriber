@@ -97,8 +97,8 @@ Requirement already satisfied: six>=1.5 in ./.venv-ci/lib/python3.12/site-packag
 Building wheels for collected packages: lan-transcriber
   Building editable for lan-transcriber (pyproject.toml): started
   Building editable for lan-transcriber (pyproject.toml): finished with status 'done'
-  Created wheel for lan-transcriber: filename=lan_transcriber-0.1.0-0.editable-py3-none-any.whl size=15397 sha256=5101a1fef200b941f71888a4f4d9bc5fc8eaa9dd8ab9c2aaa9a9be66be596003
-  Stored in directory: /tmp/pip-ephem-wheel-cache-b3uoy15u/wheels/d5/8a/5c/f7178f7e49aa5ae12b2320ec66b5c310f4f2f63d1bd301b7fb
+  Created wheel for lan-transcriber: filename=lan_transcriber-0.1.0-0.editable-py3-none-any.whl size=15397 sha256=fd9db9c9ea19af28b778caecbdf62a33db7f39f5a6e1d37ce93c976b9fda7020
+  Stored in directory: /tmp/pip-ephem-wheel-cache-ph0qbodt/wheels/d5/8a/5c/f7178f7e49aa5ae12b2320ec66b5c310f4f2f63d1bd301b7fb
 Successfully built lan-transcriber
 Installing collected packages: lan-transcriber
   Attempting uninstall: lan-transcriber
@@ -108,9 +108,9 @@ Installing collected packages: lan-transcriber
 Successfully installed lan-transcriber-0.1.0
 All checks passed!
 ........................................................................ [ 28%]
-........................................................................ [ 57%]
-........................................................................ [ 85%]
-....................................                                     [100%]
+........................................................................ [ 56%]
+........................................................................ [ 84%]
+.......................................                                  [100%]
 =============================== warnings summary ===============================
 lan_transcriber/pipeline_steps/precheck.py:3
   /home/alexey/LAN_Transcriber/lan_transcriber/pipeline_steps/precheck.py:3: DeprecationWarning: 'audioop' is deprecated and slated for removal in Python 3.13
@@ -154,4 +154,4 @@ lan_transcriber/utils.py                               50      2    96%
 -----------------------------------------------------------------------
 TOTAL                                                1511    151    90%
 Required test coverage of 90% reached. Total coverage: 90.01%
-252 passed, 1 skipped, 5 warnings in 14.71s
+255 passed, 1 skipped, 5 warnings in 13.79s

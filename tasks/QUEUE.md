@@ -203,7 +203,7 @@ Queue (in order)
 - Depends on: PR-TEST-IMPORTS-01
 
 39) PR-TEST-API-UI-01: Add end-to-end API and UI route tests for Upload and Export workflow
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-TEST-API-UI-01.md
 - Depends on: PR-TEST-PIPELINE-RESILIENCE-01
 
