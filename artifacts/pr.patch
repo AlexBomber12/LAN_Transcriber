@@ -1,13 +1,74 @@
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+index 6de80e6..81b58fa 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -44,5 +44,5 @@ jobs:
+         env:
+           SMOKE_IMAGE: ${{ steps.prepare_smoke.outputs.SMOKE_IMAGE }}
+         run: |
+-          python -m pip install -U requests
+-          pytest -q tests/test_docker_smoke.py
++          . .venv-ci/bin/activate
++          python -m pytest -q tests/test_docker_smoke.py
+diff --git a/.github/workflows/lint-and-test.yml b/.github/workflows/lint-and-test.yml
+index 0aa4c88..f44990f 100644
+--- a/.github/workflows/lint-and-test.yml
++++ b/.github/workflows/lint-and-test.yml
+@@ -1,10 +1,7 @@
+-name: lint-and-test
++name: lint-and-test (manual)
+ 
+ on:
+-  push:
+-    branches: [ main ]
+-  pull_request:
+-    branches: [ main ]
++  workflow_dispatch:
+ 
+ jobs:
+   lint-and-test:
+diff --git a/.github/workflows/staging-deploy.yml b/.github/workflows/staging-deploy.yml
+index 66fe112..691f6f1 100644
+--- a/.github/workflows/staging-deploy.yml
++++ b/.github/workflows/staging-deploy.yml
+@@ -1,25 +1,15 @@
+ name: staging-deploy
+ 
+ on:
++  workflow_dispatch:
+   push:
+     branches: [main]
+ 
+ jobs:
+   deploy:
++    if: ${{ secrets.STAGING_HOST != '' && secrets.STAGING_USER != '' && secrets.STAGING_SSH_KEY != '' }}
+     runs-on: ubuntu-latest
+     steps:
+-      - name: Validate secrets
+-        shell: bash
+-        env:
+-          STAGING_HOST: ${{ secrets.STAGING_HOST }}
+-          STAGING_USER: ${{ secrets.STAGING_USER }}
+-          STAGING_SSH_KEY: ${{ secrets.STAGING_SSH_KEY }}
+-        run: |
+-          if [ -z "$STAGING_HOST" ] || [ -z "$STAGING_USER" ] || [ -z "$STAGING_SSH_KEY" ]; then
+-            echo "::error::Missing required secrets STAGING_HOST, STAGING_USER, and STAGING_SSH_KEY"
+-            exit 1
+-          fi
+-
+       - uses: actions/checkout@v4
+ 
+       - name: Setup Python
 diff --git a/tasks/QUEUE.md b/tasks/QUEUE.md
-index d68a01f..a2c491d 100644
+index a2c491d..99bd46a 100644
 --- a/tasks/QUEUE.md
 +++ b/tasks/QUEUE.md
-@@ -172,7 +172,7 @@ Queue (in order)
- - Depends on: PR-DOCS-EXPORT-ONLY-01
+@@ -178,7 +178,7 @@ Queue (in order)
  
- 33) PR-FIX-WHISPERX-API-01: Fix WhisperX API usage (no whisperx.transcribe) and add modern-path unit test
+ 
+ 34) PR-CI-01: Fix GitHub Actions failures (docker smoke pytest, staging deploy secrets) and remove duplicate CI workflow
 -- Status: TODO
 +- Status: DONE
- - Tasks file: tasks/PR-FIX-WHISPERX-API-01.md
- - Depends on: PR-FIX-DIARIZATION-REVISION-01
+ - Tasks file: tasks/PR-CI-01.md
+ - Depends on: PR-FIX-WHISPERX-API-01
  

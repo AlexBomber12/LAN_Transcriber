@@ -178,7 +178,7 @@ Queue (in order)
 
 
 34) PR-CI-01: Fix GitHub Actions failures (docker smoke pytest, staging deploy secrets) and remove duplicate CI workflow
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-CI-01.md
 - Depends on: PR-FIX-WHISPERX-API-01
 

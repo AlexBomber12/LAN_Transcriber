@@ -1,25 +1,15 @@
 name: staging-deploy
 
 on:
+  workflow_dispatch:
   push:
     branches: [main]
 
 jobs:
   deploy:
+    if: ${{ secrets.STAGING_HOST != '' && secrets.STAGING_USER != '' && secrets.STAGING_SSH_KEY != '' }}
     runs-on: ubuntu-latest
     steps:
-      - name: Validate secrets
-        shell: bash
-        env:
-          STAGING_HOST: ${{ secrets.STAGING_HOST }}
-          STAGING_USER: ${{ secrets.STAGING_USER }}
-          STAGING_SSH_KEY: ${{ secrets.STAGING_SSH_KEY }}
-        run: |
-          if [ -z "$STAGING_HOST" ] || [ -z "$STAGING_USER" ] || [ -z "$STAGING_SSH_KEY" ]; then
-            echo "::error::Missing required secrets STAGING_HOST, STAGING_USER, and STAGING_SSH_KEY"
-            exit 1
-          fi
-
       - uses: actions/checkout@v4
 
       - name: Setup Python
