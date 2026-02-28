@@ -1,71 +1,125 @@
-diff --git a/ci-requirements.txt b/ci-requirements.txt
-index 976fc9d..cfd0b1d 100644
---- a/ci-requirements.txt
-+++ b/ci-requirements.txt
-@@ -15,6 +15,7 @@ tenacity>=9
- fastapi>=0.116
- uvicorn>=0.30
- pyyaml>=6.0
-+omegaconf>=2.3.0
- ruff>=0.12
- pip-tools>=7.4
- setuptools>=80.9
-diff --git a/requirements.in b/requirements.in
-index eebdf41..7e936da 100644
---- a/requirements.in
-+++ b/requirements.in
-@@ -6,6 +6,7 @@ whisperx==3.4.2
- faster-whisper==1.1.1
- pyannote.audio==3.3.2
- pyannote.pipeline==3.0.1
-+omegaconf==2.3.0
- gradio==5.35.0
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+index 4142cf7..4b7bc19 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -28,23 +28,3 @@ jobs:
+           COVERAGE_THRESHOLD_TRANSCRIBER: '90'
+           COVERAGE_THRESHOLD_APP: '75'
+         run: scripts/ci.sh
+-      - name: Prepare smoke image
+-        id: prepare_smoke
+-        run: |
+-          IMAGE_OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+-          REF_NAME="${{ github.ref_name }}"
+-          TAG="${REF_NAME//\//-}"
+-          IMAGE="ghcr.io/${IMAGE_OWNER}/lan-transcriber:${TAG}"
+-          echo "Attempting to pull $IMAGE"
+-          if docker pull "$IMAGE"; then
+-            echo "SMOKE_IMAGE=$IMAGE" >> "$GITHUB_OUTPUT"
+-          else
+-            echo "Image not found: $IMAGE. Skipping smoke test."
+-          fi
+-      - name: Docker smoke
+-        if: steps.prepare_smoke.outputs.SMOKE_IMAGE != ''
+-        env:
+-          SMOKE_IMAGE: ${{ steps.prepare_smoke.outputs.SMOKE_IMAGE }}
+-        run: |
+-          . .venv-ci/bin/activate
+-          python -m pytest -q tests/test_docker_smoke.py
+diff --git a/.github/workflows/docker-build-and-push.yml b/.github/workflows/docker-build-and-push.yml
+index ed044c9..4bb3b0c 100644
+--- a/.github/workflows/docker-build-and-push.yml
++++ b/.github/workflows/docker-build-and-push.yml
+@@ -27,6 +27,7 @@ jobs:
+           username: ${{ env.OWNER_LC }}
+           password: ${{ secrets.GITHUB_TOKEN }}
+       - name: Build & push Docker image
++        id: build
+         uses: docker/build-push-action@v5
+         with:
+           context: .
+@@ -34,3 +35,11 @@ jobs:
+           tags: |
+             ghcr.io/${{ env.OWNER_LC }}/lan-transcriber:latest
+             ghcr.io/${{ env.OWNER_LC }}/lan-transcriber:${{ github.ref_name }}
++      - name: Docker smoke on built digest
++        run: |
++          IMAGE="ghcr.io/${{ env.OWNER_LC }}/lan-transcriber@${{ steps.build.outputs.digest }}"
++          echo "Running smoke against $IMAGE"
++          docker pull "$IMAGE"
++          docker run --rm "$IMAGE" python -c "import ctranslate2; print('ok')"
++          python -m pip install -U pytest requests
++          SMOKE_IMAGE="$IMAGE" python -m pytest -q tests/test_docker_smoke.py
+diff --git a/Dockerfile b/Dockerfile
+index 23158b4..71a545d 100644
+--- a/Dockerfile
++++ b/Dockerfile
+@@ -10,16 +10,54 @@ RUN apt-get update \
+ COPY . /app
  
- transformers==4.53.2
-diff --git a/requirements.txt b/requirements.txt
-index 20bd54e..bd04aee 100644
---- a/requirements.txt
-+++ b/requirements.txt
-@@ -6,6 +6,7 @@ starlette
- torch
- faster-whisper
- pyannote.audio
-+omegaconf>=2.3.0
- httpx
- tenacity
- redis
+ FROM base AS runtime-full
+-RUN python -m pip install --upgrade pip setuptools wheel \
++RUN apt-get update \
++    && apt-get install -y --no-install-recommends patchelf binutils \
++    && rm -rf /var/lib/apt/lists/* \
++    && python -m pip install --upgrade pip setuptools wheel \
+     && python -m pip install --no-cache-dir -r requirements.txt \
+       --extra-index-url https://download.pytorch.org/whl/cu121 \
+     && python -m pip install --no-cache-dir whisperx==3.4.2
++RUN python - <<'PY'
++import glob, site, subprocess, sys
++root = site.getsitepackages()[0]
++libs = glob.glob(root + "/**/libctranslate2*.so*", recursive=True)
++print("Found libctranslate2 libs:", len(libs))
++if not libs:
++    raise SystemExit("No libctranslate2*.so* found; expected ctranslate2 to be installed")
++for p in libs:
++    subprocess.check_call(["patchelf", "--clear-execstack", p])
++    out = subprocess.check_output(["readelf", "-W", "-l", p], text=True)
++    gnu = next((l for l in out.splitlines() if "GNU_STACK" in l), "")
++    print(p, gnu)
++    if "RWE" in gnu:
++        raise SystemExit(f"GNU_STACK still RWE for {p}")
++PY
++RUN python -c "import ctranslate2; print('ctranslate2', ctranslate2.__version__)"
+ CMD ["uvicorn", "lan_app.api:app", "--host", "0.0.0.0", "--port", "7860"]
+ 
+ FROM base AS runtime-lite
+-RUN python -m pip install --upgrade pip setuptools wheel \
++RUN apt-get update \
++    && apt-get install -y --no-install-recommends patchelf binutils \
++    && rm -rf /var/lib/apt/lists/* \
++    && python -m pip install --upgrade pip setuptools wheel \
+     && python -m pip install --no-cache-dir -r ci-requirements.txt \
+     && python -m pip install --no-cache-dir -e .[test] \
+     && python -m pip install --no-cache-dir whisperx==3.4.2
++RUN python - <<'PY'
++import glob, site, subprocess, sys
++root = site.getsitepackages()[0]
++libs = glob.glob(root + "/**/libctranslate2*.so*", recursive=True)
++print("Found libctranslate2 libs:", len(libs))
++if not libs:
++    raise SystemExit("No libctranslate2*.so* found; expected ctranslate2 to be installed")
++for p in libs:
++    subprocess.check_call(["patchelf", "--clear-execstack", p])
++    out = subprocess.check_output(["readelf", "-W", "-l", p], text=True)
++    gnu = next((l for l in out.splitlines() if "GNU_STACK" in l), "")
++    print(p, gnu)
++    if "RWE" in gnu:
++        raise SystemExit(f"GNU_STACK still RWE for {p}")
++PY
++RUN python -c "import ctranslate2; print('ctranslate2', ctranslate2.__version__)"
+ ENV CI=true
+ CMD ["uvicorn", "lan_app.api:app", "--host", "0.0.0.0", "--port", "7860"]
 diff --git a/tasks/QUEUE.md b/tasks/QUEUE.md
-index 808fb09..dc9902c 100644
+index 903716b..9601ffe 100644
 --- a/tasks/QUEUE.md
 +++ b/tasks/QUEUE.md
-@@ -219,6 +219,6 @@ Queue (in order)
- 
- 
- 42) PR-FIX-OMEGACONF-01: Add missing omegaconf dependency (runtime + CI) and a dependency smoke test
--- Status: TODO
-+- Status: DONE
- - Tasks file: tasks/PR-FIX-OMEGACONF-01.md
+@@ -223,6 +223,6 @@ Queue (in order)
  - Depends on: PR-COVERAGE-01
-diff --git a/tests/test_docker_smoke.py b/tests/test_docker_smoke.py
-index 2e4df68..3406318 100644
---- a/tests/test_docker_smoke.py
-+++ b/tests/test_docker_smoke.py
-@@ -50,7 +50,7 @@ def test_container_launches():
-                 "lan-smoke",
-                 "python",
-                 "-c",
--                "import ctranslate2; import faster_whisper; import whisperx",
-+                "import ctranslate2; import faster_whisper; import whisperx; from omegaconf import OmegaConf; OmegaConf.create({'ok': 1})",
-             ],
-             check=False,
-             capture_output=True,
-diff --git a/tests/test_dependency_smoke.py b/tests/test_dependency_smoke.py
-new file mode 100644
-index 0000000..1278008
---- /dev/null
-+++ b/tests/test_dependency_smoke.py
-@@ -0,0 +1,4 @@
-+def test_omegaconf_importable():
-+    from omegaconf import OmegaConf
-+
-+    assert hasattr(OmegaConf, "create")
+ 
+ 43) PR-FIX-CTRANSLATE2-EXECSTACK-02: Ensure runtime images are patched (no execstack) and Docker smoke runs on built image digest (no tag races)
+-- Status: TODO
++- Status: DOING
+ - Tasks file: tasks/PR-FIX-CTRANSLATE2-EXECSTACK-02.md
+ - Depends on: PR-FIX-OMEGACONF-01

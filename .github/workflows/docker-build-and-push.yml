@@ -27,6 +27,7 @@ jobs:
           username: ${{ env.OWNER_LC }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Build & push Docker image
+        id: build
         uses: docker/build-push-action@v5
         with:
           context: .
@@ -34,3 +35,11 @@ jobs:
           tags: |
             ghcr.io/${{ env.OWNER_LC }}/lan-transcriber:latest
             ghcr.io/${{ env.OWNER_LC }}/lan-transcriber:${{ github.ref_name }}
+      - name: Docker smoke on built digest
+        run: |
+          IMAGE="ghcr.io/${{ env.OWNER_LC }}/lan-transcriber@${{ steps.build.outputs.digest }}"
+          echo "Running smoke against $IMAGE"
+          docker pull "$IMAGE"
+          docker run --rm "$IMAGE" python -c "import ctranslate2; print('ok')"
+          python -m pip install -U pytest requests
+          SMOKE_IMAGE="$IMAGE" python -m pytest -q tests/test_docker_smoke.py
