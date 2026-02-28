@@ -97,8 +97,8 @@ Requirement already satisfied: six>=1.5 in ./.venv-ci/lib/python3.12/site-packag
 Building wheels for collected packages: lan-transcriber
   Building editable for lan-transcriber (pyproject.toml): started
   Building editable for lan-transcriber (pyproject.toml): finished with status 'done'
-  Created wheel for lan-transcriber: filename=lan_transcriber-0.1.0-0.editable-py3-none-any.whl size=15397 sha256=67727f05c476f9ce7df61b2fef241bbabd842b672d456fefa3f511be3556297f
-  Stored in directory: /tmp/pip-ephem-wheel-cache-rcaa3th8/wheels/d5/8a/5c/f7178f7e49aa5ae12b2320ec66b5c310f4f2f63d1bd301b7fb
+  Created wheel for lan-transcriber: filename=lan_transcriber-0.1.0-0.editable-py3-none-any.whl size=15397 sha256=d89846ad113818931b89419262af0e52b966ec223c52d4688463a6e1f6285195
+  Stored in directory: /tmp/pip-ephem-wheel-cache-87_wma6v/wheels/d5/8a/5c/f7178f7e49aa5ae12b2320ec66b5c310f4f2f63d1bd301b7fb
 Successfully built lan-transcriber
 Installing collected packages: lan-transcriber
   Attempting uninstall: lan-transcriber
@@ -117,6 +117,7 @@ lan_transcriber/pipeline_steps/precheck.py:3
     import audioop
 
 lan_transcriber/pipeline_steps/orchestrator.py:44
+tests/test_imports.py::test_imports[lan_transcriber.pipeline_steps.orchestrator]
 tests/test_imports.py::test_orchestrator_import_does_not_import_whisperx
   /home/alexey/LAN_Transcriber/lan_transcriber/pipeline_steps/orchestrator.py:44: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
     class Settings(BaseSettings):
@@ -153,4 +154,4 @@ lan_transcriber/utils.py                               50      2    96%
 -----------------------------------------------------------------------
 TOTAL                                                1511    151    90%
 Required test coverage of 90% reached. Total coverage: 90.01%
-250 passed, 1 skipped, 4 warnings in 13.83s
+250 passed, 1 skipped, 5 warnings in 13.10s

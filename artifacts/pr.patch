@@ -1,62 +1,50 @@
-diff --git a/tasks/QUEUE.md b/tasks/QUEUE.md
-index fdc0564..aad8919 100644
---- a/tasks/QUEUE.md
-+++ b/tasks/QUEUE.md
-@@ -193,7 +193,7 @@ Queue (in order)
- - Depends on: PR-FIX-CTRANSLATE2-EXECSTACK-01
- 
- 37) PR-TEST-IMPORTS-01: Expand import smoke tests to cover critical modules
--- Status: TODO
-+- Status: DONE
- - Tasks file: tasks/PR-TEST-IMPORTS-01.md
- - Depends on: PR-DEV-01
- 
 diff --git a/tests/test_imports.py b/tests/test_imports.py
-index d203500..ac39652 100644
+index ac39652..1f5b739 100644
 --- a/tests/test_imports.py
 +++ b/tests/test_imports.py
-@@ -4,7 +4,42 @@ import pathlib
+@@ -4,6 +4,14 @@ import pathlib
  import pytest
  
  
--@pytest.mark.parametrize("mod", ["web_transcribe", "lan_app.api"])
-+@pytest.mark.parametrize(
-+    "mod",
-+    [
-+        "web_transcribe",
-+        "lan_app.api",
-+        "lan_app.worker",
-+        "lan_app.worker_tasks",
-+        "lan_app.ui_routes",
-+        "lan_app.db",
-+        "lan_app.exporter",
-+        "lan_transcriber.pipeline",
-+        "lan_transcriber.pipeline_steps.orchestrator",
-+        "lan_transcriber.pipeline_steps.precheck",
-+        "lan_transcriber.pipeline_steps.summary_builder",
-+    ],
-+)
++def _pop_module_tree(module_name: str) -> dict[str, object]:
++    removed: dict[str, object] = {}
++    for key in list(sys.modules):
++        if key == module_name or key.startswith(f"{module_name}."):
++            removed[key] = sys.modules.pop(key)
++    return removed
++
++
+ @pytest.mark.parametrize(
+     "mod",
+     [
+@@ -22,24 +30,27 @@ import pytest
+ )
  def test_imports(mod):
      sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
--    assert importlib.import_module(mod)
-+    previous_whisperx = sys.modules.pop("whisperx", None)
-+    try:
-+        assert importlib.import_module(mod)
-+        assert "whisperx" not in sys.modules
-+    finally:
-+        if previous_whisperx is not None:
-+            sys.modules["whisperx"] = previous_whisperx
-+
-+
-+def test_orchestrator_import_does_not_import_whisperx():
-+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
-+    previous_whisperx = sys.modules.pop("whisperx", None)
-+    previous_orchestrator = sys.modules.pop("lan_transcriber.pipeline_steps.orchestrator", None)
-+    try:
-+        assert importlib.import_module("lan_transcriber.pipeline_steps.orchestrator")
-+        assert "whisperx" not in sys.modules
-+    finally:
-+        if previous_orchestrator is not None:
-+            sys.modules["lan_transcriber.pipeline_steps.orchestrator"] = previous_orchestrator
-+        if previous_whisperx is not None:
-+            sys.modules["whisperx"] = previous_whisperx
++    previous_modules = _pop_module_tree(mod)
+     previous_whisperx = sys.modules.pop("whisperx", None)
+     try:
++        importlib.invalidate_caches()
+         assert importlib.import_module(mod)
+         assert "whisperx" not in sys.modules
+     finally:
++        sys.modules.update(previous_modules)
+         if previous_whisperx is not None:
+             sys.modules["whisperx"] = previous_whisperx
+ 
+ 
+ def test_orchestrator_import_does_not_import_whisperx():
+     sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
++    previous_orchestrator_modules = _pop_module_tree("lan_transcriber.pipeline_steps.orchestrator")
+     previous_whisperx = sys.modules.pop("whisperx", None)
+-    previous_orchestrator = sys.modules.pop("lan_transcriber.pipeline_steps.orchestrator", None)
+     try:
++        importlib.invalidate_caches()
+         assert importlib.import_module("lan_transcriber.pipeline_steps.orchestrator")
+         assert "whisperx" not in sys.modules
+     finally:
+-        if previous_orchestrator is not None:
+-            sys.modules["lan_transcriber.pipeline_steps.orchestrator"] = previous_orchestrator
++        sys.modules.update(previous_orchestrator_modules)
+         if previous_whisperx is not None:
+             sys.modules["whisperx"] = previous_whisperx
