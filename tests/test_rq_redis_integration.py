@@ -5,6 +5,8 @@ from typing import Iterator
 
 import pytest
 from redis import Redis
+from redis.exceptions import ConnectionError as RedisConnectionError
+from redis.exceptions import TimeoutError as RedisTimeoutError
 from rq import SimpleWorker
 
 from lan_app import worker_tasks
@@ -26,12 +28,18 @@ def _set_runtime_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
 @pytest.fixture
 def redis_db_15() -> Iterator[Redis]:
     client = Redis.from_url(_REDIS_DB15_URL)
-    client.ping()
+    try:
+        client.ping()
+    except (RedisConnectionError, RedisTimeoutError) as exc:
+        pytest.skip(f"Redis is unavailable at {_REDIS_DB15_URL}: {exc}")
     client.flushdb()
     try:
         yield client
     finally:
-        client.flushdb()
+        try:
+            client.flushdb()
+        except (RedisConnectionError, RedisTimeoutError):
+            pass
         client.close()
 
 

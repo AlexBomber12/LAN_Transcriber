@@ -1,122 +1,34 @@
-diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
-index 46b84fc..2270778 100644
---- a/.github/workflows/ci.yml
-+++ b/.github/workflows/ci.yml
-@@ -16,6 +16,15 @@ jobs:
-         options: --privileged
-         env:
-           DOCKER_TLS_CERTDIR: "/certs"
-+      redis:
-+        image: redis:7-alpine
-+        ports:
-+          - 6379:6379
-+        options: >-
-+          --health-cmd "redis-cli ping"
-+          --health-interval 5s
-+          --health-timeout 3s
-+          --health-retries 20
-     steps:
-       - uses: actions/checkout@v4
-       - name: Set up Python
-diff --git a/tasks/QUEUE.md b/tasks/QUEUE.md
-index 4d7d259..0e280ec 100644
---- a/tasks/QUEUE.md
-+++ b/tasks/QUEUE.md
-@@ -337,7 +337,7 @@ Queue (in order)
- - Depends on: PR-E2E-LITE-01
- 
- 66) PR-TEST-RQ-REDIS-INTEGRATION-01: Add Redis+RQ integration test (SimpleWorker burst) to validate enqueue + worker lifecycle in CI
--- Status: TODO
-+- Status: DONE
- - Tasks file: tasks/PR-TEST-RQ-REDIS-INTEGRATION-01.md
- - Depends on: PR-CI-DOCKER-SMOKE-PR-01
- 
 diff --git a/tests/test_rq_redis_integration.py b/tests/test_rq_redis_integration.py
-new file mode 100644
-index 0000000..5903360
---- /dev/null
+index 5903360..4aff2d8 100644
+--- a/tests/test_rq_redis_integration.py
 +++ b/tests/test_rq_redis_integration.py
-@@ -0,0 +1,83 @@
-+from __future__ import annotations
-+
-+from pathlib import Path
-+from typing import Iterator
-+
-+import pytest
-+from redis import Redis
-+from rq import SimpleWorker
-+
-+from lan_app import worker_tasks
-+from lan_app.config import AppSettings
-+from lan_app.constants import JOB_STATUS_FINISHED, RECORDING_STATUS_READY
-+from lan_app.db import create_recording, get_job, get_recording, init_db
-+from lan_app.jobs import enqueue_recording_job, get_queue
-+
-+_REDIS_DB15_URL = "redis://127.0.0.1:6379/15"
-+
-+
-+def _set_runtime_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-+    monkeypatch.setenv("LAN_DATA_ROOT", str(tmp_path))
-+    monkeypatch.setenv("LAN_RECORDINGS_ROOT", str(tmp_path / "recordings"))
-+    monkeypatch.setenv("LAN_DB_PATH", str(tmp_path / "db" / "app.db"))
-+    monkeypatch.setenv("LAN_REDIS_URL", _REDIS_DB15_URL)
-+
-+
-+@pytest.fixture
-+def redis_db_15() -> Iterator[Redis]:
-+    client = Redis.from_url(_REDIS_DB15_URL)
-+    client.ping()
-+    client.flushdb()
+@@ -5,6 +5,8 @@ from typing import Iterator
+ 
+ import pytest
+ from redis import Redis
++from redis.exceptions import ConnectionError as RedisConnectionError
++from redis.exceptions import TimeoutError as RedisTimeoutError
+ from rq import SimpleWorker
+ 
+ from lan_app import worker_tasks
+@@ -26,12 +28,18 @@ def _set_runtime_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+ @pytest.fixture
+ def redis_db_15() -> Iterator[Redis]:
+     client = Redis.from_url(_REDIS_DB15_URL)
+-    client.ping()
 +    try:
-+        yield client
-+    finally:
-+        client.flushdb()
-+        client.close()
-+
-+
-+def test_enqueue_job_runs_via_rq_simple_worker_and_updates_db(
-+    tmp_path: Path,
-+    monkeypatch: pytest.MonkeyPatch,
-+    redis_db_15: Redis,
-+) -> None:
-+    assert redis_db_15 is not None
-+    _set_runtime_env(monkeypatch, tmp_path)
-+    settings = AppSettings()
-+    init_db(settings)
-+
-+    recording_id = "rec-rq-integration-1"
-+    create_recording(
-+        recording_id,
-+        source="upload",
-+        source_filename="integration.wav",
-+        settings=settings,
-+    )
-+
-+    def _fast_precheck_stub(
-+        *,
-+        recording_id: str,
-+        settings: AppSettings,
-+        log_path: Path,
-+    ) -> tuple[str, str | None]:
-+        assert recording_id == "rec-rq-integration-1"
-+        assert settings.db_path == tmp_path / "db" / "app.db"
-+        assert log_path.name == "step-precheck.log"
-+        return RECORDING_STATUS_READY, None
-+
-+    monkeypatch.setattr(worker_tasks, "_run_precheck_pipeline", _fast_precheck_stub)
-+
-+    queued_job = enqueue_recording_job(recording_id, settings=settings)
-+    queue = get_queue(settings)
-+    worker = SimpleWorker([queue], connection=queue.connection)
-+    worker.work(burst=True, with_scheduler=False)
-+
-+    db_job = get_job(queued_job.job_id, settings=settings)
-+    assert db_job is not None
-+    assert db_job["status"] == JOB_STATUS_FINISHED
-+    assert db_job["error"] is None
-+    assert db_job["finished_at"] is not None
-+
-+    recording = get_recording(recording_id, settings=settings)
-+    assert recording is not None
-+    assert recording["status"] == RECORDING_STATUS_READY
-+    assert recording["quarantine_reason"] is None
++        client.ping()
++    except (RedisConnectionError, RedisTimeoutError) as exc:
++        pytest.skip(f"Redis is unavailable at {_REDIS_DB15_URL}: {exc}")
+     client.flushdb()
+     try:
+         yield client
+     finally:
+-        client.flushdb()
++        try:
++            client.flushdb()
++        except (RedisConnectionError, RedisTimeoutError):
++            pass
+         client.close()
+ 
+ 
