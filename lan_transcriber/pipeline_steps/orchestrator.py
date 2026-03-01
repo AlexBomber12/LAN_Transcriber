@@ -189,13 +189,19 @@ def _whisperx_asr(
 
     import whisperx
 
-    if hasattr(whisperx, "transcribe"):
+    legacy_transcribe = getattr(whisperx, "transcribe", None)
+    if legacy_transcribe is not None and not callable(legacy_transcribe):
+        raise TypeError(
+            f"whisperx.transcribe must be callable or None, got {type(legacy_transcribe).__name__}"
+        )
+
+    if callable(legacy_transcribe):
         kwargs: dict[str, Any] = {
             "vad_filter": True,
             "language": override_lang or "auto",
             "word_timestamps": True,
         }
-        filtered_kwargs = filter_kwargs_for_callable(whisperx.transcribe, kwargs)
+        filtered_kwargs = filter_kwargs_for_callable(legacy_transcribe, kwargs)
         _log_dropped_kwargs(
             callback=step_log_callback,
             scope="whisperx transcribe",
@@ -203,7 +209,7 @@ def _whisperx_asr(
             filtered=filtered_kwargs,
         )
         try:
-            segments, info = call_with_supported_kwargs(whisperx.transcribe, str(audio_path), **kwargs)
+            segments, info = call_with_supported_kwargs(legacy_transcribe, str(audio_path), **kwargs)
         except TypeError:
             retry_kwargs = dict(kwargs)
             retry_kwargs.pop("word_timestamps", None)
@@ -213,7 +219,7 @@ def _whisperx_asr(
                 attempted=kwargs,
                 filtered=retry_kwargs,
             )
-            segments, info = call_with_supported_kwargs(whisperx.transcribe, str(audio_path), **retry_kwargs)
+            segments, info = call_with_supported_kwargs(legacy_transcribe, str(audio_path), **retry_kwargs)
         return list(segments), dict(info or {})
 
     device = _select_asr_device(cfg)

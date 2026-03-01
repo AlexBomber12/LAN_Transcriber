@@ -109,8 +109,8 @@ Requirement already satisfied: pytz>2021.1 in ./.venv-ci/lib/python3.12/site-pac
 Building wheels for collected packages: lan-transcriber
   Building editable for lan-transcriber (pyproject.toml): started
   Building editable for lan-transcriber (pyproject.toml): finished with status 'done'
-  Created wheel for lan-transcriber: filename=lan_transcriber-0.1.0-0.editable-py3-none-any.whl size=15425 sha256=de7babd6c86ea785f4c29c5aae588855f36afb3db7ef9d7551c03ab7c3b959fd
-  Stored in directory: /tmp/pip-ephem-wheel-cache-d6tgsd23/wheels/d5/8a/5c/f7178f7e49aa5ae12b2320ec66b5c310f4f2f63d1bd301b7fb
+  Created wheel for lan-transcriber: filename=lan_transcriber-0.1.0-0.editable-py3-none-any.whl size=15425 sha256=9159dbb9520576efd7d7f462ae21db3fa1130dc38471891fe6b966739caa73fa
+  Stored in directory: /tmp/pip-ephem-wheel-cache-9zjcuktm/wheels/d5/8a/5c/f7178f7e49aa5ae12b2320ec66b5c310f4f2f63d1bd301b7fb
 Successfully built lan-transcriber
 Installing collected packages: lan-transcriber
   Attempting uninstall: lan-transcriber
@@ -122,8 +122,8 @@ No broken requirements found.
 All checks passed!
 ........................................................................ [ 25%]
 ........................................................................ [ 51%]
-........................................................................ [ 77%]
-...............................................................          [100%]
+........................................................................ [ 76%]
+.................................................................        [100%]
 =============================== warnings summary ===============================
 lan_transcriber/pipeline_steps/precheck.py:3
   /home/alexey/LAN_Transcriber/lan_transcriber/pipeline_steps/precheck.py:3: DeprecationWarning: 'audioop' is deprecated and slated for removal in Python 3.13
@@ -160,7 +160,7 @@ lan_transcriber/pipeline.py                             5      0   100%
 lan_transcriber/pipeline_steps/__init__.py              7      0   100%
 lan_transcriber/pipeline_steps/artifacts.py            19      0   100%
 lan_transcriber/pipeline_steps/language.py             93     12    87%
-lan_transcriber/pipeline_steps/orchestrator.py        272     35    87%
+lan_transcriber/pipeline_steps/orchestrator.py        275     35    87%
 lan_transcriber/pipeline_steps/precheck.py            116     13    89%
 lan_transcriber/pipeline_steps/snippets.py            128     11    91%
 lan_transcriber/pipeline_steps/speaker_turns.py       185     21    89%
@@ -168,13 +168,13 @@ lan_transcriber/pipeline_steps/summary_builder.py     276     25    91%
 lan_transcriber/runtime_paths.py                       21      1    95%
 lan_transcriber/utils.py                               50      2    96%
 -----------------------------------------------------------------------
-TOTAL                                                1598    161    90%
-FAIL Required test coverage of 90% not reached. Total coverage: 89.92%
-279 passed, 1 skipped, 5 warnings in 14.24s
+TOTAL                                                1601    161    90%
+FAIL Required test coverage of 90% not reached. Total coverage: 89.94%
+281 passed, 1 skipped, 5 warnings in 13.81s
 ........................................................................ [ 25%]
 ........................................................................ [ 51%]
-........................................................................ [ 77%]
-...............................................................          [100%]
+........................................................................ [ 76%]
+.................................................................        [100%]
 =============================== warnings summary ===============================
 lan_transcriber/pipeline_steps/precheck.py:3
   /home/alexey/LAN_Transcriber/lan_transcriber/pipeline_steps/precheck.py:3: DeprecationWarning: 'audioop' is deprecated and slated for removal in Python 3.13
@@ -223,4 +223,4 @@ lan_app/workers.py                   10      3    70%
 -----------------------------------------------------
 TOTAL                              4219    889    79%
 Required test coverage of 75% reached. Total coverage: 78.93%
-279 passed, 1 skipped, 5 warnings in 14.51s
+281 passed, 1 skipped, 5 warnings in 14.09s
