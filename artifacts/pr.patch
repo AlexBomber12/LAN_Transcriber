@@ -1,480 +1,619 @@
-diff --git a/lan_app/conversation_metrics.py b/lan_app/conversation_metrics.py
-index 4bef248..c485455 100644
---- a/lan_app/conversation_metrics.py
-+++ b/lan_app/conversation_metrics.py
-@@ -215,8 +215,8 @@ def _normalise_text_items(value: Any, *, max_items: int) -> list[str]:
-         text = str(row).strip()
-         if not text:
-             continue
--        if text.startswith("- "):
--            text = text[2:].strip()
-+        if text == "-" or text.startswith("- "):
-+            text = text[1:].strip()
-         if text:
-             out.append(text)
-     return out
 diff --git a/tasks/QUEUE.md b/tasks/QUEUE.md
-index 7dbcf3e..3665b0a 100644
+index 1191ff1..e417cee 100644
 --- a/tasks/QUEUE.md
 +++ b/tasks/QUEUE.md
-@@ -287,7 +287,7 @@ Queue (in order)
- - Depends on: PR-COV-LAN_APP-CALENDAR-01
- 
- 56) PR-COV-LAN_APP-METRICS-ROUTING-01: Raise conversation_metrics and routing to 100%
--- Status: TODO
-+- Status: DOING
- - Tasks file: tasks/PR-COV-LAN_APP-METRICS-ROUTING-01.md
+@@ -292,7 +292,7 @@ Queue (in order)
  - Depends on: PR-COV-LAN_APP-EXPORT-OPS-JOBS-01
  
-diff --git a/tests/test_cov_lan_app_metrics_routing.py b/tests/test_cov_lan_app_metrics_routing.py
+ 57) PR-COV-LAN_APP-DB-01: Raise lan_app.db to 100% statement and branch coverage
+-- Status: TODO
++- Status: DOING
+ - Tasks file: tasks/PR-COV-LAN_APP-DB-01.md
+ - Depends on: PR-COV-LAN_APP-METRICS-ROUTING-01
+ 
+diff --git a/tests/test_cov_lan_app_db.py b/tests/test_cov_lan_app_db.py
 new file mode 100644
-index 0000000..42b0575
+index 0000000..12563cd
 --- /dev/null
-+++ b/tests/test_cov_lan_app_metrics_routing.py
-@@ -0,0 +1,446 @@
++++ b/tests/test_cov_lan_app_db.py
+@@ -0,0 +1,600 @@
 +from __future__ import annotations
 +
 +from pathlib import Path
++import sqlite3
 +
 +import pytest
 +
-+import lan_app.conversation_metrics as conversation_metrics
-+import lan_app.routing as routing
++from lan_app import db as db_module
 +from lan_app.config import AppSettings
-+from lan_app.db import create_recording, init_db
++from lan_app.constants import (
++    JOB_STATUS_FINISHED,
++    JOB_STATUS_QUEUED,
++    JOB_TYPE_PRECHECK,
++    RECORDING_STATUS_PROCESSING,
++    RECORDING_STATUS_PUBLISHED,
++    RECORDING_STATUS_QUEUED,
++    RECORDING_STATUS_QUARANTINE,
++)
 +
 +
 +def _cfg(tmp_path: Path) -> AppSettings:
-+    return AppSettings(
++    cfg = AppSettings(
 +        data_root=tmp_path,
 +        recordings_root=tmp_path / "recordings",
 +        db_path=tmp_path / "db" / "app.db",
 +    )
++    cfg.metrics_snapshot_path = tmp_path / "metrics.snap"
++    return cfg
 +
 +
-+def test_conversation_normalise_turns_merge_and_interruptions_edge_cases():
-+    normalized = conversation_metrics._normalise_turns(  # noqa: SLF001
-+        [
-+            "not-a-dict",
-+            {"text": "   "},
-+            {"start": 5.0, "end": 4.0, "speaker": " ", "text": "Hello", "language": "ENG"},
-+            {"start": 1.0, "end": 1.2, "speaker": "S2", "text": "Hi"},
-+        ]
++def test_db_internal_helpers_and_validation_paths():
++    conn = sqlite3.connect(":memory:")
++    conn.row_factory = sqlite3.Row
++    row = conn.execute("SELECT '{' AS json, '{' AS payload_json, 1 AS number").fetchone()
++    parsed = db_module._as_dict(row)  # noqa: SLF001
++    conn.close()
++
++    assert parsed == {"json": "{", "payload_json": "{", "number": 1}
++    assert db_module._as_dict(None) is None  # noqa: SLF001
++
++    with pytest.raises(ValueError, match="Unsupported recording status"):
++        db_module._validate_recording_status("bad-status")  # noqa: SLF001
++    with pytest.raises(ValueError, match="Unsupported job status"):
++        db_module._validate_job_status("bad-status")  # noqa: SLF001
++    with pytest.raises(ValueError, match="Unsupported job type"):
++        db_module._validate_job_type("bad-type")  # noqa: SLF001
++
++    assert db_module._normalise_project_assignment_source("   ") is None  # noqa: SLF001
++    with pytest.raises(ValueError, match="Unsupported project assignment source"):
++        db_module._normalise_project_assignment_source("semi-auto")  # noqa: SLF001
++    with pytest.raises(ValueError, match="Unsupported calendar source kind"):
++        db_module._normalise_calendar_source_kind("ical")  # noqa: SLF001
++
++
++def test_with_db_retry_error_paths_and_unreachable(monkeypatch: pytest.MonkeyPatch):
++    def _raise_non_lock() -> None:
++        raise sqlite3.OperationalError("syntax error")
++
++    with pytest.raises(sqlite3.OperationalError, match="syntax error"):
++        db_module.with_db_retry(_raise_non_lock, retries=2, base_sleep_ms=0)
++
++    def _raise_lock() -> None:
++        raise sqlite3.OperationalError("database is locked")
++
++    with pytest.raises(sqlite3.OperationalError, match="locked"):
++        db_module.with_db_retry(_raise_lock, retries=0, base_sleep_ms=0)
++
++    monkeypatch.setattr(  # noqa: A003
++        db_module,
++        "range",
++        lambda *_args, **_kwargs: (),
++        raising=False,
 +    )
-+    assert [row["speaker"] for row in normalized] == ["S2", "S1"]
-+    assert normalized[1]["start"] == 5.0
-+    assert normalized[1]["end"] == 5.0
-+    assert normalized[1]["language"] == "en"
-+
-+    merged = conversation_metrics.merge_speaker_turns(
-+        [
-+            {"start": 0.0, "end": 1.0, "speaker": "S1", "text": "one"},
-+            {"start": 1.1, "end": 2.0, "speaker": "S1", "text": "two", "language": "de"},
-+        ],
-+        gap_threshold=0.2,
-+    )
-+    assert merged[0]["language"] == "de"
-+    assert conversation_metrics.merge_speaker_turns([], gap_threshold=0.0) == []
-+
-+    interruption_stats = conversation_metrics.count_interruptions(
-+        [{"start": 1.0, "end": 1.0, "speaker": "S1", "text": "zero-duration"}],
-+        overlap_threshold=0.1,
-+    )
-+    assert interruption_stats["total"] == 0
-+    assert interruption_stats["done"]["S1"] == 0
++    with pytest.raises(RuntimeError, match="unreachable"):
++        db_module.with_db_retry(lambda: "ok", retries=1, base_sleep_ms=0)
 +
 +
-+def test_conversation_fallback_from_transcript_segments_text_and_empty():
-+    from_segments = conversation_metrics._fallback_speaker_turns_from_transcript(  # noqa: SLF001
-+        {
-+            "segments": [
-+                "skip",
-+                {"text": " "},
-+                {"start": 3.0, "end": 2.0, "text": "Segment from transcript", "language": "en-US"},
-+                {"start": 1.0, "end": 2.0, "text": "Second segment"},
-+            ]
-+        }
-+    )
-+    assert from_segments[0] == {
-+        "start": 3.0,
-+        "end": 3.0,
-+        "speaker": "S1",
-+        "text": "Segment from transcript",
-+        "language": "en",
-+    }
-+    assert from_segments[1] == {
-+        "start": 1.0,
-+        "end": 2.0,
-+        "speaker": "S1",
-+        "text": "Second segment",
-+    }
++def test_migration_file_discovery_edge_cases(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
++    missing_dir = tmp_path / "missing-migrations"
++    monkeypatch.setattr(db_module, "_MIGRATIONS_DIR", missing_dir)  # noqa: SLF001
++    with pytest.raises(FileNotFoundError, match="Migrations directory not found"):
++        db_module._migration_files()  # noqa: SLF001
 +
-+    from_empty_segments = conversation_metrics._fallback_speaker_turns_from_transcript(  # noqa: SLF001
-+        {"segments": [{"text": "   "}, "skip"], "text": "Fallback text from empty segments"}
-+    )
-+    assert from_empty_segments == [
-+        {"start": 0.0, "end": 0.0, "speaker": "S1", "text": "Fallback text from empty segments"}
-+    ]
++    migrations_dir = tmp_path / "migrations"
++    migrations_dir.mkdir(parents=True, exist_ok=True)
++    (migrations_dir / "notes.sql").write_text("-- ignored", encoding="utf-8")
++    (migrations_dir / "001_init.sql").write_text("SELECT 1;", encoding="utf-8")
 +
-+    from_text = conversation_metrics._fallback_speaker_turns_from_transcript({"text": "Fallback text"})  # noqa: SLF001
-+    assert from_text == [{"start": 0.0, "end": 0.0, "speaker": "S1", "text": "Fallback text"}]
-+    assert conversation_metrics._fallback_speaker_turns_from_transcript({"text": "   "}) == []  # noqa: SLF001
++    monkeypatch.setattr(db_module, "_MIGRATIONS_DIR", migrations_dir)  # noqa: SLF001
++    files = db_module._migration_files()  # noqa: SLF001
++    assert files == [(1, migrations_dir / "001_init.sql")]
++
++    (migrations_dir / "001_duplicate.sql").write_text("SELECT 2;", encoding="utf-8")
++    with pytest.raises(ValueError, match="Duplicate migration version"):
++        db_module._migration_files()  # noqa: SLF001
 +
 +
-+def test_conversation_internal_normalizers_and_allocation():
-+    assert conversation_metrics._normalise_text_items("alpha\nbeta\n", max_items=5) == [  # noqa: SLF001
-+        "alpha",
-+        "beta",
-+    ]
-+    assert conversation_metrics._normalise_text_items(  # noqa: SLF001
-+        ["- alpha", " ", "- ", "beta", "gamma"],
-+        max_items=2,
-+    ) == ["alpha", "beta"]
++def test_executescript_allowing_duplicate_columns_error_paths():
++    conn = sqlite3.connect(":memory:")
++    conn.execute("CREATE TABLE sample (id INTEGER PRIMARY KEY)")
 +
-+    actions = conversation_metrics._normalise_action_items(  # noqa: SLF001
-+        [
-+            "skip",
-+            {},
-+            {"task": "   "},
-+            {"task": "Ship", "owner": "", "deadline": " "},
-+            {"task": "Docs", "owner": "Alex", "deadline": "2026-03-01"},
-+        ]
-+    )
-+    assert actions == [
-+        {"task": "Ship", "owner": None, "deadline": None},
-+        {"task": "Docs", "owner": "Alex", "deadline": "2026-03-01"},
-+    ]
++    with pytest.raises(sqlite3.OperationalError):
++        db_module._executescript_allowing_duplicate_columns(conn, "THIS IS NOT SQL;")  # noqa: SLF001
 +
-+    question_types = conversation_metrics._normalise_question_types({"open": "bad", "yes_no": None})  # noqa: SLF001
-+    assert question_types["open"] == 0
-+    assert question_types["yes_no"] == 0
-+
-+    assert conversation_metrics._allocate_by_weight(0, {"a": 1}) == {"a": 0}  # noqa: SLF001
-+    assert conversation_metrics._allocate_by_weight(3, {"a": 0, "b": 0}) == {"a": 2, "b": 1}  # noqa: SLF001
-+    assert conversation_metrics._allocate_by_weight(5, {"a": 2, "b": 1}) == {"a": 3, "b": 2}  # noqa: SLF001
-+
-+
-+def test_conversation_question_assignment_llm_fallback_paths():
-+    counts, total_questions, source, question_types = conversation_metrics._question_counts_by_speaker(  # noqa: SLF001
-+        merged_turns=[
-+            {"speaker": "S1", "text": "Status update?"},
-+            {"speaker": "S2", "text": "Everything is stable"},
-+        ],
-+        summary_payload={
-+            "questions": {
-+                "total_count": "invalid",
-+                "types": {"open": "invalid"},
-+                "extracted": ["??", ":", "unmatched keyword phrase"],
-+            }
-+        },
-+    )
-+    assert source == "llm"
-+    assert total_questions == 3
-+    assert sum(counts.values()) == 3
-+    assert question_types["open"] == 0
-+
-+
-+def test_conversation_infer_role_hint_branches():
-+    assert (
-+        conversation_metrics._infer_role_hint(  # noqa: SLF001
-+            airtime_share=0.1,
-+            turns=1,
-+            questions_count=0,
-+            decision_task_signals=0,
-+            avg_turn_duration_sec=1.0,
-+            terminology_density=0.0,
-+            avg_turns=3.0,
-+            avg_turn_duration=2.0,
-+            meeting_questions=3,
++    with pytest.raises(sqlite3.OperationalError):
++        db_module._executescript_allowing_duplicate_columns(  # noqa: SLF001
++            conn,
++            """
++            ALTER TABLE sample ADD COLUMN marker TEXT;
++            ALTER TABLE sample ADD COLUMN marker TEXT;
++            THIS IS BAD SQL;
++            """,
 +        )
-+        == "Passive"
-+    )
-+    assert (
-+        conversation_metrics._infer_role_hint(  # noqa: SLF001
-+            airtime_share=0.2,
-+            turns=6,
-+            questions_count=4,
-+            decision_task_signals=0,
-+            avg_turn_duration_sec=2.0,
-+            terminology_density=0.01,
-+            avg_turns=4.0,
-+            avg_turn_duration=2.0,
-+            meeting_questions=10,
-+        )
-+        == "Facilitator"
-+    )
-+    assert (
-+        conversation_metrics._infer_role_hint(  # noqa: SLF001
-+            airtime_share=0.2,
-+            turns=2,
-+            questions_count=0,
-+            decision_task_signals=0,
-+            avg_turn_duration_sec=6.0,
-+            terminology_density=0.1,
-+            avg_turns=3.0,
-+            avg_turn_duration=3.0,
-+            meeting_questions=0,
-+        )
-+        == "Expert"
-+    )
++    conn.close()
 +
 +
-+def test_conversation_build_uses_transcript_fallback_with_zero_airtime():
-+    payload = conversation_metrics.build_conversation_metrics(
-+        transcript_payload={"text": "Only transcript text fallback"},
-+        summary_payload={},
-+        speaker_turns=[],
-+    )
-+    assert payload["meeting"]["participants_count"] == 1
-+    assert payload["meeting"]["total_speech_time_seconds"] == 0.0
-+    assert payload["participants"][0]["airtime_share"] == 0.0
-+
-+
-+def test_conversation_json_loaders_handle_missing_invalid_and_wrong_types(tmp_path: Path):
-+    assert conversation_metrics._load_json_dict(tmp_path / "missing.json") == {}  # noqa: SLF001
-+    assert conversation_metrics._load_json_list(tmp_path / "missing-list.json") == []  # noqa: SLF001
-+
-+    bad_json = tmp_path / "bad.json"
-+    bad_json.write_text("{", encoding="utf-8")
-+    assert conversation_metrics._load_json_dict(bad_json) == {}  # noqa: SLF001
-+    assert conversation_metrics._load_json_list(bad_json) == []  # noqa: SLF001
-+
-+    wrong_dict = tmp_path / "wrong-dict.json"
-+    wrong_dict.write_text("[]", encoding="utf-8")
-+    assert conversation_metrics._load_json_dict(wrong_dict) == {}  # noqa: SLF001
-+
-+    wrong_list = tmp_path / "wrong-list.json"
-+    wrong_list.write_text("{}", encoding="utf-8")
-+    assert conversation_metrics._load_json_list(wrong_list) == []  # noqa: SLF001
-+
-+
-+def test_routing_refresh_raises_for_missing_recording(tmp_path: Path):
-+    cfg = _cfg(tmp_path)
-+    init_db(cfg)
-+    with pytest.raises(KeyError):
-+        routing.refresh_recording_routing("missing-recording", settings=cfg)
-+
-+
-+def test_routing_refresh_skips_invalid_rows_and_keeps_status_without_workflow(
-+    monkeypatch: pytest.MonkeyPatch,
++def test_init_db_skips_already_applied_live_migration_and_db_path_default(
 +    tmp_path: Path,
++    monkeypatch: pytest.MonkeyPatch,
 +):
 +    cfg = _cfg(tmp_path)
-+    captured: dict[str, object] = {}
-+    project_updates: list[tuple[tuple[object, ...], dict[str, object]]] = []
++    migration_path = tmp_path / "001_test.sql"
++    migration_path.write_text("CREATE TABLE IF NOT EXISTS skip_me (id INTEGER);", encoding="utf-8")
 +
-+    monkeypatch.setattr(
-+        routing,
-+        "get_recording",
-+        lambda *_args, **_kwargs: {
-+            "status": "Queued",
-+            "project_id": None,
-+            "project_assignment_source": None,
-+        },
-+    )
-+    monkeypatch.setattr(
-+        routing,
-+        "list_projects",
-+        lambda **_kwargs: [{"id": "bad"}, {"id": 1, "name": "Alpha"}],
-+    )
-+    monkeypatch.setattr(
-+        routing,
-+        "list_project_keyword_weights",
-+        lambda **_kwargs: [
-+            {"project_id": "x", "keyword": "cal:alpha", "weight": 1},
-+            {"project_id": 1, "keyword": " ", "weight": 1},
-+            {"project_id": 1, "keyword": "cal:alpha", "weight": 3},
-+        ],
-+    )
-+    monkeypatch.setattr(
-+        routing,
-+        "_build_routing_signals",
-+        lambda *_args, **_kwargs: routing.RoutingSignals([], [], [], []),
-+    )
-+    monkeypatch.setattr(
-+        routing,
-+        "set_recording_routing_suggestion",
-+        lambda recording_id, **kwargs: captured.update({"recording_id": recording_id, **kwargs}),
-+    )
-+    monkeypatch.setattr(routing, "count_routing_training_examples", lambda **_kwargs: 4)
-+    monkeypatch.setattr(
-+        routing,
-+        "set_recording_project",
-+        lambda *args, **kwargs: project_updates.append((args, kwargs)),
++    monkeypatch.setattr(db_module, "_migration_files", lambda: [(1, migration_path)])  # noqa: SLF001
++    versions = iter([0, 1])
++    monkeypatch.setattr(db_module, "_read_user_version", lambda _conn: next(versions))  # noqa: SLF001
++    applied = {"called": False}
++
++    def _fake_executescript(_conn: sqlite3.Connection, _migration_sql: str) -> None:
++        applied["called"] = True
++
++    monkeypatch.setattr(  # noqa: SLF001
++        db_module,
++        "_executescript_allowing_duplicate_columns",
++        _fake_executescript,
 +    )
 +
-+    decision = routing.refresh_recording_routing(
-+        "rec-routing-edge-1",
-+        settings=cfg,
-+        apply_workflow=False,
-+    )
++    assert db_module.init_db(cfg) == cfg.db_path
++    assert applied["called"] is False
 +
-+    assert decision["suggested_project_id"] is None
-+    assert decision["status_after_routing"] == "Queued"
-+    assert decision["training_examples_total"] == 4
-+    assert project_updates == []
-+    assert captured["recording_id"] == "rec-routing-edge-1"
++    env_db = tmp_path / "env-default.db"
++    monkeypatch.setenv("LAN_DB_PATH", str(env_db))
++    assert db_module.db_path() == env_db
 +
 +
-+def test_routing_train_raises_for_missing_recording_and_project(tmp_path: Path):
++def test_recording_status_helpers_language_settings_and_publish_edges(tmp_path: Path):
 +    cfg = _cfg(tmp_path)
-+    init_db(cfg)
-+
-+    with pytest.raises(KeyError):
-+        routing.train_routing_from_manual_selection("missing-recording", 123, settings=cfg)
-+
-+    create_recording(
-+        "rec-routing-train-missing-project",
-+        source="drive",
-+        source_filename="meeting.mp3",
++    db_module.init_db(cfg)
++    db_module.create_recording(
++        "rec-db-cov-1",
++        source="upload",
++        source_filename="input.wav",
 +        settings=cfg,
 +    )
-+    with pytest.raises(KeyError):
-+        routing.train_routing_from_manual_selection(
-+            "rec-routing-train-missing-project",
-+            999,
++
++    with pytest.raises(ValueError, match="stage is required"):
++        db_module.set_recording_progress(
++            "rec-db-cov-1",
++            stage="   ",
++            progress=0.2,
++            settings=cfg,
++        )
++
++    assert (
++        db_module.set_recording_status_if_current_in(
++            "rec-db-cov-1",
++            RECORDING_STATUS_PROCESSING,
++            current_statuses=[],
++            settings=cfg,
++        )
++        is False
++    )
++    with pytest.raises(ValueError, match="Unsupported recording status"):
++        db_module.set_recording_status_if_current_in(
++            "rec-db-cov-1",
++            RECORDING_STATUS_PROCESSING,
++            current_statuses=["not-a-status"],
++            settings=cfg,
++        )
++
++    assert db_module.set_recording_status_if_current_in(
++        "rec-db-cov-1",
++        RECORDING_STATUS_QUARANTINE,
++        current_statuses=[RECORDING_STATUS_QUEUED],
++        quarantine_reason="manual-check",
++        settings=cfg,
++    )
++    assert (
++        db_module.set_recording_status_if_current_in(
++            "rec-db-cov-1",
++            RECORDING_STATUS_PROCESSING,
++            current_statuses=[RECORDING_STATUS_QUEUED],
++            settings=cfg,
++        )
++        is False
++    )
++    rec = db_module.get_recording("rec-db-cov-1", settings=cfg) or {}
++    assert rec["status"] == RECORDING_STATUS_QUARANTINE
++    assert rec["quarantine_reason"] == "manual-check"
++
++    assert (
++        db_module.set_recording_status_if_current_in_and_no_started_job(
++            "rec-db-cov-1",
++            RECORDING_STATUS_PROCESSING,
++            current_statuses=[],
++            settings=cfg,
++        )
++        is False
++    )
++    assert (
++        db_module.set_recording_status_if_current_in_and_job_started(
++            "rec-db-cov-1",
++            RECORDING_STATUS_PROCESSING,
++            job_id="missing-job",
++            current_statuses=[],
++            settings=cfg,
++        )
++        is False
++    )
++
++    assert db_module.set_recording_routing_suggestion(
++        "rec-db-cov-1",
++        suggested_project_id=None,
++        routing_confidence=None,
++        routing_rationale=[" first ", " ", "second"],
++        settings=cfg,
++    )
++    rec = db_module.get_recording("rec-db-cov-1", settings=cfg) or {}
++    assert rec["routing_confidence"] is None
++    assert rec["routing_rationale_json"] == ["first", "second"]
++
++    assert db_module.set_recording_language_settings("rec-db-cov-1", settings=cfg) is False
++    assert db_module.set_recording_language_settings(
++        "rec-db-cov-1",
++        language_auto="en",
++        settings=cfg,
++    )
++    assert db_module.set_recording_language_settings(
++        "rec-db-cov-1",
++        target_summary_language="de",
++        settings=cfg,
++    )
++
++    with pytest.raises(ValueError, match="onenote_page_id is required"):
++        db_module.set_recording_publish_result(
++            "rec-db-cov-1",
++            onenote_page_id="  ",
++            settings=cfg,
++        )
++    assert db_module.set_recording_publish_result(
++        "rec-db-cov-1",
++        onenote_page_id="page-1",
++        onenote_page_url="   ",
++        settings=cfg,
++    )
++    rec = db_module.get_recording("rec-db-cov-1", settings=cfg) or {}
++    assert rec["status"] == RECORDING_STATUS_PUBLISHED
++    assert rec["onenote_page_id"] == "page-1"
++    assert rec["onenote_page_url"] is None
++
++
++def test_job_helpers_has_find_requeue_finish_and_invalid_terminal_status(tmp_path: Path):
++    cfg = _cfg(tmp_path)
++    db_module.init_db(cfg)
++    db_module.create_recording(
++        "rec-db-cov-job-1",
++        source="upload",
++        source_filename="input.wav",
++        settings=cfg,
++    )
++    db_module.create_job(
++        "job-db-cov-1",
++        "rec-db-cov-job-1",
++        JOB_TYPE_PRECHECK,
++        status=JOB_STATUS_QUEUED,
++        settings=cfg,
++    )
++
++    assert db_module.has_started_job_for_recording("rec-db-cov-job-1", settings=cfg) is False
++    active = db_module.find_active_job_for_recording(
++        "rec-db-cov-job-1",
++        job_type=JOB_TYPE_PRECHECK,
++        settings=cfg,
++    )
++    assert active is not None
++    assert active["id"] == "job-db-cov-1"
++    with pytest.raises(ValueError, match="Unsupported job type"):
++        db_module.find_active_job_for_recording(
++            "rec-db-cov-job-1",
++            job_type="legacy",
++            settings=cfg,
++        )
++
++    assert db_module.requeue_job("missing-job", settings=cfg) is False
++    assert db_module.start_job("job-db-cov-1", settings=cfg)
++    assert db_module.has_started_job_for_recording("rec-db-cov-job-1", settings=cfg)
++    assert db_module.requeue_job("job-db-cov-1", error="retry once", settings=cfg)
++    assert db_module.finish_job("job-db-cov-1", error="done", settings=cfg)
++
++    job = db_module.get_job("job-db-cov-1", settings=cfg) or {}
++    assert job["status"] == JOB_STATUS_FINISHED
++    assert job["error"] == "done"
++
++    with pytest.raises(ValueError, match="Unsupported terminal state"):
++        db_module._set_job_terminal_state(  # noqa: SLF001
++            job_id="job-db-cov-1",
++            status="not-terminal",
++            error=None,
 +            settings=cfg,
 +        )
 +
 +
-+def test_routing_private_helpers_cover_scoring_rationale_signals_and_calendar_paths(
-+    monkeypatch: pytest.MonkeyPatch,
-+    tmp_path: Path,
-+):
++def test_project_keyword_weights_and_voice_profile_crud_edges(tmp_path: Path):
 +    cfg = _cfg(tmp_path)
-+    original_selected_calendar_candidate = routing._selected_calendar_candidate  # noqa: SLF001
++    db_module.init_db(cfg)
++    project = db_module.create_project("Coverage Project", settings=cfg)
++    project_id = int(project["id"])
 +
-+    zero_score = routing._project_score(  # noqa: SLF001
-+        project={"name": "Alpha"},
-+        signals=routing.RoutingSignals([], [], [], []),
-+        learned_weights={},
++    assert db_module.update_project_onenote_mapping(9999, settings=cfg) is None
++    mapped = db_module.update_project_onenote_mapping(
++        project_id,
++        onenote_notebook_id=" notebook-1 ",
++        onenote_section_id="   ",
++        settings=cfg,
 +    )
-+    assert zero_score["score"] == 0.0
++    assert mapped is not None
++    assert mapped["onenote_notebook_id"] == "notebook-1"
++    assert mapped["onenote_section_id"] is None
 +
-+    fallback_component = routing._component_score(  # noqa: SLF001
-+        tokens=["roadmap"],
-+        keyword_prefix="cal",
-+        learned_weights={},
-+        fallback_tokens={"roadmap"},
-+        fallback_score=0.4,
-+    )
-+    assert fallback_component["matched_count"] == 1
-+    assert fallback_component["score"] == 0.4
-+    fallback_zero_component = routing._component_score(  # noqa: SLF001
-+        tokens=["roadmap"],
-+        keyword_prefix="cal",
-+        learned_weights={},
-+        fallback_tokens={"roadmap"},
-+        fallback_score=0.0,
-+    )
-+    assert fallback_zero_component["matched_count"] == 0
++    assert db_module.increment_project_keyword_weights(
++        project_id=project_id,
++        keyword_deltas={
++            "  ": 2.0,
++            "alpha": 0.0,
++            "beta signal": 1.5,
++        },
++        settings=cfg,
++    ) == 1
 +
-+    rationale = routing._build_rationale(  # noqa: SLF001
-+        top={
-+            "project_name": "Roadmap",
-+            "score": 0.5,
-+            "components": {
-+                "calendar_subject": {},
-+                "participants": {},
-+                "llm_tags": {},
-+                "voice_profiles": {},
++    weights_for_project = db_module.list_project_keyword_weights(
++        project_id=project_id,
++        settings=cfg,
++    )
++    all_weights = db_module.list_project_keyword_weights(settings=cfg)
++    assert len(weights_for_project) == 1
++    assert weights_for_project[0]["keyword"] == "beta signal"
++    assert any(item["keyword"] == "beta signal" for item in all_weights)
++
++    assert db_module.list_voice_profiles(settings=cfg) == []
++    profile = db_module.create_voice_profile(
++        "Speaker One",
++        notes="notes",
++        settings=cfg,
++    )
++    assert db_module.delete_voice_profile(int(profile["id"]), settings=cfg)
++    assert db_module.delete_voice_profile(int(profile["id"]), settings=cfg) is False
++
++
++def test_speaker_assignments_and_voice_samples_paths(tmp_path: Path):
++    cfg = _cfg(tmp_path)
++    db_module.init_db(cfg)
++    db_module.create_recording(
++        "rec-db-cov-voice-1",
++        source="upload",
++        source_filename="voice.wav",
++        settings=cfg,
++    )
++    profile = db_module.create_voice_profile("Voice A", settings=cfg)
++    profile_id = int(profile["id"])
++
++    with pytest.raises(ValueError, match="diar_speaker_label is required"):
++        db_module.set_speaker_assignment(
++            recording_id="rec-db-cov-voice-1",
++            diar_speaker_label="   ",
++            voice_profile_id=profile_id,
++            settings=cfg,
++        )
++
++    assigned = db_module.set_speaker_assignment(
++        recording_id="rec-db-cov-voice-1",
++        diar_speaker_label="S1",
++        voice_profile_id=profile_id,
++        confidence=2.0,
++        settings=cfg,
++    )
++    assert assigned is not None
++    assert assigned["confidence"] == 1.0
++    assert (
++        db_module.set_speaker_assignment(
++            recording_id="rec-db-cov-voice-1",
++            diar_speaker_label="S1",
++            voice_profile_id=None,
++            settings=cfg,
++        )
++        is None
++    )
++
++    with pytest.raises(ValueError, match="snippet_path is required"):
++        db_module.create_voice_sample(
++            voice_profile_id=profile_id,
++            snippet_path=" ",
++            settings=cfg,
++        )
++
++    sample = db_module.create_voice_sample(
++        voice_profile_id=profile_id,
++        recording_id=" rec-db-cov-voice-1 ",
++        diar_speaker_label=" S1 ",
++        snippet_path="snippet.wav",
++        settings=cfg,
++    )
++    assert sample["recording_id"] == "rec-db-cov-voice-1"
++    assert sample["diar_speaker_label"] == "S1"
++
++    assert db_module.list_voice_samples(voice_profile_id=profile_id, settings=cfg)
++    by_recording = db_module.list_voice_samples(
++        voice_profile_id=profile_id,
++        recording_id="rec-db-cov-voice-1",
++        settings=cfg,
++    )
++    assert len(by_recording) == 1
++
++    loaded = db_module.get_voice_sample(int(sample["id"]), settings=cfg)
++    assert loaded is not None
++    assert loaded["id"] == sample["id"]
++
++
++def test_calendar_sources_events_matches_and_metrics_edges(tmp_path: Path):
++    cfg = _cfg(tmp_path)
++    db_module.init_db(cfg)
++    db_module.create_recording(
++        "rec-db-cov-calendar-1",
++        source="upload",
++        source_filename="calendar.wav",
++        settings=cfg,
++    )
++
++    with pytest.raises(ValueError, match="name is required"):
++        db_module.create_calendar_source(
++            "  ",
++            kind="url",
++            url="https://example.com/calendar.ics",
++            settings=cfg,
++        )
++    with pytest.raises(ValueError, match="url is required"):
++        db_module.create_calendar_source(
++            "Team Calendar",
++            kind="url",
++            url="  ",
++            settings=cfg,
++        )
++    with pytest.raises(ValueError, match="file_ics is required"):
++        db_module.create_calendar_source(
++            "Team Calendar",
++            kind="file",
++            file_ics=" ",
++            settings=cfg,
++        )
++
++    source = db_module.create_calendar_source(
++        "Team Calendar",
++        kind="url",
++        url="https://example.com/calendar.ics",
++        file_ics="ignored.ics",
++        settings=cfg,
++    )
++    source_id = int(source["id"])
++    assert source["file_ics"] is None
++
++    assert db_module.get_calendar_source(source_id, settings=cfg) is not None
++    assert any(
++        int(row["id"]) == source_id
++        for row in db_module.list_calendar_sources(settings=cfg)
++    )
++
++    with pytest.raises(ValueError, match="at least one field"):
++        db_module.update_calendar_source_sync_state(source_id, settings=cfg)
++    assert (
++        db_module.update_calendar_source_sync_state(
++            9999,
++            last_error="sync failed",
++            settings=cfg,
++        )
++        is None
++    )
++    updated = db_module.update_calendar_source_sync_state(
++        source_id,
++        last_synced_at="2026-03-01T10:00:00Z",
++        settings=cfg,
++    )
++    assert updated is not None
++    assert updated["last_synced_at"] == "2026-03-01T10:00:00Z"
++    updated = db_module.update_calendar_source_sync_state(
++        source_id,
++        last_error="temporary",
++        settings=cfg,
++    )
++    assert updated is not None
++    assert updated["last_error"] == "temporary"
++
++    with pytest.raises(ValueError, match="window_start and window_end are required"):
++        db_module.replace_calendar_events_for_window(
++            source_id=source_id,
++            window_start=" ",
++            window_end="2026-03-02T00:00:00Z",
++            events=[],
++            settings=cfg,
++        )
++
++    inserted = db_module.replace_calendar_events_for_window(
++        source_id=source_id,
++        window_start="2026-03-01T00:00:00Z",
++        window_end="2026-03-03T00:00:00Z",
++        events=[
++            {
++                "uid": "",
++                "starts_at": "2026-03-01T10:00:00Z",
++                "ends_at": "2026-03-01T11:00:00Z",
 +            },
-+        },
-+        runner_up=None,
-+        confidence=0.2,
-+        threshold=0.5,
-+        signals=routing.RoutingSignals([], [], [], []),
-+    )
-+    assert all("Runner-up:" not in row for row in rationale)
-+    assert any("No calendar subject tokens" in row for row in rationale)
-+    assert any("No LLM tags/keywords" in row for row in rationale)
-+    assert any("No assigned voice profiles" in row for row in rationale)
-+    rationale_with_voice_profiles = routing._build_rationale(  # noqa: SLF001
-+        top={
-+            "project_name": "Roadmap",
-+            "score": 0.5,
-+            "components": {
-+                "calendar_subject": {},
-+                "participants": {},
-+                "llm_tags": {},
-+                "voice_profiles": {},
++            {
++                "uid": "event-1",
++                "starts_at": "2026-03-01T10:00:00Z",
++                "ends_at": "2026-03-01T11:00:00Z",
++                "summary": " Standup ",
++                "description": " notes ",
++                "location": " room ",
++                "organizer": " owner@example.com ",
++                "all_day": True,
 +            },
-+        },
-+        runner_up=None,
-+        confidence=0.2,
-+        threshold=0.5,
-+        signals=routing.RoutingSignals([], [], [], [7]),
-+    )
-+    assert all("No assigned voice profiles" not in row for row in rationale_with_voice_profiles)
-+
-+    monkeypatch.setattr(
-+        routing,
-+        "_selected_calendar_candidate",
-+        lambda *_args, **_kwargs: {
-+            "subject": "Roadmap sync",
-+            "organizer": "Alex",
-+            "attendees": ["Priya"],
-+        },
-+    )
-+    monkeypatch.setattr(routing, "_llm_keywords", lambda *_args, **_kwargs: {"planning"})
-+    monkeypatch.setattr(
-+        routing,
-+        "list_speaker_assignments",
-+        lambda *_args, **_kwargs: [
-+            {"voice_profile_id": None},
-+            {"voice_profile_id": "bad"},
-+            {"voice_profile_id": "7"},
 +        ],
++        settings=cfg,
 +    )
-+    signals = routing._build_routing_signals("rec-routing-signals-1", settings=cfg)  # noqa: SLF001
-+    assert signals.voice_profile_ids == [7]
-+    assert "roadmap" in signals.calendar_subject_tokens
++    assert inserted == 1
 +
-+    monkeypatch.setattr(
-+        routing,
-+        "_selected_calendar_candidate",
-+        original_selected_calendar_candidate,
++    with pytest.raises(ValueError, match="starts_from and ends_to are required"):
++        db_module.list_calendar_events(
++            starts_from=" ",
++            ends_to="2026-03-03T00:00:00Z",
++            settings=cfg,
++        )
++
++    rows = db_module.list_calendar_events(
++        starts_from="2026-03-01T00:00:00Z",
++        ends_to="2026-03-03T00:00:00Z",
++        source_id=source_id,
++        settings=cfg,
 +    )
++    assert len(rows) == 1
++    assert rows[0]["uid"] == "event-1"
 +
-+    monkeypatch.setattr(
-+        routing,
-+        "get_calendar_match",
-+        lambda *_args, **_kwargs: {"selected_event_id": "evt-1", "candidates_json": {}},
++    inserted_match = db_module.set_calendar_match_selection(
++        recording_id="rec-db-cov-calendar-1",
++        event_id="event-1",
++        selected_confidence=0.9,
++        settings=cfg,
 +    )
-+    assert routing._selected_calendar_candidate("rec-routing-cal-1", settings=cfg) == {}  # noqa: SLF001
-+
-+    monkeypatch.setattr(
-+        routing,
-+        "get_calendar_match",
-+        lambda *_args, **_kwargs: {
-+            "selected_event_id": "evt-1",
-+            "candidates_json": ["not-a-dict", {"event_id": "evt-2", "subject": "Other"}],
-+        },
++    assert inserted_match["selected_event_id"] == "event-1"
++    updated_match = db_module.set_calendar_match_selection(
++        recording_id="rec-db-cov-calendar-1",
++        event_id=None,
++        selected_confidence=None,
++        settings=cfg,
 +    )
-+    assert routing._selected_calendar_candidate("rec-routing-cal-2", settings=cfg) == {}  # noqa: SLF001
++    assert updated_match["selected_event_id"] is None
 +
-+
-+def test_routing_text_json_and_token_helpers(tmp_path: Path):
-+    assert routing._action_item_keywords("not-a-list") == []  # noqa: SLF001
-+    keywords = routing._action_item_keywords(  # noqa: SLF001
-+        [
-+            "skip",
-+            {},
-+            {"task": "Ship", "owner": "Alex", "deadline": "2026-03-01"},
-+        ]
++    assert db_module.get_meeting_metrics("rec-db-cov-calendar-1", settings=cfg) is None
++    db_module.upsert_meeting_metrics(
++        recording_id="rec-db-cov-calendar-1",
++        payload={"score": 1},
++        settings=cfg,
 +    )
-+    assert keywords == ["Ship", "Alex", "2026-03-01"]
++    metrics = db_module.get_meeting_metrics("rec-db-cov-calendar-1", settings=cfg)
++    assert metrics is not None
++    assert metrics["json"] == {"score": 1}
 +
-+    assert routing._text_list([" ", " Roadmap ", 7]) == ["Roadmap", "7"]  # noqa: SLF001
-+
-+    bad_json = tmp_path / "bad-routing.json"
-+    bad_json.write_text("{", encoding="utf-8")
-+    assert routing._load_json_dict(bad_json) == {}  # noqa: SLF001
-+
-+    wrong_type_json = tmp_path / "wrong-type-routing.json"
-+    wrong_type_json.write_text("[]", encoding="utf-8")
-+    assert routing._load_json_dict(wrong_type_json) == {}  # noqa: SLF001
-+
-+    tokens = routing._tokenize("a roadmap and b")  # noqa: SLF001
-+    assert "roadmap" in tokens
-+    assert "a" not in tokens
++    replaced = db_module.replace_participant_metrics(
++        recording_id="rec-db-cov-calendar-1",
++        rows=[
++            {
++                "diar_speaker_label": " ",
++                "voice_profile_id": 7,
++                "payload": {"skip": True},
++            },
++            {
++                "diar_speaker_label": "S1",
++                "voice_profile_id": "not-int",
++                "payload": "bad-payload",
++            },
++            {
++                "diar_speaker_label": "S2",
++                "voice_profile_id": None,
++                "payload": {"words": 42},
++            },
++        ],
++        settings=cfg,
++    )
++    assert len(replaced) == 2
++    listed = db_module.list_participant_metrics("rec-db-cov-calendar-1", settings=cfg)
++    assert len(listed) == 2

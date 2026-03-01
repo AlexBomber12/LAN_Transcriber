@@ -292,7 +292,7 @@ Queue (in order)
 - Depends on: PR-COV-LAN_APP-EXPORT-OPS-JOBS-01
 
 57) PR-COV-LAN_APP-DB-01: Raise lan_app.db to 100% statement and branch coverage
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-COV-LAN_APP-DB-01.md
 - Depends on: PR-COV-LAN_APP-METRICS-ROUTING-01
 
