@@ -212,6 +212,8 @@ def test_recording_detail_overview(seeded_client):
     assert "Ready" in r.text
     assert 'data-rid="rec-ui-1"' in r.text
     assert 'data-rlabel="meeting.mp3"' in r.text
+    assert 'href="/ui/recordings/rec-ui-1/export.zip"' in r.text
+    assert 'hx-boost="false"' in r.text
 
 
 def test_recording_detail_processing_polls_progress(tmp_path, monkeypatch):

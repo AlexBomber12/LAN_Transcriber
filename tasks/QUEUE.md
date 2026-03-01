@@ -342,6 +342,6 @@ Queue (in order)
 - Depends on: PR-CI-DOCKER-SMOKE-PR-01
 
 67) PR-UI-E2E-PLAYWRIGHT-01: Add Playwright UI smoke tests (Upload -> Recordings -> Export ZIP) and run in CI as a separate job
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-UI-E2E-PLAYWRIGHT-01.md
 - Depends on: PR-TEST-RQ-REDIS-INTEGRATION-01

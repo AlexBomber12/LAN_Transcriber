@@ -1,31 +1,31 @@
-diff --git a/tests/test_rq_redis_integration.py b/tests/test_rq_redis_integration.py
-index 4aff2d8..0f190f9 100644
---- a/tests/test_rq_redis_integration.py
-+++ b/tests/test_rq_redis_integration.py
-@@ -1,5 +1,6 @@
- from __future__ import annotations
+diff --git a/lan_app/templates/recording_detail.html b/lan_app/templates/recording_detail.html
+index f03ea54..96f0dcc 100644
+--- a/lan_app/templates/recording_detail.html
++++ b/lan_app/templates/recording_detail.html
+@@ -81,7 +81,12 @@
+     <h2 style="margin-top:0">Export</h2>
+     <div class="filters" style="margin-bottom:6px">
+       <button type="button" class="btn" onclick="copyExportText()">Copy</button>
+-      <a href="/ui/recordings/{{ rec.id }}/export.zip" class="btn" style="text-decoration:none">Download ZIP</a>
++      <a
++        href="/ui/recordings/{{ rec.id }}/export.zip"
++        class="btn"
++        style="text-decoration:none"
++        hx-boost="false"
++      >Download ZIP</a>
+     </div>
+     <textarea
+       id="export-text"
+diff --git a/tests/test_ui_routes.py b/tests/test_ui_routes.py
+index 0653f00..1195b26 100644
+--- a/tests/test_ui_routes.py
++++ b/tests/test_ui_routes.py
+@@ -212,6 +212,8 @@ def test_recording_detail_overview(seeded_client):
+     assert "Ready" in r.text
+     assert 'data-rid="rec-ui-1"' in r.text
+     assert 'data-rlabel="meeting.mp3"' in r.text
++    assert 'href="/ui/recordings/rec-ui-1/export.zip"' in r.text
++    assert 'hx-boost="false"' in r.text
  
-+import os
- from pathlib import Path
- from typing import Iterator
  
-@@ -18,6 +19,10 @@ from lan_app.jobs import enqueue_recording_job, get_queue
- _REDIS_DB15_URL = "redis://127.0.0.1:6379/15"
- 
- 
-+def _is_github_actions() -> bool:
-+    return os.getenv("GITHUB_ACTIONS", "").strip().lower() == "true"
-+
-+
- def _set_runtime_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-     monkeypatch.setenv("LAN_DATA_ROOT", str(tmp_path))
-     monkeypatch.setenv("LAN_RECORDINGS_ROOT", str(tmp_path / "recordings"))
-@@ -31,6 +36,8 @@ def redis_db_15() -> Iterator[Redis]:
-     try:
-         client.ping()
-     except (RedisConnectionError, RedisTimeoutError) as exc:
-+        if _is_github_actions():
-+            raise
-         pytest.skip(f"Redis is unavailable at {_REDIS_DB15_URL}: {exc}")
-     client.flushdb()
-     try:
+ def test_recording_detail_processing_polls_progress(tmp_path, monkeypatch):
