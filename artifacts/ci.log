@@ -109,8 +109,8 @@ Requirement already satisfied: pytz>2021.1 in ./.venv-ci/lib/python3.12/site-pac
 Building wheels for collected packages: lan-transcriber
   Building editable for lan-transcriber (pyproject.toml): started
   Building editable for lan-transcriber (pyproject.toml): finished with status 'done'
-  Created wheel for lan-transcriber: filename=lan_transcriber-0.1.0-0.editable-py3-none-any.whl size=15425 sha256=9159dbb9520576efd7d7f462ae21db3fa1130dc38471891fe6b966739caa73fa
-  Stored in directory: /tmp/pip-ephem-wheel-cache-9zjcuktm/wheels/d5/8a/5c/f7178f7e49aa5ae12b2320ec66b5c310f4f2f63d1bd301b7fb
+  Created wheel for lan-transcriber: filename=lan_transcriber-0.1.0-0.editable-py3-none-any.whl size=15425 sha256=70eb61a076e576db78f5e013bb3e88389be06dc00597c73ab4ce8df41a9f7ab2
+  Stored in directory: /tmp/pip-ephem-wheel-cache-qyqf79bb/wheels/d5/8a/5c/f7178f7e49aa5ae12b2320ec66b5c310f4f2f63d1bd301b7fb
 Successfully built lan-transcriber
 Installing collected packages: lan-transcriber
   Attempting uninstall: lan-transcriber
@@ -143,84 +143,102 @@ lan_app/config.py:29
 ================================ tests coverage ================================
 _______________ coverage: platform linux, python 3.12.3-final-0 ________________
 
-Name                                                Stmts   Miss  Cover
------------------------------------------------------------------------
-lan_transcriber/__init__.py                             8      0   100%
-lan_transcriber/aliases.py                             17      0   100%
-lan_transcriber/artifacts.py                           66      4    94%
-lan_transcriber/compat/__init__.py                      2      0   100%
-lan_transcriber/compat/call_compat.py                  33      1    97%
-lan_transcriber/compat/pyannote_compat.py              27      6    78%
-lan_transcriber/llm_client.py                         112     23    79%
-lan_transcriber/metrics.py                             12      0   100%
-lan_transcriber/models.py                              22      1    95%
-lan_transcriber/native_fixups.py                      102      6    94%
-lan_transcriber/normalizer.py                          25      0   100%
-lan_transcriber/pipeline.py                             5      0   100%
-lan_transcriber/pipeline_steps/__init__.py              7      0   100%
-lan_transcriber/pipeline_steps/artifacts.py            19      0   100%
-lan_transcriber/pipeline_steps/language.py             93     12    87%
-lan_transcriber/pipeline_steps/orchestrator.py        275     35    87%
-lan_transcriber/pipeline_steps/precheck.py            116     13    89%
-lan_transcriber/pipeline_steps/snippets.py            128     11    91%
-lan_transcriber/pipeline_steps/speaker_turns.py       185     21    89%
-lan_transcriber/pipeline_steps/summary_builder.py     276     25    91%
-lan_transcriber/runtime_paths.py                       21      1    95%
-lan_transcriber/utils.py                               50      2    96%
------------------------------------------------------------------------
-TOTAL                                                1601    161    90%
-FAIL Required test coverage of 90% not reached. Total coverage: 89.94%
-281 passed, 1 skipped, 5 warnings in 13.81s
-........................................................................ [ 25%]
-........................................................................ [ 51%]
-........................................................................ [ 76%]
-.................................................................        [100%]
-=============================== warnings summary ===============================
-lan_transcriber/pipeline_steps/precheck.py:3
-  /home/alexey/LAN_Transcriber/lan_transcriber/pipeline_steps/precheck.py:3: DeprecationWarning: 'audioop' is deprecated and slated for removal in Python 3.13
-    import audioop
+Name                                                Stmts   Miss Branch BrPart  Cover   Missing
+-----------------------------------------------------------------------------------------------
+lan_app/api.py                                        320     87     78     23    69%   81-95, 125-127, 133-135, 143, 145, 152, 156-157, 159, 174, 195, 197, 200, 207-208, 215-220, 224-239, 249, 251, 257, 262-273, 318, 334-339, 354, 365, 372, 376-377, 384, 418, 420->428, 423, 429-430, 439-440, 458-461, 474-475, 477, 536, 539-540, 552
+lan_app/auth.py                                        58      5     20      4    88%   34, 45, 70, 88, 97
+lan_app/calendar/ics.py                               194     80     70     16    55%   35-36, 38, 44, 61-62, 69, 75, 77, 90-124, 145-148, 157-158, 159->152, 172, 175, 179-180, 190-191, 196-201, 206-218, 243, 247-248, 255-256, 260-261, 267, 274
+lan_app/calendar/service.py                            66     13     12      4    78%   57-58, 77, 86-87, 91, 93, 103, 120-121, 135-141
+lan_app/config.py                                      66      9     14      2    79%   189->195, 197-207
+lan_app/conversation_metrics.py                       380     48    150     21    84%   62, 65, 69, 88-110, 141, 207, 214, 217, 219, 220->212, 230, 233, 253-254, 276, 281-284, 298, 323-324, 327, 340, 352, 474, 476, 608-609, 618-619, 621
+lan_app/db.py                                         771    108    150     41    83%   64-65, 71, 76, 81, 89, 91-92, 99-100, 126, 129, 134, 139, 143, 159, 172, 193-194, 225, 366, 467-493, 508, 553, 634, 672-673, 674->677, 677->681, 682, 708-730, 951-963, 995-1003, 1093-1105, 1141, 1293-1317, 1425, 1428, 1560, 1620-1621, 1648, 1719, 1724, 1726, 1802->1805, 1805->1808, 1809, 1821-1822, 1843, 1865, 1927, 2012-2053, 2130, 2135-2138, 2141, 2181
+lan_app/db_init.py                                      9      9      2      0     0%   1-14
+lan_app/exporter.py                                   212     43     90     23    75%   36-37, 39, 48-49, 51, 63, 70, 73, 75, 76->68, 87-88, 97, 130, 132->134, 134->136, 140-143, 151, 156, 171-181, 195, 198->201, 203, 226->230, 229, 230->232, 256-257, 270, 291-302
+lan_app/healthchecks.py                               103     70     38      5    27%   21, 29-36, 40-46, 50-65, 69-99, 103-104, 119, 122-126, 133-134, 137-139, 147
+lan_app/hf_repo.py                                      9      1      2      1    82%   7
+lan_app/jobs.py                                       103     25     30     11    70%   46, 60-62, 67, 74, 78, 82-85, 111, 114->112, 117->102, 127-135, 148, 160->174, 166, 194-195
+lan_app/ops.py                                         72     10     32     11    80%   15, 18, 22-23, 25, 44, 47->36, 54, 85, 90->92, 92->82, 96->110, 103-104, 107->97
+lan_app/reaper.py                                      65      3     18      3    93%   35, 87, 112, 117->124
+lan_app/routing.py                                    255     22    106     19    89%   70, 116-117, 119, 126-127, 216, 219, 309, 345->349, 423, 454, 456-457, 479, 482, 483->480, 485, 509, 513->515, 515->517, 518, 528->526, 538-539, 541, 550
+lan_app/ui.py                                          63     24      8      2    58%   72-105, 136-142, 193-194, 196->204, 201, 205
+lan_app/ui_routes.py                                  951    220    304     82    73%   122, 132, 143, 171-172, 174, 183-184, 186, 201, 204, 206, 207->199, 226, 229, 234-235, 257->263, 261-262, 265-266, 295-296, 301-302, 309->312, 317, 321, 331->337, 333, 337->360, 342-358, 374, 398, 415-422, 428->430, 436-461, 493-494, 497-498, 505, 507, 521, 526, 529, 538, 551, 571-572, 575-576, 603-604, 632-634, 648-650, 653->655, 656->658, 661-662, 667, 715, 716->713, 721-722, 752-753, 768, 772-773, 833, 837, 856->858, 859, 865, 890, 929-939, 945, 948-949, 968, 1000, 1008-1013, 1031, 1037, 1059-1062, 1186, 1211, 1238, 1245, 1256, 1259, 1263->1268, 1266-1267, 1276-1279, 1291, 1294, 1297, 1302-1303, 1321, 1324, 1327, 1330-1331, 1339, 1343, 1352-1355, 1366, 1370->1376, 1373-1374, 1382-1383, 1385, 1388->1397, 1395-1396, 1452-1453, 1456-1460, 1464-1465, 1499, 1502, 1504->1506, 1508, 1593-1595, 1620, 1632-1633, 1642, 1649-1650, 1669, 1683, 1686, 1695-1701, 1772-1782, 1792, 1805-1808, 1819, 1831-1834
+lan_app/uploads.py                                     59      6     12      2    89%   31, 37, 57-58, 77-78
+lan_app/worker.py                                      28     16      2      1    43%   17-29, 33-38, 42
+lan_app/worker_tasks.py                               393     87    122     30    75%   86-87, 92->96, 98->108, 100->108, 113, 132, 133->129, 139-143, 173-174, 206-207, 231-232, 234, 239, 242, 265-266, 271-272, 282-283, 299-300, 303-304, 321-322, 329-330, 339-340, 354-355, 365-371, 385-394, 397->403, 399, 400->397, 404, 409->415, 423-432, 443-444, 464, 531, 569, 608, 624, 637-638, 640, 641->677, 652-653, 675-676, 700, 729-735, 748-749, 757, 759-768, 779-785, 813->815, 817->825
+lan_app/workers.py                                     10      3      0      0    70%   18-20
+lan_transcriber/aliases.py                             17      0      4      1    95%   18->20
+lan_transcriber/artifacts.py                           66      4      8      2    92%   39, 81-82, 102
+lan_transcriber/compat/call_compat.py                  33      1     10      1    95%   54
+lan_transcriber/compat/pyannote_compat.py              27      6      6      2    76%   17-18, 22, 28-29, 32
+lan_transcriber/llm_client.py                         112     23     44     13    73%   25-29, 44-47, 53, 57, 109, 117, 120-121, 123->139, 126-130, 140, 161, 183->191, 185->191, 193
+lan_transcriber/models.py                              22      1      0      0    95%   33
+lan_transcriber/native_fixups.py                      102      6     36      7    91%   38, 49, 54, 63, 71, 79, 125->123
+lan_transcriber/normalizer.py                          25      0     14      1    97%   23->22
+lan_transcriber/pipeline_steps/language.py             93     12     46     12    81%   61, 64, 68, 70, 73-75, 94, 101-102, 129, 154->158, 155->154, 159, 163->167
+lan_transcriber/pipeline_steps/orchestrator.py        276     35     48      9    86%   43->exit, 77->71, 104-113, 132-136, 142, 174-182, 186-188, 214-222, 262-263, 265-266, 284, 342-345, 443, 450-451
+lan_transcriber/pipeline_steps/precheck.py            116     13     46      5    89%   48-49, 51, 54, 57-58, 60, 88-89, 119, 136, 138-139
+lan_transcriber/pipeline_steps/snippets.py            128     11     44      8    88%   35, 49->53, 54, 77, 85-86, 172, 184, 187, 192-194
+lan_transcriber/pipeline_steps/speaker_turns.py       185     21     94     25    84%   13, 17, 31, 38, 40->36, 60, 64, 70, 93, 111, 135, 137, 146, 149, 153, 159->161, 199->178, 201->203, 210, 213, 217, 227, 254, 265, 271
+lan_transcriber/pipeline_steps/summary_builder.py     276     25     98     21    87%   54, 61, 88, 142, 144, 155, 168-170, 184->186, 202, 261-265, 288, 294->286, 310, 315, 322-325, 327, 417->419, 419->421, 450, 470->479, 493, 499->511
+lan_transcriber/runtime_paths.py                       21      1      4      1    92%   15
+lan_transcriber/utils.py                               50      2     30      4    92%   52, 60, 85->87, 87->79
+-----------------------------------------------------------------------------------------------
+TOTAL                                                5821   1050   1792    413    79%
 
-lan_transcriber/pipeline_steps/orchestrator.py:46
-tests/test_imports.py::test_imports[lan_transcriber.pipeline_steps.orchestrator]
-tests/test_imports.py::test_orchestrator_import_does_not_import_whisperx
-  /home/alexey/LAN_Transcriber/lan_transcriber/pipeline_steps/orchestrator.py:46: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
-    class Settings(BaseSettings):
-
-lan_app/config.py:29
-  /home/alexey/LAN_Transcriber/lan_app/config.py:29: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
-    class AppSettings(BaseSettings):
-
--- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
-================================ tests coverage ================================
-_______________ coverage: platform linux, python 3.12.3-final-0 ________________
-
-Name                              Stmts   Miss  Cover
------------------------------------------------------
-lan_app/__init__.py                   1      0   100%
-lan_app/api.py                      320     87    73%
-lan_app/auth.py                      58      5    91%
-lan_app/calendar/__init__.py          3      0   100%
-lan_app/calendar/ics.py             194     80    59%
-lan_app/calendar/service.py          66     13    80%
-lan_app/config.py                    66      9    86%
-lan_app/constants.py                 28      0   100%
-lan_app/conversation_metrics.py     380     48    87%
-lan_app/db.py                       771    108    86%
-lan_app/db_init.py                    9      9     0%
-lan_app/exporter.py                 212     43    80%
-lan_app/healthchecks.py             103     70    32%
-lan_app/hf_repo.py                    9      1    89%
-lan_app/jobs.py                     103     25    76%
-lan_app/ops.py                       72     10    86%
-lan_app/reaper.py                    65      3    95%
-lan_app/routing.py                  255     22    91%
-lan_app/ui.py                        63     24    62%
-lan_app/ui_routes.py                951    220    77%
-lan_app/uploads.py                   59      6    90%
-lan_app/worker.py                    28     16    43%
-lan_app/worker_tasks.py             393     87    78%
-lan_app/workers.py                   10      3    70%
------------------------------------------------------
-TOTAL                              4219    889    79%
-Required test coverage of 75% reached. Total coverage: 78.93%
-281 passed, 1 skipped, 5 warnings in 14.09s
+9 files skipped due to complete coverage.
+Coverage HTML written to dir htmlcov
+281 passed, 1 skipped, 5 warnings in 15.83s
+Name                                                Stmts   Miss Branch BrPart  Cover
+-------------------------------------------------------------------------------------
+lan_transcriber/__init__.py                             8      0      0      0   100%
+lan_transcriber/aliases.py                             17      0      4      1    95%
+lan_transcriber/artifacts.py                           66      4      8      2    92%
+lan_transcriber/compat/__init__.py                      2      0      0      0   100%
+lan_transcriber/compat/call_compat.py                  33      1     10      1    95%
+lan_transcriber/compat/pyannote_compat.py              27      6      6      2    76%
+lan_transcriber/llm_client.py                         112     23     44     13    73%
+lan_transcriber/metrics.py                             12      0      0      0   100%
+lan_transcriber/models.py                              22      1      0      0    95%
+lan_transcriber/native_fixups.py                      102      6     36      7    91%
+lan_transcriber/normalizer.py                          25      0     14      1    97%
+lan_transcriber/pipeline.py                             5      0      0      0   100%
+lan_transcriber/pipeline_steps/__init__.py              7      0      0      0   100%
+lan_transcriber/pipeline_steps/artifacts.py            19      0      0      0   100%
+lan_transcriber/pipeline_steps/language.py             93     12     46     12    81%
+lan_transcriber/pipeline_steps/orchestrator.py        276     35     48      9    86%
+lan_transcriber/pipeline_steps/precheck.py            116     13     46      5    89%
+lan_transcriber/pipeline_steps/snippets.py            128     11     44      8    88%
+lan_transcriber/pipeline_steps/speaker_turns.py       185     21     94     25    84%
+lan_transcriber/pipeline_steps/summary_builder.py     276     25     98     21    87%
+lan_transcriber/runtime_paths.py                       21      1      4      1    92%
+lan_transcriber/utils.py                               50      2     30      4    92%
+-------------------------------------------------------------------------------------
+TOTAL                                                1602    161    532    112    87%
+Name                              Stmts   Miss Branch BrPart  Cover
+-------------------------------------------------------------------
+lan_app/__init__.py                   1      0      0      0   100%
+lan_app/api.py                      320     87     78     23    69%
+lan_app/auth.py                      58      5     20      4    88%
+lan_app/calendar/__init__.py          3      0      0      0   100%
+lan_app/calendar/ics.py             194     80     70     16    55%
+lan_app/calendar/service.py          66     13     12      4    78%
+lan_app/config.py                    66      9     14      2    79%
+lan_app/constants.py                 28      0      0      0   100%
+lan_app/conversation_metrics.py     380     48    150     21    84%
+lan_app/db.py                       771    108    150     41    83%
+lan_app/db_init.py                    9      9      2      0     0%
+lan_app/exporter.py                 212     43     90     23    75%
+lan_app/healthchecks.py             103     70     38      5    27%
+lan_app/hf_repo.py                    9      1      2      1    82%
+lan_app/jobs.py                     103     25     30     11    70%
+lan_app/ops.py                       72     10     32     11    80%
+lan_app/reaper.py                    65      3     18      3    93%
+lan_app/routing.py                  255     22    106     19    89%
+lan_app/ui.py                        63     24      8      2    58%
+lan_app/ui_routes.py                951    220    304     82    73%
+lan_app/uploads.py                   59      6     12      2    89%
+lan_app/worker.py                    28     16      2      1    43%
+lan_app/worker_tasks.py             393     87    122     30    75%
+lan_app/workers.py                   10      3      0      0    70%
+-------------------------------------------------------------------
+TOTAL                              4219    889   1260    301    75%

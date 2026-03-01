@@ -267,7 +267,7 @@ Queue (in order)
 - Depends on: PR-FIX-WHISPERX-TRANSCRIBE-KWARGS-02
 
 52) PR-COVERAGE-INFRA-02: Coverage foundation for 100%: branch coverage, unified local/CI command, htmlcov artifact
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-COVERAGE-INFRA-02.md
 - Depends on: PR-FIX-NONETYPE-CALLABLE-01
 
