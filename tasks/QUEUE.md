@@ -262,7 +262,7 @@ Queue (in order)
 - Depends on: PR-DEPS-WHISPERX-DETERMINISM-01
 
 51) PR-FIX-NONETYPE-CALLABLE-01: Fix startup/runtime crash: 'NoneType' object is not callable + regression test
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-FIX-NONETYPE-CALLABLE-01.md
 - Depends on: PR-FIX-WHISPERX-TRANSCRIBE-KWARGS-02
 
