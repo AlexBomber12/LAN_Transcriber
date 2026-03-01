@@ -81,7 +81,12 @@
     <h2 style="margin-top:0">Export</h2>
     <div class="filters" style="margin-bottom:6px">
       <button type="button" class="btn" onclick="copyExportText()">Copy</button>
-      <a href="/ui/recordings/{{ rec.id }}/export.zip" class="btn" style="text-decoration:none">Download ZIP</a>
+      <a
+        href="/ui/recordings/{{ rec.id }}/export.zip"
+        class="btn"
+        style="text-decoration:none"
+        hx-boost="false"
+      >Download ZIP</a>
     </div>
     <textarea
       id="export-text"
