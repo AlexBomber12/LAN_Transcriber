@@ -1,710 +1,712 @@
 diff --git a/tasks/QUEUE.md b/tasks/QUEUE.md
-index 7b101a8..151a809 100644
+index 82046b6..f56eaf9 100644
 --- a/tasks/QUEUE.md
 +++ b/tasks/QUEUE.md
-@@ -277,7 +277,7 @@ Queue (in order)
- - Depends on: PR-COVERAGE-INFRA-02
- 
- 54) PR-COV-LAN_APP-CALENDAR-01: Raise calendar ICS parsing + service matching to 100%
--- Status: TODO
-+- Status: DOING
- - Tasks file: tasks/PR-COV-LAN_APP-CALENDAR-01.md
+@@ -282,7 +282,7 @@ Queue (in order)
  - Depends on: PR-COV-LAN_APP-HEALTH-WORKER-01
  
-diff --git a/tests/test_calendar_cov_calendar_modules.py b/tests/test_calendar_cov_calendar_modules.py
+ 55) PR-COV-LAN_APP-EXPORT-OPS-JOBS-01: Raise exporter/jobs/ops/reaper to 100%
+-- Status: TODO
++- Status: DOING
+ - Tasks file: tasks/PR-COV-LAN_APP-EXPORT-OPS-JOBS-01.md
+ - Depends on: PR-COV-LAN_APP-CALENDAR-01
+ 
+diff --git a/tests/test_cov_lan_app_export_ops_jobs.py b/tests/test_cov_lan_app_export_ops_jobs.py
 new file mode 100644
-index 0000000..3b26450
+index 0000000..05b9fa7
 --- /dev/null
-+++ b/tests/test_calendar_cov_calendar_modules.py
-@@ -0,0 +1,691 @@
++++ b/tests/test_cov_lan_app_export_ops_jobs.py
+@@ -0,0 +1,693 @@
 +from __future__ import annotations
 +
-+from datetime import date, datetime, timedelta, timezone
++from datetime import datetime, timezone
++import io
++import json
++import os
++from pathlib import Path
 +from types import SimpleNamespace
-+from zoneinfo import ZoneInfo
++import zipfile
 +
-+import httpx
 +import pytest
 +
-+from lan_app.calendar import ics, service
++from lan_app.config import AppSettings
++from lan_app.constants import (
++    DEFAULT_REQUEUE_JOB_TYPE,
++    JOB_STATUS_QUEUED,
++    JOB_TYPE_STT,
++    RECORDING_STATUS_READY,
++)
++from lan_app.db import create_recording, init_db
++import lan_app.exporter as exporter
++import lan_app.jobs as jobs
++import lan_app.ops as ops
++import lan_app.reaper as reaper
 +
 +
-+class DummyOrganizer:
-+    def __init__(self, value: str, *, params: dict[str, str] | None = None) -> None:
-+        self.value = value
-+        self.params = params or {}
-+
-+    def __str__(self) -> str:
-+        return self.value
-+
-+
-+class DummyComponent:
-+    def __init__(
-+        self,
-+        *,
-+        props: dict[str, object] | None = None,
-+        decoded_values: dict[str, object] | None = None,
-+        decoded_errors: dict[str, Exception] | None = None,
-+        name: str = "VEVENT",
-+    ) -> None:
-+        self._props = props or {}
-+        self._decoded_values = decoded_values or {}
-+        self._decoded_errors = decoded_errors or {}
-+        self.name = name
-+
-+    def get(self, key: str) -> object | None:
-+        return self._props.get(key)
-+
-+    def decoded(self, key: str) -> object:
-+        if key in self._decoded_errors:
-+            raise self._decoded_errors[key]
-+        if key not in self._decoded_values:
-+            raise KeyError(key)
-+        return self._decoded_values[key]
-+
-+
-+class DummyResponse:
-+    def __init__(
-+        self,
-+        *,
-+        status_code: int = 200,
-+        headers: dict[str, str] | None = None,
-+        chunks: list[bytes] | None = None,
-+        raise_for_status_error: Exception | None = None,
-+    ) -> None:
-+        self.status_code = status_code
-+        self.headers = headers or {}
-+        self._chunks = chunks or []
-+        self._raise_for_status_error = raise_for_status_error
-+
-+    def __enter__(self) -> "DummyResponse":
-+        return self
-+
-+    def __exit__(self, _exc_type, _exc_value, _traceback) -> bool:
-+        return False
-+
-+    def raise_for_status(self) -> None:
-+        if self._raise_for_status_error is not None:
-+            raise self._raise_for_status_error
-+
-+    def iter_bytes(self):
-+        return iter(self._chunks)
-+
-+
-+class DummyClient:
-+    def __init__(self, actions: list[object]) -> None:
-+        self._actions = list(actions)
-+
-+    def __enter__(self) -> "DummyClient":
-+        return self
-+
-+    def __exit__(self, _exc_type, _exc_value, _traceback) -> bool:
-+        return False
-+
-+    def stream(self, _method: str, _url: str, headers: dict[str, str]):
-+        assert "Accept" in headers
-+        action = self._actions.pop(0)
-+        if isinstance(action, Exception):
-+            raise action
-+        return action
-+
-+
-+def _patch_client(monkeypatch: pytest.MonkeyPatch, actions: list[object]) -> None:
-+    monkeypatch.setattr(ics.httpx, "Client", lambda *args, **kwargs: DummyClient(actions))
-+
-+
-+def _service_settings() -> SimpleNamespace:
-+    return SimpleNamespace(
-+        calendar_expand_past_days=2,
-+        calendar_expand_future_days=3,
-+        calendar_fetch_timeout_seconds=4.5,
-+        calendar_fetch_max_bytes=12345,
-+        calendar_fetch_max_redirects=4,
++def _cfg(tmp_path: Path) -> AppSettings:
++    cfg = AppSettings(
++        data_root=tmp_path,
++        recordings_root=tmp_path / "recordings",
++        db_path=tmp_path / "db" / "app.db",
 +    )
++    cfg.metrics_snapshot_path = tmp_path / "metrics.snap"
++    return cfg
 +
 +
-+def test_coerce_utc_datetime_for_naive_aware_and_date_values():
-+    berlin = ZoneInfo("Europe/Berlin")
-+    naive = datetime(2026, 2, 1, 9, 0, 0)
-+    aware = datetime(2026, 2, 1, 9, 0, 0, tzinfo=timezone(timedelta(hours=2)))
-+    date_value = date(2026, 2, 1)
++def test_exporter_json_loaders_handle_invalid_and_wrong_types(tmp_path: Path):
++    bad_dict = tmp_path / "bad-dict.json"
++    bad_dict.write_text("{", encoding="utf-8")
++    assert exporter._load_json_dict(bad_dict) == {}
 +
-+    assert ics._coerce_utc_datetime(naive) == datetime(2026, 2, 1, 9, 0, tzinfo=timezone.utc)
-+    assert ics._coerce_utc_datetime(naive, default_tz=berlin) == datetime(
-+        2026, 2, 1, 8, 0, tzinfo=timezone.utc
++    list_json = tmp_path / "list.json"
++    list_json.write_text("[1, 2]", encoding="utf-8")
++    assert exporter._load_json_dict(list_json) == {}
++
++    bad_list = tmp_path / "bad-list.json"
++    bad_list.write_text("{", encoding="utf-8")
++    assert exporter._load_json_list(bad_list) == []
++
++    dict_json = tmp_path / "dict.json"
++    dict_json.write_text('{"k": 1}', encoding="utf-8")
++    assert exporter._load_json_list(dict_json) == []
++
++
++def test_exporter_normalise_text_items_covers_limits_and_empty_after_bullet(monkeypatch):
++    lines = exporter._normalise_text_items(
++        " first line \n\n- second line\nthird line",
++        max_items=2,
 +    )
-+    assert ics._coerce_utc_datetime(aware) == datetime(2026, 2, 1, 7, 0, tzinfo=timezone.utc)
-+    assert ics._coerce_utc_datetime(date_value) == datetime(2026, 2, 1, 0, 0, tzinfo=timezone.utc)
++    assert lines == ["first line", "second line"]
++
++    values = iter(["- ", "kept"])
++    monkeypatch.setattr(exporter, "_normalize_text", lambda _row: next(values))
++    assert exporter._normalise_text_items(["x", "y"], max_items=10) == ["kept"]
 +
 +
-+def test_is_loopback_hostname_handles_localhost_ip_and_invalid():
-+    assert ics._is_loopback_hostname("localhost")
-+    assert ics._is_loopback_hostname("api.localhost")
-+    assert ics._is_loopback_hostname("127.0.0.1")
-+    assert not ics._is_loopback_hostname("example.com")
-+    assert not ics._is_loopback_hostname("not-an-ip")
-+
-+
-+def test_resolves_only_loopback_handles_dns_error(monkeypatch: pytest.MonkeyPatch):
-+    def _raise_gaierror(*_args, **_kwargs):
-+        raise ics.socket.gaierror()
-+
-+    monkeypatch.setattr(ics.socket, "getaddrinfo", _raise_gaierror)
-+    assert not ics._resolves_only_loopback("calendar.example")
-+
-+
-+def test_resolves_only_loopback_parses_addresses(monkeypatch: pytest.MonkeyPatch):
-+    monkeypatch.setattr(
-+        ics.socket,
-+        "getaddrinfo",
-+        lambda *_args, **_kwargs: [
-+            (0, 0, 0, "", ("not-an-ip", 443)),
-+            (0, 0, 0, "", ("203.0.113.10", 443)),
-+            (0, 0, 0, "", ("127.0.0.1", 443)),
-+        ],
++def test_exporter_section_helpers_cover_optional_paths():
++    metadata = exporter._metadata_lines(
++        {
++            "id": "rec-1",
++            "source_filename": "meeting.wav",
++            "duration_sec": "unknown-ish",
++        },
++        language="de",
 +    )
-+    assert ics._resolves_only_loopback("calendar.example")
++    assert "- Duration: unknown-ish" in metadata
++    assert "- Language: de" in metadata
 +
-+    monkeypatch.setattr(
-+        ics.socket,
-+        "getaddrinfo",
-+        lambda *_args, **_kwargs: [(0, 0, 0, "", ("203.0.113.10", 443))],
-+    )
-+    assert not ics._resolves_only_loopback("calendar.example")
-+
-+
-+def test_validate_ics_url_rejects_invalid_inputs(monkeypatch: pytest.MonkeyPatch):
-+    monkeypatch.setattr(ics, "_resolves_only_loopback", lambda _hostname: False)
-+
-+    with pytest.raises(ValueError, match="required"):
-+        ics.validate_ics_url("")
-+    with pytest.raises(ValueError, match="http or https"):
-+        ics.validate_ics_url("ftp://example.com/calendar.ics")
-+    with pytest.raises(ValueError, match="credentials"):
-+        ics.validate_ics_url("https://user:pass@example.com/calendar.ics")
-+    with pytest.raises(ValueError, match="include a host"):
-+        ics.validate_ics_url("https:///calendar.ics")
-+    with pytest.raises(ValueError, match="localhost/loopback"):
-+        ics.validate_ics_url("https://localhost/calendar.ics")
-+
-+
-+def test_validate_ics_url_rejects_resolved_loopback_and_accepts_safe_host(
-+    monkeypatch: pytest.MonkeyPatch,
-+):
-+    monkeypatch.setattr(ics, "_is_loopback_hostname", lambda _hostname: False)
-+    monkeypatch.setattr(ics, "_resolves_only_loopback", lambda _hostname: True)
-+    with pytest.raises(ValueError, match="localhost/loopback"):
-+        ics.validate_ics_url("https://calendar.example.com/team.ics")
-+
-+    monkeypatch.setattr(ics, "_resolves_only_loopback", lambda _hostname: False)
-+    assert (
-+        ics.validate_ics_url(" https://calendar.example.com/team.ics ")
-+        == "https://calendar.example.com/team.ics"
-+    )
-+
-+
-+def test_fetch_ics_url_returns_payload_and_handles_redirect(monkeypatch: pytest.MonkeyPatch):
-+    validated_urls: list[str] = []
-+
-+    def _validate(url: str) -> str:
-+        validated_urls.append(url)
-+        return url
-+
-+    monkeypatch.setattr(ics, "validate_ics_url", _validate)
-+    _patch_client(
-+        monkeypatch,
-+        [
-+            DummyResponse(status_code=302, headers={"location": "/next.ics"}),
-+            DummyResponse(status_code=200, chunks=[b"aa", b"", b"bb"]),
-+        ],
-+    )
-+
-+    payload = ics.fetch_ics_url(
-+        "https://calendar.example.com/root.ics",
-+        timeout_seconds=1,
-+        max_bytes=10,
-+        max_redirects=3,
-+    )
-+    assert payload == b"aabb"
-+    assert validated_urls == [
-+        "https://calendar.example.com/root.ics",
-+        "https://calendar.example.com/next.ics",
-+    ]
-+
-+
-+def test_fetch_ics_url_redirect_without_location_raises(monkeypatch: pytest.MonkeyPatch):
-+    monkeypatch.setattr(ics, "validate_ics_url", lambda url: url)
-+    _patch_client(monkeypatch, [DummyResponse(status_code=302, headers={})])
-+
-+    with pytest.raises(ics.CalendarFetchError, match="did not provide a location"):
-+        ics.fetch_ics_url(
-+            "https://calendar.example.com/root.ics",
-+            timeout_seconds=1,
-+            max_bytes=10,
-+            max_redirects=2,
-+        )
-+
-+
-+def test_fetch_ics_url_redirect_limit_raises(monkeypatch: pytest.MonkeyPatch):
-+    monkeypatch.setattr(ics, "validate_ics_url", lambda url: url)
-+    _patch_client(monkeypatch, [DummyResponse(status_code=302, headers={"location": "/next.ics"})])
-+
-+    with pytest.raises(ics.CalendarFetchError, match="redirect limit"):
-+        ics.fetch_ics_url(
-+            "https://calendar.example.com/root.ics",
-+            timeout_seconds=1,
-+            max_bytes=10,
-+            max_redirects=0,
-+        )
-+
-+
-+def test_fetch_ics_url_timeout_http_status_and_http_error(monkeypatch: pytest.MonkeyPatch):
-+    monkeypatch.setattr(ics, "validate_ics_url", lambda url: url)
-+    _patch_client(monkeypatch, [httpx.TimeoutException("slow")])
-+    with pytest.raises(ics.CalendarFetchError, match="timed out"):
-+        ics.fetch_ics_url("https://calendar.example.com/root.ics", timeout_seconds=1, max_bytes=10, max_redirects=1)
-+
-+    request = httpx.Request("GET", "https://calendar.example.com/root.ics")
-+    status_error = httpx.HTTPStatusError(
-+        "bad status",
-+        request=request,
-+        response=httpx.Response(status_code=503, request=request),
-+    )
-+    _patch_client(
-+        monkeypatch,
-+        [DummyResponse(status_code=503, raise_for_status_error=status_error)],
-+    )
-+    with pytest.raises(ics.CalendarFetchError, match="HTTP 503"):
-+        ics.fetch_ics_url("https://calendar.example.com/root.ics", timeout_seconds=1, max_bytes=10, max_redirects=1)
-+
-+    _patch_client(monkeypatch, [httpx.ConnectError("network down", request=request)])
-+    with pytest.raises(ics.CalendarFetchError, match="fetch failed"):
-+        ics.fetch_ics_url("https://calendar.example.com/root.ics", timeout_seconds=1, max_bytes=10, max_redirects=1)
-+
-+
-+def test_fetch_ics_url_enforces_max_bytes(monkeypatch: pytest.MonkeyPatch):
-+    monkeypatch.setattr(ics, "validate_ics_url", lambda url: url)
-+    _patch_client(monkeypatch, [DummyResponse(status_code=200, chunks=[b"abcd", b"ef"])])
-+
-+    with pytest.raises(ics.CalendarFetchError, match="maximum allowed size"):
-+        ics.fetch_ics_url(
-+            "https://calendar.example.com/root.ics",
-+            timeout_seconds=1,
-+            max_bytes=5,
-+            max_redirects=1,
-+        )
-+
-+
-+def test_property_and_organizer_helpers():
-+    organizer_with_cn = DummyOrganizer("mailto:owner@example.com", params={"CN": " Owner Name "})
-+    organizer_mailto_only = DummyOrganizer("mailto:owner@example.com", params={"CN": "   "})
-+    organizer_plain = DummyOrganizer("owner@example.com", params={})
-+    component = DummyComponent(
-+        props={
-+            "SUMMARY": "  Team Sync  ",
-+            "DESCRIPTION": "   ",
-+            "ORGANIZER_A": organizer_with_cn,
-+            "ORGANIZER_B": organizer_mailto_only,
-+            "ORGANIZER_C": organizer_plain,
++    action_items = exporter._action_items_section(
++        {
++            "action_items": [
++                {"task": "   ", "owner": "skip-me"},
++                {"task": "Ship update", "deadline": "2026-01-01"},
++                {"task": "Review notes", "owner": "Alex"},
++                "  Free-form follow up  ",
++                "   ",
++            ]
 +        }
 +    )
++    assert "- [ ] Ship update (deadline: 2026-01-01)" in action_items
++    assert "- [ ] Review notes (owner: Alex)" in action_items
++    assert "- [ ] Free-form follow up" in action_items
 +
-+    assert ics._property_text(component, "SUMMARY") == "Team Sync"
-+    assert ics._property_text(component, "DESCRIPTION") is None
-+    assert ics._property_text(component, "MISSING") is None
-+
-+    component._props["ORGANIZER"] = organizer_with_cn
-+    assert ics._organizer_text(component) == "Owner Name"
-+    component._props["ORGANIZER"] = organizer_mailto_only
-+    assert ics._organizer_text(component) == "owner@example.com"
-+    component._props["ORGANIZER"] = organizer_plain
-+    assert ics._organizer_text(component) == "owner@example.com"
-+    component._props["ORGANIZER"] = None
-+    assert ics._organizer_text(component) is None
-+
-+
-+def test_updated_at_text_uses_modified_stamp_or_fallback():
-+    fallback = "2026-01-01T00:00:00Z"
-+    with_last_modified = DummyComponent(
-+        decoded_values={"LAST-MODIFIED": datetime(2026, 2, 2, 10, tzinfo=timezone.utc)}
++    questions = exporter._questions_section(
++        {"questions": {"extracted": ["  Why now?  "]}}
 +    )
-+    assert ics._updated_at_text(with_last_modified, fallback=fallback) == "2026-02-02T10:00:00Z"
++    assert questions == ["## Questions", "- Why now?"]
 +
-+    with_dtstamp = DummyComponent(
-+        decoded_values={"DTSTAMP": date(2026, 2, 3)},
-+        decoded_errors={"LAST-MODIFIED": RuntimeError("bad last-modified")},
++    metrics = exporter._metrics_section(
++        {
++            "meeting": {
++                "total_interruptions": 2,
++                "total_questions": None,
++                "decisions_count": 1,
++                "action_items_count": 0,
++            }
++        }
 +    )
-+    assert ics._updated_at_text(with_dtstamp, fallback=fallback) == "2026-02-03T00:00:00Z"
-+
-+    with_non_datetime_modified = DummyComponent(
-+        decoded_values={"LAST-MODIFIED": "not-a-datetime", "DTSTAMP": date(2026, 2, 4)}
-+    )
-+    assert ics._updated_at_text(with_non_datetime_modified, fallback=fallback) == "2026-02-04T00:00:00Z"
-+
-+    without_any_timestamp = DummyComponent(decoded_values={})
-+    assert ics._updated_at_text(without_any_timestamp, fallback=fallback) == fallback
-+
-+
-+def test_normalise_event_rejects_missing_or_cancelled_and_missing_start():
-+    fallback = "2026-01-01T00:00:00Z"
-+    missing_uid = DummyComponent(decoded_values={"DTSTART": datetime(2026, 2, 1, tzinfo=timezone.utc)})
-+    cancelled = DummyComponent(
-+        props={"UID": "event-1", "STATUS": "cancelled"},
-+        decoded_values={"DTSTART": datetime(2026, 2, 1, tzinfo=timezone.utc)},
-+    )
-+    missing_start = DummyComponent(props={"UID": "event-2"}, decoded_values={})
-+
-+    assert ics._normalise_event(missing_uid, fallback_updated_at=fallback) is None
-+    assert ics._normalise_event(cancelled, fallback_updated_at=fallback) is None
-+    assert ics._normalise_event(missing_start, fallback_updated_at=fallback) is None
-+
-+
-+def test_normalise_event_all_day_paths():
-+    fallback = "2026-01-01T00:00:00Z"
-+    all_day_no_end = DummyComponent(
-+        props={"UID": "all-day-1", "SUMMARY": "All day no end"},
-+        decoded_values={"DTSTART": date(2026, 2, 10)},
-+    )
-+    row = ics._normalise_event(all_day_no_end, fallback_updated_at=fallback)
-+    assert row is not None
-+    assert row["all_day"] is True
-+    assert row["starts_at"] == "2026-02-10T00:00:00Z"
-+    assert row["ends_at"] == "2026-02-11T00:00:00Z"
-+
-+    all_day_end_before_start = DummyComponent(
-+        props={"UID": "all-day-2"},
-+        decoded_values={"DTSTART": date(2026, 2, 10), "DTEND": date(2026, 2, 9)},
-+    )
-+    row = ics._normalise_event(all_day_end_before_start, fallback_updated_at=fallback)
-+    assert row is not None
-+    assert row["ends_at"] == "2026-02-11T00:00:00Z"
-+
-+    all_day_end_after_start = DummyComponent(
-+        props={"UID": "all-day-3"},
-+        decoded_values={"DTSTART": date(2026, 2, 10), "DTEND": date(2026, 2, 12)},
-+    )
-+    row = ics._normalise_event(all_day_end_after_start, fallback_updated_at=fallback)
-+    assert row is not None
-+    assert row["ends_at"] == "2026-02-12T00:00:00Z"
-+
-+
-+def test_normalise_event_timed_paths_with_dtend_and_duration():
-+    fallback = "2026-01-01T00:00:00Z"
-+    start = datetime(2026, 2, 10, 12, 0, tzinfo=timezone.utc)
-+    timed_with_dtend = DummyComponent(
-+        props={"UID": "timed-dtend"},
-+        decoded_values={"DTSTART": start, "DTEND": start + timedelta(minutes=30)},
-+    )
-+    row = ics._normalise_event(timed_with_dtend, fallback_updated_at=fallback)
-+    assert row is not None
-+    assert row["ends_at"] == "2026-02-10T12:30:00Z"
-+
-+    timed_with_duration = DummyComponent(
-+        props={"UID": "timed-duration"},
-+        decoded_values={"DTSTART": start, "DURATION": timedelta(minutes=45)},
-+    )
-+    row = ics._normalise_event(timed_with_duration, fallback_updated_at=fallback)
-+    assert row is not None
-+    assert row["ends_at"] == "2026-02-10T12:45:00Z"
-+
-+    timed_negative_duration = DummyComponent(
-+        props={"UID": "timed-negative"},
-+        decoded_values={"DTSTART": start, "DURATION": timedelta(minutes=-30)},
-+    )
-+    row = ics._normalise_event(timed_negative_duration, fallback_updated_at=fallback)
-+    assert row is not None
-+    assert row["ends_at"] == "2026-02-10T12:01:00Z"
-+
-+    timed_default_duration = DummyComponent(
-+        props={"UID": "timed-default"},
-+        decoded_values={"DTSTART": start},
-+    )
-+    row = ics._normalise_event(timed_default_duration, fallback_updated_at=fallback)
-+    assert row is not None
-+    assert row["ends_at"] == "2026-02-10T13:00:00Z"
-+
-+
-+def test_parse_ics_events_rejects_bad_window():
-+    with pytest.raises(ValueError, match="window_end must be after window_start"):
-+        ics.parse_ics_events(
-+            "BEGIN:VCALENDAR\nEND:VCALENDAR",
-+            window_start=datetime(2026, 2, 10, tzinfo=timezone.utc),
-+            window_end=datetime(2026, 2, 10, tzinfo=timezone.utc),
-+        )
-+
-+
-+def test_parse_ics_events_wraps_calendar_and_expansion_errors(monkeypatch: pytest.MonkeyPatch):
-+    monkeypatch.setattr(ics.Calendar, "from_ical", lambda _payload: (_ for _ in ()).throw(ValueError("bad ics")))
-+    with pytest.raises(ics.CalendarParseError, match="could not be parsed"):
-+        ics.parse_ics_events(
-+            "broken",
-+            window_start=datetime(2026, 2, 1, tzinfo=timezone.utc),
-+            window_end=datetime(2026, 2, 2, tzinfo=timezone.utc),
-+        )
-+
-+    calendar = SimpleNamespace(get=lambda _key: "Etc/UTC")
-+    monkeypatch.setattr(ics.Calendar, "from_ical", lambda _payload: calendar)
-+
-+    class _BrokenExpander:
-+        def between(self, _start, _end):
-+            raise RuntimeError("expand failed")
-+
-+    monkeypatch.setattr(ics.recurring_ical_events, "of", lambda _calendar: _BrokenExpander())
-+    with pytest.raises(ics.CalendarParseError, match="recurrence expansion failed"):
-+        ics.parse_ics_events(
-+            "ok",
-+            window_start=datetime(2026, 2, 1, tzinfo=timezone.utc),
-+            window_end=datetime(2026, 2, 2, tzinfo=timezone.utc),
-+        )
-+
-+
-+def test_parse_ics_events_filters_deduplicates_and_sorts(monkeypatch: pytest.MonkeyPatch):
-+    class _Calendar:
-+        @staticmethod
-+        def get(key: str):
-+            if key == "X-WR-TIMEZONE":
-+                return "Bad/Timezone"
-+            return None
-+
-+    class _Expander:
-+        def between(self, _start, _end):
-+            return [
-+                SimpleNamespace(name="VTODO", token="skip-non-event"),
-+                SimpleNamespace(name="VEVENT", token="drop-none"),
-+                SimpleNamespace(name="VEVENT", token="late"),
-+                SimpleNamespace(name="VEVENT", token="early-old"),
-+                SimpleNamespace(name="VEVENT", token="early-new"),
-+            ]
-+
-+    monkeypatch.setattr(ics.Calendar, "from_ical", lambda _payload: _Calendar())
-+    monkeypatch.setattr(ics.recurring_ical_events, "of", lambda _calendar: _Expander())
-+
-+    captured_tzs: list[object] = []
-+
-+    def _normalise(component, *, fallback_updated_at: str, default_tz):  # noqa: ANN001
-+        assert fallback_updated_at == "2026-02-01T12:00:00Z"
-+        captured_tzs.append(default_tz)
-+        token = getattr(component, "token")
-+        if token == "drop-none":
-+            return None
-+        if token == "late":
-+            return {"uid": "2", "starts_at": "2026-02-03T00:00:00Z", "summary": "late"}
-+        if token == "early-old":
-+            return {"uid": "1", "starts_at": "2026-02-02T00:00:00Z", "summary": "old"}
-+        if token == "early-new":
-+            return {"uid": "1", "starts_at": "2026-02-02T00:00:00Z", "summary": "new"}
-+        raise AssertionError(f"unexpected token: {token}")
-+
-+    monkeypatch.setattr(ics, "_normalise_event", _normalise)
-+
-+    rows = ics.parse_ics_events(
-+        "payload",
-+        window_start=datetime(2026, 2, 1, tzinfo=timezone.utc),
-+        window_end=datetime(2026, 2, 10, tzinfo=timezone.utc),
-+        synced_at=datetime(2026, 2, 1, 12, 0, tzinfo=timezone.utc),
-+    )
-+    assert rows == [
-+        {"uid": "1", "starts_at": "2026-02-02T00:00:00Z", "summary": "new"},
-+        {"uid": "2", "starts_at": "2026-02-03T00:00:00Z", "summary": "late"},
++    assert metrics == [
++        "## Metrics",
++        "- Interruptions: 2",
++        "- Decisions: 1",
++        "- Action items: 0",
 +    ]
-+    assert captured_tzs == [None, None, None, None]
-+
-+
-+def test_parse_ics_events_without_timezone_header(monkeypatch: pytest.MonkeyPatch):
-+    calendar = SimpleNamespace(get=lambda _key: None)
-+    monkeypatch.setattr(ics.Calendar, "from_ical", lambda _payload: calendar)
-+
-+    class _EmptyExpander:
-+        def between(self, _start, _end):
-+            return []
-+
-+    monkeypatch.setattr(ics.recurring_ical_events, "of", lambda _calendar: _EmptyExpander())
 +    assert (
-+        ics.parse_ics_events(
-+            "payload",
-+            window_start=datetime(2026, 2, 1, tzinfo=timezone.utc),
-+            window_end=datetime(2026, 2, 10, tzinfo=timezone.utc),
++        exporter._metrics_section(
++            {
++                "meeting": {
++                    "total_interruptions": None,
++                    "total_questions": None,
++                    "decisions_count": None,
++                    "action_items_count": None,
++                }
++            }
 +        )
 +        == []
 +    )
 +
-+
-+def test_calendar_expansion_window_clamps_values():
-+    settings = SimpleNamespace(calendar_expand_past_days=-5, calendar_expand_future_days=0)
-+    start, end = service.calendar_expansion_window(
-+        settings,
-+        now=datetime(2026, 2, 10, 15, 45, tzinfo=timezone.utc),
++    transcript = exporter._transcript_section(
++        {"text": "fallback transcript"},
++        [{"speaker": "S1", "text": "   "}],
 +    )
-+    assert start == datetime(2026, 2, 10, 0, 0, tzinfo=timezone.utc)
-+    assert end == datetime(2026, 2, 12, 0, 0, tzinfo=timezone.utc)
++    assert transcript == ["## Transcript", "fallback transcript"]
 +
 +
-+def test_redacted_calendar_source_variants():
-+    source_with_url = {
-+        "id": 1,
-+        "name": "Team",
-+        "kind": "URL",
-+        "url": "https://calendar.example.com/team.ics",
-+        "file_ics": "",
-+        "created_at": "created",
-+        "last_synced_at": "synced",
-+        "last_error": "err",
-+    }
-+    redacted = service.redacted_calendar_source(source_with_url)
-+    assert redacted["kind"] == "url"
-+    assert redacted["url_configured"] is True
-+    assert redacted["url_host"] == "calendar.example.com"
-+    assert redacted["file_configured"] is False
++def test_build_onenote_markdown_language_detection_paths(tmp_path: Path):
++    cfg = _cfg(tmp_path)
 +
-+    invalid_url_source = {"kind": "url", "url": "https://[not-valid", "file_ics": "ics"}
-+    redacted = service.redacted_calendar_source(invalid_url_source)
-+    assert redacted["url_host"] is None
-+    assert redacted["file_configured"] is True
-+
-+    empty_url_source = {"kind": "", "url": "", "file_ics": ""}
-+    redacted = service.redacted_calendar_source(empty_url_source)
-+    assert redacted["url_configured"] is False
-+    assert redacted["url_host"] is None
-+
-+
-+def test_source_payload_for_sync_url_file_and_errors(monkeypatch: pytest.MonkeyPatch):
-+    settings = _service_settings()
-+
-+    with pytest.raises(service.CalendarSyncError, match="not configured"):
-+        service._source_payload_for_sync({"kind": "url", "url": ""}, settings)
-+
-+    monkeypatch.setattr(service, "validate_ics_url", lambda raw: f"validated:{raw}")
-+    fetch_calls: list[tuple[str, float, int, int]] = []
-+
-+    def _fetch(url: str, *, timeout_seconds: float, max_bytes: int, max_redirects: int) -> bytes:
-+        fetch_calls.append((url, timeout_seconds, max_bytes, max_redirects))
-+        return b"calendar"
-+
-+    monkeypatch.setattr(service, "fetch_ics_url", _fetch)
-+    payload = service._source_payload_for_sync(
-+        {"kind": "url", "url": "https://calendar.example.com/a.ics"},
-+        settings,
++    rec_with_detected = "rec-lang-detected"
++    derived_detected = cfg.recordings_root / rec_with_detected / "derived"
++    derived_detected.mkdir(parents=True, exist_ok=True)
++    (derived_detected / "transcript.json").write_text(
++        json.dumps({"language": {"detected": " fr "}, "text": "bonjour"}),
++        encoding="utf-8",
 +    )
-+    assert payload == b"calendar"
-+    assert fetch_calls == [("validated:https://calendar.example.com/a.ics", 4.5, 12345, 4)]
-+
-+    monkeypatch.setattr(
-+        service,
-+        "fetch_ics_url",
-+        lambda *_args, **_kwargs: (_ for _ in ()).throw(ics.CalendarFetchError("fetch-failed")),
++    markdown_detected = exporter.build_onenote_markdown(
++        {"id": rec_with_detected, "source_filename": "detected.wav"},
++        settings=cfg,
 +    )
-+    with pytest.raises(service.CalendarSyncError, match="fetch-failed"):
-+        service._source_payload_for_sync({"kind": "url", "url": "https://calendar.example.com/a.ics"}, settings)
++    assert "- Language: fr" in markdown_detected
 +
-+    with pytest.raises(service.CalendarSyncError, match="file payload is empty"):
-+        service._source_payload_for_sync({"kind": "file", "file_ics": "   "}, settings)
-+    assert service._source_payload_for_sync({"kind": "file", "file_ics": "BEGIN:VCALENDAR"}, settings) == b"BEGIN:VCALENDAR"
-+
-+    with pytest.raises(service.CalendarSyncError, match="unsupported"):
-+        service._source_payload_for_sync({"kind": "other"}, settings)
-+
-+
-+def test_sync_calendar_source_raises_key_error_when_source_missing(monkeypatch: pytest.MonkeyPatch):
-+    monkeypatch.setattr(service, "get_calendar_source", lambda *_args, **_kwargs: None)
-+    with pytest.raises(KeyError):
-+        service.sync_calendar_source(9, settings=_service_settings())
-+
-+
-+def test_sync_calendar_source_success(monkeypatch: pytest.MonkeyPatch):
-+    fixed_now = datetime(2026, 2, 10, 12, 0, tzinfo=timezone.utc)
-+
-+    class _FixedDateTime(datetime):
-+        @classmethod
-+        def now(cls, tz=None):  # noqa: ANN001
-+            return fixed_now if tz is not None else fixed_now.replace(tzinfo=None)
-+
-+    monkeypatch.setattr(service, "datetime", _FixedDateTime)
-+    monkeypatch.setattr(service, "get_calendar_source", lambda *_args, **_kwargs: {"id": 5, "kind": "file", "file_ics": "x"})
-+    monkeypatch.setattr(
-+        service,
-+        "calendar_expansion_window",
-+        lambda _settings, *, now: (datetime(2026, 2, 1, tzinfo=timezone.utc), datetime(2026, 2, 20, tzinfo=timezone.utc)),
++    rec_with_dominant = "rec-lang-dominant"
++    derived_dominant = cfg.recordings_root / rec_with_dominant / "derived"
++    derived_dominant.mkdir(parents=True, exist_ok=True)
++    (derived_dominant / "transcript.json").write_text(
++        json.dumps({"language": "not-a-dict", "dominant_language": "es", "text": "hola"}),
++        encoding="utf-8",
 +    )
-+    monkeypatch.setattr(service, "_source_payload_for_sync", lambda *_args, **_kwargs: b"payload")
-+    monkeypatch.setattr(service, "parse_ics_events", lambda *_args, **_kwargs: [{"uid": "1"}])
-+    monkeypatch.setattr(service, "replace_calendar_events_for_window", lambda **_kwargs: 7)
-+
-+    updates: list[dict[str, object]] = []
-+    monkeypatch.setattr(
-+        service,
-+        "update_calendar_source_sync_state",
-+        lambda source_id, **kwargs: updates.append({"source_id": source_id, **kwargs}),
++    markdown_dominant = exporter.build_onenote_markdown(
++        {"id": rec_with_dominant, "source_filename": "dominant.wav"},
++        settings=cfg,
 +    )
++    assert "- Language: es" in markdown_dominant
 +
-+    result = service.sync_calendar_source(5, settings=_service_settings())
-+    assert result == {
-+        "source_id": 5,
-+        "window_start": "2026-02-01T00:00:00Z",
-+        "window_end": "2026-02-20T00:00:00Z",
-+        "events_count": 7,
-+        "synced_at": "2026-02-10T12:00:00Z",
-+    }
-+    assert updates == [
++    rec_language_auto = "rec-lang-auto"
++    derived_auto = cfg.recordings_root / rec_language_auto / "derived"
++    derived_auto.mkdir(parents=True, exist_ok=True)
++    (derived_auto / "transcript.json").write_text(
++        json.dumps({"language": {"detected": "ignored"}, "dominant_language": "ignored"}),
++        encoding="utf-8",
++    )
++    markdown_auto = exporter.build_onenote_markdown(
 +        {
-+            "source_id": 5,
-+            "last_synced_at": "2026-02-10T12:00:00Z",
-+            "last_error": None,
-+            "settings": _service_settings(),
-+        }
-+    ]
-+
-+
-+def test_sync_calendar_source_updates_error_state_for_parse_errors(monkeypatch: pytest.MonkeyPatch):
-+    monkeypatch.setattr(service, "get_calendar_source", lambda *_args, **_kwargs: {"id": 7, "kind": "file"})
-+    monkeypatch.setattr(
-+        service,
-+        "calendar_expansion_window",
-+        lambda _settings, *, now: (datetime(2026, 2, 1, tzinfo=timezone.utc), datetime(2026, 2, 20, tzinfo=timezone.utc)),
++            "id": rec_language_auto,
++            "source_filename": "auto.wav",
++            "language_auto": "en",
++        },
++        settings=cfg,
 +    )
-+    monkeypatch.setattr(service, "_source_payload_for_sync", lambda *_args, **_kwargs: b"payload")
-+    monkeypatch.setattr(
-+        service,
-+        "parse_ics_events",
-+        lambda *_args, **_kwargs: (_ for _ in ()).throw(ics.CalendarParseError("parse-failed")),
-+    )
-+
-+    updates: list[dict[str, object]] = []
-+    monkeypatch.setattr(
-+        service,
-+        "update_calendar_source_sync_state",
-+        lambda source_id, **kwargs: updates.append({"source_id": source_id, **kwargs}),
-+    )
-+
-+    with pytest.raises(service.CalendarSyncError, match="parse-failed"):
-+        service.sync_calendar_source(7, settings=_service_settings())
-+    assert len(updates) == 1
-+    assert updates[0]["source_id"] == 7
-+    assert updates[0]["last_error"] == "parse-failed"
++    assert "- Language: en" in markdown_auto
 +
 +
-+def test_sync_calendar_source_updates_error_state_for_payload_errors(monkeypatch: pytest.MonkeyPatch):
-+    monkeypatch.setattr(service, "get_calendar_source", lambda *_args, **_kwargs: {"id": 8, "kind": "file"})
-+    monkeypatch.setattr(
-+        service,
-+        "calendar_expansion_window",
-+        lambda _settings, *, now: (datetime(2026, 2, 1, tzinfo=timezone.utc), datetime(2026, 2, 20, tzinfo=timezone.utc)),
-+    )
-+    long_error = "x" * 1205
-+    monkeypatch.setattr(
-+        service,
-+        "_source_payload_for_sync",
-+        lambda *_args, **_kwargs: (_ for _ in ()).throw(service.CalendarSyncError(long_error)),
++def test_try_read_bytes_returns_none_on_oserror(tmp_path: Path, monkeypatch):
++    target = tmp_path / "payload.bin"
++    target.write_bytes(b"payload")
++    path_type = type(target)
++    real_read_bytes = path_type.read_bytes
++
++    def _patched_read_bytes(self):
++        if self == target:
++            raise OSError("read failed")
++        return real_read_bytes(self)
++
++    monkeypatch.setattr(path_type, "read_bytes", _patched_read_bytes)
++    assert exporter._try_read_bytes(target) is None
++
++
++def test_build_export_zip_bytes_missing_recording_and_snippet_paths(
++    tmp_path: Path,
++    monkeypatch,
++):
++    cfg = _cfg(tmp_path)
++    init_db(cfg)
++
++    with pytest.raises(KeyError):
++        exporter.build_export_zip_bytes("missing-recording", settings=cfg)
++
++    recording_id = "rec-export-snippets"
++    create_recording(
++        recording_id,
++        source="upload",
++        source_filename="snippets.wav",
++        status=RECORDING_STATUS_READY,
++        settings=cfg,
 +    )
 +
-+    updates: list[dict[str, object]] = []
-+    monkeypatch.setattr(
-+        service,
-+        "update_calendar_source_sync_state",
-+        lambda source_id, **kwargs: updates.append({"source_id": source_id, **kwargs}),
++    derived = cfg.recordings_root / recording_id / "derived"
++    snippets = derived / "snippets"
++    snippets.mkdir(parents=True, exist_ok=True)
++    inside = snippets / "inside.wav"
++    inside.write_bytes(b"inside")
++    outside = tmp_path / "outside.wav"
++    outside.write_bytes(b"outside")
++
++    path_type = type(snippets)
++    real_rglob = path_type.rglob
++
++    def _patched_rglob(self, pattern):
++        if self == snippets and pattern == "*.wav":
++            return [outside, inside]
++        return real_rglob(self, pattern)
++
++    monkeypatch.setattr(path_type, "rglob", _patched_rglob)
++
++    payload = exporter.build_export_zip_bytes(
++        recording_id,
++        settings=cfg,
++        include_snippets=True,
++    )
++    archive = zipfile.ZipFile(io.BytesIO(payload))
++    names = set(archive.namelist())
++    assert f"derived/snippets/{inside.name}" in names
++    assert "outside.wav" not in names
++
++
++def test_build_export_zip_bytes_include_snippets_non_dir_and_unreadable_file(
++    tmp_path: Path,
++    monkeypatch,
++):
++    cfg = _cfg(tmp_path)
++    init_db(cfg)
++    recording_id = "rec-export-unreadable"
++    create_recording(
++        recording_id,
++        source="upload",
++        source_filename="unreadable.wav",
++        status=RECORDING_STATUS_READY,
++        settings=cfg,
 +    )
 +
-+    with pytest.raises(service.CalendarSyncError, match="x{10,}"):
-+        service.sync_calendar_source(8, settings=_service_settings())
-+    assert len(updates) == 1
-+    assert updates[0]["source_id"] == 8
-+    assert len(str(updates[0]["last_error"])) == 1000
++    derived = cfg.recordings_root / recording_id / "derived"
++    derived.mkdir(parents=True, exist_ok=True)
++
++    snippets_as_file = derived / "snippets"
++    snippets_as_file.write_text("not-a-directory", encoding="utf-8")
++    payload_no_dir = exporter.build_export_zip_bytes(
++        recording_id,
++        settings=cfg,
++        include_snippets=True,
++    )
++    archive_no_dir = zipfile.ZipFile(io.BytesIO(payload_no_dir))
++    assert all(not name.startswith("derived/snippets/") for name in archive_no_dir.namelist())
++
++    snippets_as_file.unlink()
++    snippets_dir = derived / "snippets"
++    snippets_dir.mkdir(parents=True, exist_ok=True)
++    unreadable = snippets_dir / "unreadable.wav"
++    unreadable.write_bytes(b"wav")
++
++    real_try_read_bytes = exporter._try_read_bytes
++
++    def _patched_try_read_bytes(path: Path):
++        if path == unreadable:
++            return None
++        return real_try_read_bytes(path)
++
++    monkeypatch.setattr(exporter, "_try_read_bytes", _patched_try_read_bytes)
++
++    payload_unreadable = exporter.build_export_zip_bytes(
++        recording_id,
++        settings=cfg,
++        include_snippets=True,
++    )
++    archive_unreadable = zipfile.ZipFile(io.BytesIO(payload_unreadable))
++    assert all("unreadable.wav" not in name for name in archive_unreadable.namelist())
++
++
++def test_jobs_get_queue_status_and_pending_job_paths(tmp_path: Path, monkeypatch):
++    cfg = _cfg(tmp_path)
++
++    class _FakeQueueCtor:
++        def __init__(self, *, name: str, connection: object):
++            self.name = name
++            self.connection = connection
++
++    monkeypatch.setattr(jobs, "AppSettings", lambda: cfg)
++    monkeypatch.setattr(jobs.Redis, "from_url", lambda url: {"url": url})
++    monkeypatch.setattr(jobs, "Queue", _FakeQueueCtor)
++
++    queue_from_settings = jobs.get_queue()
++    assert queue_from_settings.name == cfg.rq_queue_name
++    assert queue_from_settings.connection == {"url": cfg.redis_url}
++
++    assert jobs._status_value(None) is None
++
++    class _FakeRQJob:
++        def __init__(self, status: str):
++            self.status = status
++            self.deleted = False
++
++        def get_status(self, refresh: bool = False):
++            assert refresh is True
++            return SimpleNamespace(value=self.status)
++
++        def delete(self, *, remove_from_queue: bool = True, delete_dependents: bool = True):
++            self.deleted = remove_from_queue and delete_dependents
++
++    class _FakeQueue:
++        def __init__(self):
++            self.jobs = {
++                "done": _FakeRQJob("finished"),
++                "deferred": _FakeRQJob("deferred"),
++                "scheduled": _FakeRQJob("scheduled"),
++            }
++            self.removed: list[str] = []
++
++        def fetch_job(self, job_id: str):
++            return self.jobs.get(job_id)
++
++        def remove(self, job_id: str):
++            self.removed.append(job_id)
++
++    deferred_removed: list[tuple[str, bool]] = []
++    scheduled_removed: list[tuple[str, bool]] = []
++
++    class _DeferredRegistry:
++        def __init__(self, *, queue):
++            self.queue = queue
++
++        def remove(self, job_id: str, delete_job: bool = False):
++            deferred_removed.append((job_id, delete_job))
++
++    class _ScheduledRegistry:
++        def __init__(self, *, queue):
++            self.queue = queue
++
++        def remove(self, job_id: str, delete_job: bool = False):
++            scheduled_removed.append((job_id, delete_job))
++
++    monkeypatch.setattr(jobs, "DeferredJobRegistry", _DeferredRegistry)
++    monkeypatch.setattr(jobs, "ScheduledJobRegistry", _ScheduledRegistry)
++
++    queue = _FakeQueue()
++    assert jobs._purge_pending_queue_job(queue, "missing") is False
++    assert jobs._purge_pending_queue_job(queue, "done") is False
++    assert jobs._purge_pending_queue_job(queue, "deferred") is True
++    assert jobs._purge_pending_queue_job(queue, "scheduled") is True
++    assert deferred_removed == [("deferred", False)]
++    assert scheduled_removed == [("scheduled", False)]
++
++
++def test_jobs_purge_pending_queue_job_covers_scheduled_false_branch(monkeypatch):
++    class _WeirdStatus:
++        def __init__(self):
++            self.calls = 0
++
++        def __hash__(self):
++            return hash("scheduled")
++
++        def __eq__(self, other):
++            self.calls += 1
++            if self.calls == 1 and other == "scheduled":
++                return True
++            return False
++
++    status = _WeirdStatus()
++
++    class _FakeJob:
++        def __init__(self):
++            self.deleted = False
++
++        def get_status(self, refresh: bool = False):
++            assert refresh is True
++            return SimpleNamespace(value="scheduled")
++
++        def delete(self, *, remove_from_queue: bool = True, delete_dependents: bool = True):
++            self.deleted = remove_from_queue and delete_dependents
++
++    class _FakeQueue:
++        def __init__(self):
++            self.job = _FakeJob()
++
++        def fetch_job(self, _job_id: str):
++            return self.job
++
++        def remove(self, _job_id: str):
++            raise AssertionError("queue.remove should not be called")
++
++    monkeypatch.setattr(jobs, "_status_value", lambda _status: status)
++    queue = _FakeQueue()
++    assert jobs._purge_pending_queue_job(queue, "job-weird") is True
++    assert queue.job.deleted is True
++
++
++def test_purge_pending_recording_jobs_handles_empty_and_paginated_results(
++    tmp_path: Path,
++    monkeypatch,
++):
++    cfg = _cfg(tmp_path)
++    monkeypatch.setattr(jobs, "init_db", lambda _cfg: None)
++    monkeypatch.setattr(jobs, "get_queue", lambda _cfg: object())
++
++    monkeypatch.setattr(
++        jobs,
++        "list_jobs",
++        lambda **_kwargs: ([], 0),
++    )
++    assert jobs.purge_pending_recording_jobs("rec-empty", settings=cfg) == 0
++
++    offsets: list[int] = []
++
++    def _list_jobs_paginated(**kwargs):
++        offset = int(kwargs["offset"])
++        offsets.append(offset)
++        if offset == 0:
++            return ([{"id": "job-a"}, {"id": "job-b"}], 3)
++        if offset == 2:
++            return ([{"id": "job-c"}], 3)
++        return ([], 3)
++
++    monkeypatch.setattr(jobs, "list_jobs", _list_jobs_paginated)
++    monkeypatch.setattr(
++        jobs,
++        "_purge_pending_queue_job",
++        lambda _queue, job_id: job_id != "job-b",
++    )
++
++    removed = jobs.purge_pending_recording_jobs("rec-paged", settings=cfg)
++    assert removed == 2
++    assert offsets == [0, 2]
++
++
++def test_cancel_pending_queue_job_returns_false_on_errors(tmp_path: Path, monkeypatch):
++    cfg = _cfg(tmp_path)
++    monkeypatch.setattr(jobs, "get_queue", lambda _cfg: (_ for _ in ()).throw(RuntimeError("boom")))
++    assert jobs.cancel_pending_queue_job("job-1", settings=cfg) is False
++
++    monkeypatch.setattr(jobs, "get_queue", lambda _cfg: object())
++    monkeypatch.setattr(
++        jobs,
++        "_purge_pending_queue_job",
++        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("boom")),
++    )
++    assert jobs.cancel_pending_queue_job("job-2", settings=cfg) is False
++
++
++def test_enqueue_recording_job_rejects_invalid_type_and_missing_recording(tmp_path: Path):
++    cfg = _cfg(tmp_path)
++    with pytest.raises(ValueError, match="Unsupported job type"):
++        jobs.enqueue_recording_job("rec-x", job_type="unsupported", settings=cfg)
++
++    with pytest.raises(jobs.RecordingNotFoundError, match="Recording not found"):
++        jobs.enqueue_recording_job("rec-missing", settings=cfg)
++
++
++def test_enqueue_recording_job_allows_empty_existing_job_id(tmp_path: Path, monkeypatch):
++    cfg = _cfg(tmp_path)
++    monkeypatch.setattr(jobs, "init_db", lambda _cfg: None)
++    monkeypatch.setattr(jobs, "get_recording", lambda *_a, **_k: {"id": "rec-1"})
++    monkeypatch.setattr(
++        jobs,
++        "create_job_if_no_active_for_recording",
++        lambda **_kwargs: (False, {"id": "   "}),
++    )
++    monkeypatch.setattr(jobs, "set_recording_status", lambda *_a, **_k: True)
++
++    class _QueueOK:
++        def enqueue(self, *_args, **_kwargs):
++            return None
++
++    monkeypatch.setattr(jobs, "get_queue", lambda _cfg: _QueueOK())
++
++    job = jobs.enqueue_recording_job("rec-1", settings=cfg)
++    assert job.recording_id == "rec-1"
++    assert job.job_type == DEFAULT_REQUEUE_JOB_TYPE
++
++
++def test_enqueue_recording_job_uses_create_job_for_non_default_type(
++    tmp_path: Path,
++    monkeypatch,
++):
++    cfg = _cfg(tmp_path)
++    monkeypatch.setattr(jobs, "init_db", lambda _cfg: None)
++    monkeypatch.setattr(jobs, "get_recording", lambda *_a, **_k: {"id": "rec-2"})
++    monkeypatch.setattr(
++        jobs,
++        "create_job_if_no_active_for_recording",
++        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("unexpected")),
++    )
++    created: list[dict[str, object]] = []
++    monkeypatch.setattr(
++        jobs,
++        "create_job",
++        lambda **kwargs: created.append(kwargs),
++    )
++    monkeypatch.setattr(jobs, "set_recording_status", lambda *_a, **_k: True)
++
++    class _QueueOK:
++        def enqueue(self, *_args, **_kwargs):
++            return None
++
++    monkeypatch.setattr(jobs, "get_queue", lambda _cfg: _QueueOK())
++
++    job = jobs.enqueue_recording_job("rec-2", job_type=JOB_TYPE_STT, settings=cfg)
++    assert job.job_type == JOB_TYPE_STT
++    assert len(created) == 1
++    assert created[0]["job_type"] == JOB_TYPE_STT
++    assert created[0]["status"] == JOB_STATUS_QUEUED
++
++
++def test_enqueue_recording_job_reraises_when_fail_job_also_fails(
++    tmp_path: Path,
++    monkeypatch,
++):
++    cfg = _cfg(tmp_path)
++    monkeypatch.setattr(jobs, "init_db", lambda _cfg: None)
++    monkeypatch.setattr(jobs, "get_recording", lambda *_a, **_k: {"id": "rec-3"})
++    monkeypatch.setattr(
++        jobs,
++        "create_job_if_no_active_for_recording",
++        lambda **_kwargs: (True, None),
++    )
++    monkeypatch.setattr(
++        jobs,
++        "fail_job",
++        lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("fail-job-down")),
++    )
++
++    class _BrokenQueue:
++        def enqueue(self, *_args, **_kwargs):
++            raise RuntimeError("redis-down")
++
++    monkeypatch.setattr(jobs, "get_queue", lambda _cfg: _BrokenQueue())
++
++    with pytest.raises(RuntimeError, match="redis-down"):
++        jobs.enqueue_recording_job("rec-3", settings=cfg)
++
++
++def test_ops_parse_and_iteration_branches(tmp_path: Path, monkeypatch):
++    assert ops._parse_utc(None) is None
++    assert ops._parse_utc("   ") is None
++    assert ops._parse_utc("not-a-date") is None
++
++    parsed_naive = ops._parse_utc("2026-01-02T03:04:05")
++    assert parsed_naive is not None
++    assert parsed_naive.tzinfo == timezone.utc
++
++    cfg = _cfg(tmp_path)
++    offsets: list[int] = []
++
++    def _paged_list_recordings(**kwargs):
++        offset = int(kwargs["offset"])
++        offsets.append(offset)
++        if offset == 0:
++            return ([{"id": "rec-1"}], 2)
++        if offset == 1:
++            return ([{"id": "rec-2"}], 2)
++        return ([], 2)
++
++    monkeypatch.setattr(ops, "list_recordings", _paged_list_recordings)
++    rows = ops._iter_recordings(settings=cfg)
++    assert rows == [{"id": "rec-1"}, {"id": "rec-2"}]
++    assert offsets == [0, 1]
++
++    monkeypatch.setattr(ops, "list_recordings", lambda **_kwargs: ([], 0))
++    assert ops._iter_recordings(settings=cfg) == []
++
++
++def test_ops_delete_path_and_cleanup_skip_paths(tmp_path: Path, monkeypatch):
++    cfg = _cfg(tmp_path)
++    assert ops._delete_path(tmp_path / "does-not-exist") is False
++
++    monkeypatch.setattr(
++        ops,
++        "_iter_recordings",
++        lambda **_kwargs: [
++            {"id": "   ", "updated_at": "2000-01-01T00:00:00Z"},
++            {"id": "rec-old", "updated_at": "2000-01-01T00:00:00Z"},
++        ],
++    )
++    monkeypatch.setattr(ops, "_delete_path", lambda _path: False)
++    monkeypatch.setattr(ops, "delete_recording", lambda *_a, **_k: False)
++
++    summary = ops.run_retention_cleanup(settings=cfg)
++    assert summary == {
++        "quarantine_recordings_deleted": 0,
++        "quarantine_directories_deleted": 0,
++        "tmp_entries_deleted": 0,
++    }
++
++
++def test_ops_cleanup_handles_tmp_stat_errors_and_failed_deletes(
++    tmp_path: Path,
++    monkeypatch,
++):
++    cfg = _cfg(tmp_path)
++    monkeypatch.setattr(ops, "_iter_recordings", lambda **_kwargs: [])
++
++    tmp_root = cfg.data_root / "tmp"
++    tmp_root.mkdir(parents=True, exist_ok=True)
++    bad_entry = tmp_root / "bad.tmp"
++    old_entry = tmp_root / "old.tmp"
++    bad_entry.write_text("x", encoding="utf-8")
++    old_entry.write_text("y", encoding="utf-8")
++    stale_timestamp = datetime(2000, 1, 1, tzinfo=timezone.utc).timestamp()
++    old_entry.touch()
++    bad_entry.touch()
++    os.utime(old_entry, (stale_timestamp, stale_timestamp))
++    os.utime(bad_entry, (stale_timestamp, stale_timestamp))
++
++    path_type = type(bad_entry)
++    real_stat = path_type.stat
++
++    def _patched_stat(self, *args, **kwargs):
++        if self == bad_entry:
++            raise OSError("stat failed")
++        return real_stat(self, *args, **kwargs)
++
++    monkeypatch.setattr(path_type, "stat", _patched_stat)
++    monkeypatch.setattr(ops, "_delete_path", lambda _path: False)
++
++    summary = ops.run_retention_cleanup(settings=cfg)
++    assert summary["tmp_entries_deleted"] == 0
++
++
++def test_reaper_now_default_and_missing_identifier_paths(tmp_path: Path, monkeypatch):
++    cfg = _cfg(tmp_path)
++    cfg.stuck_job_seconds = 10
++
++    monkeypatch.setattr(
++        reaper,
++        "list_stale_started_jobs",
++        lambda **_kwargs: [{"id": "", "recording_id": "rec-stale", "type": "precheck"}],
++    )
++    monkeypatch.setattr(
++        reaper,
++        "list_processing_recordings_without_started_job",
++        lambda **_kwargs: [
++            {"id": "", "active_job_id": "job-1", "active_job_type": "precheck"},
++            {"id": "rec-no-job", "active_job_id": "", "active_job_type": " "},
++        ],
++    )
++    monkeypatch.setattr(
++        reaper,
++        "fail_job_if_started",
++        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("unexpected")),
++    )
++    monkeypatch.setattr(
++        reaper,
++        "fail_job_if_queued",
++        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("unexpected")),
++    )
++    monkeypatch.setattr(
++        reaper,
++        "set_recording_status_if_current_in_and_no_started_job",
++        lambda recording_id, *_a, **_k: recording_id == "rec-no-job",
++    )
++    appended: list[str] = []
++    monkeypatch.setattr(
++        reaper,
++        "_append_step_log_best_effort",
++        lambda _path, message, *, now: appended.append(message),
++    )
++
++    summary = reaper.run_stuck_job_reaper_once(settings=cfg)
++    assert summary["stale_started_jobs"] == 1
++    assert summary["processing_without_started"] == 2
++    assert summary["recovered_jobs"] == 0
++    assert summary["recovered_recordings"] == 1
++    assert summary["job_ids"] == []
++    assert summary["recording_ids"] == ["rec-no-job"]
++    assert len(appended) == 1
++    assert "job=none" in appended[0]

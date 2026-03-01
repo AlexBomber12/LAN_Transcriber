@@ -282,7 +282,7 @@ Queue (in order)
 - Depends on: PR-COV-LAN_APP-HEALTH-WORKER-01
 
 55) PR-COV-LAN_APP-EXPORT-OPS-JOBS-01: Raise exporter/jobs/ops/reaper to 100%
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-COV-LAN_APP-EXPORT-OPS-JOBS-01.md
 - Depends on: PR-COV-LAN_APP-CALENDAR-01
 
