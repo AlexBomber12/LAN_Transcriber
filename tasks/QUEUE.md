@@ -315,3 +315,8 @@ Queue (in order)
 - Status: DONE
 - Tasks file: tasks/PR-COVERAGE-ENFORCE-100-01.md
 - Depends on: PR-COV-LAN_TRANSCRIBER-01
+
+62) PR-DIARIZATION-ROBUST-02: Robust diarization load, persistent HF cache, warmup command, and pre-start checklist
+- Status: TODO
+- Tasks file: tasks/PR-DIARIZATION-ROBUST-02.md
+- Depends on: PR-COVERAGE-ENFORCE-100-01
