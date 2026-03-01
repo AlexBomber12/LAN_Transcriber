@@ -28,9 +28,14 @@ x-lan-service: &lan-service
     - TRANSCRIBER_VERSION=${TRANSCRIBER_VERSION:-local}
     - LANG_DEFAULT=${LANG_DEFAULT:-en}
     - QUARANTINE_RETENTION_DAYS=${QUARANTINE_RETENTION_DAYS:-7}
+    - LAN_DIARIZATION_MODEL_ID=${LAN_DIARIZATION_MODEL_ID:-pyannote/speaker-diarization@3.1}
+    - HF_TOKEN
+    - HUGGINGFACE_HUB_TOKEN
+    - HF_HOME=${HF_HOME:-/data/hf}
+    - TRANSFORMERS_CACHE=${TRANSFORMERS_CACHE:-/data/hf/transformers}
   volumes:
     - lan_cache:/root/.cache
-    - /opt/lan_cache/hf:/root/.cache/huggingface
+    - hf-cache:/data/hf
     - /opt/lan_cache/ollama:/root/.ollama
     # Persistent runtime state root: DB, uploads, derived artifacts, logs.
     - ./data:/data
@@ -102,3 +107,4 @@ networks:
 
 volumes:
   lan_cache:
+  hf-cache:

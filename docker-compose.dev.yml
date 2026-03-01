@@ -18,9 +18,15 @@ services:
         "--reload-dir",
         "/app/lan_transcriber",
       ]
+    environment:
+      - HF_HOME=${HF_HOME:-/data/hf}
+      - TRANSFORMERS_CACHE=${TRANSFORMERS_CACHE:-/data/hf/transformers}
     volumes:
       - ./:/app
 
   worker:
+    environment:
+      - HF_HOME=${HF_HOME:-/data/hf}
+      - TRANSFORMERS_CACHE=${TRANSFORMERS_CACHE:-/data/hf/transformers}
     volumes:
       - ./:/app

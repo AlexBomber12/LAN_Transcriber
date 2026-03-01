@@ -10,6 +10,8 @@ from pydantic_settings import BaseSettings
 from lan_app.constants import DEFAULT_RQ_QUEUE_NAME
 from lan_transcriber.runtime_paths import default_data_root, default_recordings_root
 
+from .diarization_loader import DEFAULT_DIARIZATION_MODEL_ID
+
 _DEV_DEFAULT_REDIS_URL = "redis://127.0.0.1:6379/0"
 _DEV_DEFAULT_LLM_BASE_URL = "http://127.0.0.1:8000"
 _logger = logging.getLogger(__name__)
@@ -173,11 +175,18 @@ class AppSettings(BaseSettings):
             "CALENDAR_FETCH_MAX_REDIRECTS",
         ),
     )
+    diarization_model_id: str = Field(
+        default=DEFAULT_DIARIZATION_MODEL_ID,
+        validation_alias=AliasChoices("LAN_DIARIZATION_MODEL_ID"),
+    )
 
     @model_validator(mode="after")
     def validate_runtime_environment(self) -> "AppSettings":
         self.redis_url = _normalize_optional_env(self.redis_url)
         self.llm_base_url = _normalize_optional_env(self.llm_base_url)
+        self.diarization_model_id = (
+            self.diarization_model_id.strip() or DEFAULT_DIARIZATION_MODEL_ID
+        )
 
         if self.lan_env == "dev":
             if self.redis_url is None:
