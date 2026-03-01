@@ -46,7 +46,7 @@ TOTAL                      5821     96   1792     32    98%
 
 44 files skipped due to complete coverage.
 Coverage HTML written to dir htmlcov
-463 passed, 1 skipped, 9 warnings in 17.93s
+463 passed, 1 skipped, 9 warnings in 17.11s
 Name                                                Stmts   Miss Branch BrPart  Cover
 -------------------------------------------------------------------------------------
 lan_transcriber/__init__.py                             8      0      0      0   100%
