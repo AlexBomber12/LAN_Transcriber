@@ -109,8 +109,8 @@ Requirement already satisfied: pytz>2021.1 in ./.venv-ci/lib/python3.12/site-pac
 Building wheels for collected packages: lan-transcriber
   Building editable for lan-transcriber (pyproject.toml): started
   Building editable for lan-transcriber (pyproject.toml): finished with status 'done'
-  Created wheel for lan-transcriber: filename=lan_transcriber-0.1.0-0.editable-py3-none-any.whl size=15425 sha256=99093b3cffdde9db16000b6880a397a0b64e1b4baf11c9fcf2fd0f959f02cf12
-  Stored in directory: /tmp/pip-ephem-wheel-cache-8d87gyxb/wheels/d5/8a/5c/f7178f7e49aa5ae12b2320ec66b5c310f4f2f63d1bd301b7fb
+  Created wheel for lan-transcriber: filename=lan_transcriber-0.1.0-0.editable-py3-none-any.whl size=15425 sha256=0408872e72219427bdb754f16d50eb225e491a68d144170c7c8b7a5974b8d7be
+  Stored in directory: /tmp/pip-ephem-wheel-cache-pn8qup1z/wheels/d5/8a/5c/f7178f7e49aa5ae12b2320ec66b5c310f4f2f63d1bd301b7fb
 Successfully built lan-transcriber
 Installing collected packages: lan-transcriber
   Attempting uninstall: lan-transcriber
@@ -120,12 +120,12 @@ Installing collected packages: lan-transcriber
 Successfully installed lan-transcriber-0.1.0
 No broken requirements found.
 All checks passed!
-........................................................................ [ 18%]
-........................................................................ [ 36%]
-........................................................................ [ 54%]
-........................................................................ [ 72%]
-........................................................................ [ 90%]
-....................................                                     [100%]
+........................................................................ [ 17%]
+........................................................................ [ 34%]
+........................................................................ [ 51%]
+........................................................................ [ 68%]
+........................................................................ [ 85%]
+..............................................................           [100%]
 =============================== warnings summary ===============================
 lan_transcriber/pipeline_steps/precheck.py:3
   /home/alexey/LAN_Transcriber/lan_transcriber/pipeline_steps/precheck.py:3: DeprecationWarning: 'audioop' is deprecated and slated for removal in Python 3.13
@@ -150,6 +150,9 @@ tests/test_cov_lan_app_health_worker.py::test_worker_module_main_guard
 tests/test_cov_lan_app_health_worker.py::test_db_init_main_and_guard
   <frozen runpy>:128: RuntimeWarning: 'lan_app.db_init' found in sys.modules after import of package 'lan_app', but prior to execution of 'lan_app.db_init'; this may result in unpredictable behaviour
 
+tests/test_cov_lan_app_ui.py::test_ui_module_main_guard_launches
+  <frozen runpy>:128: RuntimeWarning: 'lan_app.ui' found in sys.modules after import of package 'lan_app', but prior to execution of 'lan_app.ui'; this may result in unpredictable behaviour
+
 -- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
 ================================ tests coverage ================================
 _______________ coverage: platform linux, python 3.12.3-final-0 ________________
@@ -157,8 +160,6 @@ _______________ coverage: platform linux, python 3.12.3-final-0 ________________
 Name                                                Stmts   Miss Branch BrPart  Cover   Missing
 -----------------------------------------------------------------------------------------------
 lan_app/config.py                                      66      9     14      2    79%   189->195, 197-207
-lan_app/ui.py                                          63     24      8      2    58%   72-105, 136-142, 193-194, 196->204, 201, 205
-lan_app/ui_routes.py                                  951    220    304     82    73%   122, 132, 143, 171-172, 174, 183-184, 186, 201, 204, 206, 207->199, 226, 229, 234-235, 257->263, 261-262, 265-266, 295-296, 301-302, 309->312, 317, 321, 331->337, 333, 337->360, 342-358, 374, 398, 415-422, 428->430, 436-461, 493-494, 497-498, 505, 507, 521, 526, 529, 538, 551, 571-572, 575-576, 603-604, 632-634, 648-650, 653->655, 656->658, 661-662, 667, 715, 716->713, 721-722, 752-753, 768, 772-773, 833, 837, 856->858, 859, 865, 890, 929-939, 945, 948-949, 968, 1000, 1008-1013, 1031, 1037, 1059-1062, 1186, 1211, 1238, 1245, 1256, 1259, 1263->1268, 1266-1267, 1276-1279, 1291, 1294, 1297, 1302-1303, 1321, 1324, 1327, 1330-1331, 1339, 1343, 1352-1355, 1366, 1370->1376, 1373-1374, 1382-1383, 1385, 1388->1397, 1395-1396, 1452-1453, 1456-1460, 1464-1465, 1499, 1502, 1504->1506, 1508, 1593-1595, 1620, 1632-1633, 1642, 1649-1650, 1669, 1683, 1686, 1695-1701, 1772-1782, 1792, 1805-1808, 1819, 1831-1834
 lan_app/worker_tasks.py                               393     87    122     30    75%   86-87, 92->96, 98->108, 100->108, 113, 132, 133->129, 139-143, 173-174, 206-207, 231-232, 234, 239, 242, 265-266, 271-272, 282-283, 299-300, 303-304, 321-322, 329-330, 339-340, 354-355, 365-371, 385-394, 397->403, 399, 400->397, 404, 409->415, 423-432, 443-444, 464, 531, 569, 608, 624, 637-638, 640, 641->677, 652-653, 675-676, 700, 729-735, 748-749, 757, 759-768, 779-785, 813->815, 817->825
 lan_transcriber/aliases.py                             17      0      4      1    95%   18->20
 lan_transcriber/artifacts.py                           66      4      8      2    92%   39, 81-82, 102
@@ -177,11 +178,11 @@ lan_transcriber/pipeline_steps/summary_builder.py     276     25     98     21  
 lan_transcriber/runtime_paths.py                       21      1      4      1    92%   15
 lan_transcriber/utils.py                               50      2     30      4    92%   52, 60, 85->87, 87->79
 -----------------------------------------------------------------------------------------------
-TOTAL                                                5821    501   1792    228    90%
+TOTAL                                                5821    257   1792    144    94%
 
-26 files skipped due to complete coverage.
+28 files skipped due to complete coverage.
 Coverage HTML written to dir htmlcov
-396 passed, 1 skipped, 8 warnings in 14.88s
+422 passed, 1 skipped, 9 warnings in 17.15s
 Name                                                Stmts   Miss Branch BrPart  Cover
 -------------------------------------------------------------------------------------
 lan_transcriber/__init__.py                             8      0      0      0   100%
@@ -228,11 +229,11 @@ lan_app/jobs.py                     103      0     30      0   100%
 lan_app/ops.py                       72      0     32      0   100%
 lan_app/reaper.py                    65      0     18      0   100%
 lan_app/routing.py                  255      0    106      0   100%
-lan_app/ui.py                        63     24      8      2    58%
-lan_app/ui_routes.py                951    220    304     82    73%
+lan_app/ui.py                        63      0      8      0   100%
+lan_app/ui_routes.py                951      0    304      0   100%
 lan_app/uploads.py                   59      0     12      0   100%
 lan_app/worker.py                    28      0      2      0   100%
 lan_app/worker_tasks.py             393     87    122     30    75%
 lan_app/workers.py                   10      0      0      0   100%
 -------------------------------------------------------------------
-TOTAL                              4219    340   1260    116    91%
+TOTAL                              4219     96   1260     32    97%
