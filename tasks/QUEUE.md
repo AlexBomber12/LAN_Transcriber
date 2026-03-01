@@ -307,7 +307,7 @@ Queue (in order)
 - Depends on: PR-COV-LAN_APP-API-01
 
 60) PR-COV-LAN_TRANSCRIBER-01: Raise lan_transcriber to 100% statement and branch coverage (offline)
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-COV-LAN_TRANSCRIBER-01.md
 - Depends on: PR-COV-LAN_APP-UI-01
 
