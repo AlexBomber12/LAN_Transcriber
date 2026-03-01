@@ -277,7 +277,7 @@ Queue (in order)
 - Depends on: PR-COVERAGE-INFRA-02
 
 54) PR-COV-LAN_APP-CALENDAR-01: Raise calendar ICS parsing + service matching to 100%
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-COV-LAN_APP-CALENDAR-01.md
 - Depends on: PR-COV-LAN_APP-HEALTH-WORKER-01
 
