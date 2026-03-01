@@ -337,7 +337,7 @@ Queue (in order)
 - Depends on: PR-E2E-LITE-01
 
 66) PR-TEST-RQ-REDIS-INTEGRATION-01: Add Redis+RQ integration test (SimpleWorker burst) to validate enqueue + worker lifecycle in CI
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-TEST-RQ-REDIS-INTEGRATION-01.md
 - Depends on: PR-CI-DOCKER-SMOKE-PR-01
 
