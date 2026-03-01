@@ -215,8 +215,8 @@ def _normalise_text_items(value: Any, *, max_items: int) -> list[str]:
         text = str(row).strip()
         if not text:
             continue
-        if text.startswith("- "):
-            text = text[2:].strip()
+        if text == "-" or text.startswith("- "):
+            text = text[1:].strip()
         if text:
             out.append(text)
     return out
