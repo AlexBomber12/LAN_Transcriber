@@ -49,7 +49,7 @@ from .db import (
     set_recording_status_if_current_in_and_job_started,
     start_job,
 )
-from .hf_repo import split_repo_id_and_revision
+from .diarization_loader import load_pyannote_pipeline
 from .routing import refresh_recording_routing
 
 
@@ -434,14 +434,26 @@ class _FallbackDiariser:
 
 class _PyannoteDiariser:
     def __init__(self, pipeline_model: Any) -> None:
+        if pipeline_model is None or not callable(pipeline_model):
+            raise TypeError("pipeline_model must be a callable pyannote pipeline.")
         self._pipeline_model = pipeline_model
 
     async def __call__(self, audio_path: Path):
+        audio_text = str(audio_path)
+
         def _run_sync():
             try:
-                return self._pipeline_model(str(audio_path))
-            except Exception:
-                return self._pipeline_model({"audio": str(audio_path)})
+                return self._pipeline_model({"audio": audio_text})
+            except TypeError as exc:
+                message = str(exc).lower()
+                if "argument" not in message or (
+                    "positional" not in message
+                    and "unexpected" not in message
+                    and "missing" not in message
+                    and "takes" not in message
+                ):
+                    raise
+                return self._pipeline_model(audio_text)
 
         return await asyncio.to_thread(_run_sync)
 
@@ -455,22 +467,14 @@ def _build_pipeline_settings(settings: AppSettings) -> PipelineSettings:
     )
 
 
-def _build_diariser(duration_sec: float | None):
+def _build_diariser(duration_sec: float | None, *, model_id: str | None = None):
     try:
-        from pyannote.audio import Pipeline  # type: ignore
+        model = load_pyannote_pipeline(model_id=model_id)
     except ModuleNotFoundError as exc:
         missing = (exc.name or "").split(".", 1)[0]
         if missing == "pyannote":
             return _FallbackDiariser(duration_sec)
         raise
-    repo_id, revision = split_repo_id_and_revision("pyannote/speaker-diarization@3.2")
-    kwargs = {"revision": revision} if revision else {}
-    try:
-        model = Pipeline.from_pretrained(repo_id, **kwargs)
-    except TypeError:
-        model = Pipeline.from_pretrained(
-            f"{repo_id}@{revision}" if revision else repo_id
-        )
     return _PyannoteDiariser(model)
 
 
@@ -504,7 +508,10 @@ def _run_precheck_pipeline(
         diariser = _FallbackDiariser(precheck.duration_sec)
     else:
         try:
-            diariser = _build_diariser(precheck.duration_sec)
+            diariser = _build_diariser(
+                precheck.duration_sec,
+                model_id=settings.diarization_model_id,
+            )
         except Exception as exc:
             _append_step_log(
                 log_path,

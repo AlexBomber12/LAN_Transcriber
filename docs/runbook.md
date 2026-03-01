@@ -36,6 +36,32 @@ docker compose run --rm api python -m lan_app.healthchecks app
 2. If set, uploads above this limit are rejected with HTTP `413`.
 3. Keep app and reverse-proxy limits consistent to avoid mismatched failures.
 
+### 1.4 Before first start (diarization warmup)
+
+1. Create a Hugging Face token with read scope.
+2. Accept gated model terms for `pyannote/speaker-diarization` and any linked models.
+3. Set these values in `.env`:
+   - `HF_TOKEN=<your token>`
+   - `LAN_DIARIZATION_MODEL_ID=pyannote/speaker-diarization@3.1` (or your approved revision)
+4. Run warmup once before starting normal traffic:
+
+```bash
+docker compose run --rm worker python -m lan_app.tools.warm_models --models diarization
+```
+
+Warmup exits with:
+- `0`: cache ready
+- `2`: token missing
+- `3`: gated access not granted
+- `4`: revision not found
+- `5`: other load errors
+
+Verify in a running worker:
+
+```bash
+docker compose exec worker python -c "from lan_app.diarization_loader import load_pyannote_pipeline; print(type(load_pyannote_pipeline()).__name__)"
+```
+
 ## 2) Runtime safety defaults
 
 - Store runtime secrets only under `/data/secrets` or environment variables.

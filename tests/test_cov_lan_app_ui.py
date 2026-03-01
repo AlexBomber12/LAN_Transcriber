@@ -41,24 +41,18 @@ def test_transcribe_happy_path_and_fallback_path(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+    diar_devices: list[str] = []
     recorded: list[_DummyResult] = []
 
     class _Diar:
         def to(self, _device: str) -> "_Diar":
+            diar_devices.append(_device)
             return self
-
-    def _from_pretrained(*args: object, **kwargs: object) -> _Diar:
-        calls.append((args, kwargs))
-        if len(calls) == 1:
-            raise TypeError("old-signature")
-        return _Diar()
 
     async def _process_recording(**_kwargs: object) -> _DummyResult:
         return _DummyResult()
 
-    monkeypatch.setattr(ui, "split_repo_id_and_revision", lambda *_a, **_k: ("repo/test", None))
-    monkeypatch.setattr(ui.Pipeline, "from_pretrained", _from_pretrained)
+    monkeypatch.setattr(ui, "load_pyannote_pipeline", lambda *_a, **_k: _Diar())
     monkeypatch.setattr(ui.pipeline, "Settings", lambda: _DummySettings(tmp_path))
     monkeypatch.setattr(ui, "process_recording", _process_recording)
     monkeypatch.setattr(ui.llm_client, "LLMClient", lambda: object())
@@ -69,8 +63,33 @@ def test_transcribe_happy_path_and_fallback_path(
     assert "Friendly-score: **7**" in result[1]
     assert result[2] == Path("summary.md")
     assert result[5] == "chunk-1.wav"
-    assert calls[0] == (("repo/test",), {})
-    assert calls[1] == (("repo/test",), {})
+    assert diar_devices == [ui.DEVICE]
+    assert len(recorded) == 1
+
+
+def test_transcribe_uses_loader_result_without_to_method(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recorded: list[_DummyResult] = []
+    seen_diariser: dict[str, object] = {}
+
+    def _diariser(payload: object) -> object:
+        return payload
+
+    async def _process_recording(**kwargs: object) -> _DummyResult:
+        seen_diariser["value"] = kwargs["diariser"]
+        return _DummyResult()
+
+    monkeypatch.setattr(ui, "load_pyannote_pipeline", lambda *_a, **_k: _diariser)
+    monkeypatch.setattr(ui.pipeline, "Settings", lambda: _DummySettings(tmp_path))
+    monkeypatch.setattr(ui, "process_recording", _process_recording)
+    monkeypatch.setattr(ui.llm_client, "LLMClient", lambda: object())
+    monkeypatch.setattr(ui, "set_current_result", lambda value: recorded.append(value))
+
+    result = ui.transcribe(str(tmp_path / "meeting.wav"))
+    assert "Summary" in result[0]
+    assert seen_diariser["value"] is _diariser
     assert len(recorded) == 1
 
 

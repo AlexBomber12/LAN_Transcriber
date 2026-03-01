@@ -1829,9 +1829,9 @@ def test_build_diariser_wraps_sync_pyannote_pipeline(monkeypatch):
     result = asyncio.run(diariser(Path("/tmp/fake.wav")))
 
     assert result == {"ok": True}
-    assert fake_model.calls == ["/tmp/fake.wav"]
+    assert fake_model.calls == [{"audio": "/tmp/fake.wav"}]
     assert from_pretrained_call["name"] == "pyannote/speaker-diarization"
-    assert from_pretrained_call["kwargs"] == {"revision": "3.2"}
+    assert from_pretrained_call["kwargs"] == {"revision": "3.1"}
 
 
 def test_build_diariser_surfaces_pyannote_model_load_errors(monkeypatch):

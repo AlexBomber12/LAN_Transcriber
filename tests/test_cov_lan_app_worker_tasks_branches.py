@@ -401,22 +401,37 @@ def test_fallback_diariser_annotation_itertracks_covers_both_modes():
     assert yielded_without_label[0][0].end == 1.5
 
 
-def test_pyannote_diariser_retries_with_audio_dict_payload():
+def test_pyannote_diariser_retries_with_string_path_for_signature_mismatch():
     class _Model:
         def __init__(self):
             self.calls: list[object] = []
 
         def __call__(self, payload: object):
             self.calls.append(payload)
-            if isinstance(payload, str):
-                raise TypeError("string path not accepted")
+            if isinstance(payload, dict):
+                raise TypeError("missing required positional argument")
             return {"ok": True}
 
     model = _Model()
     diariser = worker_tasks._PyannoteDiariser(model)
     result = asyncio.run(diariser(Path("/tmp/input.wav")))
     assert result == {"ok": True}
-    assert model.calls == ["/tmp/input.wav", {"audio": "/tmp/input.wav"}]
+    assert model.calls == [{"audio": "/tmp/input.wav"}, "/tmp/input.wav"]
+
+
+def test_pyannote_diariser_does_not_swallow_non_signature_type_errors():
+    class _Model:
+        def __call__(self, _payload: object):
+            raise TypeError("internal type mismatch")
+
+    diariser = worker_tasks._PyannoteDiariser(_Model())
+    with pytest.raises(TypeError, match="internal type mismatch"):
+        asyncio.run(diariser(Path("/tmp/input.wav")))
+
+
+def test_pyannote_diariser_rejects_non_callable_model():
+    with pytest.raises(TypeError, match="pipeline_model must be a callable"):
+        worker_tasks._PyannoteDiariser(None)
 
 
 def test_build_diariser_uses_fallback_when_pyannote_is_unavailable(

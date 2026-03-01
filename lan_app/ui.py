@@ -56,12 +56,11 @@ import gradio as gr  # type: ignore
 import torch  # type: ignore
 from fastapi import FastAPI  # type: ignore
 from fastapi.responses import HTMLResponse
-from pyannote.audio import Pipeline  # type: ignore
 
 from lan_transcriber import llm_client, pipeline
 
 from .api import set_current_result
-from .hf_repo import split_repo_id_and_revision
+from .diarization_loader import load_pyannote_pipeline
 from .workers import process_recording
 
 DEVICE = "cuda" if getattr(torch, "cuda", None) and torch.cuda.is_available() else "cpu"
@@ -79,14 +78,9 @@ def transcribe(audio_path: str):
             "—",
         )
 
-    repo_id, revision = split_repo_id_and_revision("pyannote/speaker-diarization@3.2")
-    kwargs = {"revision": revision} if revision else {}
-    try:
-        diar = Pipeline.from_pretrained(repo_id, **kwargs).to(DEVICE)
-    except TypeError:
-        diar = Pipeline.from_pretrained(
-            f"{repo_id}@{revision}" if revision else repo_id
-        ).to(DEVICE)
+    diar = load_pyannote_pipeline()
+    if hasattr(diar, "to"):
+        diar = diar.to(DEVICE)
     cfg = pipeline.Settings()
     cfg.voices_dir.mkdir(parents=True, exist_ok=True)
     cfg.recordings_root.mkdir(parents=True, exist_ok=True)

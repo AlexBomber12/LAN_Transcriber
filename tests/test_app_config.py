@@ -147,3 +147,14 @@ def test_dev_missing_urls_allows_import():
     )
 
     assert result.returncode == 0, f"{result.stdout}\n{result.stderr}"
+
+
+def test_diarization_model_id_defaults_and_env_override(monkeypatch):
+    monkeypatch.delenv("LAN_DIARIZATION_MODEL_ID", raising=False)
+    assert AppSettings().diarization_model_id == "pyannote/speaker-diarization@3.1"
+
+    monkeypatch.setenv("LAN_DIARIZATION_MODEL_ID", "custom-org/custom-diar@v2")
+    assert AppSettings().diarization_model_id == "custom-org/custom-diar@v2"
+
+    monkeypatch.setenv("LAN_DIARIZATION_MODEL_ID", "   ")
+    assert AppSettings().diarization_model_id == "pyannote/speaker-diarization@3.1"
