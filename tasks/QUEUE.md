@@ -312,6 +312,6 @@ Queue (in order)
 - Depends on: PR-COV-LAN_APP-UI-01
 
 61) PR-COVERAGE-ENFORCE-100-01: Enforce 100% statement and branch coverage in CI
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-COVERAGE-ENFORCE-100-01.md
 - Depends on: PR-COV-LAN_TRANSCRIBER-01

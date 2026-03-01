@@ -3,6 +3,8 @@ from pathlib import Path
 import subprocess
 import sys
 
+import pytest
+
 from lan_app.config import AppSettings
 
 
@@ -97,6 +99,36 @@ def test_staging_missing_redis_url_fails_import():
 
     assert result.returncode != 0
     assert "LAN_REDIS_URL" in f"{result.stdout}\n{result.stderr}"
+
+
+def test_non_dev_requires_both_runtime_urls(monkeypatch):
+    monkeypatch.setenv("LAN_ENV", "prod")
+    monkeypatch.delenv("LAN_REDIS_URL", raising=False)
+    monkeypatch.delenv("REDIS_URL", raising=False)
+    monkeypatch.delenv("LLM_BASE_URL", raising=False)
+
+    with pytest.raises(ValueError, match="LAN_REDIS_URL, LLM_BASE_URL"):
+        AppSettings()
+
+
+def test_non_dev_accepts_when_runtime_urls_are_present(monkeypatch):
+    monkeypatch.setenv("LAN_ENV", "staging")
+    monkeypatch.setenv("LAN_REDIS_URL", "redis://127.0.0.1:6379/0")
+    monkeypatch.setenv("LLM_BASE_URL", "http://127.0.0.1:8000")
+
+    cfg = AppSettings()
+    assert cfg.redis_url == "redis://127.0.0.1:6379/0"
+    assert cfg.llm_base_url == "http://127.0.0.1:8000"
+
+
+def test_dev_keeps_explicit_llm_base_url(monkeypatch):
+    monkeypatch.setenv("LAN_ENV", "dev")
+    monkeypatch.setenv("LAN_REDIS_URL", "redis://127.0.0.1:6379/3")
+    monkeypatch.setenv("LLM_BASE_URL", "http://localhost:1234")
+
+    cfg = AppSettings()
+    assert cfg.redis_url == "redis://127.0.0.1:6379/3"
+    assert cfg.llm_base_url == "http://localhost:1234"
 
 
 def test_dev_missing_urls_allows_import():
