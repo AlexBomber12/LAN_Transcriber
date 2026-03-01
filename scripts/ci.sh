@@ -27,6 +27,6 @@ if [ "$INSTALL_DEPS" = "1" ]; then
 fi
 
 python -m ruff check .
-python -m pytest -q --cov=lan_transcriber --cov=lan_app --cov-branch --cov-report=term-missing:skip-covered --cov-report=html "$@"
+python -m pytest -q --cov=lan_transcriber --cov=lan_app --cov-branch --cov-fail-under=100 --cov-report=term-missing:skip-covered --cov-report=html "$@"
 python -m coverage report --include='lan_transcriber/*' --fail-under="${COVERAGE_THRESHOLD_TRANSCRIBER}"
 python -m coverage report --include='lan_app/*' --fail-under="${COVERAGE_THRESHOLD_APP}"
