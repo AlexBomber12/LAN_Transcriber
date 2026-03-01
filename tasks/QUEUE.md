@@ -332,7 +332,7 @@ Queue (in order)
 - Depends on: PR-DIARIZATION-ROBUST-02
 
 65) PR-CI-DOCKER-SMOKE-PR-01: Run Docker runtime-lite build + docker smoke test on pull_request to catch runtime/native dependency regressions early
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-CI-DOCKER-SMOKE-PR-01.md
 - Depends on: PR-E2E-LITE-01
 
