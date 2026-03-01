@@ -91,7 +91,11 @@ def load_pyannote_pipeline(*, model_id: str | None = None, token: str | None = N
                 and "token" in message
             ):
                 kwargs.pop("token", None)
-                model = Pipeline.from_pretrained(candidate, **kwargs)
+                try:
+                    model = Pipeline.from_pretrained(candidate, **kwargs)
+                except Exception as retry_exc:
+                    last_error = retry_exc
+                    continue
             else:
                 last_error = exc
                 continue

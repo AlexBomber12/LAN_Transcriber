@@ -104,6 +104,32 @@ def test_load_pyannote_pipeline_handles_token_keyword_mismatch(monkeypatch: pyte
     ]
 
 
+def test_load_pyannote_pipeline_continues_candidates_after_tokenless_retry_failure(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    def _impl(name: str, **kwargs):
+        calls.append((name, dict(kwargs)))
+        if len(calls) == 1:
+            raise TypeError("got an unexpected keyword argument 'token'")
+        if len(calls) == 2:
+            raise RuntimeError("revision failed")
+        return lambda payload: payload
+
+    _install_fake_pipeline(monkeypatch, _impl)
+    model = diarization_loader.load_pyannote_pipeline(
+        model_id="repo/test@rev1",
+        token="token-1",
+    )
+    assert callable(model)
+    assert calls == [
+        ("repo/test", {"revision": "rev1", "token": "token-1"}),
+        ("repo/test", {"revision": "rev1"}),
+        ("repo/test@rev1", {"token": "token-1"}),
+    ]
+
+
 def test_load_pyannote_pipeline_uses_ordered_candidates_and_raises_last_error(
     monkeypatch: pytest.MonkeyPatch,
 ):
