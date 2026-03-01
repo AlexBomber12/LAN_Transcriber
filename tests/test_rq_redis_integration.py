@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Iterator
 
@@ -18,6 +19,10 @@ from lan_app.jobs import enqueue_recording_job, get_queue
 _REDIS_DB15_URL = "redis://127.0.0.1:6379/15"
 
 
+def _is_github_actions() -> bool:
+    return os.getenv("GITHUB_ACTIONS", "").strip().lower() == "true"
+
+
 def _set_runtime_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("LAN_DATA_ROOT", str(tmp_path))
     monkeypatch.setenv("LAN_RECORDINGS_ROOT", str(tmp_path / "recordings"))
@@ -31,6 +36,8 @@ def redis_db_15() -> Iterator[Redis]:
     try:
         client.ping()
     except (RedisConnectionError, RedisTimeoutError) as exc:
+        if _is_github_actions():
+            raise
         pytest.skip(f"Redis is unavailable at {_REDIS_DB15_URL}: {exc}")
     client.flushdb()
     try:
