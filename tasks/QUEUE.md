@@ -255,3 +255,63 @@ Queue (in order)
 - Status: DONE
 - Tasks file: tasks/PR-DEPS-WHISPERX-DETERMINISM-01.md
 - Depends on: PR-TEST-WHISPERX-CONTRACT-01
+
+50) PR-FIX-WHISPERX-TRANSCRIBE-KWARGS-02: Robustly drop unsupported transcribe kwargs even when signature is uninspectable (fix vad_filter crash)
+- Status: TODO
+- Tasks file: tasks/PR-FIX-WHISPERX-TRANSCRIBE-KWARGS-02.md
+- Depends on: PR-DEPS-WHISPERX-DETERMINISM-01
+
+51) PR-FIX-NONETYPE-CALLABLE-01: Fix startup/runtime crash: 'NoneType' object is not callable + regression test
+- Status: TODO
+- Tasks file: tasks/PR-FIX-NONETYPE-CALLABLE-01.md
+- Depends on: PR-FIX-WHISPERX-TRANSCRIBE-KWARGS-02
+
+52) PR-COVERAGE-INFRA-02: Coverage foundation for 100%: branch coverage, unified local/CI command, htmlcov artifact
+- Status: TODO
+- Tasks file: tasks/PR-COVERAGE-INFRA-02.md
+- Depends on: PR-FIX-NONETYPE-CALLABLE-01
+
+53) PR-COV-LAN_APP-HEALTH-WORKER-01: Raise small lan_app modules to 100% (healthchecks/auth/worker/db_init/uploads/hf_repo)
+- Status: TODO
+- Tasks file: tasks/PR-COV-LAN_APP-HEALTH-WORKER-01.md
+- Depends on: PR-COVERAGE-INFRA-02
+
+54) PR-COV-LAN_APP-CALENDAR-01: Raise calendar ICS parsing + service matching to 100%
+- Status: TODO
+- Tasks file: tasks/PR-COV-LAN_APP-CALENDAR-01.md
+- Depends on: PR-COV-LAN_APP-HEALTH-WORKER-01
+
+55) PR-COV-LAN_APP-EXPORT-OPS-JOBS-01: Raise exporter/jobs/ops/reaper to 100%
+- Status: TODO
+- Tasks file: tasks/PR-COV-LAN_APP-EXPORT-OPS-JOBS-01.md
+- Depends on: PR-COV-LAN_APP-CALENDAR-01
+
+56) PR-COV-LAN_APP-METRICS-ROUTING-01: Raise conversation_metrics and routing to 100%
+- Status: TODO
+- Tasks file: tasks/PR-COV-LAN_APP-METRICS-ROUTING-01.md
+- Depends on: PR-COV-LAN_APP-EXPORT-OPS-JOBS-01
+
+57) PR-COV-LAN_APP-DB-01: Raise lan_app.db to 100% statement and branch coverage
+- Status: TODO
+- Tasks file: tasks/PR-COV-LAN_APP-DB-01.md
+- Depends on: PR-COV-LAN_APP-METRICS-ROUTING-01
+
+58) PR-COV-LAN_APP-API-01: Raise lan_app.api to 100% statement and branch coverage
+- Status: TODO
+- Tasks file: tasks/PR-COV-LAN_APP-API-01.md
+- Depends on: PR-COV-LAN_APP-DB-01
+
+59) PR-COV-LAN_APP-UI-01: Raise lan_app.ui and lan_app.ui_routes to 100% statement and branch coverage
+- Status: TODO
+- Tasks file: tasks/PR-COV-LAN_APP-UI-01.md
+- Depends on: PR-COV-LAN_APP-API-01
+
+60) PR-COV-LAN_TRANSCRIBER-01: Raise lan_transcriber to 100% statement and branch coverage (offline)
+- Status: TODO
+- Tasks file: tasks/PR-COV-LAN_TRANSCRIBER-01.md
+- Depends on: PR-COV-LAN_APP-UI-01
+
+61) PR-COVERAGE-ENFORCE-100-01: Enforce 100% statement and branch coverage in CI
+- Status: TODO
+- Tasks file: tasks/PR-COVERAGE-ENFORCE-100-01.md
+- Depends on: PR-COV-LAN_TRANSCRIBER-01
