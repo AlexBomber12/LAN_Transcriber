@@ -327,6 +327,6 @@ Queue (in order)
 - Depends on: PR-COVERAGE-ENFORCE-100-01
 
 64) PR-E2E-LITE-01: CI-friendly E2E-lite processing test for a real audio file path (no network, no heavy models)
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-E2E-LITE-01.md
 - Depends on: PR-DIARIZATION-ROBUST-02
