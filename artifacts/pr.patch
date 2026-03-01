@@ -1,54 +1,71 @@
-diff --git a/lan_app/diarization_loader.py b/lan_app/diarization_loader.py
-index f8e7382..e95174f 100644
---- a/lan_app/diarization_loader.py
-+++ b/lan_app/diarization_loader.py
-@@ -91,7 +91,11 @@ def load_pyannote_pipeline(*, model_id: str | None = None, token: str | None = N
-                 and "token" in message
-             ):
-                 kwargs.pop("token", None)
--                model = Pipeline.from_pretrained(candidate, **kwargs)
-+                try:
-+                    model = Pipeline.from_pretrained(candidate, **kwargs)
-+                except Exception as retry_exc:
-+                    last_error = retry_exc
-+                    continue
-             else:
-                 last_error = exc
-                 continue
-diff --git a/tests/test_diarization_loader.py b/tests/test_diarization_loader.py
-index 6f2c6df..84afc80 100644
---- a/tests/test_diarization_loader.py
-+++ b/tests/test_diarization_loader.py
-@@ -104,6 +104,32 @@ def test_load_pyannote_pipeline_handles_token_keyword_mismatch(monkeypatch: pyte
-     ]
+diff --git a/lan_app/worker_tasks.py b/lan_app/worker_tasks.py
+index 044fa3f..6b39482 100644
+--- a/lan_app/worker_tasks.py
++++ b/lan_app/worker_tasks.py
+@@ -441,17 +441,30 @@ class _PyannoteDiariser:
+     async def __call__(self, audio_path: Path):
+         audio_text = str(audio_path)
+ 
++        def _is_signature_mismatch(exc: TypeError) -> bool:
++            message = str(exc).lower()
++            signature_markers = (
++                "missing required",
++                "unexpected keyword",
++                "positional argument",
++                "got multiple values",
++                "takes",
++            )
++            if any(marker in message for marker in signature_markers):
++                return True
++            expects_path_like = (
++                "expected str" in message
++                or "expected bytes" in message
++                or "pathlike" in message
++                or "os.pathlike" in message
++            )
++            return expects_path_like and "dict" in message
++
+         def _run_sync():
+             try:
+                 return self._pipeline_model({"audio": audio_text})
+             except TypeError as exc:
+-                message = str(exc).lower()
+-                if "argument" not in message or (
+-                    "positional" not in message
+-                    and "unexpected" not in message
+-                    and "missing" not in message
+-                    and "takes" not in message
+-                ):
++                if not _is_signature_mismatch(exc):
+                     raise
+                 return self._pipeline_model(audio_text)
+ 
+diff --git a/tests/test_cov_lan_app_worker_tasks_branches.py b/tests/test_cov_lan_app_worker_tasks_branches.py
+index c4d9622..abe3691 100644
+--- a/tests/test_cov_lan_app_worker_tasks_branches.py
++++ b/tests/test_cov_lan_app_worker_tasks_branches.py
+@@ -429,6 +429,24 @@ def test_pyannote_diariser_does_not_swallow_non_signature_type_errors():
+         asyncio.run(diariser(Path("/tmp/input.wav")))
  
  
-+def test_load_pyannote_pipeline_continues_candidates_after_tokenless_retry_failure(
-+    monkeypatch: pytest.MonkeyPatch,
-+):
-+    calls: list[tuple[str, dict[str, object]]] = []
++def test_pyannote_diariser_retries_when_dict_payload_typeerror_expects_path():
++    class _Model:
++        def __init__(self):
++            self.calls: list[object] = []
 +
-+    def _impl(name: str, **kwargs):
-+        calls.append((name, dict(kwargs)))
-+        if len(calls) == 1:
-+            raise TypeError("got an unexpected keyword argument 'token'")
-+        if len(calls) == 2:
-+            raise RuntimeError("revision failed")
-+        return lambda payload: payload
++        def __call__(self, payload: object):
++            self.calls.append(payload)
++            if isinstance(payload, dict):
++                raise TypeError("expected str, bytes or os.PathLike object, not dict")
++            return {"ok": "path"}
 +
-+    _install_fake_pipeline(monkeypatch, _impl)
-+    model = diarization_loader.load_pyannote_pipeline(
-+        model_id="repo/test@rev1",
-+        token="token-1",
-+    )
-+    assert callable(model)
-+    assert calls == [
-+        ("repo/test", {"revision": "rev1", "token": "token-1"}),
-+        ("repo/test", {"revision": "rev1"}),
-+        ("repo/test@rev1", {"token": "token-1"}),
-+    ]
++    model = _Model()
++    diariser = worker_tasks._PyannoteDiariser(model)
++    result = asyncio.run(diariser(Path("/tmp/input.wav")))
++    assert result == {"ok": "path"}
++    assert model.calls == [{"audio": "/tmp/input.wav"}, "/tmp/input.wav"]
 +
 +
- def test_load_pyannote_pipeline_uses_ordered_candidates_and_raises_last_error(
-     monkeypatch: pytest.MonkeyPatch,
- ):
+ def test_pyannote_diariser_rejects_non_callable_model():
+     with pytest.raises(TypeError, match="pipeline_model must be a callable"):
+         worker_tasks._PyannoteDiariser(None)

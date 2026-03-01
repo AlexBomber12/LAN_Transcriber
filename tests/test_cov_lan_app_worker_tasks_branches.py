@@ -429,6 +429,24 @@ def test_pyannote_diariser_does_not_swallow_non_signature_type_errors():
         asyncio.run(diariser(Path("/tmp/input.wav")))
 
 
+def test_pyannote_diariser_retries_when_dict_payload_typeerror_expects_path():
+    class _Model:
+        def __init__(self):
+            self.calls: list[object] = []
+
+        def __call__(self, payload: object):
+            self.calls.append(payload)
+            if isinstance(payload, dict):
+                raise TypeError("expected str, bytes or os.PathLike object, not dict")
+            return {"ok": "path"}
+
+    model = _Model()
+    diariser = worker_tasks._PyannoteDiariser(model)
+    result = asyncio.run(diariser(Path("/tmp/input.wav")))
+    assert result == {"ok": "path"}
+    assert model.calls == [{"audio": "/tmp/input.wav"}, "/tmp/input.wav"]
+
+
 def test_pyannote_diariser_rejects_non_callable_model():
     with pytest.raises(TypeError, match="pipeline_model must be a callable"):
         worker_tasks._PyannoteDiariser(None)

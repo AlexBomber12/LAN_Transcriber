@@ -441,17 +441,30 @@ class _PyannoteDiariser:
     async def __call__(self, audio_path: Path):
         audio_text = str(audio_path)
 
+        def _is_signature_mismatch(exc: TypeError) -> bool:
+            message = str(exc).lower()
+            signature_markers = (
+                "missing required",
+                "unexpected keyword",
+                "positional argument",
+                "got multiple values",
+                "takes",
+            )
+            if any(marker in message for marker in signature_markers):
+                return True
+            expects_path_like = (
+                "expected str" in message
+                or "expected bytes" in message
+                or "pathlike" in message
+                or "os.pathlike" in message
+            )
+            return expects_path_like and "dict" in message
+
         def _run_sync():
             try:
                 return self._pipeline_model({"audio": audio_text})
             except TypeError as exc:
-                message = str(exc).lower()
-                if "argument" not in message or (
-                    "positional" not in message
-                    and "unexpected" not in message
-                    and "missing" not in message
-                    and "takes" not in message
-                ):
+                if not _is_signature_mismatch(exc):
                     raise
                 return self._pipeline_model(audio_text)
 
