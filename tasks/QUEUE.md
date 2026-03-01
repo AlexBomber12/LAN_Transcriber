@@ -302,7 +302,7 @@ Queue (in order)
 - Depends on: PR-COV-LAN_APP-DB-01
 
 59) PR-COV-LAN_APP-UI-01: Raise lan_app.ui and lan_app.ui_routes to 100% statement and branch coverage
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-COV-LAN_APP-UI-01.md
 - Depends on: PR-COV-LAN_APP-API-01
 
