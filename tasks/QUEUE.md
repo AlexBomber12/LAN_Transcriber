@@ -323,10 +323,25 @@ Queue (in order)
 
 63) PR-DIARIZATION-ROBUST-03: Robust diarization load (pyannote v3 repo id), persistent HF cache, warmup command, matplotlib fix, and pre-start checklist
 - Status: DONE
-- Tasks file: tasks/PR-DIARIZATION-ROBUST-02.md
+- Tasks file: tasks/PR-DIARIZATION-ROBUST-03.md
 - Depends on: PR-COVERAGE-ENFORCE-100-01
 
 64) PR-E2E-LITE-01: CI-friendly E2E-lite processing test for a real audio file path (no network, no heavy models)
 - Status: DONE
 - Tasks file: tasks/PR-E2E-LITE-01.md
 - Depends on: PR-DIARIZATION-ROBUST-02
+
+65) PR-CI-DOCKER-SMOKE-PR-01: Run Docker runtime-lite build + docker smoke test on pull_request to catch runtime/native dependency regressions early
+- Status: TODO
+- Tasks file: tasks/PR-CI-DOCKER-SMOKE-PR-01.md
+- Depends on: PR-E2E-LITE-01
+
+66) PR-TEST-RQ-REDIS-INTEGRATION-01: Add Redis+RQ integration test (SimpleWorker burst) to validate enqueue + worker lifecycle in CI
+- Status: TODO
+- Tasks file: tasks/PR-TEST-RQ-REDIS-INTEGRATION-01.md
+- Depends on: PR-CI-DOCKER-SMOKE-PR-01
+
+67) PR-UI-E2E-PLAYWRIGHT-01: Add Playwright UI smoke tests (Upload -> Recordings -> Export ZIP) and run in CI as a separate job
+- Status: TODO
+- Tasks file: tasks/PR-UI-E2E-PLAYWRIGHT-01.md
+- Depends on: PR-TEST-RQ-REDIS-INTEGRATION-01
