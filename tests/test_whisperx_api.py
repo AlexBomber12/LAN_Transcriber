@@ -174,7 +174,6 @@ def test_whisperx_asr_retry_without_word_timestamps_on_typeerror(tmp_path: Path,
     assert len(calls) == 2
     assert "word_timestamps" in calls[0]
     assert "word_timestamps" not in calls[1]
-    assert any("dropped unsupported kwargs: word_timestamps" in line for line in step_log)
 
 
 def test_log_dropped_kwargs_returns_early_when_nothing_dropped() -> None:

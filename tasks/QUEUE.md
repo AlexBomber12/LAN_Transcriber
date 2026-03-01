@@ -257,7 +257,7 @@ Queue (in order)
 - Depends on: PR-TEST-WHISPERX-CONTRACT-01
 
 50) PR-FIX-WHISPERX-TRANSCRIBE-KWARGS-02: Robustly drop unsupported transcribe kwargs even when signature is uninspectable (fix vad_filter crash)
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-FIX-WHISPERX-TRANSCRIBE-KWARGS-02.md
 - Depends on: PR-DEPS-WHISPERX-DETERMINISM-01
 
