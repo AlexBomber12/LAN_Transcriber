@@ -272,7 +272,7 @@ Queue (in order)
 - Depends on: PR-FIX-NONETYPE-CALLABLE-01
 
 53) PR-COV-LAN_APP-HEALTH-WORKER-01: Raise small lan_app modules to 100% (healthchecks/auth/worker/db_init/uploads/hf_repo)
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-COV-LAN_APP-HEALTH-WORKER-01.md
 - Depends on: PR-COVERAGE-INFRA-02
 
