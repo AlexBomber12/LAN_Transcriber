@@ -287,7 +287,7 @@ Queue (in order)
 - Depends on: PR-COV-LAN_APP-CALENDAR-01
 
 56) PR-COV-LAN_APP-METRICS-ROUTING-01: Raise conversation_metrics and routing to 100%
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-COV-LAN_APP-METRICS-ROUTING-01.md
 - Depends on: PR-COV-LAN_APP-EXPORT-OPS-JOBS-01
 
