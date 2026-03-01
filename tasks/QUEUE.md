@@ -322,7 +322,7 @@ Queue (in order)
 - Depends on: PR-COVERAGE-ENFORCE-100-01
 
 63) PR-DIARIZATION-ROBUST-03: Robust diarization load (pyannote v3 repo id), persistent HF cache, warmup command, matplotlib fix, and pre-start checklist
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-DIARIZATION-ROBUST-02.md
 - Depends on: PR-COVERAGE-ENFORCE-100-01
 
