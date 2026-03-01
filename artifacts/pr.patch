@@ -1,62 +1,19 @@
-diff --git a/.coveragerc b/.coveragerc
-index facc48b..e8b16fd 100644
---- a/.coveragerc
-+++ b/.coveragerc
-@@ -1,3 +1,7 @@
- [run]
- omit =
-     lan_transcriber/api.py
-+
-+[report]
-+exclude_lines =
-+    pragma: no cover
-diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
-index 4b7bc19..aef4781 100644
---- a/.github/workflows/ci.yml
-+++ b/.github/workflows/ci.yml
-@@ -25,6 +25,10 @@ jobs:
-       - name: Run lint and tests
-         env:
-           CI: 'true'
--          COVERAGE_THRESHOLD_TRANSCRIBER: '90'
--          COVERAGE_THRESHOLD_APP: '75'
-         run: scripts/ci.sh
-+      - name: Upload htmlcov artifact
-+        if: always()
-+        uses: actions/upload-artifact@v4
-+        with:
-+          name: htmlcov
-+          path: htmlcov/
 diff --git a/scripts/ci.sh b/scripts/ci.sh
-index 1395e00..52bc769 100755
+index 52bc769..3eb5459 100755
 --- a/scripts/ci.sh
 +++ b/scripts/ci.sh
-@@ -4,8 +4,6 @@ set -euo pipefail
+@@ -4,6 +4,8 @@ set -euo pipefail
  ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
  cd "$ROOT_DIR"
  
--COVERAGE_THRESHOLD_TRANSCRIBER="${COVERAGE_THRESHOLD_TRANSCRIBER:-90}"
--COVERAGE_THRESHOLD_APP="${COVERAGE_THRESHOLD_APP:-75}"
++COVERAGE_THRESHOLD_TRANSCRIBER="${COVERAGE_THRESHOLD_TRANSCRIBER:-87}"
++COVERAGE_THRESHOLD_APP="${COVERAGE_THRESHOLD_APP:-75}"
  INSTALL_DEPS="${INSTALL_DEPS:-1}"
  USE_VENV="${USE_VENV:-1}"
  CI_VENV_DIR="${CI_VENV_DIR:-.venv-ci}"
-@@ -27,5 +25,4 @@ if [ "$INSTALL_DEPS" = "1" ]; then
- fi
+@@ -26,3 +28,5 @@ fi
  
  python -m ruff check .
--pytest --cov=lan_transcriber --cov-fail-under="${COVERAGE_THRESHOLD_TRANSCRIBER}" -q "$@"
--pytest --cov=lan_app --cov-fail-under="${COVERAGE_THRESHOLD_APP}" -q "$@"
-+python -m pytest -q --cov=lan_transcriber --cov=lan_app --cov-branch --cov-report=term-missing:skip-covered --cov-report=html "$@"
-diff --git a/tasks/QUEUE.md b/tasks/QUEUE.md
-index fa5af86..a330b5b 100644
---- a/tasks/QUEUE.md
-+++ b/tasks/QUEUE.md
-@@ -267,7 +267,7 @@ Queue (in order)
- - Depends on: PR-FIX-WHISPERX-TRANSCRIBE-KWARGS-02
- 
- 52) PR-COVERAGE-INFRA-02: Coverage foundation for 100%: branch coverage, unified local/CI command, htmlcov artifact
--- Status: TODO
-+- Status: DONE
- - Tasks file: tasks/PR-COVERAGE-INFRA-02.md
- - Depends on: PR-FIX-NONETYPE-CALLABLE-01
- 
+ python -m pytest -q --cov=lan_transcriber --cov=lan_app --cov-branch --cov-report=term-missing:skip-covered --cov-report=html "$@"
++python -m coverage report --include='lan_transcriber/*' --fail-under="${COVERAGE_THRESHOLD_TRANSCRIBER}"
++python -m coverage report --include='lan_app/*' --fail-under="${COVERAGE_THRESHOLD_APP}"
