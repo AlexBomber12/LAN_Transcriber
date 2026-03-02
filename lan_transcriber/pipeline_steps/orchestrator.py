@@ -19,6 +19,7 @@ from ..llm_client import LLMClient
 from ..metrics import error_rate_total, p95_latency_seconds
 from ..models import SpeakerSegment, TranscriptResult
 from ..native_fixups import ensure_ctranslate2_no_execstack
+from ..torch_safe_globals import allowlist_omegaconf_for_weights_only
 from .language import analyse_languages, resolve_target_summary_language, segment_language
 from .precheck import PrecheckResult, run_precheck as _run_precheck
 from .snippets import SnippetExportRequest, export_speaker_snippets
@@ -225,6 +226,7 @@ def _whisperx_asr(
     device = _select_asr_device(cfg)
     compute_type = _select_compute_type(cfg, device)
     audio = whisperx.load_audio(str(audio_path))
+    allowlist_omegaconf_for_weights_only()
     try:
         model = whisperx.load_model(cfg.asr_model, device, compute_type=compute_type)
     except TypeError:
