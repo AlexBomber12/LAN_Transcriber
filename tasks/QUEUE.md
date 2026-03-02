@@ -365,3 +365,8 @@ Queue (in order)
 - Status: DONE
 - Tasks file: tasks/PR-FIX-TORCH-SAFEGLOBALS-02.md
 - Depends on: PR-FIX-TORCH-SAFEGLOBALS-01
+
+72) PR-FIX-TORCH-SAFEGLOBALS-03: Make torch safe-globals allowlisting robust across torch API variants (list vs dict), include OmegaConf ContainerMetadata, and add scoped retry for WhisperX VAD checkpoint load
+- Status: TODO
+- Tasks file: tasks/PR-FIX-TORCH-SAFEGLOBALS-03.md
+- Depends on: PR-FIX-TORCH-SAFEGLOBALS-02
