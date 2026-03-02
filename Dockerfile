@@ -31,7 +31,7 @@ for p in libs:
     if "RWE" in gnu:
         raise SystemExit(f"GNU_STACK still RWE for {p}")
 PY
-RUN python -c "import whisperx; import whisperx.asr; import matplotlib; import faster_whisper; import ctranslate2; print('deps ok')"
+RUN python -c "import whisperx; import whisperx.asr; import matplotlib; import faster_whisper; import ctranslate2; import torch; print('deps ok', 'ctranslate2', ctranslate2.__version__, 'torch cuda', torch.version.cuda)"
 CMD ["uvicorn", "lan_app.api:app", "--host", "0.0.0.0", "--port", "7860"]
 
 FROM base AS runtime-lite
@@ -56,6 +56,6 @@ for p in libs:
     if "RWE" in gnu:
         raise SystemExit(f"GNU_STACK still RWE for {p}")
 PY
-RUN python -c "import whisperx; import whisperx.asr; import matplotlib; import faster_whisper; import ctranslate2; print('deps ok')"
+RUN python -c "import whisperx; import whisperx.asr; import matplotlib; import faster_whisper; import ctranslate2; import torch; print('deps ok', 'ctranslate2', ctranslate2.__version__, 'torch cuda', torch.version.cuda)"
 ENV CI=true
 CMD ["uvicorn", "lan_app.api:app", "--host", "0.0.0.0", "--port", "7860"]
