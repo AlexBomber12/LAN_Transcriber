@@ -158,3 +158,15 @@ def test_diarization_model_id_defaults_and_env_override(monkeypatch):
 
     monkeypatch.setenv("LAN_DIARIZATION_MODEL_ID", "   ")
     assert AppSettings().diarization_model_id == "pyannote/speaker-diarization-3.1"
+
+
+def test_vad_method_defaults_and_env_override(monkeypatch):
+    monkeypatch.delenv("LAN_VAD_METHOD", raising=False)
+    assert AppSettings().vad_method == "silero"
+
+    monkeypatch.setenv("LAN_VAD_METHOD", "pyannote")
+    assert AppSettings().vad_method == "pyannote"
+
+    monkeypatch.setenv("LAN_VAD_METHOD", "invalid")
+    with pytest.raises(ValueError, match="LAN_VAD_METHOD|vad_method"):
+        AppSettings()

@@ -372,6 +372,6 @@ Queue (in order)
 - Depends on: PR-FIX-TORCH-SAFEGLOBALS-02
 
 73) PR-VAD-SILERO-01: Switch WhisperX VAD to Silero by default to remove Pyannote VAD checkpoint load failures (torch weights_only / OmegaConf) + tests
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-VAD-SILERO-01.md
 - Depends on: PR-FIX-TORCH-SAFEGLOBALS-03

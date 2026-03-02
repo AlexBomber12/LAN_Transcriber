@@ -43,6 +43,7 @@ docker compose run --rm api python -m lan_app.healthchecks app
 3. Set these values in `.env`:
    - `HF_TOKEN=<your token>`
    - `LAN_DIARIZATION_MODEL_ID=pyannote/speaker-diarization-3.1` (or your approved repo id)
+   - `LAN_VAD_METHOD=silero` (default; set `pyannote` only if explicitly required)
 4. Run warmup once before starting normal traffic:
 
 ```bash

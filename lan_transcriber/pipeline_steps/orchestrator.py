@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import logging
 import shutil
 import time
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Awaitable, Callable, Iterable, List, Protocol, Sequence
+from typing import Any, Awaitable, Callable, Iterable, List, Literal, Protocol, Sequence
 
 from pydantic_settings import BaseSettings
 
@@ -40,6 +41,8 @@ from .summary_builder import (
 from ..runtime_paths import default_recordings_root, default_tmp_root, default_unknown_dir, default_voices_dir
 from ..utils import normalise_language_code, safe_float
 
+_logger = logging.getLogger(__name__)
+
 
 class Diariser(Protocol):
     """Minimal interface for speaker diarisation."""
@@ -61,6 +64,7 @@ class Settings(BaseSettings):
     asr_compute_type: str | None = None
     asr_batch_size: int = 16
     asr_enable_align: bool = True
+    vad_method: Literal["silero", "pyannote"] = "silero"
     embed_threshold: float = 0.65
     merge_similar: float = 0.9
     precheck_min_duration_sec: float = 20.0
@@ -147,6 +151,40 @@ def _select_compute_type(cfg: Settings, device: str) -> str:
     return "float16" if device == "cuda" else "int8"
 
 
+def _whisperx_load_model_vad_kwargs(
+    load_model: Callable[..., Any],
+    vad_method: Literal["silero", "pyannote"],
+) -> dict[str, Any]:
+    candidates = (
+        {"vad_method": vad_method},
+        {"vad_model": vad_method},
+        {"vad_options": {"vad_method": vad_method}},
+    )
+    try:
+        signature = inspect.signature(load_model)
+    except (TypeError, ValueError):
+        # Unknown callable shape: pass all known selector keys so the runtime
+        # implementation can consume whichever one it supports.
+        merged: dict[str, Any] = {}
+        for kwargs in candidates:
+            merged.update(kwargs)
+        return merged
+
+    parameters = signature.parameters
+    has_var_kwargs = any(param.kind == inspect.Parameter.VAR_KEYWORD for param in parameters.values())
+
+    for kwargs in candidates:
+        if any(key in parameters for key in kwargs):
+            return kwargs
+
+    if has_var_kwargs:
+        merged: dict[str, Any] = {}
+        for kwargs in candidates:
+            merged.update(kwargs)
+        return merged
+    return {}
+
+
 def _log_dropped_kwargs(
     *,
     callback: Callable[[str], Any] | None,
@@ -184,7 +222,7 @@ def _whisperx_asr(
         except Exception:
             # Step log append is best-effort and must not break processing.
             pass
-    if patch_pyannote_inference_ignore_use_auth_token() and step_log_callback is not None:
+    if cfg.vad_method == "pyannote" and patch_pyannote_inference_ignore_use_auth_token() and step_log_callback is not None:
         try:
             step_log_callback("pyannote compat: ignore unsupported Inference use_auth_token")
         except Exception:
@@ -229,12 +267,14 @@ def _whisperx_asr(
     device = _select_asr_device(cfg)
     compute_type = _select_compute_type(cfg, device)
     audio = whisperx.load_audio(str(audio_path))
+    _logger.info("ASR VAD method: %s", cfg.vad_method)
+    model_load_kwargs = {
+        "compute_type": compute_type,
+        **_whisperx_load_model_vad_kwargs(whisperx.load_model, cfg.vad_method),
+    }
 
     def _load_model() -> Any:
-        try:
-            return whisperx.load_model(cfg.asr_model, device, compute_type=compute_type)
-        except TypeError:
-            return whisperx.load_model(cfg.asr_model, device)
+        return call_with_supported_kwargs(whisperx.load_model, cfg.asr_model, device, **model_load_kwargs)
 
     with omegaconf_safe_globals_for_torch_load():
         try:

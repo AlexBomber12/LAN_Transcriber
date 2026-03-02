@@ -60,8 +60,8 @@ def test_transcribe_contract_without_vad_filter(tmp_path: Path, monkeypatch: Any
 
     assert segments and segments[0]["text"] == "hello"
     assert info["language"] == "en"
-    assert len(call_spy) == 1
-    assert call_spy[0]["kwargs"]["vad_filter"] is True
+    assert len(call_spy) == 2
+    assert call_spy[-1]["kwargs"]["vad_filter"] is True
 
 
 def test_transcribe_contract_with_vad_filter(tmp_path: Path, monkeypatch: Any) -> None:
@@ -100,8 +100,8 @@ def test_transcribe_contract_with_vad_filter(tmp_path: Path, monkeypatch: Any) -
 
     assert segments and segments[0]["text"] == "hi"
     assert info["language"] == "en"
-    assert len(call_spy) == 1
-    assert call_spy[0]["kwargs"]["vad_filter"] is True
+    assert len(call_spy) == 2
+    assert call_spy[-1]["kwargs"]["vad_filter"] is True
 
 
 def test_transcribe_contract_with_var_kwargs(tmp_path: Path, monkeypatch: Any) -> None:
@@ -142,5 +142,5 @@ def test_transcribe_contract_with_var_kwargs(tmp_path: Path, monkeypatch: Any) -
     assert segments and segments[0]["text"] == "yo"
     assert info["language"] == "en"
     assert seen_kwargs["vad_filter"] is True
-    assert len(call_spy) == 1
-    assert call_spy[0]["kwargs"]["vad_filter"] is True
+    assert len(call_spy) == 2
+    assert call_spy[-1]["kwargs"]["vad_filter"] is True

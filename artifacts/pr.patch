@@ -1,449 +1,135 @@
-diff --git a/lan_transcriber/torch_safe_globals.py b/lan_transcriber/torch_safe_globals.py
-index 60dc17c..548d9db 100644
---- a/lan_transcriber/torch_safe_globals.py
-+++ b/lan_transcriber/torch_safe_globals.py
-@@ -2,10 +2,13 @@ from __future__ import annotations
- 
- import contextlib
- import importlib
-+import logging
- import pickle
- import re
- from collections.abc import Iterator
- 
-+_log = logging.getLogger(__name__)
-+
- _OMEGACONF_BASE_FQNS = (
-     "omegaconf.listconfig.ListConfig",
-     "omegaconf.dictconfig.DictConfig",
-@@ -28,19 +31,55 @@ def _import_omegaconf_symbol(fqn: str) -> object | None:
-     return getattr(module, symbol_name, None)
- 
- 
--def _collect_omegaconf_symbols(extra_fqns: list[str] | None) -> list[object]:
-+def _collect_omegaconf_symbols(extra_fqns: list[str] | None) -> list[tuple[str, object]]:
-+    """Return ``(fqn, class)`` pairs for all importable OmegaConf symbols."""
-     fqns = list(_OMEGACONF_BASE_FQNS)
-     for candidate in extra_fqns or []:
-         if candidate in fqns:
-             continue
-         fqns.append(candidate)
- 
--    symbols: list[object] = []
-+    pairs: list[tuple[str, object]] = []
-     for fqn in fqns:
-         symbol = _import_omegaconf_symbol(fqn)
-         if symbol is not None:
--            symbols.append(symbol)
--    return symbols
-+            pairs.append((fqn, symbol))
-+    return pairs
-+
-+
-+def _try_api(
-+    api: object,
-+    symbols_list: list[object],
-+    symbols_dict: dict[str, object],
-+) -> object | None:
-+    """Try *api*(list); on ``TypeError`` fall back to *api*(dict).
-+
-+    Returns whatever *api* returns (e.g. a context-manager) or ``None``
-+    if both forms fail.  Logs exactly one warning on total failure.
-+    """
-+    try:
-+        return api(symbols_list)  # type: ignore[operator]
-+    except TypeError:
-+        pass
-+    except Exception as exc:
-+        _log.warning(
-+            "torch safe-globals %s(list) failed: %s: %s",
-+            getattr(api, "__name__", api),
-+            type(exc).__name__,
-+            exc,
-+        )
-+        return None
-+    # List form raised TypeError – try dict form.
-+    try:
-+        return api(symbols_dict)  # type: ignore[operator]
-+    except Exception as exc:
-+        _log.warning(
-+            "torch safe-globals %s rejected both list and dict forms: %s: %s",
-+            getattr(api, "__name__", api),
-+            type(exc).__name__,
-+            exc,
-+        )
-+        return None
- 
- 
- @contextlib.contextmanager
-@@ -58,28 +97,25 @@ def omegaconf_safe_globals_for_torch_load(extra_fqns: list[str] | None = None) -
-         yield
-         return
- 
--    symbols = _collect_omegaconf_symbols(extra_fqns)
--    if not symbols:
-+    pairs = _collect_omegaconf_symbols(extra_fqns)
-+    if not pairs:
-         yield
-         return
- 
-+    symbols_list = [symbol for _, symbol in pairs]
-+    symbols_dict = {fqn: symbol for fqn, symbol in pairs}
-+
-     safe_globals = getattr(serialization, "safe_globals", None)
-     if callable(safe_globals):
--        context = None
--        try:
--            context = safe_globals(symbols)
--        except Exception:
--            context = None
-+        context = _try_api(safe_globals, symbols_list, symbols_dict)
-         if context is not None:
-             with context:
-                 yield
-             return
- 
-     add_safe_globals = getattr(serialization, "add_safe_globals", None)
--    try:
--        add_safe_globals(symbols)
--    except Exception:
--        pass
-+    if add_safe_globals is not None:
-+        _try_api(add_safe_globals, symbols_list, symbols_dict)
-     yield
- 
- 
-diff --git a/tests/test_torch_safe_globals.py b/tests/test_torch_safe_globals.py
-index 6dc194c..56c51ea 100644
---- a/tests/test_torch_safe_globals.py
-+++ b/tests/test_torch_safe_globals.py
-@@ -2,6 +2,7 @@ from __future__ import annotations
- 
- import contextlib
- import importlib
-+import logging
- import pickle
- import sys
- from types import ModuleType, SimpleNamespace
-@@ -42,6 +43,9 @@ def _install_fake_omegaconf(monkeypatch) -> tuple[type, type, type]:
-     return ListConfig, DictConfig, ContainerMetadata
- 
- 
-+# --- (a) safe_globals(list) works ---
-+
-+
- def test_context_uses_torch_safe_globals_when_available(monkeypatch) -> None:
-     module = _reload_module()
-     calls: list[list[object]] = []
-@@ -49,16 +53,16 @@ def test_context_uses_torch_safe_globals_when_available(monkeypatch) -> None:
-     entered: list[str] = []
- 
-     @contextlib.contextmanager
--    def _safe_globals(items: list[object]):
--        calls.append(list(items))
-+    def _safe_globals(items):
-+        calls.append(list(items) if isinstance(items, list) else [items])
-         entered.append("enter")
-         try:
-             yield
-         finally:
-             entered.append("exit")
- 
--    def _add_safe_globals(items: list[object]) -> None:
--        add_calls.append(list(items))
-+    def _add_safe_globals(items) -> None:
-+        add_calls.append(list(items) if isinstance(items, list) else [items])
- 
-     fake_torch = ModuleType("torch")
-     fake_torch.serialization = SimpleNamespace(safe_globals=_safe_globals, add_safe_globals=_add_safe_globals)
-@@ -73,6 +77,50 @@ def test_context_uses_torch_safe_globals_when_available(monkeypatch) -> None:
-     assert entered == ["enter", "body", "exit"]
- 
- 
-+# --- (b) safe_globals(list) TypeError, safe_globals(dict) works ---
-+
-+
-+def test_safe_globals_list_type_error_falls_back_to_dict(monkeypatch) -> None:
-+    module = _reload_module()
-+    dict_calls: list[dict[str, object]] = []
-+    entered: list[str] = []
-+
-+    def _safe_globals(items):
-+        """Reject list, accept dict — TypeError at *call* time (like real torch)."""
-+        if isinstance(items, list):
-+            raise TypeError("list form unsupported")
-+
-+        @contextlib.contextmanager
-+        def _cm():
-+            dict_calls.append(dict(items))
-+            entered.append("enter")
-+            try:
-+                yield
-+            finally:
-+                entered.append("exit")
-+
-+        return _cm()
-+
-+    fake_torch = ModuleType("torch")
-+    fake_torch.serialization = SimpleNamespace(safe_globals=_safe_globals)
-+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
-+    list_config, dict_config, container_metadata = _install_fake_omegaconf(monkeypatch)
-+
-+    with module.omegaconf_safe_globals_for_torch_load():
-+        entered.append("body")
-+
-+    assert len(dict_calls) == 1
-+    assert dict_calls[0] == {
-+        "omegaconf.listconfig.ListConfig": list_config,
-+        "omegaconf.dictconfig.DictConfig": dict_config,
-+        "omegaconf.base.ContainerMetadata": container_metadata,
-+    }
-+    assert entered == ["enter", "body", "exit"]
-+
-+
-+# --- (c) add_safe_globals(list) works ---
-+
-+
- def test_context_falls_back_to_add_safe_globals_and_supports_extra_fqns(monkeypatch) -> None:
-     module = _reload_module()
-     calls: list[list[object]] = []
-@@ -85,8 +133,8 @@ def test_context_falls_back_to_add_safe_globals_and_supports_extra_fqns(monkeypa
-     fake_custom.CustomNode = CustomNode
-     monkeypatch.setitem(sys.modules, "omegaconf.custom", fake_custom)
- 
--    def _add_safe_globals(items: list[object]) -> None:
--        calls.append(list(items))
-+    def _add_safe_globals(items) -> None:
-+        calls.append(list(items) if isinstance(items, list) else [items])
- 
-     fake_torch = ModuleType("torch")
-     fake_torch.serialization = SimpleNamespace(add_safe_globals=_add_safe_globals)
-@@ -105,18 +153,58 @@ def test_context_falls_back_to_add_safe_globals_and_supports_extra_fqns(monkeypa
-     assert calls == [[list_config, dict_config, container_metadata, CustomNode]]
- 
- 
--def test_context_handles_missing_torch_serialization_or_omegaconf(monkeypatch) -> None:
-+# --- (d) add_safe_globals(list) TypeError, add_safe_globals(dict) works ---
-+
-+
-+def test_add_safe_globals_list_type_error_falls_back_to_dict(monkeypatch) -> None:
-+    module = _reload_module()
-+    dict_calls: list[dict[str, object]] = []
-+
-+    def _add_safe_globals(items) -> None:
-+        if isinstance(items, list):
-+            raise TypeError("list form unsupported")
-+        dict_calls.append(dict(items))
-+
-+    fake_torch = ModuleType("torch")
-+    fake_torch.serialization = SimpleNamespace(add_safe_globals=_add_safe_globals)
-+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
-+    list_config, dict_config, container_metadata = _install_fake_omegaconf(monkeypatch)
-+
-+    with module.omegaconf_safe_globals_for_torch_load():
-+        pass
-+
-+    assert len(dict_calls) == 1
-+    assert dict_calls[0] == {
-+        "omegaconf.listconfig.ListConfig": list_config,
-+        "omegaconf.dictconfig.DictConfig": dict_config,
-+        "omegaconf.base.ContainerMetadata": container_metadata,
-+    }
-+
-+
-+# --- (e) torch missing -> no crash ---
-+
-+
-+def test_context_handles_missing_torch(monkeypatch) -> None:
-     module = _reload_module()
- 
-     monkeypatch.setitem(sys.modules, "torch", None)
-     with module.omegaconf_safe_globals_for_torch_load():
-         pass
- 
-+
-+# --- (e/f) torch.serialization missing + omegaconf missing -> no crash ---
-+
-+
-+def test_context_handles_missing_torch_serialization_or_omegaconf(monkeypatch) -> None:
-+    module = _reload_module()
-+
-+    # torch with no serialization attribute
-     fake_torch = ModuleType("torch")
-     monkeypatch.setitem(sys.modules, "torch", fake_torch)
-     with module.omegaconf_safe_globals_for_torch_load():
-         pass
- 
-+    # serialization exists but no symbols importable (omegaconf blocked)
-     fake_torch.serialization = SimpleNamespace()
-     monkeypatch.setitem(sys.modules, "omegaconf", None)
-     monkeypatch.setitem(sys.modules, "omegaconf.listconfig", None)
-@@ -126,15 +214,18 @@ def test_context_handles_missing_torch_serialization_or_omegaconf(monkeypatch) -
-         pass
- 
- 
--def test_context_handles_safe_globals_factory_and_add_safe_globals_errors(monkeypatch) -> None:
-+# --- safe_globals and add_safe_globals both error (non-TypeError) ---
-+
-+
-+def test_context_handles_safe_globals_factory_and_add_safe_globals_errors(monkeypatch, caplog) -> None:
-     module = _reload_module()
-     add_calls: list[list[object]] = []
- 
--    def _broken_safe_globals(_items: list[object]):
-+    def _broken_safe_globals(_items):
-         raise RuntimeError("no safe globals")
- 
--    def _add_safe_globals(items: list[object]) -> None:
--        add_calls.append(list(items))
-+    def _add_safe_globals(items) -> None:
-+        add_calls.append(list(items) if isinstance(items, list) else [items])
-         raise RuntimeError("cannot add")
- 
-     fake_torch = ModuleType("torch")
-@@ -145,10 +236,61 @@ def test_context_handles_safe_globals_factory_and_add_safe_globals_errors(monkey
-     monkeypatch.setitem(sys.modules, "torch", fake_torch)
-     _install_fake_omegaconf(monkeypatch)
- 
--    with module.omegaconf_safe_globals_for_torch_load(extra_fqns=["omegaconf."]):
--        pass
-+    with caplog.at_level(logging.WARNING, logger="lan_transcriber.torch_safe_globals"):
-+        with module.omegaconf_safe_globals_for_torch_load(extra_fqns=["omegaconf."]):
-+            pass
- 
-     assert len(add_calls) == 1
-+    # Warnings should be logged for both failures
-+    assert any("safe-globals" in r.message for r in caplog.records)
-+
-+
-+# --- safe_globals(list) and safe_globals(dict) both TypeError ---
-+
-+
-+def test_safe_globals_both_forms_type_error_falls_through_to_add(monkeypatch, caplog) -> None:
-+    module = _reload_module()
-+    add_calls: list[list[object]] = []
-+
-+    def _broken_safe_globals(_items):
-+        raise TypeError("unsupported arg type")
-+
-+    def _add_safe_globals(items) -> None:
-+        add_calls.append(list(items) if isinstance(items, list) else [items])
-+
-+    fake_torch = ModuleType("torch")
-+    fake_torch.serialization = SimpleNamespace(
-+        safe_globals=_broken_safe_globals,
-+        add_safe_globals=_add_safe_globals,
+diff --git a/lan_transcriber/pipeline_steps/orchestrator.py b/lan_transcriber/pipeline_steps/orchestrator.py
+index 504bbf3..23c7fea 100644
+--- a/lan_transcriber/pipeline_steps/orchestrator.py
++++ b/lan_transcriber/pipeline_steps/orchestrator.py
+@@ -155,13 +155,33 @@ def _whisperx_load_model_vad_kwargs(
+     load_model: Callable[..., Any],
+     vad_method: Literal["silero", "pyannote"],
+ ) -> dict[str, Any]:
+-    for kwargs in (
++    candidates = (
+         {"vad_method": vad_method},
+         {"vad_model": vad_method},
+         {"vad_options": {"vad_method": vad_method}},
+-    ):
+-        if filter_kwargs_for_callable(load_model, kwargs):
 +    )
-+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
-+    list_config, dict_config, container_metadata = _install_fake_omegaconf(monkeypatch)
++    try:
++        signature = inspect.signature(load_model)
++    except (TypeError, ValueError):
++        # Unknown callable shape: pass all known selector keys so the runtime
++        # implementation can consume whichever one it supports.
++        merged: dict[str, Any] = {}
++        for kwargs in candidates:
++            merged.update(kwargs)
++        return merged
 +
-+    with caplog.at_level(logging.WARNING, logger="lan_transcriber.torch_safe_globals"):
-+        with module.omegaconf_safe_globals_for_torch_load():
-+            pass
++    parameters = signature.parameters
++    has_var_kwargs = any(param.kind == inspect.Parameter.VAR_KEYWORD for param in parameters.values())
 +
-+    # safe_globals failed for both forms; fell through to add_safe_globals
-+    assert add_calls == [[list_config, dict_config, container_metadata]]
-+    assert any("rejected both" in r.message for r in caplog.records)
++    for kwargs in candidates:
++        if any(key in parameters for key in kwargs):
+             return kwargs
 +
-+
-+# --- add_safe_globals is None (serialization exists but has neither API) ---
-+
-+
-+def test_context_handles_no_add_safe_globals(monkeypatch) -> None:
-+    module = _reload_module()
-+
-+    fake_torch = ModuleType("torch")
-+    fake_torch.serialization = SimpleNamespace()
-+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
-+    _install_fake_omegaconf(monkeypatch)
-+
-+    with module.omegaconf_safe_globals_for_torch_load():
-+        pass
-+
-+
-+# --- (g) parser extracts OmegaConf FQN and rejects non-omegaconf FQN ---
++    if has_var_kwargs:
++        merged: dict[str, Any] = {}
++        for kwargs in candidates:
++            merged.update(kwargs)
++        return merged
+     return {}
  
  
- def test_parse_unsupported_global_fqn_accepts_only_omegaconf() -> None:
-@@ -162,6 +304,8 @@ def test_parse_unsupported_global_fqn_accepts_only_omegaconf() -> None:
+diff --git a/tests/test_whisperx_api.py b/tests/test_whisperx_api.py
+index f472dd9..4bb9bbf 100644
+--- a/tests/test_whisperx_api.py
++++ b/tests/test_whisperx_api.py
+@@ -211,6 +211,67 @@ def test_whisperx_asr_modern_path_uses_vad_options_fallback(tmp_path: Path, monk
+     assert info["language"] == "en"
+ 
+ 
++def test_whisperx_asr_modern_path_uses_vad_fallback_keys_with_var_kwargs(tmp_path: Path, monkeypatch):
++    fake_whisperx = ModuleType("whisperx")
++    seen_kwargs: dict[str, object] = {}
++
++    class _FakeModel:
++        def transcribe(
++            self,
++            audio: str,
++            *,
++            batch_size: int,
++            vad_filter: bool,
++            language: str | None,
++        ) -> dict[str, object]:
++            assert audio == "audio"
++            assert batch_size == 16
++            assert vad_filter is True
++            assert language is None
++            return {"segments": [{"start": 0.0, "end": 1.0, "text": "hello"}], "language": "en"}
++
++    def _load_audio(path: str) -> str:
++        assert path.endswith("a.wav")
++        return "audio"
++
++    def _load_model(
++        model_name: str,
++        device: str,
++        compute_type: str = "int8",
++        **kwargs: object,
++    ) -> _FakeModel:
++        assert model_name == "large-v3"
++        assert device == "cpu"
++        assert compute_type == "int8"
++        seen_kwargs.update(kwargs)
++        # Simulate implementations that actually consume vad_model.
++        assert kwargs.get("vad_model") == "pyannote"
++        return _FakeModel()
++
++    fake_whisperx.load_audio = _load_audio
++    fake_whisperx.load_model = _load_model
++    monkeypatch.setitem(sys.modules, "whisperx", fake_whisperx)
++    monkeypatch.setattr(pipeline, "patch_pyannote_inference_ignore_use_auth_token", lambda: False)
++
++    audio_path = tmp_path / "a.wav"
++    audio_path.write_bytes(b"")
++    cfg = pipeline.Settings(
++        asr_device="cpu",
++        asr_enable_align=False,
++        vad_method="pyannote",
++        tmp_root=tmp_path,
++        recordings_root=tmp_path / "recordings",
++    )
++
++    segments, info = pipeline._whisperx_asr(audio_path, override_lang=None, cfg=cfg)
++
++    assert segments and segments[0]["text"] == "hello"
++    assert info["language"] == "en"
++    assert seen_kwargs["vad_method"] == "pyannote"
++    assert seen_kwargs["vad_model"] == "pyannote"
++    assert seen_kwargs["vad_options"] == {"vad_method": "pyannote"}
++
++
+ def test_whisperx_asr_modern_path_drops_unsupported_kwargs(tmp_path: Path, monkeypatch):
+     fake_whisperx = ModuleType("whisperx")
+ 
+@@ -476,3 +537,21 @@ def test_log_dropped_kwargs_ignores_callback_errors() -> None:
+         attempted={"vad_filter": True},
+         filtered={},
      )
-     assert module.parse_unsupported_global_fqn("Unsupported global: GLOBAL builtins.list") is None
-     assert module.parse_unsupported_global_fqn("no unsupported global here") is None
-+    assert module.parse_unsupported_global_fqn("") is None
-+    assert module.parse_unsupported_global_fqn("Unsupported global: omegaconf.dictconfig.DictConfig") == "omegaconf.dictconfig.DictConfig"
- 
- 
- def test_unsupported_global_omegaconf_fqn_from_error_filters_error_types() -> None:
-@@ -178,3 +322,72 @@ def test_unsupported_global_omegaconf_fqn_from_error_filters_error_types() -> No
-     assert module.unsupported_global_omegaconf_fqn_from_error(runtime_err) == "omegaconf.dictconfig.DictConfig"
- 
-     assert module.unsupported_global_omegaconf_fqn_from_error(ValueError("Unsupported global: GLOBAL omegaconf.x")) is None
 +
 +
-+# --- (h) auto-retry path succeeds on second attempt after allowlisting specific FQN ---
++def test_whisperx_load_model_vad_kwargs_when_signature_unavailable(monkeypatch) -> None:
++    def _load_model(*_args: object, **_kwargs: object) -> object:
++        return object()
 +
++    def _raise_signature_error(_fn: object) -> object:
++        raise TypeError("signature unavailable")
 +
-+def test_auto_retry_pattern_with_extra_fqn(monkeypatch) -> None:
-+    """Simulate orchestrator retry: first load fails with unknown FQN, second succeeds."""
-+    module = _reload_module()
-+    call_log: list[list[object]] = []
++    monkeypatch.setattr(pipeline.inspect, "signature", _raise_signature_error)
 +
-+    @contextlib.contextmanager
-+    def _safe_globals(items):
-+        call_log.append(list(items) if isinstance(items, list) else sorted(items.keys()) if isinstance(items, dict) else [items])
-+        yield
++    kwargs = pipeline._whisperx_load_model_vad_kwargs(_load_model, "pyannote")
 +
-+    fake_torch = ModuleType("torch")
-+    fake_torch.serialization = SimpleNamespace(safe_globals=_safe_globals)
-+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
-+    list_config, dict_config, container_metadata = _install_fake_omegaconf(monkeypatch)
-+
-+    # Add an extra omegaconf symbol that we'll "discover" via error parsing
-+    fake_nodes = ModuleType("omegaconf.nodes")
-+
-+    class ValueNode:
-+        pass
-+
-+    fake_nodes.ValueNode = ValueNode
-+    monkeypatch.setitem(sys.modules, "omegaconf.nodes", fake_nodes)
-+
-+    # First attempt: standard allowlist
-+    with module.omegaconf_safe_globals_for_torch_load():
-+        pass
-+
-+    assert call_log == [[list_config, dict_config, container_metadata]]
-+
-+    # Simulate error from load
-+    error = pickle.UnpicklingError(
-+        "Unsupported global: GLOBAL omegaconf.nodes.ValueNode"
-+    )
-+    retry_fqn = module.unsupported_global_omegaconf_fqn_from_error(error)
-+    assert retry_fqn == "omegaconf.nodes.ValueNode"
-+
-+    # Second attempt with extra FQN
-+    call_log.clear()
-+    with module.omegaconf_safe_globals_for_torch_load(extra_fqns=[retry_fqn]):
-+        pass
-+
-+    assert call_log == [[list_config, dict_config, container_metadata, ValueNode]]
-+
-+
-+# --- _try_api: add_safe_globals both forms TypeError (log warning, no crash) ---
-+
-+
-+def test_add_safe_globals_both_forms_type_error_logs_warning(monkeypatch, caplog) -> None:
-+    module = _reload_module()
-+
-+    def _add_safe_globals(_items) -> None:
-+        raise TypeError("nope")
-+
-+    fake_torch = ModuleType("torch")
-+    fake_torch.serialization = SimpleNamespace(add_safe_globals=_add_safe_globals)
-+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
-+    _install_fake_omegaconf(monkeypatch)
-+
-+    with caplog.at_level(logging.WARNING, logger="lan_transcriber.torch_safe_globals"):
-+        with module.omegaconf_safe_globals_for_torch_load():
-+            pass
-+
-+    assert any("rejected both" in r.message for r in caplog.records)
++    assert kwargs == {
++        "vad_method": "pyannote",
++        "vad_model": "pyannote",
++        "vad_options": {"vad_method": "pyannote"},
++    }
