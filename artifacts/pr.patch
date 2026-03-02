@@ -1,265 +1,55 @@
-diff --git a/.env.example b/.env.example
-index f4dd2b2..d1b67a7 100644
---- a/.env.example
-+++ b/.env.example
-@@ -24,6 +24,7 @@ LAN_SQLITE_BUSY_TIMEOUT_MS=30000
- LAN_REDIS_URL=redis://redis:6379/0
- LAN_RQ_QUEUE_NAME=lan-transcriber
- LAN_DIARIZATION_MODEL_ID=pyannote/speaker-diarization-3.1
-+LAN_VAD_METHOD=silero
- # Optional upload cap per file in bytes (set to enable)
- # UPLOAD_MAX_BYTES=1073741824
- LAN_CALENDAR_EXPAND_PAST_DAYS=30
-diff --git a/README.md b/README.md
-index b3f1075..222dde6 100644
---- a/README.md
-+++ b/README.md
-@@ -136,6 +136,7 @@ models are cached across runs.
- | `LAN_DB_PATH` | SQLite database path (default `/data/db/app.db`) |
- | `LAN_REDIS_URL` | Redis endpoint for the RQ queue |
- | `LAN_RQ_QUEUE_NAME` | Queue name consumed by the worker |
-+| `LAN_VAD_METHOD` | WhisperX VAD selector for ASR model init: `silero` (default) or `pyannote` |
- | `LAN_API_BEARER_TOKEN` | Optional bearer token for protected POST actions (`/api` and UI POST routes) |
- | `UPLOAD_MAX_BYTES` | Optional max size per uploaded file in bytes (`413` when exceeded) |
- | `QUARANTINE_RETENTION_DAYS` | Retention period for quarantined recording cleanup (default `7`) |
-diff --git a/docs/runbook.md b/docs/runbook.md
-index 7e8fc5f..6772701 100644
---- a/docs/runbook.md
-+++ b/docs/runbook.md
-@@ -43,6 +43,7 @@ docker compose run --rm api python -m lan_app.healthchecks app
- 3. Set these values in `.env`:
-    - `HF_TOKEN=<your token>`
-    - `LAN_DIARIZATION_MODEL_ID=pyannote/speaker-diarization-3.1` (or your approved repo id)
-+   - `LAN_VAD_METHOD=silero` (default; set `pyannote` only if explicitly required)
- 4. Run warmup once before starting normal traffic:
- 
- ```bash
-diff --git a/lan_app/config.py b/lan_app/config.py
-index 4110b0d..510fbb4 100644
---- a/lan_app/config.py
-+++ b/lan_app/config.py
-@@ -179,6 +179,7 @@ class AppSettings(BaseSettings):
-         default=DEFAULT_DIARIZATION_MODEL_ID,
-         validation_alias=AliasChoices("LAN_DIARIZATION_MODEL_ID"),
-     )
-+    vad_method: Literal["silero", "pyannote"] = "silero"
- 
-     @model_validator(mode="after")
-     def validate_runtime_environment(self) -> "AppSettings":
-diff --git a/lan_app/worker_tasks.py b/lan_app/worker_tasks.py
-index 6b39482..a2622cb 100644
---- a/lan_app/worker_tasks.py
-+++ b/lan_app/worker_tasks.py
-@@ -477,6 +477,7 @@ def _build_pipeline_settings(settings: AppSettings) -> PipelineSettings:
-         voices_dir=settings.data_root / "voices",
-         unknown_dir=settings.recordings_root / "unknown",
-         tmp_root=settings.data_root / "tmp",
-+        vad_method=settings.vad_method,
-     )
- 
- 
 diff --git a/lan_transcriber/pipeline_steps/orchestrator.py b/lan_transcriber/pipeline_steps/orchestrator.py
-index a2b7d6a..504bbf3 100644
+index 504bbf3..23c7fea 100644
 --- a/lan_transcriber/pipeline_steps/orchestrator.py
 +++ b/lan_transcriber/pipeline_steps/orchestrator.py
-@@ -2,11 +2,12 @@ from __future__ import annotations
- 
- import asyncio
- import inspect
-+import logging
- import shutil
- import time
- from pathlib import Path
- from types import SimpleNamespace
--from typing import Any, Awaitable, Callable, Iterable, List, Protocol, Sequence
-+from typing import Any, Awaitable, Callable, Iterable, List, Literal, Protocol, Sequence
- 
- from pydantic_settings import BaseSettings
- 
-@@ -40,6 +41,8 @@ from .summary_builder import (
- from ..runtime_paths import default_recordings_root, default_tmp_root, default_unknown_dir, default_voices_dir
- from ..utils import normalise_language_code, safe_float
- 
-+_logger = logging.getLogger(__name__)
-+
- 
- class Diariser(Protocol):
-     """Minimal interface for speaker diarisation."""
-@@ -61,6 +64,7 @@ class Settings(BaseSettings):
-     asr_compute_type: str | None = None
-     asr_batch_size: int = 16
-     asr_enable_align: bool = True
-+    vad_method: Literal["silero", "pyannote"] = "silero"
-     embed_threshold: float = 0.65
-     merge_similar: float = 0.9
-     precheck_min_duration_sec: float = 20.0
-@@ -147,6 +151,20 @@ def _select_compute_type(cfg: Settings, device: str) -> str:
-     return "float16" if device == "cuda" else "int8"
- 
- 
-+def _whisperx_load_model_vad_kwargs(
-+    load_model: Callable[..., Any],
-+    vad_method: Literal["silero", "pyannote"],
-+) -> dict[str, Any]:
-+    for kwargs in (
-+        {"vad_method": vad_method},
-+        {"vad_model": vad_method},
-+        {"vad_options": {"vad_method": vad_method}},
-+    ):
-+        if filter_kwargs_for_callable(load_model, kwargs):
-+            return kwargs
-+    return {}
-+
-+
- def _log_dropped_kwargs(
-     *,
-     callback: Callable[[str], Any] | None,
-@@ -184,7 +202,7 @@ def _whisperx_asr(
-         except Exception:
-             # Step log append is best-effort and must not break processing.
-             pass
--    if patch_pyannote_inference_ignore_use_auth_token() and step_log_callback is not None:
-+    if cfg.vad_method == "pyannote" and patch_pyannote_inference_ignore_use_auth_token() and step_log_callback is not None:
-         try:
-             step_log_callback("pyannote compat: ignore unsupported Inference use_auth_token")
-         except Exception:
-@@ -229,12 +247,14 @@ def _whisperx_asr(
-     device = _select_asr_device(cfg)
-     compute_type = _select_compute_type(cfg, device)
-     audio = whisperx.load_audio(str(audio_path))
-+    _logger.info("ASR VAD method: %s", cfg.vad_method)
-+    model_load_kwargs = {
-+        "compute_type": compute_type,
-+        **_whisperx_load_model_vad_kwargs(whisperx.load_model, cfg.vad_method),
-+    }
- 
-     def _load_model() -> Any:
--        try:
--            return whisperx.load_model(cfg.asr_model, device, compute_type=compute_type)
--        except TypeError:
--            return whisperx.load_model(cfg.asr_model, device)
-+        return call_with_supported_kwargs(whisperx.load_model, cfg.asr_model, device, **model_load_kwargs)
- 
-     with omegaconf_safe_globals_for_torch_load():
-         try:
-diff --git a/tasks/QUEUE.md b/tasks/QUEUE.md
-index 5265743..c9758dd 100644
---- a/tasks/QUEUE.md
-+++ b/tasks/QUEUE.md
-@@ -372,6 +372,6 @@ Queue (in order)
- - Depends on: PR-FIX-TORCH-SAFEGLOBALS-02
- 
- 73) PR-VAD-SILERO-01: Switch WhisperX VAD to Silero by default to remove Pyannote VAD checkpoint load failures (torch weights_only / OmegaConf) + tests
--- Status: TODO
-+- Status: DOING
- - Tasks file: tasks/PR-VAD-SILERO-01.md
- - Depends on: PR-FIX-TORCH-SAFEGLOBALS-03
-diff --git a/tests/test_app_config.py b/tests/test_app_config.py
-index 8ef2c6e..05b91eb 100644
---- a/tests/test_app_config.py
-+++ b/tests/test_app_config.py
-@@ -158,3 +158,15 @@ def test_diarization_model_id_defaults_and_env_override(monkeypatch):
- 
-     monkeypatch.setenv("LAN_DIARIZATION_MODEL_ID", "   ")
-     assert AppSettings().diarization_model_id == "pyannote/speaker-diarization-3.1"
-+
-+
-+def test_vad_method_defaults_and_env_override(monkeypatch):
-+    monkeypatch.delenv("LAN_VAD_METHOD", raising=False)
-+    assert AppSettings().vad_method == "silero"
-+
-+    monkeypatch.setenv("LAN_VAD_METHOD", "pyannote")
-+    assert AppSettings().vad_method == "pyannote"
-+
-+    monkeypatch.setenv("LAN_VAD_METHOD", "invalid")
-+    with pytest.raises(ValueError, match="LAN_VAD_METHOD|vad_method"):
-+        AppSettings()
-diff --git a/tests/test_cov_lan_app_worker_tasks_branches.py b/tests/test_cov_lan_app_worker_tasks_branches.py
-index abe3691..ddc9f36 100644
---- a/tests/test_cov_lan_app_worker_tasks_branches.py
-+++ b/tests/test_cov_lan_app_worker_tasks_branches.py
-@@ -304,6 +304,19 @@ def test_clean_language_value_rejects_blank_strings():
-     assert worker_tasks._clean_language_value("   ") is None
- 
- 
-+def test_build_pipeline_settings_propagates_vad_method(tmp_path: Path):
-+    cfg = AppSettings(
-+        data_root=tmp_path,
-+        recordings_root=tmp_path / "recordings",
-+        db_path=tmp_path / "db" / "app.db",
-+        vad_method="pyannote",
+@@ -155,13 +155,33 @@ def _whisperx_load_model_vad_kwargs(
+     load_model: Callable[..., Any],
+     vad_method: Literal["silero", "pyannote"],
+ ) -> dict[str, Any]:
+-    for kwargs in (
++    candidates = (
+         {"vad_method": vad_method},
+         {"vad_model": vad_method},
+         {"vad_options": {"vad_method": vad_method}},
+-    ):
+-        if filter_kwargs_for_callable(load_model, kwargs):
 +    )
++    try:
++        signature = inspect.signature(load_model)
++    except (TypeError, ValueError):
++        # Unknown callable shape: pass all known selector keys so the runtime
++        # implementation can consume whichever one it supports.
++        merged: dict[str, Any] = {}
++        for kwargs in candidates:
++            merged.update(kwargs)
++        return merged
 +
-+    pipeline_cfg = worker_tasks._build_pipeline_settings(cfg)
++    parameters = signature.parameters
++    has_var_kwargs = any(param.kind == inspect.Parameter.VAR_KEYWORD for param in parameters.values())
 +
-+    assert pipeline_cfg.vad_method == "pyannote"
++    for kwargs in candidates:
++        if any(key in parameters for key in kwargs):
+             return kwargs
 +
-+
- def test_load_transcript_language_payload_parses_valid_and_invalid_json(tmp_path: Path):
-     cfg = _db_settings(tmp_path)
-     transcript_path = cfg.recordings_root / "rec-lang-1" / "derived" / "transcript.json"
-diff --git a/tests/test_cov_lan_transcriber_extra_pipeline.py b/tests/test_cov_lan_transcriber_extra_pipeline.py
-index 478bb72..bbcb340 100644
---- a/tests/test_cov_lan_transcriber_extra_pipeline.py
-+++ b/tests/test_cov_lan_transcriber_extra_pipeline.py
-@@ -780,7 +780,7 @@ def test_whisperx_asr_callback_and_retry_branches(tmp_path: Path, monkeypatch: p
-     segments, info = pipeline._whisperx_asr(
-         _audio_file(tmp_path, "a.wav"),
-         override_lang=None,
--        cfg=_settings(tmp_path, asr_enable_align=False),
-+        cfg=_settings(tmp_path, asr_enable_align=False, vad_method="pyannote"),
-         step_log_callback=_bad_step_log,
-     )
-     assert segments and info["language"] == "en"
++    if has_var_kwargs:
++        merged: dict[str, Any] = {}
++        for kwargs in candidates:
++            merged.update(kwargs)
++        return merged
+     return {}
+ 
+ 
 diff --git a/tests/test_whisperx_api.py b/tests/test_whisperx_api.py
-index f3c036e..f472dd9 100644
+index f472dd9..4bb9bbf 100644
 --- a/tests/test_whisperx_api.py
 +++ b/tests/test_whisperx_api.py
-@@ -11,7 +11,7 @@ import pytest
- from lan_transcriber.pipeline_steps import orchestrator as pipeline
- 
- 
--def test_whisperx_asr_modern_path(tmp_path: Path, monkeypatch):
-+def test_whisperx_asr_modern_path(tmp_path: Path, monkeypatch, caplog):
-     fake_whisperx = ModuleType("whisperx")
- 
-     class _FakeModel:
-@@ -33,10 +33,16 @@ def test_whisperx_asr_modern_path(tmp_path: Path, monkeypatch):
-         assert path.endswith("a.wav")
-         return "audio"
- 
--    def _load_model(model_name: str, device: str, compute_type: str = "int8") -> _FakeModel:
-+    def _load_model(
-+        model_name: str,
-+        device: str,
-+        compute_type: str = "int8",
-+        vad_method: str = "silero",
-+    ) -> _FakeModel:
-         assert model_name == "large-v3"
-         assert device == "cpu"
-         assert compute_type == "int8"
-+        assert vad_method == "silero"
-         return _FakeModel()
- 
-     def _load_align_model(language_code: str, device: str) -> tuple[str, dict[str, str]]:
-@@ -79,13 +85,130 @@ def test_whisperx_asr_modern_path(tmp_path: Path, monkeypatch):
-         recordings_root=tmp_path / "recordings",
-     )
- 
--    segments, info = pipeline._whisperx_asr(audio_path, override_lang=None, cfg=cfg)
-+    with caplog.at_level("INFO"):
-+        segments, info = pipeline._whisperx_asr(audio_path, override_lang=None, cfg=cfg)
- 
-     assert isinstance(segments, list)
-     assert segments
-     assert all("start" in segment and "end" in segment and "text" in segment for segment in segments)
-     assert any(segment.get("words") for segment in segments)
+@@ -211,6 +211,67 @@ def test_whisperx_asr_modern_path_uses_vad_options_fallback(tmp_path: Path, monk
      assert info["language"] == "en"
-+    assert "ASR VAD method: silero" in caplog.text
-+
-+
-+def test_whisperx_asr_modern_path_uses_vad_model_fallback(tmp_path: Path, monkeypatch):
+ 
+ 
++def test_whisperx_asr_modern_path_uses_vad_fallback_keys_with_var_kwargs(tmp_path: Path, monkeypatch):
 +    fake_whisperx = ModuleType("whisperx")
++    seen_kwargs: dict[str, object] = {}
 +
 +    class _FakeModel:
 +        def transcribe(
@@ -284,18 +74,20 @@ index f3c036e..f472dd9 100644
 +        model_name: str,
 +        device: str,
 +        compute_type: str = "int8",
-+        vad_model: str = "silero",
++        **kwargs: object,
 +    ) -> _FakeModel:
 +        assert model_name == "large-v3"
 +        assert device == "cpu"
 +        assert compute_type == "int8"
-+        assert vad_model == "pyannote"
++        seen_kwargs.update(kwargs)
++        # Simulate implementations that actually consume vad_model.
++        assert kwargs.get("vad_model") == "pyannote"
 +        return _FakeModel()
 +
 +    fake_whisperx.load_audio = _load_audio
 +    fake_whisperx.load_model = _load_model
 +    monkeypatch.setitem(sys.modules, "whisperx", fake_whisperx)
-+    monkeypatch.setattr(pipeline, "patch_pyannote_inference_ignore_use_auth_token", lambda: True)
++    monkeypatch.setattr(pipeline, "patch_pyannote_inference_ignore_use_auth_token", lambda: False)
 +
 +    audio_path = tmp_path / "a.wav"
 +    audio_path.write_bytes(b"")
@@ -303,66 +95,6 @@ index f3c036e..f472dd9 100644
 +        asr_device="cpu",
 +        asr_enable_align=False,
 +        vad_method="pyannote",
-+        tmp_root=tmp_path,
-+        recordings_root=tmp_path / "recordings",
-+    )
-+    step_log: list[str] = []
-+
-+    segments, info = pipeline._whisperx_asr(
-+        audio_path,
-+        override_lang=None,
-+        cfg=cfg,
-+        step_log_callback=step_log.append,
-+    )
-+
-+    assert segments and segments[0]["text"] == "hello"
-+    assert info["language"] == "en"
-+    assert any("pyannote compat" in line for line in step_log)
-+
-+
-+def test_whisperx_asr_modern_path_uses_vad_options_fallback(tmp_path: Path, monkeypatch):
-+    fake_whisperx = ModuleType("whisperx")
-+
-+    class _FakeModel:
-+        def transcribe(
-+            self,
-+            audio: str,
-+            *,
-+            batch_size: int,
-+            vad_filter: bool,
-+            language: str | None,
-+        ) -> dict[str, object]:
-+            assert audio == "audio"
-+            assert batch_size == 16
-+            assert vad_filter is True
-+            assert language is None
-+            return {"segments": [{"start": 0.0, "end": 1.0, "text": "hello"}], "language": "en"}
-+
-+    def _load_audio(path: str) -> str:
-+        assert path.endswith("a.wav")
-+        return "audio"
-+
-+    def _load_model(
-+        model_name: str,
-+        device: str,
-+        compute_type: str = "int8",
-+        vad_options: dict[str, object] | None = None,
-+    ) -> _FakeModel:
-+        assert model_name == "large-v3"
-+        assert device == "cpu"
-+        assert compute_type == "int8"
-+        assert vad_options == {"vad_method": "silero"}
-+        return _FakeModel()
-+
-+    fake_whisperx.load_audio = _load_audio
-+    fake_whisperx.load_model = _load_model
-+    monkeypatch.setitem(sys.modules, "whisperx", fake_whisperx)
-+
-+    audio_path = tmp_path / "a.wav"
-+    audio_path.write_bytes(b"")
-+    cfg = pipeline.Settings(
-+        asr_device="cpu",
-+        asr_enable_align=False,
 +        tmp_root=tmp_path,
 +        recordings_root=tmp_path / "recordings",
 +    )
@@ -371,40 +103,33 @@ index f3c036e..f472dd9 100644
 +
 +    assert segments and segments[0]["text"] == "hello"
 +    assert info["language"] == "en"
- 
- 
++    assert seen_kwargs["vad_method"] == "pyannote"
++    assert seen_kwargs["vad_model"] == "pyannote"
++    assert seen_kwargs["vad_options"] == {"vad_method": "pyannote"}
++
++
  def test_whisperx_asr_modern_path_drops_unsupported_kwargs(tmp_path: Path, monkeypatch):
-diff --git a/tests/test_whisperx_contract.py b/tests/test_whisperx_contract.py
-index 43da312..f96202b 100644
---- a/tests/test_whisperx_contract.py
-+++ b/tests/test_whisperx_contract.py
-@@ -60,8 +60,8 @@ def test_transcribe_contract_without_vad_filter(tmp_path: Path, monkeypatch: Any
+     fake_whisperx = ModuleType("whisperx")
  
-     assert segments and segments[0]["text"] == "hello"
-     assert info["language"] == "en"
--    assert len(call_spy) == 1
--    assert call_spy[0]["kwargs"]["vad_filter"] is True
-+    assert len(call_spy) == 2
-+    assert call_spy[-1]["kwargs"]["vad_filter"] is True
- 
- 
- def test_transcribe_contract_with_vad_filter(tmp_path: Path, monkeypatch: Any) -> None:
-@@ -100,8 +100,8 @@ def test_transcribe_contract_with_vad_filter(tmp_path: Path, monkeypatch: Any) -
- 
-     assert segments and segments[0]["text"] == "hi"
-     assert info["language"] == "en"
--    assert len(call_spy) == 1
--    assert call_spy[0]["kwargs"]["vad_filter"] is True
-+    assert len(call_spy) == 2
-+    assert call_spy[-1]["kwargs"]["vad_filter"] is True
- 
- 
- def test_transcribe_contract_with_var_kwargs(tmp_path: Path, monkeypatch: Any) -> None:
-@@ -142,5 +142,5 @@ def test_transcribe_contract_with_var_kwargs(tmp_path: Path, monkeypatch: Any) -
-     assert segments and segments[0]["text"] == "yo"
-     assert info["language"] == "en"
-     assert seen_kwargs["vad_filter"] is True
--    assert len(call_spy) == 1
--    assert call_spy[0]["kwargs"]["vad_filter"] is True
-+    assert len(call_spy) == 2
-+    assert call_spy[-1]["kwargs"]["vad_filter"] is True
+@@ -476,3 +537,21 @@ def test_log_dropped_kwargs_ignores_callback_errors() -> None:
+         attempted={"vad_filter": True},
+         filtered={},
+     )
++
++
++def test_whisperx_load_model_vad_kwargs_when_signature_unavailable(monkeypatch) -> None:
++    def _load_model(*_args: object, **_kwargs: object) -> object:
++        return object()
++
++    def _raise_signature_error(_fn: object) -> object:
++        raise TypeError("signature unavailable")
++
++    monkeypatch.setattr(pipeline.inspect, "signature", _raise_signature_error)
++
++    kwargs = pipeline._whisperx_load_model_vad_kwargs(_load_model, "pyannote")
++
++    assert kwargs == {
++        "vad_method": "pyannote",
++        "vad_model": "pyannote",
++        "vad_options": {"vad_method": "pyannote"},
++    }

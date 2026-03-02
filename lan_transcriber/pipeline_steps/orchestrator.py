@@ -155,13 +155,33 @@ def _whisperx_load_model_vad_kwargs(
     load_model: Callable[..., Any],
     vad_method: Literal["silero", "pyannote"],
 ) -> dict[str, Any]:
-    for kwargs in (
+    candidates = (
         {"vad_method": vad_method},
         {"vad_model": vad_method},
         {"vad_options": {"vad_method": vad_method}},
-    ):
-        if filter_kwargs_for_callable(load_model, kwargs):
+    )
+    try:
+        signature = inspect.signature(load_model)
+    except (TypeError, ValueError):
+        # Unknown callable shape: pass all known selector keys so the runtime
+        # implementation can consume whichever one it supports.
+        merged: dict[str, Any] = {}
+        for kwargs in candidates:
+            merged.update(kwargs)
+        return merged
+
+    parameters = signature.parameters
+    has_var_kwargs = any(param.kind == inspect.Parameter.VAR_KEYWORD for param in parameters.values())
+
+    for kwargs in candidates:
+        if any(key in parameters for key in kwargs):
             return kwargs
+
+    if has_var_kwargs:
+        merged: dict[str, Any] = {}
+        for kwargs in candidates:
+            merged.update(kwargs)
+        return merged
     return {}
 
 

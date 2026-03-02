@@ -211,6 +211,67 @@ def test_whisperx_asr_modern_path_uses_vad_options_fallback(tmp_path: Path, monk
     assert info["language"] == "en"
 
 
+def test_whisperx_asr_modern_path_uses_vad_fallback_keys_with_var_kwargs(tmp_path: Path, monkeypatch):
+    fake_whisperx = ModuleType("whisperx")
+    seen_kwargs: dict[str, object] = {}
+
+    class _FakeModel:
+        def transcribe(
+            self,
+            audio: str,
+            *,
+            batch_size: int,
+            vad_filter: bool,
+            language: str | None,
+        ) -> dict[str, object]:
+            assert audio == "audio"
+            assert batch_size == 16
+            assert vad_filter is True
+            assert language is None
+            return {"segments": [{"start": 0.0, "end": 1.0, "text": "hello"}], "language": "en"}
+
+    def _load_audio(path: str) -> str:
+        assert path.endswith("a.wav")
+        return "audio"
+
+    def _load_model(
+        model_name: str,
+        device: str,
+        compute_type: str = "int8",
+        **kwargs: object,
+    ) -> _FakeModel:
+        assert model_name == "large-v3"
+        assert device == "cpu"
+        assert compute_type == "int8"
+        seen_kwargs.update(kwargs)
+        # Simulate implementations that actually consume vad_model.
+        assert kwargs.get("vad_model") == "pyannote"
+        return _FakeModel()
+
+    fake_whisperx.load_audio = _load_audio
+    fake_whisperx.load_model = _load_model
+    monkeypatch.setitem(sys.modules, "whisperx", fake_whisperx)
+    monkeypatch.setattr(pipeline, "patch_pyannote_inference_ignore_use_auth_token", lambda: False)
+
+    audio_path = tmp_path / "a.wav"
+    audio_path.write_bytes(b"")
+    cfg = pipeline.Settings(
+        asr_device="cpu",
+        asr_enable_align=False,
+        vad_method="pyannote",
+        tmp_root=tmp_path,
+        recordings_root=tmp_path / "recordings",
+    )
+
+    segments, info = pipeline._whisperx_asr(audio_path, override_lang=None, cfg=cfg)
+
+    assert segments and segments[0]["text"] == "hello"
+    assert info["language"] == "en"
+    assert seen_kwargs["vad_method"] == "pyannote"
+    assert seen_kwargs["vad_model"] == "pyannote"
+    assert seen_kwargs["vad_options"] == {"vad_method": "pyannote"}
+
+
 def test_whisperx_asr_modern_path_drops_unsupported_kwargs(tmp_path: Path, monkeypatch):
     fake_whisperx = ModuleType("whisperx")
 
@@ -476,3 +537,21 @@ def test_log_dropped_kwargs_ignores_callback_errors() -> None:
         attempted={"vad_filter": True},
         filtered={},
     )
+
+
+def test_whisperx_load_model_vad_kwargs_when_signature_unavailable(monkeypatch) -> None:
+    def _load_model(*_args: object, **_kwargs: object) -> object:
+        return object()
+
+    def _raise_signature_error(_fn: object) -> object:
+        raise TypeError("signature unavailable")
+
+    monkeypatch.setattr(pipeline.inspect, "signature", _raise_signature_error)
+
+    kwargs = pipeline._whisperx_load_model_vad_kwargs(_load_model, "pyannote")
+
+    assert kwargs == {
+        "vad_method": "pyannote",
+        "vad_model": "pyannote",
+        "vad_options": {"vad_method": "pyannote"},
+    }
