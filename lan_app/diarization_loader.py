@@ -6,7 +6,7 @@ from typing import Any
 
 from .hf_repo import split_repo_id_and_revision
 
-DEFAULT_DIARIZATION_MODEL_ID = "pyannote/speaker-diarization@3.1"
+DEFAULT_DIARIZATION_MODEL_ID = "pyannote/speaker-diarization-3.1"
 
 _REPO_HINT_RE = re.compile(r"\b[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*\b")
 

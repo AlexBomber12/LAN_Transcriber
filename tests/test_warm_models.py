@@ -53,7 +53,7 @@ def test_warm_models_gated_access_message_uses_repo_hints(
     monkeypatch.setattr(
         warm_models,
         "resolve_diarization_model_id",
-        lambda *_a, **_k: "pyannote/speaker-diarization@3.1",
+        lambda *_a, **_k: "pyannote/speaker-diarization-3.1",
     )
 
     def _raise(**_kwargs):

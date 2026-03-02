@@ -45,7 +45,7 @@ After code changes:
 docker compose restart api worker
 ```
 
-Rebuild images only when dependencies change (for example `requirements.txt` updates).
+Rebuild images only when dependencies change (for example `requirements-cu121.txt` updates).
 
 ## Operations runbook
 

@@ -155,6 +155,25 @@ def test_load_pyannote_pipeline_uses_ordered_candidates_and_raises_last_error(
     ]
 
 
+def test_load_pyannote_pipeline_preserves_non_token_type_errors(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    def _impl(name: str, **kwargs):
+        calls.append((name, dict(kwargs)))
+        raise TypeError("from_pretrained() missing required positional argument")
+
+    _install_fake_pipeline(monkeypatch, _impl)
+    with pytest.raises(TypeError, match="missing required positional argument"):
+        diarization_loader.load_pyannote_pipeline(model_id="repo/type-error@rev")
+    assert calls == [
+        ("repo/type-error", {"revision": "rev"}),
+        ("repo/type-error@rev", {}),
+        ("repo/type-error", {}),
+    ]
+
+
 def test_load_pyannote_pipeline_supports_unversioned_model_and_rejects_non_callable(
     monkeypatch: pytest.MonkeyPatch,
 ):

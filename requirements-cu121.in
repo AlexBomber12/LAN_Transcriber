@@ -9,6 +9,7 @@ pyannote.audio==3.3.2
 pyannote.pipeline==3.0.1
 omegaconf==2.3.0
 gradio==5.35.0
+matplotlib
 
 transformers==4.53.2
 sentencepiece==0.2.0
