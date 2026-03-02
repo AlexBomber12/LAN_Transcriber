@@ -19,7 +19,10 @@ from ..llm_client import LLMClient
 from ..metrics import error_rate_total, p95_latency_seconds
 from ..models import SpeakerSegment, TranscriptResult
 from ..native_fixups import ensure_ctranslate2_no_execstack
-from ..torch_safe_globals import allowlist_omegaconf_for_weights_only
+from ..torch_safe_globals import (
+    omegaconf_safe_globals_for_torch_load,
+    unsupported_global_omegaconf_fqn_from_error,
+)
 from .language import analyse_languages, resolve_target_summary_language, segment_language
 from .precheck import PrecheckResult, run_precheck as _run_precheck
 from .snippets import SnippetExportRequest, export_speaker_snippets
@@ -226,11 +229,25 @@ def _whisperx_asr(
     device = _select_asr_device(cfg)
     compute_type = _select_compute_type(cfg, device)
     audio = whisperx.load_audio(str(audio_path))
-    allowlist_omegaconf_for_weights_only()
-    try:
-        model = whisperx.load_model(cfg.asr_model, device, compute_type=compute_type)
-    except TypeError:
-        model = whisperx.load_model(cfg.asr_model, device)
+
+    def _load_model() -> Any:
+        try:
+            return whisperx.load_model(cfg.asr_model, device, compute_type=compute_type)
+        except TypeError:
+            return whisperx.load_model(cfg.asr_model, device)
+
+    with omegaconf_safe_globals_for_torch_load():
+        try:
+            model = _load_model()
+        except Exception as first_error:
+            retry_fqn = unsupported_global_omegaconf_fqn_from_error(first_error)
+            if retry_fqn is None:
+                raise
+            with omegaconf_safe_globals_for_torch_load(extra_fqns=[retry_fqn]):
+                try:
+                    model = _load_model()
+                except Exception:
+                    raise first_error
 
     transcribe_kwargs: dict[str, Any] = {
         "batch_size": cfg.asr_batch_size,

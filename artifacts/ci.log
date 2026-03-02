@@ -102,8 +102,8 @@ Requirement already satisfied: pytz>2021.1 in ./.venv-ci/lib/python3.12/site-pac
 Building wheels for collected packages: lan-transcriber
   Building editable for lan-transcriber (pyproject.toml): started
   Building editable for lan-transcriber (pyproject.toml): finished with status 'done'
-  Created wheel for lan-transcriber: filename=lan_transcriber-0.1.0-0.editable-py3-none-any.whl size=15425 sha256=de48a161c33ceec48cd5fd4d9a2e8d5ec12d0dc7c3636e6d950c2c3a66dfa8da
-  Stored in directory: /tmp/pip-ephem-wheel-cache-833e3_oi/wheels/d5/8a/5c/f7178f7e49aa5ae12b2320ec66b5c310f4f2f63d1bd301b7fb
+  Created wheel for lan-transcriber: filename=lan_transcriber-0.1.0-0.editable-py3-none-any.whl size=15425 sha256=59eeb1fb5e981dd060935f47d739b561e230ed298c89bfb58da3f515cd01d438
+  Stored in directory: /tmp/pip-ephem-wheel-cache-kioj132z/wheels/d5/8a/5c/f7178f7e49aa5ae12b2320ec66b5c310f4f2f63d1bd301b7fb
 Successfully built lan-transcriber
 Installing collected packages: lan-transcriber
   Attempting uninstall: lan-transcriber
@@ -120,20 +120,20 @@ The event loop scope for asynchronous fixtures will default to the fixture cachi
 ........................................................................ [ 13%]
 ........................................................................ [ 27%]
 ........................................................................ [ 41%]
-........................................................................ [ 55%]
-........................................................................ [ 69%]
-.......................................................s................ [ 83%]
+........................................................................ [ 54%]
+........................................................................ [ 68%]
+.......................................................s................ [ 82%]
 ........................................................................ [ 96%]
-................                                                         [100%]
+.....................                                                    [100%]
 =============================== warnings summary ===============================
 lan_transcriber/pipeline_steps/precheck.py:3
   /home/alexey/LAN_Transcriber/lan_transcriber/pipeline_steps/precheck.py:3: DeprecationWarning: 'audioop' is deprecated and slated for removal in Python 3.13
     import audioop
 
-lan_transcriber/pipeline_steps/orchestrator.py:47
+lan_transcriber/pipeline_steps/orchestrator.py:50
 tests/test_imports.py::test_imports[lan_transcriber.pipeline_steps.orchestrator]
 tests/test_imports.py::test_orchestrator_import_does_not_import_whisperx
-  /home/alexey/LAN_Transcriber/lan_transcriber/pipeline_steps/orchestrator.py:47: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+  /home/alexey/LAN_Transcriber/lan_transcriber/pipeline_steps/orchestrator.py:50: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
     class Settings(BaseSettings):
 
 lan_app/config.py:31
@@ -160,13 +160,13 @@ tests/test_warm_models.py::test_warm_models_module_main_guard
 ---------- coverage: platform linux, python 3.12.3-final-0 -----------
 Name    Stmts   Miss Branch BrPart  Cover   Missing
 ---------------------------------------------------
-TOTAL    5978      0   1844      0   100%
+TOTAL    6045      0   1868      0   100%
 
 50 files skipped due to complete coverage.
 Coverage HTML written to dir htmlcov
 
 Required test coverage of 100% reached. Total coverage: 100.00%
-519 passed, 3 skipped, 10 warnings in 17.28s
+524 passed, 3 skipped, 10 warnings in 18.24s
 Name                                                Stmts   Miss Branch BrPart  Cover
 -------------------------------------------------------------------------------------
 lan_transcriber/__init__.py                             8      0      0      0   100%
@@ -184,16 +184,16 @@ lan_transcriber/pipeline.py                             5      0      0      0  
 lan_transcriber/pipeline_steps/__init__.py              7      0      0      0   100%
 lan_transcriber/pipeline_steps/artifacts.py            19      0      0      0   100%
 lan_transcriber/pipeline_steps/language.py             93      0     46      0   100%
-lan_transcriber/pipeline_steps/orchestrator.py        278      0     48      0   100%
+lan_transcriber/pipeline_steps/orchestrator.py        290      0     50      0   100%
 lan_transcriber/pipeline_steps/precheck.py            116      0     46      0   100%
 lan_transcriber/pipeline_steps/snippets.py            128      0     44      0   100%
 lan_transcriber/pipeline_steps/speaker_turns.py       185      0     94      0   100%
 lan_transcriber/pipeline_steps/summary_builder.py     276      0     98      0   100%
 lan_transcriber/runtime_paths.py                       21      0      4      0   100%
-lan_transcriber/torch_safe_globals.py                  21      0      4      0   100%
+lan_transcriber/torch_safe_globals.py                  76      0     26      0   100%
 lan_transcriber/utils.py                               50      0     30      0   100%
 -------------------------------------------------------------------------------------
-TOTAL                                                1625      0    536      0   100%
+TOTAL                                                1692      0    560      0   100%
 Name                              Stmts   Miss Branch BrPart  Cover
 -------------------------------------------------------------------
 lan_app/__init__.py                   1      0      0      0   100%

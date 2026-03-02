@@ -362,6 +362,6 @@ Queue (in order)
 - Depends on: PR-CUDA-CUDNN9-ALIGN-01
 
 71) PR-FIX-TORCH-SAFEGLOBALS-02: Fix torch weights_only load crash for pyannote VAD (allowlist OmegaConf ContainerMetadata + scoped safe_globals + auto-retry) + regression tests
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-FIX-TORCH-SAFEGLOBALS-02.md
 - Depends on: PR-FIX-TORCH-SAFEGLOBALS-01
