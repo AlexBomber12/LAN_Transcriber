@@ -6,6 +6,8 @@
 #
 annotated-types==0.7.0
     # via pydantic
+antlr4-python3-runtime==4.9.3
+    # via omegaconf
 anyio==4.12.1
     # via
     #   httpx
@@ -50,6 +52,8 @@ idna==3.11
     #   requests
 iniconfig==2.3.0
     # via pytest
+omegaconf==2.3.0
+    # via -r ci-requirements.in
 packaging==26.0
     # via
     #   build
@@ -91,7 +95,9 @@ python-dateutil==2.9.0.post0
 python-dotenv==1.2.2
     # via pydantic-settings
 pyyaml==6.0.2
-    # via -r ci-requirements.in
+    # via
+    #   -r ci-requirements.in
+    #   omegaconf
 recurring-ical-events==3.8.0
     # via -r ci-requirements.in
 requests==2.32.5
