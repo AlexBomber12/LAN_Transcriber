@@ -375,3 +375,8 @@ Queue (in order)
 - Status: DONE
 - Tasks file: tasks/PR-VAD-SILERO-01.md
 - Depends on: PR-FIX-TORCH-SAFEGLOBALS-03
+
+74) PR-VAD-SILERO-02: Fix Silero VAD integration with WhisperX (use vad_method, ensure vad_model is callable) + regression tests
+- Status: TODO
+- Tasks file: tasks/PR-VAD-SILERO-02.md
+- Depends on: PR-VAD-SILERO-01
