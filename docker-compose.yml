@@ -2,7 +2,7 @@ x-lan-service: &lan-service
   build:
     context: .
     dockerfile: Dockerfile
-    target: ${TRANSCRIBER_DOCKER_TARGET:-runtime-lite}
+    target: ${TRANSCRIBER_DOCKER_TARGET:-runtime-full}
   image: ${TRANSCRIBER_IMAGE:-lan-transcriber:${TRANSCRIBER_VERSION:-local}}
   pull_policy: ${TRANSCRIBER_PULL_POLICY:-never}
   restart: unless-stopped
@@ -28,7 +28,7 @@ x-lan-service: &lan-service
     - TRANSCRIBER_VERSION=${TRANSCRIBER_VERSION:-local}
     - LANG_DEFAULT=${LANG_DEFAULT:-en}
     - QUARANTINE_RETENTION_DAYS=${QUARANTINE_RETENTION_DAYS:-7}
-    - LAN_DIARIZATION_MODEL_ID=${LAN_DIARIZATION_MODEL_ID:-pyannote/speaker-diarization@3.1}
+    - LAN_DIARIZATION_MODEL_ID=${LAN_DIARIZATION_MODEL_ID:-pyannote/speaker-diarization-3.1}
     - HF_TOKEN
     - HUGGINGFACE_HUB_TOKEN
     - HF_HOME=${HF_HOME:-/data/hf}

@@ -16,7 +16,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('ci-requirements.txt', 'requirements.txt') }}
+          key: ${{ runner.os }}-pip-${{ hashFiles('ci-requirements.in', 'ci-requirements.txt') }}
           restore-keys: ${{ runner.os }}-pip-
       - name: Run lint and tests
         env:

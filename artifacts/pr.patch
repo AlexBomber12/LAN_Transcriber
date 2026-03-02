@@ -1,31 +1,45 @@
-diff --git a/lan_app/templates/recording_detail.html b/lan_app/templates/recording_detail.html
-index f03ea54..96f0dcc 100644
---- a/lan_app/templates/recording_detail.html
-+++ b/lan_app/templates/recording_detail.html
-@@ -81,7 +81,12 @@
-     <h2 style="margin-top:0">Export</h2>
-     <div class="filters" style="margin-bottom:6px">
-       <button type="button" class="btn" onclick="copyExportText()">Copy</button>
--      <a href="/ui/recordings/{{ rec.id }}/export.zip" class="btn" style="text-decoration:none">Download ZIP</a>
-+      <a
-+        href="/ui/recordings/{{ rec.id }}/export.zip"
-+        class="btn"
-+        style="text-decoration:none"
-+        hx-boost="false"
-+      >Download ZIP</a>
-     </div>
-     <textarea
-       id="export-text"
-diff --git a/tests/test_ui_routes.py b/tests/test_ui_routes.py
-index 0653f00..1195b26 100644
---- a/tests/test_ui_routes.py
-+++ b/tests/test_ui_routes.py
-@@ -212,6 +212,8 @@ def test_recording_detail_overview(seeded_client):
-     assert "Ready" in r.text
-     assert 'data-rid="rec-ui-1"' in r.text
-     assert 'data-rlabel="meeting.mp3"' in r.text
-+    assert 'href="/ui/recordings/rec-ui-1/export.zip"' in r.text
-+    assert 'hx-boost="false"' in r.text
- 
- 
- def test_recording_detail_processing_polls_progress(tmp_path, monkeypatch):
+diff --git a/ci-requirements.in b/ci-requirements.in
+index c4ab36b..037dc09 100644
+--- a/ci-requirements.in
++++ b/ci-requirements.in
+@@ -13,6 +13,7 @@ uvicorn==0.35.0
+ pyyaml==6.0.2
+ icalendar==6.3.1
+ recurring-ical-events==3.8.0
++omegaconf==2.3.0
+ ruff==0.12.4
+ pip-tools==7.4.1
+ setuptools==80.9.0
+diff --git a/ci-requirements.txt b/ci-requirements.txt
+index 42efeb6..55b489b 100644
+--- a/ci-requirements.txt
++++ b/ci-requirements.txt
+@@ -6,6 +6,8 @@
+ #
+ annotated-types==0.7.0
+     # via pydantic
++antlr4-python3-runtime==4.9.3
++    # via omegaconf
+ anyio==4.12.1
+     # via
+     #   httpx
+@@ -50,6 +52,8 @@ idna==3.11
+     #   requests
+ iniconfig==2.3.0
+     # via pytest
++omegaconf==2.3.0
++    # via -r ci-requirements.in
+ packaging==26.0
+     # via
+     #   build
+@@ -91,7 +95,9 @@ python-dateutil==2.9.0.post0
+ python-dotenv==1.2.2
+     # via pydantic-settings
+ pyyaml==6.0.2
+-    # via -r ci-requirements.in
++    # via
++    #   -r ci-requirements.in
++    #   omegaconf
+ recurring-ical-events==3.8.0
+     # via -r ci-requirements.in
+ requests==2.32.5

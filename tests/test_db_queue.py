@@ -1830,8 +1830,8 @@ def test_build_diariser_wraps_sync_pyannote_pipeline(monkeypatch):
 
     assert result == {"ok": True}
     assert fake_model.calls == [{"audio": "/tmp/fake.wav"}]
-    assert from_pretrained_call["name"] == "pyannote/speaker-diarization"
-    assert from_pretrained_call["kwargs"] == {"revision": "3.1"}
+    assert from_pretrained_call["name"] == "pyannote/speaker-diarization-3.1"
+    assert from_pretrained_call["kwargs"] == {}
 
 
 def test_build_diariser_surfaces_pyannote_model_load_errors(monkeypatch):

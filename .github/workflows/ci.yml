@@ -31,6 +31,16 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - name: Verify ci lockfile is up to date
+        run: |
+          python -m pip install "pip==24.3.1" "pip-tools==7.4.1"
+          tmp_dir="$(mktemp -d)"
+          cp ci-requirements.in "$tmp_dir/ci-requirements.in"
+          (
+            cd "$tmp_dir"
+            pip-compile --output-file=ci-requirements.txt ci-requirements.in
+          )
+          diff -u ci-requirements.txt "$tmp_dir/ci-requirements.txt"
       - name: Run lint and tests
         env:
           CI: 'true'

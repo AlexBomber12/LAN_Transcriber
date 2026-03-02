@@ -347,6 +347,6 @@ Queue (in order)
 - Depends on: PR-TEST-RQ-REDIS-INTEGRATION-01
 
 68) PR-CI-DEPS-STABLE-01: Stable CI lockfiles (pip-compile), CUDA-only runtime, add matplotlib, and strengthen docker smoke imports
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-CI-DEPS-STABLE-01.md
 - Depends on: PR-COVERAGE-ENFORCE-100-01
