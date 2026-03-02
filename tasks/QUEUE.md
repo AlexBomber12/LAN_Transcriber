@@ -351,7 +351,12 @@ Queue (in order)
 - Tasks file: tasks/PR-CI-DEPS-STABLE-01.md
 - Depends on: PR-COVERAGE-ENFORCE-100-01
 
-69) PR-FIX-TORCH-SAFEGLOBALS-01: Fix torch weights_only load crash for pyannote VAD (allowlist OmegaConf ListConfig/DictConfig) + regression tests
+69) PR-CUDA-CUDNN9-ALIGN-01: Align CUDA/cuDNN stack (switch to cu124 wheels + ctranslate2>=4.5) to fix missing libcudnn_ops_infer.so.8
+- Status: DONE
+- Tasks file: tasks/PR-CUDA-CUDNN9-ALIGN-01.md
+- Depends on: PR-CI-DEPS-STABLE-01
+
+70) PR-FIX-TORCH-SAFEGLOBALS-01: Fix torch weights_only load crash for pyannote VAD (allowlist OmegaConf ListConfig/DictConfig) + regression tests
 - Status: TODO
 - Tasks file: tasks/PR-FIX-TORCH-SAFEGLOBALS-01.md
 - Depends on: PR-CUDA-CUDNN9-ALIGN-01
