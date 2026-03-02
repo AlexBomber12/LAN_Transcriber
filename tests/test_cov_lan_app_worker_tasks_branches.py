@@ -304,6 +304,19 @@ def test_clean_language_value_rejects_blank_strings():
     assert worker_tasks._clean_language_value("   ") is None
 
 
+def test_build_pipeline_settings_propagates_vad_method(tmp_path: Path):
+    cfg = AppSettings(
+        data_root=tmp_path,
+        recordings_root=tmp_path / "recordings",
+        db_path=tmp_path / "db" / "app.db",
+        vad_method="pyannote",
+    )
+
+    pipeline_cfg = worker_tasks._build_pipeline_settings(cfg)
+
+    assert pipeline_cfg.vad_method == "pyannote"
+
+
 def test_load_transcript_language_payload_parses_valid_and_invalid_json(tmp_path: Path):
     cfg = _db_settings(tmp_path)
     transcript_path = cfg.recordings_root / "rec-lang-1" / "derived" / "transcript.json"

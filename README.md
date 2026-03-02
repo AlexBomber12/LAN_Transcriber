@@ -136,6 +136,7 @@ models are cached across runs.
 | `LAN_DB_PATH` | SQLite database path (default `/data/db/app.db`) |
 | `LAN_REDIS_URL` | Redis endpoint for the RQ queue |
 | `LAN_RQ_QUEUE_NAME` | Queue name consumed by the worker |
+| `LAN_VAD_METHOD` | WhisperX VAD selector for ASR model init: `silero` (default) or `pyannote` |
 | `LAN_API_BEARER_TOKEN` | Optional bearer token for protected POST actions (`/api` and UI POST routes) |
 | `UPLOAD_MAX_BYTES` | Optional max size per uploaded file in bytes (`413` when exceeded) |
 | `QUARANTINE_RETENTION_DAYS` | Retention period for quarantined recording cleanup (default `7`) |

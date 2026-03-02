@@ -780,7 +780,7 @@ def test_whisperx_asr_callback_and_retry_branches(tmp_path: Path, monkeypatch: p
     segments, info = pipeline._whisperx_asr(
         _audio_file(tmp_path, "a.wav"),
         override_lang=None,
-        cfg=_settings(tmp_path, asr_enable_align=False),
+        cfg=_settings(tmp_path, asr_enable_align=False, vad_method="pyannote"),
         step_log_callback=_bad_step_log,
     )
     assert segments and info["language"] == "en"

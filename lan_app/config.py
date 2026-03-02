@@ -179,6 +179,7 @@ class AppSettings(BaseSettings):
         default=DEFAULT_DIARIZATION_MODEL_ID,
         validation_alias=AliasChoices("LAN_DIARIZATION_MODEL_ID"),
     )
+    vad_method: Literal["silero", "pyannote"] = "silero"
 
     @model_validator(mode="after")
     def validate_runtime_environment(self) -> "AppSettings":

@@ -1,449 +1,410 @@
-diff --git a/lan_transcriber/torch_safe_globals.py b/lan_transcriber/torch_safe_globals.py
-index 60dc17c..548d9db 100644
---- a/lan_transcriber/torch_safe_globals.py
-+++ b/lan_transcriber/torch_safe_globals.py
-@@ -2,10 +2,13 @@ from __future__ import annotations
+diff --git a/.env.example b/.env.example
+index f4dd2b2..d1b67a7 100644
+--- a/.env.example
++++ b/.env.example
+@@ -24,6 +24,7 @@ LAN_SQLITE_BUSY_TIMEOUT_MS=30000
+ LAN_REDIS_URL=redis://redis:6379/0
+ LAN_RQ_QUEUE_NAME=lan-transcriber
+ LAN_DIARIZATION_MODEL_ID=pyannote/speaker-diarization-3.1
++LAN_VAD_METHOD=silero
+ # Optional upload cap per file in bytes (set to enable)
+ # UPLOAD_MAX_BYTES=1073741824
+ LAN_CALENDAR_EXPAND_PAST_DAYS=30
+diff --git a/README.md b/README.md
+index b3f1075..222dde6 100644
+--- a/README.md
++++ b/README.md
+@@ -136,6 +136,7 @@ models are cached across runs.
+ | `LAN_DB_PATH` | SQLite database path (default `/data/db/app.db`) |
+ | `LAN_REDIS_URL` | Redis endpoint for the RQ queue |
+ | `LAN_RQ_QUEUE_NAME` | Queue name consumed by the worker |
++| `LAN_VAD_METHOD` | WhisperX VAD selector for ASR model init: `silero` (default) or `pyannote` |
+ | `LAN_API_BEARER_TOKEN` | Optional bearer token for protected POST actions (`/api` and UI POST routes) |
+ | `UPLOAD_MAX_BYTES` | Optional max size per uploaded file in bytes (`413` when exceeded) |
+ | `QUARANTINE_RETENTION_DAYS` | Retention period for quarantined recording cleanup (default `7`) |
+diff --git a/docs/runbook.md b/docs/runbook.md
+index 7e8fc5f..6772701 100644
+--- a/docs/runbook.md
++++ b/docs/runbook.md
+@@ -43,6 +43,7 @@ docker compose run --rm api python -m lan_app.healthchecks app
+ 3. Set these values in `.env`:
+    - `HF_TOKEN=<your token>`
+    - `LAN_DIARIZATION_MODEL_ID=pyannote/speaker-diarization-3.1` (or your approved repo id)
++   - `LAN_VAD_METHOD=silero` (default; set `pyannote` only if explicitly required)
+ 4. Run warmup once before starting normal traffic:
  
- import contextlib
- import importlib
-+import logging
- import pickle
- import re
- from collections.abc import Iterator
- 
-+_log = logging.getLogger(__name__)
-+
- _OMEGACONF_BASE_FQNS = (
-     "omegaconf.listconfig.ListConfig",
-     "omegaconf.dictconfig.DictConfig",
-@@ -28,19 +31,55 @@ def _import_omegaconf_symbol(fqn: str) -> object | None:
-     return getattr(module, symbol_name, None)
- 
- 
--def _collect_omegaconf_symbols(extra_fqns: list[str] | None) -> list[object]:
-+def _collect_omegaconf_symbols(extra_fqns: list[str] | None) -> list[tuple[str, object]]:
-+    """Return ``(fqn, class)`` pairs for all importable OmegaConf symbols."""
-     fqns = list(_OMEGACONF_BASE_FQNS)
-     for candidate in extra_fqns or []:
-         if candidate in fqns:
-             continue
-         fqns.append(candidate)
- 
--    symbols: list[object] = []
-+    pairs: list[tuple[str, object]] = []
-     for fqn in fqns:
-         symbol = _import_omegaconf_symbol(fqn)
-         if symbol is not None:
--            symbols.append(symbol)
--    return symbols
-+            pairs.append((fqn, symbol))
-+    return pairs
-+
-+
-+def _try_api(
-+    api: object,
-+    symbols_list: list[object],
-+    symbols_dict: dict[str, object],
-+) -> object | None:
-+    """Try *api*(list); on ``TypeError`` fall back to *api*(dict).
-+
-+    Returns whatever *api* returns (e.g. a context-manager) or ``None``
-+    if both forms fail.  Logs exactly one warning on total failure.
-+    """
-+    try:
-+        return api(symbols_list)  # type: ignore[operator]
-+    except TypeError:
-+        pass
-+    except Exception as exc:
-+        _log.warning(
-+            "torch safe-globals %s(list) failed: %s: %s",
-+            getattr(api, "__name__", api),
-+            type(exc).__name__,
-+            exc,
-+        )
-+        return None
-+    # List form raised TypeError – try dict form.
-+    try:
-+        return api(symbols_dict)  # type: ignore[operator]
-+    except Exception as exc:
-+        _log.warning(
-+            "torch safe-globals %s rejected both list and dict forms: %s: %s",
-+            getattr(api, "__name__", api),
-+            type(exc).__name__,
-+            exc,
-+        )
-+        return None
- 
- 
- @contextlib.contextmanager
-@@ -58,28 +97,25 @@ def omegaconf_safe_globals_for_torch_load(extra_fqns: list[str] | None = None) -
-         yield
-         return
- 
--    symbols = _collect_omegaconf_symbols(extra_fqns)
--    if not symbols:
-+    pairs = _collect_omegaconf_symbols(extra_fqns)
-+    if not pairs:
-         yield
-         return
- 
-+    symbols_list = [symbol for _, symbol in pairs]
-+    symbols_dict = {fqn: symbol for fqn, symbol in pairs}
-+
-     safe_globals = getattr(serialization, "safe_globals", None)
-     if callable(safe_globals):
--        context = None
--        try:
--            context = safe_globals(symbols)
--        except Exception:
--            context = None
-+        context = _try_api(safe_globals, symbols_list, symbols_dict)
-         if context is not None:
-             with context:
-                 yield
-             return
- 
-     add_safe_globals = getattr(serialization, "add_safe_globals", None)
--    try:
--        add_safe_globals(symbols)
--    except Exception:
--        pass
-+    if add_safe_globals is not None:
-+        _try_api(add_safe_globals, symbols_list, symbols_dict)
-     yield
- 
- 
-diff --git a/tests/test_torch_safe_globals.py b/tests/test_torch_safe_globals.py
-index 6dc194c..56c51ea 100644
---- a/tests/test_torch_safe_globals.py
-+++ b/tests/test_torch_safe_globals.py
-@@ -2,6 +2,7 @@ from __future__ import annotations
- 
- import contextlib
- import importlib
-+import logging
- import pickle
- import sys
- from types import ModuleType, SimpleNamespace
-@@ -42,6 +43,9 @@ def _install_fake_omegaconf(monkeypatch) -> tuple[type, type, type]:
-     return ListConfig, DictConfig, ContainerMetadata
- 
- 
-+# --- (a) safe_globals(list) works ---
-+
-+
- def test_context_uses_torch_safe_globals_when_available(monkeypatch) -> None:
-     module = _reload_module()
-     calls: list[list[object]] = []
-@@ -49,16 +53,16 @@ def test_context_uses_torch_safe_globals_when_available(monkeypatch) -> None:
-     entered: list[str] = []
- 
-     @contextlib.contextmanager
--    def _safe_globals(items: list[object]):
--        calls.append(list(items))
-+    def _safe_globals(items):
-+        calls.append(list(items) if isinstance(items, list) else [items])
-         entered.append("enter")
-         try:
-             yield
-         finally:
-             entered.append("exit")
- 
--    def _add_safe_globals(items: list[object]) -> None:
--        add_calls.append(list(items))
-+    def _add_safe_globals(items) -> None:
-+        add_calls.append(list(items) if isinstance(items, list) else [items])
- 
-     fake_torch = ModuleType("torch")
-     fake_torch.serialization = SimpleNamespace(safe_globals=_safe_globals, add_safe_globals=_add_safe_globals)
-@@ -73,6 +77,50 @@ def test_context_uses_torch_safe_globals_when_available(monkeypatch) -> None:
-     assert entered == ["enter", "body", "exit"]
- 
- 
-+# --- (b) safe_globals(list) TypeError, safe_globals(dict) works ---
-+
-+
-+def test_safe_globals_list_type_error_falls_back_to_dict(monkeypatch) -> None:
-+    module = _reload_module()
-+    dict_calls: list[dict[str, object]] = []
-+    entered: list[str] = []
-+
-+    def _safe_globals(items):
-+        """Reject list, accept dict — TypeError at *call* time (like real torch)."""
-+        if isinstance(items, list):
-+            raise TypeError("list form unsupported")
-+
-+        @contextlib.contextmanager
-+        def _cm():
-+            dict_calls.append(dict(items))
-+            entered.append("enter")
-+            try:
-+                yield
-+            finally:
-+                entered.append("exit")
-+
-+        return _cm()
-+
-+    fake_torch = ModuleType("torch")
-+    fake_torch.serialization = SimpleNamespace(safe_globals=_safe_globals)
-+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
-+    list_config, dict_config, container_metadata = _install_fake_omegaconf(monkeypatch)
-+
-+    with module.omegaconf_safe_globals_for_torch_load():
-+        entered.append("body")
-+
-+    assert len(dict_calls) == 1
-+    assert dict_calls[0] == {
-+        "omegaconf.listconfig.ListConfig": list_config,
-+        "omegaconf.dictconfig.DictConfig": dict_config,
-+        "omegaconf.base.ContainerMetadata": container_metadata,
-+    }
-+    assert entered == ["enter", "body", "exit"]
-+
-+
-+# --- (c) add_safe_globals(list) works ---
-+
-+
- def test_context_falls_back_to_add_safe_globals_and_supports_extra_fqns(monkeypatch) -> None:
-     module = _reload_module()
-     calls: list[list[object]] = []
-@@ -85,8 +133,8 @@ def test_context_falls_back_to_add_safe_globals_and_supports_extra_fqns(monkeypa
-     fake_custom.CustomNode = CustomNode
-     monkeypatch.setitem(sys.modules, "omegaconf.custom", fake_custom)
- 
--    def _add_safe_globals(items: list[object]) -> None:
--        calls.append(list(items))
-+    def _add_safe_globals(items) -> None:
-+        calls.append(list(items) if isinstance(items, list) else [items])
- 
-     fake_torch = ModuleType("torch")
-     fake_torch.serialization = SimpleNamespace(add_safe_globals=_add_safe_globals)
-@@ -105,18 +153,58 @@ def test_context_falls_back_to_add_safe_globals_and_supports_extra_fqns(monkeypa
-     assert calls == [[list_config, dict_config, container_metadata, CustomNode]]
- 
- 
--def test_context_handles_missing_torch_serialization_or_omegaconf(monkeypatch) -> None:
-+# --- (d) add_safe_globals(list) TypeError, add_safe_globals(dict) works ---
-+
-+
-+def test_add_safe_globals_list_type_error_falls_back_to_dict(monkeypatch) -> None:
-+    module = _reload_module()
-+    dict_calls: list[dict[str, object]] = []
-+
-+    def _add_safe_globals(items) -> None:
-+        if isinstance(items, list):
-+            raise TypeError("list form unsupported")
-+        dict_calls.append(dict(items))
-+
-+    fake_torch = ModuleType("torch")
-+    fake_torch.serialization = SimpleNamespace(add_safe_globals=_add_safe_globals)
-+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
-+    list_config, dict_config, container_metadata = _install_fake_omegaconf(monkeypatch)
-+
-+    with module.omegaconf_safe_globals_for_torch_load():
-+        pass
-+
-+    assert len(dict_calls) == 1
-+    assert dict_calls[0] == {
-+        "omegaconf.listconfig.ListConfig": list_config,
-+        "omegaconf.dictconfig.DictConfig": dict_config,
-+        "omegaconf.base.ContainerMetadata": container_metadata,
-+    }
-+
-+
-+# --- (e) torch missing -> no crash ---
-+
-+
-+def test_context_handles_missing_torch(monkeypatch) -> None:
-     module = _reload_module()
- 
-     monkeypatch.setitem(sys.modules, "torch", None)
-     with module.omegaconf_safe_globals_for_torch_load():
-         pass
- 
-+
-+# --- (e/f) torch.serialization missing + omegaconf missing -> no crash ---
-+
-+
-+def test_context_handles_missing_torch_serialization_or_omegaconf(monkeypatch) -> None:
-+    module = _reload_module()
-+
-+    # torch with no serialization attribute
-     fake_torch = ModuleType("torch")
-     monkeypatch.setitem(sys.modules, "torch", fake_torch)
-     with module.omegaconf_safe_globals_for_torch_load():
-         pass
- 
-+    # serialization exists but no symbols importable (omegaconf blocked)
-     fake_torch.serialization = SimpleNamespace()
-     monkeypatch.setitem(sys.modules, "omegaconf", None)
-     monkeypatch.setitem(sys.modules, "omegaconf.listconfig", None)
-@@ -126,15 +214,18 @@ def test_context_handles_missing_torch_serialization_or_omegaconf(monkeypatch) -
-         pass
- 
- 
--def test_context_handles_safe_globals_factory_and_add_safe_globals_errors(monkeypatch) -> None:
-+# --- safe_globals and add_safe_globals both error (non-TypeError) ---
-+
-+
-+def test_context_handles_safe_globals_factory_and_add_safe_globals_errors(monkeypatch, caplog) -> None:
-     module = _reload_module()
-     add_calls: list[list[object]] = []
- 
--    def _broken_safe_globals(_items: list[object]):
-+    def _broken_safe_globals(_items):
-         raise RuntimeError("no safe globals")
- 
--    def _add_safe_globals(items: list[object]) -> None:
--        add_calls.append(list(items))
-+    def _add_safe_globals(items) -> None:
-+        add_calls.append(list(items) if isinstance(items, list) else [items])
-         raise RuntimeError("cannot add")
- 
-     fake_torch = ModuleType("torch")
-@@ -145,10 +236,61 @@ def test_context_handles_safe_globals_factory_and_add_safe_globals_errors(monkey
-     monkeypatch.setitem(sys.modules, "torch", fake_torch)
-     _install_fake_omegaconf(monkeypatch)
- 
--    with module.omegaconf_safe_globals_for_torch_load(extra_fqns=["omegaconf."]):
--        pass
-+    with caplog.at_level(logging.WARNING, logger="lan_transcriber.torch_safe_globals"):
-+        with module.omegaconf_safe_globals_for_torch_load(extra_fqns=["omegaconf."]):
-+            pass
- 
-     assert len(add_calls) == 1
-+    # Warnings should be logged for both failures
-+    assert any("safe-globals" in r.message for r in caplog.records)
-+
-+
-+# --- safe_globals(list) and safe_globals(dict) both TypeError ---
-+
-+
-+def test_safe_globals_both_forms_type_error_falls_through_to_add(monkeypatch, caplog) -> None:
-+    module = _reload_module()
-+    add_calls: list[list[object]] = []
-+
-+    def _broken_safe_globals(_items):
-+        raise TypeError("unsupported arg type")
-+
-+    def _add_safe_globals(items) -> None:
-+        add_calls.append(list(items) if isinstance(items, list) else [items])
-+
-+    fake_torch = ModuleType("torch")
-+    fake_torch.serialization = SimpleNamespace(
-+        safe_globals=_broken_safe_globals,
-+        add_safe_globals=_add_safe_globals,
-+    )
-+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
-+    list_config, dict_config, container_metadata = _install_fake_omegaconf(monkeypatch)
-+
-+    with caplog.at_level(logging.WARNING, logger="lan_transcriber.torch_safe_globals"):
-+        with module.omegaconf_safe_globals_for_torch_load():
-+            pass
-+
-+    # safe_globals failed for both forms; fell through to add_safe_globals
-+    assert add_calls == [[list_config, dict_config, container_metadata]]
-+    assert any("rejected both" in r.message for r in caplog.records)
-+
-+
-+# --- add_safe_globals is None (serialization exists but has neither API) ---
-+
-+
-+def test_context_handles_no_add_safe_globals(monkeypatch) -> None:
-+    module = _reload_module()
-+
-+    fake_torch = ModuleType("torch")
-+    fake_torch.serialization = SimpleNamespace()
-+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
-+    _install_fake_omegaconf(monkeypatch)
-+
-+    with module.omegaconf_safe_globals_for_torch_load():
-+        pass
-+
-+
-+# --- (g) parser extracts OmegaConf FQN and rejects non-omegaconf FQN ---
- 
- 
- def test_parse_unsupported_global_fqn_accepts_only_omegaconf() -> None:
-@@ -162,6 +304,8 @@ def test_parse_unsupported_global_fqn_accepts_only_omegaconf() -> None:
+ ```bash
+diff --git a/lan_app/config.py b/lan_app/config.py
+index 4110b0d..510fbb4 100644
+--- a/lan_app/config.py
++++ b/lan_app/config.py
+@@ -179,6 +179,7 @@ class AppSettings(BaseSettings):
+         default=DEFAULT_DIARIZATION_MODEL_ID,
+         validation_alias=AliasChoices("LAN_DIARIZATION_MODEL_ID"),
      )
-     assert module.parse_unsupported_global_fqn("Unsupported global: GLOBAL builtins.list") is None
-     assert module.parse_unsupported_global_fqn("no unsupported global here") is None
-+    assert module.parse_unsupported_global_fqn("") is None
-+    assert module.parse_unsupported_global_fqn("Unsupported global: omegaconf.dictconfig.DictConfig") == "omegaconf.dictconfig.DictConfig"
++    vad_method: Literal["silero", "pyannote"] = "silero"
+ 
+     @model_validator(mode="after")
+     def validate_runtime_environment(self) -> "AppSettings":
+diff --git a/lan_app/worker_tasks.py b/lan_app/worker_tasks.py
+index 6b39482..a2622cb 100644
+--- a/lan_app/worker_tasks.py
++++ b/lan_app/worker_tasks.py
+@@ -477,6 +477,7 @@ def _build_pipeline_settings(settings: AppSettings) -> PipelineSettings:
+         voices_dir=settings.data_root / "voices",
+         unknown_dir=settings.recordings_root / "unknown",
+         tmp_root=settings.data_root / "tmp",
++        vad_method=settings.vad_method,
+     )
  
  
- def test_unsupported_global_omegaconf_fqn_from_error_filters_error_types() -> None:
-@@ -178,3 +322,72 @@ def test_unsupported_global_omegaconf_fqn_from_error_filters_error_types() -> No
-     assert module.unsupported_global_omegaconf_fqn_from_error(runtime_err) == "omegaconf.dictconfig.DictConfig"
+diff --git a/lan_transcriber/pipeline_steps/orchestrator.py b/lan_transcriber/pipeline_steps/orchestrator.py
+index a2b7d6a..504bbf3 100644
+--- a/lan_transcriber/pipeline_steps/orchestrator.py
++++ b/lan_transcriber/pipeline_steps/orchestrator.py
+@@ -2,11 +2,12 @@ from __future__ import annotations
  
-     assert module.unsupported_global_omegaconf_fqn_from_error(ValueError("Unsupported global: GLOBAL omegaconf.x")) is None
+ import asyncio
+ import inspect
++import logging
+ import shutil
+ import time
+ from pathlib import Path
+ from types import SimpleNamespace
+-from typing import Any, Awaitable, Callable, Iterable, List, Protocol, Sequence
++from typing import Any, Awaitable, Callable, Iterable, List, Literal, Protocol, Sequence
+ 
+ from pydantic_settings import BaseSettings
+ 
+@@ -40,6 +41,8 @@ from .summary_builder import (
+ from ..runtime_paths import default_recordings_root, default_tmp_root, default_unknown_dir, default_voices_dir
+ from ..utils import normalise_language_code, safe_float
+ 
++_logger = logging.getLogger(__name__)
++
+ 
+ class Diariser(Protocol):
+     """Minimal interface for speaker diarisation."""
+@@ -61,6 +64,7 @@ class Settings(BaseSettings):
+     asr_compute_type: str | None = None
+     asr_batch_size: int = 16
+     asr_enable_align: bool = True
++    vad_method: Literal["silero", "pyannote"] = "silero"
+     embed_threshold: float = 0.65
+     merge_similar: float = 0.9
+     precheck_min_duration_sec: float = 20.0
+@@ -147,6 +151,20 @@ def _select_compute_type(cfg: Settings, device: str) -> str:
+     return "float16" if device == "cuda" else "int8"
+ 
+ 
++def _whisperx_load_model_vad_kwargs(
++    load_model: Callable[..., Any],
++    vad_method: Literal["silero", "pyannote"],
++) -> dict[str, Any]:
++    for kwargs in (
++        {"vad_method": vad_method},
++        {"vad_model": vad_method},
++        {"vad_options": {"vad_method": vad_method}},
++    ):
++        if filter_kwargs_for_callable(load_model, kwargs):
++            return kwargs
++    return {}
 +
 +
-+# --- (h) auto-retry path succeeds on second attempt after allowlisting specific FQN ---
+ def _log_dropped_kwargs(
+     *,
+     callback: Callable[[str], Any] | None,
+@@ -184,7 +202,7 @@ def _whisperx_asr(
+         except Exception:
+             # Step log append is best-effort and must not break processing.
+             pass
+-    if patch_pyannote_inference_ignore_use_auth_token() and step_log_callback is not None:
++    if cfg.vad_method == "pyannote" and patch_pyannote_inference_ignore_use_auth_token() and step_log_callback is not None:
+         try:
+             step_log_callback("pyannote compat: ignore unsupported Inference use_auth_token")
+         except Exception:
+@@ -229,12 +247,14 @@ def _whisperx_asr(
+     device = _select_asr_device(cfg)
+     compute_type = _select_compute_type(cfg, device)
+     audio = whisperx.load_audio(str(audio_path))
++    _logger.info("ASR VAD method: %s", cfg.vad_method)
++    model_load_kwargs = {
++        "compute_type": compute_type,
++        **_whisperx_load_model_vad_kwargs(whisperx.load_model, cfg.vad_method),
++    }
+ 
+     def _load_model() -> Any:
+-        try:
+-            return whisperx.load_model(cfg.asr_model, device, compute_type=compute_type)
+-        except TypeError:
+-            return whisperx.load_model(cfg.asr_model, device)
++        return call_with_supported_kwargs(whisperx.load_model, cfg.asr_model, device, **model_load_kwargs)
+ 
+     with omegaconf_safe_globals_for_torch_load():
+         try:
+diff --git a/tasks/QUEUE.md b/tasks/QUEUE.md
+index 5265743..c9758dd 100644
+--- a/tasks/QUEUE.md
++++ b/tasks/QUEUE.md
+@@ -372,6 +372,6 @@ Queue (in order)
+ - Depends on: PR-FIX-TORCH-SAFEGLOBALS-02
+ 
+ 73) PR-VAD-SILERO-01: Switch WhisperX VAD to Silero by default to remove Pyannote VAD checkpoint load failures (torch weights_only / OmegaConf) + tests
+-- Status: TODO
++- Status: DOING
+ - Tasks file: tasks/PR-VAD-SILERO-01.md
+ - Depends on: PR-FIX-TORCH-SAFEGLOBALS-03
+diff --git a/tests/test_app_config.py b/tests/test_app_config.py
+index 8ef2c6e..05b91eb 100644
+--- a/tests/test_app_config.py
++++ b/tests/test_app_config.py
+@@ -158,3 +158,15 @@ def test_diarization_model_id_defaults_and_env_override(monkeypatch):
+ 
+     monkeypatch.setenv("LAN_DIARIZATION_MODEL_ID", "   ")
+     assert AppSettings().diarization_model_id == "pyannote/speaker-diarization-3.1"
 +
 +
-+def test_auto_retry_pattern_with_extra_fqn(monkeypatch) -> None:
-+    """Simulate orchestrator retry: first load fails with unknown FQN, second succeeds."""
-+    module = _reload_module()
-+    call_log: list[list[object]] = []
++def test_vad_method_defaults_and_env_override(monkeypatch):
++    monkeypatch.delenv("LAN_VAD_METHOD", raising=False)
++    assert AppSettings().vad_method == "silero"
 +
-+    @contextlib.contextmanager
-+    def _safe_globals(items):
-+        call_log.append(list(items) if isinstance(items, list) else sorted(items.keys()) if isinstance(items, dict) else [items])
-+        yield
++    monkeypatch.setenv("LAN_VAD_METHOD", "pyannote")
++    assert AppSettings().vad_method == "pyannote"
 +
-+    fake_torch = ModuleType("torch")
-+    fake_torch.serialization = SimpleNamespace(safe_globals=_safe_globals)
-+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
-+    list_config, dict_config, container_metadata = _install_fake_omegaconf(monkeypatch)
-+
-+    # Add an extra omegaconf symbol that we'll "discover" via error parsing
-+    fake_nodes = ModuleType("omegaconf.nodes")
-+
-+    class ValueNode:
-+        pass
-+
-+    fake_nodes.ValueNode = ValueNode
-+    monkeypatch.setitem(sys.modules, "omegaconf.nodes", fake_nodes)
-+
-+    # First attempt: standard allowlist
-+    with module.omegaconf_safe_globals_for_torch_load():
-+        pass
-+
-+    assert call_log == [[list_config, dict_config, container_metadata]]
-+
-+    # Simulate error from load
-+    error = pickle.UnpicklingError(
-+        "Unsupported global: GLOBAL omegaconf.nodes.ValueNode"
++    monkeypatch.setenv("LAN_VAD_METHOD", "invalid")
++    with pytest.raises(ValueError, match="LAN_VAD_METHOD|vad_method"):
++        AppSettings()
+diff --git a/tests/test_cov_lan_app_worker_tasks_branches.py b/tests/test_cov_lan_app_worker_tasks_branches.py
+index abe3691..ddc9f36 100644
+--- a/tests/test_cov_lan_app_worker_tasks_branches.py
++++ b/tests/test_cov_lan_app_worker_tasks_branches.py
+@@ -304,6 +304,19 @@ def test_clean_language_value_rejects_blank_strings():
+     assert worker_tasks._clean_language_value("   ") is None
+ 
+ 
++def test_build_pipeline_settings_propagates_vad_method(tmp_path: Path):
++    cfg = AppSettings(
++        data_root=tmp_path,
++        recordings_root=tmp_path / "recordings",
++        db_path=tmp_path / "db" / "app.db",
++        vad_method="pyannote",
 +    )
-+    retry_fqn = module.unsupported_global_omegaconf_fqn_from_error(error)
-+    assert retry_fqn == "omegaconf.nodes.ValueNode"
 +
-+    # Second attempt with extra FQN
-+    call_log.clear()
-+    with module.omegaconf_safe_globals_for_torch_load(extra_fqns=[retry_fqn]):
-+        pass
++    pipeline_cfg = worker_tasks._build_pipeline_settings(cfg)
 +
-+    assert call_log == [[list_config, dict_config, container_metadata, ValueNode]]
++    assert pipeline_cfg.vad_method == "pyannote"
 +
 +
-+# --- _try_api: add_safe_globals both forms TypeError (log warning, no crash) ---
+ def test_load_transcript_language_payload_parses_valid_and_invalid_json(tmp_path: Path):
+     cfg = _db_settings(tmp_path)
+     transcript_path = cfg.recordings_root / "rec-lang-1" / "derived" / "transcript.json"
+diff --git a/tests/test_cov_lan_transcriber_extra_pipeline.py b/tests/test_cov_lan_transcriber_extra_pipeline.py
+index 478bb72..bbcb340 100644
+--- a/tests/test_cov_lan_transcriber_extra_pipeline.py
++++ b/tests/test_cov_lan_transcriber_extra_pipeline.py
+@@ -780,7 +780,7 @@ def test_whisperx_asr_callback_and_retry_branches(tmp_path: Path, monkeypatch: p
+     segments, info = pipeline._whisperx_asr(
+         _audio_file(tmp_path, "a.wav"),
+         override_lang=None,
+-        cfg=_settings(tmp_path, asr_enable_align=False),
++        cfg=_settings(tmp_path, asr_enable_align=False, vad_method="pyannote"),
+         step_log_callback=_bad_step_log,
+     )
+     assert segments and info["language"] == "en"
+diff --git a/tests/test_whisperx_api.py b/tests/test_whisperx_api.py
+index f3c036e..f472dd9 100644
+--- a/tests/test_whisperx_api.py
++++ b/tests/test_whisperx_api.py
+@@ -11,7 +11,7 @@ import pytest
+ from lan_transcriber.pipeline_steps import orchestrator as pipeline
+ 
+ 
+-def test_whisperx_asr_modern_path(tmp_path: Path, monkeypatch):
++def test_whisperx_asr_modern_path(tmp_path: Path, monkeypatch, caplog):
+     fake_whisperx = ModuleType("whisperx")
+ 
+     class _FakeModel:
+@@ -33,10 +33,16 @@ def test_whisperx_asr_modern_path(tmp_path: Path, monkeypatch):
+         assert path.endswith("a.wav")
+         return "audio"
+ 
+-    def _load_model(model_name: str, device: str, compute_type: str = "int8") -> _FakeModel:
++    def _load_model(
++        model_name: str,
++        device: str,
++        compute_type: str = "int8",
++        vad_method: str = "silero",
++    ) -> _FakeModel:
+         assert model_name == "large-v3"
+         assert device == "cpu"
+         assert compute_type == "int8"
++        assert vad_method == "silero"
+         return _FakeModel()
+ 
+     def _load_align_model(language_code: str, device: str) -> tuple[str, dict[str, str]]:
+@@ -79,13 +85,130 @@ def test_whisperx_asr_modern_path(tmp_path: Path, monkeypatch):
+         recordings_root=tmp_path / "recordings",
+     )
+ 
+-    segments, info = pipeline._whisperx_asr(audio_path, override_lang=None, cfg=cfg)
++    with caplog.at_level("INFO"):
++        segments, info = pipeline._whisperx_asr(audio_path, override_lang=None, cfg=cfg)
+ 
+     assert isinstance(segments, list)
+     assert segments
+     assert all("start" in segment and "end" in segment and "text" in segment for segment in segments)
+     assert any(segment.get("words") for segment in segments)
+     assert info["language"] == "en"
++    assert "ASR VAD method: silero" in caplog.text
 +
 +
-+def test_add_safe_globals_both_forms_type_error_logs_warning(monkeypatch, caplog) -> None:
-+    module = _reload_module()
++def test_whisperx_asr_modern_path_uses_vad_model_fallback(tmp_path: Path, monkeypatch):
++    fake_whisperx = ModuleType("whisperx")
 +
-+    def _add_safe_globals(_items) -> None:
-+        raise TypeError("nope")
++    class _FakeModel:
++        def transcribe(
++            self,
++            audio: str,
++            *,
++            batch_size: int,
++            vad_filter: bool,
++            language: str | None,
++        ) -> dict[str, object]:
++            assert audio == "audio"
++            assert batch_size == 16
++            assert vad_filter is True
++            assert language is None
++            return {"segments": [{"start": 0.0, "end": 1.0, "text": "hello"}], "language": "en"}
 +
-+    fake_torch = ModuleType("torch")
-+    fake_torch.serialization = SimpleNamespace(add_safe_globals=_add_safe_globals)
-+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
-+    _install_fake_omegaconf(monkeypatch)
++    def _load_audio(path: str) -> str:
++        assert path.endswith("a.wav")
++        return "audio"
 +
-+    with caplog.at_level(logging.WARNING, logger="lan_transcriber.torch_safe_globals"):
-+        with module.omegaconf_safe_globals_for_torch_load():
-+            pass
++    def _load_model(
++        model_name: str,
++        device: str,
++        compute_type: str = "int8",
++        vad_model: str = "silero",
++    ) -> _FakeModel:
++        assert model_name == "large-v3"
++        assert device == "cpu"
++        assert compute_type == "int8"
++        assert vad_model == "pyannote"
++        return _FakeModel()
 +
-+    assert any("rejected both" in r.message for r in caplog.records)
++    fake_whisperx.load_audio = _load_audio
++    fake_whisperx.load_model = _load_model
++    monkeypatch.setitem(sys.modules, "whisperx", fake_whisperx)
++    monkeypatch.setattr(pipeline, "patch_pyannote_inference_ignore_use_auth_token", lambda: True)
++
++    audio_path = tmp_path / "a.wav"
++    audio_path.write_bytes(b"")
++    cfg = pipeline.Settings(
++        asr_device="cpu",
++        asr_enable_align=False,
++        vad_method="pyannote",
++        tmp_root=tmp_path,
++        recordings_root=tmp_path / "recordings",
++    )
++    step_log: list[str] = []
++
++    segments, info = pipeline._whisperx_asr(
++        audio_path,
++        override_lang=None,
++        cfg=cfg,
++        step_log_callback=step_log.append,
++    )
++
++    assert segments and segments[0]["text"] == "hello"
++    assert info["language"] == "en"
++    assert any("pyannote compat" in line for line in step_log)
++
++
++def test_whisperx_asr_modern_path_uses_vad_options_fallback(tmp_path: Path, monkeypatch):
++    fake_whisperx = ModuleType("whisperx")
++
++    class _FakeModel:
++        def transcribe(
++            self,
++            audio: str,
++            *,
++            batch_size: int,
++            vad_filter: bool,
++            language: str | None,
++        ) -> dict[str, object]:
++            assert audio == "audio"
++            assert batch_size == 16
++            assert vad_filter is True
++            assert language is None
++            return {"segments": [{"start": 0.0, "end": 1.0, "text": "hello"}], "language": "en"}
++
++    def _load_audio(path: str) -> str:
++        assert path.endswith("a.wav")
++        return "audio"
++
++    def _load_model(
++        model_name: str,
++        device: str,
++        compute_type: str = "int8",
++        vad_options: dict[str, object] | None = None,
++    ) -> _FakeModel:
++        assert model_name == "large-v3"
++        assert device == "cpu"
++        assert compute_type == "int8"
++        assert vad_options == {"vad_method": "silero"}
++        return _FakeModel()
++
++    fake_whisperx.load_audio = _load_audio
++    fake_whisperx.load_model = _load_model
++    monkeypatch.setitem(sys.modules, "whisperx", fake_whisperx)
++
++    audio_path = tmp_path / "a.wav"
++    audio_path.write_bytes(b"")
++    cfg = pipeline.Settings(
++        asr_device="cpu",
++        asr_enable_align=False,
++        tmp_root=tmp_path,
++        recordings_root=tmp_path / "recordings",
++    )
++
++    segments, info = pipeline._whisperx_asr(audio_path, override_lang=None, cfg=cfg)
++
++    assert segments and segments[0]["text"] == "hello"
++    assert info["language"] == "en"
+ 
+ 
+ def test_whisperx_asr_modern_path_drops_unsupported_kwargs(tmp_path: Path, monkeypatch):
+diff --git a/tests/test_whisperx_contract.py b/tests/test_whisperx_contract.py
+index 43da312..f96202b 100644
+--- a/tests/test_whisperx_contract.py
++++ b/tests/test_whisperx_contract.py
+@@ -60,8 +60,8 @@ def test_transcribe_contract_without_vad_filter(tmp_path: Path, monkeypatch: Any
+ 
+     assert segments and segments[0]["text"] == "hello"
+     assert info["language"] == "en"
+-    assert len(call_spy) == 1
+-    assert call_spy[0]["kwargs"]["vad_filter"] is True
++    assert len(call_spy) == 2
++    assert call_spy[-1]["kwargs"]["vad_filter"] is True
+ 
+ 
+ def test_transcribe_contract_with_vad_filter(tmp_path: Path, monkeypatch: Any) -> None:
+@@ -100,8 +100,8 @@ def test_transcribe_contract_with_vad_filter(tmp_path: Path, monkeypatch: Any) -
+ 
+     assert segments and segments[0]["text"] == "hi"
+     assert info["language"] == "en"
+-    assert len(call_spy) == 1
+-    assert call_spy[0]["kwargs"]["vad_filter"] is True
++    assert len(call_spy) == 2
++    assert call_spy[-1]["kwargs"]["vad_filter"] is True
+ 
+ 
+ def test_transcribe_contract_with_var_kwargs(tmp_path: Path, monkeypatch: Any) -> None:
+@@ -142,5 +142,5 @@ def test_transcribe_contract_with_var_kwargs(tmp_path: Path, monkeypatch: Any) -
+     assert segments and segments[0]["text"] == "yo"
+     assert info["language"] == "en"
+     assert seen_kwargs["vad_filter"] is True
+-    assert len(call_spy) == 1
+-    assert call_spy[0]["kwargs"]["vad_filter"] is True
++    assert len(call_spy) == 2
++    assert call_spy[-1]["kwargs"]["vad_filter"] is True
