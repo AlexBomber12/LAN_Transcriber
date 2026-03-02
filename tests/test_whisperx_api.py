@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import contextlib
+import pickle
 import sys
 from pathlib import Path
 from types import ModuleType
+
+import pytest
 
 from lan_transcriber.pipeline_steps import orchestrator as pipeline
 
@@ -174,6 +178,156 @@ def test_whisperx_asr_retry_without_word_timestamps_on_typeerror(tmp_path: Path,
     assert len(calls) == 2
     assert "word_timestamps" in calls[0]
     assert "word_timestamps" not in calls[1]
+
+
+def test_whisperx_asr_retries_once_for_omegaconf_unsupported_global(tmp_path: Path, monkeypatch) -> None:
+    fake_whisperx = ModuleType("whisperx")
+    fake_whisperx.transcribe = None
+    load_attempts: list[str] = []
+    context_calls: list[list[str]] = []
+
+    class _FakeModel:
+        def transcribe(
+            self,
+            audio: str,
+            *,
+            batch_size: int,
+            vad_filter: bool,
+            language: str | None,
+        ) -> dict[str, object]:
+            del batch_size, vad_filter, language
+            assert audio == "audio"
+            return {"segments": [{"start": 0.0, "end": 1.0, "text": "hello"}], "language": "en"}
+
+    def _load_audio(path: str) -> str:
+        assert path.endswith("a.wav")
+        return "audio"
+
+    def _load_model(_model_name: str, _device: str, compute_type: str = "int8") -> _FakeModel:
+        assert compute_type == "int8"
+        load_attempts.append("call")
+        if len(load_attempts) == 1:
+            raise pickle.UnpicklingError(
+                "Weights only load failed. Unsupported global: GLOBAL omegaconf.base.ContainerMetadata"
+            )
+        return _FakeModel()
+
+    @contextlib.contextmanager
+    def _fake_safe_globals(extra_fqns: list[str] | None = None):
+        context_calls.append(list(extra_fqns or []))
+        yield
+
+    fake_whisperx.load_audio = _load_audio
+    fake_whisperx.load_model = _load_model
+    monkeypatch.setitem(sys.modules, "whisperx", fake_whisperx)
+    monkeypatch.setattr(pipeline, "omegaconf_safe_globals_for_torch_load", _fake_safe_globals)
+
+    audio_path = tmp_path / "a.wav"
+    audio_path.write_bytes(b"")
+    cfg = pipeline.Settings(
+        asr_device="cpu",
+        asr_enable_align=False,
+        tmp_root=tmp_path,
+        recordings_root=tmp_path / "recordings",
+    )
+
+    segments, info = pipeline._whisperx_asr(audio_path, override_lang=None, cfg=cfg)
+
+    assert segments and segments[0]["text"] == "hello"
+    assert info["language"] == "en"
+    assert len(load_attempts) == 2
+    assert context_calls == [[], ["omegaconf.base.ContainerMetadata"]]
+
+
+def test_whisperx_asr_does_not_retry_for_non_unsupported_global_errors(tmp_path: Path, monkeypatch) -> None:
+    fake_whisperx = ModuleType("whisperx")
+    fake_whisperx.transcribe = None
+    context_calls: list[list[str]] = []
+
+    class _FakeModel:
+        def transcribe(self, *args: object, **kwargs: object) -> dict[str, object]:
+            del args, kwargs
+            return {"segments": [], "language": "en"}
+
+    def _load_audio(path: str) -> str:
+        assert path.endswith("a.wav")
+        return "audio"
+
+    def _load_model(_model_name: str, _device: str, compute_type: str = "int8") -> _FakeModel:
+        assert compute_type == "int8"
+        raise RuntimeError("some other load failure")
+
+    @contextlib.contextmanager
+    def _fake_safe_globals(extra_fqns: list[str] | None = None):
+        context_calls.append(list(extra_fqns or []))
+        yield
+
+    fake_whisperx.load_audio = _load_audio
+    fake_whisperx.load_model = _load_model
+    monkeypatch.setitem(sys.modules, "whisperx", fake_whisperx)
+    monkeypatch.setattr(pipeline, "omegaconf_safe_globals_for_torch_load", _fake_safe_globals)
+
+    audio_path = tmp_path / "a.wav"
+    audio_path.write_bytes(b"")
+    cfg = pipeline.Settings(
+        asr_device="cpu",
+        asr_enable_align=False,
+        tmp_root=tmp_path,
+        recordings_root=tmp_path / "recordings",
+    )
+
+    with pytest.raises(RuntimeError, match="some other load failure"):
+        pipeline._whisperx_asr(audio_path, override_lang=None, cfg=cfg)
+
+    assert context_calls == [[]]
+
+
+def test_whisperx_asr_reraises_original_error_when_retry_fails(tmp_path: Path, monkeypatch) -> None:
+    fake_whisperx = ModuleType("whisperx")
+    fake_whisperx.transcribe = None
+    context_calls: list[list[str]] = []
+    first_error = pickle.UnpicklingError(
+        "Weights only load failed. Unsupported global: GLOBAL omegaconf.base.ContainerMetadata"
+    )
+
+    class _FakeModel:
+        def transcribe(self, *args: object, **kwargs: object) -> dict[str, object]:
+            del args, kwargs
+            return {"segments": [], "language": "en"}
+
+    def _load_audio(path: str) -> str:
+        assert path.endswith("a.wav")
+        return "audio"
+
+    def _load_model(_model_name: str, _device: str, compute_type: str = "int8") -> _FakeModel:
+        assert compute_type == "int8"
+        if len(context_calls) == 1:
+            raise first_error
+        raise RuntimeError("retry failed with another reason")
+
+    @contextlib.contextmanager
+    def _fake_safe_globals(extra_fqns: list[str] | None = None):
+        context_calls.append(list(extra_fqns or []))
+        yield
+
+    fake_whisperx.load_audio = _load_audio
+    fake_whisperx.load_model = _load_model
+    monkeypatch.setitem(sys.modules, "whisperx", fake_whisperx)
+    monkeypatch.setattr(pipeline, "omegaconf_safe_globals_for_torch_load", _fake_safe_globals)
+
+    audio_path = tmp_path / "a.wav"
+    audio_path.write_bytes(b"")
+    cfg = pipeline.Settings(
+        asr_device="cpu",
+        asr_enable_align=False,
+        tmp_root=tmp_path,
+        recordings_root=tmp_path / "recordings",
+    )
+
+    with pytest.raises(pickle.UnpicklingError, match="ContainerMetadata"):
+        pipeline._whisperx_asr(audio_path, override_lang=None, cfg=cfg)
+
+    assert context_calls == [[], ["omegaconf.base.ContainerMetadata"]]
 
 
 def test_log_dropped_kwargs_returns_early_when_nothing_dropped() -> None:

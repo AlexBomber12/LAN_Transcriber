@@ -1,163 +1,565 @@
 diff --git a/lan_transcriber/pipeline_steps/orchestrator.py b/lan_transcriber/pipeline_steps/orchestrator.py
-index 095a8a7..509c13c 100644
+index 509c13c..a2b7d6a 100644
 --- a/lan_transcriber/pipeline_steps/orchestrator.py
 +++ b/lan_transcriber/pipeline_steps/orchestrator.py
-@@ -19,6 +19,7 @@ from ..llm_client import LLMClient
+@@ -19,7 +19,10 @@ from ..llm_client import LLMClient
  from ..metrics import error_rate_total, p95_latency_seconds
  from ..models import SpeakerSegment, TranscriptResult
  from ..native_fixups import ensure_ctranslate2_no_execstack
-+from ..torch_safe_globals import allowlist_omegaconf_for_weights_only
+-from ..torch_safe_globals import allowlist_omegaconf_for_weights_only
++from ..torch_safe_globals import (
++    omegaconf_safe_globals_for_torch_load,
++    unsupported_global_omegaconf_fqn_from_error,
++)
  from .language import analyse_languages, resolve_target_summary_language, segment_language
  from .precheck import PrecheckResult, run_precheck as _run_precheck
  from .snippets import SnippetExportRequest, export_speaker_snippets
-@@ -225,6 +226,7 @@ def _whisperx_asr(
+@@ -226,11 +229,25 @@ def _whisperx_asr(
      device = _select_asr_device(cfg)
      compute_type = _select_compute_type(cfg, device)
      audio = whisperx.load_audio(str(audio_path))
-+    allowlist_omegaconf_for_weights_only()
+-    allowlist_omegaconf_for_weights_only()
+-    try:
+-        model = whisperx.load_model(cfg.asr_model, device, compute_type=compute_type)
+-    except TypeError:
+-        model = whisperx.load_model(cfg.asr_model, device)
++
++    def _load_model() -> Any:
++        try:
++            return whisperx.load_model(cfg.asr_model, device, compute_type=compute_type)
++        except TypeError:
++            return whisperx.load_model(cfg.asr_model, device)
++
++    with omegaconf_safe_globals_for_torch_load():
++        try:
++            model = _load_model()
++        except Exception as first_error:
++            retry_fqn = unsupported_global_omegaconf_fqn_from_error(first_error)
++            if retry_fqn is None:
++                raise
++            with omegaconf_safe_globals_for_torch_load(extra_fqns=[retry_fqn]):
++                try:
++                    model = _load_model()
++                except Exception:
++                    raise first_error
+ 
+     transcribe_kwargs: dict[str, Any] = {
+         "batch_size": cfg.asr_batch_size,
+diff --git a/lan_transcriber/torch_safe_globals.py b/lan_transcriber/torch_safe_globals.py
+index a840cfc..60dc17c 100644
+--- a/lan_transcriber/torch_safe_globals.py
++++ b/lan_transcriber/torch_safe_globals.py
+@@ -1,33 +1,106 @@
+ from __future__ import annotations
+ 
+-_ALLOWLIST_APPLIED = False
++import contextlib
++import importlib
++import pickle
++import re
++from collections.abc import Iterator
+ 
++_OMEGACONF_BASE_FQNS = (
++    "omegaconf.listconfig.ListConfig",
++    "omegaconf.dictconfig.DictConfig",
++    "omegaconf.base.ContainerMetadata",
++)
+ 
+-def allowlist_omegaconf_for_weights_only() -> None:
+-    """Allowlist OmegaConf container types for torch weights-only unpickling."""
++_UNSUPPORTED_GLOBAL_RE = re.compile(r"Unsupported global:\s+(?:GLOBAL\s+)?([A-Za-z_][\w.]*)")
+ 
+-    global _ALLOWLIST_APPLIED
+-    if _ALLOWLIST_APPLIED:
+-        return
++
++def _import_omegaconf_symbol(fqn: str) -> object | None:
++    if not fqn.startswith("omegaconf."):
++        return None
++    module_name, _, symbol_name = fqn.rpartition(".")
++    if not module_name or not symbol_name:
++        return None
++    try:
++        module = importlib.import_module(module_name)
++    except Exception:
++        return None
++    return getattr(module, symbol_name, None)
++
++
++def _collect_omegaconf_symbols(extra_fqns: list[str] | None) -> list[object]:
++    fqns = list(_OMEGACONF_BASE_FQNS)
++    for candidate in extra_fqns or []:
++        if candidate in fqns:
++            continue
++        fqns.append(candidate)
++
++    symbols: list[object] = []
++    for fqn in fqns:
++        symbol = _import_omegaconf_symbol(fqn)
++        if symbol is not None:
++            symbols.append(symbol)
++    return symbols
++
++
++@contextlib.contextmanager
++def omegaconf_safe_globals_for_torch_load(extra_fqns: list[str] | None = None) -> Iterator[None]:
++    """Best-effort OmegaConf allowlisting for torch weights-only unpickling."""
+ 
      try:
-         model = whisperx.load_model(cfg.asr_model, device, compute_type=compute_type)
-     except TypeError:
+         import torch
+     except Exception:
++        yield
+         return
+ 
+     serialization = getattr(torch, "serialization", None)
+-    add_safe_globals = getattr(serialization, "add_safe_globals", None)
+-    if not callable(add_safe_globals):
++    if serialization is None:
++        yield
++        return
++
++    symbols = _collect_omegaconf_symbols(extra_fqns)
++    if not symbols:
++        yield
+         return
+ 
++    safe_globals = getattr(serialization, "safe_globals", None)
++    if callable(safe_globals):
++        context = None
++        try:
++            context = safe_globals(symbols)
++        except Exception:
++            context = None
++        if context is not None:
++            with context:
++                yield
++            return
++
++    add_safe_globals = getattr(serialization, "add_safe_globals", None)
+     try:
+-        from omegaconf.dictconfig import DictConfig
+-        from omegaconf.listconfig import ListConfig
++        add_safe_globals(symbols)
+     except Exception:
+-        return
++        pass
++    yield
++
++
++def parse_unsupported_global_fqn(message: str) -> str | None:
++    match = _UNSUPPORTED_GLOBAL_RE.search(message or "")
++    if match is None:
++        return None
++    fqn = match.group(1)
++    if not fqn.startswith("omegaconf."):
++        return None
++    return fqn
++
+ 
+-    add_safe_globals([ListConfig, DictConfig])
+-    _ALLOWLIST_APPLIED = True
++def unsupported_global_omegaconf_fqn_from_error(error: BaseException) -> str | None:
++    if not isinstance(error, (pickle.UnpicklingError, RuntimeError)):
++        return None
++    return parse_unsupported_global_fqn(str(error))
+ 
+ 
+-__all__ = ["allowlist_omegaconf_for_weights_only"]
++__all__ = [
++    "omegaconf_safe_globals_for_torch_load",
++    "parse_unsupported_global_fqn",
++    "unsupported_global_omegaconf_fqn_from_error",
++]
 diff --git a/tasks/QUEUE.md b/tasks/QUEUE.md
-index 34f59d5..f6e6ea4 100644
+index 25b238f..4f58582 100644
 --- a/tasks/QUEUE.md
 +++ b/tasks/QUEUE.md
-@@ -357,6 +357,6 @@ Queue (in order)
- - Depends on: PR-CI-DEPS-STABLE-01
- 
- 70) PR-FIX-TORCH-SAFEGLOBALS-01: Fix torch weights_only load crash for pyannote VAD (allowlist OmegaConf ListConfig/DictConfig) + regression tests
--- Status: TODO
-+- Status: DONE
- - Tasks file: tasks/PR-FIX-TORCH-SAFEGLOBALS-01.md
+@@ -362,6 +362,6 @@ Queue (in order)
  - Depends on: PR-CUDA-CUDNN9-ALIGN-01
-diff --git a/lan_transcriber/torch_safe_globals.py b/lan_transcriber/torch_safe_globals.py
-new file mode 100644
-index 0000000..a840cfc
---- /dev/null
-+++ b/lan_transcriber/torch_safe_globals.py
-@@ -0,0 +1,33 @@
-+from __future__ import annotations
-+
-+_ALLOWLIST_APPLIED = False
-+
-+
-+def allowlist_omegaconf_for_weights_only() -> None:
-+    """Allowlist OmegaConf container types for torch weights-only unpickling."""
-+
-+    global _ALLOWLIST_APPLIED
-+    if _ALLOWLIST_APPLIED:
-+        return
-+
-+    try:
-+        import torch
-+    except Exception:
-+        return
-+
-+    serialization = getattr(torch, "serialization", None)
-+    add_safe_globals = getattr(serialization, "add_safe_globals", None)
-+    if not callable(add_safe_globals):
-+        return
-+
-+    try:
-+        from omegaconf.dictconfig import DictConfig
-+        from omegaconf.listconfig import ListConfig
-+    except Exception:
-+        return
-+
-+    add_safe_globals([ListConfig, DictConfig])
-+    _ALLOWLIST_APPLIED = True
-+
-+
-+__all__ = ["allowlist_omegaconf_for_weights_only"]
+ 
+ 71) PR-FIX-TORCH-SAFEGLOBALS-02: Fix torch weights_only load crash for pyannote VAD (allowlist OmegaConf ContainerMetadata + scoped safe_globals + auto-retry) + regression tests
+-- Status: TODO
++- Status: DOING
+ - Tasks file: tasks/PR-FIX-TORCH-SAFEGLOBALS-02.md
+ - Depends on: PR-FIX-TORCH-SAFEGLOBALS-01
 diff --git a/tests/test_torch_safe_globals.py b/tests/test_torch_safe_globals.py
-new file mode 100644
-index 0000000..3af57fd
---- /dev/null
+index 3af57fd..6dc194c 100644
+--- a/tests/test_torch_safe_globals.py
 +++ b/tests/test_torch_safe_globals.py
-@@ -0,0 +1,86 @@
-+from __future__ import annotations
-+
-+import importlib
-+import sys
-+from types import ModuleType, SimpleNamespace
-+
-+import lan_transcriber.torch_safe_globals as torch_safe_globals
-+
-+
-+def _reload_module() -> ModuleType:
-+    return importlib.reload(torch_safe_globals)
-+
-+
-+def _install_fake_omegaconf(monkeypatch) -> tuple[type, type]:
-+    fake_omegaconf = ModuleType("omegaconf")
-+    fake_listconfig = ModuleType("omegaconf.listconfig")
-+    fake_dictconfig = ModuleType("omegaconf.dictconfig")
-+
-+    class ListConfig:
+@@ -1,6 +1,8 @@
+ from __future__ import annotations
+ 
++import contextlib
+ import importlib
++import pickle
+ import sys
+ from types import ModuleType, SimpleNamespace
+ 
+@@ -11,10 +13,11 @@ def _reload_module() -> ModuleType:
+     return importlib.reload(torch_safe_globals)
+ 
+ 
+-def _install_fake_omegaconf(monkeypatch) -> tuple[type, type]:
++def _install_fake_omegaconf(monkeypatch) -> tuple[type, type, type]:
+     fake_omegaconf = ModuleType("omegaconf")
+     fake_listconfig = ModuleType("omegaconf.listconfig")
+     fake_dictconfig = ModuleType("omegaconf.dictconfig")
++    fake_base = ModuleType("omegaconf.base")
+ 
+     class ListConfig:
+         pass
+@@ -22,65 +25,156 @@ def _install_fake_omegaconf(monkeypatch) -> tuple[type, type]:
+     class DictConfig:
+         pass
+ 
++    class ContainerMetadata:
 +        pass
 +
-+    class DictConfig:
+     fake_listconfig.ListConfig = ListConfig
+     fake_dictconfig.DictConfig = DictConfig
++    fake_base.ContainerMetadata = ContainerMetadata
+     fake_omegaconf.listconfig = fake_listconfig
+     fake_omegaconf.dictconfig = fake_dictconfig
++    fake_omegaconf.base = fake_base
+ 
+     monkeypatch.setitem(sys.modules, "omegaconf", fake_omegaconf)
+     monkeypatch.setitem(sys.modules, "omegaconf.listconfig", fake_listconfig)
+     monkeypatch.setitem(sys.modules, "omegaconf.dictconfig", fake_dictconfig)
+-    return ListConfig, DictConfig
++    monkeypatch.setitem(sys.modules, "omegaconf.base", fake_base)
++    return ListConfig, DictConfig, ContainerMetadata
+ 
+ 
+-def test_allowlist_adds_omegaconf_types_once(monkeypatch) -> None:
++def test_context_uses_torch_safe_globals_when_available(monkeypatch) -> None:
+     module = _reload_module()
+-    calls: list[list[type]] = []
++    calls: list[list[object]] = []
++    add_calls: list[list[object]] = []
++    entered: list[str] = []
+ 
+-    def _add_safe_globals(items: list[type]) -> None:
++    @contextlib.contextmanager
++    def _safe_globals(items: list[object]):
+         calls.append(list(items))
++        entered.append("enter")
++        try:
++            yield
++        finally:
++            entered.append("exit")
++
++    def _add_safe_globals(items: list[object]) -> None:
++        add_calls.append(list(items))
+ 
+     fake_torch = ModuleType("torch")
+-    fake_torch.serialization = SimpleNamespace(add_safe_globals=_add_safe_globals)
++    fake_torch.serialization = SimpleNamespace(safe_globals=_safe_globals, add_safe_globals=_add_safe_globals)
+     monkeypatch.setitem(sys.modules, "torch", fake_torch)
+-    list_config, dict_config = _install_fake_omegaconf(monkeypatch)
++    list_config, dict_config, container_metadata = _install_fake_omegaconf(monkeypatch)
+ 
+-    module.allowlist_omegaconf_for_weights_only()
+-    module.allowlist_omegaconf_for_weights_only()
++    with module.omegaconf_safe_globals_for_torch_load():
++        entered.append("body")
+ 
+-    assert calls == [[list_config, dict_config]]
++    assert calls == [[list_config, dict_config, container_metadata]]
++    assert add_calls == []
++    assert entered == ["enter", "body", "exit"]
+ 
+ 
+-def test_allowlist_returns_when_torch_is_missing(monkeypatch) -> None:
++def test_context_falls_back_to_add_safe_globals_and_supports_extra_fqns(monkeypatch) -> None:
+     module = _reload_module()
+-    monkeypatch.setitem(sys.modules, "torch", None)
++    calls: list[list[object]] = []
+ 
+-    module.allowlist_omegaconf_for_weights_only()
++    fake_custom = ModuleType("omegaconf.custom")
+ 
++    class CustomNode:
 +        pass
 +
-+    fake_listconfig.ListConfig = ListConfig
-+    fake_dictconfig.DictConfig = DictConfig
-+    fake_omegaconf.listconfig = fake_listconfig
-+    fake_omegaconf.dictconfig = fake_dictconfig
++    fake_custom.CustomNode = CustomNode
++    monkeypatch.setitem(sys.modules, "omegaconf.custom", fake_custom)
 +
-+    monkeypatch.setitem(sys.modules, "omegaconf", fake_omegaconf)
-+    monkeypatch.setitem(sys.modules, "omegaconf.listconfig", fake_listconfig)
-+    monkeypatch.setitem(sys.modules, "omegaconf.dictconfig", fake_dictconfig)
-+    return ListConfig, DictConfig
-+
-+
-+def test_allowlist_adds_omegaconf_types_once(monkeypatch) -> None:
-+    module = _reload_module()
-+    calls: list[list[type]] = []
-+
-+    def _add_safe_globals(items: list[type]) -> None:
++    def _add_safe_globals(items: list[object]) -> None:
 +        calls.append(list(items))
-+
-+    fake_torch = ModuleType("torch")
+ 
+-def test_allowlist_returns_when_add_safe_globals_is_missing(monkeypatch) -> None:
+-    module = _reload_module()
+     fake_torch = ModuleType("torch")
+-    fake_torch.serialization = SimpleNamespace()
 +    fake_torch.serialization = SimpleNamespace(add_safe_globals=_add_safe_globals)
-+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
-+    list_config, dict_config = _install_fake_omegaconf(monkeypatch)
+     monkeypatch.setitem(sys.modules, "torch", fake_torch)
++    list_config, dict_config, container_metadata = _install_fake_omegaconf(monkeypatch)
 +
-+    module.allowlist_omegaconf_for_weights_only()
-+    module.allowlist_omegaconf_for_weights_only()
-+
-+    assert calls == [[list_config, dict_config]]
-+
-+
-+def test_allowlist_returns_when_torch_is_missing(monkeypatch) -> None:
-+    module = _reload_module()
++    with module.omegaconf_safe_globals_for_torch_load(
++        extra_fqns=[
++            "not.allowed.Symbol",
++            "omegaconf.listconfig.ListConfig",
++            "omegaconf.custom.CustomNode",
++        ]
++    ):
++        pass
+ 
+-    module.allowlist_omegaconf_for_weights_only()
++    assert calls == [[list_config, dict_config, container_metadata, CustomNode]]
+ 
+ 
+-def test_allowlist_returns_when_omegaconf_is_missing(monkeypatch) -> None:
++def test_context_handles_missing_torch_serialization_or_omegaconf(monkeypatch) -> None:
+     module = _reload_module()
+-    calls: list[list[type]] = []
+ 
+-    def _add_safe_globals(items: list[type]) -> None:
+-        calls.append(list(items))
 +    monkeypatch.setitem(sys.modules, "torch", None)
++    with module.omegaconf_safe_globals_for_torch_load():
++        pass
+ 
+     fake_torch = ModuleType("torch")
+-    fake_torch.serialization = SimpleNamespace(add_safe_globals=_add_safe_globals)
+     monkeypatch.setitem(sys.modules, "torch", fake_torch)
++    with module.omegaconf_safe_globals_for_torch_load():
++        pass
 +
-+    module.allowlist_omegaconf_for_weights_only()
-+
-+
-+def test_allowlist_returns_when_add_safe_globals_is_missing(monkeypatch) -> None:
-+    module = _reload_module()
-+    fake_torch = ModuleType("torch")
 +    fake_torch.serialization = SimpleNamespace()
-+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+     monkeypatch.setitem(sys.modules, "omegaconf", None)
+     monkeypatch.setitem(sys.modules, "omegaconf.listconfig", None)
+     monkeypatch.setitem(sys.modules, "omegaconf.dictconfig", None)
++    monkeypatch.setitem(sys.modules, "omegaconf.base", None)
++    with module.omegaconf_safe_globals_for_torch_load():
++        pass
 +
-+    module.allowlist_omegaconf_for_weights_only()
 +
-+
-+def test_allowlist_returns_when_omegaconf_is_missing(monkeypatch) -> None:
++def test_context_handles_safe_globals_factory_and_add_safe_globals_errors(monkeypatch) -> None:
 +    module = _reload_module()
-+    calls: list[list[type]] = []
++    add_calls: list[list[object]] = []
 +
-+    def _add_safe_globals(items: list[type]) -> None:
-+        calls.append(list(items))
++    def _broken_safe_globals(_items: list[object]):
++        raise RuntimeError("no safe globals")
++
++    def _add_safe_globals(items: list[object]) -> None:
++        add_calls.append(list(items))
++        raise RuntimeError("cannot add")
 +
 +    fake_torch = ModuleType("torch")
-+    fake_torch.serialization = SimpleNamespace(add_safe_globals=_add_safe_globals)
++    fake_torch.serialization = SimpleNamespace(
++        safe_globals=_broken_safe_globals,
++        add_safe_globals=_add_safe_globals,
++    )
 +    monkeypatch.setitem(sys.modules, "torch", fake_torch)
-+    monkeypatch.setitem(sys.modules, "omegaconf", None)
-+    monkeypatch.setitem(sys.modules, "omegaconf.listconfig", None)
-+    monkeypatch.setitem(sys.modules, "omegaconf.dictconfig", None)
++    _install_fake_omegaconf(monkeypatch)
 +
-+    module.allowlist_omegaconf_for_weights_only()
++    with module.omegaconf_safe_globals_for_torch_load(extra_fqns=["omegaconf."]):
++        pass
 +
-+    assert calls == []
++    assert len(add_calls) == 1
++
++
++def test_parse_unsupported_global_fqn_accepts_only_omegaconf() -> None:
++    module = _reload_module()
++
++    assert (
++        module.parse_unsupported_global_fqn(
++            "Weights only load failed. Unsupported global: GLOBAL omegaconf.base.ContainerMetadata"
++        )
++        == "omegaconf.base.ContainerMetadata"
++    )
++    assert module.parse_unsupported_global_fqn("Unsupported global: GLOBAL builtins.list") is None
++    assert module.parse_unsupported_global_fqn("no unsupported global here") is None
++
++
++def test_unsupported_global_omegaconf_fqn_from_error_filters_error_types() -> None:
++    module = _reload_module()
++
++    err = pickle.UnpicklingError(
++        "Weights only load failed. Unsupported global: GLOBAL omegaconf.listconfig.ListConfig"
++    )
++    assert module.unsupported_global_omegaconf_fqn_from_error(err) == "omegaconf.listconfig.ListConfig"
+ 
+-    module.allowlist_omegaconf_for_weights_only()
++    runtime_err = RuntimeError(
++        "Weights only load failed. Unsupported global: GLOBAL omegaconf.dictconfig.DictConfig"
++    )
++    assert module.unsupported_global_omegaconf_fqn_from_error(runtime_err) == "omegaconf.dictconfig.DictConfig"
+ 
+-    assert calls == []
++    assert module.unsupported_global_omegaconf_fqn_from_error(ValueError("Unsupported global: GLOBAL omegaconf.x")) is None
+diff --git a/tests/test_whisperx_api.py b/tests/test_whisperx_api.py
+index 8315116..f3c036e 100644
+--- a/tests/test_whisperx_api.py
++++ b/tests/test_whisperx_api.py
+@@ -1,9 +1,13 @@
+ from __future__ import annotations
+ 
++import contextlib
++import pickle
+ import sys
+ from pathlib import Path
+ from types import ModuleType
+ 
++import pytest
++
+ from lan_transcriber.pipeline_steps import orchestrator as pipeline
+ 
+ 
+@@ -176,6 +180,156 @@ def test_whisperx_asr_retry_without_word_timestamps_on_typeerror(tmp_path: Path,
+     assert "word_timestamps" not in calls[1]
+ 
+ 
++def test_whisperx_asr_retries_once_for_omegaconf_unsupported_global(tmp_path: Path, monkeypatch) -> None:
++    fake_whisperx = ModuleType("whisperx")
++    fake_whisperx.transcribe = None
++    load_attempts: list[str] = []
++    context_calls: list[list[str]] = []
++
++    class _FakeModel:
++        def transcribe(
++            self,
++            audio: str,
++            *,
++            batch_size: int,
++            vad_filter: bool,
++            language: str | None,
++        ) -> dict[str, object]:
++            del batch_size, vad_filter, language
++            assert audio == "audio"
++            return {"segments": [{"start": 0.0, "end": 1.0, "text": "hello"}], "language": "en"}
++
++    def _load_audio(path: str) -> str:
++        assert path.endswith("a.wav")
++        return "audio"
++
++    def _load_model(_model_name: str, _device: str, compute_type: str = "int8") -> _FakeModel:
++        assert compute_type == "int8"
++        load_attempts.append("call")
++        if len(load_attempts) == 1:
++            raise pickle.UnpicklingError(
++                "Weights only load failed. Unsupported global: GLOBAL omegaconf.base.ContainerMetadata"
++            )
++        return _FakeModel()
++
++    @contextlib.contextmanager
++    def _fake_safe_globals(extra_fqns: list[str] | None = None):
++        context_calls.append(list(extra_fqns or []))
++        yield
++
++    fake_whisperx.load_audio = _load_audio
++    fake_whisperx.load_model = _load_model
++    monkeypatch.setitem(sys.modules, "whisperx", fake_whisperx)
++    monkeypatch.setattr(pipeline, "omegaconf_safe_globals_for_torch_load", _fake_safe_globals)
++
++    audio_path = tmp_path / "a.wav"
++    audio_path.write_bytes(b"")
++    cfg = pipeline.Settings(
++        asr_device="cpu",
++        asr_enable_align=False,
++        tmp_root=tmp_path,
++        recordings_root=tmp_path / "recordings",
++    )
++
++    segments, info = pipeline._whisperx_asr(audio_path, override_lang=None, cfg=cfg)
++
++    assert segments and segments[0]["text"] == "hello"
++    assert info["language"] == "en"
++    assert len(load_attempts) == 2
++    assert context_calls == [[], ["omegaconf.base.ContainerMetadata"]]
++
++
++def test_whisperx_asr_does_not_retry_for_non_unsupported_global_errors(tmp_path: Path, monkeypatch) -> None:
++    fake_whisperx = ModuleType("whisperx")
++    fake_whisperx.transcribe = None
++    context_calls: list[list[str]] = []
++
++    class _FakeModel:
++        def transcribe(self, *args: object, **kwargs: object) -> dict[str, object]:
++            del args, kwargs
++            return {"segments": [], "language": "en"}
++
++    def _load_audio(path: str) -> str:
++        assert path.endswith("a.wav")
++        return "audio"
++
++    def _load_model(_model_name: str, _device: str, compute_type: str = "int8") -> _FakeModel:
++        assert compute_type == "int8"
++        raise RuntimeError("some other load failure")
++
++    @contextlib.contextmanager
++    def _fake_safe_globals(extra_fqns: list[str] | None = None):
++        context_calls.append(list(extra_fqns or []))
++        yield
++
++    fake_whisperx.load_audio = _load_audio
++    fake_whisperx.load_model = _load_model
++    monkeypatch.setitem(sys.modules, "whisperx", fake_whisperx)
++    monkeypatch.setattr(pipeline, "omegaconf_safe_globals_for_torch_load", _fake_safe_globals)
++
++    audio_path = tmp_path / "a.wav"
++    audio_path.write_bytes(b"")
++    cfg = pipeline.Settings(
++        asr_device="cpu",
++        asr_enable_align=False,
++        tmp_root=tmp_path,
++        recordings_root=tmp_path / "recordings",
++    )
++
++    with pytest.raises(RuntimeError, match="some other load failure"):
++        pipeline._whisperx_asr(audio_path, override_lang=None, cfg=cfg)
++
++    assert context_calls == [[]]
++
++
++def test_whisperx_asr_reraises_original_error_when_retry_fails(tmp_path: Path, monkeypatch) -> None:
++    fake_whisperx = ModuleType("whisperx")
++    fake_whisperx.transcribe = None
++    context_calls: list[list[str]] = []
++    first_error = pickle.UnpicklingError(
++        "Weights only load failed. Unsupported global: GLOBAL omegaconf.base.ContainerMetadata"
++    )
++
++    class _FakeModel:
++        def transcribe(self, *args: object, **kwargs: object) -> dict[str, object]:
++            del args, kwargs
++            return {"segments": [], "language": "en"}
++
++    def _load_audio(path: str) -> str:
++        assert path.endswith("a.wav")
++        return "audio"
++
++    def _load_model(_model_name: str, _device: str, compute_type: str = "int8") -> _FakeModel:
++        assert compute_type == "int8"
++        if len(context_calls) == 1:
++            raise first_error
++        raise RuntimeError("retry failed with another reason")
++
++    @contextlib.contextmanager
++    def _fake_safe_globals(extra_fqns: list[str] | None = None):
++        context_calls.append(list(extra_fqns or []))
++        yield
++
++    fake_whisperx.load_audio = _load_audio
++    fake_whisperx.load_model = _load_model
++    monkeypatch.setitem(sys.modules, "whisperx", fake_whisperx)
++    monkeypatch.setattr(pipeline, "omegaconf_safe_globals_for_torch_load", _fake_safe_globals)
++
++    audio_path = tmp_path / "a.wav"
++    audio_path.write_bytes(b"")
++    cfg = pipeline.Settings(
++        asr_device="cpu",
++        asr_enable_align=False,
++        tmp_root=tmp_path,
++        recordings_root=tmp_path / "recordings",
++    )
++
++    with pytest.raises(pickle.UnpicklingError, match="ContainerMetadata"):
++        pipeline._whisperx_asr(audio_path, override_lang=None, cfg=cfg)
++
++    assert context_calls == [[], ["omegaconf.base.ContainerMetadata"]]
++
++
+ def test_log_dropped_kwargs_returns_early_when_nothing_dropped() -> None:
+     messages: list[str] = []
+ 
