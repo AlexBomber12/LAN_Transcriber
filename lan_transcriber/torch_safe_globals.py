@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import contextlib
 import importlib
+import logging
 import pickle
 import re
 from collections.abc import Iterator
+
+_log = logging.getLogger(__name__)
 
 _OMEGACONF_BASE_FQNS = (
     "omegaconf.listconfig.ListConfig",
@@ -28,19 +31,55 @@ def _import_omegaconf_symbol(fqn: str) -> object | None:
     return getattr(module, symbol_name, None)
 
 
-def _collect_omegaconf_symbols(extra_fqns: list[str] | None) -> list[object]:
+def _collect_omegaconf_symbols(extra_fqns: list[str] | None) -> list[tuple[str, object]]:
+    """Return ``(fqn, class)`` pairs for all importable OmegaConf symbols."""
     fqns = list(_OMEGACONF_BASE_FQNS)
     for candidate in extra_fqns or []:
         if candidate in fqns:
             continue
         fqns.append(candidate)
 
-    symbols: list[object] = []
+    pairs: list[tuple[str, object]] = []
     for fqn in fqns:
         symbol = _import_omegaconf_symbol(fqn)
         if symbol is not None:
-            symbols.append(symbol)
-    return symbols
+            pairs.append((fqn, symbol))
+    return pairs
+
+
+def _try_api(
+    api: object,
+    symbols_list: list[object],
+    symbols_dict: dict[str, object],
+) -> object | None:
+    """Try *api*(list); on ``TypeError`` fall back to *api*(dict).
+
+    Returns whatever *api* returns (e.g. a context-manager) or ``None``
+    if both forms fail.  Logs exactly one warning on total failure.
+    """
+    try:
+        return api(symbols_list)  # type: ignore[operator]
+    except TypeError:
+        pass
+    except Exception as exc:
+        _log.warning(
+            "torch safe-globals %s(list) failed: %s: %s",
+            getattr(api, "__name__", api),
+            type(exc).__name__,
+            exc,
+        )
+        return None
+    # List form raised TypeError – try dict form.
+    try:
+        return api(symbols_dict)  # type: ignore[operator]
+    except Exception as exc:
+        _log.warning(
+            "torch safe-globals %s rejected both list and dict forms: %s: %s",
+            getattr(api, "__name__", api),
+            type(exc).__name__,
+            exc,
+        )
+        return None
 
 
 @contextlib.contextmanager
@@ -58,28 +97,25 @@ def omegaconf_safe_globals_for_torch_load(extra_fqns: list[str] | None = None) -
         yield
         return
 
-    symbols = _collect_omegaconf_symbols(extra_fqns)
-    if not symbols:
+    pairs = _collect_omegaconf_symbols(extra_fqns)
+    if not pairs:
         yield
         return
 
+    symbols_list = [symbol for _, symbol in pairs]
+    symbols_dict = {fqn: symbol for fqn, symbol in pairs}
+
     safe_globals = getattr(serialization, "safe_globals", None)
     if callable(safe_globals):
-        context = None
-        try:
-            context = safe_globals(symbols)
-        except Exception:
-            context = None
+        context = _try_api(safe_globals, symbols_list, symbols_dict)
         if context is not None:
             with context:
                 yield
             return
 
     add_safe_globals = getattr(serialization, "add_safe_globals", None)
-    try:
-        add_safe_globals(symbols)
-    except Exception:
-        pass
+    if add_safe_globals is not None:
+        _try_api(add_safe_globals, symbols_list, symbols_dict)
     yield
 
 
