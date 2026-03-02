@@ -151,40 +151,6 @@ def _select_compute_type(cfg: Settings, device: str) -> str:
     return "float16" if device == "cuda" else "int8"
 
 
-def _whisperx_load_model_vad_kwargs(
-    load_model: Callable[..., Any],
-    vad_method: Literal["silero", "pyannote"],
-) -> dict[str, Any]:
-    candidates = (
-        {"vad_method": vad_method},
-        {"vad_model": vad_method},
-        {"vad_options": {"vad_method": vad_method}},
-    )
-    try:
-        signature = inspect.signature(load_model)
-    except (TypeError, ValueError):
-        # Unknown callable shape: pass all known selector keys so the runtime
-        # implementation can consume whichever one it supports.
-        merged: dict[str, Any] = {}
-        for kwargs in candidates:
-            merged.update(kwargs)
-        return merged
-
-    parameters = signature.parameters
-    has_var_kwargs = any(param.kind == inspect.Parameter.VAR_KEYWORD for param in parameters.values())
-
-    for kwargs in candidates:
-        if any(key in parameters for key in kwargs):
-            return kwargs
-
-    if has_var_kwargs:
-        merged: dict[str, Any] = {}
-        for kwargs in candidates:
-            merged.update(kwargs)
-        return merged
-    return {}
-
-
 def _log_dropped_kwargs(
     *,
     callback: Callable[[str], Any] | None,
@@ -230,6 +196,11 @@ def _whisperx_asr(
             pass
 
     import whisperx
+    try:
+        import whisperx.asr as wx_asr
+    except Exception:
+        # Test doubles may provide only whisperx.load_model without submodules.
+        wx_asr = whisperx
 
     legacy_transcribe = getattr(whisperx, "transcribe", None)
     if legacy_transcribe is not None and not callable(legacy_transcribe):
@@ -268,13 +239,10 @@ def _whisperx_asr(
     compute_type = _select_compute_type(cfg, device)
     audio = whisperx.load_audio(str(audio_path))
     _logger.info("ASR VAD method: %s", cfg.vad_method)
-    model_load_kwargs = {
-        "compute_type": compute_type,
-        **_whisperx_load_model_vad_kwargs(whisperx.load_model, cfg.vad_method),
-    }
+    model_load_kwargs = {"compute_type": compute_type, "vad_method": cfg.vad_method}
 
     def _load_model() -> Any:
-        return call_with_supported_kwargs(whisperx.load_model, cfg.asr_model, device, **model_load_kwargs)
+        return call_with_supported_kwargs(wx_asr.load_model, cfg.asr_model, device, **model_load_kwargs)
 
     with omegaconf_safe_globals_for_torch_load():
         try:
@@ -288,6 +256,14 @@ def _whisperx_asr(
                     model = _load_model()
                 except Exception:
                     raise first_error
+
+    vad = getattr(model, "vad_model", None)
+    if not callable(vad):
+        raise RuntimeError(
+            "WhisperX VAD misconfigured: "
+            f"vad_method={cfg.vad_method!r}, "
+            f"type(vad_model)={type(vad)!r}; expected callable model.vad_model"
+        )
 
     transcribe_kwargs: dict[str, Any] = {
         "batch_size": cfg.asr_batch_size,

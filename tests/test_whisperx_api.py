@@ -13,8 +13,12 @@ from lan_transcriber.pipeline_steps import orchestrator as pipeline
 
 def test_whisperx_asr_modern_path(tmp_path: Path, monkeypatch, caplog):
     fake_whisperx = ModuleType("whisperx")
+    fake_asr = ModuleType("whisperx.asr")
+    seen_kwargs: dict[str, object] = {}
 
     class _FakeModel:
+        vad_model = staticmethod(lambda _payload: [])
+
         def transcribe(
             self,
             audio: str,
@@ -38,11 +42,14 @@ def test_whisperx_asr_modern_path(tmp_path: Path, monkeypatch, caplog):
         device: str,
         compute_type: str = "int8",
         vad_method: str = "silero",
+        **kwargs: object,
     ) -> _FakeModel:
         assert model_name == "large-v3"
         assert device == "cpu"
         assert compute_type == "int8"
         assert vad_method == "silero"
+        assert kwargs == {}
+        seen_kwargs.update({"compute_type": compute_type, "vad_method": vad_method, **kwargs})
         return _FakeModel()
 
     def _load_align_model(language_code: str, device: str) -> tuple[str, dict[str, str]]:
@@ -70,11 +77,17 @@ def test_whisperx_asr_modern_path(tmp_path: Path, monkeypatch, caplog):
             enriched.append(row)
         return {"segments": enriched}
 
+    def _wrapper_load_model(*_args: object, **_kwargs: object) -> _FakeModel:
+        raise AssertionError("expected whisperx.asr.load_model to be used")
+
     fake_whisperx.load_audio = _load_audio
-    fake_whisperx.load_model = _load_model
+    fake_whisperx.load_model = _wrapper_load_model
     fake_whisperx.load_align_model = _load_align_model
     fake_whisperx.align = _align
+    fake_asr.load_model = _load_model
+    fake_whisperx.asr = fake_asr
     monkeypatch.setitem(sys.modules, "whisperx", fake_whisperx)
+    monkeypatch.setitem(sys.modules, "whisperx.asr", fake_asr)
 
     audio_path = tmp_path / "a.wav"
     audio_path.write_bytes(b"")
@@ -93,13 +106,19 @@ def test_whisperx_asr_modern_path(tmp_path: Path, monkeypatch, caplog):
     assert all("start" in segment and "end" in segment and "text" in segment for segment in segments)
     assert any(segment.get("words") for segment in segments)
     assert info["language"] == "en"
+    assert seen_kwargs["vad_method"] == "silero"
+    assert "vad_model" not in seen_kwargs
     assert "ASR VAD method: silero" in caplog.text
 
 
-def test_whisperx_asr_modern_path_uses_vad_model_fallback(tmp_path: Path, monkeypatch):
+def test_whisperx_asr_modern_path_uses_pyannote_vad_method(tmp_path: Path, monkeypatch):
     fake_whisperx = ModuleType("whisperx")
+    fake_asr = ModuleType("whisperx.asr")
+    seen_kwargs: dict[str, object] = {}
 
     class _FakeModel:
+        vad_model = staticmethod(lambda _payload: [])
+
         def transcribe(
             self,
             audio: str,
@@ -122,17 +141,22 @@ def test_whisperx_asr_modern_path_uses_vad_model_fallback(tmp_path: Path, monkey
         model_name: str,
         device: str,
         compute_type: str = "int8",
-        vad_model: str = "silero",
+        vad_method: str = "silero",
+        **kwargs: object,
     ) -> _FakeModel:
         assert model_name == "large-v3"
         assert device == "cpu"
         assert compute_type == "int8"
-        assert vad_model == "pyannote"
+        assert vad_method == "pyannote"
+        assert kwargs == {}
+        seen_kwargs.update({"compute_type": compute_type, "vad_method": vad_method, **kwargs})
         return _FakeModel()
 
     fake_whisperx.load_audio = _load_audio
-    fake_whisperx.load_model = _load_model
+    fake_asr.load_model = _load_model
+    fake_whisperx.asr = fake_asr
     monkeypatch.setitem(sys.modules, "whisperx", fake_whisperx)
+    monkeypatch.setitem(sys.modules, "whisperx.asr", fake_asr)
     monkeypatch.setattr(pipeline, "patch_pyannote_inference_ignore_use_auth_token", lambda: True)
 
     audio_path = tmp_path / "a.wav"
@@ -155,26 +179,24 @@ def test_whisperx_asr_modern_path_uses_vad_model_fallback(tmp_path: Path, monkey
 
     assert segments and segments[0]["text"] == "hello"
     assert info["language"] == "en"
+    assert seen_kwargs["vad_method"] == "pyannote"
+    assert "vad_model" not in seen_kwargs
     assert any("pyannote compat" in line for line in step_log)
 
 
-def test_whisperx_asr_modern_path_uses_vad_options_fallback(tmp_path: Path, monkeypatch):
+def test_whisperx_asr_modern_path_fails_fast_on_non_callable_vad_model(tmp_path: Path, monkeypatch):
     fake_whisperx = ModuleType("whisperx")
+    fake_asr = ModuleType("whisperx.asr")
 
     class _FakeModel:
+        vad_model = "silero"
+
         def transcribe(
             self,
-            audio: str,
-            *,
-            batch_size: int,
-            vad_filter: bool,
-            language: str | None,
+            _audio: str,
+            **_kwargs: object,
         ) -> dict[str, object]:
-            assert audio == "audio"
-            assert batch_size == 16
-            assert vad_filter is True
-            assert language is None
-            return {"segments": [{"start": 0.0, "end": 1.0, "text": "hello"}], "language": "en"}
+            raise AssertionError("transcribe should not run before vad_model validation")
 
     def _load_audio(path: str) -> str:
         assert path.endswith("a.wav")
@@ -184,17 +206,19 @@ def test_whisperx_asr_modern_path_uses_vad_options_fallback(tmp_path: Path, monk
         model_name: str,
         device: str,
         compute_type: str = "int8",
-        vad_options: dict[str, object] | None = None,
+        vad_method: str = "silero",
     ) -> _FakeModel:
         assert model_name == "large-v3"
         assert device == "cpu"
         assert compute_type == "int8"
-        assert vad_options == {"vad_method": "silero"}
+        assert vad_method == "silero"
         return _FakeModel()
 
     fake_whisperx.load_audio = _load_audio
-    fake_whisperx.load_model = _load_model
+    fake_asr.load_model = _load_model
+    fake_whisperx.asr = fake_asr
     monkeypatch.setitem(sys.modules, "whisperx", fake_whisperx)
+    monkeypatch.setitem(sys.modules, "whisperx.asr", fake_asr)
 
     audio_path = tmp_path / "a.wav"
     audio_path.write_bytes(b"")
@@ -205,77 +229,19 @@ def test_whisperx_asr_modern_path_uses_vad_options_fallback(tmp_path: Path, monk
         recordings_root=tmp_path / "recordings",
     )
 
-    segments, info = pipeline._whisperx_asr(audio_path, override_lang=None, cfg=cfg)
-
-    assert segments and segments[0]["text"] == "hello"
-    assert info["language"] == "en"
-
-
-def test_whisperx_asr_modern_path_uses_vad_fallback_keys_with_var_kwargs(tmp_path: Path, monkeypatch):
-    fake_whisperx = ModuleType("whisperx")
-    seen_kwargs: dict[str, object] = {}
-
-    class _FakeModel:
-        def transcribe(
-            self,
-            audio: str,
-            *,
-            batch_size: int,
-            vad_filter: bool,
-            language: str | None,
-        ) -> dict[str, object]:
-            assert audio == "audio"
-            assert batch_size == 16
-            assert vad_filter is True
-            assert language is None
-            return {"segments": [{"start": 0.0, "end": 1.0, "text": "hello"}], "language": "en"}
-
-    def _load_audio(path: str) -> str:
-        assert path.endswith("a.wav")
-        return "audio"
-
-    def _load_model(
-        model_name: str,
-        device: str,
-        compute_type: str = "int8",
-        **kwargs: object,
-    ) -> _FakeModel:
-        assert model_name == "large-v3"
-        assert device == "cpu"
-        assert compute_type == "int8"
-        seen_kwargs.update(kwargs)
-        # Simulate implementations that actually consume vad_model.
-        assert kwargs.get("vad_model") == "pyannote"
-        return _FakeModel()
-
-    fake_whisperx.load_audio = _load_audio
-    fake_whisperx.load_model = _load_model
-    monkeypatch.setitem(sys.modules, "whisperx", fake_whisperx)
-    monkeypatch.setattr(pipeline, "patch_pyannote_inference_ignore_use_auth_token", lambda: False)
-
-    audio_path = tmp_path / "a.wav"
-    audio_path.write_bytes(b"")
-    cfg = pipeline.Settings(
-        asr_device="cpu",
-        asr_enable_align=False,
-        vad_method="pyannote",
-        tmp_root=tmp_path,
-        recordings_root=tmp_path / "recordings",
-    )
-
-    segments, info = pipeline._whisperx_asr(audio_path, override_lang=None, cfg=cfg)
-
-    assert segments and segments[0]["text"] == "hello"
-    assert info["language"] == "en"
-    assert seen_kwargs["vad_method"] == "pyannote"
-    assert seen_kwargs["vad_model"] == "pyannote"
-    assert seen_kwargs["vad_options"] == {"vad_method": "pyannote"}
+    with pytest.raises(
+        RuntimeError,
+        match="WhisperX VAD misconfigured:.*vad_method='silero'.*type\\(vad_model\\)=<class 'str'>",
+    ):
+        pipeline._whisperx_asr(audio_path, override_lang=None, cfg=cfg)
 
 
 def test_whisperx_asr_modern_path_drops_unsupported_kwargs(tmp_path: Path, monkeypatch):
     fake_whisperx = ModuleType("whisperx")
 
     class _FakeModel:
+        vad_model = staticmethod(lambda _payload: [])
+
         def transcribe(
             self,
             audio: str,
@@ -371,6 +337,8 @@ def test_whisperx_asr_retries_once_for_omegaconf_unsupported_global(tmp_path: Pa
     context_calls: list[list[str]] = []
 
     class _FakeModel:
+        vad_model = staticmethod(lambda _payload: [])
+
         def transcribe(
             self,
             audio: str,
@@ -429,6 +397,8 @@ def test_whisperx_asr_does_not_retry_for_non_unsupported_global_errors(tmp_path:
     context_calls: list[list[str]] = []
 
     class _FakeModel:
+        vad_model = staticmethod(lambda _payload: [])
+
         def transcribe(self, *args: object, **kwargs: object) -> dict[str, object]:
             del args, kwargs
             return {"segments": [], "language": "en"}
@@ -475,6 +445,8 @@ def test_whisperx_asr_reraises_original_error_when_retry_fails(tmp_path: Path, m
     )
 
     class _FakeModel:
+        vad_model = staticmethod(lambda _payload: [])
+
         def transcribe(self, *args: object, **kwargs: object) -> dict[str, object]:
             del args, kwargs
             return {"segments": [], "language": "en"}
@@ -538,20 +510,3 @@ def test_log_dropped_kwargs_ignores_callback_errors() -> None:
         filtered={},
     )
 
-
-def test_whisperx_load_model_vad_kwargs_when_signature_unavailable(monkeypatch) -> None:
-    def _load_model(*_args: object, **_kwargs: object) -> object:
-        return object()
-
-    def _raise_signature_error(_fn: object) -> object:
-        raise TypeError("signature unavailable")
-
-    monkeypatch.setattr(pipeline.inspect, "signature", _raise_signature_error)
-
-    kwargs = pipeline._whisperx_load_model_vad_kwargs(_load_model, "pyannote")
-
-    assert kwargs == {
-        "vad_method": "pyannote",
-        "vad_model": "pyannote",
-        "vad_options": {"vad_method": "pyannote"},
-    }

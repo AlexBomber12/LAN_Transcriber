@@ -815,6 +815,8 @@ def test_whisperx_asr_align_typeerror_and_exception_paths(
     fake_whisperx.transcribe = None
 
     class _Model:
+        vad_model = staticmethod(lambda _payload: [])
+
         def transcribe(self, audio: str, *, batch_size: int, vad_filter: bool, language: str | None):
             del audio, batch_size, vad_filter, language
             return {"segments": [{"start": 0.0, "end": 1.0, "text": "a"}], "language": "en"}
