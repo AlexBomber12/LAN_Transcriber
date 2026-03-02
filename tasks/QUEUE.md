@@ -350,3 +350,8 @@ Queue (in order)
 - Status: DONE
 - Tasks file: tasks/PR-CI-DEPS-STABLE-01.md
 - Depends on: PR-COVERAGE-ENFORCE-100-01
+
+69) PR-CUDA-CUDNN9-ALIGN-01: Align CUDA/cuDNN stack (switch to cu124 wheels + ctranslate2>=4.5) to fix missing libcudnn_ops_infer.so.8
+- Status: TODO
+- Tasks file: tasks/PR-CUDA-CUDNN9-ALIGN-01.md
+- Depends on: PR-CI-DEPS-STABLE-01
