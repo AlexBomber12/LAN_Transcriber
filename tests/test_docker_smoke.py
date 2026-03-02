@@ -50,7 +50,7 @@ def test_container_launches():
                 "lan-smoke",
                 "python",
                 "-c",
-                "import ctranslate2; import faster_whisper; import matplotlib; import whisperx; import whisperx.asr; from omegaconf import OmegaConf; OmegaConf.create({'ok': 1})",
+                "import ctranslate2; import torch; import faster_whisper; import matplotlib; import whisperx; import whisperx.asr; from omegaconf import OmegaConf; OmegaConf.create({'ok': 1}); print(ctranslate2.__version__, torch.version.cuda, torch.cuda.is_available())",
             ],
             check=False,
             capture_output=True,

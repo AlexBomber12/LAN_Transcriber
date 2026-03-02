@@ -47,6 +47,17 @@ docker compose restart api worker
 
 Rebuild images only when dependencies change (for example `requirements-cu121.txt` updates).
 
+## CUDA runtime troubleshooting
+
+If the worker crashes with `Could not load library libcudnn_ops_infer.so.8`, the runtime has a cuDNN 8/9 mismatch.
+The current lockfile stack uses `ctranslate2>=4.5` with CUDA wheels from `https://download.pytorch.org/whl/cu126`.
+
+Quick runtime diagnostic:
+
+```bash
+python -c "import ctranslate2, torch; print('ctranslate2', ctranslate2.__version__, 'torch cuda', torch.version.cuda, 'cuda available', torch.cuda.is_available())"
+```
+
 ## Operations runbook
 
 Operational setup, failure handling, backup/restore, and upgrade steps are documented in
