@@ -58,6 +58,48 @@ async def test_generate_payload_includes_max_tokens() -> None:
 
 
 @pytest.mark.asyncio
+@respx.mock
+async def test_generate_omits_model_when_not_configured() -> None:
+    route = respx.post("http://127.0.0.1:8000/v1/chat/completions").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "finish_reason": "stop",
+                        "message": {"content": "ok"},
+                    }
+                ]
+            },
+        )
+    )
+    client = llm_client.LLMClient(
+        base_url="http://127.0.0.1:8000",
+        max_tokens=512,
+        max_tokens_retry=1024,
+    )
+    client.default_model = None
+
+    result = await client.generate("s", "u", model=None)
+    assert result["content"] == "ok"
+    payload = json.loads(route.calls[0].request.content.decode("utf-8"))
+    assert payload["max_tokens"] == 512
+    assert "model" not in payload
+
+
+def test_retry_max_tokens_defaults_to_scaled_base_when_env_unset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("LLM_MAX_TOKENS_RETRY", raising=False)
+    client = llm_client.LLMClient(
+        base_url="http://127.0.0.1:8000",
+        max_tokens=4096,
+        max_tokens_retry=None,
+    )
+    assert client.max_tokens_retry == 4096
+
+
+@pytest.mark.asyncio
 async def test_generate_retries_once_on_finish_reason_length(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -18,7 +18,6 @@ _RETRYABLE_STATUS_CODES = {408, 409, 425, 429}
 _DEV_DEFAULT_LLM_BASE_URL = "http://127.0.0.1:8000"
 _MIN_LLM_MAX_TOKENS = 256
 _DEFAULT_LLM_MAX_TOKENS = 1024
-_DEFAULT_LLM_MAX_TOKENS_RETRY = 2048
 _MAX_LLM_MAX_TOKENS = 4096
 _logger = logging.getLogger(__name__)
 
@@ -195,7 +194,7 @@ class LLMClient:
             (
                 max_tokens_retry
                 if max_tokens_retry is not None
-                else os.getenv("LLM_MAX_TOKENS_RETRY", _DEFAULT_LLM_MAX_TOKENS_RETRY)
+                else os.getenv("LLM_MAX_TOKENS_RETRY")
             ),
             base_max_tokens=self.max_tokens,
         )
@@ -302,7 +301,8 @@ class LLMClient:
         if mock_message is not None:
             return mock_message
 
-        model = model or self.default_model or "unknown"
+        model_name = model or self.default_model
+        model_label = model_name or "<unset>"
 
         url = f"{self.base_url}/v1/chat/completions"
         headers: Dict[str, str] = {}
@@ -314,7 +314,9 @@ class LLMClient:
             {"role": "user", "content": user_prompt},
         ]
 
-        payload: Dict[str, Any] = {"messages": messages, "model": model}
+        payload: Dict[str, Any] = {"messages": messages}
+        if model_name is not None:
+            payload["model"] = model_name
         if response_format is not None:
             payload["response_format"] = response_format
 
@@ -327,7 +329,7 @@ class LLMClient:
             _logger.debug(
                 "LLM request attempt=%s model=%s max_tokens=%s timeout_seconds=%s",
                 attempt_number,
-                model,
+                model_label,
                 max_tokens,
                 self.timeout,
             )
@@ -356,7 +358,7 @@ class LLMClient:
             _logger.info(
                 "Retrying LLM request after attempt=%s (model=%s max_tokens=%s finish_reason=%s empty_content=%s)",
                 1,
-                model,
+                model_label,
                 self.max_tokens,
                 finish_reason or "unknown",
                 not content.strip(),
@@ -377,7 +379,7 @@ class LLMClient:
             )
             raise LLMTruncatedResponseError(
                 host=self.base_url_host,
-                model=model,
+                model=model_label,
                 max_tokens=max_tokens_used,
                 request_id=request_id,
                 raw_response=data,
@@ -386,7 +388,7 @@ class LLMClient:
             _logger.debug("LLM raw response with empty message.content: %s", data)
             raise LLMEmptyContentError(
                 host=self.base_url_host,
-                model=model,
+                model=model_label,
                 max_tokens=max_tokens_used,
                 finish_reason=finish_reason,
                 request_id=request_id,
