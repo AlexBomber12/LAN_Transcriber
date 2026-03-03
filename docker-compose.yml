@@ -33,6 +33,7 @@ x-lan-service: &lan-service
     - HUGGINGFACE_HUB_TOKEN
     - HF_HOME=${HF_HOME:-/data/hf}
     - TRANSFORMERS_CACHE=${TRANSFORMERS_CACHE:-/data/hf/transformers}
+    - LD_LIBRARY_PATH=/usr/local/lib/python3.12/site-packages/nvidia/cudnn/lib:/usr/local/lib/python3.12/site-packages/nvidia/cublas/lib:/usr/local/lib/python3.12/site-packages/nvidia/cuda_runtime/lib:/usr/local/lib/python3.12/site-packages/nvidia/nvjitlink/lib:/usr/local/lib/python3.12/site-packages/torch/lib
   volumes:
     - lan_cache:/root/.cache
     - hf-cache:/data/hf
@@ -93,8 +94,6 @@ services:
     container_name: lan-worker
     command: ["python", "-m", "lan_app.worker"]
     gpus: all
-    environment:
-      LD_LIBRARY_PATH: /usr/local/lib/python3.12/site-packages/nvidia/cudnn/lib:/usr/local/lib/python3.12/site-packages/nvidia/cublas/lib:/usr/local/lib/python3.12/site-packages/nvidia/cuda_runtime/lib:/usr/local/lib/python3.12/site-packages/nvidia/nvjitlink/lib:/usr/local/lib/python3.12/site-packages/torch/lib
     depends_on:
       - db
       - redis
