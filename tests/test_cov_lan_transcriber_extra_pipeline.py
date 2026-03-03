@@ -60,6 +60,7 @@ def test_timeout_seconds_and_retryable_status_paths() -> None:
     assert llm_client._int_setting("512", default=1024, minimum=256) == 512
     assert llm_client._resolve_retry_max_tokens("2000", base_max_tokens=1000) == 2000
     assert llm_client._resolve_retry_max_tokens("800", base_max_tokens=1000) == 2000
+    assert llm_client._resolve_retry_max_tokens(None, base_max_tokens=5000) == 5000
     assert (
         llm_client._resolve_retry_max_tokens(
             "5000",

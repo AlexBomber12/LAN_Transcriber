@@ -58,7 +58,9 @@ def _resolve_retry_max_tokens(
         default=default_retry,
         minimum=_MIN_LLM_MAX_TOKENS,
     )
-    if parsed <= base_max_tokens and base_max_tokens < _MAX_LLM_MAX_TOKENS:
+    if parsed <= base_max_tokens:
+        if base_max_tokens >= _MAX_LLM_MAX_TOKENS:
+            return base_max_tokens
         return min(_MAX_LLM_MAX_TOKENS, max(default_retry, base_max_tokens + 1))
     return parsed
 
