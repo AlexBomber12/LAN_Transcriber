@@ -392,6 +392,6 @@ Queue (in order)
 - Depends on: PR-FIX-SENTIMENT-GPU-01
 
 77) PR-LLM-DIAGNOSTICS-01: LLM diagnostics: robust URL join for /v1/chat/completions + actionable HTTP error bodies/logs (no prompt leakage)
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-LLM-DIAGNOSTICS-01.md
 - Depends on: PR-LLM-ROBUST-01
