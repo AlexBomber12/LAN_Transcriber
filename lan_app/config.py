@@ -62,6 +62,16 @@ class AppSettings(BaseSettings):
         default=None,
         validation_alias=AliasChoices("LLM_BASE_URL"),
     )
+    llm_max_tokens: int = Field(
+        default=1024,
+        ge=256,
+        validation_alias=AliasChoices("LLM_MAX_TOKENS"),
+    )
+    llm_max_tokens_retry: int = Field(
+        default=2048,
+        ge=256,
+        validation_alias=AliasChoices("LLM_MAX_TOKENS_RETRY"),
+    )
     rq_queue_name: str = Field(
         default=DEFAULT_RQ_QUEUE_NAME,
         validation_alias=AliasChoices("LAN_RQ_QUEUE_NAME", "RQ_QUEUE_NAME"),

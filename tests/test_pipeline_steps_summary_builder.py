@@ -70,3 +70,16 @@ def test_build_summary_payload_no_json_object_sets_parse_error(tmp_path: Path):
     assert payload["parse_error"] is True
     assert payload["parse_error_reason"] == "json_object_not_found"
     assert json.loads((derived / "llm_extract.json").read_text(encoding="utf-8")) == {}
+
+
+def test_build_summary_payload_empty_content_uses_default_summary_bullet() -> None:
+    payload = build_summary_payload(
+        raw_llm_content="   ",
+        model="m",
+        target_summary_language="en",
+        friendly=0,
+    )
+
+    assert payload["parse_error"] is True
+    assert payload["summary_bullets"] == ["No summary available."]
+    assert payload["summary"] == "- No summary available."

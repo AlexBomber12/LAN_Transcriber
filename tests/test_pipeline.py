@@ -330,16 +330,17 @@ async def test_no_talk(tmp_path: Path, mocker):
         tmp_root=tmp_path,
         recordings_root=tmp_path / "recordings",
     )
-    res = await pipeline.run_pipeline(
-        fake_audio(tmp_path, "notalk.mp3"),
-        cfg,
-        llm_client.LLMClient(),
-        DummyDiariser(),
-        precheck=precheck_ok(),
-    )
-
-    assert res.friendly == 0
-    assert res.summary.strip() == "- No summary available."
+    with pytest.raises(
+        llm_client.LLMEmptyContentError,
+        match="LLM_MAX_TOKENS and LLM_TIMEOUT_SECONDS",
+    ):
+        await pipeline.run_pipeline(
+            fake_audio(tmp_path, "notalk.mp3"),
+            cfg,
+            llm_client.LLMClient(),
+            DummyDiariser(),
+            precheck=precheck_ok(),
+        )
 
 
 @pytest.mark.asyncio
