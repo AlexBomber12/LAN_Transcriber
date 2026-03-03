@@ -93,6 +93,8 @@ services:
     container_name: lan-worker
     command: ["python", "-m", "lan_app.worker"]
     gpus: all
+    environment:
+      LD_LIBRARY_PATH: /usr/local/lib/python3.12/site-packages/nvidia/cudnn/lib:/usr/local/lib/python3.12/site-packages/nvidia/cublas/lib:/usr/local/lib/python3.12/site-packages/nvidia/cuda_runtime/lib:/usr/local/lib/python3.12/site-packages/nvidia/nvjitlink/lib:/usr/local/lib/python3.12/site-packages/torch/lib
     depends_on:
       - db
       - redis
