@@ -67,7 +67,7 @@ class AppSettings(BaseSettings):
     )
     llm_model: str | None = Field(
         default=None,
-        validation_alias=AliasChoices("LLM_MODEL"),
+        validation_alias=AliasChoices("LLM_MODEL", "LAN_LLM_MODEL"),
     )
     llm_max_tokens: int = Field(
         default=1024,

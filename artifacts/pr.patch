@@ -1,12 +1,31 @@
-diff --git a/tests_playwright/test_ui_smoke_playwright.py b/tests_playwright/test_ui_smoke_playwright.py
-index 1cec1ff..2914982 100644
---- a/tests_playwright/test_ui_smoke_playwright.py
-+++ b/tests_playwright/test_ui_smoke_playwright.py
-@@ -116,6 +116,7 @@ def test_upload_recordings_detail_and_export_zip_smoke(tmp_path: Path) -> None:
-             "LAN_DB_PATH": str(db_path),
-             "LAN_PROM_SNAPSHOT_PATH": str(metrics_snapshot_path),
-             "LAN_REDIS_URL": os.getenv("LAN_REDIS_URL", "redis://127.0.0.1:6379/14"),
-+            "LLM_MODEL": os.getenv("LLM_MODEL", "test-llm-model"),
-         }
+diff --git a/lan_app/config.py b/lan_app/config.py
+index b0a06c5..cdae556 100644
+--- a/lan_app/config.py
++++ b/lan_app/config.py
+@@ -67,7 +67,7 @@ class AppSettings(BaseSettings):
      )
+     llm_model: str | None = Field(
+         default=None,
+-        validation_alias=AliasChoices("LLM_MODEL"),
++        validation_alias=AliasChoices("LLM_MODEL", "LAN_LLM_MODEL"),
+     )
+     llm_max_tokens: int = Field(
+         default=1024,
+diff --git a/tests/test_app_config.py b/tests/test_app_config.py
+index a8081ff..b024959 100644
+--- a/tests/test_app_config.py
++++ b/tests/test_app_config.py
+@@ -40,6 +40,13 @@ def test_llm_model_env_required_and_trimmed(monkeypatch):
+     assert cfg.llm_model == "gpt-oss:120b"
  
+ 
++def test_llm_model_prefixed_alias_is_accepted(monkeypatch):
++    monkeypatch.delenv("LLM_MODEL", raising=False)
++    monkeypatch.setenv("LAN_LLM_MODEL", "  gpt-oss:prefixed  ")
++    cfg = AppSettings()
++    assert cfg.llm_model == "gpt-oss:prefixed"
++
++
+ def test_llm_model_missing_fails_with_clear_message(monkeypatch):
+     monkeypatch.delenv("LLM_MODEL", raising=False)
+     monkeypatch.delenv("LAN_LLM_MODEL", raising=False)

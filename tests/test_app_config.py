@@ -40,6 +40,13 @@ def test_llm_model_env_required_and_trimmed(monkeypatch):
     assert cfg.llm_model == "gpt-oss:120b"
 
 
+def test_llm_model_prefixed_alias_is_accepted(monkeypatch):
+    monkeypatch.delenv("LLM_MODEL", raising=False)
+    monkeypatch.setenv("LAN_LLM_MODEL", "  gpt-oss:prefixed  ")
+    cfg = AppSettings()
+    assert cfg.llm_model == "gpt-oss:prefixed"
+
+
 def test_llm_model_missing_fails_with_clear_message(monkeypatch):
     monkeypatch.delenv("LLM_MODEL", raising=False)
     monkeypatch.delenv("LAN_LLM_MODEL", raising=False)

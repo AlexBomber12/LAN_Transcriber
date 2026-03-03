@@ -102,8 +102,8 @@ Requirement already satisfied: pytz>2021.1 in ./.venv-ci/lib/python3.12/site-pac
 Building wheels for collected packages: lan-transcriber
   Building editable for lan-transcriber (pyproject.toml): started
   Building editable for lan-transcriber (pyproject.toml): finished with status 'done'
-  Created wheel for lan-transcriber: filename=lan_transcriber-0.1.0-0.editable-py3-none-any.whl size=15425 sha256=582272f4792abdc4802b45d65a4f8683d7d7370b05de1eaa44f073325d59dbc2
-  Stored in directory: /tmp/pip-ephem-wheel-cache-rknwwl2v/wheels/d5/8a/5c/f7178f7e49aa5ae12b2320ec66b5c310f4f2f63d1bd301b7fb
+  Created wheel for lan-transcriber: filename=lan_transcriber-0.1.0-0.editable-py3-none-any.whl size=15425 sha256=89a87a3f0e0b88a1ad45446b49eb51bdd6f8c99e8dc4ae8a98e7ddeadd3f5f48
+  Stored in directory: /tmp/pip-ephem-wheel-cache-tuw7m7qt/wheels/d5/8a/5c/f7178f7e49aa5ae12b2320ec66b5c310f4f2f63d1bd301b7fb
 Successfully built lan-transcriber
 Installing collected packages: lan-transcriber
   Attempting uninstall: lan-transcriber
@@ -119,12 +119,12 @@ The event loop scope for asynchronous fixtures will default to the fixture cachi
   warnings.warn(PytestDeprecationWarning(_DEFAULT_FIXTURE_LOOP_SCOPE_UNSET))
 ........................................................................ [ 12%]
 ........................................................................ [ 25%]
-........................................................................ [ 38%]
+........................................................................ [ 37%]
 ........................................................................ [ 50%]
 ........................................................................ [ 63%]
-........................................................................ [ 76%]
-.................s...................................................... [ 88%]
-................................................................         [100%]
+........................................................................ [ 75%]
+..................s..................................................... [ 88%]
+.................................................................        [100%]
 =============================== warnings summary ===============================
 lan_transcriber/pipeline_steps/precheck.py:3
   /home/alexey/LAN_Transcriber/lan_transcriber/pipeline_steps/precheck.py:3: DeprecationWarning: 'audioop' is deprecated and slated for removal in Python 3.13
@@ -166,7 +166,7 @@ TOTAL    6218      0   1910      0   100%
 Coverage HTML written to dir htmlcov
 
 Required test coverage of 100% reached. Total coverage: 100.00%
-567 passed, 3 skipped, 10 warnings in 18.72s
+568 passed, 3 skipped, 10 warnings in 19.24s
 Name                                                Stmts   Miss Branch BrPart  Cover
 -------------------------------------------------------------------------------------
 lan_transcriber/__init__.py                             8      0      0      0   100%
