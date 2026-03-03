@@ -92,6 +92,7 @@ services:
     <<: *lan-service
     container_name: lan-worker
     command: ["python", "-m", "lan_app.worker"]
+    gpus: all
     depends_on:
       - db
       - redis

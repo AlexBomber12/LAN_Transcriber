@@ -1,449 +1,231 @@
+diff --git a/README.md b/README.md
+index 222dde6..25043d6 100644
+--- a/README.md
++++ b/README.md
+@@ -47,6 +47,16 @@ docker compose restart api worker
+ 
+ Rebuild images only when dependencies change (for example `requirements-cu121.txt` updates).
+ 
++## GPU setup
++
++- Worker services in `docker-compose.yml` and `docker-compose.dev.yml` use `gpus: all`.
++- Install NVIDIA Container Toolkit on the Docker host so GPU devices are visible inside containers.
++- Verify GPU passthrough on the host:
++
++```bash
++docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi
++```
++
+ ## CUDA runtime troubleshooting
+ 
+ If the worker crashes with `Could not load library libcudnn_ops_infer.so.8`, the runtime has a cuDNN 8/9 mismatch.
+diff --git a/docker-compose.dev.yml b/docker-compose.dev.yml
+index 289928b..a106832 100644
+--- a/docker-compose.dev.yml
++++ b/docker-compose.dev.yml
+@@ -33,6 +33,7 @@ services:
+       - ./data:/data
+ 
+   worker:
++    gpus: all
+     environment:
+       - HF_HOME=${HF_HOME:-/data/hf}
+       - TRANSFORMERS_CACHE=${TRANSFORMERS_CACHE:-/data/hf/transformers}
+diff --git a/docker-compose.yml b/docker-compose.yml
+index a070a8b..687d279 100644
+--- a/docker-compose.yml
++++ b/docker-compose.yml
+@@ -92,6 +92,7 @@ services:
+     <<: *lan-service
+     container_name: lan-worker
+     command: ["python", "-m", "lan_app.worker"]
++    gpus: all
+     depends_on:
+       - db
+       - redis
 diff --git a/lan_transcriber/pipeline_steps/orchestrator.py b/lan_transcriber/pipeline_steps/orchestrator.py
-index 23c7fea..e2a6f38 100644
+index e2a6f38..4aa0851 100644
 --- a/lan_transcriber/pipeline_steps/orchestrator.py
 +++ b/lan_transcriber/pipeline_steps/orchestrator.py
-@@ -151,40 +151,6 @@ def _select_compute_type(cfg: Settings, device: str) -> str:
-     return "float16" if device == "cuda" else "int8"
+@@ -87,10 +87,23 @@ def _merge_similar(lines: Iterable[str], threshold: float) -> List[str]:
+     return out
  
  
--def _whisperx_load_model_vad_kwargs(
--    load_model: Callable[..., Any],
--    vad_method: Literal["silero", "pyannote"],
--) -> dict[str, Any]:
--    candidates = (
--        {"vad_method": vad_method},
--        {"vad_model": vad_method},
--        {"vad_options": {"vad_method": vad_method}},
--    )
--    try:
--        signature = inspect.signature(load_model)
--    except (TypeError, ValueError):
--        # Unknown callable shape: pass all known selector keys so the runtime
--        # implementation can consume whichever one it supports.
--        merged: dict[str, Any] = {}
--        for kwargs in candidates:
--            merged.update(kwargs)
--        return merged
--
--    parameters = signature.parameters
--    has_var_kwargs = any(param.kind == inspect.Parameter.VAR_KEYWORD for param in parameters.values())
--
--    for kwargs in candidates:
--        if any(key in parameters for key in kwargs):
--            return kwargs
--
--    if has_var_kwargs:
--        merged: dict[str, Any] = {}
--        for kwargs in candidates:
--            merged.update(kwargs)
--        return merged
--    return {}
--
--
- def _log_dropped_kwargs(
-     *,
-     callback: Callable[[str], Any] | None,
-@@ -230,6 +196,11 @@ def _whisperx_asr(
-             pass
+-def _sentiment_score(text: str) -> int:  # pragma: no cover - trivial wrapper
++def _sentiment_score(text: str) -> int | float:
+     from transformers import pipeline as hf_pipeline
  
-     import whisperx
+-    sent = hf_pipeline("sentiment-analysis")(text[:4000])[0]
++    sentiment = hf_pipeline(
++        "sentiment-analysis",
++        model="distilbert/distilbert-base-uncased-finetuned-sst-2-english",
++        device=-1,
++    )
 +    try:
-+        import whisperx.asr as wx_asr
-+    except Exception:
-+        # Test doubles may provide only whisperx.load_model without submodules.
-+        wx_asr = whisperx
- 
-     legacy_transcribe = getattr(whisperx, "transcribe", None)
-     if legacy_transcribe is not None and not callable(legacy_transcribe):
-@@ -268,13 +239,10 @@ def _whisperx_asr(
-     compute_type = _select_compute_type(cfg, device)
-     audio = whisperx.load_audio(str(audio_path))
-     _logger.info("ASR VAD method: %s", cfg.vad_method)
--    model_load_kwargs = {
--        "compute_type": compute_type,
--        **_whisperx_load_model_vad_kwargs(whisperx.load_model, cfg.vad_method),
--    }
-+    model_load_kwargs = {"compute_type": compute_type, "vad_method": cfg.vad_method}
- 
-     def _load_model() -> Any:
--        return call_with_supported_kwargs(whisperx.load_model, cfg.asr_model, device, **model_load_kwargs)
-+        return call_with_supported_kwargs(wx_asr.load_model, cfg.asr_model, device, **model_load_kwargs)
- 
-     with omegaconf_safe_globals_for_torch_load():
-         try:
-@@ -289,6 +257,14 @@ def _whisperx_asr(
-                 except Exception:
-                     raise first_error
- 
-+    vad = getattr(model, "vad_model", None)
-+    if not callable(vad):
-+        raise RuntimeError(
-+            "WhisperX VAD misconfigured: "
-+            f"vad_method={cfg.vad_method!r}, "
-+            f"type(vad_model)={type(vad)!r}; expected callable model.vad_model"
++        sent = sentiment(
++            text[:4000],
++            truncation=True,
++            max_length=512,
++        )[0]
++    except Exception as exc:
++        _logger.warning("Sentiment scoring failed (%s); using neutral score", type(exc).__name__)
++        return 0.0
+     if sent["label"] == "positive":
+         return int(sent["score"] * 100)
+     if sent["label"] == "negative":
+@@ -140,8 +153,23 @@ def _select_asr_device(cfg: Settings) -> str:
+     try:
+         import torch
+     except Exception:
++        _logger.info(
++            "Torch CUDA runtime: is_available=%s device_count=%s torch.version.cuda=%s",
++            False,
++            0,
++            None,
 +        )
-+
-     transcribe_kwargs: dict[str, Any] = {
-         "batch_size": cfg.asr_batch_size,
-         "vad_filter": True,
+         return "cpu"
+-    return "cuda" if torch.cuda.is_available() else "cpu"
++    cuda_available = torch.cuda.is_available()
++    device_count = torch.cuda.device_count()
++    cuda_version = getattr(getattr(torch, "version", None), "cuda", None)
++    _logger.info(
++        "Torch CUDA runtime: is_available=%s device_count=%s torch.version.cuda=%s",
++        cuda_available,
++        device_count,
++        cuda_version,
++    )
++    return "cuda" if cuda_available else "cpu"
+ 
+ 
+ def _select_compute_type(cfg: Settings, device: str) -> str:
 diff --git a/tasks/QUEUE.md b/tasks/QUEUE.md
-index 8475bf3..648bb82 100644
+index bdb99f0..e68a026 100644
 --- a/tasks/QUEUE.md
 +++ b/tasks/QUEUE.md
-@@ -377,6 +377,6 @@ Queue (in order)
- - Depends on: PR-FIX-TORCH-SAFEGLOBALS-03
+@@ -382,6 +382,6 @@ Queue (in order)
+ - Depends on: PR-VAD-SILERO-01
  
- 74) PR-VAD-SILERO-02: Fix Silero VAD integration with WhisperX (use vad_method, ensure vad_model is callable) + regression tests
+ 75) PR-FIX-SENTIMENT-GPU-01: Fix sentiment pipeline token-length crash (truncate to model max length) + enable GPU for worker in docker-compose
 -- Status: TODO
 +- Status: DOING
- - Tasks file: tasks/PR-VAD-SILERO-02.md
- - Depends on: PR-VAD-SILERO-01
+ - Tasks file: tasks/PR-FIX-SENTIMENT-GPU-01.md
+ - Depends on: PR-VAD-SILERO-02
 diff --git a/tests/test_cov_lan_transcriber_extra_pipeline.py b/tests/test_cov_lan_transcriber_extra_pipeline.py
-index bbcb340..e3678e3 100644
+index e3678e3..bee7172 100644
 --- a/tests/test_cov_lan_transcriber_extra_pipeline.py
 +++ b/tests/test_cov_lan_transcriber_extra_pipeline.py
-@@ -815,6 +815,8 @@ def test_whisperx_asr_align_typeerror_and_exception_paths(
-     fake_whisperx.transcribe = None
+@@ -733,7 +733,8 @@ def test_orchestrator_helpers_cover_remaining_branches(tmp_path: Path, monkeypat
+     monkeypatch.setattr(builtins, "__import__", original_import)
  
-     class _Model:
-+        vad_model = staticmethod(lambda _payload: [])
+     fake_torch = ModuleType("torch")
+-    fake_torch.cuda = SimpleNamespace(is_available=lambda: True)
++    fake_torch.cuda = SimpleNamespace(is_available=lambda: True, device_count=lambda: 1)
++    fake_torch.version = SimpleNamespace(cuda="12.4")
+     monkeypatch.setitem(sys.modules, "torch", fake_torch)
+     assert pipeline._select_asr_device(cfg) == "cuda"
+ 
+@@ -747,6 +748,80 @@ def test_orchestrator_helpers_cover_remaining_branches(tmp_path: Path, monkeypat
+     assert list(target_dir.iterdir()) == []
+ 
+ 
++def test_sentiment_score_uses_truncation_and_explicit_model(monkeypatch: pytest.MonkeyPatch) -> None:
++    calls: dict[str, Any] = {}
 +
-         def transcribe(self, audio: str, *, batch_size: int, vad_filter: bool, language: str | None):
-             del audio, batch_size, vad_filter, language
-             return {"segments": [{"start": 0.0, "end": 1.0, "text": "a"}], "language": "en"}
-diff --git a/tests/test_nonetype_callable_regression.py b/tests/test_nonetype_callable_regression.py
-index bf5154e..a7fa756 100644
---- a/tests/test_nonetype_callable_regression.py
-+++ b/tests/test_nonetype_callable_regression.py
-@@ -23,6 +23,8 @@ def test_whisperx_none_transcribe_falls_back_to_modern_path(tmp_path: Path, monk
-     fake_whisperx.transcribe = None
- 
-     class _FakeModel:
-+        vad_model = staticmethod(lambda _payload: [])
++    def _pipeline(task: str, **kwargs: Any):
++        calls["task"] = task
++        calls["factory_kwargs"] = dict(kwargs)
 +
-         def transcribe(
-             self,
-             audio: str,
-diff --git a/tests/test_whisperx_api.py b/tests/test_whisperx_api.py
-index 4bb9bbf..3433f52 100644
---- a/tests/test_whisperx_api.py
-+++ b/tests/test_whisperx_api.py
-@@ -13,8 +13,12 @@ from lan_transcriber.pipeline_steps import orchestrator as pipeline
- 
- def test_whisperx_asr_modern_path(tmp_path: Path, monkeypatch, caplog):
-     fake_whisperx = ModuleType("whisperx")
-+    fake_asr = ModuleType("whisperx.asr")
-+    seen_kwargs: dict[str, object] = {}
- 
-     class _FakeModel:
-+        vad_model = staticmethod(lambda _payload: [])
++        def _infer(text: str, **infer_kwargs: Any):
++            calls["text"] = text
++            calls["infer_kwargs"] = dict(infer_kwargs)
++            return [{"label": "positive", "score": 0.91}]
 +
-         def transcribe(
-             self,
-             audio: str,
-@@ -38,11 +42,14 @@ def test_whisperx_asr_modern_path(tmp_path: Path, monkeypatch, caplog):
-         device: str,
-         compute_type: str = "int8",
-         vad_method: str = "silero",
-+        **kwargs: object,
-     ) -> _FakeModel:
-         assert model_name == "large-v3"
-         assert device == "cpu"
-         assert compute_type == "int8"
-         assert vad_method == "silero"
-+        assert kwargs == {}
-+        seen_kwargs.update({"compute_type": compute_type, "vad_method": vad_method, **kwargs})
-         return _FakeModel()
- 
-     def _load_align_model(language_code: str, device: str) -> tuple[str, dict[str, str]]:
-@@ -70,11 +77,17 @@ def test_whisperx_asr_modern_path(tmp_path: Path, monkeypatch, caplog):
-             enriched.append(row)
-         return {"segments": enriched}
- 
-+    def _wrapper_load_model(*_args: object, **_kwargs: object) -> _FakeModel:
-+        raise AssertionError("expected whisperx.asr.load_model to be used")
++        return _infer
 +
-     fake_whisperx.load_audio = _load_audio
--    fake_whisperx.load_model = _load_model
-+    fake_whisperx.load_model = _wrapper_load_model
-     fake_whisperx.load_align_model = _load_align_model
-     fake_whisperx.align = _align
-+    fake_asr.load_model = _load_model
-+    fake_whisperx.asr = fake_asr
-     monkeypatch.setitem(sys.modules, "whisperx", fake_whisperx)
-+    monkeypatch.setitem(sys.modules, "whisperx.asr", fake_asr)
- 
-     audio_path = tmp_path / "a.wav"
-     audio_path.write_bytes(b"")
-@@ -93,13 +106,19 @@ def test_whisperx_asr_modern_path(tmp_path: Path, monkeypatch, caplog):
-     assert all("start" in segment and "end" in segment and "text" in segment for segment in segments)
-     assert any(segment.get("words") for segment in segments)
-     assert info["language"] == "en"
-+    assert seen_kwargs["vad_method"] == "silero"
-+    assert "vad_model" not in seen_kwargs
-     assert "ASR VAD method: silero" in caplog.text
- 
- 
--def test_whisperx_asr_modern_path_uses_vad_model_fallback(tmp_path: Path, monkeypatch):
-+def test_whisperx_asr_modern_path_uses_pyannote_vad_method(tmp_path: Path, monkeypatch):
-     fake_whisperx = ModuleType("whisperx")
-+    fake_asr = ModuleType("whisperx.asr")
-+    seen_kwargs: dict[str, object] = {}
- 
-     class _FakeModel:
-+        vad_model = staticmethod(lambda _payload: [])
++    fake_transformers = ModuleType("transformers")
++    fake_transformers.pipeline = _pipeline
++    monkeypatch.setitem(sys.modules, "transformers", fake_transformers)
 +
-         def transcribe(
-             self,
-             audio: str,
-@@ -122,17 +141,22 @@ def test_whisperx_asr_modern_path_uses_vad_model_fallback(tmp_path: Path, monkey
-         model_name: str,
-         device: str,
-         compute_type: str = "int8",
--        vad_model: str = "silero",
-+        vad_method: str = "silero",
-+        **kwargs: object,
-     ) -> _FakeModel:
-         assert model_name == "large-v3"
-         assert device == "cpu"
-         assert compute_type == "int8"
--        assert vad_model == "pyannote"
-+        assert vad_method == "pyannote"
-+        assert kwargs == {}
-+        seen_kwargs.update({"compute_type": compute_type, "vad_method": vad_method, **kwargs})
-         return _FakeModel()
- 
-     fake_whisperx.load_audio = _load_audio
--    fake_whisperx.load_model = _load_model
-+    fake_asr.load_model = _load_model
-+    fake_whisperx.asr = fake_asr
-     monkeypatch.setitem(sys.modules, "whisperx", fake_whisperx)
-+    monkeypatch.setitem(sys.modules, "whisperx.asr", fake_asr)
-     monkeypatch.setattr(pipeline, "patch_pyannote_inference_ignore_use_auth_token", lambda: True)
- 
-     audio_path = tmp_path / "a.wav"
-@@ -155,80 +179,24 @@ def test_whisperx_asr_modern_path_uses_vad_model_fallback(tmp_path: Path, monkey
- 
-     assert segments and segments[0]["text"] == "hello"
-     assert info["language"] == "en"
-+    assert seen_kwargs["vad_method"] == "pyannote"
-+    assert "vad_model" not in seen_kwargs
-     assert any("pyannote compat" in line for line in step_log)
- 
- 
--def test_whisperx_asr_modern_path_uses_vad_options_fallback(tmp_path: Path, monkeypatch):
-+def test_whisperx_asr_modern_path_fails_fast_on_non_callable_vad_model(tmp_path: Path, monkeypatch):
-     fake_whisperx = ModuleType("whisperx")
-+    fake_asr = ModuleType("whisperx.asr")
- 
-     class _FakeModel:
--        def transcribe(
--            self,
--            audio: str,
--            *,
--            batch_size: int,
--            vad_filter: bool,
--            language: str | None,
--        ) -> dict[str, object]:
--            assert audio == "audio"
--            assert batch_size == 16
--            assert vad_filter is True
--            assert language is None
--            return {"segments": [{"start": 0.0, "end": 1.0, "text": "hello"}], "language": "en"}
--
--    def _load_audio(path: str) -> str:
--        assert path.endswith("a.wav")
--        return "audio"
-+        vad_model = "silero"
- 
--    def _load_model(
--        model_name: str,
--        device: str,
--        compute_type: str = "int8",
--        vad_options: dict[str, object] | None = None,
--    ) -> _FakeModel:
--        assert model_name == "large-v3"
--        assert device == "cpu"
--        assert compute_type == "int8"
--        assert vad_options == {"vad_method": "silero"}
--        return _FakeModel()
--
--    fake_whisperx.load_audio = _load_audio
--    fake_whisperx.load_model = _load_model
--    monkeypatch.setitem(sys.modules, "whisperx", fake_whisperx)
--
--    audio_path = tmp_path / "a.wav"
--    audio_path.write_bytes(b"")
--    cfg = pipeline.Settings(
--        asr_device="cpu",
--        asr_enable_align=False,
--        tmp_root=tmp_path,
--        recordings_root=tmp_path / "recordings",
--    )
--
--    segments, info = pipeline._whisperx_asr(audio_path, override_lang=None, cfg=cfg)
--
--    assert segments and segments[0]["text"] == "hello"
--    assert info["language"] == "en"
--
--
--def test_whisperx_asr_modern_path_uses_vad_fallback_keys_with_var_kwargs(tmp_path: Path, monkeypatch):
--    fake_whisperx = ModuleType("whisperx")
--    seen_kwargs: dict[str, object] = {}
--
--    class _FakeModel:
-         def transcribe(
-             self,
--            audio: str,
--            *,
--            batch_size: int,
--            vad_filter: bool,
--            language: str | None,
-+            _audio: str,
-+            **_kwargs: object,
-         ) -> dict[str, object]:
--            assert audio == "audio"
--            assert batch_size == 16
--            assert vad_filter is True
--            assert language is None
--            return {"segments": [{"start": 0.0, "end": 1.0, "text": "hello"}], "language": "en"}
-+            raise AssertionError("transcribe should not run before vad_model validation")
- 
-     def _load_audio(path: str) -> str:
-         assert path.endswith("a.wav")
-@@ -238,44 +206,42 @@ def test_whisperx_asr_modern_path_uses_vad_fallback_keys_with_var_kwargs(tmp_pat
-         model_name: str,
-         device: str,
-         compute_type: str = "int8",
--        **kwargs: object,
-+        vad_method: str = "silero",
-     ) -> _FakeModel:
-         assert model_name == "large-v3"
-         assert device == "cpu"
-         assert compute_type == "int8"
--        seen_kwargs.update(kwargs)
--        # Simulate implementations that actually consume vad_model.
--        assert kwargs.get("vad_model") == "pyannote"
-+        assert vad_method == "silero"
-         return _FakeModel()
- 
-     fake_whisperx.load_audio = _load_audio
--    fake_whisperx.load_model = _load_model
-+    fake_asr.load_model = _load_model
-+    fake_whisperx.asr = fake_asr
-     monkeypatch.setitem(sys.modules, "whisperx", fake_whisperx)
--    monkeypatch.setattr(pipeline, "patch_pyannote_inference_ignore_use_auth_token", lambda: False)
-+    monkeypatch.setitem(sys.modules, "whisperx.asr", fake_asr)
- 
-     audio_path = tmp_path / "a.wav"
-     audio_path.write_bytes(b"")
-     cfg = pipeline.Settings(
-         asr_device="cpu",
-         asr_enable_align=False,
--        vad_method="pyannote",
-         tmp_root=tmp_path,
-         recordings_root=tmp_path / "recordings",
-     )
- 
--    segments, info = pipeline._whisperx_asr(audio_path, override_lang=None, cfg=cfg)
--
--    assert segments and segments[0]["text"] == "hello"
--    assert info["language"] == "en"
--    assert seen_kwargs["vad_method"] == "pyannote"
--    assert seen_kwargs["vad_model"] == "pyannote"
--    assert seen_kwargs["vad_options"] == {"vad_method": "pyannote"}
-+    with pytest.raises(
-+        RuntimeError,
-+        match="WhisperX VAD misconfigured:.*vad_method='silero'.*type\\(vad_model\\)=<class 'str'>",
-+    ):
-+        pipeline._whisperx_asr(audio_path, override_lang=None, cfg=cfg)
- 
- 
- def test_whisperx_asr_modern_path_drops_unsupported_kwargs(tmp_path: Path, monkeypatch):
-     fake_whisperx = ModuleType("whisperx")
- 
-     class _FakeModel:
-+        vad_model = staticmethod(lambda _payload: [])
++    score = pipeline._sentiment_score("x" * 5000)
++    assert score == 91
++    assert calls["task"] == "sentiment-analysis"
++    assert calls["factory_kwargs"] == {
++        "model": "distilbert/distilbert-base-uncased-finetuned-sst-2-english",
++        "device": -1,
++    }
++    assert calls["text"] == "x" * 4000
++    assert calls["infer_kwargs"] == {"truncation": True, "max_length": 512}
 +
-         def transcribe(
-             self,
-             audio: str,
-@@ -371,6 +337,8 @@ def test_whisperx_asr_retries_once_for_omegaconf_unsupported_global(tmp_path: Pa
-     context_calls: list[list[str]] = []
- 
-     class _FakeModel:
-+        vad_model = staticmethod(lambda _payload: [])
 +
-         def transcribe(
-             self,
-             audio: str,
-@@ -429,6 +397,8 @@ def test_whisperx_asr_does_not_retry_for_non_unsupported_global_errors(tmp_path:
-     context_calls: list[list[str]] = []
- 
-     class _FakeModel:
-+        vad_model = staticmethod(lambda _payload: [])
++@pytest.mark.parametrize(
++    ("label", "value", "expected"),
++    [
++        ("negative", 0.2, 80),
++        ("neutral", 0.7, 50),
++    ],
++)
++def test_sentiment_score_negative_and_fallback_labels(
++    monkeypatch: pytest.MonkeyPatch,
++    label: str,
++    value: float,
++    expected: int,
++) -> None:
++    def _pipeline(_task: str, **_kwargs: Any):
++        return lambda *_a, **_k: [{"label": label, "score": value}]
 +
-         def transcribe(self, *args: object, **kwargs: object) -> dict[str, object]:
-             del args, kwargs
-             return {"segments": [], "language": "en"}
-@@ -475,6 +445,8 @@ def test_whisperx_asr_reraises_original_error_when_retry_fails(tmp_path: Path, m
-     )
- 
-     class _FakeModel:
-+        vad_model = staticmethod(lambda _payload: [])
++    fake_transformers = ModuleType("transformers")
++    fake_transformers.pipeline = _pipeline
++    monkeypatch.setitem(sys.modules, "transformers", fake_transformers)
 +
-         def transcribe(self, *args: object, **kwargs: object) -> dict[str, object]:
-             del args, kwargs
-             return {"segments": [], "language": "en"}
-@@ -538,20 +510,3 @@ def test_log_dropped_kwargs_ignores_callback_errors() -> None:
-         filtered={},
-     )
- 
--
--def test_whisperx_load_model_vad_kwargs_when_signature_unavailable(monkeypatch) -> None:
--    def _load_model(*_args: object, **_kwargs: object) -> object:
--        return object()
--
--    def _raise_signature_error(_fn: object) -> object:
--        raise TypeError("signature unavailable")
--
--    monkeypatch.setattr(pipeline.inspect, "signature", _raise_signature_error)
--
--    kwargs = pipeline._whisperx_load_model_vad_kwargs(_load_model, "pyannote")
--
--    assert kwargs == {
--        "vad_method": "pyannote",
--        "vad_model": "pyannote",
--        "vad_options": {"vad_method": "pyannote"},
--    }
-diff --git a/tests/test_whisperx_contract.py b/tests/test_whisperx_contract.py
-index f96202b..285ffa3 100644
---- a/tests/test_whisperx_contract.py
-+++ b/tests/test_whisperx_contract.py
-@@ -34,6 +34,8 @@ def test_transcribe_contract_without_vad_filter(tmp_path: Path, monkeypatch: Any
-     call_spy = _patch_call_with_supported_kwargs(monkeypatch)
- 
-     class _FakeModel:
-+        vad_model = staticmethod(lambda _payload: [])
++    assert pipeline._sentiment_score("hello") == expected
 +
-         def transcribe(self, audio: str, *, batch_size: int, language: str | None) -> dict[str, object]:
-             assert audio == "AUDIO"
-             assert batch_size == 16
-@@ -69,6 +71,8 @@ def test_transcribe_contract_with_vad_filter(tmp_path: Path, monkeypatch: Any) -
-     call_spy = _patch_call_with_supported_kwargs(monkeypatch)
- 
-     class _FakeModel:
-+        vad_model = staticmethod(lambda _payload: [])
 +
-         def transcribe(
-             self,
-             audio: str,
-@@ -110,6 +114,8 @@ def test_transcribe_contract_with_var_kwargs(tmp_path: Path, monkeypatch: Any) -
-     seen_kwargs: dict[str, object] = {}
- 
-     class _FakeModel:
-+        vad_model = staticmethod(lambda _payload: [])
++def test_sentiment_score_returns_neutral_on_exception(monkeypatch: pytest.MonkeyPatch) -> None:
++    warnings: list[str] = []
 +
-         def transcribe(
-             self,
-             audio: str,
++    def _pipeline(_task: str, **_kwargs: Any):
++        def _boom(*_args: Any, **_infer_kwargs: Any):
++            raise RuntimeError("model failed")
++
++        return _boom
++
++    fake_transformers = ModuleType("transformers")
++    fake_transformers.pipeline = _pipeline
++    monkeypatch.setitem(sys.modules, "transformers", fake_transformers)
++    monkeypatch.setattr(
++        pipeline._logger,
++        "warning",
++        lambda message, *args: warnings.append(message % args),
++    )
++
++    assert pipeline._sentiment_score("hello") == 0.0
++    assert warnings == ["Sentiment scoring failed (RuntimeError); using neutral score"]
++
++
+ @pytest.mark.asyncio
+ async def test_emit_progress_awaitable_and_error_branches() -> None:
+     events: list[tuple[str, float]] = []
+diff --git a/tests/test_compose_gpu_config.py b/tests/test_compose_gpu_config.py
+new file mode 100644
+index 0000000..3c714f6
+--- /dev/null
++++ b/tests/test_compose_gpu_config.py
+@@ -0,0 +1,18 @@
++from __future__ import annotations
++
++from pathlib import Path
++
++import yaml
++
++
++def _load_compose(path: Path) -> dict:
++    return yaml.safe_load(path.read_text(encoding="utf-8"))
++
++
++def test_worker_gpu_exposed_in_compose_files() -> None:
++    root = Path(__file__).resolve().parent.parent
++    base = _load_compose(root / "docker-compose.yml")
++    dev = _load_compose(root / "docker-compose.dev.yml")
++
++    assert base["services"]["worker"]["gpus"] == "all"
++    assert dev["services"]["worker"]["gpus"] == "all"

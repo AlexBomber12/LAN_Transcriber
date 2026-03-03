@@ -87,10 +87,23 @@ def _merge_similar(lines: Iterable[str], threshold: float) -> List[str]:
     return out
 
 
-def _sentiment_score(text: str) -> int:  # pragma: no cover - trivial wrapper
+def _sentiment_score(text: str) -> int | float:
     from transformers import pipeline as hf_pipeline
 
-    sent = hf_pipeline("sentiment-analysis")(text[:4000])[0]
+    sentiment = hf_pipeline(
+        "sentiment-analysis",
+        model="distilbert/distilbert-base-uncased-finetuned-sst-2-english",
+        device=-1,
+    )
+    try:
+        sent = sentiment(
+            text[:4000],
+            truncation=True,
+            max_length=512,
+        )[0]
+    except Exception as exc:
+        _logger.warning("Sentiment scoring failed (%s); using neutral score", type(exc).__name__)
+        return 0.0
     if sent["label"] == "positive":
         return int(sent["score"] * 100)
     if sent["label"] == "negative":
@@ -140,8 +153,23 @@ def _select_asr_device(cfg: Settings) -> str:
     try:
         import torch
     except Exception:
+        _logger.info(
+            "Torch CUDA runtime: is_available=%s device_count=%s torch.version.cuda=%s",
+            False,
+            0,
+            None,
+        )
         return "cpu"
-    return "cuda" if torch.cuda.is_available() else "cpu"
+    cuda_available = torch.cuda.is_available()
+    device_count = torch.cuda.device_count()
+    cuda_version = getattr(getattr(torch, "version", None), "cuda", None)
+    _logger.info(
+        "Torch CUDA runtime: is_available=%s device_count=%s torch.version.cuda=%s",
+        cuda_available,
+        device_count,
+        cuda_version,
+    )
+    return "cuda" if cuda_available else "cpu"
 
 
 def _select_compute_type(cfg: Settings, device: str) -> str:

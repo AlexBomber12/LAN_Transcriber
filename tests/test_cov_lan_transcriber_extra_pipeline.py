@@ -733,7 +733,8 @@ def test_orchestrator_helpers_cover_remaining_branches(tmp_path: Path, monkeypat
     monkeypatch.setattr(builtins, "__import__", original_import)
 
     fake_torch = ModuleType("torch")
-    fake_torch.cuda = SimpleNamespace(is_available=lambda: True)
+    fake_torch.cuda = SimpleNamespace(is_available=lambda: True, device_count=lambda: 1)
+    fake_torch.version = SimpleNamespace(cuda="12.4")
     monkeypatch.setitem(sys.modules, "torch", fake_torch)
     assert pipeline._select_asr_device(cfg) == "cuda"
 
@@ -745,6 +746,80 @@ def test_orchestrator_helpers_cover_remaining_branches(tmp_path: Path, monkeypat
     (target_dir / "file.txt").write_text("x", encoding="utf-8")
     pipeline._clear_dir(target_dir)
     assert list(target_dir.iterdir()) == []
+
+
+def test_sentiment_score_uses_truncation_and_explicit_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: dict[str, Any] = {}
+
+    def _pipeline(task: str, **kwargs: Any):
+        calls["task"] = task
+        calls["factory_kwargs"] = dict(kwargs)
+
+        def _infer(text: str, **infer_kwargs: Any):
+            calls["text"] = text
+            calls["infer_kwargs"] = dict(infer_kwargs)
+            return [{"label": "positive", "score": 0.91}]
+
+        return _infer
+
+    fake_transformers = ModuleType("transformers")
+    fake_transformers.pipeline = _pipeline
+    monkeypatch.setitem(sys.modules, "transformers", fake_transformers)
+
+    score = pipeline._sentiment_score("x" * 5000)
+    assert score == 91
+    assert calls["task"] == "sentiment-analysis"
+    assert calls["factory_kwargs"] == {
+        "model": "distilbert/distilbert-base-uncased-finetuned-sst-2-english",
+        "device": -1,
+    }
+    assert calls["text"] == "x" * 4000
+    assert calls["infer_kwargs"] == {"truncation": True, "max_length": 512}
+
+
+@pytest.mark.parametrize(
+    ("label", "value", "expected"),
+    [
+        ("negative", 0.2, 80),
+        ("neutral", 0.7, 50),
+    ],
+)
+def test_sentiment_score_negative_and_fallback_labels(
+    monkeypatch: pytest.MonkeyPatch,
+    label: str,
+    value: float,
+    expected: int,
+) -> None:
+    def _pipeline(_task: str, **_kwargs: Any):
+        return lambda *_a, **_k: [{"label": label, "score": value}]
+
+    fake_transformers = ModuleType("transformers")
+    fake_transformers.pipeline = _pipeline
+    monkeypatch.setitem(sys.modules, "transformers", fake_transformers)
+
+    assert pipeline._sentiment_score("hello") == expected
+
+
+def test_sentiment_score_returns_neutral_on_exception(monkeypatch: pytest.MonkeyPatch) -> None:
+    warnings: list[str] = []
+
+    def _pipeline(_task: str, **_kwargs: Any):
+        def _boom(*_args: Any, **_infer_kwargs: Any):
+            raise RuntimeError("model failed")
+
+        return _boom
+
+    fake_transformers = ModuleType("transformers")
+    fake_transformers.pipeline = _pipeline
+    monkeypatch.setitem(sys.modules, "transformers", fake_transformers)
+    monkeypatch.setattr(
+        pipeline._logger,
+        "warning",
+        lambda message, *args: warnings.append(message % args),
+    )
+
+    assert pipeline._sentiment_score("hello") == 0.0
+    assert warnings == ["Sentiment scoring failed (RuntimeError); using neutral score"]
 
 
 @pytest.mark.asyncio

@@ -47,6 +47,16 @@ docker compose restart api worker
 
 Rebuild images only when dependencies change (for example `requirements-cu121.txt` updates).
 
+## GPU setup
+
+- Worker services in `docker-compose.yml` and `docker-compose.dev.yml` use `gpus: all`.
+- Install NVIDIA Container Toolkit on the Docker host so GPU devices are visible inside containers.
+- Verify GPU passthrough on the host:
+
+```bash
+docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi
+```
+
 ## CUDA runtime troubleshooting
 
 If the worker crashes with `Could not load library libcudnn_ops_infer.so.8`, the runtime has a cuDNN 8/9 mismatch.
