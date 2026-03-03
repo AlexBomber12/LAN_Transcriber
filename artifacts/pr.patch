@@ -1,27 +1,362 @@
 diff --git a/lan_transcriber/llm_client.py b/lan_transcriber/llm_client.py
-index 3ebe743..779e199 100644
+index 779e199..f06851c 100644
 --- a/lan_transcriber/llm_client.py
 +++ b/lan_transcriber/llm_client.py
-@@ -58,7 +58,9 @@ def _resolve_retry_max_tokens(
-         default=default_retry,
-         minimum=_MIN_LLM_MAX_TOKENS,
-     )
--    if parsed <= base_max_tokens and base_max_tokens < _MAX_LLM_MAX_TOKENS:
-+    if parsed <= base_max_tokens:
-+        if base_max_tokens >= _MAX_LLM_MAX_TOKENS:
-+            return base_max_tokens
-         return min(_MAX_LLM_MAX_TOKENS, max(default_retry, base_max_tokens + 1))
-     return parsed
+@@ -19,6 +19,7 @@ _DEV_DEFAULT_LLM_BASE_URL = "http://127.0.0.1:8000"
+ _MIN_LLM_MAX_TOKENS = 256
+ _DEFAULT_LLM_MAX_TOKENS = 1024
+ _MAX_LLM_MAX_TOKENS = 4096
++_HTTP_ERROR_BODY_MAX_CHARS = 2000
+ _logger = logging.getLogger(__name__)
  
+ 
+@@ -111,6 +112,40 @@ def _base_url_host(base_url: str) -> str:
+     return str(host) if host else base_url
+ 
+ 
++def build_chat_completions_url(base_url: str) -> str:
++    normalized = base_url.strip().rstrip("/")
++    if normalized.endswith("/v1/chat/completions"):
++        return normalized
++    if normalized.endswith("/v1"):
++        return f"{normalized}/chat/completions"
++    return f"{normalized}/v1/chat/completions"
++
++
++def _truncate_text(text: str, *, max_chars: int = _HTTP_ERROR_BODY_MAX_CHARS) -> str:
++    if len(text) <= max_chars:
++        return text
++    suffix = "...<truncated>"
++    return f"{text[: max_chars - len(suffix)]}{suffix}"
++
++
++def _error_body_snippet(response: httpx.Response) -> str:
++    raw_text = response.text
++    value = raw_text
++    try:
++        payload = response.json()
++    except ValueError:
++        payload = None
++    if isinstance(payload, dict) and "error" in payload:
++        error_value = payload.get("error")
++        if isinstance(error_value, str):
++            value = error_value
++        elif error_value is not None:
++            value = json.dumps(error_value, ensure_ascii=False)
++    if not value:
++        value = "<empty>"
++    return _truncate_text(value)
++
++
+ class LLMEmptyContentError(ValueError):
+     """Raised when the LLM reply has no usable assistant content."""
+ 
+@@ -215,11 +250,37 @@ class LLMClient:
+         url: str,
+         payload: Dict[str, Any],
+         headers: Dict[str, str],
++        attempt_number: int | None = None,
+     ) -> Dict[str, Any]:
++        _logger.debug(
++            "LLM request metadata llm_url=%s model=%s max_tokens=%s timeout_seconds=%s attempt=%s response_format=%s",
++            url,
++            str(payload.get("model") or "<unset>"),
++            payload.get("max_tokens"),
++            self.timeout,
++            attempt_number if attempt_number is not None else "unknown",
++            payload.get("response_format") is not None,
++        )
+         async with httpx.AsyncClient(timeout=self.timeout) as client:
+             with anyio.fail_after(self.timeout):
+                 resp = await client.post(url, json=payload, headers=headers)
+-            resp.raise_for_status()
++            try:
++                resp.raise_for_status()
++            except httpx.HTTPStatusError as exc:
++                model_label = str(payload.get("model") or "<unset>")
++                message = (
++                    "LLM HTTP request failed "
++                    f"status_code={resp.status_code} "
++                    f"llm_url={url} "
++                    f"model={model_label} "
++                    f"max_tokens={payload.get('max_tokens')} "
++                    f"body={_error_body_snippet(resp)}"
++                )
++                raise httpx.HTTPStatusError(
++                    message,
++                    request=exc.request,
++                    response=exc.response,
++                ) from exc
+             data = resp.json()
+             if not isinstance(data, dict):
+                 raise ValueError("LLM response must be a JSON object")
+@@ -306,7 +367,7 @@ class LLMClient:
+         model_name = model or self.default_model
+         model_label = model_name or "<unset>"
+ 
+-        url = f"{self.base_url}/v1/chat/completions"
++        url = build_chat_completions_url(self.base_url)
+         headers: Dict[str, str] = {}
+         if self.api_key:
+             headers["Authorization"] = f"Bearer {self.api_key}"
+@@ -328,18 +389,12 @@ class LLMClient:
+             max_tokens: int,
+         ) -> tuple[Dict[str, Any], str, str, str | None, str | None] | None:
+             payload["max_tokens"] = max_tokens
+-            _logger.debug(
+-                "LLM request attempt=%s model=%s max_tokens=%s timeout_seconds=%s",
+-                attempt_number,
+-                model_label,
+-                max_tokens,
+-                self.timeout,
+-            )
+             try:
+                 data = await self._post_chat_completion(
+                     url=url,
+                     payload=payload,
+                     headers=headers,
++                    attempt_number=attempt_number,
+                 )
+             except (TimeoutError, httpx.TimeoutException):
+                 llm_timeouts_total.inc()
+diff --git a/tasks/QUEUE.md b/tasks/QUEUE.md
+index f1d5f27..df47bfe 100644
+--- a/tasks/QUEUE.md
++++ b/tasks/QUEUE.md
+@@ -392,6 +392,6 @@ Queue (in order)
+ - Depends on: PR-FIX-SENTIMENT-GPU-01
+ 
+ 77) PR-LLM-DIAGNOSTICS-01: LLM diagnostics: robust URL join for /v1/chat/completions + actionable HTTP error bodies/logs (no prompt leakage)
+-- Status: TODO
++- Status: DOING
+ - Tasks file: tasks/PR-LLM-DIAGNOSTICS-01.md
+ - Depends on: PR-LLM-ROBUST-01
 diff --git a/tests/test_cov_lan_transcriber_extra_pipeline.py b/tests/test_cov_lan_transcriber_extra_pipeline.py
-index 4097f0f..e617183 100644
+index e617183..65cbbce 100644
 --- a/tests/test_cov_lan_transcriber_extra_pipeline.py
 +++ b/tests/test_cov_lan_transcriber_extra_pipeline.py
-@@ -60,6 +60,7 @@ def test_timeout_seconds_and_retryable_status_paths() -> None:
-     assert llm_client._int_setting("512", default=1024, minimum=256) == 512
-     assert llm_client._resolve_retry_max_tokens("2000", base_max_tokens=1000) == 2000
-     assert llm_client._resolve_retry_max_tokens("800", base_max_tokens=1000) == 2000
-+    assert llm_client._resolve_retry_max_tokens(None, base_max_tokens=5000) == 5000
-     assert (
-         llm_client._resolve_retry_max_tokens(
-             "5000",
+@@ -189,7 +189,14 @@ async def test_generate_headers_and_fallback_paths(monkeypatch: pytest.MonkeyPat
+     captured: dict[str, Any] = {}
+     client = llm_client.LLMClient(base_url="http://example.test", api_key="secret-key")
+ 
+-    async def _fake_post(*, url: str, payload: dict[str, Any], headers: dict[str, str]) -> dict[str, Any]:
++    async def _fake_post(
++        *,
++        url: str,
++        payload: dict[str, Any],
++        headers: dict[str, str],
++        attempt_number: int | None = None,
++    ) -> dict[str, Any]:
++        del attempt_number
+         captured["url"] = url
+         captured["payload"] = payload
+         captured["headers"] = headers
+diff --git a/tests/test_llm_client.py b/tests/test_llm_client.py
+index e2217fa..34d5d40 100644
+--- a/tests/test_llm_client.py
++++ b/tests/test_llm_client.py
+@@ -1,5 +1,6 @@
+ import asyncio
+ import json
++import logging
+ import pathlib
+ import sys
+ from typing import Any
+@@ -28,6 +29,45 @@ def test_base_url_host_returns_input_when_url_parser_errors(
+     assert llm_client._base_url_host("http://invalid") == "http://invalid"
+ 
+ 
++@pytest.mark.parametrize(
++    ("base_url", "expected"),
++    [
++        ("http://host:11434", "http://host:11434/v1/chat/completions"),
++        ("http://host:11434/", "http://host:11434/v1/chat/completions"),
++        ("http://host:11434/v1", "http://host:11434/v1/chat/completions"),
++        ("http://host:11434/v1/", "http://host:11434/v1/chat/completions"),
++        (
++            "http://host:11434/v1/chat/completions",
++            "http://host:11434/v1/chat/completions",
++        ),
++    ],
++)
++def test_build_chat_completions_url(base_url: str, expected: str) -> None:
++    assert llm_client.build_chat_completions_url(base_url) == expected
++
++
++def test_error_body_snippet_uses_json_error_object() -> None:
++    response = httpx.Response(404, json={"error": {"message": "not found"}})
++    assert (
++        llm_client._error_body_snippet(response)
++        == '{"message": "not found"}'
++    )
++
++
++def test_error_body_snippet_uses_empty_placeholder_when_body_missing() -> None:
++    response = httpx.Response(
++        404,
++        content="",
++        headers={"content-type": "text/plain"},
++    )
++    assert llm_client._error_body_snippet(response) == "<empty>"
++
++
++def test_error_body_snippet_keeps_raw_text_when_error_field_is_null() -> None:
++    response = httpx.Response(404, json={"error": None})
++    assert llm_client._error_body_snippet(response) == '{"error":null}'
++
++
+ @pytest.mark.asyncio
+ @respx.mock
+ async def test_generate_payload_includes_max_tokens() -> None:
+@@ -115,8 +155,9 @@ async def test_generate_retries_once_on_finish_reason_length(
+         url: str,
+         payload: dict[str, Any],
+         headers: dict[str, str],
++        attempt_number: int | None = None,
+     ) -> dict[str, Any]:
+-        del url, headers
++        del url, headers, attempt_number
+         attempts.append(payload["max_tokens"])
+         if len(attempts) == 1:
+             return {
+@@ -160,8 +201,9 @@ async def test_generate_retries_once_on_empty_content(
+         url: str,
+         payload: dict[str, Any],
+         headers: dict[str, str],
++        attempt_number: int | None = None,
+     ) -> dict[str, Any]:
+-        del url, headers
++        del url, headers, attempt_number
+         attempts.append(payload["max_tokens"])
+         if len(attempts) == 1:
+             return {
+@@ -205,8 +247,9 @@ async def test_generate_raises_truncated_error_after_retry(
+         url: str,
+         payload: dict[str, Any],
+         headers: dict[str, str],
++        attempt_number: int | None = None,
+     ) -> dict[str, Any]:
+-        del url, headers
++        del url, headers, attempt_number
+         attempts.append(payload["max_tokens"])
+         return {
+             "id": f"req-length-{len(attempts)}",
+@@ -259,8 +302,9 @@ async def test_generate_raises_empty_content_error_after_retry(
+         url: str,
+         payload: dict[str, Any],
+         headers: dict[str, str],
++        attempt_number: int | None = None,
+     ) -> dict[str, Any]:
+-        del url, payload, headers
++        del url, payload, headers, attempt_number
+         return responses.pop(0)
+ 
+     monkeypatch.setattr(client, "_post_chat_completion", _fake_post)
+@@ -289,9 +333,10 @@ async def test_generate_returns_timeout_when_retry_attempt_times_out(
+         url: str,
+         payload: dict[str, Any],
+         headers: dict[str, str],
++        attempt_number: int | None = None,
+     ) -> dict[str, Any]:
+         nonlocal calls
+-        del url, payload, headers
++        del url, payload, headers, attempt_number
+         calls += 1
+         if calls == 1:
+             return {
+@@ -356,3 +401,95 @@ def test_generate_with_content_only_response() -> None:
+     result = asyncio.run(llm_client.generate("s", "u", model="m"))
+     assert route.called
+     assert result["content"] == "fallback-content"
++
++
++@pytest.mark.asyncio
++@respx.mock
++async def test_generate_http_404_json_error_includes_metadata() -> None:
++    route = respx.post("http://127.0.0.1:8000/v1/chat/completions").mock(
++        return_value=httpx.Response(404, json={"error": "x" * 2105})
++    )
++    client = llm_client.LLMClient(
++        base_url="http://127.0.0.1:8000/v1",
++        max_tokens=512,
++        max_tokens_retry=1024,
++    )
++
++    with pytest.raises(httpx.HTTPStatusError) as exc_info:
++        await client.generate("system-secret", "user-secret", model="m")
++    assert route.called
++    message = str(exc_info.value)
++    assert "status_code=404" in message
++    assert "llm_url=http://127.0.0.1:8000/v1/chat/completions" in message
++    assert "model=m" in message
++    assert "max_tokens=512" in message
++    assert "...<truncated>" in message
++    assert "system-secret" not in message
++    assert "user-secret" not in message
++
++
++@pytest.mark.asyncio
++@respx.mock
++async def test_generate_http_404_non_json_includes_raw_text() -> None:
++    route = respx.post("http://127.0.0.1:8000/v1/chat/completions").mock(
++        return_value=httpx.Response(
++            404,
++            content="plain-text-error",
++            headers={"content-type": "text/plain"},
++        )
++    )
++    client = llm_client.LLMClient(
++        base_url="http://127.0.0.1:8000/",
++        max_tokens=512,
++        max_tokens_retry=1024,
++    )
++
++    with pytest.raises(httpx.HTTPStatusError) as exc_info:
++        await client.generate("s", "u", model="m")
++    assert route.called
++    message = str(exc_info.value)
++    assert "status_code=404" in message
++    assert "body=plain-text-error" in message
++
++
++@pytest.mark.asyncio
++@respx.mock
++async def test_generate_debug_log_uses_safe_request_metadata(caplog: pytest.LogCaptureFixture) -> None:
++    respx.post("http://127.0.0.1:8000/v1/chat/completions").mock(
++        return_value=httpx.Response(
++            200,
++            json={
++                "choices": [
++                    {
++                        "finish_reason": "stop",
++                        "message": {"content": "ok"},
++                    }
++                ]
++            },
++        )
++    )
++    client = llm_client.LLMClient(
++        base_url="http://127.0.0.1:8000",
++        max_tokens=600,
++        max_tokens_retry=1200,
++        timeout=12.0,
++    )
++
++    with caplog.at_level(logging.DEBUG, logger=llm_client.__name__):
++        await client.generate(
++            "system-super-secret",
++            "user-ultra-secret",
++            model="safe-model",
++            response_format={"type": "json_object"},
++        )
++    debug_messages = "\n".join(
++        record.getMessage() for record in caplog.records if record.levelno == logging.DEBUG
++    )
++    assert "llm_url=http://127.0.0.1:8000/v1/chat/completions" in debug_messages
++    assert "model=safe-model" in debug_messages
++    assert "max_tokens=600" in debug_messages
++    assert "timeout_seconds=12.0" in debug_messages
++    assert "attempt=1" in debug_messages
++    assert "response_format=True" in debug_messages
++    assert "system-super-secret" not in debug_messages
++    assert "user-ultra-secret" not in debug_messages

@@ -189,7 +189,14 @@ async def test_generate_headers_and_fallback_paths(monkeypatch: pytest.MonkeyPat
     captured: dict[str, Any] = {}
     client = llm_client.LLMClient(base_url="http://example.test", api_key="secret-key")
 
-    async def _fake_post(*, url: str, payload: dict[str, Any], headers: dict[str, str]) -> dict[str, Any]:
+    async def _fake_post(
+        *,
+        url: str,
+        payload: dict[str, Any],
+        headers: dict[str, str],
+        attempt_number: int | None = None,
+    ) -> dict[str, Any]:
+        del attempt_number
         captured["url"] = url
         captured["payload"] = payload
         captured["headers"] = headers

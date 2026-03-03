@@ -19,6 +19,7 @@ _DEV_DEFAULT_LLM_BASE_URL = "http://127.0.0.1:8000"
 _MIN_LLM_MAX_TOKENS = 256
 _DEFAULT_LLM_MAX_TOKENS = 1024
 _MAX_LLM_MAX_TOKENS = 4096
+_HTTP_ERROR_BODY_MAX_CHARS = 2000
 _logger = logging.getLogger(__name__)
 
 
@@ -109,6 +110,40 @@ def _base_url_host(base_url: str) -> str:
         return base_url
     host = parsed.host
     return str(host) if host else base_url
+
+
+def build_chat_completions_url(base_url: str) -> str:
+    normalized = base_url.strip().rstrip("/")
+    if normalized.endswith("/v1/chat/completions"):
+        return normalized
+    if normalized.endswith("/v1"):
+        return f"{normalized}/chat/completions"
+    return f"{normalized}/v1/chat/completions"
+
+
+def _truncate_text(text: str, *, max_chars: int = _HTTP_ERROR_BODY_MAX_CHARS) -> str:
+    if len(text) <= max_chars:
+        return text
+    suffix = "...<truncated>"
+    return f"{text[: max_chars - len(suffix)]}{suffix}"
+
+
+def _error_body_snippet(response: httpx.Response) -> str:
+    raw_text = response.text
+    value = raw_text
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = None
+    if isinstance(payload, dict) and "error" in payload:
+        error_value = payload.get("error")
+        if isinstance(error_value, str):
+            value = error_value
+        elif error_value is not None:
+            value = json.dumps(error_value, ensure_ascii=False)
+    if not value:
+        value = "<empty>"
+    return _truncate_text(value)
 
 
 class LLMEmptyContentError(ValueError):
@@ -215,11 +250,37 @@ class LLMClient:
         url: str,
         payload: Dict[str, Any],
         headers: Dict[str, str],
+        attempt_number: int | None = None,
     ) -> Dict[str, Any]:
+        _logger.debug(
+            "LLM request metadata llm_url=%s model=%s max_tokens=%s timeout_seconds=%s attempt=%s response_format=%s",
+            url,
+            str(payload.get("model") or "<unset>"),
+            payload.get("max_tokens"),
+            self.timeout,
+            attempt_number if attempt_number is not None else "unknown",
+            payload.get("response_format") is not None,
+        )
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             with anyio.fail_after(self.timeout):
                 resp = await client.post(url, json=payload, headers=headers)
-            resp.raise_for_status()
+            try:
+                resp.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                model_label = str(payload.get("model") or "<unset>")
+                message = (
+                    "LLM HTTP request failed "
+                    f"status_code={resp.status_code} "
+                    f"llm_url={url} "
+                    f"model={model_label} "
+                    f"max_tokens={payload.get('max_tokens')} "
+                    f"body={_error_body_snippet(resp)}"
+                )
+                raise httpx.HTTPStatusError(
+                    message,
+                    request=exc.request,
+                    response=exc.response,
+                ) from exc
             data = resp.json()
             if not isinstance(data, dict):
                 raise ValueError("LLM response must be a JSON object")
@@ -306,7 +367,7 @@ class LLMClient:
         model_name = model or self.default_model
         model_label = model_name or "<unset>"
 
-        url = f"{self.base_url}/v1/chat/completions"
+        url = build_chat_completions_url(self.base_url)
         headers: Dict[str, str] = {}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
@@ -328,18 +389,12 @@ class LLMClient:
             max_tokens: int,
         ) -> tuple[Dict[str, Any], str, str, str | None, str | None] | None:
             payload["max_tokens"] = max_tokens
-            _logger.debug(
-                "LLM request attempt=%s model=%s max_tokens=%s timeout_seconds=%s",
-                attempt_number,
-                model_label,
-                max_tokens,
-                self.timeout,
-            )
             try:
                 data = await self._post_chat_completion(
                     url=url,
                     payload=payload,
                     headers=headers,
+                    attempt_number=attempt_number,
                 )
             except (TimeoutError, httpx.TimeoutException):
                 llm_timeouts_total.inc()
