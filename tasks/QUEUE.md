@@ -395,3 +395,8 @@ Queue (in order)
 - Status: DONE
 - Tasks file: tasks/PR-LLM-DIAGNOSTICS-01.md
 - Depends on: PR-LLM-ROBUST-01
+
+78) PR-FIX-LLM-MODEL-DEFAULT-01: Remove hardcoded LLM model default (llama3:8b); require LLM_MODEL env and fail fast with clear error + update tests
+- Status: TODO
+- Tasks file: tasks/PR-FIX-LLM-MODEL-DEFAULT-01.md
+- Depends on: PR-LLM-DIAGNOSTICS-01
