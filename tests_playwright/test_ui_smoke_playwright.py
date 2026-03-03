@@ -116,6 +116,7 @@ def test_upload_recordings_detail_and_export_zip_smoke(tmp_path: Path) -> None:
             "LAN_DB_PATH": str(db_path),
             "LAN_PROM_SNAPSHOT_PATH": str(metrics_snapshot_path),
             "LAN_REDIS_URL": os.getenv("LAN_REDIS_URL", "redis://127.0.0.1:6379/14"),
+            "LLM_MODEL": os.getenv("LLM_MODEL", "test-llm-model"),
         }
     )
 
