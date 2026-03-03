@@ -23,6 +23,8 @@ def test_whisperx_none_transcribe_falls_back_to_modern_path(tmp_path: Path, monk
     fake_whisperx.transcribe = None
 
     class _FakeModel:
+        vad_model = staticmethod(lambda _payload: [])
+
         def transcribe(
             self,
             audio: str,

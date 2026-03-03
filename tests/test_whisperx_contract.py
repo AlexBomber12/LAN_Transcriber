@@ -34,6 +34,8 @@ def test_transcribe_contract_without_vad_filter(tmp_path: Path, monkeypatch: Any
     call_spy = _patch_call_with_supported_kwargs(monkeypatch)
 
     class _FakeModel:
+        vad_model = staticmethod(lambda _payload: [])
+
         def transcribe(self, audio: str, *, batch_size: int, language: str | None) -> dict[str, object]:
             assert audio == "AUDIO"
             assert batch_size == 16
@@ -69,6 +71,8 @@ def test_transcribe_contract_with_vad_filter(tmp_path: Path, monkeypatch: Any) -
     call_spy = _patch_call_with_supported_kwargs(monkeypatch)
 
     class _FakeModel:
+        vad_model = staticmethod(lambda _payload: [])
+
         def transcribe(
             self,
             audio: str,
@@ -110,6 +114,8 @@ def test_transcribe_contract_with_var_kwargs(tmp_path: Path, monkeypatch: Any) -
     seen_kwargs: dict[str, object] = {}
 
     class _FakeModel:
+        vad_model = staticmethod(lambda _payload: [])
+
         def transcribe(
             self,
             audio: str,
