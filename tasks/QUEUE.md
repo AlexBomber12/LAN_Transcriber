@@ -380,3 +380,8 @@ Queue (in order)
 - Status: DONE
 - Tasks file: tasks/PR-VAD-SILERO-02.md
 - Depends on: PR-VAD-SILERO-01
+
+75) PR-FIX-SENTIMENT-GPU-01: Fix sentiment pipeline token-length crash (truncate to model max length) + enable GPU for worker in docker-compose
+- Status: TODO
+- Tasks file: tasks/PR-FIX-SENTIMENT-GPU-01.md
+- Depends on: PR-VAD-SILERO-02
