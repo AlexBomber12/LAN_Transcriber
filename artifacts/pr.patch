@@ -1,362 +1,361 @@
-diff --git a/lan_transcriber/llm_client.py b/lan_transcriber/llm_client.py
-index 779e199..f06851c 100644
---- a/lan_transcriber/llm_client.py
-+++ b/lan_transcriber/llm_client.py
-@@ -19,6 +19,7 @@ _DEV_DEFAULT_LLM_BASE_URL = "http://127.0.0.1:8000"
- _MIN_LLM_MAX_TOKENS = 256
- _DEFAULT_LLM_MAX_TOKENS = 1024
- _MAX_LLM_MAX_TOKENS = 4096
-+_HTTP_ERROR_BODY_MAX_CHARS = 2000
+diff --git a/.env.example b/.env.example
+index 5008c5a..7ee3e5d 100644
+--- a/.env.example
++++ b/.env.example
+@@ -5,7 +5,8 @@ PLAUD_PASSWORD=
+ # External LLM (OpenAI-compatible)
+ LLM_BASE_URL=http://192.168.0.4:8000
+ LLM_API_KEY=
+-LLM_MODEL=
++# Required: no fallback model is used at runtime.
++LLM_MODEL=gpt-oss:120b
+ # Recommended for larger JSON responses and slower local models
+ LLM_TIMEOUT_SECONDS=600
+ LLM_MAX_TOKENS=1024
+diff --git a/README.md b/README.md
+index e9f90a6..ff207ed 100644
+--- a/README.md
++++ b/README.md
+@@ -154,7 +154,7 @@ models are cached across runs.
+ | `LAN_API_PORT` | Published API port (default `7860`) |
+ | `LLM_BASE_URL` | OpenAI-compatible Spark endpoint |
+ | `LLM_API_KEY` | Optional API key for the LLM |
+-| `LLM_MODEL` | Model name passed to the OpenAI-compatible endpoint |
++| `LLM_MODEL` | Required model name passed to the OpenAI-compatible endpoint (no runtime fallback) |
+ | `LLM_MAX_TOKENS` | Base `max_tokens` for `/v1/chat/completions` requests (default `1024`) |
+ | `LLM_MAX_TOKENS_RETRY` | One-shot retry `max_tokens` for truncated/empty LLM output (default `2048`) |
+ | `LLM_TIMEOUT_SECONDS` | Per-request timeout for LLM calls (default `30`) |
+@@ -163,6 +163,7 @@ models are cached across runs.
+ 
+ - `LAN_ENV=dev`: missing `LAN_REDIS_URL` and/or `LLM_BASE_URL` is allowed with warnings; dev defaults are used (`redis://127.0.0.1:6379/0`, `http://127.0.0.1:8000`).
+ - `LAN_ENV=staging` or `LAN_ENV=prod`: `LAN_REDIS_URL` and `LLM_BASE_URL` are required; startup fails fast if either is missing.
++- All environments: `LLM_MODEL` is required. Startup fails fast when unset/blank with `LLM_MODEL is required. Set it in .env (e.g., LLM_MODEL=gpt-oss:120b).`
+ 
+ If LLM responses fail with `finish_reason=length` or empty `message.content`, increase `LLM_MAX_TOKENS` and `LLM_TIMEOUT_SECONDS` (and optionally `LLM_MAX_TOKENS_RETRY`).
+ 
+diff --git a/docs/runbook.md b/docs/runbook.md
+index c0d50f4..042d8ed 100644
+--- a/docs/runbook.md
++++ b/docs/runbook.md
+@@ -16,7 +16,7 @@ This runbook covers day-2 operations for LAN deployment:
+ 
+ 1. Set `LLM_BASE_URL` to the Spark-compatible endpoint.
+ 2. Set `LLM_API_KEY` if the endpoint requires auth.
+-3. Set `LLM_MODEL` if your endpoint requires explicit model name.
++3. Set `LLM_MODEL` (required; there is no fallback model).
+ 4. Tune output sizing/timeouts for your model:
+    - `LLM_MAX_TOKENS=1024`
+    - `LLM_MAX_TOKENS_RETRY=2048`
+diff --git a/lan_app/config.py b/lan_app/config.py
+index 4075acf..b0a06c5 100644
+--- a/lan_app/config.py
++++ b/lan_app/config.py
+@@ -14,6 +14,9 @@ from .diarization_loader import DEFAULT_DIARIZATION_MODEL_ID
+ 
+ _DEV_DEFAULT_REDIS_URL = "redis://127.0.0.1:6379/0"
+ _DEV_DEFAULT_LLM_BASE_URL = "http://127.0.0.1:8000"
++_LLM_MODEL_REQUIRED_ERROR = (
++    "LLM_MODEL is required. Set it in .env (e.g., LLM_MODEL=gpt-oss:120b)."
++)
  _logger = logging.getLogger(__name__)
  
  
-@@ -111,6 +112,40 @@ def _base_url_host(base_url: str) -> str:
-     return str(host) if host else base_url
+@@ -62,6 +65,10 @@ class AppSettings(BaseSettings):
+         default=None,
+         validation_alias=AliasChoices("LLM_BASE_URL"),
+     )
++    llm_model: str | None = Field(
++        default=None,
++        validation_alias=AliasChoices("LLM_MODEL"),
++    )
+     llm_max_tokens: int = Field(
+         default=1024,
+         ge=256,
+@@ -195,9 +202,12 @@ class AppSettings(BaseSettings):
+     def validate_runtime_environment(self) -> "AppSettings":
+         self.redis_url = _normalize_optional_env(self.redis_url)
+         self.llm_base_url = _normalize_optional_env(self.llm_base_url)
++        self.llm_model = _normalize_optional_env(self.llm_model)
+         self.diarization_model_id = (
+             self.diarization_model_id.strip() or DEFAULT_DIARIZATION_MODEL_ID
+         )
++        if self.llm_model is None:
++            raise ValueError(_LLM_MODEL_REQUIRED_ERROR)
+ 
+         if self.lan_env == "dev":
+             if self.redis_url is None:
+diff --git a/lan_app/ui_routes.py b/lan_app/ui_routes.py
+index 3431385..7394656 100644
+--- a/lan_app/ui_routes.py
++++ b/lan_app/ui_routes.py
+@@ -850,6 +850,7 @@ def _resummarize_recording(
+         voices_dir=settings.data_root / "voices",
+         unknown_dir=settings.recordings_root / "unknown",
+         tmp_root=settings.data_root / "tmp",
++        llm_model=settings.llm_model,
+     )
+     speaker_turns_raw = _load_json_list(speaker_turns_path)
+     speaker_turns = [row for row in speaker_turns_raw if isinstance(row, dict)]
+diff --git a/lan_app/worker_tasks.py b/lan_app/worker_tasks.py
+index a2622cb..9e36ddd 100644
+--- a/lan_app/worker_tasks.py
++++ b/lan_app/worker_tasks.py
+@@ -477,6 +477,7 @@ def _build_pipeline_settings(settings: AppSettings) -> PipelineSettings:
+         voices_dir=settings.data_root / "voices",
+         unknown_dir=settings.recordings_root / "unknown",
+         tmp_root=settings.data_root / "tmp",
++        llm_model=settings.llm_model,
+         vad_method=settings.vad_method,
+     )
+ 
+diff --git a/lan_transcriber/pipeline_steps/orchestrator.py b/lan_transcriber/pipeline_steps/orchestrator.py
+index 4aa0851..17344fe 100644
+--- a/lan_transcriber/pipeline_steps/orchestrator.py
++++ b/lan_transcriber/pipeline_steps/orchestrator.py
+@@ -42,6 +42,9 @@ from ..runtime_paths import default_recordings_root, default_tmp_root, default_u
+ from ..utils import normalise_language_code, safe_float
+ 
+ _logger = logging.getLogger(__name__)
++_LLM_MODEL_REQUIRED_ERROR = (
++    "LLM_MODEL is required. Set it in .env (e.g., LLM_MODEL=gpt-oss:120b)."
++)
  
  
-+def build_chat_completions_url(base_url: str) -> str:
-+    normalized = base_url.strip().rstrip("/")
-+    if normalized.endswith("/v1/chat/completions"):
-+        return normalized
-+    if normalized.endswith("/v1"):
-+        return f"{normalized}/chat/completions"
-+    return f"{normalized}/v1/chat/completions"
-+
-+
-+def _truncate_text(text: str, *, max_chars: int = _HTTP_ERROR_BODY_MAX_CHARS) -> str:
-+    if len(text) <= max_chars:
-+        return text
-+    suffix = "...<truncated>"
-+    return f"{text[: max_chars - len(suffix)]}{suffix}"
-+
-+
-+def _error_body_snippet(response: httpx.Response) -> str:
-+    raw_text = response.text
-+    value = raw_text
-+    try:
-+        payload = response.json()
-+    except ValueError:
-+        payload = None
-+    if isinstance(payload, dict) and "error" in payload:
-+        error_value = payload.get("error")
-+        if isinstance(error_value, str):
-+            value = error_value
-+        elif error_value is not None:
-+            value = json.dumps(error_value, ensure_ascii=False)
-+    if not value:
-+        value = "<empty>"
-+    return _truncate_text(value)
-+
-+
- class LLMEmptyContentError(ValueError):
-     """Raised when the LLM reply has no usable assistant content."""
+ class Diariser(Protocol):
+@@ -58,7 +61,7 @@ class Settings(BaseSettings):
+     voices_dir: Path = default_voices_dir()
+     unknown_dir: Path = default_unknown_dir()
+     tmp_root: Path = default_tmp_root()
+-    llm_model: str = "llama3:8b"
++    llm_model: str | None = None
+     asr_model: str = "large-v3"
+     asr_device: str = "auto"
+     asr_compute_type: str | None = None
+@@ -179,6 +182,13 @@ def _select_compute_type(cfg: Settings, device: str) -> str:
+     return "float16" if device == "cuda" else "int8"
  
-@@ -215,11 +250,37 @@ class LLMClient:
-         url: str,
-         payload: Dict[str, Any],
-         headers: Dict[str, str],
-+        attempt_number: int | None = None,
-     ) -> Dict[str, Any]:
-+        _logger.debug(
-+            "LLM request metadata llm_url=%s model=%s max_tokens=%s timeout_seconds=%s attempt=%s response_format=%s",
-+            url,
-+            str(payload.get("model") or "<unset>"),
-+            payload.get("max_tokens"),
-+            self.timeout,
-+            attempt_number if attempt_number is not None else "unknown",
-+            payload.get("response_format") is not None,
-+        )
-         async with httpx.AsyncClient(timeout=self.timeout) as client:
-             with anyio.fail_after(self.timeout):
-                 resp = await client.post(url, json=payload, headers=headers)
--            resp.raise_for_status()
-+            try:
-+                resp.raise_for_status()
-+            except httpx.HTTPStatusError as exc:
-+                model_label = str(payload.get("model") or "<unset>")
-+                message = (
-+                    "LLM HTTP request failed "
-+                    f"status_code={resp.status_code} "
-+                    f"llm_url={url} "
-+                    f"model={model_label} "
-+                    f"max_tokens={payload.get('max_tokens')} "
-+                    f"body={_error_body_snippet(resp)}"
-+                )
-+                raise httpx.HTTPStatusError(
-+                    message,
-+                    request=exc.request,
-+                    response=exc.response,
-+                ) from exc
-             data = resp.json()
-             if not isinstance(data, dict):
-                 raise ValueError("LLM response must be a JSON object")
-@@ -306,7 +367,7 @@ class LLMClient:
-         model_name = model or self.default_model
-         model_label = model_name or "<unset>"
  
--        url = f"{self.base_url}/v1/chat/completions"
-+        url = build_chat_completions_url(self.base_url)
-         headers: Dict[str, str] = {}
-         if self.api_key:
-             headers["Authorization"] = f"Bearer {self.api_key}"
-@@ -328,18 +389,12 @@ class LLMClient:
-             max_tokens: int,
-         ) -> tuple[Dict[str, Any], str, str, str | None, str | None] | None:
-             payload["max_tokens"] = max_tokens
--            _logger.debug(
--                "LLM request attempt=%s model=%s max_tokens=%s timeout_seconds=%s",
--                attempt_number,
--                model_label,
--                max_tokens,
--                self.timeout,
--            )
-             try:
-                 data = await self._post_chat_completion(
-                     url=url,
-                     payload=payload,
-                     headers=headers,
-+                    attempt_number=attempt_number,
-                 )
-             except (TimeoutError, httpx.TimeoutException):
-                 llm_timeouts_total.inc()
++def _require_llm_model(llm_model: str | None) -> str:
++    resolved = str(llm_model or "").strip()
++    if not resolved:
++        raise RuntimeError(_LLM_MODEL_REQUIRED_ERROR)
++    return resolved
++
++
+ def _log_dropped_kwargs(
+     *,
+     callback: Callable[[str], Any] | None,
+@@ -422,6 +432,7 @@ async def run_pipeline(
+     progress_callback: ProgressCallback | None = None,
+     step_log_callback: Callable[[str], Any] | None = None,
+ ) -> TranscriptResult:
++    llm_model = _require_llm_model(cfg.llm_model)
+     start = time.perf_counter()
+     artifacts = build_recording_artifacts(cfg.recordings_root, recording_id or _default_recording_id(audio_path), audio_path.suffix)
+     stage_raw_audio(audio_path, artifacts.raw_audio_path)
+@@ -464,7 +475,7 @@ async def run_pipeline(
+         atomic_write_json(
+             artifacts.summary_json_path,
+             _build_structured_summary_payload(
+-                model=cfg.llm_model,
++                model=llm_model,
+                 target_summary_language=summary_lang,
+                 friendly=0,
+                 topic="Quarantined recording",
+@@ -527,7 +538,7 @@ async def run_pipeline(
+         atomic_write_json(
+             artifacts.summary_json_path,
+             _build_structured_summary_payload(
+-                model=cfg.llm_model,
++                model=llm_model,
+                 target_summary_language=summary_lang,
+                 friendly=0,
+                 topic="Summary generation failed",
+@@ -572,7 +583,7 @@ async def run_pipeline(
+         atomic_write_json(
+             artifacts.summary_json_path,
+             _build_structured_summary_payload(
+-                model=cfg.llm_model,
++                model=llm_model,
+                 target_summary_language=summary_lang,
+                 friendly=0,
+                 topic="No speech detected",
+@@ -603,11 +614,11 @@ async def run_pipeline(
+ 
+     try:
+         await _emit_progress(progress_callback, stage="llm", progress=0.85)
+-        msg = await llm.generate(system_prompt=sys_prompt, user_prompt=user_prompt, model=cfg.llm_model, response_format={"type": "json_object"})
++        msg = await llm.generate(system_prompt=sys_prompt, user_prompt=user_prompt, model=llm_model, response_format={"type": "json_object"})
+         raw_summary = msg.get("content", "") if isinstance(msg, dict) else str(msg)
+         summary_payload = build_summary_payload(
+             raw_llm_content=raw_summary,
+-            model=cfg.llm_model,
++            model=llm_model,
+             target_summary_language=summary_lang,
+             friendly=friendly,
+             default_topic=cal_title or "Meeting summary",
+@@ -644,7 +655,7 @@ async def run_pipeline(
+         atomic_write_json(
+             artifacts.summary_json_path,
+             _build_structured_summary_payload(
+-                model=cfg.llm_model,
++                model=llm_model,
+                 target_summary_language=summary_lang,
+                 friendly=friendly,
+                 topic="Summary generation failed",
 diff --git a/tasks/QUEUE.md b/tasks/QUEUE.md
-index f1d5f27..df47bfe 100644
+index 25855d0..b94dd4e 100644
 --- a/tasks/QUEUE.md
 +++ b/tasks/QUEUE.md
-@@ -392,6 +392,6 @@ Queue (in order)
- - Depends on: PR-FIX-SENTIMENT-GPU-01
- 
- 77) PR-LLM-DIAGNOSTICS-01: LLM diagnostics: robust URL join for /v1/chat/completions + actionable HTTP error bodies/logs (no prompt leakage)
--- Status: TODO
-+- Status: DOING
- - Tasks file: tasks/PR-LLM-DIAGNOSTICS-01.md
+@@ -397,6 +397,6 @@ Queue (in order)
  - Depends on: PR-LLM-ROBUST-01
+ 
+ 78) PR-FIX-LLM-MODEL-DEFAULT-01: Remove hardcoded LLM model default (llama3:8b); require LLM_MODEL env and fail fast with clear error + update tests
+-- Status: TODO
++- Status: DONE
+ - Tasks file: tasks/PR-FIX-LLM-MODEL-DEFAULT-01.md
+ - Depends on: PR-LLM-DIAGNOSTICS-01
+diff --git a/tests/test_app_config.py b/tests/test_app_config.py
+index b13a0c5..a8081ff 100644
+--- a/tests/test_app_config.py
++++ b/tests/test_app_config.py
+@@ -34,6 +34,19 @@ def test_redis_url_alias(monkeypatch):
+     assert cfg.redis_url == "redis://localhost:6380/0"
+ 
+ 
++def test_llm_model_env_required_and_trimmed(monkeypatch):
++    monkeypatch.setenv("LLM_MODEL", "  gpt-oss:120b  ")
++    cfg = AppSettings()
++    assert cfg.llm_model == "gpt-oss:120b"
++
++
++def test_llm_model_missing_fails_with_clear_message(monkeypatch):
++    monkeypatch.delenv("LLM_MODEL", raising=False)
++    monkeypatch.delenv("LAN_LLM_MODEL", raising=False)
++    with pytest.raises(ValueError, match="LLM_MODEL is required\\. Set it in \\.env"):
++        AppSettings()
++
++
+ def test_sqlite_busy_timeout_from_env(monkeypatch):
+     monkeypatch.setenv("LAN_SQLITE_BUSY_TIMEOUT_MS", "12345")
+     cfg = AppSettings()
+@@ -86,6 +99,7 @@ def test_staging_missing_redis_url_fails_import():
+     env = os.environ.copy()
+     env["LAN_ENV"] = "staging"
+     env["LLM_BASE_URL"] = "http://127.0.0.1:8000"
++    env["LLM_MODEL"] = "test-llm-model"
+     env.pop("LAN_REDIS_URL", None)
+     env.pop("REDIS_URL", None)
+ 
+@@ -101,6 +115,24 @@ def test_staging_missing_redis_url_fails_import():
+     assert "LAN_REDIS_URL" in f"{result.stdout}\n{result.stderr}"
+ 
+ 
++def test_dev_missing_llm_model_fails_import():
++    env = os.environ.copy()
++    env["LAN_ENV"] = "dev"
++    env.pop("LLM_MODEL", None)
++    env.pop("LAN_LLM_MODEL", None)
++
++    result = subprocess.run(
++        [sys.executable, "-c", "import lan_app.api"],
++        capture_output=True,
++        text=True,
++        env=env,
++        check=False,
++    )
++
++    assert result.returncode != 0
++    assert "LLM_MODEL is required" in f"{result.stdout}\n{result.stderr}"
++
++
+ def test_non_dev_requires_both_runtime_urls(monkeypatch):
+     monkeypatch.setenv("LAN_ENV", "prod")
+     monkeypatch.delenv("LAN_REDIS_URL", raising=False)
+@@ -152,6 +184,7 @@ def test_llm_max_tokens_defaults_and_env_override(monkeypatch):
+ def test_dev_missing_urls_allows_import():
+     env = os.environ.copy()
+     env["LAN_ENV"] = "dev"
++    env["LLM_MODEL"] = "test-llm-model"
+     env.pop("LAN_REDIS_URL", None)
+     env.pop("REDIS_URL", None)
+     env.pop("LLM_BASE_URL", None)
+diff --git a/tests/test_cov_lan_app_worker_tasks_branches.py b/tests/test_cov_lan_app_worker_tasks_branches.py
+index ddc9f36..6f29faf 100644
+--- a/tests/test_cov_lan_app_worker_tasks_branches.py
++++ b/tests/test_cov_lan_app_worker_tasks_branches.py
+@@ -315,6 +315,7 @@ def test_build_pipeline_settings_propagates_vad_method(tmp_path: Path):
+     pipeline_cfg = worker_tasks._build_pipeline_settings(cfg)
+ 
+     assert pipeline_cfg.vad_method == "pyannote"
++    assert pipeline_cfg.llm_model == cfg.llm_model
+ 
+ 
+ def test_load_transcript_language_payload_parses_valid_and_invalid_json(tmp_path: Path):
 diff --git a/tests/test_cov_lan_transcriber_extra_pipeline.py b/tests/test_cov_lan_transcriber_extra_pipeline.py
-index e617183..65cbbce 100644
+index 65cbbce..ba38718 100644
 --- a/tests/test_cov_lan_transcriber_extra_pipeline.py
 +++ b/tests/test_cov_lan_transcriber_extra_pipeline.py
-@@ -189,7 +189,14 @@ async def test_generate_headers_and_fallback_paths(monkeypatch: pytest.MonkeyPat
-     captured: dict[str, Any] = {}
-     client = llm_client.LLMClient(base_url="http://example.test", api_key="secret-key")
- 
--    async def _fake_post(*, url: str, payload: dict[str, Any], headers: dict[str, str]) -> dict[str, Any]:
-+    async def _fake_post(
-+        *,
-+        url: str,
-+        payload: dict[str, Any],
-+        headers: dict[str, str],
-+        attempt_number: int | None = None,
-+    ) -> dict[str, Any]:
-+        del attempt_number
-         captured["url"] = url
-         captured["payload"] = payload
-         captured["headers"] = headers
-diff --git a/tests/test_llm_client.py b/tests/test_llm_client.py
-index e2217fa..34d5d40 100644
---- a/tests/test_llm_client.py
-+++ b/tests/test_llm_client.py
-@@ -1,5 +1,6 @@
- import asyncio
- import json
-+import logging
- import pathlib
- import sys
- from typing import Any
-@@ -28,6 +29,45 @@ def test_base_url_host_returns_input_when_url_parser_errors(
-     assert llm_client._base_url_host("http://invalid") == "http://invalid"
+@@ -989,6 +989,20 @@ async def test_run_pipeline_backfills_detected_language_and_uses_fallback_diariz
+     assert diar_data and diar_data[0]["speaker"] == "S1"
  
  
-+@pytest.mark.parametrize(
-+    ("base_url", "expected"),
-+    [
-+        ("http://host:11434", "http://host:11434/v1/chat/completions"),
-+        ("http://host:11434/", "http://host:11434/v1/chat/completions"),
-+        ("http://host:11434/v1", "http://host:11434/v1/chat/completions"),
-+        ("http://host:11434/v1/", "http://host:11434/v1/chat/completions"),
-+        (
-+            "http://host:11434/v1/chat/completions",
-+            "http://host:11434/v1/chat/completions",
-+        ),
-+    ],
-+)
-+def test_build_chat_completions_url(base_url: str, expected: str) -> None:
-+    assert llm_client.build_chat_completions_url(base_url) == expected
-+
-+
-+def test_error_body_snippet_uses_json_error_object() -> None:
-+    response = httpx.Response(404, json={"error": {"message": "not found"}})
-+    assert (
-+        llm_client._error_body_snippet(response)
-+        == '{"message": "not found"}'
-+    )
-+
-+
-+def test_error_body_snippet_uses_empty_placeholder_when_body_missing() -> None:
-+    response = httpx.Response(
-+        404,
-+        content="",
-+        headers={"content-type": "text/plain"},
-+    )
-+    assert llm_client._error_body_snippet(response) == "<empty>"
-+
-+
-+def test_error_body_snippet_keeps_raw_text_when_error_field_is_null() -> None:
-+    response = httpx.Response(404, json={"error": None})
-+    assert llm_client._error_body_snippet(response) == '{"error":null}'
++@pytest.mark.asyncio
++async def test_run_pipeline_fails_fast_when_llm_model_is_blank(tmp_path: Path) -> None:
++    cfg = _settings(tmp_path, llm_model="   ")
++    with pytest.raises(RuntimeError, match="LLM_MODEL is required"):
++        await pipeline.run_pipeline(
++            audio_path=_audio_file(tmp_path, "missing-model.mp3"),
++            cfg=cfg,
++            llm=_FakeLLM(),
++            diariser=_NoTracksDiariser(),
++            recording_id="rec-missing-model",
++            precheck=pipeline.PrecheckResult(duration_sec=30.0, speech_ratio=0.8, quarantine_reason=None),
++        )
 +
 +
  @pytest.mark.asyncio
- @respx.mock
- async def test_generate_payload_includes_max_tokens() -> None:
-@@ -115,8 +155,9 @@ async def test_generate_retries_once_on_finish_reason_length(
-         url: str,
-         payload: dict[str, Any],
-         headers: dict[str, str],
-+        attempt_number: int | None = None,
-     ) -> dict[str, Any]:
--        del url, headers
-+        del url, headers, attempt_number
-         attempts.append(payload["max_tokens"])
-         if len(attempts) == 1:
-             return {
-@@ -160,8 +201,9 @@ async def test_generate_retries_once_on_empty_content(
-         url: str,
-         payload: dict[str, Any],
-         headers: dict[str, str],
-+        attempt_number: int | None = None,
-     ) -> dict[str, Any]:
--        del url, headers
-+        del url, headers, attempt_number
-         attempts.append(payload["max_tokens"])
-         if len(attempts) == 1:
-             return {
-@@ -205,8 +247,9 @@ async def test_generate_raises_truncated_error_after_retry(
-         url: str,
-         payload: dict[str, Any],
-         headers: dict[str, str],
-+        attempt_number: int | None = None,
-     ) -> dict[str, Any]:
--        del url, headers
-+        del url, headers, attempt_number
-         attempts.append(payload["max_tokens"])
-         return {
-             "id": f"req-length-{len(attempts)}",
-@@ -259,8 +302,9 @@ async def test_generate_raises_empty_content_error_after_retry(
-         url: str,
-         payload: dict[str, Any],
-         headers: dict[str, str],
-+        attempt_number: int | None = None,
-     ) -> dict[str, Any]:
--        del url, payload, headers
-+        del url, payload, headers, attempt_number
-         return responses.pop(0)
+ async def test_protocol_stub_call_executes() -> None:
+     out = await pipeline.Diariser.__call__(object(), Path("x"))
+diff --git a/tests/test_ui_routes.py b/tests/test_ui_routes.py
+index 1195b26..c8a20ac 100644
+--- a/tests/test_ui_routes.py
++++ b/tests/test_ui_routes.py
+@@ -1163,7 +1163,7 @@ def test_ui_language_resummarize_uses_target_language_override(tmp_path, monkeyp
+         encoding="utf-8",
+     )
+     (derived / "summary.json").write_text(
+-        json.dumps({"friendly": 0, "model": "llama3:8b", "summary": "- old"}),
++        json.dumps({"friendly": 0, "model": "test-llm-model", "summary": "- old"}),
+         encoding="utf-8",
+     )
  
-     monkeypatch.setattr(client, "_post_chat_completion", _fake_post)
-@@ -289,9 +333,10 @@ async def test_generate_returns_timeout_when_retry_attempt_times_out(
-         url: str,
-         payload: dict[str, Any],
-         headers: dict[str, str],
-+        attempt_number: int | None = None,
-     ) -> dict[str, Any]:
-         nonlocal calls
--        del url, payload, headers
-+        del url, payload, headers, attempt_number
-         calls += 1
-         if calls == 1:
-             return {
-@@ -356,3 +401,95 @@ def test_generate_with_content_only_response() -> None:
-     result = asyncio.run(llm_client.generate("s", "u", model="m"))
-     assert route.called
-     assert result["content"] == "fallback-content"
+@@ -1228,6 +1228,7 @@ def test_ui_language_resummarize_uses_target_language_override(tmp_path, monkeyp
+     assert summary_payload["summary_bullets"] == ["Bloqueadores revisados."]
+     assert summary_payload["topic"] == "Resumen semanal"
+     assert summary_payload["target_summary_language"] == "es"
++    assert captured["model"] == cfg.llm_model
+     assert "in Spanish." in captured["system_prompt"]
+ 
+ 
+@@ -1259,7 +1260,7 @@ def test_ui_language_resummarize_without_speaker_turns_uses_full_transcript(tmp_
+         encoding="utf-8",
+     )
+     (derived / "summary.json").write_text(
+-        json.dumps({"friendly": 0, "model": "llama3:8b", "summary": "- old"}),
++        json.dumps({"friendly": 0, "model": "test-llm-model", "summary": "- old"}),
+         encoding="utf-8",
+     )
+ 
+diff --git a/tests/conftest.py b/tests/conftest.py
+new file mode 100644
+index 0000000..2c75785
+--- /dev/null
++++ b/tests/conftest.py
+@@ -0,0 +1,6 @@
++from __future__ import annotations
 +
++import os
 +
-+@pytest.mark.asyncio
-+@respx.mock
-+async def test_generate_http_404_json_error_includes_metadata() -> None:
-+    route = respx.post("http://127.0.0.1:8000/v1/chat/completions").mock(
-+        return_value=httpx.Response(404, json={"error": "x" * 2105})
-+    )
-+    client = llm_client.LLMClient(
-+        base_url="http://127.0.0.1:8000/v1",
-+        max_tokens=512,
-+        max_tokens_retry=1024,
-+    )
-+
-+    with pytest.raises(httpx.HTTPStatusError) as exc_info:
-+        await client.generate("system-secret", "user-secret", model="m")
-+    assert route.called
-+    message = str(exc_info.value)
-+    assert "status_code=404" in message
-+    assert "llm_url=http://127.0.0.1:8000/v1/chat/completions" in message
-+    assert "model=m" in message
-+    assert "max_tokens=512" in message
-+    assert "...<truncated>" in message
-+    assert "system-secret" not in message
-+    assert "user-secret" not in message
-+
-+
-+@pytest.mark.asyncio
-+@respx.mock
-+async def test_generate_http_404_non_json_includes_raw_text() -> None:
-+    route = respx.post("http://127.0.0.1:8000/v1/chat/completions").mock(
-+        return_value=httpx.Response(
-+            404,
-+            content="plain-text-error",
-+            headers={"content-type": "text/plain"},
-+        )
-+    )
-+    client = llm_client.LLMClient(
-+        base_url="http://127.0.0.1:8000/",
-+        max_tokens=512,
-+        max_tokens_retry=1024,
-+    )
-+
-+    with pytest.raises(httpx.HTTPStatusError) as exc_info:
-+        await client.generate("s", "u", model="m")
-+    assert route.called
-+    message = str(exc_info.value)
-+    assert "status_code=404" in message
-+    assert "body=plain-text-error" in message
-+
-+
-+@pytest.mark.asyncio
-+@respx.mock
-+async def test_generate_debug_log_uses_safe_request_metadata(caplog: pytest.LogCaptureFixture) -> None:
-+    respx.post("http://127.0.0.1:8000/v1/chat/completions").mock(
-+        return_value=httpx.Response(
-+            200,
-+            json={
-+                "choices": [
-+                    {
-+                        "finish_reason": "stop",
-+                        "message": {"content": "ok"},
-+                    }
-+                ]
-+            },
-+        )
-+    )
-+    client = llm_client.LLMClient(
-+        base_url="http://127.0.0.1:8000",
-+        max_tokens=600,
-+        max_tokens_retry=1200,
-+        timeout=12.0,
-+    )
-+
-+    with caplog.at_level(logging.DEBUG, logger=llm_client.__name__):
-+        await client.generate(
-+            "system-super-secret",
-+            "user-ultra-secret",
-+            model="safe-model",
-+            response_format={"type": "json_object"},
-+        )
-+    debug_messages = "\n".join(
-+        record.getMessage() for record in caplog.records if record.levelno == logging.DEBUG
-+    )
-+    assert "llm_url=http://127.0.0.1:8000/v1/chat/completions" in debug_messages
-+    assert "model=safe-model" in debug_messages
-+    assert "max_tokens=600" in debug_messages
-+    assert "timeout_seconds=12.0" in debug_messages
-+    assert "attempt=1" in debug_messages
-+    assert "response_format=True" in debug_messages
-+    assert "system-super-secret" not in debug_messages
-+    assert "user-ultra-secret" not in debug_messages
++_DEFAULT_TEST_LLM_MODEL = os.environ.setdefault("LLM_MODEL", "test-llm-model")
++os.environ.setdefault("LAN_LLM_MODEL", _DEFAULT_TEST_LLM_MODEL)

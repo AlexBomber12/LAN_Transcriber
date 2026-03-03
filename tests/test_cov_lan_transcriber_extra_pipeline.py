@@ -990,6 +990,20 @@ async def test_run_pipeline_backfills_detected_language_and_uses_fallback_diariz
 
 
 @pytest.mark.asyncio
+async def test_run_pipeline_fails_fast_when_llm_model_is_blank(tmp_path: Path) -> None:
+    cfg = _settings(tmp_path, llm_model="   ")
+    with pytest.raises(RuntimeError, match="LLM_MODEL is required"):
+        await pipeline.run_pipeline(
+            audio_path=_audio_file(tmp_path, "missing-model.mp3"),
+            cfg=cfg,
+            llm=_FakeLLM(),
+            diariser=_NoTracksDiariser(),
+            recording_id="rec-missing-model",
+            precheck=pipeline.PrecheckResult(duration_sec=30.0, speech_ratio=0.8, quarantine_reason=None),
+        )
+
+
+@pytest.mark.asyncio
 async def test_protocol_stub_call_executes() -> None:
     out = await pipeline.Diariser.__call__(object(), Path("x"))
     assert out is None

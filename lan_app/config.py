@@ -14,6 +14,9 @@ from .diarization_loader import DEFAULT_DIARIZATION_MODEL_ID
 
 _DEV_DEFAULT_REDIS_URL = "redis://127.0.0.1:6379/0"
 _DEV_DEFAULT_LLM_BASE_URL = "http://127.0.0.1:8000"
+_LLM_MODEL_REQUIRED_ERROR = (
+    "LLM_MODEL is required. Set it in .env (e.g., LLM_MODEL=gpt-oss:120b)."
+)
 _logger = logging.getLogger(__name__)
 
 
@@ -61,6 +64,10 @@ class AppSettings(BaseSettings):
     llm_base_url: str | None = Field(
         default=None,
         validation_alias=AliasChoices("LLM_BASE_URL"),
+    )
+    llm_model: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("LLM_MODEL"),
     )
     llm_max_tokens: int = Field(
         default=1024,
@@ -195,9 +202,12 @@ class AppSettings(BaseSettings):
     def validate_runtime_environment(self) -> "AppSettings":
         self.redis_url = _normalize_optional_env(self.redis_url)
         self.llm_base_url = _normalize_optional_env(self.llm_base_url)
+        self.llm_model = _normalize_optional_env(self.llm_model)
         self.diarization_model_id = (
             self.diarization_model_id.strip() or DEFAULT_DIARIZATION_MODEL_ID
         )
+        if self.llm_model is None:
+            raise ValueError(_LLM_MODEL_REQUIRED_ERROR)
 
         if self.lan_env == "dev":
             if self.redis_url is None:

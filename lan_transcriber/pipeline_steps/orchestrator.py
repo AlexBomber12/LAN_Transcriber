@@ -42,6 +42,9 @@ from ..runtime_paths import default_recordings_root, default_tmp_root, default_u
 from ..utils import normalise_language_code, safe_float
 
 _logger = logging.getLogger(__name__)
+_LLM_MODEL_REQUIRED_ERROR = (
+    "LLM_MODEL is required. Set it in .env (e.g., LLM_MODEL=gpt-oss:120b)."
+)
 
 
 class Diariser(Protocol):
@@ -58,7 +61,7 @@ class Settings(BaseSettings):
     voices_dir: Path = default_voices_dir()
     unknown_dir: Path = default_unknown_dir()
     tmp_root: Path = default_tmp_root()
-    llm_model: str = "llama3:8b"
+    llm_model: str | None = None
     asr_model: str = "large-v3"
     asr_device: str = "auto"
     asr_compute_type: str | None = None
@@ -177,6 +180,13 @@ def _select_compute_type(cfg: Settings, device: str) -> str:
     if configured:
         return configured
     return "float16" if device == "cuda" else "int8"
+
+
+def _require_llm_model(llm_model: str | None) -> str:
+    resolved = str(llm_model or "").strip()
+    if not resolved:
+        raise RuntimeError(_LLM_MODEL_REQUIRED_ERROR)
+    return resolved
 
 
 def _log_dropped_kwargs(
@@ -422,6 +432,7 @@ async def run_pipeline(
     progress_callback: ProgressCallback | None = None,
     step_log_callback: Callable[[str], Any] | None = None,
 ) -> TranscriptResult:
+    llm_model = _require_llm_model(cfg.llm_model)
     start = time.perf_counter()
     artifacts = build_recording_artifacts(cfg.recordings_root, recording_id or _default_recording_id(audio_path), audio_path.suffix)
     stage_raw_audio(audio_path, artifacts.raw_audio_path)
@@ -464,7 +475,7 @@ async def run_pipeline(
         atomic_write_json(
             artifacts.summary_json_path,
             _build_structured_summary_payload(
-                model=cfg.llm_model,
+                model=llm_model,
                 target_summary_language=summary_lang,
                 friendly=0,
                 topic="Quarantined recording",
@@ -527,7 +538,7 @@ async def run_pipeline(
         atomic_write_json(
             artifacts.summary_json_path,
             _build_structured_summary_payload(
-                model=cfg.llm_model,
+                model=llm_model,
                 target_summary_language=summary_lang,
                 friendly=0,
                 topic="Summary generation failed",
@@ -572,7 +583,7 @@ async def run_pipeline(
         atomic_write_json(
             artifacts.summary_json_path,
             _build_structured_summary_payload(
-                model=cfg.llm_model,
+                model=llm_model,
                 target_summary_language=summary_lang,
                 friendly=0,
                 topic="No speech detected",
@@ -603,11 +614,11 @@ async def run_pipeline(
 
     try:
         await _emit_progress(progress_callback, stage="llm", progress=0.85)
-        msg = await llm.generate(system_prompt=sys_prompt, user_prompt=user_prompt, model=cfg.llm_model, response_format={"type": "json_object"})
+        msg = await llm.generate(system_prompt=sys_prompt, user_prompt=user_prompt, model=llm_model, response_format={"type": "json_object"})
         raw_summary = msg.get("content", "") if isinstance(msg, dict) else str(msg)
         summary_payload = build_summary_payload(
             raw_llm_content=raw_summary,
-            model=cfg.llm_model,
+            model=llm_model,
             target_summary_language=summary_lang,
             friendly=friendly,
             default_topic=cal_title or "Meeting summary",
@@ -644,7 +655,7 @@ async def run_pipeline(
         atomic_write_json(
             artifacts.summary_json_path,
             _build_structured_summary_payload(
-                model=cfg.llm_model,
+                model=llm_model,
                 target_summary_language=summary_lang,
                 friendly=friendly,
                 topic="Summary generation failed",

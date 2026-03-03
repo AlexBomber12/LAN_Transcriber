@@ -1163,7 +1163,7 @@ def test_ui_language_resummarize_uses_target_language_override(tmp_path, monkeyp
         encoding="utf-8",
     )
     (derived / "summary.json").write_text(
-        json.dumps({"friendly": 0, "model": "llama3:8b", "summary": "- old"}),
+        json.dumps({"friendly": 0, "model": "test-llm-model", "summary": "- old"}),
         encoding="utf-8",
     )
 
@@ -1228,6 +1228,7 @@ def test_ui_language_resummarize_uses_target_language_override(tmp_path, monkeyp
     assert summary_payload["summary_bullets"] == ["Bloqueadores revisados."]
     assert summary_payload["topic"] == "Resumen semanal"
     assert summary_payload["target_summary_language"] == "es"
+    assert captured["model"] == cfg.llm_model
     assert "in Spanish." in captured["system_prompt"]
 
 
@@ -1259,7 +1260,7 @@ def test_ui_language_resummarize_without_speaker_turns_uses_full_transcript(tmp_
         encoding="utf-8",
     )
     (derived / "summary.json").write_text(
-        json.dumps({"friendly": 0, "model": "llama3:8b", "summary": "- old"}),
+        json.dumps({"friendly": 0, "model": "test-llm-model", "summary": "- old"}),
         encoding="utf-8",
     )
 
