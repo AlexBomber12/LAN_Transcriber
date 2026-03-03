@@ -9,6 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Awaitable, Callable, Iterable, List, Literal, Protocol, Sequence
 
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings
 
 from .. import normalizer
@@ -61,7 +62,10 @@ class Settings(BaseSettings):
     voices_dir: Path = default_voices_dir()
     unknown_dir: Path = default_unknown_dir()
     tmp_root: Path = default_tmp_root()
-    llm_model: str | None = None
+    llm_model: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("llm_model", "LLM_MODEL", "LAN_LLM_MODEL"),
+    )
     asr_model: str = "large-v3"
     asr_device: str = "auto"
     asr_compute_type: str | None = None

@@ -1,361 +1,50 @@
-diff --git a/.env.example b/.env.example
-index 5008c5a..7ee3e5d 100644
---- a/.env.example
-+++ b/.env.example
-@@ -5,7 +5,8 @@ PLAUD_PASSWORD=
- # External LLM (OpenAI-compatible)
- LLM_BASE_URL=http://192.168.0.4:8000
- LLM_API_KEY=
--LLM_MODEL=
-+# Required: no fallback model is used at runtime.
-+LLM_MODEL=gpt-oss:120b
- # Recommended for larger JSON responses and slower local models
- LLM_TIMEOUT_SECONDS=600
- LLM_MAX_TOKENS=1024
-diff --git a/README.md b/README.md
-index e9f90a6..ff207ed 100644
---- a/README.md
-+++ b/README.md
-@@ -154,7 +154,7 @@ models are cached across runs.
- | `LAN_API_PORT` | Published API port (default `7860`) |
- | `LLM_BASE_URL` | OpenAI-compatible Spark endpoint |
- | `LLM_API_KEY` | Optional API key for the LLM |
--| `LLM_MODEL` | Model name passed to the OpenAI-compatible endpoint |
-+| `LLM_MODEL` | Required model name passed to the OpenAI-compatible endpoint (no runtime fallback) |
- | `LLM_MAX_TOKENS` | Base `max_tokens` for `/v1/chat/completions` requests (default `1024`) |
- | `LLM_MAX_TOKENS_RETRY` | One-shot retry `max_tokens` for truncated/empty LLM output (default `2048`) |
- | `LLM_TIMEOUT_SECONDS` | Per-request timeout for LLM calls (default `30`) |
-@@ -163,6 +163,7 @@ models are cached across runs.
- 
- - `LAN_ENV=dev`: missing `LAN_REDIS_URL` and/or `LLM_BASE_URL` is allowed with warnings; dev defaults are used (`redis://127.0.0.1:6379/0`, `http://127.0.0.1:8000`).
- - `LAN_ENV=staging` or `LAN_ENV=prod`: `LAN_REDIS_URL` and `LLM_BASE_URL` are required; startup fails fast if either is missing.
-+- All environments: `LLM_MODEL` is required. Startup fails fast when unset/blank with `LLM_MODEL is required. Set it in .env (e.g., LLM_MODEL=gpt-oss:120b).`
- 
- If LLM responses fail with `finish_reason=length` or empty `message.content`, increase `LLM_MAX_TOKENS` and `LLM_TIMEOUT_SECONDS` (and optionally `LLM_MAX_TOKENS_RETRY`).
- 
-diff --git a/docs/runbook.md b/docs/runbook.md
-index c0d50f4..042d8ed 100644
---- a/docs/runbook.md
-+++ b/docs/runbook.md
-@@ -16,7 +16,7 @@ This runbook covers day-2 operations for LAN deployment:
- 
- 1. Set `LLM_BASE_URL` to the Spark-compatible endpoint.
- 2. Set `LLM_API_KEY` if the endpoint requires auth.
--3. Set `LLM_MODEL` if your endpoint requires explicit model name.
-+3. Set `LLM_MODEL` (required; there is no fallback model).
- 4. Tune output sizing/timeouts for your model:
-    - `LLM_MAX_TOKENS=1024`
-    - `LLM_MAX_TOKENS_RETRY=2048`
-diff --git a/lan_app/config.py b/lan_app/config.py
-index 4075acf..b0a06c5 100644
---- a/lan_app/config.py
-+++ b/lan_app/config.py
-@@ -14,6 +14,9 @@ from .diarization_loader import DEFAULT_DIARIZATION_MODEL_ID
- 
- _DEV_DEFAULT_REDIS_URL = "redis://127.0.0.1:6379/0"
- _DEV_DEFAULT_LLM_BASE_URL = "http://127.0.0.1:8000"
-+_LLM_MODEL_REQUIRED_ERROR = (
-+    "LLM_MODEL is required. Set it in .env (e.g., LLM_MODEL=gpt-oss:120b)."
-+)
- _logger = logging.getLogger(__name__)
- 
- 
-@@ -62,6 +65,10 @@ class AppSettings(BaseSettings):
-         default=None,
-         validation_alias=AliasChoices("LLM_BASE_URL"),
-     )
-+    llm_model: str | None = Field(
-+        default=None,
-+        validation_alias=AliasChoices("LLM_MODEL"),
-+    )
-     llm_max_tokens: int = Field(
-         default=1024,
-         ge=256,
-@@ -195,9 +202,12 @@ class AppSettings(BaseSettings):
-     def validate_runtime_environment(self) -> "AppSettings":
-         self.redis_url = _normalize_optional_env(self.redis_url)
-         self.llm_base_url = _normalize_optional_env(self.llm_base_url)
-+        self.llm_model = _normalize_optional_env(self.llm_model)
-         self.diarization_model_id = (
-             self.diarization_model_id.strip() or DEFAULT_DIARIZATION_MODEL_ID
-         )
-+        if self.llm_model is None:
-+            raise ValueError(_LLM_MODEL_REQUIRED_ERROR)
- 
-         if self.lan_env == "dev":
-             if self.redis_url is None:
-diff --git a/lan_app/ui_routes.py b/lan_app/ui_routes.py
-index 3431385..7394656 100644
---- a/lan_app/ui_routes.py
-+++ b/lan_app/ui_routes.py
-@@ -850,6 +850,7 @@ def _resummarize_recording(
-         voices_dir=settings.data_root / "voices",
-         unknown_dir=settings.recordings_root / "unknown",
-         tmp_root=settings.data_root / "tmp",
-+        llm_model=settings.llm_model,
-     )
-     speaker_turns_raw = _load_json_list(speaker_turns_path)
-     speaker_turns = [row for row in speaker_turns_raw if isinstance(row, dict)]
-diff --git a/lan_app/worker_tasks.py b/lan_app/worker_tasks.py
-index a2622cb..9e36ddd 100644
---- a/lan_app/worker_tasks.py
-+++ b/lan_app/worker_tasks.py
-@@ -477,6 +477,7 @@ def _build_pipeline_settings(settings: AppSettings) -> PipelineSettings:
-         voices_dir=settings.data_root / "voices",
-         unknown_dir=settings.recordings_root / "unknown",
-         tmp_root=settings.data_root / "tmp",
-+        llm_model=settings.llm_model,
-         vad_method=settings.vad_method,
-     )
- 
 diff --git a/lan_transcriber/pipeline_steps/orchestrator.py b/lan_transcriber/pipeline_steps/orchestrator.py
-index 4aa0851..17344fe 100644
+index 17344fe..586ba32 100644
 --- a/lan_transcriber/pipeline_steps/orchestrator.py
 +++ b/lan_transcriber/pipeline_steps/orchestrator.py
-@@ -42,6 +42,9 @@ from ..runtime_paths import default_recordings_root, default_tmp_root, default_u
- from ..utils import normalise_language_code, safe_float
+@@ -9,6 +9,7 @@ from pathlib import Path
+ from types import SimpleNamespace
+ from typing import Any, Awaitable, Callable, Iterable, List, Literal, Protocol, Sequence
  
- _logger = logging.getLogger(__name__)
-+_LLM_MODEL_REQUIRED_ERROR = (
-+    "LLM_MODEL is required. Set it in .env (e.g., LLM_MODEL=gpt-oss:120b)."
-+)
++from pydantic import AliasChoices, Field
+ from pydantic_settings import BaseSettings
  
- 
- class Diariser(Protocol):
-@@ -58,7 +61,7 @@ class Settings(BaseSettings):
+ from .. import normalizer
+@@ -61,7 +62,10 @@ class Settings(BaseSettings):
      voices_dir: Path = default_voices_dir()
      unknown_dir: Path = default_unknown_dir()
      tmp_root: Path = default_tmp_root()
--    llm_model: str = "llama3:8b"
-+    llm_model: str | None = None
+-    llm_model: str | None = None
++    llm_model: str | None = Field(
++        default=None,
++        validation_alias=AliasChoices("llm_model", "LLM_MODEL", "LAN_LLM_MODEL"),
++    )
      asr_model: str = "large-v3"
      asr_device: str = "auto"
      asr_compute_type: str | None = None
-@@ -179,6 +182,13 @@ def _select_compute_type(cfg: Settings, device: str) -> str:
-     return "float16" if device == "cuda" else "int8"
- 
- 
-+def _require_llm_model(llm_model: str | None) -> str:
-+    resolved = str(llm_model or "").strip()
-+    if not resolved:
-+        raise RuntimeError(_LLM_MODEL_REQUIRED_ERROR)
-+    return resolved
-+
-+
- def _log_dropped_kwargs(
-     *,
-     callback: Callable[[str], Any] | None,
-@@ -422,6 +432,7 @@ async def run_pipeline(
-     progress_callback: ProgressCallback | None = None,
-     step_log_callback: Callable[[str], Any] | None = None,
- ) -> TranscriptResult:
-+    llm_model = _require_llm_model(cfg.llm_model)
-     start = time.perf_counter()
-     artifacts = build_recording_artifacts(cfg.recordings_root, recording_id or _default_recording_id(audio_path), audio_path.suffix)
-     stage_raw_audio(audio_path, artifacts.raw_audio_path)
-@@ -464,7 +475,7 @@ async def run_pipeline(
-         atomic_write_json(
-             artifacts.summary_json_path,
-             _build_structured_summary_payload(
--                model=cfg.llm_model,
-+                model=llm_model,
-                 target_summary_language=summary_lang,
-                 friendly=0,
-                 topic="Quarantined recording",
-@@ -527,7 +538,7 @@ async def run_pipeline(
-         atomic_write_json(
-             artifacts.summary_json_path,
-             _build_structured_summary_payload(
--                model=cfg.llm_model,
-+                model=llm_model,
-                 target_summary_language=summary_lang,
-                 friendly=0,
-                 topic="Summary generation failed",
-@@ -572,7 +583,7 @@ async def run_pipeline(
-         atomic_write_json(
-             artifacts.summary_json_path,
-             _build_structured_summary_payload(
--                model=cfg.llm_model,
-+                model=llm_model,
-                 target_summary_language=summary_lang,
-                 friendly=0,
-                 topic="No speech detected",
-@@ -603,11 +614,11 @@ async def run_pipeline(
- 
-     try:
-         await _emit_progress(progress_callback, stage="llm", progress=0.85)
--        msg = await llm.generate(system_prompt=sys_prompt, user_prompt=user_prompt, model=cfg.llm_model, response_format={"type": "json_object"})
-+        msg = await llm.generate(system_prompt=sys_prompt, user_prompt=user_prompt, model=llm_model, response_format={"type": "json_object"})
-         raw_summary = msg.get("content", "") if isinstance(msg, dict) else str(msg)
-         summary_payload = build_summary_payload(
-             raw_llm_content=raw_summary,
--            model=cfg.llm_model,
-+            model=llm_model,
-             target_summary_language=summary_lang,
-             friendly=friendly,
-             default_topic=cal_title or "Meeting summary",
-@@ -644,7 +655,7 @@ async def run_pipeline(
-         atomic_write_json(
-             artifacts.summary_json_path,
-             _build_structured_summary_payload(
--                model=cfg.llm_model,
-+                model=llm_model,
-                 target_summary_language=summary_lang,
-                 friendly=friendly,
-                 topic="Summary generation failed",
-diff --git a/tasks/QUEUE.md b/tasks/QUEUE.md
-index 25855d0..b94dd4e 100644
---- a/tasks/QUEUE.md
-+++ b/tasks/QUEUE.md
-@@ -397,6 +397,6 @@ Queue (in order)
- - Depends on: PR-LLM-ROBUST-01
- 
- 78) PR-FIX-LLM-MODEL-DEFAULT-01: Remove hardcoded LLM model default (llama3:8b); require LLM_MODEL env and fail fast with clear error + update tests
--- Status: TODO
-+- Status: DONE
- - Tasks file: tasks/PR-FIX-LLM-MODEL-DEFAULT-01.md
- - Depends on: PR-LLM-DIAGNOSTICS-01
-diff --git a/tests/test_app_config.py b/tests/test_app_config.py
-index b13a0c5..a8081ff 100644
---- a/tests/test_app_config.py
-+++ b/tests/test_app_config.py
-@@ -34,6 +34,19 @@ def test_redis_url_alias(monkeypatch):
-     assert cfg.redis_url == "redis://localhost:6380/0"
- 
- 
-+def test_llm_model_env_required_and_trimmed(monkeypatch):
-+    monkeypatch.setenv("LLM_MODEL", "  gpt-oss:120b  ")
-+    cfg = AppSettings()
-+    assert cfg.llm_model == "gpt-oss:120b"
-+
-+
-+def test_llm_model_missing_fails_with_clear_message(monkeypatch):
-+    monkeypatch.delenv("LLM_MODEL", raising=False)
-+    monkeypatch.delenv("LAN_LLM_MODEL", raising=False)
-+    with pytest.raises(ValueError, match="LLM_MODEL is required\\. Set it in \\.env"):
-+        AppSettings()
-+
-+
- def test_sqlite_busy_timeout_from_env(monkeypatch):
-     monkeypatch.setenv("LAN_SQLITE_BUSY_TIMEOUT_MS", "12345")
-     cfg = AppSettings()
-@@ -86,6 +99,7 @@ def test_staging_missing_redis_url_fails_import():
-     env = os.environ.copy()
-     env["LAN_ENV"] = "staging"
-     env["LLM_BASE_URL"] = "http://127.0.0.1:8000"
-+    env["LLM_MODEL"] = "test-llm-model"
-     env.pop("LAN_REDIS_URL", None)
-     env.pop("REDIS_URL", None)
- 
-@@ -101,6 +115,24 @@ def test_staging_missing_redis_url_fails_import():
-     assert "LAN_REDIS_URL" in f"{result.stdout}\n{result.stderr}"
- 
- 
-+def test_dev_missing_llm_model_fails_import():
-+    env = os.environ.copy()
-+    env["LAN_ENV"] = "dev"
-+    env.pop("LLM_MODEL", None)
-+    env.pop("LAN_LLM_MODEL", None)
-+
-+    result = subprocess.run(
-+        [sys.executable, "-c", "import lan_app.api"],
-+        capture_output=True,
-+        text=True,
-+        env=env,
-+        check=False,
-+    )
-+
-+    assert result.returncode != 0
-+    assert "LLM_MODEL is required" in f"{result.stdout}\n{result.stderr}"
-+
-+
- def test_non_dev_requires_both_runtime_urls(monkeypatch):
-     monkeypatch.setenv("LAN_ENV", "prod")
-     monkeypatch.delenv("LAN_REDIS_URL", raising=False)
-@@ -152,6 +184,7 @@ def test_llm_max_tokens_defaults_and_env_override(monkeypatch):
- def test_dev_missing_urls_allows_import():
-     env = os.environ.copy()
-     env["LAN_ENV"] = "dev"
-+    env["LLM_MODEL"] = "test-llm-model"
-     env.pop("LAN_REDIS_URL", None)
-     env.pop("REDIS_URL", None)
-     env.pop("LLM_BASE_URL", None)
-diff --git a/tests/test_cov_lan_app_worker_tasks_branches.py b/tests/test_cov_lan_app_worker_tasks_branches.py
-index ddc9f36..6f29faf 100644
---- a/tests/test_cov_lan_app_worker_tasks_branches.py
-+++ b/tests/test_cov_lan_app_worker_tasks_branches.py
-@@ -315,6 +315,7 @@ def test_build_pipeline_settings_propagates_vad_method(tmp_path: Path):
-     pipeline_cfg = worker_tasks._build_pipeline_settings(cfg)
- 
-     assert pipeline_cfg.vad_method == "pyannote"
-+    assert pipeline_cfg.llm_model == cfg.llm_model
- 
- 
- def test_load_transcript_language_payload_parses_valid_and_invalid_json(tmp_path: Path):
 diff --git a/tests/test_cov_lan_transcriber_extra_pipeline.py b/tests/test_cov_lan_transcriber_extra_pipeline.py
-index 65cbbce..ba38718 100644
+index ba38718..77cec3a 100644
 --- a/tests/test_cov_lan_transcriber_extra_pipeline.py
 +++ b/tests/test_cov_lan_transcriber_extra_pipeline.py
-@@ -989,6 +989,20 @@ async def test_run_pipeline_backfills_detected_language_and_uses_fallback_diariz
-     assert diar_data and diar_data[0]["speaker"] == "S1"
+@@ -25,6 +25,21 @@ def _settings(tmp_path: Path, **overrides: Any) -> pipeline.Settings:
+     return pipeline.Settings(**defaults)
  
  
-+@pytest.mark.asyncio
-+async def test_run_pipeline_fails_fast_when_llm_model_is_blank(tmp_path: Path) -> None:
-+    cfg = _settings(tmp_path, llm_model="   ")
-+    with pytest.raises(RuntimeError, match="LLM_MODEL is required"):
-+        await pipeline.run_pipeline(
-+            audio_path=_audio_file(tmp_path, "missing-model.mp3"),
-+            cfg=cfg,
-+            llm=_FakeLLM(),
-+            diariser=_NoTracksDiariser(),
-+            recording_id="rec-missing-model",
-+            precheck=pipeline.PrecheckResult(duration_sec=30.0, speech_ratio=0.8, quarantine_reason=None),
-+        )
++def test_pipeline_settings_reads_llm_model_from_env(
++    monkeypatch: pytest.MonkeyPatch,
++    tmp_path: Path,
++) -> None:
++    monkeypatch.setenv("LLM_MODEL", "env-model")
++    monkeypatch.delenv("LAN_LLM_MODEL", raising=False)
++    cfg = _settings(tmp_path)
++    assert cfg.llm_model == "env-model"
 +
 +
- @pytest.mark.asyncio
- async def test_protocol_stub_call_executes() -> None:
-     out = await pipeline.Diariser.__call__(object(), Path("x"))
-diff --git a/tests/test_ui_routes.py b/tests/test_ui_routes.py
-index 1195b26..c8a20ac 100644
---- a/tests/test_ui_routes.py
-+++ b/tests/test_ui_routes.py
-@@ -1163,7 +1163,7 @@ def test_ui_language_resummarize_uses_target_language_override(tmp_path, monkeyp
-         encoding="utf-8",
-     )
-     (derived / "summary.json").write_text(
--        json.dumps({"friendly": 0, "model": "llama3:8b", "summary": "- old"}),
-+        json.dumps({"friendly": 0, "model": "test-llm-model", "summary": "- old"}),
-         encoding="utf-8",
-     )
- 
-@@ -1228,6 +1228,7 @@ def test_ui_language_resummarize_uses_target_language_override(tmp_path, monkeyp
-     assert summary_payload["summary_bullets"] == ["Bloqueadores revisados."]
-     assert summary_payload["topic"] == "Resumen semanal"
-     assert summary_payload["target_summary_language"] == "es"
-+    assert captured["model"] == cfg.llm_model
-     assert "in Spanish." in captured["system_prompt"]
- 
- 
-@@ -1259,7 +1260,7 @@ def test_ui_language_resummarize_without_speaker_turns_uses_full_transcript(tmp_
-         encoding="utf-8",
-     )
-     (derived / "summary.json").write_text(
--        json.dumps({"friendly": 0, "model": "llama3:8b", "summary": "- old"}),
-+        json.dumps({"friendly": 0, "model": "test-llm-model", "summary": "- old"}),
-         encoding="utf-8",
-     )
- 
-diff --git a/tests/conftest.py b/tests/conftest.py
-new file mode 100644
-index 0000000..2c75785
---- /dev/null
-+++ b/tests/conftest.py
-@@ -0,0 +1,6 @@
-+from __future__ import annotations
++def test_pipeline_settings_allows_direct_llm_model_override(tmp_path: Path) -> None:
++    cfg = _settings(tmp_path, llm_model="direct-model")
++    assert cfg.llm_model == "direct-model"
 +
-+import os
 +
-+_DEFAULT_TEST_LLM_MODEL = os.environ.setdefault("LLM_MODEL", "test-llm-model")
-+os.environ.setdefault("LAN_LLM_MODEL", _DEFAULT_TEST_LLM_MODEL)
+ def _audio_file(tmp_path: Path, name: str = "audio.mp3") -> Path:
+     path = tmp_path / name
+     path.write_bytes(b"\x00")
