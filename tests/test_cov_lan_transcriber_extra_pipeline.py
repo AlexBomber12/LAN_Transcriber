@@ -55,6 +55,20 @@ class _FakeLLM:
 def test_timeout_seconds_and_retryable_status_paths() -> None:
     assert llm_client._timeout_seconds("bad", default=7.5) == 7.5
     assert llm_client._timeout_seconds("-1", default=7.5) == 7.5
+    assert llm_client._int_setting("bad", default=1024, minimum=256) == 1024
+    assert llm_client._int_setting("128", default=1024, minimum=256) == 1024
+    assert llm_client._int_setting("512", default=1024, minimum=256) == 512
+    assert llm_client._resolve_retry_max_tokens("2000", base_max_tokens=1000) == 2000
+    assert llm_client._resolve_retry_max_tokens("800", base_max_tokens=1000) == 2000
+    assert (
+        llm_client._resolve_retry_max_tokens(
+            "5000",
+            base_max_tokens=4096,
+        )
+        == 5000
+    )
+    assert llm_client._base_url_host("http://example.test:8000/path") == "example.test"
+    assert llm_client._base_url_host("not-a-url") == "not-a-url"
 
     req = httpx.Request("POST", "http://example.test")
     retry_resp = httpx.Response(503, request=req)
@@ -190,6 +204,7 @@ async def test_generate_headers_and_fallback_paths(monkeypatch: pytest.MonkeyPat
     assert result["content"] == "ok"
     assert captured["headers"]["Authorization"] == "Bearer secret-key"
     assert captured["payload"]["response_format"] == {"type": "json_object"}
+    assert captured["payload"]["max_tokens"] == client.max_tokens
 
     fallback_client = llm_client.LLMClient(base_url="http://example.test")
 

@@ -16,6 +16,10 @@ from .metrics import llm_timeouts_total
 
 _RETRYABLE_STATUS_CODES = {408, 409, 425, 429}
 _DEV_DEFAULT_LLM_BASE_URL = "http://127.0.0.1:8000"
+_MIN_LLM_MAX_TOKENS = 256
+_DEFAULT_LLM_MAX_TOKENS = 1024
+_DEFAULT_LLM_MAX_TOKENS_RETRY = 2048
+_MAX_LLM_MAX_TOKENS = 4096
 _logger = logging.getLogger(__name__)
 
 
@@ -27,6 +31,37 @@ def _timeout_seconds(value: str | None, *, default: float) -> float:
     except ValueError:
         return default
     return timeout if timeout > 0 else default
+
+
+def _int_setting(
+    value: int | str | None,
+    *,
+    default: int,
+    minimum: int,
+) -> int:
+    if value is None:
+        return default
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return parsed if parsed >= minimum else default
+
+
+def _resolve_retry_max_tokens(
+    value: int | str | None,
+    *,
+    base_max_tokens: int,
+) -> int:
+    default_retry = min(base_max_tokens * 2, _MAX_LLM_MAX_TOKENS)
+    parsed = _int_setting(
+        value,
+        default=default_retry,
+        minimum=_MIN_LLM_MAX_TOKENS,
+    )
+    if parsed <= base_max_tokens and base_max_tokens < _MAX_LLM_MAX_TOKENS:
+        return min(_MAX_LLM_MAX_TOKENS, max(default_retry, base_max_tokens + 1))
+    return parsed
 
 
 def _is_retryable_exception(exc: BaseException) -> bool:
@@ -66,6 +101,70 @@ def _resolve_base_url(base_url: str | None) -> str:
     return _DEV_DEFAULT_LLM_BASE_URL
 
 
+def _base_url_host(base_url: str) -> str:
+    try:
+        parsed = httpx.URL(base_url)
+    except Exception:
+        return base_url
+    host = parsed.host
+    return str(host) if host else base_url
+
+
+class LLMEmptyContentError(ValueError):
+    """Raised when the LLM reply has no usable assistant content."""
+
+    def __init__(
+        self,
+        *,
+        host: str,
+        model: str,
+        max_tokens: int,
+        finish_reason: str | None,
+        request_id: str | None,
+        raw_response: Dict[str, Any],
+    ) -> None:
+        self.host = host
+        self.model = model
+        self.max_tokens = max_tokens
+        self.finish_reason = finish_reason
+        self.request_id = request_id
+        self.raw_response = raw_response
+        reason = finish_reason or "unknown"
+        request = request_id or "unknown"
+        super().__init__(
+            "LLM returned empty message.content "
+            f"(host={host}, model={model}, max_tokens={max_tokens}, "
+            f"finish_reason={reason}, request_id={request}). "
+            "Ollama may have returned reasoning-only output; increase "
+            "LLM_MAX_TOKENS and LLM_TIMEOUT_SECONDS."
+        )
+
+
+class LLMTruncatedResponseError(ValueError):
+    """Raised when the LLM reply keeps truncating after the explicit retry."""
+
+    def __init__(
+        self,
+        *,
+        host: str,
+        model: str,
+        max_tokens: int,
+        request_id: str | None,
+        raw_response: Dict[str, Any],
+    ) -> None:
+        self.host = host
+        self.model = model
+        self.max_tokens = max_tokens
+        self.request_id = request_id
+        self.raw_response = raw_response
+        request = request_id or "unknown"
+        super().__init__(
+            "LLM response is truncated with finish_reason=length "
+            f"(host={host}, model={model}, max_tokens={max_tokens}, request_id={request}). "
+            "Increase LLM_MAX_TOKENS and LLM_TIMEOUT_SECONDS."
+        )
+
+
 class LLMClient:
     """Simple asynchronous client for the language model API."""
 
@@ -75,14 +174,30 @@ class LLMClient:
         api_key: str | None = None,
         timeout: float | None = None,
         mock_response_path: str | Path | None = None,
+        max_tokens: int | None = None,
+        max_tokens_retry: int | None = None,
     ) -> None:
         self.base_url = _resolve_base_url(base_url)
+        self.base_url_host = _base_url_host(self.base_url)
         self.api_key = api_key or os.getenv("LLM_API_KEY")
         self.default_model = os.getenv("LLM_MODEL")
         self.timeout = (
             timeout
             if timeout is not None
             else _timeout_seconds(os.getenv("LLM_TIMEOUT_SECONDS"), default=30.0)
+        )
+        self.max_tokens = _int_setting(
+            max_tokens if max_tokens is not None else os.getenv("LLM_MAX_TOKENS"),
+            default=_DEFAULT_LLM_MAX_TOKENS,
+            minimum=_MIN_LLM_MAX_TOKENS,
+        )
+        self.max_tokens_retry = _resolve_retry_max_tokens(
+            (
+                max_tokens_retry
+                if max_tokens_retry is not None
+                else os.getenv("LLM_MAX_TOKENS_RETRY", _DEFAULT_LLM_MAX_TOKENS_RETRY)
+            ),
+            base_max_tokens=self.max_tokens,
         )
         configured_mock_path = mock_response_path or os.getenv("LLM_MOCK_RESPONSE_PATH")
         self.mock_response_path = Path(configured_mock_path) if configured_mock_path else None
@@ -140,6 +255,40 @@ class LLMClient:
             return {"role": "assistant", "content": payload}
         return {"role": "assistant", "content": json.dumps(payload, ensure_ascii=False)}
 
+    @staticmethod
+    def _request_id(data: Dict[str, Any]) -> str | None:
+        request_id = data.get("id") or data.get("request_id") or data.get("requestId")
+        return str(request_id) if request_id is not None else None
+
+    def _extract_message(
+        self,
+        data: Dict[str, Any],
+    ) -> tuple[str, str, str | None, str | None]:
+        request_id = self._request_id(data)
+        choices = data.get("choices")
+        if isinstance(choices, list) and choices:
+            first = choices[0]
+            if isinstance(first, dict):
+                finish_reason = first.get("finish_reason")
+                finish_reason_text = (
+                    str(finish_reason) if finish_reason is not None else None
+                )
+                message = first.get("message")
+                if isinstance(message, dict):
+                    return (
+                        str(message.get("role") or "assistant"),
+                        str(message.get("content") or ""),
+                        finish_reason_text,
+                        request_id,
+                    )
+        if "content" in data:
+            return ("assistant", str(data.get("content") or ""), None, request_id)
+        raise ValueError("LLM response missing choices[0].message.content")
+
+    @staticmethod
+    def _should_retry_response(*, finish_reason: str | None, content: str) -> bool:
+        return finish_reason == "length" or not content.strip()
+
     async def generate(
         self,
         system_prompt: str,
@@ -153,7 +302,7 @@ class LLMClient:
         if mock_message is not None:
             return mock_message
 
-        model = model or self.default_model
+        model = model or self.default_model or "unknown"
 
         url = f"{self.base_url}/v1/chat/completions"
         headers: Dict[str, str] = {}
@@ -165,32 +314,85 @@ class LLMClient:
             {"role": "user", "content": user_prompt},
         ]
 
-        payload: Dict[str, Any] = {"messages": messages}
-        if model is not None:
-            payload["model"] = model
+        payload: Dict[str, Any] = {"messages": messages, "model": model}
         if response_format is not None:
             payload["response_format"] = response_format
 
-        try:
-            data = await self._post_chat_completion(url=url, payload=payload, headers=headers)
-        except (TimeoutError, httpx.TimeoutException):
-            llm_timeouts_total.inc()
+        async def _run_attempt(
+            *,
+            attempt_number: int,
+            max_tokens: int,
+        ) -> tuple[Dict[str, Any], str, str, str | None, str | None] | None:
+            payload["max_tokens"] = max_tokens
+            _logger.debug(
+                "LLM request attempt=%s model=%s max_tokens=%s timeout_seconds=%s",
+                attempt_number,
+                model,
+                max_tokens,
+                self.timeout,
+            )
+            try:
+                data = await self._post_chat_completion(
+                    url=url,
+                    payload=payload,
+                    headers=headers,
+                )
+            except (TimeoutError, httpx.TimeoutException):
+                llm_timeouts_total.inc()
+                return None
+            role, content, finish_reason, request_id = self._extract_message(data)
+            return data, role, content, finish_reason, request_id
+
+        first_attempt = await _run_attempt(
+            attempt_number=1,
+            max_tokens=self.max_tokens,
+        )
+        if first_attempt is None:
             return {"content": "**LLM timeout**", "role": "assistant"}
+        data, role, content, finish_reason, request_id = first_attempt
+        max_tokens_used = self.max_tokens
 
-        choices = data.get("choices")
-        if isinstance(choices, list) and choices:
-            first = choices[0]
-            if isinstance(first, dict):
-                message = first.get("message")
-                if isinstance(message, dict):
-                    return {
-                        "role": str(message.get("role") or "assistant"),
-                        "content": str(message.get("content") or ""),
-                    }
+        if self._should_retry_response(finish_reason=finish_reason, content=content):
+            _logger.info(
+                "Retrying LLM request after attempt=%s (model=%s max_tokens=%s finish_reason=%s empty_content=%s)",
+                1,
+                model,
+                self.max_tokens,
+                finish_reason or "unknown",
+                not content.strip(),
+            )
+            second_attempt = await _run_attempt(
+                attempt_number=2,
+                max_tokens=self.max_tokens_retry,
+            )
+            if second_attempt is None:
+                return {"content": "**LLM timeout**", "role": "assistant"}
+            data, role, content, finish_reason, request_id = second_attempt
+            max_tokens_used = self.max_tokens_retry
 
-        if "content" in data:
-            return {"role": "assistant", "content": str(data.get("content") or "")}
-        raise ValueError("LLM response missing choices[0].message.content")
+        if finish_reason == "length":
+            _logger.debug(
+                "LLM raw response with finish_reason=length: %s",
+                data,
+            )
+            raise LLMTruncatedResponseError(
+                host=self.base_url_host,
+                model=model,
+                max_tokens=max_tokens_used,
+                request_id=request_id,
+                raw_response=data,
+            )
+        if not content.strip():
+            _logger.debug("LLM raw response with empty message.content: %s", data)
+            raise LLMEmptyContentError(
+                host=self.base_url_host,
+                model=model,
+                max_tokens=max_tokens_used,
+                finish_reason=finish_reason,
+                request_id=request_id,
+                raw_response=data,
+            )
+        return {"role": role, "content": content}
 
 
 _default_client = LLMClient()
@@ -212,4 +414,10 @@ async def generate(
     )
 
 
-__all__ = ["LLMClient", "generate", "llm_timeouts_total"]
+__all__ = [
+    "LLMClient",
+    "LLMEmptyContentError",
+    "LLMTruncatedResponseError",
+    "generate",
+    "llm_timeouts_total",
+]

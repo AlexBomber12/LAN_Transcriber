@@ -131,6 +131,24 @@ def test_dev_keeps_explicit_llm_base_url(monkeypatch):
     assert cfg.llm_base_url == "http://localhost:1234"
 
 
+def test_llm_max_tokens_defaults_and_env_override(monkeypatch):
+    monkeypatch.delenv("LLM_MAX_TOKENS", raising=False)
+    monkeypatch.delenv("LLM_MAX_TOKENS_RETRY", raising=False)
+    defaults = AppSettings()
+    assert defaults.llm_max_tokens == 1024
+    assert defaults.llm_max_tokens_retry == 2048
+
+    monkeypatch.setenv("LLM_MAX_TOKENS", "1536")
+    monkeypatch.setenv("LLM_MAX_TOKENS_RETRY", "3072")
+    overridden = AppSettings()
+    assert overridden.llm_max_tokens == 1536
+    assert overridden.llm_max_tokens_retry == 3072
+
+    monkeypatch.setenv("LLM_MAX_TOKENS", "128")
+    with pytest.raises(ValueError, match="LLM_MAX_TOKENS|llm_max_tokens"):
+        AppSettings()
+
+
 def test_dev_missing_urls_allows_import():
     env = os.environ.copy()
     env["LAN_ENV"] = "dev"

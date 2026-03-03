@@ -17,7 +17,12 @@ This runbook covers day-2 operations for LAN deployment:
 1. Set `LLM_BASE_URL` to the Spark-compatible endpoint.
 2. Set `LLM_API_KEY` if the endpoint requires auth.
 3. Set `LLM_MODEL` if your endpoint requires explicit model name.
-4. Validate connectivity:
+4. Tune output sizing/timeouts for your model:
+   - `LLM_MAX_TOKENS=1024`
+   - `LLM_MAX_TOKENS_RETRY=2048`
+   - `LLM_TIMEOUT_SECONDS=600` (recommended for larger local models)
+5. If you see `finish_reason=length` or empty `message.content`, increase `LLM_MAX_TOKENS` and `LLM_TIMEOUT_SECONDS`.
+6. Validate connectivity:
 
 ```bash
 docker compose run --rm api python -m lan_app.healthchecks app

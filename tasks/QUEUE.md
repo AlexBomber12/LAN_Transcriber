@@ -387,6 +387,6 @@ Queue (in order)
 - Depends on: PR-VAD-SILERO-02
 
 76) PR-LLM-ROBUST-01: LLM robustness: configurable max_tokens, fail-fast on empty content, and 1 retry on finish_reason=length (Ollama /v1/chat/completions)
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-LLM-ROBUST-01.md
 - Depends on: PR-FIX-SENTIMENT-GPU-01
