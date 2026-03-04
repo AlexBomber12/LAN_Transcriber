@@ -9,10 +9,24 @@ IMAGE = os.getenv("SMOKE_IMAGE")
 if not IMAGE:
     pytest.skip("SMOKE_IMAGE not supplied; skipping container smoke test", allow_module_level=True)
 
+CONTAINER_NAME = "lan-smoke"
+SMOKE_LLM_MODEL = os.getenv("LLM_MODEL", "").strip() or "test-llm-model"
+
 
 def test_container_launches():
     subprocess.run(
-        ["docker", "run", "-d", "--rm", "--name", "lan-smoke", "-p", "17860:7860", IMAGE],
+        [
+            "docker",
+            "run",
+            "-d",
+            "--name",
+            CONTAINER_NAME,
+            "-p",
+            "17860:7860",
+            "-e",
+            f"LLM_MODEL={SMOKE_LLM_MODEL}",
+            IMAGE,
+        ],
         check=True,
         capture_output=True,
         text=True,
@@ -33,7 +47,7 @@ def test_container_launches():
             time.sleep(1)
         if not ready:
             logs = subprocess.run(
-                ["docker", "logs", "lan-smoke"],
+                ["docker", "logs", CONTAINER_NAME],
                 check=False,
                 capture_output=True,
                 text=True,
@@ -47,7 +61,7 @@ def test_container_launches():
             [
                 "docker",
                 "exec",
-                "lan-smoke",
+                CONTAINER_NAME,
                 "python",
                 "-c",
                 "import ctranslate2; import torch; import faster_whisper; import matplotlib; import whisperx; import whisperx.asr; from omegaconf import OmegaConf; OmegaConf.create({'ok': 1}); print(ctranslate2.__version__, torch.version.cuda, torch.cuda.is_available())",
@@ -64,7 +78,7 @@ def test_container_launches():
             )
     finally:
         subprocess.run(
-            ["docker", "stop", "lan-smoke"],
+            ["docker", "rm", "-f", CONTAINER_NAME],
             check=False,
             capture_output=True,
             text=True,
