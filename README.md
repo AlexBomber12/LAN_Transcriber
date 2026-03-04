@@ -154,7 +154,7 @@ models are cached across runs.
 | `LAN_API_PORT` | Published API port (default `7860`) |
 | `LLM_BASE_URL` | OpenAI-compatible Spark endpoint |
 | `LLM_API_KEY` | Optional API key for the LLM |
-| `LLM_MODEL` | Model name passed to the OpenAI-compatible endpoint |
+| `LLM_MODEL` | Required model name passed to the OpenAI-compatible endpoint (no runtime fallback) |
 | `LLM_MAX_TOKENS` | Base `max_tokens` for `/v1/chat/completions` requests (default `1024`) |
 | `LLM_MAX_TOKENS_RETRY` | One-shot retry `max_tokens` for truncated/empty LLM output (default `2048`) |
 | `LLM_TIMEOUT_SECONDS` | Per-request timeout for LLM calls (default `30`) |
@@ -163,6 +163,7 @@ models are cached across runs.
 
 - `LAN_ENV=dev`: missing `LAN_REDIS_URL` and/or `LLM_BASE_URL` is allowed with warnings; dev defaults are used (`redis://127.0.0.1:6379/0`, `http://127.0.0.1:8000`).
 - `LAN_ENV=staging` or `LAN_ENV=prod`: `LAN_REDIS_URL` and `LLM_BASE_URL` are required; startup fails fast if either is missing.
+- All environments: `LLM_MODEL` is required. Startup fails fast when unset/blank with `LLM_MODEL is required. Set it in .env (e.g., LLM_MODEL=gpt-oss:120b).`
 
 If LLM responses fail with `finish_reason=length` or empty `message.content`, increase `LLM_MAX_TOKENS` and `LLM_TIMEOUT_SECONDS` (and optionally `LLM_MAX_TOKENS_RETRY`).
 

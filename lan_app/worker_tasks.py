@@ -477,6 +477,7 @@ def _build_pipeline_settings(settings: AppSettings) -> PipelineSettings:
         voices_dir=settings.data_root / "voices",
         unknown_dir=settings.recordings_root / "unknown",
         tmp_root=settings.data_root / "tmp",
+        llm_model=settings.llm_model,
         vad_method=settings.vad_method,
     )
 

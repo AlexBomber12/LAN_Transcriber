@@ -34,6 +34,26 @@ def test_redis_url_alias(monkeypatch):
     assert cfg.redis_url == "redis://localhost:6380/0"
 
 
+def test_llm_model_env_required_and_trimmed(monkeypatch):
+    monkeypatch.setenv("LLM_MODEL", "  gpt-oss:120b  ")
+    cfg = AppSettings()
+    assert cfg.llm_model == "gpt-oss:120b"
+
+
+def test_llm_model_prefixed_alias_is_accepted(monkeypatch):
+    monkeypatch.delenv("LLM_MODEL", raising=False)
+    monkeypatch.setenv("LAN_LLM_MODEL", "  gpt-oss:prefixed  ")
+    cfg = AppSettings()
+    assert cfg.llm_model == "gpt-oss:prefixed"
+
+
+def test_llm_model_missing_fails_with_clear_message(monkeypatch):
+    monkeypatch.delenv("LLM_MODEL", raising=False)
+    monkeypatch.delenv("LAN_LLM_MODEL", raising=False)
+    with pytest.raises(ValueError, match="LLM_MODEL is required\\. Set it in \\.env"):
+        AppSettings()
+
+
 def test_sqlite_busy_timeout_from_env(monkeypatch):
     monkeypatch.setenv("LAN_SQLITE_BUSY_TIMEOUT_MS", "12345")
     cfg = AppSettings()
@@ -86,6 +106,7 @@ def test_staging_missing_redis_url_fails_import():
     env = os.environ.copy()
     env["LAN_ENV"] = "staging"
     env["LLM_BASE_URL"] = "http://127.0.0.1:8000"
+    env["LLM_MODEL"] = "test-llm-model"
     env.pop("LAN_REDIS_URL", None)
     env.pop("REDIS_URL", None)
 
@@ -99,6 +120,24 @@ def test_staging_missing_redis_url_fails_import():
 
     assert result.returncode != 0
     assert "LAN_REDIS_URL" in f"{result.stdout}\n{result.stderr}"
+
+
+def test_dev_missing_llm_model_fails_import():
+    env = os.environ.copy()
+    env["LAN_ENV"] = "dev"
+    env.pop("LLM_MODEL", None)
+    env.pop("LAN_LLM_MODEL", None)
+
+    result = subprocess.run(
+        [sys.executable, "-c", "import lan_app.api"],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "LLM_MODEL is required" in f"{result.stdout}\n{result.stderr}"
 
 
 def test_non_dev_requires_both_runtime_urls(monkeypatch):
@@ -152,6 +191,7 @@ def test_llm_max_tokens_defaults_and_env_override(monkeypatch):
 def test_dev_missing_urls_allows_import():
     env = os.environ.copy()
     env["LAN_ENV"] = "dev"
+    env["LLM_MODEL"] = "test-llm-model"
     env.pop("LAN_REDIS_URL", None)
     env.pop("REDIS_URL", None)
     env.pop("LLM_BASE_URL", None)

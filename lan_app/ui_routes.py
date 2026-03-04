@@ -850,6 +850,7 @@ def _resummarize_recording(
         voices_dir=settings.data_root / "voices",
         unknown_dir=settings.recordings_root / "unknown",
         tmp_root=settings.data_root / "tmp",
+        llm_model=settings.llm_model,
     )
     speaker_turns_raw = _load_json_list(speaker_turns_path)
     speaker_turns = [row for row in speaker_turns_raw if isinstance(row, dict)]

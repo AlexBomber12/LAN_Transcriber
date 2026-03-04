@@ -315,6 +315,7 @@ def test_build_pipeline_settings_propagates_vad_method(tmp_path: Path):
     pipeline_cfg = worker_tasks._build_pipeline_settings(cfg)
 
     assert pipeline_cfg.vad_method == "pyannote"
+    assert pipeline_cfg.llm_model == cfg.llm_model
 
 
 def test_load_transcript_language_payload_parses_valid_and_invalid_json(tmp_path: Path):

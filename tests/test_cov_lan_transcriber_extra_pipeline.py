@@ -25,6 +25,21 @@ def _settings(tmp_path: Path, **overrides: Any) -> pipeline.Settings:
     return pipeline.Settings(**defaults)
 
 
+def test_pipeline_settings_reads_llm_model_from_env(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("LLM_MODEL", "env-model")
+    monkeypatch.delenv("LAN_LLM_MODEL", raising=False)
+    cfg = _settings(tmp_path)
+    assert cfg.llm_model == "env-model"
+
+
+def test_pipeline_settings_allows_direct_llm_model_override(tmp_path: Path) -> None:
+    cfg = _settings(tmp_path, llm_model="direct-model")
+    assert cfg.llm_model == "direct-model"
+
+
 def _audio_file(tmp_path: Path, name: str = "audio.mp3") -> Path:
     path = tmp_path / name
     path.write_bytes(b"\x00")
@@ -987,6 +1002,20 @@ async def test_run_pipeline_backfills_detected_language_and_uses_fallback_diariz
     diar_data = json.loads((derived / "segments.json").read_text(encoding="utf-8"))
     assert transcript_data["language"]["detected"] == "en"
     assert diar_data and diar_data[0]["speaker"] == "S1"
+
+
+@pytest.mark.asyncio
+async def test_run_pipeline_fails_fast_when_llm_model_is_blank(tmp_path: Path) -> None:
+    cfg = _settings(tmp_path, llm_model="   ")
+    with pytest.raises(RuntimeError, match="LLM_MODEL is required"):
+        await pipeline.run_pipeline(
+            audio_path=_audio_file(tmp_path, "missing-model.mp3"),
+            cfg=cfg,
+            llm=_FakeLLM(),
+            diariser=_NoTracksDiariser(),
+            recording_id="rec-missing-model",
+            precheck=pipeline.PrecheckResult(duration_sec=30.0, speech_ratio=0.8, quarantine_reason=None),
+        )
 
 
 @pytest.mark.asyncio
