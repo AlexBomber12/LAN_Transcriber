@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import builtins
+import json
 from pathlib import Path
 import sqlite3
 import sys
@@ -1674,6 +1675,20 @@ def test_worker_precheck_falls_back_when_diariser_init_fails(tmp_path: Path, mon
     log_path = cfg.recordings_root / "rec-precheck-fallback-1" / "logs" / "step-precheck.log"
     log_text = log_path.read_text(encoding="utf-8")
     assert "diariser init failed, falling back: RuntimeError: boom" in log_text
+    assert "diariser mode=fallback reason=init_failed" in log_text
+    status_payload = json.loads(
+        (
+            cfg.recordings_root
+            / "rec-precheck-fallback-1"
+            / "derived"
+            / "diarization_status.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert status_payload == {
+        "mode": "fallback",
+        "degraded": True,
+        "reason": "RuntimeError: boom",
+    }
 
 
 def test_worker_clears_progress_when_pipeline_fails(tmp_path: Path, monkeypatch):
@@ -1832,6 +1847,45 @@ def test_build_diariser_wraps_sync_pyannote_pipeline(monkeypatch):
     assert fake_model.calls == [{"audio": "/tmp/fake.wav"}]
     assert from_pretrained_call["name"] == "pyannote/speaker-diarization-3.1"
     assert from_pretrained_call["kwargs"] == {}
+
+
+def test_build_diariser_passes_env_speaker_hints(monkeypatch):
+    from lan_app import worker_tasks
+
+    class _FakeModel:
+        def __init__(self):
+            self.calls: list[tuple[object, dict[str, object]]] = []
+
+        def __call__(self, input_payload: object, **kwargs: object):
+            self.calls.append((input_payload, dict(kwargs)))
+            return {"ok": True}
+
+    fake_model = _FakeModel()
+
+    class _FakePipeline:
+        @staticmethod
+        def from_pretrained(_name: str, **_kwargs):
+            return fake_model
+
+    pyannote_audio = ModuleType("pyannote.audio")
+    pyannote_audio.Pipeline = _FakePipeline  # type: ignore[attr-defined]
+    pyannote_pkg = ModuleType("pyannote")
+    pyannote_pkg.audio = pyannote_audio  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "pyannote", pyannote_pkg)
+    monkeypatch.setitem(sys.modules, "pyannote.audio", pyannote_audio)
+    monkeypatch.setenv("LAN_DIARIZATION_MIN_SPEAKERS", "2")
+    monkeypatch.setenv("LAN_DIARIZATION_MAX_SPEAKERS", "3")
+
+    diariser = worker_tasks._build_diariser(duration_sec=30.0)
+    result = asyncio.run(diariser(Path("/tmp/fake.wav")))
+
+    assert result == {"ok": True}
+    assert fake_model.calls == [
+        (
+            {"audio": "/tmp/fake.wav"},
+            {"min_speakers": 2, "max_speakers": 3},
+        )
+    ]
 
 
 def test_build_diariser_surfaces_pyannote_model_load_errors(monkeypatch):

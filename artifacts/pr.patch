@@ -1,57 +1,1065 @@
-diff --git a/tests/test_docker_smoke.py b/tests/test_docker_smoke.py
-index c3bc7b6..227366a 100644
---- a/tests/test_docker_smoke.py
-+++ b/tests/test_docker_smoke.py
-@@ -9,10 +9,24 @@ IMAGE = os.getenv("SMOKE_IMAGE")
- if not IMAGE:
-     pytest.skip("SMOKE_IMAGE not supplied; skipping container smoke test", allow_module_level=True)
+diff --git a/lan_app/diarization_loader.py b/lan_app/diarization_loader.py
+index 1ecd578..d62636e 100644
+--- a/lan_app/diarization_loader.py
++++ b/lan_app/diarization_loader.py
+@@ -4,9 +4,16 @@ import os
+ import re
+ from typing import Any
  
-+CONTAINER_NAME = "lan-smoke"
-+SMOKE_LLM_MODEL = os.getenv("LLM_MODEL", "").strip() or "test-llm-model"
++from lan_transcriber.torch_safe_globals import (
++    diarization_safe_globals_for_torch_load,
++    import_trusted_diarization_symbol,
++    unsupported_global_diarization_fqn_from_error,
++)
 +
+ from .hf_repo import split_repo_id_and_revision
  
- def test_container_launches():
-     subprocess.run(
--        ["docker", "run", "-d", "--rm", "--name", "lan-smoke", "-p", "17860:7860", IMAGE],
-+        [
-+            "docker",
-+            "run",
-+            "-d",
-+            "--name",
-+            CONTAINER_NAME,
-+            "-p",
-+            "17860:7860",
-+            "-e",
-+            f"LLM_MODEL={SMOKE_LLM_MODEL}",
-+            IMAGE,
-+        ],
-         check=True,
-         capture_output=True,
-         text=True,
-@@ -33,7 +47,7 @@ def test_container_launches():
-             time.sleep(1)
-         if not ready:
-             logs = subprocess.run(
--                ["docker", "logs", "lan-smoke"],
-+                ["docker", "logs", CONTAINER_NAME],
-                 check=False,
-                 capture_output=True,
-                 text=True,
-@@ -47,7 +61,7 @@ def test_container_launches():
-             [
-                 "docker",
-                 "exec",
--                "lan-smoke",
-+                CONTAINER_NAME,
-                 "python",
-                 "-c",
-                 "import ctranslate2; import torch; import faster_whisper; import matplotlib; import whisperx; import whisperx.asr; from omegaconf import OmegaConf; OmegaConf.create({'ok': 1}); print(ctranslate2.__version__, torch.version.cuda, torch.cuda.is_available())",
-@@ -64,7 +78,7 @@ def test_container_launches():
+ DEFAULT_DIARIZATION_MODEL_ID = "pyannote/speaker-diarization-3.1"
++_MAX_SAFE_GLOBAL_ATTEMPTS = 3
+ 
+ _REPO_HINT_RE = re.compile(r"\b[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*\b")
+ 
+@@ -67,6 +74,31 @@ def _candidate_load_inputs(repo_id: str, revision: str | None) -> list[tuple[str
+     return [(repo_id, {})]
+ 
+ 
++def _from_pretrained_with_safe_globals(
++    from_pretrained: Any,
++    candidate: str,
++    kwargs: dict[str, Any],
++) -> Any:
++    extra_fqns: list[str] = []
++    last_error: Exception | None = None
++    for _ in range(_MAX_SAFE_GLOBAL_ATTEMPTS):
++        with diarization_safe_globals_for_torch_load(extra_fqns=extra_fqns):
++            try:
++                return from_pretrained(candidate, **kwargs)
++            except Exception as exc:
++                last_error = exc
++        retry_fqn = unsupported_global_diarization_fqn_from_error(last_error)
++        if retry_fqn is None or retry_fqn in extra_fqns:
++            raise last_error
++        if import_trusted_diarization_symbol(retry_fqn) is None:
++            raise last_error
++        extra_fqns.append(retry_fqn)
++
++    if last_error is not None:
++        raise last_error
++    raise RuntimeError("Unable to load diarization pipeline.")
++
++
+ def load_pyannote_pipeline(*, model_id: str | None = None, token: str | None = None) -> Any:
+     resolved_model_id = resolve_diarization_model_id(model_id)
+     repo_id, revision = split_repo_id_and_revision(resolved_model_id)
+@@ -82,7 +114,11 @@ def load_pyannote_pipeline(*, model_id: str | None = None, token: str | None = N
+         if resolved_token:
+             kwargs["token"] = resolved_token
+         try:
+-            model = Pipeline.from_pretrained(candidate, **kwargs)
++            model = _from_pretrained_with_safe_globals(
++                Pipeline.from_pretrained,
++                candidate,
++                kwargs,
++            )
+         except TypeError as exc:
+             message = str(exc).lower()
+             if (
+@@ -92,7 +128,11 @@ def load_pyannote_pipeline(*, model_id: str | None = None, token: str | None = N
+             ):
+                 kwargs.pop("token", None)
+                 try:
+-                    model = Pipeline.from_pretrained(candidate, **kwargs)
++                    model = _from_pretrained_with_safe_globals(
++                        Pipeline.from_pretrained,
++                        candidate,
++                        kwargs,
++                    )
+                 except Exception as retry_exc:
+                     last_error = retry_exc
+                     continue
+diff --git a/lan_app/worker_tasks.py b/lan_app/worker_tasks.py
+index 9e36ddd..5410885 100644
+--- a/lan_app/worker_tasks.py
++++ b/lan_app/worker_tasks.py
+@@ -4,12 +4,15 @@ import asyncio
+ from dataclasses import dataclass
+ from datetime import datetime, timezone
+ import json
++import os
+ from pathlib import Path
+ import re
+ import time
+ from types import SimpleNamespace
+ from typing import Any
+ 
++from lan_transcriber.artifacts import atomic_write_json
++from lan_transcriber.compat.call_compat import call_with_supported_kwargs
+ from lan_transcriber.llm_client import LLMClient
+ from lan_transcriber.pipeline import Settings as PipelineSettings
+ from lan_transcriber.pipeline import run_pipeline, run_precheck
+@@ -418,6 +421,7 @@ def _load_calendar_summary_context(
+ class _FallbackDiariser:
+     def __init__(self, duration_sec: float | None) -> None:
+         self._duration_sec = max(duration_sec or 0.1, 0.1)
++        self.mode = "fallback"
+ 
+     async def __call__(self, _audio_path: Path):
+         duration = self._duration_sec
+@@ -433,10 +437,23 @@ class _FallbackDiariser:
+ 
+ 
+ class _PyannoteDiariser:
+-    def __init__(self, pipeline_model: Any) -> None:
++    def __init__(
++        self,
++        pipeline_model: Any,
++        *,
++        min_speakers: int | None = None,
++        max_speakers: int | None = None,
++    ) -> None:
+         if pipeline_model is None or not callable(pipeline_model):
+             raise TypeError("pipeline_model must be a callable pyannote pipeline.")
+         self._pipeline_model = pipeline_model
++        self.mode = "pyannote"
++        call_kwargs: dict[str, int] = {}
++        if min_speakers is not None:
++            call_kwargs["min_speakers"] = min_speakers
++        if max_speakers is not None:
++            call_kwargs["max_speakers"] = max_speakers
++        self._call_kwargs = call_kwargs
+ 
+     async def __call__(self, audio_path: Path):
+         audio_text = str(audio_path)
+@@ -462,15 +479,48 @@ class _PyannoteDiariser:
+ 
+         def _run_sync():
+             try:
+-                return self._pipeline_model({"audio": audio_text})
++                return call_with_supported_kwargs(
++                    self._pipeline_model,
++                    {"audio": audio_text},
++                    **self._call_kwargs,
++                )
+             except TypeError as exc:
+                 if not _is_signature_mismatch(exc):
+                     raise
+-                return self._pipeline_model(audio_text)
++                return call_with_supported_kwargs(
++                    self._pipeline_model,
++                    audio_text,
++                    **self._call_kwargs,
++                )
+ 
+         return await asyncio.to_thread(_run_sync)
+ 
+ 
++def _optional_positive_env_int(name: str) -> int | None:
++    raw = os.getenv(name, "").strip()
++    if not raw:
++        return None
++    try:
++        value = int(raw)
++    except ValueError:
++        return None
++    if value < 1:
++        return None
++    return value
++
++
++def _resolve_diarization_speaker_hints() -> tuple[int | None, int | None]:
++    min_speakers = _optional_positive_env_int("LAN_DIARIZATION_MIN_SPEAKERS")
++    max_speakers = _optional_positive_env_int("LAN_DIARIZATION_MAX_SPEAKERS")
++    if (
++        min_speakers is not None
++        and max_speakers is not None
++        and min_speakers > max_speakers
++    ):
++        return None, None
++    return min_speakers, max_speakers
++
++
+ def _build_pipeline_settings(settings: AppSettings) -> PipelineSettings:
+     return PipelineSettings(
+         recordings_root=settings.recordings_root,
+@@ -483,6 +533,7 @@ def _build_pipeline_settings(settings: AppSettings) -> PipelineSettings:
+ 
+ 
+ def _build_diariser(duration_sec: float | None, *, model_id: str | None = None):
++    min_speakers, max_speakers = _resolve_diarization_speaker_hints()
+     try:
+         model = load_pyannote_pipeline(model_id=model_id)
+     except ModuleNotFoundError as exc:
+@@ -490,7 +541,32 @@ def _build_diariser(duration_sec: float | None, *, model_id: str | None = None):
+         if missing == "pyannote":
+             return _FallbackDiariser(duration_sec)
+         raise
+-    return _PyannoteDiariser(model)
++    return _PyannoteDiariser(
++        model,
++        min_speakers=min_speakers,
++        max_speakers=max_speakers,
++    )
++
++
++def _write_diarization_status_artifact(
++    *,
++    recording_id: str,
++    mode: str,
++    reason: str | None,
++    settings: AppSettings,
++) -> None:
++    payload: dict[str, Any] = {
++        "mode": mode,
++        "degraded": mode != "pyannote",
++    }
++    if reason:
++        payload["reason"] = reason
++    path = settings.recordings_root / recording_id / "derived" / "diarization_status.json"
++    path.parent.mkdir(parents=True, exist_ok=True)
++    try:
++        atomic_write_json(path, payload)
++    except OSError:
++        pass
+ 
+ 
+ def _run_precheck_pipeline(
+@@ -519,14 +595,31 @@ def _run_precheck_pipeline(
+             f"speech_ratio={precheck.speech_ratio}"
+         ),
+     )
++    diarization_mode = "pyannote"
++    diarization_reason: str | None = None
+     if precheck.quarantine_reason:
+         diariser = _FallbackDiariser(precheck.duration_sec)
++        diarization_mode = "fallback"
++        diarization_reason = "precheck_quarantine"
++        _append_step_log(
++            log_path,
++            "diariser mode=fallback reason=precheck_quarantine",
++        )
+     else:
+         try:
+             diariser = _build_diariser(
+                 precheck.duration_sec,
+                 model_id=settings.diarization_model_id,
              )
-     finally:
-         subprocess.run(
--            ["docker", "stop", "lan-smoke"],
-+            ["docker", "rm", "-f", CONTAINER_NAME],
-             check=False,
-             capture_output=True,
-             text=True,
++            if isinstance(diariser, _FallbackDiariser):
++                diarization_mode = "fallback"
++                diarization_reason = "pyannote_unavailable"
++                _append_step_log(
++                    log_path,
++                    "diariser mode=fallback reason=pyannote_unavailable",
++                )
++            else:
++                _append_step_log(log_path, "diariser mode=pyannote")
+         except Exception as exc:
+             _append_step_log(
+                 log_path,
+@@ -536,6 +629,18 @@ def _run_precheck_pipeline(
+                 ),
+             )
+             diariser = _FallbackDiariser(precheck.duration_sec)
++            diarization_mode = "fallback"
++            diarization_reason = f"{type(exc).__name__}: {exc}"
++            _append_step_log(
++                log_path,
++                "diariser mode=fallback reason=init_failed",
++            )
++    _write_diarization_status_artifact(
++        recording_id=recording_id,
++        mode=diarization_mode,
++        reason=diarization_reason,
++        settings=settings,
++    )
+     calendar_title, calendar_attendees = _load_calendar_summary_context(
+         recording_id,
+         settings,
+diff --git a/lan_transcriber/torch_safe_globals.py b/lan_transcriber/torch_safe_globals.py
+index 548d9db..0eb89f9 100644
+--- a/lan_transcriber/torch_safe_globals.py
++++ b/lan_transcriber/torch_safe_globals.py
+@@ -5,7 +5,7 @@ import importlib
+ import logging
+ import pickle
+ import re
+-from collections.abc import Iterator
++from collections.abc import Callable, Iterator
+ 
+ _log = logging.getLogger(__name__)
+ 
+@@ -14,13 +14,20 @@ _OMEGACONF_BASE_FQNS = (
+     "omegaconf.dictconfig.DictConfig",
+     "omegaconf.base.ContainerMetadata",
+ )
++_DIARIZATION_BASE_FQNS = (
++    "torch.torch_version.TorchVersion",
++    "omegaconf.listconfig.ListConfig",
++    "omegaconf.dictconfig.DictConfig",
++    "omegaconf.base.ContainerMetadata",
++    "pyannote.audio.core.task.Specifications",
++)
++_DIARIZATION_TRUSTED_PREFIXES = ("omegaconf.", "pyannote.")
++_DIARIZATION_TRUSTED_EXACT = {"torch.torch_version.TorchVersion"}
+ 
+ _UNSUPPORTED_GLOBAL_RE = re.compile(r"Unsupported global:\s+(?:GLOBAL\s+)?([A-Za-z_][\w.]*)")
+ 
+ 
+-def _import_omegaconf_symbol(fqn: str) -> object | None:
+-    if not fqn.startswith("omegaconf."):
+-        return None
++def _import_symbol(fqn: str) -> object | None:
+     module_name, _, symbol_name = fqn.rpartition(".")
+     if not module_name or not symbol_name:
+         return None
+@@ -31,22 +38,57 @@ def _import_omegaconf_symbol(fqn: str) -> object | None:
+     return getattr(module, symbol_name, None)
+ 
+ 
+-def _collect_omegaconf_symbols(extra_fqns: list[str] | None) -> list[tuple[str, object]]:
+-    """Return ``(fqn, class)`` pairs for all importable OmegaConf symbols."""
+-    fqns = list(_OMEGACONF_BASE_FQNS)
++def _collect_symbols(
++    base_fqns: tuple[str, ...],
++    extra_fqns: list[str] | None,
++    *,
++    trusted_fqn: Callable[[str], bool],
++) -> list[tuple[str, object]]:
++    fqns = list(base_fqns)
+     for candidate in extra_fqns or []:
++        if not trusted_fqn(candidate):
++            continue
+         if candidate in fqns:
+             continue
+         fqns.append(candidate)
+ 
+     pairs: list[tuple[str, object]] = []
+     for fqn in fqns:
+-        symbol = _import_omegaconf_symbol(fqn)
++        if not trusted_fqn(fqn):
++            continue
++        symbol = _import_symbol(fqn)
+         if symbol is not None:
+             pairs.append((fqn, symbol))
+     return pairs
+ 
+ 
++def _collect_omegaconf_symbols(extra_fqns: list[str] | None) -> list[tuple[str, object]]:
++    """Return ``(fqn, class)`` pairs for all importable OmegaConf symbols."""
++    return _collect_symbols(
++        _OMEGACONF_BASE_FQNS,
++        extra_fqns,
++        trusted_fqn=lambda fqn: fqn.startswith("omegaconf."),
++    )
++
++
++def is_trusted_diarization_global_fqn(fqn: str) -> bool:
++    return fqn in _DIARIZATION_TRUSTED_EXACT or fqn.startswith(_DIARIZATION_TRUSTED_PREFIXES)
++
++
++def _collect_diarization_symbols(extra_fqns: list[str] | None) -> list[tuple[str, object]]:
++    return _collect_symbols(
++        _DIARIZATION_BASE_FQNS,
++        extra_fqns,
++        trusted_fqn=is_trusted_diarization_global_fqn,
++    )
++
++
++def import_trusted_diarization_symbol(fqn: str) -> object | None:
++    if not is_trusted_diarization_global_fqn(fqn):
++        return None
++    return _import_symbol(fqn)
++
++
+ def _try_api(
+     api: object,
+     symbols_list: list[object],
+@@ -83,9 +125,7 @@ def _try_api(
+ 
+ 
+ @contextlib.contextmanager
+-def omegaconf_safe_globals_for_torch_load(extra_fqns: list[str] | None = None) -> Iterator[None]:
+-    """Best-effort OmegaConf allowlisting for torch weights-only unpickling."""
+-
++def _torch_safe_globals_for_symbols(pairs: list[tuple[str, object]]) -> Iterator[None]:
+     try:
+         import torch
+     except Exception:
+@@ -97,7 +137,6 @@ def omegaconf_safe_globals_for_torch_load(extra_fqns: list[str] | None = None) -
+         yield
+         return
+ 
+-    pairs = _collect_omegaconf_symbols(extra_fqns)
+     if not pairs:
+         yield
+         return
+@@ -119,11 +158,35 @@ def omegaconf_safe_globals_for_torch_load(extra_fqns: list[str] | None = None) -
+     yield
+ 
+ 
+-def parse_unsupported_global_fqn(message: str) -> str | None:
++@contextlib.contextmanager
++def omegaconf_safe_globals_for_torch_load(extra_fqns: list[str] | None = None) -> Iterator[None]:
++    """Best-effort OmegaConf allowlisting for torch weights-only unpickling."""
++
++    pairs = _collect_omegaconf_symbols(extra_fqns)
++    with _torch_safe_globals_for_symbols(pairs):
++        yield
++
++
++@contextlib.contextmanager
++def diarization_safe_globals_for_torch_load(extra_fqns: list[str] | None = None) -> Iterator[None]:
++    """Best-effort trusted allowlisting for pyannote diarization checkpoint loading."""
++
++    pairs = _collect_diarization_symbols(extra_fqns)
++    with _torch_safe_globals_for_symbols(pairs):
++        yield
++
++
++def _parse_any_unsupported_global_fqn(message: str) -> str | None:
+     match = _UNSUPPORTED_GLOBAL_RE.search(message or "")
+     if match is None:
+         return None
+-    fqn = match.group(1)
++    return match.group(1)
++
++
++def parse_unsupported_global_fqn(message: str) -> str | None:
++    fqn = _parse_any_unsupported_global_fqn(message)
++    if fqn is None:
++        return None
+     if not fqn.startswith("omegaconf."):
+         return None
+     return fqn
+@@ -135,8 +198,28 @@ def unsupported_global_omegaconf_fqn_from_error(error: BaseException) -> str | N
+     return parse_unsupported_global_fqn(str(error))
+ 
+ 
++def parse_diarization_unsupported_global_fqn(message: str) -> str | None:
++    fqn = _parse_any_unsupported_global_fqn(message)
++    if fqn is None:
++        return None
++    if not is_trusted_diarization_global_fqn(fqn):
++        return None
++    return fqn
++
++
++def unsupported_global_diarization_fqn_from_error(error: BaseException) -> str | None:
++    if not isinstance(error, (pickle.UnpicklingError, RuntimeError)):
++        return None
++    return parse_diarization_unsupported_global_fqn(str(error))
++
++
+ __all__ = [
++    "diarization_safe_globals_for_torch_load",
++    "import_trusted_diarization_symbol",
++    "is_trusted_diarization_global_fqn",
+     "omegaconf_safe_globals_for_torch_load",
++    "parse_diarization_unsupported_global_fqn",
+     "parse_unsupported_global_fqn",
++    "unsupported_global_diarization_fqn_from_error",
+     "unsupported_global_omegaconf_fqn_from_error",
+ ]
+diff --git a/tasks/QUEUE.md b/tasks/QUEUE.md
+index b35f0ee..b8f4e0d 100644
+--- a/tasks/QUEUE.md
++++ b/tasks/QUEUE.md
+@@ -402,6 +402,6 @@ Queue (in order)
+ - Depends on: PR-LLM-DIAGNOSTICS-01
+ 
+ 79) PR-FIX-DIARIZATION-WEIGHTS-ONLY-01: Fix pyannote diarization init under torch weights_only (scoped safe_globals for omegaconf/pyannote + auto-retry) and prevent fallback-to-single-speaker regressions
+-- Status: TODO
++- Status: DONE
+ - Tasks file: tasks/PR-FIX-DIARIZATION-WEIGHTS-ONLY-01.md
+ - Depends on: PR-FIX-LLM-MODEL-DEFAULT-01
+diff --git a/tests/test_cov_lan_app_worker_tasks_branches.py b/tests/test_cov_lan_app_worker_tasks_branches.py
+index 6f29faf..8c62a10 100644
+--- a/tests/test_cov_lan_app_worker_tasks_branches.py
++++ b/tests/test_cov_lan_app_worker_tasks_branches.py
+@@ -461,6 +461,84 @@ def test_pyannote_diariser_retries_when_dict_payload_typeerror_expects_path():
+     assert model.calls == [{"audio": "/tmp/input.wav"}, "/tmp/input.wav"]
+ 
+ 
++def test_pyannote_diariser_passes_optional_speaker_hint_kwargs():
++    class _Model:
++        def __init__(self):
++            self.calls: list[tuple[object, dict[str, object]]] = []
++
++        def __call__(self, payload: object, **kwargs: object):
++            self.calls.append((payload, dict(kwargs)))
++            return {"ok": True}
++
++    model = _Model()
++    diariser = worker_tasks._PyannoteDiariser(
++        model,
++        min_speakers=2,
++        max_speakers=4,
++    )
++    result = asyncio.run(diariser(Path("/tmp/input.wav")))
++    assert result == {"ok": True}
++    assert model.calls == [
++        (
++            {"audio": "/tmp/input.wav"},
++            {"min_speakers": 2, "max_speakers": 4},
++        )
++    ]
++
++
++def test_resolve_diarization_speaker_hints_from_env(monkeypatch: pytest.MonkeyPatch):
++    monkeypatch.setenv("LAN_DIARIZATION_MIN_SPEAKERS", "2")
++    monkeypatch.setenv("LAN_DIARIZATION_MAX_SPEAKERS", "4")
++    assert worker_tasks._resolve_diarization_speaker_hints() == (2, 4)
++
++    monkeypatch.setenv("LAN_DIARIZATION_MIN_SPEAKERS", "abc")
++    monkeypatch.setenv("LAN_DIARIZATION_MAX_SPEAKERS", "1")
++    assert worker_tasks._resolve_diarization_speaker_hints() == (None, 1)
++
++    monkeypatch.setenv("LAN_DIARIZATION_MIN_SPEAKERS", "0")
++    monkeypatch.setenv("LAN_DIARIZATION_MAX_SPEAKERS", "3")
++    assert worker_tasks._resolve_diarization_speaker_hints() == (None, 3)
++
++    monkeypatch.setenv("LAN_DIARIZATION_MIN_SPEAKERS", "5")
++    monkeypatch.setenv("LAN_DIARIZATION_MAX_SPEAKERS", "2")
++    assert worker_tasks._resolve_diarization_speaker_hints() == (None, None)
++
++
++def test_write_diarization_status_artifact_writes_payload_and_ignores_oserror(
++    monkeypatch: pytest.MonkeyPatch,
++    tmp_path: Path,
++):
++    cfg = _db_settings(tmp_path)
++    worker_tasks._write_diarization_status_artifact(
++        recording_id="rec-diar-mode-1",
++        mode="pyannote",
++        reason=None,
++        settings=cfg,
++    )
++    artifact_path = (
++        cfg.recordings_root
++        / "rec-diar-mode-1"
++        / "derived"
++        / "diarization_status.json"
++    )
++    assert json.loads(artifact_path.read_text(encoding="utf-8")) == {
++        "mode": "pyannote",
++        "degraded": False,
++    }
++
++    monkeypatch.setattr(
++        worker_tasks,
++        "atomic_write_json",
++        lambda *_a, **_k: (_ for _ in ()).throw(OSError("readonly")),
++    )
++    worker_tasks._write_diarization_status_artifact(
++        recording_id="rec-diar-mode-2",
++        mode="fallback",
++        reason="RuntimeError: boom",
++        settings=cfg,
++    )
++
++
+ def test_pyannote_diariser_rejects_non_callable_model():
+     with pytest.raises(TypeError, match="pipeline_model must be a callable"):
+         worker_tasks._PyannoteDiariser(None)
+@@ -572,6 +650,92 @@ def test_run_precheck_pipeline_records_step_logs_and_explicit_summary_target(
+     }
+ 
+ 
++def test_run_precheck_pipeline_marks_fallback_when_builder_returns_fallback(
++    tmp_path: Path,
++    monkeypatch: pytest.MonkeyPatch,
++):
++    cfg = _db_settings(tmp_path)
++    init_db(cfg)
++    create_recording(
++        "rec-step-log-fallback-1",
++        source="test",
++        source_filename="audio.wav",
++        settings=cfg,
++    )
++
++    raw_audio = cfg.recordings_root / "rec-step-log-fallback-1" / "raw" / "audio.wav"
++    raw_audio.parent.mkdir(parents=True, exist_ok=True)
++    raw_audio.write_bytes(b"\x00")
++
++    monkeypatch.setattr(
++        worker_tasks,
++        "run_precheck",
++        lambda *_a, **_k: PrecheckResult(
++            duration_sec=30.0,
++            speech_ratio=0.5,
++            quarantine_reason=None,
++        ),
++    )
++    monkeypatch.setattr(
++        worker_tasks,
++        "_build_diariser",
++        lambda *_a, **_k: worker_tasks._FallbackDiariser(30.0),
++    )
++    monkeypatch.setattr(
++        worker_tasks,
++        "refresh_recording_metrics",
++        lambda *_a, **_k: {"participants": [], "meeting": {"total_interruptions": 0}},
++    )
++    monkeypatch.setattr(
++        worker_tasks,
++        "refresh_recording_routing",
++        lambda *_a, **_k: {
++            "suggested_project_id": None,
++            "confidence": 0.0,
++            "threshold": 0.5,
++            "auto_selected": False,
++            "status_after_routing": RECORDING_STATUS_READY,
++        },
++    )
++    monkeypatch.setattr(
++        worker_tasks,
++        "run_pipeline",
++        lambda *_a, **_k: asyncio.sleep(0),
++    )
++
++    final_status, quarantine_reason = worker_tasks._run_precheck_pipeline(
++        recording_id="rec-step-log-fallback-1",
++        settings=cfg,
++        log_path=cfg.recordings_root
++        / "rec-step-log-fallback-1"
++        / "logs"
++        / "step-precheck.log",
++    )
++
++    assert final_status == RECORDING_STATUS_READY
++    assert quarantine_reason is None
++    log_text = (
++        cfg.recordings_root
++        / "rec-step-log-fallback-1"
++        / "logs"
++        / "step-precheck.log"
++    ).read_text(encoding="utf-8")
++    assert "diariser mode=fallback reason=pyannote_unavailable" in log_text
++    status_payload = json.loads(
++        (
++            cfg.recordings_root
++            / "rec-step-log-fallback-1"
++            / "derived"
++            / "diarization_status.json"
++        ).read_text(encoding="utf-8")
++    )
++    assert status_payload == {
++        "mode": "fallback",
++        "degraded": True,
++        "reason": "pyannote_unavailable",
++    }
++
++
+ def test_process_job_rejects_unknown_job_type():
+     with pytest.raises(ValueError, match="Unsupported job type"):
+         worker_tasks.process_job("job-unknown-1", "rec-unknown-1", "unknown")
+diff --git a/tests/test_db_queue.py b/tests/test_db_queue.py
+index 4c33149..3dc4e6e 100644
+--- a/tests/test_db_queue.py
++++ b/tests/test_db_queue.py
+@@ -2,6 +2,7 @@ from __future__ import annotations
+ 
+ import asyncio
+ import builtins
++import json
+ from pathlib import Path
+ import sqlite3
+ import sys
+@@ -1674,6 +1675,20 @@ def test_worker_precheck_falls_back_when_diariser_init_fails(tmp_path: Path, mon
+     log_path = cfg.recordings_root / "rec-precheck-fallback-1" / "logs" / "step-precheck.log"
+     log_text = log_path.read_text(encoding="utf-8")
+     assert "diariser init failed, falling back: RuntimeError: boom" in log_text
++    assert "diariser mode=fallback reason=init_failed" in log_text
++    status_payload = json.loads(
++        (
++            cfg.recordings_root
++            / "rec-precheck-fallback-1"
++            / "derived"
++            / "diarization_status.json"
++        ).read_text(encoding="utf-8")
++    )
++    assert status_payload == {
++        "mode": "fallback",
++        "degraded": True,
++        "reason": "RuntimeError: boom",
++    }
+ 
+ 
+ def test_worker_clears_progress_when_pipeline_fails(tmp_path: Path, monkeypatch):
+@@ -1834,6 +1849,45 @@ def test_build_diariser_wraps_sync_pyannote_pipeline(monkeypatch):
+     assert from_pretrained_call["kwargs"] == {}
+ 
+ 
++def test_build_diariser_passes_env_speaker_hints(monkeypatch):
++    from lan_app import worker_tasks
++
++    class _FakeModel:
++        def __init__(self):
++            self.calls: list[tuple[object, dict[str, object]]] = []
++
++        def __call__(self, input_payload: object, **kwargs: object):
++            self.calls.append((input_payload, dict(kwargs)))
++            return {"ok": True}
++
++    fake_model = _FakeModel()
++
++    class _FakePipeline:
++        @staticmethod
++        def from_pretrained(_name: str, **_kwargs):
++            return fake_model
++
++    pyannote_audio = ModuleType("pyannote.audio")
++    pyannote_audio.Pipeline = _FakePipeline  # type: ignore[attr-defined]
++    pyannote_pkg = ModuleType("pyannote")
++    pyannote_pkg.audio = pyannote_audio  # type: ignore[attr-defined]
++    monkeypatch.setitem(sys.modules, "pyannote", pyannote_pkg)
++    monkeypatch.setitem(sys.modules, "pyannote.audio", pyannote_audio)
++    monkeypatch.setenv("LAN_DIARIZATION_MIN_SPEAKERS", "2")
++    monkeypatch.setenv("LAN_DIARIZATION_MAX_SPEAKERS", "3")
++
++    diariser = worker_tasks._build_diariser(duration_sec=30.0)
++    result = asyncio.run(diariser(Path("/tmp/fake.wav")))
++
++    assert result == {"ok": True}
++    assert fake_model.calls == [
++        (
++            {"audio": "/tmp/fake.wav"},
++            {"min_speakers": 2, "max_speakers": 3},
++        )
++    ]
++
++
+ def test_build_diariser_surfaces_pyannote_model_load_errors(monkeypatch):
+     from lan_app import worker_tasks
+ 
+diff --git a/tests/test_diarization_loader.py b/tests/test_diarization_loader.py
+index 9b2fb68..68ba4be 100644
+--- a/tests/test_diarization_loader.py
++++ b/tests/test_diarization_loader.py
+@@ -1,6 +1,8 @@
+ from __future__ import annotations
+ 
+ import builtins
++import contextlib
++import pickle
+ from types import ModuleType, SimpleNamespace
+ import sys
+ 
+@@ -232,3 +234,179 @@ def test_load_pyannote_pipeline_raises_runtime_error_when_candidates_are_empty(
+     monkeypatch.setattr(diarization_loader, "_candidate_load_inputs", lambda *_a, **_k: [])
+     with pytest.raises(RuntimeError, match="Unable to load diarization pipeline"):
+         diarization_loader.load_pyannote_pipeline(model_id="repo/empty@main")
++
++
++def test_load_pyannote_pipeline_retries_trusted_unsupported_global(
++    monkeypatch: pytest.MonkeyPatch,
++):
++    retry_fqn = "pyannote.audio.core.task.Specifications"
++    calls: list[tuple[str, dict[str, object]]] = []
++    safe_globals_calls: list[list[str]] = []
++    imported: list[str] = []
++
++    @contextlib.contextmanager
++    def _fake_safe_globals(extra_fqns: list[str] | None = None):
++        safe_globals_calls.append(list(extra_fqns or []))
++        yield
++
++    def _impl(name: str, **kwargs):
++        calls.append((name, dict(kwargs)))
++        if len(calls) == 1:
++            raise pickle.UnpicklingError(
++                "Weights only load failed. Unsupported global: GLOBAL "
++                f"{retry_fqn}"
++            )
++        return lambda payload: payload
++
++    _install_fake_pipeline(monkeypatch, _impl)
++    monkeypatch.setattr(
++        diarization_loader,
++        "diarization_safe_globals_for_torch_load",
++        _fake_safe_globals,
++    )
++    monkeypatch.setattr(
++        diarization_loader,
++        "import_trusted_diarization_symbol",
++        lambda fqn: imported.append(fqn) or object(),
++    )
++
++    model = diarization_loader.load_pyannote_pipeline(model_id="repo/retry")
++    assert callable(model)
++    assert calls == [
++        ("repo/retry", {}),
++        ("repo/retry", {}),
++    ]
++    assert safe_globals_calls == [
++        [],
++        [retry_fqn],
++    ]
++    assert imported == [retry_fqn]
++
++
++def test_load_pyannote_pipeline_rejects_untrusted_unsupported_global(
++    monkeypatch: pytest.MonkeyPatch,
++):
++    calls: list[tuple[str, dict[str, object]]] = []
++    imported: list[str] = []
++
++    @contextlib.contextmanager
++    def _fake_safe_globals(extra_fqns: list[str] | None = None):
++        del extra_fqns
++        yield
++
++    def _impl(name: str, **kwargs):
++        calls.append((name, dict(kwargs)))
++        raise RuntimeError("Unsupported global: GLOBAL builtins.eval")
++
++    _install_fake_pipeline(monkeypatch, _impl)
++    monkeypatch.setattr(
++        diarization_loader,
++        "diarization_safe_globals_for_torch_load",
++        _fake_safe_globals,
++    )
++    monkeypatch.setattr(
++        diarization_loader,
++        "import_trusted_diarization_symbol",
++        lambda fqn: imported.append(fqn) or object(),
++    )
++
++    with pytest.raises(RuntimeError, match="builtins.eval"):
++        diarization_loader.load_pyannote_pipeline(model_id="repo/unsafe")
++    assert calls == [("repo/unsafe", {})]
++    assert imported == []
++
++
++def test_from_pretrained_with_safe_globals_raises_when_import_fails(
++    monkeypatch: pytest.MonkeyPatch,
++):
++    retry_fqn = "pyannote.audio.core.task.Specifications"
++
++    @contextlib.contextmanager
++    def _fake_safe_globals(extra_fqns: list[str] | None = None):
++        del extra_fqns
++        yield
++
++    def _always_unsupported(_name: str, **_kwargs):
++        raise pickle.UnpicklingError(f"Unsupported global: GLOBAL {retry_fqn}")
++
++    monkeypatch.setattr(
++        diarization_loader,
++        "diarization_safe_globals_for_torch_load",
++        _fake_safe_globals,
++    )
++    monkeypatch.setattr(
++        diarization_loader,
++        "unsupported_global_diarization_fqn_from_error",
++        lambda _exc: retry_fqn,
++    )
++    monkeypatch.setattr(
++        diarization_loader,
++        "import_trusted_diarization_symbol",
++        lambda _fqn: None,
++    )
++
++    with pytest.raises(pickle.UnpicklingError, match=retry_fqn):
++        diarization_loader._from_pretrained_with_safe_globals(
++            _always_unsupported,
++            "repo/test",
++            {},
++        )
++
++
++def test_from_pretrained_with_safe_globals_raises_last_error_after_retry_cap(
++    monkeypatch: pytest.MonkeyPatch,
++):
++    calls: list[str] = []
++    retry_fqns = iter(
++        [
++            "pyannote.audio.core.task.Specifications",
++            "omegaconf.base.ContainerMetadata",
++            "torch.torch_version.TorchVersion",
++        ]
++    )
++
++    @contextlib.contextmanager
++    def _fake_safe_globals(extra_fqns: list[str] | None = None):
++        del extra_fqns
++        yield
++
++    def _always_fail(_name: str, **_kwargs):
++        calls.append("x")
++        raise RuntimeError("unsupported global loop")
++
++    monkeypatch.setattr(
++        diarization_loader,
++        "diarization_safe_globals_for_torch_load",
++        _fake_safe_globals,
++    )
++    monkeypatch.setattr(
++        diarization_loader,
++        "unsupported_global_diarization_fqn_from_error",
++        lambda _exc: next(retry_fqns),
++    )
++    monkeypatch.setattr(
++        diarization_loader,
++        "import_trusted_diarization_symbol",
++        lambda _fqn: object(),
++    )
++
++    with pytest.raises(RuntimeError, match="unsupported global loop"):
++        diarization_loader._from_pretrained_with_safe_globals(
++            _always_fail,
++            "repo/test",
++            {},
++        )
++    assert len(calls) == diarization_loader._MAX_SAFE_GLOBAL_ATTEMPTS
++
++
++def test_from_pretrained_with_safe_globals_raises_runtime_error_when_attempts_zero(
++    monkeypatch: pytest.MonkeyPatch,
++):
++    monkeypatch.setattr(diarization_loader, "_MAX_SAFE_GLOBAL_ATTEMPTS", 0)
++
++    with pytest.raises(RuntimeError, match="Unable to load diarization pipeline"):
++        diarization_loader._from_pretrained_with_safe_globals(
++            lambda *_a, **_k: object(),
++            "repo/test",
++            {},
++        )
+diff --git a/tests/test_torch_safe_globals.py b/tests/test_torch_safe_globals.py
+index 56c51ea..0f44383 100644
+--- a/tests/test_torch_safe_globals.py
++++ b/tests/test_torch_safe_globals.py
+@@ -391,3 +391,133 @@ def test_add_safe_globals_both_forms_type_error_logs_warning(monkeypatch, caplog
+             pass
+ 
+     assert any("rejected both" in r.message for r in caplog.records)
++
++
++def _install_fake_diarization_symbols(monkeypatch, module) -> dict[str, object]:
++    class TorchVersion:
++        pass
++
++    class ListConfig:
++        pass
++
++    class DictConfig:
++        pass
++
++    class ContainerMetadata:
++        pass
++
++    class Specifications:
++        pass
++
++    symbols: dict[str, object] = {
++        "torch.torch_version.TorchVersion": TorchVersion,
++        "omegaconf.listconfig.ListConfig": ListConfig,
++        "omegaconf.dictconfig.DictConfig": DictConfig,
++        "omegaconf.base.ContainerMetadata": ContainerMetadata,
++        "pyannote.audio.core.task.Specifications": Specifications,
++        "pyannote.audio.core.task.ExtraSafe": type("ExtraSafe", (), {}),
++    }
++    monkeypatch.setattr(module, "_import_symbol", lambda fqn: symbols.get(fqn))
++    return symbols
++
++
++def test_diarization_context_safe_globals_dict_fallback(monkeypatch) -> None:
++    module = _reload_module()
++    dict_calls: list[dict[str, object]] = []
++    entered: list[str] = []
++
++    def _safe_globals(items):
++        if isinstance(items, list):
++            raise TypeError("list form unsupported")
++
++        @contextlib.contextmanager
++        def _cm():
++            dict_calls.append(dict(items))
++            entered.append("enter")
++            try:
++                yield
++            finally:
++                entered.append("exit")
++
++        return _cm()
++
++    fake_torch = ModuleType("torch")
++    fake_torch.serialization = SimpleNamespace(safe_globals=_safe_globals)
++    monkeypatch.setitem(sys.modules, "torch", fake_torch)
++    symbols = _install_fake_diarization_symbols(monkeypatch, module)
++
++    with module.diarization_safe_globals_for_torch_load(
++        extra_fqns=["pyannote.audio.core.task.ExtraSafe", "builtins.eval"]
++    ):
++        entered.append("body")
++
++    assert len(dict_calls) == 1
++    assert dict_calls[0] == {
++        "torch.torch_version.TorchVersion": symbols["torch.torch_version.TorchVersion"],
++        "omegaconf.listconfig.ListConfig": symbols["omegaconf.listconfig.ListConfig"],
++        "omegaconf.dictconfig.DictConfig": symbols["omegaconf.dictconfig.DictConfig"],
++        "omegaconf.base.ContainerMetadata": symbols["omegaconf.base.ContainerMetadata"],
++        "pyannote.audio.core.task.Specifications": symbols["pyannote.audio.core.task.Specifications"],
++        "pyannote.audio.core.task.ExtraSafe": symbols["pyannote.audio.core.task.ExtraSafe"],
++    }
++    assert entered == ["enter", "body", "exit"]
++
++
++def test_diarization_parser_and_import_filter() -> None:
++    module = _reload_module()
++
++    assert module.is_trusted_diarization_global_fqn("pyannote.audio.core.task.Specifications")
++    assert module.is_trusted_diarization_global_fqn("omegaconf.base.ContainerMetadata")
++    assert module.is_trusted_diarization_global_fqn("torch.torch_version.TorchVersion")
++    assert not module.is_trusted_diarization_global_fqn("builtins.eval")
++
++    assert (
++        module.parse_diarization_unsupported_global_fqn(
++            "Unsupported global: GLOBAL torch.torch_version.TorchVersion"
++        )
++        == "torch.torch_version.TorchVersion"
++    )
++    assert (
++        module.parse_diarization_unsupported_global_fqn(
++            "Unsupported global: GLOBAL pyannote.audio.core.task.Specifications"
++        )
++        == "pyannote.audio.core.task.Specifications"
++    )
++    assert module.parse_diarization_unsupported_global_fqn("Unsupported global: GLOBAL builtins.eval") is None
++    assert (
++        module.unsupported_global_diarization_fqn_from_error(
++            pickle.UnpicklingError("Unsupported global: GLOBAL omegaconf.listconfig.ListConfig")
++        )
++        == "omegaconf.listconfig.ListConfig"
++    )
++    assert module.unsupported_global_diarization_fqn_from_error(ValueError("Unsupported global: GLOBAL omegaconf.listconfig.ListConfig")) is None
++
++
++def test_collect_symbols_skips_untrusted_base_entries(monkeypatch) -> None:
++    module = _reload_module()
++    imported: list[str] = []
++    monkeypatch.setattr(
++        module,
++        "_import_symbol",
++        lambda fqn: imported.append(fqn) or object(),
++    )
++    pairs = module._collect_symbols(
++        ("builtins.eval",),
++        None,
++        trusted_fqn=lambda fqn: fqn.startswith("omegaconf."),
++    )
++    assert pairs == []
++    assert imported == []
++
++
++def test_import_trusted_diarization_symbol_only_imports_trusted(monkeypatch) -> None:
++    module = _reload_module()
++    imported: list[str] = []
++    monkeypatch.setattr(
++        module,
++        "_import_symbol",
++        lambda fqn: imported.append(fqn) or "ok",
++    )
++    assert module.import_trusted_diarization_symbol("builtins.eval") is None
++    assert module.import_trusted_diarization_symbol("pyannote.audio.core.task.Specifications") == "ok"
++    assert imported == ["pyannote.audio.core.task.Specifications"]

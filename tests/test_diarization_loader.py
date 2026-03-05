@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import builtins
+import contextlib
+import pickle
 from types import ModuleType, SimpleNamespace
 import sys
 
@@ -232,3 +234,179 @@ def test_load_pyannote_pipeline_raises_runtime_error_when_candidates_are_empty(
     monkeypatch.setattr(diarization_loader, "_candidate_load_inputs", lambda *_a, **_k: [])
     with pytest.raises(RuntimeError, match="Unable to load diarization pipeline"):
         diarization_loader.load_pyannote_pipeline(model_id="repo/empty@main")
+
+
+def test_load_pyannote_pipeline_retries_trusted_unsupported_global(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    retry_fqn = "pyannote.audio.core.task.Specifications"
+    calls: list[tuple[str, dict[str, object]]] = []
+    safe_globals_calls: list[list[str]] = []
+    imported: list[str] = []
+
+    @contextlib.contextmanager
+    def _fake_safe_globals(extra_fqns: list[str] | None = None):
+        safe_globals_calls.append(list(extra_fqns or []))
+        yield
+
+    def _impl(name: str, **kwargs):
+        calls.append((name, dict(kwargs)))
+        if len(calls) == 1:
+            raise pickle.UnpicklingError(
+                "Weights only load failed. Unsupported global: GLOBAL "
+                f"{retry_fqn}"
+            )
+        return lambda payload: payload
+
+    _install_fake_pipeline(monkeypatch, _impl)
+    monkeypatch.setattr(
+        diarization_loader,
+        "diarization_safe_globals_for_torch_load",
+        _fake_safe_globals,
+    )
+    monkeypatch.setattr(
+        diarization_loader,
+        "import_trusted_diarization_symbol",
+        lambda fqn: imported.append(fqn) or object(),
+    )
+
+    model = diarization_loader.load_pyannote_pipeline(model_id="repo/retry")
+    assert callable(model)
+    assert calls == [
+        ("repo/retry", {}),
+        ("repo/retry", {}),
+    ]
+    assert safe_globals_calls == [
+        [],
+        [retry_fqn],
+    ]
+    assert imported == [retry_fqn]
+
+
+def test_load_pyannote_pipeline_rejects_untrusted_unsupported_global(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    calls: list[tuple[str, dict[str, object]]] = []
+    imported: list[str] = []
+
+    @contextlib.contextmanager
+    def _fake_safe_globals(extra_fqns: list[str] | None = None):
+        del extra_fqns
+        yield
+
+    def _impl(name: str, **kwargs):
+        calls.append((name, dict(kwargs)))
+        raise RuntimeError("Unsupported global: GLOBAL builtins.eval")
+
+    _install_fake_pipeline(monkeypatch, _impl)
+    monkeypatch.setattr(
+        diarization_loader,
+        "diarization_safe_globals_for_torch_load",
+        _fake_safe_globals,
+    )
+    monkeypatch.setattr(
+        diarization_loader,
+        "import_trusted_diarization_symbol",
+        lambda fqn: imported.append(fqn) or object(),
+    )
+
+    with pytest.raises(RuntimeError, match="builtins.eval"):
+        diarization_loader.load_pyannote_pipeline(model_id="repo/unsafe")
+    assert calls == [("repo/unsafe", {})]
+    assert imported == []
+
+
+def test_from_pretrained_with_safe_globals_raises_when_import_fails(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    retry_fqn = "pyannote.audio.core.task.Specifications"
+
+    @contextlib.contextmanager
+    def _fake_safe_globals(extra_fqns: list[str] | None = None):
+        del extra_fqns
+        yield
+
+    def _always_unsupported(_name: str, **_kwargs):
+        raise pickle.UnpicklingError(f"Unsupported global: GLOBAL {retry_fqn}")
+
+    monkeypatch.setattr(
+        diarization_loader,
+        "diarization_safe_globals_for_torch_load",
+        _fake_safe_globals,
+    )
+    monkeypatch.setattr(
+        diarization_loader,
+        "unsupported_global_diarization_fqn_from_error",
+        lambda _exc: retry_fqn,
+    )
+    monkeypatch.setattr(
+        diarization_loader,
+        "import_trusted_diarization_symbol",
+        lambda _fqn: None,
+    )
+
+    with pytest.raises(pickle.UnpicklingError, match=retry_fqn):
+        diarization_loader._from_pretrained_with_safe_globals(
+            _always_unsupported,
+            "repo/test",
+            {},
+        )
+
+
+def test_from_pretrained_with_safe_globals_raises_last_error_after_retry_cap(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    calls: list[str] = []
+    retry_fqns = iter(
+        [
+            "pyannote.audio.core.task.Specifications",
+            "omegaconf.base.ContainerMetadata",
+            "torch.torch_version.TorchVersion",
+        ]
+    )
+
+    @contextlib.contextmanager
+    def _fake_safe_globals(extra_fqns: list[str] | None = None):
+        del extra_fqns
+        yield
+
+    def _always_fail(_name: str, **_kwargs):
+        calls.append("x")
+        raise RuntimeError("unsupported global loop")
+
+    monkeypatch.setattr(
+        diarization_loader,
+        "diarization_safe_globals_for_torch_load",
+        _fake_safe_globals,
+    )
+    monkeypatch.setattr(
+        diarization_loader,
+        "unsupported_global_diarization_fqn_from_error",
+        lambda _exc: next(retry_fqns),
+    )
+    monkeypatch.setattr(
+        diarization_loader,
+        "import_trusted_diarization_symbol",
+        lambda _fqn: object(),
+    )
+
+    with pytest.raises(RuntimeError, match="unsupported global loop"):
+        diarization_loader._from_pretrained_with_safe_globals(
+            _always_fail,
+            "repo/test",
+            {},
+        )
+    assert len(calls) == diarization_loader._MAX_SAFE_GLOBAL_ATTEMPTS
+
+
+def test_from_pretrained_with_safe_globals_raises_runtime_error_when_attempts_zero(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(diarization_loader, "_MAX_SAFE_GLOBAL_ATTEMPTS", 0)
+
+    with pytest.raises(RuntimeError, match="Unable to load diarization pipeline"):
+        diarization_loader._from_pretrained_with_safe_globals(
+            lambda *_a, **_k: object(),
+            "repo/test",
+            {},
+        )

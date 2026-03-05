@@ -4,12 +4,15 @@ import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
+import os
 from pathlib import Path
 import re
 import time
 from types import SimpleNamespace
 from typing import Any
 
+from lan_transcriber.artifacts import atomic_write_json
+from lan_transcriber.compat.call_compat import call_with_supported_kwargs
 from lan_transcriber.llm_client import LLMClient
 from lan_transcriber.pipeline import Settings as PipelineSettings
 from lan_transcriber.pipeline import run_pipeline, run_precheck
@@ -418,6 +421,7 @@ def _load_calendar_summary_context(
 class _FallbackDiariser:
     def __init__(self, duration_sec: float | None) -> None:
         self._duration_sec = max(duration_sec or 0.1, 0.1)
+        self.mode = "fallback"
 
     async def __call__(self, _audio_path: Path):
         duration = self._duration_sec
@@ -433,10 +437,23 @@ class _FallbackDiariser:
 
 
 class _PyannoteDiariser:
-    def __init__(self, pipeline_model: Any) -> None:
+    def __init__(
+        self,
+        pipeline_model: Any,
+        *,
+        min_speakers: int | None = None,
+        max_speakers: int | None = None,
+    ) -> None:
         if pipeline_model is None or not callable(pipeline_model):
             raise TypeError("pipeline_model must be a callable pyannote pipeline.")
         self._pipeline_model = pipeline_model
+        self.mode = "pyannote"
+        call_kwargs: dict[str, int] = {}
+        if min_speakers is not None:
+            call_kwargs["min_speakers"] = min_speakers
+        if max_speakers is not None:
+            call_kwargs["max_speakers"] = max_speakers
+        self._call_kwargs = call_kwargs
 
     async def __call__(self, audio_path: Path):
         audio_text = str(audio_path)
@@ -462,13 +479,46 @@ class _PyannoteDiariser:
 
         def _run_sync():
             try:
-                return self._pipeline_model({"audio": audio_text})
+                return call_with_supported_kwargs(
+                    self._pipeline_model,
+                    {"audio": audio_text},
+                    **self._call_kwargs,
+                )
             except TypeError as exc:
                 if not _is_signature_mismatch(exc):
                     raise
-                return self._pipeline_model(audio_text)
+                return call_with_supported_kwargs(
+                    self._pipeline_model,
+                    audio_text,
+                    **self._call_kwargs,
+                )
 
         return await asyncio.to_thread(_run_sync)
+
+
+def _optional_positive_env_int(name: str) -> int | None:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return None
+    try:
+        value = int(raw)
+    except ValueError:
+        return None
+    if value < 1:
+        return None
+    return value
+
+
+def _resolve_diarization_speaker_hints() -> tuple[int | None, int | None]:
+    min_speakers = _optional_positive_env_int("LAN_DIARIZATION_MIN_SPEAKERS")
+    max_speakers = _optional_positive_env_int("LAN_DIARIZATION_MAX_SPEAKERS")
+    if (
+        min_speakers is not None
+        and max_speakers is not None
+        and min_speakers > max_speakers
+    ):
+        return None, None
+    return min_speakers, max_speakers
 
 
 def _build_pipeline_settings(settings: AppSettings) -> PipelineSettings:
@@ -483,6 +533,7 @@ def _build_pipeline_settings(settings: AppSettings) -> PipelineSettings:
 
 
 def _build_diariser(duration_sec: float | None, *, model_id: str | None = None):
+    min_speakers, max_speakers = _resolve_diarization_speaker_hints()
     try:
         model = load_pyannote_pipeline(model_id=model_id)
     except ModuleNotFoundError as exc:
@@ -490,7 +541,32 @@ def _build_diariser(duration_sec: float | None, *, model_id: str | None = None):
         if missing == "pyannote":
             return _FallbackDiariser(duration_sec)
         raise
-    return _PyannoteDiariser(model)
+    return _PyannoteDiariser(
+        model,
+        min_speakers=min_speakers,
+        max_speakers=max_speakers,
+    )
+
+
+def _write_diarization_status_artifact(
+    *,
+    recording_id: str,
+    mode: str,
+    reason: str | None,
+    settings: AppSettings,
+) -> None:
+    payload: dict[str, Any] = {
+        "mode": mode,
+        "degraded": mode != "pyannote",
+    }
+    if reason:
+        payload["reason"] = reason
+    path = settings.recordings_root / recording_id / "derived" / "diarization_status.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        atomic_write_json(path, payload)
+    except OSError:
+        pass
 
 
 def _run_precheck_pipeline(
@@ -519,14 +595,31 @@ def _run_precheck_pipeline(
             f"speech_ratio={precheck.speech_ratio}"
         ),
     )
+    diarization_mode = "pyannote"
+    diarization_reason: str | None = None
     if precheck.quarantine_reason:
         diariser = _FallbackDiariser(precheck.duration_sec)
+        diarization_mode = "fallback"
+        diarization_reason = "precheck_quarantine"
+        _append_step_log(
+            log_path,
+            "diariser mode=fallback reason=precheck_quarantine",
+        )
     else:
         try:
             diariser = _build_diariser(
                 precheck.duration_sec,
                 model_id=settings.diarization_model_id,
             )
+            if isinstance(diariser, _FallbackDiariser):
+                diarization_mode = "fallback"
+                diarization_reason = "pyannote_unavailable"
+                _append_step_log(
+                    log_path,
+                    "diariser mode=fallback reason=pyannote_unavailable",
+                )
+            else:
+                _append_step_log(log_path, "diariser mode=pyannote")
         except Exception as exc:
             _append_step_log(
                 log_path,
@@ -536,6 +629,18 @@ def _run_precheck_pipeline(
                 ),
             )
             diariser = _FallbackDiariser(precheck.duration_sec)
+            diarization_mode = "fallback"
+            diarization_reason = f"{type(exc).__name__}: {exc}"
+            _append_step_log(
+                log_path,
+                "diariser mode=fallback reason=init_failed",
+            )
+    _write_diarization_status_artifact(
+        recording_id=recording_id,
+        mode=diarization_mode,
+        reason=diarization_reason,
+        settings=settings,
+    )
     calendar_title, calendar_attendees = _load_calendar_summary_context(
         recording_id,
         settings,

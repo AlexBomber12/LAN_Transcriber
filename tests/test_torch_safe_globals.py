@@ -391,3 +391,133 @@ def test_add_safe_globals_both_forms_type_error_logs_warning(monkeypatch, caplog
             pass
 
     assert any("rejected both" in r.message for r in caplog.records)
+
+
+def _install_fake_diarization_symbols(monkeypatch, module) -> dict[str, object]:
+    class TorchVersion:
+        pass
+
+    class ListConfig:
+        pass
+
+    class DictConfig:
+        pass
+
+    class ContainerMetadata:
+        pass
+
+    class Specifications:
+        pass
+
+    symbols: dict[str, object] = {
+        "torch.torch_version.TorchVersion": TorchVersion,
+        "omegaconf.listconfig.ListConfig": ListConfig,
+        "omegaconf.dictconfig.DictConfig": DictConfig,
+        "omegaconf.base.ContainerMetadata": ContainerMetadata,
+        "pyannote.audio.core.task.Specifications": Specifications,
+        "pyannote.audio.core.task.ExtraSafe": type("ExtraSafe", (), {}),
+    }
+    monkeypatch.setattr(module, "_import_symbol", lambda fqn: symbols.get(fqn))
+    return symbols
+
+
+def test_diarization_context_safe_globals_dict_fallback(monkeypatch) -> None:
+    module = _reload_module()
+    dict_calls: list[dict[str, object]] = []
+    entered: list[str] = []
+
+    def _safe_globals(items):
+        if isinstance(items, list):
+            raise TypeError("list form unsupported")
+
+        @contextlib.contextmanager
+        def _cm():
+            dict_calls.append(dict(items))
+            entered.append("enter")
+            try:
+                yield
+            finally:
+                entered.append("exit")
+
+        return _cm()
+
+    fake_torch = ModuleType("torch")
+    fake_torch.serialization = SimpleNamespace(safe_globals=_safe_globals)
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    symbols = _install_fake_diarization_symbols(monkeypatch, module)
+
+    with module.diarization_safe_globals_for_torch_load(
+        extra_fqns=["pyannote.audio.core.task.ExtraSafe", "builtins.eval"]
+    ):
+        entered.append("body")
+
+    assert len(dict_calls) == 1
+    assert dict_calls[0] == {
+        "torch.torch_version.TorchVersion": symbols["torch.torch_version.TorchVersion"],
+        "omegaconf.listconfig.ListConfig": symbols["omegaconf.listconfig.ListConfig"],
+        "omegaconf.dictconfig.DictConfig": symbols["omegaconf.dictconfig.DictConfig"],
+        "omegaconf.base.ContainerMetadata": symbols["omegaconf.base.ContainerMetadata"],
+        "pyannote.audio.core.task.Specifications": symbols["pyannote.audio.core.task.Specifications"],
+        "pyannote.audio.core.task.ExtraSafe": symbols["pyannote.audio.core.task.ExtraSafe"],
+    }
+    assert entered == ["enter", "body", "exit"]
+
+
+def test_diarization_parser_and_import_filter() -> None:
+    module = _reload_module()
+
+    assert module.is_trusted_diarization_global_fqn("pyannote.audio.core.task.Specifications")
+    assert module.is_trusted_diarization_global_fqn("omegaconf.base.ContainerMetadata")
+    assert module.is_trusted_diarization_global_fqn("torch.torch_version.TorchVersion")
+    assert not module.is_trusted_diarization_global_fqn("builtins.eval")
+
+    assert (
+        module.parse_diarization_unsupported_global_fqn(
+            "Unsupported global: GLOBAL torch.torch_version.TorchVersion"
+        )
+        == "torch.torch_version.TorchVersion"
+    )
+    assert (
+        module.parse_diarization_unsupported_global_fqn(
+            "Unsupported global: GLOBAL pyannote.audio.core.task.Specifications"
+        )
+        == "pyannote.audio.core.task.Specifications"
+    )
+    assert module.parse_diarization_unsupported_global_fqn("Unsupported global: GLOBAL builtins.eval") is None
+    assert (
+        module.unsupported_global_diarization_fqn_from_error(
+            pickle.UnpicklingError("Unsupported global: GLOBAL omegaconf.listconfig.ListConfig")
+        )
+        == "omegaconf.listconfig.ListConfig"
+    )
+    assert module.unsupported_global_diarization_fqn_from_error(ValueError("Unsupported global: GLOBAL omegaconf.listconfig.ListConfig")) is None
+
+
+def test_collect_symbols_skips_untrusted_base_entries(monkeypatch) -> None:
+    module = _reload_module()
+    imported: list[str] = []
+    monkeypatch.setattr(
+        module,
+        "_import_symbol",
+        lambda fqn: imported.append(fqn) or object(),
+    )
+    pairs = module._collect_symbols(
+        ("builtins.eval",),
+        None,
+        trusted_fqn=lambda fqn: fqn.startswith("omegaconf."),
+    )
+    assert pairs == []
+    assert imported == []
+
+
+def test_import_trusted_diarization_symbol_only_imports_trusted(monkeypatch) -> None:
+    module = _reload_module()
+    imported: list[str] = []
+    monkeypatch.setattr(
+        module,
+        "_import_symbol",
+        lambda fqn: imported.append(fqn) or "ok",
+    )
+    assert module.import_trusted_diarization_symbol("builtins.eval") is None
+    assert module.import_trusted_diarization_symbol("pyannote.audio.core.task.Specifications") == "ok"
+    assert imported == ["pyannote.audio.core.task.Specifications"]
