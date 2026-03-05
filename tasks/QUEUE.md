@@ -405,3 +405,8 @@ Queue (in order)
 - Status: DONE
 - Tasks file: tasks/PR-FIX-DIARIZATION-WEIGHTS-ONLY-01.md
 - Depends on: PR-FIX-LLM-MODEL-DEFAULT-01
+
+80) PR-AUDIO-SANITIZE-FFMPEG-01: Sanitize uploaded audio with ffmpeg to normalized WAV before VAD/ASR/diarization to avoid broken MP3 decode hangs and partial outputs
+- Status: TODO
+- Tasks file: tasks/PR-AUDIO-SANITIZE-FFMPEG-01.md
+- Depends on: PR-FIX-DIARIZATION-WEIGHTS-ONLY-01
