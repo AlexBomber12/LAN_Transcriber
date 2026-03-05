@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import sys
 from types import SimpleNamespace
+import wave
 
 import pytest
 
@@ -33,6 +34,16 @@ def _db_settings(tmp_path: Path) -> AppSettings:
     )
     cfg.metrics_snapshot_path = tmp_path / "metrics.snap"
     return cfg
+
+
+def _write_pcm_wav(path: Path, *, sample_rate: int = 16000, duration_sec: float = 0.1) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    frames = max(int(sample_rate * duration_sec), 1)
+    with wave.open(str(path), "wb") as wav_file:
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(sample_rate)
+        wav_file.writeframes(b"\x00\x00" * frames)
 
 
 def _lightweight_settings(tmp_path: Path, *, max_job_attempts: int = 3) -> SimpleNamespace:
@@ -580,7 +591,7 @@ def test_run_precheck_pipeline_records_step_logs_and_explicit_summary_target(
 
     raw_audio = cfg.recordings_root / "rec-step-log-1" / "raw" / "audio.wav"
     raw_audio.parent.mkdir(parents=True, exist_ok=True)
-    raw_audio.write_bytes(b"\x00")
+    _write_pcm_wav(raw_audio)
 
     monkeypatch.setattr(
         worker_tasks,
@@ -768,7 +779,7 @@ def test_run_precheck_pipeline_marks_fallback_when_builder_returns_fallback(
 
     raw_audio = cfg.recordings_root / "rec-step-log-fallback-1" / "raw" / "audio.wav"
     raw_audio.parent.mkdir(parents=True, exist_ok=True)
-    raw_audio.write_bytes(b"\x00")
+    _write_pcm_wav(raw_audio)
 
     monkeypatch.setattr(
         worker_tasks,

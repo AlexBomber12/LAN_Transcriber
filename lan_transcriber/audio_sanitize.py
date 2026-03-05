@@ -4,12 +4,29 @@ import shlex
 import shutil
 import subprocess
 from pathlib import Path
+import wave
 
 DEFAULT_AUDIO_SANITIZE_TIMEOUT_SECONDS = 120.0
 
 
 class AudioSanitizeError(Exception):
     """Raised when ffmpeg-based audio sanitization fails."""
+
+
+def _is_target_pcm_wav(audio_path: Path) -> bool:
+    if audio_path.suffix.lower() != ".wav":
+        return False
+    try:
+        with wave.open(str(audio_path), "rb") as wav_file:
+            fmt = (
+                wav_file.getframerate(),
+                wav_file.getnchannels(),
+                wav_file.getsampwidth(),
+                wav_file.getcomptype(),
+            )
+            return fmt == (16000, 1, 2, "NONE")
+    except Exception:
+        return False
 
 
 def sanitize_audio_for_pipeline(
@@ -21,8 +38,8 @@ def sanitize_audio_for_pipeline(
     input_audio = Path(input_path)
     output_audio = Path(output_path)
 
-    # Deterministic short-circuit for WAV uploads.
-    if input_audio.suffix.lower() == ".wav":
+    # Deterministic short-circuit only for already normalized PCM WAV.
+    if _is_target_pcm_wav(input_audio):
         return input_audio
 
     ffmpeg = shutil.which("ffmpeg")
@@ -64,12 +81,13 @@ def sanitize_audio_for_pipeline(
         ) from exc
 
     if proc.returncode != 0:
-        stderr_snippet = ((proc.stderr or proc.stdout or "").strip().replace("\n", " "))[
-            :400
-        ]
+        diagnostics = (proc.stderr or "").strip()
+        if not diagnostics:
+            diagnostics = (proc.stdout or "").strip()
+        diagnostics = diagnostics.replace("\n", " ")[:400]
         raise AudioSanitizeError(
             f"ffmpeg failed with exit code {proc.returncode}: {shlex.join(cmd)}; "
-            f"stderr={stderr_snippet}"
+            f"stderr={diagnostics}"
         )
 
     return output_audio

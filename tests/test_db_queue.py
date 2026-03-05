@@ -9,6 +9,7 @@ import sys
 import threading
 import time
 from types import ModuleType
+import wave
 
 from fastapi.testclient import TestClient
 import pytest
@@ -70,6 +71,16 @@ def _test_settings(tmp_path: Path) -> AppSettings:
     )
     cfg.metrics_snapshot_path = tmp_path / "metrics.snap"
     return cfg
+
+
+def _write_pcm_wav(path: Path, *, sample_rate: int = 16000, duration_sec: float = 0.1) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    frames = max(int(sample_rate * duration_sec), 1)
+    with wave.open(str(path), "wb") as wav_file:
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(sample_rate)
+        wav_file.writeframes(b"\x00\x00" * frames)
 
 
 def test_init_db_creates_mvp_tables(tmp_path: Path):
@@ -1064,7 +1075,7 @@ def test_worker_retryable_failure_retries_before_marking_failed(
 
     raw_audio = cfg.recordings_root / "rec-worker-retry-1" / "raw" / "audio.wav"
     raw_audio.parent.mkdir(parents=True, exist_ok=True)
-    raw_audio.write_bytes(b"\x00")
+    _write_pcm_wav(raw_audio)
     monkeypatch.setattr("lan_app.worker_tasks._resolve_raw_audio_path", lambda *_a, **_k: raw_audio)
 
     attempts = {"count": 0}
@@ -1127,7 +1138,7 @@ def test_worker_retry_does_not_revive_recovered_started_job(
 
     raw_audio = cfg.recordings_root / "rec-worker-retry-race-1" / "raw" / "audio.wav"
     raw_audio.parent.mkdir(parents=True, exist_ok=True)
-    raw_audio.write_bytes(b"\x00")
+    _write_pcm_wav(raw_audio)
     monkeypatch.setattr("lan_app.worker_tasks._resolve_raw_audio_path", lambda *_a, **_k: raw_audio)
     monkeypatch.setattr(
         "lan_app.worker_tasks.run_precheck",
@@ -1207,7 +1218,7 @@ def test_worker_retry_terminal_uses_effective_max_attempts_cap(
 
     raw_audio = cfg.recordings_root / "rec-worker-retry-cap-1" / "raw" / "audio.wav"
     raw_audio.parent.mkdir(parents=True, exist_ok=True)
-    raw_audio.write_bytes(b"\x00")
+    _write_pcm_wav(raw_audio)
     monkeypatch.setattr("lan_app.worker_tasks._resolve_raw_audio_path", lambda *_a, **_k: raw_audio)
     monkeypatch.setattr(
         "lan_app.worker_tasks.run_precheck",
@@ -1417,7 +1428,7 @@ def test_worker_precheck_quarantines_and_writes_artifacts(tmp_path: Path, monkey
 
     raw_audio = cfg.recordings_root / "rec-precheck-q-1" / "raw" / "audio.wav"
     raw_audio.parent.mkdir(parents=True, exist_ok=True)
-    raw_audio.write_bytes(b"\x00")
+    _write_pcm_wav(raw_audio)
 
     monkeypatch.setattr("lan_app.worker_tasks._resolve_raw_audio_path", lambda *_a, **_k: raw_audio)
     monkeypatch.setattr(
@@ -1611,7 +1622,7 @@ def test_worker_precheck_runs_pipeline_when_safe(tmp_path: Path, monkeypatch):
 
     raw_audio = cfg.recordings_root / "rec-precheck-ok-1" / "raw" / "audio.wav"
     raw_audio.parent.mkdir(parents=True, exist_ok=True)
-    raw_audio.write_bytes(b"\x00")
+    _write_pcm_wav(raw_audio)
 
     monkeypatch.setattr("lan_app.worker_tasks._resolve_raw_audio_path", lambda *_a, **_k: raw_audio)
     monkeypatch.setattr(
@@ -1682,7 +1693,7 @@ def test_worker_precheck_falls_back_when_diariser_init_fails(tmp_path: Path, mon
 
     raw_audio = cfg.recordings_root / "rec-precheck-fallback-1" / "raw" / "audio.wav"
     raw_audio.parent.mkdir(parents=True, exist_ok=True)
-    raw_audio.write_bytes(b"\x00")
+    _write_pcm_wav(raw_audio)
 
     monkeypatch.setattr("lan_app.worker_tasks._resolve_raw_audio_path", lambda *_a, **_k: raw_audio)
     monkeypatch.setattr(
@@ -1778,7 +1789,7 @@ def test_worker_clears_progress_when_pipeline_fails(tmp_path: Path, monkeypatch)
 
     raw_audio = cfg.recordings_root / "rec-progress-fail-1" / "raw" / "audio.wav"
     raw_audio.parent.mkdir(parents=True, exist_ok=True)
-    raw_audio.write_bytes(b"\x00")
+    _write_pcm_wav(raw_audio)
 
     monkeypatch.setattr("lan_app.worker_tasks._resolve_raw_audio_path", lambda *_a, **_k: raw_audio)
     monkeypatch.setattr(
@@ -1831,7 +1842,7 @@ def test_worker_precheck_keeps_auto_summary_target_unset(tmp_path: Path, monkeyp
 
     raw_audio = cfg.recordings_root / "rec-precheck-auto-target-1" / "raw" / "audio.wav"
     raw_audio.parent.mkdir(parents=True, exist_ok=True)
-    raw_audio.write_bytes(b"\x00")
+    _write_pcm_wav(raw_audio)
 
     monkeypatch.setattr("lan_app.worker_tasks._resolve_raw_audio_path", lambda *_a, **_k: raw_audio)
     monkeypatch.setattr(

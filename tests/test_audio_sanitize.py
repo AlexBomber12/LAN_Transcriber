@@ -2,15 +2,25 @@ from __future__ import annotations
 
 from pathlib import Path
 import subprocess
+import wave
 
 import pytest
 
 import lan_transcriber.audio_sanitize as audio_sanitize
 
 
+def _write_wav(path: Path, *, sample_rate: int, channels: int) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with wave.open(str(path), "wb") as wav_file:
+        wav_file.setframerate(sample_rate)
+        wav_file.setnchannels(channels)
+        wav_file.setsampwidth(2)
+        wav_file.writeframes(b"\x00\x00" * sample_rate)
+
+
 def test_sanitize_audio_for_pipeline_short_circuits_wav(tmp_path: Path) -> None:
     source = tmp_path / "input.wav"
-    source.write_bytes(b"fake")
+    _write_wav(source, sample_rate=16000, channels=1)
 
     result = audio_sanitize.sanitize_audio_for_pipeline(
         source,
@@ -18,6 +28,38 @@ def test_sanitize_audio_for_pipeline_short_circuits_wav(tmp_path: Path) -> None:
     )
 
     assert result == source
+
+
+def test_sanitize_audio_for_pipeline_invalid_wav_does_not_bypass(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "broken.wav"
+    source.write_bytes(b"not-a-wave")
+    monkeypatch.setattr(audio_sanitize.shutil, "which", lambda _name: None)
+
+    with pytest.raises(audio_sanitize.AudioSanitizeError, match="ffmpeg is required"):
+        audio_sanitize.sanitize_audio_for_pipeline(source, tmp_path / "output.wav")
+
+
+def test_sanitize_audio_for_pipeline_non_target_wav_is_transcoded(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "input.wav"
+    _write_wav(source, sample_rate=44100, channels=2)
+    output = tmp_path / "derived" / "audio_sanitized.wav"
+    monkeypatch.setattr(audio_sanitize.shutil, "which", lambda _name: "/usr/bin/ffmpeg")
+
+    class _Proc:
+        returncode = 0
+        stderr = ""
+        stdout = ""
+
+    monkeypatch.setattr(audio_sanitize.subprocess, "run", lambda *_a, **_k: _Proc())
+
+    result = audio_sanitize.sanitize_audio_for_pipeline(source, output)
+    assert result == output
 
 
 def test_sanitize_audio_for_pipeline_requires_ffmpeg_for_non_wav(
@@ -110,6 +152,28 @@ def test_sanitize_audio_for_pipeline_raises_on_ffmpeg_non_zero_exit(
     assert "exit code 2" in message
     assert "/usr/bin/ffmpeg" in message
     assert "decode failed bitrate mismatch" in message
+
+
+def test_sanitize_audio_for_pipeline_uses_stdout_when_stderr_is_empty(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "input.mp3"
+    source.write_bytes(b"fake")
+    output = tmp_path / "audio_sanitized.wav"
+    monkeypatch.setattr(audio_sanitize.shutil, "which", lambda _name: "/usr/bin/ffmpeg")
+
+    class _Proc:
+        returncode = 1
+        stderr = ""
+        stdout = "bad stream\ncannot decode"
+
+    monkeypatch.setattr(audio_sanitize.subprocess, "run", lambda *_a, **_k: _Proc())
+
+    with pytest.raises(audio_sanitize.AudioSanitizeError) as exc_info:
+        audio_sanitize.sanitize_audio_for_pipeline(source, output)
+
+    assert "bad stream cannot decode" in str(exc_info.value)
 
 
 def test_sanitize_audio_for_pipeline_raises_on_timeout(
