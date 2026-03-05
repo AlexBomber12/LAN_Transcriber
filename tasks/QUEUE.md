@@ -400,3 +400,8 @@ Queue (in order)
 - Status: DONE
 - Tasks file: tasks/PR-FIX-LLM-MODEL-DEFAULT-01.md
 - Depends on: PR-LLM-DIAGNOSTICS-01
+
+79) PR-FIX-DIARIZATION-WEIGHTS-ONLY-01: Fix pyannote diarization init under torch weights_only (scoped safe_globals for omegaconf/pyannote + auto-retry) and prevent fallback-to-single-speaker regressions
+- Status: TODO
+- Tasks file: tasks/PR-FIX-DIARIZATION-WEIGHTS-ONLY-01.md
+- Depends on: PR-FIX-LLM-MODEL-DEFAULT-01
