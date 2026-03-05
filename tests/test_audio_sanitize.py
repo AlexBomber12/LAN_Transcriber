@@ -62,6 +62,37 @@ def test_sanitize_audio_for_pipeline_non_target_wav_is_transcoded(
     assert result == output
 
 
+def test_sanitize_audio_for_pipeline_empty_target_wav_does_not_bypass(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "empty.wav"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    with wave.open(str(source), "wb") as wav_file:
+        wav_file.setframerate(16000)
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(2)
+        wav_file.writeframes(b"")
+
+    monkeypatch.setattr(audio_sanitize.shutil, "which", lambda _name: None)
+    with pytest.raises(audio_sanitize.AudioSanitizeError, match="ffmpeg is required"):
+        audio_sanitize.sanitize_audio_for_pipeline(source, tmp_path / "output.wav")
+
+
+def test_sanitize_audio_for_pipeline_truncated_target_wav_does_not_bypass(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "truncated.wav"
+    _write_wav(source, sample_rate=16000, channels=1)
+    payload = source.read_bytes()
+    source.write_bytes(payload[:-2])
+
+    monkeypatch.setattr(audio_sanitize.shutil, "which", lambda _name: None)
+    with pytest.raises(audio_sanitize.AudioSanitizeError, match="ffmpeg is required"):
+        audio_sanitize.sanitize_audio_for_pipeline(source, tmp_path / "output.wav")
+
+
 def test_sanitize_audio_for_pipeline_requires_ffmpeg_for_non_wav(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

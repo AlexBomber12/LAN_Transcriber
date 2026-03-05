@@ -24,7 +24,22 @@ def _is_target_pcm_wav(audio_path: Path) -> bool:
                 wav_file.getsampwidth(),
                 wav_file.getcomptype(),
             )
-            return fmt == (16000, 1, 2, "NONE")
+            if fmt != (16000, 1, 2, "NONE"):
+                return False
+
+            frame_count = wav_file.getnframes()
+            if frame_count <= 0:
+                return False
+
+            expected_bytes = frame_count * 2  # mono * sampwidth(2)
+            read_bytes = 0
+            while read_bytes < expected_bytes:
+                remaining_frames = (expected_bytes - read_bytes + 1) // 2
+                chunk = wav_file.readframes(min(4096, remaining_frames))
+                if not chunk:
+                    return False
+                read_bytes += len(chunk)
+            return read_bytes == expected_bytes
     except Exception:
         return False
 

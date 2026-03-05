@@ -1,355 +1,70 @@
 diff --git a/lan_transcriber/audio_sanitize.py b/lan_transcriber/audio_sanitize.py
-index 367047a..ecda902 100644
+index ecda902..0d6f6b8 100644
 --- a/lan_transcriber/audio_sanitize.py
 +++ b/lan_transcriber/audio_sanitize.py
-@@ -4,6 +4,7 @@ import shlex
- import shutil
- import subprocess
- from pathlib import Path
-+import wave
- 
- DEFAULT_AUDIO_SANITIZE_TIMEOUT_SECONDS = 120.0
- 
-@@ -12,6 +13,22 @@ class AudioSanitizeError(Exception):
-     """Raised when ffmpeg-based audio sanitization fails."""
- 
- 
-+def _is_target_pcm_wav(audio_path: Path) -> bool:
-+    if audio_path.suffix.lower() != ".wav":
-+        return False
-+    try:
-+        with wave.open(str(audio_path), "rb") as wav_file:
-+            fmt = (
-+                wav_file.getframerate(),
-+                wav_file.getnchannels(),
-+                wav_file.getsampwidth(),
-+                wav_file.getcomptype(),
-+            )
-+            return fmt == (16000, 1, 2, "NONE")
-+    except Exception:
-+        return False
+@@ -24,7 +24,22 @@ def _is_target_pcm_wav(audio_path: Path) -> bool:
+                 wav_file.getsampwidth(),
+                 wav_file.getcomptype(),
+             )
+-            return fmt == (16000, 1, 2, "NONE")
++            if fmt != (16000, 1, 2, "NONE"):
++                return False
 +
++            frame_count = wav_file.getnframes()
++            if frame_count <= 0:
++                return False
 +
- def sanitize_audio_for_pipeline(
-     input_path: Path,
-     output_path: Path,
-@@ -21,8 +38,8 @@ def sanitize_audio_for_pipeline(
-     input_audio = Path(input_path)
-     output_audio = Path(output_path)
++            expected_bytes = frame_count * 2  # mono * sampwidth(2)
++            read_bytes = 0
++            while read_bytes < expected_bytes:
++                remaining_frames = (expected_bytes - read_bytes + 1) // 2
++                chunk = wav_file.readframes(min(4096, remaining_frames))
++                if not chunk:
++                    return False
++                read_bytes += len(chunk)
++            return read_bytes == expected_bytes
+     except Exception:
+         return False
  
--    # Deterministic short-circuit for WAV uploads.
--    if input_audio.suffix.lower() == ".wav":
-+    # Deterministic short-circuit only for already normalized PCM WAV.
-+    if _is_target_pcm_wav(input_audio):
-         return input_audio
- 
-     ffmpeg = shutil.which("ffmpeg")
-@@ -64,12 +81,13 @@ def sanitize_audio_for_pipeline(
-         ) from exc
- 
-     if proc.returncode != 0:
--        stderr_snippet = ((proc.stderr or proc.stdout or "").strip().replace("\n", " "))[
--            :400
--        ]
-+        diagnostics = (proc.stderr or "").strip()
-+        if not diagnostics:
-+            diagnostics = (proc.stdout or "").strip()
-+        diagnostics = diagnostics.replace("\n", " ")[:400]
-         raise AudioSanitizeError(
-             f"ffmpeg failed with exit code {proc.returncode}: {shlex.join(cmd)}; "
--            f"stderr={stderr_snippet}"
-+            f"stderr={diagnostics}"
-         )
- 
-     return output_audio
 diff --git a/tests/test_audio_sanitize.py b/tests/test_audio_sanitize.py
-index 37863cb..370b66c 100644
+index 370b66c..42c0b37 100644
 --- a/tests/test_audio_sanitize.py
 +++ b/tests/test_audio_sanitize.py
-@@ -2,15 +2,25 @@ from __future__ import annotations
- 
- from pathlib import Path
- import subprocess
-+import wave
- 
- import pytest
- 
- import lan_transcriber.audio_sanitize as audio_sanitize
+@@ -62,6 +62,37 @@ def test_sanitize_audio_for_pipeline_non_target_wav_is_transcoded(
+     assert result == output
  
  
-+def _write_wav(path: Path, *, sample_rate: int, channels: int) -> None:
-+    path.parent.mkdir(parents=True, exist_ok=True)
-+    with wave.open(str(path), "wb") as wav_file:
-+        wav_file.setframerate(sample_rate)
-+        wav_file.setnchannels(channels)
-+        wav_file.setsampwidth(2)
-+        wav_file.writeframes(b"\x00\x00" * sample_rate)
-+
-+
- def test_sanitize_audio_for_pipeline_short_circuits_wav(tmp_path: Path) -> None:
-     source = tmp_path / "input.wav"
--    source.write_bytes(b"fake")
-+    _write_wav(source, sample_rate=16000, channels=1)
- 
-     result = audio_sanitize.sanitize_audio_for_pipeline(
-         source,
-@@ -20,6 +30,38 @@ def test_sanitize_audio_for_pipeline_short_circuits_wav(tmp_path: Path) -> None:
-     assert result == source
- 
- 
-+def test_sanitize_audio_for_pipeline_invalid_wav_does_not_bypass(
++def test_sanitize_audio_for_pipeline_empty_target_wav_does_not_bypass(
 +    tmp_path: Path,
 +    monkeypatch: pytest.MonkeyPatch,
 +) -> None:
-+    source = tmp_path / "broken.wav"
-+    source.write_bytes(b"not-a-wave")
-+    monkeypatch.setattr(audio_sanitize.shutil, "which", lambda _name: None)
++    source = tmp_path / "empty.wav"
++    source.parent.mkdir(parents=True, exist_ok=True)
++    with wave.open(str(source), "wb") as wav_file:
++        wav_file.setframerate(16000)
++        wav_file.setnchannels(1)
++        wav_file.setsampwidth(2)
++        wav_file.writeframes(b"")
 +
++    monkeypatch.setattr(audio_sanitize.shutil, "which", lambda _name: None)
 +    with pytest.raises(audio_sanitize.AudioSanitizeError, match="ffmpeg is required"):
 +        audio_sanitize.sanitize_audio_for_pipeline(source, tmp_path / "output.wav")
 +
 +
-+def test_sanitize_audio_for_pipeline_non_target_wav_is_transcoded(
++def test_sanitize_audio_for_pipeline_truncated_target_wav_does_not_bypass(
 +    tmp_path: Path,
 +    monkeypatch: pytest.MonkeyPatch,
 +) -> None:
-+    source = tmp_path / "input.wav"
-+    _write_wav(source, sample_rate=44100, channels=2)
-+    output = tmp_path / "derived" / "audio_sanitized.wav"
-+    monkeypatch.setattr(audio_sanitize.shutil, "which", lambda _name: "/usr/bin/ffmpeg")
++    source = tmp_path / "truncated.wav"
++    _write_wav(source, sample_rate=16000, channels=1)
++    payload = source.read_bytes()
++    source.write_bytes(payload[:-2])
 +
-+    class _Proc:
-+        returncode = 0
-+        stderr = ""
-+        stdout = ""
-+
-+    monkeypatch.setattr(audio_sanitize.subprocess, "run", lambda *_a, **_k: _Proc())
-+
-+    result = audio_sanitize.sanitize_audio_for_pipeline(source, output)
-+    assert result == output
++    monkeypatch.setattr(audio_sanitize.shutil, "which", lambda _name: None)
++    with pytest.raises(audio_sanitize.AudioSanitizeError, match="ffmpeg is required"):
++        audio_sanitize.sanitize_audio_for_pipeline(source, tmp_path / "output.wav")
 +
 +
  def test_sanitize_audio_for_pipeline_requires_ffmpeg_for_non_wav(
      tmp_path: Path,
      monkeypatch: pytest.MonkeyPatch,
-@@ -112,6 +154,28 @@ def test_sanitize_audio_for_pipeline_raises_on_ffmpeg_non_zero_exit(
-     assert "decode failed bitrate mismatch" in message
- 
- 
-+def test_sanitize_audio_for_pipeline_uses_stdout_when_stderr_is_empty(
-+    tmp_path: Path,
-+    monkeypatch: pytest.MonkeyPatch,
-+) -> None:
-+    source = tmp_path / "input.mp3"
-+    source.write_bytes(b"fake")
-+    output = tmp_path / "audio_sanitized.wav"
-+    monkeypatch.setattr(audio_sanitize.shutil, "which", lambda _name: "/usr/bin/ffmpeg")
-+
-+    class _Proc:
-+        returncode = 1
-+        stderr = ""
-+        stdout = "bad stream\ncannot decode"
-+
-+    monkeypatch.setattr(audio_sanitize.subprocess, "run", lambda *_a, **_k: _Proc())
-+
-+    with pytest.raises(audio_sanitize.AudioSanitizeError) as exc_info:
-+        audio_sanitize.sanitize_audio_for_pipeline(source, output)
-+
-+    assert "bad stream cannot decode" in str(exc_info.value)
-+
-+
- def test_sanitize_audio_for_pipeline_raises_on_timeout(
-     tmp_path: Path,
-     monkeypatch: pytest.MonkeyPatch,
-diff --git a/tests/test_cov_lan_app_worker_tasks_branches.py b/tests/test_cov_lan_app_worker_tasks_branches.py
-index 379ae1f..015867f 100644
---- a/tests/test_cov_lan_app_worker_tasks_branches.py
-+++ b/tests/test_cov_lan_app_worker_tasks_branches.py
-@@ -6,6 +6,7 @@ import json
- from pathlib import Path
- import sys
- from types import SimpleNamespace
-+import wave
- 
- import pytest
- 
-@@ -35,6 +36,16 @@ def _db_settings(tmp_path: Path) -> AppSettings:
-     return cfg
- 
- 
-+def _write_pcm_wav(path: Path, *, sample_rate: int = 16000, duration_sec: float = 0.1) -> None:
-+    path.parent.mkdir(parents=True, exist_ok=True)
-+    frames = max(int(sample_rate * duration_sec), 1)
-+    with wave.open(str(path), "wb") as wav_file:
-+        wav_file.setnchannels(1)
-+        wav_file.setsampwidth(2)
-+        wav_file.setframerate(sample_rate)
-+        wav_file.writeframes(b"\x00\x00" * frames)
-+
-+
- def _lightweight_settings(tmp_path: Path, *, max_job_attempts: int = 3) -> SimpleNamespace:
-     return SimpleNamespace(
-         data_root=tmp_path,
-@@ -580,7 +591,7 @@ def test_run_precheck_pipeline_records_step_logs_and_explicit_summary_target(
- 
-     raw_audio = cfg.recordings_root / "rec-step-log-1" / "raw" / "audio.wav"
-     raw_audio.parent.mkdir(parents=True, exist_ok=True)
--    raw_audio.write_bytes(b"\x00")
-+    _write_pcm_wav(raw_audio)
- 
-     monkeypatch.setattr(
-         worker_tasks,
-@@ -768,7 +779,7 @@ def test_run_precheck_pipeline_marks_fallback_when_builder_returns_fallback(
- 
-     raw_audio = cfg.recordings_root / "rec-step-log-fallback-1" / "raw" / "audio.wav"
-     raw_audio.parent.mkdir(parents=True, exist_ok=True)
--    raw_audio.write_bytes(b"\x00")
-+    _write_pcm_wav(raw_audio)
- 
-     monkeypatch.setattr(
-         worker_tasks,
-diff --git a/tests/test_db_queue.py b/tests/test_db_queue.py
-index 0780bf6..b7d3b9a 100644
---- a/tests/test_db_queue.py
-+++ b/tests/test_db_queue.py
-@@ -9,6 +9,7 @@ import sys
- import threading
- import time
- from types import ModuleType
-+import wave
- 
- from fastapi.testclient import TestClient
- import pytest
-@@ -72,6 +73,16 @@ def _test_settings(tmp_path: Path) -> AppSettings:
-     return cfg
- 
- 
-+def _write_pcm_wav(path: Path, *, sample_rate: int = 16000, duration_sec: float = 0.1) -> None:
-+    path.parent.mkdir(parents=True, exist_ok=True)
-+    frames = max(int(sample_rate * duration_sec), 1)
-+    with wave.open(str(path), "wb") as wav_file:
-+        wav_file.setnchannels(1)
-+        wav_file.setsampwidth(2)
-+        wav_file.setframerate(sample_rate)
-+        wav_file.writeframes(b"\x00\x00" * frames)
-+
-+
- def test_init_db_creates_mvp_tables(tmp_path: Path):
-     cfg = _test_settings(tmp_path)
-     init_db(cfg)
-@@ -1064,7 +1075,7 @@ def test_worker_retryable_failure_retries_before_marking_failed(
- 
-     raw_audio = cfg.recordings_root / "rec-worker-retry-1" / "raw" / "audio.wav"
-     raw_audio.parent.mkdir(parents=True, exist_ok=True)
--    raw_audio.write_bytes(b"\x00")
-+    _write_pcm_wav(raw_audio)
-     monkeypatch.setattr("lan_app.worker_tasks._resolve_raw_audio_path", lambda *_a, **_k: raw_audio)
- 
-     attempts = {"count": 0}
-@@ -1127,7 +1138,7 @@ def test_worker_retry_does_not_revive_recovered_started_job(
- 
-     raw_audio = cfg.recordings_root / "rec-worker-retry-race-1" / "raw" / "audio.wav"
-     raw_audio.parent.mkdir(parents=True, exist_ok=True)
--    raw_audio.write_bytes(b"\x00")
-+    _write_pcm_wav(raw_audio)
-     monkeypatch.setattr("lan_app.worker_tasks._resolve_raw_audio_path", lambda *_a, **_k: raw_audio)
-     monkeypatch.setattr(
-         "lan_app.worker_tasks.run_precheck",
-@@ -1207,7 +1218,7 @@ def test_worker_retry_terminal_uses_effective_max_attempts_cap(
- 
-     raw_audio = cfg.recordings_root / "rec-worker-retry-cap-1" / "raw" / "audio.wav"
-     raw_audio.parent.mkdir(parents=True, exist_ok=True)
--    raw_audio.write_bytes(b"\x00")
-+    _write_pcm_wav(raw_audio)
-     monkeypatch.setattr("lan_app.worker_tasks._resolve_raw_audio_path", lambda *_a, **_k: raw_audio)
-     monkeypatch.setattr(
-         "lan_app.worker_tasks.run_precheck",
-@@ -1417,7 +1428,7 @@ def test_worker_precheck_quarantines_and_writes_artifacts(tmp_path: Path, monkey
- 
-     raw_audio = cfg.recordings_root / "rec-precheck-q-1" / "raw" / "audio.wav"
-     raw_audio.parent.mkdir(parents=True, exist_ok=True)
--    raw_audio.write_bytes(b"\x00")
-+    _write_pcm_wav(raw_audio)
- 
-     monkeypatch.setattr("lan_app.worker_tasks._resolve_raw_audio_path", lambda *_a, **_k: raw_audio)
-     monkeypatch.setattr(
-@@ -1611,7 +1622,7 @@ def test_worker_precheck_runs_pipeline_when_safe(tmp_path: Path, monkeypatch):
- 
-     raw_audio = cfg.recordings_root / "rec-precheck-ok-1" / "raw" / "audio.wav"
-     raw_audio.parent.mkdir(parents=True, exist_ok=True)
--    raw_audio.write_bytes(b"\x00")
-+    _write_pcm_wav(raw_audio)
- 
-     monkeypatch.setattr("lan_app.worker_tasks._resolve_raw_audio_path", lambda *_a, **_k: raw_audio)
-     monkeypatch.setattr(
-@@ -1682,7 +1693,7 @@ def test_worker_precheck_falls_back_when_diariser_init_fails(tmp_path: Path, mon
- 
-     raw_audio = cfg.recordings_root / "rec-precheck-fallback-1" / "raw" / "audio.wav"
-     raw_audio.parent.mkdir(parents=True, exist_ok=True)
--    raw_audio.write_bytes(b"\x00")
-+    _write_pcm_wav(raw_audio)
- 
-     monkeypatch.setattr("lan_app.worker_tasks._resolve_raw_audio_path", lambda *_a, **_k: raw_audio)
-     monkeypatch.setattr(
-@@ -1778,7 +1789,7 @@ def test_worker_clears_progress_when_pipeline_fails(tmp_path: Path, monkeypatch)
- 
-     raw_audio = cfg.recordings_root / "rec-progress-fail-1" / "raw" / "audio.wav"
-     raw_audio.parent.mkdir(parents=True, exist_ok=True)
--    raw_audio.write_bytes(b"\x00")
-+    _write_pcm_wav(raw_audio)
- 
-     monkeypatch.setattr("lan_app.worker_tasks._resolve_raw_audio_path", lambda *_a, **_k: raw_audio)
-     monkeypatch.setattr(
-@@ -1831,7 +1842,7 @@ def test_worker_precheck_keeps_auto_summary_target_unset(tmp_path: Path, monkeyp
- 
-     raw_audio = cfg.recordings_root / "rec-precheck-auto-target-1" / "raw" / "audio.wav"
-     raw_audio.parent.mkdir(parents=True, exist_ok=True)
--    raw_audio.write_bytes(b"\x00")
-+    _write_pcm_wav(raw_audio)
- 
-     monkeypatch.setattr("lan_app.worker_tasks._resolve_raw_audio_path", lambda *_a, **_k: raw_audio)
-     monkeypatch.setattr(
-diff --git a/tests/test_worker_resilience.py b/tests/test_worker_resilience.py
-index 6a3bcd8..170275b 100644
---- a/tests/test_worker_resilience.py
-+++ b/tests/test_worker_resilience.py
-@@ -1,6 +1,7 @@
- from __future__ import annotations
- 
- from pathlib import Path
-+import wave
- 
- import pytest
- 
-@@ -34,6 +35,16 @@ def _set_worker_env(monkeypatch, cfg: AppSettings) -> None:
-     monkeypatch.setenv("LAN_PROM_SNAPSHOT_PATH", str(cfg.metrics_snapshot_path))
- 
- 
-+def _write_pcm_wav(path: Path, *, sample_rate: int = 16000, duration_sec: float = 0.1) -> None:
-+    path.parent.mkdir(parents=True, exist_ok=True)
-+    frames = max(int(sample_rate * duration_sec), 1)
-+    with wave.open(str(path), "wb") as wav_file:
-+        wav_file.setnchannels(1)
-+        wav_file.setsampwidth(2)
-+        wav_file.setframerate(sample_rate)
-+        wav_file.writeframes(b"\x00\x00" * frames)
-+
-+
- def _seed_precheck_job(cfg: AppSettings, *, recording_id: str, job_id: str) -> None:
-     init_db(cfg)
-     create_recording(
-@@ -49,8 +60,7 @@ def _seed_precheck_job(cfg: AppSettings, *, recording_id: str, job_id: str) -> N
-         settings=cfg,
-     )
-     raw_audio = cfg.recordings_root / recording_id / "raw" / "audio.wav"
--    raw_audio.parent.mkdir(parents=True, exist_ok=True)
--    raw_audio.write_bytes(b"\x00")
-+    _write_pcm_wav(raw_audio)
- 
- 
- def test_process_job_pipeline_exception_marks_job_failed_and_updates_recording_status(
-@@ -137,4 +147,3 @@ def test_progress_update_failures_do_not_hide_original_pipeline_error(
-     job = get_job("job-worker-resilience-2", settings=cfg) or {}
-     assert job.get("status") == JOB_STATUS_FAILED
-     assert "dep failure" in str(job.get("error") or "")
--
