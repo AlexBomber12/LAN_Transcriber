@@ -57,6 +57,7 @@ from lan_app.db import (
 from lan_app.jobs import RecordingJob, enqueue_recording_job, purge_pending_recording_jobs
 from lan_app.worker_tasks import process_job
 from lan_transcriber import aliases
+from lan_transcriber.audio_sanitize import AudioSanitizeError
 from lan_transcriber.llm_client import LLMClient
 from lan_transcriber.pipeline import PrecheckResult
 
@@ -1505,6 +1506,68 @@ def test_worker_precheck_missing_audio_quarantines_recording(tmp_path: Path, mon
     assert recording["quarantine_reason"] == "raw_audio_missing"
     assert job is not None
     assert job["status"] == JOB_STATUS_FINISHED
+
+
+def test_worker_precheck_sanitize_failure_sets_terminal_failure(
+    tmp_path: Path,
+    monkeypatch,
+):
+    cfg = _test_settings(tmp_path)
+    monkeypatch.setenv("LAN_DATA_ROOT", str(cfg.data_root))
+    monkeypatch.setenv("LAN_RECORDINGS_ROOT", str(cfg.recordings_root))
+    monkeypatch.setenv("LAN_DB_PATH", str(cfg.db_path))
+    monkeypatch.setenv("LAN_PROM_SNAPSHOT_PATH", str(cfg.metrics_snapshot_path))
+
+    init_db(cfg)
+    create_recording(
+        "rec-precheck-sanitize-fail-1",
+        source="test",
+        source_filename="broken.mp3",
+        settings=cfg,
+    )
+    create_job(
+        "job-precheck-sanitize-fail-1",
+        recording_id="rec-precheck-sanitize-fail-1",
+        job_type=JOB_TYPE_PRECHECK,
+        settings=cfg,
+    )
+
+    raw_audio = cfg.recordings_root / "rec-precheck-sanitize-fail-1" / "raw" / "audio.mp3"
+    raw_audio.parent.mkdir(parents=True, exist_ok=True)
+    raw_audio.write_bytes(b"broken")
+    monkeypatch.setattr("lan_app.worker_tasks._resolve_raw_audio_path", lambda *_a, **_k: raw_audio)
+
+    def _raise_sanitize_error(*_args, **_kwargs):
+        raise AudioSanitizeError("ffmpeg failed")
+
+    monkeypatch.setattr(
+        "lan_app.worker_tasks.sanitize_audio_for_pipeline",
+        _raise_sanitize_error,
+    )
+    monkeypatch.setattr(
+        "lan_app.worker_tasks.run_precheck",
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("run_precheck should not run")),
+    )
+
+    with pytest.raises(AudioSanitizeError, match="ffmpeg failed"):
+        process_job(
+            "job-precheck-sanitize-fail-1",
+            "rec-precheck-sanitize-fail-1",
+            JOB_TYPE_PRECHECK,
+        )
+
+    recording = get_recording("rec-precheck-sanitize-fail-1", settings=cfg)
+    job = get_job("job-precheck-sanitize-fail-1", settings=cfg)
+    assert recording is not None
+    assert recording["status"] == RECORDING_STATUS_FAILED
+    assert recording["pipeline_stage"] is None
+    assert recording["pipeline_progress"] is None
+    assert job is not None
+    assert job["status"] == JOB_STATUS_FAILED
+    derived_dir = cfg.recordings_root / "rec-precheck-sanitize-fail-1" / "derived"
+    assert not (derived_dir / "audio_sanitize.json").exists()
+    assert not (derived_dir / "diarization_status.json").exists()
+    assert not (derived_dir / "transcript.json").exists()
 
 
 def test_worker_precheck_runs_pipeline_when_safe(tmp_path: Path, monkeypatch):

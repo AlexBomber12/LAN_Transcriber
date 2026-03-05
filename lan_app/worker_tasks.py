@@ -4,6 +4,7 @@ import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
+import logging
 import os
 from pathlib import Path
 import re
@@ -12,6 +13,10 @@ from types import SimpleNamespace
 from typing import Any
 
 from lan_transcriber.artifacts import atomic_write_json
+from lan_transcriber.audio_sanitize import (
+    AudioSanitizeError,
+    sanitize_audio_for_pipeline,
+)
 from lan_transcriber.compat.call_compat import call_with_supported_kwargs
 from lan_transcriber.llm_client import LLMClient
 from lan_transcriber.pipeline import Settings as PipelineSettings
@@ -54,6 +59,8 @@ from .db import (
 )
 from .diarization_loader import load_pyannote_pipeline
 from .routing import refresh_recording_routing
+
+_logger = logging.getLogger(__name__)
 
 
 def _utc_now() -> str:
@@ -358,6 +365,42 @@ def _clean_language_value(value: object | None) -> str | None:
     return cleaned or None
 
 
+def _sanitize_audio_for_worker(
+    *,
+    recording_id: str,
+    audio_path: Path,
+    settings: AppSettings,
+) -> Path:
+    derived_dir = settings.recordings_root / recording_id / "derived"
+    sanitized_path = derived_dir / "audio_sanitized.wav"
+    try:
+        working_path = sanitize_audio_for_pipeline(
+            audio_path,
+            sanitized_path,
+        )
+    except AudioSanitizeError:
+        _logger.exception(
+            "audio sanitization failed for recording_id=%s input_path=%s",
+            recording_id,
+            audio_path,
+        )
+        raise
+
+    atomic_write_json(
+        derived_dir / "audio_sanitize.json",
+        {
+            "input_path": str(audio_path),
+            "output_path": str(working_path),
+            "ffmpeg_used": working_path != audio_path,
+            "sample_rate": 16000,
+            "channels": 1,
+            "codec": "pcm_s16le",
+        },
+    )
+    _logger.info("audio sanitized to wav path=%s", working_path)
+    return working_path
+
+
 def _load_transcript_language_payload(
     recording_id: str,
     settings: AppSettings,
@@ -584,6 +627,12 @@ def _run_precheck_pipeline(
     if audio_path is None:
         _append_step_log(log_path, "precheck skipped: raw audio not found")
         return RECORDING_STATUS_QUARANTINE, "raw_audio_missing"
+
+    audio_path = _sanitize_audio_for_worker(
+        recording_id=recording_id,
+        audio_path=audio_path,
+        settings=settings,
+    )
 
     pipeline_settings = _build_pipeline_settings(settings)
     precheck = run_precheck(audio_path, pipeline_settings)
