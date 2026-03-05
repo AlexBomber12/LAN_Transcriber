@@ -31,9 +31,10 @@ docker compose run --rm api python -m lan_app.healthchecks app
 ### 1.2 Upload and export flow
 
 1. Open `/upload` and upload one or more files (UI sends multipart to `POST /api/uploads`).
-2. Track upload and processing progress per file on `/upload`.
-3. Open `/recordings/{recording_id}` for transcript, summary, and export actions.
-4. Download export bundle from `GET /ui/recordings/{recording_id}/export.zip`.
+2. Uploaded audio is normalized automatically to 16 kHz mono WAV before VAD/ASR/diarization; no manual conversion is required.
+3. Track upload and processing progress per file on `/upload`.
+4. Open `/recordings/{recording_id}` for transcript, summary, and export actions.
+5. Download export bundle from `GET /ui/recordings/{recording_id}/export.zip`.
 
 ### 1.3 Upload size controls
 

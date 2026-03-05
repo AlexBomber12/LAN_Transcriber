@@ -9,6 +9,7 @@ import sys
 import threading
 import time
 from types import ModuleType
+import wave
 
 from fastapi.testclient import TestClient
 import pytest
@@ -57,6 +58,7 @@ from lan_app.db import (
 from lan_app.jobs import RecordingJob, enqueue_recording_job, purge_pending_recording_jobs
 from lan_app.worker_tasks import process_job
 from lan_transcriber import aliases
+from lan_transcriber.audio_sanitize import AudioSanitizeError
 from lan_transcriber.llm_client import LLMClient
 from lan_transcriber.pipeline import PrecheckResult
 
@@ -69,6 +71,16 @@ def _test_settings(tmp_path: Path) -> AppSettings:
     )
     cfg.metrics_snapshot_path = tmp_path / "metrics.snap"
     return cfg
+
+
+def _write_pcm_wav(path: Path, *, sample_rate: int = 16000, duration_sec: float = 0.1) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    frames = max(int(sample_rate * duration_sec), 1)
+    with wave.open(str(path), "wb") as wav_file:
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(sample_rate)
+        wav_file.writeframes(b"\x00\x00" * frames)
 
 
 def test_init_db_creates_mvp_tables(tmp_path: Path):
@@ -1063,7 +1075,7 @@ def test_worker_retryable_failure_retries_before_marking_failed(
 
     raw_audio = cfg.recordings_root / "rec-worker-retry-1" / "raw" / "audio.wav"
     raw_audio.parent.mkdir(parents=True, exist_ok=True)
-    raw_audio.write_bytes(b"\x00")
+    _write_pcm_wav(raw_audio)
     monkeypatch.setattr("lan_app.worker_tasks._resolve_raw_audio_path", lambda *_a, **_k: raw_audio)
 
     attempts = {"count": 0}
@@ -1126,7 +1138,7 @@ def test_worker_retry_does_not_revive_recovered_started_job(
 
     raw_audio = cfg.recordings_root / "rec-worker-retry-race-1" / "raw" / "audio.wav"
     raw_audio.parent.mkdir(parents=True, exist_ok=True)
-    raw_audio.write_bytes(b"\x00")
+    _write_pcm_wav(raw_audio)
     monkeypatch.setattr("lan_app.worker_tasks._resolve_raw_audio_path", lambda *_a, **_k: raw_audio)
     monkeypatch.setattr(
         "lan_app.worker_tasks.run_precheck",
@@ -1206,7 +1218,7 @@ def test_worker_retry_terminal_uses_effective_max_attempts_cap(
 
     raw_audio = cfg.recordings_root / "rec-worker-retry-cap-1" / "raw" / "audio.wav"
     raw_audio.parent.mkdir(parents=True, exist_ok=True)
-    raw_audio.write_bytes(b"\x00")
+    _write_pcm_wav(raw_audio)
     monkeypatch.setattr("lan_app.worker_tasks._resolve_raw_audio_path", lambda *_a, **_k: raw_audio)
     monkeypatch.setattr(
         "lan_app.worker_tasks.run_precheck",
@@ -1416,7 +1428,7 @@ def test_worker_precheck_quarantines_and_writes_artifacts(tmp_path: Path, monkey
 
     raw_audio = cfg.recordings_root / "rec-precheck-q-1" / "raw" / "audio.wav"
     raw_audio.parent.mkdir(parents=True, exist_ok=True)
-    raw_audio.write_bytes(b"\x00")
+    _write_pcm_wav(raw_audio)
 
     monkeypatch.setattr("lan_app.worker_tasks._resolve_raw_audio_path", lambda *_a, **_k: raw_audio)
     monkeypatch.setattr(
@@ -1507,6 +1519,68 @@ def test_worker_precheck_missing_audio_quarantines_recording(tmp_path: Path, mon
     assert job["status"] == JOB_STATUS_FINISHED
 
 
+def test_worker_precheck_sanitize_failure_sets_terminal_failure(
+    tmp_path: Path,
+    monkeypatch,
+):
+    cfg = _test_settings(tmp_path)
+    monkeypatch.setenv("LAN_DATA_ROOT", str(cfg.data_root))
+    monkeypatch.setenv("LAN_RECORDINGS_ROOT", str(cfg.recordings_root))
+    monkeypatch.setenv("LAN_DB_PATH", str(cfg.db_path))
+    monkeypatch.setenv("LAN_PROM_SNAPSHOT_PATH", str(cfg.metrics_snapshot_path))
+
+    init_db(cfg)
+    create_recording(
+        "rec-precheck-sanitize-fail-1",
+        source="test",
+        source_filename="broken.mp3",
+        settings=cfg,
+    )
+    create_job(
+        "job-precheck-sanitize-fail-1",
+        recording_id="rec-precheck-sanitize-fail-1",
+        job_type=JOB_TYPE_PRECHECK,
+        settings=cfg,
+    )
+
+    raw_audio = cfg.recordings_root / "rec-precheck-sanitize-fail-1" / "raw" / "audio.mp3"
+    raw_audio.parent.mkdir(parents=True, exist_ok=True)
+    raw_audio.write_bytes(b"broken")
+    monkeypatch.setattr("lan_app.worker_tasks._resolve_raw_audio_path", lambda *_a, **_k: raw_audio)
+
+    def _raise_sanitize_error(*_args, **_kwargs):
+        raise AudioSanitizeError("ffmpeg failed")
+
+    monkeypatch.setattr(
+        "lan_app.worker_tasks.sanitize_audio_for_pipeline",
+        _raise_sanitize_error,
+    )
+    monkeypatch.setattr(
+        "lan_app.worker_tasks.run_precheck",
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("run_precheck should not run")),
+    )
+
+    with pytest.raises(AudioSanitizeError, match="ffmpeg failed"):
+        process_job(
+            "job-precheck-sanitize-fail-1",
+            "rec-precheck-sanitize-fail-1",
+            JOB_TYPE_PRECHECK,
+        )
+
+    recording = get_recording("rec-precheck-sanitize-fail-1", settings=cfg)
+    job = get_job("job-precheck-sanitize-fail-1", settings=cfg)
+    assert recording is not None
+    assert recording["status"] == RECORDING_STATUS_FAILED
+    assert recording["pipeline_stage"] is None
+    assert recording["pipeline_progress"] is None
+    assert job is not None
+    assert job["status"] == JOB_STATUS_FAILED
+    derived_dir = cfg.recordings_root / "rec-precheck-sanitize-fail-1" / "derived"
+    assert not (derived_dir / "audio_sanitize.json").exists()
+    assert not (derived_dir / "diarization_status.json").exists()
+    assert not (derived_dir / "transcript.json").exists()
+
+
 def test_worker_precheck_runs_pipeline_when_safe(tmp_path: Path, monkeypatch):
     cfg = _test_settings(tmp_path)
     monkeypatch.setenv("LAN_DATA_ROOT", str(cfg.data_root))
@@ -1548,7 +1622,7 @@ def test_worker_precheck_runs_pipeline_when_safe(tmp_path: Path, monkeypatch):
 
     raw_audio = cfg.recordings_root / "rec-precheck-ok-1" / "raw" / "audio.wav"
     raw_audio.parent.mkdir(parents=True, exist_ok=True)
-    raw_audio.write_bytes(b"\x00")
+    _write_pcm_wav(raw_audio)
 
     monkeypatch.setattr("lan_app.worker_tasks._resolve_raw_audio_path", lambda *_a, **_k: raw_audio)
     monkeypatch.setattr(
@@ -1619,7 +1693,7 @@ def test_worker_precheck_falls_back_when_diariser_init_fails(tmp_path: Path, mon
 
     raw_audio = cfg.recordings_root / "rec-precheck-fallback-1" / "raw" / "audio.wav"
     raw_audio.parent.mkdir(parents=True, exist_ok=True)
-    raw_audio.write_bytes(b"\x00")
+    _write_pcm_wav(raw_audio)
 
     monkeypatch.setattr("lan_app.worker_tasks._resolve_raw_audio_path", lambda *_a, **_k: raw_audio)
     monkeypatch.setattr(
@@ -1715,7 +1789,7 @@ def test_worker_clears_progress_when_pipeline_fails(tmp_path: Path, monkeypatch)
 
     raw_audio = cfg.recordings_root / "rec-progress-fail-1" / "raw" / "audio.wav"
     raw_audio.parent.mkdir(parents=True, exist_ok=True)
-    raw_audio.write_bytes(b"\x00")
+    _write_pcm_wav(raw_audio)
 
     monkeypatch.setattr("lan_app.worker_tasks._resolve_raw_audio_path", lambda *_a, **_k: raw_audio)
     monkeypatch.setattr(
@@ -1768,7 +1842,7 @@ def test_worker_precheck_keeps_auto_summary_target_unset(tmp_path: Path, monkeyp
 
     raw_audio = cfg.recordings_root / "rec-precheck-auto-target-1" / "raw" / "audio.wav"
     raw_audio.parent.mkdir(parents=True, exist_ok=True)
-    raw_audio.write_bytes(b"\x00")
+    _write_pcm_wav(raw_audio)
 
     monkeypatch.setattr("lan_app.worker_tasks._resolve_raw_audio_path", lambda *_a, **_k: raw_audio)
     monkeypatch.setattr(

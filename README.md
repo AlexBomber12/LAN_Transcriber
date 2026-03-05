@@ -76,9 +76,10 @@ Operational setup, failure handling, backup/restore, and upgrade steps are docum
 ## Workflow (Upload -> Processing -> Export)
 
 1. Open `/upload` and add one or more audio files.
-2. Track per-file upload progress and processing progress on the same page.
-3. Open the recording detail page at `/recordings/{recording_id}`.
-4. Export results:
+2. Uploaded audio is normalized automatically to 16 kHz mono WAV before VAD/ASR/diarization (raw upload is preserved; no user conversion needed).
+3. Track per-file upload progress and processing progress on the same page.
+4. Open the recording detail page at `/recordings/{recording_id}`.
+5. Export results:
    - Copy markdown from the export tab for manual OneNote paste.
    - Download ZIP from `/ui/recordings/{recording_id}/export.zip`.
 
@@ -98,6 +99,8 @@ Canonical artifact layout (v1):
 ```text
 /data/recordings/<recording_id>/
   raw/audio.<ext>
+  derived/audio_sanitized.wav
+  derived/audio_sanitize.json
   derived/transcript.json
   derived/transcript.txt
   derived/segments.json

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import wave
 
 import pytest
 
@@ -34,6 +35,16 @@ def _set_worker_env(monkeypatch, cfg: AppSettings) -> None:
     monkeypatch.setenv("LAN_PROM_SNAPSHOT_PATH", str(cfg.metrics_snapshot_path))
 
 
+def _write_pcm_wav(path: Path, *, sample_rate: int = 16000, duration_sec: float = 0.1) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    frames = max(int(sample_rate * duration_sec), 1)
+    with wave.open(str(path), "wb") as wav_file:
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(sample_rate)
+        wav_file.writeframes(b"\x00\x00" * frames)
+
+
 def _seed_precheck_job(cfg: AppSettings, *, recording_id: str, job_id: str) -> None:
     init_db(cfg)
     create_recording(
@@ -49,8 +60,7 @@ def _seed_precheck_job(cfg: AppSettings, *, recording_id: str, job_id: str) -> N
         settings=cfg,
     )
     raw_audio = cfg.recordings_root / recording_id / "raw" / "audio.wav"
-    raw_audio.parent.mkdir(parents=True, exist_ok=True)
-    raw_audio.write_bytes(b"\x00")
+    _write_pcm_wav(raw_audio)
 
 
 def test_process_job_pipeline_exception_marks_job_failed_and_updates_recording_status(
@@ -137,4 +147,3 @@ def test_progress_update_failures_do_not_hide_original_pipeline_error(
     job = get_job("job-worker-resilience-2", settings=cfg) or {}
     assert job.get("status") == JOB_STATUS_FAILED
     assert "dep failure" in str(job.get("error") or "")
-

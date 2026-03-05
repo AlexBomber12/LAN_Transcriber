@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import sys
 from types import SimpleNamespace
+import wave
 
 import pytest
 
@@ -33,6 +34,16 @@ def _db_settings(tmp_path: Path) -> AppSettings:
     )
     cfg.metrics_snapshot_path = tmp_path / "metrics.snap"
     return cfg
+
+
+def _write_pcm_wav(path: Path, *, sample_rate: int = 16000, duration_sec: float = 0.1) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    frames = max(int(sample_rate * duration_sec), 1)
+    with wave.open(str(path), "wb") as wav_file:
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(sample_rate)
+        wav_file.writeframes(b"\x00\x00" * frames)
 
 
 def _lightweight_settings(tmp_path: Path, *, max_job_attempts: int = 3) -> SimpleNamespace:
@@ -580,7 +591,7 @@ def test_run_precheck_pipeline_records_step_logs_and_explicit_summary_target(
 
     raw_audio = cfg.recordings_root / "rec-step-log-1" / "raw" / "audio.wav"
     raw_audio.parent.mkdir(parents=True, exist_ok=True)
-    raw_audio.write_bytes(b"\x00")
+    _write_pcm_wav(raw_audio)
 
     monkeypatch.setattr(
         worker_tasks,
@@ -650,6 +661,109 @@ def test_run_precheck_pipeline_records_step_logs_and_explicit_summary_target(
     }
 
 
+def test_run_precheck_pipeline_uses_sanitized_audio_for_precheck_and_pipeline(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    cfg = _db_settings(tmp_path)
+    init_db(cfg)
+    create_recording(
+        "rec-sanitize-wire-1",
+        source="test",
+        source_filename="audio.mp3",
+        settings=cfg,
+    )
+
+    raw_audio = cfg.recordings_root / "rec-sanitize-wire-1" / "raw" / "audio.mp3"
+    raw_audio.parent.mkdir(parents=True, exist_ok=True)
+    raw_audio.write_bytes(b"fake")
+
+    observed_paths: dict[str, Path] = {}
+
+    def _fake_sanitize(input_path: Path, output_path: Path, **_kwargs) -> Path:
+        observed_paths["sanitize_input"] = input_path
+        observed_paths["sanitize_output"] = output_path
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(b"wav")
+        return output_path
+
+    monkeypatch.setattr(
+        worker_tasks,
+        "sanitize_audio_for_pipeline",
+        _fake_sanitize,
+    )
+
+    def _fake_run_precheck(audio_path: Path, *_args, **_kwargs) -> PrecheckResult:
+        observed_paths["precheck"] = audio_path
+        return PrecheckResult(
+            duration_sec=30.0,
+            speech_ratio=0.6,
+            quarantine_reason=None,
+        )
+
+    monkeypatch.setattr(worker_tasks, "run_precheck", _fake_run_precheck)
+    monkeypatch.setattr(worker_tasks, "_build_diariser", lambda *_a, **_k: object())
+    monkeypatch.setattr(
+        worker_tasks,
+        "refresh_recording_metrics",
+        lambda *_a, **_k: {"participants": [], "meeting": {"total_interruptions": 0}},
+    )
+    monkeypatch.setattr(
+        worker_tasks,
+        "refresh_recording_routing",
+        lambda *_a, **_k: {
+            "suggested_project_id": None,
+            "confidence": 0.0,
+            "threshold": 0.5,
+            "auto_selected": False,
+            "status_after_routing": RECORDING_STATUS_READY,
+        },
+    )
+    monkeypatch.setattr(
+        worker_tasks,
+        "_load_transcript_language_payload",
+        lambda *_a, **_k: (None, None),
+    )
+
+    async def _fake_run_pipeline(*_args, **kwargs):
+        observed_paths["pipeline"] = kwargs["audio_path"]
+        return None
+
+    monkeypatch.setattr(worker_tasks, "run_pipeline", _fake_run_pipeline)
+
+    final_status, quarantine_reason = worker_tasks._run_precheck_pipeline(
+        recording_id="rec-sanitize-wire-1",
+        settings=cfg,
+        log_path=cfg.recordings_root / "rec-sanitize-wire-1" / "logs" / "step-precheck.log",
+    )
+
+    assert final_status == RECORDING_STATUS_READY
+    assert quarantine_reason is None
+    assert observed_paths["sanitize_input"] == raw_audio
+    assert observed_paths["sanitize_output"] == (
+        cfg.recordings_root / "rec-sanitize-wire-1" / "derived" / "audio_sanitized.wav"
+    )
+    assert observed_paths["precheck"] == observed_paths["sanitize_output"]
+    assert observed_paths["pipeline"] == observed_paths["sanitize_output"]
+
+    sanitize_payload = json.loads(
+        (
+            cfg.recordings_root
+            / "rec-sanitize-wire-1"
+            / "derived"
+            / "audio_sanitize.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert sanitize_payload == {
+        "input_path": str(raw_audio),
+        "output_path": str(observed_paths["sanitize_output"]),
+        "ffmpeg_used": True,
+        "sample_rate": 16000,
+        "channels": 1,
+        "codec": "pcm_s16le",
+    }
+
+
 def test_run_precheck_pipeline_marks_fallback_when_builder_returns_fallback(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -665,7 +779,7 @@ def test_run_precheck_pipeline_marks_fallback_when_builder_returns_fallback(
 
     raw_audio = cfg.recordings_root / "rec-step-log-fallback-1" / "raw" / "audio.wav"
     raw_audio.parent.mkdir(parents=True, exist_ok=True)
-    raw_audio.write_bytes(b"\x00")
+    _write_pcm_wav(raw_audio)
 
     monkeypatch.setattr(
         worker_tasks,
