@@ -461,6 +461,84 @@ def test_pyannote_diariser_retries_when_dict_payload_typeerror_expects_path():
     assert model.calls == [{"audio": "/tmp/input.wav"}, "/tmp/input.wav"]
 
 
+def test_pyannote_diariser_passes_optional_speaker_hint_kwargs():
+    class _Model:
+        def __init__(self):
+            self.calls: list[tuple[object, dict[str, object]]] = []
+
+        def __call__(self, payload: object, **kwargs: object):
+            self.calls.append((payload, dict(kwargs)))
+            return {"ok": True}
+
+    model = _Model()
+    diariser = worker_tasks._PyannoteDiariser(
+        model,
+        min_speakers=2,
+        max_speakers=4,
+    )
+    result = asyncio.run(diariser(Path("/tmp/input.wav")))
+    assert result == {"ok": True}
+    assert model.calls == [
+        (
+            {"audio": "/tmp/input.wav"},
+            {"min_speakers": 2, "max_speakers": 4},
+        )
+    ]
+
+
+def test_resolve_diarization_speaker_hints_from_env(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("LAN_DIARIZATION_MIN_SPEAKERS", "2")
+    monkeypatch.setenv("LAN_DIARIZATION_MAX_SPEAKERS", "4")
+    assert worker_tasks._resolve_diarization_speaker_hints() == (2, 4)
+
+    monkeypatch.setenv("LAN_DIARIZATION_MIN_SPEAKERS", "abc")
+    monkeypatch.setenv("LAN_DIARIZATION_MAX_SPEAKERS", "1")
+    assert worker_tasks._resolve_diarization_speaker_hints() == (None, 1)
+
+    monkeypatch.setenv("LAN_DIARIZATION_MIN_SPEAKERS", "0")
+    monkeypatch.setenv("LAN_DIARIZATION_MAX_SPEAKERS", "3")
+    assert worker_tasks._resolve_diarization_speaker_hints() == (None, 3)
+
+    monkeypatch.setenv("LAN_DIARIZATION_MIN_SPEAKERS", "5")
+    monkeypatch.setenv("LAN_DIARIZATION_MAX_SPEAKERS", "2")
+    assert worker_tasks._resolve_diarization_speaker_hints() == (None, None)
+
+
+def test_write_diarization_status_artifact_writes_payload_and_ignores_oserror(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    cfg = _db_settings(tmp_path)
+    worker_tasks._write_diarization_status_artifact(
+        recording_id="rec-diar-mode-1",
+        mode="pyannote",
+        reason=None,
+        settings=cfg,
+    )
+    artifact_path = (
+        cfg.recordings_root
+        / "rec-diar-mode-1"
+        / "derived"
+        / "diarization_status.json"
+    )
+    assert json.loads(artifact_path.read_text(encoding="utf-8")) == {
+        "mode": "pyannote",
+        "degraded": False,
+    }
+
+    monkeypatch.setattr(
+        worker_tasks,
+        "atomic_write_json",
+        lambda *_a, **_k: (_ for _ in ()).throw(OSError("readonly")),
+    )
+    worker_tasks._write_diarization_status_artifact(
+        recording_id="rec-diar-mode-2",
+        mode="fallback",
+        reason="RuntimeError: boom",
+        settings=cfg,
+    )
+
+
 def test_pyannote_diariser_rejects_non_callable_model():
     with pytest.raises(TypeError, match="pipeline_model must be a callable"):
         worker_tasks._PyannoteDiariser(None)
@@ -569,6 +647,92 @@ def test_run_precheck_pipeline_records_step_logs_and_explicit_summary_target(
     assert observed_updates == {
         "recording_id": "rec-step-log-1",
         "kwargs": {"language_auto": "en", "target_summary_language": "fr"},
+    }
+
+
+def test_run_precheck_pipeline_marks_fallback_when_builder_returns_fallback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    cfg = _db_settings(tmp_path)
+    init_db(cfg)
+    create_recording(
+        "rec-step-log-fallback-1",
+        source="test",
+        source_filename="audio.wav",
+        settings=cfg,
+    )
+
+    raw_audio = cfg.recordings_root / "rec-step-log-fallback-1" / "raw" / "audio.wav"
+    raw_audio.parent.mkdir(parents=True, exist_ok=True)
+    raw_audio.write_bytes(b"\x00")
+
+    monkeypatch.setattr(
+        worker_tasks,
+        "run_precheck",
+        lambda *_a, **_k: PrecheckResult(
+            duration_sec=30.0,
+            speech_ratio=0.5,
+            quarantine_reason=None,
+        ),
+    )
+    monkeypatch.setattr(
+        worker_tasks,
+        "_build_diariser",
+        lambda *_a, **_k: worker_tasks._FallbackDiariser(30.0),
+    )
+    monkeypatch.setattr(
+        worker_tasks,
+        "refresh_recording_metrics",
+        lambda *_a, **_k: {"participants": [], "meeting": {"total_interruptions": 0}},
+    )
+    monkeypatch.setattr(
+        worker_tasks,
+        "refresh_recording_routing",
+        lambda *_a, **_k: {
+            "suggested_project_id": None,
+            "confidence": 0.0,
+            "threshold": 0.5,
+            "auto_selected": False,
+            "status_after_routing": RECORDING_STATUS_READY,
+        },
+    )
+    monkeypatch.setattr(
+        worker_tasks,
+        "run_pipeline",
+        lambda *_a, **_k: asyncio.sleep(0),
+    )
+
+    final_status, quarantine_reason = worker_tasks._run_precheck_pipeline(
+        recording_id="rec-step-log-fallback-1",
+        settings=cfg,
+        log_path=cfg.recordings_root
+        / "rec-step-log-fallback-1"
+        / "logs"
+        / "step-precheck.log",
+    )
+
+    assert final_status == RECORDING_STATUS_READY
+    assert quarantine_reason is None
+    log_text = (
+        cfg.recordings_root
+        / "rec-step-log-fallback-1"
+        / "logs"
+        / "step-precheck.log"
+    ).read_text(encoding="utf-8")
+    assert "diariser mode=fallback reason=pyannote_unavailable" in log_text
+    status_payload = json.loads(
+        (
+            cfg.recordings_root
+            / "rec-step-log-fallback-1"
+            / "derived"
+            / "diarization_status.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert status_payload == {
+        "mode": "fallback",
+        "degraded": True,
+        "reason": "pyannote_unavailable",
     }
 
 

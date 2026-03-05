@@ -4,9 +4,16 @@ import os
 import re
 from typing import Any
 
+from lan_transcriber.torch_safe_globals import (
+    diarization_safe_globals_for_torch_load,
+    import_trusted_diarization_symbol,
+    unsupported_global_diarization_fqn_from_error,
+)
+
 from .hf_repo import split_repo_id_and_revision
 
 DEFAULT_DIARIZATION_MODEL_ID = "pyannote/speaker-diarization-3.1"
+_MAX_SAFE_GLOBAL_ATTEMPTS = 3
 
 _REPO_HINT_RE = re.compile(r"\b[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*\b")
 
@@ -67,6 +74,31 @@ def _candidate_load_inputs(repo_id: str, revision: str | None) -> list[tuple[str
     return [(repo_id, {})]
 
 
+def _from_pretrained_with_safe_globals(
+    from_pretrained: Any,
+    candidate: str,
+    kwargs: dict[str, Any],
+) -> Any:
+    extra_fqns: list[str] = []
+    last_error: Exception | None = None
+    for _ in range(_MAX_SAFE_GLOBAL_ATTEMPTS):
+        with diarization_safe_globals_for_torch_load(extra_fqns=extra_fqns):
+            try:
+                return from_pretrained(candidate, **kwargs)
+            except Exception as exc:
+                last_error = exc
+        retry_fqn = unsupported_global_diarization_fqn_from_error(last_error)
+        if retry_fqn is None or retry_fqn in extra_fqns:
+            raise last_error
+        if import_trusted_diarization_symbol(retry_fqn) is None:
+            raise last_error
+        extra_fqns.append(retry_fqn)
+
+    if last_error is not None:
+        raise last_error
+    raise RuntimeError("Unable to load diarization pipeline.")
+
+
 def load_pyannote_pipeline(*, model_id: str | None = None, token: str | None = None) -> Any:
     resolved_model_id = resolve_diarization_model_id(model_id)
     repo_id, revision = split_repo_id_and_revision(resolved_model_id)
@@ -82,7 +114,11 @@ def load_pyannote_pipeline(*, model_id: str | None = None, token: str | None = N
         if resolved_token:
             kwargs["token"] = resolved_token
         try:
-            model = Pipeline.from_pretrained(candidate, **kwargs)
+            model = _from_pretrained_with_safe_globals(
+                Pipeline.from_pretrained,
+                candidate,
+                kwargs,
+            )
         except TypeError as exc:
             message = str(exc).lower()
             if (
@@ -92,7 +128,11 @@ def load_pyannote_pipeline(*, model_id: str | None = None, token: str | None = N
             ):
                 kwargs.pop("token", None)
                 try:
-                    model = Pipeline.from_pretrained(candidate, **kwargs)
+                    model = _from_pretrained_with_safe_globals(
+                        Pipeline.from_pretrained,
+                        candidate,
+                        kwargs,
+                    )
                 except Exception as retry_exc:
                     last_error = retry_exc
                     continue
