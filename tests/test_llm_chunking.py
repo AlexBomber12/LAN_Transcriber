@@ -46,6 +46,12 @@ def test_plan_transcript_chunks_splits_long_sentences_and_words() -> None:
 def test_internal_split_helpers_cover_blank_short_and_sentence_edges() -> None:
     assert llm_chunking._split_words_to_fit("", max_chars=5) == []
     assert llm_chunking._split_words_to_fit("tiny", max_chars=10) == ["tiny"]
+    assert llm_chunking._split_words_to_fit("ok " + ("x" * 25), max_chars=10) == [
+        "ok",
+        "xxxxxxxxxx",
+        "xxxxxxxxxx",
+        "xxxxx",
+    ]
     assert llm_chunking._split_unit_to_fit("   ", max_chars=10) == []
 
     flushed = llm_chunking._split_unit_to_fit(

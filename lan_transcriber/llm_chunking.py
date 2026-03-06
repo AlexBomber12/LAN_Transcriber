@@ -69,11 +69,14 @@ def _split_words_to_fit(text: str, *, max_chars: int) -> list[str]:
     chunks: list[str] = []
     current: list[str] = []
 
+    def _append_oversized_word(word: str) -> None:
+        for start in range(0, len(word), max_chars):
+            chunks.append(word[start : start + max_chars])
+
     for word in words:
         if not current:
             if len(word) > max_chars:
-                for start in range(0, len(word), max_chars):
-                    chunks.append(word[start : start + max_chars])
+                _append_oversized_word(word)
                 continue
             current = [word]
             continue
@@ -81,6 +84,10 @@ def _split_words_to_fit(text: str, *, max_chars: int) -> list[str]:
         candidate = " ".join([*current, word])
         if len(candidate) > max_chars:
             chunks.append(" ".join(current))
+            if len(word) > max_chars:
+                _append_oversized_word(word)
+                current = []
+                continue
             current = [word]
         else:
             current.append(word)
