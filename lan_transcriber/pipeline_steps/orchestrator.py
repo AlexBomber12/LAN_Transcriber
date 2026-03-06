@@ -626,7 +626,7 @@ async def _run_chunked_llm_summary(
             if _llm_message_timed_out(raw_chunk):
                 raise TimeoutError(_LLM_TIMEOUT_SENTINEL)
             extract = parse_chunk_extract(str(raw_chunk.get("content") or ""))
-        except TimeoutError as exc:
+        except (TimeoutError, asyncio.TimeoutError) as exc:
             message = _llm_timeout_message(cfg.llm_chunk_timeout_seconds)
             atomic_write_json(error_path, {"error": message})
             raise RuntimeError(f"LLM chunk {chunk.index}/{chunk.total} failed: {message}") from exc

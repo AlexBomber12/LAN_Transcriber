@@ -145,6 +145,42 @@ async def test_run_chunked_llm_summary_timeout_writes_error_artifact(tmp_path: P
 
 
 @pytest.mark.asyncio
+async def test_run_chunked_llm_summary_asyncio_timeout_writes_error_artifact(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _raise_asyncio_timeout(*_args: Any, **_kwargs: Any) -> dict[str, str]:
+        raise asyncio.TimeoutError()
+
+    monkeypatch.setattr(pipeline, "_generate_llm_message", _raise_asyncio_timeout)
+
+    derived = tmp_path / "derived"
+    with pytest.raises(RuntimeError, match=r"LLM chunk 1/1 failed: timed out after 0.001s"):
+        await pipeline._run_chunked_llm_summary(
+            transcript_text="single chunk transcript",
+            derived_dir=derived,
+            llm=object(),
+            cfg=_settings(
+                tmp_path,
+                llm_model="model",
+                llm_chunk_max_chars=100,
+                llm_chunk_timeout_seconds=0.001,
+            ),
+            llm_model="model",
+            target_summary_language="en",
+            friendly=0,
+            default_topic="Meeting summary",
+            calendar_title=None,
+            calendar_attendees=[],
+            progress_callback=None,
+        )
+
+    assert json.loads((derived / "llm_chunk_001_error.json").read_text(encoding="utf-8")) == {
+        "error": "timed out after 0.001s"
+    }
+
+
+@pytest.mark.asyncio
 async def test_run_chunked_llm_summary_timeout_sentinel_writes_error_artifact(
     tmp_path: Path,
 ) -> None:
