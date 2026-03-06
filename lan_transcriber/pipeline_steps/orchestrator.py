@@ -53,6 +53,7 @@ _logger = logging.getLogger(__name__)
 _LLM_MODEL_REQUIRED_ERROR = (
     "LLM_MODEL is required. Set it in .env (e.g., LLM_MODEL=gpt-oss:120b)."
 )
+_LLM_TIMEOUT_SENTINEL = "**LLM timeout**"
 
 
 class Diariser(Protocol):
@@ -526,6 +527,10 @@ async def _generate_llm_message(
     return _normalise_llm_message(await awaitable)
 
 
+def _llm_message_timed_out(message: dict[str, Any]) -> bool:
+    return str(message.get("content") or "").strip() == _LLM_TIMEOUT_SENTINEL
+
+
 def _llm_chunk_progress(chunk_index: int, total_chunks: int) -> float:
     total = max(total_chunks, 1)
     start = 0.85
@@ -612,6 +617,8 @@ async def _run_chunked_llm_summary(
                 timeout_seconds=cfg.llm_chunk_timeout_seconds,
             )
             atomic_write_json(derived_dir / f"llm_chunk_{chunk.index:03d}_raw.json", raw_chunk)
+            if _llm_message_timed_out(raw_chunk):
+                raise TimeoutError(_LLM_TIMEOUT_SENTINEL)
             extract = parse_chunk_extract(str(raw_chunk.get("content") or ""))
         except TimeoutError as exc:
             message = f"timed out after {cfg.llm_chunk_timeout_seconds:g}s"

@@ -143,6 +143,44 @@ async def test_run_chunked_llm_summary_timeout_writes_error_artifact(tmp_path: P
     }
 
 
+@pytest.mark.asyncio
+async def test_run_chunked_llm_summary_timeout_sentinel_writes_error_artifact(
+    tmp_path: Path,
+) -> None:
+    class _TimeoutSentinelLLM:
+        async def generate(self, **_kwargs: Any) -> dict[str, str]:
+            return {"content": "**LLM timeout**", "role": "assistant"}
+
+    derived = tmp_path / "derived"
+    with pytest.raises(RuntimeError, match=r"LLM chunk 1/1 failed: timed out after 0.001s"):
+        await pipeline._run_chunked_llm_summary(
+            transcript_text="single chunk transcript",
+            derived_dir=derived,
+            llm=_TimeoutSentinelLLM(),
+            cfg=_settings(
+                tmp_path,
+                llm_model="model",
+                llm_chunk_max_chars=100,
+                llm_chunk_timeout_seconds=0.001,
+            ),
+            llm_model="model",
+            target_summary_language="en",
+            friendly=0,
+            default_topic="Meeting summary",
+            calendar_title=None,
+            calendar_attendees=[],
+            progress_callback=None,
+        )
+
+    assert json.loads((derived / "llm_chunk_001_raw.json").read_text(encoding="utf-8")) == {
+        "content": "**LLM timeout**",
+        "role": "assistant",
+    }
+    assert json.loads((derived / "llm_chunk_001_error.json").read_text(encoding="utf-8")) == {
+        "error": "timed out after 0.001s"
+    }
+
+
 def _audio_file(tmp_path: Path, name: str = "audio.mp3") -> Path:
     path = tmp_path / name
     path.write_bytes(b"\x00")
