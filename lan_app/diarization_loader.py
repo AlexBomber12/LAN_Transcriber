@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 import re
 from typing import Any
@@ -16,6 +17,7 @@ DEFAULT_DIARIZATION_MODEL_ID = "pyannote/speaker-diarization-3.1"
 _MAX_SAFE_GLOBAL_ATTEMPTS = 3
 
 _REPO_HINT_RE = re.compile(r"\b[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*\b")
+_LOG = logging.getLogger(__name__)
 
 
 def resolve_diarization_model_id(model_id: str | None = None) -> str:
@@ -99,6 +101,26 @@ def _from_pretrained_with_safe_globals(
     raise RuntimeError("Unable to load diarization pipeline.")
 
 
+def _move_pipeline_to_best_device(model: Any) -> str:
+    try:
+        import torch
+    except Exception:
+        return "cpu"
+
+    if not torch.cuda.is_available():
+        return "cpu"
+
+    try:
+        model.to(torch.device("cuda"))
+    except Exception as exc:
+        _LOG.warning(
+            "Failed to move pyannote diarization pipeline to CUDA; continuing on CPU: %s",
+            exc,
+        )
+        return "cpu"
+    return "cuda"
+
+
 def load_pyannote_pipeline(*, model_id: str | None = None, token: str | None = None) -> Any:
     resolved_model_id = resolve_diarization_model_id(model_id)
     repo_id, revision = split_repo_id_and_revision(resolved_model_id)
@@ -145,6 +167,8 @@ def load_pyannote_pipeline(*, model_id: str | None = None, token: str | None = N
 
         if model is None or not callable(model):
             raise TypeError("Loaded diarization pipeline must be callable.")
+        device_name = _move_pipeline_to_best_device(model)
+        _LOG.info("Pyannote diarization device: %s", device_name)
         return model
 
     if last_error is not None:

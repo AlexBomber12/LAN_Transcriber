@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import builtins
 import contextlib
+import logging
 import pickle
-from types import ModuleType, SimpleNamespace
 import sys
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
@@ -24,6 +25,13 @@ def _install_fake_pipeline(monkeypatch: pytest.MonkeyPatch, impl):
     pyannote_pkg.audio = pyannote_audio  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "pyannote", pyannote_pkg)
     monkeypatch.setitem(sys.modules, "pyannote.audio", pyannote_audio)
+
+
+def _install_fake_torch(monkeypatch: pytest.MonkeyPatch, *, cuda_available: bool):
+    torch_mod = ModuleType("torch")
+    torch_mod.cuda = SimpleNamespace(is_available=lambda: cuda_available)  # type: ignore[attr-defined]
+    torch_mod.device = lambda name: f"device:{name}"  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "torch", torch_mod)
 
 
 def test_resolve_diarization_model_id_prefers_explicit_then_env(monkeypatch: pytest.MonkeyPatch):
@@ -225,6 +233,110 @@ def test_load_pyannote_pipeline_rejects_empty_model_and_import_errors(
     sys.modules.pop("pyannote.audio", None)
     with pytest.raises(ModuleNotFoundError, match="pyannote"):
         diarization_loader.load_pyannote_pipeline(model_id="repo/import@1")
+
+
+def test_load_pyannote_pipeline_moves_to_cuda_when_available(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+):
+    moved_to: list[object] = []
+
+    class _Model:
+        def __call__(self, payload):
+            return payload
+
+        def to(self, device):
+            moved_to.append(device)
+
+    _install_fake_pipeline(monkeypatch, lambda *_a, **_k: _Model())
+    _install_fake_torch(monkeypatch, cuda_available=True)
+
+    with caplog.at_level(logging.INFO, logger=diarization_loader.__name__):
+        model = diarization_loader.load_pyannote_pipeline(model_id="repo/cuda")
+
+    assert callable(model)
+    assert moved_to == ["device:cuda"]
+    assert "Pyannote diarization device: cuda" in caplog.text
+
+
+def test_load_pyannote_pipeline_stays_on_cpu_when_cuda_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+):
+    moved_to: list[object] = []
+
+    class _Model:
+        def __call__(self, payload):
+            return payload
+
+        def to(self, device):
+            moved_to.append(device)
+
+    _install_fake_pipeline(monkeypatch, lambda *_a, **_k: _Model())
+    _install_fake_torch(monkeypatch, cuda_available=False)
+
+    with caplog.at_level(logging.INFO, logger=diarization_loader.__name__):
+        model = diarization_loader.load_pyannote_pipeline(model_id="repo/cpu")
+
+    assert callable(model)
+    assert moved_to == []
+    assert "Pyannote diarization device: cpu" in caplog.text
+
+
+def test_load_pyannote_pipeline_falls_back_to_cpu_when_cuda_move_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+):
+    class _Model:
+        def __call__(self, payload):
+            return payload
+
+        def to(self, _device):
+            raise RuntimeError("cuda move failed")
+
+    _install_fake_pipeline(monkeypatch, lambda *_a, **_k: _Model())
+    _install_fake_torch(monkeypatch, cuda_available=True)
+
+    with caplog.at_level(logging.INFO, logger=diarization_loader.__name__):
+        model = diarization_loader.load_pyannote_pipeline(model_id="repo/fallback")
+
+    assert callable(model)
+    assert (
+        "Failed to move pyannote diarization pipeline to CUDA; continuing on CPU"
+        in caplog.text
+    )
+    assert "Pyannote diarization device: cpu" in caplog.text
+
+
+def test_load_pyannote_pipeline_stays_on_cpu_when_torch_import_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+):
+    class _Model:
+        def __call__(self, payload):
+            return payload
+
+        def to(self, _device):
+            raise AssertionError("to() should not be called without torch")
+
+    real_import = builtins.__import__
+
+    def _fake_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "torch":
+            err = ModuleNotFoundError("No module named 'torch'")
+            err.name = "torch"
+            raise err
+        return real_import(name, globals, locals, fromlist, level)
+
+    _install_fake_pipeline(monkeypatch, lambda *_a, **_k: _Model())
+    monkeypatch.setattr(builtins, "__import__", _fake_import)
+    sys.modules.pop("torch", None)
+
+    with caplog.at_level(logging.INFO, logger=diarization_loader.__name__):
+        model = diarization_loader.load_pyannote_pipeline(model_id="repo/no-torch")
+
+    assert callable(model)
+    assert "Pyannote diarization device: cpu" in caplog.text
 
 
 def test_load_pyannote_pipeline_raises_runtime_error_when_candidates_are_empty(
