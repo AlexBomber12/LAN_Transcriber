@@ -188,6 +188,38 @@ def test_llm_max_tokens_defaults_and_env_override(monkeypatch):
         AppSettings()
 
 
+def test_llm_chunking_settings_defaults_and_env_override(monkeypatch):
+    monkeypatch.delenv("LLM_CHUNK_MAX_CHARS", raising=False)
+    monkeypatch.delenv("LLM_CHUNK_OVERLAP_CHARS", raising=False)
+    monkeypatch.delenv("LLM_CHUNK_TIMEOUT_SECONDS", raising=False)
+    monkeypatch.delenv("LLM_LONG_TRANSCRIPT_THRESHOLD_CHARS", raising=False)
+    monkeypatch.delenv("LLM_MERGE_MAX_TOKENS", raising=False)
+
+    defaults = AppSettings()
+    assert defaults.llm_chunk_max_chars == 6000
+    assert defaults.llm_chunk_overlap_chars == 600
+    assert defaults.llm_chunk_timeout_seconds == 120.0
+    assert defaults.llm_long_transcript_threshold_chars == 6000
+    assert defaults.llm_merge_max_tokens is None
+
+    monkeypatch.setenv("LLM_CHUNK_MAX_CHARS", "4096")
+    monkeypatch.setenv("LLM_CHUNK_OVERLAP_CHARS", "256")
+    monkeypatch.setenv("LLM_CHUNK_TIMEOUT_SECONDS", "45")
+    monkeypatch.setenv("LLM_LONG_TRANSCRIPT_THRESHOLD_CHARS", "8192")
+    monkeypatch.setenv("LLM_MERGE_MAX_TOKENS", "3072")
+
+    overridden = AppSettings()
+    assert overridden.llm_chunk_max_chars == 4096
+    assert overridden.llm_chunk_overlap_chars == 256
+    assert overridden.llm_chunk_timeout_seconds == 45.0
+    assert overridden.llm_long_transcript_threshold_chars == 8192
+    assert overridden.llm_merge_max_tokens == 3072
+
+    monkeypatch.setenv("LLM_CHUNK_TIMEOUT_SECONDS", "0")
+    with pytest.raises(ValueError, match="LLM_CHUNK_TIMEOUT_SECONDS|llm_chunk_timeout_seconds"):
+        AppSettings()
+
+
 def test_dev_missing_urls_allows_import():
     env = os.environ.copy()
     env["LAN_ENV"] = "dev"

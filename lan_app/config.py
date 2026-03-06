@@ -72,12 +72,57 @@ class AppSettings(BaseSettings):
     llm_max_tokens: int = Field(
         default=1024,
         ge=256,
-        validation_alias=AliasChoices("LLM_MAX_TOKENS"),
+        validation_alias=AliasChoices("llm_max_tokens", "LLM_MAX_TOKENS"),
     )
     llm_max_tokens_retry: int = Field(
         default=2048,
         ge=256,
-        validation_alias=AliasChoices("LLM_MAX_TOKENS_RETRY"),
+        validation_alias=AliasChoices("llm_max_tokens_retry", "LLM_MAX_TOKENS_RETRY"),
+    )
+    llm_chunk_max_chars: int = Field(
+        default=6000,
+        ge=1,
+        validation_alias=AliasChoices(
+            "llm_chunk_max_chars",
+            "LAN_LLM_CHUNK_MAX_CHARS",
+            "LLM_CHUNK_MAX_CHARS",
+        ),
+    )
+    llm_chunk_overlap_chars: int = Field(
+        default=600,
+        ge=0,
+        validation_alias=AliasChoices(
+            "llm_chunk_overlap_chars",
+            "LAN_LLM_CHUNK_OVERLAP_CHARS",
+            "LLM_CHUNK_OVERLAP_CHARS",
+        ),
+    )
+    llm_chunk_timeout_seconds: float = Field(
+        default=120.0,
+        gt=0.0,
+        validation_alias=AliasChoices(
+            "llm_chunk_timeout_seconds",
+            "LAN_LLM_CHUNK_TIMEOUT_SECONDS",
+            "LLM_CHUNK_TIMEOUT_SECONDS",
+        ),
+    )
+    llm_long_transcript_threshold_chars: int = Field(
+        default=6000,
+        ge=1,
+        validation_alias=AliasChoices(
+            "llm_long_transcript_threshold_chars",
+            "LAN_LLM_LONG_TRANSCRIPT_THRESHOLD_CHARS",
+            "LLM_LONG_TRANSCRIPT_THRESHOLD_CHARS",
+        ),
+    )
+    llm_merge_max_tokens: int | None = Field(
+        default=None,
+        ge=256,
+        validation_alias=AliasChoices(
+            "llm_merge_max_tokens",
+            "LAN_LLM_MERGE_MAX_TOKENS",
+            "LLM_MERGE_MAX_TOKENS",
+        ),
     )
     rq_queue_name: str = Field(
         default=DEFAULT_RQ_QUEUE_NAME,

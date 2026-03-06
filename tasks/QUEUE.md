@@ -417,7 +417,7 @@ Queue (in order)
 - Depends on: PR-AUDIO-SANITIZE-FFMPEG-01
 
 82) PR-LLM-CHUNKING-01: Chunk long transcripts for LLM (map-reduce summaries, bounded per-chunk timeout, chunk/merge progress, deterministic merge)
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-LLM-CHUNKING-01.md
 - Depends on: PR-DIARIZATION-GPU-01
 

@@ -17,6 +17,13 @@ from ..aliases import ALIAS_PATH, load_aliases as _load_aliases, save_aliases as
 from ..artifacts import atomic_write_json, atomic_write_text, build_recording_artifacts, stage_raw_audio
 from ..compat.call_compat import call_with_supported_kwargs, filter_kwargs_for_callable
 from ..compat.pyannote_compat import patch_pyannote_inference_ignore_use_auth_token
+from ..llm_chunking import (
+    build_chunk_prompt,
+    build_merge_prompt,
+    merge_chunk_results,
+    parse_chunk_extract,
+    plan_transcript_chunks,
+)
 from ..llm_client import LLMClient
 from ..metrics import error_rate_total, p95_latency_seconds
 from ..models import SpeakerSegment, TranscriptResult
@@ -65,6 +72,65 @@ class Settings(BaseSettings):
     llm_model: str | None = Field(
         default=None,
         validation_alias=AliasChoices("llm_model", "LLM_MODEL", "LAN_LLM_MODEL"),
+    )
+    llm_max_tokens: int = Field(
+        default=1024,
+        ge=256,
+        validation_alias=AliasChoices("llm_max_tokens", "LLM_MAX_TOKENS", "LAN_LLM_MAX_TOKENS"),
+    )
+    llm_max_tokens_retry: int = Field(
+        default=2048,
+        ge=256,
+        validation_alias=AliasChoices(
+            "llm_max_tokens_retry",
+            "LLM_MAX_TOKENS_RETRY",
+            "LAN_LLM_MAX_TOKENS_RETRY",
+        ),
+    )
+    llm_chunk_max_chars: int = Field(
+        default=6000,
+        ge=1,
+        validation_alias=AliasChoices(
+            "llm_chunk_max_chars",
+            "LLM_CHUNK_MAX_CHARS",
+            "LAN_LLM_CHUNK_MAX_CHARS",
+        ),
+    )
+    llm_chunk_overlap_chars: int = Field(
+        default=600,
+        ge=0,
+        validation_alias=AliasChoices(
+            "llm_chunk_overlap_chars",
+            "LLM_CHUNK_OVERLAP_CHARS",
+            "LAN_LLM_CHUNK_OVERLAP_CHARS",
+        ),
+    )
+    llm_chunk_timeout_seconds: float = Field(
+        default=120.0,
+        gt=0.0,
+        validation_alias=AliasChoices(
+            "llm_chunk_timeout_seconds",
+            "LLM_CHUNK_TIMEOUT_SECONDS",
+            "LAN_LLM_CHUNK_TIMEOUT_SECONDS",
+        ),
+    )
+    llm_long_transcript_threshold_chars: int = Field(
+        default=6000,
+        ge=1,
+        validation_alias=AliasChoices(
+            "llm_long_transcript_threshold_chars",
+            "LLM_LONG_TRANSCRIPT_THRESHOLD_CHARS",
+            "LAN_LLM_LONG_TRANSCRIPT_THRESHOLD_CHARS",
+        ),
+    )
+    llm_merge_max_tokens: int | None = Field(
+        default=None,
+        ge=256,
+        validation_alias=AliasChoices(
+            "llm_merge_max_tokens",
+            "LLM_MERGE_MAX_TOKENS",
+            "LAN_LLM_MERGE_MAX_TOKENS",
+        ),
     )
     asr_model: str = "large-v3"
     asr_device: str = "auto"
@@ -422,6 +488,173 @@ async def _emit_progress(
         return
 
 
+async def _await_result(result: Any) -> Any:
+    if inspect.isawaitable(result):
+        return await result
+    return result
+
+
+def _normalise_llm_message(message: Any) -> dict[str, Any]:
+    if isinstance(message, dict):
+        return dict(message)
+    return {"role": "assistant", "content": str(message)}
+
+
+async def _generate_llm_message(
+    llm: LLMClient,
+    *,
+    system_prompt: str,
+    user_prompt: str,
+    model: str,
+    response_format: dict[str, Any] | None,
+    max_tokens: int,
+    max_tokens_retry: int | None = None,
+    timeout_seconds: float | None = None,
+) -> dict[str, Any]:
+    request = call_with_supported_kwargs(
+        llm.generate,
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+        model=model,
+        response_format=response_format,
+        max_tokens=max_tokens,
+        max_tokens_retry=max_tokens_retry,
+    )
+    awaitable = _await_result(request)
+    if timeout_seconds is not None:
+        return _normalise_llm_message(await asyncio.wait_for(awaitable, timeout=timeout_seconds))
+    return _normalise_llm_message(await awaitable)
+
+
+def _llm_chunk_progress(chunk_index: int, total_chunks: int) -> float:
+    total = max(total_chunks, 1)
+    start = 0.85
+    span = 0.08
+    return min(0.93, start + ((max(chunk_index, 1) - 1) / total) * span)
+
+
+def _speaker_turn_prompt_text(
+    speaker_turns: Sequence[dict[str, Any]],
+    *,
+    aliases: dict[str, str],
+) -> str:
+    rows: list[str] = []
+    for turn in speaker_turns:
+        text = str(turn.get("text") or "").strip()
+        if not text:
+            continue
+        speaker_key = str(turn.get("speaker") or "S1")
+        speaker = aliases.get(speaker_key, speaker_key)
+        start = safe_float(turn.get("start"), default=0.0)
+        end = safe_float(turn.get("end"), default=0.0)
+        rows.append(f"[{start:.2f}-{end:.2f}] {speaker}: {text}")
+    return "\n".join(rows).strip()
+
+
+def _use_chunked_llm(transcript_text: str, cfg: Settings) -> bool:
+    return len(transcript_text.strip()) > cfg.llm_long_transcript_threshold_chars
+
+
+async def _run_chunked_llm_summary(
+    *,
+    transcript_text: str,
+    derived_dir: Path,
+    llm: LLMClient,
+    cfg: Settings,
+    llm_model: str,
+    target_summary_language: str,
+    friendly: int,
+    default_topic: str,
+    calendar_title: str | None,
+    calendar_attendees: Sequence[str],
+    progress_callback: ProgressCallback | None,
+) -> dict[str, Any]:
+    chunks = plan_transcript_chunks(
+        transcript_text,
+        max_chars=cfg.llm_chunk_max_chars,
+        overlap_chars=cfg.llm_chunk_overlap_chars,
+    )
+    atomic_write_json(
+        derived_dir / "llm_chunks_plan.json",
+        {
+            "chunk_max_chars": cfg.llm_chunk_max_chars,
+            "chunk_overlap_chars": cfg.llm_chunk_overlap_chars,
+            "long_transcript_threshold_chars": cfg.llm_long_transcript_threshold_chars,
+            "chunks": [chunk.plan_payload() for chunk in chunks],
+        },
+    )
+    if not chunks:
+        raise RuntimeError("LLM chunk planning produced no chunks")
+
+    chunk_results: list[dict[str, Any]] = []
+    for chunk in chunks:
+        await _emit_progress(
+            progress_callback,
+            stage=f"llm_chunk_{chunk.index}_of_{chunk.total}",
+            progress=_llm_chunk_progress(chunk.index, chunk.total),
+        )
+        chunk_sys_prompt, chunk_user_prompt = build_chunk_prompt(
+            chunk,
+            target_summary_language=target_summary_language,
+            calendar_title=calendar_title,
+            calendar_attendees=calendar_attendees,
+        )
+        error_path = derived_dir / f"llm_chunk_{chunk.index:03d}_error.json"
+        try:
+            raw_chunk = await _generate_llm_message(
+                llm,
+                system_prompt=chunk_sys_prompt,
+                user_prompt=chunk_user_prompt,
+                model=llm_model,
+                response_format={"type": "json_object"},
+                max_tokens=cfg.llm_max_tokens,
+                max_tokens_retry=cfg.llm_max_tokens_retry,
+                timeout_seconds=cfg.llm_chunk_timeout_seconds,
+            )
+            atomic_write_json(derived_dir / f"llm_chunk_{chunk.index:03d}_raw.json", raw_chunk)
+            extract = parse_chunk_extract(str(raw_chunk.get("content") or ""))
+        except TimeoutError as exc:
+            message = f"timed out after {cfg.llm_chunk_timeout_seconds:g}s"
+            atomic_write_json(error_path, {"error": message})
+            raise RuntimeError(f"LLM chunk {chunk.index}/{chunk.total} failed: {message}") from exc
+        except Exception as exc:
+            message = str(exc) or exc.__class__.__name__
+            atomic_write_json(error_path, {"error": message})
+            raise RuntimeError(f"LLM chunk {chunk.index}/{chunk.total} failed: {message}") from exc
+
+        extract["chunk_index"] = chunk.index
+        extract["chunk_total"] = chunk.total
+        atomic_write_json(derived_dir / f"llm_chunk_{chunk.index:03d}_extract.json", extract)
+        chunk_results.append(extract)
+
+    merge_input = merge_chunk_results(chunk_results)
+    atomic_write_json(derived_dir / "llm_merge_input.json", merge_input)
+    await _emit_progress(progress_callback, stage="llm_merge", progress=0.93)
+    merge_sys_prompt, merge_user_prompt = build_merge_prompt(
+        merge_input,
+        target_summary_language=target_summary_language,
+        calendar_title=calendar_title,
+        calendar_attendees=calendar_attendees,
+    )
+    raw_merge = await _generate_llm_message(
+        llm,
+        system_prompt=merge_sys_prompt,
+        user_prompt=merge_user_prompt,
+        model=llm_model,
+        response_format={"type": "json_object"},
+        max_tokens=cfg.llm_merge_max_tokens or cfg.llm_max_tokens,
+    )
+    atomic_write_json(derived_dir / "llm_merge_raw.json", raw_merge)
+    return build_summary_payload(
+        raw_llm_content=str(raw_merge.get("content") or ""),
+        model=llm_model,
+        target_summary_language=target_summary_language,
+        friendly=friendly,
+        default_topic=default_topic,
+        derived_dir=derived_dir,
+    )
+
+
 async def run_pipeline(
     audio_path: Path,
     cfg: Settings,
@@ -614,20 +847,48 @@ async def run_pipeline(
         cfg.merge_similar,
     )
     friendly = _sentiment_score(clean_text)
-    sys_prompt, user_prompt = build_structured_summary_prompts(speaker_turns, summary_lang, calendar_title=cal_title, calendar_attendees=cal_attendees)
+    llm_prompt_text = _speaker_turn_prompt_text(speaker_turns, aliases=aliases)
 
     try:
-        await _emit_progress(progress_callback, stage="llm", progress=0.85)
-        msg = await llm.generate(system_prompt=sys_prompt, user_prompt=user_prompt, model=llm_model, response_format={"type": "json_object"})
-        raw_summary = msg.get("content", "") if isinstance(msg, dict) else str(msg)
-        summary_payload = build_summary_payload(
-            raw_llm_content=raw_summary,
-            model=llm_model,
-            target_summary_language=summary_lang,
-            friendly=friendly,
-            default_topic=cal_title or "Meeting summary",
-            derived_dir=artifacts.summary_json_path.parent,
-        )
+        if _use_chunked_llm(llm_prompt_text, cfg):
+            summary_payload = await _run_chunked_llm_summary(
+                transcript_text=llm_prompt_text or clean_text,
+                derived_dir=artifacts.summary_json_path.parent,
+                llm=llm,
+                cfg=cfg,
+                llm_model=llm_model,
+                target_summary_language=summary_lang,
+                friendly=friendly,
+                default_topic=cal_title or "Meeting summary",
+                calendar_title=cal_title,
+                calendar_attendees=cal_attendees,
+                progress_callback=progress_callback,
+            )
+        else:
+            sys_prompt, user_prompt = build_structured_summary_prompts(
+                speaker_turns,
+                summary_lang,
+                calendar_title=cal_title,
+                calendar_attendees=cal_attendees,
+            )
+            await _emit_progress(progress_callback, stage="llm", progress=0.85)
+            msg = await _generate_llm_message(
+                llm,
+                system_prompt=sys_prompt,
+                user_prompt=user_prompt,
+                model=llm_model,
+                response_format={"type": "json_object"},
+                max_tokens=cfg.llm_max_tokens,
+                max_tokens_retry=cfg.llm_max_tokens_retry,
+            )
+            summary_payload = build_summary_payload(
+                raw_llm_content=str(msg.get("content") or ""),
+                model=llm_model,
+                target_summary_language=summary_lang,
+                friendly=friendly,
+                default_topic=cal_title or "Meeting summary",
+                derived_dir=artifacts.summary_json_path.parent,
+            )
         serialised_segments = [SpeakerSegment(start=safe_float(turn["start"]), end=safe_float(turn["end"]), speaker=str(turn["speaker"]), text=str(turn["text"])) for turn in speaker_turns]
         speakers = sorted(set(aliases.get(turn["speaker"], turn["speaker"]) for turn in speaker_turns))
         atomic_write_text(artifacts.transcript_txt_path, clean_text)

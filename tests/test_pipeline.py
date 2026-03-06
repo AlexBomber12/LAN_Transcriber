@@ -228,6 +228,273 @@ async def test_pipeline_emits_progress_stages_in_order(tmp_path: Path, mocker):
 
 
 @pytest.mark.asyncio
+async def test_pipeline_short_transcript_keeps_single_pass_llm(tmp_path: Path, mocker):
+    mocker.patch(
+        "whisperx.transcribe",
+        return_value=(
+            [{"start": 0.0, "end": 1.0, "text": "hello world team"}],
+            {"language": "en", "language_probability": 0.95},
+        ),
+    )
+    mocker.patch(
+        "transformers.pipeline",
+        lambda *a, **k: lambda text: [{"label": "positive", "score": 0.7}],
+    )
+
+    payloads: list[dict[str, object]] = []
+
+    class _SinglePassLLM:
+        async def generate(
+            self,
+            *,
+            system_prompt: str,
+            user_prompt: str,
+            model: str | None = None,
+            response_format: dict[str, object] | None = None,
+        ):
+            del system_prompt, model, response_format
+            payloads.append(json.loads(user_prompt))
+            return {
+                "content": json.dumps(
+                    {
+                        "topic": "Short update",
+                        "summary_bullets": ["Reviewed one short update."],
+                        "decisions": [],
+                        "action_items": [],
+                        "emotional_summary": "Calm and focused.",
+                        "questions": {"total_count": 0, "types": {}, "extracted": []},
+                    }
+                )
+            }
+
+    cfg = pipeline.Settings(
+        speaker_db=tmp_path / "db.yaml",
+        tmp_root=tmp_path,
+        recordings_root=tmp_path / "recordings",
+        llm_model="test-llm-model",
+        llm_long_transcript_threshold_chars=1000,
+        llm_chunk_max_chars=120,
+        llm_chunk_overlap_chars=10,
+    )
+    await pipeline.run_pipeline(
+        audio_path=fake_audio(tmp_path, "short-single-pass.mp3"),
+        cfg=cfg,
+        llm=_SinglePassLLM(),
+        diariser=DummyDiariser(),
+        recording_id="rec-single-pass-1",
+        precheck=precheck_ok(),
+    )
+
+    derived = cfg.recordings_root / "rec-single-pass-1" / "derived"
+    assert len(payloads) == 1
+    assert "speaker_turns" in payloads[0]
+    assert not (derived / "llm_chunks_plan.json").exists()
+    assert not (derived / "llm_merge_input.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_pipeline_long_transcript_uses_chunked_llm_progress_and_artifacts(tmp_path: Path, mocker):
+    mocker.patch(
+        "whisperx.transcribe",
+        return_value=(
+            [
+                {
+                    "start": float(index),
+                    "end": float(index) + 1.0,
+                    "text": f"discussion item {index} " * 6,
+                }
+                for index in range(4)
+            ],
+            {"language": "en", "language_probability": 0.95},
+        ),
+    )
+    mocker.patch(
+        "transformers.pipeline",
+        lambda *a, **k: lambda text: [{"label": "positive", "score": 0.7}],
+    )
+
+    events: list[tuple[str, float]] = []
+    merge_payload: dict[str, object] = {}
+
+    class _ChunkedLLM:
+        async def generate(
+            self,
+            *,
+            system_prompt: str,
+            user_prompt: str,
+            model: str | None = None,
+            response_format: dict[str, object] | None = None,
+        ):
+            del system_prompt, model, response_format
+            payload = json.loads(user_prompt)
+            if "chunk" in payload:
+                index = int(payload["chunk"]["index"])
+                return {
+                    "content": json.dumps(
+                        {
+                            "topic_candidates": [f"Topic {index}"],
+                            "summary_bullets": [f"Chunk bullet {index}"],
+                            "decisions": [f"Decision {index}"] if index == 1 else [],
+                            "action_items": (
+                                [{"task": "Send notes", "owner": "Alex", "confidence": 0.8}]
+                                if index == 2
+                                else []
+                            ),
+                            "emotional_cues": ["Focused"],
+                            "questions": (
+                                {
+                                    "total_count": 1,
+                                    "types": {"status": 1},
+                                    "extracted": ["Is QA done?"],
+                                }
+                                if index == 1
+                                else {"total_count": 0, "types": {}, "extracted": []}
+                            ),
+                        }
+                    )
+                }
+            merge_payload["payload"] = payload
+            return {
+                "content": json.dumps(
+                    {
+                        "topic": "Merged topic",
+                        "summary_bullets": ["Merged summary bullet"],
+                        "decisions": ["Decision 1"],
+                        "action_items": [{"task": "Send notes", "owner": "Alex", "confidence": 0.8}],
+                        "emotional_summary": "Focused and positive.",
+                        "questions": {
+                            "total_count": 1,
+                            "types": {"status": 1},
+                            "extracted": ["Is QA done?"],
+                        },
+                    }
+                )
+            }
+
+    cfg = pipeline.Settings(
+        speaker_db=tmp_path / "db.yaml",
+        tmp_root=tmp_path,
+        recordings_root=tmp_path / "recordings",
+        llm_model="test-llm-model",
+        llm_long_transcript_threshold_chars=120,
+        llm_chunk_max_chars=90,
+        llm_chunk_overlap_chars=20,
+        llm_merge_max_tokens=1536,
+    )
+
+    def _progress(stage: str, progress: float) -> None:
+        events.append((stage, progress))
+
+    await pipeline.run_pipeline(
+        audio_path=fake_audio(tmp_path, "chunked.mp3"),
+        cfg=cfg,
+        llm=_ChunkedLLM(),
+        diariser=DummyDiariser(),
+        recording_id="rec-chunked-1",
+        precheck=precheck_ok(),
+        progress_callback=_progress,
+    )
+
+    derived = cfg.recordings_root / "rec-chunked-1" / "derived"
+    plan_payload = json.loads((derived / "llm_chunks_plan.json").read_text(encoding="utf-8"))
+    total_chunks = len(plan_payload["chunks"])
+    stage_names = [stage for stage, _progress in events]
+    summary_payload = json.loads((derived / "summary.json").read_text(encoding="utf-8"))
+
+    assert total_chunks > 1
+    assert stage_names[:5] == ["precheck", "stt", "diarize", "align", "language"]
+    assert stage_names[5] == f"llm_chunk_1_of_{total_chunks}"
+    assert stage_names[5 + total_chunks] == "llm_merge"
+    assert stage_names[-2:] == ["metrics", "done"]
+    assert merge_payload["payload"]["merge_input"]["chunk_count"] == total_chunks
+    assert (derived / "llm_chunk_001_raw.json").exists()
+    assert (derived / f"llm_chunk_{total_chunks:03d}_extract.json").exists()
+    assert (derived / "llm_merge_input.json").exists()
+    assert (derived / "llm_merge_raw.json").exists()
+    assert summary_payload["topic"] == "Merged topic"
+    assert summary_payload["summary_bullets"] == ["Merged summary bullet"]
+
+
+@pytest.mark.asyncio
+async def test_pipeline_chunk_failure_is_explicit_and_marks_metrics_failed(tmp_path: Path, mocker):
+    mocker.patch(
+        "whisperx.transcribe",
+        return_value=(
+            [
+                {
+                    "start": float(index),
+                    "end": float(index) + 1.0,
+                    "text": f"discussion item {index} " * 6,
+                }
+                for index in range(4)
+            ],
+            {"language": "en", "language_probability": 0.95},
+        ),
+    )
+    mocker.patch(
+        "transformers.pipeline",
+        lambda *a, **k: lambda text: [{"label": "positive", "score": 0.7}],
+    )
+
+    class _FailingChunkLLM:
+        async def generate(
+            self,
+            *,
+            system_prompt: str,
+            user_prompt: str,
+            model: str | None = None,
+            response_format: dict[str, object] | None = None,
+        ):
+            del system_prompt, model, response_format
+            payload = json.loads(user_prompt)
+            if "chunk" not in payload:
+                raise AssertionError("merge should not run after a chunk failure")
+            if int(payload["chunk"]["index"]) == 1:
+                return {
+                    "content": json.dumps(
+                        {
+                            "summary_bullets": ["Chunk 1"],
+                            "decisions": [],
+                            "action_items": [],
+                            "emotional_cues": ["Focused"],
+                            "questions": {"total_count": 0, "types": {}, "extracted": []},
+                        }
+                    )
+                }
+            return {"content": "not json"}
+
+    cfg = pipeline.Settings(
+        speaker_db=tmp_path / "db.yaml",
+        tmp_root=tmp_path,
+        recordings_root=tmp_path / "recordings",
+        llm_model="test-llm-model",
+        llm_long_transcript_threshold_chars=120,
+        llm_chunk_max_chars=90,
+        llm_chunk_overlap_chars=20,
+    )
+
+    with pytest.raises(RuntimeError, match=r"LLM chunk 2/\d+ failed: json_object_not_found"):
+        await pipeline.run_pipeline(
+            audio_path=fake_audio(tmp_path, "chunked-fail.mp3"),
+            cfg=cfg,
+            llm=_FailingChunkLLM(),
+            diariser=DummyDiariser(),
+            recording_id="rec-chunked-fail-1",
+            precheck=precheck_ok(),
+        )
+
+    derived = cfg.recordings_root / "rec-chunked-fail-1" / "derived"
+    summary_data = json.loads((derived / "summary.json").read_text(encoding="utf-8"))
+    metrics_data = json.loads((derived / "metrics.json").read_text(encoding="utf-8"))
+    error_payload = json.loads((derived / "llm_chunk_002_error.json").read_text(encoding="utf-8"))
+
+    assert summary_data["status"] == "failed"
+    assert metrics_data["status"] == "failed"
+    assert "LLM chunk 2/" in metrics_data["error"]
+    assert error_payload["error"] == "json_object_not_found"
+
+
+@pytest.mark.asyncio
 @respx.mock
 async def test_alias_persist(tmp_path: Path, mocker):
     mocker.patch(

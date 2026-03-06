@@ -393,6 +393,43 @@ async def test_mock_response_path_with_content_field(tmp_path: pathlib.Path) -> 
     assert res["content"] == "from-mock"
 
 
+@pytest.mark.asyncio
+async def test_generate_allows_per_call_max_token_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = llm_client.LLMClient(
+        base_url="http://example.test",
+        max_tokens=1024,
+        max_tokens_retry=2048,
+    )
+    seen_max_tokens: list[int] = []
+
+    async def _fake_post(
+        *,
+        url: str,
+        payload: dict[str, Any],
+        headers: dict[str, str],
+        attempt_number: int | None = None,
+    ) -> dict[str, Any]:
+        del url, headers
+        seen_max_tokens.append(int(payload["max_tokens"]))
+        if attempt_number == 1:
+            return {
+                "choices": [
+                    {
+                        "finish_reason": "length",
+                        "message": {"role": "assistant", "content": ""},
+                    }
+                ]
+            }
+        return {"choices": [{"message": {"role": "assistant", "content": "ok"}}]}
+
+    monkeypatch.setattr(client, "_post_chat_completion", _fake_post)
+
+    result = await client.generate("sys", "usr", max_tokens=1536)
+
+    assert result["content"] == "ok"
+    assert seen_max_tokens == [1536, 3072]
+
+
 @respx.mock
 def test_generate_with_content_only_response() -> None:
     route = respx.post("http://127.0.0.1:8000/v1/chat/completions").mock(

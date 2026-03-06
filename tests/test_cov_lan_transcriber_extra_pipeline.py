@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import builtins
 import json
 import sys
@@ -38,6 +39,108 @@ def test_pipeline_settings_reads_llm_model_from_env(
 def test_pipeline_settings_allows_direct_llm_model_override(tmp_path: Path) -> None:
     cfg = _settings(tmp_path, llm_model="direct-model")
     assert cfg.llm_model == "direct-model"
+
+
+def test_pipeline_settings_read_llm_chunking_env(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("LLM_CHUNK_MAX_CHARS", "4096")
+    monkeypatch.setenv("LLM_CHUNK_OVERLAP_CHARS", "256")
+    monkeypatch.setenv("LLM_CHUNK_TIMEOUT_SECONDS", "45")
+    monkeypatch.setenv("LLM_LONG_TRANSCRIPT_THRESHOLD_CHARS", "8192")
+    monkeypatch.setenv("LLM_MERGE_MAX_TOKENS", "3072")
+
+    cfg = _settings(tmp_path)
+    assert cfg.llm_chunk_max_chars == 4096
+    assert cfg.llm_chunk_overlap_chars == 256
+    assert cfg.llm_chunk_timeout_seconds == 45.0
+    assert cfg.llm_long_transcript_threshold_chars == 8192
+    assert cfg.llm_merge_max_tokens == 3072
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_llm_helper_supports_sync_generate_and_skips_blank_turns(
+    tmp_path: Path,
+) -> None:
+    class _SyncLLM:
+        def generate(self, **_kwargs: Any) -> str:
+            return "plain"
+
+    message = await pipeline._generate_llm_message(
+        _SyncLLM(),
+        system_prompt="sys",
+        user_prompt="usr",
+        model="m",
+        response_format=None,
+        max_tokens=256,
+    )
+    assert message == {"role": "assistant", "content": "plain"}
+
+    prompt_text = pipeline._speaker_turn_prompt_text(
+        [
+            {"start": 0.0, "end": 1.0, "speaker": "S1", "text": "hello"},
+            {"start": 1.0, "end": 2.0, "speaker": "S2", "text": "   "},
+        ],
+        aliases={"S1": "Alex", "S2": "Priya"},
+    )
+    assert prompt_text == "[0.00-1.00] Alex: hello"
+
+
+@pytest.mark.asyncio
+async def test_run_chunked_llm_summary_rejects_empty_chunk_plan(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(pipeline, "plan_transcript_chunks", lambda *_args, **_kwargs: [])
+
+    with pytest.raises(RuntimeError, match="produced no chunks"):
+        await pipeline._run_chunked_llm_summary(
+            transcript_text="hello world",
+            derived_dir=tmp_path / "derived",
+            llm=object(),
+            cfg=_settings(tmp_path, llm_model="model"),
+            llm_model="model",
+            target_summary_language="en",
+            friendly=0,
+            default_topic="Meeting summary",
+            calendar_title=None,
+            calendar_attendees=[],
+            progress_callback=None,
+        )
+
+
+@pytest.mark.asyncio
+async def test_run_chunked_llm_summary_timeout_writes_error_artifact(tmp_path: Path) -> None:
+    class _SlowLLM:
+        async def generate(self, **_kwargs: Any) -> dict[str, str]:
+            await asyncio.sleep(0.01)
+            return {"content": "{}"}
+
+    derived = tmp_path / "derived"
+    with pytest.raises(RuntimeError, match=r"LLM chunk 1/1 failed: timed out after 0.001s"):
+        await pipeline._run_chunked_llm_summary(
+            transcript_text="single chunk transcript",
+            derived_dir=derived,
+            llm=_SlowLLM(),
+            cfg=_settings(
+                tmp_path,
+                llm_model="model",
+                llm_chunk_max_chars=100,
+                llm_chunk_timeout_seconds=0.001,
+            ),
+            llm_model="model",
+            target_summary_language="en",
+            friendly=0,
+            default_topic="Meeting summary",
+            calendar_title=None,
+            calendar_attendees=[],
+            progress_callback=None,
+        )
+
+    assert json.loads((derived / "llm_chunk_001_error.json").read_text(encoding="utf-8")) == {
+        "error": "timed out after 0.001s"
+    }
 
 
 def _audio_file(tmp_path: Path, name: str = "audio.mp3") -> Path:

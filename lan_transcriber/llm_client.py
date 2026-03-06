@@ -357,6 +357,8 @@ class LLMClient:
         user_prompt: str,
         model: Optional[str] | None = None,
         response_format: Dict[str, Any] | None = None,
+        max_tokens: int | None = None,
+        max_tokens_retry: int | None = None,
     ) -> Dict[str, str]:
         """Send a chat completion request and return the assistant message."""
 
@@ -366,6 +368,22 @@ class LLMClient:
 
         model_name = model or self.default_model
         model_label = model_name or "<unset>"
+        effective_max_tokens = _int_setting(
+            max_tokens,
+            default=self.max_tokens,
+            minimum=_MIN_LLM_MAX_TOKENS,
+        )
+        effective_max_tokens_retry = (
+            _resolve_retry_max_tokens(
+                max_tokens_retry,
+                base_max_tokens=effective_max_tokens,
+            )
+            if max_tokens_retry is not None
+            else max(
+                self.max_tokens_retry,
+                _resolve_retry_max_tokens(None, base_max_tokens=effective_max_tokens),
+            )
+        )
 
         url = build_chat_completions_url(self.base_url)
         headers: Dict[str, str] = {}
@@ -404,30 +422,30 @@ class LLMClient:
 
         first_attempt = await _run_attempt(
             attempt_number=1,
-            max_tokens=self.max_tokens,
+            max_tokens=effective_max_tokens,
         )
         if first_attempt is None:
             return {"content": "**LLM timeout**", "role": "assistant"}
         data, role, content, finish_reason, request_id = first_attempt
-        max_tokens_used = self.max_tokens
+        max_tokens_used = effective_max_tokens
 
         if self._should_retry_response(finish_reason=finish_reason, content=content):
             _logger.info(
                 "Retrying LLM request after attempt=%s (model=%s max_tokens=%s finish_reason=%s empty_content=%s)",
                 1,
                 model_label,
-                self.max_tokens,
+                effective_max_tokens,
                 finish_reason or "unknown",
                 not content.strip(),
             )
             second_attempt = await _run_attempt(
                 attempt_number=2,
-                max_tokens=self.max_tokens_retry,
+                max_tokens=effective_max_tokens_retry,
             )
             if second_attempt is None:
                 return {"content": "**LLM timeout**", "role": "assistant"}
             data, role, content, finish_reason, request_id = second_attempt
-            max_tokens_used = self.max_tokens_retry
+            max_tokens_used = effective_max_tokens_retry
 
         if finish_reason == "length":
             _logger.debug(
@@ -462,6 +480,8 @@ async def generate(
     user_prompt: str,
     model: Optional[str] = None,
     response_format: Dict[str, Any] | None = None,
+    max_tokens: int | None = None,
+    max_tokens_retry: int | None = None,
 ) -> Dict[str, str]:
     """Backwards-compatible helper that proxies to :class:`LLMClient`."""
 
@@ -470,6 +490,8 @@ async def generate(
         user_prompt=user_prompt,
         model=model,
         response_format=response_format,
+        max_tokens=max_tokens,
+        max_tokens_retry=max_tokens_retry,
     )
 
 
