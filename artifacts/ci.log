@@ -9,9 +9,9 @@ The event loop scope for asynchronous fixtures will default to the fixture cachi
 ........................................................................ [ 46%]
 ........................................................................ [ 58%]
 ........................................................................ [ 69%]
-...............................................................s........ [ 81%]
-........................................................................ [ 93%]
-..........................................                               [100%]
+.................................................................s...... [ 81%]
+........................................................................ [ 92%]
+............................................                             [100%]
 =============================== warnings summary ===============================
 lan_transcriber/pipeline_steps/precheck.py:3
   /home/alexey/LAN_Transcriber/lan_transcriber/pipeline_steps/precheck.py:3: DeprecationWarning: 'audioop' is deprecated and slated for removal in Python 3.13
@@ -47,13 +47,13 @@ tests/test_warm_models.py::test_warm_models_module_main_guard
 ---------- coverage: platform linux, python 3.12.3-final-0 -----------
 Name    Stmts   Miss Branch BrPart  Cover   Missing
 ---------------------------------------------------
-TOTAL    6761      0   2088      0   100%
+TOTAL    6768      0   2092      0   100%
 
 52 files skipped due to complete coverage.
 Coverage HTML written to dir htmlcov
 
 Required test coverage of 100% reached. Total coverage: 100.00%
-617 passed, 3 skipped, 10 warnings in 19.03s
+619 passed, 3 skipped, 10 warnings in 19.20s
 Name                                                Stmts   Miss Branch BrPart  Cover
 -------------------------------------------------------------------------------------
 lan_transcriber/__init__.py                             8      0      0      0   100%
@@ -73,7 +73,7 @@ lan_transcriber/pipeline.py                             5      0      0      0  
 lan_transcriber/pipeline_steps/__init__.py              7      0      0      0   100%
 lan_transcriber/pipeline_steps/artifacts.py            19      0      0      0   100%
 lan_transcriber/pipeline_steps/language.py             93      0     46      0   100%
-lan_transcriber/pipeline_steps/orchestrator.py        406      0     76      0   100%
+lan_transcriber/pipeline_steps/orchestrator.py        413      0     80      0   100%
 lan_transcriber/pipeline_steps/precheck.py            116      0     46      0   100%
 lan_transcriber/pipeline_steps/snippets.py            128      0     44      0   100%
 lan_transcriber/pipeline_steps/speaker_turns.py       185      0     94      0   100%
@@ -82,7 +82,7 @@ lan_transcriber/runtime_paths.py                       21      0      4      0  
 lan_transcriber/torch_safe_globals.py                 126      0     40      0   100%
 lan_transcriber/utils.py                               50      0     30      0   100%
 -------------------------------------------------------------------------------------
-TOTAL                                                2290      0    754      0   100%
+TOTAL                                                2297      0    758      0   100%
 Name                              Stmts   Miss Branch BrPart  Cover
 -------------------------------------------------------------------
 lan_app/__init__.py                   1      0      0      0   100%

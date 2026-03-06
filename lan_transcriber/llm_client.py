@@ -379,10 +379,7 @@ class LLMClient:
                 base_max_tokens=effective_max_tokens,
             )
             if max_tokens_retry is not None
-            else max(
-                self.max_tokens_retry,
-                _resolve_retry_max_tokens(None, base_max_tokens=effective_max_tokens),
-            )
+            else self.max_tokens_retry
         )
 
         url = build_chat_completions_url(self.base_url)

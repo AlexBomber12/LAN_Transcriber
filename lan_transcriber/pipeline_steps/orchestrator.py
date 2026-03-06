@@ -531,6 +531,12 @@ def _llm_message_timed_out(message: dict[str, Any]) -> bool:
     return str(message.get("content") or "").strip() == _LLM_TIMEOUT_SENTINEL
 
 
+def _llm_timeout_message(timeout_seconds: float | None) -> str:
+    if timeout_seconds is None or timeout_seconds <= 0:
+        return "timed out"
+    return f"timed out after {timeout_seconds:g}s"
+
+
 def _llm_chunk_progress(chunk_index: int, total_chunks: int) -> float:
     total = max(total_chunks, 1)
     start = 0.85
@@ -621,7 +627,7 @@ async def _run_chunked_llm_summary(
                 raise TimeoutError(_LLM_TIMEOUT_SENTINEL)
             extract = parse_chunk_extract(str(raw_chunk.get("content") or ""))
         except TimeoutError as exc:
-            message = f"timed out after {cfg.llm_chunk_timeout_seconds:g}s"
+            message = _llm_timeout_message(cfg.llm_chunk_timeout_seconds)
             atomic_write_json(error_path, {"error": message})
             raise RuntimeError(f"LLM chunk {chunk.index}/{chunk.total} failed: {message}") from exc
         except Exception as exc:
@@ -652,6 +658,9 @@ async def _run_chunked_llm_summary(
         max_tokens=cfg.llm_merge_max_tokens or cfg.llm_max_tokens,
     )
     atomic_write_json(derived_dir / "llm_merge_raw.json", raw_merge)
+    if _llm_message_timed_out(raw_merge):
+        message = _llm_timeout_message(getattr(llm, "timeout", None))
+        raise RuntimeError(f"LLM merge failed: {message}")
     return build_summary_payload(
         raw_llm_content=str(raw_merge.get("content") or ""),
         model=llm_model,

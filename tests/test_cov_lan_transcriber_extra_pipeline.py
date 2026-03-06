@@ -85,6 +85,7 @@ async def test_orchestrator_llm_helper_supports_sync_generate_and_skips_blank_tu
         aliases={"S1": "Alex", "S2": "Priya"},
     )
     assert prompt_text == "[0.00-1.00] Alex: hello"
+    assert pipeline._llm_timeout_message(None) == "timed out"
 
 
 @pytest.mark.asyncio
@@ -178,6 +179,53 @@ async def test_run_chunked_llm_summary_timeout_sentinel_writes_error_artifact(
     }
     assert json.loads((derived / "llm_chunk_001_error.json").read_text(encoding="utf-8")) == {
         "error": "timed out after 0.001s"
+    }
+
+
+@pytest.mark.asyncio
+async def test_run_chunked_llm_summary_merge_timeout_sentinel_fails(tmp_path: Path) -> None:
+    class _MergeTimeoutSentinelLLM:
+        timeout = 12.0
+
+        async def generate(self, **kwargs: Any) -> dict[str, str]:
+            payload = json.loads(kwargs["user_prompt"])
+            if "chunk" in payload:
+                return {
+                    "content": json.dumps(
+                        {
+                            "summary_bullets": ["Chunk 1"],
+                            "decisions": [],
+                            "action_items": [],
+                            "emotional_cues": ["Focused"],
+                            "questions": {"total_count": 0, "types": {}, "extracted": []},
+                        }
+                    )
+                }
+            return {"content": "**LLM timeout**", "role": "assistant"}
+
+    derived = tmp_path / "derived"
+    with pytest.raises(RuntimeError, match=r"LLM merge failed: timed out after 12s"):
+        await pipeline._run_chunked_llm_summary(
+            transcript_text="single chunk transcript",
+            derived_dir=derived,
+            llm=_MergeTimeoutSentinelLLM(),
+            cfg=_settings(
+                tmp_path,
+                llm_model="model",
+                llm_chunk_max_chars=100,
+            ),
+            llm_model="model",
+            target_summary_language="en",
+            friendly=0,
+            default_topic="Meeting summary",
+            calendar_title=None,
+            calendar_attendees=[],
+            progress_callback=None,
+        )
+
+    assert json.loads((derived / "llm_merge_raw.json").read_text(encoding="utf-8")) == {
+        "content": "**LLM timeout**",
+        "role": "assistant",
     }
 
 
