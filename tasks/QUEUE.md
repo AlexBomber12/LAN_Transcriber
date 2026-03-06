@@ -410,3 +410,9 @@ Queue (in order)
 - Status: DONE
 - Tasks file: tasks/PR-AUDIO-SANITIZE-FFMPEG-01.md
 - Depends on: PR-FIX-DIARIZATION-WEIGHTS-ONLY-01
+
+81) PR-DIARIZATION-GPU-01: Move pyannote diarization pipeline to CUDA when available, log effective device, and add regression tests
+- Status: TODO
+- Tasks file: tasks/PR-DIARIZATION-GPU-01.md
+- Depends on: PR-AUDIO-SANITIZE-FFMPEG-01
+
