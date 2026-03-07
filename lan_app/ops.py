@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+import sqlite3
 import shutil
 from typing import Any
 
@@ -100,6 +101,14 @@ def delete_recording_with_artifacts(
 ) -> bool:
     cfg = settings or AppSettings()
     recording_root = _recording_root_path(recording_id, cfg)
+    try:
+        deleted = delete_recording(recording_id, settings=cfg)
+    except sqlite3.Error as exc:
+        raise RecordingDeleteError(
+            f"Delete failed during database cleanup: {exc}"
+        ) from exc
+    if not deleted:
+        return False
 
     try:
         if recording_root.exists() or recording_root.is_symlink():
@@ -116,7 +125,7 @@ def delete_recording_with_artifacts(
             f"Delete failed during disk cleanup: {exc}"
         ) from exc
 
-    return delete_recording(recording_id, settings=cfg)
+    return True
 
 
 def run_retention_cleanup(

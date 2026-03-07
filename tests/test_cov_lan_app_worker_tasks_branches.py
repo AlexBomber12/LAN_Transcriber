@@ -4,6 +4,7 @@ import asyncio
 import builtins
 import json
 from pathlib import Path
+import sqlite3
 import sys
 from types import SimpleNamespace
 import wave
@@ -1088,6 +1089,30 @@ def test_review_reason_helpers_cover_exception_and_routing_paths(tmp_path: Path)
         "routing_low_confidence",
         "Project routing confidence 0.25 is below threshold 0.50; manual review required.",
     )
+
+
+def test_set_recording_duration_best_effort_swallows_write_errors(
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    cfg = _db_settings(tmp_path)
+    monkeypatch.setattr(
+        worker_tasks,
+        "set_recording_duration",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            sqlite3.OperationalError("database is locked")
+        ),
+    )
+
+    with caplog.at_level("WARNING"):
+        worker_tasks._set_recording_duration_best_effort(  # noqa: SLF001
+            "rec-duration-warning-1",
+            duration_sec=5.0,
+            settings=cfg,
+        )
+
+    assert "Failed to persist duration for recording rec-duration-warning-1" in caplog.text
 
 
 def test_run_precheck_pipeline_skips_duration_persist_when_duration_is_missing(

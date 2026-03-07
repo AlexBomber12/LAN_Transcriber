@@ -480,6 +480,26 @@ def _set_recording_progress_best_effort(
         pass
 
 
+def _set_recording_duration_best_effort(
+    recording_id: str,
+    *,
+    duration_sec: float | None,
+    settings: AppSettings,
+) -> None:
+    try:
+        set_recording_duration(
+            recording_id,
+            duration_sec,
+            settings=settings,
+        )
+    except Exception:
+        _logger.warning(
+            "Failed to persist duration for recording %s",
+            recording_id,
+            exc_info=True,
+        )
+
+
 def _clean_language_value(value: object | None) -> str | None:
     if not isinstance(value, str):
         return None
@@ -918,9 +938,9 @@ def _run_precheck_pipeline(
     pipeline_settings = _build_pipeline_settings(settings)
     precheck = run_precheck(audio_path, pipeline_settings)
     if precheck.duration_sec is not None:
-        set_recording_duration(
+        _set_recording_duration_best_effort(
             recording_id,
-            precheck.duration_sec,
+            duration_sec=precheck.duration_sec,
             settings=settings,
         )
     _append_step_log(

@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 import os
 from pathlib import Path
+import sqlite3
 import shutil
 
 from fastapi.testclient import TestClient
@@ -160,6 +161,40 @@ def test_delete_recording_with_artifacts_handles_file_root(tmp_path: Path) -> No
     assert not recording_root.exists()
 
 
+def test_delete_recording_with_artifacts_returns_false_before_disk_cleanup_when_row_missing(
+    tmp_path: Path,
+) -> None:
+    cfg = _cfg(tmp_path)
+    recording_root = cfg.recordings_root / "rec-delete-missing-1"
+    (recording_root / "raw").mkdir(parents=True, exist_ok=True)
+    (recording_root / "raw" / "audio.wav").write_bytes(b"\x00")
+
+    assert delete_recording_with_artifacts("rec-delete-missing-1", settings=cfg) is False
+    assert recording_root.exists()
+
+
+def test_delete_recording_with_artifacts_raises_on_database_delete_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = _cfg(tmp_path)
+    recording_root = cfg.recordings_root / "rec-delete-db-fail-1"
+    (recording_root / "raw").mkdir(parents=True, exist_ok=True)
+    audio_path = recording_root / "raw" / "audio.wav"
+    audio_path.write_bytes(b"\x00")
+
+    monkeypatch.setattr(
+        "lan_app.ops.delete_recording",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            sqlite3.OperationalError("database is locked")
+        ),
+    )
+
+    with pytest.raises(RecordingDeleteError, match="database is locked"):
+        delete_recording_with_artifacts("rec-delete-db-fail-1", settings=cfg)
+    assert audio_path.exists()
+
+
 def test_delete_recording_with_artifacts_raises_on_disk_cleanup_failure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -187,7 +222,8 @@ def test_delete_recording_with_artifacts_raises_on_disk_cleanup_failure(
 
     with pytest.raises(RecordingDeleteError, match="disk busy"):
         delete_recording_with_artifacts("rec-delete-fail-1", settings=cfg)
-    assert get_recording("rec-delete-fail-1", settings=cfg) is not None
+    assert get_recording("rec-delete-fail-1", settings=cfg) is None
+    assert raw_dir.exists()
 
 
 def test_healthz_component_endpoints(tmp_path: Path, monkeypatch):
