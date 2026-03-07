@@ -571,6 +571,13 @@ def _build_pipeline_settings(settings: AppSettings) -> PipelineSettings:
         unknown_dir=settings.recordings_root / "unknown",
         tmp_root=settings.data_root / "tmp",
         llm_model=settings.llm_model,
+        llm_max_tokens=settings.llm_max_tokens,
+        llm_max_tokens_retry=settings.llm_max_tokens_retry,
+        llm_chunk_max_chars=settings.llm_chunk_max_chars,
+        llm_chunk_overlap_chars=settings.llm_chunk_overlap_chars,
+        llm_chunk_timeout_seconds=settings.llm_chunk_timeout_seconds,
+        llm_long_transcript_threshold_chars=settings.llm_long_transcript_threshold_chars,
+        llm_merge_max_tokens=settings.llm_merge_max_tokens,
         vad_method=settings.vad_method,
     )
 

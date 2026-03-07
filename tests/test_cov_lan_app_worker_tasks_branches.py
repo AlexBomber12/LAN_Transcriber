@@ -315,11 +315,18 @@ def test_clean_language_value_rejects_blank_strings():
     assert worker_tasks._clean_language_value("   ") is None
 
 
-def test_build_pipeline_settings_propagates_vad_method(tmp_path: Path):
+def test_build_pipeline_settings_propagates_runtime_llm_and_vad_settings(tmp_path: Path):
     cfg = AppSettings(
         data_root=tmp_path,
         recordings_root=tmp_path / "recordings",
         db_path=tmp_path / "db" / "app.db",
+        llm_max_tokens=1536,
+        llm_max_tokens_retry=3072,
+        llm_chunk_max_chars=4096,
+        llm_chunk_overlap_chars=256,
+        llm_chunk_timeout_seconds=45.0,
+        llm_long_transcript_threshold_chars=8192,
+        llm_merge_max_tokens=2048,
         vad_method="pyannote",
     )
 
@@ -327,6 +334,13 @@ def test_build_pipeline_settings_propagates_vad_method(tmp_path: Path):
 
     assert pipeline_cfg.vad_method == "pyannote"
     assert pipeline_cfg.llm_model == cfg.llm_model
+    assert pipeline_cfg.llm_max_tokens == 1536
+    assert pipeline_cfg.llm_max_tokens_retry == 3072
+    assert pipeline_cfg.llm_chunk_max_chars == 4096
+    assert pipeline_cfg.llm_chunk_overlap_chars == 256
+    assert pipeline_cfg.llm_chunk_timeout_seconds == 45.0
+    assert pipeline_cfg.llm_long_transcript_threshold_chars == 8192
+    assert pipeline_cfg.llm_merge_max_tokens == 2048
 
 
 def test_load_transcript_language_payload_parses_valid_and_invalid_json(tmp_path: Path):

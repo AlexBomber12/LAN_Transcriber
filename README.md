@@ -161,6 +161,11 @@ models are cached across runs.
 | `LLM_MAX_TOKENS` | Base `max_tokens` for `/v1/chat/completions` requests (default `1024`) |
 | `LLM_MAX_TOKENS_RETRY` | One-shot retry `max_tokens` for truncated/empty LLM output (default `2048`) |
 | `LLM_TIMEOUT_SECONDS` | Per-request timeout for LLM calls (default `30`) |
+| `LLM_CHUNK_MAX_CHARS` | Transcript chunk size threshold for long-recording map-reduce LLM processing (default `6000`) |
+| `LLM_CHUNK_OVERLAP_CHARS` | Deterministic overlap between adjacent transcript chunks (default `600`) |
+| `LLM_CHUNK_TIMEOUT_SECONDS` | Wall-clock timeout applied to each chunk extraction call (default `120`) |
+| `LLM_LONG_TRANSCRIPT_THRESHOLD_CHARS` | Switch to chunked LLM mode when the speaker-attributed transcript exceeds this size (default `6000`) |
+| `LLM_MERGE_MAX_TOKENS` | Optional `max_tokens` override for the final merge pass; falls back to `LLM_MAX_TOKENS` when unset |
 
 `LAN_ENV` controls startup validation:
 
@@ -169,6 +174,8 @@ models are cached across runs.
 - All environments: `LLM_MODEL` is required. Startup fails fast when unset/blank with `LLM_MODEL is required. Set it in .env (e.g., LLM_MODEL=gpt-oss:120b).`
 
 If LLM responses fail with `finish_reason=length` or empty `message.content`, increase `LLM_MAX_TOKENS` and `LLM_TIMEOUT_SECONDS` (and optionally `LLM_MAX_TOKENS_RETRY`).
+
+Long transcripts are processed with a chunked map-reduce LLM flow. During that phase the UI may show progress stages like `llm_chunk_1_of_5` and `llm_merge`, and debug artifacts are written under `derived/` for chunk planning and merge inspection.
 
 If API auth is enabled, set `LAN_API_BEARER_TOKEN` to a non-empty value in your env file.
 

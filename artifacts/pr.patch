@@ -1,13 +1,83 @@
-diff --git a/ci-requirements.txt b/ci-requirements.txt
-index 55b489b..d98f417 100644
---- a/ci-requirements.txt
-+++ b/ci-requirements.txt
-@@ -19,7 +19,7 @@ certifi==2026.2.25
-     #   httpcore
-     #   httpx
-     #   requests
--charset-normalizer==3.4.4
-+charset-normalizer==3.4.5
-     # via requests
- click==8.3.1
-     # via
+diff --git a/lan_transcriber/llm_client.py b/lan_transcriber/llm_client.py
+index 557da55..4203a29 100644
+--- a/lan_transcriber/llm_client.py
++++ b/lan_transcriber/llm_client.py
+@@ -66,6 +66,19 @@ def _resolve_retry_max_tokens(
+     return parsed
+ 
+ 
++def _resolve_call_retry_max_tokens(
++    value: int | str | None,
++    *,
++    base_max_tokens: int,
++) -> int:
++    parsed = _int_setting(
++        value,
++        default=base_max_tokens,
++        minimum=_MIN_LLM_MAX_TOKENS,
++    )
++    return max(parsed, base_max_tokens)
++
++
+ def _is_retryable_exception(exc: BaseException) -> bool:
+     if isinstance(
+         exc,
+@@ -374,7 +387,7 @@ class LLMClient:
+             minimum=_MIN_LLM_MAX_TOKENS,
+         )
+         effective_max_tokens_retry = (
+-            _resolve_retry_max_tokens(
++            _resolve_call_retry_max_tokens(
+                 max_tokens_retry,
+                 base_max_tokens=effective_max_tokens,
+             )
+diff --git a/tests/test_llm_client.py b/tests/test_llm_client.py
+index f11b0fa..f4d7cd1 100644
+--- a/tests/test_llm_client.py
++++ b/tests/test_llm_client.py
+@@ -510,6 +510,45 @@ async def test_generate_retry_budget_never_drops_below_overridden_max_tokens(
+     assert seen_max_tokens == [3072, 3072]
+ 
+ 
++@pytest.mark.asyncio
++async def test_generate_respects_explicit_retry_budget_equal_to_max_tokens(
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    client = llm_client.LLMClient(
++        base_url="http://example.test",
++        max_tokens=1024,
++        max_tokens_retry=2048,
++    )
++    seen_max_tokens: list[int] = []
++
++    async def _fake_post(
++        *,
++        url: str,
++        payload: dict[str, Any],
++        headers: dict[str, str],
++        attempt_number: int | None = None,
++    ) -> dict[str, Any]:
++        del url, headers
++        seen_max_tokens.append(int(payload["max_tokens"]))
++        if attempt_number == 1:
++            return {
++                "choices": [
++                    {
++                        "finish_reason": "length",
++                        "message": {"role": "assistant", "content": ""},
++                    }
++                ]
++            }
++        return {"choices": [{"message": {"role": "assistant", "content": "ok"}}]}
++
++    monkeypatch.setattr(client, "_post_chat_completion", _fake_post)
++
++    result = await client.generate("sys", "usr", max_tokens=3072, max_tokens_retry=3072)
++
++    assert result["content"] == "ok"
++    assert seen_max_tokens == [3072, 3072]
++
++
+ @respx.mock
+ def test_generate_with_content_only_response() -> None:
+     route = respx.post("http://127.0.0.1:8000/v1/chat/completions").mock(
