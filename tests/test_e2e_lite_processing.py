@@ -167,12 +167,12 @@ async def test_e2e_lite_processing_success(tmp_path: Path, monkeypatch: pytest.M
     assert [stage for stage, _ in progress_events] == [
         "precheck",
         "stt",
+        "stt",
         "diarize",
         "align",
         "language",
         "llm",
         "metrics",
-        "done",
     ]
 
 

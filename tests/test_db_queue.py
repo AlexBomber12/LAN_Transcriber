@@ -49,8 +49,12 @@ from lan_app.db import (
     get_recording,
     init_db,
     list_jobs,
+    set_recording_duration,
     set_recording_progress,
     set_recording_status,
+    set_recording_status_if_current_in,
+    set_recording_status_if_current_in_and_job_started,
+    set_recording_status_if_current_in_and_no_started_job,
     start_job,
     upsert_calendar_match,
     with_db_retry,
@@ -163,6 +167,137 @@ def test_recording_progress_helpers_set_and_clear(tmp_path: Path):
     assert after_clear["pipeline_stage"] is None
     assert after_clear["pipeline_progress"] is None
     assert after_clear["pipeline_updated_at"] is None
+
+
+def test_recording_duration_and_review_reason_helpers(tmp_path: Path) -> None:
+    cfg = _test_settings(tmp_path)
+    init_db(cfg)
+    create_recording(
+        "rec-review-helpers-1",
+        source="test",
+        source_filename="review.mp3",
+        status=RECORDING_STATUS_NEEDS_REVIEW,
+        review_reason_code="routing_low_confidence",
+        review_reason_text="Project routing confidence is too low.",
+        settings=cfg,
+    )
+
+    assert set_recording_duration("rec-review-helpers-1", 12.3456, settings=cfg)
+    assert set_recording_status(
+        "rec-review-helpers-1",
+        RECORDING_STATUS_NEEDS_REVIEW,
+        settings=cfg,
+    )
+
+    preserved = get_recording("rec-review-helpers-1", settings=cfg) or {}
+    assert preserved["duration_sec"] == 12.346
+    assert preserved["review_reason_code"] == "routing_low_confidence"
+    assert preserved["review_reason_text"] == "Project routing confidence is too low."
+
+    assert set_recording_status(
+        "rec-review-helpers-1",
+        RECORDING_STATUS_READY,
+        settings=cfg,
+    )
+    cleared = get_recording("rec-review-helpers-1", settings=cfg) or {}
+    assert cleared["review_reason_code"] is None
+    assert cleared["review_reason_text"] is None
+
+    assert set_recording_status(
+        "rec-review-helpers-1",
+        RECORDING_STATUS_NEEDS_REVIEW,
+        settings=cfg,
+        review_reason_code="llm_truncated",
+        review_reason_text="LLM output was truncated repeatedly.",
+    )
+    explicit = get_recording("rec-review-helpers-1", settings=cfg) or {}
+    assert explicit["review_reason_code"] == "llm_truncated"
+    assert explicit["review_reason_text"] == "LLM output was truncated repeatedly."
+
+    assert set_recording_duration("rec-review-helpers-1", None, settings=cfg)
+    duration_cleared = get_recording("rec-review-helpers-1", settings=cfg) or {}
+    assert duration_cleared["duration_sec"] is None
+
+
+def test_recording_review_reason_conditional_status_helpers_preserve_existing_reason(
+    tmp_path: Path,
+) -> None:
+    cfg = _test_settings(tmp_path)
+    init_db(cfg)
+
+    create_recording(
+        "rec-review-cond-1",
+        source="test",
+        source_filename="cond-1.mp3",
+        status=RECORDING_STATUS_NEEDS_REVIEW,
+        review_reason_code="routing_low_confidence",
+        review_reason_text="Routing reason",
+        settings=cfg,
+    )
+    assert set_recording_status_if_current_in(
+        "rec-review-cond-1",
+        RECORDING_STATUS_NEEDS_REVIEW,
+        current_statuses=[RECORDING_STATUS_NEEDS_REVIEW],
+        settings=cfg,
+    )
+    assert (get_recording("rec-review-cond-1", settings=cfg) or {})[
+        "review_reason_code"
+    ] == "routing_low_confidence"
+
+    create_recording(
+        "rec-review-cond-2",
+        source="test",
+        source_filename="cond-2.mp3",
+        status=RECORDING_STATUS_NEEDS_REVIEW,
+        review_reason_code="routing_low_confidence",
+        review_reason_text="Routing reason",
+        settings=cfg,
+    )
+    assert set_recording_status_if_current_in_and_no_started_job(
+        "rec-review-cond-2",
+        RECORDING_STATUS_NEEDS_REVIEW,
+        current_statuses=[RECORDING_STATUS_NEEDS_REVIEW],
+        settings=cfg,
+    )
+    assert (get_recording("rec-review-cond-2", settings=cfg) or {})[
+        "review_reason_code"
+    ] == "routing_low_confidence"
+    assert set_recording_status_if_current_in_and_no_started_job(
+        "rec-review-cond-2",
+        RECORDING_STATUS_READY,
+        current_statuses=[RECORDING_STATUS_NEEDS_REVIEW],
+        settings=cfg,
+    )
+    assert (get_recording("rec-review-cond-2", settings=cfg) or {})[
+        "review_reason_code"
+    ] is None
+
+    create_recording(
+        "rec-review-cond-3",
+        source="test",
+        source_filename="cond-3.mp3",
+        status=RECORDING_STATUS_NEEDS_REVIEW,
+        review_reason_code="routing_low_confidence",
+        review_reason_text="Routing reason",
+        settings=cfg,
+    )
+    create_job(
+        "job-review-cond-3",
+        recording_id="rec-review-cond-3",
+        job_type=JOB_TYPE_PRECHECK,
+        status=JOB_STATUS_STARTED,
+        settings=cfg,
+    )
+    assert set_recording_status_if_current_in_and_job_started(
+        "rec-review-cond-3",
+        RECORDING_STATUS_NEEDS_REVIEW,
+        job_id="job-review-cond-3",
+        current_statuses=[RECORDING_STATUS_NEEDS_REVIEW],
+        settings=cfg,
+    )
+    assert (get_recording("rec-review-cond-3", settings=cfg) or {})[
+        "review_reason_code"
+    ] == "routing_low_confidence"
 
 
 def test_with_db_retry_retries_on_forced_lock(tmp_path: Path):
@@ -424,7 +559,7 @@ def test_worker_ignores_stale_inflight_execution_for_recovered_started_job(
             )
             is True
         )
-        return RECORDING_STATUS_READY, None
+        return worker_tasks.PipelineTerminalState(status=RECORDING_STATUS_READY)
 
     monkeypatch.setattr("lan_app.worker_tasks._run_precheck_pipeline", _simulate_reaper)
 
@@ -487,7 +622,7 @@ def test_worker_does_not_write_terminal_status_after_job_recovered_mid_run(
             is True
         )
         # Reaper has recovered the job; worker must not commit terminal recording state.
-        return RECORDING_STATUS_READY, None
+        return worker_tasks.PipelineTerminalState(status=RECORDING_STATUS_READY)
 
     monkeypatch.setattr(
         "lan_app.worker_tasks._run_precheck_pipeline",
@@ -553,7 +688,7 @@ def test_worker_finalizes_started_job_when_recording_leaves_processing_mid_run(
             )
             is True
         )
-        return RECORDING_STATUS_READY, None
+        return worker_tasks.PipelineTerminalState(status=RECORDING_STATUS_READY)
 
     monkeypatch.setattr(
         "lan_app.worker_tasks._run_precheck_pipeline",
@@ -1237,6 +1372,7 @@ def test_worker_retry_terminal_uses_effective_max_attempts_cap(
     assert job["status"] == JOB_STATUS_FAILED
     assert job["error"] == "max attempts exceeded"
     assert recording["status"] == RECORDING_STATUS_NEEDS_REVIEW
+    assert recording["review_reason_code"] == "job_retry_limit_reached"
 
 
 def test_worker_max_attempts_exceeded_before_processing_sets_terminal_state(
@@ -1285,6 +1421,7 @@ def test_worker_max_attempts_exceeded_before_processing_sets_terminal_state(
     assert job["status"] == JOB_STATUS_FAILED
     assert job["error"] == "max attempts exceeded"
     assert recording["status"] == RECORDING_STATUS_NEEDS_REVIEW
+    assert recording["review_reason_code"] == "job_retry_limit_reached"
 
 
 def test_enqueue_sets_recording_status_to_queued_on_success(tmp_path: Path, monkeypatch):

@@ -8,8 +8,8 @@
   </div>
   <div style="font-size:11px;color:#555;margin-top:5px">
     stage=<code>{{ stage_code }}</code>
-    {% if updated_at %}
-    &nbsp;updated={{ updated_at[:19].replace('T', ' ') }}
+    {% if updated_at_display and updated_at_display != '—' %}
+    &nbsp;updated={{ updated_at_display }}
     {% endif %}
     {% if warning %}
     &nbsp;warning={{ warning }}

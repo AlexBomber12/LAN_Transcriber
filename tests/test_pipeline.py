@@ -267,13 +267,13 @@ async def test_pipeline_emits_progress_stages_in_order(tmp_path: Path, mocker):
 
     assert events == [
         ("precheck", 0.05),
-        ("stt", 0.30),
-        ("diarize", 0.50),
-        ("align", 0.60),
-        ("language", 0.70),
-        ("llm", 0.85),
-        ("metrics", 0.95),
-        ("done", 1.0),
+        ("stt", 0.10),
+        ("stt", 0.35),
+        ("diarize", 0.60),
+        ("align", 0.68),
+        ("language", 0.75),
+        ("llm", 0.90),
+        ("metrics", 0.98),
     ]
 
 
@@ -593,10 +593,17 @@ async def test_pipeline_long_transcript_uses_chunked_llm_progress_and_artifacts(
     summary_payload = json.loads((derived / "summary.json").read_text(encoding="utf-8"))
 
     assert total_chunks > 1
-    assert stage_names[:5] == ["precheck", "stt", "diarize", "align", "language"]
-    assert stage_names[5] == f"llm_chunk_1_of_{total_chunks}"
-    assert stage_names[5 + total_chunks] == "llm_merge"
-    assert stage_names[-2:] == ["metrics", "done"]
+    assert stage_names[:6] == [
+        "precheck",
+        "stt",
+        "stt",
+        "diarize",
+        "align",
+        "language",
+    ]
+    assert stage_names[6] == f"llm_chunk_1_of_{total_chunks}"
+    assert stage_names[6 + total_chunks] == "llm_merge"
+    assert stage_names[-1] == "metrics"
     assert merge_payload["payload"]["merge_input"]["chunk_count"] == total_chunks
     assert (derived / "llm_chunk_001_raw.json").exists()
     assert (derived / f"llm_chunk_{total_chunks:03d}_extract.json").exists()

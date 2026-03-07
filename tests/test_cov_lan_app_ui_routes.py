@@ -72,7 +72,7 @@ def test_language_and_json_helper_edge_paths() -> None:
     warning = ui_routes._recording_recovery_warning(  # noqa: SLF001
         [{"error": "stuck job recovered", "finished_at": "2026-01-02T03:04:05Z"}]
     )
-    assert warning and "2026-01-02 03:04:05 UTC" in warning
+    assert warning and "2026-01-02 04:04:05 CET" in warning
 
     warning_no_ts = ui_routes._recording_recovery_warning(  # noqa: SLF001
         [{"error": "stuck job recovered"}]
@@ -86,6 +86,87 @@ def test_language_and_json_helper_edge_paths() -> None:
         "first",
         "second",
     ]
+
+
+def test_display_helpers_cover_timezone_duration_and_prepare_recording(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = _cfg(tmp_path)
+
+    assert ui_routes._pipeline_stage_label("precheck") == "Sanitize & Precheck"  # noqa: SLF001
+    assert ui_routes._pipeline_stage_label("llm_chunk_2_of_5") == "LLM Chunk 2 of 5"  # noqa: SLF001
+    assert ui_routes._pipeline_stage_label("llm_chunk_bad") == "Llm Chunk Bad"  # noqa: SLF001
+    assert ui_routes._pipeline_stage_label("custom_stage") == "Custom Stage"  # noqa: SLF001
+    assert ui_routes._format_duration_seconds(None) == "—"  # noqa: SLF001
+    assert ui_routes._format_duration_seconds(0) == "—"  # noqa: SLF001
+    assert ui_routes._format_duration_seconds(2.0) == "2s"  # noqa: SLF001
+    assert ui_routes._format_duration_seconds(2.345) == "2.35s"  # noqa: SLF001
+    assert ui_routes._format_local_timestamp("") == "—"  # noqa: SLF001
+    assert ui_routes._format_local_timestamp("bad-timestamp") == "bad-timestamp"  # noqa: SLF001
+    assert "CET" in ui_routes._format_local_timestamp("2026-01-10T10:00:00Z")  # noqa: SLF001
+
+    observed_update: dict[str, object] = {}
+    monkeypatch.setattr(
+        ui_routes,
+        "_recording_audio_candidates",
+        lambda *_a, **_k: [Path("/tmp/fake.wav")],
+    )
+    monkeypatch.setattr(ui_routes, "_probe_duration_seconds", lambda *_a, **_k: 3.5)
+    monkeypatch.setattr(
+        ui_routes,
+        "set_recording_duration",
+        lambda recording_id, duration_sec, *, settings=None: observed_update.update(
+            {"recording_id": recording_id, "duration_sec": duration_sec}
+        )
+        or True,
+    )
+
+    prepared = ui_routes._prepare_recording_for_display(  # noqa: SLF001
+        {
+            "id": "rec-helper-1",
+            "duration_sec": None,
+            "captured_at": "2026-01-10T10:00:00Z",
+            "created_at": "",
+            "updated_at": "bad",
+            "pipeline_updated_at": "2026-01-10T10:05:00Z",
+            "review_reason_text": "  Needs a closer look.  ",
+        },
+        settings=cfg,
+    )
+    assert observed_update == {"recording_id": "rec-helper-1", "duration_sec": 3.5}
+    assert prepared["duration_display"] == "3.50s"
+    assert prepared["captured_at_display"].endswith("CET")
+    assert prepared["created_at_display"] == "—"
+    assert prepared["updated_at_display"] == "bad"
+    assert prepared["pipeline_updated_at_display"].endswith("CET")
+    assert prepared["review_reason_text_display"] == "Needs a closer look."
+
+    observed_update.clear()
+    prepared_existing_duration = ui_routes._prepare_recording_for_display(  # noqa: SLF001
+        {
+            "id": "rec-helper-2",
+            "duration_sec": 1.0,
+            "captured_at": None,
+            "created_at": None,
+            "updated_at": None,
+            "pipeline_updated_at": None,
+            "review_reason_text": None,
+        },
+        settings=cfg,
+    )
+    assert observed_update == {}
+    assert prepared_existing_duration["duration_display"] == "1s"
+
+    monkeypatch.setattr(
+        ui_routes,
+        "ZoneInfo",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            ui_routes.ZoneInfoNotFoundError("missing tzdata")
+        ),
+        raising=False,
+    )
+    assert ui_routes._display_timezone() is timezone.utc  # noqa: SLF001
 
 
 def test_load_json_and_chunk_helpers_cover_error_paths(tmp_path: Path) -> None:

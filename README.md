@@ -79,9 +79,14 @@ Operational setup, failure handling, backup/restore, and upgrade steps are docum
 2. Uploaded audio is normalized automatically to 16 kHz mono WAV before VAD/ASR/diarization (raw upload is preserved; no user conversion needed).
 3. Track per-file upload progress and processing progress on the same page.
 4. Open the recording detail page at `/recordings/{recording_id}`.
+   - `NeedsReview` recordings now show an explicit review reason in both the list and detail UI.
+   - Displayed timestamps are rendered in local Europe/Rome time in the server-rendered UI.
+   - Duration is taken from `derived/audio_sanitized.wav` when present, then falls back to the raw upload.
 5. Export results:
    - Copy markdown from the export tab for manual OneNote paste.
    - Download ZIP from `/ui/recordings/{recording_id}/export.zip`.
+   - Export content appears automatically once the recording reaches a terminal state; no manual refresh is needed.
+6. Deleting a recording from the UI/API removes the DB row and the recording directory under `/data/recordings/<recording_id>`. If disk cleanup fails, delete returns an error instead of silently succeeding.
 
 ## Runtime data root
 

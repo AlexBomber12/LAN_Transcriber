@@ -1,224 +1,2330 @@
+diff --git a/lan_app/api.py b/lan_app/api.py
+index 380b640..d84179e 100644
+--- a/lan_app/api.py
++++ b/lan_app/api.py
+@@ -58,6 +58,7 @@ from .healthchecks import (
+     collect_health_checks,
+ )
+ from .ops import run_retention_cleanup
++from .ops import RecordingDeleteError, delete_recording_with_artifacts
+ from .reaper import run_stuck_job_reaper_once
+ from .uploads import (
+     ALLOWED_UPLOAD_EXTENSIONS,
+@@ -379,12 +380,12 @@ async def api_delete_recording(recording_id: str) -> dict[str, object]:
+             detail=f"Queue unavailable: {exc}",
+         )
+ 
+-    deleted = delete_recording(recording_id, settings=_settings)
++    try:
++        deleted = delete_recording_with_artifacts(recording_id, settings=_settings)
++    except RecordingDeleteError as exc:
++        raise HTTPException(status_code=500, detail=str(exc)) from exc
+     if not deleted:
+         raise HTTPException(status_code=404, detail="Recording not found")
+-
+-    recording_path = _settings.recordings_root / recording_id
+-    shutil.rmtree(recording_path, ignore_errors=True)
+     return {"recording_id": recording_id, "deleted": True}
+ 
+ 
+diff --git a/lan_app/db.py b/lan_app/db.py
+index f078508..f7eb41a 100644
+--- a/lan_app/db.py
++++ b/lan_app/db.py
+@@ -16,6 +16,7 @@ from .constants import (
+     JOB_STATUS_STARTED,
+     JOB_TYPES,
+     RECORDING_STATUSES,
++    RECORDING_STATUS_NEEDS_REVIEW,
+     RECORDING_STATUS_PROCESSING,
+     RECORDING_STATUS_PUBLISHED,
+     RECORDING_STATUS_QUEUED,
+@@ -239,9 +240,11 @@ def create_recording(
+     *,
+     settings: AppSettings | None = None,
+     captured_at: str | None = None,
+-    duration_sec: int | None = None,
++    duration_sec: float | None = None,
+     status: str = RECORDING_STATUS_QUEUED,
+     quarantine_reason: str | None = None,
++    review_reason_code: str | None = None,
++    review_reason_text: str | None = None,
+     language_auto: str | None = None,
+     language_override: str | None = None,
+     target_summary_language: str | None = None,
+@@ -267,11 +270,12 @@ def create_recording(
+             """
+             INSERT INTO recordings (
+                 id, source, source_filename, captured_at, duration_sec, status,
+-                quarantine_reason, language_auto, language_override, target_summary_language, project_id,
++                quarantine_reason, review_reason_code, review_reason_text,
++                language_auto, language_override, target_summary_language, project_id,
+                 project_assignment_source,
+                 onenote_page_id, drive_file_id, drive_md5, created_at, updated_at
+             )
+-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
++            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             """,
+             (
+                 recording_id,
+@@ -281,6 +285,8 @@ def create_recording(
+                 duration_sec,
+                 status,
+                 quarantine_reason,
++                review_reason_code if status == RECORDING_STATUS_NEEDS_REVIEW else None,
++                review_reason_text if status == RECORDING_STATUS_NEEDS_REVIEW else None,
+                 language_auto,
+                 language_override,
+                 target_summary_language,
+@@ -424,28 +430,92 @@ def clear_recording_progress(
+     return with_db_retry(_clear)
+ 
+ 
++def set_recording_duration(
++    recording_id: str,
++    duration_sec: float | None,
++    *,
++    settings: AppSettings | None = None,
++) -> bool:
++    init_db(settings)
++    duration_value: float | None
++    if duration_sec is None:
++        duration_value = None
++    else:
++        duration_value = round(max(float(duration_sec), 0.0), 3)
++    now = _utc_now()
++
++    def _update() -> bool:
++        with connect(settings) as conn:
++            updated = conn.execute(
++                """
++                UPDATE recordings
++                SET duration_sec = ?, updated_at = ?
++                WHERE id = ?
++                """,
++                (
++                    duration_value,
++                    now,
++                    recording_id,
++                ),
++            )
++            conn.commit()
++            return updated.rowcount > 0
++
++    return with_db_retry(_update)
++
++
+ def set_recording_status(
+     recording_id: str,
+     status: str,
+     *,
+     settings: AppSettings | None = None,
+     quarantine_reason: str | None = None,
++    review_reason_code: str | object = _UNSET,
++    review_reason_text: str | object = _UNSET,
+ ) -> bool:
+     init_db(settings)
+     _validate_recording_status(status)
+     now = _utc_now()
+ 
++    if status == RECORDING_STATUS_NEEDS_REVIEW:
++        resolved_review_reason_code = review_reason_code
++        resolved_review_reason_text = review_reason_text
++    else:
++        resolved_review_reason_code = None
++        resolved_review_reason_text = None
++
++    if resolved_review_reason_code is _UNSET:
++        review_reason_code_sql = "review_reason_code"
++        review_reason_code_params: tuple[Any, ...] = ()
++    else:
++        review_reason_code_sql = "?"
++        review_reason_code_params = (resolved_review_reason_code,)
++
++    if resolved_review_reason_text is _UNSET:
++        review_reason_text_sql = "review_reason_text"
++        review_reason_text_params: tuple[Any, ...] = ()
++    else:
++        review_reason_text_sql = "?"
++        review_reason_text_params = (resolved_review_reason_text,)
++
+     def _update() -> bool:
+         with connect(settings) as conn:
+             updated = conn.execute(
+-                """
++                f"""
+                 UPDATE recordings
+-                SET status = ?, quarantine_reason = ?, updated_at = ?
++                SET
++                    status = ?,
++                    quarantine_reason = ?,
++                    review_reason_code = {review_reason_code_sql},
++                    review_reason_text = {review_reason_text_sql},
++                    updated_at = ?
+                 WHERE id = ?
+                 """,
+                 (
+                     status,
+                     quarantine_reason if status == RECORDING_STATUS_QUARANTINE else None,
++                    *review_reason_code_params,
++                    *review_reason_text_params,
+                     now,
+                     recording_id,
+                 ),
+@@ -463,6 +533,8 @@ def set_recording_status_if_current_in(
+     current_statuses: Sequence[str],
+     settings: AppSettings | None = None,
+     quarantine_reason: str | None = None,
++    review_reason_code: str | object = _UNSET,
++    review_reason_text: str | object = _UNSET,
+ ) -> bool:
+     init_db(settings)
+     _validate_recording_status(status)
+@@ -473,17 +545,45 @@ def set_recording_status_if_current_in(
+         _validate_recording_status(value)
+     placeholders = ", ".join("?" for _ in expected_statuses)
+     now = _utc_now()
++
++    if status == RECORDING_STATUS_NEEDS_REVIEW:
++        review_reason_code_sql = (
++            "review_reason_code" if review_reason_code is _UNSET else "?"
++        )
++        review_reason_text_sql = (
++            "review_reason_text" if review_reason_text is _UNSET else "?"
++        )
++        review_reason_params = (
++            ()
++            if review_reason_code is _UNSET
++            else (review_reason_code,)
++        ) + (
++            ()
++            if review_reason_text is _UNSET
++            else (review_reason_text,)
++        )
++    else:
++        review_reason_code_sql = "NULL"
++        review_reason_text_sql = "NULL"
++        review_reason_params = ()
++
+     with connect(settings) as conn:
+         updated = conn.execute(
+             f"""
+             UPDATE recordings
+-            SET status = ?, quarantine_reason = ?, updated_at = ?
++            SET
++                status = ?,
++                quarantine_reason = ?,
++                review_reason_code = {review_reason_code_sql},
++                review_reason_text = {review_reason_text_sql},
++                updated_at = ?
+             WHERE id = ?
+               AND status IN ({placeholders})
+             """,
+             (
+                 status,
+                 quarantine_reason if status == RECORDING_STATUS_QUARANTINE else None,
++                *review_reason_params,
+                 now,
+                 recording_id,
+                 *expected_statuses,
+@@ -500,6 +600,8 @@ def set_recording_status_if_current_in_and_no_started_job(
+     current_statuses: Sequence[str],
+     settings: AppSettings | None = None,
+     quarantine_reason: str | None = None,
++    review_reason_code: str | object = _UNSET,
++    review_reason_text: str | object = _UNSET,
+ ) -> bool:
+     init_db(settings)
+     _validate_recording_status(status)
+@@ -510,11 +612,37 @@ def set_recording_status_if_current_in_and_no_started_job(
+         _validate_recording_status(value)
+     placeholders = ", ".join("?" for _ in expected_statuses)
+     now = _utc_now()
++
++    if status == RECORDING_STATUS_NEEDS_REVIEW:
++        review_reason_code_sql = (
++            "review_reason_code" if review_reason_code is _UNSET else "?"
++        )
++        review_reason_text_sql = (
++            "review_reason_text" if review_reason_text is _UNSET else "?"
++        )
++        review_reason_params = (
++            ()
++            if review_reason_code is _UNSET
++            else (review_reason_code,)
++        ) + (
++            ()
++            if review_reason_text is _UNSET
++            else (review_reason_text,)
++        )
++    else:
++        review_reason_code_sql = "NULL"
++        review_reason_text_sql = "NULL"
++        review_reason_params = ()
+     with connect(settings) as conn:
+         updated = conn.execute(
+             f"""
+             UPDATE recordings
+-            SET status = ?, quarantine_reason = ?, updated_at = ?
++            SET
++                status = ?,
++                quarantine_reason = ?,
++                review_reason_code = {review_reason_code_sql},
++                review_reason_text = {review_reason_text_sql},
++                updated_at = ?
+             WHERE id = ?
+               AND status IN ({placeholders})
+               AND NOT EXISTS (
+@@ -527,6 +655,7 @@ def set_recording_status_if_current_in_and_no_started_job(
+             (
+                 status,
+                 quarantine_reason if status == RECORDING_STATUS_QUARANTINE else None,
++                *review_reason_params,
+                 now,
+                 recording_id,
+                 *expected_statuses,
+@@ -545,6 +674,8 @@ def set_recording_status_if_current_in_and_job_started(
+     current_statuses: Sequence[str],
+     settings: AppSettings | None = None,
+     quarantine_reason: str | None = None,
++    review_reason_code: str | object = _UNSET,
++    review_reason_text: str | object = _UNSET,
+ ) -> bool:
+     init_db(settings)
+     _validate_recording_status(status)
+@@ -555,11 +686,37 @@ def set_recording_status_if_current_in_and_job_started(
+         _validate_recording_status(value)
+     placeholders = ", ".join("?" for _ in expected_statuses)
+     now = _utc_now()
++
++    if status == RECORDING_STATUS_NEEDS_REVIEW:
++        review_reason_code_sql = (
++            "review_reason_code" if review_reason_code is _UNSET else "?"
++        )
++        review_reason_text_sql = (
++            "review_reason_text" if review_reason_text is _UNSET else "?"
++        )
++        review_reason_params = (
++            ()
++            if review_reason_code is _UNSET
++            else (review_reason_code,)
++        ) + (
++            ()
++            if review_reason_text is _UNSET
++            else (review_reason_text,)
++        )
++    else:
++        review_reason_code_sql = "NULL"
++        review_reason_text_sql = "NULL"
++        review_reason_params = ()
+     with connect(settings) as conn:
+         updated = conn.execute(
+             f"""
+             UPDATE recordings
+-            SET status = ?, quarantine_reason = ?, updated_at = ?
++            SET
++                status = ?,
++                quarantine_reason = ?,
++                review_reason_code = {review_reason_code_sql},
++                review_reason_text = {review_reason_text_sql},
++                updated_at = ?
+             WHERE id = ?
+               AND status IN ({placeholders})
+               AND EXISTS (
+@@ -573,6 +730,7 @@ def set_recording_status_if_current_in_and_job_started(
+             (
+                 status,
+                 quarantine_reason if status == RECORDING_STATUS_QUARANTINE else None,
++                *review_reason_params,
+                 now,
+                 recording_id,
+                 *expected_statuses,
+@@ -2206,6 +2364,7 @@ __all__ = [
+     "create_recording",
+     "get_recording",
+     "list_recordings",
++    "set_recording_duration",
+     "set_recording_progress",
+     "clear_recording_progress",
+     "set_recording_status",
+diff --git a/lan_app/ops.py b/lan_app/ops.py
+index f25f0cd..e4de1d6 100644
+--- a/lan_app/ops.py
++++ b/lan_app/ops.py
+@@ -10,6 +10,10 @@ from .constants import RECORDING_STATUS_QUARANTINE
+ from .db import delete_recording, list_recordings
+ 
+ 
++class RecordingDeleteError(RuntimeError):
++    """Raised when recording deletion cannot safely remove disk artifacts."""
++
++
+ def _parse_utc(value: object) -> datetime | None:
+     if not isinstance(value, str):
+         return None
+@@ -63,6 +67,58 @@ def _delete_path(path: Path) -> bool:
+     return True
+ 
+ 
++def _recording_root_path(recording_id: str, settings: AppSettings) -> Path:
++    raw_recording_id = str(recording_id or "").strip()
++    if not raw_recording_id:
++        raise RecordingDeleteError("Delete failed: recording id is required.")
++    if Path(raw_recording_id).parts != (raw_recording_id,):
++        raise RecordingDeleteError("Delete failed: invalid recording id.")
++
++    recordings_root = settings.recordings_root.resolve(strict=False)
++    recording_root = (settings.recordings_root / raw_recording_id).resolve(strict=False)
++    try:
++        recording_root.relative_to(recordings_root)
++    except ValueError as exc:
++        raise RecordingDeleteError("Delete failed: invalid recording path.") from exc
++    return recording_root
++
++
++def _delete_path_strict(path: Path) -> bool:
++    if not path.exists() and not path.is_symlink():
++        return False
++    if path.is_symlink() or path.is_file():
++        path.unlink()
++        return True
++    shutil.rmtree(path)
++    return True
++
++
++def delete_recording_with_artifacts(
++    recording_id: str,
++    *,
++    settings: AppSettings | None = None,
++) -> bool:
++    cfg = settings or AppSettings()
++    recording_root = _recording_root_path(recording_id, cfg)
++
++    try:
++        if recording_root.exists() or recording_root.is_symlink():
++            if recording_root.is_symlink() or recording_root.is_file():
++                _delete_path_strict(recording_root)
++            else:
++                for child_name in ("raw", "derived", "logs"):
++                    _delete_path_strict(recording_root / child_name)
++                for entry in list(recording_root.iterdir()):
++                    _delete_path_strict(entry)
++                recording_root.rmdir()
++    except OSError as exc:
++        raise RecordingDeleteError(
++            f"Delete failed during disk cleanup: {exc}"
++        ) from exc
++
++    return delete_recording(recording_id, settings=cfg)
++
++
+ def run_retention_cleanup(
+     *,
+     settings: AppSettings | None = None,
+@@ -110,4 +166,8 @@ def run_retention_cleanup(
+     return summary
+ 
+ 
+-__all__ = ["run_retention_cleanup"]
++__all__ = [
++    "RecordingDeleteError",
++    "delete_recording_with_artifacts",
++    "run_retention_cleanup",
++]
+diff --git a/lan_app/reaper.py b/lan_app/reaper.py
+index 2e511f5..0ef3085 100644
+--- a/lan_app/reaper.py
++++ b/lan_app/reaper.py
+@@ -23,6 +23,10 @@ from .jobs import cancel_pending_queue_job
+ 
+ _LOG = logging.getLogger(__name__)
+ _RECOVERY_ERROR = "stuck job recovered"
++_RECOVERY_REVIEW_REASON_CODE = "stuck_job_recovered"
++_RECOVERY_REVIEW_REASON_TEXT = (
++    "Processing stalled and was recovered automatically; manual review required."
++)
+ _STALE_DOWNGRADE_STATUSES = (
+     RECORDING_STATUS_QUEUED,
+     RECORDING_STATUS_PROCESSING,
+@@ -93,6 +97,8 @@ def run_stuck_job_reaper_once(
+             RECORDING_STATUS_NEEDS_REVIEW,
+             current_statuses=_STALE_DOWNGRADE_STATUSES,
+             settings=cfg,
++            review_reason_code=_RECOVERY_REVIEW_REASON_CODE,
++            review_reason_text=_RECOVERY_REVIEW_REASON_TEXT,
+         ):
+             recovered_recording_ids.add(recording_id)
+         _append_step_log_best_effort(
+@@ -126,6 +132,8 @@ def run_stuck_job_reaper_once(
+             RECORDING_STATUS_NEEDS_REVIEW,
+             current_statuses=_ORPHAN_DOWNGRADE_STATUSES,
+             settings=cfg,
++            review_reason_code=_RECOVERY_REVIEW_REASON_CODE,
++            review_reason_text=_RECOVERY_REVIEW_REASON_TEXT,
+         ):
+             recovered_recording_ids.add(recording_id)
+         _append_step_log_best_effort(
+diff --git a/lan_app/templates/partials/recording_progress.html b/lan_app/templates/partials/recording_progress.html
+index 4554ad7..342f69e 100644
+--- a/lan_app/templates/partials/recording_progress.html
++++ b/lan_app/templates/partials/recording_progress.html
+@@ -8,8 +8,8 @@
+   </div>
+   <div style="font-size:11px;color:#555;margin-top:5px">
+     stage=<code>{{ stage_code }}</code>
+-    {% if updated_at %}
+-    &nbsp;updated={{ updated_at[:19].replace('T', ' ') }}
++    {% if updated_at_display and updated_at_display != '—' %}
++    &nbsp;updated={{ updated_at_display }}
+     {% endif %}
+     {% if warning %}
+     &nbsp;warning={{ warning }}
+diff --git a/lan_app/templates/recording_detail.html b/lan_app/templates/recording_detail.html
+index 96f0dcc..f5c7bd1 100644
+--- a/lan_app/templates/recording_detail.html
++++ b/lan_app/templates/recording_detail.html
+@@ -4,6 +4,9 @@
+ <h1>
+   Recording: <code>{{ rec.id }}</code>
+   &nbsp;<span class="badge s-{{ rec.status }}">{{ rec.status }}</span>
++  {% if rec.review_reason_text_display %}
++  <span style="font-size:14px;color:#92400e">{{ rec.review_reason_text_display }}</span>
++  {% endif %}
+ </h1>
+ 
+ <div class="filters" style="margin-bottom:10px">
+@@ -12,7 +15,7 @@
+     style="font-size:12px"
+     data-rid="{{ rec.id }}"
+     data-rlabel="{{ rec.source_filename or rec.id }}"
+-    data-rcaptured="{{ rec.captured_at[:19].replace('T',' ') if rec.captured_at else '' }}"
++    data-rcaptured="{{ '' if rec.captured_at_display == '—' else rec.captured_at_display }}"
+     onchange="doRecAction(this)"
+   >
+     <option value="">Actions…</option>
+@@ -32,7 +35,7 @@
+ {% if rec.status == 'Processing' %}
+ <div
+   id="recording-progress"
+-  hx-get="/ui/recordings/{{ rec.id }}/progress"
++  hx-get="/ui/recordings/{{ rec.id }}/progress?tab={{ current_tab }}"
+   hx-trigger="load, every 2s"
+   hx-swap="innerHTML"
+   style="margin:0 0 10px 0"
+@@ -55,9 +58,15 @@
+     <span class="k">ID</span><span class="v">{{ rec.id }}</span>
+     <span class="k">Filename</span><span class="v">{{ rec.source_filename }}</span>
+     <span class="k">Source</span><span class="v">{{ rec.source }}</span>
+-    <span class="k">Status</span><span class="v"><span class="badge s-{{ rec.status }}">{{ rec.status }}</span></span>
+-    <span class="k">Captured at</span><span class="v">{{ rec.captured_at[:19].replace('T',' ') if rec.captured_at else '—' }}</span>
+-    <span class="k">Duration</span><span class="v">{% if rec.duration_sec %}{{ rec.duration_sec }}s{% else %}—{% endif %}</span>
++    <span class="k">Status</span>
++    <span class="v">
++      <span class="badge s-{{ rec.status }}">{{ rec.status }}</span>
++      {% if rec.review_reason_text_display %}
++      <span style="color:#92400e">{{ rec.review_reason_text_display }}</span>
++      {% endif %}
++    </span>
++    <span class="k">Captured at</span><span class="v">{{ rec.captured_at_display }}</span>
++    <span class="k">Duration</span><span class="v">{{ rec.duration_display }}</span>
+     <span class="k">Project</span><span class="v">{{ rec.project_name or (rec.project_id and ('#' ~ rec.project_id)) or '—' }}</span>
+     <span class="k">Suggested project</span><span class="v">{{ rec.suggested_project_name or (rec.suggested_project_id and ('#' ~ rec.suggested_project_id)) or '—' }}</span>
+     <span class="k">Routing confidence</span>
+@@ -73,8 +82,9 @@
+     <span class="k">Target summary language</span><span class="v">{{ rec.target_summary_language or '—' }}</span>
+     <span class="k">Drive file ID</span><span class="v">{{ rec.drive_file_id or '—' }}</span>
+     <span class="k">Quarantine reason</span><span class="v">{{ rec.quarantine_reason or '—' }}</span>
+-    <span class="k">Created at</span><span class="v">{{ rec.created_at[:19].replace('T',' ') if rec.created_at else '—' }}</span>
+-    <span class="k">Updated at</span><span class="v">{{ rec.updated_at[:19].replace('T',' ') if rec.updated_at else '—' }}</span>
++    <span class="k">Review reason</span><span class="v">{{ rec.review_reason_text_display or '—' }}</span>
++    <span class="k">Created at</span><span class="v">{{ rec.created_at_display }}</span>
++    <span class="k">Updated at</span><span class="v">{{ rec.updated_at_display }}</span>
+   </div>
+ 
+   <div class="section" style="margin-top:10px">
+diff --git a/lan_app/templates/recordings.html b/lan_app/templates/recordings.html
+index fac82e6..dddff62 100644
+--- a/lan_app/templates/recordings.html
++++ b/lan_app/templates/recordings.html
+@@ -42,7 +42,12 @@
+     <tr>
+       <td title="{{ r.id }}"><a href="/recordings/{{ r.id }}" style="text-decoration:none;color:#1d4ed8">{{ r.id[:16] }}…</a></td>
+       <td title="{{ r.source_filename }}">{{ r.source_filename }}</td>
+-      <td><span class="badge s-{{ r.status }}">{{ r.status }}</span></td>
++      <td>
++        <span class="badge s-{{ r.status }}">{{ r.status }}</span>
++        {% if r.review_reason_text_display %}
++        <span style="display:block;margin-top:4px;color:#92400e">{{ r.review_reason_text_display }}</span>
++        {% endif %}
++      </td>
+       <td style="max-width:140px">
+         {% if r.status == "Processing" %}
+         {{ r.progress_percent }}% {{ r.progress_stage_label }}
+@@ -72,15 +77,15 @@
+         —
+         {% endif %}
+       </td>
+-      <td>{{ r.captured_at[:19].replace('T',' ') if r.captured_at else '—' }}</td>
+-      <td>{% if r.duration_sec %}{{ r.duration_sec }}s{% else %}—{% endif %}</td>
++      <td>{{ r.captured_at_display }}</td>
++      <td>{{ r.duration_display }}</td>
+       <td>{{ r.source }}</td>
+       <td>
+         <select
+           class="action-sel"
+           data-rid="{{ r.id }}"
+           data-rlabel="{{ r.source_filename or r.id }}"
+-          data-rcaptured="{{ r.captured_at[:19].replace('T',' ') if r.captured_at else '' }}"
++          data-rcaptured="{{ '' if r.captured_at_display == '—' else r.captured_at_display }}"
+           onchange="doRecAction(this)"
+         >
+           <option value="">Actions</option>
+diff --git a/lan_app/ui_routes.py b/lan_app/ui_routes.py
+index 7394656..39ce7d8 100644
+--- a/lan_app/ui_routes.py
++++ b/lan_app/ui_routes.py
+@@ -8,11 +8,11 @@ from __future__ import annotations
+ import asyncio
+ from datetime import date, datetime, time, timedelta, timezone
+ import json
+-import shutil
+ import sqlite3
+ from pathlib import Path
+ from typing import Any
+ from urllib.parse import quote
++from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+ 
+ from fastapi import APIRouter, Form, Query, Request
+ from fastapi.concurrency import run_in_threadpool
+@@ -39,6 +39,7 @@ from .constants import (
+     JOB_TYPE_PRECHECK,
+     RECORDING_STATUSES,
+     RECORDING_STATUS_PROCESSING,
++    RECORDING_STATUS_QUEUED,
+     RECORDING_STATUS_QUARANTINE,
+ )
+ from .db import (
+@@ -63,6 +64,7 @@ from .db import (
+     list_speaker_assignments,
+     list_voice_samples,
+     list_voice_profiles,
++    set_recording_duration,
+     set_recording_project,
+     set_speaker_assignment,
+     set_recording_language_settings,
+@@ -74,11 +76,16 @@ from .jobs import (
+     enqueue_recording_job,
+     purge_pending_recording_jobs,
+ )
++from .ops import RecordingDeleteError, delete_recording_with_artifacts
+ from .routing import refresh_recording_routing, train_routing_from_manual_selection
+ from lan_transcriber.artifacts import atomic_write_json
+ from lan_transcriber.llm_client import LLMClient
+ from lan_transcriber.pipeline import Settings as PipelineSettings
+ from lan_transcriber.pipeline import build_structured_summary_prompts, build_summary_payload
++from lan_transcriber.pipeline_steps.precheck import (
++    _audio_duration_from_ffprobe,
++    _audio_duration_from_wave,
++)
+ from lan_transcriber.utils import normalise_language_code as _normalise_language_code_shared
+ 
+ _TEMPLATES_DIR = Path(__file__).parent / "templates"
+@@ -109,6 +116,22 @@ _LANGUAGE_NAME_MAP: dict[str, str] = {
+ 
+ _COMMON_LANGUAGE_CODES = ("en", "es", "fr", "de", "pt", "it", "zh", "ja", "ko", "ru")
+ _STUCK_JOB_RECOVERY_ERROR = "stuck job recovered"
++_DISPLAY_TIMEZONE = "Europe/Rome"
++_TERMINAL_RECORDING_STATUSES = frozenset(RECORDING_STATUSES) - {
++    RECORDING_STATUS_PROCESSING,
++    RECORDING_STATUS_QUEUED,
++}
++_PIPELINE_STAGE_LABELS = {
++    "precheck": "Sanitize & Precheck",
++    "stt": "ASR / VAD",
++    "diarize": "Diarization",
++    "align": "Word Alignment",
++    "language": "Language Analysis",
++    "llm": "LLM Summary",
++    "llm_merge": "LLM Merge",
++    "metrics": "Post-process & Metrics",
++    "done": "Done",
++}
+ 
+ 
+ def _normalise_language_code(value: object | None) -> str | None:
+@@ -142,7 +165,7 @@ def _recording_recovery_warning(jobs: list[dict[str, Any]]) -> str | None:
+         if finished_at:
+             return (
+                 "Warning: this recording was recovered from a stuck job at "
+-                f"{finished_at[:19].replace('T', ' ')} UTC."
++                f"{_format_local_timestamp(finished_at)}."
+             )
+         return "Warning: this recording was recovered from a stuck job."
+     return None
+@@ -160,9 +183,98 @@ def _pipeline_stage_label(stage: object) -> str:
+     text = str(stage or "").strip()
+     if not text:
+         return "Waiting"
++    if text in _PIPELINE_STAGE_LABELS:
++        return _PIPELINE_STAGE_LABELS[text]
++    if text.startswith("llm_chunk_"):
++        parts = text.split("_")
++        if len(parts) == 5 and parts[3] == "of":
++            return f"LLM Chunk {parts[2]} of {parts[4]}"
+     return text.replace("_", " ").title()
+ 
+ 
++def _safe_duration_seconds(value: object) -> float | None:
++    try:
++        duration = float(value)
++    except (TypeError, ValueError):
++        return None
++    if duration <= 0:
++        return None
++    return round(duration, 3)
++
++
++def _format_duration_seconds(value: object) -> str:
++    duration = _safe_duration_seconds(value)
++    if duration is None:
++        return "—"
++    if duration.is_integer():
++        return f"{int(duration)}s"
++    return f"{duration:.2f}s"
++
++
++def _display_timezone() -> ZoneInfo | timezone:
++    try:
++        return ZoneInfo(_DISPLAY_TIMEZONE)
++    except ZoneInfoNotFoundError:
++        return timezone.utc
++
++
++def _format_local_timestamp(value: object) -> str:
++    if not isinstance(value, str) or not value.strip():
++        return "—"
++    try:
++        parsed = _parse_iso_datetime(value, field_name="timestamp")
++    except ValueError:
++        return str(value)
++    return parsed.astimezone(_display_timezone()).strftime("%Y-%m-%d %H:%M:%S %Z")
++
++
++def _recording_audio_candidates(recording_id: str, settings: AppSettings) -> list[Path]:
++    candidates: list[Path] = []
++    sanitized = settings.recordings_root / recording_id / "derived" / "audio_sanitized.wav"
++    if sanitized.exists():
++        candidates.append(sanitized)
++    raw_dir = settings.recordings_root / recording_id / "raw"
++    for raw_path in sorted(raw_dir.glob("audio.*")):
++        candidates.append(raw_path)
++    return candidates
++
++
++def _probe_duration_seconds(audio_path: Path) -> float | None:
++    return _safe_duration_seconds(
++        _audio_duration_from_wave(audio_path) or _audio_duration_from_ffprobe(audio_path)
++    )
++
++
++def _prepare_recording_for_display(
++    recording: dict[str, Any],
++    *,
++    settings: AppSettings,
++) -> dict[str, Any]:
++    item = dict(recording)
++    recording_id = str(item.get("id") or "").strip()
++    duration_sec = _safe_duration_seconds(item.get("duration_sec"))
++    if duration_sec is None and recording_id:
++        for candidate in _recording_audio_candidates(recording_id, settings):
++            duration_sec = _probe_duration_seconds(candidate)
++            if duration_sec is None:
++                continue
++            set_recording_duration(recording_id, duration_sec, settings=settings)
++            item["duration_sec"] = duration_sec
++            break
++
++    item["duration_display"] = _format_duration_seconds(item.get("duration_sec"))
++    item["captured_at_display"] = _format_local_timestamp(item.get("captured_at"))
++    item["created_at_display"] = _format_local_timestamp(item.get("created_at"))
++    item["updated_at_display"] = _format_local_timestamp(item.get("updated_at"))
++    item["pipeline_updated_at_display"] = _format_local_timestamp(
++        item.get("pipeline_updated_at")
++    )
++    item["review_reason_text_display"] = str(
++        item.get("review_reason_text") or ""
++    ).strip()
++    return item
++
++
+ def _load_json_dict(path: Path) -> dict[str, Any]:
+     if not path.exists():
+         return {}
+@@ -1104,10 +1216,12 @@ async def ui_recordings(
+         limit=limit,
+         offset=offset,
+     )
+-    for item in items:
++    for idx, item in enumerate(items):
++        item = _prepare_recording_for_display(item, settings=_settings)
+         progress_ratio = _safe_pipeline_progress(item.get("pipeline_progress"))
+         item["progress_percent"] = int(round(progress_ratio * 100))
+         item["progress_stage_label"] = _pipeline_stage_label(item.get("pipeline_stage"))
++        items[idx] = item
+     return templates.TemplateResponse(
+         request,
+         "recordings.html",
+@@ -1136,6 +1250,7 @@ async def ui_recording_detail(
+     rec = get_recording(recording_id, settings=_settings)
+     if rec is None:
+         return HTMLResponse("<h1>404 – Recording not found</h1>", status_code=404)
++    rec = _prepare_recording_for_display(rec, settings=_settings)
+     jobs, _ = list_jobs(settings=_settings, recording_id=recording_id, limit=100)
+     recovery_warning = _recording_recovery_warning(jobs)
+     tabs = ["overview", "project", "speakers", "language", "metrics", "log"]
+@@ -1152,7 +1267,10 @@ async def ui_recording_detail(
+         speakers = _speakers_tab_context(recording_id, _settings)
+     if current_tab == "project":
+         project = _project_tab_context(recording_id, rec, _settings)
+-        rec = get_recording(recording_id, settings=_settings) or rec
++        rec = _prepare_recording_for_display(
++            get_recording(recording_id, settings=_settings) or rec,
++            settings=_settings,
++        )
+     if current_tab in {"overview", "metrics"}:
+         summary = _summary_context(recording_id, _settings)
+     if current_tab == "overview":
+@@ -1181,13 +1299,18 @@ async def ui_recording_detail(
+ 
+ 
+ @ui_router.get("/ui/recordings/{recording_id}/progress", response_class=HTMLResponse)
+-async def ui_recording_progress(request: Request, recording_id: str) -> Any:
++async def ui_recording_progress(
++    request: Request,
++    recording_id: str,
++    tab: str = Query(default="overview"),
++) -> Any:
+     rec = get_recording(recording_id, settings=_settings)
+     if rec is None:
+         return HTMLResponse("Not found", status_code=404)
++    rec = _prepare_recording_for_display(rec, settings=_settings)
+     progress_ratio = _safe_pipeline_progress(rec.get("pipeline_progress"))
+     progress_percent = int(round(progress_ratio * 100))
+-    return templates.TemplateResponse(
++    response = templates.TemplateResponse(
+         request,
+         "partials/recording_progress.html",
+         {
+@@ -1197,10 +1320,17 @@ async def ui_recording_progress(request: Request, recording_id: str) -> Any:
+             "stage_code": str(rec.get("pipeline_stage") or "").strip() or "waiting",
+             "stage_label": _pipeline_stage_label(rec.get("pipeline_stage")),
+             "updated_at": str(rec.get("pipeline_updated_at") or "").strip(),
++            "updated_at_display": rec.get("pipeline_updated_at_display"),
+             "warning": str(rec.get("last_warning") or "").strip(),
+             "is_processing": str(rec.get("status") or "") == RECORDING_STATUS_PROCESSING,
+         },
+     )
++    if (
++        request.headers.get("HX-Request") == "true"
++        and str(rec.get("status") or "") in _TERMINAL_RECORDING_STATUSES
++    ):
++        response.headers["HX-Redirect"] = f"/recordings/{recording_id}?tab={quote(tab)}"
++    return response
+ 
+ 
+ @ui_router.get("/ui/recordings/{recording_id}/export.zip")
+@@ -1725,11 +1855,12 @@ async def ui_action_delete(recording_id: str) -> Any:
+         purge_pending_recording_jobs(recording_id, settings=_settings)
+     except Exception as exc:
+         return HTMLResponse(f"Delete failed (queue unavailable): {exc}", status_code=503)
+-    from .db import delete_recording
+-
+-    delete_recording(recording_id, settings=_settings)
+-    recording_path = _settings.recordings_root / recording_id
+-    shutil.rmtree(recording_path, ignore_errors=True)
++    try:
++        deleted = delete_recording_with_artifacts(recording_id, settings=_settings)
++    except RecordingDeleteError as exc:
++        return HTMLResponse(str(exc), status_code=500)
++    if not deleted:
++        return HTMLResponse("Not found", status_code=404)
+     resp = HTMLResponse("")
+     resp.headers["HX-Redirect"] = "/recordings"
+     return resp
 diff --git a/lan_app/worker_tasks.py b/lan_app/worker_tasks.py
-index 1a6cd43..2966945 100644
+index 2966945..8034e4b 100644
 --- a/lan_app/worker_tasks.py
 +++ b/lan_app/worker_tasks.py
-@@ -656,6 +656,8 @@ def _resolve_diarization_speaker_hints(
-         retry_min_duration_seconds = settings.diarization_dialog_retry_min_duration_seconds
-         retry_min_turns = settings.diarization_dialog_retry_min_turns
+@@ -18,7 +18,11 @@ from lan_transcriber.audio_sanitize import (
+     sanitize_audio_for_pipeline,
+ )
+ from lan_transcriber.compat.call_compat import call_with_supported_kwargs
+-from lan_transcriber.llm_client import LLMClient
++from lan_transcriber.llm_client import (
++    LLMClient,
++    LLMEmptyContentError,
++    LLMTruncatedResponseError,
++)
+ from lan_transcriber.pipeline import Settings as PipelineSettings
+ from lan_transcriber.pipeline import run_pipeline, run_precheck
+ from lan_transcriber.pipeline_steps.diarization_quality import (
+@@ -58,6 +62,7 @@ from .db import (
+     list_jobs,
+     requeue_job_if_started,
+     set_recording_progress,
++    set_recording_duration,
+     set_recording_language_settings,
+     set_recording_status,
+     set_recording_status_if_current_in_and_job_started,
+@@ -174,6 +179,14 @@ _JOB_RETRY_POLICIES: dict[str, RetryPolicy] = {
+ _MAX_ATTEMPTS_ERROR = "max attempts exceeded"
  
-+    explicit_min_speakers = min_speakers is not None
-+    explicit_max_speakers = max_speakers is not None
-     if profile not in {"auto", "dialog", "meeting"}:
-         profile = "auto"
-     default_min_speakers, default_max_speakers = profile_default_speaker_hints(profile)
-@@ -668,8 +670,13 @@ def _resolve_diarization_speaker_hints(
-         and max_speakers is not None
-         and min_speakers > max_speakers
-     ):
--        min_speakers = None
--        max_speakers = None
-+        if explicit_min_speakers and not explicit_max_speakers:
-+            max_speakers = None
-+        elif explicit_max_speakers and not explicit_min_speakers:
-+            min_speakers = None
-+        else:
-+            min_speakers = None
-+            max_speakers = None
  
-     return _DiarizationRuntimeConfig(
-         profile=profile,
-diff --git a/lan_transcriber/pipeline_steps/diarization_quality.py b/lan_transcriber/pipeline_steps/diarization_quality.py
-index 3bfbcc7..d090ab6 100644
---- a/lan_transcriber/pipeline_steps/diarization_quality.py
-+++ b/lan_transcriber/pipeline_steps/diarization_quality.py
-@@ -52,6 +52,7 @@ def annotation_speaker_count(diarization: Any) -> int:
- def should_retry_dialog(
-     *,
-     profile: str,
-+    min_speakers: int | None,
-     max_speakers: int | None,
-     detected_speaker_count: int,
-     speech_turn_count: int,
-@@ -60,6 +61,8 @@ def should_retry_dialog(
-     min_duration_seconds: float,
- ) -> bool:
-     normalized_profile = str(profile or "auto").strip().lower()
-+    if min_speakers is not None and min_speakers > 2:
-+        return False
-     if max_speakers is not None and max_speakers != 2:
-         return False
-     if normalized_profile != "dialog" and max_speakers != 2:
-diff --git a/lan_transcriber/pipeline_steps/orchestrator.py b/lan_transcriber/pipeline_steps/orchestrator.py
-index 3c5f6f8..e5b15c6 100644
---- a/lan_transcriber/pipeline_steps/orchestrator.py
-+++ b/lan_transcriber/pipeline_steps/orchestrator.py
-@@ -345,6 +345,12 @@ async def _maybe_retry_dialog_diarization(
-         effective_hints = {}
-     if not should_retry_dialog(
-         profile=str(metadata.get("diarization_profile") or "auto"),
-+        min_speakers=(
-+            int(effective_hints["min_speakers"])
-+            if "min_speakers" in effective_hints
-+            and isinstance(effective_hints["min_speakers"], int)
-+            else None
++@dataclass(frozen=True)
++class PipelineTerminalState:
++    status: str
++    quarantine_reason: str | None = None
++    review_reason_code: str | None = None
++    review_reason_text: str | None = None
++
++
+ def _retry_policy(job_type: str) -> RetryPolicy:
+     return _JOB_RETRY_POLICIES.get(job_type, _DEFAULT_RETRY_POLICY)
+ 
+@@ -331,7 +344,9 @@ def _record_max_attempts_exceeded(
+     recording_id: str,
+     settings: AppSettings,
+     log_path: Path,
++    exc: Exception,
+ ) -> None:
++    review_reason_code, review_reason_text = _review_reason_from_exception(exc)
+     try:
+         fail_job(job_id, _MAX_ATTEMPTS_ERROR, settings=settings)
+     except Exception:
+@@ -341,6 +356,8 @@ def _record_max_attempts_exceeded(
+             recording_id,
+             RECORDING_STATUS_NEEDS_REVIEW,
+             settings=settings,
++            review_reason_code=review_reason_code,
++            review_reason_text=review_reason_text,
+         )
+     except Exception:
+         pass
+@@ -356,6 +373,87 @@ def _record_max_attempts_exceeded(
+         pass
+ 
+ 
++def _load_json_dict(path: Path) -> dict[str, Any]:
++    if not path.exists():
++        return {}
++    try:
++        payload = json.loads(path.read_text(encoding="utf-8"))
++    except (OSError, ValueError):
++        return {}
++    if not isinstance(payload, dict):
++        return {}
++    return payload
++
++
++def _review_reason_from_exception(exc: Exception) -> tuple[str, str]:
++    message = str(exc).strip()
++    lowered = message.lower()
++    if isinstance(exc, LLMTruncatedResponseError) or "finish_reason=length" in lowered:
++        return (
++            "llm_truncated",
++            "LLM output was truncated repeatedly; manual review required.",
++        )
++    if isinstance(exc, LLMEmptyContentError) or "empty message.content" in lowered:
++        return (
++            "llm_empty_content",
++            "LLM returned empty content repeatedly; manual review required.",
++        )
++    if message == _MAX_ATTEMPTS_ERROR:
++        return (
++            "job_retry_limit_reached",
++            "Processing hit the retry limit; manual review required.",
++        )
++    return (
++        "job_retry_limit_reached",
++        (
++            "Processing hit the retry limit after repeated errors "
++            f"({type(exc).__name__}); manual review required."
 +        ),
-         max_speakers=(
-             int(effective_hints["max_speakers"])
-             if "max_speakers" in effective_hints
-@@ -380,7 +386,14 @@ async def _maybe_retry_dialog_diarization(
-             "min_speakers=2 max_speakers=2"
++    )
++
++
++def _review_reason_from_routing(
++    *,
++    recording_id: str,
++    settings: AppSettings,
++    routing: dict[str, Any],
++) -> tuple[str, str]:
++    derived_dir = settings.recordings_root / recording_id / "derived"
++    summary_payload = _load_json_dict(derived_dir / "summary.json")
++    diarization_payload = _load_json_dict(derived_dir / "diarization_metadata.json")
++
++    parse_reason = str(summary_payload.get("parse_error_reason") or "").strip()
++    if parse_reason:
++        if parse_reason == "json_object_not_found":
++            return (
++                "llm_empty_content",
++                "LLM output was empty or invalid JSON; manual review required.",
++            )
++        return (
++            "llm_output_invalid",
++            (
++                "LLM output could not be parsed cleanly "
++                f"({parse_reason}); manual review required."
++            ),
++        )
++
++    if bool(diarization_payload.get("degraded")):
++        return (
++            "diarization_degraded",
++            "Diarization ran in degraded mode; manual review required.",
++        )
++
++    confidence = float(routing.get("confidence") or 0.0)
++    threshold = float(routing.get("threshold") or 0.0)
++    return (
++        "routing_low_confidence",
++        (
++            f"Project routing confidence {confidence:.2f} is below "
++            f"threshold {threshold:.2f}; manual review required."
++        ),
++    )
++
++
+ def _resolve_raw_audio_path(recording_id: str, settings: AppSettings) -> Path | None:
+     raw_dir = settings.recordings_root / recording_id / "raw"
+     candidates = sorted(raw_dir.glob("audio.*"))
+@@ -364,6 +462,24 @@ def _resolve_raw_audio_path(recording_id: str, settings: AppSettings) -> Path |
+     return candidates[0]
+ 
+ 
++def _set_recording_progress_best_effort(
++    recording_id: str,
++    *,
++    stage: str,
++    progress: float,
++    settings: AppSettings,
++) -> None:
++    try:
++        set_recording_progress(
++            recording_id,
++            stage=stage,
++            progress=progress,
++            settings=settings,
++        )
++    except Exception:
++        pass
++
++
+ def _clean_language_value(value: object | None) -> str | None:
+     if not isinstance(value, str):
+         return None
+@@ -766,7 +882,7 @@ def _run_precheck_pipeline(
+     recording_id: str,
+     settings: AppSettings,
+     log_path: Path,
+-) -> tuple[str, str | None]:
++) -> PipelineTerminalState:
+     recording = get_recording(recording_id, settings=settings) or {}
+     transcript_language_override = _clean_language_value(recording.get("language_override"))
+     target_summary_language = _clean_language_value(recording.get("target_summary_language"))
+@@ -775,16 +891,38 @@ def _run_precheck_pipeline(
+     audio_path = _resolve_raw_audio_path(recording_id, settings)
+     if audio_path is None:
+         _append_step_log(log_path, "precheck skipped: raw audio not found")
+-        return RECORDING_STATUS_QUARANTINE, "raw_audio_missing"
++        return PipelineTerminalState(
++            status=RECORDING_STATUS_QUARANTINE,
++            quarantine_reason="raw_audio_missing",
++        )
++
++    _set_recording_progress_best_effort(
++        recording_id,
++        stage="precheck",
++        progress=0.01,
++        settings=settings,
++    )
+ 
+     audio_path = _sanitize_audio_for_worker(
+         recording_id=recording_id,
+         audio_path=audio_path,
+         settings=settings,
+     )
++    _set_recording_progress_best_effort(
++        recording_id,
++        stage="precheck",
++        progress=0.05,
++        settings=settings,
++    )
+ 
+     pipeline_settings = _build_pipeline_settings(settings)
+     precheck = run_precheck(audio_path, pipeline_settings)
++    if precheck.duration_sec is not None:
++        set_recording_duration(
++            recording_id,
++            precheck.duration_sec,
++            settings=settings,
++        )
+     _append_step_log(
+         log_path,
+         (
+@@ -846,7 +984,7 @@ def _run_precheck_pipeline(
+     )
+ 
+     def _progress_callback(stage: str, progress: float) -> None:
+-        set_recording_progress(
++        _set_recording_progress_best_effort(
+             recording_id,
+             stage=stage,
+             progress=progress,
+@@ -905,7 +1043,10 @@ def _run_precheck_pipeline(
+             log_path,
+             f"quarantined reason={precheck.quarantine_reason}",
+         )
+-        return RECORDING_STATUS_QUARANTINE, precheck.quarantine_reason
++        return PipelineTerminalState(
++            status=RECORDING_STATUS_QUARANTINE,
++            quarantine_reason=precheck.quarantine_reason,
++        )
+     routing = refresh_recording_routing(
+         recording_id,
+         settings=settings,
+@@ -923,8 +1064,17 @@ def _run_precheck_pipeline(
          ),
      )
--    return await retry_dialog(audio_path)
-+    try:
-+        return await retry_dialog(audio_path)
-+    except Exception as exc:
-+        _best_effort_step_log(
-+            step_log_callback,
-+            f"diarization dialog retry failed: {exc}",
+     if routing.get("status_after_routing") == RECORDING_STATUS_NEEDS_REVIEW:
+-        return RECORDING_STATUS_NEEDS_REVIEW, None
+-    return RECORDING_STATUS_READY, None
++        review_reason_code, review_reason_text = _review_reason_from_routing(
++            recording_id=recording_id,
++            settings=settings,
++            routing=routing,
 +        )
-+        return diarization
++        return PipelineTerminalState(
++            status=RECORDING_STATUS_NEEDS_REVIEW,
++            review_reason_code=review_reason_code,
++            review_reason_text=review_reason_text,
++        )
++    return PipelineTerminalState(status=RECORDING_STATUS_READY)
  
  
- def _write_diarization_metadata_artifact(
+ def process_job(job_id: str, recording_id: str, job_type: str) -> dict[str, str]:
+@@ -1026,7 +1176,7 @@ def process_job(job_id: str, recording_id: str, job_type: str) -> dict[str, str]
+                 raise ValueError(f"Recording not found: {recording_id}")
+             _append_step_log(log_path, f"started job={job_id} type={job_type}")
+ 
+-            final_status, quarantine_reason = _run_precheck_pipeline(
++            terminal_state = _run_precheck_pipeline(
+                 recording_id=recording_id,
+                 settings=settings,
+                 log_path=log_path,
+@@ -1044,11 +1194,13 @@ def process_job(job_id: str, recording_id: str, job_type: str) -> dict[str, str]
+ 
+             if not set_recording_status_if_current_in_and_job_started(
+                 recording_id,
+-                final_status,
++                terminal_state.status,
+                 job_id=job_id,
+                 current_statuses=(RECORDING_STATUS_PROCESSING,),
+                 settings=settings,
+-                quarantine_reason=quarantine_reason,
++                quarantine_reason=terminal_state.quarantine_reason,
++                review_reason_code=terminal_state.review_reason_code,
++                review_reason_text=terminal_state.review_reason_text,
+             ):
+                 current_job_status = _job_status(job_id, settings)
+                 if current_job_status != JOB_STATUS_STARTED:
+@@ -1095,7 +1247,10 @@ def process_job(job_id: str, recording_id: str, job_type: str) -> dict[str, str]
+             clear_recording_progress(recording_id, settings=settings)
+             _append_step_log(
+                 log_path,
+-                f"finished job={job_id} type={job_type} recording_status={final_status}",
++                (
++                    f"finished job={job_id} type={job_type} "
++                    f"recording_status={terminal_state.status}"
++                ),
+             )
+             break
+         except Exception as exc:
+@@ -1117,6 +1272,7 @@ def process_job(job_id: str, recording_id: str, job_type: str) -> dict[str, str]
+                     recording_id=recording_id,
+                     settings=settings,
+                     log_path=log_path,
++                    exc=exc,
+                 )
+                 raise
+             if (
+diff --git a/lan_transcriber/pipeline_steps/orchestrator.py b/lan_transcriber/pipeline_steps/orchestrator.py
+index e5b15c6..7c868e3 100644
+--- a/lan_transcriber/pipeline_steps/orchestrator.py
++++ b/lan_transcriber/pipeline_steps/orchestrator.py
+@@ -699,9 +699,9 @@ def _llm_timeout_message(timeout_seconds: float | None) -> str:
+ 
+ def _llm_chunk_progress(chunk_index: int, total_chunks: int) -> float:
+     total = max(total_chunks, 1)
+-    start = 0.85
++    start = 0.82
+     span = 0.08
+-    return min(0.93, start + ((max(chunk_index, 1) - 1) / total) * span)
++    return min(0.90, start + (max(chunk_index, 1) / total) * span)
+ 
+ 
+ def _speaker_turn_prompt_text(
+@@ -802,7 +802,7 @@ async def _run_chunked_llm_summary(
+ 
+     merge_input = merge_chunk_results(chunk_results)
+     atomic_write_json(derived_dir / "llm_merge_input.json", merge_input)
+-    await _emit_progress(progress_callback, stage="llm_merge", progress=0.93)
++    await _emit_progress(progress_callback, stage="llm_merge", progress=0.94)
+     merge_sys_prompt, merge_user_prompt = build_merge_prompt(
+         merge_input,
+         target_summary_language=target_summary_language,
+@@ -865,7 +865,7 @@ async def run_pipeline(
+     )
+ 
+     if precheck_result.quarantine_reason:
+-        await _emit_progress(progress_callback, stage="metrics", progress=0.95)
++        await _emit_progress(progress_callback, stage="metrics", progress=0.98)
+         _clear_dir(artifacts.snippets_dir)
+         atomic_write_text(artifacts.transcript_txt_path, "")
+         atomic_write_json(
+@@ -904,14 +904,11 @@ async def run_pipeline(
+             ),
+         )
+         atomic_write_json(artifacts.metrics_json_path, {"status": "quarantined", "version": 1, "precheck": precheck_result.__dict__})
+-        await _emit_progress(progress_callback, stage="done", progress=1.0)
+         p95_latency_seconds.observe(time.perf_counter() - start)
+         return TranscriptResult(summary="Quarantined", body="", friendly=0, speakers=[], summary_path=artifacts.summary_json_path, body_path=artifacts.transcript_txt_path, unknown_chunks=[], segments=[])
+ 
+     try:
+-        await _emit_progress(progress_callback, stage="stt", progress=0.30)
+-
+-        await _emit_progress(progress_callback, stage="diarize", progress=0.50)
++        await _emit_progress(progress_callback, stage="stt", progress=0.10)
+         (raw_segments, info), diarization = await asyncio.gather(
+             asyncio.to_thread(
+                 _whisperx_asr,
+@@ -922,23 +919,25 @@ async def run_pipeline(
+             ),
+             diariser(audio_path),
+         )
+-        await _emit_progress(progress_callback, stage="align", progress=0.60)
++        await _emit_progress(progress_callback, stage="stt", progress=0.35)
+         asr_segments = normalise_asr_segments(raw_segments)
+-        language_info = _language_payload(info)
+-        await _emit_progress(progress_callback, stage="language", progress=0.70)
+-        detected_language = normalise_language_code(language_info["detected"]) if language_info["detected"] != "unknown" else None
+-        language_analysis = analyse_languages(asr_segments, detected_language=detected_language, transcript_language_override=override_lang)
+-        if language_info["detected"] == "unknown" and language_analysis.dominant_language != "unknown":
+-            language_info["detected"] = language_analysis.dominant_language
+-        summary_lang = resolve_target_summary_language(target_summary_language, dominant_language=language_analysis.dominant_language, detected_language=detected_language)
+         diarization = await _maybe_retry_dialog_diarization(
+             diariser=diariser,
+             audio_path=audio_path,
+             diarization=diarization,
+-            asr_segments=language_analysis.segments,
++            asr_segments=asr_segments,
+             precheck_result=precheck_result,
+             step_log_callback=step_log_callback,
+         )
++        await _emit_progress(progress_callback, stage="diarize", progress=0.60)
++        await _emit_progress(progress_callback, stage="align", progress=0.68)
++        language_info = _language_payload(info)
++        detected_language = normalise_language_code(language_info["detected"]) if language_info["detected"] != "unknown" else None
++        language_analysis = analyse_languages(asr_segments, detected_language=detected_language, transcript_language_override=override_lang)
++        if language_info["detected"] == "unknown" and language_analysis.dominant_language != "unknown":
++            language_info["detected"] = language_analysis.dominant_language
++        summary_lang = resolve_target_summary_language(target_summary_language, dominant_language=language_analysis.dominant_language, detected_language=detected_language)
++        await _emit_progress(progress_callback, stage="language", progress=0.75)
+ 
+         asr_text = " ".join(seg.get("text", "").strip() for seg in language_analysis.segments).strip()
+         clean_text = normalizer.dedup(asr_text)
+@@ -1047,9 +1046,8 @@ async def run_pipeline(
+                 status="no_speech",
+             ),
+         )
+-        await _emit_progress(progress_callback, stage="metrics", progress=0.95)
++        await _emit_progress(progress_callback, stage="metrics", progress=0.98)
+         atomic_write_json(artifacts.metrics_json_path, {"status": "no_speech", "version": 1, "precheck": {**precheck_result.__dict__, "quarantine_reason": None}, "language": language_info, "asr_segments": len(language_analysis.segments), "diar_segments": len(diar_segments), "speaker_turns": len(speaker_turns)})
+-        await _emit_progress(progress_callback, stage="done", progress=1.0)
+         p95_latency_seconds.observe(time.perf_counter() - start)
+         return TranscriptResult(summary="No speech detected", body="", friendly=0, speakers=speakers, summary_path=artifacts.summary_json_path, body_path=artifacts.transcript_txt_path, unknown_chunks=[], segments=[])
+ 
+@@ -1086,7 +1084,7 @@ async def run_pipeline(
+                 calendar_title=cal_title,
+                 calendar_attendees=cal_attendees,
+             )
+-            await _emit_progress(progress_callback, stage="llm", progress=0.85)
++            await _emit_progress(progress_callback, stage="llm", progress=0.90)
+             msg = await _generate_llm_message(
+                 llm,
+                 system_prompt=sys_prompt,
+@@ -1126,9 +1124,8 @@ async def run_pipeline(
+         atomic_write_json(artifacts.segments_json_path, diar_segments)
+         atomic_write_json(artifacts.speaker_turns_json_path, speaker_turns)
+         atomic_write_json(artifacts.summary_json_path, summary_payload)
+-        await _emit_progress(progress_callback, stage="metrics", progress=0.95)
++        await _emit_progress(progress_callback, stage="metrics", progress=0.98)
+         atomic_write_json(artifacts.metrics_json_path, {"status": "ok", "version": 1, "precheck": {**precheck_result.__dict__, "quarantine_reason": None}, "language": language_info, "asr_segments": len(language_analysis.segments), "diar_segments": len(diar_segments), "speaker_turns": len(speaker_turns), "snippets": len(snippet_paths)})
+-        await _emit_progress(progress_callback, stage="done", progress=1.0)
+         return TranscriptResult(summary=str(summary_payload.get("summary") or ""), body=clean_text, friendly=friendly, speakers=speakers, summary_path=artifacts.summary_json_path, body_path=artifacts.transcript_txt_path, unknown_chunks=snippet_paths, segments=serialised_segments)
+     except Exception as exc:
+         error_rate_total.inc()
+diff --git a/tasks/QUEUE.md b/tasks/QUEUE.md
+index bf64c0a..9d636f0 100644
+--- a/tasks/QUEUE.md
++++ b/tasks/QUEUE.md
+@@ -427,7 +427,7 @@ Queue (in order)
+ - Depends on: PR-LLM-CHUNKING-01
+ 
+ 84) PR-UI-PIPELINE-UX-01: Pipeline UX polish: explicit review reasons, duration from sanitized WAV, better progress model, timezone fix, auto-refresh on terminal status, and delete removes disk artifacts
+-- Status: TODO
++- Status: DOING
+ - Tasks file: tasks/PR-UI-PIPELINE-UX-01.md
+ - Depends on: PR-DIARIZATION-QUALITY-01
+ 
+diff --git a/tests/test_cov_lan_app_api.py b/tests/test_cov_lan_app_api.py
+index 568d782..a54d2bc 100644
+--- a/tests/test_cov_lan_app_api.py
++++ b/tests/test_cov_lan_app_api.py
+@@ -14,6 +14,7 @@ from lan_app import api
+ from lan_app.calendar.service import CalendarSyncError
+ from lan_app.config import AppSettings
+ from lan_app.jobs import RecordingNotFoundError
++from lan_app.ops import RecordingDeleteError
+ 
+ 
+ def _cfg(tmp_path: Path) -> AppSettings:
+@@ -404,7 +405,11 @@ def test_api_delete_returns_404_when_db_delete_fails(
+ ) -> None:
+     monkeypatch.setattr(api, "get_recording", lambda *_args, **_kwargs: {"id": "rec-1"})
+     monkeypatch.setattr(api, "purge_pending_recording_jobs", lambda *_args, **_kwargs: 0)
+-    monkeypatch.setattr(api, "delete_recording", lambda *_args, **_kwargs: False)
++    monkeypatch.setattr(
++        api,
++        "delete_recording_with_artifacts",
++        lambda *_args, **_kwargs: False,
++    )
+     client = TestClient(api.app)
+ 
+     response = client.post("/api/recordings/rec-1/actions/delete")
+@@ -412,6 +417,23 @@ def test_api_delete_returns_404_when_db_delete_fails(
+     assert response.json()["detail"] == "Recording not found"
+ 
+ 
++def test_api_delete_returns_500_when_disk_cleanup_fails(
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    monkeypatch.setattr(api, "get_recording", lambda *_args, **_kwargs: {"id": "rec-1"})
++    monkeypatch.setattr(api, "purge_pending_recording_jobs", lambda *_args, **_kwargs: 0)
++
++    def _raise(*_args: Any, **_kwargs: Any) -> Any:
++        raise RecordingDeleteError("disk busy")
++
++    monkeypatch.setattr(api, "delete_recording_with_artifacts", _raise)
++    client = TestClient(api.app)
++
++    response = client.post("/api/recordings/rec-1/actions/delete")
++    assert response.status_code == 500
++    assert response.json()["detail"] == "disk busy"
++
++
+ def test_api_create_calendar_source_validates_required_fields(
+     monkeypatch: pytest.MonkeyPatch,
+ ) -> None:
+diff --git a/tests/test_cov_lan_app_ui_routes.py b/tests/test_cov_lan_app_ui_routes.py
+index 7fd4232..3b03d94 100644
+--- a/tests/test_cov_lan_app_ui_routes.py
++++ b/tests/test_cov_lan_app_ui_routes.py
+@@ -72,7 +72,7 @@ def test_language_and_json_helper_edge_paths() -> None:
+     warning = ui_routes._recording_recovery_warning(  # noqa: SLF001
+         [{"error": "stuck job recovered", "finished_at": "2026-01-02T03:04:05Z"}]
+     )
+-    assert warning and "2026-01-02 03:04:05 UTC" in warning
++    assert warning and "2026-01-02 04:04:05 CET" in warning
+ 
+     warning_no_ts = ui_routes._recording_recovery_warning(  # noqa: SLF001
+         [{"error": "stuck job recovered"}]
+@@ -88,6 +88,87 @@ def test_language_and_json_helper_edge_paths() -> None:
+     ]
+ 
+ 
++def test_display_helpers_cover_timezone_duration_and_prepare_recording(
++    tmp_path: Path,
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    cfg = _cfg(tmp_path)
++
++    assert ui_routes._pipeline_stage_label("precheck") == "Sanitize & Precheck"  # noqa: SLF001
++    assert ui_routes._pipeline_stage_label("llm_chunk_2_of_5") == "LLM Chunk 2 of 5"  # noqa: SLF001
++    assert ui_routes._pipeline_stage_label("llm_chunk_bad") == "Llm Chunk Bad"  # noqa: SLF001
++    assert ui_routes._pipeline_stage_label("custom_stage") == "Custom Stage"  # noqa: SLF001
++    assert ui_routes._format_duration_seconds(None) == "—"  # noqa: SLF001
++    assert ui_routes._format_duration_seconds(0) == "—"  # noqa: SLF001
++    assert ui_routes._format_duration_seconds(2.0) == "2s"  # noqa: SLF001
++    assert ui_routes._format_duration_seconds(2.345) == "2.35s"  # noqa: SLF001
++    assert ui_routes._format_local_timestamp("") == "—"  # noqa: SLF001
++    assert ui_routes._format_local_timestamp("bad-timestamp") == "bad-timestamp"  # noqa: SLF001
++    assert "CET" in ui_routes._format_local_timestamp("2026-01-10T10:00:00Z")  # noqa: SLF001
++
++    observed_update: dict[str, object] = {}
++    monkeypatch.setattr(
++        ui_routes,
++        "_recording_audio_candidates",
++        lambda *_a, **_k: [Path("/tmp/fake.wav")],
++    )
++    monkeypatch.setattr(ui_routes, "_probe_duration_seconds", lambda *_a, **_k: 3.5)
++    monkeypatch.setattr(
++        ui_routes,
++        "set_recording_duration",
++        lambda recording_id, duration_sec, *, settings=None: observed_update.update(
++            {"recording_id": recording_id, "duration_sec": duration_sec}
++        )
++        or True,
++    )
++
++    prepared = ui_routes._prepare_recording_for_display(  # noqa: SLF001
++        {
++            "id": "rec-helper-1",
++            "duration_sec": None,
++            "captured_at": "2026-01-10T10:00:00Z",
++            "created_at": "",
++            "updated_at": "bad",
++            "pipeline_updated_at": "2026-01-10T10:05:00Z",
++            "review_reason_text": "  Needs a closer look.  ",
++        },
++        settings=cfg,
++    )
++    assert observed_update == {"recording_id": "rec-helper-1", "duration_sec": 3.5}
++    assert prepared["duration_display"] == "3.50s"
++    assert prepared["captured_at_display"].endswith("CET")
++    assert prepared["created_at_display"] == "—"
++    assert prepared["updated_at_display"] == "bad"
++    assert prepared["pipeline_updated_at_display"].endswith("CET")
++    assert prepared["review_reason_text_display"] == "Needs a closer look."
++
++    observed_update.clear()
++    prepared_existing_duration = ui_routes._prepare_recording_for_display(  # noqa: SLF001
++        {
++            "id": "rec-helper-2",
++            "duration_sec": 1.0,
++            "captured_at": None,
++            "created_at": None,
++            "updated_at": None,
++            "pipeline_updated_at": None,
++            "review_reason_text": None,
++        },
++        settings=cfg,
++    )
++    assert observed_update == {}
++    assert prepared_existing_duration["duration_display"] == "1s"
++
++    monkeypatch.setattr(
++        ui_routes,
++        "ZoneInfo",
++        lambda *_a, **_k: (_ for _ in ()).throw(
++            ui_routes.ZoneInfoNotFoundError("missing tzdata")
++        ),
++        raising=False,
++    )
++    assert ui_routes._display_timezone() is timezone.utc  # noqa: SLF001
++
++
+ def test_load_json_and_chunk_helpers_cover_error_paths(tmp_path: Path) -> None:
+     broken = tmp_path / "broken.json"
+     broken.write_text("{", encoding="utf-8")
 diff --git a/tests/test_cov_lan_app_worker_tasks_branches.py b/tests/test_cov_lan_app_worker_tasks_branches.py
-index 3696ab8..25dcd3b 100644
+index 25dcd3b..406f9c8 100644
 --- a/tests/test_cov_lan_app_worker_tasks_branches.py
 +++ b/tests/test_cov_lan_app_worker_tasks_branches.py
-@@ -559,6 +559,20 @@ def test_resolve_diarization_speaker_hints_from_env(monkeypatch: pytest.MonkeyPa
-     assert hints.min_speakers is None
-     assert hints.max_speakers is None
- 
-+    monkeypatch.setenv("LAN_DIARIZATION_PROFILE", "meeting")
-+    monkeypatch.delenv("LAN_DIARIZATION_MIN_SPEAKERS")
-+    monkeypatch.setenv("LAN_DIARIZATION_MAX_SPEAKERS", "1")
-+    hints = worker_tasks._resolve_diarization_speaker_hints()
-+    assert hints.min_speakers is None
-+    assert hints.max_speakers == 1
-+
-+    monkeypatch.setenv("LAN_DIARIZATION_PROFILE", "dialog")
-+    monkeypatch.setenv("LAN_DIARIZATION_MIN_SPEAKERS", "5")
-+    monkeypatch.delenv("LAN_DIARIZATION_MAX_SPEAKERS")
-+    hints = worker_tasks._resolve_diarization_speaker_hints()
-+    assert hints.min_speakers == 5
-+    assert hints.max_speakers is None
-+
-     monkeypatch.setenv("LAN_DIARIZATION_PROFILE", "unknown")
-     monkeypatch.setenv("LAN_DIARIZATION_MIN_SPEAKERS", "abc")
-     monkeypatch.setenv("LAN_DIARIZATION_MAX_SPEAKERS", "0")
-diff --git a/tests/test_cov_lan_transcriber_extra_pipeline.py b/tests/test_cov_lan_transcriber_extra_pipeline.py
-index 2b661a2..9eeeb22 100644
---- a/tests/test_cov_lan_transcriber_extra_pipeline.py
-+++ b/tests/test_cov_lan_transcriber_extra_pipeline.py
-@@ -146,6 +146,47 @@ async def test_orchestrator_retry_helper_skips_non_retryable_cases_and_tolerates
-     assert result is diarization
+@@ -22,7 +22,8 @@ from lan_app.constants import (
+     RECORDING_STATUS_QUEUED,
+     RECORDING_STATUS_READY,
+ )
+-from lan_app.db import create_recording, init_db
++from lan_app.db import create_recording, get_recording, init_db
++from lan_transcriber.llm_client import LLMEmptyContentError, LLMTruncatedResponseError
+ from lan_transcriber.pipeline import PrecheckResult
  
  
-+@pytest.mark.asyncio
-+async def test_orchestrator_retry_helper_keeps_initial_diarization_when_retry_fails():
-+    class _RetryingDiariser:
-+        dialog_retry_min_turns = 4
-+        dialog_retry_min_duration_seconds = 15.0
-+        last_run_metadata = {
-+            "diarization_profile": "dialog",
-+            "effective_hints": {"min_speakers": 2, "max_speakers": 2},
-+            "speaker_count_before_retry": 1,
-+        }
+@@ -82,7 +83,7 @@ def _patch_precheck_happy_path(
+     monkeypatch.setattr(
+         worker_tasks,
+         "_run_precheck_pipeline",
+-        lambda **_kwargs: (final_status, None),
++        lambda **_kwargs: worker_tasks.PipelineTerminalState(status=final_status),
+     )
+     monkeypatch.setattr(worker_tasks, "clear_recording_progress", lambda *_a, **_k: True)
+ 
+@@ -307,6 +308,7 @@ def test_record_failure_and_max_attempts_helpers_swallow_secondary_errors(
+         recording_id="rec-fail-2",
+         settings=settings,
+         log_path=log_path,
++        exc=RuntimeError("max attempts exceeded"),
+     )
+ 
+ 
+@@ -792,14 +794,14 @@ def test_run_precheck_pipeline_records_step_logs_and_explicit_summary_target(
+ 
+     monkeypatch.setattr(worker_tasks, "run_pipeline", _run_pipeline_with_callbacks)
+ 
+-    final_status, quarantine_reason = worker_tasks._run_precheck_pipeline(
++    terminal_state = worker_tasks._run_precheck_pipeline(
+         recording_id="rec-step-log-1",
+         settings=cfg,
+         log_path=cfg.recordings_root / "rec-step-log-1" / "logs" / "step-precheck.log",
+     )
+ 
+-    assert final_status == RECORDING_STATUS_READY
+-    assert quarantine_reason is None
++    assert terminal_state.status == RECORDING_STATUS_READY
++    assert terminal_state.quarantine_reason is None
+     assert observed_updates == {
+         "recording_id": "rec-step-log-1",
+         "kwargs": {"language_auto": "en", "target_summary_language": "fr"},
+@@ -876,14 +878,14 @@ def test_run_precheck_pipeline_uses_sanitized_audio_for_precheck_and_pipeline(
+ 
+     monkeypatch.setattr(worker_tasks, "run_pipeline", _fake_run_pipeline)
+ 
+-    final_status, quarantine_reason = worker_tasks._run_precheck_pipeline(
++    terminal_state = worker_tasks._run_precheck_pipeline(
+         recording_id="rec-sanitize-wire-1",
+         settings=cfg,
+         log_path=cfg.recordings_root / "rec-sanitize-wire-1" / "logs" / "step-precheck.log",
+     )
+ 
+-    assert final_status == RECORDING_STATUS_READY
+-    assert quarantine_reason is None
++    assert terminal_state.status == RECORDING_STATUS_READY
++    assert terminal_state.quarantine_reason is None
+     assert observed_paths["sanitize_input"] == raw_audio
+     assert observed_paths["sanitize_output"] == (
+         cfg.recordings_root / "rec-sanitize-wire-1" / "derived" / "audio_sanitized.wav"
+@@ -907,6 +909,9 @@ def test_run_precheck_pipeline_uses_sanitized_audio_for_precheck_and_pipeline(
+         "channels": 1,
+         "codec": "pcm_s16le",
+     }
++    recording = get_recording("rec-sanitize-wire-1", settings=cfg)
++    assert recording is not None
++    assert recording["duration_sec"] == 30.0
+ 
+ 
+ def test_run_precheck_pipeline_marks_fallback_when_builder_returns_fallback(
+@@ -962,7 +967,7 @@ def test_run_precheck_pipeline_marks_fallback_when_builder_returns_fallback(
+         lambda *_a, **_k: asyncio.sleep(0),
+     )
+ 
+-    final_status, quarantine_reason = worker_tasks._run_precheck_pipeline(
++    terminal_state = worker_tasks._run_precheck_pipeline(
+         recording_id="rec-step-log-fallback-1",
+         settings=cfg,
+         log_path=cfg.recordings_root
+@@ -971,8 +976,8 @@ def test_run_precheck_pipeline_marks_fallback_when_builder_returns_fallback(
+         / "step-precheck.log",
+     )
+ 
+-    assert final_status == RECORDING_STATUS_READY
+-    assert quarantine_reason is None
++    assert terminal_state.status == RECORDING_STATUS_READY
++    assert terminal_state.quarantine_reason is None
+     log_text = (
+         cfg.recordings_root
+         / "rec-step-log-fallback-1"
+@@ -995,6 +1000,160 @@ def test_run_precheck_pipeline_marks_fallback_when_builder_returns_fallback(
+     }
+ 
+ 
++def test_review_reason_helpers_cover_exception_and_routing_paths(tmp_path: Path) -> None:
++    cfg = _db_settings(tmp_path)
++    assert worker_tasks._load_json_dict(tmp_path / "missing.json") == {}  # noqa: SLF001
++    broken = tmp_path / "broken.json"
++    broken.write_text("{", encoding="utf-8")
++    assert worker_tasks._load_json_dict(broken) == {}  # noqa: SLF001
++    as_list = tmp_path / "list.json"
++    as_list.write_text("[]", encoding="utf-8")
++    assert worker_tasks._load_json_dict(as_list) == {}  # noqa: SLF001
 +
-+        async def retry_dialog(self, _audio_path: Path):
-+            raise RuntimeError("retry boom")
++    truncated = worker_tasks._review_reason_from_exception(  # noqa: SLF001
++        LLMTruncatedResponseError(
++            host="localhost",
++            model="test-model",
++            max_tokens=123,
++            request_id="req-1",
++            raw_response={},
++        )
++    )
++    assert truncated[0] == "llm_truncated"
 +
-+    diarization = object()
-+    step_messages: list[str] = []
-+    result = await pipeline._maybe_retry_dialog_diarization(
-+        diariser=_RetryingDiariser(),
-+        audio_path=Path("/tmp/audio.wav"),
-+        diarization=diarization,
-+        asr_segments=[
-+            {"text": "first"},
-+            {"text": "second"},
-+            {"text": "third"},
-+            {"text": "fourth"},
-+        ],
-+        precheck_result=precheck.PrecheckResult(
-+            duration_sec=30.0,
++    empty = worker_tasks._review_reason_from_exception(  # noqa: SLF001
++        LLMEmptyContentError(
++            host="localhost",
++            model="test-model",
++            max_tokens=123,
++            finish_reason="stop",
++            request_id="req-2",
++            raw_response={},
++        )
++    )
++    assert empty[0] == "llm_empty_content"
++
++    generic = worker_tasks._review_reason_from_exception(RuntimeError("boom"))  # noqa: SLF001
++    assert generic[0] == "job_retry_limit_reached"
++
++    derived = cfg.recordings_root / "rec-review-reason-1" / "derived"
++    derived.mkdir(parents=True, exist_ok=True)
++    (derived / "summary.json").write_text(
++        json.dumps({"parse_error_reason": "json_object_not_found"}),
++        encoding="utf-8",
++    )
++    assert worker_tasks._review_reason_from_routing(  # noqa: SLF001
++        recording_id="rec-review-reason-1",
++        settings=cfg,
++        routing={"confidence": 0.25, "threshold": 0.5},
++    ) == (
++        "llm_empty_content",
++        "LLM output was empty or invalid JSON; manual review required.",
++    )
++
++    (derived / "summary.json").write_text(
++        json.dumps({"parse_error_reason": "summary_bullets: required"}),
++        encoding="utf-8",
++    )
++    invalid_payload_reason = worker_tasks._review_reason_from_routing(  # noqa: SLF001
++        recording_id="rec-review-reason-1",
++        settings=cfg,
++        routing={"confidence": 0.25, "threshold": 0.5},
++    )
++    assert invalid_payload_reason[0] == "llm_output_invalid"
++
++    (derived / "summary.json").write_text("{}", encoding="utf-8")
++    (derived / "diarization_metadata.json").write_text(
++        json.dumps({"degraded": True}),
++        encoding="utf-8",
++    )
++    assert worker_tasks._review_reason_from_routing(  # noqa: SLF001
++        recording_id="rec-review-reason-1",
++        settings=cfg,
++        routing={"confidence": 0.25, "threshold": 0.5},
++    ) == (
++        "diarization_degraded",
++        "Diarization ran in degraded mode; manual review required.",
++    )
++
++    (derived / "diarization_metadata.json").write_text(
++        json.dumps({"degraded": False}),
++        encoding="utf-8",
++    )
++    assert worker_tasks._review_reason_from_routing(  # noqa: SLF001
++        recording_id="rec-review-reason-1",
++        settings=cfg,
++        routing={"confidence": 0.25, "threshold": 0.5},
++    ) == (
++        "routing_low_confidence",
++        "Project routing confidence 0.25 is below threshold 0.50; manual review required.",
++    )
++
++
++def test_run_precheck_pipeline_skips_duration_persist_when_duration_is_missing(
++    tmp_path: Path,
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    cfg = _db_settings(tmp_path)
++    init_db(cfg)
++    create_recording(
++        "rec-no-duration-1",
++        source="test",
++        source_filename="audio.wav",
++        settings=cfg,
++    )
++
++    raw_audio = cfg.recordings_root / "rec-no-duration-1" / "raw" / "audio.wav"
++    _write_pcm_wav(raw_audio)
++
++    monkeypatch.setattr(
++        worker_tasks,
++        "run_precheck",
++        lambda *_a, **_k: PrecheckResult(
++            duration_sec=None,
 +            speech_ratio=0.5,
 +            quarantine_reason=None,
 +        ),
-+        step_log_callback=step_messages.append,
++    )
++    monkeypatch.setattr(worker_tasks, "_build_diariser", lambda *_a, **_k: object())
++    monkeypatch.setattr(
++        worker_tasks,
++        "set_recording_duration",
++        lambda *_a, **_k: (_ for _ in ()).throw(
++            AssertionError("duration should not be persisted")
++        ),
++    )
++    monkeypatch.setattr(
++        worker_tasks,
++        "refresh_recording_metrics",
++        lambda *_a, **_k: {"participants": [], "meeting": {"total_interruptions": 0}},
++    )
++    monkeypatch.setattr(
++        worker_tasks,
++        "refresh_recording_routing",
++        lambda *_a, **_k: {
++            "suggested_project_id": None,
++            "confidence": 0.0,
++            "threshold": 0.5,
++            "auto_selected": False,
++            "status_after_routing": RECORDING_STATUS_READY,
++        },
++    )
++    monkeypatch.setattr(
++        worker_tasks,
++        "_load_transcript_language_payload",
++        lambda *_a, **_k: (None, None),
++    )
++    monkeypatch.setattr(worker_tasks, "run_pipeline", lambda *_a, **_k: asyncio.sleep(0))
++
++    terminal_state = worker_tasks._run_precheck_pipeline(
++        recording_id="rec-no-duration-1",
++        settings=cfg,
++        log_path=cfg.recordings_root / "rec-no-duration-1" / "logs" / "step-precheck.log",
++    )
++    assert terminal_state.status == RECORDING_STATUS_READY
++
++
+ def test_process_job_rejects_unknown_job_type():
+     with pytest.raises(ValueError, match="Unsupported job type"):
+         worker_tasks.process_job("job-unknown-1", "rec-unknown-1", "unknown")
+diff --git a/tests/test_db_queue.py b/tests/test_db_queue.py
+index b7d3b9a..fd83e50 100644
+--- a/tests/test_db_queue.py
++++ b/tests/test_db_queue.py
+@@ -49,8 +49,12 @@ from lan_app.db import (
+     get_recording,
+     init_db,
+     list_jobs,
++    set_recording_duration,
+     set_recording_progress,
+     set_recording_status,
++    set_recording_status_if_current_in,
++    set_recording_status_if_current_in_and_job_started,
++    set_recording_status_if_current_in_and_no_started_job,
+     start_job,
+     upsert_calendar_match,
+     with_db_retry,
+@@ -165,6 +169,137 @@ def test_recording_progress_helpers_set_and_clear(tmp_path: Path):
+     assert after_clear["pipeline_updated_at"] is None
+ 
+ 
++def test_recording_duration_and_review_reason_helpers(tmp_path: Path) -> None:
++    cfg = _test_settings(tmp_path)
++    init_db(cfg)
++    create_recording(
++        "rec-review-helpers-1",
++        source="test",
++        source_filename="review.mp3",
++        status=RECORDING_STATUS_NEEDS_REVIEW,
++        review_reason_code="routing_low_confidence",
++        review_reason_text="Project routing confidence is too low.",
++        settings=cfg,
 +    )
 +
-+    assert result is diarization
-+    assert step_messages == [
-+        "diarization dialog retry profile=dialog min_speakers=2 max_speakers=2",
-+        "diarization dialog retry failed: retry boom",
++    assert set_recording_duration("rec-review-helpers-1", 12.3456, settings=cfg)
++    assert set_recording_status(
++        "rec-review-helpers-1",
++        RECORDING_STATUS_NEEDS_REVIEW,
++        settings=cfg,
++    )
++
++    preserved = get_recording("rec-review-helpers-1", settings=cfg) or {}
++    assert preserved["duration_sec"] == 12.346
++    assert preserved["review_reason_code"] == "routing_low_confidence"
++    assert preserved["review_reason_text"] == "Project routing confidence is too low."
++
++    assert set_recording_status(
++        "rec-review-helpers-1",
++        RECORDING_STATUS_READY,
++        settings=cfg,
++    )
++    cleared = get_recording("rec-review-helpers-1", settings=cfg) or {}
++    assert cleared["review_reason_code"] is None
++    assert cleared["review_reason_text"] is None
++
++    assert set_recording_status(
++        "rec-review-helpers-1",
++        RECORDING_STATUS_NEEDS_REVIEW,
++        settings=cfg,
++        review_reason_code="llm_truncated",
++        review_reason_text="LLM output was truncated repeatedly.",
++    )
++    explicit = get_recording("rec-review-helpers-1", settings=cfg) or {}
++    assert explicit["review_reason_code"] == "llm_truncated"
++    assert explicit["review_reason_text"] == "LLM output was truncated repeatedly."
++
++    assert set_recording_duration("rec-review-helpers-1", None, settings=cfg)
++    duration_cleared = get_recording("rec-review-helpers-1", settings=cfg) or {}
++    assert duration_cleared["duration_sec"] is None
++
++
++def test_recording_review_reason_conditional_status_helpers_preserve_existing_reason(
++    tmp_path: Path,
++) -> None:
++    cfg = _test_settings(tmp_path)
++    init_db(cfg)
++
++    create_recording(
++        "rec-review-cond-1",
++        source="test",
++        source_filename="cond-1.mp3",
++        status=RECORDING_STATUS_NEEDS_REVIEW,
++        review_reason_code="routing_low_confidence",
++        review_reason_text="Routing reason",
++        settings=cfg,
++    )
++    assert set_recording_status_if_current_in(
++        "rec-review-cond-1",
++        RECORDING_STATUS_NEEDS_REVIEW,
++        current_statuses=[RECORDING_STATUS_NEEDS_REVIEW],
++        settings=cfg,
++    )
++    assert (get_recording("rec-review-cond-1", settings=cfg) or {})[
++        "review_reason_code"
++    ] == "routing_low_confidence"
++
++    create_recording(
++        "rec-review-cond-2",
++        source="test",
++        source_filename="cond-2.mp3",
++        status=RECORDING_STATUS_NEEDS_REVIEW,
++        review_reason_code="routing_low_confidence",
++        review_reason_text="Routing reason",
++        settings=cfg,
++    )
++    assert set_recording_status_if_current_in_and_no_started_job(
++        "rec-review-cond-2",
++        RECORDING_STATUS_NEEDS_REVIEW,
++        current_statuses=[RECORDING_STATUS_NEEDS_REVIEW],
++        settings=cfg,
++    )
++    assert (get_recording("rec-review-cond-2", settings=cfg) or {})[
++        "review_reason_code"
++    ] == "routing_low_confidence"
++    assert set_recording_status_if_current_in_and_no_started_job(
++        "rec-review-cond-2",
++        RECORDING_STATUS_READY,
++        current_statuses=[RECORDING_STATUS_NEEDS_REVIEW],
++        settings=cfg,
++    )
++    assert (get_recording("rec-review-cond-2", settings=cfg) or {})[
++        "review_reason_code"
++    ] is None
++
++    create_recording(
++        "rec-review-cond-3",
++        source="test",
++        source_filename="cond-3.mp3",
++        status=RECORDING_STATUS_NEEDS_REVIEW,
++        review_reason_code="routing_low_confidence",
++        review_reason_text="Routing reason",
++        settings=cfg,
++    )
++    create_job(
++        "job-review-cond-3",
++        recording_id="rec-review-cond-3",
++        job_type=JOB_TYPE_PRECHECK,
++        status=JOB_STATUS_STARTED,
++        settings=cfg,
++    )
++    assert set_recording_status_if_current_in_and_job_started(
++        "rec-review-cond-3",
++        RECORDING_STATUS_NEEDS_REVIEW,
++        job_id="job-review-cond-3",
++        current_statuses=[RECORDING_STATUS_NEEDS_REVIEW],
++        settings=cfg,
++    )
++    assert (get_recording("rec-review-cond-3", settings=cfg) or {})[
++        "review_reason_code"
++    ] == "routing_low_confidence"
++
++
+ def test_with_db_retry_retries_on_forced_lock(tmp_path: Path):
+     db_file = tmp_path / "db" / "locked.db"
+     with connect_db(db_file, timeout=0.01, busy_timeout_ms=1) as conn:
+@@ -424,7 +559,7 @@ def test_worker_ignores_stale_inflight_execution_for_recovered_started_job(
+             )
+             is True
+         )
+-        return RECORDING_STATUS_READY, None
++        return worker_tasks.PipelineTerminalState(status=RECORDING_STATUS_READY)
+ 
+     monkeypatch.setattr("lan_app.worker_tasks._run_precheck_pipeline", _simulate_reaper)
+ 
+@@ -487,7 +622,7 @@ def test_worker_does_not_write_terminal_status_after_job_recovered_mid_run(
+             is True
+         )
+         # Reaper has recovered the job; worker must not commit terminal recording state.
+-        return RECORDING_STATUS_READY, None
++        return worker_tasks.PipelineTerminalState(status=RECORDING_STATUS_READY)
+ 
+     monkeypatch.setattr(
+         "lan_app.worker_tasks._run_precheck_pipeline",
+@@ -553,7 +688,7 @@ def test_worker_finalizes_started_job_when_recording_leaves_processing_mid_run(
+             )
+             is True
+         )
+-        return RECORDING_STATUS_READY, None
++        return worker_tasks.PipelineTerminalState(status=RECORDING_STATUS_READY)
+ 
+     monkeypatch.setattr(
+         "lan_app.worker_tasks._run_precheck_pipeline",
+@@ -1237,6 +1372,7 @@ def test_worker_retry_terminal_uses_effective_max_attempts_cap(
+     assert job["status"] == JOB_STATUS_FAILED
+     assert job["error"] == "max attempts exceeded"
+     assert recording["status"] == RECORDING_STATUS_NEEDS_REVIEW
++    assert recording["review_reason_code"] == "job_retry_limit_reached"
+ 
+ 
+ def test_worker_max_attempts_exceeded_before_processing_sets_terminal_state(
+@@ -1285,6 +1421,7 @@ def test_worker_max_attempts_exceeded_before_processing_sets_terminal_state(
+     assert job["status"] == JOB_STATUS_FAILED
+     assert job["error"] == "max attempts exceeded"
+     assert recording["status"] == RECORDING_STATUS_NEEDS_REVIEW
++    assert recording["review_reason_code"] == "job_retry_limit_reached"
+ 
+ 
+ def test_enqueue_sets_recording_status_to_queued_on_success(tmp_path: Path, monkeypatch):
+diff --git a/tests/test_e2e_lite_processing.py b/tests/test_e2e_lite_processing.py
+index 5a6182f..fb010e4 100644
+--- a/tests/test_e2e_lite_processing.py
++++ b/tests/test_e2e_lite_processing.py
+@@ -167,12 +167,12 @@ async def test_e2e_lite_processing_success(tmp_path: Path, monkeypatch: pytest.M
+     assert [stage for stage, _ in progress_events] == [
+         "precheck",
+         "stt",
++        "stt",
+         "diarize",
+         "align",
+         "language",
+         "llm",
+         "metrics",
+-        "done",
+     ]
+ 
+ 
+diff --git a/tests/test_ops.py b/tests/test_ops.py
+index d3e7e38..16ebf43 100644
+--- a/tests/test_ops.py
++++ b/tests/test_ops.py
+@@ -3,15 +3,21 @@ from __future__ import annotations
+ from datetime import datetime, timedelta, timezone
+ import os
+ from pathlib import Path
++import shutil
+ 
+ from fastapi.testclient import TestClient
++import pytest
+ 
+ from lan_app import api, ui_routes
+ from lan_app.config import AppSettings
+ from lan_app.constants import RECORDING_STATUS_QUARANTINE
+ from lan_app.db import connect, create_recording, get_recording, init_db
+ from lan_app import healthchecks
+-from lan_app.ops import run_retention_cleanup
++from lan_app.ops import (
++    RecordingDeleteError,
++    delete_recording_with_artifacts,
++    run_retention_cleanup,
++)
+ 
+ 
+ def _cfg(tmp_path: Path) -> AppSettings:
+@@ -95,6 +101,95 @@ def test_run_retention_cleanup_deletes_old_quarantine_and_tmp_entries(tmp_path:
+     assert fresh_tmp.exists()
+ 
+ 
++def test_delete_recording_with_artifacts_removes_db_and_directory(tmp_path: Path) -> None:
++    cfg = _cfg(tmp_path)
++    init_db(cfg)
++    create_recording(
++        "rec-delete-all-1",
++        source="upload",
++        source_filename="delete.wav",
++        settings=cfg,
++    )
++    recording_root = cfg.recordings_root / "rec-delete-all-1"
++    (recording_root / "raw").mkdir(parents=True, exist_ok=True)
++    (recording_root / "derived").mkdir(parents=True, exist_ok=True)
++    (recording_root / "logs").mkdir(parents=True, exist_ok=True)
++    (recording_root / "raw" / "audio.wav").write_bytes(b"\x00")
++    (recording_root / "derived" / "summary.json").write_text("{}", encoding="utf-8")
++    (recording_root / "logs" / "step-precheck.log").write_text("log", encoding="utf-8")
++    (recording_root / "temp.tmp").write_text("temp", encoding="utf-8")
++
++    assert delete_recording_with_artifacts("rec-delete-all-1", settings=cfg) is True
++    assert get_recording("rec-delete-all-1", settings=cfg) is None
++    assert not recording_root.exists()
++
++
++def test_delete_recording_with_artifacts_rejects_invalid_id(tmp_path: Path) -> None:
++    cfg = _cfg(tmp_path)
++    with pytest.raises(RecordingDeleteError, match="recording id is required"):
++        delete_recording_with_artifacts("", settings=cfg)
++    with pytest.raises(RecordingDeleteError, match="invalid recording id"):
++        delete_recording_with_artifacts("../escape", settings=cfg)
++
++
++def test_delete_recording_with_artifacts_rejects_symlink_escape(tmp_path: Path) -> None:
++    cfg = _cfg(tmp_path)
++    cfg.recordings_root.mkdir(parents=True, exist_ok=True)
++    outside = tmp_path / "outside"
++    outside.mkdir(parents=True, exist_ok=True)
++    (cfg.recordings_root / "escape").symlink_to(outside, target_is_directory=True)
++
++    with pytest.raises(RecordingDeleteError, match="invalid recording path"):
++        delete_recording_with_artifacts("escape", settings=cfg)
++
++
++def test_delete_recording_with_artifacts_handles_file_root(tmp_path: Path) -> None:
++    cfg = _cfg(tmp_path)
++    init_db(cfg)
++    create_recording(
++        "rec-delete-file-1",
++        source="upload",
++        source_filename="file-root.wav",
++        settings=cfg,
++    )
++    recording_root = cfg.recordings_root / "rec-delete-file-1"
++    recording_root.parent.mkdir(parents=True, exist_ok=True)
++    recording_root.write_text("unexpected-file-root", encoding="utf-8")
++
++    assert delete_recording_with_artifacts("rec-delete-file-1", settings=cfg) is True
++    assert not recording_root.exists()
++
++
++def test_delete_recording_with_artifacts_raises_on_disk_cleanup_failure(
++    tmp_path: Path,
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    cfg = _cfg(tmp_path)
++    init_db(cfg)
++    create_recording(
++        "rec-delete-fail-1",
++        source="upload",
++        source_filename="fail.wav",
++        settings=cfg,
++    )
++    raw_dir = cfg.recordings_root / "rec-delete-fail-1" / "raw"
++    raw_dir.mkdir(parents=True, exist_ok=True)
++    (raw_dir / "audio.wav").write_bytes(b"\x00")
++
++    real_rmtree = shutil.rmtree
++
++    def _fail_once(path: Path | str, *args, **kwargs) -> None:
++        if Path(path) == raw_dir:
++            raise OSError("disk busy")
++        real_rmtree(path, *args, **kwargs)
++
++    monkeypatch.setattr("lan_app.ops.shutil.rmtree", _fail_once)
++
++    with pytest.raises(RecordingDeleteError, match="disk busy"):
++        delete_recording_with_artifacts("rec-delete-fail-1", settings=cfg)
++    assert get_recording("rec-delete-fail-1", settings=cfg) is not None
++
++
+ def test_healthz_component_endpoints(tmp_path: Path, monkeypatch):
+     cfg = _cfg(tmp_path)
+     monkeypatch.setattr(api, "_settings", cfg)
+diff --git a/tests/test_pipeline.py b/tests/test_pipeline.py
+index 639949f..e56b741 100644
+--- a/tests/test_pipeline.py
++++ b/tests/test_pipeline.py
+@@ -267,13 +267,13 @@ async def test_pipeline_emits_progress_stages_in_order(tmp_path: Path, mocker):
+ 
+     assert events == [
+         ("precheck", 0.05),
+-        ("stt", 0.30),
+-        ("diarize", 0.50),
+-        ("align", 0.60),
+-        ("language", 0.70),
+-        ("llm", 0.85),
+-        ("metrics", 0.95),
+-        ("done", 1.0),
++        ("stt", 0.10),
++        ("stt", 0.35),
++        ("diarize", 0.60),
++        ("align", 0.68),
++        ("language", 0.75),
++        ("llm", 0.90),
++        ("metrics", 0.98),
+     ]
+ 
+ 
+@@ -593,10 +593,17 @@ async def test_pipeline_long_transcript_uses_chunked_llm_progress_and_artifacts(
+     summary_payload = json.loads((derived / "summary.json").read_text(encoding="utf-8"))
+ 
+     assert total_chunks > 1
+-    assert stage_names[:5] == ["precheck", "stt", "diarize", "align", "language"]
+-    assert stage_names[5] == f"llm_chunk_1_of_{total_chunks}"
+-    assert stage_names[5 + total_chunks] == "llm_merge"
+-    assert stage_names[-2:] == ["metrics", "done"]
++    assert stage_names[:6] == [
++        "precheck",
++        "stt",
++        "stt",
++        "diarize",
++        "align",
++        "language",
 +    ]
++    assert stage_names[6] == f"llm_chunk_1_of_{total_chunks}"
++    assert stage_names[6 + total_chunks] == "llm_merge"
++    assert stage_names[-1] == "metrics"
+     assert merge_payload["payload"]["merge_input"]["chunk_count"] == total_chunks
+     assert (derived / "llm_chunk_001_raw.json").exists()
+     assert (derived / f"llm_chunk_{total_chunks:03d}_extract.json").exists()
+diff --git a/tests/test_reaper.py b/tests/test_reaper.py
+index be108a4..1151cff 100644
+--- a/tests/test_reaper.py
++++ b/tests/test_reaper.py
+@@ -81,6 +81,8 @@ def test_reaper_recovers_stale_started_job(tmp_path: Path):
+     assert job["status"] == JOB_STATUS_FAILED
+     assert job["error"] == "stuck job recovered"
+     assert recording["status"] == RECORDING_STATUS_NEEDS_REVIEW
++    assert recording["review_reason_code"] == "stuck_job_recovered"
++    assert "Processing stalled" in str(recording["review_reason_text"])
+ 
+     step_log = cfg.recordings_root / "rec-reaper-stale-1" / "logs" / "step-precheck.log"
+     assert step_log.exists()
+diff --git a/tests/test_rq_redis_integration.py b/tests/test_rq_redis_integration.py
+index 0f190f9..40af011 100644
+--- a/tests/test_rq_redis_integration.py
++++ b/tests/test_rq_redis_integration.py
+@@ -73,11 +73,11 @@ def test_enqueue_job_runs_via_rq_simple_worker_and_updates_db(
+         recording_id: str,
+         settings: AppSettings,
+         log_path: Path,
+-    ) -> tuple[str, str | None]:
++    ) -> worker_tasks.PipelineTerminalState:
+         assert recording_id == "rec-rq-integration-1"
+         assert settings.db_path == tmp_path / "db" / "app.db"
+         assert log_path.name == "step-precheck.log"
+-        return RECORDING_STATUS_READY, None
++        return worker_tasks.PipelineTerminalState(status=RECORDING_STATUS_READY)
+ 
+     monkeypatch.setattr(worker_tasks, "_run_precheck_pipeline", _fast_precheck_stub)
+ 
+diff --git a/tests/test_ui_routes.py b/tests/test_ui_routes.py
+index c8a20ac..5a39f44 100644
+--- a/tests/test_ui_routes.py
++++ b/tests/test_ui_routes.py
+@@ -5,6 +5,7 @@ from __future__ import annotations
+ from datetime import datetime, timedelta, timezone
+ import json
+ from pathlib import Path
++import wave
+ 
+ import pytest
+ from fastapi.testclient import TestClient
+@@ -12,6 +13,7 @@ from fastapi.testclient import TestClient
+ from lan_app import api, ui_routes
+ from lan_app.auth import AUTH_COOKIE_NAME
+ from lan_app.config import AppSettings
++from lan_app.ops import RecordingDeleteError
+ from lan_app.db import (
+     create_calendar_source,
+     count_routing_training_examples,
+@@ -111,6 +113,16 @@ def _seed_speaker_artifacts(cfg: AppSettings, recording_id: str) -> None:
+     (snippets / "S2" / "1.wav").write_bytes(b"fake-wav-s2")
+ 
+ 
++def _write_pcm_wav(path: Path, *, duration_sec: float, sample_rate: int = 16000) -> None:
++    path.parent.mkdir(parents=True, exist_ok=True)
++    frames = max(int(sample_rate * duration_sec), 1)
++    with wave.open(str(path), "wb") as wav_file:
++        wav_file.setnchannels(1)
++        wav_file.setsampwidth(2)
++        wav_file.setframerate(sample_rate)
++        wav_file.writeframes(b"\x00\x00" * frames)
 +
 +
- @pytest.mark.asyncio
- async def test_run_chunked_llm_summary_rejects_empty_chunk_plan(
-     tmp_path: Path,
-diff --git a/tests/test_diarization_quality.py b/tests/test_diarization_quality.py
-index dd592d2..86ed898 100644
---- a/tests/test_diarization_quality.py
-+++ b/tests/test_diarization_quality.py
-@@ -46,6 +46,7 @@ def test_annotation_speaker_count_ignores_invalid_tracks_and_counts_multiple_sha
- def test_should_retry_dialog_requires_dialog_like_mode_single_speaker_and_plausible_audio():
-     assert not should_retry_dialog(
-         profile="auto",
-+        min_speakers=None,
-         max_speakers=None,
-         detected_speaker_count=1,
-         speech_turn_count=8,
-@@ -55,6 +56,7 @@ def test_should_retry_dialog_requires_dialog_like_mode_single_speaker_and_plausi
-     )
-     assert not should_retry_dialog(
-         profile="dialog",
-+        min_speakers=2,
-         max_speakers=2,
-         detected_speaker_count=2,
-         speech_turn_count=8,
-@@ -64,6 +66,7 @@ def test_should_retry_dialog_requires_dialog_like_mode_single_speaker_and_plausi
-     )
-     assert not should_retry_dialog(
-         profile="dialog",
-+        min_speakers=2,
-         max_speakers=2,
-         detected_speaker_count=1,
-         speech_turn_count=3,
-@@ -73,6 +76,7 @@ def test_should_retry_dialog_requires_dialog_like_mode_single_speaker_and_plausi
-     )
-     assert not should_retry_dialog(
-         profile="dialog",
-+        min_speakers=2,
-         max_speakers=2,
-         detected_speaker_count=1,
-         speech_turn_count=8,
-@@ -82,6 +86,7 @@ def test_should_retry_dialog_requires_dialog_like_mode_single_speaker_and_plausi
-     )
-     assert not should_retry_dialog(
-         profile="dialog",
-+        min_speakers=2,
-         max_speakers=4,
-         detected_speaker_count=1,
-         speech_turn_count=8,
-@@ -89,8 +94,19 @@ def test_should_retry_dialog_requires_dialog_like_mode_single_speaker_and_plausi
-         min_turns=4,
-         min_duration_seconds=20.0,
-     )
-+    assert not should_retry_dialog(
-+        profile="dialog",
-+        min_speakers=5,
-+        max_speakers=None,
-+        detected_speaker_count=1,
-+        speech_turn_count=8,
-+        duration_sec=45.0,
-+        min_turns=4,
-+        min_duration_seconds=20.0,
+ # ---------------------------------------------------------------------------
+ # Dashboard
+ # ---------------------------------------------------------------------------
+@@ -182,6 +194,27 @@ def test_recordings_list_shows_progress_column_and_percent(tmp_path, monkeypatch
+     assert "50%" in r.text
+ 
+ 
++def test_recordings_list_shows_review_reason_text(tmp_path, monkeypatch):
++    cfg = _cfg(tmp_path)
++    monkeypatch.setattr(api, "_settings", cfg)
++    monkeypatch.setattr(ui_routes, "_settings", cfg)
++    init_db(cfg)
++    create_recording(
++        "rec-ui-review-list-1",
++        source="upload",
++        source_filename="needs-review.wav",
++        status=RECORDING_STATUS_NEEDS_REVIEW,
++        review_reason_code="routing_low_confidence",
++        review_reason_text="Project routing confidence is too low.",
++        settings=cfg,
 +    )
-     assert should_retry_dialog(
-         profile="meeting",
-+        min_speakers=1,
-         max_speakers=2,
-         detected_speaker_count=1,
-         speech_turn_count=8,
++
++    c = TestClient(api.app, follow_redirects=True)
++    r = c.get("/recordings")
++    assert r.status_code == 200
++    assert "Project routing confidence is too low." in r.text
++
++
+ def test_recordings_status_filter(seeded_client):
+     r = seeded_client.get("/recordings?status=Ready")
+     assert r.status_code == 200
+@@ -232,7 +265,7 @@ def test_recording_detail_processing_polls_progress(tmp_path, monkeypatch):
+     c = TestClient(api.app, follow_redirects=True)
+     r = c.get("/recordings/rec-ui-processing-1")
+     assert r.status_code == 200
+-    assert "/ui/recordings/rec-ui-processing-1/progress" in r.text
++    assert "/ui/recordings/rec-ui-processing-1/progress?tab=overview" in r.text
+     assert "every 2s" in r.text
+ 
+ 
+@@ -259,11 +292,81 @@ def test_recording_progress_endpoint_renders_expected_html(tmp_path, monkeypatch
+     r = c.get("/ui/recordings/rec-ui-progress-1/progress")
+     assert r.status_code == 200
+     assert "Pipeline:" in r.text
+-    assert "Diarize" in r.text
++    assert "Diarization" in r.text
+     assert "50%" in r.text
+     assert "stage=<code>diarize</code>" in r.text
+ 
+ 
++def test_recording_progress_endpoint_redirects_when_terminal(tmp_path, monkeypatch):
++    cfg = _cfg(tmp_path)
++    monkeypatch.setattr(api, "_settings", cfg)
++    monkeypatch.setattr(ui_routes, "_settings", cfg)
++    init_db(cfg)
++    create_recording(
++        "rec-ui-terminal-1",
++        source="upload",
++        source_filename="terminal.wav",
++        status=RECORDING_STATUS_READY,
++        settings=cfg,
++    )
++
++    c = TestClient(api.app, follow_redirects=False)
++    r = c.get(
++        "/ui/recordings/rec-ui-terminal-1/progress?tab=metrics",
++        headers={"HX-Request": "true"},
++    )
++    assert r.status_code == 200
++    assert r.headers["HX-Redirect"] == "/recordings/rec-ui-terminal-1?tab=metrics"
++
++
++def test_recording_detail_shows_review_reason_and_local_timestamp(tmp_path, monkeypatch):
++    cfg = _cfg(tmp_path)
++    monkeypatch.setattr(api, "_settings", cfg)
++    monkeypatch.setattr(ui_routes, "_settings", cfg)
++    init_db(cfg)
++    create_recording(
++        "rec-ui-review-detail-1",
++        source="upload",
++        source_filename="review-detail.wav",
++        captured_at="2026-01-10T10:00:00Z",
++        status=RECORDING_STATUS_NEEDS_REVIEW,
++        review_reason_code="routing_low_confidence",
++        review_reason_text="Project routing confidence is too low.",
++        settings=cfg,
++    )
++
++    c = TestClient(api.app, follow_redirects=True)
++    r = c.get("/recordings/rec-ui-review-detail-1")
++    assert r.status_code == 200
++    assert "Project routing confidence is too low." in r.text
++    assert "2026-01-10 11:00:00 CET" in r.text
++
++
++def test_recording_detail_persists_duration_from_sanitized_audio(tmp_path, monkeypatch):
++    cfg = _cfg(tmp_path)
++    monkeypatch.setattr(api, "_settings", cfg)
++    monkeypatch.setattr(ui_routes, "_settings", cfg)
++    init_db(cfg)
++    create_recording(
++        "rec-ui-duration-1",
++        source="upload",
++        source_filename="duration.wav",
++        settings=cfg,
++    )
++    _write_pcm_wav(
++        cfg.recordings_root / "rec-ui-duration-1" / "derived" / "audio_sanitized.wav",
++        duration_sec=2.0,
++    )
++
++    c = TestClient(api.app, follow_redirects=True)
++    r = c.get("/recordings/rec-ui-duration-1")
++    assert r.status_code == 200
++    assert "2s" in r.text
++    recording = get_recording("rec-ui-duration-1", settings=cfg)
++    assert recording is not None
++    assert recording["duration_sec"] == 2.0
++
++
+ def test_recording_detail_log_tab(seeded_client):
+     r = seeded_client.get("/recordings/rec-ui-1?tab=log")
+     assert r.status_code == 200
+@@ -1360,6 +1463,50 @@ def test_ui_action_delete_purge_failure_returns_503(tmp_path, monkeypatch):
+     assert "redis down" in r.text
+ 
+ 
++def test_ui_action_delete_cleanup_failure_returns_500(tmp_path, monkeypatch):
++    cfg = _cfg(tmp_path)
++    monkeypatch.setattr(api, "_settings", cfg)
++    monkeypatch.setattr(ui_routes, "_settings", cfg)
++    init_db(cfg)
++    create_recording(
++        "rec-del-fail-1",
++        source="drive",
++        source_filename="fail.mp3",
++        settings=cfg,
++    )
++
++    monkeypatch.setattr(ui_routes, "purge_pending_recording_jobs", lambda *_a, **_k: 0)
++    monkeypatch.setattr(
++        ui_routes,
++        "delete_recording_with_artifacts",
++        lambda *_a, **_k: (_ for _ in ()).throw(RecordingDeleteError("disk busy")),
++    )
++    c = TestClient(api.app, follow_redirects=False)
++    r = c.post("/ui/recordings/rec-del-fail-1/delete")
++    assert r.status_code == 500
++    assert "disk busy" in r.text
++
++
++def test_ui_action_delete_returns_404_when_cleanup_reports_missing(tmp_path, monkeypatch):
++    cfg = _cfg(tmp_path)
++    monkeypatch.setattr(api, "_settings", cfg)
++    monkeypatch.setattr(ui_routes, "_settings", cfg)
++    init_db(cfg)
++    create_recording(
++        "rec-del-missing-1",
++        source="drive",
++        source_filename="missing.mp3",
++        settings=cfg,
++    )
++
++    monkeypatch.setattr(ui_routes, "purge_pending_recording_jobs", lambda *_a, **_k: 0)
++    monkeypatch.setattr(ui_routes, "delete_recording_with_artifacts", lambda *_a, **_k: False)
++    c = TestClient(api.app, follow_redirects=False)
++    r = c.post("/ui/recordings/rec-del-missing-1/delete")
++    assert r.status_code == 404
++    assert "Not found" in r.text
++
++
+ def test_ui_action_delete_removes_disk_artifacts(tmp_path, monkeypatch):
+     cfg = _cfg(tmp_path)
+     monkeypatch.setattr(api, "_settings", cfg)
+diff --git a/lan_app/migrations/014_add_recording_review_reason.sql b/lan_app/migrations/014_add_recording_review_reason.sql
+new file mode 100644
+index 0000000..db4bb5d
+--- /dev/null
++++ b/lan_app/migrations/014_add_recording_review_reason.sql
+@@ -0,0 +1,2 @@
++ALTER TABLE recordings ADD COLUMN review_reason_code TEXT;
++ALTER TABLE recordings ADD COLUMN review_reason_text TEXT;

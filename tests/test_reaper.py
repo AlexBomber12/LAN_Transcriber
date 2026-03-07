@@ -81,6 +81,8 @@ def test_reaper_recovers_stale_started_job(tmp_path: Path):
     assert job["status"] == JOB_STATUS_FAILED
     assert job["error"] == "stuck job recovered"
     assert recording["status"] == RECORDING_STATUS_NEEDS_REVIEW
+    assert recording["review_reason_code"] == "stuck_job_recovered"
+    assert "Processing stalled" in str(recording["review_reason_text"])
 
     step_log = cfg.recordings_root / "rec-reaper-stale-1" / "logs" / "step-precheck.log"
     assert step_log.exists()

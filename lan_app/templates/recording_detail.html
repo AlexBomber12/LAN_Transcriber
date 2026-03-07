@@ -4,6 +4,9 @@
 <h1>
   Recording: <code>{{ rec.id }}</code>
   &nbsp;<span class="badge s-{{ rec.status }}">{{ rec.status }}</span>
+  {% if rec.review_reason_text_display %}
+  <span style="font-size:14px;color:#92400e">{{ rec.review_reason_text_display }}</span>
+  {% endif %}
 </h1>
 
 <div class="filters" style="margin-bottom:10px">
@@ -12,7 +15,7 @@
     style="font-size:12px"
     data-rid="{{ rec.id }}"
     data-rlabel="{{ rec.source_filename or rec.id }}"
-    data-rcaptured="{{ rec.captured_at[:19].replace('T',' ') if rec.captured_at else '' }}"
+    data-rcaptured="{{ '' if rec.captured_at_display == '—' else rec.captured_at_display }}"
     onchange="doRecAction(this)"
   >
     <option value="">Actions…</option>
@@ -32,7 +35,7 @@
 {% if rec.status == 'Processing' %}
 <div
   id="recording-progress"
-  hx-get="/ui/recordings/{{ rec.id }}/progress"
+  hx-get="/ui/recordings/{{ rec.id }}/progress?tab={{ current_tab }}"
   hx-trigger="load, every 2s"
   hx-swap="innerHTML"
   style="margin:0 0 10px 0"
@@ -55,9 +58,15 @@
     <span class="k">ID</span><span class="v">{{ rec.id }}</span>
     <span class="k">Filename</span><span class="v">{{ rec.source_filename }}</span>
     <span class="k">Source</span><span class="v">{{ rec.source }}</span>
-    <span class="k">Status</span><span class="v"><span class="badge s-{{ rec.status }}">{{ rec.status }}</span></span>
-    <span class="k">Captured at</span><span class="v">{{ rec.captured_at[:19].replace('T',' ') if rec.captured_at else '—' }}</span>
-    <span class="k">Duration</span><span class="v">{% if rec.duration_sec %}{{ rec.duration_sec }}s{% else %}—{% endif %}</span>
+    <span class="k">Status</span>
+    <span class="v">
+      <span class="badge s-{{ rec.status }}">{{ rec.status }}</span>
+      {% if rec.review_reason_text_display %}
+      <span style="color:#92400e">{{ rec.review_reason_text_display }}</span>
+      {% endif %}
+    </span>
+    <span class="k">Captured at</span><span class="v">{{ rec.captured_at_display }}</span>
+    <span class="k">Duration</span><span class="v">{{ rec.duration_display }}</span>
     <span class="k">Project</span><span class="v">{{ rec.project_name or (rec.project_id and ('#' ~ rec.project_id)) or '—' }}</span>
     <span class="k">Suggested project</span><span class="v">{{ rec.suggested_project_name or (rec.suggested_project_id and ('#' ~ rec.suggested_project_id)) or '—' }}</span>
     <span class="k">Routing confidence</span>
@@ -73,8 +82,9 @@
     <span class="k">Target summary language</span><span class="v">{{ rec.target_summary_language or '—' }}</span>
     <span class="k">Drive file ID</span><span class="v">{{ rec.drive_file_id or '—' }}</span>
     <span class="k">Quarantine reason</span><span class="v">{{ rec.quarantine_reason or '—' }}</span>
-    <span class="k">Created at</span><span class="v">{{ rec.created_at[:19].replace('T',' ') if rec.created_at else '—' }}</span>
-    <span class="k">Updated at</span><span class="v">{{ rec.updated_at[:19].replace('T',' ') if rec.updated_at else '—' }}</span>
+    <span class="k">Review reason</span><span class="v">{{ rec.review_reason_text_display or '—' }}</span>
+    <span class="k">Created at</span><span class="v">{{ rec.created_at_display }}</span>
+    <span class="k">Updated at</span><span class="v">{{ rec.updated_at_display }}</span>
   </div>
 
   <div class="section" style="margin-top:10px">

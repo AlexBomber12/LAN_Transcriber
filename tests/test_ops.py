@@ -3,15 +3,21 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 import os
 from pathlib import Path
+import shutil
 
 from fastapi.testclient import TestClient
+import pytest
 
 from lan_app import api, ui_routes
 from lan_app.config import AppSettings
 from lan_app.constants import RECORDING_STATUS_QUARANTINE
 from lan_app.db import connect, create_recording, get_recording, init_db
 from lan_app import healthchecks
-from lan_app.ops import run_retention_cleanup
+from lan_app.ops import (
+    RecordingDeleteError,
+    delete_recording_with_artifacts,
+    run_retention_cleanup,
+)
 
 
 def _cfg(tmp_path: Path) -> AppSettings:
@@ -93,6 +99,95 @@ def test_run_retention_cleanup_deletes_old_quarantine_and_tmp_entries(tmp_path: 
     assert (cfg.recordings_root / "rec-quarantine-fresh-1").exists()
     assert not stale_tmp.exists()
     assert fresh_tmp.exists()
+
+
+def test_delete_recording_with_artifacts_removes_db_and_directory(tmp_path: Path) -> None:
+    cfg = _cfg(tmp_path)
+    init_db(cfg)
+    create_recording(
+        "rec-delete-all-1",
+        source="upload",
+        source_filename="delete.wav",
+        settings=cfg,
+    )
+    recording_root = cfg.recordings_root / "rec-delete-all-1"
+    (recording_root / "raw").mkdir(parents=True, exist_ok=True)
+    (recording_root / "derived").mkdir(parents=True, exist_ok=True)
+    (recording_root / "logs").mkdir(parents=True, exist_ok=True)
+    (recording_root / "raw" / "audio.wav").write_bytes(b"\x00")
+    (recording_root / "derived" / "summary.json").write_text("{}", encoding="utf-8")
+    (recording_root / "logs" / "step-precheck.log").write_text("log", encoding="utf-8")
+    (recording_root / "temp.tmp").write_text("temp", encoding="utf-8")
+
+    assert delete_recording_with_artifacts("rec-delete-all-1", settings=cfg) is True
+    assert get_recording("rec-delete-all-1", settings=cfg) is None
+    assert not recording_root.exists()
+
+
+def test_delete_recording_with_artifacts_rejects_invalid_id(tmp_path: Path) -> None:
+    cfg = _cfg(tmp_path)
+    with pytest.raises(RecordingDeleteError, match="recording id is required"):
+        delete_recording_with_artifacts("", settings=cfg)
+    with pytest.raises(RecordingDeleteError, match="invalid recording id"):
+        delete_recording_with_artifacts("../escape", settings=cfg)
+
+
+def test_delete_recording_with_artifacts_rejects_symlink_escape(tmp_path: Path) -> None:
+    cfg = _cfg(tmp_path)
+    cfg.recordings_root.mkdir(parents=True, exist_ok=True)
+    outside = tmp_path / "outside"
+    outside.mkdir(parents=True, exist_ok=True)
+    (cfg.recordings_root / "escape").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(RecordingDeleteError, match="invalid recording path"):
+        delete_recording_with_artifacts("escape", settings=cfg)
+
+
+def test_delete_recording_with_artifacts_handles_file_root(tmp_path: Path) -> None:
+    cfg = _cfg(tmp_path)
+    init_db(cfg)
+    create_recording(
+        "rec-delete-file-1",
+        source="upload",
+        source_filename="file-root.wav",
+        settings=cfg,
+    )
+    recording_root = cfg.recordings_root / "rec-delete-file-1"
+    recording_root.parent.mkdir(parents=True, exist_ok=True)
+    recording_root.write_text("unexpected-file-root", encoding="utf-8")
+
+    assert delete_recording_with_artifacts("rec-delete-file-1", settings=cfg) is True
+    assert not recording_root.exists()
+
+
+def test_delete_recording_with_artifacts_raises_on_disk_cleanup_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = _cfg(tmp_path)
+    init_db(cfg)
+    create_recording(
+        "rec-delete-fail-1",
+        source="upload",
+        source_filename="fail.wav",
+        settings=cfg,
+    )
+    raw_dir = cfg.recordings_root / "rec-delete-fail-1" / "raw"
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    (raw_dir / "audio.wav").write_bytes(b"\x00")
+
+    real_rmtree = shutil.rmtree
+
+    def _fail_once(path: Path | str, *args, **kwargs) -> None:
+        if Path(path) == raw_dir:
+            raise OSError("disk busy")
+        real_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr("lan_app.ops.shutil.rmtree", _fail_once)
+
+    with pytest.raises(RecordingDeleteError, match="disk busy"):
+        delete_recording_with_artifacts("rec-delete-fail-1", settings=cfg)
+    assert get_recording("rec-delete-fail-1", settings=cfg) is not None
 
 
 def test_healthz_component_endpoints(tmp_path: Path, monkeypatch):

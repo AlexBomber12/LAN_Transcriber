@@ -22,7 +22,8 @@ from lan_app.constants import (
     RECORDING_STATUS_QUEUED,
     RECORDING_STATUS_READY,
 )
-from lan_app.db import create_recording, init_db
+from lan_app.db import create_recording, get_recording, init_db
+from lan_transcriber.llm_client import LLMEmptyContentError, LLMTruncatedResponseError
 from lan_transcriber.pipeline import PrecheckResult
 
 
@@ -82,7 +83,7 @@ def _patch_precheck_happy_path(
     monkeypatch.setattr(
         worker_tasks,
         "_run_precheck_pipeline",
-        lambda **_kwargs: (final_status, None),
+        lambda **_kwargs: worker_tasks.PipelineTerminalState(status=final_status),
     )
     monkeypatch.setattr(worker_tasks, "clear_recording_progress", lambda *_a, **_k: True)
 
@@ -307,6 +308,7 @@ def test_record_failure_and_max_attempts_helpers_swallow_secondary_errors(
         recording_id="rec-fail-2",
         settings=settings,
         log_path=log_path,
+        exc=RuntimeError("max attempts exceeded"),
     )
 
 
@@ -792,14 +794,14 @@ def test_run_precheck_pipeline_records_step_logs_and_explicit_summary_target(
 
     monkeypatch.setattr(worker_tasks, "run_pipeline", _run_pipeline_with_callbacks)
 
-    final_status, quarantine_reason = worker_tasks._run_precheck_pipeline(
+    terminal_state = worker_tasks._run_precheck_pipeline(
         recording_id="rec-step-log-1",
         settings=cfg,
         log_path=cfg.recordings_root / "rec-step-log-1" / "logs" / "step-precheck.log",
     )
 
-    assert final_status == RECORDING_STATUS_READY
-    assert quarantine_reason is None
+    assert terminal_state.status == RECORDING_STATUS_READY
+    assert terminal_state.quarantine_reason is None
     assert observed_updates == {
         "recording_id": "rec-step-log-1",
         "kwargs": {"language_auto": "en", "target_summary_language": "fr"},
@@ -876,14 +878,14 @@ def test_run_precheck_pipeline_uses_sanitized_audio_for_precheck_and_pipeline(
 
     monkeypatch.setattr(worker_tasks, "run_pipeline", _fake_run_pipeline)
 
-    final_status, quarantine_reason = worker_tasks._run_precheck_pipeline(
+    terminal_state = worker_tasks._run_precheck_pipeline(
         recording_id="rec-sanitize-wire-1",
         settings=cfg,
         log_path=cfg.recordings_root / "rec-sanitize-wire-1" / "logs" / "step-precheck.log",
     )
 
-    assert final_status == RECORDING_STATUS_READY
-    assert quarantine_reason is None
+    assert terminal_state.status == RECORDING_STATUS_READY
+    assert terminal_state.quarantine_reason is None
     assert observed_paths["sanitize_input"] == raw_audio
     assert observed_paths["sanitize_output"] == (
         cfg.recordings_root / "rec-sanitize-wire-1" / "derived" / "audio_sanitized.wav"
@@ -907,6 +909,9 @@ def test_run_precheck_pipeline_uses_sanitized_audio_for_precheck_and_pipeline(
         "channels": 1,
         "codec": "pcm_s16le",
     }
+    recording = get_recording("rec-sanitize-wire-1", settings=cfg)
+    assert recording is not None
+    assert recording["duration_sec"] == 30.0
 
 
 def test_run_precheck_pipeline_marks_fallback_when_builder_returns_fallback(
@@ -962,7 +967,7 @@ def test_run_precheck_pipeline_marks_fallback_when_builder_returns_fallback(
         lambda *_a, **_k: asyncio.sleep(0),
     )
 
-    final_status, quarantine_reason = worker_tasks._run_precheck_pipeline(
+    terminal_state = worker_tasks._run_precheck_pipeline(
         recording_id="rec-step-log-fallback-1",
         settings=cfg,
         log_path=cfg.recordings_root
@@ -971,8 +976,8 @@ def test_run_precheck_pipeline_marks_fallback_when_builder_returns_fallback(
         / "step-precheck.log",
     )
 
-    assert final_status == RECORDING_STATUS_READY
-    assert quarantine_reason is None
+    assert terminal_state.status == RECORDING_STATUS_READY
+    assert terminal_state.quarantine_reason is None
     log_text = (
         cfg.recordings_root
         / "rec-step-log-fallback-1"
@@ -993,6 +998,160 @@ def test_run_precheck_pipeline_marks_fallback_when_builder_returns_fallback(
         "degraded": True,
         "reason": "pyannote_unavailable",
     }
+
+
+def test_review_reason_helpers_cover_exception_and_routing_paths(tmp_path: Path) -> None:
+    cfg = _db_settings(tmp_path)
+    assert worker_tasks._load_json_dict(tmp_path / "missing.json") == {}  # noqa: SLF001
+    broken = tmp_path / "broken.json"
+    broken.write_text("{", encoding="utf-8")
+    assert worker_tasks._load_json_dict(broken) == {}  # noqa: SLF001
+    as_list = tmp_path / "list.json"
+    as_list.write_text("[]", encoding="utf-8")
+    assert worker_tasks._load_json_dict(as_list) == {}  # noqa: SLF001
+
+    truncated = worker_tasks._review_reason_from_exception(  # noqa: SLF001
+        LLMTruncatedResponseError(
+            host="localhost",
+            model="test-model",
+            max_tokens=123,
+            request_id="req-1",
+            raw_response={},
+        )
+    )
+    assert truncated[0] == "llm_truncated"
+
+    empty = worker_tasks._review_reason_from_exception(  # noqa: SLF001
+        LLMEmptyContentError(
+            host="localhost",
+            model="test-model",
+            max_tokens=123,
+            finish_reason="stop",
+            request_id="req-2",
+            raw_response={},
+        )
+    )
+    assert empty[0] == "llm_empty_content"
+
+    generic = worker_tasks._review_reason_from_exception(RuntimeError("boom"))  # noqa: SLF001
+    assert generic[0] == "job_retry_limit_reached"
+
+    derived = cfg.recordings_root / "rec-review-reason-1" / "derived"
+    derived.mkdir(parents=True, exist_ok=True)
+    (derived / "summary.json").write_text(
+        json.dumps({"parse_error_reason": "json_object_not_found"}),
+        encoding="utf-8",
+    )
+    assert worker_tasks._review_reason_from_routing(  # noqa: SLF001
+        recording_id="rec-review-reason-1",
+        settings=cfg,
+        routing={"confidence": 0.25, "threshold": 0.5},
+    ) == (
+        "llm_empty_content",
+        "LLM output was empty or invalid JSON; manual review required.",
+    )
+
+    (derived / "summary.json").write_text(
+        json.dumps({"parse_error_reason": "summary_bullets: required"}),
+        encoding="utf-8",
+    )
+    invalid_payload_reason = worker_tasks._review_reason_from_routing(  # noqa: SLF001
+        recording_id="rec-review-reason-1",
+        settings=cfg,
+        routing={"confidence": 0.25, "threshold": 0.5},
+    )
+    assert invalid_payload_reason[0] == "llm_output_invalid"
+
+    (derived / "summary.json").write_text("{}", encoding="utf-8")
+    (derived / "diarization_metadata.json").write_text(
+        json.dumps({"degraded": True}),
+        encoding="utf-8",
+    )
+    assert worker_tasks._review_reason_from_routing(  # noqa: SLF001
+        recording_id="rec-review-reason-1",
+        settings=cfg,
+        routing={"confidence": 0.25, "threshold": 0.5},
+    ) == (
+        "diarization_degraded",
+        "Diarization ran in degraded mode; manual review required.",
+    )
+
+    (derived / "diarization_metadata.json").write_text(
+        json.dumps({"degraded": False}),
+        encoding="utf-8",
+    )
+    assert worker_tasks._review_reason_from_routing(  # noqa: SLF001
+        recording_id="rec-review-reason-1",
+        settings=cfg,
+        routing={"confidence": 0.25, "threshold": 0.5},
+    ) == (
+        "routing_low_confidence",
+        "Project routing confidence 0.25 is below threshold 0.50; manual review required.",
+    )
+
+
+def test_run_precheck_pipeline_skips_duration_persist_when_duration_is_missing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = _db_settings(tmp_path)
+    init_db(cfg)
+    create_recording(
+        "rec-no-duration-1",
+        source="test",
+        source_filename="audio.wav",
+        settings=cfg,
+    )
+
+    raw_audio = cfg.recordings_root / "rec-no-duration-1" / "raw" / "audio.wav"
+    _write_pcm_wav(raw_audio)
+
+    monkeypatch.setattr(
+        worker_tasks,
+        "run_precheck",
+        lambda *_a, **_k: PrecheckResult(
+            duration_sec=None,
+            speech_ratio=0.5,
+            quarantine_reason=None,
+        ),
+    )
+    monkeypatch.setattr(worker_tasks, "_build_diariser", lambda *_a, **_k: object())
+    monkeypatch.setattr(
+        worker_tasks,
+        "set_recording_duration",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            AssertionError("duration should not be persisted")
+        ),
+    )
+    monkeypatch.setattr(
+        worker_tasks,
+        "refresh_recording_metrics",
+        lambda *_a, **_k: {"participants": [], "meeting": {"total_interruptions": 0}},
+    )
+    monkeypatch.setattr(
+        worker_tasks,
+        "refresh_recording_routing",
+        lambda *_a, **_k: {
+            "suggested_project_id": None,
+            "confidence": 0.0,
+            "threshold": 0.5,
+            "auto_selected": False,
+            "status_after_routing": RECORDING_STATUS_READY,
+        },
+    )
+    monkeypatch.setattr(
+        worker_tasks,
+        "_load_transcript_language_payload",
+        lambda *_a, **_k: (None, None),
+    )
+    monkeypatch.setattr(worker_tasks, "run_pipeline", lambda *_a, **_k: asyncio.sleep(0))
+
+    terminal_state = worker_tasks._run_precheck_pipeline(
+        recording_id="rec-no-duration-1",
+        settings=cfg,
+        log_path=cfg.recordings_root / "rec-no-duration-1" / "logs" / "step-precheck.log",
+    )
+    assert terminal_state.status == RECORDING_STATUS_READY
 
 
 def test_process_job_rejects_unknown_job_type():
