@@ -9,9 +9,9 @@ The event loop scope for asynchronous fixtures will default to the fixture cachi
 ........................................................................ [ 46%]
 ........................................................................ [ 57%]
 ........................................................................ [ 69%]
-....................................................................s... [ 80%]
+.....................................................................s.. [ 80%]
 ........................................................................ [ 92%]
-...............................................                          [100%]
+................................................                         [100%]
 =============================== warnings summary ===============================
 lan_transcriber/pipeline_steps/precheck.py:3
   /home/alexey/LAN_Transcriber/lan_transcriber/pipeline_steps/precheck.py:3: DeprecationWarning: 'audioop' is deprecated and slated for removal in Python 3.13
@@ -47,13 +47,13 @@ tests/test_warm_models.py::test_warm_models_module_main_guard
 ---------- coverage: platform linux, python 3.12.3-final-0 -----------
 Name    Stmts   Miss Branch BrPart  Cover   Missing
 ---------------------------------------------------
-TOTAL    6769      0   2092      0   100%
+TOTAL    6772      0   2092      0   100%
 
 52 files skipped due to complete coverage.
 Coverage HTML written to dir htmlcov
 
 Required test coverage of 100% reached. Total coverage: 100.00%
-622 passed, 3 skipped, 10 warnings in 20.31s
+623 passed, 3 skipped, 10 warnings in 19.78s
 Name                                                Stmts   Miss Branch BrPart  Cover
 -------------------------------------------------------------------------------------
 lan_transcriber/__init__.py                             8      0      0      0   100%
@@ -64,7 +64,7 @@ lan_transcriber/compat/__init__.py                      2      0      0      0  
 lan_transcriber/compat/call_compat.py                  33      0     10      0   100%
 lan_transcriber/compat/pyannote_compat.py              27      0      6      0   100%
 lan_transcriber/llm_chunking.py                       259      0    106      0   100%
-lan_transcriber/llm_client.py                         233      0     74      0   100%
+lan_transcriber/llm_client.py                         236      0     74      0   100%
 lan_transcriber/metrics.py                             12      0      0      0   100%
 lan_transcriber/models.py                              22      0      0      0   100%
 lan_transcriber/native_fixups.py                      102      0     36      0   100%
@@ -82,7 +82,7 @@ lan_transcriber/runtime_paths.py                       21      0      4      0  
 lan_transcriber/torch_safe_globals.py                 126      0     40      0   100%
 lan_transcriber/utils.py                               50      0     30      0   100%
 -------------------------------------------------------------------------------------
-TOTAL                                                2298      0    758      0   100%
+TOTAL                                                2301      0    758      0   100%
 Name                              Stmts   Miss Branch BrPart  Cover
 -------------------------------------------------------------------
 lan_app/__init__.py                   1      0      0      0   100%

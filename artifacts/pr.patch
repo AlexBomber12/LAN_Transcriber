@@ -1,26 +1,46 @@
 diff --git a/lan_transcriber/llm_client.py b/lan_transcriber/llm_client.py
-index 5b095ca..557da55 100644
+index 557da55..4203a29 100644
 --- a/lan_transcriber/llm_client.py
 +++ b/lan_transcriber/llm_client.py
-@@ -379,7 +379,7 @@ class LLMClient:
+@@ -66,6 +66,19 @@ def _resolve_retry_max_tokens(
+     return parsed
+ 
+ 
++def _resolve_call_retry_max_tokens(
++    value: int | str | None,
++    *,
++    base_max_tokens: int,
++) -> int:
++    parsed = _int_setting(
++        value,
++        default=base_max_tokens,
++        minimum=_MIN_LLM_MAX_TOKENS,
++    )
++    return max(parsed, base_max_tokens)
++
++
+ def _is_retryable_exception(exc: BaseException) -> bool:
+     if isinstance(
+         exc,
+@@ -374,7 +387,7 @@ class LLMClient:
+             minimum=_MIN_LLM_MAX_TOKENS,
+         )
+         effective_max_tokens_retry = (
+-            _resolve_retry_max_tokens(
++            _resolve_call_retry_max_tokens(
+                 max_tokens_retry,
                  base_max_tokens=effective_max_tokens,
              )
-             if max_tokens_retry is not None
--            else self.max_tokens_retry
-+            else max(self.max_tokens_retry, effective_max_tokens)
-         )
- 
-         url = build_chat_completions_url(self.base_url)
 diff --git a/tests/test_llm_client.py b/tests/test_llm_client.py
-index 2ee0716..f11b0fa 100644
+index f11b0fa..f4d7cd1 100644
 --- a/tests/test_llm_client.py
 +++ b/tests/test_llm_client.py
-@@ -471,6 +471,45 @@ async def test_generate_allows_per_call_retry_max_token_override(
-     assert seen_max_tokens == [1536, 3072]
+@@ -510,6 +510,45 @@ async def test_generate_retry_budget_never_drops_below_overridden_max_tokens(
+     assert seen_max_tokens == [3072, 3072]
  
  
 +@pytest.mark.asyncio
-+async def test_generate_retry_budget_never_drops_below_overridden_max_tokens(
++async def test_generate_respects_explicit_retry_budget_equal_to_max_tokens(
 +    monkeypatch: pytest.MonkeyPatch,
 +) -> None:
 +    client = llm_client.LLMClient(
@@ -52,7 +72,7 @@ index 2ee0716..f11b0fa 100644
 +
 +    monkeypatch.setattr(client, "_post_chat_completion", _fake_post)
 +
-+    result = await client.generate("sys", "usr", max_tokens=3072)
++    result = await client.generate("sys", "usr", max_tokens=3072, max_tokens_retry=3072)
 +
 +    assert result["content"] == "ok"
 +    assert seen_max_tokens == [3072, 3072]

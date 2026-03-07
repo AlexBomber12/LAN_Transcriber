@@ -66,6 +66,19 @@ def _resolve_retry_max_tokens(
     return parsed
 
 
+def _resolve_call_retry_max_tokens(
+    value: int | str | None,
+    *,
+    base_max_tokens: int,
+) -> int:
+    parsed = _int_setting(
+        value,
+        default=base_max_tokens,
+        minimum=_MIN_LLM_MAX_TOKENS,
+    )
+    return max(parsed, base_max_tokens)
+
+
 def _is_retryable_exception(exc: BaseException) -> bool:
     if isinstance(
         exc,
@@ -374,7 +387,7 @@ class LLMClient:
             minimum=_MIN_LLM_MAX_TOKENS,
         )
         effective_max_tokens_retry = (
-            _resolve_retry_max_tokens(
+            _resolve_call_retry_max_tokens(
                 max_tokens_retry,
                 base_max_tokens=effective_max_tokens,
             )
