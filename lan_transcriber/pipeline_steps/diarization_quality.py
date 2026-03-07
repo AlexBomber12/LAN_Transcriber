@@ -127,7 +127,7 @@ def _dominant_sequence(
     out: list[str] = []
     for row in segments:
         speaker = str(row.get("speaker") or "").strip()
-        if speaker in dominant_speakers:
+        if speaker in dominant_speakers and _segment_duration(row) > 0.0:
             out.append(speaker)
     return out
 

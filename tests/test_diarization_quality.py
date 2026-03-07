@@ -154,6 +154,20 @@ def test_diarization_profile_metrics_handle_malformed_segments_and_zero_denomina
     assert with_zero_duration.overlap_seconds == 0.0
 
 
+def test_diarization_profile_metrics_ignore_non_positive_segments_in_dominant_turns():
+    metrics = diarization_profile_metrics(
+        _annotation(
+            (SimpleNamespace(start=0.0, end=1.0), "S1"),
+            (SimpleNamespace(start=1.0, end=2.0), "track-2", "S2"),
+            (SimpleNamespace(start=2.0, end=2.0), "S1"),
+            (SimpleNamespace(start=2.0, end=3.0), "track-4", "S1"),
+        )
+    )
+
+    assert metrics.dominant_turn_count == 3
+    assert metrics.dominant_alternation_ratio == 1.0
+
+
 def test_classify_diarization_profile_identifies_dialog_candidates():
     single_speaker = _classify(
         _annotation_from_segments((0.0, 25.0, "S1")),

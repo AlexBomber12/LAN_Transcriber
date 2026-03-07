@@ -350,11 +350,13 @@ async def _maybe_retry_dialog_diarization(
     initial_hints = metadata.get("initial_hints")
     if not isinstance(initial_hints, dict):
         initial_hints = {}
+    auto_profile_enabled = bool(metadata.get("auto_profile_enabled", False))
     initial_profile = str(
         metadata.get("initial_profile")
         or metadata.get("diarization_profile")
         or "meeting"
     )
+    retry_profile_enabled = auto_profile_enabled or initial_profile == "dialog"
     initial_decision = classify_diarization_profile(
         diarization,
         speech_turn_count=len(asr_segments),
@@ -378,11 +380,11 @@ async def _maybe_retry_dialog_diarization(
     profile_selection: dict[str, Any] = {
         "requested_profile": str(metadata.get("diarization_profile") or "auto"),
         "initial_profile": initial_profile,
-        "auto_profile_enabled": bool(metadata.get("auto_profile_enabled", False)),
+        "auto_profile_enabled": auto_profile_enabled,
         "override_reason": metadata.get("override_reason"),
         "selected_profile": (
             initial_profile
-            if not bool(metadata.get("auto_profile_enabled", False))
+            if not auto_profile_enabled
             else initial_decision.selected_profile
         ),
         "classification_reason": initial_decision.reason,
@@ -392,31 +394,29 @@ async def _maybe_retry_dialog_diarization(
         "initial_metrics": initial_decision.metrics.as_dict(),
         "initial_dialog_score": initial_decision.dialog_score,
     }
-    if not bool(metadata.get("auto_profile_enabled", False)):
+    selected_profile_without_retry = profile_selection["selected_profile"]
+    if not retry_profile_enabled:
         _update_diariser_runtime_metadata(
             diariser,
             effective_hints=dict(initial_hints),
-            selected_profile=profile_selection["selected_profile"],
+            selected_profile=selected_profile_without_retry,
             profile_selection=profile_selection,
         )
         return diarization
 
     retry_dialog = getattr(diariser, "retry_dialog", None)
     if not callable(retry_dialog):
-        profile_selection["selected_profile"] = initial_decision.selected_profile
         profile_selection["winner_reason"] = "dialog_retry_unavailable"
         _update_diariser_runtime_metadata(
             diariser,
-            selected_profile=profile_selection["selected_profile"],
+            selected_profile=selected_profile_without_retry,
             profile_selection=profile_selection,
         )
         return diarization
     if initial_decision.selected_profile != "dialog":
-        profile_selection["selected_profile"] = "meeting"
-        profile_selection["winner_reason"] = initial_decision.reason
         _update_diariser_runtime_metadata(
             diariser,
-            selected_profile="meeting",
+            selected_profile=selected_profile_without_retry,
             profile_selection=profile_selection,
         )
         return diarization
@@ -424,7 +424,7 @@ async def _maybe_retry_dialog_diarization(
     _best_effort_step_log(
         step_log_callback,
         (
-            "diarization auto-profile retry "
+            f"{'diarization auto-profile retry' if auto_profile_enabled else 'diarization forced-dialog retry'} "
             f"classification={initial_decision.reason} "
             "min_speakers=2 max_speakers=2"
         ),
@@ -433,7 +433,7 @@ async def _maybe_retry_dialog_diarization(
     try:
         retry_result = await retry_dialog(audio_path)
     except Exception as exc:
-        profile_selection["selected_profile"] = initial_decision.selected_profile
+        profile_selection["selected_profile"] = selected_profile_without_retry
         profile_selection["winner_reason"] = "dialog_retry_failed"
         profile_selection["retry_error"] = str(exc) or exc.__class__.__name__
         _update_diariser_runtime_metadata(
@@ -477,7 +477,7 @@ async def _maybe_retry_dialog_diarization(
             "selected_profile": (
                 retry_decision.selected_profile
                 if winner_is_retry
-                else initial_decision.selected_profile
+                else selected_profile_without_retry
             ),
             "selected_result": retry_selection.selected_result,
             "winner_reason": retry_selection.winner_reason,
