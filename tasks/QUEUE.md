@@ -425,3 +425,28 @@ Queue (in order)
 - Status: DONE
 - Tasks file: tasks/PR-DIARIZATION-QUALITY-01.md
 - Depends on: PR-LLM-CHUNKING-01
+
+84) PR-UI-PIPELINE-UX-01: Pipeline UX polish: explicit review reasons, duration from sanitized WAV, better progress model, timezone fix, auto-refresh on terminal status, and delete removes disk artifacts
+- Status: TODO
+- Tasks file: tasks/PR-UI-PIPELINE-UX-01.md
+- Depends on: PR-DIARIZATION-QUALITY-01
+
+85) PR-DIARIZATION-AUTO-PROFILE-01: Auto-select diarization profile (dialog vs meeting), retry 2-speaker dialogs, and persist profile-selection metadata
+- Status: TODO
+- Tasks file: tasks/PR-DIARIZATION-AUTO-PROFILE-01.md
+- Depends on: PR-DIARIZATION-QUALITY-01
+
+86) PR-SPEAKER-BANK-CANONICAL-01: Canonical speaker bank backend: one person = one record, many embeddings per speaker, one-to-one assignment, duplicate merge operations
+- Status: TODO
+- Tasks file: tasks/PR-SPEAKER-BANK-CANONICAL-01.md
+- Depends on: PR-DIARIZATION-AUTO-PROFILE-01
+
+87) PR-ASR-MULTILINGUAL-01: Mixed-language ASR pipeline: segment-level language ID, per-chunk language hints, language spans artifacts, and review flags for uncertain multilingual chunks
+- Status: TODO
+- Tasks file: tasks/PR-ASR-MULTILINGUAL-01.md
+- Depends on: PR-SPEAKER-BANK-CANONICAL-01
+
+88) PR-SPEAKER-UX-01: Speaker UX: canonical speaker management, duplicate merge UI, per-recording remap UI, degraded diarization visibility
+- Status: TODO
+- Tasks file: tasks/PR-SPEAKER-UX-01.md
+- Depends on: PR-ASR-MULTILINGUAL-01
