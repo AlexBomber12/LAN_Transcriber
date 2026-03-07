@@ -58,6 +58,7 @@ from .healthchecks import (
     collect_health_checks,
 )
 from .ops import run_retention_cleanup
+from .ops import RecordingDeleteError, delete_recording_with_artifacts
 from .reaper import run_stuck_job_reaper_once
 from .uploads import (
     ALLOWED_UPLOAD_EXTENSIONS,
@@ -379,12 +380,12 @@ async def api_delete_recording(recording_id: str) -> dict[str, object]:
             detail=f"Queue unavailable: {exc}",
         )
 
-    deleted = delete_recording(recording_id, settings=_settings)
+    try:
+        deleted = delete_recording_with_artifacts(recording_id, settings=_settings)
+    except RecordingDeleteError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
     if not deleted:
         raise HTTPException(status_code=404, detail="Recording not found")
-
-    recording_path = _settings.recordings_root / recording_id
-    shutil.rmtree(recording_path, ignore_errors=True)
     return {"recording_id": recording_id, "deleted": True}
 
 

@@ -427,7 +427,7 @@ Queue (in order)
 - Depends on: PR-LLM-CHUNKING-01
 
 84) PR-UI-PIPELINE-UX-01: Pipeline UX polish: explicit review reasons, duration from sanitized WAV, better progress model, timezone fix, auto-refresh on terminal status, and delete removes disk artifacts
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-UI-PIPELINE-UX-01.md
 - Depends on: PR-DIARIZATION-QUALITY-01
 

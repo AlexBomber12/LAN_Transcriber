@@ -14,6 +14,7 @@ from lan_app import api
 from lan_app.calendar.service import CalendarSyncError
 from lan_app.config import AppSettings
 from lan_app.jobs import RecordingNotFoundError
+from lan_app.ops import RecordingDeleteError
 
 
 def _cfg(tmp_path: Path) -> AppSettings:
@@ -404,12 +405,33 @@ def test_api_delete_returns_404_when_db_delete_fails(
 ) -> None:
     monkeypatch.setattr(api, "get_recording", lambda *_args, **_kwargs: {"id": "rec-1"})
     monkeypatch.setattr(api, "purge_pending_recording_jobs", lambda *_args, **_kwargs: 0)
-    monkeypatch.setattr(api, "delete_recording", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(
+        api,
+        "delete_recording_with_artifacts",
+        lambda *_args, **_kwargs: False,
+    )
     client = TestClient(api.app)
 
     response = client.post("/api/recordings/rec-1/actions/delete")
     assert response.status_code == 404
     assert response.json()["detail"] == "Recording not found"
+
+
+def test_api_delete_returns_500_when_disk_cleanup_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(api, "get_recording", lambda *_args, **_kwargs: {"id": "rec-1"})
+    monkeypatch.setattr(api, "purge_pending_recording_jobs", lambda *_args, **_kwargs: 0)
+
+    def _raise(*_args: Any, **_kwargs: Any) -> Any:
+        raise RecordingDeleteError("disk busy")
+
+    monkeypatch.setattr(api, "delete_recording_with_artifacts", _raise)
+    client = TestClient(api.app)
+
+    response = client.post("/api/recordings/rec-1/actions/delete")
+    assert response.status_code == 500
+    assert response.json()["detail"] == "disk busy"
 
 
 def test_api_create_calendar_source_validates_required_fields(

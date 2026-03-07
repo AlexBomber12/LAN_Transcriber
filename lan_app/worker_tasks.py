@@ -18,7 +18,11 @@ from lan_transcriber.audio_sanitize import (
     sanitize_audio_for_pipeline,
 )
 from lan_transcriber.compat.call_compat import call_with_supported_kwargs
-from lan_transcriber.llm_client import LLMClient
+from lan_transcriber.llm_client import (
+    LLMClient,
+    LLMEmptyContentError,
+    LLMTruncatedResponseError,
+)
 from lan_transcriber.pipeline import Settings as PipelineSettings
 from lan_transcriber.pipeline import run_pipeline, run_precheck
 from lan_transcriber.pipeline_steps.diarization_quality import (
@@ -58,6 +62,7 @@ from .db import (
     list_jobs,
     requeue_job_if_started,
     set_recording_progress,
+    set_recording_duration,
     set_recording_language_settings,
     set_recording_status,
     set_recording_status_if_current_in_and_job_started,
@@ -172,6 +177,14 @@ _JOB_RETRY_POLICIES: dict[str, RetryPolicy] = {
     JOB_TYPE_CLEANUP: RetryPolicy(max_attempts=2, backoff_seconds=(5,)),
 }
 _MAX_ATTEMPTS_ERROR = "max attempts exceeded"
+
+
+@dataclass(frozen=True)
+class PipelineTerminalState:
+    status: str
+    quarantine_reason: str | None = None
+    review_reason_code: str | None = None
+    review_reason_text: str | None = None
 
 
 def _retry_policy(job_type: str) -> RetryPolicy:
@@ -331,7 +344,9 @@ def _record_max_attempts_exceeded(
     recording_id: str,
     settings: AppSettings,
     log_path: Path,
+    exc: Exception,
 ) -> None:
+    review_reason_code, review_reason_text = _review_reason_from_exception(exc)
     try:
         fail_job(job_id, _MAX_ATTEMPTS_ERROR, settings=settings)
     except Exception:
@@ -341,6 +356,8 @@ def _record_max_attempts_exceeded(
             recording_id,
             RECORDING_STATUS_NEEDS_REVIEW,
             settings=settings,
+            review_reason_code=review_reason_code,
+            review_reason_text=review_reason_text,
         )
     except Exception:
         pass
@@ -356,12 +373,131 @@ def _record_max_attempts_exceeded(
         pass
 
 
+def _load_json_dict(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    return payload
+
+
+def _review_reason_from_exception(exc: Exception) -> tuple[str, str]:
+    message = str(exc).strip()
+    lowered = message.lower()
+    if isinstance(exc, LLMTruncatedResponseError) or "finish_reason=length" in lowered:
+        return (
+            "llm_truncated",
+            "LLM output was truncated repeatedly; manual review required.",
+        )
+    if isinstance(exc, LLMEmptyContentError) or "empty message.content" in lowered:
+        return (
+            "llm_empty_content",
+            "LLM returned empty content repeatedly; manual review required.",
+        )
+    if message == _MAX_ATTEMPTS_ERROR:
+        return (
+            "job_retry_limit_reached",
+            "Processing hit the retry limit; manual review required.",
+        )
+    return (
+        "job_retry_limit_reached",
+        (
+            "Processing hit the retry limit after repeated errors "
+            f"({type(exc).__name__}); manual review required."
+        ),
+    )
+
+
+def _review_reason_from_routing(
+    *,
+    recording_id: str,
+    settings: AppSettings,
+    routing: dict[str, Any],
+) -> tuple[str, str]:
+    derived_dir = settings.recordings_root / recording_id / "derived"
+    summary_payload = _load_json_dict(derived_dir / "summary.json")
+    diarization_payload = _load_json_dict(derived_dir / "diarization_metadata.json")
+
+    parse_reason = str(summary_payload.get("parse_error_reason") or "").strip()
+    if parse_reason:
+        if parse_reason == "json_object_not_found":
+            return (
+                "llm_empty_content",
+                "LLM output was empty or invalid JSON; manual review required.",
+            )
+        return (
+            "llm_output_invalid",
+            (
+                "LLM output could not be parsed cleanly "
+                f"({parse_reason}); manual review required."
+            ),
+        )
+
+    if bool(diarization_payload.get("degraded")):
+        return (
+            "diarization_degraded",
+            "Diarization ran in degraded mode; manual review required.",
+        )
+
+    confidence = float(routing.get("confidence") or 0.0)
+    threshold = float(routing.get("threshold") or 0.0)
+    return (
+        "routing_low_confidence",
+        (
+            f"Project routing confidence {confidence:.2f} is below "
+            f"threshold {threshold:.2f}; manual review required."
+        ),
+    )
+
+
 def _resolve_raw_audio_path(recording_id: str, settings: AppSettings) -> Path | None:
     raw_dir = settings.recordings_root / recording_id / "raw"
     candidates = sorted(raw_dir.glob("audio.*"))
     if not candidates:
         return None
     return candidates[0]
+
+
+def _set_recording_progress_best_effort(
+    recording_id: str,
+    *,
+    stage: str,
+    progress: float,
+    settings: AppSettings,
+) -> None:
+    try:
+        set_recording_progress(
+            recording_id,
+            stage=stage,
+            progress=progress,
+            settings=settings,
+        )
+    except Exception:
+        pass
+
+
+def _set_recording_duration_best_effort(
+    recording_id: str,
+    *,
+    duration_sec: float | None,
+    settings: AppSettings,
+) -> None:
+    try:
+        set_recording_duration(
+            recording_id,
+            duration_sec,
+            settings=settings,
+        )
+    except Exception:
+        _logger.warning(
+            "Failed to persist duration for recording %s",
+            recording_id,
+            exc_info=True,
+        )
 
 
 def _clean_language_value(value: object | None) -> str | None:
@@ -766,7 +902,7 @@ def _run_precheck_pipeline(
     recording_id: str,
     settings: AppSettings,
     log_path: Path,
-) -> tuple[str, str | None]:
+) -> PipelineTerminalState:
     recording = get_recording(recording_id, settings=settings) or {}
     transcript_language_override = _clean_language_value(recording.get("language_override"))
     target_summary_language = _clean_language_value(recording.get("target_summary_language"))
@@ -775,16 +911,38 @@ def _run_precheck_pipeline(
     audio_path = _resolve_raw_audio_path(recording_id, settings)
     if audio_path is None:
         _append_step_log(log_path, "precheck skipped: raw audio not found")
-        return RECORDING_STATUS_QUARANTINE, "raw_audio_missing"
+        return PipelineTerminalState(
+            status=RECORDING_STATUS_QUARANTINE,
+            quarantine_reason="raw_audio_missing",
+        )
+
+    _set_recording_progress_best_effort(
+        recording_id,
+        stage="precheck",
+        progress=0.01,
+        settings=settings,
+    )
 
     audio_path = _sanitize_audio_for_worker(
         recording_id=recording_id,
         audio_path=audio_path,
         settings=settings,
     )
+    _set_recording_progress_best_effort(
+        recording_id,
+        stage="precheck",
+        progress=0.05,
+        settings=settings,
+    )
 
     pipeline_settings = _build_pipeline_settings(settings)
     precheck = run_precheck(audio_path, pipeline_settings)
+    if precheck.duration_sec is not None:
+        _set_recording_duration_best_effort(
+            recording_id,
+            duration_sec=precheck.duration_sec,
+            settings=settings,
+        )
     _append_step_log(
         log_path,
         (
@@ -846,7 +1004,7 @@ def _run_precheck_pipeline(
     )
 
     def _progress_callback(stage: str, progress: float) -> None:
-        set_recording_progress(
+        _set_recording_progress_best_effort(
             recording_id,
             stage=stage,
             progress=progress,
@@ -905,7 +1063,10 @@ def _run_precheck_pipeline(
             log_path,
             f"quarantined reason={precheck.quarantine_reason}",
         )
-        return RECORDING_STATUS_QUARANTINE, precheck.quarantine_reason
+        return PipelineTerminalState(
+            status=RECORDING_STATUS_QUARANTINE,
+            quarantine_reason=precheck.quarantine_reason,
+        )
     routing = refresh_recording_routing(
         recording_id,
         settings=settings,
@@ -923,8 +1084,17 @@ def _run_precheck_pipeline(
         ),
     )
     if routing.get("status_after_routing") == RECORDING_STATUS_NEEDS_REVIEW:
-        return RECORDING_STATUS_NEEDS_REVIEW, None
-    return RECORDING_STATUS_READY, None
+        review_reason_code, review_reason_text = _review_reason_from_routing(
+            recording_id=recording_id,
+            settings=settings,
+            routing=routing,
+        )
+        return PipelineTerminalState(
+            status=RECORDING_STATUS_NEEDS_REVIEW,
+            review_reason_code=review_reason_code,
+            review_reason_text=review_reason_text,
+        )
+    return PipelineTerminalState(status=RECORDING_STATUS_READY)
 
 
 def process_job(job_id: str, recording_id: str, job_type: str) -> dict[str, str]:
@@ -1026,7 +1196,7 @@ def process_job(job_id: str, recording_id: str, job_type: str) -> dict[str, str]
                 raise ValueError(f"Recording not found: {recording_id}")
             _append_step_log(log_path, f"started job={job_id} type={job_type}")
 
-            final_status, quarantine_reason = _run_precheck_pipeline(
+            terminal_state = _run_precheck_pipeline(
                 recording_id=recording_id,
                 settings=settings,
                 log_path=log_path,
@@ -1044,11 +1214,13 @@ def process_job(job_id: str, recording_id: str, job_type: str) -> dict[str, str]
 
             if not set_recording_status_if_current_in_and_job_started(
                 recording_id,
-                final_status,
+                terminal_state.status,
                 job_id=job_id,
                 current_statuses=(RECORDING_STATUS_PROCESSING,),
                 settings=settings,
-                quarantine_reason=quarantine_reason,
+                quarantine_reason=terminal_state.quarantine_reason,
+                review_reason_code=terminal_state.review_reason_code,
+                review_reason_text=terminal_state.review_reason_text,
             ):
                 current_job_status = _job_status(job_id, settings)
                 if current_job_status != JOB_STATUS_STARTED:
@@ -1095,7 +1267,10 @@ def process_job(job_id: str, recording_id: str, job_type: str) -> dict[str, str]
             clear_recording_progress(recording_id, settings=settings)
             _append_step_log(
                 log_path,
-                f"finished job={job_id} type={job_type} recording_status={final_status}",
+                (
+                    f"finished job={job_id} type={job_type} "
+                    f"recording_status={terminal_state.status}"
+                ),
             )
             break
         except Exception as exc:
@@ -1117,6 +1292,7 @@ def process_job(job_id: str, recording_id: str, job_type: str) -> dict[str, str]
                     recording_id=recording_id,
                     settings=settings,
                     log_path=log_path,
+                    exc=exc,
                 )
                 raise
             if (

@@ -23,6 +23,10 @@ from .jobs import cancel_pending_queue_job
 
 _LOG = logging.getLogger(__name__)
 _RECOVERY_ERROR = "stuck job recovered"
+_RECOVERY_REVIEW_REASON_CODE = "stuck_job_recovered"
+_RECOVERY_REVIEW_REASON_TEXT = (
+    "Processing stalled and was recovered automatically; manual review required."
+)
 _STALE_DOWNGRADE_STATUSES = (
     RECORDING_STATUS_QUEUED,
     RECORDING_STATUS_PROCESSING,
@@ -93,6 +97,8 @@ def run_stuck_job_reaper_once(
             RECORDING_STATUS_NEEDS_REVIEW,
             current_statuses=_STALE_DOWNGRADE_STATUSES,
             settings=cfg,
+            review_reason_code=_RECOVERY_REVIEW_REASON_CODE,
+            review_reason_text=_RECOVERY_REVIEW_REASON_TEXT,
         ):
             recovered_recording_ids.add(recording_id)
         _append_step_log_best_effort(
@@ -126,6 +132,8 @@ def run_stuck_job_reaper_once(
             RECORDING_STATUS_NEEDS_REVIEW,
             current_statuses=_ORPHAN_DOWNGRADE_STATUSES,
             settings=cfg,
+            review_reason_code=_RECOVERY_REVIEW_REASON_CODE,
+            review_reason_text=_RECOVERY_REVIEW_REASON_TEXT,
         ):
             recovered_recording_ids.add(recording_id)
         _append_step_log_best_effort(

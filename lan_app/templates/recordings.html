@@ -42,7 +42,12 @@
     <tr>
       <td title="{{ r.id }}"><a href="/recordings/{{ r.id }}" style="text-decoration:none;color:#1d4ed8">{{ r.id[:16] }}…</a></td>
       <td title="{{ r.source_filename }}">{{ r.source_filename }}</td>
-      <td><span class="badge s-{{ r.status }}">{{ r.status }}</span></td>
+      <td>
+        <span class="badge s-{{ r.status }}">{{ r.status }}</span>
+        {% if r.review_reason_text_display %}
+        <span style="display:block;margin-top:4px;color:#92400e">{{ r.review_reason_text_display }}</span>
+        {% endif %}
+      </td>
       <td style="max-width:140px">
         {% if r.status == "Processing" %}
         {{ r.progress_percent }}% {{ r.progress_stage_label }}
@@ -72,15 +77,15 @@
         —
         {% endif %}
       </td>
-      <td>{{ r.captured_at[:19].replace('T',' ') if r.captured_at else '—' }}</td>
-      <td>{% if r.duration_sec %}{{ r.duration_sec }}s{% else %}—{% endif %}</td>
+      <td>{{ r.captured_at_display }}</td>
+      <td>{{ r.duration_display }}</td>
       <td>{{ r.source }}</td>
       <td>
         <select
           class="action-sel"
           data-rid="{{ r.id }}"
           data-rlabel="{{ r.source_filename or r.id }}"
-          data-rcaptured="{{ r.captured_at[:19].replace('T',' ') if r.captured_at else '' }}"
+          data-rcaptured="{{ '' if r.captured_at_display == '—' else r.captured_at_display }}"
           onchange="doRecAction(this)"
         >
           <option value="">Actions</option>

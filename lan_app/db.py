@@ -16,6 +16,7 @@ from .constants import (
     JOB_STATUS_STARTED,
     JOB_TYPES,
     RECORDING_STATUSES,
+    RECORDING_STATUS_NEEDS_REVIEW,
     RECORDING_STATUS_PROCESSING,
     RECORDING_STATUS_PUBLISHED,
     RECORDING_STATUS_QUEUED,
@@ -239,9 +240,11 @@ def create_recording(
     *,
     settings: AppSettings | None = None,
     captured_at: str | None = None,
-    duration_sec: int | None = None,
+    duration_sec: float | None = None,
     status: str = RECORDING_STATUS_QUEUED,
     quarantine_reason: str | None = None,
+    review_reason_code: str | None = None,
+    review_reason_text: str | None = None,
     language_auto: str | None = None,
     language_override: str | None = None,
     target_summary_language: str | None = None,
@@ -267,11 +270,12 @@ def create_recording(
             """
             INSERT INTO recordings (
                 id, source, source_filename, captured_at, duration_sec, status,
-                quarantine_reason, language_auto, language_override, target_summary_language, project_id,
+                quarantine_reason, review_reason_code, review_reason_text,
+                language_auto, language_override, target_summary_language, project_id,
                 project_assignment_source,
                 onenote_page_id, drive_file_id, drive_md5, created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 recording_id,
@@ -281,6 +285,8 @@ def create_recording(
                 duration_sec,
                 status,
                 quarantine_reason,
+                review_reason_code if status == RECORDING_STATUS_NEEDS_REVIEW else None,
+                review_reason_text if status == RECORDING_STATUS_NEEDS_REVIEW else None,
                 language_auto,
                 language_override,
                 target_summary_language,
@@ -424,28 +430,106 @@ def clear_recording_progress(
     return with_db_retry(_clear)
 
 
+def set_recording_duration(
+    recording_id: str,
+    duration_sec: float | None,
+    *,
+    settings: AppSettings | None = None,
+    touch_updated_at: bool = True,
+) -> bool:
+    init_db(settings)
+    duration_value: float | None
+    if duration_sec is None:
+        duration_value = None
+    else:
+        duration_value = round(max(float(duration_sec), 0.0), 3)
+    now = _utc_now() if touch_updated_at else None
+
+    def _update() -> bool:
+        with connect(settings) as conn:
+            if touch_updated_at:
+                updated = conn.execute(
+                    """
+                    UPDATE recordings
+                    SET duration_sec = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        duration_value,
+                        now,
+                        recording_id,
+                    ),
+                )
+            else:
+                updated = conn.execute(
+                    """
+                    UPDATE recordings
+                    SET duration_sec = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        duration_value,
+                        recording_id,
+                    ),
+                )
+            conn.commit()
+            return updated.rowcount > 0
+
+    return with_db_retry(_update)
+
+
 def set_recording_status(
     recording_id: str,
     status: str,
     *,
     settings: AppSettings | None = None,
     quarantine_reason: str | None = None,
+    review_reason_code: str | object = _UNSET,
+    review_reason_text: str | object = _UNSET,
 ) -> bool:
     init_db(settings)
     _validate_recording_status(status)
     now = _utc_now()
 
+    if status == RECORDING_STATUS_NEEDS_REVIEW:
+        resolved_review_reason_code = review_reason_code
+        resolved_review_reason_text = review_reason_text
+    else:
+        resolved_review_reason_code = None
+        resolved_review_reason_text = None
+
+    if resolved_review_reason_code is _UNSET:
+        review_reason_code_sql = "review_reason_code"
+        review_reason_code_params: tuple[Any, ...] = ()
+    else:
+        review_reason_code_sql = "?"
+        review_reason_code_params = (resolved_review_reason_code,)
+
+    if resolved_review_reason_text is _UNSET:
+        review_reason_text_sql = "review_reason_text"
+        review_reason_text_params: tuple[Any, ...] = ()
+    else:
+        review_reason_text_sql = "?"
+        review_reason_text_params = (resolved_review_reason_text,)
+
     def _update() -> bool:
         with connect(settings) as conn:
             updated = conn.execute(
-                """
+                f"""
                 UPDATE recordings
-                SET status = ?, quarantine_reason = ?, updated_at = ?
+                SET
+                    status = ?,
+                    quarantine_reason = ?,
+                    review_reason_code = {review_reason_code_sql},
+                    review_reason_text = {review_reason_text_sql},
+                    updated_at = ?
                 WHERE id = ?
                 """,
                 (
                     status,
                     quarantine_reason if status == RECORDING_STATUS_QUARANTINE else None,
+                    *review_reason_code_params,
+                    *review_reason_text_params,
                     now,
                     recording_id,
                 ),
@@ -463,6 +547,8 @@ def set_recording_status_if_current_in(
     current_statuses: Sequence[str],
     settings: AppSettings | None = None,
     quarantine_reason: str | None = None,
+    review_reason_code: str | object = _UNSET,
+    review_reason_text: str | object = _UNSET,
 ) -> bool:
     init_db(settings)
     _validate_recording_status(status)
@@ -473,17 +559,45 @@ def set_recording_status_if_current_in(
         _validate_recording_status(value)
     placeholders = ", ".join("?" for _ in expected_statuses)
     now = _utc_now()
+
+    if status == RECORDING_STATUS_NEEDS_REVIEW:
+        review_reason_code_sql = (
+            "review_reason_code" if review_reason_code is _UNSET else "?"
+        )
+        review_reason_text_sql = (
+            "review_reason_text" if review_reason_text is _UNSET else "?"
+        )
+        review_reason_params = (
+            ()
+            if review_reason_code is _UNSET
+            else (review_reason_code,)
+        ) + (
+            ()
+            if review_reason_text is _UNSET
+            else (review_reason_text,)
+        )
+    else:
+        review_reason_code_sql = "NULL"
+        review_reason_text_sql = "NULL"
+        review_reason_params = ()
+
     with connect(settings) as conn:
         updated = conn.execute(
             f"""
             UPDATE recordings
-            SET status = ?, quarantine_reason = ?, updated_at = ?
+            SET
+                status = ?,
+                quarantine_reason = ?,
+                review_reason_code = {review_reason_code_sql},
+                review_reason_text = {review_reason_text_sql},
+                updated_at = ?
             WHERE id = ?
               AND status IN ({placeholders})
             """,
             (
                 status,
                 quarantine_reason if status == RECORDING_STATUS_QUARANTINE else None,
+                *review_reason_params,
                 now,
                 recording_id,
                 *expected_statuses,
@@ -500,6 +614,8 @@ def set_recording_status_if_current_in_and_no_started_job(
     current_statuses: Sequence[str],
     settings: AppSettings | None = None,
     quarantine_reason: str | None = None,
+    review_reason_code: str | object = _UNSET,
+    review_reason_text: str | object = _UNSET,
 ) -> bool:
     init_db(settings)
     _validate_recording_status(status)
@@ -510,11 +626,37 @@ def set_recording_status_if_current_in_and_no_started_job(
         _validate_recording_status(value)
     placeholders = ", ".join("?" for _ in expected_statuses)
     now = _utc_now()
+
+    if status == RECORDING_STATUS_NEEDS_REVIEW:
+        review_reason_code_sql = (
+            "review_reason_code" if review_reason_code is _UNSET else "?"
+        )
+        review_reason_text_sql = (
+            "review_reason_text" if review_reason_text is _UNSET else "?"
+        )
+        review_reason_params = (
+            ()
+            if review_reason_code is _UNSET
+            else (review_reason_code,)
+        ) + (
+            ()
+            if review_reason_text is _UNSET
+            else (review_reason_text,)
+        )
+    else:
+        review_reason_code_sql = "NULL"
+        review_reason_text_sql = "NULL"
+        review_reason_params = ()
     with connect(settings) as conn:
         updated = conn.execute(
             f"""
             UPDATE recordings
-            SET status = ?, quarantine_reason = ?, updated_at = ?
+            SET
+                status = ?,
+                quarantine_reason = ?,
+                review_reason_code = {review_reason_code_sql},
+                review_reason_text = {review_reason_text_sql},
+                updated_at = ?
             WHERE id = ?
               AND status IN ({placeholders})
               AND NOT EXISTS (
@@ -527,6 +669,7 @@ def set_recording_status_if_current_in_and_no_started_job(
             (
                 status,
                 quarantine_reason if status == RECORDING_STATUS_QUARANTINE else None,
+                *review_reason_params,
                 now,
                 recording_id,
                 *expected_statuses,
@@ -545,6 +688,8 @@ def set_recording_status_if_current_in_and_job_started(
     current_statuses: Sequence[str],
     settings: AppSettings | None = None,
     quarantine_reason: str | None = None,
+    review_reason_code: str | object = _UNSET,
+    review_reason_text: str | object = _UNSET,
 ) -> bool:
     init_db(settings)
     _validate_recording_status(status)
@@ -555,11 +700,37 @@ def set_recording_status_if_current_in_and_job_started(
         _validate_recording_status(value)
     placeholders = ", ".join("?" for _ in expected_statuses)
     now = _utc_now()
+
+    if status == RECORDING_STATUS_NEEDS_REVIEW:
+        review_reason_code_sql = (
+            "review_reason_code" if review_reason_code is _UNSET else "?"
+        )
+        review_reason_text_sql = (
+            "review_reason_text" if review_reason_text is _UNSET else "?"
+        )
+        review_reason_params = (
+            ()
+            if review_reason_code is _UNSET
+            else (review_reason_code,)
+        ) + (
+            ()
+            if review_reason_text is _UNSET
+            else (review_reason_text,)
+        )
+    else:
+        review_reason_code_sql = "NULL"
+        review_reason_text_sql = "NULL"
+        review_reason_params = ()
     with connect(settings) as conn:
         updated = conn.execute(
             f"""
             UPDATE recordings
-            SET status = ?, quarantine_reason = ?, updated_at = ?
+            SET
+                status = ?,
+                quarantine_reason = ?,
+                review_reason_code = {review_reason_code_sql},
+                review_reason_text = {review_reason_text_sql},
+                updated_at = ?
             WHERE id = ?
               AND status IN ({placeholders})
               AND EXISTS (
@@ -573,6 +744,7 @@ def set_recording_status_if_current_in_and_job_started(
             (
                 status,
                 quarantine_reason if status == RECORDING_STATUS_QUARANTINE else None,
+                *review_reason_params,
                 now,
                 recording_id,
                 *expected_statuses,
@@ -2206,6 +2378,7 @@ __all__ = [
     "create_recording",
     "get_recording",
     "list_recordings",
+    "set_recording_duration",
     "set_recording_progress",
     "clear_recording_progress",
     "set_recording_status",

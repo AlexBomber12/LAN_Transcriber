@@ -8,11 +8,12 @@ from __future__ import annotations
 import asyncio
 from datetime import date, datetime, time, timedelta, timezone
 import json
-import shutil
+import logging
 import sqlite3
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, Form, Query, Request
 from fastapi.concurrency import run_in_threadpool
@@ -39,6 +40,7 @@ from .constants import (
     JOB_TYPE_PRECHECK,
     RECORDING_STATUSES,
     RECORDING_STATUS_PROCESSING,
+    RECORDING_STATUS_QUEUED,
     RECORDING_STATUS_QUARANTINE,
 )
 from .db import (
@@ -63,6 +65,7 @@ from .db import (
     list_speaker_assignments,
     list_voice_samples,
     list_voice_profiles,
+    set_recording_duration,
     set_recording_project,
     set_speaker_assignment,
     set_recording_language_settings,
@@ -74,16 +77,22 @@ from .jobs import (
     enqueue_recording_job,
     purge_pending_recording_jobs,
 )
+from .ops import RecordingDeleteError, delete_recording_with_artifacts
 from .routing import refresh_recording_routing, train_routing_from_manual_selection
 from lan_transcriber.artifacts import atomic_write_json
 from lan_transcriber.llm_client import LLMClient
 from lan_transcriber.pipeline import Settings as PipelineSettings
 from lan_transcriber.pipeline import build_structured_summary_prompts, build_summary_payload
+from lan_transcriber.pipeline_steps.precheck import (
+    _audio_duration_from_ffprobe,
+    _audio_duration_from_wave,
+)
 from lan_transcriber.utils import normalise_language_code as _normalise_language_code_shared
 
 _TEMPLATES_DIR = Path(__file__).parent / "templates"
 _STATIC_DIR = Path(__file__).parent / "static"
 templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
+_LOG = logging.getLogger(__name__)
 
 ui_router = APIRouter()
 _settings = AppSettings()
@@ -109,6 +118,22 @@ _LANGUAGE_NAME_MAP: dict[str, str] = {
 
 _COMMON_LANGUAGE_CODES = ("en", "es", "fr", "de", "pt", "it", "zh", "ja", "ko", "ru")
 _STUCK_JOB_RECOVERY_ERROR = "stuck job recovered"
+_DISPLAY_TIMEZONE = "Europe/Rome"
+_TERMINAL_RECORDING_STATUSES = frozenset(RECORDING_STATUSES) - {
+    RECORDING_STATUS_PROCESSING,
+    RECORDING_STATUS_QUEUED,
+}
+_PIPELINE_STAGE_LABELS = {
+    "precheck": "Sanitize & Precheck",
+    "stt": "ASR / VAD",
+    "diarize": "Diarization",
+    "align": "Word Alignment",
+    "language": "Language Analysis",
+    "llm": "LLM Summary",
+    "llm_merge": "LLM Merge",
+    "metrics": "Post-process & Metrics",
+    "done": "Done",
+}
 
 
 def _normalise_language_code(value: object | None) -> str | None:
@@ -142,7 +167,7 @@ def _recording_recovery_warning(jobs: list[dict[str, Any]]) -> str | None:
         if finished_at:
             return (
                 "Warning: this recording was recovered from a stuck job at "
-                f"{finished_at[:19].replace('T', ' ')} UTC."
+                f"{_format_local_timestamp(finished_at)}."
             )
         return "Warning: this recording was recovered from a stuck job."
     return None
@@ -160,7 +185,108 @@ def _pipeline_stage_label(stage: object) -> str:
     text = str(stage or "").strip()
     if not text:
         return "Waiting"
+    if text in _PIPELINE_STAGE_LABELS:
+        return _PIPELINE_STAGE_LABELS[text]
+    if text.startswith("llm_chunk_"):
+        parts = text.split("_")
+        if len(parts) == 5 and parts[3] == "of":
+            return f"LLM Chunk {parts[2]} of {parts[4]}"
     return text.replace("_", " ").title()
+
+
+def _safe_duration_seconds(value: object) -> float | None:
+    try:
+        duration = float(value)
+    except (TypeError, ValueError):
+        return None
+    if duration <= 0:
+        return None
+    return round(duration, 3)
+
+
+def _format_duration_seconds(value: object) -> str:
+    duration = _safe_duration_seconds(value)
+    if duration is None:
+        return "—"
+    if duration.is_integer():
+        return f"{int(duration)}s"
+    return f"{duration:.2f}s"
+
+
+def _display_timezone() -> ZoneInfo | timezone:
+    try:
+        return ZoneInfo(_DISPLAY_TIMEZONE)
+    except ZoneInfoNotFoundError:
+        return timezone.utc
+
+
+def _format_local_timestamp(value: object) -> str:
+    if not isinstance(value, str) or not value.strip():
+        return "—"
+    try:
+        parsed = _parse_iso_datetime(value, field_name="timestamp")
+    except ValueError:
+        return str(value)
+    return parsed.astimezone(_display_timezone()).strftime("%Y-%m-%d %H:%M:%S %Z")
+
+
+def _recording_audio_candidates(recording_id: str, settings: AppSettings) -> list[Path]:
+    candidates: list[Path] = []
+    sanitized = settings.recordings_root / recording_id / "derived" / "audio_sanitized.wav"
+    if sanitized.exists():
+        candidates.append(sanitized)
+    raw_dir = settings.recordings_root / recording_id / "raw"
+    for raw_path in sorted(raw_dir.glob("audio.*")):
+        candidates.append(raw_path)
+    return candidates
+
+
+def _probe_duration_seconds(audio_path: Path) -> float | None:
+    return _safe_duration_seconds(
+        _audio_duration_from_wave(audio_path) or _audio_duration_from_ffprobe(audio_path)
+    )
+
+
+def _prepare_recording_for_display(
+    recording: dict[str, Any],
+    *,
+    settings: AppSettings,
+) -> dict[str, Any]:
+    item = dict(recording)
+    recording_id = str(item.get("id") or "").strip()
+    duration_sec = _safe_duration_seconds(item.get("duration_sec"))
+    if duration_sec is None and recording_id:
+        for candidate in _recording_audio_candidates(recording_id, settings):
+            duration_sec = _probe_duration_seconds(candidate)
+            if duration_sec is None:
+                continue
+            item["duration_sec"] = duration_sec
+            try:
+                set_recording_duration(
+                    recording_id,
+                    duration_sec,
+                    settings=settings,
+                    touch_updated_at=False,
+                )
+            except sqlite3.Error:
+                _LOG.warning(
+                    "Failed to backfill display duration for recording %s",
+                    recording_id,
+                    exc_info=True,
+                )
+            break
+
+    item["duration_display"] = _format_duration_seconds(item.get("duration_sec"))
+    item["captured_at_display"] = _format_local_timestamp(item.get("captured_at"))
+    item["created_at_display"] = _format_local_timestamp(item.get("created_at"))
+    item["updated_at_display"] = _format_local_timestamp(item.get("updated_at"))
+    item["pipeline_updated_at_display"] = _format_local_timestamp(
+        item.get("pipeline_updated_at")
+    )
+    item["review_reason_text_display"] = str(
+        item.get("review_reason_text") or ""
+    ).strip()
+    return item
 
 
 def _load_json_dict(path: Path) -> dict[str, Any]:
@@ -1104,10 +1230,12 @@ async def ui_recordings(
         limit=limit,
         offset=offset,
     )
-    for item in items:
+    for idx, item in enumerate(items):
+        item = _prepare_recording_for_display(item, settings=_settings)
         progress_ratio = _safe_pipeline_progress(item.get("pipeline_progress"))
         item["progress_percent"] = int(round(progress_ratio * 100))
         item["progress_stage_label"] = _pipeline_stage_label(item.get("pipeline_stage"))
+        items[idx] = item
     return templates.TemplateResponse(
         request,
         "recordings.html",
@@ -1136,6 +1264,7 @@ async def ui_recording_detail(
     rec = get_recording(recording_id, settings=_settings)
     if rec is None:
         return HTMLResponse("<h1>404 – Recording not found</h1>", status_code=404)
+    rec = _prepare_recording_for_display(rec, settings=_settings)
     jobs, _ = list_jobs(settings=_settings, recording_id=recording_id, limit=100)
     recovery_warning = _recording_recovery_warning(jobs)
     tabs = ["overview", "project", "speakers", "language", "metrics", "log"]
@@ -1152,7 +1281,10 @@ async def ui_recording_detail(
         speakers = _speakers_tab_context(recording_id, _settings)
     if current_tab == "project":
         project = _project_tab_context(recording_id, rec, _settings)
-        rec = get_recording(recording_id, settings=_settings) or rec
+        rec = _prepare_recording_for_display(
+            get_recording(recording_id, settings=_settings) or rec,
+            settings=_settings,
+        )
     if current_tab in {"overview", "metrics"}:
         summary = _summary_context(recording_id, _settings)
     if current_tab == "overview":
@@ -1181,13 +1313,18 @@ async def ui_recording_detail(
 
 
 @ui_router.get("/ui/recordings/{recording_id}/progress", response_class=HTMLResponse)
-async def ui_recording_progress(request: Request, recording_id: str) -> Any:
+async def ui_recording_progress(
+    request: Request,
+    recording_id: str,
+    tab: str = Query(default="overview"),
+) -> Any:
     rec = get_recording(recording_id, settings=_settings)
     if rec is None:
         return HTMLResponse("Not found", status_code=404)
+    rec = _prepare_recording_for_display(rec, settings=_settings)
     progress_ratio = _safe_pipeline_progress(rec.get("pipeline_progress"))
     progress_percent = int(round(progress_ratio * 100))
-    return templates.TemplateResponse(
+    response = templates.TemplateResponse(
         request,
         "partials/recording_progress.html",
         {
@@ -1197,10 +1334,17 @@ async def ui_recording_progress(request: Request, recording_id: str) -> Any:
             "stage_code": str(rec.get("pipeline_stage") or "").strip() or "waiting",
             "stage_label": _pipeline_stage_label(rec.get("pipeline_stage")),
             "updated_at": str(rec.get("pipeline_updated_at") or "").strip(),
+            "updated_at_display": rec.get("pipeline_updated_at_display"),
             "warning": str(rec.get("last_warning") or "").strip(),
             "is_processing": str(rec.get("status") or "") == RECORDING_STATUS_PROCESSING,
         },
     )
+    if (
+        request.headers.get("HX-Request") == "true"
+        and str(rec.get("status") or "") in _TERMINAL_RECORDING_STATUSES
+    ):
+        response.headers["HX-Redirect"] = f"/recordings/{recording_id}?tab={quote(tab)}"
+    return response
 
 
 @ui_router.get("/ui/recordings/{recording_id}/export.zip")
@@ -1725,11 +1869,12 @@ async def ui_action_delete(recording_id: str) -> Any:
         purge_pending_recording_jobs(recording_id, settings=_settings)
     except Exception as exc:
         return HTMLResponse(f"Delete failed (queue unavailable): {exc}", status_code=503)
-    from .db import delete_recording
-
-    delete_recording(recording_id, settings=_settings)
-    recording_path = _settings.recordings_root / recording_id
-    shutil.rmtree(recording_path, ignore_errors=True)
+    try:
+        deleted = delete_recording_with_artifacts(recording_id, settings=_settings)
+    except RecordingDeleteError as exc:
+        return HTMLResponse(str(exc), status_code=500)
+    if not deleted:
+        return HTMLResponse("Not found", status_code=404)
     resp = HTMLResponse("")
     resp.headers["HX-Redirect"] = "/recordings"
     return resp

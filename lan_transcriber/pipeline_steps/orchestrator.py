@@ -699,9 +699,9 @@ def _llm_timeout_message(timeout_seconds: float | None) -> str:
 
 def _llm_chunk_progress(chunk_index: int, total_chunks: int) -> float:
     total = max(total_chunks, 1)
-    start = 0.85
+    start = 0.82
     span = 0.08
-    return min(0.93, start + ((max(chunk_index, 1) - 1) / total) * span)
+    return min(0.90, start + (max(chunk_index, 1) / total) * span)
 
 
 def _speaker_turn_prompt_text(
@@ -802,7 +802,7 @@ async def _run_chunked_llm_summary(
 
     merge_input = merge_chunk_results(chunk_results)
     atomic_write_json(derived_dir / "llm_merge_input.json", merge_input)
-    await _emit_progress(progress_callback, stage="llm_merge", progress=0.93)
+    await _emit_progress(progress_callback, stage="llm_merge", progress=0.94)
     merge_sys_prompt, merge_user_prompt = build_merge_prompt(
         merge_input,
         target_summary_language=target_summary_language,
@@ -865,7 +865,7 @@ async def run_pipeline(
     )
 
     if precheck_result.quarantine_reason:
-        await _emit_progress(progress_callback, stage="metrics", progress=0.95)
+        await _emit_progress(progress_callback, stage="metrics", progress=0.98)
         _clear_dir(artifacts.snippets_dir)
         atomic_write_text(artifacts.transcript_txt_path, "")
         atomic_write_json(
@@ -904,14 +904,11 @@ async def run_pipeline(
             ),
         )
         atomic_write_json(artifacts.metrics_json_path, {"status": "quarantined", "version": 1, "precheck": precheck_result.__dict__})
-        await _emit_progress(progress_callback, stage="done", progress=1.0)
         p95_latency_seconds.observe(time.perf_counter() - start)
         return TranscriptResult(summary="Quarantined", body="", friendly=0, speakers=[], summary_path=artifacts.summary_json_path, body_path=artifacts.transcript_txt_path, unknown_chunks=[], segments=[])
 
     try:
-        await _emit_progress(progress_callback, stage="stt", progress=0.30)
-
-        await _emit_progress(progress_callback, stage="diarize", progress=0.50)
+        await _emit_progress(progress_callback, stage="stt", progress=0.10)
         (raw_segments, info), diarization = await asyncio.gather(
             asyncio.to_thread(
                 _whisperx_asr,
@@ -922,23 +919,25 @@ async def run_pipeline(
             ),
             diariser(audio_path),
         )
-        await _emit_progress(progress_callback, stage="align", progress=0.60)
+        await _emit_progress(progress_callback, stage="stt", progress=0.35)
         asr_segments = normalise_asr_segments(raw_segments)
+        diarization = await _maybe_retry_dialog_diarization(
+            diariser=diariser,
+            audio_path=audio_path,
+            diarization=diarization,
+            asr_segments=asr_segments,
+            precheck_result=precheck_result,
+            step_log_callback=step_log_callback,
+        )
+        await _emit_progress(progress_callback, stage="diarize", progress=0.60)
+        await _emit_progress(progress_callback, stage="align", progress=0.68)
         language_info = _language_payload(info)
-        await _emit_progress(progress_callback, stage="language", progress=0.70)
         detected_language = normalise_language_code(language_info["detected"]) if language_info["detected"] != "unknown" else None
         language_analysis = analyse_languages(asr_segments, detected_language=detected_language, transcript_language_override=override_lang)
         if language_info["detected"] == "unknown" and language_analysis.dominant_language != "unknown":
             language_info["detected"] = language_analysis.dominant_language
         summary_lang = resolve_target_summary_language(target_summary_language, dominant_language=language_analysis.dominant_language, detected_language=detected_language)
-        diarization = await _maybe_retry_dialog_diarization(
-            diariser=diariser,
-            audio_path=audio_path,
-            diarization=diarization,
-            asr_segments=language_analysis.segments,
-            precheck_result=precheck_result,
-            step_log_callback=step_log_callback,
-        )
+        await _emit_progress(progress_callback, stage="language", progress=0.75)
 
         asr_text = " ".join(seg.get("text", "").strip() for seg in language_analysis.segments).strip()
         clean_text = normalizer.dedup(asr_text)
@@ -1047,9 +1046,8 @@ async def run_pipeline(
                 status="no_speech",
             ),
         )
-        await _emit_progress(progress_callback, stage="metrics", progress=0.95)
+        await _emit_progress(progress_callback, stage="metrics", progress=0.98)
         atomic_write_json(artifacts.metrics_json_path, {"status": "no_speech", "version": 1, "precheck": {**precheck_result.__dict__, "quarantine_reason": None}, "language": language_info, "asr_segments": len(language_analysis.segments), "diar_segments": len(diar_segments), "speaker_turns": len(speaker_turns)})
-        await _emit_progress(progress_callback, stage="done", progress=1.0)
         p95_latency_seconds.observe(time.perf_counter() - start)
         return TranscriptResult(summary="No speech detected", body="", friendly=0, speakers=speakers, summary_path=artifacts.summary_json_path, body_path=artifacts.transcript_txt_path, unknown_chunks=[], segments=[])
 
@@ -1086,7 +1084,7 @@ async def run_pipeline(
                 calendar_title=cal_title,
                 calendar_attendees=cal_attendees,
             )
-            await _emit_progress(progress_callback, stage="llm", progress=0.85)
+            await _emit_progress(progress_callback, stage="llm", progress=0.90)
             msg = await _generate_llm_message(
                 llm,
                 system_prompt=sys_prompt,
@@ -1126,9 +1124,8 @@ async def run_pipeline(
         atomic_write_json(artifacts.segments_json_path, diar_segments)
         atomic_write_json(artifacts.speaker_turns_json_path, speaker_turns)
         atomic_write_json(artifacts.summary_json_path, summary_payload)
-        await _emit_progress(progress_callback, stage="metrics", progress=0.95)
+        await _emit_progress(progress_callback, stage="metrics", progress=0.98)
         atomic_write_json(artifacts.metrics_json_path, {"status": "ok", "version": 1, "precheck": {**precheck_result.__dict__, "quarantine_reason": None}, "language": language_info, "asr_segments": len(language_analysis.segments), "diar_segments": len(diar_segments), "speaker_turns": len(speaker_turns), "snippets": len(snippet_paths)})
-        await _emit_progress(progress_callback, stage="done", progress=1.0)
         return TranscriptResult(summary=str(summary_payload.get("summary") or ""), body=clean_text, friendly=friendly, speakers=speakers, summary_path=artifacts.summary_json_path, body_path=artifacts.transcript_txt_path, unknown_chunks=snippet_paths, segments=serialised_segments)
     except Exception as exc:
         error_rate_total.inc()

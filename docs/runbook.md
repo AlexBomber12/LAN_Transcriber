@@ -40,7 +40,11 @@ docker compose run --rm api python -m lan_app.healthchecks app
 2. Uploaded audio is normalized automatically to 16 kHz mono WAV before VAD/ASR/diarization; no manual conversion is required.
 3. Track upload and processing progress per file on `/upload`.
 4. Open `/recordings/{recording_id}` for transcript, summary, and export actions.
+   - `NeedsReview` recordings show an explicit review reason in the recordings list and detail page.
+   - The server-rendered UI shows timestamps in local Europe/Rome time.
+   - Duration is sourced from `derived/audio_sanitized.wav` when it exists, otherwise from the raw upload.
 5. Download export bundle from `GET /ui/recordings/{recording_id}/export.zip`.
+6. Deleting a recording removes the DB row plus `/data/recordings/<recording_id>/raw`, `derived`, `logs`, and other remaining files under that recording root. If cleanup fails, delete returns an error.
 
 ### 1.3 Upload size controls
 
@@ -230,5 +234,5 @@ docker compose up -d --build
 ## 8) Retry and failure operations
 
 - Failed step retries are available in recording detail, `Log` tab, button `Retry step`.
-- `NeedsReview` is not a failure; it indicates manual review workflow.
+- `NeedsReview` is not a failure; it indicates manual review workflow, and the UI now shows the specific review reason.
 - `Failed` is terminal after retry policy is exhausted for that step.

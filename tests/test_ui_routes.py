@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
+import wave
 
 import pytest
 from fastapi.testclient import TestClient
@@ -12,6 +13,7 @@ from fastapi.testclient import TestClient
 from lan_app import api, ui_routes
 from lan_app.auth import AUTH_COOKIE_NAME
 from lan_app.config import AppSettings
+from lan_app.ops import RecordingDeleteError
 from lan_app.db import (
     create_calendar_source,
     count_routing_training_examples,
@@ -111,6 +113,16 @@ def _seed_speaker_artifacts(cfg: AppSettings, recording_id: str) -> None:
     (snippets / "S2" / "1.wav").write_bytes(b"fake-wav-s2")
 
 
+def _write_pcm_wav(path: Path, *, duration_sec: float, sample_rate: int = 16000) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    frames = max(int(sample_rate * duration_sec), 1)
+    with wave.open(str(path), "wb") as wav_file:
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(sample_rate)
+        wav_file.writeframes(b"\x00\x00" * frames)
+
+
 # ---------------------------------------------------------------------------
 # Dashboard
 # ---------------------------------------------------------------------------
@@ -182,6 +194,27 @@ def test_recordings_list_shows_progress_column_and_percent(tmp_path, monkeypatch
     assert "50%" in r.text
 
 
+def test_recordings_list_shows_review_reason_text(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    init_db(cfg)
+    create_recording(
+        "rec-ui-review-list-1",
+        source="upload",
+        source_filename="needs-review.wav",
+        status=RECORDING_STATUS_NEEDS_REVIEW,
+        review_reason_code="routing_low_confidence",
+        review_reason_text="Project routing confidence is too low.",
+        settings=cfg,
+    )
+
+    c = TestClient(api.app, follow_redirects=True)
+    r = c.get("/recordings")
+    assert r.status_code == 200
+    assert "Project routing confidence is too low." in r.text
+
+
 def test_recordings_status_filter(seeded_client):
     r = seeded_client.get("/recordings?status=Ready")
     assert r.status_code == 200
@@ -232,7 +265,7 @@ def test_recording_detail_processing_polls_progress(tmp_path, monkeypatch):
     c = TestClient(api.app, follow_redirects=True)
     r = c.get("/recordings/rec-ui-processing-1")
     assert r.status_code == 200
-    assert "/ui/recordings/rec-ui-processing-1/progress" in r.text
+    assert "/ui/recordings/rec-ui-processing-1/progress?tab=overview" in r.text
     assert "every 2s" in r.text
 
 
@@ -259,9 +292,79 @@ def test_recording_progress_endpoint_renders_expected_html(tmp_path, monkeypatch
     r = c.get("/ui/recordings/rec-ui-progress-1/progress")
     assert r.status_code == 200
     assert "Pipeline:" in r.text
-    assert "Diarize" in r.text
+    assert "Diarization" in r.text
     assert "50%" in r.text
     assert "stage=<code>diarize</code>" in r.text
+
+
+def test_recording_progress_endpoint_redirects_when_terminal(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    init_db(cfg)
+    create_recording(
+        "rec-ui-terminal-1",
+        source="upload",
+        source_filename="terminal.wav",
+        status=RECORDING_STATUS_READY,
+        settings=cfg,
+    )
+
+    c = TestClient(api.app, follow_redirects=False)
+    r = c.get(
+        "/ui/recordings/rec-ui-terminal-1/progress?tab=metrics",
+        headers={"HX-Request": "true"},
+    )
+    assert r.status_code == 200
+    assert r.headers["HX-Redirect"] == "/recordings/rec-ui-terminal-1?tab=metrics"
+
+
+def test_recording_detail_shows_review_reason_and_local_timestamp(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    init_db(cfg)
+    create_recording(
+        "rec-ui-review-detail-1",
+        source="upload",
+        source_filename="review-detail.wav",
+        captured_at="2026-01-10T10:00:00Z",
+        status=RECORDING_STATUS_NEEDS_REVIEW,
+        review_reason_code="routing_low_confidence",
+        review_reason_text="Project routing confidence is too low.",
+        settings=cfg,
+    )
+
+    c = TestClient(api.app, follow_redirects=True)
+    r = c.get("/recordings/rec-ui-review-detail-1")
+    assert r.status_code == 200
+    assert "Project routing confidence is too low." in r.text
+    assert "2026-01-10 11:00:00 CET" in r.text
+
+
+def test_recording_detail_persists_duration_from_sanitized_audio(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    init_db(cfg)
+    create_recording(
+        "rec-ui-duration-1",
+        source="upload",
+        source_filename="duration.wav",
+        settings=cfg,
+    )
+    _write_pcm_wav(
+        cfg.recordings_root / "rec-ui-duration-1" / "derived" / "audio_sanitized.wav",
+        duration_sec=2.0,
+    )
+
+    c = TestClient(api.app, follow_redirects=True)
+    r = c.get("/recordings/rec-ui-duration-1")
+    assert r.status_code == 200
+    assert "2s" in r.text
+    recording = get_recording("rec-ui-duration-1", settings=cfg)
+    assert recording is not None
+    assert recording["duration_sec"] == 2.0
 
 
 def test_recording_detail_log_tab(seeded_client):
@@ -1358,6 +1461,50 @@ def test_ui_action_delete_purge_failure_returns_503(tmp_path, monkeypatch):
     r = c.post("/ui/recordings/rec-pf-1/delete")
     assert r.status_code == 503
     assert "redis down" in r.text
+
+
+def test_ui_action_delete_cleanup_failure_returns_500(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    init_db(cfg)
+    create_recording(
+        "rec-del-fail-1",
+        source="drive",
+        source_filename="fail.mp3",
+        settings=cfg,
+    )
+
+    monkeypatch.setattr(ui_routes, "purge_pending_recording_jobs", lambda *_a, **_k: 0)
+    monkeypatch.setattr(
+        ui_routes,
+        "delete_recording_with_artifacts",
+        lambda *_a, **_k: (_ for _ in ()).throw(RecordingDeleteError("disk busy")),
+    )
+    c = TestClient(api.app, follow_redirects=False)
+    r = c.post("/ui/recordings/rec-del-fail-1/delete")
+    assert r.status_code == 500
+    assert "disk busy" in r.text
+
+
+def test_ui_action_delete_returns_404_when_cleanup_reports_missing(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    init_db(cfg)
+    create_recording(
+        "rec-del-missing-1",
+        source="drive",
+        source_filename="missing.mp3",
+        settings=cfg,
+    )
+
+    monkeypatch.setattr(ui_routes, "purge_pending_recording_jobs", lambda *_a, **_k: 0)
+    monkeypatch.setattr(ui_routes, "delete_recording_with_artifacts", lambda *_a, **_k: False)
+    c = TestClient(api.app, follow_redirects=False)
+    r = c.post("/ui/recordings/rec-del-missing-1/delete")
+    assert r.status_code == 404
+    assert "Not found" in r.text
 
 
 def test_ui_action_delete_removes_disk_artifacts(tmp_path, monkeypatch):

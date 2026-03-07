@@ -2,12 +2,17 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+import sqlite3
 import shutil
 from typing import Any
 
 from .config import AppSettings
 from .constants import RECORDING_STATUS_QUARANTINE
 from .db import delete_recording, list_recordings
+
+
+class RecordingDeleteError(RuntimeError):
+    """Raised when recording deletion cannot safely remove disk artifacts."""
 
 
 def _parse_utc(value: object) -> datetime | None:
@@ -63,6 +68,66 @@ def _delete_path(path: Path) -> bool:
     return True
 
 
+def _recording_root_path(recording_id: str, settings: AppSettings) -> Path:
+    raw_recording_id = str(recording_id or "").strip()
+    if not raw_recording_id:
+        raise RecordingDeleteError("Delete failed: recording id is required.")
+    if raw_recording_id in {".", ".."}:
+        raise RecordingDeleteError("Delete failed: invalid recording id.")
+    if Path(raw_recording_id).parts != (raw_recording_id,):
+        raise RecordingDeleteError("Delete failed: invalid recording id.")
+
+    recordings_root = settings.recordings_root.resolve(strict=False)
+    recording_root = recordings_root / raw_recording_id
+    if recording_root.is_symlink():
+        raise RecordingDeleteError("Delete failed: invalid recording path.")
+    return recording_root
+
+
+def _delete_path_strict(path: Path) -> bool:
+    if not path.exists() and not path.is_symlink():
+        return False
+    if path.is_symlink() or path.is_file():
+        path.unlink()
+        return True
+    shutil.rmtree(path)
+    return True
+
+
+def delete_recording_with_artifacts(
+    recording_id: str,
+    *,
+    settings: AppSettings | None = None,
+) -> bool:
+    cfg = settings or AppSettings()
+    recording_root = _recording_root_path(recording_id, cfg)
+    try:
+        deleted = delete_recording(recording_id, settings=cfg)
+    except sqlite3.Error as exc:
+        raise RecordingDeleteError(
+            f"Delete failed during database cleanup: {exc}"
+        ) from exc
+    if not deleted:
+        return False
+
+    try:
+        if recording_root.exists() or recording_root.is_symlink():
+            if recording_root.is_symlink() or recording_root.is_file():
+                _delete_path_strict(recording_root)
+            else:
+                for child_name in ("raw", "derived", "logs"):
+                    _delete_path_strict(recording_root / child_name)
+                for entry in list(recording_root.iterdir()):
+                    _delete_path_strict(entry)
+                recording_root.rmdir()
+    except OSError as exc:
+        raise RecordingDeleteError(
+            f"Delete failed during disk cleanup: {exc}"
+        ) from exc
+
+    return True
+
+
 def run_retention_cleanup(
     *,
     settings: AppSettings | None = None,
@@ -110,4 +175,8 @@ def run_retention_cleanup(
     return summary
 
 
-__all__ = ["run_retention_cleanup"]
+__all__ = [
+    "RecordingDeleteError",
+    "delete_recording_with_artifacts",
+    "run_retention_cleanup",
+]

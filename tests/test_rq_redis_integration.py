@@ -73,11 +73,11 @@ def test_enqueue_job_runs_via_rq_simple_worker_and_updates_db(
         recording_id: str,
         settings: AppSettings,
         log_path: Path,
-    ) -> tuple[str, str | None]:
+    ) -> worker_tasks.PipelineTerminalState:
         assert recording_id == "rec-rq-integration-1"
         assert settings.db_path == tmp_path / "db" / "app.db"
         assert log_path.name == "step-precheck.log"
-        return RECORDING_STATUS_READY, None
+        return worker_tasks.PipelineTerminalState(status=RECORDING_STATUS_READY)
 
     monkeypatch.setattr(worker_tasks, "_run_precheck_pipeline", _fast_precheck_stub)
 
