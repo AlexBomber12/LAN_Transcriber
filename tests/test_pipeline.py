@@ -69,34 +69,27 @@ def precheck_ok() -> pipeline.PrecheckResult:
     )
 
 
+def _annotation_from_segments(*segments: tuple[float, float, str]):
+    class _Annotation:
+        def itertracks(self, yield_label: bool = False):
+            for start, end, speaker in segments:
+                window = SimpleNamespace(start=start, end=end)
+                if yield_label:
+                    yield window, speaker
+                else:
+                    yield (window,)
+
+    return _Annotation()
+
+
 class DummyDiariser:
     async def __call__(self, audio_path: Path):
-        class Ann:
-            def itertracks(self, yield_label: bool = False):
-                from types import SimpleNamespace
-
-                if yield_label:
-                    yield SimpleNamespace(start=0.0, end=1.0), "S1"
-                else:
-                    yield (SimpleNamespace(start=0.0, end=1.0),)
-
-        return Ann()
+        return _annotation_from_segments((0.0, 1.0, "S1"))
 
 
 class TwoSpeakerDiariser:
     async def __call__(self, audio_path: Path):
-        class Ann:
-            def itertracks(self, yield_label: bool = False):
-                from types import SimpleNamespace
-
-                if yield_label:
-                    yield SimpleNamespace(start=0.0, end=12.0), "S1"
-                    yield SimpleNamespace(start=12.0, end=24.0), "S2"
-                else:
-                    yield (SimpleNamespace(start=0.0, end=12.0),)
-                    yield (SimpleNamespace(start=12.0, end=24.0),)
-
-        return Ann()
+        return _annotation_from_segments((0.0, 12.0, "S1"), (12.0, 24.0, "S2"))
 
 
 class TwoSpeakerTripletDiariser:
@@ -127,6 +120,63 @@ class FailingItertracksDiariser:
                 raise RuntimeError("itertracks boom")
 
         return Ann()
+
+
+class DialogRetryDiariser:
+    def __init__(self) -> None:
+        self.mode = "pyannote"
+        self.profile = "dialog"
+        self.dialog_retry_min_turns = 3
+        self.dialog_retry_min_duration_seconds = 10.0
+        self.last_run_metadata = {
+            "diarization_profile": "dialog",
+            "initial_hints": {},
+            "effective_hints": {},
+            "dialog_retry_used": False,
+            "speaker_count_before_retry": None,
+            "speaker_count_after_retry": None,
+        }
+
+    async def __call__(self, audio_path: Path):
+        self.last_run_metadata.update(
+            {
+                "dialog_retry_used": False,
+                "speaker_count_before_retry": 1,
+                "speaker_count_after_retry": 1,
+            }
+        )
+        return _annotation_from_segments((0.0, 2.4, "S1"))
+
+    async def retry_dialog(self, audio_path: Path):
+        self.last_run_metadata.update(
+            {
+                "effective_hints": {"min_speakers": 2, "max_speakers": 2},
+                "dialog_retry_used": True,
+                "speaker_count_after_retry": 2,
+            }
+        )
+        return _annotation_from_segments(
+            (0.0, 1.0, "S1"),
+            (1.0, 1.2, "S2"),
+            (1.2, 2.4, "S1"),
+        )
+
+
+class EmptyTracksDiariser:
+    def __init__(self) -> None:
+        self.mode = "pyannote"
+        self.profile = "auto"
+        self.last_run_metadata = {
+            "diarization_profile": "auto",
+            "initial_hints": {},
+            "effective_hints": {},
+            "dialog_retry_used": False,
+            "speaker_count_before_retry": 0,
+            "speaker_count_after_retry": 0,
+        }
+
+    async def __call__(self, audio_path: Path):
+        return object()
 
 
 @pytest.mark.asyncio
@@ -225,6 +275,147 @@ async def test_pipeline_emits_progress_stages_in_order(tmp_path: Path, mocker):
         ("metrics", 0.95),
         ("done", 1.0),
     ]
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_pipeline_writes_diarization_metadata_and_smooths_retry_output(
+    tmp_path: Path,
+    mocker,
+):
+    mocker.patch(
+        "whisperx.transcribe",
+        return_value=(
+            [
+                {
+                    "start": 0.0,
+                    "end": 1.0,
+                    "text": "alpha",
+                    "words": [{"start": 0.0, "end": 1.0, "word": "alpha"}],
+                },
+                {
+                    "start": 1.0,
+                    "end": 1.2,
+                    "text": "noise",
+                    "words": [{"start": 1.0, "end": 1.2, "word": "noise"}],
+                },
+                {
+                    "start": 1.2,
+                    "end": 2.4,
+                    "text": "omega",
+                    "words": [{"start": 1.2, "end": 2.4, "word": "omega"}],
+                },
+            ],
+            {"language": "en", "language_probability": 0.95},
+        ),
+    )
+    respx.post("http://127.0.0.1:8000/v1/chat/completions").mock(
+        return_value=httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": "- summary"}}]},
+        ),
+    )
+    mocker.patch(
+        "transformers.pipeline",
+        lambda *a, **k: lambda text: [{"label": "positive", "score": 0.7}],
+    )
+
+    cfg = pipeline.Settings(
+        speaker_db=tmp_path / "db.yaml",
+        tmp_root=tmp_path,
+        recordings_root=tmp_path / "recordings",
+        diarization_profile="dialog",
+        diarization_merge_gap_seconds=0.2,
+        diarization_min_turn_seconds=0.5,
+    )
+    recording_id = "rec-diar-meta-1"
+
+    await pipeline.run_pipeline(
+        fake_audio(tmp_path, "dialog-retry.mp3"),
+        cfg,
+        llm_client.LLMClient(),
+        DialogRetryDiariser(),
+        recording_id=recording_id,
+        precheck=precheck_ok(),
+    )
+
+    derived = cfg.recordings_root / recording_id / "derived"
+    speaker_turns = json.loads((derived / "speaker_turns.json").read_text(encoding="utf-8"))
+    metadata = json.loads(
+        (derived / "diarization_metadata.json").read_text(encoding="utf-8")
+    )
+
+    assert speaker_turns == [
+        {"start": 0.0, "end": 2.4, "speaker": "S1", "text": "alpha noise omega", "language": "en"}
+    ]
+    assert metadata["diarization_profile"] == "dialog"
+    assert metadata["dialog_retry_used"] is True
+    assert metadata["hints_applied"] == {"max_speakers": 2, "min_speakers": 2}
+    assert metadata["used_dummy_fallback"] is False
+    assert metadata["smoothing_applied"] is True
+    assert metadata["speaker_count_before_smoothing"] == 2
+    assert metadata["speaker_count_after_smoothing"] == 1
+    assert metadata["micro_turn_absorptions"] == 1
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_pipeline_marks_dummy_fallback_in_diarization_metadata(
+    tmp_path: Path,
+    mocker,
+):
+    mocker.patch(
+        "whisperx.transcribe",
+        return_value=(
+            [
+                {
+                    "start": 0.0,
+                    "end": 1.0,
+                    "text": "hello",
+                    "words": [{"start": 0.0, "end": 1.0, "word": "hello"}],
+                }
+            ],
+            {"language": "en", "language_probability": 0.95},
+        ),
+    )
+    respx.post("http://127.0.0.1:8000/v1/chat/completions").mock(
+        return_value=httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": "- summary"}}]},
+        ),
+    )
+    mocker.patch(
+        "transformers.pipeline",
+        lambda *a, **k: lambda text: [{"label": "positive", "score": 0.7}],
+    )
+
+    cfg = pipeline.Settings(
+        speaker_db=tmp_path / "db.yaml",
+        tmp_root=tmp_path,
+        recordings_root=tmp_path / "recordings",
+    )
+    recording_id = "rec-diar-fallback-1"
+
+    await pipeline.run_pipeline(
+        fake_audio(tmp_path, "dummy-fallback.mp3"),
+        cfg,
+        llm_client.LLMClient(),
+        EmptyTracksDiariser(),
+        recording_id=recording_id,
+        precheck=precheck_ok(),
+    )
+
+    derived = cfg.recordings_root / recording_id / "derived"
+    metadata = json.loads(
+        (derived / "diarization_metadata.json").read_text(encoding="utf-8")
+    )
+
+    assert metadata["mode"] == "pyannote"
+    assert metadata["degraded"] is True
+    assert metadata["used_dummy_fallback"] is True
+    assert metadata["smoothing_applied"] is False
+    assert metadata["speaker_count_before_smoothing"] == 1
+    assert metadata["speaker_count_after_smoothing"] == 1
 
 
 @pytest.mark.asyncio

@@ -34,6 +34,15 @@ from ..torch_safe_globals import (
 )
 from .language import analyse_languages, resolve_target_summary_language, segment_language
 from .precheck import PrecheckResult, run_precheck as _run_precheck
+from .diarization_quality import (
+    DEFAULT_DIALOG_RETRY_MIN_DURATION_SECONDS,
+    DEFAULT_DIALOG_RETRY_MIN_TURNS,
+    DEFAULT_DIARIZATION_MERGE_GAP_SECONDS,
+    DEFAULT_DIARIZATION_MIN_TURN_SECONDS,
+    SpeakerTurnSmoothingResult,
+    should_retry_dialog,
+    smooth_speaker_turns,
+)
 from .snippets import SnippetExportRequest, export_speaker_snippets
 from .speaker_turns import (
     _diarization_segments,
@@ -143,6 +152,25 @@ class Settings(BaseSettings):
     merge_similar: float = 0.9
     precheck_min_duration_sec: float = 20.0
     precheck_min_speech_ratio: float = 0.10
+    diarization_profile: Literal["auto", "dialog", "meeting"] = "auto"
+    diarization_min_speakers: int | None = Field(default=None, ge=1)
+    diarization_max_speakers: int | None = Field(default=None, ge=1)
+    diarization_dialog_retry_min_duration_seconds: float = Field(
+        default=DEFAULT_DIALOG_RETRY_MIN_DURATION_SECONDS,
+        ge=0.0,
+    )
+    diarization_dialog_retry_min_turns: int = Field(
+        default=DEFAULT_DIALOG_RETRY_MIN_TURNS,
+        ge=1,
+    )
+    diarization_merge_gap_seconds: float = Field(
+        default=DEFAULT_DIARIZATION_MERGE_GAP_SECONDS,
+        ge=0.0,
+    )
+    diarization_min_turn_seconds: float = Field(
+        default=DEFAULT_DIARIZATION_MIN_TURN_SECONDS,
+        ge=0.0,
+    )
 
     class Config:
         env_prefix = "LAN_"
@@ -277,6 +305,125 @@ def _log_dropped_kwargs(
     except Exception:
         # Step log append is best-effort and must not break processing.
         pass
+
+
+def _best_effort_step_log(
+    callback: Callable[[str], Any] | None,
+    message: str,
+) -> None:
+    if callback is None:
+        return
+    try:
+        callback(message)
+    except Exception:
+        pass
+
+
+def _diariser_runtime_metadata(diariser: Diariser) -> dict[str, Any]:
+    raw = getattr(diariser, "last_run_metadata", None)
+    if not isinstance(raw, dict):
+        return {}
+    return dict(raw)
+
+
+async def _maybe_retry_dialog_diarization(
+    *,
+    diariser: Diariser,
+    audio_path: Path,
+    diarization: Any,
+    asr_segments: Sequence[dict[str, Any]],
+    precheck_result: PrecheckResult,
+    step_log_callback: Callable[[str], Any] | None,
+) -> Any:
+    retry_dialog = getattr(diariser, "retry_dialog", None)
+    if not callable(retry_dialog):
+        return diarization
+
+    metadata = _diariser_runtime_metadata(diariser)
+    effective_hints = metadata.get("effective_hints")
+    if not isinstance(effective_hints, dict):
+        effective_hints = {}
+    if not should_retry_dialog(
+        profile=str(metadata.get("diarization_profile") or "auto"),
+        max_speakers=(
+            int(effective_hints["max_speakers"])
+            if "max_speakers" in effective_hints
+            and isinstance(effective_hints["max_speakers"], int)
+            else None
+        ),
+        detected_speaker_count=int(metadata.get("speaker_count_before_retry") or 0),
+        speech_turn_count=len(asr_segments),
+        duration_sec=precheck_result.duration_sec,
+        min_turns=int(
+            getattr(
+                diariser,
+                "dialog_retry_min_turns",
+                DEFAULT_DIALOG_RETRY_MIN_TURNS,
+            )
+        ),
+        min_duration_seconds=safe_float(
+            getattr(
+                diariser,
+                "dialog_retry_min_duration_seconds",
+                DEFAULT_DIALOG_RETRY_MIN_DURATION_SECONDS,
+            ),
+            default=DEFAULT_DIALOG_RETRY_MIN_DURATION_SECONDS,
+        ),
+    ):
+        return diarization
+
+    _best_effort_step_log(
+        step_log_callback,
+        (
+            "diarization dialog retry "
+            f"profile={metadata.get('diarization_profile', 'auto')} "
+            "min_speakers=2 max_speakers=2"
+        ),
+    )
+    return await retry_dialog(audio_path)
+
+
+def _write_diarization_metadata_artifact(
+    *,
+    artifacts,
+    diariser: Diariser,
+    cfg: Settings,
+    smoothing_result,
+    used_dummy_fallback: bool,
+) -> None:
+    metadata = _diariser_runtime_metadata(diariser)
+    effective_hints = metadata.get("effective_hints")
+    if not isinstance(effective_hints, dict):
+        effective_hints = {}
+    initial_hints = metadata.get("initial_hints")
+    if not isinstance(initial_hints, dict):
+        initial_hints = {}
+
+    payload: dict[str, Any] = {
+        "version": 1,
+        "mode": str(getattr(diariser, "mode", "unknown") or "unknown"),
+        "degraded": bool(getattr(diariser, "mode", "unknown") != "pyannote" or used_dummy_fallback),
+        "diarization_profile": str(metadata.get("diarization_profile") or cfg.diarization_profile),
+        "hints_applied": effective_hints,
+        "dialog_retry_used": bool(metadata.get("dialog_retry_used", False)),
+        "speaker_count_before_retry": metadata.get("speaker_count_before_retry"),
+        "speaker_count_after_retry": metadata.get("speaker_count_after_retry"),
+        "used_dummy_fallback": used_dummy_fallback,
+        "smoothing_applied": bool(
+            getattr(diariser, "mode", "unknown") == "pyannote" and not used_dummy_fallback
+        ),
+        "merge_gap_seconds": cfg.diarization_merge_gap_seconds,
+        "min_turn_seconds": cfg.diarization_min_turn_seconds,
+        "speaker_count_before_smoothing": smoothing_result.speaker_count_before,
+        "speaker_count_after_smoothing": smoothing_result.speaker_count_after,
+        "turn_count_before_smoothing": smoothing_result.turn_count_before,
+        "turn_count_after_smoothing": smoothing_result.turn_count_after,
+        "adjacent_merges": smoothing_result.adjacent_merges,
+        "micro_turn_absorptions": smoothing_result.micro_turn_absorptions,
+    }
+    if initial_hints != effective_hints:
+        payload["initial_hints"] = initial_hints
+    atomic_write_json(artifacts.diarization_metadata_json_path, payload)
 
 
 def _whisperx_asr(
@@ -771,17 +918,54 @@ async def run_pipeline(
         if language_info["detected"] == "unknown" and language_analysis.dominant_language != "unknown":
             language_info["detected"] = language_analysis.dominant_language
         summary_lang = resolve_target_summary_language(target_summary_language, dominant_language=language_analysis.dominant_language, detected_language=detected_language)
+        diarization = await _maybe_retry_dialog_diarization(
+            diariser=diariser,
+            audio_path=audio_path,
+            diarization=diarization,
+            asr_segments=language_analysis.segments,
+            precheck_result=precheck_result,
+            step_log_callback=step_log_callback,
+        )
 
         asr_text = " ".join(seg.get("text", "").strip() for seg in language_analysis.segments).strip()
         clean_text = normalizer.dedup(asr_text)
         diar_segments = _diarization_segments(diarization)
+        used_dummy_fallback = False
         if not diar_segments and language_analysis.segments:
             fallback_end = max(safe_float(seg.get("end")) for seg in language_analysis.segments)
+            used_dummy_fallback = True
+            _best_effort_step_log(step_log_callback, "diarization output empty; using fallback single-speaker annotation")
             diar_segments = _diarization_segments(_fallback_diarization(max(fallback_end, 0.1)))
-        speaker_turns = build_speaker_turns(
+        unsmoothed_speaker_turns = build_speaker_turns(
             language_analysis.segments,
             diar_segments,
             default_language=language_analysis.dominant_language if language_analysis.dominant_language != "unknown" else detected_language,
+        )
+        if getattr(diariser, "mode", "unknown") == "pyannote" and not used_dummy_fallback:
+            smoothing_result = smooth_speaker_turns(
+                unsmoothed_speaker_turns,
+                merge_gap_seconds=cfg.diarization_merge_gap_seconds,
+                min_turn_seconds=cfg.diarization_min_turn_seconds,
+            )
+            speaker_turns = smoothing_result.turns
+        else:
+            speaker_turns = unsmoothed_speaker_turns
+            speaker_count = len({str(turn.get("speaker") or "S1") for turn in speaker_turns})
+            smoothing_result = SpeakerTurnSmoothingResult(
+                turns=speaker_turns,
+                adjacent_merges=0,
+                micro_turn_absorptions=0,
+                turn_count_before=len(speaker_turns),
+                turn_count_after=len(speaker_turns),
+                speaker_count_before=speaker_count,
+                speaker_count_after=speaker_count,
+            )
+        _write_diarization_metadata_artifact(
+            artifacts=artifacts,
+            diariser=diariser,
+            cfg=cfg,
+            smoothing_result=smoothing_result,
+            used_dummy_fallback=used_dummy_fallback,
         )
 
         aliases = _load_aliases(cfg.speaker_db)

@@ -21,6 +21,12 @@ from lan_transcriber.compat.call_compat import call_with_supported_kwargs
 from lan_transcriber.llm_client import LLMClient
 from lan_transcriber.pipeline import Settings as PipelineSettings
 from lan_transcriber.pipeline import run_pipeline, run_precheck
+from lan_transcriber.pipeline_steps.diarization_quality import (
+    DEFAULT_DIALOG_RETRY_MIN_DURATION_SECONDS,
+    DEFAULT_DIALOG_RETRY_MIN_TURNS,
+    annotation_speaker_count,
+    profile_default_speaker_hints,
+)
 
 from .config import AppSettings
 from .conversation_metrics import refresh_recording_metrics
@@ -479,26 +485,57 @@ class _FallbackDiariser:
         return _Annotation()
 
 
+@dataclass(frozen=True)
+class _DiarizationRuntimeConfig:
+    profile: str
+    min_speakers: int | None
+    max_speakers: int | None
+    dialog_retry_min_duration_seconds: float
+    dialog_retry_min_turns: int
+
+
 class _PyannoteDiariser:
     def __init__(
         self,
         pipeline_model: Any,
         *,
+        profile: str = "auto",
         min_speakers: int | None = None,
         max_speakers: int | None = None,
+        dialog_retry_min_duration_seconds: float = DEFAULT_DIALOG_RETRY_MIN_DURATION_SECONDS,
+        dialog_retry_min_turns: int = DEFAULT_DIALOG_RETRY_MIN_TURNS,
     ) -> None:
         if pipeline_model is None or not callable(pipeline_model):
             raise TypeError("pipeline_model must be a callable pyannote pipeline.")
         self._pipeline_model = pipeline_model
         self.mode = "pyannote"
+        self.profile = str(profile or "auto").strip().lower() or "auto"
         call_kwargs: dict[str, int] = {}
         if min_speakers is not None:
             call_kwargs["min_speakers"] = min_speakers
         if max_speakers is not None:
             call_kwargs["max_speakers"] = max_speakers
-        self._call_kwargs = call_kwargs
+        self._base_call_kwargs = call_kwargs
+        self.dialog_retry_min_duration_seconds = max(
+            dialog_retry_min_duration_seconds,
+            0.0,
+        )
+        self.dialog_retry_min_turns = max(int(dialog_retry_min_turns), 1)
+        self.last_run_metadata: dict[str, Any] = {
+            "diarization_profile": self.profile,
+            "initial_hints": dict(self._base_call_kwargs),
+            "effective_hints": dict(self._base_call_kwargs),
+            "dialog_retry_used": False,
+            "speaker_count_before_retry": None,
+            "speaker_count_after_retry": None,
+        }
 
-    async def __call__(self, audio_path: Path):
+    async def _call_pipeline(
+        self,
+        audio_path: Path,
+        *,
+        call_kwargs: dict[str, int],
+    ):
         audio_text = str(audio_path)
 
         def _is_signature_mismatch(exc: TypeError) -> bool:
@@ -525,7 +562,7 @@ class _PyannoteDiariser:
                 return call_with_supported_kwargs(
                     self._pipeline_model,
                     {"audio": audio_text},
-                    **self._call_kwargs,
+                    **call_kwargs,
                 )
             except TypeError as exc:
                 if not _is_signature_mismatch(exc):
@@ -533,10 +570,39 @@ class _PyannoteDiariser:
                 return call_with_supported_kwargs(
                     self._pipeline_model,
                     audio_text,
-                    **self._call_kwargs,
+                    **call_kwargs,
                 )
 
         return await asyncio.to_thread(_run_sync)
+
+    async def __call__(self, audio_path: Path):
+        annotation = await self._call_pipeline(
+            audio_path,
+            call_kwargs=self._base_call_kwargs,
+        )
+        speaker_count = annotation_speaker_count(annotation)
+        self.last_run_metadata.update(
+            {
+                "initial_hints": dict(self._base_call_kwargs),
+                "effective_hints": dict(self._base_call_kwargs),
+                "dialog_retry_used": False,
+                "speaker_count_before_retry": speaker_count,
+                "speaker_count_after_retry": speaker_count,
+            }
+        )
+        return annotation
+
+    async def retry_dialog(self, audio_path: Path):
+        retry_hints = {"min_speakers": 2, "max_speakers": 2}
+        annotation = await self._call_pipeline(audio_path, call_kwargs=retry_hints)
+        self.last_run_metadata.update(
+            {
+                "effective_hints": dict(retry_hints),
+                "dialog_retry_used": True,
+                "speaker_count_after_retry": annotation_speaker_count(annotation),
+            }
+        )
+        return annotation
 
 
 def _optional_positive_env_int(name: str) -> int | None:
@@ -552,16 +618,66 @@ def _optional_positive_env_int(name: str) -> int | None:
     return value
 
 
-def _resolve_diarization_speaker_hints() -> tuple[int | None, int | None]:
-    min_speakers = _optional_positive_env_int("LAN_DIARIZATION_MIN_SPEAKERS")
-    max_speakers = _optional_positive_env_int("LAN_DIARIZATION_MAX_SPEAKERS")
+def _optional_nonnegative_env_float(name: str) -> float | None:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return None
+    try:
+        value = float(raw)
+    except ValueError:
+        return None
+    if value < 0.0:
+        return None
+    return value
+
+
+def _resolve_diarization_speaker_hints(
+    *,
+    settings: AppSettings | None = None,
+) -> _DiarizationRuntimeConfig:
+    if settings is None:
+        profile = str(os.getenv("LAN_DIARIZATION_PROFILE", "auto")).strip().lower() or "auto"
+        min_speakers = _optional_positive_env_int("LAN_DIARIZATION_MIN_SPEAKERS")
+        max_speakers = _optional_positive_env_int("LAN_DIARIZATION_MAX_SPEAKERS")
+        retry_min_duration_seconds = (
+            _optional_nonnegative_env_float(
+                "LAN_DIARIZATION_DIALOG_RETRY_MIN_DURATION_SECONDS"
+            )
+            or DEFAULT_DIALOG_RETRY_MIN_DURATION_SECONDS
+        )
+        retry_min_turns = (
+            _optional_positive_env_int("LAN_DIARIZATION_DIALOG_RETRY_MIN_TURNS")
+            or DEFAULT_DIALOG_RETRY_MIN_TURNS
+        )
+    else:
+        profile = settings.diarization_profile
+        min_speakers = settings.diarization_min_speakers
+        max_speakers = settings.diarization_max_speakers
+        retry_min_duration_seconds = settings.diarization_dialog_retry_min_duration_seconds
+        retry_min_turns = settings.diarization_dialog_retry_min_turns
+
+    if profile not in {"auto", "dialog", "meeting"}:
+        profile = "auto"
+    default_min_speakers, default_max_speakers = profile_default_speaker_hints(profile)
+    if min_speakers is None:
+        min_speakers = default_min_speakers
+    if max_speakers is None:
+        max_speakers = default_max_speakers
     if (
         min_speakers is not None
         and max_speakers is not None
         and min_speakers > max_speakers
     ):
-        return None, None
-    return min_speakers, max_speakers
+        min_speakers = None
+        max_speakers = None
+
+    return _DiarizationRuntimeConfig(
+        profile=profile,
+        min_speakers=min_speakers,
+        max_speakers=max_speakers,
+        dialog_retry_min_duration_seconds=retry_min_duration_seconds,
+        dialog_retry_min_turns=retry_min_turns,
+    )
 
 
 def _build_pipeline_settings(settings: AppSettings) -> PipelineSettings:
@@ -578,12 +694,26 @@ def _build_pipeline_settings(settings: AppSettings) -> PipelineSettings:
         llm_chunk_timeout_seconds=settings.llm_chunk_timeout_seconds,
         llm_long_transcript_threshold_chars=settings.llm_long_transcript_threshold_chars,
         llm_merge_max_tokens=settings.llm_merge_max_tokens,
+        diarization_profile=settings.diarization_profile,
+        diarization_min_speakers=settings.diarization_min_speakers,
+        diarization_max_speakers=settings.diarization_max_speakers,
+        diarization_dialog_retry_min_duration_seconds=(
+            settings.diarization_dialog_retry_min_duration_seconds
+        ),
+        diarization_dialog_retry_min_turns=settings.diarization_dialog_retry_min_turns,
+        diarization_merge_gap_seconds=settings.diarization_merge_gap_seconds,
+        diarization_min_turn_seconds=settings.diarization_min_turn_seconds,
         vad_method=settings.vad_method,
     )
 
 
-def _build_diariser(duration_sec: float | None, *, model_id: str | None = None):
-    min_speakers, max_speakers = _resolve_diarization_speaker_hints()
+def _build_diariser(
+    duration_sec: float | None,
+    *,
+    model_id: str | None = None,
+    settings: AppSettings | None = None,
+):
+    diarization_cfg = _resolve_diarization_speaker_hints(settings=settings)
     try:
         model = load_pyannote_pipeline(model_id=model_id)
     except ModuleNotFoundError as exc:
@@ -593,8 +723,13 @@ def _build_diariser(duration_sec: float | None, *, model_id: str | None = None):
         raise
     return _PyannoteDiariser(
         model,
-        min_speakers=min_speakers,
-        max_speakers=max_speakers,
+        profile=diarization_cfg.profile,
+        min_speakers=diarization_cfg.min_speakers,
+        max_speakers=diarization_cfg.max_speakers,
+        dialog_retry_min_duration_seconds=(
+            diarization_cfg.dialog_retry_min_duration_seconds
+        ),
+        dialog_retry_min_turns=diarization_cfg.dialog_retry_min_turns,
     )
 
 
@@ -666,6 +801,7 @@ def _run_precheck_pipeline(
             diariser = _build_diariser(
                 precheck.duration_sec,
                 model_id=settings.diarization_model_id,
+                settings=settings,
             )
             if isinstance(diariser, _FallbackDiariser):
                 diarization_mode = "fallback"

@@ -59,6 +59,28 @@ def test_pipeline_settings_read_llm_chunking_env(
     assert cfg.llm_merge_max_tokens == 3072
 
 
+def test_pipeline_settings_read_diarization_quality_env(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("LAN_DIARIZATION_PROFILE", "meeting")
+    monkeypatch.setenv("LAN_DIARIZATION_MIN_SPEAKERS", "3")
+    monkeypatch.setenv("LAN_DIARIZATION_MAX_SPEAKERS", "5")
+    monkeypatch.setenv("LAN_DIARIZATION_DIALOG_RETRY_MIN_DURATION_SECONDS", "11.5")
+    monkeypatch.setenv("LAN_DIARIZATION_DIALOG_RETRY_MIN_TURNS", "4")
+    monkeypatch.setenv("LAN_DIARIZATION_MERGE_GAP_SECONDS", "0.6")
+    monkeypatch.setenv("LAN_DIARIZATION_MIN_TURN_SECONDS", "0.4")
+
+    cfg = _settings(tmp_path)
+    assert cfg.diarization_profile == "meeting"
+    assert cfg.diarization_min_speakers == 3
+    assert cfg.diarization_max_speakers == 5
+    assert cfg.diarization_dialog_retry_min_duration_seconds == 11.5
+    assert cfg.diarization_dialog_retry_min_turns == 4
+    assert cfg.diarization_merge_gap_seconds == 0.6
+    assert cfg.diarization_min_turn_seconds == 0.4
+
+
 @pytest.mark.asyncio
 async def test_orchestrator_llm_helper_supports_sync_generate_and_skips_blank_turns(
     tmp_path: Path,
@@ -86,6 +108,42 @@ async def test_orchestrator_llm_helper_supports_sync_generate_and_skips_blank_tu
     )
     assert prompt_text == "[0.00-1.00] Alex: hello"
     assert pipeline._llm_timeout_message(None) == "timed out"
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_retry_helper_skips_non_retryable_cases_and_tolerates_log_failures():
+    pipeline._best_effort_step_log(
+        lambda _message: (_ for _ in ()).throw(RuntimeError("log failed")),
+        "ignored",
+    )
+
+    class _NoRetryDiariser:
+        dialog_retry_min_turns = 4
+        dialog_retry_min_duration_seconds = 15.0
+        last_run_metadata = {
+            "diarization_profile": "dialog",
+            "effective_hints": "not-a-dict",
+            "speaker_count_before_retry": 1,
+        }
+
+        async def retry_dialog(self, _audio_path: Path):
+            raise AssertionError("retry_dialog should not run")
+
+    diarization = object()
+    result = await pipeline._maybe_retry_dialog_diarization(
+        diariser=_NoRetryDiariser(),
+        audio_path=Path("/tmp/audio.wav"),
+        diarization=diarization,
+        asr_segments=[{"text": "only one"}],
+        precheck_result=precheck.PrecheckResult(
+            duration_sec=30.0,
+            speech_ratio=0.5,
+            quarantine_reason=None,
+        ),
+        step_log_callback=None,
+    )
+
+    assert result is diarization
 
 
 @pytest.mark.asyncio

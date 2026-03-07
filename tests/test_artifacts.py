@@ -30,6 +30,7 @@ def test_recording_artifact_layout_and_writes(tmp_path: Path) -> None:
     assert json.loads(artifacts.summary_json_path.read_text(encoding="utf-8"))["summary"] == "- one"
     assert json.loads(artifacts.segments_json_path.read_text(encoding="utf-8"))[0]["speaker"] == "S1"
     assert artifacts.speaker_turns_json_path.name == "speaker_turns.json"
+    assert artifacts.diarization_metadata_json_path.name == "diarization_metadata.json"
 
 
 def test_stage_raw_audio_is_noop_when_source_equals_destination(tmp_path: Path) -> None:

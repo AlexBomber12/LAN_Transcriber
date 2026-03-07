@@ -327,6 +327,13 @@ def test_build_pipeline_settings_propagates_runtime_llm_and_vad_settings(tmp_pat
         llm_chunk_timeout_seconds=45.0,
         llm_long_transcript_threshold_chars=8192,
         llm_merge_max_tokens=2048,
+        diarization_profile="meeting",
+        diarization_min_speakers=3,
+        diarization_max_speakers=5,
+        diarization_dialog_retry_min_duration_seconds=12.0,
+        diarization_dialog_retry_min_turns=4,
+        diarization_merge_gap_seconds=0.6,
+        diarization_min_turn_seconds=0.4,
         vad_method="pyannote",
     )
 
@@ -341,6 +348,13 @@ def test_build_pipeline_settings_propagates_runtime_llm_and_vad_settings(tmp_pat
     assert pipeline_cfg.llm_chunk_timeout_seconds == 45.0
     assert pipeline_cfg.llm_long_transcript_threshold_chars == 8192
     assert pipeline_cfg.llm_merge_max_tokens == 2048
+    assert pipeline_cfg.diarization_profile == "meeting"
+    assert pipeline_cfg.diarization_min_speakers == 3
+    assert pipeline_cfg.diarization_max_speakers == 5
+    assert pipeline_cfg.diarization_dialog_retry_min_duration_seconds == 12.0
+    assert pipeline_cfg.diarization_dialog_retry_min_turns == 4
+    assert pipeline_cfg.diarization_merge_gap_seconds == 0.6
+    assert pipeline_cfg.diarization_min_turn_seconds == 0.4
 
 
 def test_load_transcript_language_payload_parses_valid_and_invalid_json(tmp_path: Path):
@@ -509,24 +523,99 @@ def test_pyannote_diariser_passes_optional_speaker_hint_kwargs():
             {"min_speakers": 2, "max_speakers": 4},
         )
     ]
+    assert diariser.last_run_metadata == {
+        "diarization_profile": "auto",
+        "initial_hints": {"min_speakers": 2, "max_speakers": 4},
+        "effective_hints": {"min_speakers": 2, "max_speakers": 4},
+        "dialog_retry_used": False,
+        "speaker_count_before_retry": 0,
+        "speaker_count_after_retry": 0,
+    }
 
 
 def test_resolve_diarization_speaker_hints_from_env(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("LAN_DIARIZATION_MIN_SPEAKERS", "2")
+    monkeypatch.setenv("LAN_DIARIZATION_PROFILE", "dialog")
+    hints = worker_tasks._resolve_diarization_speaker_hints()
+    assert hints.profile == "dialog"
+    assert hints.min_speakers == 2
+    assert hints.max_speakers == 2
+
+    monkeypatch.setenv("LAN_DIARIZATION_PROFILE", "meeting")
+    monkeypatch.setenv("LAN_DIARIZATION_MIN_SPEAKERS", "3")
     monkeypatch.setenv("LAN_DIARIZATION_MAX_SPEAKERS", "4")
-    assert worker_tasks._resolve_diarization_speaker_hints() == (2, 4)
+    monkeypatch.setenv("LAN_DIARIZATION_DIALOG_RETRY_MIN_DURATION_SECONDS", "9.5")
+    monkeypatch.setenv("LAN_DIARIZATION_DIALOG_RETRY_MIN_TURNS", "5")
+    hints = worker_tasks._resolve_diarization_speaker_hints()
+    assert hints.profile == "meeting"
+    assert hints.min_speakers == 3
+    assert hints.max_speakers == 4
+    assert hints.dialog_retry_min_duration_seconds == 9.5
+    assert hints.dialog_retry_min_turns == 5
 
-    monkeypatch.setenv("LAN_DIARIZATION_MIN_SPEAKERS", "abc")
-    monkeypatch.setenv("LAN_DIARIZATION_MAX_SPEAKERS", "1")
-    assert worker_tasks._resolve_diarization_speaker_hints() == (None, 1)
-
-    monkeypatch.setenv("LAN_DIARIZATION_MIN_SPEAKERS", "0")
-    monkeypatch.setenv("LAN_DIARIZATION_MAX_SPEAKERS", "3")
-    assert worker_tasks._resolve_diarization_speaker_hints() == (None, 3)
-
+    monkeypatch.setenv("LAN_DIARIZATION_PROFILE", "dialog")
     monkeypatch.setenv("LAN_DIARIZATION_MIN_SPEAKERS", "5")
     monkeypatch.setenv("LAN_DIARIZATION_MAX_SPEAKERS", "2")
-    assert worker_tasks._resolve_diarization_speaker_hints() == (None, None)
+    hints = worker_tasks._resolve_diarization_speaker_hints()
+    assert hints.min_speakers is None
+    assert hints.max_speakers is None
+
+    monkeypatch.setenv("LAN_DIARIZATION_PROFILE", "unknown")
+    monkeypatch.setenv("LAN_DIARIZATION_MIN_SPEAKERS", "abc")
+    monkeypatch.setenv("LAN_DIARIZATION_MAX_SPEAKERS", "0")
+    monkeypatch.setenv("LAN_DIARIZATION_DIALOG_RETRY_MIN_DURATION_SECONDS", "-1")
+    monkeypatch.setenv("LAN_DIARIZATION_DIALOG_RETRY_MIN_TURNS", "0")
+    hints = worker_tasks._resolve_diarization_speaker_hints()
+    assert hints.profile == "auto"
+    assert hints.min_speakers is None
+    assert hints.max_speakers is None
+    assert hints.dialog_retry_min_duration_seconds == 20.0
+    assert hints.dialog_retry_min_turns == 6
+
+    monkeypatch.setenv("LAN_DIARIZATION_DIALOG_RETRY_MIN_DURATION_SECONDS", "oops")
+    hints = worker_tasks._resolve_diarization_speaker_hints()
+    assert hints.dialog_retry_min_duration_seconds == 20.0
+
+
+def test_pyannote_diariser_retry_dialog_forces_two_speakers_once():
+    segment = SimpleNamespace(start=0.0, end=1.0)
+
+    class _Model:
+        def __init__(self):
+            self.calls: list[tuple[object, dict[str, object]]] = []
+
+        def __call__(self, payload: object, **kwargs: object):
+            self.calls.append((payload, dict(kwargs)))
+
+            class _Annotation:
+                def itertracks(self, yield_label: bool = False):
+                    if yield_label:
+                        yield segment, "S1"
+                        if kwargs.get("max_speakers") == 2:
+                            yield segment, "S2"
+
+            return _Annotation()
+
+    diariser = worker_tasks._PyannoteDiariser(
+        _Model(),
+        profile="dialog",
+        min_speakers=2,
+        max_speakers=4,
+        dialog_retry_min_duration_seconds=8.0,
+        dialog_retry_min_turns=3,
+    )
+
+    asyncio.run(diariser(Path("/tmp/input.wav")))
+    retried = asyncio.run(diariser.retry_dialog(Path("/tmp/input.wav")))
+
+    assert len(list(retried.itertracks(yield_label=True))) == 2
+    assert diariser.last_run_metadata == {
+        "diarization_profile": "dialog",
+        "initial_hints": {"min_speakers": 2, "max_speakers": 4},
+        "effective_hints": {"min_speakers": 2, "max_speakers": 2},
+        "dialog_retry_used": True,
+        "speaker_count_before_retry": 1,
+        "speaker_count_after_retry": 2,
+    }
 
 
 def test_write_diarization_status_artifact_writes_payload_and_ignores_oserror(
@@ -587,6 +676,34 @@ def test_build_diariser_uses_fallback_when_pyannote_is_unavailable(
 
     diariser = worker_tasks._build_diariser(duration_sec=12.0)
     assert isinstance(diariser, worker_tasks._FallbackDiariser)
+
+
+def test_build_diariser_applies_profile_defaults_from_settings(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    class _Model:
+        def __init__(self):
+            self.calls: list[tuple[object, dict[str, object]]] = []
+
+        def __call__(self, payload: object, **kwargs: object):
+            self.calls.append((payload, dict(kwargs)))
+            return {"ok": True}
+
+    model = _Model()
+    cfg = _db_settings(tmp_path)
+    cfg.diarization_profile = "dialog"
+
+    monkeypatch.setattr(worker_tasks, "load_pyannote_pipeline", lambda **_kwargs: model)
+
+    diariser = worker_tasks._build_diariser(duration_sec=30.0, settings=cfg)
+    assert asyncio.run(diariser(Path("/tmp/dialog.wav"))) == {"ok": True}
+    assert model.calls == [
+        (
+            {"audio": "/tmp/dialog.wav"},
+            {"min_speakers": 2, "max_speakers": 2},
+        )
+    ]
 
 
 def test_run_precheck_pipeline_records_step_logs_and_explicit_summary_target(
