@@ -52,6 +52,7 @@ def annotation_speaker_count(diarization: Any) -> int:
 def should_retry_dialog(
     *,
     profile: str,
+    min_speakers: int | None,
     max_speakers: int | None,
     detected_speaker_count: int,
     speech_turn_count: int,
@@ -60,6 +61,8 @@ def should_retry_dialog(
     min_duration_seconds: float,
 ) -> bool:
     normalized_profile = str(profile or "auto").strip().lower()
+    if min_speakers is not None and min_speakers > 2:
+        return False
     if max_speakers is not None and max_speakers != 2:
         return False
     if normalized_profile != "dialog" and max_speakers != 2:

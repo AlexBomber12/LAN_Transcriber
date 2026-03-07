@@ -147,6 +147,47 @@ async def test_orchestrator_retry_helper_skips_non_retryable_cases_and_tolerates
 
 
 @pytest.mark.asyncio
+async def test_orchestrator_retry_helper_keeps_initial_diarization_when_retry_fails():
+    class _RetryingDiariser:
+        dialog_retry_min_turns = 4
+        dialog_retry_min_duration_seconds = 15.0
+        last_run_metadata = {
+            "diarization_profile": "dialog",
+            "effective_hints": {"min_speakers": 2, "max_speakers": 2},
+            "speaker_count_before_retry": 1,
+        }
+
+        async def retry_dialog(self, _audio_path: Path):
+            raise RuntimeError("retry boom")
+
+    diarization = object()
+    step_messages: list[str] = []
+    result = await pipeline._maybe_retry_dialog_diarization(
+        diariser=_RetryingDiariser(),
+        audio_path=Path("/tmp/audio.wav"),
+        diarization=diarization,
+        asr_segments=[
+            {"text": "first"},
+            {"text": "second"},
+            {"text": "third"},
+            {"text": "fourth"},
+        ],
+        precheck_result=precheck.PrecheckResult(
+            duration_sec=30.0,
+            speech_ratio=0.5,
+            quarantine_reason=None,
+        ),
+        step_log_callback=step_messages.append,
+    )
+
+    assert result is diarization
+    assert step_messages == [
+        "diarization dialog retry profile=dialog min_speakers=2 max_speakers=2",
+        "diarization dialog retry failed: retry boom",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_run_chunked_llm_summary_rejects_empty_chunk_plan(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

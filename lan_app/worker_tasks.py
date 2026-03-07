@@ -656,6 +656,8 @@ def _resolve_diarization_speaker_hints(
         retry_min_duration_seconds = settings.diarization_dialog_retry_min_duration_seconds
         retry_min_turns = settings.diarization_dialog_retry_min_turns
 
+    explicit_min_speakers = min_speakers is not None
+    explicit_max_speakers = max_speakers is not None
     if profile not in {"auto", "dialog", "meeting"}:
         profile = "auto"
     default_min_speakers, default_max_speakers = profile_default_speaker_hints(profile)
@@ -668,8 +670,13 @@ def _resolve_diarization_speaker_hints(
         and max_speakers is not None
         and min_speakers > max_speakers
     ):
-        min_speakers = None
-        max_speakers = None
+        if explicit_min_speakers and not explicit_max_speakers:
+            max_speakers = None
+        elif explicit_max_speakers and not explicit_min_speakers:
+            min_speakers = None
+        else:
+            min_speakers = None
+            max_speakers = None
 
     return _DiarizationRuntimeConfig(
         profile=profile,

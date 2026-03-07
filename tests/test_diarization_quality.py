@@ -46,6 +46,7 @@ def test_annotation_speaker_count_ignores_invalid_tracks_and_counts_multiple_sha
 def test_should_retry_dialog_requires_dialog_like_mode_single_speaker_and_plausible_audio():
     assert not should_retry_dialog(
         profile="auto",
+        min_speakers=None,
         max_speakers=None,
         detected_speaker_count=1,
         speech_turn_count=8,
@@ -55,6 +56,7 @@ def test_should_retry_dialog_requires_dialog_like_mode_single_speaker_and_plausi
     )
     assert not should_retry_dialog(
         profile="dialog",
+        min_speakers=2,
         max_speakers=2,
         detected_speaker_count=2,
         speech_turn_count=8,
@@ -64,6 +66,7 @@ def test_should_retry_dialog_requires_dialog_like_mode_single_speaker_and_plausi
     )
     assert not should_retry_dialog(
         profile="dialog",
+        min_speakers=2,
         max_speakers=2,
         detected_speaker_count=1,
         speech_turn_count=3,
@@ -73,6 +76,7 @@ def test_should_retry_dialog_requires_dialog_like_mode_single_speaker_and_plausi
     )
     assert not should_retry_dialog(
         profile="dialog",
+        min_speakers=2,
         max_speakers=2,
         detected_speaker_count=1,
         speech_turn_count=8,
@@ -82,7 +86,18 @@ def test_should_retry_dialog_requires_dialog_like_mode_single_speaker_and_plausi
     )
     assert not should_retry_dialog(
         profile="dialog",
+        min_speakers=2,
         max_speakers=4,
+        detected_speaker_count=1,
+        speech_turn_count=8,
+        duration_sec=45.0,
+        min_turns=4,
+        min_duration_seconds=20.0,
+    )
+    assert not should_retry_dialog(
+        profile="dialog",
+        min_speakers=5,
+        max_speakers=None,
         detected_speaker_count=1,
         speech_turn_count=8,
         duration_sec=45.0,
@@ -91,6 +106,7 @@ def test_should_retry_dialog_requires_dialog_like_mode_single_speaker_and_plausi
     )
     assert should_retry_dialog(
         profile="meeting",
+        min_speakers=1,
         max_speakers=2,
         detected_speaker_count=1,
         speech_turn_count=8,

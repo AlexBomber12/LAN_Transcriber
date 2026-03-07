@@ -559,6 +559,20 @@ def test_resolve_diarization_speaker_hints_from_env(monkeypatch: pytest.MonkeyPa
     assert hints.min_speakers is None
     assert hints.max_speakers is None
 
+    monkeypatch.setenv("LAN_DIARIZATION_PROFILE", "meeting")
+    monkeypatch.delenv("LAN_DIARIZATION_MIN_SPEAKERS")
+    monkeypatch.setenv("LAN_DIARIZATION_MAX_SPEAKERS", "1")
+    hints = worker_tasks._resolve_diarization_speaker_hints()
+    assert hints.min_speakers is None
+    assert hints.max_speakers == 1
+
+    monkeypatch.setenv("LAN_DIARIZATION_PROFILE", "dialog")
+    monkeypatch.setenv("LAN_DIARIZATION_MIN_SPEAKERS", "5")
+    monkeypatch.delenv("LAN_DIARIZATION_MAX_SPEAKERS")
+    hints = worker_tasks._resolve_diarization_speaker_hints()
+    assert hints.min_speakers == 5
+    assert hints.max_speakers is None
+
     monkeypatch.setenv("LAN_DIARIZATION_PROFILE", "unknown")
     monkeypatch.setenv("LAN_DIARIZATION_MIN_SPEAKERS", "abc")
     monkeypatch.setenv("LAN_DIARIZATION_MAX_SPEAKERS", "0")

@@ -345,6 +345,12 @@ async def _maybe_retry_dialog_diarization(
         effective_hints = {}
     if not should_retry_dialog(
         profile=str(metadata.get("diarization_profile") or "auto"),
+        min_speakers=(
+            int(effective_hints["min_speakers"])
+            if "min_speakers" in effective_hints
+            and isinstance(effective_hints["min_speakers"], int)
+            else None
+        ),
         max_speakers=(
             int(effective_hints["max_speakers"])
             if "max_speakers" in effective_hints
@@ -380,7 +386,14 @@ async def _maybe_retry_dialog_diarization(
             "min_speakers=2 max_speakers=2"
         ),
     )
-    return await retry_dialog(audio_path)
+    try:
+        return await retry_dialog(audio_path)
+    except Exception as exc:
+        _best_effort_step_log(
+            step_log_callback,
+            f"diarization dialog retry failed: {exc}",
+        )
+        return diarization
 
 
 def _write_diarization_metadata_artifact(
