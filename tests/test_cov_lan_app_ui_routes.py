@@ -116,8 +116,12 @@ def test_display_helpers_cover_timezone_duration_and_prepare_recording(
     monkeypatch.setattr(
         ui_routes,
         "set_recording_duration",
-        lambda recording_id, duration_sec, *, settings=None: observed_update.update(
-            {"recording_id": recording_id, "duration_sec": duration_sec}
+        lambda recording_id, duration_sec, *, settings=None, touch_updated_at=True: observed_update.update(
+            {
+                "recording_id": recording_id,
+                "duration_sec": duration_sec,
+                "touch_updated_at": touch_updated_at,
+            }
         )
         or True,
     )
@@ -134,7 +138,11 @@ def test_display_helpers_cover_timezone_duration_and_prepare_recording(
         },
         settings=cfg,
     )
-    assert observed_update == {"recording_id": "rec-helper-1", "duration_sec": 3.5}
+    assert observed_update == {
+        "recording_id": "rec-helper-1",
+        "duration_sec": 3.5,
+        "touch_updated_at": False,
+    }
     assert prepared["duration_display"] == "3.50s"
     assert prepared["captured_at_display"].endswith("CET")
     assert prepared["created_at_display"] == "—"
@@ -157,6 +165,43 @@ def test_display_helpers_cover_timezone_duration_and_prepare_recording(
     )
     assert observed_update == {}
     assert prepared_existing_duration["duration_display"] == "1s"
+
+
+def test_prepare_recording_for_display_ignores_duration_backfill_write_errors(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(
+        ui_routes,
+        "_recording_audio_candidates",
+        lambda *_a, **_k: [Path("/tmp/fake.wav")],
+    )
+    monkeypatch.setattr(ui_routes, "_probe_duration_seconds", lambda *_a, **_k: 4.25)
+    monkeypatch.setattr(
+        ui_routes,
+        "set_recording_duration",
+        lambda *_a, **_k: (_ for _ in ()).throw(sqlite3.OperationalError("database is locked")),
+    )
+
+    with caplog.at_level("WARNING"):
+        prepared = ui_routes._prepare_recording_for_display(  # noqa: SLF001
+            {
+                "id": "rec-helper-err-1",
+                "duration_sec": None,
+                "captured_at": None,
+                "created_at": None,
+                "updated_at": None,
+                "pipeline_updated_at": None,
+                "review_reason_text": None,
+            },
+            settings=cfg,
+        )
+
+    assert prepared["duration_sec"] == 4.25
+    assert prepared["duration_display"] == "4.25s"
+    assert "Failed to backfill display duration for recording rec-helper-err-1" in caplog.text
 
     monkeypatch.setattr(
         ui_routes,

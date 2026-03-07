@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 from datetime import date, datetime, time, timedelta, timezone
 import json
+import logging
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -91,6 +92,7 @@ from lan_transcriber.utils import normalise_language_code as _normalise_language
 _TEMPLATES_DIR = Path(__file__).parent / "templates"
 _STATIC_DIR = Path(__file__).parent / "static"
 templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
+_LOG = logging.getLogger(__name__)
 
 ui_router = APIRouter()
 _settings = AppSettings()
@@ -258,8 +260,20 @@ def _prepare_recording_for_display(
             duration_sec = _probe_duration_seconds(candidate)
             if duration_sec is None:
                 continue
-            set_recording_duration(recording_id, duration_sec, settings=settings)
             item["duration_sec"] = duration_sec
+            try:
+                set_recording_duration(
+                    recording_id,
+                    duration_sec,
+                    settings=settings,
+                    touch_updated_at=False,
+                )
+            except sqlite3.Error:
+                _LOG.warning(
+                    "Failed to backfill display duration for recording %s",
+                    recording_id,
+                    exc_info=True,
+                )
             break
 
     item["duration_display"] = _format_duration_seconds(item.get("duration_sec"))

@@ -435,6 +435,7 @@ def set_recording_duration(
     duration_sec: float | None,
     *,
     settings: AppSettings | None = None,
+    touch_updated_at: bool = True,
 ) -> bool:
     init_db(settings)
     duration_value: float | None
@@ -442,22 +443,35 @@ def set_recording_duration(
         duration_value = None
     else:
         duration_value = round(max(float(duration_sec), 0.0), 3)
-    now = _utc_now()
+    now = _utc_now() if touch_updated_at else None
 
     def _update() -> bool:
         with connect(settings) as conn:
-            updated = conn.execute(
-                """
-                UPDATE recordings
-                SET duration_sec = ?, updated_at = ?
-                WHERE id = ?
-                """,
-                (
-                    duration_value,
-                    now,
-                    recording_id,
-                ),
-            )
+            if touch_updated_at:
+                updated = conn.execute(
+                    """
+                    UPDATE recordings
+                    SET duration_sec = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        duration_value,
+                        now,
+                        recording_id,
+                    ),
+                )
+            else:
+                updated = conn.execute(
+                    """
+                    UPDATE recordings
+                    SET duration_sec = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        duration_value,
+                        recording_id,
+                    ),
+                )
             conn.commit()
             return updated.rowcount > 0
 

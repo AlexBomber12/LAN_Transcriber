@@ -219,6 +219,35 @@ def test_recording_duration_and_review_reason_helpers(tmp_path: Path) -> None:
     assert duration_cleared["duration_sec"] is None
 
 
+def test_set_recording_duration_can_skip_updated_at_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = _test_settings(tmp_path)
+    init_db(cfg)
+    create_recording(
+        "rec-duration-no-touch-1",
+        source="test",
+        source_filename="duration.wav",
+        settings=cfg,
+    )
+    before = get_recording("rec-duration-no-touch-1", settings=cfg) or {}
+    assert before["updated_at"]
+
+    monkeypatch.setattr(db_module, "_utc_now", lambda: "2099-12-31T23:59:59Z")
+
+    assert set_recording_duration(
+        "rec-duration-no-touch-1",
+        8.7654,
+        settings=cfg,
+        touch_updated_at=False,
+    )
+
+    after = get_recording("rec-duration-no-touch-1", settings=cfg) or {}
+    assert after["duration_sec"] == 8.765
+    assert after["updated_at"] == before["updated_at"]
+
+
 def test_recording_review_reason_conditional_status_helpers_preserve_existing_reason(
     tmp_path: Path,
 ) -> None:

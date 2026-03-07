@@ -102,8 +102,8 @@ Requirement already satisfied: pytz>2021.1 in ./.venv-ci/lib/python3.12/site-pac
 Building wheels for collected packages: lan-transcriber
   Building editable for lan-transcriber (pyproject.toml): started
   Building editable for lan-transcriber (pyproject.toml): finished with status 'done'
-  Created wheel for lan-transcriber: filename=lan_transcriber-0.1.0-0.editable-py3-none-any.whl size=15425 sha256=7aec7de0b615fb57eb3a88bb5442cd5c9258f5eecc219c95f2ac0c8013836608
-  Stored in directory: /tmp/pip-ephem-wheel-cache-20_9zk4w/wheels/d5/8a/5c/f7178f7e49aa5ae12b2320ec66b5c310f4f2f63d1bd301b7fb
+  Created wheel for lan-transcriber: filename=lan_transcriber-0.1.0-0.editable-py3-none-any.whl size=15425 sha256=f4339ed292dbbd90d9d9cb50c7a774c4152fd0495aaed7aea6766c0969415403
+  Stored in directory: /tmp/pip-ephem-wheel-cache-a0kpen7i/wheels/d5/8a/5c/f7178f7e49aa5ae12b2320ec66b5c310f4f2f63d1bd301b7fb
 Successfully built lan-transcriber
 Installing collected packages: lan-transcriber
   Attempting uninstall: lan-transcriber
@@ -124,9 +124,9 @@ The event loop scope for asynchronous fixtures will default to the fixture cachi
 ........................................................................ [ 54%]
 ........................................................................ [ 65%]
 ........................................................................ [ 76%]
-.......................s................................................ [ 87%]
+.........................s.............................................. [ 87%]
 ........................................................................ [ 98%]
-........                                                                 [100%]
+..........                                                               [100%]
 =============================== warnings summary ===============================
 lan_transcriber/pipeline_steps/precheck.py:3
   /home/alexey/LAN_Transcriber/lan_transcriber/pipeline_steps/precheck.py:3: DeprecationWarning: 'audioop' is deprecated and slated for removal in Python 3.13
@@ -162,13 +162,13 @@ tests/test_warm_models.py::test_warm_models_module_main_guard
 ---------- coverage: platform linux, python 3.12.3-final-0 -----------
 Name    Stmts   Miss Branch BrPart  Cover   Missing
 ---------------------------------------------------
-TOTAL    7255      0   2258      0   100%
+TOTAL    7262      0   2260      0   100%
 
 53 files skipped due to complete coverage.
 Coverage HTML written to dir htmlcov
 
 Required test coverage of 100% reached. Total coverage: 100.00%
-655 passed, 3 skipped, 10 warnings in 19.77s
+657 passed, 3 skipped, 10 warnings in 21.49s
 Name                                                    Stmts   Miss Branch BrPart  Cover
 -----------------------------------------------------------------------------------------
 lan_transcriber/__init__.py                                 8      0      0      0   100%
@@ -210,7 +210,7 @@ lan_app/calendar/service.py          66      0     12      0   100%
 lan_app/config.py                    90      0     16      0   100%
 lan_app/constants.py                 28      0      0      0   100%
 lan_app/conversation_metrics.py     380      0    150      0   100%
-lan_app/db.py                       819      0    164      0   100%
+lan_app/db.py                       821      0    166      0   100%
 lan_app/db_init.py                    9      0      2      0   100%
 lan_app/diarization_loader.py       118      0     40      0   100%
 lan_app/exporter.py                 212      0     90      0   100%
@@ -223,10 +223,10 @@ lan_app/routing.py                  255      0    106      0   100%
 lan_app/tools/__init__.py             1      0      0      0   100%
 lan_app/tools/warm_models.py         47      0     10      0   100%
 lan_app/ui.py                        59      0     10      0   100%
-lan_app/ui_routes.py               1029      0    332      0   100%
+lan_app/ui_routes.py               1034      0    332      0   100%
 lan_app/uploads.py                   59      0     12      0   100%
 lan_app/worker.py                    28      0      2      0   100%
 lan_app/worker_tasks.py             574      0    176      0   100%
 lan_app/workers.py                   10      0      0      0   100%
 -------------------------------------------------------------------
-TOTAL                              4753      0   1426      0   100%
+TOTAL                              4760      0   1428      0   100%
