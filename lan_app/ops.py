@@ -76,11 +76,9 @@ def _recording_root_path(recording_id: str, settings: AppSettings) -> Path:
         raise RecordingDeleteError("Delete failed: invalid recording id.")
 
     recordings_root = settings.recordings_root.resolve(strict=False)
-    recording_root = (settings.recordings_root / raw_recording_id).resolve(strict=False)
-    try:
-        recording_root.relative_to(recordings_root)
-    except ValueError as exc:
-        raise RecordingDeleteError("Delete failed: invalid recording path.") from exc
+    recording_root = recordings_root / raw_recording_id
+    if recording_root.is_symlink():
+        raise RecordingDeleteError("Delete failed: invalid recording path.")
     return recording_root
 
 

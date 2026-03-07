@@ -144,6 +144,40 @@ def test_delete_recording_with_artifacts_rejects_symlink_escape(tmp_path: Path) 
         delete_recording_with_artifacts("escape", settings=cfg)
 
 
+def test_delete_recording_with_artifacts_rejects_symlink_to_another_recording(
+    tmp_path: Path,
+) -> None:
+    cfg = _cfg(tmp_path)
+    init_db(cfg)
+    create_recording(
+        "rec-delete-link-1",
+        source="upload",
+        source_filename="link.wav",
+        settings=cfg,
+    )
+    create_recording(
+        "rec-delete-target-1",
+        source="upload",
+        source_filename="target.wav",
+        settings=cfg,
+    )
+    target_root = cfg.recordings_root / "rec-delete-target-1"
+    (target_root / "raw").mkdir(parents=True, exist_ok=True)
+    target_audio = target_root / "raw" / "audio.wav"
+    target_audio.write_bytes(b"\x00")
+    alias_root = cfg.recordings_root / "rec-delete-link-1"
+    alias_root.parent.mkdir(parents=True, exist_ok=True)
+    alias_root.symlink_to(target_root, target_is_directory=True)
+
+    with pytest.raises(RecordingDeleteError, match="invalid recording path"):
+        delete_recording_with_artifacts("rec-delete-link-1", settings=cfg)
+
+    assert get_recording("rec-delete-link-1", settings=cfg) is not None
+    assert get_recording("rec-delete-target-1", settings=cfg) is not None
+    assert target_audio.exists()
+    assert alias_root.is_symlink()
+
+
 def test_delete_recording_with_artifacts_handles_file_root(tmp_path: Path) -> None:
     cfg = _cfg(tmp_path)
     init_db(cfg)

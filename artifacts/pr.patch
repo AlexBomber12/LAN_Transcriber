@@ -1,185 +1,64 @@
 diff --git a/lan_app/ops.py b/lan_app/ops.py
-index e4de1d6..712b381 100644
+index 712b381..0e816f0 100644
 --- a/lan_app/ops.py
 +++ b/lan_app/ops.py
-@@ -2,6 +2,7 @@ from __future__ import annotations
+@@ -76,11 +76,9 @@ def _recording_root_path(recording_id: str, settings: AppSettings) -> Path:
+         raise RecordingDeleteError("Delete failed: invalid recording id.")
  
- from datetime import datetime, timedelta, timezone
- from pathlib import Path
-+import sqlite3
- import shutil
- from typing import Any
- 
-@@ -100,6 +101,14 @@ def delete_recording_with_artifacts(
- ) -> bool:
-     cfg = settings or AppSettings()
-     recording_root = _recording_root_path(recording_id, cfg)
-+    try:
-+        deleted = delete_recording(recording_id, settings=cfg)
-+    except sqlite3.Error as exc:
-+        raise RecordingDeleteError(
-+            f"Delete failed during database cleanup: {exc}"
-+        ) from exc
-+    if not deleted:
-+        return False
- 
-     try:
-         if recording_root.exists() or recording_root.is_symlink():
-@@ -116,7 +125,7 @@ def delete_recording_with_artifacts(
-             f"Delete failed during disk cleanup: {exc}"
-         ) from exc
- 
--    return delete_recording(recording_id, settings=cfg)
-+    return True
+     recordings_root = settings.recordings_root.resolve(strict=False)
+-    recording_root = (settings.recordings_root / raw_recording_id).resolve(strict=False)
+-    try:
+-        recording_root.relative_to(recordings_root)
+-    except ValueError as exc:
+-        raise RecordingDeleteError("Delete failed: invalid recording path.") from exc
++    recording_root = recordings_root / raw_recording_id
++    if recording_root.is_symlink():
++        raise RecordingDeleteError("Delete failed: invalid recording path.")
+     return recording_root
  
  
- def run_retention_cleanup(
-diff --git a/lan_app/worker_tasks.py b/lan_app/worker_tasks.py
-index 8034e4b..8b22364 100644
---- a/lan_app/worker_tasks.py
-+++ b/lan_app/worker_tasks.py
-@@ -480,6 +480,26 @@ def _set_recording_progress_best_effort(
-         pass
- 
- 
-+def _set_recording_duration_best_effort(
-+    recording_id: str,
-+    *,
-+    duration_sec: float | None,
-+    settings: AppSettings,
-+) -> None:
-+    try:
-+        set_recording_duration(
-+            recording_id,
-+            duration_sec,
-+            settings=settings,
-+        )
-+    except Exception:
-+        _logger.warning(
-+            "Failed to persist duration for recording %s",
-+            recording_id,
-+            exc_info=True,
-+        )
-+
-+
- def _clean_language_value(value: object | None) -> str | None:
-     if not isinstance(value, str):
-         return None
-@@ -918,9 +938,9 @@ def _run_precheck_pipeline(
-     pipeline_settings = _build_pipeline_settings(settings)
-     precheck = run_precheck(audio_path, pipeline_settings)
-     if precheck.duration_sec is not None:
--        set_recording_duration(
-+        _set_recording_duration_best_effort(
-             recording_id,
--            precheck.duration_sec,
-+            duration_sec=precheck.duration_sec,
-             settings=settings,
-         )
-     _append_step_log(
-diff --git a/tests/test_cov_lan_app_worker_tasks_branches.py b/tests/test_cov_lan_app_worker_tasks_branches.py
-index 406f9c8..acea6dc 100644
---- a/tests/test_cov_lan_app_worker_tasks_branches.py
-+++ b/tests/test_cov_lan_app_worker_tasks_branches.py
-@@ -4,6 +4,7 @@ import asyncio
- import builtins
- import json
- from pathlib import Path
-+import sqlite3
- import sys
- from types import SimpleNamespace
- import wave
-@@ -1090,6 +1091,30 @@ def test_review_reason_helpers_cover_exception_and_routing_paths(tmp_path: Path)
-     )
- 
- 
-+def test_set_recording_duration_best_effort_swallows_write_errors(
-+    caplog: pytest.LogCaptureFixture,
-+    monkeypatch: pytest.MonkeyPatch,
-+    tmp_path: Path,
-+) -> None:
-+    cfg = _db_settings(tmp_path)
-+    monkeypatch.setattr(
-+        worker_tasks,
-+        "set_recording_duration",
-+        lambda *_a, **_k: (_ for _ in ()).throw(
-+            sqlite3.OperationalError("database is locked")
-+        ),
-+    )
-+
-+    with caplog.at_level("WARNING"):
-+        worker_tasks._set_recording_duration_best_effort(  # noqa: SLF001
-+            "rec-duration-warning-1",
-+            duration_sec=5.0,
-+            settings=cfg,
-+        )
-+
-+    assert "Failed to persist duration for recording rec-duration-warning-1" in caplog.text
-+
-+
- def test_run_precheck_pipeline_skips_duration_persist_when_duration_is_missing(
-     tmp_path: Path,
-     monkeypatch: pytest.MonkeyPatch,
 diff --git a/tests/test_ops.py b/tests/test_ops.py
-index 16ebf43..25fec85 100644
+index 25fec85..9d5e500 100644
 --- a/tests/test_ops.py
 +++ b/tests/test_ops.py
-@@ -3,6 +3,7 @@ from __future__ import annotations
- from datetime import datetime, timedelta, timezone
- import os
- from pathlib import Path
-+import sqlite3
- import shutil
- 
- from fastapi.testclient import TestClient
-@@ -160,6 +161,40 @@ def test_delete_recording_with_artifacts_handles_file_root(tmp_path: Path) -> No
-     assert not recording_root.exists()
+@@ -144,6 +144,40 @@ def test_delete_recording_with_artifacts_rejects_symlink_escape(tmp_path: Path)
+         delete_recording_with_artifacts("escape", settings=cfg)
  
  
-+def test_delete_recording_with_artifacts_returns_false_before_disk_cleanup_when_row_missing(
++def test_delete_recording_with_artifacts_rejects_symlink_to_another_recording(
 +    tmp_path: Path,
 +) -> None:
 +    cfg = _cfg(tmp_path)
-+    recording_root = cfg.recordings_root / "rec-delete-missing-1"
-+    (recording_root / "raw").mkdir(parents=True, exist_ok=True)
-+    (recording_root / "raw" / "audio.wav").write_bytes(b"\x00")
-+
-+    assert delete_recording_with_artifacts("rec-delete-missing-1", settings=cfg) is False
-+    assert recording_root.exists()
-+
-+
-+def test_delete_recording_with_artifacts_raises_on_database_delete_failure(
-+    tmp_path: Path,
-+    monkeypatch: pytest.MonkeyPatch,
-+) -> None:
-+    cfg = _cfg(tmp_path)
-+    recording_root = cfg.recordings_root / "rec-delete-db-fail-1"
-+    (recording_root / "raw").mkdir(parents=True, exist_ok=True)
-+    audio_path = recording_root / "raw" / "audio.wav"
-+    audio_path.write_bytes(b"\x00")
-+
-+    monkeypatch.setattr(
-+        "lan_app.ops.delete_recording",
-+        lambda *_a, **_k: (_ for _ in ()).throw(
-+            sqlite3.OperationalError("database is locked")
-+        ),
++    init_db(cfg)
++    create_recording(
++        "rec-delete-link-1",
++        source="upload",
++        source_filename="link.wav",
++        settings=cfg,
 +    )
++    create_recording(
++        "rec-delete-target-1",
++        source="upload",
++        source_filename="target.wav",
++        settings=cfg,
++    )
++    target_root = cfg.recordings_root / "rec-delete-target-1"
++    (target_root / "raw").mkdir(parents=True, exist_ok=True)
++    target_audio = target_root / "raw" / "audio.wav"
++    target_audio.write_bytes(b"\x00")
++    alias_root = cfg.recordings_root / "rec-delete-link-1"
++    alias_root.parent.mkdir(parents=True, exist_ok=True)
++    alias_root.symlink_to(target_root, target_is_directory=True)
 +
-+    with pytest.raises(RecordingDeleteError, match="database is locked"):
-+        delete_recording_with_artifacts("rec-delete-db-fail-1", settings=cfg)
-+    assert audio_path.exists()
++    with pytest.raises(RecordingDeleteError, match="invalid recording path"):
++        delete_recording_with_artifacts("rec-delete-link-1", settings=cfg)
++
++    assert get_recording("rec-delete-link-1", settings=cfg) is not None
++    assert get_recording("rec-delete-target-1", settings=cfg) is not None
++    assert target_audio.exists()
++    assert alias_root.is_symlink()
 +
 +
- def test_delete_recording_with_artifacts_raises_on_disk_cleanup_failure(
-     tmp_path: Path,
-     monkeypatch: pytest.MonkeyPatch,
-@@ -187,7 +222,8 @@ def test_delete_recording_with_artifacts_raises_on_disk_cleanup_failure(
- 
-     with pytest.raises(RecordingDeleteError, match="disk busy"):
-         delete_recording_with_artifacts("rec-delete-fail-1", settings=cfg)
--    assert get_recording("rec-delete-fail-1", settings=cfg) is not None
-+    assert get_recording("rec-delete-fail-1", settings=cfg) is None
-+    assert raw_dir.exists()
- 
- 
- def test_healthz_component_endpoints(tmp_path: Path, monkeypatch):
+ def test_delete_recording_with_artifacts_handles_file_root(tmp_path: Path) -> None:
+     cfg = _cfg(tmp_path)
+     init_db(cfg)
