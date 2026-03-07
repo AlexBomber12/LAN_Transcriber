@@ -102,8 +102,8 @@ Requirement already satisfied: pytz>2021.1 in ./.venv-ci/lib/python3.12/site-pac
 Building wheels for collected packages: lan-transcriber
   Building editable for lan-transcriber (pyproject.toml): started
   Building editable for lan-transcriber (pyproject.toml): finished with status 'done'
-  Created wheel for lan-transcriber: filename=lan_transcriber-0.1.0-0.editable-py3-none-any.whl size=15425 sha256=131caf3afe7a01aa9dc4fa2334419a055de6e11388393e2fda319f4092f77108
-  Stored in directory: /tmp/pip-ephem-wheel-cache-kjtflt8u/wheels/d5/8a/5c/f7178f7e49aa5ae12b2320ec66b5c310f4f2f63d1bd301b7fb
+  Created wheel for lan-transcriber: filename=lan_transcriber-0.1.0-0.editable-py3-none-any.whl size=15425 sha256=411869d42360fa8aadb14fd2b08a3b866924439721e23a7e548bec82f99a00b1
+  Stored in directory: /tmp/pip-ephem-wheel-cache-s6lq_5l0/wheels/d5/8a/5c/f7178f7e49aa5ae12b2320ec66b5c310f4f2f63d1bd301b7fb
 Successfully built lan-transcriber
 Installing collected packages: lan-transcriber
   Attempting uninstall: lan-transcriber
@@ -162,13 +162,13 @@ tests/test_warm_models.py::test_warm_models_module_main_guard
 ---------- coverage: platform linux, python 3.12.3-final-0 -----------
 Name    Stmts   Miss Branch BrPart  Cover   Missing
 ---------------------------------------------------
-TOTAL    7460      0   2330      0   100%
+TOTAL    7465      0   2334      0   100%
 
 53 files skipped due to complete coverage.
 Coverage HTML written to dir htmlcov
 
 Required test coverage of 100% reached. Total coverage: 100.00%
-673 passed, 3 skipped, 10 warnings in 21.17s
+673 passed, 3 skipped, 10 warnings in 21.11s
 Name                                                    Stmts   Miss Branch BrPart  Cover
 -----------------------------------------------------------------------------------------
 lan_transcriber/__init__.py                                 8      0      0      0   100%
@@ -187,7 +187,7 @@ lan_transcriber/normalizer.py                              25      0     14     
 lan_transcriber/pipeline.py                                 5      0      0      0   100%
 lan_transcriber/pipeline_steps/__init__.py                  7      0      0      0   100%
 lan_transcriber/pipeline_steps/artifacts.py                19      0      0      0   100%
-lan_transcriber/pipeline_steps/diarization_quality.py     263      0     94      0   100%
+lan_transcriber/pipeline_steps/diarization_quality.py     268      0     98      0   100%
 lan_transcriber/pipeline_steps/language.py                 93      0     46      0   100%
 lan_transcriber/pipeline_steps/orchestrator.py            511      0    110      0   100%
 lan_transcriber/pipeline_steps/precheck.py                116      0     46      0   100%
@@ -198,7 +198,7 @@ lan_transcriber/runtime_paths.py                           21      0      4     
 lan_transcriber/torch_safe_globals.py                     126      0     40      0   100%
 lan_transcriber/utils.py                                   50      0     30      0   100%
 -----------------------------------------------------------------------------------------
-TOTAL                                                    2662      0    882      0   100%
+TOTAL                                                    2667      0    886      0   100%
 Name                              Stmts   Miss Branch BrPart  Cover
 -------------------------------------------------------------------
 lan_app/__init__.py                   1      0      0      0   100%

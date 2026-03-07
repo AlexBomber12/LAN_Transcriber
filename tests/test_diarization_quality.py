@@ -180,6 +180,32 @@ def test_classify_diarization_profile_identifies_dialog_candidates():
     assert dominant_pair.reason == "dominant_pair_dialog_like"
     assert dominant_pair.metrics.low_mass_speaker_count == 1
 
+    short_pair = _classify(
+        _annotation_from_segments(
+            (0.0, 1.0, "S1"),
+            (1.0, 2.0, "S2"),
+            (2.0, 3.0, "S1"),
+            (3.0, 4.0, "S2"),
+        ),
+        speech_turn_count=4,
+        duration_sec=4.0,
+    )
+    assert short_pair.selected_profile == "meeting"
+    assert short_pair.reason == "dialog_like_below_min_duration"
+
+    low_turn_pair = _classify(
+        _annotation_from_segments(
+            (0.0, 1.0, "S1"),
+            (1.0, 2.0, "S2"),
+            (2.0, 3.0, "S1"),
+            (3.0, 4.0, "S2"),
+        ),
+        speech_turn_count=3,
+        duration_sec=30.0,
+    )
+    assert low_turn_pair.selected_profile == "meeting"
+    assert low_turn_pair.reason == "dialog_like_below_min_turns"
+
 
 @pytest.mark.parametrize(
     ("diarization", "speech_turn_count", "duration_sec", "expected_reason"),

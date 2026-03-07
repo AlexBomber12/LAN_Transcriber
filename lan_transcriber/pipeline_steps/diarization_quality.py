@@ -259,6 +259,7 @@ def classify_diarization_profile(
         0.0,
     )
     dialog_score = _dialog_score(metrics)
+    dialog_like_multispeaker = _is_dialog_like_multispeaker(metrics)
 
     if metrics.speaker_count == 1 and enough_turns and enough_duration:
         return DiarizationProfileDecision(
@@ -267,7 +268,7 @@ def classify_diarization_profile(
             metrics=metrics,
             dialog_score=dialog_score,
         )
-    if _is_dialog_like_multispeaker(metrics):
+    if dialog_like_multispeaker and enough_turns and enough_duration:
         return DiarizationProfileDecision(
             selected_profile="dialog",
             reason="dominant_pair_dialog_like",
@@ -279,6 +280,10 @@ def classify_diarization_profile(
         reason = "no_valid_speakers"
     elif metrics.speaker_count == 1:
         reason = "single_speaker_short_recording"
+    elif dialog_like_multispeaker and not enough_turns:
+        reason = "dialog_like_below_min_turns"
+    elif dialog_like_multispeaker and not enough_duration:
+        reason = "dialog_like_below_min_duration"
     elif metrics.speaker_count > AUTO_PROFILE_DIALOG_MAX_SPEAKERS:
         reason = "too_many_speakers"
     elif metrics.low_mass_speaker_count < max(metrics.speaker_count - 2, 0):
