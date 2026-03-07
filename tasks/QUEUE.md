@@ -422,6 +422,6 @@ Queue (in order)
 - Depends on: PR-DIARIZATION-GPU-01
 
 83) PR-DIARIZATION-QUALITY-01: Improve speaker quality with diarization hints, dialog retry (2 speakers), and turn smoothing/post-processing
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-DIARIZATION-QUALITY-01.md
 - Depends on: PR-LLM-CHUNKING-01

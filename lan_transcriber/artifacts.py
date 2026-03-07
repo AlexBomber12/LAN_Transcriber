@@ -20,6 +20,7 @@ class RecordingArtifacts:
     transcript_txt_path: Path
     segments_json_path: Path
     speaker_turns_json_path: Path
+    diarization_metadata_json_path: Path
     snippets_dir: Path
     summary_json_path: Path
     metrics_json_path: Path
@@ -65,6 +66,7 @@ def build_recording_artifacts(
         transcript_txt_path=derived_dir / "transcript.txt",
         segments_json_path=derived_dir / "segments.json",
         speaker_turns_json_path=derived_dir / "speaker_turns.json",
+        diarization_metadata_json_path=derived_dir / "diarization_metadata.json",
         snippets_dir=snippets_dir,
         summary_json_path=derived_dir / "summary.json",
         metrics_json_path=derived_dir / "metrics.json",

@@ -260,3 +260,42 @@ def test_vad_method_defaults_and_env_override(monkeypatch):
     monkeypatch.setenv("LAN_VAD_METHOD", "invalid")
     with pytest.raises(ValueError, match="LAN_VAD_METHOD|vad_method"):
         AppSettings()
+
+
+def test_diarization_quality_settings_defaults_and_env_override(monkeypatch):
+    monkeypatch.delenv("LAN_DIARIZATION_PROFILE", raising=False)
+    monkeypatch.delenv("LAN_DIARIZATION_MIN_SPEAKERS", raising=False)
+    monkeypatch.delenv("LAN_DIARIZATION_MAX_SPEAKERS", raising=False)
+    monkeypatch.delenv(
+        "LAN_DIARIZATION_DIALOG_RETRY_MIN_DURATION_SECONDS",
+        raising=False,
+    )
+    monkeypatch.delenv("LAN_DIARIZATION_DIALOG_RETRY_MIN_TURNS", raising=False)
+    monkeypatch.delenv("LAN_DIARIZATION_MERGE_GAP_SECONDS", raising=False)
+    monkeypatch.delenv("LAN_DIARIZATION_MIN_TURN_SECONDS", raising=False)
+
+    cfg = AppSettings()
+    assert cfg.diarization_profile == "auto"
+    assert cfg.diarization_min_speakers is None
+    assert cfg.diarization_max_speakers is None
+    assert cfg.diarization_dialog_retry_min_duration_seconds == 20.0
+    assert cfg.diarization_dialog_retry_min_turns == 6
+    assert cfg.diarization_merge_gap_seconds == 0.5
+    assert cfg.diarization_min_turn_seconds == 0.5
+
+    monkeypatch.setenv("LAN_DIARIZATION_PROFILE", "dialog")
+    monkeypatch.setenv("LAN_DIARIZATION_MIN_SPEAKERS", "3")
+    monkeypatch.setenv("LAN_DIARIZATION_MAX_SPEAKERS", "4")
+    monkeypatch.setenv("LAN_DIARIZATION_DIALOG_RETRY_MIN_DURATION_SECONDS", "9.5")
+    monkeypatch.setenv("LAN_DIARIZATION_DIALOG_RETRY_MIN_TURNS", "5")
+    monkeypatch.setenv("LAN_DIARIZATION_MERGE_GAP_SECONDS", "0.6")
+    monkeypatch.setenv("LAN_DIARIZATION_MIN_TURN_SECONDS", "0.4")
+
+    cfg = AppSettings()
+    assert cfg.diarization_profile == "dialog"
+    assert cfg.diarization_min_speakers == 3
+    assert cfg.diarization_max_speakers == 4
+    assert cfg.diarization_dialog_retry_min_duration_seconds == 9.5
+    assert cfg.diarization_dialog_retry_min_turns == 5
+    assert cfg.diarization_merge_gap_seconds == 0.6
+    assert cfg.diarization_min_turn_seconds == 0.4

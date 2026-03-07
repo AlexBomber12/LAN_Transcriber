@@ -16,6 +16,7 @@ _OPTIONAL_DERIVED_FILES = (
     "summary.json",
     "transcript.json",
     "speaker_turns.json",
+    "diarization_metadata.json",
     "metrics.json",
     "segments.json",
     "lang_spans.json",

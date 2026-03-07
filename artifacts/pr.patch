@@ -1,83 +1,224 @@
-diff --git a/lan_transcriber/llm_client.py b/lan_transcriber/llm_client.py
-index 557da55..4203a29 100644
---- a/lan_transcriber/llm_client.py
-+++ b/lan_transcriber/llm_client.py
-@@ -66,6 +66,19 @@ def _resolve_retry_max_tokens(
-     return parsed
+diff --git a/lan_app/worker_tasks.py b/lan_app/worker_tasks.py
+index 1a6cd43..2966945 100644
+--- a/lan_app/worker_tasks.py
++++ b/lan_app/worker_tasks.py
+@@ -656,6 +656,8 @@ def _resolve_diarization_speaker_hints(
+         retry_min_duration_seconds = settings.diarization_dialog_retry_min_duration_seconds
+         retry_min_turns = settings.diarization_dialog_retry_min_turns
+ 
++    explicit_min_speakers = min_speakers is not None
++    explicit_max_speakers = max_speakers is not None
+     if profile not in {"auto", "dialog", "meeting"}:
+         profile = "auto"
+     default_min_speakers, default_max_speakers = profile_default_speaker_hints(profile)
+@@ -668,8 +670,13 @@ def _resolve_diarization_speaker_hints(
+         and max_speakers is not None
+         and min_speakers > max_speakers
+     ):
+-        min_speakers = None
+-        max_speakers = None
++        if explicit_min_speakers and not explicit_max_speakers:
++            max_speakers = None
++        elif explicit_max_speakers and not explicit_min_speakers:
++            min_speakers = None
++        else:
++            min_speakers = None
++            max_speakers = None
+ 
+     return _DiarizationRuntimeConfig(
+         profile=profile,
+diff --git a/lan_transcriber/pipeline_steps/diarization_quality.py b/lan_transcriber/pipeline_steps/diarization_quality.py
+index 3bfbcc7..d090ab6 100644
+--- a/lan_transcriber/pipeline_steps/diarization_quality.py
++++ b/lan_transcriber/pipeline_steps/diarization_quality.py
+@@ -52,6 +52,7 @@ def annotation_speaker_count(diarization: Any) -> int:
+ def should_retry_dialog(
+     *,
+     profile: str,
++    min_speakers: int | None,
+     max_speakers: int | None,
+     detected_speaker_count: int,
+     speech_turn_count: int,
+@@ -60,6 +61,8 @@ def should_retry_dialog(
+     min_duration_seconds: float,
+ ) -> bool:
+     normalized_profile = str(profile or "auto").strip().lower()
++    if min_speakers is not None and min_speakers > 2:
++        return False
+     if max_speakers is not None and max_speakers != 2:
+         return False
+     if normalized_profile != "dialog" and max_speakers != 2:
+diff --git a/lan_transcriber/pipeline_steps/orchestrator.py b/lan_transcriber/pipeline_steps/orchestrator.py
+index 3c5f6f8..e5b15c6 100644
+--- a/lan_transcriber/pipeline_steps/orchestrator.py
++++ b/lan_transcriber/pipeline_steps/orchestrator.py
+@@ -345,6 +345,12 @@ async def _maybe_retry_dialog_diarization(
+         effective_hints = {}
+     if not should_retry_dialog(
+         profile=str(metadata.get("diarization_profile") or "auto"),
++        min_speakers=(
++            int(effective_hints["min_speakers"])
++            if "min_speakers" in effective_hints
++            and isinstance(effective_hints["min_speakers"], int)
++            else None
++        ),
+         max_speakers=(
+             int(effective_hints["max_speakers"])
+             if "max_speakers" in effective_hints
+@@ -380,7 +386,14 @@ async def _maybe_retry_dialog_diarization(
+             "min_speakers=2 max_speakers=2"
+         ),
+     )
+-    return await retry_dialog(audio_path)
++    try:
++        return await retry_dialog(audio_path)
++    except Exception as exc:
++        _best_effort_step_log(
++            step_log_callback,
++            f"diarization dialog retry failed: {exc}",
++        )
++        return diarization
  
  
-+def _resolve_call_retry_max_tokens(
-+    value: int | str | None,
-+    *,
-+    base_max_tokens: int,
-+) -> int:
-+    parsed = _int_setting(
-+        value,
-+        default=base_max_tokens,
-+        minimum=_MIN_LLM_MAX_TOKENS,
-+    )
-+    return max(parsed, base_max_tokens)
+ def _write_diarization_metadata_artifact(
+diff --git a/tests/test_cov_lan_app_worker_tasks_branches.py b/tests/test_cov_lan_app_worker_tasks_branches.py
+index 3696ab8..25dcd3b 100644
+--- a/tests/test_cov_lan_app_worker_tasks_branches.py
++++ b/tests/test_cov_lan_app_worker_tasks_branches.py
+@@ -559,6 +559,20 @@ def test_resolve_diarization_speaker_hints_from_env(monkeypatch: pytest.MonkeyPa
+     assert hints.min_speakers is None
+     assert hints.max_speakers is None
+ 
++    monkeypatch.setenv("LAN_DIARIZATION_PROFILE", "meeting")
++    monkeypatch.delenv("LAN_DIARIZATION_MIN_SPEAKERS")
++    monkeypatch.setenv("LAN_DIARIZATION_MAX_SPEAKERS", "1")
++    hints = worker_tasks._resolve_diarization_speaker_hints()
++    assert hints.min_speakers is None
++    assert hints.max_speakers == 1
 +
++    monkeypatch.setenv("LAN_DIARIZATION_PROFILE", "dialog")
++    monkeypatch.setenv("LAN_DIARIZATION_MIN_SPEAKERS", "5")
++    monkeypatch.delenv("LAN_DIARIZATION_MAX_SPEAKERS")
++    hints = worker_tasks._resolve_diarization_speaker_hints()
++    assert hints.min_speakers == 5
++    assert hints.max_speakers is None
 +
- def _is_retryable_exception(exc: BaseException) -> bool:
-     if isinstance(
-         exc,
-@@ -374,7 +387,7 @@ class LLMClient:
-             minimum=_MIN_LLM_MAX_TOKENS,
-         )
-         effective_max_tokens_retry = (
--            _resolve_retry_max_tokens(
-+            _resolve_call_retry_max_tokens(
-                 max_tokens_retry,
-                 base_max_tokens=effective_max_tokens,
-             )
-diff --git a/tests/test_llm_client.py b/tests/test_llm_client.py
-index f11b0fa..f4d7cd1 100644
---- a/tests/test_llm_client.py
-+++ b/tests/test_llm_client.py
-@@ -510,6 +510,45 @@ async def test_generate_retry_budget_never_drops_below_overridden_max_tokens(
-     assert seen_max_tokens == [3072, 3072]
+     monkeypatch.setenv("LAN_DIARIZATION_PROFILE", "unknown")
+     monkeypatch.setenv("LAN_DIARIZATION_MIN_SPEAKERS", "abc")
+     monkeypatch.setenv("LAN_DIARIZATION_MAX_SPEAKERS", "0")
+diff --git a/tests/test_cov_lan_transcriber_extra_pipeline.py b/tests/test_cov_lan_transcriber_extra_pipeline.py
+index 2b661a2..9eeeb22 100644
+--- a/tests/test_cov_lan_transcriber_extra_pipeline.py
++++ b/tests/test_cov_lan_transcriber_extra_pipeline.py
+@@ -146,6 +146,47 @@ async def test_orchestrator_retry_helper_skips_non_retryable_cases_and_tolerates
+     assert result is diarization
  
  
 +@pytest.mark.asyncio
-+async def test_generate_respects_explicit_retry_budget_equal_to_max_tokens(
-+    monkeypatch: pytest.MonkeyPatch,
-+) -> None:
-+    client = llm_client.LLMClient(
-+        base_url="http://example.test",
-+        max_tokens=1024,
-+        max_tokens_retry=2048,
++async def test_orchestrator_retry_helper_keeps_initial_diarization_when_retry_fails():
++    class _RetryingDiariser:
++        dialog_retry_min_turns = 4
++        dialog_retry_min_duration_seconds = 15.0
++        last_run_metadata = {
++            "diarization_profile": "dialog",
++            "effective_hints": {"min_speakers": 2, "max_speakers": 2},
++            "speaker_count_before_retry": 1,
++        }
++
++        async def retry_dialog(self, _audio_path: Path):
++            raise RuntimeError("retry boom")
++
++    diarization = object()
++    step_messages: list[str] = []
++    result = await pipeline._maybe_retry_dialog_diarization(
++        diariser=_RetryingDiariser(),
++        audio_path=Path("/tmp/audio.wav"),
++        diarization=diarization,
++        asr_segments=[
++            {"text": "first"},
++            {"text": "second"},
++            {"text": "third"},
++            {"text": "fourth"},
++        ],
++        precheck_result=precheck.PrecheckResult(
++            duration_sec=30.0,
++            speech_ratio=0.5,
++            quarantine_reason=None,
++        ),
++        step_log_callback=step_messages.append,
 +    )
-+    seen_max_tokens: list[int] = []
 +
-+    async def _fake_post(
-+        *,
-+        url: str,
-+        payload: dict[str, Any],
-+        headers: dict[str, str],
-+        attempt_number: int | None = None,
-+    ) -> dict[str, Any]:
-+        del url, headers
-+        seen_max_tokens.append(int(payload["max_tokens"]))
-+        if attempt_number == 1:
-+            return {
-+                "choices": [
-+                    {
-+                        "finish_reason": "length",
-+                        "message": {"role": "assistant", "content": ""},
-+                    }
-+                ]
-+            }
-+        return {"choices": [{"message": {"role": "assistant", "content": "ok"}}]}
-+
-+    monkeypatch.setattr(client, "_post_chat_completion", _fake_post)
-+
-+    result = await client.generate("sys", "usr", max_tokens=3072, max_tokens_retry=3072)
-+
-+    assert result["content"] == "ok"
-+    assert seen_max_tokens == [3072, 3072]
++    assert result is diarization
++    assert step_messages == [
++        "diarization dialog retry profile=dialog min_speakers=2 max_speakers=2",
++        "diarization dialog retry failed: retry boom",
++    ]
 +
 +
- @respx.mock
- def test_generate_with_content_only_response() -> None:
-     route = respx.post("http://127.0.0.1:8000/v1/chat/completions").mock(
+ @pytest.mark.asyncio
+ async def test_run_chunked_llm_summary_rejects_empty_chunk_plan(
+     tmp_path: Path,
+diff --git a/tests/test_diarization_quality.py b/tests/test_diarization_quality.py
+index dd592d2..86ed898 100644
+--- a/tests/test_diarization_quality.py
++++ b/tests/test_diarization_quality.py
+@@ -46,6 +46,7 @@ def test_annotation_speaker_count_ignores_invalid_tracks_and_counts_multiple_sha
+ def test_should_retry_dialog_requires_dialog_like_mode_single_speaker_and_plausible_audio():
+     assert not should_retry_dialog(
+         profile="auto",
++        min_speakers=None,
+         max_speakers=None,
+         detected_speaker_count=1,
+         speech_turn_count=8,
+@@ -55,6 +56,7 @@ def test_should_retry_dialog_requires_dialog_like_mode_single_speaker_and_plausi
+     )
+     assert not should_retry_dialog(
+         profile="dialog",
++        min_speakers=2,
+         max_speakers=2,
+         detected_speaker_count=2,
+         speech_turn_count=8,
+@@ -64,6 +66,7 @@ def test_should_retry_dialog_requires_dialog_like_mode_single_speaker_and_plausi
+     )
+     assert not should_retry_dialog(
+         profile="dialog",
++        min_speakers=2,
+         max_speakers=2,
+         detected_speaker_count=1,
+         speech_turn_count=3,
+@@ -73,6 +76,7 @@ def test_should_retry_dialog_requires_dialog_like_mode_single_speaker_and_plausi
+     )
+     assert not should_retry_dialog(
+         profile="dialog",
++        min_speakers=2,
+         max_speakers=2,
+         detected_speaker_count=1,
+         speech_turn_count=8,
+@@ -82,6 +86,7 @@ def test_should_retry_dialog_requires_dialog_like_mode_single_speaker_and_plausi
+     )
+     assert not should_retry_dialog(
+         profile="dialog",
++        min_speakers=2,
+         max_speakers=4,
+         detected_speaker_count=1,
+         speech_turn_count=8,
+@@ -89,8 +94,19 @@ def test_should_retry_dialog_requires_dialog_like_mode_single_speaker_and_plausi
+         min_turns=4,
+         min_duration_seconds=20.0,
+     )
++    assert not should_retry_dialog(
++        profile="dialog",
++        min_speakers=5,
++        max_speakers=None,
++        detected_speaker_count=1,
++        speech_turn_count=8,
++        duration_sec=45.0,
++        min_turns=4,
++        min_duration_seconds=20.0,
++    )
+     assert should_retry_dialog(
+         profile="meeting",
++        min_speakers=1,
+         max_speakers=2,
+         detected_speaker_count=1,
+         speech_turn_count=8,

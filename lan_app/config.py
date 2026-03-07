@@ -8,6 +8,12 @@ from pydantic import AliasChoices, Field, model_validator
 from pydantic_settings import BaseSettings
 
 from lan_app.constants import DEFAULT_RQ_QUEUE_NAME
+from lan_transcriber.pipeline_steps.diarization_quality import (
+    DEFAULT_DIALOG_RETRY_MIN_DURATION_SECONDS,
+    DEFAULT_DIALOG_RETRY_MIN_TURNS,
+    DEFAULT_DIARIZATION_MERGE_GAP_SECONDS,
+    DEFAULT_DIARIZATION_MIN_TURN_SECONDS,
+)
 from lan_transcriber.runtime_paths import default_data_root, default_recordings_root
 
 from .diarization_loader import DEFAULT_DIARIZATION_MODEL_ID
@@ -240,6 +246,25 @@ class AppSettings(BaseSettings):
     diarization_model_id: str = Field(
         default=DEFAULT_DIARIZATION_MODEL_ID,
         validation_alias=AliasChoices("LAN_DIARIZATION_MODEL_ID"),
+    )
+    diarization_profile: Literal["auto", "dialog", "meeting"] = "auto"
+    diarization_min_speakers: int | None = Field(default=None, ge=1)
+    diarization_max_speakers: int | None = Field(default=None, ge=1)
+    diarization_dialog_retry_min_duration_seconds: float = Field(
+        default=DEFAULT_DIALOG_RETRY_MIN_DURATION_SECONDS,
+        ge=0.0,
+    )
+    diarization_dialog_retry_min_turns: int = Field(
+        default=DEFAULT_DIALOG_RETRY_MIN_TURNS,
+        ge=1,
+    )
+    diarization_merge_gap_seconds: float = Field(
+        default=DEFAULT_DIARIZATION_MERGE_GAP_SECONDS,
+        ge=0.0,
+    )
+    diarization_min_turn_seconds: float = Field(
+        default=DEFAULT_DIARIZATION_MIN_TURN_SECONDS,
+        ge=0.0,
     )
     vad_method: Literal["silero", "pyannote"] = "silero"
 
