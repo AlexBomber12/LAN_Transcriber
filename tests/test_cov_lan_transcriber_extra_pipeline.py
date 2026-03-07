@@ -265,6 +265,64 @@ async def test_run_chunked_llm_summary_merge_timeout_sentinel_fails(tmp_path: Pa
     }
 
 
+@pytest.mark.asyncio
+async def test_run_chunked_llm_summary_passes_merge_retry_budget(tmp_path: Path) -> None:
+    merge_kwargs: dict[str, Any] = {}
+
+    class _MergeBudgetLLM:
+        async def generate(self, **kwargs: Any) -> dict[str, str]:
+            payload = json.loads(kwargs["user_prompt"])
+            if "chunk" in payload:
+                return {
+                    "content": json.dumps(
+                        {
+                            "summary_bullets": ["Chunk 1"],
+                            "decisions": [],
+                            "action_items": [],
+                            "emotional_cues": ["Focused"],
+                            "questions": {"total_count": 0, "types": {}, "extracted": []},
+                        }
+                    )
+                }
+            merge_kwargs.update(kwargs)
+            return {
+                "content": json.dumps(
+                    {
+                        "topic": "Merged topic",
+                        "summary_bullets": ["Merged summary bullet"],
+                        "decisions": [],
+                        "action_items": [],
+                        "emotional_summary": "Focused.",
+                        "questions": {"total_count": 0, "types": {}, "extracted": []},
+                    }
+                )
+            }
+
+    await pipeline._run_chunked_llm_summary(
+        transcript_text="single chunk transcript",
+        derived_dir=tmp_path / "derived",
+        llm=_MergeBudgetLLM(),
+        cfg=_settings(
+            tmp_path,
+            llm_model="model",
+            llm_chunk_max_chars=100,
+            llm_max_tokens=1024,
+            llm_max_tokens_retry=2048,
+            llm_merge_max_tokens=3072,
+        ),
+        llm_model="model",
+        target_summary_language="en",
+        friendly=0,
+        default_topic="Meeting summary",
+        calendar_title=None,
+        calendar_attendees=[],
+        progress_callback=None,
+    )
+
+    assert merge_kwargs["max_tokens"] == 3072
+    assert merge_kwargs["max_tokens_retry"] == 3072
+
+
 def _audio_file(tmp_path: Path, name: str = "audio.mp3") -> Path:
     path = tmp_path / name
     path.write_bytes(b"\x00")

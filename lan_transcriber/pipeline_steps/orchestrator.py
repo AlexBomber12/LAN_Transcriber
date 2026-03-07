@@ -649,13 +649,15 @@ async def _run_chunked_llm_summary(
         calendar_title=calendar_title,
         calendar_attendees=calendar_attendees,
     )
+    merge_max_tokens = cfg.llm_merge_max_tokens or cfg.llm_max_tokens
     raw_merge = await _generate_llm_message(
         llm,
         system_prompt=merge_sys_prompt,
         user_prompt=merge_user_prompt,
         model=llm_model,
         response_format={"type": "json_object"},
-        max_tokens=cfg.llm_merge_max_tokens or cfg.llm_max_tokens,
+        max_tokens=merge_max_tokens,
+        max_tokens_retry=max(cfg.llm_max_tokens_retry, merge_max_tokens),
     )
     atomic_write_json(derived_dir / "llm_merge_raw.json", raw_merge)
     if _llm_message_timed_out(raw_merge):

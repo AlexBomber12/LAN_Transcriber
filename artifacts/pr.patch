@@ -1,60 +1,90 @@
 diff --git a/lan_transcriber/pipeline_steps/orchestrator.py b/lan_transcriber/pipeline_steps/orchestrator.py
-index 322c037..5f9199a 100644
+index 5f9199a..ba3ab6b 100644
 --- a/lan_transcriber/pipeline_steps/orchestrator.py
 +++ b/lan_transcriber/pipeline_steps/orchestrator.py
-@@ -626,7 +626,7 @@ async def _run_chunked_llm_summary(
-             if _llm_message_timed_out(raw_chunk):
-                 raise TimeoutError(_LLM_TIMEOUT_SENTINEL)
-             extract = parse_chunk_extract(str(raw_chunk.get("content") or ""))
--        except TimeoutError as exc:
-+        except (TimeoutError, asyncio.TimeoutError) as exc:
-             message = _llm_timeout_message(cfg.llm_chunk_timeout_seconds)
-             atomic_write_json(error_path, {"error": message})
-             raise RuntimeError(f"LLM chunk {chunk.index}/{chunk.total} failed: {message}") from exc
+@@ -649,13 +649,15 @@ async def _run_chunked_llm_summary(
+         calendar_title=calendar_title,
+         calendar_attendees=calendar_attendees,
+     )
++    merge_max_tokens = cfg.llm_merge_max_tokens or cfg.llm_max_tokens
+     raw_merge = await _generate_llm_message(
+         llm,
+         system_prompt=merge_sys_prompt,
+         user_prompt=merge_user_prompt,
+         model=llm_model,
+         response_format={"type": "json_object"},
+-        max_tokens=cfg.llm_merge_max_tokens or cfg.llm_max_tokens,
++        max_tokens=merge_max_tokens,
++        max_tokens_retry=max(cfg.llm_max_tokens_retry, merge_max_tokens),
+     )
+     atomic_write_json(derived_dir / "llm_merge_raw.json", raw_merge)
+     if _llm_message_timed_out(raw_merge):
 diff --git a/tests/test_cov_lan_transcriber_extra_pipeline.py b/tests/test_cov_lan_transcriber_extra_pipeline.py
-index c4ef6ce..de04671 100644
+index de04671..6537758 100644
 --- a/tests/test_cov_lan_transcriber_extra_pipeline.py
 +++ b/tests/test_cov_lan_transcriber_extra_pipeline.py
-@@ -144,6 +144,42 @@ async def test_run_chunked_llm_summary_timeout_writes_error_artifact(tmp_path: P
+@@ -265,6 +265,64 @@ async def test_run_chunked_llm_summary_merge_timeout_sentinel_fails(tmp_path: Pa
      }
  
  
 +@pytest.mark.asyncio
-+async def test_run_chunked_llm_summary_asyncio_timeout_writes_error_artifact(
-+    tmp_path: Path,
-+    monkeypatch: pytest.MonkeyPatch,
-+) -> None:
-+    async def _raise_asyncio_timeout(*_args: Any, **_kwargs: Any) -> dict[str, str]:
-+        raise asyncio.TimeoutError()
++async def test_run_chunked_llm_summary_passes_merge_retry_budget(tmp_path: Path) -> None:
++    merge_kwargs: dict[str, Any] = {}
 +
-+    monkeypatch.setattr(pipeline, "_generate_llm_message", _raise_asyncio_timeout)
++    class _MergeBudgetLLM:
++        async def generate(self, **kwargs: Any) -> dict[str, str]:
++            payload = json.loads(kwargs["user_prompt"])
++            if "chunk" in payload:
++                return {
++                    "content": json.dumps(
++                        {
++                            "summary_bullets": ["Chunk 1"],
++                            "decisions": [],
++                            "action_items": [],
++                            "emotional_cues": ["Focused"],
++                            "questions": {"total_count": 0, "types": {}, "extracted": []},
++                        }
++                    )
++                }
++            merge_kwargs.update(kwargs)
++            return {
++                "content": json.dumps(
++                    {
++                        "topic": "Merged topic",
++                        "summary_bullets": ["Merged summary bullet"],
++                        "decisions": [],
++                        "action_items": [],
++                        "emotional_summary": "Focused.",
++                        "questions": {"total_count": 0, "types": {}, "extracted": []},
++                    }
++                )
++            }
 +
-+    derived = tmp_path / "derived"
-+    with pytest.raises(RuntimeError, match=r"LLM chunk 1/1 failed: timed out after 0.001s"):
-+        await pipeline._run_chunked_llm_summary(
-+            transcript_text="single chunk transcript",
-+            derived_dir=derived,
-+            llm=object(),
-+            cfg=_settings(
-+                tmp_path,
-+                llm_model="model",
-+                llm_chunk_max_chars=100,
-+                llm_chunk_timeout_seconds=0.001,
-+            ),
++    await pipeline._run_chunked_llm_summary(
++        transcript_text="single chunk transcript",
++        derived_dir=tmp_path / "derived",
++        llm=_MergeBudgetLLM(),
++        cfg=_settings(
++            tmp_path,
 +            llm_model="model",
-+            target_summary_language="en",
-+            friendly=0,
-+            default_topic="Meeting summary",
-+            calendar_title=None,
-+            calendar_attendees=[],
-+            progress_callback=None,
-+        )
++            llm_chunk_max_chars=100,
++            llm_max_tokens=1024,
++            llm_max_tokens_retry=2048,
++            llm_merge_max_tokens=3072,
++        ),
++        llm_model="model",
++        target_summary_language="en",
++        friendly=0,
++        default_topic="Meeting summary",
++        calendar_title=None,
++        calendar_attendees=[],
++        progress_callback=None,
++    )
 +
-+    assert json.loads((derived / "llm_chunk_001_error.json").read_text(encoding="utf-8")) == {
-+        "error": "timed out after 0.001s"
-+    }
++    assert merge_kwargs["max_tokens"] == 3072
++    assert merge_kwargs["max_tokens_retry"] == 3072
 +
 +
- @pytest.mark.asyncio
- async def test_run_chunked_llm_summary_timeout_sentinel_writes_error_artifact(
-     tmp_path: Path,
+ def _audio_file(tmp_path: Path, name: str = "audio.mp3") -> Path:
+     path = tmp_path / name
+     path.write_bytes(b"\x00")
