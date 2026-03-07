@@ -26,6 +26,7 @@ from lan_transcriber.llm_client import (
 from lan_transcriber.pipeline import Settings as PipelineSettings
 from lan_transcriber.pipeline import run_pipeline, run_precheck
 from lan_transcriber.pipeline_steps.diarization_quality import (
+    AUTO_PROFILE_DEFAULT_INITIAL_PROFILE,
     DEFAULT_DIALOG_RETRY_MIN_DURATION_SECONDS,
     DEFAULT_DIALOG_RETRY_MIN_TURNS,
     annotation_speaker_count,
@@ -624,8 +625,11 @@ class _FallbackDiariser:
 @dataclass(frozen=True)
 class _DiarizationRuntimeConfig:
     profile: str
+    initial_profile: str
     min_speakers: int | None
     max_speakers: int | None
+    auto_profile_enabled: bool
+    override_reason: str | None
     dialog_retry_min_duration_seconds: float
     dialog_retry_min_turns: int
 
@@ -636,6 +640,9 @@ class _PyannoteDiariser:
         pipeline_model: Any,
         *,
         profile: str = "auto",
+        initial_profile: str | None = None,
+        auto_profile_enabled: bool = True,
+        override_reason: str | None = None,
         min_speakers: int | None = None,
         max_speakers: int | None = None,
         dialog_retry_min_duration_seconds: float = DEFAULT_DIALOG_RETRY_MIN_DURATION_SECONDS,
@@ -646,6 +653,18 @@ class _PyannoteDiariser:
         self._pipeline_model = pipeline_model
         self.mode = "pyannote"
         self.profile = str(profile or "auto").strip().lower() or "auto"
+        self.initial_profile = (
+            str(
+                initial_profile
+                or (self.profile if self.profile in {"dialog", "meeting"} else "")
+                or AUTO_PROFILE_DEFAULT_INITIAL_PROFILE
+            ).strip().lower()
+            or AUTO_PROFILE_DEFAULT_INITIAL_PROFILE
+        )
+        if self.initial_profile not in {"dialog", "meeting"}:
+            self.initial_profile = AUTO_PROFILE_DEFAULT_INITIAL_PROFILE
+        self.auto_profile_enabled = bool(auto_profile_enabled and self.profile == "auto")
+        self.override_reason = str(override_reason or "").strip() or None
         call_kwargs: dict[str, int] = {}
         if min_speakers is not None:
             call_kwargs["min_speakers"] = min_speakers
@@ -658,9 +677,16 @@ class _PyannoteDiariser:
         )
         self.dialog_retry_min_turns = max(int(dialog_retry_min_turns), 1)
         self.last_run_metadata: dict[str, Any] = {
+            "requested_profile": self.profile,
             "diarization_profile": self.profile,
+            "initial_profile": self.initial_profile,
+            "selected_profile": self.initial_profile if not self.auto_profile_enabled else None,
+            "auto_profile_enabled": self.auto_profile_enabled,
+            "override_reason": self.override_reason,
             "initial_hints": dict(self._base_call_kwargs),
+            "retry_hints": None,
             "effective_hints": dict(self._base_call_kwargs),
+            "profile_selection": None,
             "dialog_retry_used": False,
             "speaker_count_before_retry": None,
             "speaker_count_after_retry": None,
@@ -720,7 +746,10 @@ class _PyannoteDiariser:
         self.last_run_metadata.update(
             {
                 "initial_hints": dict(self._base_call_kwargs),
+                "retry_hints": None,
                 "effective_hints": dict(self._base_call_kwargs),
+                "selected_profile": self.initial_profile if not self.auto_profile_enabled else None,
+                "profile_selection": None,
                 "dialog_retry_used": False,
                 "speaker_count_before_retry": speaker_count,
                 "speaker_count_after_retry": speaker_count,
@@ -733,6 +762,7 @@ class _PyannoteDiariser:
         annotation = await self._call_pipeline(audio_path, call_kwargs=retry_hints)
         self.last_run_metadata.update(
             {
+                "retry_hints": dict(retry_hints),
                 "effective_hints": dict(retry_hints),
                 "dialog_retry_used": True,
                 "speaker_count_after_retry": annotation_speaker_count(annotation),
@@ -767,6 +797,21 @@ def _optional_nonnegative_env_float(name: str) -> float | None:
     return value
 
 
+def _profile_from_runtime_hints(
+    requested_profile: str,
+    min_speakers: int | None,
+    max_speakers: int | None,
+) -> str:
+    normalized = str(requested_profile or "auto").strip().lower() or "auto"
+    if normalized == "dialog":
+        return "dialog"
+    if normalized == "meeting":
+        return "meeting"
+    if max_speakers == 2 and (min_speakers is None or min_speakers <= 2):
+        return "dialog"
+    return AUTO_PROFILE_DEFAULT_INITIAL_PROFILE
+
+
 def _resolve_diarization_speaker_hints(
     *,
     settings: AppSettings | None = None,
@@ -796,7 +841,10 @@ def _resolve_diarization_speaker_hints(
     explicit_max_speakers = max_speakers is not None
     if profile not in {"auto", "dialog", "meeting"}:
         profile = "auto"
-    default_min_speakers, default_max_speakers = profile_default_speaker_hints(profile)
+    default_profile = profile if profile != "auto" else AUTO_PROFILE_DEFAULT_INITIAL_PROFILE
+    default_min_speakers, default_max_speakers = profile_default_speaker_hints(
+        default_profile
+    )
     if min_speakers is None:
         min_speakers = default_min_speakers
     if max_speakers is None:
@@ -814,10 +862,22 @@ def _resolve_diarization_speaker_hints(
             min_speakers = None
             max_speakers = None
 
+    auto_profile_enabled = profile == "auto" and not explicit_min_speakers and not explicit_max_speakers
+    override_reason: str | None = None
+    if profile == "dialog":
+        override_reason = "profile_forced_dialog"
+    elif profile == "meeting":
+        override_reason = "profile_forced_meeting"
+    elif not auto_profile_enabled:
+        override_reason = "explicit_speaker_hints"
+
     return _DiarizationRuntimeConfig(
         profile=profile,
+        initial_profile=_profile_from_runtime_hints(profile, min_speakers, max_speakers),
         min_speakers=min_speakers,
         max_speakers=max_speakers,
+        auto_profile_enabled=auto_profile_enabled,
+        override_reason=override_reason,
         dialog_retry_min_duration_seconds=retry_min_duration_seconds,
         dialog_retry_min_turns=retry_min_turns,
     )
@@ -867,6 +927,9 @@ def _build_diariser(
     return _PyannoteDiariser(
         model,
         profile=diarization_cfg.profile,
+        initial_profile=diarization_cfg.initial_profile,
+        auto_profile_enabled=diarization_cfg.auto_profile_enabled,
+        override_reason=diarization_cfg.override_reason,
         min_speakers=diarization_cfg.min_speakers,
         max_speakers=diarization_cfg.max_speakers,
         dialog_retry_min_duration_seconds=(

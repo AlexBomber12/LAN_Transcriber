@@ -160,9 +160,9 @@ models are cached across runs.
 | `QUARANTINE_RETENTION_DAYS` | Retention period for quarantined recording cleanup (default `7`) |
 | `LAN_API_BIND_HOST` | Published API bind host (default `127.0.0.1`) |
 | `LAN_API_PORT` | Published API port (default `7860`) |
-| `LAN_DIARIZATION_PROFILE` | Speaker diarization hint profile: `auto` (default), `dialog` (forces 2 speakers), or `meeting` (defaults to 2..6 speakers) |
-| `LAN_DIARIZATION_MIN_SPEAKERS` | Optional explicit pyannote `min_speakers` override; takes precedence over the selected profile |
-| `LAN_DIARIZATION_MAX_SPEAKERS` | Optional explicit pyannote `max_speakers` override; takes precedence over the selected profile |
+| `LAN_DIARIZATION_PROFILE` | Speaker diarization mode: `auto` (default; first pass uses meeting-like 2..6 hints and retries once with 2 speakers only when the result looks dialog-like), `dialog` (forces 2 speakers and bypasses auto selection), or `meeting` (forces meeting-like 2..6 and bypasses auto selection) |
+| `LAN_DIARIZATION_MIN_SPEAKERS` | Optional explicit pyannote `min_speakers` override for the first pass; when set, it overrides the profile default and bypasses auto-profile selection |
+| `LAN_DIARIZATION_MAX_SPEAKERS` | Optional explicit pyannote `max_speakers` override for the first pass; when set, it overrides the profile default and bypasses auto-profile selection |
 | `LAN_DIARIZATION_MERGE_GAP_SECONDS` | Conservative post-processing gap threshold for merging adjacent same-speaker turns (default `0.5`) |
 | `LAN_DIARIZATION_MIN_TURN_SECONDS` | Conservative post-processing threshold for absorbing micro-turns between matching neighbors (default `0.5`) |
 | `LLM_BASE_URL` | OpenAI-compatible Spark endpoint |
@@ -187,7 +187,7 @@ If LLM responses fail with `finish_reason=length` or empty `message.content`, in
 
 Long transcripts are processed with a chunked map-reduce LLM flow. During that phase the UI may show progress stages like `llm_chunk_1_of_5` and `llm_merge`, and debug artifacts are written under `derived/` for chunk planning and merge inspection.
 
-For diarization quality tuning, use `LAN_DIARIZATION_PROFILE=dialog` for 2-person conversations, keep `auto` for mixed workloads, or use `meeting` to bias pyannote toward small multi-speaker meetings. Each processed recording now writes `derived/diarization_metadata.json` with the applied profile, hints, retry usage, and smoothing stats.
+For diarization quality tuning, keep `LAN_DIARIZATION_PROFILE=auto` for mixed workloads. In `auto`, the worker runs a meeting-oriented first pass, classifies the result from deterministic speaker-share/alternation/overlap heuristics, and retries once with `min_speakers=2` and `max_speakers=2` only when the recording looks dialog-like. Use `dialog` or `meeting` only to force one behavior, and note that explicit `LAN_DIARIZATION_MIN_SPEAKERS` / `LAN_DIARIZATION_MAX_SPEAKERS` overrides bypass auto selection. Each processed recording writes `derived/diarization_metadata.json` with the requested profile, selected profile, initial top-two coverage, retry attempt/winner, applied hints, and smoothing stats.
 
 If API auth is enabled, set `LAN_API_BEARER_TOKEN` to a non-empty value in your env file.
 

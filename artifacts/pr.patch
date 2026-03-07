@@ -1,28 +1,1625 @@
-diff --git a/lan_app/ops.py b/lan_app/ops.py
-index 0e816f0..a73932e 100644
---- a/lan_app/ops.py
-+++ b/lan_app/ops.py
-@@ -72,6 +72,8 @@ def _recording_root_path(recording_id: str, settings: AppSettings) -> Path:
-     raw_recording_id = str(recording_id or "").strip()
-     if not raw_recording_id:
-         raise RecordingDeleteError("Delete failed: recording id is required.")
-+    if raw_recording_id in {".", ".."}:
-+        raise RecordingDeleteError("Delete failed: invalid recording id.")
-     if Path(raw_recording_id).parts != (raw_recording_id,):
-         raise RecordingDeleteError("Delete failed: invalid recording id.")
+diff --git a/README.md b/README.md
+index c9ec814..36d51cb 100644
+--- a/README.md
++++ b/README.md
+@@ -160,9 +160,9 @@ models are cached across runs.
+ | `QUARANTINE_RETENTION_DAYS` | Retention period for quarantined recording cleanup (default `7`) |
+ | `LAN_API_BIND_HOST` | Published API bind host (default `127.0.0.1`) |
+ | `LAN_API_PORT` | Published API port (default `7860`) |
+-| `LAN_DIARIZATION_PROFILE` | Speaker diarization hint profile: `auto` (default), `dialog` (forces 2 speakers), or `meeting` (defaults to 2..6 speakers) |
+-| `LAN_DIARIZATION_MIN_SPEAKERS` | Optional explicit pyannote `min_speakers` override; takes precedence over the selected profile |
+-| `LAN_DIARIZATION_MAX_SPEAKERS` | Optional explicit pyannote `max_speakers` override; takes precedence over the selected profile |
++| `LAN_DIARIZATION_PROFILE` | Speaker diarization mode: `auto` (default; first pass uses meeting-like 2..6 hints and retries once with 2 speakers only when the result looks dialog-like), `dialog` (forces 2 speakers and bypasses auto selection), or `meeting` (forces meeting-like 2..6 and bypasses auto selection) |
++| `LAN_DIARIZATION_MIN_SPEAKERS` | Optional explicit pyannote `min_speakers` override for the first pass; when set, it overrides the profile default and bypasses auto-profile selection |
++| `LAN_DIARIZATION_MAX_SPEAKERS` | Optional explicit pyannote `max_speakers` override for the first pass; when set, it overrides the profile default and bypasses auto-profile selection |
+ | `LAN_DIARIZATION_MERGE_GAP_SECONDS` | Conservative post-processing gap threshold for merging adjacent same-speaker turns (default `0.5`) |
+ | `LAN_DIARIZATION_MIN_TURN_SECONDS` | Conservative post-processing threshold for absorbing micro-turns between matching neighbors (default `0.5`) |
+ | `LLM_BASE_URL` | OpenAI-compatible Spark endpoint |
+@@ -187,7 +187,7 @@ If LLM responses fail with `finish_reason=length` or empty `message.content`, in
  
-diff --git a/tests/test_ops.py b/tests/test_ops.py
-index 9d5e500..11e7eda 100644
---- a/tests/test_ops.py
-+++ b/tests/test_ops.py
-@@ -129,6 +129,10 @@ def test_delete_recording_with_artifacts_rejects_invalid_id(tmp_path: Path) -> N
-     cfg = _cfg(tmp_path)
-     with pytest.raises(RecordingDeleteError, match="recording id is required"):
-         delete_recording_with_artifacts("", settings=cfg)
-+    with pytest.raises(RecordingDeleteError, match="invalid recording id"):
-+        delete_recording_with_artifacts(".", settings=cfg)
-+    with pytest.raises(RecordingDeleteError, match="invalid recording id"):
-+        delete_recording_with_artifacts("..", settings=cfg)
-     with pytest.raises(RecordingDeleteError, match="invalid recording id"):
-         delete_recording_with_artifacts("../escape", settings=cfg)
+ Long transcripts are processed with a chunked map-reduce LLM flow. During that phase the UI may show progress stages like `llm_chunk_1_of_5` and `llm_merge`, and debug artifacts are written under `derived/` for chunk planning and merge inspection.
  
+-For diarization quality tuning, use `LAN_DIARIZATION_PROFILE=dialog` for 2-person conversations, keep `auto` for mixed workloads, or use `meeting` to bias pyannote toward small multi-speaker meetings. Each processed recording now writes `derived/diarization_metadata.json` with the applied profile, hints, retry usage, and smoothing stats.
++For diarization quality tuning, keep `LAN_DIARIZATION_PROFILE=auto` for mixed workloads. In `auto`, the worker runs a meeting-oriented first pass, classifies the result from deterministic speaker-share/alternation/overlap heuristics, and retries once with `min_speakers=2` and `max_speakers=2` only when the recording looks dialog-like. Use `dialog` or `meeting` only to force one behavior, and note that explicit `LAN_DIARIZATION_MIN_SPEAKERS` / `LAN_DIARIZATION_MAX_SPEAKERS` overrides bypass auto selection. Each processed recording writes `derived/diarization_metadata.json` with the requested profile, selected profile, initial top-two coverage, retry attempt/winner, applied hints, and smoothing stats.
+ 
+ If API auth is enabled, set `LAN_API_BEARER_TOKEN` to a non-empty value in your env file.
+ 
+diff --git a/docs/runbook.md b/docs/runbook.md
+index 4806a55..3081b36 100644
+--- a/docs/runbook.md
++++ b/docs/runbook.md
+@@ -59,7 +59,7 @@ docker compose run --rm api python -m lan_app.healthchecks app
+ 3. Set these values in `.env`:
+    - `HF_TOKEN=<your token>`
+    - `LAN_DIARIZATION_MODEL_ID=pyannote/speaker-diarization-3.1` (or your approved repo id)
+-   - `LAN_DIARIZATION_PROFILE=auto` (use `dialog` to force 2-person conversations, or `meeting` to bias toward 2..6 speakers)
++   - `LAN_DIARIZATION_PROFILE=auto` (default; first pass uses meeting-like 2..6 hints and retries once with 2 speakers only when the result looks dialog-like)
+    - `LAN_VAD_METHOD=silero` (default; set `pyannote` only if explicitly required)
+ 4. Run warmup once before starting normal traffic:
+ 
+@@ -81,9 +81,10 @@ docker compose exec worker python -c "from lan_app.diarization_loader import loa
+ ```
+ 
+ Optional diarization tuning:
+-- `LAN_DIARIZATION_MIN_SPEAKERS` and `LAN_DIARIZATION_MAX_SPEAKERS` override the selected profile defaults.
++- `LAN_DIARIZATION_PROFILE=dialog` forces 2-speaker diarization; `LAN_DIARIZATION_PROFILE=meeting` forces meeting-like 2..6 hints.
++- `LAN_DIARIZATION_MIN_SPEAKERS` and `LAN_DIARIZATION_MAX_SPEAKERS` override the first-pass defaults and bypass auto-profile selection when set.
+ - `LAN_DIARIZATION_MERGE_GAP_SECONDS` and `LAN_DIARIZATION_MIN_TURN_SECONDS` control conservative turn smoothing.
+-- Each processed recording writes `derived/diarization_metadata.json` with the applied profile, hints, retry usage, and before/after smoothing counts.
++- Each processed recording writes `derived/diarization_metadata.json` with the requested profile, selected profile, initial speaker count, top-two coverage, retry attempt/winner, applied hints, and before/after smoothing counts.
+ 
+ ## 2) Runtime safety defaults
+ 
+diff --git a/lan_app/worker_tasks.py b/lan_app/worker_tasks.py
+index 8b22364..5fc5e90 100644
+--- a/lan_app/worker_tasks.py
++++ b/lan_app/worker_tasks.py
+@@ -26,6 +26,7 @@ from lan_transcriber.llm_client import (
+ from lan_transcriber.pipeline import Settings as PipelineSettings
+ from lan_transcriber.pipeline import run_pipeline, run_precheck
+ from lan_transcriber.pipeline_steps.diarization_quality import (
++    AUTO_PROFILE_DEFAULT_INITIAL_PROFILE,
+     DEFAULT_DIALOG_RETRY_MIN_DURATION_SECONDS,
+     DEFAULT_DIALOG_RETRY_MIN_TURNS,
+     annotation_speaker_count,
+@@ -624,8 +625,11 @@ class _FallbackDiariser:
+ @dataclass(frozen=True)
+ class _DiarizationRuntimeConfig:
+     profile: str
++    initial_profile: str
+     min_speakers: int | None
+     max_speakers: int | None
++    auto_profile_enabled: bool
++    override_reason: str | None
+     dialog_retry_min_duration_seconds: float
+     dialog_retry_min_turns: int
+ 
+@@ -636,6 +640,9 @@ class _PyannoteDiariser:
+         pipeline_model: Any,
+         *,
+         profile: str = "auto",
++        initial_profile: str | None = None,
++        auto_profile_enabled: bool = True,
++        override_reason: str | None = None,
+         min_speakers: int | None = None,
+         max_speakers: int | None = None,
+         dialog_retry_min_duration_seconds: float = DEFAULT_DIALOG_RETRY_MIN_DURATION_SECONDS,
+@@ -646,6 +653,18 @@ class _PyannoteDiariser:
+         self._pipeline_model = pipeline_model
+         self.mode = "pyannote"
+         self.profile = str(profile or "auto").strip().lower() or "auto"
++        self.initial_profile = (
++            str(
++                initial_profile
++                or (self.profile if self.profile in {"dialog", "meeting"} else "")
++                or AUTO_PROFILE_DEFAULT_INITIAL_PROFILE
++            ).strip().lower()
++            or AUTO_PROFILE_DEFAULT_INITIAL_PROFILE
++        )
++        if self.initial_profile not in {"dialog", "meeting"}:
++            self.initial_profile = AUTO_PROFILE_DEFAULT_INITIAL_PROFILE
++        self.auto_profile_enabled = bool(auto_profile_enabled and self.profile == "auto")
++        self.override_reason = str(override_reason or "").strip() or None
+         call_kwargs: dict[str, int] = {}
+         if min_speakers is not None:
+             call_kwargs["min_speakers"] = min_speakers
+@@ -658,9 +677,16 @@ class _PyannoteDiariser:
+         )
+         self.dialog_retry_min_turns = max(int(dialog_retry_min_turns), 1)
+         self.last_run_metadata: dict[str, Any] = {
++            "requested_profile": self.profile,
+             "diarization_profile": self.profile,
++            "initial_profile": self.initial_profile,
++            "selected_profile": self.initial_profile if not self.auto_profile_enabled else None,
++            "auto_profile_enabled": self.auto_profile_enabled,
++            "override_reason": self.override_reason,
+             "initial_hints": dict(self._base_call_kwargs),
++            "retry_hints": None,
+             "effective_hints": dict(self._base_call_kwargs),
++            "profile_selection": None,
+             "dialog_retry_used": False,
+             "speaker_count_before_retry": None,
+             "speaker_count_after_retry": None,
+@@ -720,7 +746,10 @@ class _PyannoteDiariser:
+         self.last_run_metadata.update(
+             {
+                 "initial_hints": dict(self._base_call_kwargs),
++                "retry_hints": None,
+                 "effective_hints": dict(self._base_call_kwargs),
++                "selected_profile": self.initial_profile if not self.auto_profile_enabled else None,
++                "profile_selection": None,
+                 "dialog_retry_used": False,
+                 "speaker_count_before_retry": speaker_count,
+                 "speaker_count_after_retry": speaker_count,
+@@ -733,6 +762,7 @@ class _PyannoteDiariser:
+         annotation = await self._call_pipeline(audio_path, call_kwargs=retry_hints)
+         self.last_run_metadata.update(
+             {
++                "retry_hints": dict(retry_hints),
+                 "effective_hints": dict(retry_hints),
+                 "dialog_retry_used": True,
+                 "speaker_count_after_retry": annotation_speaker_count(annotation),
+@@ -767,6 +797,21 @@ def _optional_nonnegative_env_float(name: str) -> float | None:
+     return value
+ 
+ 
++def _profile_from_runtime_hints(
++    requested_profile: str,
++    min_speakers: int | None,
++    max_speakers: int | None,
++) -> str:
++    normalized = str(requested_profile or "auto").strip().lower() or "auto"
++    if normalized == "dialog":
++        return "dialog"
++    if normalized == "meeting":
++        return "meeting"
++    if max_speakers == 2 and (min_speakers is None or min_speakers <= 2):
++        return "dialog"
++    return AUTO_PROFILE_DEFAULT_INITIAL_PROFILE
++
++
+ def _resolve_diarization_speaker_hints(
+     *,
+     settings: AppSettings | None = None,
+@@ -796,7 +841,10 @@ def _resolve_diarization_speaker_hints(
+     explicit_max_speakers = max_speakers is not None
+     if profile not in {"auto", "dialog", "meeting"}:
+         profile = "auto"
+-    default_min_speakers, default_max_speakers = profile_default_speaker_hints(profile)
++    default_profile = profile if profile != "auto" else AUTO_PROFILE_DEFAULT_INITIAL_PROFILE
++    default_min_speakers, default_max_speakers = profile_default_speaker_hints(
++        default_profile
++    )
+     if min_speakers is None:
+         min_speakers = default_min_speakers
+     if max_speakers is None:
+@@ -814,10 +862,22 @@ def _resolve_diarization_speaker_hints(
+             min_speakers = None
+             max_speakers = None
+ 
++    auto_profile_enabled = profile == "auto" and not explicit_min_speakers and not explicit_max_speakers
++    override_reason: str | None = None
++    if profile == "dialog":
++        override_reason = "profile_forced_dialog"
++    elif profile == "meeting":
++        override_reason = "profile_forced_meeting"
++    elif not auto_profile_enabled:
++        override_reason = "explicit_speaker_hints"
++
+     return _DiarizationRuntimeConfig(
+         profile=profile,
++        initial_profile=_profile_from_runtime_hints(profile, min_speakers, max_speakers),
+         min_speakers=min_speakers,
+         max_speakers=max_speakers,
++        auto_profile_enabled=auto_profile_enabled,
++        override_reason=override_reason,
+         dialog_retry_min_duration_seconds=retry_min_duration_seconds,
+         dialog_retry_min_turns=retry_min_turns,
+     )
+@@ -867,6 +927,9 @@ def _build_diariser(
+     return _PyannoteDiariser(
+         model,
+         profile=diarization_cfg.profile,
++        initial_profile=diarization_cfg.initial_profile,
++        auto_profile_enabled=diarization_cfg.auto_profile_enabled,
++        override_reason=diarization_cfg.override_reason,
+         min_speakers=diarization_cfg.min_speakers,
+         max_speakers=diarization_cfg.max_speakers,
+         dialog_retry_min_duration_seconds=(
+diff --git a/lan_transcriber/pipeline_steps/diarization_quality.py b/lan_transcriber/pipeline_steps/diarization_quality.py
+index d090ab6..c67a035 100644
+--- a/lan_transcriber/pipeline_steps/diarization_quality.py
++++ b/lan_transcriber/pipeline_steps/diarization_quality.py
+@@ -1,10 +1,12 @@
+ from __future__ import annotations
+ 
+ from dataclasses import dataclass
+-from typing import Any, Sequence
++from typing import Any, Literal, Sequence
+ 
+ from lan_transcriber.utils import normalise_language_code, safe_float
+ 
++from .speaker_turns import _diarization_segments
++
+ DEFAULT_DIALOG_MIN_SPEAKERS = 2
+ DEFAULT_DIALOG_MAX_SPEAKERS = 2
+ DEFAULT_MEETING_MIN_SPEAKERS = 2
+@@ -13,6 +15,67 @@ DEFAULT_DIALOG_RETRY_MIN_DURATION_SECONDS = 20.0
+ DEFAULT_DIALOG_RETRY_MIN_TURNS = 6
+ DEFAULT_DIARIZATION_MERGE_GAP_SECONDS = 0.5
+ DEFAULT_DIARIZATION_MIN_TURN_SECONDS = 0.5
++AUTO_PROFILE_DEFAULT_INITIAL_PROFILE = "meeting"
++AUTO_PROFILE_DIALOG_MAX_SPEAKERS = 4
++AUTO_PROFILE_DIALOG_MIN_TOP_TWO_COVERAGE = 0.85
++AUTO_PROFILE_DIALOG_MAX_LOW_MASS_COVERAGE = 0.12
++AUTO_PROFILE_DIALOG_MAX_LOW_MASS_SHARE_PER_SPEAKER = 0.12
++AUTO_PROFILE_DIALOG_MIN_DOMINANT_TURNS = 3
++AUTO_PROFILE_DIALOG_MIN_ALTERNATION_RATIO = 0.55
++AUTO_PROFILE_DIALOG_MAX_OVERLAP_RATIO = 0.2
++AUTO_PROFILE_DIALOG_RETRY_SCORE_MIN_DELTA = 0.05
++AUTO_PROFILE_DIALOG_MIN_ACCEPTABLE_TOP_TWO_COVERAGE = 0.75
++
++
++@dataclass(frozen=True)
++class DiarizationProfileMetrics:
++    speaker_count: int = 0
++    total_speech_seconds: float = 0.0
++    top_speakers: tuple[tuple[str, float], ...] = ()
++    top_two_coverage: float = 0.0
++    low_mass_speaker_count: int = 0
++    low_mass_seconds: float = 0.0
++    low_mass_coverage: float = 0.0
++    dominant_turn_count: int = 0
++    dominant_alternation_ratio: float = 0.0
++    overlap_seconds: float = 0.0
++    overlap_ratio: float = 0.0
++
++    def as_dict(self) -> dict[str, Any]:
++        dominant_speakers = [speaker for speaker, _seconds in self.top_speakers[:2]]
++        return {
++            "speaker_count": self.speaker_count,
++            "total_speech_seconds": self.total_speech_seconds,
++            "top_speakers": [
++                {"speaker": speaker, "seconds": seconds}
++                for speaker, seconds in self.top_speakers
++            ],
++            "dominant_speakers": dominant_speakers,
++            "top_two_coverage": self.top_two_coverage,
++            "low_mass_speaker_count": self.low_mass_speaker_count,
++            "low_mass_seconds": self.low_mass_seconds,
++            "low_mass_coverage": self.low_mass_coverage,
++            "dominant_turn_count": self.dominant_turn_count,
++            "dominant_alternation_ratio": self.dominant_alternation_ratio,
++            "overlap_seconds": self.overlap_seconds,
++            "overlap_ratio": self.overlap_ratio,
++        }
++
++
++@dataclass(frozen=True)
++class DiarizationProfileDecision:
++    selected_profile: Literal["dialog", "meeting"]
++    reason: str
++    metrics: DiarizationProfileMetrics
++    dialog_score: float
++
++
++@dataclass(frozen=True)
++class DialogRetrySelection:
++    selected_result: Literal["initial_pass", "dialog_retry"]
++    winner_reason: str
++    initial_score: float
++    retry_score: float
+ 
+ 
+ @dataclass(frozen=True)
+@@ -36,45 +99,255 @@ def profile_default_speaker_hints(profile: str) -> tuple[int | None, int | None]
+ 
+ 
+ def annotation_speaker_count(diarization: Any) -> int:
+-    if diarization is None or not hasattr(diarization, "itertracks"):
+-        return 0
+-    speakers: set[str] = set()
+-    for item in diarization.itertracks(yield_label=True):
+-        if not isinstance(item, tuple) or len(item) < 2:
++    return len(
++        {
++            str(row.get("speaker") or "").strip()
++            for row in _diarization_segments(diarization)
++            if str(row.get("speaker") or "").strip()
++        }
++    )
++
++
++def _segment_duration(row: dict[str, Any]) -> float:
++    start = safe_float(row.get("start"), default=0.0)
++    end = safe_float(row.get("end"), default=start)
++    return max(end - start, 0.0)
++
++
++def _rounded_ratio(numerator: float, denominator: float) -> float:
++    if denominator <= 0.0:
++        return 0.0
++    return round(numerator / denominator, 4)
++
++
++def _dominant_sequence(
++    segments: Sequence[dict[str, Any]],
++    dominant_speakers: set[str],
++) -> list[str]:
++    out: list[str] = []
++    for row in segments:
++        speaker = str(row.get("speaker") or "").strip()
++        if speaker in dominant_speakers:
++            out.append(speaker)
++    return out
++
++
++def _overlap_seconds(segments: Sequence[dict[str, Any]]) -> float:
++    total = 0.0
++    previous_end = 0.0
++    for row in segments:
++        start = safe_float(row.get("start"), default=0.0)
++        end = safe_float(row.get("end"), default=start)
++        if end <= start:
++            continue
++        overlap = min(previous_end, end) - start
++        if overlap > 0.0:
++            total += overlap
++        previous_end = max(previous_end, end)
++    return round(total, 4)
++
++
++def diarization_profile_metrics(diarization: Any) -> DiarizationProfileMetrics:
++    segments = _diarization_segments(diarization)
++    if not segments:
++        return DiarizationProfileMetrics()
++
++    speaker_durations: dict[str, float] = {}
++    for row in segments:
++        speaker = str(row.get("speaker") or "").strip()
++        if not speaker:
+             continue
+-        label = item[1] if len(item) == 2 else item[-1]
+-        speaker = str(label).strip()
+-        if speaker:
+-            speakers.add(speaker)
+-    return len(speakers)
++        duration = _segment_duration(row)
++        if duration <= 0.0:
++            continue
++        speaker_durations[speaker] = speaker_durations.get(speaker, 0.0) + duration
+ 
++    if not speaker_durations:
++        return DiarizationProfileMetrics()
+ 
+-def should_retry_dialog(
++    ordered_speakers = tuple(
++        sorted(
++            (
++                (speaker, round(seconds, 4))
++                for speaker, seconds in speaker_durations.items()
++            ),
++            key=lambda item: (-item[1], item[0]),
++        )
++    )
++    total_speech_seconds = round(sum(seconds for _speaker, seconds in ordered_speakers), 4)
++    top_two_seconds = round(sum(seconds for _speaker, seconds in ordered_speakers[:2]), 4)
++    low_mass_speakers = tuple(
++        (speaker, seconds)
++        for speaker, seconds in ordered_speakers[2:]
++        if _rounded_ratio(seconds, total_speech_seconds)
++        <= AUTO_PROFILE_DIALOG_MAX_LOW_MASS_SHARE_PER_SPEAKER
++    )
++    low_mass_seconds = round(
++        sum(seconds for _speaker, seconds in low_mass_speakers),
++        4,
++    )
++    dominant_speakers = {speaker for speaker, _seconds in ordered_speakers[:2]}
++    dominant_sequence = _dominant_sequence(segments, dominant_speakers)
++    dominant_turn_count = len(dominant_sequence)
++    alternations = sum(
++        1
++        for left, right in zip(dominant_sequence, dominant_sequence[1:])
++        if left != right
++    )
++    overlap_seconds = _overlap_seconds(segments)
++
++    return DiarizationProfileMetrics(
++        speaker_count=len(ordered_speakers),
++        total_speech_seconds=total_speech_seconds,
++        top_speakers=ordered_speakers,
++        top_two_coverage=_rounded_ratio(top_two_seconds, total_speech_seconds),
++        low_mass_speaker_count=len(low_mass_speakers),
++        low_mass_seconds=low_mass_seconds,
++        low_mass_coverage=_rounded_ratio(low_mass_seconds, total_speech_seconds),
++        dominant_turn_count=dominant_turn_count,
++        dominant_alternation_ratio=_rounded_ratio(
++            float(alternations),
++            float(max(dominant_turn_count - 1, 1)),
++        ),
++        overlap_seconds=overlap_seconds,
++        overlap_ratio=_rounded_ratio(overlap_seconds, total_speech_seconds),
++    )
++
++
++def _is_dialog_like_multispeaker(metrics: DiarizationProfileMetrics) -> bool:
++    extra_speakers = max(metrics.speaker_count - 2, 0)
++    return (
++        2 <= metrics.speaker_count <= AUTO_PROFILE_DIALOG_MAX_SPEAKERS
++        and metrics.top_two_coverage >= AUTO_PROFILE_DIALOG_MIN_TOP_TWO_COVERAGE
++        and metrics.low_mass_speaker_count >= extra_speakers
++        and metrics.low_mass_coverage <= AUTO_PROFILE_DIALOG_MAX_LOW_MASS_COVERAGE
++        and metrics.dominant_turn_count >= AUTO_PROFILE_DIALOG_MIN_DOMINANT_TURNS
++        and metrics.dominant_alternation_ratio >= AUTO_PROFILE_DIALOG_MIN_ALTERNATION_RATIO
++        and metrics.overlap_ratio <= AUTO_PROFILE_DIALOG_MAX_OVERLAP_RATIO
++    )
++
++
++def _dialog_score(metrics: DiarizationProfileMetrics) -> float:
++    if metrics.speaker_count == 2:
++        speaker_bonus = 0.6
++    elif metrics.speaker_count == 1:
++        speaker_bonus = 0.15
++    else:
++        speaker_bonus = max(0.0, 0.45 - 0.15 * max(metrics.speaker_count - 2, 0))
++    score = (
++        speaker_bonus
++        + metrics.top_two_coverage
++        + metrics.dominant_alternation_ratio
++        - metrics.low_mass_coverage
++        - metrics.overlap_ratio
++    )
++    return round(score, 4)
++
++
++def classify_diarization_profile(
++    diarization: Any,
+     *,
+-    profile: str,
+-    min_speakers: int | None,
+-    max_speakers: int | None,
+-    detected_speaker_count: int,
+     speech_turn_count: int,
+     duration_sec: float | None,
+     min_turns: int,
+     min_duration_seconds: float,
+-) -> bool:
+-    normalized_profile = str(profile or "auto").strip().lower()
+-    if min_speakers is not None and min_speakers > 2:
+-        return False
+-    if max_speakers is not None and max_speakers != 2:
+-        return False
+-    if normalized_profile != "dialog" and max_speakers != 2:
+-        return False
+-    if detected_speaker_count != 1:
+-        return False
+-    if speech_turn_count < max(int(min_turns), 1):
+-        return False
+-    return safe_float(duration_sec, default=0.0) >= max(
++) -> DiarizationProfileDecision:
++    metrics = diarization_profile_metrics(diarization)
++    enough_turns = speech_turn_count >= max(int(min_turns), 1)
++    enough_duration = safe_float(duration_sec, default=0.0) >= max(
+         safe_float(min_duration_seconds, default=0.0),
+         0.0,
+     )
++    dialog_score = _dialog_score(metrics)
++
++    if metrics.speaker_count == 1 and enough_turns and enough_duration:
++        return DiarizationProfileDecision(
++            selected_profile="dialog",
++            reason="single_speaker_long_recording",
++            metrics=metrics,
++            dialog_score=dialog_score,
++        )
++    if _is_dialog_like_multispeaker(metrics):
++        return DiarizationProfileDecision(
++            selected_profile="dialog",
++            reason="dominant_pair_dialog_like",
++            metrics=metrics,
++            dialog_score=dialog_score,
++        )
++
++    if metrics.speaker_count == 0:
++        reason = "no_valid_speakers"
++    elif metrics.speaker_count == 1:
++        reason = "single_speaker_short_recording"
++    elif metrics.speaker_count > AUTO_PROFILE_DIALOG_MAX_SPEAKERS:
++        reason = "too_many_speakers"
++    elif metrics.low_mass_speaker_count < max(metrics.speaker_count - 2, 0):
++        reason = "non_tiny_extra_speakers"
++    elif metrics.top_two_coverage < AUTO_PROFILE_DIALOG_MIN_TOP_TWO_COVERAGE:
++        reason = "low_top_two_coverage"
++    elif metrics.low_mass_coverage > AUTO_PROFILE_DIALOG_MAX_LOW_MASS_COVERAGE:
++        reason = "too_much_low_mass_speech"
++    elif metrics.dominant_turn_count < AUTO_PROFILE_DIALOG_MIN_DOMINANT_TURNS:
++        reason = "insufficient_dominant_turns"
++    elif metrics.dominant_alternation_ratio < AUTO_PROFILE_DIALOG_MIN_ALTERNATION_RATIO:
++        reason = "low_turn_alternation"
++    else:
++        reason = "high_overlap"
++    return DiarizationProfileDecision(
++        selected_profile="meeting",
++        reason=reason,
++        metrics=metrics,
++        dialog_score=dialog_score,
++    )
++
++
++def choose_dialog_retry_winner(
++    initial: DiarizationProfileDecision,
++    retry: DiarizationProfileDecision,
++) -> DialogRetrySelection:
++    if retry.selected_profile != "dialog":
++        return DialogRetrySelection(
++            selected_result="initial_pass",
++            winner_reason="dialog_retry_not_dialog_like",
++            initial_score=initial.dialog_score,
++            retry_score=retry.dialog_score,
++        )
++    if retry.metrics.speaker_count < 2:
++        return DialogRetrySelection(
++            selected_result="initial_pass",
++            winner_reason="dialog_retry_single_speaker",
++            initial_score=initial.dialog_score,
++            retry_score=retry.dialog_score,
++        )
++    if retry.metrics.dominant_turn_count < 2:
++        return DialogRetrySelection(
++            selected_result="initial_pass",
++            winner_reason="dialog_retry_pathological_turns",
++            initial_score=initial.dialog_score,
++            retry_score=retry.dialog_score,
++        )
++    if retry.metrics.top_two_coverage < AUTO_PROFILE_DIALOG_MIN_ACCEPTABLE_TOP_TWO_COVERAGE:
++        return DialogRetrySelection(
++            selected_result="initial_pass",
++            winner_reason="dialog_retry_low_top_two_coverage",
++            initial_score=initial.dialog_score,
++            retry_score=retry.dialog_score,
++        )
++    if retry.dialog_score <= (
++        initial.dialog_score + AUTO_PROFILE_DIALOG_RETRY_SCORE_MIN_DELTA
++    ):
++        return DialogRetrySelection(
++            selected_result="initial_pass",
++            winner_reason="dialog_retry_not_better",
++            initial_score=initial.dialog_score,
++            retry_score=retry.dialog_score,
++        )
++    return DialogRetrySelection(
++        selected_result="dialog_retry",
++        winner_reason="dialog_retry_improved_dialog_score",
++        initial_score=initial.dialog_score,
++        retry_score=retry.dialog_score,
++    )
+ 
+ 
+ def _normalise_turns(turns: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+@@ -280,6 +553,16 @@ def smooth_speaker_turns(
+ 
+ 
+ __all__ = [
++    "AUTO_PROFILE_DEFAULT_INITIAL_PROFILE",
++    "AUTO_PROFILE_DIALOG_MAX_OVERLAP_RATIO",
++    "AUTO_PROFILE_DIALOG_MAX_SPEAKERS",
++    "AUTO_PROFILE_DIALOG_MAX_LOW_MASS_COVERAGE",
++    "AUTO_PROFILE_DIALOG_MAX_LOW_MASS_SHARE_PER_SPEAKER",
++    "AUTO_PROFILE_DIALOG_MIN_ACCEPTABLE_TOP_TWO_COVERAGE",
++    "AUTO_PROFILE_DIALOG_MIN_ALTERNATION_RATIO",
++    "AUTO_PROFILE_DIALOG_MIN_DOMINANT_TURNS",
++    "AUTO_PROFILE_DIALOG_MIN_TOP_TWO_COVERAGE",
++    "AUTO_PROFILE_DIALOG_RETRY_SCORE_MIN_DELTA",
+     "DEFAULT_DIALOG_MAX_SPEAKERS",
+     "DEFAULT_DIALOG_MIN_SPEAKERS",
+     "DEFAULT_DIALOG_RETRY_MIN_DURATION_SECONDS",
+@@ -288,9 +571,14 @@ __all__ = [
+     "DEFAULT_DIARIZATION_MIN_TURN_SECONDS",
+     "DEFAULT_MEETING_MAX_SPEAKERS",
+     "DEFAULT_MEETING_MIN_SPEAKERS",
++    "DialogRetrySelection",
++    "DiarizationProfileDecision",
++    "DiarizationProfileMetrics",
+     "SpeakerTurnSmoothingResult",
+     "annotation_speaker_count",
++    "choose_dialog_retry_winner",
++    "classify_diarization_profile",
++    "diarization_profile_metrics",
+     "profile_default_speaker_hints",
+-    "should_retry_dialog",
+     "smooth_speaker_turns",
+ ]
+diff --git a/lan_transcriber/pipeline_steps/orchestrator.py b/lan_transcriber/pipeline_steps/orchestrator.py
+index 7c868e3..ecd1ca9 100644
+--- a/lan_transcriber/pipeline_steps/orchestrator.py
++++ b/lan_transcriber/pipeline_steps/orchestrator.py
+@@ -40,7 +40,8 @@ from .diarization_quality import (
+     DEFAULT_DIARIZATION_MERGE_GAP_SECONDS,
+     DEFAULT_DIARIZATION_MIN_TURN_SECONDS,
+     SpeakerTurnSmoothingResult,
+-    should_retry_dialog,
++    choose_dialog_retry_winner,
++    classify_diarization_profile,
+     smooth_speaker_turns,
+ )
+ from .snippets import SnippetExportRequest, export_speaker_snippets
+@@ -326,6 +327,16 @@ def _diariser_runtime_metadata(diariser: Diariser) -> dict[str, Any]:
+     return dict(raw)
+ 
+ 
++def _update_diariser_runtime_metadata(
++    diariser: Diariser,
++    **updates: Any,
++) -> None:
++    raw = getattr(diariser, "last_run_metadata", None)
++    if not isinstance(raw, dict):
++        return
++    raw.update(updates)
++
++
+ async def _maybe_retry_dialog_diarization(
+     *,
+     diariser: Diariser,
+@@ -335,29 +346,17 @@ async def _maybe_retry_dialog_diarization(
+     precheck_result: PrecheckResult,
+     step_log_callback: Callable[[str], Any] | None,
+ ) -> Any:
+-    retry_dialog = getattr(diariser, "retry_dialog", None)
+-    if not callable(retry_dialog):
+-        return diarization
+-
+     metadata = _diariser_runtime_metadata(diariser)
+-    effective_hints = metadata.get("effective_hints")
+-    if not isinstance(effective_hints, dict):
+-        effective_hints = {}
+-    if not should_retry_dialog(
+-        profile=str(metadata.get("diarization_profile") or "auto"),
+-        min_speakers=(
+-            int(effective_hints["min_speakers"])
+-            if "min_speakers" in effective_hints
+-            and isinstance(effective_hints["min_speakers"], int)
+-            else None
+-        ),
+-        max_speakers=(
+-            int(effective_hints["max_speakers"])
+-            if "max_speakers" in effective_hints
+-            and isinstance(effective_hints["max_speakers"], int)
+-            else None
+-        ),
+-        detected_speaker_count=int(metadata.get("speaker_count_before_retry") or 0),
++    initial_hints = metadata.get("initial_hints")
++    if not isinstance(initial_hints, dict):
++        initial_hints = {}
++    initial_profile = str(
++        metadata.get("initial_profile")
++        or metadata.get("diarization_profile")
++        or "meeting"
++    )
++    initial_decision = classify_diarization_profile(
++        diarization,
+         speech_turn_count=len(asr_segments),
+         duration_sec=precheck_result.duration_sec,
+         min_turns=int(
+@@ -375,25 +374,124 @@ async def _maybe_retry_dialog_diarization(
+             ),
+             default=DEFAULT_DIALOG_RETRY_MIN_DURATION_SECONDS,
+         ),
+-    ):
++    )
++    profile_selection: dict[str, Any] = {
++        "requested_profile": str(metadata.get("diarization_profile") or "auto"),
++        "initial_profile": initial_profile,
++        "auto_profile_enabled": bool(metadata.get("auto_profile_enabled", False)),
++        "override_reason": metadata.get("override_reason"),
++        "selected_profile": (
++            initial_profile
++            if not bool(metadata.get("auto_profile_enabled", False))
++            else initial_decision.selected_profile
++        ),
++        "classification_reason": initial_decision.reason,
++        "dialog_retry_attempted": False,
++        "selected_result": "initial_pass",
++        "winner_reason": metadata.get("override_reason") or initial_decision.reason,
++        "initial_metrics": initial_decision.metrics.as_dict(),
++        "initial_dialog_score": initial_decision.dialog_score,
++    }
++    if not bool(metadata.get("auto_profile_enabled", False)):
++        _update_diariser_runtime_metadata(
++            diariser,
++            effective_hints=dict(initial_hints),
++            selected_profile=profile_selection["selected_profile"],
++            profile_selection=profile_selection,
++        )
++        return diarization
++
++    retry_dialog = getattr(diariser, "retry_dialog", None)
++    if not callable(retry_dialog):
++        profile_selection["selected_profile"] = initial_decision.selected_profile
++        profile_selection["winner_reason"] = "dialog_retry_unavailable"
++        _update_diariser_runtime_metadata(
++            diariser,
++            selected_profile=profile_selection["selected_profile"],
++            profile_selection=profile_selection,
++        )
++        return diarization
++    if initial_decision.selected_profile != "dialog":
++        profile_selection["selected_profile"] = "meeting"
++        profile_selection["winner_reason"] = initial_decision.reason
++        _update_diariser_runtime_metadata(
++            diariser,
++            selected_profile="meeting",
++            profile_selection=profile_selection,
++        )
+         return diarization
+ 
+     _best_effort_step_log(
+         step_log_callback,
+         (
+-            "diarization dialog retry "
+-            f"profile={metadata.get('diarization_profile', 'auto')} "
++            "diarization auto-profile retry "
++            f"classification={initial_decision.reason} "
+             "min_speakers=2 max_speakers=2"
+         ),
+     )
++    profile_selection["dialog_retry_attempted"] = True
+     try:
+-        return await retry_dialog(audio_path)
++        retry_result = await retry_dialog(audio_path)
+     except Exception as exc:
++        profile_selection["selected_profile"] = initial_decision.selected_profile
++        profile_selection["winner_reason"] = "dialog_retry_failed"
++        profile_selection["retry_error"] = str(exc) or exc.__class__.__name__
++        _update_diariser_runtime_metadata(
++            diariser,
++            effective_hints=dict(initial_hints),
++            selected_profile=profile_selection["selected_profile"],
++            profile_selection=profile_selection,
++        )
+         _best_effort_step_log(
+             step_log_callback,
+             f"diarization dialog retry failed: {exc}",
+         )
+         return diarization
++    retry_decision = classify_diarization_profile(
++        retry_result,
++        speech_turn_count=len(asr_segments),
++        duration_sec=precheck_result.duration_sec,
++        min_turns=int(
++            getattr(
++                diariser,
++                "dialog_retry_min_turns",
++                DEFAULT_DIALOG_RETRY_MIN_TURNS,
++            )
++        ),
++        min_duration_seconds=safe_float(
++            getattr(
++                diariser,
++                "dialog_retry_min_duration_seconds",
++                DEFAULT_DIALOG_RETRY_MIN_DURATION_SECONDS,
++            ),
++            default=DEFAULT_DIALOG_RETRY_MIN_DURATION_SECONDS,
++        ),
++    )
++    retry_selection = choose_dialog_retry_winner(initial_decision, retry_decision)
++    winner_is_retry = retry_selection.selected_result == "dialog_retry"
++    retry_hints = _diariser_runtime_metadata(diariser).get("retry_hints")
++    if not isinstance(retry_hints, dict):
++        retry_hints = {"min_speakers": 2, "max_speakers": 2}
++    profile_selection.update(
++        {
++            "selected_profile": (
++                retry_decision.selected_profile
++                if winner_is_retry
++                else initial_decision.selected_profile
++            ),
++            "selected_result": retry_selection.selected_result,
++            "winner_reason": retry_selection.winner_reason,
++            "retry_metrics": retry_decision.metrics.as_dict(),
++            "retry_dialog_score": retry_decision.dialog_score,
++        }
++    )
++    _update_diariser_runtime_metadata(
++        diariser,
++        effective_hints=dict(retry_hints if winner_is_retry else initial_hints),
++        selected_profile=profile_selection["selected_profile"],
++        profile_selection=profile_selection,
++    )
++    return retry_result if winner_is_retry else diarization
+ 
+ 
+ def _write_diarization_metadata_artifact(
+@@ -411,16 +509,50 @@ def _write_diarization_metadata_artifact(
+     initial_hints = metadata.get("initial_hints")
+     if not isinstance(initial_hints, dict):
+         initial_hints = {}
++    profile_selection = metadata.get("profile_selection")
++    if not isinstance(profile_selection, dict):
++        profile_selection = {}
++    selected_profile = str(
++        profile_selection.get("selected_profile")
++        or metadata.get("selected_profile")
++        or metadata.get("initial_profile")
++        or metadata.get("diarization_profile")
++        or cfg.diarization_profile
++    )
++    initial_metrics = profile_selection.get("initial_metrics")
++    if not isinstance(initial_metrics, dict):
++        initial_metrics = {}
+ 
+     payload: dict[str, Any] = {
+         "version": 1,
+         "mode": str(getattr(diariser, "mode", "unknown") or "unknown"),
+         "degraded": bool(getattr(diariser, "mode", "unknown") != "pyannote" or used_dummy_fallback),
+         "diarization_profile": str(metadata.get("diarization_profile") or cfg.diarization_profile),
++        "requested_profile": str(
++            metadata.get("requested_profile")
++            or metadata.get("diarization_profile")
++            or cfg.diarization_profile
++        ),
++        "initial_profile": str(metadata.get("initial_profile") or cfg.diarization_profile),
++        "selected_profile": selected_profile,
++        "selected_result": str(profile_selection.get("selected_result") or "initial_pass"),
++        "auto_profile_enabled": bool(metadata.get("auto_profile_enabled", False)),
++        "profile_override_reason": metadata.get("override_reason"),
+         "hints_applied": effective_hints,
++        "dialog_retry_attempted": bool(
++            profile_selection.get(
++                "dialog_retry_attempted",
++                metadata.get("dialog_retry_used", False),
++            )
++        ),
+         "dialog_retry_used": bool(metadata.get("dialog_retry_used", False)),
+         "speaker_count_before_retry": metadata.get("speaker_count_before_retry"),
+         "speaker_count_after_retry": metadata.get("speaker_count_after_retry"),
++        "initial_speaker_count": initial_metrics.get(
++            "speaker_count",
++            metadata.get("speaker_count_before_retry"),
++        ),
++        "initial_top_two_coverage": initial_metrics.get("top_two_coverage"),
+         "used_dummy_fallback": used_dummy_fallback,
+         "smoothing_applied": bool(
+             getattr(diariser, "mode", "unknown") == "pyannote" and not used_dummy_fallback
+@@ -436,6 +568,8 @@ def _write_diarization_metadata_artifact(
+     }
+     if initial_hints != effective_hints:
+         payload["initial_hints"] = initial_hints
++    if profile_selection:
++        payload["profile_selection"] = profile_selection
+     atomic_write_json(artifacts.diarization_metadata_json_path, payload)
+ 
+ 
+diff --git a/tasks/QUEUE.md b/tasks/QUEUE.md
+index f34d339..e0fbb7c 100644
+--- a/tasks/QUEUE.md
++++ b/tasks/QUEUE.md
+@@ -432,7 +432,7 @@ Queue (in order)
+ - Depends on: PR-DIARIZATION-QUALITY-01
+ 
+ 85) PR-DIARIZATION-AUTO-PROFILE-01: Auto-select diarization profile (dialog vs meeting), retry 2-speaker dialogs, and persist profile-selection metadata
+-- Status: TODO
++- Status: DONE
+ - Tasks file: tasks/PR-DIARIZATION-AUTO-PROFILE-01.md
+ - Depends on: PR-DIARIZATION-QUALITY-01
+ 
+diff --git a/tests/test_cov_lan_app_worker_tasks_branches.py b/tests/test_cov_lan_app_worker_tasks_branches.py
+index acea6dc..232b2ad 100644
+--- a/tests/test_cov_lan_app_worker_tasks_branches.py
++++ b/tests/test_cov_lan_app_worker_tasks_branches.py
+@@ -527,9 +527,16 @@ def test_pyannote_diariser_passes_optional_speaker_hint_kwargs():
+         )
+     ]
+     assert diariser.last_run_metadata == {
++        "requested_profile": "auto",
+         "diarization_profile": "auto",
++        "initial_profile": "meeting",
++        "selected_profile": None,
++        "auto_profile_enabled": True,
++        "override_reason": None,
+         "initial_hints": {"min_speakers": 2, "max_speakers": 4},
++        "retry_hints": None,
+         "effective_hints": {"min_speakers": 2, "max_speakers": 4},
++        "profile_selection": None,
+         "dialog_retry_used": False,
+         "speaker_count_before_retry": 0,
+         "speaker_count_after_retry": 0,
+@@ -537,9 +544,23 @@ def test_pyannote_diariser_passes_optional_speaker_hint_kwargs():
+ 
+ 
+ def test_resolve_diarization_speaker_hints_from_env(monkeypatch: pytest.MonkeyPatch):
++    monkeypatch.setenv("LAN_DIARIZATION_PROFILE", "auto")
++    monkeypatch.delenv("LAN_DIARIZATION_MIN_SPEAKERS", raising=False)
++    monkeypatch.delenv("LAN_DIARIZATION_MAX_SPEAKERS", raising=False)
++    hints = worker_tasks._resolve_diarization_speaker_hints()
++    assert hints.profile == "auto"
++    assert hints.initial_profile == "meeting"
++    assert hints.auto_profile_enabled is True
++    assert hints.override_reason is None
++    assert hints.min_speakers == 2
++    assert hints.max_speakers == 6
++
+     monkeypatch.setenv("LAN_DIARIZATION_PROFILE", "dialog")
+     hints = worker_tasks._resolve_diarization_speaker_hints()
+     assert hints.profile == "dialog"
++    assert hints.initial_profile == "dialog"
++    assert hints.auto_profile_enabled is False
++    assert hints.override_reason == "profile_forced_dialog"
+     assert hints.min_speakers == 2
+     assert hints.max_speakers == 2
+ 
+@@ -550,11 +571,24 @@ def test_resolve_diarization_speaker_hints_from_env(monkeypatch: pytest.MonkeyPa
+     monkeypatch.setenv("LAN_DIARIZATION_DIALOG_RETRY_MIN_TURNS", "5")
+     hints = worker_tasks._resolve_diarization_speaker_hints()
+     assert hints.profile == "meeting"
++    assert hints.initial_profile == "meeting"
++    assert hints.auto_profile_enabled is False
++    assert hints.override_reason == "profile_forced_meeting"
+     assert hints.min_speakers == 3
+     assert hints.max_speakers == 4
+     assert hints.dialog_retry_min_duration_seconds == 9.5
+     assert hints.dialog_retry_min_turns == 5
+ 
++    monkeypatch.setenv("LAN_DIARIZATION_PROFILE", "auto")
++    monkeypatch.delenv("LAN_DIARIZATION_MIN_SPEAKERS")
++    monkeypatch.setenv("LAN_DIARIZATION_MAX_SPEAKERS", "2")
++    hints = worker_tasks._resolve_diarization_speaker_hints()
++    assert hints.initial_profile == "dialog"
++    assert hints.auto_profile_enabled is False
++    assert hints.override_reason == "explicit_speaker_hints"
++    assert hints.min_speakers == 2
++    assert hints.max_speakers == 2
++
+     monkeypatch.setenv("LAN_DIARIZATION_PROFILE", "dialog")
+     monkeypatch.setenv("LAN_DIARIZATION_MIN_SPEAKERS", "5")
+     monkeypatch.setenv("LAN_DIARIZATION_MAX_SPEAKERS", "2")
+@@ -583,8 +617,10 @@ def test_resolve_diarization_speaker_hints_from_env(monkeypatch: pytest.MonkeyPa
+     monkeypatch.setenv("LAN_DIARIZATION_DIALOG_RETRY_MIN_TURNS", "0")
+     hints = worker_tasks._resolve_diarization_speaker_hints()
+     assert hints.profile == "auto"
+-    assert hints.min_speakers is None
+-    assert hints.max_speakers is None
++    assert hints.initial_profile == "meeting"
++    assert hints.auto_profile_enabled is True
++    assert hints.min_speakers == 2
++    assert hints.max_speakers == 6
+     assert hints.dialog_retry_min_duration_seconds == 20.0
+     assert hints.dialog_retry_min_turns == 6
+ 
+@@ -626,9 +662,16 @@ def test_pyannote_diariser_retry_dialog_forces_two_speakers_once():
+ 
+     assert len(list(retried.itertracks(yield_label=True))) == 2
+     assert diariser.last_run_metadata == {
++        "requested_profile": "dialog",
+         "diarization_profile": "dialog",
++        "initial_profile": "dialog",
++        "selected_profile": "dialog",
++        "auto_profile_enabled": False,
++        "override_reason": None,
+         "initial_hints": {"min_speakers": 2, "max_speakers": 4},
++        "retry_hints": {"min_speakers": 2, "max_speakers": 2},
+         "effective_hints": {"min_speakers": 2, "max_speakers": 2},
++        "profile_selection": None,
+         "dialog_retry_used": True,
+         "speaker_count_before_retry": 1,
+         "speaker_count_after_retry": 2,
+@@ -674,6 +717,9 @@ def test_pyannote_diariser_rejects_non_callable_model():
+     with pytest.raises(TypeError, match="pipeline_model must be a callable"):
+         worker_tasks._PyannoteDiariser(None)
+ 
++    diariser = worker_tasks._PyannoteDiariser(lambda *_a, **_k: {"ok": True}, initial_profile="weird")
++    assert diariser.initial_profile == "meeting"
++
+ 
+ def test_build_diariser_uses_fallback_when_pyannote_is_unavailable(
+     monkeypatch: pytest.MonkeyPatch,
+diff --git a/tests/test_cov_lan_transcriber_extra_pipeline.py b/tests/test_cov_lan_transcriber_extra_pipeline.py
+index 9eeeb22..898e7fa 100644
+--- a/tests/test_cov_lan_transcriber_extra_pipeline.py
++++ b/tests/test_cov_lan_transcriber_extra_pipeline.py
+@@ -121,7 +121,9 @@ async def test_orchestrator_retry_helper_skips_non_retryable_cases_and_tolerates
+         dialog_retry_min_turns = 4
+         dialog_retry_min_duration_seconds = 15.0
+         last_run_metadata = {
+-            "diarization_profile": "dialog",
++            "diarization_profile": "auto",
++            "initial_profile": "meeting",
++            "auto_profile_enabled": True,
+             "effective_hints": "not-a-dict",
+             "speaker_count_before_retry": 1,
+         }
+@@ -148,19 +150,28 @@ async def test_orchestrator_retry_helper_skips_non_retryable_cases_and_tolerates
+ 
+ @pytest.mark.asyncio
+ async def test_orchestrator_retry_helper_keeps_initial_diarization_when_retry_fails():
++    segment = SimpleNamespace(start=0.0, end=30.0)
++
+     class _RetryingDiariser:
+         dialog_retry_min_turns = 4
+         dialog_retry_min_duration_seconds = 15.0
+         last_run_metadata = {
+-            "diarization_profile": "dialog",
+-            "effective_hints": {"min_speakers": 2, "max_speakers": 2},
++            "diarization_profile": "auto",
++            "initial_profile": "meeting",
++            "auto_profile_enabled": True,
++            "initial_hints": {"min_speakers": 2, "max_speakers": 6},
++            "effective_hints": {"min_speakers": 2, "max_speakers": 6},
+             "speaker_count_before_retry": 1,
+         }
+ 
+         async def retry_dialog(self, _audio_path: Path):
+             raise RuntimeError("retry boom")
+ 
+-    diarization = object()
++    diarization = SimpleNamespace(
++        itertracks=lambda yield_label=False: (
++            iter([(segment, "S1")]) if yield_label else iter([(segment,)])
++        )
++    )
+     step_messages: list[str] = []
+     result = await pipeline._maybe_retry_dialog_diarization(
+         diariser=_RetryingDiariser(),
+@@ -182,11 +193,79 @@ async def test_orchestrator_retry_helper_keeps_initial_diarization_when_retry_fa
+ 
+     assert result is diarization
+     assert step_messages == [
+-        "diarization dialog retry profile=dialog min_speakers=2 max_speakers=2",
++        "diarization auto-profile retry classification=single_speaker_long_recording min_speakers=2 max_speakers=2",
+         "diarization dialog retry failed: retry boom",
+     ]
+ 
+ 
++@pytest.mark.asyncio
++async def test_orchestrator_retry_helper_uses_default_retry_hints_when_missing():
++    first_segment = SimpleNamespace(start=0.0, end=30.0)
++
++    class _RetryingDiariser:
++        dialog_retry_min_turns = 4
++        dialog_retry_min_duration_seconds = 15.0
++        last_run_metadata = {
++            "diarization_profile": "auto",
++            "initial_profile": "meeting",
++            "auto_profile_enabled": True,
++            "initial_hints": {"min_speakers": 2, "max_speakers": 6},
++            "effective_hints": {"min_speakers": 2, "max_speakers": 6},
++            "speaker_count_before_retry": 1,
++        }
++
++        async def retry_dialog(self, _audio_path: Path):
++            retry_segments = [
++                SimpleNamespace(start=0.0, end=1.0),
++                SimpleNamespace(start=1.0, end=2.0),
++                SimpleNamespace(start=2.0, end=3.0),
++            ]
++            return SimpleNamespace(
++                itertracks=lambda yield_label=False: (
++                    iter(
++                        [
++                            (retry_segments[0], "S1"),
++                            (retry_segments[1], "S2"),
++                            (retry_segments[2], "S1"),
++                        ]
++                    )
++                    if yield_label
++                    else iter([(retry_segments[0],), (retry_segments[1],), (retry_segments[2],)])
++                )
++            )
++
++    diarization = SimpleNamespace(
++        itertracks=lambda yield_label=False: (
++            iter([(first_segment, "S1")]) if yield_label else iter([(first_segment,)])
++        )
++    )
++    diariser = _RetryingDiariser()
++
++    result = await pipeline._maybe_retry_dialog_diarization(
++        diariser=diariser,
++        audio_path=Path("/tmp/audio.wav"),
++        diarization=diarization,
++        asr_segments=[
++            {"text": "first"},
++            {"text": "second"},
++            {"text": "third"},
++            {"text": "fourth"},
++        ],
++        precheck_result=precheck.PrecheckResult(
++            duration_sec=30.0,
++            speech_ratio=0.5,
++            quarantine_reason=None,
++        ),
++        step_log_callback=None,
++    )
++
++    assert result is not diarization
++    assert diariser.last_run_metadata["effective_hints"] == {
++        "min_speakers": 2,
++        "max_speakers": 2,
++    }
++
++
+ @pytest.mark.asyncio
+ async def test_run_chunked_llm_summary_rejects_empty_chunk_plan(
+     tmp_path: Path,
+diff --git a/tests/test_diarization_quality.py b/tests/test_diarization_quality.py
+index 86ed898..edeccd2 100644
+--- a/tests/test_diarization_quality.py
++++ b/tests/test_diarization_quality.py
+@@ -2,13 +2,21 @@ from __future__ import annotations
+ 
+ from types import SimpleNamespace
+ 
++import pytest
++
+ from lan_transcriber.pipeline_steps.diarization_quality import (
++    AUTO_PROFILE_DIALOG_MIN_ACCEPTABLE_TOP_TWO_COVERAGE,
++    DiarizationProfileDecision,
++    DiarizationProfileMetrics,
+     SpeakerTurnSmoothingResult,
+     _merge_adjacent_same_speaker,
++    _rounded_ratio,
+     _should_absorb_micro_turn,
+     annotation_speaker_count,
++    choose_dialog_retry_winner,
++    classify_diarization_profile,
++    diarization_profile_metrics,
+     profile_default_speaker_hints,
+-    should_retry_dialog,
+     smooth_speaker_turns,
+ )
+ 
+@@ -22,14 +30,72 @@ def _annotation(*items):
+     return _Annotation()
+ 
+ 
+-def test_profile_default_speaker_hints_cover_known_profiles():
++def _annotation_from_segments(*segments: tuple[float, float, str]):
++    rows = []
++    for index, (start, end, speaker) in enumerate(segments, start=1):
++        segment = SimpleNamespace(start=start, end=end)
++        if index % 2:
++            rows.append((segment, speaker))
++        else:
++            rows.append((segment, f"track-{index}", speaker))
++    return _annotation(*rows)
++
++
++def _classify(
++    diarization,
++    *,
++    speech_turn_count: int = 8,
++    duration_sec: float = 30.0,
++    min_turns: int = 4,
++    min_duration_seconds: float = 20.0,
++) -> DiarizationProfileDecision:
++    return classify_diarization_profile(
++        diarization,
++        speech_turn_count=speech_turn_count,
++        duration_sec=duration_sec,
++        min_turns=min_turns,
++        min_duration_seconds=min_duration_seconds,
++    )
++
++
++def _decision(
++    profile: str,
++    score: float,
++    *,
++    speaker_count: int = 2,
++    top_two_coverage: float = 1.0,
++    dominant_turn_count: int = 4,
++) -> DiarizationProfileDecision:
++    top_speakers = (("S1", 5.0), ("S2", 5.0))
++    if speaker_count == 1:
++        top_speakers = (("S1", 10.0),)
++    metrics = DiarizationProfileMetrics(
++        speaker_count=speaker_count,
++        total_speech_seconds=10.0,
++        top_speakers=top_speakers,
++        top_two_coverage=top_two_coverage,
++        low_mass_speaker_count=max(speaker_count - 2, 0),
++        low_mass_seconds=0.0,
++        low_mass_coverage=0.0,
++        dominant_turn_count=dominant_turn_count,
++        dominant_alternation_ratio=0.8 if dominant_turn_count > 1 else 0.0,
++        overlap_seconds=0.0,
++        overlap_ratio=0.0,
++    )
++    return DiarizationProfileDecision(
++        selected_profile=profile,
++        reason="test",
++        metrics=metrics,
++        dialog_score=score,
++    )
++
++
++def test_profile_default_speaker_hints_and_annotation_count_cover_known_shapes():
+     assert profile_default_speaker_hints("dialog") == (2, 2)
+     assert profile_default_speaker_hints("meeting") == (2, 6)
+     assert profile_default_speaker_hints("auto") == (None, None)
+     assert profile_default_speaker_hints("unexpected") == (None, None)
+ 
+-
+-def test_annotation_speaker_count_ignores_invalid_tracks_and_counts_multiple_shapes():
+     segment = SimpleNamespace(start=0.0, end=1.0)
+     annotation = _annotation(
+         "bad",
+@@ -43,77 +109,216 @@ def test_annotation_speaker_count_ignores_invalid_tracks_and_counts_multiple_sha
+     assert annotation_speaker_count(annotation) == 2
+ 
+ 
+-def test_should_retry_dialog_requires_dialog_like_mode_single_speaker_and_plausible_audio():
+-    assert not should_retry_dialog(
+-        profile="auto",
+-        min_speakers=None,
+-        max_speakers=None,
+-        detected_speaker_count=1,
+-        speech_turn_count=8,
+-        duration_sec=45.0,
+-        min_turns=4,
+-        min_duration_seconds=20.0,
+-    )
+-    assert not should_retry_dialog(
+-        profile="dialog",
+-        min_speakers=2,
+-        max_speakers=2,
+-        detected_speaker_count=2,
+-        speech_turn_count=8,
+-        duration_sec=45.0,
+-        min_turns=4,
+-        min_duration_seconds=20.0,
+-    )
+-    assert not should_retry_dialog(
+-        profile="dialog",
+-        min_speakers=2,
+-        max_speakers=2,
+-        detected_speaker_count=1,
+-        speech_turn_count=3,
+-        duration_sec=45.0,
+-        min_turns=4,
+-        min_duration_seconds=20.0,
+-    )
+-    assert not should_retry_dialog(
+-        profile="dialog",
+-        min_speakers=2,
+-        max_speakers=2,
+-        detected_speaker_count=1,
+-        speech_turn_count=8,
+-        duration_sec=10.0,
+-        min_turns=4,
+-        min_duration_seconds=20.0,
+-    )
+-    assert not should_retry_dialog(
+-        profile="dialog",
+-        min_speakers=2,
+-        max_speakers=4,
+-        detected_speaker_count=1,
+-        speech_turn_count=8,
+-        duration_sec=45.0,
+-        min_turns=4,
+-        min_duration_seconds=20.0,
+-    )
+-    assert not should_retry_dialog(
+-        profile="dialog",
+-        min_speakers=5,
+-        max_speakers=None,
+-        detected_speaker_count=1,
+-        speech_turn_count=8,
+-        duration_sec=45.0,
+-        min_turns=4,
+-        min_duration_seconds=20.0,
+-    )
+-    assert should_retry_dialog(
+-        profile="meeting",
+-        min_speakers=1,
+-        max_speakers=2,
+-        detected_speaker_count=1,
++def test_diarization_profile_metrics_capture_dominant_speakers_low_mass_and_overlap():
++    metrics = diarization_profile_metrics(
++        _annotation_from_segments(
++            (0.0, 2.0, "S1"),
++            (2.0, 4.0, "S2"),
++            (4.0, 6.0, "S1"),
++            (6.0, 8.0, "S2"),
++            (8.0, 8.5, "S3"),
++            (8.25, 8.75, "S2"),
++        )
++    )
++
++    assert metrics.speaker_count == 3
++    assert metrics.top_speakers == (("S2", 4.5), ("S1", 4.0), ("S3", 0.5))
++    assert metrics.top_two_coverage == 0.9444
++    assert metrics.low_mass_speaker_count == 1
++    assert metrics.low_mass_coverage == 0.0556
++    assert metrics.dominant_turn_count == 5
++    assert metrics.dominant_alternation_ratio == 0.75
++    assert metrics.overlap_seconds == 0.25
++    assert metrics.overlap_ratio == 0.0278
++    assert metrics.as_dict()["dominant_speakers"] == ["S2", "S1"]
++
++
++def test_diarization_profile_metrics_handle_malformed_segments_and_zero_denominators():
++    assert _rounded_ratio(1.0, 0.0) == 0.0
++
++    malformed_only = diarization_profile_metrics(
++        _annotation(
++            (SimpleNamespace(start=0.0, end=1.0), " "),
++            (SimpleNamespace(start=2.0, end=1.0), "S1"),
++        )
++    )
++    assert malformed_only == DiarizationProfileMetrics()
++
++    with_zero_duration = diarization_profile_metrics(
++        _annotation(
++            (SimpleNamespace(start=0.0, end=1.0), "S1"),
++            (SimpleNamespace(start=2.0, end=1.0), "track-2", "S2"),
++        )
++    )
++    assert with_zero_duration.speaker_count == 1
++    assert with_zero_duration.overlap_seconds == 0.0
++
++
++def test_classify_diarization_profile_identifies_dialog_candidates():
++    single_speaker = _classify(
++        _annotation_from_segments((0.0, 25.0, "S1")),
+         speech_turn_count=8,
+-        duration_sec=45.0,
+-        min_turns=4,
+-        min_duration_seconds=20.0,
++        duration_sec=25.0,
++    )
++    assert single_speaker.selected_profile == "dialog"
++    assert single_speaker.reason == "single_speaker_long_recording"
++
++    dominant_pair = _classify(
++        _annotation_from_segments(
++            (0.0, 1.0, "S1"),
++            (1.0, 2.0, "S2"),
++            (2.0, 3.0, "S1"),
++            (3.0, 4.0, "S2"),
++            (4.0, 5.0, "S1"),
++            (5.0, 6.0, "S2"),
++            (6.0, 6.2, "S3"),
++        ),
++        speech_turn_count=10,
++        duration_sec=30.0,
++    )
++    assert dominant_pair.selected_profile == "dialog"
++    assert dominant_pair.reason == "dominant_pair_dialog_like"
++    assert dominant_pair.metrics.low_mass_speaker_count == 1
++
++
++@pytest.mark.parametrize(
++    ("diarization", "speech_turn_count", "duration_sec", "expected_reason"),
++    [
++        (object(), 8, 30.0, "no_valid_speakers"),
++        (_annotation_from_segments((0.0, 10.0, "S1")), 2, 10.0, "single_speaker_short_recording"),
++        (
++            _annotation_from_segments(
++                (0.0, 1.0, "S1"),
++                (1.0, 2.0, "S2"),
++                (2.0, 3.0, "S3"),
++                (3.0, 4.0, "S4"),
++                (4.0, 5.0, "S5"),
++            ),
++            10,
++            30.0,
++            "too_many_speakers",
++        ),
++        (
++            _annotation_from_segments(
++                (0.0, 2.0, "S1"),
++                (2.0, 4.0, "S2"),
++                (4.0, 6.0, "S1"),
++                (6.0, 8.0, "S2"),
++                (8.0, 10.0, "S3"),
++            ),
++            10,
++            30.0,
++            "non_tiny_extra_speakers",
++        ),
++        (
++            _annotation_from_segments(
++                (0.0, 1.5, "S1"),
++                (1.5, 3.0, "S2"),
++                (3.0, 4.5, "S1"),
++                (4.5, 6.0, "S2"),
++                (6.0, 6.7, "S3"),
++                (6.7, 7.4, "S4"),
++            ),
++            10,
++            30.0,
++            "low_top_two_coverage",
++        ),
++        (
++            _annotation_from_segments(
++                (0.0, 2.0, "S1"),
++                (2.0, 4.0, "S2"),
++                (4.0, 6.0, "S1"),
++                (6.0, 8.0, "S2"),
++                (8.0, 8.65, "S3"),
++                (8.65, 9.3, "S4"),
++            ),
++            10,
++            30.0,
++            "too_much_low_mass_speech",
++        ),
++        (
++            _annotation_from_segments(
++                (0.0, 4.0, "S1"),
++                (4.0, 8.0, "S2"),
++            ),
++            10,
++            30.0,
++            "insufficient_dominant_turns",
++        ),
++        (
++            _annotation_from_segments(
++                (0.0, 2.0, "S1"),
++                (2.0, 4.0, "S1"),
++                (4.0, 6.0, "S1"),
++                (6.0, 8.0, "S2"),
++            ),
++            10,
++            30.0,
++            "low_turn_alternation",
++        ),
++        (
++            _annotation_from_segments(
++                (0.0, 2.0, "S1"),
++                (1.0, 3.0, "S2"),
++                (3.0, 5.0, "S1"),
++                (4.0, 6.0, "S2"),
++            ),
++            10,
++            30.0,
++            "high_overlap",
++        ),
++    ],
++)
++def test_classify_diarization_profile_reports_meeting_reasons(
++    diarization,
++    speech_turn_count: int,
++    duration_sec: float,
++    expected_reason: str,
++):
++    decision = _classify(
++        diarization,
++        speech_turn_count=speech_turn_count,
++        duration_sec=duration_sec,
++    )
++
++    assert decision.selected_profile == "meeting"
++    assert decision.reason == expected_reason
++
++
++def test_choose_dialog_retry_winner_covers_rejections_and_success():
++    initial = _decision("dialog", 1.0)
++
++    assert choose_dialog_retry_winner(
++        initial,
++        _decision("meeting", 1.3),
++    ).winner_reason == "dialog_retry_not_dialog_like"
++    assert choose_dialog_retry_winner(
++        initial,
++        _decision("dialog", 1.3, speaker_count=1),
++    ).winner_reason == "dialog_retry_single_speaker"
++    assert choose_dialog_retry_winner(
++        initial,
++        _decision("dialog", 1.3, dominant_turn_count=1),
++    ).winner_reason == "dialog_retry_pathological_turns"
++    assert choose_dialog_retry_winner(
++        initial,
++        _decision(
++            "dialog",
++            1.3,
++            top_two_coverage=AUTO_PROFILE_DIALOG_MIN_ACCEPTABLE_TOP_TWO_COVERAGE - 0.01,
++        ),
++    ).winner_reason == "dialog_retry_low_top_two_coverage"
++    assert choose_dialog_retry_winner(
++        initial,
++        _decision("dialog", 1.04),
++    ).winner_reason == "dialog_retry_not_better"
++
++    accepted = choose_dialog_retry_winner(
++        initial,
++        _decision("dialog", 1.2),
+     )
++    assert accepted.selected_result == "dialog_retry"
++    assert accepted.winner_reason == "dialog_retry_improved_dialog_score"
+ 
+ 
+ def test_smooth_speaker_turns_merges_adjacent_same_speaker_and_normalises_rows():
+@@ -121,7 +326,13 @@ def test_smooth_speaker_turns_merges_adjacent_same_speaker_and_normalises_rows()
+         [
+             "bad",
+             {"text": "   "},
+-            {"start": 2.0, "end": 1.0, "speaker": "S1", "text": "hello", "language": "EN"},
++            {
++                "start": 2.0,
++                "end": 1.0,
++                "speaker": "S1",
++                "text": "hello",
++                "language": "EN",
++            },
+             {"start": 2.2, "end": 2.8, "speaker": "S1", "text": "again"},
+             {"start": 4.0, "end": 4.2, "speaker": "S2", "text": "next", "language": "fr"},
+         ],
+@@ -175,7 +386,7 @@ def test_smooth_speaker_turns_absorbs_micro_turns_but_preserves_real_changes():
+     assert [turn["speaker"] for turn in preserved.turns] == ["S1", "S2", "S1", "S1"]
+ 
+ 
+-def test_smooth_speaker_turns_handles_empty_input():
++def test_smooth_speaker_turns_handles_empty_input_and_private_guards():
+     result = smooth_speaker_turns([])
+ 
+     assert result == SpeakerTurnSmoothingResult(
+@@ -187,9 +398,6 @@ def test_smooth_speaker_turns_handles_empty_input():
+         speaker_count_before=0,
+         speaker_count_after=0,
+     )
+-
+-
+-def test_private_diarization_quality_helpers_cover_remaining_guard_paths():
+     assert _merge_adjacent_same_speaker([], gap_threshold=0.1) == ([], 0)
+     assert not _should_absorb_micro_turn(
+         {"start": 0.0, "end": 1.0, "speaker": "S1", "text": "left"},
+diff --git a/tests/test_pipeline.py b/tests/test_pipeline.py
+index e56b741..13667b5 100644
+--- a/tests/test_pipeline.py
++++ b/tests/test_pipeline.py
+@@ -125,13 +125,20 @@ class FailingItertracksDiariser:
+ class DialogRetryDiariser:
+     def __init__(self) -> None:
+         self.mode = "pyannote"
+-        self.profile = "dialog"
++        self.profile = "auto"
+         self.dialog_retry_min_turns = 3
+         self.dialog_retry_min_duration_seconds = 10.0
+         self.last_run_metadata = {
+-            "diarization_profile": "dialog",
+-            "initial_hints": {},
+-            "effective_hints": {},
++            "requested_profile": "auto",
++            "diarization_profile": "auto",
++            "initial_profile": "meeting",
++            "selected_profile": None,
++            "auto_profile_enabled": True,
++            "override_reason": None,
++            "initial_hints": {"min_speakers": 2, "max_speakers": 6},
++            "retry_hints": None,
++            "effective_hints": {"min_speakers": 2, "max_speakers": 6},
++            "profile_selection": None,
+             "dialog_retry_used": False,
+             "speaker_count_before_retry": None,
+             "speaker_count_after_retry": None,
+@@ -150,6 +157,7 @@ class DialogRetryDiariser:
+     async def retry_dialog(self, audio_path: Path):
+         self.last_run_metadata.update(
+             {
++                "retry_hints": {"min_speakers": 2, "max_speakers": 2},
+                 "effective_hints": {"min_speakers": 2, "max_speakers": 2},
+                 "dialog_retry_used": True,
+                 "speaker_count_after_retry": 2,
+@@ -167,9 +175,16 @@ class EmptyTracksDiariser:
+         self.mode = "pyannote"
+         self.profile = "auto"
+         self.last_run_metadata = {
++            "requested_profile": "auto",
+             "diarization_profile": "auto",
+-            "initial_hints": {},
+-            "effective_hints": {},
++            "initial_profile": "meeting",
++            "selected_profile": None,
++            "auto_profile_enabled": True,
++            "override_reason": None,
++            "initial_hints": {"min_speakers": 2, "max_speakers": 6},
++            "retry_hints": None,
++            "effective_hints": {"min_speakers": 2, "max_speakers": 6},
++            "profile_selection": None,
+             "dialog_retry_used": False,
+             "speaker_count_before_retry": 0,
+             "speaker_count_after_retry": 0,
+@@ -324,7 +339,7 @@ async def test_pipeline_writes_diarization_metadata_and_smooths_retry_output(
+         speaker_db=tmp_path / "db.yaml",
+         tmp_root=tmp_path,
+         recordings_root=tmp_path / "recordings",
+-        diarization_profile="dialog",
++        diarization_profile="auto",
+         diarization_merge_gap_seconds=0.2,
+         diarization_min_turn_seconds=0.5,
+     )
+@@ -348,9 +363,13 @@ async def test_pipeline_writes_diarization_metadata_and_smooths_retry_output(
+     assert speaker_turns == [
+         {"start": 0.0, "end": 2.4, "speaker": "S1", "text": "alpha noise omega", "language": "en"}
+     ]
+-    assert metadata["diarization_profile"] == "dialog"
++    assert metadata["diarization_profile"] == "auto"
++    assert metadata["selected_profile"] == "dialog"
++    assert metadata["selected_result"] == "dialog_retry"
++    assert metadata["dialog_retry_attempted"] is True
+     assert metadata["dialog_retry_used"] is True
+     assert metadata["hints_applied"] == {"max_speakers": 2, "min_speakers": 2}
++    assert metadata["initial_top_two_coverage"] == 1.0
+     assert metadata["used_dummy_fallback"] is False
+     assert metadata["smoothing_applied"] is True
+     assert metadata["speaker_count_before_smoothing"] == 2

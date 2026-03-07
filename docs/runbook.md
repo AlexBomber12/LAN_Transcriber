@@ -59,7 +59,7 @@ docker compose run --rm api python -m lan_app.healthchecks app
 3. Set these values in `.env`:
    - `HF_TOKEN=<your token>`
    - `LAN_DIARIZATION_MODEL_ID=pyannote/speaker-diarization-3.1` (or your approved repo id)
-   - `LAN_DIARIZATION_PROFILE=auto` (use `dialog` to force 2-person conversations, or `meeting` to bias toward 2..6 speakers)
+   - `LAN_DIARIZATION_PROFILE=auto` (default; first pass uses meeting-like 2..6 hints and retries once with 2 speakers only when the result looks dialog-like)
    - `LAN_VAD_METHOD=silero` (default; set `pyannote` only if explicitly required)
 4. Run warmup once before starting normal traffic:
 
@@ -81,9 +81,10 @@ docker compose exec worker python -c "from lan_app.diarization_loader import loa
 ```
 
 Optional diarization tuning:
-- `LAN_DIARIZATION_MIN_SPEAKERS` and `LAN_DIARIZATION_MAX_SPEAKERS` override the selected profile defaults.
+- `LAN_DIARIZATION_PROFILE=dialog` forces 2-speaker diarization; `LAN_DIARIZATION_PROFILE=meeting` forces meeting-like 2..6 hints.
+- `LAN_DIARIZATION_MIN_SPEAKERS` and `LAN_DIARIZATION_MAX_SPEAKERS` override the first-pass defaults and bypass auto-profile selection when set.
 - `LAN_DIARIZATION_MERGE_GAP_SECONDS` and `LAN_DIARIZATION_MIN_TURN_SECONDS` control conservative turn smoothing.
-- Each processed recording writes `derived/diarization_metadata.json` with the applied profile, hints, retry usage, and before/after smoothing counts.
+- Each processed recording writes `derived/diarization_metadata.json` with the requested profile, selected profile, initial speaker count, top-two coverage, retry attempt/winner, applied hints, and before/after smoothing counts.
 
 ## 2) Runtime safety defaults
 

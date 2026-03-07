@@ -40,7 +40,8 @@ from .diarization_quality import (
     DEFAULT_DIARIZATION_MERGE_GAP_SECONDS,
     DEFAULT_DIARIZATION_MIN_TURN_SECONDS,
     SpeakerTurnSmoothingResult,
-    should_retry_dialog,
+    choose_dialog_retry_winner,
+    classify_diarization_profile,
     smooth_speaker_turns,
 )
 from .snippets import SnippetExportRequest, export_speaker_snippets
@@ -326,6 +327,16 @@ def _diariser_runtime_metadata(diariser: Diariser) -> dict[str, Any]:
     return dict(raw)
 
 
+def _update_diariser_runtime_metadata(
+    diariser: Diariser,
+    **updates: Any,
+) -> None:
+    raw = getattr(diariser, "last_run_metadata", None)
+    if not isinstance(raw, dict):
+        return
+    raw.update(updates)
+
+
 async def _maybe_retry_dialog_diarization(
     *,
     diariser: Diariser,
@@ -335,29 +346,17 @@ async def _maybe_retry_dialog_diarization(
     precheck_result: PrecheckResult,
     step_log_callback: Callable[[str], Any] | None,
 ) -> Any:
-    retry_dialog = getattr(diariser, "retry_dialog", None)
-    if not callable(retry_dialog):
-        return diarization
-
     metadata = _diariser_runtime_metadata(diariser)
-    effective_hints = metadata.get("effective_hints")
-    if not isinstance(effective_hints, dict):
-        effective_hints = {}
-    if not should_retry_dialog(
-        profile=str(metadata.get("diarization_profile") or "auto"),
-        min_speakers=(
-            int(effective_hints["min_speakers"])
-            if "min_speakers" in effective_hints
-            and isinstance(effective_hints["min_speakers"], int)
-            else None
-        ),
-        max_speakers=(
-            int(effective_hints["max_speakers"])
-            if "max_speakers" in effective_hints
-            and isinstance(effective_hints["max_speakers"], int)
-            else None
-        ),
-        detected_speaker_count=int(metadata.get("speaker_count_before_retry") or 0),
+    initial_hints = metadata.get("initial_hints")
+    if not isinstance(initial_hints, dict):
+        initial_hints = {}
+    initial_profile = str(
+        metadata.get("initial_profile")
+        or metadata.get("diarization_profile")
+        or "meeting"
+    )
+    initial_decision = classify_diarization_profile(
+        diarization,
         speech_turn_count=len(asr_segments),
         duration_sec=precheck_result.duration_sec,
         min_turns=int(
@@ -375,25 +374,124 @@ async def _maybe_retry_dialog_diarization(
             ),
             default=DEFAULT_DIALOG_RETRY_MIN_DURATION_SECONDS,
         ),
-    ):
+    )
+    profile_selection: dict[str, Any] = {
+        "requested_profile": str(metadata.get("diarization_profile") or "auto"),
+        "initial_profile": initial_profile,
+        "auto_profile_enabled": bool(metadata.get("auto_profile_enabled", False)),
+        "override_reason": metadata.get("override_reason"),
+        "selected_profile": (
+            initial_profile
+            if not bool(metadata.get("auto_profile_enabled", False))
+            else initial_decision.selected_profile
+        ),
+        "classification_reason": initial_decision.reason,
+        "dialog_retry_attempted": False,
+        "selected_result": "initial_pass",
+        "winner_reason": metadata.get("override_reason") or initial_decision.reason,
+        "initial_metrics": initial_decision.metrics.as_dict(),
+        "initial_dialog_score": initial_decision.dialog_score,
+    }
+    if not bool(metadata.get("auto_profile_enabled", False)):
+        _update_diariser_runtime_metadata(
+            diariser,
+            effective_hints=dict(initial_hints),
+            selected_profile=profile_selection["selected_profile"],
+            profile_selection=profile_selection,
+        )
+        return diarization
+
+    retry_dialog = getattr(diariser, "retry_dialog", None)
+    if not callable(retry_dialog):
+        profile_selection["selected_profile"] = initial_decision.selected_profile
+        profile_selection["winner_reason"] = "dialog_retry_unavailable"
+        _update_diariser_runtime_metadata(
+            diariser,
+            selected_profile=profile_selection["selected_profile"],
+            profile_selection=profile_selection,
+        )
+        return diarization
+    if initial_decision.selected_profile != "dialog":
+        profile_selection["selected_profile"] = "meeting"
+        profile_selection["winner_reason"] = initial_decision.reason
+        _update_diariser_runtime_metadata(
+            diariser,
+            selected_profile="meeting",
+            profile_selection=profile_selection,
+        )
         return diarization
 
     _best_effort_step_log(
         step_log_callback,
         (
-            "diarization dialog retry "
-            f"profile={metadata.get('diarization_profile', 'auto')} "
+            "diarization auto-profile retry "
+            f"classification={initial_decision.reason} "
             "min_speakers=2 max_speakers=2"
         ),
     )
+    profile_selection["dialog_retry_attempted"] = True
     try:
-        return await retry_dialog(audio_path)
+        retry_result = await retry_dialog(audio_path)
     except Exception as exc:
+        profile_selection["selected_profile"] = initial_decision.selected_profile
+        profile_selection["winner_reason"] = "dialog_retry_failed"
+        profile_selection["retry_error"] = str(exc) or exc.__class__.__name__
+        _update_diariser_runtime_metadata(
+            diariser,
+            effective_hints=dict(initial_hints),
+            selected_profile=profile_selection["selected_profile"],
+            profile_selection=profile_selection,
+        )
         _best_effort_step_log(
             step_log_callback,
             f"diarization dialog retry failed: {exc}",
         )
         return diarization
+    retry_decision = classify_diarization_profile(
+        retry_result,
+        speech_turn_count=len(asr_segments),
+        duration_sec=precheck_result.duration_sec,
+        min_turns=int(
+            getattr(
+                diariser,
+                "dialog_retry_min_turns",
+                DEFAULT_DIALOG_RETRY_MIN_TURNS,
+            )
+        ),
+        min_duration_seconds=safe_float(
+            getattr(
+                diariser,
+                "dialog_retry_min_duration_seconds",
+                DEFAULT_DIALOG_RETRY_MIN_DURATION_SECONDS,
+            ),
+            default=DEFAULT_DIALOG_RETRY_MIN_DURATION_SECONDS,
+        ),
+    )
+    retry_selection = choose_dialog_retry_winner(initial_decision, retry_decision)
+    winner_is_retry = retry_selection.selected_result == "dialog_retry"
+    retry_hints = _diariser_runtime_metadata(diariser).get("retry_hints")
+    if not isinstance(retry_hints, dict):
+        retry_hints = {"min_speakers": 2, "max_speakers": 2}
+    profile_selection.update(
+        {
+            "selected_profile": (
+                retry_decision.selected_profile
+                if winner_is_retry
+                else initial_decision.selected_profile
+            ),
+            "selected_result": retry_selection.selected_result,
+            "winner_reason": retry_selection.winner_reason,
+            "retry_metrics": retry_decision.metrics.as_dict(),
+            "retry_dialog_score": retry_decision.dialog_score,
+        }
+    )
+    _update_diariser_runtime_metadata(
+        diariser,
+        effective_hints=dict(retry_hints if winner_is_retry else initial_hints),
+        selected_profile=profile_selection["selected_profile"],
+        profile_selection=profile_selection,
+    )
+    return retry_result if winner_is_retry else diarization
 
 
 def _write_diarization_metadata_artifact(
@@ -411,16 +509,50 @@ def _write_diarization_metadata_artifact(
     initial_hints = metadata.get("initial_hints")
     if not isinstance(initial_hints, dict):
         initial_hints = {}
+    profile_selection = metadata.get("profile_selection")
+    if not isinstance(profile_selection, dict):
+        profile_selection = {}
+    selected_profile = str(
+        profile_selection.get("selected_profile")
+        or metadata.get("selected_profile")
+        or metadata.get("initial_profile")
+        or metadata.get("diarization_profile")
+        or cfg.diarization_profile
+    )
+    initial_metrics = profile_selection.get("initial_metrics")
+    if not isinstance(initial_metrics, dict):
+        initial_metrics = {}
 
     payload: dict[str, Any] = {
         "version": 1,
         "mode": str(getattr(diariser, "mode", "unknown") or "unknown"),
         "degraded": bool(getattr(diariser, "mode", "unknown") != "pyannote" or used_dummy_fallback),
         "diarization_profile": str(metadata.get("diarization_profile") or cfg.diarization_profile),
+        "requested_profile": str(
+            metadata.get("requested_profile")
+            or metadata.get("diarization_profile")
+            or cfg.diarization_profile
+        ),
+        "initial_profile": str(metadata.get("initial_profile") or cfg.diarization_profile),
+        "selected_profile": selected_profile,
+        "selected_result": str(profile_selection.get("selected_result") or "initial_pass"),
+        "auto_profile_enabled": bool(metadata.get("auto_profile_enabled", False)),
+        "profile_override_reason": metadata.get("override_reason"),
         "hints_applied": effective_hints,
+        "dialog_retry_attempted": bool(
+            profile_selection.get(
+                "dialog_retry_attempted",
+                metadata.get("dialog_retry_used", False),
+            )
+        ),
         "dialog_retry_used": bool(metadata.get("dialog_retry_used", False)),
         "speaker_count_before_retry": metadata.get("speaker_count_before_retry"),
         "speaker_count_after_retry": metadata.get("speaker_count_after_retry"),
+        "initial_speaker_count": initial_metrics.get(
+            "speaker_count",
+            metadata.get("speaker_count_before_retry"),
+        ),
+        "initial_top_two_coverage": initial_metrics.get("top_two_coverage"),
         "used_dummy_fallback": used_dummy_fallback,
         "smoothing_applied": bool(
             getattr(diariser, "mode", "unknown") == "pyannote" and not used_dummy_fallback
@@ -436,6 +568,8 @@ def _write_diarization_metadata_artifact(
     }
     if initial_hints != effective_hints:
         payload["initial_hints"] = initial_hints
+    if profile_selection:
+        payload["profile_selection"] = profile_selection
     atomic_write_json(artifacts.diarization_metadata_json_path, payload)
 
 

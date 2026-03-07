@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Sequence
+from typing import Any, Literal, Sequence
 
 from lan_transcriber.utils import normalise_language_code, safe_float
+
+from .speaker_turns import _diarization_segments
 
 DEFAULT_DIALOG_MIN_SPEAKERS = 2
 DEFAULT_DIALOG_MAX_SPEAKERS = 2
@@ -13,6 +15,67 @@ DEFAULT_DIALOG_RETRY_MIN_DURATION_SECONDS = 20.0
 DEFAULT_DIALOG_RETRY_MIN_TURNS = 6
 DEFAULT_DIARIZATION_MERGE_GAP_SECONDS = 0.5
 DEFAULT_DIARIZATION_MIN_TURN_SECONDS = 0.5
+AUTO_PROFILE_DEFAULT_INITIAL_PROFILE = "meeting"
+AUTO_PROFILE_DIALOG_MAX_SPEAKERS = 4
+AUTO_PROFILE_DIALOG_MIN_TOP_TWO_COVERAGE = 0.85
+AUTO_PROFILE_DIALOG_MAX_LOW_MASS_COVERAGE = 0.12
+AUTO_PROFILE_DIALOG_MAX_LOW_MASS_SHARE_PER_SPEAKER = 0.12
+AUTO_PROFILE_DIALOG_MIN_DOMINANT_TURNS = 3
+AUTO_PROFILE_DIALOG_MIN_ALTERNATION_RATIO = 0.55
+AUTO_PROFILE_DIALOG_MAX_OVERLAP_RATIO = 0.2
+AUTO_PROFILE_DIALOG_RETRY_SCORE_MIN_DELTA = 0.05
+AUTO_PROFILE_DIALOG_MIN_ACCEPTABLE_TOP_TWO_COVERAGE = 0.75
+
+
+@dataclass(frozen=True)
+class DiarizationProfileMetrics:
+    speaker_count: int = 0
+    total_speech_seconds: float = 0.0
+    top_speakers: tuple[tuple[str, float], ...] = ()
+    top_two_coverage: float = 0.0
+    low_mass_speaker_count: int = 0
+    low_mass_seconds: float = 0.0
+    low_mass_coverage: float = 0.0
+    dominant_turn_count: int = 0
+    dominant_alternation_ratio: float = 0.0
+    overlap_seconds: float = 0.0
+    overlap_ratio: float = 0.0
+
+    def as_dict(self) -> dict[str, Any]:
+        dominant_speakers = [speaker for speaker, _seconds in self.top_speakers[:2]]
+        return {
+            "speaker_count": self.speaker_count,
+            "total_speech_seconds": self.total_speech_seconds,
+            "top_speakers": [
+                {"speaker": speaker, "seconds": seconds}
+                for speaker, seconds in self.top_speakers
+            ],
+            "dominant_speakers": dominant_speakers,
+            "top_two_coverage": self.top_two_coverage,
+            "low_mass_speaker_count": self.low_mass_speaker_count,
+            "low_mass_seconds": self.low_mass_seconds,
+            "low_mass_coverage": self.low_mass_coverage,
+            "dominant_turn_count": self.dominant_turn_count,
+            "dominant_alternation_ratio": self.dominant_alternation_ratio,
+            "overlap_seconds": self.overlap_seconds,
+            "overlap_ratio": self.overlap_ratio,
+        }
+
+
+@dataclass(frozen=True)
+class DiarizationProfileDecision:
+    selected_profile: Literal["dialog", "meeting"]
+    reason: str
+    metrics: DiarizationProfileMetrics
+    dialog_score: float
+
+
+@dataclass(frozen=True)
+class DialogRetrySelection:
+    selected_result: Literal["initial_pass", "dialog_retry"]
+    winner_reason: str
+    initial_score: float
+    retry_score: float
 
 
 @dataclass(frozen=True)
@@ -36,44 +99,254 @@ def profile_default_speaker_hints(profile: str) -> tuple[int | None, int | None]
 
 
 def annotation_speaker_count(diarization: Any) -> int:
-    if diarization is None or not hasattr(diarization, "itertracks"):
-        return 0
-    speakers: set[str] = set()
-    for item in diarization.itertracks(yield_label=True):
-        if not isinstance(item, tuple) or len(item) < 2:
+    return len(
+        {
+            str(row.get("speaker") or "").strip()
+            for row in _diarization_segments(diarization)
+            if str(row.get("speaker") or "").strip()
+        }
+    )
+
+
+def _segment_duration(row: dict[str, Any]) -> float:
+    start = safe_float(row.get("start"), default=0.0)
+    end = safe_float(row.get("end"), default=start)
+    return max(end - start, 0.0)
+
+
+def _rounded_ratio(numerator: float, denominator: float) -> float:
+    if denominator <= 0.0:
+        return 0.0
+    return round(numerator / denominator, 4)
+
+
+def _dominant_sequence(
+    segments: Sequence[dict[str, Any]],
+    dominant_speakers: set[str],
+) -> list[str]:
+    out: list[str] = []
+    for row in segments:
+        speaker = str(row.get("speaker") or "").strip()
+        if speaker in dominant_speakers:
+            out.append(speaker)
+    return out
+
+
+def _overlap_seconds(segments: Sequence[dict[str, Any]]) -> float:
+    total = 0.0
+    previous_end = 0.0
+    for row in segments:
+        start = safe_float(row.get("start"), default=0.0)
+        end = safe_float(row.get("end"), default=start)
+        if end <= start:
             continue
-        label = item[1] if len(item) == 2 else item[-1]
-        speaker = str(label).strip()
-        if speaker:
-            speakers.add(speaker)
-    return len(speakers)
+        overlap = min(previous_end, end) - start
+        if overlap > 0.0:
+            total += overlap
+        previous_end = max(previous_end, end)
+    return round(total, 4)
 
 
-def should_retry_dialog(
+def diarization_profile_metrics(diarization: Any) -> DiarizationProfileMetrics:
+    segments = _diarization_segments(diarization)
+    if not segments:
+        return DiarizationProfileMetrics()
+
+    speaker_durations: dict[str, float] = {}
+    for row in segments:
+        speaker = str(row.get("speaker") or "").strip()
+        if not speaker:
+            continue
+        duration = _segment_duration(row)
+        if duration <= 0.0:
+            continue
+        speaker_durations[speaker] = speaker_durations.get(speaker, 0.0) + duration
+
+    if not speaker_durations:
+        return DiarizationProfileMetrics()
+
+    ordered_speakers = tuple(
+        sorted(
+            (
+                (speaker, round(seconds, 4))
+                for speaker, seconds in speaker_durations.items()
+            ),
+            key=lambda item: (-item[1], item[0]),
+        )
+    )
+    total_speech_seconds = round(sum(seconds for _speaker, seconds in ordered_speakers), 4)
+    top_two_seconds = round(sum(seconds for _speaker, seconds in ordered_speakers[:2]), 4)
+    low_mass_speakers = tuple(
+        (speaker, seconds)
+        for speaker, seconds in ordered_speakers[2:]
+        if _rounded_ratio(seconds, total_speech_seconds)
+        <= AUTO_PROFILE_DIALOG_MAX_LOW_MASS_SHARE_PER_SPEAKER
+    )
+    low_mass_seconds = round(
+        sum(seconds for _speaker, seconds in low_mass_speakers),
+        4,
+    )
+    dominant_speakers = {speaker for speaker, _seconds in ordered_speakers[:2]}
+    dominant_sequence = _dominant_sequence(segments, dominant_speakers)
+    dominant_turn_count = len(dominant_sequence)
+    alternations = sum(
+        1
+        for left, right in zip(dominant_sequence, dominant_sequence[1:])
+        if left != right
+    )
+    overlap_seconds = _overlap_seconds(segments)
+
+    return DiarizationProfileMetrics(
+        speaker_count=len(ordered_speakers),
+        total_speech_seconds=total_speech_seconds,
+        top_speakers=ordered_speakers,
+        top_two_coverage=_rounded_ratio(top_two_seconds, total_speech_seconds),
+        low_mass_speaker_count=len(low_mass_speakers),
+        low_mass_seconds=low_mass_seconds,
+        low_mass_coverage=_rounded_ratio(low_mass_seconds, total_speech_seconds),
+        dominant_turn_count=dominant_turn_count,
+        dominant_alternation_ratio=_rounded_ratio(
+            float(alternations),
+            float(max(dominant_turn_count - 1, 1)),
+        ),
+        overlap_seconds=overlap_seconds,
+        overlap_ratio=_rounded_ratio(overlap_seconds, total_speech_seconds),
+    )
+
+
+def _is_dialog_like_multispeaker(metrics: DiarizationProfileMetrics) -> bool:
+    extra_speakers = max(metrics.speaker_count - 2, 0)
+    return (
+        2 <= metrics.speaker_count <= AUTO_PROFILE_DIALOG_MAX_SPEAKERS
+        and metrics.top_two_coverage >= AUTO_PROFILE_DIALOG_MIN_TOP_TWO_COVERAGE
+        and metrics.low_mass_speaker_count >= extra_speakers
+        and metrics.low_mass_coverage <= AUTO_PROFILE_DIALOG_MAX_LOW_MASS_COVERAGE
+        and metrics.dominant_turn_count >= AUTO_PROFILE_DIALOG_MIN_DOMINANT_TURNS
+        and metrics.dominant_alternation_ratio >= AUTO_PROFILE_DIALOG_MIN_ALTERNATION_RATIO
+        and metrics.overlap_ratio <= AUTO_PROFILE_DIALOG_MAX_OVERLAP_RATIO
+    )
+
+
+def _dialog_score(metrics: DiarizationProfileMetrics) -> float:
+    if metrics.speaker_count == 2:
+        speaker_bonus = 0.6
+    elif metrics.speaker_count == 1:
+        speaker_bonus = 0.15
+    else:
+        speaker_bonus = max(0.0, 0.45 - 0.15 * max(metrics.speaker_count - 2, 0))
+    score = (
+        speaker_bonus
+        + metrics.top_two_coverage
+        + metrics.dominant_alternation_ratio
+        - metrics.low_mass_coverage
+        - metrics.overlap_ratio
+    )
+    return round(score, 4)
+
+
+def classify_diarization_profile(
+    diarization: Any,
     *,
-    profile: str,
-    min_speakers: int | None,
-    max_speakers: int | None,
-    detected_speaker_count: int,
     speech_turn_count: int,
     duration_sec: float | None,
     min_turns: int,
     min_duration_seconds: float,
-) -> bool:
-    normalized_profile = str(profile or "auto").strip().lower()
-    if min_speakers is not None and min_speakers > 2:
-        return False
-    if max_speakers is not None and max_speakers != 2:
-        return False
-    if normalized_profile != "dialog" and max_speakers != 2:
-        return False
-    if detected_speaker_count != 1:
-        return False
-    if speech_turn_count < max(int(min_turns), 1):
-        return False
-    return safe_float(duration_sec, default=0.0) >= max(
+) -> DiarizationProfileDecision:
+    metrics = diarization_profile_metrics(diarization)
+    enough_turns = speech_turn_count >= max(int(min_turns), 1)
+    enough_duration = safe_float(duration_sec, default=0.0) >= max(
         safe_float(min_duration_seconds, default=0.0),
         0.0,
+    )
+    dialog_score = _dialog_score(metrics)
+
+    if metrics.speaker_count == 1 and enough_turns and enough_duration:
+        return DiarizationProfileDecision(
+            selected_profile="dialog",
+            reason="single_speaker_long_recording",
+            metrics=metrics,
+            dialog_score=dialog_score,
+        )
+    if _is_dialog_like_multispeaker(metrics):
+        return DiarizationProfileDecision(
+            selected_profile="dialog",
+            reason="dominant_pair_dialog_like",
+            metrics=metrics,
+            dialog_score=dialog_score,
+        )
+
+    if metrics.speaker_count == 0:
+        reason = "no_valid_speakers"
+    elif metrics.speaker_count == 1:
+        reason = "single_speaker_short_recording"
+    elif metrics.speaker_count > AUTO_PROFILE_DIALOG_MAX_SPEAKERS:
+        reason = "too_many_speakers"
+    elif metrics.low_mass_speaker_count < max(metrics.speaker_count - 2, 0):
+        reason = "non_tiny_extra_speakers"
+    elif metrics.top_two_coverage < AUTO_PROFILE_DIALOG_MIN_TOP_TWO_COVERAGE:
+        reason = "low_top_two_coverage"
+    elif metrics.low_mass_coverage > AUTO_PROFILE_DIALOG_MAX_LOW_MASS_COVERAGE:
+        reason = "too_much_low_mass_speech"
+    elif metrics.dominant_turn_count < AUTO_PROFILE_DIALOG_MIN_DOMINANT_TURNS:
+        reason = "insufficient_dominant_turns"
+    elif metrics.dominant_alternation_ratio < AUTO_PROFILE_DIALOG_MIN_ALTERNATION_RATIO:
+        reason = "low_turn_alternation"
+    else:
+        reason = "high_overlap"
+    return DiarizationProfileDecision(
+        selected_profile="meeting",
+        reason=reason,
+        metrics=metrics,
+        dialog_score=dialog_score,
+    )
+
+
+def choose_dialog_retry_winner(
+    initial: DiarizationProfileDecision,
+    retry: DiarizationProfileDecision,
+) -> DialogRetrySelection:
+    if retry.selected_profile != "dialog":
+        return DialogRetrySelection(
+            selected_result="initial_pass",
+            winner_reason="dialog_retry_not_dialog_like",
+            initial_score=initial.dialog_score,
+            retry_score=retry.dialog_score,
+        )
+    if retry.metrics.speaker_count < 2:
+        return DialogRetrySelection(
+            selected_result="initial_pass",
+            winner_reason="dialog_retry_single_speaker",
+            initial_score=initial.dialog_score,
+            retry_score=retry.dialog_score,
+        )
+    if retry.metrics.dominant_turn_count < 2:
+        return DialogRetrySelection(
+            selected_result="initial_pass",
+            winner_reason="dialog_retry_pathological_turns",
+            initial_score=initial.dialog_score,
+            retry_score=retry.dialog_score,
+        )
+    if retry.metrics.top_two_coverage < AUTO_PROFILE_DIALOG_MIN_ACCEPTABLE_TOP_TWO_COVERAGE:
+        return DialogRetrySelection(
+            selected_result="initial_pass",
+            winner_reason="dialog_retry_low_top_two_coverage",
+            initial_score=initial.dialog_score,
+            retry_score=retry.dialog_score,
+        )
+    if retry.dialog_score <= (
+        initial.dialog_score + AUTO_PROFILE_DIALOG_RETRY_SCORE_MIN_DELTA
+    ):
+        return DialogRetrySelection(
+            selected_result="initial_pass",
+            winner_reason="dialog_retry_not_better",
+            initial_score=initial.dialog_score,
+            retry_score=retry.dialog_score,
+        )
+    return DialogRetrySelection(
+        selected_result="dialog_retry",
+        winner_reason="dialog_retry_improved_dialog_score",
+        initial_score=initial.dialog_score,
+        retry_score=retry.dialog_score,
     )
 
 
@@ -280,6 +553,16 @@ def smooth_speaker_turns(
 
 
 __all__ = [
+    "AUTO_PROFILE_DEFAULT_INITIAL_PROFILE",
+    "AUTO_PROFILE_DIALOG_MAX_OVERLAP_RATIO",
+    "AUTO_PROFILE_DIALOG_MAX_SPEAKERS",
+    "AUTO_PROFILE_DIALOG_MAX_LOW_MASS_COVERAGE",
+    "AUTO_PROFILE_DIALOG_MAX_LOW_MASS_SHARE_PER_SPEAKER",
+    "AUTO_PROFILE_DIALOG_MIN_ACCEPTABLE_TOP_TWO_COVERAGE",
+    "AUTO_PROFILE_DIALOG_MIN_ALTERNATION_RATIO",
+    "AUTO_PROFILE_DIALOG_MIN_DOMINANT_TURNS",
+    "AUTO_PROFILE_DIALOG_MIN_TOP_TWO_COVERAGE",
+    "AUTO_PROFILE_DIALOG_RETRY_SCORE_MIN_DELTA",
     "DEFAULT_DIALOG_MAX_SPEAKERS",
     "DEFAULT_DIALOG_MIN_SPEAKERS",
     "DEFAULT_DIALOG_RETRY_MIN_DURATION_SECONDS",
@@ -288,9 +571,14 @@ __all__ = [
     "DEFAULT_DIARIZATION_MIN_TURN_SECONDS",
     "DEFAULT_MEETING_MAX_SPEAKERS",
     "DEFAULT_MEETING_MIN_SPEAKERS",
+    "DialogRetrySelection",
+    "DiarizationProfileDecision",
+    "DiarizationProfileMetrics",
     "SpeakerTurnSmoothingResult",
     "annotation_speaker_count",
+    "choose_dialog_retry_winner",
+    "classify_diarization_profile",
+    "diarization_profile_metrics",
     "profile_default_speaker_hints",
-    "should_retry_dialog",
     "smooth_speaker_turns",
 ]

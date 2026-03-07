@@ -121,7 +121,9 @@ async def test_orchestrator_retry_helper_skips_non_retryable_cases_and_tolerates
         dialog_retry_min_turns = 4
         dialog_retry_min_duration_seconds = 15.0
         last_run_metadata = {
-            "diarization_profile": "dialog",
+            "diarization_profile": "auto",
+            "initial_profile": "meeting",
+            "auto_profile_enabled": True,
             "effective_hints": "not-a-dict",
             "speaker_count_before_retry": 1,
         }
@@ -148,19 +150,28 @@ async def test_orchestrator_retry_helper_skips_non_retryable_cases_and_tolerates
 
 @pytest.mark.asyncio
 async def test_orchestrator_retry_helper_keeps_initial_diarization_when_retry_fails():
+    segment = SimpleNamespace(start=0.0, end=30.0)
+
     class _RetryingDiariser:
         dialog_retry_min_turns = 4
         dialog_retry_min_duration_seconds = 15.0
         last_run_metadata = {
-            "diarization_profile": "dialog",
-            "effective_hints": {"min_speakers": 2, "max_speakers": 2},
+            "diarization_profile": "auto",
+            "initial_profile": "meeting",
+            "auto_profile_enabled": True,
+            "initial_hints": {"min_speakers": 2, "max_speakers": 6},
+            "effective_hints": {"min_speakers": 2, "max_speakers": 6},
             "speaker_count_before_retry": 1,
         }
 
         async def retry_dialog(self, _audio_path: Path):
             raise RuntimeError("retry boom")
 
-    diarization = object()
+    diarization = SimpleNamespace(
+        itertracks=lambda yield_label=False: (
+            iter([(segment, "S1")]) if yield_label else iter([(segment,)])
+        )
+    )
     step_messages: list[str] = []
     result = await pipeline._maybe_retry_dialog_diarization(
         diariser=_RetryingDiariser(),
@@ -182,9 +193,77 @@ async def test_orchestrator_retry_helper_keeps_initial_diarization_when_retry_fa
 
     assert result is diarization
     assert step_messages == [
-        "diarization dialog retry profile=dialog min_speakers=2 max_speakers=2",
+        "diarization auto-profile retry classification=single_speaker_long_recording min_speakers=2 max_speakers=2",
         "diarization dialog retry failed: retry boom",
     ]
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_retry_helper_uses_default_retry_hints_when_missing():
+    first_segment = SimpleNamespace(start=0.0, end=30.0)
+
+    class _RetryingDiariser:
+        dialog_retry_min_turns = 4
+        dialog_retry_min_duration_seconds = 15.0
+        last_run_metadata = {
+            "diarization_profile": "auto",
+            "initial_profile": "meeting",
+            "auto_profile_enabled": True,
+            "initial_hints": {"min_speakers": 2, "max_speakers": 6},
+            "effective_hints": {"min_speakers": 2, "max_speakers": 6},
+            "speaker_count_before_retry": 1,
+        }
+
+        async def retry_dialog(self, _audio_path: Path):
+            retry_segments = [
+                SimpleNamespace(start=0.0, end=1.0),
+                SimpleNamespace(start=1.0, end=2.0),
+                SimpleNamespace(start=2.0, end=3.0),
+            ]
+            return SimpleNamespace(
+                itertracks=lambda yield_label=False: (
+                    iter(
+                        [
+                            (retry_segments[0], "S1"),
+                            (retry_segments[1], "S2"),
+                            (retry_segments[2], "S1"),
+                        ]
+                    )
+                    if yield_label
+                    else iter([(retry_segments[0],), (retry_segments[1],), (retry_segments[2],)])
+                )
+            )
+
+    diarization = SimpleNamespace(
+        itertracks=lambda yield_label=False: (
+            iter([(first_segment, "S1")]) if yield_label else iter([(first_segment,)])
+        )
+    )
+    diariser = _RetryingDiariser()
+
+    result = await pipeline._maybe_retry_dialog_diarization(
+        diariser=diariser,
+        audio_path=Path("/tmp/audio.wav"),
+        diarization=diarization,
+        asr_segments=[
+            {"text": "first"},
+            {"text": "second"},
+            {"text": "third"},
+            {"text": "fourth"},
+        ],
+        precheck_result=precheck.PrecheckResult(
+            duration_sec=30.0,
+            speech_ratio=0.5,
+            quarantine_reason=None,
+        ),
+        step_log_callback=None,
+    )
+
+    assert result is not diarization
+    assert diariser.last_run_metadata["effective_hints"] == {
+        "min_speakers": 2,
+        "max_speakers": 2,
+    }
 
 
 @pytest.mark.asyncio
