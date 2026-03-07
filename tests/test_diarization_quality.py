@@ -80,6 +80,15 @@ def test_should_retry_dialog_requires_dialog_like_mode_single_speaker_and_plausi
         min_turns=4,
         min_duration_seconds=20.0,
     )
+    assert not should_retry_dialog(
+        profile="dialog",
+        max_speakers=4,
+        detected_speaker_count=1,
+        speech_turn_count=8,
+        duration_sec=45.0,
+        min_turns=4,
+        min_duration_seconds=20.0,
+    )
     assert should_retry_dialog(
         profile="meeting",
         max_speakers=2,

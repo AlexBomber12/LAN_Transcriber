@@ -60,6 +60,8 @@ def should_retry_dialog(
     min_duration_seconds: float,
 ) -> bool:
     normalized_profile = str(profile or "auto").strip().lower()
+    if max_speakers is not None and max_speakers != 2:
+        return False
     if normalized_profile != "dialog" and max_speakers != 2:
         return False
     if detected_speaker_count != 1:
