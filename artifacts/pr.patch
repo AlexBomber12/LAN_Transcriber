@@ -1,90 +1,63 @@
-diff --git a/lan_transcriber/pipeline_steps/orchestrator.py b/lan_transcriber/pipeline_steps/orchestrator.py
-index 5f9199a..ba3ab6b 100644
---- a/lan_transcriber/pipeline_steps/orchestrator.py
-+++ b/lan_transcriber/pipeline_steps/orchestrator.py
-@@ -649,13 +649,15 @@ async def _run_chunked_llm_summary(
-         calendar_title=calendar_title,
-         calendar_attendees=calendar_attendees,
-     )
-+    merge_max_tokens = cfg.llm_merge_max_tokens or cfg.llm_max_tokens
-     raw_merge = await _generate_llm_message(
-         llm,
-         system_prompt=merge_sys_prompt,
-         user_prompt=merge_user_prompt,
-         model=llm_model,
-         response_format={"type": "json_object"},
--        max_tokens=cfg.llm_merge_max_tokens or cfg.llm_max_tokens,
-+        max_tokens=merge_max_tokens,
-+        max_tokens_retry=max(cfg.llm_max_tokens_retry, merge_max_tokens),
-     )
-     atomic_write_json(derived_dir / "llm_merge_raw.json", raw_merge)
-     if _llm_message_timed_out(raw_merge):
-diff --git a/tests/test_cov_lan_transcriber_extra_pipeline.py b/tests/test_cov_lan_transcriber_extra_pipeline.py
-index de04671..6537758 100644
---- a/tests/test_cov_lan_transcriber_extra_pipeline.py
-+++ b/tests/test_cov_lan_transcriber_extra_pipeline.py
-@@ -265,6 +265,64 @@ async def test_run_chunked_llm_summary_merge_timeout_sentinel_fails(tmp_path: Pa
-     }
+diff --git a/lan_transcriber/llm_client.py b/lan_transcriber/llm_client.py
+index 5b095ca..557da55 100644
+--- a/lan_transcriber/llm_client.py
++++ b/lan_transcriber/llm_client.py
+@@ -379,7 +379,7 @@ class LLMClient:
+                 base_max_tokens=effective_max_tokens,
+             )
+             if max_tokens_retry is not None
+-            else self.max_tokens_retry
++            else max(self.max_tokens_retry, effective_max_tokens)
+         )
+ 
+         url = build_chat_completions_url(self.base_url)
+diff --git a/tests/test_llm_client.py b/tests/test_llm_client.py
+index 2ee0716..f11b0fa 100644
+--- a/tests/test_llm_client.py
++++ b/tests/test_llm_client.py
+@@ -471,6 +471,45 @@ async def test_generate_allows_per_call_retry_max_token_override(
+     assert seen_max_tokens == [1536, 3072]
  
  
 +@pytest.mark.asyncio
-+async def test_run_chunked_llm_summary_passes_merge_retry_budget(tmp_path: Path) -> None:
-+    merge_kwargs: dict[str, Any] = {}
-+
-+    class _MergeBudgetLLM:
-+        async def generate(self, **kwargs: Any) -> dict[str, str]:
-+            payload = json.loads(kwargs["user_prompt"])
-+            if "chunk" in payload:
-+                return {
-+                    "content": json.dumps(
-+                        {
-+                            "summary_bullets": ["Chunk 1"],
-+                            "decisions": [],
-+                            "action_items": [],
-+                            "emotional_cues": ["Focused"],
-+                            "questions": {"total_count": 0, "types": {}, "extracted": []},
-+                        }
-+                    )
-+                }
-+            merge_kwargs.update(kwargs)
-+            return {
-+                "content": json.dumps(
-+                    {
-+                        "topic": "Merged topic",
-+                        "summary_bullets": ["Merged summary bullet"],
-+                        "decisions": [],
-+                        "action_items": [],
-+                        "emotional_summary": "Focused.",
-+                        "questions": {"total_count": 0, "types": {}, "extracted": []},
-+                    }
-+                )
-+            }
-+
-+    await pipeline._run_chunked_llm_summary(
-+        transcript_text="single chunk transcript",
-+        derived_dir=tmp_path / "derived",
-+        llm=_MergeBudgetLLM(),
-+        cfg=_settings(
-+            tmp_path,
-+            llm_model="model",
-+            llm_chunk_max_chars=100,
-+            llm_max_tokens=1024,
-+            llm_max_tokens_retry=2048,
-+            llm_merge_max_tokens=3072,
-+        ),
-+        llm_model="model",
-+        target_summary_language="en",
-+        friendly=0,
-+        default_topic="Meeting summary",
-+        calendar_title=None,
-+        calendar_attendees=[],
-+        progress_callback=None,
++async def test_generate_retry_budget_never_drops_below_overridden_max_tokens(
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    client = llm_client.LLMClient(
++        base_url="http://example.test",
++        max_tokens=1024,
++        max_tokens_retry=2048,
 +    )
++    seen_max_tokens: list[int] = []
 +
-+    assert merge_kwargs["max_tokens"] == 3072
-+    assert merge_kwargs["max_tokens_retry"] == 3072
++    async def _fake_post(
++        *,
++        url: str,
++        payload: dict[str, Any],
++        headers: dict[str, str],
++        attempt_number: int | None = None,
++    ) -> dict[str, Any]:
++        del url, headers
++        seen_max_tokens.append(int(payload["max_tokens"]))
++        if attempt_number == 1:
++            return {
++                "choices": [
++                    {
++                        "finish_reason": "length",
++                        "message": {"role": "assistant", "content": ""},
++                    }
++                ]
++            }
++        return {"choices": [{"message": {"role": "assistant", "content": "ok"}}]}
++
++    monkeypatch.setattr(client, "_post_chat_completion", _fake_post)
++
++    result = await client.generate("sys", "usr", max_tokens=3072)
++
++    assert result["content"] == "ok"
++    assert seen_max_tokens == [3072, 3072]
 +
 +
- def _audio_file(tmp_path: Path, name: str = "audio.mp3") -> Path:
-     path = tmp_path / name
-     path.write_bytes(b"\x00")
+ @respx.mock
+ def test_generate_with_content_only_response() -> None:
+     route = respx.post("http://127.0.0.1:8000/v1/chat/completions").mock(
