@@ -72,6 +72,8 @@ def _recording_root_path(recording_id: str, settings: AppSettings) -> Path:
     raw_recording_id = str(recording_id or "").strip()
     if not raw_recording_id:
         raise RecordingDeleteError("Delete failed: recording id is required.")
+    if raw_recording_id in {".", ".."}:
+        raise RecordingDeleteError("Delete failed: invalid recording id.")
     if Path(raw_recording_id).parts != (raw_recording_id,):
         raise RecordingDeleteError("Delete failed: invalid recording id.")
 

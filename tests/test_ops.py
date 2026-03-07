@@ -130,6 +130,10 @@ def test_delete_recording_with_artifacts_rejects_invalid_id(tmp_path: Path) -> N
     with pytest.raises(RecordingDeleteError, match="recording id is required"):
         delete_recording_with_artifacts("", settings=cfg)
     with pytest.raises(RecordingDeleteError, match="invalid recording id"):
+        delete_recording_with_artifacts(".", settings=cfg)
+    with pytest.raises(RecordingDeleteError, match="invalid recording id"):
+        delete_recording_with_artifacts("..", settings=cfg)
+    with pytest.raises(RecordingDeleteError, match="invalid recording id"):
         delete_recording_with_artifacts("../escape", settings=cfg)
 
 

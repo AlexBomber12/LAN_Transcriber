@@ -1,64 +1,28 @@
 diff --git a/lan_app/ops.py b/lan_app/ops.py
-index 712b381..0e816f0 100644
+index 0e816f0..a73932e 100644
 --- a/lan_app/ops.py
 +++ b/lan_app/ops.py
-@@ -76,11 +76,9 @@ def _recording_root_path(recording_id: str, settings: AppSettings) -> Path:
+@@ -72,6 +72,8 @@ def _recording_root_path(recording_id: str, settings: AppSettings) -> Path:
+     raw_recording_id = str(recording_id or "").strip()
+     if not raw_recording_id:
+         raise RecordingDeleteError("Delete failed: recording id is required.")
++    if raw_recording_id in {".", ".."}:
++        raise RecordingDeleteError("Delete failed: invalid recording id.")
+     if Path(raw_recording_id).parts != (raw_recording_id,):
          raise RecordingDeleteError("Delete failed: invalid recording id.")
  
-     recordings_root = settings.recordings_root.resolve(strict=False)
--    recording_root = (settings.recordings_root / raw_recording_id).resolve(strict=False)
--    try:
--        recording_root.relative_to(recordings_root)
--    except ValueError as exc:
--        raise RecordingDeleteError("Delete failed: invalid recording path.") from exc
-+    recording_root = recordings_root / raw_recording_id
-+    if recording_root.is_symlink():
-+        raise RecordingDeleteError("Delete failed: invalid recording path.")
-     return recording_root
- 
- 
 diff --git a/tests/test_ops.py b/tests/test_ops.py
-index 25fec85..9d5e500 100644
+index 9d5e500..11e7eda 100644
 --- a/tests/test_ops.py
 +++ b/tests/test_ops.py
-@@ -144,6 +144,40 @@ def test_delete_recording_with_artifacts_rejects_symlink_escape(tmp_path: Path)
-         delete_recording_with_artifacts("escape", settings=cfg)
- 
- 
-+def test_delete_recording_with_artifacts_rejects_symlink_to_another_recording(
-+    tmp_path: Path,
-+) -> None:
-+    cfg = _cfg(tmp_path)
-+    init_db(cfg)
-+    create_recording(
-+        "rec-delete-link-1",
-+        source="upload",
-+        source_filename="link.wav",
-+        settings=cfg,
-+    )
-+    create_recording(
-+        "rec-delete-target-1",
-+        source="upload",
-+        source_filename="target.wav",
-+        settings=cfg,
-+    )
-+    target_root = cfg.recordings_root / "rec-delete-target-1"
-+    (target_root / "raw").mkdir(parents=True, exist_ok=True)
-+    target_audio = target_root / "raw" / "audio.wav"
-+    target_audio.write_bytes(b"\x00")
-+    alias_root = cfg.recordings_root / "rec-delete-link-1"
-+    alias_root.parent.mkdir(parents=True, exist_ok=True)
-+    alias_root.symlink_to(target_root, target_is_directory=True)
-+
-+    with pytest.raises(RecordingDeleteError, match="invalid recording path"):
-+        delete_recording_with_artifacts("rec-delete-link-1", settings=cfg)
-+
-+    assert get_recording("rec-delete-link-1", settings=cfg) is not None
-+    assert get_recording("rec-delete-target-1", settings=cfg) is not None
-+    assert target_audio.exists()
-+    assert alias_root.is_symlink()
-+
-+
- def test_delete_recording_with_artifacts_handles_file_root(tmp_path: Path) -> None:
+@@ -129,6 +129,10 @@ def test_delete_recording_with_artifacts_rejects_invalid_id(tmp_path: Path) -> N
      cfg = _cfg(tmp_path)
-     init_db(cfg)
+     with pytest.raises(RecordingDeleteError, match="recording id is required"):
+         delete_recording_with_artifacts("", settings=cfg)
++    with pytest.raises(RecordingDeleteError, match="invalid recording id"):
++        delete_recording_with_artifacts(".", settings=cfg)
++    with pytest.raises(RecordingDeleteError, match="invalid recording id"):
++        delete_recording_with_artifacts("..", settings=cfg)
+     with pytest.raises(RecordingDeleteError, match="invalid recording id"):
+         delete_recording_with_artifacts("../escape", settings=cfg)
+ 
