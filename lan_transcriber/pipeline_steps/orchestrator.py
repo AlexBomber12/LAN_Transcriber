@@ -488,6 +488,7 @@ async def _maybe_retry_dialog_diarization(
     _update_diariser_runtime_metadata(
         diariser,
         effective_hints=dict(retry_hints if winner_is_retry else initial_hints),
+        dialog_retry_used=winner_is_retry,
         selected_profile=profile_selection["selected_profile"],
         profile_selection=profile_selection,
     )

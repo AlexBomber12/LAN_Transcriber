@@ -267,6 +267,96 @@ async def test_orchestrator_retry_helper_uses_default_retry_hints_when_missing()
 
 
 @pytest.mark.asyncio
+async def test_orchestrator_retry_helper_clears_retry_used_when_initial_pass_wins():
+    first_segments = [
+        SimpleNamespace(start=0.0, end=1.0),
+        SimpleNamespace(start=1.0, end=2.0),
+        SimpleNamespace(start=2.0, end=3.0),
+        SimpleNamespace(start=3.0, end=4.0),
+    ]
+
+    def _annotation_from_rows(rows: list[tuple[SimpleNamespace, str]]):
+        return SimpleNamespace(
+            itertracks=lambda yield_label=False: (
+                iter(rows) if yield_label else iter([(segment,) for segment, _speaker in rows])
+            )
+        )
+
+    initial_diarization = _annotation_from_rows(
+        [
+            (first_segments[0], "S1"),
+            (first_segments[1], "S2"),
+            (first_segments[2], "S1"),
+            (first_segments[3], "S2"),
+        ]
+    )
+
+    class _RetryingDiariser:
+        dialog_retry_min_turns = 4
+        dialog_retry_min_duration_seconds = 15.0
+        last_run_metadata = {
+            "diarization_profile": "auto",
+            "initial_profile": "meeting",
+            "auto_profile_enabled": True,
+            "initial_hints": {"min_speakers": 2, "max_speakers": 6},
+            "effective_hints": {"min_speakers": 2, "max_speakers": 6},
+            "speaker_count_before_retry": 2,
+            "dialog_retry_used": False,
+        }
+
+        async def retry_dialog(self, _audio_path: Path):
+            self.last_run_metadata.update(
+                {
+                    "retry_hints": {"min_speakers": 2, "max_speakers": 2},
+                    "effective_hints": {"min_speakers": 2, "max_speakers": 2},
+                    "dialog_retry_used": True,
+                    "speaker_count_after_retry": 3,
+                }
+            )
+            retry_segments = [
+                SimpleNamespace(start=0.0, end=1.0),
+                SimpleNamespace(start=1.0, end=2.0),
+                SimpleNamespace(start=2.0, end=3.0),
+                SimpleNamespace(start=3.0, end=3.3),
+            ]
+            return _annotation_from_rows(
+                [
+                    (retry_segments[0], "S1"),
+                    (retry_segments[1], "S2"),
+                    (retry_segments[2], "S1"),
+                    (retry_segments[3], "S3"),
+                ]
+            )
+
+    diariser = _RetryingDiariser()
+    result = await pipeline._maybe_retry_dialog_diarization(
+        diariser=diariser,
+        audio_path=Path("/tmp/audio.wav"),
+        diarization=initial_diarization,
+        asr_segments=[
+            {"text": "first"},
+            {"text": "second"},
+            {"text": "third"},
+            {"text": "fourth"},
+        ],
+        precheck_result=precheck.PrecheckResult(
+            duration_sec=30.0,
+            speech_ratio=0.5,
+            quarantine_reason=None,
+        ),
+        step_log_callback=None,
+    )
+
+    assert result is initial_diarization
+    assert diariser.last_run_metadata["dialog_retry_used"] is False
+    assert diariser.last_run_metadata["effective_hints"] == {
+        "min_speakers": 2,
+        "max_speakers": 6,
+    }
+    assert diariser.last_run_metadata["profile_selection"]["selected_result"] == "initial_pass"
+
+
+@pytest.mark.asyncio
 async def test_run_chunked_llm_summary_rejects_empty_chunk_plan(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
