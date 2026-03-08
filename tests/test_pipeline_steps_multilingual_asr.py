@@ -375,6 +375,39 @@ def test_run_language_aware_asr_override_and_empty_chunk_plan_paths(
     assert payload["selection_reason"] == "empty_chunk_plan"
 
 
+def test_run_language_aware_asr_force_multilingual_requires_wav_input(
+    tmp_path: Path,
+) -> None:
+    audio = tmp_path / "mixed.mp3"
+    audio.write_bytes(b"synthetic")
+
+    def _transcribe(
+        path: Path,
+        override_lang: str | None,
+    ) -> tuple[list[dict[str, object]], dict[str, object]]:
+        assert path == audio
+        assert override_lang is None
+        return (
+            [
+                {"start": 0.0, "end": 4.0, "text": "hello team thanks"},
+                {"start": 4.0, "end": 8.0, "text": "hola equipo gracias"},
+            ],
+            {"language": "en", "language_probability": 0.92},
+        )
+
+    with pytest.raises(
+        ValueError,
+        match="force_multilingual requires a WAV input",
+    ):
+        multilingual_asr.run_language_aware_asr(
+            audio,
+            override_lang=None,
+            configured_mode="force_multilingual",
+            tmp_root=tmp_path / "tmp",
+            transcribe_fn=_transcribe,
+        )
+
+
 def test_run_language_aware_asr_multilingual_executes_chunk_hints_and_conflicts(
     tmp_path: Path,
 ) -> None:

@@ -371,6 +371,10 @@ def run_language_aware_asr(
         return initial_segments, initial_info, payload
 
     if audio_path.suffix.lower() != ".wav":
+        if configured_mode == "force_multilingual":
+            raise ValueError(
+                "force_multilingual requires a WAV input; sanitize or transcode before chunking"
+            )
         payload = {
             "configured_mode": configured_mode,
             "selected_mode": "single_language",
