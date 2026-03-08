@@ -527,9 +527,16 @@ def test_pyannote_diariser_passes_optional_speaker_hint_kwargs():
         )
     ]
     assert diariser.last_run_metadata == {
+        "requested_profile": "auto",
         "diarization_profile": "auto",
+        "initial_profile": "meeting",
+        "selected_profile": None,
+        "auto_profile_enabled": True,
+        "override_reason": None,
         "initial_hints": {"min_speakers": 2, "max_speakers": 4},
+        "retry_hints": None,
         "effective_hints": {"min_speakers": 2, "max_speakers": 4},
+        "profile_selection": None,
         "dialog_retry_used": False,
         "speaker_count_before_retry": 0,
         "speaker_count_after_retry": 0,
@@ -537,9 +544,23 @@ def test_pyannote_diariser_passes_optional_speaker_hint_kwargs():
 
 
 def test_resolve_diarization_speaker_hints_from_env(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("LAN_DIARIZATION_PROFILE", "auto")
+    monkeypatch.delenv("LAN_DIARIZATION_MIN_SPEAKERS", raising=False)
+    monkeypatch.delenv("LAN_DIARIZATION_MAX_SPEAKERS", raising=False)
+    hints = worker_tasks._resolve_diarization_speaker_hints()
+    assert hints.profile == "auto"
+    assert hints.initial_profile == "meeting"
+    assert hints.auto_profile_enabled is True
+    assert hints.override_reason is None
+    assert hints.min_speakers == 2
+    assert hints.max_speakers == 6
+
     monkeypatch.setenv("LAN_DIARIZATION_PROFILE", "dialog")
     hints = worker_tasks._resolve_diarization_speaker_hints()
     assert hints.profile == "dialog"
+    assert hints.initial_profile == "dialog"
+    assert hints.auto_profile_enabled is False
+    assert hints.override_reason == "profile_forced_dialog"
     assert hints.min_speakers == 2
     assert hints.max_speakers == 2
 
@@ -550,10 +571,23 @@ def test_resolve_diarization_speaker_hints_from_env(monkeypatch: pytest.MonkeyPa
     monkeypatch.setenv("LAN_DIARIZATION_DIALOG_RETRY_MIN_TURNS", "5")
     hints = worker_tasks._resolve_diarization_speaker_hints()
     assert hints.profile == "meeting"
+    assert hints.initial_profile == "meeting"
+    assert hints.auto_profile_enabled is False
+    assert hints.override_reason == "profile_forced_meeting"
     assert hints.min_speakers == 3
     assert hints.max_speakers == 4
     assert hints.dialog_retry_min_duration_seconds == 9.5
     assert hints.dialog_retry_min_turns == 5
+
+    monkeypatch.setenv("LAN_DIARIZATION_PROFILE", "auto")
+    monkeypatch.delenv("LAN_DIARIZATION_MIN_SPEAKERS")
+    monkeypatch.setenv("LAN_DIARIZATION_MAX_SPEAKERS", "2")
+    hints = worker_tasks._resolve_diarization_speaker_hints()
+    assert hints.initial_profile == "dialog"
+    assert hints.auto_profile_enabled is False
+    assert hints.override_reason == "explicit_speaker_hints"
+    assert hints.min_speakers == 2
+    assert hints.max_speakers == 2
 
     monkeypatch.setenv("LAN_DIARIZATION_PROFILE", "dialog")
     monkeypatch.setenv("LAN_DIARIZATION_MIN_SPEAKERS", "5")
@@ -583,8 +617,10 @@ def test_resolve_diarization_speaker_hints_from_env(monkeypatch: pytest.MonkeyPa
     monkeypatch.setenv("LAN_DIARIZATION_DIALOG_RETRY_MIN_TURNS", "0")
     hints = worker_tasks._resolve_diarization_speaker_hints()
     assert hints.profile == "auto"
-    assert hints.min_speakers is None
-    assert hints.max_speakers is None
+    assert hints.initial_profile == "meeting"
+    assert hints.auto_profile_enabled is True
+    assert hints.min_speakers == 2
+    assert hints.max_speakers == 6
     assert hints.dialog_retry_min_duration_seconds == 20.0
     assert hints.dialog_retry_min_turns == 6
 
@@ -626,9 +662,16 @@ def test_pyannote_diariser_retry_dialog_forces_two_speakers_once():
 
     assert len(list(retried.itertracks(yield_label=True))) == 2
     assert diariser.last_run_metadata == {
+        "requested_profile": "dialog",
         "diarization_profile": "dialog",
+        "initial_profile": "dialog",
+        "selected_profile": "dialog",
+        "auto_profile_enabled": False,
+        "override_reason": None,
         "initial_hints": {"min_speakers": 2, "max_speakers": 4},
+        "retry_hints": {"min_speakers": 2, "max_speakers": 2},
         "effective_hints": {"min_speakers": 2, "max_speakers": 2},
+        "profile_selection": None,
         "dialog_retry_used": True,
         "speaker_count_before_retry": 1,
         "speaker_count_after_retry": 2,
@@ -673,6 +716,9 @@ def test_write_diarization_status_artifact_writes_payload_and_ignores_oserror(
 def test_pyannote_diariser_rejects_non_callable_model():
     with pytest.raises(TypeError, match="pipeline_model must be a callable"):
         worker_tasks._PyannoteDiariser(None)
+
+    diariser = worker_tasks._PyannoteDiariser(lambda *_a, **_k: {"ok": True}, initial_profile="weird")
+    assert diariser.initial_profile == "meeting"
 
 
 def test_build_diariser_uses_fallback_when_pyannote_is_unavailable(

@@ -432,7 +432,7 @@ Queue (in order)
 - Depends on: PR-DIARIZATION-QUALITY-01
 
 85) PR-DIARIZATION-AUTO-PROFILE-01: Auto-select diarization profile (dialog vs meeting), retry 2-speaker dialogs, and persist profile-selection metadata
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-DIARIZATION-AUTO-PROFILE-01.md
 - Depends on: PR-DIARIZATION-QUALITY-01
 

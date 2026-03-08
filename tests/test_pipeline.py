@@ -125,13 +125,20 @@ class FailingItertracksDiariser:
 class DialogRetryDiariser:
     def __init__(self) -> None:
         self.mode = "pyannote"
-        self.profile = "dialog"
+        self.profile = "auto"
         self.dialog_retry_min_turns = 3
         self.dialog_retry_min_duration_seconds = 10.0
         self.last_run_metadata = {
-            "diarization_profile": "dialog",
-            "initial_hints": {},
-            "effective_hints": {},
+            "requested_profile": "auto",
+            "diarization_profile": "auto",
+            "initial_profile": "meeting",
+            "selected_profile": None,
+            "auto_profile_enabled": True,
+            "override_reason": None,
+            "initial_hints": {"min_speakers": 2, "max_speakers": 6},
+            "retry_hints": None,
+            "effective_hints": {"min_speakers": 2, "max_speakers": 6},
+            "profile_selection": None,
             "dialog_retry_used": False,
             "speaker_count_before_retry": None,
             "speaker_count_after_retry": None,
@@ -150,6 +157,7 @@ class DialogRetryDiariser:
     async def retry_dialog(self, audio_path: Path):
         self.last_run_metadata.update(
             {
+                "retry_hints": {"min_speakers": 2, "max_speakers": 2},
                 "effective_hints": {"min_speakers": 2, "max_speakers": 2},
                 "dialog_retry_used": True,
                 "speaker_count_after_retry": 2,
@@ -167,9 +175,16 @@ class EmptyTracksDiariser:
         self.mode = "pyannote"
         self.profile = "auto"
         self.last_run_metadata = {
+            "requested_profile": "auto",
             "diarization_profile": "auto",
-            "initial_hints": {},
-            "effective_hints": {},
+            "initial_profile": "meeting",
+            "selected_profile": None,
+            "auto_profile_enabled": True,
+            "override_reason": None,
+            "initial_hints": {"min_speakers": 2, "max_speakers": 6},
+            "retry_hints": None,
+            "effective_hints": {"min_speakers": 2, "max_speakers": 6},
+            "profile_selection": None,
             "dialog_retry_used": False,
             "speaker_count_before_retry": 0,
             "speaker_count_after_retry": 0,
@@ -324,7 +339,7 @@ async def test_pipeline_writes_diarization_metadata_and_smooths_retry_output(
         speaker_db=tmp_path / "db.yaml",
         tmp_root=tmp_path,
         recordings_root=tmp_path / "recordings",
-        diarization_profile="dialog",
+        diarization_profile="auto",
         diarization_merge_gap_seconds=0.2,
         diarization_min_turn_seconds=0.5,
     )
@@ -348,9 +363,13 @@ async def test_pipeline_writes_diarization_metadata_and_smooths_retry_output(
     assert speaker_turns == [
         {"start": 0.0, "end": 2.4, "speaker": "S1", "text": "alpha noise omega", "language": "en"}
     ]
-    assert metadata["diarization_profile"] == "dialog"
+    assert metadata["diarization_profile"] == "auto"
+    assert metadata["selected_profile"] == "dialog"
+    assert metadata["selected_result"] == "dialog_retry"
+    assert metadata["dialog_retry_attempted"] is True
     assert metadata["dialog_retry_used"] is True
     assert metadata["hints_applied"] == {"max_speakers": 2, "min_speakers": 2}
+    assert metadata["initial_top_two_coverage"] == 1.0
     assert metadata["used_dummy_fallback"] is False
     assert metadata["smoothing_applied"] is True
     assert metadata["speaker_count_before_smoothing"] == 2
