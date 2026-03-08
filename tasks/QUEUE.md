@@ -437,7 +437,7 @@ Queue (in order)
 - Depends on: PR-DIARIZATION-QUALITY-01
 
 86) PR-SPEAKER-BANK-CANONICAL-01: Canonical speaker bank backend: one person = one record, many embeddings per speaker, one-to-one assignment, duplicate merge operations
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-SPEAKER-BANK-CANONICAL-01.md
 - Depends on: PR-DIARIZATION-AUTO-PROFILE-01
 

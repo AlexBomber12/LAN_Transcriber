@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import sqlite3
 
@@ -37,6 +38,45 @@ def test_db_internal_helpers_and_validation_paths():
 
     assert parsed == {"json": "{", "payload_json": "{", "number": 1}
     assert db_module._as_dict(None) is None  # noqa: SLF001
+    assert db_module._clamp_score("bad", default=0.3) == 0.3  # noqa: SLF001
+    assert db_module._normalise_candidate_matches(  # noqa: SLF001
+        [
+            "skip",
+            {"voice_profile_id": "bad"},
+            {"voice_profile_id": "7", "score": "bad"},
+            {"voice_profile_id": 7, "score": 0.5, "display_name": "Voice 7"},
+        ]
+    ) == [{"voice_profile_id": 7, "score": 0.5, "display_name": "Voice 7"}]
+    assert db_module._rewrite_voice_profile_ids_for_merge(  # noqa: SLF001
+        "{bad-json",
+        source_profile_id=1,
+        target_profile_id=2,
+    ) == []
+    assert db_module._rewrite_voice_profile_ids_for_merge(  # noqa: SLF001
+        123,
+        source_profile_id=1,
+        target_profile_id=2,
+    ) == []
+    assert db_module._rewrite_voice_profile_ids_for_merge(  # noqa: SLF001
+        [1, "bad", 3],
+        source_profile_id=1,
+        target_profile_id=2,
+    ) == [2, 3]
+    assert db_module._rewrite_candidate_matches_for_merge(  # noqa: SLF001
+        "{bad-json",
+        source_profile_id=1,
+        target_profile_id=2,
+    ) == []
+    assert db_module._rewrite_candidate_matches_for_merge(  # noqa: SLF001
+        123,
+        source_profile_id=1,
+        target_profile_id=2,
+    ) == []
+    assert db_module._rewrite_candidate_matches_for_merge(  # noqa: SLF001
+        ["skip", {"voice_profile_id": 1, "score": 0.9}, {"voice_profile_id": "bad"}],
+        source_profile_id=1,
+        target_profile_id=2,
+    ) == [{"voice_profile_id": 2, "score": 0.9}]
 
     with pytest.raises(ValueError, match="Unsupported recording status"):
         db_module._validate_recording_status("bad-status")  # noqa: SLF001
@@ -386,6 +426,26 @@ def test_speaker_assignments_and_voice_samples_paths(tmp_path: Path):
     )
     assert assigned is not None
     assert assigned["confidence"] == 1.0
+    unmatched = db_module.set_speaker_assignment(
+        recording_id="rec-db-cov-voice-1",
+        diar_speaker_label="S2",
+        voice_profile_id=None,
+        confidence=0.42,
+        candidate_matches=[
+            {"voice_profile_id": profile_id, "score": 0.42, "display_name": "Voice A"},
+            {"voice_profile_id": "bad"},
+            {"voice_profile_id": profile_id, "score": 0.4},
+        ],
+        low_confidence=True,
+        keep_unmatched=True,
+        settings=cfg,
+    )
+    assert unmatched is not None
+    assert unmatched["voice_profile_id"] is None
+    assert unmatched["low_confidence"] == 1
+    assert unmatched["candidate_matches_json"] == [
+        {"voice_profile_id": profile_id, "score": 0.42, "display_name": "Voice A"}
+    ]
     assert (
         db_module.set_speaker_assignment(
             recording_id="rec-db-cov-voice-1",
@@ -412,6 +472,27 @@ def test_speaker_assignments_and_voice_samples_paths(tmp_path: Path):
     )
     assert sample["recording_id"] == "rec-db-cov-voice-1"
     assert sample["diar_speaker_label"] == "S1"
+    review_sample = db_module.create_voice_sample(
+        voice_profile_id=None,
+        recording_id="rec-db-cov-voice-1",
+        diar_speaker_label="S2",
+        snippet_path="snippet-review.wav",
+        sample_source="auto",
+        sample_start_sec=1.25,
+        sample_end_sec=2.5,
+        embedding=[0.1, "bad", 0.2],
+        candidate_matches=[{"voice_profile_id": profile_id, "score": 0.41}],
+        needs_review=True,
+        confidence=0.41,
+        settings=cfg,
+    )
+    assert review_sample["voice_profile_id"] is None
+    assert review_sample["sample_source"] == "auto"
+    assert review_sample["embedding_json"] == [0.1, 0.2]
+    assert review_sample["candidate_matches_json"] == [
+        {"voice_profile_id": profile_id, "score": 0.41}
+    ]
+    assert review_sample["needs_review"] == 1
 
     assert db_module.list_voice_samples(voice_profile_id=profile_id, settings=cfg)
     by_recording = db_module.list_voice_samples(
@@ -420,10 +501,287 @@ def test_speaker_assignments_and_voice_samples_paths(tmp_path: Path):
         settings=cfg,
     )
     assert len(by_recording) == 1
+    all_recording_samples = db_module.list_voice_samples(
+        recording_id="rec-db-cov-voice-1",
+        settings=cfg,
+    )
+    assert len(all_recording_samples) == 2
 
     loaded = db_module.get_voice_sample(int(sample["id"]), settings=cfg)
     assert loaded is not None
     assert loaded["id"] == sample["id"]
+
+
+def test_canonical_speaker_migration_from_legacy_schema(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    cfg = _cfg(tmp_path)
+    all_migrations = db_module._migration_files()  # noqa: SLF001
+    legacy_migrations = [item for item in all_migrations if item[0] < 15]
+
+    monkeypatch.setattr(db_module, "_migration_files", lambda: legacy_migrations)  # noqa: SLF001
+    db_module.init_db(cfg)
+    db_module.create_recording(
+        "rec-db-cov-legacy-1",
+        source="upload",
+        source_filename="legacy.wav",
+        settings=cfg,
+    )
+    with db_module.connect(cfg) as conn:
+        conn.execute(
+            "INSERT INTO voice_profiles (id, display_name, notes) VALUES (?, ?, ?)",
+            (1, "Legacy Voice", "notes"),
+        )
+        conn.execute(
+            """
+            INSERT INTO speaker_assignments (
+                recording_id,
+                diar_speaker_label,
+                voice_profile_id,
+                confidence
+            )
+            VALUES (?, ?, ?, ?)
+            """,
+            ("rec-db-cov-legacy-1", "S1", 1, 0.93),
+        )
+        conn.execute(
+            """
+            INSERT INTO voice_samples (
+                id,
+                voice_profile_id,
+                recording_id,
+                diar_speaker_label,
+                snippet_path,
+                created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                1,
+                1,
+                "rec-db-cov-legacy-1",
+                "S1",
+                "recordings/rec-db-cov-legacy-1/derived/snippets/S1/1.wav",
+                "2026-03-01T10:00:00Z",
+            ),
+        )
+        conn.commit()
+
+    monkeypatch.setattr(db_module, "_migration_files", lambda: all_migrations)  # noqa: SLF001
+    db_module.init_db(cfg)
+
+    profile = db_module.get_voice_profile(1, include_merged=True, settings=cfg)
+    assert profile is not None
+    assert profile["display_name"] == "Legacy Voice"
+    assert profile["created_at"] == "2026-03-01T10:00:00Z"
+    assert profile["updated_at"] == "2026-03-01T10:00:00Z"
+    assignment = db_module.list_speaker_assignments(
+        "rec-db-cov-legacy-1",
+        settings=cfg,
+    )
+    assert len(assignment) == 1
+    assert assignment[0]["recording_id"] == "rec-db-cov-legacy-1"
+    assert assignment[0]["diar_speaker_label"] == "S1"
+    assert assignment[0]["voice_profile_id"] == 1
+    assert assignment[0]["confidence"] == 0.93
+    assert assignment[0]["candidate_matches_json"] == []
+    assert assignment[0]["low_confidence"] == 0
+    assert assignment[0]["voice_profile_name"] == "Legacy Voice"
+    assert assignment[0]["updated_at"]
+    sample = db_module.get_voice_sample(1, settings=cfg)
+    assert sample is not None
+    assert sample["sample_source"] == "manual"
+    assert sample["candidate_matches_json"] == []
+    assert sample["needs_review"] == 0
+    assert sample["confidence"] == 1.0
+
+
+def test_merge_voice_profiles_moves_references_and_rewrites_candidates(tmp_path: Path):
+    cfg = _cfg(tmp_path)
+    db_module.init_db(cfg)
+    project = db_module.create_project("Merge Project", settings=cfg)
+    db_module.create_recording(
+        "rec-db-cov-merge-1",
+        source="upload",
+        source_filename="merge.wav",
+        settings=cfg,
+    )
+    source = db_module.create_voice_profile("Source Voice", settings=cfg)
+    target = db_module.create_voice_profile("Target Voice", settings=cfg)
+
+    db_module.set_speaker_assignment(
+        recording_id="rec-db-cov-merge-1",
+        diar_speaker_label="S1",
+        voice_profile_id=source["id"],
+        confidence=0.98,
+        candidate_matches=[
+            {"voice_profile_id": source["id"], "score": 0.98},
+            {"voice_profile_id": target["id"], "score": 0.72},
+        ],
+        keep_unmatched=True,
+        settings=cfg,
+    )
+    db_module.create_voice_sample(
+        voice_profile_id=source["id"],
+        recording_id="rec-db-cov-merge-1",
+        diar_speaker_label="S1",
+        snippet_path="recordings/rec-db-cov-merge-1/derived/snippets/S1/1.wav",
+        candidate_matches=[
+            {"voice_profile_id": source["id"], "score": 0.98},
+            {"voice_profile_id": target["id"], "score": 0.72},
+        ],
+        settings=cfg,
+    )
+    db_module.create_voice_sample(
+        voice_profile_id=None,
+        recording_id="rec-db-cov-merge-1",
+        diar_speaker_label="S2",
+        snippet_path="recordings/rec-db-cov-merge-1/derived/snippets/S2/1.wav",
+        candidate_matches=[
+            {"voice_profile_id": source["id"], "score": 0.44},
+            {"voice_profile_id": target["id"], "score": 0.41},
+        ],
+        needs_review=True,
+        confidence=0.44,
+        settings=cfg,
+    )
+    db_module.replace_participant_metrics(
+        recording_id="rec-db-cov-merge-1",
+        rows=[
+            {
+                "diar_speaker_label": "S1",
+                "voice_profile_id": source["id"],
+                "payload": {"words": 5},
+            }
+        ],
+        settings=cfg,
+    )
+    db_module.create_routing_training_example(
+        recording_id="rec-db-cov-merge-1",
+        project_id=project["id"],
+        calendar_subject_tokens=["merge"],
+        tags=["speaker"],
+        voice_profile_ids=[source["id"], source["id"]],
+        settings=cfg,
+    )
+    db_module.increment_project_keyword_weights(
+        project_id=project["id"],
+        keyword_deltas={
+            f"voice:{source['id']}": 1.2,
+            f"voice:{target['id']}": 0.3,
+        },
+        settings=cfg,
+    )
+
+    merged = db_module.merge_voice_profiles(
+        source["id"],
+        target["id"],
+        settings=cfg,
+    )
+    assert merged["samples_moved"] == 1
+    assert merged["assignments_moved"] == 1
+    assert merged["participant_metrics_moved"] == 1
+    assert merged["assignment_candidate_updates"] == 1
+    assert merged["sample_candidate_updates"] == 2
+    assert merged["routing_example_updates"] == 1
+    assert merged["routing_keyword_updates"] == 1
+
+    assert [row["id"] for row in db_module.list_voice_profiles(settings=cfg)] == [
+        target["id"]
+    ]
+    all_profiles = db_module.list_voice_profiles(include_merged=True, settings=cfg)
+    assert {row["id"] for row in all_profiles} == {source["id"], target["id"]}
+    assert db_module.get_voice_profile(source["id"], settings=cfg) is None
+    merged_profile = db_module.get_voice_profile(
+        source["id"],
+        include_merged=True,
+        settings=cfg,
+    )
+    assert merged_profile is not None
+    assert merged_profile["merged_into_voice_profile_id"] == target["id"]
+
+    assignments = db_module.list_speaker_assignments(
+        "rec-db-cov-merge-1",
+        settings=cfg,
+    )
+    assert assignments[0]["voice_profile_id"] == target["id"]
+    assert assignments[0]["candidate_matches_json"] == [
+        {"voice_profile_id": target["id"], "score": 0.98}
+    ]
+
+    samples = db_module.list_voice_samples(settings=cfg)
+    assigned_sample = next(
+        row for row in samples if row["voice_profile_id"] == target["id"]
+    )
+    review_sample = next(row for row in samples if row["voice_profile_id"] is None)
+    assert assigned_sample["candidate_matches_json"] == [
+        {"voice_profile_id": target["id"], "score": 0.98}
+    ]
+    assert review_sample["candidate_matches_json"] == [
+        {"voice_profile_id": target["id"], "score": 0.44}
+    ]
+    participant_rows = db_module.list_participant_metrics(
+        "rec-db-cov-merge-1",
+        settings=cfg,
+    )
+    assert participant_rows[0]["voice_profile_id"] == target["id"]
+
+    with db_module.connect(cfg) as conn:
+        training_row = conn.execute(
+            "SELECT voice_profile_ids_json FROM routing_training_examples"
+        ).fetchone()
+        keyword_rows = conn.execute(
+            """
+            SELECT keyword, weight
+            FROM routing_project_keyword_weights
+            WHERE project_id = ?
+            ORDER BY keyword
+            """,
+            (project["id"],),
+        ).fetchall()
+    assert json.loads(training_row[0]) == [target["id"]]
+    assert [(row[0], row[1]) for row in keyword_rows] == [
+        (f"voice:{target['id']}", 1.5)
+    ]
+
+    with pytest.raises(ValueError, match="must differ"):
+        db_module.merge_voice_profiles(target["id"], target["id"], settings=cfg)
+    with pytest.raises(ValueError, match="source_profile_id was not found"):
+        db_module.merge_voice_profiles(9999, target["id"], settings=cfg)
+    with pytest.raises(ValueError, match="target_profile_id was not found"):
+        db_module.merge_voice_profiles(target["id"], 9999, settings=cfg)
+    with pytest.raises(ValueError, match="source_profile_id is already merged"):
+        db_module.merge_voice_profiles(source["id"], target["id"], settings=cfg)
+
+    third = db_module.create_voice_profile("Third Voice", settings=cfg)
+    db_module.merge_voice_profiles(third["id"], target["id"], settings=cfg)
+    with pytest.raises(ValueError, match="target_profile_id is already merged"):
+        db_module.merge_voice_profiles(target["id"], third["id"], settings=cfg)
+
+
+def test_delete_voice_profile_clears_merged_pointer_via_trigger(tmp_path: Path):
+    cfg = _cfg(tmp_path)
+    db_module.init_db(cfg)
+    source = db_module.create_voice_profile("Delete Source", settings=cfg)
+    target = db_module.create_voice_profile("Delete Target", settings=cfg)
+
+    db_module.merge_voice_profiles(source["id"], target["id"], settings=cfg)
+    assert db_module.get_voice_profile(source["id"], settings=cfg) is None
+
+    assert db_module.delete_voice_profile(target["id"], settings=cfg) is True
+
+    reactivated = db_module.get_voice_profile(
+        source["id"],
+        include_merged=True,
+        settings=cfg,
+    )
+    assert reactivated is not None
+    assert reactivated["merged_into_voice_profile_id"] is None
+    assert reactivated["merged_at"] is None
+    assert [row["id"] for row in db_module.list_voice_profiles(settings=cfg)] == [
+        source["id"]
+    ]
 
 
 def test_calendar_sources_events_matches_and_metrics_edges(tmp_path: Path):

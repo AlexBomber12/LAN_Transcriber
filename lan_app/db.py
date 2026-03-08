@@ -45,6 +45,33 @@ LEFT JOIN projects AS p ON p.id = r.project_id
 LEFT JOIN projects AS sp ON sp.id = r.suggested_project_id
 """
 
+_VOICE_PROFILE_SELECT_SQL = """
+SELECT *
+FROM voice_profiles
+"""
+
+_SPEAKER_ASSIGNMENT_SELECT_SQL = """
+SELECT
+    sa.recording_id,
+    sa.diar_speaker_label,
+    sa.voice_profile_id,
+    sa.confidence,
+    sa.candidate_matches_json,
+    sa.low_confidence,
+    sa.updated_at,
+    vp.display_name AS voice_profile_name
+FROM speaker_assignments AS sa
+LEFT JOIN voice_profiles AS vp ON vp.id = sa.voice_profile_id
+"""
+
+_VOICE_SAMPLE_SELECT_SQL = """
+SELECT
+    vs.*,
+    vp.display_name AS voice_profile_name
+FROM voice_samples AS vs
+LEFT JOIN voice_profiles AS vp ON vp.id = vs.voice_profile_id
+"""
+
 
 def _utc_now() -> str:
     return datetime.now(tz=timezone.utc).replace(microsecond=0).isoformat().replace(
@@ -104,6 +131,131 @@ def _normalise_calendar_source_kind(kind: str) -> str:
 
 def _normalise_keyword(value: object) -> str:
     return " ".join(str(value).strip().lower().split())
+
+
+def _clamp_score(value: object, *, default: float = 0.0) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        parsed = default
+    return max(0.0, min(parsed, 1.0))
+
+
+def _normalise_candidate_matches(
+    candidate_matches: Sequence[dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    if not candidate_matches:
+        return []
+    best_by_profile_id: dict[int, dict[str, Any]] = {}
+    for row in candidate_matches:
+        if not isinstance(row, dict):
+            continue
+        try:
+            voice_profile_id = int(row.get("voice_profile_id"))
+        except (TypeError, ValueError):
+            continue
+        normalized = {
+            "voice_profile_id": voice_profile_id,
+            "score": round(
+                _clamp_score(row.get("score", row.get("confidence")), default=0.0),
+                4,
+            ),
+        }
+        display_name = str(row.get("display_name") or "").strip()
+        if display_name:
+            normalized["display_name"] = display_name
+        existing = best_by_profile_id.get(voice_profile_id)
+        if existing is None or tuple(
+            normalized.get(key, "") for key in ("score", "display_name")
+        ) > tuple(existing.get(key, "") for key in ("score", "display_name")):
+            best_by_profile_id[voice_profile_id] = normalized
+    return sorted(
+        best_by_profile_id.values(),
+        key=lambda item: (
+            -float(item.get("score") or 0.0),
+            str(item.get("display_name") or ""),
+            int(item["voice_profile_id"]),
+        ),
+    )
+
+
+def _normalise_embedding(embedding: Sequence[float] | None) -> list[float] | None:
+    if embedding is None or isinstance(embedding, (str, bytes)):
+        return None
+    values: list[float] = []
+    for value in embedding:
+        try:
+            values.append(round(float(value), 8))
+        except (TypeError, ValueError):
+            continue
+    return values or None
+
+
+def _rewrite_voice_profile_ids_for_merge(
+    voice_profile_ids: Any,
+    *,
+    source_profile_id: int,
+    target_profile_id: int,
+) -> list[int]:
+    source_values = voice_profile_ids
+    if isinstance(source_values, str):
+        try:
+            source_values = json.loads(source_values)
+        except ValueError:
+            source_values = []
+    if not isinstance(source_values, Sequence) or isinstance(source_values, (str, bytes)):
+        return []
+    rewritten: list[int] = []
+    for value in source_values:
+        try:
+            profile_id = int(value)
+        except (TypeError, ValueError):
+            continue
+        rewritten.append(target_profile_id if profile_id == source_profile_id else profile_id)
+    return sorted(set(rewritten))
+
+
+def _rewrite_candidate_matches_for_merge(
+    candidate_matches: Any,
+    *,
+    source_profile_id: int,
+    target_profile_id: int,
+) -> list[dict[str, Any]]:
+    source_values = candidate_matches
+    if isinstance(source_values, str):
+        try:
+            source_values = json.loads(source_values)
+        except ValueError:
+            source_values = []
+    if not source_values or not isinstance(source_values, Sequence) or isinstance(
+        source_values,
+        (str, bytes),
+    ):
+        return []
+    rewritten: list[dict[str, Any]] = []
+    for row in source_values:
+        if not isinstance(row, dict):
+            continue
+        updated = dict(row)
+        if updated.get("voice_profile_id") == source_profile_id:
+            updated["voice_profile_id"] = target_profile_id
+        rewritten.append(updated)
+    return _normalise_candidate_matches(rewritten)
+
+
+def _get_voice_profile_row(
+    conn: sqlite3.Connection,
+    profile_id: int,
+    *,
+    include_merged: bool,
+) -> sqlite3.Row | None:
+    where_clause = "WHERE id = ?"
+    if not include_merged:
+        where_clause += " AND merged_into_voice_profile_id IS NULL"
+    return conn.execute(
+        f"{_VOICE_PROFILE_SELECT_SQL} {where_clause}",
+        (int(profile_id),),
+    ).fetchone()
 
 
 def _is_lock_or_busy_error(error: sqlite3.OperationalError) -> bool:
@@ -1650,14 +1802,32 @@ def list_project_keyword_weights(
 
 def list_voice_profiles(
     *,
+    include_merged: bool = False,
     settings: AppSettings | None = None,
 ) -> list[dict[str, Any]]:
     init_db(settings)
+    where_sql = "" if include_merged else "WHERE merged_into_voice_profile_id IS NULL"
     with connect(settings) as conn:
         rows = conn.execute(
-            "SELECT * FROM voice_profiles ORDER BY display_name"
+            f"{_VOICE_PROFILE_SELECT_SQL} {where_sql} ORDER BY display_name, id"
         ).fetchall()
     return [_as_dict(row) or {} for row in rows]
+
+
+def get_voice_profile(
+    profile_id: int,
+    *,
+    include_merged: bool = False,
+    settings: AppSettings | None = None,
+) -> dict[str, Any] | None:
+    init_db(settings)
+    with connect(settings) as conn:
+        row = _get_voice_profile_row(
+            conn,
+            int(profile_id),
+            include_merged=include_merged,
+        )
+    return _as_dict(row)
 
 
 def create_voice_profile(
@@ -1667,14 +1837,27 @@ def create_voice_profile(
     settings: AppSettings | None = None,
 ) -> dict[str, Any]:
     init_db(settings)
+    now = _utc_now()
     with connect(settings) as conn:
         cursor = conn.execute(
-            "INSERT INTO voice_profiles (display_name, notes) VALUES (?, ?)",
-            (display_name, notes),
+            """
+            INSERT INTO voice_profiles (
+                display_name,
+                notes,
+                created_at,
+                updated_at,
+                merged_into_voice_profile_id,
+                merged_at
+            )
+            VALUES (?, ?, ?, ?, NULL, NULL)
+            """,
+            (display_name, notes, now, now),
         )
-        row = conn.execute(
-            "SELECT * FROM voice_profiles WHERE id = ?", (cursor.lastrowid,)
-        ).fetchone()
+        row = _get_voice_profile_row(
+            conn,
+            int(cursor.lastrowid),
+            include_merged=True,
+        )
         conn.commit()
     return _as_dict(row) or {}
 
@@ -1701,15 +1884,8 @@ def list_speaker_assignments(
     init_db(settings)
     with connect(settings) as conn:
         rows = conn.execute(
-            """
-            SELECT
-                sa.recording_id,
-                sa.diar_speaker_label,
-                sa.voice_profile_id,
-                sa.confidence,
-                vp.display_name AS voice_profile_name
-            FROM speaker_assignments AS sa
-            LEFT JOIN voice_profiles AS vp ON vp.id = sa.voice_profile_id
+            f"""
+            {_SPEAKER_ASSIGNMENT_SELECT_SQL}
             WHERE sa.recording_id = ?
             ORDER BY sa.diar_speaker_label
             """,
@@ -1724,14 +1900,19 @@ def set_speaker_assignment(
     diar_speaker_label: str,
     voice_profile_id: int | None,
     confidence: float = 1.0,
+    candidate_matches: Sequence[dict[str, Any]] | None = None,
+    low_confidence: bool | None = None,
+    keep_unmatched: bool = False,
     settings: AppSettings | None = None,
 ) -> dict[str, Any] | None:
     init_db(settings)
     diar_label = str(diar_speaker_label).strip()
     if not diar_label:
         raise ValueError("diar_speaker_label is required")
+    normalized_candidates = _normalise_candidate_matches(candidate_matches)
+    score = round(_clamp_score(confidence, default=0.0), 4)
     with connect(settings) as conn:
-        if voice_profile_id is None:
+        if voice_profile_id is None and not keep_unmatched:
             conn.execute(
                 """
                 DELETE FROM speaker_assignments
@@ -1741,33 +1922,45 @@ def set_speaker_assignment(
             )
             conn.commit()
             return None
-        profile_id = int(voice_profile_id)
-        score = max(0.0, min(float(confidence), 1.0))
+        profile_id = None if voice_profile_id is None else int(voice_profile_id)
+        resolved_low_confidence = (
+            bool(low_confidence)
+            if low_confidence is not None
+            else profile_id is None and bool(normalized_candidates)
+        )
+        now = _utc_now()
         conn.execute(
             """
             INSERT INTO speaker_assignments (
                 recording_id,
                 diar_speaker_label,
                 voice_profile_id,
-                confidence
+                confidence,
+                candidate_matches_json,
+                low_confidence,
+                updated_at
             )
-            VALUES (?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(recording_id, diar_speaker_label) DO UPDATE SET
                 voice_profile_id = excluded.voice_profile_id,
-                confidence = excluded.confidence
+                confidence = excluded.confidence,
+                candidate_matches_json = excluded.candidate_matches_json,
+                low_confidence = excluded.low_confidence,
+                updated_at = excluded.updated_at
             """,
-            (recording_id, diar_label, profile_id, score),
+            (
+                recording_id,
+                diar_label,
+                profile_id,
+                score,
+                json.dumps(normalized_candidates, ensure_ascii=True),
+                1 if resolved_low_confidence else 0,
+                now,
+            ),
         )
         row = conn.execute(
-            """
-            SELECT
-                sa.recording_id,
-                sa.diar_speaker_label,
-                sa.voice_profile_id,
-                sa.confidence,
-                vp.display_name AS voice_profile_name
-            FROM speaker_assignments AS sa
-            LEFT JOIN voice_profiles AS vp ON vp.id = sa.voice_profile_id
+            f"""
+            {_SPEAKER_ASSIGNMENT_SELECT_SQL}
             WHERE sa.recording_id = ? AND sa.diar_speaker_label = ?
             """,
             (recording_id, diar_label),
@@ -1793,11 +1986,7 @@ def list_voice_samples(
         params.append(recording_id)
     where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
     query = f"""
-        SELECT
-            vs.*,
-            vp.display_name AS voice_profile_name
-        FROM voice_samples AS vs
-        LEFT JOIN voice_profiles AS vp ON vp.id = vs.voice_profile_id
+        {_VOICE_SAMPLE_SELECT_SQL}
         {where_sql}
         ORDER BY vs.created_at DESC, vs.id DESC
     """
@@ -1808,10 +1997,17 @@ def list_voice_samples(
 
 def create_voice_sample(
     *,
-    voice_profile_id: int,
+    voice_profile_id: int | None,
     snippet_path: str,
     recording_id: str | None = None,
     diar_speaker_label: str | None = None,
+    sample_source: str = "manual",
+    sample_start_sec: float | None = None,
+    sample_end_sec: float | None = None,
+    embedding: Sequence[float] | None = None,
+    candidate_matches: Sequence[dict[str, Any]] | None = None,
+    needs_review: bool | None = None,
+    confidence: float | None = None,
     settings: AppSettings | None = None,
 ) -> dict[str, Any]:
     init_db(settings)
@@ -1820,6 +2016,19 @@ def create_voice_sample(
         raise ValueError("snippet_path is required")
     clean_recording = str(recording_id).strip() if recording_id is not None else None
     clean_label = str(diar_speaker_label).strip() if diar_speaker_label is not None else None
+    clean_sample_source = str(sample_source).strip() or "manual"
+    normalized_candidates = _normalise_candidate_matches(candidate_matches)
+    normalized_embedding = _normalise_embedding(embedding)
+    resolved_needs_review = bool(needs_review) if needs_review is not None else voice_profile_id is None
+    resolved_confidence = (
+        round(_clamp_score(confidence, default=0.0), 4)
+        if confidence is not None
+        else (
+            float(normalized_candidates[0]["score"])
+            if normalized_candidates
+            else (1.0 if voice_profile_id is not None else None)
+        )
+    )
     now = _utc_now()
     with connect(settings) as conn:
         cursor = conn.execute(
@@ -1829,25 +2038,37 @@ def create_voice_sample(
                 recording_id,
                 diar_speaker_label,
                 snippet_path,
+                sample_source,
+                sample_start_sec,
+                sample_end_sec,
+                embedding_json,
+                candidate_matches_json,
+                needs_review,
+                confidence,
                 created_at
             )
-            VALUES (?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                int(voice_profile_id),
+                None if voice_profile_id is None else int(voice_profile_id),
                 clean_recording or None,
                 clean_label or None,
                 snippet,
+                clean_sample_source,
+                sample_start_sec,
+                sample_end_sec,
+                json.dumps(normalized_embedding, ensure_ascii=True)
+                if normalized_embedding is not None
+                else None,
+                json.dumps(normalized_candidates, ensure_ascii=True),
+                1 if resolved_needs_review else 0,
+                resolved_confidence,
                 now,
             ),
         )
         row = conn.execute(
-            """
-            SELECT
-                vs.*,
-                vp.display_name AS voice_profile_name
-            FROM voice_samples AS vs
-            LEFT JOIN voice_profiles AS vp ON vp.id = vs.voice_profile_id
+            f"""
+            {_VOICE_SAMPLE_SELECT_SQL}
             WHERE vs.id = ?
             """,
             (cursor.lastrowid,),
@@ -1864,17 +2085,240 @@ def get_voice_sample(
     init_db(settings)
     with connect(settings) as conn:
         row = conn.execute(
-            """
-            SELECT
-                vs.*,
-                vp.display_name AS voice_profile_name
-            FROM voice_samples AS vs
-            LEFT JOIN voice_profiles AS vp ON vp.id = vs.voice_profile_id
+            f"""
+            {_VOICE_SAMPLE_SELECT_SQL}
             WHERE vs.id = ?
             """,
             (sample_id,),
         ).fetchone()
     return _as_dict(row)
+
+
+def merge_voice_profiles(
+    source_profile_id: int,
+    target_profile_id: int,
+    *,
+    settings: AppSettings | None = None,
+) -> dict[str, Any]:
+    init_db(settings)
+    source_id = int(source_profile_id)
+    target_id = int(target_profile_id)
+    if source_id == target_id:
+        raise ValueError("source_profile_id and target_profile_id must differ")
+
+    now = _utc_now()
+    with connect(settings) as conn:
+        source_row = _get_voice_profile_row(
+            conn,
+            source_id,
+            include_merged=True,
+        )
+        if source_row is None:
+            raise ValueError("source_profile_id was not found")
+        if source_row["merged_into_voice_profile_id"] is not None:
+            raise ValueError("source_profile_id is already merged")
+
+        target_row = _get_voice_profile_row(
+            conn,
+            target_id,
+            include_merged=True,
+        )
+        if target_row is None:
+            raise ValueError("target_profile_id was not found")
+        if target_row["merged_into_voice_profile_id"] is not None:
+            raise ValueError("target_profile_id is already merged")
+
+        samples_moved = conn.execute(
+            """
+            UPDATE voice_samples
+            SET voice_profile_id = ?
+            WHERE voice_profile_id = ?
+            """,
+            (target_id, source_id),
+        ).rowcount
+        assignments_moved = conn.execute(
+            """
+            UPDATE speaker_assignments
+            SET voice_profile_id = ?, updated_at = ?
+            WHERE voice_profile_id = ?
+            """,
+            (target_id, now, source_id),
+        ).rowcount
+        participant_metrics_moved = conn.execute(
+            """
+            UPDATE participant_metrics
+            SET voice_profile_id = ?
+            WHERE voice_profile_id = ?
+            """,
+            (target_id, source_id),
+        ).rowcount
+
+        assignment_candidate_updates = 0
+        assignment_rows = conn.execute(
+            """
+            SELECT recording_id, diar_speaker_label, candidate_matches_json
+            FROM speaker_assignments
+            """
+        ).fetchall()
+        for row in assignment_rows:
+            rewritten = _rewrite_candidate_matches_for_merge(
+                row["candidate_matches_json"],
+                source_profile_id=source_id,
+                target_profile_id=target_id,
+            )
+            normalized_json = json.dumps(rewritten, ensure_ascii=True)
+            if normalized_json == row["candidate_matches_json"]:
+                continue
+            conn.execute(
+                """
+                UPDATE speaker_assignments
+                SET candidate_matches_json = ?, updated_at = ?
+                WHERE recording_id = ? AND diar_speaker_label = ?
+                """,
+                (
+                    normalized_json,
+                    now,
+                    row["recording_id"],
+                    row["diar_speaker_label"],
+                ),
+            )
+            assignment_candidate_updates += 1
+
+        sample_candidate_updates = 0
+        sample_rows = conn.execute(
+            """
+            SELECT id, candidate_matches_json
+            FROM voice_samples
+            """
+        ).fetchall()
+        for row in sample_rows:
+            rewritten = _rewrite_candidate_matches_for_merge(
+                row["candidate_matches_json"],
+                source_profile_id=source_id,
+                target_profile_id=target_id,
+            )
+            normalized_json = json.dumps(rewritten, ensure_ascii=True)
+            if normalized_json == row["candidate_matches_json"]:
+                continue
+            conn.execute(
+                """
+                UPDATE voice_samples
+                SET candidate_matches_json = ?
+                WHERE id = ?
+                """,
+                (normalized_json, row["id"]),
+            )
+            sample_candidate_updates += 1
+
+        routing_example_updates = 0
+        training_rows = conn.execute(
+            """
+            SELECT id, voice_profile_ids_json
+            FROM routing_training_examples
+            """
+        ).fetchall()
+        for row in training_rows:
+            rewritten_ids = _rewrite_voice_profile_ids_for_merge(
+                row["voice_profile_ids_json"],
+                source_profile_id=source_id,
+                target_profile_id=target_id,
+            )
+            normalized_json = json.dumps(rewritten_ids, ensure_ascii=True)
+            if normalized_json == row["voice_profile_ids_json"]:
+                continue
+            conn.execute(
+                """
+                UPDATE routing_training_examples
+                SET voice_profile_ids_json = ?
+                WHERE id = ?
+                """,
+                (normalized_json, row["id"]),
+            )
+            routing_example_updates += 1
+
+        routing_keyword_updates = 0
+        source_keyword = f"voice:{source_id}"
+        target_keyword = f"voice:{target_id}"
+        keyword_rows = conn.execute(
+            """
+            SELECT project_id, keyword, weight
+            FROM routing_project_keyword_weights
+            WHERE keyword IN (?, ?)
+            ORDER BY project_id, keyword
+            """,
+            (source_keyword, target_keyword),
+        ).fetchall()
+        weights_by_project: dict[int, dict[str, float]] = {}
+        for row in keyword_rows:
+            project_weights = weights_by_project.setdefault(int(row["project_id"]), {})
+            project_weights[str(row["keyword"])] = float(row["weight"])
+        for project_id, project_weights in weights_by_project.items():
+            source_weight = project_weights.get(source_keyword)
+            if source_weight is None:
+                continue
+            target_weight = project_weights.get(target_keyword, 0.0)
+            conn.execute(
+                """
+                INSERT INTO routing_project_keyword_weights (
+                    project_id,
+                    keyword,
+                    weight,
+                    updated_at
+                )
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(project_id, keyword) DO UPDATE SET
+                    weight = excluded.weight,
+                    updated_at = excluded.updated_at
+                """,
+                (project_id, target_keyword, target_weight + source_weight, now),
+            )
+            conn.execute(
+                """
+                DELETE FROM routing_project_keyword_weights
+                WHERE project_id = ? AND keyword = ?
+                """,
+                (project_id, source_keyword),
+            )
+            routing_keyword_updates += 1
+
+        conn.execute(
+            """
+            UPDATE voice_profiles
+            SET
+                merged_into_voice_profile_id = ?,
+                merged_at = ?,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (target_id, now, now, source_id),
+        )
+        conn.execute(
+            """
+            UPDATE voice_profiles
+            SET updated_at = ?
+            WHERE id = ?
+            """,
+            (now, target_id),
+        )
+        merged_row = _get_voice_profile_row(
+            conn,
+            source_id,
+            include_merged=True,
+        )
+        conn.commit()
+
+    return {
+        "source_profile_id": source_id,
+        "target_profile_id": target_id,
+        "samples_moved": samples_moved,
+        "assignments_moved": assignments_moved,
+        "participant_metrics_moved": participant_metrics_moved,
+        "assignment_candidate_updates": assignment_candidate_updates,
+        "sample_candidate_updates": sample_candidate_updates,
+        "routing_example_updates": routing_example_updates,
+        "routing_keyword_updates": routing_keyword_updates,
+        "merged_profile": _as_dict(merged_row) or {},
+    }
 
 
 def create_calendar_source(
@@ -2416,6 +2860,7 @@ __all__ = [
     "increment_project_keyword_weights",
     "list_project_keyword_weights",
     "list_voice_profiles",
+    "get_voice_profile",
     "create_voice_profile",
     "delete_voice_profile",
     "list_speaker_assignments",
@@ -2423,6 +2868,7 @@ __all__ = [
     "list_voice_samples",
     "create_voice_sample",
     "get_voice_sample",
+    "merge_voice_profiles",
     "create_calendar_source",
     "get_calendar_source",
     "list_calendar_sources",

@@ -43,8 +43,15 @@ docker compose run --rm api python -m lan_app.healthchecks app
    - `NeedsReview` recordings show an explicit review reason in the recordings list and detail page.
    - The server-rendered UI shows timestamps in local Europe/Rome time.
    - Duration is sourced from `derived/audio_sanitized.wav` when it exists, otherwise from the raw upload.
+   - Canonical speaker records keep one active person entry with many samples; low-confidence matches stay reviewable instead of auto-merging.
 5. Download export bundle from `GET /ui/recordings/{recording_id}/export.zip`.
 6. Deleting a recording removes the DB row plus `/data/recordings/<recording_id>/raw`, `derived`, `logs`, and other remaining files under that recording root. If cleanup fails, delete returns an error.
+
+### 1.2.1 Canonical speaker merges
+
+1. Treat `/voices` entries as canonical people, not one-off embeddings.
+2. Backend merge operations move all samples and references from duplicate speaker A to canonical speaker B.
+3. After a merge, routing/training references follow the target canonical speaker automatically.
 
 ### 1.3 Upload size controls
 
