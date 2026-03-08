@@ -1,161 +1,187 @@
-diff --git a/lan_app/worker_tasks.py b/lan_app/worker_tasks.py
-index 94bfd8a..dade7c3 100644
---- a/lan_app/worker_tasks.py
-+++ b/lan_app/worker_tasks.py
-@@ -424,15 +424,12 @@ def _review_reason_from_routing(
-     summary_payload = _load_json_dict(derived_dir / "summary.json")
-     diarization_payload = _load_json_dict(derived_dir / "diarization_metadata.json")
-     transcript_review = transcript_payload.get("review")
--    if (
--        isinstance(transcript_review, dict)
--        and bool(transcript_review.get("required"))
--        and str(transcript_review.get("reason_code") or "").strip()
--        and str(transcript_review.get("reason_text") or "").strip()
--    ):
-+    if isinstance(transcript_review, dict) and bool(transcript_review.get("required")):
-         return (
--            str(transcript_review.get("reason_code")).strip(),
--            str(transcript_review.get("reason_text")).strip(),
-+            str(transcript_review.get("reason_code") or "").strip()
-+            or "transcript_review_required",
-+            str(transcript_review.get("reason_text") or "").strip()
-+            or "Multilingual transcript review is required.",
-         )
- 
-     parse_reason = str(summary_payload.get("parse_error_reason") or "").strip()
 diff --git a/lan_transcriber/pipeline_steps/multilingual_asr.py b/lan_transcriber/pipeline_steps/multilingual_asr.py
-index b6e96a5..a3f98a8 100644
+index a3f98a8..26d8b60 100644
 --- a/lan_transcriber/pipeline_steps/multilingual_asr.py
 +++ b/lan_transcriber/pipeline_steps/multilingual_asr.py
-@@ -260,6 +260,26 @@ def _annotate_chunk_segments(
+@@ -260,14 +260,18 @@ def _annotate_chunk_segments(
      return annotated
  
  
+-def _select_segments_for_range(
++def _select_segment_indexes_for_range(
+     raw_segments: list[dict[str, Any]],
+     *,
+     start_seconds: float,
+     end_seconds: float,
+-) -> list[dict[str, Any]]:
+-    selected: list[dict[str, Any]] = []
+-    for row in raw_segments:
++    excluded_indexes: set[int] | None = None,
++) -> list[int]:
++    excluded = excluded_indexes or set()
++    selected: list[int] = []
++    for index, row in enumerate(raw_segments):
++        if index in excluded:
++            continue
+         if not isinstance(row, dict):
+             continue
+         seg_start = safe_float(row.get("start"), default=0.0)
+@@ -276,7 +280,28 @@ def _select_segments_for_range(
+             seg_end = seg_start
+         if seg_end <= start_seconds or seg_start >= end_seconds:
+             continue
+-        selected.append(dict(row))
++        selected.append(index)
++    return selected
++
++
 +def _select_segments_for_range(
 +    raw_segments: list[dict[str, Any]],
 +    *,
 +    start_seconds: float,
 +    end_seconds: float,
++    excluded_indexes: set[int] | None = None,
 +) -> list[dict[str, Any]]:
++    selected_indexes = _select_segment_indexes_for_range(
++        raw_segments,
++        start_seconds=start_seconds,
++        end_seconds=end_seconds,
++        excluded_indexes=excluded_indexes,
++    )
 +    selected: list[dict[str, Any]] = []
-+    for row in raw_segments:
-+        if not isinstance(row, dict):
-+            continue
-+        seg_start = safe_float(row.get("start"), default=0.0)
-+        seg_end = safe_float(row.get("end"), default=seg_start)
-+        if seg_end < seg_start:
-+            seg_end = seg_start
-+        if seg_end <= start_seconds or seg_start >= end_seconds:
-+            continue
-+        selected.append(dict(row))
-+    return selected
-+
-+
- def _merge_result_language_info(
-     chunk_payloads: list[dict[str, Any]],
-     *,
-@@ -431,18 +451,31 @@ def run_language_aware_asr(
++    for index in selected_indexes:
++        row = raw_segments[index]
++        if isinstance(row, dict):
++            selected.append(dict(row))
+     return selected
+ 
+ 
+@@ -413,6 +438,7 @@ def run_language_aware_asr(
+     tmp_root.mkdir(parents=True, exist_ok=True)
+     merged_segments: list[dict[str, Any]] = []
+     chunk_payloads: list[dict[str, Any]] = []
++    consumed_initial_segment_indexes: set[int] = set()
+     _log(
+         step_log_callback,
+         (
+@@ -451,6 +477,17 @@ def run_language_aware_asr(
                  if result_confidence is not None
                  else chunk.confidence
              )
--
--            merged_segments.extend(
--                _annotate_chunk_segments(
--                    chunk_segments,
--                    offset_seconds=chunk.start,
-+            annotated_segments = _annotate_chunk_segments(
-+                chunk_segments,
-+                offset_seconds=chunk.start,
-+                language=effective_language,
-+                confidence=effective_confidence,
-+                language_hint=chunk.language_hint,
-+                uncertain=uncertain,
-+                conflict=conflict,
++            fallback_indexes = _select_segment_indexes_for_range(
++                initial_segments,
++                start_seconds=chunk.start,
++                end_seconds=chunk.end,
++                excluded_indexes=consumed_initial_segment_indexes,
 +            )
-+            if not annotated_segments:
-+                annotated_segments = _annotate_chunk_segments(
-+                    _select_segments_for_range(
-+                        initial_segments,
-+                        start_seconds=chunk.start,
-+                        end_seconds=chunk.end,
-+                    ),
-+                    offset_seconds=0.0,
++            fallback_segments = [
++                dict(initial_segments[index])
++                for index in fallback_indexes
++                if isinstance(initial_segments[index], dict)
++            ]
+             annotated_segments = _annotate_chunk_segments(
+                 chunk_segments,
+                 offset_seconds=chunk.start,
+@@ -462,11 +499,7 @@ def run_language_aware_asr(
+             )
+             if not annotated_segments:
+                 annotated_segments = _annotate_chunk_segments(
+-                    _select_segments_for_range(
+-                        initial_segments,
+-                        start_seconds=chunk.start,
+-                        end_seconds=chunk.end,
+-                    ),
++                    fallback_segments,
+                     offset_seconds=0.0,
                      language=effective_language,
                      confidence=effective_confidence,
-                     language_hint=chunk.language_hint,
+@@ -474,6 +507,7 @@ def run_language_aware_asr(
                      uncertain=uncertain,
                      conflict=conflict,
                  )
--            )
-+
-+            merged_segments.extend(annotated_segments)
-             payload = chunk.to_payload(index=index, total=len(chunks))
-             payload["result_language"] = effective_language
-             payload["result_uncertain"] = uncertain
-diff --git a/tests/test_cov_lan_app_worker_tasks_branches.py b/tests/test_cov_lan_app_worker_tasks_branches.py
-index 27769d8..02aa6e6 100644
---- a/tests/test_cov_lan_app_worker_tasks_branches.py
-+++ b/tests/test_cov_lan_app_worker_tasks_branches.py
-@@ -1108,6 +1108,28 @@ def test_review_reason_helpers_cover_exception_and_routing_paths(tmp_path: Path)
-         "Language detection conflicted across multilingual chunks.",
-     )
++            consumed_initial_segment_indexes.update(fallback_indexes)
  
-+    (derived / "transcript.json").write_text(
-+        json.dumps(
-+            {
-+                "review": {
-+                    "required": True,
-+                    "reason_code": "multilingual_uncertain",
-+                }
-+            }
-+        ),
-+        encoding="utf-8",
-+    )
-+    (derived / "summary.json").write_text("{}", encoding="utf-8")
-+    (derived / "diarization_metadata.json").write_text("{}", encoding="utf-8")
-+    assert worker_tasks._review_reason_from_routing(  # noqa: SLF001
-+        recording_id="rec-review-reason-1",
-+        settings=cfg,
-+        routing={"confidence": 0.95, "threshold": 0.5},
-+    ) == (
-+        "multilingual_uncertain",
-+        "Multilingual transcript review is required.",
-+    )
-+
-     (derived / "transcript.json").write_text("{}", encoding="utf-8")
-     (derived / "summary.json").write_text(
-         json.dumps({"parse_error_reason": "json_object_not_found"}),
+             merged_segments.extend(annotated_segments)
+             payload = chunk.to_payload(index=index, total=len(chunks))
 diff --git a/tests/test_pipeline_steps_multilingual_asr.py b/tests/test_pipeline_steps_multilingual_asr.py
-index ed4b422..79f602d 100644
+index 79f602d..d686e47 100644
 --- a/tests/test_pipeline_steps_multilingual_asr.py
 +++ b/tests/test_pipeline_steps_multilingual_asr.py
-@@ -309,6 +309,18 @@ def test_private_multilingual_helpers_cover_edge_paths() -> None:
-     )
-     assert fallback_only == {"language": "es"}
+@@ -243,7 +243,9 @@ def test_plan_multilingual_chunks_merges_matching_segments_and_preserves_uncerta
+     assert backwards_chunks[0].language == "en"
  
-+    selected = multilingual_asr._select_segments_for_range(  # noqa: SLF001
+ 
+-def test_private_multilingual_helpers_cover_edge_paths() -> None:
++def test_private_multilingual_helpers_cover_edge_paths(
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
+     assert multilingual_asr.ChunkPlan(  # noqa: SLF001
+         start=0.0,
+         end=1.0,
+@@ -320,6 +322,28 @@ def test_private_multilingual_helpers_cover_edge_paths() -> None:
+         end_seconds=2.5,
+     )
+     assert [row["text"] for row in selected] == ["boundary", "inside"]
++    assert multilingual_asr._select_segment_indexes_for_range(  # noqa: SLF001
 +        [
-+            "skip",
 +            {"start": 2.0, "end": 1.0, "text": "boundary"},
 +            {"start": 1.0, "end": 3.0, "text": "inside"},
-+            {"start": 3.0, "end": 4.0, "text": "outside"},
 +        ],
 +        start_seconds=1.5,
 +        end_seconds=2.5,
++        excluded_indexes={0},
++    ) == [1]
++    monkeypatch.setattr(
++        multilingual_asr,
++        "_select_segment_indexes_for_range",
++        lambda *_a, **_k: [0],
 +    )
-+    assert [row["text"] for row in selected] == ["boundary", "inside"]
-+
++    assert (
++        multilingual_asr._select_segments_for_range(  # noqa: SLF001
++            ["skip"],
++            start_seconds=0.0,
++            end_seconds=1.0,
++        )
++        == []
++    )
+ 
      merged = multilingual_asr._merge_result_language_info(  # noqa: SLF001
          [{"result_language": "en", "start": 1.0, "end": 1.0}],
-         fallback_info={"language": "es"},
-@@ -458,6 +470,46 @@ def test_run_language_aware_asr_multilingual_executes_chunk_hints_and_conflicts(
+@@ -510,6 +534,65 @@ def test_run_language_aware_asr_multilingual_preserves_initial_segments_when_chu
      assert info["language"] == "en"
  
  
-+def test_run_language_aware_asr_multilingual_preserves_initial_segments_when_chunk_is_empty(
++def test_run_language_aware_asr_multilingual_empty_chunks_do_not_duplicate_fallback_segments(
 +    tmp_path: Path,
++    monkeypatch: pytest.MonkeyPatch,
 +) -> None:
-+    audio = _write_pcm_wav(tmp_path / "mixed-empty-chunk.wav", duration_sec=8.0)
++    audio = _write_pcm_wav(tmp_path / "mixed-empty-duplicate.wav", duration_sec=8.0)
++
++    monkeypatch.setattr(
++        multilingual_asr,
++        "plan_multilingual_chunks",
++        lambda *_a, **_k: [
++            multilingual_asr.ChunkPlan(
++                start=0.0,
++                end=4.0,
++                language="en",
++                confidence=0.95,
++                language_hint="en",
++                uncertain=False,
++                conflict=False,
++                segment_count=1,
++            ),
++            multilingual_asr.ChunkPlan(
++                start=4.0,
++                end=8.0,
++                language="en",
++                confidence=0.95,
++                language_hint="en",
++                uncertain=False,
++                conflict=False,
++                segment_count=1,
++            ),
++        ],
++    )
 +
 +    def _transcribe(
 +        path: Path,
@@ -163,33 +189,24 @@ index ed4b422..79f602d 100644
 +    ) -> tuple[list[dict[str, object]], dict[str, object]]:
 +        if path == audio:
 +            return (
-+                [
-+                    {"start": 0.0, "end": 4.0, "text": "hello team thanks"},
-+                    {"start": 4.0, "end": 8.0, "text": "hola equipo gracias"},
-+                ],
++                [{"start": 3.0, "end": 5.0, "text": "boundary overlap"}],
 +                {"language": "en", "language_probability": 0.92},
 +            )
-+        if override_lang == "en":
-+            return (
-+                [{"start": 0.0, "end": 4.0, "text": "hello team thanks"}],
-+                {"language": "en", "language_probability": 0.98},
-+            )
-+        return ([], {})
++        assert override_lang == "en"
++        return ([], {"language": "en", "language_probability": 0.92})
 +
-+    segments, info, payload = multilingual_asr.run_language_aware_asr(
++    segments, _info, payload = multilingual_asr.run_language_aware_asr(
 +        audio,
 +        override_lang=None,
-+        configured_mode="auto",
++        configured_mode="force_multilingual",
 +        tmp_root=tmp_path / "tmp",
 +        transcribe_fn=_transcribe,
 +    )
 +
 +    assert payload["used_multilingual_path"] is True
-+    assert segments[0]["text"] == "hello team thanks"
-+    assert segments[1]["text"] == "hola equipo gracias"
-+    assert segments[1]["start"] == 4.0
-+    assert segments[1]["language"] == "es"
-+    assert info["language"] == "en"
++    assert [segment["text"] for segment in segments] == ["boundary overlap"]
++    assert segments[0]["start"] == 3.0
++    assert segments[0]["end"] == 5.0
 +
 +
  def test_run_language_aware_asr_multilingual_without_confidence_payload(

@@ -260,14 +260,18 @@ def _annotate_chunk_segments(
     return annotated
 
 
-def _select_segments_for_range(
+def _select_segment_indexes_for_range(
     raw_segments: list[dict[str, Any]],
     *,
     start_seconds: float,
     end_seconds: float,
-) -> list[dict[str, Any]]:
-    selected: list[dict[str, Any]] = []
-    for row in raw_segments:
+    excluded_indexes: set[int] | None = None,
+) -> list[int]:
+    excluded = excluded_indexes or set()
+    selected: list[int] = []
+    for index, row in enumerate(raw_segments):
+        if index in excluded:
+            continue
         if not isinstance(row, dict):
             continue
         seg_start = safe_float(row.get("start"), default=0.0)
@@ -276,7 +280,28 @@ def _select_segments_for_range(
             seg_end = seg_start
         if seg_end <= start_seconds or seg_start >= end_seconds:
             continue
-        selected.append(dict(row))
+        selected.append(index)
+    return selected
+
+
+def _select_segments_for_range(
+    raw_segments: list[dict[str, Any]],
+    *,
+    start_seconds: float,
+    end_seconds: float,
+    excluded_indexes: set[int] | None = None,
+) -> list[dict[str, Any]]:
+    selected_indexes = _select_segment_indexes_for_range(
+        raw_segments,
+        start_seconds=start_seconds,
+        end_seconds=end_seconds,
+        excluded_indexes=excluded_indexes,
+    )
+    selected: list[dict[str, Any]] = []
+    for index in selected_indexes:
+        row = raw_segments[index]
+        if isinstance(row, dict):
+            selected.append(dict(row))
     return selected
 
 
@@ -413,6 +438,7 @@ def run_language_aware_asr(
     tmp_root.mkdir(parents=True, exist_ok=True)
     merged_segments: list[dict[str, Any]] = []
     chunk_payloads: list[dict[str, Any]] = []
+    consumed_initial_segment_indexes: set[int] = set()
     _log(
         step_log_callback,
         (
@@ -451,6 +477,17 @@ def run_language_aware_asr(
                 if result_confidence is not None
                 else chunk.confidence
             )
+            fallback_indexes = _select_segment_indexes_for_range(
+                initial_segments,
+                start_seconds=chunk.start,
+                end_seconds=chunk.end,
+                excluded_indexes=consumed_initial_segment_indexes,
+            )
+            fallback_segments = [
+                dict(initial_segments[index])
+                for index in fallback_indexes
+                if isinstance(initial_segments[index], dict)
+            ]
             annotated_segments = _annotate_chunk_segments(
                 chunk_segments,
                 offset_seconds=chunk.start,
@@ -462,11 +499,7 @@ def run_language_aware_asr(
             )
             if not annotated_segments:
                 annotated_segments = _annotate_chunk_segments(
-                    _select_segments_for_range(
-                        initial_segments,
-                        start_seconds=chunk.start,
-                        end_seconds=chunk.end,
-                    ),
+                    fallback_segments,
                     offset_seconds=0.0,
                     language=effective_language,
                     confidence=effective_confidence,
@@ -474,6 +507,7 @@ def run_language_aware_asr(
                     uncertain=uncertain,
                     conflict=conflict,
                 )
+            consumed_initial_segment_indexes.update(fallback_indexes)
 
             merged_segments.extend(annotated_segments)
             payload = chunk.to_payload(index=index, total=len(chunks))

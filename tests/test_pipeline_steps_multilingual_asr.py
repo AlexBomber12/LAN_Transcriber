@@ -243,7 +243,9 @@ def test_plan_multilingual_chunks_merges_matching_segments_and_preserves_uncerta
     assert backwards_chunks[0].language == "en"
 
 
-def test_private_multilingual_helpers_cover_edge_paths() -> None:
+def test_private_multilingual_helpers_cover_edge_paths(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     assert multilingual_asr.ChunkPlan(  # noqa: SLF001
         start=0.0,
         end=1.0,
@@ -320,6 +322,28 @@ def test_private_multilingual_helpers_cover_edge_paths() -> None:
         end_seconds=2.5,
     )
     assert [row["text"] for row in selected] == ["boundary", "inside"]
+    assert multilingual_asr._select_segment_indexes_for_range(  # noqa: SLF001
+        [
+            {"start": 2.0, "end": 1.0, "text": "boundary"},
+            {"start": 1.0, "end": 3.0, "text": "inside"},
+        ],
+        start_seconds=1.5,
+        end_seconds=2.5,
+        excluded_indexes={0},
+    ) == [1]
+    monkeypatch.setattr(
+        multilingual_asr,
+        "_select_segment_indexes_for_range",
+        lambda *_a, **_k: [0],
+    )
+    assert (
+        multilingual_asr._select_segments_for_range(  # noqa: SLF001
+            ["skip"],
+            start_seconds=0.0,
+            end_seconds=1.0,
+        )
+        == []
+    )
 
     merged = multilingual_asr._merge_result_language_info(  # noqa: SLF001
         [{"result_language": "en", "start": 1.0, "end": 1.0}],
@@ -508,6 +532,65 @@ def test_run_language_aware_asr_multilingual_preserves_initial_segments_when_chu
     assert segments[1]["start"] == 4.0
     assert segments[1]["language"] == "es"
     assert info["language"] == "en"
+
+
+def test_run_language_aware_asr_multilingual_empty_chunks_do_not_duplicate_fallback_segments(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    audio = _write_pcm_wav(tmp_path / "mixed-empty-duplicate.wav", duration_sec=8.0)
+
+    monkeypatch.setattr(
+        multilingual_asr,
+        "plan_multilingual_chunks",
+        lambda *_a, **_k: [
+            multilingual_asr.ChunkPlan(
+                start=0.0,
+                end=4.0,
+                language="en",
+                confidence=0.95,
+                language_hint="en",
+                uncertain=False,
+                conflict=False,
+                segment_count=1,
+            ),
+            multilingual_asr.ChunkPlan(
+                start=4.0,
+                end=8.0,
+                language="en",
+                confidence=0.95,
+                language_hint="en",
+                uncertain=False,
+                conflict=False,
+                segment_count=1,
+            ),
+        ],
+    )
+
+    def _transcribe(
+        path: Path,
+        override_lang: str | None,
+    ) -> tuple[list[dict[str, object]], dict[str, object]]:
+        if path == audio:
+            return (
+                [{"start": 3.0, "end": 5.0, "text": "boundary overlap"}],
+                {"language": "en", "language_probability": 0.92},
+            )
+        assert override_lang == "en"
+        return ([], {"language": "en", "language_probability": 0.92})
+
+    segments, _info, payload = multilingual_asr.run_language_aware_asr(
+        audio,
+        override_lang=None,
+        configured_mode="force_multilingual",
+        tmp_root=tmp_path / "tmp",
+        transcribe_fn=_transcribe,
+    )
+
+    assert payload["used_multilingual_path"] is True
+    assert [segment["text"] for segment in segments] == ["boundary overlap"]
+    assert segments[0]["start"] == 3.0
+    assert segments[0]["end"] == 5.0
 
 
 def test_run_language_aware_asr_multilingual_without_confidence_payload(
