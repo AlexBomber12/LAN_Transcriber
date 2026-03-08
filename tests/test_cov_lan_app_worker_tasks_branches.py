@@ -1085,6 +1085,52 @@ def test_review_reason_helpers_cover_exception_and_routing_paths(tmp_path: Path)
 
     derived = cfg.recordings_root / "rec-review-reason-1" / "derived"
     derived.mkdir(parents=True, exist_ok=True)
+    (derived / "transcript.json").write_text(
+        json.dumps(
+            {
+                "review": {
+                    "required": True,
+                    "reason_code": "multilingual_uncertain",
+                    "reason_text": (
+                        "Language detection conflicted across multilingual chunks."
+                    ),
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert worker_tasks._review_reason_from_routing(  # noqa: SLF001
+        recording_id="rec-review-reason-1",
+        settings=cfg,
+        routing={"confidence": 0.25, "threshold": 0.5},
+    ) == (
+        "multilingual_uncertain",
+        "Language detection conflicted across multilingual chunks.",
+    )
+
+    (derived / "transcript.json").write_text(
+        json.dumps(
+            {
+                "review": {
+                    "required": True,
+                    "reason_code": "multilingual_uncertain",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    (derived / "summary.json").write_text("{}", encoding="utf-8")
+    (derived / "diarization_metadata.json").write_text("{}", encoding="utf-8")
+    assert worker_tasks._review_reason_from_routing(  # noqa: SLF001
+        recording_id="rec-review-reason-1",
+        settings=cfg,
+        routing={"confidence": 0.95, "threshold": 0.5},
+    ) == (
+        "multilingual_uncertain",
+        "Multilingual transcript review is required.",
+    )
+
+    (derived / "transcript.json").write_text("{}", encoding="utf-8")
     (derived / "summary.json").write_text(
         json.dumps({"parse_error_reason": "json_object_not_found"}),
         encoding="utf-8",

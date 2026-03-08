@@ -27,6 +27,7 @@ transformers.pipeline = lambda *a, **k: lambda text: [
 sys.modules["transformers"] = transformers
 
 from lan_transcriber import llm_client, pipeline  # noqa: E402
+from lan_transcriber.pipeline_steps.language import LanguageAnalysis  # noqa: E402
 from lan_transcriber.pipeline_steps import precheck as precheck_step  # noqa: E402
 
 
@@ -1001,6 +1002,402 @@ async def test_pipeline_writes_language_spans_for_mixed_language_segments(tmp_pa
     assert len(transcript_data["language_spans"]) >= 2
     assert transcript_data["language_spans"][0]["lang"] == "en"
     assert transcript_data["language_spans"][1]["lang"] == "es"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_pipeline_single_language_auto_keeps_single_asr_pass(tmp_path: Path, mocker):
+    asr_languages: list[str | None] = []
+
+    def _transcribe(_audio_path: str, **kwargs):
+        asr_languages.append(kwargs.get("language"))
+        return (
+            [{"start": 0.0, "end": 6.0, "text": "hello team thanks for joining"}],
+            {"language": "en", "language_probability": 0.96},
+        )
+
+    mocker.patch("whisperx.transcribe", side_effect=_transcribe)
+    mocker.patch(
+        "transformers.pipeline",
+        lambda *a, **k: lambda text: [{"label": "positive", "score": 0.6}],
+    )
+    respx.post("http://127.0.0.1:8000/v1/chat/completions").mock(
+        return_value=httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": "- summary"}}]},
+        ),
+    )
+
+    cfg = pipeline.Settings(
+        speaker_db=tmp_path / "db.yaml",
+        tmp_root=tmp_path,
+        recordings_root=tmp_path / "recordings",
+        asr_multilingual_mode="auto",
+    )
+    audio = wav_audio(
+        tmp_path,
+        name="single-language.wav",
+        duration_sec=8.0,
+        speech=True,
+    )
+    await pipeline.run_pipeline(
+        audio_path=audio,
+        cfg=cfg,
+        llm=llm_client.LLMClient(),
+        diariser=DummyDiariser(),
+        recording_id="rec-single-language-1",
+        precheck=precheck_ok(),
+    )
+
+    transcript_data = json.loads(
+        (
+            cfg.recordings_root
+            / "rec-single-language-1"
+            / "derived"
+            / "transcript.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert asr_languages == ["auto"]
+    assert transcript_data["multilingual_asr"]["used_multilingual_path"] is False
+    assert transcript_data["multilingual_asr"]["selected_mode"] == "single_language"
+    assert transcript_data["review"]["required"] is False
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_pipeline_multilingual_asr_uses_chunk_language_hints(tmp_path: Path, mocker):
+    asr_languages: list[str | None] = []
+
+    def _transcribe(audio_path: str, **kwargs):
+        language = kwargs.get("language")
+        asr_languages.append(language)
+        if audio_path == str(audio):
+            return (
+                [
+                    {"start": 0.0, "end": 4.0, "text": "hello team and thanks"},
+                    {"start": 4.0, "end": 8.0, "text": "hola equipo y gracias"},
+                ],
+                {"language": "en", "language_probability": 0.91},
+            )
+        if language == "en":
+            return (
+                [{"start": 0.0, "end": 4.0, "text": "hello team and thanks"}],
+                {"language": "en", "language_probability": 0.98},
+            )
+        return (
+            [{"start": 0.0, "end": 4.0, "text": "hola equipo y gracias"}],
+            {"language": "es", "language_probability": 0.97},
+        )
+
+    mocker.patch("whisperx.transcribe", side_effect=_transcribe)
+    mocker.patch(
+        "transformers.pipeline",
+        lambda *a, **k: lambda text: [{"label": "positive", "score": 0.6}],
+    )
+    respx.post("http://127.0.0.1:8000/v1/chat/completions").mock(
+        return_value=httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": "- summary"}}]},
+        ),
+    )
+
+    cfg = pipeline.Settings(
+        speaker_db=tmp_path / "db.yaml",
+        tmp_root=tmp_path,
+        recordings_root=tmp_path / "recordings",
+        asr_multilingual_mode="auto",
+    )
+    audio = wav_audio(
+        tmp_path,
+        name="mixed-language.wav",
+        duration_sec=8.0,
+        speech=True,
+    )
+    await pipeline.run_pipeline(
+        audio_path=audio,
+        cfg=cfg,
+        llm=llm_client.LLMClient(),
+        diariser=TwoSpeakerDiariser(),
+        recording_id="rec-multilingual-hints-1",
+        precheck=precheck_ok(),
+    )
+
+    transcript_data = json.loads(
+        (
+            cfg.recordings_root
+            / "rec-multilingual-hints-1"
+            / "derived"
+            / "transcript.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert asr_languages == ["auto", "en", "es"]
+    assert transcript_data["multilingual_asr"]["used_multilingual_path"] is True
+    assert transcript_data["multilingual_asr"]["selected_mode"] == "multilingual"
+    assert transcript_data["language_spans"][0]["lang"] == "en"
+    assert transcript_data["language_spans"][1]["lang"] == "es"
+    hinted_languages = {
+        row["language_hint"]
+        for row in transcript_data["segments"]
+        if "language_hint" in row
+    }
+    assert hinted_languages == {"en", "es"}
+    assert transcript_data["review"]["required"] is False
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_pipeline_multilingual_model_path_reuses_single_whisperx_model_load(
+    tmp_path: Path,
+    mocker,
+    monkeypatch,
+):
+    fake_whisperx = ModuleType("whisperx")
+    fake_asr = ModuleType("whisperx.asr")
+    load_model_calls = 0
+    asr_languages: list[str | None] = []
+
+    class _FakeModel:
+        vad_model = staticmethod(lambda _payload: [])
+
+        def transcribe(
+            self,
+            audio_input: str,
+            *,
+            batch_size: int,
+            vad_filter: bool,
+            language: str | None,
+        ) -> dict[str, object]:
+            del audio_input
+            assert batch_size == 16
+            assert vad_filter is True
+            asr_languages.append(language)
+            if language is None:
+                return {
+                    "segments": [
+                        {"start": 0.0, "end": 4.0, "text": "hello team and thanks"},
+                        {"start": 4.0, "end": 8.0, "text": "hola equipo y gracias"},
+                    ],
+                    "language": "en",
+                }
+            if language == "en":
+                return {
+                    "segments": [
+                        {"start": 0.0, "end": 4.0, "text": "hello team and thanks"}
+                    ],
+                    "language": "en",
+                }
+            return {
+                "segments": [
+                    {"start": 0.0, "end": 4.0, "text": "hola equipo y gracias"}
+                ],
+                "language": "es",
+            }
+
+    def _load_audio(path: str) -> str:
+        return path
+
+    def _load_model(
+        model_name: str,
+        device: str,
+        compute_type: str = "int8",
+        vad_method: str = "silero",
+    ) -> _FakeModel:
+        nonlocal load_model_calls
+        assert model_name == "large-v3"
+        assert device == "cpu"
+        assert compute_type == "int8"
+        assert vad_method == "silero"
+        load_model_calls += 1
+        return _FakeModel()
+
+    fake_whisperx.transcribe = None
+    fake_whisperx.load_audio = _load_audio
+    fake_whisperx.asr = fake_asr
+    fake_asr.load_model = _load_model
+    monkeypatch.setitem(sys.modules, "whisperx", fake_whisperx)
+    monkeypatch.setitem(sys.modules, "whisperx.asr", fake_asr)
+    monkeypatch.setattr(
+        "lan_transcriber.pipeline_steps.orchestrator.ensure_ctranslate2_no_execstack",
+        lambda: [],
+    )
+    mocker.patch(
+        "transformers.pipeline",
+        lambda *a, **k: lambda text: [{"label": "positive", "score": 0.6}],
+    )
+    respx.post("http://127.0.0.1:8000/v1/chat/completions").mock(
+        return_value=httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": "- summary"}}]},
+        ),
+    )
+
+    cfg = pipeline.Settings(
+        speaker_db=tmp_path / "db.yaml",
+        tmp_root=tmp_path,
+        recordings_root=tmp_path / "recordings",
+        asr_device="cpu",
+        asr_enable_align=False,
+        asr_multilingual_mode="auto",
+    )
+    audio = wav_audio(
+        tmp_path,
+        name="mixed-model-path.wav",
+        duration_sec=8.0,
+        speech=True,
+    )
+    await pipeline.run_pipeline(
+        audio_path=audio,
+        cfg=cfg,
+        llm=llm_client.LLMClient(),
+        diariser=TwoSpeakerDiariser(),
+        recording_id="rec-multilingual-model-reuse-1",
+        precheck=precheck_ok(),
+    )
+
+    transcript_data = json.loads(
+        (
+            cfg.recordings_root
+            / "rec-multilingual-model-reuse-1"
+            / "derived"
+            / "transcript.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert load_model_calls == 1
+    assert asr_languages == [None, "en", "es"]
+    assert transcript_data["multilingual_asr"]["used_multilingual_path"] is True
+    assert transcript_data["segments"][0]["language_hint"] == "en"
+    assert transcript_data["segments"][1]["language_hint"] == "es"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_pipeline_multilingual_uncertainty_sets_review_metadata(tmp_path: Path, mocker):
+    def _transcribe(audio_path: str, **kwargs):
+        language = kwargs.get("language")
+        if audio_path == str(audio):
+            return (
+                [
+                    {"start": 0.0, "end": 4.0, "text": "hello team and thanks"},
+                    {"start": 4.0, "end": 8.0, "text": "hola equipo y gracias"},
+                ],
+                {"language": "en", "language_probability": 0.91},
+            )
+        if language == "en":
+            return (
+                [{"start": 0.0, "end": 4.0, "text": "hello team and thanks"}],
+                {"language": "en", "language_probability": 0.98},
+            )
+        return (
+            [{"start": 0.0, "end": 4.0, "text": "hello team and thanks"}],
+            {"language": "en", "language_probability": 0.99},
+        )
+
+    mocker.patch("whisperx.transcribe", side_effect=_transcribe)
+    mocker.patch(
+        "transformers.pipeline",
+        lambda *a, **k: lambda text: [{"label": "positive", "score": 0.6}],
+    )
+    respx.post("http://127.0.0.1:8000/v1/chat/completions").mock(
+        return_value=httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": "- summary"}}]},
+        ),
+    )
+
+    cfg = pipeline.Settings(
+        speaker_db=tmp_path / "db.yaml",
+        tmp_root=tmp_path,
+        recordings_root=tmp_path / "recordings",
+        asr_multilingual_mode="auto",
+    )
+    audio = wav_audio(
+        tmp_path,
+        name="mixed-uncertain.wav",
+        duration_sec=8.0,
+        speech=True,
+    )
+    await pipeline.run_pipeline(
+        audio_path=audio,
+        cfg=cfg,
+        llm=llm_client.LLMClient(),
+        diariser=TwoSpeakerDiariser(),
+        recording_id="rec-multilingual-review-1",
+        precheck=precheck_ok(),
+    )
+
+    derived = cfg.recordings_root / "rec-multilingual-review-1" / "derived"
+    transcript_data = json.loads((derived / "transcript.json").read_text(encoding="utf-8"))
+    metrics_data = json.loads((derived / "metrics.json").read_text(encoding="utf-8"))
+    assert transcript_data["review"]["required"] is True
+    assert transcript_data["review"]["reason_code"] == "multilingual_uncertain"
+    assert transcript_data["multilingual_asr"]["chunks"][1]["conflict"] is True
+    assert metrics_data["review_required"] is True
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_pipeline_multilingual_backfills_detected_language_without_distribution_confidence(
+    tmp_path: Path,
+    mocker,
+):
+    mocker.patch(
+        "lan_transcriber.pipeline_steps.orchestrator.run_language_aware_asr",
+        return_value=(
+            [{"start": 0.0, "end": 1.0, "text": "hello", "language": "en"}],
+            {"language": "unknown"},
+            {"used_multilingual_path": True, "selected_mode": "multilingual"},
+        ),
+    )
+    mocker.patch(
+        "lan_transcriber.pipeline_steps.orchestrator.analyse_languages",
+        return_value=LanguageAnalysis(
+            segments=[{"start": 0.0, "end": 1.0, "text": "hello", "language": "en"}],
+            dominant_language="en",
+            distribution={},
+            spans=[],
+        ),
+    )
+    mocker.patch(
+        "transformers.pipeline",
+        lambda *a, **k: lambda text: [{"label": "positive", "score": 0.6}],
+    )
+    respx.post("http://127.0.0.1:8000/v1/chat/completions").mock(
+        return_value=httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": "- summary"}}]},
+        ),
+    )
+
+    cfg = pipeline.Settings(
+        speaker_db=tmp_path / "db.yaml",
+        tmp_root=tmp_path,
+        recordings_root=tmp_path / "recordings",
+    )
+    audio = wav_audio(
+        tmp_path,
+        name="multilingual-backfill.wav",
+        duration_sec=8.0,
+        speech=True,
+    )
+    await pipeline.run_pipeline(
+        audio_path=audio,
+        cfg=cfg,
+        llm=llm_client.LLMClient(),
+        diariser=DummyDiariser(),
+        recording_id="rec-multilingual-backfill-1",
+        precheck=precheck_ok(),
+    )
+
+    transcript_data = json.loads(
+        (
+            cfg.recordings_root
+            / "rec-multilingual-backfill-1"
+            / "derived"
+            / "transcript.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert transcript_data["language"]["detected"] == "en"
+    assert transcript_data["language"]["confidence"] is None
 
 
 def test_segment_language_prefers_detected_over_text_guess():

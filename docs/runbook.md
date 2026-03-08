@@ -38,14 +38,17 @@ docker compose run --rm api python -m lan_app.healthchecks app
 
 1. Open `/upload` and upload one or more files (UI sends multipart to `POST /api/uploads`).
 2. Uploaded audio is normalized automatically to 16 kHz mono WAV before VAD/ASR/diarization; no manual conversion is required.
-3. Track upload and processing progress per file on `/upload`.
-4. Open `/recordings/{recording_id}` for transcript, summary, and export actions.
+3. Mixed-language handling now runs automatically when `LAN_ASR_MULTILINGUAL_MODE=auto`.
+   - `derived/transcript.json` can include `language_spans`, multilingual chunk metadata, and multilingual review metadata.
+   - If chunk-level language ID stays conflicted or low-confidence, the recording remains in `NeedsReview` with an explicit review reason.
+4. Track upload and processing progress per file on `/upload`.
+5. Open `/recordings/{recording_id}` for transcript, summary, and export actions.
    - `NeedsReview` recordings show an explicit review reason in the recordings list and detail page.
    - The server-rendered UI shows timestamps in local Europe/Rome time.
    - Duration is sourced from `derived/audio_sanitized.wav` when it exists, otherwise from the raw upload.
    - Canonical speaker records keep one active person entry with many samples; low-confidence matches stay reviewable instead of auto-merging.
-5. Download export bundle from `GET /ui/recordings/{recording_id}/export.zip`.
-6. Deleting a recording removes the DB row plus `/data/recordings/<recording_id>/raw`, `derived`, `logs`, and other remaining files under that recording root. If cleanup fails, delete returns an error.
+6. Download export bundle from `GET /ui/recordings/{recording_id}/export.zip`.
+7. Deleting a recording removes the DB row plus `/data/recordings/<recording_id>/raw`, `derived`, `logs`, and other remaining files under that recording root. If cleanup fails, delete returns an error.
 
 ### 1.2.1 Canonical speaker merges
 
@@ -68,6 +71,7 @@ docker compose run --rm api python -m lan_app.healthchecks app
    - `LAN_DIARIZATION_MODEL_ID=pyannote/speaker-diarization-3.1` (or your approved repo id)
    - `LAN_DIARIZATION_PROFILE=auto` (default; first pass uses meeting-like 2..6 hints and retries once with 2 speakers only when the result looks dialog-like)
    - `LAN_VAD_METHOD=silero` (default; set `pyannote` only if explicitly required)
+   - `LAN_ASR_MULTILINGUAL_MODE=auto` (default; switches to chunk-level language-aware ASR only when credible language changes are detected)
 4. Run warmup once before starting normal traffic:
 
 ```bash
@@ -92,6 +96,7 @@ Optional diarization tuning:
 - `LAN_DIARIZATION_MIN_SPEAKERS` and `LAN_DIARIZATION_MAX_SPEAKERS` override the first-pass defaults and bypass auto-profile selection when set.
 - `LAN_DIARIZATION_MERGE_GAP_SECONDS` and `LAN_DIARIZATION_MIN_TURN_SECONDS` control conservative turn smoothing.
 - Each processed recording writes `derived/diarization_metadata.json` with the requested profile, selected profile, initial speaker count, top-two coverage, retry attempt/winner, applied hints, and before/after smoothing counts.
+- Mixed-language ASR writes chunk-level `language_spans` and multilingual execution metadata into `derived/transcript.json`; when those chunks stay conflicted or low-confidence, the worker leaves the recording in `NeedsReview`.
 
 ## 2) Runtime safety defaults
 

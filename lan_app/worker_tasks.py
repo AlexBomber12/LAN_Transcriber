@@ -420,8 +420,17 @@ def _review_reason_from_routing(
     routing: dict[str, Any],
 ) -> tuple[str, str]:
     derived_dir = settings.recordings_root / recording_id / "derived"
+    transcript_payload = _load_json_dict(derived_dir / "transcript.json")
     summary_payload = _load_json_dict(derived_dir / "summary.json")
     diarization_payload = _load_json_dict(derived_dir / "diarization_metadata.json")
+    transcript_review = transcript_payload.get("review")
+    if isinstance(transcript_review, dict) and bool(transcript_review.get("required")):
+        return (
+            str(transcript_review.get("reason_code") or "").strip()
+            or "transcript_review_required",
+            str(transcript_review.get("reason_text") or "").strip()
+            or "Multilingual transcript review is required.",
+        )
 
     parse_reason = str(summary_payload.get("parse_error_reason") or "").strip()
     if parse_reason:

@@ -50,6 +50,23 @@ def normalise_asr_segments(raw_segments: Sequence[dict[str, Any]]) -> list[dict[
         language = raw.get("language")
         if isinstance(language, str) and language.strip():
             payload["language"] = language.strip()
+        if raw.get("language_confidence") is not None:
+            payload["language_confidence"] = round(
+                safe_float(raw.get("language_confidence"), default=0.0),
+                4,
+            )
+        language_source = raw.get("language_source")
+        if isinstance(language_source, str) and language_source.strip():
+            payload["language_source"] = language_source.strip()
+        if "language_uncertain" in raw:
+            payload["language_uncertain"] = bool(raw.get("language_uncertain"))
+        if "language_conflict" in raw:
+            payload["language_conflict"] = bool(raw.get("language_conflict"))
+        language_hint = raw.get("language_hint")
+        if isinstance(language_hint, str) and language_hint.strip():
+            payload["language_hint"] = language_hint.strip()
+        if "language_hint_applied" in raw:
+            payload["language_hint_applied"] = bool(raw.get("language_hint_applied"))
         out.append(payload)
     return out
 

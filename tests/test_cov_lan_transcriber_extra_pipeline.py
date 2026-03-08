@@ -1735,6 +1735,76 @@ async def test_run_pipeline_backfills_detected_language_and_uses_fallback_diariz
 
 
 @pytest.mark.asyncio
+async def test_run_pipeline_restores_previous_whisperx_transcriber_session(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    previous_transcriber = object()
+
+    def _session_transcriber(
+        _audio_path: Path,
+        _override_lang: str | None,
+    ) -> tuple[list[dict[str, object]], dict[str, object]]:
+        assert getattr(pipeline._whisperx_transcriber_state, "transcribe_audio") is _session_transcriber
+        return (
+            [{"start": 0.0, "end": 1.0, "text": "hello team and thanks"}],
+            {"language": "en", "language_probability": 0.95},
+        )
+
+    def _fake_run_language_aware_asr(
+        audio_path: Path,
+        *,
+        override_lang: str | None,
+        configured_mode: str,
+        tmp_root: Path,
+        transcribe_fn,
+        step_log_callback=None,
+    ) -> tuple[list[dict[str, object]], dict[str, object], dict[str, object]]:
+        del configured_mode, tmp_root, step_log_callback
+        segments, info = transcribe_fn(audio_path, override_lang)
+        return (
+            segments,
+            info,
+            {
+                "used_multilingual_path": False,
+                "selected_mode": "single_language",
+                "selection_reason": "test",
+                "chunks": [],
+            },
+        )
+
+    async def _fake_to_thread(fn, /, *args, **kwargs):
+        pipeline._whisperx_transcriber_state.transcribe_audio = previous_transcriber
+        return fn(*args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "to_thread", _fake_to_thread)
+    monkeypatch.setattr(
+        pipeline,
+        "_build_whisperx_transcriber",
+        lambda **_kwargs: _session_transcriber,
+    )
+    monkeypatch.setattr(pipeline, "run_language_aware_asr", _fake_run_language_aware_asr)
+    monkeypatch.setattr(pipeline, "_sentiment_score", lambda _text: 50)
+    monkeypatch.setattr(pipeline, "export_speaker_snippets", lambda _req: [])
+    monkeypatch.setattr(pipeline, "_save_aliases", lambda *_a, **_k: None)
+    monkeypatch.setattr(pipeline, "_load_aliases", lambda *_a, **_k: {})
+
+    cfg = _settings(tmp_path)
+    result = await pipeline.run_pipeline(
+        audio_path=_audio_file(tmp_path, "pipeline-session.mp3"),
+        cfg=cfg,
+        llm=_FakeLLM(),
+        diariser=_NoTracksDiariser(),
+        recording_id="rec-transcriber-session",
+        precheck=pipeline.PrecheckResult(duration_sec=30.0, speech_ratio=0.8, quarantine_reason=None),
+    )
+
+    assert result.summary.strip() == "- ok"
+    assert getattr(pipeline._whisperx_transcriber_state, "transcribe_audio") is previous_transcriber
+    delattr(pipeline._whisperx_transcriber_state, "transcribe_audio")
+
+
+@pytest.mark.asyncio
 async def test_run_pipeline_fails_fast_when_llm_model_is_blank(tmp_path: Path) -> None:
     cfg = _settings(tmp_path, llm_model="   ")
     with pytest.raises(RuntimeError, match="LLM_MODEL is required"):

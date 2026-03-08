@@ -14,10 +14,24 @@ def test_normalise_asr_segments_keeps_word_timestamps():
             "end": 1.5,
             "text": "hello team",
             "words": [{"start": 0.0, "end": 0.4, "word": "hello"}],
+            "language": "EN-us",
+            "language_confidence": 0.91,
+            "language_source": "chunk_hint",
+            "language_uncertain": True,
+            "language_conflict": False,
+            "language_hint": "en",
+            "language_hint_applied": True,
         }
     ]
     payload = normalise_asr_segments(rows)
     assert payload[0]["words"][0]["word"] == "hello"
+    assert payload[0]["language"] == "EN-us"
+    assert payload[0]["language_confidence"] == 0.91
+    assert payload[0]["language_source"] == "chunk_hint"
+    assert payload[0]["language_uncertain"] is True
+    assert payload[0]["language_conflict"] is False
+    assert payload[0]["language_hint"] == "en"
+    assert payload[0]["language_hint_applied"] is True
 
 
 def test_build_speaker_turns_assigns_speakers_from_diarization():

@@ -75,6 +75,8 @@ def refresh_recording_routing(
     has_manual_project_override = (
         current_project_id is not None and current_assignment_source == "manual"
     )
+    transcript_review = _transcript_review_requirement(recording_id, settings=cfg)
+    review_required = bool(transcript_review.get("required"))
 
     projects = list_projects(settings=cfg)
     signals = _build_routing_signals(recording_id, settings=cfg)
@@ -85,6 +87,11 @@ def refresh_recording_routing(
             "No projects exist yet, so routing cannot suggest a project.",
             f"Confidence 0.00 is below threshold {threshold:.2f}; manual review required.",
         ]
+        if review_required:
+            rationale.append(
+                str(transcript_review.get("reason_text") or "").strip()
+                or "Multilingual transcript review is required."
+            )
         set_recording_routing_suggestion(
             recording_id,
             suggested_project_id=None,
@@ -160,6 +167,11 @@ def refresh_recording_routing(
         threshold=threshold,
         signals=signals,
     )
+    if review_required:
+        rationale.append(
+            str(transcript_review.get("reason_text") or "").strip()
+            or "Multilingual transcript review is required."
+        )
 
     set_recording_routing_suggestion(
         recording_id,
@@ -181,7 +193,11 @@ def refresh_recording_routing(
                     assignment_source="auto",
                 )
                 auto_selected = True
-            status_after_routing = RECORDING_STATUS_READY
+            status_after_routing = (
+                RECORDING_STATUS_NEEDS_REVIEW
+                if review_required
+                else RECORDING_STATUS_READY
+            )
         else:
             if current_project_id is not None and current_assignment_source == "auto":
                 set_recording_project(
@@ -540,6 +556,23 @@ def _load_json_dict(path: Path) -> dict[str, Any]:
     if not isinstance(payload, dict):
         return {}
     return payload
+
+
+def _transcript_review_requirement(
+    recording_id: str,
+    *,
+    settings: AppSettings,
+) -> dict[str, Any]:
+    transcript_path = settings.recordings_root / recording_id / "derived" / "transcript.json"
+    payload = _load_json_dict(transcript_path)
+    review_payload = payload.get("review")
+    if not isinstance(review_payload, dict):
+        return {"required": False}
+    return {
+        "required": bool(review_payload.get("required")),
+        "reason_code": str(review_payload.get("reason_code") or "").strip(),
+        "reason_text": str(review_payload.get("reason_text") or "").strip(),
+    }
 
 
 def _tokenize(value: str) -> set[str]:
