@@ -1,88 +1,595 @@
 diff --git a/lan_transcriber/pipeline_steps/multilingual_asr.py b/lan_transcriber/pipeline_steps/multilingual_asr.py
-index 26d8b60..79ac310 100644
+index 79ac310..e386acb 100644
 --- a/lan_transcriber/pipeline_steps/multilingual_asr.py
 +++ b/lan_transcriber/pipeline_steps/multilingual_asr.py
-@@ -458,7 +458,30 @@ def run_language_aware_asr(
-                 end_sec=chunk.end,
-                 output_path=tmp_dir / f"chunk-{index:03d}.wav",
+@@ -530,7 +530,7 @@ def run_language_aware_asr(
+                     uncertain=uncertain,
+                     conflict=conflict,
+                 )
+-            consumed_initial_segment_indexes.update(fallback_indexes)
++                consumed_initial_segment_indexes.update(fallback_indexes)
+ 
+             merged_segments.extend(annotated_segments)
+             payload = chunk.to_payload(index=index, total=len(chunks))
+diff --git a/lan_transcriber/pipeline_steps/orchestrator.py b/lan_transcriber/pipeline_steps/orchestrator.py
+index a9a4067..bbeb11d 100644
+--- a/lan_transcriber/pipeline_steps/orchestrator.py
++++ b/lan_transcriber/pipeline_steps/orchestrator.py
+@@ -4,6 +4,7 @@ import asyncio
+ import inspect
+ import logging
+ import shutil
++import threading
+ import time
+ from pathlib import Path
+ from types import SimpleNamespace
+@@ -61,6 +62,7 @@ from ..runtime_paths import default_recordings_root, default_tmp_root, default_u
+ from ..utils import normalise_language_code, safe_float
+ 
+ _logger = logging.getLogger(__name__)
++_whisperx_transcriber_state = threading.local()
+ _LLM_MODEL_REQUIRED_ERROR = (
+     "LLM_MODEL is required. Set it in .env (e.g., LLM_MODEL=gpt-oss:120b)."
+ )
+@@ -585,13 +587,10 @@ def _write_diarization_metadata_artifact(
+     atomic_write_json(artifacts.diarization_metadata_json_path, payload)
+ 
+ 
+-def _whisperx_asr(
+-    audio_path: Path,
+-    *,
+-    override_lang: str | None,
++def _build_whisperx_transcriber(
+     cfg: Settings,
+     step_log_callback: Callable[[str], Any] | None = None,
+-) -> tuple[list[dict[str, Any]], dict[str, Any]]:
++) -> Callable[[Path, str | None], tuple[list[dict[str, Any]], dict[str, Any]]]:
+     patched_paths = ensure_ctranslate2_no_execstack()
+     if patched_paths and step_log_callback is not None:
+         try:
+@@ -624,35 +623,48 @@ def _whisperx_asr(
+         )
+ 
+     if callable(legacy_transcribe):
+-        kwargs: dict[str, Any] = {
+-            "vad_filter": True,
+-            "language": override_lang or "auto",
+-            "word_timestamps": True,
+-        }
+-        filtered_kwargs = filter_kwargs_for_callable(legacy_transcribe, kwargs)
+-        _log_dropped_kwargs(
+-            callback=step_log_callback,
+-            scope="whisperx transcribe",
+-            attempted=kwargs,
+-            filtered=filtered_kwargs,
+-        )
+-        try:
+-            segments, info = call_with_supported_kwargs(legacy_transcribe, str(audio_path), **kwargs)
+-        except TypeError:
+-            retry_kwargs = dict(kwargs)
+-            retry_kwargs.pop("word_timestamps", None)
++        def _legacy_transcribe(
++            audio_path: Path,
++            override_lang: str | None,
++        ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
++            kwargs: dict[str, Any] = {
++                "vad_filter": True,
++                "language": override_lang or "auto",
++                "word_timestamps": True,
++            }
++            filtered_kwargs = filter_kwargs_for_callable(legacy_transcribe, kwargs)
+             _log_dropped_kwargs(
+                 callback=step_log_callback,
+                 scope="whisperx transcribe",
+                 attempted=kwargs,
+-                filtered=retry_kwargs,
++                filtered=filtered_kwargs,
              )
--            chunk_segments, chunk_info = transcribe_fn(chunk_audio_path, chunk.language_hint)
+-            segments, info = call_with_supported_kwargs(legacy_transcribe, str(audio_path), **retry_kwargs)
+-        return list(segments), dict(info or {})
 +            try:
-+                chunk_segments, chunk_info = transcribe_fn(
++                segments, info = call_with_supported_kwargs(
++                    legacy_transcribe,
++                    str(audio_path),
++                    **kwargs,
++                )
++            except TypeError:
++                retry_kwargs = dict(kwargs)
++                retry_kwargs.pop("word_timestamps", None)
++                _log_dropped_kwargs(
++                    callback=step_log_callback,
++                    scope="whisperx transcribe",
++                    attempted=kwargs,
++                    filtered=retry_kwargs,
++                )
++                segments, info = call_with_supported_kwargs(
++                    legacy_transcribe,
++                    str(audio_path),
++                    **retry_kwargs,
++                )
++            return list(segments), dict(info or {})
++
++        return _legacy_transcribe
+ 
+     device = _select_asr_device(cfg)
+     compute_type = _select_compute_type(cfg, device)
+-    audio = whisperx.load_audio(str(audio_path))
+     _logger.info("ASR VAD method: %s", cfg.vad_method)
+     model_load_kwargs = {"compute_type": compute_type, "vad_method": cfg.vad_method}
+ 
+@@ -680,42 +692,73 @@ def _whisperx_asr(
+             f"type(vad_model)={type(vad)!r}; expected callable model.vad_model"
+         )
+ 
+-    transcribe_kwargs: dict[str, Any] = {
+-        "batch_size": cfg.asr_batch_size,
+-        "vad_filter": True,
+-        "language": (override_lang if override_lang else None),
+-    }
+-    filtered_kwargs = filter_kwargs_for_callable(model.transcribe, transcribe_kwargs)
+-    _log_dropped_kwargs(
+-        callback=step_log_callback,
+-        scope="whisperx transcribe",
+-        attempted=transcribe_kwargs,
+-        filtered=filtered_kwargs,
+-    )
+-    result = call_with_supported_kwargs(model.transcribe, audio, **transcribe_kwargs)
+-    segments = list(result.get("segments", []))
+-    info: dict[str, Any] = {"language": result.get("language") or (override_lang or "unknown")}
++    def _modern_transcribe(
++        audio_path: Path,
++        override_lang: str | None,
++    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
++        audio = whisperx.load_audio(str(audio_path))
++        transcribe_kwargs: dict[str, Any] = {
++            "batch_size": cfg.asr_batch_size,
++            "vad_filter": True,
++            "language": (override_lang if override_lang else None),
++        }
++        filtered_kwargs = filter_kwargs_for_callable(model.transcribe, transcribe_kwargs)
++        _log_dropped_kwargs(
++            callback=step_log_callback,
++            scope="whisperx transcribe",
++            attempted=transcribe_kwargs,
++            filtered=filtered_kwargs,
++        )
++        result = call_with_supported_kwargs(model.transcribe, audio, **transcribe_kwargs)
++        segments = list(result.get("segments", []))
++        info: dict[str, Any] = {
++            "language": result.get("language") or (override_lang or "unknown")
++        }
+ 
+-    if cfg.asr_enable_align:
+-        try:
+-            align_lang = normalise_language_code(info.get("language")) or "en"
+-            model_a, metadata = whisperx.load_align_model(language_code=align_lang, device=device)
++        if cfg.asr_enable_align:
+             try:
+-                aligned = whisperx.align(
+-                    segments,
+-                    model_a,
+-                    metadata,
+-                    audio,
+-                    device,
+-                    return_char_alignments=False,
++                align_lang = normalise_language_code(info.get("language")) or "en"
++                model_a, metadata = whisperx.load_align_model(
++                    language_code=align_lang,
++                    device=device,
+                 )
+-            except TypeError:
+-                aligned = whisperx.align(segments, model_a, metadata, audio, device)
+-            segments = list(aligned.get("segments", segments))
+-        except Exception:
+-            pass
++                try:
++                    aligned = whisperx.align(
++                        segments,
++                        model_a,
++                        metadata,
++                        audio,
++                        device,
++                        return_char_alignments=False,
++                    )
++                except TypeError:
++                    aligned = whisperx.align(segments, model_a, metadata, audio, device)
++                segments = list(aligned.get("segments", segments))
++            except Exception:
++                pass
+ 
+-    return segments, info
++        return segments, info
++
++    return _modern_transcribe
++
++
++def _whisperx_asr(
++    audio_path: Path,
++    *,
++    override_lang: str | None,
++    cfg: Settings,
++    step_log_callback: Callable[[str], Any] | None = None,
++) -> tuple[list[dict[str, Any]], dict[str, Any]]:
++    transcribe_audio = getattr(_whisperx_transcriber_state, "transcribe_audio", None)
++    if transcribe_audio is None:
++        transcribe_audio = _build_whisperx_transcriber(
++            cfg=cfg,
++            step_log_callback=step_log_callback,
++        )
++    return transcribe_audio(audio_path, override_lang)
++
++
++_DEFAULT_WHISPERX_ASR = _whisperx_asr
+ 
+ 
+ def _empty_questions() -> dict[str, Any]:
+@@ -1055,26 +1098,56 @@ async def run_pipeline(
+ 
+     try:
+         await _emit_progress(progress_callback, stage="stt", progress=0.10)
+-        def _transcribe_chunk(
+-            chunk_audio_path: Path,
+-            chunk_language_hint: str | None,
+-        ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+-            return _whisperx_asr(
+-                chunk_audio_path,
+-                override_lang=chunk_language_hint,
++        def _run_asr_workflow() -> tuple[
++            list[dict[str, Any]],
++            dict[str, Any],
++            dict[str, Any],
++        ]:
++            def _transcribe_chunk(
++                chunk_audio_path: Path,
++                chunk_language_hint: str | None,
++            ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
++                return _whisperx_asr(
 +                    chunk_audio_path,
-+                    chunk.language_hint,
++                    override_lang=chunk_language_hint,
++                    cfg=cfg,
++                    step_log_callback=step_log_callback,
 +                )
-+            except Exception as exc:
-+                payload = {
-+                    "configured_mode": configured_mode,
-+                    "selected_mode": "single_language",
-+                    "selection_reason": "multilingual_chunk_transcription_failed",
-+                    "used_multilingual_path": False,
-+                    "initial_detected_language": detected_language or "unknown",
-+                    "initial_language_distribution": initial_analysis.distribution,
-+                    "chunks": [],
++
++            if _whisperx_asr is not _DEFAULT_WHISPERX_ASR:
++                return run_language_aware_asr(
++                    audio_path,
++                    override_lang=override_lang,
++                    configured_mode=cfg.asr_multilingual_mode,
++                    tmp_root=cfg.tmp_root,
++                    transcribe_fn=_transcribe_chunk,
++                    step_log_callback=step_log_callback,
++                )
++
++            previous_transcriber = getattr(_whisperx_transcriber_state, "transcribe_audio", None)
++            _whisperx_transcriber_state.transcribe_audio = _build_whisperx_transcriber(
+                 cfg=cfg,
+                 step_log_callback=step_log_callback,
+             )
++            try:
++                return run_language_aware_asr(
++                    audio_path,
++                    override_lang=override_lang,
++                    configured_mode=cfg.asr_multilingual_mode,
++                    tmp_root=cfg.tmp_root,
++                    transcribe_fn=_transcribe_chunk,
++                    step_log_callback=step_log_callback,
++                )
++            finally:
++                if previous_transcriber is None:
++                    if hasattr(_whisperx_transcriber_state, "transcribe_audio"):
++                        delattr(_whisperx_transcriber_state, "transcribe_audio")
++                else:
++                    _whisperx_transcriber_state.transcribe_audio = previous_transcriber
+ 
+         (raw_segments, info, asr_execution), diarization = await asyncio.gather(
+             asyncio.to_thread(
+-                run_language_aware_asr,
+-                audio_path,
+-                override_lang=override_lang,
+-                configured_mode=cfg.asr_multilingual_mode,
+-                tmp_root=cfg.tmp_root,
+-                transcribe_fn=_transcribe_chunk,
+-                step_log_callback=step_log_callback,
++                _run_asr_workflow,
+             ),
+             diariser(audio_path),
+         )
+diff --git a/tests/test_cov_lan_transcriber_extra_pipeline.py b/tests/test_cov_lan_transcriber_extra_pipeline.py
+index 2ae37a2..fe60024 100644
+--- a/tests/test_cov_lan_transcriber_extra_pipeline.py
++++ b/tests/test_cov_lan_transcriber_extra_pipeline.py
+@@ -1734,6 +1734,76 @@ async def test_run_pipeline_backfills_detected_language_and_uses_fallback_diariz
+     assert diar_data and diar_data[0]["speaker"] == "S1"
+ 
+ 
++@pytest.mark.asyncio
++async def test_run_pipeline_restores_previous_whisperx_transcriber_session(
++    tmp_path: Path,
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    previous_transcriber = object()
++
++    def _session_transcriber(
++        _audio_path: Path,
++        _override_lang: str | None,
++    ) -> tuple[list[dict[str, object]], dict[str, object]]:
++        assert getattr(pipeline._whisperx_transcriber_state, "transcribe_audio") is _session_transcriber
++        return (
++            [{"start": 0.0, "end": 1.0, "text": "hello team and thanks"}],
++            {"language": "en", "language_probability": 0.95},
++        )
++
++    def _fake_run_language_aware_asr(
++        audio_path: Path,
++        *,
++        override_lang: str | None,
++        configured_mode: str,
++        tmp_root: Path,
++        transcribe_fn,
++        step_log_callback=None,
++    ) -> tuple[list[dict[str, object]], dict[str, object], dict[str, object]]:
++        del configured_mode, tmp_root, step_log_callback
++        segments, info = transcribe_fn(audio_path, override_lang)
++        return (
++            segments,
++            info,
++            {
++                "used_multilingual_path": False,
++                "selected_mode": "single_language",
++                "selection_reason": "test",
++                "chunks": [],
++            },
++        )
++
++    async def _fake_to_thread(fn, /, *args, **kwargs):
++        pipeline._whisperx_transcriber_state.transcribe_audio = previous_transcriber
++        return fn(*args, **kwargs)
++
++    monkeypatch.setattr(asyncio, "to_thread", _fake_to_thread)
++    monkeypatch.setattr(
++        pipeline,
++        "_build_whisperx_transcriber",
++        lambda **_kwargs: _session_transcriber,
++    )
++    monkeypatch.setattr(pipeline, "run_language_aware_asr", _fake_run_language_aware_asr)
++    monkeypatch.setattr(pipeline, "_sentiment_score", lambda _text: 50)
++    monkeypatch.setattr(pipeline, "export_speaker_snippets", lambda _req: [])
++    monkeypatch.setattr(pipeline, "_save_aliases", lambda *_a, **_k: None)
++    monkeypatch.setattr(pipeline, "_load_aliases", lambda *_a, **_k: {})
++
++    cfg = _settings(tmp_path)
++    result = await pipeline.run_pipeline(
++        audio_path=_audio_file(tmp_path, "pipeline-session.mp3"),
++        cfg=cfg,
++        llm=_FakeLLM(),
++        diariser=_NoTracksDiariser(),
++        recording_id="rec-transcriber-session",
++        precheck=pipeline.PrecheckResult(duration_sec=30.0, speech_ratio=0.8, quarantine_reason=None),
++    )
++
++    assert result.summary.strip() == "- ok"
++    assert getattr(pipeline._whisperx_transcriber_state, "transcribe_audio") is previous_transcriber
++    delattr(pipeline._whisperx_transcriber_state, "transcribe_audio")
++
++
+ @pytest.mark.asyncio
+ async def test_run_pipeline_fails_fast_when_llm_model_is_blank(tmp_path: Path) -> None:
+     cfg = _settings(tmp_path, llm_model="   ")
+diff --git a/tests/test_pipeline.py b/tests/test_pipeline.py
+index 1815ab7..24c34fb 100644
+--- a/tests/test_pipeline.py
++++ b/tests/test_pipeline.py
+@@ -1144,6 +1144,131 @@ async def test_pipeline_multilingual_asr_uses_chunk_language_hints(tmp_path: Pat
+     assert transcript_data["review"]["required"] is False
+ 
+ 
++@pytest.mark.asyncio
++@respx.mock
++async def test_pipeline_multilingual_model_path_reuses_single_whisperx_model_load(
++    tmp_path: Path,
++    mocker,
++    monkeypatch,
++):
++    fake_whisperx = ModuleType("whisperx")
++    fake_asr = ModuleType("whisperx.asr")
++    load_model_calls = 0
++    asr_languages: list[str | None] = []
++
++    class _FakeModel:
++        vad_model = staticmethod(lambda _payload: [])
++
++        def transcribe(
++            self,
++            audio_input: str,
++            *,
++            batch_size: int,
++            vad_filter: bool,
++            language: str | None,
++        ) -> dict[str, object]:
++            del audio_input
++            assert batch_size == 16
++            assert vad_filter is True
++            asr_languages.append(language)
++            if language is None:
++                return {
++                    "segments": [
++                        {"start": 0.0, "end": 4.0, "text": "hello team and thanks"},
++                        {"start": 4.0, "end": 8.0, "text": "hola equipo y gracias"},
++                    ],
++                    "language": "en",
 +                }
-+                _log(
-+                    step_log_callback,
-+                    (
-+                        "multilingual asr: single_language "
-+                        "reason=multilingual_chunk_transcription_failed "
-+                        f"chunk={index} error={exc.__class__.__name__}"
-+                    ),
-+                )
-+                return initial_segments, initial_info, payload
-             result_language, result_confidence = _language_from_info(chunk_info)
-             conflict = bool(
-                 chunk.language_hint is not None
++            if language == "en":
++                return {
++                    "segments": [
++                        {"start": 0.0, "end": 4.0, "text": "hello team and thanks"}
++                    ],
++                    "language": "en",
++                }
++            return {
++                "segments": [
++                    {"start": 0.0, "end": 4.0, "text": "hola equipo y gracias"}
++                ],
++                "language": "es",
++            }
++
++    def _load_audio(path: str) -> str:
++        return path
++
++    def _load_model(
++        model_name: str,
++        device: str,
++        compute_type: str = "int8",
++        vad_method: str = "silero",
++    ) -> _FakeModel:
++        nonlocal load_model_calls
++        assert model_name == "large-v3"
++        assert device == "cpu"
++        assert compute_type == "int8"
++        assert vad_method == "silero"
++        load_model_calls += 1
++        return _FakeModel()
++
++    fake_whisperx.transcribe = None
++    fake_whisperx.load_audio = _load_audio
++    fake_whisperx.asr = fake_asr
++    fake_asr.load_model = _load_model
++    monkeypatch.setitem(sys.modules, "whisperx", fake_whisperx)
++    monkeypatch.setitem(sys.modules, "whisperx.asr", fake_asr)
++    monkeypatch.setattr(
++        "lan_transcriber.pipeline_steps.orchestrator.ensure_ctranslate2_no_execstack",
++        lambda: [],
++    )
++    mocker.patch(
++        "transformers.pipeline",
++        lambda *a, **k: lambda text: [{"label": "positive", "score": 0.6}],
++    )
++    respx.post("http://127.0.0.1:8000/v1/chat/completions").mock(
++        return_value=httpx.Response(
++            200,
++            json={"choices": [{"message": {"content": "- summary"}}]},
++        ),
++    )
++
++    cfg = pipeline.Settings(
++        speaker_db=tmp_path / "db.yaml",
++        tmp_root=tmp_path,
++        recordings_root=tmp_path / "recordings",
++        asr_device="cpu",
++        asr_enable_align=False,
++        asr_multilingual_mode="auto",
++    )
++    audio = wav_audio(
++        tmp_path,
++        name="mixed-model-path.wav",
++        duration_sec=8.0,
++        speech=True,
++    )
++    await pipeline.run_pipeline(
++        audio_path=audio,
++        cfg=cfg,
++        llm=llm_client.LLMClient(),
++        diariser=TwoSpeakerDiariser(),
++        recording_id="rec-multilingual-model-reuse-1",
++        precheck=precheck_ok(),
++    )
++
++    transcript_data = json.loads(
++        (
++            cfg.recordings_root
++            / "rec-multilingual-model-reuse-1"
++            / "derived"
++            / "transcript.json"
++        ).read_text(encoding="utf-8")
++    )
++    assert load_model_calls == 1
++    assert asr_languages == [None, "en", "es"]
++    assert transcript_data["multilingual_asr"]["used_multilingual_path"] is True
++    assert transcript_data["segments"][0]["language_hint"] == "en"
++    assert transcript_data["segments"][1]["language_hint"] == "es"
++
++
+ @pytest.mark.asyncio
+ @respx.mock
+ async def test_pipeline_multilingual_uncertainty_sets_review_metadata(tmp_path: Path, mocker):
 diff --git a/tests/test_pipeline_steps_multilingual_asr.py b/tests/test_pipeline_steps_multilingual_asr.py
-index d686e47..d3ec0f0 100644
+index d3ec0f0..dcab1f4 100644
 --- a/tests/test_pipeline_steps_multilingual_asr.py
 +++ b/tests/test_pipeline_steps_multilingual_asr.py
-@@ -593,6 +593,47 @@ def test_run_language_aware_asr_multilingual_empty_chunks_do_not_duplicate_fallb
+@@ -593,6 +593,77 @@ def test_run_language_aware_asr_multilingual_empty_chunks_do_not_duplicate_fallb
      assert segments[0]["end"] == 5.0
  
  
-+def test_run_language_aware_asr_multilingual_chunk_error_falls_back_to_initial_asr(
++def test_run_language_aware_asr_multilingual_later_empty_chunk_reuses_boundary_fallback(
 +    tmp_path: Path,
++    monkeypatch: pytest.MonkeyPatch,
 +) -> None:
-+    audio = _write_pcm_wav(tmp_path / "mixed-chunk-error.wav", duration_sec=8.0)
++    audio = _write_pcm_wav(tmp_path / "mixed-later-empty-boundary.wav", duration_sec=8.0)
++
++    monkeypatch.setattr(
++        multilingual_asr,
++        "plan_multilingual_chunks",
++        lambda *_a, **_k: [
++            multilingual_asr.ChunkPlan(
++                start=0.0,
++                end=4.0,
++                language="en",
++                confidence=0.95,
++                language_hint="en",
++                uncertain=False,
++                conflict=False,
++                segment_count=1,
++            ),
++            multilingual_asr.ChunkPlan(
++                start=4.0,
++                end=8.0,
++                language="en",
++                confidence=0.95,
++                language_hint="en",
++                uncertain=False,
++                conflict=False,
++                segment_count=1,
++            ),
++        ],
++    )
++
++    chunk_calls = 0
 +
 +    def _transcribe(
 +        path: Path,
 +        override_lang: str | None,
 +    ) -> tuple[list[dict[str, object]], dict[str, object]]:
++        nonlocal chunk_calls
 +        if path == audio:
 +            return (
-+                [
-+                    {"start": 0.0, "end": 4.0, "text": "hello team thanks"},
-+                    {"start": 4.0, "end": 8.0, "text": "hola equipo gracias"},
-+                ],
++                [{"start": 3.0, "end": 5.0, "text": "boundary overlap"}],
 +                {"language": "en", "language_probability": 0.92},
 +            )
-+        if override_lang == "en":
++        assert override_lang == "en"
++        chunk_calls += 1
++        if chunk_calls == 1:
 +            return (
-+                [{"start": 0.0, "end": 4.0, "text": "hello team thanks"}],
++                [{"start": 0.0, "end": 4.0, "text": "fresh first chunk"}],
 +                {"language": "en", "language_probability": 0.98},
 +            )
-+        raise RuntimeError("synthetic chunk failure")
++        return ([], {"language": "en", "language_probability": 0.92})
 +
-+    segments, info, payload = multilingual_asr.run_language_aware_asr(
++    segments, _info, payload = multilingual_asr.run_language_aware_asr(
 +        audio,
 +        override_lang=None,
-+        configured_mode="auto",
++        configured_mode="force_multilingual",
 +        tmp_root=tmp_path / "tmp",
 +        transcribe_fn=_transcribe,
 +    )
 +
-+    assert payload["used_multilingual_path"] is False
-+    assert payload["selection_reason"] == "multilingual_chunk_transcription_failed"
++    assert payload["used_multilingual_path"] is True
 +    assert [segment["text"] for segment in segments] == [
-+        "hello team thanks",
-+        "hola equipo gracias",
++        "fresh first chunk",
++        "boundary overlap",
 +    ]
-+    assert info["language"] == "en"
++    assert segments[1]["start"] == 3.0
++    assert segments[1]["end"] == 5.0
 +
 +
- def test_run_language_aware_asr_multilingual_without_confidence_payload(
+ def test_run_language_aware_asr_multilingual_chunk_error_falls_back_to_initial_asr(
      tmp_path: Path,
  ) -> None:

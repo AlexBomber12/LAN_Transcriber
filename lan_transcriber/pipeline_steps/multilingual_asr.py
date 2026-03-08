@@ -530,7 +530,7 @@ def run_language_aware_asr(
                     uncertain=uncertain,
                     conflict=conflict,
                 )
-            consumed_initial_segment_indexes.update(fallback_indexes)
+                consumed_initial_segment_indexes.update(fallback_indexes)
 
             merged_segments.extend(annotated_segments)
             payload = chunk.to_payload(index=index, total=len(chunks))

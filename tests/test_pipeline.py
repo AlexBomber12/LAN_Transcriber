@@ -1146,6 +1146,131 @@ async def test_pipeline_multilingual_asr_uses_chunk_language_hints(tmp_path: Pat
 
 @pytest.mark.asyncio
 @respx.mock
+async def test_pipeline_multilingual_model_path_reuses_single_whisperx_model_load(
+    tmp_path: Path,
+    mocker,
+    monkeypatch,
+):
+    fake_whisperx = ModuleType("whisperx")
+    fake_asr = ModuleType("whisperx.asr")
+    load_model_calls = 0
+    asr_languages: list[str | None] = []
+
+    class _FakeModel:
+        vad_model = staticmethod(lambda _payload: [])
+
+        def transcribe(
+            self,
+            audio_input: str,
+            *,
+            batch_size: int,
+            vad_filter: bool,
+            language: str | None,
+        ) -> dict[str, object]:
+            del audio_input
+            assert batch_size == 16
+            assert vad_filter is True
+            asr_languages.append(language)
+            if language is None:
+                return {
+                    "segments": [
+                        {"start": 0.0, "end": 4.0, "text": "hello team and thanks"},
+                        {"start": 4.0, "end": 8.0, "text": "hola equipo y gracias"},
+                    ],
+                    "language": "en",
+                }
+            if language == "en":
+                return {
+                    "segments": [
+                        {"start": 0.0, "end": 4.0, "text": "hello team and thanks"}
+                    ],
+                    "language": "en",
+                }
+            return {
+                "segments": [
+                    {"start": 0.0, "end": 4.0, "text": "hola equipo y gracias"}
+                ],
+                "language": "es",
+            }
+
+    def _load_audio(path: str) -> str:
+        return path
+
+    def _load_model(
+        model_name: str,
+        device: str,
+        compute_type: str = "int8",
+        vad_method: str = "silero",
+    ) -> _FakeModel:
+        nonlocal load_model_calls
+        assert model_name == "large-v3"
+        assert device == "cpu"
+        assert compute_type == "int8"
+        assert vad_method == "silero"
+        load_model_calls += 1
+        return _FakeModel()
+
+    fake_whisperx.transcribe = None
+    fake_whisperx.load_audio = _load_audio
+    fake_whisperx.asr = fake_asr
+    fake_asr.load_model = _load_model
+    monkeypatch.setitem(sys.modules, "whisperx", fake_whisperx)
+    monkeypatch.setitem(sys.modules, "whisperx.asr", fake_asr)
+    monkeypatch.setattr(
+        "lan_transcriber.pipeline_steps.orchestrator.ensure_ctranslate2_no_execstack",
+        lambda: [],
+    )
+    mocker.patch(
+        "transformers.pipeline",
+        lambda *a, **k: lambda text: [{"label": "positive", "score": 0.6}],
+    )
+    respx.post("http://127.0.0.1:8000/v1/chat/completions").mock(
+        return_value=httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": "- summary"}}]},
+        ),
+    )
+
+    cfg = pipeline.Settings(
+        speaker_db=tmp_path / "db.yaml",
+        tmp_root=tmp_path,
+        recordings_root=tmp_path / "recordings",
+        asr_device="cpu",
+        asr_enable_align=False,
+        asr_multilingual_mode="auto",
+    )
+    audio = wav_audio(
+        tmp_path,
+        name="mixed-model-path.wav",
+        duration_sec=8.0,
+        speech=True,
+    )
+    await pipeline.run_pipeline(
+        audio_path=audio,
+        cfg=cfg,
+        llm=llm_client.LLMClient(),
+        diariser=TwoSpeakerDiariser(),
+        recording_id="rec-multilingual-model-reuse-1",
+        precheck=precheck_ok(),
+    )
+
+    transcript_data = json.loads(
+        (
+            cfg.recordings_root
+            / "rec-multilingual-model-reuse-1"
+            / "derived"
+            / "transcript.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert load_model_calls == 1
+    assert asr_languages == [None, "en", "es"]
+    assert transcript_data["multilingual_asr"]["used_multilingual_path"] is True
+    assert transcript_data["segments"][0]["language_hint"] == "en"
+    assert transcript_data["segments"][1]["language_hint"] == "es"
+
+
+@pytest.mark.asyncio
+@respx.mock
 async def test_pipeline_multilingual_uncertainty_sets_review_metadata(tmp_path: Path, mocker):
     def _transcribe(audio_path: str, **kwargs):
         language = kwargs.get("language")

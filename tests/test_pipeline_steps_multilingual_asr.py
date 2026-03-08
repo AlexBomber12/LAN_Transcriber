@@ -593,6 +593,77 @@ def test_run_language_aware_asr_multilingual_empty_chunks_do_not_duplicate_fallb
     assert segments[0]["end"] == 5.0
 
 
+def test_run_language_aware_asr_multilingual_later_empty_chunk_reuses_boundary_fallback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    audio = _write_pcm_wav(tmp_path / "mixed-later-empty-boundary.wav", duration_sec=8.0)
+
+    monkeypatch.setattr(
+        multilingual_asr,
+        "plan_multilingual_chunks",
+        lambda *_a, **_k: [
+            multilingual_asr.ChunkPlan(
+                start=0.0,
+                end=4.0,
+                language="en",
+                confidence=0.95,
+                language_hint="en",
+                uncertain=False,
+                conflict=False,
+                segment_count=1,
+            ),
+            multilingual_asr.ChunkPlan(
+                start=4.0,
+                end=8.0,
+                language="en",
+                confidence=0.95,
+                language_hint="en",
+                uncertain=False,
+                conflict=False,
+                segment_count=1,
+            ),
+        ],
+    )
+
+    chunk_calls = 0
+
+    def _transcribe(
+        path: Path,
+        override_lang: str | None,
+    ) -> tuple[list[dict[str, object]], dict[str, object]]:
+        nonlocal chunk_calls
+        if path == audio:
+            return (
+                [{"start": 3.0, "end": 5.0, "text": "boundary overlap"}],
+                {"language": "en", "language_probability": 0.92},
+            )
+        assert override_lang == "en"
+        chunk_calls += 1
+        if chunk_calls == 1:
+            return (
+                [{"start": 0.0, "end": 4.0, "text": "fresh first chunk"}],
+                {"language": "en", "language_probability": 0.98},
+            )
+        return ([], {"language": "en", "language_probability": 0.92})
+
+    segments, _info, payload = multilingual_asr.run_language_aware_asr(
+        audio,
+        override_lang=None,
+        configured_mode="force_multilingual",
+        tmp_root=tmp_path / "tmp",
+        transcribe_fn=_transcribe,
+    )
+
+    assert payload["used_multilingual_path"] is True
+    assert [segment["text"] for segment in segments] == [
+        "fresh first chunk",
+        "boundary overlap",
+    ]
+    assert segments[1]["start"] == 3.0
+    assert segments[1]["end"] == 5.0
+
+
 def test_run_language_aware_asr_multilingual_chunk_error_falls_back_to_initial_asr(
     tmp_path: Path,
 ) -> None:

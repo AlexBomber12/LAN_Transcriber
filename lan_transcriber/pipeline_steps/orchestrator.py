@@ -4,6 +4,7 @@ import asyncio
 import inspect
 import logging
 import shutil
+import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -61,6 +62,7 @@ from ..runtime_paths import default_recordings_root, default_tmp_root, default_u
 from ..utils import normalise_language_code, safe_float
 
 _logger = logging.getLogger(__name__)
+_whisperx_transcriber_state = threading.local()
 _LLM_MODEL_REQUIRED_ERROR = (
     "LLM_MODEL is required. Set it in .env (e.g., LLM_MODEL=gpt-oss:120b)."
 )
@@ -585,13 +587,10 @@ def _write_diarization_metadata_artifact(
     atomic_write_json(artifacts.diarization_metadata_json_path, payload)
 
 
-def _whisperx_asr(
-    audio_path: Path,
-    *,
-    override_lang: str | None,
+def _build_whisperx_transcriber(
     cfg: Settings,
     step_log_callback: Callable[[str], Any] | None = None,
-) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+) -> Callable[[Path, str | None], tuple[list[dict[str, Any]], dict[str, Any]]]:
     patched_paths = ensure_ctranslate2_no_execstack()
     if patched_paths and step_log_callback is not None:
         try:
@@ -624,35 +623,48 @@ def _whisperx_asr(
         )
 
     if callable(legacy_transcribe):
-        kwargs: dict[str, Any] = {
-            "vad_filter": True,
-            "language": override_lang or "auto",
-            "word_timestamps": True,
-        }
-        filtered_kwargs = filter_kwargs_for_callable(legacy_transcribe, kwargs)
-        _log_dropped_kwargs(
-            callback=step_log_callback,
-            scope="whisperx transcribe",
-            attempted=kwargs,
-            filtered=filtered_kwargs,
-        )
-        try:
-            segments, info = call_with_supported_kwargs(legacy_transcribe, str(audio_path), **kwargs)
-        except TypeError:
-            retry_kwargs = dict(kwargs)
-            retry_kwargs.pop("word_timestamps", None)
+        def _legacy_transcribe(
+            audio_path: Path,
+            override_lang: str | None,
+        ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+            kwargs: dict[str, Any] = {
+                "vad_filter": True,
+                "language": override_lang or "auto",
+                "word_timestamps": True,
+            }
+            filtered_kwargs = filter_kwargs_for_callable(legacy_transcribe, kwargs)
             _log_dropped_kwargs(
                 callback=step_log_callback,
                 scope="whisperx transcribe",
                 attempted=kwargs,
-                filtered=retry_kwargs,
+                filtered=filtered_kwargs,
             )
-            segments, info = call_with_supported_kwargs(legacy_transcribe, str(audio_path), **retry_kwargs)
-        return list(segments), dict(info or {})
+            try:
+                segments, info = call_with_supported_kwargs(
+                    legacy_transcribe,
+                    str(audio_path),
+                    **kwargs,
+                )
+            except TypeError:
+                retry_kwargs = dict(kwargs)
+                retry_kwargs.pop("word_timestamps", None)
+                _log_dropped_kwargs(
+                    callback=step_log_callback,
+                    scope="whisperx transcribe",
+                    attempted=kwargs,
+                    filtered=retry_kwargs,
+                )
+                segments, info = call_with_supported_kwargs(
+                    legacy_transcribe,
+                    str(audio_path),
+                    **retry_kwargs,
+                )
+            return list(segments), dict(info or {})
+
+        return _legacy_transcribe
 
     device = _select_asr_device(cfg)
     compute_type = _select_compute_type(cfg, device)
-    audio = whisperx.load_audio(str(audio_path))
     _logger.info("ASR VAD method: %s", cfg.vad_method)
     model_load_kwargs = {"compute_type": compute_type, "vad_method": cfg.vad_method}
 
@@ -680,42 +692,73 @@ def _whisperx_asr(
             f"type(vad_model)={type(vad)!r}; expected callable model.vad_model"
         )
 
-    transcribe_kwargs: dict[str, Any] = {
-        "batch_size": cfg.asr_batch_size,
-        "vad_filter": True,
-        "language": (override_lang if override_lang else None),
-    }
-    filtered_kwargs = filter_kwargs_for_callable(model.transcribe, transcribe_kwargs)
-    _log_dropped_kwargs(
-        callback=step_log_callback,
-        scope="whisperx transcribe",
-        attempted=transcribe_kwargs,
-        filtered=filtered_kwargs,
-    )
-    result = call_with_supported_kwargs(model.transcribe, audio, **transcribe_kwargs)
-    segments = list(result.get("segments", []))
-    info: dict[str, Any] = {"language": result.get("language") or (override_lang or "unknown")}
+    def _modern_transcribe(
+        audio_path: Path,
+        override_lang: str | None,
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        audio = whisperx.load_audio(str(audio_path))
+        transcribe_kwargs: dict[str, Any] = {
+            "batch_size": cfg.asr_batch_size,
+            "vad_filter": True,
+            "language": (override_lang if override_lang else None),
+        }
+        filtered_kwargs = filter_kwargs_for_callable(model.transcribe, transcribe_kwargs)
+        _log_dropped_kwargs(
+            callback=step_log_callback,
+            scope="whisperx transcribe",
+            attempted=transcribe_kwargs,
+            filtered=filtered_kwargs,
+        )
+        result = call_with_supported_kwargs(model.transcribe, audio, **transcribe_kwargs)
+        segments = list(result.get("segments", []))
+        info: dict[str, Any] = {
+            "language": result.get("language") or (override_lang or "unknown")
+        }
 
-    if cfg.asr_enable_align:
-        try:
-            align_lang = normalise_language_code(info.get("language")) or "en"
-            model_a, metadata = whisperx.load_align_model(language_code=align_lang, device=device)
+        if cfg.asr_enable_align:
             try:
-                aligned = whisperx.align(
-                    segments,
-                    model_a,
-                    metadata,
-                    audio,
-                    device,
-                    return_char_alignments=False,
+                align_lang = normalise_language_code(info.get("language")) or "en"
+                model_a, metadata = whisperx.load_align_model(
+                    language_code=align_lang,
+                    device=device,
                 )
-            except TypeError:
-                aligned = whisperx.align(segments, model_a, metadata, audio, device)
-            segments = list(aligned.get("segments", segments))
-        except Exception:
-            pass
+                try:
+                    aligned = whisperx.align(
+                        segments,
+                        model_a,
+                        metadata,
+                        audio,
+                        device,
+                        return_char_alignments=False,
+                    )
+                except TypeError:
+                    aligned = whisperx.align(segments, model_a, metadata, audio, device)
+                segments = list(aligned.get("segments", segments))
+            except Exception:
+                pass
 
-    return segments, info
+        return segments, info
+
+    return _modern_transcribe
+
+
+def _whisperx_asr(
+    audio_path: Path,
+    *,
+    override_lang: str | None,
+    cfg: Settings,
+    step_log_callback: Callable[[str], Any] | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    transcribe_audio = getattr(_whisperx_transcriber_state, "transcribe_audio", None)
+    if transcribe_audio is None:
+        transcribe_audio = _build_whisperx_transcriber(
+            cfg=cfg,
+            step_log_callback=step_log_callback,
+        )
+    return transcribe_audio(audio_path, override_lang)
+
+
+_DEFAULT_WHISPERX_ASR = _whisperx_asr
 
 
 def _empty_questions() -> dict[str, Any]:
@@ -1055,26 +1098,56 @@ async def run_pipeline(
 
     try:
         await _emit_progress(progress_callback, stage="stt", progress=0.10)
-        def _transcribe_chunk(
-            chunk_audio_path: Path,
-            chunk_language_hint: str | None,
-        ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-            return _whisperx_asr(
-                chunk_audio_path,
-                override_lang=chunk_language_hint,
+        def _run_asr_workflow() -> tuple[
+            list[dict[str, Any]],
+            dict[str, Any],
+            dict[str, Any],
+        ]:
+            def _transcribe_chunk(
+                chunk_audio_path: Path,
+                chunk_language_hint: str | None,
+            ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+                return _whisperx_asr(
+                    chunk_audio_path,
+                    override_lang=chunk_language_hint,
+                    cfg=cfg,
+                    step_log_callback=step_log_callback,
+                )
+
+            if _whisperx_asr is not _DEFAULT_WHISPERX_ASR:
+                return run_language_aware_asr(
+                    audio_path,
+                    override_lang=override_lang,
+                    configured_mode=cfg.asr_multilingual_mode,
+                    tmp_root=cfg.tmp_root,
+                    transcribe_fn=_transcribe_chunk,
+                    step_log_callback=step_log_callback,
+                )
+
+            previous_transcriber = getattr(_whisperx_transcriber_state, "transcribe_audio", None)
+            _whisperx_transcriber_state.transcribe_audio = _build_whisperx_transcriber(
                 cfg=cfg,
                 step_log_callback=step_log_callback,
             )
+            try:
+                return run_language_aware_asr(
+                    audio_path,
+                    override_lang=override_lang,
+                    configured_mode=cfg.asr_multilingual_mode,
+                    tmp_root=cfg.tmp_root,
+                    transcribe_fn=_transcribe_chunk,
+                    step_log_callback=step_log_callback,
+                )
+            finally:
+                if previous_transcriber is None:
+                    if hasattr(_whisperx_transcriber_state, "transcribe_audio"):
+                        delattr(_whisperx_transcriber_state, "transcribe_audio")
+                else:
+                    _whisperx_transcriber_state.transcribe_audio = previous_transcriber
 
         (raw_segments, info, asr_execution), diarization = await asyncio.gather(
             asyncio.to_thread(
-                run_language_aware_asr,
-                audio_path,
-                override_lang=override_lang,
-                configured_mode=cfg.asr_multilingual_mode,
-                tmp_root=cfg.tmp_root,
-                transcribe_fn=_transcribe_chunk,
-                step_log_callback=step_log_callback,
+                _run_asr_workflow,
             ),
             diariser(audio_path),
         )
