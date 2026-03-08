@@ -760,6 +760,30 @@ def test_merge_voice_profiles_moves_references_and_rewrites_candidates(tmp_path:
         db_module.merge_voice_profiles(target["id"], third["id"], settings=cfg)
 
 
+def test_delete_voice_profile_clears_merged_pointer_via_trigger(tmp_path: Path):
+    cfg = _cfg(tmp_path)
+    db_module.init_db(cfg)
+    source = db_module.create_voice_profile("Delete Source", settings=cfg)
+    target = db_module.create_voice_profile("Delete Target", settings=cfg)
+
+    db_module.merge_voice_profiles(source["id"], target["id"], settings=cfg)
+    assert db_module.get_voice_profile(source["id"], settings=cfg) is None
+
+    assert db_module.delete_voice_profile(target["id"], settings=cfg) is True
+
+    reactivated = db_module.get_voice_profile(
+        source["id"],
+        include_merged=True,
+        settings=cfg,
+    )
+    assert reactivated is not None
+    assert reactivated["merged_into_voice_profile_id"] is None
+    assert reactivated["merged_at"] is None
+    assert [row["id"] for row in db_module.list_voice_profiles(settings=cfg)] == [
+        source["id"]
+    ]
+
+
 def test_calendar_sources_events_matches_and_metrics_edges(tmp_path: Path):
     cfg = _cfg(tmp_path)
     db_module.init_db(cfg)

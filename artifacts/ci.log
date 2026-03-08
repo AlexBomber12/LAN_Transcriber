@@ -102,8 +102,8 @@ Requirement already satisfied: pytz>2021.1 in ./.venv-ci/lib/python3.12/site-pac
 Building wheels for collected packages: lan-transcriber
   Building editable for lan-transcriber (pyproject.toml): started
   Building editable for lan-transcriber (pyproject.toml): finished with status 'done'
-  Created wheel for lan-transcriber: filename=lan_transcriber-0.1.0-0.editable-py3-none-any.whl size=15425 sha256=980e931d5c5001e81292f5c2b778c6daf31456cc864f3840cad8fcbaaf59b3e7
-  Stored in directory: /tmp/pip-ephem-wheel-cache-m2hp_jrw/wheels/d5/8a/5c/f7178f7e49aa5ae12b2320ec66b5c310f4f2f63d1bd301b7fb
+  Created wheel for lan-transcriber: filename=lan_transcriber-0.1.0-0.editable-py3-none-any.whl size=15425 sha256=757fc0df6fd2e230014a6a4159c0cb04a3cedbe87e8f7afb864a3c95f6ba733e
+  Stored in directory: /tmp/pip-ephem-wheel-cache-ma9kbqrm/wheels/d5/8a/5c/f7178f7e49aa5ae12b2320ec66b5c310f4f2f63d1bd301b7fb
 Successfully built lan-transcriber
 Installing collected packages: lan-transcriber
   Attempting uninstall: lan-transcriber
@@ -124,9 +124,9 @@ The event loop scope for asynchronous fixtures will default to the fixture cachi
 ........................................................................ [ 52%]
 ........................................................................ [ 62%]
 ........................................................................ [ 73%]
-................................................s....................... [ 83%]
+.................................................s...................... [ 83%]
 ........................................................................ [ 94%]
-.......................................                                  [100%]
+........................................                                 [100%]
 =============================== warnings summary ===============================
 lan_transcriber/pipeline_steps/precheck.py:3
   /home/alexey/LAN_Transcriber/lan_transcriber/pipeline_steps/precheck.py:3: DeprecationWarning: 'audioop' is deprecated and slated for removal in Python 3.13
@@ -168,7 +168,7 @@ TOTAL    7734      0   2428      0   100%
 Coverage HTML written to dir htmlcov
 
 Required test coverage of 100% reached. Total coverage: 100.00%
-686 passed, 3 skipped, 10 warnings in 20.53s
+687 passed, 3 skipped, 10 warnings in 22.06s
 Name                                                    Stmts   Miss Branch BrPart  Cover
 -----------------------------------------------------------------------------------------
 lan_transcriber/__init__.py                                 8      0      0      0   100%
