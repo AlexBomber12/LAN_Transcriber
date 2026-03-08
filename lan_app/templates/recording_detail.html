@@ -211,8 +211,16 @@
   {% set sp = speakers or {} %}
   {% set rows = sp.speaker_rows or [] %}
   {% set profiles = sp.voice_profiles or [] %}
+  {% set notices = sp.review_notices or [] %}
 
   <h2>Speaker Assignments</h2>
+  {% if notices %}
+    {% for notice in notices %}
+    <p style="margin:0 0 10px 0;padding:8px 10px;border:1px solid #f59e0b;background:#fffbeb;color:#92400e">
+      {{ notice }}
+    </p>
+    {% endfor %}
+  {% endif %}
   {% if rows %}
   <table>
     <thead>
@@ -221,8 +229,10 @@
         <th>Turns</th>
         <th>Duration (s)</th>
         <th>Preview</th>
+        <th>Current mapping</th>
+        <th>Confidence</th>
         <th>Snippets</th>
-        <th>Assignment</th>
+        <th>Remap</th>
         <th>Samples</th>
       </tr>
     </thead>
@@ -233,6 +243,37 @@
         <td>{{ row.turn_count }}</td>
         <td>{{ '%.2f'|format(row.duration_sec or 0.0) }}</td>
         <td title="{{ row.preview_text }}" style="white-space:normal;max-width:300px">{{ row.preview_text or '—' }}</td>
+        <td style="white-space:normal;max-width:260px">
+          {% if row.voice_profile_name %}
+          <div><strong>{{ row.voice_profile_name }}</strong></div>
+          <div style="margin-top:4px;color:#555">Displays as {{ row.display_label }} in exports.</div>
+          {% else %}
+          <span class="placeholder" style="padding:0">Leave unmatched</span>
+          {% endif %}
+          {% if row.candidate_matches %}
+          <div style="margin-top:6px;font-size:11px;color:#555">
+            Candidates:
+            {% for candidate in row.candidate_matches %}
+            <span>{{ candidate.display_name }} ({{ '%.2f'|format(candidate.score) }}){% if not loop.last %}, {% endif %}</span>
+            {% endfor %}
+          </div>
+          {% endif %}
+        </td>
+        <td style="white-space:normal;max-width:220px">
+          {% if row.low_confidence %}
+          <span class="badge s-NeedsReview">Low confidence</span>
+          {% elif row.voice_profile_name %}
+          <span class="badge s-Ready">Mapped</span>
+          {% else %}
+          <span class="badge s-Queued">Unmatched</span>
+          {% endif %}
+          <div style="margin-top:4px;color:#555">{{ '%.2f'|format(row.confidence or 0.0) }}</div>
+          {% if row.needs_review and row.assignment_threshold %}
+          <div style="margin-top:4px;font-size:11px;color:#92400e">
+            Below auto-match threshold {{ '%.2f'|format(row.assignment_threshold) }}.
+          </div>
+          {% endif %}
+        </td>
         <td style="white-space:normal;max-width:320px">
           {% if row.snippet_urls %}
             {% for src in row.snippet_urls %}
@@ -251,16 +292,13 @@
           <form method="post" action="/ui/recordings/{{ rec.id }}/speakers/assign">
             <input type="hidden" name="diar_speaker_label" value="{{ row.speaker }}">
             <select name="voice_profile_id" style="width:180px">
-              <option value="">Unassigned</option>
+              <option value="">Leave unmatched</option>
               {% for vp in profiles %}
               <option value="{{ vp.id }}" {% if row.voice_profile_id == vp.id %}selected{% endif %}>{{ vp.display_name }}</option>
               {% endfor %}
             </select>
-            <button class="btn" type="submit">Save</button>
+            <button class="btn" type="submit">Save remap</button>
           </form>
-          {% if row.voice_profile_name %}
-          <div style="margin-top:4px;color:#555">Current: {{ row.voice_profile_name }} ({{ '%.2f'|format(row.confidence or 0.0) }})</div>
-          {% endif %}
           {% else %}
           <span class="placeholder" style="padding:0">No voice profiles yet.</span>
           {% endif %}

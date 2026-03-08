@@ -10,7 +10,7 @@ import zipfile
 from typing import Any
 
 from .config import AppSettings
-from .db import get_recording
+from .db import get_recording, list_speaker_assignments
 
 _OPTIONAL_DERIVED_FILES = (
     "summary.json",
@@ -182,15 +182,47 @@ def _metrics_section(metrics_payload: dict[str, Any]) -> list[str]:
     return ["## Metrics", *[f"- {label}: {value}" for label, value in present]]
 
 
+def _speaker_name_map(
+    recording_id: str,
+    *,
+    settings: AppSettings,
+) -> dict[str, str]:
+    name_map: dict[str, str] = {}
+    for row in list_speaker_assignments(recording_id, settings=settings):
+        diar_label = _normalize_text(row.get("diar_speaker_label") or "")
+        display_name = _normalize_text(row.get("voice_profile_name") or "")
+        if diar_label and display_name:
+            name_map[diar_label] = display_name
+    return name_map
+
+
+def _speaker_display_label(
+    speaker_label: object,
+    *,
+    speaker_name_map: dict[str, str],
+) -> str:
+    diar_label = _normalize_text(speaker_label or "") or "S1"
+    display_name = _normalize_text(speaker_name_map.get(diar_label) or "")
+    if not display_name:
+        return diar_label
+    return f"{display_name} ({diar_label})"
+
+
 def _transcript_section(
     transcript_payload: dict[str, Any],
     speaker_turns_payload: list[dict[str, Any]],
+    *,
+    speaker_name_map: dict[str, str] | None = None,
 ) -> list[str]:
+    resolved_name_map = speaker_name_map or {}
     if speaker_turns_payload:
         lines = ["## Transcript"]
         wrote_any = False
         for turn in speaker_turns_payload:
-            speaker = _normalize_text(turn.get("speaker") or "S1") or "S1"
+            speaker = _speaker_display_label(
+                turn.get("speaker") or "S1",
+                speaker_name_map=resolved_name_map,
+            )
             text = _normalize_text(turn.get("text") or "")
             if not text:
                 continue
@@ -216,6 +248,7 @@ def build_onenote_markdown(recording: dict[str, Any], *, settings: AppSettings) 
     speaker_turns_raw = _load_json_list(derived / "speaker_turns.json")
     speaker_turns_payload = [row for row in speaker_turns_raw if isinstance(row, dict)]
     metrics_payload = _load_json_dict(derived / "metrics.json")
+    speaker_name_map = _speaker_name_map(recording_id, settings=settings)
 
     topic = _normalize_text(summary_payload.get("topic") or "")
     fallback_title = _normalize_text(recording.get("source_filename") or "")
@@ -241,7 +274,11 @@ def build_onenote_markdown(recording: dict[str, Any], *, settings: AppSettings) 
         _questions_section(summary_payload),
         _emotion_section(summary_payload),
         _metrics_section(metrics_payload),
-        _transcript_section(transcript_payload, speaker_turns_payload),
+        _transcript_section(
+            transcript_payload,
+            speaker_turns_payload,
+            speaker_name_map=speaker_name_map,
+        ),
     ):
         if block:
             sections.append("\n".join(block))

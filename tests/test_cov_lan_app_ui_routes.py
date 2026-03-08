@@ -20,6 +20,7 @@ from lan_app.db import (
     create_calendar_source,
     create_job,
     create_recording,
+    create_voice_profile,
     init_db,
 )
 from lan_app.jobs import DuplicateRecordingJobError
@@ -416,6 +417,93 @@ def test_audio_snippet_helpers_and_speakers_context_edge_paths(
     assert parsed_ctx["speaker_rows"][0]["voice_profile_id"] is None
 
 
+def test_speaker_helper_paths_cover_duplicates_labels_and_notices(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = _cfg(tmp_path)
+    recording_id = "rec-speaker-helper-extra"
+    derived = cfg.recordings_root / recording_id / "derived"
+    derived.mkdir(parents=True, exist_ok=True)
+    (derived / "diarization_status.json").write_text(
+        json.dumps({"degraded": True, "mode": "fallback"}),
+        encoding="utf-8",
+    )
+    (derived / "diarization_metadata.json").write_text(
+        json.dumps({"reason": "no pyannote"}),
+        encoding="utf-8",
+    )
+
+    candidate_rows = ui_routes._candidate_match_rows(  # noqa: SLF001
+        [
+            "skip",
+            {"voice_profile_id": "bad", "score": 0.4},
+            {"voice_profile_id": "1", "score": "bad"},
+            {"voice_profile_id": 2, "score": 0.6, "display_name": "Bea"},
+        ],
+        voice_profiles_by_id={1: {"display_name": "Alex"}},
+    )
+    assert candidate_rows == [
+        {"voice_profile_id": 2, "display_name": "Bea", "score": 0.6},
+        {"voice_profile_id": 1, "display_name": "Alex", "score": 0.0},
+    ]
+
+    monkeypatch.setattr(
+        ui_routes,
+        "list_speaker_assignments",
+        lambda *_a, **_k: [
+            {"diar_speaker_label": "S1", "voice_profile_name": "Alex"},
+            {"diar_speaker_label": " ", "voice_profile_name": "skip"},
+            {"diar_speaker_label": "S2", "voice_profile_name": " "},
+        ],
+    )
+    assert ui_routes._recording_speaker_name_map(recording_id, settings=cfg) == {  # noqa: SLF001
+        "S1": "Alex"
+    }
+    assert ui_routes._speaker_display_label("S1", speaker_name_map={"S1": "Alex"}) == "Alex (S1)"  # noqa: SLF001
+    assert ui_routes._speaker_display_label("S2", speaker_name_map={"S1": "Alex"}) == "S2"  # noqa: SLF001
+
+    duplicates = ui_routes._voice_duplicate_candidates(  # noqa: SLF001
+        voice_samples=[
+            {
+                "voice_profile_id": 1,
+                "candidate_matches_json": [
+                    {"voice_profile_id": 1, "score": 0.95},
+                    {"voice_profile_id": 2, "score": 0.81},
+                    {"voice_profile_id": 2, "score": 0.8},
+                ],
+            },
+            {"voice_profile_id": None, "candidate_matches_json": [{"voice_profile_id": 2, "score": 0.5}]},
+        ],
+        voice_profiles_by_id={1: {"display_name": "Alex"}, 2: {"display_name": "Bea"}},
+    )
+    assert duplicates == {
+        1: [{"voice_profile_id": 2, "display_name": "Bea", "best_score": 0.81, "match_count": 1}]
+    }
+
+    assert ui_routes._speaker_review_notices(  # noqa: SLF001
+        recording_id,
+        low_confidence_count=2,
+        settings=cfg,
+    ) == [
+        "Diarization ran in degraded fallback mode (fallback): no pyannote.",
+        "2 speaker matches are low confidence and need manual review.",
+    ]
+
+    (derived / "diarization_status.json").write_text(
+        json.dumps({"degraded": True, "mode": "pyannote"}),
+        encoding="utf-8",
+    )
+    (derived / "diarization_metadata.json").write_text("{}", encoding="utf-8")
+    assert ui_routes._speaker_review_notices(  # noqa: SLF001
+        recording_id,
+        low_confidence_count=0,
+        settings=cfg,
+    ) == [
+        "Diarization ran in degraded fallback mode; speaker results may need manual review."
+    ]
+
+
 def test_project_language_and_resummarize_helpers(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -729,6 +817,37 @@ def test_create_and_assign_speaker_validation_paths(
     monkeypatch.setattr(ui_routes, "create_voice_profile", lambda *_a, **_k: {"id": "bad"})
     resp = c.post(base, data={"diar_speaker_label": "S1", "display_name": "Alex"})
     assert resp.status_code == 503
+
+
+def test_merge_voice_validation_and_error_paths(
+    client: tuple[AppSettings, TestClient],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg, c = client
+    source = create_voice_profile("Source", settings=cfg)
+    target = create_voice_profile("Target", settings=cfg)
+    base = f"/voices/{source['id']}/merge"
+
+    assert c.post(base, data={"target_profile_id": ""}).status_code == 422
+    assert c.post(base, data={"target_profile_id": "bad"}).status_code == 422
+
+    monkeypatch.setattr(
+        ui_routes,
+        "merge_canonical_speakers",
+        lambda *_a, **_k: (_ for _ in ()).throw(ValueError("target_profile_id was not found")),
+    )
+    assert c.post(base, data={"target_profile_id": str(target["id"])}).status_code == 404
+
+    monkeypatch.setattr(
+        ui_routes,
+        "merge_canonical_speakers",
+        lambda *_a, **_k: (_ for _ in ()).throw(ValueError("source_profile_id and target_profile_id must differ")),
+    )
+    assert c.post(base, data={"target_profile_id": str(target["id"])}).status_code == 422
+
+    monkeypatch.setattr(ui_routes, "merge_canonical_speakers", lambda *_a, **_k: {})
+    ok = c.post(base, data={"target_profile_id": str(target["id"])})
+    assert ok.status_code == 303
 
 
 def test_add_speaker_sample_validation_and_error_paths(

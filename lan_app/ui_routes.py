@@ -79,6 +79,7 @@ from .jobs import (
 )
 from .ops import RecordingDeleteError, delete_recording_with_artifacts
 from .routing import refresh_recording_routing, train_routing_from_manual_selection
+from .speaker_bank import DEFAULT_ASSIGNMENT_THRESHOLD, merge_canonical_speakers
 from lan_transcriber.artifacts import atomic_write_json
 from lan_transcriber.llm_client import LLMClient
 from lan_transcriber.pipeline import Settings as PipelineSettings
@@ -429,6 +430,7 @@ def _metrics_tab_context(recording_id: str, settings: AppSettings) -> dict[str, 
 
     meeting_payload: dict[str, Any] = {}
     participants_payload: list[dict[str, Any]] = []
+    speaker_name_map = _recording_speaker_name_map(recording_id, settings=settings)
 
     meeting_row = get_meeting_metrics(recording_id, settings=settings) or {}
     meeting_json = meeting_row.get("json")
@@ -495,12 +497,15 @@ def _metrics_tab_context(recording_id: str, settings: AppSettings) -> dict[str, 
 
     participants: list[dict[str, Any]] = []
     for row in participants_payload:
-        speaker = str(row.get("speaker") or "").strip()
-        if not speaker:
+        diar_label = str(row.get("speaker") or "").strip()
+        if not diar_label:
             continue
         participants.append(
             {
-                "speaker": speaker,
+                "speaker": _speaker_display_label(
+                    diar_label,
+                    speaker_name_map=speaker_name_map,
+                ),
                 "airtime_seconds": round(_to_float(row.get("airtime_seconds")), 3),
                 "airtime_share": round(_to_float(row.get("airtime_share")), 4),
                 "turns": _to_int(row.get("turns")),
@@ -666,6 +671,150 @@ def _as_data_relative_path(path: Path, *, settings: AppSettings) -> str | None:
     return safe.relative_to(root_resolved).as_posix()
 
 
+def _candidate_match_rows(
+    candidate_matches: Any,
+    *,
+    voice_profiles_by_id: dict[int, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    rows = candidate_matches if isinstance(candidate_matches, list) else []
+    normalized: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        profile_id = _as_int(row.get("voice_profile_id"))
+        if profile_id is None:
+            continue
+        try:
+            score = float(row.get("score") or 0.0)
+        except (TypeError, ValueError):
+            score = 0.0
+        profile = voice_profiles_by_id.get(profile_id, {})
+        display_name = str(
+            row.get("display_name")
+            or profile.get("display_name")
+            or f"#{profile_id}"
+        ).strip() or f"#{profile_id}"
+        normalized.append(
+            {
+                "voice_profile_id": profile_id,
+                "display_name": display_name,
+                "score": max(0.0, min(score, 1.0)),
+            }
+        )
+    normalized.sort(
+        key=lambda item: (
+            -float(item["score"]),
+            str(item["display_name"]),
+            int(item["voice_profile_id"]),
+        )
+    )
+    return normalized
+
+
+def _recording_speaker_name_map(
+    recording_id: str,
+    *,
+    settings: AppSettings,
+) -> dict[str, str]:
+    name_map: dict[str, str] = {}
+    for row in list_speaker_assignments(recording_id, settings=settings):
+        diar_label = str(row.get("diar_speaker_label") or "").strip()
+        display_name = str(row.get("voice_profile_name") or "").strip()
+        if diar_label and display_name:
+            name_map[diar_label] = display_name
+    return name_map
+
+
+def _speaker_display_label(
+    speaker_label: str,
+    *,
+    speaker_name_map: dict[str, str],
+) -> str:
+    diar_label = str(speaker_label or "").strip() or "S1"
+    mapped_name = str(speaker_name_map.get(diar_label) or "").strip()
+    if not mapped_name:
+        return diar_label
+    return f"{mapped_name} ({diar_label})"
+
+
+def _voice_duplicate_candidates(
+    *,
+    voice_samples: list[dict[str, Any]],
+    voice_profiles_by_id: dict[int, dict[str, Any]],
+) -> dict[int, list[dict[str, Any]]]:
+    evidence: dict[tuple[int, int], dict[str, Any]] = {}
+    for sample in voice_samples:
+        source_profile_id = _as_int(sample.get("voice_profile_id"))
+        if source_profile_id is None or source_profile_id not in voice_profiles_by_id:
+            continue
+        seen_targets: set[int] = set()
+        for candidate in _candidate_match_rows(
+            sample.get("candidate_matches_json"),
+            voice_profiles_by_id=voice_profiles_by_id,
+        ):
+            target_profile_id = int(candidate["voice_profile_id"])
+            if target_profile_id == source_profile_id or target_profile_id in seen_targets:
+                continue
+            seen_targets.add(target_profile_id)
+            slot = evidence.setdefault(
+                (source_profile_id, target_profile_id),
+                {
+                    "voice_profile_id": target_profile_id,
+                    "display_name": str(candidate["display_name"]),
+                    "best_score": 0.0,
+                    "match_count": 0,
+                },
+            )
+            slot["match_count"] += 1
+            slot["best_score"] = max(slot["best_score"], float(candidate["score"]))
+
+    grouped: dict[int, list[dict[str, Any]]] = {}
+    for (source_profile_id, _target_profile_id), item in evidence.items():
+        grouped.setdefault(source_profile_id, []).append(item)
+    for rows in grouped.values():
+        rows.sort(
+            key=lambda item: (
+                -int(item["match_count"]),
+                -float(item["best_score"]),
+                str(item["display_name"]),
+                int(item["voice_profile_id"]),
+            )
+        )
+    return grouped
+
+
+def _speaker_review_notices(
+    recording_id: str,
+    *,
+    low_confidence_count: int,
+    settings: AppSettings,
+) -> list[str]:
+    derived_root = settings.recordings_root / recording_id / "derived"
+    status_payload = _load_json_dict(derived_root / "diarization_status.json")
+    metadata_payload = _load_json_dict(derived_root / "diarization_metadata.json")
+
+    notices: list[str] = []
+    degraded = bool(status_payload.get("degraded")) or bool(metadata_payload.get("degraded"))
+    if degraded:
+        mode = str(status_payload.get("mode") or metadata_payload.get("mode") or "").strip()
+        reason = str(status_payload.get("reason") or metadata_payload.get("reason") or "").strip()
+        message = "Diarization ran in degraded fallback mode"
+        if mode and mode != "pyannote":
+            message += f" ({mode})"
+        if reason:
+            message += f": {reason}."
+        else:
+            message += "; speaker results may need manual review."
+        notices.append(message)
+    if low_confidence_count == 1:
+        notices.append("1 speaker match is low confidence and needs manual review.")
+    elif low_confidence_count > 1:
+        notices.append(
+            f"{low_confidence_count} speaker matches are low confidence and need manual review."
+        )
+    return notices
+
+
 def _speakers_tab_context(recording_id: str, settings: AppSettings) -> dict[str, Any]:
     transcript_path, _summary_path = _recording_derived_paths(recording_id, settings)
     speaker_turns_path = transcript_path.parent / "speaker_turns.json"
@@ -708,9 +857,15 @@ def _speakers_tab_context(recording_id: str, settings: AppSettings) -> dict[str,
         for row in assignments
     }
     voice_profiles = list_voice_profiles(settings=settings)
+    voice_profiles_by_id = {
+        int(profile["id"]): profile
+        for profile in voice_profiles
+        if _as_int(profile.get("id")) is not None
+    }
 
     speaker_rows: list[dict[str, Any]] = []
     recording_token = quote(recording_id, safe="")
+    low_confidence_count = 0
     for speaker in sorted(per_speaker):
         row = per_speaker[speaker]
         snippets = _speaker_snippet_files(recording_id, speaker, settings=settings)
@@ -732,6 +887,14 @@ def _speakers_tab_context(recording_id: str, settings: AppSettings) -> dict[str,
             confidence = float(assignment.get("confidence"))
         except (TypeError, ValueError):
             confidence = 0.0
+        candidate_matches = _candidate_match_rows(
+            assignment.get("candidate_matches_json"),
+            voice_profiles_by_id=voice_profiles_by_id,
+        )
+        low_confidence = bool(assignment.get("low_confidence"))
+        if low_confidence:
+            low_confidence_count += 1
+        voice_profile_name = str(assignment.get("voice_profile_name") or "")
         speaker_rows.append(
             {
                 "speaker": speaker,
@@ -740,14 +903,29 @@ def _speakers_tab_context(recording_id: str, settings: AppSettings) -> dict[str,
                 "preview_text": str(row["preview_text"]),
                 "snippet_urls": snippet_urls,
                 "voice_profile_id": profile_id,
-                "voice_profile_name": str(assignment.get("voice_profile_name") or ""),
+                "voice_profile_name": voice_profile_name,
                 "confidence": max(0.0, min(confidence, 1.0)),
+                "candidate_matches": candidate_matches,
+                "low_confidence": low_confidence,
+                "display_label": _speaker_display_label(
+                    speaker,
+                    speaker_name_map={speaker: voice_profile_name.strip()},
+                ),
+                "needs_review": low_confidence or (
+                    profile_id is None and bool(candidate_matches)
+                ),
+                "assignment_threshold": DEFAULT_ASSIGNMENT_THRESHOLD,
             }
         )
 
     return {
         "speaker_rows": speaker_rows,
         "voice_profiles": voice_profiles,
+        "review_notices": _speaker_review_notices(
+            recording_id,
+            low_confidence_count=low_confidence_count,
+            settings=settings,
+        ),
     }
 
 
@@ -1410,18 +1588,44 @@ async def ui_assign_speaker(
             profile_id = int(profile_token)
         except ValueError:
             return HTMLResponse("voice_profile_id must be an integer", status_code=422)
+    existing_assignment = next(
+        (
+            row
+            for row in list_speaker_assignments(recording_id, settings=_settings)
+            if str(row.get("diar_speaker_label") or "").strip() == diar_label
+        ),
+        {},
+    )
     try:
         set_speaker_assignment(
             recording_id=recording_id,
             diar_speaker_label=diar_label,
             voice_profile_id=profile_id,
-            confidence=1.0,
+            confidence=(
+                1.0
+                if profile_id is not None
+                else float(existing_assignment.get("confidence") or 0.0)
+            ),
+            candidate_matches=existing_assignment.get("candidate_matches_json"),
+            low_confidence=(
+                False if profile_id is not None else existing_assignment.get("low_confidence")
+            ),
+            keep_unmatched=(
+                profile_id is None and bool(existing_assignment.get("candidate_matches_json"))
+            ),
             settings=_settings,
         )
     except sqlite3.IntegrityError:
         return HTMLResponse("Voice profile not found", status_code=404)
     except ValueError as exc:
         return HTMLResponse(str(exc), status_code=422)
+    _LOG.info(
+        "speaker remap saved recording_id=%s diar_speaker_label=%s from_voice_profile_id=%s to_voice_profile_id=%s",
+        recording_id,
+        diar_label,
+        existing_assignment.get("voice_profile_id"),
+        profile_id,
+    )
     return RedirectResponse(f"/recordings/{recording_id}?tab=speakers", status_code=303)
 
 
@@ -1452,6 +1656,12 @@ async def ui_create_and_assign_speaker(
         voice_profile_id=profile_id,
         confidence=1.0,
         settings=_settings,
+    )
+    _LOG.info(
+        "speaker profile created and assigned recording_id=%s diar_speaker_label=%s voice_profile_id=%s",
+        recording_id,
+        diar_label,
+        profile_id,
     )
     return RedirectResponse(f"/recordings/{recording_id}?tab=speakers", status_code=303)
 
@@ -1498,6 +1708,13 @@ async def ui_add_speaker_sample(
         return HTMLResponse("Voice profile not found", status_code=404)
     except ValueError as exc:
         return HTMLResponse(str(exc), status_code=422)
+    _LOG.info(
+        "speaker sample linked recording_id=%s diar_speaker_label=%s voice_profile_id=%s snippet_path=%s",
+        recording_id,
+        diar_label,
+        profile_id,
+        rel_path,
+    )
     return RedirectResponse(f"/recordings/{recording_id}?tab=speakers", status_code=303)
 
 
@@ -1596,6 +1813,11 @@ async def ui_voices(request: Request) -> Any:
     for sample in samples:
         sample_id = sample.get("id")
         sample["audio_url"] = f"/ui/voice-samples/{sample_id}/audio"
+    voice_profiles_by_id = {
+        int(item["id"]): item
+        for item in items
+        if _as_int(item.get("id")) is not None
+    }
     samples_by_profile: dict[int, list[dict[str, Any]]] = {}
     for sample in samples:
         try:
@@ -1603,12 +1825,24 @@ async def ui_voices(request: Request) -> Any:
         except (TypeError, ValueError):
             continue
         samples_by_profile.setdefault(profile_id, []).append(sample)
+    duplicate_candidates_by_profile = _voice_duplicate_candidates(
+        voice_samples=samples,
+        voice_profiles_by_id=voice_profiles_by_id,
+    )
     for item in items:
         try:
             profile_id = int(item.get("id"))
         except (TypeError, ValueError):
             continue
-        item["sample_count"] = len(samples_by_profile.get(profile_id, []))
+        item_samples = samples_by_profile.get(profile_id, [])
+        item["sample_count"] = len(item_samples)
+        item["samples_preview"] = item_samples[:3]
+        item["duplicate_candidates"] = duplicate_candidates_by_profile.get(profile_id, [])
+        item["merge_targets"] = [
+            target
+            for target in items
+            if _as_int(target.get("id")) is not None and int(target["id"]) != profile_id
+        ]
     return templates.TemplateResponse(
         request,
         "voices.html",
@@ -1629,6 +1863,37 @@ async def ui_create_voice(
     if display_name:
         create_voice_profile(display_name, notes.strip() or None, settings=_settings)
     return RedirectResponse("/voices", status_code=303)
+
+
+@ui_router.post("/voices/{profile_id}/merge", response_class=HTMLResponse)
+async def ui_merge_voice(
+    profile_id: int,
+    target_profile_id: str = Form(default=""),
+) -> Any:
+    target_token = target_profile_id.strip()
+    if not target_token:
+        return HTMLResponse("target_profile_id is required", status_code=422)
+    try:
+        target_id = int(target_token)
+    except ValueError:
+        return HTMLResponse("target_profile_id must be an integer", status_code=422)
+    try:
+        merged = merge_canonical_speakers(
+            profile_id,
+            target_id,
+            settings=_settings,
+        )
+    except ValueError as exc:
+        message = str(exc)
+        status_code = 404 if "not found" in message else 422
+        return HTMLResponse(message, status_code=status_code)
+    _LOG.info(
+        "canonical speaker merged source_profile_id=%s target_profile_id=%s merged=%s",
+        profile_id,
+        target_id,
+        merged,
+    )
+    return RedirectResponse(f"/voices#voice-{target_id}", status_code=303)
 
 
 @ui_router.post("/voices/{profile_id}/delete", response_class=HTMLResponse)

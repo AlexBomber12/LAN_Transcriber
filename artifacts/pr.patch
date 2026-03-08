@@ -1,595 +1,1098 @@
-diff --git a/lan_transcriber/pipeline_steps/multilingual_asr.py b/lan_transcriber/pipeline_steps/multilingual_asr.py
-index 79ac310..e386acb 100644
---- a/lan_transcriber/pipeline_steps/multilingual_asr.py
-+++ b/lan_transcriber/pipeline_steps/multilingual_asr.py
-@@ -530,7 +530,7 @@ def run_language_aware_asr(
-                     uncertain=uncertain,
-                     conflict=conflict,
-                 )
--            consumed_initial_segment_indexes.update(fallback_indexes)
-+                consumed_initial_segment_indexes.update(fallback_indexes)
+diff --git a/README.md b/README.md
+index 94f6ff5..dd20aa2 100644
+--- a/README.md
++++ b/README.md
+@@ -96,6 +96,9 @@ Operational setup, failure handling, backup/restore, and upgrade steps are docum
+ - `voice_profiles` now represent canonical speakers: one real person should map to one active record.
+ - `voice_samples` can store many samples per canonical speaker, including provenance and review metadata for low-confidence matches.
+ - Duplicate speakers can be merged backend-side without losing samples, assignments, or routing references.
++- `/voices` is the canonical speaker management page: inspect linked samples, review likely duplicates, and merge duplicate speakers into the surviving canonical record.
++- `/recordings/{recording_id}?tab=speakers` lets you remap diarized labels (`S1`, `S2`, ...) to canonical speakers or leave them unmatched; exports render the corrected canonical names as `Name (Sx)`.
++- When diarization falls back to degraded mode or a speaker match is low confidence, the recording detail page shows an explicit warning instead of silently trusting the labels.
  
-             merged_segments.extend(annotated_segments)
-             payload = chunk.to_payload(index=index, total=len(chunks))
-diff --git a/lan_transcriber/pipeline_steps/orchestrator.py b/lan_transcriber/pipeline_steps/orchestrator.py
-index a9a4067..bbeb11d 100644
---- a/lan_transcriber/pipeline_steps/orchestrator.py
-+++ b/lan_transcriber/pipeline_steps/orchestrator.py
-@@ -4,6 +4,7 @@ import asyncio
- import inspect
- import logging
- import shutil
-+import threading
- import time
- from pathlib import Path
- from types import SimpleNamespace
-@@ -61,6 +62,7 @@ from ..runtime_paths import default_recordings_root, default_tmp_root, default_u
- from ..utils import normalise_language_code, safe_float
+ ## Runtime data root
  
- _logger = logging.getLogger(__name__)
-+_whisperx_transcriber_state = threading.local()
- _LLM_MODEL_REQUIRED_ERROR = (
-     "LLM_MODEL is required. Set it in .env (e.g., LLM_MODEL=gpt-oss:120b)."
- )
-@@ -585,13 +587,10 @@ def _write_diarization_metadata_artifact(
-     atomic_write_json(artifacts.diarization_metadata_json_path, payload)
+diff --git a/docs/runbook.md b/docs/runbook.md
+index 9941d42..778b6c1 100644
+--- a/docs/runbook.md
++++ b/docs/runbook.md
+@@ -47,6 +47,8 @@ docker compose run --rm api python -m lan_app.healthchecks app
+    - The server-rendered UI shows timestamps in local Europe/Rome time.
+    - Duration is sourced from `derived/audio_sanitized.wav` when it exists, otherwise from the raw upload.
+    - Canonical speaker records keep one active person entry with many samples; low-confidence matches stay reviewable instead of auto-merging.
++   - Use the `speakers` tab to remap `S1`/`S2` diarization labels to canonical speakers or leave them unmatched; the export preview updates to the corrected `Name (Sx)` labels.
++   - If diarization fell back to degraded mode or a match stayed low confidence, the speakers tab shows a visible warning badge/message.
+ 6. Download export bundle from `GET /ui/recordings/{recording_id}/export.zip`.
+ 7. Deleting a recording removes the DB row plus `/data/recordings/<recording_id>/raw`, `derived`, `logs`, and other remaining files under that recording root. If cleanup fails, delete returns an error.
+ 
+@@ -55,6 +57,7 @@ docker compose run --rm api python -m lan_app.healthchecks app
+ 1. Treat `/voices` entries as canonical people, not one-off embeddings.
+ 2. Backend merge operations move all samples and references from duplicate speaker A to canonical speaker B.
+ 3. After a merge, routing/training references follow the target canonical speaker automatically.
++4. Use `/voices` to review linked samples, inspect duplicate evidence, and run the merge with an explicit target speaker.
+ 
+ ### 1.3 Upload size controls
+ 
+diff --git a/lan_app/exporter.py b/lan_app/exporter.py
+index 14ef63f..bf54254 100644
+--- a/lan_app/exporter.py
++++ b/lan_app/exporter.py
+@@ -10,7 +10,7 @@ import zipfile
+ from typing import Any
+ 
+ from .config import AppSettings
+-from .db import get_recording
++from .db import get_recording, list_speaker_assignments
+ 
+ _OPTIONAL_DERIVED_FILES = (
+     "summary.json",
+@@ -182,15 +182,47 @@ def _metrics_section(metrics_payload: dict[str, Any]) -> list[str]:
+     return ["## Metrics", *[f"- {label}: {value}" for label, value in present]]
  
  
--def _whisperx_asr(
--    audio_path: Path,
--    *,
--    override_lang: str | None,
-+def _build_whisperx_transcriber(
-     cfg: Settings,
-     step_log_callback: Callable[[str], Any] | None = None,
--) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-+) -> Callable[[Path, str | None], tuple[list[dict[str, Any]], dict[str, Any]]]:
-     patched_paths = ensure_ctranslate2_no_execstack()
-     if patched_paths and step_log_callback is not None:
-         try:
-@@ -624,35 +623,48 @@ def _whisperx_asr(
-         )
- 
-     if callable(legacy_transcribe):
--        kwargs: dict[str, Any] = {
--            "vad_filter": True,
--            "language": override_lang or "auto",
--            "word_timestamps": True,
--        }
--        filtered_kwargs = filter_kwargs_for_callable(legacy_transcribe, kwargs)
--        _log_dropped_kwargs(
--            callback=step_log_callback,
--            scope="whisperx transcribe",
--            attempted=kwargs,
--            filtered=filtered_kwargs,
--        )
--        try:
--            segments, info = call_with_supported_kwargs(legacy_transcribe, str(audio_path), **kwargs)
--        except TypeError:
--            retry_kwargs = dict(kwargs)
--            retry_kwargs.pop("word_timestamps", None)
-+        def _legacy_transcribe(
-+            audio_path: Path,
-+            override_lang: str | None,
-+        ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-+            kwargs: dict[str, Any] = {
-+                "vad_filter": True,
-+                "language": override_lang or "auto",
-+                "word_timestamps": True,
-+            }
-+            filtered_kwargs = filter_kwargs_for_callable(legacy_transcribe, kwargs)
-             _log_dropped_kwargs(
-                 callback=step_log_callback,
-                 scope="whisperx transcribe",
-                 attempted=kwargs,
--                filtered=retry_kwargs,
-+                filtered=filtered_kwargs,
-             )
--            segments, info = call_with_supported_kwargs(legacy_transcribe, str(audio_path), **retry_kwargs)
--        return list(segments), dict(info or {})
-+            try:
-+                segments, info = call_with_supported_kwargs(
-+                    legacy_transcribe,
-+                    str(audio_path),
-+                    **kwargs,
-+                )
-+            except TypeError:
-+                retry_kwargs = dict(kwargs)
-+                retry_kwargs.pop("word_timestamps", None)
-+                _log_dropped_kwargs(
-+                    callback=step_log_callback,
-+                    scope="whisperx transcribe",
-+                    attempted=kwargs,
-+                    filtered=retry_kwargs,
-+                )
-+                segments, info = call_with_supported_kwargs(
-+                    legacy_transcribe,
-+                    str(audio_path),
-+                    **retry_kwargs,
-+                )
-+            return list(segments), dict(info or {})
-+
-+        return _legacy_transcribe
- 
-     device = _select_asr_device(cfg)
-     compute_type = _select_compute_type(cfg, device)
--    audio = whisperx.load_audio(str(audio_path))
-     _logger.info("ASR VAD method: %s", cfg.vad_method)
-     model_load_kwargs = {"compute_type": compute_type, "vad_method": cfg.vad_method}
- 
-@@ -680,42 +692,73 @@ def _whisperx_asr(
-             f"type(vad_model)={type(vad)!r}; expected callable model.vad_model"
-         )
- 
--    transcribe_kwargs: dict[str, Any] = {
--        "batch_size": cfg.asr_batch_size,
--        "vad_filter": True,
--        "language": (override_lang if override_lang else None),
--    }
--    filtered_kwargs = filter_kwargs_for_callable(model.transcribe, transcribe_kwargs)
--    _log_dropped_kwargs(
--        callback=step_log_callback,
--        scope="whisperx transcribe",
--        attempted=transcribe_kwargs,
--        filtered=filtered_kwargs,
--    )
--    result = call_with_supported_kwargs(model.transcribe, audio, **transcribe_kwargs)
--    segments = list(result.get("segments", []))
--    info: dict[str, Any] = {"language": result.get("language") or (override_lang or "unknown")}
-+    def _modern_transcribe(
-+        audio_path: Path,
-+        override_lang: str | None,
-+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-+        audio = whisperx.load_audio(str(audio_path))
-+        transcribe_kwargs: dict[str, Any] = {
-+            "batch_size": cfg.asr_batch_size,
-+            "vad_filter": True,
-+            "language": (override_lang if override_lang else None),
-+        }
-+        filtered_kwargs = filter_kwargs_for_callable(model.transcribe, transcribe_kwargs)
-+        _log_dropped_kwargs(
-+            callback=step_log_callback,
-+            scope="whisperx transcribe",
-+            attempted=transcribe_kwargs,
-+            filtered=filtered_kwargs,
-+        )
-+        result = call_with_supported_kwargs(model.transcribe, audio, **transcribe_kwargs)
-+        segments = list(result.get("segments", []))
-+        info: dict[str, Any] = {
-+            "language": result.get("language") or (override_lang or "unknown")
-+        }
- 
--    if cfg.asr_enable_align:
--        try:
--            align_lang = normalise_language_code(info.get("language")) or "en"
--            model_a, metadata = whisperx.load_align_model(language_code=align_lang, device=device)
-+        if cfg.asr_enable_align:
-             try:
--                aligned = whisperx.align(
--                    segments,
--                    model_a,
--                    metadata,
--                    audio,
--                    device,
--                    return_char_alignments=False,
-+                align_lang = normalise_language_code(info.get("language")) or "en"
-+                model_a, metadata = whisperx.load_align_model(
-+                    language_code=align_lang,
-+                    device=device,
-                 )
--            except TypeError:
--                aligned = whisperx.align(segments, model_a, metadata, audio, device)
--            segments = list(aligned.get("segments", segments))
--        except Exception:
--            pass
-+                try:
-+                    aligned = whisperx.align(
-+                        segments,
-+                        model_a,
-+                        metadata,
-+                        audio,
-+                        device,
-+                        return_char_alignments=False,
-+                    )
-+                except TypeError:
-+                    aligned = whisperx.align(segments, model_a, metadata, audio, device)
-+                segments = list(aligned.get("segments", segments))
-+            except Exception:
-+                pass
- 
--    return segments, info
-+        return segments, info
-+
-+    return _modern_transcribe
-+
-+
-+def _whisperx_asr(
-+    audio_path: Path,
++def _speaker_name_map(
++    recording_id: str,
 +    *,
-+    override_lang: str | None,
-+    cfg: Settings,
-+    step_log_callback: Callable[[str], Any] | None = None,
-+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-+    transcribe_audio = getattr(_whisperx_transcriber_state, "transcribe_audio", None)
-+    if transcribe_audio is None:
-+        transcribe_audio = _build_whisperx_transcriber(
-+            cfg=cfg,
-+            step_log_callback=step_log_callback,
-+        )
-+    return transcribe_audio(audio_path, override_lang)
++    settings: AppSettings,
++) -> dict[str, str]:
++    name_map: dict[str, str] = {}
++    for row in list_speaker_assignments(recording_id, settings=settings):
++        diar_label = _normalize_text(row.get("diar_speaker_label") or "")
++        display_name = _normalize_text(row.get("voice_profile_name") or "")
++        if diar_label and display_name:
++            name_map[diar_label] = display_name
++    return name_map
 +
 +
-+_DEFAULT_WHISPERX_ASR = _whisperx_asr
++def _speaker_display_label(
++    speaker_label: object,
++    *,
++    speaker_name_map: dict[str, str],
++) -> str:
++    diar_label = _normalize_text(speaker_label or "") or "S1"
++    display_name = _normalize_text(speaker_name_map.get(diar_label) or "")
++    if not display_name:
++        return diar_label
++    return f"{display_name} ({diar_label})"
++
++
+ def _transcript_section(
+     transcript_payload: dict[str, Any],
+     speaker_turns_payload: list[dict[str, Any]],
++    *,
++    speaker_name_map: dict[str, str] | None = None,
+ ) -> list[str]:
++    resolved_name_map = speaker_name_map or {}
+     if speaker_turns_payload:
+         lines = ["## Transcript"]
+         wrote_any = False
+         for turn in speaker_turns_payload:
+-            speaker = _normalize_text(turn.get("speaker") or "S1") or "S1"
++            speaker = _speaker_display_label(
++                turn.get("speaker") or "S1",
++                speaker_name_map=resolved_name_map,
++            )
+             text = _normalize_text(turn.get("text") or "")
+             if not text:
+                 continue
+@@ -216,6 +248,7 @@ def build_onenote_markdown(recording: dict[str, Any], *, settings: AppSettings)
+     speaker_turns_raw = _load_json_list(derived / "speaker_turns.json")
+     speaker_turns_payload = [row for row in speaker_turns_raw if isinstance(row, dict)]
+     metrics_payload = _load_json_dict(derived / "metrics.json")
++    speaker_name_map = _speaker_name_map(recording_id, settings=settings)
  
- 
- def _empty_questions() -> dict[str, Any]:
-@@ -1055,26 +1098,56 @@ async def run_pipeline(
- 
-     try:
-         await _emit_progress(progress_callback, stage="stt", progress=0.10)
--        def _transcribe_chunk(
--            chunk_audio_path: Path,
--            chunk_language_hint: str | None,
--        ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
--            return _whisperx_asr(
--                chunk_audio_path,
--                override_lang=chunk_language_hint,
-+        def _run_asr_workflow() -> tuple[
-+            list[dict[str, Any]],
-+            dict[str, Any],
-+            dict[str, Any],
-+        ]:
-+            def _transcribe_chunk(
-+                chunk_audio_path: Path,
-+                chunk_language_hint: str | None,
-+            ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-+                return _whisperx_asr(
-+                    chunk_audio_path,
-+                    override_lang=chunk_language_hint,
-+                    cfg=cfg,
-+                    step_log_callback=step_log_callback,
-+                )
-+
-+            if _whisperx_asr is not _DEFAULT_WHISPERX_ASR:
-+                return run_language_aware_asr(
-+                    audio_path,
-+                    override_lang=override_lang,
-+                    configured_mode=cfg.asr_multilingual_mode,
-+                    tmp_root=cfg.tmp_root,
-+                    transcribe_fn=_transcribe_chunk,
-+                    step_log_callback=step_log_callback,
-+                )
-+
-+            previous_transcriber = getattr(_whisperx_transcriber_state, "transcribe_audio", None)
-+            _whisperx_transcriber_state.transcribe_audio = _build_whisperx_transcriber(
-                 cfg=cfg,
-                 step_log_callback=step_log_callback,
-             )
-+            try:
-+                return run_language_aware_asr(
-+                    audio_path,
-+                    override_lang=override_lang,
-+                    configured_mode=cfg.asr_multilingual_mode,
-+                    tmp_root=cfg.tmp_root,
-+                    transcribe_fn=_transcribe_chunk,
-+                    step_log_callback=step_log_callback,
-+                )
-+            finally:
-+                if previous_transcriber is None:
-+                    if hasattr(_whisperx_transcriber_state, "transcribe_audio"):
-+                        delattr(_whisperx_transcriber_state, "transcribe_audio")
-+                else:
-+                    _whisperx_transcriber_state.transcribe_audio = previous_transcriber
- 
-         (raw_segments, info, asr_execution), diarization = await asyncio.gather(
-             asyncio.to_thread(
--                run_language_aware_asr,
--                audio_path,
--                override_lang=override_lang,
--                configured_mode=cfg.asr_multilingual_mode,
--                tmp_root=cfg.tmp_root,
--                transcribe_fn=_transcribe_chunk,
--                step_log_callback=step_log_callback,
-+                _run_asr_workflow,
-             ),
-             diariser(audio_path),
-         )
-diff --git a/tests/test_cov_lan_transcriber_extra_pipeline.py b/tests/test_cov_lan_transcriber_extra_pipeline.py
-index 2ae37a2..fe60024 100644
---- a/tests/test_cov_lan_transcriber_extra_pipeline.py
-+++ b/tests/test_cov_lan_transcriber_extra_pipeline.py
-@@ -1734,6 +1734,76 @@ async def test_run_pipeline_backfills_detected_language_and_uses_fallback_diariz
-     assert diar_data and diar_data[0]["speaker"] == "S1"
- 
- 
-+@pytest.mark.asyncio
-+async def test_run_pipeline_restores_previous_whisperx_transcriber_session(
-+    tmp_path: Path,
-+    monkeypatch: pytest.MonkeyPatch,
-+) -> None:
-+    previous_transcriber = object()
-+
-+    def _session_transcriber(
-+        _audio_path: Path,
-+        _override_lang: str | None,
-+    ) -> tuple[list[dict[str, object]], dict[str, object]]:
-+        assert getattr(pipeline._whisperx_transcriber_state, "transcribe_audio") is _session_transcriber
-+        return (
-+            [{"start": 0.0, "end": 1.0, "text": "hello team and thanks"}],
-+            {"language": "en", "language_probability": 0.95},
-+        )
-+
-+    def _fake_run_language_aware_asr(
-+        audio_path: Path,
-+        *,
-+        override_lang: str | None,
-+        configured_mode: str,
-+        tmp_root: Path,
-+        transcribe_fn,
-+        step_log_callback=None,
-+    ) -> tuple[list[dict[str, object]], dict[str, object], dict[str, object]]:
-+        del configured_mode, tmp_root, step_log_callback
-+        segments, info = transcribe_fn(audio_path, override_lang)
-+        return (
-+            segments,
-+            info,
-+            {
-+                "used_multilingual_path": False,
-+                "selected_mode": "single_language",
-+                "selection_reason": "test",
-+                "chunks": [],
-+            },
-+        )
-+
-+    async def _fake_to_thread(fn, /, *args, **kwargs):
-+        pipeline._whisperx_transcriber_state.transcribe_audio = previous_transcriber
-+        return fn(*args, **kwargs)
-+
-+    monkeypatch.setattr(asyncio, "to_thread", _fake_to_thread)
-+    monkeypatch.setattr(
-+        pipeline,
-+        "_build_whisperx_transcriber",
-+        lambda **_kwargs: _session_transcriber,
-+    )
-+    monkeypatch.setattr(pipeline, "run_language_aware_asr", _fake_run_language_aware_asr)
-+    monkeypatch.setattr(pipeline, "_sentiment_score", lambda _text: 50)
-+    monkeypatch.setattr(pipeline, "export_speaker_snippets", lambda _req: [])
-+    monkeypatch.setattr(pipeline, "_save_aliases", lambda *_a, **_k: None)
-+    monkeypatch.setattr(pipeline, "_load_aliases", lambda *_a, **_k: {})
-+
-+    cfg = _settings(tmp_path)
-+    result = await pipeline.run_pipeline(
-+        audio_path=_audio_file(tmp_path, "pipeline-session.mp3"),
-+        cfg=cfg,
-+        llm=_FakeLLM(),
-+        diariser=_NoTracksDiariser(),
-+        recording_id="rec-transcriber-session",
-+        precheck=pipeline.PrecheckResult(duration_sec=30.0, speech_ratio=0.8, quarantine_reason=None),
-+    )
-+
-+    assert result.summary.strip() == "- ok"
-+    assert getattr(pipeline._whisperx_transcriber_state, "transcribe_audio") is previous_transcriber
-+    delattr(pipeline._whisperx_transcriber_state, "transcribe_audio")
-+
-+
- @pytest.mark.asyncio
- async def test_run_pipeline_fails_fast_when_llm_model_is_blank(tmp_path: Path) -> None:
-     cfg = _settings(tmp_path, llm_model="   ")
-diff --git a/tests/test_pipeline.py b/tests/test_pipeline.py
-index 1815ab7..24c34fb 100644
---- a/tests/test_pipeline.py
-+++ b/tests/test_pipeline.py
-@@ -1144,6 +1144,131 @@ async def test_pipeline_multilingual_asr_uses_chunk_language_hints(tmp_path: Pat
-     assert transcript_data["review"]["required"] is False
- 
- 
-+@pytest.mark.asyncio
-+@respx.mock
-+async def test_pipeline_multilingual_model_path_reuses_single_whisperx_model_load(
-+    tmp_path: Path,
-+    mocker,
-+    monkeypatch,
-+):
-+    fake_whisperx = ModuleType("whisperx")
-+    fake_asr = ModuleType("whisperx.asr")
-+    load_model_calls = 0
-+    asr_languages: list[str | None] = []
-+
-+    class _FakeModel:
-+        vad_model = staticmethod(lambda _payload: [])
-+
-+        def transcribe(
-+            self,
-+            audio_input: str,
-+            *,
-+            batch_size: int,
-+            vad_filter: bool,
-+            language: str | None,
-+        ) -> dict[str, object]:
-+            del audio_input
-+            assert batch_size == 16
-+            assert vad_filter is True
-+            asr_languages.append(language)
-+            if language is None:
-+                return {
-+                    "segments": [
-+                        {"start": 0.0, "end": 4.0, "text": "hello team and thanks"},
-+                        {"start": 4.0, "end": 8.0, "text": "hola equipo y gracias"},
-+                    ],
-+                    "language": "en",
-+                }
-+            if language == "en":
-+                return {
-+                    "segments": [
-+                        {"start": 0.0, "end": 4.0, "text": "hello team and thanks"}
-+                    ],
-+                    "language": "en",
-+                }
-+            return {
-+                "segments": [
-+                    {"start": 0.0, "end": 4.0, "text": "hola equipo y gracias"}
-+                ],
-+                "language": "es",
-+            }
-+
-+    def _load_audio(path: str) -> str:
-+        return path
-+
-+    def _load_model(
-+        model_name: str,
-+        device: str,
-+        compute_type: str = "int8",
-+        vad_method: str = "silero",
-+    ) -> _FakeModel:
-+        nonlocal load_model_calls
-+        assert model_name == "large-v3"
-+        assert device == "cpu"
-+        assert compute_type == "int8"
-+        assert vad_method == "silero"
-+        load_model_calls += 1
-+        return _FakeModel()
-+
-+    fake_whisperx.transcribe = None
-+    fake_whisperx.load_audio = _load_audio
-+    fake_whisperx.asr = fake_asr
-+    fake_asr.load_model = _load_model
-+    monkeypatch.setitem(sys.modules, "whisperx", fake_whisperx)
-+    monkeypatch.setitem(sys.modules, "whisperx.asr", fake_asr)
-+    monkeypatch.setattr(
-+        "lan_transcriber.pipeline_steps.orchestrator.ensure_ctranslate2_no_execstack",
-+        lambda: [],
-+    )
-+    mocker.patch(
-+        "transformers.pipeline",
-+        lambda *a, **k: lambda text: [{"label": "positive", "score": 0.6}],
-+    )
-+    respx.post("http://127.0.0.1:8000/v1/chat/completions").mock(
-+        return_value=httpx.Response(
-+            200,
-+            json={"choices": [{"message": {"content": "- summary"}}]},
+     topic = _normalize_text(summary_payload.get("topic") or "")
+     fallback_title = _normalize_text(recording.get("source_filename") or "")
+@@ -241,7 +274,11 @@ def build_onenote_markdown(recording: dict[str, Any], *, settings: AppSettings)
+         _questions_section(summary_payload),
+         _emotion_section(summary_payload),
+         _metrics_section(metrics_payload),
+-        _transcript_section(transcript_payload, speaker_turns_payload),
++        _transcript_section(
++            transcript_payload,
++            speaker_turns_payload,
++            speaker_name_map=speaker_name_map,
 +        ),
-+    )
+     ):
+         if block:
+             sections.append("\n".join(block))
+diff --git a/lan_app/templates/recording_detail.html b/lan_app/templates/recording_detail.html
+index f5c7bd1..7f89311 100644
+--- a/lan_app/templates/recording_detail.html
++++ b/lan_app/templates/recording_detail.html
+@@ -211,8 +211,16 @@
+   {% set sp = speakers or {} %}
+   {% set rows = sp.speaker_rows or [] %}
+   {% set profiles = sp.voice_profiles or [] %}
++  {% set notices = sp.review_notices or [] %}
+ 
+   <h2>Speaker Assignments</h2>
++  {% if notices %}
++    {% for notice in notices %}
++    <p style="margin:0 0 10px 0;padding:8px 10px;border:1px solid #f59e0b;background:#fffbeb;color:#92400e">
++      {{ notice }}
++    </p>
++    {% endfor %}
++  {% endif %}
+   {% if rows %}
+   <table>
+     <thead>
+@@ -221,8 +229,10 @@
+         <th>Turns</th>
+         <th>Duration (s)</th>
+         <th>Preview</th>
++        <th>Current mapping</th>
++        <th>Confidence</th>
+         <th>Snippets</th>
+-        <th>Assignment</th>
++        <th>Remap</th>
+         <th>Samples</th>
+       </tr>
+     </thead>
+@@ -233,6 +243,37 @@
+         <td>{{ row.turn_count }}</td>
+         <td>{{ '%.2f'|format(row.duration_sec or 0.0) }}</td>
+         <td title="{{ row.preview_text }}" style="white-space:normal;max-width:300px">{{ row.preview_text or '—' }}</td>
++        <td style="white-space:normal;max-width:260px">
++          {% if row.voice_profile_name %}
++          <div><strong>{{ row.voice_profile_name }}</strong></div>
++          <div style="margin-top:4px;color:#555">Displays as {{ row.display_label }} in exports.</div>
++          {% else %}
++          <span class="placeholder" style="padding:0">Leave unmatched</span>
++          {% endif %}
++          {% if row.candidate_matches %}
++          <div style="margin-top:6px;font-size:11px;color:#555">
++            Candidates:
++            {% for candidate in row.candidate_matches %}
++            <span>{{ candidate.display_name }} ({{ '%.2f'|format(candidate.score) }}){% if not loop.last %}, {% endif %}</span>
++            {% endfor %}
++          </div>
++          {% endif %}
++        </td>
++        <td style="white-space:normal;max-width:220px">
++          {% if row.low_confidence %}
++          <span class="badge s-NeedsReview">Low confidence</span>
++          {% elif row.voice_profile_name %}
++          <span class="badge s-Ready">Mapped</span>
++          {% else %}
++          <span class="badge s-Queued">Unmatched</span>
++          {% endif %}
++          <div style="margin-top:4px;color:#555">{{ '%.2f'|format(row.confidence or 0.0) }}</div>
++          {% if row.needs_review and row.assignment_threshold %}
++          <div style="margin-top:4px;font-size:11px;color:#92400e">
++            Below auto-match threshold {{ '%.2f'|format(row.assignment_threshold) }}.
++          </div>
++          {% endif %}
++        </td>
+         <td style="white-space:normal;max-width:320px">
+           {% if row.snippet_urls %}
+             {% for src in row.snippet_urls %}
+@@ -251,16 +292,13 @@
+           <form method="post" action="/ui/recordings/{{ rec.id }}/speakers/assign">
+             <input type="hidden" name="diar_speaker_label" value="{{ row.speaker }}">
+             <select name="voice_profile_id" style="width:180px">
+-              <option value="">Unassigned</option>
++              <option value="">Leave unmatched</option>
+               {% for vp in profiles %}
+               <option value="{{ vp.id }}" {% if row.voice_profile_id == vp.id %}selected{% endif %}>{{ vp.display_name }}</option>
+               {% endfor %}
+             </select>
+-            <button class="btn" type="submit">Save</button>
++            <button class="btn" type="submit">Save remap</button>
+           </form>
+-          {% if row.voice_profile_name %}
+-          <div style="margin-top:4px;color:#555">Current: {{ row.voice_profile_name }} ({{ '%.2f'|format(row.confidence or 0.0) }})</div>
+-          {% endif %}
+           {% else %}
+           <span class="placeholder" style="padding:0">No voice profiles yet.</span>
+           {% endif %}
+diff --git a/lan_app/templates/voices.html b/lan_app/templates/voices.html
+index 93e3a40..1ece680 100644
+--- a/lan_app/templates/voices.html
++++ b/lan_app/templates/voices.html
+@@ -1,10 +1,14 @@
+ {% extends "base.html" %}
+-{% block title %}Voice Profiles – LAN Transcriber{% endblock %}
++{% block title %}Canonical Speakers – LAN Transcriber{% endblock %}
+ {% block content %}
+-<h1>Voice Profiles</h1>
++<h1>Canonical Speakers</h1>
 +
-+    cfg = pipeline.Settings(
-+        speaker_db=tmp_path / "db.yaml",
-+        tmp_root=tmp_path,
-+        recordings_root=tmp_path / "recordings",
-+        asr_device="cpu",
-+        asr_enable_align=False,
-+        asr_multilingual_mode="auto",
++<p style="margin:0 0 12px 0;color:#555">
++  Manage one canonical person per real speaker, inspect linked samples, and safely merge duplicates.
++</p>
+ 
+ <div class="section">
+-  <h2>Add voice profile</h2>
++  <h2>Add canonical speaker</h2>
+   <form method="post" action="/voices">
+     <div class="form-row">
+       <label>Display name:</label>
+@@ -27,21 +31,68 @@
+     <thead>
+       <tr>
+         <th>ID</th>
+-        <th>Display name</th>
++        <th>Canonical speaker</th>
+         <th>Notes</th>
++        <th>Updated</th>
+         <th>Samples</th>
+-        <th></th>
++        <th>Potential duplicates</th>
++        <th>Actions</th>
+       </tr>
+     </thead>
+     <tbody>
+       {% for v in items %}
+-      <tr>
++      <tr id="voice-{{ v.id }}">
+         <td>{{ v.id }}</td>
+         <td>{{ v.display_name }}</td>
+         <td>{{ v.notes or '—' }}</td>
+-        <td>{{ v.sample_count or 0 }}</td>
+         <td>
+-          <form method="post" action="/voices/{{ v.id }}/delete" style="display:inline" onsubmit="return confirm('Delete voice profile ' + this.dataset.name + '?')" data-name="{{ v.display_name }}">
++          {{ v.updated_at[:19].replace('T',' ') if v.updated_at else '—' }}
++        </td>
++        <td style="white-space:normal;max-width:320px">
++          {{ v.sample_count or 0 }}
++          {% if v.samples_preview %}
++          <details style="margin-top:4px">
++            <summary>Inspect samples</summary>
++            {% for s in v.samples_preview %}
++            <div style="margin-top:6px;padding-top:6px;border-top:1px solid #dde">
++              <div style="font-size:11px;color:#555">
++                {{ s.recording_id or 'manual' }} / {{ s.diar_speaker_label or '—' }}
++              </div>
++              <audio controls preload="none" style="height:26px;max-width:240px;margin-top:4px">
++                <source src="{{ s.audio_url }}" type="audio/wav">
++              </audio>
++            </div>
++            {% endfor %}
++            {% if (v.sample_count or 0) > (v.samples_preview|length) %}
++            <div style="margin-top:6px;font-size:11px;color:#555">More samples are listed below.</div>
++            {% endif %}
++          </details>
++          {% endif %}
++        </td>
++        <td style="white-space:normal;max-width:320px">
++          {% if v.duplicate_candidates %}
++            {% for candidate in v.duplicate_candidates %}
++            <div style="margin-bottom:4px">
++              {{ candidate.display_name }} ({{ candidate.match_count }} samples, {{ '%.2f'|format(candidate.best_score) }})
++            </div>
++            {% endfor %}
++          {% else %}
++          <span class="placeholder" style="padding:0">No duplicate evidence yet.</span>
++          {% endif %}
++        </td>
++        <td style="white-space:normal;max-width:360px">
++          {% if v.merge_targets %}
++          <form method="post" action="/voices/{{ v.id }}/merge" onsubmit="return confirm('Merge ' + this.dataset.name + ' into the selected canonical speaker?')" data-name="{{ v.display_name }}" style="margin-bottom:6px">
++            <select name="target_profile_id" style="width:180px" required>
++              <option value="">Merge into…</option>
++              {% for target in v.merge_targets %}
++              <option value="{{ target.id }}">{{ target.display_name }}</option>
++              {% endfor %}
++            </select>
++            <button class="btn" type="submit">Merge</button>
++          </form>
++          {% endif %}
++          <form method="post" action="/voices/{{ v.id }}/delete" style="display:inline" onsubmit="return confirm('Delete canonical speaker ' + this.dataset.name + '?')" data-name="{{ v.display_name }}">
+             <button class="btn btn-danger" type="submit">Delete</button>
+           </form>
+         </td>
+@@ -50,7 +101,7 @@
+     </tbody>
+   </table>
+   {% else %}
+-  <p class="placeholder">No voice profiles yet. Add one above.</p>
++  <p class="placeholder">No canonical speakers yet. Add one above.</p>
+   {% endif %}
+ </div>
+ 
+diff --git a/lan_app/ui_routes.py b/lan_app/ui_routes.py
+index a6aab7d..d83a54c 100644
+--- a/lan_app/ui_routes.py
++++ b/lan_app/ui_routes.py
+@@ -79,6 +79,7 @@ from .jobs import (
+ )
+ from .ops import RecordingDeleteError, delete_recording_with_artifacts
+ from .routing import refresh_recording_routing, train_routing_from_manual_selection
++from .speaker_bank import DEFAULT_ASSIGNMENT_THRESHOLD, merge_canonical_speakers
+ from lan_transcriber.artifacts import atomic_write_json
+ from lan_transcriber.llm_client import LLMClient
+ from lan_transcriber.pipeline import Settings as PipelineSettings
+@@ -429,6 +430,7 @@ def _metrics_tab_context(recording_id: str, settings: AppSettings) -> dict[str,
+ 
+     meeting_payload: dict[str, Any] = {}
+     participants_payload: list[dict[str, Any]] = []
++    speaker_name_map = _recording_speaker_name_map(recording_id, settings=settings)
+ 
+     meeting_row = get_meeting_metrics(recording_id, settings=settings) or {}
+     meeting_json = meeting_row.get("json")
+@@ -495,12 +497,15 @@ def _metrics_tab_context(recording_id: str, settings: AppSettings) -> dict[str,
+ 
+     participants: list[dict[str, Any]] = []
+     for row in participants_payload:
+-        speaker = str(row.get("speaker") or "").strip()
+-        if not speaker:
++        diar_label = str(row.get("speaker") or "").strip()
++        if not diar_label:
+             continue
+         participants.append(
+             {
+-                "speaker": speaker,
++                "speaker": _speaker_display_label(
++                    diar_label,
++                    speaker_name_map=speaker_name_map,
++                ),
+                 "airtime_seconds": round(_to_float(row.get("airtime_seconds")), 3),
+                 "airtime_share": round(_to_float(row.get("airtime_share")), 4),
+                 "turns": _to_int(row.get("turns")),
+@@ -666,6 +671,150 @@ def _as_data_relative_path(path: Path, *, settings: AppSettings) -> str | None:
+     return safe.relative_to(root_resolved).as_posix()
+ 
+ 
++def _candidate_match_rows(
++    candidate_matches: Any,
++    *,
++    voice_profiles_by_id: dict[int, dict[str, Any]],
++) -> list[dict[str, Any]]:
++    rows = candidate_matches if isinstance(candidate_matches, list) else []
++    normalized: list[dict[str, Any]] = []
++    for row in rows:
++        if not isinstance(row, dict):
++            continue
++        profile_id = _as_int(row.get("voice_profile_id"))
++        if profile_id is None:
++            continue
++        try:
++            score = float(row.get("score") or 0.0)
++        except (TypeError, ValueError):
++            score = 0.0
++        profile = voice_profiles_by_id.get(profile_id, {})
++        display_name = str(
++            row.get("display_name")
++            or profile.get("display_name")
++            or f"#{profile_id}"
++        ).strip() or f"#{profile_id}"
++        normalized.append(
++            {
++                "voice_profile_id": profile_id,
++                "display_name": display_name,
++                "score": max(0.0, min(score, 1.0)),
++            }
++        )
++    normalized.sort(
++        key=lambda item: (
++            -float(item["score"]),
++            str(item["display_name"]),
++            int(item["voice_profile_id"]),
++        )
 +    )
-+    audio = wav_audio(
-+        tmp_path,
-+        name="mixed-model-path.wav",
-+        duration_sec=8.0,
-+        speech=True,
-+    )
-+    await pipeline.run_pipeline(
-+        audio_path=audio,
-+        cfg=cfg,
-+        llm=llm_client.LLMClient(),
-+        diariser=TwoSpeakerDiariser(),
-+        recording_id="rec-multilingual-model-reuse-1",
-+        precheck=precheck_ok(),
-+    )
++    return normalized
 +
-+    transcript_data = json.loads(
++
++def _recording_speaker_name_map(
++    recording_id: str,
++    *,
++    settings: AppSettings,
++) -> dict[str, str]:
++    name_map: dict[str, str] = {}
++    for row in list_speaker_assignments(recording_id, settings=settings):
++        diar_label = str(row.get("diar_speaker_label") or "").strip()
++        display_name = str(row.get("voice_profile_name") or "").strip()
++        if diar_label and display_name:
++            name_map[diar_label] = display_name
++    return name_map
++
++
++def _speaker_display_label(
++    speaker_label: str,
++    *,
++    speaker_name_map: dict[str, str],
++) -> str:
++    diar_label = str(speaker_label or "").strip() or "S1"
++    mapped_name = str(speaker_name_map.get(diar_label) or "").strip()
++    if not mapped_name:
++        return diar_label
++    return f"{mapped_name} ({diar_label})"
++
++
++def _voice_duplicate_candidates(
++    *,
++    voice_samples: list[dict[str, Any]],
++    voice_profiles_by_id: dict[int, dict[str, Any]],
++) -> dict[int, list[dict[str, Any]]]:
++    evidence: dict[tuple[int, int], dict[str, Any]] = {}
++    for sample in voice_samples:
++        source_profile_id = _as_int(sample.get("voice_profile_id"))
++        if source_profile_id is None or source_profile_id not in voice_profiles_by_id:
++            continue
++        seen_targets: set[int] = set()
++        for candidate in _candidate_match_rows(
++            sample.get("candidate_matches_json"),
++            voice_profiles_by_id=voice_profiles_by_id,
++        ):
++            target_profile_id = int(candidate["voice_profile_id"])
++            if target_profile_id == source_profile_id or target_profile_id in seen_targets:
++                continue
++            seen_targets.add(target_profile_id)
++            slot = evidence.setdefault(
++                (source_profile_id, target_profile_id),
++                {
++                    "voice_profile_id": target_profile_id,
++                    "display_name": str(candidate["display_name"]),
++                    "best_score": 0.0,
++                    "match_count": 0,
++                },
++            )
++            slot["match_count"] += 1
++            slot["best_score"] = max(slot["best_score"], float(candidate["score"]))
++
++    grouped: dict[int, list[dict[str, Any]]] = {}
++    for (source_profile_id, _target_profile_id), item in evidence.items():
++        grouped.setdefault(source_profile_id, []).append(item)
++    for rows in grouped.values():
++        rows.sort(
++            key=lambda item: (
++                -int(item["match_count"]),
++                -float(item["best_score"]),
++                str(item["display_name"]),
++                int(item["voice_profile_id"]),
++            )
++        )
++    return grouped
++
++
++def _speaker_review_notices(
++    recording_id: str,
++    *,
++    low_confidence_count: int,
++    settings: AppSettings,
++) -> list[str]:
++    derived_root = settings.recordings_root / recording_id / "derived"
++    status_payload = _load_json_dict(derived_root / "diarization_status.json")
++    metadata_payload = _load_json_dict(derived_root / "diarization_metadata.json")
++
++    notices: list[str] = []
++    degraded = bool(status_payload.get("degraded")) or bool(metadata_payload.get("degraded"))
++    if degraded:
++        mode = str(status_payload.get("mode") or metadata_payload.get("mode") or "").strip()
++        reason = str(status_payload.get("reason") or metadata_payload.get("reason") or "").strip()
++        message = "Diarization ran in degraded fallback mode"
++        if mode and mode != "pyannote":
++            message += f" ({mode})"
++        if reason:
++            message += f": {reason}."
++        else:
++            message += "; speaker results may need manual review."
++        notices.append(message)
++    if low_confidence_count == 1:
++        notices.append("1 speaker match is low confidence and needs manual review.")
++    elif low_confidence_count > 1:
++        notices.append(
++            f"{low_confidence_count} speaker matches are low confidence and need manual review."
++        )
++    return notices
++
++
+ def _speakers_tab_context(recording_id: str, settings: AppSettings) -> dict[str, Any]:
+     transcript_path, _summary_path = _recording_derived_paths(recording_id, settings)
+     speaker_turns_path = transcript_path.parent / "speaker_turns.json"
+@@ -708,9 +857,15 @@ def _speakers_tab_context(recording_id: str, settings: AppSettings) -> dict[str,
+         for row in assignments
+     }
+     voice_profiles = list_voice_profiles(settings=settings)
++    voice_profiles_by_id = {
++        int(profile["id"]): profile
++        for profile in voice_profiles
++        if _as_int(profile.get("id")) is not None
++    }
+ 
+     speaker_rows: list[dict[str, Any]] = []
+     recording_token = quote(recording_id, safe="")
++    low_confidence_count = 0
+     for speaker in sorted(per_speaker):
+         row = per_speaker[speaker]
+         snippets = _speaker_snippet_files(recording_id, speaker, settings=settings)
+@@ -732,6 +887,14 @@ def _speakers_tab_context(recording_id: str, settings: AppSettings) -> dict[str,
+             confidence = float(assignment.get("confidence"))
+         except (TypeError, ValueError):
+             confidence = 0.0
++        candidate_matches = _candidate_match_rows(
++            assignment.get("candidate_matches_json"),
++            voice_profiles_by_id=voice_profiles_by_id,
++        )
++        low_confidence = bool(assignment.get("low_confidence"))
++        if low_confidence:
++            low_confidence_count += 1
++        voice_profile_name = str(assignment.get("voice_profile_name") or "")
+         speaker_rows.append(
+             {
+                 "speaker": speaker,
+@@ -740,14 +903,29 @@ def _speakers_tab_context(recording_id: str, settings: AppSettings) -> dict[str,
+                 "preview_text": str(row["preview_text"]),
+                 "snippet_urls": snippet_urls,
+                 "voice_profile_id": profile_id,
+-                "voice_profile_name": str(assignment.get("voice_profile_name") or ""),
++                "voice_profile_name": voice_profile_name,
+                 "confidence": max(0.0, min(confidence, 1.0)),
++                "candidate_matches": candidate_matches,
++                "low_confidence": low_confidence,
++                "display_label": _speaker_display_label(
++                    speaker,
++                    speaker_name_map={speaker: voice_profile_name.strip()},
++                ),
++                "needs_review": low_confidence or (
++                    profile_id is None and bool(candidate_matches)
++                ),
++                "assignment_threshold": DEFAULT_ASSIGNMENT_THRESHOLD,
+             }
+         )
+ 
+     return {
+         "speaker_rows": speaker_rows,
+         "voice_profiles": voice_profiles,
++        "review_notices": _speaker_review_notices(
++            recording_id,
++            low_confidence_count=low_confidence_count,
++            settings=settings,
++        ),
+     }
+ 
+ 
+@@ -1410,18 +1588,44 @@ async def ui_assign_speaker(
+             profile_id = int(profile_token)
+         except ValueError:
+             return HTMLResponse("voice_profile_id must be an integer", status_code=422)
++    existing_assignment = next(
 +        (
-+            cfg.recordings_root
-+            / "rec-multilingual-model-reuse-1"
-+            / "derived"
-+            / "transcript.json"
-+        ).read_text(encoding="utf-8")
++            row
++            for row in list_speaker_assignments(recording_id, settings=_settings)
++            if str(row.get("diar_speaker_label") or "").strip() == diar_label
++        ),
++        {},
 +    )
-+    assert load_model_calls == 1
-+    assert asr_languages == [None, "en", "es"]
-+    assert transcript_data["multilingual_asr"]["used_multilingual_path"] is True
-+    assert transcript_data["segments"][0]["language_hint"] == "en"
-+    assert transcript_data["segments"][1]["language_hint"] == "es"
-+
-+
- @pytest.mark.asyncio
- @respx.mock
- async def test_pipeline_multilingual_uncertainty_sets_review_metadata(tmp_path: Path, mocker):
-diff --git a/tests/test_pipeline_steps_multilingual_asr.py b/tests/test_pipeline_steps_multilingual_asr.py
-index d3ec0f0..dcab1f4 100644
---- a/tests/test_pipeline_steps_multilingual_asr.py
-+++ b/tests/test_pipeline_steps_multilingual_asr.py
-@@ -593,6 +593,77 @@ def test_run_language_aware_asr_multilingual_empty_chunks_do_not_duplicate_fallb
-     assert segments[0]["end"] == 5.0
+     try:
+         set_speaker_assignment(
+             recording_id=recording_id,
+             diar_speaker_label=diar_label,
+             voice_profile_id=profile_id,
+-            confidence=1.0,
++            confidence=(
++                1.0
++                if profile_id is not None
++                else float(existing_assignment.get("confidence") or 0.0)
++            ),
++            candidate_matches=existing_assignment.get("candidate_matches_json"),
++            low_confidence=(
++                False if profile_id is not None else existing_assignment.get("low_confidence")
++            ),
++            keep_unmatched=(
++                profile_id is None and bool(existing_assignment.get("candidate_matches_json"))
++            ),
+             settings=_settings,
+         )
+     except sqlite3.IntegrityError:
+         return HTMLResponse("Voice profile not found", status_code=404)
+     except ValueError as exc:
+         return HTMLResponse(str(exc), status_code=422)
++    _LOG.info(
++        "speaker remap saved recording_id=%s diar_speaker_label=%s from_voice_profile_id=%s to_voice_profile_id=%s",
++        recording_id,
++        diar_label,
++        existing_assignment.get("voice_profile_id"),
++        profile_id,
++    )
+     return RedirectResponse(f"/recordings/{recording_id}?tab=speakers", status_code=303)
  
  
-+def test_run_language_aware_asr_multilingual_later_empty_chunk_reuses_boundary_fallback(
-+    tmp_path: Path,
-+    monkeypatch: pytest.MonkeyPatch,
-+) -> None:
-+    audio = _write_pcm_wav(tmp_path / "mixed-later-empty-boundary.wav", duration_sec=8.0)
+@@ -1453,6 +1657,12 @@ async def ui_create_and_assign_speaker(
+         confidence=1.0,
+         settings=_settings,
+     )
++    _LOG.info(
++        "speaker profile created and assigned recording_id=%s diar_speaker_label=%s voice_profile_id=%s",
++        recording_id,
++        diar_label,
++        profile_id,
++    )
+     return RedirectResponse(f"/recordings/{recording_id}?tab=speakers", status_code=303)
+ 
+ 
+@@ -1498,6 +1708,13 @@ async def ui_add_speaker_sample(
+         return HTMLResponse("Voice profile not found", status_code=404)
+     except ValueError as exc:
+         return HTMLResponse(str(exc), status_code=422)
++    _LOG.info(
++        "speaker sample linked recording_id=%s diar_speaker_label=%s voice_profile_id=%s snippet_path=%s",
++        recording_id,
++        diar_label,
++        profile_id,
++        rel_path,
++    )
+     return RedirectResponse(f"/recordings/{recording_id}?tab=speakers", status_code=303)
+ 
+ 
+@@ -1596,6 +1813,11 @@ async def ui_voices(request: Request) -> Any:
+     for sample in samples:
+         sample_id = sample.get("id")
+         sample["audio_url"] = f"/ui/voice-samples/{sample_id}/audio"
++    voice_profiles_by_id = {
++        int(item["id"]): item
++        for item in items
++        if _as_int(item.get("id")) is not None
++    }
+     samples_by_profile: dict[int, list[dict[str, Any]]] = {}
+     for sample in samples:
+         try:
+@@ -1603,12 +1825,24 @@ async def ui_voices(request: Request) -> Any:
+         except (TypeError, ValueError):
+             continue
+         samples_by_profile.setdefault(profile_id, []).append(sample)
++    duplicate_candidates_by_profile = _voice_duplicate_candidates(
++        voice_samples=samples,
++        voice_profiles_by_id=voice_profiles_by_id,
++    )
+     for item in items:
+         try:
+             profile_id = int(item.get("id"))
+         except (TypeError, ValueError):
+             continue
+-        item["sample_count"] = len(samples_by_profile.get(profile_id, []))
++        item_samples = samples_by_profile.get(profile_id, [])
++        item["sample_count"] = len(item_samples)
++        item["samples_preview"] = item_samples[:3]
++        item["duplicate_candidates"] = duplicate_candidates_by_profile.get(profile_id, [])
++        item["merge_targets"] = [
++            target
++            for target in items
++            if _as_int(target.get("id")) is not None and int(target["id"]) != profile_id
++        ]
+     return templates.TemplateResponse(
+         request,
+         "voices.html",
+@@ -1631,6 +1865,37 @@ async def ui_create_voice(
+     return RedirectResponse("/voices", status_code=303)
+ 
+ 
++@ui_router.post("/voices/{profile_id}/merge", response_class=HTMLResponse)
++async def ui_merge_voice(
++    profile_id: int,
++    target_profile_id: str = Form(default=""),
++) -> Any:
++    target_token = target_profile_id.strip()
++    if not target_token:
++        return HTMLResponse("target_profile_id is required", status_code=422)
++    try:
++        target_id = int(target_token)
++    except ValueError:
++        return HTMLResponse("target_profile_id must be an integer", status_code=422)
++    try:
++        merged = merge_canonical_speakers(
++            profile_id,
++            target_id,
++            settings=_settings,
++        )
++    except ValueError as exc:
++        message = str(exc)
++        status_code = 404 if "not found" in message else 422
++        return HTMLResponse(message, status_code=status_code)
++    _LOG.info(
++        "canonical speaker merged source_profile_id=%s target_profile_id=%s merged=%s",
++        profile_id,
++        target_id,
++        merged,
++    )
++    return RedirectResponse(f"/voices#voice-{target_id}", status_code=303)
 +
++
+ @ui_router.post("/voices/{profile_id}/delete", response_class=HTMLResponse)
+ async def ui_delete_voice(profile_id: int) -> Any:
+     delete_voice_profile(profile_id, settings=_settings)
+diff --git a/tasks/QUEUE.md b/tasks/QUEUE.md
+index e8e5204..249813f 100644
+--- a/tasks/QUEUE.md
++++ b/tasks/QUEUE.md
+@@ -447,6 +447,6 @@ Queue (in order)
+ - Depends on: PR-SPEAKER-BANK-CANONICAL-01
+ 
+ 88) PR-SPEAKER-UX-01: Speaker UX: canonical speaker management, duplicate merge UI, per-recording remap UI, degraded diarization visibility
+-- Status: TODO
++- Status: DONE
+ - Tasks file: tasks/PR-SPEAKER-UX-01.md
+ - Depends on: PR-ASR-MULTILINGUAL-01
+diff --git a/tests/test_cov_lan_app_export_ops_jobs.py b/tests/test_cov_lan_app_export_ops_jobs.py
+index 05b9fa7..a8877b2 100644
+--- a/tests/test_cov_lan_app_export_ops_jobs.py
++++ b/tests/test_cov_lan_app_export_ops_jobs.py
+@@ -64,7 +64,7 @@ def test_exporter_normalise_text_items_covers_limits_and_empty_after_bullet(monk
+     assert exporter._normalise_text_items(["x", "y"], max_items=10) == ["kept"]
+ 
+ 
+-def test_exporter_section_helpers_cover_optional_paths():
++def test_exporter_section_helpers_cover_optional_paths(monkeypatch: pytest.MonkeyPatch):
+     metadata = exporter._metadata_lines(
+         {
+             "id": "rec-1",
+@@ -132,6 +132,25 @@ def test_exporter_section_helpers_cover_optional_paths():
+     )
+     assert transcript == ["## Transcript", "fallback transcript"]
+ 
 +    monkeypatch.setattr(
-+        multilingual_asr,
-+        "plan_multilingual_chunks",
++        exporter,
++        "list_speaker_assignments",
 +        lambda *_a, **_k: [
-+            multilingual_asr.ChunkPlan(
-+                start=0.0,
-+                end=4.0,
-+                language="en",
-+                confidence=0.95,
-+                language_hint="en",
-+                uncertain=False,
-+                conflict=False,
-+                segment_count=1,
-+            ),
-+            multilingual_asr.ChunkPlan(
-+                start=4.0,
-+                end=8.0,
-+                language="en",
-+                confidence=0.95,
-+                language_hint="en",
-+                uncertain=False,
-+                conflict=False,
-+                segment_count=1,
-+            ),
++            {"diar_speaker_label": "S1", "voice_profile_name": "Alex"},
++            {"diar_speaker_label": " ", "voice_profile_name": "skip"},
++            {"diar_speaker_label": "S2", "voice_profile_name": " "},
 +        ],
 +    )
++    assert exporter._speaker_name_map("rec-1", settings=SimpleNamespace()) == {"S1": "Alex"}
++    assert exporter._speaker_display_label("S1", speaker_name_map={"S1": "Alex"}) == "Alex (S1)"
++    assert exporter._speaker_display_label("S2", speaker_name_map={"S1": "Alex"}) == "S2"
++    mapped_transcript = exporter._transcript_section(
++        {"text": "fallback transcript"},
++        [{"speaker": "S1", "text": "hello"}],
++        speaker_name_map={"S1": "Alex"},
++    )
++    assert mapped_transcript == ["## Transcript", "- **Alex (S1):** hello"]
 +
-+    chunk_calls = 0
-+
-+    def _transcribe(
-+        path: Path,
-+        override_lang: str | None,
-+    ) -> tuple[list[dict[str, object]], dict[str, object]]:
-+        nonlocal chunk_calls
-+        if path == audio:
-+            return (
-+                [{"start": 3.0, "end": 5.0, "text": "boundary overlap"}],
-+                {"language": "en", "language_probability": 0.92},
-+            )
-+        assert override_lang == "en"
-+        chunk_calls += 1
-+        if chunk_calls == 1:
-+            return (
-+                [{"start": 0.0, "end": 4.0, "text": "fresh first chunk"}],
-+                {"language": "en", "language_probability": 0.98},
-+            )
-+        return ([], {"language": "en", "language_probability": 0.92})
-+
-+    segments, _info, payload = multilingual_asr.run_language_aware_asr(
-+        audio,
-+        override_lang=None,
-+        configured_mode="force_multilingual",
-+        tmp_root=tmp_path / "tmp",
-+        transcribe_fn=_transcribe,
+ 
+ def test_build_onenote_markdown_language_detection_paths(tmp_path: Path):
+     cfg = _cfg(tmp_path)
+diff --git a/tests/test_cov_lan_app_ui_routes.py b/tests/test_cov_lan_app_ui_routes.py
+index f21bfbc..77fed1e 100644
+--- a/tests/test_cov_lan_app_ui_routes.py
++++ b/tests/test_cov_lan_app_ui_routes.py
+@@ -20,6 +20,7 @@ from lan_app.db import (
+     create_calendar_source,
+     create_job,
+     create_recording,
++    create_voice_profile,
+     init_db,
+ )
+ from lan_app.jobs import DuplicateRecordingJobError
+@@ -416,6 +417,93 @@ def test_audio_snippet_helpers_and_speakers_context_edge_paths(
+     assert parsed_ctx["speaker_rows"][0]["voice_profile_id"] is None
+ 
+ 
++def test_speaker_helper_paths_cover_duplicates_labels_and_notices(
++    tmp_path: Path,
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    cfg = _cfg(tmp_path)
++    recording_id = "rec-speaker-helper-extra"
++    derived = cfg.recordings_root / recording_id / "derived"
++    derived.mkdir(parents=True, exist_ok=True)
++    (derived / "diarization_status.json").write_text(
++        json.dumps({"degraded": True, "mode": "fallback"}),
++        encoding="utf-8",
++    )
++    (derived / "diarization_metadata.json").write_text(
++        json.dumps({"reason": "no pyannote"}),
++        encoding="utf-8",
 +    )
 +
-+    assert payload["used_multilingual_path"] is True
-+    assert [segment["text"] for segment in segments] == [
-+        "fresh first chunk",
-+        "boundary overlap",
++    candidate_rows = ui_routes._candidate_match_rows(  # noqa: SLF001
++        [
++            "skip",
++            {"voice_profile_id": "bad", "score": 0.4},
++            {"voice_profile_id": "1", "score": "bad"},
++            {"voice_profile_id": 2, "score": 0.6, "display_name": "Bea"},
++        ],
++        voice_profiles_by_id={1: {"display_name": "Alex"}},
++    )
++    assert candidate_rows == [
++        {"voice_profile_id": 2, "display_name": "Bea", "score": 0.6},
++        {"voice_profile_id": 1, "display_name": "Alex", "score": 0.0},
 +    ]
-+    assert segments[1]["start"] == 3.0
-+    assert segments[1]["end"] == 5.0
++
++    monkeypatch.setattr(
++        ui_routes,
++        "list_speaker_assignments",
++        lambda *_a, **_k: [
++            {"diar_speaker_label": "S1", "voice_profile_name": "Alex"},
++            {"diar_speaker_label": " ", "voice_profile_name": "skip"},
++            {"diar_speaker_label": "S2", "voice_profile_name": " "},
++        ],
++    )
++    assert ui_routes._recording_speaker_name_map(recording_id, settings=cfg) == {  # noqa: SLF001
++        "S1": "Alex"
++    }
++    assert ui_routes._speaker_display_label("S1", speaker_name_map={"S1": "Alex"}) == "Alex (S1)"  # noqa: SLF001
++    assert ui_routes._speaker_display_label("S2", speaker_name_map={"S1": "Alex"}) == "S2"  # noqa: SLF001
++
++    duplicates = ui_routes._voice_duplicate_candidates(  # noqa: SLF001
++        voice_samples=[
++            {
++                "voice_profile_id": 1,
++                "candidate_matches_json": [
++                    {"voice_profile_id": 1, "score": 0.95},
++                    {"voice_profile_id": 2, "score": 0.81},
++                    {"voice_profile_id": 2, "score": 0.8},
++                ],
++            },
++            {"voice_profile_id": None, "candidate_matches_json": [{"voice_profile_id": 2, "score": 0.5}]},
++        ],
++        voice_profiles_by_id={1: {"display_name": "Alex"}, 2: {"display_name": "Bea"}},
++    )
++    assert duplicates == {
++        1: [{"voice_profile_id": 2, "display_name": "Bea", "best_score": 0.81, "match_count": 1}]
++    }
++
++    assert ui_routes._speaker_review_notices(  # noqa: SLF001
++        recording_id,
++        low_confidence_count=2,
++        settings=cfg,
++    ) == [
++        "Diarization ran in degraded fallback mode (fallback): no pyannote.",
++        "2 speaker matches are low confidence and need manual review.",
++    ]
++
++    (derived / "diarization_status.json").write_text(
++        json.dumps({"degraded": True, "mode": "pyannote"}),
++        encoding="utf-8",
++    )
++    (derived / "diarization_metadata.json").write_text("{}", encoding="utf-8")
++    assert ui_routes._speaker_review_notices(  # noqa: SLF001
++        recording_id,
++        low_confidence_count=0,
++        settings=cfg,
++    ) == [
++        "Diarization ran in degraded fallback mode; speaker results may need manual review."
++    ]
 +
 +
- def test_run_language_aware_asr_multilingual_chunk_error_falls_back_to_initial_asr(
+ def test_project_language_and_resummarize_helpers(
      tmp_path: Path,
- ) -> None:
+     monkeypatch: pytest.MonkeyPatch,
+@@ -731,6 +819,37 @@ def test_create_and_assign_speaker_validation_paths(
+     assert resp.status_code == 503
+ 
+ 
++def test_merge_voice_validation_and_error_paths(
++    client: tuple[AppSettings, TestClient],
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    cfg, c = client
++    source = create_voice_profile("Source", settings=cfg)
++    target = create_voice_profile("Target", settings=cfg)
++    base = f"/voices/{source['id']}/merge"
++
++    assert c.post(base, data={"target_profile_id": ""}).status_code == 422
++    assert c.post(base, data={"target_profile_id": "bad"}).status_code == 422
++
++    monkeypatch.setattr(
++        ui_routes,
++        "merge_canonical_speakers",
++        lambda *_a, **_k: (_ for _ in ()).throw(ValueError("target_profile_id was not found")),
++    )
++    assert c.post(base, data={"target_profile_id": str(target["id"])}).status_code == 404
++
++    monkeypatch.setattr(
++        ui_routes,
++        "merge_canonical_speakers",
++        lambda *_a, **_k: (_ for _ in ()).throw(ValueError("source_profile_id and target_profile_id must differ")),
++    )
++    assert c.post(base, data={"target_profile_id": str(target["id"])}).status_code == 422
++
++    monkeypatch.setattr(ui_routes, "merge_canonical_speakers", lambda *_a, **_k: {})
++    ok = c.post(base, data={"target_profile_id": str(target["id"])})
++    assert ok.status_code == 303
++
++
+ def test_add_speaker_sample_validation_and_error_paths(
+     client: tuple[AppSettings, TestClient],
+     monkeypatch: pytest.MonkeyPatch,
+diff --git a/tests/test_export.py b/tests/test_export.py
+index 8134851..f4af237 100644
+--- a/tests/test_export.py
++++ b/tests/test_export.py
+@@ -10,7 +10,12 @@ from fastapi.testclient import TestClient
+ from lan_app import api, ui_routes
+ from lan_app.config import AppSettings
+ from lan_app.constants import RECORDING_STATUS_READY
+-from lan_app.db import create_recording, init_db
++from lan_app.db import (
++    create_recording,
++    create_voice_profile,
++    init_db,
++    set_speaker_assignment,
++)
+ 
+ 
+ def _cfg(tmp_path: Path) -> AppSettings:
+@@ -37,6 +42,14 @@ def test_ui_recording_export_zip_contains_markdown_and_manifest(tmp_path: Path,
+         status=RECORDING_STATUS_READY,
+         settings=cfg,
+     )
++    profile = create_voice_profile("Alex Finance", settings=cfg)
++    set_speaker_assignment(
++        recording_id=recording_id,
++        diar_speaker_label="S1",
++        voice_profile_id=profile["id"],
++        confidence=1.0,
++        settings=cfg,
++    )
+ 
+     derived = cfg.recordings_root / recording_id / "derived"
+     derived.mkdir(parents=True, exist_ok=True)
+@@ -79,5 +92,6 @@ def test_ui_recording_export_zip_contains_markdown_and_manifest(tmp_path: Path,
+ 
+     markdown = archive.read("onenote.md").decode("utf-8")
+     assert "Budget sync" in markdown
++    assert "Alex Finance (S1)" in markdown
+     manifest = json.loads(archive.read("manifest.json").decode("utf-8"))
+     assert manifest["recording_id"] == recording_id
+diff --git a/tests/test_ui_routes.py b/tests/test_ui_routes.py
+index 5a39f44..a64b956 100644
+--- a/tests/test_ui_routes.py
++++ b/tests/test_ui_routes.py
+@@ -518,8 +518,13 @@ def test_recording_detail_speakers_tab_assignment_persists(tmp_path, monkeypatch
+     assert page.status_code == 200
+     assert "Speaker Assignments" in page.text
+     assert "Alice Example" in page.text
++    assert "Save remap" in page.text
+     assert "Add sample from this recording" in page.text
+ 
++    overview = TestClient(api.app, follow_redirects=True).get("/recordings/rec-speakers-1")
++    assert overview.status_code == 200
++    assert "Alice Example (S1)" in overview.text
++
+ 
+ def test_recording_detail_speakers_create_and_assign(tmp_path, monkeypatch):
+     cfg = _cfg(tmp_path)
+@@ -605,6 +610,51 @@ def test_recording_detail_speakers_add_sample_links_snippet_and_audio_route(tmp_
+     assert audio_resp.headers["content-type"].startswith("audio/wav")
+ 
+ 
++def test_recording_detail_speakers_show_degraded_notice_and_low_confidence(tmp_path, monkeypatch):
++    cfg = _cfg(tmp_path)
++    monkeypatch.setattr(api, "_settings", cfg)
++    monkeypatch.setattr(ui_routes, "_settings", cfg)
++    init_db(cfg)
++    create_recording(
++        "rec-speakers-review-1",
++        source="drive",
++        source_filename="speakers-review.mp3",
++        status=RECORDING_STATUS_READY,
++        settings=cfg,
++    )
++    _seed_speaker_artifacts(cfg, "rec-speakers-review-1")
++    profile = create_voice_profile("Review Candidate", settings=cfg)
++    set_speaker_assignment(
++        recording_id="rec-speakers-review-1",
++        diar_speaker_label="S1",
++        voice_profile_id=None,
++        confidence=0.61,
++        candidate_matches=[{"voice_profile_id": profile["id"], "score": 0.61}],
++        low_confidence=True,
++        keep_unmatched=True,
++        settings=cfg,
++    )
++    derived = cfg.recordings_root / "rec-speakers-review-1" / "derived"
++    (derived / "diarization_status.json").write_text(
++        json.dumps(
++            {
++                "degraded": True,
++                "mode": "fallback",
++                "reason": "pyannote unavailable",
++            }
++        ),
++        encoding="utf-8",
++    )
++
++    c = TestClient(api.app, follow_redirects=True)
++    r = c.get("/recordings/rec-speakers-review-1?tab=speakers")
++    assert r.status_code == 200
++    assert "degraded fallback mode" in r.text
++    assert "Low confidence" in r.text
++    assert "Below auto-match threshold 0.75" in r.text
++    assert "Review Candidate (0.61)" in r.text
++
++
+ def test_recording_detail_metrics_tab_uses_summary_payload(tmp_path, monkeypatch):
+     cfg = _cfg(tmp_path)
+     monkeypatch.setattr(api, "_settings", cfg)
+@@ -920,7 +970,7 @@ def test_projects_delete(tmp_path, monkeypatch):
+ def test_voices_empty(client):
+     r = client.get("/voices")
+     assert r.status_code == 200
+-    assert "Voice Profiles" in r.text
++    assert "Canonical Speakers" in r.text
+ 
+ 
+ def test_voices_create_and_list(tmp_path, monkeypatch):
+@@ -960,6 +1010,69 @@ def test_voices_delete(tmp_path, monkeypatch):
+     assert list_voice_profiles(settings=cfg) == []
+ 
+ 
++def test_voices_page_renders_duplicate_candidates_and_sample_inspection(tmp_path, monkeypatch):
++    cfg = _cfg(tmp_path)
++    monkeypatch.setattr(api, "_settings", cfg)
++    monkeypatch.setattr(ui_routes, "_settings", cfg)
++    init_db(cfg)
++    create_recording(
++        "rec-voices-1",
++        source="upload",
++        source_filename="voices.wav",
++        status=RECORDING_STATUS_READY,
++        settings=cfg,
++    )
++    left = create_voice_profile("Alice Canonical", settings=cfg)
++    right = create_voice_profile("Alicia Duplicate", settings=cfg)
++    sample = create_voice_sample(
++        voice_profile_id=left["id"],
++        recording_id="rec-voices-1",
++        diar_speaker_label="S1",
++        snippet_path="recordings/rec-voices-1/derived/snippets/S1/1.wav",
++        candidate_matches=[
++            {"voice_profile_id": left["id"], "score": 0.97},
++            {"voice_profile_id": right["id"], "score": 0.83},
++        ],
++        settings=cfg,
++    )
++
++    c = TestClient(api.app, follow_redirects=True)
++    r = c.get("/voices")
++    assert r.status_code == 200
++    assert "Potential duplicates" in r.text
++    assert "Alicia Duplicate (1 samples, 0.83)" in r.text
++    assert "Inspect samples" in r.text
++    assert f"/ui/voice-samples/{sample['id']}/audio" in r.text
++    assert "Merge into" in r.text
++
++
++def test_voices_merge_route_calls_backend_and_redirects_to_target_anchor(tmp_path, monkeypatch):
++    cfg = _cfg(tmp_path)
++    monkeypatch.setattr(api, "_settings", cfg)
++    monkeypatch.setattr(ui_routes, "_settings", cfg)
++    init_db(cfg)
++    source = create_voice_profile("Source Voice", settings=cfg)
++    target = create_voice_profile("Target Voice", settings=cfg)
++    seen: dict[str, int | AppSettings] = {}
++
++    def _merge(source_profile_id: int, target_profile_id: int, *, settings: AppSettings):
++        seen["source"] = source_profile_id
++        seen["target"] = target_profile_id
++        seen["settings"] = settings
++        return {"target": target_profile_id}
++
++    monkeypatch.setattr(ui_routes, "merge_canonical_speakers", _merge)
++
++    c = TestClient(api.app, follow_redirects=False)
++    r = c.post(
++        f"/voices/{source['id']}/merge",
++        data={"target_profile_id": str(target["id"])},
++    )
++    assert r.status_code == 303
++    assert r.headers["location"] == f"/voices#voice-{target['id']}"
++    assert seen == {"source": source["id"], "target": target["id"], "settings": cfg}
++
++
+ # ---------------------------------------------------------------------------
+ # Queue / Jobs
+ # ---------------------------------------------------------------------------

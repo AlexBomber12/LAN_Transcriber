@@ -10,7 +10,12 @@ from fastapi.testclient import TestClient
 from lan_app import api, ui_routes
 from lan_app.config import AppSettings
 from lan_app.constants import RECORDING_STATUS_READY
-from lan_app.db import create_recording, init_db
+from lan_app.db import (
+    create_recording,
+    create_voice_profile,
+    init_db,
+    set_speaker_assignment,
+)
 
 
 def _cfg(tmp_path: Path) -> AppSettings:
@@ -35,6 +40,14 @@ def test_ui_recording_export_zip_contains_markdown_and_manifest(tmp_path: Path, 
         source="upload",
         source_filename="team-sync.wav",
         status=RECORDING_STATUS_READY,
+        settings=cfg,
+    )
+    profile = create_voice_profile("Alex Finance", settings=cfg)
+    set_speaker_assignment(
+        recording_id=recording_id,
+        diar_speaker_label="S1",
+        voice_profile_id=profile["id"],
+        confidence=1.0,
         settings=cfg,
     )
 
@@ -79,5 +92,6 @@ def test_ui_recording_export_zip_contains_markdown_and_manifest(tmp_path: Path, 
 
     markdown = archive.read("onenote.md").decode("utf-8")
     assert "Budget sync" in markdown
+    assert "Alex Finance (S1)" in markdown
     manifest = json.loads(archive.read("manifest.json").decode("utf-8"))
     assert manifest["recording_id"] == recording_id

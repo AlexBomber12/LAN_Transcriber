@@ -47,6 +47,8 @@ docker compose run --rm api python -m lan_app.healthchecks app
    - The server-rendered UI shows timestamps in local Europe/Rome time.
    - Duration is sourced from `derived/audio_sanitized.wav` when it exists, otherwise from the raw upload.
    - Canonical speaker records keep one active person entry with many samples; low-confidence matches stay reviewable instead of auto-merging.
+   - Use the `speakers` tab to remap `S1`/`S2` diarization labels to canonical speakers or leave them unmatched; the export preview updates to the corrected `Name (Sx)` labels.
+   - If diarization fell back to degraded mode or a match stayed low confidence, the speakers tab shows a visible warning badge/message.
 6. Download export bundle from `GET /ui/recordings/{recording_id}/export.zip`.
 7. Deleting a recording removes the DB row plus `/data/recordings/<recording_id>/raw`, `derived`, `logs`, and other remaining files under that recording root. If cleanup fails, delete returns an error.
 
@@ -55,6 +57,7 @@ docker compose run --rm api python -m lan_app.healthchecks app
 1. Treat `/voices` entries as canonical people, not one-off embeddings.
 2. Backend merge operations move all samples and references from duplicate speaker A to canonical speaker B.
 3. After a merge, routing/training references follow the target canonical speaker automatically.
+4. Use `/voices` to review linked samples, inspect duplicate evidence, and run the merge with an explicit target speaker.
 
 ### 1.3 Upload size controls
 

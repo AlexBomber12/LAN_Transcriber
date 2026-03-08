@@ -1,10 +1,14 @@
 {% extends "base.html" %}
-{% block title %}Voice Profiles – LAN Transcriber{% endblock %}
+{% block title %}Canonical Speakers – LAN Transcriber{% endblock %}
 {% block content %}
-<h1>Voice Profiles</h1>
+<h1>Canonical Speakers</h1>
+
+<p style="margin:0 0 12px 0;color:#555">
+  Manage one canonical person per real speaker, inspect linked samples, and safely merge duplicates.
+</p>
 
 <div class="section">
-  <h2>Add voice profile</h2>
+  <h2>Add canonical speaker</h2>
   <form method="post" action="/voices">
     <div class="form-row">
       <label>Display name:</label>
@@ -27,21 +31,68 @@
     <thead>
       <tr>
         <th>ID</th>
-        <th>Display name</th>
+        <th>Canonical speaker</th>
         <th>Notes</th>
+        <th>Updated</th>
         <th>Samples</th>
-        <th></th>
+        <th>Potential duplicates</th>
+        <th>Actions</th>
       </tr>
     </thead>
     <tbody>
       {% for v in items %}
-      <tr>
+      <tr id="voice-{{ v.id }}">
         <td>{{ v.id }}</td>
         <td>{{ v.display_name }}</td>
         <td>{{ v.notes or '—' }}</td>
-        <td>{{ v.sample_count or 0 }}</td>
         <td>
-          <form method="post" action="/voices/{{ v.id }}/delete" style="display:inline" onsubmit="return confirm('Delete voice profile ' + this.dataset.name + '?')" data-name="{{ v.display_name }}">
+          {{ v.updated_at[:19].replace('T',' ') if v.updated_at else '—' }}
+        </td>
+        <td style="white-space:normal;max-width:320px">
+          {{ v.sample_count or 0 }}
+          {% if v.samples_preview %}
+          <details style="margin-top:4px">
+            <summary>Inspect samples</summary>
+            {% for s in v.samples_preview %}
+            <div style="margin-top:6px;padding-top:6px;border-top:1px solid #dde">
+              <div style="font-size:11px;color:#555">
+                {{ s.recording_id or 'manual' }} / {{ s.diar_speaker_label or '—' }}
+              </div>
+              <audio controls preload="none" style="height:26px;max-width:240px;margin-top:4px">
+                <source src="{{ s.audio_url }}" type="audio/wav">
+              </audio>
+            </div>
+            {% endfor %}
+            {% if (v.sample_count or 0) > (v.samples_preview|length) %}
+            <div style="margin-top:6px;font-size:11px;color:#555">More samples are listed below.</div>
+            {% endif %}
+          </details>
+          {% endif %}
+        </td>
+        <td style="white-space:normal;max-width:320px">
+          {% if v.duplicate_candidates %}
+            {% for candidate in v.duplicate_candidates %}
+            <div style="margin-bottom:4px">
+              {{ candidate.display_name }} ({{ candidate.match_count }} samples, {{ '%.2f'|format(candidate.best_score) }})
+            </div>
+            {% endfor %}
+          {% else %}
+          <span class="placeholder" style="padding:0">No duplicate evidence yet.</span>
+          {% endif %}
+        </td>
+        <td style="white-space:normal;max-width:360px">
+          {% if v.merge_targets %}
+          <form method="post" action="/voices/{{ v.id }}/merge" onsubmit="return confirm('Merge ' + this.dataset.name + ' into the selected canonical speaker?')" data-name="{{ v.display_name }}" style="margin-bottom:6px">
+            <select name="target_profile_id" style="width:180px" required>
+              <option value="">Merge into…</option>
+              {% for target in v.merge_targets %}
+              <option value="{{ target.id }}">{{ target.display_name }}</option>
+              {% endfor %}
+            </select>
+            <button class="btn" type="submit">Merge</button>
+          </form>
+          {% endif %}
+          <form method="post" action="/voices/{{ v.id }}/delete" style="display:inline" onsubmit="return confirm('Delete canonical speaker ' + this.dataset.name + '?')" data-name="{{ v.display_name }}">
             <button class="btn btn-danger" type="submit">Delete</button>
           </form>
         </td>
@@ -50,7 +101,7 @@
     </tbody>
   </table>
   {% else %}
-  <p class="placeholder">No voice profiles yet. Add one above.</p>
+  <p class="placeholder">No canonical speakers yet. Add one above.</p>
   {% endif %}
 </div>
 

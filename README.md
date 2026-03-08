@@ -96,6 +96,9 @@ Operational setup, failure handling, backup/restore, and upgrade steps are docum
 - `voice_profiles` now represent canonical speakers: one real person should map to one active record.
 - `voice_samples` can store many samples per canonical speaker, including provenance and review metadata for low-confidence matches.
 - Duplicate speakers can be merged backend-side without losing samples, assignments, or routing references.
+- `/voices` is the canonical speaker management page: inspect linked samples, review likely duplicates, and merge duplicate speakers into the surviving canonical record.
+- `/recordings/{recording_id}?tab=speakers` lets you remap diarized labels (`S1`, `S2`, ...) to canonical speakers or leave them unmatched; exports render the corrected canonical names as `Name (Sx)`.
+- When diarization falls back to degraded mode or a speaker match is low confidence, the recording detail page shows an explicit warning instead of silently trusting the labels.
 
 ## Runtime data root
 
