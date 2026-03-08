@@ -309,6 +309,18 @@ def test_private_multilingual_helpers_cover_edge_paths() -> None:
     )
     assert fallback_only == {"language": "es"}
 
+    selected = multilingual_asr._select_segments_for_range(  # noqa: SLF001
+        [
+            "skip",
+            {"start": 2.0, "end": 1.0, "text": "boundary"},
+            {"start": 1.0, "end": 3.0, "text": "inside"},
+            {"start": 3.0, "end": 4.0, "text": "outside"},
+        ],
+        start_seconds=1.5,
+        end_seconds=2.5,
+    )
+    assert [row["text"] for row in selected] == ["boundary", "inside"]
+
     merged = multilingual_asr._merge_result_language_info(  # noqa: SLF001
         [{"result_language": "en", "start": 1.0, "end": 1.0}],
         fallback_info={"language": "es"},
@@ -455,6 +467,46 @@ def test_run_language_aware_asr_multilingual_executes_chunk_hints_and_conflicts(
     assert segments[1]["start"] == 4.0
     assert segments[1]["language_conflict"] is True
     assert segments[1]["language_hint"] == "es"
+    assert info["language"] == "en"
+
+
+def test_run_language_aware_asr_multilingual_preserves_initial_segments_when_chunk_is_empty(
+    tmp_path: Path,
+) -> None:
+    audio = _write_pcm_wav(tmp_path / "mixed-empty-chunk.wav", duration_sec=8.0)
+
+    def _transcribe(
+        path: Path,
+        override_lang: str | None,
+    ) -> tuple[list[dict[str, object]], dict[str, object]]:
+        if path == audio:
+            return (
+                [
+                    {"start": 0.0, "end": 4.0, "text": "hello team thanks"},
+                    {"start": 4.0, "end": 8.0, "text": "hola equipo gracias"},
+                ],
+                {"language": "en", "language_probability": 0.92},
+            )
+        if override_lang == "en":
+            return (
+                [{"start": 0.0, "end": 4.0, "text": "hello team thanks"}],
+                {"language": "en", "language_probability": 0.98},
+            )
+        return ([], {})
+
+    segments, info, payload = multilingual_asr.run_language_aware_asr(
+        audio,
+        override_lang=None,
+        configured_mode="auto",
+        tmp_root=tmp_path / "tmp",
+        transcribe_fn=_transcribe,
+    )
+
+    assert payload["used_multilingual_path"] is True
+    assert segments[0]["text"] == "hello team thanks"
+    assert segments[1]["text"] == "hola equipo gracias"
+    assert segments[1]["start"] == 4.0
+    assert segments[1]["language"] == "es"
     assert info["language"] == "en"
 
 

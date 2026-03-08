@@ -424,15 +424,12 @@ def _review_reason_from_routing(
     summary_payload = _load_json_dict(derived_dir / "summary.json")
     diarization_payload = _load_json_dict(derived_dir / "diarization_metadata.json")
     transcript_review = transcript_payload.get("review")
-    if (
-        isinstance(transcript_review, dict)
-        and bool(transcript_review.get("required"))
-        and str(transcript_review.get("reason_code") or "").strip()
-        and str(transcript_review.get("reason_text") or "").strip()
-    ):
+    if isinstance(transcript_review, dict) and bool(transcript_review.get("required")):
         return (
-            str(transcript_review.get("reason_code")).strip(),
-            str(transcript_review.get("reason_text")).strip(),
+            str(transcript_review.get("reason_code") or "").strip()
+            or "transcript_review_required",
+            str(transcript_review.get("reason_text") or "").strip()
+            or "Multilingual transcript review is required.",
         )
 
     parse_reason = str(summary_payload.get("parse_error_reason") or "").strip()

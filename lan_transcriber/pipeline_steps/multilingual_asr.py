@@ -260,6 +260,26 @@ def _annotate_chunk_segments(
     return annotated
 
 
+def _select_segments_for_range(
+    raw_segments: list[dict[str, Any]],
+    *,
+    start_seconds: float,
+    end_seconds: float,
+) -> list[dict[str, Any]]:
+    selected: list[dict[str, Any]] = []
+    for row in raw_segments:
+        if not isinstance(row, dict):
+            continue
+        seg_start = safe_float(row.get("start"), default=0.0)
+        seg_end = safe_float(row.get("end"), default=seg_start)
+        if seg_end < seg_start:
+            seg_end = seg_start
+        if seg_end <= start_seconds or seg_start >= end_seconds:
+            continue
+        selected.append(dict(row))
+    return selected
+
+
 def _merge_result_language_info(
     chunk_payloads: list[dict[str, Any]],
     *,
@@ -431,18 +451,31 @@ def run_language_aware_asr(
                 if result_confidence is not None
                 else chunk.confidence
             )
-
-            merged_segments.extend(
-                _annotate_chunk_segments(
-                    chunk_segments,
-                    offset_seconds=chunk.start,
+            annotated_segments = _annotate_chunk_segments(
+                chunk_segments,
+                offset_seconds=chunk.start,
+                language=effective_language,
+                confidence=effective_confidence,
+                language_hint=chunk.language_hint,
+                uncertain=uncertain,
+                conflict=conflict,
+            )
+            if not annotated_segments:
+                annotated_segments = _annotate_chunk_segments(
+                    _select_segments_for_range(
+                        initial_segments,
+                        start_seconds=chunk.start,
+                        end_seconds=chunk.end,
+                    ),
+                    offset_seconds=0.0,
                     language=effective_language,
                     confidence=effective_confidence,
                     language_hint=chunk.language_hint,
                     uncertain=uncertain,
                     conflict=conflict,
                 )
-            )
+
+            merged_segments.extend(annotated_segments)
             payload = chunk.to_payload(index=index, total=len(chunks))
             payload["result_language"] = effective_language
             payload["result_uncertain"] = uncertain

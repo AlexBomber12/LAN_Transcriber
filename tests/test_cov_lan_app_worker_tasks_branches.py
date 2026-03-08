@@ -1108,6 +1108,28 @@ def test_review_reason_helpers_cover_exception_and_routing_paths(tmp_path: Path)
         "Language detection conflicted across multilingual chunks.",
     )
 
+    (derived / "transcript.json").write_text(
+        json.dumps(
+            {
+                "review": {
+                    "required": True,
+                    "reason_code": "multilingual_uncertain",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    (derived / "summary.json").write_text("{}", encoding="utf-8")
+    (derived / "diarization_metadata.json").write_text("{}", encoding="utf-8")
+    assert worker_tasks._review_reason_from_routing(  # noqa: SLF001
+        recording_id="rec-review-reason-1",
+        settings=cfg,
+        routing={"confidence": 0.95, "threshold": 0.5},
+    ) == (
+        "multilingual_uncertain",
+        "Multilingual transcript review is required.",
+    )
+
     (derived / "transcript.json").write_text("{}", encoding="utf-8")
     (derived / "summary.json").write_text(
         json.dumps({"parse_error_reason": "json_object_not_found"}),
