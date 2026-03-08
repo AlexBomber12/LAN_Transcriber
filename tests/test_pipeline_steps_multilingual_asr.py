@@ -593,6 +593,47 @@ def test_run_language_aware_asr_multilingual_empty_chunks_do_not_duplicate_fallb
     assert segments[0]["end"] == 5.0
 
 
+def test_run_language_aware_asr_multilingual_chunk_error_falls_back_to_initial_asr(
+    tmp_path: Path,
+) -> None:
+    audio = _write_pcm_wav(tmp_path / "mixed-chunk-error.wav", duration_sec=8.0)
+
+    def _transcribe(
+        path: Path,
+        override_lang: str | None,
+    ) -> tuple[list[dict[str, object]], dict[str, object]]:
+        if path == audio:
+            return (
+                [
+                    {"start": 0.0, "end": 4.0, "text": "hello team thanks"},
+                    {"start": 4.0, "end": 8.0, "text": "hola equipo gracias"},
+                ],
+                {"language": "en", "language_probability": 0.92},
+            )
+        if override_lang == "en":
+            return (
+                [{"start": 0.0, "end": 4.0, "text": "hello team thanks"}],
+                {"language": "en", "language_probability": 0.98},
+            )
+        raise RuntimeError("synthetic chunk failure")
+
+    segments, info, payload = multilingual_asr.run_language_aware_asr(
+        audio,
+        override_lang=None,
+        configured_mode="auto",
+        tmp_root=tmp_path / "tmp",
+        transcribe_fn=_transcribe,
+    )
+
+    assert payload["used_multilingual_path"] is False
+    assert payload["selection_reason"] == "multilingual_chunk_transcription_failed"
+    assert [segment["text"] for segment in segments] == [
+        "hello team thanks",
+        "hola equipo gracias",
+    ]
+    assert info["language"] == "en"
+
+
 def test_run_language_aware_asr_multilingual_without_confidence_payload(
     tmp_path: Path,
 ) -> None:

@@ -458,7 +458,30 @@ def run_language_aware_asr(
                 end_sec=chunk.end,
                 output_path=tmp_dir / f"chunk-{index:03d}.wav",
             )
-            chunk_segments, chunk_info = transcribe_fn(chunk_audio_path, chunk.language_hint)
+            try:
+                chunk_segments, chunk_info = transcribe_fn(
+                    chunk_audio_path,
+                    chunk.language_hint,
+                )
+            except Exception as exc:
+                payload = {
+                    "configured_mode": configured_mode,
+                    "selected_mode": "single_language",
+                    "selection_reason": "multilingual_chunk_transcription_failed",
+                    "used_multilingual_path": False,
+                    "initial_detected_language": detected_language or "unknown",
+                    "initial_language_distribution": initial_analysis.distribution,
+                    "chunks": [],
+                }
+                _log(
+                    step_log_callback,
+                    (
+                        "multilingual asr: single_language "
+                        "reason=multilingual_chunk_transcription_failed "
+                        f"chunk={index} error={exc.__class__.__name__}"
+                    ),
+                )
+                return initial_segments, initial_info, payload
             result_language, result_confidence = _language_from_info(chunk_info)
             conflict = bool(
                 chunk.language_hint is not None
