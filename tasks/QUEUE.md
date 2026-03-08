@@ -442,7 +442,7 @@ Queue (in order)
 - Depends on: PR-DIARIZATION-AUTO-PROFILE-01
 
 87) PR-ASR-MULTILINGUAL-01: Mixed-language ASR pipeline: segment-level language ID, per-chunk language hints, language spans artifacts, and review flags for uncertain multilingual chunks
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-ASR-MULTILINGUAL-01.md
 - Depends on: PR-SPEAKER-BANK-CANONICAL-01
 

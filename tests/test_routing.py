@@ -38,6 +38,12 @@ def _write_summary(cfg: AppSettings, recording_id: str, payload: dict[str, objec
     (derived / "summary.json").write_text(json.dumps(payload), encoding="utf-8")
 
 
+def _write_transcript(cfg: AppSettings, recording_id: str, payload: dict[str, object]) -> None:
+    derived = cfg.recordings_root / recording_id / "derived"
+    derived.mkdir(parents=True, exist_ok=True)
+    (derived / "transcript.json").write_text(json.dumps(payload), encoding="utf-8")
+
+
 def test_refresh_recording_routing_auto_selects_when_confident(tmp_path: Path):
     cfg = _cfg(tmp_path)
     cfg.routing_auto_select_threshold = 0.3
@@ -171,6 +177,83 @@ def test_refresh_recording_routing_preserves_manual_assignment_when_confident(
     assert recording["project_assignment_source"] == "manual"
 
 
+def test_refresh_recording_routing_keeps_needs_review_when_transcript_review_required(
+    tmp_path: Path,
+):
+    cfg = _cfg(tmp_path)
+    cfg.routing_auto_select_threshold = 0.3
+    init_db(cfg)
+    roadmap = create_project("Roadmap", settings=cfg)
+    create_recording(
+        "rec-route-transcript-review-1",
+        source="drive",
+        source_filename="roadmap-sync.mp3",
+        status=RECORDING_STATUS_READY,
+        settings=cfg,
+    )
+    upsert_calendar_match(
+        recording_id="rec-route-transcript-review-1",
+        candidates=[
+            {
+                "event_id": "evt-roadmap",
+                "subject": "Roadmap sync",
+                "organizer": "Alex",
+                "attendees": ["Priya"],
+                "score": 0.95,
+                "rationale": "manual",
+            }
+        ],
+        selected_event_id="evt-roadmap",
+        selected_confidence=0.95,
+        settings=cfg,
+    )
+    _write_summary(
+        cfg,
+        "rec-route-transcript-review-1",
+        {
+            "topic": "Roadmap planning",
+            "summary_bullets": ["Roadmap priorities and milestones"],
+        },
+    )
+    _write_transcript(
+        cfg,
+        "rec-route-transcript-review-1",
+        {
+            "review": {
+                "required": True,
+                "reason_code": "multilingual_uncertain",
+                "reason_text": "Language detection conflicted across multilingual chunks.",
+            }
+        },
+    )
+    increment_project_keyword_weights(
+        project_id=roadmap["id"],
+        keyword_deltas={
+            "cal:roadmap": 3.0,
+            "tag:roadmap": 3.0,
+            "party:alex": 2.0,
+        },
+        settings=cfg,
+    )
+
+    decision = refresh_recording_routing(
+        "rec-route-transcript-review-1",
+        settings=cfg,
+        apply_workflow=True,
+    )
+
+    assert decision["suggested_project_id"] == roadmap["id"]
+    assert decision["confidence"] >= cfg.routing_auto_select_threshold
+    assert decision["auto_selected"] is True
+    assert decision["status_after_routing"] == RECORDING_STATUS_NEEDS_REVIEW
+    assert any("Language detection conflicted" in row for row in decision["rationale"])
+
+    recording = get_recording("rec-route-transcript-review-1", settings=cfg)
+    assert recording is not None
+    assert recording["project_id"] == roadmap["id"]
+    assert recording["project_assignment_source"] == "auto"
+
+
 def test_refresh_recording_routing_marks_needs_review_when_low_confidence(tmp_path: Path):
     cfg = _cfg(tmp_path)
     init_db(cfg)
@@ -268,6 +351,40 @@ def test_refresh_recording_routing_without_projects_forces_needs_review(tmp_path
     assert decision["suggested_project_id"] is None
     assert decision["confidence"] == 0.0
     assert decision["status_after_routing"] == RECORDING_STATUS_NEEDS_REVIEW
+
+
+def test_refresh_recording_routing_without_projects_keeps_transcript_review_reason(
+    tmp_path: Path,
+):
+    cfg = _cfg(tmp_path)
+    init_db(cfg)
+    create_recording(
+        "rec-route-no-projects-review-1",
+        source="drive",
+        source_filename="setup.mp3",
+        status=RECORDING_STATUS_READY,
+        settings=cfg,
+    )
+    _write_transcript(
+        cfg,
+        "rec-route-no-projects-review-1",
+        {
+            "review": {
+                "required": True,
+                "reason_code": "multilingual_uncertain",
+                "reason_text": "",
+            }
+        },
+    )
+
+    decision = refresh_recording_routing(
+        "rec-route-no-projects-review-1",
+        settings=cfg,
+        apply_workflow=True,
+    )
+
+    assert decision["status_after_routing"] == RECORDING_STATUS_NEEDS_REVIEW
+    assert decision["rationale"][-1] == "Multilingual transcript review is required."
 
 
 def test_delete_project_clears_recording_suggested_project_id(tmp_path: Path):

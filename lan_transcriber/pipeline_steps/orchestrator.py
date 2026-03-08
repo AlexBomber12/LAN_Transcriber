@@ -50,6 +50,7 @@ from .speaker_turns import (
     build_speaker_turns,
     normalise_asr_segments,
 )
+from .multilingual_asr import run_language_aware_asr
 from .summary_builder import (
     _build_structured_summary_payload,
     build_structured_summary_prompts,
@@ -148,6 +149,16 @@ class Settings(BaseSettings):
     asr_compute_type: str | None = None
     asr_batch_size: int = 16
     asr_enable_align: bool = True
+    asr_multilingual_mode: Literal[
+        "auto", "force_single_language", "force_multilingual"
+    ] = Field(
+        default="auto",
+        validation_alias=AliasChoices(
+            "asr_multilingual_mode",
+            "ASR_MULTILINGUAL_MODE",
+            "LAN_ASR_MULTILINGUAL_MODE",
+        ),
+    )
     vad_method: Literal["silero", "pyannote"] = "silero"
     embed_threshold: float = 0.65
     merge_similar: float = 0.9
@@ -1044,12 +1055,25 @@ async def run_pipeline(
 
     try:
         await _emit_progress(progress_callback, stage="stt", progress=0.10)
-        (raw_segments, info), diarization = await asyncio.gather(
+        def _transcribe_chunk(
+            chunk_audio_path: Path,
+            chunk_language_hint: str | None,
+        ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+            return _whisperx_asr(
+                chunk_audio_path,
+                override_lang=chunk_language_hint,
+                cfg=cfg,
+                step_log_callback=step_log_callback,
+            )
+
+        (raw_segments, info, asr_execution), diarization = await asyncio.gather(
             asyncio.to_thread(
-                _whisperx_asr,
+                run_language_aware_asr,
                 audio_path,
                 override_lang=override_lang,
-                cfg=cfg,
+                configured_mode=cfg.asr_multilingual_mode,
+                tmp_root=cfg.tmp_root,
+                transcribe_fn=_transcribe_chunk,
                 step_log_callback=step_log_callback,
             ),
             diariser(audio_path),
@@ -1068,9 +1092,23 @@ async def run_pipeline(
         await _emit_progress(progress_callback, stage="align", progress=0.68)
         language_info = _language_payload(info)
         detected_language = normalise_language_code(language_info["detected"]) if language_info["detected"] != "unknown" else None
-        language_analysis = analyse_languages(asr_segments, detected_language=detected_language, transcript_language_override=override_lang)
-        if language_info["detected"] == "unknown" and language_analysis.dominant_language != "unknown":
+        language_analysis = analyse_languages(
+            asr_segments,
+            detected_language=(
+                None if asr_execution.get("used_multilingual_path") else detected_language
+            ),
+            transcript_language_override=override_lang,
+        )
+        if (
+            asr_execution.get("used_multilingual_path")
+            or language_info["detected"] == "unknown"
+        ) and language_analysis.dominant_language != "unknown":
             language_info["detected"] = language_analysis.dominant_language
+            dominant_percent = language_analysis.distribution.get(
+                language_analysis.dominant_language
+            )
+            if dominant_percent is not None:
+                language_info["confidence"] = round(dominant_percent / 100.0, 4)
         summary_lang = resolve_target_summary_language(target_summary_language, dominant_language=language_analysis.dominant_language, detected_language=detected_language)
         await _emit_progress(progress_callback, stage="language", progress=0.75)
 
@@ -1255,12 +1293,42 @@ async def run_pipeline(
             text=clean_text,
         )
         payload["speaker_lines"] = speaker_lines
+        payload["multilingual_asr"] = dict(asr_execution)
+        payload["review"] = {
+            "required": bool(language_analysis.review_required),
+            "reason_code": language_analysis.review_reason_code,
+            "reason_text": language_analysis.review_reason_text,
+            "uncertain_segment_count": language_analysis.uncertain_segment_count,
+            "conflict_segment_count": language_analysis.conflict_segment_count,
+        }
         atomic_write_json(artifacts.transcript_json_path, payload)
         atomic_write_json(artifacts.segments_json_path, diar_segments)
         atomic_write_json(artifacts.speaker_turns_json_path, speaker_turns)
         atomic_write_json(artifacts.summary_json_path, summary_payload)
         await _emit_progress(progress_callback, stage="metrics", progress=0.98)
-        atomic_write_json(artifacts.metrics_json_path, {"status": "ok", "version": 1, "precheck": {**precheck_result.__dict__, "quarantine_reason": None}, "language": language_info, "asr_segments": len(language_analysis.segments), "diar_segments": len(diar_segments), "speaker_turns": len(speaker_turns), "snippets": len(snippet_paths)})
+        atomic_write_json(
+            artifacts.metrics_json_path,
+            {
+                "status": "ok",
+                "version": 1,
+                "precheck": {
+                    **precheck_result.__dict__,
+                    "quarantine_reason": None,
+                },
+                "language": language_info,
+                "asr_segments": len(language_analysis.segments),
+                "diar_segments": len(diar_segments),
+                "speaker_turns": len(speaker_turns),
+                "snippets": len(snippet_paths),
+                "multilingual_asr": {
+                    "used_multilingual_path": bool(
+                        asr_execution.get("used_multilingual_path")
+                    ),
+                    "selected_mode": asr_execution.get("selected_mode"),
+                },
+                "review_required": bool(language_analysis.review_required),
+            },
+        )
         return TranscriptResult(summary=str(summary_payload.get("summary") or ""), body=clean_text, friendly=friendly, speakers=speakers, summary_path=artifacts.summary_json_path, body_path=artifacts.transcript_txt_path, unknown_chunks=snippet_paths, segments=serialised_segments)
     except Exception as exc:
         error_rate_total.inc()

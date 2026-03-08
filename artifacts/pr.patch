@@ -1,51 +1,2109 @@
-diff --git a/tests/test_cov_lan_app_db.py b/tests/test_cov_lan_app_db.py
-index 5c2a81b..519680b 100644
---- a/tests/test_cov_lan_app_db.py
-+++ b/tests/test_cov_lan_app_db.py
-@@ -760,6 +760,30 @@ def test_merge_voice_profiles_moves_references_and_rewrites_candidates(tmp_path:
-         db_module.merge_voice_profiles(target["id"], third["id"], settings=cfg)
+diff --git a/.env.example b/.env.example
+index 99f70bf..e851b00 100644
+--- a/.env.example
++++ b/.env.example
+@@ -35,6 +35,7 @@ LAN_REDIS_URL=redis://redis:6379/0
+ LAN_RQ_QUEUE_NAME=lan-transcriber
+ LAN_DIARIZATION_MODEL_ID=pyannote/speaker-diarization-3.1
+ LAN_VAD_METHOD=silero
++LAN_ASR_MULTILINGUAL_MODE=auto
+ # Optional upload cap per file in bytes (set to enable)
+ # UPLOAD_MAX_BYTES=1073741824
+ LAN_CALENDAR_EXPAND_PAST_DAYS=30
+diff --git a/README.md b/README.md
+index 32290e9..94f6ff5 100644
+--- a/README.md
++++ b/README.md
+@@ -77,16 +77,19 @@ Operational setup, failure handling, backup/restore, and upgrade steps are docum
+ 
+ 1. Open `/upload` and add one or more audio files.
+ 2. Uploaded audio is normalized automatically to 16 kHz mono WAV before VAD/ASR/diarization (raw upload is preserved; no user conversion needed).
+-3. Track per-file upload progress and processing progress on the same page.
+-4. Open the recording detail page at `/recordings/{recording_id}`.
++3. Mixed-language handling now happens automatically in `LAN_ASR_MULTILINGUAL_MODE=auto`.
++   - `derived/transcript.json` can include chunk-level `language_spans` and multilingual execution metadata.
++   - When chunk language ID remains conflicted or low-confidence, the recording stays in `NeedsReview` with an explicit review reason.
++4. Track per-file upload progress and processing progress on the same page.
++5. Open the recording detail page at `/recordings/{recording_id}`.
+    - `NeedsReview` recordings now show an explicit review reason in both the list and detail UI.
+    - Displayed timestamps are rendered in local Europe/Rome time in the server-rendered UI.
+    - Duration is taken from `derived/audio_sanitized.wav` when present, then falls back to the raw upload.
+-5. Export results:
++6. Export results:
+    - Copy markdown from the export tab for manual OneNote paste.
+    - Download ZIP from `/ui/recordings/{recording_id}/export.zip`.
+    - Export content appears automatically once the recording reaches a terminal state; no manual refresh is needed.
+-6. Deleting a recording from the UI/API removes the DB row and the recording directory under `/data/recordings/<recording_id>`. If disk cleanup fails, delete returns an error instead of silently succeeding.
++7. Deleting a recording from the UI/API removes the DB row and the recording directory under `/data/recordings/<recording_id>`. If disk cleanup fails, delete returns an error instead of silently succeeding.
+ 
+ ## Speaker bank
+ 
+@@ -161,6 +164,7 @@ models are cached across runs.
+ | `LAN_REDIS_URL` | Redis endpoint for the RQ queue |
+ | `LAN_RQ_QUEUE_NAME` | Queue name consumed by the worker |
+ | `LAN_VAD_METHOD` | WhisperX VAD selector for ASR model init: `silero` (default) or `pyannote` |
++| `LAN_ASR_MULTILINGUAL_MODE` | Mixed-language ASR mode: `auto` (default), `force_single_language`, or `force_multilingual` |
+ | `LAN_API_BEARER_TOKEN` | Optional bearer token for protected POST actions (`/api` and UI POST routes) |
+ | `UPLOAD_MAX_BYTES` | Optional max size per uploaded file in bytes (`413` when exceeded) |
+ | `QUARANTINE_RETENTION_DAYS` | Retention period for quarantined recording cleanup (default `7`) |
+@@ -195,6 +199,8 @@ Long transcripts are processed with a chunked map-reduce LLM flow. During that p
+ 
+ For diarization quality tuning, keep `LAN_DIARIZATION_PROFILE=auto` for mixed workloads. In `auto`, the worker runs a meeting-oriented first pass, classifies the result from deterministic speaker-share/alternation/overlap heuristics, and retries once with `min_speakers=2` and `max_speakers=2` only when the recording looks dialog-like. Use `dialog` or `meeting` only to force one behavior, and note that explicit `LAN_DIARIZATION_MIN_SPEAKERS` / `LAN_DIARIZATION_MAX_SPEAKERS` overrides bypass auto selection. Each processed recording writes `derived/diarization_metadata.json` with the requested profile, selected profile, initial top-two coverage, retry attempt/winner, applied hints, and smoothing stats.
+ 
++Mixed-language ASR defaults to `LAN_ASR_MULTILINGUAL_MODE=auto`. When the pipeline sees credible language switches, it retranscribes grouped chunks with per-chunk language hints, writes `language_spans` plus multilingual execution metadata into `derived/transcript.json`, and keeps the recording in `NeedsReview` when chunk-level language ID remains conflicted or low-confidence.
++
+ If API auth is enabled, set `LAN_API_BEARER_TOKEN` to a non-empty value in your env file.
+ 
+ `docker compose up` starts:
+diff --git a/docs/runbook.md b/docs/runbook.md
+index 204d34a..9941d42 100644
+--- a/docs/runbook.md
++++ b/docs/runbook.md
+@@ -38,14 +38,17 @@ docker compose run --rm api python -m lan_app.healthchecks app
+ 
+ 1. Open `/upload` and upload one or more files (UI sends multipart to `POST /api/uploads`).
+ 2. Uploaded audio is normalized automatically to 16 kHz mono WAV before VAD/ASR/diarization; no manual conversion is required.
+-3. Track upload and processing progress per file on `/upload`.
+-4. Open `/recordings/{recording_id}` for transcript, summary, and export actions.
++3. Mixed-language handling now runs automatically when `LAN_ASR_MULTILINGUAL_MODE=auto`.
++   - `derived/transcript.json` can include `language_spans`, multilingual chunk metadata, and multilingual review metadata.
++   - If chunk-level language ID stays conflicted or low-confidence, the recording remains in `NeedsReview` with an explicit review reason.
++4. Track upload and processing progress per file on `/upload`.
++5. Open `/recordings/{recording_id}` for transcript, summary, and export actions.
+    - `NeedsReview` recordings show an explicit review reason in the recordings list and detail page.
+    - The server-rendered UI shows timestamps in local Europe/Rome time.
+    - Duration is sourced from `derived/audio_sanitized.wav` when it exists, otherwise from the raw upload.
+    - Canonical speaker records keep one active person entry with many samples; low-confidence matches stay reviewable instead of auto-merging.
+-5. Download export bundle from `GET /ui/recordings/{recording_id}/export.zip`.
+-6. Deleting a recording removes the DB row plus `/data/recordings/<recording_id>/raw`, `derived`, `logs`, and other remaining files under that recording root. If cleanup fails, delete returns an error.
++6. Download export bundle from `GET /ui/recordings/{recording_id}/export.zip`.
++7. Deleting a recording removes the DB row plus `/data/recordings/<recording_id>/raw`, `derived`, `logs`, and other remaining files under that recording root. If cleanup fails, delete returns an error.
+ 
+ ### 1.2.1 Canonical speaker merges
+ 
+@@ -68,6 +71,7 @@ docker compose run --rm api python -m lan_app.healthchecks app
+    - `LAN_DIARIZATION_MODEL_ID=pyannote/speaker-diarization-3.1` (or your approved repo id)
+    - `LAN_DIARIZATION_PROFILE=auto` (default; first pass uses meeting-like 2..6 hints and retries once with 2 speakers only when the result looks dialog-like)
+    - `LAN_VAD_METHOD=silero` (default; set `pyannote` only if explicitly required)
++   - `LAN_ASR_MULTILINGUAL_MODE=auto` (default; switches to chunk-level language-aware ASR only when credible language changes are detected)
+ 4. Run warmup once before starting normal traffic:
+ 
+ ```bash
+@@ -92,6 +96,7 @@ Optional diarization tuning:
+ - `LAN_DIARIZATION_MIN_SPEAKERS` and `LAN_DIARIZATION_MAX_SPEAKERS` override the first-pass defaults and bypass auto-profile selection when set.
+ - `LAN_DIARIZATION_MERGE_GAP_SECONDS` and `LAN_DIARIZATION_MIN_TURN_SECONDS` control conservative turn smoothing.
+ - Each processed recording writes `derived/diarization_metadata.json` with the requested profile, selected profile, initial speaker count, top-two coverage, retry attempt/winner, applied hints, and before/after smoothing counts.
++- Mixed-language ASR writes chunk-level `language_spans` and multilingual execution metadata into `derived/transcript.json`; when those chunks stay conflicted or low-confidence, the worker leaves the recording in `NeedsReview`.
+ 
+ ## 2) Runtime safety defaults
+ 
+diff --git a/lan_app/routing.py b/lan_app/routing.py
+index 84459e7..9f40160 100644
+--- a/lan_app/routing.py
++++ b/lan_app/routing.py
+@@ -75,6 +75,8 @@ def refresh_recording_routing(
+     has_manual_project_override = (
+         current_project_id is not None and current_assignment_source == "manual"
+     )
++    transcript_review = _transcript_review_requirement(recording_id, settings=cfg)
++    review_required = bool(transcript_review.get("required"))
+ 
+     projects = list_projects(settings=cfg)
+     signals = _build_routing_signals(recording_id, settings=cfg)
+@@ -85,6 +87,11 @@ def refresh_recording_routing(
+             "No projects exist yet, so routing cannot suggest a project.",
+             f"Confidence 0.00 is below threshold {threshold:.2f}; manual review required.",
+         ]
++        if review_required:
++            rationale.append(
++                str(transcript_review.get("reason_text") or "").strip()
++                or "Multilingual transcript review is required."
++            )
+         set_recording_routing_suggestion(
+             recording_id,
+             suggested_project_id=None,
+@@ -160,6 +167,11 @@ def refresh_recording_routing(
+         threshold=threshold,
+         signals=signals,
+     )
++    if review_required:
++        rationale.append(
++            str(transcript_review.get("reason_text") or "").strip()
++            or "Multilingual transcript review is required."
++        )
+ 
+     set_recording_routing_suggestion(
+         recording_id,
+@@ -181,7 +193,11 @@ def refresh_recording_routing(
+                     assignment_source="auto",
+                 )
+                 auto_selected = True
+-            status_after_routing = RECORDING_STATUS_READY
++            status_after_routing = (
++                RECORDING_STATUS_NEEDS_REVIEW
++                if review_required
++                else RECORDING_STATUS_READY
++            )
+         else:
+             if current_project_id is not None and current_assignment_source == "auto":
+                 set_recording_project(
+@@ -542,6 +558,23 @@ def _load_json_dict(path: Path) -> dict[str, Any]:
+     return payload
  
  
-+def test_delete_voice_profile_clears_merged_pointer_via_trigger(tmp_path: Path):
++def _transcript_review_requirement(
++    recording_id: str,
++    *,
++    settings: AppSettings,
++) -> dict[str, Any]:
++    transcript_path = settings.recordings_root / recording_id / "derived" / "transcript.json"
++    payload = _load_json_dict(transcript_path)
++    review_payload = payload.get("review")
++    if not isinstance(review_payload, dict):
++        return {"required": False}
++    return {
++        "required": bool(review_payload.get("required")),
++        "reason_code": str(review_payload.get("reason_code") or "").strip(),
++        "reason_text": str(review_payload.get("reason_text") or "").strip(),
++    }
++
++
+ def _tokenize(value: str) -> set[str]:
+     tokens: set[str] = set()
+     for raw_token in _TOKEN_RE.findall(value):
+diff --git a/lan_app/worker_tasks.py b/lan_app/worker_tasks.py
+index 5fc5e90..94bfd8a 100644
+--- a/lan_app/worker_tasks.py
++++ b/lan_app/worker_tasks.py
+@@ -420,8 +420,20 @@ def _review_reason_from_routing(
+     routing: dict[str, Any],
+ ) -> tuple[str, str]:
+     derived_dir = settings.recordings_root / recording_id / "derived"
++    transcript_payload = _load_json_dict(derived_dir / "transcript.json")
+     summary_payload = _load_json_dict(derived_dir / "summary.json")
+     diarization_payload = _load_json_dict(derived_dir / "diarization_metadata.json")
++    transcript_review = transcript_payload.get("review")
++    if (
++        isinstance(transcript_review, dict)
++        and bool(transcript_review.get("required"))
++        and str(transcript_review.get("reason_code") or "").strip()
++        and str(transcript_review.get("reason_text") or "").strip()
++    ):
++        return (
++            str(transcript_review.get("reason_code")).strip(),
++            str(transcript_review.get("reason_text")).strip(),
++        )
+ 
+     parse_reason = str(summary_payload.get("parse_error_reason") or "").strip()
+     if parse_reason:
+diff --git a/lan_transcriber/pipeline_steps/language.py b/lan_transcriber/pipeline_steps/language.py
+index 10ff8ac..968b442 100644
+--- a/lan_transcriber/pipeline_steps/language.py
++++ b/lan_transcriber/pipeline_steps/language.py
+@@ -46,6 +46,15 @@ _ES_STOPWORDS = {
+     "hoy",
+ }
+ 
++_LANGUAGE_CONFIDENCE_KEYS = (
++    "language_confidence",
++    "language_probability",
++    "language_score",
++    "probability",
++)
++_TEXT_GUESS_HIGH_CONFIDENCE = 0.75
++_REVIEW_UNCERTAIN_SEGMENT_THRESHOLD = 2
++
+ 
+ @dataclass(frozen=True)
+ class LanguageAnalysis:
+@@ -53,45 +62,155 @@ class LanguageAnalysis:
+     dominant_language: str
+     distribution: dict[str, float]
+     spans: list[dict[str, Any]]
++    review_required: bool = False
++    review_reason_code: str | None = None
++    review_reason_text: str | None = None
++    uncertain_segment_count: int = 0
++    conflict_segment_count: int = 0
+ 
+ 
+-def _guess_language_from_text(text: str) -> str | None:
++def _language_scores_from_text(text: str) -> dict[str, float]:
+     sample = text.strip().lower()
+     if not sample:
+-        return None
++        return {}
+     tokens = re.findall(r"[a-zA-Z\u00c0-\u017f]+", sample)
+     if not tokens:
+-        return None
+-    en_score = sum(1 for token in tokens if token in _EN_STOPWORDS)
+-    es_score = sum(1 for token in tokens if token in _ES_STOPWORDS)
++        return {}
++    en_score = float(sum(1 for token in tokens if token in _EN_STOPWORDS))
++    es_score = float(sum(1 for token in tokens if token in _ES_STOPWORDS))
+     if any(ch in sample for ch in "áéíóúñ¿¡"):
+-        es_score += 2
+-    if en_score == 0 and es_score == 0:
+-        return None
+-    if es_score > en_score:
+-        return "es"
+-    if en_score > es_score:
+-        return "en"
++        es_score += 2.0
++    scores = {
++        "en": en_score,
++        "es": es_score,
++    }
++    return {code: value for code, value in scores.items() if value > 0.0}
++
++
++def _guess_language_with_confidence(text: str) -> tuple[str | None, float | None]:
++    scores = _language_scores_from_text(text)
++    if not scores:
++        return None, None
++    ordered = sorted(scores.items(), key=lambda item: (-item[1], item[0]))
++    if len(ordered) > 1 and ordered[0][1] == ordered[1][1]:
++        return None, round(ordered[0][1] / (ordered[0][1] + ordered[1][1]), 4)
++    top_language, top_score = ordered[0]
++    total_score = sum(scores.values())
++    confidence = 1.0 if total_score <= 0 else round(top_score / total_score, 4)
++    return top_language, confidence
++
++
++def _guess_language_from_text(text: str) -> str | None:
++    language, _confidence = _guess_language_with_confidence(text)
++    return language
++
++
++def _extract_language_confidence(segment: dict[str, Any]) -> float | None:
++    for key in _LANGUAGE_CONFIDENCE_KEYS:
++        if key in segment and segment[key] is not None:
++            return round(safe_float(segment[key], default=0.0), 4)
+     return None
+ 
+ 
+-def segment_language(
++def _segment_language_details(
+     segment: dict[str, Any],
+     *,
+     detected_language: str | None,
+     transcript_language_override: str | None,
+-) -> str:
++    prefer_detected_language: bool,
++) -> dict[str, Any]:
+     if transcript_language_override:
+-        return transcript_language_override
+-    seg_language = normalise_language_code(segment.get("language"))
+-    if seg_language:
+-        return seg_language
+-    if detected_language:
+-        return detected_language
+-    text_language = _guess_language_from_text(str(segment.get("text") or ""))
++        return {
++            "language": transcript_language_override,
++            "confidence": 1.0,
++            "source": "override",
++            "uncertain": False,
++            "conflict": False,
++        }
++
++    segment_language_value = normalise_language_code(segment.get("language"))
++    segment_confidence = _extract_language_confidence(segment)
++    text_language, text_confidence = _guess_language_with_confidence(
++        str(segment.get("text") or "")
++    )
++
++    if segment_language_value:
++        resolved_confidence = (
++            segment_confidence if segment_confidence is not None else 0.95
++        )
++        conflict = bool(
++            text_language
++            and text_confidence is not None
++            and text_confidence >= _TEXT_GUESS_HIGH_CONFIDENCE
++            and text_language != segment_language_value
++        )
++        return {
++            "language": segment_language_value,
++            "confidence": resolved_confidence,
++            "source": "segment",
++            "uncertain": resolved_confidence < _TEXT_GUESS_HIGH_CONFIDENCE or conflict,
++            "conflict": conflict,
++        }
++
++    if prefer_detected_language and detected_language:
++        return {
++            "language": detected_language,
++            "confidence": None,
++            "source": "recording_detected",
++            "uncertain": bool(text_language and text_language != detected_language),
++            "conflict": False,
++        }
++
+     if text_language:
+-        return text_language
+-    return "unknown"
++        conflict = bool(
++            detected_language
++            and text_confidence is not None
++            and text_confidence >= _TEXT_GUESS_HIGH_CONFIDENCE
++            and text_language != detected_language
++        )
++        return {
++            "language": text_language,
++            "confidence": text_confidence,
++            "source": "text_guess",
++            "uncertain": (
++                text_confidence is None
++                or text_confidence < _TEXT_GUESS_HIGH_CONFIDENCE
++            ),
++            "conflict": conflict,
++        }
++
++    if detected_language:
++        return {
++            "language": detected_language,
++            "confidence": None,
++            "source": "recording_detected",
++            "uncertain": True,
++            "conflict": False,
++        }
++
++    return {
++        "language": "unknown",
++        "confidence": None,
++        "source": "unknown",
++        "uncertain": True,
++        "conflict": False,
++    }
++
++
++def segment_language(
++    segment: dict[str, Any],
++    *,
++    detected_language: str | None,
++    transcript_language_override: str | None,
++) -> str:
++    return str(
++        _segment_language_details(
++            segment,
++            detected_language=detected_language,
++            transcript_language_override=transcript_language_override,
++            prefer_detected_language=True,
++        )["language"]
++    )
+ 
+ 
+ def _duration_weight(start: float, end: float, text: str) -> float:
+@@ -122,32 +241,54 @@ def analyse_languages(
+ 
+     weighted_totals: dict[str, float] = {}
+     spans: list[dict[str, Any]] = []
++    uncertain_segment_count = 0
++    conflict_segment_count = 0
+     for segment in enriched:
+         start = safe_float(segment.get("start"), default=0.0)
+         end = safe_float(segment.get("end"), default=start)
+         if end < start:
+             end = start
+         text = str(segment.get("text") or "").strip()
+-        lang = segment_language(
++        preexisting_uncertain = bool(segment.get("language_uncertain"))
++        preexisting_conflict = bool(segment.get("language_conflict"))
++        preexisting_source = str(segment.get("language_source") or "").strip()
++        details = _segment_language_details(
+             segment,
+             detected_language=detected_language,
+             transcript_language_override=transcript_language_override,
++            prefer_detected_language=False,
+         )
++        lang = str(details["language"])
+         segment["language"] = lang
++        segment["language_source"] = preexisting_source or str(details["source"])
++        if details["confidence"] is not None:
++            segment["language_confidence"] = round(
++                safe_float(details["confidence"], default=0.0),
++                4,
++            )
++        if details["uncertain"] or preexisting_uncertain:
++            segment["language_uncertain"] = True
++            uncertain_segment_count += 1
++        if details["conflict"] or preexisting_conflict:
++            segment["language_conflict"] = True
++            conflict_segment_count += 1
+ 
+         weight = _duration_weight(start, end, text)
+         weighted_totals[lang] = weighted_totals.get(lang, 0.0) + weight
+ 
+         if spans and spans[-1]["lang"] == lang and start <= safe_float(spans[-1]["end"]) + 0.5:
+             spans[-1]["end"] = round(max(safe_float(spans[-1]["end"]), end), 3)
++            if details["uncertain"] or preexisting_uncertain:
++                spans[-1]["uncertain"] = True
+         else:
+-            spans.append(
+-                {
+-                    "start": round(start, 3),
+-                    "end": round(end, 3),
+-                    "lang": lang,
+-                }
+-            )
++            payload = {
++                "start": round(start, 3),
++                "end": round(end, 3),
++                "lang": lang,
++            }
++            if details["uncertain"] or preexisting_uncertain:
++                payload["uncertain"] = True
++            spans.append(payload)
+ 
+     ordered = sorted(weighted_totals.items(), key=lambda row: (-row[1], row[0]))
+     dominant = "unknown"
+@@ -164,7 +305,41 @@ def analyse_languages(
+         for lang, weight in ordered:
+             distribution[lang] = round((weight / total_weight) * 100.0, 2)
+ 
+-    return LanguageAnalysis(enriched, dominant, distribution, spans)
++    non_unknown_languages = {
++        lang for lang in distribution if lang != "unknown"
++    }
++    review_required = False
++    review_reason_code: str | None = None
++    review_reason_text: str | None = None
++    if conflict_segment_count > 0:
++        review_required = True
++        review_reason_code = "multilingual_uncertain"
++        review_reason_text = (
++            "Segment-level language detection conflicted across multilingual "
++            "chunks; manual review required."
++        )
++    elif (
++        len(non_unknown_languages) >= 2
++        and uncertain_segment_count >= _REVIEW_UNCERTAIN_SEGMENT_THRESHOLD
++    ):
++        review_required = True
++        review_reason_code = "multilingual_uncertain"
++        review_reason_text = (
++            "Language detection remained low-confidence across multiple "
++            "multilingual chunks; manual review required."
++        )
++
++    return LanguageAnalysis(
++        enriched,
++        dominant,
++        distribution,
++        spans,
++        review_required=review_required,
++        review_reason_code=review_reason_code,
++        review_reason_text=review_reason_text,
++        uncertain_segment_count=uncertain_segment_count,
++        conflict_segment_count=conflict_segment_count,
++    )
+ 
+ 
+ def resolve_target_summary_language(
+diff --git a/lan_transcriber/pipeline_steps/orchestrator.py b/lan_transcriber/pipeline_steps/orchestrator.py
+index 28f1897..a9a4067 100644
+--- a/lan_transcriber/pipeline_steps/orchestrator.py
++++ b/lan_transcriber/pipeline_steps/orchestrator.py
+@@ -50,6 +50,7 @@ from .speaker_turns import (
+     build_speaker_turns,
+     normalise_asr_segments,
+ )
++from .multilingual_asr import run_language_aware_asr
+ from .summary_builder import (
+     _build_structured_summary_payload,
+     build_structured_summary_prompts,
+@@ -148,6 +149,16 @@ class Settings(BaseSettings):
+     asr_compute_type: str | None = None
+     asr_batch_size: int = 16
+     asr_enable_align: bool = True
++    asr_multilingual_mode: Literal[
++        "auto", "force_single_language", "force_multilingual"
++    ] = Field(
++        default="auto",
++        validation_alias=AliasChoices(
++            "asr_multilingual_mode",
++            "ASR_MULTILINGUAL_MODE",
++            "LAN_ASR_MULTILINGUAL_MODE",
++        ),
++    )
+     vad_method: Literal["silero", "pyannote"] = "silero"
+     embed_threshold: float = 0.65
+     merge_similar: float = 0.9
+@@ -1044,12 +1055,25 @@ async def run_pipeline(
+ 
+     try:
+         await _emit_progress(progress_callback, stage="stt", progress=0.10)
+-        (raw_segments, info), diarization = await asyncio.gather(
++        def _transcribe_chunk(
++            chunk_audio_path: Path,
++            chunk_language_hint: str | None,
++        ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
++            return _whisperx_asr(
++                chunk_audio_path,
++                override_lang=chunk_language_hint,
++                cfg=cfg,
++                step_log_callback=step_log_callback,
++            )
++
++        (raw_segments, info, asr_execution), diarization = await asyncio.gather(
+             asyncio.to_thread(
+-                _whisperx_asr,
++                run_language_aware_asr,
+                 audio_path,
+                 override_lang=override_lang,
+-                cfg=cfg,
++                configured_mode=cfg.asr_multilingual_mode,
++                tmp_root=cfg.tmp_root,
++                transcribe_fn=_transcribe_chunk,
+                 step_log_callback=step_log_callback,
+             ),
+             diariser(audio_path),
+@@ -1068,9 +1092,23 @@ async def run_pipeline(
+         await _emit_progress(progress_callback, stage="align", progress=0.68)
+         language_info = _language_payload(info)
+         detected_language = normalise_language_code(language_info["detected"]) if language_info["detected"] != "unknown" else None
+-        language_analysis = analyse_languages(asr_segments, detected_language=detected_language, transcript_language_override=override_lang)
+-        if language_info["detected"] == "unknown" and language_analysis.dominant_language != "unknown":
++        language_analysis = analyse_languages(
++            asr_segments,
++            detected_language=(
++                None if asr_execution.get("used_multilingual_path") else detected_language
++            ),
++            transcript_language_override=override_lang,
++        )
++        if (
++            asr_execution.get("used_multilingual_path")
++            or language_info["detected"] == "unknown"
++        ) and language_analysis.dominant_language != "unknown":
+             language_info["detected"] = language_analysis.dominant_language
++            dominant_percent = language_analysis.distribution.get(
++                language_analysis.dominant_language
++            )
++            if dominant_percent is not None:
++                language_info["confidence"] = round(dominant_percent / 100.0, 4)
+         summary_lang = resolve_target_summary_language(target_summary_language, dominant_language=language_analysis.dominant_language, detected_language=detected_language)
+         await _emit_progress(progress_callback, stage="language", progress=0.75)
+ 
+@@ -1255,12 +1293,42 @@ async def run_pipeline(
+             text=clean_text,
+         )
+         payload["speaker_lines"] = speaker_lines
++        payload["multilingual_asr"] = dict(asr_execution)
++        payload["review"] = {
++            "required": bool(language_analysis.review_required),
++            "reason_code": language_analysis.review_reason_code,
++            "reason_text": language_analysis.review_reason_text,
++            "uncertain_segment_count": language_analysis.uncertain_segment_count,
++            "conflict_segment_count": language_analysis.conflict_segment_count,
++        }
+         atomic_write_json(artifacts.transcript_json_path, payload)
+         atomic_write_json(artifacts.segments_json_path, diar_segments)
+         atomic_write_json(artifacts.speaker_turns_json_path, speaker_turns)
+         atomic_write_json(artifacts.summary_json_path, summary_payload)
+         await _emit_progress(progress_callback, stage="metrics", progress=0.98)
+-        atomic_write_json(artifacts.metrics_json_path, {"status": "ok", "version": 1, "precheck": {**precheck_result.__dict__, "quarantine_reason": None}, "language": language_info, "asr_segments": len(language_analysis.segments), "diar_segments": len(diar_segments), "speaker_turns": len(speaker_turns), "snippets": len(snippet_paths)})
++        atomic_write_json(
++            artifacts.metrics_json_path,
++            {
++                "status": "ok",
++                "version": 1,
++                "precheck": {
++                    **precheck_result.__dict__,
++                    "quarantine_reason": None,
++                },
++                "language": language_info,
++                "asr_segments": len(language_analysis.segments),
++                "diar_segments": len(diar_segments),
++                "speaker_turns": len(speaker_turns),
++                "snippets": len(snippet_paths),
++                "multilingual_asr": {
++                    "used_multilingual_path": bool(
++                        asr_execution.get("used_multilingual_path")
++                    ),
++                    "selected_mode": asr_execution.get("selected_mode"),
++                },
++                "review_required": bool(language_analysis.review_required),
++            },
++        )
+         return TranscriptResult(summary=str(summary_payload.get("summary") or ""), body=clean_text, friendly=friendly, speakers=speakers, summary_path=artifacts.summary_json_path, body_path=artifacts.transcript_txt_path, unknown_chunks=snippet_paths, segments=serialised_segments)
+     except Exception as exc:
+         error_rate_total.inc()
+diff --git a/lan_transcriber/pipeline_steps/speaker_turns.py b/lan_transcriber/pipeline_steps/speaker_turns.py
+index 8df707f..0b5204a 100644
+--- a/lan_transcriber/pipeline_steps/speaker_turns.py
++++ b/lan_transcriber/pipeline_steps/speaker_turns.py
+@@ -50,6 +50,23 @@ def normalise_asr_segments(raw_segments: Sequence[dict[str, Any]]) -> list[dict[
+         language = raw.get("language")
+         if isinstance(language, str) and language.strip():
+             payload["language"] = language.strip()
++        if raw.get("language_confidence") is not None:
++            payload["language_confidence"] = round(
++                safe_float(raw.get("language_confidence"), default=0.0),
++                4,
++            )
++        language_source = raw.get("language_source")
++        if isinstance(language_source, str) and language_source.strip():
++            payload["language_source"] = language_source.strip()
++        if "language_uncertain" in raw:
++            payload["language_uncertain"] = bool(raw.get("language_uncertain"))
++        if "language_conflict" in raw:
++            payload["language_conflict"] = bool(raw.get("language_conflict"))
++        language_hint = raw.get("language_hint")
++        if isinstance(language_hint, str) and language_hint.strip():
++            payload["language_hint"] = language_hint.strip()
++        if "language_hint_applied" in raw:
++            payload["language_hint_applied"] = bool(raw.get("language_hint_applied"))
+         out.append(payload)
+     return out
+ 
+diff --git a/tasks/QUEUE.md b/tasks/QUEUE.md
+index 98e8920..91e70db 100644
+--- a/tasks/QUEUE.md
++++ b/tasks/QUEUE.md
+@@ -442,7 +442,7 @@ Queue (in order)
+ - Depends on: PR-DIARIZATION-AUTO-PROFILE-01
+ 
+ 87) PR-ASR-MULTILINGUAL-01: Mixed-language ASR pipeline: segment-level language ID, per-chunk language hints, language spans artifacts, and review flags for uncertain multilingual chunks
+-- Status: TODO
++- Status: DOING
+ - Tasks file: tasks/PR-ASR-MULTILINGUAL-01.md
+ - Depends on: PR-SPEAKER-BANK-CANONICAL-01
+ 
+diff --git a/tests/test_cov_lan_app_worker_tasks_branches.py b/tests/test_cov_lan_app_worker_tasks_branches.py
+index 232b2ad..27769d8 100644
+--- a/tests/test_cov_lan_app_worker_tasks_branches.py
++++ b/tests/test_cov_lan_app_worker_tasks_branches.py
+@@ -1085,6 +1085,30 @@ def test_review_reason_helpers_cover_exception_and_routing_paths(tmp_path: Path)
+ 
+     derived = cfg.recordings_root / "rec-review-reason-1" / "derived"
+     derived.mkdir(parents=True, exist_ok=True)
++    (derived / "transcript.json").write_text(
++        json.dumps(
++            {
++                "review": {
++                    "required": True,
++                    "reason_code": "multilingual_uncertain",
++                    "reason_text": (
++                        "Language detection conflicted across multilingual chunks."
++                    ),
++                }
++            }
++        ),
++        encoding="utf-8",
++    )
++    assert worker_tasks._review_reason_from_routing(  # noqa: SLF001
++        recording_id="rec-review-reason-1",
++        settings=cfg,
++        routing={"confidence": 0.25, "threshold": 0.5},
++    ) == (
++        "multilingual_uncertain",
++        "Language detection conflicted across multilingual chunks.",
++    )
++
++    (derived / "transcript.json").write_text("{}", encoding="utf-8")
+     (derived / "summary.json").write_text(
+         json.dumps({"parse_error_reason": "json_object_not_found"}),
+         encoding="utf-8",
+diff --git a/tests/test_pipeline.py b/tests/test_pipeline.py
+index 13667b5..1815ab7 100644
+--- a/tests/test_pipeline.py
++++ b/tests/test_pipeline.py
+@@ -27,6 +27,7 @@ transformers.pipeline = lambda *a, **k: lambda text: [
+ sys.modules["transformers"] = transformers
+ 
+ from lan_transcriber import llm_client, pipeline  # noqa: E402
++from lan_transcriber.pipeline_steps.language import LanguageAnalysis  # noqa: E402
+ from lan_transcriber.pipeline_steps import precheck as precheck_step  # noqa: E402
+ 
+ 
+@@ -1003,6 +1004,277 @@ async def test_pipeline_writes_language_spans_for_mixed_language_segments(tmp_pa
+     assert transcript_data["language_spans"][1]["lang"] == "es"
+ 
+ 
++@pytest.mark.asyncio
++@respx.mock
++async def test_pipeline_single_language_auto_keeps_single_asr_pass(tmp_path: Path, mocker):
++    asr_languages: list[str | None] = []
++
++    def _transcribe(_audio_path: str, **kwargs):
++        asr_languages.append(kwargs.get("language"))
++        return (
++            [{"start": 0.0, "end": 6.0, "text": "hello team thanks for joining"}],
++            {"language": "en", "language_probability": 0.96},
++        )
++
++    mocker.patch("whisperx.transcribe", side_effect=_transcribe)
++    mocker.patch(
++        "transformers.pipeline",
++        lambda *a, **k: lambda text: [{"label": "positive", "score": 0.6}],
++    )
++    respx.post("http://127.0.0.1:8000/v1/chat/completions").mock(
++        return_value=httpx.Response(
++            200,
++            json={"choices": [{"message": {"content": "- summary"}}]},
++        ),
++    )
++
++    cfg = pipeline.Settings(
++        speaker_db=tmp_path / "db.yaml",
++        tmp_root=tmp_path,
++        recordings_root=tmp_path / "recordings",
++        asr_multilingual_mode="auto",
++    )
++    audio = wav_audio(
++        tmp_path,
++        name="single-language.wav",
++        duration_sec=8.0,
++        speech=True,
++    )
++    await pipeline.run_pipeline(
++        audio_path=audio,
++        cfg=cfg,
++        llm=llm_client.LLMClient(),
++        diariser=DummyDiariser(),
++        recording_id="rec-single-language-1",
++        precheck=precheck_ok(),
++    )
++
++    transcript_data = json.loads(
++        (
++            cfg.recordings_root
++            / "rec-single-language-1"
++            / "derived"
++            / "transcript.json"
++        ).read_text(encoding="utf-8")
++    )
++    assert asr_languages == ["auto"]
++    assert transcript_data["multilingual_asr"]["used_multilingual_path"] is False
++    assert transcript_data["multilingual_asr"]["selected_mode"] == "single_language"
++    assert transcript_data["review"]["required"] is False
++
++
++@pytest.mark.asyncio
++@respx.mock
++async def test_pipeline_multilingual_asr_uses_chunk_language_hints(tmp_path: Path, mocker):
++    asr_languages: list[str | None] = []
++
++    def _transcribe(audio_path: str, **kwargs):
++        language = kwargs.get("language")
++        asr_languages.append(language)
++        if audio_path == str(audio):
++            return (
++                [
++                    {"start": 0.0, "end": 4.0, "text": "hello team and thanks"},
++                    {"start": 4.0, "end": 8.0, "text": "hola equipo y gracias"},
++                ],
++                {"language": "en", "language_probability": 0.91},
++            )
++        if language == "en":
++            return (
++                [{"start": 0.0, "end": 4.0, "text": "hello team and thanks"}],
++                {"language": "en", "language_probability": 0.98},
++            )
++        return (
++            [{"start": 0.0, "end": 4.0, "text": "hola equipo y gracias"}],
++            {"language": "es", "language_probability": 0.97},
++        )
++
++    mocker.patch("whisperx.transcribe", side_effect=_transcribe)
++    mocker.patch(
++        "transformers.pipeline",
++        lambda *a, **k: lambda text: [{"label": "positive", "score": 0.6}],
++    )
++    respx.post("http://127.0.0.1:8000/v1/chat/completions").mock(
++        return_value=httpx.Response(
++            200,
++            json={"choices": [{"message": {"content": "- summary"}}]},
++        ),
++    )
++
++    cfg = pipeline.Settings(
++        speaker_db=tmp_path / "db.yaml",
++        tmp_root=tmp_path,
++        recordings_root=tmp_path / "recordings",
++        asr_multilingual_mode="auto",
++    )
++    audio = wav_audio(
++        tmp_path,
++        name="mixed-language.wav",
++        duration_sec=8.0,
++        speech=True,
++    )
++    await pipeline.run_pipeline(
++        audio_path=audio,
++        cfg=cfg,
++        llm=llm_client.LLMClient(),
++        diariser=TwoSpeakerDiariser(),
++        recording_id="rec-multilingual-hints-1",
++        precheck=precheck_ok(),
++    )
++
++    transcript_data = json.loads(
++        (
++            cfg.recordings_root
++            / "rec-multilingual-hints-1"
++            / "derived"
++            / "transcript.json"
++        ).read_text(encoding="utf-8")
++    )
++    assert asr_languages == ["auto", "en", "es"]
++    assert transcript_data["multilingual_asr"]["used_multilingual_path"] is True
++    assert transcript_data["multilingual_asr"]["selected_mode"] == "multilingual"
++    assert transcript_data["language_spans"][0]["lang"] == "en"
++    assert transcript_data["language_spans"][1]["lang"] == "es"
++    hinted_languages = {
++        row["language_hint"]
++        for row in transcript_data["segments"]
++        if "language_hint" in row
++    }
++    assert hinted_languages == {"en", "es"}
++    assert transcript_data["review"]["required"] is False
++
++
++@pytest.mark.asyncio
++@respx.mock
++async def test_pipeline_multilingual_uncertainty_sets_review_metadata(tmp_path: Path, mocker):
++    def _transcribe(audio_path: str, **kwargs):
++        language = kwargs.get("language")
++        if audio_path == str(audio):
++            return (
++                [
++                    {"start": 0.0, "end": 4.0, "text": "hello team and thanks"},
++                    {"start": 4.0, "end": 8.0, "text": "hola equipo y gracias"},
++                ],
++                {"language": "en", "language_probability": 0.91},
++            )
++        if language == "en":
++            return (
++                [{"start": 0.0, "end": 4.0, "text": "hello team and thanks"}],
++                {"language": "en", "language_probability": 0.98},
++            )
++        return (
++            [{"start": 0.0, "end": 4.0, "text": "hello team and thanks"}],
++            {"language": "en", "language_probability": 0.99},
++        )
++
++    mocker.patch("whisperx.transcribe", side_effect=_transcribe)
++    mocker.patch(
++        "transformers.pipeline",
++        lambda *a, **k: lambda text: [{"label": "positive", "score": 0.6}],
++    )
++    respx.post("http://127.0.0.1:8000/v1/chat/completions").mock(
++        return_value=httpx.Response(
++            200,
++            json={"choices": [{"message": {"content": "- summary"}}]},
++        ),
++    )
++
++    cfg = pipeline.Settings(
++        speaker_db=tmp_path / "db.yaml",
++        tmp_root=tmp_path,
++        recordings_root=tmp_path / "recordings",
++        asr_multilingual_mode="auto",
++    )
++    audio = wav_audio(
++        tmp_path,
++        name="mixed-uncertain.wav",
++        duration_sec=8.0,
++        speech=True,
++    )
++    await pipeline.run_pipeline(
++        audio_path=audio,
++        cfg=cfg,
++        llm=llm_client.LLMClient(),
++        diariser=TwoSpeakerDiariser(),
++        recording_id="rec-multilingual-review-1",
++        precheck=precheck_ok(),
++    )
++
++    derived = cfg.recordings_root / "rec-multilingual-review-1" / "derived"
++    transcript_data = json.loads((derived / "transcript.json").read_text(encoding="utf-8"))
++    metrics_data = json.loads((derived / "metrics.json").read_text(encoding="utf-8"))
++    assert transcript_data["review"]["required"] is True
++    assert transcript_data["review"]["reason_code"] == "multilingual_uncertain"
++    assert transcript_data["multilingual_asr"]["chunks"][1]["conflict"] is True
++    assert metrics_data["review_required"] is True
++
++
++@pytest.mark.asyncio
++@respx.mock
++async def test_pipeline_multilingual_backfills_detected_language_without_distribution_confidence(
++    tmp_path: Path,
++    mocker,
++):
++    mocker.patch(
++        "lan_transcriber.pipeline_steps.orchestrator.run_language_aware_asr",
++        return_value=(
++            [{"start": 0.0, "end": 1.0, "text": "hello", "language": "en"}],
++            {"language": "unknown"},
++            {"used_multilingual_path": True, "selected_mode": "multilingual"},
++        ),
++    )
++    mocker.patch(
++        "lan_transcriber.pipeline_steps.orchestrator.analyse_languages",
++        return_value=LanguageAnalysis(
++            segments=[{"start": 0.0, "end": 1.0, "text": "hello", "language": "en"}],
++            dominant_language="en",
++            distribution={},
++            spans=[],
++        ),
++    )
++    mocker.patch(
++        "transformers.pipeline",
++        lambda *a, **k: lambda text: [{"label": "positive", "score": 0.6}],
++    )
++    respx.post("http://127.0.0.1:8000/v1/chat/completions").mock(
++        return_value=httpx.Response(
++            200,
++            json={"choices": [{"message": {"content": "- summary"}}]},
++        ),
++    )
++
++    cfg = pipeline.Settings(
++        speaker_db=tmp_path / "db.yaml",
++        tmp_root=tmp_path,
++        recordings_root=tmp_path / "recordings",
++    )
++    audio = wav_audio(
++        tmp_path,
++        name="multilingual-backfill.wav",
++        duration_sec=8.0,
++        speech=True,
++    )
++    await pipeline.run_pipeline(
++        audio_path=audio,
++        cfg=cfg,
++        llm=llm_client.LLMClient(),
++        diariser=DummyDiariser(),
++        recording_id="rec-multilingual-backfill-1",
++        precheck=precheck_ok(),
++    )
++
++    transcript_data = json.loads(
++        (
++            cfg.recordings_root
++            / "rec-multilingual-backfill-1"
++            / "derived"
++            / "transcript.json"
++        ).read_text(encoding="utf-8")
++    )
++    assert transcript_data["language"]["detected"] == "en"
++    assert transcript_data["language"]["confidence"] is None
++
++
+ def test_segment_language_prefers_detected_over_text_guess():
+     segment = {"text": "the and to of in"}
+     resolved = pipeline._segment_language(
+diff --git a/tests/test_pipeline_steps_speaker_turns.py b/tests/test_pipeline_steps_speaker_turns.py
+index f6dc92d..b5940ee 100644
+--- a/tests/test_pipeline_steps_speaker_turns.py
++++ b/tests/test_pipeline_steps_speaker_turns.py
+@@ -14,10 +14,24 @@ def test_normalise_asr_segments_keeps_word_timestamps():
+             "end": 1.5,
+             "text": "hello team",
+             "words": [{"start": 0.0, "end": 0.4, "word": "hello"}],
++            "language": "EN-us",
++            "language_confidence": 0.91,
++            "language_source": "chunk_hint",
++            "language_uncertain": True,
++            "language_conflict": False,
++            "language_hint": "en",
++            "language_hint_applied": True,
+         }
+     ]
+     payload = normalise_asr_segments(rows)
+     assert payload[0]["words"][0]["word"] == "hello"
++    assert payload[0]["language"] == "EN-us"
++    assert payload[0]["language_confidence"] == 0.91
++    assert payload[0]["language_source"] == "chunk_hint"
++    assert payload[0]["language_uncertain"] is True
++    assert payload[0]["language_conflict"] is False
++    assert payload[0]["language_hint"] == "en"
++    assert payload[0]["language_hint_applied"] is True
+ 
+ 
+ def test_build_speaker_turns_assigns_speakers_from_diarization():
+diff --git a/tests/test_routing.py b/tests/test_routing.py
+index 9e64fee..ae1b957 100644
+--- a/tests/test_routing.py
++++ b/tests/test_routing.py
+@@ -38,6 +38,12 @@ def _write_summary(cfg: AppSettings, recording_id: str, payload: dict[str, objec
+     (derived / "summary.json").write_text(json.dumps(payload), encoding="utf-8")
+ 
+ 
++def _write_transcript(cfg: AppSettings, recording_id: str, payload: dict[str, object]) -> None:
++    derived = cfg.recordings_root / recording_id / "derived"
++    derived.mkdir(parents=True, exist_ok=True)
++    (derived / "transcript.json").write_text(json.dumps(payload), encoding="utf-8")
++
++
+ def test_refresh_recording_routing_auto_selects_when_confident(tmp_path: Path):
+     cfg = _cfg(tmp_path)
+     cfg.routing_auto_select_threshold = 0.3
+@@ -171,6 +177,83 @@ def test_refresh_recording_routing_preserves_manual_assignment_when_confident(
+     assert recording["project_assignment_source"] == "manual"
+ 
+ 
++def test_refresh_recording_routing_keeps_needs_review_when_transcript_review_required(
++    tmp_path: Path,
++):
 +    cfg = _cfg(tmp_path)
-+    db_module.init_db(cfg)
-+    source = db_module.create_voice_profile("Delete Source", settings=cfg)
-+    target = db_module.create_voice_profile("Delete Target", settings=cfg)
-+
-+    db_module.merge_voice_profiles(source["id"], target["id"], settings=cfg)
-+    assert db_module.get_voice_profile(source["id"], settings=cfg) is None
-+
-+    assert db_module.delete_voice_profile(target["id"], settings=cfg) is True
-+
-+    reactivated = db_module.get_voice_profile(
-+        source["id"],
-+        include_merged=True,
++    cfg.routing_auto_select_threshold = 0.3
++    init_db(cfg)
++    roadmap = create_project("Roadmap", settings=cfg)
++    create_recording(
++        "rec-route-transcript-review-1",
++        source="drive",
++        source_filename="roadmap-sync.mp3",
++        status=RECORDING_STATUS_READY,
 +        settings=cfg,
 +    )
-+    assert reactivated is not None
-+    assert reactivated["merged_into_voice_profile_id"] is None
-+    assert reactivated["merged_at"] is None
-+    assert [row["id"] for row in db_module.list_voice_profiles(settings=cfg)] == [
-+        source["id"]
-+    ]
++    upsert_calendar_match(
++        recording_id="rec-route-transcript-review-1",
++        candidates=[
++            {
++                "event_id": "evt-roadmap",
++                "subject": "Roadmap sync",
++                "organizer": "Alex",
++                "attendees": ["Priya"],
++                "score": 0.95,
++                "rationale": "manual",
++            }
++        ],
++        selected_event_id="evt-roadmap",
++        selected_confidence=0.95,
++        settings=cfg,
++    )
++    _write_summary(
++        cfg,
++        "rec-route-transcript-review-1",
++        {
++            "topic": "Roadmap planning",
++            "summary_bullets": ["Roadmap priorities and milestones"],
++        },
++    )
++    _write_transcript(
++        cfg,
++        "rec-route-transcript-review-1",
++        {
++            "review": {
++                "required": True,
++                "reason_code": "multilingual_uncertain",
++                "reason_text": "Language detection conflicted across multilingual chunks.",
++            }
++        },
++    )
++    increment_project_keyword_weights(
++        project_id=roadmap["id"],
++        keyword_deltas={
++            "cal:roadmap": 3.0,
++            "tag:roadmap": 3.0,
++            "party:alex": 2.0,
++        },
++        settings=cfg,
++    )
++
++    decision = refresh_recording_routing(
++        "rec-route-transcript-review-1",
++        settings=cfg,
++        apply_workflow=True,
++    )
++
++    assert decision["suggested_project_id"] == roadmap["id"]
++    assert decision["confidence"] >= cfg.routing_auto_select_threshold
++    assert decision["auto_selected"] is True
++    assert decision["status_after_routing"] == RECORDING_STATUS_NEEDS_REVIEW
++    assert any("Language detection conflicted" in row for row in decision["rationale"])
++
++    recording = get_recording("rec-route-transcript-review-1", settings=cfg)
++    assert recording is not None
++    assert recording["project_id"] == roadmap["id"]
++    assert recording["project_assignment_source"] == "auto"
 +
 +
- def test_calendar_sources_events_matches_and_metrics_edges(tmp_path: Path):
+ def test_refresh_recording_routing_marks_needs_review_when_low_confidence(tmp_path: Path):
      cfg = _cfg(tmp_path)
-     db_module.init_db(cfg)
-diff --git a/lan_app/migrations/016_merged_speaker_delete_trigger.sql b/lan_app/migrations/016_merged_speaker_delete_trigger.sql
+     init_db(cfg)
+@@ -270,6 +353,40 @@ def test_refresh_recording_routing_without_projects_forces_needs_review(tmp_path
+     assert decision["status_after_routing"] == RECORDING_STATUS_NEEDS_REVIEW
+ 
+ 
++def test_refresh_recording_routing_without_projects_keeps_transcript_review_reason(
++    tmp_path: Path,
++):
++    cfg = _cfg(tmp_path)
++    init_db(cfg)
++    create_recording(
++        "rec-route-no-projects-review-1",
++        source="drive",
++        source_filename="setup.mp3",
++        status=RECORDING_STATUS_READY,
++        settings=cfg,
++    )
++    _write_transcript(
++        cfg,
++        "rec-route-no-projects-review-1",
++        {
++            "review": {
++                "required": True,
++                "reason_code": "multilingual_uncertain",
++                "reason_text": "",
++            }
++        },
++    )
++
++    decision = refresh_recording_routing(
++        "rec-route-no-projects-review-1",
++        settings=cfg,
++        apply_workflow=True,
++    )
++
++    assert decision["status_after_routing"] == RECORDING_STATUS_NEEDS_REVIEW
++    assert decision["rationale"][-1] == "Multilingual transcript review is required."
++
++
+ def test_delete_project_clears_recording_suggested_project_id(tmp_path: Path):
+     cfg = _cfg(tmp_path)
+     init_db(cfg)
+diff --git a/lan_transcriber/pipeline_steps/multilingual_asr.py b/lan_transcriber/pipeline_steps/multilingual_asr.py
 new file mode 100644
-index 0000000..fd0371f
+index 0000000..6a8e6e9
 --- /dev/null
-+++ b/lan_app/migrations/016_merged_speaker_delete_trigger.sql
-@@ -0,0 +1,10 @@
-+CREATE TRIGGER IF NOT EXISTS trg_voice_profiles_clear_merged_reference_on_delete
-+AFTER DELETE ON voice_profiles
-+BEGIN
-+    UPDATE voice_profiles
-+    SET
-+        merged_into_voice_profile_id = NULL,
-+        merged_at = NULL,
-+        updated_at = COALESCE(updated_at, OLD.updated_at, '1970-01-01T00:00:00Z')
-+    WHERE merged_into_voice_profile_id = OLD.id;
-+END;
++++ b/lan_transcriber/pipeline_steps/multilingual_asr.py
+@@ -0,0 +1,470 @@
++from __future__ import annotations
++
++import tempfile
++import wave
++from dataclasses import dataclass
++from pathlib import Path
++from typing import Any, Callable, Literal
++
++from lan_transcriber.utils import normalise_language_code, safe_float
++
++from .language import LanguageAnalysis, analyse_languages
++
++AUTO_MIN_SWITCH_SPAN_SECONDS = 3.0
++AUTO_MIN_SWITCH_SHARE_PERCENT = 15.0
++CHUNK_MERGE_GAP_SECONDS = 0.75
++HIGH_CONFIDENCE_THRESHOLD = 0.75
++
++MultilingualMode = Literal["auto", "force_single_language", "force_multilingual"]
++TranscribeFn = Callable[[Path, str | None], tuple[list[dict[str, Any]], dict[str, Any]]]
++
++
++@dataclass(frozen=True)
++class ChunkPlan:
++    start: float
++    end: float
++    language: str
++    confidence: float | None
++    language_hint: str | None
++    uncertain: bool
++    conflict: bool
++    segment_count: int
++
++    def to_payload(self, *, index: int, total: int) -> dict[str, Any]:
++        payload: dict[str, Any] = {
++            "index": index,
++            "total": total,
++            "start": round(self.start, 3),
++            "end": round(self.end, 3),
++            "language": self.language,
++            "segment_count": self.segment_count,
++            "language_hint": self.language_hint,
++            "hint_applied": self.language_hint is not None,
++            "uncertain": self.uncertain,
++            "conflict": self.conflict,
++        }
++        if self.confidence is not None:
++            payload["confidence"] = round(self.confidence, 4)
++        return payload
++
++
++def _log(callback: Callable[[str], Any] | None, message: str) -> None:
++    if callback is None:
++        return
++    try:
++        callback(message)
++    except Exception:
++        pass
++
++
++def _language_from_info(info: dict[str, Any]) -> tuple[str | None, float | None]:
++    language = normalise_language_code(
++        info.get("language") or info.get("detected_language") or info.get("lang")
++    )
++    confidence_raw = None
++    for key in (
++        "language_probability",
++        "language_confidence",
++        "language_score",
++        "probability",
++    ):
++        if key in info and info[key] is not None:
++            confidence_raw = info[key]
++            break
++    if confidence_raw is None:
++        return language, None
++    return language, round(safe_float(confidence_raw, default=0.0), 4)
++
++
++def should_use_multilingual_path(
++    analysis: LanguageAnalysis,
++    *,
++    configured_mode: MultilingualMode,
++) -> tuple[bool, str]:
++    if configured_mode == "force_single_language":
++        return False, "forced_single_language"
++    if not analysis.segments:
++        return False, "no_segments"
++    if configured_mode == "force_multilingual":
++        return True, "forced_multilingual"
++
++    significant_languages = {
++        lang
++        for lang, percent in analysis.distribution.items()
++        if lang != "unknown" and percent >= AUTO_MIN_SWITCH_SHARE_PERCENT
++    }
++    switched_languages = {
++        str(span.get("lang") or "unknown")
++        for span in analysis.spans
++        if str(span.get("lang") or "unknown") != "unknown"
++        and (
++            safe_float(span.get("end"), default=0.0)
++            - safe_float(span.get("start"), default=0.0)
++        )
++        >= AUTO_MIN_SWITCH_SPAN_SECONDS
++    }
++    if len(significant_languages) >= 2 and len(switched_languages) >= 2:
++        return True, "credible_language_switches"
++    return False, "dominant_single_language"
++
++
++def plan_multilingual_chunks(
++    analysis: LanguageAnalysis,
++    *,
++    merge_gap_seconds: float = CHUNK_MERGE_GAP_SECONDS,
++) -> list[ChunkPlan]:
++    chunks: list[ChunkPlan] = []
++    for row in analysis.segments:
++        start = safe_float(row.get("start"), default=0.0)
++        end = safe_float(row.get("end"), default=start)
++        if end < start:
++            end = start
++        language = normalise_language_code(row.get("language")) or "unknown"
++        confidence_raw = row.get("language_confidence")
++        confidence = (
++            None
++            if confidence_raw is None
++            else round(safe_float(confidence_raw, default=0.0), 4)
++        )
++        uncertain = bool(row.get("language_uncertain"))
++        conflict = bool(row.get("language_conflict"))
++        language_hint = None if uncertain or language == "unknown" else language
++
++        if (
++            chunks
++            and chunks[-1].language == language
++            and chunks[-1].language_hint == language_hint
++            and chunks[-1].uncertain == uncertain
++            and start <= chunks[-1].end + max(merge_gap_seconds, 0.0)
++        ):
++            previous = chunks[-1]
++            chunks[-1] = ChunkPlan(
++                start=previous.start,
++                end=max(previous.end, end),
++                language=previous.language,
++                confidence=previous.confidence if previous.confidence is not None else confidence,
++                language_hint=previous.language_hint,
++                uncertain=previous.uncertain,
++                conflict=previous.conflict or conflict,
++                segment_count=previous.segment_count + 1,
++            )
++            continue
++
++        chunks.append(
++            ChunkPlan(
++                start=start,
++                end=end,
++                language=language,
++                confidence=confidence,
++                language_hint=language_hint,
++                uncertain=uncertain,
++                conflict=conflict,
++                segment_count=1,
++            )
++        )
++    return chunks
++
++
++def _write_wav_chunk(
++    source_audio_path: Path,
++    *,
++    start_sec: float,
++    end_sec: float,
++    output_path: Path,
++) -> Path:
++    with wave.open(str(source_audio_path), "rb") as source:
++        params = source.getparams()
++        frame_rate = source.getframerate()
++        total_frames = source.getnframes()
++        start_frame = max(0, min(int(start_sec * frame_rate), total_frames))
++        end_frame = max(0, min(int(end_sec * frame_rate), total_frames))
++        if end_frame <= start_frame:
++            end_frame = min(total_frames, start_frame + 1)
++        source.setpos(start_frame)
++        frames = source.readframes(max(end_frame - start_frame, 1))
++
++    output_path.parent.mkdir(parents=True, exist_ok=True)
++    with wave.open(str(output_path), "wb") as target:
++        target.setparams(params)
++        target.writeframes(frames)
++    return output_path
++
++
++def _offset_segment_words(words: Any, *, offset_seconds: float) -> list[dict[str, Any]]:
++    if not isinstance(words, list):
++        return []
++    shifted: list[dict[str, Any]] = []
++    for row in words:
++        if not isinstance(row, dict):
++            continue
++        payload = dict(row)
++        if "start" in payload:
++            payload["start"] = round(
++                safe_float(payload.get("start"), default=0.0) + offset_seconds,
++                3,
++            )
++        if "end" in payload:
++            payload["end"] = round(
++                safe_float(payload.get("end"), default=0.0) + offset_seconds,
++                3,
++            )
++        shifted.append(payload)
++    return shifted
++
++
++def _annotate_chunk_segments(
++    raw_segments: list[dict[str, Any]],
++    *,
++    offset_seconds: float,
++    language: str,
++    confidence: float | None,
++    language_hint: str | None,
++    uncertain: bool,
++    conflict: bool,
++) -> list[dict[str, Any]]:
++    annotated: list[dict[str, Any]] = []
++    for row in raw_segments:
++        payload = dict(row)
++        payload["start"] = round(
++            safe_float(payload.get("start"), default=0.0) + offset_seconds,
++            3,
++        )
++        payload["end"] = round(
++            safe_float(payload.get("end"), default=payload["start"]) + offset_seconds,
++            3,
++        )
++        if payload["end"] < payload["start"]:
++            payload["end"] = payload["start"]
++        payload["words"] = _offset_segment_words(
++            payload.get("words"),
++            offset_seconds=offset_seconds,
++        )
++
++        seg_language = normalise_language_code(payload.get("language")) or language
++        if seg_language:
++            payload["language"] = seg_language
++        if confidence is not None:
++            payload["language_confidence"] = round(confidence, 4)
++        payload["language_source"] = (
++            "chunk_hint" if language_hint is not None else "chunk_detected"
++        )
++        if language_hint is not None:
++            payload["language_hint"] = language_hint
++            payload["language_hint_applied"] = True
++        if uncertain:
++            payload["language_uncertain"] = True
++        if conflict:
++            payload["language_conflict"] = True
++            payload["language_uncertain"] = True
++        annotated.append(payload)
++    return annotated
++
++
++def _merge_result_language_info(
++    chunk_payloads: list[dict[str, Any]],
++    *,
++    fallback_info: dict[str, Any],
++) -> dict[str, Any]:
++    weighted: dict[str, float] = {}
++    for chunk in chunk_payloads:
++        language = normalise_language_code(
++            chunk.get("result_language")
++            or chunk.get("language")
++            or chunk.get("language_hint")
++        )
++        if language is None:
++            continue
++        duration = max(
++            0.0,
++            safe_float(chunk.get("end"), default=0.0)
++            - safe_float(chunk.get("start"), default=0.0),
++        )
++        if duration <= 0.0:
++            duration = 0.001
++        weighted[language] = weighted.get(language, 0.0) + duration
++
++    merged = dict(fallback_info)
++    if not weighted:
++        return merged
++
++    ordered = sorted(weighted.items(), key=lambda item: (-item[1], item[0]))
++    detected_language = next(
++        (language for language, _weight in ordered if language != "unknown"),
++        ordered[0][0],
++    )
++    total = sum(weighted.values())
++    dominant_weight = weighted.get(detected_language, 0.0)
++    merged["language"] = detected_language
++    merged["language_probability"] = round(
++        (dominant_weight / total) if total > 0 else 0.0,
++        4,
++    )
++    return merged
++
++
++def run_language_aware_asr(
++    audio_path: Path,
++    *,
++    override_lang: str | None,
++    configured_mode: MultilingualMode,
++    tmp_root: Path,
++    transcribe_fn: TranscribeFn,
++    step_log_callback: Callable[[str], Any] | None = None,
++) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, Any]]:
++    if override_lang:
++        segments, info = transcribe_fn(audio_path, override_lang)
++        payload = {
++            "configured_mode": configured_mode,
++            "selected_mode": "single_language",
++            "selection_reason": "transcript_language_override",
++            "used_multilingual_path": False,
++            "chunks": [],
++        }
++        _log(
++            step_log_callback,
++            "multilingual asr: single_language reason=transcript_language_override",
++        )
++        return segments, info, payload
++
++    initial_segments, initial_info = transcribe_fn(audio_path, None)
++    detected_language, _confidence = _language_from_info(initial_info)
++    initial_analysis = analyse_languages(
++        initial_segments,
++        detected_language=detected_language,
++        transcript_language_override=None,
++    )
++    use_multilingual, selection_reason = should_use_multilingual_path(
++        initial_analysis,
++        configured_mode=configured_mode,
++    )
++    if not use_multilingual:
++        payload = {
++            "configured_mode": configured_mode,
++            "selected_mode": "single_language",
++            "selection_reason": selection_reason,
++            "used_multilingual_path": False,
++            "initial_detected_language": detected_language or "unknown",
++            "initial_language_distribution": initial_analysis.distribution,
++            "chunks": [],
++        }
++        _log(
++            step_log_callback,
++            f"multilingual asr: single_language reason={selection_reason}",
++        )
++        return initial_segments, initial_info, payload
++
++    chunks = plan_multilingual_chunks(initial_analysis)
++    if not chunks:
++        payload = {
++            "configured_mode": configured_mode,
++            "selected_mode": "single_language",
++            "selection_reason": "empty_chunk_plan",
++            "used_multilingual_path": False,
++            "initial_detected_language": detected_language or "unknown",
++            "initial_language_distribution": initial_analysis.distribution,
++            "chunks": [],
++        }
++        _log(
++            step_log_callback,
++            "multilingual asr: single_language reason=empty_chunk_plan",
++        )
++        return initial_segments, initial_info, payload
++
++    if audio_path.suffix.lower() != ".wav":
++        payload = {
++            "configured_mode": configured_mode,
++            "selected_mode": "single_language",
++            "selection_reason": "multilingual_chunking_requires_wav",
++            "used_multilingual_path": False,
++            "initial_detected_language": detected_language or "unknown",
++            "initial_language_distribution": initial_analysis.distribution,
++            "chunks": [],
++        }
++        _log(
++            step_log_callback,
++            "multilingual asr: single_language reason=multilingual_chunking_requires_wav",
++        )
++        return initial_segments, initial_info, payload
++
++    tmp_root.mkdir(parents=True, exist_ok=True)
++    merged_segments: list[dict[str, Any]] = []
++    chunk_payloads: list[dict[str, Any]] = []
++    _log(
++        step_log_callback,
++        (
++            "multilingual asr: multilingual "
++            f"reason={selection_reason} chunks={len(chunks)}"
++        ),
++    )
++    with tempfile.TemporaryDirectory(
++        dir=str(tmp_root),
++        prefix="multilingual-asr-",
++    ) as tmp_dir_name:
++        tmp_dir = Path(tmp_dir_name)
++        for index, chunk in enumerate(chunks, start=1):
++            chunk_audio_path = _write_wav_chunk(
++                audio_path,
++                start_sec=chunk.start,
++                end_sec=chunk.end,
++                output_path=tmp_dir / f"chunk-{index:03d}.wav",
++            )
++            chunk_segments, chunk_info = transcribe_fn(chunk_audio_path, chunk.language_hint)
++            result_language, result_confidence = _language_from_info(chunk_info)
++            conflict = bool(
++                chunk.language_hint is not None
++                and result_language is not None
++                and result_language != chunk.language_hint
++            )
++            confident_result = (
++                result_language is not None
++                and result_confidence is not None
++                and result_confidence >= HIGH_CONFIDENCE_THRESHOLD
++            )
++            uncertain = bool(chunk.uncertain and not confident_result) or conflict
++            effective_language = result_language or chunk.language
++            effective_confidence = (
++                result_confidence
++                if result_confidence is not None
++                else chunk.confidence
++            )
++
++            merged_segments.extend(
++                _annotate_chunk_segments(
++                    chunk_segments,
++                    offset_seconds=chunk.start,
++                    language=effective_language,
++                    confidence=effective_confidence,
++                    language_hint=chunk.language_hint,
++                    uncertain=uncertain,
++                    conflict=conflict,
++                )
++            )
++            payload = chunk.to_payload(index=index, total=len(chunks))
++            payload["result_language"] = effective_language
++            payload["result_uncertain"] = uncertain
++            payload["conflict"] = conflict
++            if effective_confidence is not None:
++                payload["result_confidence"] = round(effective_confidence, 4)
++            chunk_payloads.append(payload)
++
++    payload = {
++        "configured_mode": configured_mode,
++        "selected_mode": "multilingual",
++        "selection_reason": selection_reason,
++        "used_multilingual_path": True,
++        "initial_detected_language": detected_language or "unknown",
++        "initial_language_distribution": initial_analysis.distribution,
++        "chunks": chunk_payloads,
++    }
++    return merged_segments, _merge_result_language_info(
++        chunk_payloads,
++        fallback_info=initial_info,
++    ), payload
++
++
++__all__ = [
++    "ChunkPlan",
++    "run_language_aware_asr",
++    "plan_multilingual_chunks",
++    "should_use_multilingual_path",
++]
+diff --git a/tests/test_pipeline_steps_multilingual_asr.py b/tests/test_pipeline_steps_multilingual_asr.py
+new file mode 100644
+index 0000000..3239f64
+--- /dev/null
++++ b/tests/test_pipeline_steps_multilingual_asr.py
+@@ -0,0 +1,459 @@
++from __future__ import annotations
++
++import wave
++from pathlib import Path
++
++import pytest
++
++from lan_transcriber.pipeline_steps import multilingual_asr
++from lan_transcriber.pipeline_steps.language import (
++    LanguageAnalysis,
++    analyse_languages,
++    resolve_target_summary_language,
++    segment_language,
++)
++
++
++def _write_pcm_wav(path: Path, *, duration_sec: float) -> Path:
++    frame_rate = 16000
++    frame_count = int(frame_rate * duration_sec)
++    path.parent.mkdir(parents=True, exist_ok=True)
++    with wave.open(str(path), "wb") as handle:
++        handle.setnchannels(1)
++        handle.setsampwidth(2)
++        handle.setframerate(frame_rate)
++        handle.writeframes(b"\x00\x01" * frame_count)
++    return path
++
++
++def test_segment_language_and_summary_resolution_paths() -> None:
++    assert (
++        segment_language(
++            {"text": "the and to of in"},
++            detected_language="fr",
++            transcript_language_override=None,
++        )
++        == "fr"
++    )
++    assert (
++        resolve_target_summary_language(
++            "de",
++            dominant_language="en",
++            detected_language="es",
++        )
++        == "de"
++    )
++    assert (
++        resolve_target_summary_language(
++            None,
++            dominant_language="en",
++            detected_language="es",
++        )
++        == "en"
++    )
++    assert (
++        resolve_target_summary_language(
++            None,
++            dominant_language="unknown",
++            detected_language="es",
++        )
++        == "es"
++    )
++    assert (
++        resolve_target_summary_language(
++            None,
++            dominant_language="unknown",
++            detected_language=None,
++        )
++        == "en"
++    )
++
++
++def test_analyse_languages_conflict_and_empty_paths() -> None:
++    analysis = analyse_languages(
++        [
++            {
++                "start": 0.0,
++                "end": 4.0,
++                "text": "hola equipo gracias",
++                "language": "en",
++                "language_confidence": 0.95,
++            },
++            {
++                "start": 4.0,
++                "end": 8.0,
++                "text": "hello team thanks",
++            },
++        ],
++        detected_language=None,
++        transcript_language_override=None,
++    )
++
++    assert analysis.review_required is True
++    assert analysis.review_reason_code == "multilingual_uncertain"
++    assert analysis.conflict_segment_count == 1
++    assert analysis.segments[0]["language_conflict"] is True
++    assert analysis.spans[0]["uncertain"] is True
++
++    empty = analyse_languages(
++        [],
++        detected_language="es",
++        transcript_language_override=None,
++    )
++    assert empty.dominant_language == "es"
++    assert empty.review_required is False
++
++
++def test_analyse_languages_marks_low_confidence_multilingual_segments() -> None:
++    analysis = analyse_languages(
++        [
++            {
++                "start": 0.0,
++                "end": 4.0,
++                "text": "hello team thanks",
++                "language": "en",
++                "language_confidence": 0.4,
++            },
++            {
++                "start": 4.0,
++                "end": 8.0,
++                "text": "hola equipo gracias",
++                "language": "es",
++                "language_confidence": 0.45,
++            },
++        ],
++        detected_language=None,
++        transcript_language_override=None,
++    )
++
++    assert analysis.review_required is True
++    assert analysis.review_reason_code == "multilingual_uncertain"
++    assert analysis.uncertain_segment_count == 2
++    assert analysis.segments[0]["language_uncertain"] is True
++    assert analysis.segments[1]["language_uncertain"] is True
++
++
++def test_should_use_multilingual_path_respects_modes_and_switches() -> None:
++    empty = LanguageAnalysis([], "unknown", {}, [])
++    assert multilingual_asr.should_use_multilingual_path(
++        empty,
++        configured_mode="force_single_language",
++    ) == (False, "forced_single_language")
++    assert multilingual_asr.should_use_multilingual_path(
++        empty,
++        configured_mode="auto",
++    ) == (False, "no_segments")
++
++    mixed = LanguageAnalysis(
++        segments=[{"start": 0.0, "end": 4.0}, {"start": 4.0, "end": 8.0}],
++        dominant_language="en",
++        distribution={"en": 50.0, "es": 50.0},
++        spans=[
++            {"start": 0.0, "end": 4.0, "lang": "en"},
++            {"start": 4.0, "end": 8.0, "lang": "es"},
++        ],
++    )
++    assert multilingual_asr.should_use_multilingual_path(
++        mixed,
++        configured_mode="force_multilingual",
++    ) == (True, "forced_multilingual")
++    assert multilingual_asr.should_use_multilingual_path(
++        mixed,
++        configured_mode="auto",
++    ) == (True, "credible_language_switches")
++
++    single = LanguageAnalysis(
++        segments=[{"start": 0.0, "end": 8.0}],
++        dominant_language="en",
++        distribution={"en": 100.0},
++        spans=[{"start": 0.0, "end": 8.0, "lang": "en"}],
++    )
++    assert multilingual_asr.should_use_multilingual_path(
++        single,
++        configured_mode="auto",
++    ) == (False, "dominant_single_language")
++
++    weak_switch = LanguageAnalysis(
++        segments=[{"start": 0.0, "end": 2.0}],
++        dominant_language="en",
++        distribution={"en": 90.0, "es": 10.0},
++        spans=[
++            {"start": 0.0, "end": 2.0, "lang": "en"},
++            {"start": 2.0, "end": 3.0, "lang": "es"},
++        ],
++    )
++    assert multilingual_asr.should_use_multilingual_path(
++        weak_switch,
++        configured_mode="auto",
++    ) == (False, "dominant_single_language")
++
++
++def test_plan_multilingual_chunks_merges_matching_segments_and_preserves_uncertain() -> None:
++    analysis = LanguageAnalysis(
++        segments=[
++            {
++                "start": 0.0,
++                "end": 2.0,
++                "language": "en",
++                "language_confidence": 0.95,
++            },
++            {
++                "start": 2.3,
++                "end": 4.0,
++                "language": "en",
++                "language_confidence": 0.9,
++            },
++            {
++                "start": 4.5,
++                "end": 7.0,
++                "language": "es",
++                "language_confidence": 0.5,
++                "language_uncertain": True,
++            },
++        ],
++        dominant_language="en",
++        distribution={"en": 60.0, "es": 40.0},
++        spans=[],
++    )
++
++    chunks = multilingual_asr.plan_multilingual_chunks(analysis)
++    assert len(chunks) == 2
++    assert chunks[0].start == 0.0
++    assert chunks[0].end == 4.0
++    assert chunks[0].language_hint == "en"
++    assert chunks[1].language_hint is None
++    assert chunks[1].uncertain is True
++
++    backwards = LanguageAnalysis(
++        segments=[
++            {
++                "start": 5.0,
++                "end": 1.0,
++                "language": "eng",
++                "language_confidence": None,
++            }
++        ],
++        dominant_language="en",
++        distribution={"en": 100.0},
++        spans=[],
++    )
++    backwards_chunks = multilingual_asr.plan_multilingual_chunks(backwards)
++    assert backwards_chunks[0].start == 5.0
++    assert backwards_chunks[0].end == 5.0
++    assert backwards_chunks[0].language == "en"
++
++
++def test_private_multilingual_helpers_cover_edge_paths() -> None:
++    assert multilingual_asr.ChunkPlan(  # noqa: SLF001
++        start=0.0,
++        end=1.0,
++        language="en",
++        confidence=None,
++        language_hint=None,
++        uncertain=False,
++        conflict=False,
++        segment_count=1,
++    ).to_payload(index=1, total=1)["hint_applied"] is False
++
++    seen: list[str] = []
++
++    def _raising_callback(message: str) -> None:
++        seen.append(message)
++        raise RuntimeError("ignore me")
++
++    multilingual_asr._log(_raising_callback, "synthetic")  # noqa: SLF001
++    assert seen == ["synthetic"]
++    assert multilingual_asr._language_from_info(  # noqa: SLF001
++        {"detected_language": "es"}
++    ) == ("es", None)
++
++    shifted_words = multilingual_asr._offset_segment_words(  # noqa: SLF001
++        [{"start": 0.5, "end": 0.2}, "skip", {"start": 1.0}, {"end": 2.0}],
++        offset_seconds=1.0,
++    )
++    assert shifted_words[0]["start"] == 1.5
++    assert shifted_words[0]["end"] == 1.2
++    assert shifted_words[1]["start"] == 2.0
++    assert shifted_words[2]["end"] == 3.0
++
++    annotated = multilingual_asr._annotate_chunk_segments(  # noqa: SLF001
++        [{"start": 2.0, "end": 1.0, "words": "not-a-list"}],
++        offset_seconds=1.0,
++        language="unknown",
++        confidence=None,
++        language_hint=None,
++        uncertain=False,
++        conflict=False,
++    )
++    assert annotated[0]["start"] == 3.0
++    assert annotated[0]["end"] == 3.0
++    assert annotated[0]["words"] == []
++    assert annotated[0]["language"] == "unknown"
++    assert "language_confidence" not in annotated[0]
++    assert annotated[0]["language_source"] == "chunk_detected"
++
++    no_language = multilingual_asr._annotate_chunk_segments(  # noqa: SLF001
++        [{"start": 0.0, "end": 1.0}],
++        offset_seconds=0.0,
++        language="",
++        confidence=None,
++        language_hint=None,
++        uncertain=False,
++        conflict=False,
++    )
++    assert "language" not in no_language[0]
++
++    fallback_only = multilingual_asr._merge_result_language_info(  # noqa: SLF001
++        [{"result_language": None, "language": None, "language_hint": None}],
++        fallback_info={"language": "es"},
++    )
++    assert fallback_only == {"language": "es"}
++
++    merged = multilingual_asr._merge_result_language_info(  # noqa: SLF001
++        [{"result_language": "en", "start": 1.0, "end": 1.0}],
++        fallback_info={"language": "es"},
++    )
++    assert merged["language"] == "en"
++    assert merged["language_probability"] == 1.0
++
++
++def test_write_wav_chunk_clamps_zero_length_ranges(tmp_path: Path) -> None:
++    source = _write_pcm_wav(tmp_path / "source.wav", duration_sec=1.0)
++    output = multilingual_asr._write_wav_chunk(  # noqa: SLF001
++        source,
++        start_sec=0.4,
++        end_sec=0.4,
++        output_path=tmp_path / "chunk.wav",
++    )
++
++    with wave.open(str(output), "rb") as handle:
++        assert handle.getnframes() == 1
++
++
++def test_run_language_aware_asr_override_and_empty_chunk_plan_paths(
++    tmp_path: Path,
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    audio = _write_pcm_wav(tmp_path / "override.wav", duration_sec=2.0)
++    calls: list[str | None] = []
++
++    def _transcribe(
++        path: Path,
++        override_lang: str | None,
++    ) -> tuple[list[dict[str, object]], dict[str, object]]:
++        assert path.exists()
++        calls.append(override_lang)
++        return (
++            [{"start": 0.0, "end": 1.0, "text": "hola"}],
++            {"language": override_lang or "en"},
++        )
++
++    segments, info, payload = multilingual_asr.run_language_aware_asr(
++        audio,
++        override_lang="es",
++        configured_mode="auto",
++        tmp_root=tmp_path / "tmp",
++        transcribe_fn=_transcribe,
++    )
++    assert calls == ["es"]
++    assert segments[0]["text"] == "hola"
++    assert info["language"] == "es"
++    assert payload["selection_reason"] == "transcript_language_override"
++
++    monkeypatch.setattr(multilingual_asr, "plan_multilingual_chunks", lambda *_a, **_k: [])
++    calls.clear()
++    segments, info, payload = multilingual_asr.run_language_aware_asr(
++        audio,
++        override_lang=None,
++        configured_mode="force_multilingual",
++        tmp_root=tmp_path / "tmp",
++        transcribe_fn=_transcribe,
++    )
++    assert calls == [None]
++    assert segments[0]["text"] == "hola"
++    assert info["language"] == "en"
++    assert payload["selection_reason"] == "empty_chunk_plan"
++
++
++def test_run_language_aware_asr_multilingual_executes_chunk_hints_and_conflicts(
++    tmp_path: Path,
++) -> None:
++    audio = _write_pcm_wav(tmp_path / "mixed.wav", duration_sec=8.0)
++    calls: list[str | None] = []
++
++    def _transcribe(
++        path: Path,
++        override_lang: str | None,
++    ) -> tuple[list[dict[str, object]], dict[str, object]]:
++        calls.append(override_lang)
++        if path == audio:
++            return (
++                [
++                    {"start": 0.0, "end": 4.0, "text": "hello team thanks"},
++                    {"start": 4.0, "end": 8.0, "text": "hola equipo gracias"},
++                ],
++                {"language": "en", "language_probability": 0.92},
++            )
++        if override_lang == "en":
++            return (
++                [{"start": 0.0, "end": 4.0, "text": "hello team thanks"}],
++                {"language": "en", "language_probability": 0.98},
++            )
++        return (
++            [{"start": 0.0, "end": 4.0, "text": "hello team thanks"}],
++            {"language": "en", "language_probability": 0.99},
++        )
++
++    segments, info, payload = multilingual_asr.run_language_aware_asr(
++        audio,
++        override_lang=None,
++        configured_mode="auto",
++        tmp_root=tmp_path / "tmp",
++        transcribe_fn=_transcribe,
++    )
++
++    assert calls == [None, "en", "es"]
++    assert payload["used_multilingual_path"] is True
++    assert payload["selected_mode"] == "multilingual"
++    assert payload["chunks"][0]["hint_applied"] is True
++    assert payload["chunks"][1]["conflict"] is True
++    assert payload["chunks"][1]["result_uncertain"] is True
++    assert segments[0]["start"] == 0.0
++    assert segments[1]["start"] == 4.0
++    assert segments[1]["language_conflict"] is True
++    assert segments[1]["language_hint"] == "es"
++    assert info["language"] == "en"
++
++
++def test_run_language_aware_asr_multilingual_without_confidence_payload(
++    tmp_path: Path,
++) -> None:
++    audio = _write_pcm_wav(tmp_path / "mixed-no-confidence.wav", duration_sec=8.0)
++
++    def _transcribe(
++        path: Path,
++        override_lang: str | None,
++    ) -> tuple[list[dict[str, object]], dict[str, object]]:
++        if path == audio:
++            return (
++                [
++                    {"start": 0.0, "end": 4.0, "text": "alpha beta gamma"},
++                    {"start": 4.0, "end": 8.0, "text": "delta epsilon zeta"},
++                ],
++                {},
++            )
++        return (
++            [{"start": 0.0, "end": 4.0, "text": "alpha beta gamma"}],
++            {},
++        )
++
++    _segments, _info, payload = multilingual_asr.run_language_aware_asr(
++        audio,
++        override_lang=None,
++        configured_mode="force_multilingual",
++        tmp_root=tmp_path / "tmp",
++        transcribe_fn=_transcribe,
++    )
++
++    assert payload["used_multilingual_path"] is True
++    assert "result_confidence" not in payload["chunks"][0]

@@ -77,16 +77,19 @@ Operational setup, failure handling, backup/restore, and upgrade steps are docum
 
 1. Open `/upload` and add one or more audio files.
 2. Uploaded audio is normalized automatically to 16 kHz mono WAV before VAD/ASR/diarization (raw upload is preserved; no user conversion needed).
-3. Track per-file upload progress and processing progress on the same page.
-4. Open the recording detail page at `/recordings/{recording_id}`.
+3. Mixed-language handling now happens automatically in `LAN_ASR_MULTILINGUAL_MODE=auto`.
+   - `derived/transcript.json` can include chunk-level `language_spans` and multilingual execution metadata.
+   - When chunk language ID remains conflicted or low-confidence, the recording stays in `NeedsReview` with an explicit review reason.
+4. Track per-file upload progress and processing progress on the same page.
+5. Open the recording detail page at `/recordings/{recording_id}`.
    - `NeedsReview` recordings now show an explicit review reason in both the list and detail UI.
    - Displayed timestamps are rendered in local Europe/Rome time in the server-rendered UI.
    - Duration is taken from `derived/audio_sanitized.wav` when present, then falls back to the raw upload.
-5. Export results:
+6. Export results:
    - Copy markdown from the export tab for manual OneNote paste.
    - Download ZIP from `/ui/recordings/{recording_id}/export.zip`.
    - Export content appears automatically once the recording reaches a terminal state; no manual refresh is needed.
-6. Deleting a recording from the UI/API removes the DB row and the recording directory under `/data/recordings/<recording_id>`. If disk cleanup fails, delete returns an error instead of silently succeeding.
+7. Deleting a recording from the UI/API removes the DB row and the recording directory under `/data/recordings/<recording_id>`. If disk cleanup fails, delete returns an error instead of silently succeeding.
 
 ## Speaker bank
 
@@ -161,6 +164,7 @@ models are cached across runs.
 | `LAN_REDIS_URL` | Redis endpoint for the RQ queue |
 | `LAN_RQ_QUEUE_NAME` | Queue name consumed by the worker |
 | `LAN_VAD_METHOD` | WhisperX VAD selector for ASR model init: `silero` (default) or `pyannote` |
+| `LAN_ASR_MULTILINGUAL_MODE` | Mixed-language ASR mode: `auto` (default), `force_single_language`, or `force_multilingual` |
 | `LAN_API_BEARER_TOKEN` | Optional bearer token for protected POST actions (`/api` and UI POST routes) |
 | `UPLOAD_MAX_BYTES` | Optional max size per uploaded file in bytes (`413` when exceeded) |
 | `QUARANTINE_RETENTION_DAYS` | Retention period for quarantined recording cleanup (default `7`) |
@@ -194,6 +198,8 @@ If LLM responses fail with `finish_reason=length` or empty `message.content`, in
 Long transcripts are processed with a chunked map-reduce LLM flow. During that phase the UI may show progress stages like `llm_chunk_1_of_5` and `llm_merge`, and debug artifacts are written under `derived/` for chunk planning and merge inspection.
 
 For diarization quality tuning, keep `LAN_DIARIZATION_PROFILE=auto` for mixed workloads. In `auto`, the worker runs a meeting-oriented first pass, classifies the result from deterministic speaker-share/alternation/overlap heuristics, and retries once with `min_speakers=2` and `max_speakers=2` only when the recording looks dialog-like. Use `dialog` or `meeting` only to force one behavior, and note that explicit `LAN_DIARIZATION_MIN_SPEAKERS` / `LAN_DIARIZATION_MAX_SPEAKERS` overrides bypass auto selection. Each processed recording writes `derived/diarization_metadata.json` with the requested profile, selected profile, initial top-two coverage, retry attempt/winner, applied hints, and smoothing stats.
+
+Mixed-language ASR defaults to `LAN_ASR_MULTILINGUAL_MODE=auto`. When the pipeline sees credible language switches, it retranscribes grouped chunks with per-chunk language hints, writes `language_spans` plus multilingual execution metadata into `derived/transcript.json`, and keeps the recording in `NeedsReview` when chunk-level language ID remains conflicted or low-confidence.
 
 If API auth is enabled, set `LAN_API_BEARER_TOKEN` to a non-empty value in your env file.
 
