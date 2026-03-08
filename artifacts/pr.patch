@@ -1,331 +1,1823 @@
-diff --git a/lan_transcriber/pipeline_steps/diarization_quality.py b/lan_transcriber/pipeline_steps/diarization_quality.py
-index 0165cc8..32dcaa4 100644
---- a/lan_transcriber/pipeline_steps/diarization_quality.py
-+++ b/lan_transcriber/pipeline_steps/diarization_quality.py
-@@ -127,7 +127,7 @@ def _dominant_sequence(
-     out: list[str] = []
-     for row in segments:
-         speaker = str(row.get("speaker") or "").strip()
--        if speaker in dominant_speakers:
-+        if speaker in dominant_speakers and _segment_duration(row) > 0.0:
-             out.append(speaker)
-     return out
+diff --git a/README.md b/README.md
+index 36d51cb..32290e9 100644
+--- a/README.md
++++ b/README.md
+@@ -88,6 +88,12 @@ Operational setup, failure handling, backup/restore, and upgrade steps are docum
+    - Export content appears automatically once the recording reaches a terminal state; no manual refresh is needed.
+ 6. Deleting a recording from the UI/API removes the DB row and the recording directory under `/data/recordings/<recording_id>`. If disk cleanup fails, delete returns an error instead of silently succeeding.
  
-diff --git a/lan_transcriber/pipeline_steps/orchestrator.py b/lan_transcriber/pipeline_steps/orchestrator.py
-index 3061d63..28f1897 100644
---- a/lan_transcriber/pipeline_steps/orchestrator.py
-+++ b/lan_transcriber/pipeline_steps/orchestrator.py
-@@ -350,11 +350,13 @@ async def _maybe_retry_dialog_diarization(
-     initial_hints = metadata.get("initial_hints")
-     if not isinstance(initial_hints, dict):
-         initial_hints = {}
-+    auto_profile_enabled = bool(metadata.get("auto_profile_enabled", False))
-     initial_profile = str(
-         metadata.get("initial_profile")
-         or metadata.get("diarization_profile")
-         or "meeting"
-     )
-+    retry_profile_enabled = auto_profile_enabled or initial_profile == "dialog"
-     initial_decision = classify_diarization_profile(
-         diarization,
-         speech_turn_count=len(asr_segments),
-@@ -378,11 +380,11 @@ async def _maybe_retry_dialog_diarization(
-     profile_selection: dict[str, Any] = {
-         "requested_profile": str(metadata.get("diarization_profile") or "auto"),
-         "initial_profile": initial_profile,
--        "auto_profile_enabled": bool(metadata.get("auto_profile_enabled", False)),
-+        "auto_profile_enabled": auto_profile_enabled,
-         "override_reason": metadata.get("override_reason"),
-         "selected_profile": (
-             initial_profile
--            if not bool(metadata.get("auto_profile_enabled", False))
-+            if not auto_profile_enabled
-             else initial_decision.selected_profile
-         ),
-         "classification_reason": initial_decision.reason,
-@@ -392,31 +394,29 @@ async def _maybe_retry_dialog_diarization(
-         "initial_metrics": initial_decision.metrics.as_dict(),
-         "initial_dialog_score": initial_decision.dialog_score,
-     }
--    if not bool(metadata.get("auto_profile_enabled", False)):
-+    selected_profile_without_retry = profile_selection["selected_profile"]
-+    if not retry_profile_enabled:
-         _update_diariser_runtime_metadata(
-             diariser,
-             effective_hints=dict(initial_hints),
--            selected_profile=profile_selection["selected_profile"],
-+            selected_profile=selected_profile_without_retry,
-             profile_selection=profile_selection,
-         )
-         return diarization
++## Speaker bank
++
++- `voice_profiles` now represent canonical speakers: one real person should map to one active record.
++- `voice_samples` can store many samples per canonical speaker, including provenance and review metadata for low-confidence matches.
++- Duplicate speakers can be merged backend-side without losing samples, assignments, or routing references.
++
+ ## Runtime data root
  
-     retry_dialog = getattr(diariser, "retry_dialog", None)
-     if not callable(retry_dialog):
--        profile_selection["selected_profile"] = initial_decision.selected_profile
-         profile_selection["winner_reason"] = "dialog_retry_unavailable"
-         _update_diariser_runtime_metadata(
-             diariser,
--            selected_profile=profile_selection["selected_profile"],
-+            selected_profile=selected_profile_without_retry,
-             profile_selection=profile_selection,
-         )
-         return diarization
-     if initial_decision.selected_profile != "dialog":
--        profile_selection["selected_profile"] = "meeting"
--        profile_selection["winner_reason"] = initial_decision.reason
-         _update_diariser_runtime_metadata(
-             diariser,
--            selected_profile="meeting",
-+            selected_profile=selected_profile_without_retry,
-             profile_selection=profile_selection,
-         )
-         return diarization
-@@ -424,7 +424,7 @@ async def _maybe_retry_dialog_diarization(
-     _best_effort_step_log(
-         step_log_callback,
-         (
--            "diarization auto-profile retry "
-+            f"{'diarization auto-profile retry' if auto_profile_enabled else 'diarization forced-dialog retry'} "
-             f"classification={initial_decision.reason} "
-             "min_speakers=2 max_speakers=2"
-         ),
-@@ -433,7 +433,7 @@ async def _maybe_retry_dialog_diarization(
-     try:
-         retry_result = await retry_dialog(audio_path)
-     except Exception as exc:
--        profile_selection["selected_profile"] = initial_decision.selected_profile
-+        profile_selection["selected_profile"] = selected_profile_without_retry
-         profile_selection["winner_reason"] = "dialog_retry_failed"
-         profile_selection["retry_error"] = str(exc) or exc.__class__.__name__
-         _update_diariser_runtime_metadata(
-@@ -477,7 +477,7 @@ async def _maybe_retry_dialog_diarization(
-             "selected_profile": (
-                 retry_decision.selected_profile
-                 if winner_is_retry
--                else initial_decision.selected_profile
-+                else selected_profile_without_retry
-             ),
-             "selected_result": retry_selection.selected_result,
-             "winner_reason": retry_selection.winner_reason,
-diff --git a/tests/test_cov_lan_transcriber_extra_pipeline.py b/tests/test_cov_lan_transcriber_extra_pipeline.py
-index 7bd63af..2ae37a2 100644
---- a/tests/test_cov_lan_transcriber_extra_pipeline.py
-+++ b/tests/test_cov_lan_transcriber_extra_pipeline.py
-@@ -26,6 +26,21 @@ def _settings(tmp_path: Path, **overrides: Any) -> pipeline.Settings:
-     return pipeline.Settings(**defaults)
+ Runtime mutable state must live under `/data` in containers (mounted from `./data` in Docker):
+diff --git a/docs/runbook.md b/docs/runbook.md
+index 3081b36..204d34a 100644
+--- a/docs/runbook.md
++++ b/docs/runbook.md
+@@ -43,9 +43,16 @@ docker compose run --rm api python -m lan_app.healthchecks app
+    - `NeedsReview` recordings show an explicit review reason in the recordings list and detail page.
+    - The server-rendered UI shows timestamps in local Europe/Rome time.
+    - Duration is sourced from `derived/audio_sanitized.wav` when it exists, otherwise from the raw upload.
++   - Canonical speaker records keep one active person entry with many samples; low-confidence matches stay reviewable instead of auto-merging.
+ 5. Download export bundle from `GET /ui/recordings/{recording_id}/export.zip`.
+ 6. Deleting a recording removes the DB row plus `/data/recordings/<recording_id>/raw`, `derived`, `logs`, and other remaining files under that recording root. If cleanup fails, delete returns an error.
+ 
++### 1.2.1 Canonical speaker merges
++
++1. Treat `/voices` entries as canonical people, not one-off embeddings.
++2. Backend merge operations move all samples and references from duplicate speaker A to canonical speaker B.
++3. After a merge, routing/training references follow the target canonical speaker automatically.
++
+ ### 1.3 Upload size controls
+ 
+ 1. Optionally set `UPLOAD_MAX_BYTES` to cap a single uploaded file size.
+diff --git a/lan_app/db.py b/lan_app/db.py
+index e307f6f..f48089f 100644
+--- a/lan_app/db.py
++++ b/lan_app/db.py
+@@ -45,6 +45,33 @@ LEFT JOIN projects AS p ON p.id = r.project_id
+ LEFT JOIN projects AS sp ON sp.id = r.suggested_project_id
+ """
+ 
++_VOICE_PROFILE_SELECT_SQL = """
++SELECT *
++FROM voice_profiles
++"""
++
++_SPEAKER_ASSIGNMENT_SELECT_SQL = """
++SELECT
++    sa.recording_id,
++    sa.diar_speaker_label,
++    sa.voice_profile_id,
++    sa.confidence,
++    sa.candidate_matches_json,
++    sa.low_confidence,
++    sa.updated_at,
++    vp.display_name AS voice_profile_name
++FROM speaker_assignments AS sa
++LEFT JOIN voice_profiles AS vp ON vp.id = sa.voice_profile_id
++"""
++
++_VOICE_SAMPLE_SELECT_SQL = """
++SELECT
++    vs.*,
++    vp.display_name AS voice_profile_name
++FROM voice_samples AS vs
++LEFT JOIN voice_profiles AS vp ON vp.id = vs.voice_profile_id
++"""
++
+ 
+ def _utc_now() -> str:
+     return datetime.now(tz=timezone.utc).replace(microsecond=0).isoformat().replace(
+@@ -106,6 +133,131 @@ def _normalise_keyword(value: object) -> str:
+     return " ".join(str(value).strip().lower().split())
  
  
-+def _annotation_from_segments(*segments: tuple[float, float, str]):
-+    rows = []
-+    segment_only = []
-+    for index, (start, end, speaker) in enumerate(segments, start=1):
-+        segment = SimpleNamespace(start=start, end=end)
-+        segment_only.append((segment,))
-+        if index % 2:
-+            rows.append((segment, speaker))
-+        else:
-+            rows.append((segment, f"track-{index}", speaker))
-+    return SimpleNamespace(
-+        itertracks=lambda yield_label=False: iter(rows if yield_label else segment_only)
-+    )
++def _clamp_score(value: object, *, default: float = 0.0) -> float:
++    try:
++        parsed = float(value)
++    except (TypeError, ValueError):
++        parsed = default
++    return max(0.0, min(parsed, 1.0))
 +
 +
- def test_pipeline_settings_reads_llm_model_from_env(
-     monkeypatch: pytest.MonkeyPatch,
-     tmp_path: Path,
-@@ -148,6 +163,170 @@ async def test_orchestrator_retry_helper_skips_non_retryable_cases_and_tolerates
-     assert result is diarization
- 
- 
-+@pytest.mark.asyncio
-+async def test_orchestrator_retry_helper_skips_forced_meeting_configs():
-+    class _MeetingDiariser:
-+        dialog_retry_min_turns = 4
-+        dialog_retry_min_duration_seconds = 15.0
-+        last_run_metadata = {
-+            "diarization_profile": "meeting",
-+            "initial_profile": "meeting",
-+            "auto_profile_enabled": False,
-+            "override_reason": "profile_forced_meeting",
-+            "initial_hints": {"min_speakers": 2, "max_speakers": 6},
-+            "effective_hints": {"min_speakers": 2, "max_speakers": 6},
-+            "speaker_count_before_retry": 1,
++def _normalise_candidate_matches(
++    candidate_matches: Sequence[dict[str, Any]] | None,
++) -> list[dict[str, Any]]:
++    if not candidate_matches:
++        return []
++    best_by_profile_id: dict[int, dict[str, Any]] = {}
++    for row in candidate_matches:
++        if not isinstance(row, dict):
++            continue
++        try:
++            voice_profile_id = int(row.get("voice_profile_id"))
++        except (TypeError, ValueError):
++            continue
++        normalized = {
++            "voice_profile_id": voice_profile_id,
++            "score": round(
++                _clamp_score(row.get("score", row.get("confidence")), default=0.0),
++                4,
++            ),
 +        }
-+
-+        async def retry_dialog(self, _audio_path: Path):
-+            raise AssertionError("retry_dialog should not run")
-+
-+    diarization = _annotation_from_segments((0.0, 30.0, "S1"))
-+    diariser = _MeetingDiariser()
-+    result = await pipeline._maybe_retry_dialog_diarization(
-+        diariser=diariser,
-+        audio_path=Path("/tmp/audio.wav"),
-+        diarization=diarization,
-+        asr_segments=[{"text": "first"}, {"text": "second"}, {"text": "third"}, {"text": "fourth"}],
-+        precheck_result=precheck.PrecheckResult(
-+            duration_sec=30.0,
-+            speech_ratio=0.5,
-+            quarantine_reason=None,
++        display_name = str(row.get("display_name") or "").strip()
++        if display_name:
++            normalized["display_name"] = display_name
++        existing = best_by_profile_id.get(voice_profile_id)
++        if existing is None or tuple(
++            normalized.get(key, "") for key in ("score", "display_name")
++        ) > tuple(existing.get(key, "") for key in ("score", "display_name")):
++            best_by_profile_id[voice_profile_id] = normalized
++    return sorted(
++        best_by_profile_id.values(),
++        key=lambda item: (
++            -float(item.get("score") or 0.0),
++            str(item.get("display_name") or ""),
++            int(item["voice_profile_id"]),
 +        ),
-+        step_log_callback=None,
 +    )
 +
-+    assert result is diarization
-+    assert diariser.last_run_metadata["selected_profile"] == "meeting"
-+    assert diariser.last_run_metadata["profile_selection"]["dialog_retry_attempted"] is False
-+    assert diariser.last_run_metadata["profile_selection"]["winner_reason"] == "profile_forced_meeting"
++
++def _normalise_embedding(embedding: Sequence[float] | None) -> list[float] | None:
++    if embedding is None or isinstance(embedding, (str, bytes)):
++        return None
++    values: list[float] = []
++    for value in embedding:
++        try:
++            values.append(round(float(value), 8))
++        except (TypeError, ValueError):
++            continue
++    return values or None
 +
 +
-+@pytest.mark.asyncio
-+@pytest.mark.parametrize(
-+    ("requested_profile", "override_reason"),
-+    [
-+        ("dialog", "profile_forced_dialog"),
-+        ("auto", "explicit_speaker_hints"),
-+    ],
-+)
-+async def test_orchestrator_retry_helper_preserves_retry_for_forced_dialog_configs(
-+    requested_profile: str,
-+    override_reason: str,
-+):
-+    class _RetryingDiariser:
-+        dialog_retry_min_turns = 4
-+        dialog_retry_min_duration_seconds = 15.0
-+
-+        def __init__(self):
-+            self.retry_calls = 0
-+            self.last_run_metadata = {
-+                "diarization_profile": requested_profile,
-+                "initial_profile": "dialog",
-+                "auto_profile_enabled": False,
-+                "override_reason": override_reason,
-+                "initial_hints": {"min_speakers": 2, "max_speakers": 2},
-+                "effective_hints": {"min_speakers": 2, "max_speakers": 2},
-+                "speaker_count_before_retry": 1,
-+                "dialog_retry_used": False,
-+            }
-+
-+        async def retry_dialog(self, _audio_path: Path):
-+            self.retry_calls += 1
-+            self.last_run_metadata.update(
-+                {
-+                    "retry_hints": {"min_speakers": 2, "max_speakers": 2},
-+                    "effective_hints": {"min_speakers": 2, "max_speakers": 2},
-+                    "dialog_retry_used": True,
-+                    "speaker_count_after_retry": 2,
-+                }
-+            )
-+            return _annotation_from_segments(
-+                (0.0, 1.0, "S1"),
-+                (1.0, 2.0, "S2"),
-+                (2.0, 3.0, "S1"),
-+                (3.0, 4.0, "S2"),
-+            )
-+
-+    diarization = _annotation_from_segments((0.0, 30.0, "S1"))
-+    diariser = _RetryingDiariser()
-+    result = await pipeline._maybe_retry_dialog_diarization(
-+        diariser=diariser,
-+        audio_path=Path("/tmp/audio.wav"),
-+        diarization=diarization,
-+        asr_segments=[{"text": "first"}, {"text": "second"}, {"text": "third"}, {"text": "fourth"}],
-+        precheck_result=precheck.PrecheckResult(
-+            duration_sec=30.0,
-+            speech_ratio=0.5,
-+            quarantine_reason=None,
-+        ),
-+        step_log_callback=None,
-+    )
-+
-+    assert result is not diarization
-+    assert diariser.retry_calls == 1
-+    assert diariser.last_run_metadata["selected_profile"] == "dialog"
-+    assert diariser.last_run_metadata["dialog_retry_used"] is True
-+    assert diariser.last_run_metadata["effective_hints"] == {
-+        "min_speakers": 2,
-+        "max_speakers": 2,
-+    }
-+    assert diariser.last_run_metadata["profile_selection"]["dialog_retry_attempted"] is True
-+    assert diariser.last_run_metadata["profile_selection"]["selected_result"] == "dialog_retry"
++def _rewrite_voice_profile_ids_for_merge(
++    voice_profile_ids: Any,
++    *,
++    source_profile_id: int,
++    target_profile_id: int,
++) -> list[int]:
++    source_values = voice_profile_ids
++    if isinstance(source_values, str):
++        try:
++            source_values = json.loads(source_values)
++        except ValueError:
++            source_values = []
++    if not isinstance(source_values, Sequence) or isinstance(source_values, (str, bytes)):
++        return []
++    rewritten: list[int] = []
++    for value in source_values:
++        try:
++            profile_id = int(value)
++        except (TypeError, ValueError):
++            continue
++        rewritten.append(target_profile_id if profile_id == source_profile_id else profile_id)
++    return sorted(set(rewritten))
 +
 +
-+@pytest.mark.asyncio
-+async def test_orchestrator_retry_helper_keeps_forced_dialog_profile_when_retry_floor_not_met():
-+    class _ForcedDialogDiariser:
-+        dialog_retry_min_turns = 4
-+        dialog_retry_min_duration_seconds = 15.0
-+
-+        def __init__(self):
-+            self.retry_calls = 0
-+            self.last_run_metadata = {
-+                "diarization_profile": "dialog",
-+                "initial_profile": "dialog",
-+                "auto_profile_enabled": False,
-+                "override_reason": "profile_forced_dialog",
-+                "initial_hints": {"min_speakers": 2, "max_speakers": 2},
-+                "effective_hints": {"min_speakers": 2, "max_speakers": 2},
-+                "speaker_count_before_retry": 2,
-+                "dialog_retry_used": False,
-+            }
-+
-+        async def retry_dialog(self, _audio_path: Path):
-+            self.retry_calls += 1
-+            raise AssertionError("retry_dialog should not run")
-+
-+    diarization = _annotation_from_segments(
-+        (0.0, 1.0, "S1"),
-+        (1.0, 2.0, "S2"),
-+        (2.0, 3.0, "S1"),
-+        (3.0, 4.0, "S2"),
-+    )
-+    diariser = _ForcedDialogDiariser()
-+    result = await pipeline._maybe_retry_dialog_diarization(
-+        diariser=diariser,
-+        audio_path=Path("/tmp/audio.wav"),
-+        diarization=diarization,
-+        asr_segments=[{"text": "first"}, {"text": "second"}, {"text": "third"}, {"text": "fourth"}],
-+        precheck_result=precheck.PrecheckResult(
-+            duration_sec=4.0,
-+            speech_ratio=0.5,
-+            quarantine_reason=None,
-+        ),
-+        step_log_callback=None,
-+    )
-+
-+    assert result is diarization
-+    assert diariser.retry_calls == 0
-+    assert diariser.last_run_metadata["selected_profile"] == "dialog"
-+    assert diariser.last_run_metadata["profile_selection"]["classification_reason"] == (
-+        "dialog_like_below_min_duration"
-+    )
-+    assert diariser.last_run_metadata["profile_selection"]["selected_result"] == "initial_pass"
++def _rewrite_candidate_matches_for_merge(
++    candidate_matches: Any,
++    *,
++    source_profile_id: int,
++    target_profile_id: int,
++) -> list[dict[str, Any]]:
++    source_values = candidate_matches
++    if isinstance(source_values, str):
++        try:
++            source_values = json.loads(source_values)
++        except ValueError:
++            source_values = []
++    if not source_values or not isinstance(source_values, Sequence) or isinstance(
++        source_values,
++        (str, bytes),
++    ):
++        return []
++    rewritten: list[dict[str, Any]] = []
++    for row in source_values:
++        if not isinstance(row, dict):
++            continue
++        updated = dict(row)
++        if updated.get("voice_profile_id") == source_profile_id:
++            updated["voice_profile_id"] = target_profile_id
++        rewritten.append(updated)
++    return _normalise_candidate_matches(rewritten)
 +
 +
- @pytest.mark.asyncio
- async def test_orchestrator_retry_helper_keeps_initial_diarization_when_retry_fails():
-     segment = SimpleNamespace(start=0.0, end=30.0)
-diff --git a/tests/test_diarization_quality.py b/tests/test_diarization_quality.py
-index 62b2b44..4332396 100644
---- a/tests/test_diarization_quality.py
-+++ b/tests/test_diarization_quality.py
-@@ -154,6 +154,20 @@ def test_diarization_profile_metrics_handle_malformed_segments_and_zero_denomina
-     assert with_zero_duration.overlap_seconds == 0.0
++def _get_voice_profile_row(
++    conn: sqlite3.Connection,
++    profile_id: int,
++    *,
++    include_merged: bool,
++) -> sqlite3.Row | None:
++    where_clause = "WHERE id = ?"
++    if not include_merged:
++        where_clause += " AND merged_into_voice_profile_id IS NULL"
++    return conn.execute(
++        f"{_VOICE_PROFILE_SELECT_SQL} {where_clause}",
++        (int(profile_id),),
++    ).fetchone()
++
++
+ def _is_lock_or_busy_error(error: sqlite3.OperationalError) -> bool:
+     message = str(error).strip().lower()
+     return any(marker in message for marker in _LOCK_ERROR_MARKERS)
+@@ -1650,16 +1802,34 @@ def list_project_keyword_weights(
+ 
+ def list_voice_profiles(
+     *,
++    include_merged: bool = False,
+     settings: AppSettings | None = None,
+ ) -> list[dict[str, Any]]:
+     init_db(settings)
++    where_sql = "" if include_merged else "WHERE merged_into_voice_profile_id IS NULL"
+     with connect(settings) as conn:
+         rows = conn.execute(
+-            "SELECT * FROM voice_profiles ORDER BY display_name"
++            f"{_VOICE_PROFILE_SELECT_SQL} {where_sql} ORDER BY display_name, id"
+         ).fetchall()
+     return [_as_dict(row) or {} for row in rows]
  
  
-+def test_diarization_profile_metrics_ignore_non_positive_segments_in_dominant_turns():
-+    metrics = diarization_profile_metrics(
-+        _annotation(
-+            (SimpleNamespace(start=0.0, end=1.0), "S1"),
-+            (SimpleNamespace(start=1.0, end=2.0), "track-2", "S2"),
-+            (SimpleNamespace(start=2.0, end=2.0), "S1"),
-+            (SimpleNamespace(start=2.0, end=3.0), "track-4", "S1"),
++def get_voice_profile(
++    profile_id: int,
++    *,
++    include_merged: bool = False,
++    settings: AppSettings | None = None,
++) -> dict[str, Any] | None:
++    init_db(settings)
++    with connect(settings) as conn:
++        row = _get_voice_profile_row(
++            conn,
++            int(profile_id),
++            include_merged=include_merged,
++        )
++    return _as_dict(row)
++
++
+ def create_voice_profile(
+     display_name: str,
+     notes: str | None = None,
+@@ -1667,14 +1837,27 @@ def create_voice_profile(
+     settings: AppSettings | None = None,
+ ) -> dict[str, Any]:
+     init_db(settings)
++    now = _utc_now()
+     with connect(settings) as conn:
+         cursor = conn.execute(
+-            "INSERT INTO voice_profiles (display_name, notes) VALUES (?, ?)",
+-            (display_name, notes),
++            """
++            INSERT INTO voice_profiles (
++                display_name,
++                notes,
++                created_at,
++                updated_at,
++                merged_into_voice_profile_id,
++                merged_at
++            )
++            VALUES (?, ?, ?, ?, NULL, NULL)
++            """,
++            (display_name, notes, now, now),
++        )
++        row = _get_voice_profile_row(
++            conn,
++            int(cursor.lastrowid),
++            include_merged=True,
+         )
+-        row = conn.execute(
+-            "SELECT * FROM voice_profiles WHERE id = ?", (cursor.lastrowid,)
+-        ).fetchone()
+         conn.commit()
+     return _as_dict(row) or {}
+ 
+@@ -1701,15 +1884,8 @@ def list_speaker_assignments(
+     init_db(settings)
+     with connect(settings) as conn:
+         rows = conn.execute(
+-            """
+-            SELECT
+-                sa.recording_id,
+-                sa.diar_speaker_label,
+-                sa.voice_profile_id,
+-                sa.confidence,
+-                vp.display_name AS voice_profile_name
+-            FROM speaker_assignments AS sa
+-            LEFT JOIN voice_profiles AS vp ON vp.id = sa.voice_profile_id
++            f"""
++            {_SPEAKER_ASSIGNMENT_SELECT_SQL}
+             WHERE sa.recording_id = ?
+             ORDER BY sa.diar_speaker_label
+             """,
+@@ -1724,14 +1900,19 @@ def set_speaker_assignment(
+     diar_speaker_label: str,
+     voice_profile_id: int | None,
+     confidence: float = 1.0,
++    candidate_matches: Sequence[dict[str, Any]] | None = None,
++    low_confidence: bool | None = None,
++    keep_unmatched: bool = False,
+     settings: AppSettings | None = None,
+ ) -> dict[str, Any] | None:
+     init_db(settings)
+     diar_label = str(diar_speaker_label).strip()
+     if not diar_label:
+         raise ValueError("diar_speaker_label is required")
++    normalized_candidates = _normalise_candidate_matches(candidate_matches)
++    score = round(_clamp_score(confidence, default=0.0), 4)
+     with connect(settings) as conn:
+-        if voice_profile_id is None:
++        if voice_profile_id is None and not keep_unmatched:
+             conn.execute(
+                 """
+                 DELETE FROM speaker_assignments
+@@ -1741,33 +1922,45 @@ def set_speaker_assignment(
+             )
+             conn.commit()
+             return None
+-        profile_id = int(voice_profile_id)
+-        score = max(0.0, min(float(confidence), 1.0))
++        profile_id = None if voice_profile_id is None else int(voice_profile_id)
++        resolved_low_confidence = (
++            bool(low_confidence)
++            if low_confidence is not None
++            else profile_id is None and bool(normalized_candidates)
++        )
++        now = _utc_now()
+         conn.execute(
+             """
+             INSERT INTO speaker_assignments (
+                 recording_id,
+                 diar_speaker_label,
+                 voice_profile_id,
+-                confidence
++                confidence,
++                candidate_matches_json,
++                low_confidence,
++                updated_at
+             )
+-            VALUES (?, ?, ?, ?)
++            VALUES (?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(recording_id, diar_speaker_label) DO UPDATE SET
+                 voice_profile_id = excluded.voice_profile_id,
+-                confidence = excluded.confidence
++                confidence = excluded.confidence,
++                candidate_matches_json = excluded.candidate_matches_json,
++                low_confidence = excluded.low_confidence,
++                updated_at = excluded.updated_at
+             """,
+-            (recording_id, diar_label, profile_id, score),
++            (
++                recording_id,
++                diar_label,
++                profile_id,
++                score,
++                json.dumps(normalized_candidates, ensure_ascii=True),
++                1 if resolved_low_confidence else 0,
++                now,
++            ),
+         )
+         row = conn.execute(
+-            """
+-            SELECT
+-                sa.recording_id,
+-                sa.diar_speaker_label,
+-                sa.voice_profile_id,
+-                sa.confidence,
+-                vp.display_name AS voice_profile_name
+-            FROM speaker_assignments AS sa
+-            LEFT JOIN voice_profiles AS vp ON vp.id = sa.voice_profile_id
++            f"""
++            {_SPEAKER_ASSIGNMENT_SELECT_SQL}
+             WHERE sa.recording_id = ? AND sa.diar_speaker_label = ?
+             """,
+             (recording_id, diar_label),
+@@ -1793,11 +1986,7 @@ def list_voice_samples(
+         params.append(recording_id)
+     where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+     query = f"""
+-        SELECT
+-            vs.*,
+-            vp.display_name AS voice_profile_name
+-        FROM voice_samples AS vs
+-        LEFT JOIN voice_profiles AS vp ON vp.id = vs.voice_profile_id
++        {_VOICE_SAMPLE_SELECT_SQL}
+         {where_sql}
+         ORDER BY vs.created_at DESC, vs.id DESC
+     """
+@@ -1808,10 +1997,17 @@ def list_voice_samples(
+ 
+ def create_voice_sample(
+     *,
+-    voice_profile_id: int,
++    voice_profile_id: int | None,
+     snippet_path: str,
+     recording_id: str | None = None,
+     diar_speaker_label: str | None = None,
++    sample_source: str = "manual",
++    sample_start_sec: float | None = None,
++    sample_end_sec: float | None = None,
++    embedding: Sequence[float] | None = None,
++    candidate_matches: Sequence[dict[str, Any]] | None = None,
++    needs_review: bool | None = None,
++    confidence: float | None = None,
+     settings: AppSettings | None = None,
+ ) -> dict[str, Any]:
+     init_db(settings)
+@@ -1820,6 +2016,19 @@ def create_voice_sample(
+         raise ValueError("snippet_path is required")
+     clean_recording = str(recording_id).strip() if recording_id is not None else None
+     clean_label = str(diar_speaker_label).strip() if diar_speaker_label is not None else None
++    clean_sample_source = str(sample_source).strip() or "manual"
++    normalized_candidates = _normalise_candidate_matches(candidate_matches)
++    normalized_embedding = _normalise_embedding(embedding)
++    resolved_needs_review = bool(needs_review) if needs_review is not None else voice_profile_id is None
++    resolved_confidence = (
++        round(_clamp_score(confidence, default=0.0), 4)
++        if confidence is not None
++        else (
++            float(normalized_candidates[0]["score"])
++            if normalized_candidates
++            else (1.0 if voice_profile_id is not None else None)
 +        )
 +    )
+     now = _utc_now()
+     with connect(settings) as conn:
+         cursor = conn.execute(
+@@ -1829,25 +2038,37 @@ def create_voice_sample(
+                 recording_id,
+                 diar_speaker_label,
+                 snippet_path,
++                sample_source,
++                sample_start_sec,
++                sample_end_sec,
++                embedding_json,
++                candidate_matches_json,
++                needs_review,
++                confidence,
+                 created_at
+             )
+-            VALUES (?, ?, ?, ?, ?)
++            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             """,
+             (
+-                int(voice_profile_id),
++                None if voice_profile_id is None else int(voice_profile_id),
+                 clean_recording or None,
+                 clean_label or None,
+                 snippet,
++                clean_sample_source,
++                sample_start_sec,
++                sample_end_sec,
++                json.dumps(normalized_embedding, ensure_ascii=True)
++                if normalized_embedding is not None
++                else None,
++                json.dumps(normalized_candidates, ensure_ascii=True),
++                1 if resolved_needs_review else 0,
++                resolved_confidence,
+                 now,
+             ),
+         )
+         row = conn.execute(
+-            """
+-            SELECT
+-                vs.*,
+-                vp.display_name AS voice_profile_name
+-            FROM voice_samples AS vs
+-            LEFT JOIN voice_profiles AS vp ON vp.id = vs.voice_profile_id
++            f"""
++            {_VOICE_SAMPLE_SELECT_SQL}
+             WHERE vs.id = ?
+             """,
+             (cursor.lastrowid,),
+@@ -1864,12 +2085,8 @@ def get_voice_sample(
+     init_db(settings)
+     with connect(settings) as conn:
+         row = conn.execute(
+-            """
+-            SELECT
+-                vs.*,
+-                vp.display_name AS voice_profile_name
+-            FROM voice_samples AS vs
+-            LEFT JOIN voice_profiles AS vp ON vp.id = vs.voice_profile_id
++            f"""
++            {_VOICE_SAMPLE_SELECT_SQL}
+             WHERE vs.id = ?
+             """,
+             (sample_id,),
+@@ -1877,6 +2094,233 @@ def get_voice_sample(
+     return _as_dict(row)
+ 
+ 
++def merge_voice_profiles(
++    source_profile_id: int,
++    target_profile_id: int,
++    *,
++    settings: AppSettings | None = None,
++) -> dict[str, Any]:
++    init_db(settings)
++    source_id = int(source_profile_id)
++    target_id = int(target_profile_id)
++    if source_id == target_id:
++        raise ValueError("source_profile_id and target_profile_id must differ")
 +
-+    assert metrics.dominant_turn_count == 3
-+    assert metrics.dominant_alternation_ratio == 1.0
++    now = _utc_now()
++    with connect(settings) as conn:
++        source_row = _get_voice_profile_row(
++            conn,
++            source_id,
++            include_merged=True,
++        )
++        if source_row is None:
++            raise ValueError("source_profile_id was not found")
++        if source_row["merged_into_voice_profile_id"] is not None:
++            raise ValueError("source_profile_id is already merged")
++
++        target_row = _get_voice_profile_row(
++            conn,
++            target_id,
++            include_merged=True,
++        )
++        if target_row is None:
++            raise ValueError("target_profile_id was not found")
++        if target_row["merged_into_voice_profile_id"] is not None:
++            raise ValueError("target_profile_id is already merged")
++
++        samples_moved = conn.execute(
++            """
++            UPDATE voice_samples
++            SET voice_profile_id = ?
++            WHERE voice_profile_id = ?
++            """,
++            (target_id, source_id),
++        ).rowcount
++        assignments_moved = conn.execute(
++            """
++            UPDATE speaker_assignments
++            SET voice_profile_id = ?, updated_at = ?
++            WHERE voice_profile_id = ?
++            """,
++            (target_id, now, source_id),
++        ).rowcount
++        participant_metrics_moved = conn.execute(
++            """
++            UPDATE participant_metrics
++            SET voice_profile_id = ?
++            WHERE voice_profile_id = ?
++            """,
++            (target_id, source_id),
++        ).rowcount
++
++        assignment_candidate_updates = 0
++        assignment_rows = conn.execute(
++            """
++            SELECT recording_id, diar_speaker_label, candidate_matches_json
++            FROM speaker_assignments
++            """
++        ).fetchall()
++        for row in assignment_rows:
++            rewritten = _rewrite_candidate_matches_for_merge(
++                row["candidate_matches_json"],
++                source_profile_id=source_id,
++                target_profile_id=target_id,
++            )
++            normalized_json = json.dumps(rewritten, ensure_ascii=True)
++            if normalized_json == row["candidate_matches_json"]:
++                continue
++            conn.execute(
++                """
++                UPDATE speaker_assignments
++                SET candidate_matches_json = ?, updated_at = ?
++                WHERE recording_id = ? AND diar_speaker_label = ?
++                """,
++                (
++                    normalized_json,
++                    now,
++                    row["recording_id"],
++                    row["diar_speaker_label"],
++                ),
++            )
++            assignment_candidate_updates += 1
++
++        sample_candidate_updates = 0
++        sample_rows = conn.execute(
++            """
++            SELECT id, candidate_matches_json
++            FROM voice_samples
++            """
++        ).fetchall()
++        for row in sample_rows:
++            rewritten = _rewrite_candidate_matches_for_merge(
++                row["candidate_matches_json"],
++                source_profile_id=source_id,
++                target_profile_id=target_id,
++            )
++            normalized_json = json.dumps(rewritten, ensure_ascii=True)
++            if normalized_json == row["candidate_matches_json"]:
++                continue
++            conn.execute(
++                """
++                UPDATE voice_samples
++                SET candidate_matches_json = ?
++                WHERE id = ?
++                """,
++                (normalized_json, row["id"]),
++            )
++            sample_candidate_updates += 1
++
++        routing_example_updates = 0
++        training_rows = conn.execute(
++            """
++            SELECT id, voice_profile_ids_json
++            FROM routing_training_examples
++            """
++        ).fetchall()
++        for row in training_rows:
++            rewritten_ids = _rewrite_voice_profile_ids_for_merge(
++                row["voice_profile_ids_json"],
++                source_profile_id=source_id,
++                target_profile_id=target_id,
++            )
++            normalized_json = json.dumps(rewritten_ids, ensure_ascii=True)
++            if normalized_json == row["voice_profile_ids_json"]:
++                continue
++            conn.execute(
++                """
++                UPDATE routing_training_examples
++                SET voice_profile_ids_json = ?
++                WHERE id = ?
++                """,
++                (normalized_json, row["id"]),
++            )
++            routing_example_updates += 1
++
++        routing_keyword_updates = 0
++        source_keyword = f"voice:{source_id}"
++        target_keyword = f"voice:{target_id}"
++        keyword_rows = conn.execute(
++            """
++            SELECT project_id, keyword, weight
++            FROM routing_project_keyword_weights
++            WHERE keyword IN (?, ?)
++            ORDER BY project_id, keyword
++            """,
++            (source_keyword, target_keyword),
++        ).fetchall()
++        weights_by_project: dict[int, dict[str, float]] = {}
++        for row in keyword_rows:
++            project_weights = weights_by_project.setdefault(int(row["project_id"]), {})
++            project_weights[str(row["keyword"])] = float(row["weight"])
++        for project_id, project_weights in weights_by_project.items():
++            source_weight = project_weights.get(source_keyword)
++            if source_weight is None:
++                continue
++            target_weight = project_weights.get(target_keyword, 0.0)
++            conn.execute(
++                """
++                INSERT INTO routing_project_keyword_weights (
++                    project_id,
++                    keyword,
++                    weight,
++                    updated_at
++                )
++                VALUES (?, ?, ?, ?)
++                ON CONFLICT(project_id, keyword) DO UPDATE SET
++                    weight = excluded.weight,
++                    updated_at = excluded.updated_at
++                """,
++                (project_id, target_keyword, target_weight + source_weight, now),
++            )
++            conn.execute(
++                """
++                DELETE FROM routing_project_keyword_weights
++                WHERE project_id = ? AND keyword = ?
++                """,
++                (project_id, source_keyword),
++            )
++            routing_keyword_updates += 1
++
++        conn.execute(
++            """
++            UPDATE voice_profiles
++            SET
++                merged_into_voice_profile_id = ?,
++                merged_at = ?,
++                updated_at = ?
++            WHERE id = ?
++            """,
++            (target_id, now, now, source_id),
++        )
++        conn.execute(
++            """
++            UPDATE voice_profiles
++            SET updated_at = ?
++            WHERE id = ?
++            """,
++            (now, target_id),
++        )
++        merged_row = _get_voice_profile_row(
++            conn,
++            source_id,
++            include_merged=True,
++        )
++        conn.commit()
++
++    return {
++        "source_profile_id": source_id,
++        "target_profile_id": target_id,
++        "samples_moved": samples_moved,
++        "assignments_moved": assignments_moved,
++        "participant_metrics_moved": participant_metrics_moved,
++        "assignment_candidate_updates": assignment_candidate_updates,
++        "sample_candidate_updates": sample_candidate_updates,
++        "routing_example_updates": routing_example_updates,
++        "routing_keyword_updates": routing_keyword_updates,
++        "merged_profile": _as_dict(merged_row) or {},
++    }
 +
 +
- def test_classify_diarization_profile_identifies_dialog_candidates():
-     single_speaker = _classify(
-         _annotation_from_segments((0.0, 25.0, "S1")),
+ def create_calendar_source(
+     name: str,
+     *,
+@@ -2416,6 +2860,7 @@ __all__ = [
+     "increment_project_keyword_weights",
+     "list_project_keyword_weights",
+     "list_voice_profiles",
++    "get_voice_profile",
+     "create_voice_profile",
+     "delete_voice_profile",
+     "list_speaker_assignments",
+@@ -2423,6 +2868,7 @@ __all__ = [
+     "list_voice_samples",
+     "create_voice_sample",
+     "get_voice_sample",
++    "merge_voice_profiles",
+     "create_calendar_source",
+     "get_calendar_source",
+     "list_calendar_sources",
+diff --git a/tasks/QUEUE.md b/tasks/QUEUE.md
+index e0fbb7c..98e8920 100644
+--- a/tasks/QUEUE.md
++++ b/tasks/QUEUE.md
+@@ -437,7 +437,7 @@ Queue (in order)
+ - Depends on: PR-DIARIZATION-QUALITY-01
+ 
+ 86) PR-SPEAKER-BANK-CANONICAL-01: Canonical speaker bank backend: one person = one record, many embeddings per speaker, one-to-one assignment, duplicate merge operations
+-- Status: TODO
++- Status: DONE
+ - Tasks file: tasks/PR-SPEAKER-BANK-CANONICAL-01.md
+ - Depends on: PR-DIARIZATION-AUTO-PROFILE-01
+ 
+diff --git a/tests/test_cov_lan_app_db.py b/tests/test_cov_lan_app_db.py
+index 12563cd..5c2a81b 100644
+--- a/tests/test_cov_lan_app_db.py
++++ b/tests/test_cov_lan_app_db.py
+@@ -1,5 +1,6 @@
+ from __future__ import annotations
+ 
++import json
+ from pathlib import Path
+ import sqlite3
+ 
+@@ -37,6 +38,45 @@ def test_db_internal_helpers_and_validation_paths():
+ 
+     assert parsed == {"json": "{", "payload_json": "{", "number": 1}
+     assert db_module._as_dict(None) is None  # noqa: SLF001
++    assert db_module._clamp_score("bad", default=0.3) == 0.3  # noqa: SLF001
++    assert db_module._normalise_candidate_matches(  # noqa: SLF001
++        [
++            "skip",
++            {"voice_profile_id": "bad"},
++            {"voice_profile_id": "7", "score": "bad"},
++            {"voice_profile_id": 7, "score": 0.5, "display_name": "Voice 7"},
++        ]
++    ) == [{"voice_profile_id": 7, "score": 0.5, "display_name": "Voice 7"}]
++    assert db_module._rewrite_voice_profile_ids_for_merge(  # noqa: SLF001
++        "{bad-json",
++        source_profile_id=1,
++        target_profile_id=2,
++    ) == []
++    assert db_module._rewrite_voice_profile_ids_for_merge(  # noqa: SLF001
++        123,
++        source_profile_id=1,
++        target_profile_id=2,
++    ) == []
++    assert db_module._rewrite_voice_profile_ids_for_merge(  # noqa: SLF001
++        [1, "bad", 3],
++        source_profile_id=1,
++        target_profile_id=2,
++    ) == [2, 3]
++    assert db_module._rewrite_candidate_matches_for_merge(  # noqa: SLF001
++        "{bad-json",
++        source_profile_id=1,
++        target_profile_id=2,
++    ) == []
++    assert db_module._rewrite_candidate_matches_for_merge(  # noqa: SLF001
++        123,
++        source_profile_id=1,
++        target_profile_id=2,
++    ) == []
++    assert db_module._rewrite_candidate_matches_for_merge(  # noqa: SLF001
++        ["skip", {"voice_profile_id": 1, "score": 0.9}, {"voice_profile_id": "bad"}],
++        source_profile_id=1,
++        target_profile_id=2,
++    ) == [{"voice_profile_id": 2, "score": 0.9}]
+ 
+     with pytest.raises(ValueError, match="Unsupported recording status"):
+         db_module._validate_recording_status("bad-status")  # noqa: SLF001
+@@ -386,6 +426,26 @@ def test_speaker_assignments_and_voice_samples_paths(tmp_path: Path):
+     )
+     assert assigned is not None
+     assert assigned["confidence"] == 1.0
++    unmatched = db_module.set_speaker_assignment(
++        recording_id="rec-db-cov-voice-1",
++        diar_speaker_label="S2",
++        voice_profile_id=None,
++        confidence=0.42,
++        candidate_matches=[
++            {"voice_profile_id": profile_id, "score": 0.42, "display_name": "Voice A"},
++            {"voice_profile_id": "bad"},
++            {"voice_profile_id": profile_id, "score": 0.4},
++        ],
++        low_confidence=True,
++        keep_unmatched=True,
++        settings=cfg,
++    )
++    assert unmatched is not None
++    assert unmatched["voice_profile_id"] is None
++    assert unmatched["low_confidence"] == 1
++    assert unmatched["candidate_matches_json"] == [
++        {"voice_profile_id": profile_id, "score": 0.42, "display_name": "Voice A"}
++    ]
+     assert (
+         db_module.set_speaker_assignment(
+             recording_id="rec-db-cov-voice-1",
+@@ -412,6 +472,27 @@ def test_speaker_assignments_and_voice_samples_paths(tmp_path: Path):
+     )
+     assert sample["recording_id"] == "rec-db-cov-voice-1"
+     assert sample["diar_speaker_label"] == "S1"
++    review_sample = db_module.create_voice_sample(
++        voice_profile_id=None,
++        recording_id="rec-db-cov-voice-1",
++        diar_speaker_label="S2",
++        snippet_path="snippet-review.wav",
++        sample_source="auto",
++        sample_start_sec=1.25,
++        sample_end_sec=2.5,
++        embedding=[0.1, "bad", 0.2],
++        candidate_matches=[{"voice_profile_id": profile_id, "score": 0.41}],
++        needs_review=True,
++        confidence=0.41,
++        settings=cfg,
++    )
++    assert review_sample["voice_profile_id"] is None
++    assert review_sample["sample_source"] == "auto"
++    assert review_sample["embedding_json"] == [0.1, 0.2]
++    assert review_sample["candidate_matches_json"] == [
++        {"voice_profile_id": profile_id, "score": 0.41}
++    ]
++    assert review_sample["needs_review"] == 1
+ 
+     assert db_module.list_voice_samples(voice_profile_id=profile_id, settings=cfg)
+     by_recording = db_module.list_voice_samples(
+@@ -420,12 +501,265 @@ def test_speaker_assignments_and_voice_samples_paths(tmp_path: Path):
+         settings=cfg,
+     )
+     assert len(by_recording) == 1
++    all_recording_samples = db_module.list_voice_samples(
++        recording_id="rec-db-cov-voice-1",
++        settings=cfg,
++    )
++    assert len(all_recording_samples) == 2
+ 
+     loaded = db_module.get_voice_sample(int(sample["id"]), settings=cfg)
+     assert loaded is not None
+     assert loaded["id"] == sample["id"]
+ 
+ 
++def test_canonical_speaker_migration_from_legacy_schema(
++    tmp_path: Path,
++    monkeypatch: pytest.MonkeyPatch,
++):
++    cfg = _cfg(tmp_path)
++    all_migrations = db_module._migration_files()  # noqa: SLF001
++    legacy_migrations = [item for item in all_migrations if item[0] < 15]
++
++    monkeypatch.setattr(db_module, "_migration_files", lambda: legacy_migrations)  # noqa: SLF001
++    db_module.init_db(cfg)
++    db_module.create_recording(
++        "rec-db-cov-legacy-1",
++        source="upload",
++        source_filename="legacy.wav",
++        settings=cfg,
++    )
++    with db_module.connect(cfg) as conn:
++        conn.execute(
++            "INSERT INTO voice_profiles (id, display_name, notes) VALUES (?, ?, ?)",
++            (1, "Legacy Voice", "notes"),
++        )
++        conn.execute(
++            """
++            INSERT INTO speaker_assignments (
++                recording_id,
++                diar_speaker_label,
++                voice_profile_id,
++                confidence
++            )
++            VALUES (?, ?, ?, ?)
++            """,
++            ("rec-db-cov-legacy-1", "S1", 1, 0.93),
++        )
++        conn.execute(
++            """
++            INSERT INTO voice_samples (
++                id,
++                voice_profile_id,
++                recording_id,
++                diar_speaker_label,
++                snippet_path,
++                created_at
++            )
++            VALUES (?, ?, ?, ?, ?, ?)
++            """,
++            (
++                1,
++                1,
++                "rec-db-cov-legacy-1",
++                "S1",
++                "recordings/rec-db-cov-legacy-1/derived/snippets/S1/1.wav",
++                "2026-03-01T10:00:00Z",
++            ),
++        )
++        conn.commit()
++
++    monkeypatch.setattr(db_module, "_migration_files", lambda: all_migrations)  # noqa: SLF001
++    db_module.init_db(cfg)
++
++    profile = db_module.get_voice_profile(1, include_merged=True, settings=cfg)
++    assert profile is not None
++    assert profile["display_name"] == "Legacy Voice"
++    assert profile["created_at"] == "2026-03-01T10:00:00Z"
++    assert profile["updated_at"] == "2026-03-01T10:00:00Z"
++    assignment = db_module.list_speaker_assignments(
++        "rec-db-cov-legacy-1",
++        settings=cfg,
++    )
++    assert len(assignment) == 1
++    assert assignment[0]["recording_id"] == "rec-db-cov-legacy-1"
++    assert assignment[0]["diar_speaker_label"] == "S1"
++    assert assignment[0]["voice_profile_id"] == 1
++    assert assignment[0]["confidence"] == 0.93
++    assert assignment[0]["candidate_matches_json"] == []
++    assert assignment[0]["low_confidence"] == 0
++    assert assignment[0]["voice_profile_name"] == "Legacy Voice"
++    assert assignment[0]["updated_at"]
++    sample = db_module.get_voice_sample(1, settings=cfg)
++    assert sample is not None
++    assert sample["sample_source"] == "manual"
++    assert sample["candidate_matches_json"] == []
++    assert sample["needs_review"] == 0
++    assert sample["confidence"] == 1.0
++
++
++def test_merge_voice_profiles_moves_references_and_rewrites_candidates(tmp_path: Path):
++    cfg = _cfg(tmp_path)
++    db_module.init_db(cfg)
++    project = db_module.create_project("Merge Project", settings=cfg)
++    db_module.create_recording(
++        "rec-db-cov-merge-1",
++        source="upload",
++        source_filename="merge.wav",
++        settings=cfg,
++    )
++    source = db_module.create_voice_profile("Source Voice", settings=cfg)
++    target = db_module.create_voice_profile("Target Voice", settings=cfg)
++
++    db_module.set_speaker_assignment(
++        recording_id="rec-db-cov-merge-1",
++        diar_speaker_label="S1",
++        voice_profile_id=source["id"],
++        confidence=0.98,
++        candidate_matches=[
++            {"voice_profile_id": source["id"], "score": 0.98},
++            {"voice_profile_id": target["id"], "score": 0.72},
++        ],
++        keep_unmatched=True,
++        settings=cfg,
++    )
++    db_module.create_voice_sample(
++        voice_profile_id=source["id"],
++        recording_id="rec-db-cov-merge-1",
++        diar_speaker_label="S1",
++        snippet_path="recordings/rec-db-cov-merge-1/derived/snippets/S1/1.wav",
++        candidate_matches=[
++            {"voice_profile_id": source["id"], "score": 0.98},
++            {"voice_profile_id": target["id"], "score": 0.72},
++        ],
++        settings=cfg,
++    )
++    db_module.create_voice_sample(
++        voice_profile_id=None,
++        recording_id="rec-db-cov-merge-1",
++        diar_speaker_label="S2",
++        snippet_path="recordings/rec-db-cov-merge-1/derived/snippets/S2/1.wav",
++        candidate_matches=[
++            {"voice_profile_id": source["id"], "score": 0.44},
++            {"voice_profile_id": target["id"], "score": 0.41},
++        ],
++        needs_review=True,
++        confidence=0.44,
++        settings=cfg,
++    )
++    db_module.replace_participant_metrics(
++        recording_id="rec-db-cov-merge-1",
++        rows=[
++            {
++                "diar_speaker_label": "S1",
++                "voice_profile_id": source["id"],
++                "payload": {"words": 5},
++            }
++        ],
++        settings=cfg,
++    )
++    db_module.create_routing_training_example(
++        recording_id="rec-db-cov-merge-1",
++        project_id=project["id"],
++        calendar_subject_tokens=["merge"],
++        tags=["speaker"],
++        voice_profile_ids=[source["id"], source["id"]],
++        settings=cfg,
++    )
++    db_module.increment_project_keyword_weights(
++        project_id=project["id"],
++        keyword_deltas={
++            f"voice:{source['id']}": 1.2,
++            f"voice:{target['id']}": 0.3,
++        },
++        settings=cfg,
++    )
++
++    merged = db_module.merge_voice_profiles(
++        source["id"],
++        target["id"],
++        settings=cfg,
++    )
++    assert merged["samples_moved"] == 1
++    assert merged["assignments_moved"] == 1
++    assert merged["participant_metrics_moved"] == 1
++    assert merged["assignment_candidate_updates"] == 1
++    assert merged["sample_candidate_updates"] == 2
++    assert merged["routing_example_updates"] == 1
++    assert merged["routing_keyword_updates"] == 1
++
++    assert [row["id"] for row in db_module.list_voice_profiles(settings=cfg)] == [
++        target["id"]
++    ]
++    all_profiles = db_module.list_voice_profiles(include_merged=True, settings=cfg)
++    assert {row["id"] for row in all_profiles} == {source["id"], target["id"]}
++    assert db_module.get_voice_profile(source["id"], settings=cfg) is None
++    merged_profile = db_module.get_voice_profile(
++        source["id"],
++        include_merged=True,
++        settings=cfg,
++    )
++    assert merged_profile is not None
++    assert merged_profile["merged_into_voice_profile_id"] == target["id"]
++
++    assignments = db_module.list_speaker_assignments(
++        "rec-db-cov-merge-1",
++        settings=cfg,
++    )
++    assert assignments[0]["voice_profile_id"] == target["id"]
++    assert assignments[0]["candidate_matches_json"] == [
++        {"voice_profile_id": target["id"], "score": 0.98}
++    ]
++
++    samples = db_module.list_voice_samples(settings=cfg)
++    assigned_sample = next(
++        row for row in samples if row["voice_profile_id"] == target["id"]
++    )
++    review_sample = next(row for row in samples if row["voice_profile_id"] is None)
++    assert assigned_sample["candidate_matches_json"] == [
++        {"voice_profile_id": target["id"], "score": 0.98}
++    ]
++    assert review_sample["candidate_matches_json"] == [
++        {"voice_profile_id": target["id"], "score": 0.44}
++    ]
++    participant_rows = db_module.list_participant_metrics(
++        "rec-db-cov-merge-1",
++        settings=cfg,
++    )
++    assert participant_rows[0]["voice_profile_id"] == target["id"]
++
++    with db_module.connect(cfg) as conn:
++        training_row = conn.execute(
++            "SELECT voice_profile_ids_json FROM routing_training_examples"
++        ).fetchone()
++        keyword_rows = conn.execute(
++            """
++            SELECT keyword, weight
++            FROM routing_project_keyword_weights
++            WHERE project_id = ?
++            ORDER BY keyword
++            """,
++            (project["id"],),
++        ).fetchall()
++    assert json.loads(training_row[0]) == [target["id"]]
++    assert [(row[0], row[1]) for row in keyword_rows] == [
++        (f"voice:{target['id']}", 1.5)
++    ]
++
++    with pytest.raises(ValueError, match="must differ"):
++        db_module.merge_voice_profiles(target["id"], target["id"], settings=cfg)
++    with pytest.raises(ValueError, match="source_profile_id was not found"):
++        db_module.merge_voice_profiles(9999, target["id"], settings=cfg)
++    with pytest.raises(ValueError, match="target_profile_id was not found"):
++        db_module.merge_voice_profiles(target["id"], 9999, settings=cfg)
++    with pytest.raises(ValueError, match="source_profile_id is already merged"):
++        db_module.merge_voice_profiles(source["id"], target["id"], settings=cfg)
++
++    third = db_module.create_voice_profile("Third Voice", settings=cfg)
++    db_module.merge_voice_profiles(third["id"], target["id"], settings=cfg)
++    with pytest.raises(ValueError, match="target_profile_id is already merged"):
++        db_module.merge_voice_profiles(target["id"], third["id"], settings=cfg)
++
++
+ def test_calendar_sources_events_matches_and_metrics_edges(tmp_path: Path):
+     cfg = _cfg(tmp_path)
+     db_module.init_db(cfg)
+diff --git a/lan_app/migrations/015_canonical_speaker_bank.sql b/lan_app/migrations/015_canonical_speaker_bank.sql
+new file mode 100644
+index 0000000..4ea7d4e
+--- /dev/null
++++ b/lan_app/migrations/015_canonical_speaker_bank.sql
+@@ -0,0 +1,126 @@
++ALTER TABLE voice_profiles ADD COLUMN created_at TEXT;
++ALTER TABLE voice_profiles ADD COLUMN updated_at TEXT;
++ALTER TABLE voice_profiles ADD COLUMN merged_into_voice_profile_id INTEGER;
++ALTER TABLE voice_profiles ADD COLUMN merged_at TEXT;
++
++UPDATE voice_profiles
++SET created_at = COALESCE(
++    created_at,
++    (
++        SELECT MIN(vs.created_at)
++        FROM voice_samples AS vs
++        WHERE vs.voice_profile_id = voice_profiles.id
++    ),
++    '1970-01-01T00:00:00Z'
++);
++
++UPDATE voice_profiles
++SET updated_at = COALESCE(updated_at, created_at, '1970-01-01T00:00:00Z');
++
++CREATE INDEX IF NOT EXISTS idx_voice_profiles_merged_into_profile_id
++    ON voice_profiles(merged_into_voice_profile_id);
++
++ALTER TABLE speaker_assignments RENAME TO speaker_assignments_old;
++
++CREATE TABLE speaker_assignments (
++    recording_id TEXT NOT NULL,
++    diar_speaker_label TEXT NOT NULL,
++    voice_profile_id INTEGER,
++    confidence REAL NOT NULL,
++    candidate_matches_json TEXT NOT NULL DEFAULT '[]',
++    low_confidence INTEGER NOT NULL DEFAULT 0 CHECK(low_confidence IN (0, 1)),
++    updated_at TEXT NOT NULL,
++    PRIMARY KEY(recording_id, diar_speaker_label),
++    FOREIGN KEY(recording_id) REFERENCES recordings(id) ON DELETE CASCADE,
++    FOREIGN KEY(voice_profile_id) REFERENCES voice_profiles(id) ON DELETE SET NULL
++);
++
++INSERT INTO speaker_assignments (
++    recording_id,
++    diar_speaker_label,
++    voice_profile_id,
++    confidence,
++    candidate_matches_json,
++    low_confidence,
++    updated_at
++)
++SELECT
++    recording_id,
++    diar_speaker_label,
++    voice_profile_id,
++    confidence,
++    '[]',
++    0,
++    COALESCE(
++        (
++            SELECT r.updated_at
++            FROM recordings AS r
++            WHERE r.id = speaker_assignments_old.recording_id
++        ),
++        '1970-01-01T00:00:00Z'
++    )
++FROM speaker_assignments_old;
++
++DROP TABLE speaker_assignments_old;
++
++CREATE INDEX IF NOT EXISTS idx_speaker_assignments_recording_id
++    ON speaker_assignments(recording_id);
++
++ALTER TABLE voice_samples RENAME TO voice_samples_old;
++
++CREATE TABLE voice_samples (
++    id INTEGER PRIMARY KEY AUTOINCREMENT,
++    voice_profile_id INTEGER,
++    recording_id TEXT,
++    diar_speaker_label TEXT,
++    snippet_path TEXT NOT NULL,
++    sample_source TEXT NOT NULL DEFAULT 'manual',
++    sample_start_sec REAL,
++    sample_end_sec REAL,
++    embedding_json TEXT,
++    candidate_matches_json TEXT NOT NULL DEFAULT '[]',
++    needs_review INTEGER NOT NULL DEFAULT 0 CHECK(needs_review IN (0, 1)),
++    confidence REAL,
++    created_at TEXT NOT NULL,
++    FOREIGN KEY(voice_profile_id) REFERENCES voice_profiles(id) ON DELETE SET NULL,
++    FOREIGN KEY(recording_id) REFERENCES recordings(id) ON DELETE CASCADE
++);
++
++INSERT INTO voice_samples (
++    id,
++    voice_profile_id,
++    recording_id,
++    diar_speaker_label,
++    snippet_path,
++    sample_source,
++    sample_start_sec,
++    sample_end_sec,
++    embedding_json,
++    candidate_matches_json,
++    needs_review,
++    confidence,
++    created_at
++)
++SELECT
++    id,
++    voice_profile_id,
++    recording_id,
++    diar_speaker_label,
++    snippet_path,
++    'manual',
++    NULL,
++    NULL,
++    NULL,
++    '[]',
++    0,
++    CASE
++        WHEN voice_profile_id IS NULL THEN NULL
++        ELSE 1.0
++    END,
++    created_at
++FROM voice_samples_old;
++
++DROP TABLE voice_samples_old;
++
++CREATE INDEX IF NOT EXISTS idx_voice_samples_profile_id ON voice_samples(voice_profile_id);
++CREATE INDEX IF NOT EXISTS idx_voice_samples_recording_id ON voice_samples(recording_id);
+diff --git a/lan_app/speaker_bank.py b/lan_app/speaker_bank.py
+new file mode 100644
+index 0000000..ff62e76
+--- /dev/null
++++ b/lan_app/speaker_bank.py
+@@ -0,0 +1,308 @@
++from __future__ import annotations
++
++from functools import lru_cache
++from typing import Any, Sequence
++
++from .config import AppSettings
++from .db import create_voice_sample, merge_voice_profiles, set_speaker_assignment
++
++DEFAULT_ASSIGNMENT_THRESHOLD = 0.75
++DEFAULT_SAMPLE_ATTACH_THRESHOLD = 0.85
++
++
++def _clamp_score(value: object) -> float:
++    try:
++        parsed = float(value)
++    except (TypeError, ValueError):
++        parsed = 0.0
++    return max(0.0, min(parsed, 1.0))
++
++
++def _normalise_candidate_matches(
++    candidate_matches: Sequence[dict[str, Any]] | None,
++) -> list[dict[str, Any]]:
++    if not candidate_matches:
++        return []
++    best_by_profile_id: dict[int, dict[str, Any]] = {}
++    for row in candidate_matches:
++        if not isinstance(row, dict):
++            continue
++        try:
++            voice_profile_id = int(row.get("voice_profile_id"))
++        except (TypeError, ValueError):
++            continue
++        normalized = {
++            "voice_profile_id": voice_profile_id,
++            "score": round(
++                _clamp_score(row.get("score", row.get("confidence"))),
++                4,
++            ),
++        }
++        display_name = str(row.get("display_name") or "").strip()
++        if display_name:
++            normalized["display_name"] = display_name
++        existing = best_by_profile_id.get(voice_profile_id)
++        if existing is None or tuple(
++            normalized.get(key, "") for key in ("score", "display_name")
++        ) > tuple(existing.get(key, "") for key in ("score", "display_name")):
++            best_by_profile_id[voice_profile_id] = normalized
++    return sorted(
++        best_by_profile_id.values(),
++        key=lambda item: (
++            -float(item.get("score") or 0.0),
++            str(item.get("display_name") or ""),
++            int(item["voice_profile_id"]),
++        ),
++    )
++
++
++def _normalise_speaker_rows(
++    diarized_speakers: Sequence[dict[str, Any]],
++) -> list[dict[str, Any]]:
++    normalized: list[dict[str, Any]] = []
++    for row in diarized_speakers:
++        if not isinstance(row, dict):
++            continue
++        diar_speaker_label = str(
++            row.get("diar_speaker_label") or row.get("speaker") or ""
++        ).strip()
++        if not diar_speaker_label:
++            raise ValueError("diar_speaker_label is required")
++        normalized.append(
++            {
++                "diar_speaker_label": diar_speaker_label,
++                "candidate_matches": _normalise_candidate_matches(
++                    row.get("candidate_matches")
++                ),
++            }
++        )
++    return normalized
++
++
++def _assignment_tiebreak(assignment: tuple[int | None, ...]) -> tuple[int, ...]:
++    return tuple(value if value is not None else 1_000_000_000 for value in assignment)
++
++
++def _is_better_result(
++    candidate_total: float,
++    candidate_count: int,
++    candidate_assignment: tuple[int | None, ...],
++    best_total: float,
++    best_count: int,
++    best_assignment: tuple[int | None, ...],
++) -> bool:
++    rounded_candidate_total = round(candidate_total, 6)
++    rounded_best_total = round(best_total, 6)
++    if rounded_candidate_total != rounded_best_total:
++        return rounded_candidate_total > rounded_best_total
++    if candidate_count != best_count:
++        return candidate_count > best_count
++    return _assignment_tiebreak(candidate_assignment) < _assignment_tiebreak(
++        best_assignment
++    )
++
++
++def resolve_one_to_one_assignments(
++    diarized_speakers: Sequence[dict[str, Any]],
++    *,
++    min_confidence: float = DEFAULT_ASSIGNMENT_THRESHOLD,
++) -> list[dict[str, Any]]:
++    normalized_rows = _normalise_speaker_rows(diarized_speakers)
++    if not normalized_rows:
++        return []
++
++    threshold = _clamp_score(min_confidence)
++    eligible_profile_ids = sorted(
++        {
++            int(candidate["voice_profile_id"])
++            for row in normalized_rows
++            for candidate in row["candidate_matches"]
++            if float(candidate.get("score") or 0.0) >= threshold
++        }
++    )
++    profile_bits = {
++        voice_profile_id: 1 << index
++        for index, voice_profile_id in enumerate(eligible_profile_ids)
++    }
++    eligible_candidates = [
++        [
++            candidate
++            for candidate in row["candidate_matches"]
++            if float(candidate.get("score") or 0.0) >= threshold
++        ]
++        for row in normalized_rows
++    ]
++
++    @lru_cache(maxsize=None)
++    def _best_assignment(
++        index: int,
++        used_mask: int,
++    ) -> tuple[float, int, tuple[int | None, ...]]:
++        if index >= len(normalized_rows):
++            return 0.0, 0, ()
++
++        next_total, next_count, next_assignment = _best_assignment(index + 1, used_mask)
++        best_total = next_total
++        best_count = next_count
++        best_assignment_rows = (None,) + next_assignment
++
++        for candidate in eligible_candidates[index]:
++            voice_profile_id = int(candidate["voice_profile_id"])
++            bit = profile_bits[voice_profile_id]
++            if used_mask & bit:
++                continue
++            next_total, next_count, next_assignment = _best_assignment(
++                index + 1,
++                used_mask | bit,
++            )
++            candidate_total = float(candidate["score"]) + next_total
++            candidate_count = next_count + 1
++            candidate_assignment = (voice_profile_id,) + next_assignment
++            if _is_better_result(
++                candidate_total,
++                candidate_count,
++                candidate_assignment,
++                best_total,
++                best_count,
++                best_assignment_rows,
++            ):
++                best_total = candidate_total
++                best_count = candidate_count
++                best_assignment_rows = candidate_assignment
++
++        return best_total, best_count, best_assignment_rows
++
++    _, _, selected_profile_ids = _best_assignment(0, 0)
++    decisions: list[dict[str, Any]] = []
++    for row, selected_profile_id in zip(normalized_rows, selected_profile_ids, strict=True):
++        selected_candidate = next(
++            (
++                candidate
++                for candidate in row["candidate_matches"]
++                if int(candidate["voice_profile_id"]) == selected_profile_id
++            ),
++            None,
++        )
++        best_score = (
++            float(row["candidate_matches"][0]["score"])
++            if row["candidate_matches"]
++            else 0.0
++        )
++        decisions.append(
++            {
++                "diar_speaker_label": row["diar_speaker_label"],
++                "voice_profile_id": selected_profile_id,
++                "confidence": (
++                    float(selected_candidate["score"])
++                    if selected_candidate is not None
++                    else best_score
++                ),
++                "low_confidence": selected_profile_id is None and bool(
++                    row["candidate_matches"]
++                ),
++                "candidate_matches": row["candidate_matches"],
++            }
++        )
++    return decisions
++
++
++def assign_speakers_to_recording(
++    recording_id: str,
++    diarized_speakers: Sequence[dict[str, Any]],
++    *,
++    min_confidence: float = DEFAULT_ASSIGNMENT_THRESHOLD,
++    settings: AppSettings | None = None,
++) -> list[dict[str, Any]]:
++    decisions = resolve_one_to_one_assignments(
++        diarized_speakers,
++        min_confidence=min_confidence,
++    )
++    persisted: list[dict[str, Any]] = []
++    for decision in decisions:
++        keep_unmatched = decision["voice_profile_id"] is None and bool(
++            decision["candidate_matches"]
++        )
++        row = set_speaker_assignment(
++            recording_id=recording_id,
++            diar_speaker_label=str(decision["diar_speaker_label"]),
++            voice_profile_id=decision["voice_profile_id"],
++            confidence=float(decision["confidence"]),
++            candidate_matches=decision["candidate_matches"],
++            low_confidence=bool(decision["low_confidence"]),
++            keep_unmatched=keep_unmatched,
++            settings=settings,
++        )
++        persisted.append(
++            row
++            or {
++                "recording_id": recording_id,
++                "voice_profile_name": "",
++                **decision,
++            }
++        )
++    return persisted
++
++
++def register_voice_sample(
++    *,
++    snippet_path: str,
++    candidate_matches: Sequence[dict[str, Any]] | None = None,
++    attach_threshold: float = DEFAULT_SAMPLE_ATTACH_THRESHOLD,
++    recording_id: str | None = None,
++    diar_speaker_label: str | None = None,
++    sample_source: str = "speaker-bank",
++    sample_start_sec: float | None = None,
++    sample_end_sec: float | None = None,
++    embedding: Sequence[float] | None = None,
++    settings: AppSettings | None = None,
++) -> dict[str, Any]:
++    normalized_candidates = _normalise_candidate_matches(candidate_matches)
++    threshold = _clamp_score(attach_threshold)
++    best_candidate = normalized_candidates[0] if normalized_candidates else None
++    selected_profile_id = (
++        int(best_candidate["voice_profile_id"])
++        if best_candidate is not None and float(best_candidate["score"]) >= threshold
++        else None
++    )
++    confidence = (
++        float(best_candidate["score"])
++        if best_candidate is not None
++        else None
++    )
++    return create_voice_sample(
++        voice_profile_id=selected_profile_id,
++        snippet_path=snippet_path,
++        recording_id=recording_id,
++        diar_speaker_label=diar_speaker_label,
++        sample_source=sample_source,
++        sample_start_sec=sample_start_sec,
++        sample_end_sec=sample_end_sec,
++        embedding=embedding,
++        candidate_matches=normalized_candidates,
++        needs_review=selected_profile_id is None,
++        confidence=confidence,
++        settings=settings,
++    )
++
++
++def merge_canonical_speakers(
++    source_profile_id: int,
++    target_profile_id: int,
++    *,
++    settings: AppSettings | None = None,
++) -> dict[str, Any]:
++    return merge_voice_profiles(
++        source_profile_id,
++        target_profile_id,
++        settings=settings,
++    )
++
++
++__all__ = [
++    "DEFAULT_ASSIGNMENT_THRESHOLD",
++    "DEFAULT_SAMPLE_ATTACH_THRESHOLD",
++    "resolve_one_to_one_assignments",
++    "assign_speakers_to_recording",
++    "register_voice_sample",
++    "merge_canonical_speakers",
++]
+diff --git a/tests/test_speaker_bank.py b/tests/test_speaker_bank.py
+new file mode 100644
+index 0000000..3c75c87
+--- /dev/null
++++ b/tests/test_speaker_bank.py
+@@ -0,0 +1,240 @@
++from __future__ import annotations
++
++from pathlib import Path
++
++import pytest
++
++from lan_app.config import AppSettings
++from lan_app.db import (
++    create_recording,
++    create_voice_profile,
++    init_db,
++    list_speaker_assignments,
++    list_voice_samples,
++)
++from lan_app import speaker_bank
++
++
++def _cfg(tmp_path: Path) -> AppSettings:
++    cfg = AppSettings(
++        data_root=tmp_path,
++        recordings_root=tmp_path / "recordings",
++        db_path=tmp_path / "db" / "app.db",
++    )
++    cfg.metrics_snapshot_path = tmp_path / "metrics.snap"
++    return cfg
++
++
++def test_resolve_one_to_one_assignments_avoids_double_match():
++    decisions = speaker_bank.resolve_one_to_one_assignments(
++        [
++            {
++                "diar_speaker_label": "S1",
++                "candidate_matches": [
++                    {"voice_profile_id": 1, "score": 0.96, "display_name": "Alice"},
++                    {"voice_profile_id": 2, "score": 0.61},
++                ],
++            },
++            "skip-me",
++            {
++                "speaker": "S2",
++                "candidate_matches": [
++                    {"voice_profile_id": 1, "score": 0.94},
++                    {"voice_profile_id": 2, "score": 0.88},
++                ],
++            },
++        ],
++        min_confidence=0.75,
++    )
++
++    assert decisions == [
++        {
++            "diar_speaker_label": "S1",
++            "voice_profile_id": 1,
++            "confidence": 0.96,
++            "low_confidence": False,
++            "candidate_matches": [
++                {"voice_profile_id": 1, "score": 0.96, "display_name": "Alice"},
++                {"voice_profile_id": 2, "score": 0.61},
++            ],
++        },
++        {
++            "diar_speaker_label": "S2",
++            "voice_profile_id": 2,
++            "confidence": 0.88,
++            "low_confidence": False,
++            "candidate_matches": [
++                {"voice_profile_id": 1, "score": 0.94},
++                {"voice_profile_id": 2, "score": 0.88},
++            ],
++        },
++    ]
++
++
++def test_speaker_bank_helper_paths():
++    assert speaker_bank._clamp_score("bad-score") == 0.0  # noqa: SLF001
++    assert speaker_bank._normalise_candidate_matches(  # noqa: SLF001
++        ["skip", {"voice_profile_id": "4", "score": "bad"}]
++    ) == [{"voice_profile_id": 4, "score": 0.0}]
++    assert speaker_bank._assignment_tiebreak((1, None, 2)) == (  # noqa: SLF001
++        1,
++        1_000_000_000,
++        2,
++    )
++    assert speaker_bank._is_better_result(  # noqa: SLF001
++        1.0,
++        2,
++        (1, None),
++        1.0,
++        1,
++        (1, 2),
++    )
++    assert speaker_bank._is_better_result(  # noqa: SLF001
++        1.0,
++        1,
++        (1, None),
++        1.0,
++        1,
++        (2, None),
++    )
++
++
++def test_resolve_one_to_one_assignments_keeps_low_confidence_reviewable():
++    assert speaker_bank.resolve_one_to_one_assignments([]) == []
++
++    decisions = speaker_bank.resolve_one_to_one_assignments(
++        [
++            {
++                "diar_speaker_label": "S1",
++                "candidate_matches": [
++                    {"voice_profile_id": 7, "score": 0.61},
++                    {"voice_profile_id": "bad"},
++                    {"voice_profile_id": 7, "score": 0.6},
++                ],
++            }
++        ],
++        min_confidence=0.75,
++    )
++
++    assert decisions == [
++        {
++            "diar_speaker_label": "S1",
++            "voice_profile_id": None,
++            "confidence": 0.61,
++            "low_confidence": True,
++            "candidate_matches": [{"voice_profile_id": 7, "score": 0.61}],
++        }
++    ]
++
++    with pytest.raises(ValueError, match="diar_speaker_label is required"):
++        speaker_bank.resolve_one_to_one_assignments(
++            [{"diar_speaker_label": " ", "candidate_matches": []}]
++        )
++
++
++def test_assign_speakers_to_recording_persists_matches_and_skips_empty_rows(tmp_path: Path):
++    cfg = _cfg(tmp_path)
++    init_db(cfg)
++    create_recording(
++        "rec-speaker-bank-1",
++        source="upload",
++        source_filename="speaker-bank.wav",
++        settings=cfg,
++    )
++    left = create_voice_profile("Left Voice", settings=cfg)
++    right = create_voice_profile("Right Voice", settings=cfg)
++
++    persisted = speaker_bank.assign_speakers_to_recording(
++        "rec-speaker-bank-1",
++        [
++            {
++                "diar_speaker_label": "S1",
++                "candidate_matches": [
++                    {"voice_profile_id": left["id"], "score": 0.93},
++                    {"voice_profile_id": right["id"], "score": 0.52},
++                ],
++            },
++            {
++                "diar_speaker_label": "S2",
++                "candidate_matches": [
++                    {"voice_profile_id": left["id"], "score": 0.9},
++                    {"voice_profile_id": right["id"], "score": 0.87},
++                ],
++            },
++            {"diar_speaker_label": "S3", "candidate_matches": []},
++        ],
++        min_confidence=0.75,
++        settings=cfg,
++    )
++
++    assert persisted[0]["voice_profile_id"] == left["id"]
++    assert persisted[1]["voice_profile_id"] == right["id"]
++    assert persisted[2]["recording_id"] == "rec-speaker-bank-1"
++    assert persisted[2]["voice_profile_id"] is None
++    assert persisted[2]["voice_profile_name"] == ""
++
++    stored_rows = list_speaker_assignments("rec-speaker-bank-1", settings=cfg)
++    assert len(stored_rows) == 2
++    assert [row["voice_profile_id"] for row in stored_rows] == [left["id"], right["id"]]
++
++
++def test_register_voice_sample_attaches_or_defers_based_on_confidence(tmp_path: Path):
++    cfg = _cfg(tmp_path)
++    init_db(cfg)
++    create_recording(
++        "rec-speaker-bank-sample-1",
++        source="upload",
++        source_filename="speaker-sample.wav",
++        settings=cfg,
++    )
++    profile = create_voice_profile("Attached Voice", settings=cfg)
++
++    attached = speaker_bank.register_voice_sample(
++        snippet_path="recordings/rec-speaker-bank-sample-1/derived/snippets/S1/1.wav",
++        candidate_matches=[
++            {"voice_profile_id": profile["id"], "score": 0.92},
++            {"voice_profile_id": profile["id"], "score": 0.91},
++        ],
++        attach_threshold=0.85,
++        recording_id="rec-speaker-bank-sample-1",
++        diar_speaker_label="S1",
++        sample_start_sec=1.0,
++        sample_end_sec=2.0,
++        embedding=[0.2, 0.3],
++        settings=cfg,
++    )
++    assert attached["voice_profile_id"] == profile["id"]
++    assert attached["needs_review"] == 0
++    assert attached["sample_source"] == "speaker-bank"
++
++    review_only = speaker_bank.register_voice_sample(
++        snippet_path="recordings/rec-speaker-bank-sample-1/derived/snippets/S2/1.wav",
++        candidate_matches=[{"voice_profile_id": profile["id"], "score": 0.51}],
++        attach_threshold=0.85,
++        recording_id="rec-speaker-bank-sample-1",
++        diar_speaker_label="S2",
++        settings=cfg,
++    )
++    assert review_only["voice_profile_id"] is None
++    assert review_only["needs_review"] == 1
++    assert review_only["candidate_matches_json"] == [
++        {"voice_profile_id": profile["id"], "score": 0.51}
++    ]
++
++    samples = list_voice_samples(settings=cfg)
++    assert len(samples) == 2
++
++
++def test_merge_canonical_speakers_wrapper(monkeypatch: pytest.MonkeyPatch):
++    monkeypatch.setattr(
++        speaker_bank,
++        "merge_voice_profiles",
++        lambda source_profile_id, target_profile_id, settings=None: {
++            "source": source_profile_id,
++            "target": target_profile_id,
++            "settings": settings,
++        },
++    )
++
++    merged = speaker_bank.merge_canonical_speakers(1, 2, settings="cfg")
++    assert merged == {"source": 1, "target": 2, "settings": "cfg"}

@@ -88,6 +88,12 @@ Operational setup, failure handling, backup/restore, and upgrade steps are docum
    - Export content appears automatically once the recording reaches a terminal state; no manual refresh is needed.
 6. Deleting a recording from the UI/API removes the DB row and the recording directory under `/data/recordings/<recording_id>`. If disk cleanup fails, delete returns an error instead of silently succeeding.
 
+## Speaker bank
+
+- `voice_profiles` now represent canonical speakers: one real person should map to one active record.
+- `voice_samples` can store many samples per canonical speaker, including provenance and review metadata for low-confidence matches.
+- Duplicate speakers can be merged backend-side without losing samples, assignments, or routing references.
+
 ## Runtime data root
 
 Runtime mutable state must live under `/data` in containers (mounted from `./data` in Docker):
