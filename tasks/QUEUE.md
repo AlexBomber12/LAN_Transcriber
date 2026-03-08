@@ -447,6 +447,6 @@ Queue (in order)
 - Depends on: PR-SPEAKER-BANK-CANONICAL-01
 
 88) PR-SPEAKER-UX-01: Speaker UX: canonical speaker management, duplicate merge UI, per-recording remap UI, degraded diarization visibility
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-SPEAKER-UX-01.md
 - Depends on: PR-ASR-MULTILINGUAL-01

@@ -518,7 +518,12 @@ def test_recording_detail_speakers_tab_assignment_persists(tmp_path, monkeypatch
     assert page.status_code == 200
     assert "Speaker Assignments" in page.text
     assert "Alice Example" in page.text
+    assert "Save remap" in page.text
     assert "Add sample from this recording" in page.text
+
+    overview = TestClient(api.app, follow_redirects=True).get("/recordings/rec-speakers-1")
+    assert overview.status_code == 200
+    assert "Alice Example (S1)" in overview.text
 
 
 def test_recording_detail_speakers_create_and_assign(tmp_path, monkeypatch):
@@ -603,6 +608,51 @@ def test_recording_detail_speakers_add_sample_links_snippet_and_audio_route(tmp_
     )
     assert audio_resp.status_code == 200
     assert audio_resp.headers["content-type"].startswith("audio/wav")
+
+
+def test_recording_detail_speakers_show_degraded_notice_and_low_confidence(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    init_db(cfg)
+    create_recording(
+        "rec-speakers-review-1",
+        source="drive",
+        source_filename="speakers-review.mp3",
+        status=RECORDING_STATUS_READY,
+        settings=cfg,
+    )
+    _seed_speaker_artifacts(cfg, "rec-speakers-review-1")
+    profile = create_voice_profile("Review Candidate", settings=cfg)
+    set_speaker_assignment(
+        recording_id="rec-speakers-review-1",
+        diar_speaker_label="S1",
+        voice_profile_id=None,
+        confidence=0.61,
+        candidate_matches=[{"voice_profile_id": profile["id"], "score": 0.61}],
+        low_confidence=True,
+        keep_unmatched=True,
+        settings=cfg,
+    )
+    derived = cfg.recordings_root / "rec-speakers-review-1" / "derived"
+    (derived / "diarization_status.json").write_text(
+        json.dumps(
+            {
+                "degraded": True,
+                "mode": "fallback",
+                "reason": "pyannote unavailable",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    c = TestClient(api.app, follow_redirects=True)
+    r = c.get("/recordings/rec-speakers-review-1?tab=speakers")
+    assert r.status_code == 200
+    assert "degraded fallback mode" in r.text
+    assert "Low confidence" in r.text
+    assert "Below auto-match threshold 0.75" in r.text
+    assert "Review Candidate (0.61)" in r.text
 
 
 def test_recording_detail_metrics_tab_uses_summary_payload(tmp_path, monkeypatch):
@@ -920,7 +970,7 @@ def test_projects_delete(tmp_path, monkeypatch):
 def test_voices_empty(client):
     r = client.get("/voices")
     assert r.status_code == 200
-    assert "Voice Profiles" in r.text
+    assert "Canonical Speakers" in r.text
 
 
 def test_voices_create_and_list(tmp_path, monkeypatch):
@@ -958,6 +1008,69 @@ def test_voices_delete(tmp_path, monkeypatch):
     r = c.post(f"/voices/{vp['id']}/delete")
     assert r.status_code == 200
     assert list_voice_profiles(settings=cfg) == []
+
+
+def test_voices_page_renders_duplicate_candidates_and_sample_inspection(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    init_db(cfg)
+    create_recording(
+        "rec-voices-1",
+        source="upload",
+        source_filename="voices.wav",
+        status=RECORDING_STATUS_READY,
+        settings=cfg,
+    )
+    left = create_voice_profile("Alice Canonical", settings=cfg)
+    right = create_voice_profile("Alicia Duplicate", settings=cfg)
+    sample = create_voice_sample(
+        voice_profile_id=left["id"],
+        recording_id="rec-voices-1",
+        diar_speaker_label="S1",
+        snippet_path="recordings/rec-voices-1/derived/snippets/S1/1.wav",
+        candidate_matches=[
+            {"voice_profile_id": left["id"], "score": 0.97},
+            {"voice_profile_id": right["id"], "score": 0.83},
+        ],
+        settings=cfg,
+    )
+
+    c = TestClient(api.app, follow_redirects=True)
+    r = c.get("/voices")
+    assert r.status_code == 200
+    assert "Potential duplicates" in r.text
+    assert "Alicia Duplicate (1 samples, 0.83)" in r.text
+    assert "Inspect samples" in r.text
+    assert f"/ui/voice-samples/{sample['id']}/audio" in r.text
+    assert "Merge into" in r.text
+
+
+def test_voices_merge_route_calls_backend_and_redirects_to_target_anchor(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    init_db(cfg)
+    source = create_voice_profile("Source Voice", settings=cfg)
+    target = create_voice_profile("Target Voice", settings=cfg)
+    seen: dict[str, int | AppSettings] = {}
+
+    def _merge(source_profile_id: int, target_profile_id: int, *, settings: AppSettings):
+        seen["source"] = source_profile_id
+        seen["target"] = target_profile_id
+        seen["settings"] = settings
+        return {"target": target_profile_id}
+
+    monkeypatch.setattr(ui_routes, "merge_canonical_speakers", _merge)
+
+    c = TestClient(api.app, follow_redirects=False)
+    r = c.post(
+        f"/voices/{source['id']}/merge",
+        data={"target_profile_id": str(target["id"])},
+    )
+    assert r.status_code == 303
+    assert r.headers["location"] == f"/voices#voice-{target['id']}"
+    assert seen == {"source": source["id"], "target": target["id"], "settings": cfg}
 
 
 # ---------------------------------------------------------------------------

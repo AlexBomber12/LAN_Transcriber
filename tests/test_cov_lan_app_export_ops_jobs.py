@@ -64,7 +64,7 @@ def test_exporter_normalise_text_items_covers_limits_and_empty_after_bullet(monk
     assert exporter._normalise_text_items(["x", "y"], max_items=10) == ["kept"]
 
 
-def test_exporter_section_helpers_cover_optional_paths():
+def test_exporter_section_helpers_cover_optional_paths(monkeypatch: pytest.MonkeyPatch):
     metadata = exporter._metadata_lines(
         {
             "id": "rec-1",
@@ -131,6 +131,25 @@ def test_exporter_section_helpers_cover_optional_paths():
         [{"speaker": "S1", "text": "   "}],
     )
     assert transcript == ["## Transcript", "fallback transcript"]
+
+    monkeypatch.setattr(
+        exporter,
+        "list_speaker_assignments",
+        lambda *_a, **_k: [
+            {"diar_speaker_label": "S1", "voice_profile_name": "Alex"},
+            {"diar_speaker_label": " ", "voice_profile_name": "skip"},
+            {"diar_speaker_label": "S2", "voice_profile_name": " "},
+        ],
+    )
+    assert exporter._speaker_name_map("rec-1", settings=SimpleNamespace()) == {"S1": "Alex"}
+    assert exporter._speaker_display_label("S1", speaker_name_map={"S1": "Alex"}) == "Alex (S1)"
+    assert exporter._speaker_display_label("S2", speaker_name_map={"S1": "Alex"}) == "S2"
+    mapped_transcript = exporter._transcript_section(
+        {"text": "fallback transcript"},
+        [{"speaker": "S1", "text": "hello"}],
+        speaker_name_map={"S1": "Alex"},
+    )
+    assert mapped_transcript == ["## Transcript", "- **Alex (S1):** hello"]
 
 
 def test_build_onenote_markdown_language_detection_paths(tmp_path: Path):
