@@ -450,3 +450,19 @@ Queue (in order)
 - Status: DONE
 - Tasks file: tasks/PR-SPEAKER-UX-01.md
 - Depends on: PR-ASR-MULTILINGUAL-01
+
+89) PR-SNIPPETS-PURITY-01: Pure speaker snippets: single-speaker clip selection, snippet manifest, no silence fallback, and explicit snippet choice for Add sample
+- Status: TODO
+- Tasks file: tasks/PR-SNIPPETS-PURITY-01.md
+- Depends on: PR-SPEAKER-UX-01 and PR-SPEAKER-BANK-CANONICAL-01
+
+90) PR-GLOSSARY-CORRECTIONS-01: Multi-source ASR glossary and correction memory: manual glossary UI, speaker/calendar seeds, safe ASR prompt injection, and per-recording glossary artifacts
+- Status: TODO
+- Tasks file: tasks/PR-GLOSSARY-CORRECTIONS-01.md
+- Depends on: PR-SNIPPETS-PURITY-01 and PR-ASR-MULTILINGUAL-01 and PR-CALENDAR-ICS-01
+
+91) PR-CALENDAR-MATCHING-ICS-01: Reliable ICS calendar matching: attendee parsing, sync boundary fixes, runtime calendar_matches population, manual override UI, and downstream summary/glossary context
+- Status: TODO
+- Tasks file: tasks/PR-CALENDAR-MATCHING-ICS-01.md
+- Depends on: PR-GLOSSARY-CORRECTIONS-01 and PR-CALENDAR-ICS-01
+
