@@ -1115,7 +1115,13 @@ def test_snippets_edge_branches(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
 
     # Force the defensive `clip_end <= clip_start` branch.
     monkeypatch.setattr(snippets, "min", lambda *_args: 0.0, raising=False)
-    start, end = snippets._snippet_window(0.0, 0.0, duration_sec=None)
+    start, end = snippets._snippet_window(
+        0.0,
+        0.0,
+        pad_seconds=0.0,
+        max_duration_sec=0.0,
+        duration_sec=None,
+    )
     assert start == 0.0
     assert end == 0.0
 
@@ -1183,6 +1189,12 @@ def test_export_speaker_snippets_overlap_and_fallback_paths(
         )
     )
     assert len(outputs) == 2
+    manifest = json.loads((tmp_path / "derived" / "snippets_manifest.json").read_text(encoding="utf-8"))
+    assert [entry["status"] for entry in manifest["speakers"]["S1"]] == [
+        "accepted",
+        "accepted",
+        "rejected_short",
+    ]
 
 
 def test_export_speaker_snippets_fallback_continue_branch(
@@ -1203,7 +1215,12 @@ def test_export_speaker_snippets_fallback_continue_branch(
             duration_sec=10.0,
         )
     )
-    assert len(outputs) == 2
+    assert outputs == []
+    manifest = json.loads((tmp_path / "snips3" / ".." / "snippets_manifest.json").resolve().read_text(encoding="utf-8"))
+    assert [entry["status"] for entry in manifest["speakers"]["S3"]] == [
+        "rejected_short",
+        "rejected_short",
+    ]
 
 
 def test_export_speaker_snippets_stops_after_three_non_overlapping(
@@ -1227,6 +1244,8 @@ def test_export_speaker_snippets_stops_after_three_non_overlapping(
         )
     )
     assert len(outputs) == 3
+    manifest = json.loads((tmp_path / "snips2" / ".." / "snippets_manifest.json").resolve().read_text(encoding="utf-8"))
+    assert manifest["speakers"]["S2"][-1]["status"] == "rejected_rank_limit"
 
 
 def test_speaker_turn_helpers_cover_remaining_branches() -> None:

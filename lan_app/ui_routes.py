@@ -671,6 +671,206 @@ def _as_data_relative_path(path: Path, *, settings: AppSettings) -> str | None:
     return safe.relative_to(root_resolved).as_posix()
 
 
+def _snippets_manifest_path(recording_id: str, *, settings: AppSettings) -> Path:
+    return settings.recordings_root / recording_id / "derived" / "snippets_manifest.json"
+
+
+def _speaker_snippet_manifest_entries(
+    recording_id: str,
+    speaker_label: str,
+    *,
+    settings: AppSettings,
+) -> list[dict[str, Any]]:
+    payload = _load_json_dict(_snippets_manifest_path(recording_id, settings=settings))
+    speakers_payload = payload.get("speakers")
+    if not isinstance(speakers_payload, dict):
+        return []
+    rows = speakers_payload.get(speaker_label)
+    if not isinstance(rows, list):
+        return []
+
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("speaker") or speaker_label).strip() != speaker_label:
+            continue
+        out.append(dict(row))
+    out.sort(
+        key=lambda item: (
+            int(item.get("ranking_position") or 0),
+            str(item.get("snippet_id") or ""),
+        )
+    )
+    return out
+
+
+def _snippet_audio_url(
+    recording_id: str,
+    relative_path: str,
+) -> str | None:
+    normalized = Path(relative_path)
+    if len(normalized.parts) != 2:
+        return None
+    speaker_slug, filename = normalized.parts
+    return (
+        f"/ui/recordings/{quote(recording_id, safe='')}/snippets/"
+        f"{quote(speaker_slug, safe='')}/{quote(filename, safe='')}"
+    )
+
+
+def _snippet_choice_label(entry: dict[str, Any]) -> str:
+    prefix = "Recommended" if bool(entry.get("recommended")) else "Clean"
+    clip_start = float(entry.get("clip_start") or 0.0)
+    clip_end = float(entry.get("clip_end") or clip_start)
+    purity = max(0.0, min(float(entry.get("purity_score") or 0.0), 1.0))
+    return (
+        f"{prefix}: {clip_start:.2f}s-{clip_end:.2f}s "
+        f"(purity {purity * 100:.0f}%)"
+    )
+
+
+def _snippet_warning_messages(entries: list[dict[str, Any]]) -> list[str]:
+    counts: dict[str, int] = {}
+    for entry in entries:
+        status = str(entry.get("status") or "").strip()
+        if not status or status == "accepted":
+            continue
+        counts[status] = counts.get(status, 0) + 1
+
+    messages: list[str] = []
+    if counts.get("rejected_degraded"):
+        messages.append(
+            "Diarization ran in degraded mode, so snippet samples from this speaker were blocked."
+        )
+    if counts.get("rejected_overlap"):
+        count = counts["rejected_overlap"]
+        noun = "candidate was" if count == 1 else "candidates were"
+        messages.append(f"{count} snippet {noun} rejected because it overlaps another speaker.")
+    if counts.get("rejected_failed_extract"):
+        count = counts["rejected_failed_extract"]
+        noun = "candidate could" if count == 1 else "candidates could"
+        messages.append(
+            f"{count} snippet {noun} not be extracted from the sanitized WAV."
+        )
+    if counts.get("rejected_short"):
+        count = counts["rejected_short"]
+        noun = "candidate was" if count == 1 else "candidates were"
+        messages.append(f"{count} snippet {noun} too short to trust as a voice sample.")
+    return messages
+
+
+def _no_clean_snippet_message(entries: list[dict[str, Any]]) -> str:
+    statuses = {str(entry.get("status") or "").strip() for entry in entries}
+    if "rejected_degraded" in statuses:
+        return "No clean snippets are available because diarization ran in degraded mode."
+    if "rejected_overlap" in statuses:
+        return "No clean snippets are available because every candidate overlaps another speaker."
+    if "rejected_failed_extract" in statuses:
+        return "No clean snippets are available because extraction failed for the clean candidates."
+    if "rejected_short" in statuses:
+        return "No clean snippets are available because every candidate was too short."
+    if entries:
+        return "No accepted clean snippets are available for this speaker."
+    return "No snippet quality data is available for this speaker yet."
+
+
+def _speaker_snippet_context(
+    recording_id: str,
+    speaker_label: str,
+    *,
+    settings: AppSettings,
+) -> dict[str, Any]:
+    snippets_root = settings.recordings_root / recording_id / "derived" / "snippets"
+    expected_prefix = f"{_speaker_slug(speaker_label)}/"
+    clean_snippets: list[dict[str, Any]] = []
+    for entry in _speaker_snippet_manifest_entries(
+        recording_id,
+        speaker_label,
+        settings=settings,
+    ):
+        if str(entry.get("status") or "").strip() != "accepted":
+            continue
+        relative_path = str(entry.get("relative_path") or "").strip()
+        if not relative_path.startswith(expected_prefix):
+            continue
+        safe_file = _safe_audio_path(snippets_root / relative_path, root=snippets_root)
+        if safe_file is None or not safe_file.exists() or not safe_file.is_file():
+            continue
+        safe_relative = safe_file.relative_to(snippets_root.resolve()).as_posix()
+        audio_url = _snippet_audio_url(recording_id, safe_relative)
+        if audio_url is None:
+            continue
+        clean_snippets.append(
+            {
+                "relative_path": safe_relative,
+                "audio_url": audio_url,
+                "clip_label": (
+                    f"{float(entry.get('clip_start') or 0.0):.2f}s-"
+                    f"{float(entry.get('clip_end') or 0.0):.2f}s"
+                ),
+                "source_label": (
+                    f"{str(entry.get('source_kind') or 'segment').title()} "
+                    f"{float(entry.get('source_start') or 0.0):.2f}s-"
+                    f"{float(entry.get('source_end') or 0.0):.2f}s"
+                ),
+                "purity_label": f"{max(0.0, min(float(entry.get('purity_score') or 0.0), 1.0)) * 100:.0f}%",
+                "recommended": bool(entry.get("recommended")),
+                "choice_label": _snippet_choice_label(entry),
+            }
+        )
+
+    entries = _speaker_snippet_manifest_entries(
+        recording_id,
+        speaker_label,
+        settings=settings,
+    )
+    return {
+        "clean_snippets": clean_snippets,
+        "snippet_warnings": _snippet_warning_messages(entries),
+        "no_clean_snippet_message": (
+            None if clean_snippets else _no_clean_snippet_message(entries)
+        ),
+    }
+
+
+def _selected_clean_snippet(
+    recording_id: str,
+    speaker_label: str,
+    snippet_path: str,
+    *,
+    settings: AppSettings,
+) -> Path:
+    chosen_path = snippet_path.strip()
+    if not chosen_path:
+        raise ValueError("snippet_path is required")
+    accepted = next(
+        (
+            entry
+            for entry in _speaker_snippet_manifest_entries(
+                recording_id,
+                speaker_label,
+                settings=settings,
+            )
+            if str(entry.get("status") or "").strip() == "accepted"
+            and str(entry.get("relative_path") or "").strip() == chosen_path
+        ),
+        None,
+    )
+    if accepted is None:
+        raise ValueError("Selected snippet is not a clean snippet for this speaker")
+    snippets_root = settings.recordings_root / recording_id / "derived" / "snippets"
+    safe_file = _safe_audio_path(snippets_root / chosen_path, root=snippets_root)
+    if safe_file is None:
+        raise ValueError("Selected snippet path is invalid")
+    safe_relative = safe_file.relative_to(snippets_root.resolve()).as_posix()
+    if not safe_relative.startswith(f"{_speaker_slug(speaker_label)}/"):
+        raise ValueError("Selected snippet does not belong to this speaker")
+    if not safe_file.exists() or not safe_file.is_file():
+        raise ValueError("Selected snippet file does not exist")
+    return safe_file
+
+
 def _candidate_match_rows(
     candidate_matches: Any,
     *,
@@ -864,19 +1064,10 @@ def _speakers_tab_context(recording_id: str, settings: AppSettings) -> dict[str,
     }
 
     speaker_rows: list[dict[str, Any]] = []
-    recording_token = quote(recording_id, safe="")
     low_confidence_count = 0
     for speaker in sorted(per_speaker):
         row = per_speaker[speaker]
-        snippets = _speaker_snippet_files(recording_id, speaker, settings=settings)
-        speaker_token = quote(_speaker_slug(speaker), safe="")
-        snippet_urls = [
-            (
-                f"/ui/recordings/{recording_token}/snippets/"
-                f"{speaker_token}/{quote(path.name, safe='')}"
-            )
-            for path in snippets
-        ]
+        snippet_context = _speaker_snippet_context(recording_id, speaker, settings=settings)
         assignment = assignment_by_speaker.get(speaker, {})
         profile_id_raw = assignment.get("voice_profile_id")
         try:
@@ -901,7 +1092,9 @@ def _speakers_tab_context(recording_id: str, settings: AppSettings) -> dict[str,
                 "turn_count": int(row["turn_count"]),
                 "duration_sec": round(float(row["duration_sec"]), 3),
                 "preview_text": str(row["preview_text"]),
-                "snippet_urls": snippet_urls,
+                "clean_snippets": snippet_context["clean_snippets"],
+                "snippet_warnings": snippet_context["snippet_warnings"],
+                "no_clean_snippet_message": snippet_context["no_clean_snippet_message"],
                 "voice_profile_id": profile_id,
                 "voice_profile_name": voice_profile_name,
                 "confidence": max(0.0, min(confidence, 1.0)),
@@ -1671,6 +1864,7 @@ async def ui_add_speaker_sample(
     recording_id: str,
     diar_speaker_label: str = Form(...),
     voice_profile_id: str = Form(default=""),
+    snippet_path: str = Form(default=""),
 ) -> Any:
     if get_recording(recording_id, settings=_settings) is None:
         return HTMLResponse("Not found", status_code=404)
@@ -1685,15 +1879,17 @@ async def ui_add_speaker_sample(
     except ValueError:
         return HTMLResponse("voice_profile_id must be an integer", status_code=422)
 
-    snippet_files = _speaker_snippet_files(
-        recording_id,
-        diar_label,
-        settings=_settings,
-    )
-    if not snippet_files:
-        return HTMLResponse("No snippets available for this speaker", status_code=422)
+    try:
+        selected_snippet = _selected_clean_snippet(
+            recording_id,
+            diar_label,
+            snippet_path,
+            settings=_settings,
+        )
+    except ValueError as exc:
+        return HTMLResponse(str(exc), status_code=422)
 
-    rel_path = _as_data_relative_path(snippet_files[0], settings=_settings)
+    rel_path = _as_data_relative_path(selected_snippet, settings=_settings)
     if rel_path is None:
         return HTMLResponse("Snippet path is outside runtime data root", status_code=422)
     try:

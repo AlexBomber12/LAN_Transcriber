@@ -84,11 +84,15 @@ def _annotation_from_segments(*segments: tuple[float, float, str]):
 
 
 class DummyDiariser:
+    mode = "pyannote"
+
     async def __call__(self, audio_path: Path):
         return _annotation_from_segments((0.0, 1.0, "S1"))
 
 
 class TwoSpeakerDiariser:
+    mode = "pyannote"
+
     async def __call__(self, audio_path: Path):
         return _annotation_from_segments((0.0, 12.0, "S1"), (12.0, 24.0, "S2"))
 

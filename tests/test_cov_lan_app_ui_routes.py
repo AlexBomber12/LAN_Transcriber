@@ -417,6 +417,258 @@ def test_audio_snippet_helpers_and_speakers_context_edge_paths(
     assert parsed_ctx["speaker_rows"][0]["voice_profile_id"] is None
 
 
+def test_snippet_manifest_helpers_cover_context_and_validation(tmp_path: Path) -> None:
+    cfg = _cfg(tmp_path)
+    recording_id = "rec-snippet-manifest-helpers"
+    derived = cfg.recordings_root / recording_id / "derived"
+    snippets_root = derived / "snippets"
+    (snippets_root / "S1").mkdir(parents=True, exist_ok=True)
+    (snippets_root / "S1" / "1.wav").write_bytes(b"wav")
+    (snippets_root / "S1" / "nested").mkdir(parents=True, exist_ok=True)
+    (snippets_root / "S1" / "nested" / "1.wav").write_bytes(b"wav")
+    (derived / "snippets_manifest.json").write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "speakers": {
+                    "S1": [
+                        "skip",
+                        {"snippet_id": "skip-speaker", "speaker": "S9", "ranking_position": 0},
+                        {
+                            "snippet_id": "S1-02",
+                            "speaker": "S1",
+                            "clip_start": 4.0,
+                            "clip_end": 5.0,
+                            "source_kind": "turn",
+                            "source_start": 4.0,
+                            "source_end": 4.7,
+                            "purity_score": 0.61,
+                            "ranking_position": 2,
+                            "status": "rejected_overlap",
+                        },
+                        {
+                            "snippet_id": "S1-01",
+                            "speaker": "S1",
+                            "clip_start": 0.0,
+                            "clip_end": 1.0,
+                            "source_kind": "turn",
+                            "source_start": 0.0,
+                            "source_end": 0.8,
+                            "purity_score": 0.88,
+                            "ranking_position": 1,
+                            "status": "accepted",
+                            "recommended": True,
+                            "relative_path": "S1/1.wav",
+                        },
+                        {
+                            "snippet_id": "S1-03",
+                            "speaker": "S1",
+                            "clip_start": 6.0,
+                            "clip_end": 6.5,
+                            "source_kind": "turn",
+                            "source_start": 6.0,
+                            "source_end": 6.2,
+                            "purity_score": 0.52,
+                            "ranking_position": 3,
+                            "status": "rejected_failed_extract",
+                        },
+                        {
+                            "snippet_id": "S1-04",
+                            "speaker": "S1",
+                            "clip_start": 7.0,
+                            "clip_end": 8.0,
+                            "source_kind": "turn",
+                            "source_start": 7.0,
+                            "source_end": 7.8,
+                            "purity_score": 0.74,
+                            "ranking_position": 4,
+                            "status": "accepted",
+                            "recommended": False,
+                            "relative_path": "S1/missing.wav",
+                        },
+                        {
+                            "snippet_id": "S1-05",
+                            "speaker": "S1",
+                            "clip_start": 8.0,
+                            "clip_end": 9.0,
+                            "source_kind": "turn",
+                            "source_start": 8.0,
+                            "source_end": 8.8,
+                            "purity_score": 0.73,
+                            "ranking_position": 5,
+                            "status": "accepted",
+                            "recommended": False,
+                            "relative_path": "S1/nested/1.wav",
+                        },
+                        {
+                            "snippet_id": "S1-06",
+                            "speaker": "S1",
+                            "clip_start": 9.0,
+                            "clip_end": 10.0,
+                            "source_kind": "turn",
+                            "source_start": 9.0,
+                            "source_end": 9.8,
+                            "purity_score": 0.72,
+                            "ranking_position": 6,
+                            "status": "accepted",
+                            "recommended": False,
+                            "relative_path": "../evil.wav",
+                        },
+                    ],
+                    "S2": [
+                        {
+                            "snippet_id": "S2-01",
+                            "speaker": "S2",
+                            "clip_start": 1.5,
+                            "clip_end": 2.0,
+                            "source_kind": "turn",
+                            "source_start": 1.5,
+                            "source_end": 1.9,
+                            "purity_score": 0.77,
+                            "ranking_position": 1,
+                            "status": "accepted",
+                            "recommended": True,
+                            "relative_path": "S1/1.wav",
+                        }
+                    ],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    rows = ui_routes._speaker_snippet_manifest_entries(  # noqa: SLF001
+        recording_id,
+        "S1",
+        settings=cfg,
+    )
+    assert ui_routes._speaker_snippet_files(recording_id, "missing", settings=cfg) == []  # noqa: SLF001
+    assert [row["snippet_id"] for row in rows] == [
+        "S1-01",
+        "S1-02",
+        "S1-03",
+        "S1-04",
+        "S1-05",
+        "S1-06",
+    ]
+    assert ui_routes._snippet_audio_url(recording_id, "bad") is None  # noqa: SLF001
+    assert ui_routes._snippet_audio_url(recording_id, "S1/1.wav") == (  # noqa: SLF001
+        f"/ui/recordings/{recording_id}/snippets/S1/1.wav"
+    )
+    assert ui_routes._snippet_choice_label(rows[0]).startswith("Recommended: 0.00s-1.00s")  # noqa: SLF001
+    assert ui_routes._snippet_warning_messages(rows) == [  # noqa: SLF001
+        "1 snippet candidate was rejected because it overlaps another speaker.",
+        "1 snippet candidate could not be extracted from the sanitized WAV.",
+    ]
+    assert ui_routes._no_clean_snippet_message([]) == (  # noqa: SLF001
+        "No snippet quality data is available for this speaker yet."
+    )
+
+    context = ui_routes._speaker_snippet_context(  # noqa: SLF001
+        recording_id,
+        "S1",
+        settings=cfg,
+    )
+    assert context["clean_snippets"][0]["relative_path"] == "S1/1.wav"
+    assert context["clean_snippets"][0]["recommended"] is True
+    assert context["no_clean_snippet_message"] is None
+    blocked_context = ui_routes._speaker_snippet_context(  # noqa: SLF001
+        recording_id,
+        "S2",
+        settings=cfg,
+    )
+    assert blocked_context["clean_snippets"] == []
+
+    selected = ui_routes._selected_clean_snippet(  # noqa: SLF001
+        recording_id,
+        "S1",
+        "S1/1.wav",
+        settings=cfg,
+    )
+    assert selected == (snippets_root / "S1" / "1.wav").resolve()
+
+    with pytest.raises(ValueError, match="Selected snippet is not a clean snippet for this speaker"):
+        ui_routes._selected_clean_snippet(  # noqa: SLF001
+            recording_id,
+            "S1",
+            "S1/2.wav",
+            settings=cfg,
+        )
+
+    with pytest.raises(ValueError, match="Selected snippet does not belong to this speaker"):
+        ui_routes._selected_clean_snippet(  # noqa: SLF001
+            recording_id,
+            "S2",
+            "S1/1.wav",
+            settings=cfg,
+        )
+
+    with pytest.raises(ValueError, match="Selected snippet file does not exist"):
+        ui_routes._selected_clean_snippet(  # noqa: SLF001
+            recording_id,
+            "S1",
+            "S1/missing.wav",
+            settings=cfg,
+        )
+
+    with pytest.raises(ValueError, match="Selected snippet path is invalid"):
+        ui_routes._selected_clean_snippet(  # noqa: SLF001
+            recording_id,
+            "S1",
+            "../evil.wav",
+            settings=cfg,
+        )
+
+
+def test_snippet_message_helpers_and_display_backfill_edges(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = _cfg(tmp_path)
+    recording_id = "rec-ui-display-backfill"
+    raw_dir = cfg.recordings_root / recording_id / "raw"
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    (raw_dir / "audio.mp3").write_bytes(b"raw")
+    (raw_dir / "audio.wav").write_bytes(b"raw")
+
+    calls: list[Path] = []
+
+    def _fake_wave_duration(path: Path) -> float | None:
+        calls.append(path)
+        return None if path.suffix == ".mp3" else 12.0
+
+    monkeypatch.setattr(ui_routes, "_audio_duration_from_wave", _fake_wave_duration)
+    monkeypatch.setattr(ui_routes, "_audio_duration_from_ffprobe", lambda _path: None)
+    monkeypatch.setattr(ui_routes, "set_recording_duration", lambda *_a, **_k: None)
+
+    item = ui_routes._prepare_recording_for_display(  # noqa: SLF001
+        {"id": recording_id, "duration_sec": None},
+        settings=cfg,
+    )
+    assert item["duration_display"] == "12s"
+    assert calls == [raw_dir / "audio.mp3", raw_dir / "audio.wav"]
+    assert ui_routes._snippet_warning_messages([  # noqa: SLF001
+        {"status": "rejected_degraded"},
+        {"status": "rejected_short"},
+        {"status": "rejected_short"},
+    ]) == [
+        "Diarization ran in degraded mode, so snippet samples from this speaker were blocked.",
+        "2 snippet candidates were too short to trust as a voice sample.",
+    ]
+    assert ui_routes._no_clean_snippet_message([{"status": "rejected_degraded"}]) == (  # noqa: SLF001
+        "No clean snippets are available because diarization ran in degraded mode."
+    )
+    assert ui_routes._no_clean_snippet_message([{"status": "rejected_failed_extract"}]) == (  # noqa: SLF001
+        "No clean snippets are available because extraction failed for the clean candidates."
+    )
+    assert ui_routes._no_clean_snippet_message([{"status": "rejected_short"}]) == (  # noqa: SLF001
+        "No clean snippets are available because every candidate was too short."
+    )
+    assert ui_routes._no_clean_snippet_message([{"status": "rejected_rank_limit"}]) == (  # noqa: SLF001
+        "No accepted clean snippets are available for this speaker."
+    )
+
+
 def test_speaker_helper_paths_cover_duplicates_labels_and_notices(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -763,6 +1015,37 @@ def test_recording_progress_export_and_snippet_not_found_paths(
     assert c.get(f"/ui/recordings/{recording_id}/snippets/S1/missing.wav").status_code == 404
 
 
+def test_recording_export_zip_route_returns_zip_bytes(
+    client: tuple[AppSettings, TestClient],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg, c = client
+    recording_id = _seed_recording(cfg, "rec-export-zip-ok")
+    seen: dict[str, object] = {}
+
+    def _fake_build_export_zip_bytes(
+        recording_id_arg: str,
+        *,
+        settings: AppSettings,
+        include_snippets: bool,
+    ) -> bytes:
+        seen["recording_id"] = recording_id_arg
+        seen["settings"] = settings
+        seen["include_snippets"] = include_snippets
+        return b"zip-bytes"
+
+    monkeypatch.setattr(ui_routes, "build_export_zip_bytes", _fake_build_export_zip_bytes)
+    response = c.get(f"/ui/recordings/{recording_id}/export.zip?include_snippets=1")
+    assert response.status_code == 200
+    assert response.content == b"zip-bytes"
+    assert response.headers["content-type"].startswith("application/zip")
+    assert seen == {
+        "recording_id": recording_id,
+        "settings": cfg,
+        "include_snippets": True,
+    }
+
+
 def test_assign_speaker_validation_and_error_paths(
     client: tuple[AppSettings, TestClient],
     monkeypatch: pytest.MonkeyPatch,
@@ -870,9 +1153,24 @@ def test_add_speaker_sample_validation_and_error_paths(
 
     rel_bad = tmp_path / "outside.wav"
     rel_bad.write_bytes(b"wav")
-    monkeypatch.setattr(ui_routes, "_speaker_snippet_files", lambda *_a, **_k: [rel_bad])
+    monkeypatch.setattr(
+        ui_routes,
+        "_selected_clean_snippet",
+        lambda *_a, **_k: (_ for _ in ()).throw(ValueError("Selected snippet path is invalid")),
+    )
+    invalid = c.post(
+        base,
+        data={"diar_speaker_label": "S1", "voice_profile_id": "1", "snippet_path": "../bad.wav"},
+    )
+    assert invalid.status_code == 422
+    assert "Selected snippet path is invalid" in invalid.text
+
+    monkeypatch.setattr(ui_routes, "_selected_clean_snippet", lambda *_a, **_k: rel_bad)
     monkeypatch.setattr(ui_routes, "_as_data_relative_path", lambda *_a, **_k: None)
-    assert c.post(base, data={"diar_speaker_label": "S1", "voice_profile_id": "1"}).status_code == 422
+    assert c.post(
+        base,
+        data={"diar_speaker_label": "S1", "voice_profile_id": "1", "snippet_path": "S1/1.wav"},
+    ).status_code == 422
 
     monkeypatch.setattr(ui_routes, "_as_data_relative_path", lambda *_a, **_k: "recordings/x.wav")
     monkeypatch.setattr(
@@ -880,14 +1178,20 @@ def test_add_speaker_sample_validation_and_error_paths(
         "create_voice_sample",
         lambda *_a, **_k: (_ for _ in ()).throw(sqlite3.IntegrityError("missing")),
     )
-    assert c.post(base, data={"diar_speaker_label": "S1", "voice_profile_id": "1"}).status_code == 404
+    assert c.post(
+        base,
+        data={"diar_speaker_label": "S1", "voice_profile_id": "1", "snippet_path": "S1/1.wav"},
+    ).status_code == 404
 
     monkeypatch.setattr(
         ui_routes,
         "create_voice_sample",
         lambda *_a, **_k: (_ for _ in ()).throw(ValueError("bad snippet")),
     )
-    bad_value = c.post(base, data={"diar_speaker_label": "S1", "voice_profile_id": "1"})
+    bad_value = c.post(
+        base,
+        data={"diar_speaker_label": "S1", "voice_profile_id": "1", "snippet_path": "S1/1.wav"},
+    )
     assert bad_value.status_code == 422
     assert "bad snippet" in bad_value.text
 

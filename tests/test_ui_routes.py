@@ -111,6 +111,62 @@ def _seed_speaker_artifacts(cfg: AppSettings, recording_id: str) -> None:
     (snippets / "S2").mkdir(parents=True, exist_ok=True)
     (snippets / "S1" / "1.wav").write_bytes(b"fake-wav-s1")
     (snippets / "S2" / "1.wav").write_bytes(b"fake-wav-s2")
+    (derived / "snippets_manifest.json").write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "source_kind": "turn",
+                "degraded_diarization": False,
+                "pad_seconds": 0.25,
+                "max_clip_duration_seconds": 8.0,
+                "min_clip_duration_seconds": 0.8,
+                "max_snippets_per_speaker": 3,
+                "speakers": {
+                    "S1": [
+                        {
+                            "snippet_id": "S1-01",
+                            "speaker": "S1",
+                            "source_kind": "turn",
+                            "source_start": 0.0,
+                            "source_end": 1.2,
+                            "clip_start": 0.0,
+                            "clip_end": 1.45,
+                            "duration_seconds": 1.45,
+                            "overlap_seconds": 0.0,
+                            "overlap_ratio": 0.0,
+                            "purity_score": 0.88,
+                            "ranking_position": 1,
+                            "status": "accepted",
+                            "recommended": True,
+                            "extraction_backend": "wave",
+                            "relative_path": "S1/1.wav",
+                        }
+                    ],
+                    "S2": [
+                        {
+                            "snippet_id": "S2-01",
+                            "speaker": "S2",
+                            "source_kind": "turn",
+                            "source_start": 1.3,
+                            "source_end": 2.1,
+                            "clip_start": 1.05,
+                            "clip_end": 2.35,
+                            "duration_seconds": 1.3,
+                            "overlap_seconds": 0.0,
+                            "overlap_ratio": 0.0,
+                            "purity_score": 0.85,
+                            "ranking_position": 1,
+                            "status": "accepted",
+                            "recommended": True,
+                            "extraction_backend": "wave",
+                            "relative_path": "S2/1.wav",
+                        }
+                    ],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
 
 
 def _write_pcm_wav(path: Path, *, duration_sec: float, sample_rate: int = 16000) -> None:
@@ -520,6 +576,8 @@ def test_recording_detail_speakers_tab_assignment_persists(tmp_path, monkeypatch
     assert "Alice Example" in page.text
     assert "Save remap" in page.text
     assert "Add sample from this recording" in page.text
+    assert "Recommended" in page.text
+    assert "purity 88%" in page.text
 
     overview = TestClient(api.app, follow_redirects=True).get("/recordings/rec-speakers-1")
     assert overview.status_code == 200
@@ -586,6 +644,7 @@ def test_recording_detail_speakers_add_sample_links_snippet_and_audio_route(tmp_
         data={
             "diar_speaker_label": "S1",
             "voice_profile_id": str(profile["id"]),
+            "snippet_path": "S1/1.wav",
         },
     )
     assert r.status_code == 303
@@ -608,6 +667,76 @@ def test_recording_detail_speakers_add_sample_links_snippet_and_audio_route(tmp_
     )
     assert audio_resp.status_code == 200
     assert audio_resp.headers["content-type"].startswith("audio/wav")
+
+
+def test_recording_detail_speakers_no_clean_snippet_shows_clear_message(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    init_db(cfg)
+    create_recording(
+        "rec-speakers-no-clean-1",
+        source="drive",
+        source_filename="speakers-no-clean.mp3",
+        status=RECORDING_STATUS_READY,
+        settings=cfg,
+    )
+    _seed_speaker_artifacts(cfg, "rec-speakers-no-clean-1")
+    derived = cfg.recordings_root / "rec-speakers-no-clean-1" / "derived"
+    (derived / "snippets_manifest.json").write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "source_kind": "turn",
+                "degraded_diarization": False,
+                "pad_seconds": 0.25,
+                "max_clip_duration_seconds": 8.0,
+                "min_clip_duration_seconds": 0.8,
+                "max_snippets_per_speaker": 3,
+                "speakers": {
+                    "S1": [
+                        {
+                            "snippet_id": "S1-01",
+                            "speaker": "S1",
+                            "source_kind": "turn",
+                            "source_start": 0.0,
+                            "source_end": 1.2,
+                            "clip_start": 0.0,
+                            "clip_end": 1.45,
+                            "duration_seconds": 1.45,
+                            "overlap_seconds": 0.31,
+                            "overlap_ratio": 0.2138,
+                            "purity_score": 0.62,
+                            "ranking_position": 1,
+                            "status": "rejected_overlap",
+                            "recommended": False,
+                            "extraction_backend": "none",
+                        }
+                    ]
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    profile = create_voice_profile("Blocked Sample", settings=cfg)
+
+    page = TestClient(api.app, follow_redirects=True).get(
+        "/recordings/rec-speakers-no-clean-1?tab=speakers"
+    )
+    assert page.status_code == 200
+    assert "No clean snippets are available because every candidate overlaps another speaker." in page.text
+    assert "rejected because it overlaps another speaker" in page.text
+
+    blocked = TestClient(api.app, follow_redirects=False).post(
+        "/ui/recordings/rec-speakers-no-clean-1/speakers/add-sample",
+        data={
+            "diar_speaker_label": "S1",
+            "voice_profile_id": str(profile["id"]),
+            "snippet_path": "",
+        },
+    )
+    assert blocked.status_code == 422
+    assert "snippet_path is required" in blocked.text
 
 
 def test_recording_detail_speakers_show_degraded_notice_and_low_confidence(tmp_path, monkeypatch):

@@ -20,6 +20,8 @@ transformers.pipeline = lambda *a, **k: lambda text: [{"label": "positive", "sco
 sys.modules["transformers"] = transformers
 
 class DummyDiariser:
+    mode = "pyannote"
+
     async def __call__(self, audio_path: Path):
         class Ann:
             def itertracks(self, yield_label=False):

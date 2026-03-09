@@ -452,7 +452,7 @@ Queue (in order)
 - Depends on: PR-ASR-MULTILINGUAL-01
 
 89) PR-SNIPPETS-PURITY-01: Pure speaker snippets: single-speaker clip selection, snippet manifest, no silence fallback, and explicit snippet choice for Add sample
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-SNIPPETS-PURITY-01.md
 - Depends on: PR-SPEAKER-UX-01 and PR-SPEAKER-BANK-CANONICAL-01
 
@@ -465,4 +465,3 @@ Queue (in order)
 - Status: TODO
 - Tasks file: tasks/PR-CALENDAR-MATCHING-ICS-01.md
 - Depends on: PR-GLOSSARY-CORRECTIONS-01 and PR-CALENDAR-ICS-01
-

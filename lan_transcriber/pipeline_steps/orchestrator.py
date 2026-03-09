@@ -45,7 +45,7 @@ from .diarization_quality import (
     classify_diarization_profile,
     smooth_speaker_turns,
 )
-from .snippets import SnippetExportRequest, export_speaker_snippets
+from .snippets import SnippetExportRequest, export_speaker_snippets, write_empty_snippets_manifest
 from .speaker_turns import (
     _diarization_segments,
     build_speaker_turns,
@@ -184,6 +184,22 @@ class Settings(BaseSettings):
     diarization_min_turn_seconds: float = Field(
         default=DEFAULT_DIARIZATION_MIN_TURN_SECONDS,
         ge=0.0,
+    )
+    snippet_pad_seconds: float = Field(
+        default=0.25,
+        ge=0.0,
+    )
+    snippet_max_duration_seconds: float = Field(
+        default=8.0,
+        gt=0.0,
+    )
+    snippet_min_duration_seconds: float = Field(
+        default=0.8,
+        gt=0.0,
+    )
+    snippet_max_per_speaker: int = Field(
+        default=3,
+        ge=0,
     )
 
     class Config:
@@ -1255,7 +1271,13 @@ async def run_pipeline(
         raise
 
     if not clean_text:
-        _clear_dir(artifacts.snippets_dir)
+        write_empty_snippets_manifest(
+            snippets_dir=artifacts.snippets_dir,
+            pad_seconds=cfg.snippet_pad_seconds,
+            max_clip_duration_sec=cfg.snippet_max_duration_seconds,
+            min_clip_duration_sec=cfg.snippet_min_duration_seconds,
+            max_snippets_per_speaker=cfg.snippet_max_per_speaker,
+        )
         atomic_write_text(artifacts.transcript_txt_path, "")
         speakers = sorted({aliases.get(row["speaker"], row["speaker"]) for row in diar_segments})
         atomic_write_json(
@@ -1297,7 +1319,22 @@ async def run_pipeline(
         p95_latency_seconds.observe(time.perf_counter() - start)
         return TranscriptResult(summary="No speech detected", body="", friendly=0, speakers=speakers, summary_path=artifacts.summary_json_path, body_path=artifacts.transcript_txt_path, unknown_chunks=[], segments=[])
 
-    snippet_paths = export_speaker_snippets(SnippetExportRequest(audio_path=audio_path, diar_segments=diar_segments, snippets_dir=artifacts.snippets_dir, duration_sec=precheck_result.duration_sec))
+    snippet_paths = export_speaker_snippets(
+        SnippetExportRequest(
+            audio_path=audio_path,
+            diar_segments=diar_segments,
+            snippets_dir=artifacts.snippets_dir,
+            duration_sec=precheck_result.duration_sec,
+            speaker_turns=speaker_turns,
+            degraded_diarization=bool(
+                getattr(diariser, "mode", "unknown") != "pyannote" or used_dummy_fallback
+            ),
+            pad_seconds=cfg.snippet_pad_seconds,
+            max_clip_duration_sec=cfg.snippet_max_duration_seconds,
+            min_clip_duration_sec=cfg.snippet_min_duration_seconds,
+            max_snippets_per_speaker=cfg.snippet_max_per_speaker,
+        )
+    )
     speaker_lines = _merge_similar(
         [
             f"[{turn['start']:.2f}-{turn['end']:.2f}] **{aliases.get(turn['speaker'], turn['speaker'])}:** {turn['text']}"
