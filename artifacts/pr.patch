@@ -1,342 +1,68 @@
-diff --git a/lan_transcriber/compat/call_compat.py b/lan_transcriber/compat/call_compat.py
-index b3bfa05..ede3288 100644
---- a/lan_transcriber/compat/call_compat.py
-+++ b/lan_transcriber/compat/call_compat.py
-@@ -2,9 +2,11 @@ from __future__ import annotations
- 
- import inspect
- import re
-+import threading
- from typing import Any, Callable
- 
- _UNEXPECTED_KWARG_RE = re.compile(r"unexpected keyword argument '([^']+)'")
-+_LAST_CALL_DETAILS = threading.local()
- 
- 
- def filter_kwargs_for_callable(fn: Callable[..., Any], kwargs: dict[str, Any]) -> dict[str, Any]:
-@@ -35,20 +37,54 @@ def _extract_unexpected_kwarg_name(msg: str) -> str | None:
-     return match.group(1)
- 
- 
--def call_with_supported_kwargs(fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
--    """Invoke ``fn`` while dropping unsupported kwargs when possible."""
-+def clear_last_supported_kwargs_call_details() -> None:
-+    _LAST_CALL_DETAILS.value = None
-+
-+
-+def last_supported_kwargs_call_details() -> tuple[dict[str, Any] | None, tuple[str, ...] | None]:
-+    raw = getattr(_LAST_CALL_DETAILS, "value", None)
-+    if not isinstance(raw, tuple) or len(raw) != 2:
-+        return None, None
-+    filtered, dropped = raw
-+    if not isinstance(filtered, dict) or not isinstance(dropped, tuple):
-+        return None, None
-+    return dict(filtered), dropped
-+
-+
-+def call_with_supported_kwargs_details(
-+    fn: Callable[..., Any],
-+    *args: Any,
-+    **kwargs: Any,
-+) -> tuple[Any, dict[str, Any], tuple[str, ...]]:
-+    """Invoke ``fn`` and report the kwargs that were ultimately dropped."""
- 
-+    clear_last_supported_kwargs_call_details()
-     filtered = filter_kwargs_for_callable(fn, kwargs)
-+    dropped = [key for key in kwargs if key not in filtered]
-     max_retries = len(filtered)
- 
-     for _ in range(max_retries + 1):
-         try:
--            return fn(*args, **filtered)
-+            result = fn(*args, **filtered)
-+            details = (dict(filtered), tuple(dropped))
-+            _LAST_CALL_DETAILS.value = details
-+            return result, details[0], details[1]
-         except TypeError as exc:
-             unexpected_kwarg = _extract_unexpected_kwarg_name(str(exc))
-             if unexpected_kwarg is None or unexpected_kwarg not in filtered:
-                 raise
-             filtered = dict(filtered)
-             filtered.pop(unexpected_kwarg, None)
-+            dropped.append(unexpected_kwarg)
-+
-+    result = fn(*args, **filtered)
-+    details = (dict(filtered), tuple(dropped))
-+    _LAST_CALL_DETAILS.value = details
-+    return result, details[0], details[1]
-+
-+
-+def call_with_supported_kwargs(fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
-+    """Invoke ``fn`` while dropping unsupported kwargs when possible."""
- 
--    return fn(*args, **filtered)
-+    result, _filtered, _dropped = call_with_supported_kwargs_details(fn, *args, **kwargs)
-+    return result
 diff --git a/lan_transcriber/pipeline_steps/orchestrator.py b/lan_transcriber/pipeline_steps/orchestrator.py
-index 062c5a2..db39b8d 100644
+index db39b8d..fba9536 100644
 --- a/lan_transcriber/pipeline_steps/orchestrator.py
 +++ b/lan_transcriber/pipeline_steps/orchestrator.py
-@@ -16,7 +16,12 @@ from pydantic_settings import BaseSettings
- from .. import normalizer
- from ..aliases import ALIAS_PATH, load_aliases as _load_aliases, save_aliases as _save_aliases
- from ..artifacts import atomic_write_json, atomic_write_text, build_recording_artifacts, stage_raw_audio
--from ..compat.call_compat import call_with_supported_kwargs, filter_kwargs_for_callable
-+from ..compat.call_compat import (
-+    clear_last_supported_kwargs_call_details,
-+    call_with_supported_kwargs,
-+    filter_kwargs_for_callable,
-+    last_supported_kwargs_call_details,
-+)
- from ..compat.pyannote_compat import patch_pyannote_inference_ignore_use_auth_token
- from ..llm_chunking import (
-     build_chunk_prompt,
-@@ -367,16 +372,28 @@ def _log_glossary_context_unsupported(
-     callback: Callable[[str], Any] | None,
-     glossary_kwargs: dict[str, Any],
-     filtered_kwargs: dict[str, Any],
-+    dropped_kwargs: Iterable[str] = (),
-     state: dict[str, bool],
- ) -> None:
-     if callback is None or not glossary_kwargs or state.get("unsupported"):
-         return
--    if any(key in filtered_kwargs for key in glossary_kwargs):
-+    glossary_keys = set(glossary_kwargs)
-+    remaining_keys = {key for key in glossary_keys if key in filtered_kwargs}
-+    runtime_dropped = {key for key in dropped_kwargs if key in glossary_keys}
-+    effective_keys = remaining_keys - runtime_dropped
-+    if effective_keys == glossary_keys:
-         return
-     state["unsupported"] = True
-+    if effective_keys:
-+        message = (
-+            "whisperx transcribe: glossary context unsupported for some kwargs; "
-+            "continuing with supported ASR hints only"
-+        )
-+    else:
-+        message = "whisperx transcribe: glossary context unsupported; continuing without ASR hints"
-     _best_effort_step_log(
-         callback,
--        "whisperx transcribe: glossary context unsupported; continuing without ASR hints",
-+        message,
+@@ -1202,11 +1202,6 @@ async def run_pipeline(
+     summary_lang = resolve_target_summary_language(target_summary_language, dominant_language=override_lang or "unknown", detected_language=None)
+     cal_title = str(calendar_title or "").strip() or None
+     cal_attendees = [str(item).strip() for item in (calendar_attendees or []) if str(item).strip()]
+-    _write_asr_glossary_artifact(
+-        derived_dir=artifacts.transcript_json_path.parent,
+-        recording_id=artifacts.recording_id,
+-        asr_glossary=asr_glossary,
+-    )
+ 
+     atomic_write_json(
+         artifacts.metrics_json_path,
+@@ -1214,6 +1209,11 @@ async def run_pipeline(
      )
  
- 
-@@ -386,12 +403,17 @@ def _write_asr_glossary_artifact(
-     recording_id: str,
-     asr_glossary: dict[str, Any] | None,
- ) -> None:
-+    artifact_path = derived_dir / "asr_glossary.json"
-     if not isinstance(asr_glossary, dict):
-+        try:
-+            artifact_path.unlink()
-+        except FileNotFoundError:
-+            pass
-         return
-     payload = dict(asr_glossary)
-     payload.setdefault("version", 1)
-     payload["recording_id"] = recording_id
--    atomic_write_json(derived_dir / "asr_glossary.json", payload)
-+    atomic_write_json(artifact_path, payload)
- 
- 
- def _diariser_runtime_metadata(diariser: Diariser) -> dict[str, Any]:
-@@ -724,18 +746,15 @@ def _build_whisperx_transcriber(
-                 attempted=kwargs,
-                 filtered=filtered_kwargs,
-             )
--            _log_glossary_context_unsupported(
--                callback=step_log_callback,
--                glossary_kwargs=glossary_kwargs,
--                filtered_kwargs=filtered_kwargs,
--                state=glossary_log_state,
--            )
-+            attempted_runtime_kwargs = filtered_kwargs
-             try:
-+                clear_last_supported_kwargs_call_details()
-                 segments, info = call_with_supported_kwargs(
-                     legacy_transcribe,
-                     str(audio_path),
-                     **kwargs,
-                 )
-+                final_kwargs, dropped_kwargs = last_supported_kwargs_call_details()
-             except TypeError:
-                 retry_kwargs = dict(kwargs)
-                 retry_kwargs.pop("word_timestamps", None)
-@@ -745,11 +764,31 @@ def _build_whisperx_transcriber(
-                     attempted=kwargs,
-                     filtered=retry_kwargs,
-                 )
-+                attempted_runtime_kwargs = filter_kwargs_for_callable(legacy_transcribe, retry_kwargs)
-+                clear_last_supported_kwargs_call_details()
-                 segments, info = call_with_supported_kwargs(
-                     legacy_transcribe,
-                     str(audio_path),
-                     **retry_kwargs,
-                 )
-+                final_kwargs, dropped_kwargs = last_supported_kwargs_call_details()
-+            if final_kwargs is None:
-+                final_kwargs = dict(attempted_runtime_kwargs)
-+            if dropped_kwargs is None:
-+                dropped_kwargs = ()
-+            _log_dropped_kwargs(
-+                callback=step_log_callback,
-+                scope="whisperx transcribe",
-+                attempted=attempted_runtime_kwargs,
-+                filtered=final_kwargs,
-+            )
-+            _log_glossary_context_unsupported(
-+                callback=step_log_callback,
-+                glossary_kwargs=glossary_kwargs,
-+                filtered_kwargs=final_kwargs,
-+                dropped_kwargs=dropped_kwargs,
-+                state=glossary_log_state,
-+            )
-             return list(segments), dict(info or {})
- 
-         return _legacy_transcribe
-@@ -801,13 +840,30 @@ def _build_whisperx_transcriber(
-             attempted=transcribe_kwargs,
-             filtered=filtered_kwargs,
-         )
-+        clear_last_supported_kwargs_call_details()
-+        result = call_with_supported_kwargs(
-+            model.transcribe,
-+            audio,
-+            **transcribe_kwargs,
+     if precheck_result.quarantine_reason:
++        _write_asr_glossary_artifact(
++            derived_dir=artifacts.transcript_json_path.parent,
++            recording_id=artifacts.recording_id,
++            asr_glossary=None,
 +        )
-+        final_kwargs, dropped_kwargs = last_supported_kwargs_call_details()
-+        if final_kwargs is None:
-+            final_kwargs = dict(filtered_kwargs)
-+        if dropped_kwargs is None:
-+            dropped_kwargs = ()
-+        _log_dropped_kwargs(
-+            callback=step_log_callback,
-+            scope="whisperx transcribe",
-+            attempted=filtered_kwargs,
-+            filtered=final_kwargs,
-+        )
-         _log_glossary_context_unsupported(
-             callback=step_log_callback,
-             glossary_kwargs=glossary_kwargs,
--            filtered_kwargs=filtered_kwargs,
-+            filtered_kwargs=final_kwargs,
-+            dropped_kwargs=dropped_kwargs,
-             state=glossary_log_state,
-         )
--        result = call_with_supported_kwargs(model.transcribe, audio, **transcribe_kwargs)
-         segments = list(result.get("segments", []))
-         info: dict[str, Any] = {
-             "language": result.get("language") or (override_lang or "unknown")
-diff --git a/tests/test_call_compat.py b/tests/test_call_compat.py
-index fe76c7e..153b44e 100644
---- a/tests/test_call_compat.py
-+++ b/tests/test_call_compat.py
-@@ -5,7 +5,13 @@ from typing import Any
- import pytest
+         await _emit_progress(progress_callback, stage="metrics", progress=0.98)
+         _clear_dir(artifacts.snippets_dir)
+         atomic_write_text(artifacts.transcript_txt_path, "")
+@@ -1256,6 +1256,12 @@ async def run_pipeline(
+         p95_latency_seconds.observe(time.perf_counter() - start)
+         return TranscriptResult(summary="Quarantined", body="", friendly=0, speakers=[], summary_path=artifacts.summary_json_path, body_path=artifacts.transcript_txt_path, unknown_chunks=[], segments=[])
  
- from lan_transcriber.compat import call_compat
--from lan_transcriber.compat.call_compat import call_with_supported_kwargs, filter_kwargs_for_callable
-+from lan_transcriber.compat.call_compat import (
-+    clear_last_supported_kwargs_call_details,
-+    call_with_supported_kwargs,
-+    call_with_supported_kwargs_details,
-+    filter_kwargs_for_callable,
-+    last_supported_kwargs_call_details,
-+)
- 
- 
- def test_filter_kwargs_drops_unsupported_keys_without_var_kwargs() -> None:
-@@ -106,6 +112,62 @@ def test_call_with_supported_kwargs_retries_when_signature_is_unavailable(monkey
-     ]
- 
- 
-+def test_call_with_supported_kwargs_details_reports_prefiltered_and_runtime_drops(monkeypatch) -> None:
-+    clear_last_supported_kwargs_call_details()
-+    assert last_supported_kwargs_call_details() == (None, None)
-+    call_compat._LAST_CALL_DETAILS.value = ("bad", [])  # noqa: SLF001
-+    assert last_supported_kwargs_call_details() == (None, None)
-+
-+    def _prefilter_target(audio: str, *, batch_size: int) -> int:
-+        del audio
-+        return batch_size
-+
-+    result, final_kwargs, dropped = call_with_supported_kwargs_details(
-+        _prefilter_target,
-+        "audio-bytes",
-+        batch_size=8,
-+        vad_filter=True,
++    _write_asr_glossary_artifact(
++        derived_dir=artifacts.transcript_json_path.parent,
++        recording_id=artifacts.recording_id,
++        asr_glossary=asr_glossary,
 +    )
 +
-+    assert result == 8
-+    assert final_kwargs == {"batch_size": 8}
-+    assert dropped == ("vad_filter",)
-+    assert last_supported_kwargs_call_details() == ({"batch_size": 8}, ("vad_filter",))
-+
-+    def _raise_signature_error(*_args: Any, **_kwargs: Any) -> Any:
-+        raise TypeError("signature unavailable")
-+
-+    class _RetryTarget:
-+        def __init__(self) -> None:
-+            self.calls: list[dict[str, Any]] = []
-+
-+        def __call__(self, audio: str, **kwargs: Any) -> int:
-+            del audio
-+            self.calls.append(dict(kwargs))
-+            if "hotwords" in kwargs:
-+                raise TypeError("FasterWhisperPipeline.transcribe() got an unexpected keyword argument 'hotwords'")
-+            return int(kwargs["batch_size"])
-+
-+    target = _RetryTarget()
-+    monkeypatch.setattr(call_compat.inspect, "signature", _raise_signature_error)
-+
-+    result, final_kwargs, dropped = call_with_supported_kwargs_details(
-+        target,
-+        "audio-bytes",
-+        batch_size=8,
-+        hotwords="term",
-+    )
-+
-+    assert result == 8
-+    assert final_kwargs == {"batch_size": 8}
-+    assert dropped == ("hotwords",)
-+    assert target.calls == [
-+        {"batch_size": 8, "hotwords": "term"},
-+        {"batch_size": 8},
-+    ]
-+    assert last_supported_kwargs_call_details() == ({"batch_size": 8}, ("hotwords",))
-+
-+
- def test_call_with_supported_kwargs_reraises_non_matching_type_error(monkeypatch) -> None:
-     def _raise_signature_error(*_args: Any, **_kwargs: Any) -> Any:
-         raise TypeError("signature unavailable")
+     try:
+         await _emit_progress(progress_callback, stage="stt", progress=0.10)
+         def _run_asr_workflow() -> tuple[
 diff --git a/tests/test_pipeline.py b/tests/test_pipeline.py
-index 65eeee1..38aedfb 100644
+index 38aedfb..cc0dbfb 100644
 --- a/tests/test_pipeline.py
 +++ b/tests/test_pipeline.py
-@@ -1966,6 +1966,44 @@ async def test_pipeline_quarantine_skips_whisperx_import(tmp_path: Path, monkeyp
-     assert result.summary == "Quarantined"
+@@ -2004,6 +2004,48 @@ async def test_pipeline_without_glossary_removes_stale_glossary_artifact(tmp_pat
+     assert not artifact.exists()
  
  
 +@pytest.mark.asyncio
-+async def test_pipeline_without_glossary_removes_stale_glossary_artifact(tmp_path: Path) -> None:
++async def test_pipeline_quarantine_does_not_write_glossary_artifact_when_glossary_is_present(
++    tmp_path: Path,
++) -> None:
 +    cfg = pipeline.Settings(
 +        speaker_db=tmp_path / "db.yaml",
 +        tmp_root=tmp_path,
 +        recordings_root=tmp_path / "recordings",
 +        llm_model="test-model",
 +    )
-+    audio = fake_audio(tmp_path, name="stale-glossary.mp3")
++    audio = fake_audio(tmp_path, name="quarantine-glossary.mp3")
 +    artifact = (
 +        cfg.recordings_root
-+        / "rec-stale-glossary"
++        / "rec-quarantine-glossary"
 +        / "derived"
 +        / "asr_glossary.json"
-+    )
-+    artifact.parent.mkdir(parents=True, exist_ok=True)
-+    artifact.write_text(
-+        json.dumps({"version": 1, "recording_id": "rec-stale-glossary", "terms": ["stale"]}),
-+        encoding="utf-8",
 +    )
 +
 +    result = await pipeline.run_pipeline(
@@ -344,12 +70,19 @@ index 65eeee1..38aedfb 100644
 +        cfg=cfg,
 +        llm=llm_client.LLMClient(),
 +        diariser=DummyDiariser(),
-+        recording_id="rec-stale-glossary",
++        recording_id="rec-quarantine-glossary",
 +        precheck=pipeline.PrecheckResult(
 +            duration_sec=5.0,
 +            speech_ratio=0.0,
 +            quarantine_reason="duration_lt_20s",
 +        ),
++        asr_glossary={
++            "version": 1,
++            "recording_id": "rec-quarantine-glossary",
++            "terms": ["Sander", "Sandia"],
++            "initial_prompt": "Glossary: Sander; Sandia",
++            "hotwords": "Sander, Sandia",
++        },
 +    )
 +
 +    assert result.summary == "Quarantined"
@@ -359,155 +92,3 @@ index 65eeee1..38aedfb 100644
  @pytest.mark.asyncio
  async def test_pipeline_no_speech_clears_stale_snippets(tmp_path: Path, mocker):
      mocker.patch("whisperx.transcribe", return_value=([], {"language": "en"}))
-diff --git a/tests/test_whisperx_api.py b/tests/test_whisperx_api.py
-index 6c8f986..420cf60 100644
---- a/tests/test_whisperx_api.py
-+++ b/tests/test_whisperx_api.py
-@@ -529,6 +529,17 @@ def test_glossary_transcribe_helper_edge_paths() -> None:
-     )
-     assert messages == []
- 
-+    pipeline._log_glossary_context_unsupported(  # noqa: SLF001
-+        callback=messages.append,
-+        glossary_kwargs={"initial_prompt": "Prompt", "hotwords": "Term"},
-+        filtered_kwargs={"initial_prompt": "Prompt"},
-+        state={},
-+    )
-+    assert messages == [
-+        "whisperx transcribe: glossary context unsupported for some kwargs; "
-+        "continuing with supported ASR hints only"
-+    ]
-+
- 
- def test_build_whisperx_transcriber_modern_path_forwards_glossary_kwargs(
-     tmp_path: Path,
-@@ -603,6 +614,61 @@ def test_build_whisperx_transcriber_modern_path_forwards_glossary_kwargs(
-     }
- 
- 
-+def test_build_whisperx_transcriber_modern_path_uses_safe_fallback_when_call_details_are_unavailable(
-+    tmp_path: Path,
-+    monkeypatch,
-+):
-+    fake_whisperx = ModuleType("whisperx")
-+    fake_asr = ModuleType("whisperx.asr")
-+
-+    class _FakeModel:
-+        vad_model = staticmethod(lambda _payload: [])
-+
-+        def transcribe(
-+            self,
-+            audio: str,
-+            *,
-+            batch_size: int,
-+            vad_filter: bool,
-+            language: str | None,
-+            initial_prompt: str,
-+        ) -> dict[str, object]:
-+            assert audio == "audio"
-+            assert batch_size == 16
-+            assert vad_filter is True
-+            assert language == "es"
-+            assert initial_prompt == "Glossary: Sander"
-+            return {"segments": [{"start": 0.0, "end": 1.0, "text": "hola"}], "language": "es"}
-+
-+    fake_whisperx.load_audio = lambda _path: "audio"
-+    fake_asr.load_model = lambda *_args, **_kwargs: _FakeModel()
-+    fake_whisperx.asr = fake_asr
-+    monkeypatch.setitem(sys.modules, "whisperx", fake_whisperx)
-+    monkeypatch.setitem(sys.modules, "whisperx.asr", fake_asr)
-+    monkeypatch.setattr(
-+        pipeline,
-+        "call_with_supported_kwargs",
-+        lambda fn, *args, **kwargs: fn(*args, **pipeline.filter_kwargs_for_callable(fn, kwargs)),
-+    )
-+
-+    transcribe_audio = pipeline._build_whisperx_transcriber(
-+        cfg=pipeline.Settings(
-+            asr_device="cpu",
-+            asr_enable_align=False,
-+            tmp_root=tmp_path,
-+            recordings_root=tmp_path / "recordings",
-+        ),
-+        asr_glossary={"initial_prompt": "Glossary: Sander"},
-+    )
-+
-+    audio_path = tmp_path / "a.wav"
-+    audio_path.write_bytes(b"")
-+    segments, info = transcribe_audio(audio_path, "es")
-+
-+    assert segments and segments[0]["text"] == "hola"
-+    assert info["language"] == "es"
-+
-+
- def test_build_whisperx_transcriber_legacy_path_logs_glossary_degrade_when_unsupported(
-     tmp_path: Path,
-     monkeypatch,
-@@ -639,3 +705,67 @@ def test_build_whisperx_transcriber_legacy_path_logs_glossary_degrade_when_unsup
-     assert segments and segments[0]["text"] == "hello"
-     assert info["language"] == "en"
-     assert any("glossary context unsupported" in line for line in step_log)
-+
-+
-+def test_build_whisperx_transcriber_legacy_path_logs_partial_glossary_degrade_after_runtime_fallback(
-+    tmp_path: Path,
-+    monkeypatch,
-+):
-+    fake_whisperx = ModuleType("whisperx")
-+    calls: list[dict[str, object]] = []
-+
-+    def _transcribe(audio_path: str, **kwargs: object) -> tuple[list[dict[str, object]], dict[str, object]]:
-+        calls.append(dict(kwargs))
-+        assert audio_path.endswith("a.wav")
-+        if "hotwords" in kwargs:
-+            raise TypeError("FasterWhisperPipeline.transcribe() got an unexpected keyword argument 'hotwords'")
-+        assert kwargs == {
-+            "vad_filter": True,
-+            "language": "auto",
-+            "word_timestamps": True,
-+            "initial_prompt": "Glossary: Sander; Sandia",
-+        }
-+        return ([{"start": 0.0, "end": 1.0, "text": "hello"}], {"language": "en"})
-+
-+    fake_whisperx.transcribe = _transcribe
-+    monkeypatch.setitem(sys.modules, "whisperx", fake_whisperx)
-+
-+    step_log: list[str] = []
-+    transcribe_audio = pipeline._build_whisperx_transcriber(
-+        cfg=pipeline.Settings(
-+            asr_device="cpu",
-+            asr_enable_align=False,
-+            tmp_root=tmp_path,
-+            recordings_root=tmp_path / "recordings",
-+        ),
-+        step_log_callback=step_log.append,
-+        asr_glossary={
-+            "initial_prompt": "Glossary: Sander; Sandia",
-+            "hotwords": "Sander, Sandia",
-+        },
-+    )
-+
-+    audio_path = tmp_path / "a.wav"
-+    audio_path.write_bytes(b"")
-+    segments, info = transcribe_audio(audio_path, None)
-+
-+    assert segments and segments[0]["text"] == "hello"
-+    assert info["language"] == "en"
-+    assert calls == [
-+        {
-+            "vad_filter": True,
-+            "language": "auto",
-+            "word_timestamps": True,
-+            "initial_prompt": "Glossary: Sander; Sandia",
-+            "hotwords": "Sander, Sandia",
-+        },
-+        {
-+            "vad_filter": True,
-+            "language": "auto",
-+            "word_timestamps": True,
-+            "initial_prompt": "Glossary: Sander; Sandia",
-+        },
-+    ]
-+    assert any(
-+        "glossary context unsupported for some kwargs" in line for line in step_log
-+    )

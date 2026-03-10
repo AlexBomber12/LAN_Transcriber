@@ -1202,11 +1202,6 @@ async def run_pipeline(
     summary_lang = resolve_target_summary_language(target_summary_language, dominant_language=override_lang or "unknown", detected_language=None)
     cal_title = str(calendar_title or "").strip() or None
     cal_attendees = [str(item).strip() for item in (calendar_attendees or []) if str(item).strip()]
-    _write_asr_glossary_artifact(
-        derived_dir=artifacts.transcript_json_path.parent,
-        recording_id=artifacts.recording_id,
-        asr_glossary=asr_glossary,
-    )
 
     atomic_write_json(
         artifacts.metrics_json_path,
@@ -1214,6 +1209,11 @@ async def run_pipeline(
     )
 
     if precheck_result.quarantine_reason:
+        _write_asr_glossary_artifact(
+            derived_dir=artifacts.transcript_json_path.parent,
+            recording_id=artifacts.recording_id,
+            asr_glossary=None,
+        )
         await _emit_progress(progress_callback, stage="metrics", progress=0.98)
         _clear_dir(artifacts.snippets_dir)
         atomic_write_text(artifacts.transcript_txt_path, "")
@@ -1255,6 +1255,12 @@ async def run_pipeline(
         atomic_write_json(artifacts.metrics_json_path, {"status": "quarantined", "version": 1, "precheck": precheck_result.__dict__})
         p95_latency_seconds.observe(time.perf_counter() - start)
         return TranscriptResult(summary="Quarantined", body="", friendly=0, speakers=[], summary_path=artifacts.summary_json_path, body_path=artifacts.transcript_txt_path, unknown_chunks=[], segments=[])
+
+    _write_asr_glossary_artifact(
+        derived_dir=artifacts.transcript_json_path.parent,
+        recording_id=artifacts.recording_id,
+        asr_glossary=asr_glossary,
+    )
 
     try:
         await _emit_progress(progress_callback, stage="stt", progress=0.10)
