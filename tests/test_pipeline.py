@@ -1262,6 +1262,91 @@ async def test_pipeline_multilingual_asr_forwards_glossary_context_and_writes_ar
 
 @pytest.mark.asyncio
 @respx.mock
+async def test_pipeline_omits_glossary_artifact_when_runtime_drops_all_glossary_hints(
+    tmp_path: Path,
+    mocker,
+):
+    def _transcribe(audio_path: str, **kwargs):
+        assert audio_path.endswith(".wav")
+        if "initial_prompt" in kwargs:
+            raise TypeError("FasterWhisperPipeline.transcribe() got an unexpected keyword argument 'initial_prompt'")
+        if "hotwords" in kwargs:
+            raise TypeError("FasterWhisperPipeline.transcribe() got an unexpected keyword argument 'hotwords'")
+        if "word_timestamps" in kwargs:
+            raise TypeError("unexpected keyword argument 'word_timestamps'")
+        return (
+            [{"start": 0.0, "end": 1.0, "text": "hello team"}],
+            {"language": "en", "language_probability": 0.98},
+        )
+
+    mocker.patch("whisperx.transcribe", side_effect=_transcribe)
+    mocker.patch(
+        "transformers.pipeline",
+        lambda *a, **k: lambda text: [{"label": "positive", "score": 0.6}],
+    )
+    respx.post("http://127.0.0.1:8000/v1/chat/completions").mock(
+        return_value=httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": "- summary"}}]},
+        ),
+    )
+
+    cfg = pipeline.Settings(
+        speaker_db=tmp_path / "db.yaml",
+        tmp_root=tmp_path,
+        recordings_root=tmp_path / "recordings",
+        asr_multilingual_mode="force_single_language",
+    )
+    audio = wav_audio(
+        tmp_path,
+        name="runtime-drop-glossary.wav",
+        duration_sec=8.0,
+        speech=True,
+    )
+    step_log: list[str] = []
+    glossary_payload = {
+        "version": 1,
+        "recording_id": "rec-runtime-drop-glossary",
+        "entries": [
+            {
+                "canonical_text": "Sander",
+                "aliases": ["Sandia"],
+                "kind": "person",
+                "sources": ["correction"],
+                "terms": ["Sander", "Sandia"],
+                "term_count": 2,
+            }
+        ],
+        "terms": ["Sander", "Sandia"],
+        "entry_count": 1,
+        "term_count": 2,
+        "truncated": False,
+        "initial_prompt": "Glossary: Sander; Sandia",
+        "hotwords": "Sander, Sandia",
+    }
+    await pipeline.run_pipeline(
+        audio_path=audio,
+        cfg=cfg,
+        llm=llm_client.LLMClient(),
+        diariser=TwoSpeakerDiariser(),
+        recording_id="rec-runtime-drop-glossary",
+        precheck=precheck_ok(),
+        asr_glossary=glossary_payload,
+        step_log_callback=step_log.append,
+    )
+
+    assert any("glossary context unsupported" in line for line in step_log)
+    artifact = (
+        cfg.recordings_root
+        / "rec-runtime-drop-glossary"
+        / "derived"
+        / "asr_glossary.json"
+    )
+    assert not artifact.exists()
+
+
+@pytest.mark.asyncio
+@respx.mock
 async def test_pipeline_multilingual_model_path_reuses_single_whisperx_model_load(
     tmp_path: Path,
     mocker,

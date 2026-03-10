@@ -540,6 +540,98 @@ def test_glossary_transcribe_helper_edge_paths() -> None:
         "continuing with supported ASR hints only"
     ]
 
+    runtime_state = pipeline._new_glossary_runtime_state(  # noqa: SLF001
+        {"initial_prompt": "Prompt", "hotwords": "Term"}
+    )
+    pipeline._update_glossary_runtime_state(  # noqa: SLF001
+        state=runtime_state,
+        glossary_kwargs={"initial_prompt": "Prompt", "hotwords": "Term"},
+        final_kwargs={"initial_prompt": "Prompt"},
+        dropped_kwargs=("hotwords",),
+    )
+    pipeline._update_glossary_runtime_state(  # noqa: SLF001
+        state={"checked": False, "applied_keys": [], "dropped_keys": ()},
+        glossary_kwargs={"initial_prompt": "Prompt"},
+        final_kwargs={},
+        dropped_kwargs=("initial_prompt",),
+    )
+
+    def transcribe_audio(*_args, **_kwargs) -> None:
+        return None
+
+    transcribe_audio.glossary_runtime_state = runtime_state  # type: ignore[attr-defined]
+    assert pipeline._glossary_runtime_metadata(transcribe_audio) == {  # noqa: SLF001
+        "checked": True,
+        "requested_keys": ["hotwords", "initial_prompt"],
+        "applied_keys": ["initial_prompt"],
+        "dropped_keys": ["hotwords"],
+    }
+    assert pipeline._glossary_runtime_metadata(object()) == {}  # noqa: SLF001
+    transcribe_audio.glossary_runtime_state = {  # type: ignore[attr-defined]
+        "requested_keys": (),
+        "applied_keys": set(),
+        "dropped_keys": set(),
+        "checked": False,
+    }
+    assert pipeline._glossary_runtime_metadata(transcribe_audio) == {}  # noqa: SLF001
+
+    glossary_payload = {
+        "version": 1,
+        "recording_id": "rec-1",
+        "terms": ["Sander", "Sandia"],
+        "entry_count": 1,
+        "term_count": 2,
+        "initial_prompt": "Glossary: Sander; Sandia",
+        "hotwords": "Sander, Sandia",
+    }
+    assert pipeline._effective_asr_glossary_artifact(  # noqa: SLF001
+        asr_glossary=glossary_payload,
+        runtime_metadata=None,
+    ) == glossary_payload
+    assert pipeline._effective_asr_glossary_artifact(  # noqa: SLF001
+        asr_glossary=glossary_payload,
+        runtime_metadata={"requested_keys": ("initial_prompt",), "applied_keys": []},
+    ) == glossary_payload
+    assert pipeline._effective_asr_glossary_artifact(  # noqa: SLF001
+        asr_glossary=glossary_payload,
+        runtime_metadata={
+            "requested_keys": ["initial_prompt", "hotwords"],
+            "applied_keys": ["initial_prompt"],
+            "dropped_keys": ["hotwords"],
+        },
+    ) == {
+        "version": 1,
+        "recording_id": "rec-1",
+        "terms": ["Sander", "Sandia"],
+        "entry_count": 1,
+        "term_count": 2,
+        "initial_prompt": "Glossary: Sander; Sandia",
+        "applied_kwargs": ["initial_prompt"],
+        "dropped_kwargs": ["hotwords"],
+    }
+    assert pipeline._effective_asr_glossary_artifact(  # noqa: SLF001
+        asr_glossary=glossary_payload,
+        runtime_metadata={
+            "requested_keys": ["initial_prompt", "hotwords"],
+            "applied_keys": [],
+            "dropped_keys": ["initial_prompt", "hotwords"],
+        },
+    ) is None
+    assert pipeline._effective_asr_glossary_artifact(  # noqa: SLF001
+        asr_glossary=glossary_payload,
+        runtime_metadata={
+            "requested_keys": ["other"],
+            "applied_keys": [],
+            "dropped_keys": [],
+        },
+    ) == {
+        "version": 1,
+        "recording_id": "rec-1",
+        "terms": ["Sander", "Sandia"],
+        "entry_count": 1,
+        "term_count": 2,
+    }
+
 
 def test_build_whisperx_transcriber_modern_path_forwards_glossary_kwargs(
     tmp_path: Path,
