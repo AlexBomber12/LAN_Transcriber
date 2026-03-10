@@ -57,6 +57,15 @@ Rebuild images only when dependencies change (for example `requirements-cu121.tx
 docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi
 ```
 
+### GPU scheduling
+
+- `LAN_ASR_DEVICE` controls WhisperX/faster-whisper placement: `auto`, `cpu`, `cuda`, `cuda:0`, `cuda:1`.
+- `LAN_DIARIZATION_DEVICE` controls pyannote placement with the same values.
+- `LAN_GPU_SCHEDULER_MODE` controls overlap policy: `auto`, `sequential`, `parallel`.
+- Recommended single-GPU setup: leave all three at their defaults (`LAN_ASR_DEVICE=auto`, `LAN_DIARIZATION_DEVICE=auto`, `LAN_GPU_SCHEDULER_MODE=auto`).
+- In the default single-GPU path, ASR stays warm in-process across jobs when the load config is unchanged, while diarization loads lazily for its stage and is not preloaded during precheck.
+- When the worker hits GPU memory exhaustion, the recording now lands in `NeedsReview` with review reason `gpu_oom`, and the worker/step logs include the effective ASR device, diarization device, scheduler mode, and any automatic fallback that occurred.
+
 ## CUDA runtime troubleshooting
 
 If the worker crashes with `Could not load library libcudnn_ops_infer.so.8`, the runtime has a cuDNN 8/9 mismatch.

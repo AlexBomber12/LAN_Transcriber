@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 import sqlite3
 import sys
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 import wave
 
 import pytest
@@ -529,6 +529,7 @@ def test_pyannote_diariser_passes_optional_speaker_hint_kwargs():
         "dialog_retry_used": False,
         "speaker_count_before_retry": 0,
         "speaker_count_after_retry": 0,
+        "effective_device": None,
     }
 
 
@@ -664,6 +665,7 @@ def test_pyannote_diariser_retry_dialog_forces_two_speakers_once():
         "dialog_retry_used": True,
         "speaker_count_before_retry": 1,
         "speaker_count_after_retry": 2,
+        "effective_device": None,
     }
 
 
@@ -703,11 +705,28 @@ def test_write_diarization_status_artifact_writes_payload_and_ignores_oserror(
 
 
 def test_pyannote_diariser_rejects_non_callable_model():
-    with pytest.raises(TypeError, match="pipeline_model must be a callable"):
+    with pytest.raises(TypeError, match="pipeline_loader is required|pipeline_model must be a callable"):
         worker_tasks._PyannoteDiariser(None)
 
     diariser = worker_tasks._PyannoteDiariser(lambda *_a, **_k: {"ok": True}, initial_profile="weird")
     assert diariser.initial_profile == "meeting"
+
+
+def test_pyannote_diariser_rejects_invalid_lazy_pipeline_states():
+    with pytest.raises(TypeError, match="pipeline_model must be a callable"):
+        worker_tasks._PyannoteDiariser(123)
+
+    diariser = worker_tasks._PyannoteDiariser(lambda *_a, **_k: {"ok": True})
+    diariser._pipeline_model = None
+    diariser._pipeline_loader = None
+    with pytest.raises(TypeError, match="pipeline_loader must be provided"):
+        diariser._ensure_pipeline_model()
+
+    lazy_diariser = worker_tasks._PyannoteDiariser(
+        pipeline_loader=lambda: object(),
+    )
+    with pytest.raises(TypeError, match="pipeline_model must be a callable"):
+        lazy_diariser._ensure_pipeline_model()
 
 
 def test_build_diariser_uses_fallback_when_pyannote_is_unavailable(
@@ -745,6 +764,12 @@ def test_build_diariser_applies_profile_defaults_from_settings(
     model = _Model()
     cfg = _db_settings(tmp_path)
     cfg.diarization_profile = "dialog"
+    pyannote_audio = ModuleType("pyannote.audio")
+    pyannote_audio.Pipeline = object()  # type: ignore[attr-defined]
+    pyannote_pkg = ModuleType("pyannote")
+    pyannote_pkg.audio = pyannote_audio  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "pyannote", pyannote_pkg)
+    monkeypatch.setitem(sys.modules, "pyannote.audio", pyannote_audio)
 
     monkeypatch.setattr(worker_tasks, "load_pyannote_pipeline", lambda **_kwargs: model)
 
@@ -756,6 +781,98 @@ def test_build_diariser_applies_profile_defaults_from_settings(
             {"min_speakers": 2, "max_speakers": 2},
         )
     ]
+
+
+def test_build_diariser_loads_pipeline_lazily_and_forwards_device_policy(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    class _Model:
+        def __init__(self):
+            self.calls: list[tuple[object, dict[str, object]]] = []
+            self._lan_effective_device = "cpu"
+
+        def __call__(self, payload: object, **kwargs: object):
+            self.calls.append((payload, dict(kwargs)))
+            return {"ok": True}
+
+    pyannote_audio = ModuleType("pyannote.audio")
+    pyannote_audio.Pipeline = object()  # type: ignore[attr-defined]
+    pyannote_pkg = ModuleType("pyannote")
+    pyannote_pkg.audio = pyannote_audio  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "pyannote", pyannote_pkg)
+    monkeypatch.setitem(sys.modules, "pyannote.audio", pyannote_audio)
+
+    model = _Model()
+    load_calls: list[dict[str, object]] = []
+
+    def _load_pyannote_pipeline(**kwargs):
+        load_calls.append(dict(kwargs))
+        return model
+
+    monkeypatch.setattr(worker_tasks, "load_pyannote_pipeline", _load_pyannote_pipeline)
+
+    diariser = worker_tasks._build_diariser(
+        duration_sec=30.0,
+        model_id="repo/test",
+        settings=SimpleNamespace(
+            diarization_profile="auto",
+            diarization_min_speakers=None,
+            diarization_max_speakers=None,
+            diarization_dialog_retry_min_duration_seconds=1.0,
+            diarization_dialog_retry_min_turns=2,
+            diarization_device="cpu",
+            gpu_scheduler_mode="auto",
+        ),
+    )
+
+    assert load_calls == []
+    result = asyncio.run(diariser(Path("/tmp/lazy.wav")))
+    assert result == {"ok": True}
+    assert load_calls == [
+        {
+            "model_id": "repo/test",
+            "device": "cpu",
+            "scheduler_mode": "auto",
+        }
+    ]
+    assert diariser.last_run_metadata["effective_device"] == "cpu"
+
+
+def test_log_gpu_execution_policy_writes_step_log(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    log_path = tmp_path / "step-precheck.log"
+    pipeline_settings = worker_tasks.PipelineSettings(
+        recordings_root=tmp_path / "recordings",
+        tmp_root=tmp_path / "tmp",
+        speaker_db=tmp_path / "aliases.yaml",
+        llm_model="model",
+        asr_device="cpu",
+        diarization_device="cuda:1",
+        gpu_scheduler_mode="parallel",
+    )
+    monkeypatch.setattr(
+        worker_tasks,
+        "collect_cuda_runtime_facts",
+        lambda: SimpleNamespace(
+            is_available=True,
+            device_count=2,
+            visible_devices="0,1",
+            torch_cuda_version="12.4",
+        ),
+    )
+
+    worker_tasks._log_gpu_execution_policy(  # noqa: SLF001
+        pipeline_settings=pipeline_settings,
+        diariser=SimpleNamespace(mode="pyannote"),
+        log_path=log_path,
+    )
+
+    log_text = log_path.read_text(encoding="utf-8")
+    assert "gpu policy" in log_text
+    assert "asr_device=cpu" in log_text
+    assert "diarization_device=cuda:1" in log_text
 
 
 def test_run_precheck_pipeline_records_step_logs_and_explicit_summary_target(
@@ -1165,6 +1282,14 @@ def test_review_reason_helpers_cover_exception_and_routing_paths(tmp_path: Path)
         )
     )
     assert empty[0] == "llm_empty_content"
+
+    gpu_oom = worker_tasks._review_reason_from_exception(  # noqa: SLF001
+        RuntimeError("CUDA out of memory while loading faster-whisper")
+    )
+    assert gpu_oom == (
+        "gpu_oom",
+        "The worker ran out of GPU memory while loading or running a heavy model; manual review required.",
+    )
 
     generic = worker_tasks._review_reason_from_exception(RuntimeError("boom"))  # noqa: SLF001
     assert generic[0] == "job_retry_limit_reached"

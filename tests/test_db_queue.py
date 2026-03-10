@@ -1267,6 +1267,59 @@ def test_worker_retryable_failure_retries_before_marking_failed(
     assert recording["status"] == RECORDING_STATUS_NEEDS_REVIEW
 
 
+def test_worker_gpu_oom_is_non_retryable_and_sets_specific_review_reason(
+    tmp_path: Path,
+    monkeypatch,
+):
+    cfg = _test_settings(tmp_path)
+    monkeypatch.setenv("LAN_DATA_ROOT", str(cfg.data_root))
+    monkeypatch.setenv("LAN_RECORDINGS_ROOT", str(cfg.recordings_root))
+    monkeypatch.setenv("LAN_DB_PATH", str(cfg.db_path))
+    monkeypatch.setenv("LAN_PROM_SNAPSHOT_PATH", str(cfg.metrics_snapshot_path))
+
+    init_db(cfg)
+    create_recording(
+        "rec-worker-gpu-oom-1",
+        source="test",
+        source_filename="gpu-oom.wav",
+        settings=cfg,
+    )
+    create_job(
+        "job-worker-gpu-oom-1",
+        recording_id="rec-worker-gpu-oom-1",
+        job_type=JOB_TYPE_PRECHECK,
+        settings=cfg,
+    )
+
+    raw_audio = cfg.recordings_root / "rec-worker-gpu-oom-1" / "raw" / "audio.wav"
+    raw_audio.parent.mkdir(parents=True, exist_ok=True)
+    _write_pcm_wav(raw_audio)
+    monkeypatch.setattr("lan_app.worker_tasks._resolve_raw_audio_path", lambda *_a, **_k: raw_audio)
+    monkeypatch.setattr(
+        "lan_app.worker_tasks.run_precheck",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            RuntimeError("CUDA out of memory while loading faster-whisper")
+        ),
+    )
+
+    sleeps: list[int] = []
+    monkeypatch.setattr("lan_app.worker_tasks.time.sleep", lambda seconds: sleeps.append(seconds))
+
+    with pytest.raises(RuntimeError, match="CUDA out of memory"):
+        process_job("job-worker-gpu-oom-1", "rec-worker-gpu-oom-1", JOB_TYPE_PRECHECK)
+
+    job = get_job("job-worker-gpu-oom-1", settings=cfg)
+    recording = get_recording("rec-worker-gpu-oom-1", settings=cfg)
+    assert sleeps == []
+    assert job is not None
+    assert recording is not None
+    assert job["attempt"] == 1
+    assert job["status"] == JOB_STATUS_FAILED
+    assert recording["status"] == RECORDING_STATUS_NEEDS_REVIEW
+    assert recording["review_reason_code"] == "gpu_oom"
+    assert "ran out of GPU memory" in str(recording["review_reason_text"])
+
+
 def test_worker_retry_does_not_revive_recovered_started_job(
     tmp_path: Path,
     monkeypatch,
@@ -2122,20 +2175,21 @@ def test_build_diariser_passes_env_speaker_hints(monkeypatch):
 def test_build_diariser_surfaces_pyannote_model_load_errors(monkeypatch):
     from lan_app import worker_tasks
 
-    class _BrokenPipeline:
-        @staticmethod
-        def from_pretrained(_name: str):
-            raise RuntimeError("auth failed")
-
     pyannote_audio = ModuleType("pyannote.audio")
-    pyannote_audio.Pipeline = _BrokenPipeline  # type: ignore[attr-defined]
+    pyannote_audio.Pipeline = object()  # type: ignore[attr-defined]
     pyannote_pkg = ModuleType("pyannote")
     pyannote_pkg.audio = pyannote_audio  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "pyannote", pyannote_pkg)
     monkeypatch.setitem(sys.modules, "pyannote.audio", pyannote_audio)
+    monkeypatch.setattr(
+        worker_tasks,
+        "load_pyannote_pipeline",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("auth failed")),
+    )
 
+    diariser = worker_tasks._build_diariser(duration_sec=30.0)
     with pytest.raises(RuntimeError, match="auth failed"):
-        worker_tasks._build_diariser(duration_sec=30.0)
+        asyncio.run(diariser(Path("/tmp/auth-failed.wav")))
 
 
 def test_build_diariser_surfaces_non_pyannote_import_errors(monkeypatch):

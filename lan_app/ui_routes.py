@@ -230,9 +230,10 @@ def _format_duration_seconds(value: object) -> str:
     duration = _safe_duration_seconds(value)
     if duration is None:
         return "—"
-    if duration.is_integer():
-        return f"{int(duration)}s"
-    return f"{duration:.2f}s"
+    total_seconds = int(duration)
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
 
 
 def _display_timezone() -> ZoneInfo | timezone:

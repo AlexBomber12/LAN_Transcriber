@@ -8,6 +8,7 @@ from .pipeline_steps.orchestrator import (
     build_structured_summary_prompts,
     build_summary_payload,
     build_summary_prompts,
+    clear_asr_model_cache,
     refresh_aliases,
     run_pipeline,
     run_precheck,
@@ -25,4 +26,5 @@ __all__ = [
     "build_summary_prompts",
     "build_structured_summary_prompts",
     "build_summary_payload",
+    "clear_asr_model_cache",
 ]

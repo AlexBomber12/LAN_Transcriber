@@ -797,6 +797,159 @@ class _FakeLLM:
         }
 
 
+@pytest.mark.asyncio
+async def test_run_pipeline_uses_sequential_scheduler_for_shared_gpu(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    step_log: list[str] = []
+
+    class _TrackingDiariser:
+        mode = "pyannote"
+        last_run_metadata: dict[str, Any] = {}
+
+        async def __call__(self, _audio_path: Path):
+            events.append("diar")
+            return _annotation_from_segments((0.0, 1.0, "S1"))
+
+    monkeypatch.setattr(
+        pipeline,
+        "_whisperx_asr",
+        lambda *_a, **_k: (
+            [{"start": 0.0, "end": 1.0, "text": "hello"}],
+            {"language": "en", "language_probability": 0.9},
+        ),
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "run_language_aware_asr",
+        lambda audio_path, *, override_lang, configured_mode, tmp_root, transcribe_fn, step_log_callback=None: (
+            events.append("asr") or transcribe_fn(audio_path, override_lang) + ({
+                "used_multilingual_path": False,
+                "selected_mode": "single_language",
+                "selection_reason": "test",
+                "chunks": [],
+            },)
+        ),
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "_resolve_scheduler_plan",
+        lambda _cfg, _diariser: SimpleNamespace(
+            asr_device="cuda",
+            diarization_device="cuda:0",
+            effective_mode="sequential",
+            requested_mode="auto",
+            reason="auto_shared_or_single_device",
+        ),
+    )
+    monkeypatch.setattr(pipeline, "_cleanup_cuda_memory", lambda device: events.append(f"cleanup:{device}"))
+    monkeypatch.setattr(pipeline, "_sentiment_score", lambda _text: 50)
+    monkeypatch.setattr(pipeline, "export_speaker_snippets", lambda _req: [])
+    monkeypatch.setattr(pipeline, "_save_aliases", lambda *_a, **_k: None)
+    monkeypatch.setattr(pipeline, "_load_aliases", lambda *_a, **_k: {})
+
+    await pipeline.run_pipeline(
+        audio_path=_audio_file(tmp_path, "sequential.mp3"),
+        cfg=_settings(
+            tmp_path,
+            llm_model="model",
+            asr_device="cuda",
+            diarization_device="cuda:0",
+            gpu_scheduler_mode="auto",
+        ),
+        llm=_FakeLLM(),
+        diariser=_TrackingDiariser(),
+        recording_id="rec-sequential-scheduler",
+        precheck=pipeline.PrecheckResult(duration_sec=30.0, speech_ratio=0.8, quarantine_reason=None),
+        step_log_callback=step_log.append,
+    )
+
+    assert events[:3] == ["asr", "cleanup:cuda", "diar"]
+    assert any("mode=sequential" in message for message in step_log)
+    assert any("cleared CUDA cache before diarization stage" in message for message in step_log)
+
+
+@pytest.mark.asyncio
+async def test_run_pipeline_uses_parallel_scheduler_only_for_safe_devices(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+
+    class _TrackingDiariser:
+        mode = "pyannote"
+        last_run_metadata: dict[str, Any] = {}
+
+        async def __call__(self, _audio_path: Path):
+            events.append("diar")
+            return _annotation_from_segments((0.0, 1.0, "S1"))
+
+    async def _fake_gather(*aws):
+        events.append("gather")
+        results = []
+        for awaitable in aws:
+            results.append(await awaitable)
+        return tuple(results)
+
+    monkeypatch.setattr(
+        pipeline,
+        "_whisperx_asr",
+        lambda *_a, **_k: (
+            [{"start": 0.0, "end": 1.0, "text": "hello"}],
+            {"language": "en", "language_probability": 0.9},
+        ),
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "run_language_aware_asr",
+        lambda audio_path, *, override_lang, configured_mode, tmp_root, transcribe_fn, step_log_callback=None: (
+            events.append("asr") or transcribe_fn(audio_path, override_lang) + ({
+                "used_multilingual_path": False,
+                "selected_mode": "single_language",
+                "selection_reason": "test",
+                "chunks": [],
+            },)
+        ),
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "_resolve_scheduler_plan",
+        lambda _cfg, _diariser: SimpleNamespace(
+            asr_device="cpu",
+            diarization_device="cuda:1",
+            effective_mode="parallel",
+            requested_mode="auto",
+            reason="auto_parallel_safe",
+        ),
+    )
+    monkeypatch.setattr(pipeline.asyncio, "gather", _fake_gather)
+    monkeypatch.setattr(pipeline, "_sentiment_score", lambda _text: 50)
+    monkeypatch.setattr(pipeline, "export_speaker_snippets", lambda _req: [])
+    monkeypatch.setattr(pipeline, "_save_aliases", lambda *_a, **_k: None)
+    monkeypatch.setattr(pipeline, "_load_aliases", lambda *_a, **_k: {})
+
+    await pipeline.run_pipeline(
+        audio_path=_audio_file(tmp_path, "parallel.mp3"),
+        cfg=_settings(
+            tmp_path,
+            llm_model="model",
+            asr_device="cpu",
+            diarization_device="cuda:1",
+            gpu_scheduler_mode="auto",
+        ),
+        llm=_FakeLLM(),
+        diariser=_TrackingDiariser(),
+        recording_id="rec-parallel-scheduler",
+        precheck=pipeline.PrecheckResult(duration_sec=30.0, speech_ratio=0.8, quarantine_reason=None),
+    )
+
+    assert "gather" in events
+    assert "asr" in events
+    assert "diar" in events
+
+
 def test_timeout_seconds_and_retryable_status_paths() -> None:
     assert llm_client._timeout_seconds("bad", default=7.5) == 7.5
     assert llm_client._timeout_seconds("-1", default=7.5) == 7.5
@@ -1520,19 +1673,128 @@ def test_orchestrator_helpers_cover_remaining_branches(tmp_path: Path, monkeypat
     monkeypatch.setattr(builtins, "__import__", original_import)
 
     fake_torch = ModuleType("torch")
-    fake_torch.cuda = SimpleNamespace(is_available=lambda: True, device_count=lambda: 1)
+    fake_torch.cuda = SimpleNamespace(is_available=lambda: True, device_count=lambda: 2)
     fake_torch.version = SimpleNamespace(cuda="12.4")
     monkeypatch.setitem(sys.modules, "torch", fake_torch)
     assert pipeline._select_asr_device(cfg) == "cuda"
+    assert pipeline._select_diarization_device(_settings(tmp_path, diarization_device="cuda:1")) == "cuda:1"
+
+    parallel_plan = pipeline._resolve_scheduler_plan(
+        _settings(
+            tmp_path,
+            asr_device="cuda:0",
+            diarization_device="cuda:1",
+            gpu_scheduler_mode="auto",
+        ),
+        SimpleNamespace(mode="pyannote"),
+    )
+    assert parallel_plan.effective_mode == "parallel"
+
+    monkeypatch.setitem(
+        sys.modules,
+        "torch",
+        ModuleType("torch"),
+    )
+    sys.modules["torch"].cuda = SimpleNamespace(is_available=lambda: True, device_count=lambda: 1)  # type: ignore[attr-defined]
+    sys.modules["torch"].version = SimpleNamespace(cuda="12.4")  # type: ignore[attr-defined]
+    forced_parallel_same_gpu = pipeline._resolve_scheduler_plan(
+        _settings(
+            tmp_path,
+            asr_device="cuda",
+            diarization_device="cuda:0",
+            gpu_scheduler_mode="parallel",
+        ),
+        SimpleNamespace(mode="pyannote"),
+    )
+    assert forced_parallel_same_gpu.effective_mode == "sequential"
 
     configured = _settings(tmp_path, asr_compute_type="float32")
     assert pipeline._select_compute_type(configured, "cpu") == "float32"
+    assert pipeline._select_compute_type(_settings(tmp_path), "cuda:0") == "float16"
 
     target_dir = tmp_path / "clear"
     target_dir.mkdir(parents=True, exist_ok=True)
     (target_dir / "file.txt").write_text("x", encoding="utf-8")
     pipeline._clear_dir(target_dir)
     assert list(target_dir.iterdir()) == []
+
+    pipeline._ASR_MODEL_CACHE[("m", "cpu", "int8", "silero")] = object()  # noqa: SLF001
+    cleaned: list[str] = []
+    real_cleanup_cuda_memory = pipeline._cleanup_cuda_memory  # noqa: SLF001
+    monkeypatch.setattr(pipeline, "_cleanup_cuda_memory", lambda device: cleaned.append(device))
+    pipeline.clear_asr_model_cache()
+    assert pipeline._ASR_MODEL_CACHE == {}  # noqa: SLF001
+    assert cleaned == ["cuda"]
+    monkeypatch.setattr(pipeline, "_cleanup_cuda_memory", real_cleanup_cuda_memory)
+
+    logged: list[tuple[str, str, int, int]] = []
+    monkeypatch.setattr(pipeline, "cuda_memory_info", lambda _device: (11, 22))
+    monkeypatch.setattr(
+        pipeline,
+        "_logger",
+        SimpleNamespace(
+            info=lambda template, label, device, free_bytes, total_bytes: logged.append(
+                (template, label, device, free_bytes, total_bytes)
+            )
+        ),
+    )
+    pipeline._log_cuda_memory_snapshot(label="ASR load", device="cuda:0")  # noqa: SLF001
+    assert logged == [
+        ("%s VRAM snapshot: device=%s free_bytes=%s total_bytes=%s", "ASR load", "cuda:0", 11, 22)
+    ]
+
+    empty_cache_calls: list[str] = []
+    fake_torch.cuda.empty_cache = lambda: empty_cache_calls.append("empty")  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    original_import = builtins.__import__
+
+    def _import_fake_torch(name: str, globals=None, locals=None, fromlist=(), level: int = 0):
+        if name == "torch":
+            return fake_torch
+        return original_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", _import_fake_torch)
+    pipeline._cleanup_cuda_memory("cpu")  # noqa: SLF001
+    pipeline._cleanup_cuda_memory("cuda")  # noqa: SLF001
+    assert empty_cache_calls == ["empty"]
+
+
+def test_cleanup_cuda_memory_ignores_missing_cuda_and_empty_cache_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_import = builtins.__import__
+
+    torch_without_cuda = ModuleType("torch")
+    monkeypatch.setitem(sys.modules, "torch", torch_without_cuda)
+
+    def _import_torch_without_cuda(name: str, globals=None, locals=None, fromlist=(), level: int = 0):
+        if name == "torch":
+            return torch_without_cuda
+        return original_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", _import_torch_without_cuda)
+    pipeline._cleanup_cuda_memory("cuda")  # noqa: SLF001
+
+    def _raise_empty_cache() -> None:
+        raise RuntimeError("cache flush failed")
+
+    torch_with_bad_empty_cache = ModuleType("torch")
+    torch_with_bad_empty_cache.cuda = SimpleNamespace(empty_cache=_raise_empty_cache)
+    monkeypatch.setitem(sys.modules, "torch", torch_with_bad_empty_cache)
+
+    def _import_torch_with_bad_empty_cache(
+        name: str,
+        globals=None,
+        locals=None,
+        fromlist=(),
+        level: int = 0,
+    ):
+        if name == "torch":
+            return torch_with_bad_empty_cache
+        return original_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", _import_torch_with_bad_empty_cache)
+    pipeline._cleanup_cuda_memory("cuda")  # noqa: SLF001
 
 
 def test_sentiment_score_uses_truncation_and_explicit_model(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1821,6 +2083,143 @@ async def test_run_pipeline_restores_previous_whisperx_transcriber_session(
     assert result.summary.strip() == "- ok"
     assert getattr(pipeline._whisperx_transcriber_state, "transcribe_audio") is previous_transcriber
     delattr(pipeline._whisperx_transcriber_state, "transcribe_audio")
+
+
+@pytest.mark.asyncio
+async def test_run_pipeline_preserves_previous_session_flag(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    previous_transcriber = object()
+
+    def _session_transcriber(
+        _audio_path: Path,
+        _override_lang: str | None,
+    ) -> tuple[list[dict[str, object]], dict[str, object]]:
+        return (
+            [{"start": 0.0, "end": 1.0, "text": "hello team and thanks"}],
+            {"language": "en", "language_probability": 0.95},
+        )
+
+    def _fake_run_language_aware_asr(
+        audio_path: Path,
+        *,
+        override_lang: str | None,
+        configured_mode: str,
+        tmp_root: Path,
+        transcribe_fn,
+        step_log_callback=None,
+    ) -> tuple[list[dict[str, object]], dict[str, object], dict[str, object]]:
+        del configured_mode, tmp_root, step_log_callback
+        delattr(pipeline._whisperx_transcriber_state, "use_session_transcriber")
+        segments, info = transcribe_fn(audio_path, override_lang)
+        return (
+            segments,
+            info,
+            {
+                "used_multilingual_path": False,
+                "selected_mode": "single_language",
+                "selection_reason": "test",
+                "chunks": [],
+            },
+        )
+
+    async def _fake_to_thread(fn, /, *args, **kwargs):
+        pipeline._whisperx_transcriber_state.transcribe_audio = previous_transcriber
+        pipeline._whisperx_transcriber_state.use_session_transcriber = True
+        return fn(*args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "to_thread", _fake_to_thread)
+    monkeypatch.setattr(
+        pipeline,
+        "_build_whisperx_transcriber",
+        lambda **_kwargs: _session_transcriber,
+    )
+    monkeypatch.setattr(pipeline, "run_language_aware_asr", _fake_run_language_aware_asr)
+    monkeypatch.setattr(pipeline, "_sentiment_score", lambda _text: 50)
+    monkeypatch.setattr(pipeline, "export_speaker_snippets", lambda _req: [])
+    monkeypatch.setattr(pipeline, "_save_aliases", lambda *_a, **_k: None)
+    monkeypatch.setattr(pipeline, "_load_aliases", lambda *_a, **_k: {})
+
+    cfg = _settings(tmp_path)
+    result = await pipeline.run_pipeline(
+        audio_path=_audio_file(tmp_path, "pipeline-session-flag.mp3"),
+        cfg=cfg,
+        llm=_FakeLLM(),
+        diariser=_NoTracksDiariser(),
+        recording_id="rec-transcriber-session-flag",
+        precheck=pipeline.PrecheckResult(duration_sec=30.0, speech_ratio=0.8, quarantine_reason=None),
+    )
+
+    assert result.summary.strip() == "- ok"
+    assert getattr(pipeline._whisperx_transcriber_state, "transcribe_audio") is previous_transcriber
+    assert getattr(pipeline._whisperx_transcriber_state, "use_session_transcriber") is True
+    delattr(pipeline._whisperx_transcriber_state, "transcribe_audio")
+    delattr(pipeline._whisperx_transcriber_state, "use_session_transcriber")
+
+
+@pytest.mark.asyncio
+async def test_run_pipeline_tolerates_session_transcriber_cleanup_before_restore(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _session_transcriber(
+        _audio_path: Path,
+        _override_lang: str | None,
+    ) -> tuple[list[dict[str, object]], dict[str, object]]:
+        return (
+            [{"start": 0.0, "end": 1.0, "text": "hello team and thanks"}],
+            {"language": "en", "language_probability": 0.95},
+        )
+
+    def _fake_run_language_aware_asr(
+        audio_path: Path,
+        *,
+        override_lang: str | None,
+        configured_mode: str,
+        tmp_root: Path,
+        transcribe_fn,
+        step_log_callback=None,
+    ) -> tuple[list[dict[str, object]], dict[str, object], dict[str, object]]:
+        del configured_mode, tmp_root, step_log_callback
+        delattr(pipeline._whisperx_transcriber_state, "transcribe_audio")
+        delattr(pipeline._whisperx_transcriber_state, "use_session_transcriber")
+        segments, info = transcribe_fn(audio_path, override_lang)
+        return (
+            segments,
+            info,
+            {
+                "used_multilingual_path": False,
+                "selected_mode": "single_language",
+                "selection_reason": "test",
+                "chunks": [],
+            },
+        )
+
+    monkeypatch.setattr(
+        pipeline,
+        "_build_whisperx_transcriber",
+        lambda **_kwargs: _session_transcriber,
+    )
+    monkeypatch.setattr(pipeline, "run_language_aware_asr", _fake_run_language_aware_asr)
+    monkeypatch.setattr(pipeline, "_sentiment_score", lambda _text: 50)
+    monkeypatch.setattr(pipeline, "export_speaker_snippets", lambda _req: [])
+    monkeypatch.setattr(pipeline, "_save_aliases", lambda *_a, **_k: None)
+    monkeypatch.setattr(pipeline, "_load_aliases", lambda *_a, **_k: {})
+
+    cfg = _settings(tmp_path)
+    result = await pipeline.run_pipeline(
+        audio_path=_audio_file(tmp_path, "pipeline-session-cleanup.mp3"),
+        cfg=cfg,
+        llm=_FakeLLM(),
+        diariser=_NoTracksDiariser(),
+        recording_id="rec-transcriber-session-cleanup",
+        precheck=pipeline.PrecheckResult(duration_sec=30.0, speech_ratio=0.8, quarantine_reason=None),
+    )
+
+    assert result.summary.strip() == "- ok"
+    assert not hasattr(pipeline._whisperx_transcriber_state, "transcribe_audio")
+    assert not hasattr(pipeline._whisperx_transcriber_state, "use_session_transcriber")
 
 
 @pytest.mark.asyncio

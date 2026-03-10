@@ -5,6 +5,15 @@ import os
 import re
 from typing import Any
 
+from lan_transcriber.gpu_policy import (
+    collect_cuda_runtime_facts,
+    cuda_memory_info,
+    is_gpu_oom_error,
+    is_gpu_device,
+    normalize_device,
+    normalize_scheduler_mode,
+    resolve_effective_device,
+)
 from lan_transcriber.torch_safe_globals import (
     diarization_safe_globals_for_torch_load,
     import_trusted_diarization_symbol,
@@ -101,27 +110,81 @@ def _from_pretrained_with_safe_globals(
     raise RuntimeError("Unable to load diarization pipeline.")
 
 
-def _move_pipeline_to_best_device(model: Any) -> str:
+def _log_cuda_memory_snapshot(*, label: str, device: str) -> None:
+    memory_info = cuda_memory_info(device)
+    if memory_info is None:
+        return
+    free_bytes, total_bytes = memory_info
+    _LOG.info(
+        "%s VRAM snapshot: device=%s free_bytes=%s total_bytes=%s",
+        label,
+        device,
+        free_bytes,
+        total_bytes,
+    )
+
+
+def _move_pipeline_to_best_device(
+    model: Any,
+    *,
+    requested_device: str | None,
+    scheduler_mode: str | None,
+) -> str:
+    normalized_request = normalize_device(requested_device)
+    normalized_scheduler_mode = normalize_scheduler_mode(scheduler_mode)
+    if normalized_request == "cpu":
+        return "cpu"
+
+    cuda_facts = collect_cuda_runtime_facts()
     try:
         import torch
     except Exception:
+        if normalized_request != "auto":
+            raise RuntimeError(
+                f"Requested diarization device {normalized_request} but torch is unavailable."
+            )
         return "cpu"
 
-    if not torch.cuda.is_available():
+    effective_device = resolve_effective_device(
+        normalized_request,
+        cuda_facts=cuda_facts,
+        label="diarization device",
+    )
+    if not is_gpu_device(effective_device):
         return "cpu"
+
+    _log_cuda_memory_snapshot(label="Pyannote move", device=effective_device)
 
     try:
-        model.to(torch.device("cuda"))
+        model.to(torch.device(effective_device))
     except Exception as exc:
-        _LOG.warning(
-            "Failed to move pyannote diarization pipeline to CUDA; continuing on CPU: %s",
-            exc,
-        )
-        return "cpu"
-    return "cuda"
+        if normalized_request == "auto" and normalized_scheduler_mode == "auto":
+            _LOG.warning(
+                "Failed to move pyannote diarization pipeline to %s; continuing on CPU: %s",
+                effective_device,
+                exc,
+            )
+            return "cpu"
+        if normalized_request == "auto" and is_gpu_oom_error(exc):
+            _LOG.warning(
+                "Pyannote diarization GPU OOM on %s; retrying on CPU in auto mode: %s",
+                effective_device,
+                exc,
+            )
+            return "cpu"
+        raise RuntimeError(
+            f"Failed to move pyannote diarization pipeline to {effective_device}: {exc}"
+        ) from exc
+    return effective_device
 
 
-def load_pyannote_pipeline(*, model_id: str | None = None, token: str | None = None) -> Any:
+def load_pyannote_pipeline(
+    *,
+    model_id: str | None = None,
+    token: str | None = None,
+    device: str | None = None,
+    scheduler_mode: str | None = None,
+) -> Any:
     resolved_model_id = resolve_diarization_model_id(model_id)
     repo_id, revision = split_repo_id_and_revision(resolved_model_id)
     if not repo_id:
@@ -135,6 +198,18 @@ def load_pyannote_pipeline(*, model_id: str | None = None, token: str | None = N
         kwargs: dict[str, Any] = dict(candidate_kwargs)
         if resolved_token:
             kwargs["token"] = resolved_token
+        requested_device = device if device is not None else os.getenv(
+            "LAN_DIARIZATION_DEVICE",
+            "auto",
+        )
+        if normalize_device(requested_device) != "cpu":
+            resolved_device = resolve_effective_device(
+                requested_device,
+                cuda_facts=collect_cuda_runtime_facts(),
+                label="diarization device",
+            )
+            if is_gpu_device(resolved_device):
+                _log_cuda_memory_snapshot(label="Pyannote load", device=resolved_device)
         try:
             model = _from_pretrained_with_safe_globals(
                 Pipeline.from_pretrained,
@@ -167,7 +242,12 @@ def load_pyannote_pipeline(*, model_id: str | None = None, token: str | None = N
 
         if model is None or not callable(model):
             raise TypeError("Loaded diarization pipeline must be callable.")
-        device_name = _move_pipeline_to_best_device(model)
+        device_name = _move_pipeline_to_best_device(
+            model,
+            requested_device=requested_device,
+            scheduler_mode=scheduler_mode or os.getenv("LAN_GPU_SCHEDULER_MODE", "auto"),
+        )
+        setattr(model, "_lan_effective_device", device_name)
         _LOG.info("Pyannote diarization device: %s", device_name)
         return model
 

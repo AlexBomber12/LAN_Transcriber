@@ -1,2378 +1,2639 @@
 diff --git a/README.md b/README.md
-index 490c525..8c6d5ab 100644
+index 8c6d5ab..778ef38 100644
 --- a/README.md
 +++ b/README.md
-@@ -84,6 +84,8 @@ Operational setup, failure handling, backup/restore, and upgrade steps are docum
- 5. Open the recording detail page at `/recordings/{recording_id}`.
-    - `NeedsReview` recordings now show an explicit review reason in both the list and detail UI.
-    - Displayed timestamps are rendered in local Europe/Rome time in the server-rendered UI.
-+   - ICS sync now stores organizer and attendee details per event, and the calendars UI renders those event times in local Europe/Rome time.
-+   - Uploaded/processed recordings are matched automatically to nearby calendar events when the score is strong enough; ambiguous candidates remain reviewable on the recording `calendar` tab.
-    - Duration is taken from `derived/audio_sanitized.wav` when present, then falls back to the raw upload.
-    - The app now uses glossary/correction memory instead of ASR model training: manage manual terms and future corrections on `/glossary`.
-    - Glossary sources are merged deterministically from stored manual/correction entries, canonical speaker names, selected calendar context, and the current project name/keywords when available.
+@@ -57,6 +57,15 @@ Rebuild images only when dependencies change (for example `requirements-cu121.tx
+ docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi
+ ```
+ 
++### GPU scheduling
++
++- `LAN_ASR_DEVICE` controls WhisperX/faster-whisper placement: `auto`, `cpu`, `cuda`, `cuda:0`, `cuda:1`.
++- `LAN_DIARIZATION_DEVICE` controls pyannote placement with the same values.
++- `LAN_GPU_SCHEDULER_MODE` controls overlap policy: `auto`, `sequential`, `parallel`.
++- Recommended single-GPU setup: leave all three at their defaults (`LAN_ASR_DEVICE=auto`, `LAN_DIARIZATION_DEVICE=auto`, `LAN_GPU_SCHEDULER_MODE=auto`).
++- In the default single-GPU path, ASR stays warm in-process across jobs when the load config is unchanged, while diarization loads lazily for its stage and is not preloaded during precheck.
++- When the worker hits GPU memory exhaustion, the recording now lands in `NeedsReview` with review reason `gpu_oom`, and the worker/step logs include the effective ASR device, diarization device, scheduler mode, and any automatic fallback that occurred.
++
+ ## CUDA runtime troubleshooting
+ 
+ If the worker crashes with `Could not load library libcudnn_ops_infer.so.8`, the runtime has a cuDNN 8/9 mismatch.
 diff --git a/docs/runbook.md b/docs/runbook.md
-index 399924f..07cc5b4 100644
+index 07cc5b4..b1584a0 100644
 --- a/docs/runbook.md
 +++ b/docs/runbook.md
-@@ -45,6 +45,8 @@ docker compose run --rm api python -m lan_app.healthchecks app
- 5. Open `/recordings/{recording_id}` for transcript, summary, and export actions.
-    - `NeedsReview` recordings show an explicit review reason in the recordings list and detail page.
-    - The server-rendered UI shows timestamps in local Europe/Rome time.
-+   - ICS sync now stores organizer and attendee details per event, and the calendars page renders those event times in local Europe/Rome time.
-+   - Uploaded and processed recordings are matched automatically to nearby calendar events when the score is strong enough; ambiguous candidates remain reviewable on the recording `calendar` tab.
-    - Duration is sourced from `derived/audio_sanitized.wav` when it exists, otherwise from the raw upload.
-    - The app uses glossary/correction memory instead of ASR model training. Manage manual terms and saved corrections on `/glossary`.
-    - Glossary sources are merged deterministically from stored manual/correction entries, speaker-bank names, selected calendar context, and project context when available.
-diff --git a/lan_app/api.py b/lan_app/api.py
-index d84179e..2b5868c 100644
---- a/lan_app/api.py
-+++ b/lan_app/api.py
-@@ -31,6 +31,7 @@ from .constants import (
-     RECORDING_STATUS_QUARANTINE,
- )
- from .calendar.ics import validate_ics_url
-+from .calendar.matching import refresh_recording_calendar_match
- from .calendar.service import CalendarSyncError, redacted_calendar_source, sync_calendar_source
- from .db import (
-     create_calendar_source,
-@@ -514,6 +515,17 @@ async def api_upload_file(file: UploadFile = File(...)) -> dict[str, object]:
-             settings=_settings,
-         )
-         recording_created = True
-+        try:
-+            refresh_recording_calendar_match(
-+                recording_id,
-+                settings=_settings,
-+            )
-+        except Exception:
-+            _logger.warning(
-+                "calendar matching failed during upload for recording %s",
-+                recording_id,
-+                exc_info=True,
-+            )
-         try:
-             job = enqueue_recording_job(
-                 recording_id,
-diff --git a/lan_app/calendar/__init__.py b/lan_app/calendar/__init__.py
-index 7fa9ca6..3279d17 100644
---- a/lan_app/calendar/__init__.py
-+++ b/lan_app/calendar/__init__.py
-@@ -1,4 +1,11 @@
- from .ics import CalendarFetchError, CalendarParseError, fetch_ics_url, parse_ics_events, validate_ics_url
-+from .matching import (
-+    calendar_match_candidates,
-+    calendar_summary_context,
-+    match_recording_to_calendar,
-+    refresh_recording_calendar_match,
-+    selected_calendar_candidate,
-+)
- from .service import (
-     CalendarSyncError,
-     calendar_expansion_window,
-@@ -13,6 +20,11 @@ __all__ = [
-     "fetch_ics_url",
-     "parse_ics_events",
-     "validate_ics_url",
-+    "calendar_match_candidates",
-+    "calendar_summary_context",
-+    "match_recording_to_calendar",
-+    "refresh_recording_calendar_match",
-+    "selected_calendar_candidate",
-     "calendar_expansion_window",
-     "redacted_calendar_source",
-     "sync_calendar_source",
-diff --git a/lan_app/calendar/ics.py b/lan_app/calendar/ics.py
-index 1748a26..ba71f56 100644
---- a/lan_app/calendar/ics.py
-+++ b/lan_app/calendar/ics.py
-@@ -132,22 +132,76 @@ def _property_text(component: Any, key: str) -> str | None:
-     return text or None
+@@ -125,6 +125,19 @@ Optional diarization tuning:
+   - `LAN_API_PORT=7860`
+ - Keep remote access behind SSH tunnel, reverse proxy auth, or a LAN gateway ACL.
  
++## 2.1 GPU scheduler policy
++
++- `LAN_ASR_DEVICE` selects the ASR device: `auto`, `cpu`, `cuda`, `cuda:0`, `cuda:1`.
++- `LAN_DIARIZATION_DEVICE` selects the diarization device with the same values.
++- `LAN_GPU_SCHEDULER_MODE` selects execution policy: `auto`, `sequential`, `parallel`.
++- Recommended single-GPU LAN server config:
++  - `LAN_ASR_DEVICE=auto`
++  - `LAN_DIARIZATION_DEVICE=auto`
++  - `LAN_GPU_SCHEDULER_MODE=auto`
++- In that default mode the worker keeps the ASR model warm across jobs when the model/device/compute-type config is unchanged, but keeps diarization lazy and stage-local to avoid overlapping the two heavy GPU stages on one card.
++- Worker step logs now include the effective ASR device, diarization device, scheduler mode, CUDA visibility, and any bounded fallback that was used.
++- If the worker still exhausts VRAM, the recording moves to `NeedsReview` with review reason `gpu_oom` instead of burning retries until a generic retry-limit failure.
++
+ ## 3) Health checks
  
--def _organizer_text(component: Any) -> str | None:
--    organizer = component.get("ORGANIZER")
--    if organizer is None:
-+def _participant_email(value: Any) -> str | None:
-+    raw = str(value or "").strip()
-+    if not raw:
-         return None
--    params = getattr(organizer, "params", {})
--    cn = params.get("CN")
--    if cn:
--        value = str(cn).strip()
--        if value:
--            return value
--    raw = str(organizer).strip()
--    if raw.lower().startswith("mailto:"):
--        raw = raw[7:]
-+    lowered = raw.lower()
-+    if lowered.startswith("mailto:"):
-+        raw = raw.split(":", 1)[1].strip()
-     return raw or None
- 
- 
-+def _participant_payload(value: Any) -> dict[str, str] | None:
-+    if value is None:
-+        return None
-+    params = getattr(value, "params", {})
-+    name = str(params.get("CN") or "").strip() or None
-+    email = _participant_email(value)
-+    label = name or email
-+    if not label:
-+        return None
-+    payload = {"label": label}
-+    if name:
-+        payload["name"] = name
-+    if email:
-+        payload["email"] = email
-+    return payload
-+
-+
-+def _organizer_text(component: Any) -> str | None:
-+    payload = _participant_payload(component.get("ORGANIZER"))
-+    if payload is None:
-+        return None
-+    return payload.get("label")
-+
-+
-+def _organizer_name(component: Any) -> str | None:
-+    payload = _participant_payload(component.get("ORGANIZER"))
-+    if payload is None:
-+        return None
-+    return payload.get("name")
-+
-+
-+def _organizer_email(component: Any) -> str | None:
-+    payload = _participant_payload(component.get("ORGANIZER"))
-+    if payload is None:
-+        return None
-+    return payload.get("email")
-+
-+
-+def _attendees(component: Any) -> list[dict[str, str]]:
-+    attendees_raw = component.get("ATTENDEE")
-+    if attendees_raw is None:
-+        return []
-+    rows = attendees_raw if isinstance(attendees_raw, list) else [attendees_raw]
-+    attendees: list[dict[str, str]] = []
-+    seen: set[tuple[str, str]] = set()
-+    for row in rows:
-+        payload = _participant_payload(row)
-+        if payload is None:
-+            continue
-+        dedupe_key = (
-+            str(payload.get("email") or "").strip().lower(),
-+            str(payload.get("name") or payload.get("label") or "").strip().lower(),
-+        )
-+        if dedupe_key in seen:
-+            continue
-+        seen.add(dedupe_key)
-+        attendees.append(payload)
-+    return attendees
-+
-+
- def _updated_at_text(component: Any, *, fallback: str) -> str:
-     for key in ("LAST-MODIFIED", "DTSTAMP"):
-         try:
-@@ -226,6 +280,9 @@ def _normalise_event(
-         "description": _property_text(component, "DESCRIPTION"),
-         "location": _property_text(component, "LOCATION"),
-         "organizer": _organizer_text(component),
-+        "organizer_name": _organizer_name(component),
-+        "organizer_email": _organizer_email(component),
-+        "attendees": _attendees(component),
-         "updated_at": _updated_at_text(component, fallback=fallback_updated_at),
-     }
- 
-diff --git a/lan_app/calendar/service.py b/lan_app/calendar/service.py
-index 5f46bc7..41f9286 100644
---- a/lan_app/calendar/service.py
-+++ b/lan_app/calendar/service.py
-@@ -63,6 +63,7 @@ def redacted_calendar_source(source: dict[str, Any]) -> dict[str, Any]:
-         "created_at": source.get("created_at"),
-         "last_synced_at": source.get("last_synced_at"),
-         "last_error": source.get("last_error"),
-+        "event_count": int(source.get("event_count") or 0),
-         "url_configured": bool(url_raw),
-         "url_host": url_host or None,
-         "file_configured": bool(str(source.get("file_ics") or "").strip()),
-diff --git a/lan_app/db.py b/lan_app/db.py
-index b9907bd..0ac0936 100644
---- a/lan_app/db.py
-+++ b/lan_app/db.py
-@@ -2656,9 +2656,13 @@ def list_calendar_sources(
-     with connect(settings) as conn:
-         rows = conn.execute(
-             """
--            SELECT *
--            FROM calendar_sources
--            ORDER BY created_at DESC, id DESC
-+            SELECT
-+                cs.*,
-+                COUNT(ce.id) AS event_count
-+            FROM calendar_sources AS cs
-+            LEFT JOIN calendar_events AS ce ON ce.source_id = cs.id
-+            GROUP BY cs.id
-+            ORDER BY cs.created_at DESC, cs.id DESC
-             """
-         ).fetchall()
-     return [_as_dict(row) or {} for row in rows]
-@@ -2723,12 +2727,12 @@ def replace_calendar_events_for_window(
-             conn.execute(
-                 """
-                 DELETE FROM calendar_events
--                WHERE source_id = ? AND starts_at >= ? AND starts_at < ?
-+                WHERE source_id = ? AND starts_at < ? AND ends_at > ?
-                 """,
-                 (
-                     int(source_id),
--                    clean_window_start,
-                     clean_window_end,
-+                    clean_window_start,
-                 ),
-             )
-             inserted = 0
-@@ -2742,6 +2746,13 @@ def replace_calendar_events_for_window(
-                 description = str(event.get("description") or "").strip() or None
-                 location = str(event.get("location") or "").strip() or None
-                 organizer = str(event.get("organizer") or "").strip() or None
-+                organizer_name = str(event.get("organizer_name") or "").strip() or None
-+                organizer_email = str(event.get("organizer_email") or "").strip() or None
-+                attendees = event.get("attendees")
-+                attendees_json = json.dumps(
-+                    attendees if isinstance(attendees, list) else [],
-+                    ensure_ascii=True,
-+                )
-                 updated_at = str(event.get("updated_at") or "").strip() or now
-                 all_day = 1 if bool(event.get("all_day")) else 0
-                 conn.execute(
-@@ -2756,9 +2767,12 @@ def replace_calendar_events_for_window(
-                         description,
-                         location,
-                         organizer,
-+                        organizer_name,
-+                        organizer_email,
-+                        attendees_json,
-                         updated_at
-                     )
--                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                     ON CONFLICT(source_id, uid, starts_at) DO UPDATE SET
-                         ends_at = excluded.ends_at,
-                         all_day = excluded.all_day,
-@@ -2766,6 +2780,9 @@ def replace_calendar_events_for_window(
-                         description = excluded.description,
-                         location = excluded.location,
-                         organizer = excluded.organizer,
-+                        organizer_name = excluded.organizer_name,
-+                        organizer_email = excluded.organizer_email,
-+                        attendees_json = excluded.attendees_json,
-                         updated_at = excluded.updated_at
-                     """,
-                     (
-@@ -2778,6 +2795,9 @@ def replace_calendar_events_for_window(
-                         description,
-                         location,
-                         organizer,
-+                        organizer_name,
-+                        organizer_email,
-+                        attendees_json,
-                         updated_at,
-                     ),
-                 )
-diff --git a/lan_app/routing.py b/lan_app/routing.py
-index 9f40160..b5bd8c6 100644
---- a/lan_app/routing.py
-+++ b/lan_app/routing.py
-@@ -8,12 +8,12 @@ from pathlib import Path
+ Component endpoints:
+diff --git a/lan_app/config.py b/lan_app/config.py
+index 72a1963..c66c022 100644
+--- a/lan_app/config.py
++++ b/lan_app/config.py
+@@ -247,6 +247,18 @@ class AppSettings(BaseSettings):
+         default=DEFAULT_DIARIZATION_MODEL_ID,
+         validation_alias=AliasChoices("LAN_DIARIZATION_MODEL_ID"),
+     )
++    asr_device: str = Field(
++        default="auto",
++        validation_alias=AliasChoices("LAN_ASR_DEVICE"),
++    )
++    diarization_device: str = Field(
++        default="auto",
++        validation_alias=AliasChoices("LAN_DIARIZATION_DEVICE"),
++    )
++    gpu_scheduler_mode: Literal["auto", "sequential", "parallel"] = Field(
++        default="auto",
++        validation_alias=AliasChoices("LAN_GPU_SCHEDULER_MODE"),
++    )
+     diarization_profile: Literal["auto", "dialog", "meeting"] = "auto"
+     diarization_min_speakers: int | None = Field(default=None, ge=1)
+     diarization_max_speakers: int | None = Field(default=None, ge=1)
+diff --git a/lan_app/diarization_loader.py b/lan_app/diarization_loader.py
+index 00b0e84..e4657f1 100644
+--- a/lan_app/diarization_loader.py
++++ b/lan_app/diarization_loader.py
+@@ -5,6 +5,15 @@ import os
  import re
  from typing import Any
  
-+from .calendar.matching import selected_calendar_candidate
- from .config import AppSettings
- from .constants import RECORDING_STATUS_NEEDS_REVIEW, RECORDING_STATUS_READY
- from .db import (
-     count_routing_training_examples,
-     create_routing_training_example,
--    get_calendar_match,
-     get_project,
-     get_recording,
-     increment_project_keyword_weights,
-@@ -485,20 +485,10 @@ def _selected_calendar_candidate(
-     *,
-     settings: AppSettings,
- ) -> dict[str, Any]:
--    row = get_calendar_match(recording_id, settings=settings) or {}
--    selected_event_id = str(row.get("selected_event_id") or "").strip()
--    if not selected_event_id:
--        return {}
--
--    candidates = row.get("candidates_json")
--    if not isinstance(candidates, list):
--        return {}
--    for candidate in candidates:
--        if not isinstance(candidate, dict):
--            continue
--        if str(candidate.get("event_id") or "").strip() == selected_event_id:
--            return candidate
--    return {}
-+    return selected_calendar_candidate(
-+        recording_id,
-+        settings=settings,
++from lan_transcriber.gpu_policy import (
++    collect_cuda_runtime_facts,
++    cuda_memory_info,
++    is_gpu_oom_error,
++    is_gpu_device,
++    normalize_device,
++    normalize_scheduler_mode,
++    resolve_effective_device,
++)
+ from lan_transcriber.torch_safe_globals import (
+     diarization_safe_globals_for_torch_load,
+     import_trusted_diarization_symbol,
+@@ -101,27 +110,81 @@ def _from_pretrained_with_safe_globals(
+     raise RuntimeError("Unable to load diarization pipeline.")
+ 
+ 
+-def _move_pipeline_to_best_device(model: Any) -> str:
++def _log_cuda_memory_snapshot(*, label: str, device: str) -> None:
++    memory_info = cuda_memory_info(device)
++    if memory_info is None:
++        return
++    free_bytes, total_bytes = memory_info
++    _LOG.info(
++        "%s VRAM snapshot: device=%s free_bytes=%s total_bytes=%s",
++        label,
++        device,
++        free_bytes,
++        total_bytes,
 +    )
++
++
++def _move_pipeline_to_best_device(
++    model: Any,
++    *,
++    requested_device: str | None,
++    scheduler_mode: str | None,
++) -> str:
++    normalized_request = normalize_device(requested_device)
++    normalized_scheduler_mode = normalize_scheduler_mode(scheduler_mode)
++    if normalized_request == "cpu":
++        return "cpu"
++
++    cuda_facts = collect_cuda_runtime_facts()
+     try:
+         import torch
+     except Exception:
++        if normalized_request != "auto":
++            raise RuntimeError(
++                f"Requested diarization device {normalized_request} but torch is unavailable."
++            )
+         return "cpu"
  
+-    if not torch.cuda.is_available():
++    effective_device = resolve_effective_device(
++        normalized_request,
++        cuda_facts=cuda_facts,
++        label="diarization device",
++    )
++    if not is_gpu_device(effective_device):
+         return "cpu"
  
- def _llm_keywords(recording_id: str, *, settings: AppSettings) -> set[str]:
-diff --git a/lan_app/templates/calendars.html b/lan_app/templates/calendars.html
-index 3557932..7f2a1cb 100644
---- a/lan_app/templates/calendars.html
-+++ b/lan_app/templates/calendars.html
-@@ -44,6 +44,7 @@
-         <th>Name</th>
-         <th>Type</th>
-         <th>Configured</th>
-+        <th>Events</th>
-         <th>Last sync</th>
-         <th>Last error</th>
-         <th>Action</th>
-@@ -61,7 +62,8 @@
-           {% if source.file_configured %}Configured{% else %}Missing{% endif %}
-           {% endif %}
-         </td>
--        <td>{{ source.last_synced_at[:19].replace('T', ' ') if source.last_synced_at else '—' }}</td>
-+        <td>{{ source.event_count }}</td>
-+        <td>{{ source.last_synced_at_display }}</td>
-         <td title="{{ source.last_error or '' }}">{{ source.last_error or '—' }}</td>
-         <td>
-           <form method="post" action="/calendars/sources/{{ source.id }}/sync">
-@@ -101,6 +103,8 @@
-         <th>Start</th>
-         <th>End</th>
-         <th>Summary</th>
-+        <th>Organizer</th>
-+        <th>Attendees</th>
-         <th>Location</th>
-         <th>Source</th>
-       </tr>
-@@ -108,9 +112,11 @@
-     <tbody>
-       {% for event in events %}
-       <tr>
--        <td>{{ event.starts_at[:19].replace('T', ' ') }}</td>
--        <td>{{ event.ends_at[:19].replace('T', ' ') }}</td>
-+        <td>{{ event.starts_at_display }}</td>
-+        <td>{{ event.ends_at_display }}</td>
-         <td title="{{ event.summary or '' }}">{{ event.summary or '—' }}</td>
-+        <td>{{ event.organizer or '—' }}</td>
-+        <td title="{{ event.attendees_label }}">{{ event.attendees_label }}</td>
-         <td title="{{ event.location or '' }}">{{ event.location or '—' }}</td>
-         <td>{{ event.source_name or ('#' ~ event.source_id) }}</td>
-       </tr>
-diff --git a/lan_app/templates/recording_detail.html b/lan_app/templates/recording_detail.html
-index a55e3ee..de1fa3e 100644
---- a/lan_app/templates/recording_detail.html
-+++ b/lan_app/templates/recording_detail.html
-@@ -197,6 +197,101 @@
-     {% endif %}
-   </div>
++    _log_cuda_memory_snapshot(label="Pyannote move", device=effective_device)
++
+     try:
+-        model.to(torch.device("cuda"))
++        model.to(torch.device(effective_device))
+     except Exception as exc:
+-        _LOG.warning(
+-            "Failed to move pyannote diarization pipeline to CUDA; continuing on CPU: %s",
+-            exc,
+-        )
+-        return "cpu"
+-    return "cuda"
+-
+-
+-def load_pyannote_pipeline(*, model_id: str | None = None, token: str | None = None) -> Any:
++        if normalized_request == "auto" and normalized_scheduler_mode == "auto":
++            _LOG.warning(
++                "Failed to move pyannote diarization pipeline to %s; continuing on CPU: %s",
++                effective_device,
++                exc,
++            )
++            return "cpu"
++        if normalized_request == "auto" and is_gpu_oom_error(exc):
++            _LOG.warning(
++                "Pyannote diarization GPU OOM on %s; retrying on CPU in auto mode: %s",
++                effective_device,
++                exc,
++            )
++            return "cpu"
++        raise RuntimeError(
++            f"Failed to move pyannote diarization pipeline to {effective_device}: {exc}"
++        ) from exc
++    return effective_device
++
++
++def load_pyannote_pipeline(
++    *,
++    model_id: str | None = None,
++    token: str | None = None,
++    device: str | None = None,
++    scheduler_mode: str | None = None,
++) -> Any:
+     resolved_model_id = resolve_diarization_model_id(model_id)
+     repo_id, revision = split_repo_id_and_revision(resolved_model_id)
+     if not repo_id:
+@@ -135,6 +198,18 @@ def load_pyannote_pipeline(*, model_id: str | None = None, token: str | None = N
+         kwargs: dict[str, Any] = dict(candidate_kwargs)
+         if resolved_token:
+             kwargs["token"] = resolved_token
++        requested_device = device if device is not None else os.getenv(
++            "LAN_DIARIZATION_DEVICE",
++            "auto",
++        )
++        if normalize_device(requested_device) != "cpu":
++            resolved_device = resolve_effective_device(
++                requested_device,
++                cuda_facts=collect_cuda_runtime_facts(),
++                label="diarization device",
++            )
++            if is_gpu_device(resolved_device):
++                _log_cuda_memory_snapshot(label="Pyannote load", device=resolved_device)
+         try:
+             model = _from_pretrained_with_safe_globals(
+                 Pipeline.from_pretrained,
+@@ -167,7 +242,12 @@ def load_pyannote_pipeline(*, model_id: str | None = None, token: str | None = N
  
-+{% elif current_tab == 'calendar' %}
-+  {% set cal = calendar or {} %}
-+
-+  <h2>Calendar Match</h2>
-+  {% if cal.error_message %}
-+  <p style="margin:0 0 10px 0;padding:8px 10px;border:1px solid #f59e0b;background:#fffbeb;color:#92400e">
-+    {{ cal.error_message }}
-+  </p>
-+  {% endif %}
-+
-+  <div class="section" style="margin-top:10px">
-+    <h3 style="margin-top:0">Selected Event</h3>
-+    {% if cal.selected %}
-+    <div style="border:1px solid #d5d9e6;background:#f8f9ff;padding:10px;border-radius:6px">
-+      <div><strong>{{ cal.selected.subject_display }}</strong></div>
-+      <div style="margin-top:4px;color:#555">{{ cal.selected.starts_at_display }} → {{ cal.selected.ends_at_display }}</div>
-+      <div style="margin-top:4px">Source: {{ cal.selected.source_label }}</div>
-+      <div style="margin-top:4px">Confidence: {{ cal.selected.confidence_display }}</div>
-+      <div style="margin-top:4px">Organizer: {{ cal.selected.organizer_display }}</div>
-+      <div style="margin-top:4px">Attendees: {{ cal.selected.attendees_label }}</div>
-+      {% if cal.selected.rationale_rows %}
-+      <ul style="margin:8px 0 0 18px">
-+        {% for reason in cal.selected.rationale_rows %}
-+        <li>{{ reason }}</li>
-+        {% endfor %}
-+      </ul>
-+      {% endif %}
-+      <form method="post" action="/ui/recordings/{{ rec.id }}/calendar/select" style="margin-top:8px">
-+        <button type="submit" class="btn">Clear selection</button>
-+      </form>
-+    </div>
-+    {% else %}
-+    <p class="placeholder">No calendar event is currently selected for this recording.</p>
-+    {% endif %}
-+  </div>
-+
-+  <div class="section" style="margin-top:10px">
-+    <h3 style="margin-top:0">Candidates</h3>
-+    {% if cal.candidates %}
-+    <table>
-+      <thead>
-+        <tr>
-+          <th>Event</th>
-+          <th>When</th>
-+          <th>Source</th>
-+          <th>Confidence</th>
-+          <th>Attendees</th>
-+          <th>Rationale</th>
-+          <th>Action</th>
-+        </tr>
-+      </thead>
-+      <tbody>
-+        {% for candidate in cal.candidates %}
-+        <tr>
-+          <td style="white-space:normal;max-width:220px">
-+            <div><strong>{{ candidate.subject_display }}</strong></div>
-+            <div style="margin-top:4px;color:#555">Organizer: {{ candidate.organizer_display }}</div>
-+          </td>
-+          <td>{{ candidate.starts_at_display }} → {{ candidate.ends_at_display }}</td>
-+          <td>{{ candidate.source_label }}</td>
-+          <td>
-+            {{ candidate.confidence_display }}
-+            {% if candidate.selected %}
-+            <div style="margin-top:4px"><span class="badge s-Ready">Selected</span></div>
-+            {% endif %}
-+          </td>
-+          <td title="{{ candidate.attendees_label }}">{{ candidate.attendees_label }}</td>
-+          <td style="white-space:normal;max-width:320px">
-+            {% if candidate.rationale_rows %}
-+              {% for reason in candidate.rationale_rows %}
-+              <div>{{ reason }}</div>
-+              {% endfor %}
-+            {% else %}
-+            —
-+            {% endif %}
-+          </td>
-+          <td>
-+            {% if candidate.selected %}
-+            <span class="placeholder" style="padding:0">Current</span>
-+            {% else %}
-+            <form method="post" action="/ui/recordings/{{ rec.id }}/calendar/select">
-+              <input type="hidden" name="event_id" value="{{ candidate.event_id }}">
-+              <button type="submit" class="btn">Choose</button>
-+            </form>
-+            {% endif %}
-+          </td>
-+        </tr>
-+        {% endfor %}
-+      </tbody>
-+    </table>
-+    {% else %}
-+    <p class="placeholder">No calendar candidates are stored for this recording yet.</p>
-+    {% endif %}
-+  </div>
-+
- {% elif current_tab == 'project' %}
-   {% set prj = project or {} %}
-   {% set project_items = prj.projects or [] %}
+         if model is None or not callable(model):
+             raise TypeError("Loaded diarization pipeline must be callable.")
+-        device_name = _move_pipeline_to_best_device(model)
++        device_name = _move_pipeline_to_best_device(
++            model,
++            requested_device=requested_device,
++            scheduler_mode=scheduler_mode or os.getenv("LAN_GPU_SCHEDULER_MODE", "auto"),
++        )
++        setattr(model, "_lan_effective_device", device_name)
+         _LOG.info("Pyannote diarization device: %s", device_name)
+         return model
+ 
 diff --git a/lan_app/ui_routes.py b/lan_app/ui_routes.py
-index b52d8ff..93c622b 100644
+index 93c622b..a9a35d5 100644
 --- a/lan_app/ui_routes.py
 +++ b/lan_app/ui_routes.py
-@@ -31,6 +31,11 @@ from .auth import (
+@@ -230,9 +230,10 @@ def _format_duration_seconds(value: object) -> str:
+     duration = _safe_duration_seconds(value)
+     if duration is None:
+         return "—"
+-    if duration.is_integer():
+-        return f"{int(duration)}s"
+-    return f"{duration:.2f}s"
++    total_seconds = int(duration)
++    hours, remainder = divmod(total_seconds, 3600)
++    minutes, seconds = divmod(remainder, 60)
++    return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+ 
+ 
+ def _display_timezone() -> ZoneInfo | timezone:
+diff --git a/lan_app/worker_tasks.py b/lan_app/worker_tasks.py
+index 0eceb25..266784d 100644
+--- a/lan_app/worker_tasks.py
++++ b/lan_app/worker_tasks.py
+@@ -25,6 +25,11 @@ from lan_transcriber.llm_client import (
  )
- from .config import AppSettings
- from .calendar.ics import validate_ics_url
-+from .calendar.matching import (
-+    calendar_match_candidates,
-+    calendar_summary_context,
-+    selected_calendar_candidate,
+ from lan_transcriber.pipeline import Settings as PipelineSettings
+ from lan_transcriber.pipeline import run_pipeline, run_precheck
++from lan_transcriber.gpu_policy import (
++    collect_cuda_runtime_facts,
++    is_gpu_oom_error,
++    resolve_scheduler_decision,
 +)
- from .calendar.service import CalendarSyncError, redacted_calendar_source, sync_calendar_source
- from .conversation_metrics import refresh_recording_metrics
- from .constants import (
-@@ -55,6 +60,7 @@ from .db import (
-     get_glossary_entry,
-     delete_project,
-     delete_voice_profile,
-+    get_calendar_match,
-     get_meeting_metrics,
-     get_job,
-     get_recording,
-@@ -69,6 +75,7 @@ from .db import (
-     list_speaker_assignments,
-     list_voice_samples,
-     list_voice_profiles,
-+    set_calendar_match_selection,
-     set_recording_duration,
-     set_recording_project,
-     set_speaker_assignment,
-@@ -1470,15 +1477,19 @@ def _resummarize_recording(
-     if not speaker_turns:
-         speaker_turns = [{"start": 0.0, "end": 0.0, "speaker": "S1", "text": transcript_text}]
+ from lan_transcriber.pipeline_steps.diarization_quality import (
+     AUTO_PROFILE_DEFAULT_INITIAL_PROFILE,
+     DEFAULT_DIALOG_RETRY_MIN_DURATION_SECONDS,
+@@ -194,6 +199,8 @@ def _retry_policy(job_type: str) -> RetryPolicy:
  
--    calendar_title = str(transcript_payload.get("calendar_title") or "").strip() or None
--    attendees_payload = transcript_payload.get("calendar_attendees")
--    calendar_attendees: list[str] = []
--    if isinstance(attendees_payload, list):
--        calendar_attendees = [
--            str(attendee).strip()
--            for attendee in attendees_payload
--            if str(attendee).strip()
--        ]
-+    calendar_title, calendar_attendees = calendar_summary_context(
-+        recording_id,
-+        settings=settings,
+ 
+ def _is_retryable_exception(exc: Exception) -> bool:
++    if is_gpu_oom_error(exc):
++        return False
+     return isinstance(exc, (TimeoutError, ConnectionError, RuntimeError))
+ 
+ 
+@@ -325,12 +332,28 @@ def _record_failure(
+     exc: Exception,
+ ) -> None:
+     error = str(exc)
++    review_reason_code, review_reason_text = _review_reason_from_exception(exc)
++    terminal_status = (
++        RECORDING_STATUS_NEEDS_REVIEW
++        if review_reason_code == "gpu_oom"
++        else RECORDING_STATUS_FAILED
 +    )
-+    if calendar_title is None and not calendar_attendees:
-+        calendar_title = str(transcript_payload.get("calendar_title") or "").strip() or None
-+        attendees_payload = transcript_payload.get("calendar_attendees")
-+        if isinstance(attendees_payload, list):
-+            calendar_attendees = [
-+                str(attendee).strip()
-+                for attendee in attendees_payload
-+                if str(attendee).strip()
-+            ]
+     try:
+         fail_job(job_id, error, settings=settings)
+     except Exception:
+         pass
+     try:
+-        set_recording_status(recording_id, RECORDING_STATUS_FAILED, settings=settings)
++        set_recording_status(
++            recording_id,
++            terminal_status,
++            settings=settings,
++            review_reason_code=(
++                review_reason_code if terminal_status == RECORDING_STATUS_NEEDS_REVIEW else None
++            ),
++            review_reason_text=(
++                review_reason_text if terminal_status == RECORDING_STATUS_NEEDS_REVIEW else None
++            ),
++        )
+     except Exception:
+         pass
+     try:
+@@ -390,6 +413,14 @@ def _load_json_dict(path: Path) -> dict[str, Any]:
+ def _review_reason_from_exception(exc: Exception) -> tuple[str, str]:
+     message = str(exc).strip()
+     lowered = message.lower()
++    if is_gpu_oom_error(exc):
++        return (
++            "gpu_oom",
++            (
++                "The worker ran out of GPU memory while loading or running a heavy "
++                "model; manual review required."
++            ),
++        )
+     if isinstance(exc, LLMTruncatedResponseError) or "finish_reason=length" in lowered:
+         return (
+             "llm_truncated",
+@@ -613,8 +644,9 @@ class _DiarizationRuntimeConfig:
+ class _PyannoteDiariser:
+     def __init__(
+         self,
+-        pipeline_model: Any,
++        pipeline_model: Any | None = None,
+         *,
++        pipeline_loader: Any | None = None,
+         profile: str = "auto",
+         initial_profile: str | None = None,
+         auto_profile_enabled: bool = True,
+@@ -624,9 +656,12 @@ class _PyannoteDiariser:
+         dialog_retry_min_duration_seconds: float = DEFAULT_DIALOG_RETRY_MIN_DURATION_SECONDS,
+         dialog_retry_min_turns: int = DEFAULT_DIALOG_RETRY_MIN_TURNS,
+     ) -> None:
+-        if pipeline_model is None or not callable(pipeline_model):
++        if pipeline_model is not None and not callable(pipeline_model):
+             raise TypeError("pipeline_model must be a callable pyannote pipeline.")
++        if pipeline_model is None and pipeline_loader is None:
++            raise TypeError("pipeline_loader is required when pipeline_model is not provided.")
+         self._pipeline_model = pipeline_model
++        self._pipeline_loader = pipeline_loader
+         self.mode = "pyannote"
+         self.profile = str(profile or "auto").strip().lower() or "auto"
+         self.initial_profile = (
+@@ -666,8 +701,22 @@ class _PyannoteDiariser:
+             "dialog_retry_used": False,
+             "speaker_count_before_retry": None,
+             "speaker_count_after_retry": None,
++            "effective_device": None,
+         }
  
-     system_prompt, user_prompt = build_structured_summary_prompts(
-         speaker_turns,
-@@ -1585,12 +1596,20 @@ def _calendar_page_data(
++    def _ensure_pipeline_model(self) -> Any:
++        if self._pipeline_model is None:
++            if self._pipeline_loader is None:
++                raise TypeError("pipeline_loader must be provided for lazy diarization.")
++            pipeline_model = self._pipeline_loader()
++            if pipeline_model is None or not callable(pipeline_model):
++                raise TypeError("pipeline_model must be a callable pyannote pipeline.")
++            self._pipeline_model = pipeline_model
++            self.last_run_metadata["effective_device"] = str(
++                getattr(pipeline_model, "_lan_effective_device", "cpu")
++            )
++        return self._pipeline_model
++
+     async def _call_pipeline(
+         self,
+         audio_path: Path,
+@@ -675,6 +724,7 @@ class _PyannoteDiariser:
+         call_kwargs: dict[str, int],
+     ):
+         audio_text = str(audio_path)
++        pipeline_model = self._ensure_pipeline_model()
  
-     sources_raw = list_calendar_sources(settings=settings)
-     sources = [redacted_calendar_source(row) for row in sources_raw]
-+    for source in sources:
-+        source["last_synced_at_display"] = _format_local_timestamp(source.get("last_synced_at"))
-     events = list_calendar_events(
-         starts_from=_utc_iso(start_dt),
-         ends_to=_utc_iso(end_dt),
-         source_id=source_id,
+         def _is_signature_mismatch(exc: TypeError) -> bool:
+             message = str(exc).lower()
+@@ -698,7 +748,7 @@ class _PyannoteDiariser:
+         def _run_sync():
+             try:
+                 return call_with_supported_kwargs(
+-                    self._pipeline_model,
++                    pipeline_model,
+                     {"audio": audio_text},
+                     **call_kwargs,
+                 )
+@@ -706,7 +756,7 @@ class _PyannoteDiariser:
+                 if not _is_signature_mismatch(exc):
+                     raise
+                 return call_with_supported_kwargs(
+-                    self._pipeline_model,
++                    pipeline_model,
+                     audio_text,
+                     **call_kwargs,
+                 )
+@@ -873,6 +923,9 @@ def _build_pipeline_settings(settings: AppSettings) -> PipelineSettings:
+         llm_chunk_timeout_seconds=settings.llm_chunk_timeout_seconds,
+         llm_long_transcript_threshold_chars=settings.llm_long_transcript_threshold_chars,
+         llm_merge_max_tokens=settings.llm_merge_max_tokens,
++        asr_device=getattr(settings, "asr_device", "auto"),
++        diarization_device=getattr(settings, "diarization_device", "auto"),
++        gpu_scheduler_mode=getattr(settings, "gpu_scheduler_mode", "auto"),
+         diarization_profile=settings.diarization_profile,
+         diarization_min_speakers=settings.diarization_min_speakers,
+         diarization_max_speakers=settings.diarization_max_speakers,
+@@ -890,18 +943,24 @@ def _build_diariser(
+     duration_sec: float | None,
+     *,
+     model_id: str | None = None,
+-    settings: AppSettings | None = None,
++    settings: Any | None = None,
+ ):
+-    diarization_cfg = _resolve_diarization_speaker_hints(settings=settings)
+     try:
+-        model = load_pyannote_pipeline(model_id=model_id)
++        from pyannote.audio import Pipeline as _Pipeline  # type: ignore
+     except ModuleNotFoundError as exc:
+         missing = (exc.name or "").split(".", 1)[0]
+         if missing == "pyannote":
+             return _FallbackDiariser(duration_sec)
+         raise
++    del _Pipeline
++
++    diarization_cfg = _resolve_diarization_speaker_hints(settings=settings)
+     return _PyannoteDiariser(
+-        model,
++        pipeline_loader=lambda: load_pyannote_pipeline(
++            model_id=model_id,
++            device=getattr(settings, "diarization_device", None),
++            scheduler_mode=getattr(settings, "gpu_scheduler_mode", None),
++        ),
+         profile=diarization_cfg.profile,
+         initial_profile=diarization_cfg.initial_profile,
+         auto_profile_enabled=diarization_cfg.auto_profile_enabled,
+@@ -936,6 +995,37 @@ def _write_diarization_status_artifact(
+         pass
+ 
+ 
++def _log_gpu_execution_policy(
++    *,
++    pipeline_settings: PipelineSettings,
++    diariser: Any,
++    log_path: Path,
++) -> None:
++    diariser_mode = str(getattr(diariser, "mode", "") or "").strip().lower()
++    scheduler_plan = resolve_scheduler_decision(
++        pipeline_settings.gpu_scheduler_mode,
++        asr_device=pipeline_settings.asr_device,
++        diarization_device=pipeline_settings.diarization_device,
++        diarization_is_heavy=diariser_mode == "pyannote",
++        cuda_facts=collect_cuda_runtime_facts(),
++    )
++    facts = scheduler_plan.cuda_facts
++    message = (
++        "gpu policy "
++        f"asr_device={scheduler_plan.asr_device} "
++        f"diarization_device={scheduler_plan.diarization_device} "
++        f"scheduler_mode={scheduler_plan.effective_mode} "
++        f"requested_mode={scheduler_plan.requested_mode} "
++        f"reason={scheduler_plan.reason} "
++        f"cuda_available={facts.is_available} "
++        f"device_count={facts.device_count} "
++        f"visible_devices={facts.visible_devices or 'unset'} "
++        f"torch_cuda={facts.torch_cuda_version or 'none'}"
++    )
++    _logger.info(message)
++    _append_step_log(log_path, message)
++
++
+ def _run_precheck_pipeline(
+     *,
+     recording_id: str,
+@@ -1016,7 +1106,7 @@ def _run_precheck_pipeline(
+             diariser = _build_diariser(
+                 precheck.duration_sec,
+                 model_id=settings.diarization_model_id,
+-                settings=settings,
++                settings=pipeline_settings,
+             )
+             if isinstance(diariser, _FallbackDiariser):
+                 diarization_mode = "fallback"
+@@ -1048,6 +1138,11 @@ def _run_precheck_pipeline(
+         reason=diarization_reason,
          settings=settings,
      )
-+    for event in events:
-+        event["starts_at_display"] = _format_local_timestamp(event.get("starts_at"))
-+        event["ends_at_display"] = _format_local_timestamp(event.get("ends_at"))
-+        attendees = _calendar_attendee_labels(event.get("attendees_json"))
-+        event["attendees_preview"] = attendees[:4]
-+        event["attendees_label"] = ", ".join(attendees) if attendees else "—"
-     return {
-         "sources": sources,
-         "events": events,
-@@ -1600,6 +1619,99 @@ def _calendar_page_data(
++    _log_gpu_execution_policy(
++        pipeline_settings=pipeline_settings,
++        diariser=diariser,
++        log_path=log_path,
++    )
+     calendar_title, calendar_attendees = _load_calendar_summary_context(
+         recording_id,
+         settings,
+diff --git a/lan_transcriber/pipeline.py b/lan_transcriber/pipeline.py
+index 3e29ed9..12f9a85 100644
+--- a/lan_transcriber/pipeline.py
++++ b/lan_transcriber/pipeline.py
+@@ -8,6 +8,7 @@ from .pipeline_steps.orchestrator import (
+     build_structured_summary_prompts,
+     build_summary_payload,
+     build_summary_prompts,
++    clear_asr_model_cache,
+     refresh_aliases,
+     run_pipeline,
+     run_precheck,
+@@ -25,4 +26,5 @@ __all__ = [
+     "build_summary_prompts",
+     "build_structured_summary_prompts",
+     "build_summary_payload",
++    "clear_asr_model_cache",
+ ]
+diff --git a/lan_transcriber/pipeline_steps/orchestrator.py b/lan_transcriber/pipeline_steps/orchestrator.py
+index dc3ac00..7b56eb5 100644
+--- a/lan_transcriber/pipeline_steps/orchestrator.py
++++ b/lan_transcriber/pipeline_steps/orchestrator.py
+@@ -1,6 +1,7 @@
+ from __future__ import annotations
+ 
+ import asyncio
++import gc
+ import inspect
+ import logging
+ import shutil
+@@ -39,6 +40,16 @@ from ..torch_safe_globals import (
+     unsupported_global_omegaconf_fqn_from_error,
+ )
+ from .language import analyse_languages, resolve_target_summary_language, segment_language
++from ..gpu_policy import (
++    SchedulerDecision,
++    collect_cuda_runtime_facts,
++    cuda_memory_info,
++    is_gpu_device,
++    is_gpu_oom_error,
++    normalize_device,
++    resolve_effective_device,
++    resolve_scheduler_decision,
++)
+ from .precheck import PrecheckResult, run_precheck as _run_precheck
+ from .diarization_quality import (
+     DEFAULT_DIALOG_RETRY_MIN_DURATION_SECONDS,
+@@ -68,6 +79,8 @@ from ..utils import normalise_language_code, safe_float
+ 
+ _logger = logging.getLogger(__name__)
+ _whisperx_transcriber_state = threading.local()
++_ASR_MODEL_CACHE: dict[tuple[str, str, str, str, Any], Any] = {}
++_ASR_MODEL_CACHE_LOCK = threading.Lock()
+ _LLM_MODEL_REQUIRED_ERROR = (
+     "LLM_MODEL is required. Set it in .env (e.g., LLM_MODEL=gpt-oss:120b)."
+ )
+@@ -152,7 +165,10 @@ class Settings(BaseSettings):
+         ),
+     )
+     asr_model: str = "large-v3"
+-    asr_device: str = "auto"
++    asr_device: str = Field(
++        default="auto",
++        validation_alias=AliasChoices("asr_device", "ASR_DEVICE", "LAN_ASR_DEVICE"),
++    )
+     asr_compute_type: str | None = None
+     asr_batch_size: int = 16
+     asr_enable_align: bool = True
+@@ -167,6 +183,22 @@ class Settings(BaseSettings):
+         ),
+     )
+     vad_method: Literal["silero", "pyannote"] = "silero"
++    diarization_device: str = Field(
++        default="auto",
++        validation_alias=AliasChoices(
++            "diarization_device",
++            "DIARIZATION_DEVICE",
++            "LAN_DIARIZATION_DEVICE",
++        ),
++    )
++    gpu_scheduler_mode: Literal["auto", "sequential", "parallel"] = Field(
++        default="auto",
++        validation_alias=AliasChoices(
++            "gpu_scheduler_mode",
++            "GPU_SCHEDULER_MODE",
++            "LAN_GPU_SCHEDULER_MODE",
++        ),
++    )
+     embed_threshold: float = 0.65
+     merge_similar: float = 0.9
+     precheck_min_duration_sec: float = 20.0
+@@ -284,36 +316,100 @@ def _language_payload(info: dict[str, Any]) -> dict[str, Any]:
+ 
+ 
+ def _select_asr_device(cfg: Settings) -> str:
+-    preferred = str(cfg.asr_device or "auto").strip().lower()
+-    if preferred in {"cpu", "cuda"}:
+-        return preferred
+-    try:
+-        import torch
+-    except Exception:
+-        _logger.info(
+-            "Torch CUDA runtime: is_available=%s device_count=%s torch.version.cuda=%s",
+-            False,
+-            0,
+-            None,
+-        )
+-        return "cpu"
+-    cuda_available = torch.cuda.is_available()
+-    device_count = torch.cuda.device_count()
+-    cuda_version = getattr(getattr(torch, "version", None), "cuda", None)
++    cuda_facts = collect_cuda_runtime_facts()
+     _logger.info(
+-        "Torch CUDA runtime: is_available=%s device_count=%s torch.version.cuda=%s",
+-        cuda_available,
+-        device_count,
+-        cuda_version,
++        "Torch CUDA runtime: is_available=%s device_count=%s visible_devices=%s torch.version.cuda=%s",
++        cuda_facts.is_available,
++        cuda_facts.device_count,
++        cuda_facts.visible_devices,
++        cuda_facts.torch_cuda_version,
++    )
++    return resolve_effective_device(
++        cfg.asr_device,
++        cuda_facts=cuda_facts,
++        label="ASR device",
++    )
++
++
++def _select_diarization_device(cfg: Settings) -> str:
++    return resolve_effective_device(
++        cfg.diarization_device,
++        cuda_facts=collect_cuda_runtime_facts(),
++        label="diarization device",
++    )
++
++
++def _resolve_scheduler_plan(cfg: Settings, diariser: Diariser) -> SchedulerDecision:
++    return resolve_scheduler_decision(
++        cfg.gpu_scheduler_mode,
++        asr_device=cfg.asr_device,
++        diarization_device=cfg.diarization_device,
++        diarization_is_heavy=_diariser_mode(diariser) == "pyannote",
+     )
+-    return "cuda" if cuda_available else "cpu"
+ 
+ 
+ def _select_compute_type(cfg: Settings, device: str) -> str:
+     configured = str(cfg.asr_compute_type or "").strip()
+     if configured:
+         return configured
+-    return "float16" if device == "cuda" else "int8"
++    return "float16" if is_gpu_device(device) else "int8"
++
++
++def clear_asr_model_cache() -> None:
++    with _ASR_MODEL_CACHE_LOCK:
++        _ASR_MODEL_CACHE.clear()
++    _cleanup_cuda_memory("cuda")
++
++
++def _asr_model_cache_key(
++    *,
++    cfg: Settings,
++    device: str,
++    compute_type: str,
++    load_model_callable: Any,
++) -> tuple[str, str, str, str, Any]:
++    return (
++        str(cfg.asr_model or "").strip(),
++        str(device).strip(),
++        str(compute_type).strip(),
++        str(cfg.vad_method or "").strip(),
++        load_model_callable,
++    )
++
++
++def _log_cuda_memory_snapshot(
++    *,
++    label: str,
++    device: str,
++) -> None:
++    memory_info = cuda_memory_info(device)
++    if memory_info is None:
++        return
++    free_bytes, total_bytes = memory_info
++    _logger.info(
++        "%s VRAM snapshot: device=%s free_bytes=%s total_bytes=%s",
++        label,
++        device,
++        free_bytes,
++        total_bytes,
++    )
++
++
++def _cleanup_cuda_memory(device: str) -> None:
++    if not is_gpu_device(device):
++        return
++    gc.collect()
++    try:
++        import torch
++    except Exception:
++        return
++    cuda = getattr(torch, "cuda", None)
++    if cuda is None:
++        return
++    try:
++        cuda.empty_cache()
++    except Exception:
++        return
+ 
+ 
+ def _require_llm_model(llm_model: str | None) -> str:
+@@ -777,6 +873,9 @@ def _write_diarization_metadata_artifact(
+             or metadata.get("diarization_profile")
+             or cfg.diarization_profile
+         ),
++        "effective_device": str(metadata.get("effective_device") or cfg.diarization_device),
++        "scheduler_mode": str(metadata.get("scheduler_mode") or cfg.gpu_scheduler_mode),
++        "scheduler_reason": metadata.get("scheduler_reason"),
+         "initial_profile": str(metadata.get("initial_profile") or cfg.diarization_profile),
+         "selected_profile": selected_profile,
+         "selected_result": str(profile_selection.get("selected_result") or "initial_pass"),
+@@ -815,6 +914,91 @@ def _write_diarization_metadata_artifact(
+     atomic_write_json(artifacts.diarization_metadata_json_path, payload)
+ 
+ 
++def _load_cached_whisperx_model(
++    *,
++    cfg: Settings,
++    wx_asr: Any,
++    device: str,
++    compute_type: str,
++    step_log_callback: Callable[[str], Any] | None,
++) -> tuple[Any, str]:
++    load_model_callable = getattr(wx_asr, "load_model", None)
++    cache_key = _asr_model_cache_key(
++        cfg=cfg,
++        device=device,
++        compute_type=compute_type,
++        load_model_callable=load_model_callable,
++    )
++    with _ASR_MODEL_CACHE_LOCK:
++        cached_model = _ASR_MODEL_CACHE.get(cache_key)
++    if cached_model is not None:
++        _best_effort_step_log(
++            step_log_callback,
++            (
++                "asr model cache hit "
++                f"model={cfg.asr_model} device={device} compute_type={compute_type}"
++            ),
++        )
++        return cached_model, compute_type
++
++    model_load_kwargs = {"compute_type": compute_type, "vad_method": cfg.vad_method}
++
++    def _load_model(selected_compute_type: str) -> Any:
++        load_kwargs = dict(model_load_kwargs)
++        load_kwargs["compute_type"] = selected_compute_type
++        _log_cuda_memory_snapshot(label="ASR load", device=device)
++        return call_with_supported_kwargs(
++            wx_asr.load_model,
++            cfg.asr_model,
++            device,
++            **load_kwargs,
++        )
++
++    selected_compute_type = compute_type
++    with omegaconf_safe_globals_for_torch_load():
++        try:
++            model = _load_model(selected_compute_type)
++        except Exception as first_error:
++            retry_fqn = unsupported_global_omegaconf_fqn_from_error(first_error)
++            if retry_fqn is not None:
++                with omegaconf_safe_globals_for_torch_load(extra_fqns=[retry_fqn]):
++                    try:
++                        model = _load_model(selected_compute_type)
++                    except Exception:
++                        raise first_error
++            elif (
++                is_gpu_oom_error(first_error)
++                and normalize_device(cfg.asr_device) == "auto"
++                and not str(cfg.asr_compute_type or "").strip()
++                and selected_compute_type != "int8_float16"
++            ):
++                clear_asr_model_cache()
++                selected_compute_type = "int8_float16"
++                _best_effort_step_log(
++                    step_log_callback,
++                    (
++                        "asr GPU OOM during model load; retrying once with "
++                        "compute_type=int8_float16"
++                    ),
++                )
++                model = _load_model(selected_compute_type)
++            else:
++                raise
++
++    cache_key = _asr_model_cache_key(
++        cfg=cfg,
++        device=device,
++        compute_type=selected_compute_type,
++        load_model_callable=load_model_callable,
++    )
++    with _ASR_MODEL_CACHE_LOCK:
++        cached_model = _ASR_MODEL_CACHE.get(cache_key)
++        if cached_model is None:
++            _ASR_MODEL_CACHE[cache_key] = model
++            cached_model = model
++    return cached_model, selected_compute_type
++
++
+ def _build_whisperx_transcriber(
+     cfg: Settings,
+     step_log_callback: Callable[[str], Any] | None = None,
+@@ -929,23 +1113,13 @@ def _build_whisperx_transcriber(
+     device = _select_asr_device(cfg)
+     compute_type = _select_compute_type(cfg, device)
+     _logger.info("ASR VAD method: %s", cfg.vad_method)
+-    model_load_kwargs = {"compute_type": compute_type, "vad_method": cfg.vad_method}
+-
+-    def _load_model() -> Any:
+-        return call_with_supported_kwargs(wx_asr.load_model, cfg.asr_model, device, **model_load_kwargs)
+-
+-    with omegaconf_safe_globals_for_torch_load():
+-        try:
+-            model = _load_model()
+-        except Exception as first_error:
+-            retry_fqn = unsupported_global_omegaconf_fqn_from_error(first_error)
+-            if retry_fqn is None:
+-                raise
+-            with omegaconf_safe_globals_for_torch_load(extra_fqns=[retry_fqn]):
+-                try:
+-                    model = _load_model()
+-                except Exception:
+-                    raise first_error
++    model, compute_type = _load_cached_whisperx_model(
++        cfg=cfg,
++        wx_asr=wx_asr,
++        device=device,
++        compute_type=compute_type,
++        step_log_callback=step_log_callback,
++    )
+ 
+     vad = getattr(model, "vad_model", None)
+     if not callable(vad):
+@@ -1043,7 +1217,11 @@ def _whisperx_asr(
+     cfg: Settings,
+     step_log_callback: Callable[[str], Any] | None = None,
+ ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+-    transcribe_audio = getattr(_whisperx_transcriber_state, "transcribe_audio", None)
++    transcribe_audio = (
++        getattr(_whisperx_transcriber_state, "transcribe_audio", None)
++        if bool(getattr(_whisperx_transcriber_state, "use_session_transcriber", False))
++        else None
++    )
+     if transcribe_audio is None:
+         transcribe_audio = _build_whisperx_transcriber(
+             cfg=cfg,
+@@ -1428,15 +1606,19 @@ async def run_pipeline(
+                     tmp_root=cfg.tmp_root,
+                     transcribe_fn=_transcribe_chunk,
+                     step_log_callback=step_log_callback,
+-                )
++            )
+ 
+             previous_transcriber = getattr(_whisperx_transcriber_state, "transcribe_audio", None)
++            previous_session_flag = bool(
++                getattr(_whisperx_transcriber_state, "use_session_transcriber", False)
++            )
+             transcribe_audio = _build_whisperx_transcriber(
+                 cfg=cfg,
+                 step_log_callback=step_log_callback,
+                 asr_glossary=asr_glossary,
+             )
+             _whisperx_transcriber_state.transcribe_audio = transcribe_audio
++            _whisperx_transcriber_state.use_session_transcriber = True
+             try:
+                 segments, info, payload = run_language_aware_asr(
+                     audio_path,
+@@ -1457,13 +1639,44 @@ async def run_pipeline(
+                         delattr(_whisperx_transcriber_state, "transcribe_audio")
+                 else:
+                     _whisperx_transcriber_state.transcribe_audio = previous_transcriber
++                if previous_session_flag:
++                    _whisperx_transcriber_state.use_session_transcriber = True
++                elif hasattr(_whisperx_transcriber_state, "use_session_transcriber"):
++                    delattr(_whisperx_transcriber_state, "use_session_transcriber")
+ 
+-        (raw_segments, info, asr_execution), diarization = await asyncio.gather(
+-            asyncio.to_thread(
+-                _run_asr_workflow,
++        scheduler_plan = _resolve_scheduler_plan(cfg, diariser)
++        _update_diariser_runtime_metadata(
++            diariser,
++            scheduler_mode=scheduler_plan.effective_mode,
++            scheduler_reason=scheduler_plan.reason,
++            requested_scheduler_mode=scheduler_plan.requested_mode,
++            effective_device=scheduler_plan.diarization_device,
++        )
++        _best_effort_step_log(
++            step_log_callback,
++            (
++                "gpu scheduler "
++                f"asr_device={scheduler_plan.asr_device} "
++                f"diarization_device={scheduler_plan.diarization_device} "
++                f"mode={scheduler_plan.effective_mode} "
++                f"reason={scheduler_plan.reason}"
+             ),
+-            diariser(audio_path),
+         )
++        if scheduler_plan.effective_mode == "parallel":
++            (raw_segments, info, asr_execution), diarization = await asyncio.gather(
++                asyncio.to_thread(_run_asr_workflow),
++                diariser(audio_path),
++            )
++        else:
++            raw_segments, info, asr_execution = await asyncio.to_thread(_run_asr_workflow)
++            await _emit_progress(progress_callback, stage="stt", progress=0.35)
++            _cleanup_cuda_memory(scheduler_plan.asr_device)
++            if is_gpu_device(scheduler_plan.asr_device):
++                _best_effort_step_log(
++                    step_log_callback,
++                    "gpu scheduler cleared CUDA cache before diarization stage",
++                )
++            diarization = await diariser(audio_path)
+         _write_asr_glossary_artifact(
+             derived_dir=artifacts.transcript_json_path.parent,
+             recording_id=artifacts.recording_id,
+@@ -1476,7 +1689,8 @@ async def run_pipeline(
+                 ),
+             ),
+         )
+-        await _emit_progress(progress_callback, stage="stt", progress=0.35)
++        if scheduler_plan.effective_mode == "parallel":
++            await _emit_progress(progress_callback, stage="stt", progress=0.35)
+         asr_segments = normalise_asr_segments(raw_segments)
+         diarization = await _maybe_retry_dialog_diarization(
+             diariser=diariser,
+@@ -1799,4 +2013,5 @@ __all__ = [
+     "build_summary_prompts",
+     "build_structured_summary_prompts",
+     "build_summary_payload",
++    "clear_asr_model_cache",
+ ]
+diff --git a/tasks/QUEUE.md b/tasks/QUEUE.md
+index 00f1b44..f4ca67f 100644
+--- a/tasks/QUEUE.md
++++ b/tasks/QUEUE.md
+@@ -467,6 +467,6 @@ Queue (in order)
+ - Depends on: PR-GLOSSARY-CORRECTIONS-01 and PR-CALENDAR-ICS-01
+ 
+ 92) PR-GPU-SCHEDULER-01: GPU scheduling foundation: lazy diarization, sequential single-GPU execution, warm ASR cache, GPU OOM review reason, and HH:MM:SS duration formatting
+-- Status: TODO
++- Status: DONE
+ - Tasks file: tasks/PR-GPU-SCHEDULER-01.md
+ - Depends on: PR-CALENDAR-MATCHING-ICS-01 and PR-DIARIZATION-GPU-01 and PR-UI-PIPELINE-UX-01
+diff --git a/tests/conftest.py b/tests/conftest.py
+index 0aa6572..d9e1012 100644
+--- a/tests/conftest.py
++++ b/tests/conftest.py
+@@ -2,6 +2,25 @@ from __future__ import annotations
+ 
+ import os
+ 
++import pytest
++
+ _DEFAULT_TEST_LLM_MODEL = os.environ.get("LLM_MODEL", "").strip() or "test-llm-model"
+ os.environ["LLM_MODEL"] = _DEFAULT_TEST_LLM_MODEL
+ os.environ.setdefault("LAN_LLM_MODEL", _DEFAULT_TEST_LLM_MODEL)
++
++
++@pytest.fixture(autouse=True)
++def _clear_asr_model_cache_between_tests():
++    from lan_transcriber.pipeline_steps import orchestrator as pipeline
++
++    pipeline.clear_asr_model_cache()
++    if hasattr(pipeline._whisperx_transcriber_state, "transcribe_audio"):  # noqa: SLF001
++        delattr(pipeline._whisperx_transcriber_state, "transcribe_audio")  # noqa: SLF001
++    if hasattr(pipeline._whisperx_transcriber_state, "use_session_transcriber"):  # noqa: SLF001
++        delattr(pipeline._whisperx_transcriber_state, "use_session_transcriber")  # noqa: SLF001
++    yield
++    pipeline.clear_asr_model_cache()
++    if hasattr(pipeline._whisperx_transcriber_state, "transcribe_audio"):  # noqa: SLF001
++        delattr(pipeline._whisperx_transcriber_state, "transcribe_audio")  # noqa: SLF001
++    if hasattr(pipeline._whisperx_transcriber_state, "use_session_transcriber"):  # noqa: SLF001
++        delattr(pipeline._whisperx_transcriber_state, "use_session_transcriber")  # noqa: SLF001
+diff --git a/tests/test_cov_lan_app_ui_routes.py b/tests/test_cov_lan_app_ui_routes.py
+index 56f4a88..4d818b7 100644
+--- a/tests/test_cov_lan_app_ui_routes.py
++++ b/tests/test_cov_lan_app_ui_routes.py
+@@ -103,8 +103,9 @@ def test_display_helpers_cover_timezone_duration_and_prepare_recording(
+     assert ui_routes._pipeline_stage_label("custom_stage") == "Custom Stage"  # noqa: SLF001
+     assert ui_routes._format_duration_seconds(None) == "—"  # noqa: SLF001
+     assert ui_routes._format_duration_seconds(0) == "—"  # noqa: SLF001
+-    assert ui_routes._format_duration_seconds(2.0) == "2s"  # noqa: SLF001
+-    assert ui_routes._format_duration_seconds(2.345) == "2.35s"  # noqa: SLF001
++    assert ui_routes._format_duration_seconds(2.0) == "00:00:02"  # noqa: SLF001
++    assert ui_routes._format_duration_seconds(2.345) == "00:00:02"  # noqa: SLF001
++    assert ui_routes._format_duration_seconds(4699.26) == "01:18:19"  # noqa: SLF001
+     assert ui_routes._format_local_timestamp("") == "—"  # noqa: SLF001
+     assert ui_routes._format_local_timestamp("bad-timestamp") == "bad-timestamp"  # noqa: SLF001
+     assert "CET" in ui_routes._format_local_timestamp("2026-01-10T10:00:00Z")  # noqa: SLF001
+@@ -146,7 +147,7 @@ def test_display_helpers_cover_timezone_duration_and_prepare_recording(
+         "duration_sec": 3.5,
+         "touch_updated_at": False,
+     }
+-    assert prepared["duration_display"] == "3.50s"
++    assert prepared["duration_display"] == "00:00:03"
+     assert prepared["captured_at_display"].endswith("CET")
+     assert prepared["created_at_display"] == "—"
+     assert prepared["updated_at_display"] == "bad"
+@@ -167,7 +168,7 @@ def test_display_helpers_cover_timezone_duration_and_prepare_recording(
+         settings=cfg,
+     )
+     assert observed_update == {}
+-    assert prepared_existing_duration["duration_display"] == "1s"
++    assert prepared_existing_duration["duration_display"] == "00:00:01"
+ 
+ 
+ def test_prepare_recording_for_display_ignores_duration_backfill_write_errors(
+@@ -203,7 +204,7 @@ def test_prepare_recording_for_display_ignores_duration_backfill_write_errors(
+         )
+ 
+     assert prepared["duration_sec"] == 4.25
+-    assert prepared["duration_display"] == "4.25s"
++    assert prepared["duration_display"] == "00:00:04"
+     assert "Failed to backfill display duration for recording rec-helper-err-1" in caplog.text
+ 
+     monkeypatch.setattr(
+@@ -745,7 +746,7 @@ def test_snippet_message_helpers_and_display_backfill_edges(
+         {"id": recording_id, "duration_sec": None},
+         settings=cfg,
+     )
+-    assert item["duration_display"] == "12s"
++    assert item["duration_display"] == "00:00:12"
+     assert calls == [raw_dir / "audio.mp3", raw_dir / "audio.wav"]
+     assert ui_routes._snippet_warning_messages([  # noqa: SLF001
+         {"status": "rejected_degraded"},
+diff --git a/tests/test_cov_lan_app_worker_tasks_branches.py b/tests/test_cov_lan_app_worker_tasks_branches.py
+index adbe47e..efc2815 100644
+--- a/tests/test_cov_lan_app_worker_tasks_branches.py
++++ b/tests/test_cov_lan_app_worker_tasks_branches.py
+@@ -6,7 +6,7 @@ import json
+ from pathlib import Path
+ import sqlite3
+ import sys
+-from types import SimpleNamespace
++from types import ModuleType, SimpleNamespace
+ import wave
+ 
+ import pytest
+@@ -529,6 +529,7 @@ def test_pyannote_diariser_passes_optional_speaker_hint_kwargs():
+         "dialog_retry_used": False,
+         "speaker_count_before_retry": 0,
+         "speaker_count_after_retry": 0,
++        "effective_device": None,
      }
  
  
-+def _calendar_attendee_labels(value: object) -> list[str]:
-+    if not isinstance(value, list):
-+        return []
-+    labels: list[str] = []
-+    seen: set[str] = set()
-+    for row in value:
-+        if isinstance(row, dict):
-+            label = str(row.get("label") or row.get("name") or row.get("email") or "").strip()
-+        else:
-+            label = str(row or "").strip()
-+        if not label:
-+            continue
-+        key = label.lower()
-+        if key in seen:
-+            continue
-+        seen.add(key)
-+        labels.append(label)
-+    return labels
-+
-+
-+def _calendar_rationale_rows(value: object) -> list[str]:
-+    if isinstance(value, list):
-+        return [str(row).strip() for row in value if str(row).strip()]
-+    if isinstance(value, str):
-+        text = value.strip()
-+        return [text] if text else []
-+    return []
-+
-+
-+def _calendar_candidate_context(candidate: dict[str, Any], *, selected_event_id: str) -> dict[str, Any]:
-+    attendees = _calendar_attendee_labels(candidate.get("attendees"))
-+    if not attendees:
-+        attendees = _calendar_attendee_labels(candidate.get("attendee_details"))
-+    confidence_raw = candidate.get("confidence", candidate.get("score"))
-+    try:
-+        confidence_value = float(confidence_raw)
-+    except (TypeError, ValueError):
-+        confidence_value = None
-+    organizer_display = str(
-+        candidate.get("organizer")
-+        or candidate.get("organizer_name")
-+        or candidate.get("organizer_email")
-+        or ""
-+    ).strip() or None
-+    event_id = str(candidate.get("event_id") or "").strip()
-+    return {
-+        **candidate,
-+        "event_id": event_id,
-+        "selected": event_id == selected_event_id and bool(event_id),
-+        "subject_display": str(candidate.get("subject") or candidate.get("summary") or "").strip()
-+        or "Untitled event",
-+        "starts_at_display": _format_local_timestamp(candidate.get("starts_at")),
-+        "ends_at_display": _format_local_timestamp(candidate.get("ends_at")),
-+        "organizer_display": organizer_display or "—",
-+        "attendees": attendees,
-+        "attendees_preview": attendees[:4],
-+        "attendees_label": ", ".join(attendees) if attendees else "—",
-+        "confidence_value": confidence_value,
-+        "confidence_display": (
-+            f"{confidence_value:.2f}" if confidence_value is not None else "—"
-+        ),
-+        "rationale_rows": _calendar_rationale_rows(candidate.get("rationale")),
-+        "source_label": str(
-+            candidate.get("source_name") or candidate.get("source_kind") or ""
-+        ).strip()
-+        or "—",
-+    }
-+
-+
-+def _calendar_tab_context(recording_id: str, settings: AppSettings) -> dict[str, Any]:
-+    match_row = get_calendar_match(recording_id, settings=settings) or {}
-+    selected_event_id = str(match_row.get("selected_event_id") or "").strip()
-+    selected_candidate = selected_calendar_candidate(recording_id, settings=settings)
-+    selected = None
-+    if selected_candidate:
-+        selected = _calendar_candidate_context(
-+            selected_candidate,
-+            selected_event_id=selected_event_id,
-+        )
-+    candidates = [
-+        _calendar_candidate_context(candidate, selected_event_id=selected_event_id)
-+        for candidate in calendar_match_candidates(recording_id, settings=settings)
-+        if str(candidate.get("event_id") or "").strip()
-+    ]
-+    return {
-+        "selected": selected,
-+        "selected_event_id": selected_event_id or None,
-+        "selected_confidence": match_row.get("selected_confidence"),
-+        "candidates": candidates,
-+        "error_message": "",
-+    }
-+
-+
- # ---------------------------------------------------------------------------
- # UI auth shell
- # ---------------------------------------------------------------------------
-@@ -1745,6 +1857,7 @@ async def ui_recording_detail(
-     request: Request,
-     recording_id: str,
-     tab: str = Query(default="overview"),
-+    calendar_error: str = Query(default=""),
- ) -> Any:
-     rec = get_recording(recording_id, settings=_settings)
-     if rec is None:
-@@ -1752,8 +1865,9 @@ async def ui_recording_detail(
-     rec = _prepare_recording_for_display(rec, settings=_settings)
-     jobs, _ = list_jobs(settings=_settings, recording_id=recording_id, limit=100)
-     recovery_warning = _recording_recovery_warning(jobs)
--    tabs = ["overview", "project", "speakers", "language", "metrics", "log"]
-+    tabs = ["overview", "calendar", "project", "speakers", "language", "metrics", "log"]
-     current_tab = tab if tab in tabs else "overview"
-+    calendar: dict[str, Any] | None = None
-     language: dict[str, Any] | None = None
-     summary: dict[str, Any] | None = None
-     metrics: dict[str, Any] | None = None
-@@ -1761,6 +1875,10 @@ async def ui_recording_detail(
-     project: dict[str, Any] | None = None
-     glossary: dict[str, Any] | None = None
-     export_text = ""
-+    if current_tab == "calendar":
-+        calendar = _calendar_tab_context(recording_id, _settings)
-+        if calendar_error.strip():
-+            calendar["error_message"] = calendar_error.strip()
-     if current_tab == "language":
-         language = _language_tab_context(recording_id, rec, _settings)
-     if current_tab == "speakers":
-@@ -1789,6 +1907,7 @@ async def ui_recording_detail(
-             "recovery_warning": recovery_warning,
-             "tabs": tabs,
-             "current_tab": current_tab,
-+            "calendar": calendar,
-             "language": language,
-             "summary": summary,
-             "metrics": metrics,
-@@ -1856,6 +1975,50 @@ async def ui_recording_export_zip(
-     )
+@@ -664,6 +665,7 @@ def test_pyannote_diariser_retry_dialog_forces_two_speakers_once():
+         "dialog_retry_used": True,
+         "speaker_count_before_retry": 1,
+         "speaker_count_after_retry": 2,
++        "effective_device": None,
+     }
  
  
-+# ---------------------------------------------------------------------------
-+# Recording calendar selection
-+# ---------------------------------------------------------------------------
+@@ -703,13 +705,30 @@ def test_write_diarization_status_artifact_writes_payload_and_ignores_oserror(
+ 
+ 
+ def test_pyannote_diariser_rejects_non_callable_model():
+-    with pytest.raises(TypeError, match="pipeline_model must be a callable"):
++    with pytest.raises(TypeError, match="pipeline_loader is required|pipeline_model must be a callable"):
+         worker_tasks._PyannoteDiariser(None)
+ 
+     diariser = worker_tasks._PyannoteDiariser(lambda *_a, **_k: {"ok": True}, initial_profile="weird")
+     assert diariser.initial_profile == "meeting"
+ 
+ 
++def test_pyannote_diariser_rejects_invalid_lazy_pipeline_states():
++    with pytest.raises(TypeError, match="pipeline_model must be a callable"):
++        worker_tasks._PyannoteDiariser(123)
 +
++    diariser = worker_tasks._PyannoteDiariser(lambda *_a, **_k: {"ok": True})
++    diariser._pipeline_model = None
++    diariser._pipeline_loader = None
++    with pytest.raises(TypeError, match="pipeline_loader must be provided"):
++        diariser._ensure_pipeline_model()
 +
-+@ui_router.post("/ui/recordings/{recording_id}/calendar/select")
-+async def ui_select_calendar_match(
-+    recording_id: str,
-+    event_id: str = Form(default=""),
-+) -> Any:
-+    if get_recording(recording_id, settings=_settings) is None:
-+        return HTMLResponse("Not found", status_code=404)
-+
-+    clean_event_id = event_id.strip()
-+    selected_confidence: float | None = None
-+    if clean_event_id:
-+        selected_candidate = None
-+        for candidate in calendar_match_candidates(recording_id, settings=_settings):
-+            if str(candidate.get("event_id") or "").strip() == clean_event_id:
-+                selected_candidate = candidate
-+                break
-+        if selected_candidate is None:
-+            return HTMLResponse("Calendar candidate not found", status_code=422)
-+        try:
-+            selected_confidence = float(
-+                selected_candidate.get("confidence", selected_candidate.get("score"))
-+            )
-+        except (TypeError, ValueError):
-+            selected_confidence = None
-+
-+    set_calendar_match_selection(
-+        recording_id=recording_id,
-+        event_id=clean_event_id or None,
-+        selected_confidence=selected_confidence,
-+        settings=_settings,
++    lazy_diariser = worker_tasks._PyannoteDiariser(
++        pipeline_loader=lambda: object(),
 +    )
-+    refresh_recording_routing(
-+        recording_id,
-+        settings=_settings,
-+        apply_workflow=False,
-+    )
-+    return RedirectResponse(f"/recordings/{recording_id}?tab=calendar", status_code=303)
++    with pytest.raises(TypeError, match="pipeline_model must be a callable"):
++        lazy_diariser._ensure_pipeline_model()
 +
 +
- # ---------------------------------------------------------------------------
- # Recording speaker assignment + snippet audio
- # ---------------------------------------------------------------------------
-diff --git a/lan_app/worker_tasks.py b/lan_app/worker_tasks.py
-index 0790722..0eceb25 100644
---- a/lan_app/worker_tasks.py
-+++ b/lan_app/worker_tasks.py
-@@ -34,6 +34,7 @@ from lan_transcriber.pipeline_steps.diarization_quality import (
- )
+ def test_build_diariser_uses_fallback_when_pyannote_is_unavailable(
+     monkeypatch: pytest.MonkeyPatch,
+ ):
+@@ -745,6 +764,12 @@ def test_build_diariser_applies_profile_defaults_from_settings(
+     model = _Model()
+     cfg = _db_settings(tmp_path)
+     cfg.diarization_profile = "dialog"
++    pyannote_audio = ModuleType("pyannote.audio")
++    pyannote_audio.Pipeline = object()  # type: ignore[attr-defined]
++    pyannote_pkg = ModuleType("pyannote")
++    pyannote_pkg.audio = pyannote_audio  # type: ignore[attr-defined]
++    monkeypatch.setitem(sys.modules, "pyannote", pyannote_pkg)
++    monkeypatch.setitem(sys.modules, "pyannote.audio", pyannote_audio)
  
- from .asr_glossary import build_recording_asr_glossary
-+from .calendar.matching import calendar_summary_context, refresh_recording_calendar_match
- from .config import AppSettings
- from .conversation_metrics import refresh_recording_metrics
- from .constants import (
-@@ -57,7 +58,6 @@ from .db import (
-     fail_job,
-     fail_job_if_started,
-     finish_job_if_started,
--    get_calendar_match,
-     get_job,
-     get_recording,
-     init_db,
-@@ -574,44 +574,10 @@ def _load_calendar_summary_context(
-     recording_id: str,
-     settings: AppSettings,
- ) -> tuple[str | None, list[str]]:
--    row = get_calendar_match(recording_id, settings=settings) or {}
--    selected_event_id = str(row.get("selected_event_id") or "").strip()
--    if not selected_event_id:
--        return None, []
--    raw_candidates = row.get("candidates_json")
--    if isinstance(raw_candidates, list):
--        candidates = raw_candidates
--    elif isinstance(raw_candidates, str):
--        try:
--            parsed = json.loads(raw_candidates or "[]")
--        except ValueError:
--            return None, []
--        if not isinstance(parsed, list):
--            return None, []
--        candidates = parsed
--    else:
--        return None, []
--
--    selected: dict[str, Any] | None = None
--    for item in candidates:
--        if not isinstance(item, dict):
--            continue
--        if str(item.get("event_id") or "").strip() == selected_event_id:
--            selected = item
--            break
--    if selected is None:
--        return None, []
--
--    title = str(selected.get("subject") or "").strip() or None
--    attendees_raw = selected.get("attendees")
--    attendees = []
--    if isinstance(attendees_raw, list):
--        attendees = [
--            str(attendee).strip()
--            for attendee in attendees_raw
--            if str(attendee).strip()
--        ]
--    return title, attendees
-+    return calendar_summary_context(
-+        recording_id,
-+        settings=settings,
-+    )
+     monkeypatch.setattr(worker_tasks, "load_pyannote_pipeline", lambda **_kwargs: model)
  
- 
- class _FallbackDiariser:
-@@ -1016,6 +982,17 @@ def _run_precheck_pipeline(
-             duration_sec=precheck.duration_sec,
-             settings=settings,
-         )
-+    try:
-+        refresh_recording_calendar_match(
-+            recording_id,
-+            settings=settings,
-+        )
-+    except Exception:
-+        _logger.warning(
-+            "calendar matching refresh failed for recording %s",
-+            recording_id,
-+            exc_info=True,
-+        )
-     _append_step_log(
-         log_path,
-         (
-diff --git a/tasks/QUEUE.md b/tasks/QUEUE.md
-index 66bdc8e..1470e17 100644
---- a/tasks/QUEUE.md
-+++ b/tasks/QUEUE.md
-@@ -462,6 +462,6 @@ Queue (in order)
- - Depends on: PR-SNIPPETS-PURITY-01 and PR-ASR-MULTILINGUAL-01 and PR-CALENDAR-ICS-01
- 
- 91) PR-CALENDAR-MATCHING-ICS-01: Reliable ICS calendar matching: attendee parsing, sync boundary fixes, runtime calendar_matches population, manual override UI, and downstream summary/glossary context
--- Status: TODO
-+- Status: DONE
- - Tasks file: tasks/PR-CALENDAR-MATCHING-ICS-01.md
- - Depends on: PR-GLOSSARY-CORRECTIONS-01 and PR-CALENDAR-ICS-01
-diff --git a/tests/test_calendar_ics.py b/tests/test_calendar_ics.py
-index 0d8840b..2d1935c 100644
---- a/tests/test_calendar_ics.py
-+++ b/tests/test_calendar_ics.py
-@@ -7,10 +7,16 @@ from fastapi.testclient import TestClient
- import pytest
- 
- from lan_app import api
-+from lan_app.calendar import ics as ics_module
- from lan_app.calendar import service as calendar_service
- from lan_app.calendar.ics import parse_ics_events
- from lan_app.config import AppSettings
--from lan_app.db import init_db
-+from lan_app.db import (
-+    create_calendar_source,
-+    get_calendar_match,
-+    init_db,
-+    replace_calendar_events_for_window,
-+)
- 
- 
- def _cfg(tmp_path: Path) -> AppSettings:
-@@ -37,6 +43,9 @@ def test_parse_ics_timezone_fixture_expands_to_utc():
-     assert events[0]["starts_at"] == "2026-02-10T08:00:00Z"
-     assert events[0]["ends_at"] == "2026-02-10T09:00:00Z"
-     assert events[0]["organizer"] == "Alice Example"
-+    assert events[0]["organizer_name"] == "Alice Example"
-+    assert events[0]["organizer_email"] == "alice@example.com"
-+    assert events[0]["attendees"] == []
- 
- 
- def test_parse_ics_recurrence_fixture_expands_weekly_instances():
-@@ -58,6 +67,50 @@ def test_parse_ics_recurrence_fixture_expands_weekly_instances():
+@@ -758,6 +783,98 @@ def test_build_diariser_applies_profile_defaults_from_settings(
      ]
  
  
-+def test_parse_ics_recurring_event_retains_attendees_and_organizer():
-+    payload = "\n".join(
-+        [
-+            "BEGIN:VCALENDAR",
-+            "VERSION:2.0",
-+            "PRODID:-//LAN Transcriber//Calendar Recurrence Attendees Test//EN",
-+            "BEGIN:VEVENT",
-+            "UID:weekly-attendees-1",
-+            "DTSTAMP:20260201T120000Z",
-+            "DTSTART:20260201T120000Z",
-+            "DTEND:20260201T130000Z",
-+            "RRULE:FREQ=WEEKLY;COUNT=3",
-+            "SUMMARY:Weekly planning",
-+            "ORGANIZER;CN=Alex Example:mailto:alex@example.com",
-+            "ATTENDEE;CN=Priya Kapoor:mailto:priya@example.com",
-+            "ATTENDEE;CN=Marco Rossi:mailto:marco@example.com",
-+            "END:VEVENT",
-+            "END:VCALENDAR",
-+        ]
-+    )
-+    events = parse_ics_events(
-+        payload,
-+        window_start=datetime(2026, 2, 1, tzinfo=timezone.utc),
-+        window_end=datetime(2026, 2, 28, tzinfo=timezone.utc),
-+    )
-+
-+    assert len(events) == 3
-+    for event in events:
-+        assert event["organizer"] == "Alex Example"
-+        assert event["organizer_email"] == "alex@example.com"
-+        assert event["attendees"] == [
-+            {
-+                "label": "Priya Kapoor",
-+                "name": "Priya Kapoor",
-+                "email": "priya@example.com",
-+            },
-+            {
-+                "label": "Marco Rossi",
-+                "name": "Marco Rossi",
-+                "email": "marco@example.com",
-+            },
-+        ]
-+
-+
- def test_parse_ics_floating_datetimes_use_calendar_timezone():
-     payload = "\n".join(
-         [
-@@ -85,6 +138,43 @@ def test_parse_ics_floating_datetimes_use_calendar_timezone():
-     assert events[0]["ends_at"] == "2026-02-10T09:00:00Z"
- 
- 
-+def test_ics_private_participant_helpers_cover_empty_and_duplicate_inputs():
-+    assert ics_module._participant_email("") is None  # noqa: SLF001
-+    assert ics_module._participant_email("mailto:alex@example.com") == "alex@example.com"  # noqa: SLF001
-+
-+    class _BlankParticipant:
-+        params: dict[str, str] = {}
-+
-+        def __str__(self) -> str:
-+            return ""
-+
-+    assert ics_module._participant_payload(_BlankParticipant()) is None  # noqa: SLF001
-+    assert ics_module._participant_payload(  # noqa: SLF001
-+        type("Participant", (), {"params": {"CN": "Alex"}, "__str__": lambda self: ""})()
-+    ) == {
-+        "label": "Alex",
-+        "name": "Alex",
-+    }
-+
-+    class _Component:
-+        def get(self, key: str):  # noqa: ANN001
-+            if key != "ATTENDEE":
-+                return None
-+            return [
-+                type("Participant", (), {"params": {"CN": "Alex"}, "__str__": lambda self: "mailto:alex@example.com"})(),
-+                type("Participant", (), {"params": {"CN": "Alex"}, "__str__": lambda self: "mailto:alex@example.com"})(),
-+                type("Participant", (), {"params": {}, "__str__": lambda self: ""})(),
-+            ]
-+
-+    assert ics_module._attendees(_Component()) == [  # noqa: SLF001
-+        {
-+            "label": "Alex",
-+            "name": "Alex",
-+            "email": "alex@example.com",
-+        }
-+    ]
-+
-+
- @pytest.fixture()
- def calendar_client(tmp_path: Path, monkeypatch):
-     cfg = _cfg(tmp_path)
-@@ -163,6 +253,69 @@ def test_calendar_source_create_sync_and_events(calendar_client: TestClient, mon
-     assert body["items"][0]["summary"] == "API Calendar Event"
- 
- 
-+def test_upload_runtime_populates_calendar_matches(calendar_client: TestClient, monkeypatch):
-+    cfg = api._settings
-+    source = create_calendar_source(
-+        name="Team Calendar",
-+        kind="file",
-+        file_ics="BEGIN:VCALENDAR\nEND:VCALENDAR",
-+        settings=cfg,
-+    )
-+    replace_calendar_events_for_window(
-+        source_id=int(source["id"]),
-+        window_start="2026-03-01T00:00:00Z",
-+        window_end="2026-03-02T00:00:00Z",
-+        events=[
-+            {
-+                "uid": "evt-upload-1",
-+                "starts_at": "2026-03-01T10:00:00Z",
-+                "ends_at": "2026-03-01T11:00:00Z",
-+                "summary": "Roadmap Review",
-+                "organizer": "Alex",
-+                "attendees": [{"label": "Priya Kapoor"}],
-+                "updated_at": "2026-03-01T00:00:00Z",
-+            }
-+        ],
-+        settings=cfg,
-+    )
-+    monkeypatch.setattr(api, "infer_captured_at", lambda *_a, **_k: "2026-03-01T10:05:00Z")
-+    monkeypatch.setattr(
-+        api,
-+        "enqueue_recording_job",
-+        lambda *_a, **_k: type("Job", (), {"job_id": "job-upload-1"})(),
-+    )
-+
-+    response = calendar_client.post(
-+        "/api/uploads",
-+        files={"file": ("roadmap-review.mp3", b"fake-mp3", "audio/mpeg")},
-+    )
-+    assert response.status_code == 200
-+    recording_id = response.json()["recording_id"]
-+    row = get_calendar_match(recording_id, settings=cfg)
-+    assert row is not None
-+    assert row["selected_event_id"] == f"{source['id']}:evt-upload-1:2026-03-01T10:00:00Z"
-+    assert row["candidates_json"][0]["subject"] == "Roadmap Review"
-+
-+
-+def test_upload_runtime_ignores_calendar_matching_failures(
-+    calendar_client: TestClient,
-+    monkeypatch,
++def test_build_diariser_loads_pipeline_lazily_and_forwards_device_policy(
++    monkeypatch: pytest.MonkeyPatch,
 +):
-+    monkeypatch.setattr(api, "refresh_recording_calendar_match", lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("boom")))
-+    monkeypatch.setattr(api, "infer_captured_at", lambda *_a, **_k: "2026-03-01T10:05:00Z")
-+    monkeypatch.setattr(
-+        api,
-+        "enqueue_recording_job",
-+        lambda *_a, **_k: type("Job", (), {"job_id": "job-upload-fail"})(),
++    class _Model:
++        def __init__(self):
++            self.calls: list[tuple[object, dict[str, object]]] = []
++            self._lan_effective_device = "cpu"
++
++        def __call__(self, payload: object, **kwargs: object):
++            self.calls.append((payload, dict(kwargs)))
++            return {"ok": True}
++
++    pyannote_audio = ModuleType("pyannote.audio")
++    pyannote_audio.Pipeline = object()  # type: ignore[attr-defined]
++    pyannote_pkg = ModuleType("pyannote")
++    pyannote_pkg.audio = pyannote_audio  # type: ignore[attr-defined]
++    monkeypatch.setitem(sys.modules, "pyannote", pyannote_pkg)
++    monkeypatch.setitem(sys.modules, "pyannote.audio", pyannote_audio)
++
++    model = _Model()
++    load_calls: list[dict[str, object]] = []
++
++    def _load_pyannote_pipeline(**kwargs):
++        load_calls.append(dict(kwargs))
++        return model
++
++    monkeypatch.setattr(worker_tasks, "load_pyannote_pipeline", _load_pyannote_pipeline)
++
++    diariser = worker_tasks._build_diariser(
++        duration_sec=30.0,
++        model_id="repo/test",
++        settings=SimpleNamespace(
++            diarization_profile="auto",
++            diarization_min_speakers=None,
++            diarization_max_speakers=None,
++            diarization_dialog_retry_min_duration_seconds=1.0,
++            diarization_dialog_retry_min_turns=2,
++            diarization_device="cpu",
++            gpu_scheduler_mode="auto",
++        ),
 +    )
 +
-+    response = calendar_client.post(
-+        "/api/uploads",
-+        files={"file": ("calendar-fail.mp3", b"fake-mp3", "audio/mpeg")},
-+    )
-+    assert response.status_code == 200
-+
-+
- def test_calendar_source_rejects_non_http_url(calendar_client: TestClient):
-     response = calendar_client.post(
-         "/api/calendar/sources",
-diff --git a/tests/test_cov_lan_app_db.py b/tests/test_cov_lan_app_db.py
-index 29e9686..8b21437 100644
---- a/tests/test_cov_lan_app_db.py
-+++ b/tests/test_cov_lan_app_db.py
-@@ -961,12 +961,15 @@ def test_calendar_sources_events_matches_and_metrics_edges(tmp_path: Path):
-             },
-             {
-                 "uid": "event-1",
--                "starts_at": "2026-03-01T10:00:00Z",
--                "ends_at": "2026-03-01T11:00:00Z",
-+                "starts_at": "2026-03-01T23:00:00Z",
-+                "ends_at": "2026-03-02T01:00:00Z",
-                 "summary": " Standup ",
-                 "description": " notes ",
-                 "location": " room ",
-                 "organizer": " owner@example.com ",
-+                "organizer_name": " Owner Example ",
-+                "organizer_email": " owner@example.com ",
-+                "attendees": [{"name": "Alex", "email": "alex@example.com", "label": "Alex"}],
-                 "all_day": True,
-             },
-         ],
-@@ -989,6 +992,39 @@ def test_calendar_sources_events_matches_and_metrics_edges(tmp_path: Path):
-     )
-     assert len(rows) == 1
-     assert rows[0]["uid"] == "event-1"
-+    assert rows[0]["organizer_name"] == "Owner Example"
-+    assert rows[0]["organizer_email"] == "owner@example.com"
-+    assert rows[0]["attendees_json"] == [
++    assert load_calls == []
++    result = asyncio.run(diariser(Path("/tmp/lazy.wav")))
++    assert result == {"ok": True}
++    assert load_calls == [
 +        {
-+            "name": "Alex",
-+            "email": "alex@example.com",
-+            "label": "Alex",
++            "model_id": "repo/test",
++            "device": "cpu",
++            "scheduler_mode": "auto",
 +        }
 +    ]
++    assert diariser.last_run_metadata["effective_device"] == "cpu"
 +
-+    replaced = db_module.replace_calendar_events_for_window(
-+        source_id=source_id,
-+        window_start="2026-03-02T00:00:00Z",
-+        window_end="2026-03-04T00:00:00Z",
-+        events=[
-+            {
-+                "uid": "event-2",
-+                "starts_at": "2026-03-02T09:00:00Z",
-+                "ends_at": "2026-03-02T10:00:00Z",
-+                "summary": "Boundary replacement",
-+                "updated_at": "2026-03-01T00:00:00Z",
-+            }
-+        ],
-+        settings=cfg,
-+    )
-+    assert replaced == 1
-+    boundary_rows = db_module.list_calendar_events(
-+        starts_from="2026-03-01T00:00:00Z",
-+        ends_to="2026-03-04T00:00:00Z",
-+        source_id=source_id,
-+        settings=cfg,
-+    )
-+    assert [row["uid"] for row in boundary_rows] == ["event-2"]
- 
-     inserted_match = db_module.set_calendar_match_selection(
-         recording_id="rec-db-cov-calendar-1",
-diff --git a/tests/test_cov_lan_app_metrics_routing.py b/tests/test_cov_lan_app_metrics_routing.py
-index 42b0575..4efc254 100644
---- a/tests/test_cov_lan_app_metrics_routing.py
-+++ b/tests/test_cov_lan_app_metrics_routing.py
-@@ -404,18 +404,15 @@ def test_routing_private_helpers_cover_scoring_rationale_signals_and_calendar_pa
- 
-     monkeypatch.setattr(
-         routing,
--        "get_calendar_match",
--        lambda *_args, **_kwargs: {"selected_event_id": "evt-1", "candidates_json": {}},
-+        "selected_calendar_candidate",
-+        lambda *_args, **_kwargs: {},
-     )
-     assert routing._selected_calendar_candidate("rec-routing-cal-1", settings=cfg) == {}  # noqa: SLF001
- 
-     monkeypatch.setattr(
-         routing,
--        "get_calendar_match",
--        lambda *_args, **_kwargs: {
--            "selected_event_id": "evt-1",
--            "candidates_json": ["not-a-dict", {"event_id": "evt-2", "subject": "Other"}],
--        },
-+        "selected_calendar_candidate",
-+        lambda *_args, **_kwargs: {},
-     )
-     assert routing._selected_calendar_candidate("rec-routing-cal-2", settings=cfg) == {}  # noqa: SLF001
- 
-diff --git a/tests/test_cov_lan_app_ui_routes.py b/tests/test_cov_lan_app_ui_routes.py
-index 8300a9a..56f4a88 100644
---- a/tests/test_cov_lan_app_ui_routes.py
-+++ b/tests/test_cov_lan_app_ui_routes.py
-@@ -23,6 +23,7 @@ from lan_app.db import (
-     create_recording,
-     create_voice_profile,
-     init_db,
-+    upsert_calendar_match,
- )
- from lan_app.jobs import DuplicateRecordingJobError
- 
-@@ -1014,6 +1015,84 @@ def test_resummarize_recording_default_turn_and_attendees_paths(
-     assert any(path.name == "summary.json" for path in writes)
- 
- 
-+def test_resummarize_recording_prefers_selected_calendar_context(
++
++def test_log_gpu_execution_policy_writes_step_log(
 +    tmp_path: Path,
 +    monkeypatch: pytest.MonkeyPatch,
 +) -> None:
-+    cfg = _cfg(tmp_path)
-+    init_db(cfg)
-+    create_recording(
-+        "rec-resummarize-selected-cal",
-+        source="upload",
-+        source_filename="selected.wav",
-+        status=RECORDING_STATUS_READY,
-+        settings=cfg,
++    log_path = tmp_path / "step-precheck.log"
++    pipeline_settings = worker_tasks.PipelineSettings(
++        recordings_root=tmp_path / "recordings",
++        tmp_root=tmp_path / "tmp",
++        speaker_db=tmp_path / "aliases.yaml",
++        llm_model="model",
++        asr_device="cpu",
++        diarization_device="cuda:1",
++        gpu_scheduler_mode="parallel",
 +    )
-+    upsert_calendar_match(
-+        recording_id="rec-resummarize-selected-cal",
-+        candidates=[
-+            {
-+                "event_id": "evt-selected",
-+                "subject": "Selected Calendar Event",
-+                "attendee_details": [{"label": "Priya Kapoor"}],
-+            }
-+        ],
-+        selected_event_id="evt-selected",
-+        selected_confidence=0.9,
-+        settings=cfg,
-+    )
-+    derived = cfg.recordings_root / "rec-resummarize-selected-cal" / "derived"
-+    derived.mkdir(parents=True, exist_ok=True)
-+    (derived / "transcript.json").write_text(
-+        json.dumps(
-+            {
-+                "text": "hello world",
-+                "calendar_title": "Stale title",
-+                "calendar_attendees": ["Stale attendee"],
-+            }
++    monkeypatch.setattr(
++        worker_tasks,
++        "collect_cuda_runtime_facts",
++        lambda: SimpleNamespace(
++            is_available=True,
++            device_count=2,
++            visible_devices="0,1",
++            torch_cuda_version="12.4",
 +        ),
-+        encoding="utf-8",
 +    )
-+    (derived / "summary.json").write_text(json.dumps({"friendly": 0}), encoding="utf-8")
 +
-+    monkeypatch.setattr(ui_routes, "_fallback_speaker_turns_from_transcript", lambda *_a, **_k: [])
-+    monkeypatch.setattr(
-+        ui_routes,
-+        "PipelineSettings",
-+        lambda **kwargs: type("S", (), {"llm_model": "test-model", **kwargs})(),
++    worker_tasks._log_gpu_execution_policy(  # noqa: SLF001
++        pipeline_settings=pipeline_settings,
++        diariser=SimpleNamespace(mode="pyannote"),
++        log_path=log_path,
 +    )
-+    prompts_seen: dict[str, Any] = {}
 +
-+    def _prompts(turns: list[dict[str, Any]], *_a: Any, **kwargs: Any) -> tuple[str, str]:
-+        prompts_seen["turns"] = turns
-+        prompts_seen["title"] = kwargs.get("calendar_title")
-+        prompts_seen["attendees"] = kwargs.get("calendar_attendees")
-+        return "sys", "usr"
-+
-+    class _FakeLLM:
-+        async def generate(self, **_kwargs: Any) -> dict[str, str]:
-+            return {"content": '{"summary":"ok"}'}
-+
-+    monkeypatch.setattr(ui_routes, "build_structured_summary_prompts", _prompts)
-+    monkeypatch.setattr(ui_routes, "LLMClient", lambda: _FakeLLM())
-+    monkeypatch.setattr(
-+        ui_routes,
-+        "build_summary_payload",
-+        lambda **_k: {"summary": "ok", "friendly": 0},
-+    )
-+    monkeypatch.setattr(ui_routes, "atomic_write_json", lambda *_a, **_k: None)
-+    monkeypatch.setattr(ui_routes, "refresh_recording_metrics", lambda *_a, **_k: None)
-+
-+    ui_routes._resummarize_recording(  # noqa: SLF001
-+        "rec-resummarize-selected-cal",
-+        settings=cfg,
-+        target_summary_language=None,
-+    )
-+    assert prompts_seen["turns"][0]["speaker"] == "S1"
-+    assert prompts_seen["title"] == "Selected Calendar Event"
-+    assert prompts_seen["attendees"] == ["Priya Kapoor"]
++    log_text = log_path.read_text(encoding="utf-8")
++    assert "gpu policy" in log_text
++    assert "asr_device=cpu" in log_text
++    assert "diarization_device=cuda:1" in log_text
 +
 +
- def test_resummarize_recording_uses_existing_speaker_turns(
+ def test_run_precheck_pipeline_records_step_logs_and_explicit_summary_target(
      tmp_path: Path,
      monkeypatch: pytest.MonkeyPatch,
-@@ -1079,6 +1158,91 @@ def test_datetime_and_calendar_parse_errors(tmp_path: Path, monkeypatch: pytest.
-         )
- 
- 
-+def test_calendar_ui_helper_context_paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-+    cfg = _cfg(tmp_path)
-+    init_db(cfg)
-+    assert ui_routes._calendar_attendee_labels("bad") == []  # noqa: SLF001
-+    assert ui_routes._calendar_attendee_labels(  # noqa: SLF001
-+        [{"label": ""}, {"label": "Alex"}, {"name": "Alex"}, "Priya", "Priya"]
-+    ) == ["Alex", "Priya"]
-+    assert ui_routes._calendar_rationale_rows(123) == []  # noqa: SLF001
-+    assert ui_routes._calendar_rationale_rows(" one ") == ["one"]  # noqa: SLF001
-+    candidate = ui_routes._calendar_candidate_context(  # noqa: SLF001
-+        {
-+            "event_id": "evt-1",
-+            "subject": "Calendar event",
-+            "starts_at": "2026-03-01T10:00:00Z",
-+            "ends_at": "2026-03-01T11:00:00Z",
-+            "attendee_details": [{"label": "Alex"}],
-+            "source_kind": "file",
-+            "rationale": "manual",
-+        },
-+        selected_event_id="evt-1",
-+    )
-+    assert candidate["selected"] is True
-+    assert candidate["attendees_label"] == "Alex"
-+    assert candidate["source_label"] == "file"
-+
-+    monkeypatch.setattr(
-+        ui_routes,
-+        "get_calendar_match",
-+        lambda *_a, **_k: {"selected_event_id": "evt-1", "selected_confidence": 0.7},
-+    )
-+    monkeypatch.setattr(
-+        ui_routes,
-+        "selected_calendar_candidate",
-+        lambda *_a, **_k: {"event_id": "evt-1", "subject": "Selected"},
-+    )
-+    monkeypatch.setattr(
-+        ui_routes,
-+        "calendar_match_candidates",
-+        lambda *_a, **_k: [{"event_id": "evt-1", "subject": "Selected"}],
-+    )
-+    context = ui_routes._calendar_tab_context("rec-helper", cfg)  # noqa: SLF001
-+    assert context["selected"]["subject_display"] == "Selected"
-+    assert context["candidates"][0]["selected"] is True
-+
-+
-+def test_calendar_detail_error_and_invalid_confidence_paths(
-+    client: tuple[AppSettings, TestClient],
-+    monkeypatch: pytest.MonkeyPatch,
-+) -> None:
-+    cfg, c = client
-+    _seed_recording(cfg, "rec-calendar-ui-edge")
-+    monkeypatch.setattr(
-+        ui_routes,
-+        "get_calendar_match",
-+        lambda *_a, **_k: {"selected_event_id": "", "selected_confidence": None},
-+    )
-+    monkeypatch.setattr(ui_routes, "selected_calendar_candidate", lambda *_a, **_k: {})
-+    monkeypatch.setattr(ui_routes, "calendar_match_candidates", lambda *_a, **_k: [])
-+    detail = c.get("/recordings/rec-calendar-ui-edge?tab=calendar&calendar_error=Need+review")
-+    assert detail.status_code == 200
-+    assert "Need review" in detail.text
-+
-+    monkeypatch.setattr(
-+        ui_routes,
-+        "calendar_match_candidates",
-+        lambda *_a, **_k: [
-+            {"event_id": "evt-other", "score": 0.1},
-+            {"event_id": "evt-edge", "score": "bad"},
-+        ],
-+    )
-+    captured: dict[str, Any] = {}
-+    monkeypatch.setattr(
-+        ui_routes,
-+        "set_calendar_match_selection",
-+        lambda **kwargs: captured.update(kwargs) or kwargs,
-+    )
-+    monkeypatch.setattr(ui_routes, "refresh_recording_routing", lambda *_a, **_k: {})
-+    selected = c.post(
-+        "/ui/recordings/rec-calendar-ui-edge/calendar/select",
-+        data={"event_id": "evt-edge"},
-+    )
-+    assert selected.status_code == 303
-+    assert captured["selected_confidence"] is None
-+
-+
- def test_auth_route_edge_paths(client: tuple[AppSettings, TestClient], monkeypatch: pytest.MonkeyPatch) -> None:
-     _cfg, c = client
-     monkeypatch.setattr(ui_routes, "auth_enabled", lambda *_a, **_k: False)
-@@ -1418,6 +1582,16 @@ def test_calendar_route_edge_paths(
-     assert failed_sync.status_code == 303
-     assert "error=" in failed_sync.headers["location"]
- 
-+    _seed_recording(cfg, "rec-calendar-select-edge")
-+    missing_recording = c.post("/ui/recordings/missing/calendar/select", data={})
-+    assert missing_recording.status_code == 404
-+
-+    bad_select = c.post(
-+        "/ui/recordings/rec-calendar-select-edge/calendar/select",
-+        data={"event_id": "evt-missing"},
-+    )
-+    assert bad_select.status_code == 422
-+
- 
- def test_queue_action_error_paths(
-     client: tuple[AppSettings, TestClient],
-diff --git a/tests/test_cov_lan_app_worker_tasks_branches.py b/tests/test_cov_lan_app_worker_tasks_branches.py
-index 2df55e0..adbe47e 100644
---- a/tests/test_cov_lan_app_worker_tasks_branches.py
-+++ b/tests/test_cov_lan_app_worker_tasks_branches.py
-@@ -382,32 +382,29 @@ def test_load_calendar_summary_context_handles_invalid_candidate_shapes(
- 
-     monkeypatch.setattr(
-         worker_tasks,
--        "get_calendar_match",
--        lambda *_a, **_k: {"selected_event_id": "evt-1", "candidates_json": "{bad"},
-+        "calendar_summary_context",
-+        lambda *_a, **_k: (None, []),
+@@ -1166,6 +1283,14 @@ def test_review_reason_helpers_cover_exception_and_routing_paths(tmp_path: Path)
      )
-     assert worker_tasks._load_calendar_summary_context("rec-cal-1", cfg) == (None, [])
+     assert empty[0] == "llm_empty_content"
  
-     monkeypatch.setattr(
-         worker_tasks,
--        "get_calendar_match",
--        lambda *_a, **_k: {"selected_event_id": "evt-1", "candidates_json": "{}"},
-+        "calendar_summary_context",
-+        lambda *_a, **_k: (None, []),
-     )
-     assert worker_tasks._load_calendar_summary_context("rec-cal-2", cfg) == (None, [])
++    gpu_oom = worker_tasks._review_reason_from_exception(  # noqa: SLF001
++        RuntimeError("CUDA out of memory while loading faster-whisper")
++    )
++    assert gpu_oom == (
++        "gpu_oom",
++        "The worker ran out of GPU memory while loading or running a heavy model; manual review required.",
++    )
++
+     generic = worker_tasks._review_reason_from_exception(RuntimeError("boom"))  # noqa: SLF001
+     assert generic[0] == "job_retry_limit_reached"
  
-     monkeypatch.setattr(
-         worker_tasks,
--        "get_calendar_match",
--        lambda *_a, **_k: {"selected_event_id": "evt-1", "candidates_json": 123},
-+        "calendar_summary_context",
-+        lambda *_a, **_k: (None, []),
-     )
-     assert worker_tasks._load_calendar_summary_context("rec-cal-3", cfg) == (None, [])
- 
-     monkeypatch.setattr(
-         worker_tasks,
--        "get_calendar_match",
--        lambda *_a, **_k: {
--            "selected_event_id": "evt-1",
--            "candidates_json": '[{"event_id":"evt-1","subject":"Team Sync","attendees":[]}]',
--        },
-+        "calendar_summary_context",
-+        lambda *_a, **_k: ("Team Sync", []),
-     )
-     assert worker_tasks._load_calendar_summary_context("rec-cal-3b", cfg) == (
-         "Team Sync",
-@@ -416,11 +413,8 @@ def test_load_calendar_summary_context_handles_invalid_candidate_shapes(
- 
-     monkeypatch.setattr(
-         worker_tasks,
--        "get_calendar_match",
--        lambda *_a, **_k: {
--            "selected_event_id": "evt-1",
--            "candidates_json": ["not-dict", {"event_id": "evt-2"}],
--        },
-+        "calendar_summary_context",
-+        lambda *_a, **_k: (None, []),
-     )
-     assert worker_tasks._load_calendar_summary_context("rec-cal-4", cfg) == (None, [])
- 
-@@ -432,13 +426,8 @@ def test_load_calendar_summary_context_returns_title_without_attendees_list(
-     cfg = _db_settings(tmp_path)
-     monkeypatch.setattr(
-         worker_tasks,
--        "get_calendar_match",
--        lambda *_a, **_k: {
--            "selected_event_id": "evt-1",
--            "candidates_json": [
--                {"event_id": "evt-1", "subject": "Weekly Sync", "attendees": "not-a-list"}
--            ],
--        },
-+        "calendar_summary_context",
-+        lambda *_a, **_k: ("Weekly Sync", []),
-     )
- 
-     assert worker_tasks._load_calendar_summary_context("rec-cal-5", cfg) == (
-@@ -981,6 +970,83 @@ def test_run_precheck_pipeline_uses_sanitized_audio_for_precheck_and_pipeline(
-     assert recording["duration_sec"] == 30.0
+diff --git a/tests/test_cov_lan_transcriber_extra_pipeline.py b/tests/test_cov_lan_transcriber_extra_pipeline.py
+index 0a41597..50ea6d3 100644
+--- a/tests/test_cov_lan_transcriber_extra_pipeline.py
++++ b/tests/test_cov_lan_transcriber_extra_pipeline.py
+@@ -797,6 +797,159 @@ class _FakeLLM:
+         }
  
  
-+def test_run_precheck_pipeline_survives_calendar_refresh_failures(
++@pytest.mark.asyncio
++async def test_run_pipeline_uses_sequential_scheduler_for_shared_gpu(
 +    tmp_path: Path,
 +    monkeypatch: pytest.MonkeyPatch,
 +) -> None:
-+    cfg = _db_settings(tmp_path)
-+    init_db(cfg)
-+    create_recording(
-+        "rec-calendar-refresh-fail-1",
-+        source="test",
-+        source_filename="calendar-refresh.wav",
-+        settings=cfg,
-+    )
++    events: list[str] = []
++    step_log: list[str] = []
 +
-+    raw_audio = cfg.recordings_root / "rec-calendar-refresh-fail-1" / "raw" / "audio.wav"
-+    raw_audio.parent.mkdir(parents=True, exist_ok=True)
-+    _write_pcm_wav(raw_audio)
++    class _TrackingDiariser:
++        mode = "pyannote"
++        last_run_metadata: dict[str, Any] = {}
 +
-+    monkeypatch.setattr(worker_tasks, "_resolve_raw_audio_path", lambda *_a, **_k: raw_audio)
-+    monkeypatch.setattr(worker_tasks, "sanitize_audio_for_pipeline", lambda src, _dst: src)
++        async def __call__(self, _audio_path: Path):
++            events.append("diar")
++            return _annotation_from_segments((0.0, 1.0, "S1"))
++
 +    monkeypatch.setattr(
-+        worker_tasks,
-+        "run_precheck",
-+        lambda *_a, **_k: PrecheckResult(
-+            duration_sec=20.0,
-+            speech_ratio=0.5,
-+            quarantine_reason=None,
++        pipeline,
++        "_whisperx_asr",
++        lambda *_a, **_k: (
++            [{"start": 0.0, "end": 1.0, "text": "hello"}],
++            {"language": "en", "language_probability": 0.9},
 +        ),
 +    )
 +    monkeypatch.setattr(
-+        worker_tasks,
-+        "refresh_recording_calendar_match",
-+        lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("calendar boom")),
++        pipeline,
++        "run_language_aware_asr",
++        lambda audio_path, *, override_lang, configured_mode, tmp_root, transcribe_fn, step_log_callback=None: (
++            events.append("asr") or transcribe_fn(audio_path, override_lang) + ({
++                "used_multilingual_path": False,
++                "selected_mode": "single_language",
++                "selection_reason": "test",
++                "chunks": [],
++            },)
++        ),
 +    )
 +    monkeypatch.setattr(
-+        worker_tasks,
-+        "_build_diariser",
-+        lambda *_a, **_k: worker_tasks._FallbackDiariser(20.0),
++        pipeline,
++        "_resolve_scheduler_plan",
++        lambda _cfg, _diariser: SimpleNamespace(
++            asr_device="cuda",
++            diarization_device="cuda:0",
++            effective_mode="sequential",
++            requested_mode="auto",
++            reason="auto_shared_or_single_device",
++        ),
++    )
++    monkeypatch.setattr(pipeline, "_cleanup_cuda_memory", lambda device: events.append(f"cleanup:{device}"))
++    monkeypatch.setattr(pipeline, "_sentiment_score", lambda _text: 50)
++    monkeypatch.setattr(pipeline, "export_speaker_snippets", lambda _req: [])
++    monkeypatch.setattr(pipeline, "_save_aliases", lambda *_a, **_k: None)
++    monkeypatch.setattr(pipeline, "_load_aliases", lambda *_a, **_k: {})
++
++    await pipeline.run_pipeline(
++        audio_path=_audio_file(tmp_path, "sequential.mp3"),
++        cfg=_settings(
++            tmp_path,
++            llm_model="model",
++            asr_device="cuda",
++            diarization_device="cuda:0",
++            gpu_scheduler_mode="auto",
++        ),
++        llm=_FakeLLM(),
++        diariser=_TrackingDiariser(),
++        recording_id="rec-sequential-scheduler",
++        precheck=pipeline.PrecheckResult(duration_sec=30.0, speech_ratio=0.8, quarantine_reason=None),
++        step_log_callback=step_log.append,
++    )
++
++    assert events[:3] == ["asr", "cleanup:cuda", "diar"]
++    assert any("mode=sequential" in message for message in step_log)
++    assert any("cleared CUDA cache before diarization stage" in message for message in step_log)
++
++
++@pytest.mark.asyncio
++async def test_run_pipeline_uses_parallel_scheduler_only_for_safe_devices(
++    tmp_path: Path,
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    events: list[str] = []
++
++    class _TrackingDiariser:
++        mode = "pyannote"
++        last_run_metadata: dict[str, Any] = {}
++
++        async def __call__(self, _audio_path: Path):
++            events.append("diar")
++            return _annotation_from_segments((0.0, 1.0, "S1"))
++
++    async def _fake_gather(*aws):
++        events.append("gather")
++        results = []
++        for awaitable in aws:
++            results.append(await awaitable)
++        return tuple(results)
++
++    monkeypatch.setattr(
++        pipeline,
++        "_whisperx_asr",
++        lambda *_a, **_k: (
++            [{"start": 0.0, "end": 1.0, "text": "hello"}],
++            {"language": "en", "language_probability": 0.9},
++        ),
 +    )
 +    monkeypatch.setattr(
-+        worker_tasks,
-+        "build_recording_asr_glossary",
-+        lambda *_a, **_k: {
-+            "entry_count": 0,
-+            "term_count": 0,
-+            "truncated": False,
-+            "initial_prompt": "",
-+            "hotwords": "",
-+        },
++        pipeline,
++        "run_language_aware_asr",
++        lambda audio_path, *, override_lang, configured_mode, tmp_root, transcribe_fn, step_log_callback=None: (
++            events.append("asr") or transcribe_fn(audio_path, override_lang) + ({
++                "used_multilingual_path": False,
++                "selected_mode": "single_language",
++                "selection_reason": "test",
++                "chunks": [],
++            },)
++        ),
 +    )
 +    monkeypatch.setattr(
-+        worker_tasks,
-+        "_load_transcript_language_payload",
-+        lambda *_a, **_k: (None, None),
++        pipeline,
++        "_resolve_scheduler_plan",
++        lambda _cfg, _diariser: SimpleNamespace(
++            asr_device="cpu",
++            diarization_device="cuda:1",
++            effective_mode="parallel",
++            requested_mode="auto",
++            reason="auto_parallel_safe",
++        ),
 +    )
++    monkeypatch.setattr(pipeline.asyncio, "gather", _fake_gather)
++    monkeypatch.setattr(pipeline, "_sentiment_score", lambda _text: 50)
++    monkeypatch.setattr(pipeline, "export_speaker_snippets", lambda _req: [])
++    monkeypatch.setattr(pipeline, "_save_aliases", lambda *_a, **_k: None)
++    monkeypatch.setattr(pipeline, "_load_aliases", lambda *_a, **_k: {})
++
++    await pipeline.run_pipeline(
++        audio_path=_audio_file(tmp_path, "parallel.mp3"),
++        cfg=_settings(
++            tmp_path,
++            llm_model="model",
++            asr_device="cpu",
++            diarization_device="cuda:1",
++            gpu_scheduler_mode="auto",
++        ),
++        llm=_FakeLLM(),
++        diariser=_TrackingDiariser(),
++        recording_id="rec-parallel-scheduler",
++        precheck=pipeline.PrecheckResult(duration_sec=30.0, speech_ratio=0.8, quarantine_reason=None),
++    )
++
++    assert "gather" in events
++    assert "asr" in events
++    assert "diar" in events
++
++
+ def test_timeout_seconds_and_retryable_status_paths() -> None:
+     assert llm_client._timeout_seconds("bad", default=7.5) == 7.5
+     assert llm_client._timeout_seconds("-1", default=7.5) == 7.5
+@@ -1520,13 +1673,44 @@ def test_orchestrator_helpers_cover_remaining_branches(tmp_path: Path, monkeypat
+     monkeypatch.setattr(builtins, "__import__", original_import)
+ 
+     fake_torch = ModuleType("torch")
+-    fake_torch.cuda = SimpleNamespace(is_available=lambda: True, device_count=lambda: 1)
++    fake_torch.cuda = SimpleNamespace(is_available=lambda: True, device_count=lambda: 2)
+     fake_torch.version = SimpleNamespace(cuda="12.4")
+     monkeypatch.setitem(sys.modules, "torch", fake_torch)
+     assert pipeline._select_asr_device(cfg) == "cuda"
++    assert pipeline._select_diarization_device(_settings(tmp_path, diarization_device="cuda:1")) == "cuda:1"
++
++    parallel_plan = pipeline._resolve_scheduler_plan(
++        _settings(
++            tmp_path,
++            asr_device="cuda:0",
++            diarization_device="cuda:1",
++            gpu_scheduler_mode="auto",
++        ),
++        SimpleNamespace(mode="pyannote"),
++    )
++    assert parallel_plan.effective_mode == "parallel"
++
++    monkeypatch.setitem(
++        sys.modules,
++        "torch",
++        ModuleType("torch"),
++    )
++    sys.modules["torch"].cuda = SimpleNamespace(is_available=lambda: True, device_count=lambda: 1)  # type: ignore[attr-defined]
++    sys.modules["torch"].version = SimpleNamespace(cuda="12.4")  # type: ignore[attr-defined]
++    forced_parallel_same_gpu = pipeline._resolve_scheduler_plan(
++        _settings(
++            tmp_path,
++            asr_device="cuda",
++            diarization_device="cuda:0",
++            gpu_scheduler_mode="parallel",
++        ),
++        SimpleNamespace(mode="pyannote"),
++    )
++    assert forced_parallel_same_gpu.effective_mode == "sequential"
+ 
+     configured = _settings(tmp_path, asr_compute_type="float32")
+     assert pipeline._select_compute_type(configured, "cpu") == "float32"
++    assert pipeline._select_compute_type(_settings(tmp_path), "cuda:0") == "float16"
+ 
+     target_dir = tmp_path / "clear"
+     target_dir.mkdir(parents=True, exist_ok=True)
+@@ -1534,6 +1718,84 @@ def test_orchestrator_helpers_cover_remaining_branches(tmp_path: Path, monkeypat
+     pipeline._clear_dir(target_dir)
+     assert list(target_dir.iterdir()) == []
+ 
++    pipeline._ASR_MODEL_CACHE[("m", "cpu", "int8", "silero")] = object()  # noqa: SLF001
++    cleaned: list[str] = []
++    real_cleanup_cuda_memory = pipeline._cleanup_cuda_memory  # noqa: SLF001
++    monkeypatch.setattr(pipeline, "_cleanup_cuda_memory", lambda device: cleaned.append(device))
++    pipeline.clear_asr_model_cache()
++    assert pipeline._ASR_MODEL_CACHE == {}  # noqa: SLF001
++    assert cleaned == ["cuda"]
++    monkeypatch.setattr(pipeline, "_cleanup_cuda_memory", real_cleanup_cuda_memory)
++
++    logged: list[tuple[str, str, int, int]] = []
++    monkeypatch.setattr(pipeline, "cuda_memory_info", lambda _device: (11, 22))
 +    monkeypatch.setattr(
-+        worker_tasks,
-+        "refresh_recording_metrics",
-+        lambda *_a, **_k: {"participants": [], "meeting": {}},
++        pipeline,
++        "_logger",
++        SimpleNamespace(
++            info=lambda template, label, device, free_bytes, total_bytes: logged.append(
++                (template, label, device, free_bytes, total_bytes)
++            )
++        ),
 +    )
-+    monkeypatch.setattr(worker_tasks, "refresh_recording_routing", lambda *_a, **_k: {})
-+    monkeypatch.setattr(worker_tasks, "run_pipeline", lambda *_a, **_k: asyncio.sleep(0))
++    pipeline._log_cuda_memory_snapshot(label="ASR load", device="cuda:0")  # noqa: SLF001
++    assert logged == [
++        ("%s VRAM snapshot: device=%s free_bytes=%s total_bytes=%s", "ASR load", "cuda:0", 11, 22)
++    ]
 +
-+    state = worker_tasks._run_precheck_pipeline(
-+        recording_id="rec-calendar-refresh-fail-1",
-+        settings=cfg,
-+        log_path=cfg.recordings_root
-+        / "rec-calendar-refresh-fail-1"
-+        / "logs"
-+        / "step-precheck.log",
++    empty_cache_calls: list[str] = []
++    fake_torch.cuda.empty_cache = lambda: empty_cache_calls.append("empty")  # type: ignore[attr-defined]
++    monkeypatch.setitem(sys.modules, "torch", fake_torch)
++    original_import = builtins.__import__
++
++    def _import_fake_torch(name: str, globals=None, locals=None, fromlist=(), level: int = 0):
++        if name == "torch":
++            return fake_torch
++        return original_import(name, globals, locals, fromlist, level)
++
++    monkeypatch.setattr(builtins, "__import__", _import_fake_torch)
++    pipeline._cleanup_cuda_memory("cpu")  # noqa: SLF001
++    pipeline._cleanup_cuda_memory("cuda")  # noqa: SLF001
++    assert empty_cache_calls == ["empty"]
++
++
++def test_cleanup_cuda_memory_ignores_missing_cuda_and_empty_cache_errors(
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    original_import = builtins.__import__
++
++    torch_without_cuda = ModuleType("torch")
++    monkeypatch.setitem(sys.modules, "torch", torch_without_cuda)
++
++    def _import_torch_without_cuda(name: str, globals=None, locals=None, fromlist=(), level: int = 0):
++        if name == "torch":
++            return torch_without_cuda
++        return original_import(name, globals, locals, fromlist, level)
++
++    monkeypatch.setattr(builtins, "__import__", _import_torch_without_cuda)
++    pipeline._cleanup_cuda_memory("cuda")  # noqa: SLF001
++
++    def _raise_empty_cache() -> None:
++        raise RuntimeError("cache flush failed")
++
++    torch_with_bad_empty_cache = ModuleType("torch")
++    torch_with_bad_empty_cache.cuda = SimpleNamespace(empty_cache=_raise_empty_cache)
++    monkeypatch.setitem(sys.modules, "torch", torch_with_bad_empty_cache)
++
++    def _import_torch_with_bad_empty_cache(
++        name: str,
++        globals=None,
++        locals=None,
++        fromlist=(),
++        level: int = 0,
++    ):
++        if name == "torch":
++            return torch_with_bad_empty_cache
++        return original_import(name, globals, locals, fromlist, level)
++
++    monkeypatch.setattr(builtins, "__import__", _import_torch_with_bad_empty_cache)
++    pipeline._cleanup_cuda_memory("cuda")  # noqa: SLF001
++
+ 
+ def test_sentiment_score_uses_truncation_and_explicit_model(monkeypatch: pytest.MonkeyPatch) -> None:
+     calls: dict[str, Any] = {}
+@@ -1823,6 +2085,143 @@ async def test_run_pipeline_restores_previous_whisperx_transcriber_session(
+     delattr(pipeline._whisperx_transcriber_state, "transcribe_audio")
+ 
+ 
++@pytest.mark.asyncio
++async def test_run_pipeline_preserves_previous_session_flag(
++    tmp_path: Path,
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    previous_transcriber = object()
++
++    def _session_transcriber(
++        _audio_path: Path,
++        _override_lang: str | None,
++    ) -> tuple[list[dict[str, object]], dict[str, object]]:
++        return (
++            [{"start": 0.0, "end": 1.0, "text": "hello team and thanks"}],
++            {"language": "en", "language_probability": 0.95},
++        )
++
++    def _fake_run_language_aware_asr(
++        audio_path: Path,
++        *,
++        override_lang: str | None,
++        configured_mode: str,
++        tmp_root: Path,
++        transcribe_fn,
++        step_log_callback=None,
++    ) -> tuple[list[dict[str, object]], dict[str, object], dict[str, object]]:
++        del configured_mode, tmp_root, step_log_callback
++        delattr(pipeline._whisperx_transcriber_state, "use_session_transcriber")
++        segments, info = transcribe_fn(audio_path, override_lang)
++        return (
++            segments,
++            info,
++            {
++                "used_multilingual_path": False,
++                "selected_mode": "single_language",
++                "selection_reason": "test",
++                "chunks": [],
++            },
++        )
++
++    async def _fake_to_thread(fn, /, *args, **kwargs):
++        pipeline._whisperx_transcriber_state.transcribe_audio = previous_transcriber
++        pipeline._whisperx_transcriber_state.use_session_transcriber = True
++        return fn(*args, **kwargs)
++
++    monkeypatch.setattr(asyncio, "to_thread", _fake_to_thread)
++    monkeypatch.setattr(
++        pipeline,
++        "_build_whisperx_transcriber",
++        lambda **_kwargs: _session_transcriber,
++    )
++    monkeypatch.setattr(pipeline, "run_language_aware_asr", _fake_run_language_aware_asr)
++    monkeypatch.setattr(pipeline, "_sentiment_score", lambda _text: 50)
++    monkeypatch.setattr(pipeline, "export_speaker_snippets", lambda _req: [])
++    monkeypatch.setattr(pipeline, "_save_aliases", lambda *_a, **_k: None)
++    monkeypatch.setattr(pipeline, "_load_aliases", lambda *_a, **_k: {})
++
++    cfg = _settings(tmp_path)
++    result = await pipeline.run_pipeline(
++        audio_path=_audio_file(tmp_path, "pipeline-session-flag.mp3"),
++        cfg=cfg,
++        llm=_FakeLLM(),
++        diariser=_NoTracksDiariser(),
++        recording_id="rec-transcriber-session-flag",
++        precheck=pipeline.PrecheckResult(duration_sec=30.0, speech_ratio=0.8, quarantine_reason=None),
 +    )
 +
-+    assert state.status == RECORDING_STATUS_READY
-+    recording = get_recording("rec-calendar-refresh-fail-1", settings=cfg)
-+    assert recording is not None
-+    assert recording["duration_sec"] == 20.0
++    assert result.summary.strip() == "- ok"
++    assert getattr(pipeline._whisperx_transcriber_state, "transcribe_audio") is previous_transcriber
++    assert getattr(pipeline._whisperx_transcriber_state, "use_session_transcriber") is True
++    delattr(pipeline._whisperx_transcriber_state, "transcribe_audio")
++    delattr(pipeline._whisperx_transcriber_state, "use_session_transcriber")
 +
 +
- def test_run_precheck_pipeline_marks_fallback_when_builder_returns_fallback(
-     tmp_path: Path,
-     monkeypatch: pytest.MonkeyPatch,
++@pytest.mark.asyncio
++async def test_run_pipeline_tolerates_session_transcriber_cleanup_before_restore(
++    tmp_path: Path,
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    def _session_transcriber(
++        _audio_path: Path,
++        _override_lang: str | None,
++    ) -> tuple[list[dict[str, object]], dict[str, object]]:
++        return (
++            [{"start": 0.0, "end": 1.0, "text": "hello team and thanks"}],
++            {"language": "en", "language_probability": 0.95},
++        )
++
++    def _fake_run_language_aware_asr(
++        audio_path: Path,
++        *,
++        override_lang: str | None,
++        configured_mode: str,
++        tmp_root: Path,
++        transcribe_fn,
++        step_log_callback=None,
++    ) -> tuple[list[dict[str, object]], dict[str, object], dict[str, object]]:
++        del configured_mode, tmp_root, step_log_callback
++        delattr(pipeline._whisperx_transcriber_state, "transcribe_audio")
++        delattr(pipeline._whisperx_transcriber_state, "use_session_transcriber")
++        segments, info = transcribe_fn(audio_path, override_lang)
++        return (
++            segments,
++            info,
++            {
++                "used_multilingual_path": False,
++                "selected_mode": "single_language",
++                "selection_reason": "test",
++                "chunks": [],
++            },
++        )
++
++    monkeypatch.setattr(
++        pipeline,
++        "_build_whisperx_transcriber",
++        lambda **_kwargs: _session_transcriber,
++    )
++    monkeypatch.setattr(pipeline, "run_language_aware_asr", _fake_run_language_aware_asr)
++    monkeypatch.setattr(pipeline, "_sentiment_score", lambda _text: 50)
++    monkeypatch.setattr(pipeline, "export_speaker_snippets", lambda _req: [])
++    monkeypatch.setattr(pipeline, "_save_aliases", lambda *_a, **_k: None)
++    monkeypatch.setattr(pipeline, "_load_aliases", lambda *_a, **_k: {})
++
++    cfg = _settings(tmp_path)
++    result = await pipeline.run_pipeline(
++        audio_path=_audio_file(tmp_path, "pipeline-session-cleanup.mp3"),
++        cfg=cfg,
++        llm=_FakeLLM(),
++        diariser=_NoTracksDiariser(),
++        recording_id="rec-transcriber-session-cleanup",
++        precheck=pipeline.PrecheckResult(duration_sec=30.0, speech_ratio=0.8, quarantine_reason=None),
++    )
++
++    assert result.summary.strip() == "- ok"
++    assert not hasattr(pipeline._whisperx_transcriber_state, "transcribe_audio")
++    assert not hasattr(pipeline._whisperx_transcriber_state, "use_session_transcriber")
++
++
+ @pytest.mark.asyncio
+ async def test_run_pipeline_fails_fast_when_llm_model_is_blank(tmp_path: Path) -> None:
+     cfg = _settings(tmp_path, llm_model="   ")
 diff --git a/tests/test_db_queue.py b/tests/test_db_queue.py
-index fe69b25..a70f79a 100644
+index a70f79a..12a0215 100644
 --- a/tests/test_db_queue.py
 +++ b/tests/test_db_queue.py
-@@ -961,17 +961,8 @@ def test_load_calendar_summary_context_uses_preparsed_candidates(tmp_path: Path,
-     cfg = _test_settings(tmp_path)
-     monkeypatch.setattr(
-         worker_tasks,
--        "get_calendar_match",
--        lambda *_a, **_k: {
--            "selected_event_id": "evt-1",
--            "candidates_json": [
--                {
--                    "event_id": "evt-1",
--                    "subject": "Roadmap Review",
--                    "attendees": ["Alex", " Priya ", ""],
--                }
--            ],
--        },
-+        "calendar_summary_context",
-+        lambda *_a, **_k: ("Roadmap Review", ["Alex", "Priya"]),
-     )
- 
-     title, attendees = worker_tasks._load_calendar_summary_context("rec-cal-ctx-1", settings=cfg)
-diff --git a/tests/test_ui_routes.py b/tests/test_ui_routes.py
-index 41f4dff..e281097 100644
---- a/tests/test_ui_routes.py
-+++ b/tests/test_ui_routes.py
-@@ -22,6 +22,7 @@ from lan_app.db import (
-     create_recording,
-     create_project,
-     create_voice_profile,
-+    get_calendar_match,
-     get_glossary_entry,
-     get_recording,
-     list_glossary_entries,
-@@ -357,6 +358,111 @@ def test_recording_detail_overview_shows_asr_glossary_context(tmp_path, monkeypa
-     assert "correction, speaker bank" in r.text
+@@ -1267,6 +1267,59 @@ def test_worker_retryable_failure_retries_before_marking_failed(
+     assert recording["status"] == RECORDING_STATUS_NEEDS_REVIEW
  
  
-+def test_recording_detail_calendar_tab_renders_selected_candidate_and_rationale(
-+    tmp_path,
++def test_worker_gpu_oom_is_non_retryable_and_sets_specific_review_reason(
++    tmp_path: Path,
 +    monkeypatch,
 +):
-+    cfg = _cfg(tmp_path)
-+    monkeypatch.setattr(api, "_settings", cfg)
-+    monkeypatch.setattr(ui_routes, "_settings", cfg)
++    cfg = _test_settings(tmp_path)
++    monkeypatch.setenv("LAN_DATA_ROOT", str(cfg.data_root))
++    monkeypatch.setenv("LAN_RECORDINGS_ROOT", str(cfg.recordings_root))
++    monkeypatch.setenv("LAN_DB_PATH", str(cfg.db_path))
++    monkeypatch.setenv("LAN_PROM_SNAPSHOT_PATH", str(cfg.metrics_snapshot_path))
++
 +    init_db(cfg)
 +    create_recording(
-+        "rec-ui-calendar-1",
-+        source="upload",
-+        source_filename="roadmap.wav",
-+        status=RECORDING_STATUS_READY,
++        "rec-worker-gpu-oom-1",
++        source="test",
++        source_filename="gpu-oom.wav",
 +        settings=cfg,
 +    )
-+    upsert_calendar_match(
-+        recording_id="rec-ui-calendar-1",
-+        candidates=[
-+            {
-+                "event_id": "evt-roadmap",
-+                "subject": "Roadmap Weekly Sync",
-+                "starts_at": "2026-03-01T10:00:00Z",
-+                "ends_at": "2026-03-01T11:00:00Z",
-+                "source_name": "Team Calendar",
-+                "organizer": "Alex Example",
-+                "attendee_details": [
-+                    {"label": "Priya Kapoor", "email": "priya@example.com"},
-+                    {"label": "Marco Rossi"},
-+                ],
-+                "confidence": 0.92,
-+                "rationale": ["Capture time falls inside the event window.", "Final confidence 0.92."],
-+            },
-+            {
-+                "event_id": "evt-other",
-+                "subject": "Other Meeting",
-+                "starts_at": "2026-03-01T12:00:00Z",
-+                "ends_at": "2026-03-01T13:00:00Z",
-+                "source_name": "Team Calendar",
-+                "organizer": "Jordan",
-+                "attendees": ["Alex Example"],
-+                "confidence": 0.33,
-+                "rationale": "Low confidence",
-+            },
-+        ],
-+        selected_event_id="evt-roadmap",
-+        selected_confidence=0.92,
++    create_job(
++        "job-worker-gpu-oom-1",
++        recording_id="rec-worker-gpu-oom-1",
++        job_type=JOB_TYPE_PRECHECK,
 +        settings=cfg,
 +    )
 +
-+    c = TestClient(api.app, follow_redirects=True)
-+    response = c.get("/recordings/rec-ui-calendar-1?tab=calendar")
-+    assert response.status_code == 200
-+    assert "Calendar Match" in response.text
-+    assert "Roadmap Weekly Sync" in response.text
-+    assert "Capture time falls inside the event window." in response.text
-+    assert "Priya Kapoor" in response.text
-+    assert "Selected" in response.text
-+
-+
-+def test_recording_detail_calendar_selection_and_clear_persist(tmp_path, monkeypatch):
-+    cfg = _cfg(tmp_path)
-+    monkeypatch.setattr(api, "_settings", cfg)
-+    monkeypatch.setattr(ui_routes, "_settings", cfg)
-+    init_db(cfg)
-+    create_recording(
-+        "rec-ui-calendar-select-1",
-+        source="upload",
-+        source_filename="planning.wav",
-+        status=RECORDING_STATUS_READY,
-+        settings=cfg,
++    raw_audio = cfg.recordings_root / "rec-worker-gpu-oom-1" / "raw" / "audio.wav"
++    raw_audio.parent.mkdir(parents=True, exist_ok=True)
++    _write_pcm_wav(raw_audio)
++    monkeypatch.setattr("lan_app.worker_tasks._resolve_raw_audio_path", lambda *_a, **_k: raw_audio)
++    monkeypatch.setattr(
++        "lan_app.worker_tasks.run_precheck",
++        lambda *_a, **_k: (_ for _ in ()).throw(
++            RuntimeError("CUDA out of memory while loading faster-whisper")
++        ),
 +    )
-+    upsert_calendar_match(
-+        recording_id="rec-ui-calendar-select-1",
-+        candidates=[
-+            {
-+                "event_id": "evt-a",
-+                "subject": "Planning",
-+                "confidence": 0.81,
-+            }
-+        ],
-+        selected_event_id=None,
-+        selected_confidence=None,
-+        settings=cfg,
++
++    sleeps: list[int] = []
++    monkeypatch.setattr("lan_app.worker_tasks.time.sleep", lambda seconds: sleeps.append(seconds))
++
++    with pytest.raises(RuntimeError, match="CUDA out of memory"):
++        process_job("job-worker-gpu-oom-1", "rec-worker-gpu-oom-1", JOB_TYPE_PRECHECK)
++
++    job = get_job("job-worker-gpu-oom-1", settings=cfg)
++    recording = get_recording("rec-worker-gpu-oom-1", settings=cfg)
++    assert sleeps == []
++    assert job is not None
++    assert recording is not None
++    assert job["attempt"] == 1
++    assert job["status"] == JOB_STATUS_FAILED
++    assert recording["status"] == RECORDING_STATUS_NEEDS_REVIEW
++    assert recording["review_reason_code"] == "gpu_oom"
++    assert "ran out of GPU memory" in str(recording["review_reason_text"])
++
++
+ def test_worker_retry_does_not_revive_recovered_started_job(
+     tmp_path: Path,
+     monkeypatch,
+@@ -2122,20 +2175,21 @@ def test_build_diariser_passes_env_speaker_hints(monkeypatch):
+ def test_build_diariser_surfaces_pyannote_model_load_errors(monkeypatch):
+     from lan_app import worker_tasks
+ 
+-    class _BrokenPipeline:
+-        @staticmethod
+-        def from_pretrained(_name: str):
+-            raise RuntimeError("auth failed")
+-
+     pyannote_audio = ModuleType("pyannote.audio")
+-    pyannote_audio.Pipeline = _BrokenPipeline  # type: ignore[attr-defined]
++    pyannote_audio.Pipeline = object()  # type: ignore[attr-defined]
+     pyannote_pkg = ModuleType("pyannote")
+     pyannote_pkg.audio = pyannote_audio  # type: ignore[attr-defined]
+     monkeypatch.setitem(sys.modules, "pyannote", pyannote_pkg)
+     monkeypatch.setitem(sys.modules, "pyannote.audio", pyannote_audio)
++    monkeypatch.setattr(
++        worker_tasks,
++        "load_pyannote_pipeline",
++        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("auth failed")),
 +    )
-+    monkeypatch.setattr(ui_routes, "refresh_recording_routing", lambda *_a, **_k: {})
-+
-+    c = TestClient(api.app, follow_redirects=False)
-+    selected = c.post(
-+        "/ui/recordings/rec-ui-calendar-select-1/calendar/select",
-+        data={"event_id": "evt-a"},
-+    )
-+    assert selected.status_code == 303
-+    assert selected.headers["location"] == "/recordings/rec-ui-calendar-select-1?tab=calendar"
-+    match = get_calendar_match("rec-ui-calendar-select-1", settings=cfg)
-+    assert match is not None
-+    assert match["selected_event_id"] == "evt-a"
-+    assert match["selected_confidence"] == 0.81
-+
-+    cleared = c.post("/ui/recordings/rec-ui-calendar-select-1/calendar/select", data={})
-+    assert cleared.status_code == 303
-+    match = get_calendar_match("rec-ui-calendar-select-1", settings=cfg)
-+    assert match is not None
-+    assert match["selected_event_id"] is None
-+
-+
- def test_recording_detail_processing_polls_progress(tmp_path, monkeypatch):
-     cfg = _cfg(tmp_path)
-     monkeypatch.setattr(api, "_settings", cfg)
-@@ -2090,6 +2196,7 @@ def test_calendars_page_renders_seeded_sources_and_events(tmp_path, monkeypatch)
-                 "location": "Room 5",
-                 "description": "fixture",
-                 "organizer": "Alex",
-+                "attendees": [{"label": "Priya Kapoor"}],
-                 "updated_at": "2026-02-01T00:00:00Z",
-             },
-             {
-@@ -2112,7 +2219,10 @@ def test_calendars_page_renders_seeded_sources_and_events(tmp_path, monkeypatch)
-     assert response.status_code == 200
-     assert "Calendars" in response.text
-     assert "Local Team Calendar" in response.text
-+    assert ">2<" in response.text
-     assert "Seeded calendar event" in response.text
-+    assert "Priya Kapoor" in response.text
-+    assert "2026-02-03 11:00:00 CET" in response.text
-     assert "End date event" in response.text
+ 
++    diariser = worker_tasks._build_diariser(duration_sec=30.0)
+     with pytest.raises(RuntimeError, match="auth failed"):
+-        worker_tasks._build_diariser(duration_sec=30.0)
++        asyncio.run(diariser(Path("/tmp/auth-failed.wav")))
  
  
-diff --git a/lan_app/calendar/matching.py b/lan_app/calendar/matching.py
+ def test_build_diariser_surfaces_non_pyannote_import_errors(monkeypatch):
+diff --git a/tests/test_diarization_loader.py b/tests/test_diarization_loader.py
+index 2cfc96f..3c99d94 100644
+--- a/tests/test_diarization_loader.py
++++ b/tests/test_diarization_loader.py
+@@ -27,10 +27,20 @@ def _install_fake_pipeline(monkeypatch: pytest.MonkeyPatch, impl):
+     monkeypatch.setitem(sys.modules, "pyannote.audio", pyannote_audio)
+ 
+ 
+-def _install_fake_torch(monkeypatch: pytest.MonkeyPatch, *, cuda_available: bool):
++def _install_fake_torch(
++    monkeypatch: pytest.MonkeyPatch,
++    *,
++    cuda_available: bool,
++    mem_info: tuple[int, int] = (100, 200),
++):
+     torch_mod = ModuleType("torch")
+-    torch_mod.cuda = SimpleNamespace(is_available=lambda: cuda_available)  # type: ignore[attr-defined]
++    torch_mod.cuda = SimpleNamespace(  # type: ignore[attr-defined]
++        is_available=lambda: cuda_available,
++        device_count=lambda: 1 if cuda_available else 0,
++        mem_get_info=lambda _device: mem_info,
++    )
+     torch_mod.device = lambda name: f"device:{name}"  # type: ignore[attr-defined]
++    torch_mod.version = SimpleNamespace(cuda="12.4")
+     monkeypatch.setitem(sys.modules, "torch", torch_mod)
+ 
+ 
+@@ -302,12 +312,73 @@ def test_load_pyannote_pipeline_falls_back_to_cpu_when_cuda_move_fails(
+ 
+     assert callable(model)
+     assert (
+-        "Failed to move pyannote diarization pipeline to CUDA; continuing on CPU"
++        "Failed to move pyannote diarization pipeline to cuda; continuing on CPU"
+         in caplog.text
+     )
+     assert "Pyannote diarization device: cpu" in caplog.text
+ 
+ 
++def test_load_pyannote_pipeline_respects_forced_cpu_when_cuda_is_available(
++    monkeypatch: pytest.MonkeyPatch,
++    caplog: pytest.LogCaptureFixture,
++):
++    moved_to: list[object] = []
++
++    class _Model:
++        def __call__(self, payload):
++            return payload
++
++        def to(self, device):
++            moved_to.append(device)
++
++    _install_fake_pipeline(monkeypatch, lambda *_a, **_k: _Model())
++    _install_fake_torch(monkeypatch, cuda_available=True)
++
++    with caplog.at_level(logging.INFO, logger=diarization_loader.__name__):
++        model = diarization_loader.load_pyannote_pipeline(
++            model_id="repo/forced-cpu",
++            device="cpu",
++        )
++
++    assert callable(model)
++    assert moved_to == []
++    assert "Pyannote diarization device: cpu" in caplog.text
++
++
++def test_load_pyannote_pipeline_raises_when_forced_cuda_move_fails(
++    monkeypatch: pytest.MonkeyPatch,
++):
++    class _Model:
++        def __call__(self, payload):
++            return payload
++
++        def to(self, _device):
++            raise RuntimeError("cuda move failed")
++
++    _install_fake_pipeline(monkeypatch, lambda *_a, **_k: _Model())
++    _install_fake_torch(monkeypatch, cuda_available=True)
++
++    with pytest.raises(RuntimeError, match="Failed to move pyannote diarization pipeline to cuda:0|cuda"):
++        diarization_loader.load_pyannote_pipeline(
++            model_id="repo/forced-cuda",
++            device="cuda",
++            scheduler_mode="sequential",
++        )
++
++
++def test_load_pyannote_pipeline_raises_when_forced_cuda_is_unavailable(
++    monkeypatch: pytest.MonkeyPatch,
++):
++    _install_fake_pipeline(monkeypatch, lambda *_a, **_k: lambda payload: payload)
++    _install_fake_torch(monkeypatch, cuda_available=False)
++
++    with pytest.raises(RuntimeError, match="Requested diarization device cuda but CUDA is unavailable"):
++        diarization_loader.load_pyannote_pipeline(
++            model_id="repo/unavailable",
++            device="cuda",
++        )
++
++
+ def test_load_pyannote_pipeline_stays_on_cpu_when_torch_import_fails(
+     monkeypatch: pytest.MonkeyPatch,
+     caplog: pytest.LogCaptureFixture,
+@@ -339,6 +410,59 @@ def test_load_pyannote_pipeline_stays_on_cpu_when_torch_import_fails(
+     assert "Pyannote diarization device: cpu" in caplog.text
+ 
+ 
++def test_move_pipeline_to_best_device_raises_when_explicit_device_requested_without_torch(
++    monkeypatch: pytest.MonkeyPatch,
++):
++    class _Model:
++        def __call__(self, payload):
++            return payload
++
++    real_import = builtins.__import__
++
++    def _fake_import(name, globals=None, locals=None, fromlist=(), level=0):
++        if name == "torch":
++            err = ModuleNotFoundError("No module named 'torch'")
++            err.name = "torch"
++            raise err
++        return real_import(name, globals, locals, fromlist, level)
++
++    _install_fake_pipeline(monkeypatch, lambda *_a, **_k: _Model())
++    monkeypatch.setattr(builtins, "__import__", _fake_import)
++    sys.modules.pop("torch", None)
++
++    with pytest.raises(RuntimeError, match="Requested diarization device cuda but torch is unavailable"):
++        diarization_loader._move_pipeline_to_best_device(  # noqa: SLF001
++            _Model(),
++            requested_device="cuda",
++            scheduler_mode="auto",
++        )
++
++
++def test_load_pyannote_pipeline_falls_back_to_cpu_on_gpu_oom_in_auto_mode(
++    monkeypatch: pytest.MonkeyPatch,
++    caplog: pytest.LogCaptureFixture,
++):
++    class _Model:
++        def __call__(self, payload):
++            return payload
++
++        def to(self, _device):
++            raise RuntimeError("CUDA out of memory while moving pipeline")
++
++    _install_fake_pipeline(monkeypatch, lambda *_a, **_k: _Model())
++    _install_fake_torch(monkeypatch, cuda_available=True)
++
++    with caplog.at_level(logging.INFO, logger=diarization_loader.__name__):
++        model = diarization_loader.load_pyannote_pipeline(
++            model_id="repo/oom-fallback",
++            scheduler_mode="sequential",
++        )
++
++    assert callable(model)
++    assert "Pyannote diarization GPU OOM on cuda; retrying on CPU in auto mode" in caplog.text
++    assert "Pyannote diarization device: cpu" in caplog.text
++
++
+ def test_load_pyannote_pipeline_raises_runtime_error_when_candidates_are_empty(
+     monkeypatch: pytest.MonkeyPatch,
+ ):
+diff --git a/tests/test_ui_routes.py b/tests/test_ui_routes.py
+index e281097..cf017c0 100644
+--- a/tests/test_ui_routes.py
++++ b/tests/test_ui_routes.py
+@@ -575,7 +575,7 @@ def test_recording_detail_persists_duration_from_sanitized_audio(tmp_path, monke
+     c = TestClient(api.app, follow_redirects=True)
+     r = c.get("/recordings/rec-ui-duration-1")
+     assert r.status_code == 200
+-    assert "2s" in r.text
++    assert "00:00:02" in r.text
+     recording = get_recording("rec-ui-duration-1", settings=cfg)
+     assert recording is not None
+     assert recording["duration_sec"] == 2.0
+diff --git a/tests/test_whisperx_api.py b/tests/test_whisperx_api.py
+index a2acc85..4c5b4f0 100644
+--- a/tests/test_whisperx_api.py
++++ b/tests/test_whisperx_api.py
+@@ -4,7 +4,7 @@ import contextlib
+ import pickle
+ import sys
+ from pathlib import Path
+-from types import ModuleType
++from types import ModuleType, SimpleNamespace
+ 
+ import pytest
+ 
+@@ -706,6 +706,204 @@ def test_build_whisperx_transcriber_modern_path_forwards_glossary_kwargs(
+     }
+ 
+ 
++def test_build_whisperx_transcriber_modern_path_reuses_cached_model_across_builds(
++    tmp_path: Path,
++    monkeypatch,
++):
++    fake_whisperx = ModuleType("whisperx")
++    fake_asr = ModuleType("whisperx.asr")
++    load_calls: list[tuple[str, str, str]] = []
++
++    class _FakeModel:
++        vad_model = staticmethod(lambda _payload: [])
++
++        def transcribe(self, _audio: str, *, batch_size: int, vad_filter: bool, language: str | None):
++            assert batch_size == 16
++            assert vad_filter is True
++            return {"segments": [{"start": 0.0, "end": 1.0, "text": "ok"}], "language": language or "en"}
++
++    fake_whisperx.load_audio = lambda _path: "audio"
++    fake_asr.load_model = lambda model_name, device, *, compute_type="int8", vad_method="silero": (
++        load_calls.append((model_name, device, compute_type)) or _FakeModel()
++    )
++    fake_whisperx.asr = fake_asr
++    monkeypatch.setitem(sys.modules, "whisperx", fake_whisperx)
++    monkeypatch.setitem(sys.modules, "whisperx.asr", fake_asr)
++    pipeline.clear_asr_model_cache()
++
++    cfg = pipeline.Settings(
++        asr_device="cpu",
++        asr_enable_align=False,
++        tmp_root=tmp_path,
++        recordings_root=tmp_path / "recordings",
++    )
++    first = pipeline._build_whisperx_transcriber(cfg=cfg)
++    second = pipeline._build_whisperx_transcriber(cfg=cfg)
++
++    audio_path = tmp_path / "cached.wav"
++    audio_path.write_bytes(b"")
++    assert first(audio_path, None)[0][0]["text"] == "ok"
++    assert second(audio_path, "en")[0][0]["text"] == "ok"
++    assert load_calls == [("large-v3", "cpu", "int8")]
++    pipeline.clear_asr_model_cache()
++
++
++def test_build_whisperx_transcriber_retries_gpu_oom_once_with_smaller_compute_type(
++    tmp_path: Path,
++    monkeypatch,
++):
++    fake_whisperx = ModuleType("whisperx")
++    fake_asr = ModuleType("whisperx.asr")
++    compute_types: list[str] = []
++
++    class _FakeModel:
++        vad_model = staticmethod(lambda _payload: [])
++
++        def transcribe(self, _audio: str, *, batch_size: int, vad_filter: bool, language: str | None):
++            assert batch_size == 16
++            assert vad_filter is True
++            return {"segments": [{"start": 0.0, "end": 1.0, "text": "gpu"}], "language": language or "en"}
++
++    def _load_model(_model_name: str, _device: str, *, compute_type="float16", vad_method="silero"):
++        compute_types.append(compute_type)
++        assert vad_method == "silero"
++        if len(compute_types) == 1:
++            raise RuntimeError("CUDA out of memory")
++        return _FakeModel()
++
++    fake_whisperx.load_audio = lambda _path: "audio"
++    fake_asr.load_model = _load_model
++    fake_whisperx.asr = fake_asr
++    monkeypatch.setitem(sys.modules, "whisperx", fake_whisperx)
++    monkeypatch.setitem(sys.modules, "whisperx.asr", fake_asr)
++    monkeypatch.setattr(
++        pipeline,
++        "collect_cuda_runtime_facts",
++        lambda: SimpleNamespace(
++            is_available=True,
++            device_count=1,
++            visible_devices="0",
++            torch_cuda_version="12.4",
++        ),
++    )
++    step_log: list[str] = []
++    pipeline.clear_asr_model_cache()
++
++    transcribe_audio = pipeline._build_whisperx_transcriber(
++        cfg=pipeline.Settings(
++            asr_device="auto",
++            asr_enable_align=False,
++            tmp_root=tmp_path,
++            recordings_root=tmp_path / "recordings",
++        ),
++        step_log_callback=step_log.append,
++    )
++
++    audio_path = tmp_path / "gpu-oom.wav"
++    audio_path.write_bytes(b"")
++    segments, info = transcribe_audio(audio_path, None)
++
++    assert segments[0]["text"] == "gpu"
++    assert info["language"] == "en"
++    assert compute_types == ["float16", "int8_float16"]
++    assert any("retrying once with compute_type=int8_float16" in message for message in step_log)
++    pipeline.clear_asr_model_cache()
++
++
++def test_load_cached_whisperx_model_raises_plain_load_errors(
++    tmp_path: Path,
++    monkeypatch,
++):
++    fake_asr = SimpleNamespace(
++        load_model=lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("plain load failure"))
++    )
++    monkeypatch.setattr(pipeline, "_log_cuda_memory_snapshot", lambda **_kwargs: None)
++    monkeypatch.setattr(
++        pipeline,
++        "omegaconf_safe_globals_for_torch_load",
++        contextlib.nullcontext,
++    )
++    pipeline.clear_asr_model_cache()
++
++    cfg = pipeline.Settings(
++        asr_device="cpu",
++        asr_enable_align=False,
++        tmp_root=tmp_path,
++        recordings_root=tmp_path / "recordings",
++    )
++
++    with pytest.raises(RuntimeError, match="plain load failure"):
++        pipeline._load_cached_whisperx_model(  # noqa: SLF001
++            cfg=cfg,
++            wx_asr=fake_asr,
++            device="cpu",
++            compute_type="int8",
++            step_log_callback=None,
++        )
++
++
++def test_load_cached_whisperx_model_prefers_cache_entry_inserted_after_load(
++    tmp_path: Path,
++    monkeypatch,
++):
++    load_calls: list[tuple[object, ...]] = []
++    inserted_model = object()
++    loaded_model = object()
++
++    def _load_model(*args: object, **kwargs: object) -> object:
++        load_calls.append(args + (kwargs["compute_type"], kwargs["vad_method"]))
++        return loaded_model
++
++    fake_asr = SimpleNamespace(load_model=_load_model)
++    cfg = pipeline.Settings(
++        asr_device="cpu",
++        asr_enable_align=False,
++        tmp_root=tmp_path,
++        recordings_root=tmp_path / "recordings",
++    )
++    cache_key = pipeline._asr_model_cache_key(  # noqa: SLF001
++        cfg=cfg,
++        device="cpu",
++        compute_type="int8",
++        load_model_callable=_load_model,
++    )
++
++    class _RaceLock:
++        def __init__(self) -> None:
++            self.enter_count = 0
++
++        def __enter__(self):
++            self.enter_count += 1
++            if self.enter_count == 2:
++                pipeline._ASR_MODEL_CACHE[cache_key] = inserted_model  # noqa: SLF001
++            return self
++
++        def __exit__(self, exc_type, exc, tb) -> bool:
++            return False
++
++    monkeypatch.setattr(pipeline, "_log_cuda_memory_snapshot", lambda **_kwargs: None)
++    monkeypatch.setattr(
++        pipeline,
++        "omegaconf_safe_globals_for_torch_load",
++        contextlib.nullcontext,
++    )
++    pipeline.clear_asr_model_cache()
++    monkeypatch.setattr(pipeline, "_ASR_MODEL_CACHE_LOCK", _RaceLock())
++
++    cached_model, selected_compute_type = pipeline._load_cached_whisperx_model(  # noqa: SLF001
++        cfg=cfg,
++        wx_asr=fake_asr,
++        device="cpu",
++        compute_type="int8",
++        step_log_callback=None,
++    )
++
++    assert cached_model is inserted_model
++    assert selected_compute_type == "int8"
++    assert load_calls == [("large-v3", "cpu", "int8", "silero")]
++    pipeline.clear_asr_model_cache()
++
++
+ def test_build_whisperx_transcriber_modern_path_uses_safe_fallback_when_call_details_are_unavailable(
+     tmp_path: Path,
+     monkeypatch,
+diff --git a/lan_transcriber/gpu_policy.py b/lan_transcriber/gpu_policy.py
 new file mode 100644
-index 0000000..26bc77d
+index 0000000..6438adc
 --- /dev/null
-+++ b/lan_app/calendar/matching.py
-@@ -0,0 +1,368 @@
++++ b/lan_transcriber/gpu_policy.py
+@@ -0,0 +1,253 @@
 +from __future__ import annotations
 +
-+from datetime import datetime, timedelta, timezone
-+import json
-+from pathlib import Path
++from dataclasses import dataclass
++import os
 +import re
 +from typing import Any
 +
-+from lan_app.config import AppSettings
-+from lan_app.db import (
-+    get_calendar_match,
-+    get_recording,
-+    list_calendar_events,
-+    upsert_calendar_match,
++_DEVICE_RE = re.compile(r"^(auto|cpu|cuda(?::(?P<index>\d+))?)$")
++_GPU_OOM_MARKERS = (
++    "cuda out of memory",
++    "cuda error: out of memory",
++    "cuda failed with error out of memory",
++    "cublas_status_alloc_failed",
++    "cuda malloc",
++    "hip out of memory",
++    "outofmemoryerror",
 +)
 +
-+_AUTO_SELECT_MIN_MARGIN = 0.12
-+_AUTO_SELECT_MIN_SCORE = 0.78
-+_SEARCH_WINDOW_AFTER = timedelta(hours=12)
-+_SEARCH_WINDOW_BEFORE = timedelta(hours=8)
-+_TOKEN_RE = re.compile(r"[a-z0-9]{2,}")
-+_STOPWORDS = {"and", "audio", "meeting", "recording", "sync", "the"}
++
++@dataclass(frozen=True)
++class CudaRuntimeFacts:
++    is_available: bool
++    device_count: int
++    visible_devices: str | None
++    torch_cuda_version: str | None
 +
 +
-+def _utc_iso(value: datetime) -> str:
-+    return value.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace(
-+        "+00:00", "Z"
++@dataclass(frozen=True)
++class SchedulerDecision:
++    requested_mode: str
++    effective_mode: str
++    asr_device: str
++    diarization_device: str
++    reason: str
++    cuda_facts: CudaRuntimeFacts
++
++
++def normalize_device(value: str | None) -> str:
++    normalized = str(value or "auto").strip().lower()
++    if not normalized:
++        return "auto"
++    if normalized == "gpu":
++        normalized = "cuda"
++    if _DEVICE_RE.fullmatch(normalized) is None:
++        raise ValueError(
++            "Device must be one of auto, cpu, cuda, or cuda:<index>."
++        )
++    return normalized
++
++
++def normalize_scheduler_mode(value: str | None) -> str:
++    normalized = str(value or "auto").strip().lower()
++    if not normalized:
++        return "auto"
++    if normalized not in {"auto", "sequential", "parallel"}:
++        raise ValueError("Scheduler mode must be one of auto, sequential, parallel.")
++    return normalized
++
++
++def collect_cuda_runtime_facts() -> CudaRuntimeFacts:
++    visible_devices = os.getenv("CUDA_VISIBLE_DEVICES", "").strip() or None
++    try:
++        import torch
++    except Exception:
++        return CudaRuntimeFacts(
++            is_available=False,
++            device_count=0,
++            visible_devices=visible_devices,
++            torch_cuda_version=None,
++        )
++
++    cuda = getattr(torch, "cuda", None)
++    if cuda is None:
++        return CudaRuntimeFacts(
++            is_available=False,
++            device_count=0,
++            visible_devices=visible_devices,
++            torch_cuda_version=getattr(getattr(torch, "version", None), "cuda", None),
++        )
++
++    try:
++        is_available = bool(cuda.is_available())
++    except Exception:
++        is_available = False
++    try:
++        device_count = int(cuda.device_count()) if is_available else 0
++    except Exception:
++        device_count = 0
++    return CudaRuntimeFacts(
++        is_available=is_available,
++        device_count=max(device_count, 0),
++        visible_devices=visible_devices,
++        torch_cuda_version=getattr(getattr(torch, "version", None), "cuda", None),
 +    )
 +
 +
-+def _parse_datetime(value: object) -> datetime | None:
-+    if not isinstance(value, str) or not value.strip():
-+        return None
-+    text = value.strip()
-+    normalized = text[:-1] + "+00:00" if text.endswith("Z") else text
-+    try:
-+        parsed = datetime.fromisoformat(normalized)
-+    except ValueError:
-+        return None
-+    if parsed.tzinfo is None:
-+        parsed = parsed.replace(tzinfo=timezone.utc)
-+    return parsed.astimezone(timezone.utc)
++def is_gpu_device(device: str | None) -> bool:
++    return normalize_device(device) not in {"auto", "cpu"}
 +
 +
-+def _safe_duration_seconds(value: object) -> float | None:
++def device_index(device: str | None) -> int | None:
++    normalized = normalize_device(device)
++    if normalized in {"auto", "cpu"}:
++        return None
++    if normalized == "cuda":
++        return 0
++    return int(normalized.split(":", 1)[1])
++
++
++def resolve_effective_device(
++    requested_device: str | None,
++    *,
++    cuda_facts: CudaRuntimeFacts | None = None,
++    label: str = "device",
++) -> str:
++    normalized = normalize_device(requested_device)
++    facts = cuda_facts or collect_cuda_runtime_facts()
++    if normalized == "auto":
++        return "cuda" if facts.is_available else "cpu"
++    if normalized == "cpu":
++        return "cpu"
++    if not facts.is_available:
++        raise RuntimeError(
++            f"Requested {label} {normalized} but CUDA is unavailable."
++        )
++    gpu_index = device_index(normalized)
++    if (
++        gpu_index is not None
++        and facts.device_count > 0
++        and gpu_index >= facts.device_count
++    ):
++        raise RuntimeError(
++            f"Requested {label} {normalized} but only "
++            f"{facts.device_count} visible CUDA device(s) are available."
++        )
++    return normalized
++
++
++def devices_share_gpu(left: str | None, right: str | None) -> bool:
++    if not is_gpu_device(left) or not is_gpu_device(right):
++        return False
++    return device_index(left) == device_index(right)
++
++
++def parallel_devices_safe(
++    asr_device: str | None,
++    diarization_device: str | None,
++) -> bool:
++    asr_gpu = is_gpu_device(asr_device)
++    diar_gpu = is_gpu_device(diarization_device)
++    if asr_gpu and diar_gpu:
++        return not devices_share_gpu(asr_device, diarization_device)
++    if asr_gpu != diar_gpu:
++        return True
++    return False
++
++
++def resolve_scheduler_decision(
++    requested_mode: str | None,
++    *,
++    asr_device: str | None,
++    diarization_device: str | None,
++    diarization_is_heavy: bool,
++    cuda_facts: CudaRuntimeFacts | None = None,
++) -> SchedulerDecision:
++    facts = cuda_facts or collect_cuda_runtime_facts()
++    normalized_mode = normalize_scheduler_mode(requested_mode)
++    effective_asr = resolve_effective_device(
++        asr_device,
++        cuda_facts=facts,
++        label="ASR device",
++    )
++    effective_diarization = resolve_effective_device(
++        diarization_device,
++        cuda_facts=facts,
++        label="diarization device",
++    )
++    safe_parallel = diarization_is_heavy and parallel_devices_safe(
++        effective_asr,
++        effective_diarization,
++    )
++
++    if normalized_mode == "sequential":
++        return SchedulerDecision(
++            requested_mode=normalized_mode,
++            effective_mode="sequential",
++            asr_device=effective_asr,
++            diarization_device=effective_diarization,
++            reason="forced_sequential",
++            cuda_facts=facts,
++        )
++    if normalized_mode == "parallel":
++        return SchedulerDecision(
++            requested_mode=normalized_mode,
++            effective_mode="parallel" if safe_parallel else "sequential",
++            asr_device=effective_asr,
++            diarization_device=effective_diarization,
++            reason="forced_parallel" if safe_parallel else "parallel_not_safe",
++            cuda_facts=facts,
++        )
++    return SchedulerDecision(
++        requested_mode=normalized_mode,
++        effective_mode="parallel" if safe_parallel else "sequential",
++        asr_device=effective_asr,
++        diarization_device=effective_diarization,
++        reason="auto_parallel_safe" if safe_parallel else "auto_shared_or_single_device",
++        cuda_facts=facts,
++    )
++
++
++def cuda_memory_info(device: str | None) -> tuple[int, int] | None:
++    if not is_gpu_device(device):
++        return None
 +    try:
-+        duration = float(value)
++        import torch
++    except Exception:
++        return None
++    cuda = getattr(torch, "cuda", None)
++    mem_get_info = getattr(cuda, "mem_get_info", None)
++    if cuda is None or mem_get_info is None:
++        return None
++    target_index = device_index(device)
++    target: Any = target_index if target_index is not None else 0
++    try:
++        free_bytes, total_bytes = mem_get_info(target)
++    except Exception:
++        return None
++    try:
++        return int(free_bytes), int(total_bytes)
 +    except (TypeError, ValueError):
 +        return None
-+    if duration <= 0:
-+        return None
-+    return duration
 +
 +
-+def _tokenize(value: object) -> set[str]:
-+    text = str(value or "").strip().lower()
-+    if not text:
-+        return set()
-+    tokens = {token for token in _TOKEN_RE.findall(text) if token not in _STOPWORDS}
-+    return tokens
-+
-+
-+def _recording_tokens(recording: dict[str, Any]) -> set[str]:
-+    filename = Path(str(recording.get("source_filename") or "").strip()).stem
-+    return _tokenize(filename)
-+
-+
-+def _candidate_rows(raw: object) -> list[dict[str, Any]]:
-+    if isinstance(raw, str):
-+        try:
-+            raw = json.loads(raw or "[]")
-+        except ValueError:
-+            return []
-+    if not isinstance(raw, list):
-+        return []
-+    return [row for row in raw if isinstance(row, dict)]
-+
-+
-+def calendar_match_candidates(
-+    recording_id: str,
-+    *,
-+    settings: AppSettings,
-+) -> list[dict[str, Any]]:
-+    row = get_calendar_match(recording_id, settings=settings) or {}
-+    return _candidate_rows(row.get("candidates_json"))
-+
-+
-+def _candidate_attendee_details(value: object) -> list[dict[str, str]]:
-+    if not isinstance(value, list):
-+        return []
-+    out: list[dict[str, str]] = []
-+    seen: set[tuple[str, str]] = set()
-+    for row in value:
-+        if isinstance(row, dict):
-+            name = str(row.get("name") or "").strip()
-+            email = str(row.get("email") or "").strip()
-+            label = str(row.get("label") or name or email).strip()
-+        else:
-+            name = ""
-+            email = ""
-+            label = str(row or "").strip()
-+        if not label:
-+            continue
-+        dedupe_key = (email.lower(), label.lower())
-+        if dedupe_key in seen:
-+            continue
-+        seen.add(dedupe_key)
-+        payload = {"label": label}
-+        if name:
-+            payload["name"] = name
-+        if email:
-+            payload["email"] = email
-+        out.append(payload)
-+    return out
-+
-+
-+def _candidate_attendees(candidate: dict[str, Any]) -> list[str]:
-+    attendees = candidate.get("attendees")
-+    if isinstance(attendees, list):
-+        cleaned = [str(value).strip() for value in attendees if str(value).strip()]
-+        if cleaned:
-+            return cleaned
-+    return [row["label"] for row in _candidate_attendee_details(candidate.get("attendee_details"))]
-+
-+
-+def selected_calendar_candidate(
-+    recording_id: str,
-+    *,
-+    settings: AppSettings,
-+) -> dict[str, Any]:
-+    row = get_calendar_match(recording_id, settings=settings) or {}
-+    selected_event_id = str(row.get("selected_event_id") or "").strip()
-+    if not selected_event_id:
-+        return {}
-+    for candidate in _candidate_rows(row.get("candidates_json")):
-+        if str(candidate.get("event_id") or "").strip() == selected_event_id:
-+            normalized = dict(candidate)
-+            normalized["attendees"] = _candidate_attendees(normalized)
-+            return normalized
-+    return {}
-+
-+
-+def calendar_summary_context(
-+    recording_id: str,
-+    *,
-+    settings: AppSettings,
-+) -> tuple[str | None, list[str]]:
-+    selected = selected_calendar_candidate(recording_id, settings=settings)
-+    title = str(selected.get("subject") or selected.get("summary") or "").strip() or None
-+    return title, _candidate_attendees(selected)
-+
-+
-+def _event_identifier(event: dict[str, Any]) -> str:
-+    source_id = str(event.get("source_id") or "").strip()
-+    uid = str(event.get("uid") or "").strip()
-+    starts_at = str(event.get("starts_at") or "").strip()
-+    return f"{source_id}:{uid}:{starts_at}"
-+
-+
-+def _event_attendee_details(event: dict[str, Any]) -> list[dict[str, str]]:
-+    return _candidate_attendee_details(event.get("attendees_json"))
-+
-+
-+def _event_attendees(event: dict[str, Any]) -> list[str]:
-+    return [row["label"] for row in _event_attendee_details(event)]
-+
-+
-+def _event_tokens(event: dict[str, Any]) -> set[str]:
-+    values: list[object] = [
-+        event.get("summary"),
-+        event.get("location"),
-+        event.get("organizer"),
-+    ]
-+    values.extend(_event_attendees(event))
-+    tokens: set[str] = set()
-+    for value in values:
-+        tokens.update(_tokenize(value))
-+    return tokens
-+
-+
-+def _score_event(
-+    *,
-+    event: dict[str, Any],
-+    captured_at: datetime,
-+    duration_sec: float | None,
-+    recording_tokens: set[str],
-+) -> dict[str, Any] | None:
-+    starts_at = _parse_datetime(event.get("starts_at"))
-+    ends_at = _parse_datetime(event.get("ends_at"))
-+    if starts_at is None or ends_at is None or ends_at <= starts_at:
-+        return None
-+
-+    start_delta_minutes = abs((captured_at - starts_at).total_seconds()) / 60.0
-+    proximity_score = max(0.0, 1.0 - (start_delta_minutes / 180.0))
-+    capture_inside = starts_at <= captured_at <= ends_at
-+    presence_score = 1.0 if capture_inside else 0.0
-+
-+    overlap_score = 0.0
-+    duration_score = 0.0
-+    if duration_sec is not None:
-+        recording_end = captured_at + timedelta(seconds=duration_sec)
-+        overlap_seconds = max(
-+            0.0,
-+            (min(recording_end, ends_at) - max(captured_at, starts_at)).total_seconds(),
-+        )
-+        overlap_score = min(1.0, overlap_seconds / max(duration_sec, 1.0))
-+        event_duration_seconds = max((ends_at - starts_at).total_seconds(), 60.0)
-+        duration_score = max(
-+            0.0,
-+            1.0
-+            - (
-+                abs(event_duration_seconds - duration_sec)
-+                / max(event_duration_seconds, duration_sec, 1.0)
-+            ),
-+        )
-+
-+    event_tokens = _event_tokens(event)
-+    shared_tokens = sorted(recording_tokens & event_tokens)
-+    token_score = (
-+        min(1.0, len(shared_tokens) / max(len(recording_tokens), 1))
-+        if recording_tokens
-+        else 0.0
-+    )
-+
-+    if duration_sec is None:
-+        score = (0.60 * proximity_score) + (0.25 * presence_score) + (0.15 * token_score)
-+    else:
-+        score = (
-+            (0.30 * proximity_score)
-+            + (0.30 * presence_score)
-+            + (0.25 * overlap_score)
-+            + (0.10 * duration_score)
-+            + (0.05 * token_score)
-+        )
-+    confidence = round(max(0.0, min(score, 1.0)), 4)
-+
-+    rationale = [f"Start is {int(round(start_delta_minutes))}m from capture time."]
-+    if capture_inside:
-+        rationale.append("Capture time falls inside the event window.")
-+    if duration_sec is not None:
-+        rationale.append(
-+            f"Recording overlaps {int(round(overlap_score * 100))}% of the event window."
-+        )
-+        rationale.append(
-+            f"Duration similarity is {int(round(duration_score * 100))}%."
-+        )
-+    if shared_tokens:
-+        rationale.append(f"Shared filename/title tokens: {', '.join(shared_tokens)}.")
-+    rationale.append(f"Final confidence {confidence:.2f}.")
-+
-+    return {
-+        "event_id": _event_identifier(event),
-+        "uid": str(event.get("uid") or "").strip(),
-+        "source_id": event.get("source_id"),
-+        "source_name": str(event.get("source_name") or "").strip() or None,
-+        "source_kind": str(event.get("source_kind") or "").strip() or None,
-+        "subject": str(event.get("summary") or "").strip() or None,
-+        "summary": str(event.get("summary") or "").strip() or None,
-+        "description": str(event.get("description") or "").strip() or None,
-+        "location": str(event.get("location") or "").strip() or None,
-+        "starts_at": _utc_iso(starts_at),
-+        "ends_at": _utc_iso(ends_at),
-+        "all_day": bool(event.get("all_day")),
-+        "organizer": str(event.get("organizer") or "").strip() or None,
-+        "organizer_name": str(event.get("organizer_name") or "").strip() or None,
-+        "organizer_email": str(event.get("organizer_email") or "").strip() or None,
-+        "attendees": _event_attendees(event),
-+        "attendee_details": _event_attendee_details(event),
-+        "score": confidence,
-+        "confidence": confidence,
-+        "rationale": rationale,
-+    }
-+
-+
-+def _auto_selection(candidates: list[dict[str, Any]]) -> tuple[str | None, float | None]:
-+    if not candidates:
-+        return None, None
-+    top_score = float(candidates[0].get("score") or 0.0)
-+    if top_score < _AUTO_SELECT_MIN_SCORE:
-+        return None, None
-+    if len(candidates) > 1:
-+        next_score = float(candidates[1].get("score") or 0.0)
-+        if (top_score - next_score) < _AUTO_SELECT_MIN_MARGIN:
-+            return None, None
-+    return str(candidates[0].get("event_id") or "").strip() or None, top_score
-+
-+
-+def match_recording_to_calendar(
-+    recording: dict[str, Any],
-+    *,
-+    settings: AppSettings,
-+) -> dict[str, Any]:
-+    recording_id = str(recording.get("id") or "").strip()
-+    captured_at = _parse_datetime(recording.get("captured_at"))
-+    if captured_at is None:
-+        return {
-+            "recording_id": recording_id,
-+            "candidates": [],
-+            "selected_event_id": None,
-+            "selected_confidence": None,
-+        }
-+
-+    duration_sec = _safe_duration_seconds(recording.get("duration_sec"))
-+    window_end = captured_at + max(
-+        _SEARCH_WINDOW_AFTER,
-+        timedelta(seconds=duration_sec or 0.0) + timedelta(hours=2),
-+    )
-+    events = list_calendar_events(
-+        starts_from=_utc_iso(captured_at - _SEARCH_WINDOW_BEFORE),
-+        ends_to=_utc_iso(window_end),
-+        settings=settings,
-+    )
-+    recording_tokens = _recording_tokens(recording)
-+    candidates = [
-+        candidate
-+        for event in events
-+        if (candidate := _score_event(
-+            event=event,
-+            captured_at=captured_at,
-+            duration_sec=duration_sec,
-+            recording_tokens=recording_tokens,
-+        ))
-+        is not None
-+    ]
-+    candidates.sort(
-+        key=lambda candidate: (
-+            -float(candidate.get("score") or 0.0),
-+            str(candidate.get("starts_at") or ""),
-+            str(candidate.get("event_id") or ""),
-+        )
-+    )
-+    selected_event_id, selected_confidence = _auto_selection(candidates)
-+    return {
-+        "recording_id": recording_id,
-+        "candidates": candidates,
-+        "selected_event_id": selected_event_id,
-+        "selected_confidence": selected_confidence,
-+    }
-+
-+
-+def refresh_recording_calendar_match(
-+    recording_id: str,
-+    *,
-+    settings: AppSettings,
-+) -> dict[str, Any]:
-+    recording = get_recording(recording_id, settings=settings)
-+    if recording is None:
-+        raise KeyError(recording_id)
-+    existing = get_calendar_match(recording_id, settings=settings) or {}
-+    match = match_recording_to_calendar(recording, settings=settings)
-+    if not match["candidates"] and _candidate_rows(existing.get("candidates_json")):
-+        return existing
-+    return upsert_calendar_match(
-+        recording_id=recording_id,
-+        candidates=match["candidates"],
-+        selected_event_id=match["selected_event_id"],
-+        selected_confidence=match["selected_confidence"],
-+        settings=settings,
-+    )
++def is_gpu_oom_error(exc: BaseException) -> bool:
++    message = f"{type(exc).__name__}: {exc}".lower()
++    return any(marker in message for marker in _GPU_OOM_MARKERS)
 +
 +
 +__all__ = [
-+    "calendar_match_candidates",
-+    "calendar_summary_context",
-+    "match_recording_to_calendar",
-+    "refresh_recording_calendar_match",
-+    "selected_calendar_candidate",
++    "CudaRuntimeFacts",
++    "SchedulerDecision",
++    "collect_cuda_runtime_facts",
++    "cuda_memory_info",
++    "device_index",
++    "devices_share_gpu",
++    "is_gpu_device",
++    "is_gpu_oom_error",
++    "normalize_device",
++    "normalize_scheduler_mode",
++    "parallel_devices_safe",
++    "resolve_effective_device",
++    "resolve_scheduler_decision",
 +]
-diff --git a/lan_app/migrations/018_calendar_attendees_and_organizer.sql b/lan_app/migrations/018_calendar_attendees_and_organizer.sql
+diff --git a/tests/test_gpu_policy.py b/tests/test_gpu_policy.py
 new file mode 100644
-index 0000000..f657c1d
+index 0000000..f38faba
 --- /dev/null
-+++ b/lan_app/migrations/018_calendar_attendees_and_organizer.sql
-@@ -0,0 +1,8 @@
-+ALTER TABLE calendar_events
-+    ADD COLUMN organizer_name TEXT;
-+
-+ALTER TABLE calendar_events
-+    ADD COLUMN organizer_email TEXT;
-+
-+ALTER TABLE calendar_events
-+    ADD COLUMN attendees_json TEXT NOT NULL DEFAULT '[]';
-diff --git a/tests/test_calendar_matching.py b/tests/test_calendar_matching.py
-new file mode 100644
-index 0000000..6c1b37c
---- /dev/null
-+++ b/tests/test_calendar_matching.py
-@@ -0,0 +1,319 @@
++++ b/tests/test_gpu_policy.py
+@@ -0,0 +1,247 @@
 +from __future__ import annotations
 +
-+from datetime import datetime, timezone
-+from pathlib import Path
++import sys
++from types import ModuleType, SimpleNamespace
 +
 +import pytest
 +
-+from lan_app.calendar import matching
-+from lan_app.config import AppSettings
-+from lan_app.db import (
-+    create_calendar_source,
-+    create_recording,
-+    get_calendar_match,
-+    init_db,
-+    replace_calendar_events_for_window,
-+    upsert_calendar_match,
-+)
++from lan_transcriber import gpu_policy
 +
 +
-+def _cfg(tmp_path: Path) -> AppSettings:
-+    cfg = AppSettings(
-+        data_root=tmp_path,
-+        recordings_root=tmp_path / "recordings",
-+        db_path=tmp_path / "db" / "app.db",
++def _install_fake_torch(
++    monkeypatch: pytest.MonkeyPatch,
++    *,
++    cuda_available: bool,
++    device_count: int = 0,
++    mem_info: tuple[int, int] | None = None,
++    mem_error: Exception | None = None,
++) -> None:
++    torch_mod = ModuleType("torch")
++
++    def _mem_get_info(_device: int):
++        if mem_error is not None:
++            raise mem_error
++        if mem_info is None:
++            raise AttributeError("mem_get_info unavailable")
++        return mem_info
++
++    torch_mod.cuda = SimpleNamespace(
++        is_available=lambda: cuda_available,
++        device_count=lambda: device_count,
++        mem_get_info=_mem_get_info,
 +    )
-+    cfg.metrics_snapshot_path = tmp_path / "metrics.snap"
-+    return cfg
++    torch_mod.version = SimpleNamespace(cuda="12.4")
++    monkeypatch.setitem(sys.modules, "torch", torch_mod)
 +
 +
-+def test_matching_private_helpers_cover_edge_cases() -> None:
-+    assert matching._parse_datetime(None) is None  # noqa: SLF001
-+    assert matching._parse_datetime("2026-03-01T10:00:00Z") == datetime(  # noqa: SLF001
-+        2026,
-+        3,
-+        1,
-+        10,
-+        0,
-+        tzinfo=timezone.utc,
-+    )
-+    assert matching._parse_datetime("2026-03-01T10:00:00") == datetime(  # noqa: SLF001
-+        2026,
-+        3,
-+        1,
-+        10,
-+        0,
-+        tzinfo=timezone.utc,
-+    )
-+    assert matching._parse_datetime("bad") is None  # noqa: SLF001
-+    assert matching._safe_duration_seconds("12.5") == 12.5  # noqa: SLF001
-+    assert matching._safe_duration_seconds(0) is None  # noqa: SLF001
-+    assert matching._tokenize("The Roadmap sync audio") == {"roadmap"}  # noqa: SLF001
-+    assert matching._recording_tokens({"source_filename": "Roadmap Review.wav"}) == {  # noqa: SLF001
-+        "review",
-+        "roadmap",
-+    }
-+    assert matching._candidate_rows("{bad") == []  # noqa: SLF001
-+    assert matching._candidate_rows("{}") == []  # noqa: SLF001
-+    assert matching._candidate_rows([{"event_id": "evt-1"}, "skip"]) == [  # noqa: SLF001
-+        {"event_id": "evt-1"}
-+    ]
-+    details = matching._candidate_attendee_details(  # noqa: SLF001
-+        [
-+            {"name": "Alex", "email": "alex@example.com"},
-+            {"label": "Priya"},
-+            "Priya",
-+            "",
-+        ]
-+    )
-+    assert details == [
-+        {
-+            "label": "Alex",
-+            "name": "Alex",
-+            "email": "alex@example.com",
-+        },
-+        {"label": "Priya"},
-+    ]
-+    assert matching._candidate_attendees({"attendees": [" Alex ", " "]}) == ["Alex"]  # noqa: SLF001
-+    assert matching._candidate_attendees(  # noqa: SLF001
-+        {"attendees": [" ", ""], "attendee_details": details}
-+    ) == ["Alex", "Priya"]
-+    assert matching._candidate_attendees({"attendee_details": details}) == [  # noqa: SLF001
-+        "Alex",
-+        "Priya",
-+    ]
-+    assert matching._score_event(  # noqa: SLF001
-+        event={"starts_at": "2026-03-01T11:00:00Z", "ends_at": "2026-03-01T10:00:00Z"},
-+        captured_at=datetime(2026, 3, 1, 10, 0, tzinfo=timezone.utc),
-+        duration_sec=None,
-+        recording_tokens=set(),
-+    ) is None
-+    no_token_score = matching._score_event(  # noqa: SLF001
-+        event={
-+            "source_id": 1,
-+            "uid": "evt-no-token",
-+            "starts_at": "2026-03-01T10:00:00Z",
-+            "ends_at": "2026-03-01T11:00:00Z",
-+            "summary": "Budget review",
-+            "attendees_json": [],
-+        },
-+        captured_at=datetime(2026, 3, 1, 10, 5, tzinfo=timezone.utc),
-+        duration_sec=None,
-+        recording_tokens={"roadmap"},
-+    )
-+    assert no_token_score is not None
-+    assert all("Shared filename/title tokens" not in row for row in no_token_score["rationale"])
-+    assert matching._auto_selection([{"event_id": "evt-low", "score": 0.5}]) == (None, None)  # noqa: SLF001
++def test_normalizers_cover_valid_and_invalid_inputs() -> None:
++    assert gpu_policy.normalize_device(None) == "auto"
++    assert gpu_policy.normalize_device("   ") == "auto"
++    assert gpu_policy.normalize_device(" GPU ") == "cuda"
++    assert gpu_policy.normalize_device("cuda:1") == "cuda:1"
++    with pytest.raises(ValueError, match="Device must be one of"):
++        gpu_policy.normalize_device("metal")
++
++    assert gpu_policy.normalize_scheduler_mode(None) == "auto"
++    assert gpu_policy.normalize_scheduler_mode("   ") == "auto"
++    assert gpu_policy.normalize_scheduler_mode(" parallel ") == "parallel"
++    with pytest.raises(ValueError, match="Scheduler mode must be one of"):
++        gpu_policy.normalize_scheduler_mode("burst")
 +
 +
-+def test_match_recording_to_calendar_scores_and_auto_selects(tmp_path: Path) -> None:
-+    cfg = _cfg(tmp_path)
-+    init_db(cfg)
-+    source = create_calendar_source(
-+        name="Team Calendar",
-+        kind="file",
-+        file_ics="BEGIN:VCALENDAR\nEND:VCALENDAR",
-+        settings=cfg,
-+    )
-+    replace_calendar_events_for_window(
-+        source_id=int(source["id"]),
-+        window_start="2026-03-01T00:00:00Z",
-+        window_end="2026-03-02T00:00:00Z",
-+        events=[
-+            {
-+                "uid": "evt-roadmap",
-+                "starts_at": "2026-03-01T10:00:00Z",
-+                "ends_at": "2026-03-01T11:00:00Z",
-+                "summary": "Roadmap review",
-+                "organizer": "Alex",
-+                "organizer_name": "Alex",
-+                "organizer_email": "alex@example.com",
-+                "attendees": [
-+                    {"name": "Priya Kapoor", "email": "priya@example.com", "label": "Priya Kapoor"}
-+                ],
-+                "updated_at": "2026-03-01T00:00:00Z",
-+            },
-+            {
-+                "uid": "evt-budget",
-+                "starts_at": "2026-03-01T13:00:00Z",
-+                "ends_at": "2026-03-01T14:00:00Z",
-+                "summary": "Budget review",
-+                "organizer": "Jordan",
-+                "attendees": [],
-+                "updated_at": "2026-03-01T00:00:00Z",
-+            },
-+        ],
-+        settings=cfg,
-+    )
-+
-+    result = matching.match_recording_to_calendar(
-+        {
-+            "id": "rec-match-1",
-+            "captured_at": "2026-03-01T10:05:00Z",
-+            "duration_sec": 3300,
-+            "source_filename": "Roadmap review.wav",
-+        },
-+        settings=cfg,
-+    )
-+
-+    assert result["selected_event_id"] == f"{source['id']}:evt-roadmap:2026-03-01T10:00:00Z"
-+    assert result["selected_confidence"] == result["candidates"][0]["score"]
-+    assert result["candidates"][0]["attendees"] == ["Priya Kapoor"]
-+    assert result["candidates"][0]["attendee_details"][0]["email"] == "priya@example.com"
-+    assert result["candidates"][0]["source_name"] == "Team Calendar"
-+    assert "Shared filename/title tokens" in " ".join(result["candidates"][0]["rationale"])
-+    assert result["candidates"][0]["score"] > result["candidates"][1]["score"]
-+
-+
-+def test_match_recording_to_calendar_keeps_ambiguous_candidates_unselected(tmp_path: Path) -> None:
-+    cfg = _cfg(tmp_path)
-+    init_db(cfg)
-+    source = create_calendar_source(
-+        name="Team Calendar",
-+        kind="file",
-+        file_ics="BEGIN:VCALENDAR\nEND:VCALENDAR",
-+        settings=cfg,
-+    )
-+    replace_calendar_events_for_window(
-+        source_id=int(source["id"]),
-+        window_start="2026-03-01T00:00:00Z",
-+        window_end="2026-03-02T00:00:00Z",
-+        events=[
-+            {
-+                "uid": "evt-a",
-+                "starts_at": "2026-03-01T10:00:00Z",
-+                "ends_at": "2026-03-01T11:00:00Z",
-+                "summary": "Planning session",
-+                "updated_at": "2026-03-01T00:00:00Z",
-+            },
-+            {
-+                "uid": "evt-b",
-+                "starts_at": "2026-03-01T10:03:00Z",
-+                "ends_at": "2026-03-01T11:03:00Z",
-+                "summary": "Planning session",
-+                "updated_at": "2026-03-01T00:00:00Z",
-+            },
-+        ],
-+        settings=cfg,
-+    )
-+
-+    result = matching.match_recording_to_calendar(
-+        {
-+            "id": "rec-match-ambiguous",
-+            "captured_at": "2026-03-01T10:05:00Z",
-+            "source_filename": "planning.wav",
-+        },
-+        settings=cfg,
-+    )
-+
-+    assert len(result["candidates"]) == 2
-+    assert result["selected_event_id"] is None
-+    assert result["selected_confidence"] is None
-+    assert matching.match_recording_to_calendar(  # noqa: SLF001
-+        {"id": "rec-no-capture", "captured_at": None},
-+        settings=cfg,
-+    ) == {
-+        "recording_id": "rec-no-capture",
-+        "candidates": [],
-+        "selected_event_id": None,
-+        "selected_confidence": None,
-+    }
-+
-+
-+def test_selected_calendar_helpers_and_refresh_cover_existing_and_missing_paths(
-+    tmp_path: Path,
++def test_collect_cuda_runtime_facts_handles_import_failure_and_success(
 +    monkeypatch: pytest.MonkeyPatch,
 +) -> None:
-+    cfg = _cfg(tmp_path)
-+    init_db(cfg)
-+    create_recording(
-+        "rec-match-refresh-1",
-+        source="upload",
-+        source_filename="meeting.wav",
-+        settings=cfg,
-+    )
-+    upsert_calendar_match(
-+        recording_id="rec-match-refresh-1",
-+        candidates=[
-+            {
-+                "event_id": "evt-kept",
-+                "subject": "Kept meeting",
-+                "attendee_details": [{"label": "Alex Example"}],
-+            }
-+        ],
-+        selected_event_id="evt-kept",
-+        selected_confidence=0.8,
-+        settings=cfg,
++    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0,1")
++    sys.modules.pop("torch", None)
++    facts_without_torch = gpu_policy.collect_cuda_runtime_facts()
++    assert facts_without_torch == gpu_policy.CudaRuntimeFacts(
++        is_available=False,
++        device_count=0,
++        visible_devices="0,1",
++        torch_cuda_version=None,
 +    )
 +
-+    monkeypatch.setattr(
-+        matching,
-+        "match_recording_to_calendar",
-+        lambda *_a, **_k: {
-+            "recording_id": "rec-match-refresh-1",
-+            "candidates": [],
-+            "selected_event_id": None,
-+            "selected_confidence": None,
-+        },
-+    )
-+    refreshed = matching.refresh_recording_calendar_match(
-+        "rec-match-refresh-1",
-+        settings=cfg,
-+    )
-+    assert refreshed["selected_event_id"] == "evt-kept"
-+    assert matching.calendar_match_candidates("rec-match-refresh-1", settings=cfg) == [
-+        {
-+            "event_id": "evt-kept",
-+            "subject": "Kept meeting",
-+            "attendee_details": [{"label": "Alex Example"}],
-+        }
-+    ]
-+    assert matching.selected_calendar_candidate("rec-match-refresh-1", settings=cfg) == {
-+        "event_id": "evt-kept",
-+        "subject": "Kept meeting",
-+        "attendee_details": [{"label": "Alex Example"}],
-+        "attendees": ["Alex Example"],
-+    }
-+    assert matching.calendar_summary_context("rec-match-refresh-1", settings=cfg) == (
-+        "Kept meeting",
-+        ["Alex Example"],
++    _install_fake_torch(monkeypatch, cuda_available=True, device_count=2)
++    facts_with_torch = gpu_policy.collect_cuda_runtime_facts()
++    assert facts_with_torch == gpu_policy.CudaRuntimeFacts(
++        is_available=True,
++        device_count=2,
++        visible_devices="0,1",
++        torch_cuda_version="12.4",
 +    )
 +
-+    upsert_calendar_match(
-+        recording_id="rec-match-refresh-1",
-+        candidates=[],
-+        selected_event_id=None,
-+        selected_confidence=None,
-+        settings=cfg,
-+    )
-+    row = get_calendar_match("rec-match-refresh-1", settings=cfg)
-+    assert row is not None
-+    assert row["candidates_json"] == []
 +
-+    upsert_calendar_match(
-+        recording_id="rec-match-refresh-1",
-+        candidates=[
-+            {"event_id": "evt-other", "subject": "Other"},
-+            {"event_id": "evt-selected", "summary": "Selected later", "attendees": ["Priya"]},
-+        ],
-+        selected_event_id="evt-selected",
-+        selected_confidence=0.7,
-+        settings=cfg,
++def test_collect_cuda_runtime_facts_handles_missing_cuda_and_probe_failures(
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "2")
++    torch_without_cuda = ModuleType("torch")
++    torch_without_cuda.version = SimpleNamespace(cuda="12.4")
++    monkeypatch.setitem(sys.modules, "torch", torch_without_cuda)
++    assert gpu_policy.collect_cuda_runtime_facts() == gpu_policy.CudaRuntimeFacts(
++        is_available=False,
++        device_count=0,
++        visible_devices="2",
++        torch_cuda_version="12.4",
 +    )
-+    assert matching.selected_calendar_candidate("rec-match-refresh-1", settings=cfg) == {
-+        "event_id": "evt-selected",
-+        "summary": "Selected later",
-+        "attendees": ["Priya"],
-+    }
 +
-+    monkeypatch.setattr(
-+        matching,
-+        "get_calendar_match",
-+        lambda *_a, **_k: {"selected_event_id": "evt-1", "candidates_json": "{bad"},
++    def _raise_is_available() -> bool:
++        raise RuntimeError("probe failed")
++
++    torch_probe_failure = ModuleType("torch")
++    torch_probe_failure.cuda = SimpleNamespace(
++        is_available=_raise_is_available,
++        device_count=lambda: 9,
 +    )
-+    assert matching.calendar_match_candidates("rec-bad", settings=cfg) == []
-+    assert matching.selected_calendar_candidate("rec-bad", settings=cfg) == {}
-+    assert matching.calendar_summary_context("rec-bad", settings=cfg) == (None, [])
++    torch_probe_failure.version = SimpleNamespace(cuda="12.5")
++    monkeypatch.setitem(sys.modules, "torch", torch_probe_failure)
++    assert gpu_policy.collect_cuda_runtime_facts() == gpu_policy.CudaRuntimeFacts(
++        is_available=False,
++        device_count=0,
++        visible_devices="2",
++        torch_cuda_version="12.5",
++    )
 +
-+    with pytest.raises(KeyError):
-+        matching.refresh_recording_calendar_match("missing-recording", settings=cfg)
++
++def test_device_resolution_and_parallel_safety_cover_edge_cases() -> None:
++    cpu_facts = gpu_policy.CudaRuntimeFacts(
++        is_available=False,
++        device_count=0,
++        visible_devices=None,
++        torch_cuda_version=None,
++    )
++    gpu_facts = gpu_policy.CudaRuntimeFacts(
++        is_available=True,
++        device_count=2,
++        visible_devices="0,1",
++        torch_cuda_version="12.4",
++    )
++
++    assert gpu_policy.resolve_effective_device("auto", cuda_facts=cpu_facts) == "cpu"
++    assert gpu_policy.resolve_effective_device("auto", cuda_facts=gpu_facts) == "cuda"
++    assert gpu_policy.resolve_effective_device("cuda:1", cuda_facts=gpu_facts) == "cuda:1"
++    assert gpu_policy.device_index("auto") is None
++    assert gpu_policy.device_index("cpu") is None
++
++    with pytest.raises(RuntimeError, match="CUDA is unavailable"):
++        gpu_policy.resolve_effective_device("cuda", cuda_facts=cpu_facts)
++    with pytest.raises(RuntimeError, match="only 2 visible CUDA device"):
++        gpu_policy.resolve_effective_device("cuda:2", cuda_facts=gpu_facts)
++
++    assert gpu_policy.devices_share_gpu("cuda", "cuda:0")
++    assert not gpu_policy.devices_share_gpu("cuda:0", "cuda:1")
++    assert not gpu_policy.devices_share_gpu("cpu", "cuda")
++    assert gpu_policy.parallel_devices_safe("cpu", "cuda")
++    assert gpu_policy.parallel_devices_safe("cuda:0", "cuda:1")
++    assert not gpu_policy.parallel_devices_safe("cpu", "cpu")
++    assert not gpu_policy.parallel_devices_safe("cuda", "cuda:0")
++
++
++def test_scheduler_decision_resolves_sequential_and_parallel_modes() -> None:
++    single_gpu = gpu_policy.CudaRuntimeFacts(
++        is_available=True,
++        device_count=1,
++        visible_devices="0",
++        torch_cuda_version="12.4",
++    )
++    dual_gpu = gpu_policy.CudaRuntimeFacts(
++        is_available=True,
++        device_count=2,
++        visible_devices="0,1",
++        torch_cuda_version="12.4",
++    )
++
++    auto_same_gpu = gpu_policy.resolve_scheduler_decision(
++        "auto",
++        asr_device="auto",
++        diarization_device="auto",
++        diarization_is_heavy=True,
++        cuda_facts=single_gpu,
++    )
++    assert auto_same_gpu.effective_mode == "sequential"
++    assert auto_same_gpu.reason == "auto_shared_or_single_device"
++
++    auto_safe_parallel = gpu_policy.resolve_scheduler_decision(
++        "auto",
++        asr_device="cuda:0",
++        diarization_device="cuda:1",
++        diarization_is_heavy=True,
++        cuda_facts=dual_gpu,
++    )
++    assert auto_safe_parallel.effective_mode == "parallel"
++    assert auto_safe_parallel.reason == "auto_parallel_safe"
++
++    forced_parallel_unsafe = gpu_policy.resolve_scheduler_decision(
++        "parallel",
++        asr_device="cuda",
++        diarization_device="cuda:0",
++        diarization_is_heavy=True,
++        cuda_facts=single_gpu,
++    )
++    assert forced_parallel_unsafe.effective_mode == "sequential"
++    assert forced_parallel_unsafe.reason == "parallel_not_safe"
++
++    forced_sequential = gpu_policy.resolve_scheduler_decision(
++        "sequential",
++        asr_device="cpu",
++        diarization_device="cuda:1",
++        diarization_is_heavy=True,
++        cuda_facts=dual_gpu,
++    )
++    assert forced_sequential.effective_mode == "sequential"
++    assert forced_sequential.reason == "forced_sequential"
++
++    auto_non_heavy = gpu_policy.resolve_scheduler_decision(
++        "auto",
++        asr_device="cpu",
++        diarization_device="cuda",
++        diarization_is_heavy=False,
++        cuda_facts=single_gpu,
++    )
++    assert auto_non_heavy.effective_mode == "sequential"
++
++
++def test_cuda_memory_info_and_gpu_oom_detection(
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    assert gpu_policy.cuda_memory_info("cpu") is None
++
++    _install_fake_torch(
++        monkeypatch,
++        cuda_available=True,
++        device_count=1,
++        mem_info=(123, 456),
++    )
++    assert gpu_policy.cuda_memory_info("cuda") == (123, 456)
++
++    _install_fake_torch(
++        monkeypatch,
++        cuda_available=True,
++        device_count=1,
++        mem_error=RuntimeError("broken"),
++    )
++    assert gpu_policy.cuda_memory_info("cuda:0") is None
++
++    torch_without_mem_get_info = ModuleType("torch")
++    torch_without_mem_get_info.cuda = SimpleNamespace(
++        is_available=lambda: True,
++        device_count=lambda: 1,
++    )
++    torch_without_mem_get_info.version = SimpleNamespace(cuda="12.4")
++    monkeypatch.setitem(sys.modules, "torch", torch_without_mem_get_info)
++    assert gpu_policy.cuda_memory_info("cuda") is None
++
++    torch_bad_mem_info = ModuleType("torch")
++    torch_bad_mem_info.cuda = SimpleNamespace(
++        is_available=lambda: True,
++        device_count=lambda: 1,
++        mem_get_info=lambda _device: ("oops", object()),
++    )
++    torch_bad_mem_info.version = SimpleNamespace(cuda="12.4")
++    monkeypatch.setitem(sys.modules, "torch", torch_bad_mem_info)
++    assert gpu_policy.cuda_memory_info("cuda") is None
++
++    assert gpu_policy.is_gpu_oom_error(RuntimeError("CUDA out of memory"))
++    assert gpu_policy.is_gpu_oom_error(RuntimeError("CUBLAS_STATUS_ALLOC_FAILED"))
++    assert not gpu_policy.is_gpu_oom_error(RuntimeError("network timeout"))
