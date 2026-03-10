@@ -470,3 +470,43 @@ Queue (in order)
 - Status: DONE
 - Tasks file: tasks/PR-GPU-SCHEDULER-01.md
 - Depends on: PR-CALENDAR-MATCHING-ICS-01 and PR-DIARIZATION-GPU-01 and PR-UI-PIPELINE-UX-01
+
+93) PR-CAPTURE-TIME-SEMANTICS-01: Correct upload/Plaud capture-time semantics: local source time -> UTC normalization, provenance fields, and safe legacy backfill
+- Status: TODO
+- Tasks file: tasks/PR-CAPTURE-TIME-SEMANTICS-01.md
+- Depends on: PR-GPU-SCHEDULER-01 and PR-CALENDAR-MATCHING-ICS-01
+
+94) PR-PIPELINE-CHECKPOINTS-RESUME-01: Durable pipeline stage checkpoints and resume from first incomplete/invalid stage under the single-job model
+- Status: TODO
+- Tasks file: tasks/PR-PIPELINE-CHECKPOINTS-RESUME-01.md
+- Depends on: PR-CAPTURE-TIME-SEMANTICS-01
+
+95) PR-LLM-CHUNK-COMPACTION-01: Compact long-transcript LLM input: merged speaker blocks, no per-line timestamps, compact speaker labels, and richer chunk plan metadata
+- Status: TODO
+- Tasks file: tasks/PR-LLM-CHUNK-COMPACTION-01.md
+- Depends on: PR-PIPELINE-CHECKPOINTS-RESUME-01 and PR-LLM-CHUNKING-01
+
+96) PR-LLM-CHUNK-RESUME-TIMEOUTS-01: Chunk-level state, resume, adaptive split-on-timeout, and specific chunk failure reasons for long-transcript LLM processing
+- Status: TODO
+- Tasks file: tasks/PR-LLM-CHUNK-RESUME-TIMEOUTS-01.md
+- Depends on: PR-LLM-CHUNK-COMPACTION-01 and PR-PIPELINE-CHECKPOINTS-RESUME-01
+
+97) PR-STOP-CANCEL-01: Soft Stop from UI: stop button, durable cancel requests, queued-job cancel, and worker cooperative checkpoints
+- Status: TODO
+- Tasks file: tasks/PR-STOP-CANCEL-01.md
+- Depends on: PR-LLM-CHUNK-RESUME-TIMEOUTS-01
+
+98) PR-STOP-CANCEL-HARD-01: Hard-stop escalation for long-running heavy stages via child processes and bounded termination grace period
+- Status: TODO
+- Tasks file: tasks/PR-STOP-CANCEL-HARD-01.md
+- Depends on: PR-STOP-CANCEL-01
+
+99) PR-OBSERVABILITY-ROOT-CAUSE-01: Root-cause-first UI/log diagnostics: current stage, chunk N/M, primary error reason, and stop visibility
+- Status: TODO
+- Tasks file: tasks/PR-OBSERVABILITY-ROOT-CAUSE-01.md
+- Depends on: PR-STOP-CANCEL-HARD-01
+
+100) PR-CALENDAR-MATCHING-STABILIZATION-01: Stabilize calendar matching after corrected capture times: safer scoring, ambiguity handling, and clearer operator warnings
+- Status: TODO
+- Tasks file: tasks/PR-CALENDAR-MATCHING-STABILIZATION-01.md
+- Depends on: PR-CAPTURE-TIME-SEMANTICS-01 and PR-OBSERVABILITY-ROOT-CAUSE-01
