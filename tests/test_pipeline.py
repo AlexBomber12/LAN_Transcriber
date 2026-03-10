@@ -1705,7 +1705,10 @@ async def test_pipeline_transcript_language_override_is_used_for_asr(tmp_path: P
 
 @pytest.mark.asyncio
 @respx.mock
-async def test_pipeline_accepts_pyannote_triplet_itertracks(tmp_path: Path, mocker):
+async def test_pipeline_accepts_triplet_itertracks_without_mode_and_exports_clean_snippets(
+    tmp_path: Path,
+    mocker,
+):
     mocker.patch(
         "whisperx.transcribe",
         return_value=(
@@ -1765,7 +1768,14 @@ async def test_pipeline_accepts_pyannote_triplet_itertracks(tmp_path: Path, mock
 
     derived = cfg.recordings_root / "rec-triplet-1" / "derived"
     diar_data = json.loads((derived / "segments.json").read_text(encoding="utf-8"))
+    metadata = json.loads((derived / "diarization_metadata.json").read_text(encoding="utf-8"))
+    manifest = json.loads((derived / "snippets_manifest.json").read_text(encoding="utf-8"))
+
     assert [row["speaker"] for row in diar_data] == ["S1", "S2"]
+    assert metadata["mode"] == "unknown"
+    assert metadata["degraded"] is False
+    assert [entry["status"] for entry in manifest["speakers"]["S1"]] == ["accepted"]
+    assert [entry["status"] for entry in manifest["speakers"]["S2"]] == ["accepted"]
 
 
 @pytest.mark.asyncio
