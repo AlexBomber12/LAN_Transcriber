@@ -1,147 +1,141 @@
-diff --git a/lan_app/diarization_loader.py b/lan_app/diarization_loader.py
-index e4657f1..96a1e98 100644
---- a/lan_app/diarization_loader.py
-+++ b/lan_app/diarization_loader.py
-@@ -11,7 +11,6 @@ from lan_transcriber.gpu_policy import (
-     is_gpu_oom_error,
-     is_gpu_device,
-     normalize_device,
--    normalize_scheduler_mode,
-     resolve_effective_device,
- )
- from lan_transcriber.torch_safe_globals import (
-@@ -131,7 +130,6 @@ def _move_pipeline_to_best_device(
-     scheduler_mode: str | None,
- ) -> str:
-     normalized_request = normalize_device(requested_device)
--    normalized_scheduler_mode = normalize_scheduler_mode(scheduler_mode)
-     if normalized_request == "cpu":
-         return "cpu"
+diff --git a/lan_transcriber/pipeline_steps/orchestrator.py b/lan_transcriber/pipeline_steps/orchestrator.py
+index 54e0449..2b4337c 100644
+--- a/lan_transcriber/pipeline_steps/orchestrator.py
++++ b/lan_transcriber/pipeline_steps/orchestrator.py
+@@ -1555,6 +1555,18 @@ async def run_pipeline(
+     summary_lang = resolve_target_summary_language(target_summary_language, dominant_language=override_lang or "unknown", detected_language=None)
+     cal_title = str(calendar_title or "").strip() or None
+     cal_attendees = [str(item).strip() for item in (calendar_attendees or []) if str(item).strip()]
++    language_info: dict[str, Any] = {
++        "detected": override_lang or "unknown",
++        "confidence": None,
++    }
++    language_analysis = analyse_languages(
++        [],
++        detected_language=override_lang,
++        transcript_language_override=override_lang,
++    )
++    diar_segments: list[dict[str, Any]] = []
++    speaker_turns: list[dict[str, Any]] = []
++    friendly = 0
  
-@@ -158,7 +156,7 @@ def _move_pipeline_to_best_device(
+     atomic_write_json(
+         artifacts.metrics_json_path,
+@@ -1878,34 +1890,33 @@ async def run_pipeline(
+         p95_latency_seconds.observe(time.perf_counter() - start)
+         return TranscriptResult(summary="No speech detected", body="", friendly=0, speakers=speakers, summary_path=artifacts.summary_json_path, body_path=artifacts.transcript_txt_path, unknown_chunks=[], segments=[])
+ 
+-    snippet_paths = export_speaker_snippets(
+-        SnippetExportRequest(
+-            audio_path=audio_path,
+-            diar_segments=diar_segments,
+-            snippets_dir=artifacts.snippets_dir,
+-            duration_sec=precheck_result.duration_sec,
+-            speaker_turns=speaker_turns,
+-            degraded_diarization=_is_degraded_diarization(
+-                diariser,
+-                used_dummy_fallback=used_dummy_fallback,
+-            ),
+-            pad_seconds=cfg.snippet_pad_seconds,
+-            max_clip_duration_sec=cfg.snippet_max_duration_seconds,
+-            min_clip_duration_sec=cfg.snippet_min_duration_seconds,
+-            max_snippets_per_speaker=cfg.snippet_max_per_speaker,
+-        )
+-    )
+-    speaker_lines = _merge_similar(
+-        [
+-            f"[{turn['start']:.2f}-{turn['end']:.2f}] **{aliases.get(turn['speaker'], turn['speaker'])}:** {turn['text']}"
+-            for turn in speaker_turns
+-        ],
+-        cfg.merge_similar,
+-    )
+-    friendly = _sentiment_score(clean_text)
+-    llm_prompt_text = _speaker_turn_prompt_text(speaker_turns, aliases=aliases)
+-
      try:
-         model.to(torch.device(effective_device))
-     except Exception as exc:
--        if normalized_request == "auto" and normalized_scheduler_mode == "auto":
-+        if normalized_request == "auto" and not is_gpu_oom_error(exc):
-             _LOG.warning(
-                 "Failed to move pyannote diarization pipeline to %s; continuing on CPU: %s",
-                 effective_device,
-diff --git a/lan_app/worker_tasks.py b/lan_app/worker_tasks.py
-index 7e66b71..0c5df47 100644
---- a/lan_app/worker_tasks.py
-+++ b/lan_app/worker_tasks.py
-@@ -27,7 +27,6 @@ from lan_transcriber.pipeline import Settings as PipelineSettings
- from lan_transcriber.pipeline import run_pipeline, run_precheck
- from lan_transcriber.gpu_policy import (
-     collect_cuda_runtime_facts,
--    is_gpu_device,
-     is_gpu_oom_error,
-     resolve_scheduler_decision,
- )
-@@ -667,7 +666,10 @@ class _PyannoteDiariser:
-         self._pipeline_loader = pipeline_loader
-         self._fallback_diariser: _FallbackDiariser | None = None
-         self._fallback_duration_sec = fallback_duration_sec
--        self._forced_gpu_device_requested = is_gpu_device(requested_device)
-+        normalized_requested_device = str(requested_device or "").strip().lower()
-+        if normalized_requested_device == "gpu":
-+            normalized_requested_device = "cuda"
-+        self._forced_gpu_device_requested = normalized_requested_device.startswith("cuda")
-         self.mode = "pyannote"
-         self.profile = str(profile or "auto").strip().lower() or "auto"
-         self.initial_profile = (
-@@ -741,6 +743,11 @@ class _PyannoteDiariser:
-                 or message.startswith("pipeline_model must be a callable")
-             ):
-                 raise
-+            if (
-+                isinstance(exc, ValueError)
-+                and message.startswith("Device must be one of auto, cpu, cuda, or cuda:<index>.")
-+            ):
-+                raise
-             if (
-                 self._forced_gpu_device_requested
-                 and isinstance(exc, RuntimeError)
-diff --git a/tests/test_cov_lan_app_worker_tasks_branches.py b/tests/test_cov_lan_app_worker_tasks_branches.py
-index 617521c..9fc5479 100644
---- a/tests/test_cov_lan_app_worker_tasks_branches.py
-+++ b/tests/test_cov_lan_app_worker_tasks_branches.py
-@@ -590,6 +590,38 @@ def test_pyannote_diariser_reraises_forced_gpu_loader_device_errors():
-         asyncio.run(diariser(Path("/tmp/forced-gpu.wav")))
++        snippet_paths = export_speaker_snippets(
++            SnippetExportRequest(
++                audio_path=audio_path,
++                diar_segments=diar_segments,
++                snippets_dir=artifacts.snippets_dir,
++                duration_sec=precheck_result.duration_sec,
++                speaker_turns=speaker_turns,
++                degraded_diarization=_is_degraded_diarization(
++                    diariser,
++                    used_dummy_fallback=used_dummy_fallback,
++                ),
++                pad_seconds=cfg.snippet_pad_seconds,
++                max_clip_duration_sec=cfg.snippet_max_duration_seconds,
++                min_clip_duration_sec=cfg.snippet_min_duration_seconds,
++                max_snippets_per_speaker=cfg.snippet_max_per_speaker,
++            )
++        )
++        speaker_lines = _merge_similar(
++            [
++                f"[{turn['start']:.2f}-{turn['end']:.2f}] **{aliases.get(turn['speaker'], turn['speaker'])}:** {turn['text']}"
++                for turn in speaker_turns
++            ],
++            cfg.merge_similar,
++        )
++        friendly = _sentiment_score(clean_text)
++        llm_prompt_text = _speaker_turn_prompt_text(speaker_turns, aliases=aliases)
+         if _use_chunked_llm(llm_prompt_text, cfg):
+             summary_payload = await _run_chunked_llm_summary(
+                 transcript_text=llm_prompt_text or clean_text,
+diff --git a/tests/test_pipeline.py b/tests/test_pipeline.py
+index 68bef71..4fe5e96 100644
+--- a/tests/test_pipeline.py
++++ b/tests/test_pipeline.py
+@@ -2214,6 +2214,52 @@ async def test_pipeline_error_marks_metrics_failed(tmp_path: Path, mocker):
+     assert metrics_data["error"] == "llm boom"
  
  
-+def test_pyannote_diariser_treats_gpu_alias_as_forced_gpu_device():
-+    diariser = worker_tasks._PyannoteDiariser(
-+        pipeline_loader=lambda: (_ for _ in ()).throw(
-+            RuntimeError("Requested diarization device cuda but CUDA is unavailable.")
++@pytest.mark.asyncio
++async def test_pipeline_snippet_export_error_marks_metrics_failed(tmp_path: Path, mocker):
++    mocker.patch(
++        "whisperx.transcribe",
++        return_value=(
++            [{"start": 0.0, "end": 1.0, "text": "hello world today"}],
++            {"language": "en", "language_probability": 0.9},
 +        ),
-+        requested_device="gpu",
-+        fallback_duration_sec=12.0,
++    )
++    mocker.patch(
++        "lan_transcriber.pipeline_steps.orchestrator.export_speaker_snippets",
++        side_effect=RuntimeError("snippet boom"),
 +    )
 +
-+    with pytest.raises(
-+        RuntimeError,
-+        match="Requested diarization device cuda but CUDA is unavailable.",
-+    ):
-+        asyncio.run(diariser(Path("/tmp/gpu-alias.wav")))
-+
-+
-+def test_pyannote_diariser_reraises_invalid_requested_device_errors_without_eager_validation():
-+    diariser = worker_tasks._PyannoteDiariser(
-+        pipeline_loader=lambda: (_ for _ in ()).throw(
-+            ValueError("Device must be one of auto, cpu, cuda, or cuda:<index>.")
-+        ),
-+        requested_device="metal",
-+        fallback_duration_sec=12.0,
++    cfg = pipeline.Settings(
++        speaker_db=tmp_path / "db.yaml",
++        tmp_root=tmp_path,
++        recordings_root=tmp_path / "recordings",
++    )
++    audio = wav_audio(
++        tmp_path,
++        name="snippet-fail.wav",
++        duration_sec=24.0,
++        speech=True,
 +    )
 +
-+    with pytest.raises(
-+        ValueError,
-+        match="Device must be one of auto, cpu, cuda, or cuda:<index>.",
-+    ):
-+        asyncio.run(diariser(Path("/tmp/invalid-device.wav")))
-+
-+
- def test_resolve_diarization_speaker_hints_from_env(monkeypatch: pytest.MonkeyPatch):
-     monkeypatch.setenv("LAN_DIARIZATION_PROFILE", "auto")
-     monkeypatch.delenv("LAN_DIARIZATION_MIN_SPEAKERS", raising=False)
-diff --git a/tests/test_diarization_loader.py b/tests/test_diarization_loader.py
-index 3c99d94..44c814c 100644
---- a/tests/test_diarization_loader.py
-+++ b/tests/test_diarization_loader.py
-@@ -318,6 +318,34 @@ def test_load_pyannote_pipeline_falls_back_to_cpu_when_cuda_move_fails(
-     assert "Pyannote diarization device: cpu" in caplog.text
- 
- 
-+def test_load_pyannote_pipeline_falls_back_to_cpu_when_cuda_move_fails_in_sequential_mode(
-+    monkeypatch: pytest.MonkeyPatch,
-+    caplog: pytest.LogCaptureFixture,
-+):
-+    class _Model:
-+        def __call__(self, payload):
-+            return payload
-+
-+        def to(self, _device):
-+            raise RuntimeError("cuda move failed")
-+
-+    _install_fake_pipeline(monkeypatch, lambda *_a, **_k: _Model())
-+    _install_fake_torch(monkeypatch, cuda_available=True)
-+
-+    with caplog.at_level(logging.INFO, logger=diarization_loader.__name__):
-+        model = diarization_loader.load_pyannote_pipeline(
-+            model_id="repo/fallback-sequential",
-+            scheduler_mode="sequential",
++    with pytest.raises(RuntimeError, match="snippet boom"):
++        await pipeline.run_pipeline(
++            audio_path=audio,
++            cfg=cfg,
++            llm=llm_client.LLMClient(),
++            diariser=DummyDiariser(),
++            recording_id="rec-snippet-fail-1",
++            precheck=precheck_ok(),
 +        )
 +
-+    assert callable(model)
-+    assert (
-+        "Failed to move pyannote diarization pipeline to cuda; continuing on CPU"
-+        in caplog.text
-+    )
-+    assert "Pyannote diarization device: cpu" in caplog.text
++    derived = cfg.recordings_root / "rec-snippet-fail-1" / "derived"
++    summary_data = json.loads((derived / "summary.json").read_text(encoding="utf-8"))
++    metrics_data = json.loads((derived / "metrics.json").read_text(encoding="utf-8"))
++
++    assert summary_data["status"] == "failed"
++    assert summary_data["friendly"] == 0
++    assert metrics_data["status"] == "failed"
++    assert metrics_data["error"] == "snippet boom"
 +
 +
- def test_load_pyannote_pipeline_respects_forced_cpu_when_cuda_is_available(
-     monkeypatch: pytest.MonkeyPatch,
-     caplog: pytest.LogCaptureFixture,
+ @pytest.mark.asyncio
+ async def test_pipeline_pre_llm_error_marks_metrics_failed(tmp_path: Path, mocker):
+     mocker.patch("whisperx.transcribe", side_effect=RuntimeError("asr boom"))

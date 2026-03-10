@@ -1555,6 +1555,18 @@ async def run_pipeline(
     summary_lang = resolve_target_summary_language(target_summary_language, dominant_language=override_lang or "unknown", detected_language=None)
     cal_title = str(calendar_title or "").strip() or None
     cal_attendees = [str(item).strip() for item in (calendar_attendees or []) if str(item).strip()]
+    language_info: dict[str, Any] = {
+        "detected": override_lang or "unknown",
+        "confidence": None,
+    }
+    language_analysis = analyse_languages(
+        [],
+        detected_language=override_lang,
+        transcript_language_override=override_lang,
+    )
+    diar_segments: list[dict[str, Any]] = []
+    speaker_turns: list[dict[str, Any]] = []
+    friendly = 0
 
     atomic_write_json(
         artifacts.metrics_json_path,
@@ -1878,34 +1890,33 @@ async def run_pipeline(
         p95_latency_seconds.observe(time.perf_counter() - start)
         return TranscriptResult(summary="No speech detected", body="", friendly=0, speakers=speakers, summary_path=artifacts.summary_json_path, body_path=artifacts.transcript_txt_path, unknown_chunks=[], segments=[])
 
-    snippet_paths = export_speaker_snippets(
-        SnippetExportRequest(
-            audio_path=audio_path,
-            diar_segments=diar_segments,
-            snippets_dir=artifacts.snippets_dir,
-            duration_sec=precheck_result.duration_sec,
-            speaker_turns=speaker_turns,
-            degraded_diarization=_is_degraded_diarization(
-                diariser,
-                used_dummy_fallback=used_dummy_fallback,
-            ),
-            pad_seconds=cfg.snippet_pad_seconds,
-            max_clip_duration_sec=cfg.snippet_max_duration_seconds,
-            min_clip_duration_sec=cfg.snippet_min_duration_seconds,
-            max_snippets_per_speaker=cfg.snippet_max_per_speaker,
-        )
-    )
-    speaker_lines = _merge_similar(
-        [
-            f"[{turn['start']:.2f}-{turn['end']:.2f}] **{aliases.get(turn['speaker'], turn['speaker'])}:** {turn['text']}"
-            for turn in speaker_turns
-        ],
-        cfg.merge_similar,
-    )
-    friendly = _sentiment_score(clean_text)
-    llm_prompt_text = _speaker_turn_prompt_text(speaker_turns, aliases=aliases)
-
     try:
+        snippet_paths = export_speaker_snippets(
+            SnippetExportRequest(
+                audio_path=audio_path,
+                diar_segments=diar_segments,
+                snippets_dir=artifacts.snippets_dir,
+                duration_sec=precheck_result.duration_sec,
+                speaker_turns=speaker_turns,
+                degraded_diarization=_is_degraded_diarization(
+                    diariser,
+                    used_dummy_fallback=used_dummy_fallback,
+                ),
+                pad_seconds=cfg.snippet_pad_seconds,
+                max_clip_duration_sec=cfg.snippet_max_duration_seconds,
+                min_clip_duration_sec=cfg.snippet_min_duration_seconds,
+                max_snippets_per_speaker=cfg.snippet_max_per_speaker,
+            )
+        )
+        speaker_lines = _merge_similar(
+            [
+                f"[{turn['start']:.2f}-{turn['end']:.2f}] **{aliases.get(turn['speaker'], turn['speaker'])}:** {turn['text']}"
+                for turn in speaker_turns
+            ],
+            cfg.merge_similar,
+        )
+        friendly = _sentiment_score(clean_text)
+        llm_prompt_text = _speaker_turn_prompt_text(speaker_turns, aliases=aliases)
         if _use_chunked_llm(llm_prompt_text, cfg):
             summary_payload = await _run_chunked_llm_summary(
                 transcript_text=llm_prompt_text or clean_text,
