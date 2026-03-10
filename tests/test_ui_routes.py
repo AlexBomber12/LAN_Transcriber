@@ -36,6 +36,7 @@ from lan_app.db import (
     list_voice_profiles,
     set_recording_progress,
     set_speaker_assignment,
+    update_glossary_entry,
     upsert_calendar_match,
     upsert_meeting_metrics,
 )
@@ -1170,6 +1171,16 @@ def test_glossary_page_create_edit_and_delete(tmp_path, monkeypatch):
     created_entry = list_glossary_entries(settings=cfg)[0]
     assert created_entry["aliases_json"] == ["Sandia", "Sandoor"]
     assert created_entry["metadata_json"] == {"recording_id": "rec-ui-glossary-create-1"}
+    seeded_entry = update_glossary_entry(
+        int(created_entry["id"]),
+        settings=cfg,
+        metadata={
+            "recording_id": "rec-ui-glossary-create-1",
+            "import_source": "csv",
+            "audit": {"by": "importer"},
+        },
+    )
+    assert seeded_entry["metadata_json"]["import_source"] == "csv"
 
     edit_page = TestClient(api.app, follow_redirects=True).get(
         f"/glossary?edit_id={created_entry['id']}"
@@ -1194,6 +1205,11 @@ def test_glossary_page_create_edit_and_delete(tmp_path, monkeypatch):
     assert updated_entry["canonical_text"] == "Sander Van Doorn"
     assert updated_entry["enabled"] == 0
     assert updated_entry["source"] == "manual"
+    assert updated_entry["metadata_json"] == {
+        "recording_id": "rec-ui-glossary-create-2",
+        "import_source": "csv",
+        "audit": {"by": "importer"},
+    }
 
     listing = TestClient(api.app, follow_redirects=True).get("/glossary")
     assert listing.status_code == 200

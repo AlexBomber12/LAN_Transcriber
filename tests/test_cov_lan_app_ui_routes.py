@@ -434,6 +434,18 @@ def test_asr_glossary_context_and_route_error_paths(
         == 404
     )
 
+    payload = ui_routes._glossary_form_payload(  # noqa: SLF001
+        canonical_text="Known",
+        aliases_text="Alias",
+        kind="term",
+        source="manual",
+        enabled="1",
+        notes="note",
+        recording_id="   ",
+        existing_metadata={"recording_id": "rec-1", "import_source": "csv"},
+    )
+    assert payload["metadata"] == {"import_source": "csv"}
+
 
 def test_fallback_turns_and_path_helpers(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     turns = ui_routes._fallback_speaker_turns_from_transcript(  # noqa: SLF001

@@ -618,11 +618,14 @@ def _glossary_form_payload(
     enabled: str,
     notes: str,
     recording_id: str,
+    existing_metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    metadata: dict[str, Any] = {}
+    metadata = dict(existing_metadata) if isinstance(existing_metadata, dict) else {}
     clean_recording_id = " ".join(recording_id.strip().split())
     if clean_recording_id:
         metadata["recording_id"] = clean_recording_id
+    else:
+        metadata.pop("recording_id", None)
     return {
         "canonical_text": canonical_text.strip(),
         "aliases": aliases_text,
@@ -2153,7 +2156,8 @@ async def ui_update_glossary(
     notes: str = Form(default=""),
     recording_id: str = Form(default=""),
 ) -> Any:
-    if get_glossary_entry(entry_id, settings=_settings) is None:
+    existing_entry = get_glossary_entry(entry_id, settings=_settings)
+    if existing_entry is None:
         return HTMLResponse("Glossary entry not found", status_code=404)
     payload = _glossary_form_payload(
         canonical_text=canonical_text,
@@ -2163,6 +2167,11 @@ async def ui_update_glossary(
         enabled=enabled,
         notes=notes,
         recording_id=recording_id,
+        existing_metadata=(
+            existing_entry.get("metadata_json")
+            if isinstance(existing_entry.get("metadata_json"), dict)
+            else None
+        ),
     )
     try:
         update_glossary_entry(entry_id, settings=_settings, **payload)
