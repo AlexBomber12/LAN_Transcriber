@@ -647,6 +647,7 @@ class _PyannoteDiariser:
         pipeline_model: Any | None = None,
         *,
         pipeline_loader: Any | None = None,
+        fallback_duration_sec: float | None = None,
         profile: str = "auto",
         initial_profile: str | None = None,
         auto_profile_enabled: bool = True,
@@ -662,6 +663,8 @@ class _PyannoteDiariser:
             raise TypeError("pipeline_loader is required when pipeline_model is not provided.")
         self._pipeline_model = pipeline_model
         self._pipeline_loader = pipeline_loader
+        self._fallback_diariser: _FallbackDiariser | None = None
+        self._fallback_duration_sec = fallback_duration_sec
         self.mode = "pyannote"
         self.profile = str(profile or "auto").strip().lower() or "auto"
         self.initial_profile = (
@@ -724,7 +727,26 @@ class _PyannoteDiariser:
         call_kwargs: dict[str, int],
     ):
         audio_text = str(audio_path)
-        pipeline_model = self._ensure_pipeline_model()
+        if self._fallback_diariser is not None:
+            return await self._fallback_diariser(audio_path)
+        try:
+            pipeline_model = self._ensure_pipeline_model()
+        except Exception as exc:
+            message = str(exc)
+            if isinstance(exc, TypeError) and (
+                message.startswith("pipeline_loader must be provided")
+                or message.startswith("pipeline_model must be a callable")
+            ):
+                raise
+            self.mode = "fallback"
+            self.last_run_metadata["effective_device"] = "cpu"
+            _logger.warning(
+                "pyannote diarization load failed; using fallback diariser: %s: %s",
+                type(exc).__name__,
+                exc,
+            )
+            self._fallback_diariser = _FallbackDiariser(self._fallback_duration_sec)
+            return await self._fallback_diariser(audio_path)
 
         def _is_signature_mismatch(exc: TypeError) -> bool:
             message = str(exc).lower()
@@ -961,6 +983,7 @@ def _build_diariser(
             device=getattr(settings, "diarization_device", None),
             scheduler_mode=getattr(settings, "gpu_scheduler_mode", None),
         ),
+        fallback_duration_sec=duration_sec,
         profile=diarization_cfg.profile,
         initial_profile=diarization_cfg.initial_profile,
         auto_profile_enabled=diarization_cfg.auto_profile_enabled,

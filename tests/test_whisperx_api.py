@@ -789,24 +789,33 @@ def test_build_whisperx_transcriber_retries_gpu_oom_once_with_smaller_compute_ty
     step_log: list[str] = []
     pipeline.clear_asr_model_cache()
 
+    cfg = pipeline.Settings(
+        asr_device="auto",
+        asr_enable_align=False,
+        tmp_root=tmp_path,
+        recordings_root=tmp_path / "recordings",
+    )
     transcribe_audio = pipeline._build_whisperx_transcriber(
-        cfg=pipeline.Settings(
-            asr_device="auto",
-            asr_enable_align=False,
-            tmp_root=tmp_path,
-            recordings_root=tmp_path / "recordings",
-        ),
+        cfg=cfg,
         step_log_callback=step_log.append,
     )
 
     audio_path = tmp_path / "gpu-oom.wav"
     audio_path.write_bytes(b"")
     segments, info = transcribe_audio(audio_path, None)
+    second_transcriber = pipeline._build_whisperx_transcriber(
+        cfg=cfg,
+        step_log_callback=step_log.append,
+    )
+    second_segments, second_info = second_transcriber(audio_path, None)
 
     assert segments[0]["text"] == "gpu"
     assert info["language"] == "en"
+    assert second_segments[0]["text"] == "gpu"
+    assert second_info["language"] == "en"
     assert compute_types == ["float16", "int8_float16"]
     assert any("retrying once with compute_type=int8_float16" in message for message in step_log)
+    assert any("compute_type=int8_float16" in message for message in step_log)
     pipeline.clear_asr_model_cache()
 
 

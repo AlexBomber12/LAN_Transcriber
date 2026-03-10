@@ -2172,7 +2172,7 @@ def test_build_diariser_passes_env_speaker_hints(monkeypatch):
     ]
 
 
-def test_build_diariser_surfaces_pyannote_model_load_errors(monkeypatch):
+def test_build_diariser_falls_back_when_lazy_pyannote_load_fails(monkeypatch):
     from lan_app import worker_tasks
 
     pyannote_audio = ModuleType("pyannote.audio")
@@ -2188,8 +2188,13 @@ def test_build_diariser_surfaces_pyannote_model_load_errors(monkeypatch):
     )
 
     diariser = worker_tasks._build_diariser(duration_sec=30.0)
-    with pytest.raises(RuntimeError, match="auth failed"):
-        asyncio.run(diariser(Path("/tmp/auth-failed.wav")))
+    annotation = asyncio.run(diariser(Path("/tmp/auth-failed.wav")))
+    tracks = list(annotation.itertracks(yield_label=True))
+    assert diariser.mode == "fallback"
+    assert len(tracks) == 1
+    assert tracks[0][1] == "S1"
+    assert tracks[0][0].start == 0.0
+    assert tracks[0][0].end == 30.0
 
 
 def test_build_diariser_surfaces_non_pyannote_import_errors(monkeypatch):

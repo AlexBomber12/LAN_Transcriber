@@ -533,6 +533,50 @@ def test_pyannote_diariser_passes_optional_speaker_hint_kwargs():
     }
 
 
+def test_pyannote_diariser_falls_back_when_lazy_loader_fails(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    warnings: list[str] = []
+    attempts: list[str] = []
+
+    def _raise_loader():
+        attempts.append("load")
+        raise RuntimeError("auth failed")
+
+    monkeypatch.setattr(
+        worker_tasks._logger,
+        "warning",
+        lambda template, *args: warnings.append(template % args),
+    )
+    diariser = worker_tasks._PyannoteDiariser(
+        pipeline_loader=_raise_loader,
+        fallback_duration_sec=12.0,
+    )
+
+    first_annotation = asyncio.run(diariser(Path("/tmp/auth-failed.wav")))
+    second_annotation = asyncio.run(diariser(Path("/tmp/auth-failed.wav")))
+    first_tracks = list(first_annotation.itertracks(yield_label=True))
+    second_tracks = list(second_annotation.itertracks(yield_label=True))
+
+    assert attempts == ["load"]
+    assert diariser.mode == "fallback"
+    assert diariser.last_run_metadata["effective_device"] == "cpu"
+    assert first_tracks[0][0].end == 12.0
+    assert second_tracks[0][1] == "S1"
+    assert warnings == [
+        "pyannote diarization load failed; using fallback diariser: RuntimeError: auth failed"
+    ]
+
+
+def test_pyannote_diariser_reraises_invalid_lazy_loader_state():
+    diariser = worker_tasks._PyannoteDiariser(
+        pipeline_loader=lambda: object(),
+    )
+
+    with pytest.raises(TypeError, match="pipeline_model must be a callable"):
+        asyncio.run(diariser(Path("/tmp/not-callable.wav")))
+
+
 def test_resolve_diarization_speaker_hints_from_env(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("LAN_DIARIZATION_PROFILE", "auto")
     monkeypatch.delenv("LAN_DIARIZATION_MIN_SPEAKERS", raising=False)

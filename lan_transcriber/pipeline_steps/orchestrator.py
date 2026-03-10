@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 import gc
 import inspect
 import logging
@@ -85,6 +86,12 @@ _LLM_MODEL_REQUIRED_ERROR = (
     "LLM_MODEL is required. Set it in .env (e.g., LLM_MODEL=gpt-oss:120b)."
 )
 _LLM_TIMEOUT_SENTINEL = "**LLM timeout**"
+
+
+@dataclass(frozen=True)
+class _CachedAsrModel:
+    model: Any
+    compute_type: str
 
 
 class Diariser(Protocol):
@@ -375,6 +382,18 @@ def _asr_model_cache_key(
         str(cfg.vad_method or "").strip(),
         load_model_callable,
     )
+
+
+def _cached_asr_model_entry(
+    cached_entry: Any,
+    *,
+    default_compute_type: str,
+) -> tuple[Any | None, str]:
+    if cached_entry is None:
+        return None, default_compute_type
+    if isinstance(cached_entry, _CachedAsrModel):
+        return cached_entry.model, cached_entry.compute_type
+    return cached_entry, default_compute_type
 
 
 def _log_cuda_memory_snapshot(
@@ -930,16 +949,19 @@ def _load_cached_whisperx_model(
         load_model_callable=load_model_callable,
     )
     with _ASR_MODEL_CACHE_LOCK:
-        cached_model = _ASR_MODEL_CACHE.get(cache_key)
+        cached_model, cached_compute_type = _cached_asr_model_entry(
+            _ASR_MODEL_CACHE.get(cache_key),
+            default_compute_type=compute_type,
+        )
     if cached_model is not None:
         _best_effort_step_log(
             step_log_callback,
             (
                 "asr model cache hit "
-                f"model={cfg.asr_model} device={device} compute_type={compute_type}"
+                f"model={cfg.asr_model} device={device} compute_type={cached_compute_type}"
             ),
         )
-        return cached_model, compute_type
+        return cached_model, cached_compute_type
 
     model_load_kwargs = {"compute_type": compute_type, "vad_method": cfg.vad_method}
 
@@ -985,18 +1007,31 @@ def _load_cached_whisperx_model(
             else:
                 raise
 
-    cache_key = _asr_model_cache_key(
+    resolved_cache_key = _asr_model_cache_key(
         cfg=cfg,
         device=device,
         compute_type=selected_compute_type,
         load_model_callable=load_model_callable,
     )
+    cache_entry = _CachedAsrModel(model=model, compute_type=selected_compute_type)
     with _ASR_MODEL_CACHE_LOCK:
-        cached_model = _ASR_MODEL_CACHE.get(cache_key)
+        cached_model, cached_compute_type = _cached_asr_model_entry(
+            _ASR_MODEL_CACHE.get(resolved_cache_key),
+            default_compute_type=selected_compute_type,
+        )
         if cached_model is None:
-            _ASR_MODEL_CACHE[cache_key] = model
+            _ASR_MODEL_CACHE[resolved_cache_key] = cache_entry
             cached_model = model
-    return cached_model, selected_compute_type
+            cached_compute_type = selected_compute_type
+        if selected_compute_type != compute_type:
+            _ASR_MODEL_CACHE.setdefault(
+                cache_key,
+                _CachedAsrModel(
+                    model=cached_model,
+                    compute_type=cached_compute_type,
+                ),
+            )
+    return cached_model, cached_compute_type
 
 
 def _build_whisperx_transcriber(
