@@ -23,6 +23,7 @@ from lan_app.db import (
     create_recording,
     create_voice_profile,
     init_db,
+    upsert_calendar_match,
 )
 from lan_app.jobs import DuplicateRecordingJobError
 
@@ -1014,6 +1015,84 @@ def test_resummarize_recording_default_turn_and_attendees_paths(
     assert any(path.name == "summary.json" for path in writes)
 
 
+def test_resummarize_recording_prefers_selected_calendar_context(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = _cfg(tmp_path)
+    init_db(cfg)
+    create_recording(
+        "rec-resummarize-selected-cal",
+        source="upload",
+        source_filename="selected.wav",
+        status=RECORDING_STATUS_READY,
+        settings=cfg,
+    )
+    upsert_calendar_match(
+        recording_id="rec-resummarize-selected-cal",
+        candidates=[
+            {
+                "event_id": "evt-selected",
+                "subject": "Selected Calendar Event",
+                "attendee_details": [{"label": "Priya Kapoor"}],
+            }
+        ],
+        selected_event_id="evt-selected",
+        selected_confidence=0.9,
+        settings=cfg,
+    )
+    derived = cfg.recordings_root / "rec-resummarize-selected-cal" / "derived"
+    derived.mkdir(parents=True, exist_ok=True)
+    (derived / "transcript.json").write_text(
+        json.dumps(
+            {
+                "text": "hello world",
+                "calendar_title": "Stale title",
+                "calendar_attendees": ["Stale attendee"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (derived / "summary.json").write_text(json.dumps({"friendly": 0}), encoding="utf-8")
+
+    monkeypatch.setattr(ui_routes, "_fallback_speaker_turns_from_transcript", lambda *_a, **_k: [])
+    monkeypatch.setattr(
+        ui_routes,
+        "PipelineSettings",
+        lambda **kwargs: type("S", (), {"llm_model": "test-model", **kwargs})(),
+    )
+    prompts_seen: dict[str, Any] = {}
+
+    def _prompts(turns: list[dict[str, Any]], *_a: Any, **kwargs: Any) -> tuple[str, str]:
+        prompts_seen["turns"] = turns
+        prompts_seen["title"] = kwargs.get("calendar_title")
+        prompts_seen["attendees"] = kwargs.get("calendar_attendees")
+        return "sys", "usr"
+
+    class _FakeLLM:
+        async def generate(self, **_kwargs: Any) -> dict[str, str]:
+            return {"content": '{"summary":"ok"}'}
+
+    monkeypatch.setattr(ui_routes, "build_structured_summary_prompts", _prompts)
+    monkeypatch.setattr(ui_routes, "LLMClient", lambda: _FakeLLM())
+    monkeypatch.setattr(
+        ui_routes,
+        "build_summary_payload",
+        lambda **_k: {"summary": "ok", "friendly": 0},
+    )
+    monkeypatch.setattr(ui_routes, "atomic_write_json", lambda *_a, **_k: None)
+    monkeypatch.setattr(ui_routes, "refresh_recording_metrics", lambda *_a, **_k: None)
+
+    ui_routes._resummarize_recording(  # noqa: SLF001
+        "rec-resummarize-selected-cal",
+        settings=cfg,
+        target_summary_language=None,
+    )
+    assert prompts_seen["turns"][0]["speaker"] == "S1"
+    assert prompts_seen["title"] == "Selected Calendar Event"
+    assert prompts_seen["attendees"] == ["Priya Kapoor"]
+
+
 def test_resummarize_recording_uses_existing_speaker_turns(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1077,6 +1156,91 @@ def test_datetime_and_calendar_parse_errors(tmp_path: Path, monkeypatch: pytest.
             source_id=None,
             settings=cfg,
         )
+
+
+def test_calendar_ui_helper_context_paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg = _cfg(tmp_path)
+    init_db(cfg)
+    assert ui_routes._calendar_attendee_labels("bad") == []  # noqa: SLF001
+    assert ui_routes._calendar_attendee_labels(  # noqa: SLF001
+        [{"label": ""}, {"label": "Alex"}, {"name": "Alex"}, "Priya", "Priya"]
+    ) == ["Alex", "Priya"]
+    assert ui_routes._calendar_rationale_rows(123) == []  # noqa: SLF001
+    assert ui_routes._calendar_rationale_rows(" one ") == ["one"]  # noqa: SLF001
+    candidate = ui_routes._calendar_candidate_context(  # noqa: SLF001
+        {
+            "event_id": "evt-1",
+            "subject": "Calendar event",
+            "starts_at": "2026-03-01T10:00:00Z",
+            "ends_at": "2026-03-01T11:00:00Z",
+            "attendee_details": [{"label": "Alex"}],
+            "source_kind": "file",
+            "rationale": "manual",
+        },
+        selected_event_id="evt-1",
+    )
+    assert candidate["selected"] is True
+    assert candidate["attendees_label"] == "Alex"
+    assert candidate["source_label"] == "file"
+
+    monkeypatch.setattr(
+        ui_routes,
+        "get_calendar_match",
+        lambda *_a, **_k: {"selected_event_id": "evt-1", "selected_confidence": 0.7},
+    )
+    monkeypatch.setattr(
+        ui_routes,
+        "selected_calendar_candidate",
+        lambda *_a, **_k: {"event_id": "evt-1", "subject": "Selected"},
+    )
+    monkeypatch.setattr(
+        ui_routes,
+        "calendar_match_candidates",
+        lambda *_a, **_k: [{"event_id": "evt-1", "subject": "Selected"}],
+    )
+    context = ui_routes._calendar_tab_context("rec-helper", cfg)  # noqa: SLF001
+    assert context["selected"]["subject_display"] == "Selected"
+    assert context["candidates"][0]["selected"] is True
+
+
+def test_calendar_detail_error_and_invalid_confidence_paths(
+    client: tuple[AppSettings, TestClient],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg, c = client
+    _seed_recording(cfg, "rec-calendar-ui-edge")
+    monkeypatch.setattr(
+        ui_routes,
+        "get_calendar_match",
+        lambda *_a, **_k: {"selected_event_id": "", "selected_confidence": None},
+    )
+    monkeypatch.setattr(ui_routes, "selected_calendar_candidate", lambda *_a, **_k: {})
+    monkeypatch.setattr(ui_routes, "calendar_match_candidates", lambda *_a, **_k: [])
+    detail = c.get("/recordings/rec-calendar-ui-edge?tab=calendar&calendar_error=Need+review")
+    assert detail.status_code == 200
+    assert "Need review" in detail.text
+
+    monkeypatch.setattr(
+        ui_routes,
+        "calendar_match_candidates",
+        lambda *_a, **_k: [
+            {"event_id": "evt-other", "score": 0.1},
+            {"event_id": "evt-edge", "score": "bad"},
+        ],
+    )
+    captured: dict[str, Any] = {}
+    monkeypatch.setattr(
+        ui_routes,
+        "set_calendar_match_selection",
+        lambda **kwargs: captured.update(kwargs) or kwargs,
+    )
+    monkeypatch.setattr(ui_routes, "refresh_recording_routing", lambda *_a, **_k: {})
+    selected = c.post(
+        "/ui/recordings/rec-calendar-ui-edge/calendar/select",
+        data={"event_id": "evt-edge"},
+    )
+    assert selected.status_code == 303
+    assert captured["selected_confidence"] is None
 
 
 def test_auth_route_edge_paths(client: tuple[AppSettings, TestClient], monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1417,6 +1581,16 @@ def test_calendar_route_edge_paths(
     failed_sync = c.post(f"/calendars/sources/{source_id}/sync")
     assert failed_sync.status_code == 303
     assert "error=" in failed_sync.headers["location"]
+
+    _seed_recording(cfg, "rec-calendar-select-edge")
+    missing_recording = c.post("/ui/recordings/missing/calendar/select", data={})
+    assert missing_recording.status_code == 404
+
+    bad_select = c.post(
+        "/ui/recordings/rec-calendar-select-edge/calendar/select",
+        data={"event_id": "evt-missing"},
+    )
+    assert bad_select.status_code == 422
 
 
 def test_queue_action_error_paths(

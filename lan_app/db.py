@@ -2656,9 +2656,13 @@ def list_calendar_sources(
     with connect(settings) as conn:
         rows = conn.execute(
             """
-            SELECT *
-            FROM calendar_sources
-            ORDER BY created_at DESC, id DESC
+            SELECT
+                cs.*,
+                COUNT(ce.id) AS event_count
+            FROM calendar_sources AS cs
+            LEFT JOIN calendar_events AS ce ON ce.source_id = cs.id
+            GROUP BY cs.id
+            ORDER BY cs.created_at DESC, cs.id DESC
             """
         ).fetchall()
     return [_as_dict(row) or {} for row in rows]
@@ -2723,12 +2727,12 @@ def replace_calendar_events_for_window(
             conn.execute(
                 """
                 DELETE FROM calendar_events
-                WHERE source_id = ? AND starts_at >= ? AND starts_at < ?
+                WHERE source_id = ? AND starts_at < ? AND ends_at > ?
                 """,
                 (
                     int(source_id),
-                    clean_window_start,
                     clean_window_end,
+                    clean_window_start,
                 ),
             )
             inserted = 0
@@ -2742,6 +2746,13 @@ def replace_calendar_events_for_window(
                 description = str(event.get("description") or "").strip() or None
                 location = str(event.get("location") or "").strip() or None
                 organizer = str(event.get("organizer") or "").strip() or None
+                organizer_name = str(event.get("organizer_name") or "").strip() or None
+                organizer_email = str(event.get("organizer_email") or "").strip() or None
+                attendees = event.get("attendees")
+                attendees_json = json.dumps(
+                    attendees if isinstance(attendees, list) else [],
+                    ensure_ascii=True,
+                )
                 updated_at = str(event.get("updated_at") or "").strip() or now
                 all_day = 1 if bool(event.get("all_day")) else 0
                 conn.execute(
@@ -2756,9 +2767,12 @@ def replace_calendar_events_for_window(
                         description,
                         location,
                         organizer,
+                        organizer_name,
+                        organizer_email,
+                        attendees_json,
                         updated_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(source_id, uid, starts_at) DO UPDATE SET
                         ends_at = excluded.ends_at,
                         all_day = excluded.all_day,
@@ -2766,6 +2780,9 @@ def replace_calendar_events_for_window(
                         description = excluded.description,
                         location = excluded.location,
                         organizer = excluded.organizer,
+                        organizer_name = excluded.organizer_name,
+                        organizer_email = excluded.organizer_email,
+                        attendees_json = excluded.attendees_json,
                         updated_at = excluded.updated_at
                     """,
                     (
@@ -2778,6 +2795,9 @@ def replace_calendar_events_for_window(
                         description,
                         location,
                         organizer,
+                        organizer_name,
+                        organizer_email,
+                        attendees_json,
                         updated_at,
                     ),
                 )

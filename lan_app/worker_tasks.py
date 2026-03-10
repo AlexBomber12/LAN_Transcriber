@@ -34,6 +34,7 @@ from lan_transcriber.pipeline_steps.diarization_quality import (
 )
 
 from .asr_glossary import build_recording_asr_glossary
+from .calendar.matching import calendar_summary_context, refresh_recording_calendar_match
 from .config import AppSettings
 from .conversation_metrics import refresh_recording_metrics
 from .constants import (
@@ -57,7 +58,6 @@ from .db import (
     fail_job,
     fail_job_if_started,
     finish_job_if_started,
-    get_calendar_match,
     get_job,
     get_recording,
     init_db,
@@ -574,44 +574,10 @@ def _load_calendar_summary_context(
     recording_id: str,
     settings: AppSettings,
 ) -> tuple[str | None, list[str]]:
-    row = get_calendar_match(recording_id, settings=settings) or {}
-    selected_event_id = str(row.get("selected_event_id") or "").strip()
-    if not selected_event_id:
-        return None, []
-    raw_candidates = row.get("candidates_json")
-    if isinstance(raw_candidates, list):
-        candidates = raw_candidates
-    elif isinstance(raw_candidates, str):
-        try:
-            parsed = json.loads(raw_candidates or "[]")
-        except ValueError:
-            return None, []
-        if not isinstance(parsed, list):
-            return None, []
-        candidates = parsed
-    else:
-        return None, []
-
-    selected: dict[str, Any] | None = None
-    for item in candidates:
-        if not isinstance(item, dict):
-            continue
-        if str(item.get("event_id") or "").strip() == selected_event_id:
-            selected = item
-            break
-    if selected is None:
-        return None, []
-
-    title = str(selected.get("subject") or "").strip() or None
-    attendees_raw = selected.get("attendees")
-    attendees = []
-    if isinstance(attendees_raw, list):
-        attendees = [
-            str(attendee).strip()
-            for attendee in attendees_raw
-            if str(attendee).strip()
-        ]
-    return title, attendees
+    return calendar_summary_context(
+        recording_id,
+        settings=settings,
+    )
 
 
 class _FallbackDiariser:
@@ -1015,6 +981,17 @@ def _run_precheck_pipeline(
             recording_id,
             duration_sec=precheck.duration_sec,
             settings=settings,
+        )
+    try:
+        refresh_recording_calendar_match(
+            recording_id,
+            settings=settings,
+        )
+    except Exception:
+        _logger.warning(
+            "calendar matching refresh failed for recording %s",
+            recording_id,
+            exc_info=True,
         )
     _append_step_log(
         log_path,

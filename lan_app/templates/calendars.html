@@ -44,6 +44,7 @@
         <th>Name</th>
         <th>Type</th>
         <th>Configured</th>
+        <th>Events</th>
         <th>Last sync</th>
         <th>Last error</th>
         <th>Action</th>
@@ -61,7 +62,8 @@
           {% if source.file_configured %}Configured{% else %}Missing{% endif %}
           {% endif %}
         </td>
-        <td>{{ source.last_synced_at[:19].replace('T', ' ') if source.last_synced_at else '—' }}</td>
+        <td>{{ source.event_count }}</td>
+        <td>{{ source.last_synced_at_display }}</td>
         <td title="{{ source.last_error or '' }}">{{ source.last_error or '—' }}</td>
         <td>
           <form method="post" action="/calendars/sources/{{ source.id }}/sync">
@@ -101,6 +103,8 @@
         <th>Start</th>
         <th>End</th>
         <th>Summary</th>
+        <th>Organizer</th>
+        <th>Attendees</th>
         <th>Location</th>
         <th>Source</th>
       </tr>
@@ -108,9 +112,11 @@
     <tbody>
       {% for event in events %}
       <tr>
-        <td>{{ event.starts_at[:19].replace('T', ' ') }}</td>
-        <td>{{ event.ends_at[:19].replace('T', ' ') }}</td>
+        <td>{{ event.starts_at_display }}</td>
+        <td>{{ event.ends_at_display }}</td>
         <td title="{{ event.summary or '' }}">{{ event.summary or '—' }}</td>
+        <td>{{ event.organizer or '—' }}</td>
+        <td title="{{ event.attendees_label }}">{{ event.attendees_label }}</td>
         <td title="{{ event.location or '' }}">{{ event.location or '—' }}</td>
         <td>{{ event.source_name or ('#' ~ event.source_id) }}</td>
       </tr>

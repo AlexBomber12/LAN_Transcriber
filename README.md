@@ -84,6 +84,8 @@ Operational setup, failure handling, backup/restore, and upgrade steps are docum
 5. Open the recording detail page at `/recordings/{recording_id}`.
    - `NeedsReview` recordings now show an explicit review reason in both the list and detail UI.
    - Displayed timestamps are rendered in local Europe/Rome time in the server-rendered UI.
+   - ICS sync now stores organizer and attendee details per event, and the calendars UI renders those event times in local Europe/Rome time.
+   - Uploaded/processed recordings are matched automatically to nearby calendar events when the score is strong enough; ambiguous candidates remain reviewable on the recording `calendar` tab.
    - Duration is taken from `derived/audio_sanitized.wav` when present, then falls back to the raw upload.
    - The app now uses glossary/correction memory instead of ASR model training: manage manual terms and future corrections on `/glossary`.
    - Glossary sources are merged deterministically from stored manual/correction entries, canonical speaker names, selected calendar context, and the current project name/keywords when available.

@@ -382,32 +382,29 @@ def test_load_calendar_summary_context_handles_invalid_candidate_shapes(
 
     monkeypatch.setattr(
         worker_tasks,
-        "get_calendar_match",
-        lambda *_a, **_k: {"selected_event_id": "evt-1", "candidates_json": "{bad"},
+        "calendar_summary_context",
+        lambda *_a, **_k: (None, []),
     )
     assert worker_tasks._load_calendar_summary_context("rec-cal-1", cfg) == (None, [])
 
     monkeypatch.setattr(
         worker_tasks,
-        "get_calendar_match",
-        lambda *_a, **_k: {"selected_event_id": "evt-1", "candidates_json": "{}"},
+        "calendar_summary_context",
+        lambda *_a, **_k: (None, []),
     )
     assert worker_tasks._load_calendar_summary_context("rec-cal-2", cfg) == (None, [])
 
     monkeypatch.setattr(
         worker_tasks,
-        "get_calendar_match",
-        lambda *_a, **_k: {"selected_event_id": "evt-1", "candidates_json": 123},
+        "calendar_summary_context",
+        lambda *_a, **_k: (None, []),
     )
     assert worker_tasks._load_calendar_summary_context("rec-cal-3", cfg) == (None, [])
 
     monkeypatch.setattr(
         worker_tasks,
-        "get_calendar_match",
-        lambda *_a, **_k: {
-            "selected_event_id": "evt-1",
-            "candidates_json": '[{"event_id":"evt-1","subject":"Team Sync","attendees":[]}]',
-        },
+        "calendar_summary_context",
+        lambda *_a, **_k: ("Team Sync", []),
     )
     assert worker_tasks._load_calendar_summary_context("rec-cal-3b", cfg) == (
         "Team Sync",
@@ -416,11 +413,8 @@ def test_load_calendar_summary_context_handles_invalid_candidate_shapes(
 
     monkeypatch.setattr(
         worker_tasks,
-        "get_calendar_match",
-        lambda *_a, **_k: {
-            "selected_event_id": "evt-1",
-            "candidates_json": ["not-dict", {"event_id": "evt-2"}],
-        },
+        "calendar_summary_context",
+        lambda *_a, **_k: (None, []),
     )
     assert worker_tasks._load_calendar_summary_context("rec-cal-4", cfg) == (None, [])
 
@@ -432,13 +426,8 @@ def test_load_calendar_summary_context_returns_title_without_attendees_list(
     cfg = _db_settings(tmp_path)
     monkeypatch.setattr(
         worker_tasks,
-        "get_calendar_match",
-        lambda *_a, **_k: {
-            "selected_event_id": "evt-1",
-            "candidates_json": [
-                {"event_id": "evt-1", "subject": "Weekly Sync", "attendees": "not-a-list"}
-            ],
-        },
+        "calendar_summary_context",
+        lambda *_a, **_k: ("Weekly Sync", []),
     )
 
     assert worker_tasks._load_calendar_summary_context("rec-cal-5", cfg) == (
@@ -979,6 +968,83 @@ def test_run_precheck_pipeline_uses_sanitized_audio_for_precheck_and_pipeline(
     recording = get_recording("rec-sanitize-wire-1", settings=cfg)
     assert recording is not None
     assert recording["duration_sec"] == 30.0
+
+
+def test_run_precheck_pipeline_survives_calendar_refresh_failures(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = _db_settings(tmp_path)
+    init_db(cfg)
+    create_recording(
+        "rec-calendar-refresh-fail-1",
+        source="test",
+        source_filename="calendar-refresh.wav",
+        settings=cfg,
+    )
+
+    raw_audio = cfg.recordings_root / "rec-calendar-refresh-fail-1" / "raw" / "audio.wav"
+    raw_audio.parent.mkdir(parents=True, exist_ok=True)
+    _write_pcm_wav(raw_audio)
+
+    monkeypatch.setattr(worker_tasks, "_resolve_raw_audio_path", lambda *_a, **_k: raw_audio)
+    monkeypatch.setattr(worker_tasks, "sanitize_audio_for_pipeline", lambda src, _dst: src)
+    monkeypatch.setattr(
+        worker_tasks,
+        "run_precheck",
+        lambda *_a, **_k: PrecheckResult(
+            duration_sec=20.0,
+            speech_ratio=0.5,
+            quarantine_reason=None,
+        ),
+    )
+    monkeypatch.setattr(
+        worker_tasks,
+        "refresh_recording_calendar_match",
+        lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("calendar boom")),
+    )
+    monkeypatch.setattr(
+        worker_tasks,
+        "_build_diariser",
+        lambda *_a, **_k: worker_tasks._FallbackDiariser(20.0),
+    )
+    monkeypatch.setattr(
+        worker_tasks,
+        "build_recording_asr_glossary",
+        lambda *_a, **_k: {
+            "entry_count": 0,
+            "term_count": 0,
+            "truncated": False,
+            "initial_prompt": "",
+            "hotwords": "",
+        },
+    )
+    monkeypatch.setattr(
+        worker_tasks,
+        "_load_transcript_language_payload",
+        lambda *_a, **_k: (None, None),
+    )
+    monkeypatch.setattr(
+        worker_tasks,
+        "refresh_recording_metrics",
+        lambda *_a, **_k: {"participants": [], "meeting": {}},
+    )
+    monkeypatch.setattr(worker_tasks, "refresh_recording_routing", lambda *_a, **_k: {})
+    monkeypatch.setattr(worker_tasks, "run_pipeline", lambda *_a, **_k: asyncio.sleep(0))
+
+    state = worker_tasks._run_precheck_pipeline(
+        recording_id="rec-calendar-refresh-fail-1",
+        settings=cfg,
+        log_path=cfg.recordings_root
+        / "rec-calendar-refresh-fail-1"
+        / "logs"
+        / "step-precheck.log",
+    )
+
+    assert state.status == RECORDING_STATUS_READY
+    recording = get_recording("rec-calendar-refresh-fail-1", settings=cfg)
+    assert recording is not None
+    assert recording["duration_sec"] == 20.0
 
 
 def test_run_precheck_pipeline_marks_fallback_when_builder_returns_fallback(

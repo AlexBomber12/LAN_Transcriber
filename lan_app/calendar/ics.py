@@ -132,20 +132,74 @@ def _property_text(component: Any, key: str) -> str | None:
     return text or None
 
 
-def _organizer_text(component: Any) -> str | None:
-    organizer = component.get("ORGANIZER")
-    if organizer is None:
+def _participant_email(value: Any) -> str | None:
+    raw = str(value or "").strip()
+    if not raw:
         return None
-    params = getattr(organizer, "params", {})
-    cn = params.get("CN")
-    if cn:
-        value = str(cn).strip()
-        if value:
-            return value
-    raw = str(organizer).strip()
-    if raw.lower().startswith("mailto:"):
-        raw = raw[7:]
+    lowered = raw.lower()
+    if lowered.startswith("mailto:"):
+        raw = raw.split(":", 1)[1].strip()
     return raw or None
+
+
+def _participant_payload(value: Any) -> dict[str, str] | None:
+    if value is None:
+        return None
+    params = getattr(value, "params", {})
+    name = str(params.get("CN") or "").strip() or None
+    email = _participant_email(value)
+    label = name or email
+    if not label:
+        return None
+    payload = {"label": label}
+    if name:
+        payload["name"] = name
+    if email:
+        payload["email"] = email
+    return payload
+
+
+def _organizer_text(component: Any) -> str | None:
+    payload = _participant_payload(component.get("ORGANIZER"))
+    if payload is None:
+        return None
+    return payload.get("label")
+
+
+def _organizer_name(component: Any) -> str | None:
+    payload = _participant_payload(component.get("ORGANIZER"))
+    if payload is None:
+        return None
+    return payload.get("name")
+
+
+def _organizer_email(component: Any) -> str | None:
+    payload = _participant_payload(component.get("ORGANIZER"))
+    if payload is None:
+        return None
+    return payload.get("email")
+
+
+def _attendees(component: Any) -> list[dict[str, str]]:
+    attendees_raw = component.get("ATTENDEE")
+    if attendees_raw is None:
+        return []
+    rows = attendees_raw if isinstance(attendees_raw, list) else [attendees_raw]
+    attendees: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for row in rows:
+        payload = _participant_payload(row)
+        if payload is None:
+            continue
+        dedupe_key = (
+            str(payload.get("email") or "").strip().lower(),
+            str(payload.get("name") or payload.get("label") or "").strip().lower(),
+        )
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        attendees.append(payload)
+    return attendees
 
 
 def _updated_at_text(component: Any, *, fallback: str) -> str:
@@ -226,6 +280,9 @@ def _normalise_event(
         "description": _property_text(component, "DESCRIPTION"),
         "location": _property_text(component, "LOCATION"),
         "organizer": _organizer_text(component),
+        "organizer_name": _organizer_name(component),
+        "organizer_email": _organizer_email(component),
+        "attendees": _attendees(component),
         "updated_at": _updated_at_text(component, fallback=fallback_updated_at),
     }
 
