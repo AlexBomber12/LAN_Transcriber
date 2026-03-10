@@ -28,6 +28,8 @@ def _write_wav(path: Path, *, duration_sec: float) -> Path:
 
 
 class _FakeDiariser:
+    mode = "pyannote"
+
     async def __call__(self, _audio_path: Path):
         class _Annotation:
             def itertracks(self, yield_label: bool = False):

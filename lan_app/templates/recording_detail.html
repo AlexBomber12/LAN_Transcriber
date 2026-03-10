@@ -275,16 +275,32 @@
           {% endif %}
         </td>
         <td style="white-space:normal;max-width:320px">
-          {% if row.snippet_urls %}
-            {% for src in row.snippet_urls %}
-            <div style="margin-bottom:4px">
+          {% if row.clean_snippets %}
+            {% for snippet in row.clean_snippets %}
+            <div style="margin-bottom:8px;padding:6px;border:1px solid #ddd;border-radius:6px">
+              <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:4px">
+                {% if snippet.recommended %}
+                <span class="badge s-Ready">Recommended</span>
+                {% else %}
+                <span class="badge s-Published">Clean</span>
+                {% endif %}
+                <span>{{ snippet.clip_label }}</span>
+                <span style="color:#555">from {{ snippet.source_label }}</span>
+                <span style="color:#555">purity {{ snippet.purity_label }}</span>
+              </div>
               <audio controls preload="none" style="height:26px;max-width:280px">
-                <source src="{{ src }}" type="audio/wav">
+                <source src="{{ snippet.audio_url }}" type="audio/wav">
               </audio>
             </div>
             {% endfor %}
-          {% else %}
-          <span class="placeholder" style="padding:0">No snippets found.</span>
+          {% endif %}
+          {% if row.snippet_warnings %}
+            {% for warning in row.snippet_warnings %}
+            <div style="margin-top:4px;font-size:11px;color:#92400e">{{ warning }}</div>
+            {% endfor %}
+          {% endif %}
+          {% if not row.clean_snippets and not row.snippet_warnings %}
+          <span class="placeholder" style="padding:0">No snippet quality data found.</span>
           {% endif %}
         </td>
         <td style="white-space:normal;max-width:260px">
@@ -312,7 +328,15 @@
               <option value="{{ vp.id }}" {% if row.voice_profile_id == vp.id %}selected{% endif %}>{{ vp.display_name }}</option>
               {% endfor %}
             </select>
-            <button class="btn" type="submit" {% if not row.snippet_urls %}disabled{% endif %}>Add sample from this recording</button>
+            <select name="snippet_path" style="width:220px" {% if not row.clean_snippets %}disabled{% endif %}>
+              {% for snippet in row.clean_snippets %}
+              <option value="{{ snippet.relative_path }}" {% if snippet.recommended %}selected{% endif %}>{{ snippet.choice_label }}</option>
+              {% endfor %}
+            </select>
+            <button class="btn" type="submit" {% if not row.clean_snippets %}disabled{% endif %}>Add sample from this recording</button>
+            {% if row.no_clean_snippet_message %}
+            <div style="margin-top:4px;font-size:11px;color:#92400e">{{ row.no_clean_snippet_message }}</div>
+            {% endif %}
           </form>
           {% else %}
           <span class="placeholder" style="padding:0">Create a profile first.</span>
