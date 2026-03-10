@@ -1,0 +1,143 @@
+{% extends "base.html" %}
+{% block title %}Glossary – LAN Transcriber{% endblock %}
+{% block content %}
+{% set editing = editing_entry or {} %}
+<h1>Glossary</h1>
+
+<p style="margin:0 0 12px 0;color:#555">
+  Manage manual ASR terms and correction memory. Store canonical spellings plus observed wrong variants so future recordings can reuse them without model retraining.
+</p>
+
+<div class="section">
+  <h2>{% if editing %}Edit entry #{{ editing.id }}{% else %}Create glossary entry{% endif %}</h2>
+  <form
+    method="post"
+    action="{% if editing %}/glossary/{{ editing.id }}{% else %}/glossary{% endif %}"
+    style="background:#fff;border:1px solid #ccc;padding:10px;max-width:920px"
+  >
+    <div class="form-row">
+      <label for="glossary-canonical">Canonical term</label>
+      <input
+        id="glossary-canonical"
+        name="canonical_text"
+        type="text"
+        required
+        maxlength="160"
+        value="{{ editing.canonical_text or '' }}"
+        style="min-width:320px"
+      >
+    </div>
+    <div class="form-row" style="align-items:flex-start">
+      <label for="glossary-aliases">Aliases / variants</label>
+      <textarea
+        id="glossary-aliases"
+        name="aliases_text"
+        rows="4"
+        style="min-width:320px"
+        placeholder="One alias per line, or comma-separated"
+      >{{ editing.aliases_text or '' }}</textarea>
+    </div>
+    <div class="form-row">
+      <label for="glossary-kind">Kind</label>
+      <select id="glossary-kind" name="kind">
+        {% for option in kind_options %}
+        <option value="{{ option }}" {% if (editing.kind or 'term') == option %}selected{% endif %}>{{ option }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="form-row">
+      <label for="glossary-source">Source</label>
+      <select id="glossary-source" name="source">
+        {% for option in source_options %}
+        <option value="{{ option }}" {% if (editing.source or 'manual') == option %}selected{% endif %}>{{ option }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="form-row">
+      <label for="glossary-notes">Notes</label>
+      <input
+        id="glossary-notes"
+        name="notes"
+        type="text"
+        maxlength="240"
+        value="{{ editing.notes or '' }}"
+        style="min-width:420px"
+      >
+    </div>
+    <div class="form-row">
+      <label for="glossary-recording">Observed in recording</label>
+      <input
+        id="glossary-recording"
+        name="recording_id"
+        type="text"
+        maxlength="160"
+        value="{{ editing.recording_id or '' }}"
+        placeholder="Optional recording ID"
+        style="min-width:280px"
+      >
+    </div>
+    <div class="form-row">
+      <label for="glossary-enabled">Enabled</label>
+      <input
+        id="glossary-enabled"
+        type="checkbox"
+        name="enabled"
+        value="1"
+        {% if editing.enabled is not defined or editing.enabled %}checked{% endif %}
+      >
+      <span style="font-size:12px;color:#555">Disabled entries stay stored but are omitted from new ASR prompts.</span>
+    </div>
+    <div class="filters" style="margin-top:8px">
+      <button class="btn" type="submit">{% if editing %}Save entry{% else %}Add entry{% endif %}</button>
+      {% if editing %}
+      <a href="/glossary" class="btn" style="text-decoration:none">Cancel edit</a>
+      {% endif %}
+    </div>
+  </form>
+</div>
+
+<div class="section">
+  <h2>Stored entries</h2>
+  {% if items %}
+  <table>
+    <thead>
+      <tr>
+        <th>ID</th>
+        <th>Canonical</th>
+        <th>Aliases</th>
+        <th>Kind</th>
+        <th>Source</th>
+        <th>Status</th>
+        <th>Observed in</th>
+        <th>Notes</th>
+        <th>Updated</th>
+        <th>Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for item in items %}
+      <tr id="glossary-{{ item.id }}">
+        <td>{{ item.id }}</td>
+        <td>{{ item.canonical_text }}</td>
+        <td>{{ item.aliases|join(', ') if item.aliases else '—' }}</td>
+        <td>{{ item.kind }}</td>
+        <td>{{ item.source_label }}</td>
+        <td>{% if item.enabled %}Enabled{% else %}Disabled{% endif %}</td>
+        <td>{{ item.recording_id or '—' }}</td>
+        <td>{{ item.notes or '—' }}</td>
+        <td>{{ item.updated_at[:19].replace('T', ' ') if item.updated_at else '—' }}</td>
+        <td style="white-space:nowrap">
+          <a href="/glossary?edit_id={{ item.id }}#glossary-{{ item.id }}" class="btn" style="text-decoration:none">Edit</a>
+          <form method="post" action="/glossary/{{ item.id }}/delete" style="display:inline" onsubmit="return confirm('Delete glossary entry ' + this.dataset.name + '?')" data-name="{{ item.canonical_text }}">
+            <button class="btn btn-danger" type="submit">Delete</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="placeholder">No glossary entries yet. Add a manual term or a correction-memory entry above.</p>
+  {% endif %}
+</div>
+{% endblock %}

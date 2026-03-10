@@ -1,46 +1,2685 @@
+diff --git a/README.md b/README.md
+index 861911c..490c525 100644
+--- a/README.md
++++ b/README.md
+@@ -85,6 +85,9 @@ Operational setup, failure handling, backup/restore, and upgrade steps are docum
+    - `NeedsReview` recordings now show an explicit review reason in both the list and detail UI.
+    - Displayed timestamps are rendered in local Europe/Rome time in the server-rendered UI.
+    - Duration is taken from `derived/audio_sanitized.wav` when present, then falls back to the raw upload.
++   - The app now uses glossary/correction memory instead of ASR model training: manage manual terms and future corrections on `/glossary`.
++   - Glossary sources are merged deterministically from stored manual/correction entries, canonical speaker names, selected calendar context, and the current project name/keywords when available.
++   - Each processed recording writes `derived/asr_glossary.json`, and the overview page shows which glossary terms were actually forwarded to ASR.
+ 6. Export results:
+    - Copy markdown from the export tab for manual OneNote paste.
+    - Download ZIP from `/ui/recordings/{recording_id}/export.zip`.
+@@ -103,6 +106,13 @@ Operational setup, failure handling, backup/restore, and upgrade steps are docum
+ - Synthetic silence fallback was removed on purpose. Inspect `derived/snippets_manifest.json` to see accepted clips, rejected candidates, overlap, and extraction failures.
+ - When diarization falls back to degraded mode or a speaker match is low confidence, the recording detail page shows an explicit warning instead of silently trusting the labels.
+ 
++## ASR glossary and correction memory
++
++- `/glossary` stores manual ASR hints and correction-memory entries as a canonical term plus aliases / observed wrong spellings.
++- Use `source=manual` for domain terms you always want available and `source=correction` for previously mis-transcribed names such as `canonical=Sander`, `aliases=[Sandia]`.
++- The worker builds a bounded per-recording glossary from stored entries, speaker bank names, selected calendar data, and project context, then forwards that context to WhisperX when the active transcribe callable supports `initial_prompt` and/or `hotwords`.
++- The resulting per-recording artifact lives at `derived/asr_glossary.json` for inspection and troubleshooting.
++
+ ## Runtime data root
+ 
+ Runtime mutable state must live under `/data` in containers (mounted from `./data` in Docker):
+@@ -121,6 +131,7 @@ Canonical artifact layout (v1):
+   raw/audio.<ext>
+   derived/audio_sanitized.wav
+   derived/audio_sanitize.json
++  derived/asr_glossary.json
+   derived/transcript.json
+   derived/transcript.txt
+   derived/segments.json
+diff --git a/docs/runbook.md b/docs/runbook.md
+index 59982c9..399924f 100644
+--- a/docs/runbook.md
++++ b/docs/runbook.md
+@@ -46,6 +46,9 @@ docker compose run --rm api python -m lan_app.healthchecks app
+    - `NeedsReview` recordings show an explicit review reason in the recordings list and detail page.
+    - The server-rendered UI shows timestamps in local Europe/Rome time.
+    - Duration is sourced from `derived/audio_sanitized.wav` when it exists, otherwise from the raw upload.
++   - The app uses glossary/correction memory instead of ASR model training. Manage manual terms and saved corrections on `/glossary`.
++   - Glossary sources are merged deterministically from stored manual/correction entries, speaker-bank names, selected calendar context, and project context when available.
++   - Each processed recording writes `derived/asr_glossary.json`, and the overview page shows the glossary terms that were actually sent to ASR.
+    - Canonical speaker records keep one active person entry with many samples; low-confidence matches stay reviewable instead of auto-merging.
+    - Use the `speakers` tab to remap `S1`/`S2` diarization labels to canonical speakers or leave them unmatched; the export preview updates to the corrected `Name (Sx)` labels.
+    - Speaker snippets are purity-ranked voice samples. Add sample now requires selecting an explicit clean clip instead of silently taking the first snippet.
+@@ -54,6 +57,14 @@ docker compose run --rm api python -m lan_app.healthchecks app
+ 6. Download export bundle from `GET /ui/recordings/{recording_id}/export.zip`.
+ 7. Deleting a recording removes the DB row plus `/data/recordings/<recording_id>/raw`, `derived`, `logs`, and other remaining files under that recording root. If cleanup fails, delete returns an error.
+ 
++### 1.2.2 Glossary and correction-memory workflow
++
++1. Open `/glossary`.
++2. Add a canonical term and optional aliases / observed wrong spellings.
++3. Use `source=manual` for always-on domain terminology and `source=correction` for future ASR memory.
++4. Optional metadata like `Observed in recording` can point back to the recording where you noticed the issue.
++5. After processing a recording, inspect `derived/asr_glossary.json` or the recording overview page to confirm the terms that were applied.
++
+ ### 1.2.1 Canonical speaker merges
+ 
+ 1. Treat `/voices` entries as canonical people, not one-off embeddings.
+diff --git a/lan_app/db.py b/lan_app/db.py
+index f48089f..b9907bd 100644
+--- a/lan_app/db.py
++++ b/lan_app/db.py
+@@ -25,6 +25,15 @@ from .constants import (
+ 
+ _PROJECT_ASSIGNMENT_SOURCES = {"manual", "auto"}
+ _CALENDAR_SOURCE_KINDS = {"url", "file"}
++_GLOSSARY_TERM_KINDS = {"company", "person", "product", "project", "term"}
++_GLOSSARY_SOURCES = {
++    "calendar",
++    "correction",
++    "manual",
++    "project",
++    "speaker_bank",
++    "system",
++}
+ _MIGRATIONS_DIR = Path(__file__).with_name("migrations")
+ _SQLITE_CONNECT_TIMEOUT_SECONDS = 30
+ _DEFAULT_SQLITE_BUSY_TIMEOUT_MS = 30_000
+@@ -129,6 +138,51 @@ def _normalise_calendar_source_kind(kind: str) -> str:
+     return value
+ 
+ 
++def _normalise_glossary_kind(kind: str | None) -> str:
++    value = str(kind or "term").strip().lower() or "term"
++    if value not in _GLOSSARY_TERM_KINDS:
++        options = ", ".join(sorted(_GLOSSARY_TERM_KINDS))
++        raise ValueError(f"Unsupported glossary kind: {value} ({options})")
++    return value
++
++
++def _normalise_glossary_source(source: str | None) -> str:
++    value = str(source or "manual").strip().lower() or "manual"
++    if value not in _GLOSSARY_SOURCES:
++        options = ", ".join(sorted(_GLOSSARY_SOURCES))
++        raise ValueError(f"Unsupported glossary source: {value} ({options})")
++    return value
++
++
++def _normalise_glossary_aliases(
++    aliases: Sequence[str] | str | None,
++    *,
++    canonical_text: str | None = None,
++) -> list[str]:
++    if aliases is None:
++        raw_values: Sequence[object] = ()
++    elif isinstance(aliases, str):
++        raw_values = aliases.replace(",", "\n").splitlines()
++    elif isinstance(aliases, Sequence) and not isinstance(aliases, (bytes, bytearray)):
++        raw_values = aliases
++    else:
++        raw_values = ()
++
++    canonical_key = _normalise_keyword(canonical_text) if canonical_text else ""
++    seen: set[str] = set()
++    normalized: list[str] = []
++    for value in raw_values:
++        text = " ".join(str(value).strip().split())
++        if not text:
++            continue
++        key = _normalise_keyword(text)
++        if not key or key == canonical_key or key in seen:
++            continue
++        seen.add(key)
++        normalized.append(text)
++    return normalized
++
++
+ def _normalise_keyword(value: object) -> str:
+     return " ".join(str(value).strip().lower().split())
+ 
+@@ -1800,6 +1854,211 @@ def list_project_keyword_weights(
+     return [_as_dict(row) or {} for row in rows]
+ 
+ 
++def list_glossary_entries(
++    *,
++    enabled: bool | None = None,
++    source: str | None = None,
++    settings: AppSettings | None = None,
++) -> list[dict[str, Any]]:
++    init_db(settings)
++    clauses: list[str] = []
++    params: list[Any] = []
++    if enabled is not None:
++        clauses.append("enabled = ?")
++        params.append(1 if enabled else 0)
++    if source is not None:
++        clauses.append("source = ?")
++        params.append(_normalise_glossary_source(source))
++    where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
++    with connect(settings) as conn:
++        rows = conn.execute(
++            f"""
++            SELECT *
++            FROM glossary_entries
++            {where_sql}
++            ORDER BY canonical_text, id
++            """,
++            tuple(params),
++        ).fetchall()
++    return [_as_dict(row) or {} for row in rows]
++
++
++def get_glossary_entry(
++    entry_id: int,
++    *,
++    settings: AppSettings | None = None,
++) -> dict[str, Any] | None:
++    init_db(settings)
++    with connect(settings) as conn:
++        row = conn.execute(
++            "SELECT * FROM glossary_entries WHERE id = ?",
++            (int(entry_id),),
++        ).fetchone()
++    return _as_dict(row)
++
++
++def create_glossary_entry(
++    canonical_text: str,
++    *,
++    aliases: Sequence[str] | str | None = None,
++    term_kind: str = "term",
++    source: str = "manual",
++    enabled: bool = True,
++    notes: str | None = None,
++    metadata: dict[str, Any] | None = None,
++    settings: AppSettings | None = None,
++) -> dict[str, Any]:
++    init_db(settings)
++    canonical = " ".join(str(canonical_text).strip().split())
++    if not canonical:
++        raise ValueError("canonical_text is required")
++    normalized_aliases = _normalise_glossary_aliases(
++        aliases,
++        canonical_text=canonical,
++    )
++    normalized_kind = _normalise_glossary_kind(term_kind)
++    normalized_source = _normalise_glossary_source(source)
++    normalized_notes = " ".join(str(notes or "").strip().split()) or None
++    metadata_payload = metadata if isinstance(metadata, dict) else {}
++    now = _utc_now()
++    with connect(settings) as conn:
++        cursor = conn.execute(
++            """
++            INSERT INTO glossary_entries (
++                canonical_text,
++                aliases_json,
++                kind,
++                source,
++                enabled,
++                notes,
++                metadata_json,
++                created_at,
++                updated_at
++            )
++            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
++            """,
++            (
++                canonical,
++                json.dumps(normalized_aliases, ensure_ascii=True),
++                normalized_kind,
++                normalized_source,
++                1 if enabled else 0,
++                normalized_notes,
++                json.dumps(metadata_payload, ensure_ascii=True, sort_keys=True),
++                now,
++                now,
++            ),
++        )
++        row = conn.execute(
++            "SELECT * FROM glossary_entries WHERE id = ?",
++            (int(cursor.lastrowid),),
++        ).fetchone()
++        conn.commit()
++    return _as_dict(row) or {}
++
++
++def update_glossary_entry(
++    entry_id: int,
++    *,
++    canonical_text: str | object = _UNSET,
++    aliases: Sequence[str] | str | object = _UNSET,
++    term_kind: str | object = _UNSET,
++    source: str | object = _UNSET,
++    enabled: bool | object = _UNSET,
++    notes: str | object = _UNSET,
++    metadata: dict[str, Any] | object = _UNSET,
++    settings: AppSettings | None = None,
++) -> dict[str, Any] | None:
++    init_db(settings)
++    with connect(settings) as conn:
++        existing = conn.execute(
++            "SELECT * FROM glossary_entries WHERE id = ?",
++            (int(entry_id),),
++        ).fetchone()
++        if existing is None:
++            return None
++        current = _as_dict(existing) or {}
++        canonical = (
++            " ".join(str(current.get("canonical_text") or "").strip().split())
++            if canonical_text is _UNSET
++            else " ".join(str(canonical_text).strip().split())
++        )
++        if not canonical:
++            raise ValueError("canonical_text is required")
++        normalized_aliases = _normalise_glossary_aliases(
++            current.get("aliases_json") if aliases is _UNSET else aliases,
++            canonical_text=canonical,
++        )
++        normalized_kind = _normalise_glossary_kind(
++            current.get("kind") if term_kind is _UNSET else str(term_kind)
++        )
++        normalized_source = _normalise_glossary_source(
++            current.get("source") if source is _UNSET else str(source)
++        )
++        resolved_enabled = (
++            bool(current.get("enabled"))
++            if enabled is _UNSET
++            else bool(enabled)
++        )
++        resolved_notes = (
++            current.get("notes")
++            if notes is _UNSET
++            else (" ".join(str(notes).strip().split()) or None)
++        )
++        resolved_metadata = (
++            current.get("metadata_json")
++            if metadata is _UNSET and isinstance(current.get("metadata_json"), dict)
++            else (metadata if isinstance(metadata, dict) else {})
++        )
++        now = _utc_now()
++        conn.execute(
++            """
++            UPDATE glossary_entries
++            SET canonical_text = ?,
++                aliases_json = ?,
++                kind = ?,
++                source = ?,
++                enabled = ?,
++                notes = ?,
++                metadata_json = ?,
++                updated_at = ?
++            WHERE id = ?
++            """,
++            (
++                canonical,
++                json.dumps(normalized_aliases, ensure_ascii=True),
++                normalized_kind,
++                normalized_source,
++                1 if resolved_enabled else 0,
++                resolved_notes,
++                json.dumps(resolved_metadata, ensure_ascii=True, sort_keys=True),
++                now,
++                int(entry_id),
++            ),
++        )
++        row = conn.execute(
++            "SELECT * FROM glossary_entries WHERE id = ?",
++            (int(entry_id),),
++        ).fetchone()
++        conn.commit()
++    return _as_dict(row)
++
++
++def delete_glossary_entry(
++    entry_id: int,
++    *,
++    settings: AppSettings | None = None,
++) -> bool:
++    init_db(settings)
++    with connect(settings) as conn:
++        deleted = conn.execute(
++            "DELETE FROM glossary_entries WHERE id = ?",
++            (int(entry_id),),
++        )
++        conn.commit()
++    return deleted.rowcount > 0
++
++
+ def list_voice_profiles(
+     *,
+     include_merged: bool = False,
+@@ -2859,6 +3118,11 @@ __all__ = [
+     "count_routing_training_examples",
+     "increment_project_keyword_weights",
+     "list_project_keyword_weights",
++    "list_glossary_entries",
++    "get_glossary_entry",
++    "create_glossary_entry",
++    "update_glossary_entry",
++    "delete_glossary_entry",
+     "list_voice_profiles",
+     "get_voice_profile",
+     "create_voice_profile",
+diff --git a/lan_app/templates/base.html b/lan_app/templates/base.html
+index 351ea64..4f084ca 100644
+--- a/lan_app/templates/base.html
++++ b/lan_app/templates/base.html
+@@ -87,6 +87,7 @@ tr:hover{background:#e8ecf8}
+   <a href="/calendars" {% if active=='calendars' %}class="active"{% endif %}>Calendars</a>
+   <a href="/queue" {% if active=='queue' %}class="active"{% endif %}>Queue</a>
+   <a href="/projects" {% if active=='projects' %}class="active"{% endif %}>Projects</a>
++  <a href="/glossary" {% if active=='glossary' %}class="active"{% endif %}>Glossary</a>
+   <a href="/voices" {% if active=='voices' %}class="active"{% endif %}>Voices</a>
+ </nav>
+ <main>
+diff --git a/lan_app/templates/recording_detail.html b/lan_app/templates/recording_detail.html
+index ea927e3..a55e3ee 100644
+--- a/lan_app/templates/recording_detail.html
++++ b/lan_app/templates/recording_detail.html
+@@ -54,6 +54,7 @@
+ 
+ {% if current_tab == 'overview' %}
+   {% set summary_data = summary or {} %}
++  {% set glossary_data = glossary or {} %}
+   <div class="info-grid">
+     <span class="k">ID</span><span class="v">{{ rec.id }}</span>
+     <span class="k">Filename</span><span class="v">{{ rec.source_filename }}</span>
+@@ -156,6 +157,46 @@
+   <h2>Emotional Summary</h2>
+   <p style="white-space:pre-wrap">{{ summary_data.emotional_summary or '—' }}</p>
+ 
++  <div class="section" style="margin-top:10px">
++    <h2 style="margin-top:0">ASR Glossary</h2>
++    <div class="filters" style="margin-bottom:6px">
++      <a href="/glossary" class="btn" style="text-decoration:none">Manage glossary</a>
++    </div>
++    {% if glossary_data.available and glossary_data.entries %}
++    <p style="margin:0 0 8px 0;color:#555">
++      {{ glossary_data.term_count }} term{{ '' if glossary_data.term_count == 1 else 's' }}
++      used across {{ glossary_data.entry_count }} entry{{ '' if glossary_data.entry_count == 1 else 'ies' }}.
++      {% if glossary_data.truncated %}
++      Prompt budget reached; only the highest-priority terms were forwarded to ASR.
++      {% endif %}
++    </p>
++    <table>
++      <thead>
++        <tr>
++          <th>Canonical</th>
++          <th>Aliases</th>
++          <th>Kind</th>
++          <th>Sources</th>
++        </tr>
++      </thead>
++      <tbody>
++        {% for row in glossary_data.entries %}
++        <tr>
++          <td>{{ row.canonical_text }}</td>
++          <td>{{ row.aliases|join(', ') if row.aliases else '—' }}</td>
++          <td>{{ row.kind }}</td>
++          <td>{{ row.sources_label }}</td>
++        </tr>
++        {% endfor %}
++      </tbody>
++    </table>
++    {% elif glossary_data.available %}
++    <p class="placeholder">This recording wrote an ASR glossary artifact, but no terms were selected.</p>
++    {% else %}
++    <p class="placeholder">No ASR glossary artifact is available for this recording yet.</p>
++    {% endif %}
++  </div>
++
+ {% elif current_tab == 'project' %}
+   {% set prj = project or {} %}
+   {% set project_items = prj.projects or [] %}
+diff --git a/lan_app/ui_routes.py b/lan_app/ui_routes.py
+index dd2d5c0..b3dd2ea 100644
+--- a/lan_app/ui_routes.py
++++ b/lan_app/ui_routes.py
+@@ -45,11 +45,14 @@ from .constants import (
+ )
+ from .db import (
+     create_calendar_source,
++    create_glossary_entry,
+     count_routing_training_examples,
+     create_voice_sample,
+     create_project,
+     create_voice_profile,
++    delete_glossary_entry,
+     get_calendar_source,
++    get_glossary_entry,
+     delete_project,
+     delete_voice_profile,
+     get_meeting_metrics,
+@@ -58,6 +61,7 @@ from .db import (
+     get_voice_sample,
+     list_calendar_events,
+     list_calendar_sources,
++    list_glossary_entries,
+     list_participant_metrics,
+     list_jobs,
+     list_projects,
+@@ -70,6 +74,7 @@ from .db import (
+     set_speaker_assignment,
+     set_recording_language_settings,
+     set_recording_status,
++    update_glossary_entry,
+ )
+ from .exporter import build_export_zip_bytes, build_onenote_markdown
+ from .jobs import (
+@@ -120,6 +125,15 @@ _LANGUAGE_NAME_MAP: dict[str, str] = {
+ _COMMON_LANGUAGE_CODES = ("en", "es", "fr", "de", "pt", "it", "zh", "ja", "ko", "ru")
+ _STUCK_JOB_RECOVERY_ERROR = "stuck job recovered"
+ _DISPLAY_TIMEZONE = "Europe/Rome"
++_GLOSSARY_KIND_OPTIONS = ("person", "company", "product", "project", "term")
++_GLOSSARY_SOURCE_OPTIONS = (
++    "manual",
++    "correction",
++    "system",
++    "speaker_bank",
++    "calendar",
++    "project",
++)
+ _TERMINAL_RECORDING_STATUSES = frozenset(RECORDING_STATUSES) - {
+     RECORDING_STATUS_PROCESSING,
+     RECORDING_STATUS_QUEUED,
+@@ -523,6 +537,103 @@ def _metrics_tab_context(recording_id: str, settings: AppSettings) -> dict[str,
+     }
+ 
+ 
++def _asr_glossary_context(recording_id: str, settings: AppSettings) -> dict[str, Any]:
++    derived = settings.recordings_root / recording_id / "derived"
++    payload = _load_json_dict(derived / "asr_glossary.json")
++    if not payload:
++        return {
++            "available": False,
++            "entries": [],
++            "entry_count": 0,
++            "term_count": 0,
++            "truncated": False,
++        }
++
++    entry_rows: list[dict[str, Any]] = []
++    raw_entries = payload.get("entries")
++    if isinstance(raw_entries, list):
++        for row in raw_entries:
++            if not isinstance(row, dict):
++                continue
++            canonical_text = " ".join(str(row.get("canonical_text") or "").split())
++            if not canonical_text:
++                continue
++            aliases_raw = row.get("aliases")
++            aliases = (
++                [
++                    " ".join(str(alias).split())
++                    for alias in aliases_raw
++                    if " ".join(str(alias).split())
++                ]
++                if isinstance(aliases_raw, list)
++                else []
++            )
++            sources_raw = row.get("sources")
++            sources = (
++                [
++                    " ".join(str(source).split())
++                    for source in sources_raw
++                    if " ".join(str(source).split())
++                ]
++                if isinstance(sources_raw, list)
++                else []
++            )
++            entry_rows.append(
++                {
++                    "canonical_text": canonical_text,
++                    "aliases": aliases,
++                    "kind": " ".join(str(row.get("kind") or "term").split()) or "term",
++                    "sources": sources,
++                    "sources_label": ", ".join(
++                        source.replace("_", " ") for source in sources
++                    )
++                    or "—",
++                }
++            )
++
++    def _safe_count(value: Any, *, default: int) -> int:
++        try:
++            return max(0, int(value))
++        except (TypeError, ValueError):
++            return default
++
++    return {
++        "available": True,
++        "entries": entry_rows,
++        "entry_count": _safe_count(payload.get("entry_count"), default=len(entry_rows)),
++        "term_count": _safe_count(
++            payload.get("term_count"),
++            default=sum(1 + len(row["aliases"]) for row in entry_rows),
++        ),
++        "truncated": bool(payload.get("truncated")),
++    }
++
++
++def _glossary_form_payload(
++    *,
++    canonical_text: str,
++    aliases_text: str,
++    kind: str,
++    source: str,
++    enabled: str,
++    notes: str,
++    recording_id: str,
++) -> dict[str, Any]:
++    metadata: dict[str, Any] = {}
++    clean_recording_id = " ".join(recording_id.strip().split())
++    if clean_recording_id:
++        metadata["recording_id"] = clean_recording_id
++    return {
++        "canonical_text": canonical_text.strip(),
++        "aliases": aliases_text,
++        "term_kind": kind,
++        "source": source,
++        "enabled": enabled.strip().lower() in {"1", "true", "on", "yes"},
++        "notes": notes,
++        "metadata": metadata,
++    }
++
++
+ def _chunk_text_for_turns(text: str, *, chunk_size: int = 450) -> list[str]:
+     normalized = " ".join(text.split())
+     if not normalized:
+@@ -1645,6 +1756,7 @@ async def ui_recording_detail(
+     metrics: dict[str, Any] | None = None
+     speakers: dict[str, Any] | None = None
+     project: dict[str, Any] | None = None
++    glossary: dict[str, Any] | None = None
+     export_text = ""
+     if current_tab == "language":
+         language = _language_tab_context(recording_id, rec, _settings)
+@@ -1660,6 +1772,7 @@ async def ui_recording_detail(
+         summary = _summary_context(recording_id, _settings)
+     if current_tab == "overview":
+         export_text = build_onenote_markdown(rec, settings=_settings)
++        glossary = _asr_glossary_context(recording_id, _settings)
+     if current_tab == "metrics":
+         metrics = _metrics_tab_context(recording_id, _settings)
+ 
+@@ -1678,6 +1791,7 @@ async def ui_recording_detail(
+             "metrics": metrics,
+             "speakers": speakers,
+             "project": project,
++            "glossary": glossary,
+             "export_text": export_text,
+         },
+     )
+@@ -1960,6 +2074,109 @@ async def ui_set_recording_project(
+     return RedirectResponse(f"/recordings/{recording_id}?tab=project", status_code=303)
+ 
+ 
++# ---------------------------------------------------------------------------
++# Glossary
++# ---------------------------------------------------------------------------
++
++
++@ui_router.get("/glossary", response_class=HTMLResponse)
++async def ui_glossary(
++    request: Request,
++    edit_id: int | None = Query(default=None),
++) -> Any:
++    items = list_glossary_entries(settings=_settings)
++    for item in items:
++        aliases = item.get("aliases_json")
++        item["aliases"] = aliases if isinstance(aliases, list) else []
++        item["aliases_text"] = "\n".join(item["aliases"])
++        metadata = item.get("metadata_json")
++        item["metadata"] = metadata if isinstance(metadata, dict) else {}
++        item["recording_id"] = str(item["metadata"].get("recording_id") or "").strip()
++        item["source_label"] = str(item.get("source") or "").replace("_", " ")
++    editing_entry = None if edit_id is None else get_glossary_entry(edit_id, settings=_settings)
++    if isinstance(editing_entry, dict):
++        aliases = editing_entry.get("aliases_json")
++        editing_entry["aliases"] = aliases if isinstance(aliases, list) else []
++        editing_entry["aliases_text"] = "\n".join(editing_entry["aliases"])
++        metadata = editing_entry.get("metadata_json")
++        editing_entry["metadata"] = metadata if isinstance(metadata, dict) else {}
++        editing_entry["recording_id"] = str(
++            editing_entry["metadata"].get("recording_id") or ""
++        ).strip()
++    return templates.TemplateResponse(
++        request,
++        "glossary.html",
++        {
++            "active": "glossary",
++            "items": items,
++            "editing_entry": editing_entry,
++            "kind_options": _GLOSSARY_KIND_OPTIONS,
++            "source_options": _GLOSSARY_SOURCE_OPTIONS,
++        },
++    )
++
++
++@ui_router.post("/glossary", response_class=HTMLResponse)
++async def ui_create_glossary(
++    canonical_text: str = Form(...),
++    aliases_text: str = Form(default=""),
++    kind: str = Form(default="term"),
++    source: str = Form(default="manual"),
++    enabled: str = Form(default=""),
++    notes: str = Form(default=""),
++    recording_id: str = Form(default=""),
++) -> Any:
++    payload = _glossary_form_payload(
++        canonical_text=canonical_text,
++        aliases_text=aliases_text,
++        kind=kind,
++        source=source,
++        enabled=enabled,
++        notes=notes,
++        recording_id=recording_id,
++    )
++    try:
++        create_glossary_entry(settings=_settings, **payload)
++    except ValueError as exc:
++        return HTMLResponse(str(exc), status_code=422)
++    return RedirectResponse("/glossary", status_code=303)
++
++
++@ui_router.post("/glossary/{entry_id}", response_class=HTMLResponse)
++async def ui_update_glossary(
++    entry_id: int,
++    canonical_text: str = Form(...),
++    aliases_text: str = Form(default=""),
++    kind: str = Form(default="term"),
++    source: str = Form(default="manual"),
++    enabled: str = Form(default=""),
++    notes: str = Form(default=""),
++    recording_id: str = Form(default=""),
++) -> Any:
++    if get_glossary_entry(entry_id, settings=_settings) is None:
++        return HTMLResponse("Glossary entry not found", status_code=404)
++    payload = _glossary_form_payload(
++        canonical_text=canonical_text,
++        aliases_text=aliases_text,
++        kind=kind,
++        source=source,
++        enabled=enabled,
++        notes=notes,
++        recording_id=recording_id,
++    )
++    try:
++        update_glossary_entry(entry_id, settings=_settings, **payload)
++    except ValueError as exc:
++        return HTMLResponse(str(exc), status_code=422)
++    return RedirectResponse("/glossary", status_code=303)
++
++
++@ui_router.post("/glossary/{entry_id}/delete", response_class=HTMLResponse)
++async def ui_delete_glossary(entry_id: int) -> Any:
++    delete_glossary_entry(entry_id, settings=_settings)
++    return RedirectResponse("/glossary", status_code=303)
++
++
+ # ---------------------------------------------------------------------------
+ # Projects
+ # ---------------------------------------------------------------------------
+diff --git a/lan_app/worker_tasks.py b/lan_app/worker_tasks.py
+index dade7c3..0790722 100644
+--- a/lan_app/worker_tasks.py
++++ b/lan_app/worker_tasks.py
+@@ -33,6 +33,7 @@ from lan_transcriber.pipeline_steps.diarization_quality import (
+     profile_default_speaker_hints,
+ )
+ 
++from .asr_glossary import build_recording_asr_glossary
+ from .config import AppSettings
+ from .conversation_metrics import refresh_recording_metrics
+ from .constants import (
+@@ -1074,6 +1075,21 @@ def _run_precheck_pipeline(
+         recording_id,
+         settings,
+     )
++    asr_glossary = build_recording_asr_glossary(
++        recording_id,
++        calendar_title=calendar_title,
++        calendar_attendees=calendar_attendees,
++        settings=settings,
++    )
++    _append_step_log(
++        log_path,
++        (
++            "asr glossary "
++            f"entries={int(asr_glossary.get('entry_count') or 0)} "
++            f"terms={int(asr_glossary.get('term_count') or 0)} "
++            f"truncated={bool(asr_glossary.get('truncated'))}"
++        ),
++    )
+ 
+     def _progress_callback(stage: str, progress: float) -> None:
+         _set_recording_progress_best_effort(
+@@ -1098,6 +1114,7 @@ def _run_precheck_pipeline(
+             transcript_language_override=transcript_language_override,
+             calendar_title=calendar_title,
+             calendar_attendees=calendar_attendees,
++            asr_glossary=asr_glossary,
+             progress_callback=_progress_callback,
+             step_log_callback=_step_log_callback,
+         )
 diff --git a/lan_transcriber/pipeline_steps/orchestrator.py b/lan_transcriber/pipeline_steps/orchestrator.py
-index 7bf7bb7..644cce7 100644
+index 644cce7..062c5a2 100644
 --- a/lan_transcriber/pipeline_steps/orchestrator.py
 +++ b/lan_transcriber/pipeline_steps/orchestrator.py
-@@ -1235,7 +1235,8 @@ async def run_pipeline(
-             diar_segments,
-             default_language=language_analysis.dominant_language if language_analysis.dominant_language != "unknown" else detected_language,
+@@ -349,6 +349,51 @@ def _best_effort_step_log(
+         pass
+ 
+ 
++def _glossary_transcribe_kwargs(asr_glossary: dict[str, Any] | None) -> dict[str, Any]:
++    if not isinstance(asr_glossary, dict):
++        return {}
++    initial_prompt = " ".join(str(asr_glossary.get("initial_prompt") or "").split())
++    hotwords = " ".join(str(asr_glossary.get("hotwords") or "").split())
++    kwargs: dict[str, Any] = {}
++    if initial_prompt:
++        kwargs["initial_prompt"] = initial_prompt
++    if hotwords:
++        kwargs["hotwords"] = hotwords
++    return kwargs
++
++
++def _log_glossary_context_unsupported(
++    *,
++    callback: Callable[[str], Any] | None,
++    glossary_kwargs: dict[str, Any],
++    filtered_kwargs: dict[str, Any],
++    state: dict[str, bool],
++) -> None:
++    if callback is None or not glossary_kwargs or state.get("unsupported"):
++        return
++    if any(key in filtered_kwargs for key in glossary_kwargs):
++        return
++    state["unsupported"] = True
++    _best_effort_step_log(
++        callback,
++        "whisperx transcribe: glossary context unsupported; continuing without ASR hints",
++    )
++
++
++def _write_asr_glossary_artifact(
++    *,
++    derived_dir: Path,
++    recording_id: str,
++    asr_glossary: dict[str, Any] | None,
++) -> None:
++    if not isinstance(asr_glossary, dict):
++        return
++    payload = dict(asr_glossary)
++    payload.setdefault("version", 1)
++    payload["recording_id"] = recording_id
++    atomic_write_json(derived_dir / "asr_glossary.json", payload)
++
++
+ def _diariser_runtime_metadata(diariser: Diariser) -> dict[str, Any]:
+     raw = getattr(diariser, "last_run_metadata", None)
+     if not isinstance(raw, dict):
+@@ -626,7 +671,10 @@ def _write_diarization_metadata_artifact(
+ def _build_whisperx_transcriber(
+     cfg: Settings,
+     step_log_callback: Callable[[str], Any] | None = None,
++    asr_glossary: dict[str, Any] | None = None,
+ ) -> Callable[[Path, str | None], tuple[list[dict[str, Any]], dict[str, Any]]]:
++    glossary_kwargs = _glossary_transcribe_kwargs(asr_glossary)
++    glossary_log_state = {"unsupported": False}
+     patched_paths = ensure_ctranslate2_no_execstack()
+     if patched_paths and step_log_callback is not None:
+         try:
+@@ -667,6 +715,7 @@ def _build_whisperx_transcriber(
+                 "vad_filter": True,
+                 "language": override_lang or "auto",
+                 "word_timestamps": True,
++                **glossary_kwargs,
+             }
+             filtered_kwargs = filter_kwargs_for_callable(legacy_transcribe, kwargs)
+             _log_dropped_kwargs(
+@@ -675,6 +724,12 @@ def _build_whisperx_transcriber(
+                 attempted=kwargs,
+                 filtered=filtered_kwargs,
+             )
++            _log_glossary_context_unsupported(
++                callback=step_log_callback,
++                glossary_kwargs=glossary_kwargs,
++                filtered_kwargs=filtered_kwargs,
++                state=glossary_log_state,
++            )
+             try:
+                 segments, info = call_with_supported_kwargs(
+                     legacy_transcribe,
+@@ -737,6 +792,7 @@ def _build_whisperx_transcriber(
+             "batch_size": cfg.asr_batch_size,
+             "vad_filter": True,
+             "language": (override_lang if override_lang else None),
++            **glossary_kwargs,
+         }
+         filtered_kwargs = filter_kwargs_for_callable(model.transcribe, transcribe_kwargs)
+         _log_dropped_kwargs(
+@@ -745,6 +801,12 @@ def _build_whisperx_transcriber(
+             attempted=transcribe_kwargs,
+             filtered=filtered_kwargs,
          )
--        if getattr(diariser, "mode", "unknown") == "pyannote" and not used_dummy_fallback:
-+        diariser_mode = _diariser_mode(diariser)
-+        if diariser_mode == "pyannote" and not used_dummy_fallback:
-             smoothing_result = smooth_speaker_turns(
-                 unsmoothed_speaker_turns,
-                 merge_gap_seconds=cfg.diarization_merge_gap_seconds,
++        _log_glossary_context_unsupported(
++            callback=step_log_callback,
++            glossary_kwargs=glossary_kwargs,
++            filtered_kwargs=filtered_kwargs,
++            state=glossary_log_state,
++        )
+         result = call_with_supported_kwargs(model.transcribe, audio, **transcribe_kwargs)
+         segments = list(result.get("segments", []))
+         info: dict[str, Any] = {
+@@ -1069,6 +1131,7 @@ async def run_pipeline(
+     transcript_language_override: str | None = None,
+     calendar_title: str | None = None,
+     calendar_attendees: Sequence[str] | None = None,
++    asr_glossary: dict[str, Any] | None = None,
+     progress_callback: ProgressCallback | None = None,
+     step_log_callback: Callable[[str], Any] | None = None,
+ ) -> TranscriptResult:
+@@ -1083,6 +1146,11 @@ async def run_pipeline(
+     summary_lang = resolve_target_summary_language(target_summary_language, dominant_language=override_lang or "unknown", detected_language=None)
+     cal_title = str(calendar_title or "").strip() or None
+     cal_attendees = [str(item).strip() for item in (calendar_attendees or []) if str(item).strip()]
++    _write_asr_glossary_artifact(
++        derived_dir=artifacts.transcript_json_path.parent,
++        recording_id=artifacts.recording_id,
++        asr_glossary=asr_glossary,
++    )
+ 
+     atomic_write_json(
+         artifacts.metrics_json_path,
+@@ -1164,6 +1232,7 @@ async def run_pipeline(
+             _whisperx_transcriber_state.transcribe_audio = _build_whisperx_transcriber(
+                 cfg=cfg,
+                 step_log_callback=step_log_callback,
++                asr_glossary=asr_glossary,
+             )
+             try:
+                 return run_language_aware_asr(
+diff --git a/tasks/QUEUE.md b/tasks/QUEUE.md
+index 66c7b9e..66bdc8e 100644
+--- a/tasks/QUEUE.md
++++ b/tasks/QUEUE.md
+@@ -457,7 +457,7 @@ Queue (in order)
+ - Depends on: PR-SPEAKER-UX-01 and PR-SPEAKER-BANK-CANONICAL-01
+ 
+ 90) PR-GLOSSARY-CORRECTIONS-01: Multi-source ASR glossary and correction memory: manual glossary UI, speaker/calendar seeds, safe ASR prompt injection, and per-recording glossary artifacts
+-- Status: TODO
++- Status: DONE
+ - Tasks file: tasks/PR-GLOSSARY-CORRECTIONS-01.md
+ - Depends on: PR-SNIPPETS-PURITY-01 and PR-ASR-MULTILINGUAL-01 and PR-CALENDAR-ICS-01
+ 
+diff --git a/tests/test_cov_lan_app_db.py b/tests/test_cov_lan_app_db.py
+index 519680b..29e9686 100644
+--- a/tests/test_cov_lan_app_db.py
++++ b/tests/test_cov_lan_app_db.py
+@@ -184,6 +184,89 @@ def test_init_db_skips_already_applied_live_migration_and_db_path_default(
+     assert db_module.db_path() == env_db
+ 
+ 
++def test_glossary_entry_helpers_cover_crud_and_validation_paths(tmp_path: Path) -> None:
++    cfg = _cfg(tmp_path)
++    db_module.init_db(cfg)
++
++    created = db_module.create_glossary_entry(
++        "  Sander  ",
++        aliases=["Sandia", " sandia ", "Sander"],
++        term_kind="person",
++        source="correction",
++        enabled=True,
++        notes="  common mis-hearing  ",
++        metadata={"recording_id": "rec-glossary-1"},
++        settings=cfg,
++    )
++    assert created["canonical_text"] == "Sander"
++    assert created["aliases_json"] == ["Sandia"]
++    assert created["kind"] == "person"
++    assert created["source"] == "correction"
++    assert created["metadata_json"] == {"recording_id": "rec-glossary-1"}
++
++    listed = db_module.list_glossary_entries(settings=cfg)
++    assert [row["canonical_text"] for row in listed] == ["Sander"]
++    assert db_module.list_glossary_entries(source="correction", settings=cfg)
++    assert db_module.list_glossary_entries(enabled=False, settings=cfg) == []
++
++    updated = db_module.update_glossary_entry(
++        int(created["id"]),
++        canonical_text="Sander Van Doorn",
++        aliases="Sandia\nSandoor\nSander Van Doorn",
++        term_kind="person",
++        source="manual",
++        enabled=False,
++        notes="updated",
++        metadata={"recording_id": "rec-glossary-2"},
++        settings=cfg,
++    )
++    assert updated is not None
++    assert updated["canonical_text"] == "Sander Van Doorn"
++    assert updated["aliases_json"] == ["Sandia", "Sandoor"]
++    assert updated["source"] == "manual"
++    assert updated["enabled"] == 0
++    assert updated["notes"] == "updated"
++    assert updated["metadata_json"] == {"recording_id": "rec-glossary-2"}
++
++    fetched = db_module.get_glossary_entry(int(created["id"]), settings=cfg)
++    assert fetched == updated
++    assert db_module.list_glossary_entries(enabled=True, settings=cfg) == []
++    assert db_module.list_glossary_entries(enabled=False, settings=cfg)
++    assert db_module.update_glossary_entry(999, settings=cfg) is None
++    assert db_module.delete_glossary_entry(int(created["id"]), settings=cfg) is True
++    assert db_module.get_glossary_entry(int(created["id"]), settings=cfg) is None
++    assert db_module.delete_glossary_entry(int(created["id"]), settings=cfg) is False
++
++    assert db_module._normalise_glossary_aliases(  # noqa: SLF001
++        123,
++        canonical_text="Sander",
++    ) == []
++    assert db_module._normalise_glossary_aliases(  # noqa: SLF001
++        ["", "Sandia"],
++        canonical_text="Sander",
++    ) == ["Sandia"]
++    assert db_module.create_glossary_entry(
++        "fallback-meta",
++        aliases=None,
++        metadata="bad",  # type: ignore[arg-type]
++        settings=cfg,
++    )["metadata_json"] == {}
++
++    with pytest.raises(ValueError, match="canonical_text is required"):
++        db_module.create_glossary_entry("   ", settings=cfg)
++    created_for_error = db_module.create_glossary_entry("Editable", settings=cfg)
++    with pytest.raises(ValueError, match="canonical_text is required"):
++        db_module.update_glossary_entry(
++            int(created_for_error["id"]),
++            canonical_text="   ",
++            settings=cfg,
++        )
++    with pytest.raises(ValueError, match="Unsupported glossary kind"):
++        db_module.create_glossary_entry("Bad Kind", term_kind="alias", settings=cfg)
++    with pytest.raises(ValueError, match="Unsupported glossary source"):
++        db_module.list_glossary_entries(source="seeded", settings=cfg)
++
++
+ def test_recording_status_helpers_language_settings_and_publish_edges(tmp_path: Path):
+     cfg = _cfg(tmp_path)
+     db_module.init_db(cfg)
+diff --git a/tests/test_cov_lan_app_ui_routes.py b/tests/test_cov_lan_app_ui_routes.py
+index 7f525f1..d69000d 100644
+--- a/tests/test_cov_lan_app_ui_routes.py
++++ b/tests/test_cov_lan_app_ui_routes.py
+@@ -18,6 +18,7 @@ from lan_app.constants import (
+ )
+ from lan_app.db import (
+     create_calendar_source,
++    create_glossary_entry,
+     create_job,
+     create_recording,
+     create_voice_profile,
+@@ -348,6 +349,92 @@ def test_summary_context_and_metrics_merge_edge_paths(
+     assert merged["participants"]
+ 
+ 
++def test_asr_glossary_context_and_route_error_paths(
++    client: tuple[AppSettings, TestClient],
++) -> None:
++    cfg, c = client
++    recording_id = _seed_recording(cfg, "rec-glossary-helper-1")
++    derived = cfg.recordings_root / recording_id / "derived"
++    derived.mkdir(parents=True, exist_ok=True)
++
++    assert ui_routes._asr_glossary_context(recording_id, cfg)["available"] is False  # noqa: SLF001
++
++    (derived / "asr_glossary.json").write_text(
++        json.dumps(
++            {
++                "entry_count": "bad",
++                "term_count": "bad",
++                "truncated": 1,
++                "entries": [
++                    "skip",
++                    {"canonical_text": "", "aliases": ["skip"]},
++                    {
++                        "canonical_text": "Sander",
++                        "aliases": [" Sandia ", ""],
++                        "kind": "person",
++                        "sources": ["correction", "speaker_bank"],
++                    },
++                ],
++            }
++        ),
++        encoding="utf-8",
++    )
++    glossary_ctx = ui_routes._asr_glossary_context(recording_id, cfg)  # noqa: SLF001
++    assert glossary_ctx["available"] is True
++    assert glossary_ctx["entries"][0]["aliases"] == ["Sandia"]
++    assert glossary_ctx["entries"][0]["sources_label"] == "correction, speaker bank"
++    assert glossary_ctx["entry_count"] == 1
++    assert glossary_ctx["term_count"] == 2
++
++    (derived / "asr_glossary.json").write_text(
++        json.dumps({"entries": "bad"}),
++        encoding="utf-8",
++    )
++    glossary_ctx_no_entries = ui_routes._asr_glossary_context(recording_id, cfg)  # noqa: SLF001
++    assert glossary_ctx_no_entries["available"] is True
++    assert glossary_ctx_no_entries["entries"] == []
++
++    assert (
++        c.post(
++            "/glossary",
++            data={
++                "canonical_text": "   ",
++                "aliases_text": "",
++                "kind": "term",
++                "source": "manual",
++                "enabled": "1",
++            },
++        ).status_code
++        == 422
++    )
++    created = create_glossary_entry("Known", settings=cfg)
++    assert (
++        c.post(
++            f"/glossary/{created['id']}",
++            data={
++                "canonical_text": "Known",
++                "aliases_text": "",
++                "kind": "person",
++                "source": "unsupported",
++                "enabled": "1",
++            },
++        ).status_code
++        == 422
++    )
++    assert (
++        c.post(
++            "/glossary/999",
++            data={
++                "canonical_text": "Missing",
++                "aliases_text": "",
++                "kind": "term",
++                "source": "manual",
++            },
++        ).status_code
++        == 404
++    )
++
++
+ def test_fallback_turns_and_path_helpers(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+     turns = ui_routes._fallback_speaker_turns_from_transcript(  # noqa: SLF001
+         {
+diff --git a/tests/test_cov_lan_app_worker_tasks_branches.py b/tests/test_cov_lan_app_worker_tasks_branches.py
+index 02aa6e6..2df55e0 100644
+--- a/tests/test_cov_lan_app_worker_tasks_branches.py
++++ b/tests/test_cov_lan_app_worker_tasks_branches.py
+@@ -918,9 +918,21 @@ def test_run_precheck_pipeline_uses_sanitized_audio_for_precheck_and_pipeline(
+         "_load_transcript_language_payload",
+         lambda *_a, **_k: (None, None),
+     )
++    monkeypatch.setattr(
++        worker_tasks,
++        "build_recording_asr_glossary",
++        lambda *_a, **_k: {
++            "entry_count": 1,
++            "term_count": 2,
++            "truncated": False,
++            "initial_prompt": "Glossary: Sander; Sandia",
++            "hotwords": "Sander, Sandia",
++        },
++    )
+ 
+     async def _fake_run_pipeline(*_args, **kwargs):
+         observed_paths["pipeline"] = kwargs["audio_path"]
++        observed_paths["glossary"] = kwargs["asr_glossary"]
+         return None
+ 
+     monkeypatch.setattr(worker_tasks, "run_pipeline", _fake_run_pipeline)
+@@ -939,6 +951,7 @@ def test_run_precheck_pipeline_uses_sanitized_audio_for_precheck_and_pipeline(
+     )
+     assert observed_paths["precheck"] == observed_paths["sanitize_output"]
+     assert observed_paths["pipeline"] == observed_paths["sanitize_output"]
++    assert observed_paths["glossary"]["term_count"] == 2
+ 
+     sanitize_payload = json.loads(
+         (
+@@ -956,6 +969,13 @@ def test_run_precheck_pipeline_uses_sanitized_audio_for_precheck_and_pipeline(
+         "channels": 1,
+         "codec": "pcm_s16le",
+     }
++    step_log = (
++        cfg.recordings_root
++        / "rec-sanitize-wire-1"
++        / "logs"
++        / "step-precheck.log"
++    ).read_text(encoding="utf-8")
++    assert "asr glossary entries=1 terms=2 truncated=False" in step_log
+     recording = get_recording("rec-sanitize-wire-1", settings=cfg)
+     assert recording is not None
+     assert recording["duration_sec"] == 30.0
 diff --git a/tests/test_pipeline.py b/tests/test_pipeline.py
-index 8c216f2..04fc7f0 100644
+index 04fc7f0..65eeee1 100644
 --- a/tests/test_pipeline.py
 +++ b/tests/test_pipeline.py
-@@ -299,9 +299,11 @@ async def test_pipeline_emits_progress_stages_in_order(tmp_path: Path, mocker):
+@@ -1153,6 +1153,113 @@ async def test_pipeline_multilingual_asr_uses_chunk_language_hints(tmp_path: Pat
+     assert transcript_data["review"]["required"] is False
  
+ 
++@pytest.mark.asyncio
++@respx.mock
++async def test_pipeline_multilingual_asr_forwards_glossary_context_and_writes_artifact(
++    tmp_path: Path,
++    mocker,
++):
++    seen_calls: list[dict[str, object]] = []
++
++    def _transcribe(audio_path: str, **kwargs):
++        seen_calls.append(
++            {
++                "audio_path": audio_path,
++                "language": kwargs.get("language"),
++                "initial_prompt": kwargs.get("initial_prompt"),
++                "hotwords": kwargs.get("hotwords"),
++            }
++        )
++        if audio_path == str(audio):
++            return (
++                [
++                    {"start": 0.0, "end": 4.0, "text": "hello team and thanks"},
++                    {"start": 4.0, "end": 8.0, "text": "hola equipo y gracias"},
++                ],
++                {"language": "en", "language_probability": 0.91},
++            )
++        if kwargs.get("language") == "en":
++            return (
++                [{"start": 0.0, "end": 4.0, "text": "hello team and thanks"}],
++                {"language": "en", "language_probability": 0.98},
++            )
++        return (
++            [{"start": 0.0, "end": 4.0, "text": "hola equipo y gracias"}],
++            {"language": "es", "language_probability": 0.97},
++        )
++
++    mocker.patch("whisperx.transcribe", side_effect=_transcribe)
++    mocker.patch(
++        "transformers.pipeline",
++        lambda *a, **k: lambda text: [{"label": "positive", "score": 0.6}],
++    )
++    respx.post("http://127.0.0.1:8000/v1/chat/completions").mock(
++        return_value=httpx.Response(
++            200,
++            json={"choices": [{"message": {"content": "- summary"}}]},
++        ),
++    )
++
++    cfg = pipeline.Settings(
++        speaker_db=tmp_path / "db.yaml",
++        tmp_root=tmp_path,
++        recordings_root=tmp_path / "recordings",
++        asr_multilingual_mode="auto",
++    )
++    audio = wav_audio(
++        tmp_path,
++        name="mixed-language-glossary.wav",
++        duration_sec=8.0,
++        speech=True,
++    )
++    glossary_payload = {
++        "version": 1,
++        "recording_id": "rec-multilingual-glossary-1",
++        "entries": [
++            {
++                "canonical_text": "Sander",
++                "aliases": ["Sandia"],
++                "kind": "person",
++                "sources": ["correction"],
++                "terms": ["Sander", "Sandia"],
++                "term_count": 2,
++            }
++        ],
++        "terms": ["Sander", "Sandia"],
++        "entry_count": 1,
++        "term_count": 2,
++        "truncated": False,
++        "initial_prompt": "Glossary: Sander; Sandia",
++        "hotwords": "Sander, Sandia",
++    }
++    await pipeline.run_pipeline(
++        audio_path=audio,
++        cfg=cfg,
++        llm=llm_client.LLMClient(),
++        diariser=TwoSpeakerDiariser(),
++        recording_id="rec-multilingual-glossary-1",
++        precheck=precheck_ok(),
++        asr_glossary=glossary_payload,
++    )
++
++    assert [call["language"] for call in seen_calls] == ["auto", "en", "es"]
++    assert all(
++        call["initial_prompt"] == "Glossary: Sander; Sandia"
++        and call["hotwords"] == "Sander, Sandia"
++        for call in seen_calls
++    )
++    artifact = json.loads(
++        (
++            cfg.recordings_root
++            / "rec-multilingual-glossary-1"
++            / "derived"
++            / "asr_glossary.json"
++        ).read_text(encoding="utf-8")
++    )
++    assert artifact["recording_id"] == "rec-multilingual-glossary-1"
++    assert artifact["terms"] == ["Sander", "Sandia"]
++
++
  @pytest.mark.asyncio
  @respx.mock
-+@pytest.mark.parametrize("mode", ["pyannote", " PyAnNoTe "])
- async def test_pipeline_writes_diarization_metadata_and_smooths_retry_output(
-     tmp_path: Path,
-     mocker,
-+    mode: str,
- ):
-     mocker.patch(
-         "whisperx.transcribe",
-@@ -350,11 +352,14 @@ async def test_pipeline_writes_diarization_metadata_and_smooths_retry_output(
-     )
-     recording_id = "rec-diar-meta-1"
+ async def test_pipeline_multilingual_model_path_reuses_single_whisperx_model_load(
+diff --git a/tests/test_ui_routes.py b/tests/test_ui_routes.py
+index c460a26..f14a0ce 100644
+--- a/tests/test_ui_routes.py
++++ b/tests/test_ui_routes.py
+@@ -22,7 +22,9 @@ from lan_app.db import (
+     create_recording,
+     create_project,
+     create_voice_profile,
++    get_glossary_entry,
+     get_recording,
++    list_glossary_entries,
+     list_speaker_assignments,
+     list_voice_samples,
+     init_db,
+@@ -305,6 +307,55 @@ def test_recording_detail_overview(seeded_client):
+     assert 'hx-boost="false"' in r.text
  
-+    diariser = DialogRetryDiariser()
-+    diariser.mode = mode
+ 
++def test_recording_detail_overview_shows_asr_glossary_context(tmp_path, monkeypatch):
++    cfg = _cfg(tmp_path)
++    monkeypatch.setattr(api, "_settings", cfg)
++    monkeypatch.setattr(ui_routes, "_settings", cfg)
++    init_db(cfg)
++    create_recording(
++        "rec-ui-glossary-1",
++        source="upload",
++        source_filename="glossary.wav",
++        status=RECORDING_STATUS_READY,
++        settings=cfg,
++    )
++    derived = cfg.recordings_root / "rec-ui-glossary-1" / "derived"
++    derived.mkdir(parents=True, exist_ok=True)
++    (derived / "asr_glossary.json").write_text(
++        json.dumps(
++            {
++                "entry_count": 2,
++                "term_count": 3,
++                "truncated": False,
++                "entries": [
++                    {
++                        "canonical_text": "Sander",
++                        "aliases": ["Sandia"],
++                        "kind": "person",
++                        "sources": ["correction", "speaker_bank"],
++                    },
++                    {
++                        "canonical_text": "Quarterly Roadmap",
++                        "aliases": [],
++                        "kind": "project",
++                        "sources": ["calendar"],
++                    },
++                ],
++            }
++        ),
++        encoding="utf-8",
++    )
 +
-     await pipeline.run_pipeline(
-         fake_audio(tmp_path, "dialog-retry.mp3"),
-         cfg,
-         llm_client.LLMClient(),
--        DialogRetryDiariser(),
-+        diariser,
-         recording_id=recording_id,
-         precheck=precheck_ok(),
++    c = TestClient(api.app, follow_redirects=True)
++    r = c.get("/recordings/rec-ui-glossary-1")
++    assert r.status_code == 200
++    assert "ASR Glossary" in r.text
++    assert "Manage glossary" in r.text
++    assert "Sander" in r.text
++    assert "Sandia" in r.text
++    assert "correction, speaker bank" in r.text
++
++
+ def test_recording_detail_processing_polls_progress(tmp_path, monkeypatch):
+     cfg = _cfg(tmp_path)
+     monkeypatch.setattr(api, "_settings", cfg)
+@@ -1091,6 +1142,70 @@ def test_projects_delete(tmp_path, monkeypatch):
+     assert list_projects(settings=cfg) == []
+ 
+ 
++# ---------------------------------------------------------------------------
++# Glossary
++# ---------------------------------------------------------------------------
++
++
++def test_glossary_page_create_edit_and_delete(tmp_path, monkeypatch):
++    cfg = _cfg(tmp_path)
++    monkeypatch.setattr(api, "_settings", cfg)
++    monkeypatch.setattr(ui_routes, "_settings", cfg)
++    init_db(cfg)
++    c = TestClient(api.app, follow_redirects=False)
++
++    created = c.post(
++        "/glossary",
++        data={
++            "canonical_text": "Sander",
++            "aliases_text": "Sandia\nSandoor",
++            "kind": "person",
++            "source": "correction",
++            "enabled": "1",
++            "notes": "common transcription issue",
++            "recording_id": "rec-ui-glossary-create-1",
++        },
++    )
++    assert created.status_code == 303
++    created_entry = list_glossary_entries(settings=cfg)[0]
++    assert created_entry["aliases_json"] == ["Sandia", "Sandoor"]
++    assert created_entry["metadata_json"] == {"recording_id": "rec-ui-glossary-create-1"}
++
++    edit_page = TestClient(api.app, follow_redirects=True).get(
++        f"/glossary?edit_id={created_entry['id']}"
++    )
++    assert edit_page.status_code == 200
++    assert "Edit entry" in edit_page.text
++
++    updated = c.post(
++        f"/glossary/{created_entry['id']}",
++        data={
++            "canonical_text": "Sander Van Doorn",
++            "aliases_text": "Sandia",
++            "kind": "person",
++            "source": "manual",
++            "notes": "updated",
++            "recording_id": "rec-ui-glossary-create-2",
++        },
++    )
++    assert updated.status_code == 303
++    updated_entry = get_glossary_entry(int(created_entry["id"]), settings=cfg)
++    assert updated_entry is not None
++    assert updated_entry["canonical_text"] == "Sander Van Doorn"
++    assert updated_entry["enabled"] == 0
++    assert updated_entry["source"] == "manual"
++
++    listing = TestClient(api.app, follow_redirects=True).get("/glossary")
++    assert listing.status_code == 200
++    assert "Glossary" in listing.text
++    assert "Sander Van Doorn" in listing.text
++    assert "Disabled" in listing.text
++
++    deleted = c.post(f"/glossary/{created_entry['id']}/delete")
++    assert deleted.status_code == 303
++    assert list_glossary_entries(settings=cfg) == []
++
++
+ # ---------------------------------------------------------------------------
+ # Voices
+ # ---------------------------------------------------------------------------
+diff --git a/tests/test_whisperx_api.py b/tests/test_whisperx_api.py
+index 3433f52..6c8f986 100644
+--- a/tests/test_whisperx_api.py
++++ b/tests/test_whisperx_api.py
+@@ -510,3 +510,132 @@ def test_log_dropped_kwargs_ignores_callback_errors() -> None:
+         filtered={},
      )
+ 
++
++def test_glossary_transcribe_helper_edge_paths() -> None:
++    assert pipeline._glossary_transcribe_kwargs(None) == {}  # noqa: SLF001
++    assert pipeline._glossary_transcribe_kwargs({"initial_prompt": "Prompt"}) == {  # noqa: SLF001
++        "initial_prompt": "Prompt"
++    }
++    assert pipeline._glossary_transcribe_kwargs({"hotwords": "Term"}) == {  # noqa: SLF001
++        "hotwords": "Term"
++    }
++
++    messages: list[str] = []
++    pipeline._log_glossary_context_unsupported(  # noqa: SLF001
++        callback=messages.append,
++        glossary_kwargs={"hotwords": "Term"},
++        filtered_kwargs={"hotwords": "Term"},
++        state={},
++    )
++    assert messages == []
++
++
++def test_build_whisperx_transcriber_modern_path_forwards_glossary_kwargs(
++    tmp_path: Path,
++    monkeypatch,
++):
++    fake_whisperx = ModuleType("whisperx")
++    fake_asr = ModuleType("whisperx.asr")
++    seen_kwargs: dict[str, object] = {}
++
++    class _FakeModel:
++        vad_model = staticmethod(lambda _payload: [])
++
++        def transcribe(
++            self,
++            audio: str,
++            *,
++            batch_size: int,
++            vad_filter: bool,
++            language: str | None,
++            initial_prompt: str,
++            hotwords: str,
++        ) -> dict[str, object]:
++            assert audio == "audio"
++            assert batch_size == 16
++            assert vad_filter is True
++            assert language == "es"
++            seen_kwargs["initial_prompt"] = initial_prompt
++            seen_kwargs["hotwords"] = hotwords
++            return {"segments": [{"start": 0.0, "end": 1.0, "text": "hola"}], "language": "es"}
++
++    def _load_audio(_path: str) -> str:
++        return "audio"
++
++    def _load_model(
++        _model_name: str,
++        _device: str,
++        compute_type: str = "int8",
++        vad_method: str = "silero",
++    ) -> _FakeModel:
++        assert compute_type == "int8"
++        assert vad_method == "silero"
++        return _FakeModel()
++
++    fake_whisperx.load_audio = _load_audio
++    fake_asr.load_model = _load_model
++    fake_whisperx.asr = fake_asr
++    monkeypatch.setitem(sys.modules, "whisperx", fake_whisperx)
++    monkeypatch.setitem(sys.modules, "whisperx.asr", fake_asr)
++
++    transcribe_audio = pipeline._build_whisperx_transcriber(
++        cfg=pipeline.Settings(
++            asr_device="cpu",
++            asr_enable_align=False,
++            tmp_root=tmp_path,
++            recordings_root=tmp_path / "recordings",
++        ),
++        asr_glossary={
++            "initial_prompt": "Glossary: Sander; Sandia",
++            "hotwords": "Sander, Sandia",
++        },
++    )
++
++    audio_path = tmp_path / "a.wav"
++    audio_path.write_bytes(b"")
++    segments, info = transcribe_audio(audio_path, "es")
++
++    assert segments and segments[0]["text"] == "hola"
++    assert info["language"] == "es"
++    assert seen_kwargs == {
++        "initial_prompt": "Glossary: Sander; Sandia",
++        "hotwords": "Sander, Sandia",
++    }
++
++
++def test_build_whisperx_transcriber_legacy_path_logs_glossary_degrade_when_unsupported(
++    tmp_path: Path,
++    monkeypatch,
++):
++    fake_whisperx = ModuleType("whisperx")
++
++    def _transcribe(audio_path: str, *, language: str) -> tuple[list[dict[str, object]], dict[str, object]]:
++        assert audio_path.endswith("a.wav")
++        assert language == "auto"
++        return ([{"start": 0.0, "end": 1.0, "text": "hello"}], {"language": "en"})
++
++    fake_whisperx.transcribe = _transcribe
++    monkeypatch.setitem(sys.modules, "whisperx", fake_whisperx)
++
++    step_log: list[str] = []
++    transcribe_audio = pipeline._build_whisperx_transcriber(
++        cfg=pipeline.Settings(
++            asr_device="cpu",
++            asr_enable_align=False,
++            tmp_root=tmp_path,
++            recordings_root=tmp_path / "recordings",
++        ),
++        step_log_callback=step_log.append,
++        asr_glossary={
++            "initial_prompt": "Glossary: Sander; Sandia",
++            "hotwords": "Sander, Sandia",
++        },
++    )
++
++    audio_path = tmp_path / "a.wav"
++    audio_path.write_bytes(b"")
++    segments, info = transcribe_audio(audio_path, None)
++
++    assert segments and segments[0]["text"] == "hello"
++    assert info["language"] == "en"
++    assert any("glossary context unsupported" in line for line in step_log)
+diff --git a/lan_app/asr_glossary.py b/lan_app/asr_glossary.py
+new file mode 100644
+index 0000000..a9d887f
+--- /dev/null
++++ b/lan_app/asr_glossary.py
+@@ -0,0 +1,492 @@
++from __future__ import annotations
++
++from datetime import datetime, timezone
++from typing import Any, Sequence
++
++from .config import AppSettings
++from .db import (
++    get_recording,
++    list_glossary_entries,
++    list_project_keyword_weights,
++    list_voice_profiles,
++)
++
++_MAX_GLOSSARY_ENTRIES = 24
++_MAX_GLOSSARY_TERMS = 48
++_MAX_GLOSSARY_TERM_CHARS = 480
++_MAX_HOTWORDS_CHARS = 640
++_MAX_PROMPT_CHARS = 720
++_SOURCE_PRIORITY = {
++    "manual": 0,
++    "correction": 1,
++    "project": 2,
++    "calendar": 3,
++    "speaker_bank": 4,
++    "system": 5,
++}
++
++
++def _utc_now() -> str:
++    return datetime.now(tz=timezone.utc).replace(microsecond=0).isoformat().replace(
++        "+00:00",
++        "Z",
++    )
++
++
++def _clean_text(value: object) -> str:
++    return " ".join(str(value or "").strip().split())
++
++
++def _term_key(value: object) -> str:
++    return _clean_text(value).lower()
++
++
++def _clean_terms(values: Sequence[object] | None) -> list[str]:
++    if not values:
++        return []
++    seen: set[str] = set()
++    cleaned: list[str] = []
++    for value in values:
++        text = _clean_text(value)
++        key = _term_key(text)
++        if not key or key in seen:
++            continue
++        seen.add(key)
++        cleaned.append(text)
++    return cleaned
++
++
++def _calendar_attendee_name(value: object) -> str:
++    text = _clean_text(value)
++    if text.lower().startswith("mailto:"):
++        text = _clean_text(text.split(":", 1)[1])
++    if "<" in text:
++        prefix = _clean_text(text.split("<", 1)[0])
++        if prefix:
++            return prefix
++    return text
++
++
++def _source_rank(source: object) -> int:
++    return _SOURCE_PRIORITY.get(_term_key(source), 99)
++
++
++def _maybe_int(value: object) -> int | None:
++    try:
++        if value is None:
++            return None
++        return int(value)
++    except (TypeError, ValueError):
++        return None
++
++
++def _manual_source_entries(settings: AppSettings) -> list[dict[str, Any]]:
++    out: list[dict[str, Any]] = []
++    for row in list_glossary_entries(enabled=True, settings=settings):
++        canonical = _clean_text(row.get("canonical_text"))
++        if not canonical:
++            continue
++        metadata = row.get("metadata_json")
++        metadata_dict = metadata if isinstance(metadata, dict) else {}
++        detail: dict[str, Any] = {
++            "source": _term_key(row.get("source")) or "manual",
++            "entry_id": _maybe_int(row.get("id")),
++        }
++        recording_id = _clean_text(metadata_dict.get("recording_id"))
++        notes = _clean_text(row.get("notes"))
++        if recording_id:
++            detail["recording_id"] = recording_id
++        if notes:
++            detail["notes"] = notes
++        out.append(
++            {
++                "canonical_text": canonical,
++                "aliases": row.get("aliases_json")
++                if isinstance(row.get("aliases_json"), list)
++                else [],
++                "kind": _term_key(row.get("kind")) or "term",
++                "source": detail["source"],
++                "detail": detail,
++            }
++        )
++    return out
++
++
++def _speaker_source_entries(settings: AppSettings) -> list[dict[str, Any]]:
++    out: list[dict[str, Any]] = []
++    for row in list_voice_profiles(settings=settings):
++        canonical = _clean_text(row.get("display_name"))
++        if not canonical:
++            continue
++        out.append(
++            {
++                "canonical_text": canonical,
++                "aliases": [],
++                "kind": "person",
++                "source": "speaker_bank",
++                "detail": {
++                    "source": "speaker_bank",
++                    "voice_profile_id": _maybe_int(row.get("id")),
++                },
++            }
++        )
++    return out
++
++
++def _calendar_source_entries(
++    recording_id: str,
++    *,
++    calendar_title: str | None,
++    calendar_attendees: Sequence[str] | None,
++) -> list[dict[str, Any]]:
++    out: list[dict[str, Any]] = []
++    title = _clean_text(calendar_title)
++    if title:
++        out.append(
++            {
++                "canonical_text": title,
++                "aliases": [],
++                "kind": "project",
++                "source": "calendar",
++                "detail": {
++                    "source": "calendar",
++                    "recording_id": recording_id,
++                    "field": "title",
++                },
++            }
++        )
++    for attendee in calendar_attendees or ():
++        name = _calendar_attendee_name(attendee)
++        if not name:
++            continue
++        out.append(
++            {
++                "canonical_text": name,
++                "aliases": [],
++                "kind": "person",
++                "source": "calendar",
++                "detail": {
++                    "source": "calendar",
++                    "recording_id": recording_id,
++                    "field": "attendee",
++                },
++            }
++        )
++    return out
++
++
++def _project_source_entries(
++    recording_id: str,
++    *,
++    project_id: int | None,
++    project_name: str | None,
++    settings: AppSettings,
++) -> list[dict[str, Any]]:
++    out: list[dict[str, Any]] = []
++    clean_project_name = _clean_text(project_name)
++    if clean_project_name:
++        out.append(
++            {
++                "canonical_text": clean_project_name,
++                "aliases": [],
++                "kind": "project",
++                "source": "project",
++                "detail": {
++                    "source": "project",
++                    "project_id": project_id,
++                    "recording_id": recording_id,
++                    "field": "project_name",
++                },
++            }
++        )
++    if project_id is None:
++        return out
++
++    keyword_rows: list[tuple[float, str]] = []
++    for row in list_project_keyword_weights(project_id=project_id, settings=settings):
++        keyword = _clean_text(row.get("keyword"))
++        if not keyword or _term_key(keyword) == _term_key(clean_project_name):
++            continue
++        try:
++            weight = float(row.get("weight"))
++        except (TypeError, ValueError):
++            continue
++        if weight <= 0:
++            continue
++        keyword_rows.append((weight, keyword))
++    keyword_rows.sort(key=lambda item: (-item[0], item[1].lower(), item[1]))
++
++    for _weight, keyword in keyword_rows[:5]:
++        out.append(
++            {
++                "canonical_text": keyword,
++                "aliases": [],
++                "kind": "term",
++                "source": "project",
++                "detail": {
++                    "source": "project",
++                    "project_id": project_id,
++                    "recording_id": recording_id,
++                    "field": "keyword",
++                },
++            }
++        )
++    return out
++
++
++def _merge_source_entries(source_entries: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
++    merged: dict[str, dict[str, Any]] = {}
++    for row in source_entries:
++        canonical = _clean_text(row.get("canonical_text"))
++        if not canonical:
++            continue
++        key = _term_key(canonical)
++        aliases = _clean_terms(
++            row.get("aliases") if isinstance(row.get("aliases"), Sequence) else []
++        )
++        source = _term_key(row.get("source")) or "system"
++        kind = _term_key(row.get("kind")) or "term"
++        detail = row.get("detail") if isinstance(row.get("detail"), dict) else {}
++        bucket = merged.setdefault(
++            key,
++            {
++                "canonical_text": canonical,
++                "kind": kind,
++                "sources": [],
++                "source_details": [],
++                "_aliases": {},
++                "_sort_key": (_source_rank(source), key, canonical),
++            },
++        )
++        candidate_sort_key = (_source_rank(source), _term_key(canonical), canonical)
++        if candidate_sort_key < bucket["_sort_key"]:
++            bucket["canonical_text"] = canonical
++            bucket["kind"] = kind
++            bucket["_sort_key"] = candidate_sort_key
++        if source not in bucket["sources"]:
++            bucket["sources"].append(source)
++
++        serialised_detail = {"source": source}
++        for field in (
++            "entry_id",
++            "voice_profile_id",
++            "project_id",
++            "recording_id",
++            "field",
++            "notes",
++        ):
++            value = detail.get(field)
++            if value in (None, "", [], {}):
++                continue
++            serialised_detail[field] = value
++        if serialised_detail not in bucket["source_details"]:
++            bucket["source_details"].append(serialised_detail)
++
++        for alias in aliases:
++            alias_key = _term_key(alias)
++            if alias_key == key:
++                continue
++            bucket["_aliases"].setdefault(alias_key, alias)
++
++    candidates: list[dict[str, Any]] = []
++    for bucket in merged.values():
++        sources = sorted(bucket["sources"], key=lambda item: (_source_rank(item), item))
++        source_details = sorted(
++            bucket["source_details"],
++            key=lambda item: (
++                _source_rank(item.get("source")),
++                str(item.get("source") or ""),
++                str(item.get("field") or ""),
++                str(
++                    item.get("entry_id")
++                    or item.get("voice_profile_id")
++                    or item.get("project_id")
++                    or item.get("recording_id")
++                    or ""
++                ),
++            ),
++        )
++        aliases = [
++            bucket["_aliases"][alias_key]
++            for alias_key in sorted(bucket["_aliases"])
++        ]
++        candidates.append(
++            {
++                "canonical_text": bucket["canonical_text"],
++                "aliases": aliases,
++                "kind": bucket["kind"],
++                "sources": sources,
++                "source_details": source_details,
++                "_sort_key": bucket["_sort_key"],
++            }
++        )
++    candidates.sort(key=lambda item: item["_sort_key"])
++    for item in candidates:
++        item.pop("_sort_key", None)
++    return candidates
++
++
++def _fit_entries(
++    candidates: Sequence[dict[str, Any]],
++) -> tuple[list[dict[str, Any]], list[str], int, bool]:
++    selected_entries: list[dict[str, Any]] = []
++    selected_terms: list[str] = []
++    seen_terms: set[str] = set()
++    term_chars = 0
++    truncated = False
++
++    for candidate in candidates:
++        if len(selected_entries) >= _MAX_GLOSSARY_ENTRIES:
++            truncated = True
++            break
++
++        canonical = _clean_text(candidate.get("canonical_text"))
++        canonical_key = _term_key(canonical)
++        if not canonical or canonical_key in seen_terms:
++            continue
++        if len(selected_terms) >= _MAX_GLOSSARY_TERMS:
++            truncated = True
++            break
++        if term_chars + len(canonical) > _MAX_GLOSSARY_TERM_CHARS:
++            truncated = True
++            continue
++
++        selected_aliases: list[str] = []
++        seen_terms.add(canonical_key)
++        selected_terms.append(canonical)
++        term_chars += len(canonical)
++
++        for alias in candidate.get("aliases", []):
++            alias_text = _clean_text(alias)
++            alias_key = _term_key(alias_text)
++            if not alias_text or alias_key in seen_terms:
++                continue
++            if len(selected_terms) >= _MAX_GLOSSARY_TERMS:
++                truncated = True
++                break
++            if term_chars + len(alias_text) > _MAX_GLOSSARY_TERM_CHARS:
++                truncated = True
++                continue
++            seen_terms.add(alias_key)
++            selected_terms.append(alias_text)
++            selected_aliases.append(alias_text)
++            term_chars += len(alias_text)
++
++        selected_entries.append(
++            {
++                "canonical_text": canonical,
++                "aliases": selected_aliases,
++                "kind": _term_key(candidate.get("kind")) or "term",
++                "sources": list(candidate.get("sources") or []),
++                "source_details": list(candidate.get("source_details") or []),
++                "terms": [canonical, *selected_aliases],
++                "term_count": 1 + len(selected_aliases),
++            }
++        )
++
++    return selected_entries, selected_terms, term_chars, truncated
++
++
++def _limited_join(
++    terms: Sequence[str],
++    *,
++    separator: str,
++    prefix: str,
++    max_chars: int,
++) -> tuple[str | None, list[str]]:
++    if max_chars <= len(prefix):
++        return None, []
++    parts: list[str] = []
++    used_terms: list[str] = []
++    total_chars = len(prefix)
++    for term in terms:
++        extra_chars = len(term) + (len(separator) if parts else 0)
++        if total_chars + extra_chars > max_chars:
++            break
++        parts.append(term)
++        used_terms.append(term)
++        total_chars += extra_chars
++    if not parts:
++        return None, []
++    return f"{prefix}{separator.join(parts)}", used_terms
++
++
++def build_recording_asr_glossary(
++    recording_id: str,
++    *,
++    calendar_title: str | None = None,
++    calendar_attendees: Sequence[str] | None = None,
++    settings: AppSettings | None = None,
++) -> dict[str, Any]:
++    cfg = settings or AppSettings()
++    recording = get_recording(recording_id, settings=cfg) or {}
++    project_name = _clean_text(recording.get("project_name"))
++    project_id = _maybe_int(recording.get("project_id"))
++
++    candidates = _merge_source_entries(
++        [
++            *_manual_source_entries(cfg),
++            *_speaker_source_entries(cfg),
++            *_calendar_source_entries(
++                recording_id,
++                calendar_title=calendar_title,
++                calendar_attendees=calendar_attendees,
++            ),
++            *_project_source_entries(
++                recording_id,
++                project_id=project_id,
++                project_name=project_name,
++                settings=cfg,
++            ),
++        ]
++    )
++    selected_entries, selected_terms, selected_term_chars, truncated = _fit_entries(
++        candidates
++    )
++    hotwords, hotword_terms = _limited_join(
++        selected_terms,
++        separator=", ",
++        prefix="",
++        max_chars=_MAX_HOTWORDS_CHARS,
++    )
++    initial_prompt, prompt_terms = _limited_join(
++        selected_terms,
++        separator="; ",
++        prefix="Glossary: ",
++        max_chars=_MAX_PROMPT_CHARS,
++    )
++    if len(hotword_terms) < len(selected_terms) or len(prompt_terms) < len(selected_terms):
++        truncated = True
++
++    source_counts: dict[str, int] = {}
++    for entry in selected_entries:
++        for source in entry.get("sources", []):
++            source_key = _term_key(source)
++            source_counts[source_key] = source_counts.get(source_key, 0) + 1
++
++    return {
++        "version": 1,
++        "recording_id": _clean_text(recording_id) or recording_id,
++        "generated_at": _utc_now(),
++        "entries": selected_entries,
++        "terms": selected_terms,
++        "entry_count": len(selected_entries),
++        "term_count": len(selected_terms),
++        "term_chars": selected_term_chars,
++        "truncated": bool(truncated),
++        "source_counts": dict(sorted(source_counts.items())),
++        "budgets": {
++            "max_entries": _MAX_GLOSSARY_ENTRIES,
++            "max_terms": _MAX_GLOSSARY_TERMS,
++            "max_term_chars": _MAX_GLOSSARY_TERM_CHARS,
++            "max_hotwords_chars": _MAX_HOTWORDS_CHARS,
++            "max_prompt_chars": _MAX_PROMPT_CHARS,
++        },
++        "hotwords": hotwords,
++        "hotword_terms": hotword_terms,
++        "initial_prompt": initial_prompt,
++        "prompt_terms": prompt_terms,
++    }
++
++
++__all__ = ["build_recording_asr_glossary"]
+diff --git a/lan_app/migrations/017_add_glossary_entries.sql b/lan_app/migrations/017_add_glossary_entries.sql
+new file mode 100644
+index 0000000..21a50c0
+--- /dev/null
++++ b/lan_app/migrations/017_add_glossary_entries.sql
+@@ -0,0 +1,15 @@
++CREATE TABLE IF NOT EXISTS glossary_entries (
++    id INTEGER PRIMARY KEY AUTOINCREMENT,
++    canonical_text TEXT NOT NULL,
++    aliases_json TEXT NOT NULL DEFAULT '[]',
++    kind TEXT NOT NULL DEFAULT 'term',
++    source TEXT NOT NULL DEFAULT 'manual',
++    enabled INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN (0, 1)),
++    notes TEXT,
++    metadata_json TEXT NOT NULL DEFAULT '{}',
++    created_at TEXT NOT NULL,
++    updated_at TEXT NOT NULL
++);
++
++CREATE INDEX IF NOT EXISTS idx_glossary_entries_enabled
++    ON glossary_entries(enabled, source, kind, canonical_text);
+diff --git a/lan_app/templates/glossary.html b/lan_app/templates/glossary.html
+new file mode 100644
+index 0000000..09ab238
+--- /dev/null
++++ b/lan_app/templates/glossary.html
+@@ -0,0 +1,143 @@
++{% extends "base.html" %}
++{% block title %}Glossary – LAN Transcriber{% endblock %}
++{% block content %}
++{% set editing = editing_entry or {} %}
++<h1>Glossary</h1>
++
++<p style="margin:0 0 12px 0;color:#555">
++  Manage manual ASR terms and correction memory. Store canonical spellings plus observed wrong variants so future recordings can reuse them without model retraining.
++</p>
++
++<div class="section">
++  <h2>{% if editing %}Edit entry #{{ editing.id }}{% else %}Create glossary entry{% endif %}</h2>
++  <form
++    method="post"
++    action="{% if editing %}/glossary/{{ editing.id }}{% else %}/glossary{% endif %}"
++    style="background:#fff;border:1px solid #ccc;padding:10px;max-width:920px"
++  >
++    <div class="form-row">
++      <label for="glossary-canonical">Canonical term</label>
++      <input
++        id="glossary-canonical"
++        name="canonical_text"
++        type="text"
++        required
++        maxlength="160"
++        value="{{ editing.canonical_text or '' }}"
++        style="min-width:320px"
++      >
++    </div>
++    <div class="form-row" style="align-items:flex-start">
++      <label for="glossary-aliases">Aliases / variants</label>
++      <textarea
++        id="glossary-aliases"
++        name="aliases_text"
++        rows="4"
++        style="min-width:320px"
++        placeholder="One alias per line, or comma-separated"
++      >{{ editing.aliases_text or '' }}</textarea>
++    </div>
++    <div class="form-row">
++      <label for="glossary-kind">Kind</label>
++      <select id="glossary-kind" name="kind">
++        {% for option in kind_options %}
++        <option value="{{ option }}" {% if (editing.kind or 'term') == option %}selected{% endif %}>{{ option }}</option>
++        {% endfor %}
++      </select>
++    </div>
++    <div class="form-row">
++      <label for="glossary-source">Source</label>
++      <select id="glossary-source" name="source">
++        {% for option in source_options %}
++        <option value="{{ option }}" {% if (editing.source or 'manual') == option %}selected{% endif %}>{{ option }}</option>
++        {% endfor %}
++      </select>
++    </div>
++    <div class="form-row">
++      <label for="glossary-notes">Notes</label>
++      <input
++        id="glossary-notes"
++        name="notes"
++        type="text"
++        maxlength="240"
++        value="{{ editing.notes or '' }}"
++        style="min-width:420px"
++      >
++    </div>
++    <div class="form-row">
++      <label for="glossary-recording">Observed in recording</label>
++      <input
++        id="glossary-recording"
++        name="recording_id"
++        type="text"
++        maxlength="160"
++        value="{{ editing.recording_id or '' }}"
++        placeholder="Optional recording ID"
++        style="min-width:280px"
++      >
++    </div>
++    <div class="form-row">
++      <label for="glossary-enabled">Enabled</label>
++      <input
++        id="glossary-enabled"
++        type="checkbox"
++        name="enabled"
++        value="1"
++        {% if editing.enabled is not defined or editing.enabled %}checked{% endif %}
++      >
++      <span style="font-size:12px;color:#555">Disabled entries stay stored but are omitted from new ASR prompts.</span>
++    </div>
++    <div class="filters" style="margin-top:8px">
++      <button class="btn" type="submit">{% if editing %}Save entry{% else %}Add entry{% endif %}</button>
++      {% if editing %}
++      <a href="/glossary" class="btn" style="text-decoration:none">Cancel edit</a>
++      {% endif %}
++    </div>
++  </form>
++</div>
++
++<div class="section">
++  <h2>Stored entries</h2>
++  {% if items %}
++  <table>
++    <thead>
++      <tr>
++        <th>ID</th>
++        <th>Canonical</th>
++        <th>Aliases</th>
++        <th>Kind</th>
++        <th>Source</th>
++        <th>Status</th>
++        <th>Observed in</th>
++        <th>Notes</th>
++        <th>Updated</th>
++        <th>Actions</th>
++      </tr>
++    </thead>
++    <tbody>
++      {% for item in items %}
++      <tr id="glossary-{{ item.id }}">
++        <td>{{ item.id }}</td>
++        <td>{{ item.canonical_text }}</td>
++        <td>{{ item.aliases|join(', ') if item.aliases else '—' }}</td>
++        <td>{{ item.kind }}</td>
++        <td>{{ item.source_label }}</td>
++        <td>{% if item.enabled %}Enabled{% else %}Disabled{% endif %}</td>
++        <td>{{ item.recording_id or '—' }}</td>
++        <td>{{ item.notes or '—' }}</td>
++        <td>{{ item.updated_at[:19].replace('T', ' ') if item.updated_at else '—' }}</td>
++        <td style="white-space:nowrap">
++          <a href="/glossary?edit_id={{ item.id }}#glossary-{{ item.id }}" class="btn" style="text-decoration:none">Edit</a>
++          <form method="post" action="/glossary/{{ item.id }}/delete" style="display:inline" onsubmit="return confirm('Delete glossary entry ' + this.dataset.name + '?')" data-name="{{ item.canonical_text }}">
++            <button class="btn btn-danger" type="submit">Delete</button>
++          </form>
++        </td>
++      </tr>
++      {% endfor %}
++    </tbody>
++  </table>
++  {% else %}
++  <p class="placeholder">No glossary entries yet. Add a manual term or a correction-memory entry above.</p>
++  {% endif %}
++</div>
++{% endblock %}
+diff --git a/tests/test_asr_glossary.py b/tests/test_asr_glossary.py
+new file mode 100644
+index 0000000..58a2041
+--- /dev/null
++++ b/tests/test_asr_glossary.py
+@@ -0,0 +1,455 @@
++from __future__ import annotations
++
++from pathlib import Path
++
++import pytest
++
++from lan_app import asr_glossary
++from lan_app.config import AppSettings
++from lan_app.db import (
++    create_glossary_entry,
++    create_project,
++    create_recording,
++    create_voice_profile,
++    increment_project_keyword_weights,
++    init_db,
++    set_recording_project,
++)
++
++
++def _cfg(tmp_path: Path) -> AppSettings:
++    cfg = AppSettings(
++        data_root=tmp_path,
++        recordings_root=tmp_path / "recordings",
++        db_path=tmp_path / "db" / "app.db",
++    )
++    cfg.metrics_snapshot_path = tmp_path / "metrics.snap"
++    return cfg
++
++
++def test_build_recording_asr_glossary_merges_manual_speaker_calendar_and_project_sources(
++    tmp_path: Path,
++) -> None:
++    cfg = _cfg(tmp_path)
++    init_db(cfg)
++    create_recording(
++        "rec-glossary-build-1",
++        source="upload",
++        source_filename="meeting.wav",
++        settings=cfg,
++    )
++    project = create_project("Apollo Launch", settings=cfg)
++    set_recording_project("rec-glossary-build-1", int(project["id"]), settings=cfg)
++    increment_project_keyword_weights(
++        project_id=int(project["id"]),
++        keyword_deltas={"roadmap": 2.0, "launchpad": 1.5},
++        settings=cfg,
++    )
++    create_glossary_entry(
++        "Sander",
++        aliases=["Sandia", " sandia "],
++        term_kind="person",
++        source="correction",
++        settings=cfg,
++    )
++    create_glossary_entry(
++        "Quarterly roadmap",
++        aliases=["Q roadmap"],
++        term_kind="project",
++        source="manual",
++        settings=cfg,
++    )
++    create_voice_profile("Priya Kapoor", settings=cfg)
++    create_voice_profile("Alex Example", settings=cfg)
++
++    payload = asr_glossary.build_recording_asr_glossary(
++        "rec-glossary-build-1",
++        calendar_title="Quarterly Roadmap",
++        calendar_attendees=["Priya Kapoor", "Alex Example <alex@example.com>"],
++        settings=cfg,
++    )
++
++    entry_order = [
++        (row["sources"][0], row["canonical_text"])
++        for row in payload["entries"]
++    ]
++    assert entry_order == sorted(
++        entry_order,
++        key=lambda item: (
++            asr_glossary._source_rank(item[0]),  # noqa: SLF001
++            item[1].lower(),
++            item[1],
++        ),
++    )
++    sander_entry = next(
++        row for row in payload["entries"] if row["canonical_text"] == "Sander"
++    )
++    assert sander_entry["aliases"] == ["Sandia"]
++    assert sander_entry["sources"] == ["correction"]
++    assert "Priya Kapoor" in payload["terms"]
++    assert "Alex Example" in payload["terms"]
++    assert "Apollo Launch" in payload["terms"]
++    assert "roadmap" in payload["terms"]
++    assert payload["hotwords"]
++    assert payload["initial_prompt"]
++    assert payload["source_counts"]["correction"] >= 1
++    assert payload["source_counts"]["speaker_bank"] >= 1
++    assert payload["source_counts"]["calendar"] >= 1
++    assert payload["source_counts"]["project"] >= 1
++
++
++def test_build_recording_asr_glossary_deduplicates_aliases_and_enforces_budgets(
++    tmp_path: Path,
++) -> None:
++    cfg = _cfg(tmp_path)
++    init_db(cfg)
++    create_recording(
++        "rec-glossary-build-2",
++        source="upload",
++        source_filename="meeting.wav",
++        settings=cfg,
++    )
++
++    for index in range(80):
++        create_glossary_entry(
++            f"Term {index:02d}",
++            aliases=[f"Alias {index:02d}", f"alias {index:02d}"],
++            term_kind="term",
++            source="manual",
++            settings=cfg,
++        )
++
++    payload = asr_glossary.build_recording_asr_glossary(
++        "rec-glossary-build-2",
++        settings=cfg,
++    )
++
++    assert payload["truncated"] is True
++    assert payload["entry_count"] <= payload["budgets"]["max_entries"]
++    assert payload["term_count"] <= payload["budgets"]["max_terms"]
++    assert payload["term_chars"] <= payload["budgets"]["max_term_chars"]
++    assert len(payload["terms"]) == len({term.lower() for term in payload["terms"]})
++    assert all(
++        len(entry["terms"]) == entry["term_count"] for entry in payload["entries"]
++    )
++
++
++def test_asr_glossary_private_helpers_cover_edge_paths(tmp_path: Path) -> None:
++    cfg = _cfg(tmp_path)
++    init_db(cfg)
++    assert asr_glossary._clean_terms(["  Alex  ", "alex", "", None]) == ["Alex"]  # noqa: SLF001
++    assert asr_glossary._calendar_attendee_name("mailto:alex@example.com") == "alex@example.com"  # noqa: SLF001
++    assert asr_glossary._calendar_attendee_name("Alex <alex@example.com>") == "Alex"  # noqa: SLF001
++    assert asr_glossary._calendar_attendee_name("<alex@example.com>") == "<alex@example.com>"  # noqa: SLF001
++    assert asr_glossary._source_rank("unknown") == 99  # noqa: SLF001
++    assert asr_glossary._maybe_int("bad") is None  # noqa: SLF001
++    assert asr_glossary._limited_join(  # noqa: SLF001
++        ["Term A", "Term B"],
++        separator=", ",
++        prefix="",
++        max_chars=0,
++    ) == (None, [])
++    assert asr_glossary._project_source_entries(  # noqa: SLF001
++        "rec-glossary-build-3",
++        project_id=None,
++        project_name="",
++        settings=cfg,
++    ) == []
++    assert asr_glossary._merge_source_entries(  # noqa: SLF001
++        [
++            {"canonical_text": " ", "aliases": [], "kind": "term", "source": "manual"},
++            {
++                "canonical_text": "Sander",
++                "aliases": ["Sandia"],
++                "kind": "person",
++                "source": "manual",
++                "detail": {"source": "manual", "entry_id": 1},
++            },
++            {
++                "canonical_text": "sander",
++                "aliases": ["Sandor"],
++                "kind": "person",
++                "source": "correction",
++                "detail": {"source": "correction", "entry_id": 2},
++            },
++        ]
++    )[0]["aliases"] == ["Sandia", "Sandor"]
++
++
++def test_asr_glossary_source_helpers_cover_branch_paths(
++    tmp_path: Path,
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    cfg = _cfg(tmp_path)
++    init_db(cfg)
++
++    monkeypatch.setattr(
++        asr_glossary,
++        "list_glossary_entries",
++        lambda **_kwargs: [
++            {"canonical_text": " ", "aliases_json": [], "kind": "term", "source": "manual"},
++            {
++                "id": "x",
++                "canonical_text": "Sander",
++                "aliases_json": "bad",
++                "kind": "person",
++                "source": "manual",
++                "metadata_json": {"recording_id": "rec-1"},
++                "notes": "remember this",
++            },
++        ],
++    )
++    manual_entries = asr_glossary._manual_source_entries(cfg)  # noqa: SLF001
++    assert manual_entries == [
++        {
++            "canonical_text": "Sander",
++            "aliases": [],
++            "kind": "person",
++            "source": "manual",
++            "detail": {
++                "source": "manual",
++                "entry_id": None,
++                "recording_id": "rec-1",
++                "notes": "remember this",
++            },
++        }
++    ]
++
++    monkeypatch.setattr(
++        asr_glossary,
++        "list_voice_profiles",
++        lambda **_kwargs: [
++            {"display_name": " ", "id": 1},
++            {"display_name": "Alex Example", "id": "bad"},
++        ],
++    )
++    assert asr_glossary._speaker_source_entries(cfg) == [  # noqa: SLF001
++        {
++            "canonical_text": "Alex Example",
++            "aliases": [],
++            "kind": "person",
++            "source": "speaker_bank",
++            "detail": {"source": "speaker_bank", "voice_profile_id": None},
++        }
++    ]
++
++    calendar_entries = asr_glossary._calendar_source_entries(  # noqa: SLF001
++        "rec-2",
++        calendar_title=None,
++        calendar_attendees=[" ", "<alex@example.com>"],
++    )
++    assert calendar_entries == [
++        {
++            "canonical_text": "<alex@example.com>",
++            "aliases": [],
++            "kind": "person",
++            "source": "calendar",
++            "detail": {
++                "source": "calendar",
++                "recording_id": "rec-2",
++                "field": "attendee",
++            },
++        }
++    ]
++
++    monkeypatch.setattr(
++        asr_glossary,
++        "list_project_keyword_weights",
++        lambda **_kwargs: [
++            {"keyword": "Roadmap", "weight": 2.0},
++            {"keyword": "broken", "weight": "bad"},
++            {"keyword": "ignored", "weight": 0.0},
++            {"keyword": "apollo", "weight": 1.5},
++        ],
++    )
++    assert asr_glossary._project_source_entries(  # noqa: SLF001
++        "rec-3",
++        project_id=7,
++        project_name="Roadmap",
++        settings=cfg,
++    ) == [
++        {
++            "canonical_text": "Roadmap",
++            "aliases": [],
++            "kind": "project",
++            "source": "project",
++            "detail": {
++                "source": "project",
++                "project_id": 7,
++                "recording_id": "rec-3",
++                "field": "project_name",
++            },
++        },
++        {
++            "canonical_text": "apollo",
++            "aliases": [],
++            "kind": "term",
++            "source": "project",
++            "detail": {
++                "source": "project",
++                "project_id": 7,
++                "recording_id": "rec-3",
++                "field": "keyword",
++            },
++        },
++    ]
++
++
++def test_asr_glossary_merge_fit_join_and_truncation_paths(
++    tmp_path: Path,
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    cfg = _cfg(tmp_path)
++    init_db(cfg)
++    merged = asr_glossary._merge_source_entries(  # noqa: SLF001
++        [
++            {
++                "canonical_text": "Sander",
++                "aliases": ["Sander", "Sandia"],
++                "kind": "person",
++                "source": "manual",
++                "detail": {"source": "manual", "entry_id": 1},
++            },
++            {
++                "canonical_text": "Sander",
++                "aliases": ["Sandia"],
++                "kind": "person",
++                "source": "manual",
++                "detail": {"source": "manual", "entry_id": 1},
++            },
++        ]
++    )
++    assert merged == [
++        {
++            "canonical_text": "Sander",
++            "aliases": ["Sandia"],
++            "kind": "person",
++            "sources": ["manual"],
++            "source_details": [{"source": "manual", "entry_id": 1}],
++        }
++    ]
++
++    monkeypatch.setattr(asr_glossary, "_MAX_GLOSSARY_ENTRIES", 1)
++    selected_entries, selected_terms, _term_chars, truncated = asr_glossary._fit_entries(  # noqa: SLF001
++        [
++            {
++                "canonical_text": "Term A",
++                "aliases": [],
++                "kind": "term",
++                "sources": ["manual"],
++                "source_details": [],
++            },
++            {
++                "canonical_text": "Term B",
++                "aliases": [],
++                "kind": "term",
++                "sources": ["manual"],
++                "source_details": [],
++            },
++        ]
++    )
++    assert truncated is True
++    assert selected_terms == ["Term A"]
++    assert selected_entries[0]["canonical_text"] == "Term A"
++
++    monkeypatch.setattr(asr_glossary, "_MAX_GLOSSARY_ENTRIES", 24)
++    monkeypatch.setattr(asr_glossary, "_MAX_GLOSSARY_TERMS", 0)
++    assert asr_glossary._fit_entries(  # noqa: SLF001
++        [
++            {
++                "canonical_text": "Term A",
++                "aliases": [],
++                "kind": "term",
++                "sources": ["manual"],
++                "source_details": [],
++            }
++        ]
++    ) == ([], [], 0, True)
++
++    monkeypatch.setattr(asr_glossary, "_MAX_GLOSSARY_TERMS", 48)
++    monkeypatch.setattr(asr_glossary, "_MAX_GLOSSARY_TERM_CHARS", 2)
++    selected_entries, selected_terms, _term_chars, truncated = asr_glossary._fit_entries(  # noqa: SLF001
++        [
++            {
++                "canonical_text": "Long",
++                "aliases": [],
++                "kind": "term",
++                "sources": ["manual"],
++                "source_details": [],
++            }
++        ]
++    )
++    assert selected_entries == []
++    assert selected_terms == []
++    assert truncated is True
++
++    monkeypatch.setattr(asr_glossary, "_MAX_GLOSSARY_TERM_CHARS", 20)
++    selected_entries, selected_terms, _term_chars, truncated = asr_glossary._fit_entries(  # noqa: SLF001
++        [
++            {
++                "canonical_text": "Term A",
++                "aliases": ["", "Term A", "Alias Too Long For Budget", "B"],
++                "kind": "term",
++                "sources": ["manual"],
++                "source_details": [],
++            },
++            {
++                "canonical_text": "Term A",
++                "aliases": [],
++                "kind": "term",
++                "sources": ["manual"],
++                "source_details": [],
++            },
++        ]
++    )
++    assert selected_entries[0]["aliases"] == ["B"]
++    assert selected_terms == ["Term A", "B"]
++    assert truncated is True
++
++    monkeypatch.setattr(asr_glossary, "_MAX_GLOSSARY_TERM_CHARS", 480)
++    monkeypatch.setattr(asr_glossary, "_MAX_GLOSSARY_TERMS", 1)
++    selected_entries, selected_terms, _term_chars, truncated = asr_glossary._fit_entries(  # noqa: SLF001
++        [
++            {
++                "canonical_text": "Term A",
++                "aliases": ["Alias"],
++                "kind": "term",
++                "sources": ["manual"],
++                "source_details": [],
++            }
++        ]
++    )
++    assert selected_entries[0]["aliases"] == []
++    assert selected_terms == ["Term A"]
++    assert truncated is True
++
++    joined, used_terms = asr_glossary._limited_join(  # noqa: SLF001
++        ["Term A", "Term B"],
++        separator=", ",
++        prefix="",
++        max_chars=8,
++    )
++    assert joined == "Term A"
++    assert used_terms == ["Term A"]
++
++    monkeypatch.setattr(asr_glossary, "_MAX_GLOSSARY_TERMS", 48)
++    monkeypatch.setattr(asr_glossary, "_MAX_HOTWORDS_CHARS", 6)
++    monkeypatch.setattr(asr_glossary, "_MAX_PROMPT_CHARS", 12)
++    create_recording(
++        "rec-glossary-build-4",
++        source="upload",
++        source_filename="meeting.wav",
++        settings=cfg,
++    )
++    create_glossary_entry(
++        "Sander",
++        aliases=["Sandia"],
++        settings=cfg,
++    )
++    payload = asr_glossary.build_recording_asr_glossary(
++        "rec-glossary-build-4",
++        settings=cfg,
++    )
++    assert payload["truncated"] is True
++    assert payload["hotword_terms"] == ["Sander"]
++    assert payload["prompt_terms"] == []

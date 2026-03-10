@@ -22,7 +22,9 @@ from lan_app.db import (
     create_recording,
     create_project,
     create_voice_profile,
+    get_glossary_entry,
     get_recording,
+    list_glossary_entries,
     list_speaker_assignments,
     list_voice_samples,
     init_db,
@@ -303,6 +305,55 @@ def test_recording_detail_overview(seeded_client):
     assert 'data-rlabel="meeting.mp3"' in r.text
     assert 'href="/ui/recordings/rec-ui-1/export.zip"' in r.text
     assert 'hx-boost="false"' in r.text
+
+
+def test_recording_detail_overview_shows_asr_glossary_context(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    init_db(cfg)
+    create_recording(
+        "rec-ui-glossary-1",
+        source="upload",
+        source_filename="glossary.wav",
+        status=RECORDING_STATUS_READY,
+        settings=cfg,
+    )
+    derived = cfg.recordings_root / "rec-ui-glossary-1" / "derived"
+    derived.mkdir(parents=True, exist_ok=True)
+    (derived / "asr_glossary.json").write_text(
+        json.dumps(
+            {
+                "entry_count": 2,
+                "term_count": 3,
+                "truncated": False,
+                "entries": [
+                    {
+                        "canonical_text": "Sander",
+                        "aliases": ["Sandia"],
+                        "kind": "person",
+                        "sources": ["correction", "speaker_bank"],
+                    },
+                    {
+                        "canonical_text": "Quarterly Roadmap",
+                        "aliases": [],
+                        "kind": "project",
+                        "sources": ["calendar"],
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    c = TestClient(api.app, follow_redirects=True)
+    r = c.get("/recordings/rec-ui-glossary-1")
+    assert r.status_code == 200
+    assert "ASR Glossary" in r.text
+    assert "Manage glossary" in r.text
+    assert "Sander" in r.text
+    assert "Sandia" in r.text
+    assert "correction, speaker bank" in r.text
 
 
 def test_recording_detail_processing_polls_progress(tmp_path, monkeypatch):
@@ -1089,6 +1140,70 @@ def test_projects_delete(tmp_path, monkeypatch):
     r = c.post(f"/projects/{proj['id']}/delete")
     assert r.status_code == 200
     assert list_projects(settings=cfg) == []
+
+
+# ---------------------------------------------------------------------------
+# Glossary
+# ---------------------------------------------------------------------------
+
+
+def test_glossary_page_create_edit_and_delete(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    init_db(cfg)
+    c = TestClient(api.app, follow_redirects=False)
+
+    created = c.post(
+        "/glossary",
+        data={
+            "canonical_text": "Sander",
+            "aliases_text": "Sandia\nSandoor",
+            "kind": "person",
+            "source": "correction",
+            "enabled": "1",
+            "notes": "common transcription issue",
+            "recording_id": "rec-ui-glossary-create-1",
+        },
+    )
+    assert created.status_code == 303
+    created_entry = list_glossary_entries(settings=cfg)[0]
+    assert created_entry["aliases_json"] == ["Sandia", "Sandoor"]
+    assert created_entry["metadata_json"] == {"recording_id": "rec-ui-glossary-create-1"}
+
+    edit_page = TestClient(api.app, follow_redirects=True).get(
+        f"/glossary?edit_id={created_entry['id']}"
+    )
+    assert edit_page.status_code == 200
+    assert "Edit entry" in edit_page.text
+
+    updated = c.post(
+        f"/glossary/{created_entry['id']}",
+        data={
+            "canonical_text": "Sander Van Doorn",
+            "aliases_text": "Sandia",
+            "kind": "person",
+            "source": "manual",
+            "notes": "updated",
+            "recording_id": "rec-ui-glossary-create-2",
+        },
+    )
+    assert updated.status_code == 303
+    updated_entry = get_glossary_entry(int(created_entry["id"]), settings=cfg)
+    assert updated_entry is not None
+    assert updated_entry["canonical_text"] == "Sander Van Doorn"
+    assert updated_entry["enabled"] == 0
+    assert updated_entry["source"] == "manual"
+
+    listing = TestClient(api.app, follow_redirects=True).get("/glossary")
+    assert listing.status_code == 200
+    assert "Glossary" in listing.text
+    assert "Sander Van Doorn" in listing.text
+    assert "Disabled" in listing.text
+
+    deleted = c.post(f"/glossary/{created_entry['id']}/delete")
+    assert deleted.status_code == 303
+    assert list_glossary_entries(settings=cfg) == []
 
 
 # ---------------------------------------------------------------------------

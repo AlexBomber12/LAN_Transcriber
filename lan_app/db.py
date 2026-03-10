@@ -25,6 +25,15 @@ from .constants import (
 
 _PROJECT_ASSIGNMENT_SOURCES = {"manual", "auto"}
 _CALENDAR_SOURCE_KINDS = {"url", "file"}
+_GLOSSARY_TERM_KINDS = {"company", "person", "product", "project", "term"}
+_GLOSSARY_SOURCES = {
+    "calendar",
+    "correction",
+    "manual",
+    "project",
+    "speaker_bank",
+    "system",
+}
 _MIGRATIONS_DIR = Path(__file__).with_name("migrations")
 _SQLITE_CONNECT_TIMEOUT_SECONDS = 30
 _DEFAULT_SQLITE_BUSY_TIMEOUT_MS = 30_000
@@ -127,6 +136,51 @@ def _normalise_calendar_source_kind(kind: str) -> str:
         options = ", ".join(sorted(_CALENDAR_SOURCE_KINDS))
         raise ValueError(f"Unsupported calendar source kind: {value} ({options})")
     return value
+
+
+def _normalise_glossary_kind(kind: str | None) -> str:
+    value = str(kind or "term").strip().lower() or "term"
+    if value not in _GLOSSARY_TERM_KINDS:
+        options = ", ".join(sorted(_GLOSSARY_TERM_KINDS))
+        raise ValueError(f"Unsupported glossary kind: {value} ({options})")
+    return value
+
+
+def _normalise_glossary_source(source: str | None) -> str:
+    value = str(source or "manual").strip().lower() or "manual"
+    if value not in _GLOSSARY_SOURCES:
+        options = ", ".join(sorted(_GLOSSARY_SOURCES))
+        raise ValueError(f"Unsupported glossary source: {value} ({options})")
+    return value
+
+
+def _normalise_glossary_aliases(
+    aliases: Sequence[str] | str | None,
+    *,
+    canonical_text: str | None = None,
+) -> list[str]:
+    if aliases is None:
+        raw_values: Sequence[object] = ()
+    elif isinstance(aliases, str):
+        raw_values = aliases.replace(",", "\n").splitlines()
+    elif isinstance(aliases, Sequence) and not isinstance(aliases, (bytes, bytearray)):
+        raw_values = aliases
+    else:
+        raw_values = ()
+
+    canonical_key = _normalise_keyword(canonical_text) if canonical_text else ""
+    seen: set[str] = set()
+    normalized: list[str] = []
+    for value in raw_values:
+        text = " ".join(str(value).strip().split())
+        if not text:
+            continue
+        key = _normalise_keyword(text)
+        if not key or key == canonical_key or key in seen:
+            continue
+        seen.add(key)
+        normalized.append(text)
+    return normalized
 
 
 def _normalise_keyword(value: object) -> str:
@@ -1800,6 +1854,211 @@ def list_project_keyword_weights(
     return [_as_dict(row) or {} for row in rows]
 
 
+def list_glossary_entries(
+    *,
+    enabled: bool | None = None,
+    source: str | None = None,
+    settings: AppSettings | None = None,
+) -> list[dict[str, Any]]:
+    init_db(settings)
+    clauses: list[str] = []
+    params: list[Any] = []
+    if enabled is not None:
+        clauses.append("enabled = ?")
+        params.append(1 if enabled else 0)
+    if source is not None:
+        clauses.append("source = ?")
+        params.append(_normalise_glossary_source(source))
+    where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    with connect(settings) as conn:
+        rows = conn.execute(
+            f"""
+            SELECT *
+            FROM glossary_entries
+            {where_sql}
+            ORDER BY canonical_text, id
+            """,
+            tuple(params),
+        ).fetchall()
+    return [_as_dict(row) or {} for row in rows]
+
+
+def get_glossary_entry(
+    entry_id: int,
+    *,
+    settings: AppSettings | None = None,
+) -> dict[str, Any] | None:
+    init_db(settings)
+    with connect(settings) as conn:
+        row = conn.execute(
+            "SELECT * FROM glossary_entries WHERE id = ?",
+            (int(entry_id),),
+        ).fetchone()
+    return _as_dict(row)
+
+
+def create_glossary_entry(
+    canonical_text: str,
+    *,
+    aliases: Sequence[str] | str | None = None,
+    term_kind: str = "term",
+    source: str = "manual",
+    enabled: bool = True,
+    notes: str | None = None,
+    metadata: dict[str, Any] | None = None,
+    settings: AppSettings | None = None,
+) -> dict[str, Any]:
+    init_db(settings)
+    canonical = " ".join(str(canonical_text).strip().split())
+    if not canonical:
+        raise ValueError("canonical_text is required")
+    normalized_aliases = _normalise_glossary_aliases(
+        aliases,
+        canonical_text=canonical,
+    )
+    normalized_kind = _normalise_glossary_kind(term_kind)
+    normalized_source = _normalise_glossary_source(source)
+    normalized_notes = " ".join(str(notes or "").strip().split()) or None
+    metadata_payload = metadata if isinstance(metadata, dict) else {}
+    now = _utc_now()
+    with connect(settings) as conn:
+        cursor = conn.execute(
+            """
+            INSERT INTO glossary_entries (
+                canonical_text,
+                aliases_json,
+                kind,
+                source,
+                enabled,
+                notes,
+                metadata_json,
+                created_at,
+                updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                canonical,
+                json.dumps(normalized_aliases, ensure_ascii=True),
+                normalized_kind,
+                normalized_source,
+                1 if enabled else 0,
+                normalized_notes,
+                json.dumps(metadata_payload, ensure_ascii=True, sort_keys=True),
+                now,
+                now,
+            ),
+        )
+        row = conn.execute(
+            "SELECT * FROM glossary_entries WHERE id = ?",
+            (int(cursor.lastrowid),),
+        ).fetchone()
+        conn.commit()
+    return _as_dict(row) or {}
+
+
+def update_glossary_entry(
+    entry_id: int,
+    *,
+    canonical_text: str | object = _UNSET,
+    aliases: Sequence[str] | str | object = _UNSET,
+    term_kind: str | object = _UNSET,
+    source: str | object = _UNSET,
+    enabled: bool | object = _UNSET,
+    notes: str | object = _UNSET,
+    metadata: dict[str, Any] | object = _UNSET,
+    settings: AppSettings | None = None,
+) -> dict[str, Any] | None:
+    init_db(settings)
+    with connect(settings) as conn:
+        existing = conn.execute(
+            "SELECT * FROM glossary_entries WHERE id = ?",
+            (int(entry_id),),
+        ).fetchone()
+        if existing is None:
+            return None
+        current = _as_dict(existing) or {}
+        canonical = (
+            " ".join(str(current.get("canonical_text") or "").strip().split())
+            if canonical_text is _UNSET
+            else " ".join(str(canonical_text).strip().split())
+        )
+        if not canonical:
+            raise ValueError("canonical_text is required")
+        normalized_aliases = _normalise_glossary_aliases(
+            current.get("aliases_json") if aliases is _UNSET else aliases,
+            canonical_text=canonical,
+        )
+        normalized_kind = _normalise_glossary_kind(
+            current.get("kind") if term_kind is _UNSET else str(term_kind)
+        )
+        normalized_source = _normalise_glossary_source(
+            current.get("source") if source is _UNSET else str(source)
+        )
+        resolved_enabled = (
+            bool(current.get("enabled"))
+            if enabled is _UNSET
+            else bool(enabled)
+        )
+        resolved_notes = (
+            current.get("notes")
+            if notes is _UNSET
+            else (" ".join(str(notes).strip().split()) or None)
+        )
+        resolved_metadata = (
+            current.get("metadata_json")
+            if metadata is _UNSET and isinstance(current.get("metadata_json"), dict)
+            else (metadata if isinstance(metadata, dict) else {})
+        )
+        now = _utc_now()
+        conn.execute(
+            """
+            UPDATE glossary_entries
+            SET canonical_text = ?,
+                aliases_json = ?,
+                kind = ?,
+                source = ?,
+                enabled = ?,
+                notes = ?,
+                metadata_json = ?,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                canonical,
+                json.dumps(normalized_aliases, ensure_ascii=True),
+                normalized_kind,
+                normalized_source,
+                1 if resolved_enabled else 0,
+                resolved_notes,
+                json.dumps(resolved_metadata, ensure_ascii=True, sort_keys=True),
+                now,
+                int(entry_id),
+            ),
+        )
+        row = conn.execute(
+            "SELECT * FROM glossary_entries WHERE id = ?",
+            (int(entry_id),),
+        ).fetchone()
+        conn.commit()
+    return _as_dict(row)
+
+
+def delete_glossary_entry(
+    entry_id: int,
+    *,
+    settings: AppSettings | None = None,
+) -> bool:
+    init_db(settings)
+    with connect(settings) as conn:
+        deleted = conn.execute(
+            "DELETE FROM glossary_entries WHERE id = ?",
+            (int(entry_id),),
+        )
+        conn.commit()
+    return deleted.rowcount > 0
+
+
 def list_voice_profiles(
     *,
     include_merged: bool = False,
@@ -2859,6 +3118,11 @@ __all__ = [
     "count_routing_training_examples",
     "increment_project_keyword_weights",
     "list_project_keyword_weights",
+    "list_glossary_entries",
+    "get_glossary_entry",
+    "create_glossary_entry",
+    "update_glossary_entry",
+    "delete_glossary_entry",
     "list_voice_profiles",
     "get_voice_profile",
     "create_voice_profile",

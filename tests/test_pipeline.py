@@ -1155,6 +1155,113 @@ async def test_pipeline_multilingual_asr_uses_chunk_language_hints(tmp_path: Pat
 
 @pytest.mark.asyncio
 @respx.mock
+async def test_pipeline_multilingual_asr_forwards_glossary_context_and_writes_artifact(
+    tmp_path: Path,
+    mocker,
+):
+    seen_calls: list[dict[str, object]] = []
+
+    def _transcribe(audio_path: str, **kwargs):
+        seen_calls.append(
+            {
+                "audio_path": audio_path,
+                "language": kwargs.get("language"),
+                "initial_prompt": kwargs.get("initial_prompt"),
+                "hotwords": kwargs.get("hotwords"),
+            }
+        )
+        if audio_path == str(audio):
+            return (
+                [
+                    {"start": 0.0, "end": 4.0, "text": "hello team and thanks"},
+                    {"start": 4.0, "end": 8.0, "text": "hola equipo y gracias"},
+                ],
+                {"language": "en", "language_probability": 0.91},
+            )
+        if kwargs.get("language") == "en":
+            return (
+                [{"start": 0.0, "end": 4.0, "text": "hello team and thanks"}],
+                {"language": "en", "language_probability": 0.98},
+            )
+        return (
+            [{"start": 0.0, "end": 4.0, "text": "hola equipo y gracias"}],
+            {"language": "es", "language_probability": 0.97},
+        )
+
+    mocker.patch("whisperx.transcribe", side_effect=_transcribe)
+    mocker.patch(
+        "transformers.pipeline",
+        lambda *a, **k: lambda text: [{"label": "positive", "score": 0.6}],
+    )
+    respx.post("http://127.0.0.1:8000/v1/chat/completions").mock(
+        return_value=httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": "- summary"}}]},
+        ),
+    )
+
+    cfg = pipeline.Settings(
+        speaker_db=tmp_path / "db.yaml",
+        tmp_root=tmp_path,
+        recordings_root=tmp_path / "recordings",
+        asr_multilingual_mode="auto",
+    )
+    audio = wav_audio(
+        tmp_path,
+        name="mixed-language-glossary.wav",
+        duration_sec=8.0,
+        speech=True,
+    )
+    glossary_payload = {
+        "version": 1,
+        "recording_id": "rec-multilingual-glossary-1",
+        "entries": [
+            {
+                "canonical_text": "Sander",
+                "aliases": ["Sandia"],
+                "kind": "person",
+                "sources": ["correction"],
+                "terms": ["Sander", "Sandia"],
+                "term_count": 2,
+            }
+        ],
+        "terms": ["Sander", "Sandia"],
+        "entry_count": 1,
+        "term_count": 2,
+        "truncated": False,
+        "initial_prompt": "Glossary: Sander; Sandia",
+        "hotwords": "Sander, Sandia",
+    }
+    await pipeline.run_pipeline(
+        audio_path=audio,
+        cfg=cfg,
+        llm=llm_client.LLMClient(),
+        diariser=TwoSpeakerDiariser(),
+        recording_id="rec-multilingual-glossary-1",
+        precheck=precheck_ok(),
+        asr_glossary=glossary_payload,
+    )
+
+    assert [call["language"] for call in seen_calls] == ["auto", "en", "es"]
+    assert all(
+        call["initial_prompt"] == "Glossary: Sander; Sandia"
+        and call["hotwords"] == "Sander, Sandia"
+        for call in seen_calls
+    )
+    artifact = json.loads(
+        (
+            cfg.recordings_root
+            / "rec-multilingual-glossary-1"
+            / "derived"
+            / "asr_glossary.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert artifact["recording_id"] == "rec-multilingual-glossary-1"
+    assert artifact["terms"] == ["Sander", "Sandia"]
+
+
+@pytest.mark.asyncio
+@respx.mock
 async def test_pipeline_multilingual_model_path_reuses_single_whisperx_model_load(
     tmp_path: Path,
     mocker,

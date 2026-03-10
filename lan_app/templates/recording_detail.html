@@ -54,6 +54,7 @@
 
 {% if current_tab == 'overview' %}
   {% set summary_data = summary or {} %}
+  {% set glossary_data = glossary or {} %}
   <div class="info-grid">
     <span class="k">ID</span><span class="v">{{ rec.id }}</span>
     <span class="k">Filename</span><span class="v">{{ rec.source_filename }}</span>
@@ -155,6 +156,46 @@
 
   <h2>Emotional Summary</h2>
   <p style="white-space:pre-wrap">{{ summary_data.emotional_summary or '—' }}</p>
+
+  <div class="section" style="margin-top:10px">
+    <h2 style="margin-top:0">ASR Glossary</h2>
+    <div class="filters" style="margin-bottom:6px">
+      <a href="/glossary" class="btn" style="text-decoration:none">Manage glossary</a>
+    </div>
+    {% if glossary_data.available and glossary_data.entries %}
+    <p style="margin:0 0 8px 0;color:#555">
+      {{ glossary_data.term_count }} term{{ '' if glossary_data.term_count == 1 else 's' }}
+      used across {{ glossary_data.entry_count }} entry{{ '' if glossary_data.entry_count == 1 else 'ies' }}.
+      {% if glossary_data.truncated %}
+      Prompt budget reached; only the highest-priority terms were forwarded to ASR.
+      {% endif %}
+    </p>
+    <table>
+      <thead>
+        <tr>
+          <th>Canonical</th>
+          <th>Aliases</th>
+          <th>Kind</th>
+          <th>Sources</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in glossary_data.entries %}
+        <tr>
+          <td>{{ row.canonical_text }}</td>
+          <td>{{ row.aliases|join(', ') if row.aliases else '—' }}</td>
+          <td>{{ row.kind }}</td>
+          <td>{{ row.sources_label }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% elif glossary_data.available %}
+    <p class="placeholder">This recording wrote an ASR glossary artifact, but no terms were selected.</p>
+    {% else %}
+    <p class="placeholder">No ASR glossary artifact is available for this recording yet.</p>
+    {% endif %}
+  </div>
 
 {% elif current_tab == 'project' %}
   {% set prj = project or {} %}

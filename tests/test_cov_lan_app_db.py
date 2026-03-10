@@ -184,6 +184,89 @@ def test_init_db_skips_already_applied_live_migration_and_db_path_default(
     assert db_module.db_path() == env_db
 
 
+def test_glossary_entry_helpers_cover_crud_and_validation_paths(tmp_path: Path) -> None:
+    cfg = _cfg(tmp_path)
+    db_module.init_db(cfg)
+
+    created = db_module.create_glossary_entry(
+        "  Sander  ",
+        aliases=["Sandia", " sandia ", "Sander"],
+        term_kind="person",
+        source="correction",
+        enabled=True,
+        notes="  common mis-hearing  ",
+        metadata={"recording_id": "rec-glossary-1"},
+        settings=cfg,
+    )
+    assert created["canonical_text"] == "Sander"
+    assert created["aliases_json"] == ["Sandia"]
+    assert created["kind"] == "person"
+    assert created["source"] == "correction"
+    assert created["metadata_json"] == {"recording_id": "rec-glossary-1"}
+
+    listed = db_module.list_glossary_entries(settings=cfg)
+    assert [row["canonical_text"] for row in listed] == ["Sander"]
+    assert db_module.list_glossary_entries(source="correction", settings=cfg)
+    assert db_module.list_glossary_entries(enabled=False, settings=cfg) == []
+
+    updated = db_module.update_glossary_entry(
+        int(created["id"]),
+        canonical_text="Sander Van Doorn",
+        aliases="Sandia\nSandoor\nSander Van Doorn",
+        term_kind="person",
+        source="manual",
+        enabled=False,
+        notes="updated",
+        metadata={"recording_id": "rec-glossary-2"},
+        settings=cfg,
+    )
+    assert updated is not None
+    assert updated["canonical_text"] == "Sander Van Doorn"
+    assert updated["aliases_json"] == ["Sandia", "Sandoor"]
+    assert updated["source"] == "manual"
+    assert updated["enabled"] == 0
+    assert updated["notes"] == "updated"
+    assert updated["metadata_json"] == {"recording_id": "rec-glossary-2"}
+
+    fetched = db_module.get_glossary_entry(int(created["id"]), settings=cfg)
+    assert fetched == updated
+    assert db_module.list_glossary_entries(enabled=True, settings=cfg) == []
+    assert db_module.list_glossary_entries(enabled=False, settings=cfg)
+    assert db_module.update_glossary_entry(999, settings=cfg) is None
+    assert db_module.delete_glossary_entry(int(created["id"]), settings=cfg) is True
+    assert db_module.get_glossary_entry(int(created["id"]), settings=cfg) is None
+    assert db_module.delete_glossary_entry(int(created["id"]), settings=cfg) is False
+
+    assert db_module._normalise_glossary_aliases(  # noqa: SLF001
+        123,
+        canonical_text="Sander",
+    ) == []
+    assert db_module._normalise_glossary_aliases(  # noqa: SLF001
+        ["", "Sandia"],
+        canonical_text="Sander",
+    ) == ["Sandia"]
+    assert db_module.create_glossary_entry(
+        "fallback-meta",
+        aliases=None,
+        metadata="bad",  # type: ignore[arg-type]
+        settings=cfg,
+    )["metadata_json"] == {}
+
+    with pytest.raises(ValueError, match="canonical_text is required"):
+        db_module.create_glossary_entry("   ", settings=cfg)
+    created_for_error = db_module.create_glossary_entry("Editable", settings=cfg)
+    with pytest.raises(ValueError, match="canonical_text is required"):
+        db_module.update_glossary_entry(
+            int(created_for_error["id"]),
+            canonical_text="   ",
+            settings=cfg,
+        )
+    with pytest.raises(ValueError, match="Unsupported glossary kind"):
+        db_module.create_glossary_entry("Bad Kind", term_kind="alias", settings=cfg)
+    with pytest.raises(ValueError, match="Unsupported glossary source"):
+        db_module.list_glossary_entries(source="seeded", settings=cfg)
+
+
 def test_recording_status_helpers_language_settings_and_publish_edges(tmp_path: Path):
     cfg = _cfg(tmp_path)
     db_module.init_db(cfg)

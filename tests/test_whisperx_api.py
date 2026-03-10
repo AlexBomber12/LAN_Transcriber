@@ -510,3 +510,132 @@ def test_log_dropped_kwargs_ignores_callback_errors() -> None:
         filtered={},
     )
 
+
+def test_glossary_transcribe_helper_edge_paths() -> None:
+    assert pipeline._glossary_transcribe_kwargs(None) == {}  # noqa: SLF001
+    assert pipeline._glossary_transcribe_kwargs({"initial_prompt": "Prompt"}) == {  # noqa: SLF001
+        "initial_prompt": "Prompt"
+    }
+    assert pipeline._glossary_transcribe_kwargs({"hotwords": "Term"}) == {  # noqa: SLF001
+        "hotwords": "Term"
+    }
+
+    messages: list[str] = []
+    pipeline._log_glossary_context_unsupported(  # noqa: SLF001
+        callback=messages.append,
+        glossary_kwargs={"hotwords": "Term"},
+        filtered_kwargs={"hotwords": "Term"},
+        state={},
+    )
+    assert messages == []
+
+
+def test_build_whisperx_transcriber_modern_path_forwards_glossary_kwargs(
+    tmp_path: Path,
+    monkeypatch,
+):
+    fake_whisperx = ModuleType("whisperx")
+    fake_asr = ModuleType("whisperx.asr")
+    seen_kwargs: dict[str, object] = {}
+
+    class _FakeModel:
+        vad_model = staticmethod(lambda _payload: [])
+
+        def transcribe(
+            self,
+            audio: str,
+            *,
+            batch_size: int,
+            vad_filter: bool,
+            language: str | None,
+            initial_prompt: str,
+            hotwords: str,
+        ) -> dict[str, object]:
+            assert audio == "audio"
+            assert batch_size == 16
+            assert vad_filter is True
+            assert language == "es"
+            seen_kwargs["initial_prompt"] = initial_prompt
+            seen_kwargs["hotwords"] = hotwords
+            return {"segments": [{"start": 0.0, "end": 1.0, "text": "hola"}], "language": "es"}
+
+    def _load_audio(_path: str) -> str:
+        return "audio"
+
+    def _load_model(
+        _model_name: str,
+        _device: str,
+        compute_type: str = "int8",
+        vad_method: str = "silero",
+    ) -> _FakeModel:
+        assert compute_type == "int8"
+        assert vad_method == "silero"
+        return _FakeModel()
+
+    fake_whisperx.load_audio = _load_audio
+    fake_asr.load_model = _load_model
+    fake_whisperx.asr = fake_asr
+    monkeypatch.setitem(sys.modules, "whisperx", fake_whisperx)
+    monkeypatch.setitem(sys.modules, "whisperx.asr", fake_asr)
+
+    transcribe_audio = pipeline._build_whisperx_transcriber(
+        cfg=pipeline.Settings(
+            asr_device="cpu",
+            asr_enable_align=False,
+            tmp_root=tmp_path,
+            recordings_root=tmp_path / "recordings",
+        ),
+        asr_glossary={
+            "initial_prompt": "Glossary: Sander; Sandia",
+            "hotwords": "Sander, Sandia",
+        },
+    )
+
+    audio_path = tmp_path / "a.wav"
+    audio_path.write_bytes(b"")
+    segments, info = transcribe_audio(audio_path, "es")
+
+    assert segments and segments[0]["text"] == "hola"
+    assert info["language"] == "es"
+    assert seen_kwargs == {
+        "initial_prompt": "Glossary: Sander; Sandia",
+        "hotwords": "Sander, Sandia",
+    }
+
+
+def test_build_whisperx_transcriber_legacy_path_logs_glossary_degrade_when_unsupported(
+    tmp_path: Path,
+    monkeypatch,
+):
+    fake_whisperx = ModuleType("whisperx")
+
+    def _transcribe(audio_path: str, *, language: str) -> tuple[list[dict[str, object]], dict[str, object]]:
+        assert audio_path.endswith("a.wav")
+        assert language == "auto"
+        return ([{"start": 0.0, "end": 1.0, "text": "hello"}], {"language": "en"})
+
+    fake_whisperx.transcribe = _transcribe
+    monkeypatch.setitem(sys.modules, "whisperx", fake_whisperx)
+
+    step_log: list[str] = []
+    transcribe_audio = pipeline._build_whisperx_transcriber(
+        cfg=pipeline.Settings(
+            asr_device="cpu",
+            asr_enable_align=False,
+            tmp_root=tmp_path,
+            recordings_root=tmp_path / "recordings",
+        ),
+        step_log_callback=step_log.append,
+        asr_glossary={
+            "initial_prompt": "Glossary: Sander; Sandia",
+            "hotwords": "Sander, Sandia",
+        },
+    )
+
+    audio_path = tmp_path / "a.wav"
+    audio_path.write_bytes(b"")
+    segments, info = transcribe_audio(audio_path, None)
+
+    assert segments and segments[0]["text"] == "hello"
+    assert info["language"] == "en"
+    assert any("glossary context unsupported" in line for line in step_log)

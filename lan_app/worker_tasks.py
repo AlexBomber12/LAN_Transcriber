@@ -33,6 +33,7 @@ from lan_transcriber.pipeline_steps.diarization_quality import (
     profile_default_speaker_hints,
 )
 
+from .asr_glossary import build_recording_asr_glossary
 from .config import AppSettings
 from .conversation_metrics import refresh_recording_metrics
 from .constants import (
@@ -1074,6 +1075,21 @@ def _run_precheck_pipeline(
         recording_id,
         settings,
     )
+    asr_glossary = build_recording_asr_glossary(
+        recording_id,
+        calendar_title=calendar_title,
+        calendar_attendees=calendar_attendees,
+        settings=settings,
+    )
+    _append_step_log(
+        log_path,
+        (
+            "asr glossary "
+            f"entries={int(asr_glossary.get('entry_count') or 0)} "
+            f"terms={int(asr_glossary.get('term_count') or 0)} "
+            f"truncated={bool(asr_glossary.get('truncated'))}"
+        ),
+    )
 
     def _progress_callback(stage: str, progress: float) -> None:
         _set_recording_progress_best_effort(
@@ -1098,6 +1114,7 @@ def _run_precheck_pipeline(
             transcript_language_override=transcript_language_override,
             calendar_title=calendar_title,
             calendar_attendees=calendar_attendees,
+            asr_glossary=asr_glossary,
             progress_callback=_progress_callback,
             step_log_callback=_step_log_callback,
         )

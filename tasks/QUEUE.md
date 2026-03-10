@@ -457,7 +457,7 @@ Queue (in order)
 - Depends on: PR-SPEAKER-UX-01 and PR-SPEAKER-BANK-CANONICAL-01
 
 90) PR-GLOSSARY-CORRECTIONS-01: Multi-source ASR glossary and correction memory: manual glossary UI, speaker/calendar seeds, safe ASR prompt injection, and per-recording glossary artifacts
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-GLOSSARY-CORRECTIONS-01.md
 - Depends on: PR-SNIPPETS-PURITY-01 and PR-ASR-MULTILINGUAL-01 and PR-CALENDAR-ICS-01
 
