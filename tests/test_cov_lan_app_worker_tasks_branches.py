@@ -918,9 +918,21 @@ def test_run_precheck_pipeline_uses_sanitized_audio_for_precheck_and_pipeline(
         "_load_transcript_language_payload",
         lambda *_a, **_k: (None, None),
     )
+    monkeypatch.setattr(
+        worker_tasks,
+        "build_recording_asr_glossary",
+        lambda *_a, **_k: {
+            "entry_count": 1,
+            "term_count": 2,
+            "truncated": False,
+            "initial_prompt": "Glossary: Sander; Sandia",
+            "hotwords": "Sander, Sandia",
+        },
+    )
 
     async def _fake_run_pipeline(*_args, **kwargs):
         observed_paths["pipeline"] = kwargs["audio_path"]
+        observed_paths["glossary"] = kwargs["asr_glossary"]
         return None
 
     monkeypatch.setattr(worker_tasks, "run_pipeline", _fake_run_pipeline)
@@ -939,6 +951,7 @@ def test_run_precheck_pipeline_uses_sanitized_audio_for_precheck_and_pipeline(
     )
     assert observed_paths["precheck"] == observed_paths["sanitize_output"]
     assert observed_paths["pipeline"] == observed_paths["sanitize_output"]
+    assert observed_paths["glossary"]["term_count"] == 2
 
     sanitize_payload = json.loads(
         (
@@ -956,6 +969,13 @@ def test_run_precheck_pipeline_uses_sanitized_audio_for_precheck_and_pipeline(
         "channels": 1,
         "codec": "pcm_s16le",
     }
+    step_log = (
+        cfg.recordings_root
+        / "rec-sanitize-wire-1"
+        / "logs"
+        / "step-precheck.log"
+    ).read_text(encoding="utf-8")
+    assert "asr glossary entries=1 terms=2 truncated=False" in step_log
     recording = get_recording("rec-sanitize-wire-1", settings=cfg)
     assert recording is not None
     assert recording["duration_sec"] == 30.0

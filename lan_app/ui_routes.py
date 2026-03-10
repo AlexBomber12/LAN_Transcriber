@@ -45,11 +45,14 @@ from .constants import (
 )
 from .db import (
     create_calendar_source,
+    create_glossary_entry,
     count_routing_training_examples,
     create_voice_sample,
     create_project,
     create_voice_profile,
+    delete_glossary_entry,
     get_calendar_source,
+    get_glossary_entry,
     delete_project,
     delete_voice_profile,
     get_meeting_metrics,
@@ -58,6 +61,7 @@ from .db import (
     get_voice_sample,
     list_calendar_events,
     list_calendar_sources,
+    list_glossary_entries,
     list_participant_metrics,
     list_jobs,
     list_projects,
@@ -70,6 +74,7 @@ from .db import (
     set_speaker_assignment,
     set_recording_language_settings,
     set_recording_status,
+    update_glossary_entry,
 )
 from .exporter import build_export_zip_bytes, build_onenote_markdown
 from .jobs import (
@@ -120,6 +125,15 @@ _LANGUAGE_NAME_MAP: dict[str, str] = {
 _COMMON_LANGUAGE_CODES = ("en", "es", "fr", "de", "pt", "it", "zh", "ja", "ko", "ru")
 _STUCK_JOB_RECOVERY_ERROR = "stuck job recovered"
 _DISPLAY_TIMEZONE = "Europe/Rome"
+_GLOSSARY_KIND_OPTIONS = ("person", "company", "product", "project", "term")
+_GLOSSARY_SOURCE_OPTIONS = (
+    "manual",
+    "correction",
+    "system",
+    "speaker_bank",
+    "calendar",
+    "project",
+)
 _TERMINAL_RECORDING_STATUSES = frozenset(RECORDING_STATUSES) - {
     RECORDING_STATUS_PROCESSING,
     RECORDING_STATUS_QUEUED,
@@ -520,6 +534,106 @@ def _metrics_tab_context(recording_id: str, settings: AppSettings) -> dict[str, 
     return {
         "meeting": meeting,
         "participants": participants,
+    }
+
+
+def _asr_glossary_context(recording_id: str, settings: AppSettings) -> dict[str, Any]:
+    derived = settings.recordings_root / recording_id / "derived"
+    payload = _load_json_dict(derived / "asr_glossary.json")
+    if not payload:
+        return {
+            "available": False,
+            "entries": [],
+            "entry_count": 0,
+            "term_count": 0,
+            "truncated": False,
+        }
+
+    entry_rows: list[dict[str, Any]] = []
+    raw_entries = payload.get("entries")
+    if isinstance(raw_entries, list):
+        for row in raw_entries:
+            if not isinstance(row, dict):
+                continue
+            canonical_text = " ".join(str(row.get("canonical_text") or "").split())
+            if not canonical_text:
+                continue
+            aliases_raw = row.get("aliases")
+            aliases = (
+                [
+                    " ".join(str(alias).split())
+                    for alias in aliases_raw
+                    if " ".join(str(alias).split())
+                ]
+                if isinstance(aliases_raw, list)
+                else []
+            )
+            sources_raw = row.get("sources")
+            sources = (
+                [
+                    " ".join(str(source).split())
+                    for source in sources_raw
+                    if " ".join(str(source).split())
+                ]
+                if isinstance(sources_raw, list)
+                else []
+            )
+            entry_rows.append(
+                {
+                    "canonical_text": canonical_text,
+                    "aliases": aliases,
+                    "kind": " ".join(str(row.get("kind") or "term").split()) or "term",
+                    "sources": sources,
+                    "sources_label": ", ".join(
+                        source.replace("_", " ") for source in sources
+                    )
+                    or "—",
+                }
+            )
+
+    def _safe_count(value: Any, *, default: int) -> int:
+        try:
+            return max(0, int(value))
+        except (TypeError, ValueError):
+            return default
+
+    return {
+        "available": True,
+        "entries": entry_rows,
+        "entry_count": _safe_count(payload.get("entry_count"), default=len(entry_rows)),
+        "term_count": _safe_count(
+            payload.get("term_count"),
+            default=sum(1 + len(row["aliases"]) for row in entry_rows),
+        ),
+        "truncated": bool(payload.get("truncated")),
+    }
+
+
+def _glossary_form_payload(
+    *,
+    canonical_text: str,
+    aliases_text: str,
+    kind: str,
+    source: str,
+    enabled: str,
+    notes: str,
+    recording_id: str,
+    existing_metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    metadata = dict(existing_metadata) if isinstance(existing_metadata, dict) else {}
+    clean_recording_id = " ".join(recording_id.strip().split())
+    if clean_recording_id:
+        metadata["recording_id"] = clean_recording_id
+    else:
+        metadata.pop("recording_id", None)
+    return {
+        "canonical_text": canonical_text.strip(),
+        "aliases": aliases_text,
+        "term_kind": kind,
+        "source": source,
+        "enabled": enabled.strip().lower() in {"1", "true", "on", "yes"},
+        "notes": notes,
+        "metadata": metadata,
     }
 
 
@@ -1645,6 +1759,7 @@ async def ui_recording_detail(
     metrics: dict[str, Any] | None = None
     speakers: dict[str, Any] | None = None
     project: dict[str, Any] | None = None
+    glossary: dict[str, Any] | None = None
     export_text = ""
     if current_tab == "language":
         language = _language_tab_context(recording_id, rec, _settings)
@@ -1660,6 +1775,7 @@ async def ui_recording_detail(
         summary = _summary_context(recording_id, _settings)
     if current_tab == "overview":
         export_text = build_onenote_markdown(rec, settings=_settings)
+        glossary = _asr_glossary_context(recording_id, _settings)
     if current_tab == "metrics":
         metrics = _metrics_tab_context(recording_id, _settings)
 
@@ -1678,6 +1794,7 @@ async def ui_recording_detail(
             "metrics": metrics,
             "speakers": speakers,
             "project": project,
+            "glossary": glossary,
             "export_text": export_text,
         },
     )
@@ -1958,6 +2075,115 @@ async def ui_set_recording_project(
         apply_workflow=False,
     )
     return RedirectResponse(f"/recordings/{recording_id}?tab=project", status_code=303)
+
+
+# ---------------------------------------------------------------------------
+# Glossary
+# ---------------------------------------------------------------------------
+
+
+@ui_router.get("/glossary", response_class=HTMLResponse)
+async def ui_glossary(
+    request: Request,
+    edit_id: int | None = Query(default=None),
+) -> Any:
+    items = list_glossary_entries(settings=_settings)
+    for item in items:
+        aliases = item.get("aliases_json")
+        item["aliases"] = aliases if isinstance(aliases, list) else []
+        item["aliases_text"] = "\n".join(item["aliases"])
+        metadata = item.get("metadata_json")
+        item["metadata"] = metadata if isinstance(metadata, dict) else {}
+        item["recording_id"] = str(item["metadata"].get("recording_id") or "").strip()
+        item["source_label"] = str(item.get("source") or "").replace("_", " ")
+    editing_entry = None if edit_id is None else get_glossary_entry(edit_id, settings=_settings)
+    if isinstance(editing_entry, dict):
+        aliases = editing_entry.get("aliases_json")
+        editing_entry["aliases"] = aliases if isinstance(aliases, list) else []
+        editing_entry["aliases_text"] = "\n".join(editing_entry["aliases"])
+        metadata = editing_entry.get("metadata_json")
+        editing_entry["metadata"] = metadata if isinstance(metadata, dict) else {}
+        editing_entry["recording_id"] = str(
+            editing_entry["metadata"].get("recording_id") or ""
+        ).strip()
+    return templates.TemplateResponse(
+        request,
+        "glossary.html",
+        {
+            "active": "glossary",
+            "items": items,
+            "editing_entry": editing_entry,
+            "kind_options": _GLOSSARY_KIND_OPTIONS,
+            "source_options": _GLOSSARY_SOURCE_OPTIONS,
+        },
+    )
+
+
+@ui_router.post("/glossary", response_class=HTMLResponse)
+async def ui_create_glossary(
+    canonical_text: str = Form(...),
+    aliases_text: str = Form(default=""),
+    kind: str = Form(default="term"),
+    source: str = Form(default="manual"),
+    enabled: str = Form(default=""),
+    notes: str = Form(default=""),
+    recording_id: str = Form(default=""),
+) -> Any:
+    payload = _glossary_form_payload(
+        canonical_text=canonical_text,
+        aliases_text=aliases_text,
+        kind=kind,
+        source=source,
+        enabled=enabled,
+        notes=notes,
+        recording_id=recording_id,
+    )
+    try:
+        create_glossary_entry(settings=_settings, **payload)
+    except ValueError as exc:
+        return HTMLResponse(str(exc), status_code=422)
+    return RedirectResponse("/glossary", status_code=303)
+
+
+@ui_router.post("/glossary/{entry_id}", response_class=HTMLResponse)
+async def ui_update_glossary(
+    entry_id: int,
+    canonical_text: str = Form(...),
+    aliases_text: str = Form(default=""),
+    kind: str = Form(default="term"),
+    source: str = Form(default="manual"),
+    enabled: str = Form(default=""),
+    notes: str = Form(default=""),
+    recording_id: str = Form(default=""),
+) -> Any:
+    existing_entry = get_glossary_entry(entry_id, settings=_settings)
+    if existing_entry is None:
+        return HTMLResponse("Glossary entry not found", status_code=404)
+    payload = _glossary_form_payload(
+        canonical_text=canonical_text,
+        aliases_text=aliases_text,
+        kind=kind,
+        source=source,
+        enabled=enabled,
+        notes=notes,
+        recording_id=recording_id,
+        existing_metadata=(
+            existing_entry.get("metadata_json")
+            if isinstance(existing_entry.get("metadata_json"), dict)
+            else None
+        ),
+    )
+    try:
+        update_glossary_entry(entry_id, settings=_settings, **payload)
+    except ValueError as exc:
+        return HTMLResponse(str(exc), status_code=422)
+    return RedirectResponse("/glossary", status_code=303)
+
+
+@ui_router.post("/glossary/{entry_id}/delete", response_class=HTMLResponse)
+async def ui_delete_glossary(entry_id: int) -> Any:
+    delete_glossary_entry(entry_id, settings=_settings)
+    return RedirectResponse("/glossary", status_code=303)
 
 
 # ---------------------------------------------------------------------------

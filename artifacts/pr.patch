@@ -1,46 +1,106 @@
-diff --git a/lan_transcriber/pipeline_steps/orchestrator.py b/lan_transcriber/pipeline_steps/orchestrator.py
-index 7bf7bb7..644cce7 100644
---- a/lan_transcriber/pipeline_steps/orchestrator.py
-+++ b/lan_transcriber/pipeline_steps/orchestrator.py
-@@ -1235,7 +1235,8 @@ async def run_pipeline(
-             diar_segments,
-             default_language=language_analysis.dominant_language if language_analysis.dominant_language != "unknown" else detected_language,
-         )
--        if getattr(diariser, "mode", "unknown") == "pyannote" and not used_dummy_fallback:
-+        diariser_mode = _diariser_mode(diariser)
-+        if diariser_mode == "pyannote" and not used_dummy_fallback:
-             smoothing_result = smooth_speaker_turns(
-                 unsmoothed_speaker_turns,
-                 merge_gap_seconds=cfg.diarization_merge_gap_seconds,
-diff --git a/tests/test_pipeline.py b/tests/test_pipeline.py
-index 8c216f2..04fc7f0 100644
---- a/tests/test_pipeline.py
-+++ b/tests/test_pipeline.py
-@@ -299,9 +299,11 @@ async def test_pipeline_emits_progress_stages_in_order(tmp_path: Path, mocker):
- 
- @pytest.mark.asyncio
- @respx.mock
-+@pytest.mark.parametrize("mode", ["pyannote", " PyAnNoTe "])
- async def test_pipeline_writes_diarization_metadata_and_smooths_retry_output(
-     tmp_path: Path,
-     mocker,
-+    mode: str,
- ):
-     mocker.patch(
-         "whisperx.transcribe",
-@@ -350,11 +352,14 @@ async def test_pipeline_writes_diarization_metadata_and_smooths_retry_output(
-     )
-     recording_id = "rec-diar-meta-1"
- 
-+    diariser = DialogRetryDiariser()
-+    diariser.mode = mode
-+
-     await pipeline.run_pipeline(
-         fake_audio(tmp_path, "dialog-retry.mp3"),
-         cfg,
-         llm_client.LLMClient(),
--        DialogRetryDiariser(),
-+        diariser,
+diff --git a/lan_app/ui_routes.py b/lan_app/ui_routes.py
+index b3dd2ea..b52d8ff 100644
+--- a/lan_app/ui_routes.py
++++ b/lan_app/ui_routes.py
+@@ -618,11 +618,14 @@ def _glossary_form_payload(
+     enabled: str,
+     notes: str,
+     recording_id: str,
++    existing_metadata: dict[str, Any] | None = None,
+ ) -> dict[str, Any]:
+-    metadata: dict[str, Any] = {}
++    metadata = dict(existing_metadata) if isinstance(existing_metadata, dict) else {}
+     clean_recording_id = " ".join(recording_id.strip().split())
+     if clean_recording_id:
+         metadata["recording_id"] = clean_recording_id
++    else:
++        metadata.pop("recording_id", None)
+     return {
+         "canonical_text": canonical_text.strip(),
+         "aliases": aliases_text,
+@@ -2153,7 +2156,8 @@ async def ui_update_glossary(
+     notes: str = Form(default=""),
+     recording_id: str = Form(default=""),
+ ) -> Any:
+-    if get_glossary_entry(entry_id, settings=_settings) is None:
++    existing_entry = get_glossary_entry(entry_id, settings=_settings)
++    if existing_entry is None:
+         return HTMLResponse("Glossary entry not found", status_code=404)
+     payload = _glossary_form_payload(
+         canonical_text=canonical_text,
+@@ -2163,6 +2167,11 @@ async def ui_update_glossary(
+         enabled=enabled,
+         notes=notes,
          recording_id=recording_id,
-         precheck=precheck_ok(),
++        existing_metadata=(
++            existing_entry.get("metadata_json")
++            if isinstance(existing_entry.get("metadata_json"), dict)
++            else None
++        ),
      )
+     try:
+         update_glossary_entry(entry_id, settings=_settings, **payload)
+diff --git a/tests/test_cov_lan_app_ui_routes.py b/tests/test_cov_lan_app_ui_routes.py
+index d69000d..8300a9a 100644
+--- a/tests/test_cov_lan_app_ui_routes.py
++++ b/tests/test_cov_lan_app_ui_routes.py
+@@ -434,6 +434,18 @@ def test_asr_glossary_context_and_route_error_paths(
+         == 404
+     )
+ 
++    payload = ui_routes._glossary_form_payload(  # noqa: SLF001
++        canonical_text="Known",
++        aliases_text="Alias",
++        kind="term",
++        source="manual",
++        enabled="1",
++        notes="note",
++        recording_id="   ",
++        existing_metadata={"recording_id": "rec-1", "import_source": "csv"},
++    )
++    assert payload["metadata"] == {"import_source": "csv"}
++
+ 
+ def test_fallback_turns_and_path_helpers(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+     turns = ui_routes._fallback_speaker_turns_from_transcript(  # noqa: SLF001
+diff --git a/tests/test_ui_routes.py b/tests/test_ui_routes.py
+index f14a0ce..41f4dff 100644
+--- a/tests/test_ui_routes.py
++++ b/tests/test_ui_routes.py
+@@ -36,6 +36,7 @@ from lan_app.db import (
+     list_voice_profiles,
+     set_recording_progress,
+     set_speaker_assignment,
++    update_glossary_entry,
+     upsert_calendar_match,
+     upsert_meeting_metrics,
+ )
+@@ -1170,6 +1171,16 @@ def test_glossary_page_create_edit_and_delete(tmp_path, monkeypatch):
+     created_entry = list_glossary_entries(settings=cfg)[0]
+     assert created_entry["aliases_json"] == ["Sandia", "Sandoor"]
+     assert created_entry["metadata_json"] == {"recording_id": "rec-ui-glossary-create-1"}
++    seeded_entry = update_glossary_entry(
++        int(created_entry["id"]),
++        settings=cfg,
++        metadata={
++            "recording_id": "rec-ui-glossary-create-1",
++            "import_source": "csv",
++            "audit": {"by": "importer"},
++        },
++    )
++    assert seeded_entry["metadata_json"]["import_source"] == "csv"
+ 
+     edit_page = TestClient(api.app, follow_redirects=True).get(
+         f"/glossary?edit_id={created_entry['id']}"
+@@ -1194,6 +1205,11 @@ def test_glossary_page_create_edit_and_delete(tmp_path, monkeypatch):
+     assert updated_entry["canonical_text"] == "Sander Van Doorn"
+     assert updated_entry["enabled"] == 0
+     assert updated_entry["source"] == "manual"
++    assert updated_entry["metadata_json"] == {
++        "recording_id": "rec-ui-glossary-create-2",
++        "import_source": "csv",
++        "audit": {"by": "importer"},
++    }
+ 
+     listing = TestClient(api.app, follow_redirects=True).get("/glossary")
+     assert listing.status_code == 200

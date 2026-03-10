@@ -16,7 +16,12 @@ from pydantic_settings import BaseSettings
 from .. import normalizer
 from ..aliases import ALIAS_PATH, load_aliases as _load_aliases, save_aliases as _save_aliases
 from ..artifacts import atomic_write_json, atomic_write_text, build_recording_artifacts, stage_raw_audio
-from ..compat.call_compat import call_with_supported_kwargs, filter_kwargs_for_callable
+from ..compat.call_compat import (
+    clear_last_supported_kwargs_call_details,
+    call_with_supported_kwargs,
+    filter_kwargs_for_callable,
+    last_supported_kwargs_call_details,
+)
 from ..compat.pyannote_compat import patch_pyannote_inference_ignore_use_auth_token
 from ..llm_chunking import (
     build_chunk_prompt,
@@ -349,6 +354,193 @@ def _best_effort_step_log(
         pass
 
 
+def _glossary_transcribe_kwargs(asr_glossary: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(asr_glossary, dict):
+        return {}
+    initial_prompt = " ".join(str(asr_glossary.get("initial_prompt") or "").split())
+    hotwords = " ".join(str(asr_glossary.get("hotwords") or "").split())
+    kwargs: dict[str, Any] = {}
+    if initial_prompt:
+        kwargs["initial_prompt"] = initial_prompt
+    if hotwords:
+        kwargs["hotwords"] = hotwords
+    return kwargs
+
+
+def _new_glossary_runtime_state(glossary_kwargs: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "requested_keys": tuple(sorted(glossary_kwargs)),
+        "applied_keys": set(),
+        "dropped_keys": set(),
+        "checked": False,
+    }
+
+
+def _update_glossary_runtime_state(
+    *,
+    state: dict[str, Any],
+    glossary_kwargs: dict[str, Any],
+    final_kwargs: dict[str, Any],
+    dropped_kwargs: Iterable[str],
+) -> None:
+    if not glossary_kwargs:
+        return
+    glossary_keys = set(glossary_kwargs)
+    applied_keys = {key for key in final_kwargs if key in glossary_keys}
+    dropped_keys = glossary_keys - applied_keys
+    dropped_keys.update(key for key in dropped_kwargs if key in glossary_keys)
+
+    state["checked"] = True
+    raw_applied = state.get("applied_keys")
+    if isinstance(raw_applied, set):
+        raw_applied.update(applied_keys)
+    raw_dropped = state.get("dropped_keys")
+    if isinstance(raw_dropped, set):
+        raw_dropped.update(dropped_keys)
+
+
+def _glossary_runtime_metadata(transcribe_audio: Any) -> dict[str, Any]:
+    raw = getattr(transcribe_audio, "glossary_runtime_state", None)
+    if not isinstance(raw, dict):
+        return {}
+
+    requested_keys_raw = raw.get("requested_keys")
+    applied_keys_raw = raw.get("applied_keys")
+    dropped_keys_raw = raw.get("dropped_keys")
+    requested_keys = (
+        sorted(
+            key
+            for key in requested_keys_raw
+            if isinstance(key, str) and key
+        )
+        if isinstance(requested_keys_raw, (tuple, list, set))
+        else []
+    )
+    applied_keys = (
+        sorted(
+            key
+            for key in applied_keys_raw
+            if isinstance(key, str) and key in requested_keys
+        )
+        if isinstance(applied_keys_raw, set)
+        else []
+    )
+    dropped_keys = (
+        sorted(
+            key
+            for key in dropped_keys_raw
+            if isinstance(key, str) and key in requested_keys and key not in applied_keys
+        )
+        if isinstance(dropped_keys_raw, set)
+        else []
+    )
+    if not requested_keys:
+        return {}
+    return {
+        "checked": bool(raw.get("checked")),
+        "requested_keys": requested_keys,
+        "applied_keys": applied_keys,
+        "dropped_keys": dropped_keys,
+    }
+
+
+def _effective_asr_glossary_artifact(
+    *,
+    asr_glossary: dict[str, Any] | None,
+    runtime_metadata: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    if not isinstance(asr_glossary, dict):
+        return None
+    payload = dict(asr_glossary)
+    if not isinstance(runtime_metadata, dict) or not runtime_metadata:
+        return payload
+
+    requested_raw = runtime_metadata.get("requested_keys")
+    applied_raw = runtime_metadata.get("applied_keys")
+    dropped_raw = runtime_metadata.get("dropped_keys")
+    if not isinstance(requested_raw, list) or not isinstance(applied_raw, list):
+        return payload
+
+    requested_keys = [
+        key for key in requested_raw if key in {"initial_prompt", "hotwords"}
+    ]
+    applied_keys = [
+        key
+        for key in applied_raw
+        if key in requested_keys and " ".join(str(payload.get(key) or "").split())
+    ]
+    if requested_keys and not applied_keys:
+        return None
+
+    for key in ("initial_prompt", "hotwords"):
+        if key not in applied_keys and key in payload:
+            payload.pop(key, None)
+
+    if applied_keys:
+        payload["applied_kwargs"] = applied_keys
+    dropped_keys = (
+        [
+            key
+            for key in dropped_raw
+            if key in requested_keys and key not in applied_keys
+        ]
+        if isinstance(dropped_raw, list)
+        else []
+    )
+    if dropped_keys:
+        payload["dropped_kwargs"] = dropped_keys
+    return payload
+
+
+def _log_glossary_context_unsupported(
+    *,
+    callback: Callable[[str], Any] | None,
+    glossary_kwargs: dict[str, Any],
+    filtered_kwargs: dict[str, Any],
+    dropped_kwargs: Iterable[str] = (),
+    state: dict[str, bool],
+) -> None:
+    if callback is None or not glossary_kwargs or state.get("unsupported"):
+        return
+    glossary_keys = set(glossary_kwargs)
+    remaining_keys = {key for key in glossary_keys if key in filtered_kwargs}
+    runtime_dropped = {key for key in dropped_kwargs if key in glossary_keys}
+    effective_keys = remaining_keys - runtime_dropped
+    if effective_keys == glossary_keys:
+        return
+    state["unsupported"] = True
+    if effective_keys:
+        message = (
+            "whisperx transcribe: glossary context unsupported for some kwargs; "
+            "continuing with supported ASR hints only"
+        )
+    else:
+        message = "whisperx transcribe: glossary context unsupported; continuing without ASR hints"
+    _best_effort_step_log(
+        callback,
+        message,
+    )
+
+
+def _write_asr_glossary_artifact(
+    *,
+    derived_dir: Path,
+    recording_id: str,
+    asr_glossary: dict[str, Any] | None,
+) -> None:
+    artifact_path = derived_dir / "asr_glossary.json"
+    if not isinstance(asr_glossary, dict):
+        try:
+            artifact_path.unlink()
+        except FileNotFoundError:
+            pass
+        return
+    payload = dict(asr_glossary)
+    payload.setdefault("version", 1)
+    payload["recording_id"] = recording_id
+    atomic_write_json(artifact_path, payload)
+
+
 def _diariser_runtime_metadata(diariser: Diariser) -> dict[str, Any]:
     raw = getattr(diariser, "last_run_metadata", None)
     if not isinstance(raw, dict):
@@ -626,7 +818,11 @@ def _write_diarization_metadata_artifact(
 def _build_whisperx_transcriber(
     cfg: Settings,
     step_log_callback: Callable[[str], Any] | None = None,
+    asr_glossary: dict[str, Any] | None = None,
 ) -> Callable[[Path, str | None], tuple[list[dict[str, Any]], dict[str, Any]]]:
+    glossary_kwargs = _glossary_transcribe_kwargs(asr_glossary)
+    glossary_log_state = {"unsupported": False}
+    glossary_runtime_state = _new_glossary_runtime_state(glossary_kwargs)
     patched_paths = ensure_ctranslate2_no_execstack()
     if patched_paths and step_log_callback is not None:
         try:
@@ -667,6 +863,7 @@ def _build_whisperx_transcriber(
                 "vad_filter": True,
                 "language": override_lang or "auto",
                 "word_timestamps": True,
+                **glossary_kwargs,
             }
             filtered_kwargs = filter_kwargs_for_callable(legacy_transcribe, kwargs)
             _log_dropped_kwargs(
@@ -675,12 +872,15 @@ def _build_whisperx_transcriber(
                 attempted=kwargs,
                 filtered=filtered_kwargs,
             )
+            attempted_runtime_kwargs = filtered_kwargs
             try:
+                clear_last_supported_kwargs_call_details()
                 segments, info = call_with_supported_kwargs(
                     legacy_transcribe,
                     str(audio_path),
                     **kwargs,
                 )
+                final_kwargs, dropped_kwargs = last_supported_kwargs_call_details()
             except TypeError:
                 retry_kwargs = dict(kwargs)
                 retry_kwargs.pop("word_timestamps", None)
@@ -690,13 +890,40 @@ def _build_whisperx_transcriber(
                     attempted=kwargs,
                     filtered=retry_kwargs,
                 )
+                attempted_runtime_kwargs = filter_kwargs_for_callable(legacy_transcribe, retry_kwargs)
+                clear_last_supported_kwargs_call_details()
                 segments, info = call_with_supported_kwargs(
                     legacy_transcribe,
                     str(audio_path),
                     **retry_kwargs,
                 )
+                final_kwargs, dropped_kwargs = last_supported_kwargs_call_details()
+            if final_kwargs is None:
+                final_kwargs = dict(attempted_runtime_kwargs)
+            if dropped_kwargs is None:
+                dropped_kwargs = ()
+            _update_glossary_runtime_state(
+                state=glossary_runtime_state,
+                glossary_kwargs=glossary_kwargs,
+                final_kwargs=final_kwargs,
+                dropped_kwargs=dropped_kwargs,
+            )
+            _log_dropped_kwargs(
+                callback=step_log_callback,
+                scope="whisperx transcribe",
+                attempted=attempted_runtime_kwargs,
+                filtered=final_kwargs,
+            )
+            _log_glossary_context_unsupported(
+                callback=step_log_callback,
+                glossary_kwargs=glossary_kwargs,
+                filtered_kwargs=final_kwargs,
+                dropped_kwargs=dropped_kwargs,
+                state=glossary_log_state,
+            )
             return list(segments), dict(info or {})
 
+        _legacy_transcribe.glossary_runtime_state = glossary_runtime_state  # type: ignore[attr-defined]
         return _legacy_transcribe
 
     device = _select_asr_device(cfg)
@@ -737,6 +964,7 @@ def _build_whisperx_transcriber(
             "batch_size": cfg.asr_batch_size,
             "vad_filter": True,
             "language": (override_lang if override_lang else None),
+            **glossary_kwargs,
         }
         filtered_kwargs = filter_kwargs_for_callable(model.transcribe, transcribe_kwargs)
         _log_dropped_kwargs(
@@ -745,7 +973,36 @@ def _build_whisperx_transcriber(
             attempted=transcribe_kwargs,
             filtered=filtered_kwargs,
         )
-        result = call_with_supported_kwargs(model.transcribe, audio, **transcribe_kwargs)
+        clear_last_supported_kwargs_call_details()
+        result = call_with_supported_kwargs(
+            model.transcribe,
+            audio,
+            **transcribe_kwargs,
+        )
+        final_kwargs, dropped_kwargs = last_supported_kwargs_call_details()
+        if final_kwargs is None:
+            final_kwargs = dict(filtered_kwargs)
+        if dropped_kwargs is None:
+            dropped_kwargs = ()
+        _update_glossary_runtime_state(
+            state=glossary_runtime_state,
+            glossary_kwargs=glossary_kwargs,
+            final_kwargs=final_kwargs,
+            dropped_kwargs=dropped_kwargs,
+        )
+        _log_dropped_kwargs(
+            callback=step_log_callback,
+            scope="whisperx transcribe",
+            attempted=filtered_kwargs,
+            filtered=final_kwargs,
+        )
+        _log_glossary_context_unsupported(
+            callback=step_log_callback,
+            glossary_kwargs=glossary_kwargs,
+            filtered_kwargs=final_kwargs,
+            dropped_kwargs=dropped_kwargs,
+            state=glossary_log_state,
+        )
         segments = list(result.get("segments", []))
         info: dict[str, Any] = {
             "language": result.get("language") or (override_lang or "unknown")
@@ -775,6 +1032,7 @@ def _build_whisperx_transcriber(
 
         return segments, info
 
+    _modern_transcribe.glossary_runtime_state = glossary_runtime_state  # type: ignore[attr-defined]
     return _modern_transcribe
 
 
@@ -1069,6 +1327,7 @@ async def run_pipeline(
     transcript_language_override: str | None = None,
     calendar_title: str | None = None,
     calendar_attendees: Sequence[str] | None = None,
+    asr_glossary: dict[str, Any] | None = None,
     progress_callback: ProgressCallback | None = None,
     step_log_callback: Callable[[str], Any] | None = None,
 ) -> TranscriptResult:
@@ -1090,6 +1349,11 @@ async def run_pipeline(
     )
 
     if precheck_result.quarantine_reason:
+        _write_asr_glossary_artifact(
+            derived_dir=artifacts.transcript_json_path.parent,
+            recording_id=artifacts.recording_id,
+            asr_glossary=None,
+        )
         await _emit_progress(progress_callback, stage="metrics", progress=0.98)
         _clear_dir(artifacts.snippets_dir)
         atomic_write_text(artifacts.transcript_txt_path, "")
@@ -1132,6 +1396,12 @@ async def run_pipeline(
         p95_latency_seconds.observe(time.perf_counter() - start)
         return TranscriptResult(summary="Quarantined", body="", friendly=0, speakers=[], summary_path=artifacts.summary_json_path, body_path=artifacts.transcript_txt_path, unknown_chunks=[], segments=[])
 
+    _write_asr_glossary_artifact(
+        derived_dir=artifacts.transcript_json_path.parent,
+        recording_id=artifacts.recording_id,
+        asr_glossary=None,
+    )
+
     try:
         await _emit_progress(progress_callback, stage="stt", progress=0.10)
         def _run_asr_workflow() -> tuple[
@@ -1161,12 +1431,14 @@ async def run_pipeline(
                 )
 
             previous_transcriber = getattr(_whisperx_transcriber_state, "transcribe_audio", None)
-            _whisperx_transcriber_state.transcribe_audio = _build_whisperx_transcriber(
+            transcribe_audio = _build_whisperx_transcriber(
                 cfg=cfg,
                 step_log_callback=step_log_callback,
+                asr_glossary=asr_glossary,
             )
+            _whisperx_transcriber_state.transcribe_audio = transcribe_audio
             try:
-                return run_language_aware_asr(
+                segments, info, payload = run_language_aware_asr(
                     audio_path,
                     override_lang=override_lang,
                     configured_mode=cfg.asr_multilingual_mode,
@@ -1174,6 +1446,11 @@ async def run_pipeline(
                     transcribe_fn=_transcribe_chunk,
                     step_log_callback=step_log_callback,
                 )
+                runtime_metadata = _glossary_runtime_metadata(transcribe_audio)
+                if runtime_metadata:
+                    payload = dict(payload)
+                    payload["glossary_runtime"] = runtime_metadata
+                return segments, info, payload
             finally:
                 if previous_transcriber is None:
                     if hasattr(_whisperx_transcriber_state, "transcribe_audio"):
@@ -1186,6 +1463,18 @@ async def run_pipeline(
                 _run_asr_workflow,
             ),
             diariser(audio_path),
+        )
+        _write_asr_glossary_artifact(
+            derived_dir=artifacts.transcript_json_path.parent,
+            recording_id=artifacts.recording_id,
+            asr_glossary=_effective_asr_glossary_artifact(
+                asr_glossary=asr_glossary,
+                runtime_metadata=(
+                    asr_execution.get("glossary_runtime")
+                    if isinstance(asr_execution, dict)
+                    else None
+                ),
+            ),
         )
         await _emit_progress(progress_callback, stage="stt", progress=0.35)
         asr_segments = normalise_asr_segments(raw_segments)

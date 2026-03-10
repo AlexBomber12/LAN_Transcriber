@@ -5,7 +5,13 @@ from typing import Any
 import pytest
 
 from lan_transcriber.compat import call_compat
-from lan_transcriber.compat.call_compat import call_with_supported_kwargs, filter_kwargs_for_callable
+from lan_transcriber.compat.call_compat import (
+    clear_last_supported_kwargs_call_details,
+    call_with_supported_kwargs,
+    call_with_supported_kwargs_details,
+    filter_kwargs_for_callable,
+    last_supported_kwargs_call_details,
+)
 
 
 def test_filter_kwargs_drops_unsupported_keys_without_var_kwargs() -> None:
@@ -104,6 +110,62 @@ def test_call_with_supported_kwargs_retries_when_signature_is_unavailable(monkey
         {"batch_size": 8, "vad_filter": True},
         {"batch_size": 8},
     ]
+
+
+def test_call_with_supported_kwargs_details_reports_prefiltered_and_runtime_drops(monkeypatch) -> None:
+    clear_last_supported_kwargs_call_details()
+    assert last_supported_kwargs_call_details() == (None, None)
+    call_compat._LAST_CALL_DETAILS.value = ("bad", [])  # noqa: SLF001
+    assert last_supported_kwargs_call_details() == (None, None)
+
+    def _prefilter_target(audio: str, *, batch_size: int) -> int:
+        del audio
+        return batch_size
+
+    result, final_kwargs, dropped = call_with_supported_kwargs_details(
+        _prefilter_target,
+        "audio-bytes",
+        batch_size=8,
+        vad_filter=True,
+    )
+
+    assert result == 8
+    assert final_kwargs == {"batch_size": 8}
+    assert dropped == ("vad_filter",)
+    assert last_supported_kwargs_call_details() == ({"batch_size": 8}, ("vad_filter",))
+
+    def _raise_signature_error(*_args: Any, **_kwargs: Any) -> Any:
+        raise TypeError("signature unavailable")
+
+    class _RetryTarget:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, Any]] = []
+
+        def __call__(self, audio: str, **kwargs: Any) -> int:
+            del audio
+            self.calls.append(dict(kwargs))
+            if "hotwords" in kwargs:
+                raise TypeError("FasterWhisperPipeline.transcribe() got an unexpected keyword argument 'hotwords'")
+            return int(kwargs["batch_size"])
+
+    target = _RetryTarget()
+    monkeypatch.setattr(call_compat.inspect, "signature", _raise_signature_error)
+
+    result, final_kwargs, dropped = call_with_supported_kwargs_details(
+        target,
+        "audio-bytes",
+        batch_size=8,
+        hotwords="term",
+    )
+
+    assert result == 8
+    assert final_kwargs == {"batch_size": 8}
+    assert dropped == ("hotwords",)
+    assert target.calls == [
+        {"batch_size": 8, "hotwords": "term"},
+        {"batch_size": 8},
+    ]
+    assert last_supported_kwargs_call_details() == ({"batch_size": 8}, ("hotwords",))
 
 
 def test_call_with_supported_kwargs_reraises_non_matching_type_error(monkeypatch) -> None:

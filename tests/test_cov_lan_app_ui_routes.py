@@ -18,6 +18,7 @@ from lan_app.constants import (
 )
 from lan_app.db import (
     create_calendar_source,
+    create_glossary_entry,
     create_job,
     create_recording,
     create_voice_profile,
@@ -346,6 +347,104 @@ def test_summary_context_and_metrics_merge_edge_paths(
     monkeypatch.setattr(ui_routes, "str", _stateful_str, raising=False)
     merged = ui_routes._metrics_tab_context(recording_id, cfg)  # noqa: SLF001
     assert merged["participants"]
+
+
+def test_asr_glossary_context_and_route_error_paths(
+    client: tuple[AppSettings, TestClient],
+) -> None:
+    cfg, c = client
+    recording_id = _seed_recording(cfg, "rec-glossary-helper-1")
+    derived = cfg.recordings_root / recording_id / "derived"
+    derived.mkdir(parents=True, exist_ok=True)
+
+    assert ui_routes._asr_glossary_context(recording_id, cfg)["available"] is False  # noqa: SLF001
+
+    (derived / "asr_glossary.json").write_text(
+        json.dumps(
+            {
+                "entry_count": "bad",
+                "term_count": "bad",
+                "truncated": 1,
+                "entries": [
+                    "skip",
+                    {"canonical_text": "", "aliases": ["skip"]},
+                    {
+                        "canonical_text": "Sander",
+                        "aliases": [" Sandia ", ""],
+                        "kind": "person",
+                        "sources": ["correction", "speaker_bank"],
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    glossary_ctx = ui_routes._asr_glossary_context(recording_id, cfg)  # noqa: SLF001
+    assert glossary_ctx["available"] is True
+    assert glossary_ctx["entries"][0]["aliases"] == ["Sandia"]
+    assert glossary_ctx["entries"][0]["sources_label"] == "correction, speaker bank"
+    assert glossary_ctx["entry_count"] == 1
+    assert glossary_ctx["term_count"] == 2
+
+    (derived / "asr_glossary.json").write_text(
+        json.dumps({"entries": "bad"}),
+        encoding="utf-8",
+    )
+    glossary_ctx_no_entries = ui_routes._asr_glossary_context(recording_id, cfg)  # noqa: SLF001
+    assert glossary_ctx_no_entries["available"] is True
+    assert glossary_ctx_no_entries["entries"] == []
+
+    assert (
+        c.post(
+            "/glossary",
+            data={
+                "canonical_text": "   ",
+                "aliases_text": "",
+                "kind": "term",
+                "source": "manual",
+                "enabled": "1",
+            },
+        ).status_code
+        == 422
+    )
+    created = create_glossary_entry("Known", settings=cfg)
+    assert (
+        c.post(
+            f"/glossary/{created['id']}",
+            data={
+                "canonical_text": "Known",
+                "aliases_text": "",
+                "kind": "person",
+                "source": "unsupported",
+                "enabled": "1",
+            },
+        ).status_code
+        == 422
+    )
+    assert (
+        c.post(
+            "/glossary/999",
+            data={
+                "canonical_text": "Missing",
+                "aliases_text": "",
+                "kind": "term",
+                "source": "manual",
+            },
+        ).status_code
+        == 404
+    )
+
+    payload = ui_routes._glossary_form_payload(  # noqa: SLF001
+        canonical_text="Known",
+        aliases_text="Alias",
+        kind="term",
+        source="manual",
+        enabled="1",
+        notes="note",
+        recording_id="   ",
+        existing_metadata={"recording_id": "rec-1", "import_source": "csv"},
+    )
+    assert payload["metadata"] == {"import_source": "csv"}
 
 
 def test_fallback_turns_and_path_helpers(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

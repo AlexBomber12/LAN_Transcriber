@@ -1155,6 +1155,198 @@ async def test_pipeline_multilingual_asr_uses_chunk_language_hints(tmp_path: Pat
 
 @pytest.mark.asyncio
 @respx.mock
+async def test_pipeline_multilingual_asr_forwards_glossary_context_and_writes_artifact(
+    tmp_path: Path,
+    mocker,
+):
+    seen_calls: list[dict[str, object]] = []
+
+    def _transcribe(audio_path: str, **kwargs):
+        seen_calls.append(
+            {
+                "audio_path": audio_path,
+                "language": kwargs.get("language"),
+                "initial_prompt": kwargs.get("initial_prompt"),
+                "hotwords": kwargs.get("hotwords"),
+            }
+        )
+        if audio_path == str(audio):
+            return (
+                [
+                    {"start": 0.0, "end": 4.0, "text": "hello team and thanks"},
+                    {"start": 4.0, "end": 8.0, "text": "hola equipo y gracias"},
+                ],
+                {"language": "en", "language_probability": 0.91},
+            )
+        if kwargs.get("language") == "en":
+            return (
+                [{"start": 0.0, "end": 4.0, "text": "hello team and thanks"}],
+                {"language": "en", "language_probability": 0.98},
+            )
+        return (
+            [{"start": 0.0, "end": 4.0, "text": "hola equipo y gracias"}],
+            {"language": "es", "language_probability": 0.97},
+        )
+
+    mocker.patch("whisperx.transcribe", side_effect=_transcribe)
+    mocker.patch(
+        "transformers.pipeline",
+        lambda *a, **k: lambda text: [{"label": "positive", "score": 0.6}],
+    )
+    respx.post("http://127.0.0.1:8000/v1/chat/completions").mock(
+        return_value=httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": "- summary"}}]},
+        ),
+    )
+
+    cfg = pipeline.Settings(
+        speaker_db=tmp_path / "db.yaml",
+        tmp_root=tmp_path,
+        recordings_root=tmp_path / "recordings",
+        asr_multilingual_mode="auto",
+    )
+    audio = wav_audio(
+        tmp_path,
+        name="mixed-language-glossary.wav",
+        duration_sec=8.0,
+        speech=True,
+    )
+    glossary_payload = {
+        "version": 1,
+        "recording_id": "rec-multilingual-glossary-1",
+        "entries": [
+            {
+                "canonical_text": "Sander",
+                "aliases": ["Sandia"],
+                "kind": "person",
+                "sources": ["correction"],
+                "terms": ["Sander", "Sandia"],
+                "term_count": 2,
+            }
+        ],
+        "terms": ["Sander", "Sandia"],
+        "entry_count": 1,
+        "term_count": 2,
+        "truncated": False,
+        "initial_prompt": "Glossary: Sander; Sandia",
+        "hotwords": "Sander, Sandia",
+    }
+    await pipeline.run_pipeline(
+        audio_path=audio,
+        cfg=cfg,
+        llm=llm_client.LLMClient(),
+        diariser=TwoSpeakerDiariser(),
+        recording_id="rec-multilingual-glossary-1",
+        precheck=precheck_ok(),
+        asr_glossary=glossary_payload,
+    )
+
+    assert [call["language"] for call in seen_calls] == ["auto", "en", "es"]
+    assert all(
+        call["initial_prompt"] == "Glossary: Sander; Sandia"
+        and call["hotwords"] == "Sander, Sandia"
+        for call in seen_calls
+    )
+    artifact = json.loads(
+        (
+            cfg.recordings_root
+            / "rec-multilingual-glossary-1"
+            / "derived"
+            / "asr_glossary.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert artifact["recording_id"] == "rec-multilingual-glossary-1"
+    assert artifact["terms"] == ["Sander", "Sandia"]
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_pipeline_omits_glossary_artifact_when_runtime_drops_all_glossary_hints(
+    tmp_path: Path,
+    mocker,
+):
+    def _transcribe(audio_path: str, **kwargs):
+        assert audio_path.endswith(".wav")
+        if "initial_prompt" in kwargs:
+            raise TypeError("FasterWhisperPipeline.transcribe() got an unexpected keyword argument 'initial_prompt'")
+        if "hotwords" in kwargs:
+            raise TypeError("FasterWhisperPipeline.transcribe() got an unexpected keyword argument 'hotwords'")
+        if "word_timestamps" in kwargs:
+            raise TypeError("unexpected keyword argument 'word_timestamps'")
+        return (
+            [{"start": 0.0, "end": 1.0, "text": "hello team"}],
+            {"language": "en", "language_probability": 0.98},
+        )
+
+    mocker.patch("whisperx.transcribe", side_effect=_transcribe)
+    mocker.patch(
+        "transformers.pipeline",
+        lambda *a, **k: lambda text: [{"label": "positive", "score": 0.6}],
+    )
+    respx.post("http://127.0.0.1:8000/v1/chat/completions").mock(
+        return_value=httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": "- summary"}}]},
+        ),
+    )
+
+    cfg = pipeline.Settings(
+        speaker_db=tmp_path / "db.yaml",
+        tmp_root=tmp_path,
+        recordings_root=tmp_path / "recordings",
+        asr_multilingual_mode="force_single_language",
+    )
+    audio = wav_audio(
+        tmp_path,
+        name="runtime-drop-glossary.wav",
+        duration_sec=8.0,
+        speech=True,
+    )
+    step_log: list[str] = []
+    glossary_payload = {
+        "version": 1,
+        "recording_id": "rec-runtime-drop-glossary",
+        "entries": [
+            {
+                "canonical_text": "Sander",
+                "aliases": ["Sandia"],
+                "kind": "person",
+                "sources": ["correction"],
+                "terms": ["Sander", "Sandia"],
+                "term_count": 2,
+            }
+        ],
+        "terms": ["Sander", "Sandia"],
+        "entry_count": 1,
+        "term_count": 2,
+        "truncated": False,
+        "initial_prompt": "Glossary: Sander; Sandia",
+        "hotwords": "Sander, Sandia",
+    }
+    await pipeline.run_pipeline(
+        audio_path=audio,
+        cfg=cfg,
+        llm=llm_client.LLMClient(),
+        diariser=TwoSpeakerDiariser(),
+        recording_id="rec-runtime-drop-glossary",
+        precheck=precheck_ok(),
+        asr_glossary=glossary_payload,
+        step_log_callback=step_log.append,
+    )
+
+    assert any("glossary context unsupported" in line for line in step_log)
+    artifact = (
+        cfg.recordings_root
+        / "rec-runtime-drop-glossary"
+        / "derived"
+        / "asr_glossary.json"
+    )
+    assert not artifact.exists()
+
+
+@pytest.mark.asyncio
+@respx.mock
 async def test_pipeline_multilingual_model_path_reuses_single_whisperx_model_load(
     tmp_path: Path,
     mocker,
@@ -1857,6 +2049,86 @@ async def test_pipeline_quarantine_skips_whisperx_import(tmp_path: Path, monkeyp
     )
 
     assert result.summary == "Quarantined"
+
+
+@pytest.mark.asyncio
+async def test_pipeline_without_glossary_removes_stale_glossary_artifact(tmp_path: Path) -> None:
+    cfg = pipeline.Settings(
+        speaker_db=tmp_path / "db.yaml",
+        tmp_root=tmp_path,
+        recordings_root=tmp_path / "recordings",
+        llm_model="test-model",
+    )
+    audio = fake_audio(tmp_path, name="stale-glossary.mp3")
+    artifact = (
+        cfg.recordings_root
+        / "rec-stale-glossary"
+        / "derived"
+        / "asr_glossary.json"
+    )
+    artifact.parent.mkdir(parents=True, exist_ok=True)
+    artifact.write_text(
+        json.dumps({"version": 1, "recording_id": "rec-stale-glossary", "terms": ["stale"]}),
+        encoding="utf-8",
+    )
+
+    result = await pipeline.run_pipeline(
+        audio_path=audio,
+        cfg=cfg,
+        llm=llm_client.LLMClient(),
+        diariser=DummyDiariser(),
+        recording_id="rec-stale-glossary",
+        precheck=pipeline.PrecheckResult(
+            duration_sec=5.0,
+            speech_ratio=0.0,
+            quarantine_reason="duration_lt_20s",
+        ),
+    )
+
+    assert result.summary == "Quarantined"
+    assert not artifact.exists()
+
+
+@pytest.mark.asyncio
+async def test_pipeline_quarantine_does_not_write_glossary_artifact_when_glossary_is_present(
+    tmp_path: Path,
+) -> None:
+    cfg = pipeline.Settings(
+        speaker_db=tmp_path / "db.yaml",
+        tmp_root=tmp_path,
+        recordings_root=tmp_path / "recordings",
+        llm_model="test-model",
+    )
+    audio = fake_audio(tmp_path, name="quarantine-glossary.mp3")
+    artifact = (
+        cfg.recordings_root
+        / "rec-quarantine-glossary"
+        / "derived"
+        / "asr_glossary.json"
+    )
+
+    result = await pipeline.run_pipeline(
+        audio_path=audio,
+        cfg=cfg,
+        llm=llm_client.LLMClient(),
+        diariser=DummyDiariser(),
+        recording_id="rec-quarantine-glossary",
+        precheck=pipeline.PrecheckResult(
+            duration_sec=5.0,
+            speech_ratio=0.0,
+            quarantine_reason="duration_lt_20s",
+        ),
+        asr_glossary={
+            "version": 1,
+            "recording_id": "rec-quarantine-glossary",
+            "terms": ["Sander", "Sandia"],
+            "initial_prompt": "Glossary: Sander; Sandia",
+            "hotwords": "Sander, Sandia",
+        },
+    )
+
+    assert result.summary == "Quarantined"
+    assert not artifact.exists()
 
 
 @pytest.mark.asyncio
