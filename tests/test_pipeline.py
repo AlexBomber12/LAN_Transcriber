@@ -1967,6 +1967,44 @@ async def test_pipeline_quarantine_skips_whisperx_import(tmp_path: Path, monkeyp
 
 
 @pytest.mark.asyncio
+async def test_pipeline_without_glossary_removes_stale_glossary_artifact(tmp_path: Path) -> None:
+    cfg = pipeline.Settings(
+        speaker_db=tmp_path / "db.yaml",
+        tmp_root=tmp_path,
+        recordings_root=tmp_path / "recordings",
+        llm_model="test-model",
+    )
+    audio = fake_audio(tmp_path, name="stale-glossary.mp3")
+    artifact = (
+        cfg.recordings_root
+        / "rec-stale-glossary"
+        / "derived"
+        / "asr_glossary.json"
+    )
+    artifact.parent.mkdir(parents=True, exist_ok=True)
+    artifact.write_text(
+        json.dumps({"version": 1, "recording_id": "rec-stale-glossary", "terms": ["stale"]}),
+        encoding="utf-8",
+    )
+
+    result = await pipeline.run_pipeline(
+        audio_path=audio,
+        cfg=cfg,
+        llm=llm_client.LLMClient(),
+        diariser=DummyDiariser(),
+        recording_id="rec-stale-glossary",
+        precheck=pipeline.PrecheckResult(
+            duration_sec=5.0,
+            speech_ratio=0.0,
+            quarantine_reason="duration_lt_20s",
+        ),
+    )
+
+    assert result.summary == "Quarantined"
+    assert not artifact.exists()
+
+
+@pytest.mark.asyncio
 async def test_pipeline_no_speech_clears_stale_snippets(tmp_path: Path, mocker):
     mocker.patch("whisperx.transcribe", return_value=([], {"language": "en"}))
 

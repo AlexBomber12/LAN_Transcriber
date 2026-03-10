@@ -16,7 +16,12 @@ from pydantic_settings import BaseSettings
 from .. import normalizer
 from ..aliases import ALIAS_PATH, load_aliases as _load_aliases, save_aliases as _save_aliases
 from ..artifacts import atomic_write_json, atomic_write_text, build_recording_artifacts, stage_raw_audio
-from ..compat.call_compat import call_with_supported_kwargs, filter_kwargs_for_callable
+from ..compat.call_compat import (
+    clear_last_supported_kwargs_call_details,
+    call_with_supported_kwargs,
+    filter_kwargs_for_callable,
+    last_supported_kwargs_call_details,
+)
 from ..compat.pyannote_compat import patch_pyannote_inference_ignore_use_auth_token
 from ..llm_chunking import (
     build_chunk_prompt,
@@ -367,16 +372,28 @@ def _log_glossary_context_unsupported(
     callback: Callable[[str], Any] | None,
     glossary_kwargs: dict[str, Any],
     filtered_kwargs: dict[str, Any],
+    dropped_kwargs: Iterable[str] = (),
     state: dict[str, bool],
 ) -> None:
     if callback is None or not glossary_kwargs or state.get("unsupported"):
         return
-    if any(key in filtered_kwargs for key in glossary_kwargs):
+    glossary_keys = set(glossary_kwargs)
+    remaining_keys = {key for key in glossary_keys if key in filtered_kwargs}
+    runtime_dropped = {key for key in dropped_kwargs if key in glossary_keys}
+    effective_keys = remaining_keys - runtime_dropped
+    if effective_keys == glossary_keys:
         return
     state["unsupported"] = True
+    if effective_keys:
+        message = (
+            "whisperx transcribe: glossary context unsupported for some kwargs; "
+            "continuing with supported ASR hints only"
+        )
+    else:
+        message = "whisperx transcribe: glossary context unsupported; continuing without ASR hints"
     _best_effort_step_log(
         callback,
-        "whisperx transcribe: glossary context unsupported; continuing without ASR hints",
+        message,
     )
 
 
@@ -386,12 +403,17 @@ def _write_asr_glossary_artifact(
     recording_id: str,
     asr_glossary: dict[str, Any] | None,
 ) -> None:
+    artifact_path = derived_dir / "asr_glossary.json"
     if not isinstance(asr_glossary, dict):
+        try:
+            artifact_path.unlink()
+        except FileNotFoundError:
+            pass
         return
     payload = dict(asr_glossary)
     payload.setdefault("version", 1)
     payload["recording_id"] = recording_id
-    atomic_write_json(derived_dir / "asr_glossary.json", payload)
+    atomic_write_json(artifact_path, payload)
 
 
 def _diariser_runtime_metadata(diariser: Diariser) -> dict[str, Any]:
@@ -724,18 +746,15 @@ def _build_whisperx_transcriber(
                 attempted=kwargs,
                 filtered=filtered_kwargs,
             )
-            _log_glossary_context_unsupported(
-                callback=step_log_callback,
-                glossary_kwargs=glossary_kwargs,
-                filtered_kwargs=filtered_kwargs,
-                state=glossary_log_state,
-            )
+            attempted_runtime_kwargs = filtered_kwargs
             try:
+                clear_last_supported_kwargs_call_details()
                 segments, info = call_with_supported_kwargs(
                     legacy_transcribe,
                     str(audio_path),
                     **kwargs,
                 )
+                final_kwargs, dropped_kwargs = last_supported_kwargs_call_details()
             except TypeError:
                 retry_kwargs = dict(kwargs)
                 retry_kwargs.pop("word_timestamps", None)
@@ -745,11 +764,31 @@ def _build_whisperx_transcriber(
                     attempted=kwargs,
                     filtered=retry_kwargs,
                 )
+                attempted_runtime_kwargs = filter_kwargs_for_callable(legacy_transcribe, retry_kwargs)
+                clear_last_supported_kwargs_call_details()
                 segments, info = call_with_supported_kwargs(
                     legacy_transcribe,
                     str(audio_path),
                     **retry_kwargs,
                 )
+                final_kwargs, dropped_kwargs = last_supported_kwargs_call_details()
+            if final_kwargs is None:
+                final_kwargs = dict(attempted_runtime_kwargs)
+            if dropped_kwargs is None:
+                dropped_kwargs = ()
+            _log_dropped_kwargs(
+                callback=step_log_callback,
+                scope="whisperx transcribe",
+                attempted=attempted_runtime_kwargs,
+                filtered=final_kwargs,
+            )
+            _log_glossary_context_unsupported(
+                callback=step_log_callback,
+                glossary_kwargs=glossary_kwargs,
+                filtered_kwargs=final_kwargs,
+                dropped_kwargs=dropped_kwargs,
+                state=glossary_log_state,
+            )
             return list(segments), dict(info or {})
 
         return _legacy_transcribe
@@ -801,13 +840,30 @@ def _build_whisperx_transcriber(
             attempted=transcribe_kwargs,
             filtered=filtered_kwargs,
         )
+        clear_last_supported_kwargs_call_details()
+        result = call_with_supported_kwargs(
+            model.transcribe,
+            audio,
+            **transcribe_kwargs,
+        )
+        final_kwargs, dropped_kwargs = last_supported_kwargs_call_details()
+        if final_kwargs is None:
+            final_kwargs = dict(filtered_kwargs)
+        if dropped_kwargs is None:
+            dropped_kwargs = ()
+        _log_dropped_kwargs(
+            callback=step_log_callback,
+            scope="whisperx transcribe",
+            attempted=filtered_kwargs,
+            filtered=final_kwargs,
+        )
         _log_glossary_context_unsupported(
             callback=step_log_callback,
             glossary_kwargs=glossary_kwargs,
-            filtered_kwargs=filtered_kwargs,
+            filtered_kwargs=final_kwargs,
+            dropped_kwargs=dropped_kwargs,
             state=glossary_log_state,
         )
-        result = call_with_supported_kwargs(model.transcribe, audio, **transcribe_kwargs)
         segments = list(result.get("segments", []))
         info: dict[str, Any] = {
             "language": result.get("language") or (override_lang or "unknown")
