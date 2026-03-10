@@ -577,6 +577,19 @@ def test_pyannote_diariser_reraises_invalid_lazy_loader_state():
         asyncio.run(diariser(Path("/tmp/not-callable.wav")))
 
 
+def test_pyannote_diariser_reraises_forced_gpu_loader_device_errors():
+    diariser = worker_tasks._PyannoteDiariser(
+        pipeline_loader=lambda: (_ for _ in ()).throw(
+            RuntimeError("Failed to move pyannote diarization pipeline to cuda:0: boom")
+        ),
+        requested_device="cuda:0",
+        fallback_duration_sec=12.0,
+    )
+
+    with pytest.raises(RuntimeError, match="Failed to move pyannote diarization pipeline to cuda:0: boom"):
+        asyncio.run(diariser(Path("/tmp/forced-gpu.wav")))
+
+
 def test_resolve_diarization_speaker_hints_from_env(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("LAN_DIARIZATION_PROFILE", "auto")
     monkeypatch.delenv("LAN_DIARIZATION_MIN_SPEAKERS", raising=False)

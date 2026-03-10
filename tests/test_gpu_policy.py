@@ -111,6 +111,12 @@ def test_device_resolution_and_parallel_safety_cover_edge_cases() -> None:
         visible_devices=None,
         torch_cuda_version=None,
     )
+    zero_visible_gpu_facts = gpu_policy.CudaRuntimeFacts(
+        is_available=True,
+        device_count=0,
+        visible_devices=None,
+        torch_cuda_version="12.4",
+    )
     gpu_facts = gpu_policy.CudaRuntimeFacts(
         is_available=True,
         device_count=2,
@@ -126,6 +132,8 @@ def test_device_resolution_and_parallel_safety_cover_edge_cases() -> None:
 
     with pytest.raises(RuntimeError, match="CUDA is unavailable"):
         gpu_policy.resolve_effective_device("cuda", cuda_facts=cpu_facts)
+    with pytest.raises(RuntimeError, match="only 0 visible CUDA device"):
+        gpu_policy.resolve_effective_device("cuda", cuda_facts=zero_visible_gpu_facts)
     with pytest.raises(RuntimeError, match="only 2 visible CUDA device"):
         gpu_policy.resolve_effective_device("cuda:2", cuda_facts=gpu_facts)
 

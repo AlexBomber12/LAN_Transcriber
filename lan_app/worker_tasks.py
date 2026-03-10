@@ -27,6 +27,7 @@ from lan_transcriber.pipeline import Settings as PipelineSettings
 from lan_transcriber.pipeline import run_pipeline, run_precheck
 from lan_transcriber.gpu_policy import (
     collect_cuda_runtime_facts,
+    is_gpu_device,
     is_gpu_oom_error,
     resolve_scheduler_decision,
 )
@@ -647,6 +648,7 @@ class _PyannoteDiariser:
         pipeline_model: Any | None = None,
         *,
         pipeline_loader: Any | None = None,
+        requested_device: str | None = None,
         fallback_duration_sec: float | None = None,
         profile: str = "auto",
         initial_profile: str | None = None,
@@ -665,6 +667,7 @@ class _PyannoteDiariser:
         self._pipeline_loader = pipeline_loader
         self._fallback_diariser: _FallbackDiariser | None = None
         self._fallback_duration_sec = fallback_duration_sec
+        self._forced_gpu_device_requested = is_gpu_device(requested_device)
         self.mode = "pyannote"
         self.profile = str(profile or "auto").strip().lower() or "auto"
         self.initial_profile = (
@@ -736,6 +739,15 @@ class _PyannoteDiariser:
             if isinstance(exc, TypeError) and (
                 message.startswith("pipeline_loader must be provided")
                 or message.startswith("pipeline_model must be a callable")
+            ):
+                raise
+            if (
+                self._forced_gpu_device_requested
+                and isinstance(exc, RuntimeError)
+                and (
+                    message.startswith("Requested diarization device ")
+                    or message.startswith("Failed to move pyannote diarization pipeline to ")
+                )
             ):
                 raise
             self.mode = "fallback"
@@ -983,6 +995,7 @@ def _build_diariser(
             device=getattr(settings, "diarization_device", None),
             scheduler_mode=getattr(settings, "gpu_scheduler_mode", None),
         ),
+        requested_device=getattr(settings, "diarization_device", None),
         fallback_duration_sec=duration_sec,
         profile=diarization_cfg.profile,
         initial_profile=diarization_cfg.initial_profile,

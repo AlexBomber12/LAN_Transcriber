@@ -126,7 +126,6 @@ def resolve_effective_device(
     gpu_index = device_index(normalized)
     if (
         gpu_index is not None
-        and facts.device_count > 0
         and gpu_index >= facts.device_count
     ):
         raise RuntimeError(

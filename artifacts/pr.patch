@@ -1,15 +1,114 @@
-diff --git a/tests/conftest.py b/tests/conftest.py
-index d9e1012..9bdb704 100644
---- a/tests/conftest.py
-+++ b/tests/conftest.py
-@@ -11,6 +11,10 @@ os.environ.setdefault("LAN_LLM_MODEL", _DEFAULT_TEST_LLM_MODEL)
+diff --git a/lan_app/worker_tasks.py b/lan_app/worker_tasks.py
+index 2550413..7e66b71 100644
+--- a/lan_app/worker_tasks.py
++++ b/lan_app/worker_tasks.py
+@@ -27,6 +27,7 @@ from lan_transcriber.pipeline import Settings as PipelineSettings
+ from lan_transcriber.pipeline import run_pipeline, run_precheck
+ from lan_transcriber.gpu_policy import (
+     collect_cuda_runtime_facts,
++    is_gpu_device,
+     is_gpu_oom_error,
+     resolve_scheduler_decision,
+ )
+@@ -647,6 +648,7 @@ class _PyannoteDiariser:
+         pipeline_model: Any | None = None,
+         *,
+         pipeline_loader: Any | None = None,
++        requested_device: str | None = None,
+         fallback_duration_sec: float | None = None,
+         profile: str = "auto",
+         initial_profile: str | None = None,
+@@ -665,6 +667,7 @@ class _PyannoteDiariser:
+         self._pipeline_loader = pipeline_loader
+         self._fallback_diariser: _FallbackDiariser | None = None
+         self._fallback_duration_sec = fallback_duration_sec
++        self._forced_gpu_device_requested = is_gpu_device(requested_device)
+         self.mode = "pyannote"
+         self.profile = str(profile or "auto").strip().lower() or "auto"
+         self.initial_profile = (
+@@ -738,6 +741,15 @@ class _PyannoteDiariser:
+                 or message.startswith("pipeline_model must be a callable")
+             ):
+                 raise
++            if (
++                self._forced_gpu_device_requested
++                and isinstance(exc, RuntimeError)
++                and (
++                    message.startswith("Requested diarization device ")
++                    or message.startswith("Failed to move pyannote diarization pipeline to ")
++                )
++            ):
++                raise
+             self.mode = "fallback"
+             self.last_run_metadata["effective_device"] = "cpu"
+             _logger.warning(
+@@ -983,6 +995,7 @@ def _build_diariser(
+             device=getattr(settings, "diarization_device", None),
+             scheduler_mode=getattr(settings, "gpu_scheduler_mode", None),
+         ),
++        requested_device=getattr(settings, "diarization_device", None),
+         fallback_duration_sec=duration_sec,
+         profile=diarization_cfg.profile,
+         initial_profile=diarization_cfg.initial_profile,
+diff --git a/lan_transcriber/gpu_policy.py b/lan_transcriber/gpu_policy.py
+index 6438adc..4d03c2a 100644
+--- a/lan_transcriber/gpu_policy.py
++++ b/lan_transcriber/gpu_policy.py
+@@ -126,7 +126,6 @@ def resolve_effective_device(
+     gpu_index = device_index(normalized)
+     if (
+         gpu_index is not None
+-        and facts.device_count > 0
+         and gpu_index >= facts.device_count
+     ):
+         raise RuntimeError(
+diff --git a/tests/test_cov_lan_app_worker_tasks_branches.py b/tests/test_cov_lan_app_worker_tasks_branches.py
+index 492a604..617521c 100644
+--- a/tests/test_cov_lan_app_worker_tasks_branches.py
++++ b/tests/test_cov_lan_app_worker_tasks_branches.py
+@@ -577,6 +577,19 @@ def test_pyannote_diariser_reraises_invalid_lazy_loader_state():
+         asyncio.run(diariser(Path("/tmp/not-callable.wav")))
  
- @pytest.fixture(autouse=True)
- def _clear_asr_model_cache_between_tests():
-+    if os.environ.get("SMOKE_IMAGE", "").strip():
-+        yield
-+        return
+ 
++def test_pyannote_diariser_reraises_forced_gpu_loader_device_errors():
++    diariser = worker_tasks._PyannoteDiariser(
++        pipeline_loader=lambda: (_ for _ in ()).throw(
++            RuntimeError("Failed to move pyannote diarization pipeline to cuda:0: boom")
++        ),
++        requested_device="cuda:0",
++        fallback_duration_sec=12.0,
++    )
 +
-     from lan_transcriber.pipeline_steps import orchestrator as pipeline
++    with pytest.raises(RuntimeError, match="Failed to move pyannote diarization pipeline to cuda:0: boom"):
++        asyncio.run(diariser(Path("/tmp/forced-gpu.wav")))
++
++
+ def test_resolve_diarization_speaker_hints_from_env(monkeypatch: pytest.MonkeyPatch):
+     monkeypatch.setenv("LAN_DIARIZATION_PROFILE", "auto")
+     monkeypatch.delenv("LAN_DIARIZATION_MIN_SPEAKERS", raising=False)
+diff --git a/tests/test_gpu_policy.py b/tests/test_gpu_policy.py
+index f38faba..4038581 100644
+--- a/tests/test_gpu_policy.py
++++ b/tests/test_gpu_policy.py
+@@ -111,6 +111,12 @@ def test_device_resolution_and_parallel_safety_cover_edge_cases() -> None:
+         visible_devices=None,
+         torch_cuda_version=None,
+     )
++    zero_visible_gpu_facts = gpu_policy.CudaRuntimeFacts(
++        is_available=True,
++        device_count=0,
++        visible_devices=None,
++        torch_cuda_version="12.4",
++    )
+     gpu_facts = gpu_policy.CudaRuntimeFacts(
+         is_available=True,
+         device_count=2,
+@@ -126,6 +132,8 @@ def test_device_resolution_and_parallel_safety_cover_edge_cases() -> None:
  
-     pipeline.clear_asr_model_cache()
+     with pytest.raises(RuntimeError, match="CUDA is unavailable"):
+         gpu_policy.resolve_effective_device("cuda", cuda_facts=cpu_facts)
++    with pytest.raises(RuntimeError, match="only 0 visible CUDA device"):
++        gpu_policy.resolve_effective_device("cuda", cuda_facts=zero_visible_gpu_facts)
+     with pytest.raises(RuntimeError, match="only 2 visible CUDA device"):
+         gpu_policy.resolve_effective_device("cuda:2", cuda_facts=gpu_facts)
+ 
