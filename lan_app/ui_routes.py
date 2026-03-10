@@ -31,6 +31,11 @@ from .auth import (
 )
 from .config import AppSettings
 from .calendar.ics import validate_ics_url
+from .calendar.matching import (
+    calendar_match_candidates,
+    calendar_summary_context,
+    selected_calendar_candidate,
+)
 from .calendar.service import CalendarSyncError, redacted_calendar_source, sync_calendar_source
 from .conversation_metrics import refresh_recording_metrics
 from .constants import (
@@ -55,6 +60,7 @@ from .db import (
     get_glossary_entry,
     delete_project,
     delete_voice_profile,
+    get_calendar_match,
     get_meeting_metrics,
     get_job,
     get_recording,
@@ -69,6 +75,7 @@ from .db import (
     list_speaker_assignments,
     list_voice_samples,
     list_voice_profiles,
+    set_calendar_match_selection,
     set_recording_duration,
     set_recording_project,
     set_speaker_assignment,
@@ -1470,15 +1477,19 @@ def _resummarize_recording(
     if not speaker_turns:
         speaker_turns = [{"start": 0.0, "end": 0.0, "speaker": "S1", "text": transcript_text}]
 
-    calendar_title = str(transcript_payload.get("calendar_title") or "").strip() or None
-    attendees_payload = transcript_payload.get("calendar_attendees")
-    calendar_attendees: list[str] = []
-    if isinstance(attendees_payload, list):
-        calendar_attendees = [
-            str(attendee).strip()
-            for attendee in attendees_payload
-            if str(attendee).strip()
-        ]
+    calendar_title, calendar_attendees = calendar_summary_context(
+        recording_id,
+        settings=settings,
+    )
+    if calendar_title is None and not calendar_attendees:
+        calendar_title = str(transcript_payload.get("calendar_title") or "").strip() or None
+        attendees_payload = transcript_payload.get("calendar_attendees")
+        if isinstance(attendees_payload, list):
+            calendar_attendees = [
+                str(attendee).strip()
+                for attendee in attendees_payload
+                if str(attendee).strip()
+            ]
 
     system_prompt, user_prompt = build_structured_summary_prompts(
         speaker_turns,
@@ -1585,18 +1596,119 @@ def _calendar_page_data(
 
     sources_raw = list_calendar_sources(settings=settings)
     sources = [redacted_calendar_source(row) for row in sources_raw]
+    for source in sources:
+        source["last_synced_at_display"] = _format_local_timestamp(source.get("last_synced_at"))
     events = list_calendar_events(
         starts_from=_utc_iso(start_dt),
         ends_to=_utc_iso(end_dt),
         source_id=source_id,
         settings=settings,
     )
+    for event in events:
+        event["starts_at_display"] = _format_local_timestamp(event.get("starts_at"))
+        event["ends_at_display"] = _format_local_timestamp(event.get("ends_at"))
+        attendees = _calendar_attendee_labels(event.get("attendees_json"))
+        event["attendees_preview"] = attendees[:4]
+        event["attendees_label"] = ", ".join(attendees) if attendees else "—"
     return {
         "sources": sources,
         "events": events,
         "date_from": start_date.isoformat(),
         "date_to": end_date.isoformat(),
         "selected_source_id": source_id,
+    }
+
+
+def _calendar_attendee_labels(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    labels: list[str] = []
+    seen: set[str] = set()
+    for row in value:
+        if isinstance(row, dict):
+            label = str(row.get("label") or row.get("name") or row.get("email") or "").strip()
+        else:
+            label = str(row or "").strip()
+        if not label:
+            continue
+        key = label.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        labels.append(label)
+    return labels
+
+
+def _calendar_rationale_rows(value: object) -> list[str]:
+    if isinstance(value, list):
+        return [str(row).strip() for row in value if str(row).strip()]
+    if isinstance(value, str):
+        text = value.strip()
+        return [text] if text else []
+    return []
+
+
+def _calendar_candidate_context(candidate: dict[str, Any], *, selected_event_id: str) -> dict[str, Any]:
+    attendees = _calendar_attendee_labels(candidate.get("attendees"))
+    if not attendees:
+        attendees = _calendar_attendee_labels(candidate.get("attendee_details"))
+    confidence_raw = candidate.get("confidence", candidate.get("score"))
+    try:
+        confidence_value = float(confidence_raw)
+    except (TypeError, ValueError):
+        confidence_value = None
+    organizer_display = str(
+        candidate.get("organizer")
+        or candidate.get("organizer_name")
+        or candidate.get("organizer_email")
+        or ""
+    ).strip() or None
+    event_id = str(candidate.get("event_id") or "").strip()
+    return {
+        **candidate,
+        "event_id": event_id,
+        "selected": event_id == selected_event_id and bool(event_id),
+        "subject_display": str(candidate.get("subject") or candidate.get("summary") or "").strip()
+        or "Untitled event",
+        "starts_at_display": _format_local_timestamp(candidate.get("starts_at")),
+        "ends_at_display": _format_local_timestamp(candidate.get("ends_at")),
+        "organizer_display": organizer_display or "—",
+        "attendees": attendees,
+        "attendees_preview": attendees[:4],
+        "attendees_label": ", ".join(attendees) if attendees else "—",
+        "confidence_value": confidence_value,
+        "confidence_display": (
+            f"{confidence_value:.2f}" if confidence_value is not None else "—"
+        ),
+        "rationale_rows": _calendar_rationale_rows(candidate.get("rationale")),
+        "source_label": str(
+            candidate.get("source_name") or candidate.get("source_kind") or ""
+        ).strip()
+        or "—",
+    }
+
+
+def _calendar_tab_context(recording_id: str, settings: AppSettings) -> dict[str, Any]:
+    match_row = get_calendar_match(recording_id, settings=settings) or {}
+    selected_event_id = str(match_row.get("selected_event_id") or "").strip()
+    selected_candidate = selected_calendar_candidate(recording_id, settings=settings)
+    selected = None
+    if selected_candidate:
+        selected = _calendar_candidate_context(
+            selected_candidate,
+            selected_event_id=selected_event_id,
+        )
+    candidates = [
+        _calendar_candidate_context(candidate, selected_event_id=selected_event_id)
+        for candidate in calendar_match_candidates(recording_id, settings=settings)
+        if str(candidate.get("event_id") or "").strip()
+    ]
+    return {
+        "selected": selected,
+        "selected_event_id": selected_event_id or None,
+        "selected_confidence": match_row.get("selected_confidence"),
+        "candidates": candidates,
+        "error_message": "",
     }
 
 
@@ -1745,6 +1857,7 @@ async def ui_recording_detail(
     request: Request,
     recording_id: str,
     tab: str = Query(default="overview"),
+    calendar_error: str = Query(default=""),
 ) -> Any:
     rec = get_recording(recording_id, settings=_settings)
     if rec is None:
@@ -1752,8 +1865,9 @@ async def ui_recording_detail(
     rec = _prepare_recording_for_display(rec, settings=_settings)
     jobs, _ = list_jobs(settings=_settings, recording_id=recording_id, limit=100)
     recovery_warning = _recording_recovery_warning(jobs)
-    tabs = ["overview", "project", "speakers", "language", "metrics", "log"]
+    tabs = ["overview", "calendar", "project", "speakers", "language", "metrics", "log"]
     current_tab = tab if tab in tabs else "overview"
+    calendar: dict[str, Any] | None = None
     language: dict[str, Any] | None = None
     summary: dict[str, Any] | None = None
     metrics: dict[str, Any] | None = None
@@ -1761,6 +1875,10 @@ async def ui_recording_detail(
     project: dict[str, Any] | None = None
     glossary: dict[str, Any] | None = None
     export_text = ""
+    if current_tab == "calendar":
+        calendar = _calendar_tab_context(recording_id, _settings)
+        if calendar_error.strip():
+            calendar["error_message"] = calendar_error.strip()
     if current_tab == "language":
         language = _language_tab_context(recording_id, rec, _settings)
     if current_tab == "speakers":
@@ -1789,6 +1907,7 @@ async def ui_recording_detail(
             "recovery_warning": recovery_warning,
             "tabs": tabs,
             "current_tab": current_tab,
+            "calendar": calendar,
             "language": language,
             "summary": summary,
             "metrics": metrics,
@@ -1854,6 +1973,50 @@ async def ui_recording_export_zip(
             "Content-Disposition": f'attachment; filename="export_{recording_id}.zip"',
         },
     )
+
+
+# ---------------------------------------------------------------------------
+# Recording calendar selection
+# ---------------------------------------------------------------------------
+
+
+@ui_router.post("/ui/recordings/{recording_id}/calendar/select")
+async def ui_select_calendar_match(
+    recording_id: str,
+    event_id: str = Form(default=""),
+) -> Any:
+    if get_recording(recording_id, settings=_settings) is None:
+        return HTMLResponse("Not found", status_code=404)
+
+    clean_event_id = event_id.strip()
+    selected_confidence: float | None = None
+    if clean_event_id:
+        selected_candidate = None
+        for candidate in calendar_match_candidates(recording_id, settings=_settings):
+            if str(candidate.get("event_id") or "").strip() == clean_event_id:
+                selected_candidate = candidate
+                break
+        if selected_candidate is None:
+            return HTMLResponse("Calendar candidate not found", status_code=422)
+        try:
+            selected_confidence = float(
+                selected_candidate.get("confidence", selected_candidate.get("score"))
+            )
+        except (TypeError, ValueError):
+            selected_confidence = None
+
+    set_calendar_match_selection(
+        recording_id=recording_id,
+        event_id=clean_event_id or None,
+        selected_confidence=selected_confidence,
+        settings=_settings,
+    )
+    refresh_recording_routing(
+        recording_id,
+        settings=_settings,
+        apply_workflow=False,
+    )
+    return RedirectResponse(f"/recordings/{recording_id}?tab=calendar", status_code=303)
 
 
 # ---------------------------------------------------------------------------

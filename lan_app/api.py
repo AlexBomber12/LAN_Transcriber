@@ -31,6 +31,7 @@ from .constants import (
     RECORDING_STATUS_QUARANTINE,
 )
 from .calendar.ics import validate_ics_url
+from .calendar.matching import refresh_recording_calendar_match
 from .calendar.service import CalendarSyncError, redacted_calendar_source, sync_calendar_source
 from .db import (
     create_calendar_source,
@@ -514,6 +515,17 @@ async def api_upload_file(file: UploadFile = File(...)) -> dict[str, object]:
             settings=_settings,
         )
         recording_created = True
+        try:
+            refresh_recording_calendar_match(
+                recording_id,
+                settings=_settings,
+            )
+        except Exception:
+            _logger.warning(
+                "calendar matching failed during upload for recording %s",
+                recording_id,
+                exc_info=True,
+            )
         try:
             job = enqueue_recording_job(
                 recording_id,

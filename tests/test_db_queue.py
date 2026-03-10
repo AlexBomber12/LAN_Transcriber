@@ -961,17 +961,8 @@ def test_load_calendar_summary_context_uses_preparsed_candidates(tmp_path: Path,
     cfg = _test_settings(tmp_path)
     monkeypatch.setattr(
         worker_tasks,
-        "get_calendar_match",
-        lambda *_a, **_k: {
-            "selected_event_id": "evt-1",
-            "candidates_json": [
-                {
-                    "event_id": "evt-1",
-                    "subject": "Roadmap Review",
-                    "attendees": ["Alex", " Priya ", ""],
-                }
-            ],
-        },
+        "calendar_summary_context",
+        lambda *_a, **_k: ("Roadmap Review", ["Alex", "Priya"]),
     )
 
     title, attendees = worker_tasks._load_calendar_summary_context("rec-cal-ctx-1", settings=cfg)

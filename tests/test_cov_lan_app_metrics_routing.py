@@ -404,18 +404,15 @@ def test_routing_private_helpers_cover_scoring_rationale_signals_and_calendar_pa
 
     monkeypatch.setattr(
         routing,
-        "get_calendar_match",
-        lambda *_args, **_kwargs: {"selected_event_id": "evt-1", "candidates_json": {}},
+        "selected_calendar_candidate",
+        lambda *_args, **_kwargs: {},
     )
     assert routing._selected_calendar_candidate("rec-routing-cal-1", settings=cfg) == {}  # noqa: SLF001
 
     monkeypatch.setattr(
         routing,
-        "get_calendar_match",
-        lambda *_args, **_kwargs: {
-            "selected_event_id": "evt-1",
-            "candidates_json": ["not-a-dict", {"event_id": "evt-2", "subject": "Other"}],
-        },
+        "selected_calendar_candidate",
+        lambda *_args, **_kwargs: {},
     )
     assert routing._selected_calendar_candidate("rec-routing-cal-2", settings=cfg) == {}  # noqa: SLF001
 

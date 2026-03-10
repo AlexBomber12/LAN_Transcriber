@@ -22,6 +22,7 @@ from lan_app.db import (
     create_recording,
     create_project,
     create_voice_profile,
+    get_calendar_match,
     get_glossary_entry,
     get_recording,
     list_glossary_entries,
@@ -355,6 +356,111 @@ def test_recording_detail_overview_shows_asr_glossary_context(tmp_path, monkeypa
     assert "Sander" in r.text
     assert "Sandia" in r.text
     assert "correction, speaker bank" in r.text
+
+
+def test_recording_detail_calendar_tab_renders_selected_candidate_and_rationale(
+    tmp_path,
+    monkeypatch,
+):
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    init_db(cfg)
+    create_recording(
+        "rec-ui-calendar-1",
+        source="upload",
+        source_filename="roadmap.wav",
+        status=RECORDING_STATUS_READY,
+        settings=cfg,
+    )
+    upsert_calendar_match(
+        recording_id="rec-ui-calendar-1",
+        candidates=[
+            {
+                "event_id": "evt-roadmap",
+                "subject": "Roadmap Weekly Sync",
+                "starts_at": "2026-03-01T10:00:00Z",
+                "ends_at": "2026-03-01T11:00:00Z",
+                "source_name": "Team Calendar",
+                "organizer": "Alex Example",
+                "attendee_details": [
+                    {"label": "Priya Kapoor", "email": "priya@example.com"},
+                    {"label": "Marco Rossi"},
+                ],
+                "confidence": 0.92,
+                "rationale": ["Capture time falls inside the event window.", "Final confidence 0.92."],
+            },
+            {
+                "event_id": "evt-other",
+                "subject": "Other Meeting",
+                "starts_at": "2026-03-01T12:00:00Z",
+                "ends_at": "2026-03-01T13:00:00Z",
+                "source_name": "Team Calendar",
+                "organizer": "Jordan",
+                "attendees": ["Alex Example"],
+                "confidence": 0.33,
+                "rationale": "Low confidence",
+            },
+        ],
+        selected_event_id="evt-roadmap",
+        selected_confidence=0.92,
+        settings=cfg,
+    )
+
+    c = TestClient(api.app, follow_redirects=True)
+    response = c.get("/recordings/rec-ui-calendar-1?tab=calendar")
+    assert response.status_code == 200
+    assert "Calendar Match" in response.text
+    assert "Roadmap Weekly Sync" in response.text
+    assert "Capture time falls inside the event window." in response.text
+    assert "Priya Kapoor" in response.text
+    assert "Selected" in response.text
+
+
+def test_recording_detail_calendar_selection_and_clear_persist(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    init_db(cfg)
+    create_recording(
+        "rec-ui-calendar-select-1",
+        source="upload",
+        source_filename="planning.wav",
+        status=RECORDING_STATUS_READY,
+        settings=cfg,
+    )
+    upsert_calendar_match(
+        recording_id="rec-ui-calendar-select-1",
+        candidates=[
+            {
+                "event_id": "evt-a",
+                "subject": "Planning",
+                "confidence": 0.81,
+            }
+        ],
+        selected_event_id=None,
+        selected_confidence=None,
+        settings=cfg,
+    )
+    monkeypatch.setattr(ui_routes, "refresh_recording_routing", lambda *_a, **_k: {})
+
+    c = TestClient(api.app, follow_redirects=False)
+    selected = c.post(
+        "/ui/recordings/rec-ui-calendar-select-1/calendar/select",
+        data={"event_id": "evt-a"},
+    )
+    assert selected.status_code == 303
+    assert selected.headers["location"] == "/recordings/rec-ui-calendar-select-1?tab=calendar"
+    match = get_calendar_match("rec-ui-calendar-select-1", settings=cfg)
+    assert match is not None
+    assert match["selected_event_id"] == "evt-a"
+    assert match["selected_confidence"] == 0.81
+
+    cleared = c.post("/ui/recordings/rec-ui-calendar-select-1/calendar/select", data={})
+    assert cleared.status_code == 303
+    match = get_calendar_match("rec-ui-calendar-select-1", settings=cfg)
+    assert match is not None
+    assert match["selected_event_id"] is None
 
 
 def test_recording_detail_processing_polls_progress(tmp_path, monkeypatch):
@@ -2090,6 +2196,7 @@ def test_calendars_page_renders_seeded_sources_and_events(tmp_path, monkeypatch)
                 "location": "Room 5",
                 "description": "fixture",
                 "organizer": "Alex",
+                "attendees": [{"label": "Priya Kapoor"}],
                 "updated_at": "2026-02-01T00:00:00Z",
             },
             {
@@ -2112,7 +2219,10 @@ def test_calendars_page_renders_seeded_sources_and_events(tmp_path, monkeypatch)
     assert response.status_code == 200
     assert "Calendars" in response.text
     assert "Local Team Calendar" in response.text
+    assert ">2<" in response.text
     assert "Seeded calendar event" in response.text
+    assert "Priya Kapoor" in response.text
+    assert "2026-02-03 11:00:00 CET" in response.text
     assert "End date event" in response.text
 
 

@@ -961,12 +961,15 @@ def test_calendar_sources_events_matches_and_metrics_edges(tmp_path: Path):
             },
             {
                 "uid": "event-1",
-                "starts_at": "2026-03-01T10:00:00Z",
-                "ends_at": "2026-03-01T11:00:00Z",
+                "starts_at": "2026-03-01T23:00:00Z",
+                "ends_at": "2026-03-02T01:00:00Z",
                 "summary": " Standup ",
                 "description": " notes ",
                 "location": " room ",
                 "organizer": " owner@example.com ",
+                "organizer_name": " Owner Example ",
+                "organizer_email": " owner@example.com ",
+                "attendees": [{"name": "Alex", "email": "alex@example.com", "label": "Alex"}],
                 "all_day": True,
             },
         ],
@@ -989,6 +992,39 @@ def test_calendar_sources_events_matches_and_metrics_edges(tmp_path: Path):
     )
     assert len(rows) == 1
     assert rows[0]["uid"] == "event-1"
+    assert rows[0]["organizer_name"] == "Owner Example"
+    assert rows[0]["organizer_email"] == "owner@example.com"
+    assert rows[0]["attendees_json"] == [
+        {
+            "name": "Alex",
+            "email": "alex@example.com",
+            "label": "Alex",
+        }
+    ]
+
+    replaced = db_module.replace_calendar_events_for_window(
+        source_id=source_id,
+        window_start="2026-03-02T00:00:00Z",
+        window_end="2026-03-04T00:00:00Z",
+        events=[
+            {
+                "uid": "event-2",
+                "starts_at": "2026-03-02T09:00:00Z",
+                "ends_at": "2026-03-02T10:00:00Z",
+                "summary": "Boundary replacement",
+                "updated_at": "2026-03-01T00:00:00Z",
+            }
+        ],
+        settings=cfg,
+    )
+    assert replaced == 1
+    boundary_rows = db_module.list_calendar_events(
+        starts_from="2026-03-01T00:00:00Z",
+        ends_to="2026-03-04T00:00:00Z",
+        source_id=source_id,
+        settings=cfg,
+    )
+    assert [row["uid"] for row in boundary_rows] == ["event-2"]
 
     inserted_match = db_module.set_calendar_match_selection(
         recording_id="rec-db-cov-calendar-1",

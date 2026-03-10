@@ -45,6 +45,8 @@ docker compose run --rm api python -m lan_app.healthchecks app
 5. Open `/recordings/{recording_id}` for transcript, summary, and export actions.
    - `NeedsReview` recordings show an explicit review reason in the recordings list and detail page.
    - The server-rendered UI shows timestamps in local Europe/Rome time.
+   - ICS sync now stores organizer and attendee details per event, and the calendars page renders those event times in local Europe/Rome time.
+   - Uploaded and processed recordings are matched automatically to nearby calendar events when the score is strong enough; ambiguous candidates remain reviewable on the recording `calendar` tab.
    - Duration is sourced from `derived/audio_sanitized.wav` when it exists, otherwise from the raw upload.
    - The app uses glossary/correction memory instead of ASR model training. Manage manual terms and saved corrections on `/glossary`.
    - Glossary sources are merged deterministically from stored manual/correction entries, speaker-bank names, selected calendar context, and project context when available.

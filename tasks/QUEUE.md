@@ -462,6 +462,6 @@ Queue (in order)
 - Depends on: PR-SNIPPETS-PURITY-01 and PR-ASR-MULTILINGUAL-01 and PR-CALENDAR-ICS-01
 
 91) PR-CALENDAR-MATCHING-ICS-01: Reliable ICS calendar matching: attendee parsing, sync boundary fixes, runtime calendar_matches population, manual override UI, and downstream summary/glossary context
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-CALENDAR-MATCHING-ICS-01.md
 - Depends on: PR-GLOSSARY-CORRECTIONS-01 and PR-CALENDAR-ICS-01

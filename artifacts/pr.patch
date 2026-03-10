@@ -1,106 +1,2378 @@
+diff --git a/README.md b/README.md
+index 490c525..8c6d5ab 100644
+--- a/README.md
++++ b/README.md
+@@ -84,6 +84,8 @@ Operational setup, failure handling, backup/restore, and upgrade steps are docum
+ 5. Open the recording detail page at `/recordings/{recording_id}`.
+    - `NeedsReview` recordings now show an explicit review reason in both the list and detail UI.
+    - Displayed timestamps are rendered in local Europe/Rome time in the server-rendered UI.
++   - ICS sync now stores organizer and attendee details per event, and the calendars UI renders those event times in local Europe/Rome time.
++   - Uploaded/processed recordings are matched automatically to nearby calendar events when the score is strong enough; ambiguous candidates remain reviewable on the recording `calendar` tab.
+    - Duration is taken from `derived/audio_sanitized.wav` when present, then falls back to the raw upload.
+    - The app now uses glossary/correction memory instead of ASR model training: manage manual terms and future corrections on `/glossary`.
+    - Glossary sources are merged deterministically from stored manual/correction entries, canonical speaker names, selected calendar context, and the current project name/keywords when available.
+diff --git a/docs/runbook.md b/docs/runbook.md
+index 399924f..07cc5b4 100644
+--- a/docs/runbook.md
++++ b/docs/runbook.md
+@@ -45,6 +45,8 @@ docker compose run --rm api python -m lan_app.healthchecks app
+ 5. Open `/recordings/{recording_id}` for transcript, summary, and export actions.
+    - `NeedsReview` recordings show an explicit review reason in the recordings list and detail page.
+    - The server-rendered UI shows timestamps in local Europe/Rome time.
++   - ICS sync now stores organizer and attendee details per event, and the calendars page renders those event times in local Europe/Rome time.
++   - Uploaded and processed recordings are matched automatically to nearby calendar events when the score is strong enough; ambiguous candidates remain reviewable on the recording `calendar` tab.
+    - Duration is sourced from `derived/audio_sanitized.wav` when it exists, otherwise from the raw upload.
+    - The app uses glossary/correction memory instead of ASR model training. Manage manual terms and saved corrections on `/glossary`.
+    - Glossary sources are merged deterministically from stored manual/correction entries, speaker-bank names, selected calendar context, and project context when available.
+diff --git a/lan_app/api.py b/lan_app/api.py
+index d84179e..2b5868c 100644
+--- a/lan_app/api.py
++++ b/lan_app/api.py
+@@ -31,6 +31,7 @@ from .constants import (
+     RECORDING_STATUS_QUARANTINE,
+ )
+ from .calendar.ics import validate_ics_url
++from .calendar.matching import refresh_recording_calendar_match
+ from .calendar.service import CalendarSyncError, redacted_calendar_source, sync_calendar_source
+ from .db import (
+     create_calendar_source,
+@@ -514,6 +515,17 @@ async def api_upload_file(file: UploadFile = File(...)) -> dict[str, object]:
+             settings=_settings,
+         )
+         recording_created = True
++        try:
++            refresh_recording_calendar_match(
++                recording_id,
++                settings=_settings,
++            )
++        except Exception:
++            _logger.warning(
++                "calendar matching failed during upload for recording %s",
++                recording_id,
++                exc_info=True,
++            )
+         try:
+             job = enqueue_recording_job(
+                 recording_id,
+diff --git a/lan_app/calendar/__init__.py b/lan_app/calendar/__init__.py
+index 7fa9ca6..3279d17 100644
+--- a/lan_app/calendar/__init__.py
++++ b/lan_app/calendar/__init__.py
+@@ -1,4 +1,11 @@
+ from .ics import CalendarFetchError, CalendarParseError, fetch_ics_url, parse_ics_events, validate_ics_url
++from .matching import (
++    calendar_match_candidates,
++    calendar_summary_context,
++    match_recording_to_calendar,
++    refresh_recording_calendar_match,
++    selected_calendar_candidate,
++)
+ from .service import (
+     CalendarSyncError,
+     calendar_expansion_window,
+@@ -13,6 +20,11 @@ __all__ = [
+     "fetch_ics_url",
+     "parse_ics_events",
+     "validate_ics_url",
++    "calendar_match_candidates",
++    "calendar_summary_context",
++    "match_recording_to_calendar",
++    "refresh_recording_calendar_match",
++    "selected_calendar_candidate",
+     "calendar_expansion_window",
+     "redacted_calendar_source",
+     "sync_calendar_source",
+diff --git a/lan_app/calendar/ics.py b/lan_app/calendar/ics.py
+index 1748a26..ba71f56 100644
+--- a/lan_app/calendar/ics.py
++++ b/lan_app/calendar/ics.py
+@@ -132,22 +132,76 @@ def _property_text(component: Any, key: str) -> str | None:
+     return text or None
+ 
+ 
+-def _organizer_text(component: Any) -> str | None:
+-    organizer = component.get("ORGANIZER")
+-    if organizer is None:
++def _participant_email(value: Any) -> str | None:
++    raw = str(value or "").strip()
++    if not raw:
+         return None
+-    params = getattr(organizer, "params", {})
+-    cn = params.get("CN")
+-    if cn:
+-        value = str(cn).strip()
+-        if value:
+-            return value
+-    raw = str(organizer).strip()
+-    if raw.lower().startswith("mailto:"):
+-        raw = raw[7:]
++    lowered = raw.lower()
++    if lowered.startswith("mailto:"):
++        raw = raw.split(":", 1)[1].strip()
+     return raw or None
+ 
+ 
++def _participant_payload(value: Any) -> dict[str, str] | None:
++    if value is None:
++        return None
++    params = getattr(value, "params", {})
++    name = str(params.get("CN") or "").strip() or None
++    email = _participant_email(value)
++    label = name or email
++    if not label:
++        return None
++    payload = {"label": label}
++    if name:
++        payload["name"] = name
++    if email:
++        payload["email"] = email
++    return payload
++
++
++def _organizer_text(component: Any) -> str | None:
++    payload = _participant_payload(component.get("ORGANIZER"))
++    if payload is None:
++        return None
++    return payload.get("label")
++
++
++def _organizer_name(component: Any) -> str | None:
++    payload = _participant_payload(component.get("ORGANIZER"))
++    if payload is None:
++        return None
++    return payload.get("name")
++
++
++def _organizer_email(component: Any) -> str | None:
++    payload = _participant_payload(component.get("ORGANIZER"))
++    if payload is None:
++        return None
++    return payload.get("email")
++
++
++def _attendees(component: Any) -> list[dict[str, str]]:
++    attendees_raw = component.get("ATTENDEE")
++    if attendees_raw is None:
++        return []
++    rows = attendees_raw if isinstance(attendees_raw, list) else [attendees_raw]
++    attendees: list[dict[str, str]] = []
++    seen: set[tuple[str, str]] = set()
++    for row in rows:
++        payload = _participant_payload(row)
++        if payload is None:
++            continue
++        dedupe_key = (
++            str(payload.get("email") or "").strip().lower(),
++            str(payload.get("name") or payload.get("label") or "").strip().lower(),
++        )
++        if dedupe_key in seen:
++            continue
++        seen.add(dedupe_key)
++        attendees.append(payload)
++    return attendees
++
++
+ def _updated_at_text(component: Any, *, fallback: str) -> str:
+     for key in ("LAST-MODIFIED", "DTSTAMP"):
+         try:
+@@ -226,6 +280,9 @@ def _normalise_event(
+         "description": _property_text(component, "DESCRIPTION"),
+         "location": _property_text(component, "LOCATION"),
+         "organizer": _organizer_text(component),
++        "organizer_name": _organizer_name(component),
++        "organizer_email": _organizer_email(component),
++        "attendees": _attendees(component),
+         "updated_at": _updated_at_text(component, fallback=fallback_updated_at),
+     }
+ 
+diff --git a/lan_app/calendar/service.py b/lan_app/calendar/service.py
+index 5f46bc7..41f9286 100644
+--- a/lan_app/calendar/service.py
++++ b/lan_app/calendar/service.py
+@@ -63,6 +63,7 @@ def redacted_calendar_source(source: dict[str, Any]) -> dict[str, Any]:
+         "created_at": source.get("created_at"),
+         "last_synced_at": source.get("last_synced_at"),
+         "last_error": source.get("last_error"),
++        "event_count": int(source.get("event_count") or 0),
+         "url_configured": bool(url_raw),
+         "url_host": url_host or None,
+         "file_configured": bool(str(source.get("file_ics") or "").strip()),
+diff --git a/lan_app/db.py b/lan_app/db.py
+index b9907bd..0ac0936 100644
+--- a/lan_app/db.py
++++ b/lan_app/db.py
+@@ -2656,9 +2656,13 @@ def list_calendar_sources(
+     with connect(settings) as conn:
+         rows = conn.execute(
+             """
+-            SELECT *
+-            FROM calendar_sources
+-            ORDER BY created_at DESC, id DESC
++            SELECT
++                cs.*,
++                COUNT(ce.id) AS event_count
++            FROM calendar_sources AS cs
++            LEFT JOIN calendar_events AS ce ON ce.source_id = cs.id
++            GROUP BY cs.id
++            ORDER BY cs.created_at DESC, cs.id DESC
+             """
+         ).fetchall()
+     return [_as_dict(row) or {} for row in rows]
+@@ -2723,12 +2727,12 @@ def replace_calendar_events_for_window(
+             conn.execute(
+                 """
+                 DELETE FROM calendar_events
+-                WHERE source_id = ? AND starts_at >= ? AND starts_at < ?
++                WHERE source_id = ? AND starts_at < ? AND ends_at > ?
+                 """,
+                 (
+                     int(source_id),
+-                    clean_window_start,
+                     clean_window_end,
++                    clean_window_start,
+                 ),
+             )
+             inserted = 0
+@@ -2742,6 +2746,13 @@ def replace_calendar_events_for_window(
+                 description = str(event.get("description") or "").strip() or None
+                 location = str(event.get("location") or "").strip() or None
+                 organizer = str(event.get("organizer") or "").strip() or None
++                organizer_name = str(event.get("organizer_name") or "").strip() or None
++                organizer_email = str(event.get("organizer_email") or "").strip() or None
++                attendees = event.get("attendees")
++                attendees_json = json.dumps(
++                    attendees if isinstance(attendees, list) else [],
++                    ensure_ascii=True,
++                )
+                 updated_at = str(event.get("updated_at") or "").strip() or now
+                 all_day = 1 if bool(event.get("all_day")) else 0
+                 conn.execute(
+@@ -2756,9 +2767,12 @@ def replace_calendar_events_for_window(
+                         description,
+                         location,
+                         organizer,
++                        organizer_name,
++                        organizer_email,
++                        attendees_json,
+                         updated_at
+                     )
+-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
++                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     ON CONFLICT(source_id, uid, starts_at) DO UPDATE SET
+                         ends_at = excluded.ends_at,
+                         all_day = excluded.all_day,
+@@ -2766,6 +2780,9 @@ def replace_calendar_events_for_window(
+                         description = excluded.description,
+                         location = excluded.location,
+                         organizer = excluded.organizer,
++                        organizer_name = excluded.organizer_name,
++                        organizer_email = excluded.organizer_email,
++                        attendees_json = excluded.attendees_json,
+                         updated_at = excluded.updated_at
+                     """,
+                     (
+@@ -2778,6 +2795,9 @@ def replace_calendar_events_for_window(
+                         description,
+                         location,
+                         organizer,
++                        organizer_name,
++                        organizer_email,
++                        attendees_json,
+                         updated_at,
+                     ),
+                 )
+diff --git a/lan_app/routing.py b/lan_app/routing.py
+index 9f40160..b5bd8c6 100644
+--- a/lan_app/routing.py
++++ b/lan_app/routing.py
+@@ -8,12 +8,12 @@ from pathlib import Path
+ import re
+ from typing import Any
+ 
++from .calendar.matching import selected_calendar_candidate
+ from .config import AppSettings
+ from .constants import RECORDING_STATUS_NEEDS_REVIEW, RECORDING_STATUS_READY
+ from .db import (
+     count_routing_training_examples,
+     create_routing_training_example,
+-    get_calendar_match,
+     get_project,
+     get_recording,
+     increment_project_keyword_weights,
+@@ -485,20 +485,10 @@ def _selected_calendar_candidate(
+     *,
+     settings: AppSettings,
+ ) -> dict[str, Any]:
+-    row = get_calendar_match(recording_id, settings=settings) or {}
+-    selected_event_id = str(row.get("selected_event_id") or "").strip()
+-    if not selected_event_id:
+-        return {}
+-
+-    candidates = row.get("candidates_json")
+-    if not isinstance(candidates, list):
+-        return {}
+-    for candidate in candidates:
+-        if not isinstance(candidate, dict):
+-            continue
+-        if str(candidate.get("event_id") or "").strip() == selected_event_id:
+-            return candidate
+-    return {}
++    return selected_calendar_candidate(
++        recording_id,
++        settings=settings,
++    )
+ 
+ 
+ def _llm_keywords(recording_id: str, *, settings: AppSettings) -> set[str]:
+diff --git a/lan_app/templates/calendars.html b/lan_app/templates/calendars.html
+index 3557932..7f2a1cb 100644
+--- a/lan_app/templates/calendars.html
++++ b/lan_app/templates/calendars.html
+@@ -44,6 +44,7 @@
+         <th>Name</th>
+         <th>Type</th>
+         <th>Configured</th>
++        <th>Events</th>
+         <th>Last sync</th>
+         <th>Last error</th>
+         <th>Action</th>
+@@ -61,7 +62,8 @@
+           {% if source.file_configured %}Configured{% else %}Missing{% endif %}
+           {% endif %}
+         </td>
+-        <td>{{ source.last_synced_at[:19].replace('T', ' ') if source.last_synced_at else '—' }}</td>
++        <td>{{ source.event_count }}</td>
++        <td>{{ source.last_synced_at_display }}</td>
+         <td title="{{ source.last_error or '' }}">{{ source.last_error or '—' }}</td>
+         <td>
+           <form method="post" action="/calendars/sources/{{ source.id }}/sync">
+@@ -101,6 +103,8 @@
+         <th>Start</th>
+         <th>End</th>
+         <th>Summary</th>
++        <th>Organizer</th>
++        <th>Attendees</th>
+         <th>Location</th>
+         <th>Source</th>
+       </tr>
+@@ -108,9 +112,11 @@
+     <tbody>
+       {% for event in events %}
+       <tr>
+-        <td>{{ event.starts_at[:19].replace('T', ' ') }}</td>
+-        <td>{{ event.ends_at[:19].replace('T', ' ') }}</td>
++        <td>{{ event.starts_at_display }}</td>
++        <td>{{ event.ends_at_display }}</td>
+         <td title="{{ event.summary or '' }}">{{ event.summary or '—' }}</td>
++        <td>{{ event.organizer or '—' }}</td>
++        <td title="{{ event.attendees_label }}">{{ event.attendees_label }}</td>
+         <td title="{{ event.location or '' }}">{{ event.location or '—' }}</td>
+         <td>{{ event.source_name or ('#' ~ event.source_id) }}</td>
+       </tr>
+diff --git a/lan_app/templates/recording_detail.html b/lan_app/templates/recording_detail.html
+index a55e3ee..de1fa3e 100644
+--- a/lan_app/templates/recording_detail.html
++++ b/lan_app/templates/recording_detail.html
+@@ -197,6 +197,101 @@
+     {% endif %}
+   </div>
+ 
++{% elif current_tab == 'calendar' %}
++  {% set cal = calendar or {} %}
++
++  <h2>Calendar Match</h2>
++  {% if cal.error_message %}
++  <p style="margin:0 0 10px 0;padding:8px 10px;border:1px solid #f59e0b;background:#fffbeb;color:#92400e">
++    {{ cal.error_message }}
++  </p>
++  {% endif %}
++
++  <div class="section" style="margin-top:10px">
++    <h3 style="margin-top:0">Selected Event</h3>
++    {% if cal.selected %}
++    <div style="border:1px solid #d5d9e6;background:#f8f9ff;padding:10px;border-radius:6px">
++      <div><strong>{{ cal.selected.subject_display }}</strong></div>
++      <div style="margin-top:4px;color:#555">{{ cal.selected.starts_at_display }} → {{ cal.selected.ends_at_display }}</div>
++      <div style="margin-top:4px">Source: {{ cal.selected.source_label }}</div>
++      <div style="margin-top:4px">Confidence: {{ cal.selected.confidence_display }}</div>
++      <div style="margin-top:4px">Organizer: {{ cal.selected.organizer_display }}</div>
++      <div style="margin-top:4px">Attendees: {{ cal.selected.attendees_label }}</div>
++      {% if cal.selected.rationale_rows %}
++      <ul style="margin:8px 0 0 18px">
++        {% for reason in cal.selected.rationale_rows %}
++        <li>{{ reason }}</li>
++        {% endfor %}
++      </ul>
++      {% endif %}
++      <form method="post" action="/ui/recordings/{{ rec.id }}/calendar/select" style="margin-top:8px">
++        <button type="submit" class="btn">Clear selection</button>
++      </form>
++    </div>
++    {% else %}
++    <p class="placeholder">No calendar event is currently selected for this recording.</p>
++    {% endif %}
++  </div>
++
++  <div class="section" style="margin-top:10px">
++    <h3 style="margin-top:0">Candidates</h3>
++    {% if cal.candidates %}
++    <table>
++      <thead>
++        <tr>
++          <th>Event</th>
++          <th>When</th>
++          <th>Source</th>
++          <th>Confidence</th>
++          <th>Attendees</th>
++          <th>Rationale</th>
++          <th>Action</th>
++        </tr>
++      </thead>
++      <tbody>
++        {% for candidate in cal.candidates %}
++        <tr>
++          <td style="white-space:normal;max-width:220px">
++            <div><strong>{{ candidate.subject_display }}</strong></div>
++            <div style="margin-top:4px;color:#555">Organizer: {{ candidate.organizer_display }}</div>
++          </td>
++          <td>{{ candidate.starts_at_display }} → {{ candidate.ends_at_display }}</td>
++          <td>{{ candidate.source_label }}</td>
++          <td>
++            {{ candidate.confidence_display }}
++            {% if candidate.selected %}
++            <div style="margin-top:4px"><span class="badge s-Ready">Selected</span></div>
++            {% endif %}
++          </td>
++          <td title="{{ candidate.attendees_label }}">{{ candidate.attendees_label }}</td>
++          <td style="white-space:normal;max-width:320px">
++            {% if candidate.rationale_rows %}
++              {% for reason in candidate.rationale_rows %}
++              <div>{{ reason }}</div>
++              {% endfor %}
++            {% else %}
++            —
++            {% endif %}
++          </td>
++          <td>
++            {% if candidate.selected %}
++            <span class="placeholder" style="padding:0">Current</span>
++            {% else %}
++            <form method="post" action="/ui/recordings/{{ rec.id }}/calendar/select">
++              <input type="hidden" name="event_id" value="{{ candidate.event_id }}">
++              <button type="submit" class="btn">Choose</button>
++            </form>
++            {% endif %}
++          </td>
++        </tr>
++        {% endfor %}
++      </tbody>
++    </table>
++    {% else %}
++    <p class="placeholder">No calendar candidates are stored for this recording yet.</p>
++    {% endif %}
++  </div>
++
+ {% elif current_tab == 'project' %}
+   {% set prj = project or {} %}
+   {% set project_items = prj.projects or [] %}
 diff --git a/lan_app/ui_routes.py b/lan_app/ui_routes.py
-index b3dd2ea..b52d8ff 100644
+index b52d8ff..93c622b 100644
 --- a/lan_app/ui_routes.py
 +++ b/lan_app/ui_routes.py
-@@ -618,11 +618,14 @@ def _glossary_form_payload(
-     enabled: str,
-     notes: str,
-     recording_id: str,
-+    existing_metadata: dict[str, Any] | None = None,
- ) -> dict[str, Any]:
--    metadata: dict[str, Any] = {}
-+    metadata = dict(existing_metadata) if isinstance(existing_metadata, dict) else {}
-     clean_recording_id = " ".join(recording_id.strip().split())
-     if clean_recording_id:
-         metadata["recording_id"] = clean_recording_id
-+    else:
-+        metadata.pop("recording_id", None)
-     return {
-         "canonical_text": canonical_text.strip(),
-         "aliases": aliases_text,
-@@ -2153,7 +2156,8 @@ async def ui_update_glossary(
-     notes: str = Form(default=""),
-     recording_id: str = Form(default=""),
- ) -> Any:
--    if get_glossary_entry(entry_id, settings=_settings) is None:
-+    existing_entry = get_glossary_entry(entry_id, settings=_settings)
-+    if existing_entry is None:
-         return HTMLResponse("Glossary entry not found", status_code=404)
-     payload = _glossary_form_payload(
-         canonical_text=canonical_text,
-@@ -2163,6 +2167,11 @@ async def ui_update_glossary(
-         enabled=enabled,
-         notes=notes,
-         recording_id=recording_id,
-+        existing_metadata=(
-+            existing_entry.get("metadata_json")
-+            if isinstance(existing_entry.get("metadata_json"), dict)
-+            else None
-+        ),
+@@ -31,6 +31,11 @@ from .auth import (
+ )
+ from .config import AppSettings
+ from .calendar.ics import validate_ics_url
++from .calendar.matching import (
++    calendar_match_candidates,
++    calendar_summary_context,
++    selected_calendar_candidate,
++)
+ from .calendar.service import CalendarSyncError, redacted_calendar_source, sync_calendar_source
+ from .conversation_metrics import refresh_recording_metrics
+ from .constants import (
+@@ -55,6 +60,7 @@ from .db import (
+     get_glossary_entry,
+     delete_project,
+     delete_voice_profile,
++    get_calendar_match,
+     get_meeting_metrics,
+     get_job,
+     get_recording,
+@@ -69,6 +75,7 @@ from .db import (
+     list_speaker_assignments,
+     list_voice_samples,
+     list_voice_profiles,
++    set_calendar_match_selection,
+     set_recording_duration,
+     set_recording_project,
+     set_speaker_assignment,
+@@ -1470,15 +1477,19 @@ def _resummarize_recording(
+     if not speaker_turns:
+         speaker_turns = [{"start": 0.0, "end": 0.0, "speaker": "S1", "text": transcript_text}]
+ 
+-    calendar_title = str(transcript_payload.get("calendar_title") or "").strip() or None
+-    attendees_payload = transcript_payload.get("calendar_attendees")
+-    calendar_attendees: list[str] = []
+-    if isinstance(attendees_payload, list):
+-        calendar_attendees = [
+-            str(attendee).strip()
+-            for attendee in attendees_payload
+-            if str(attendee).strip()
+-        ]
++    calendar_title, calendar_attendees = calendar_summary_context(
++        recording_id,
++        settings=settings,
++    )
++    if calendar_title is None and not calendar_attendees:
++        calendar_title = str(transcript_payload.get("calendar_title") or "").strip() or None
++        attendees_payload = transcript_payload.get("calendar_attendees")
++        if isinstance(attendees_payload, list):
++            calendar_attendees = [
++                str(attendee).strip()
++                for attendee in attendees_payload
++                if str(attendee).strip()
++            ]
+ 
+     system_prompt, user_prompt = build_structured_summary_prompts(
+         speaker_turns,
+@@ -1585,12 +1596,20 @@ def _calendar_page_data(
+ 
+     sources_raw = list_calendar_sources(settings=settings)
+     sources = [redacted_calendar_source(row) for row in sources_raw]
++    for source in sources:
++        source["last_synced_at_display"] = _format_local_timestamp(source.get("last_synced_at"))
+     events = list_calendar_events(
+         starts_from=_utc_iso(start_dt),
+         ends_to=_utc_iso(end_dt),
+         source_id=source_id,
+         settings=settings,
      )
-     try:
-         update_glossary_entry(entry_id, settings=_settings, **payload)
++    for event in events:
++        event["starts_at_display"] = _format_local_timestamp(event.get("starts_at"))
++        event["ends_at_display"] = _format_local_timestamp(event.get("ends_at"))
++        attendees = _calendar_attendee_labels(event.get("attendees_json"))
++        event["attendees_preview"] = attendees[:4]
++        event["attendees_label"] = ", ".join(attendees) if attendees else "—"
+     return {
+         "sources": sources,
+         "events": events,
+@@ -1600,6 +1619,99 @@ def _calendar_page_data(
+     }
+ 
+ 
++def _calendar_attendee_labels(value: object) -> list[str]:
++    if not isinstance(value, list):
++        return []
++    labels: list[str] = []
++    seen: set[str] = set()
++    for row in value:
++        if isinstance(row, dict):
++            label = str(row.get("label") or row.get("name") or row.get("email") or "").strip()
++        else:
++            label = str(row or "").strip()
++        if not label:
++            continue
++        key = label.lower()
++        if key in seen:
++            continue
++        seen.add(key)
++        labels.append(label)
++    return labels
++
++
++def _calendar_rationale_rows(value: object) -> list[str]:
++    if isinstance(value, list):
++        return [str(row).strip() for row in value if str(row).strip()]
++    if isinstance(value, str):
++        text = value.strip()
++        return [text] if text else []
++    return []
++
++
++def _calendar_candidate_context(candidate: dict[str, Any], *, selected_event_id: str) -> dict[str, Any]:
++    attendees = _calendar_attendee_labels(candidate.get("attendees"))
++    if not attendees:
++        attendees = _calendar_attendee_labels(candidate.get("attendee_details"))
++    confidence_raw = candidate.get("confidence", candidate.get("score"))
++    try:
++        confidence_value = float(confidence_raw)
++    except (TypeError, ValueError):
++        confidence_value = None
++    organizer_display = str(
++        candidate.get("organizer")
++        or candidate.get("organizer_name")
++        or candidate.get("organizer_email")
++        or ""
++    ).strip() or None
++    event_id = str(candidate.get("event_id") or "").strip()
++    return {
++        **candidate,
++        "event_id": event_id,
++        "selected": event_id == selected_event_id and bool(event_id),
++        "subject_display": str(candidate.get("subject") or candidate.get("summary") or "").strip()
++        or "Untitled event",
++        "starts_at_display": _format_local_timestamp(candidate.get("starts_at")),
++        "ends_at_display": _format_local_timestamp(candidate.get("ends_at")),
++        "organizer_display": organizer_display or "—",
++        "attendees": attendees,
++        "attendees_preview": attendees[:4],
++        "attendees_label": ", ".join(attendees) if attendees else "—",
++        "confidence_value": confidence_value,
++        "confidence_display": (
++            f"{confidence_value:.2f}" if confidence_value is not None else "—"
++        ),
++        "rationale_rows": _calendar_rationale_rows(candidate.get("rationale")),
++        "source_label": str(
++            candidate.get("source_name") or candidate.get("source_kind") or ""
++        ).strip()
++        or "—",
++    }
++
++
++def _calendar_tab_context(recording_id: str, settings: AppSettings) -> dict[str, Any]:
++    match_row = get_calendar_match(recording_id, settings=settings) or {}
++    selected_event_id = str(match_row.get("selected_event_id") or "").strip()
++    selected_candidate = selected_calendar_candidate(recording_id, settings=settings)
++    selected = None
++    if selected_candidate:
++        selected = _calendar_candidate_context(
++            selected_candidate,
++            selected_event_id=selected_event_id,
++        )
++    candidates = [
++        _calendar_candidate_context(candidate, selected_event_id=selected_event_id)
++        for candidate in calendar_match_candidates(recording_id, settings=settings)
++        if str(candidate.get("event_id") or "").strip()
++    ]
++    return {
++        "selected": selected,
++        "selected_event_id": selected_event_id or None,
++        "selected_confidence": match_row.get("selected_confidence"),
++        "candidates": candidates,
++        "error_message": "",
++    }
++
++
+ # ---------------------------------------------------------------------------
+ # UI auth shell
+ # ---------------------------------------------------------------------------
+@@ -1745,6 +1857,7 @@ async def ui_recording_detail(
+     request: Request,
+     recording_id: str,
+     tab: str = Query(default="overview"),
++    calendar_error: str = Query(default=""),
+ ) -> Any:
+     rec = get_recording(recording_id, settings=_settings)
+     if rec is None:
+@@ -1752,8 +1865,9 @@ async def ui_recording_detail(
+     rec = _prepare_recording_for_display(rec, settings=_settings)
+     jobs, _ = list_jobs(settings=_settings, recording_id=recording_id, limit=100)
+     recovery_warning = _recording_recovery_warning(jobs)
+-    tabs = ["overview", "project", "speakers", "language", "metrics", "log"]
++    tabs = ["overview", "calendar", "project", "speakers", "language", "metrics", "log"]
+     current_tab = tab if tab in tabs else "overview"
++    calendar: dict[str, Any] | None = None
+     language: dict[str, Any] | None = None
+     summary: dict[str, Any] | None = None
+     metrics: dict[str, Any] | None = None
+@@ -1761,6 +1875,10 @@ async def ui_recording_detail(
+     project: dict[str, Any] | None = None
+     glossary: dict[str, Any] | None = None
+     export_text = ""
++    if current_tab == "calendar":
++        calendar = _calendar_tab_context(recording_id, _settings)
++        if calendar_error.strip():
++            calendar["error_message"] = calendar_error.strip()
+     if current_tab == "language":
+         language = _language_tab_context(recording_id, rec, _settings)
+     if current_tab == "speakers":
+@@ -1789,6 +1907,7 @@ async def ui_recording_detail(
+             "recovery_warning": recovery_warning,
+             "tabs": tabs,
+             "current_tab": current_tab,
++            "calendar": calendar,
+             "language": language,
+             "summary": summary,
+             "metrics": metrics,
+@@ -1856,6 +1975,50 @@ async def ui_recording_export_zip(
+     )
+ 
+ 
++# ---------------------------------------------------------------------------
++# Recording calendar selection
++# ---------------------------------------------------------------------------
++
++
++@ui_router.post("/ui/recordings/{recording_id}/calendar/select")
++async def ui_select_calendar_match(
++    recording_id: str,
++    event_id: str = Form(default=""),
++) -> Any:
++    if get_recording(recording_id, settings=_settings) is None:
++        return HTMLResponse("Not found", status_code=404)
++
++    clean_event_id = event_id.strip()
++    selected_confidence: float | None = None
++    if clean_event_id:
++        selected_candidate = None
++        for candidate in calendar_match_candidates(recording_id, settings=_settings):
++            if str(candidate.get("event_id") or "").strip() == clean_event_id:
++                selected_candidate = candidate
++                break
++        if selected_candidate is None:
++            return HTMLResponse("Calendar candidate not found", status_code=422)
++        try:
++            selected_confidence = float(
++                selected_candidate.get("confidence", selected_candidate.get("score"))
++            )
++        except (TypeError, ValueError):
++            selected_confidence = None
++
++    set_calendar_match_selection(
++        recording_id=recording_id,
++        event_id=clean_event_id or None,
++        selected_confidence=selected_confidence,
++        settings=_settings,
++    )
++    refresh_recording_routing(
++        recording_id,
++        settings=_settings,
++        apply_workflow=False,
++    )
++    return RedirectResponse(f"/recordings/{recording_id}?tab=calendar", status_code=303)
++
++
+ # ---------------------------------------------------------------------------
+ # Recording speaker assignment + snippet audio
+ # ---------------------------------------------------------------------------
+diff --git a/lan_app/worker_tasks.py b/lan_app/worker_tasks.py
+index 0790722..0eceb25 100644
+--- a/lan_app/worker_tasks.py
++++ b/lan_app/worker_tasks.py
+@@ -34,6 +34,7 @@ from lan_transcriber.pipeline_steps.diarization_quality import (
+ )
+ 
+ from .asr_glossary import build_recording_asr_glossary
++from .calendar.matching import calendar_summary_context, refresh_recording_calendar_match
+ from .config import AppSettings
+ from .conversation_metrics import refresh_recording_metrics
+ from .constants import (
+@@ -57,7 +58,6 @@ from .db import (
+     fail_job,
+     fail_job_if_started,
+     finish_job_if_started,
+-    get_calendar_match,
+     get_job,
+     get_recording,
+     init_db,
+@@ -574,44 +574,10 @@ def _load_calendar_summary_context(
+     recording_id: str,
+     settings: AppSettings,
+ ) -> tuple[str | None, list[str]]:
+-    row = get_calendar_match(recording_id, settings=settings) or {}
+-    selected_event_id = str(row.get("selected_event_id") or "").strip()
+-    if not selected_event_id:
+-        return None, []
+-    raw_candidates = row.get("candidates_json")
+-    if isinstance(raw_candidates, list):
+-        candidates = raw_candidates
+-    elif isinstance(raw_candidates, str):
+-        try:
+-            parsed = json.loads(raw_candidates or "[]")
+-        except ValueError:
+-            return None, []
+-        if not isinstance(parsed, list):
+-            return None, []
+-        candidates = parsed
+-    else:
+-        return None, []
+-
+-    selected: dict[str, Any] | None = None
+-    for item in candidates:
+-        if not isinstance(item, dict):
+-            continue
+-        if str(item.get("event_id") or "").strip() == selected_event_id:
+-            selected = item
+-            break
+-    if selected is None:
+-        return None, []
+-
+-    title = str(selected.get("subject") or "").strip() or None
+-    attendees_raw = selected.get("attendees")
+-    attendees = []
+-    if isinstance(attendees_raw, list):
+-        attendees = [
+-            str(attendee).strip()
+-            for attendee in attendees_raw
+-            if str(attendee).strip()
+-        ]
+-    return title, attendees
++    return calendar_summary_context(
++        recording_id,
++        settings=settings,
++    )
+ 
+ 
+ class _FallbackDiariser:
+@@ -1016,6 +982,17 @@ def _run_precheck_pipeline(
+             duration_sec=precheck.duration_sec,
+             settings=settings,
+         )
++    try:
++        refresh_recording_calendar_match(
++            recording_id,
++            settings=settings,
++        )
++    except Exception:
++        _logger.warning(
++            "calendar matching refresh failed for recording %s",
++            recording_id,
++            exc_info=True,
++        )
+     _append_step_log(
+         log_path,
+         (
+diff --git a/tasks/QUEUE.md b/tasks/QUEUE.md
+index 66bdc8e..1470e17 100644
+--- a/tasks/QUEUE.md
++++ b/tasks/QUEUE.md
+@@ -462,6 +462,6 @@ Queue (in order)
+ - Depends on: PR-SNIPPETS-PURITY-01 and PR-ASR-MULTILINGUAL-01 and PR-CALENDAR-ICS-01
+ 
+ 91) PR-CALENDAR-MATCHING-ICS-01: Reliable ICS calendar matching: attendee parsing, sync boundary fixes, runtime calendar_matches population, manual override UI, and downstream summary/glossary context
+-- Status: TODO
++- Status: DONE
+ - Tasks file: tasks/PR-CALENDAR-MATCHING-ICS-01.md
+ - Depends on: PR-GLOSSARY-CORRECTIONS-01 and PR-CALENDAR-ICS-01
+diff --git a/tests/test_calendar_ics.py b/tests/test_calendar_ics.py
+index 0d8840b..2d1935c 100644
+--- a/tests/test_calendar_ics.py
++++ b/tests/test_calendar_ics.py
+@@ -7,10 +7,16 @@ from fastapi.testclient import TestClient
+ import pytest
+ 
+ from lan_app import api
++from lan_app.calendar import ics as ics_module
+ from lan_app.calendar import service as calendar_service
+ from lan_app.calendar.ics import parse_ics_events
+ from lan_app.config import AppSettings
+-from lan_app.db import init_db
++from lan_app.db import (
++    create_calendar_source,
++    get_calendar_match,
++    init_db,
++    replace_calendar_events_for_window,
++)
+ 
+ 
+ def _cfg(tmp_path: Path) -> AppSettings:
+@@ -37,6 +43,9 @@ def test_parse_ics_timezone_fixture_expands_to_utc():
+     assert events[0]["starts_at"] == "2026-02-10T08:00:00Z"
+     assert events[0]["ends_at"] == "2026-02-10T09:00:00Z"
+     assert events[0]["organizer"] == "Alice Example"
++    assert events[0]["organizer_name"] == "Alice Example"
++    assert events[0]["organizer_email"] == "alice@example.com"
++    assert events[0]["attendees"] == []
+ 
+ 
+ def test_parse_ics_recurrence_fixture_expands_weekly_instances():
+@@ -58,6 +67,50 @@ def test_parse_ics_recurrence_fixture_expands_weekly_instances():
+     ]
+ 
+ 
++def test_parse_ics_recurring_event_retains_attendees_and_organizer():
++    payload = "\n".join(
++        [
++            "BEGIN:VCALENDAR",
++            "VERSION:2.0",
++            "PRODID:-//LAN Transcriber//Calendar Recurrence Attendees Test//EN",
++            "BEGIN:VEVENT",
++            "UID:weekly-attendees-1",
++            "DTSTAMP:20260201T120000Z",
++            "DTSTART:20260201T120000Z",
++            "DTEND:20260201T130000Z",
++            "RRULE:FREQ=WEEKLY;COUNT=3",
++            "SUMMARY:Weekly planning",
++            "ORGANIZER;CN=Alex Example:mailto:alex@example.com",
++            "ATTENDEE;CN=Priya Kapoor:mailto:priya@example.com",
++            "ATTENDEE;CN=Marco Rossi:mailto:marco@example.com",
++            "END:VEVENT",
++            "END:VCALENDAR",
++        ]
++    )
++    events = parse_ics_events(
++        payload,
++        window_start=datetime(2026, 2, 1, tzinfo=timezone.utc),
++        window_end=datetime(2026, 2, 28, tzinfo=timezone.utc),
++    )
++
++    assert len(events) == 3
++    for event in events:
++        assert event["organizer"] == "Alex Example"
++        assert event["organizer_email"] == "alex@example.com"
++        assert event["attendees"] == [
++            {
++                "label": "Priya Kapoor",
++                "name": "Priya Kapoor",
++                "email": "priya@example.com",
++            },
++            {
++                "label": "Marco Rossi",
++                "name": "Marco Rossi",
++                "email": "marco@example.com",
++            },
++        ]
++
++
+ def test_parse_ics_floating_datetimes_use_calendar_timezone():
+     payload = "\n".join(
+         [
+@@ -85,6 +138,43 @@ def test_parse_ics_floating_datetimes_use_calendar_timezone():
+     assert events[0]["ends_at"] == "2026-02-10T09:00:00Z"
+ 
+ 
++def test_ics_private_participant_helpers_cover_empty_and_duplicate_inputs():
++    assert ics_module._participant_email("") is None  # noqa: SLF001
++    assert ics_module._participant_email("mailto:alex@example.com") == "alex@example.com"  # noqa: SLF001
++
++    class _BlankParticipant:
++        params: dict[str, str] = {}
++
++        def __str__(self) -> str:
++            return ""
++
++    assert ics_module._participant_payload(_BlankParticipant()) is None  # noqa: SLF001
++    assert ics_module._participant_payload(  # noqa: SLF001
++        type("Participant", (), {"params": {"CN": "Alex"}, "__str__": lambda self: ""})()
++    ) == {
++        "label": "Alex",
++        "name": "Alex",
++    }
++
++    class _Component:
++        def get(self, key: str):  # noqa: ANN001
++            if key != "ATTENDEE":
++                return None
++            return [
++                type("Participant", (), {"params": {"CN": "Alex"}, "__str__": lambda self: "mailto:alex@example.com"})(),
++                type("Participant", (), {"params": {"CN": "Alex"}, "__str__": lambda self: "mailto:alex@example.com"})(),
++                type("Participant", (), {"params": {}, "__str__": lambda self: ""})(),
++            ]
++
++    assert ics_module._attendees(_Component()) == [  # noqa: SLF001
++        {
++            "label": "Alex",
++            "name": "Alex",
++            "email": "alex@example.com",
++        }
++    ]
++
++
+ @pytest.fixture()
+ def calendar_client(tmp_path: Path, monkeypatch):
+     cfg = _cfg(tmp_path)
+@@ -163,6 +253,69 @@ def test_calendar_source_create_sync_and_events(calendar_client: TestClient, mon
+     assert body["items"][0]["summary"] == "API Calendar Event"
+ 
+ 
++def test_upload_runtime_populates_calendar_matches(calendar_client: TestClient, monkeypatch):
++    cfg = api._settings
++    source = create_calendar_source(
++        name="Team Calendar",
++        kind="file",
++        file_ics="BEGIN:VCALENDAR\nEND:VCALENDAR",
++        settings=cfg,
++    )
++    replace_calendar_events_for_window(
++        source_id=int(source["id"]),
++        window_start="2026-03-01T00:00:00Z",
++        window_end="2026-03-02T00:00:00Z",
++        events=[
++            {
++                "uid": "evt-upload-1",
++                "starts_at": "2026-03-01T10:00:00Z",
++                "ends_at": "2026-03-01T11:00:00Z",
++                "summary": "Roadmap Review",
++                "organizer": "Alex",
++                "attendees": [{"label": "Priya Kapoor"}],
++                "updated_at": "2026-03-01T00:00:00Z",
++            }
++        ],
++        settings=cfg,
++    )
++    monkeypatch.setattr(api, "infer_captured_at", lambda *_a, **_k: "2026-03-01T10:05:00Z")
++    monkeypatch.setattr(
++        api,
++        "enqueue_recording_job",
++        lambda *_a, **_k: type("Job", (), {"job_id": "job-upload-1"})(),
++    )
++
++    response = calendar_client.post(
++        "/api/uploads",
++        files={"file": ("roadmap-review.mp3", b"fake-mp3", "audio/mpeg")},
++    )
++    assert response.status_code == 200
++    recording_id = response.json()["recording_id"]
++    row = get_calendar_match(recording_id, settings=cfg)
++    assert row is not None
++    assert row["selected_event_id"] == f"{source['id']}:evt-upload-1:2026-03-01T10:00:00Z"
++    assert row["candidates_json"][0]["subject"] == "Roadmap Review"
++
++
++def test_upload_runtime_ignores_calendar_matching_failures(
++    calendar_client: TestClient,
++    monkeypatch,
++):
++    monkeypatch.setattr(api, "refresh_recording_calendar_match", lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("boom")))
++    monkeypatch.setattr(api, "infer_captured_at", lambda *_a, **_k: "2026-03-01T10:05:00Z")
++    monkeypatch.setattr(
++        api,
++        "enqueue_recording_job",
++        lambda *_a, **_k: type("Job", (), {"job_id": "job-upload-fail"})(),
++    )
++
++    response = calendar_client.post(
++        "/api/uploads",
++        files={"file": ("calendar-fail.mp3", b"fake-mp3", "audio/mpeg")},
++    )
++    assert response.status_code == 200
++
++
+ def test_calendar_source_rejects_non_http_url(calendar_client: TestClient):
+     response = calendar_client.post(
+         "/api/calendar/sources",
+diff --git a/tests/test_cov_lan_app_db.py b/tests/test_cov_lan_app_db.py
+index 29e9686..8b21437 100644
+--- a/tests/test_cov_lan_app_db.py
++++ b/tests/test_cov_lan_app_db.py
+@@ -961,12 +961,15 @@ def test_calendar_sources_events_matches_and_metrics_edges(tmp_path: Path):
+             },
+             {
+                 "uid": "event-1",
+-                "starts_at": "2026-03-01T10:00:00Z",
+-                "ends_at": "2026-03-01T11:00:00Z",
++                "starts_at": "2026-03-01T23:00:00Z",
++                "ends_at": "2026-03-02T01:00:00Z",
+                 "summary": " Standup ",
+                 "description": " notes ",
+                 "location": " room ",
+                 "organizer": " owner@example.com ",
++                "organizer_name": " Owner Example ",
++                "organizer_email": " owner@example.com ",
++                "attendees": [{"name": "Alex", "email": "alex@example.com", "label": "Alex"}],
+                 "all_day": True,
+             },
+         ],
+@@ -989,6 +992,39 @@ def test_calendar_sources_events_matches_and_metrics_edges(tmp_path: Path):
+     )
+     assert len(rows) == 1
+     assert rows[0]["uid"] == "event-1"
++    assert rows[0]["organizer_name"] == "Owner Example"
++    assert rows[0]["organizer_email"] == "owner@example.com"
++    assert rows[0]["attendees_json"] == [
++        {
++            "name": "Alex",
++            "email": "alex@example.com",
++            "label": "Alex",
++        }
++    ]
++
++    replaced = db_module.replace_calendar_events_for_window(
++        source_id=source_id,
++        window_start="2026-03-02T00:00:00Z",
++        window_end="2026-03-04T00:00:00Z",
++        events=[
++            {
++                "uid": "event-2",
++                "starts_at": "2026-03-02T09:00:00Z",
++                "ends_at": "2026-03-02T10:00:00Z",
++                "summary": "Boundary replacement",
++                "updated_at": "2026-03-01T00:00:00Z",
++            }
++        ],
++        settings=cfg,
++    )
++    assert replaced == 1
++    boundary_rows = db_module.list_calendar_events(
++        starts_from="2026-03-01T00:00:00Z",
++        ends_to="2026-03-04T00:00:00Z",
++        source_id=source_id,
++        settings=cfg,
++    )
++    assert [row["uid"] for row in boundary_rows] == ["event-2"]
+ 
+     inserted_match = db_module.set_calendar_match_selection(
+         recording_id="rec-db-cov-calendar-1",
+diff --git a/tests/test_cov_lan_app_metrics_routing.py b/tests/test_cov_lan_app_metrics_routing.py
+index 42b0575..4efc254 100644
+--- a/tests/test_cov_lan_app_metrics_routing.py
++++ b/tests/test_cov_lan_app_metrics_routing.py
+@@ -404,18 +404,15 @@ def test_routing_private_helpers_cover_scoring_rationale_signals_and_calendar_pa
+ 
+     monkeypatch.setattr(
+         routing,
+-        "get_calendar_match",
+-        lambda *_args, **_kwargs: {"selected_event_id": "evt-1", "candidates_json": {}},
++        "selected_calendar_candidate",
++        lambda *_args, **_kwargs: {},
+     )
+     assert routing._selected_calendar_candidate("rec-routing-cal-1", settings=cfg) == {}  # noqa: SLF001
+ 
+     monkeypatch.setattr(
+         routing,
+-        "get_calendar_match",
+-        lambda *_args, **_kwargs: {
+-            "selected_event_id": "evt-1",
+-            "candidates_json": ["not-a-dict", {"event_id": "evt-2", "subject": "Other"}],
+-        },
++        "selected_calendar_candidate",
++        lambda *_args, **_kwargs: {},
+     )
+     assert routing._selected_calendar_candidate("rec-routing-cal-2", settings=cfg) == {}  # noqa: SLF001
+ 
 diff --git a/tests/test_cov_lan_app_ui_routes.py b/tests/test_cov_lan_app_ui_routes.py
-index d69000d..8300a9a 100644
+index 8300a9a..56f4a88 100644
 --- a/tests/test_cov_lan_app_ui_routes.py
 +++ b/tests/test_cov_lan_app_ui_routes.py
-@@ -434,6 +434,18 @@ def test_asr_glossary_context_and_route_error_paths(
-         == 404
-     )
+@@ -23,6 +23,7 @@ from lan_app.db import (
+     create_recording,
+     create_voice_profile,
+     init_db,
++    upsert_calendar_match,
+ )
+ from lan_app.jobs import DuplicateRecordingJobError
  
-+    payload = ui_routes._glossary_form_payload(  # noqa: SLF001
-+        canonical_text="Known",
-+        aliases_text="Alias",
-+        kind="term",
-+        source="manual",
-+        enabled="1",
-+        notes="note",
-+        recording_id="   ",
-+        existing_metadata={"recording_id": "rec-1", "import_source": "csv"},
+@@ -1014,6 +1015,84 @@ def test_resummarize_recording_default_turn_and_attendees_paths(
+     assert any(path.name == "summary.json" for path in writes)
+ 
+ 
++def test_resummarize_recording_prefers_selected_calendar_context(
++    tmp_path: Path,
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    cfg = _cfg(tmp_path)
++    init_db(cfg)
++    create_recording(
++        "rec-resummarize-selected-cal",
++        source="upload",
++        source_filename="selected.wav",
++        status=RECORDING_STATUS_READY,
++        settings=cfg,
 +    )
-+    assert payload["metadata"] == {"import_source": "csv"}
++    upsert_calendar_match(
++        recording_id="rec-resummarize-selected-cal",
++        candidates=[
++            {
++                "event_id": "evt-selected",
++                "subject": "Selected Calendar Event",
++                "attendee_details": [{"label": "Priya Kapoor"}],
++            }
++        ],
++        selected_event_id="evt-selected",
++        selected_confidence=0.9,
++        settings=cfg,
++    )
++    derived = cfg.recordings_root / "rec-resummarize-selected-cal" / "derived"
++    derived.mkdir(parents=True, exist_ok=True)
++    (derived / "transcript.json").write_text(
++        json.dumps(
++            {
++                "text": "hello world",
++                "calendar_title": "Stale title",
++                "calendar_attendees": ["Stale attendee"],
++            }
++        ),
++        encoding="utf-8",
++    )
++    (derived / "summary.json").write_text(json.dumps({"friendly": 0}), encoding="utf-8")
++
++    monkeypatch.setattr(ui_routes, "_fallback_speaker_turns_from_transcript", lambda *_a, **_k: [])
++    monkeypatch.setattr(
++        ui_routes,
++        "PipelineSettings",
++        lambda **kwargs: type("S", (), {"llm_model": "test-model", **kwargs})(),
++    )
++    prompts_seen: dict[str, Any] = {}
++
++    def _prompts(turns: list[dict[str, Any]], *_a: Any, **kwargs: Any) -> tuple[str, str]:
++        prompts_seen["turns"] = turns
++        prompts_seen["title"] = kwargs.get("calendar_title")
++        prompts_seen["attendees"] = kwargs.get("calendar_attendees")
++        return "sys", "usr"
++
++    class _FakeLLM:
++        async def generate(self, **_kwargs: Any) -> dict[str, str]:
++            return {"content": '{"summary":"ok"}'}
++
++    monkeypatch.setattr(ui_routes, "build_structured_summary_prompts", _prompts)
++    monkeypatch.setattr(ui_routes, "LLMClient", lambda: _FakeLLM())
++    monkeypatch.setattr(
++        ui_routes,
++        "build_summary_payload",
++        lambda **_k: {"summary": "ok", "friendly": 0},
++    )
++    monkeypatch.setattr(ui_routes, "atomic_write_json", lambda *_a, **_k: None)
++    monkeypatch.setattr(ui_routes, "refresh_recording_metrics", lambda *_a, **_k: None)
++
++    ui_routes._resummarize_recording(  # noqa: SLF001
++        "rec-resummarize-selected-cal",
++        settings=cfg,
++        target_summary_language=None,
++    )
++    assert prompts_seen["turns"][0]["speaker"] == "S1"
++    assert prompts_seen["title"] == "Selected Calendar Event"
++    assert prompts_seen["attendees"] == ["Priya Kapoor"]
++
++
+ def test_resummarize_recording_uses_existing_speaker_turns(
+     tmp_path: Path,
+     monkeypatch: pytest.MonkeyPatch,
+@@ -1079,6 +1158,91 @@ def test_datetime_and_calendar_parse_errors(tmp_path: Path, monkeypatch: pytest.
+         )
+ 
+ 
++def test_calendar_ui_helper_context_paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
++    cfg = _cfg(tmp_path)
++    init_db(cfg)
++    assert ui_routes._calendar_attendee_labels("bad") == []  # noqa: SLF001
++    assert ui_routes._calendar_attendee_labels(  # noqa: SLF001
++        [{"label": ""}, {"label": "Alex"}, {"name": "Alex"}, "Priya", "Priya"]
++    ) == ["Alex", "Priya"]
++    assert ui_routes._calendar_rationale_rows(123) == []  # noqa: SLF001
++    assert ui_routes._calendar_rationale_rows(" one ") == ["one"]  # noqa: SLF001
++    candidate = ui_routes._calendar_candidate_context(  # noqa: SLF001
++        {
++            "event_id": "evt-1",
++            "subject": "Calendar event",
++            "starts_at": "2026-03-01T10:00:00Z",
++            "ends_at": "2026-03-01T11:00:00Z",
++            "attendee_details": [{"label": "Alex"}],
++            "source_kind": "file",
++            "rationale": "manual",
++        },
++        selected_event_id="evt-1",
++    )
++    assert candidate["selected"] is True
++    assert candidate["attendees_label"] == "Alex"
++    assert candidate["source_label"] == "file"
++
++    monkeypatch.setattr(
++        ui_routes,
++        "get_calendar_match",
++        lambda *_a, **_k: {"selected_event_id": "evt-1", "selected_confidence": 0.7},
++    )
++    monkeypatch.setattr(
++        ui_routes,
++        "selected_calendar_candidate",
++        lambda *_a, **_k: {"event_id": "evt-1", "subject": "Selected"},
++    )
++    monkeypatch.setattr(
++        ui_routes,
++        "calendar_match_candidates",
++        lambda *_a, **_k: [{"event_id": "evt-1", "subject": "Selected"}],
++    )
++    context = ui_routes._calendar_tab_context("rec-helper", cfg)  # noqa: SLF001
++    assert context["selected"]["subject_display"] == "Selected"
++    assert context["candidates"][0]["selected"] is True
++
++
++def test_calendar_detail_error_and_invalid_confidence_paths(
++    client: tuple[AppSettings, TestClient],
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    cfg, c = client
++    _seed_recording(cfg, "rec-calendar-ui-edge")
++    monkeypatch.setattr(
++        ui_routes,
++        "get_calendar_match",
++        lambda *_a, **_k: {"selected_event_id": "", "selected_confidence": None},
++    )
++    monkeypatch.setattr(ui_routes, "selected_calendar_candidate", lambda *_a, **_k: {})
++    monkeypatch.setattr(ui_routes, "calendar_match_candidates", lambda *_a, **_k: [])
++    detail = c.get("/recordings/rec-calendar-ui-edge?tab=calendar&calendar_error=Need+review")
++    assert detail.status_code == 200
++    assert "Need review" in detail.text
++
++    monkeypatch.setattr(
++        ui_routes,
++        "calendar_match_candidates",
++        lambda *_a, **_k: [
++            {"event_id": "evt-other", "score": 0.1},
++            {"event_id": "evt-edge", "score": "bad"},
++        ],
++    )
++    captured: dict[str, Any] = {}
++    monkeypatch.setattr(
++        ui_routes,
++        "set_calendar_match_selection",
++        lambda **kwargs: captured.update(kwargs) or kwargs,
++    )
++    monkeypatch.setattr(ui_routes, "refresh_recording_routing", lambda *_a, **_k: {})
++    selected = c.post(
++        "/ui/recordings/rec-calendar-ui-edge/calendar/select",
++        data={"event_id": "evt-edge"},
++    )
++    assert selected.status_code == 303
++    assert captured["selected_confidence"] is None
++
++
+ def test_auth_route_edge_paths(client: tuple[AppSettings, TestClient], monkeypatch: pytest.MonkeyPatch) -> None:
+     _cfg, c = client
+     monkeypatch.setattr(ui_routes, "auth_enabled", lambda *_a, **_k: False)
+@@ -1418,6 +1582,16 @@ def test_calendar_route_edge_paths(
+     assert failed_sync.status_code == 303
+     assert "error=" in failed_sync.headers["location"]
+ 
++    _seed_recording(cfg, "rec-calendar-select-edge")
++    missing_recording = c.post("/ui/recordings/missing/calendar/select", data={})
++    assert missing_recording.status_code == 404
++
++    bad_select = c.post(
++        "/ui/recordings/rec-calendar-select-edge/calendar/select",
++        data={"event_id": "evt-missing"},
++    )
++    assert bad_select.status_code == 422
 +
  
- def test_fallback_turns_and_path_helpers(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-     turns = ui_routes._fallback_speaker_turns_from_transcript(  # noqa: SLF001
-diff --git a/tests/test_ui_routes.py b/tests/test_ui_routes.py
-index f14a0ce..41f4dff 100644
---- a/tests/test_ui_routes.py
-+++ b/tests/test_ui_routes.py
-@@ -36,6 +36,7 @@ from lan_app.db import (
-     list_voice_profiles,
-     set_recording_progress,
-     set_speaker_assignment,
-+    update_glossary_entry,
-     upsert_calendar_match,
-     upsert_meeting_metrics,
- )
-@@ -1170,6 +1171,16 @@ def test_glossary_page_create_edit_and_delete(tmp_path, monkeypatch):
-     created_entry = list_glossary_entries(settings=cfg)[0]
-     assert created_entry["aliases_json"] == ["Sandia", "Sandoor"]
-     assert created_entry["metadata_json"] == {"recording_id": "rec-ui-glossary-create-1"}
-+    seeded_entry = update_glossary_entry(
-+        int(created_entry["id"]),
+ def test_queue_action_error_paths(
+     client: tuple[AppSettings, TestClient],
+diff --git a/tests/test_cov_lan_app_worker_tasks_branches.py b/tests/test_cov_lan_app_worker_tasks_branches.py
+index 2df55e0..adbe47e 100644
+--- a/tests/test_cov_lan_app_worker_tasks_branches.py
++++ b/tests/test_cov_lan_app_worker_tasks_branches.py
+@@ -382,32 +382,29 @@ def test_load_calendar_summary_context_handles_invalid_candidate_shapes(
+ 
+     monkeypatch.setattr(
+         worker_tasks,
+-        "get_calendar_match",
+-        lambda *_a, **_k: {"selected_event_id": "evt-1", "candidates_json": "{bad"},
++        "calendar_summary_context",
++        lambda *_a, **_k: (None, []),
+     )
+     assert worker_tasks._load_calendar_summary_context("rec-cal-1", cfg) == (None, [])
+ 
+     monkeypatch.setattr(
+         worker_tasks,
+-        "get_calendar_match",
+-        lambda *_a, **_k: {"selected_event_id": "evt-1", "candidates_json": "{}"},
++        "calendar_summary_context",
++        lambda *_a, **_k: (None, []),
+     )
+     assert worker_tasks._load_calendar_summary_context("rec-cal-2", cfg) == (None, [])
+ 
+     monkeypatch.setattr(
+         worker_tasks,
+-        "get_calendar_match",
+-        lambda *_a, **_k: {"selected_event_id": "evt-1", "candidates_json": 123},
++        "calendar_summary_context",
++        lambda *_a, **_k: (None, []),
+     )
+     assert worker_tasks._load_calendar_summary_context("rec-cal-3", cfg) == (None, [])
+ 
+     monkeypatch.setattr(
+         worker_tasks,
+-        "get_calendar_match",
+-        lambda *_a, **_k: {
+-            "selected_event_id": "evt-1",
+-            "candidates_json": '[{"event_id":"evt-1","subject":"Team Sync","attendees":[]}]',
+-        },
++        "calendar_summary_context",
++        lambda *_a, **_k: ("Team Sync", []),
+     )
+     assert worker_tasks._load_calendar_summary_context("rec-cal-3b", cfg) == (
+         "Team Sync",
+@@ -416,11 +413,8 @@ def test_load_calendar_summary_context_handles_invalid_candidate_shapes(
+ 
+     monkeypatch.setattr(
+         worker_tasks,
+-        "get_calendar_match",
+-        lambda *_a, **_k: {
+-            "selected_event_id": "evt-1",
+-            "candidates_json": ["not-dict", {"event_id": "evt-2"}],
+-        },
++        "calendar_summary_context",
++        lambda *_a, **_k: (None, []),
+     )
+     assert worker_tasks._load_calendar_summary_context("rec-cal-4", cfg) == (None, [])
+ 
+@@ -432,13 +426,8 @@ def test_load_calendar_summary_context_returns_title_without_attendees_list(
+     cfg = _db_settings(tmp_path)
+     monkeypatch.setattr(
+         worker_tasks,
+-        "get_calendar_match",
+-        lambda *_a, **_k: {
+-            "selected_event_id": "evt-1",
+-            "candidates_json": [
+-                {"event_id": "evt-1", "subject": "Weekly Sync", "attendees": "not-a-list"}
+-            ],
+-        },
++        "calendar_summary_context",
++        lambda *_a, **_k: ("Weekly Sync", []),
+     )
+ 
+     assert worker_tasks._load_calendar_summary_context("rec-cal-5", cfg) == (
+@@ -981,6 +970,83 @@ def test_run_precheck_pipeline_uses_sanitized_audio_for_precheck_and_pipeline(
+     assert recording["duration_sec"] == 30.0
+ 
+ 
++def test_run_precheck_pipeline_survives_calendar_refresh_failures(
++    tmp_path: Path,
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    cfg = _db_settings(tmp_path)
++    init_db(cfg)
++    create_recording(
++        "rec-calendar-refresh-fail-1",
++        source="test",
++        source_filename="calendar-refresh.wav",
 +        settings=cfg,
-+        metadata={
-+            "recording_id": "rec-ui-glossary-create-1",
-+            "import_source": "csv",
-+            "audit": {"by": "importer"},
++    )
++
++    raw_audio = cfg.recordings_root / "rec-calendar-refresh-fail-1" / "raw" / "audio.wav"
++    raw_audio.parent.mkdir(parents=True, exist_ok=True)
++    _write_pcm_wav(raw_audio)
++
++    monkeypatch.setattr(worker_tasks, "_resolve_raw_audio_path", lambda *_a, **_k: raw_audio)
++    monkeypatch.setattr(worker_tasks, "sanitize_audio_for_pipeline", lambda src, _dst: src)
++    monkeypatch.setattr(
++        worker_tasks,
++        "run_precheck",
++        lambda *_a, **_k: PrecheckResult(
++            duration_sec=20.0,
++            speech_ratio=0.5,
++            quarantine_reason=None,
++        ),
++    )
++    monkeypatch.setattr(
++        worker_tasks,
++        "refresh_recording_calendar_match",
++        lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("calendar boom")),
++    )
++    monkeypatch.setattr(
++        worker_tasks,
++        "_build_diariser",
++        lambda *_a, **_k: worker_tasks._FallbackDiariser(20.0),
++    )
++    monkeypatch.setattr(
++        worker_tasks,
++        "build_recording_asr_glossary",
++        lambda *_a, **_k: {
++            "entry_count": 0,
++            "term_count": 0,
++            "truncated": False,
++            "initial_prompt": "",
++            "hotwords": "",
 +        },
 +    )
-+    assert seeded_entry["metadata_json"]["import_source"] == "csv"
++    monkeypatch.setattr(
++        worker_tasks,
++        "_load_transcript_language_payload",
++        lambda *_a, **_k: (None, None),
++    )
++    monkeypatch.setattr(
++        worker_tasks,
++        "refresh_recording_metrics",
++        lambda *_a, **_k: {"participants": [], "meeting": {}},
++    )
++    monkeypatch.setattr(worker_tasks, "refresh_recording_routing", lambda *_a, **_k: {})
++    monkeypatch.setattr(worker_tasks, "run_pipeline", lambda *_a, **_k: asyncio.sleep(0))
++
++    state = worker_tasks._run_precheck_pipeline(
++        recording_id="rec-calendar-refresh-fail-1",
++        settings=cfg,
++        log_path=cfg.recordings_root
++        / "rec-calendar-refresh-fail-1"
++        / "logs"
++        / "step-precheck.log",
++    )
++
++    assert state.status == RECORDING_STATUS_READY
++    recording = get_recording("rec-calendar-refresh-fail-1", settings=cfg)
++    assert recording is not None
++    assert recording["duration_sec"] == 20.0
++
++
+ def test_run_precheck_pipeline_marks_fallback_when_builder_returns_fallback(
+     tmp_path: Path,
+     monkeypatch: pytest.MonkeyPatch,
+diff --git a/tests/test_db_queue.py b/tests/test_db_queue.py
+index fe69b25..a70f79a 100644
+--- a/tests/test_db_queue.py
++++ b/tests/test_db_queue.py
+@@ -961,17 +961,8 @@ def test_load_calendar_summary_context_uses_preparsed_candidates(tmp_path: Path,
+     cfg = _test_settings(tmp_path)
+     monkeypatch.setattr(
+         worker_tasks,
+-        "get_calendar_match",
+-        lambda *_a, **_k: {
+-            "selected_event_id": "evt-1",
+-            "candidates_json": [
+-                {
+-                    "event_id": "evt-1",
+-                    "subject": "Roadmap Review",
+-                    "attendees": ["Alex", " Priya ", ""],
+-                }
+-            ],
+-        },
++        "calendar_summary_context",
++        lambda *_a, **_k: ("Roadmap Review", ["Alex", "Priya"]),
+     )
  
-     edit_page = TestClient(api.app, follow_redirects=True).get(
-         f"/glossary?edit_id={created_entry['id']}"
-@@ -1194,6 +1205,11 @@ def test_glossary_page_create_edit_and_delete(tmp_path, monkeypatch):
-     assert updated_entry["canonical_text"] == "Sander Van Doorn"
-     assert updated_entry["enabled"] == 0
-     assert updated_entry["source"] == "manual"
-+    assert updated_entry["metadata_json"] == {
-+        "recording_id": "rec-ui-glossary-create-2",
-+        "import_source": "csv",
-+        "audit": {"by": "importer"},
+     title, attendees = worker_tasks._load_calendar_summary_context("rec-cal-ctx-1", settings=cfg)
+diff --git a/tests/test_ui_routes.py b/tests/test_ui_routes.py
+index 41f4dff..e281097 100644
+--- a/tests/test_ui_routes.py
++++ b/tests/test_ui_routes.py
+@@ -22,6 +22,7 @@ from lan_app.db import (
+     create_recording,
+     create_project,
+     create_voice_profile,
++    get_calendar_match,
+     get_glossary_entry,
+     get_recording,
+     list_glossary_entries,
+@@ -357,6 +358,111 @@ def test_recording_detail_overview_shows_asr_glossary_context(tmp_path, monkeypa
+     assert "correction, speaker bank" in r.text
+ 
+ 
++def test_recording_detail_calendar_tab_renders_selected_candidate_and_rationale(
++    tmp_path,
++    monkeypatch,
++):
++    cfg = _cfg(tmp_path)
++    monkeypatch.setattr(api, "_settings", cfg)
++    monkeypatch.setattr(ui_routes, "_settings", cfg)
++    init_db(cfg)
++    create_recording(
++        "rec-ui-calendar-1",
++        source="upload",
++        source_filename="roadmap.wav",
++        status=RECORDING_STATUS_READY,
++        settings=cfg,
++    )
++    upsert_calendar_match(
++        recording_id="rec-ui-calendar-1",
++        candidates=[
++            {
++                "event_id": "evt-roadmap",
++                "subject": "Roadmap Weekly Sync",
++                "starts_at": "2026-03-01T10:00:00Z",
++                "ends_at": "2026-03-01T11:00:00Z",
++                "source_name": "Team Calendar",
++                "organizer": "Alex Example",
++                "attendee_details": [
++                    {"label": "Priya Kapoor", "email": "priya@example.com"},
++                    {"label": "Marco Rossi"},
++                ],
++                "confidence": 0.92,
++                "rationale": ["Capture time falls inside the event window.", "Final confidence 0.92."],
++            },
++            {
++                "event_id": "evt-other",
++                "subject": "Other Meeting",
++                "starts_at": "2026-03-01T12:00:00Z",
++                "ends_at": "2026-03-01T13:00:00Z",
++                "source_name": "Team Calendar",
++                "organizer": "Jordan",
++                "attendees": ["Alex Example"],
++                "confidence": 0.33,
++                "rationale": "Low confidence",
++            },
++        ],
++        selected_event_id="evt-roadmap",
++        selected_confidence=0.92,
++        settings=cfg,
++    )
++
++    c = TestClient(api.app, follow_redirects=True)
++    response = c.get("/recordings/rec-ui-calendar-1?tab=calendar")
++    assert response.status_code == 200
++    assert "Calendar Match" in response.text
++    assert "Roadmap Weekly Sync" in response.text
++    assert "Capture time falls inside the event window." in response.text
++    assert "Priya Kapoor" in response.text
++    assert "Selected" in response.text
++
++
++def test_recording_detail_calendar_selection_and_clear_persist(tmp_path, monkeypatch):
++    cfg = _cfg(tmp_path)
++    monkeypatch.setattr(api, "_settings", cfg)
++    monkeypatch.setattr(ui_routes, "_settings", cfg)
++    init_db(cfg)
++    create_recording(
++        "rec-ui-calendar-select-1",
++        source="upload",
++        source_filename="planning.wav",
++        status=RECORDING_STATUS_READY,
++        settings=cfg,
++    )
++    upsert_calendar_match(
++        recording_id="rec-ui-calendar-select-1",
++        candidates=[
++            {
++                "event_id": "evt-a",
++                "subject": "Planning",
++                "confidence": 0.81,
++            }
++        ],
++        selected_event_id=None,
++        selected_confidence=None,
++        settings=cfg,
++    )
++    monkeypatch.setattr(ui_routes, "refresh_recording_routing", lambda *_a, **_k: {})
++
++    c = TestClient(api.app, follow_redirects=False)
++    selected = c.post(
++        "/ui/recordings/rec-ui-calendar-select-1/calendar/select",
++        data={"event_id": "evt-a"},
++    )
++    assert selected.status_code == 303
++    assert selected.headers["location"] == "/recordings/rec-ui-calendar-select-1?tab=calendar"
++    match = get_calendar_match("rec-ui-calendar-select-1", settings=cfg)
++    assert match is not None
++    assert match["selected_event_id"] == "evt-a"
++    assert match["selected_confidence"] == 0.81
++
++    cleared = c.post("/ui/recordings/rec-ui-calendar-select-1/calendar/select", data={})
++    assert cleared.status_code == 303
++    match = get_calendar_match("rec-ui-calendar-select-1", settings=cfg)
++    assert match is not None
++    assert match["selected_event_id"] is None
++
++
+ def test_recording_detail_processing_polls_progress(tmp_path, monkeypatch):
+     cfg = _cfg(tmp_path)
+     monkeypatch.setattr(api, "_settings", cfg)
+@@ -2090,6 +2196,7 @@ def test_calendars_page_renders_seeded_sources_and_events(tmp_path, monkeypatch)
+                 "location": "Room 5",
+                 "description": "fixture",
+                 "organizer": "Alex",
++                "attendees": [{"label": "Priya Kapoor"}],
+                 "updated_at": "2026-02-01T00:00:00Z",
+             },
+             {
+@@ -2112,7 +2219,10 @@ def test_calendars_page_renders_seeded_sources_and_events(tmp_path, monkeypatch)
+     assert response.status_code == 200
+     assert "Calendars" in response.text
+     assert "Local Team Calendar" in response.text
++    assert ">2<" in response.text
+     assert "Seeded calendar event" in response.text
++    assert "Priya Kapoor" in response.text
++    assert "2026-02-03 11:00:00 CET" in response.text
+     assert "End date event" in response.text
+ 
+ 
+diff --git a/lan_app/calendar/matching.py b/lan_app/calendar/matching.py
+new file mode 100644
+index 0000000..26bc77d
+--- /dev/null
++++ b/lan_app/calendar/matching.py
+@@ -0,0 +1,368 @@
++from __future__ import annotations
++
++from datetime import datetime, timedelta, timezone
++import json
++from pathlib import Path
++import re
++from typing import Any
++
++from lan_app.config import AppSettings
++from lan_app.db import (
++    get_calendar_match,
++    get_recording,
++    list_calendar_events,
++    upsert_calendar_match,
++)
++
++_AUTO_SELECT_MIN_MARGIN = 0.12
++_AUTO_SELECT_MIN_SCORE = 0.78
++_SEARCH_WINDOW_AFTER = timedelta(hours=12)
++_SEARCH_WINDOW_BEFORE = timedelta(hours=8)
++_TOKEN_RE = re.compile(r"[a-z0-9]{2,}")
++_STOPWORDS = {"and", "audio", "meeting", "recording", "sync", "the"}
++
++
++def _utc_iso(value: datetime) -> str:
++    return value.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace(
++        "+00:00", "Z"
++    )
++
++
++def _parse_datetime(value: object) -> datetime | None:
++    if not isinstance(value, str) or not value.strip():
++        return None
++    text = value.strip()
++    normalized = text[:-1] + "+00:00" if text.endswith("Z") else text
++    try:
++        parsed = datetime.fromisoformat(normalized)
++    except ValueError:
++        return None
++    if parsed.tzinfo is None:
++        parsed = parsed.replace(tzinfo=timezone.utc)
++    return parsed.astimezone(timezone.utc)
++
++
++def _safe_duration_seconds(value: object) -> float | None:
++    try:
++        duration = float(value)
++    except (TypeError, ValueError):
++        return None
++    if duration <= 0:
++        return None
++    return duration
++
++
++def _tokenize(value: object) -> set[str]:
++    text = str(value or "").strip().lower()
++    if not text:
++        return set()
++    tokens = {token for token in _TOKEN_RE.findall(text) if token not in _STOPWORDS}
++    return tokens
++
++
++def _recording_tokens(recording: dict[str, Any]) -> set[str]:
++    filename = Path(str(recording.get("source_filename") or "").strip()).stem
++    return _tokenize(filename)
++
++
++def _candidate_rows(raw: object) -> list[dict[str, Any]]:
++    if isinstance(raw, str):
++        try:
++            raw = json.loads(raw or "[]")
++        except ValueError:
++            return []
++    if not isinstance(raw, list):
++        return []
++    return [row for row in raw if isinstance(row, dict)]
++
++
++def calendar_match_candidates(
++    recording_id: str,
++    *,
++    settings: AppSettings,
++) -> list[dict[str, Any]]:
++    row = get_calendar_match(recording_id, settings=settings) or {}
++    return _candidate_rows(row.get("candidates_json"))
++
++
++def _candidate_attendee_details(value: object) -> list[dict[str, str]]:
++    if not isinstance(value, list):
++        return []
++    out: list[dict[str, str]] = []
++    seen: set[tuple[str, str]] = set()
++    for row in value:
++        if isinstance(row, dict):
++            name = str(row.get("name") or "").strip()
++            email = str(row.get("email") or "").strip()
++            label = str(row.get("label") or name or email).strip()
++        else:
++            name = ""
++            email = ""
++            label = str(row or "").strip()
++        if not label:
++            continue
++        dedupe_key = (email.lower(), label.lower())
++        if dedupe_key in seen:
++            continue
++        seen.add(dedupe_key)
++        payload = {"label": label}
++        if name:
++            payload["name"] = name
++        if email:
++            payload["email"] = email
++        out.append(payload)
++    return out
++
++
++def _candidate_attendees(candidate: dict[str, Any]) -> list[str]:
++    attendees = candidate.get("attendees")
++    if isinstance(attendees, list):
++        cleaned = [str(value).strip() for value in attendees if str(value).strip()]
++        if cleaned:
++            return cleaned
++    return [row["label"] for row in _candidate_attendee_details(candidate.get("attendee_details"))]
++
++
++def selected_calendar_candidate(
++    recording_id: str,
++    *,
++    settings: AppSettings,
++) -> dict[str, Any]:
++    row = get_calendar_match(recording_id, settings=settings) or {}
++    selected_event_id = str(row.get("selected_event_id") or "").strip()
++    if not selected_event_id:
++        return {}
++    for candidate in _candidate_rows(row.get("candidates_json")):
++        if str(candidate.get("event_id") or "").strip() == selected_event_id:
++            normalized = dict(candidate)
++            normalized["attendees"] = _candidate_attendees(normalized)
++            return normalized
++    return {}
++
++
++def calendar_summary_context(
++    recording_id: str,
++    *,
++    settings: AppSettings,
++) -> tuple[str | None, list[str]]:
++    selected = selected_calendar_candidate(recording_id, settings=settings)
++    title = str(selected.get("subject") or selected.get("summary") or "").strip() or None
++    return title, _candidate_attendees(selected)
++
++
++def _event_identifier(event: dict[str, Any]) -> str:
++    source_id = str(event.get("source_id") or "").strip()
++    uid = str(event.get("uid") or "").strip()
++    starts_at = str(event.get("starts_at") or "").strip()
++    return f"{source_id}:{uid}:{starts_at}"
++
++
++def _event_attendee_details(event: dict[str, Any]) -> list[dict[str, str]]:
++    return _candidate_attendee_details(event.get("attendees_json"))
++
++
++def _event_attendees(event: dict[str, Any]) -> list[str]:
++    return [row["label"] for row in _event_attendee_details(event)]
++
++
++def _event_tokens(event: dict[str, Any]) -> set[str]:
++    values: list[object] = [
++        event.get("summary"),
++        event.get("location"),
++        event.get("organizer"),
++    ]
++    values.extend(_event_attendees(event))
++    tokens: set[str] = set()
++    for value in values:
++        tokens.update(_tokenize(value))
++    return tokens
++
++
++def _score_event(
++    *,
++    event: dict[str, Any],
++    captured_at: datetime,
++    duration_sec: float | None,
++    recording_tokens: set[str],
++) -> dict[str, Any] | None:
++    starts_at = _parse_datetime(event.get("starts_at"))
++    ends_at = _parse_datetime(event.get("ends_at"))
++    if starts_at is None or ends_at is None or ends_at <= starts_at:
++        return None
++
++    start_delta_minutes = abs((captured_at - starts_at).total_seconds()) / 60.0
++    proximity_score = max(0.0, 1.0 - (start_delta_minutes / 180.0))
++    capture_inside = starts_at <= captured_at <= ends_at
++    presence_score = 1.0 if capture_inside else 0.0
++
++    overlap_score = 0.0
++    duration_score = 0.0
++    if duration_sec is not None:
++        recording_end = captured_at + timedelta(seconds=duration_sec)
++        overlap_seconds = max(
++            0.0,
++            (min(recording_end, ends_at) - max(captured_at, starts_at)).total_seconds(),
++        )
++        overlap_score = min(1.0, overlap_seconds / max(duration_sec, 1.0))
++        event_duration_seconds = max((ends_at - starts_at).total_seconds(), 60.0)
++        duration_score = max(
++            0.0,
++            1.0
++            - (
++                abs(event_duration_seconds - duration_sec)
++                / max(event_duration_seconds, duration_sec, 1.0)
++            ),
++        )
++
++    event_tokens = _event_tokens(event)
++    shared_tokens = sorted(recording_tokens & event_tokens)
++    token_score = (
++        min(1.0, len(shared_tokens) / max(len(recording_tokens), 1))
++        if recording_tokens
++        else 0.0
++    )
++
++    if duration_sec is None:
++        score = (0.60 * proximity_score) + (0.25 * presence_score) + (0.15 * token_score)
++    else:
++        score = (
++            (0.30 * proximity_score)
++            + (0.30 * presence_score)
++            + (0.25 * overlap_score)
++            + (0.10 * duration_score)
++            + (0.05 * token_score)
++        )
++    confidence = round(max(0.0, min(score, 1.0)), 4)
++
++    rationale = [f"Start is {int(round(start_delta_minutes))}m from capture time."]
++    if capture_inside:
++        rationale.append("Capture time falls inside the event window.")
++    if duration_sec is not None:
++        rationale.append(
++            f"Recording overlaps {int(round(overlap_score * 100))}% of the event window."
++        )
++        rationale.append(
++            f"Duration similarity is {int(round(duration_score * 100))}%."
++        )
++    if shared_tokens:
++        rationale.append(f"Shared filename/title tokens: {', '.join(shared_tokens)}.")
++    rationale.append(f"Final confidence {confidence:.2f}.")
++
++    return {
++        "event_id": _event_identifier(event),
++        "uid": str(event.get("uid") or "").strip(),
++        "source_id": event.get("source_id"),
++        "source_name": str(event.get("source_name") or "").strip() or None,
++        "source_kind": str(event.get("source_kind") or "").strip() or None,
++        "subject": str(event.get("summary") or "").strip() or None,
++        "summary": str(event.get("summary") or "").strip() or None,
++        "description": str(event.get("description") or "").strip() or None,
++        "location": str(event.get("location") or "").strip() or None,
++        "starts_at": _utc_iso(starts_at),
++        "ends_at": _utc_iso(ends_at),
++        "all_day": bool(event.get("all_day")),
++        "organizer": str(event.get("organizer") or "").strip() or None,
++        "organizer_name": str(event.get("organizer_name") or "").strip() or None,
++        "organizer_email": str(event.get("organizer_email") or "").strip() or None,
++        "attendees": _event_attendees(event),
++        "attendee_details": _event_attendee_details(event),
++        "score": confidence,
++        "confidence": confidence,
++        "rationale": rationale,
 +    }
- 
-     listing = TestClient(api.app, follow_redirects=True).get("/glossary")
-     assert listing.status_code == 200
++
++
++def _auto_selection(candidates: list[dict[str, Any]]) -> tuple[str | None, float | None]:
++    if not candidates:
++        return None, None
++    top_score = float(candidates[0].get("score") or 0.0)
++    if top_score < _AUTO_SELECT_MIN_SCORE:
++        return None, None
++    if len(candidates) > 1:
++        next_score = float(candidates[1].get("score") or 0.0)
++        if (top_score - next_score) < _AUTO_SELECT_MIN_MARGIN:
++            return None, None
++    return str(candidates[0].get("event_id") or "").strip() or None, top_score
++
++
++def match_recording_to_calendar(
++    recording: dict[str, Any],
++    *,
++    settings: AppSettings,
++) -> dict[str, Any]:
++    recording_id = str(recording.get("id") or "").strip()
++    captured_at = _parse_datetime(recording.get("captured_at"))
++    if captured_at is None:
++        return {
++            "recording_id": recording_id,
++            "candidates": [],
++            "selected_event_id": None,
++            "selected_confidence": None,
++        }
++
++    duration_sec = _safe_duration_seconds(recording.get("duration_sec"))
++    window_end = captured_at + max(
++        _SEARCH_WINDOW_AFTER,
++        timedelta(seconds=duration_sec or 0.0) + timedelta(hours=2),
++    )
++    events = list_calendar_events(
++        starts_from=_utc_iso(captured_at - _SEARCH_WINDOW_BEFORE),
++        ends_to=_utc_iso(window_end),
++        settings=settings,
++    )
++    recording_tokens = _recording_tokens(recording)
++    candidates = [
++        candidate
++        for event in events
++        if (candidate := _score_event(
++            event=event,
++            captured_at=captured_at,
++            duration_sec=duration_sec,
++            recording_tokens=recording_tokens,
++        ))
++        is not None
++    ]
++    candidates.sort(
++        key=lambda candidate: (
++            -float(candidate.get("score") or 0.0),
++            str(candidate.get("starts_at") or ""),
++            str(candidate.get("event_id") or ""),
++        )
++    )
++    selected_event_id, selected_confidence = _auto_selection(candidates)
++    return {
++        "recording_id": recording_id,
++        "candidates": candidates,
++        "selected_event_id": selected_event_id,
++        "selected_confidence": selected_confidence,
++    }
++
++
++def refresh_recording_calendar_match(
++    recording_id: str,
++    *,
++    settings: AppSettings,
++) -> dict[str, Any]:
++    recording = get_recording(recording_id, settings=settings)
++    if recording is None:
++        raise KeyError(recording_id)
++    existing = get_calendar_match(recording_id, settings=settings) or {}
++    match = match_recording_to_calendar(recording, settings=settings)
++    if not match["candidates"] and _candidate_rows(existing.get("candidates_json")):
++        return existing
++    return upsert_calendar_match(
++        recording_id=recording_id,
++        candidates=match["candidates"],
++        selected_event_id=match["selected_event_id"],
++        selected_confidence=match["selected_confidence"],
++        settings=settings,
++    )
++
++
++__all__ = [
++    "calendar_match_candidates",
++    "calendar_summary_context",
++    "match_recording_to_calendar",
++    "refresh_recording_calendar_match",
++    "selected_calendar_candidate",
++]
+diff --git a/lan_app/migrations/018_calendar_attendees_and_organizer.sql b/lan_app/migrations/018_calendar_attendees_and_organizer.sql
+new file mode 100644
+index 0000000..f657c1d
+--- /dev/null
++++ b/lan_app/migrations/018_calendar_attendees_and_organizer.sql
+@@ -0,0 +1,8 @@
++ALTER TABLE calendar_events
++    ADD COLUMN organizer_name TEXT;
++
++ALTER TABLE calendar_events
++    ADD COLUMN organizer_email TEXT;
++
++ALTER TABLE calendar_events
++    ADD COLUMN attendees_json TEXT NOT NULL DEFAULT '[]';
+diff --git a/tests/test_calendar_matching.py b/tests/test_calendar_matching.py
+new file mode 100644
+index 0000000..6c1b37c
+--- /dev/null
++++ b/tests/test_calendar_matching.py
+@@ -0,0 +1,319 @@
++from __future__ import annotations
++
++from datetime import datetime, timezone
++from pathlib import Path
++
++import pytest
++
++from lan_app.calendar import matching
++from lan_app.config import AppSettings
++from lan_app.db import (
++    create_calendar_source,
++    create_recording,
++    get_calendar_match,
++    init_db,
++    replace_calendar_events_for_window,
++    upsert_calendar_match,
++)
++
++
++def _cfg(tmp_path: Path) -> AppSettings:
++    cfg = AppSettings(
++        data_root=tmp_path,
++        recordings_root=tmp_path / "recordings",
++        db_path=tmp_path / "db" / "app.db",
++    )
++    cfg.metrics_snapshot_path = tmp_path / "metrics.snap"
++    return cfg
++
++
++def test_matching_private_helpers_cover_edge_cases() -> None:
++    assert matching._parse_datetime(None) is None  # noqa: SLF001
++    assert matching._parse_datetime("2026-03-01T10:00:00Z") == datetime(  # noqa: SLF001
++        2026,
++        3,
++        1,
++        10,
++        0,
++        tzinfo=timezone.utc,
++    )
++    assert matching._parse_datetime("2026-03-01T10:00:00") == datetime(  # noqa: SLF001
++        2026,
++        3,
++        1,
++        10,
++        0,
++        tzinfo=timezone.utc,
++    )
++    assert matching._parse_datetime("bad") is None  # noqa: SLF001
++    assert matching._safe_duration_seconds("12.5") == 12.5  # noqa: SLF001
++    assert matching._safe_duration_seconds(0) is None  # noqa: SLF001
++    assert matching._tokenize("The Roadmap sync audio") == {"roadmap"}  # noqa: SLF001
++    assert matching._recording_tokens({"source_filename": "Roadmap Review.wav"}) == {  # noqa: SLF001
++        "review",
++        "roadmap",
++    }
++    assert matching._candidate_rows("{bad") == []  # noqa: SLF001
++    assert matching._candidate_rows("{}") == []  # noqa: SLF001
++    assert matching._candidate_rows([{"event_id": "evt-1"}, "skip"]) == [  # noqa: SLF001
++        {"event_id": "evt-1"}
++    ]
++    details = matching._candidate_attendee_details(  # noqa: SLF001
++        [
++            {"name": "Alex", "email": "alex@example.com"},
++            {"label": "Priya"},
++            "Priya",
++            "",
++        ]
++    )
++    assert details == [
++        {
++            "label": "Alex",
++            "name": "Alex",
++            "email": "alex@example.com",
++        },
++        {"label": "Priya"},
++    ]
++    assert matching._candidate_attendees({"attendees": [" Alex ", " "]}) == ["Alex"]  # noqa: SLF001
++    assert matching._candidate_attendees(  # noqa: SLF001
++        {"attendees": [" ", ""], "attendee_details": details}
++    ) == ["Alex", "Priya"]
++    assert matching._candidate_attendees({"attendee_details": details}) == [  # noqa: SLF001
++        "Alex",
++        "Priya",
++    ]
++    assert matching._score_event(  # noqa: SLF001
++        event={"starts_at": "2026-03-01T11:00:00Z", "ends_at": "2026-03-01T10:00:00Z"},
++        captured_at=datetime(2026, 3, 1, 10, 0, tzinfo=timezone.utc),
++        duration_sec=None,
++        recording_tokens=set(),
++    ) is None
++    no_token_score = matching._score_event(  # noqa: SLF001
++        event={
++            "source_id": 1,
++            "uid": "evt-no-token",
++            "starts_at": "2026-03-01T10:00:00Z",
++            "ends_at": "2026-03-01T11:00:00Z",
++            "summary": "Budget review",
++            "attendees_json": [],
++        },
++        captured_at=datetime(2026, 3, 1, 10, 5, tzinfo=timezone.utc),
++        duration_sec=None,
++        recording_tokens={"roadmap"},
++    )
++    assert no_token_score is not None
++    assert all("Shared filename/title tokens" not in row for row in no_token_score["rationale"])
++    assert matching._auto_selection([{"event_id": "evt-low", "score": 0.5}]) == (None, None)  # noqa: SLF001
++
++
++def test_match_recording_to_calendar_scores_and_auto_selects(tmp_path: Path) -> None:
++    cfg = _cfg(tmp_path)
++    init_db(cfg)
++    source = create_calendar_source(
++        name="Team Calendar",
++        kind="file",
++        file_ics="BEGIN:VCALENDAR\nEND:VCALENDAR",
++        settings=cfg,
++    )
++    replace_calendar_events_for_window(
++        source_id=int(source["id"]),
++        window_start="2026-03-01T00:00:00Z",
++        window_end="2026-03-02T00:00:00Z",
++        events=[
++            {
++                "uid": "evt-roadmap",
++                "starts_at": "2026-03-01T10:00:00Z",
++                "ends_at": "2026-03-01T11:00:00Z",
++                "summary": "Roadmap review",
++                "organizer": "Alex",
++                "organizer_name": "Alex",
++                "organizer_email": "alex@example.com",
++                "attendees": [
++                    {"name": "Priya Kapoor", "email": "priya@example.com", "label": "Priya Kapoor"}
++                ],
++                "updated_at": "2026-03-01T00:00:00Z",
++            },
++            {
++                "uid": "evt-budget",
++                "starts_at": "2026-03-01T13:00:00Z",
++                "ends_at": "2026-03-01T14:00:00Z",
++                "summary": "Budget review",
++                "organizer": "Jordan",
++                "attendees": [],
++                "updated_at": "2026-03-01T00:00:00Z",
++            },
++        ],
++        settings=cfg,
++    )
++
++    result = matching.match_recording_to_calendar(
++        {
++            "id": "rec-match-1",
++            "captured_at": "2026-03-01T10:05:00Z",
++            "duration_sec": 3300,
++            "source_filename": "Roadmap review.wav",
++        },
++        settings=cfg,
++    )
++
++    assert result["selected_event_id"] == f"{source['id']}:evt-roadmap:2026-03-01T10:00:00Z"
++    assert result["selected_confidence"] == result["candidates"][0]["score"]
++    assert result["candidates"][0]["attendees"] == ["Priya Kapoor"]
++    assert result["candidates"][0]["attendee_details"][0]["email"] == "priya@example.com"
++    assert result["candidates"][0]["source_name"] == "Team Calendar"
++    assert "Shared filename/title tokens" in " ".join(result["candidates"][0]["rationale"])
++    assert result["candidates"][0]["score"] > result["candidates"][1]["score"]
++
++
++def test_match_recording_to_calendar_keeps_ambiguous_candidates_unselected(tmp_path: Path) -> None:
++    cfg = _cfg(tmp_path)
++    init_db(cfg)
++    source = create_calendar_source(
++        name="Team Calendar",
++        kind="file",
++        file_ics="BEGIN:VCALENDAR\nEND:VCALENDAR",
++        settings=cfg,
++    )
++    replace_calendar_events_for_window(
++        source_id=int(source["id"]),
++        window_start="2026-03-01T00:00:00Z",
++        window_end="2026-03-02T00:00:00Z",
++        events=[
++            {
++                "uid": "evt-a",
++                "starts_at": "2026-03-01T10:00:00Z",
++                "ends_at": "2026-03-01T11:00:00Z",
++                "summary": "Planning session",
++                "updated_at": "2026-03-01T00:00:00Z",
++            },
++            {
++                "uid": "evt-b",
++                "starts_at": "2026-03-01T10:03:00Z",
++                "ends_at": "2026-03-01T11:03:00Z",
++                "summary": "Planning session",
++                "updated_at": "2026-03-01T00:00:00Z",
++            },
++        ],
++        settings=cfg,
++    )
++
++    result = matching.match_recording_to_calendar(
++        {
++            "id": "rec-match-ambiguous",
++            "captured_at": "2026-03-01T10:05:00Z",
++            "source_filename": "planning.wav",
++        },
++        settings=cfg,
++    )
++
++    assert len(result["candidates"]) == 2
++    assert result["selected_event_id"] is None
++    assert result["selected_confidence"] is None
++    assert matching.match_recording_to_calendar(  # noqa: SLF001
++        {"id": "rec-no-capture", "captured_at": None},
++        settings=cfg,
++    ) == {
++        "recording_id": "rec-no-capture",
++        "candidates": [],
++        "selected_event_id": None,
++        "selected_confidence": None,
++    }
++
++
++def test_selected_calendar_helpers_and_refresh_cover_existing_and_missing_paths(
++    tmp_path: Path,
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    cfg = _cfg(tmp_path)
++    init_db(cfg)
++    create_recording(
++        "rec-match-refresh-1",
++        source="upload",
++        source_filename="meeting.wav",
++        settings=cfg,
++    )
++    upsert_calendar_match(
++        recording_id="rec-match-refresh-1",
++        candidates=[
++            {
++                "event_id": "evt-kept",
++                "subject": "Kept meeting",
++                "attendee_details": [{"label": "Alex Example"}],
++            }
++        ],
++        selected_event_id="evt-kept",
++        selected_confidence=0.8,
++        settings=cfg,
++    )
++
++    monkeypatch.setattr(
++        matching,
++        "match_recording_to_calendar",
++        lambda *_a, **_k: {
++            "recording_id": "rec-match-refresh-1",
++            "candidates": [],
++            "selected_event_id": None,
++            "selected_confidence": None,
++        },
++    )
++    refreshed = matching.refresh_recording_calendar_match(
++        "rec-match-refresh-1",
++        settings=cfg,
++    )
++    assert refreshed["selected_event_id"] == "evt-kept"
++    assert matching.calendar_match_candidates("rec-match-refresh-1", settings=cfg) == [
++        {
++            "event_id": "evt-kept",
++            "subject": "Kept meeting",
++            "attendee_details": [{"label": "Alex Example"}],
++        }
++    ]
++    assert matching.selected_calendar_candidate("rec-match-refresh-1", settings=cfg) == {
++        "event_id": "evt-kept",
++        "subject": "Kept meeting",
++        "attendee_details": [{"label": "Alex Example"}],
++        "attendees": ["Alex Example"],
++    }
++    assert matching.calendar_summary_context("rec-match-refresh-1", settings=cfg) == (
++        "Kept meeting",
++        ["Alex Example"],
++    )
++
++    upsert_calendar_match(
++        recording_id="rec-match-refresh-1",
++        candidates=[],
++        selected_event_id=None,
++        selected_confidence=None,
++        settings=cfg,
++    )
++    row = get_calendar_match("rec-match-refresh-1", settings=cfg)
++    assert row is not None
++    assert row["candidates_json"] == []
++
++    upsert_calendar_match(
++        recording_id="rec-match-refresh-1",
++        candidates=[
++            {"event_id": "evt-other", "subject": "Other"},
++            {"event_id": "evt-selected", "summary": "Selected later", "attendees": ["Priya"]},
++        ],
++        selected_event_id="evt-selected",
++        selected_confidence=0.7,
++        settings=cfg,
++    )
++    assert matching.selected_calendar_candidate("rec-match-refresh-1", settings=cfg) == {
++        "event_id": "evt-selected",
++        "summary": "Selected later",
++        "attendees": ["Priya"],
++    }
++
++    monkeypatch.setattr(
++        matching,
++        "get_calendar_match",
++        lambda *_a, **_k: {"selected_event_id": "evt-1", "candidates_json": "{bad"},
++    )
++    assert matching.calendar_match_candidates("rec-bad", settings=cfg) == []
++    assert matching.selected_calendar_candidate("rec-bad", settings=cfg) == {}
++    assert matching.calendar_summary_context("rec-bad", settings=cfg) == (None, [])
++
++    with pytest.raises(KeyError):
++        matching.refresh_recording_calendar_match("missing-recording", settings=cfg)

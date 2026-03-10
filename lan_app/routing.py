@@ -8,12 +8,12 @@ from pathlib import Path
 import re
 from typing import Any
 
+from .calendar.matching import selected_calendar_candidate
 from .config import AppSettings
 from .constants import RECORDING_STATUS_NEEDS_REVIEW, RECORDING_STATUS_READY
 from .db import (
     count_routing_training_examples,
     create_routing_training_example,
-    get_calendar_match,
     get_project,
     get_recording,
     increment_project_keyword_weights,
@@ -485,20 +485,10 @@ def _selected_calendar_candidate(
     *,
     settings: AppSettings,
 ) -> dict[str, Any]:
-    row = get_calendar_match(recording_id, settings=settings) or {}
-    selected_event_id = str(row.get("selected_event_id") or "").strip()
-    if not selected_event_id:
-        return {}
-
-    candidates = row.get("candidates_json")
-    if not isinstance(candidates, list):
-        return {}
-    for candidate in candidates:
-        if not isinstance(candidate, dict):
-            continue
-        if str(candidate.get("event_id") or "").strip() == selected_event_id:
-            return candidate
-    return {}
+    return selected_calendar_candidate(
+        recording_id,
+        settings=settings,
+    )
 
 
 def _llm_keywords(recording_id: str, *, settings: AppSettings) -> set[str]:

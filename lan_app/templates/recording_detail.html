@@ -197,6 +197,101 @@
     {% endif %}
   </div>
 
+{% elif current_tab == 'calendar' %}
+  {% set cal = calendar or {} %}
+
+  <h2>Calendar Match</h2>
+  {% if cal.error_message %}
+  <p style="margin:0 0 10px 0;padding:8px 10px;border:1px solid #f59e0b;background:#fffbeb;color:#92400e">
+    {{ cal.error_message }}
+  </p>
+  {% endif %}
+
+  <div class="section" style="margin-top:10px">
+    <h3 style="margin-top:0">Selected Event</h3>
+    {% if cal.selected %}
+    <div style="border:1px solid #d5d9e6;background:#f8f9ff;padding:10px;border-radius:6px">
+      <div><strong>{{ cal.selected.subject_display }}</strong></div>
+      <div style="margin-top:4px;color:#555">{{ cal.selected.starts_at_display }} → {{ cal.selected.ends_at_display }}</div>
+      <div style="margin-top:4px">Source: {{ cal.selected.source_label }}</div>
+      <div style="margin-top:4px">Confidence: {{ cal.selected.confidence_display }}</div>
+      <div style="margin-top:4px">Organizer: {{ cal.selected.organizer_display }}</div>
+      <div style="margin-top:4px">Attendees: {{ cal.selected.attendees_label }}</div>
+      {% if cal.selected.rationale_rows %}
+      <ul style="margin:8px 0 0 18px">
+        {% for reason in cal.selected.rationale_rows %}
+        <li>{{ reason }}</li>
+        {% endfor %}
+      </ul>
+      {% endif %}
+      <form method="post" action="/ui/recordings/{{ rec.id }}/calendar/select" style="margin-top:8px">
+        <button type="submit" class="btn">Clear selection</button>
+      </form>
+    </div>
+    {% else %}
+    <p class="placeholder">No calendar event is currently selected for this recording.</p>
+    {% endif %}
+  </div>
+
+  <div class="section" style="margin-top:10px">
+    <h3 style="margin-top:0">Candidates</h3>
+    {% if cal.candidates %}
+    <table>
+      <thead>
+        <tr>
+          <th>Event</th>
+          <th>When</th>
+          <th>Source</th>
+          <th>Confidence</th>
+          <th>Attendees</th>
+          <th>Rationale</th>
+          <th>Action</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for candidate in cal.candidates %}
+        <tr>
+          <td style="white-space:normal;max-width:220px">
+            <div><strong>{{ candidate.subject_display }}</strong></div>
+            <div style="margin-top:4px;color:#555">Organizer: {{ candidate.organizer_display }}</div>
+          </td>
+          <td>{{ candidate.starts_at_display }} → {{ candidate.ends_at_display }}</td>
+          <td>{{ candidate.source_label }}</td>
+          <td>
+            {{ candidate.confidence_display }}
+            {% if candidate.selected %}
+            <div style="margin-top:4px"><span class="badge s-Ready">Selected</span></div>
+            {% endif %}
+          </td>
+          <td title="{{ candidate.attendees_label }}">{{ candidate.attendees_label }}</td>
+          <td style="white-space:normal;max-width:320px">
+            {% if candidate.rationale_rows %}
+              {% for reason in candidate.rationale_rows %}
+              <div>{{ reason }}</div>
+              {% endfor %}
+            {% else %}
+            —
+            {% endif %}
+          </td>
+          <td>
+            {% if candidate.selected %}
+            <span class="placeholder" style="padding:0">Current</span>
+            {% else %}
+            <form method="post" action="/ui/recordings/{{ rec.id }}/calendar/select">
+              <input type="hidden" name="event_id" value="{{ candidate.event_id }}">
+              <button type="submit" class="btn">Choose</button>
+            </form>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="placeholder">No calendar candidates are stored for this recording yet.</p>
+    {% endif %}
+  </div>
+
 {% elif current_tab == 'project' %}
   {% set prj = project or {} %}
   {% set project_items = prj.projects or [] %}

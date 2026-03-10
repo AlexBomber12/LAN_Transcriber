@@ -63,6 +63,7 @@ def redacted_calendar_source(source: dict[str, Any]) -> dict[str, Any]:
         "created_at": source.get("created_at"),
         "last_synced_at": source.get("last_synced_at"),
         "last_error": source.get("last_error"),
+        "event_count": int(source.get("event_count") or 0),
         "url_configured": bool(url_raw),
         "url_host": url_host or None,
         "file_configured": bool(str(source.get("file_ics") or "").strip()),
