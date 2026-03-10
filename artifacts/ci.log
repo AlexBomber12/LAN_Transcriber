@@ -102,8 +102,8 @@ Requirement already satisfied: pytz>2021.1 in ./.venv-ci/lib/python3.12/site-pac
 Building wheels for collected packages: lan-transcriber
   Building editable for lan-transcriber (pyproject.toml): started
   Building editable for lan-transcriber (pyproject.toml): finished with status 'done'
-  Created wheel for lan-transcriber: filename=lan_transcriber-0.1.0-0.editable-py3-none-any.whl size=15425 sha256=0cf34ecab259fc4999b48dd643b5eb04d678eaeef971f99be60710b81eca5bac
-  Stored in directory: /tmp/pip-ephem-wheel-cache-bgj3we8o/wheels/d5/8a/5c/f7178f7e49aa5ae12b2320ec66b5c310f4f2f63d1bd301b7fb
+  Created wheel for lan-transcriber: filename=lan_transcriber-0.1.0-0.editable-py3-none-any.whl size=15425 sha256=978c386fde2435bead48cfd9a0dedacd1d3f05dce322b30ca5746c8a1ae213ce
+  Stored in directory: /tmp/pip-ephem-wheel-cache-k89wgjeo/wheels/d5/8a/5c/f7178f7e49aa5ae12b2320ec66b5c310f4f2f63d1bd301b7fb
 Successfully built lan-transcriber
 Installing collected packages: lan-transcriber
   Attempting uninstall: lan-transcriber
@@ -125,9 +125,9 @@ The event loop scope for asynchronous fixtures will default to the fixture cachi
 ........................................................................ [ 59%]
 ........................................................................ [ 69%]
 ........................................................................ [ 79%]
-..........s............................................................. [ 89%]
+...........s............................................................ [ 89%]
 ........................................................................ [ 99%]
-.....                                                                    [100%]
+......                                                                   [100%]
 =============================== warnings summary ===============================
 lan_transcriber/pipeline_steps/precheck.py:3
   /home/alexey/LAN_Transcriber/lan_transcriber/pipeline_steps/precheck.py:3: DeprecationWarning: 'audioop' is deprecated and slated for removal in Python 3.13
@@ -163,13 +163,13 @@ tests/test_warm_models.py::test_warm_models_module_main_guard
 ---------- coverage: platform linux, python 3.12.3-final-0 -----------
 Name    Stmts   Miss Branch BrPart  Cover   Missing
 ---------------------------------------------------
-TOTAL    8444      0   2702      0   100%
+TOTAL    8445      0   2702      0   100%
 
 55 files skipped due to complete coverage.
 Coverage HTML written to dir htmlcov
 
 Required test coverage of 100% reached. Total coverage: 100.00%
-724 passed, 3 skipped, 10 warnings in 23.60s
+725 passed, 3 skipped, 10 warnings in 24.59s
 Name                                                    Stmts   Miss Branch BrPart  Cover
 -----------------------------------------------------------------------------------------
 lan_transcriber/__init__.py                                 8      0      0      0   100%
@@ -191,7 +191,7 @@ lan_transcriber/pipeline_steps/artifacts.py                19      0      0     
 lan_transcriber/pipeline_steps/diarization_quality.py     268      0     98      0   100%
 lan_transcriber/pipeline_steps/language.py                155      0     64      0   100%
 lan_transcriber/pipeline_steps/multilingual_asr.py        239      0     88      0   100%
-lan_transcriber/pipeline_steps/orchestrator.py            558      0    122      0   100%
+lan_transcriber/pipeline_steps/orchestrator.py            559      0    122      0   100%
 lan_transcriber/pipeline_steps/precheck.py                116      0     46      0   100%
 lan_transcriber/pipeline_steps/snippets.py                231      0     84      0   100%
 lan_transcriber/pipeline_steps/speaker_turns.py           199      0    106      0   100%
@@ -200,7 +200,7 @@ lan_transcriber/runtime_paths.py                           21      0      4     
 lan_transcriber/torch_safe_globals.py                     126      0     40      0   100%
 lan_transcriber/utils.py                                   50      0     30      0   100%
 -----------------------------------------------------------------------------------------
-TOTAL                                                    3132      0   1056      0   100%
+TOTAL                                                    3133      0   1056      0   100%
 Name                              Stmts   Miss Branch BrPart  Cover
 -------------------------------------------------------------------
 lan_app/__init__.py                   1      0      0      0   100%

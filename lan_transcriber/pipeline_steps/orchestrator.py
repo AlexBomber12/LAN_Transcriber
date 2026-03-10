@@ -1235,7 +1235,8 @@ async def run_pipeline(
             diar_segments,
             default_language=language_analysis.dominant_language if language_analysis.dominant_language != "unknown" else detected_language,
         )
-        if getattr(diariser, "mode", "unknown") == "pyannote" and not used_dummy_fallback:
+        diariser_mode = _diariser_mode(diariser)
+        if diariser_mode == "pyannote" and not used_dummy_fallback:
             smoothing_result = smooth_speaker_turns(
                 unsmoothed_speaker_turns,
                 merge_gap_seconds=cfg.diarization_merge_gap_seconds,

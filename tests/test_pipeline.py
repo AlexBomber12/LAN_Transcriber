@@ -299,9 +299,11 @@ async def test_pipeline_emits_progress_stages_in_order(tmp_path: Path, mocker):
 
 @pytest.mark.asyncio
 @respx.mock
+@pytest.mark.parametrize("mode", ["pyannote", " PyAnNoTe "])
 async def test_pipeline_writes_diarization_metadata_and_smooths_retry_output(
     tmp_path: Path,
     mocker,
+    mode: str,
 ):
     mocker.patch(
         "whisperx.transcribe",
@@ -350,11 +352,14 @@ async def test_pipeline_writes_diarization_metadata_and_smooths_retry_output(
     )
     recording_id = "rec-diar-meta-1"
 
+    diariser = DialogRetryDiariser()
+    diariser.mode = mode
+
     await pipeline.run_pipeline(
         fake_audio(tmp_path, "dialog-retry.mp3"),
         cfg,
         llm_client.LLMClient(),
-        DialogRetryDiariser(),
+        diariser,
         recording_id=recording_id,
         precheck=precheck_ok(),
     )
