@@ -125,6 +125,19 @@ Optional diarization tuning:
   - `LAN_API_PORT=7860`
 - Keep remote access behind SSH tunnel, reverse proxy auth, or a LAN gateway ACL.
 
+## 2.1 GPU scheduler policy
+
+- `LAN_ASR_DEVICE` selects the ASR device: `auto`, `cpu`, `cuda`, `cuda:0`, `cuda:1`.
+- `LAN_DIARIZATION_DEVICE` selects the diarization device with the same values.
+- `LAN_GPU_SCHEDULER_MODE` selects execution policy: `auto`, `sequential`, `parallel`.
+- Recommended single-GPU LAN server config:
+  - `LAN_ASR_DEVICE=auto`
+  - `LAN_DIARIZATION_DEVICE=auto`
+  - `LAN_GPU_SCHEDULER_MODE=auto`
+- In that default mode the worker keeps the ASR model warm across jobs when the model/device/compute-type config is unchanged, but keeps diarization lazy and stage-local to avoid overlapping the two heavy GPU stages on one card.
+- Worker step logs now include the effective ASR device, diarization device, scheduler mode, CUDA visibility, and any bounded fallback that was used.
+- If the worker still exhausts VRAM, the recording moves to `NeedsReview` with review reason `gpu_oom` instead of burning retries until a generic retry-limit failure.
+
 ## 3) Health checks
 
 Component endpoints:

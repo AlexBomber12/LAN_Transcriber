@@ -467,6 +467,6 @@ Queue (in order)
 - Depends on: PR-GLOSSARY-CORRECTIONS-01 and PR-CALENDAR-ICS-01
 
 92) PR-GPU-SCHEDULER-01: GPU scheduling foundation: lazy diarization, sequential single-GPU execution, warm ASR cache, GPU OOM review reason, and HH:MM:SS duration formatting
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-GPU-SCHEDULER-01.md
 - Depends on: PR-CALENDAR-MATCHING-ICS-01 and PR-DIARIZATION-GPU-01 and PR-UI-PIPELINE-UX-01

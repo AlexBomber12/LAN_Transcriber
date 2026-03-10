@@ -25,6 +25,11 @@ from lan_transcriber.llm_client import (
 )
 from lan_transcriber.pipeline import Settings as PipelineSettings
 from lan_transcriber.pipeline import run_pipeline, run_precheck
+from lan_transcriber.gpu_policy import (
+    collect_cuda_runtime_facts,
+    is_gpu_oom_error,
+    resolve_scheduler_decision,
+)
 from lan_transcriber.pipeline_steps.diarization_quality import (
     AUTO_PROFILE_DEFAULT_INITIAL_PROFILE,
     DEFAULT_DIALOG_RETRY_MIN_DURATION_SECONDS,
@@ -194,6 +199,8 @@ def _retry_policy(job_type: str) -> RetryPolicy:
 
 
 def _is_retryable_exception(exc: Exception) -> bool:
+    if is_gpu_oom_error(exc):
+        return False
     return isinstance(exc, (TimeoutError, ConnectionError, RuntimeError))
 
 
@@ -325,12 +332,28 @@ def _record_failure(
     exc: Exception,
 ) -> None:
     error = str(exc)
+    review_reason_code, review_reason_text = _review_reason_from_exception(exc)
+    terminal_status = (
+        RECORDING_STATUS_NEEDS_REVIEW
+        if review_reason_code == "gpu_oom"
+        else RECORDING_STATUS_FAILED
+    )
     try:
         fail_job(job_id, error, settings=settings)
     except Exception:
         pass
     try:
-        set_recording_status(recording_id, RECORDING_STATUS_FAILED, settings=settings)
+        set_recording_status(
+            recording_id,
+            terminal_status,
+            settings=settings,
+            review_reason_code=(
+                review_reason_code if terminal_status == RECORDING_STATUS_NEEDS_REVIEW else None
+            ),
+            review_reason_text=(
+                review_reason_text if terminal_status == RECORDING_STATUS_NEEDS_REVIEW else None
+            ),
+        )
     except Exception:
         pass
     try:
@@ -390,6 +413,14 @@ def _load_json_dict(path: Path) -> dict[str, Any]:
 def _review_reason_from_exception(exc: Exception) -> tuple[str, str]:
     message = str(exc).strip()
     lowered = message.lower()
+    if is_gpu_oom_error(exc):
+        return (
+            "gpu_oom",
+            (
+                "The worker ran out of GPU memory while loading or running a heavy "
+                "model; manual review required."
+            ),
+        )
     if isinstance(exc, LLMTruncatedResponseError) or "finish_reason=length" in lowered:
         return (
             "llm_truncated",
@@ -613,8 +644,11 @@ class _DiarizationRuntimeConfig:
 class _PyannoteDiariser:
     def __init__(
         self,
-        pipeline_model: Any,
+        pipeline_model: Any | None = None,
         *,
+        pipeline_loader: Any | None = None,
+        requested_device: str | None = None,
+        fallback_duration_sec: float | None = None,
         profile: str = "auto",
         initial_profile: str | None = None,
         auto_profile_enabled: bool = True,
@@ -624,9 +658,18 @@ class _PyannoteDiariser:
         dialog_retry_min_duration_seconds: float = DEFAULT_DIALOG_RETRY_MIN_DURATION_SECONDS,
         dialog_retry_min_turns: int = DEFAULT_DIALOG_RETRY_MIN_TURNS,
     ) -> None:
-        if pipeline_model is None or not callable(pipeline_model):
+        if pipeline_model is not None and not callable(pipeline_model):
             raise TypeError("pipeline_model must be a callable pyannote pipeline.")
+        if pipeline_model is None and pipeline_loader is None:
+            raise TypeError("pipeline_loader is required when pipeline_model is not provided.")
         self._pipeline_model = pipeline_model
+        self._pipeline_loader = pipeline_loader
+        self._fallback_diariser: _FallbackDiariser | None = None
+        self._fallback_duration_sec = fallback_duration_sec
+        normalized_requested_device = str(requested_device or "").strip().lower()
+        if normalized_requested_device == "gpu":
+            normalized_requested_device = "cuda"
+        self._forced_gpu_device_requested = normalized_requested_device.startswith("cuda")
         self.mode = "pyannote"
         self.profile = str(profile or "auto").strip().lower() or "auto"
         self.initial_profile = (
@@ -666,7 +709,21 @@ class _PyannoteDiariser:
             "dialog_retry_used": False,
             "speaker_count_before_retry": None,
             "speaker_count_after_retry": None,
+            "effective_device": None,
         }
+
+    def _ensure_pipeline_model(self) -> Any:
+        if self._pipeline_model is None:
+            if self._pipeline_loader is None:
+                raise TypeError("pipeline_loader must be provided for lazy diarization.")
+            pipeline_model = self._pipeline_loader()
+            if pipeline_model is None or not callable(pipeline_model):
+                raise TypeError("pipeline_model must be a callable pyannote pipeline.")
+            self._pipeline_model = pipeline_model
+            self.last_run_metadata["effective_device"] = str(
+                getattr(pipeline_model, "_lan_effective_device", "cpu")
+            )
+        return self._pipeline_model
 
     async def _call_pipeline(
         self,
@@ -675,6 +732,40 @@ class _PyannoteDiariser:
         call_kwargs: dict[str, int],
     ):
         audio_text = str(audio_path)
+        if self._fallback_diariser is not None:
+            return await self._fallback_diariser(audio_path)
+        try:
+            pipeline_model = self._ensure_pipeline_model()
+        except Exception as exc:
+            message = str(exc)
+            if isinstance(exc, TypeError) and (
+                message.startswith("pipeline_loader must be provided")
+                or message.startswith("pipeline_model must be a callable")
+            ):
+                raise
+            if (
+                isinstance(exc, ValueError)
+                and message.startswith("Device must be one of auto, cpu, cuda, or cuda:<index>.")
+            ):
+                raise
+            if (
+                self._forced_gpu_device_requested
+                and isinstance(exc, RuntimeError)
+                and (
+                    message.startswith("Requested diarization device ")
+                    or message.startswith("Failed to move pyannote diarization pipeline to ")
+                )
+            ):
+                raise
+            self.mode = "fallback"
+            self.last_run_metadata["effective_device"] = "cpu"
+            _logger.warning(
+                "pyannote diarization load failed; using fallback diariser: %s: %s",
+                type(exc).__name__,
+                exc,
+            )
+            self._fallback_diariser = _FallbackDiariser(self._fallback_duration_sec)
+            return await self._fallback_diariser(audio_path)
 
         def _is_signature_mismatch(exc: TypeError) -> bool:
             message = str(exc).lower()
@@ -698,7 +789,7 @@ class _PyannoteDiariser:
         def _run_sync():
             try:
                 return call_with_supported_kwargs(
-                    self._pipeline_model,
+                    pipeline_model,
                     {"audio": audio_text},
                     **call_kwargs,
                 )
@@ -706,7 +797,7 @@ class _PyannoteDiariser:
                 if not _is_signature_mismatch(exc):
                     raise
                 return call_with_supported_kwargs(
-                    self._pipeline_model,
+                    pipeline_model,
                     audio_text,
                     **call_kwargs,
                 )
@@ -873,6 +964,9 @@ def _build_pipeline_settings(settings: AppSettings) -> PipelineSettings:
         llm_chunk_timeout_seconds=settings.llm_chunk_timeout_seconds,
         llm_long_transcript_threshold_chars=settings.llm_long_transcript_threshold_chars,
         llm_merge_max_tokens=settings.llm_merge_max_tokens,
+        asr_device=getattr(settings, "asr_device", "auto"),
+        diarization_device=getattr(settings, "diarization_device", "auto"),
+        gpu_scheduler_mode=getattr(settings, "gpu_scheduler_mode", "auto"),
         diarization_profile=settings.diarization_profile,
         diarization_min_speakers=settings.diarization_min_speakers,
         diarization_max_speakers=settings.diarization_max_speakers,
@@ -890,18 +984,26 @@ def _build_diariser(
     duration_sec: float | None,
     *,
     model_id: str | None = None,
-    settings: AppSettings | None = None,
+    settings: Any | None = None,
 ):
-    diarization_cfg = _resolve_diarization_speaker_hints(settings=settings)
     try:
-        model = load_pyannote_pipeline(model_id=model_id)
+        from pyannote.audio import Pipeline as _Pipeline  # type: ignore
     except ModuleNotFoundError as exc:
         missing = (exc.name or "").split(".", 1)[0]
         if missing == "pyannote":
             return _FallbackDiariser(duration_sec)
         raise
+    del _Pipeline
+
+    diarization_cfg = _resolve_diarization_speaker_hints(settings=settings)
     return _PyannoteDiariser(
-        model,
+        pipeline_loader=lambda: load_pyannote_pipeline(
+            model_id=model_id,
+            device=getattr(settings, "diarization_device", None),
+            scheduler_mode=getattr(settings, "gpu_scheduler_mode", None),
+        ),
+        requested_device=getattr(settings, "diarization_device", None),
+        fallback_duration_sec=duration_sec,
         profile=diarization_cfg.profile,
         initial_profile=diarization_cfg.initial_profile,
         auto_profile_enabled=diarization_cfg.auto_profile_enabled,
@@ -934,6 +1036,37 @@ def _write_diarization_status_artifact(
         atomic_write_json(path, payload)
     except OSError:
         pass
+
+
+def _log_gpu_execution_policy(
+    *,
+    pipeline_settings: PipelineSettings,
+    diariser: Any,
+    log_path: Path,
+) -> None:
+    diariser_mode = str(getattr(diariser, "mode", "") or "").strip().lower()
+    scheduler_plan = resolve_scheduler_decision(
+        pipeline_settings.gpu_scheduler_mode,
+        asr_device=pipeline_settings.asr_device,
+        diarization_device=pipeline_settings.diarization_device,
+        diarization_is_heavy=diariser_mode == "pyannote",
+        cuda_facts=collect_cuda_runtime_facts(),
+    )
+    facts = scheduler_plan.cuda_facts
+    message = (
+        "gpu policy "
+        f"asr_device={scheduler_plan.asr_device} "
+        f"diarization_device={scheduler_plan.diarization_device} "
+        f"scheduler_mode={scheduler_plan.effective_mode} "
+        f"requested_mode={scheduler_plan.requested_mode} "
+        f"reason={scheduler_plan.reason} "
+        f"cuda_available={facts.is_available} "
+        f"device_count={facts.device_count} "
+        f"visible_devices={facts.visible_devices or 'unset'} "
+        f"torch_cuda={facts.torch_cuda_version or 'none'}"
+    )
+    _logger.info(message)
+    _append_step_log(log_path, message)
 
 
 def _run_precheck_pipeline(
@@ -1016,7 +1149,7 @@ def _run_precheck_pipeline(
             diariser = _build_diariser(
                 precheck.duration_sec,
                 model_id=settings.diarization_model_id,
-                settings=settings,
+                settings=pipeline_settings,
             )
             if isinstance(diariser, _FallbackDiariser):
                 diarization_mode = "fallback"
@@ -1047,6 +1180,11 @@ def _run_precheck_pipeline(
         mode=diarization_mode,
         reason=diarization_reason,
         settings=settings,
+    )
+    _log_gpu_execution_policy(
+        pipeline_settings=pipeline_settings,
+        diariser=diariser,
+        log_path=log_path,
     )
     calendar_title, calendar_attendees = _load_calendar_summary_context(
         recording_id,

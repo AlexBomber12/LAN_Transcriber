@@ -27,10 +27,20 @@ def _install_fake_pipeline(monkeypatch: pytest.MonkeyPatch, impl):
     monkeypatch.setitem(sys.modules, "pyannote.audio", pyannote_audio)
 
 
-def _install_fake_torch(monkeypatch: pytest.MonkeyPatch, *, cuda_available: bool):
+def _install_fake_torch(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    cuda_available: bool,
+    mem_info: tuple[int, int] = (100, 200),
+):
     torch_mod = ModuleType("torch")
-    torch_mod.cuda = SimpleNamespace(is_available=lambda: cuda_available)  # type: ignore[attr-defined]
+    torch_mod.cuda = SimpleNamespace(  # type: ignore[attr-defined]
+        is_available=lambda: cuda_available,
+        device_count=lambda: 1 if cuda_available else 0,
+        mem_get_info=lambda _device: mem_info,
+    )
     torch_mod.device = lambda name: f"device:{name}"  # type: ignore[attr-defined]
+    torch_mod.version = SimpleNamespace(cuda="12.4")
     monkeypatch.setitem(sys.modules, "torch", torch_mod)
 
 
@@ -302,10 +312,99 @@ def test_load_pyannote_pipeline_falls_back_to_cpu_when_cuda_move_fails(
 
     assert callable(model)
     assert (
-        "Failed to move pyannote diarization pipeline to CUDA; continuing on CPU"
+        "Failed to move pyannote diarization pipeline to cuda; continuing on CPU"
         in caplog.text
     )
     assert "Pyannote diarization device: cpu" in caplog.text
+
+
+def test_load_pyannote_pipeline_falls_back_to_cpu_when_cuda_move_fails_in_sequential_mode(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+):
+    class _Model:
+        def __call__(self, payload):
+            return payload
+
+        def to(self, _device):
+            raise RuntimeError("cuda move failed")
+
+    _install_fake_pipeline(monkeypatch, lambda *_a, **_k: _Model())
+    _install_fake_torch(monkeypatch, cuda_available=True)
+
+    with caplog.at_level(logging.INFO, logger=diarization_loader.__name__):
+        model = diarization_loader.load_pyannote_pipeline(
+            model_id="repo/fallback-sequential",
+            scheduler_mode="sequential",
+        )
+
+    assert callable(model)
+    assert (
+        "Failed to move pyannote diarization pipeline to cuda; continuing on CPU"
+        in caplog.text
+    )
+    assert "Pyannote diarization device: cpu" in caplog.text
+
+
+def test_load_pyannote_pipeline_respects_forced_cpu_when_cuda_is_available(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+):
+    moved_to: list[object] = []
+
+    class _Model:
+        def __call__(self, payload):
+            return payload
+
+        def to(self, device):
+            moved_to.append(device)
+
+    _install_fake_pipeline(monkeypatch, lambda *_a, **_k: _Model())
+    _install_fake_torch(monkeypatch, cuda_available=True)
+
+    with caplog.at_level(logging.INFO, logger=diarization_loader.__name__):
+        model = diarization_loader.load_pyannote_pipeline(
+            model_id="repo/forced-cpu",
+            device="cpu",
+        )
+
+    assert callable(model)
+    assert moved_to == []
+    assert "Pyannote diarization device: cpu" in caplog.text
+
+
+def test_load_pyannote_pipeline_raises_when_forced_cuda_move_fails(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    class _Model:
+        def __call__(self, payload):
+            return payload
+
+        def to(self, _device):
+            raise RuntimeError("cuda move failed")
+
+    _install_fake_pipeline(monkeypatch, lambda *_a, **_k: _Model())
+    _install_fake_torch(monkeypatch, cuda_available=True)
+
+    with pytest.raises(RuntimeError, match="Failed to move pyannote diarization pipeline to cuda:0|cuda"):
+        diarization_loader.load_pyannote_pipeline(
+            model_id="repo/forced-cuda",
+            device="cuda",
+            scheduler_mode="sequential",
+        )
+
+
+def test_load_pyannote_pipeline_raises_when_forced_cuda_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _install_fake_pipeline(monkeypatch, lambda *_a, **_k: lambda payload: payload)
+    _install_fake_torch(monkeypatch, cuda_available=False)
+
+    with pytest.raises(RuntimeError, match="Requested diarization device cuda but CUDA is unavailable"):
+        diarization_loader.load_pyannote_pipeline(
+            model_id="repo/unavailable",
+            device="cuda",
+        )
 
 
 def test_load_pyannote_pipeline_stays_on_cpu_when_torch_import_fails(
@@ -336,6 +435,59 @@ def test_load_pyannote_pipeline_stays_on_cpu_when_torch_import_fails(
         model = diarization_loader.load_pyannote_pipeline(model_id="repo/no-torch")
 
     assert callable(model)
+    assert "Pyannote diarization device: cpu" in caplog.text
+
+
+def test_move_pipeline_to_best_device_raises_when_explicit_device_requested_without_torch(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    class _Model:
+        def __call__(self, payload):
+            return payload
+
+    real_import = builtins.__import__
+
+    def _fake_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "torch":
+            err = ModuleNotFoundError("No module named 'torch'")
+            err.name = "torch"
+            raise err
+        return real_import(name, globals, locals, fromlist, level)
+
+    _install_fake_pipeline(monkeypatch, lambda *_a, **_k: _Model())
+    monkeypatch.setattr(builtins, "__import__", _fake_import)
+    sys.modules.pop("torch", None)
+
+    with pytest.raises(RuntimeError, match="Requested diarization device cuda but torch is unavailable"):
+        diarization_loader._move_pipeline_to_best_device(  # noqa: SLF001
+            _Model(),
+            requested_device="cuda",
+            scheduler_mode="auto",
+        )
+
+
+def test_load_pyannote_pipeline_falls_back_to_cpu_on_gpu_oom_in_auto_mode(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+):
+    class _Model:
+        def __call__(self, payload):
+            return payload
+
+        def to(self, _device):
+            raise RuntimeError("CUDA out of memory while moving pipeline")
+
+    _install_fake_pipeline(monkeypatch, lambda *_a, **_k: _Model())
+    _install_fake_torch(monkeypatch, cuda_available=True)
+
+    with caplog.at_level(logging.INFO, logger=diarization_loader.__name__):
+        model = diarization_loader.load_pyannote_pipeline(
+            model_id="repo/oom-fallback",
+            scheduler_mode="sequential",
+        )
+
+    assert callable(model)
+    assert "Pyannote diarization GPU OOM on cuda; retrying on CPU in auto mode" in caplog.text
     assert "Pyannote diarization device: cpu" in caplog.text
 
 

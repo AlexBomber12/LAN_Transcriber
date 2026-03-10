@@ -575,7 +575,7 @@ def test_recording_detail_persists_duration_from_sanitized_audio(tmp_path, monke
     c = TestClient(api.app, follow_redirects=True)
     r = c.get("/recordings/rec-ui-duration-1")
     assert r.status_code == 200
-    assert "2s" in r.text
+    assert "00:00:02" in r.text
     recording = get_recording("rec-ui-duration-1", settings=cfg)
     assert recording is not None
     assert recording["duration_sec"] == 2.0

@@ -103,8 +103,9 @@ def test_display_helpers_cover_timezone_duration_and_prepare_recording(
     assert ui_routes._pipeline_stage_label("custom_stage") == "Custom Stage"  # noqa: SLF001
     assert ui_routes._format_duration_seconds(None) == "—"  # noqa: SLF001
     assert ui_routes._format_duration_seconds(0) == "—"  # noqa: SLF001
-    assert ui_routes._format_duration_seconds(2.0) == "2s"  # noqa: SLF001
-    assert ui_routes._format_duration_seconds(2.345) == "2.35s"  # noqa: SLF001
+    assert ui_routes._format_duration_seconds(2.0) == "00:00:02"  # noqa: SLF001
+    assert ui_routes._format_duration_seconds(2.345) == "00:00:02"  # noqa: SLF001
+    assert ui_routes._format_duration_seconds(4699.26) == "01:18:19"  # noqa: SLF001
     assert ui_routes._format_local_timestamp("") == "—"  # noqa: SLF001
     assert ui_routes._format_local_timestamp("bad-timestamp") == "bad-timestamp"  # noqa: SLF001
     assert "CET" in ui_routes._format_local_timestamp("2026-01-10T10:00:00Z")  # noqa: SLF001
@@ -146,7 +147,7 @@ def test_display_helpers_cover_timezone_duration_and_prepare_recording(
         "duration_sec": 3.5,
         "touch_updated_at": False,
     }
-    assert prepared["duration_display"] == "3.50s"
+    assert prepared["duration_display"] == "00:00:03"
     assert prepared["captured_at_display"].endswith("CET")
     assert prepared["created_at_display"] == "—"
     assert prepared["updated_at_display"] == "bad"
@@ -167,7 +168,7 @@ def test_display_helpers_cover_timezone_duration_and_prepare_recording(
         settings=cfg,
     )
     assert observed_update == {}
-    assert prepared_existing_duration["duration_display"] == "1s"
+    assert prepared_existing_duration["duration_display"] == "00:00:01"
 
 
 def test_prepare_recording_for_display_ignores_duration_backfill_write_errors(
@@ -203,7 +204,7 @@ def test_prepare_recording_for_display_ignores_duration_backfill_write_errors(
         )
 
     assert prepared["duration_sec"] == 4.25
-    assert prepared["duration_display"] == "4.25s"
+    assert prepared["duration_display"] == "00:00:04"
     assert "Failed to backfill display duration for recording rec-helper-err-1" in caplog.text
 
     monkeypatch.setattr(
@@ -745,7 +746,7 @@ def test_snippet_message_helpers_and_display_backfill_edges(
         {"id": recording_id, "duration_sec": None},
         settings=cfg,
     )
-    assert item["duration_display"] == "12s"
+    assert item["duration_display"] == "00:00:12"
     assert calls == [raw_dir / "audio.mp3", raw_dir / "audio.wav"]
     assert ui_routes._snippet_warning_messages([  # noqa: SLF001
         {"status": "rejected_degraded"},

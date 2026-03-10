@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
+import gc
 import inspect
 import logging
 import shutil
@@ -39,6 +41,16 @@ from ..torch_safe_globals import (
     unsupported_global_omegaconf_fqn_from_error,
 )
 from .language import analyse_languages, resolve_target_summary_language, segment_language
+from ..gpu_policy import (
+    SchedulerDecision,
+    collect_cuda_runtime_facts,
+    cuda_memory_info,
+    is_gpu_device,
+    is_gpu_oom_error,
+    normalize_device,
+    resolve_effective_device,
+    resolve_scheduler_decision,
+)
 from .precheck import PrecheckResult, run_precheck as _run_precheck
 from .diarization_quality import (
     DEFAULT_DIALOG_RETRY_MIN_DURATION_SECONDS,
@@ -68,10 +80,18 @@ from ..utils import normalise_language_code, safe_float
 
 _logger = logging.getLogger(__name__)
 _whisperx_transcriber_state = threading.local()
+_ASR_MODEL_CACHE: dict[tuple[str, str, str, str, Any], Any] = {}
+_ASR_MODEL_CACHE_LOCK = threading.Lock()
 _LLM_MODEL_REQUIRED_ERROR = (
     "LLM_MODEL is required. Set it in .env (e.g., LLM_MODEL=gpt-oss:120b)."
 )
 _LLM_TIMEOUT_SENTINEL = "**LLM timeout**"
+
+
+@dataclass(frozen=True)
+class _CachedAsrModel:
+    model: Any
+    compute_type: str
 
 
 class Diariser(Protocol):
@@ -152,7 +172,10 @@ class Settings(BaseSettings):
         ),
     )
     asr_model: str = "large-v3"
-    asr_device: str = "auto"
+    asr_device: str = Field(
+        default="auto",
+        validation_alias=AliasChoices("asr_device", "ASR_DEVICE", "LAN_ASR_DEVICE"),
+    )
     asr_compute_type: str | None = None
     asr_batch_size: int = 16
     asr_enable_align: bool = True
@@ -167,6 +190,22 @@ class Settings(BaseSettings):
         ),
     )
     vad_method: Literal["silero", "pyannote"] = "silero"
+    diarization_device: str = Field(
+        default="auto",
+        validation_alias=AliasChoices(
+            "diarization_device",
+            "DIARIZATION_DEVICE",
+            "LAN_DIARIZATION_DEVICE",
+        ),
+    )
+    gpu_scheduler_mode: Literal["auto", "sequential", "parallel"] = Field(
+        default="auto",
+        validation_alias=AliasChoices(
+            "gpu_scheduler_mode",
+            "GPU_SCHEDULER_MODE",
+            "LAN_GPU_SCHEDULER_MODE",
+        ),
+    )
     embed_threshold: float = 0.65
     merge_similar: float = 0.9
     precheck_min_duration_sec: float = 20.0
@@ -284,36 +323,112 @@ def _language_payload(info: dict[str, Any]) -> dict[str, Any]:
 
 
 def _select_asr_device(cfg: Settings) -> str:
-    preferred = str(cfg.asr_device or "auto").strip().lower()
-    if preferred in {"cpu", "cuda"}:
-        return preferred
-    try:
-        import torch
-    except Exception:
-        _logger.info(
-            "Torch CUDA runtime: is_available=%s device_count=%s torch.version.cuda=%s",
-            False,
-            0,
-            None,
-        )
-        return "cpu"
-    cuda_available = torch.cuda.is_available()
-    device_count = torch.cuda.device_count()
-    cuda_version = getattr(getattr(torch, "version", None), "cuda", None)
+    cuda_facts = collect_cuda_runtime_facts()
     _logger.info(
-        "Torch CUDA runtime: is_available=%s device_count=%s torch.version.cuda=%s",
-        cuda_available,
-        device_count,
-        cuda_version,
+        "Torch CUDA runtime: is_available=%s device_count=%s visible_devices=%s torch.version.cuda=%s",
+        cuda_facts.is_available,
+        cuda_facts.device_count,
+        cuda_facts.visible_devices,
+        cuda_facts.torch_cuda_version,
     )
-    return "cuda" if cuda_available else "cpu"
+    return resolve_effective_device(
+        cfg.asr_device,
+        cuda_facts=cuda_facts,
+        label="ASR device",
+    )
+
+
+def _select_diarization_device(cfg: Settings) -> str:
+    return resolve_effective_device(
+        cfg.diarization_device,
+        cuda_facts=collect_cuda_runtime_facts(),
+        label="diarization device",
+    )
+
+
+def _resolve_scheduler_plan(cfg: Settings, diariser: Diariser) -> SchedulerDecision:
+    return resolve_scheduler_decision(
+        cfg.gpu_scheduler_mode,
+        asr_device=cfg.asr_device,
+        diarization_device=cfg.diarization_device,
+        diarization_is_heavy=_diariser_mode(diariser) == "pyannote",
+    )
 
 
 def _select_compute_type(cfg: Settings, device: str) -> str:
     configured = str(cfg.asr_compute_type or "").strip()
     if configured:
         return configured
-    return "float16" if device == "cuda" else "int8"
+    return "float16" if is_gpu_device(device) else "int8"
+
+
+def clear_asr_model_cache() -> None:
+    with _ASR_MODEL_CACHE_LOCK:
+        _ASR_MODEL_CACHE.clear()
+    _cleanup_cuda_memory("cuda")
+
+
+def _asr_model_cache_key(
+    *,
+    cfg: Settings,
+    device: str,
+    compute_type: str,
+    load_model_callable: Any,
+) -> tuple[str, str, str, str, Any]:
+    return (
+        str(cfg.asr_model or "").strip(),
+        str(device).strip(),
+        str(compute_type).strip(),
+        str(cfg.vad_method or "").strip(),
+        load_model_callable,
+    )
+
+
+def _cached_asr_model_entry(
+    cached_entry: Any,
+    *,
+    default_compute_type: str,
+) -> tuple[Any | None, str]:
+    if cached_entry is None:
+        return None, default_compute_type
+    if isinstance(cached_entry, _CachedAsrModel):
+        return cached_entry.model, cached_entry.compute_type
+    return cached_entry, default_compute_type
+
+
+def _log_cuda_memory_snapshot(
+    *,
+    label: str,
+    device: str,
+) -> None:
+    memory_info = cuda_memory_info(device)
+    if memory_info is None:
+        return
+    free_bytes, total_bytes = memory_info
+    _logger.info(
+        "%s VRAM snapshot: device=%s free_bytes=%s total_bytes=%s",
+        label,
+        device,
+        free_bytes,
+        total_bytes,
+    )
+
+
+def _cleanup_cuda_memory(device: str) -> None:
+    if not is_gpu_device(device):
+        return
+    gc.collect()
+    try:
+        import torch
+    except Exception:
+        return
+    cuda = getattr(torch, "cuda", None)
+    if cuda is None:
+        return
+    try:
+        cuda.empty_cache()
+    except Exception:
+        return
 
 
 def _require_llm_model(llm_model: str | None) -> str:
@@ -777,6 +892,9 @@ def _write_diarization_metadata_artifact(
             or metadata.get("diarization_profile")
             or cfg.diarization_profile
         ),
+        "effective_device": str(metadata.get("effective_device") or cfg.diarization_device),
+        "scheduler_mode": str(metadata.get("scheduler_mode") or cfg.gpu_scheduler_mode),
+        "scheduler_reason": metadata.get("scheduler_reason"),
         "initial_profile": str(metadata.get("initial_profile") or cfg.diarization_profile),
         "selected_profile": selected_profile,
         "selected_result": str(profile_selection.get("selected_result") or "initial_pass"),
@@ -813,6 +931,107 @@ def _write_diarization_metadata_artifact(
     if profile_selection:
         payload["profile_selection"] = profile_selection
     atomic_write_json(artifacts.diarization_metadata_json_path, payload)
+
+
+def _load_cached_whisperx_model(
+    *,
+    cfg: Settings,
+    wx_asr: Any,
+    device: str,
+    compute_type: str,
+    step_log_callback: Callable[[str], Any] | None,
+) -> tuple[Any, str]:
+    load_model_callable = getattr(wx_asr, "load_model", None)
+    cache_key = _asr_model_cache_key(
+        cfg=cfg,
+        device=device,
+        compute_type=compute_type,
+        load_model_callable=load_model_callable,
+    )
+    with _ASR_MODEL_CACHE_LOCK:
+        cached_model, cached_compute_type = _cached_asr_model_entry(
+            _ASR_MODEL_CACHE.get(cache_key),
+            default_compute_type=compute_type,
+        )
+    if cached_model is not None:
+        _best_effort_step_log(
+            step_log_callback,
+            (
+                "asr model cache hit "
+                f"model={cfg.asr_model} device={device} compute_type={cached_compute_type}"
+            ),
+        )
+        return cached_model, cached_compute_type
+
+    model_load_kwargs = {"compute_type": compute_type, "vad_method": cfg.vad_method}
+
+    def _load_model(selected_compute_type: str) -> Any:
+        load_kwargs = dict(model_load_kwargs)
+        load_kwargs["compute_type"] = selected_compute_type
+        _log_cuda_memory_snapshot(label="ASR load", device=device)
+        return call_with_supported_kwargs(
+            wx_asr.load_model,
+            cfg.asr_model,
+            device,
+            **load_kwargs,
+        )
+
+    selected_compute_type = compute_type
+    with omegaconf_safe_globals_for_torch_load():
+        try:
+            model = _load_model(selected_compute_type)
+        except Exception as first_error:
+            retry_fqn = unsupported_global_omegaconf_fqn_from_error(first_error)
+            if retry_fqn is not None:
+                with omegaconf_safe_globals_for_torch_load(extra_fqns=[retry_fqn]):
+                    try:
+                        model = _load_model(selected_compute_type)
+                    except Exception:
+                        raise first_error
+            elif (
+                is_gpu_oom_error(first_error)
+                and normalize_device(cfg.asr_device) == "auto"
+                and not str(cfg.asr_compute_type or "").strip()
+                and selected_compute_type != "int8_float16"
+            ):
+                clear_asr_model_cache()
+                selected_compute_type = "int8_float16"
+                _best_effort_step_log(
+                    step_log_callback,
+                    (
+                        "asr GPU OOM during model load; retrying once with "
+                        "compute_type=int8_float16"
+                    ),
+                )
+                model = _load_model(selected_compute_type)
+            else:
+                raise
+
+    resolved_cache_key = _asr_model_cache_key(
+        cfg=cfg,
+        device=device,
+        compute_type=selected_compute_type,
+        load_model_callable=load_model_callable,
+    )
+    cache_entry = _CachedAsrModel(model=model, compute_type=selected_compute_type)
+    with _ASR_MODEL_CACHE_LOCK:
+        cached_model, cached_compute_type = _cached_asr_model_entry(
+            _ASR_MODEL_CACHE.get(resolved_cache_key),
+            default_compute_type=selected_compute_type,
+        )
+        if cached_model is None:
+            _ASR_MODEL_CACHE[resolved_cache_key] = cache_entry
+            cached_model = model
+            cached_compute_type = selected_compute_type
+        if selected_compute_type != compute_type:
+            _ASR_MODEL_CACHE.setdefault(
+                cache_key,
+                _CachedAsrModel(
+                    model=cached_model,
+                    compute_type=cached_compute_type,
+                ),
+            )
+    return cached_model, cached_compute_type
 
 
 def _build_whisperx_transcriber(
@@ -929,23 +1148,13 @@ def _build_whisperx_transcriber(
     device = _select_asr_device(cfg)
     compute_type = _select_compute_type(cfg, device)
     _logger.info("ASR VAD method: %s", cfg.vad_method)
-    model_load_kwargs = {"compute_type": compute_type, "vad_method": cfg.vad_method}
-
-    def _load_model() -> Any:
-        return call_with_supported_kwargs(wx_asr.load_model, cfg.asr_model, device, **model_load_kwargs)
-
-    with omegaconf_safe_globals_for_torch_load():
-        try:
-            model = _load_model()
-        except Exception as first_error:
-            retry_fqn = unsupported_global_omegaconf_fqn_from_error(first_error)
-            if retry_fqn is None:
-                raise
-            with omegaconf_safe_globals_for_torch_load(extra_fqns=[retry_fqn]):
-                try:
-                    model = _load_model()
-                except Exception:
-                    raise first_error
+    model, compute_type = _load_cached_whisperx_model(
+        cfg=cfg,
+        wx_asr=wx_asr,
+        device=device,
+        compute_type=compute_type,
+        step_log_callback=step_log_callback,
+    )
 
     vad = getattr(model, "vad_model", None)
     if not callable(vad):
@@ -1043,7 +1252,11 @@ def _whisperx_asr(
     cfg: Settings,
     step_log_callback: Callable[[str], Any] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    transcribe_audio = getattr(_whisperx_transcriber_state, "transcribe_audio", None)
+    transcribe_audio = (
+        getattr(_whisperx_transcriber_state, "transcribe_audio", None)
+        if bool(getattr(_whisperx_transcriber_state, "use_session_transcriber", False))
+        else None
+    )
     if transcribe_audio is None:
         transcribe_audio = _build_whisperx_transcriber(
             cfg=cfg,
@@ -1342,6 +1555,18 @@ async def run_pipeline(
     summary_lang = resolve_target_summary_language(target_summary_language, dominant_language=override_lang or "unknown", detected_language=None)
     cal_title = str(calendar_title or "").strip() or None
     cal_attendees = [str(item).strip() for item in (calendar_attendees or []) if str(item).strip()]
+    language_info: dict[str, Any] = {
+        "detected": override_lang or "unknown",
+        "confidence": None,
+    }
+    language_analysis = analyse_languages(
+        [],
+        detected_language=override_lang,
+        transcript_language_override=override_lang,
+    )
+    diar_segments: list[dict[str, Any]] = []
+    speaker_turns: list[dict[str, Any]] = []
+    friendly = 0
 
     atomic_write_json(
         artifacts.metrics_json_path,
@@ -1428,15 +1653,19 @@ async def run_pipeline(
                     tmp_root=cfg.tmp_root,
                     transcribe_fn=_transcribe_chunk,
                     step_log_callback=step_log_callback,
-                )
+            )
 
             previous_transcriber = getattr(_whisperx_transcriber_state, "transcribe_audio", None)
+            previous_session_flag = bool(
+                getattr(_whisperx_transcriber_state, "use_session_transcriber", False)
+            )
             transcribe_audio = _build_whisperx_transcriber(
                 cfg=cfg,
                 step_log_callback=step_log_callback,
                 asr_glossary=asr_glossary,
             )
             _whisperx_transcriber_state.transcribe_audio = transcribe_audio
+            _whisperx_transcriber_state.use_session_transcriber = True
             try:
                 segments, info, payload = run_language_aware_asr(
                     audio_path,
@@ -1457,13 +1686,44 @@ async def run_pipeline(
                         delattr(_whisperx_transcriber_state, "transcribe_audio")
                 else:
                     _whisperx_transcriber_state.transcribe_audio = previous_transcriber
+                if previous_session_flag:
+                    _whisperx_transcriber_state.use_session_transcriber = True
+                elif hasattr(_whisperx_transcriber_state, "use_session_transcriber"):
+                    delattr(_whisperx_transcriber_state, "use_session_transcriber")
 
-        (raw_segments, info, asr_execution), diarization = await asyncio.gather(
-            asyncio.to_thread(
-                _run_asr_workflow,
-            ),
-            diariser(audio_path),
+        scheduler_plan = _resolve_scheduler_plan(cfg, diariser)
+        _update_diariser_runtime_metadata(
+            diariser,
+            scheduler_mode=scheduler_plan.effective_mode,
+            scheduler_reason=scheduler_plan.reason,
+            requested_scheduler_mode=scheduler_plan.requested_mode,
+            effective_device=scheduler_plan.diarization_device,
         )
+        _best_effort_step_log(
+            step_log_callback,
+            (
+                "gpu scheduler "
+                f"asr_device={scheduler_plan.asr_device} "
+                f"diarization_device={scheduler_plan.diarization_device} "
+                f"mode={scheduler_plan.effective_mode} "
+                f"reason={scheduler_plan.reason}"
+            ),
+        )
+        if scheduler_plan.effective_mode == "parallel":
+            (raw_segments, info, asr_execution), diarization = await asyncio.gather(
+                asyncio.to_thread(_run_asr_workflow),
+                diariser(audio_path),
+            )
+        else:
+            raw_segments, info, asr_execution = await asyncio.to_thread(_run_asr_workflow)
+            await _emit_progress(progress_callback, stage="stt", progress=0.35)
+            _cleanup_cuda_memory(scheduler_plan.asr_device)
+            if is_gpu_device(scheduler_plan.asr_device):
+                _best_effort_step_log(
+                    step_log_callback,
+                    "gpu scheduler cleared CUDA cache before diarization stage",
+                )
+            diarization = await diariser(audio_path)
         _write_asr_glossary_artifact(
             derived_dir=artifacts.transcript_json_path.parent,
             recording_id=artifacts.recording_id,
@@ -1476,7 +1736,8 @@ async def run_pipeline(
                 ),
             ),
         )
-        await _emit_progress(progress_callback, stage="stt", progress=0.35)
+        if scheduler_plan.effective_mode == "parallel":
+            await _emit_progress(progress_callback, stage="stt", progress=0.35)
         asr_segments = normalise_asr_segments(raw_segments)
         diarization = await _maybe_retry_dialog_diarization(
             diariser=diariser,
@@ -1629,34 +1890,33 @@ async def run_pipeline(
         p95_latency_seconds.observe(time.perf_counter() - start)
         return TranscriptResult(summary="No speech detected", body="", friendly=0, speakers=speakers, summary_path=artifacts.summary_json_path, body_path=artifacts.transcript_txt_path, unknown_chunks=[], segments=[])
 
-    snippet_paths = export_speaker_snippets(
-        SnippetExportRequest(
-            audio_path=audio_path,
-            diar_segments=diar_segments,
-            snippets_dir=artifacts.snippets_dir,
-            duration_sec=precheck_result.duration_sec,
-            speaker_turns=speaker_turns,
-            degraded_diarization=_is_degraded_diarization(
-                diariser,
-                used_dummy_fallback=used_dummy_fallback,
-            ),
-            pad_seconds=cfg.snippet_pad_seconds,
-            max_clip_duration_sec=cfg.snippet_max_duration_seconds,
-            min_clip_duration_sec=cfg.snippet_min_duration_seconds,
-            max_snippets_per_speaker=cfg.snippet_max_per_speaker,
-        )
-    )
-    speaker_lines = _merge_similar(
-        [
-            f"[{turn['start']:.2f}-{turn['end']:.2f}] **{aliases.get(turn['speaker'], turn['speaker'])}:** {turn['text']}"
-            for turn in speaker_turns
-        ],
-        cfg.merge_similar,
-    )
-    friendly = _sentiment_score(clean_text)
-    llm_prompt_text = _speaker_turn_prompt_text(speaker_turns, aliases=aliases)
-
     try:
+        snippet_paths = export_speaker_snippets(
+            SnippetExportRequest(
+                audio_path=audio_path,
+                diar_segments=diar_segments,
+                snippets_dir=artifacts.snippets_dir,
+                duration_sec=precheck_result.duration_sec,
+                speaker_turns=speaker_turns,
+                degraded_diarization=_is_degraded_diarization(
+                    diariser,
+                    used_dummy_fallback=used_dummy_fallback,
+                ),
+                pad_seconds=cfg.snippet_pad_seconds,
+                max_clip_duration_sec=cfg.snippet_max_duration_seconds,
+                min_clip_duration_sec=cfg.snippet_min_duration_seconds,
+                max_snippets_per_speaker=cfg.snippet_max_per_speaker,
+            )
+        )
+        speaker_lines = _merge_similar(
+            [
+                f"[{turn['start']:.2f}-{turn['end']:.2f}] **{aliases.get(turn['speaker'], turn['speaker'])}:** {turn['text']}"
+                for turn in speaker_turns
+            ],
+            cfg.merge_similar,
+        )
+        friendly = _sentiment_score(clean_text)
+        llm_prompt_text = _speaker_turn_prompt_text(speaker_turns, aliases=aliases)
         if _use_chunked_llm(llm_prompt_text, cfg):
             summary_payload = await _run_chunked_llm_summary(
                 transcript_text=llm_prompt_text or clean_text,
@@ -1799,4 +2059,5 @@ __all__ = [
     "build_summary_prompts",
     "build_structured_summary_prompts",
     "build_summary_payload",
+    "clear_asr_model_cache",
 ]

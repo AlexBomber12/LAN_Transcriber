@@ -4,7 +4,7 @@ import contextlib
 import pickle
 import sys
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
@@ -704,6 +704,213 @@ def test_build_whisperx_transcriber_modern_path_forwards_glossary_kwargs(
         "initial_prompt": "Glossary: Sander; Sandia",
         "hotwords": "Sander, Sandia",
     }
+
+
+def test_build_whisperx_transcriber_modern_path_reuses_cached_model_across_builds(
+    tmp_path: Path,
+    monkeypatch,
+):
+    fake_whisperx = ModuleType("whisperx")
+    fake_asr = ModuleType("whisperx.asr")
+    load_calls: list[tuple[str, str, str]] = []
+
+    class _FakeModel:
+        vad_model = staticmethod(lambda _payload: [])
+
+        def transcribe(self, _audio: str, *, batch_size: int, vad_filter: bool, language: str | None):
+            assert batch_size == 16
+            assert vad_filter is True
+            return {"segments": [{"start": 0.0, "end": 1.0, "text": "ok"}], "language": language or "en"}
+
+    fake_whisperx.load_audio = lambda _path: "audio"
+    fake_asr.load_model = lambda model_name, device, *, compute_type="int8", vad_method="silero": (
+        load_calls.append((model_name, device, compute_type)) or _FakeModel()
+    )
+    fake_whisperx.asr = fake_asr
+    monkeypatch.setitem(sys.modules, "whisperx", fake_whisperx)
+    monkeypatch.setitem(sys.modules, "whisperx.asr", fake_asr)
+    pipeline.clear_asr_model_cache()
+
+    cfg = pipeline.Settings(
+        asr_device="cpu",
+        asr_enable_align=False,
+        tmp_root=tmp_path,
+        recordings_root=tmp_path / "recordings",
+    )
+    first = pipeline._build_whisperx_transcriber(cfg=cfg)
+    second = pipeline._build_whisperx_transcriber(cfg=cfg)
+
+    audio_path = tmp_path / "cached.wav"
+    audio_path.write_bytes(b"")
+    assert first(audio_path, None)[0][0]["text"] == "ok"
+    assert second(audio_path, "en")[0][0]["text"] == "ok"
+    assert load_calls == [("large-v3", "cpu", "int8")]
+    pipeline.clear_asr_model_cache()
+
+
+def test_build_whisperx_transcriber_retries_gpu_oom_once_with_smaller_compute_type(
+    tmp_path: Path,
+    monkeypatch,
+):
+    fake_whisperx = ModuleType("whisperx")
+    fake_asr = ModuleType("whisperx.asr")
+    compute_types: list[str] = []
+
+    class _FakeModel:
+        vad_model = staticmethod(lambda _payload: [])
+
+        def transcribe(self, _audio: str, *, batch_size: int, vad_filter: bool, language: str | None):
+            assert batch_size == 16
+            assert vad_filter is True
+            return {"segments": [{"start": 0.0, "end": 1.0, "text": "gpu"}], "language": language or "en"}
+
+    def _load_model(_model_name: str, _device: str, *, compute_type="float16", vad_method="silero"):
+        compute_types.append(compute_type)
+        assert vad_method == "silero"
+        if len(compute_types) == 1:
+            raise RuntimeError("CUDA out of memory")
+        return _FakeModel()
+
+    fake_whisperx.load_audio = lambda _path: "audio"
+    fake_asr.load_model = _load_model
+    fake_whisperx.asr = fake_asr
+    monkeypatch.setitem(sys.modules, "whisperx", fake_whisperx)
+    monkeypatch.setitem(sys.modules, "whisperx.asr", fake_asr)
+    monkeypatch.setattr(
+        pipeline,
+        "collect_cuda_runtime_facts",
+        lambda: SimpleNamespace(
+            is_available=True,
+            device_count=1,
+            visible_devices="0",
+            torch_cuda_version="12.4",
+        ),
+    )
+    step_log: list[str] = []
+    pipeline.clear_asr_model_cache()
+
+    cfg = pipeline.Settings(
+        asr_device="auto",
+        asr_enable_align=False,
+        tmp_root=tmp_path,
+        recordings_root=tmp_path / "recordings",
+    )
+    transcribe_audio = pipeline._build_whisperx_transcriber(
+        cfg=cfg,
+        step_log_callback=step_log.append,
+    )
+
+    audio_path = tmp_path / "gpu-oom.wav"
+    audio_path.write_bytes(b"")
+    segments, info = transcribe_audio(audio_path, None)
+    second_transcriber = pipeline._build_whisperx_transcriber(
+        cfg=cfg,
+        step_log_callback=step_log.append,
+    )
+    second_segments, second_info = second_transcriber(audio_path, None)
+
+    assert segments[0]["text"] == "gpu"
+    assert info["language"] == "en"
+    assert second_segments[0]["text"] == "gpu"
+    assert second_info["language"] == "en"
+    assert compute_types == ["float16", "int8_float16"]
+    assert any("retrying once with compute_type=int8_float16" in message for message in step_log)
+    assert any("compute_type=int8_float16" in message for message in step_log)
+    pipeline.clear_asr_model_cache()
+
+
+def test_load_cached_whisperx_model_raises_plain_load_errors(
+    tmp_path: Path,
+    monkeypatch,
+):
+    fake_asr = SimpleNamespace(
+        load_model=lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("plain load failure"))
+    )
+    monkeypatch.setattr(pipeline, "_log_cuda_memory_snapshot", lambda **_kwargs: None)
+    monkeypatch.setattr(
+        pipeline,
+        "omegaconf_safe_globals_for_torch_load",
+        contextlib.nullcontext,
+    )
+    pipeline.clear_asr_model_cache()
+
+    cfg = pipeline.Settings(
+        asr_device="cpu",
+        asr_enable_align=False,
+        tmp_root=tmp_path,
+        recordings_root=tmp_path / "recordings",
+    )
+
+    with pytest.raises(RuntimeError, match="plain load failure"):
+        pipeline._load_cached_whisperx_model(  # noqa: SLF001
+            cfg=cfg,
+            wx_asr=fake_asr,
+            device="cpu",
+            compute_type="int8",
+            step_log_callback=None,
+        )
+
+
+def test_load_cached_whisperx_model_prefers_cache_entry_inserted_after_load(
+    tmp_path: Path,
+    monkeypatch,
+):
+    load_calls: list[tuple[object, ...]] = []
+    inserted_model = object()
+    loaded_model = object()
+
+    def _load_model(*args: object, **kwargs: object) -> object:
+        load_calls.append(args + (kwargs["compute_type"], kwargs["vad_method"]))
+        return loaded_model
+
+    fake_asr = SimpleNamespace(load_model=_load_model)
+    cfg = pipeline.Settings(
+        asr_device="cpu",
+        asr_enable_align=False,
+        tmp_root=tmp_path,
+        recordings_root=tmp_path / "recordings",
+    )
+    cache_key = pipeline._asr_model_cache_key(  # noqa: SLF001
+        cfg=cfg,
+        device="cpu",
+        compute_type="int8",
+        load_model_callable=_load_model,
+    )
+
+    class _RaceLock:
+        def __init__(self) -> None:
+            self.enter_count = 0
+
+        def __enter__(self):
+            self.enter_count += 1
+            if self.enter_count == 2:
+                pipeline._ASR_MODEL_CACHE[cache_key] = inserted_model  # noqa: SLF001
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> bool:
+            return False
+
+    monkeypatch.setattr(pipeline, "_log_cuda_memory_snapshot", lambda **_kwargs: None)
+    monkeypatch.setattr(
+        pipeline,
+        "omegaconf_safe_globals_for_torch_load",
+        contextlib.nullcontext,
+    )
+    pipeline.clear_asr_model_cache()
+    monkeypatch.setattr(pipeline, "_ASR_MODEL_CACHE_LOCK", _RaceLock())
+
+    cached_model, selected_compute_type = pipeline._load_cached_whisperx_model(  # noqa: SLF001
+        cfg=cfg,
+        wx_asr=fake_asr,
+        device="cpu",
+        compute_type="int8",
+        step_log_callback=None,
+    )
+
+    assert cached_model is inserted_model
+    assert selected_compute_type == "int8"
+    assert load_calls == [("large-v3", "cpu", "int8", "silero")]
+    pipeline.clear_asr_model_cache()
 
 
 def test_build_whisperx_transcriber_modern_path_uses_safe_fallback_when_call_details_are_unavailable(

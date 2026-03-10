@@ -247,6 +247,18 @@ class AppSettings(BaseSettings):
         default=DEFAULT_DIARIZATION_MODEL_ID,
         validation_alias=AliasChoices("LAN_DIARIZATION_MODEL_ID"),
     )
+    asr_device: str = Field(
+        default="auto",
+        validation_alias=AliasChoices("LAN_ASR_DEVICE"),
+    )
+    diarization_device: str = Field(
+        default="auto",
+        validation_alias=AliasChoices("LAN_DIARIZATION_DEVICE"),
+    )
+    gpu_scheduler_mode: Literal["auto", "sequential", "parallel"] = Field(
+        default="auto",
+        validation_alias=AliasChoices("LAN_GPU_SCHEDULER_MODE"),
+    )
     diarization_profile: Literal["auto", "dialog", "meeting"] = "auto"
     diarization_min_speakers: int | None = Field(default=None, ge=1)
     diarization_max_speakers: int | None = Field(default=None, ge=1)
