@@ -27,7 +27,6 @@ from lan_transcriber.pipeline import Settings as PipelineSettings
 from lan_transcriber.pipeline import run_pipeline, run_precheck
 from lan_transcriber.gpu_policy import (
     collect_cuda_runtime_facts,
-    is_gpu_device,
     is_gpu_oom_error,
     resolve_scheduler_decision,
 )
@@ -667,7 +666,10 @@ class _PyannoteDiariser:
         self._pipeline_loader = pipeline_loader
         self._fallback_diariser: _FallbackDiariser | None = None
         self._fallback_duration_sec = fallback_duration_sec
-        self._forced_gpu_device_requested = is_gpu_device(requested_device)
+        normalized_requested_device = str(requested_device or "").strip().lower()
+        if normalized_requested_device == "gpu":
+            normalized_requested_device = "cuda"
+        self._forced_gpu_device_requested = normalized_requested_device.startswith("cuda")
         self.mode = "pyannote"
         self.profile = str(profile or "auto").strip().lower() or "auto"
         self.initial_profile = (
@@ -739,6 +741,11 @@ class _PyannoteDiariser:
             if isinstance(exc, TypeError) and (
                 message.startswith("pipeline_loader must be provided")
                 or message.startswith("pipeline_model must be a callable")
+            ):
+                raise
+            if (
+                isinstance(exc, ValueError)
+                and message.startswith("Device must be one of auto, cpu, cuda, or cuda:<index>.")
             ):
                 raise
             if (

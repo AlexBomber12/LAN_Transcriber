@@ -318,6 +318,34 @@ def test_load_pyannote_pipeline_falls_back_to_cpu_when_cuda_move_fails(
     assert "Pyannote diarization device: cpu" in caplog.text
 
 
+def test_load_pyannote_pipeline_falls_back_to_cpu_when_cuda_move_fails_in_sequential_mode(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+):
+    class _Model:
+        def __call__(self, payload):
+            return payload
+
+        def to(self, _device):
+            raise RuntimeError("cuda move failed")
+
+    _install_fake_pipeline(monkeypatch, lambda *_a, **_k: _Model())
+    _install_fake_torch(monkeypatch, cuda_available=True)
+
+    with caplog.at_level(logging.INFO, logger=diarization_loader.__name__):
+        model = diarization_loader.load_pyannote_pipeline(
+            model_id="repo/fallback-sequential",
+            scheduler_mode="sequential",
+        )
+
+    assert callable(model)
+    assert (
+        "Failed to move pyannote diarization pipeline to cuda; continuing on CPU"
+        in caplog.text
+    )
+    assert "Pyannote diarization device: cpu" in caplog.text
+
+
 def test_load_pyannote_pipeline_respects_forced_cpu_when_cuda_is_available(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,

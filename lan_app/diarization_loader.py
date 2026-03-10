@@ -11,7 +11,6 @@ from lan_transcriber.gpu_policy import (
     is_gpu_oom_error,
     is_gpu_device,
     normalize_device,
-    normalize_scheduler_mode,
     resolve_effective_device,
 )
 from lan_transcriber.torch_safe_globals import (
@@ -131,7 +130,6 @@ def _move_pipeline_to_best_device(
     scheduler_mode: str | None,
 ) -> str:
     normalized_request = normalize_device(requested_device)
-    normalized_scheduler_mode = normalize_scheduler_mode(scheduler_mode)
     if normalized_request == "cpu":
         return "cpu"
 
@@ -158,7 +156,7 @@ def _move_pipeline_to_best_device(
     try:
         model.to(torch.device(effective_device))
     except Exception as exc:
-        if normalized_request == "auto" and normalized_scheduler_mode == "auto":
+        if normalized_request == "auto" and not is_gpu_oom_error(exc):
             _LOG.warning(
                 "Failed to move pyannote diarization pipeline to %s; continuing on CPU: %s",
                 effective_device,

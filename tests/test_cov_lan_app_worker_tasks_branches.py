@@ -590,6 +590,38 @@ def test_pyannote_diariser_reraises_forced_gpu_loader_device_errors():
         asyncio.run(diariser(Path("/tmp/forced-gpu.wav")))
 
 
+def test_pyannote_diariser_treats_gpu_alias_as_forced_gpu_device():
+    diariser = worker_tasks._PyannoteDiariser(
+        pipeline_loader=lambda: (_ for _ in ()).throw(
+            RuntimeError("Requested diarization device cuda but CUDA is unavailable.")
+        ),
+        requested_device="gpu",
+        fallback_duration_sec=12.0,
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="Requested diarization device cuda but CUDA is unavailable.",
+    ):
+        asyncio.run(diariser(Path("/tmp/gpu-alias.wav")))
+
+
+def test_pyannote_diariser_reraises_invalid_requested_device_errors_without_eager_validation():
+    diariser = worker_tasks._PyannoteDiariser(
+        pipeline_loader=lambda: (_ for _ in ()).throw(
+            ValueError("Device must be one of auto, cpu, cuda, or cuda:<index>.")
+        ),
+        requested_device="metal",
+        fallback_duration_sec=12.0,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="Device must be one of auto, cpu, cuda, or cuda:<index>.",
+    ):
+        asyncio.run(diariser(Path("/tmp/invalid-device.wav")))
+
+
 def test_resolve_diarization_speaker_hints_from_env(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("LAN_DIARIZATION_PROFILE", "auto")
     monkeypatch.delenv("LAN_DIARIZATION_MIN_SPEAKERS", raising=False)
