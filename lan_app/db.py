@@ -42,6 +42,7 @@ _DEFAULT_SQLITE_BUSY_TIMEOUT_MS = 30_000
 _DEFAULT_DB_RETRIES = 5
 _DEFAULT_DB_BASE_SLEEP_MS = 50
 _LOCK_ERROR_MARKERS = ("locked", "busy")
+_CAPTURE_TIME_PROVENANCE_MIGRATION_VERSION = 19
 _RECORDING_CAPTURE_PROVENANCE_COLUMNS = {
     "captured_at_source",
     "captured_at_timezone",
@@ -516,6 +517,7 @@ def init_db(settings: AppSettings | None = None) -> Path:
     migrations = _migration_files()
     with connect(cfg) as conn:
         current_version = _read_user_version(conn)
+    starting_version = current_version
 
     for target_version, migration_path in migrations:
         if target_version <= current_version:
@@ -533,7 +535,11 @@ def init_db(settings: AppSettings | None = None) -> Path:
                 return target_version
 
         current_version = with_db_retry(_apply_migration)
-    _backfill_legacy_upload_capture_times(cfg)
+    if (
+        starting_version < _CAPTURE_TIME_PROVENANCE_MIGRATION_VERSION
+        and current_version >= _CAPTURE_TIME_PROVENANCE_MIGRATION_VERSION
+    ):
+        _backfill_legacy_upload_capture_times(cfg)
     return cfg.db_path
 
 

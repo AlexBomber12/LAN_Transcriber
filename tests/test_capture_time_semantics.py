@@ -100,6 +100,26 @@ def test_backfill_returns_zero_before_provenance_columns_exist(tmp_path: Path) -
     assert db_module._backfill_legacy_upload_capture_times(cfg) == 0  # noqa: SLF001
 
 
+def test_steady_state_db_calls_do_not_rerun_capture_time_backfill(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    cfg = _cfg(tmp_path)
+    init_db(cfg)
+
+    monkeypatch.setattr(
+        db_module,
+        "_backfill_legacy_upload_capture_times",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("capture-time backfill should not rerun")
+        ),
+    )
+
+    listed, total = list_recordings(settings=cfg)
+    assert listed == []
+    assert total == 0
+
+
 def test_init_db_backfills_only_eligible_legacy_upload_rows_and_is_idempotent(
     tmp_path: Path,
 ) -> None:

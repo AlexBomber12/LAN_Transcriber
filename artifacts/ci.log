@@ -11,10 +11,10 @@ The event loop scope for asynchronous fixtures will default to the fixture cachi
 ........................................................................ [ 54%]
 ........................................................................ [ 63%]
 ........................................................................ [ 72%]
-.....................................................................s.. [ 81%]
+......................................................................s. [ 81%]
 ........................................................................ [ 90%]
 ........................................................................ [ 99%]
-......                                                                   [100%]
+.......                                                                  [100%]
 =============================== warnings summary ===============================
 lan_transcriber/pipeline_steps/precheck.py:3
   /home/alexey/LAN_Transcriber/lan_transcriber/pipeline_steps/precheck.py:3: DeprecationWarning: 'audioop' is deprecated and slated for removal in Python 3.13
@@ -50,13 +50,13 @@ tests/test_warm_models.py::test_warm_models_module_main_guard
 ---------- coverage: platform linux, python 3.12.3-final-0 -----------
 Name    Stmts   Miss Branch BrPart  Cover   Missing
 ---------------------------------------------------
-TOTAL    9647      0   3100      0   100%
+TOTAL    9650      0   3102      0   100%
 
 58 files skipped due to complete coverage.
 Coverage HTML written to dir htmlcov
 
 Required test coverage of 100% reached. Total coverage: 100.00%
-797 passed, 3 skipped, 10 warnings in 57.92s
+798 passed, 3 skipped, 10 warnings in 56.51s
 Name                                                    Stmts   Miss Branch BrPart  Cover
 -----------------------------------------------------------------------------------------
 lan_transcriber/__init__.py                                 8      0      0      0   100%
@@ -102,7 +102,7 @@ lan_app/calendar/service.py          66      0     12      0   100%
 lan_app/config.py                   103      0     16      0   100%
 lan_app/constants.py                 28      0      0      0   100%
 lan_app/conversation_metrics.py     380      0    150      0   100%
-lan_app/db.py                      1122      0    262      0   100%
+lan_app/db.py                      1125      0    264      0   100%
 lan_app/db_init.py                    9      0      2      0   100%
 lan_app/diarization_loader.py       144      0     54      0   100%
 lan_app/exporter.py                 228      0     96      0   100%
@@ -122,4 +122,4 @@ lan_app/worker.py                    28      0      2      0   100%
 lan_app/worker_tasks.py             639      0    196      0   100%
 lan_app/workers.py                   10      0      0      0   100%
 -------------------------------------------------------------------
-TOTAL                              6150      0   1926      0   100%
+TOTAL                              6153      0   1928      0   100%
