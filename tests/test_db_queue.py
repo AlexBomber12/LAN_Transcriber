@@ -112,6 +112,7 @@ def test_init_db_creates_mvp_tables(tmp_path: Path):
         "participant_metrics",
         "routing_training_examples",
         "routing_project_keyword_weights",
+        "recording_pipeline_stages",
     }
     assert expected.issubset(names)
 

@@ -88,6 +88,42 @@
     <span class="k">Updated at</span><span class="v">{{ rec.updated_at_display }}</span>
   </div>
 
+  {% if pipeline_stages %}
+  <div class="section" style="margin-top:10px">
+    <h2 style="margin-top:0">Pipeline Stages</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Stage</th>
+          <th>Status</th>
+          <th>Attempt</th>
+          <th>Updated</th>
+          <th>Notes</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for stage in pipeline_stages %}
+        <tr>
+          <td>{{ stage.stage_label }}</td>
+          <td>{{ stage.status_label }}</td>
+          <td>{{ stage.attempt }}</td>
+          <td>{{ stage.updated_at_display }}</td>
+          <td>
+            {% if stage.error_text %}
+            {{ stage.error_text }}
+            {% elif stage.duration_seconds is not none %}
+            {{ '%.3f'|format(stage.duration_seconds) }}s
+            {% else %}
+            —
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+
   <div class="section" style="margin-top:10px">
     <h2 style="margin-top:0">Export</h2>
     <div class="filters" style="margin-bottom:6px">

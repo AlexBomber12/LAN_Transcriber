@@ -23,6 +23,11 @@ from .constants import (
     RECORDING_STATUS_QUEUED,
     RECORDING_STATUS_QUARANTINE,
 )
+from .pipeline_stages import (
+    stage_order as pipeline_stage_order,
+    validate_pipeline_stage_name,
+    validate_pipeline_stage_status,
+)
 from .uploads import normalize_plaud_captured_at, parse_plaud_captured_local_datetime
 
 _PROJECT_ASSIGNMENT_SOURCES = {"manual", "auto"}
@@ -214,6 +219,27 @@ def _validate_job_status(status: str) -> None:
 def _validate_job_type(job_type: str) -> None:
     if job_type not in JOB_TYPES:
         raise ValueError(f"Unsupported job type: {job_type}")
+
+
+def _normalise_pipeline_stage_metadata(metadata: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(metadata, dict):
+        return {}
+    try:
+        return json.loads(json.dumps(metadata, ensure_ascii=True))
+    except (TypeError, ValueError):
+        return {}
+
+
+def _duration_ms_between(started_at: str | None, finished_at: str | None) -> int | None:
+    if not started_at or not finished_at:
+        return None
+    try:
+        started = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
+        finished = datetime.fromisoformat(finished_at.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    delta_ms = int((finished - started).total_seconds() * 1000)
+    return max(delta_ms, 0)
 
 
 def _normalise_project_assignment_source(source: str | None) -> str | None:
@@ -745,6 +771,392 @@ def clear_recording_progress(
             )
             conn.commit()
             return updated.rowcount > 0
+
+    return with_db_retry(_clear)
+
+
+def list_recording_pipeline_stages(
+    recording_id: str,
+    *,
+    settings: AppSettings | None = None,
+) -> list[dict[str, Any]]:
+    init_db(settings)
+    with connect(settings) as conn:
+        rows = conn.execute(
+            """
+            SELECT *
+            FROM recording_pipeline_stages
+            WHERE recording_id = ?
+            ORDER BY stage_order ASC, stage_name ASC
+            """,
+            (recording_id,),
+        ).fetchall()
+    return [_as_dict(row) or {} for row in rows]
+
+
+def upsert_recording_pipeline_stage(
+    recording_id: str,
+    *,
+    stage_name: str,
+    status: str,
+    attempt: int = 0,
+    started_at: str | None = None,
+    finished_at: str | None = None,
+    duration_ms: int | None = None,
+    error_code: str | None = None,
+    error_text: str | None = None,
+    metadata: dict[str, Any] | None = None,
+    settings: AppSettings | None = None,
+) -> dict[str, Any] | None:
+    init_db(settings)
+    normalized_stage = validate_pipeline_stage_name(stage_name)
+    normalized_status = validate_pipeline_stage_status(status)
+    safe_attempt = max(int(attempt), 0)
+    now = _utc_now()
+    metadata_json = json.dumps(
+        _normalise_pipeline_stage_metadata(metadata),
+        ensure_ascii=True,
+        sort_keys=True,
+    )
+    safe_duration_ms = (
+        max(int(duration_ms), 0)
+        if duration_ms is not None
+        else _duration_ms_between(started_at, finished_at)
+    )
+    order_value = pipeline_stage_order(normalized_stage)
+
+    def _upsert() -> dict[str, Any] | None:
+        with connect(settings) as conn:
+            conn.execute(
+                """
+                INSERT INTO recording_pipeline_stages (
+                    recording_id,
+                    stage_name,
+                    stage_order,
+                    status,
+                    attempt,
+                    started_at,
+                    finished_at,
+                    duration_ms,
+                    error_code,
+                    error_text,
+                    metadata_json,
+                    updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(recording_id, stage_name) DO UPDATE SET
+                    stage_order = excluded.stage_order,
+                    status = excluded.status,
+                    attempt = excluded.attempt,
+                    started_at = excluded.started_at,
+                    finished_at = excluded.finished_at,
+                    duration_ms = excluded.duration_ms,
+                    error_code = excluded.error_code,
+                    error_text = excluded.error_text,
+                    metadata_json = excluded.metadata_json,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    recording_id,
+                    normalized_stage,
+                    order_value,
+                    normalized_status,
+                    safe_attempt,
+                    started_at,
+                    finished_at,
+                    safe_duration_ms,
+                    str(error_code or "").strip() or None,
+                    str(error_text or "").strip() or None,
+                    metadata_json,
+                    now,
+                ),
+            )
+            row = conn.execute(
+                """
+                SELECT *
+                FROM recording_pipeline_stages
+                WHERE recording_id = ? AND stage_name = ?
+                """,
+                (recording_id, normalized_stage),
+            ).fetchone()
+            conn.commit()
+        return _as_dict(row)
+
+    return with_db_retry(_upsert)
+
+
+def mark_recording_pipeline_stage_started(
+    recording_id: str,
+    *,
+    stage_name: str,
+    metadata: dict[str, Any] | None = None,
+    settings: AppSettings | None = None,
+) -> dict[str, Any] | None:
+    init_db(settings)
+    normalized_stage = validate_pipeline_stage_name(stage_name)
+    now = _utc_now()
+    metadata_json = json.dumps(
+        _normalise_pipeline_stage_metadata(metadata),
+        ensure_ascii=True,
+        sort_keys=True,
+    )
+    order_value = pipeline_stage_order(normalized_stage)
+
+    def _mark_started() -> dict[str, Any] | None:
+        with connect(settings) as conn:
+            row = conn.execute(
+                """
+                SELECT attempt
+                FROM recording_pipeline_stages
+                WHERE recording_id = ? AND stage_name = ?
+                """,
+                (recording_id, normalized_stage),
+            ).fetchone()
+            next_attempt = max(int(row["attempt"]) if row is not None else 0, 0) + 1
+            conn.execute(
+                """
+                INSERT INTO recording_pipeline_stages (
+                    recording_id,
+                    stage_name,
+                    stage_order,
+                    status,
+                    attempt,
+                    started_at,
+                    finished_at,
+                    duration_ms,
+                    error_code,
+                    error_text,
+                    metadata_json,
+                    updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(recording_id, stage_name) DO UPDATE SET
+                    stage_order = excluded.stage_order,
+                    status = excluded.status,
+                    attempt = excluded.attempt,
+                    started_at = excluded.started_at,
+                    finished_at = excluded.finished_at,
+                    duration_ms = excluded.duration_ms,
+                    error_code = excluded.error_code,
+                    error_text = excluded.error_text,
+                    metadata_json = excluded.metadata_json,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    recording_id,
+                    normalized_stage,
+                    order_value,
+                    "running",
+                    next_attempt,
+                    now,
+                    None,
+                    None,
+                    None,
+                    None,
+                    metadata_json,
+                    now,
+                ),
+            )
+            updated = conn.execute(
+                """
+                SELECT *
+                FROM recording_pipeline_stages
+                WHERE recording_id = ? AND stage_name = ?
+                """,
+                (recording_id, normalized_stage),
+            ).fetchone()
+            conn.commit()
+        return _as_dict(updated)
+
+    return with_db_retry(_mark_started)
+
+
+def _mark_recording_pipeline_stage_terminal(
+    recording_id: str,
+    *,
+    stage_name: str,
+    status: str,
+    error_code: str | None = None,
+    error_text: str | None = None,
+    metadata: dict[str, Any] | None = None,
+    settings: AppSettings | None = None,
+) -> dict[str, Any] | None:
+    init_db(settings)
+    normalized_stage = validate_pipeline_stage_name(stage_name)
+    normalized_status = validate_pipeline_stage_status(status)
+    if normalized_status == "running":
+        raise ValueError("Terminal stage status must not be running")
+    now = _utc_now()
+    metadata_json = json.dumps(
+        _normalise_pipeline_stage_metadata(metadata),
+        ensure_ascii=True,
+        sort_keys=True,
+    )
+
+    def _mark_terminal() -> dict[str, Any] | None:
+        with connect(settings) as conn:
+            existing = conn.execute(
+                """
+                SELECT *
+                FROM recording_pipeline_stages
+                WHERE recording_id = ? AND stage_name = ?
+                """,
+                (recording_id, normalized_stage),
+            ).fetchone()
+            existing_attempt = max(int(existing["attempt"]) if existing is not None else 0, 0)
+            started_at_value = (
+                str(existing["started_at"] or "").strip()
+                if existing is not None
+                else ""
+            ) or now
+            duration_value = _duration_ms_between(started_at_value, now)
+            conn.execute(
+                """
+                INSERT INTO recording_pipeline_stages (
+                    recording_id,
+                    stage_name,
+                    stage_order,
+                    status,
+                    attempt,
+                    started_at,
+                    finished_at,
+                    duration_ms,
+                    error_code,
+                    error_text,
+                    metadata_json,
+                    updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(recording_id, stage_name) DO UPDATE SET
+                    stage_order = excluded.stage_order,
+                    status = excluded.status,
+                    attempt = excluded.attempt,
+                    started_at = excluded.started_at,
+                    finished_at = excluded.finished_at,
+                    duration_ms = excluded.duration_ms,
+                    error_code = excluded.error_code,
+                    error_text = excluded.error_text,
+                    metadata_json = excluded.metadata_json,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    recording_id,
+                    normalized_stage,
+                    pipeline_stage_order(normalized_stage),
+                    normalized_status,
+                    max(existing_attempt, 1),
+                    started_at_value,
+                    now,
+                    duration_value,
+                    str(error_code or "").strip() or None,
+                    str(error_text or "").strip() or None,
+                    metadata_json,
+                    now,
+                ),
+            )
+            updated = conn.execute(
+                """
+                SELECT *
+                FROM recording_pipeline_stages
+                WHERE recording_id = ? AND stage_name = ?
+                """,
+                (recording_id, normalized_stage),
+            ).fetchone()
+            conn.commit()
+        return _as_dict(updated)
+
+    return with_db_retry(_mark_terminal)
+
+
+def mark_recording_pipeline_stage_completed(
+    recording_id: str,
+    *,
+    stage_name: str,
+    metadata: dict[str, Any] | None = None,
+    settings: AppSettings | None = None,
+) -> dict[str, Any] | None:
+    return _mark_recording_pipeline_stage_terminal(
+        recording_id,
+        stage_name=stage_name,
+        status="completed",
+        metadata=metadata,
+        settings=settings,
+    )
+
+
+def mark_recording_pipeline_stage_failed(
+    recording_id: str,
+    *,
+    stage_name: str,
+    error_code: str | None = None,
+    error_text: str | None = None,
+    metadata: dict[str, Any] | None = None,
+    settings: AppSettings | None = None,
+) -> dict[str, Any] | None:
+    return _mark_recording_pipeline_stage_terminal(
+        recording_id,
+        stage_name=stage_name,
+        status="failed",
+        error_code=error_code,
+        error_text=error_text,
+        metadata=metadata,
+        settings=settings,
+    )
+
+
+def mark_recording_pipeline_stage_skipped(
+    recording_id: str,
+    *,
+    stage_name: str,
+    metadata: dict[str, Any] | None = None,
+    settings: AppSettings | None = None,
+) -> dict[str, Any] | None:
+    return _mark_recording_pipeline_stage_terminal(
+        recording_id,
+        stage_name=stage_name,
+        status="skipped",
+        metadata=metadata,
+        settings=settings,
+    )
+
+
+def mark_recording_pipeline_stage_cancelled(
+    recording_id: str,
+    *,
+    stage_name: str,
+    metadata: dict[str, Any] | None = None,
+    settings: AppSettings | None = None,
+) -> dict[str, Any] | None:
+    return _mark_recording_pipeline_stage_terminal(
+        recording_id,
+        stage_name=stage_name,
+        status="cancelled",
+        metadata=metadata,
+        settings=settings,
+    )
+
+
+def clear_recording_pipeline_stages(
+    recording_id: str,
+    *,
+    settings: AppSettings | None = None,
+    from_stage: str | None = None,
+) -> int:
+    init_db(settings)
+    params: list[Any] = [recording_id]
+    where_sql = "recording_id = ?"
+    if from_stage is not None:
+        where_sql += " AND stage_order >= ?"
+        params.append(pipeline_stage_order(validate_pipeline_stage_name(from_stage)))
+
+    def _clear() -> int:
+        with connect(settings) as conn:
+            deleted = conn.execute(
+                f"DELETE FROM recording_pipeline_stages WHERE {where_sql}",
+                params,
+            )
+            conn.commit()
+            return int(deleted.rowcount)
 
     return with_db_retry(_clear)
 
@@ -3217,6 +3629,14 @@ __all__ = [
     "set_recording_duration",
     "set_recording_progress",
     "clear_recording_progress",
+    "list_recording_pipeline_stages",
+    "upsert_recording_pipeline_stage",
+    "mark_recording_pipeline_stage_started",
+    "mark_recording_pipeline_stage_completed",
+    "mark_recording_pipeline_stage_failed",
+    "mark_recording_pipeline_stage_skipped",
+    "mark_recording_pipeline_stage_cancelled",
+    "clear_recording_pipeline_stages",
     "set_recording_status",
     "set_recording_status_if_current_in",
     "set_recording_status_if_current_in_and_no_started_job",

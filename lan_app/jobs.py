@@ -16,6 +16,8 @@ from .constants import (
     RECORDING_STATUS_QUEUED,
 )
 from .db import (
+    clear_recording_pipeline_stages,
+    clear_recording_progress,
     create_job_if_no_active_for_recording,
     create_job,
     fail_job,
@@ -195,6 +197,9 @@ def enqueue_recording_job(
             pass
         raise
 
+    if job_type == DEFAULT_REQUEUE_JOB_TYPE:
+        clear_recording_pipeline_stages(recording_id, settings=cfg)
+        clear_recording_progress(recording_id, settings=cfg)
     set_recording_status(
         recording_id,
         RECORDING_STATUS_QUEUED,
