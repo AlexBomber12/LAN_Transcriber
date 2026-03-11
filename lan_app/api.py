@@ -63,7 +63,7 @@ from .ops import RecordingDeleteError, delete_recording_with_artifacts
 from .reaper import run_stuck_job_reaper_once
 from .uploads import (
     ALLOWED_UPLOAD_EXTENSIONS,
-    infer_captured_at,
+    infer_upload_capture_time,
     safe_filename,
     suffix_from_name,
     write_upload_to_path,
@@ -505,12 +505,20 @@ async def api_upload_file(file: UploadFile = File(...)) -> dict[str, object]:
             dest,
             max_bytes=_settings.upload_max_bytes,
         )
-        captured_at = infer_captured_at(file.filename or "")
+        capture_time = infer_upload_capture_time(
+            file.filename or "",
+            upload_capture_timezone=_settings.upload_capture_tzinfo(),
+        )
         create_recording(
             recording_id,
             source="upload",
             source_filename=safe_filename(file.filename or ""),
-            captured_at=captured_at,
+            captured_at=capture_time.captured_at,
+            captured_at_source=capture_time.captured_at_source,
+            captured_at_timezone=capture_time.captured_at_timezone,
+            captured_at_inferred_from_filename=(
+                capture_time.captured_at_inferred_from_filename
+            ),
             status=RECORDING_STATUS_QUEUED,
             settings=_settings,
         )
@@ -539,7 +547,7 @@ async def api_upload_file(file: UploadFile = File(...)) -> dict[str, object]:
         return {
             "recording_id": recording_id,
             "job_id": job.job_id,
-            "captured_at": captured_at,
+            "captured_at": capture_time.captured_at,
             "bytes_written": bytes_written,
         }
     except ValueError as exc:

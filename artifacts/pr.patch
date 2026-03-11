@@ -1,141 +1,1012 @@
-diff --git a/lan_transcriber/pipeline_steps/orchestrator.py b/lan_transcriber/pipeline_steps/orchestrator.py
-index 54e0449..2b4337c 100644
---- a/lan_transcriber/pipeline_steps/orchestrator.py
-+++ b/lan_transcriber/pipeline_steps/orchestrator.py
-@@ -1555,6 +1555,18 @@ async def run_pipeline(
-     summary_lang = resolve_target_summary_language(target_summary_language, dominant_language=override_lang or "unknown", detected_language=None)
-     cal_title = str(calendar_title or "").strip() or None
-     cal_attendees = [str(item).strip() for item in (calendar_attendees or []) if str(item).strip()]
-+    language_info: dict[str, Any] = {
-+        "detected": override_lang or "unknown",
-+        "confidence": None,
-+    }
-+    language_analysis = analyse_languages(
-+        [],
-+        detected_language=override_lang,
-+        transcript_language_override=override_lang,
-+    )
-+    diar_segments: list[dict[str, Any]] = []
-+    speaker_turns: list[dict[str, Any]] = []
-+    friendly = 0
+diff --git a/.env.example b/.env.example
+index e851b00..7aa7956 100644
+--- a/.env.example
++++ b/.env.example
+@@ -36,6 +36,9 @@ LAN_RQ_QUEUE_NAME=lan-transcriber
+ LAN_DIARIZATION_MODEL_ID=pyannote/speaker-diarization-3.1
+ LAN_VAD_METHOD=silero
+ LAN_ASR_MULTILINGUAL_MODE=auto
++# Plaud-style filename timestamps are interpreted in this timezone before UTC storage.
++# Existing legacy upload rows are backfilled automatically after upgrade.
++UPLOAD_CAPTURE_TIMEZONE=Europe/Rome
+ # Optional upload cap per file in bytes (set to enable)
+ # UPLOAD_MAX_BYTES=1073741824
+ LAN_CALENDAR_EXPAND_PAST_DAYS=30
+diff --git a/README.md b/README.md
+index 778ef38..a671cda 100644
+--- a/README.md
++++ b/README.md
+@@ -93,6 +93,8 @@ Operational setup, failure handling, backup/restore, and upgrade steps are docum
+ 5. Open the recording detail page at `/recordings/{recording_id}`.
+    - `NeedsReview` recordings now show an explicit review reason in both the list and detail UI.
+    - Displayed timestamps are rendered in local Europe/Rome time in the server-rendered UI.
++   - Plaud-style filename timestamps are interpreted in `UPLOAD_CAPTURE_TIMEZONE` (default `Europe/Rome`), normalized to UTC in the database, and shown back in local time in the UI.
++   - Legacy upload rows created before this fix are backfilled automatically on upgrade once, using the configured upload capture timezone.
+    - ICS sync now stores organizer and attendee details per event, and the calendars UI renders those event times in local Europe/Rome time.
+    - Uploaded/processed recordings are matched automatically to nearby calendar events when the score is strong enough; ambiguous candidates remain reviewable on the recording `calendar` tab.
+    - Duration is taken from `derived/audio_sanitized.wav` when present, then falls back to the raw upload.
+@@ -195,6 +197,7 @@ models are cached across runs.
+ | `LAN_VAD_METHOD` | WhisperX VAD selector for ASR model init: `silero` (default) or `pyannote` |
+ | `LAN_ASR_MULTILINGUAL_MODE` | Mixed-language ASR mode: `auto` (default), `force_single_language`, or `force_multilingual` |
+ | `LAN_API_BEARER_TOKEN` | Optional bearer token for protected POST actions (`/api` and UI POST routes) |
++| `UPLOAD_CAPTURE_TIMEZONE` | Source timezone used to interpret Plaud-style filename timestamps before storing them in UTC (default `Europe/Rome`) |
+ | `UPLOAD_MAX_BYTES` | Optional max size per uploaded file in bytes (`413` when exceeded) |
+ | `QUARANTINE_RETENTION_DAYS` | Retention period for quarantined recording cleanup (default `7`) |
+ | `LAN_API_BIND_HOST` | Published API bind host (default `127.0.0.1`) |
+diff --git a/docs/runbook.md b/docs/runbook.md
+index b1584a0..e9de2c2 100644
+--- a/docs/runbook.md
++++ b/docs/runbook.md
+@@ -45,6 +45,8 @@ docker compose run --rm api python -m lan_app.healthchecks app
+ 5. Open `/recordings/{recording_id}` for transcript, summary, and export actions.
+    - `NeedsReview` recordings show an explicit review reason in the recordings list and detail page.
+    - The server-rendered UI shows timestamps in local Europe/Rome time.
++   - Plaud-style filename timestamps are interpreted in `UPLOAD_CAPTURE_TIMEZONE` (default `Europe/Rome`), then stored in UTC in the database.
++   - Legacy upload rows created before this fix are backfilled automatically once after upgrade when the app initializes the database.
+    - ICS sync now stores organizer and attendee details per event, and the calendars page renders those event times in local Europe/Rome time.
+    - Uploaded and processed recordings are matched automatically to nearby calendar events when the score is strong enough; ambiguous candidates remain reviewable on the recording `calendar` tab.
+    - Duration is sourced from `derived/audio_sanitized.wav` when it exists, otherwise from the raw upload.
+@@ -79,6 +81,7 @@ docker compose run --rm api python -m lan_app.healthchecks app
+ 1. Optionally set `UPLOAD_MAX_BYTES` to cap a single uploaded file size.
+ 2. If set, uploads above this limit are rejected with HTTP `413`.
+ 3. Keep app and reverse-proxy limits consistent to avoid mismatched failures.
++4. Set `UPLOAD_CAPTURE_TIMEZONE` when the source device names files in a local timezone other than `Europe/Rome`.
  
-     atomic_write_json(
-         artifacts.metrics_json_path,
-@@ -1878,34 +1890,33 @@ async def run_pipeline(
-         p95_latency_seconds.observe(time.perf_counter() - start)
-         return TranscriptResult(summary="No speech detected", body="", friendly=0, speakers=speakers, summary_path=artifacts.summary_json_path, body_path=artifacts.transcript_txt_path, unknown_chunks=[], segments=[])
+ ### 1.4 Before first start (diarization warmup)
  
--    snippet_paths = export_speaker_snippets(
--        SnippetExportRequest(
--            audio_path=audio_path,
--            diar_segments=diar_segments,
--            snippets_dir=artifacts.snippets_dir,
--            duration_sec=precheck_result.duration_sec,
--            speaker_turns=speaker_turns,
--            degraded_diarization=_is_degraded_diarization(
--                diariser,
--                used_dummy_fallback=used_dummy_fallback,
--            ),
--            pad_seconds=cfg.snippet_pad_seconds,
--            max_clip_duration_sec=cfg.snippet_max_duration_seconds,
--            min_clip_duration_sec=cfg.snippet_min_duration_seconds,
--            max_snippets_per_speaker=cfg.snippet_max_per_speaker,
--        )
--    )
--    speaker_lines = _merge_similar(
--        [
--            f"[{turn['start']:.2f}-{turn['end']:.2f}] **{aliases.get(turn['speaker'], turn['speaker'])}:** {turn['text']}"
--            for turn in speaker_turns
--        ],
--        cfg.merge_similar,
--    )
--    friendly = _sentiment_score(clean_text)
--    llm_prompt_text = _speaker_turn_prompt_text(speaker_turns, aliases=aliases)
--
-     try:
-+        snippet_paths = export_speaker_snippets(
-+            SnippetExportRequest(
-+                audio_path=audio_path,
-+                diar_segments=diar_segments,
-+                snippets_dir=artifacts.snippets_dir,
-+                duration_sec=precheck_result.duration_sec,
-+                speaker_turns=speaker_turns,
-+                degraded_diarization=_is_degraded_diarization(
-+                    diariser,
-+                    used_dummy_fallback=used_dummy_fallback,
-+                ),
-+                pad_seconds=cfg.snippet_pad_seconds,
-+                max_clip_duration_sec=cfg.snippet_max_duration_seconds,
-+                min_clip_duration_sec=cfg.snippet_min_duration_seconds,
-+                max_snippets_per_speaker=cfg.snippet_max_per_speaker,
-+            )
+diff --git a/lan_app/api.py b/lan_app/api.py
+index 2b5868c..6a47869 100644
+--- a/lan_app/api.py
++++ b/lan_app/api.py
+@@ -63,7 +63,7 @@ from .ops import RecordingDeleteError, delete_recording_with_artifacts
+ from .reaper import run_stuck_job_reaper_once
+ from .uploads import (
+     ALLOWED_UPLOAD_EXTENSIONS,
+-    infer_captured_at,
++    infer_upload_capture_time,
+     safe_filename,
+     suffix_from_name,
+     write_upload_to_path,
+@@ -505,12 +505,20 @@ async def api_upload_file(file: UploadFile = File(...)) -> dict[str, object]:
+             dest,
+             max_bytes=_settings.upload_max_bytes,
+         )
+-        captured_at = infer_captured_at(file.filename or "")
++        capture_time = infer_upload_capture_time(
++            file.filename or "",
++            upload_capture_timezone=_settings.upload_capture_tzinfo(),
 +        )
-+        speaker_lines = _merge_similar(
-+            [
-+                f"[{turn['start']:.2f}-{turn['end']:.2f}] **{aliases.get(turn['speaker'], turn['speaker'])}:** {turn['text']}"
-+                for turn in speaker_turns
-+            ],
-+            cfg.merge_similar,
-+        )
-+        friendly = _sentiment_score(clean_text)
-+        llm_prompt_text = _speaker_turn_prompt_text(speaker_turns, aliases=aliases)
-         if _use_chunked_llm(llm_prompt_text, cfg):
-             summary_payload = await _run_chunked_llm_summary(
-                 transcript_text=llm_prompt_text or clean_text,
-diff --git a/tests/test_pipeline.py b/tests/test_pipeline.py
-index 68bef71..4fe5e96 100644
---- a/tests/test_pipeline.py
-+++ b/tests/test_pipeline.py
-@@ -2214,6 +2214,52 @@ async def test_pipeline_error_marks_metrics_failed(tmp_path: Path, mocker):
-     assert metrics_data["error"] == "llm boom"
+         create_recording(
+             recording_id,
+             source="upload",
+             source_filename=safe_filename(file.filename or ""),
+-            captured_at=captured_at,
++            captured_at=capture_time.captured_at,
++            captured_at_source=capture_time.captured_at_source,
++            captured_at_timezone=capture_time.captured_at_timezone,
++            captured_at_inferred_from_filename=(
++                capture_time.captured_at_inferred_from_filename
++            ),
+             status=RECORDING_STATUS_QUEUED,
+             settings=_settings,
+         )
+@@ -539,7 +547,7 @@ async def api_upload_file(file: UploadFile = File(...)) -> dict[str, object]:
+         return {
+             "recording_id": recording_id,
+             "job_id": job.job_id,
+-            "captured_at": captured_at,
++            "captured_at": capture_time.captured_at,
+             "bytes_written": bytes_written,
+         }
+     except ValueError as exc:
+diff --git a/lan_app/config.py b/lan_app/config.py
+index c66c022..f54e576 100644
+--- a/lan_app/config.py
++++ b/lan_app/config.py
+@@ -3,6 +3,7 @@ from __future__ import annotations
+ import logging
+ from pathlib import Path
+ from typing import Literal
++from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
  
+ from pydantic import AliasChoices, Field, model_validator
+ from pydantic_settings import BaseSettings
+@@ -20,6 +21,7 @@ from .diarization_loader import DEFAULT_DIARIZATION_MODEL_ID
  
-+@pytest.mark.asyncio
-+async def test_pipeline_snippet_export_error_marks_metrics_failed(tmp_path: Path, mocker):
-+    mocker.patch(
-+        "whisperx.transcribe",
-+        return_value=(
-+            [{"start": 0.0, "end": 1.0, "text": "hello world today"}],
-+            {"language": "en", "language_probability": 0.9},
+ _DEV_DEFAULT_REDIS_URL = "redis://127.0.0.1:6379/0"
+ _DEV_DEFAULT_LLM_BASE_URL = "http://127.0.0.1:8000"
++_DEFAULT_UPLOAD_CAPTURE_TIMEZONE = "Europe/Rome"
+ _LLM_MODEL_REQUIRED_ERROR = (
+     "LLM_MODEL is required. Set it in .env (e.g., LLM_MODEL=gpt-oss:120b)."
+ )
+@@ -201,6 +203,13 @@ class AppSettings(BaseSettings):
+         ge=1,
+         validation_alias=AliasChoices("UPLOAD_MAX_BYTES"),
+     )
++    upload_capture_timezone: str = Field(
++        default=_DEFAULT_UPLOAD_CAPTURE_TIMEZONE,
++        validation_alias=AliasChoices(
++            "LAN_UPLOAD_CAPTURE_TIMEZONE",
++            "UPLOAD_CAPTURE_TIMEZONE",
 +        ),
 +    )
-+    mocker.patch(
-+        "lan_transcriber.pipeline_steps.orchestrator.export_speaker_snippets",
-+        side_effect=RuntimeError("snippet boom"),
-+    )
-+
-+    cfg = pipeline.Settings(
-+        speaker_db=tmp_path / "db.yaml",
-+        tmp_root=tmp_path,
-+        recordings_root=tmp_path / "recordings",
-+    )
-+    audio = wav_audio(
-+        tmp_path,
-+        name="snippet-fail.wav",
-+        duration_sec=24.0,
-+        speech=True,
-+    )
-+
-+    with pytest.raises(RuntimeError, match="snippet boom"):
-+        await pipeline.run_pipeline(
-+            audio_path=audio,
-+            cfg=cfg,
-+            llm=llm_client.LLMClient(),
-+            diariser=DummyDiariser(),
-+            recording_id="rec-snippet-fail-1",
-+            precheck=precheck_ok(),
+     calendar_expand_past_days: int = Field(
+         default=30,
+         ge=0,
+@@ -285,6 +294,17 @@ class AppSettings(BaseSettings):
+         self.redis_url = _normalize_optional_env(self.redis_url)
+         self.llm_base_url = _normalize_optional_env(self.llm_base_url)
+         self.llm_model = _normalize_optional_env(self.llm_model)
++        timezone_name = (
++            _normalize_optional_env(self.upload_capture_timezone)
++            or _DEFAULT_UPLOAD_CAPTURE_TIMEZONE
 +        )
++        try:
++            self.upload_capture_timezone = ZoneInfo(timezone_name).key
++        except ZoneInfoNotFoundError as exc:
++            raise ValueError(
++                "UPLOAD_CAPTURE_TIMEZONE must be a valid IANA timezone "
++                f"(got {timezone_name!r})"
++            ) from exc
+         self.diarization_model_id = (
+             self.diarization_model_id.strip() or DEFAULT_DIARIZATION_MODEL_ID
+         )
+@@ -318,6 +338,9 @@ class AppSettings(BaseSettings):
+             )
+         return self
+ 
++    def upload_capture_tzinfo(self) -> ZoneInfo:
++        return ZoneInfo(self.upload_capture_timezone)
 +
-+    derived = cfg.recordings_root / "rec-snippet-fail-1" / "derived"
-+    summary_data = json.loads((derived / "summary.json").read_text(encoding="utf-8"))
-+    metrics_data = json.loads((derived / "metrics.json").read_text(encoding="utf-8"))
+     class Config:
+         env_prefix = "LAN_"
+ 
+diff --git a/lan_app/db.py b/lan_app/db.py
+index 0ac0936..965120a 100644
+--- a/lan_app/db.py
++++ b/lan_app/db.py
+@@ -2,6 +2,7 @@ from __future__ import annotations
+ 
+ from datetime import datetime, timezone
+ import json
++import logging
+ from pathlib import Path
+ import sqlite3
+ import time
+@@ -22,6 +23,7 @@ from .constants import (
+     RECORDING_STATUS_QUEUED,
+     RECORDING_STATUS_QUARANTINE,
+ )
++from .uploads import normalize_plaud_captured_at, parse_plaud_captured_local_datetime
+ 
+ _PROJECT_ASSIGNMENT_SOURCES = {"manual", "auto"}
+ _CALENDAR_SOURCE_KINDS = {"url", "file"}
+@@ -40,7 +42,13 @@ _DEFAULT_SQLITE_BUSY_TIMEOUT_MS = 30_000
+ _DEFAULT_DB_RETRIES = 5
+ _DEFAULT_DB_BASE_SLEEP_MS = 50
+ _LOCK_ERROR_MARKERS = ("locked", "busy")
++_RECORDING_CAPTURE_PROVENANCE_COLUMNS = {
++    "captured_at_source",
++    "captured_at_timezone",
++    "captured_at_inferred_from_filename",
++}
+ _T = TypeVar("_T")
++_LOG = logging.getLogger(__name__)
+ 
+ _UNSET = object()
+ 
+@@ -88,6 +96,95 @@ def _utc_now() -> str:
+     )
+ 
+ 
++def _recording_table_columns(conn: sqlite3.Connection) -> set[str]:
++    return {
++        str(row[1])
++        for row in conn.execute("PRAGMA table_info(recordings)").fetchall()
++    }
 +
-+    assert summary_data["status"] == "failed"
-+    assert summary_data["friendly"] == 0
-+    assert metrics_data["status"] == "failed"
-+    assert metrics_data["error"] == "snippet boom"
++
++def _has_recording_capture_provenance_columns(conn: sqlite3.Connection) -> bool:
++    columns = _recording_table_columns(conn)
++    return _RECORDING_CAPTURE_PROVENANCE_COLUMNS.issubset(columns)
 +
 +
- @pytest.mark.asyncio
- async def test_pipeline_pre_llm_error_marks_metrics_failed(tmp_path: Path, mocker):
-     mocker.patch("whisperx.transcribe", side_effect=RuntimeError("asr boom"))
++def _legacy_buggy_plaud_captured_at(local_datetime: datetime) -> str:
++    return _utc_iso(local_datetime.replace(tzinfo=timezone.utc))
++
++
++def _utc_iso(value: datetime) -> str:
++    return value.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace(
++        "+00:00", "Z"
++    )
++
++
++def _backfill_legacy_upload_capture_times(
++    settings: AppSettings | None = None,
++) -> int:
++    cfg = settings or AppSettings()
++    upload_capture_timezone = cfg.upload_capture_tzinfo()
++
++    def _backfill() -> int:
++        with connect(cfg) as conn:
++            if not _has_recording_capture_provenance_columns(conn):
++                return 0
++
++            rows = conn.execute(
++                """
++                SELECT
++                    id,
++                    source_filename,
++                    captured_at
++                FROM recordings
++                WHERE source = 'upload'
++                  AND captured_at_source IS NULL
++                  AND captured_at_timezone IS NULL
++                  AND captured_at_inferred_from_filename = 0
++                  AND source_filename GLOB '*[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]*'
++                """
++            ).fetchall()
++
++            updated = 0
++            for row in rows:
++                source_filename = str(row["source_filename"] or "")
++                local_datetime = parse_plaud_captured_local_datetime(source_filename)
++                if local_datetime is None:
++                    continue
++                if str(row["captured_at"] or "").strip() != _legacy_buggy_plaud_captured_at(
++                    local_datetime
++                ):
++                    continue
++                conn.execute(
++                    """
++                    UPDATE recordings
++                    SET
++                        captured_at = ?,
++                        captured_at_source = ?,
++                        captured_at_timezone = ?,
++                        captured_at_inferred_from_filename = 1
++                    WHERE id = ?
++                    """,
++                    (
++                        normalize_plaud_captured_at(
++                            local_datetime,
++                            upload_capture_timezone=upload_capture_timezone,
++                        ),
++                        local_datetime.isoformat(timespec="seconds"),
++                        upload_capture_timezone.key,
++                        row["id"],
++                    ),
++                )
++                updated += 1
++
++            if updated > 0:
++                conn.commit()
++            return updated
++
++    updated = with_db_retry(_backfill)
++    _LOG.info("Legacy upload capture-time backfill updated %s rows", updated)
++    return updated
++
++
+ def _as_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
+     if row is None:
+         return None
+@@ -436,6 +533,7 @@ def init_db(settings: AppSettings | None = None) -> Path:
+                 return target_version
+ 
+         current_version = with_db_retry(_apply_migration)
++    _backfill_legacy_upload_capture_times(cfg)
+     return cfg.db_path
+ 
+ 
+@@ -446,6 +544,9 @@ def create_recording(
+     *,
+     settings: AppSettings | None = None,
+     captured_at: str | None = None,
++    captured_at_source: str | None = None,
++    captured_at_timezone: str | None = None,
++    captured_at_inferred_from_filename: bool = False,
+     duration_sec: float | None = None,
+     status: str = RECORDING_STATUS_QUEUED,
+     quarantine_reason: str | None = None,
+@@ -479,9 +580,12 @@ def create_recording(
+                 quarantine_reason, review_reason_code, review_reason_text,
+                 language_auto, language_override, target_summary_language, project_id,
+                 project_assignment_source,
+-                onenote_page_id, drive_file_id, drive_md5, created_at, updated_at
++                onenote_page_id, drive_file_id, drive_md5,
++                captured_at_source, captured_at_timezone,
++                captured_at_inferred_from_filename,
++                created_at, updated_at
+             )
+-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
++            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             """,
+             (
+                 recording_id,
+@@ -501,6 +605,9 @@ def create_recording(
+                 onenote_page_id,
+                 drive_file_id,
+                 drive_md5,
++                captured_at_source,
++                captured_at_timezone,
++                1 if captured_at_inferred_from_filename else 0,
+                 now,
+                 now,
+             ),
+diff --git a/lan_app/uploads.py b/lan_app/uploads.py
+index 545a0bf..3e0c50c 100644
+--- a/lan_app/uploads.py
++++ b/lan_app/uploads.py
+@@ -1,9 +1,11 @@
+ from __future__ import annotations
+ 
++from dataclasses import dataclass
+ from datetime import datetime, timezone
+ from pathlib import Path
+ import re
+ from typing import BinaryIO
++from zoneinfo import ZoneInfo
+ 
+ ALLOWED_UPLOAD_EXTENSIONS = {
+     ".mp3",
+@@ -18,11 +20,19 @@ ALLOWED_UPLOAD_EXTENSIONS = {
+ _DEFAULT_SUFFIX = ".mp3"
+ _FILENAME_SAFE_CHARS_RE = re.compile(r"[^A-Za-z0-9._-]+")
+ _PLAUD_RE = re.compile(
+-    r"(\d{4})-(\d{2})-(\d{2})\s+(\d{2})[_\-](\d{2})[_\-](\d{2})"
++    r"(\d{4})-(\d{2})-(\d{2})[\s_-]+(\d{2})[_\-](\d{2})[_\-](\d{2})"
+ )
+ _COPY_CHUNK_SIZE = 1024 * 1024
+ 
+ 
++@dataclass(frozen=True, slots=True)
++class CaptureTimeInference:
++    captured_at: str
++    captured_at_source: str | None
++    captured_at_timezone: str | None
++    captured_at_inferred_from_filename: bool
++
++
+ def suffix_from_name(filename: str) -> str:
+     name = str(filename or "")
+     suffix = Path(name).suffix.strip().lower()
+@@ -39,35 +49,82 @@ def safe_filename(filename: str) -> str:
+     return sanitized or "upload"
+ 
+ 
+-def parse_plaud_captured_at(filename: str) -> str | None:
++def _utc_iso(value: datetime) -> str:
++    return value.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace(
++        "+00:00", "Z"
++    )
++
++
++def parse_plaud_captured_local_datetime(filename: str) -> datetime | None:
+     match = _PLAUD_RE.search(str(filename or ""))
+     if match is None:
+         return None
+     year, month, day, hour, minute, second = (int(group) for group in match.groups())
+     try:
+-        parsed = datetime(
+-            year,
+-            month,
+-            day,
+-            hour,
+-            minute,
+-            second,
+-            tzinfo=timezone.utc,
+-        )
++        parsed = datetime(year, month, day, hour, minute, second)
+     except ValueError:
+         return None
+-    return parsed.isoformat().replace("+00:00", "Z")
++    return parsed
+ 
+ 
+-def infer_captured_at(filename: str) -> str:
+-    parsed = parse_plaud_captured_at(filename)
++def normalize_plaud_captured_at(
++    local_datetime: datetime,
++    *,
++    upload_capture_timezone: ZoneInfo,
++) -> str:
++    aware_local = local_datetime.replace(tzinfo=upload_capture_timezone)
++    return _utc_iso(aware_local)
++
++
++def parse_plaud_captured_at(
++    filename: str,
++    *,
++    upload_capture_timezone: ZoneInfo,
++) -> str | None:
++    parsed = parse_plaud_captured_local_datetime(filename)
+     if parsed is not None:
+-        return parsed
+-    return datetime.now(tz=timezone.utc).replace(microsecond=0).isoformat().replace(
+-        "+00:00", "Z"
++        return normalize_plaud_captured_at(
++            parsed,
++            upload_capture_timezone=upload_capture_timezone,
++        )
++    return None
++
++
++def infer_upload_capture_time(
++    filename: str,
++    *,
++    upload_capture_timezone: ZoneInfo,
++) -> CaptureTimeInference:
++    parsed = parse_plaud_captured_local_datetime(filename)
++    if parsed is None:
++        return CaptureTimeInference(
++            captured_at=_utc_iso(datetime.now(tz=timezone.utc)),
++            captured_at_source=None,
++            captured_at_timezone=upload_capture_timezone.key,
++            captured_at_inferred_from_filename=False,
++        )
++    return CaptureTimeInference(
++        captured_at=normalize_plaud_captured_at(
++            parsed,
++            upload_capture_timezone=upload_capture_timezone,
++        ),
++        captured_at_source=parsed.isoformat(timespec="seconds"),
++        captured_at_timezone=upload_capture_timezone.key,
++        captured_at_inferred_from_filename=True,
+     )
+ 
+ 
++def infer_captured_at(
++    filename: str,
++    *,
++    upload_capture_timezone: ZoneInfo,
++) -> str:
++    return infer_upload_capture_time(
++        filename,
++        upload_capture_timezone=upload_capture_timezone,
++    ).captured_at
++
++
+ def write_upload_to_path(upload, dest: Path, *, max_bytes: int | None) -> int:
+     dest.parent.mkdir(parents=True, exist_ok=True)
+     bytes_written = 0
+@@ -96,8 +153,12 @@ def write_upload_to_path(upload, dest: Path, *, max_bytes: int | None) -> int:
+ 
+ __all__ = [
+     "ALLOWED_UPLOAD_EXTENSIONS",
++    "CaptureTimeInference",
+     "infer_captured_at",
++    "infer_upload_capture_time",
++    "normalize_plaud_captured_at",
+     "parse_plaud_captured_at",
++    "parse_plaud_captured_local_datetime",
+     "safe_filename",
+     "suffix_from_name",
+     "write_upload_to_path",
+diff --git a/tasks/QUEUE.md b/tasks/QUEUE.md
+index f25d898..b52398d 100644
+--- a/tasks/QUEUE.md
++++ b/tasks/QUEUE.md
+@@ -472,7 +472,7 @@ Queue (in order)
+ - Depends on: PR-CALENDAR-MATCHING-ICS-01 and PR-DIARIZATION-GPU-01 and PR-UI-PIPELINE-UX-01
+ 
+ 93) PR-CAPTURE-TIME-SEMANTICS-01: Correct upload/Plaud capture-time semantics: local source time -> UTC normalization, provenance fields, and safe legacy backfill
+-- Status: TODO
++- Status: DONE
+ - Tasks file: tasks/PR-CAPTURE-TIME-SEMANTICS-01.md
+ - Depends on: PR-GPU-SCHEDULER-01 and PR-CALENDAR-MATCHING-ICS-01
+ 
+diff --git a/tests/test_app_config.py b/tests/test_app_config.py
+index 701d88d..71fa3fb 100644
+--- a/tests/test_app_config.py
++++ b/tests/test_app_config.py
+@@ -74,6 +74,30 @@ def test_security_settings_from_env(monkeypatch):
+     assert cfg.api_bearer_token == "secret-token"
+ 
+ 
++def test_upload_capture_timezone_defaults_and_aliases(monkeypatch):
++    monkeypatch.delenv("LAN_UPLOAD_CAPTURE_TIMEZONE", raising=False)
++    monkeypatch.delenv("UPLOAD_CAPTURE_TIMEZONE", raising=False)
++    assert AppSettings().upload_capture_timezone == "Europe/Rome"
++
++    monkeypatch.setenv("UPLOAD_CAPTURE_TIMEZONE", " Europe/Berlin ")
++    assert AppSettings().upload_capture_timezone == "Europe/Berlin"
++
++    monkeypatch.setenv("LAN_UPLOAD_CAPTURE_TIMEZONE", "  ")
++    assert AppSettings().upload_capture_timezone == "Europe/Rome"
++
++    monkeypatch.setenv("LAN_UPLOAD_CAPTURE_TIMEZONE", "America/New_York")
++    assert AppSettings().upload_capture_timezone == "America/New_York"
++
++
++def test_upload_capture_timezone_invalid_fails_clearly(monkeypatch):
++    monkeypatch.setenv("UPLOAD_CAPTURE_TIMEZONE", "Mars/Olympus")
++    with pytest.raises(
++        ValueError,
++        match="UPLOAD_CAPTURE_TIMEZONE must be a valid IANA timezone",
++    ):
++        AppSettings()
++
++
+ def test_worker_and_reaper_settings_from_env(monkeypatch):
+     monkeypatch.setenv("LAN_RQ_JOB_TIMEOUT_SECONDS", "1800")
+     monkeypatch.setenv("LAN_MAX_JOB_ATTEMPTS", "5")
+diff --git a/tests/test_calendar_ics.py b/tests/test_calendar_ics.py
+index 2d1935c..d50de37 100644
+--- a/tests/test_calendar_ics.py
++++ b/tests/test_calendar_ics.py
+@@ -268,8 +268,8 @@ def test_upload_runtime_populates_calendar_matches(calendar_client: TestClient,
+         events=[
+             {
+                 "uid": "evt-upload-1",
+-                "starts_at": "2026-03-01T10:00:00Z",
+-                "ends_at": "2026-03-01T11:00:00Z",
++                "starts_at": "2026-03-01T09:00:00Z",
++                "ends_at": "2026-03-01T10:00:00Z",
+                 "summary": "Roadmap Review",
+                 "organizer": "Alex",
+                 "attendees": [{"label": "Priya Kapoor"}],
+@@ -278,7 +278,6 @@ def test_upload_runtime_populates_calendar_matches(calendar_client: TestClient,
+         ],
+         settings=cfg,
+     )
+-    monkeypatch.setattr(api, "infer_captured_at", lambda *_a, **_k: "2026-03-01T10:05:00Z")
+     monkeypatch.setattr(
+         api,
+         "enqueue_recording_job",
+@@ -287,13 +286,14 @@ def test_upload_runtime_populates_calendar_matches(calendar_client: TestClient,
+ 
+     response = calendar_client.post(
+         "/api/uploads",
+-        files={"file": ("roadmap-review.mp3", b"fake-mp3", "audio/mpeg")},
++        files={"file": ("2026-03-01 10_05_00 roadmap-review.mp3", b"fake-mp3", "audio/mpeg")},
+     )
+     assert response.status_code == 200
++    assert response.json()["captured_at"] == "2026-03-01T09:05:00Z"
+     recording_id = response.json()["recording_id"]
+     row = get_calendar_match(recording_id, settings=cfg)
+     assert row is not None
+-    assert row["selected_event_id"] == f"{source['id']}:evt-upload-1:2026-03-01T10:00:00Z"
++    assert row["selected_event_id"] == f"{source['id']}:evt-upload-1:2026-03-01T09:00:00Z"
+     assert row["candidates_json"][0]["subject"] == "Roadmap Review"
+ 
+ 
+@@ -302,7 +302,6 @@ def test_upload_runtime_ignores_calendar_matching_failures(
+     monkeypatch,
+ ):
+     monkeypatch.setattr(api, "refresh_recording_calendar_match", lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("boom")))
+-    monkeypatch.setattr(api, "infer_captured_at", lambda *_a, **_k: "2026-03-01T10:05:00Z")
+     monkeypatch.setattr(
+         api,
+         "enqueue_recording_job",
+diff --git a/tests/test_cov_lan_app_db.py b/tests/test_cov_lan_app_db.py
+index 8b21437..3fddc0a 100644
+--- a/tests/test_cov_lan_app_db.py
++++ b/tests/test_cov_lan_app_db.py
+@@ -605,13 +605,30 @@ def test_canonical_speaker_migration_from_legacy_schema(
+ 
+     monkeypatch.setattr(db_module, "_migration_files", lambda: legacy_migrations)  # noqa: SLF001
+     db_module.init_db(cfg)
+-    db_module.create_recording(
+-        "rec-db-cov-legacy-1",
+-        source="upload",
+-        source_filename="legacy.wav",
+-        settings=cfg,
+-    )
+     with db_module.connect(cfg) as conn:
++        conn.execute(
++            """
++            INSERT INTO recordings (
++                id,
++                source,
++                source_filename,
++                captured_at,
++                status,
++                created_at,
++                updated_at
++            )
++            VALUES (?, ?, ?, ?, ?, ?, ?)
++            """,
++            (
++                "rec-db-cov-legacy-1",
++                "upload",
++                "legacy.wav",
++                "2026-03-01T10:00:00Z",
++                "Queued",
++                "2026-03-01T10:00:00Z",
++                "2026-03-01T10:00:00Z",
++            ),
++        )
+         conn.execute(
+             "INSERT INTO voice_profiles (id, display_name, notes) VALUES (?, ?, ?)",
+             (1, "Legacy Voice", "notes"),
+diff --git a/tests/test_cov_lan_app_health_worker.py b/tests/test_cov_lan_app_health_worker.py
+index e0b3808..34a11fa 100644
+--- a/tests/test_cov_lan_app_health_worker.py
++++ b/tests/test_cov_lan_app_health_worker.py
+@@ -7,6 +7,7 @@ import runpy
+ import signal
+ import sys
+ from types import SimpleNamespace
++from zoneinfo import ZoneInfo
+ 
+ from fastapi import Response
+ import pytest
+@@ -588,10 +589,35 @@ def test_upload_filename_and_timestamp_helpers(monkeypatch):
+     assert uploads.safe_filename("../weird*.mp3") == "weird_.mp3"
+     assert uploads.safe_filename("....") == "upload"
+ 
+-    assert uploads.parse_plaud_captured_at("Meeting 2024-04-05 06_07_08.mp3") == "2024-04-05T06:07:08Z"
+-    assert uploads.parse_plaud_captured_at("Meeting 2024-99-05 06_07_08.mp3") is None
+-    assert uploads.parse_plaud_captured_at("no timestamp here.mp3") is None
+-    assert uploads.infer_captured_at("Meeting 2024-04-05 06_07_08.mp3") == "2024-04-05T06:07:08Z"
++    upload_capture_timezone = ZoneInfo("Europe/Rome")
++    assert uploads.parse_plaud_captured_local_datetime(
++        "Meeting 2024-04-05 06_07_08.mp3"
++    ) == datetime(2024, 4, 5, 6, 7, 8)
++    assert uploads.parse_plaud_captured_local_datetime(
++        "Meeting 2024-99-05 06_07_08.mp3"
++    ) is None
++    assert uploads.parse_plaud_captured_local_datetime("no timestamp here.mp3") is None
++    assert (
++        uploads.parse_plaud_captured_at(
++            "Meeting 2024-04-05 06_07_08.mp3",
++            upload_capture_timezone=upload_capture_timezone,
++        )
++        == "2024-04-05T04:07:08Z"
++    )
++    assert (
++        uploads.parse_plaud_captured_at(
++            "Meeting 2024-99-05 06_07_08.mp3",
++            upload_capture_timezone=upload_capture_timezone,
++        )
++        is None
++    )
++    assert (
++        uploads.infer_captured_at(
++            "Meeting 2024-04-05 06_07_08.mp3",
++            upload_capture_timezone=upload_capture_timezone,
++        )
++        == "2024-04-05T04:07:08Z"
++    )
+ 
+     fixed_now = datetime(2026, 2, 3, 4, 5, 6, 789123, tzinfo=timezone.utc)
+ 
+@@ -602,7 +628,23 @@ def test_upload_filename_and_timestamp_helpers(monkeypatch):
+             return fixed_now
+ 
+     monkeypatch.setattr(uploads, "datetime", _FixedDateTime)
+-    assert uploads.infer_captured_at("plain_name.mp3") == "2026-02-03T04:05:06Z"
++    inferred = uploads.infer_upload_capture_time(
++        "plain_name.mp3",
++        upload_capture_timezone=upload_capture_timezone,
++    )
++    assert inferred == uploads.CaptureTimeInference(
++        captured_at="2026-02-03T04:05:06Z",
++        captured_at_source=None,
++        captured_at_timezone="Europe/Rome",
++        captured_at_inferred_from_filename=False,
++    )
++    assert (
++        uploads.infer_captured_at(
++            "plain_name.mp3",
++            upload_capture_timezone=upload_capture_timezone,
++        )
++        == "2026-02-03T04:05:06Z"
++    )
+ 
+ 
+ def test_write_upload_to_path_success_and_error_paths(tmp_path: Path):
+diff --git a/tests/test_upload.py b/tests/test_upload.py
+index 555ed8e..b884dfc 100644
+--- a/tests/test_upload.py
++++ b/tests/test_upload.py
+@@ -1,11 +1,12 @@
+ from __future__ import annotations
+ 
++from datetime import datetime, timezone
+ from pathlib import Path
+ from uuid import uuid4
+ 
+ from fastapi.testclient import TestClient
+ 
+-from lan_app import api
++from lan_app import api, uploads
+ from lan_app.config import AppSettings
+ from lan_app.constants import JOB_STATUS_QUEUED, JOB_TYPE_PRECHECK, RECORDING_STATUS_QUEUED
+ from lan_app.db import (
+@@ -75,7 +76,7 @@ def test_upload_success_creates_recording_and_job(tmp_path: Path, monkeypatch):
+ 
+     recording_id = payload["recording_id"]
+     assert recording_id.startswith("trs_")
+-    assert payload["captured_at"] == "2026-02-18T16:01:43Z"
++    assert payload["captured_at"] == "2026-02-18T15:01:43Z"
+     assert payload["bytes_written"] == 3
+ 
+     raw_file = cfg.recordings_root / recording_id / "raw" / "audio.mp3"
+@@ -86,7 +87,10 @@ def test_upload_success_creates_recording_and_job(tmp_path: Path, monkeypatch):
+     assert recording is not None
+     assert recording["source"] == "upload"
+     assert ".mp3" in str(recording["source_filename"])
+-    assert recording["captured_at"] == "2026-02-18T16:01:43Z"
++    assert recording["captured_at"] == "2026-02-18T15:01:43Z"
++    assert recording["captured_at_source"] == "2026-02-18T16:01:43"
++    assert recording["captured_at_timezone"] == "Europe/Rome"
++    assert recording["captured_at_inferred_from_filename"] == 1
+ 
+     jobs, total = list_jobs(settings=cfg, recording_id=recording_id)
+     assert total == 1
+@@ -94,6 +98,42 @@ def test_upload_success_creates_recording_and_job(tmp_path: Path, monkeypatch):
+     assert jobs[0]["type"] == JOB_TYPE_PRECHECK
+ 
+ 
++def test_upload_without_embedded_timestamp_falls_back_to_current_utc(
++    tmp_path: Path,
++    monkeypatch,
++):
++    cfg = _cfg(tmp_path)
++    monkeypatch.setattr(api, "_settings", cfg)
++    init_db(cfg)
++    _stub_enqueue(monkeypatch, cfg)
++
++    fixed_now = datetime(2026, 2, 3, 4, 5, 6, 789123, tzinfo=timezone.utc)
++
++    class _FixedDateTime:
++        @staticmethod
++        def now(*, tz):
++            assert tz == timezone.utc
++            return fixed_now
++
++    monkeypatch.setattr(uploads, "datetime", _FixedDateTime)
++
++    client = TestClient(api.app)
++    response = client.post(
++        "/api/uploads",
++        files={"file": ("plain-name.mp3", b"abc", "audio/mpeg")},
++    )
++    assert response.status_code == 200
++    payload = response.json()
++    assert payload["captured_at"] == "2026-02-03T04:05:06Z"
++
++    recording = get_recording(str(payload["recording_id"]), settings=cfg)
++    assert recording is not None
++    assert recording["captured_at"] == "2026-02-03T04:05:06Z"
++    assert recording["captured_at_source"] is None
++    assert recording["captured_at_timezone"] == "Europe/Rome"
++    assert recording["captured_at_inferred_from_filename"] == 0
++
++
+ def test_upload_unsupported_extension_returns_422(tmp_path: Path, monkeypatch):
+     cfg = _cfg(tmp_path)
+     monkeypatch.setattr(api, "_settings", cfg)
+diff --git a/lan_app/migrations/019_add_recording_capture_provenance.sql b/lan_app/migrations/019_add_recording_capture_provenance.sql
+new file mode 100644
+index 0000000..25c2433
+--- /dev/null
++++ b/lan_app/migrations/019_add_recording_capture_provenance.sql
+@@ -0,0 +1,8 @@
++ALTER TABLE recordings
++    ADD COLUMN captured_at_source TEXT;
++
++ALTER TABLE recordings
++    ADD COLUMN captured_at_timezone TEXT;
++
++ALTER TABLE recordings
++    ADD COLUMN captured_at_inferred_from_filename INTEGER NOT NULL DEFAULT 0 CHECK(captured_at_inferred_from_filename IN (0, 1));
+diff --git a/tests/test_capture_time_semantics.py b/tests/test_capture_time_semantics.py
+new file mode 100644
+index 0000000..aba8cba
+--- /dev/null
++++ b/tests/test_capture_time_semantics.py
+@@ -0,0 +1,211 @@
++from __future__ import annotations
++
++from datetime import datetime
++from pathlib import Path
++import sqlite3
++from zoneinfo import ZoneInfo
++
++from lan_app import db as db_module
++from lan_app import ui_routes, uploads
++from lan_app.config import AppSettings
++from lan_app.db import create_recording, get_recording, init_db, list_recordings
++
++
++def _cfg(tmp_path: Path) -> AppSettings:
++    cfg = AppSettings(
++        data_root=tmp_path,
++        recordings_root=tmp_path / "recordings",
++        db_path=tmp_path / "db" / "app.db",
++    )
++    cfg.metrics_snapshot_path = tmp_path / "metrics.snap"
++    return cfg
++
++
++def _init_db_to_version(cfg: AppSettings, target_version: int) -> None:
++    cfg.db_path.parent.mkdir(parents=True, exist_ok=True)
++    with sqlite3.connect(cfg.db_path) as conn:
++        for version, migration_path in db_module._migration_files():  # noqa: SLF001
++            if version > target_version:
++                break
++            conn.executescript(migration_path.read_text(encoding="utf-8"))
++            conn.execute(f"PRAGMA user_version = {version}")
++        conn.commit()
++
++
++def test_upload_timestamp_helpers_cover_winter_and_dst_offsets() -> None:
++    upload_capture_timezone = ZoneInfo("Europe/Rome")
++
++    assert uploads.parse_plaud_captured_local_datetime("2026-03-06_12_02_16.mp3") == datetime(
++        2026,
++        3,
++        6,
++        12,
++        2,
++        16,
++    )
++    assert (
++        uploads.infer_captured_at(
++            "2026-03-06_12_02_16.mp3",
++            upload_capture_timezone=upload_capture_timezone,
++        )
++        == "2026-03-06T11:02:16Z"
++    )
++    assert (
++        uploads.infer_captured_at(
++            "2026-07-06_12_02_16.mp3",
++            upload_capture_timezone=upload_capture_timezone,
++        )
++        == "2026-07-06T10:02:16Z"
++    )
++
++
++def test_recording_capture_time_provenance_round_trips_in_db(tmp_path: Path) -> None:
++    cfg = _cfg(tmp_path)
++    init_db(cfg)
++
++    created = create_recording(
++        "rec-capture-provenance-1",
++        source="upload",
++        source_filename="2026-03-06_12_02_16.mp3",
++        captured_at="2026-03-06T11:02:16Z",
++        captured_at_source="2026-03-06T12:02:16",
++        captured_at_timezone="Europe/Rome",
++        captured_at_inferred_from_filename=True,
++        settings=cfg,
++    )
++
++    assert created["captured_at"] == "2026-03-06T11:02:16Z"
++    assert created["captured_at_source"] == "2026-03-06T12:02:16"
++    assert created["captured_at_timezone"] == "Europe/Rome"
++    assert created["captured_at_inferred_from_filename"] == 1
++
++    fetched = get_recording("rec-capture-provenance-1", settings=cfg)
++    assert fetched is not None
++    assert fetched["captured_at_source"] == "2026-03-06T12:02:16"
++    assert fetched["captured_at_timezone"] == "Europe/Rome"
++    assert fetched["captured_at_inferred_from_filename"] == 1
++
++    listed, total = list_recordings(settings=cfg)
++    assert total == 1
++    assert listed[0]["id"] == "rec-capture-provenance-1"
++    assert listed[0]["captured_at_source"] == "2026-03-06T12:02:16"
++    assert listed[0]["captured_at_timezone"] == "Europe/Rome"
++    assert listed[0]["captured_at_inferred_from_filename"] == 1
++
++
++def test_backfill_returns_zero_before_provenance_columns_exist(tmp_path: Path) -> None:
++    cfg = _cfg(tmp_path)
++    _init_db_to_version(cfg, 18)
++
++    assert db_module._backfill_legacy_upload_capture_times(cfg) == 0  # noqa: SLF001
++
++
++def test_init_db_backfills_only_eligible_legacy_upload_rows_and_is_idempotent(
++    tmp_path: Path,
++) -> None:
++    cfg = _cfg(tmp_path)
++    _init_db_to_version(cfg, 18)
++
++    with sqlite3.connect(cfg.db_path) as conn:
++        rows = [
++            (
++                "rec-legacy-fix",
++                "upload",
++                "2026-03-06_12_02_16.mp3",
++                "2026-03-06T12:02:16Z",
++            ),
++            (
++                "rec-legacy-non-upload",
++                "calendar",
++                "2026-03-06_12_02_16.mp3",
++                "2026-03-06T12:02:16Z",
++            ),
++            (
++                "rec-legacy-no-pattern",
++                "upload",
++                "meeting.mp3",
++                "2026-03-06T12:02:16Z",
++            ),
++            (
++                "rec-legacy-invalid-date",
++                "upload",
++                "2026-99-06_12_02_16.mp3",
++                "2026-99-06T12:02:16Z",
++            ),
++            (
++                "rec-legacy-manual-time",
++                "upload",
++                "2026-03-06_12_02_16.mp3",
++                "2026-03-06T11:02:16Z",
++            ),
++        ]
++        for recording_id, source, source_filename, captured_at in rows:
++            conn.execute(
++                """
++                INSERT INTO recordings (
++                    id,
++                    source,
++                    source_filename,
++                    captured_at,
++                    status,
++                    created_at,
++                    updated_at
++                )
++                VALUES (?, ?, ?, ?, 'Queued', '2026-03-07T00:00:00Z', '2026-03-07T00:00:00Z')
++                """,
++                (
++                    recording_id,
++                    source,
++                    source_filename,
++                    captured_at,
++                ),
++            )
++        conn.commit()
++
++    init_db(cfg)
++
++    fixed = get_recording("rec-legacy-fix", settings=cfg)
++    assert fixed is not None
++    assert fixed["captured_at"] == "2026-03-06T11:02:16Z"
++    assert fixed["captured_at_source"] == "2026-03-06T12:02:16"
++    assert fixed["captured_at_timezone"] == "Europe/Rome"
++    assert fixed["captured_at_inferred_from_filename"] == 1
++
++    non_upload = get_recording("rec-legacy-non-upload", settings=cfg)
++    assert non_upload is not None
++    assert non_upload["captured_at"] == "2026-03-06T12:02:16Z"
++    assert non_upload["captured_at_source"] is None
++    assert non_upload["captured_at_timezone"] is None
++    assert non_upload["captured_at_inferred_from_filename"] == 0
++
++    no_pattern = get_recording("rec-legacy-no-pattern", settings=cfg)
++    assert no_pattern is not None
++    assert no_pattern["captured_at"] == "2026-03-06T12:02:16Z"
++    assert no_pattern["captured_at_source"] is None
++    assert no_pattern["captured_at_timezone"] is None
++    assert no_pattern["captured_at_inferred_from_filename"] == 0
++
++    invalid_date = get_recording("rec-legacy-invalid-date", settings=cfg)
++    assert invalid_date is not None
++    assert invalid_date["captured_at"] == "2026-99-06T12:02:16Z"
++    assert invalid_date["captured_at_source"] is None
++    assert invalid_date["captured_at_timezone"] is None
++    assert invalid_date["captured_at_inferred_from_filename"] == 0
++
++    manual = get_recording("rec-legacy-manual-time", settings=cfg)
++    assert manual is not None
++    assert manual["captured_at"] == "2026-03-06T11:02:16Z"
++    assert manual["captured_at_source"] is None
++    assert manual["captured_at_timezone"] is None
++    assert manual["captured_at_inferred_from_filename"] == 0
++
++    assert db_module._backfill_legacy_upload_capture_times(cfg) == 0  # noqa: SLF001
++    fixed_again = get_recording("rec-legacy-fix", settings=cfg)
++    assert fixed_again == fixed
++
++
++def test_local_timestamp_display_uses_fixed_utc_value() -> None:
++    assert (
++        ui_routes._format_local_timestamp("2026-03-06T11:02:16Z")  # noqa: SLF001
++        == "2026-03-06 12:02:16 CET"
++    )

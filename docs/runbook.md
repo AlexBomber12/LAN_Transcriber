@@ -45,6 +45,8 @@ docker compose run --rm api python -m lan_app.healthchecks app
 5. Open `/recordings/{recording_id}` for transcript, summary, and export actions.
    - `NeedsReview` recordings show an explicit review reason in the recordings list and detail page.
    - The server-rendered UI shows timestamps in local Europe/Rome time.
+   - Plaud-style filename timestamps are interpreted in `UPLOAD_CAPTURE_TIMEZONE` (default `Europe/Rome`), then stored in UTC in the database.
+   - Legacy upload rows created before this fix are backfilled automatically once after upgrade when the app initializes the database.
    - ICS sync now stores organizer and attendee details per event, and the calendars page renders those event times in local Europe/Rome time.
    - Uploaded and processed recordings are matched automatically to nearby calendar events when the score is strong enough; ambiguous candidates remain reviewable on the recording `calendar` tab.
    - Duration is sourced from `derived/audio_sanitized.wav` when it exists, otherwise from the raw upload.
@@ -79,6 +81,7 @@ docker compose run --rm api python -m lan_app.healthchecks app
 1. Optionally set `UPLOAD_MAX_BYTES` to cap a single uploaded file size.
 2. If set, uploads above this limit are rejected with HTTP `413`.
 3. Keep app and reverse-proxy limits consistent to avoid mismatched failures.
+4. Set `UPLOAD_CAPTURE_TIMEZONE` when the source device names files in a local timezone other than `Europe/Rome`.
 
 ### 1.4 Before first start (diarization warmup)
 

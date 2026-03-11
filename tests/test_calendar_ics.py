@@ -268,8 +268,8 @@ def test_upload_runtime_populates_calendar_matches(calendar_client: TestClient, 
         events=[
             {
                 "uid": "evt-upload-1",
-                "starts_at": "2026-03-01T10:00:00Z",
-                "ends_at": "2026-03-01T11:00:00Z",
+                "starts_at": "2026-03-01T09:00:00Z",
+                "ends_at": "2026-03-01T10:00:00Z",
                 "summary": "Roadmap Review",
                 "organizer": "Alex",
                 "attendees": [{"label": "Priya Kapoor"}],
@@ -278,7 +278,6 @@ def test_upload_runtime_populates_calendar_matches(calendar_client: TestClient, 
         ],
         settings=cfg,
     )
-    monkeypatch.setattr(api, "infer_captured_at", lambda *_a, **_k: "2026-03-01T10:05:00Z")
     monkeypatch.setattr(
         api,
         "enqueue_recording_job",
@@ -287,13 +286,14 @@ def test_upload_runtime_populates_calendar_matches(calendar_client: TestClient, 
 
     response = calendar_client.post(
         "/api/uploads",
-        files={"file": ("roadmap-review.mp3", b"fake-mp3", "audio/mpeg")},
+        files={"file": ("2026-03-01 10_05_00 roadmap-review.mp3", b"fake-mp3", "audio/mpeg")},
     )
     assert response.status_code == 200
+    assert response.json()["captured_at"] == "2026-03-01T09:05:00Z"
     recording_id = response.json()["recording_id"]
     row = get_calendar_match(recording_id, settings=cfg)
     assert row is not None
-    assert row["selected_event_id"] == f"{source['id']}:evt-upload-1:2026-03-01T10:00:00Z"
+    assert row["selected_event_id"] == f"{source['id']}:evt-upload-1:2026-03-01T09:00:00Z"
     assert row["candidates_json"][0]["subject"] == "Roadmap Review"
 
 
@@ -302,7 +302,6 @@ def test_upload_runtime_ignores_calendar_matching_failures(
     monkeypatch,
 ):
     monkeypatch.setattr(api, "refresh_recording_calendar_match", lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("boom")))
-    monkeypatch.setattr(api, "infer_captured_at", lambda *_a, **_k: "2026-03-01T10:05:00Z")
     monkeypatch.setattr(
         api,
         "enqueue_recording_job",
