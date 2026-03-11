@@ -492,6 +492,7 @@ def test_enqueue_recording_job_clears_existing_pipeline_stage_rows(tmp_path: Pat
 
     class _Queue:
         def enqueue(self, *_args, **_kwargs) -> None:
+            assert list_recording_pipeline_stages("rec-requeue-1", settings=cfg) == []
             return None
 
     monkeypatch.setattr(jobs_module, "get_queue", lambda _cfg=None: _Queue())

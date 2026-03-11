@@ -1922,6 +1922,10 @@ def _stage_llm_extract(ctx: _PipelineExecutionContext) -> _StageResult:
     if not ctx.clean_text:
         return _build_skip_result("no_speech")
 
+    ctx.calendar_title, ctx.calendar_attendees = _load_calendar_summary_context(
+        ctx.recording_id,
+        ctx.settings,
+    )
     llm_model = pipeline_orchestrator._require_llm_model(ctx.pipeline_settings.llm_model)
     summary_lang = str(
         ctx.language_payload.get("target_summary_language")

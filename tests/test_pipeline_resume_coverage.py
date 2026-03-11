@@ -758,6 +758,7 @@ def test_stage_llm_extract_chunked_summary_invokes_progress_callback(
     )
 
     progress_updates: list[tuple[str, float]] = []
+    chunked_kwargs: dict[str, object] = {}
     monkeypatch.setattr(worker_tasks.pipeline_orchestrator, "_require_llm_model", lambda _model: "test-model")
     monkeypatch.setattr(worker_tasks, "LLMClient", lambda: object())
     monkeypatch.setattr(worker_tasks, "load_speaker_aliases", lambda _path: {})
@@ -766,11 +767,17 @@ def test_stage_llm_extract_chunked_summary_invokes_progress_callback(
     monkeypatch.setattr(worker_tasks.pipeline_orchestrator, "_use_chunked_llm", lambda *_a, **_k: True)
     monkeypatch.setattr(
         worker_tasks,
+        "_load_calendar_summary_context",
+        lambda *_a, **_k: ("Weekly Sync", ["Ada", "Bob"]),
+    )
+    monkeypatch.setattr(
+        worker_tasks,
         "_set_recording_progress_best_effort",
         lambda _recording_id, stage, progress, settings: progress_updates.append((stage, progress)),
     )
 
     async def _fake_run_chunked_llm_summary(*, progress_callback, **_kwargs):
+        chunked_kwargs.update(_kwargs)
         progress_callback("llm_chunk_1", 0.91)
         return {"status": "ok", "topic": "Weekly Sync"}
 
@@ -783,6 +790,8 @@ def test_stage_llm_extract_chunked_summary_invokes_progress_callback(
     result = worker_tasks._stage_llm_extract(ctx)  # noqa: SLF001
     assert result.status == "completed"
     assert ("llm_chunk_1", 0.91) in progress_updates
+    assert chunked_kwargs["calendar_title"] == "Weekly Sync"
+    assert chunked_kwargs["calendar_attendees"] == ["Ada", "Bob"]
 
 
 def test_stage_metrics_updates_language_settings_only_when_payload_exists(
