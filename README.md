@@ -93,6 +93,8 @@ Operational setup, failure handling, backup/restore, and upgrade steps are docum
 5. Open the recording detail page at `/recordings/{recording_id}`.
    - `NeedsReview` recordings now show an explicit review reason in both the list and detail UI.
    - Displayed timestamps are rendered in local Europe/Rome time in the server-rendered UI.
+   - Plaud-style filename timestamps are interpreted in `UPLOAD_CAPTURE_TIMEZONE` (default `Europe/Rome`), normalized to UTC in the database, and shown back in local time in the UI.
+   - Legacy upload rows created before this fix are backfilled automatically on upgrade once, using the configured upload capture timezone.
    - ICS sync now stores organizer and attendee details per event, and the calendars UI renders those event times in local Europe/Rome time.
    - Uploaded/processed recordings are matched automatically to nearby calendar events when the score is strong enough; ambiguous candidates remain reviewable on the recording `calendar` tab.
    - Duration is taken from `derived/audio_sanitized.wav` when present, then falls back to the raw upload.
@@ -195,6 +197,7 @@ models are cached across runs.
 | `LAN_VAD_METHOD` | WhisperX VAD selector for ASR model init: `silero` (default) or `pyannote` |
 | `LAN_ASR_MULTILINGUAL_MODE` | Mixed-language ASR mode: `auto` (default), `force_single_language`, or `force_multilingual` |
 | `LAN_API_BEARER_TOKEN` | Optional bearer token for protected POST actions (`/api` and UI POST routes) |
+| `UPLOAD_CAPTURE_TIMEZONE` | Source timezone used to interpret Plaud-style filename timestamps before storing them in UTC (default `Europe/Rome`) |
 | `UPLOAD_MAX_BYTES` | Optional max size per uploaded file in bytes (`413` when exceeded) |
 | `QUARANTINE_RETENTION_DAYS` | Retention period for quarantined recording cleanup (default `7`) |
 | `LAN_API_BIND_HOST` | Published API bind host (default `127.0.0.1`) |

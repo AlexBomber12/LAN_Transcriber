@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 import re
 from typing import BinaryIO
+from zoneinfo import ZoneInfo
 
 ALLOWED_UPLOAD_EXTENSIONS = {
     ".mp3",
@@ -18,9 +20,17 @@ ALLOWED_UPLOAD_EXTENSIONS = {
 _DEFAULT_SUFFIX = ".mp3"
 _FILENAME_SAFE_CHARS_RE = re.compile(r"[^A-Za-z0-9._-]+")
 _PLAUD_RE = re.compile(
-    r"(\d{4})-(\d{2})-(\d{2})\s+(\d{2})[_\-](\d{2})[_\-](\d{2})"
+    r"(\d{4})-(\d{2})-(\d{2})[\s_-]+(\d{2})[_\-](\d{2})[_\-](\d{2})"
 )
 _COPY_CHUNK_SIZE = 1024 * 1024
+
+
+@dataclass(frozen=True, slots=True)
+class CaptureTimeInference:
+    captured_at: str
+    captured_at_source: str | None
+    captured_at_timezone: str | None
+    captured_at_inferred_from_filename: bool
 
 
 def suffix_from_name(filename: str) -> str:
@@ -39,33 +49,80 @@ def safe_filename(filename: str) -> str:
     return sanitized or "upload"
 
 
-def parse_plaud_captured_at(filename: str) -> str | None:
+def _utc_iso(value: datetime) -> str:
+    return value.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace(
+        "+00:00", "Z"
+    )
+
+
+def parse_plaud_captured_local_datetime(filename: str) -> datetime | None:
     match = _PLAUD_RE.search(str(filename or ""))
     if match is None:
         return None
     year, month, day, hour, minute, second = (int(group) for group in match.groups())
     try:
-        parsed = datetime(
-            year,
-            month,
-            day,
-            hour,
-            minute,
-            second,
-            tzinfo=timezone.utc,
-        )
+        parsed = datetime(year, month, day, hour, minute, second)
     except ValueError:
         return None
-    return parsed.isoformat().replace("+00:00", "Z")
+    return parsed
 
 
-def infer_captured_at(filename: str) -> str:
-    parsed = parse_plaud_captured_at(filename)
+def normalize_plaud_captured_at(
+    local_datetime: datetime,
+    *,
+    upload_capture_timezone: ZoneInfo,
+) -> str:
+    aware_local = local_datetime.replace(tzinfo=upload_capture_timezone)
+    return _utc_iso(aware_local)
+
+
+def parse_plaud_captured_at(
+    filename: str,
+    *,
+    upload_capture_timezone: ZoneInfo,
+) -> str | None:
+    parsed = parse_plaud_captured_local_datetime(filename)
     if parsed is not None:
-        return parsed
-    return datetime.now(tz=timezone.utc).replace(microsecond=0).isoformat().replace(
-        "+00:00", "Z"
+        return normalize_plaud_captured_at(
+            parsed,
+            upload_capture_timezone=upload_capture_timezone,
+        )
+    return None
+
+
+def infer_upload_capture_time(
+    filename: str,
+    *,
+    upload_capture_timezone: ZoneInfo,
+) -> CaptureTimeInference:
+    parsed = parse_plaud_captured_local_datetime(filename)
+    if parsed is None:
+        return CaptureTimeInference(
+            captured_at=_utc_iso(datetime.now(tz=timezone.utc)),
+            captured_at_source=None,
+            captured_at_timezone=upload_capture_timezone.key,
+            captured_at_inferred_from_filename=False,
+        )
+    return CaptureTimeInference(
+        captured_at=normalize_plaud_captured_at(
+            parsed,
+            upload_capture_timezone=upload_capture_timezone,
+        ),
+        captured_at_source=parsed.isoformat(timespec="seconds"),
+        captured_at_timezone=upload_capture_timezone.key,
+        captured_at_inferred_from_filename=True,
     )
+
+
+def infer_captured_at(
+    filename: str,
+    *,
+    upload_capture_timezone: ZoneInfo,
+) -> str:
+    return infer_upload_capture_time(
+        filename,
+        upload_capture_timezone=upload_capture_timezone,
+    ).captured_at
 
 
 def write_upload_to_path(upload, dest: Path, *, max_bytes: int | None) -> int:
@@ -96,8 +153,12 @@ def write_upload_to_path(upload, dest: Path, *, max_bytes: int | None) -> int:
 
 __all__ = [
     "ALLOWED_UPLOAD_EXTENSIONS",
+    "CaptureTimeInference",
     "infer_captured_at",
+    "infer_upload_capture_time",
+    "normalize_plaud_captured_at",
     "parse_plaud_captured_at",
+    "parse_plaud_captured_local_datetime",
     "safe_filename",
     "suffix_from_name",
     "write_upload_to_path",

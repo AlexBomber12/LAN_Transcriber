@@ -7,6 +7,7 @@ import runpy
 import signal
 import sys
 from types import SimpleNamespace
+from zoneinfo import ZoneInfo
 
 from fastapi import Response
 import pytest
@@ -588,10 +589,35 @@ def test_upload_filename_and_timestamp_helpers(monkeypatch):
     assert uploads.safe_filename("../weird*.mp3") == "weird_.mp3"
     assert uploads.safe_filename("....") == "upload"
 
-    assert uploads.parse_plaud_captured_at("Meeting 2024-04-05 06_07_08.mp3") == "2024-04-05T06:07:08Z"
-    assert uploads.parse_plaud_captured_at("Meeting 2024-99-05 06_07_08.mp3") is None
-    assert uploads.parse_plaud_captured_at("no timestamp here.mp3") is None
-    assert uploads.infer_captured_at("Meeting 2024-04-05 06_07_08.mp3") == "2024-04-05T06:07:08Z"
+    upload_capture_timezone = ZoneInfo("Europe/Rome")
+    assert uploads.parse_plaud_captured_local_datetime(
+        "Meeting 2024-04-05 06_07_08.mp3"
+    ) == datetime(2024, 4, 5, 6, 7, 8)
+    assert uploads.parse_plaud_captured_local_datetime(
+        "Meeting 2024-99-05 06_07_08.mp3"
+    ) is None
+    assert uploads.parse_plaud_captured_local_datetime("no timestamp here.mp3") is None
+    assert (
+        uploads.parse_plaud_captured_at(
+            "Meeting 2024-04-05 06_07_08.mp3",
+            upload_capture_timezone=upload_capture_timezone,
+        )
+        == "2024-04-05T04:07:08Z"
+    )
+    assert (
+        uploads.parse_plaud_captured_at(
+            "Meeting 2024-99-05 06_07_08.mp3",
+            upload_capture_timezone=upload_capture_timezone,
+        )
+        is None
+    )
+    assert (
+        uploads.infer_captured_at(
+            "Meeting 2024-04-05 06_07_08.mp3",
+            upload_capture_timezone=upload_capture_timezone,
+        )
+        == "2024-04-05T04:07:08Z"
+    )
 
     fixed_now = datetime(2026, 2, 3, 4, 5, 6, 789123, tzinfo=timezone.utc)
 
@@ -602,7 +628,23 @@ def test_upload_filename_and_timestamp_helpers(monkeypatch):
             return fixed_now
 
     monkeypatch.setattr(uploads, "datetime", _FixedDateTime)
-    assert uploads.infer_captured_at("plain_name.mp3") == "2026-02-03T04:05:06Z"
+    inferred = uploads.infer_upload_capture_time(
+        "plain_name.mp3",
+        upload_capture_timezone=upload_capture_timezone,
+    )
+    assert inferred == uploads.CaptureTimeInference(
+        captured_at="2026-02-03T04:05:06Z",
+        captured_at_source=None,
+        captured_at_timezone="Europe/Rome",
+        captured_at_inferred_from_filename=False,
+    )
+    assert (
+        uploads.infer_captured_at(
+            "plain_name.mp3",
+            upload_capture_timezone=upload_capture_timezone,
+        )
+        == "2026-02-03T04:05:06Z"
+    )
 
 
 def test_write_upload_to_path_success_and_error_paths(tmp_path: Path):

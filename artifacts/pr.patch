@@ -1,141 +1,64 @@
-diff --git a/lan_transcriber/pipeline_steps/orchestrator.py b/lan_transcriber/pipeline_steps/orchestrator.py
-index 54e0449..2b4337c 100644
---- a/lan_transcriber/pipeline_steps/orchestrator.py
-+++ b/lan_transcriber/pipeline_steps/orchestrator.py
-@@ -1555,6 +1555,18 @@ async def run_pipeline(
-     summary_lang = resolve_target_summary_language(target_summary_language, dominant_language=override_lang or "unknown", detected_language=None)
-     cal_title = str(calendar_title or "").strip() or None
-     cal_attendees = [str(item).strip() for item in (calendar_attendees or []) if str(item).strip()]
-+    language_info: dict[str, Any] = {
-+        "detected": override_lang or "unknown",
-+        "confidence": None,
-+    }
-+    language_analysis = analyse_languages(
-+        [],
-+        detected_language=override_lang,
-+        transcript_language_override=override_lang,
-+    )
-+    diar_segments: list[dict[str, Any]] = []
-+    speaker_turns: list[dict[str, Any]] = []
-+    friendly = 0
+diff --git a/lan_app/db.py b/lan_app/db.py
+index 965120a..b4695d6 100644
+--- a/lan_app/db.py
++++ b/lan_app/db.py
+@@ -42,6 +42,7 @@ _DEFAULT_SQLITE_BUSY_TIMEOUT_MS = 30_000
+ _DEFAULT_DB_RETRIES = 5
+ _DEFAULT_DB_BASE_SLEEP_MS = 50
+ _LOCK_ERROR_MARKERS = ("locked", "busy")
++_CAPTURE_TIME_PROVENANCE_MIGRATION_VERSION = 19
+ _RECORDING_CAPTURE_PROVENANCE_COLUMNS = {
+     "captured_at_source",
+     "captured_at_timezone",
+@@ -516,6 +517,7 @@ def init_db(settings: AppSettings | None = None) -> Path:
+     migrations = _migration_files()
+     with connect(cfg) as conn:
+         current_version = _read_user_version(conn)
++    starting_version = current_version
  
-     atomic_write_json(
-         artifacts.metrics_json_path,
-@@ -1878,34 +1890,33 @@ async def run_pipeline(
-         p95_latency_seconds.observe(time.perf_counter() - start)
-         return TranscriptResult(summary="No speech detected", body="", friendly=0, speakers=speakers, summary_path=artifacts.summary_json_path, body_path=artifacts.transcript_txt_path, unknown_chunks=[], segments=[])
+     for target_version, migration_path in migrations:
+         if target_version <= current_version:
+@@ -533,7 +535,11 @@ def init_db(settings: AppSettings | None = None) -> Path:
+                 return target_version
  
--    snippet_paths = export_speaker_snippets(
--        SnippetExportRequest(
--            audio_path=audio_path,
--            diar_segments=diar_segments,
--            snippets_dir=artifacts.snippets_dir,
--            duration_sec=precheck_result.duration_sec,
--            speaker_turns=speaker_turns,
--            degraded_diarization=_is_degraded_diarization(
--                diariser,
--                used_dummy_fallback=used_dummy_fallback,
--            ),
--            pad_seconds=cfg.snippet_pad_seconds,
--            max_clip_duration_sec=cfg.snippet_max_duration_seconds,
--            min_clip_duration_sec=cfg.snippet_min_duration_seconds,
--            max_snippets_per_speaker=cfg.snippet_max_per_speaker,
--        )
--    )
--    speaker_lines = _merge_similar(
--        [
--            f"[{turn['start']:.2f}-{turn['end']:.2f}] **{aliases.get(turn['speaker'], turn['speaker'])}:** {turn['text']}"
--            for turn in speaker_turns
--        ],
--        cfg.merge_similar,
--    )
--    friendly = _sentiment_score(clean_text)
--    llm_prompt_text = _speaker_turn_prompt_text(speaker_turns, aliases=aliases)
--
-     try:
-+        snippet_paths = export_speaker_snippets(
-+            SnippetExportRequest(
-+                audio_path=audio_path,
-+                diar_segments=diar_segments,
-+                snippets_dir=artifacts.snippets_dir,
-+                duration_sec=precheck_result.duration_sec,
-+                speaker_turns=speaker_turns,
-+                degraded_diarization=_is_degraded_diarization(
-+                    diariser,
-+                    used_dummy_fallback=used_dummy_fallback,
-+                ),
-+                pad_seconds=cfg.snippet_pad_seconds,
-+                max_clip_duration_sec=cfg.snippet_max_duration_seconds,
-+                min_clip_duration_sec=cfg.snippet_min_duration_seconds,
-+                max_snippets_per_speaker=cfg.snippet_max_per_speaker,
-+            )
-+        )
-+        speaker_lines = _merge_similar(
-+            [
-+                f"[{turn['start']:.2f}-{turn['end']:.2f}] **{aliases.get(turn['speaker'], turn['speaker'])}:** {turn['text']}"
-+                for turn in speaker_turns
-+            ],
-+            cfg.merge_similar,
-+        )
-+        friendly = _sentiment_score(clean_text)
-+        llm_prompt_text = _speaker_turn_prompt_text(speaker_turns, aliases=aliases)
-         if _use_chunked_llm(llm_prompt_text, cfg):
-             summary_payload = await _run_chunked_llm_summary(
-                 transcript_text=llm_prompt_text or clean_text,
-diff --git a/tests/test_pipeline.py b/tests/test_pipeline.py
-index 68bef71..4fe5e96 100644
---- a/tests/test_pipeline.py
-+++ b/tests/test_pipeline.py
-@@ -2214,6 +2214,52 @@ async def test_pipeline_error_marks_metrics_failed(tmp_path: Path, mocker):
-     assert metrics_data["error"] == "llm boom"
+         current_version = with_db_retry(_apply_migration)
+-    _backfill_legacy_upload_capture_times(cfg)
++    if (
++        starting_version < _CAPTURE_TIME_PROVENANCE_MIGRATION_VERSION
++        and current_version >= _CAPTURE_TIME_PROVENANCE_MIGRATION_VERSION
++    ):
++        _backfill_legacy_upload_capture_times(cfg)
+     return cfg.db_path
  
  
-+@pytest.mark.asyncio
-+async def test_pipeline_snippet_export_error_marks_metrics_failed(tmp_path: Path, mocker):
-+    mocker.patch(
-+        "whisperx.transcribe",
-+        return_value=(
-+            [{"start": 0.0, "end": 1.0, "text": "hello world today"}],
-+            {"language": "en", "language_probability": 0.9},
+diff --git a/tests/test_capture_time_semantics.py b/tests/test_capture_time_semantics.py
+index aba8cba..23cb8bd 100644
+--- a/tests/test_capture_time_semantics.py
++++ b/tests/test_capture_time_semantics.py
+@@ -100,6 +100,26 @@ def test_backfill_returns_zero_before_provenance_columns_exist(tmp_path: Path) -
+     assert db_module._backfill_legacy_upload_capture_times(cfg) == 0  # noqa: SLF001
+ 
+ 
++def test_steady_state_db_calls_do_not_rerun_capture_time_backfill(
++    tmp_path: Path,
++    monkeypatch,
++) -> None:
++    cfg = _cfg(tmp_path)
++    init_db(cfg)
++
++    monkeypatch.setattr(
++        db_module,
++        "_backfill_legacy_upload_capture_times",
++        lambda *_args, **_kwargs: (_ for _ in ()).throw(
++            AssertionError("capture-time backfill should not rerun")
 +        ),
 +    )
-+    mocker.patch(
-+        "lan_transcriber.pipeline_steps.orchestrator.export_speaker_snippets",
-+        side_effect=RuntimeError("snippet boom"),
-+    )
 +
-+    cfg = pipeline.Settings(
-+        speaker_db=tmp_path / "db.yaml",
-+        tmp_root=tmp_path,
-+        recordings_root=tmp_path / "recordings",
-+    )
-+    audio = wav_audio(
-+        tmp_path,
-+        name="snippet-fail.wav",
-+        duration_sec=24.0,
-+        speech=True,
-+    )
-+
-+    with pytest.raises(RuntimeError, match="snippet boom"):
-+        await pipeline.run_pipeline(
-+            audio_path=audio,
-+            cfg=cfg,
-+            llm=llm_client.LLMClient(),
-+            diariser=DummyDiariser(),
-+            recording_id="rec-snippet-fail-1",
-+            precheck=precheck_ok(),
-+        )
-+
-+    derived = cfg.recordings_root / "rec-snippet-fail-1" / "derived"
-+    summary_data = json.loads((derived / "summary.json").read_text(encoding="utf-8"))
-+    metrics_data = json.loads((derived / "metrics.json").read_text(encoding="utf-8"))
-+
-+    assert summary_data["status"] == "failed"
-+    assert summary_data["friendly"] == 0
-+    assert metrics_data["status"] == "failed"
-+    assert metrics_data["error"] == "snippet boom"
++    listed, total = list_recordings(settings=cfg)
++    assert listed == []
++    assert total == 0
 +
 +
- @pytest.mark.asyncio
- async def test_pipeline_pre_llm_error_marks_metrics_failed(tmp_path: Path, mocker):
-     mocker.patch("whisperx.transcribe", side_effect=RuntimeError("asr boom"))
+ def test_init_db_backfills_only_eligible_legacy_upload_rows_and_is_idempotent(
+     tmp_path: Path,
+ ) -> None:

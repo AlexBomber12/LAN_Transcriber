@@ -605,13 +605,30 @@ def test_canonical_speaker_migration_from_legacy_schema(
 
     monkeypatch.setattr(db_module, "_migration_files", lambda: legacy_migrations)  # noqa: SLF001
     db_module.init_db(cfg)
-    db_module.create_recording(
-        "rec-db-cov-legacy-1",
-        source="upload",
-        source_filename="legacy.wav",
-        settings=cfg,
-    )
     with db_module.connect(cfg) as conn:
+        conn.execute(
+            """
+            INSERT INTO recordings (
+                id,
+                source,
+                source_filename,
+                captured_at,
+                status,
+                created_at,
+                updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "rec-db-cov-legacy-1",
+                "upload",
+                "legacy.wav",
+                "2026-03-01T10:00:00Z",
+                "Queued",
+                "2026-03-01T10:00:00Z",
+                "2026-03-01T10:00:00Z",
+            ),
+        )
         conn.execute(
             "INSERT INTO voice_profiles (id, display_name, notes) VALUES (?, ?, ?)",
             (1, "Legacy Voice", "notes"),

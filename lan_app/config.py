@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 from typing import Literal
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import AliasChoices, Field, model_validator
 from pydantic_settings import BaseSettings
@@ -20,6 +21,7 @@ from .diarization_loader import DEFAULT_DIARIZATION_MODEL_ID
 
 _DEV_DEFAULT_REDIS_URL = "redis://127.0.0.1:6379/0"
 _DEV_DEFAULT_LLM_BASE_URL = "http://127.0.0.1:8000"
+_DEFAULT_UPLOAD_CAPTURE_TIMEZONE = "Europe/Rome"
 _LLM_MODEL_REQUIRED_ERROR = (
     "LLM_MODEL is required. Set it in .env (e.g., LLM_MODEL=gpt-oss:120b)."
 )
@@ -201,6 +203,13 @@ class AppSettings(BaseSettings):
         ge=1,
         validation_alias=AliasChoices("UPLOAD_MAX_BYTES"),
     )
+    upload_capture_timezone: str = Field(
+        default=_DEFAULT_UPLOAD_CAPTURE_TIMEZONE,
+        validation_alias=AliasChoices(
+            "LAN_UPLOAD_CAPTURE_TIMEZONE",
+            "UPLOAD_CAPTURE_TIMEZONE",
+        ),
+    )
     calendar_expand_past_days: int = Field(
         default=30,
         ge=0,
@@ -285,6 +294,17 @@ class AppSettings(BaseSettings):
         self.redis_url = _normalize_optional_env(self.redis_url)
         self.llm_base_url = _normalize_optional_env(self.llm_base_url)
         self.llm_model = _normalize_optional_env(self.llm_model)
+        timezone_name = (
+            _normalize_optional_env(self.upload_capture_timezone)
+            or _DEFAULT_UPLOAD_CAPTURE_TIMEZONE
+        )
+        try:
+            self.upload_capture_timezone = ZoneInfo(timezone_name).key
+        except ZoneInfoNotFoundError as exc:
+            raise ValueError(
+                "UPLOAD_CAPTURE_TIMEZONE must be a valid IANA timezone "
+                f"(got {timezone_name!r})"
+            ) from exc
         self.diarization_model_id = (
             self.diarization_model_id.strip() or DEFAULT_DIARIZATION_MODEL_ID
         )
@@ -317,6 +337,9 @@ class AppSettings(BaseSettings):
                 f"Missing required environment variable(s) for LAN_ENV={self.lan_env}: {vars_text}"
             )
         return self
+
+    def upload_capture_tzinfo(self) -> ZoneInfo:
+        return ZoneInfo(self.upload_capture_timezone)
 
     class Config:
         env_prefix = "LAN_"

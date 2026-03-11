@@ -74,6 +74,30 @@ def test_security_settings_from_env(monkeypatch):
     assert cfg.api_bearer_token == "secret-token"
 
 
+def test_upload_capture_timezone_defaults_and_aliases(monkeypatch):
+    monkeypatch.delenv("LAN_UPLOAD_CAPTURE_TIMEZONE", raising=False)
+    monkeypatch.delenv("UPLOAD_CAPTURE_TIMEZONE", raising=False)
+    assert AppSettings().upload_capture_timezone == "Europe/Rome"
+
+    monkeypatch.setenv("UPLOAD_CAPTURE_TIMEZONE", " Europe/Berlin ")
+    assert AppSettings().upload_capture_timezone == "Europe/Berlin"
+
+    monkeypatch.setenv("LAN_UPLOAD_CAPTURE_TIMEZONE", "  ")
+    assert AppSettings().upload_capture_timezone == "Europe/Rome"
+
+    monkeypatch.setenv("LAN_UPLOAD_CAPTURE_TIMEZONE", "America/New_York")
+    assert AppSettings().upload_capture_timezone == "America/New_York"
+
+
+def test_upload_capture_timezone_invalid_fails_clearly(monkeypatch):
+    monkeypatch.setenv("UPLOAD_CAPTURE_TIMEZONE", "Mars/Olympus")
+    with pytest.raises(
+        ValueError,
+        match="UPLOAD_CAPTURE_TIMEZONE must be a valid IANA timezone",
+    ):
+        AppSettings()
+
+
 def test_worker_and_reaper_settings_from_env(monkeypatch):
     monkeypatch.setenv("LAN_RQ_JOB_TIMEOUT_SECONDS", "1800")
     monkeypatch.setenv("LAN_MAX_JOB_ATTEMPTS", "5")

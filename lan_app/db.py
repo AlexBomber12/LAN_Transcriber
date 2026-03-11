@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import json
+import logging
 from pathlib import Path
 import sqlite3
 import time
@@ -22,6 +23,7 @@ from .constants import (
     RECORDING_STATUS_QUEUED,
     RECORDING_STATUS_QUARANTINE,
 )
+from .uploads import normalize_plaud_captured_at, parse_plaud_captured_local_datetime
 
 _PROJECT_ASSIGNMENT_SOURCES = {"manual", "auto"}
 _CALENDAR_SOURCE_KINDS = {"url", "file"}
@@ -40,7 +42,14 @@ _DEFAULT_SQLITE_BUSY_TIMEOUT_MS = 30_000
 _DEFAULT_DB_RETRIES = 5
 _DEFAULT_DB_BASE_SLEEP_MS = 50
 _LOCK_ERROR_MARKERS = ("locked", "busy")
+_CAPTURE_TIME_PROVENANCE_MIGRATION_VERSION = 19
+_RECORDING_CAPTURE_PROVENANCE_COLUMNS = {
+    "captured_at_source",
+    "captured_at_timezone",
+    "captured_at_inferred_from_filename",
+}
 _T = TypeVar("_T")
+_LOG = logging.getLogger(__name__)
 
 _UNSET = object()
 
@@ -86,6 +95,95 @@ def _utc_now() -> str:
     return datetime.now(tz=timezone.utc).replace(microsecond=0).isoformat().replace(
         "+00:00", "Z"
     )
+
+
+def _recording_table_columns(conn: sqlite3.Connection) -> set[str]:
+    return {
+        str(row[1])
+        for row in conn.execute("PRAGMA table_info(recordings)").fetchall()
+    }
+
+
+def _has_recording_capture_provenance_columns(conn: sqlite3.Connection) -> bool:
+    columns = _recording_table_columns(conn)
+    return _RECORDING_CAPTURE_PROVENANCE_COLUMNS.issubset(columns)
+
+
+def _legacy_buggy_plaud_captured_at(local_datetime: datetime) -> str:
+    return _utc_iso(local_datetime.replace(tzinfo=timezone.utc))
+
+
+def _utc_iso(value: datetime) -> str:
+    return value.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace(
+        "+00:00", "Z"
+    )
+
+
+def _backfill_legacy_upload_capture_times(
+    settings: AppSettings | None = None,
+) -> int:
+    cfg = settings or AppSettings()
+    upload_capture_timezone = cfg.upload_capture_tzinfo()
+
+    def _backfill() -> int:
+        with connect(cfg) as conn:
+            if not _has_recording_capture_provenance_columns(conn):
+                return 0
+
+            rows = conn.execute(
+                """
+                SELECT
+                    id,
+                    source_filename,
+                    captured_at
+                FROM recordings
+                WHERE source = 'upload'
+                  AND captured_at_source IS NULL
+                  AND captured_at_timezone IS NULL
+                  AND captured_at_inferred_from_filename = 0
+                  AND source_filename GLOB '*[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]*'
+                """
+            ).fetchall()
+
+            updated = 0
+            for row in rows:
+                source_filename = str(row["source_filename"] or "")
+                local_datetime = parse_plaud_captured_local_datetime(source_filename)
+                if local_datetime is None:
+                    continue
+                if str(row["captured_at"] or "").strip() != _legacy_buggy_plaud_captured_at(
+                    local_datetime
+                ):
+                    continue
+                conn.execute(
+                    """
+                    UPDATE recordings
+                    SET
+                        captured_at = ?,
+                        captured_at_source = ?,
+                        captured_at_timezone = ?,
+                        captured_at_inferred_from_filename = 1
+                    WHERE id = ?
+                    """,
+                    (
+                        normalize_plaud_captured_at(
+                            local_datetime,
+                            upload_capture_timezone=upload_capture_timezone,
+                        ),
+                        local_datetime.isoformat(timespec="seconds"),
+                        upload_capture_timezone.key,
+                        row["id"],
+                    ),
+                )
+                updated += 1
+
+            if updated > 0:
+                conn.commit()
+            return updated
+
+    updated = with_db_retry(_backfill)
+    _LOG.info("Legacy upload capture-time backfill updated %s rows", updated)
+    return updated
 
 
 def _as_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
@@ -419,6 +517,7 @@ def init_db(settings: AppSettings | None = None) -> Path:
     migrations = _migration_files()
     with connect(cfg) as conn:
         current_version = _read_user_version(conn)
+    starting_version = current_version
 
     for target_version, migration_path in migrations:
         if target_version <= current_version:
@@ -436,6 +535,11 @@ def init_db(settings: AppSettings | None = None) -> Path:
                 return target_version
 
         current_version = with_db_retry(_apply_migration)
+    if (
+        starting_version < _CAPTURE_TIME_PROVENANCE_MIGRATION_VERSION
+        and current_version >= _CAPTURE_TIME_PROVENANCE_MIGRATION_VERSION
+    ):
+        _backfill_legacy_upload_capture_times(cfg)
     return cfg.db_path
 
 
@@ -446,6 +550,9 @@ def create_recording(
     *,
     settings: AppSettings | None = None,
     captured_at: str | None = None,
+    captured_at_source: str | None = None,
+    captured_at_timezone: str | None = None,
+    captured_at_inferred_from_filename: bool = False,
     duration_sec: float | None = None,
     status: str = RECORDING_STATUS_QUEUED,
     quarantine_reason: str | None = None,
@@ -479,9 +586,12 @@ def create_recording(
                 quarantine_reason, review_reason_code, review_reason_text,
                 language_auto, language_override, target_summary_language, project_id,
                 project_assignment_source,
-                onenote_page_id, drive_file_id, drive_md5, created_at, updated_at
+                onenote_page_id, drive_file_id, drive_md5,
+                captured_at_source, captured_at_timezone,
+                captured_at_inferred_from_filename,
+                created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 recording_id,
@@ -501,6 +611,9 @@ def create_recording(
                 onenote_page_id,
                 drive_file_id,
                 drive_md5,
+                captured_at_source,
+                captured_at_timezone,
+                1 if captured_at_inferred_from_filename else 0,
                 now,
                 now,
             ),

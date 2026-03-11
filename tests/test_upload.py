@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
 from fastapi.testclient import TestClient
 
-from lan_app import api
+from lan_app import api, uploads
 from lan_app.config import AppSettings
 from lan_app.constants import JOB_STATUS_QUEUED, JOB_TYPE_PRECHECK, RECORDING_STATUS_QUEUED
 from lan_app.db import (
@@ -75,7 +76,7 @@ def test_upload_success_creates_recording_and_job(tmp_path: Path, monkeypatch):
 
     recording_id = payload["recording_id"]
     assert recording_id.startswith("trs_")
-    assert payload["captured_at"] == "2026-02-18T16:01:43Z"
+    assert payload["captured_at"] == "2026-02-18T15:01:43Z"
     assert payload["bytes_written"] == 3
 
     raw_file = cfg.recordings_root / recording_id / "raw" / "audio.mp3"
@@ -86,12 +87,51 @@ def test_upload_success_creates_recording_and_job(tmp_path: Path, monkeypatch):
     assert recording is not None
     assert recording["source"] == "upload"
     assert ".mp3" in str(recording["source_filename"])
-    assert recording["captured_at"] == "2026-02-18T16:01:43Z"
+    assert recording["captured_at"] == "2026-02-18T15:01:43Z"
+    assert recording["captured_at_source"] == "2026-02-18T16:01:43"
+    assert recording["captured_at_timezone"] == "Europe/Rome"
+    assert recording["captured_at_inferred_from_filename"] == 1
 
     jobs, total = list_jobs(settings=cfg, recording_id=recording_id)
     assert total == 1
     assert jobs[0]["status"] == JOB_STATUS_QUEUED
     assert jobs[0]["type"] == JOB_TYPE_PRECHECK
+
+
+def test_upload_without_embedded_timestamp_falls_back_to_current_utc(
+    tmp_path: Path,
+    monkeypatch,
+):
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    init_db(cfg)
+    _stub_enqueue(monkeypatch, cfg)
+
+    fixed_now = datetime(2026, 2, 3, 4, 5, 6, 789123, tzinfo=timezone.utc)
+
+    class _FixedDateTime:
+        @staticmethod
+        def now(*, tz):
+            assert tz == timezone.utc
+            return fixed_now
+
+    monkeypatch.setattr(uploads, "datetime", _FixedDateTime)
+
+    client = TestClient(api.app)
+    response = client.post(
+        "/api/uploads",
+        files={"file": ("plain-name.mp3", b"abc", "audio/mpeg")},
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["captured_at"] == "2026-02-03T04:05:06Z"
+
+    recording = get_recording(str(payload["recording_id"]), settings=cfg)
+    assert recording is not None
+    assert recording["captured_at"] == "2026-02-03T04:05:06Z"
+    assert recording["captured_at_source"] is None
+    assert recording["captured_at_timezone"] == "Europe/Rome"
+    assert recording["captured_at_inferred_from_filename"] == 0
 
 
 def test_upload_unsupported_extension_returns_422(tmp_path: Path, monkeypatch):

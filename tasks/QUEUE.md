@@ -472,7 +472,7 @@ Queue (in order)
 - Depends on: PR-CALENDAR-MATCHING-ICS-01 and PR-DIARIZATION-GPU-01 and PR-UI-PIPELINE-UX-01
 
 93) PR-CAPTURE-TIME-SEMANTICS-01: Correct upload/Plaud capture-time semantics: local source time -> UTC normalization, provenance fields, and safe legacy backfill
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-CAPTURE-TIME-SEMANTICS-01.md
 - Depends on: PR-GPU-SCHEDULER-01 and PR-CALENDAR-MATCHING-ICS-01
 
