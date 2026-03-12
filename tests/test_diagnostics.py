@@ -272,7 +272,7 @@ def test_root_cause_from_stage_and_chunk_rows_cover_cancelled_and_fallbacks() ->
         {"status": "cancelled", "chunk_index": "7", "chunk_total": 9, "error_text": "ignored"}
     )
     assert cancelled_chunk["code"] == "cancelled_by_user"
-    split_chunk = diagnostics.root_cause_from_chunk_row(
+    assert diagnostics.root_cause_from_chunk_row(
         {
             "status": "split",
             "error_code": "llm_chunk_timeout",
@@ -280,9 +280,7 @@ def test_root_cause_from_stage_and_chunk_rows_cover_cancelled_and_fallbacks() ->
             "chunk_index": "3",
             "chunk_total": 6,
         }
-    )
-    assert split_chunk["code"] == "llm_chunk_timeout"
-    assert split_chunk["detail"] == "timed out after 20s"
+    ) is None
 
 
 def test_build_recording_diagnostics_prefers_specific_stage_cause_over_retry_wrapper() -> None:
@@ -427,6 +425,50 @@ def test_build_recording_diagnostics_stopping_and_stopped_paths() -> None:
         "Processing had to be force-stopped after the grace timeout."
     )
     assert stopped["wrapper_reason_text"] is None
+
+
+def test_build_recording_diagnostics_ignores_split_chunk_rows_for_primary_reason() -> None:
+    diagnostics_payload = diagnostics.build_recording_diagnostics(
+        recording={
+            "status": "Ready",
+            "pipeline_stage": None,
+        },
+        stage_rows=[
+            {
+                "stage_name": "llm_extract",
+                "status": "completed",
+                "attempt": 1,
+                "started_at": "2026-03-12T12:00:00Z",
+                "duration_ms": 4000,
+                "updated_at": "2026-03-12T12:00:04Z",
+                "metadata_json": {},
+            }
+        ],
+        chunk_rows=[
+            {
+                "chunk_index": "3",
+                "chunk_total": 6,
+                "status": "split",
+                "attempt": 1,
+                "updated_at": "2026-03-12T12:00:03Z",
+                "error_code": "llm_chunk_timeout",
+                "error_text": "timed out after 20s",
+            },
+            {
+                "chunk_index": "3a",
+                "chunk_total": 6,
+                "status": "completed",
+                "attempt": 1,
+                "updated_at": "2026-03-12T12:00:04Z",
+            },
+        ],
+        jobs=[],
+        now=datetime(2026, 3, 12, 12, 0, 5, tzinfo=timezone.utc),
+    )
+
+    assert diagnostics_payload["primary_reason_code"] is None
+    assert diagnostics_payload["primary_reason_text"] is None
+    assert diagnostics_payload["primary_reason_detail"] is None
 
 
 def test_diagnostics_selection_helpers_cover_match_and_fallback_paths() -> None:

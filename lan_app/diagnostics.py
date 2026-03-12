@@ -305,7 +305,7 @@ def root_cause_from_chunk_row(row: dict[str, Any] | None) -> dict[str, Any] | No
     if not isinstance(row, dict):
         return None
     status = _clean_text(row.get("status")) or ""
-    if status not in {"failed", "cancelled", "split"}:
+    if status not in {"failed", "cancelled"}:
         return None
     code = _clean_text(row.get("error_code"))
     if status == "cancelled":
