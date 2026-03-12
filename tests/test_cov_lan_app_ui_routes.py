@@ -102,6 +102,7 @@ def test_display_helpers_cover_timezone_duration_and_prepare_recording(
     cfg = _cfg(tmp_path)
 
     assert ui_routes._pipeline_stage_label("precheck") == "Sanitize & Precheck"  # noqa: SLF001
+    assert ui_routes._pipeline_stage_label("snippet_export") == "Snippet Export"  # noqa: SLF001
     assert ui_routes._pipeline_stage_label("llm_chunk_2_of_5") == "LLM Chunk 2 of 5"  # noqa: SLF001
     assert ui_routes._pipeline_stage_label("llm_chunk_bad") == "Llm Chunk Bad"  # noqa: SLF001
     assert ui_routes._pipeline_stage_label("custom_stage") == "Custom Stage"  # noqa: SLF001

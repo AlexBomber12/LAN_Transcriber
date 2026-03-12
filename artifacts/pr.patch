@@ -1,1383 +1,1016 @@
 diff --git a/README.md b/README.md
-index 35e18a0..c460ffc 100644
+index c460ffc..710a3c3 100644
 --- a/README.md
 +++ b/README.md
-@@ -101,7 +101,8 @@ Operational setup, failure handling, backup/restore, and upgrade steps are docum
-    - Plaud-style filename timestamps are interpreted in `UPLOAD_CAPTURE_TIMEZONE` (default `Europe/Rome`), normalized to UTC in the database, and shown back in local time in the UI.
-    - Legacy upload rows created before this fix are backfilled automatically on upgrade once, using the configured upload capture timezone.
-    - ICS sync now stores organizer and attendee details per event, and the calendars UI renders those event times in local Europe/Rome time.
--   - Uploaded/processed recordings are matched automatically to nearby calendar events when the score is strong enough; ambiguous candidates remain reviewable on the recording `calendar` tab.
-+   - Uploaded/processed recordings are matched automatically to nearby calendar events using the corrected upload capture time when filename provenance is available.
-+   - Weak or suspicious capture timestamps keep calendar matching conservative; ambiguous candidates remain reviewable and manually overrideable on the recording `calendar` tab.
-    - Duration is taken from `derived/audio_sanitized.wav` when present, then falls back to the raw upload.
-    - The app now uses glossary/correction memory instead of ASR model training: manage manual terms and future corrections on `/glossary`.
-    - Glossary sources are merged deterministically from stored manual/correction entries, canonical speaker names, selected calendar context, and the current project name/keywords when available.
+@@ -121,6 +121,7 @@ Operational setup, failure handling, backup/restore, and upgrade steps are docum
+ - `/voices` is the canonical speaker management page: inspect linked samples, review likely duplicates, and merge duplicate speakers into the surviving canonical record.
+ - `/recordings/{recording_id}?tab=speakers` lets you remap diarized labels (`S1`, `S2`, ...) to canonical speakers or leave them unmatched; exports render the corrected canonical names as `Name (Sx)`.
+ - Speaker snippets are now purity-ranked voice samples built from single-speaker material instead of wide playback windows.
++- Snippet export now runs immediately after `speaker_turns`, before LLM summarization, so `derived/snippets_manifest.json` and clean clips can appear while long summaries are still processing.
+ - Add sample now requires an explicit clean snippet choice from the speakers tab; if no clean snippet exists, the UI explains why and blocks the action.
+ - Synthetic silence fallback was removed on purpose. Inspect `derived/snippets_manifest.json` to see accepted clips, rejected candidates, overlap, and extraction failures.
+ - When diarization falls back to degraded mode or a speaker match is low confidence, the recording detail page shows an explicit warning instead of silently trusting the labels.
 diff --git a/docs/runbook.md b/docs/runbook.md
-index c4fee05..c42e896 100644
+index c42e896..1a7b515 100644
 --- a/docs/runbook.md
 +++ b/docs/runbook.md
-@@ -63,7 +63,8 @@ docker compose run --rm api python -m lan_app.healthchecks app
-    - Plaud-style filename timestamps are interpreted in `UPLOAD_CAPTURE_TIMEZONE` (default `Europe/Rome`), then stored in UTC in the database.
-    - Legacy upload rows created before this fix are backfilled automatically once after upgrade when the app initializes the database.
-    - ICS sync now stores organizer and attendee details per event, and the calendars page renders those event times in local Europe/Rome time.
--   - Uploaded and processed recordings are matched automatically to nearby calendar events when the score is strong enough; ambiguous candidates remain reviewable on the recording `calendar` tab.
-+   - Uploaded and processed recordings are matched automatically to nearby calendar events using the corrected upload capture time when filename provenance is available.
-+   - Weak or suspicious capture timestamps keep calendar matching conservative; use the recording `calendar` tab to review candidates and manually override the selected event when needed.
-    - Duration is sourced from `derived/audio_sanitized.wav` when it exists, otherwise from the raw upload.
-    - The app uses glossary/correction memory instead of ASR model training. Manage manual terms and saved corrections on `/glossary`.
-    - Glossary sources are merged deterministically from stored manual/correction entries, speaker-bank names, selected calendar context, and project context when available.
-diff --git a/lan_app/calendar/matching.py b/lan_app/calendar/matching.py
-index 26bc77d..c2e7447 100644
---- a/lan_app/calendar/matching.py
-+++ b/lan_app/calendar/matching.py
-@@ -5,6 +5,8 @@ import json
- from pathlib import Path
- import re
- from typing import Any
-+import unicodedata
-+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
- 
- from lan_app.config import AppSettings
- from lan_app.db import (
-@@ -14,12 +16,26 @@ from lan_app.db import (
-     upsert_calendar_match,
+@@ -72,6 +72,7 @@ docker compose run --rm api python -m lan_app.healthchecks app
+    - Canonical speaker records keep one active person entry with many samples; low-confidence matches stay reviewable instead of auto-merging.
+    - Use the `speakers` tab to remap `S1`/`S2` diarization labels to canonical speakers or leave them unmatched; the export preview updates to the corrected `Name (Sx)` labels.
+    - Speaker snippets are purity-ranked voice samples. Add sample now requires selecting an explicit clean clip instead of silently taking the first snippet.
++   - Snippet export runs right after `speaker_turns` and before `llm_extract`, so `derived/snippets_manifest.json` and accepted clips can show up while long LLM work is still running.
+    - Silence fallback for failed snippet extraction was removed intentionally. Inspect `derived/snippets_manifest.json` for accepted clips, overlap rejections, degraded-mode blocks, and extraction failures.
+    - If diarization fell back to degraded mode or a match stayed low confidence, the speakers tab shows a visible warning badge/message.
+ 6. Download export bundle from `GET /ui/recordings/{recording_id}/export.zip`.
+diff --git a/lan_app/pipeline_stages.py b/lan_app/pipeline_stages.py
+index c0fbe3d..6a65ccd 100644
+--- a/lan_app/pipeline_stages.py
++++ b/lan_app/pipeline_stages.py
+@@ -47,10 +47,11 @@ PIPELINE_STAGE_DEFINITIONS = (
+     PipelineStageDefinition("diarization", 50, 0.60, "Diarization"),
+     PipelineStageDefinition("language_analysis", 60, 0.75, "Language Analysis"),
+     PipelineStageDefinition("speaker_turns", 70, 0.80, "Speaker Turns"),
+-    PipelineStageDefinition("llm_extract", 80, 0.90, "LLM Extract"),
+-    PipelineStageDefinition("export_artifacts", 90, 0.95, "Export Artifacts"),
+-    PipelineStageDefinition("metrics", 100, 0.98, "Metrics"),
+-    PipelineStageDefinition("routing", 110, 0.99, "Routing"),
++    PipelineStageDefinition("snippet_export", 80, 0.84, "Snippet Export"),
++    PipelineStageDefinition("llm_extract", 90, 0.90, "LLM Extract"),
++    PipelineStageDefinition("export_artifacts", 100, 0.95, "Export Artifacts"),
++    PipelineStageDefinition("metrics", 110, 0.98, "Metrics"),
++    PipelineStageDefinition("routing", 120, 0.99, "Routing"),
  )
  
--_AUTO_SELECT_MIN_MARGIN = 0.12
--_AUTO_SELECT_MIN_SCORE = 0.78
-+_AUTO_SELECT_MIN_MARGIN = 0.10
-+_AUTO_SELECT_MIN_SCORE = 0.74
-+_CONSERVATIVE_AUTO_SELECT_MIN_MARGIN = 0.15
-+_CONSERVATIVE_AUTO_SELECT_MIN_SCORE = 0.82
-+_PRESTART_GRACE_MINUTES = 15.0
-+_PROXIMITY_WINDOW_MINUTES = 180.0
- _SEARCH_WINDOW_AFTER = timedelta(hours=12)
- _SEARCH_WINDOW_BEFORE = timedelta(hours=8)
- _TOKEN_RE = re.compile(r"[a-z0-9]{2,}")
--_STOPWORDS = {"and", "audio", "meeting", "recording", "sync", "the"}
-+_STOPWORDS = {
-+    "and",
-+    "audio",
-+    "call",
-+    "meeting",
-+    "recording",
-+    "sync",
-+    "the",
-+    "weekly",
-+    "with",
-+}
- 
- 
- def _utc_iso(value: datetime) -> str:
-@@ -52,12 +68,27 @@ def _safe_duration_seconds(value: object) -> float | None:
-     return duration
- 
- 
--def _tokenize(value: object) -> set[str]:
-+def _coerce_bool(value: object) -> bool:
-+    if isinstance(value, bool):
-+        return value
-+    if isinstance(value, (int, float)):
-+        return bool(value)
-+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
-+
-+
-+def _normalize_token_text(value: object) -> str:
-     text = str(value or "").strip().lower()
-+    if not text:
-+        return ""
-+    normalized = unicodedata.normalize("NFKD", text)
-+    return normalized.encode("ascii", "ignore").decode("ascii")
-+
-+
-+def _tokenize(value: object) -> set[str]:
-+    text = _normalize_token_text(value)
-     if not text:
-         return set()
--    tokens = {token for token in _TOKEN_RE.findall(text) if token not in _STOPWORDS}
--    return tokens
-+    return {token for token in _TOKEN_RE.findall(text) if token not in _STOPWORDS}
- 
- 
- def _recording_tokens(recording: dict[str, Any]) -> set[str]:
-@@ -165,17 +196,234 @@ def _event_attendees(event: dict[str, Any]) -> list[str]:
-     return [row["label"] for row in _event_attendee_details(event)]
- 
- 
--def _event_tokens(event: dict[str, Any]) -> set[str]:
--    values: list[object] = [
--        event.get("summary"),
--        event.get("location"),
-+def _capture_time_assessment(recording: dict[str, Any]) -> dict[str, Any]:
-+    captured_at = _parse_datetime(recording.get("captured_at"))
-+    recording_source = str(recording.get("source") or "").strip().lower()
-+    source_text = str(recording.get("captured_at_source") or "").strip()
-+    timezone_name = str(recording.get("captured_at_timezone") or "").strip()
-+    inferred_from_filename = _coerce_bool(recording.get("captured_at_inferred_from_filename"))
-+
-+    base = {
-+        "status": "stored_utc",
-+        "penalty": 0.0,
-+        "warning": None,
-+        "rationale": None,
-+        "auto_select_mode": "normal",
-+    }
-+    if captured_at is None:
-+        return {
-+            **base,
-+            "status": "missing",
-+            "auto_select_mode": "blocked",
-+            "warning": "This recording has no usable capture timestamp, so calendar matching needs manual review.",
-+            "rationale": "Capture time is missing, so automatic calendar selection is disabled.",
-+        }
-+
-+    if inferred_from_filename:
-+        if not source_text or not timezone_name:
-+            return {
-+                **base,
-+                "status": "suspicious",
-+                "penalty": 0.18,
-+                "warning": (
-+                    "The capture time provenance looks incomplete, so automatic calendar matching is intentionally conservative."
-+                ),
-+                "rationale": "Filename-derived capture time is missing provenance details and should be reviewed.",
-+                "auto_select_mode": "blocked",
-+            }
-+        try:
-+            source_local = datetime.fromisoformat(source_text)
-+            source_zone = ZoneInfo(timezone_name)
-+        except (ValueError, ZoneInfoNotFoundError):
-+            return {
-+                **base,
-+                "status": "suspicious",
-+                "penalty": 0.18,
-+                "warning": (
-+                    "The capture time provenance looks inconsistent, so automatic calendar matching is intentionally conservative."
-+                ),
-+                "rationale": "Filename-derived capture time could not be validated against its stored timezone.",
-+                "auto_select_mode": "blocked",
-+            }
-+        if source_local.tzinfo is None:
-+            source_local = source_local.replace(tzinfo=source_zone)
-+        expected_utc = source_local.astimezone(timezone.utc)
-+        if abs((expected_utc - captured_at).total_seconds()) > 90:
-+            return {
-+                **base,
-+                "status": "suspicious",
-+                "penalty": 0.18,
-+                "warning": (
-+                    "The capture time provenance does not line up with the stored UTC timestamp, so automatic calendar matching is intentionally conservative."
-+                ),
-+                "rationale": "Stored UTC capture time does not match the filename-derived local timestamp.",
-+                "auto_select_mode": "blocked",
-+            }
-+        return {
-+            **base,
-+            "status": "corrected_local",
-+            "rationale": (
-+                f"Capture time uses the corrected filename timestamp in {timezone_name}."
-+            ),
-+        }
-+
-+    if recording_source == "upload":
-+        if source_text:
-+            return {
-+                **base,
-+                "status": "suspicious",
-+                "penalty": 0.18,
-+                "warning": (
-+                    "The upload capture timestamp metadata is inconsistent, so automatic calendar matching is intentionally conservative."
-+                ),
-+                "rationale": "Upload capture provenance is inconsistent and should be reviewed.",
-+                "auto_select_mode": "blocked",
-+            }
-+        if not timezone_name:
-+            return {
-+                **base,
-+                "status": "suspicious",
-+                "penalty": 0.18,
-+                "warning": (
-+                    "The upload capture timestamp is missing timezone provenance, so automatic calendar matching is intentionally conservative."
-+                ),
-+                "rationale": "Upload capture time is missing timezone provenance and should be reviewed.",
-+                "auto_select_mode": "blocked",
-+            }
-+        return {
-+            **base,
-+            "status": "weak_upload_time",
-+            "penalty": 0.08,
-+            "warning": (
-+                "This upload used receipt time instead of a filename capture timestamp, so calendar auto-selection is conservative."
-+            ),
-+            "rationale": (
-+                "Capture time came from upload receipt time instead of filename metadata."
-+            ),
-+            "auto_select_mode": "conservative",
-+        }
-+
-+    return base
-+
-+
-+def _presence_score(
-+    *,
-+    captured_at: datetime,
-+    starts_at: datetime,
-+    ends_at: datetime,
-+) -> tuple[float, bool]:
-+    if starts_at <= captured_at <= ends_at:
-+        return 1.0, True
-+    minutes_before_start = (starts_at - captured_at).total_seconds() / 60.0
-+    if 0.0 < minutes_before_start <= _PRESTART_GRACE_MINUTES:
-+        return max(0.45, 0.9 - (minutes_before_start / 30.0)), False
-+    return 0.0, False
-+
-+
-+def _overlap_signals(
-+    *,
-+    captured_at: datetime,
-+    starts_at: datetime,
-+    ends_at: datetime,
-+    duration_sec: float | None,
-+) -> dict[str, float]:
-+    event_duration_seconds = max((ends_at - starts_at).total_seconds(), 60.0)
-+    if duration_sec is None:
-+        return {
-+            "overlap_seconds": 0.0,
-+            "recording_overlap_ratio": 0.0,
-+            "event_overlap_ratio": 0.0,
-+            "overlap_score": 0.0,
-+            "duration_similarity": 0.0,
-+            "duration_score": 0.0,
-+        }
-+
-+    recording_end = captured_at + timedelta(seconds=duration_sec)
-+    overlap_seconds = max(
-+        0.0,
-+        (min(recording_end, ends_at) - max(captured_at, starts_at)).total_seconds(),
-+    )
-+    recording_overlap_ratio = min(1.0, overlap_seconds / max(duration_sec, 1.0))
-+    event_overlap_ratio = min(1.0, overlap_seconds / max(event_duration_seconds, 1.0))
-+    overlap_score = (0.45 * recording_overlap_ratio) + (0.55 * event_overlap_ratio)
-+    duration_similarity = max(
-+        0.0,
-+        1.0
-+        - (
-+            abs(event_duration_seconds - duration_sec)
-+            / max(event_duration_seconds, duration_sec, 1.0)
-+        ),
-+    )
-+    if overlap_seconds <= 0:
-+        duration_score = 0.0
-+    else:
-+        duration_score = duration_similarity * (0.35 + (0.65 * event_overlap_ratio))
-+    return {
-+        "overlap_seconds": overlap_seconds,
-+        "recording_overlap_ratio": recording_overlap_ratio,
-+        "event_overlap_ratio": event_overlap_ratio,
-+        "overlap_score": overlap_score,
-+        "duration_similarity": duration_similarity,
-+        "duration_score": duration_score,
-+    }
-+
-+
-+def _event_token_buckets(event: dict[str, Any]) -> dict[str, set[str]]:
-+    attendee_values: list[object] = [
-         event.get("organizer"),
-+        event.get("organizer_name"),
-     ]
--    values.extend(_event_attendees(event))
--    tokens: set[str] = set()
--    for value in values:
--        tokens.update(_tokenize(value))
--    return tokens
-+    attendee_values.extend(_event_attendees(event))
-+    attendees: set[str] = set()
-+    for value in attendee_values:
-+        attendees.update(_tokenize(value))
-+    return {
-+        "subject": _tokenize(event.get("summary")),
-+        "location": _tokenize(event.get("location")),
-+        "attendees": attendees,
-+    }
-+
-+
-+def _text_match_details(
-+    *,
-+    event: dict[str, Any],
-+    recording_tokens: set[str],
-+) -> dict[str, Any]:
-+    buckets = _event_token_buckets(event)
-+    shared = {
-+        name: sorted(recording_tokens & tokens)
-+        for name, tokens in buckets.items()
-+    }
-+    if not recording_tokens:
-+        return {
-+            "score": 0.0,
-+            "shared": shared,
-+            "subject_score": 0.0,
-+            "attendee_score": 0.0,
-+            "location_score": 0.0,
-+        }
-+    subject_score = min(1.0, len(shared["subject"]) / max(min(len(recording_tokens), 3), 1))
-+    attendee_score = min(1.0, len(shared["attendees"]) / 2.0)
-+    location_score = min(1.0, len(shared["location"]) / 2.0)
-+    score = min(
-+        1.0,
-+        (0.65 * subject_score) + (0.25 * attendee_score) + (0.10 * location_score),
-+    )
-+    return {
-+        "score": score,
-+        "shared": shared,
-+        "subject_score": subject_score,
-+        "attendee_score": attendee_score,
-+        "location_score": location_score,
-+    }
-+
-+
-+def _candidate_score_value(candidate: dict[str, Any]) -> float:
-+    raw = candidate.get("score", candidate.get("confidence"))
-+    try:
-+        return float(raw or 0.0)
-+    except (TypeError, ValueError):
-+        return 0.0
- 
- 
- def _score_event(
-@@ -184,68 +432,79 @@ def _score_event(
-     captured_at: datetime,
-     duration_sec: float | None,
-     recording_tokens: set[str],
-+    capture_time_assessment: dict[str, Any],
- ) -> dict[str, Any] | None:
-     starts_at = _parse_datetime(event.get("starts_at"))
-     ends_at = _parse_datetime(event.get("ends_at"))
-     if starts_at is None or ends_at is None or ends_at <= starts_at:
-         return None
- 
--    start_delta_minutes = abs((captured_at - starts_at).total_seconds()) / 60.0
--    proximity_score = max(0.0, 1.0 - (start_delta_minutes / 180.0))
--    capture_inside = starts_at <= captured_at <= ends_at
--    presence_score = 1.0 if capture_inside else 0.0
--
--    overlap_score = 0.0
--    duration_score = 0.0
--    if duration_sec is not None:
--        recording_end = captured_at + timedelta(seconds=duration_sec)
--        overlap_seconds = max(
--            0.0,
--            (min(recording_end, ends_at) - max(captured_at, starts_at)).total_seconds(),
--        )
--        overlap_score = min(1.0, overlap_seconds / max(duration_sec, 1.0))
--        event_duration_seconds = max((ends_at - starts_at).total_seconds(), 60.0)
--        duration_score = max(
--            0.0,
--            1.0
--            - (
--                abs(event_duration_seconds - duration_sec)
--                / max(event_duration_seconds, duration_sec, 1.0)
--            ),
--        )
--
--    event_tokens = _event_tokens(event)
--    shared_tokens = sorted(recording_tokens & event_tokens)
--    token_score = (
--        min(1.0, len(shared_tokens) / max(len(recording_tokens), 1))
--        if recording_tokens
--        else 0.0
-+    signed_start_delta_minutes = (captured_at - starts_at).total_seconds() / 60.0
-+    start_delta_minutes = abs(signed_start_delta_minutes)
-+    proximity_score = max(0.0, 1.0 - (start_delta_minutes / _PROXIMITY_WINDOW_MINUTES))
-+    presence_score, capture_inside = _presence_score(
-+        captured_at=captured_at,
-+        starts_at=starts_at,
-+        ends_at=ends_at,
-+    )
-+    overlap = _overlap_signals(
-+        captured_at=captured_at,
-+        starts_at=starts_at,
-+        ends_at=ends_at,
-+        duration_sec=duration_sec,
-     )
-+    text_match = _text_match_details(event=event, recording_tokens=recording_tokens)
-+    penalty = float(capture_time_assessment.get("penalty") or 0.0)
- 
-     if duration_sec is None:
--        score = (0.60 * proximity_score) + (0.25 * presence_score) + (0.15 * token_score)
-+        raw_score = (
-+            (0.56 * proximity_score)
-+            + (0.24 * presence_score)
-+            + (0.20 * float(text_match["score"]))
-+        )
-     else:
--        score = (
--            (0.30 * proximity_score)
--            + (0.30 * presence_score)
--            + (0.25 * overlap_score)
--            + (0.10 * duration_score)
--            + (0.05 * token_score)
-+        raw_score = (
-+            (0.24 * proximity_score)
-+            + (0.18 * presence_score)
-+            + (0.30 * float(overlap["overlap_score"]))
-+            + (0.18 * float(overlap["duration_score"]))
-+            + (0.10 * float(text_match["score"]))
-         )
--    confidence = round(max(0.0, min(score, 1.0)), 4)
--
--    rationale = [f"Start is {int(round(start_delta_minutes))}m from capture time."]
-+    confidence = round(max(0.0, min(raw_score - penalty, 1.0)), 4)
-+
-+    if signed_start_delta_minutes == 0:
-+        rationale = ["Capture starts exactly at the event start."]
-+    elif signed_start_delta_minutes < 0:
-+        rationale = [
-+            f"Capture starts {int(round(abs(signed_start_delta_minutes)))}m before the event."
-+        ]
-+    else:
-+        rationale = [
-+            f"Capture starts {int(round(signed_start_delta_minutes))}m after the event begins."
-+        ]
-     if capture_inside:
-         rationale.append("Capture time falls inside the event window.")
-+    elif presence_score > 0:
-+        rationale.append("Capture starts shortly before the event begins.")
-     if duration_sec is not None:
-         rationale.append(
--            f"Recording overlaps {int(round(overlap_score * 100))}% of the event window."
-+            "Overlap covers "
-+            f"{int(round(float(overlap['recording_overlap_ratio']) * 100))}% of the recording and "
-+            f"{int(round(float(overlap['event_overlap_ratio']) * 100))}% of the event."
-         )
-         rationale.append(
--            f"Duration similarity is {int(round(duration_score * 100))}%."
-+            f"Duration signal is {int(round(float(overlap['duration_score']) * 100))}% after overlap adjustment."
-         )
--    if shared_tokens:
--        rationale.append(f"Shared filename/title tokens: {', '.join(shared_tokens)}.")
-+    for label, shared_tokens in (
-+        ("subject", text_match["shared"]["subject"]),
-+        ("attendee", text_match["shared"]["attendees"]),
-+        ("location", text_match["shared"]["location"]),
-+    ):
-+        if shared_tokens:
-+            rationale.append(f"Shared {label} tokens: {', '.join(shared_tokens)}.")
-+    capture_time_rationale = str(capture_time_assessment.get("rationale") or "").strip()
-+    if capture_time_rationale:
-+        rationale.append(capture_time_rationale)
-     rationale.append(f"Final confidence {confidence:.2f}.")
- 
-     return {
-@@ -269,20 +528,183 @@ def _score_event(
-         "score": confidence,
-         "confidence": confidence,
-         "rationale": rationale,
-+        "capture_time_status": str(capture_time_assessment.get("status") or "stored_utc"),
-+        "score_details": {
-+            "proximity": round(proximity_score, 4),
-+            "presence": round(presence_score, 4),
-+            "overlap": round(float(overlap["overlap_score"]), 4),
-+            "duration": round(float(overlap["duration_score"]), 4),
-+            "text": round(float(text_match["score"]), 4),
-+            "penalty": round(penalty, 4),
-+            "raw_score": round(raw_score, 4),
-+            "signed_start_delta_minutes": round(signed_start_delta_minutes, 2),
-+            "recording_overlap_ratio": round(float(overlap["recording_overlap_ratio"]), 4),
-+            "event_overlap_ratio": round(float(overlap["event_overlap_ratio"]), 4),
-+            "duration_similarity": round(float(overlap["duration_similarity"]), 4),
-+            "shared_tokens": {
-+                "subject": list(text_match["shared"]["subject"]),
-+                "attendees": list(text_match["shared"]["attendees"]),
-+                "location": list(text_match["shared"]["location"]),
-+            },
-+        },
-+    }
-+
-+
-+def _auto_selection_decision(
-+    candidates: list[dict[str, Any]],
-+    *,
-+    capture_time_assessment: dict[str, Any] | None = None,
-+) -> dict[str, Any]:
-+    assessment = capture_time_assessment or {
-+        "auto_select_mode": "normal",
-+        "penalty": 0.0,
-+    }
-+    min_score = _AUTO_SELECT_MIN_SCORE
-+    min_margin = _AUTO_SELECT_MIN_MARGIN
-+    if str(assessment.get("auto_select_mode") or "") == "conservative":
-+        min_score = max(min_score, _CONSERVATIVE_AUTO_SELECT_MIN_SCORE)
-+        min_margin = max(min_margin, _CONSERVATIVE_AUTO_SELECT_MIN_MARGIN)
-+    if not candidates:
-+        return {
-+            "selected_event_id": None,
-+            "selected_confidence": None,
-+            "reason_code": "no_candidates",
-+            "reason": "No calendar candidates are currently stored for this recording.",
-+            "min_score": min_score,
-+            "min_margin": min_margin,
-+        }
-+    if str(assessment.get("auto_select_mode") or "") == "blocked":
-+        return {
-+            "selected_event_id": None,
-+            "selected_confidence": None,
-+            "reason_code": "blocked_suspicious_time",
-+            "reason": "Automatic selection is disabled because the capture timestamp should be reviewed first.",
-+            "min_score": min_score,
-+            "min_margin": min_margin,
-+        }
-+    top_score = _candidate_score_value(candidates[0])
-+    if top_score < min_score:
-+        return {
-+            "selected_event_id": None,
-+            "selected_confidence": None,
-+            "reason_code": "below_threshold",
-+            "reason": (
-+                "Top candidate stayed below the auto-select threshold "
-+                f"({top_score:.2f} < {min_score:.2f})."
-+            ),
-+            "min_score": min_score,
-+            "min_margin": min_margin,
-+        }
-+    if len(candidates) > 1:
-+        next_score = _candidate_score_value(candidates[1])
-+        margin = top_score - next_score
-+        if margin < min_margin:
-+            return {
-+                "selected_event_id": None,
-+                "selected_confidence": None,
-+                "reason_code": "margin_too_small",
-+                "reason": (
-+                    "Top candidates are too close together for automatic selection "
-+                    f"({margin:.2f} < {min_margin:.2f})."
-+                ),
-+                "min_score": min_score,
-+                "min_margin": min_margin,
-+            }
-+        return {
-+            "selected_event_id": str(candidates[0].get("event_id") or "").strip() or None,
-+            "selected_confidence": top_score,
-+            "reason_code": "selected",
-+            "reason": f"Beat the next candidate by {margin:.2f} confidence.",
-+            "min_score": min_score,
-+            "min_margin": min_margin,
-+        }
-+    return {
-+        "selected_event_id": str(candidates[0].get("event_id") or "").strip() or None,
-+        "selected_confidence": top_score,
-+        "reason_code": "selected",
-+        "reason": "Only candidate and above the auto-select threshold.",
-+        "min_score": min_score,
-+        "min_margin": min_margin,
-     }
- 
- 
--def _auto_selection(candidates: list[dict[str, Any]]) -> tuple[str | None, float | None]:
-+def _auto_selection(
-+    candidates: list[dict[str, Any]],
-+    *,
-+    capture_time_assessment: dict[str, Any] | None = None,
-+) -> tuple[str | None, float | None]:
-+    decision = _auto_selection_decision(
-+        candidates,
-+        capture_time_assessment=capture_time_assessment,
-+    )
-+    return (
-+        decision["selected_event_id"],
-+        decision["selected_confidence"],
-+    )
-+
-+
-+def _annotate_candidates(
-+    candidates: list[dict[str, Any]],
-+    *,
-+    decision: dict[str, Any],
-+) -> None:
-     if not candidates:
--        return None, None
--    top_score = float(candidates[0].get("score") or 0.0)
--    if top_score < _AUTO_SELECT_MIN_SCORE:
--        return None, None
-+        return
-+    for index, candidate in enumerate(candidates, start=1):
-+        candidate["rank"] = index
-+    top = candidates[0]
-+    top["auto_select_reason"] = decision["reason_code"]
-+    top["auto_select_note"] = decision["reason"]
-+    top["auto_select_min_score"] = decision["min_score"]
-+    top["auto_select_min_margin"] = decision["min_margin"]
-     if len(candidates) > 1:
--        next_score = float(candidates[1].get("score") or 0.0)
--        if (top_score - next_score) < _AUTO_SELECT_MIN_MARGIN:
--            return None, None
--    return str(candidates[0].get("event_id") or "").strip() or None, top_score
-+        margin = _candidate_score_value(candidates[0]) - _candidate_score_value(candidates[1])
-+        top["margin_to_next"] = round(margin, 4)
-+    note = str(decision.get("reason") or "").strip()
-+    rationale = top.get("rationale")
-+    if note and isinstance(rationale, list) and note not in rationale:
-+        rationale.append(note)
-+
-+
-+def calendar_match_warnings(
-+    recording: dict[str, Any] | None,
-+    candidates: list[dict[str, Any]],
-+    *,
-+    selected_event_id: str | None,
-+) -> list[str]:
-+    assessment = _capture_time_assessment(recording or {})
-+    warnings: list[str] = []
-+    warning_text = str(assessment.get("warning") or "").strip()
-+    if warning_text:
-+        warnings.append(warning_text)
-+    if selected_event_id:
-+        return warnings
-+    decision = _auto_selection_decision(
-+        candidates,
-+        capture_time_assessment=assessment,
-+    )
-+    if decision["reason_code"] == "below_threshold":
-+        warnings.append(
-+            "No calendar candidate is strong enough for auto-selection yet. Review the candidates on this tab."
-+        )
-+    if decision["reason_code"] == "margin_too_small":
-+        warnings.append(
-+            "Multiple nearby calendar candidates scored too closely, so the recording was left for manual selection."
-+        )
-+    elif len(candidates) > 1:
-+        margin = _candidate_score_value(candidates[0]) - _candidate_score_value(candidates[1])
-+        if margin < float(decision.get("min_margin") or _AUTO_SELECT_MIN_MARGIN):
-+            warnings.append(
-+                "Multiple nearby calendar candidates scored too closely, so the recording was left for manual selection."
-+            )
-+    deduped: list[str] = []
-+    seen: set[str] = set()
-+    for row in warnings:
-+        if row in seen:
-+            continue
-+        seen.add(row)
-+        deduped.append(row)
-+    return deduped
- 
- 
- def match_recording_to_calendar(
-@@ -298,8 +720,14 @@ def match_recording_to_calendar(
-             "candidates": [],
-             "selected_event_id": None,
-             "selected_confidence": None,
-+            "warnings": calendar_match_warnings(
-+                recording,
-+                [],
-+                selected_event_id=None,
-+            ),
-         }
- 
-+    capture_time_assessment = _capture_time_assessment(recording)
-     duration_sec = _safe_duration_seconds(recording.get("duration_sec"))
-     window_end = captured_at + max(
-         _SEARCH_WINDOW_AFTER,
-@@ -314,27 +742,40 @@ def match_recording_to_calendar(
-     candidates = [
-         candidate
-         for event in events
--        if (candidate := _score_event(
--            event=event,
--            captured_at=captured_at,
--            duration_sec=duration_sec,
--            recording_tokens=recording_tokens,
--        ))
-+        if (
-+            candidate := _score_event(
-+                event=event,
-+                captured_at=captured_at,
-+                duration_sec=duration_sec,
-+                recording_tokens=recording_tokens,
-+                capture_time_assessment=capture_time_assessment,
-+            )
-+        )
-         is not None
-     ]
-     candidates.sort(
-         key=lambda candidate: (
--            -float(candidate.get("score") or 0.0),
-+            -_candidate_score_value(candidate),
-             str(candidate.get("starts_at") or ""),
-             str(candidate.get("event_id") or ""),
-         )
-     )
--    selected_event_id, selected_confidence = _auto_selection(candidates)
-+    decision = _auto_selection_decision(
-+        candidates,
-+        capture_time_assessment=capture_time_assessment,
-+    )
-+    _annotate_candidates(candidates, decision=decision)
-+    selected_event_id = decision["selected_event_id"]
-     return {
-         "recording_id": recording_id,
-         "candidates": candidates,
-         "selected_event_id": selected_event_id,
--        "selected_confidence": selected_confidence,
-+        "selected_confidence": decision["selected_confidence"],
-+        "warnings": calendar_match_warnings(
-+            recording,
-+            candidates,
-+            selected_event_id=selected_event_id,
-+        ),
-     }
- 
- 
-@@ -361,6 +802,7 @@ def refresh_recording_calendar_match(
- 
- __all__ = [
-     "calendar_match_candidates",
-+    "calendar_match_warnings",
-     "calendar_summary_context",
-     "match_recording_to_calendar",
-     "refresh_recording_calendar_match",
-diff --git a/lan_app/templates/recording_detail.html b/lan_app/templates/recording_detail.html
-index b328617..d1ec747 100644
---- a/lan_app/templates/recording_detail.html
-+++ b/lan_app/templates/recording_detail.html
-@@ -292,6 +292,13 @@
-     {{ cal.error_message }}
-   </p>
-   {% endif %}
-+  {% if cal.warnings %}
-+    {% for warning in cal.warnings %}
-+  <p style="margin:0 0 10px 0;padding:8px 10px;border:1px solid #f59e0b;background:#fffbeb;color:#92400e">
-+    {{ warning }}
-+  </p>
-+    {% endfor %}
-+  {% endif %}
- 
-   <div class="section" style="margin-top:10px">
-     <h3 style="margin-top:0">Selected Event</h3>
+ PIPELINE_STAGE_BY_NAME = {
+@@ -120,6 +121,7 @@ def stage_artifact_paths(
+             derived / "segments.json",
+             derived / "diarization_metadata.json",
+         ),
++        "snippet_export": (derived / "snippets_manifest.json",),
+         "llm_extract": (derived / "summary.json",),
+         "export_artifacts": (
+             derived / "transcript.json",
+@@ -127,7 +129,6 @@ def stage_artifact_paths(
+             derived / "summary.json",
+             derived / "segments.json",
+             derived / "speaker_turns.json",
+-            derived / "snippets_manifest.json",
+         ),
+         "metrics": (derived / "metrics.json",),
+         "routing": (derived / "routing.json",),
 diff --git a/lan_app/ui_routes.py b/lan_app/ui_routes.py
-index a41ddff..4ca7488 100644
+index 4ca7488..4e71308 100644
 --- a/lan_app/ui_routes.py
 +++ b/lan_app/ui_routes.py
-@@ -33,6 +33,7 @@ from .config import AppSettings
- from .calendar.ics import validate_ics_url
- from .calendar.matching import (
-     calendar_match_candidates,
-+    calendar_match_warnings,
-     calendar_summary_context,
-     selected_calendar_candidate,
- )
-@@ -1863,6 +1864,7 @@ def _calendar_candidate_context(candidate: dict[str, Any], *, selected_event_id:
+@@ -186,6 +186,7 @@ _PIPELINE_STAGE_LABELS = {
+     "diarize": "Diarization",
+     "align": "Word Alignment",
+     "speaker_turns": "Speaker Turns",
++    "snippet_export": "Snippet Export",
+     "language": "Language Analysis",
+     "language_analysis": "Language Analysis",
+     "llm_extract": "LLM Summary",
+diff --git a/lan_app/worker_tasks.py b/lan_app/worker_tasks.py
+index a9ed151..fc34723 100644
+--- a/lan_app/worker_tasks.py
++++ b/lan_app/worker_tasks.py
+@@ -2377,6 +2377,107 @@ def _working_audio_path(ctx: _PipelineExecutionContext) -> Path | None:
+     return None
  
  
- def _calendar_tab_context(recording_id: str, settings: AppSettings) -> dict[str, Any]:
-+    recording = get_recording(recording_id, settings=settings) or {}
-     match_row = get_calendar_match(recording_id, settings=settings) or {}
-     selected_event_id = str(match_row.get("selected_event_id") or "").strip()
-     selected_candidate = selected_calendar_candidate(recording_id, settings=settings)
-@@ -1882,6 +1884,11 @@ def _calendar_tab_context(recording_id: str, settings: AppSettings) -> dict[str,
-         "selected_event_id": selected_event_id or None,
-         "selected_confidence": match_row.get("selected_confidence"),
-         "candidates": candidates,
-+        "warnings": calendar_match_warnings(
-+            recording,
-+            candidates,
-+            selected_event_id=selected_event_id or None,
++def _snippets_manifest_path(ctx: _PipelineExecutionContext) -> Path:
++    return ctx.artifacts.recording_artifacts.snippets_dir.parent / "snippets_manifest.json"
++
++
++def _snippet_manifest_counts(manifest: dict[str, Any]) -> dict[str, int]:
++    accepted_snippets = 0
++    speaker_count = 0
++    warning_count = 0
++    speakers_payload = manifest.get("speakers")
++    if isinstance(speakers_payload, dict):
++        for entries in speakers_payload.values():
++            if not isinstance(entries, list):
++                continue
++            speaker_count += 1
++            for entry in entries:
++                if not isinstance(entry, dict):
++                    continue
++                status = str(entry.get("status") or "").strip()
++                if status == "accepted":
++                    accepted_snippets += 1
++                elif status:
++                    warning_count += 1
++    warnings_payload = manifest.get("warnings")
++    if isinstance(warnings_payload, list):
++        warning_count += sum(1 for item in warnings_payload if isinstance(item, dict))
++    return {
++        "accepted_snippets": accepted_snippets,
++        "speaker_count": speaker_count,
++        "warning_count": warning_count,
++    }
++
++
++def _finalize_snippets_manifest(
++    ctx: _PipelineExecutionContext,
++    *,
++    manifest_status: str,
++    degraded_diarization: bool | None = None,
++    warnings: list[dict[str, str]] | None = None,
++) -> dict[str, Any]:
++    manifest_path = _snippets_manifest_path(ctx)
++    manifest = _load_json_dict(manifest_path)
++    if not manifest:
++        raise RuntimeError("Missing snippets manifest")
++    normalized_warnings: list[dict[str, str]] = []
++    for warning in warnings or []:
++        if not isinstance(warning, dict):
++            continue
++        code = str(warning.get("code") or "").strip()
++        message = str(warning.get("message") or "").strip()
++        payload: dict[str, str] = {}
++        if code:
++            payload["code"] = code
++        if message:
++            payload["message"] = message
++        if payload:
++            normalized_warnings.append(payload)
++    if normalized_warnings:
++        manifest["warnings"] = normalized_warnings
++    else:
++        manifest.pop("warnings", None)
++    if degraded_diarization is not None:
++        manifest["degraded_diarization"] = bool(degraded_diarization)
++    manifest["manifest_status"] = str(manifest_status or "ok")
++    manifest.update(_snippet_manifest_counts(manifest))
++    atomic_write_json(manifest_path, manifest)
++    return manifest
++
++
++def _write_empty_snippet_manifest(
++    ctx: _PipelineExecutionContext,
++    *,
++    manifest_status: str,
++    degraded_diarization: bool = False,
++    warnings: list[dict[str, str]] | None = None,
++) -> dict[str, Any]:
++    write_empty_snippets_manifest(
++        snippets_dir=ctx.artifacts.recording_artifacts.snippets_dir,
++        pad_seconds=ctx.pipeline_settings.snippet_pad_seconds,
++        max_clip_duration_sec=ctx.pipeline_settings.snippet_max_duration_seconds,
++        min_clip_duration_sec=ctx.pipeline_settings.snippet_min_duration_seconds,
++        max_snippets_per_speaker=ctx.pipeline_settings.snippet_max_per_speaker,
++    )
++    return _finalize_snippets_manifest(
++        ctx,
++        manifest_status=manifest_status,
++        degraded_diarization=degraded_diarization,
++        warnings=warnings,
++    )
++
++
++def _snippet_export_result_metadata(manifest: dict[str, Any]) -> dict[str, Any]:
++    counts = _snippet_manifest_counts(manifest)
++    return {
++        "manifest_status": str(manifest.get("manifest_status") or "ok"),
++        "accepted_snippets": counts["accepted_snippets"],
++        "speaker_count": counts["speaker_count"],
++        "warning_count": counts["warning_count"],
++        "degraded_diarization": bool(manifest.get("degraded_diarization")),
++    }
++
++
+ def _build_diarization_metadata_payload(
+     *,
+     runtime: dict[str, Any],
+@@ -2897,6 +2998,165 @@ def _stage_speaker_turns(ctx: _PipelineExecutionContext) -> _StageResult:
+     )
+ 
+ 
++def _stage_snippet_export(ctx: _PipelineExecutionContext) -> _StageResult:
++    precheck_result = ctx.precheck_result or _load_precheck_artifact(ctx)
++    ctx.precheck_result = precheck_result
++    if precheck_result is None:
++        raise RuntimeError("Missing precheck artifact")
++    if precheck_result.quarantine_reason:
++        manifest = _write_empty_snippet_manifest(
++            ctx,
++            manifest_status="quarantined_precheck",
++            warnings=[
++                {
++                    "code": "quarantined_precheck",
++                    "message": "Snippet export skipped because the recording was quarantined during precheck.",
++                }
++            ],
++        )
++        metadata = _snippet_export_result_metadata(manifest)
++        _append_step_log(
++            ctx.log_path,
++            (
++                "snippet export result "
++                f"status={metadata['manifest_status']} "
++                f"accepted={metadata['accepted_snippets']} "
++                f"speakers={metadata['speaker_count']} "
++                f"warnings={metadata['warning_count']}"
++            ),
++        )
++        return _StageResult(status="completed", metadata=metadata)
++
++    working_audio_path = _working_audio_path(ctx)
++    if working_audio_path is None:
++        raise RuntimeError("Missing sanitized audio")
++    if not ctx.artifacts.diarization_segments_json_path.exists():
++        raise RuntimeError("Missing diarization segments artifact")
++    if not ctx.artifacts.recording_artifacts.speaker_turns_json_path.exists():
++        raise RuntimeError("Missing speaker turns artifact")
++    if not ctx.artifacts.recording_artifacts.diarization_metadata_json_path.exists():
++        raise RuntimeError("Missing diarization metadata artifact")
++
++    ctx.diarization_segments = _load_json_list(ctx.artifacts.diarization_segments_json_path)
++    ctx.speaker_turns = _load_json_list(ctx.artifacts.recording_artifacts.speaker_turns_json_path)
++    diarization_metadata = _load_json_dict(ctx.artifacts.recording_artifacts.diarization_metadata_json_path)
++    degraded_diarization = bool(diarization_metadata.get("degraded"))
++    speaker_labels = {
++        str(turn.get("speaker") or "S1")
++        for turn in ctx.speaker_turns
++        if isinstance(turn, dict)
++    }
++    _append_step_log(
++        ctx.log_path,
++        (
++            "snippet export start "
++            f"speakers={len(speaker_labels)} "
++            f"turns={len(ctx.speaker_turns)} "
++            f"degraded={degraded_diarization}"
 +        ),
-         "error_message": "",
-     }
++    )
++    if not ctx.speaker_turns:
++        manifest = _write_empty_snippet_manifest(
++            ctx,
++            manifest_status="no_usable_speech",
++            degraded_diarization=degraded_diarization,
++            warnings=[
++                {
++                    "code": "no_speaker_turns",
++                    "message": "No speaker turns were available, so snippet export produced no clips.",
++                }
++            ],
++        )
++        metadata = _snippet_export_result_metadata(manifest)
++        _append_step_log(
++            ctx.log_path,
++            (
++                "snippet export result "
++                f"status={metadata['manifest_status']} "
++                f"accepted={metadata['accepted_snippets']} "
++                f"speakers={metadata['speaker_count']} "
++                f"warnings={metadata['warning_count']}"
++            ),
++        )
++        return _StageResult(status="completed", metadata=metadata)
++
++    try:
++        export_speaker_snippets(
++            SnippetExportRequest(
++                audio_path=working_audio_path,
++                diar_segments=ctx.diarization_segments,
++                snippets_dir=ctx.artifacts.recording_artifacts.snippets_dir,
++                duration_sec=precheck_result.duration_sec,
++                speaker_turns=ctx.speaker_turns,
++                degraded_diarization=degraded_diarization,
++                pad_seconds=ctx.pipeline_settings.snippet_pad_seconds,
++                max_clip_duration_sec=ctx.pipeline_settings.snippet_max_duration_seconds,
++                min_clip_duration_sec=ctx.pipeline_settings.snippet_min_duration_seconds,
++                max_snippets_per_speaker=ctx.pipeline_settings.snippet_max_per_speaker,
++            )
++        )
++    except Exception as exc:
++        _logger.warning(
++            "snippet export failed for recording %s",
++            ctx.recording_id,
++            exc_info=True,
++        )
++        manifest = _write_empty_snippet_manifest(
++            ctx,
++            manifest_status="export_failed",
++            degraded_diarization=degraded_diarization,
++            warnings=[
++                {
++                    "code": type(exc).__name__,
++                    "message": str(exc) or type(exc).__name__,
++                }
++            ],
++        )
++        metadata = _snippet_export_result_metadata(manifest)
++        metadata["warning"] = str(exc) or type(exc).__name__
++        _append_step_log(
++            ctx.log_path,
++            f"snippet export warning error={type(exc).__name__}: {exc}",
++        )
++        _append_step_log(
++            ctx.log_path,
++            (
++                "snippet export result "
++                f"status={metadata['manifest_status']} "
++                f"accepted={metadata['accepted_snippets']} "
++                f"speakers={metadata['speaker_count']} "
++                f"warnings={metadata['warning_count']}"
++            ),
++        )
++        return _StageResult(status="completed", metadata=metadata)
++
++    manifest_path = _snippets_manifest_path(ctx)
++    manifest = _load_json_dict(manifest_path)
++    counts = _snippet_manifest_counts(manifest)
++    manifest_status = "ok"
++    if counts["accepted_snippets"] == 0:
++        manifest_status = "degraded" if degraded_diarization else "no_clean_snippets"
++    elif counts["warning_count"] > 0:
++        manifest_status = "partial"
++    manifest = _finalize_snippets_manifest(
++        ctx,
++        manifest_status=manifest_status,
++        degraded_diarization=degraded_diarization,
++    )
++    metadata = _snippet_export_result_metadata(manifest)
++    _append_step_log(
++        ctx.log_path,
++        (
++            "snippet export result "
++            f"status={metadata['manifest_status']} "
++            f"accepted={metadata['accepted_snippets']} "
++            f"speakers={metadata['speaker_count']} "
++            f"warnings={metadata['warning_count']}"
++        ),
++    )
++    return _StageResult(status="completed", metadata=metadata)
++
++
+ def _stage_llm_extract(ctx: _PipelineExecutionContext) -> _StageResult:
+     precheck_result = ctx.precheck_result or _load_precheck_artifact(ctx)
+     ctx.precheck_result = precheck_result
+@@ -3042,19 +3302,14 @@ def _stage_export_artifacts(ctx: _PipelineExecutionContext) -> _StageResult:
+         or ctx.target_summary_language
+         or "en"
+     )
+-    working_audio_path = _working_audio_path(ctx)
+     language_info = ctx.language_payload.get("language")
+     if not isinstance(language_info, dict):
+         language_info = {"detected": "unknown", "confidence": None}
++    snippet_metadata = _snippet_export_result_metadata(
++        _load_json_dict(_snippets_manifest_path(ctx))
++    )
  
+     if precheck_result.quarantine_reason:
+-        write_empty_snippets_manifest(
+-            snippets_dir=ctx.artifacts.recording_artifacts.snippets_dir,
+-            pad_seconds=ctx.pipeline_settings.snippet_pad_seconds,
+-            max_clip_duration_sec=ctx.pipeline_settings.snippet_max_duration_seconds,
+-            min_clip_duration_sec=ctx.pipeline_settings.snippet_min_duration_seconds,
+-            max_snippets_per_speaker=ctx.pipeline_settings.snippet_max_per_speaker,
+-        )
+         atomic_write_text(ctx.artifacts.recording_artifacts.transcript_txt_path, "")
+         atomic_write_json(
+             ctx.artifacts.recording_artifacts.transcript_json_path,
+@@ -3093,7 +3348,10 @@ def _stage_export_artifacts(ctx: _PipelineExecutionContext) -> _StageResult:
+         )
+         return _StageResult(
+             status="completed",
+-            metadata={"output_status": "quarantined"},
++            metadata={
++                "output_status": "quarantined",
++                "snippets": snippet_metadata["accepted_snippets"],
++            },
+         )
+ 
+     language_segments = [
+@@ -3105,13 +3363,6 @@ def _stage_export_artifacts(ctx: _PipelineExecutionContext) -> _StageResult:
+         " ".join(str(seg.get("text") or "").strip() for seg in language_segments).strip()
+     )
+     if not ctx.clean_text:
+-        write_empty_snippets_manifest(
+-            snippets_dir=ctx.artifacts.recording_artifacts.snippets_dir,
+-            pad_seconds=ctx.pipeline_settings.snippet_pad_seconds,
+-            max_clip_duration_sec=ctx.pipeline_settings.snippet_max_duration_seconds,
+-            min_clip_duration_sec=ctx.pipeline_settings.snippet_min_duration_seconds,
+-            max_snippets_per_speaker=ctx.pipeline_settings.snippet_max_per_speaker,
+-        )
+         speakers = sorted(
+             {
+                 aliases.get(str(row.get("speaker") or "S1"), str(row.get("speaker") or "S1"))
+@@ -3155,24 +3406,13 @@ def _stage_export_artifacts(ctx: _PipelineExecutionContext) -> _StageResult:
+         )
+         return _StageResult(
+             status="completed",
+-            metadata={"output_status": "no_speech"},
++            metadata={
++                "output_status": "no_speech",
++                "snippets": snippet_metadata["accepted_snippets"],
++            },
+         )
+ 
+     ctx.summary_payload = _load_summary_payload(ctx)
+-    snippet_paths = export_speaker_snippets(
+-        SnippetExportRequest(
+-            audio_path=working_audio_path or ctx.artifacts.recording_artifacts.raw_audio_path,
+-            diar_segments=ctx.diarization_segments,
+-            snippets_dir=ctx.artifacts.recording_artifacts.snippets_dir,
+-            duration_sec=precheck_result.duration_sec,
+-            speaker_turns=ctx.speaker_turns,
+-            degraded_diarization=bool(_load_json_dict(ctx.artifacts.recording_artifacts.diarization_metadata_json_path).get("degraded")),
+-            pad_seconds=ctx.pipeline_settings.snippet_pad_seconds,
+-            max_clip_duration_sec=ctx.pipeline_settings.snippet_max_duration_seconds,
+-            min_clip_duration_sec=ctx.pipeline_settings.snippet_min_duration_seconds,
+-            max_snippets_per_speaker=ctx.pipeline_settings.snippet_max_per_speaker,
+-        )
+-    )
+     speaker_lines = pipeline_orchestrator._merge_similar(
+         [
+             f"[{safe_float(turn.get('start')):.2f}-{safe_float(turn.get('end')):.2f}] **{aliases.get(str(turn.get('speaker') or 'S1'), str(turn.get('speaker') or 'S1'))}:** {str(turn.get('text') or '').strip()}"
+@@ -3211,7 +3451,7 @@ def _stage_export_artifacts(ctx: _PipelineExecutionContext) -> _StageResult:
+         status="completed",
+         metadata={
+             "output_status": "ok",
+-            "snippets": len(snippet_paths),
++            "snippets": snippet_metadata["accepted_snippets"],
+         },
+     )
+ 
+@@ -3331,6 +3571,7 @@ _PIPELINE_STAGE_RUNNERS: dict[str, Any] = {
+     "diarization": _stage_diarization,
+     "language_analysis": _stage_language_analysis,
+     "speaker_turns": _stage_speaker_turns,
++    "snippet_export": _stage_snippet_export,
+     "llm_extract": _stage_llm_extract,
+     "export_artifacts": _stage_export_artifacts,
+     "metrics": _stage_metrics,
 diff --git a/tasks/QUEUE.md b/tasks/QUEUE.md
-index b99a192..938122f 100644
+index 3440fee..1f84362 100644
 --- a/tasks/QUEUE.md
 +++ b/tasks/QUEUE.md
-@@ -507,6 +507,6 @@ Queue (in order)
- - Depends on: PR-STOP-CANCEL-HARD-01
+@@ -505,7 +505,7 @@ Queue (in order)
+ - Depends on: PR-CAPTURE-TIME-SEMANTICS-01 and PR-OBSERVABILITY-ROOT-CAUSE-01
  
- 100) PR-CALENDAR-MATCHING-STABILIZATION-01: Stabilize calendar matching after corrected capture times: safer scoring, ambiguity handling, and clearer operator warnings
+ 101) PR-SNIPPETS-STAGE-REORDER-01: Move snippet generation to its own earlier pipeline stage right after speaker_turns so snippets are available during long LLM processing
 -- Status: TODO
 +- Status: DONE
- - Tasks file: tasks/PR-CALENDAR-MATCHING-STABILIZATION-01.md
- - Depends on: PR-CAPTURE-TIME-SEMANTICS-01 and PR-OBSERVABILITY-ROOT-CAUSE-01
-diff --git a/tests/test_calendar_matching.py b/tests/test_calendar_matching.py
-index 6c1b37c..f4f78f0 100644
---- a/tests/test_calendar_matching.py
-+++ b/tests/test_calendar_matching.py
-@@ -48,6 +48,10 @@ def test_matching_private_helpers_cover_edge_cases() -> None:
-     assert matching._parse_datetime("bad") is None  # noqa: SLF001
-     assert matching._safe_duration_seconds("12.5") == 12.5  # noqa: SLF001
-     assert matching._safe_duration_seconds(0) is None  # noqa: SLF001
-+    assert matching._coerce_bool(True) is True  # noqa: SLF001
-+    assert matching._coerce_bool("1") is True  # noqa: SLF001
-+    assert matching._coerce_bool("no") is False  # noqa: SLF001
-+    assert matching._normalize_token_text("Riunione Caf\u00e8") == "riunione cafe"  # noqa: SLF001
-     assert matching._tokenize("The Roadmap sync audio") == {"roadmap"}  # noqa: SLF001
-     assert matching._recording_tokens({"source_filename": "Roadmap Review.wav"}) == {  # noqa: SLF001
-         "review",
-@@ -82,11 +86,55 @@ def test_matching_private_helpers_cover_edge_cases() -> None:
-         "Alex",
-         "Priya",
-     ]
-+
-+    corrected = matching._capture_time_assessment(  # noqa: SLF001
-+        {
-+            "source": "upload",
-+            "captured_at": "2026-03-01T09:05:00Z",
-+            "captured_at_source": "2026-03-01T10:05:00",
-+            "captured_at_timezone": "Europe/Rome",
-+            "captured_at_inferred_from_filename": 1,
-+        }
-+    )
-+    assert corrected["status"] == "corrected_local"
-+    assert corrected["warning"] is None
-+
-+    weak = matching._capture_time_assessment(  # noqa: SLF001
-+        {
-+            "source": "upload",
-+            "captured_at": "2026-03-01T09:05:00Z",
-+            "captured_at_timezone": "Europe/Rome",
-+            "captured_at_inferred_from_filename": 0,
-+        }
-+    )
-+    assert weak["status"] == "weak_upload_time"
-+    assert "receipt time" in weak["warning"]
-+
-+    suspicious = matching._capture_time_assessment(  # noqa: SLF001
-+        {
-+            "source": "upload",
-+            "captured_at": "2026-03-01T09:05:00Z",
-+            "captured_at_source": "2026-03-01T10:05:00",
-+            "captured_at_timezone": "UTC",
-+            "captured_at_inferred_from_filename": 1,
-+        }
-+    )
-+    assert suspicious["status"] == "suspicious"
-+    assert suspicious["auto_select_mode"] == "blocked"
-+
-+    assert matching._capture_time_assessment(  # noqa: SLF001
-+        {
-+            "source": "calendar",
-+            "captured_at": "2026-03-01T09:05:00Z",
-+        }
-+    )["status"] == "stored_utc"
-+
-     assert matching._score_event(  # noqa: SLF001
-         event={"starts_at": "2026-03-01T11:00:00Z", "ends_at": "2026-03-01T10:00:00Z"},
-         captured_at=datetime(2026, 3, 1, 10, 0, tzinfo=timezone.utc),
-         duration_sec=None,
-         recording_tokens=set(),
-+        capture_time_assessment={"status": "stored_utc", "penalty": 0.0},
-     ) is None
-     no_token_score = matching._score_event(  # noqa: SLF001
-         event={
-@@ -100,13 +148,164 @@ def test_matching_private_helpers_cover_edge_cases() -> None:
-         captured_at=datetime(2026, 3, 1, 10, 5, tzinfo=timezone.utc),
-         duration_sec=None,
-         recording_tokens={"roadmap"},
-+        capture_time_assessment={"status": "stored_utc", "penalty": 0.0},
-     )
-     assert no_token_score is not None
--    assert all("Shared filename/title tokens" not in row for row in no_token_score["rationale"])
--    assert matching._auto_selection([{"event_id": "evt-low", "score": 0.5}]) == (None, None)  # noqa: SLF001
-+    assert all("Shared subject tokens" not in row for row in no_token_score["rationale"])
-+    assert no_token_score["score_details"]["shared_tokens"]["subject"] == []
-+
-+    no_candidates = matching._auto_selection_decision([], capture_time_assessment=weak)  # noqa: SLF001
-+    assert no_candidates["reason_code"] == "no_candidates"
-+    assert matching._auto_selection(  # noqa: SLF001
-+        [{"event_id": "evt-low", "score": 0.5}],
-+        capture_time_assessment=weak,
-+    ) == (None, None)
-+    warnings = matching.calendar_match_warnings(  # noqa: SLF001
-+        {
-+            "source": "upload",
-+            "captured_at": "2026-03-01T09:05:00Z",
-+            "captured_at_timezone": "Europe/Rome",
-+            "captured_at_inferred_from_filename": 0,
-+        },
-+        [{"event_id": "evt-low", "score": 0.5}],
-+        selected_event_id=None,
-+    )
-+    assert len(warnings) == 2
-+
-+
-+def test_matching_private_helper_branch_edges(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-+    cfg = _cfg(tmp_path)
-+    init_db(cfg)
-+
-+    missing_provenance = matching._capture_time_assessment(  # noqa: SLF001
-+        {
-+            "source": "upload",
-+            "captured_at": "2026-03-01T09:05:00Z",
-+            "captured_at_inferred_from_filename": 1,
-+        }
-+    )
-+    assert missing_provenance["status"] == "suspicious"
-+
-+    invalid_provenance = matching._capture_time_assessment(  # noqa: SLF001
-+        {
-+            "source": "upload",
-+            "captured_at": "2026-03-01T09:05:00Z",
-+            "captured_at_source": "not-a-date",
-+            "captured_at_timezone": "Europe/Rome",
-+            "captured_at_inferred_from_filename": 1,
-+        }
-+    )
-+    assert invalid_provenance["status"] == "suspicious"
-+
-+    aware_source = matching._capture_time_assessment(  # noqa: SLF001
-+        {
-+            "source": "upload",
-+            "captured_at": "2026-03-01T09:05:00Z",
-+            "captured_at_source": "2026-03-01T10:05:00+01:00",
-+            "captured_at_timezone": "Europe/Rome",
-+            "captured_at_inferred_from_filename": 1,
-+        }
-+    )
-+    assert aware_source["status"] == "corrected_local"
-+
-+    upload_with_source = matching._capture_time_assessment(  # noqa: SLF001
-+        {
-+            "source": "upload",
-+            "captured_at": "2026-03-01T09:05:00Z",
-+            "captured_at_source": "2026-03-01T10:05:00",
-+            "captured_at_timezone": "Europe/Rome",
-+            "captured_at_inferred_from_filename": 0,
-+        }
-+    )
-+    assert upload_with_source["status"] == "suspicious"
-+
-+    assert matching._candidate_score_value({"score": "bad"}) == 0.0  # noqa: SLF001
-+
-+    exact_start = matching._score_event(  # noqa: SLF001
-+        event={
-+            "source_id": 1,
-+            "uid": "evt-exact",
-+            "starts_at": "2026-03-01T10:00:00Z",
-+            "ends_at": "2026-03-01T11:00:00Z",
-+            "summary": "Exact start",
-+            "attendees_json": [],
-+        },
-+        captured_at=datetime(2026, 3, 1, 10, 0, tzinfo=timezone.utc),
-+        duration_sec=1800,
-+        recording_tokens=set(),
-+        capture_time_assessment={"status": "stored_utc", "penalty": 0.0},
-+    )
-+    assert exact_start is not None
-+    assert exact_start["rationale"][0] == "Capture starts exactly at the event start."
-+
-+    single_candidate = matching._auto_selection_decision(  # noqa: SLF001
-+        [{"event_id": "evt-only", "score": 0.9}],
-+        capture_time_assessment={"auto_select_mode": "normal", "penalty": 0.0},
-+    )
-+    assert single_candidate["selected_event_id"] == "evt-only"
-+
-+    matching._annotate_candidates([], decision=single_candidate)  # noqa: SLF001
-+    candidate = {"event_id": "evt-edge", "rationale": "not-a-list"}
-+    matching._annotate_candidates(  # noqa: SLF001
-+        [candidate],
-+        decision={
-+            "reason_code": "selected",
-+            "reason": None,
-+            "min_score": 0.1,
-+            "min_margin": 0.1,
-+        },
-+    )
-+    assert candidate["auto_select_note"] is None
-+
-+    no_close_warning = matching.calendar_match_warnings(  # noqa: SLF001
-+        {
-+            "source": "calendar",
-+            "captured_at": "2026-03-01T09:05:00Z",
-+        },
-+        [{"event_id": "evt-a", "score": 0.91}, {"event_id": "evt-b", "score": 0.4}],
-+        selected_event_id=None,
-+    )
-+    assert all("too closely" not in row for row in no_close_warning)
-+
-+    duplicate_warning = "No calendar candidate is strong enough for auto-selection yet. Review the candidates on this tab."
-+    monkeypatch.setattr(
-+        matching,
-+        "_capture_time_assessment",
-+        lambda *_a, **_k: {
-+            "warning": duplicate_warning,
-+            "auto_select_mode": "normal",
-+            "penalty": 0.0,
-+        },
-+    )
-+    deduped = matching.calendar_match_warnings(  # noqa: SLF001
-+        {"captured_at": "2026-03-01T09:05:00Z"},
-+        [{"event_id": "evt-low", "score": 0.2}],
-+        selected_event_id=None,
-+    )
-+    assert deduped == [duplicate_warning]
-+
-+    create_recording(
-+        "rec-refresh-upsert",
-+        source="upload",
-+        source_filename="refresh.wav",
-+        settings=cfg,
-+    )
-+    monkeypatch.setattr(
-+        matching,
-+        "match_recording_to_calendar",
-+        lambda *_a, **_k: {
-+            "recording_id": "rec-refresh-upsert",
-+            "candidates": [{"event_id": "evt-new", "subject": "Fresh"}],
-+            "selected_event_id": "evt-new",
-+            "selected_confidence": 0.9,
-+            "warnings": [],
-+        },
-+    )
-+    refreshed = matching.refresh_recording_calendar_match("rec-refresh-upsert", settings=cfg)
-+    assert refreshed["selected_event_id"] == "evt-new"
+ - Tasks file: tasks/PR-SNIPPETS-STAGE-REORDER-01.md
+ - Depends on: PR-SNIPPETS-PURITY-01 and PR-PIPELINE-CHECKPOINTS-RESUME-01 and PR-OBSERVABILITY-ROOT-CAUSE-01
  
- 
--def test_match_recording_to_calendar_scores_and_auto_selects(tmp_path: Path) -> None:
-+def test_match_recording_to_calendar_uses_corrected_upload_capture_time(tmp_path: Path) -> None:
-     cfg = _cfg(tmp_path)
-     init_db(cfg)
-     source = create_calendar_source(
-@@ -122,8 +321,8 @@ def test_match_recording_to_calendar_scores_and_auto_selects(tmp_path: Path) ->
-         events=[
-             {
-                 "uid": "evt-roadmap",
--                "starts_at": "2026-03-01T10:00:00Z",
--                "ends_at": "2026-03-01T11:00:00Z",
-+                "starts_at": "2026-03-01T09:00:00Z",
-+                "ends_at": "2026-03-01T10:00:00Z",
-                 "summary": "Roadmap review",
-                 "organizer": "Alex",
-                 "organizer_name": "Alex",
-@@ -135,8 +334,8 @@ def test_match_recording_to_calendar_scores_and_auto_selects(tmp_path: Path) ->
-             },
-             {
-                 "uid": "evt-budget",
--                "starts_at": "2026-03-01T13:00:00Z",
--                "ends_at": "2026-03-01T14:00:00Z",
-+                "starts_at": "2026-03-01T12:00:00Z",
-+                "ends_at": "2026-03-01T13:00:00Z",
-                 "summary": "Budget review",
-                 "organizer": "Jordan",
-                 "attendees": [],
-@@ -149,22 +348,84 @@ def test_match_recording_to_calendar_scores_and_auto_selects(tmp_path: Path) ->
-     result = matching.match_recording_to_calendar(
-         {
-             "id": "rec-match-1",
--            "captured_at": "2026-03-01T10:05:00Z",
-+            "source": "upload",
-+            "captured_at": "2026-03-01T09:05:00Z",
-+            "captured_at_source": "2026-03-01T10:05:00",
-+            "captured_at_timezone": "Europe/Rome",
-+            "captured_at_inferred_from_filename": 1,
-             "duration_sec": 3300,
-             "source_filename": "Roadmap review.wav",
-         },
-         settings=cfg,
-     )
- 
--    assert result["selected_event_id"] == f"{source['id']}:evt-roadmap:2026-03-01T10:00:00Z"
-+    assert result["selected_event_id"] == f"{source['id']}:evt-roadmap:2026-03-01T09:00:00Z"
-     assert result["selected_confidence"] == result["candidates"][0]["score"]
-+    assert result["warnings"] == []
-     assert result["candidates"][0]["attendees"] == ["Priya Kapoor"]
-     assert result["candidates"][0]["attendee_details"][0]["email"] == "priya@example.com"
-     assert result["candidates"][0]["source_name"] == "Team Calendar"
--    assert "Shared filename/title tokens" in " ".join(result["candidates"][0]["rationale"])
-+    assert result["candidates"][0]["capture_time_status"] == "corrected_local"
-+    assert "corrected filename timestamp" in " ".join(result["candidates"][0]["rationale"])
-+    assert result["candidates"][0]["score_details"]["shared_tokens"]["subject"] == [
-+        "review",
-+        "roadmap",
-+    ]
-     assert result["candidates"][0]["score"] > result["candidates"][1]["score"]
- 
- 
-+def test_match_recording_to_calendar_scores_prestart_overlap_well(tmp_path: Path) -> None:
-+    cfg = _cfg(tmp_path)
-+    init_db(cfg)
-+    source = create_calendar_source(
-+        name="Team Calendar",
-+        kind="file",
-+        file_ics="BEGIN:VCALENDAR\nEND:VCALENDAR",
-+        settings=cfg,
-+    )
-+    replace_calendar_events_for_window(
-+        source_id=int(source["id"]),
-+        window_start="2026-03-01T00:00:00Z",
-+        window_end="2026-03-02T00:00:00Z",
-+        events=[
-+            {
-+                "uid": "evt-target",
-+                "starts_at": "2026-03-01T10:00:00Z",
-+                "ends_at": "2026-03-01T11:00:00Z",
-+                "summary": "Planning session",
-+                "updated_at": "2026-03-01T00:00:00Z",
-+            },
-+            {
-+                "uid": "evt-earlier",
-+                "starts_at": "2026-03-01T09:00:00Z",
-+                "ends_at": "2026-03-01T09:45:00Z",
-+                "summary": "Earlier session",
-+                "updated_at": "2026-03-01T00:00:00Z",
-+            },
-+        ],
-+        settings=cfg,
-+    )
-+
-+    result = matching.match_recording_to_calendar(
-+        {
-+            "id": "rec-prestart",
-+            "source": "upload",
-+            "captured_at": "2026-03-01T09:55:00Z",
-+            "captured_at_source": "2026-03-01T10:55:00",
-+            "captured_at_timezone": "Europe/Rome",
-+            "captured_at_inferred_from_filename": 1,
-+            "duration_sec": 4200,
-+            "source_filename": "session.wav",
-+        },
-+        settings=cfg,
-+    )
-+
-+    assert result["selected_event_id"] == f"{source['id']}:evt-target:2026-03-01T10:00:00Z"
-+    assert result["candidates"][0]["score"] > 0.79
-+    assert "shortly before the event begins" in " ".join(result["candidates"][0]["rationale"])
-+    assert result["candidates"][0]["score_details"]["event_overlap_ratio"] == 1.0
-+
-+
- def test_match_recording_to_calendar_keeps_ambiguous_candidates_unselected(tmp_path: Path) -> None:
-     cfg = _cfg(tmp_path)
-     init_db(cfg)
-@@ -200,6 +461,7 @@ def test_match_recording_to_calendar_keeps_ambiguous_candidates_unselected(tmp_p
-     result = matching.match_recording_to_calendar(
-         {
-             "id": "rec-match-ambiguous",
-+            "source": "calendar",
-             "captured_at": "2026-03-01T10:05:00Z",
-             "source_filename": "planning.wav",
-         },
-@@ -209,6 +471,9 @@ def test_match_recording_to_calendar_keeps_ambiguous_candidates_unselected(tmp_p
-     assert len(result["candidates"]) == 2
-     assert result["selected_event_id"] is None
-     assert result["selected_confidence"] is None
-+    assert result["candidates"][0]["auto_select_reason"] == "margin_too_small"
-+    assert result["candidates"][0]["margin_to_next"] < result["candidates"][0]["auto_select_min_margin"]
-+    assert any("Multiple nearby calendar candidates" in warning for warning in result["warnings"])
-     assert matching.match_recording_to_calendar(  # noqa: SLF001
-         {"id": "rec-no-capture", "captured_at": None},
-         settings=cfg,
-@@ -217,9 +482,124 @@ def test_match_recording_to_calendar_keeps_ambiguous_candidates_unselected(tmp_p
-         "candidates": [],
-         "selected_event_id": None,
-         "selected_confidence": None,
-+        "warnings": [
-+            "This recording has no usable capture timestamp, so calendar matching needs manual review."
-+        ],
-     }
- 
- 
-+def test_strong_overlap_can_outrank_slightly_closer_start_time(tmp_path: Path) -> None:
-+    cfg = _cfg(tmp_path)
-+    init_db(cfg)
-+    source = create_calendar_source(
-+        name="Team Calendar",
-+        kind="file",
-+        file_ics="BEGIN:VCALENDAR\nEND:VCALENDAR",
-+        settings=cfg,
-+    )
-+    replace_calendar_events_for_window(
-+        source_id=int(source["id"]),
-+        window_start="2026-03-01T00:00:00Z",
-+        window_end="2026-03-02T00:00:00Z",
-+        events=[
-+            {
-+                "uid": "evt-close-short",
-+                "starts_at": "2026-03-01T10:02:00Z",
-+                "ends_at": "2026-03-01T10:20:00Z",
-+                "summary": "Quick check-in",
-+                "updated_at": "2026-03-01T00:00:00Z",
-+            },
-+            {
-+                "uid": "evt-roadmap",
-+                "starts_at": "2026-03-01T10:08:00Z",
-+                "ends_at": "2026-03-01T11:08:00Z",
-+                "summary": "Roadmap workshop",
-+                "updated_at": "2026-03-01T00:00:00Z",
-+            },
-+        ],
-+        settings=cfg,
-+    )
-+
-+    result = matching.match_recording_to_calendar(
-+        {
-+            "id": "rec-overlap-wins",
-+            "source": "calendar",
-+            "captured_at": "2026-03-01T10:00:00Z",
-+            "duration_sec": 3600,
-+            "source_filename": "roadmap.wav",
-+        },
-+        settings=cfg,
-+    )
-+
-+    assert result["selected_event_id"] == f"{source['id']}:evt-roadmap:2026-03-01T10:08:00Z"
-+    assert result["candidates"][0]["uid"] == "evt-roadmap"
-+    assert result["candidates"][0]["score"] > result["candidates"][1]["score"]
-+    assert (
-+        result["candidates"][0]["score_details"]["recording_overlap_ratio"]
-+        > result["candidates"][1]["score_details"]["recording_overlap_ratio"]
-+    )
-+
-+
-+def test_weak_and_suspicious_capture_time_trigger_conservative_behavior(tmp_path: Path) -> None:
-+    cfg = _cfg(tmp_path)
-+    init_db(cfg)
-+    source = create_calendar_source(
-+        name="Team Calendar",
-+        kind="file",
-+        file_ics="BEGIN:VCALENDAR\nEND:VCALENDAR",
-+        settings=cfg,
-+    )
-+    replace_calendar_events_for_window(
-+        source_id=int(source["id"]),
-+        window_start="2026-03-01T00:00:00Z",
-+        window_end="2026-03-02T00:00:00Z",
-+        events=[
-+            {
-+                "uid": "evt-roadmap",
-+                "starts_at": "2026-03-01T09:00:00Z",
-+                "ends_at": "2026-03-01T10:00:00Z",
-+                "summary": "Roadmap review",
-+                "updated_at": "2026-03-01T00:00:00Z",
-+            }
-+        ],
-+        settings=cfg,
-+    )
-+
-+    weak = matching.match_recording_to_calendar(
-+        {
-+            "id": "rec-weak",
-+            "source": "upload",
-+            "captured_at": "2026-03-01T09:05:00Z",
-+            "captured_at_timezone": "Europe/Rome",
-+            "captured_at_inferred_from_filename": 0,
-+            "source_filename": "meeting.wav",
-+        },
-+        settings=cfg,
-+    )
-+    assert weak["selected_event_id"] is None
-+    assert weak["candidates"][0]["capture_time_status"] == "weak_upload_time"
-+    assert any("receipt time" in warning for warning in weak["warnings"])
-+    assert any("strong enough for auto-selection" in warning for warning in weak["warnings"])
-+
-+    suspicious = matching.match_recording_to_calendar(
-+        {
-+            "id": "rec-suspicious",
-+            "source": "upload",
-+            "captured_at": "2026-03-01T09:05:00Z",
-+            "captured_at_source": "2026-03-01T10:05:00",
-+            "captured_at_timezone": "UTC",
-+            "captured_at_inferred_from_filename": 1,
-+            "duration_sec": 3300,
-+            "source_filename": "Roadmap review.wav",
-+        },
-+        settings=cfg,
-+    )
-+    assert suspicious["selected_event_id"] is None
-+    assert suspicious["candidates"][0]["capture_time_status"] == "suspicious"
-+    assert suspicious["candidates"][0]["auto_select_reason"] == "blocked_suspicious_time"
-+    assert any("intentionally conservative" in warning for warning in suspicious["warnings"])
-+
-+
- def test_selected_calendar_helpers_and_refresh_cover_existing_and_missing_paths(
-     tmp_path: Path,
-     monkeypatch: pytest.MonkeyPatch,
-@@ -254,6 +634,7 @@ def test_selected_calendar_helpers_and_refresh_cover_existing_and_missing_paths(
-             "candidates": [],
-             "selected_event_id": None,
-             "selected_confidence": None,
-+            "warnings": [],
-         },
-     )
-     refreshed = matching.refresh_recording_calendar_match(
 diff --git a/tests/test_cov_lan_app_ui_routes.py b/tests/test_cov_lan_app_ui_routes.py
-index 129a792..f4530f1 100644
+index f4530f1..a847637 100644
 --- a/tests/test_cov_lan_app_ui_routes.py
 +++ b/tests/test_cov_lan_app_ui_routes.py
-@@ -1384,6 +1384,16 @@ def test_calendar_ui_helper_context_paths(tmp_path: Path, monkeypatch: pytest.Mo
-         "get_calendar_match",
-         lambda *_a, **_k: {"selected_event_id": "evt-1", "selected_confidence": 0.7},
+@@ -102,6 +102,7 @@ def test_display_helpers_cover_timezone_duration_and_prepare_recording(
+     cfg = _cfg(tmp_path)
+ 
+     assert ui_routes._pipeline_stage_label("precheck") == "Sanitize & Precheck"  # noqa: SLF001
++    assert ui_routes._pipeline_stage_label("snippet_export") == "Snippet Export"  # noqa: SLF001
+     assert ui_routes._pipeline_stage_label("llm_chunk_2_of_5") == "LLM Chunk 2 of 5"  # noqa: SLF001
+     assert ui_routes._pipeline_stage_label("llm_chunk_bad") == "Llm Chunk Bad"  # noqa: SLF001
+     assert ui_routes._pipeline_stage_label("custom_stage") == "Custom Stage"  # noqa: SLF001
+diff --git a/tests/test_pipeline_checkpoints_resume.py b/tests/test_pipeline_checkpoints_resume.py
+index 4366780..93990dd 100644
+--- a/tests/test_pipeline_checkpoints_resume.py
++++ b/tests/test_pipeline_checkpoints_resume.py
+@@ -98,7 +98,7 @@ def _patch_pipeline_dependencies(
+     routing_status: str = RECORDING_STATUS_READY,
+     routing_confidence: float = 0.91,
+ ) -> dict[str, int]:
+-    counters = {"asr": 0, "diarization": 0, "llm": 0}
++    counters = {"asr": 0, "diarization": 0, "llm": 0, "snippet_export": 0}
+     llm_values = iter(llm_outcomes or [_valid_llm_json()])
+ 
+     monkeypatch.setattr(worker_tasks, "AppSettings", lambda: cfg)
+@@ -238,6 +238,7 @@ def _patch_pipeline_dependencies(
      )
+ 
+     def _fake_export(request):
++        counters["snippet_export"] += 1
+         request.snippets_dir.mkdir(parents=True, exist_ok=True)
+         clip_path = request.snippets_dir / "s1-1.wav"
+         clip_path.write_bytes(b"clip")
+@@ -250,7 +251,14 @@ def _patch_pipeline_dependencies(
+             "max_clip_duration_seconds": request.max_clip_duration_sec,
+             "min_clip_duration_seconds": request.min_clip_duration_sec,
+             "max_snippets_per_speaker": request.max_snippets_per_speaker,
+-            "speakers": {"S1": [{"path": clip_path.name}]},
++            "speakers": {
++                "S1": [
++                    {
++                        "status": "accepted",
++                        "relative_path": clip_path.name,
++                    }
++                ]
++            },
+         }
+         manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+         return [clip_path]
+@@ -304,10 +312,12 @@ def test_process_job_resumes_from_failed_llm_stage_and_persists_stage_attempts(
+     assert counters["asr"] == 1
+     assert counters["diarization"] == 1
+     assert counters["llm"] == 2
++    assert counters["snippet_export"] == 1
+ 
+     stages = {row["stage_name"]: row for row in list_recording_pipeline_stages("rec-resume-1", settings=cfg)}
+     assert stages["asr"]["attempt"] == 1
+     assert stages["diarization"]["attempt"] == 1
++    assert stages["snippet_export"]["attempt"] == 1
+     assert stages["llm_extract"]["attempt"] == 2
+     assert stages["routing"]["status"] == "completed"
+     assert get_recording("rec-resume-1", settings=cfg)["status"] == RECORDING_STATUS_READY
+@@ -340,9 +350,14 @@ def test_run_precheck_pipeline_quarantine_skips_downstream_stages_and_writes_out
+     summary_payload = json.loads(
+         (cfg.recordings_root / "rec-quarantine-1" / "derived" / "summary.json").read_text(encoding="utf-8")
+     )
++    manifest_payload = json.loads(
++        (cfg.recordings_root / "rec-quarantine-1" / "derived" / "snippets_manifest.json").read_text(encoding="utf-8")
++    )
+     assert summary_payload["status"] == "quarantined"
++    assert manifest_payload["manifest_status"] == "quarantined_precheck"
+     stages = {row["stage_name"]: row for row in list_recording_pipeline_stages("rec-quarantine-1", settings=cfg)}
+     assert stages["asr"]["status"] == "skipped"
++    assert stages["snippet_export"]["status"] == "completed"
+     assert stages["routing"]["status"] == "skipped"
+ 
+ 
+@@ -370,11 +385,53 @@ def test_run_precheck_pipeline_no_speech_skips_llm_and_writes_no_speech_outputs(
+     summary_payload = json.loads(
+         (cfg.recordings_root / "rec-no-speech-1" / "derived" / "summary.json").read_text(encoding="utf-8")
+     )
++    manifest_payload = json.loads(
++        (cfg.recordings_root / "rec-no-speech-1" / "derived" / "snippets_manifest.json").read_text(encoding="utf-8")
++    )
+     assert summary_payload["status"] == "no_speech"
++    assert manifest_payload["manifest_status"] == "no_usable_speech"
+     stages = {row["stage_name"]: row for row in list_recording_pipeline_stages("rec-no-speech-1", settings=cfg)}
++    assert stages["snippet_export"]["status"] == "completed"
+     assert stages["llm_extract"]["status"] == "skipped"
+ 
+ 
++def test_process_job_snippet_export_failure_is_non_fatal(
++    tmp_path: Path,
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    cfg = _cfg(tmp_path)
++    init_db(cfg)
++    create_recording("rec-snippet-fail-1", source="test", source_filename="fail.wav", settings=cfg)
++    _write_pcm_wav(cfg.recordings_root / "rec-snippet-fail-1" / "raw" / "audio.wav")
++    create_job(
++        job_id="job-snippet-fail-1",
++        recording_id="rec-snippet-fail-1",
++        job_type=JOB_TYPE_PRECHECK,
++        status=JOB_STATUS_QUEUED,
++        settings=cfg,
++    )
++    _patch_pipeline_dependencies(monkeypatch, cfg=cfg)
 +    monkeypatch.setattr(
-+        ui_routes,
-+        "get_recording",
-+        lambda *_a, **_k: {
-+            "source": "upload",
-+            "captured_at": "2026-03-01T09:05:00Z",
-+            "captured_at_timezone": "Europe/Rome",
-+            "captured_at_inferred_from_filename": 0,
++        worker_tasks,
++        "export_speaker_snippets",
++        lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("snippet boom")),
++    )
++
++    result = worker_tasks.process_job("job-snippet-fail-1", "rec-snippet-fail-1", JOB_TYPE_PRECHECK)
++
++    assert result["status"] == "ok"
++    stages = {row["stage_name"]: row for row in list_recording_pipeline_stages("rec-snippet-fail-1", settings=cfg)}
++    assert stages["snippet_export"]["status"] == "completed"
++    assert stages["llm_extract"]["status"] == "completed"
++    assert stages["routing"]["status"] == "completed"
++    manifest_payload = json.loads(
++        (cfg.recordings_root / "rec-snippet-fail-1" / "derived" / "snippets_manifest.json").read_text(encoding="utf-8")
++    )
++    assert manifest_payload["manifest_status"] == "export_failed"
++    assert manifest_payload["warning_count"] == 1
++    assert manifest_payload["warnings"][0]["message"] == "snippet boom"
++
++
+ def test_pipeline_stage_db_helpers_and_ui_display_paths(tmp_path: Path) -> None:
+     cfg = _cfg(tmp_path)
+     init_db(cfg)
+@@ -451,6 +508,25 @@ def test_pipeline_stage_db_helpers_and_ui_display_paths(tmp_path: Path) -> None:
+     )
+     assert ok is True
+     assert reason is None
++    ok, reason = validate_stage_artifacts(
++        "rec-stage-db-1",
++        stage_name="snippet_export",
++        status="completed",
++        metadata={},
++        settings=cfg,
++    )
++    assert ok is False
++    assert reason == "snippet_export missing artifact snippets_manifest.json"
++    artifacts["snippet_export"][0].write_text(json.dumps({"version": 1, "speakers": {}}), encoding="utf-8")
++    ok, reason = validate_stage_artifacts(
++        "rec-stage-db-1",
++        stage_name="snippet_export",
++        status="completed",
++        metadata={},
++        settings=cfg,
++    )
++    assert ok is True
++    assert reason is None
+     ok, reason = validate_stage_artifacts(
+         "rec-stage-db-1",
+         stage_name="llm_extract",
+@@ -478,6 +554,54 @@ def test_pipeline_stage_db_helpers_and_ui_display_paths(tmp_path: Path) -> None:
+     assert cleared == 2
+ 
+ 
++def test_clear_pipeline_from_snippet_export_preserves_earlier_stages(
++    tmp_path: Path,
++) -> None:
++    cfg = _cfg(tmp_path)
++    init_db(cfg)
++    create_recording("rec-clear-snippets-1", source="test", source_filename="clear.wav", settings=cfg)
++    for stage_name in ("speaker_turns", "snippet_export", "llm_extract", "metrics"):
++        mark_recording_pipeline_stage_started(
++            "rec-clear-snippets-1",
++            stage_name=stage_name,
++            settings=cfg,
++        )
++        mark_recording_pipeline_stage_completed(
++            "rec-clear-snippets-1",
++            stage_name=stage_name,
++            settings=cfg,
++        )
++    upsert_recording_llm_chunk_state(
++        "rec-clear-snippets-1",
++        chunk_group="extract",
++        chunk_index="1",
++        chunk_total=1,
++        status="completed",
++        metadata={"order_path": [1], "text": "chunk one", "base_text": "chunk one"},
++        settings=cfg,
++    )
++    mark_recording_llm_chunk_completed(
++        "rec-clear-snippets-1",
++        chunk_group="extract",
++        chunk_index="1",
++        chunk_total=1,
++        metadata={"order_path": [1], "text": "chunk one", "base_text": "chunk one"},
++        settings=cfg,
++    )
++
++    cleared = clear_recording_pipeline_stages(
++        "rec-clear-snippets-1",
++        settings=cfg,
++        from_stage="snippet_export",
++    )
++
++    assert cleared == 3
++    assert [row["stage_name"] for row in list_recording_pipeline_stages("rec-clear-snippets-1", settings=cfg)] == [
++        "speaker_turns"
++    ]
++    assert list_recording_llm_chunk_states("rec-clear-snippets-1", settings=cfg) == []
++
++
+ def test_enqueue_recording_job_clears_existing_pipeline_stage_rows(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+     cfg = _cfg(tmp_path)
+     init_db(cfg)
+diff --git a/tests/test_pipeline_resume_coverage.py b/tests/test_pipeline_resume_coverage.py
+index 655f629..c11f511 100644
+--- a/tests/test_pipeline_resume_coverage.py
++++ b/tests/test_pipeline_resume_coverage.py
+@@ -99,7 +99,9 @@ def test_db_pipeline_stage_internal_guard_paths(tmp_path: Path) -> None:
+ def test_pipeline_stage_validation_and_artifact_edge_cases(tmp_path: Path) -> None:
+     cfg = _cfg(tmp_path)
+ 
++    assert pipeline_stages.stage_progress("snippet_export") == 0.84
+     assert pipeline_stages.stage_progress("metrics") == 0.98
++    assert pipeline_stages.stage_label("snippet_export") == "Snippet Export"
+     assert pipeline_stages.stage_label("routing") == "Routing"
+ 
+     with pytest.raises(ValueError, match="Unsupported pipeline stage"):
+@@ -136,6 +138,8 @@ def test_pipeline_stage_validation_and_artifact_edge_cases(tmp_path: Path) -> No
+     assert reason is None
+ 
+     artifacts = pipeline_stages.stage_artifact_paths("rec-stage-edge", settings=cfg)
++    assert artifacts["snippet_export"][0].name == "snippets_manifest.json"
++    assert artifacts["snippet_export"][0] not in artifacts["export_artifacts"]
+     artifacts["sanitize_audio"][1].parent.mkdir(parents=True, exist_ok=True)
+     artifacts["sanitize_audio"][1].write_text(
+         json.dumps({"output_path": str(tmp_path / "missing.wav")}),
+@@ -275,6 +279,7 @@ def test_stage_precheck_with_missing_duration_and_calendar_refresh_warning(
+         (worker_tasks._stage_diarization, "rec-missing-diar"),
+         (worker_tasks._stage_language_analysis, "rec-missing-lang"),
+         (worker_tasks._stage_speaker_turns, "rec-missing-turns"),
++        (worker_tasks._stage_snippet_export, "rec-missing-snippets"),
+         (worker_tasks._stage_llm_extract, "rec-missing-llm"),
+         (worker_tasks._stage_export_artifacts, "rec-missing-export"),
+         (worker_tasks._stage_routing, "rec-missing-routing"),
+@@ -742,6 +747,314 @@ def test_stage_speaker_turns_requires_language_artifact_and_supports_unsmoothed_
+     assert result.metadata == {"turn_count": 1, "speaker_count": 1}
+ 
+ 
++def test_stage_snippet_export_writes_manifest_metadata_and_counts(
++    tmp_path: Path,
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    _cfg_value, ctx = _new_ctx(tmp_path, "rec-snippet-stage", create_raw_audio=True)
++    ctx.precheck_result = PrecheckResult(10.0, 0.5, None)
++    _write_pcm_wav(ctx.artifacts.sanitized_audio_path, duration_sec=0.2)
++    ctx.artifacts.audio_sanitize_json_path.write_text(
++        json.dumps({"output_path": str(ctx.artifacts.sanitized_audio_path)}),
++        encoding="utf-8",
++    )
++    ctx.artifacts.diarization_segments_json_path.write_text(
++        json.dumps([{"speaker": "S1", "start": 0.0, "end": 1.0}]),
++        encoding="utf-8",
++    )
++    ctx.artifacts.recording_artifacts.speaker_turns_json_path.write_text(
++        json.dumps([{"speaker": "S1", "start": 0.0, "end": 1.0, "text": "hello"}]),
++        encoding="utf-8",
++    )
++    ctx.artifacts.recording_artifacts.diarization_metadata_json_path.write_text(
++        json.dumps({"degraded": False}),
++        encoding="utf-8",
++    )
++
++    def _fake_export(request):
++        request.snippets_dir.mkdir(parents=True, exist_ok=True)
++        (request.snippets_dir / "S1").mkdir(parents=True, exist_ok=True)
++        (request.snippets_dir / "S1" / "1.wav").write_bytes(b"clip")
++        (request.snippets_dir.parent / "snippets_manifest.json").write_text(
++            json.dumps(
++                {
++                    "version": 1,
++                    "speakers": {
++                        "S1": [
++                            {"status": "accepted", "relative_path": "S1/1.wav"},
++                            {"status": "rejected_overlap"},
++                        ]
++                    },
++                }
++            ),
++            encoding="utf-8",
++        )
++        return [request.snippets_dir / "S1" / "1.wav"]
++
++    monkeypatch.setattr(worker_tasks, "export_speaker_snippets", _fake_export)
++
++    result = worker_tasks._stage_snippet_export(ctx)  # noqa: SLF001
++
++    assert result.status == "completed"
++    assert result.metadata == {
++        "manifest_status": "partial",
++        "accepted_snippets": 1,
++        "speaker_count": 1,
++        "warning_count": 1,
++        "degraded_diarization": False,
++    }
++    manifest = json.loads(worker_tasks._snippets_manifest_path(ctx).read_text(encoding="utf-8"))  # noqa: SLF001
++    assert manifest["manifest_status"] == "partial"
++    assert manifest["accepted_snippets"] == 1
++    assert manifest["warning_count"] == 1
++
++
++def test_snippet_manifest_helpers_cover_edge_cases(tmp_path: Path) -> None:
++    _cfg_value, ctx = _new_ctx(tmp_path, "rec-snippet-helper")
++
++    with pytest.raises(RuntimeError, match="Missing snippets manifest"):
++        worker_tasks._finalize_snippets_manifest(ctx, manifest_status="ok")  # noqa: SLF001
++
++    assert worker_tasks._snippet_manifest_counts({"speakers": []}) == {  # noqa: SLF001
++        "accepted_snippets": 0,
++        "speaker_count": 0,
++        "warning_count": 0,
++    }
++
++    counts = worker_tasks._snippet_manifest_counts(  # noqa: SLF001
++        {
++            "speakers": {
++                "S1": "bad",
++                "S2": [{}, "bad", {"status": "accepted"}, {"status": "rejected_overlap"}],
++            },
++            "warnings": ["bad", {"code": "warn"}],
++        }
++    )
++    assert counts == {"accepted_snippets": 1, "speaker_count": 1, "warning_count": 2}
++
++    manifest_path = worker_tasks._snippets_manifest_path(ctx)  # noqa: SLF001
++    manifest_path.write_text(json.dumps({"version": 1, "speakers": {}, "warnings": [{"code": "stale"}]}), encoding="utf-8")
++    manifest = worker_tasks._finalize_snippets_manifest(  # noqa: SLF001
++        ctx,
++        manifest_status="",
++        warnings=[
++            {"code": "only_code"},
++            {"message": "only message"},
++            {"code": "", "message": ""},
++            "bad",  # type: ignore[list-item]
++        ],
++    )
++    assert manifest["manifest_status"] == "ok"
++    assert manifest["warnings"] == [
++        {"code": "only_code"},
++        {"message": "only message"},
++    ]
++    assert "degraded_diarization" not in manifest
++
++    manifest_path.write_text(json.dumps({"version": 1, "speakers": {}, "warnings": [{"code": "stale"}]}), encoding="utf-8")
++    manifest = worker_tasks._finalize_snippets_manifest(ctx, manifest_status="clean", degraded_diarization=True)  # noqa: SLF001
++    assert manifest["manifest_status"] == "clean"
++    assert manifest["degraded_diarization"] is True
++    assert "warnings" not in manifest
++
++
++def test_stage_snippet_export_handles_empty_turns_and_export_failures(
++    tmp_path: Path,
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    _cfg_value, ctx_no_turns = _new_ctx(tmp_path, "rec-snippet-empty", create_raw_audio=True)
++    ctx_no_turns.precheck_result = PrecheckResult(10.0, 0.5, None)
++    _write_pcm_wav(ctx_no_turns.artifacts.sanitized_audio_path, duration_sec=0.2)
++    ctx_no_turns.artifacts.audio_sanitize_json_path.write_text(
++        json.dumps({"output_path": str(ctx_no_turns.artifacts.sanitized_audio_path)}),
++        encoding="utf-8",
++    )
++    ctx_no_turns.artifacts.diarization_segments_json_path.write_text(
++        json.dumps([]),
++        encoding="utf-8",
++    )
++    ctx_no_turns.artifacts.recording_artifacts.speaker_turns_json_path.write_text(
++        "[]",
++        encoding="utf-8",
++    )
++    ctx_no_turns.artifacts.recording_artifacts.diarization_metadata_json_path.write_text(
++        json.dumps({"degraded": True}),
++        encoding="utf-8",
++    )
++
++    empty_result = worker_tasks._stage_snippet_export(ctx_no_turns)  # noqa: SLF001
++    assert empty_result.metadata["manifest_status"] == "no_usable_speech"
++    assert empty_result.metadata["degraded_diarization"] is True
++    empty_manifest = json.loads(worker_tasks._snippets_manifest_path(ctx_no_turns).read_text(encoding="utf-8"))  # noqa: SLF001
++    assert empty_manifest["warnings"][0]["code"] == "no_speaker_turns"
++
++    _cfg_value, ctx_fail = _new_ctx(tmp_path, "rec-snippet-fail", create_raw_audio=True)
++    ctx_fail.precheck_result = PrecheckResult(10.0, 0.5, None)
++    _write_pcm_wav(ctx_fail.artifacts.sanitized_audio_path, duration_sec=0.2)
++    ctx_fail.artifacts.audio_sanitize_json_path.write_text(
++        json.dumps({"output_path": str(ctx_fail.artifacts.sanitized_audio_path)}),
++        encoding="utf-8",
++    )
++    ctx_fail.artifacts.diarization_segments_json_path.write_text(
++        json.dumps([{"speaker": "S1", "start": 0.0, "end": 1.0}]),
++        encoding="utf-8",
++    )
++    ctx_fail.artifacts.recording_artifacts.speaker_turns_json_path.write_text(
++        json.dumps([{"speaker": "S1", "start": 0.0, "end": 1.0, "text": "hello"}]),
++        encoding="utf-8",
++    )
++    ctx_fail.artifacts.recording_artifacts.diarization_metadata_json_path.write_text(
++        json.dumps({"degraded": False}),
++        encoding="utf-8",
++    )
++    monkeypatch.setattr(
++        worker_tasks,
++        "export_speaker_snippets",
++        lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("boom")),
++    )
++
++    failed_result = worker_tasks._stage_snippet_export(ctx_fail)  # noqa: SLF001
++    assert failed_result.metadata["manifest_status"] == "export_failed"
++    assert failed_result.metadata["warning_count"] == 1
++    failed_manifest = json.loads(worker_tasks._snippets_manifest_path(ctx_fail).read_text(encoding="utf-8"))  # noqa: SLF001
++    assert failed_manifest["warnings"][0]["message"] == "boom"
++
++
++def test_stage_snippet_export_requires_audio_and_upstream_artifacts(tmp_path: Path) -> None:
++    _cfg_value, ctx = _new_ctx(tmp_path, "rec-snippet-missing")
++    ctx.precheck_result = PrecheckResult(10.0, 0.5, None)
++
++    with pytest.raises(RuntimeError, match="Missing sanitized audio"):
++        worker_tasks._stage_snippet_export(ctx)  # noqa: SLF001
++
++    _write_pcm_wav(ctx.artifacts.sanitized_audio_path, duration_sec=0.2)
++    ctx.artifacts.audio_sanitize_json_path.write_text(
++        json.dumps({"output_path": str(ctx.artifacts.sanitized_audio_path)}),
++        encoding="utf-8",
++    )
++    with pytest.raises(RuntimeError, match="Missing diarization segments artifact"):
++        worker_tasks._stage_snippet_export(ctx)  # noqa: SLF001
++
++    ctx.artifacts.diarization_segments_json_path.write_text("[]", encoding="utf-8")
++    with pytest.raises(RuntimeError, match="Missing speaker turns artifact"):
++        worker_tasks._stage_snippet_export(ctx)  # noqa: SLF001
++
++    ctx.artifacts.recording_artifacts.speaker_turns_json_path.write_text("[]", encoding="utf-8")
++    with pytest.raises(RuntimeError, match="Missing diarization metadata artifact"):
++        worker_tasks._stage_snippet_export(ctx)  # noqa: SLF001
++
++
++def test_stage_snippet_export_reports_no_clean_and_degraded_statuses(
++    tmp_path: Path,
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    def _prepare_ctx(recording_id: str, *, degraded: bool) -> worker_tasks._PipelineExecutionContext:
++        _cfg_value, ctx = _new_ctx(tmp_path, recording_id, create_raw_audio=True)
++        ctx.precheck_result = PrecheckResult(10.0, 0.5, None)
++        _write_pcm_wav(ctx.artifacts.sanitized_audio_path, duration_sec=0.2)
++        ctx.artifacts.audio_sanitize_json_path.write_text(
++            json.dumps({"output_path": str(ctx.artifacts.sanitized_audio_path)}),
++            encoding="utf-8",
++        )
++        ctx.artifacts.diarization_segments_json_path.write_text(
++            json.dumps([{"speaker": "S1", "start": 0.0, "end": 1.0}]),
++            encoding="utf-8",
++        )
++        ctx.artifacts.recording_artifacts.speaker_turns_json_path.write_text(
++            json.dumps([{"speaker": "S1", "start": 0.0, "end": 1.0, "text": "hello"}]),
++            encoding="utf-8",
++        )
++        ctx.artifacts.recording_artifacts.diarization_metadata_json_path.write_text(
++            json.dumps({"degraded": degraded}),
++            encoding="utf-8",
++        )
++        return ctx
++
++    def _fake_export(request):
++        request.snippets_dir.mkdir(parents=True, exist_ok=True)
++        (request.snippets_dir.parent / "snippets_manifest.json").write_text(
++            json.dumps(
++                {
++                    "version": 1,
++                    "speakers": {"S1": [{"status": "rejected_overlap"}]},
++                }
++            ),
++            encoding="utf-8",
++        )
++        return []
++
++    monkeypatch.setattr(worker_tasks, "export_speaker_snippets", _fake_export)
++
++    clean_ctx = _prepare_ctx("rec-snippet-no-clean", degraded=False)
++    clean_result = worker_tasks._stage_snippet_export(clean_ctx)  # noqa: SLF001
++    assert clean_result.metadata["manifest_status"] == "no_clean_snippets"
++
++    degraded_ctx = _prepare_ctx("rec-snippet-degraded", degraded=True)
++    degraded_result = worker_tasks._stage_snippet_export(degraded_ctx)  # noqa: SLF001
++    assert degraded_result.metadata["manifest_status"] == "degraded"
++
++
++def test_stage_export_artifacts_uses_existing_snippet_manifest_only(
++    tmp_path: Path,
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    _cfg_value, ctx = _new_ctx(tmp_path, "rec-export-stage")
++    ctx.precheck_result = PrecheckResult(10.0, 0.5, None)
++    ctx.pipeline_settings.llm_model = "test-model"
++    ctx.artifacts.diarization_segments_json_path.write_text(
++        json.dumps([{"speaker": "S1", "start": 0.0, "end": 1.0}]),
++        encoding="utf-8",
++    )
++    ctx.artifacts.recording_artifacts.speaker_turns_json_path.write_text(
++        json.dumps([{"speaker": "S1", "start": 0.0, "end": 1.0, "text": "hello"}]),
++        encoding="utf-8",
++    )
++    ctx.artifacts.recording_artifacts.summary_json_path.write_text(
++        json.dumps({"status": "ok", "topic": "Weekly Sync"}),
++        encoding="utf-8",
++    )
++    worker_tasks._snippets_manifest_path(ctx).write_text(  # noqa: SLF001
++        json.dumps(
++            {
++                "version": 1,
++                "manifest_status": "ok",
++                "accepted_snippets": 1,
++                "speaker_count": 1,
++                "warning_count": 0,
++                "speakers": {"S1": [{"status": "accepted", "relative_path": "S1/1.wav"}]},
++            }
++        ),
++        encoding="utf-8",
++    )
++    monkeypatch.setattr(
++        worker_tasks,
++        "_load_calendar_summary_context",
++        lambda *_a, **_k: ("Weekly Sync", ["Ada"]),
++    )
++    monkeypatch.setattr(
++        worker_tasks,
++        "_load_language_analysis_artifact",
++        lambda _ctx: {
++            "language": {"detected": "en", "confidence": 0.95},
++            "dominant_language": "en",
++            "language_distribution": {"en": 100.0},
++            "language_spans": [],
++            "target_summary_language": "en",
++            "segments": [{"start": 0.0, "end": 1.0, "text": "hello"}],
++            "review": {},
 +        },
 +    )
-     monkeypatch.setattr(
-         ui_routes,
-         "selected_calendar_candidate",
-@@ -1397,6 +1407,7 @@ def test_calendar_ui_helper_context_paths(tmp_path: Path, monkeypatch: pytest.Mo
-     context = ui_routes._calendar_tab_context("rec-helper", cfg)  # noqa: SLF001
-     assert context["selected"]["subject_display"] == "Selected"
-     assert context["candidates"][0]["selected"] is True
-+    assert len(context["warnings"]) == 1
- 
- 
- def test_calendar_detail_error_and_invalid_confidence_paths(
-diff --git a/tests/test_ui_routes.py b/tests/test_ui_routes.py
-index 6a00fa5..f2ba83f 100644
---- a/tests/test_ui_routes.py
-+++ b/tests/test_ui_routes.py
-@@ -476,6 +476,51 @@ def test_recording_detail_calendar_tab_renders_selected_candidate_and_rationale(
-     assert "Selected" in response.text
- 
- 
-+def test_recording_detail_calendar_tab_shows_weak_and_ambiguous_warnings(tmp_path, monkeypatch):
-+    cfg = _cfg(tmp_path)
-+    monkeypatch.setattr(api, "_settings", cfg)
-+    monkeypatch.setattr(ui_routes, "_settings", cfg)
-+    init_db(cfg)
-+    create_recording(
-+        "rec-ui-calendar-warning-1",
-+        source="upload",
-+        source_filename="meeting.wav",
-+        captured_at="2026-03-01T09:05:00Z",
-+        captured_at_timezone="Europe/Rome",
-+        captured_at_inferred_from_filename=False,
-+        status=RECORDING_STATUS_READY,
-+        settings=cfg,
-+    )
-+    upsert_calendar_match(
-+        recording_id="rec-ui-calendar-warning-1",
-+        candidates=[
-+            {
-+                "event_id": "evt-a",
-+                "subject": "Planning A",
-+                "starts_at": "2026-03-01T09:00:00Z",
-+                "ends_at": "2026-03-01T10:00:00Z",
-+                "confidence": 0.81,
-+            },
-+            {
-+                "event_id": "evt-b",
-+                "subject": "Planning B",
-+                "starts_at": "2026-03-01T09:03:00Z",
-+                "ends_at": "2026-03-01T10:03:00Z",
-+                "confidence": 0.76,
-+            },
-+        ],
-+        selected_event_id=None,
-+        selected_confidence=None,
-+        settings=cfg,
-+    )
++    monkeypatch.setattr(worker_tasks, "_load_asr_execution", lambda _ctx: {})
++    monkeypatch.setattr(worker_tasks.pipeline_orchestrator, "_require_llm_model", lambda _model: "test-model")
++    monkeypatch.setattr(worker_tasks, "load_speaker_aliases", lambda _path: {})
++    monkeypatch.setattr(worker_tasks, "export_speaker_snippets", lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("unexpected export")))
 +
-+    c = TestClient(api.app, follow_redirects=True)
-+    response = c.get("/recordings/rec-ui-calendar-warning-1?tab=calendar")
-+    assert response.status_code == 200
-+    assert "used receipt time instead of a filename capture timestamp" in response.text
-+    assert "Multiple nearby calendar candidates scored too closely" in response.text
++    result = worker_tasks._stage_export_artifacts(ctx)  # noqa: SLF001
++
++    assert result.status == "completed"
++    assert result.metadata["snippets"] == 1
 +
 +
- def test_recording_detail_calendar_selection_and_clear_persist(tmp_path, monkeypatch):
-     cfg = _cfg(tmp_path)
-     monkeypatch.setattr(api, "_settings", cfg)
+ def test_stage_llm_extract_chunked_summary_invokes_progress_callback(
+     tmp_path: Path,
+     monkeypatch: pytest.MonkeyPatch,
