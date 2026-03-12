@@ -63,7 +63,8 @@ docker compose run --rm api python -m lan_app.healthchecks app
    - Plaud-style filename timestamps are interpreted in `UPLOAD_CAPTURE_TIMEZONE` (default `Europe/Rome`), then stored in UTC in the database.
    - Legacy upload rows created before this fix are backfilled automatically once after upgrade when the app initializes the database.
    - ICS sync now stores organizer and attendee details per event, and the calendars page renders those event times in local Europe/Rome time.
-   - Uploaded and processed recordings are matched automatically to nearby calendar events when the score is strong enough; ambiguous candidates remain reviewable on the recording `calendar` tab.
+   - Uploaded and processed recordings are matched automatically to nearby calendar events using the corrected upload capture time when filename provenance is available.
+   - Weak or suspicious capture timestamps keep calendar matching conservative; use the recording `calendar` tab to review candidates and manually override the selected event when needed.
    - Duration is sourced from `derived/audio_sanitized.wav` when it exists, otherwise from the raw upload.
    - The app uses glossary/correction memory instead of ASR model training. Manage manual terms and saved corrections on `/glossary`.
    - Glossary sources are merged deterministically from stored manual/correction entries, speaker-bank names, selected calendar context, and project context when available.

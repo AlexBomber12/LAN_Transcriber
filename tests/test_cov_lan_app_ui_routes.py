@@ -1386,6 +1386,16 @@ def test_calendar_ui_helper_context_paths(tmp_path: Path, monkeypatch: pytest.Mo
     )
     monkeypatch.setattr(
         ui_routes,
+        "get_recording",
+        lambda *_a, **_k: {
+            "source": "upload",
+            "captured_at": "2026-03-01T09:05:00Z",
+            "captured_at_timezone": "Europe/Rome",
+            "captured_at_inferred_from_filename": 0,
+        },
+    )
+    monkeypatch.setattr(
+        ui_routes,
         "selected_calendar_candidate",
         lambda *_a, **_k: {"event_id": "evt-1", "subject": "Selected"},
     )
@@ -1397,6 +1407,7 @@ def test_calendar_ui_helper_context_paths(tmp_path: Path, monkeypatch: pytest.Mo
     context = ui_routes._calendar_tab_context("rec-helper", cfg)  # noqa: SLF001
     assert context["selected"]["subject_display"] == "Selected"
     assert context["candidates"][0]["selected"] is True
+    assert len(context["warnings"]) == 1
 
 
 def test_calendar_detail_error_and_invalid_confidence_paths(

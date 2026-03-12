@@ -101,7 +101,8 @@ Operational setup, failure handling, backup/restore, and upgrade steps are docum
    - Plaud-style filename timestamps are interpreted in `UPLOAD_CAPTURE_TIMEZONE` (default `Europe/Rome`), normalized to UTC in the database, and shown back in local time in the UI.
    - Legacy upload rows created before this fix are backfilled automatically on upgrade once, using the configured upload capture timezone.
    - ICS sync now stores organizer and attendee details per event, and the calendars UI renders those event times in local Europe/Rome time.
-   - Uploaded/processed recordings are matched automatically to nearby calendar events when the score is strong enough; ambiguous candidates remain reviewable on the recording `calendar` tab.
+   - Uploaded/processed recordings are matched automatically to nearby calendar events using the corrected upload capture time when filename provenance is available.
+   - Weak or suspicious capture timestamps keep calendar matching conservative; ambiguous candidates remain reviewable and manually overrideable on the recording `calendar` tab.
    - Duration is taken from `derived/audio_sanitized.wav` when present, then falls back to the raw upload.
    - The app now uses glossary/correction memory instead of ASR model training: manage manual terms and future corrections on `/glossary`.
    - Glossary sources are merged deterministically from stored manual/correction entries, canonical speaker names, selected calendar context, and the current project name/keywords when available.

@@ -33,6 +33,7 @@ from .config import AppSettings
 from .calendar.ics import validate_ics_url
 from .calendar.matching import (
     calendar_match_candidates,
+    calendar_match_warnings,
     calendar_summary_context,
     selected_calendar_candidate,
 )
@@ -1863,6 +1864,7 @@ def _calendar_candidate_context(candidate: dict[str, Any], *, selected_event_id:
 
 
 def _calendar_tab_context(recording_id: str, settings: AppSettings) -> dict[str, Any]:
+    recording = get_recording(recording_id, settings=settings) or {}
     match_row = get_calendar_match(recording_id, settings=settings) or {}
     selected_event_id = str(match_row.get("selected_event_id") or "").strip()
     selected_candidate = selected_calendar_candidate(recording_id, settings=settings)
@@ -1882,6 +1884,11 @@ def _calendar_tab_context(recording_id: str, settings: AppSettings) -> dict[str,
         "selected_event_id": selected_event_id or None,
         "selected_confidence": match_row.get("selected_confidence"),
         "candidates": candidates,
+        "warnings": calendar_match_warnings(
+            recording,
+            candidates,
+            selected_event_id=selected_event_id or None,
+        ),
         "error_message": "",
     }
 
