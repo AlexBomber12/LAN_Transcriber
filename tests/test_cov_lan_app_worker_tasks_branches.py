@@ -7,6 +7,7 @@ from pathlib import Path
 import sqlite3
 import sys
 from types import ModuleType, SimpleNamespace
+from typing import Any
 import wave
 
 import pytest
@@ -223,6 +224,7 @@ def test_cancel_aware_helpers_stop_llm_requests_and_chunk_terminal_paths(
         recording_id="rec-stop-helper-2",
         settings=cfg,
         stage_name="llm_extract",
+        log_path=tmp_path / "logs" / "llm.log",
     )
     assert sync_client.generate() == {"status": "ok"}
     assert sync_client.identity == "sync-client"
@@ -332,6 +334,8 @@ def test_stop_request_helpers_cover_optional_metadata_and_log_paths(tmp_path: Pa
         "cancel_requested_by": "user",
         "cancel_reason_code": "user_stop",
         "cancel_reason_text": "Cancelled by user",
+        "force_stopped": False,
+        "stop_mode": "soft",
     }
 
     log_path = tmp_path / "logs" / "step.log"
@@ -339,6 +343,1187 @@ def test_stop_request_helpers_cover_optional_metadata_and_log_paths(tmp_path: Pa
     assert log_path.read_text(encoding="utf-8").strip().endswith(
         "cancelled_by_user stage=llm_extract checkpoint=before_llm_request requested_by=user"
     )
+
+
+def _fake_child_runtime(
+    *,
+    parent_polls: list[bool],
+    parent_messages: list[dict[str, Any]] | None = None,
+    process_alive: list[bool] | None = None,
+    exitcode: int = 0,
+):
+    class _Conn:
+        def __init__(self, polls: list[bool], messages: list[dict[str, Any]]):
+            self._polls = list(polls)
+            self._messages = list(messages)
+            self.closed = False
+
+        def poll(self):
+            if self._polls:
+                return self._polls.pop(0)
+            return bool(self._messages)
+
+        def recv(self):
+            return self._messages.pop(0)
+
+        def send(self, payload):
+            self._messages.append(payload)
+
+        def close(self):
+            self.closed = True
+
+    class _Process:
+        def __init__(self):
+            self.pid = 12345
+            self.exitcode = exitcode
+            self.started = False
+            self.terminate_calls = 0
+            self.kill_calls = 0
+            self.join_calls: list[float | None] = []
+            self._alive = list(process_alive or [True])
+
+        def start(self):
+            self.started = True
+
+        def join(self, timeout=None):
+            self.join_calls.append(timeout)
+
+        def terminate(self):
+            self.terminate_calls += 1
+
+        def kill(self):
+            self.kill_calls += 1
+
+        def is_alive(self):
+            if self._alive:
+                return self._alive.pop(0)
+            return False
+
+    parent_conn = _Conn(parent_polls, list(parent_messages or []))
+    child_conn = _Conn([], [])
+    process = _Process()
+
+    class _Context:
+        def Pipe(self, duplex=False):
+            del duplex
+            return parent_conn, child_conn
+
+        def Process(self, target, args):
+            self.target = target
+            self.args = args
+            return process
+
+    return _Context(), process, parent_conn, child_conn
+
+
+def test_run_child_stage_operation_allows_cooperative_stop(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    log_path = tmp_path / "logs" / "step.log"
+    stop_request = worker_tasks._RecordingStopRequest(  # noqa: SLF001
+        requested_at="2026-03-12T10:00:00Z",
+        requested_by="user",
+        reason_code="user_stop",
+        reason_text="Stop requested by user",
+    )
+    fake_ctx, process, parent_conn, child_conn = _fake_child_runtime(
+        parent_polls=[False, True],
+        parent_messages=[{"status": "ok", "payload": {"status": "ok"}}],
+        process_alive=[True, False],
+    )
+    checks = {"count": 0}
+
+    def _stop_request_getter():
+        checks["count"] += 1
+        return stop_request if checks["count"] == 1 else None
+
+    async def _fast_sleep(_seconds: float):
+        return None
+
+    monkeypatch.setattr(worker_tasks.mp, "get_context", lambda _name: fake_ctx)
+    monkeypatch.setattr(worker_tasks.asyncio, "sleep", _fast_sleep)
+
+    result = asyncio.run(
+        worker_tasks._run_child_stage_operation(  # noqa: SLF001
+            operation_name="noop",
+            payload={},
+            stage_name="asr",
+            stop_request_getter=_stop_request_getter,
+            grace_seconds=0.5,
+            log_path=log_path,
+            checkpoint="during_heavy_stage",
+        )
+    )
+
+    assert result == {"status": "ok"}
+    assert process.started is True
+    assert parent_conn.closed is True
+    assert child_conn.closed is True
+    log_text = log_path.read_text(encoding="utf-8")
+    assert "waiting for cooperative stop grace=0.5s stage=asr" in log_text
+    assert "stop completed cooperatively stage=asr" in log_text
+    assert "force terminating child stage=asr" not in log_text
+
+
+def test_run_child_stage_operation_force_terminates_after_grace(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    log_path = tmp_path / "logs" / "step.log"
+    stop_request = worker_tasks._RecordingStopRequest(  # noqa: SLF001
+        requested_at="2026-03-12T10:00:00Z",
+        requested_by="user",
+        reason_code="user_stop",
+        reason_text="Stop requested by user",
+    )
+    fake_ctx, process, _parent_conn, _child_conn = _fake_child_runtime(
+        parent_polls=[False, False],
+        process_alive=[True],
+    )
+    times = iter([1.0, 1.0, 2.0])
+    force_stop_calls: list[str] = []
+
+    async def _fast_sleep(_seconds: float):
+        return None
+
+    def _next_time() -> float:
+        return next(times, 2.0)
+
+    def _alive_until_kill() -> bool:
+        return process.kill_calls == 0
+
+    monkeypatch.setattr(worker_tasks.mp, "get_context", lambda _name: fake_ctx)
+    monkeypatch.setattr(worker_tasks.asyncio, "sleep", _fast_sleep)
+    monkeypatch.setattr(worker_tasks.time, "monotonic", _next_time)
+    monkeypatch.setattr(process, "is_alive", _alive_until_kill)
+
+    with pytest.raises(worker_tasks.RecordingStopRequested) as exc_info:
+        asyncio.run(
+            worker_tasks._run_child_stage_operation(  # noqa: SLF001
+                operation_name="noop",
+                payload={},
+                stage_name="diarization",
+                stop_request_getter=lambda: stop_request,
+                grace_seconds=0.1,
+                log_path=log_path,
+                checkpoint="during_heavy_stage",
+                on_force_stop=lambda: force_stop_calls.append("cleanup"),
+            )
+        )
+
+    assert exc_info.value.forced is True
+    assert exc_info.value.acknowledged_reason_text == "Force-stopped after grace timeout"
+    assert process.terminate_calls == 1
+    assert process.kill_calls == 1
+    assert force_stop_calls == ["cleanup"]
+    worker_tasks._log_stop_requested(log_path=log_path, stop=exc_info.value)  # noqa: SLF001
+    log_text = log_path.read_text(encoding="utf-8")
+    assert "force terminating child stage=diarization" in log_text
+    assert "stage terminated by user stop stage=diarization" in log_text
+    assert "forced=true" in log_text
+
+
+def test_run_child_stage_operation_maps_error_and_exit_without_result(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    log_path = tmp_path / "logs" / "step.log"
+    error_ctx, _process, _parent_conn, _child_conn = _fake_child_runtime(
+        parent_polls=[True],
+        parent_messages=[{"status": "error", "error_type": "ConnectError", "error_message": "boom"}],
+        process_alive=[False],
+    )
+    monkeypatch.setattr(worker_tasks.mp, "get_context", lambda _name: error_ctx)
+
+    with pytest.raises(ConnectionError, match="boom"):
+        asyncio.run(
+            worker_tasks._run_child_stage_operation(  # noqa: SLF001
+                operation_name="llm_generate",
+                payload={},
+                stage_name="llm_extract",
+                stop_request_getter=lambda: None,
+                grace_seconds=1.0,
+                log_path=log_path,
+                checkpoint="llm_chunk_request",
+            )
+        )
+
+    exit_ctx, _process, _parent_conn, _child_conn = _fake_child_runtime(
+        parent_polls=[False, False],
+        process_alive=[False],
+        exitcode=17,
+    )
+    monkeypatch.setattr(worker_tasks.mp, "get_context", lambda _name: exit_ctx)
+
+    with pytest.raises(RuntimeError, match="exitcode=17"):
+        asyncio.run(
+            worker_tasks._run_child_stage_operation(  # noqa: SLF001
+                operation_name="llm_generate",
+                payload={},
+                stage_name="llm_extract",
+                stop_request_getter=lambda: None,
+                grace_seconds=1.0,
+                log_path=log_path,
+                checkpoint="llm_chunk_request",
+            )
+        )
+
+
+def test_run_child_stage_operation_returns_ok_without_stop_and_after_exit_race(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    log_path = tmp_path / "logs" / "step.log"
+    ok_ctx, _process, _parent_conn, _child_conn = _fake_child_runtime(
+        parent_polls=[True],
+        parent_messages=[{"status": "ok", "payload": {"status": "ok"}}],
+        process_alive=[False],
+    )
+    monkeypatch.setattr(worker_tasks.mp, "get_context", lambda _name: ok_ctx)
+
+    result = asyncio.run(
+        worker_tasks._run_child_stage_operation(  # noqa: SLF001
+            operation_name="llm_generate",
+            payload={},
+            stage_name="llm_extract",
+            stop_request_getter=lambda: None,
+            grace_seconds=1.0,
+            log_path=log_path,
+            checkpoint="llm_chunk_request",
+        )
+    )
+    assert result == {"status": "ok"}
+
+    race_ctx, _process, _parent_conn, _child_conn = _fake_child_runtime(
+        parent_polls=[False, True],
+        parent_messages=[{"status": "ok", "payload": {"status": "late"}}],
+        process_alive=[False, False],
+    )
+    monkeypatch.setattr(worker_tasks.mp, "get_context", lambda _name: race_ctx)
+
+    result = asyncio.run(
+        worker_tasks._run_child_stage_operation(  # noqa: SLF001
+            operation_name="llm_generate",
+            payload={},
+            stage_name="llm_extract",
+            stop_request_getter=lambda: None,
+            grace_seconds=1.0,
+            log_path=log_path,
+            checkpoint="llm_chunk_request",
+        )
+    )
+    assert result == {"status": "late"}
+
+
+def test_run_child_stage_operation_waits_with_latched_stop_before_result(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    log_path = tmp_path / "logs" / "step.log"
+    stop_request = worker_tasks._RecordingStopRequest(  # noqa: SLF001
+        requested_at="2026-03-12T10:00:00Z",
+        requested_by="user",
+        reason_code="user_stop",
+        reason_text="Stop requested by user",
+    )
+    fake_ctx, _process, _parent_conn, _child_conn = _fake_child_runtime(
+        parent_polls=[False, False, True],
+        parent_messages=[{"status": "ok", "payload": {"status": "graceful"}}],
+        process_alive=[True, True, False],
+    )
+    checks = {"count": 0}
+    times = iter([1.0, 1.0, 1.05, 1.05])
+
+    async def _fast_sleep(_seconds: float):
+        return None
+
+    def _stop_request_getter():
+        checks["count"] += 1
+        return stop_request if checks["count"] == 1 else None
+
+    monkeypatch.setattr(worker_tasks.mp, "get_context", lambda _name: fake_ctx)
+    monkeypatch.setattr(worker_tasks.asyncio, "sleep", _fast_sleep)
+    monkeypatch.setattr(worker_tasks.time, "monotonic", lambda: next(times, 1.05))
+
+    result = asyncio.run(
+        worker_tasks._run_child_stage_operation(  # noqa: SLF001
+            operation_name="noop",
+            payload={},
+            stage_name="asr",
+            stop_request_getter=_stop_request_getter,
+            grace_seconds=0.5,
+            log_path=log_path,
+            checkpoint="during_heavy_stage",
+        )
+    )
+
+    assert result == {"status": "graceful"}
+    assert checks["count"] == 1
+
+
+def test_run_child_stage_operation_terminates_lingering_child_after_result(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    log_path = tmp_path / "logs" / "step.log"
+    fake_ctx, process, _parent_conn, _child_conn = _fake_child_runtime(
+        parent_polls=[True],
+        parent_messages=[{"status": "ok", "payload": {"status": "ok"}}],
+        process_alive=[True],
+    )
+
+    def _alive_until_terminate() -> bool:
+        return process.terminate_calls == 0
+
+    monkeypatch.setattr(worker_tasks.mp, "get_context", lambda _name: fake_ctx)
+    monkeypatch.setattr(process, "is_alive", _alive_until_terminate)
+
+    result = asyncio.run(
+        worker_tasks._run_child_stage_operation(  # noqa: SLF001
+            operation_name="llm_generate",
+            payload={},
+            stage_name="llm_extract",
+            stop_request_getter=lambda: None,
+            grace_seconds=5.0,
+            log_path=log_path,
+            checkpoint="llm_chunk_request",
+        )
+    )
+
+    assert result == {"status": "ok"}
+    assert process.terminate_calls == 1
+    assert process.kill_calls == 0
+    assert "force terminating lingering child after result stage=llm_extract" in log_path.read_text(
+        encoding="utf-8"
+    )
+
+
+def test_run_child_stage_operation_kills_lingering_child_after_result(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    log_path = tmp_path / "logs" / "step.log"
+    fake_ctx, process, _parent_conn, _child_conn = _fake_child_runtime(
+        parent_polls=[True],
+        parent_messages=[{"status": "ok", "payload": {"status": "ok"}}],
+        process_alive=[True],
+    )
+
+    def _alive_until_kill() -> bool:
+        if process.kill_calls > 0:
+            return False
+        return True
+
+    monkeypatch.setattr(worker_tasks.mp, "get_context", lambda _name: fake_ctx)
+    monkeypatch.setattr(process, "is_alive", _alive_until_kill)
+
+    result = asyncio.run(
+        worker_tasks._run_child_stage_operation(  # noqa: SLF001
+            operation_name="llm_generate",
+            payload={},
+            stage_name="llm_extract",
+            stop_request_getter=lambda: None,
+            grace_seconds=5.0,
+            log_path=log_path,
+            checkpoint="llm_chunk_request",
+        )
+    )
+
+    assert result == {"status": "ok"}
+    assert process.terminate_calls == 1
+    assert process.kill_calls == 1
+    log_text = log_path.read_text(encoding="utf-8")
+    assert "force terminating lingering child after result stage=llm_extract" in log_text
+    assert "force killing lingering child after result stage=llm_extract" in log_text
+
+
+def test_run_child_stage_operation_raises_when_child_survives_result_kill(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    log_path = tmp_path / "logs" / "step.log"
+    fake_ctx, process, _parent_conn, _child_conn = _fake_child_runtime(
+        parent_polls=[True],
+        parent_messages=[{"status": "ok", "payload": {"status": "ok"}}],
+        process_alive=[True],
+    )
+
+    monkeypatch.setattr(worker_tasks.mp, "get_context", lambda _name: fake_ctx)
+    monkeypatch.setattr(process, "is_alive", lambda: True)
+
+    with pytest.raises(RuntimeError, match="did not exit after result"):
+        asyncio.run(
+            worker_tasks._run_child_stage_operation(  # noqa: SLF001
+                operation_name="llm_generate",
+                payload={},
+                stage_name="llm_extract",
+                stop_request_getter=lambda: None,
+                grace_seconds=5.0,
+                log_path=log_path,
+                checkpoint="llm_chunk_request",
+            )
+        )
+
+    assert process.terminate_calls == 1
+    assert process.kill_calls == 1
+
+
+def test_run_child_stage_operation_force_terminates_without_kill_or_callback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    log_path = tmp_path / "logs" / "step.log"
+    stop_request = worker_tasks._RecordingStopRequest(  # noqa: SLF001
+        requested_at="2026-03-12T10:00:00Z",
+        requested_by="user",
+        reason_code="user_stop",
+        reason_text="Stop requested by user",
+    )
+    fake_ctx, process, _parent_conn, _child_conn = _fake_child_runtime(
+        parent_polls=[False, False],
+        process_alive=[True],
+    )
+    times = iter([1.0, 1.0, 2.0])
+
+    async def _fast_sleep(_seconds: float):
+        return None
+
+    def _alive_until_terminate() -> bool:
+        return process.terminate_calls == 0
+
+    monkeypatch.setattr(worker_tasks.mp, "get_context", lambda _name: fake_ctx)
+    monkeypatch.setattr(worker_tasks.asyncio, "sleep", _fast_sleep)
+    monkeypatch.setattr(worker_tasks.time, "monotonic", lambda: next(times, 2.0))
+    monkeypatch.setattr(process, "is_alive", _alive_until_terminate)
+
+    with pytest.raises(worker_tasks.RecordingStopRequested) as exc_info:
+        asyncio.run(
+            worker_tasks._run_child_stage_operation(  # noqa: SLF001
+                operation_name="noop",
+                payload={},
+                stage_name="asr",
+                stop_request_getter=lambda: stop_request,
+                grace_seconds=0.1,
+                log_path=log_path,
+                checkpoint="during_heavy_stage",
+            )
+        )
+
+    assert exc_info.value.forced is True
+    assert process.terminate_calls == 1
+    assert process.kill_calls == 0
+
+
+def test_run_child_stage_operation_cleans_up_on_async_cancel(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    log_path = tmp_path / "logs" / "step.log"
+    cancel_ctx, process, _parent_conn, _child_conn = _fake_child_runtime(
+        parent_polls=[False, False, False],
+        process_alive=[True, True, True, False],
+    )
+    real_sleep = asyncio.sleep
+
+    async def _yield_once(_seconds: float):
+        await real_sleep(0)
+
+    monkeypatch.setattr(worker_tasks.mp, "get_context", lambda _name: cancel_ctx)
+    monkeypatch.setattr(worker_tasks.asyncio, "sleep", _yield_once)
+
+    async def _exercise() -> None:
+        task = asyncio.create_task(
+            worker_tasks._run_child_stage_operation(  # noqa: SLF001
+                operation_name="llm_generate",
+                payload={},
+                stage_name="llm_extract",
+                stop_request_getter=lambda: None,
+                grace_seconds=1.0,
+                log_path=log_path,
+                checkpoint="llm_chunk_request",
+            )
+        )
+        await asyncio.sleep(0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(_exercise())
+    assert process.terminate_calls == 1
+    assert process.kill_calls == 1
+
+
+def test_run_child_stage_operation_cancel_cleanup_handles_exit_without_kill(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    log_path = tmp_path / "logs" / "step.log"
+    cancel_ctx, process, _parent_conn, _child_conn = _fake_child_runtime(
+        parent_polls=[False, False, False],
+        process_alive=[True],
+    )
+    real_sleep = asyncio.sleep
+
+    async def _yield_once(_seconds: float):
+        await real_sleep(0)
+
+    def _alive_until_terminate() -> bool:
+        return process.terminate_calls == 0
+
+    monkeypatch.setattr(worker_tasks.mp, "get_context", lambda _name: cancel_ctx)
+    monkeypatch.setattr(worker_tasks.asyncio, "sleep", _yield_once)
+    monkeypatch.setattr(process, "is_alive", _alive_until_terminate)
+
+    async def _exercise() -> None:
+        task = asyncio.create_task(
+            worker_tasks._run_child_stage_operation(  # noqa: SLF001
+                operation_name="llm_generate",
+                payload={},
+                stage_name="llm_extract",
+                stop_request_getter=lambda: None,
+                grace_seconds=1.0,
+                log_path=log_path,
+                checkpoint="llm_chunk_request",
+            )
+        )
+        await asyncio.sleep(0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(_exercise())
+    assert process.terminate_calls == 1
+    assert process.kill_calls == 0
+
+
+def test_run_child_stage_operation_cancel_cleanup_skips_terminate_when_dead(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    log_path = tmp_path / "logs" / "step.log"
+    cancel_ctx, process, _parent_conn, _child_conn = _fake_child_runtime(
+        parent_polls=[False, False],
+        process_alive=[True],
+    )
+    real_sleep = asyncio.sleep
+
+    async def _yield_once(_seconds: float):
+        await real_sleep(0)
+
+    alive_checks = {"count": 0}
+
+    def _alive_once() -> bool:
+        alive_checks["count"] += 1
+        return alive_checks["count"] == 1
+
+    monkeypatch.setattr(worker_tasks.mp, "get_context", lambda _name: cancel_ctx)
+    monkeypatch.setattr(worker_tasks.asyncio, "sleep", _yield_once)
+    monkeypatch.setattr(process, "is_alive", _alive_once)
+
+    async def _exercise() -> None:
+        task = asyncio.create_task(
+            worker_tasks._run_child_stage_operation(  # noqa: SLF001
+                operation_name="llm_generate",
+                payload={},
+                stage_name="llm_extract",
+                stop_request_getter=lambda: None,
+                grace_seconds=1.0,
+                log_path=log_path,
+                checkpoint="llm_chunk_request",
+            )
+        )
+        await asyncio.sleep(0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(_exercise())
+    assert process.terminate_calls == 0
+    assert process.kill_calls == 0
+
+
+def test_run_child_stage_operation_cancel_after_cleanup_started_skips_repeat_cleanup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    log_path = tmp_path / "logs" / "step.log"
+    cancel_ctx, process, _parent_conn, _child_conn = _fake_child_runtime(
+        parent_polls=[True],
+        parent_messages=[{"status": "ok", "payload": {"status": "late"}}],
+        process_alive=[True],
+    )
+    join_calls = {"count": 0}
+
+    def _join_then_cancel(timeout=None):
+        process.join_calls.append(timeout)
+        join_calls["count"] += 1
+        if join_calls["count"] == 2:
+            raise asyncio.CancelledError
+
+    monkeypatch.setattr(worker_tasks.mp, "get_context", lambda _name: cancel_ctx)
+    monkeypatch.setattr(process, "is_alive", lambda: True)
+    monkeypatch.setattr(process, "join", _join_then_cancel)
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(
+            worker_tasks._run_child_stage_operation(  # noqa: SLF001
+                operation_name="llm_generate",
+                payload={},
+                stage_name="llm_extract",
+                stop_request_getter=lambda: None,
+                grace_seconds=5.0,
+                log_path=log_path,
+                checkpoint="llm_chunk_request",
+            )
+        )
+
+    assert process.terminate_calls == 1
+    assert process.kill_calls == 0
+
+
+def test_run_child_stage_operation_force_stop_raises_if_child_survives_kill(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    log_path = tmp_path / "logs" / "step.log"
+    stop_request = worker_tasks._RecordingStopRequest(  # noqa: SLF001
+        requested_at="2026-03-12T10:00:00Z",
+        requested_by="user",
+        reason_code="user_stop",
+        reason_text="Stop requested by user",
+    )
+    fake_ctx, process, _parent_conn, _child_conn = _fake_child_runtime(
+        parent_polls=[False, False],
+        process_alive=[True],
+    )
+    times = iter([1.0, 1.0, 2.0])
+    force_stop_calls: list[str] = []
+    real_sleep = asyncio.sleep
+
+    async def _yield_once(_seconds: float):
+        await real_sleep(0)
+
+    monkeypatch.setattr(worker_tasks.mp, "get_context", lambda _name: fake_ctx)
+    monkeypatch.setattr(worker_tasks.asyncio, "sleep", _yield_once)
+    monkeypatch.setattr(worker_tasks.time, "monotonic", lambda: next(times, 2.0))
+    monkeypatch.setattr(process, "is_alive", lambda: True)
+
+    with pytest.raises(RuntimeError, match="did not exit after forced stop"):
+        asyncio.run(
+            worker_tasks._run_child_stage_operation(  # noqa: SLF001
+                operation_name="noop",
+                payload={},
+                stage_name="asr",
+                stop_request_getter=lambda: stop_request,
+                grace_seconds=0.1,
+                log_path=log_path,
+                checkpoint="during_heavy_stage",
+                on_force_stop=lambda: force_stop_calls.append("cleanup"),
+            )
+        )
+
+    assert process.terminate_calls == 1
+    assert process.kill_calls == 1
+    assert force_stop_calls == []
+
+
+def test_run_child_stage_operation_cleans_up_on_parent_exception_with_best_effort_logging(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    log_path = tmp_path / "logs" / "step.log"
+    error_ctx, process, parent_conn, child_conn = _fake_child_runtime(
+        parent_polls=[False],
+        process_alive=[True],
+    )
+
+    def _alive_until_kill() -> bool:
+        return process.kill_calls == 0
+
+    monkeypatch.setattr(worker_tasks.mp, "get_context", lambda _name: error_ctx)
+    monkeypatch.setattr(process, "is_alive", _alive_until_kill)
+    monkeypatch.setattr(
+        worker_tasks,
+        "_append_step_log",
+        lambda *_a, **_k: (_ for _ in ()).throw(OSError("disk full")),
+    )
+
+    with pytest.raises(ValueError, match="db down"):
+        asyncio.run(
+            worker_tasks._run_child_stage_operation(  # noqa: SLF001
+                operation_name="llm_generate",
+                payload={},
+                stage_name="llm_extract",
+                stop_request_getter=lambda: (_ for _ in ()).throw(ValueError("db down")),
+                grace_seconds=1.0,
+                log_path=log_path,
+                checkpoint="llm_chunk_request",
+            )
+        )
+
+    assert process.terminate_calls == 1
+    assert process.kill_calls == 1
+    assert parent_conn.closed is True
+    assert child_conn.closed is True
+
+
+def test_cancel_inflight_llm_chunk_state_preserves_completed_rows(tmp_path: Path) -> None:
+    cfg = _db_settings(tmp_path)
+    init_db(cfg)
+    create_recording(
+        "rec-stop-hard-chunk-1",
+        source="test",
+        source_filename="chunk.wav",
+        settings=cfg,
+    )
+    worker_tasks.mark_recording_llm_chunk_started(
+        "rec-stop-hard-chunk-1",
+        chunk_group="extract",
+        chunk_index="1",
+        chunk_total=2,
+        metadata={"chunk_id": "1"},
+        settings=cfg,
+    )
+    worker_tasks.mark_recording_llm_chunk_completed(
+        "rec-stop-hard-chunk-1",
+        chunk_group="extract",
+        chunk_index="1",
+        chunk_total=2,
+        metadata={"chunk_id": "1"},
+        settings=cfg,
+    )
+    worker_tasks.mark_recording_llm_chunk_started(
+        "rec-stop-hard-chunk-1",
+        chunk_group="extract",
+        chunk_index="2",
+        chunk_total=2,
+        metadata={"chunk_id": "2"},
+        settings=cfg,
+    )
+
+    worker_tasks._cancel_inflight_llm_chunk_state(  # noqa: SLF001
+        recording_id="rec-stop-hard-chunk-1",
+        settings=cfg,
+        chunk_index="2",
+        chunk_total=2,
+    )
+
+    rows = worker_tasks.list_recording_llm_chunk_states(  # noqa: SLF001
+        "rec-stop-hard-chunk-1",
+        settings=cfg,
+    )
+    assert [(row["chunk_index"], row["status"]) for row in rows] == [
+        ("1", "completed"),
+        ("2", "cancelled"),
+    ]
+
+
+def test_cancel_inflight_llm_chunk_state_ignores_missing_and_db_errors(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = _db_settings(tmp_path)
+    worker_tasks._cancel_inflight_llm_chunk_state(  # noqa: SLF001
+        recording_id="rec-stop-hard-missing",
+        settings=cfg,
+        chunk_index=None,
+        chunk_total=1,
+    )
+    monkeypatch.setattr(
+        worker_tasks,
+        "mark_recording_llm_chunk_cancelled",
+        lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("db boom")),
+    )
+    worker_tasks._cancel_inflight_llm_chunk_state(  # noqa: SLF001
+        recording_id="rec-stop-hard-error",
+        settings=cfg,
+        chunk_index="1",
+        chunk_total=1,
+    )
+
+
+def test_cancel_aware_llm_client_passes_chunk_context_to_child(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = _db_settings(tmp_path)
+    init_db(cfg)
+    create_recording(
+        "rec-stop-child-llm-1",
+        source="test",
+        source_filename="llm.wav",
+        settings=cfg,
+    )
+    captured: dict[str, Any] = {}
+
+    async def _fake_run_child_stage_operation(**kwargs):
+        captured.update(kwargs)
+        return {"role": "assistant", "content": "{}"}
+
+    monkeypatch.setattr(worker_tasks, "_run_child_stage_operation", _fake_run_child_stage_operation)
+    llm_client = worker_tasks._CancelAwareLLMClient(  # noqa: SLF001
+        base_client=worker_tasks.LLMClient(
+            base_url="http://127.0.0.1:8000",
+            api_key="token",
+            timeout=1.0,
+            max_tokens=512,
+            max_tokens_retry=768,
+        ),
+        recording_id="rec-stop-child-llm-1",
+        settings=cfg,
+        stage_name="llm_extract",
+        log_path=tmp_path / "logs" / "llm.log",
+    )
+
+    with llm_client.request_context(
+        checkpoint="llm_chunk_request",
+        chunk_index="2",
+        chunk_total=5,
+    ):
+        result = asyncio.run(
+            llm_client.generate(
+                system_prompt="sys",
+                user_prompt="user",
+                model="test-model",
+                response_format={"type": "json_object"},
+                max_tokens=333,
+                max_tokens_retry=444,
+            )
+        )
+
+    assert result == {"role": "assistant", "content": "{}"}
+    assert captured["operation_name"] == "llm_generate"
+    assert captured["checkpoint"] == "llm_chunk_request"
+    assert captured["chunk_index"] == "2"
+    assert captured["chunk_total"] == 5
+    assert captured["payload"]["max_tokens"] == 333
+    assert captured["payload"]["max_tokens_retry"] == 444
+
+
+def test_hard_stop_helper_utilities_cover_payloads_error_mapping_and_child_helpers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = _db_settings(tmp_path)
+    pipeline_cfg = worker_tasks._build_pipeline_settings(cfg)  # noqa: SLF001
+    payload = worker_tasks._pipeline_settings_payload(pipeline_cfg)  # noqa: SLF001
+    restored = worker_tasks._pipeline_settings_from_payload(payload)  # noqa: SLF001
+    assert restored.tmp_root == pipeline_cfg.tmp_root
+
+    stage_tmp = worker_tasks._stage_temp_root(  # noqa: SLF001
+        recording_id="rec-stop-root-1",
+        stage_name="asr",
+        settings=cfg,
+    )
+    stage_tmp.mkdir(parents=True, exist_ok=True)
+    (stage_tmp / "temp.txt").write_text("x", encoding="utf-8")
+    worker_tasks._cleanup_stage_temp_root(stage_tmp)  # noqa: SLF001
+    assert stage_tmp.exists() is False
+
+    log_path = tmp_path / "logs" / "helpers.log"
+    worker_tasks._emit_child_step_logs(log_path, ["one", "two"])  # noqa: SLF001
+    assert "one" in log_path.read_text(encoding="utf-8")
+
+    worker_tasks._best_effort_step_log_callback(None, "noop")  # noqa: SLF001
+    worker_tasks._best_effort_step_log_callback(lambda _message: (_ for _ in ()).throw(RuntimeError("boom")), "ignored")  # noqa: SLF001
+
+    assert isinstance(
+        worker_tasks._rehydrate_child_operation_error(  # noqa: SLF001
+            operation_name="llm_generate",
+            error_type="ConnectError",
+            error_message="connect",
+        ),
+        ConnectionError,
+    )
+    assert isinstance(
+        worker_tasks._rehydrate_child_operation_error(  # noqa: SLF001
+            operation_name="llm_generate",
+            error_type="TimeoutException",
+            error_message="timeout",
+        ),
+        TimeoutError,
+    )
+    assert isinstance(
+        worker_tasks._rehydrate_child_operation_error(  # noqa: SLF001
+            operation_name="llm_generate",
+            error_type="LLMEmptyContentError",
+            error_message="empty",
+        ),
+        RuntimeError,
+    )
+    assert isinstance(
+        worker_tasks._rehydrate_child_operation_error(  # noqa: SLF001
+            operation_name="llm_generate",
+            error_type="ValueError",
+            error_message="bad llm value",
+        ),
+        ValueError,
+    )
+    assert isinstance(
+        worker_tasks._rehydrate_child_operation_error(  # noqa: SLF001
+            operation_name="other",
+            error_type="ValueError",
+            error_message="bad",
+        ),
+        ValueError,
+    )
+    unknown = worker_tasks._rehydrate_child_operation_error(  # noqa: SLF001
+        operation_name="other",
+        error_type="CustomError",
+        error_message="custom",
+    )
+    assert isinstance(unknown, worker_tasks._ChildOperationError)  # noqa: SLF001
+    assert unknown.operation_name == "other"
+
+    class _Conn:
+        def __init__(self):
+            self.messages: list[dict[str, Any]] = []
+            self.closed = False
+
+        def send(self, payload):
+            self.messages.append(payload)
+
+        def close(self):
+            self.closed = True
+
+    ok_conn = _Conn()
+    worker_tasks._child_stage_operation_process_main("test_sleep", {"sleep_seconds": 0.0, "result": "ok"}, ok_conn)  # noqa: SLF001
+    assert ok_conn.messages[0] == {"status": "ok", "payload": "ok"}
+    err_conn = _Conn()
+    worker_tasks._child_stage_operation_process_main("missing", {}, err_conn)  # noqa: SLF001
+    assert err_conn.messages[0]["status"] == "error"
+
+    monkeypatch.setattr(
+        worker_tasks,
+        "_execute_asr_workflow",
+        lambda **_kwargs: ([{"start": 0.0, "end": 1.0, "text": "hi"}], {"language": "en"}, {"used_multilingual_path": False}),
+    )
+    asr_child = worker_tasks._run_default_asr_child_operation(  # noqa: SLF001
+        {
+            "pipeline_settings": payload,
+            "working_audio_path": str(tmp_path / "audio.wav"),
+            "transcript_language_override": "en",
+            "asr_glossary": {"entry_count": 0},
+        }
+    )
+    assert asr_child["segments"][0]["text"] == "hi"
+
+    monkeypatch.setattr(
+        worker_tasks,
+        "_execute_diarization_workflow",
+        lambda **_kwargs: {
+            "diarization_segments": [{"speaker": "S1", "start": 0.0, "end": 1.0}],
+            "diarization_runtime": {"mode": "fallback"},
+            "used_dummy_fallback": True,
+            "diarization_mode": "fallback",
+            "diarization_reason": "pyannote_unavailable",
+        },
+    )
+    diar_child = worker_tasks._run_default_diarization_child_operation(  # noqa: SLF001
+        {
+            "pipeline_settings": payload,
+            "working_audio_path": str(tmp_path / "audio.wav"),
+            "asr_segments": [],
+            "precheck_result": {"duration_sec": 1.0, "speech_ratio": 0.2, "quarantine_reason": None},
+            "diarization_model_id": "repo/model",
+        }
+    )
+    assert diar_child["diarization_mode"] == "fallback"
+
+    class _FakeChildLLM:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        async def generate(self, **kwargs):
+            return {"role": "assistant", "content": json.dumps(kwargs, sort_keys=True)}
+
+    monkeypatch.setattr(worker_tasks, "LLMClient", _FakeChildLLM)
+    llm_child = worker_tasks._run_llm_generate_child_operation(  # noqa: SLF001
+        {
+            "base_url": "http://127.0.0.1:8000",
+            "api_key": "token",
+            "timeout": 1.0,
+            "mock_response_path": None,
+            "default_max_tokens": 512,
+            "default_max_tokens_retry": 768,
+            "system_prompt": "sys",
+            "user_prompt": "user",
+            "model": "test-model",
+            "response_format": {"type": "json_object"},
+            "max_tokens": 123,
+            "max_tokens_retry": 456,
+        }
+    )
+    assert "\"max_tokens\": 123" in llm_child["content"]
+    assert worker_tasks._run_test_sleep_child_operation({"sleep_seconds": 0.0, "result": "slept"}) == "slept"  # noqa: SLF001
+    with pytest.raises(RuntimeError, match="boom"):
+        worker_tasks._run_test_sleep_child_operation({"sleep_seconds": 0.0, "error_message": "boom"})  # noqa: SLF001
+
+
+def test_cancel_aware_llm_client_supports_positional_prompts_for_child(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = _db_settings(tmp_path)
+    init_db(cfg)
+    create_recording(
+        "rec-stop-child-llm-2",
+        source="test",
+        source_filename="llm2.wav",
+        settings=cfg,
+    )
+    captured: dict[str, Any] = {}
+
+    async def _fake_run_child_stage_operation(**kwargs):
+        captured.update(kwargs)
+        return {"role": "assistant", "content": "{}"}
+
+    monkeypatch.setattr(worker_tasks, "_run_child_stage_operation", _fake_run_child_stage_operation)
+    llm_client = worker_tasks._CancelAwareLLMClient(  # noqa: SLF001
+        base_client=worker_tasks._ORIGINAL_LLM_CLIENT_CLASS(  # noqa: SLF001
+            base_url="http://127.0.0.1:8000",
+            api_key="token",
+            timeout=1.0,
+            max_tokens=512,
+            max_tokens_retry=768,
+        ),
+        recording_id="rec-stop-child-llm-2",
+        settings=cfg,
+        stage_name="llm_extract",
+        log_path=tmp_path / "logs" / "llm2.log",
+    )
+
+    result = asyncio.run(llm_client.generate("sys-pos", "user-pos", model="test-model"))
+    assert result == {"role": "assistant", "content": "{}"}
+    assert captured["payload"]["system_prompt"] == "sys-pos"
+    assert captured["payload"]["user_prompt"] == "user-pos"
+
+
+def test_execute_diarization_workflow_direct_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg = worker_tasks._build_pipeline_settings(_db_settings(tmp_path))  # noqa: SLF001
+    annotation = object()
+
+    class _Diariser:
+        mode = "pyannote"
+        last_run_metadata = {}
+
+        async def __call__(self, _audio_path: Path):
+            return annotation
+
+    monkeypatch.setattr(worker_tasks, "_build_diariser", lambda *_a, **_k: _Diariser())
+    monkeypatch.setattr(worker_tasks, "_gpu_execution_policy_message", lambda **_kwargs: "gpu policy test")
+    monkeypatch.setattr(worker_tasks, "_diarization_segments", lambda _ann: [{"speaker": "S1", "start": 0.0, "end": 1.0}] if _ann is annotation else [])
+    monkeypatch.setattr(worker_tasks.pipeline_orchestrator, "_diariser_runtime_metadata", lambda _diariser: {})
+    monkeypatch.setattr(worker_tasks.pipeline_orchestrator, "_diariser_mode", lambda _diariser: "pyannote")
+
+    async def _fake_retry_dialog_diarization(**kwargs):
+        return kwargs["diarization"]
+
+    monkeypatch.setattr(
+        worker_tasks.pipeline_orchestrator,
+        "_maybe_retry_dialog_diarization",
+        _fake_retry_dialog_diarization,
+    )
+    messages: list[str] = []
+    result = worker_tasks._execute_diarization_workflow(  # noqa: SLF001
+        working_audio_path=tmp_path / "audio.wav",
+        asr_segments=[{"start": 0.0, "end": 1.0, "text": "hello"}],
+        precheck_result=PrecheckResult(1.0, 0.2, None),
+        pipeline_settings=cfg,
+        diarization_model_id="repo/model",
+        step_log_callback=messages.append,
+    )
+    assert result["diarization_mode"] == "pyannote"
+    assert result["used_dummy_fallback"] is False
+    assert "gpu policy test" in messages
+
+
+def test_stage_asr_uses_child_operation_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = _db_settings(tmp_path)
+    init_db(cfg)
+    create_recording("rec-asr-child", source="test", source_filename="audio.wav", settings=cfg)
+    raw_audio_path = cfg.recordings_root / "rec-asr-child" / "raw" / "audio.wav"
+    _write_pcm_wav(raw_audio_path)
+    ctx = worker_tasks._new_pipeline_context(  # noqa: SLF001
+        recording_id="rec-asr-child",
+        settings=cfg,
+        log_path=worker_tasks._step_log_path("rec-asr-child", JOB_TYPE_PRECHECK, cfg),  # noqa: SLF001
+    )
+    ctx.precheck_result = PrecheckResult(10.0, 0.5, None)
+    ctx.raw_audio_path = raw_audio_path
+    monkeypatch.setattr(worker_tasks, "_load_calendar_summary_context", lambda *_a, **_k: ("Weekly Sync", []))
+    monkeypatch.setattr(
+        worker_tasks,
+        "build_recording_asr_glossary",
+        lambda *_a, **_k: {"entry_count": 0, "term_count": 0, "truncated": False},
+    )
+    monkeypatch.setattr(worker_tasks, "_should_use_child_asr_execution", lambda: True)
+    monkeypatch.setattr(
+        worker_tasks.pipeline_orchestrator,
+        "_write_asr_glossary_artifact",
+        lambda **_kwargs: None,
+    )
+    cleanup_calls: list[Path] = []
+
+    async def _fake_run_child_stage_operation(**_kwargs):
+        return {
+            "segments": [{"start": 0.0, "end": 1.0, "text": "hello"}],
+            "info": {"language": "en"},
+            "execution": {"used_multilingual_path": True},
+            "step_logs": ["child asr"],
+        }
+
+    monkeypatch.setattr(worker_tasks, "_run_child_stage_operation", _fake_run_child_stage_operation)
+    monkeypatch.setattr(worker_tasks, "_cleanup_stage_temp_root", lambda path: cleanup_calls.append(path))
+
+    result = worker_tasks._stage_asr(ctx)  # noqa: SLF001
+    assert result.metadata["used_multilingual_path"] is True
+    assert result.metadata["segment_count"] == 1
+    assert cleanup_calls
+    assert "child asr" in ctx.log_path.read_text(encoding="utf-8")
+
+
+def test_stage_diarization_uses_child_operation_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = _db_settings(tmp_path)
+    init_db(cfg)
+    create_recording("rec-diar-child", source="test", source_filename="audio.wav", settings=cfg)
+    raw_audio_path = cfg.recordings_root / "rec-diar-child" / "raw" / "audio.wav"
+    _write_pcm_wav(raw_audio_path)
+    ctx = worker_tasks._new_pipeline_context(  # noqa: SLF001
+        recording_id="rec-diar-child",
+        settings=cfg,
+        log_path=worker_tasks._step_log_path("rec-diar-child", JOB_TYPE_PRECHECK, cfg),  # noqa: SLF001
+    )
+    ctx.precheck_result = PrecheckResult(10.0, 0.5, None)
+    ctx.raw_audio_path = raw_audio_path
+    ctx.artifacts.asr_segments_json_path.write_text(
+        json.dumps([{"start": 0.0, "end": 1.0, "text": "hello"}]),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(worker_tasks, "_should_use_child_diarization_execution", lambda: True)
+
+    async def _fake_run_child_stage_operation(**_kwargs):
+        return {
+            "step_logs": ["child diarization"],
+            "diarization_mode": "fallback",
+            "diarization_reason": "pyannote_unavailable",
+            "diarization_segments": [{"speaker": "S1", "start": 0.0, "end": 1.0}],
+            "diarization_runtime": {"mode": "fallback", "used_dummy_fallback": False},
+            "used_dummy_fallback": True,
+        }
+
+    monkeypatch.setattr(worker_tasks, "_run_child_stage_operation", _fake_run_child_stage_operation)
+    result = worker_tasks._stage_diarization(ctx)  # noqa: SLF001
+    assert result.metadata["mode"] == "fallback"
+    assert result.metadata["used_dummy_fallback"] is True
+    assert "child diarization" in ctx.log_path.read_text(encoding="utf-8")
 
 
 def test_job_attempt_returns_zero_for_invalid_attempt(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):

@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import inspect
 import json
 import logging
+import multiprocessing as mp
 import os
 from pathlib import Path
 import re
+import shutil
 import time
 from types import SimpleNamespace
 from typing import Any
@@ -137,6 +140,16 @@ from .routing import refresh_recording_routing
 
 _logger = logging.getLogger(__name__)
 _ORIGINAL_RUN_PIPELINE = run_pipeline
+_ORIGINAL_LLM_CLIENT_CLASS = LLMClient
+_ORIGINAL_RUN_LANGUAGE_AWARE_ASR = run_language_aware_asr
+_ORIGINAL_BUILD_WHISPERX_TRANSCRIBER = pipeline_orchestrator._build_whisperx_transcriber
+_ORIGINAL_GLOSSARY_RUNTIME_METADATA = pipeline_orchestrator._glossary_runtime_metadata
+_ORIGINAL_MAYBE_RETRY_DIALOG_DIARIZATION = (
+    pipeline_orchestrator._maybe_retry_dialog_diarization
+)
+_ORIGINAL_DIARISER_RUNTIME_METADATA = pipeline_orchestrator._diariser_runtime_metadata
+_ORIGINAL_DIARIZATION_SEGMENTS = _diarization_segments
+_FORCED_STOP_REASON_TEXT = "Force-stopped after grace timeout"
 
 
 def _utc_now() -> str:
@@ -329,17 +342,23 @@ class RecordingStopRequested(RuntimeError):
         stop_request: _RecordingStopRequest,
         chunk_index: str | None = None,
         chunk_total: int | None = None,
+        forced: bool = False,
+        acknowledged_reason_text: str | None = None,
     ) -> None:
         self.stage_name = stage_name
         self.checkpoint = checkpoint
         self.stop_request = stop_request
         self.chunk_index = chunk_index
         self.chunk_total = chunk_total
+        self.forced = forced
+        self.acknowledged_reason_text = acknowledged_reason_text
         detail = f"stage={stage_name} checkpoint={checkpoint}"
         if chunk_index is not None:
             detail += f" chunk_index={chunk_index}"
         if chunk_total is not None:
             detail += f" chunk_total={chunk_total}"
+        if forced:
+            detail += " forced=true"
         super().__init__(detail)
 
 
@@ -389,11 +408,12 @@ def _acknowledge_stop_requested(
     *,
     recording_id: str,
     settings: AppSettings,
+    reason_text: str | None = None,
 ) -> None:
     acknowledge_recording_cancel_request(
         recording_id,
         reason_code=_STOP_REASON_CODE,
-        reason_text=_STOPPED_REASON_TEXT,
+        reason_text=reason_text or _STOPPED_REASON_TEXT,
         settings=settings,
     )
 
@@ -402,9 +422,18 @@ def _stop_terminal_state(
     *,
     recording_id: str,
     settings: AppSettings,
+    reason_text: str | None = None,
 ) -> PipelineTerminalState:
-    _acknowledge_stop_requested(recording_id=recording_id, settings=settings)
-    return PipelineTerminalState(status=RECORDING_STATUS_STOPPED)
+    resolved_reason_text = reason_text or _STOPPED_REASON_TEXT
+    _acknowledge_stop_requested(
+        recording_id=recording_id,
+        settings=settings,
+        reason_text=resolved_reason_text,
+    )
+    return PipelineTerminalState(
+        status=RECORDING_STATUS_STOPPED,
+        stop_reason_text=resolved_reason_text,
+    )
 
 
 def _cancelled_stage_metadata(
@@ -418,7 +447,13 @@ def _cancelled_stage_metadata(
         "cancel_checkpoint": stop.checkpoint,
         "cancel_requested_by": stop.stop_request.requested_by or _STOP_REQUESTED_BY,
         "cancel_reason_code": stop.stop_request.reason_code or _STOP_REASON_CODE,
-        "cancel_reason_text": stop.stop_request.reason_text or _STOPPED_REASON_TEXT,
+        "cancel_reason_text": (
+            stop.acknowledged_reason_text
+            or stop.stop_request.reason_text
+            or _STOPPED_REASON_TEXT
+        ),
+        "force_stopped": stop.forced,
+        "stop_mode": "forced" if stop.forced else "soft",
     }
     if stop.stop_request.requested_at:
         metadata["cancel_requested_at"] = stop.stop_request.requested_at
@@ -445,7 +480,285 @@ def _log_stop_requested(
         message += f" chunk_index={stop.chunk_index}"
     if stop.chunk_total is not None:
         message += f" chunk_total={stop.chunk_total}"
+    if stop.forced:
+        message += " forced=true"
     _append_step_log(log_path, message)
+
+
+@dataclass(frozen=True)
+class _LLMRequestContext:
+    checkpoint: str
+    chunk_index: str | None = None
+    chunk_total: int | None = None
+
+
+def _stage_temp_root(
+    *,
+    recording_id: str,
+    stage_name: str,
+    settings: AppSettings,
+) -> Path:
+    return settings.data_root / "tmp" / "hard_stop" / recording_id / stage_name
+
+
+def _cleanup_stage_temp_root(path: Path) -> None:
+    shutil.rmtree(path, ignore_errors=True)
+
+
+def _pipeline_settings_payload(cfg: PipelineSettings) -> dict[str, Any]:
+    return cfg.model_dump(mode="json")
+
+
+def _pipeline_settings_from_payload(payload: dict[str, Any]) -> PipelineSettings:
+    return PipelineSettings.model_validate(payload)
+
+
+class _ChildOperationError(RuntimeError):
+    def __init__(
+        self,
+        *,
+        operation_name: str,
+        error_type: str,
+        error_message: str,
+    ) -> None:
+        self.operation_name = operation_name
+        self.error_type = error_type
+        self.error_message = error_message
+        super().__init__(error_message or error_type or operation_name)
+
+
+def _rehydrate_child_operation_error(
+    *,
+    operation_name: str,
+    error_type: str,
+    error_message: str,
+) -> Exception:
+    message = error_message or error_type or operation_name
+    if operation_name == "llm_generate":
+        if error_type in {
+            "ConnectError",
+            "ReadError",
+            "RemoteProtocolError",
+            "ConnectionError",
+        }:
+            return ConnectionError(message)
+        if error_type in {
+            "TimeoutError",
+            "ReadTimeout",
+            "WriteTimeout",
+            "PoolTimeout",
+            "TimeoutException",
+        }:
+            return TimeoutError(message)
+        if error_type in {"LLMEmptyContentError", "LLMTruncatedResponseError"}:
+            return RuntimeError(message)
+    builtins_ns = __builtins__ if isinstance(__builtins__, dict) else vars(__builtins__)
+    builtin_exc = builtins_ns.get(error_type)
+    if isinstance(builtin_exc, type) and issubclass(builtin_exc, Exception):
+        return builtin_exc(message)
+    return _ChildOperationError(
+        operation_name=operation_name,
+        error_type=error_type,
+        error_message=message,
+    )
+
+
+def _child_stage_operation_process_main(
+    operation_name: str,
+    payload: dict[str, Any],
+    conn: Any,
+) -> None:
+    try:
+        handler = _CHILD_STAGE_OPERATION_HANDLERS[operation_name]
+        conn.send({"status": "ok", "payload": handler(payload)})
+    except BaseException as exc:  # pragma: no cover - exercised via parent integration
+        conn.send(
+            {
+                "status": "error",
+                "error_type": type(exc).__name__,
+                "error_message": str(exc) or type(exc).__name__,
+            }
+        )
+    finally:
+        conn.close()
+
+
+async def _run_child_stage_operation(
+    *,
+    operation_name: str,
+    payload: dict[str, Any],
+    stage_name: str,
+    stop_request_getter: Any,
+    grace_seconds: float,
+    log_path: Path,
+    checkpoint: str,
+    chunk_index: str | None = None,
+    chunk_total: int | None = None,
+    on_force_stop: Any = None,
+) -> Any:
+    ctx = mp.get_context("spawn")
+    parent_conn, child_conn = ctx.Pipe(duplex=False)
+    process = ctx.Process(
+        target=_child_stage_operation_process_main,
+        args=(operation_name, payload, child_conn),
+    )
+    process.start()
+    child_conn.close()
+    stop_request: _RecordingStopRequest | None = None
+    stop_deadline: float | None = None
+    cleanup_attempted = False
+
+    def _append_step_log_best_effort(message: str) -> None:
+        try:
+            _append_step_log(log_path, message)
+        except OSError:
+            return
+
+    def _terminate_child_process(
+        *,
+        reason: str,
+        terminate_message: str,
+        kill_message: str,
+    ) -> None:
+        nonlocal cleanup_attempted
+        cleanup_attempted = True
+        if not process.is_alive():
+            return
+        _append_step_log_best_effort(terminate_message)
+        process.terminate()
+        process.join(timeout=1.0)
+        if not process.is_alive():
+            return
+        _append_step_log_best_effort(kill_message)
+        process.kill()
+        process.join(timeout=1.0)
+        if process.is_alive():
+            raise RuntimeError(f"child stage did not exit {reason} stage={stage_name} pid={process.pid}")
+
+    def _force_stop_process(reason: _RecordingStopRequest) -> None:
+        _terminate_child_process(
+            reason="after forced stop",
+            terminate_message=f"force terminating child stage={stage_name} pid={process.pid}",
+            kill_message=f"force killing child stage={stage_name} pid={process.pid}",
+        )
+        if callable(on_force_stop):
+            on_force_stop()
+        _append_step_log(log_path, f"stage terminated by user stop stage={stage_name}")
+        raise RecordingStopRequested(
+            stage_name=stage_name,
+            checkpoint=checkpoint,
+            stop_request=reason,
+            chunk_index=chunk_index,
+            chunk_total=chunk_total,
+            forced=True,
+            acknowledged_reason_text=_FORCED_STOP_REASON_TEXT,
+        )
+
+    def _wait_for_child_exit_after_message(message_status: str) -> None:
+        process.join(timeout=max(1.0, grace_seconds))
+        if not process.is_alive():
+            return
+        _terminate_child_process(
+            reason=f"after result status={message_status}",
+            terminate_message=(
+                "force terminating lingering child after result "
+                f"stage={stage_name} pid={process.pid} status={message_status}"
+            ),
+            kill_message=(
+                "force killing lingering child after result "
+                f"stage={stage_name} pid={process.pid} status={message_status}"
+            ),
+        )
+
+    try:
+        while True:
+            if parent_conn.poll():
+                message = parent_conn.recv()
+                message_status = str(message.get("status") or "")
+                _wait_for_child_exit_after_message(message_status)
+                if message_status == "ok":
+                    if stop_request is not None:
+                        _append_step_log(
+                            log_path,
+                            f"stop completed cooperatively stage={stage_name} pid={process.pid}",
+                        )
+                    return message.get("payload")
+                raise _rehydrate_child_operation_error(
+                    operation_name=operation_name,
+                    error_type=str(message.get("error_type") or "RuntimeError"),
+                    error_message=str(message.get("error_message") or ""),
+                )
+            if not process.is_alive():
+                process.join(timeout=1.0)
+                if parent_conn.poll():
+                    continue
+                raise RuntimeError(
+                    f"child stage exited without result stage={stage_name} exitcode={process.exitcode}"
+                )
+            if stop_request is None:
+                current_stop = stop_request_getter()
+                if current_stop is not None:
+                    stop_request = current_stop
+                    _append_step_log(log_path, f"stop requested stage={stage_name} pid={process.pid}")
+                    _append_step_log(
+                        log_path,
+                        (
+                            "waiting for cooperative stop "
+                            f"grace={grace_seconds:g}s stage={stage_name} pid={process.pid}"
+                        ),
+                    )
+                    stop_deadline = time.monotonic() + grace_seconds
+            if stop_request is not None and stop_deadline is not None and time.monotonic() >= stop_deadline:
+                _force_stop_process(stop_request)
+            await asyncio.sleep(0.05)
+    except asyncio.CancelledError:
+        if not cleanup_attempted:
+            _terminate_child_process(
+                reason="after parent cancellation",
+                terminate_message=(
+                    f"force terminating child after parent cancellation stage={stage_name} pid={process.pid}"
+                ),
+                kill_message=(
+                    f"force killing child after parent cancellation stage={stage_name} pid={process.pid}"
+                ),
+            )
+        raise
+    except BaseException:
+        if not cleanup_attempted:
+            _terminate_child_process(
+                reason="after parent exception",
+                terminate_message=(
+                    f"force terminating child after parent exception stage={stage_name} pid={process.pid}"
+                ),
+                kill_message=(
+                    f"force killing child after parent exception stage={stage_name} pid={process.pid}"
+                ),
+            )
+        raise
+    finally:
+        parent_conn.close()
+
+
+def _should_use_child_asr_execution() -> bool:
+    return (
+        pipeline_orchestrator._whisperx_asr is pipeline_orchestrator._DEFAULT_WHISPERX_ASR
+        and run_language_aware_asr is _ORIGINAL_RUN_LANGUAGE_AWARE_ASR
+        and pipeline_orchestrator._build_whisperx_transcriber
+        is _ORIGINAL_BUILD_WHISPERX_TRANSCRIBER
+        and pipeline_orchestrator._glossary_runtime_metadata
+        is _ORIGINAL_GLOSSARY_RUNTIME_METADATA
+    )
+
+
+def _should_use_child_diarization_execution() -> bool:
+    return (
+        _build_diariser is _ORIGINAL_BUILD_DIARISER
+        and pipeline_orchestrator._maybe_retry_dialog_diarization
+        is _ORIGINAL_MAYBE_RETRY_DIALOG_DIARIZATION
+        and pipeline_orchestrator._diariser_runtime_metadata
+        is _ORIGINAL_DIARISER_RUNTIME_METADATA
+        and _diarization_segments is _ORIGINAL_DIARIZATION_SEGMENTS
+    )
 
 
 class _CancelAwareChunkStateStore:
@@ -521,6 +834,27 @@ class _CancelAwareChunkStateStore:
         return self._base_store.clear_states(chunk_group=chunk_group)
 
 
+def _cancel_inflight_llm_chunk_state(
+    *,
+    recording_id: str,
+    settings: AppSettings,
+    chunk_index: str | None,
+    chunk_total: int | None,
+) -> None:
+    if chunk_index is None or chunk_total is None:
+        return
+    try:
+        mark_recording_llm_chunk_cancelled(
+            recording_id,
+            chunk_group="extract",
+            chunk_index=chunk_index,
+            chunk_total=chunk_total,
+            settings=settings,
+        )
+    except Exception:
+        return
+
+
 class _CancelAwareLLMClient:
     def __init__(
         self,
@@ -529,26 +863,105 @@ class _CancelAwareLLMClient:
         recording_id: str,
         settings: AppSettings,
         stage_name: str,
+        log_path: Path,
     ) -> None:
         self._base_client = base_client
         self._recording_id = recording_id
         self._settings = settings
         self._stage_name = stage_name
+        self._log_path = log_path
+        self._request_context = _LLMRequestContext(checkpoint="before_llm_request")
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._base_client, name)
 
+    @contextmanager
+    def request_context(
+        self,
+        *,
+        checkpoint: str,
+        chunk_index: str | None = None,
+        chunk_total: int | None = None,
+    ):
+        previous = self._request_context
+        self._request_context = _LLMRequestContext(
+            checkpoint=checkpoint,
+            chunk_index=chunk_index,
+            chunk_total=chunk_total,
+        )
+        try:
+            yield self
+        finally:
+            self._request_context = previous
+
+    async def _generate_in_child(self, *args: Any, **kwargs: Any) -> Any:
+        system_prompt = kwargs.get("system_prompt")
+        user_prompt = kwargs.get("user_prompt")
+        if system_prompt is None and args:
+            system_prompt = args[0]
+        if user_prompt is None and len(args) > 1:
+            user_prompt = args[1]
+        request_context = self._request_context
+        return await _run_child_stage_operation(
+            operation_name="llm_generate",
+            payload={
+                "base_url": getattr(self._base_client, "base_url", None),
+                "api_key": getattr(self._base_client, "api_key", None),
+                "timeout": getattr(self._base_client, "timeout", None),
+                "mock_response_path": (
+                    str(getattr(self._base_client, "mock_response_path"))
+                    if getattr(self._base_client, "mock_response_path", None) is not None
+                    else None
+                ),
+                "default_max_tokens": getattr(self._base_client, "max_tokens", None),
+                "default_max_tokens_retry": getattr(
+                    self._base_client,
+                    "max_tokens_retry",
+                    None,
+                ),
+                "system_prompt": system_prompt,
+                "user_prompt": user_prompt,
+                "model": kwargs.get("model"),
+                "response_format": kwargs.get("response_format"),
+                "max_tokens": kwargs.get("max_tokens"),
+                "max_tokens_retry": kwargs.get("max_tokens_retry"),
+            },
+            stage_name=self._stage_name,
+            stop_request_getter=lambda: _recording_stop_request(
+                self._recording_id,
+                settings=self._settings,
+            ),
+            grace_seconds=self._settings.stop_grace_seconds,
+            log_path=self._log_path,
+            checkpoint=request_context.checkpoint,
+            chunk_index=request_context.chunk_index,
+            chunk_total=request_context.chunk_total,
+            on_force_stop=lambda: _cancel_inflight_llm_chunk_state(
+                recording_id=self._recording_id,
+                settings=self._settings,
+                chunk_index=request_context.chunk_index,
+                chunk_total=request_context.chunk_total,
+            ),
+        )
+
     def generate(self, *args: Any, **kwargs: Any) -> Any:
+        request_context = self._request_context
         _raise_if_stop_requested(
             recording_id=self._recording_id,
             settings=self._settings,
             stage_name=self._stage_name,
-            checkpoint="before_llm_request",
+            checkpoint=request_context.checkpoint,
+            chunk_index=request_context.chunk_index,
+            chunk_total=request_context.chunk_total,
         )
+        if isinstance(self._base_client, _ORIGINAL_LLM_CLIENT_CLASS):
+            return self._generate_in_child(*args, **kwargs)
         result = self._base_client.generate(*args, **kwargs)
         if inspect.isawaitable(result):
+
             async def _await_result() -> Any:
                 return await result
+
             return _await_result()
         return result
 
@@ -559,6 +972,7 @@ class PipelineTerminalState:
     quarantine_reason: str | None = None
     review_reason_code: str | None = None
     review_reason_text: str | None = None
+    stop_reason_text: str | None = None
 
 
 def _retry_policy(job_type: str) -> RetryPolicy:
@@ -1497,6 +1911,9 @@ def _build_diariser(
     )
 
 
+_ORIGINAL_BUILD_DIARISER = _build_diariser
+
+
 def _write_diarization_status_artifact(
     *,
     recording_id: str,
@@ -1518,12 +1935,11 @@ def _write_diarization_status_artifact(
         pass
 
 
-def _log_gpu_execution_policy(
+def _gpu_execution_policy_message(
     *,
     pipeline_settings: PipelineSettings,
     diariser: Any,
-    log_path: Path,
-) -> None:
+) -> str:
     diariser_mode = str(getattr(diariser, "mode", "") or "").strip().lower()
     scheduler_plan = resolve_scheduler_decision(
         pipeline_settings.gpu_scheduler_mode,
@@ -1533,7 +1949,7 @@ def _log_gpu_execution_policy(
         cuda_facts=collect_cuda_runtime_facts(),
     )
     facts = scheduler_plan.cuda_facts
-    message = (
+    return (
         "gpu policy "
         f"asr_device={scheduler_plan.asr_device} "
         f"diarization_device={scheduler_plan.diarization_device} "
@@ -1545,8 +1961,264 @@ def _log_gpu_execution_policy(
         f"visible_devices={facts.visible_devices or 'unset'} "
         f"torch_cuda={facts.torch_cuda_version or 'none'}"
     )
+
+
+def _log_gpu_execution_policy(
+    *,
+    pipeline_settings: PipelineSettings,
+    diariser: Any,
+    log_path: Path,
+) -> None:
+    message = _gpu_execution_policy_message(
+        pipeline_settings=pipeline_settings,
+        diariser=diariser,
+    )
     _logger.info(message)
     _append_step_log(log_path, message)
+
+
+def _emit_child_step_logs(log_path: Path, messages: list[str]) -> None:
+    for message in messages:
+        _append_step_log(log_path, message)
+
+
+def _best_effort_step_log_callback(callback: Any, message: str) -> None:
+    if callback is None:
+        return
+    try:
+        callback(message)
+    except Exception:
+        return
+
+
+def _execute_asr_workflow(
+    *,
+    working_audio_path: Path,
+    pipeline_settings: PipelineSettings,
+    transcript_language_override: str | None,
+    asr_glossary: dict[str, Any] | None,
+    step_log_callback: Any = None,
+) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, Any]]:
+    def _transcribe_chunk(
+        chunk_audio_path: Path,
+        chunk_language_hint: str | None,
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        return pipeline_orchestrator._whisperx_asr(
+            chunk_audio_path,
+            override_lang=chunk_language_hint,
+            cfg=pipeline_settings,
+            step_log_callback=step_log_callback,
+        )
+
+    if pipeline_orchestrator._whisperx_asr is not pipeline_orchestrator._DEFAULT_WHISPERX_ASR:
+        return run_language_aware_asr(
+            working_audio_path,
+            override_lang=transcript_language_override,
+            configured_mode=pipeline_settings.asr_multilingual_mode,
+            tmp_root=pipeline_settings.tmp_root,
+            transcribe_fn=_transcribe_chunk,
+            step_log_callback=step_log_callback,
+        )
+
+    previous_transcriber = getattr(
+        pipeline_orchestrator._whisperx_transcriber_state,
+        "transcribe_audio",
+        None,
+    )
+    previous_session_flag = bool(
+        getattr(
+            pipeline_orchestrator._whisperx_transcriber_state,
+            "use_session_transcriber",
+            False,
+        )
+    )
+    transcribe_audio = pipeline_orchestrator._build_whisperx_transcriber(
+        cfg=pipeline_settings,
+        step_log_callback=step_log_callback,
+        asr_glossary=asr_glossary,
+    )
+    pipeline_orchestrator._whisperx_transcriber_state.transcribe_audio = transcribe_audio
+    pipeline_orchestrator._whisperx_transcriber_state.use_session_transcriber = True
+    try:
+        segments, info, payload = run_language_aware_asr(
+            working_audio_path,
+            override_lang=transcript_language_override,
+            configured_mode=pipeline_settings.asr_multilingual_mode,
+            tmp_root=pipeline_settings.tmp_root,
+            transcribe_fn=_transcribe_chunk,
+            step_log_callback=step_log_callback,
+        )
+        runtime_metadata = pipeline_orchestrator._glossary_runtime_metadata(transcribe_audio)
+        if runtime_metadata:
+            payload = dict(payload)
+            payload["glossary_runtime"] = runtime_metadata
+        return segments, info, payload
+    finally:
+        if previous_transcriber is None:
+            if hasattr(pipeline_orchestrator._whisperx_transcriber_state, "transcribe_audio"):
+                delattr(pipeline_orchestrator._whisperx_transcriber_state, "transcribe_audio")
+        else:
+            pipeline_orchestrator._whisperx_transcriber_state.transcribe_audio = previous_transcriber
+        if previous_session_flag:
+            pipeline_orchestrator._whisperx_transcriber_state.use_session_transcriber = True
+        elif hasattr(pipeline_orchestrator._whisperx_transcriber_state, "use_session_transcriber"):
+            delattr(pipeline_orchestrator._whisperx_transcriber_state, "use_session_transcriber")
+
+
+def _run_default_asr_child_operation(payload: dict[str, Any]) -> dict[str, Any]:
+    pipeline_settings = _pipeline_settings_from_payload(payload["pipeline_settings"])
+    step_logs: list[str] = []
+    segments, info, execution = _execute_asr_workflow(
+        working_audio_path=Path(payload["working_audio_path"]),
+        pipeline_settings=pipeline_settings,
+        transcript_language_override=payload.get("transcript_language_override"),
+        asr_glossary=payload.get("asr_glossary"),
+        step_log_callback=step_logs.append,
+    )
+    return {
+        "segments": normalise_asr_segments(segments),
+        "info": dict(info or {}),
+        "execution": dict(execution or {}),
+        "step_logs": step_logs,
+    }
+
+
+def _execute_diarization_workflow(
+    *,
+    working_audio_path: Path,
+    asr_segments: list[dict[str, Any]],
+    precheck_result: PrecheckResult,
+    pipeline_settings: PipelineSettings,
+    diarization_model_id: str | None,
+    step_log_callback: Any = None,
+) -> dict[str, Any]:
+    diarization_mode = "pyannote"
+    diarization_reason: str | None = None
+    try:
+        diariser = _build_diariser(
+            precheck_result.duration_sec,
+            model_id=diarization_model_id,
+            settings=pipeline_settings,
+        )
+        if isinstance(diariser, _FallbackDiariser):
+            diarization_mode = "fallback"
+            diarization_reason = "pyannote_unavailable"
+            _best_effort_step_log_callback(
+                step_log_callback,
+                "diariser mode=fallback reason=pyannote_unavailable",
+            )
+        else:
+            _best_effort_step_log_callback(step_log_callback, "diariser mode=pyannote")
+    except Exception as exc:
+        _best_effort_step_log_callback(
+            step_log_callback,
+            f"diariser init failed, falling back: {type(exc).__name__}: {exc}",
+        )
+        diariser = _FallbackDiariser(precheck_result.duration_sec)
+        diarization_mode = "fallback"
+        diarization_reason = f"{type(exc).__name__}: {exc}"
+        _best_effort_step_log_callback(
+            step_log_callback,
+            "diariser mode=fallback reason=init_failed",
+        )
+
+    _best_effort_step_log_callback(
+        step_log_callback,
+        _gpu_execution_policy_message(
+            pipeline_settings=pipeline_settings,
+            diariser=diariser,
+        ),
+    )
+    diarization = asyncio.run(diariser(working_audio_path))
+    diarization = asyncio.run(
+        pipeline_orchestrator._maybe_retry_dialog_diarization(
+            diariser=diariser,
+            audio_path=working_audio_path,
+            diarization=diarization,
+            asr_segments=asr_segments,
+            precheck_result=precheck_result,
+            step_log_callback=step_log_callback,
+        )
+    )
+    diarization_segments = _diarization_segments(diarization)
+    used_dummy_fallback = False
+    if not diarization_segments and asr_segments:
+        fallback_end = max(safe_float(seg.get("end")) for seg in asr_segments)
+        used_dummy_fallback = True
+        _best_effort_step_log_callback(
+            step_log_callback,
+            "diarization output empty; using fallback single-speaker annotation",
+        )
+        diarization_segments = _diarization_segments(
+            pipeline_orchestrator._fallback_diarization(max(fallback_end, 0.1))
+        )
+    diarization_runtime = pipeline_orchestrator._diariser_runtime_metadata(diariser)
+    diarization_runtime["used_dummy_fallback"] = used_dummy_fallback
+    diarization_runtime["mode"] = pipeline_orchestrator._diariser_mode(diariser)
+    return {
+        "diarization_segments": diarization_segments,
+        "diarization_runtime": diarization_runtime,
+        "used_dummy_fallback": used_dummy_fallback,
+        "diarization_mode": diarization_mode,
+        "diarization_reason": diarization_reason,
+    }
+
+
+def _run_default_diarization_child_operation(payload: dict[str, Any]) -> dict[str, Any]:
+    pipeline_settings = _pipeline_settings_from_payload(payload["pipeline_settings"])
+    precheck_result = PrecheckResult(
+        duration_sec=payload["precheck_result"].get("duration_sec"),
+        speech_ratio=payload["precheck_result"].get("speech_ratio"),
+        quarantine_reason=payload["precheck_result"].get("quarantine_reason"),
+    )
+    step_logs: list[str] = []
+    result = _execute_diarization_workflow(
+        working_audio_path=Path(payload["working_audio_path"]),
+        asr_segments=list(payload.get("asr_segments") or []),
+        precheck_result=precheck_result,
+        pipeline_settings=pipeline_settings,
+        diarization_model_id=payload.get("diarization_model_id"),
+        step_log_callback=step_logs.append,
+    )
+    result["step_logs"] = step_logs
+    return result
+
+
+def _run_llm_generate_child_operation(payload: dict[str, Any]) -> dict[str, Any]:
+    client = LLMClient(
+        base_url=payload.get("base_url"),
+        api_key=payload.get("api_key"),
+        timeout=payload.get("timeout"),
+        mock_response_path=payload.get("mock_response_path"),
+        max_tokens=payload.get("default_max_tokens"),
+        max_tokens_retry=payload.get("default_max_tokens_retry"),
+    )
+    return asyncio.run(
+        client.generate(
+            system_prompt=str(payload.get("system_prompt") or ""),
+            user_prompt=str(payload.get("user_prompt") or ""),
+            model=payload.get("model"),
+            response_format=payload.get("response_format"),
+            max_tokens=payload.get("max_tokens"),
+            max_tokens_retry=payload.get("max_tokens_retry"),
+        )
+    )
+
+
+def _run_test_sleep_child_operation(payload: dict[str, Any]) -> dict[str, Any] | str | None:
+    time.sleep(max(float(payload.get("sleep_seconds") or 0.0), 0.0))
+    error_message = str(payload.get("error_message") or "").strip()
+    if error_message:
+        raise RuntimeError(error_message)
+    return payload.get("result")
+
+
+_CHILD_STAGE_OPERATION_HANDLERS: dict[str, Any] = {
+    "asr_default": _run_default_asr_child_operation,
+    "diarization_default": _run_default_diarization_child_operation,
+    "llm_generate": _run_llm_generate_child_operation,
+    "test_sleep": _run_test_sleep_child_operation,
+}
 
 
 @dataclass(frozen=True)
@@ -1890,73 +2562,55 @@ def _stage_asr(ctx: _PipelineExecutionContext) -> _StageResult:
 
     def _step_log_callback(message: str) -> None:
         _append_step_log(ctx.log_path, message)
-
-    def _run_asr_workflow() -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, Any]]:
-        def _transcribe_chunk(
-            chunk_audio_path: Path,
-            chunk_language_hint: str | None,
-        ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-            return pipeline_orchestrator._whisperx_asr(
-                chunk_audio_path,
-                override_lang=chunk_language_hint,
-                cfg=ctx.pipeline_settings,
-                step_log_callback=_step_log_callback,
-            )
-
-        if pipeline_orchestrator._whisperx_asr is not pipeline_orchestrator._DEFAULT_WHISPERX_ASR:
-            return run_language_aware_asr(
-                working_audio_path,
-                override_lang=ctx.transcript_language_override,
-                configured_mode=ctx.pipeline_settings.asr_multilingual_mode,
-                tmp_root=ctx.pipeline_settings.tmp_root,
-                transcribe_fn=_transcribe_chunk,
-                step_log_callback=_step_log_callback,
-            )
-
-        previous_transcriber = getattr(
-            pipeline_orchestrator._whisperx_transcriber_state,
-            "transcribe_audio",
-            None,
-        )
-        previous_session_flag = bool(
-            getattr(pipeline_orchestrator._whisperx_transcriber_state, "use_session_transcriber", False)
-        )
-        transcribe_audio = pipeline_orchestrator._build_whisperx_transcriber(
-            cfg=ctx.pipeline_settings,
-            step_log_callback=_step_log_callback,
-            asr_glossary=ctx.asr_glossary,
-        )
-        pipeline_orchestrator._whisperx_transcriber_state.transcribe_audio = transcribe_audio
-        pipeline_orchestrator._whisperx_transcriber_state.use_session_transcriber = True
+    stage_tmp_root = _stage_temp_root(
+        recording_id=ctx.recording_id,
+        stage_name="asr",
+        settings=ctx.settings,
+    )
+    _cleanup_stage_temp_root(stage_tmp_root)
+    if _should_use_child_asr_execution():
+        child_settings = ctx.pipeline_settings.model_copy(update={"tmp_root": stage_tmp_root})
         try:
-            segments, info, payload = run_language_aware_asr(
-                working_audio_path,
-                override_lang=ctx.transcript_language_override,
-                configured_mode=ctx.pipeline_settings.asr_multilingual_mode,
-                tmp_root=ctx.pipeline_settings.tmp_root,
-                transcribe_fn=_transcribe_chunk,
-                step_log_callback=_step_log_callback,
+            child_result = asyncio.run(
+                _run_child_stage_operation(
+                    operation_name="asr_default",
+                    payload={
+                        "working_audio_path": str(working_audio_path),
+                        "pipeline_settings": _pipeline_settings_payload(child_settings),
+                        "transcript_language_override": ctx.transcript_language_override,
+                        "asr_glossary": ctx.asr_glossary,
+                    },
+                    stage_name="asr",
+                    stop_request_getter=lambda: _recording_stop_request(
+                        ctx.recording_id,
+                        settings=ctx.settings,
+                    ),
+                    grace_seconds=ctx.settings.stop_grace_seconds,
+                    log_path=ctx.log_path,
+                    checkpoint="during_heavy_stage",
+                    on_force_stop=lambda: _cleanup_stage_temp_root(stage_tmp_root),
+                )
             )
-            runtime_metadata = pipeline_orchestrator._glossary_runtime_metadata(transcribe_audio)
-            if runtime_metadata:
-                payload = dict(payload)
-                payload["glossary_runtime"] = runtime_metadata
-            return segments, info, payload
+            _emit_child_step_logs(
+                ctx.log_path,
+                list(child_result.get("step_logs") or []),
+            )
+            ctx.asr_segments = list(child_result.get("segments") or [])
+            ctx.asr_info = dict(child_result.get("info") or {})
+            ctx.asr_execution = dict(child_result.get("execution") or {})
         finally:
-            if previous_transcriber is None:
-                if hasattr(pipeline_orchestrator._whisperx_transcriber_state, "transcribe_audio"):
-                    delattr(pipeline_orchestrator._whisperx_transcriber_state, "transcribe_audio")
-            else:
-                pipeline_orchestrator._whisperx_transcriber_state.transcribe_audio = previous_transcriber
-            if previous_session_flag:
-                pipeline_orchestrator._whisperx_transcriber_state.use_session_transcriber = True
-            elif hasattr(pipeline_orchestrator._whisperx_transcriber_state, "use_session_transcriber"):
-                delattr(pipeline_orchestrator._whisperx_transcriber_state, "use_session_transcriber")
-
-    raw_segments, info, asr_execution = _run_asr_workflow()
-    ctx.asr_segments = normalise_asr_segments(raw_segments)
-    ctx.asr_info = dict(info or {})
-    ctx.asr_execution = dict(asr_execution or {})
+            _cleanup_stage_temp_root(stage_tmp_root)
+    else:
+        raw_segments, info, asr_execution = _execute_asr_workflow(
+            working_audio_path=working_audio_path,
+            pipeline_settings=ctx.pipeline_settings,
+            transcript_language_override=ctx.transcript_language_override,
+            asr_glossary=ctx.asr_glossary,
+            step_log_callback=_step_log_callback,
+        )
+        ctx.asr_segments = normalise_asr_segments(raw_segments)
+        ctx.asr_info = dict(info or {})
+        ctx.asr_execution = dict(asr_execution or {})
     pipeline_orchestrator._write_asr_glossary_artifact(
         derived_dir=ctx.artifacts.derived_dir,
         recording_id=ctx.recording_id,
@@ -1989,83 +2643,66 @@ def _stage_diarization(ctx: _PipelineExecutionContext) -> _StageResult:
     if precheck_result.quarantine_reason:
         return _build_skip_result("quarantined_precheck")
 
-    diarization_mode = "pyannote"
-    diarization_reason: str | None = None
-    try:
-        diariser = _build_diariser(
-            precheck_result.duration_sec,
-            model_id=ctx.settings.diarization_model_id,
-            settings=ctx.pipeline_settings,
-        )
-        if isinstance(diariser, _FallbackDiariser):
-            diarization_mode = "fallback"
-            diarization_reason = "pyannote_unavailable"
-            _append_step_log(
-                ctx.log_path,
-                "diariser mode=fallback reason=pyannote_unavailable",
+    working_audio_path = _working_audio_path(ctx)
+    if working_audio_path is None:
+        raise RuntimeError("Missing sanitized audio")
+    ctx.asr_segments = _load_json_list(ctx.artifacts.asr_segments_json_path)
+    if _should_use_child_diarization_execution():
+        child_result = asyncio.run(
+            _run_child_stage_operation(
+                operation_name="diarization_default",
+                payload={
+                    "working_audio_path": str(working_audio_path),
+                    "asr_segments": ctx.asr_segments,
+                    "precheck_result": {
+                        "duration_sec": precheck_result.duration_sec,
+                        "speech_ratio": precheck_result.speech_ratio,
+                        "quarantine_reason": precheck_result.quarantine_reason,
+                    },
+                    "pipeline_settings": _pipeline_settings_payload(ctx.pipeline_settings),
+                    "diarization_model_id": ctx.settings.diarization_model_id,
+                },
+                stage_name="diarization",
+                stop_request_getter=lambda: _recording_stop_request(
+                    ctx.recording_id,
+                    settings=ctx.settings,
+                ),
+                grace_seconds=ctx.settings.stop_grace_seconds,
+                log_path=ctx.log_path,
+                checkpoint="during_heavy_stage",
             )
-        else:
-            _append_step_log(ctx.log_path, "diariser mode=pyannote")
-    except Exception as exc:
-        _append_step_log(
-            ctx.log_path,
-            (
-                "diariser init failed, falling back: "
-                f"{type(exc).__name__}: {exc}"
-            ),
         )
-        diariser = _FallbackDiariser(precheck_result.duration_sec)
-        diarization_mode = "fallback"
-        diarization_reason = f"{type(exc).__name__}: {exc}"
-        _append_step_log(
+        _emit_child_step_logs(
             ctx.log_path,
-            "diariser mode=fallback reason=init_failed",
+            list(child_result.get("step_logs") or []),
         )
+        diarization_mode = str(child_result.get("diarization_mode") or "pyannote")
+        diarization_reason = str(child_result.get("diarization_reason") or "").strip() or None
+        ctx.diarization_segments = list(child_result.get("diarization_segments") or [])
+        ctx.diarization_runtime = dict(child_result.get("diarization_runtime") or {})
+        used_dummy_fallback = bool(child_result.get("used_dummy_fallback"))
+    else:
+        diarization_result = _execute_diarization_workflow(
+            working_audio_path=working_audio_path,
+            asr_segments=ctx.asr_segments,
+            precheck_result=precheck_result,
+            pipeline_settings=ctx.pipeline_settings,
+            diarization_model_id=ctx.settings.diarization_model_id,
+            step_log_callback=lambda message: _append_step_log(ctx.log_path, message),
+        )
+        diarization_mode = str(diarization_result.get("diarization_mode") or "pyannote")
+        diarization_reason = (
+            str(diarization_result.get("diarization_reason") or "").strip() or None
+        )
+        ctx.diarization_segments = list(diarization_result.get("diarization_segments") or [])
+        ctx.diarization_runtime = dict(diarization_result.get("diarization_runtime") or {})
+        used_dummy_fallback = bool(diarization_result.get("used_dummy_fallback"))
     _write_diarization_status_artifact(
         recording_id=ctx.recording_id,
         mode=diarization_mode,
         reason=diarization_reason,
         settings=ctx.settings,
     )
-    _log_gpu_execution_policy(
-        pipeline_settings=ctx.pipeline_settings,
-        diariser=diariser,
-        log_path=ctx.log_path,
-    )
-    working_audio_path = _working_audio_path(ctx)
-    if working_audio_path is None:
-        raise RuntimeError("Missing sanitized audio")
-    ctx.asr_segments = _load_json_list(ctx.artifacts.asr_segments_json_path)
-
-    def _step_log_callback(message: str) -> None:
-        _append_step_log(ctx.log_path, message)
-
-    diarization = asyncio.run(diariser(working_audio_path))
-    diarization = asyncio.run(
-        pipeline_orchestrator._maybe_retry_dialog_diarization(
-            diariser=diariser,
-            audio_path=working_audio_path,
-            diarization=diarization,
-            asr_segments=ctx.asr_segments,
-            precheck_result=precheck_result,
-            step_log_callback=_step_log_callback,
-        )
-    )
-    ctx.diarization_segments = _diarization_segments(diarization)
-    used_dummy_fallback = False
-    if not ctx.diarization_segments and ctx.asr_segments:
-        fallback_end = max(safe_float(seg.get("end")) for seg in ctx.asr_segments)
-        used_dummy_fallback = True
-        _append_step_log(
-            ctx.log_path,
-            "diarization output empty; using fallback single-speaker annotation",
-        )
-        ctx.diarization_segments = _diarization_segments(
-            pipeline_orchestrator._fallback_diarization(max(fallback_end, 0.1))
-        )
-    ctx.diarization_runtime = pipeline_orchestrator._diariser_runtime_metadata(diariser)
-    ctx.diarization_runtime["used_dummy_fallback"] = used_dummy_fallback
-    ctx.diarization_runtime["mode"] = pipeline_orchestrator._diariser_mode(diariser)
     atomic_write_json(ctx.artifacts.diarization_segments_json_path, ctx.diarization_segments)
     atomic_write_json(ctx.artifacts.diarization_runtime_json_path, ctx.diarization_runtime)
     return _StageResult(
@@ -2268,6 +2905,7 @@ def _stage_llm_extract(ctx: _PipelineExecutionContext) -> _StageResult:
         recording_id=ctx.recording_id,
         settings=ctx.settings,
         stage_name="llm_extract",
+        log_path=ctx.log_path,
     )
 
     def _progress_callback(stage: str, progress: float) -> None:
@@ -3004,7 +3642,11 @@ def _run_precheck_pipeline(
             )
         except RecordingStopRequested as stop:
             _log_stop_requested(log_path=log_path, stop=stop)
-            return _stop_terminal_state(recording_id=recording_id, settings=settings)
+            return _stop_terminal_state(
+                recording_id=recording_id,
+                settings=settings,
+                reason_text=stop.acknowledged_reason_text,
+            )
         _append_step_log(log_path, "pipeline artifacts generated")
         return _terminal_state_from_stage_artifacts(ctx=ctx)
 
@@ -3048,7 +3690,11 @@ def _run_precheck_pipeline(
                     settings=settings,
                 )
             _log_stop_requested(log_path=log_path, stop=stop)
-            return _stop_terminal_state(recording_id=recording_id, settings=settings)
+            return _stop_terminal_state(
+                recording_id=recording_id,
+                settings=settings,
+                reason_text=stop.acknowledged_reason_text,
+            )
         except Exception as exc:
             mark_recording_pipeline_stage_failed(
                 recording_id,
@@ -3084,7 +3730,11 @@ def _run_precheck_pipeline(
                 )
             except RecordingStopRequested as stop:
                 _log_stop_requested(log_path=log_path, stop=stop)
-                return _stop_terminal_state(recording_id=recording_id, settings=settings)
+                return _stop_terminal_state(
+                    recording_id=recording_id,
+                    settings=settings,
+                    reason_text=stop.acknowledged_reason_text,
+                )
             continue
 
         row = mark_recording_pipeline_stage_completed(
@@ -3110,7 +3760,11 @@ def _run_precheck_pipeline(
             )
         except RecordingStopRequested as stop:
             _log_stop_requested(log_path=log_path, stop=stop)
-            return _stop_terminal_state(recording_id=recording_id, settings=settings)
+            return _stop_terminal_state(
+                recording_id=recording_id,
+                settings=settings,
+                reason_text=stop.acknowledged_reason_text,
+            )
 
     try:
         _raise_if_stop_requested(
@@ -3121,7 +3775,11 @@ def _run_precheck_pipeline(
         )
     except RecordingStopRequested as stop:
         _log_stop_requested(log_path=log_path, stop=stop)
-        return _stop_terminal_state(recording_id=recording_id, settings=settings)
+        return _stop_terminal_state(
+            recording_id=recording_id,
+            settings=settings,
+            reason_text=stop.acknowledged_reason_text,
+        )
     _append_step_log(log_path, "pipeline artifacts generated")
     return _terminal_state_from_stage_artifacts(ctx=ctx)
 
@@ -3257,6 +3915,7 @@ def process_job(job_id: str, recording_id: str, job_type: str) -> dict[str, str]
                 _acknowledge_stop_requested(
                     recording_id=recording_id,
                     settings=settings,
+                    reason_text=terminal_state.stop_reason_text,
                 )
             if (
                 terminal_state.status != RECORDING_STATUS_STOPPED

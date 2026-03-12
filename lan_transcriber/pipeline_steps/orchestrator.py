@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import nullcontext
 from dataclasses import dataclass
 import gc
 import hashlib
@@ -2216,16 +2217,27 @@ async def _run_chunked_llm_summary(
         start_perf = time.perf_counter()
 
         try:
-            raw_chunk = await _generate_llm_message(
-                llm,
-                system_prompt=chunk_sys_prompt,
-                user_prompt=chunk_user_prompt,
-                model=llm_model,
-                response_format={"type": "json_object"},
-                max_tokens=cfg.llm_max_tokens,
-                max_tokens_retry=cfg.llm_max_tokens_retry,
-                timeout_seconds=cfg.llm_chunk_timeout_seconds,
+            request_context = getattr(llm, "request_context", None)
+            context_manager = (
+                request_context(
+                    checkpoint="llm_chunk_request",
+                    chunk_index=chunk.chunk_id,
+                    chunk_total=total,
+                )
+                if callable(request_context)
+                else nullcontext()
             )
+            with context_manager:
+                raw_chunk = await _generate_llm_message(
+                    llm,
+                    system_prompt=chunk_sys_prompt,
+                    user_prompt=chunk_user_prompt,
+                    model=llm_model,
+                    response_format={"type": "json_object"},
+                    max_tokens=cfg.llm_max_tokens,
+                    max_tokens_retry=cfg.llm_max_tokens_retry,
+                    timeout_seconds=cfg.llm_chunk_timeout_seconds,
+                )
         except asyncio.TimeoutError:
             reason_code = _LLM_CHUNK_REASON_TIMEOUT
             message = _llm_timeout_message(cfg.llm_chunk_timeout_seconds)
@@ -2443,15 +2455,25 @@ async def _run_chunked_llm_summary(
     merge_reason_code: str | None = None
     merge_message: str | None = None
     try:
-        raw_merge = await _generate_llm_message(
-            llm,
-            system_prompt=merge_sys_prompt,
-            user_prompt=merge_user_prompt,
-            model=llm_model,
-            response_format={"type": "json_object"},
-            max_tokens=merge_max_tokens,
-            max_tokens_retry=max(cfg.llm_max_tokens_retry, merge_max_tokens),
+        request_context = getattr(llm, "request_context", None)
+        context_manager = (
+            request_context(
+                checkpoint="llm_merge_request",
+                chunk_total=len(chunk_results),
+            )
+            if callable(request_context)
+            else nullcontext()
         )
+        with context_manager:
+            raw_merge = await _generate_llm_message(
+                llm,
+                system_prompt=merge_sys_prompt,
+                user_prompt=merge_user_prompt,
+                model=llm_model,
+                response_format={"type": "json_object"},
+                max_tokens=merge_max_tokens,
+                max_tokens_retry=max(cfg.llm_max_tokens_retry, merge_max_tokens),
+            )
     except asyncio.TimeoutError:
         merge_reason_code = _LLM_MERGE_REASON_TIMEOUT
         merge_message = _llm_timeout_message(cfg.llm_chunk_timeout_seconds)

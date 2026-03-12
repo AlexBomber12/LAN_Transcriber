@@ -1,181 +1,294 @@
-diff --git a/lan_app/db.py b/lan_app/db.py
-index d813cd8..da2781d 100644
---- a/lan_app/db.py
-+++ b/lan_app/db.py
-@@ -2487,7 +2487,7 @@ def list_processing_recordings_without_started_job(
-             FROM recordings AS r
-             LEFT JOIN projects AS p ON p.id = r.project_id
-             LEFT JOIN projects AS sp ON sp.id = r.suggested_project_id
--            WHERE r.status = ?
-+            WHERE r.status IN (?, ?)
-               AND (? IS NULL OR r.updated_at < ?)
-               AND NOT EXISTS (
-                     SELECT 1
-@@ -2506,6 +2506,7 @@ def list_processing_recordings_without_started_job(
-                 JOB_STATUS_QUEUED,
-                 JOB_STATUS_STARTED,
-                 RECORDING_STATUS_PROCESSING,
-+                RECORDING_STATUS_STOPPING,
-                 before_updated_at,
-                 before_updated_at,
-                 JOB_STATUS_STARTED,
-diff --git a/lan_app/reaper.py b/lan_app/reaper.py
-index 0ef3085..077b92b 100644
---- a/lan_app/reaper.py
-+++ b/lan_app/reaper.py
-@@ -11,6 +11,7 @@ from .constants import (
-     RECORDING_STATUS_NEEDS_REVIEW,
-     RECORDING_STATUS_PROCESSING,
-     RECORDING_STATUS_QUEUED,
-+    RECORDING_STATUS_STOPPING,
- )
- from .db import (
-     fail_job_if_queued,
-@@ -30,9 +31,13 @@ _RECOVERY_REVIEW_REASON_TEXT = (
- _STALE_DOWNGRADE_STATUSES = (
-     RECORDING_STATUS_QUEUED,
-     RECORDING_STATUS_PROCESSING,
-+    RECORDING_STATUS_STOPPING,
-     RECORDING_STATUS_NEEDS_REVIEW,
- )
--_ORPHAN_DOWNGRADE_STATUSES = (RECORDING_STATUS_PROCESSING,)
-+_ORPHAN_DOWNGRADE_STATUSES = (
-+    RECORDING_STATUS_PROCESSING,
-+    RECORDING_STATUS_STOPPING,
-+)
+diff --git a/lan_app/worker_tasks.py b/lan_app/worker_tasks.py
+index 4233665..4e6a001 100644
+--- a/lan_app/worker_tasks.py
++++ b/lan_app/worker_tasks.py
+@@ -606,17 +606,41 @@ async def _run_child_stage_operation(
+     child_conn.close()
+     stop_request: _RecordingStopRequest | None = None
+     stop_deadline: float | None = None
++    cleanup_attempted = False
  
- 
- def _utc_now() -> datetime:
-diff --git a/tests/test_reaper.py b/tests/test_reaper.py
-index 1151cff..da30058 100644
---- a/tests/test_reaper.py
-+++ b/tests/test_reaper.py
-@@ -13,6 +13,7 @@ from lan_app.constants import (
-     RECORDING_STATUS_PROCESSING,
-     RECORDING_STATUS_QUEUED,
-     RECORDING_STATUS_READY,
-+    RECORDING_STATUS_STOPPING,
- )
- from lan_app import db as db_module
- from lan_app.db import (
-@@ -190,6 +191,57 @@ def test_reaper_recovers_stale_started_job_when_recording_status_is_queued(
-     assert recording["status"] == RECORDING_STATUS_NEEDS_REVIEW
- 
- 
-+def test_reaper_recovers_stale_started_job_when_recording_status_is_stopping(
-+    tmp_path: Path,
-+):
-+    cfg = _test_settings(tmp_path)
-+    init_db(cfg)
-+    create_recording(
-+        "rec-reaper-stale-stopping-1",
-+        source="test",
-+        source_filename="stale-stopping.wav",
-+        status=RECORDING_STATUS_STOPPING,
-+        settings=cfg,
-+    )
-+    create_job(
-+        "job-reaper-stale-stopping-1",
-+        recording_id="rec-reaper-stale-stopping-1",
-+        job_type=JOB_TYPE_PRECHECK,
-+        status=JOB_STATUS_STARTED,
-+        settings=cfg,
-+        attempt=1,
-+    )
-+    with connect(cfg) as conn:
-+        conn.execute(
-+            """
-+            UPDATE jobs
-+            SET started_at = ?, updated_at = ?
-+            WHERE id = ?
-+            """,
-+            (
-+                "2026-02-22T00:00:00Z",
-+                "2026-02-22T00:00:00Z",
-+                "job-reaper-stale-stopping-1",
+-    def _force_stop_process(reason: _RecordingStopRequest) -> None:
+-        _append_step_log(
+-            log_path,
+-            f"force terminating child stage={stage_name} pid={process.pid}",
+-        )
++    def _append_step_log_best_effort(message: str) -> None:
++        try:
++            _append_step_log(log_path, message)
++        except OSError:
++            return
++
++    def _terminate_child_process(
++        *,
++        reason: str,
++        terminate_message: str,
++        kill_message: str,
++    ) -> None:
++        nonlocal cleanup_attempted
++        cleanup_attempted = True
++        if not process.is_alive():
++            return
++        _append_step_log_best_effort(terminate_message)
+         process.terminate()
+         process.join(timeout=1.0)
++        if not process.is_alive():
++            return
++        _append_step_log_best_effort(kill_message)
++        process.kill()
++        process.join(timeout=1.0)
+         if process.is_alive():
+-            process.kill()
+-            process.join(timeout=1.0)
++            raise RuntimeError(f"child stage did not exit {reason} stage={stage_name} pid={process.pid}")
++
++    def _force_stop_process(reason: _RecordingStopRequest) -> None:
++        _terminate_child_process(
++            reason="after forced stop",
++            terminate_message=f"force terminating child stage={stage_name} pid={process.pid}",
++            kill_message=f"force killing child stage={stage_name} pid={process.pid}",
++        )
+         if callable(on_force_stop):
+             on_force_stop()
+         _append_step_log(log_path, f"stage terminated by user stop stage={stage_name}")
+@@ -634,30 +658,17 @@ async def _run_child_stage_operation(
+         process.join(timeout=max(1.0, grace_seconds))
+         if not process.is_alive():
+             return
+-        _append_step_log(
+-            log_path,
+-            (
++        _terminate_child_process(
++            reason=f"after result status={message_status}",
++            terminate_message=(
+                 "force terminating lingering child after result "
+                 f"stage={stage_name} pid={process.pid} status={message_status}"
+             ),
++            kill_message=(
++                "force killing lingering child after result "
++                f"stage={stage_name} pid={process.pid} status={message_status}"
 +            ),
-+        )
-+        conn.commit()
+         )
+-        process.terminate()
+-        process.join(timeout=1.0)
+-        if process.is_alive():
+-            _append_step_log(
+-                log_path,
+-                (
+-                    "force killing lingering child after result "
+-                    f"stage={stage_name} pid={process.pid} status={message_status}"
+-                ),
+-            )
+-            process.kill()
+-            process.join(timeout=1.0)
+-            if process.is_alive():
+-                raise RuntimeError(
+-                    "child stage did not exit after result "
+-                    f"stage={stage_name} pid={process.pid} status={message_status}"
+-                )
+ 
+     try:
+         while True:
+@@ -701,12 +712,28 @@ async def _run_child_stage_operation(
+                 _force_stop_process(stop_request)
+             await asyncio.sleep(0.05)
+     except asyncio.CancelledError:
+-        if process.is_alive():
+-            process.terminate()
+-            process.join(timeout=1.0)
+-            if process.is_alive():
+-                process.kill()
+-                process.join(timeout=1.0)
++        if not cleanup_attempted:
++            _terminate_child_process(
++                reason="after parent cancellation",
++                terminate_message=(
++                    f"force terminating child after parent cancellation stage={stage_name} pid={process.pid}"
++                ),
++                kill_message=(
++                    f"force killing child after parent cancellation stage={stage_name} pid={process.pid}"
++                ),
++            )
++        raise
++    except BaseException:
++        if not cleanup_attempted:
++            _terminate_child_process(
++                reason="after parent exception",
++                terminate_message=(
++                    f"force terminating child after parent exception stage={stage_name} pid={process.pid}"
++                ),
++                kill_message=(
++                    f"force killing child after parent exception stage={stage_name} pid={process.pid}"
++                ),
++            )
+         raise
+     finally:
+         parent_conn.close()
+diff --git a/tests/test_cov_lan_app_worker_tasks_branches.py b/tests/test_cov_lan_app_worker_tasks_branches.py
+index 52171fa..b382a3b 100644
+--- a/tests/test_cov_lan_app_worker_tasks_branches.py
++++ b/tests/test_cov_lan_app_worker_tasks_branches.py
+@@ -479,7 +479,7 @@ def test_run_child_stage_operation_force_terminates_after_grace(
+     )
+     fake_ctx, process, _parent_conn, _child_conn = _fake_child_runtime(
+         parent_polls=[False, False],
+-        process_alive=[True, True, True],
++        process_alive=[True],
+     )
+     times = iter([1.0, 1.0, 2.0])
+     force_stop_calls: list[str] = []
+@@ -490,9 +490,13 @@ def test_run_child_stage_operation_force_terminates_after_grace(
+     def _next_time() -> float:
+         return next(times, 2.0)
+ 
++    def _alive_until_kill() -> bool:
++        return process.kill_calls == 0
 +
-+    summary = run_stuck_job_reaper_once(
-+        settings=cfg,
-+        now=datetime(2026, 2, 23, 0, 0, 0, tzinfo=timezone.utc),
-+    )
-+
-+    job = get_job("job-reaper-stale-stopping-1", settings=cfg)
-+    recording = get_recording("rec-reaper-stale-stopping-1", settings=cfg)
-+    assert job is not None
-+    assert recording is not None
-+    assert summary["stale_started_jobs"] == 1
-+    assert summary["recovered_jobs"] == 1
-+    assert summary["recovered_recordings"] == 1
-+    assert job["status"] == JOB_STATUS_FAILED
-+    assert recording["status"] == RECORDING_STATUS_NEEDS_REVIEW
-+
-+
- def test_reaper_does_not_downgrade_ready_recording_when_clearing_stale_started_job(
-     tmp_path: Path,
- ):
-@@ -473,6 +525,62 @@ def test_reaper_does_not_recover_recent_processing_without_started_job(tmp_path:
-     assert recording["status"] == RECORDING_STATUS_PROCESSING
+     monkeypatch.setattr(worker_tasks.mp, "get_context", lambda _name: fake_ctx)
+     monkeypatch.setattr(worker_tasks.asyncio, "sleep", _fast_sleep)
+     monkeypatch.setattr(worker_tasks.time, "monotonic", _next_time)
++    monkeypatch.setattr(process, "is_alive", _alive_until_kill)
+ 
+     with pytest.raises(worker_tasks.RecordingStopRequested) as exc_info:
+         asyncio.run(
+@@ -818,7 +822,7 @@ def test_run_child_stage_operation_cleans_up_on_async_cancel(
+     log_path = tmp_path / "logs" / "step.log"
+     cancel_ctx, process, _parent_conn, _child_conn = _fake_child_runtime(
+         parent_polls=[False, False, False],
+-        process_alive=[True, True, True],
++        process_alive=[True, True, True, False],
+     )
+     real_sleep = asyncio.sleep
+ 
+@@ -939,6 +943,131 @@ def test_run_child_stage_operation_cancel_cleanup_skips_terminate_when_dead(
+     assert process.kill_calls == 0
  
  
-+def test_reaper_recovers_stopping_recording_without_started_job(
++def test_run_child_stage_operation_cancel_after_cleanup_started_skips_repeat_cleanup(
 +    tmp_path: Path,
-+    monkeypatch,
-+):
-+    cfg = _test_settings(tmp_path)
-+    init_db(cfg)
-+    create_recording(
-+        "rec-reaper-stopping-orphan-1",
-+        source="test",
-+        source_filename="stopping-orphan.wav",
-+        status=RECORDING_STATUS_STOPPING,
-+        settings=cfg,
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    log_path = tmp_path / "logs" / "step.log"
++    cancel_ctx, process, _parent_conn, _child_conn = _fake_child_runtime(
++        parent_polls=[True],
++        parent_messages=[{"status": "ok", "payload": {"status": "late"}}],
++        process_alive=[True],
 +    )
-+    create_job(
-+        "job-reaper-stopping-orphan-1",
-+        recording_id="rec-reaper-stopping-orphan-1",
-+        job_type=JOB_TYPE_PRECHECK,
-+        status=JOB_STATUS_QUEUED,
-+        settings=cfg,
-+    )
-+    with connect(cfg) as conn:
-+        conn.execute(
-+            """
-+            UPDATE recordings
-+            SET updated_at = ?
-+            WHERE id = ?
-+            """,
-+            ("2026-02-22T00:00:00Z", "rec-reaper-stopping-orphan-1"),
++    join_calls = {"count": 0}
++
++    def _join_then_cancel(timeout=None):
++        process.join_calls.append(timeout)
++        join_calls["count"] += 1
++        if join_calls["count"] == 2:
++            raise asyncio.CancelledError
++
++    monkeypatch.setattr(worker_tasks.mp, "get_context", lambda _name: cancel_ctx)
++    monkeypatch.setattr(process, "is_alive", lambda: True)
++    monkeypatch.setattr(process, "join", _join_then_cancel)
++
++    with pytest.raises(asyncio.CancelledError):
++        asyncio.run(
++            worker_tasks._run_child_stage_operation(  # noqa: SLF001
++                operation_name="llm_generate",
++                payload={},
++                stage_name="llm_extract",
++                stop_request_getter=lambda: None,
++                grace_seconds=5.0,
++                log_path=log_path,
++                checkpoint="llm_chunk_request",
++            )
 +        )
-+        conn.commit()
 +
-+    cancelled_job_ids: list[str] = []
++    assert process.terminate_calls == 1
++    assert process.kill_calls == 0
 +
-+    def _cancel_pending(job_id: str, *, settings=None) -> bool:
-+        cancelled_job_ids.append(job_id)
-+        return True
 +
-+    monkeypatch.setattr("lan_app.reaper.cancel_pending_queue_job", _cancel_pending)
++def test_run_child_stage_operation_force_stop_raises_if_child_survives_kill(
++    tmp_path: Path,
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    log_path = tmp_path / "logs" / "step.log"
++    stop_request = worker_tasks._RecordingStopRequest(  # noqa: SLF001
++        requested_at="2026-03-12T10:00:00Z",
++        requested_by="user",
++        reason_code="user_stop",
++        reason_text="Stop requested by user",
++    )
++    fake_ctx, process, _parent_conn, _child_conn = _fake_child_runtime(
++        parent_polls=[False, False],
++        process_alive=[True],
++    )
++    times = iter([1.0, 1.0, 2.0])
++    force_stop_calls: list[str] = []
++    real_sleep = asyncio.sleep
 +
-+    summary = run_stuck_job_reaper_once(
-+        settings=cfg,
-+        now=datetime(2026, 2, 23, 0, 0, 1, tzinfo=timezone.utc),
++    async def _yield_once(_seconds: float):
++        await real_sleep(0)
++
++    monkeypatch.setattr(worker_tasks.mp, "get_context", lambda _name: fake_ctx)
++    monkeypatch.setattr(worker_tasks.asyncio, "sleep", _yield_once)
++    monkeypatch.setattr(worker_tasks.time, "monotonic", lambda: next(times, 2.0))
++    monkeypatch.setattr(process, "is_alive", lambda: True)
++
++    with pytest.raises(RuntimeError, match="did not exit after forced stop"):
++        asyncio.run(
++            worker_tasks._run_child_stage_operation(  # noqa: SLF001
++                operation_name="noop",
++                payload={},
++                stage_name="asr",
++                stop_request_getter=lambda: stop_request,
++                grace_seconds=0.1,
++                log_path=log_path,
++                checkpoint="during_heavy_stage",
++                on_force_stop=lambda: force_stop_calls.append("cleanup"),
++            )
++        )
++
++    assert process.terminate_calls == 1
++    assert process.kill_calls == 1
++    assert force_stop_calls == []
++
++
++def test_run_child_stage_operation_cleans_up_on_parent_exception_with_best_effort_logging(
++    tmp_path: Path,
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    log_path = tmp_path / "logs" / "step.log"
++    error_ctx, process, parent_conn, child_conn = _fake_child_runtime(
++        parent_polls=[False],
++        process_alive=[True],
 +    )
 +
-+    job = get_job("job-reaper-stopping-orphan-1", settings=cfg)
-+    recording = get_recording("rec-reaper-stopping-orphan-1", settings=cfg)
-+    assert job is not None
-+    assert recording is not None
-+    assert summary["processing_without_started"] == 1
-+    assert summary["recovered_jobs"] == 1
-+    assert summary["recovered_recordings"] == 1
-+    assert job["status"] == JOB_STATUS_FAILED
-+    assert recording["status"] == RECORDING_STATUS_NEEDS_REVIEW
-+    assert cancelled_job_ids == ["job-reaper-stopping-orphan-1"]
++    def _alive_until_kill() -> bool:
++        return process.kill_calls == 0
++
++    monkeypatch.setattr(worker_tasks.mp, "get_context", lambda _name: error_ctx)
++    monkeypatch.setattr(process, "is_alive", _alive_until_kill)
++    monkeypatch.setattr(
++        worker_tasks,
++        "_append_step_log",
++        lambda *_a, **_k: (_ for _ in ()).throw(OSError("disk full")),
++    )
++
++    with pytest.raises(ValueError, match="db down"):
++        asyncio.run(
++            worker_tasks._run_child_stage_operation(  # noqa: SLF001
++                operation_name="llm_generate",
++                payload={},
++                stage_name="llm_extract",
++                stop_request_getter=lambda: (_ for _ in ()).throw(ValueError("db down")),
++                grace_seconds=1.0,
++                log_path=log_path,
++                checkpoint="llm_chunk_request",
++            )
++        )
++
++    assert process.terminate_calls == 1
++    assert process.kill_calls == 1
++    assert parent_conn.closed is True
++    assert child_conn.closed is True
 +
 +
- def test_reaper_skips_orphan_recovery_when_active_job_is_no_longer_queued(
-     tmp_path: Path,
-     monkeypatch,
+ def test_cancel_inflight_llm_chunk_state_preserves_completed_rows(tmp_path: Path) -> None:
+     cfg = _db_settings(tmp_path)
+     init_db(cfg)
