@@ -216,6 +216,58 @@ def test_display_helpers_cover_timezone_duration_and_prepare_recording(
     assert prepared_stopped["stop_eligible"] is False
 
 
+def test_stage_rows_and_diagnostics_context_cover_new_observability_helpers() -> None:
+    rows = ui_routes._pipeline_stage_rows_for_display(  # noqa: SLF001
+        "rec-observability-1",
+        rows=[
+            {
+                "stage_name": "llm_extract",
+                "status": "failed",
+                "attempt": 2,
+                "updated_at": "2026-03-12T12:00:04Z",
+                "started_at": "2026-03-12T12:00:00Z",
+                "finished_at": "2026-03-12T12:00:04Z",
+                "duration_ms": 4000,
+                "error_text": "LLM chunk 3/10 failed [llm_chunk_timeout]: timed out after 120s",
+                "metadata_json": {
+                    "root_cause_code": "llm_chunk_timeout",
+                    "root_cause_text": "LLM chunk 3/10 timed out.",
+                    "cancel_chunk_total": "bad",
+                },
+            }
+        ],
+    )
+    assert rows[0]["root_cause_code"] == "llm_chunk_timeout"
+    assert rows[0]["chunk_total"] is None
+    assert ui_routes._format_elapsed_seconds(12.2) == "00:00:12"  # noqa: SLF001
+
+    diagnostics_payload = ui_routes._recording_diagnostics_context(  # noqa: SLF001
+        recording={"status": "Processing"},
+        stage_rows=[],
+        chunk_rows=[],
+        jobs=[],
+    )
+    assert diagnostics_payload["chunk_text"] == "—"
+
+    diagnostics_payload = ui_routes._recording_diagnostics_context(  # noqa: SLF001
+        recording={
+            "status": "Processing",
+            "pipeline_stage": "llm_chunk_3",
+        },
+        stage_rows=[],
+        chunk_rows=[
+            {
+                "chunk_index": "3",
+                "chunk_total": None,
+                "status": "running",
+                "attempt": 1,
+            }
+        ],
+        jobs=[],
+    )
+    assert diagnostics_payload["chunk_text"] == "3"
+
+
 def test_prepare_recording_for_display_ignores_duration_backfill_write_errors(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

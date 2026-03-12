@@ -29,11 +29,7 @@ from lan_transcriber.audio_sanitize import (
     sanitize_audio_for_pipeline,
 )
 from lan_transcriber.compat.call_compat import call_with_supported_kwargs
-from lan_transcriber.llm_client import (
-    LLMClient,
-    LLMEmptyContentError,
-    LLMTruncatedResponseError,
-)
+from lan_transcriber.llm_client import LLMClient
 from lan_transcriber.pipeline_steps import orchestrator as pipeline_orchestrator
 from lan_transcriber.pipeline import PrecheckResult, Settings as PipelineSettings
 from lan_transcriber.pipeline import run_pipeline, run_precheck
@@ -95,6 +91,7 @@ from .constants import (
     RECORDING_STATUS_STOPPED,
     RECORDING_STATUS_STOPPING,
 )
+from .diagnostics import root_cause_from_exception
 from .db import (
     acknowledge_recording_cancel_request,
     clear_recording_progress,
@@ -441,6 +438,12 @@ def _cancelled_stage_metadata(
     label: str,
     stop: RecordingStopRequested,
 ) -> dict[str, Any]:
+    root_cause_code = "force_stopped_by_user" if stop.forced else "cancelled_by_user"
+    root_cause_text = (
+        stop.acknowledged_reason_text
+        or stop.stop_request.reason_text
+        or (_FORCED_STOP_REASON_TEXT if stop.forced else _STOPPED_REASON_TEXT)
+    )
     metadata: dict[str, Any] = {
         "label": label,
         "cancelled_by_user": True,
@@ -448,12 +451,12 @@ def _cancelled_stage_metadata(
         "cancel_requested_by": stop.stop_request.requested_by or _STOP_REQUESTED_BY,
         "cancel_reason_code": stop.stop_request.reason_code or _STOP_REASON_CODE,
         "cancel_reason_text": (
-            stop.acknowledged_reason_text
-            or stop.stop_request.reason_text
-            or _STOPPED_REASON_TEXT
+            root_cause_text
         ),
         "force_stopped": stop.forced,
         "stop_mode": "forced" if stop.forced else "soft",
+        "root_cause_code": root_cause_code,
+        "root_cause_text": root_cause_text,
     }
     if stop.stop_request.requested_at:
         metadata["cancel_requested_at"] = stop.stop_request.requested_at
@@ -469,10 +472,12 @@ def _log_stop_requested(
     log_path: Path,
     stop: RecordingStopRequested,
 ) -> None:
+    root_cause_code = "force_stopped_by_user" if stop.forced else "cancelled_by_user"
     message = (
         "cancelled_by_user "
         f"stage={stop.stage_name} checkpoint={stop.checkpoint} "
-        f"requested_by={stop.stop_request.requested_by or _STOP_REQUESTED_BY}"
+        f"requested_by={stop.stop_request.requested_by or _STOP_REQUESTED_BY} "
+        f"root_cause={root_cause_code} stop_mode={'forced' if stop.forced else 'soft'}"
     )
     if stop.stop_request.requested_at:
         message += f" requested_at={stop.stop_request.requested_at}"
@@ -483,6 +488,26 @@ def _log_stop_requested(
     if stop.forced:
         message += " forced=true"
     _append_step_log(log_path, message)
+
+
+def _stage_failure_metadata(
+    *,
+    label: str,
+    exc: Exception,
+) -> dict[str, Any]:
+    cause = root_cause_from_exception(exc)
+    metadata: dict[str, Any] = {
+        "label": label,
+        "root_cause_code": cause.get("code"),
+        "root_cause_text": cause.get("text"),
+    }
+    if cause.get("detail"):
+        metadata["root_cause_detail"] = cause["detail"]
+    if cause.get("chunk_index") is not None:
+        metadata["chunk_index"] = cause["chunk_index"]
+    if cause.get("chunk_total") is not None:
+        metadata["chunk_total"] = cause["chunk_total"]
+    return metadata
 
 
 @dataclass(frozen=True)
@@ -1075,6 +1100,7 @@ def _record_retry(
     exc: Exception,
 ) -> bool:
     error = str(exc)
+    root_cause = root_cause_from_exception(exc)
     try:
         requeued = requeue_job_if_started(
             job_id,
@@ -1095,7 +1121,9 @@ def _record_retry(
             (
                 f"retrying job={job_id} type={job_type} "
                 f"attempt={attempt}/{max_attempts} "
-                f"delay_seconds={delay_seconds} error={error}"
+                f"delay_seconds={delay_seconds} "
+                f"root_cause={root_cause.get('code') or 'processing_runtime_error'} "
+                f"error={error}"
             ),
         )
     except Exception:
@@ -1114,6 +1142,7 @@ def _record_failure(
 ) -> None:
     error = str(exc)
     review_reason_code, review_reason_text = _review_reason_from_exception(exc)
+    root_cause = root_cause_from_exception(exc)
     terminal_status = (
         RECORDING_STATUS_NEEDS_REVIEW
         if review_reason_code == "gpu_oom"
@@ -1138,7 +1167,14 @@ def _record_failure(
     except Exception:
         pass
     try:
-        _append_step_log(log_path, f"failed job={job_id} type={job_type}: {error}")
+        _append_step_log(
+            log_path,
+            (
+                f"failed job={job_id} type={job_type} "
+                f"root_cause={root_cause.get('code') or 'processing_runtime_error'} "
+                f"error={error}"
+            ),
+        )
     except Exception:
         pass
 
@@ -1153,6 +1189,7 @@ def _record_max_attempts_exceeded(
     exc: Exception,
 ) -> None:
     review_reason_code, review_reason_text = _review_reason_from_exception(exc)
+    root_cause = root_cause_from_exception(exc)
     try:
         fail_job(job_id, _MAX_ATTEMPTS_ERROR, settings=settings)
     except Exception:
@@ -1172,7 +1209,8 @@ def _record_max_attempts_exceeded(
             log_path,
             (
                 f"terminal failure job={job_id} type={job_type}: "
-                f"{_MAX_ATTEMPTS_ERROR}"
+                f"wrapper={_MAX_ATTEMPTS_ERROR} "
+                f"root_cause={root_cause.get('code') or review_reason_code or 'processing_runtime_error'}"
             ),
         )
     except Exception:
@@ -1204,37 +1242,10 @@ def _load_json_list(path: Path) -> list[Any]:
 
 
 def _review_reason_from_exception(exc: Exception) -> tuple[str, str]:
-    message = str(exc).strip()
-    lowered = message.lower()
-    if is_gpu_oom_error(exc):
-        return (
-            "gpu_oom",
-            (
-                "The worker ran out of GPU memory while loading or running a heavy "
-                "model; manual review required."
-            ),
-        )
-    if isinstance(exc, LLMTruncatedResponseError) or "finish_reason=length" in lowered:
-        return (
-            "llm_truncated",
-            "LLM output was truncated repeatedly; manual review required.",
-        )
-    if isinstance(exc, LLMEmptyContentError) or "empty message.content" in lowered:
-        return (
-            "llm_empty_content",
-            "LLM returned empty content repeatedly; manual review required.",
-        )
-    if message == _MAX_ATTEMPTS_ERROR:
-        return (
-            "job_retry_limit_reached",
-            "Processing hit the retry limit; manual review required.",
-        )
+    cause = root_cause_from_exception(exc)
     return (
-        "job_retry_limit_reached",
-        (
-            "Processing hit the retry limit after repeated errors "
-            f"({type(exc).__name__}); manual review required."
-        ),
+        str(cause.get("code") or "processing_runtime_error"),
+        str(cause.get("text") or "Processing failed with a runtime error."),
     )
 
 
@@ -2265,6 +2276,28 @@ def _log_stage_completed(
         log_path,
         f"stage completed: {stage_name} elapsed={duration_ms / 1000:.3f}s",
     )
+
+
+def _log_stage_failed(
+    log_path: Path,
+    stage_name: str,
+    *,
+    root_cause_code: str,
+    duration_ms: int | None,
+    chunk_index: str | None = None,
+    chunk_total: int | None = None,
+    attempt: int | None = None,
+) -> None:
+    message = f"stage failed: {stage_name} root_cause={root_cause_code}"
+    if chunk_index is not None:
+        message += f" chunk_index={chunk_index}"
+    if chunk_total is not None:
+        message += f" chunk_total={chunk_total}"
+    if attempt is not None:
+        message += f" attempt={attempt}"
+    if duration_ms is not None:
+        message += f" elapsed={duration_ms / 1000:.3f}s"
+    _append_step_log(log_path, message)
 
 
 def _log_stage_skipped(
@@ -3667,7 +3700,7 @@ def _run_precheck_pipeline(
             mark_recording_pipeline_stage_started(
                 recording_id,
                 stage_name=stage.name,
-                metadata={"label": stage.label},
+                metadata={"label": stage.label, "resumed": resumed},
                 settings=settings,
             )
             stage_started = True
@@ -3696,13 +3729,38 @@ def _run_precheck_pipeline(
                 reason_text=stop.acknowledged_reason_text,
             )
         except Exception as exc:
-            mark_recording_pipeline_stage_failed(
+            cause = root_cause_from_exception(exc)
+            row = mark_recording_pipeline_stage_failed(
                 recording_id,
                 stage_name=stage.name,
-                error_code=type(exc).__name__,
-                error_text=str(exc) or type(exc).__name__,
-                metadata={"label": stage.label},
+                error_code=str(cause.get("code") or type(exc).__name__),
+                error_text=str(cause.get("detail") or str(exc) or type(exc).__name__),
+                metadata=_stage_failure_metadata(label=stage.label, exc=exc),
                 settings=settings,
+            )
+            duration_ms = None
+            attempt = None
+            if isinstance(row, dict):
+                try:
+                    duration_ms = int(row.get("duration_ms"))
+                except (TypeError, ValueError):
+                    duration_ms = None
+                try:
+                    attempt = int(row.get("attempt"))
+                except (TypeError, ValueError):
+                    attempt = None
+            _log_stage_failed(
+                log_path,
+                stage.name,
+                root_cause_code=str(cause.get("code") or "processing_runtime_error"),
+                duration_ms=duration_ms,
+                chunk_index=str(cause.get("chunk_index") or "").strip() or None,
+                chunk_total=(
+                    int(cause["chunk_total"])
+                    if cause.get("chunk_total") is not None
+                    else None
+                ),
+                attempt=attempt,
             )
             raise
 

@@ -35,7 +35,12 @@ This runbook covers day-2 operations for LAN deployment:
 7. Automatic retries now resume from the failed or incomplete chunk set instead of starting long-transcript processing from chunk 1. Completed chunk extracts are validated before reuse, and a timed-out chunk can split into smaller child chunks automatically when it is still large enough.
 8. Debug artifacts for that flow live under `derived/`, including `llm_compact_transcript.txt`, `llm_compact_transcript.json`, `llm_chunks_plan.json`, `llm_merge_input.json`, per-chunk `llm_chunk_*_{raw,extract,error}.json`, and `llm_merge_error.json` when the merge pass fails.
 9. If you see `finish_reason=length` or empty `message.content`, increase `LLM_MAX_TOKENS` and `LLM_TIMEOUT_SECONDS` (and optionally `LLM_MERGE_MAX_TOKENS`).
-10. Validate connectivity:
+10. Use the recording detail `Diagnostics` block for first-pass triage:
+   - primary reason = normalized root cause shown to operators
+   - retry wrapper = generic retry-limit context, if present
+   - current or last stage + chunk `N/M` + elapsed time = where the pipeline actually got stuck
+   - stopped recordings show whether the stop stayed soft or escalated to a force-stop
+11. Validate connectivity:
 
 ```bash
 docker compose run --rm api python -m lan_app.healthchecks app

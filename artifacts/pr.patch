@@ -1,294 +1,88 @@
-diff --git a/lan_app/worker_tasks.py b/lan_app/worker_tasks.py
-index 4233665..4e6a001 100644
---- a/lan_app/worker_tasks.py
-+++ b/lan_app/worker_tasks.py
-@@ -606,17 +606,41 @@ async def _run_child_stage_operation(
-     child_conn.close()
-     stop_request: _RecordingStopRequest | None = None
-     stop_deadline: float | None = None
-+    cleanup_attempted = False
- 
--    def _force_stop_process(reason: _RecordingStopRequest) -> None:
--        _append_step_log(
--            log_path,
--            f"force terminating child stage={stage_name} pid={process.pid}",
--        )
-+    def _append_step_log_best_effort(message: str) -> None:
-+        try:
-+            _append_step_log(log_path, message)
-+        except OSError:
-+            return
-+
-+    def _terminate_child_process(
-+        *,
-+        reason: str,
-+        terminate_message: str,
-+        kill_message: str,
-+    ) -> None:
-+        nonlocal cleanup_attempted
-+        cleanup_attempted = True
-+        if not process.is_alive():
-+            return
-+        _append_step_log_best_effort(terminate_message)
-         process.terminate()
-         process.join(timeout=1.0)
-+        if not process.is_alive():
-+            return
-+        _append_step_log_best_effort(kill_message)
-+        process.kill()
-+        process.join(timeout=1.0)
-         if process.is_alive():
--            process.kill()
--            process.join(timeout=1.0)
-+            raise RuntimeError(f"child stage did not exit {reason} stage={stage_name} pid={process.pid}")
-+
-+    def _force_stop_process(reason: _RecordingStopRequest) -> None:
-+        _terminate_child_process(
-+            reason="after forced stop",
-+            terminate_message=f"force terminating child stage={stage_name} pid={process.pid}",
-+            kill_message=f"force killing child stage={stage_name} pid={process.pid}",
-+        )
-         if callable(on_force_stop):
-             on_force_stop()
-         _append_step_log(log_path, f"stage terminated by user stop stage={stage_name}")
-@@ -634,30 +658,17 @@ async def _run_child_stage_operation(
-         process.join(timeout=max(1.0, grace_seconds))
-         if not process.is_alive():
-             return
--        _append_step_log(
--            log_path,
--            (
-+        _terminate_child_process(
-+            reason=f"after result status={message_status}",
-+            terminate_message=(
-                 "force terminating lingering child after result "
-                 f"stage={stage_name} pid={process.pid} status={message_status}"
-             ),
-+            kill_message=(
-+                "force killing lingering child after result "
-+                f"stage={stage_name} pid={process.pid} status={message_status}"
-+            ),
-         )
--        process.terminate()
--        process.join(timeout=1.0)
--        if process.is_alive():
--            _append_step_log(
--                log_path,
--                (
--                    "force killing lingering child after result "
--                    f"stage={stage_name} pid={process.pid} status={message_status}"
--                ),
--            )
--            process.kill()
--            process.join(timeout=1.0)
--            if process.is_alive():
--                raise RuntimeError(
--                    "child stage did not exit after result "
--                    f"stage={stage_name} pid={process.pid} status={message_status}"
--                )
- 
-     try:
-         while True:
-@@ -701,12 +712,28 @@ async def _run_child_stage_operation(
-                 _force_stop_process(stop_request)
-             await asyncio.sleep(0.05)
-     except asyncio.CancelledError:
--        if process.is_alive():
--            process.terminate()
--            process.join(timeout=1.0)
--            if process.is_alive():
--                process.kill()
--                process.join(timeout=1.0)
-+        if not cleanup_attempted:
-+            _terminate_child_process(
-+                reason="after parent cancellation",
-+                terminate_message=(
-+                    f"force terminating child after parent cancellation stage={stage_name} pid={process.pid}"
-+                ),
-+                kill_message=(
-+                    f"force killing child after parent cancellation stage={stage_name} pid={process.pid}"
-+                ),
-+            )
-+        raise
-+    except BaseException:
-+        if not cleanup_attempted:
-+            _terminate_child_process(
-+                reason="after parent exception",
-+                terminate_message=(
-+                    f"force terminating child after parent exception stage={stage_name} pid={process.pid}"
-+                ),
-+                kill_message=(
-+                    f"force killing child after parent exception stage={stage_name} pid={process.pid}"
-+                ),
-+            )
-         raise
-     finally:
-         parent_conn.close()
-diff --git a/tests/test_cov_lan_app_worker_tasks_branches.py b/tests/test_cov_lan_app_worker_tasks_branches.py
-index 52171fa..b382a3b 100644
---- a/tests/test_cov_lan_app_worker_tasks_branches.py
-+++ b/tests/test_cov_lan_app_worker_tasks_branches.py
-@@ -479,7 +479,7 @@ def test_run_child_stage_operation_force_terminates_after_grace(
+diff --git a/lan_app/diagnostics.py b/lan_app/diagnostics.py
+index 9a8fafa..cdfd543 100644
+--- a/lan_app/diagnostics.py
++++ b/lan_app/diagnostics.py
+@@ -305,7 +305,7 @@ def root_cause_from_chunk_row(row: dict[str, Any] | None) -> dict[str, Any] | No
+     if not isinstance(row, dict):
+         return None
+     status = _clean_text(row.get("status")) or ""
+-    if status not in {"failed", "cancelled", "split"}:
++    if status not in {"failed", "cancelled"}:
+         return None
+     code = _clean_text(row.get("error_code"))
+     if status == "cancelled":
+diff --git a/tests/test_diagnostics.py b/tests/test_diagnostics.py
+index 61e0ce6..0815d51 100644
+--- a/tests/test_diagnostics.py
++++ b/tests/test_diagnostics.py
+@@ -272,7 +272,7 @@ def test_root_cause_from_stage_and_chunk_rows_cover_cancelled_and_fallbacks() ->
+         {"status": "cancelled", "chunk_index": "7", "chunk_total": 9, "error_text": "ignored"}
      )
-     fake_ctx, process, _parent_conn, _child_conn = _fake_child_runtime(
-         parent_polls=[False, False],
--        process_alive=[True, True, True],
-+        process_alive=[True],
-     )
-     times = iter([1.0, 1.0, 2.0])
-     force_stop_calls: list[str] = []
-@@ -490,9 +490,13 @@ def test_run_child_stage_operation_force_terminates_after_grace(
-     def _next_time() -> float:
-         return next(times, 2.0)
- 
-+    def _alive_until_kill() -> bool:
-+        return process.kill_calls == 0
-+
-     monkeypatch.setattr(worker_tasks.mp, "get_context", lambda _name: fake_ctx)
-     monkeypatch.setattr(worker_tasks.asyncio, "sleep", _fast_sleep)
-     monkeypatch.setattr(worker_tasks.time, "monotonic", _next_time)
-+    monkeypatch.setattr(process, "is_alive", _alive_until_kill)
- 
-     with pytest.raises(worker_tasks.RecordingStopRequested) as exc_info:
-         asyncio.run(
-@@ -818,7 +822,7 @@ def test_run_child_stage_operation_cleans_up_on_async_cancel(
-     log_path = tmp_path / "logs" / "step.log"
-     cancel_ctx, process, _parent_conn, _child_conn = _fake_child_runtime(
-         parent_polls=[False, False, False],
--        process_alive=[True, True, True],
-+        process_alive=[True, True, True, False],
-     )
-     real_sleep = asyncio.sleep
- 
-@@ -939,6 +943,131 @@ def test_run_child_stage_operation_cancel_cleanup_skips_terminate_when_dead(
-     assert process.kill_calls == 0
+     assert cancelled_chunk["code"] == "cancelled_by_user"
+-    split_chunk = diagnostics.root_cause_from_chunk_row(
++    assert diagnostics.root_cause_from_chunk_row(
+         {
+             "status": "split",
+             "error_code": "llm_chunk_timeout",
+@@ -280,9 +280,7 @@ def test_root_cause_from_stage_and_chunk_rows_cover_cancelled_and_fallbacks() ->
+             "chunk_index": "3",
+             "chunk_total": 6,
+         }
+-    )
+-    assert split_chunk["code"] == "llm_chunk_timeout"
+-    assert split_chunk["detail"] == "timed out after 20s"
++    ) is None
  
  
-+def test_run_child_stage_operation_cancel_after_cleanup_started_skips_repeat_cleanup(
-+    tmp_path: Path,
-+    monkeypatch: pytest.MonkeyPatch,
-+) -> None:
-+    log_path = tmp_path / "logs" / "step.log"
-+    cancel_ctx, process, _parent_conn, _child_conn = _fake_child_runtime(
-+        parent_polls=[True],
-+        parent_messages=[{"status": "ok", "payload": {"status": "late"}}],
-+        process_alive=[True],
-+    )
-+    join_calls = {"count": 0}
-+
-+    def _join_then_cancel(timeout=None):
-+        process.join_calls.append(timeout)
-+        join_calls["count"] += 1
-+        if join_calls["count"] == 2:
-+            raise asyncio.CancelledError
-+
-+    monkeypatch.setattr(worker_tasks.mp, "get_context", lambda _name: cancel_ctx)
-+    monkeypatch.setattr(process, "is_alive", lambda: True)
-+    monkeypatch.setattr(process, "join", _join_then_cancel)
-+
-+    with pytest.raises(asyncio.CancelledError):
-+        asyncio.run(
-+            worker_tasks._run_child_stage_operation(  # noqa: SLF001
-+                operation_name="llm_generate",
-+                payload={},
-+                stage_name="llm_extract",
-+                stop_request_getter=lambda: None,
-+                grace_seconds=5.0,
-+                log_path=log_path,
-+                checkpoint="llm_chunk_request",
-+            )
-+        )
-+
-+    assert process.terminate_calls == 1
-+    assert process.kill_calls == 0
-+
-+
-+def test_run_child_stage_operation_force_stop_raises_if_child_survives_kill(
-+    tmp_path: Path,
-+    monkeypatch: pytest.MonkeyPatch,
-+) -> None:
-+    log_path = tmp_path / "logs" / "step.log"
-+    stop_request = worker_tasks._RecordingStopRequest(  # noqa: SLF001
-+        requested_at="2026-03-12T10:00:00Z",
-+        requested_by="user",
-+        reason_code="user_stop",
-+        reason_text="Stop requested by user",
-+    )
-+    fake_ctx, process, _parent_conn, _child_conn = _fake_child_runtime(
-+        parent_polls=[False, False],
-+        process_alive=[True],
-+    )
-+    times = iter([1.0, 1.0, 2.0])
-+    force_stop_calls: list[str] = []
-+    real_sleep = asyncio.sleep
-+
-+    async def _yield_once(_seconds: float):
-+        await real_sleep(0)
-+
-+    monkeypatch.setattr(worker_tasks.mp, "get_context", lambda _name: fake_ctx)
-+    monkeypatch.setattr(worker_tasks.asyncio, "sleep", _yield_once)
-+    monkeypatch.setattr(worker_tasks.time, "monotonic", lambda: next(times, 2.0))
-+    monkeypatch.setattr(process, "is_alive", lambda: True)
-+
-+    with pytest.raises(RuntimeError, match="did not exit after forced stop"):
-+        asyncio.run(
-+            worker_tasks._run_child_stage_operation(  # noqa: SLF001
-+                operation_name="noop",
-+                payload={},
-+                stage_name="asr",
-+                stop_request_getter=lambda: stop_request,
-+                grace_seconds=0.1,
-+                log_path=log_path,
-+                checkpoint="during_heavy_stage",
-+                on_force_stop=lambda: force_stop_calls.append("cleanup"),
-+            )
-+        )
-+
-+    assert process.terminate_calls == 1
-+    assert process.kill_calls == 1
-+    assert force_stop_calls == []
-+
-+
-+def test_run_child_stage_operation_cleans_up_on_parent_exception_with_best_effort_logging(
-+    tmp_path: Path,
-+    monkeypatch: pytest.MonkeyPatch,
-+) -> None:
-+    log_path = tmp_path / "logs" / "step.log"
-+    error_ctx, process, parent_conn, child_conn = _fake_child_runtime(
-+        parent_polls=[False],
-+        process_alive=[True],
+ def test_build_recording_diagnostics_prefers_specific_stage_cause_over_retry_wrapper() -> None:
+@@ -429,6 +427,50 @@ def test_build_recording_diagnostics_stopping_and_stopped_paths() -> None:
+     assert stopped["wrapper_reason_text"] is None
+ 
+ 
++def test_build_recording_diagnostics_ignores_split_chunk_rows_for_primary_reason() -> None:
++    diagnostics_payload = diagnostics.build_recording_diagnostics(
++        recording={
++            "status": "Ready",
++            "pipeline_stage": None,
++        },
++        stage_rows=[
++            {
++                "stage_name": "llm_extract",
++                "status": "completed",
++                "attempt": 1,
++                "started_at": "2026-03-12T12:00:00Z",
++                "duration_ms": 4000,
++                "updated_at": "2026-03-12T12:00:04Z",
++                "metadata_json": {},
++            }
++        ],
++        chunk_rows=[
++            {
++                "chunk_index": "3",
++                "chunk_total": 6,
++                "status": "split",
++                "attempt": 1,
++                "updated_at": "2026-03-12T12:00:03Z",
++                "error_code": "llm_chunk_timeout",
++                "error_text": "timed out after 20s",
++            },
++            {
++                "chunk_index": "3a",
++                "chunk_total": 6,
++                "status": "completed",
++                "attempt": 1,
++                "updated_at": "2026-03-12T12:00:04Z",
++            },
++        ],
++        jobs=[],
++        now=datetime(2026, 3, 12, 12, 0, 5, tzinfo=timezone.utc),
 +    )
 +
-+    def _alive_until_kill() -> bool:
-+        return process.kill_calls == 0
-+
-+    monkeypatch.setattr(worker_tasks.mp, "get_context", lambda _name: error_ctx)
-+    monkeypatch.setattr(process, "is_alive", _alive_until_kill)
-+    monkeypatch.setattr(
-+        worker_tasks,
-+        "_append_step_log",
-+        lambda *_a, **_k: (_ for _ in ()).throw(OSError("disk full")),
-+    )
-+
-+    with pytest.raises(ValueError, match="db down"):
-+        asyncio.run(
-+            worker_tasks._run_child_stage_operation(  # noqa: SLF001
-+                operation_name="llm_generate",
-+                payload={},
-+                stage_name="llm_extract",
-+                stop_request_getter=lambda: (_ for _ in ()).throw(ValueError("db down")),
-+                grace_seconds=1.0,
-+                log_path=log_path,
-+                checkpoint="llm_chunk_request",
-+            )
-+        )
-+
-+    assert process.terminate_calls == 1
-+    assert process.kill_calls == 1
-+    assert parent_conn.closed is True
-+    assert child_conn.closed is True
++    assert diagnostics_payload["primary_reason_code"] is None
++    assert diagnostics_payload["primary_reason_text"] is None
++    assert diagnostics_payload["primary_reason_detail"] is None
 +
 +
- def test_cancel_inflight_llm_chunk_state_preserves_completed_rows(tmp_path: Path) -> None:
-     cfg = _db_settings(tmp_path)
-     init_db(cfg)
+ def test_diagnostics_selection_helpers_cover_match_and_fallback_paths() -> None:
+     assert diagnostics._select_current_stage_row(  # noqa: SLF001
+         {"pipeline_stage": "llm_merge"},

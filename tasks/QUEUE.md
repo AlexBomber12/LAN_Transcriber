@@ -502,7 +502,7 @@ Queue (in order)
 - Depends on: PR-STOP-CANCEL-01
 
 99) PR-OBSERVABILITY-ROOT-CAUSE-01: Root-cause-first UI/log diagnostics: current stage, chunk N/M, primary error reason, and stop visibility
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-OBSERVABILITY-ROOT-CAUSE-01.md
 - Depends on: PR-STOP-CANCEL-HARD-01
 
