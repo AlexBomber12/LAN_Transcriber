@@ -1,128 +1,1379 @@
+diff --git a/README.md b/README.md
+index a33e932..6861b50 100644
+--- a/README.md
++++ b/README.md
+@@ -215,10 +215,12 @@ models are cached across runs.
+ | `LLM_MAX_TOKENS` | Base `max_tokens` for `/v1/chat/completions` requests (default `1024`) |
+ | `LLM_MAX_TOKENS_RETRY` | One-shot retry `max_tokens` for truncated/empty LLM output (default `2048`) |
+ | `LLM_TIMEOUT_SECONDS` | Per-request timeout for LLM calls (default `30`) |
+-| `LLM_CHUNK_MAX_CHARS` | Transcript chunk size threshold for long-recording map-reduce LLM processing (default `6000`) |
+-| `LLM_CHUNK_OVERLAP_CHARS` | Deterministic overlap between adjacent transcript chunks (default `600`) |
++| `LLM_CHUNK_MAX_CHARS` | Transcript chunk size threshold for long-recording map-reduce LLM processing (default `4500`) |
++| `LLM_CHUNK_OVERLAP_CHARS` | Deterministic overlap between adjacent transcript chunks (default `300`) |
+ | `LLM_CHUNK_TIMEOUT_SECONDS` | Wall-clock timeout applied to each chunk extraction call (default `120`) |
+-| `LLM_LONG_TRANSCRIPT_THRESHOLD_CHARS` | Switch to chunked LLM mode when the speaker-attributed transcript exceeds this size (default `6000`) |
++| `LLM_CHUNK_SPLIT_MIN_CHARS` | Minimum chunk payload size required before timeout-driven child splits are allowed (default `1200`) |
++| `LLM_CHUNK_SPLIT_MAX_DEPTH` | Maximum adaptive split depth for a timed-out chunk before the stage fails (default `2`) |
++| `LLM_LONG_TRANSCRIPT_THRESHOLD_CHARS` | Switch to chunked LLM mode when the speaker-attributed transcript exceeds this size (default `4500`) |
+ | `LLM_MERGE_MAX_TOKENS` | Optional `max_tokens` override for the final merge pass; falls back to `LLM_MAX_TOKENS` when unset |
+ 
+ `LAN_ENV` controls startup validation:
+@@ -229,7 +231,11 @@ models are cached across runs.
+ 
+ If LLM responses fail with `finish_reason=length` or empty `message.content`, increase `LLM_MAX_TOKENS` and `LLM_TIMEOUT_SECONDS` (and optionally `LLM_MAX_TOKENS_RETRY`).
+ 
+-Long transcripts are processed with a chunked map-reduce LLM flow. Before chunk planning, the worker compacts speaker turns into an LLM-ready transcript with shorter speaker labels, merged adjacent same-speaker turns, and chunk-level time ranges instead of per-line timestamps. During that phase the UI may show progress stages like `llm_chunk_1_of_5` and `llm_merge`, and debug artifacts are written under `derived/`, including `llm_compact_transcript.txt`, `llm_compact_transcript.json`, `llm_chunks_plan.json`, and merge inspection files.
++Long transcripts are processed with a chunked map-reduce LLM flow. Before chunk planning, the worker compacts speaker turns into an LLM-ready transcript with shorter speaker labels, merged adjacent same-speaker turns, and chunk-level time ranges instead of per-line timestamps. During that phase the UI may show progress stages like `llm_chunk_1_of_5` and `llm_merge`.
++
++Chunk extraction now resumes from the failed or incomplete chunk set on the next retry instead of restarting from chunk 1. Completed chunk extracts are validated and reused, and a timed-out chunk can be split into smaller child chunks automatically up to `LLM_CHUNK_SPLIT_MAX_DEPTH`.
++
++Chunk debug artifacts are written under `derived/`, including `llm_compact_transcript.txt`, `llm_compact_transcript.json`, `llm_chunks_plan.json`, `llm_merge_input.json`, per-chunk `llm_chunk_*_{raw,extract,error}.json`, and `llm_merge_error.json` when the merge pass fails. The worker also persists per-chunk state in SQLite so automatic job retries can resume safely.
+ 
+ For diarization quality tuning, keep `LAN_DIARIZATION_PROFILE=auto` for mixed workloads. In `auto`, the worker runs a meeting-oriented first pass, classifies the result from deterministic speaker-share/alternation/overlap heuristics, and retries once with `min_speakers=2` and `max_speakers=2` only when the recording looks dialog-like. Use `dialog` or `meeting` only to force one behavior, and note that explicit `LAN_DIARIZATION_MIN_SPEAKERS` / `LAN_DIARIZATION_MAX_SPEAKERS` overrides bypass auto selection. Each processed recording writes `derived/diarization_metadata.json` with the requested profile, selected profile, initial top-two coverage, retry attempt/winner, applied hints, and smoothing stats.
+ 
+diff --git a/docs/runbook.md b/docs/runbook.md
+index d83876a..af001c4 100644
+--- a/docs/runbook.md
++++ b/docs/runbook.md
+@@ -21,14 +21,18 @@ This runbook covers day-2 operations for LAN deployment:
+    - `LLM_MAX_TOKENS=1024`
+    - `LLM_MAX_TOKENS_RETRY=2048`
+    - `LLM_TIMEOUT_SECONDS=600` (recommended for larger local models)
+-   - `LLM_CHUNK_MAX_CHARS=6000`
+-   - `LLM_CHUNK_OVERLAP_CHARS=600`
++   - `LLM_CHUNK_MAX_CHARS=4500`
++   - `LLM_CHUNK_OVERLAP_CHARS=300`
+    - `LLM_CHUNK_TIMEOUT_SECONDS=120`
+-   - `LLM_LONG_TRANSCRIPT_THRESHOLD_CHARS=6000`
++   - `LLM_CHUNK_SPLIT_MIN_CHARS=1200`
++   - `LLM_CHUNK_SPLIT_MAX_DEPTH=2`
++   - `LLM_LONG_TRANSCRIPT_THRESHOLD_CHARS=4500`
+    - Optional: `LLM_MERGE_MAX_TOKENS=2048` when the final merge pass needs a larger JSON budget
+-5. Long transcripts are processed in chunks. Before planning those chunks, the worker compacts the speaker-turn transcript to reduce prompt size while keeping speaker order and chunk-level time ranges. The UI may show `llm_chunk_X_of_Y` followed by `llm_merge` while the worker writes debug artifacts under `derived/`, including `llm_compact_transcript.txt`, `llm_compact_transcript.json`, and `llm_chunks_plan.json`.
+-6. If you see `finish_reason=length` or empty `message.content`, increase `LLM_MAX_TOKENS` and `LLM_TIMEOUT_SECONDS` (and optionally `LLM_MERGE_MAX_TOKENS`).
+-7. Validate connectivity:
++5. Long transcripts are processed in chunks. Before planning those chunks, the worker compacts the speaker-turn transcript to reduce prompt size while keeping speaker order and chunk-level time ranges. The UI may show `llm_chunk_X_of_Y` followed by `llm_merge`.
++6. Automatic retries now resume from the failed or incomplete chunk set instead of starting long-transcript processing from chunk 1. Completed chunk extracts are validated before reuse, and a timed-out chunk can split into smaller child chunks automatically when it is still large enough.
++7. Debug artifacts for that flow live under `derived/`, including `llm_compact_transcript.txt`, `llm_compact_transcript.json`, `llm_chunks_plan.json`, `llm_merge_input.json`, per-chunk `llm_chunk_*_{raw,extract,error}.json`, and `llm_merge_error.json` when the merge pass fails.
++8. If you see `finish_reason=length` or empty `message.content`, increase `LLM_MAX_TOKENS` and `LLM_TIMEOUT_SECONDS` (and optionally `LLM_MERGE_MAX_TOKENS`).
++9. Validate connectivity:
+ 
+ ```bash
+ docker compose run --rm api python -m lan_app.healthchecks app
+diff --git a/lan_app/config.py b/lan_app/config.py
+index f54e576..6952805 100644
+--- a/lan_app/config.py
++++ b/lan_app/config.py
+@@ -88,7 +88,7 @@ class AppSettings(BaseSettings):
+         validation_alias=AliasChoices("llm_max_tokens_retry", "LLM_MAX_TOKENS_RETRY"),
+     )
+     llm_chunk_max_chars: int = Field(
+-        default=6000,
++        default=4500,
+         ge=1,
+         validation_alias=AliasChoices(
+             "llm_chunk_max_chars",
+@@ -97,7 +97,7 @@ class AppSettings(BaseSettings):
+         ),
+     )
+     llm_chunk_overlap_chars: int = Field(
+-        default=600,
++        default=300,
+         ge=0,
+         validation_alias=AliasChoices(
+             "llm_chunk_overlap_chars",
+@@ -114,8 +114,26 @@ class AppSettings(BaseSettings):
+             "LLM_CHUNK_TIMEOUT_SECONDS",
+         ),
+     )
++    llm_chunk_split_min_chars: int = Field(
++        default=1200,
++        ge=64,
++        validation_alias=AliasChoices(
++            "llm_chunk_split_min_chars",
++            "LAN_LLM_CHUNK_SPLIT_MIN_CHARS",
++            "LLM_CHUNK_SPLIT_MIN_CHARS",
++        ),
++    )
++    llm_chunk_split_max_depth: int = Field(
++        default=2,
++        ge=0,
++        validation_alias=AliasChoices(
++            "llm_chunk_split_max_depth",
++            "LAN_LLM_CHUNK_SPLIT_MAX_DEPTH",
++            "LLM_CHUNK_SPLIT_MAX_DEPTH",
++        ),
++    )
+     llm_long_transcript_threshold_chars: int = Field(
+-        default=6000,
++        default=4500,
+         ge=1,
+         validation_alias=AliasChoices(
+             "llm_long_transcript_threshold_chars",
+diff --git a/lan_app/db.py b/lan_app/db.py
+index 93acfa6..920328d 100644
+--- a/lan_app/db.py
++++ b/lan_app/db.py
+@@ -41,6 +41,14 @@ _GLOSSARY_SOURCES = {
+     "speaker_bank",
+     "system",
+ }
++_LLM_CHUNK_STATUSES = {
++    "planned",
++    "running",
++    "completed",
++    "failed",
++    "cancelled",
++    "split",
++}
+ _MIGRATIONS_DIR = Path(__file__).with_name("migrations")
+ _SQLITE_CONNECT_TIMEOUT_SECONDS = 30
+ _DEFAULT_SQLITE_BUSY_TIMEOUT_MS = 30_000
+@@ -242,6 +250,32 @@ def _duration_ms_between(started_at: str | None, finished_at: str | None) -> int
+     return max(delta_ms, 0)
+ 
+ 
++def _normalise_llm_chunk_group(chunk_group: str) -> str:
++    normalized = str(chunk_group or "").strip().lower()
++    if not normalized:
++        raise ValueError("chunk_group is required")
++    return normalized
++
++
++def _normalise_llm_chunk_index(chunk_index: str | int) -> str:
++    normalized = str(chunk_index).strip().lower()
++    if not normalized:
++        raise ValueError("chunk_index is required")
++    return normalized
++
++
++def _validate_llm_chunk_status(status: str) -> str:
++    normalized = str(status or "").strip().lower()
++    if normalized not in _LLM_CHUNK_STATUSES:
++        allowed = ", ".join(sorted(_LLM_CHUNK_STATUSES))
++        raise ValueError(f"Unsupported LLM chunk status: {normalized} ({allowed})")
++    return normalized
++
++
++def _normalise_llm_chunk_metadata(metadata: dict[str, Any] | None) -> dict[str, Any]:
++    return _normalise_pipeline_stage_metadata(metadata)
++
++
+ def _normalise_project_assignment_source(source: str | None) -> str | None:
+     if source is None:
+         return None
+@@ -1158,6 +1192,522 @@ def clear_recording_pipeline_stages(
+             conn.commit()
+             return int(deleted.rowcount)
+ 
++    deleted = with_db_retry(_clear)
++    if from_stage is None or pipeline_stage_order(validate_pipeline_stage_name(from_stage)) <= pipeline_stage_order("llm_extract"):
++        clear_recording_llm_chunk_states(recording_id, settings=settings)
++    return deleted
++
++
++def list_recording_llm_chunk_states(
++    recording_id: str,
++    *,
++    chunk_group: str | None = None,
++    settings: AppSettings | None = None,
++) -> list[dict[str, Any]]:
++    init_db(settings)
++    params: list[Any] = [recording_id]
++    where_sql = "recording_id = ?"
++    if chunk_group is not None:
++        where_sql += " AND chunk_group = ?"
++        params.append(_normalise_llm_chunk_group(chunk_group))
++    with connect(settings) as conn:
++        rows = conn.execute(
++            f"""
++            SELECT *
++            FROM recording_llm_chunk_states
++            WHERE {where_sql}
++            ORDER BY chunk_group ASC, chunk_index ASC
++            """,
++            params,
++        ).fetchall()
++    return [_as_dict(row) or {} for row in rows]
++
++
++def upsert_recording_llm_chunk_state(
++    recording_id: str,
++    *,
++    chunk_group: str,
++    chunk_index: str | int,
++    chunk_total: int,
++    status: str,
++    attempt: int = 0,
++    started_at: str | None = None,
++    finished_at: str | None = None,
++    duration_ms: int | None = None,
++    error_code: str | None = None,
++    error_text: str | None = None,
++    parent_chunk_index: str | int | None = None,
++    metadata: dict[str, Any] | None = None,
++    settings: AppSettings | None = None,
++) -> dict[str, Any] | None:
++    init_db(settings)
++    normalized_group = _normalise_llm_chunk_group(chunk_group)
++    normalized_index = _normalise_llm_chunk_index(chunk_index)
++    normalized_status = _validate_llm_chunk_status(status)
++    safe_total = max(int(chunk_total), 1)
++    safe_attempt = max(int(attempt), 0)
++    safe_parent = (
++        _normalise_llm_chunk_index(parent_chunk_index)
++        if parent_chunk_index is not None
++        else None
++    )
++    now = _utc_now()
++
++    def _upsert() -> dict[str, Any] | None:
++        with connect(settings) as conn:
++            existing_row = conn.execute(
++                """
++                SELECT *
++                FROM recording_llm_chunk_states
++                WHERE recording_id = ? AND chunk_group = ? AND chunk_index = ?
++                """,
++                (recording_id, normalized_group, normalized_index),
++            ).fetchone()
++            existing = _as_dict(existing_row) or {}
++            resolved_metadata = _normalise_llm_chunk_metadata(
++                metadata
++                if metadata is not None
++                else (
++                    existing.get("metadata_json")
++                    if isinstance(existing.get("metadata_json"), dict)
++                    else None
++                )
++            )
++            metadata_json = json.dumps(
++                resolved_metadata,
++                ensure_ascii=True,
++                sort_keys=True,
++            )
++            safe_duration_ms = (
++                max(int(duration_ms), 0)
++                if duration_ms is not None
++                else _duration_ms_between(started_at, finished_at)
++            )
++            resolved_parent = (
++                safe_parent
++                if parent_chunk_index is not None
++                else (
++                    _normalise_llm_chunk_index(existing.get("parent_chunk_index"))
++                    if existing.get("parent_chunk_index") not in (None, "")
++                    else None
++                )
++            )
++            conn.execute(
++                """
++                INSERT INTO recording_llm_chunk_states (
++                    recording_id,
++                    chunk_group,
++                    chunk_index,
++                    chunk_total,
++                    status,
++                    attempt,
++                    started_at,
++                    finished_at,
++                    duration_ms,
++                    error_code,
++                    error_text,
++                    parent_chunk_index,
++                    metadata_json,
++                    updated_at
++                )
++                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
++                ON CONFLICT(recording_id, chunk_group, chunk_index) DO UPDATE SET
++                    chunk_total = excluded.chunk_total,
++                    status = excluded.status,
++                    attempt = excluded.attempt,
++                    started_at = excluded.started_at,
++                    finished_at = excluded.finished_at,
++                    duration_ms = excluded.duration_ms,
++                    error_code = excluded.error_code,
++                    error_text = excluded.error_text,
++                    parent_chunk_index = excluded.parent_chunk_index,
++                    metadata_json = excluded.metadata_json,
++                    updated_at = excluded.updated_at
++                """,
++                (
++                    recording_id,
++                    normalized_group,
++                    normalized_index,
++                    safe_total,
++                    normalized_status,
++                    safe_attempt,
++                    started_at,
++                    finished_at,
++                    safe_duration_ms,
++                    str(error_code or "").strip() or None,
++                    str(error_text or "").strip() or None,
++                    resolved_parent,
++                    metadata_json,
++                    now,
++                ),
++            )
++            updated = conn.execute(
++                """
++                SELECT *
++                FROM recording_llm_chunk_states
++                WHERE recording_id = ? AND chunk_group = ? AND chunk_index = ?
++                """,
++                (recording_id, normalized_group, normalized_index),
++            ).fetchone()
++            conn.commit()
++        return _as_dict(updated)
++
++    return with_db_retry(_upsert)
++
++
++def mark_recording_llm_chunk_started(
++    recording_id: str,
++    *,
++    chunk_group: str,
++    chunk_index: str | int,
++    chunk_total: int,
++    parent_chunk_index: str | int | None = None,
++    metadata: dict[str, Any] | None = None,
++    settings: AppSettings | None = None,
++) -> dict[str, Any] | None:
++    init_db(settings)
++    normalized_group = _normalise_llm_chunk_group(chunk_group)
++    normalized_index = _normalise_llm_chunk_index(chunk_index)
++    safe_total = max(int(chunk_total), 1)
++    now = _utc_now()
++
++    def _mark_started() -> dict[str, Any] | None:
++        with connect(settings) as conn:
++            existing_row = conn.execute(
++                """
++                SELECT *
++                FROM recording_llm_chunk_states
++                WHERE recording_id = ? AND chunk_group = ? AND chunk_index = ?
++                """,
++                (recording_id, normalized_group, normalized_index),
++            ).fetchone()
++            existing = _as_dict(existing_row) or {}
++            next_attempt = max(int(existing.get("attempt") or 0), 0) + 1
++            resolved_metadata = _normalise_llm_chunk_metadata(
++                metadata
++                if metadata is not None
++                else (
++                    existing.get("metadata_json")
++                    if isinstance(existing.get("metadata_json"), dict)
++                    else None
++                )
++            )
++            metadata_json = json.dumps(
++                resolved_metadata,
++                ensure_ascii=True,
++                sort_keys=True,
++            )
++            resolved_parent = (
++                _normalise_llm_chunk_index(parent_chunk_index)
++                if parent_chunk_index is not None
++                else (
++                    _normalise_llm_chunk_index(existing.get("parent_chunk_index"))
++                    if existing.get("parent_chunk_index") not in (None, "")
++                    else None
++                )
++            )
++            conn.execute(
++                """
++                INSERT INTO recording_llm_chunk_states (
++                    recording_id,
++                    chunk_group,
++                    chunk_index,
++                    chunk_total,
++                    status,
++                    attempt,
++                    started_at,
++                    finished_at,
++                    duration_ms,
++                    error_code,
++                    error_text,
++                    parent_chunk_index,
++                    metadata_json,
++                    updated_at
++                )
++                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
++                ON CONFLICT(recording_id, chunk_group, chunk_index) DO UPDATE SET
++                    chunk_total = excluded.chunk_total,
++                    status = excluded.status,
++                    attempt = excluded.attempt,
++                    started_at = excluded.started_at,
++                    finished_at = excluded.finished_at,
++                    duration_ms = excluded.duration_ms,
++                    error_code = excluded.error_code,
++                    error_text = excluded.error_text,
++                    parent_chunk_index = excluded.parent_chunk_index,
++                    metadata_json = excluded.metadata_json,
++                    updated_at = excluded.updated_at
++                """,
++                (
++                    recording_id,
++                    normalized_group,
++                    normalized_index,
++                    safe_total,
++                    "running",
++                    next_attempt,
++                    now,
++                    None,
++                    None,
++                    None,
++                    None,
++                    resolved_parent,
++                    metadata_json,
++                    now,
++                ),
++            )
++            updated = conn.execute(
++                """
++                SELECT *
++                FROM recording_llm_chunk_states
++                WHERE recording_id = ? AND chunk_group = ? AND chunk_index = ?
++                """,
++                (recording_id, normalized_group, normalized_index),
++            ).fetchone()
++            conn.commit()
++        return _as_dict(updated)
++
++    return with_db_retry(_mark_started)
++
++
++def _mark_recording_llm_chunk_terminal(
++    recording_id: str,
++    *,
++    chunk_group: str,
++    chunk_index: str | int,
++    chunk_total: int,
++    status: str,
++    error_code: str | None = None,
++    error_text: str | None = None,
++    parent_chunk_index: str | int | None = None,
++    metadata: dict[str, Any] | None = None,
++    settings: AppSettings | None = None,
++) -> dict[str, Any] | None:
++    init_db(settings)
++    normalized_group = _normalise_llm_chunk_group(chunk_group)
++    normalized_index = _normalise_llm_chunk_index(chunk_index)
++    normalized_status = _validate_llm_chunk_status(status)
++    if normalized_status == "running":
++        raise ValueError("Terminal chunk status must not be running")
++    safe_total = max(int(chunk_total), 1)
++    now = _utc_now()
++
++    def _mark_terminal() -> dict[str, Any] | None:
++        with connect(settings) as conn:
++            existing_row = conn.execute(
++                """
++                SELECT *
++                FROM recording_llm_chunk_states
++                WHERE recording_id = ? AND chunk_group = ? AND chunk_index = ?
++                """,
++                (recording_id, normalized_group, normalized_index),
++            ).fetchone()
++            existing = _as_dict(existing_row) or {}
++            resolved_metadata = _normalise_llm_chunk_metadata(
++                metadata
++                if metadata is not None
++                else (
++                    existing.get("metadata_json")
++                    if isinstance(existing.get("metadata_json"), dict)
++                    else None
++                )
++            )
++            metadata_json = json.dumps(
++                resolved_metadata,
++                ensure_ascii=True,
++                sort_keys=True,
++            )
++            existing_attempt = max(int(existing.get("attempt") or 0), 0)
++            started_at_value = str(existing.get("started_at") or "").strip() or now
++            resolved_parent = (
++                _normalise_llm_chunk_index(parent_chunk_index)
++                if parent_chunk_index is not None
++                else (
++                    _normalise_llm_chunk_index(existing.get("parent_chunk_index"))
++                    if existing.get("parent_chunk_index") not in (None, "")
++                    else None
++                )
++            )
++            conn.execute(
++                """
++                INSERT INTO recording_llm_chunk_states (
++                    recording_id,
++                    chunk_group,
++                    chunk_index,
++                    chunk_total,
++                    status,
++                    attempt,
++                    started_at,
++                    finished_at,
++                    duration_ms,
++                    error_code,
++                    error_text,
++                    parent_chunk_index,
++                    metadata_json,
++                    updated_at
++                )
++                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
++                ON CONFLICT(recording_id, chunk_group, chunk_index) DO UPDATE SET
++                    chunk_total = excluded.chunk_total,
++                    status = excluded.status,
++                    attempt = excluded.attempt,
++                    started_at = excluded.started_at,
++                    finished_at = excluded.finished_at,
++                    duration_ms = excluded.duration_ms,
++                    error_code = excluded.error_code,
++                    error_text = excluded.error_text,
++                    parent_chunk_index = excluded.parent_chunk_index,
++                    metadata_json = excluded.metadata_json,
++                    updated_at = excluded.updated_at
++                """,
++                (
++                    recording_id,
++                    normalized_group,
++                    normalized_index,
++                    safe_total,
++                    normalized_status,
++                    max(existing_attempt, 1),
++                    started_at_value,
++                    now,
++                    _duration_ms_between(started_at_value, now),
++                    str(error_code or "").strip() or None,
++                    str(error_text or "").strip() or None,
++                    resolved_parent,
++                    metadata_json,
++                    now,
++                ),
++            )
++            updated = conn.execute(
++                """
++                SELECT *
++                FROM recording_llm_chunk_states
++                WHERE recording_id = ? AND chunk_group = ? AND chunk_index = ?
++                """,
++                (recording_id, normalized_group, normalized_index),
++            ).fetchone()
++            conn.commit()
++        return _as_dict(updated)
++
++    return with_db_retry(_mark_terminal)
++
++
++def mark_recording_llm_chunk_completed(
++    recording_id: str,
++    *,
++    chunk_group: str,
++    chunk_index: str | int,
++    chunk_total: int,
++    parent_chunk_index: str | int | None = None,
++    metadata: dict[str, Any] | None = None,
++    settings: AppSettings | None = None,
++) -> dict[str, Any] | None:
++    return _mark_recording_llm_chunk_terminal(
++        recording_id,
++        chunk_group=chunk_group,
++        chunk_index=chunk_index,
++        chunk_total=chunk_total,
++        status="completed",
++        parent_chunk_index=parent_chunk_index,
++        metadata=metadata,
++        settings=settings,
++    )
++
++
++def mark_recording_llm_chunk_failed(
++    recording_id: str,
++    *,
++    chunk_group: str,
++    chunk_index: str | int,
++    chunk_total: int,
++    error_code: str | None = None,
++    error_text: str | None = None,
++    parent_chunk_index: str | int | None = None,
++    metadata: dict[str, Any] | None = None,
++    settings: AppSettings | None = None,
++) -> dict[str, Any] | None:
++    return _mark_recording_llm_chunk_terminal(
++        recording_id,
++        chunk_group=chunk_group,
++        chunk_index=chunk_index,
++        chunk_total=chunk_total,
++        status="failed",
++        error_code=error_code,
++        error_text=error_text,
++        parent_chunk_index=parent_chunk_index,
++        metadata=metadata,
++        settings=settings,
++    )
++
++
++def mark_recording_llm_chunk_cancelled(
++    recording_id: str,
++    *,
++    chunk_group: str,
++    chunk_index: str | int,
++    chunk_total: int,
++    parent_chunk_index: str | int | None = None,
++    metadata: dict[str, Any] | None = None,
++    settings: AppSettings | None = None,
++) -> dict[str, Any] | None:
++    return _mark_recording_llm_chunk_terminal(
++        recording_id,
++        chunk_group=chunk_group,
++        chunk_index=chunk_index,
++        chunk_total=chunk_total,
++        status="cancelled",
++        parent_chunk_index=parent_chunk_index,
++        metadata=metadata,
++        settings=settings,
++    )
++
++
++def mark_recording_llm_chunk_split(
++    recording_id: str,
++    *,
++    chunk_group: str,
++    chunk_index: str | int,
++    chunk_total: int,
++    error_code: str | None = None,
++    error_text: str | None = None,
++    parent_chunk_index: str | int | None = None,
++    metadata: dict[str, Any] | None = None,
++    settings: AppSettings | None = None,
++) -> dict[str, Any] | None:
++    return _mark_recording_llm_chunk_terminal(
++        recording_id,
++        chunk_group=chunk_group,
++        chunk_index=chunk_index,
++        chunk_total=chunk_total,
++        status="split",
++        error_code=error_code,
++        error_text=error_text,
++        parent_chunk_index=parent_chunk_index,
++        metadata=metadata,
++        settings=settings,
++    )
++
++
++def clear_recording_llm_chunk_states(
++    recording_id: str,
++    *,
++    chunk_group: str | None = None,
++    settings: AppSettings | None = None,
++) -> int:
++    init_db(settings)
++    params: list[Any] = [recording_id]
++    where_sql = "recording_id = ?"
++    if chunk_group is not None:
++        where_sql += " AND chunk_group = ?"
++        params.append(_normalise_llm_chunk_group(chunk_group))
++
++    def _clear() -> int:
++        with connect(settings) as conn:
++            deleted = conn.execute(
++                f"DELETE FROM recording_llm_chunk_states WHERE {where_sql}",
++                params,
++            )
++            conn.commit()
++            return int(deleted.rowcount)
++
+     return with_db_retry(_clear)
+ 
+ 
+@@ -3637,6 +4187,14 @@ __all__ = [
+     "mark_recording_pipeline_stage_skipped",
+     "mark_recording_pipeline_stage_cancelled",
+     "clear_recording_pipeline_stages",
++    "list_recording_llm_chunk_states",
++    "upsert_recording_llm_chunk_state",
++    "mark_recording_llm_chunk_started",
++    "mark_recording_llm_chunk_completed",
++    "mark_recording_llm_chunk_failed",
++    "mark_recording_llm_chunk_cancelled",
++    "mark_recording_llm_chunk_split",
++    "clear_recording_llm_chunk_states",
+     "set_recording_status",
+     "set_recording_status_if_current_in",
+     "set_recording_status_if_current_in_and_no_started_job",
 diff --git a/lan_app/worker_tasks.py b/lan_app/worker_tasks.py
-index 39cedd0..ebdb8e5 100644
+index ebdb8e5..10a9aa4 100644
 --- a/lan_app/worker_tasks.py
 +++ b/lan_app/worker_tasks.py
-@@ -1951,6 +1951,8 @@ def _stage_llm_extract(ctx: _PipelineExecutionContext) -> _StageResult:
-         ctx.summary_payload = asyncio.run(
-             pipeline_orchestrator._run_chunked_llm_summary(
-                 transcript_text=llm_prompt_text or ctx.clean_text,
-+                speaker_turns=ctx.speaker_turns,
-+                aliases=aliases,
-                 derived_dir=ctx.artifacts.derived_dir,
-                 llm=LLMClient(),
-                 cfg=ctx.pipeline_settings,
+@@ -91,6 +91,7 @@ from .constants import (
+ )
+ from .db import (
+     clear_recording_progress,
++    clear_recording_llm_chunk_states,
+     clear_recording_pipeline_stages,
+     fail_job,
+     fail_job_if_started,
+@@ -99,7 +100,12 @@ from .db import (
+     get_recording,
+     init_db,
+     list_jobs,
++    list_recording_llm_chunk_states,
+     list_recording_pipeline_stages,
++    mark_recording_llm_chunk_completed,
++    mark_recording_llm_chunk_failed,
++    mark_recording_llm_chunk_split,
++    mark_recording_llm_chunk_started,
+     mark_recording_pipeline_stage_completed,
+     mark_recording_pipeline_stage_failed,
+     mark_recording_pipeline_stage_skipped,
+@@ -111,6 +117,7 @@ from .db import (
+     set_recording_status,
+     set_recording_status_if_current_in_and_job_started,
+     start_job,
++    upsert_recording_llm_chunk_state,
+ )
+ from .diarization_loader import load_pyannote_pipeline
+ from .pipeline_stages import (
+@@ -221,6 +228,61 @@ class RetryPolicy:
+     backoff_seconds: tuple[int, ...]
+ 
+ 
++@dataclass(frozen=True)
++class _DbChunkStateStore:
++    recording_id: str
++    settings: AppSettings
++
++    def list_states(self, *, chunk_group: str) -> list[dict[str, Any]]:
++        return list_recording_llm_chunk_states(
++            self.recording_id,
++            chunk_group=chunk_group,
++            settings=self.settings,
++        )
++
++    def upsert_state(self, **kwargs: Any) -> dict[str, Any] | None:
++        return upsert_recording_llm_chunk_state(
++            self.recording_id,
++            settings=self.settings,
++            **kwargs,
++        )
++
++    def mark_started(self, **kwargs: Any) -> dict[str, Any] | None:
++        return mark_recording_llm_chunk_started(
++            self.recording_id,
++            settings=self.settings,
++            **kwargs,
++        )
++
++    def mark_completed(self, **kwargs: Any) -> dict[str, Any] | None:
++        return mark_recording_llm_chunk_completed(
++            self.recording_id,
++            settings=self.settings,
++            **kwargs,
++        )
++
++    def mark_failed(self, **kwargs: Any) -> dict[str, Any] | None:
++        return mark_recording_llm_chunk_failed(
++            self.recording_id,
++            settings=self.settings,
++            **kwargs,
++        )
++
++    def mark_split(self, **kwargs: Any) -> dict[str, Any] | None:
++        return mark_recording_llm_chunk_split(
++            self.recording_id,
++            settings=self.settings,
++            **kwargs,
++        )
++
++    def clear_states(self, *, chunk_group: str | None = None) -> int:
++        return clear_recording_llm_chunk_states(
++            self.recording_id,
++            chunk_group=chunk_group,
++            settings=self.settings,
++        )
++
++
+ _DEFAULT_RETRY_POLICY = RetryPolicy(max_attempts=2, backoff_seconds=(2,))
+ _JOB_RETRY_POLICIES: dict[str, RetryPolicy] = {
+     JOB_TYPE_PRECHECK: RetryPolicy(max_attempts=3, backoff_seconds=(1, 2)),
+@@ -1117,6 +1179,8 @@ def _build_pipeline_settings(settings: AppSettings) -> PipelineSettings:
+         llm_chunk_max_chars=settings.llm_chunk_max_chars,
+         llm_chunk_overlap_chars=settings.llm_chunk_overlap_chars,
+         llm_chunk_timeout_seconds=settings.llm_chunk_timeout_seconds,
++        llm_chunk_split_min_chars=settings.llm_chunk_split_min_chars,
++        llm_chunk_split_max_depth=settings.llm_chunk_split_max_depth,
+         llm_long_transcript_threshold_chars=settings.llm_long_transcript_threshold_chars,
+         llm_merge_max_tokens=settings.llm_merge_max_tokens,
+         asr_device=getattr(settings, "asr_device", "auto"),
+@@ -1963,6 +2027,11 @@ def _stage_llm_extract(ctx: _PipelineExecutionContext) -> _StageResult:
+                 calendar_title=ctx.calendar_title,
+                 calendar_attendees=ctx.calendar_attendees,
+                 progress_callback=_progress_callback,
++                chunk_state_store=_DbChunkStateStore(
++                    recording_id=ctx.recording_id,
++                    settings=ctx.settings,
++                ),
++                step_log_callback=lambda message: _append_step_log(ctx.log_path, message),
+             )
+         )
+     else:
 diff --git a/lan_transcriber/llm_chunking.py b/lan_transcriber/llm_chunking.py
-index 3f9e3c2..932c320 100644
+index 932c320..0705103 100644
 --- a/lan_transcriber/llm_chunking.py
 +++ b/lan_transcriber/llm_chunking.py
-@@ -269,10 +269,10 @@ def build_compact_transcript(
-         )
+@@ -122,7 +122,7 @@ class CompactTranscript:
  
-     for turn in normalized_turns:
--        mapping = _mapping_for(turn)
-         text = str(turn["text"])
-         if not _has_substantive_content(text):
-             continue
-+        mapping = _mapping_for(turn)
-         start_seconds = safe_float(turn["start"], default=0.0)
-         end_seconds = max(start_seconds, safe_float(turn["end"], default=start_seconds))
-         if (
+ @dataclass(frozen=True)
+ class TranscriptChunk:
+-    index: int
++    index: int | str
+     total: int
+     text: str
+     base_text: str
+@@ -579,6 +579,7 @@ def build_chunk_prompt(
+     calendar_title: str | None = None,
+     calendar_attendees: Sequence[str] | None = None,
+     speaker_mapping: Sequence[dict[str, str]] | None = None,
++    chunk_id: str | None = None,
+ ) -> tuple[str, str]:
+     language_name = _language_name(target_summary_language)
+     sys_prompt = (
+@@ -592,6 +593,7 @@ def build_chunk_prompt(
+         "chunk": {
+             "index": chunk.index,
+             "total": chunk.total,
++            "id": str(chunk_id or chunk.index),
+             "time_range": (
+                 {
+                     "start_seconds": round(chunk.start_seconds, 3),
+@@ -806,6 +808,7 @@ def merge_chunk_results(chunk_results: Sequence[dict[str, Any]]) -> dict[str, An
+             {
+                 "chunk_index": chunk_index,
+                 "chunk_total": chunk_total,
++                "chunk_id": str(row.get("chunk_id") or chunk_index),
+                 "topic_candidates": topic_candidates,
+                 "summary_bullets": chunk_summary,
+                 "decisions": chunk_decisions,
 diff --git a/lan_transcriber/pipeline_steps/orchestrator.py b/lan_transcriber/pipeline_steps/orchestrator.py
-index d7bd1aa..433f8f2 100644
+index 433f8f2..1ac438a 100644
 --- a/lan_transcriber/pipeline_steps/orchestrator.py
 +++ b/lan_transcriber/pipeline_steps/orchestrator.py
-@@ -32,7 +32,6 @@ from ..llm_chunking import (
+@@ -3,7 +3,9 @@ from __future__ import annotations
+ import asyncio
+ from dataclasses import dataclass
+ import gc
++import hashlib
+ import inspect
++import json
+ import logging
+ import shutil
+ import threading
+@@ -12,6 +14,8 @@ from pathlib import Path
+ from types import SimpleNamespace
+ from typing import Any, Awaitable, Callable, Iterable, List, Literal, Protocol, Sequence
+ 
++import httpx
++
+ from pydantic import AliasChoices, Field
+ from pydantic_settings import BaseSettings
+ 
+@@ -26,12 +30,14 @@ from ..compat.call_compat import (
+ )
+ from ..compat.pyannote_compat import patch_pyannote_inference_ignore_use_auth_token
+ from ..llm_chunking import (
++    TranscriptChunk,
+     build_compact_transcript,
+     build_chunk_prompt,
+     build_merge_prompt,
      merge_chunk_results,
      parse_chunk_extract,
      plan_compact_transcript_chunks,
--    plan_transcript_chunks,
++    plan_transcript_chunks,
  )
  from ..llm_client import LLMClient
  from ..metrics import error_rate_total, p95_latency_seconds
-@@ -1427,8 +1426,8 @@ def _use_chunked_llm(transcript_text: str, cfg: Settings) -> bool:
- async def _run_chunked_llm_summary(
-     *,
-     transcript_text: str,
--    speaker_turns: Sequence[dict[str, Any]] | None = None,
--    aliases: dict[str, str] | None = None,
-+    speaker_turns: Sequence[dict[str, Any]],
-+    aliases: dict[str, str],
-     derived_dir: Path,
-     llm: LLMClient,
-     cfg: Settings,
-@@ -1440,37 +1439,26 @@ async def _run_chunked_llm_summary(
-     calendar_attendees: Sequence[str],
-     progress_callback: ProgressCallback | None,
- ) -> dict[str, Any]:
--    compact_transcript = None
--    speaker_mapping: list[dict[str, str]] = []
--    source_chars = len(transcript_text.strip())
--    compact_chars = source_chars
--    if speaker_turns is not None:
--        try:
--            compact_transcript = build_compact_transcript(
--                speaker_turns,
--                aliases=aliases,
--            )
--        except ValueError as exc:
--            raise RuntimeError(str(exc)) from exc
--        source_chars = compact_transcript.source_chars
--        compact_chars = compact_transcript.compact_chars
--        speaker_mapping = compact_transcript.prompt_speaker_mapping()
--        atomic_write_text(derived_dir / "llm_compact_transcript.txt", compact_transcript.text)
--        atomic_write_json(
--            derived_dir / "llm_compact_transcript.json",
--            compact_transcript.artifact_payload(),
--        )
--        chunks = plan_compact_transcript_chunks(
--            compact_transcript,
--            max_chars=cfg.llm_chunk_max_chars,
--            overlap_chars=cfg.llm_chunk_overlap_chars,
--        )
--    else:
--        chunks = plan_transcript_chunks(
--            transcript_text,
--            max_chars=cfg.llm_chunk_max_chars,
--            overlap_chars=cfg.llm_chunk_overlap_chars,
+@@ -101,6 +107,138 @@ class Diariser(Protocol):
+     async def __call__(self, audio_path: Path): ...
+ 
+ 
++class ChunkStateStore(Protocol):
++    def list_states(self, *, chunk_group: str) -> list[dict[str, Any]]: ...
++
++    def upsert_state(
++        self,
++        *,
++        chunk_group: str,
++        chunk_index: str,
++        chunk_total: int,
++        status: str,
++        attempt: int = 0,
++        started_at: str | None = None,
++        finished_at: str | None = None,
++        duration_ms: int | None = None,
++        error_code: str | None = None,
++        error_text: str | None = None,
++        parent_chunk_index: str | None = None,
++        metadata: dict[str, Any] | None = None,
++    ) -> dict[str, Any] | None: ...
++
++    def mark_started(
++        self,
++        *,
++        chunk_group: str,
++        chunk_index: str,
++        chunk_total: int,
++        parent_chunk_index: str | None = None,
++        metadata: dict[str, Any] | None = None,
++    ) -> dict[str, Any] | None: ...
++
++    def mark_completed(
++        self,
++        *,
++        chunk_group: str,
++        chunk_index: str,
++        chunk_total: int,
++        parent_chunk_index: str | None = None,
++        metadata: dict[str, Any] | None = None,
++    ) -> dict[str, Any] | None: ...
++
++    def mark_failed(
++        self,
++        *,
++        chunk_group: str,
++        chunk_index: str,
++        chunk_total: int,
++        error_code: str | None = None,
++        error_text: str | None = None,
++        parent_chunk_index: str | None = None,
++        metadata: dict[str, Any] | None = None,
++    ) -> dict[str, Any] | None: ...
++
++    def mark_split(
++        self,
++        *,
++        chunk_group: str,
++        chunk_index: str,
++        chunk_total: int,
++        error_code: str | None = None,
++        error_text: str | None = None,
++        parent_chunk_index: str | None = None,
++        metadata: dict[str, Any] | None = None,
++    ) -> dict[str, Any] | None: ...
++
++    def clear_states(self, *, chunk_group: str | None = None) -> int: ...
++
++
++@dataclass(frozen=True)
++class _ChunkRuntime:
++    chunk_id: str
++    parent_chunk_id: str | None
++    depth: int
++    order_path: tuple[int, ...]
++    text: str
++    base_text: str
++    overlap_prefix: str
++    start_seconds: float | None = None
++    end_seconds: float | None = None
++    source_kind: str = "root"
++
++    def metadata_payload(self, *, transcript_hash: str) -> dict[str, Any]:
++        payload: dict[str, Any] = {
++            "chunk_id": self.chunk_id,
++            "depth": self.depth,
++            "order_path": list(self.order_path),
++            "text": self.text,
++            "base_text": self.base_text,
++            "overlap_prefix": self.overlap_prefix,
++            "transcript_hash": transcript_hash,
++            "source_kind": self.source_kind,
++        }
++        if self.start_seconds is not None:
++            payload["start_seconds"] = round(self.start_seconds, 3)
++        if self.end_seconds is not None:
++            payload["end_seconds"] = round(self.end_seconds, 3)
++        return payload
++
++    def plan_payload(
++        self,
++        *,
++        position: int,
++        total: int,
++        transcript_hash: str,
++        status: str | None,
++        attempt: int | None,
++        error_code: str | None,
++    ) -> dict[str, Any]:
++        chunk = TranscriptChunk(
++            index=position,
++            total=total,
++            text=self.text,
++            base_text=self.base_text,
++            overlap_prefix=self.overlap_prefix,
++            start_seconds=self.start_seconds,
++            end_seconds=self.end_seconds,
++        )
++        payload = chunk.plan_payload()
++        payload["chunk_id"] = self.chunk_id
++        payload["parent_chunk_index"] = self.parent_chunk_id
++        payload["split_depth"] = self.depth
++        payload["order_path"] = list(self.order_path)
++        payload["source_kind"] = self.source_kind
++        payload["transcript_hash"] = transcript_hash
++        if status:
++            payload["status"] = status
++        if attempt is not None:
++            payload["attempt"] = attempt
++        if error_code:
++            payload["error_code"] = error_code
++        return payload
++
++
+ class Settings(BaseSettings):
+     """Runtime configuration for the transcription pipeline."""
+ 
+@@ -128,7 +266,7 @@ class Settings(BaseSettings):
+         ),
+     )
+     llm_chunk_max_chars: int = Field(
+-        default=6000,
++        default=4500,
+         ge=1,
+         validation_alias=AliasChoices(
+             "llm_chunk_max_chars",
+@@ -137,7 +275,7 @@ class Settings(BaseSettings):
+         ),
+     )
+     llm_chunk_overlap_chars: int = Field(
+-        default=600,
++        default=300,
+         ge=0,
+         validation_alias=AliasChoices(
+             "llm_chunk_overlap_chars",
+@@ -154,8 +292,26 @@ class Settings(BaseSettings):
+             "LAN_LLM_CHUNK_TIMEOUT_SECONDS",
+         ),
+     )
++    llm_chunk_split_min_chars: int = Field(
++        default=1200,
++        ge=64,
++        validation_alias=AliasChoices(
++            "llm_chunk_split_min_chars",
++            "LLM_CHUNK_SPLIT_MIN_CHARS",
++            "LAN_LLM_CHUNK_SPLIT_MIN_CHARS",
++        ),
++    )
++    llm_chunk_split_max_depth: int = Field(
++        default=2,
++        ge=0,
++        validation_alias=AliasChoices(
++            "llm_chunk_split_max_depth",
++            "LLM_CHUNK_SPLIT_MAX_DEPTH",
++            "LAN_LLM_CHUNK_SPLIT_MAX_DEPTH",
++        ),
++    )
+     llm_long_transcript_threshold_chars: int = Field(
+-        default=6000,
++        default=4500,
+         ge=1,
+         validation_alias=AliasChoices(
+             "llm_long_transcript_threshold_chars",
+@@ -1401,6 +1557,458 @@ def _llm_chunk_progress(chunk_index: int, total_chunks: int) -> float:
+     return min(0.90, start + (max(chunk_index, 1) / total) * span)
+ 
+ 
++_LLM_CHUNK_GROUP_EXTRACT = "extract"
++_LLM_CHUNK_REASON_TIMEOUT = "llm_chunk_timeout"
++_LLM_CHUNK_REASON_REQUEST_TIMEOUT = "llm_chunk_request_timeout"
++_LLM_CHUNK_REASON_PARSE_ERROR = "llm_chunk_parse_error"
++_LLM_CHUNK_REASON_CONNECTION_ERROR = "llm_chunk_connection_error"
++_LLM_CHUNK_REASON_RUNTIME_ERROR = "llm_chunk_runtime_error"
++_LLM_MERGE_REASON_TIMEOUT = "llm_merge_timeout"
++_LLM_MERGE_REASON_REQUEST_TIMEOUT = "llm_merge_request_timeout"
++_LLM_MERGE_REASON_CONNECTION_ERROR = "llm_merge_connection_error"
++_LLM_MERGE_REASON_PARSE_ERROR = "llm_merge_parse_error"
++
++
++def _llm_request_timeout_message(timeout_seconds: float | None) -> str:
++    base = _llm_timeout_message(timeout_seconds)
++    return f"request {base}"
++
++
++async def _emit_step_log(
++    callback: Callable[[str], Any] | None,
++    message: str,
++) -> None:
++    if callback is None:
++        return
 +    try:
-+        compact_transcript = build_compact_transcript(
-+            speaker_turns,
-+            aliases=aliases,
-         )
-+    except ValueError as exc:
-+        raise RuntimeError(str(exc)) from exc
-+    source_chars = compact_transcript.source_chars
-+    compact_chars = compact_transcript.compact_chars
-+    speaker_mapping = compact_transcript.prompt_speaker_mapping()
-+    atomic_write_text(derived_dir / "llm_compact_transcript.txt", compact_transcript.text)
++        out = callback(message)
++        if inspect.isawaitable(out):
++            await out
++    except Exception:
++        return
++
++
++def _read_json_artifact(path: Path) -> dict[str, Any] | None:
++    try:
++        payload = json.loads(path.read_text(encoding="utf-8"))
++    except (OSError, ValueError):
++        return None
++    return payload if isinstance(payload, dict) else None
++
++
++def _compact_transcript_hash(text: str) -> str:
++    return hashlib.sha256(text.encode("utf-8")).hexdigest()
++
++
++def _chunk_request_timeout_seconds(llm: Any) -> float | None:
++    timeout = safe_float(getattr(llm, "timeout", None), default=0.0)
++    return timeout if timeout > 0 else None
++
++
++def _chunk_artifact_token(chunk_id: str) -> str:
++    normalized = str(chunk_id or "").strip().lower()
++    digits: list[str] = []
++    suffix: list[str] = []
++    seen_suffix = False
++    for char in normalized:
++        if not seen_suffix and char.isdigit():
++            digits.append(char)
++            continue
++        seen_suffix = True
++        suffix.append(char if char.isalnum() else "_")
++    if digits:
++        prefix = f"{int(''.join(digits)):03d}"
++    else:
++        prefix = "chunk"
++    suffix_text = "".join(suffix)
++    return f"{prefix}{suffix_text}"
++
++
++def _chunk_artifact_paths(
++    derived_dir: Path,
++    chunk_id: str,
++) -> tuple[Path, Path, Path]:
++    token = _chunk_artifact_token(chunk_id)
++    return (
++        derived_dir / f"llm_chunk_{token}_raw.json",
++        derived_dir / f"llm_chunk_{token}_extract.json",
++        derived_dir / f"llm_chunk_{token}_error.json",
++    )
++
++
++def _chunk_runtime_from_state_row(
++    row: dict[str, Any],
++    *,
++    transcript_hash: str,
++) -> _ChunkRuntime | None:
++    metadata = row.get("metadata_json")
++    if not isinstance(metadata, dict):
++        return None
++    if str(metadata.get("transcript_hash") or "").strip() != transcript_hash:
++        return None
++    chunk_id = str(row.get("chunk_index") or metadata.get("chunk_id") or "").strip().lower()
++    text = str(metadata.get("text") or "").strip()
++    base_text = str(metadata.get("base_text") or "").strip()
++    if not chunk_id or not text or not base_text:
++        return None
++    order_path_raw = metadata.get("order_path")
++    if not isinstance(order_path_raw, list) or not order_path_raw:
++        return None
++    try:
++        order_path = tuple(max(int(item), 0) for item in order_path_raw)
++    except (TypeError, ValueError):
++        return None
++    if any(item <= 0 for item in order_path):
++        return None
++    return _ChunkRuntime(
++        chunk_id=chunk_id,
++        parent_chunk_id=(
++            str(row.get("parent_chunk_index") or "").strip().lower() or None
++        ),
++        depth=max(int(safe_float(metadata.get("depth"), default=float(len(order_path) - 1))), 0),
++        order_path=order_path,
++        text=text,
++        base_text=base_text,
++        overlap_prefix=str(metadata.get("overlap_prefix") or ""),
++        start_seconds=(
++            round(safe_float(metadata.get("start_seconds"), default=0.0), 3)
++            if metadata.get("start_seconds") is not None
++            else None
++        ),
++        end_seconds=(
++            round(safe_float(metadata.get("end_seconds"), default=0.0), 3)
++            if metadata.get("end_seconds") is not None
++            else None
++        ),
++        source_kind=str(metadata.get("source_kind") or "root"),
++    )
++
++
++def _build_root_chunk_runtime(chunks: Sequence[TranscriptChunk]) -> list[_ChunkRuntime]:
++    runtime_chunks: list[_ChunkRuntime] = []
++    for chunk in chunks:
++        runtime_chunks.append(
++            _ChunkRuntime(
++                chunk_id=str(chunk.index),
++                parent_chunk_id=None,
++                depth=0,
++                order_path=(int(safe_float(chunk.index, default=0.0)),),
++                text=chunk.text,
++                base_text=chunk.base_text,
++                overlap_prefix=chunk.overlap_prefix,
++                start_seconds=chunk.start_seconds,
++                end_seconds=chunk.end_seconds,
++                source_kind="root",
++            )
++        )
++    return runtime_chunks
++
++
++def _active_chunk_rows_by_id(rows: Sequence[dict[str, Any]]) -> dict[str, dict[str, Any]]:
++    mapping: dict[str, dict[str, Any]] = {}
++    for row in rows:
++        chunk_id = str(row.get("chunk_index") or "").strip().lower()
++        if chunk_id:
++            mapping[chunk_id] = dict(row)
++    return mapping
++
++
++def _load_active_chunk_runtime(
++    rows: Sequence[dict[str, Any]],
++    *,
++    transcript_hash: str,
++) -> list[_ChunkRuntime] | None:
++    active_chunks: list[_ChunkRuntime] = []
++    for row in rows:
++        if str(row.get("status") or "").strip().lower() == "split":
++            runtime = _chunk_runtime_from_state_row(row, transcript_hash=transcript_hash)
++            if runtime is None:
++                return None
++            continue
++        runtime = _chunk_runtime_from_state_row(row, transcript_hash=transcript_hash)
++        if runtime is None:
++            return None
++        active_chunks.append(runtime)
++    if not active_chunks:
++        return None
++    active_chunks.sort(key=lambda item: item.order_path)
++    return active_chunks
++
++
++def _runtime_chunk_row_payload(
++    chunk: _ChunkRuntime,
++    *,
++    total: int,
++    transcript_hash: str,
++    existing_row: dict[str, Any] | None,
++) -> dict[str, Any]:
++    return {
++        "chunk_group": _LLM_CHUNK_GROUP_EXTRACT,
++        "chunk_index": chunk.chunk_id,
++        "chunk_total": total,
++        "status": str(existing_row.get("status") or "planned") if existing_row else "planned",
++        "attempt": max(int(existing_row.get("attempt") or 0), 0) if existing_row else 0,
++        "started_at": str(existing_row.get("started_at") or "").strip() or None if existing_row else None,
++        "finished_at": str(existing_row.get("finished_at") or "").strip() or None if existing_row else None,
++        "duration_ms": (
++            int(existing_row.get("duration_ms"))
++            if existing_row and existing_row.get("duration_ms") is not None
++            else None
++        ),
++        "error_code": str(existing_row.get("error_code") or "").strip() or None if existing_row else None,
++        "error_text": str(existing_row.get("error_text") or "").strip() or None if existing_row else None,
++        "parent_chunk_index": chunk.parent_chunk_id,
++        "metadata": chunk.metadata_payload(transcript_hash=transcript_hash),
++    }
++
++
++def _sync_chunk_rows(
++    *,
++    chunk_state_store: ChunkStateStore | None,
++    active_chunks: Sequence[_ChunkRuntime],
++    rows_by_id: dict[str, dict[str, Any]],
++    transcript_hash: str,
++) -> dict[str, dict[str, Any]]:
++    if chunk_state_store is None:
++        return rows_by_id
++    synced = dict(rows_by_id)
++    total = len(active_chunks)
++    for chunk in active_chunks:
++        row = chunk_state_store.upsert_state(
++            **_runtime_chunk_row_payload(
++                chunk,
++                total=total,
++                transcript_hash=transcript_hash,
++                existing_row=synced.get(chunk.chunk_id),
++            )
++        )
++        if row is not None:
++            synced[chunk.chunk_id] = row
++    return synced
++
++
++def _split_parent_rows(
++    rows_by_id: dict[str, dict[str, Any]],
++) -> list[dict[str, Any]]:
++    rows: list[dict[str, Any]] = []
++    for row in rows_by_id.values():
++        if str(row.get("status") or "").strip().lower() != "split":
++            continue
++        rows.append(dict(row))
++    rows.sort(key=lambda item: str(item.get("chunk_index") or ""))
++    return rows
++
++
++def _write_chunk_plan_artifact(
++    *,
++    derived_dir: Path,
++    compact_transcript: Any,
++    transcript_text: str,
++    transcript_hash: str,
++    cfg: Settings,
++    active_chunks: Sequence[_ChunkRuntime],
++    rows_by_id: dict[str, dict[str, Any]],
++) -> None:
++    total = len(active_chunks)
++    chunk_rows = [
++        chunk.plan_payload(
++            position=index,
++            total=total,
++            transcript_hash=transcript_hash,
++            status=str(rows_by_id.get(chunk.chunk_id, {}).get("status") or "").strip() or None,
++            attempt=(
++                int(rows_by_id[chunk.chunk_id]["attempt"])
++                if chunk.chunk_id in rows_by_id and rows_by_id[chunk.chunk_id].get("attempt") is not None
++                else None
++            ),
++            error_code=str(rows_by_id.get(chunk.chunk_id, {}).get("error_code") or "").strip() or None,
++        )
++        for index, chunk in enumerate(active_chunks, start=1)
++    ]
++    split_rows: list[dict[str, Any]] = []
++    for row in _split_parent_rows(rows_by_id):
++        metadata = row.get("metadata_json") if isinstance(row.get("metadata_json"), dict) else {}
++        split_rows.append(
++            {
++                "chunk_index": str(row.get("chunk_index") or ""),
++                "parent_chunk_index": str(row.get("parent_chunk_index") or "").strip() or None,
++                "status": "split",
++                "attempt": max(int(row.get("attempt") or 0), 0),
++                "error_code": str(row.get("error_code") or "").strip() or None,
++                "child_chunk_indexes": list(metadata.get("split_child_chunk_indexes") or []),
++            }
++        )
 +    atomic_write_json(
-+        derived_dir / "llm_compact_transcript.json",
-+        compact_transcript.artifact_payload(),
-+    )
-+    chunks = plan_compact_transcript_chunks(
-+        compact_transcript,
-+        max_chars=cfg.llm_chunk_max_chars,
-+        overlap_chars=cfg.llm_chunk_overlap_chars,
-+    )
-     atomic_write_json(
-         derived_dir / "llm_chunks_plan.json",
-         {
-@@ -1479,18 +1467,15 @@ async def _run_chunked_llm_summary(
-             "chunk_max_chars": cfg.llm_chunk_max_chars,
-             "chunk_overlap_chars": cfg.llm_chunk_overlap_chars,
-             "long_transcript_threshold_chars": cfg.llm_long_transcript_threshold_chars,
--            "compaction": (
--                {
--                    "merge_gap_seconds": compact_transcript.merge_gap_seconds,
--                    "source_turn_count": compact_transcript.source_turn_count,
--                    "compact_turn_count": compact_transcript.compact_turn_count,
--                    "speaker_mapping": [
--                        item.artifact_payload() for item in compact_transcript.speaker_mapping
--                    ],
--                }
--                if compact_transcript is not None
--                else None
--            ),
++        derived_dir / "llm_chunks_plan.json",
++        {
++            "version": 2,
++            "source_chars": compact_transcript.source_chars,
++            "compact_chars": compact_transcript.compact_chars,
++            "transcript_hash": transcript_hash,
++            "chunk_max_chars": cfg.llm_chunk_max_chars,
++            "chunk_overlap_chars": cfg.llm_chunk_overlap_chars,
++            "chunk_timeout_seconds": cfg.llm_chunk_timeout_seconds,
++            "chunk_split_min_chars": cfg.llm_chunk_split_min_chars,
++            "chunk_split_max_depth": cfg.llm_chunk_split_max_depth,
++            "long_transcript_threshold_chars": cfg.llm_long_transcript_threshold_chars,
 +            "source_transcript_chars": len(transcript_text.strip()),
 +            "compaction": {
 +                "merge_gap_seconds": compact_transcript.merge_gap_seconds,
@@ -132,133 +1383,2450 @@ index d7bd1aa..433f8f2 100644
 +                    item.artifact_payload() for item in compact_transcript.speaker_mapping
 +                ],
 +            },
-             "chunks": [chunk.plan_payload() for chunk in chunks],
-         },
-     )
-diff --git a/tests/test_cov_lan_transcriber_extra_pipeline.py b/tests/test_cov_lan_transcriber_extra_pipeline.py
-index 7e8a844..096002a 100644
---- a/tests/test_cov_lan_transcriber_extra_pipeline.py
-+++ b/tests/test_cov_lan_transcriber_extra_pipeline.py
-@@ -41,6 +41,17 @@ def _annotation_from_segments(*segments: tuple[float, float, str]):
-     )
- 
- 
-+def _llm_chunk_turns(text: str = "single chunk transcript") -> list[dict[str, Any]]:
-+    return [
-+        {
-+            "speaker": "S1",
-+            "start": 0.0,
-+            "end": 1.0,
-+            "text": text,
-+        }
-+    ]
-+
-+
- def test_pipeline_settings_reads_llm_model_from_env(
-     monkeypatch: pytest.MonkeyPatch,
-     tmp_path: Path,
-@@ -540,11 +551,13 @@ async def test_run_chunked_llm_summary_rejects_empty_chunk_plan(
-     tmp_path: Path,
-     monkeypatch: pytest.MonkeyPatch,
- ) -> None:
--    monkeypatch.setattr(pipeline, "plan_transcript_chunks", lambda *_args, **_kwargs: [])
-+    monkeypatch.setattr(pipeline, "plan_compact_transcript_chunks", lambda *_args, **_kwargs: [])
- 
-     with pytest.raises(RuntimeError, match="produced no chunks"):
-         await pipeline._run_chunked_llm_summary(
-             transcript_text="hello world",
-+            speaker_turns=_llm_chunk_turns("hello world"),
-+            aliases={},
-             derived_dir=tmp_path / "derived",
-             llm=object(),
-             cfg=_settings(tmp_path, llm_model="model"),
-@@ -682,6 +695,8 @@ async def test_run_chunked_llm_summary_timeout_writes_error_artifact(tmp_path: P
-     with pytest.raises(RuntimeError, match=r"LLM chunk 1/1 failed: timed out after 0.001s"):
-         await pipeline._run_chunked_llm_summary(
-             transcript_text="single chunk transcript",
-+            speaker_turns=_llm_chunk_turns(),
-+            aliases={},
-             derived_dir=derived,
-             llm=_SlowLLM(),
-             cfg=_settings(
-@@ -718,6 +733,8 @@ async def test_run_chunked_llm_summary_asyncio_timeout_writes_error_artifact(
-     with pytest.raises(RuntimeError, match=r"LLM chunk 1/1 failed: timed out after 0.001s"):
-         await pipeline._run_chunked_llm_summary(
-             transcript_text="single chunk transcript",
-+            speaker_turns=_llm_chunk_turns(),
-+            aliases={},
-             derived_dir=derived,
-             llm=object(),
-             cfg=_settings(
-@@ -752,6 +769,8 @@ async def test_run_chunked_llm_summary_timeout_sentinel_writes_error_artifact(
-     with pytest.raises(RuntimeError, match=r"LLM chunk 1/1 failed: timed out after 0.001s"):
-         await pipeline._run_chunked_llm_summary(
-             transcript_text="single chunk transcript",
-+            speaker_turns=_llm_chunk_turns(),
-+            aliases={},
-             derived_dir=derived,
-             llm=_TimeoutSentinelLLM(),
-             cfg=_settings(
-@@ -803,6 +822,8 @@ async def test_run_chunked_llm_summary_merge_timeout_sentinel_fails(tmp_path: Pa
-     with pytest.raises(RuntimeError, match=r"LLM merge failed: timed out after 12s"):
-         await pipeline._run_chunked_llm_summary(
-             transcript_text="single chunk transcript",
-+            speaker_turns=_llm_chunk_turns(),
-+            aliases={},
-             derived_dir=derived,
-             llm=_MergeTimeoutSentinelLLM(),
-             cfg=_settings(
-@@ -860,6 +881,8 @@ async def test_run_chunked_llm_summary_passes_merge_retry_budget(tmp_path: Path)
- 
-     await pipeline._run_chunked_llm_summary(
-         transcript_text="single chunk transcript",
-+        speaker_turns=_llm_chunk_turns(),
-+        aliases={},
-         derived_dir=tmp_path / "derived",
-         llm=_MergeBudgetLLM(),
-         cfg=_settings(
-diff --git a/tests/test_llm_chunking.py b/tests/test_llm_chunking.py
-index f2c6cef..f885385 100644
---- a/tests/test_llm_chunking.py
-+++ b/tests/test_llm_chunking.py
-@@ -150,6 +150,25 @@ def test_build_compact_transcript_uses_stable_reversible_speaker_mapping() -> No
-     ]
- 
- 
-+def test_build_compact_transcript_ignores_noise_only_speakers_when_assigning_labels() -> None:
-+    compact = llm_chunking.build_compact_transcript(
-+        [
-+            {"speaker": "SPEAKER_01", "start": 0.0, "end": 0.2, "text": "..."},
-+            {"speaker": "SPEAKER_02", "start": 0.3, "end": 1.0, "text": "Real update"},
-+            {"speaker": "SPEAKER_03", "start": 1.1, "end": 1.8, "text": "Second speaker"},
-+        ]
++            "chunks": chunk_rows,
++            "split_chunks": split_rows,
++            "state_summary": {
++                "planned": sum(1 for row in rows_by_id.values() if str(row.get("status") or "") == "planned"),
++                "running": sum(1 for row in rows_by_id.values() if str(row.get("status") or "") == "running"),
++                "completed": sum(1 for row in rows_by_id.values() if str(row.get("status") or "") == "completed"),
++                "failed": sum(1 for row in rows_by_id.values() if str(row.get("status") or "") == "failed"),
++                "split": sum(1 for row in rows_by_id.values() if str(row.get("status") or "") == "split"),
++            },
++        },
 +    )
 +
-+    assert compact.text.splitlines() == [
-+        "S1: Real update",
-+        "S2: Second speaker",
-+    ]
-+    assert compact.prompt_speaker_mapping() == [
-+        {"label": "S1", "speaker": "SPEAKER_02"},
-+        {"label": "S2", "speaker": "SPEAKER_03"},
++
++def _chunk_error_payload(
++    *,
++    chunk: _ChunkRuntime,
++    position: int,
++    total: int,
++    attempt: int,
++    reason_code: str,
++    message: str,
++    status: str,
++    timeout_seconds: float | None = None,
++    child_chunk_indexes: Sequence[str] | None = None,
++) -> dict[str, Any]:
++    payload: dict[str, Any] = {
++        "chunk_index": chunk.chunk_id,
++        "chunk_position": position,
++        "chunk_total": total,
++        "parent_chunk_index": chunk.parent_chunk_id,
++        "reason_code": reason_code,
++        "error": message,
++        "attempt": attempt,
++        "status": status,
++    }
++    if timeout_seconds is not None and timeout_seconds > 0:
++        payload["timeout_seconds"] = round(timeout_seconds, 3)
++    if child_chunk_indexes:
++        payload["child_chunk_indexes"] = [str(item) for item in child_chunk_indexes]
++    return payload
++
++
++def _best_chunk_split_index(parts: Sequence[TranscriptChunk]) -> int:
++    if len(parts) <= 1:
++        return 0
++    total_chars = sum(len(part.base_text.strip()) for part in parts)
++    left_chars = 0
++    best_index = 1
++    best_delta = total_chars
++    for index in range(1, len(parts)):
++        left_chars += len(parts[index - 1].base_text.strip())
++        delta = abs((total_chars - left_chars) - left_chars)
++        if delta < best_delta:
++            best_index = index
++            best_delta = delta
++    return best_index
++
++
++def _split_runtime_chunk(
++    chunk: _ChunkRuntime,
++    *,
++    cfg: Settings,
++) -> list[_ChunkRuntime]:
++    base_text = chunk.base_text.strip()
++    if chunk.depth >= cfg.llm_chunk_split_max_depth:
++        return []
++    if len(base_text) < max(cfg.llm_chunk_split_min_chars * 2, 2):
++        return []
++    planned_parts = plan_transcript_chunks(
++        base_text,
++        max_chars=max(cfg.llm_chunk_split_min_chars, len(base_text) // 2),
++        overlap_chars=0,
++    )
++    if len(planned_parts) < 2:
++        return []
++    split_index = _best_chunk_split_index(planned_parts)
++    left_parts = planned_parts[:split_index]
++    right_parts = planned_parts[split_index:]
++    if not left_parts or not right_parts:
++        return []
++    left_base = "\n".join(part.base_text.strip() for part in left_parts if part.base_text.strip()).strip()
++    right_base = "\n".join(part.base_text.strip() for part in right_parts if part.base_text.strip()).strip()
++    if not left_base or not right_base or max(len(left_base), len(right_base)) >= len(base_text):
++        return []
++    start_seconds = chunk.start_seconds
++    end_seconds = chunk.end_seconds
++    left_start = start_seconds
++    left_end = None
++    right_start = None
++    right_end = end_seconds
++    if start_seconds is not None and end_seconds is not None and end_seconds >= start_seconds:
++        span = end_seconds - start_seconds
++        left_ratio = len(left_base) / max(len(left_base) + len(right_base), 1)
++        midpoint = round(start_seconds + (span * left_ratio), 3)
++        left_end = midpoint
++        right_start = midpoint
++    return [
++        _ChunkRuntime(
++            chunk_id=f"{chunk.chunk_id}a",
++            parent_chunk_id=chunk.chunk_id,
++            depth=chunk.depth + 1,
++            order_path=(*chunk.order_path, 1),
++            text=left_base,
++            base_text=left_base,
++            overlap_prefix="",
++            start_seconds=left_start,
++            end_seconds=left_end,
++            source_kind="split",
++        ),
++        _ChunkRuntime(
++            chunk_id=f"{chunk.chunk_id}b",
++            parent_chunk_id=chunk.chunk_id,
++            depth=chunk.depth + 1,
++            order_path=(*chunk.order_path, 2),
++            text=right_base,
++            base_text=right_base,
++            overlap_prefix="",
++            start_seconds=right_start,
++            end_seconds=right_end,
++            source_kind="split",
++        ),
 +    ]
 +
 +
- def test_build_compact_transcript_rejects_noise_only_rows() -> None:
-     with pytest.raises(ValueError, match="produced no usable content"):
-         llm_chunking.build_compact_transcript(
-diff --git a/tests/test_pipeline_resume_coverage.py b/tests/test_pipeline_resume_coverage.py
-index 8ef17d3..4529922 100644
---- a/tests/test_pipeline_resume_coverage.py
-+++ b/tests/test_pipeline_resume_coverage.py
-@@ -790,6 +790,10 @@ def test_stage_llm_extract_chunked_summary_invokes_progress_callback(
-     result = worker_tasks._stage_llm_extract(ctx)  # noqa: SLF001
-     assert result.status == "completed"
-     assert ("llm_chunk_1", 0.91) in progress_updates
-+    assert chunked_kwargs["speaker_turns"] == [
-+        {"speaker": "S1", "start": 0.0, "end": 1.0, "text": "Discussed the work plan."}
-+    ]
-+    assert chunked_kwargs["aliases"] == {}
-     assert chunked_kwargs["calendar_title"] == "Weekly Sync"
-     assert chunked_kwargs["calendar_attendees"] == ["Ada", "Bob"]
++def _validated_completed_chunk_extract(
++    *,
++    derived_dir: Path,
++    chunk: _ChunkRuntime,
++    position: int,
++    total: int,
++) -> tuple[dict[str, Any] | None, str | None]:
++    raw_path, extract_path, _error_path = _chunk_artifact_paths(derived_dir, chunk.chunk_id)
++    raw_payload = _read_json_artifact(raw_path)
++    if raw_payload is None:
++        return None, f"missing raw artifact {raw_path.name}"
++    extract_payload = _read_json_artifact(extract_path)
++    if extract_payload is None:
++        return None, f"missing extract artifact {extract_path.name}"
++    recorded_chunk_id = str(extract_payload.get("chunk_id") or chunk.chunk_id).strip().lower()
++    if recorded_chunk_id != chunk.chunk_id:
++        return None, f"extract chunk_id mismatch for {chunk.chunk_id}"
++    extract_payload["chunk_id"] = chunk.chunk_id
++    extract_payload["chunk_index"] = position
++    extract_payload["chunk_total"] = total
++    extract_payload["parent_chunk_index"] = chunk.parent_chunk_id
++    extract_payload["split_depth"] = chunk.depth
++    return extract_payload, None
++
++
+ def _speaker_turn_prompt_text(
+     speaker_turns: Sequence[dict[str, Any]],
+     *,
+@@ -1438,6 +2046,8 @@ async def _run_chunked_llm_summary(
+     calendar_title: str | None,
+     calendar_attendees: Sequence[str],
+     progress_callback: ProgressCallback | None,
++    chunk_state_store: ChunkStateStore | None = None,
++    step_log_callback: Callable[[str], Any] | None = None,
+ ) -> dict[str, Any]:
+     try:
+         compact_transcript = build_compact_transcript(
+@@ -1446,57 +2056,165 @@ async def _run_chunked_llm_summary(
+         )
+     except ValueError as exc:
+         raise RuntimeError(str(exc)) from exc
+-    source_chars = compact_transcript.source_chars
+-    compact_chars = compact_transcript.compact_chars
+     speaker_mapping = compact_transcript.prompt_speaker_mapping()
++    transcript_hash = _compact_transcript_hash(compact_transcript.text)
+     atomic_write_text(derived_dir / "llm_compact_transcript.txt", compact_transcript.text)
+     atomic_write_json(
+         derived_dir / "llm_compact_transcript.json",
+         compact_transcript.artifact_payload(),
+     )
+-    chunks = plan_compact_transcript_chunks(
+-        compact_transcript,
+-        max_chars=cfg.llm_chunk_max_chars,
+-        overlap_chars=cfg.llm_chunk_overlap_chars,
++    state_rows = (
++        chunk_state_store.list_states(chunk_group=_LLM_CHUNK_GROUP_EXTRACT)
++        if chunk_state_store is not None
++        else []
+     )
+-    atomic_write_json(
+-        derived_dir / "llm_chunks_plan.json",
+-        {
+-            "source_chars": source_chars,
+-            "compact_chars": compact_chars,
+-            "chunk_max_chars": cfg.llm_chunk_max_chars,
+-            "chunk_overlap_chars": cfg.llm_chunk_overlap_chars,
+-            "long_transcript_threshold_chars": cfg.llm_long_transcript_threshold_chars,
+-            "source_transcript_chars": len(transcript_text.strip()),
+-            "compaction": {
+-                "merge_gap_seconds": compact_transcript.merge_gap_seconds,
+-                "source_turn_count": compact_transcript.source_turn_count,
+-                "compact_turn_count": compact_transcript.compact_turn_count,
+-                "speaker_mapping": [
+-                    item.artifact_payload() for item in compact_transcript.speaker_mapping
+-                ],
+-            },
+-            "chunks": [chunk.plan_payload() for chunk in chunks],
+-        },
++    rows_by_id = _active_chunk_rows_by_id(state_rows)
++    active_chunks = _load_active_chunk_runtime(
++        state_rows,
++        transcript_hash=transcript_hash,
++    )
++    if state_rows and active_chunks is None:
++        await _emit_step_log(
++            step_log_callback,
++            "llm chunk state reset reason=transcript_or_metadata_mismatch",
++        )
++        assert chunk_state_store is not None
++        chunk_state_store.clear_states(chunk_group=_LLM_CHUNK_GROUP_EXTRACT)
++        state_rows = []
++        rows_by_id = {}
++
++    if active_chunks is None:
++        planned_chunks = plan_compact_transcript_chunks(
++            compact_transcript,
++            max_chars=cfg.llm_chunk_max_chars,
++            overlap_chars=cfg.llm_chunk_overlap_chars,
++        )
++        if not planned_chunks:
++            raise RuntimeError("LLM chunk planning produced no chunks")
++        active_chunks = _build_root_chunk_runtime(planned_chunks)
++
++    rows_by_id = _sync_chunk_rows(
++        chunk_state_store=chunk_state_store,
++        active_chunks=active_chunks,
++        rows_by_id=rows_by_id,
++        transcript_hash=transcript_hash,
++    )
++    _write_chunk_plan_artifact(
++        derived_dir=derived_dir,
++        compact_transcript=compact_transcript,
++        transcript_text=transcript_text,
++        transcript_hash=transcript_hash,
++        cfg=cfg,
++        active_chunks=active_chunks,
++        rows_by_id=rows_by_id,
+     )
+-    if not chunks:
+-        raise RuntimeError("LLM chunk planning produced no chunks")
  
+-    chunk_results: list[dict[str, Any]] = []
+-    for chunk in chunks:
++    chunk_cursor = 0
++    while chunk_cursor < len(active_chunks):
++        total = len(active_chunks)
++        position = chunk_cursor + 1
++        chunk = active_chunks[chunk_cursor]
++        row = rows_by_id.get(chunk.chunk_id, {})
++        status = str(row.get("status") or "").strip().lower()
++        raw_path, extract_path, error_path = _chunk_artifact_paths(derived_dir, chunk.chunk_id)
+         await _emit_progress(
+             progress_callback,
+-            stage=f"llm_chunk_{chunk.index}_of_{chunk.total}",
+-            progress=_llm_chunk_progress(chunk.index, chunk.total),
++            stage=f"llm_chunk_{chunk.chunk_id}_of_{total}",
++            progress=_llm_chunk_progress(position, total),
++        )
++
++        if status == "completed":
++            reused_extract, reuse_error = _validated_completed_chunk_extract(
++                derived_dir=derived_dir,
++                chunk=chunk,
++                position=position,
++                total=total,
++            )
++            if reused_extract is not None:
++                atomic_write_json(extract_path, reused_extract)
++                await _emit_step_log(
++                    step_log_callback,
++                    f"llm chunk resumed index={chunk.chunk_id}",
++                )
++                chunk_cursor += 1
++                continue
++            await _emit_step_log(
++                step_log_callback,
++                f"llm chunk invalidated index={chunk.chunk_id} reason={reuse_error}",
++            )
++            assert chunk_state_store is not None
++            invalidated_row = dict(row)
++            invalidated_row["status"] = "planned"
++            invalidated_row["finished_at"] = None
++            invalidated_row["duration_ms"] = None
++            invalidated_row["error_code"] = "llm_chunk_artifact_invalid"
++            invalidated_row["error_text"] = reuse_error
++            reset_row = chunk_state_store.upsert_state(
++                **_runtime_chunk_row_payload(
++                    chunk,
++                    total=total,
++                    transcript_hash=transcript_hash,
++                    existing_row=invalidated_row,
++                )
++            )
++            if reset_row is not None:
++                rows_by_id[chunk.chunk_id] = reset_row
++            _write_chunk_plan_artifact(
++                derived_dir=derived_dir,
++                compact_transcript=compact_transcript,
++                transcript_text=transcript_text,
++                transcript_hash=transcript_hash,
++                cfg=cfg,
++                active_chunks=active_chunks,
++                rows_by_id=rows_by_id,
++            )
++
++        start_row = (
++            chunk_state_store.mark_started(
++                chunk_group=_LLM_CHUNK_GROUP_EXTRACT,
++                chunk_index=chunk.chunk_id,
++                chunk_total=total,
++                parent_chunk_index=chunk.parent_chunk_id,
++                metadata=chunk.metadata_payload(transcript_hash=transcript_hash),
++            )
++            if chunk_state_store is not None
++            else None
++        )
++        if start_row is not None:
++            rows_by_id[chunk.chunk_id] = start_row
++            row = start_row
++        attempt = max(int(row.get("attempt") or 0), 1)
++        await _emit_step_log(
++            step_log_callback,
++            (
++                f"llm chunk {'resumed' if status in {'failed', 'running'} else 'started'} "
++                f"index={chunk.chunk_id} total={total} attempt={attempt} chars={len(chunk.text)}"
++            ),
++        )
++
++        prompt_chunk = TranscriptChunk(
++            index=position,
++            total=total,
++            text=chunk.text,
++            base_text=chunk.base_text,
++            overlap_prefix=chunk.overlap_prefix,
++            start_seconds=chunk.start_seconds,
++            end_seconds=chunk.end_seconds,
+         )
+         chunk_sys_prompt, chunk_user_prompt = build_chunk_prompt(
+-            chunk,
++            prompt_chunk,
+             target_summary_language=target_summary_language,
+             calendar_title=calendar_title,
+             calendar_attendees=calendar_attendees,
+             speaker_mapping=speaker_mapping,
++            chunk_id=chunk.chunk_id,
+         )
+-        error_path = derived_dir / f"llm_chunk_{chunk.index:03d}_error.json"
++        raw_chunk: dict[str, Any] | None = None
++        extract: dict[str, Any] | None = None
++        reason_code: str | None = None
++        message: str | None = None
++        start_perf = time.perf_counter()
++
+         try:
+             raw_chunk = await _generate_llm_message(
+                 llm,
+@@ -1508,27 +2226,212 @@ async def _run_chunked_llm_summary(
+                 max_tokens_retry=cfg.llm_max_tokens_retry,
+                 timeout_seconds=cfg.llm_chunk_timeout_seconds,
+             )
+-            atomic_write_json(derived_dir / f"llm_chunk_{chunk.index:03d}_raw.json", raw_chunk)
+-            if _llm_message_timed_out(raw_chunk):
+-                raise TimeoutError(_LLM_TIMEOUT_SENTINEL)
+-            extract = parse_chunk_extract(str(raw_chunk.get("content") or ""))
+-        except (TimeoutError, asyncio.TimeoutError) as exc:
++        except asyncio.TimeoutError:
++            reason_code = _LLM_CHUNK_REASON_TIMEOUT
+             message = _llm_timeout_message(cfg.llm_chunk_timeout_seconds)
+-            atomic_write_json(error_path, {"error": message})
+-            raise RuntimeError(f"LLM chunk {chunk.index}/{chunk.total} failed: {message}") from exc
++        except (TimeoutError, httpx.TimeoutException):
++            reason_code = _LLM_CHUNK_REASON_REQUEST_TIMEOUT
++            message = _llm_request_timeout_message(_chunk_request_timeout_seconds(llm))
++        except (httpx.ConnectError, httpx.ReadError, httpx.RemoteProtocolError, ConnectionError) as exc:
++            reason_code = _LLM_CHUNK_REASON_CONNECTION_ERROR
++            message = str(exc) or exc.__class__.__name__
+         except Exception as exc:
++            reason_code = _LLM_CHUNK_REASON_RUNTIME_ERROR
+             message = str(exc) or exc.__class__.__name__
+-            atomic_write_json(error_path, {"error": message})
+-            raise RuntimeError(f"LLM chunk {chunk.index}/{chunk.total} failed: {message}") from exc
+ 
+-        extract["chunk_index"] = chunk.index
+-        extract["chunk_total"] = chunk.total
+-        atomic_write_json(derived_dir / f"llm_chunk_{chunk.index:03d}_extract.json", extract)
+-        chunk_results.append(extract)
++        if raw_chunk is not None:
++            atomic_write_json(raw_path, raw_chunk)
++            if _llm_message_timed_out(raw_chunk):
++                reason_code = _LLM_CHUNK_REASON_REQUEST_TIMEOUT
++                message = _llm_request_timeout_message(_chunk_request_timeout_seconds(llm))
++            else:
++                try:
++                    extract = parse_chunk_extract(str(raw_chunk.get("content") or ""))
++                except Exception as exc:
++                    reason_code = _LLM_CHUNK_REASON_PARSE_ERROR
++                    message = str(exc) or exc.__class__.__name__
++
++        if reason_code is not None:
++            child_chunks = (
++                _split_runtime_chunk(chunk, cfg=cfg)
++                if reason_code in {_LLM_CHUNK_REASON_TIMEOUT, _LLM_CHUNK_REASON_REQUEST_TIMEOUT}
++                else []
++            )
++            if child_chunks:
++                child_ids = [item.chunk_id for item in child_chunks]
++                split_metadata = chunk.metadata_payload(transcript_hash=transcript_hash)
++                split_metadata["split_child_chunk_indexes"] = child_ids
++                split_metadata["last_reason_code"] = reason_code
++                split_metadata["last_error"] = message
++                atomic_write_json(
++                    error_path,
++                    _chunk_error_payload(
++                        chunk=chunk,
++                        position=position,
++                        total=total,
++                        attempt=attempt,
++                        reason_code=reason_code,
++                        message=message or reason_code,
++                        status="split",
++                        timeout_seconds=(
++                            cfg.llm_chunk_timeout_seconds
++                            if reason_code == _LLM_CHUNK_REASON_TIMEOUT
++                            else _chunk_request_timeout_seconds(llm)
++                        ),
++                        child_chunk_indexes=child_ids,
++                    ),
++                )
++                if chunk_state_store is not None:
++                    split_row = chunk_state_store.mark_split(
++                        chunk_group=_LLM_CHUNK_GROUP_EXTRACT,
++                        chunk_index=chunk.chunk_id,
++                        chunk_total=total + len(child_chunks) - 1,
++                        error_code=reason_code,
++                        error_text=message,
++                        parent_chunk_index=chunk.parent_chunk_id,
++                        metadata=split_metadata,
++                    )
++                    if split_row is not None:
++                        rows_by_id[chunk.chunk_id] = split_row
++                active_chunks = [
++                    *active_chunks[:chunk_cursor],
++                    *child_chunks,
++                    *active_chunks[chunk_cursor + 1 :],
++                ]
++                rows_by_id = _sync_chunk_rows(
++                    chunk_state_store=chunk_state_store,
++                    active_chunks=active_chunks,
++                    rows_by_id=rows_by_id,
++                    transcript_hash=transcript_hash,
++                )
++                _write_chunk_plan_artifact(
++                    derived_dir=derived_dir,
++                    compact_transcript=compact_transcript,
++                    transcript_text=transcript_text,
++                    transcript_hash=transcript_hash,
++                    cfg=cfg,
++                    active_chunks=active_chunks,
++                    rows_by_id=rows_by_id,
++                )
++                await _emit_step_log(
++                    step_log_callback,
++                    f"llm chunk split index={chunk.chunk_id} into {'/'.join(child_ids)}",
++                )
++                continue
++
++            atomic_write_json(
++                error_path,
++                _chunk_error_payload(
++                    chunk=chunk,
++                    position=position,
++                    total=total,
++                    attempt=attempt,
++                    reason_code=reason_code,
++                    message=message or reason_code,
++                    status="failed",
++                    timeout_seconds=(
++                        cfg.llm_chunk_timeout_seconds
++                        if reason_code == _LLM_CHUNK_REASON_TIMEOUT
++                        else _chunk_request_timeout_seconds(llm)
++                        if reason_code == _LLM_CHUNK_REASON_REQUEST_TIMEOUT
++                        else None
++                    ),
++                ),
++            )
++            if chunk_state_store is not None:
++                failed_row = chunk_state_store.mark_failed(
++                    chunk_group=_LLM_CHUNK_GROUP_EXTRACT,
++                    chunk_index=chunk.chunk_id,
++                    chunk_total=total,
++                    error_code=reason_code,
++                    error_text=message,
++                    parent_chunk_index=chunk.parent_chunk_id,
++                    metadata=chunk.metadata_payload(transcript_hash=transcript_hash),
++                )
++                if failed_row is not None:
++                    rows_by_id[chunk.chunk_id] = failed_row
++            _write_chunk_plan_artifact(
++                derived_dir=derived_dir,
++                compact_transcript=compact_transcript,
++                transcript_text=transcript_text,
++                transcript_hash=transcript_hash,
++                cfg=cfg,
++                active_chunks=active_chunks,
++                rows_by_id=rows_by_id,
++            )
++            await _emit_step_log(
++                step_log_callback,
++                f"llm chunk failed index={chunk.chunk_id} reason={reason_code}",
++            )
++            raise RuntimeError(
++                f"LLM chunk {chunk.chunk_id}/{total} failed [{reason_code}]: {message}"
++            )
++
++        assert extract is not None
++        extract["chunk_id"] = chunk.chunk_id
++        extract["chunk_index"] = position
++        extract["chunk_total"] = total
++        extract["parent_chunk_index"] = chunk.parent_chunk_id
++        extract["split_depth"] = chunk.depth
++        atomic_write_json(extract_path, extract)
++        completed_row = (
++            chunk_state_store.mark_completed(
++                chunk_group=_LLM_CHUNK_GROUP_EXTRACT,
++                chunk_index=chunk.chunk_id,
++                chunk_total=total,
++                parent_chunk_index=chunk.parent_chunk_id,
++                metadata=chunk.metadata_payload(transcript_hash=transcript_hash),
++            )
++            if chunk_state_store is not None
++            else None
++        )
++        if completed_row is not None:
++            rows_by_id[chunk.chunk_id] = completed_row
++            duration_ms = (
++                int(completed_row.get("duration_ms"))
++                if completed_row.get("duration_ms") is not None
++                else int((time.perf_counter() - start_perf) * 1000)
++            )
++        else:
++            duration_ms = int((time.perf_counter() - start_perf) * 1000)
++        _write_chunk_plan_artifact(
++            derived_dir=derived_dir,
++            compact_transcript=compact_transcript,
++            transcript_text=transcript_text,
++            transcript_hash=transcript_hash,
++            cfg=cfg,
++            active_chunks=active_chunks,
++            rows_by_id=rows_by_id,
++        )
++        await _emit_step_log(
++            step_log_callback,
++            f"llm chunk completed index={chunk.chunk_id} elapsed={duration_ms / 1000:.3f}s",
++        )
++        chunk_cursor += 1
++
++    chunk_results: list[dict[str, Any]] = []
++    total = len(active_chunks)
++    for position, chunk in enumerate(active_chunks, start=1):
++        extract_payload, reuse_error = _validated_completed_chunk_extract(
++            derived_dir=derived_dir,
++            chunk=chunk,
++            position=position,
++            total=total,
++        )
++        if extract_payload is None:
++            raise RuntimeError(
++                f"LLM merge failed [{_LLM_MERGE_REASON_PARSE_ERROR}]: {reuse_error}"
++            )
++        atomic_write_json(_chunk_artifact_paths(derived_dir, chunk.chunk_id)[1], extract_payload)
++        chunk_results.append(extract_payload)
+ 
+     merge_input = merge_chunk_results(chunk_results)
+     atomic_write_json(derived_dir / "llm_merge_input.json", merge_input)
+     await _emit_progress(progress_callback, stage="llm_merge", progress=0.94)
++    await _emit_step_log(
++        step_log_callback,
++        f"llm merge started chunk_count={len(chunk_results)}",
++    )
+     merge_sys_prompt, merge_user_prompt = build_merge_prompt(
+         merge_input,
+         target_summary_language=target_summary_language,
+@@ -1536,27 +2439,84 @@ async def _run_chunked_llm_summary(
+         calendar_attendees=calendar_attendees,
+     )
+     merge_max_tokens = cfg.llm_merge_max_tokens or cfg.llm_max_tokens
+-    raw_merge = await _generate_llm_message(
+-        llm,
+-        system_prompt=merge_sys_prompt,
+-        user_prompt=merge_user_prompt,
+-        model=llm_model,
+-        response_format={"type": "json_object"},
+-        max_tokens=merge_max_tokens,
+-        max_tokens_retry=max(cfg.llm_max_tokens_retry, merge_max_tokens),
+-    )
+-    atomic_write_json(derived_dir / "llm_merge_raw.json", raw_merge)
+-    if _llm_message_timed_out(raw_merge):
+-        message = _llm_timeout_message(getattr(llm, "timeout", None))
+-        raise RuntimeError(f"LLM merge failed: {message}")
+-    return build_summary_payload(
+-        raw_llm_content=str(raw_merge.get("content") or ""),
+-        model=llm_model,
+-        target_summary_language=target_summary_language,
+-        friendly=friendly,
+-        default_topic=default_topic,
+-        derived_dir=derived_dir,
++    raw_merge: dict[str, Any] | None = None
++    merge_reason_code: str | None = None
++    merge_message: str | None = None
++    try:
++        raw_merge = await _generate_llm_message(
++            llm,
++            system_prompt=merge_sys_prompt,
++            user_prompt=merge_user_prompt,
++            model=llm_model,
++            response_format={"type": "json_object"},
++            max_tokens=merge_max_tokens,
++            max_tokens_retry=max(cfg.llm_max_tokens_retry, merge_max_tokens),
++        )
++    except asyncio.TimeoutError:
++        merge_reason_code = _LLM_MERGE_REASON_TIMEOUT
++        merge_message = _llm_timeout_message(cfg.llm_chunk_timeout_seconds)
++    except (TimeoutError, httpx.TimeoutException):
++        merge_reason_code = _LLM_MERGE_REASON_REQUEST_TIMEOUT
++        merge_message = _llm_request_timeout_message(_chunk_request_timeout_seconds(llm))
++    except (httpx.ConnectError, httpx.ReadError, httpx.RemoteProtocolError, ConnectionError) as exc:
++        merge_reason_code = _LLM_MERGE_REASON_CONNECTION_ERROR
++        merge_message = str(exc) or exc.__class__.__name__
++    except Exception as exc:
++        merge_reason_code = _LLM_MERGE_REASON_PARSE_ERROR
++        merge_message = str(exc) or exc.__class__.__name__
++
++    if raw_merge is not None:
++        atomic_write_json(derived_dir / "llm_merge_raw.json", raw_merge)
++        if _llm_message_timed_out(raw_merge):
++            merge_reason_code = _LLM_MERGE_REASON_REQUEST_TIMEOUT
++            merge_message = _llm_request_timeout_message(_chunk_request_timeout_seconds(llm))
++
++    if merge_reason_code is not None:
++        atomic_write_json(
++            derived_dir / "llm_merge_error.json",
++            {
++                "reason_code": merge_reason_code,
++                "error": merge_message,
++                "chunk_count": len(chunk_results),
++            },
++        )
++        await _emit_step_log(
++            step_log_callback,
++            f"llm merge failed reason={merge_reason_code}",
++        )
++        raise RuntimeError(f"LLM merge failed [{merge_reason_code}]: {merge_message}")
++
++    try:
++        summary_payload = build_summary_payload(
++            raw_llm_content=str(raw_merge.get("content") or ""),
++            model=llm_model,
++            target_summary_language=target_summary_language,
++            friendly=friendly,
++            default_topic=default_topic,
++            derived_dir=derived_dir,
++        )
++    except Exception as exc:
++        merge_reason_code = _LLM_MERGE_REASON_PARSE_ERROR
++        merge_message = str(exc) or exc.__class__.__name__
++        atomic_write_json(
++            derived_dir / "llm_merge_error.json",
++            {
++                "reason_code": merge_reason_code,
++                "error": merge_message,
++                "chunk_count": len(chunk_results),
++            },
++        )
++        await _emit_step_log(
++            step_log_callback,
++            f"llm merge failed reason={merge_reason_code}",
++        )
++        raise RuntimeError(f"LLM merge failed [{merge_reason_code}]: {merge_message}") from exc
++
++    await _emit_step_log(
++        step_log_callback,
++        f"llm merge completed chunk_count={len(chunk_results)}",
+     )
++    return summary_payload
+ 
+ 
+ async def run_pipeline(
+@@ -1962,6 +2922,7 @@ async def run_pipeline(
+                 calendar_title=cal_title,
+                 calendar_attendees=cal_attendees,
+                 progress_callback=progress_callback,
++                step_log_callback=step_log_callback,
+             )
+         else:
+             sys_prompt, user_prompt = build_structured_summary_prompts(
+diff --git a/tasks/QUEUE.md b/tasks/QUEUE.md
+index 43693b3..1759b49 100644
+--- a/tasks/QUEUE.md
++++ b/tasks/QUEUE.md
+@@ -487,7 +487,7 @@ Queue (in order)
+ - Depends on: PR-PIPELINE-CHECKPOINTS-RESUME-01 and PR-LLM-CHUNKING-01
+ 
+ 96) PR-LLM-CHUNK-RESUME-TIMEOUTS-01: Chunk-level state, resume, adaptive split-on-timeout, and specific chunk failure reasons for long-transcript LLM processing
+-- Status: TODO
++- Status: DONE
+ - Tasks file: tasks/PR-LLM-CHUNK-RESUME-TIMEOUTS-01.md
+ - Depends on: PR-LLM-CHUNK-COMPACTION-01 and PR-PIPELINE-CHECKPOINTS-RESUME-01
+ 
+diff --git a/tests/test_app_config.py b/tests/test_app_config.py
+index 71fa3fb..3beea69 100644
+--- a/tests/test_app_config.py
++++ b/tests/test_app_config.py
+@@ -216,19 +216,25 @@ def test_llm_chunking_settings_defaults_and_env_override(monkeypatch):
+     monkeypatch.delenv("LLM_CHUNK_MAX_CHARS", raising=False)
+     monkeypatch.delenv("LLM_CHUNK_OVERLAP_CHARS", raising=False)
+     monkeypatch.delenv("LLM_CHUNK_TIMEOUT_SECONDS", raising=False)
++    monkeypatch.delenv("LLM_CHUNK_SPLIT_MIN_CHARS", raising=False)
++    monkeypatch.delenv("LLM_CHUNK_SPLIT_MAX_DEPTH", raising=False)
+     monkeypatch.delenv("LLM_LONG_TRANSCRIPT_THRESHOLD_CHARS", raising=False)
+     monkeypatch.delenv("LLM_MERGE_MAX_TOKENS", raising=False)
+ 
+     defaults = AppSettings()
+-    assert defaults.llm_chunk_max_chars == 6000
+-    assert defaults.llm_chunk_overlap_chars == 600
++    assert defaults.llm_chunk_max_chars == 4500
++    assert defaults.llm_chunk_overlap_chars == 300
+     assert defaults.llm_chunk_timeout_seconds == 120.0
+-    assert defaults.llm_long_transcript_threshold_chars == 6000
++    assert defaults.llm_chunk_split_min_chars == 1200
++    assert defaults.llm_chunk_split_max_depth == 2
++    assert defaults.llm_long_transcript_threshold_chars == 4500
+     assert defaults.llm_merge_max_tokens is None
+ 
+     monkeypatch.setenv("LLM_CHUNK_MAX_CHARS", "4096")
+     monkeypatch.setenv("LLM_CHUNK_OVERLAP_CHARS", "256")
+     monkeypatch.setenv("LLM_CHUNK_TIMEOUT_SECONDS", "45")
++    monkeypatch.setenv("LLM_CHUNK_SPLIT_MIN_CHARS", "900")
++    monkeypatch.setenv("LLM_CHUNK_SPLIT_MAX_DEPTH", "3")
+     monkeypatch.setenv("LLM_LONG_TRANSCRIPT_THRESHOLD_CHARS", "8192")
+     monkeypatch.setenv("LLM_MERGE_MAX_TOKENS", "3072")
+ 
+@@ -236,6 +242,8 @@ def test_llm_chunking_settings_defaults_and_env_override(monkeypatch):
+     assert overridden.llm_chunk_max_chars == 4096
+     assert overridden.llm_chunk_overlap_chars == 256
+     assert overridden.llm_chunk_timeout_seconds == 45.0
++    assert overridden.llm_chunk_split_min_chars == 900
++    assert overridden.llm_chunk_split_max_depth == 3
+     assert overridden.llm_long_transcript_threshold_chars == 8192
+     assert overridden.llm_merge_max_tokens == 3072
+ 
+diff --git a/tests/test_cov_lan_app_db.py b/tests/test_cov_lan_app_db.py
+index 3fddc0a..073c55e 100644
+--- a/tests/test_cov_lan_app_db.py
++++ b/tests/test_cov_lan_app_db.py
+@@ -434,6 +434,157 @@ def test_job_helpers_has_find_requeue_finish_and_invalid_terminal_status(tmp_pat
+         )
+ 
+ 
++def test_llm_chunk_state_helpers_and_pipeline_clear_reset(tmp_path: Path) -> None:
++    cfg = _cfg(tmp_path)
++    db_module.init_db(cfg)
++    db_module.create_recording(
++        "rec-db-cov-chunks-1",
++        source="upload",
++        source_filename="input.wav",
++        settings=cfg,
++    )
++
++    planned = db_module.upsert_recording_llm_chunk_state(
++        "rec-db-cov-chunks-1",
++        chunk_group="extract",
++        chunk_index="1",
++        chunk_total=2,
++        status="planned",
++        metadata={"order_path": [1], "text": "chunk one", "base_text": "chunk one"},
++        settings=cfg,
++    )
++    assert planned is not None
++    started = db_module.mark_recording_llm_chunk_started(
++        "rec-db-cov-chunks-1",
++        chunk_group="extract",
++        chunk_index="1",
++        chunk_total=2,
++        metadata={"order_path": [1], "text": "chunk one", "base_text": "chunk one"},
++        settings=cfg,
++    )
++    assert started is not None
++    assert started["attempt"] == 1
++    completed = db_module.mark_recording_llm_chunk_completed(
++        "rec-db-cov-chunks-1",
++        chunk_group="extract",
++        chunk_index="1",
++        chunk_total=2,
++        metadata={"order_path": [1], "text": "chunk one", "base_text": "chunk one"},
++        settings=cfg,
++    )
++    assert completed is not None
++    assert completed["status"] == "completed"
++
++    failed = db_module.mark_recording_llm_chunk_failed(
++        "rec-db-cov-chunks-1",
++        chunk_group="extract",
++        chunk_index="2",
++        chunk_total=2,
++        error_code="llm_chunk_timeout",
++        error_text="timed out",
++        parent_chunk_index="1",
++        metadata={"order_path": [2], "text": "chunk two", "base_text": "chunk two"},
++        settings=cfg,
++    )
++    assert failed is not None
++    assert failed["status"] == "failed"
++
++    split = db_module.mark_recording_llm_chunk_split(
++        "rec-db-cov-chunks-1",
++        chunk_group="extract",
++        chunk_index="3",
++        chunk_total=3,
++        error_code="llm_chunk_timeout",
++        error_text="request timed out",
++        metadata={
++            "order_path": [3],
++            "text": "chunk three",
++            "base_text": "chunk three",
++            "split_child_chunk_indexes": ["3a", "3b"],
++        },
++        settings=cfg,
++    )
++    assert split is not None
++    assert split["status"] == "split"
++    cancelled = db_module.mark_recording_llm_chunk_cancelled(
++        "rec-db-cov-chunks-1",
++        chunk_group="extract",
++        chunk_index="4",
++        chunk_total=4,
++        metadata={"order_path": [4], "text": "chunk four", "base_text": "chunk four"},
++        settings=cfg,
++    )
++    assert cancelled is not None
++    assert cancelled["status"] == "cancelled"
++
++    rows = db_module.list_recording_llm_chunk_states(
++        "rec-db-cov-chunks-1",
++        chunk_group="extract",
++        settings=cfg,
++    )
++    assert [row["chunk_index"] for row in rows] == ["1", "2", "3", "4"]
++    assert rows[2]["metadata_json"]["split_child_chunk_indexes"] == ["3a", "3b"]
++
++    assert db_module.clear_recording_pipeline_stages(
++        "rec-db-cov-chunks-1",
++        from_stage="metrics",
++        settings=cfg,
++    ) == 0
++    assert len(
++        db_module.list_recording_llm_chunk_states(
++            "rec-db-cov-chunks-1",
++            chunk_group="extract",
++            settings=cfg,
++        )
++    ) == 4
++
++    assert db_module.clear_recording_pipeline_stages(
++        "rec-db-cov-chunks-1",
++        from_stage="llm_extract",
++        settings=cfg,
++    ) == 0
++    assert (
++        db_module.list_recording_llm_chunk_states(
++            "rec-db-cov-chunks-1",
++            chunk_group="extract",
++            settings=cfg,
++        )
++        == []
++    )
++
++    with pytest.raises(ValueError, match="chunk_group is required"):
++        db_module._normalise_llm_chunk_group("  ")  # noqa: SLF001
++    with pytest.raises(ValueError, match="chunk_index is required"):
++        db_module._normalise_llm_chunk_index(" ")  # noqa: SLF001
++    with pytest.raises(ValueError, match="Unsupported LLM chunk status"):
++        db_module._validate_llm_chunk_status("bad")  # noqa: SLF001
++    with pytest.raises(ValueError, match="Terminal chunk status must not be running"):
++        db_module._mark_recording_llm_chunk_terminal(  # noqa: SLF001
++            "rec-db-cov-chunks-1",
++            chunk_group="extract",
++            chunk_index="5",
++            chunk_total=1,
++            status="running",
++            settings=cfg,
++        )
++
++    upsert_recording = db_module.upsert_recording_llm_chunk_state(
++        "rec-db-cov-chunks-1",
++        chunk_group="extract",
++        chunk_index="6",
++        chunk_total=1,
++        status="planned",
++        metadata={"order_path": [6], "text": "chunk six", "base_text": "chunk six"},
++        settings=cfg,
++    )
++    assert upsert_recording is not None
++    assert db_module.clear_recording_llm_chunk_states(
++        "rec-db-cov-chunks-1",
++        chunk_group="extract",
++        settings=cfg,
++    ) == 1
++
++
+ def test_project_keyword_weights_and_voice_profile_crud_edges(tmp_path: Path):
+     cfg = _cfg(tmp_path)
+     db_module.init_db(cfg)
+diff --git a/tests/test_cov_lan_app_worker_tasks_branches.py b/tests/test_cov_lan_app_worker_tasks_branches.py
+index 9fc5479..a505087 100644
+--- a/tests/test_cov_lan_app_worker_tasks_branches.py
++++ b/tests/test_cov_lan_app_worker_tasks_branches.py
+@@ -328,6 +328,8 @@ def test_build_pipeline_settings_propagates_runtime_llm_and_vad_settings(tmp_pat
+         llm_chunk_max_chars=4096,
+         llm_chunk_overlap_chars=256,
+         llm_chunk_timeout_seconds=45.0,
++        llm_chunk_split_min_chars=900,
++        llm_chunk_split_max_depth=3,
+         llm_long_transcript_threshold_chars=8192,
+         llm_merge_max_tokens=2048,
+         diarization_profile="meeting",
+@@ -349,15 +351,78 @@ def test_build_pipeline_settings_propagates_runtime_llm_and_vad_settings(tmp_pat
+     assert pipeline_cfg.llm_chunk_max_chars == 4096
+     assert pipeline_cfg.llm_chunk_overlap_chars == 256
+     assert pipeline_cfg.llm_chunk_timeout_seconds == 45.0
++    assert pipeline_cfg.llm_chunk_split_min_chars == 900
++    assert pipeline_cfg.llm_chunk_split_max_depth == 3
+     assert pipeline_cfg.llm_long_transcript_threshold_chars == 8192
+     assert pipeline_cfg.llm_merge_max_tokens == 2048
++    assert pipeline_cfg.diarization_merge_gap_seconds == 0.6
++    assert pipeline_cfg.diarization_min_turn_seconds == 0.4
+     assert pipeline_cfg.diarization_profile == "meeting"
+     assert pipeline_cfg.diarization_min_speakers == 3
+     assert pipeline_cfg.diarization_max_speakers == 5
+     assert pipeline_cfg.diarization_dialog_retry_min_duration_seconds == 12.0
+     assert pipeline_cfg.diarization_dialog_retry_min_turns == 4
+-    assert pipeline_cfg.diarization_merge_gap_seconds == 0.6
+-    assert pipeline_cfg.diarization_min_turn_seconds == 0.4
++
++
++def test_db_chunk_state_store_wrapper_round_trips(tmp_path: Path) -> None:
++    cfg = AppSettings(
++        data_root=tmp_path,
++        recordings_root=tmp_path / "recordings",
++        db_path=tmp_path / "db" / "app.db",
++    )
++    cfg.metrics_snapshot_path = tmp_path / "metrics.snap"
++    worker_tasks.init_db(cfg)
++    from lan_app.db import create_recording
++
++    create_recording(
++        "rec-store-1",
++        source="upload",
++        source_filename="input.wav",
++        settings=cfg,
++    )
++    store = worker_tasks._DbChunkStateStore("rec-store-1", cfg)  # noqa: SLF001
++
++    assert store.list_states(chunk_group="extract") == []
++    planned = store.upsert_state(
++        chunk_group="extract",
++        chunk_index="1",
++        chunk_total=1,
++        status="planned",
++        metadata={"order_path": [1], "text": "chunk one", "base_text": "chunk one"},
++    )
++    assert planned is not None
++    started = store.mark_started(
++        chunk_group="extract",
++        chunk_index="1",
++        chunk_total=1,
++    )
++    assert started is not None
++    completed = store.mark_completed(
++        chunk_group="extract",
++        chunk_index="1",
++        chunk_total=1,
++    )
++    assert completed is not None
++    failed = store.mark_failed(
++        chunk_group="extract",
++        chunk_index="2",
++        chunk_total=2,
++        error_code="llm_chunk_timeout",
++        error_text="boom",
++        metadata={"order_path": [2], "text": "chunk two", "base_text": "chunk two"},
++    )
++    assert failed is not None
++    split = store.mark_split(
++        chunk_group="extract",
++        chunk_index="3",
++        chunk_total=3,
++        error_code="llm_chunk_timeout",
++        error_text="split",
++        metadata={"order_path": [3], "text": "chunk three", "base_text": "chunk three"},
++    )
++    assert split is not None
++    assert len(store.list_states(chunk_group="extract")) == 3
++    assert store.clear_states(chunk_group="extract") == 3
+ 
+ 
+ def test_load_transcript_language_payload_parses_valid_and_invalid_json(tmp_path: Path):
+diff --git a/tests/test_cov_lan_transcriber_extra_pipeline.py b/tests/test_cov_lan_transcriber_extra_pipeline.py
+index 096002a..85ce7fa 100644
+--- a/tests/test_cov_lan_transcriber_extra_pipeline.py
++++ b/tests/test_cov_lan_transcriber_extra_pipeline.py
+@@ -12,6 +12,13 @@ import httpx
+ import pytest
+ from pydantic import ValidationError
+ 
++from lan_app.config import AppSettings
++from lan_app.db import (
++    create_recording,
++    init_db,
++    list_recording_llm_chunk_states,
++    upsert_recording_llm_chunk_state,
++)
+ from lan_transcriber import llm_client
+ from lan_transcriber.pipeline_steps import language, orchestrator as pipeline, precheck, snippets, speaker_turns, summary_builder
+ 
+@@ -26,6 +33,93 @@ def _settings(tmp_path: Path, **overrides: Any) -> pipeline.Settings:
+     return pipeline.Settings(**defaults)
+ 
+ 
++def _db_settings(tmp_path: Path) -> AppSettings:
++    cfg = AppSettings(
++        data_root=tmp_path / "data",
++        recordings_root=tmp_path / "recordings",
++        db_path=tmp_path / "db" / "app.db",
++    )
++    cfg.metrics_snapshot_path = tmp_path / "metrics.snap"
++    return cfg
++
++
++class _SqliteChunkStateStore:
++    def __init__(self, recording_id: str, settings: AppSettings) -> None:
++        self.recording_id = recording_id
++        self.settings = settings
++
++    def list_states(self, *, chunk_group: str) -> list[dict[str, Any]]:
++        return list_recording_llm_chunk_states(
++            self.recording_id,
++            chunk_group=chunk_group,
++            settings=self.settings,
++        )
++
++    def upsert_state(self, **kwargs: Any) -> dict[str, Any] | None:
++        return upsert_recording_llm_chunk_state(
++            self.recording_id,
++            settings=self.settings,
++            **kwargs,
++        )
++
++    def mark_started(self, **kwargs: Any) -> dict[str, Any] | None:
++        from lan_app.db import mark_recording_llm_chunk_started
++
++        return mark_recording_llm_chunk_started(
++            self.recording_id,
++            settings=self.settings,
++            **kwargs,
++        )
++
++    def mark_completed(self, **kwargs: Any) -> dict[str, Any] | None:
++        from lan_app.db import mark_recording_llm_chunk_completed
++
++        return mark_recording_llm_chunk_completed(
++            self.recording_id,
++            settings=self.settings,
++            **kwargs,
++        )
++
++    def mark_failed(self, **kwargs: Any) -> dict[str, Any] | None:
++        from lan_app.db import mark_recording_llm_chunk_failed
++
++        return mark_recording_llm_chunk_failed(
++            self.recording_id,
++            settings=self.settings,
++            **kwargs,
++        )
++
++    def mark_split(self, **kwargs: Any) -> dict[str, Any] | None:
++        from lan_app.db import mark_recording_llm_chunk_split
++
++        return mark_recording_llm_chunk_split(
++            self.recording_id,
++            settings=self.settings,
++            **kwargs,
++        )
++
++    def clear_states(self, *, chunk_group: str | None = None) -> int:
++        from lan_app.db import clear_recording_llm_chunk_states
++
++        return clear_recording_llm_chunk_states(
++            self.recording_id,
++            chunk_group=chunk_group,
++            settings=self.settings,
++        )
++
++
++def _chunk_store(tmp_path: Path, recording_id: str) -> tuple[AppSettings, _SqliteChunkStateStore]:
++    cfg = _db_settings(tmp_path)
++    init_db(cfg)
++    create_recording(
++        recording_id,
++        source="test",
++        source_filename="audio.wav",
++        settings=cfg,
++    )
++    return cfg, _SqliteChunkStateStore(recording_id, cfg)
++
++
+ def _annotation_from_segments(*segments: tuple[float, float, str]):
+     rows = []
+     segment_only = []
+@@ -74,6 +168,8 @@ def test_pipeline_settings_read_llm_chunking_env(
+     monkeypatch.setenv("LLM_CHUNK_MAX_CHARS", "4096")
+     monkeypatch.setenv("LLM_CHUNK_OVERLAP_CHARS", "256")
+     monkeypatch.setenv("LLM_CHUNK_TIMEOUT_SECONDS", "45")
++    monkeypatch.setenv("LLM_CHUNK_SPLIT_MIN_CHARS", "900")
++    monkeypatch.setenv("LLM_CHUNK_SPLIT_MAX_DEPTH", "3")
+     monkeypatch.setenv("LLM_LONG_TRANSCRIPT_THRESHOLD_CHARS", "8192")
+     monkeypatch.setenv("LLM_MERGE_MAX_TOKENS", "3072")
+ 
+@@ -81,6 +177,8 @@ def test_pipeline_settings_read_llm_chunking_env(
+     assert cfg.llm_chunk_max_chars == 4096
+     assert cfg.llm_chunk_overlap_chars == 256
+     assert cfg.llm_chunk_timeout_seconds == 45.0
++    assert cfg.llm_chunk_split_min_chars == 900
++    assert cfg.llm_chunk_split_max_depth == 3
+     assert cfg.llm_long_transcript_threshold_chars == 8192
+     assert cfg.llm_merge_max_tokens == 3072
+ 
+@@ -692,7 +790,7 @@ async def test_run_chunked_llm_summary_timeout_writes_error_artifact(tmp_path: P
+             return {"content": "{}"}
+ 
+     derived = tmp_path / "derived"
+-    with pytest.raises(RuntimeError, match=r"LLM chunk 1/1 failed: timed out after 0.001s"):
++    with pytest.raises(RuntimeError, match=r"LLM chunk 1/1 failed \[llm_chunk_timeout\]: timed out after 0.001s"):
+         await pipeline._run_chunked_llm_summary(
+             transcript_text="single chunk transcript",
+             speaker_turns=_llm_chunk_turns(),
+@@ -714,9 +812,10 @@ async def test_run_chunked_llm_summary_timeout_writes_error_artifact(tmp_path: P
+             progress_callback=None,
+         )
+ 
+-    assert json.loads((derived / "llm_chunk_001_error.json").read_text(encoding="utf-8")) == {
+-        "error": "timed out after 0.001s"
+-    }
++    payload = json.loads((derived / "llm_chunk_001_error.json").read_text(encoding="utf-8"))
++    assert payload["reason_code"] == "llm_chunk_timeout"
++    assert payload["error"] == "timed out after 0.001s"
++    assert payload["status"] == "failed"
+ 
+ 
+ @pytest.mark.asyncio
+@@ -730,7 +829,7 @@ async def test_run_chunked_llm_summary_asyncio_timeout_writes_error_artifact(
+     monkeypatch.setattr(pipeline, "_generate_llm_message", _raise_asyncio_timeout)
+ 
+     derived = tmp_path / "derived"
+-    with pytest.raises(RuntimeError, match=r"LLM chunk 1/1 failed: timed out after 0.001s"):
++    with pytest.raises(RuntimeError, match=r"LLM chunk 1/1 failed \[llm_chunk_timeout\]: timed out after 0.001s"):
+         await pipeline._run_chunked_llm_summary(
+             transcript_text="single chunk transcript",
+             speaker_turns=_llm_chunk_turns(),
+@@ -752,9 +851,9 @@ async def test_run_chunked_llm_summary_asyncio_timeout_writes_error_artifact(
+             progress_callback=None,
+         )
+ 
+-    assert json.loads((derived / "llm_chunk_001_error.json").read_text(encoding="utf-8")) == {
+-        "error": "timed out after 0.001s"
+-    }
++    payload = json.loads((derived / "llm_chunk_001_error.json").read_text(encoding="utf-8"))
++    assert payload["reason_code"] == "llm_chunk_timeout"
++    assert payload["error"] == "timed out after 0.001s"
+ 
+ 
+ @pytest.mark.asyncio
+@@ -766,7 +865,7 @@ async def test_run_chunked_llm_summary_timeout_sentinel_writes_error_artifact(
+             return {"content": "**LLM timeout**", "role": "assistant"}
+ 
+     derived = tmp_path / "derived"
+-    with pytest.raises(RuntimeError, match=r"LLM chunk 1/1 failed: timed out after 0.001s"):
++    with pytest.raises(RuntimeError, match=r"LLM chunk 1/1 failed \[llm_chunk_request_timeout\]: request timed out"):
+         await pipeline._run_chunked_llm_summary(
+             transcript_text="single chunk transcript",
+             speaker_turns=_llm_chunk_turns(),
+@@ -792,9 +891,9 @@ async def test_run_chunked_llm_summary_timeout_sentinel_writes_error_artifact(
+         "content": "**LLM timeout**",
+         "role": "assistant",
+     }
+-    assert json.loads((derived / "llm_chunk_001_error.json").read_text(encoding="utf-8")) == {
+-        "error": "timed out after 0.001s"
+-    }
++    payload = json.loads((derived / "llm_chunk_001_error.json").read_text(encoding="utf-8"))
++    assert payload["reason_code"] == "llm_chunk_request_timeout"
++    assert payload["error"] == "request timed out"
+ 
+ 
+ @pytest.mark.asyncio
+@@ -819,7 +918,7 @@ async def test_run_chunked_llm_summary_merge_timeout_sentinel_fails(tmp_path: Pa
+             return {"content": "**LLM timeout**", "role": "assistant"}
+ 
+     derived = tmp_path / "derived"
+-    with pytest.raises(RuntimeError, match=r"LLM merge failed: timed out after 12s"):
++    with pytest.raises(RuntimeError, match=r"LLM merge failed \[llm_merge_request_timeout\]: request timed out after 12s"):
+         await pipeline._run_chunked_llm_summary(
+             transcript_text="single chunk transcript",
+             speaker_turns=_llm_chunk_turns(),
+@@ -844,6 +943,11 @@ async def test_run_chunked_llm_summary_merge_timeout_sentinel_fails(tmp_path: Pa
+         "content": "**LLM timeout**",
+         "role": "assistant",
+     }
++    assert json.loads((derived / "llm_merge_error.json").read_text(encoding="utf-8")) == {
++        "reason_code": "llm_merge_request_timeout",
++        "error": "request timed out after 12s",
++        "chunk_count": 1,
++    }
+ 
+ 
+ @pytest.mark.asyncio
+@@ -906,6 +1010,1106 @@ async def test_run_chunked_llm_summary_passes_merge_retry_budget(tmp_path: Path)
+     assert merge_kwargs["max_tokens_retry"] == 3072
+ 
+ 
++def _chunk_extract_message(label: str) -> dict[str, str]:
++    return {
++        "content": json.dumps(
++            {
++                "topic_candidates": [f"Topic {label}"],
++                "summary_bullets": [f"Bullet {label}"],
++                "decisions": [f"Decision {label}"],
++                "action_items": [],
++                "emotional_cues": [f"Cue {label}"],
++                "questions": {"total_count": 0, "types": {}, "extracted": []},
++            }
++        )
++    }
++
++
++def _merge_message(topic: str = "Merged topic") -> dict[str, str]:
++    return {
++        "content": json.dumps(
++            {
++                "topic": topic,
++                "summary_bullets": [f"{topic} summary"],
++                "decisions": [],
++                "action_items": [],
++                "emotional_summary": "Focused.",
++                "questions": {"total_count": 0, "types": {}, "extracted": []},
++            }
++        )
++    }
++
++
++def _planned_root_chunks() -> list[pipeline.TranscriptChunk]:
++    return [
++        pipeline.TranscriptChunk(
++            index=1,
++            total=2,
++            text="A: first section " * 6,
++            base_text="A: first section " * 6,
++            start_seconds=0.0,
++            end_seconds=10.0,
++        ),
++        pipeline.TranscriptChunk(
++            index=2,
++            total=2,
++            text="B: second section " * 6,
++            base_text="B: second section " * 6,
++            start_seconds=10.0,
++            end_seconds=20.0,
++        ),
++    ]
++
++
++@pytest.mark.asyncio
++async def test_run_chunked_llm_summary_reuses_completed_chunk_state_on_retry(
++    tmp_path: Path,
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    db_cfg, store = _chunk_store(tmp_path, "rec-chunk-resume-1")
++    call_log: list[str] = []
++    failure_state = {"fail_chunk_2_once": True}
++
++    class _RetryLLM:
++        async def generate(self, **kwargs: Any) -> dict[str, str]:
++            payload = json.loads(kwargs["user_prompt"])
++            chunk_meta = payload.get("chunk")
++            if isinstance(chunk_meta, dict):
++                chunk_id = str(chunk_meta.get("id"))
++                call_log.append(chunk_id)
++                if chunk_id == "2" and failure_state["fail_chunk_2_once"]:
++                    failure_state["fail_chunk_2_once"] = False
++                    return {"content": "not json"}
++                return _chunk_extract_message(chunk_id)
++            call_log.append("merge")
++            return _merge_message()
++
++    monkeypatch.setattr(pipeline, "plan_compact_transcript_chunks", lambda *_a, **_k: _planned_root_chunks())
++
++    kwargs = {
++        "transcript_text": "resume transcript",
++        "speaker_turns": _llm_chunk_turns("resume transcript"),
++        "aliases": {},
++        "derived_dir": tmp_path / "derived",
++        "llm": _RetryLLM(),
++        "cfg": _settings(
++            tmp_path,
++            llm_model="model",
++            llm_chunk_max_chars=80,
++            llm_chunk_overlap_chars=0,
++        ),
++        "llm_model": "model",
++        "target_summary_language": "en",
++        "friendly": 0,
++        "default_topic": "Meeting summary",
++        "calendar_title": None,
++        "calendar_attendees": [],
++        "progress_callback": None,
++        "chunk_state_store": store,
++    }
++
++    with pytest.raises(RuntimeError, match=r"LLM chunk 2/2 failed \[llm_chunk_parse_error\]: json_object_not_found"):
++        await pipeline._run_chunked_llm_summary(**kwargs)
++
++    rows = {
++        row["chunk_index"]: row
++        for row in list_recording_llm_chunk_states("rec-chunk-resume-1", settings=db_cfg)
++    }
++    assert rows["1"]["status"] == "completed"
++    assert rows["2"]["status"] == "failed"
++    assert call_log == ["1", "2"]
++
++    result = await pipeline._run_chunked_llm_summary(**kwargs)
++
++    assert result["topic"] == "Merged topic"
++    assert call_log == ["1", "2", "2", "merge"]
++    merge_input = json.loads((tmp_path / "derived" / "llm_merge_input.json").read_text(encoding="utf-8"))
++    assert merge_input["chunk_count"] == 2
++    assert merge_input["chunks"][0]["chunk_id"] == "1"
++    assert merge_input["chunks"][1]["chunk_id"] == "2"
++
++
++@pytest.mark.asyncio
++async def test_run_chunked_llm_summary_invalid_completed_artifact_is_rerun(
++    tmp_path: Path,
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    db_cfg, store = _chunk_store(tmp_path, "rec-chunk-artifact-1")
++    call_log: list[str] = []
++
++    class _ArtifactLLM:
++        async def generate(self, **kwargs: Any) -> dict[str, str]:
++            payload = json.loads(kwargs["user_prompt"])
++            chunk_meta = payload.get("chunk")
++            if isinstance(chunk_meta, dict):
++                chunk_id = str(chunk_meta.get("id"))
++                call_log.append(chunk_id)
++                return _chunk_extract_message(chunk_id)
++            call_log.append("merge")
++            return _merge_message("Artifact Merge")
++
++    monkeypatch.setattr(pipeline, "plan_compact_transcript_chunks", lambda *_a, **_k: _planned_root_chunks())
++
++    kwargs = {
++        "transcript_text": "artifact transcript",
++        "speaker_turns": _llm_chunk_turns("artifact transcript"),
++        "aliases": {},
++        "derived_dir": tmp_path / "derived",
++        "llm": _ArtifactLLM(),
++        "cfg": _settings(
++            tmp_path,
++            llm_model="model",
++            llm_chunk_max_chars=80,
++            llm_chunk_overlap_chars=0,
++        ),
++        "llm_model": "model",
++        "target_summary_language": "en",
++        "friendly": 0,
++        "default_topic": "Meeting summary",
++        "calendar_title": None,
++        "calendar_attendees": [],
++        "progress_callback": None,
++        "chunk_state_store": store,
++    }
++
++    await pipeline._run_chunked_llm_summary(**kwargs)
++    (tmp_path / "derived" / "llm_chunk_001_extract.json").unlink()
++
++    result = await pipeline._run_chunked_llm_summary(**kwargs)
++
++    assert result["topic"] == "Artifact Merge"
++    assert call_log == ["1", "2", "merge", "1", "merge"]
++    rows = {
++        row["chunk_index"]: row
++        for row in list_recording_llm_chunk_states("rec-chunk-artifact-1", settings=db_cfg)
++    }
++    assert rows["1"]["attempt"] == 2
++    assert rows["2"]["attempt"] == 1
++
++
++@pytest.mark.asyncio
++async def test_run_chunked_llm_summary_timeout_splits_and_persists_children(
++    tmp_path: Path,
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    db_cfg, store = _chunk_store(tmp_path, "rec-chunk-split-1")
++    seen_chunks: list[str] = []
++    plan_chunks = [
++        pipeline.TranscriptChunk(
++            index=1,
++            total=1,
++            text=(
++                "S1: alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha\n"
++                "S1: beta beta beta beta beta beta beta beta beta beta beta beta beta beta"
++            ),
++            base_text=(
++                "S1: alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha\n"
++                "S1: beta beta beta beta beta beta beta beta beta beta beta beta beta beta"
++            ),
++            start_seconds=0.0,
++            end_seconds=20.0,
++        )
++    ]
++
++    class _SplitLLM:
++        async def generate(self, **kwargs: Any) -> dict[str, str]:
++            payload = json.loads(kwargs["user_prompt"])
++            chunk_meta = payload.get("chunk")
++            if isinstance(chunk_meta, dict):
++                chunk_id = str(chunk_meta.get("id"))
++                seen_chunks.append(chunk_id)
++                if chunk_id == "1":
++                    raise asyncio.TimeoutError()
++                return _chunk_extract_message(chunk_id)
++            seen_chunks.append("merge")
++            return _merge_message("Split Merge")
++
++    monkeypatch.setattr(pipeline, "plan_compact_transcript_chunks", lambda *_a, **_k: plan_chunks)
++
++    result = await pipeline._run_chunked_llm_summary(
++        transcript_text="split transcript",
++        speaker_turns=_llm_chunk_turns("split transcript"),
++        aliases={},
++        derived_dir=tmp_path / "derived",
++        llm=_SplitLLM(),
++        cfg=_settings(
++            tmp_path,
++            llm_model="model",
++            llm_chunk_max_chars=200,
++            llm_chunk_overlap_chars=0,
++            llm_chunk_split_min_chars=64,
++            llm_chunk_split_max_depth=2,
++        ),
++        llm_model="model",
++        target_summary_language="en",
++        friendly=0,
++        default_topic="Meeting summary",
++        calendar_title=None,
++        calendar_attendees=[],
++        progress_callback=None,
++        chunk_state_store=store,
++    )
++
++    assert result["topic"] == "Split Merge"
++    assert seen_chunks[:3] == ["1", "1a", "1b"]
++    rows = {
++        row["chunk_index"]: row
++        for row in list_recording_llm_chunk_states("rec-chunk-split-1", settings=db_cfg)
++    }
++    assert rows["1"]["status"] == "split"
++    assert rows["1a"]["status"] == "completed"
++    assert rows["1b"]["status"] == "completed"
++    error_payload = json.loads((tmp_path / "derived" / "llm_chunk_001_error.json").read_text(encoding="utf-8"))
++    assert error_payload["reason_code"] == "llm_chunk_timeout"
++    assert error_payload["status"] == "split"
++    assert error_payload["child_chunk_indexes"] == ["1a", "1b"]
++    plan_payload = json.loads((tmp_path / "derived" / "llm_chunks_plan.json").read_text(encoding="utf-8"))
++    assert plan_payload["split_chunks"][0]["child_chunk_indexes"] == ["1a", "1b"]
++
++
++@pytest.mark.asyncio
++async def test_run_chunked_llm_summary_split_guard_fails_without_children(
++    tmp_path: Path,
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    db_cfg, store = _chunk_store(tmp_path, "rec-chunk-split-guard-1")
++    monkeypatch.setattr(
++        pipeline,
++        "plan_compact_transcript_chunks",
++        lambda *_a, **_k: [
++            pipeline.TranscriptChunk(
++                index=1,
++                total=1,
++                text="S1: short short short short short short",
++                base_text="S1: short short short short short short",
++                start_seconds=0.0,
++                end_seconds=5.0,
++            )
++        ],
++    )
++
++    class _GuardLLM:
++        async def generate(self, **kwargs: Any) -> dict[str, str]:
++            payload = json.loads(kwargs["user_prompt"])
++            if isinstance(payload.get("chunk"), dict):
++                raise asyncio.TimeoutError()
++            raise AssertionError("merge should not run when the guard blocks splitting")
++
++    with pytest.raises(RuntimeError, match=r"LLM chunk 1/1 failed \[llm_chunk_timeout\]: timed out after 120s"):
++        await pipeline._run_chunked_llm_summary(
++            transcript_text="guard transcript",
++            speaker_turns=_llm_chunk_turns("guard transcript"),
++            aliases={},
++            derived_dir=tmp_path / "derived",
++            llm=_GuardLLM(),
++            cfg=_settings(
++                tmp_path,
++                llm_model="model",
++                llm_chunk_max_chars=120,
++                llm_chunk_overlap_chars=0,
++                llm_chunk_split_min_chars=64,
++                llm_chunk_split_max_depth=0,
++            ),
++            llm_model="model",
++            target_summary_language="en",
++            friendly=0,
++            default_topic="Meeting summary",
++            calendar_title=None,
++            calendar_attendees=[],
++            progress_callback=None,
++            chunk_state_store=store,
++        )
++
++    rows = list_recording_llm_chunk_states("rec-chunk-split-guard-1", settings=db_cfg)
++    assert len(rows) == 1
++    assert rows[0]["status"] == "failed"
++    assert json.loads((tmp_path / "derived" / "llm_chunk_001_error.json").read_text(encoding="utf-8"))["reason_code"] == "llm_chunk_timeout"
++
++
++@pytest.mark.asyncio
++async def test_run_chunked_llm_summary_timeout_splits_without_store(
++    tmp_path: Path,
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    seen_chunks: list[str] = []
++    monkeypatch.setattr(
++        pipeline,
++        "plan_compact_transcript_chunks",
++        lambda *_a, **_k: [
++            pipeline.TranscriptChunk(
++                index=1,
++                total=1,
++                text=(
++                    "S1: alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha\n"
++                    "S1: beta beta beta beta beta beta beta beta beta beta beta beta beta beta"
++                ),
++                base_text=(
++                    "S1: alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha\n"
++                    "S1: beta beta beta beta beta beta beta beta beta beta beta beta beta beta"
++                ),
++                start_seconds=0.0,
++                end_seconds=20.0,
++            )
++        ],
++    )
++
++    class _SplitLLM:
++        async def generate(self, **kwargs: Any) -> dict[str, str]:
++            payload = json.loads(kwargs["user_prompt"])
++            chunk_meta = payload.get("chunk")
++            if isinstance(chunk_meta, dict):
++                chunk_id = str(chunk_meta.get("id"))
++                seen_chunks.append(chunk_id)
++                if chunk_id == "1":
++                    raise asyncio.TimeoutError()
++                return _chunk_extract_message(chunk_id)
++            seen_chunks.append("merge")
++            return _merge_message("Split Merge")
++
++    result = await pipeline._run_chunked_llm_summary(
++        transcript_text="split transcript",
++        speaker_turns=_llm_chunk_turns("split transcript"),
++        aliases={},
++        derived_dir=tmp_path / "derived",
++        llm=_SplitLLM(),
++        cfg=_settings(
++            tmp_path,
++            llm_model="model",
++            llm_chunk_max_chars=200,
++            llm_chunk_overlap_chars=0,
++            llm_chunk_split_min_chars=64,
++            llm_chunk_split_max_depth=2,
++        ),
++        llm_model="model",
++        target_summary_language="en",
++        friendly=0,
++        default_topic="Meeting summary",
++        calendar_title=None,
++        calendar_attendees=[],
++        progress_callback=None,
++    )
++
++    assert result["topic"] == "Split Merge"
++    assert seen_chunks[:3] == ["1", "1a", "1b"]
++
++
++@pytest.mark.asyncio
++async def test_run_chunked_llm_summary_split_tolerates_store_without_returned_row(
++    tmp_path: Path,
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    db_cfg, _seed_store = _chunk_store(tmp_path, "rec-chunk-split-none-1")
++    monkeypatch.setattr(
++        pipeline,
++        "plan_compact_transcript_chunks",
++        lambda *_a, **_k: [
++            pipeline.TranscriptChunk(
++                index=1,
++                total=1,
++                text=(
++                    "S1: alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha\n"
++                    "S1: beta beta beta beta beta beta beta beta beta beta beta beta beta beta"
++                ),
++                base_text=(
++                    "S1: alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha\n"
++                    "S1: beta beta beta beta beta beta beta beta beta beta beta beta beta beta"
++                ),
++                start_seconds=0.0,
++                end_seconds=20.0,
++            )
++        ],
++    )
++
++    class _SplitLLM:
++        async def generate(self, **kwargs: Any) -> dict[str, str]:
++            payload = json.loads(kwargs["user_prompt"])
++            chunk_meta = payload.get("chunk")
++            if isinstance(chunk_meta, dict):
++                chunk_id = str(chunk_meta.get("id"))
++                if chunk_id == "1":
++                    raise asyncio.TimeoutError()
++                return _chunk_extract_message(chunk_id)
++            return _merge_message("Split Merge")
++
++    class _NoSplitRowStore(_SqliteChunkStateStore):
++        def mark_split(self, **kwargs: Any) -> dict[str, Any] | None:
++            super().mark_split(**kwargs)
++            return None
++
++    result = await pipeline._run_chunked_llm_summary(
++        transcript_text="split transcript",
++        speaker_turns=_llm_chunk_turns("split transcript"),
++        aliases={},
++        derived_dir=tmp_path / "derived",
++        llm=_SplitLLM(),
++        cfg=_settings(
++            tmp_path,
++            llm_model="model",
++            llm_chunk_max_chars=200,
++            llm_chunk_overlap_chars=0,
++            llm_chunk_split_min_chars=64,
++            llm_chunk_split_max_depth=2,
++        ),
++        llm_model="model",
++        target_summary_language="en",
++        friendly=0,
++        default_topic="Meeting summary",
++        calendar_title=None,
++        calendar_attendees=[],
++        progress_callback=None,
++        chunk_state_store=_NoSplitRowStore("rec-chunk-split-none-1", db_cfg),
++    )
++
++    assert result["topic"] == "Split Merge"
++
++
++@pytest.mark.asyncio
++async def test_run_chunked_llm_summary_merge_retry_reuses_completed_extracts(
++    tmp_path: Path,
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    _db_cfg, store = _chunk_store(tmp_path, "rec-chunk-merge-1")
++    seen_chunks: list[str] = []
++    merge_attempts = {"count": 0}
++
++    class _MergeRetryLLM:
++        async def generate(self, **kwargs: Any) -> dict[str, str]:
++            payload = json.loads(kwargs["user_prompt"])
++            chunk_meta = payload.get("chunk")
++            if isinstance(chunk_meta, dict):
++                chunk_id = str(chunk_meta.get("id"))
++                seen_chunks.append(chunk_id)
++                return _chunk_extract_message(chunk_id)
++            merge_attempts["count"] += 1
++            if merge_attempts["count"] == 1:
++                return {"content": "**LLM timeout**", "role": "assistant"}
++            return _merge_message("Merge Retry")
++
++    monkeypatch.setattr(pipeline, "plan_compact_transcript_chunks", lambda *_a, **_k: _planned_root_chunks())
++
++    kwargs = {
++        "transcript_text": "merge transcript",
++        "speaker_turns": _llm_chunk_turns("merge transcript"),
++        "aliases": {},
++        "derived_dir": tmp_path / "derived",
++        "llm": _MergeRetryLLM(),
++        "cfg": _settings(
++            tmp_path,
++            llm_model="model",
++            llm_chunk_max_chars=80,
++            llm_chunk_overlap_chars=0,
++        ),
++        "llm_model": "model",
++        "target_summary_language": "en",
++        "friendly": 0,
++        "default_topic": "Meeting summary",
++        "calendar_title": None,
++        "calendar_attendees": [],
++        "progress_callback": None,
++        "chunk_state_store": store,
++    }
++
++    with pytest.raises(RuntimeError, match=r"LLM merge failed \[llm_merge_request_timeout\]: request timed out"):
++        await pipeline._run_chunked_llm_summary(**kwargs)
++
++    result = await pipeline._run_chunked_llm_summary(**kwargs)
++
++    assert result["topic"] == "Merge Retry"
++    assert seen_chunks == ["1", "2"]
++    assert merge_attempts["count"] == 2
++
++
++@pytest.mark.asyncio
++async def test_emit_step_log_handles_awaitable_and_callback_errors() -> None:
++    messages: list[str] = []
++
++    async def _async_logger(message: str) -> None:
++        messages.append(message)
++
++    def _sync_logger(message: str) -> str:
++        messages.append(f"sync:{message}")
++        return "ok"
++
++    def _broken_logger(_message: str) -> None:
++        raise OSError("ignore")
++
++    await pipeline._emit_step_log(_async_logger, "hello")  # noqa: SLF001
++    await pipeline._emit_step_log(_sync_logger, "world")  # noqa: SLF001
++    await pipeline._emit_step_log(_broken_logger, "ignored")  # noqa: SLF001
++
++    assert messages == ["hello", "sync:world"]
++
++
++def test_chunk_state_store_protocol_stubs_are_callable() -> None:
++    dummy = object()
++
++    assert pipeline.ChunkStateStore.list_states(dummy, chunk_group="extract") is None
++    assert pipeline.ChunkStateStore.upsert_state(
++        dummy,
++        chunk_group="extract",
++        chunk_index="1",
++        chunk_total=1,
++        status="planned",
++    ) is None
++    assert pipeline.ChunkStateStore.mark_started(
++        dummy,
++        chunk_group="extract",
++        chunk_index="1",
++        chunk_total=1,
++    ) is None
++    assert pipeline.ChunkStateStore.mark_completed(
++        dummy,
++        chunk_group="extract",
++        chunk_index="1",
++        chunk_total=1,
++    ) is None
++    assert pipeline.ChunkStateStore.mark_failed(
++        dummy,
++        chunk_group="extract",
++        chunk_index="1",
++        chunk_total=1,
++    ) is None
++    assert pipeline.ChunkStateStore.mark_split(
++        dummy,
++        chunk_group="extract",
++        chunk_index="1",
++        chunk_total=1,
++    ) is None
++    assert pipeline.ChunkStateStore.clear_states(dummy, chunk_group="extract") is None
++
++
++def test_chunk_resume_helper_utilities_cover_invalid_inputs(
++    tmp_path: Path,
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    broken = tmp_path / "broken.json"
++    broken.write_text("{", encoding="utf-8")
++    list_payload = tmp_path / "list.json"
++    list_payload.write_text("[]", encoding="utf-8")
++
++    assert pipeline._read_json_artifact(tmp_path / "missing.json") is None  # noqa: SLF001
++    assert pipeline._read_json_artifact(broken) is None  # noqa: SLF001
++    assert pipeline._read_json_artifact(list_payload) is None  # noqa: SLF001
++    assert pipeline._chunk_request_timeout_seconds(object()) is None  # noqa: SLF001
++    assert pipeline._chunk_artifact_token("alpha!") == "chunkalpha_"  # noqa: SLF001
++
++    valid_row = {
++        "chunk_index": "1",
++        "parent_chunk_index": None,
++        "metadata_json": {
++            "transcript_hash": "hash",
++            "text": "chunk text",
++            "base_text": "chunk text",
++            "order_path": [1],
++            "depth": 0,
++        },
++    }
++    assert pipeline._chunk_runtime_from_state_row(valid_row, transcript_hash="hash") is not None  # noqa: SLF001
++    assert pipeline._chunk_runtime_from_state_row({}, transcript_hash="hash") is None  # noqa: SLF001
++    assert pipeline._chunk_runtime_from_state_row(  # noqa: SLF001
++        {"chunk_index": "1", "metadata_json": {"transcript_hash": "other"}},
++        transcript_hash="hash",
++    ) is None
++    assert pipeline._chunk_runtime_from_state_row(  # noqa: SLF001
++        {"chunk_index": "1", "metadata_json": {"transcript_hash": "hash", "text": "", "base_text": "x", "order_path": [1]}},
++        transcript_hash="hash",
++    ) is None
++    assert pipeline._chunk_runtime_from_state_row(  # noqa: SLF001
++        {"chunk_index": "1", "metadata_json": {"transcript_hash": "hash", "text": "x", "base_text": "x", "order_path": []}},
++        transcript_hash="hash",
++    ) is None
++    assert pipeline._chunk_runtime_from_state_row(  # noqa: SLF001
++        {"chunk_index": "1", "metadata_json": {"transcript_hash": "hash", "text": "x", "base_text": "x", "order_path": ["bad"]}},
++        transcript_hash="hash",
++    ) is None
++    assert pipeline._chunk_runtime_from_state_row(  # noqa: SLF001
++        {"chunk_index": "1", "metadata_json": {"transcript_hash": "hash", "text": "x", "base_text": "x", "order_path": [0]}},
++        transcript_hash="hash",
++    ) is None
++
++    rows = pipeline._active_chunk_rows_by_id([{"chunk_index": ""}, {"chunk_index": "1"}])  # noqa: SLF001
++    assert rows == {"1": {"chunk_index": "1"}}
++    assert pipeline._load_active_chunk_runtime([{"status": "split", **valid_row}], transcript_hash="hash") is None  # noqa: SLF001
++    assert pipeline._load_active_chunk_runtime(  # noqa: SLF001
++        [{"status": "split", "chunk_index": "1", "metadata_json": {"transcript_hash": "other"}}],
++        transcript_hash="hash",
++    ) is None
++
++    class _NoUpdateStore:
++        def upsert_state(self, **_kwargs: Any) -> None:
++            return None
++
++    runtime = pipeline._ChunkRuntime(  # noqa: SLF001
++        chunk_id="1",
++        parent_chunk_id=None,
++        depth=0,
++        order_path=(1,),
++        text="chunk text",
++        base_text="chunk text",
++        overlap_prefix="",
++    )
++    synced = pipeline._sync_chunk_rows(  # noqa: SLF001
++        chunk_state_store=_NoUpdateStore(),
++        active_chunks=[runtime],
++        rows_by_id={"1": {"status": "planned"}},
++        transcript_hash="hash",
++    )
++    assert synced == {"1": {"status": "planned"}}
++    assert pipeline._best_chunk_split_index([pipeline.TranscriptChunk(index=1, total=1, text="x", base_text="x")]) == 0  # noqa: SLF001
++
++    cfg = _settings(tmp_path, llm_model="model", llm_chunk_split_min_chars=64, llm_chunk_split_max_depth=1)
++    deep_chunk = pipeline._ChunkRuntime(  # noqa: SLF001
++        chunk_id="1",
++        parent_chunk_id=None,
++        depth=1,
++        order_path=(1,),
++        text="x" * 200,
++        base_text="x" * 200,
++        overlap_prefix="",
++    )
++    small_chunk = pipeline._ChunkRuntime(  # noqa: SLF001
++        chunk_id="1",
++        parent_chunk_id=None,
++        depth=0,
++        order_path=(1,),
++        text="short",
++        base_text="short",
++        overlap_prefix="",
++    )
++    assert pipeline._split_runtime_chunk(deep_chunk, cfg=cfg) == []  # noqa: SLF001
++    assert pipeline._split_runtime_chunk(small_chunk, cfg=cfg) == []  # noqa: SLF001
++
++    monkeypatch.setattr(
++        pipeline,
++        "plan_transcript_chunks",
++        lambda *_a, **_k: [pipeline.TranscriptChunk(index=1, total=1, text="x", base_text="x")],
++    )
++    split_candidate = pipeline._ChunkRuntime(  # noqa: SLF001
++        chunk_id="1",
++        parent_chunk_id=None,
++        depth=0,
++        order_path=(1,),
++        text="x" * 200,
++        base_text="x" * 200,
++        overlap_prefix="",
++    )
++    assert pipeline._split_runtime_chunk(split_candidate, cfg=cfg) == []  # noqa: SLF001
++
++    monkeypatch.setattr(
++        pipeline,
++        "plan_transcript_chunks",
++        lambda *_a, **_k: [
++            pipeline.TranscriptChunk(index=1, total=2, text="left", base_text="left"),
++            pipeline.TranscriptChunk(index=2, total=2, text="right", base_text="right"),
++        ],
++    )
++    monkeypatch.setattr(pipeline, "_best_chunk_split_index", lambda _parts: 0)
++    assert pipeline._split_runtime_chunk(split_candidate, cfg=cfg) == []  # noqa: SLF001
++
++    monkeypatch.setattr(pipeline, "_best_chunk_split_index", lambda _parts: 1)
++    monkeypatch.setattr(
++        pipeline,
++        "plan_transcript_chunks",
++        lambda *_a, **_k: [
++            pipeline.TranscriptChunk(index=1, total=2, text="L" * 80, base_text="L" * 80),
++            pipeline.TranscriptChunk(index=2, total=2, text="R" * 80, base_text="R" * 80),
++        ],
++    )
++    split_children = pipeline._split_runtime_chunk(split_candidate, cfg=cfg)  # noqa: SLF001
++    assert [child.chunk_id for child in split_children] == ["1a", "1b"]
++    assert split_children[0].end_seconds is None
++    assert split_children[1].start_seconds is None
++
++    monkeypatch.setattr(
++        pipeline,
++        "plan_transcript_chunks",
++        lambda *_a, **_k: [
++            pipeline.TranscriptChunk(index=1, total=2, text="same", base_text="x" * 200),
++            pipeline.TranscriptChunk(index=2, total=2, text="same", base_text="x" * 200),
++        ],
++    )
++    assert pipeline._split_runtime_chunk(split_candidate, cfg=cfg) == []  # noqa: SLF001
++
++
++def test_validated_completed_chunk_extract_rejects_missing_or_mismatched_artifacts(
++    tmp_path: Path,
++) -> None:
++    chunk = pipeline._ChunkRuntime(  # noqa: SLF001
++        chunk_id="1",
++        parent_chunk_id=None,
++        depth=0,
++        order_path=(1,),
++        text="chunk text",
++        base_text="chunk text",
++        overlap_prefix="",
++    )
++
++    extract_payload, error = pipeline._validated_completed_chunk_extract(  # noqa: SLF001
++        derived_dir=tmp_path,
++        chunk=chunk,
++        position=1,
++        total=1,
++    )
++    assert extract_payload is None
++    assert error == "missing raw artifact llm_chunk_001_raw.json"
++
++    raw_path, extract_path, _error_path = pipeline._chunk_artifact_paths(tmp_path, chunk.chunk_id)  # noqa: SLF001
++    raw_path.write_text(json.dumps({"role": "assistant", "content": "{}"}), encoding="utf-8")
++    extract_path.write_text(json.dumps({"chunk_id": "2"}), encoding="utf-8")
++
++    extract_payload, error = pipeline._validated_completed_chunk_extract(  # noqa: SLF001
++        derived_dir=tmp_path,
++        chunk=chunk,
++        position=1,
++        total=1,
++    )
++    assert extract_payload is None
++    assert error == "extract chunk_id mismatch for 1"
++
++
++@pytest.mark.asyncio
++@pytest.mark.parametrize(
++    ("exc_factory", "expected_reason"),
++    [
++        (lambda: httpx.ReadTimeout("request timed out"), "llm_chunk_request_timeout"),
++        (lambda: ConnectionError("network down"), "llm_chunk_connection_error"),
++        (lambda: RuntimeError("boom"), "llm_chunk_runtime_error"),
++    ],
++)
++async def test_run_chunked_llm_summary_handles_chunk_exception_classes(
++    tmp_path: Path,
++    monkeypatch: pytest.MonkeyPatch,
++    exc_factory,
++    expected_reason: str,
++) -> None:
++    monkeypatch.setattr(pipeline, "plan_compact_transcript_chunks", lambda *_a, **_k: _planned_root_chunks()[:1])
++
++    class _ErrorLLM:
++        async def generate(self, **_kwargs: Any) -> dict[str, str]:
++            raise exc_factory()
++
++    match = "request timed out" if expected_reason.endswith("request_timeout") else "network down" if expected_reason.endswith("connection_error") else "boom"
++    with pytest.raises(RuntimeError, match=rf"LLM chunk 1/1 failed \[{expected_reason}\]: {match}"):
++        await pipeline._run_chunked_llm_summary(
++            transcript_text="error transcript",
++            speaker_turns=_llm_chunk_turns("error transcript"),
++            aliases={},
++            derived_dir=tmp_path / "derived",
++            llm=_ErrorLLM(),
++            cfg=_settings(tmp_path, llm_model="model", llm_chunk_max_chars=80, llm_chunk_overlap_chars=0),
++            llm_model="model",
++            target_summary_language="en",
++            friendly=0,
++            default_topic="Meeting summary",
++            calendar_title=None,
++            calendar_attendees=[],
++            progress_callback=None,
++        )
++
++
++@pytest.mark.asyncio
++async def test_run_chunked_llm_summary_failure_tolerates_store_without_failed_row(
++    tmp_path: Path,
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    db_cfg, _seed_store = _chunk_store(tmp_path, "rec-chunk-failed-none-1")
++    monkeypatch.setattr(pipeline, "plan_compact_transcript_chunks", lambda *_a, **_k: _planned_root_chunks()[:1])
++
++    class _FailingLLM:
++        async def generate(self, **_kwargs: Any) -> dict[str, str]:
++            raise RuntimeError("boom")
++
++    class _NoFailedRowStore(_SqliteChunkStateStore):
++        def mark_failed(self, **kwargs: Any) -> dict[str, Any] | None:
++            super().mark_failed(**kwargs)
++            return None
++
++    with pytest.raises(RuntimeError, match=r"LLM chunk 1/1 failed \[llm_chunk_runtime_error\]: boom"):
++        await pipeline._run_chunked_llm_summary(
++            transcript_text="error transcript",
++            speaker_turns=_llm_chunk_turns("error transcript"),
++            aliases={},
++            derived_dir=tmp_path / "derived",
++            llm=_FailingLLM(),
++            cfg=_settings(tmp_path, llm_model="model", llm_chunk_max_chars=80, llm_chunk_overlap_chars=0),
++            llm_model="model",
++            target_summary_language="en",
++            friendly=0,
++            default_topic="Meeting summary",
++            calendar_title=None,
++            calendar_attendees=[],
++            progress_callback=None,
++            chunk_state_store=_NoFailedRowStore("rec-chunk-failed-none-1", db_cfg),
++        )
++
++
++@pytest.mark.asyncio
++async def test_run_chunked_llm_summary_resets_stale_state_before_retrying(
++    tmp_path: Path,
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    db_cfg, store = _chunk_store(tmp_path, "rec-chunk-stale-1")
++    upsert_recording_llm_chunk_state(
++        "rec-chunk-stale-1",
++        chunk_group="extract",
++        chunk_index="1",
++        chunk_total=1,
++        status="completed",
++        metadata={
++            "transcript_hash": "stale",
++            "text": "stale text",
++            "base_text": "stale text",
++            "order_path": [1],
++        },
++        settings=db_cfg,
++    )
++    monkeypatch.setattr(pipeline, "plan_compact_transcript_chunks", lambda *_a, **_k: _planned_root_chunks()[:1])
++
++    class _FreshLLM:
++        async def generate(self, **kwargs: Any) -> dict[str, str]:
++            payload = json.loads(kwargs["user_prompt"])
++            if isinstance(payload.get("chunk"), dict):
++                return _chunk_extract_message("1")
++            return _merge_message("Fresh Merge")
++
++    result = await pipeline._run_chunked_llm_summary(
++        transcript_text="fresh transcript",
++        speaker_turns=_llm_chunk_turns("fresh transcript"),
++        aliases={},
++        derived_dir=tmp_path / "derived",
++        llm=_FreshLLM(),
++        cfg=_settings(tmp_path, llm_model="model", llm_chunk_max_chars=80, llm_chunk_overlap_chars=0),
++        llm_model="model",
++        target_summary_language="en",
++        friendly=0,
++        default_topic="Meeting summary",
++        calendar_title=None,
++        calendar_attendees=[],
++        progress_callback=None,
++        chunk_state_store=store,
++    )
++
++    assert result["topic"] == "Fresh Merge"
++    rows = list_recording_llm_chunk_states("rec-chunk-stale-1", settings=db_cfg)
++    assert rows[0]["metadata_json"]["transcript_hash"] != "stale"
++
++
++@pytest.mark.asyncio
++async def test_run_chunked_llm_summary_invalidates_completed_chunk_when_store_upsert_returns_none(
++    tmp_path: Path,
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    db_cfg, seed_store = _chunk_store(tmp_path, "rec-chunk-upsert-none-1")
++    monkeypatch.setattr(pipeline, "plan_compact_transcript_chunks", lambda *_a, **_k: _planned_root_chunks()[:1])
++
++    class _FreshLLM:
++        async def generate(self, **kwargs: Any) -> dict[str, str]:
++            payload = json.loads(kwargs["user_prompt"])
++            if isinstance(payload.get("chunk"), dict):
++                return _chunk_extract_message("1")
++            return _merge_message("Fresh Merge")
++
++    kwargs = {
++        "transcript_text": "fresh transcript",
++        "speaker_turns": _llm_chunk_turns("fresh transcript"),
++        "aliases": {},
++        "derived_dir": tmp_path / "derived",
++        "llm": _FreshLLM(),
++        "cfg": _settings(tmp_path, llm_model="model", llm_chunk_max_chars=80, llm_chunk_overlap_chars=0),
++        "llm_model": "model",
++        "target_summary_language": "en",
++        "friendly": 0,
++        "default_topic": "Meeting summary",
++        "calendar_title": None,
++        "calendar_attendees": [],
++        "progress_callback": None,
++        "chunk_state_store": seed_store,
++    }
++
++    first_result = await pipeline._run_chunked_llm_summary(**kwargs)
++    assert first_result["topic"] == "Fresh Merge"
++    (tmp_path / "derived" / "llm_chunk_001_raw.json").unlink()
++
++    class _NoRowUpdateStore(_SqliteChunkStateStore):
++        def upsert_state(self, **kwargs: Any) -> dict[str, Any] | None:
++            super().upsert_state(**kwargs)
++            return None
++
++    store = _NoRowUpdateStore("rec-chunk-upsert-none-1", db_cfg)
++    second_result = await pipeline._run_chunked_llm_summary(
++        **{**kwargs, "chunk_state_store": store},
++    )
++
++    assert second_result["topic"] == "Fresh Merge"
++
++
++@pytest.mark.asyncio
++async def test_run_chunked_llm_summary_merge_failure_paths(
++    tmp_path: Path,
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    monkeypatch.setattr(pipeline, "plan_compact_transcript_chunks", lambda *_a, **_k: _planned_root_chunks()[:1])
++
++    async def _merge_timeout(*_args: Any, **kwargs: Any) -> dict[str, Any]:
++        if '"chunk"' in kwargs["user_prompt"]:
++            return _chunk_extract_message("1")
++        raise asyncio.TimeoutError()
++
++    monkeypatch.setattr(pipeline, "_generate_llm_message", _merge_timeout)
++    with pytest.raises(RuntimeError, match=r"LLM merge failed \[llm_merge_timeout\]: timed out after 120s"):
++        await pipeline._run_chunked_llm_summary(
++            transcript_text="merge timeout transcript",
++            speaker_turns=_llm_chunk_turns("merge timeout transcript"),
++            aliases={},
++            derived_dir=tmp_path / "derived-timeout",
++            llm=object(),
++            cfg=_settings(tmp_path, llm_model="model", llm_chunk_max_chars=80, llm_chunk_overlap_chars=0),
++            llm_model="model",
++            target_summary_language="en",
++            friendly=0,
++            default_topic="Meeting summary",
++            calendar_title=None,
++            calendar_attendees=[],
++            progress_callback=None,
++        )
++
++    async def _merge_connection(*_args: Any, **kwargs: Any) -> dict[str, Any]:
++        if '"chunk"' in kwargs["user_prompt"]:
++            return _chunk_extract_message("1")
++        raise ConnectionError("merge offline")
++
++    monkeypatch.setattr(pipeline, "_generate_llm_message", _merge_connection)
++    with pytest.raises(RuntimeError, match=r"LLM merge failed \[llm_merge_connection_error\]: merge offline"):
++        await pipeline._run_chunked_llm_summary(
++            transcript_text="merge connection transcript",
++            speaker_turns=_llm_chunk_turns("merge connection transcript"),
++            aliases={},
++            derived_dir=tmp_path / "derived-connection",
++            llm=object(),
++            cfg=_settings(tmp_path, llm_model="model", llm_chunk_max_chars=80, llm_chunk_overlap_chars=0),
++            llm_model="model",
++            target_summary_language="en",
++            friendly=0,
++            default_topic="Meeting summary",
++            calendar_title=None,
++            calendar_attendees=[],
++            progress_callback=None,
++        )
++
++    monkeypatch.setattr(
++        pipeline,
++        "_validated_completed_chunk_extract",
++        lambda **_kwargs: (None, "missing extract"),
++    )
++
++    class _MergeMissingExtractLLM:
++        async def generate(self, **kwargs: Any) -> dict[str, str]:
++            payload = json.loads(kwargs["user_prompt"])
++            if isinstance(payload.get("chunk"), dict):
++                return _chunk_extract_message("1")
++            return _merge_message("Unused Merge")
++
++    with pytest.raises(RuntimeError, match=r"LLM merge failed \[llm_merge_parse_error\]: missing extract"):
++        await pipeline._run_chunked_llm_summary(
++            transcript_text="merge extract transcript",
++            speaker_turns=_llm_chunk_turns("merge extract transcript"),
++            aliases={},
++            derived_dir=tmp_path / "derived-missing",
++            llm=_MergeMissingExtractLLM(),
++            cfg=_settings(tmp_path, llm_model="model", llm_chunk_max_chars=80, llm_chunk_overlap_chars=0),
++            llm_model="model",
++            target_summary_language="en",
++            friendly=0,
++            default_topic="Meeting summary",
++            calendar_title=None,
++            calendar_attendees=[],
++            progress_callback=None,
++        )
++
++
++@pytest.mark.asyncio
++@pytest.mark.parametrize(
++    ("exc_factory", "expected_reason", "message"),
++    [
++        (lambda: httpx.ReadTimeout("merge request timed out"), "llm_merge_request_timeout", "request timed out"),
++        (lambda: RuntimeError("merge boom"), "llm_merge_parse_error", "merge boom"),
++    ],
++)
++async def test_run_chunked_llm_summary_handles_merge_exception_classes(
++    tmp_path: Path,
++    monkeypatch: pytest.MonkeyPatch,
++    exc_factory,
++    expected_reason: str,
++    message: str,
++) -> None:
++    monkeypatch.setattr(pipeline, "plan_compact_transcript_chunks", lambda *_a, **_k: _planned_root_chunks()[:1])
++
++    class _MergeErrorLLM:
++        async def generate(self, **kwargs: Any) -> dict[str, str]:
++            payload = json.loads(kwargs["user_prompt"])
++            if isinstance(payload.get("chunk"), dict):
++                return _chunk_extract_message("1")
++            raise exc_factory()
++
++    with pytest.raises(RuntimeError, match=rf"LLM merge failed \[{expected_reason}\]: {message}"):
++        await pipeline._run_chunked_llm_summary(
++            transcript_text="merge error transcript",
++            speaker_turns=_llm_chunk_turns("merge error transcript"),
++            aliases={},
++            derived_dir=tmp_path / "derived",
++            llm=_MergeErrorLLM(),
++            cfg=_settings(tmp_path, llm_model="model", llm_chunk_max_chars=80, llm_chunk_overlap_chars=0),
++            llm_model="model",
++            target_summary_language="en",
++            friendly=0,
++            default_topic="Meeting summary",
++            calendar_title=None,
++            calendar_attendees=[],
++            progress_callback=None,
++        )
++
++
++@pytest.mark.asyncio
++async def test_run_chunked_llm_summary_merge_parse_error_after_raw_response(
++    tmp_path: Path,
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    monkeypatch.setattr(pipeline, "plan_compact_transcript_chunks", lambda *_a, **_k: _planned_root_chunks()[:1])
++
++    def _raise_merge_parse(**_kwargs: Any) -> dict[str, Any]:
++        raise ValueError("bad merge payload")
++
++    monkeypatch.setattr(
++        pipeline,
++        "build_summary_payload",
++        _raise_merge_parse,
++    )
++
++    class _MergeParseLLM:
++        async def generate(self, **kwargs: Any) -> dict[str, str]:
++            payload = json.loads(kwargs["user_prompt"])
++            if isinstance(payload.get("chunk"), dict):
++                return _chunk_extract_message("1")
++            return _merge_message("Broken Merge")
++
++    with pytest.raises(RuntimeError, match=r"LLM merge failed \[llm_merge_parse_error\]: bad merge payload"):
++        await pipeline._run_chunked_llm_summary(
++            transcript_text="merge parse transcript",
++            speaker_turns=_llm_chunk_turns("merge parse transcript"),
++            aliases={},
++            derived_dir=tmp_path / "derived-parse",
++            llm=_MergeParseLLM(),
++            cfg=_settings(tmp_path, llm_model="model", llm_chunk_max_chars=80, llm_chunk_overlap_chars=0),
++            llm_model="model",
++            target_summary_language="en",
++            friendly=0,
++            default_topic="Meeting summary",
++            calendar_title=None,
++            calendar_attendees=[],
++            progress_callback=None,
++        )
++
++
+ def _audio_file(tmp_path: Path, name: str = "audio.mp3") -> Path:
+     path = tmp_path / name
+     path.write_bytes(b"\x00")
+diff --git a/tests/test_llm_chunking.py b/tests/test_llm_chunking.py
+index f885385..b4a6f4b 100644
+--- a/tests/test_llm_chunking.py
++++ b/tests/test_llm_chunking.py
+@@ -326,6 +326,7 @@ def test_build_chunk_prompt_and_parse_chunk_extract() -> None:
+     assert prompt_payload["chunk"] == {
+         "index": 2,
+         "total": 4,
++        "id": "2",
+         "time_range": {"start_seconds": 12.0, "end_seconds": 18.0},
+     }
+     assert prompt_payload["calendar"]["title"] == "Roadmap Review"
+diff --git a/tests/test_pipeline.py b/tests/test_pipeline.py
+index 55a25b0..dd292d8 100644
+--- a/tests/test_pipeline.py
++++ b/tests/test_pipeline.py
+@@ -720,7 +720,10 @@ async def test_pipeline_chunk_failure_is_explicit_and_marks_metrics_failed(tmp_p
+         llm_chunk_overlap_chars=20,
+     )
+ 
+-    with pytest.raises(RuntimeError, match=r"LLM chunk 2/\d+ failed: json_object_not_found"):
++    with pytest.raises(
++        RuntimeError,
++        match=r"LLM chunk 2/\d+ failed \[llm_chunk_parse_error\]: json_object_not_found",
++    ):
+         await pipeline.run_pipeline(
+             audio_path=fake_audio(tmp_path, "chunked-fail.mp3"),
+             cfg=cfg,
+diff --git a/tests/test_pipeline_checkpoints_resume.py b/tests/test_pipeline_checkpoints_resume.py
+index f29c3ca..4366780 100644
+--- a/tests/test_pipeline_checkpoints_resume.py
++++ b/tests/test_pipeline_checkpoints_resume.py
+@@ -24,12 +24,15 @@ from lan_app.db import (
+     create_recording,
+     get_recording,
+     init_db,
++    list_recording_llm_chunk_states,
+     list_recording_pipeline_stages,
++    mark_recording_llm_chunk_completed,
+     mark_recording_pipeline_stage_cancelled,
+     mark_recording_pipeline_stage_completed,
+     mark_recording_pipeline_stage_failed,
+     mark_recording_pipeline_stage_started,
+     mark_recording_pipeline_stage_skipped,
++    upsert_recording_llm_chunk_state,
+     upsert_recording_pipeline_stage,
+ )
+ from lan_app.pipeline_stages import (
+@@ -489,10 +492,28 @@ def test_enqueue_recording_job_clears_existing_pipeline_stage_rows(tmp_path: Pat
+         stage_name="sanitize_audio",
+         settings=cfg,
+     )
++    upsert_recording_llm_chunk_state(
++        "rec-requeue-1",
++        chunk_group="extract",
++        chunk_index="1",
++        chunk_total=1,
++        status="planned",
++        metadata={"order_path": [1], "text": "chunk one", "base_text": "chunk one"},
++        settings=cfg,
++    )
++    mark_recording_llm_chunk_completed(
++        "rec-requeue-1",
++        chunk_group="extract",
++        chunk_index="1",
++        chunk_total=1,
++        metadata={"order_path": [1], "text": "chunk one", "base_text": "chunk one"},
++        settings=cfg,
++    )
+ 
+     class _Queue:
+         def enqueue(self, *_args, **_kwargs) -> None:
+             assert list_recording_pipeline_stages("rec-requeue-1", settings=cfg) == []
++            assert list_recording_llm_chunk_states("rec-requeue-1", settings=cfg) == []
+             return None
+ 
+     monkeypatch.setattr(jobs_module, "get_queue", lambda _cfg=None: _Queue())
+@@ -506,6 +527,7 @@ def test_enqueue_recording_job_clears_existing_pipeline_stage_rows(tmp_path: Pat
+ 
+     assert job.job_type == JOB_TYPE_PRECHECK
+     assert list_recording_pipeline_stages("rec-requeue-1", settings=cfg) == []
++    assert list_recording_llm_chunk_states("rec-requeue-1", settings=cfg) == []
+ 
+ 
+ def test_enqueue_recording_job_preserves_stage_rows_for_retry_resume(
+diff --git a/lan_app/migrations/021_add_recording_llm_chunk_states.sql b/lan_app/migrations/021_add_recording_llm_chunk_states.sql
+new file mode 100644
+index 0000000..7bdd7f6
+--- /dev/null
++++ b/lan_app/migrations/021_add_recording_llm_chunk_states.sql
+@@ -0,0 +1,21 @@
++CREATE TABLE IF NOT EXISTS recording_llm_chunk_states (
++    recording_id TEXT NOT NULL,
++    chunk_group TEXT NOT NULL,
++    chunk_index TEXT NOT NULL,
++    chunk_total INTEGER NOT NULL,
++    status TEXT NOT NULL CHECK(status IN ('planned', 'running', 'completed', 'failed', 'cancelled', 'split')),
++    attempt INTEGER NOT NULL DEFAULT 0,
++    started_at TEXT,
++    finished_at TEXT,
++    duration_ms INTEGER,
++    error_code TEXT,
++    error_text TEXT,
++    parent_chunk_index TEXT,
++    metadata_json TEXT,
++    updated_at TEXT NOT NULL,
++    PRIMARY KEY (recording_id, chunk_group, chunk_index),
++    FOREIGN KEY (recording_id) REFERENCES recordings(id) ON DELETE CASCADE
++);
++
++CREATE INDEX IF NOT EXISTS idx_recording_llm_chunk_states_recording_group
++ON recording_llm_chunk_states(recording_id, chunk_group);

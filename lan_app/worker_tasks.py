@@ -91,6 +91,7 @@ from .constants import (
 )
 from .db import (
     clear_recording_progress,
+    clear_recording_llm_chunk_states,
     clear_recording_pipeline_stages,
     fail_job,
     fail_job_if_started,
@@ -99,7 +100,12 @@ from .db import (
     get_recording,
     init_db,
     list_jobs,
+    list_recording_llm_chunk_states,
     list_recording_pipeline_stages,
+    mark_recording_llm_chunk_completed,
+    mark_recording_llm_chunk_failed,
+    mark_recording_llm_chunk_split,
+    mark_recording_llm_chunk_started,
     mark_recording_pipeline_stage_completed,
     mark_recording_pipeline_stage_failed,
     mark_recording_pipeline_stage_skipped,
@@ -111,6 +117,7 @@ from .db import (
     set_recording_status,
     set_recording_status_if_current_in_and_job_started,
     start_job,
+    upsert_recording_llm_chunk_state,
 )
 from .diarization_loader import load_pyannote_pipeline
 from .pipeline_stages import (
@@ -219,6 +226,61 @@ def _success_status(job_type: str) -> str:
 class RetryPolicy:
     max_attempts: int
     backoff_seconds: tuple[int, ...]
+
+
+@dataclass(frozen=True)
+class _DbChunkStateStore:
+    recording_id: str
+    settings: AppSettings
+
+    def list_states(self, *, chunk_group: str) -> list[dict[str, Any]]:
+        return list_recording_llm_chunk_states(
+            self.recording_id,
+            chunk_group=chunk_group,
+            settings=self.settings,
+        )
+
+    def upsert_state(self, **kwargs: Any) -> dict[str, Any] | None:
+        return upsert_recording_llm_chunk_state(
+            self.recording_id,
+            settings=self.settings,
+            **kwargs,
+        )
+
+    def mark_started(self, **kwargs: Any) -> dict[str, Any] | None:
+        return mark_recording_llm_chunk_started(
+            self.recording_id,
+            settings=self.settings,
+            **kwargs,
+        )
+
+    def mark_completed(self, **kwargs: Any) -> dict[str, Any] | None:
+        return mark_recording_llm_chunk_completed(
+            self.recording_id,
+            settings=self.settings,
+            **kwargs,
+        )
+
+    def mark_failed(self, **kwargs: Any) -> dict[str, Any] | None:
+        return mark_recording_llm_chunk_failed(
+            self.recording_id,
+            settings=self.settings,
+            **kwargs,
+        )
+
+    def mark_split(self, **kwargs: Any) -> dict[str, Any] | None:
+        return mark_recording_llm_chunk_split(
+            self.recording_id,
+            settings=self.settings,
+            **kwargs,
+        )
+
+    def clear_states(self, *, chunk_group: str | None = None) -> int:
+        return clear_recording_llm_chunk_states(
+            self.recording_id,
+            chunk_group=chunk_group,
+            settings=self.settings,
+        )
 
 
 _DEFAULT_RETRY_POLICY = RetryPolicy(max_attempts=2, backoff_seconds=(2,))
@@ -1117,6 +1179,8 @@ def _build_pipeline_settings(settings: AppSettings) -> PipelineSettings:
         llm_chunk_max_chars=settings.llm_chunk_max_chars,
         llm_chunk_overlap_chars=settings.llm_chunk_overlap_chars,
         llm_chunk_timeout_seconds=settings.llm_chunk_timeout_seconds,
+        llm_chunk_split_min_chars=settings.llm_chunk_split_min_chars,
+        llm_chunk_split_max_depth=settings.llm_chunk_split_max_depth,
         llm_long_transcript_threshold_chars=settings.llm_long_transcript_threshold_chars,
         llm_merge_max_tokens=settings.llm_merge_max_tokens,
         asr_device=getattr(settings, "asr_device", "auto"),
@@ -1963,6 +2027,11 @@ def _stage_llm_extract(ctx: _PipelineExecutionContext) -> _StageResult:
                 calendar_title=ctx.calendar_title,
                 calendar_attendees=ctx.calendar_attendees,
                 progress_callback=_progress_callback,
+                chunk_state_store=_DbChunkStateStore(
+                    recording_id=ctx.recording_id,
+                    settings=ctx.settings,
+                ),
+                step_log_callback=lambda message: _append_step_log(ctx.log_path, message),
             )
         )
     else:

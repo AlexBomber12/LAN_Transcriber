@@ -215,10 +215,12 @@ models are cached across runs.
 | `LLM_MAX_TOKENS` | Base `max_tokens` for `/v1/chat/completions` requests (default `1024`) |
 | `LLM_MAX_TOKENS_RETRY` | One-shot retry `max_tokens` for truncated/empty LLM output (default `2048`) |
 | `LLM_TIMEOUT_SECONDS` | Per-request timeout for LLM calls (default `30`) |
-| `LLM_CHUNK_MAX_CHARS` | Transcript chunk size threshold for long-recording map-reduce LLM processing (default `6000`) |
-| `LLM_CHUNK_OVERLAP_CHARS` | Deterministic overlap between adjacent transcript chunks (default `600`) |
+| `LLM_CHUNK_MAX_CHARS` | Transcript chunk size threshold for long-recording map-reduce LLM processing (default `4500`) |
+| `LLM_CHUNK_OVERLAP_CHARS` | Deterministic overlap between adjacent transcript chunks (default `300`) |
 | `LLM_CHUNK_TIMEOUT_SECONDS` | Wall-clock timeout applied to each chunk extraction call (default `120`) |
-| `LLM_LONG_TRANSCRIPT_THRESHOLD_CHARS` | Switch to chunked LLM mode when the speaker-attributed transcript exceeds this size (default `6000`) |
+| `LLM_CHUNK_SPLIT_MIN_CHARS` | Minimum chunk payload size required before timeout-driven child splits are allowed (default `1200`) |
+| `LLM_CHUNK_SPLIT_MAX_DEPTH` | Maximum adaptive split depth for a timed-out chunk before the stage fails (default `2`) |
+| `LLM_LONG_TRANSCRIPT_THRESHOLD_CHARS` | Switch to chunked LLM mode when the speaker-attributed transcript exceeds this size (default `4500`) |
 | `LLM_MERGE_MAX_TOKENS` | Optional `max_tokens` override for the final merge pass; falls back to `LLM_MAX_TOKENS` when unset |
 
 `LAN_ENV` controls startup validation:
@@ -229,7 +231,11 @@ models are cached across runs.
 
 If LLM responses fail with `finish_reason=length` or empty `message.content`, increase `LLM_MAX_TOKENS` and `LLM_TIMEOUT_SECONDS` (and optionally `LLM_MAX_TOKENS_RETRY`).
 
-Long transcripts are processed with a chunked map-reduce LLM flow. Before chunk planning, the worker compacts speaker turns into an LLM-ready transcript with shorter speaker labels, merged adjacent same-speaker turns, and chunk-level time ranges instead of per-line timestamps. During that phase the UI may show progress stages like `llm_chunk_1_of_5` and `llm_merge`, and debug artifacts are written under `derived/`, including `llm_compact_transcript.txt`, `llm_compact_transcript.json`, `llm_chunks_plan.json`, and merge inspection files.
+Long transcripts are processed with a chunked map-reduce LLM flow. Before chunk planning, the worker compacts speaker turns into an LLM-ready transcript with shorter speaker labels, merged adjacent same-speaker turns, and chunk-level time ranges instead of per-line timestamps. During that phase the UI may show progress stages like `llm_chunk_1_of_5` and `llm_merge`.
+
+Chunk extraction now resumes from the failed or incomplete chunk set on the next retry instead of restarting from chunk 1. Completed chunk extracts are validated and reused, and a timed-out chunk can be split into smaller child chunks automatically up to `LLM_CHUNK_SPLIT_MAX_DEPTH`.
+
+Chunk debug artifacts are written under `derived/`, including `llm_compact_transcript.txt`, `llm_compact_transcript.json`, `llm_chunks_plan.json`, `llm_merge_input.json`, per-chunk `llm_chunk_*_{raw,extract,error}.json`, and `llm_merge_error.json` when the merge pass fails. The worker also persists per-chunk state in SQLite so automatic job retries can resume safely.
 
 For diarization quality tuning, keep `LAN_DIARIZATION_PROFILE=auto` for mixed workloads. In `auto`, the worker runs a meeting-oriented first pass, classifies the result from deterministic speaker-share/alternation/overlap heuristics, and retries once with `min_speakers=2` and `max_speakers=2` only when the recording looks dialog-like. Use `dialog` or `meeting` only to force one behavior, and note that explicit `LAN_DIARIZATION_MIN_SPEAKERS` / `LAN_DIARIZATION_MAX_SPEAKERS` overrides bypass auto selection. Each processed recording writes `derived/diarization_metadata.json` with the requested profile, selected profile, initial top-two coverage, retry attempt/winner, applied hints, and smoothing stats.
 

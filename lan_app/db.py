@@ -41,6 +41,14 @@ _GLOSSARY_SOURCES = {
     "speaker_bank",
     "system",
 }
+_LLM_CHUNK_STATUSES = {
+    "planned",
+    "running",
+    "completed",
+    "failed",
+    "cancelled",
+    "split",
+}
 _MIGRATIONS_DIR = Path(__file__).with_name("migrations")
 _SQLITE_CONNECT_TIMEOUT_SECONDS = 30
 _DEFAULT_SQLITE_BUSY_TIMEOUT_MS = 30_000
@@ -240,6 +248,32 @@ def _duration_ms_between(started_at: str | None, finished_at: str | None) -> int
         return None
     delta_ms = int((finished - started).total_seconds() * 1000)
     return max(delta_ms, 0)
+
+
+def _normalise_llm_chunk_group(chunk_group: str) -> str:
+    normalized = str(chunk_group or "").strip().lower()
+    if not normalized:
+        raise ValueError("chunk_group is required")
+    return normalized
+
+
+def _normalise_llm_chunk_index(chunk_index: str | int) -> str:
+    normalized = str(chunk_index).strip().lower()
+    if not normalized:
+        raise ValueError("chunk_index is required")
+    return normalized
+
+
+def _validate_llm_chunk_status(status: str) -> str:
+    normalized = str(status or "").strip().lower()
+    if normalized not in _LLM_CHUNK_STATUSES:
+        allowed = ", ".join(sorted(_LLM_CHUNK_STATUSES))
+        raise ValueError(f"Unsupported LLM chunk status: {normalized} ({allowed})")
+    return normalized
+
+
+def _normalise_llm_chunk_metadata(metadata: dict[str, Any] | None) -> dict[str, Any]:
+    return _normalise_pipeline_stage_metadata(metadata)
 
 
 def _normalise_project_assignment_source(source: str | None) -> str | None:
@@ -1153,6 +1187,522 @@ def clear_recording_pipeline_stages(
         with connect(settings) as conn:
             deleted = conn.execute(
                 f"DELETE FROM recording_pipeline_stages WHERE {where_sql}",
+                params,
+            )
+            conn.commit()
+            return int(deleted.rowcount)
+
+    deleted = with_db_retry(_clear)
+    if from_stage is None or pipeline_stage_order(validate_pipeline_stage_name(from_stage)) <= pipeline_stage_order("llm_extract"):
+        clear_recording_llm_chunk_states(recording_id, settings=settings)
+    return deleted
+
+
+def list_recording_llm_chunk_states(
+    recording_id: str,
+    *,
+    chunk_group: str | None = None,
+    settings: AppSettings | None = None,
+) -> list[dict[str, Any]]:
+    init_db(settings)
+    params: list[Any] = [recording_id]
+    where_sql = "recording_id = ?"
+    if chunk_group is not None:
+        where_sql += " AND chunk_group = ?"
+        params.append(_normalise_llm_chunk_group(chunk_group))
+    with connect(settings) as conn:
+        rows = conn.execute(
+            f"""
+            SELECT *
+            FROM recording_llm_chunk_states
+            WHERE {where_sql}
+            ORDER BY chunk_group ASC, chunk_index ASC
+            """,
+            params,
+        ).fetchall()
+    return [_as_dict(row) or {} for row in rows]
+
+
+def upsert_recording_llm_chunk_state(
+    recording_id: str,
+    *,
+    chunk_group: str,
+    chunk_index: str | int,
+    chunk_total: int,
+    status: str,
+    attempt: int = 0,
+    started_at: str | None = None,
+    finished_at: str | None = None,
+    duration_ms: int | None = None,
+    error_code: str | None = None,
+    error_text: str | None = None,
+    parent_chunk_index: str | int | None = None,
+    metadata: dict[str, Any] | None = None,
+    settings: AppSettings | None = None,
+) -> dict[str, Any] | None:
+    init_db(settings)
+    normalized_group = _normalise_llm_chunk_group(chunk_group)
+    normalized_index = _normalise_llm_chunk_index(chunk_index)
+    normalized_status = _validate_llm_chunk_status(status)
+    safe_total = max(int(chunk_total), 1)
+    safe_attempt = max(int(attempt), 0)
+    safe_parent = (
+        _normalise_llm_chunk_index(parent_chunk_index)
+        if parent_chunk_index is not None
+        else None
+    )
+    now = _utc_now()
+
+    def _upsert() -> dict[str, Any] | None:
+        with connect(settings) as conn:
+            existing_row = conn.execute(
+                """
+                SELECT *
+                FROM recording_llm_chunk_states
+                WHERE recording_id = ? AND chunk_group = ? AND chunk_index = ?
+                """,
+                (recording_id, normalized_group, normalized_index),
+            ).fetchone()
+            existing = _as_dict(existing_row) or {}
+            resolved_metadata = _normalise_llm_chunk_metadata(
+                metadata
+                if metadata is not None
+                else (
+                    existing.get("metadata_json")
+                    if isinstance(existing.get("metadata_json"), dict)
+                    else None
+                )
+            )
+            metadata_json = json.dumps(
+                resolved_metadata,
+                ensure_ascii=True,
+                sort_keys=True,
+            )
+            safe_duration_ms = (
+                max(int(duration_ms), 0)
+                if duration_ms is not None
+                else _duration_ms_between(started_at, finished_at)
+            )
+            resolved_parent = (
+                safe_parent
+                if parent_chunk_index is not None
+                else (
+                    _normalise_llm_chunk_index(existing.get("parent_chunk_index"))
+                    if existing.get("parent_chunk_index") not in (None, "")
+                    else None
+                )
+            )
+            conn.execute(
+                """
+                INSERT INTO recording_llm_chunk_states (
+                    recording_id,
+                    chunk_group,
+                    chunk_index,
+                    chunk_total,
+                    status,
+                    attempt,
+                    started_at,
+                    finished_at,
+                    duration_ms,
+                    error_code,
+                    error_text,
+                    parent_chunk_index,
+                    metadata_json,
+                    updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(recording_id, chunk_group, chunk_index) DO UPDATE SET
+                    chunk_total = excluded.chunk_total,
+                    status = excluded.status,
+                    attempt = excluded.attempt,
+                    started_at = excluded.started_at,
+                    finished_at = excluded.finished_at,
+                    duration_ms = excluded.duration_ms,
+                    error_code = excluded.error_code,
+                    error_text = excluded.error_text,
+                    parent_chunk_index = excluded.parent_chunk_index,
+                    metadata_json = excluded.metadata_json,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    recording_id,
+                    normalized_group,
+                    normalized_index,
+                    safe_total,
+                    normalized_status,
+                    safe_attempt,
+                    started_at,
+                    finished_at,
+                    safe_duration_ms,
+                    str(error_code or "").strip() or None,
+                    str(error_text or "").strip() or None,
+                    resolved_parent,
+                    metadata_json,
+                    now,
+                ),
+            )
+            updated = conn.execute(
+                """
+                SELECT *
+                FROM recording_llm_chunk_states
+                WHERE recording_id = ? AND chunk_group = ? AND chunk_index = ?
+                """,
+                (recording_id, normalized_group, normalized_index),
+            ).fetchone()
+            conn.commit()
+        return _as_dict(updated)
+
+    return with_db_retry(_upsert)
+
+
+def mark_recording_llm_chunk_started(
+    recording_id: str,
+    *,
+    chunk_group: str,
+    chunk_index: str | int,
+    chunk_total: int,
+    parent_chunk_index: str | int | None = None,
+    metadata: dict[str, Any] | None = None,
+    settings: AppSettings | None = None,
+) -> dict[str, Any] | None:
+    init_db(settings)
+    normalized_group = _normalise_llm_chunk_group(chunk_group)
+    normalized_index = _normalise_llm_chunk_index(chunk_index)
+    safe_total = max(int(chunk_total), 1)
+    now = _utc_now()
+
+    def _mark_started() -> dict[str, Any] | None:
+        with connect(settings) as conn:
+            existing_row = conn.execute(
+                """
+                SELECT *
+                FROM recording_llm_chunk_states
+                WHERE recording_id = ? AND chunk_group = ? AND chunk_index = ?
+                """,
+                (recording_id, normalized_group, normalized_index),
+            ).fetchone()
+            existing = _as_dict(existing_row) or {}
+            next_attempt = max(int(existing.get("attempt") or 0), 0) + 1
+            resolved_metadata = _normalise_llm_chunk_metadata(
+                metadata
+                if metadata is not None
+                else (
+                    existing.get("metadata_json")
+                    if isinstance(existing.get("metadata_json"), dict)
+                    else None
+                )
+            )
+            metadata_json = json.dumps(
+                resolved_metadata,
+                ensure_ascii=True,
+                sort_keys=True,
+            )
+            resolved_parent = (
+                _normalise_llm_chunk_index(parent_chunk_index)
+                if parent_chunk_index is not None
+                else (
+                    _normalise_llm_chunk_index(existing.get("parent_chunk_index"))
+                    if existing.get("parent_chunk_index") not in (None, "")
+                    else None
+                )
+            )
+            conn.execute(
+                """
+                INSERT INTO recording_llm_chunk_states (
+                    recording_id,
+                    chunk_group,
+                    chunk_index,
+                    chunk_total,
+                    status,
+                    attempt,
+                    started_at,
+                    finished_at,
+                    duration_ms,
+                    error_code,
+                    error_text,
+                    parent_chunk_index,
+                    metadata_json,
+                    updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(recording_id, chunk_group, chunk_index) DO UPDATE SET
+                    chunk_total = excluded.chunk_total,
+                    status = excluded.status,
+                    attempt = excluded.attempt,
+                    started_at = excluded.started_at,
+                    finished_at = excluded.finished_at,
+                    duration_ms = excluded.duration_ms,
+                    error_code = excluded.error_code,
+                    error_text = excluded.error_text,
+                    parent_chunk_index = excluded.parent_chunk_index,
+                    metadata_json = excluded.metadata_json,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    recording_id,
+                    normalized_group,
+                    normalized_index,
+                    safe_total,
+                    "running",
+                    next_attempt,
+                    now,
+                    None,
+                    None,
+                    None,
+                    None,
+                    resolved_parent,
+                    metadata_json,
+                    now,
+                ),
+            )
+            updated = conn.execute(
+                """
+                SELECT *
+                FROM recording_llm_chunk_states
+                WHERE recording_id = ? AND chunk_group = ? AND chunk_index = ?
+                """,
+                (recording_id, normalized_group, normalized_index),
+            ).fetchone()
+            conn.commit()
+        return _as_dict(updated)
+
+    return with_db_retry(_mark_started)
+
+
+def _mark_recording_llm_chunk_terminal(
+    recording_id: str,
+    *,
+    chunk_group: str,
+    chunk_index: str | int,
+    chunk_total: int,
+    status: str,
+    error_code: str | None = None,
+    error_text: str | None = None,
+    parent_chunk_index: str | int | None = None,
+    metadata: dict[str, Any] | None = None,
+    settings: AppSettings | None = None,
+) -> dict[str, Any] | None:
+    init_db(settings)
+    normalized_group = _normalise_llm_chunk_group(chunk_group)
+    normalized_index = _normalise_llm_chunk_index(chunk_index)
+    normalized_status = _validate_llm_chunk_status(status)
+    if normalized_status == "running":
+        raise ValueError("Terminal chunk status must not be running")
+    safe_total = max(int(chunk_total), 1)
+    now = _utc_now()
+
+    def _mark_terminal() -> dict[str, Any] | None:
+        with connect(settings) as conn:
+            existing_row = conn.execute(
+                """
+                SELECT *
+                FROM recording_llm_chunk_states
+                WHERE recording_id = ? AND chunk_group = ? AND chunk_index = ?
+                """,
+                (recording_id, normalized_group, normalized_index),
+            ).fetchone()
+            existing = _as_dict(existing_row) or {}
+            resolved_metadata = _normalise_llm_chunk_metadata(
+                metadata
+                if metadata is not None
+                else (
+                    existing.get("metadata_json")
+                    if isinstance(existing.get("metadata_json"), dict)
+                    else None
+                )
+            )
+            metadata_json = json.dumps(
+                resolved_metadata,
+                ensure_ascii=True,
+                sort_keys=True,
+            )
+            existing_attempt = max(int(existing.get("attempt") or 0), 0)
+            started_at_value = str(existing.get("started_at") or "").strip() or now
+            resolved_parent = (
+                _normalise_llm_chunk_index(parent_chunk_index)
+                if parent_chunk_index is not None
+                else (
+                    _normalise_llm_chunk_index(existing.get("parent_chunk_index"))
+                    if existing.get("parent_chunk_index") not in (None, "")
+                    else None
+                )
+            )
+            conn.execute(
+                """
+                INSERT INTO recording_llm_chunk_states (
+                    recording_id,
+                    chunk_group,
+                    chunk_index,
+                    chunk_total,
+                    status,
+                    attempt,
+                    started_at,
+                    finished_at,
+                    duration_ms,
+                    error_code,
+                    error_text,
+                    parent_chunk_index,
+                    metadata_json,
+                    updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(recording_id, chunk_group, chunk_index) DO UPDATE SET
+                    chunk_total = excluded.chunk_total,
+                    status = excluded.status,
+                    attempt = excluded.attempt,
+                    started_at = excluded.started_at,
+                    finished_at = excluded.finished_at,
+                    duration_ms = excluded.duration_ms,
+                    error_code = excluded.error_code,
+                    error_text = excluded.error_text,
+                    parent_chunk_index = excluded.parent_chunk_index,
+                    metadata_json = excluded.metadata_json,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    recording_id,
+                    normalized_group,
+                    normalized_index,
+                    safe_total,
+                    normalized_status,
+                    max(existing_attempt, 1),
+                    started_at_value,
+                    now,
+                    _duration_ms_between(started_at_value, now),
+                    str(error_code or "").strip() or None,
+                    str(error_text or "").strip() or None,
+                    resolved_parent,
+                    metadata_json,
+                    now,
+                ),
+            )
+            updated = conn.execute(
+                """
+                SELECT *
+                FROM recording_llm_chunk_states
+                WHERE recording_id = ? AND chunk_group = ? AND chunk_index = ?
+                """,
+                (recording_id, normalized_group, normalized_index),
+            ).fetchone()
+            conn.commit()
+        return _as_dict(updated)
+
+    return with_db_retry(_mark_terminal)
+
+
+def mark_recording_llm_chunk_completed(
+    recording_id: str,
+    *,
+    chunk_group: str,
+    chunk_index: str | int,
+    chunk_total: int,
+    parent_chunk_index: str | int | None = None,
+    metadata: dict[str, Any] | None = None,
+    settings: AppSettings | None = None,
+) -> dict[str, Any] | None:
+    return _mark_recording_llm_chunk_terminal(
+        recording_id,
+        chunk_group=chunk_group,
+        chunk_index=chunk_index,
+        chunk_total=chunk_total,
+        status="completed",
+        parent_chunk_index=parent_chunk_index,
+        metadata=metadata,
+        settings=settings,
+    )
+
+
+def mark_recording_llm_chunk_failed(
+    recording_id: str,
+    *,
+    chunk_group: str,
+    chunk_index: str | int,
+    chunk_total: int,
+    error_code: str | None = None,
+    error_text: str | None = None,
+    parent_chunk_index: str | int | None = None,
+    metadata: dict[str, Any] | None = None,
+    settings: AppSettings | None = None,
+) -> dict[str, Any] | None:
+    return _mark_recording_llm_chunk_terminal(
+        recording_id,
+        chunk_group=chunk_group,
+        chunk_index=chunk_index,
+        chunk_total=chunk_total,
+        status="failed",
+        error_code=error_code,
+        error_text=error_text,
+        parent_chunk_index=parent_chunk_index,
+        metadata=metadata,
+        settings=settings,
+    )
+
+
+def mark_recording_llm_chunk_cancelled(
+    recording_id: str,
+    *,
+    chunk_group: str,
+    chunk_index: str | int,
+    chunk_total: int,
+    parent_chunk_index: str | int | None = None,
+    metadata: dict[str, Any] | None = None,
+    settings: AppSettings | None = None,
+) -> dict[str, Any] | None:
+    return _mark_recording_llm_chunk_terminal(
+        recording_id,
+        chunk_group=chunk_group,
+        chunk_index=chunk_index,
+        chunk_total=chunk_total,
+        status="cancelled",
+        parent_chunk_index=parent_chunk_index,
+        metadata=metadata,
+        settings=settings,
+    )
+
+
+def mark_recording_llm_chunk_split(
+    recording_id: str,
+    *,
+    chunk_group: str,
+    chunk_index: str | int,
+    chunk_total: int,
+    error_code: str | None = None,
+    error_text: str | None = None,
+    parent_chunk_index: str | int | None = None,
+    metadata: dict[str, Any] | None = None,
+    settings: AppSettings | None = None,
+) -> dict[str, Any] | None:
+    return _mark_recording_llm_chunk_terminal(
+        recording_id,
+        chunk_group=chunk_group,
+        chunk_index=chunk_index,
+        chunk_total=chunk_total,
+        status="split",
+        error_code=error_code,
+        error_text=error_text,
+        parent_chunk_index=parent_chunk_index,
+        metadata=metadata,
+        settings=settings,
+    )
+
+
+def clear_recording_llm_chunk_states(
+    recording_id: str,
+    *,
+    chunk_group: str | None = None,
+    settings: AppSettings | None = None,
+) -> int:
+    init_db(settings)
+    params: list[Any] = [recording_id]
+    where_sql = "recording_id = ?"
+    if chunk_group is not None:
+        where_sql += " AND chunk_group = ?"
+        params.append(_normalise_llm_chunk_group(chunk_group))
+
+    def _clear() -> int:
+        with connect(settings) as conn:
+            deleted = conn.execute(
+                f"DELETE FROM recording_llm_chunk_states WHERE {where_sql}",
                 params,
             )
             conn.commit()
@@ -3637,6 +4187,14 @@ __all__ = [
     "mark_recording_pipeline_stage_skipped",
     "mark_recording_pipeline_stage_cancelled",
     "clear_recording_pipeline_stages",
+    "list_recording_llm_chunk_states",
+    "upsert_recording_llm_chunk_state",
+    "mark_recording_llm_chunk_started",
+    "mark_recording_llm_chunk_completed",
+    "mark_recording_llm_chunk_failed",
+    "mark_recording_llm_chunk_cancelled",
+    "mark_recording_llm_chunk_split",
+    "clear_recording_llm_chunk_states",
     "set_recording_status",
     "set_recording_status_if_current_in",
     "set_recording_status_if_current_in_and_no_started_job",

@@ -720,7 +720,10 @@ async def test_pipeline_chunk_failure_is_explicit_and_marks_metrics_failed(tmp_p
         llm_chunk_overlap_chars=20,
     )
 
-    with pytest.raises(RuntimeError, match=r"LLM chunk 2/\d+ failed: json_object_not_found"):
+    with pytest.raises(
+        RuntimeError,
+        match=r"LLM chunk 2/\d+ failed \[llm_chunk_parse_error\]: json_object_not_found",
+    ):
         await pipeline.run_pipeline(
             audio_path=fake_audio(tmp_path, "chunked-fail.mp3"),
             cfg=cfg,

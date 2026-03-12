@@ -88,7 +88,7 @@ class AppSettings(BaseSettings):
         validation_alias=AliasChoices("llm_max_tokens_retry", "LLM_MAX_TOKENS_RETRY"),
     )
     llm_chunk_max_chars: int = Field(
-        default=6000,
+        default=4500,
         ge=1,
         validation_alias=AliasChoices(
             "llm_chunk_max_chars",
@@ -97,7 +97,7 @@ class AppSettings(BaseSettings):
         ),
     )
     llm_chunk_overlap_chars: int = Field(
-        default=600,
+        default=300,
         ge=0,
         validation_alias=AliasChoices(
             "llm_chunk_overlap_chars",
@@ -114,8 +114,26 @@ class AppSettings(BaseSettings):
             "LLM_CHUNK_TIMEOUT_SECONDS",
         ),
     )
+    llm_chunk_split_min_chars: int = Field(
+        default=1200,
+        ge=64,
+        validation_alias=AliasChoices(
+            "llm_chunk_split_min_chars",
+            "LAN_LLM_CHUNK_SPLIT_MIN_CHARS",
+            "LLM_CHUNK_SPLIT_MIN_CHARS",
+        ),
+    )
+    llm_chunk_split_max_depth: int = Field(
+        default=2,
+        ge=0,
+        validation_alias=AliasChoices(
+            "llm_chunk_split_max_depth",
+            "LAN_LLM_CHUNK_SPLIT_MAX_DEPTH",
+            "LLM_CHUNK_SPLIT_MAX_DEPTH",
+        ),
+    )
     llm_long_transcript_threshold_chars: int = Field(
-        default=6000,
+        default=4500,
         ge=1,
         validation_alias=AliasChoices(
             "llm_long_transcript_threshold_chars",

@@ -434,6 +434,157 @@ def test_job_helpers_has_find_requeue_finish_and_invalid_terminal_status(tmp_pat
         )
 
 
+def test_llm_chunk_state_helpers_and_pipeline_clear_reset(tmp_path: Path) -> None:
+    cfg = _cfg(tmp_path)
+    db_module.init_db(cfg)
+    db_module.create_recording(
+        "rec-db-cov-chunks-1",
+        source="upload",
+        source_filename="input.wav",
+        settings=cfg,
+    )
+
+    planned = db_module.upsert_recording_llm_chunk_state(
+        "rec-db-cov-chunks-1",
+        chunk_group="extract",
+        chunk_index="1",
+        chunk_total=2,
+        status="planned",
+        metadata={"order_path": [1], "text": "chunk one", "base_text": "chunk one"},
+        settings=cfg,
+    )
+    assert planned is not None
+    started = db_module.mark_recording_llm_chunk_started(
+        "rec-db-cov-chunks-1",
+        chunk_group="extract",
+        chunk_index="1",
+        chunk_total=2,
+        metadata={"order_path": [1], "text": "chunk one", "base_text": "chunk one"},
+        settings=cfg,
+    )
+    assert started is not None
+    assert started["attempt"] == 1
+    completed = db_module.mark_recording_llm_chunk_completed(
+        "rec-db-cov-chunks-1",
+        chunk_group="extract",
+        chunk_index="1",
+        chunk_total=2,
+        metadata={"order_path": [1], "text": "chunk one", "base_text": "chunk one"},
+        settings=cfg,
+    )
+    assert completed is not None
+    assert completed["status"] == "completed"
+
+    failed = db_module.mark_recording_llm_chunk_failed(
+        "rec-db-cov-chunks-1",
+        chunk_group="extract",
+        chunk_index="2",
+        chunk_total=2,
+        error_code="llm_chunk_timeout",
+        error_text="timed out",
+        parent_chunk_index="1",
+        metadata={"order_path": [2], "text": "chunk two", "base_text": "chunk two"},
+        settings=cfg,
+    )
+    assert failed is not None
+    assert failed["status"] == "failed"
+
+    split = db_module.mark_recording_llm_chunk_split(
+        "rec-db-cov-chunks-1",
+        chunk_group="extract",
+        chunk_index="3",
+        chunk_total=3,
+        error_code="llm_chunk_timeout",
+        error_text="request timed out",
+        metadata={
+            "order_path": [3],
+            "text": "chunk three",
+            "base_text": "chunk three",
+            "split_child_chunk_indexes": ["3a", "3b"],
+        },
+        settings=cfg,
+    )
+    assert split is not None
+    assert split["status"] == "split"
+    cancelled = db_module.mark_recording_llm_chunk_cancelled(
+        "rec-db-cov-chunks-1",
+        chunk_group="extract",
+        chunk_index="4",
+        chunk_total=4,
+        metadata={"order_path": [4], "text": "chunk four", "base_text": "chunk four"},
+        settings=cfg,
+    )
+    assert cancelled is not None
+    assert cancelled["status"] == "cancelled"
+
+    rows = db_module.list_recording_llm_chunk_states(
+        "rec-db-cov-chunks-1",
+        chunk_group="extract",
+        settings=cfg,
+    )
+    assert [row["chunk_index"] for row in rows] == ["1", "2", "3", "4"]
+    assert rows[2]["metadata_json"]["split_child_chunk_indexes"] == ["3a", "3b"]
+
+    assert db_module.clear_recording_pipeline_stages(
+        "rec-db-cov-chunks-1",
+        from_stage="metrics",
+        settings=cfg,
+    ) == 0
+    assert len(
+        db_module.list_recording_llm_chunk_states(
+            "rec-db-cov-chunks-1",
+            chunk_group="extract",
+            settings=cfg,
+        )
+    ) == 4
+
+    assert db_module.clear_recording_pipeline_stages(
+        "rec-db-cov-chunks-1",
+        from_stage="llm_extract",
+        settings=cfg,
+    ) == 0
+    assert (
+        db_module.list_recording_llm_chunk_states(
+            "rec-db-cov-chunks-1",
+            chunk_group="extract",
+            settings=cfg,
+        )
+        == []
+    )
+
+    with pytest.raises(ValueError, match="chunk_group is required"):
+        db_module._normalise_llm_chunk_group("  ")  # noqa: SLF001
+    with pytest.raises(ValueError, match="chunk_index is required"):
+        db_module._normalise_llm_chunk_index(" ")  # noqa: SLF001
+    with pytest.raises(ValueError, match="Unsupported LLM chunk status"):
+        db_module._validate_llm_chunk_status("bad")  # noqa: SLF001
+    with pytest.raises(ValueError, match="Terminal chunk status must not be running"):
+        db_module._mark_recording_llm_chunk_terminal(  # noqa: SLF001
+            "rec-db-cov-chunks-1",
+            chunk_group="extract",
+            chunk_index="5",
+            chunk_total=1,
+            status="running",
+            settings=cfg,
+        )
+
+    upsert_recording = db_module.upsert_recording_llm_chunk_state(
+        "rec-db-cov-chunks-1",
+        chunk_group="extract",
+        chunk_index="6",
+        chunk_total=1,
+        status="planned",
+        metadata={"order_path": [6], "text": "chunk six", "base_text": "chunk six"},
+        settings=cfg,
+    )
+    assert upsert_recording is not None
+    assert db_module.clear_recording_llm_chunk_states(
+        "rec-db-cov-chunks-1",
+        chunk_group="extract",
+        settings=cfg,
+    ) == 1
+
+
 def test_project_keyword_weights_and_voice_profile_crud_edges(tmp_path: Path):
     cfg = _cfg(tmp_path)
     db_module.init_db(cfg)

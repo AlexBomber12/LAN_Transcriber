@@ -122,7 +122,7 @@ class CompactTranscript:
 
 @dataclass(frozen=True)
 class TranscriptChunk:
-    index: int
+    index: int | str
     total: int
     text: str
     base_text: str
@@ -579,6 +579,7 @@ def build_chunk_prompt(
     calendar_title: str | None = None,
     calendar_attendees: Sequence[str] | None = None,
     speaker_mapping: Sequence[dict[str, str]] | None = None,
+    chunk_id: str | None = None,
 ) -> tuple[str, str]:
     language_name = _language_name(target_summary_language)
     sys_prompt = (
@@ -592,6 +593,7 @@ def build_chunk_prompt(
         "chunk": {
             "index": chunk.index,
             "total": chunk.total,
+            "id": str(chunk_id or chunk.index),
             "time_range": (
                 {
                     "start_seconds": round(chunk.start_seconds, 3),
@@ -806,6 +808,7 @@ def merge_chunk_results(chunk_results: Sequence[dict[str, Any]]) -> dict[str, An
             {
                 "chunk_index": chunk_index,
                 "chunk_total": chunk_total,
+                "chunk_id": str(row.get("chunk_id") or chunk_index),
                 "topic_candidates": topic_candidates,
                 "summary_bullets": chunk_summary,
                 "decisions": chunk_decisions,

@@ -216,19 +216,25 @@ def test_llm_chunking_settings_defaults_and_env_override(monkeypatch):
     monkeypatch.delenv("LLM_CHUNK_MAX_CHARS", raising=False)
     monkeypatch.delenv("LLM_CHUNK_OVERLAP_CHARS", raising=False)
     monkeypatch.delenv("LLM_CHUNK_TIMEOUT_SECONDS", raising=False)
+    monkeypatch.delenv("LLM_CHUNK_SPLIT_MIN_CHARS", raising=False)
+    monkeypatch.delenv("LLM_CHUNK_SPLIT_MAX_DEPTH", raising=False)
     monkeypatch.delenv("LLM_LONG_TRANSCRIPT_THRESHOLD_CHARS", raising=False)
     monkeypatch.delenv("LLM_MERGE_MAX_TOKENS", raising=False)
 
     defaults = AppSettings()
-    assert defaults.llm_chunk_max_chars == 6000
-    assert defaults.llm_chunk_overlap_chars == 600
+    assert defaults.llm_chunk_max_chars == 4500
+    assert defaults.llm_chunk_overlap_chars == 300
     assert defaults.llm_chunk_timeout_seconds == 120.0
-    assert defaults.llm_long_transcript_threshold_chars == 6000
+    assert defaults.llm_chunk_split_min_chars == 1200
+    assert defaults.llm_chunk_split_max_depth == 2
+    assert defaults.llm_long_transcript_threshold_chars == 4500
     assert defaults.llm_merge_max_tokens is None
 
     monkeypatch.setenv("LLM_CHUNK_MAX_CHARS", "4096")
     monkeypatch.setenv("LLM_CHUNK_OVERLAP_CHARS", "256")
     monkeypatch.setenv("LLM_CHUNK_TIMEOUT_SECONDS", "45")
+    monkeypatch.setenv("LLM_CHUNK_SPLIT_MIN_CHARS", "900")
+    monkeypatch.setenv("LLM_CHUNK_SPLIT_MAX_DEPTH", "3")
     monkeypatch.setenv("LLM_LONG_TRANSCRIPT_THRESHOLD_CHARS", "8192")
     monkeypatch.setenv("LLM_MERGE_MAX_TOKENS", "3072")
 
@@ -236,6 +242,8 @@ def test_llm_chunking_settings_defaults_and_env_override(monkeypatch):
     assert overridden.llm_chunk_max_chars == 4096
     assert overridden.llm_chunk_overlap_chars == 256
     assert overridden.llm_chunk_timeout_seconds == 45.0
+    assert overridden.llm_chunk_split_min_chars == 900
+    assert overridden.llm_chunk_split_max_depth == 3
     assert overridden.llm_long_transcript_threshold_chars == 8192
     assert overridden.llm_merge_max_tokens == 3072
 

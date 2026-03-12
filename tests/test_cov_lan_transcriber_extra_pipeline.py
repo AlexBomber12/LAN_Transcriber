@@ -12,6 +12,13 @@ import httpx
 import pytest
 from pydantic import ValidationError
 
+from lan_app.config import AppSettings
+from lan_app.db import (
+    create_recording,
+    init_db,
+    list_recording_llm_chunk_states,
+    upsert_recording_llm_chunk_state,
+)
 from lan_transcriber import llm_client
 from lan_transcriber.pipeline_steps import language, orchestrator as pipeline, precheck, snippets, speaker_turns, summary_builder
 
@@ -24,6 +31,93 @@ def _settings(tmp_path: Path, **overrides: Any) -> pipeline.Settings:
     }
     defaults.update(overrides)
     return pipeline.Settings(**defaults)
+
+
+def _db_settings(tmp_path: Path) -> AppSettings:
+    cfg = AppSettings(
+        data_root=tmp_path / "data",
+        recordings_root=tmp_path / "recordings",
+        db_path=tmp_path / "db" / "app.db",
+    )
+    cfg.metrics_snapshot_path = tmp_path / "metrics.snap"
+    return cfg
+
+
+class _SqliteChunkStateStore:
+    def __init__(self, recording_id: str, settings: AppSettings) -> None:
+        self.recording_id = recording_id
+        self.settings = settings
+
+    def list_states(self, *, chunk_group: str) -> list[dict[str, Any]]:
+        return list_recording_llm_chunk_states(
+            self.recording_id,
+            chunk_group=chunk_group,
+            settings=self.settings,
+        )
+
+    def upsert_state(self, **kwargs: Any) -> dict[str, Any] | None:
+        return upsert_recording_llm_chunk_state(
+            self.recording_id,
+            settings=self.settings,
+            **kwargs,
+        )
+
+    def mark_started(self, **kwargs: Any) -> dict[str, Any] | None:
+        from lan_app.db import mark_recording_llm_chunk_started
+
+        return mark_recording_llm_chunk_started(
+            self.recording_id,
+            settings=self.settings,
+            **kwargs,
+        )
+
+    def mark_completed(self, **kwargs: Any) -> dict[str, Any] | None:
+        from lan_app.db import mark_recording_llm_chunk_completed
+
+        return mark_recording_llm_chunk_completed(
+            self.recording_id,
+            settings=self.settings,
+            **kwargs,
+        )
+
+    def mark_failed(self, **kwargs: Any) -> dict[str, Any] | None:
+        from lan_app.db import mark_recording_llm_chunk_failed
+
+        return mark_recording_llm_chunk_failed(
+            self.recording_id,
+            settings=self.settings,
+            **kwargs,
+        )
+
+    def mark_split(self, **kwargs: Any) -> dict[str, Any] | None:
+        from lan_app.db import mark_recording_llm_chunk_split
+
+        return mark_recording_llm_chunk_split(
+            self.recording_id,
+            settings=self.settings,
+            **kwargs,
+        )
+
+    def clear_states(self, *, chunk_group: str | None = None) -> int:
+        from lan_app.db import clear_recording_llm_chunk_states
+
+        return clear_recording_llm_chunk_states(
+            self.recording_id,
+            chunk_group=chunk_group,
+            settings=self.settings,
+        )
+
+
+def _chunk_store(tmp_path: Path, recording_id: str) -> tuple[AppSettings, _SqliteChunkStateStore]:
+    cfg = _db_settings(tmp_path)
+    init_db(cfg)
+    create_recording(
+        recording_id,
+        source="test",
+        source_filename="audio.wav",
+        settings=cfg,
+    )
+    return cfg, _SqliteChunkStateStore(recording_id, cfg)
 
 
 def _annotation_from_segments(*segments: tuple[float, float, str]):
@@ -74,6 +168,8 @@ def test_pipeline_settings_read_llm_chunking_env(
     monkeypatch.setenv("LLM_CHUNK_MAX_CHARS", "4096")
     monkeypatch.setenv("LLM_CHUNK_OVERLAP_CHARS", "256")
     monkeypatch.setenv("LLM_CHUNK_TIMEOUT_SECONDS", "45")
+    monkeypatch.setenv("LLM_CHUNK_SPLIT_MIN_CHARS", "900")
+    monkeypatch.setenv("LLM_CHUNK_SPLIT_MAX_DEPTH", "3")
     monkeypatch.setenv("LLM_LONG_TRANSCRIPT_THRESHOLD_CHARS", "8192")
     monkeypatch.setenv("LLM_MERGE_MAX_TOKENS", "3072")
 
@@ -81,6 +177,8 @@ def test_pipeline_settings_read_llm_chunking_env(
     assert cfg.llm_chunk_max_chars == 4096
     assert cfg.llm_chunk_overlap_chars == 256
     assert cfg.llm_chunk_timeout_seconds == 45.0
+    assert cfg.llm_chunk_split_min_chars == 900
+    assert cfg.llm_chunk_split_max_depth == 3
     assert cfg.llm_long_transcript_threshold_chars == 8192
     assert cfg.llm_merge_max_tokens == 3072
 
@@ -692,7 +790,7 @@ async def test_run_chunked_llm_summary_timeout_writes_error_artifact(tmp_path: P
             return {"content": "{}"}
 
     derived = tmp_path / "derived"
-    with pytest.raises(RuntimeError, match=r"LLM chunk 1/1 failed: timed out after 0.001s"):
+    with pytest.raises(RuntimeError, match=r"LLM chunk 1/1 failed \[llm_chunk_timeout\]: timed out after 0.001s"):
         await pipeline._run_chunked_llm_summary(
             transcript_text="single chunk transcript",
             speaker_turns=_llm_chunk_turns(),
@@ -714,9 +812,10 @@ async def test_run_chunked_llm_summary_timeout_writes_error_artifact(tmp_path: P
             progress_callback=None,
         )
 
-    assert json.loads((derived / "llm_chunk_001_error.json").read_text(encoding="utf-8")) == {
-        "error": "timed out after 0.001s"
-    }
+    payload = json.loads((derived / "llm_chunk_001_error.json").read_text(encoding="utf-8"))
+    assert payload["reason_code"] == "llm_chunk_timeout"
+    assert payload["error"] == "timed out after 0.001s"
+    assert payload["status"] == "failed"
 
 
 @pytest.mark.asyncio
@@ -730,7 +829,7 @@ async def test_run_chunked_llm_summary_asyncio_timeout_writes_error_artifact(
     monkeypatch.setattr(pipeline, "_generate_llm_message", _raise_asyncio_timeout)
 
     derived = tmp_path / "derived"
-    with pytest.raises(RuntimeError, match=r"LLM chunk 1/1 failed: timed out after 0.001s"):
+    with pytest.raises(RuntimeError, match=r"LLM chunk 1/1 failed \[llm_chunk_timeout\]: timed out after 0.001s"):
         await pipeline._run_chunked_llm_summary(
             transcript_text="single chunk transcript",
             speaker_turns=_llm_chunk_turns(),
@@ -752,9 +851,9 @@ async def test_run_chunked_llm_summary_asyncio_timeout_writes_error_artifact(
             progress_callback=None,
         )
 
-    assert json.loads((derived / "llm_chunk_001_error.json").read_text(encoding="utf-8")) == {
-        "error": "timed out after 0.001s"
-    }
+    payload = json.loads((derived / "llm_chunk_001_error.json").read_text(encoding="utf-8"))
+    assert payload["reason_code"] == "llm_chunk_timeout"
+    assert payload["error"] == "timed out after 0.001s"
 
 
 @pytest.mark.asyncio
@@ -766,7 +865,7 @@ async def test_run_chunked_llm_summary_timeout_sentinel_writes_error_artifact(
             return {"content": "**LLM timeout**", "role": "assistant"}
 
     derived = tmp_path / "derived"
-    with pytest.raises(RuntimeError, match=r"LLM chunk 1/1 failed: timed out after 0.001s"):
+    with pytest.raises(RuntimeError, match=r"LLM chunk 1/1 failed \[llm_chunk_request_timeout\]: request timed out"):
         await pipeline._run_chunked_llm_summary(
             transcript_text="single chunk transcript",
             speaker_turns=_llm_chunk_turns(),
@@ -792,9 +891,9 @@ async def test_run_chunked_llm_summary_timeout_sentinel_writes_error_artifact(
         "content": "**LLM timeout**",
         "role": "assistant",
     }
-    assert json.loads((derived / "llm_chunk_001_error.json").read_text(encoding="utf-8")) == {
-        "error": "timed out after 0.001s"
-    }
+    payload = json.loads((derived / "llm_chunk_001_error.json").read_text(encoding="utf-8"))
+    assert payload["reason_code"] == "llm_chunk_request_timeout"
+    assert payload["error"] == "request timed out"
 
 
 @pytest.mark.asyncio
@@ -819,7 +918,7 @@ async def test_run_chunked_llm_summary_merge_timeout_sentinel_fails(tmp_path: Pa
             return {"content": "**LLM timeout**", "role": "assistant"}
 
     derived = tmp_path / "derived"
-    with pytest.raises(RuntimeError, match=r"LLM merge failed: timed out after 12s"):
+    with pytest.raises(RuntimeError, match=r"LLM merge failed \[llm_merge_request_timeout\]: request timed out after 12s"):
         await pipeline._run_chunked_llm_summary(
             transcript_text="single chunk transcript",
             speaker_turns=_llm_chunk_turns(),
@@ -843,6 +942,11 @@ async def test_run_chunked_llm_summary_merge_timeout_sentinel_fails(tmp_path: Pa
     assert json.loads((derived / "llm_merge_raw.json").read_text(encoding="utf-8")) == {
         "content": "**LLM timeout**",
         "role": "assistant",
+    }
+    assert json.loads((derived / "llm_merge_error.json").read_text(encoding="utf-8")) == {
+        "reason_code": "llm_merge_request_timeout",
+        "error": "request timed out after 12s",
+        "chunk_count": 1,
     }
 
 
@@ -904,6 +1008,1106 @@ async def test_run_chunked_llm_summary_passes_merge_retry_budget(tmp_path: Path)
 
     assert merge_kwargs["max_tokens"] == 3072
     assert merge_kwargs["max_tokens_retry"] == 3072
+
+
+def _chunk_extract_message(label: str) -> dict[str, str]:
+    return {
+        "content": json.dumps(
+            {
+                "topic_candidates": [f"Topic {label}"],
+                "summary_bullets": [f"Bullet {label}"],
+                "decisions": [f"Decision {label}"],
+                "action_items": [],
+                "emotional_cues": [f"Cue {label}"],
+                "questions": {"total_count": 0, "types": {}, "extracted": []},
+            }
+        )
+    }
+
+
+def _merge_message(topic: str = "Merged topic") -> dict[str, str]:
+    return {
+        "content": json.dumps(
+            {
+                "topic": topic,
+                "summary_bullets": [f"{topic} summary"],
+                "decisions": [],
+                "action_items": [],
+                "emotional_summary": "Focused.",
+                "questions": {"total_count": 0, "types": {}, "extracted": []},
+            }
+        )
+    }
+
+
+def _planned_root_chunks() -> list[pipeline.TranscriptChunk]:
+    return [
+        pipeline.TranscriptChunk(
+            index=1,
+            total=2,
+            text="A: first section " * 6,
+            base_text="A: first section " * 6,
+            start_seconds=0.0,
+            end_seconds=10.0,
+        ),
+        pipeline.TranscriptChunk(
+            index=2,
+            total=2,
+            text="B: second section " * 6,
+            base_text="B: second section " * 6,
+            start_seconds=10.0,
+            end_seconds=20.0,
+        ),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_run_chunked_llm_summary_reuses_completed_chunk_state_on_retry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_cfg, store = _chunk_store(tmp_path, "rec-chunk-resume-1")
+    call_log: list[str] = []
+    failure_state = {"fail_chunk_2_once": True}
+
+    class _RetryLLM:
+        async def generate(self, **kwargs: Any) -> dict[str, str]:
+            payload = json.loads(kwargs["user_prompt"])
+            chunk_meta = payload.get("chunk")
+            if isinstance(chunk_meta, dict):
+                chunk_id = str(chunk_meta.get("id"))
+                call_log.append(chunk_id)
+                if chunk_id == "2" and failure_state["fail_chunk_2_once"]:
+                    failure_state["fail_chunk_2_once"] = False
+                    return {"content": "not json"}
+                return _chunk_extract_message(chunk_id)
+            call_log.append("merge")
+            return _merge_message()
+
+    monkeypatch.setattr(pipeline, "plan_compact_transcript_chunks", lambda *_a, **_k: _planned_root_chunks())
+
+    kwargs = {
+        "transcript_text": "resume transcript",
+        "speaker_turns": _llm_chunk_turns("resume transcript"),
+        "aliases": {},
+        "derived_dir": tmp_path / "derived",
+        "llm": _RetryLLM(),
+        "cfg": _settings(
+            tmp_path,
+            llm_model="model",
+            llm_chunk_max_chars=80,
+            llm_chunk_overlap_chars=0,
+        ),
+        "llm_model": "model",
+        "target_summary_language": "en",
+        "friendly": 0,
+        "default_topic": "Meeting summary",
+        "calendar_title": None,
+        "calendar_attendees": [],
+        "progress_callback": None,
+        "chunk_state_store": store,
+    }
+
+    with pytest.raises(RuntimeError, match=r"LLM chunk 2/2 failed \[llm_chunk_parse_error\]: json_object_not_found"):
+        await pipeline._run_chunked_llm_summary(**kwargs)
+
+    rows = {
+        row["chunk_index"]: row
+        for row in list_recording_llm_chunk_states("rec-chunk-resume-1", settings=db_cfg)
+    }
+    assert rows["1"]["status"] == "completed"
+    assert rows["2"]["status"] == "failed"
+    assert call_log == ["1", "2"]
+
+    result = await pipeline._run_chunked_llm_summary(**kwargs)
+
+    assert result["topic"] == "Merged topic"
+    assert call_log == ["1", "2", "2", "merge"]
+    merge_input = json.loads((tmp_path / "derived" / "llm_merge_input.json").read_text(encoding="utf-8"))
+    assert merge_input["chunk_count"] == 2
+    assert merge_input["chunks"][0]["chunk_id"] == "1"
+    assert merge_input["chunks"][1]["chunk_id"] == "2"
+
+
+@pytest.mark.asyncio
+async def test_run_chunked_llm_summary_invalid_completed_artifact_is_rerun(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_cfg, store = _chunk_store(tmp_path, "rec-chunk-artifact-1")
+    call_log: list[str] = []
+
+    class _ArtifactLLM:
+        async def generate(self, **kwargs: Any) -> dict[str, str]:
+            payload = json.loads(kwargs["user_prompt"])
+            chunk_meta = payload.get("chunk")
+            if isinstance(chunk_meta, dict):
+                chunk_id = str(chunk_meta.get("id"))
+                call_log.append(chunk_id)
+                return _chunk_extract_message(chunk_id)
+            call_log.append("merge")
+            return _merge_message("Artifact Merge")
+
+    monkeypatch.setattr(pipeline, "plan_compact_transcript_chunks", lambda *_a, **_k: _planned_root_chunks())
+
+    kwargs = {
+        "transcript_text": "artifact transcript",
+        "speaker_turns": _llm_chunk_turns("artifact transcript"),
+        "aliases": {},
+        "derived_dir": tmp_path / "derived",
+        "llm": _ArtifactLLM(),
+        "cfg": _settings(
+            tmp_path,
+            llm_model="model",
+            llm_chunk_max_chars=80,
+            llm_chunk_overlap_chars=0,
+        ),
+        "llm_model": "model",
+        "target_summary_language": "en",
+        "friendly": 0,
+        "default_topic": "Meeting summary",
+        "calendar_title": None,
+        "calendar_attendees": [],
+        "progress_callback": None,
+        "chunk_state_store": store,
+    }
+
+    await pipeline._run_chunked_llm_summary(**kwargs)
+    (tmp_path / "derived" / "llm_chunk_001_extract.json").unlink()
+
+    result = await pipeline._run_chunked_llm_summary(**kwargs)
+
+    assert result["topic"] == "Artifact Merge"
+    assert call_log == ["1", "2", "merge", "1", "merge"]
+    rows = {
+        row["chunk_index"]: row
+        for row in list_recording_llm_chunk_states("rec-chunk-artifact-1", settings=db_cfg)
+    }
+    assert rows["1"]["attempt"] == 2
+    assert rows["2"]["attempt"] == 1
+
+
+@pytest.mark.asyncio
+async def test_run_chunked_llm_summary_timeout_splits_and_persists_children(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_cfg, store = _chunk_store(tmp_path, "rec-chunk-split-1")
+    seen_chunks: list[str] = []
+    plan_chunks = [
+        pipeline.TranscriptChunk(
+            index=1,
+            total=1,
+            text=(
+                "S1: alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha\n"
+                "S1: beta beta beta beta beta beta beta beta beta beta beta beta beta beta"
+            ),
+            base_text=(
+                "S1: alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha\n"
+                "S1: beta beta beta beta beta beta beta beta beta beta beta beta beta beta"
+            ),
+            start_seconds=0.0,
+            end_seconds=20.0,
+        )
+    ]
+
+    class _SplitLLM:
+        async def generate(self, **kwargs: Any) -> dict[str, str]:
+            payload = json.loads(kwargs["user_prompt"])
+            chunk_meta = payload.get("chunk")
+            if isinstance(chunk_meta, dict):
+                chunk_id = str(chunk_meta.get("id"))
+                seen_chunks.append(chunk_id)
+                if chunk_id == "1":
+                    raise asyncio.TimeoutError()
+                return _chunk_extract_message(chunk_id)
+            seen_chunks.append("merge")
+            return _merge_message("Split Merge")
+
+    monkeypatch.setattr(pipeline, "plan_compact_transcript_chunks", lambda *_a, **_k: plan_chunks)
+
+    result = await pipeline._run_chunked_llm_summary(
+        transcript_text="split transcript",
+        speaker_turns=_llm_chunk_turns("split transcript"),
+        aliases={},
+        derived_dir=tmp_path / "derived",
+        llm=_SplitLLM(),
+        cfg=_settings(
+            tmp_path,
+            llm_model="model",
+            llm_chunk_max_chars=200,
+            llm_chunk_overlap_chars=0,
+            llm_chunk_split_min_chars=64,
+            llm_chunk_split_max_depth=2,
+        ),
+        llm_model="model",
+        target_summary_language="en",
+        friendly=0,
+        default_topic="Meeting summary",
+        calendar_title=None,
+        calendar_attendees=[],
+        progress_callback=None,
+        chunk_state_store=store,
+    )
+
+    assert result["topic"] == "Split Merge"
+    assert seen_chunks[:3] == ["1", "1a", "1b"]
+    rows = {
+        row["chunk_index"]: row
+        for row in list_recording_llm_chunk_states("rec-chunk-split-1", settings=db_cfg)
+    }
+    assert rows["1"]["status"] == "split"
+    assert rows["1a"]["status"] == "completed"
+    assert rows["1b"]["status"] == "completed"
+    error_payload = json.loads((tmp_path / "derived" / "llm_chunk_001_error.json").read_text(encoding="utf-8"))
+    assert error_payload["reason_code"] == "llm_chunk_timeout"
+    assert error_payload["status"] == "split"
+    assert error_payload["child_chunk_indexes"] == ["1a", "1b"]
+    plan_payload = json.loads((tmp_path / "derived" / "llm_chunks_plan.json").read_text(encoding="utf-8"))
+    assert plan_payload["split_chunks"][0]["child_chunk_indexes"] == ["1a", "1b"]
+
+
+@pytest.mark.asyncio
+async def test_run_chunked_llm_summary_split_guard_fails_without_children(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_cfg, store = _chunk_store(tmp_path, "rec-chunk-split-guard-1")
+    monkeypatch.setattr(
+        pipeline,
+        "plan_compact_transcript_chunks",
+        lambda *_a, **_k: [
+            pipeline.TranscriptChunk(
+                index=1,
+                total=1,
+                text="S1: short short short short short short",
+                base_text="S1: short short short short short short",
+                start_seconds=0.0,
+                end_seconds=5.0,
+            )
+        ],
+    )
+
+    class _GuardLLM:
+        async def generate(self, **kwargs: Any) -> dict[str, str]:
+            payload = json.loads(kwargs["user_prompt"])
+            if isinstance(payload.get("chunk"), dict):
+                raise asyncio.TimeoutError()
+            raise AssertionError("merge should not run when the guard blocks splitting")
+
+    with pytest.raises(RuntimeError, match=r"LLM chunk 1/1 failed \[llm_chunk_timeout\]: timed out after 120s"):
+        await pipeline._run_chunked_llm_summary(
+            transcript_text="guard transcript",
+            speaker_turns=_llm_chunk_turns("guard transcript"),
+            aliases={},
+            derived_dir=tmp_path / "derived",
+            llm=_GuardLLM(),
+            cfg=_settings(
+                tmp_path,
+                llm_model="model",
+                llm_chunk_max_chars=120,
+                llm_chunk_overlap_chars=0,
+                llm_chunk_split_min_chars=64,
+                llm_chunk_split_max_depth=0,
+            ),
+            llm_model="model",
+            target_summary_language="en",
+            friendly=0,
+            default_topic="Meeting summary",
+            calendar_title=None,
+            calendar_attendees=[],
+            progress_callback=None,
+            chunk_state_store=store,
+        )
+
+    rows = list_recording_llm_chunk_states("rec-chunk-split-guard-1", settings=db_cfg)
+    assert len(rows) == 1
+    assert rows[0]["status"] == "failed"
+    assert json.loads((tmp_path / "derived" / "llm_chunk_001_error.json").read_text(encoding="utf-8"))["reason_code"] == "llm_chunk_timeout"
+
+
+@pytest.mark.asyncio
+async def test_run_chunked_llm_summary_timeout_splits_without_store(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen_chunks: list[str] = []
+    monkeypatch.setattr(
+        pipeline,
+        "plan_compact_transcript_chunks",
+        lambda *_a, **_k: [
+            pipeline.TranscriptChunk(
+                index=1,
+                total=1,
+                text=(
+                    "S1: alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha\n"
+                    "S1: beta beta beta beta beta beta beta beta beta beta beta beta beta beta"
+                ),
+                base_text=(
+                    "S1: alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha\n"
+                    "S1: beta beta beta beta beta beta beta beta beta beta beta beta beta beta"
+                ),
+                start_seconds=0.0,
+                end_seconds=20.0,
+            )
+        ],
+    )
+
+    class _SplitLLM:
+        async def generate(self, **kwargs: Any) -> dict[str, str]:
+            payload = json.loads(kwargs["user_prompt"])
+            chunk_meta = payload.get("chunk")
+            if isinstance(chunk_meta, dict):
+                chunk_id = str(chunk_meta.get("id"))
+                seen_chunks.append(chunk_id)
+                if chunk_id == "1":
+                    raise asyncio.TimeoutError()
+                return _chunk_extract_message(chunk_id)
+            seen_chunks.append("merge")
+            return _merge_message("Split Merge")
+
+    result = await pipeline._run_chunked_llm_summary(
+        transcript_text="split transcript",
+        speaker_turns=_llm_chunk_turns("split transcript"),
+        aliases={},
+        derived_dir=tmp_path / "derived",
+        llm=_SplitLLM(),
+        cfg=_settings(
+            tmp_path,
+            llm_model="model",
+            llm_chunk_max_chars=200,
+            llm_chunk_overlap_chars=0,
+            llm_chunk_split_min_chars=64,
+            llm_chunk_split_max_depth=2,
+        ),
+        llm_model="model",
+        target_summary_language="en",
+        friendly=0,
+        default_topic="Meeting summary",
+        calendar_title=None,
+        calendar_attendees=[],
+        progress_callback=None,
+    )
+
+    assert result["topic"] == "Split Merge"
+    assert seen_chunks[:3] == ["1", "1a", "1b"]
+
+
+@pytest.mark.asyncio
+async def test_run_chunked_llm_summary_split_tolerates_store_without_returned_row(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_cfg, _seed_store = _chunk_store(tmp_path, "rec-chunk-split-none-1")
+    monkeypatch.setattr(
+        pipeline,
+        "plan_compact_transcript_chunks",
+        lambda *_a, **_k: [
+            pipeline.TranscriptChunk(
+                index=1,
+                total=1,
+                text=(
+                    "S1: alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha\n"
+                    "S1: beta beta beta beta beta beta beta beta beta beta beta beta beta beta"
+                ),
+                base_text=(
+                    "S1: alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha alpha\n"
+                    "S1: beta beta beta beta beta beta beta beta beta beta beta beta beta beta"
+                ),
+                start_seconds=0.0,
+                end_seconds=20.0,
+            )
+        ],
+    )
+
+    class _SplitLLM:
+        async def generate(self, **kwargs: Any) -> dict[str, str]:
+            payload = json.loads(kwargs["user_prompt"])
+            chunk_meta = payload.get("chunk")
+            if isinstance(chunk_meta, dict):
+                chunk_id = str(chunk_meta.get("id"))
+                if chunk_id == "1":
+                    raise asyncio.TimeoutError()
+                return _chunk_extract_message(chunk_id)
+            return _merge_message("Split Merge")
+
+    class _NoSplitRowStore(_SqliteChunkStateStore):
+        def mark_split(self, **kwargs: Any) -> dict[str, Any] | None:
+            super().mark_split(**kwargs)
+            return None
+
+    result = await pipeline._run_chunked_llm_summary(
+        transcript_text="split transcript",
+        speaker_turns=_llm_chunk_turns("split transcript"),
+        aliases={},
+        derived_dir=tmp_path / "derived",
+        llm=_SplitLLM(),
+        cfg=_settings(
+            tmp_path,
+            llm_model="model",
+            llm_chunk_max_chars=200,
+            llm_chunk_overlap_chars=0,
+            llm_chunk_split_min_chars=64,
+            llm_chunk_split_max_depth=2,
+        ),
+        llm_model="model",
+        target_summary_language="en",
+        friendly=0,
+        default_topic="Meeting summary",
+        calendar_title=None,
+        calendar_attendees=[],
+        progress_callback=None,
+        chunk_state_store=_NoSplitRowStore("rec-chunk-split-none-1", db_cfg),
+    )
+
+    assert result["topic"] == "Split Merge"
+
+
+@pytest.mark.asyncio
+async def test_run_chunked_llm_summary_merge_retry_reuses_completed_extracts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _db_cfg, store = _chunk_store(tmp_path, "rec-chunk-merge-1")
+    seen_chunks: list[str] = []
+    merge_attempts = {"count": 0}
+
+    class _MergeRetryLLM:
+        async def generate(self, **kwargs: Any) -> dict[str, str]:
+            payload = json.loads(kwargs["user_prompt"])
+            chunk_meta = payload.get("chunk")
+            if isinstance(chunk_meta, dict):
+                chunk_id = str(chunk_meta.get("id"))
+                seen_chunks.append(chunk_id)
+                return _chunk_extract_message(chunk_id)
+            merge_attempts["count"] += 1
+            if merge_attempts["count"] == 1:
+                return {"content": "**LLM timeout**", "role": "assistant"}
+            return _merge_message("Merge Retry")
+
+    monkeypatch.setattr(pipeline, "plan_compact_transcript_chunks", lambda *_a, **_k: _planned_root_chunks())
+
+    kwargs = {
+        "transcript_text": "merge transcript",
+        "speaker_turns": _llm_chunk_turns("merge transcript"),
+        "aliases": {},
+        "derived_dir": tmp_path / "derived",
+        "llm": _MergeRetryLLM(),
+        "cfg": _settings(
+            tmp_path,
+            llm_model="model",
+            llm_chunk_max_chars=80,
+            llm_chunk_overlap_chars=0,
+        ),
+        "llm_model": "model",
+        "target_summary_language": "en",
+        "friendly": 0,
+        "default_topic": "Meeting summary",
+        "calendar_title": None,
+        "calendar_attendees": [],
+        "progress_callback": None,
+        "chunk_state_store": store,
+    }
+
+    with pytest.raises(RuntimeError, match=r"LLM merge failed \[llm_merge_request_timeout\]: request timed out"):
+        await pipeline._run_chunked_llm_summary(**kwargs)
+
+    result = await pipeline._run_chunked_llm_summary(**kwargs)
+
+    assert result["topic"] == "Merge Retry"
+    assert seen_chunks == ["1", "2"]
+    assert merge_attempts["count"] == 2
+
+
+@pytest.mark.asyncio
+async def test_emit_step_log_handles_awaitable_and_callback_errors() -> None:
+    messages: list[str] = []
+
+    async def _async_logger(message: str) -> None:
+        messages.append(message)
+
+    def _sync_logger(message: str) -> str:
+        messages.append(f"sync:{message}")
+        return "ok"
+
+    def _broken_logger(_message: str) -> None:
+        raise OSError("ignore")
+
+    await pipeline._emit_step_log(_async_logger, "hello")  # noqa: SLF001
+    await pipeline._emit_step_log(_sync_logger, "world")  # noqa: SLF001
+    await pipeline._emit_step_log(_broken_logger, "ignored")  # noqa: SLF001
+
+    assert messages == ["hello", "sync:world"]
+
+
+def test_chunk_state_store_protocol_stubs_are_callable() -> None:
+    dummy = object()
+
+    assert pipeline.ChunkStateStore.list_states(dummy, chunk_group="extract") is None
+    assert pipeline.ChunkStateStore.upsert_state(
+        dummy,
+        chunk_group="extract",
+        chunk_index="1",
+        chunk_total=1,
+        status="planned",
+    ) is None
+    assert pipeline.ChunkStateStore.mark_started(
+        dummy,
+        chunk_group="extract",
+        chunk_index="1",
+        chunk_total=1,
+    ) is None
+    assert pipeline.ChunkStateStore.mark_completed(
+        dummy,
+        chunk_group="extract",
+        chunk_index="1",
+        chunk_total=1,
+    ) is None
+    assert pipeline.ChunkStateStore.mark_failed(
+        dummy,
+        chunk_group="extract",
+        chunk_index="1",
+        chunk_total=1,
+    ) is None
+    assert pipeline.ChunkStateStore.mark_split(
+        dummy,
+        chunk_group="extract",
+        chunk_index="1",
+        chunk_total=1,
+    ) is None
+    assert pipeline.ChunkStateStore.clear_states(dummy, chunk_group="extract") is None
+
+
+def test_chunk_resume_helper_utilities_cover_invalid_inputs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    broken = tmp_path / "broken.json"
+    broken.write_text("{", encoding="utf-8")
+    list_payload = tmp_path / "list.json"
+    list_payload.write_text("[]", encoding="utf-8")
+
+    assert pipeline._read_json_artifact(tmp_path / "missing.json") is None  # noqa: SLF001
+    assert pipeline._read_json_artifact(broken) is None  # noqa: SLF001
+    assert pipeline._read_json_artifact(list_payload) is None  # noqa: SLF001
+    assert pipeline._chunk_request_timeout_seconds(object()) is None  # noqa: SLF001
+    assert pipeline._chunk_artifact_token("alpha!") == "chunkalpha_"  # noqa: SLF001
+
+    valid_row = {
+        "chunk_index": "1",
+        "parent_chunk_index": None,
+        "metadata_json": {
+            "transcript_hash": "hash",
+            "text": "chunk text",
+            "base_text": "chunk text",
+            "order_path": [1],
+            "depth": 0,
+        },
+    }
+    assert pipeline._chunk_runtime_from_state_row(valid_row, transcript_hash="hash") is not None  # noqa: SLF001
+    assert pipeline._chunk_runtime_from_state_row({}, transcript_hash="hash") is None  # noqa: SLF001
+    assert pipeline._chunk_runtime_from_state_row(  # noqa: SLF001
+        {"chunk_index": "1", "metadata_json": {"transcript_hash": "other"}},
+        transcript_hash="hash",
+    ) is None
+    assert pipeline._chunk_runtime_from_state_row(  # noqa: SLF001
+        {"chunk_index": "1", "metadata_json": {"transcript_hash": "hash", "text": "", "base_text": "x", "order_path": [1]}},
+        transcript_hash="hash",
+    ) is None
+    assert pipeline._chunk_runtime_from_state_row(  # noqa: SLF001
+        {"chunk_index": "1", "metadata_json": {"transcript_hash": "hash", "text": "x", "base_text": "x", "order_path": []}},
+        transcript_hash="hash",
+    ) is None
+    assert pipeline._chunk_runtime_from_state_row(  # noqa: SLF001
+        {"chunk_index": "1", "metadata_json": {"transcript_hash": "hash", "text": "x", "base_text": "x", "order_path": ["bad"]}},
+        transcript_hash="hash",
+    ) is None
+    assert pipeline._chunk_runtime_from_state_row(  # noqa: SLF001
+        {"chunk_index": "1", "metadata_json": {"transcript_hash": "hash", "text": "x", "base_text": "x", "order_path": [0]}},
+        transcript_hash="hash",
+    ) is None
+
+    rows = pipeline._active_chunk_rows_by_id([{"chunk_index": ""}, {"chunk_index": "1"}])  # noqa: SLF001
+    assert rows == {"1": {"chunk_index": "1"}}
+    assert pipeline._load_active_chunk_runtime([{"status": "split", **valid_row}], transcript_hash="hash") is None  # noqa: SLF001
+    assert pipeline._load_active_chunk_runtime(  # noqa: SLF001
+        [{"status": "split", "chunk_index": "1", "metadata_json": {"transcript_hash": "other"}}],
+        transcript_hash="hash",
+    ) is None
+
+    class _NoUpdateStore:
+        def upsert_state(self, **_kwargs: Any) -> None:
+            return None
+
+    runtime = pipeline._ChunkRuntime(  # noqa: SLF001
+        chunk_id="1",
+        parent_chunk_id=None,
+        depth=0,
+        order_path=(1,),
+        text="chunk text",
+        base_text="chunk text",
+        overlap_prefix="",
+    )
+    synced = pipeline._sync_chunk_rows(  # noqa: SLF001
+        chunk_state_store=_NoUpdateStore(),
+        active_chunks=[runtime],
+        rows_by_id={"1": {"status": "planned"}},
+        transcript_hash="hash",
+    )
+    assert synced == {"1": {"status": "planned"}}
+    assert pipeline._best_chunk_split_index([pipeline.TranscriptChunk(index=1, total=1, text="x", base_text="x")]) == 0  # noqa: SLF001
+
+    cfg = _settings(tmp_path, llm_model="model", llm_chunk_split_min_chars=64, llm_chunk_split_max_depth=1)
+    deep_chunk = pipeline._ChunkRuntime(  # noqa: SLF001
+        chunk_id="1",
+        parent_chunk_id=None,
+        depth=1,
+        order_path=(1,),
+        text="x" * 200,
+        base_text="x" * 200,
+        overlap_prefix="",
+    )
+    small_chunk = pipeline._ChunkRuntime(  # noqa: SLF001
+        chunk_id="1",
+        parent_chunk_id=None,
+        depth=0,
+        order_path=(1,),
+        text="short",
+        base_text="short",
+        overlap_prefix="",
+    )
+    assert pipeline._split_runtime_chunk(deep_chunk, cfg=cfg) == []  # noqa: SLF001
+    assert pipeline._split_runtime_chunk(small_chunk, cfg=cfg) == []  # noqa: SLF001
+
+    monkeypatch.setattr(
+        pipeline,
+        "plan_transcript_chunks",
+        lambda *_a, **_k: [pipeline.TranscriptChunk(index=1, total=1, text="x", base_text="x")],
+    )
+    split_candidate = pipeline._ChunkRuntime(  # noqa: SLF001
+        chunk_id="1",
+        parent_chunk_id=None,
+        depth=0,
+        order_path=(1,),
+        text="x" * 200,
+        base_text="x" * 200,
+        overlap_prefix="",
+    )
+    assert pipeline._split_runtime_chunk(split_candidate, cfg=cfg) == []  # noqa: SLF001
+
+    monkeypatch.setattr(
+        pipeline,
+        "plan_transcript_chunks",
+        lambda *_a, **_k: [
+            pipeline.TranscriptChunk(index=1, total=2, text="left", base_text="left"),
+            pipeline.TranscriptChunk(index=2, total=2, text="right", base_text="right"),
+        ],
+    )
+    monkeypatch.setattr(pipeline, "_best_chunk_split_index", lambda _parts: 0)
+    assert pipeline._split_runtime_chunk(split_candidate, cfg=cfg) == []  # noqa: SLF001
+
+    monkeypatch.setattr(pipeline, "_best_chunk_split_index", lambda _parts: 1)
+    monkeypatch.setattr(
+        pipeline,
+        "plan_transcript_chunks",
+        lambda *_a, **_k: [
+            pipeline.TranscriptChunk(index=1, total=2, text="L" * 80, base_text="L" * 80),
+            pipeline.TranscriptChunk(index=2, total=2, text="R" * 80, base_text="R" * 80),
+        ],
+    )
+    split_children = pipeline._split_runtime_chunk(split_candidate, cfg=cfg)  # noqa: SLF001
+    assert [child.chunk_id for child in split_children] == ["1a", "1b"]
+    assert split_children[0].end_seconds is None
+    assert split_children[1].start_seconds is None
+
+    monkeypatch.setattr(
+        pipeline,
+        "plan_transcript_chunks",
+        lambda *_a, **_k: [
+            pipeline.TranscriptChunk(index=1, total=2, text="same", base_text="x" * 200),
+            pipeline.TranscriptChunk(index=2, total=2, text="same", base_text="x" * 200),
+        ],
+    )
+    assert pipeline._split_runtime_chunk(split_candidate, cfg=cfg) == []  # noqa: SLF001
+
+
+def test_validated_completed_chunk_extract_rejects_missing_or_mismatched_artifacts(
+    tmp_path: Path,
+) -> None:
+    chunk = pipeline._ChunkRuntime(  # noqa: SLF001
+        chunk_id="1",
+        parent_chunk_id=None,
+        depth=0,
+        order_path=(1,),
+        text="chunk text",
+        base_text="chunk text",
+        overlap_prefix="",
+    )
+
+    extract_payload, error = pipeline._validated_completed_chunk_extract(  # noqa: SLF001
+        derived_dir=tmp_path,
+        chunk=chunk,
+        position=1,
+        total=1,
+    )
+    assert extract_payload is None
+    assert error == "missing raw artifact llm_chunk_001_raw.json"
+
+    raw_path, extract_path, _error_path = pipeline._chunk_artifact_paths(tmp_path, chunk.chunk_id)  # noqa: SLF001
+    raw_path.write_text(json.dumps({"role": "assistant", "content": "{}"}), encoding="utf-8")
+    extract_path.write_text(json.dumps({"chunk_id": "2"}), encoding="utf-8")
+
+    extract_payload, error = pipeline._validated_completed_chunk_extract(  # noqa: SLF001
+        derived_dir=tmp_path,
+        chunk=chunk,
+        position=1,
+        total=1,
+    )
+    assert extract_payload is None
+    assert error == "extract chunk_id mismatch for 1"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("exc_factory", "expected_reason"),
+    [
+        (lambda: httpx.ReadTimeout("request timed out"), "llm_chunk_request_timeout"),
+        (lambda: ConnectionError("network down"), "llm_chunk_connection_error"),
+        (lambda: RuntimeError("boom"), "llm_chunk_runtime_error"),
+    ],
+)
+async def test_run_chunked_llm_summary_handles_chunk_exception_classes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    exc_factory,
+    expected_reason: str,
+) -> None:
+    monkeypatch.setattr(pipeline, "plan_compact_transcript_chunks", lambda *_a, **_k: _planned_root_chunks()[:1])
+
+    class _ErrorLLM:
+        async def generate(self, **_kwargs: Any) -> dict[str, str]:
+            raise exc_factory()
+
+    match = "request timed out" if expected_reason.endswith("request_timeout") else "network down" if expected_reason.endswith("connection_error") else "boom"
+    with pytest.raises(RuntimeError, match=rf"LLM chunk 1/1 failed \[{expected_reason}\]: {match}"):
+        await pipeline._run_chunked_llm_summary(
+            transcript_text="error transcript",
+            speaker_turns=_llm_chunk_turns("error transcript"),
+            aliases={},
+            derived_dir=tmp_path / "derived",
+            llm=_ErrorLLM(),
+            cfg=_settings(tmp_path, llm_model="model", llm_chunk_max_chars=80, llm_chunk_overlap_chars=0),
+            llm_model="model",
+            target_summary_language="en",
+            friendly=0,
+            default_topic="Meeting summary",
+            calendar_title=None,
+            calendar_attendees=[],
+            progress_callback=None,
+        )
+
+
+@pytest.mark.asyncio
+async def test_run_chunked_llm_summary_failure_tolerates_store_without_failed_row(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_cfg, _seed_store = _chunk_store(tmp_path, "rec-chunk-failed-none-1")
+    monkeypatch.setattr(pipeline, "plan_compact_transcript_chunks", lambda *_a, **_k: _planned_root_chunks()[:1])
+
+    class _FailingLLM:
+        async def generate(self, **_kwargs: Any) -> dict[str, str]:
+            raise RuntimeError("boom")
+
+    class _NoFailedRowStore(_SqliteChunkStateStore):
+        def mark_failed(self, **kwargs: Any) -> dict[str, Any] | None:
+            super().mark_failed(**kwargs)
+            return None
+
+    with pytest.raises(RuntimeError, match=r"LLM chunk 1/1 failed \[llm_chunk_runtime_error\]: boom"):
+        await pipeline._run_chunked_llm_summary(
+            transcript_text="error transcript",
+            speaker_turns=_llm_chunk_turns("error transcript"),
+            aliases={},
+            derived_dir=tmp_path / "derived",
+            llm=_FailingLLM(),
+            cfg=_settings(tmp_path, llm_model="model", llm_chunk_max_chars=80, llm_chunk_overlap_chars=0),
+            llm_model="model",
+            target_summary_language="en",
+            friendly=0,
+            default_topic="Meeting summary",
+            calendar_title=None,
+            calendar_attendees=[],
+            progress_callback=None,
+            chunk_state_store=_NoFailedRowStore("rec-chunk-failed-none-1", db_cfg),
+        )
+
+
+@pytest.mark.asyncio
+async def test_run_chunked_llm_summary_resets_stale_state_before_retrying(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_cfg, store = _chunk_store(tmp_path, "rec-chunk-stale-1")
+    upsert_recording_llm_chunk_state(
+        "rec-chunk-stale-1",
+        chunk_group="extract",
+        chunk_index="1",
+        chunk_total=1,
+        status="completed",
+        metadata={
+            "transcript_hash": "stale",
+            "text": "stale text",
+            "base_text": "stale text",
+            "order_path": [1],
+        },
+        settings=db_cfg,
+    )
+    monkeypatch.setattr(pipeline, "plan_compact_transcript_chunks", lambda *_a, **_k: _planned_root_chunks()[:1])
+
+    class _FreshLLM:
+        async def generate(self, **kwargs: Any) -> dict[str, str]:
+            payload = json.loads(kwargs["user_prompt"])
+            if isinstance(payload.get("chunk"), dict):
+                return _chunk_extract_message("1")
+            return _merge_message("Fresh Merge")
+
+    result = await pipeline._run_chunked_llm_summary(
+        transcript_text="fresh transcript",
+        speaker_turns=_llm_chunk_turns("fresh transcript"),
+        aliases={},
+        derived_dir=tmp_path / "derived",
+        llm=_FreshLLM(),
+        cfg=_settings(tmp_path, llm_model="model", llm_chunk_max_chars=80, llm_chunk_overlap_chars=0),
+        llm_model="model",
+        target_summary_language="en",
+        friendly=0,
+        default_topic="Meeting summary",
+        calendar_title=None,
+        calendar_attendees=[],
+        progress_callback=None,
+        chunk_state_store=store,
+    )
+
+    assert result["topic"] == "Fresh Merge"
+    rows = list_recording_llm_chunk_states("rec-chunk-stale-1", settings=db_cfg)
+    assert rows[0]["metadata_json"]["transcript_hash"] != "stale"
+
+
+@pytest.mark.asyncio
+async def test_run_chunked_llm_summary_invalidates_completed_chunk_when_store_upsert_returns_none(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_cfg, seed_store = _chunk_store(tmp_path, "rec-chunk-upsert-none-1")
+    monkeypatch.setattr(pipeline, "plan_compact_transcript_chunks", lambda *_a, **_k: _planned_root_chunks()[:1])
+
+    class _FreshLLM:
+        async def generate(self, **kwargs: Any) -> dict[str, str]:
+            payload = json.loads(kwargs["user_prompt"])
+            if isinstance(payload.get("chunk"), dict):
+                return _chunk_extract_message("1")
+            return _merge_message("Fresh Merge")
+
+    kwargs = {
+        "transcript_text": "fresh transcript",
+        "speaker_turns": _llm_chunk_turns("fresh transcript"),
+        "aliases": {},
+        "derived_dir": tmp_path / "derived",
+        "llm": _FreshLLM(),
+        "cfg": _settings(tmp_path, llm_model="model", llm_chunk_max_chars=80, llm_chunk_overlap_chars=0),
+        "llm_model": "model",
+        "target_summary_language": "en",
+        "friendly": 0,
+        "default_topic": "Meeting summary",
+        "calendar_title": None,
+        "calendar_attendees": [],
+        "progress_callback": None,
+        "chunk_state_store": seed_store,
+    }
+
+    first_result = await pipeline._run_chunked_llm_summary(**kwargs)
+    assert first_result["topic"] == "Fresh Merge"
+    (tmp_path / "derived" / "llm_chunk_001_raw.json").unlink()
+
+    class _NoRowUpdateStore(_SqliteChunkStateStore):
+        def upsert_state(self, **kwargs: Any) -> dict[str, Any] | None:
+            super().upsert_state(**kwargs)
+            return None
+
+    store = _NoRowUpdateStore("rec-chunk-upsert-none-1", db_cfg)
+    second_result = await pipeline._run_chunked_llm_summary(
+        **{**kwargs, "chunk_state_store": store},
+    )
+
+    assert second_result["topic"] == "Fresh Merge"
+
+
+@pytest.mark.asyncio
+async def test_run_chunked_llm_summary_merge_failure_paths(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(pipeline, "plan_compact_transcript_chunks", lambda *_a, **_k: _planned_root_chunks()[:1])
+
+    async def _merge_timeout(*_args: Any, **kwargs: Any) -> dict[str, Any]:
+        if '"chunk"' in kwargs["user_prompt"]:
+            return _chunk_extract_message("1")
+        raise asyncio.TimeoutError()
+
+    monkeypatch.setattr(pipeline, "_generate_llm_message", _merge_timeout)
+    with pytest.raises(RuntimeError, match=r"LLM merge failed \[llm_merge_timeout\]: timed out after 120s"):
+        await pipeline._run_chunked_llm_summary(
+            transcript_text="merge timeout transcript",
+            speaker_turns=_llm_chunk_turns("merge timeout transcript"),
+            aliases={},
+            derived_dir=tmp_path / "derived-timeout",
+            llm=object(),
+            cfg=_settings(tmp_path, llm_model="model", llm_chunk_max_chars=80, llm_chunk_overlap_chars=0),
+            llm_model="model",
+            target_summary_language="en",
+            friendly=0,
+            default_topic="Meeting summary",
+            calendar_title=None,
+            calendar_attendees=[],
+            progress_callback=None,
+        )
+
+    async def _merge_connection(*_args: Any, **kwargs: Any) -> dict[str, Any]:
+        if '"chunk"' in kwargs["user_prompt"]:
+            return _chunk_extract_message("1")
+        raise ConnectionError("merge offline")
+
+    monkeypatch.setattr(pipeline, "_generate_llm_message", _merge_connection)
+    with pytest.raises(RuntimeError, match=r"LLM merge failed \[llm_merge_connection_error\]: merge offline"):
+        await pipeline._run_chunked_llm_summary(
+            transcript_text="merge connection transcript",
+            speaker_turns=_llm_chunk_turns("merge connection transcript"),
+            aliases={},
+            derived_dir=tmp_path / "derived-connection",
+            llm=object(),
+            cfg=_settings(tmp_path, llm_model="model", llm_chunk_max_chars=80, llm_chunk_overlap_chars=0),
+            llm_model="model",
+            target_summary_language="en",
+            friendly=0,
+            default_topic="Meeting summary",
+            calendar_title=None,
+            calendar_attendees=[],
+            progress_callback=None,
+        )
+
+    monkeypatch.setattr(
+        pipeline,
+        "_validated_completed_chunk_extract",
+        lambda **_kwargs: (None, "missing extract"),
+    )
+
+    class _MergeMissingExtractLLM:
+        async def generate(self, **kwargs: Any) -> dict[str, str]:
+            payload = json.loads(kwargs["user_prompt"])
+            if isinstance(payload.get("chunk"), dict):
+                return _chunk_extract_message("1")
+            return _merge_message("Unused Merge")
+
+    with pytest.raises(RuntimeError, match=r"LLM merge failed \[llm_merge_parse_error\]: missing extract"):
+        await pipeline._run_chunked_llm_summary(
+            transcript_text="merge extract transcript",
+            speaker_turns=_llm_chunk_turns("merge extract transcript"),
+            aliases={},
+            derived_dir=tmp_path / "derived-missing",
+            llm=_MergeMissingExtractLLM(),
+            cfg=_settings(tmp_path, llm_model="model", llm_chunk_max_chars=80, llm_chunk_overlap_chars=0),
+            llm_model="model",
+            target_summary_language="en",
+            friendly=0,
+            default_topic="Meeting summary",
+            calendar_title=None,
+            calendar_attendees=[],
+            progress_callback=None,
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("exc_factory", "expected_reason", "message"),
+    [
+        (lambda: httpx.ReadTimeout("merge request timed out"), "llm_merge_request_timeout", "request timed out"),
+        (lambda: RuntimeError("merge boom"), "llm_merge_parse_error", "merge boom"),
+    ],
+)
+async def test_run_chunked_llm_summary_handles_merge_exception_classes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    exc_factory,
+    expected_reason: str,
+    message: str,
+) -> None:
+    monkeypatch.setattr(pipeline, "plan_compact_transcript_chunks", lambda *_a, **_k: _planned_root_chunks()[:1])
+
+    class _MergeErrorLLM:
+        async def generate(self, **kwargs: Any) -> dict[str, str]:
+            payload = json.loads(kwargs["user_prompt"])
+            if isinstance(payload.get("chunk"), dict):
+                return _chunk_extract_message("1")
+            raise exc_factory()
+
+    with pytest.raises(RuntimeError, match=rf"LLM merge failed \[{expected_reason}\]: {message}"):
+        await pipeline._run_chunked_llm_summary(
+            transcript_text="merge error transcript",
+            speaker_turns=_llm_chunk_turns("merge error transcript"),
+            aliases={},
+            derived_dir=tmp_path / "derived",
+            llm=_MergeErrorLLM(),
+            cfg=_settings(tmp_path, llm_model="model", llm_chunk_max_chars=80, llm_chunk_overlap_chars=0),
+            llm_model="model",
+            target_summary_language="en",
+            friendly=0,
+            default_topic="Meeting summary",
+            calendar_title=None,
+            calendar_attendees=[],
+            progress_callback=None,
+        )
+
+
+@pytest.mark.asyncio
+async def test_run_chunked_llm_summary_merge_parse_error_after_raw_response(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(pipeline, "plan_compact_transcript_chunks", lambda *_a, **_k: _planned_root_chunks()[:1])
+
+    def _raise_merge_parse(**_kwargs: Any) -> dict[str, Any]:
+        raise ValueError("bad merge payload")
+
+    monkeypatch.setattr(
+        pipeline,
+        "build_summary_payload",
+        _raise_merge_parse,
+    )
+
+    class _MergeParseLLM:
+        async def generate(self, **kwargs: Any) -> dict[str, str]:
+            payload = json.loads(kwargs["user_prompt"])
+            if isinstance(payload.get("chunk"), dict):
+                return _chunk_extract_message("1")
+            return _merge_message("Broken Merge")
+
+    with pytest.raises(RuntimeError, match=r"LLM merge failed \[llm_merge_parse_error\]: bad merge payload"):
+        await pipeline._run_chunked_llm_summary(
+            transcript_text="merge parse transcript",
+            speaker_turns=_llm_chunk_turns("merge parse transcript"),
+            aliases={},
+            derived_dir=tmp_path / "derived-parse",
+            llm=_MergeParseLLM(),
+            cfg=_settings(tmp_path, llm_model="model", llm_chunk_max_chars=80, llm_chunk_overlap_chars=0),
+            llm_model="model",
+            target_summary_language="en",
+            friendly=0,
+            default_topic="Meeting summary",
+            calendar_title=None,
+            calendar_attendees=[],
+            progress_callback=None,
+        )
 
 
 def _audio_file(tmp_path: Path, name: str = "audio.mp3") -> Path:

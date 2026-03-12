@@ -3,7 +3,9 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 import gc
+import hashlib
 import inspect
+import json
 import logging
 import shutil
 import threading
@@ -11,6 +13,8 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Awaitable, Callable, Iterable, List, Literal, Protocol, Sequence
+
+import httpx
 
 from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings
@@ -26,12 +30,14 @@ from ..compat.call_compat import (
 )
 from ..compat.pyannote_compat import patch_pyannote_inference_ignore_use_auth_token
 from ..llm_chunking import (
+    TranscriptChunk,
     build_compact_transcript,
     build_chunk_prompt,
     build_merge_prompt,
     merge_chunk_results,
     parse_chunk_extract,
     plan_compact_transcript_chunks,
+    plan_transcript_chunks,
 )
 from ..llm_client import LLMClient
 from ..metrics import error_rate_total, p95_latency_seconds
@@ -101,6 +107,138 @@ class Diariser(Protocol):
     async def __call__(self, audio_path: Path): ...
 
 
+class ChunkStateStore(Protocol):
+    def list_states(self, *, chunk_group: str) -> list[dict[str, Any]]: ...
+
+    def upsert_state(
+        self,
+        *,
+        chunk_group: str,
+        chunk_index: str,
+        chunk_total: int,
+        status: str,
+        attempt: int = 0,
+        started_at: str | None = None,
+        finished_at: str | None = None,
+        duration_ms: int | None = None,
+        error_code: str | None = None,
+        error_text: str | None = None,
+        parent_chunk_index: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None: ...
+
+    def mark_started(
+        self,
+        *,
+        chunk_group: str,
+        chunk_index: str,
+        chunk_total: int,
+        parent_chunk_index: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None: ...
+
+    def mark_completed(
+        self,
+        *,
+        chunk_group: str,
+        chunk_index: str,
+        chunk_total: int,
+        parent_chunk_index: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None: ...
+
+    def mark_failed(
+        self,
+        *,
+        chunk_group: str,
+        chunk_index: str,
+        chunk_total: int,
+        error_code: str | None = None,
+        error_text: str | None = None,
+        parent_chunk_index: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None: ...
+
+    def mark_split(
+        self,
+        *,
+        chunk_group: str,
+        chunk_index: str,
+        chunk_total: int,
+        error_code: str | None = None,
+        error_text: str | None = None,
+        parent_chunk_index: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None: ...
+
+    def clear_states(self, *, chunk_group: str | None = None) -> int: ...
+
+
+@dataclass(frozen=True)
+class _ChunkRuntime:
+    chunk_id: str
+    parent_chunk_id: str | None
+    depth: int
+    order_path: tuple[int, ...]
+    text: str
+    base_text: str
+    overlap_prefix: str
+    start_seconds: float | None = None
+    end_seconds: float | None = None
+    source_kind: str = "root"
+
+    def metadata_payload(self, *, transcript_hash: str) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "chunk_id": self.chunk_id,
+            "depth": self.depth,
+            "order_path": list(self.order_path),
+            "text": self.text,
+            "base_text": self.base_text,
+            "overlap_prefix": self.overlap_prefix,
+            "transcript_hash": transcript_hash,
+            "source_kind": self.source_kind,
+        }
+        if self.start_seconds is not None:
+            payload["start_seconds"] = round(self.start_seconds, 3)
+        if self.end_seconds is not None:
+            payload["end_seconds"] = round(self.end_seconds, 3)
+        return payload
+
+    def plan_payload(
+        self,
+        *,
+        position: int,
+        total: int,
+        transcript_hash: str,
+        status: str | None,
+        attempt: int | None,
+        error_code: str | None,
+    ) -> dict[str, Any]:
+        chunk = TranscriptChunk(
+            index=position,
+            total=total,
+            text=self.text,
+            base_text=self.base_text,
+            overlap_prefix=self.overlap_prefix,
+            start_seconds=self.start_seconds,
+            end_seconds=self.end_seconds,
+        )
+        payload = chunk.plan_payload()
+        payload["chunk_id"] = self.chunk_id
+        payload["parent_chunk_index"] = self.parent_chunk_id
+        payload["split_depth"] = self.depth
+        payload["order_path"] = list(self.order_path)
+        payload["source_kind"] = self.source_kind
+        payload["transcript_hash"] = transcript_hash
+        if status:
+            payload["status"] = status
+        if attempt is not None:
+            payload["attempt"] = attempt
+        if error_code:
+            payload["error_code"] = error_code
+        return payload
+
+
 class Settings(BaseSettings):
     """Runtime configuration for the transcription pipeline."""
 
@@ -128,7 +266,7 @@ class Settings(BaseSettings):
         ),
     )
     llm_chunk_max_chars: int = Field(
-        default=6000,
+        default=4500,
         ge=1,
         validation_alias=AliasChoices(
             "llm_chunk_max_chars",
@@ -137,7 +275,7 @@ class Settings(BaseSettings):
         ),
     )
     llm_chunk_overlap_chars: int = Field(
-        default=600,
+        default=300,
         ge=0,
         validation_alias=AliasChoices(
             "llm_chunk_overlap_chars",
@@ -154,8 +292,26 @@ class Settings(BaseSettings):
             "LAN_LLM_CHUNK_TIMEOUT_SECONDS",
         ),
     )
+    llm_chunk_split_min_chars: int = Field(
+        default=1200,
+        ge=64,
+        validation_alias=AliasChoices(
+            "llm_chunk_split_min_chars",
+            "LLM_CHUNK_SPLIT_MIN_CHARS",
+            "LAN_LLM_CHUNK_SPLIT_MIN_CHARS",
+        ),
+    )
+    llm_chunk_split_max_depth: int = Field(
+        default=2,
+        ge=0,
+        validation_alias=AliasChoices(
+            "llm_chunk_split_max_depth",
+            "LLM_CHUNK_SPLIT_MAX_DEPTH",
+            "LAN_LLM_CHUNK_SPLIT_MAX_DEPTH",
+        ),
+    )
     llm_long_transcript_threshold_chars: int = Field(
-        default=6000,
+        default=4500,
         ge=1,
         validation_alias=AliasChoices(
             "llm_long_transcript_threshold_chars",
@@ -1401,6 +1557,458 @@ def _llm_chunk_progress(chunk_index: int, total_chunks: int) -> float:
     return min(0.90, start + (max(chunk_index, 1) / total) * span)
 
 
+_LLM_CHUNK_GROUP_EXTRACT = "extract"
+_LLM_CHUNK_REASON_TIMEOUT = "llm_chunk_timeout"
+_LLM_CHUNK_REASON_REQUEST_TIMEOUT = "llm_chunk_request_timeout"
+_LLM_CHUNK_REASON_PARSE_ERROR = "llm_chunk_parse_error"
+_LLM_CHUNK_REASON_CONNECTION_ERROR = "llm_chunk_connection_error"
+_LLM_CHUNK_REASON_RUNTIME_ERROR = "llm_chunk_runtime_error"
+_LLM_MERGE_REASON_TIMEOUT = "llm_merge_timeout"
+_LLM_MERGE_REASON_REQUEST_TIMEOUT = "llm_merge_request_timeout"
+_LLM_MERGE_REASON_CONNECTION_ERROR = "llm_merge_connection_error"
+_LLM_MERGE_REASON_PARSE_ERROR = "llm_merge_parse_error"
+
+
+def _llm_request_timeout_message(timeout_seconds: float | None) -> str:
+    base = _llm_timeout_message(timeout_seconds)
+    return f"request {base}"
+
+
+async def _emit_step_log(
+    callback: Callable[[str], Any] | None,
+    message: str,
+) -> None:
+    if callback is None:
+        return
+    try:
+        out = callback(message)
+        if inspect.isawaitable(out):
+            await out
+    except Exception:
+        return
+
+
+def _read_json_artifact(path: Path) -> dict[str, Any] | None:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _compact_transcript_hash(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _chunk_request_timeout_seconds(llm: Any) -> float | None:
+    timeout = safe_float(getattr(llm, "timeout", None), default=0.0)
+    return timeout if timeout > 0 else None
+
+
+def _chunk_artifact_token(chunk_id: str) -> str:
+    normalized = str(chunk_id or "").strip().lower()
+    digits: list[str] = []
+    suffix: list[str] = []
+    seen_suffix = False
+    for char in normalized:
+        if not seen_suffix and char.isdigit():
+            digits.append(char)
+            continue
+        seen_suffix = True
+        suffix.append(char if char.isalnum() else "_")
+    if digits:
+        prefix = f"{int(''.join(digits)):03d}"
+    else:
+        prefix = "chunk"
+    suffix_text = "".join(suffix)
+    return f"{prefix}{suffix_text}"
+
+
+def _chunk_artifact_paths(
+    derived_dir: Path,
+    chunk_id: str,
+) -> tuple[Path, Path, Path]:
+    token = _chunk_artifact_token(chunk_id)
+    return (
+        derived_dir / f"llm_chunk_{token}_raw.json",
+        derived_dir / f"llm_chunk_{token}_extract.json",
+        derived_dir / f"llm_chunk_{token}_error.json",
+    )
+
+
+def _chunk_runtime_from_state_row(
+    row: dict[str, Any],
+    *,
+    transcript_hash: str,
+) -> _ChunkRuntime | None:
+    metadata = row.get("metadata_json")
+    if not isinstance(metadata, dict):
+        return None
+    if str(metadata.get("transcript_hash") or "").strip() != transcript_hash:
+        return None
+    chunk_id = str(row.get("chunk_index") or metadata.get("chunk_id") or "").strip().lower()
+    text = str(metadata.get("text") or "").strip()
+    base_text = str(metadata.get("base_text") or "").strip()
+    if not chunk_id or not text or not base_text:
+        return None
+    order_path_raw = metadata.get("order_path")
+    if not isinstance(order_path_raw, list) or not order_path_raw:
+        return None
+    try:
+        order_path = tuple(max(int(item), 0) for item in order_path_raw)
+    except (TypeError, ValueError):
+        return None
+    if any(item <= 0 for item in order_path):
+        return None
+    return _ChunkRuntime(
+        chunk_id=chunk_id,
+        parent_chunk_id=(
+            str(row.get("parent_chunk_index") or "").strip().lower() or None
+        ),
+        depth=max(int(safe_float(metadata.get("depth"), default=float(len(order_path) - 1))), 0),
+        order_path=order_path,
+        text=text,
+        base_text=base_text,
+        overlap_prefix=str(metadata.get("overlap_prefix") or ""),
+        start_seconds=(
+            round(safe_float(metadata.get("start_seconds"), default=0.0), 3)
+            if metadata.get("start_seconds") is not None
+            else None
+        ),
+        end_seconds=(
+            round(safe_float(metadata.get("end_seconds"), default=0.0), 3)
+            if metadata.get("end_seconds") is not None
+            else None
+        ),
+        source_kind=str(metadata.get("source_kind") or "root"),
+    )
+
+
+def _build_root_chunk_runtime(chunks: Sequence[TranscriptChunk]) -> list[_ChunkRuntime]:
+    runtime_chunks: list[_ChunkRuntime] = []
+    for chunk in chunks:
+        runtime_chunks.append(
+            _ChunkRuntime(
+                chunk_id=str(chunk.index),
+                parent_chunk_id=None,
+                depth=0,
+                order_path=(int(safe_float(chunk.index, default=0.0)),),
+                text=chunk.text,
+                base_text=chunk.base_text,
+                overlap_prefix=chunk.overlap_prefix,
+                start_seconds=chunk.start_seconds,
+                end_seconds=chunk.end_seconds,
+                source_kind="root",
+            )
+        )
+    return runtime_chunks
+
+
+def _active_chunk_rows_by_id(rows: Sequence[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    mapping: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        chunk_id = str(row.get("chunk_index") or "").strip().lower()
+        if chunk_id:
+            mapping[chunk_id] = dict(row)
+    return mapping
+
+
+def _load_active_chunk_runtime(
+    rows: Sequence[dict[str, Any]],
+    *,
+    transcript_hash: str,
+) -> list[_ChunkRuntime] | None:
+    active_chunks: list[_ChunkRuntime] = []
+    for row in rows:
+        if str(row.get("status") or "").strip().lower() == "split":
+            runtime = _chunk_runtime_from_state_row(row, transcript_hash=transcript_hash)
+            if runtime is None:
+                return None
+            continue
+        runtime = _chunk_runtime_from_state_row(row, transcript_hash=transcript_hash)
+        if runtime is None:
+            return None
+        active_chunks.append(runtime)
+    if not active_chunks:
+        return None
+    active_chunks.sort(key=lambda item: item.order_path)
+    return active_chunks
+
+
+def _runtime_chunk_row_payload(
+    chunk: _ChunkRuntime,
+    *,
+    total: int,
+    transcript_hash: str,
+    existing_row: dict[str, Any] | None,
+) -> dict[str, Any]:
+    return {
+        "chunk_group": _LLM_CHUNK_GROUP_EXTRACT,
+        "chunk_index": chunk.chunk_id,
+        "chunk_total": total,
+        "status": str(existing_row.get("status") or "planned") if existing_row else "planned",
+        "attempt": max(int(existing_row.get("attempt") or 0), 0) if existing_row else 0,
+        "started_at": str(existing_row.get("started_at") or "").strip() or None if existing_row else None,
+        "finished_at": str(existing_row.get("finished_at") or "").strip() or None if existing_row else None,
+        "duration_ms": (
+            int(existing_row.get("duration_ms"))
+            if existing_row and existing_row.get("duration_ms") is not None
+            else None
+        ),
+        "error_code": str(existing_row.get("error_code") or "").strip() or None if existing_row else None,
+        "error_text": str(existing_row.get("error_text") or "").strip() or None if existing_row else None,
+        "parent_chunk_index": chunk.parent_chunk_id,
+        "metadata": chunk.metadata_payload(transcript_hash=transcript_hash),
+    }
+
+
+def _sync_chunk_rows(
+    *,
+    chunk_state_store: ChunkStateStore | None,
+    active_chunks: Sequence[_ChunkRuntime],
+    rows_by_id: dict[str, dict[str, Any]],
+    transcript_hash: str,
+) -> dict[str, dict[str, Any]]:
+    if chunk_state_store is None:
+        return rows_by_id
+    synced = dict(rows_by_id)
+    total = len(active_chunks)
+    for chunk in active_chunks:
+        row = chunk_state_store.upsert_state(
+            **_runtime_chunk_row_payload(
+                chunk,
+                total=total,
+                transcript_hash=transcript_hash,
+                existing_row=synced.get(chunk.chunk_id),
+            )
+        )
+        if row is not None:
+            synced[chunk.chunk_id] = row
+    return synced
+
+
+def _split_parent_rows(
+    rows_by_id: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for row in rows_by_id.values():
+        if str(row.get("status") or "").strip().lower() != "split":
+            continue
+        rows.append(dict(row))
+    rows.sort(key=lambda item: str(item.get("chunk_index") or ""))
+    return rows
+
+
+def _write_chunk_plan_artifact(
+    *,
+    derived_dir: Path,
+    compact_transcript: Any,
+    transcript_text: str,
+    transcript_hash: str,
+    cfg: Settings,
+    active_chunks: Sequence[_ChunkRuntime],
+    rows_by_id: dict[str, dict[str, Any]],
+) -> None:
+    total = len(active_chunks)
+    chunk_rows = [
+        chunk.plan_payload(
+            position=index,
+            total=total,
+            transcript_hash=transcript_hash,
+            status=str(rows_by_id.get(chunk.chunk_id, {}).get("status") or "").strip() or None,
+            attempt=(
+                int(rows_by_id[chunk.chunk_id]["attempt"])
+                if chunk.chunk_id in rows_by_id and rows_by_id[chunk.chunk_id].get("attempt") is not None
+                else None
+            ),
+            error_code=str(rows_by_id.get(chunk.chunk_id, {}).get("error_code") or "").strip() or None,
+        )
+        for index, chunk in enumerate(active_chunks, start=1)
+    ]
+    split_rows: list[dict[str, Any]] = []
+    for row in _split_parent_rows(rows_by_id):
+        metadata = row.get("metadata_json") if isinstance(row.get("metadata_json"), dict) else {}
+        split_rows.append(
+            {
+                "chunk_index": str(row.get("chunk_index") or ""),
+                "parent_chunk_index": str(row.get("parent_chunk_index") or "").strip() or None,
+                "status": "split",
+                "attempt": max(int(row.get("attempt") or 0), 0),
+                "error_code": str(row.get("error_code") or "").strip() or None,
+                "child_chunk_indexes": list(metadata.get("split_child_chunk_indexes") or []),
+            }
+        )
+    atomic_write_json(
+        derived_dir / "llm_chunks_plan.json",
+        {
+            "version": 2,
+            "source_chars": compact_transcript.source_chars,
+            "compact_chars": compact_transcript.compact_chars,
+            "transcript_hash": transcript_hash,
+            "chunk_max_chars": cfg.llm_chunk_max_chars,
+            "chunk_overlap_chars": cfg.llm_chunk_overlap_chars,
+            "chunk_timeout_seconds": cfg.llm_chunk_timeout_seconds,
+            "chunk_split_min_chars": cfg.llm_chunk_split_min_chars,
+            "chunk_split_max_depth": cfg.llm_chunk_split_max_depth,
+            "long_transcript_threshold_chars": cfg.llm_long_transcript_threshold_chars,
+            "source_transcript_chars": len(transcript_text.strip()),
+            "compaction": {
+                "merge_gap_seconds": compact_transcript.merge_gap_seconds,
+                "source_turn_count": compact_transcript.source_turn_count,
+                "compact_turn_count": compact_transcript.compact_turn_count,
+                "speaker_mapping": [
+                    item.artifact_payload() for item in compact_transcript.speaker_mapping
+                ],
+            },
+            "chunks": chunk_rows,
+            "split_chunks": split_rows,
+            "state_summary": {
+                "planned": sum(1 for row in rows_by_id.values() if str(row.get("status") or "") == "planned"),
+                "running": sum(1 for row in rows_by_id.values() if str(row.get("status") or "") == "running"),
+                "completed": sum(1 for row in rows_by_id.values() if str(row.get("status") or "") == "completed"),
+                "failed": sum(1 for row in rows_by_id.values() if str(row.get("status") or "") == "failed"),
+                "split": sum(1 for row in rows_by_id.values() if str(row.get("status") or "") == "split"),
+            },
+        },
+    )
+
+
+def _chunk_error_payload(
+    *,
+    chunk: _ChunkRuntime,
+    position: int,
+    total: int,
+    attempt: int,
+    reason_code: str,
+    message: str,
+    status: str,
+    timeout_seconds: float | None = None,
+    child_chunk_indexes: Sequence[str] | None = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "chunk_index": chunk.chunk_id,
+        "chunk_position": position,
+        "chunk_total": total,
+        "parent_chunk_index": chunk.parent_chunk_id,
+        "reason_code": reason_code,
+        "error": message,
+        "attempt": attempt,
+        "status": status,
+    }
+    if timeout_seconds is not None and timeout_seconds > 0:
+        payload["timeout_seconds"] = round(timeout_seconds, 3)
+    if child_chunk_indexes:
+        payload["child_chunk_indexes"] = [str(item) for item in child_chunk_indexes]
+    return payload
+
+
+def _best_chunk_split_index(parts: Sequence[TranscriptChunk]) -> int:
+    if len(parts) <= 1:
+        return 0
+    total_chars = sum(len(part.base_text.strip()) for part in parts)
+    left_chars = 0
+    best_index = 1
+    best_delta = total_chars
+    for index in range(1, len(parts)):
+        left_chars += len(parts[index - 1].base_text.strip())
+        delta = abs((total_chars - left_chars) - left_chars)
+        if delta < best_delta:
+            best_index = index
+            best_delta = delta
+    return best_index
+
+
+def _split_runtime_chunk(
+    chunk: _ChunkRuntime,
+    *,
+    cfg: Settings,
+) -> list[_ChunkRuntime]:
+    base_text = chunk.base_text.strip()
+    if chunk.depth >= cfg.llm_chunk_split_max_depth:
+        return []
+    if len(base_text) < max(cfg.llm_chunk_split_min_chars * 2, 2):
+        return []
+    planned_parts = plan_transcript_chunks(
+        base_text,
+        max_chars=max(cfg.llm_chunk_split_min_chars, len(base_text) // 2),
+        overlap_chars=0,
+    )
+    if len(planned_parts) < 2:
+        return []
+    split_index = _best_chunk_split_index(planned_parts)
+    left_parts = planned_parts[:split_index]
+    right_parts = planned_parts[split_index:]
+    if not left_parts or not right_parts:
+        return []
+    left_base = "\n".join(part.base_text.strip() for part in left_parts if part.base_text.strip()).strip()
+    right_base = "\n".join(part.base_text.strip() for part in right_parts if part.base_text.strip()).strip()
+    if not left_base or not right_base or max(len(left_base), len(right_base)) >= len(base_text):
+        return []
+    start_seconds = chunk.start_seconds
+    end_seconds = chunk.end_seconds
+    left_start = start_seconds
+    left_end = None
+    right_start = None
+    right_end = end_seconds
+    if start_seconds is not None and end_seconds is not None and end_seconds >= start_seconds:
+        span = end_seconds - start_seconds
+        left_ratio = len(left_base) / max(len(left_base) + len(right_base), 1)
+        midpoint = round(start_seconds + (span * left_ratio), 3)
+        left_end = midpoint
+        right_start = midpoint
+    return [
+        _ChunkRuntime(
+            chunk_id=f"{chunk.chunk_id}a",
+            parent_chunk_id=chunk.chunk_id,
+            depth=chunk.depth + 1,
+            order_path=(*chunk.order_path, 1),
+            text=left_base,
+            base_text=left_base,
+            overlap_prefix="",
+            start_seconds=left_start,
+            end_seconds=left_end,
+            source_kind="split",
+        ),
+        _ChunkRuntime(
+            chunk_id=f"{chunk.chunk_id}b",
+            parent_chunk_id=chunk.chunk_id,
+            depth=chunk.depth + 1,
+            order_path=(*chunk.order_path, 2),
+            text=right_base,
+            base_text=right_base,
+            overlap_prefix="",
+            start_seconds=right_start,
+            end_seconds=right_end,
+            source_kind="split",
+        ),
+    ]
+
+
+def _validated_completed_chunk_extract(
+    *,
+    derived_dir: Path,
+    chunk: _ChunkRuntime,
+    position: int,
+    total: int,
+) -> tuple[dict[str, Any] | None, str | None]:
+    raw_path, extract_path, _error_path = _chunk_artifact_paths(derived_dir, chunk.chunk_id)
+    raw_payload = _read_json_artifact(raw_path)
+    if raw_payload is None:
+        return None, f"missing raw artifact {raw_path.name}"
+    extract_payload = _read_json_artifact(extract_path)
+    if extract_payload is None:
+        return None, f"missing extract artifact {extract_path.name}"
+    recorded_chunk_id = str(extract_payload.get("chunk_id") or chunk.chunk_id).strip().lower()
+    if recorded_chunk_id != chunk.chunk_id:
+        return None, f"extract chunk_id mismatch for {chunk.chunk_id}"
+    extract_payload["chunk_id"] = chunk.chunk_id
+    extract_payload["chunk_index"] = position
+    extract_payload["chunk_total"] = total
+    extract_payload["parent_chunk_index"] = chunk.parent_chunk_id
+    extract_payload["split_depth"] = chunk.depth
+    return extract_payload, None
+
+
 def _speaker_turn_prompt_text(
     speaker_turns: Sequence[dict[str, Any]],
     *,
@@ -1438,6 +2046,8 @@ async def _run_chunked_llm_summary(
     calendar_title: str | None,
     calendar_attendees: Sequence[str],
     progress_callback: ProgressCallback | None,
+    chunk_state_store: ChunkStateStore | None = None,
+    step_log_callback: Callable[[str], Any] | None = None,
 ) -> dict[str, Any]:
     try:
         compact_transcript = build_compact_transcript(
@@ -1446,57 +2056,165 @@ async def _run_chunked_llm_summary(
         )
     except ValueError as exc:
         raise RuntimeError(str(exc)) from exc
-    source_chars = compact_transcript.source_chars
-    compact_chars = compact_transcript.compact_chars
     speaker_mapping = compact_transcript.prompt_speaker_mapping()
+    transcript_hash = _compact_transcript_hash(compact_transcript.text)
     atomic_write_text(derived_dir / "llm_compact_transcript.txt", compact_transcript.text)
     atomic_write_json(
         derived_dir / "llm_compact_transcript.json",
         compact_transcript.artifact_payload(),
     )
-    chunks = plan_compact_transcript_chunks(
-        compact_transcript,
-        max_chars=cfg.llm_chunk_max_chars,
-        overlap_chars=cfg.llm_chunk_overlap_chars,
+    state_rows = (
+        chunk_state_store.list_states(chunk_group=_LLM_CHUNK_GROUP_EXTRACT)
+        if chunk_state_store is not None
+        else []
     )
-    atomic_write_json(
-        derived_dir / "llm_chunks_plan.json",
-        {
-            "source_chars": source_chars,
-            "compact_chars": compact_chars,
-            "chunk_max_chars": cfg.llm_chunk_max_chars,
-            "chunk_overlap_chars": cfg.llm_chunk_overlap_chars,
-            "long_transcript_threshold_chars": cfg.llm_long_transcript_threshold_chars,
-            "source_transcript_chars": len(transcript_text.strip()),
-            "compaction": {
-                "merge_gap_seconds": compact_transcript.merge_gap_seconds,
-                "source_turn_count": compact_transcript.source_turn_count,
-                "compact_turn_count": compact_transcript.compact_turn_count,
-                "speaker_mapping": [
-                    item.artifact_payload() for item in compact_transcript.speaker_mapping
-                ],
-            },
-            "chunks": [chunk.plan_payload() for chunk in chunks],
-        },
+    rows_by_id = _active_chunk_rows_by_id(state_rows)
+    active_chunks = _load_active_chunk_runtime(
+        state_rows,
+        transcript_hash=transcript_hash,
     )
-    if not chunks:
-        raise RuntimeError("LLM chunk planning produced no chunks")
+    if state_rows and active_chunks is None:
+        await _emit_step_log(
+            step_log_callback,
+            "llm chunk state reset reason=transcript_or_metadata_mismatch",
+        )
+        assert chunk_state_store is not None
+        chunk_state_store.clear_states(chunk_group=_LLM_CHUNK_GROUP_EXTRACT)
+        state_rows = []
+        rows_by_id = {}
 
-    chunk_results: list[dict[str, Any]] = []
-    for chunk in chunks:
+    if active_chunks is None:
+        planned_chunks = plan_compact_transcript_chunks(
+            compact_transcript,
+            max_chars=cfg.llm_chunk_max_chars,
+            overlap_chars=cfg.llm_chunk_overlap_chars,
+        )
+        if not planned_chunks:
+            raise RuntimeError("LLM chunk planning produced no chunks")
+        active_chunks = _build_root_chunk_runtime(planned_chunks)
+
+    rows_by_id = _sync_chunk_rows(
+        chunk_state_store=chunk_state_store,
+        active_chunks=active_chunks,
+        rows_by_id=rows_by_id,
+        transcript_hash=transcript_hash,
+    )
+    _write_chunk_plan_artifact(
+        derived_dir=derived_dir,
+        compact_transcript=compact_transcript,
+        transcript_text=transcript_text,
+        transcript_hash=transcript_hash,
+        cfg=cfg,
+        active_chunks=active_chunks,
+        rows_by_id=rows_by_id,
+    )
+
+    chunk_cursor = 0
+    while chunk_cursor < len(active_chunks):
+        total = len(active_chunks)
+        position = chunk_cursor + 1
+        chunk = active_chunks[chunk_cursor]
+        row = rows_by_id.get(chunk.chunk_id, {})
+        status = str(row.get("status") or "").strip().lower()
+        raw_path, extract_path, error_path = _chunk_artifact_paths(derived_dir, chunk.chunk_id)
         await _emit_progress(
             progress_callback,
-            stage=f"llm_chunk_{chunk.index}_of_{chunk.total}",
-            progress=_llm_chunk_progress(chunk.index, chunk.total),
+            stage=f"llm_chunk_{chunk.chunk_id}_of_{total}",
+            progress=_llm_chunk_progress(position, total),
+        )
+
+        if status == "completed":
+            reused_extract, reuse_error = _validated_completed_chunk_extract(
+                derived_dir=derived_dir,
+                chunk=chunk,
+                position=position,
+                total=total,
+            )
+            if reused_extract is not None:
+                atomic_write_json(extract_path, reused_extract)
+                await _emit_step_log(
+                    step_log_callback,
+                    f"llm chunk resumed index={chunk.chunk_id}",
+                )
+                chunk_cursor += 1
+                continue
+            await _emit_step_log(
+                step_log_callback,
+                f"llm chunk invalidated index={chunk.chunk_id} reason={reuse_error}",
+            )
+            assert chunk_state_store is not None
+            invalidated_row = dict(row)
+            invalidated_row["status"] = "planned"
+            invalidated_row["finished_at"] = None
+            invalidated_row["duration_ms"] = None
+            invalidated_row["error_code"] = "llm_chunk_artifact_invalid"
+            invalidated_row["error_text"] = reuse_error
+            reset_row = chunk_state_store.upsert_state(
+                **_runtime_chunk_row_payload(
+                    chunk,
+                    total=total,
+                    transcript_hash=transcript_hash,
+                    existing_row=invalidated_row,
+                )
+            )
+            if reset_row is not None:
+                rows_by_id[chunk.chunk_id] = reset_row
+            _write_chunk_plan_artifact(
+                derived_dir=derived_dir,
+                compact_transcript=compact_transcript,
+                transcript_text=transcript_text,
+                transcript_hash=transcript_hash,
+                cfg=cfg,
+                active_chunks=active_chunks,
+                rows_by_id=rows_by_id,
+            )
+
+        start_row = (
+            chunk_state_store.mark_started(
+                chunk_group=_LLM_CHUNK_GROUP_EXTRACT,
+                chunk_index=chunk.chunk_id,
+                chunk_total=total,
+                parent_chunk_index=chunk.parent_chunk_id,
+                metadata=chunk.metadata_payload(transcript_hash=transcript_hash),
+            )
+            if chunk_state_store is not None
+            else None
+        )
+        if start_row is not None:
+            rows_by_id[chunk.chunk_id] = start_row
+            row = start_row
+        attempt = max(int(row.get("attempt") or 0), 1)
+        await _emit_step_log(
+            step_log_callback,
+            (
+                f"llm chunk {'resumed' if status in {'failed', 'running'} else 'started'} "
+                f"index={chunk.chunk_id} total={total} attempt={attempt} chars={len(chunk.text)}"
+            ),
+        )
+
+        prompt_chunk = TranscriptChunk(
+            index=position,
+            total=total,
+            text=chunk.text,
+            base_text=chunk.base_text,
+            overlap_prefix=chunk.overlap_prefix,
+            start_seconds=chunk.start_seconds,
+            end_seconds=chunk.end_seconds,
         )
         chunk_sys_prompt, chunk_user_prompt = build_chunk_prompt(
-            chunk,
+            prompt_chunk,
             target_summary_language=target_summary_language,
             calendar_title=calendar_title,
             calendar_attendees=calendar_attendees,
             speaker_mapping=speaker_mapping,
+            chunk_id=chunk.chunk_id,
         )
-        error_path = derived_dir / f"llm_chunk_{chunk.index:03d}_error.json"
+        raw_chunk: dict[str, Any] | None = None
+        extract: dict[str, Any] | None = None
+        reason_code: str | None = None
+        message: str | None = None
+        start_perf = time.perf_counter()
+
         try:
             raw_chunk = await _generate_llm_message(
                 llm,
@@ -1508,27 +2226,212 @@ async def _run_chunked_llm_summary(
                 max_tokens_retry=cfg.llm_max_tokens_retry,
                 timeout_seconds=cfg.llm_chunk_timeout_seconds,
             )
-            atomic_write_json(derived_dir / f"llm_chunk_{chunk.index:03d}_raw.json", raw_chunk)
-            if _llm_message_timed_out(raw_chunk):
-                raise TimeoutError(_LLM_TIMEOUT_SENTINEL)
-            extract = parse_chunk_extract(str(raw_chunk.get("content") or ""))
-        except (TimeoutError, asyncio.TimeoutError) as exc:
+        except asyncio.TimeoutError:
+            reason_code = _LLM_CHUNK_REASON_TIMEOUT
             message = _llm_timeout_message(cfg.llm_chunk_timeout_seconds)
-            atomic_write_json(error_path, {"error": message})
-            raise RuntimeError(f"LLM chunk {chunk.index}/{chunk.total} failed: {message}") from exc
-        except Exception as exc:
+        except (TimeoutError, httpx.TimeoutException):
+            reason_code = _LLM_CHUNK_REASON_REQUEST_TIMEOUT
+            message = _llm_request_timeout_message(_chunk_request_timeout_seconds(llm))
+        except (httpx.ConnectError, httpx.ReadError, httpx.RemoteProtocolError, ConnectionError) as exc:
+            reason_code = _LLM_CHUNK_REASON_CONNECTION_ERROR
             message = str(exc) or exc.__class__.__name__
-            atomic_write_json(error_path, {"error": message})
-            raise RuntimeError(f"LLM chunk {chunk.index}/{chunk.total} failed: {message}") from exc
+        except Exception as exc:
+            reason_code = _LLM_CHUNK_REASON_RUNTIME_ERROR
+            message = str(exc) or exc.__class__.__name__
 
-        extract["chunk_index"] = chunk.index
-        extract["chunk_total"] = chunk.total
-        atomic_write_json(derived_dir / f"llm_chunk_{chunk.index:03d}_extract.json", extract)
-        chunk_results.append(extract)
+        if raw_chunk is not None:
+            atomic_write_json(raw_path, raw_chunk)
+            if _llm_message_timed_out(raw_chunk):
+                reason_code = _LLM_CHUNK_REASON_REQUEST_TIMEOUT
+                message = _llm_request_timeout_message(_chunk_request_timeout_seconds(llm))
+            else:
+                try:
+                    extract = parse_chunk_extract(str(raw_chunk.get("content") or ""))
+                except Exception as exc:
+                    reason_code = _LLM_CHUNK_REASON_PARSE_ERROR
+                    message = str(exc) or exc.__class__.__name__
+
+        if reason_code is not None:
+            child_chunks = (
+                _split_runtime_chunk(chunk, cfg=cfg)
+                if reason_code in {_LLM_CHUNK_REASON_TIMEOUT, _LLM_CHUNK_REASON_REQUEST_TIMEOUT}
+                else []
+            )
+            if child_chunks:
+                child_ids = [item.chunk_id for item in child_chunks]
+                split_metadata = chunk.metadata_payload(transcript_hash=transcript_hash)
+                split_metadata["split_child_chunk_indexes"] = child_ids
+                split_metadata["last_reason_code"] = reason_code
+                split_metadata["last_error"] = message
+                atomic_write_json(
+                    error_path,
+                    _chunk_error_payload(
+                        chunk=chunk,
+                        position=position,
+                        total=total,
+                        attempt=attempt,
+                        reason_code=reason_code,
+                        message=message or reason_code,
+                        status="split",
+                        timeout_seconds=(
+                            cfg.llm_chunk_timeout_seconds
+                            if reason_code == _LLM_CHUNK_REASON_TIMEOUT
+                            else _chunk_request_timeout_seconds(llm)
+                        ),
+                        child_chunk_indexes=child_ids,
+                    ),
+                )
+                if chunk_state_store is not None:
+                    split_row = chunk_state_store.mark_split(
+                        chunk_group=_LLM_CHUNK_GROUP_EXTRACT,
+                        chunk_index=chunk.chunk_id,
+                        chunk_total=total + len(child_chunks) - 1,
+                        error_code=reason_code,
+                        error_text=message,
+                        parent_chunk_index=chunk.parent_chunk_id,
+                        metadata=split_metadata,
+                    )
+                    if split_row is not None:
+                        rows_by_id[chunk.chunk_id] = split_row
+                active_chunks = [
+                    *active_chunks[:chunk_cursor],
+                    *child_chunks,
+                    *active_chunks[chunk_cursor + 1 :],
+                ]
+                rows_by_id = _sync_chunk_rows(
+                    chunk_state_store=chunk_state_store,
+                    active_chunks=active_chunks,
+                    rows_by_id=rows_by_id,
+                    transcript_hash=transcript_hash,
+                )
+                _write_chunk_plan_artifact(
+                    derived_dir=derived_dir,
+                    compact_transcript=compact_transcript,
+                    transcript_text=transcript_text,
+                    transcript_hash=transcript_hash,
+                    cfg=cfg,
+                    active_chunks=active_chunks,
+                    rows_by_id=rows_by_id,
+                )
+                await _emit_step_log(
+                    step_log_callback,
+                    f"llm chunk split index={chunk.chunk_id} into {'/'.join(child_ids)}",
+                )
+                continue
+
+            atomic_write_json(
+                error_path,
+                _chunk_error_payload(
+                    chunk=chunk,
+                    position=position,
+                    total=total,
+                    attempt=attempt,
+                    reason_code=reason_code,
+                    message=message or reason_code,
+                    status="failed",
+                    timeout_seconds=(
+                        cfg.llm_chunk_timeout_seconds
+                        if reason_code == _LLM_CHUNK_REASON_TIMEOUT
+                        else _chunk_request_timeout_seconds(llm)
+                        if reason_code == _LLM_CHUNK_REASON_REQUEST_TIMEOUT
+                        else None
+                    ),
+                ),
+            )
+            if chunk_state_store is not None:
+                failed_row = chunk_state_store.mark_failed(
+                    chunk_group=_LLM_CHUNK_GROUP_EXTRACT,
+                    chunk_index=chunk.chunk_id,
+                    chunk_total=total,
+                    error_code=reason_code,
+                    error_text=message,
+                    parent_chunk_index=chunk.parent_chunk_id,
+                    metadata=chunk.metadata_payload(transcript_hash=transcript_hash),
+                )
+                if failed_row is not None:
+                    rows_by_id[chunk.chunk_id] = failed_row
+            _write_chunk_plan_artifact(
+                derived_dir=derived_dir,
+                compact_transcript=compact_transcript,
+                transcript_text=transcript_text,
+                transcript_hash=transcript_hash,
+                cfg=cfg,
+                active_chunks=active_chunks,
+                rows_by_id=rows_by_id,
+            )
+            await _emit_step_log(
+                step_log_callback,
+                f"llm chunk failed index={chunk.chunk_id} reason={reason_code}",
+            )
+            raise RuntimeError(
+                f"LLM chunk {chunk.chunk_id}/{total} failed [{reason_code}]: {message}"
+            )
+
+        assert extract is not None
+        extract["chunk_id"] = chunk.chunk_id
+        extract["chunk_index"] = position
+        extract["chunk_total"] = total
+        extract["parent_chunk_index"] = chunk.parent_chunk_id
+        extract["split_depth"] = chunk.depth
+        atomic_write_json(extract_path, extract)
+        completed_row = (
+            chunk_state_store.mark_completed(
+                chunk_group=_LLM_CHUNK_GROUP_EXTRACT,
+                chunk_index=chunk.chunk_id,
+                chunk_total=total,
+                parent_chunk_index=chunk.parent_chunk_id,
+                metadata=chunk.metadata_payload(transcript_hash=transcript_hash),
+            )
+            if chunk_state_store is not None
+            else None
+        )
+        if completed_row is not None:
+            rows_by_id[chunk.chunk_id] = completed_row
+            duration_ms = (
+                int(completed_row.get("duration_ms"))
+                if completed_row.get("duration_ms") is not None
+                else int((time.perf_counter() - start_perf) * 1000)
+            )
+        else:
+            duration_ms = int((time.perf_counter() - start_perf) * 1000)
+        _write_chunk_plan_artifact(
+            derived_dir=derived_dir,
+            compact_transcript=compact_transcript,
+            transcript_text=transcript_text,
+            transcript_hash=transcript_hash,
+            cfg=cfg,
+            active_chunks=active_chunks,
+            rows_by_id=rows_by_id,
+        )
+        await _emit_step_log(
+            step_log_callback,
+            f"llm chunk completed index={chunk.chunk_id} elapsed={duration_ms / 1000:.3f}s",
+        )
+        chunk_cursor += 1
+
+    chunk_results: list[dict[str, Any]] = []
+    total = len(active_chunks)
+    for position, chunk in enumerate(active_chunks, start=1):
+        extract_payload, reuse_error = _validated_completed_chunk_extract(
+            derived_dir=derived_dir,
+            chunk=chunk,
+            position=position,
+            total=total,
+        )
+        if extract_payload is None:
+            raise RuntimeError(
+                f"LLM merge failed [{_LLM_MERGE_REASON_PARSE_ERROR}]: {reuse_error}"
+            )
+        atomic_write_json(_chunk_artifact_paths(derived_dir, chunk.chunk_id)[1], extract_payload)
+        chunk_results.append(extract_payload)
 
     merge_input = merge_chunk_results(chunk_results)
     atomic_write_json(derived_dir / "llm_merge_input.json", merge_input)
     await _emit_progress(progress_callback, stage="llm_merge", progress=0.94)
+    await _emit_step_log(
+        step_log_callback,
+        f"llm merge started chunk_count={len(chunk_results)}",
+    )
     merge_sys_prompt, merge_user_prompt = build_merge_prompt(
         merge_input,
         target_summary_language=target_summary_language,
@@ -1536,27 +2439,84 @@ async def _run_chunked_llm_summary(
         calendar_attendees=calendar_attendees,
     )
     merge_max_tokens = cfg.llm_merge_max_tokens or cfg.llm_max_tokens
-    raw_merge = await _generate_llm_message(
-        llm,
-        system_prompt=merge_sys_prompt,
-        user_prompt=merge_user_prompt,
-        model=llm_model,
-        response_format={"type": "json_object"},
-        max_tokens=merge_max_tokens,
-        max_tokens_retry=max(cfg.llm_max_tokens_retry, merge_max_tokens),
+    raw_merge: dict[str, Any] | None = None
+    merge_reason_code: str | None = None
+    merge_message: str | None = None
+    try:
+        raw_merge = await _generate_llm_message(
+            llm,
+            system_prompt=merge_sys_prompt,
+            user_prompt=merge_user_prompt,
+            model=llm_model,
+            response_format={"type": "json_object"},
+            max_tokens=merge_max_tokens,
+            max_tokens_retry=max(cfg.llm_max_tokens_retry, merge_max_tokens),
+        )
+    except asyncio.TimeoutError:
+        merge_reason_code = _LLM_MERGE_REASON_TIMEOUT
+        merge_message = _llm_timeout_message(cfg.llm_chunk_timeout_seconds)
+    except (TimeoutError, httpx.TimeoutException):
+        merge_reason_code = _LLM_MERGE_REASON_REQUEST_TIMEOUT
+        merge_message = _llm_request_timeout_message(_chunk_request_timeout_seconds(llm))
+    except (httpx.ConnectError, httpx.ReadError, httpx.RemoteProtocolError, ConnectionError) as exc:
+        merge_reason_code = _LLM_MERGE_REASON_CONNECTION_ERROR
+        merge_message = str(exc) or exc.__class__.__name__
+    except Exception as exc:
+        merge_reason_code = _LLM_MERGE_REASON_PARSE_ERROR
+        merge_message = str(exc) or exc.__class__.__name__
+
+    if raw_merge is not None:
+        atomic_write_json(derived_dir / "llm_merge_raw.json", raw_merge)
+        if _llm_message_timed_out(raw_merge):
+            merge_reason_code = _LLM_MERGE_REASON_REQUEST_TIMEOUT
+            merge_message = _llm_request_timeout_message(_chunk_request_timeout_seconds(llm))
+
+    if merge_reason_code is not None:
+        atomic_write_json(
+            derived_dir / "llm_merge_error.json",
+            {
+                "reason_code": merge_reason_code,
+                "error": merge_message,
+                "chunk_count": len(chunk_results),
+            },
+        )
+        await _emit_step_log(
+            step_log_callback,
+            f"llm merge failed reason={merge_reason_code}",
+        )
+        raise RuntimeError(f"LLM merge failed [{merge_reason_code}]: {merge_message}")
+
+    try:
+        summary_payload = build_summary_payload(
+            raw_llm_content=str(raw_merge.get("content") or ""),
+            model=llm_model,
+            target_summary_language=target_summary_language,
+            friendly=friendly,
+            default_topic=default_topic,
+            derived_dir=derived_dir,
+        )
+    except Exception as exc:
+        merge_reason_code = _LLM_MERGE_REASON_PARSE_ERROR
+        merge_message = str(exc) or exc.__class__.__name__
+        atomic_write_json(
+            derived_dir / "llm_merge_error.json",
+            {
+                "reason_code": merge_reason_code,
+                "error": merge_message,
+                "chunk_count": len(chunk_results),
+            },
+        )
+        await _emit_step_log(
+            step_log_callback,
+            f"llm merge failed reason={merge_reason_code}",
+        )
+        raise RuntimeError(f"LLM merge failed [{merge_reason_code}]: {merge_message}") from exc
+
+    await _emit_step_log(
+        step_log_callback,
+        f"llm merge completed chunk_count={len(chunk_results)}",
     )
-    atomic_write_json(derived_dir / "llm_merge_raw.json", raw_merge)
-    if _llm_message_timed_out(raw_merge):
-        message = _llm_timeout_message(getattr(llm, "timeout", None))
-        raise RuntimeError(f"LLM merge failed: {message}")
-    return build_summary_payload(
-        raw_llm_content=str(raw_merge.get("content") or ""),
-        model=llm_model,
-        target_summary_language=target_summary_language,
-        friendly=friendly,
-        default_topic=default_topic,
-        derived_dir=derived_dir,
-    )
+    return summary_payload
 
 
 async def run_pipeline(
@@ -1962,6 +2922,7 @@ async def run_pipeline(
                 calendar_title=cal_title,
                 calendar_attendees=cal_attendees,
                 progress_callback=progress_callback,
+                step_log_callback=step_log_callback,
             )
         else:
             sys_prompt, user_prompt = build_structured_summary_prompts(
