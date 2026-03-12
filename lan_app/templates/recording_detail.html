@@ -4,8 +4,8 @@
 <h1>
   Recording: <code>{{ rec.id }}</code>
   &nbsp;<span class="badge s-{{ rec.status }}">{{ rec.status }}</span>
-  {% if rec.review_reason_text_display %}
-  <span style="font-size:14px;color:#92400e">{{ rec.review_reason_text_display }}</span>
+  {% if rec.status_reason_text_display %}
+  <span style="font-size:14px;color:#92400e">{{ rec.status_reason_text_display }}</span>
   {% endif %}
 </h1>
 
@@ -23,6 +23,22 @@
     <option value="quarantine">Quarantine</option>
     <option value="delete">Delete</option>
   </select>
+  {% if rec.stop_eligible %}
+    {% if rec.stop_in_progress %}
+    <button type="button" class="btn btn-danger" disabled>Stopping...</button>
+    {% else %}
+    <form
+      method="post"
+      action="/ui/recordings/{{ rec.id }}/stop"
+      style="display:inline"
+      hx-boost="false"
+      onsubmit="return confirm('Stop processing for this recording?')"
+    >
+      <input type="hidden" name="tab" value="{{ current_tab }}">
+      <button type="submit" class="btn btn-danger">Stop</button>
+    </form>
+    {% endif %}
+  {% endif %}
   <a href="/recordings" class="btn" style="text-decoration:none">&#8592; Back</a>
 </div>
 
@@ -32,7 +48,7 @@
 </p>
 {% endif %}
 
-{% if rec.status == 'Processing' %}
+{% if rec.status in ['Processing', 'Stopping'] %}
 <div
   id="recording-progress"
   hx-get="/ui/recordings/{{ rec.id }}/progress?tab={{ current_tab }}"
@@ -62,8 +78,8 @@
     <span class="k">Status</span>
     <span class="v">
       <span class="badge s-{{ rec.status }}">{{ rec.status }}</span>
-      {% if rec.review_reason_text_display %}
-      <span style="color:#92400e">{{ rec.review_reason_text_display }}</span>
+      {% if rec.status_reason_text_display %}
+      <span style="color:#92400e">{{ rec.status_reason_text_display }}</span>
       {% endif %}
     </span>
     <span class="k">Captured at</span><span class="v">{{ rec.captured_at_display }}</span>
@@ -84,6 +100,15 @@
     <span class="k">Drive file ID</span><span class="v">{{ rec.drive_file_id or '—' }}</span>
     <span class="k">Quarantine reason</span><span class="v">{{ rec.quarantine_reason or '—' }}</span>
     <span class="k">Review reason</span><span class="v">{{ rec.review_reason_text_display or '—' }}</span>
+    <span class="k">Stop requested</span>
+    <span class="v">
+      {% if rec.cancel_requested_at_display != '—' %}
+      {{ rec.cancel_requested_at_display }}{% if rec.cancel_requested_by_display %} by {{ rec.cancel_requested_by_display }}{% endif %}
+      {% else %}
+      —
+      {% endif %}
+    </span>
+    <span class="k">Stop reason</span><span class="v">{{ rec.cancel_reason_text_display or '—' }}</span>
     <span class="k">Created at</span><span class="v">{{ rec.created_at_display }}</span>
     <span class="k">Updated at</span><span class="v">{{ rec.updated_at_display }}</span>
   </div>

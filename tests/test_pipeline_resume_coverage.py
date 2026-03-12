@@ -16,12 +16,17 @@ from lan_app.constants import (
     RECORDING_STATUS_NEEDS_REVIEW,
     RECORDING_STATUS_QUARANTINE,
     RECORDING_STATUS_READY,
+    RECORDING_STATUS_STOPPED,
+    RECORDING_STATUS_STOPPING,
 )
 from lan_app.db import (
     create_recording,
     init_db,
+    list_recording_llm_chunk_states,
+    list_recording_pipeline_stages,
     mark_recording_pipeline_stage_completed,
     mark_recording_pipeline_stage_skipped,
+    set_recording_cancel_request,
 )
 from lan_transcriber.pipeline import PrecheckResult
 from lan_transcriber.pipeline_steps.diarization_quality import SpeakerTurnSmoothingResult
@@ -932,3 +937,145 @@ def test_run_precheck_pipeline_covers_all_valid_and_invalidated_stage_rows(
         log_path=worker_tasks._step_log_path("rec-pipeline-none-row", JOB_TYPE_PRECHECK, cfg),
     )
     assert outcome.status == RECORDING_STATUS_READY
+
+
+def test_run_precheck_pipeline_stops_after_completed_stage_when_cancel_requested(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = _cfg(tmp_path)
+    init_db(cfg)
+    create_recording(
+        "rec-pipeline-stop-1",
+        source="test",
+        source_filename="stop.wav",
+        settings=cfg,
+    )
+    stages = (
+        pipeline_stages.PIPELINE_STAGE_DEFINITIONS[0],
+        pipeline_stages.PIPELINE_STAGE_DEFINITIONS[1],
+    )
+    monkeypatch.setattr(worker_tasks, "PIPELINE_STAGE_DEFINITIONS", stages)
+    stage2_called = {"value": False}
+
+    def _stage_one(_ctx):
+        set_recording_cancel_request(
+            "rec-pipeline-stop-1",
+            requested_by="user",
+            reason_code="user_stop",
+            reason_text="Stop requested by user",
+            settings=cfg,
+        )
+        return worker_tasks._StageResult(status="completed")  # noqa: SLF001
+
+    def _stage_two(_ctx):
+        stage2_called["value"] = True
+        return worker_tasks._StageResult(status="completed")  # noqa: SLF001
+
+    monkeypatch.setitem(worker_tasks._PIPELINE_STAGE_RUNNERS, stages[0].name, _stage_one)
+    monkeypatch.setitem(worker_tasks._PIPELINE_STAGE_RUNNERS, stages[1].name, _stage_two)
+
+    outcome = worker_tasks._run_precheck_pipeline(  # noqa: SLF001
+        recording_id="rec-pipeline-stop-1",
+        settings=cfg,
+        log_path=worker_tasks._step_log_path("rec-pipeline-stop-1", JOB_TYPE_PRECHECK, cfg),
+    )
+
+    assert outcome.status == RECORDING_STATUS_STOPPED
+    assert stage2_called["value"] is False
+    stage_rows = list_recording_pipeline_stages("rec-pipeline-stop-1", settings=cfg)
+    assert [(row["stage_name"], row["status"]) for row in stage_rows] == [
+        (stages[0].name, "completed")
+    ]
+    recording = worker_tasks.get_recording("rec-pipeline-stop-1", settings=cfg) or {}
+    assert recording["cancel_reason_text"] == "Cancelled by user"
+    log_text = (
+        cfg.recordings_root / "rec-pipeline-stop-1" / "logs" / "step-precheck.log"
+    ).read_text(encoding="utf-8")
+    assert "cancelled_by_user stage=sanitize_audio checkpoint=after_stage" in log_text
+
+
+def test_stage_llm_extract_stop_after_current_chunk_marks_completed_chunk_only(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg, ctx = _new_ctx(tmp_path, "rec-llm-stop-1")
+    ctx.precheck_result = PrecheckResult(
+        duration_sec=45.0,
+        speech_ratio=0.8,
+        quarantine_reason=None,
+    )
+    monkeypatch.setattr(
+        worker_tasks,
+        "_load_language_analysis_artifact",
+        lambda _ctx: {
+            "segments": [{"text": "hello world today"}],
+            "target_summary_language": "en",
+        },
+    )
+    monkeypatch.setattr(
+        worker_tasks,
+        "_load_json_list",
+        lambda _path: [{"speaker": "S1", "text": "hello world today", "start": 0.0, "end": 1.0}],
+    )
+    monkeypatch.setattr(worker_tasks, "_load_calendar_summary_context", lambda *_a, **_k: ("Weekly Sync", ["Ada"]))
+    monkeypatch.setattr(worker_tasks.pipeline_orchestrator, "_require_llm_model", lambda _model: "test-model")
+    monkeypatch.setattr(worker_tasks.pipeline_orchestrator, "_sentiment_score", lambda _text: 3)
+    monkeypatch.setattr(worker_tasks.pipeline_orchestrator, "_speaker_turn_prompt_text", lambda *_a, **_k: "Prompt text")
+    monkeypatch.setattr(worker_tasks.pipeline_orchestrator, "_use_chunked_llm", lambda *_a, **_k: True)
+    monkeypatch.setattr(worker_tasks, "load_speaker_aliases", lambda _path: {})
+
+    class _FakeLLM:
+        async def generate(self, *_args, **_kwargs):
+            return {"content": "{}"}
+
+    monkeypatch.setattr(worker_tasks, "LLMClient", lambda: _FakeLLM())
+    seen = {"second_chunk_started": False}
+
+    async def _fake_run_chunked_llm_summary(*, llm, chunk_state_store, **_kwargs):
+        chunk_state_store.mark_started(
+            chunk_group="extract",
+            chunk_index="1",
+            chunk_total=2,
+            metadata={"chunk_id": "1"},
+        )
+        await llm.generate(system_prompt="sys", user_prompt="user", model="test-model")
+        set_recording_cancel_request(
+            "rec-llm-stop-1",
+            requested_by="user",
+            reason_code="user_stop",
+            reason_text="Stop requested by user",
+            settings=cfg,
+        )
+        worker_tasks.set_recording_status(
+            "rec-llm-stop-1",
+            RECORDING_STATUS_STOPPING,
+            settings=cfg,
+        )
+        chunk_state_store.mark_completed(
+            chunk_group="extract",
+            chunk_index="1",
+            chunk_total=2,
+            metadata={"chunk_id": "1"},
+        )
+        seen["second_chunk_started"] = True
+        chunk_state_store.mark_started(
+            chunk_group="extract",
+            chunk_index="2",
+            chunk_total=2,
+            metadata={"chunk_id": "2"},
+        )
+        return {"status": "ok"}
+
+    monkeypatch.setattr(
+        worker_tasks.pipeline_orchestrator,
+        "_run_chunked_llm_summary",
+        _fake_run_chunked_llm_summary,
+    )
+
+    with pytest.raises(worker_tasks.RecordingStopRequested):
+        worker_tasks._stage_llm_extract(ctx)  # noqa: SLF001
+
+    assert seen["second_chunk_started"] is False
+    chunk_rows = list_recording_llm_chunk_states("rec-llm-stop-1", settings=cfg)
+    assert [(row["chunk_index"], row["status"]) for row in chunk_rows] == [("1", "completed")]

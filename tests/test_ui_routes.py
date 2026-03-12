@@ -35,6 +35,7 @@ from lan_app.db import (
     replace_calendar_events_for_window,
     replace_participant_metrics,
     list_voice_profiles,
+    set_recording_cancel_request,
     set_recording_progress,
     set_speaker_assignment,
     update_glossary_entry,
@@ -43,12 +44,17 @@ from lan_app.db import (
 )
 from lan_app.constants import (
     JOB_STATUS_FAILED,
+    JOB_STATUS_FINISHED,
     JOB_STATUS_QUEUED,
+    JOB_STATUS_STARTED,
     JOB_TYPE_PRECHECK,
     JOB_TYPE_STT,
     RECORDING_STATUS_NEEDS_REVIEW,
     RECORDING_STATUS_PROCESSING,
     RECORDING_STATUS_READY,
+    RECORDING_STATUS_QUEUED,
+    RECORDING_STATUS_STOPPED,
+    RECORDING_STATUS_STOPPING,
 )
 
 
@@ -307,6 +313,56 @@ def test_recording_detail_overview(seeded_client):
     assert 'data-rlabel="meeting.mp3"' in r.text
     assert 'href="/ui/recordings/rec-ui-1/export.zip"' in r.text
     assert 'hx-boost="false"' in r.text
+
+
+@pytest.mark.parametrize(
+    ("status", "expects_stop", "expects_disabled"),
+    [
+        (RECORDING_STATUS_QUEUED, True, False),
+        (RECORDING_STATUS_PROCESSING, True, False),
+        (RECORDING_STATUS_STOPPING, False, True),
+        (RECORDING_STATUS_STOPPED, False, False),
+        (RECORDING_STATUS_READY, False, False),
+    ],
+)
+def test_recording_detail_stop_button_visibility(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    status: str,
+    expects_stop: bool,
+    expects_disabled: bool,
+) -> None:
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    init_db(cfg)
+    create_recording(
+        "rec-ui-stop-visibility-1",
+        source="upload",
+        source_filename="stop.wav",
+        status=status,
+        settings=cfg,
+    )
+    if status == RECORDING_STATUS_STOPPING:
+        set_recording_cancel_request(
+            "rec-ui-stop-visibility-1",
+            requested_by="user",
+            reason_code="user_stop",
+            reason_text="Stop requested by user",
+            settings=cfg,
+        )
+
+    c = TestClient(api.app, follow_redirects=True)
+    r = c.get("/recordings/rec-ui-stop-visibility-1")
+    assert r.status_code == 200
+    if expects_stop:
+        assert "/ui/recordings/rec-ui-stop-visibility-1/stop" in r.text
+    else:
+        assert "/ui/recordings/rec-ui-stop-visibility-1/stop" not in r.text
+    if expects_disabled:
+        assert "Stopping..." in r.text
+    else:
+        assert "Stopping..." not in r.text
 
 
 def test_recording_detail_overview_shows_asr_glossary_context(tmp_path, monkeypatch):
@@ -1582,6 +1638,139 @@ def test_ui_action_quarantine(seeded_client):
 def test_ui_action_quarantine_not_found(client):
     r = client.post("/ui/recordings/no-such-rec/quarantine")
     assert r.status_code == 404
+
+
+def test_ui_action_stop_queued_recording_immediately_stops_and_finishes_queued_job(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    init_db(cfg)
+    create_recording(
+        "rec-stop-queued-1",
+        source="upload",
+        source_filename="queued.wav",
+        status=RECORDING_STATUS_QUEUED,
+        settings=cfg,
+    )
+    create_job(
+        "job-stop-queued-1",
+        recording_id="rec-stop-queued-1",
+        job_type=JOB_TYPE_PRECHECK,
+        settings=cfg,
+        status=JOB_STATUS_QUEUED,
+    )
+    set_recording_progress(
+        "rec-stop-queued-1",
+        stage="asr",
+        progress=0.4,
+        settings=cfg,
+    )
+    monkeypatch.setattr(
+        ui_routes,
+        "purge_pending_recording_jobs",
+        lambda *_args, **_kwargs: 1,
+    )
+
+    c = TestClient(api.app, follow_redirects=False)
+    r = c.post("/ui/recordings/rec-stop-queued-1/stop", data={"tab": "overview"})
+    assert r.status_code == 303
+    assert r.headers["location"] == "/recordings/rec-stop-queued-1"
+
+    recording = get_recording("rec-stop-queued-1", settings=cfg) or {}
+    job = ui_routes.get_job("job-stop-queued-1", settings=cfg) or {}
+    assert recording["status"] == RECORDING_STATUS_STOPPED
+    assert recording["cancel_requested_by"] == "user"
+    assert recording["cancel_reason_code"] == "user_stop"
+    assert recording["cancel_reason_text"] == "Cancelled by user"
+    assert recording["pipeline_stage"] is None
+    assert recording["pipeline_progress"] is None
+    assert job["status"] == JOB_STATUS_FINISHED
+    assert job["error"] == "cancelled_by_user"
+
+
+def test_ui_action_stop_processing_recording_sets_stopping_request(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    init_db(cfg)
+    create_recording(
+        "rec-stop-processing-1",
+        source="upload",
+        source_filename="processing.wav",
+        status=RECORDING_STATUS_PROCESSING,
+        settings=cfg,
+    )
+    create_job(
+        "job-stop-processing-1",
+        recording_id="rec-stop-processing-1",
+        job_type=JOB_TYPE_PRECHECK,
+        settings=cfg,
+        status=JOB_STATUS_STARTED,
+    )
+
+    c = TestClient(api.app, follow_redirects=False)
+    r = c.post(
+        "/ui/recordings/rec-stop-processing-1/stop",
+        data={"tab": "log"},
+    )
+    assert r.status_code == 303
+    assert r.headers["location"] == "/recordings/rec-stop-processing-1?tab=log"
+
+    recording = get_recording("rec-stop-processing-1", settings=cfg) or {}
+    job = ui_routes.get_job("job-stop-processing-1", settings=cfg) or {}
+    assert recording["status"] == RECORDING_STATUS_STOPPING
+    assert recording["cancel_requested_at"]
+    assert recording["cancel_requested_by"] == "user"
+    assert recording["cancel_reason_code"] == "user_stop"
+    assert recording["cancel_reason_text"] == "Stop requested by user"
+    assert job["status"] == JOB_STATUS_STARTED
+
+
+def test_ui_action_stop_duplicate_request_does_not_corrupt_existing_stop_request(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    init_db(cfg)
+    create_recording(
+        "rec-stop-dup-1",
+        source="upload",
+        source_filename="dup.wav",
+        status=RECORDING_STATUS_STOPPING,
+        settings=cfg,
+    )
+    create_job(
+        "job-stop-dup-1",
+        recording_id="rec-stop-dup-1",
+        job_type=JOB_TYPE_PRECHECK,
+        settings=cfg,
+        status=JOB_STATUS_STARTED,
+    )
+    set_recording_cancel_request(
+        "rec-stop-dup-1",
+        requested_by="user",
+        reason_code="user_stop",
+        reason_text="Stop requested by user",
+        settings=cfg,
+    )
+    before = get_recording("rec-stop-dup-1", settings=cfg) or {}
+
+    c = TestClient(api.app, follow_redirects=False)
+    r = c.post("/ui/recordings/rec-stop-dup-1/stop", data={"tab": "overview"})
+    assert r.status_code == 303
+
+    after = get_recording("rec-stop-dup-1", settings=cfg) or {}
+    assert after["status"] == RECORDING_STATUS_STOPPING
+    assert after["cancel_requested_at"] == before["cancel_requested_at"]
+    assert after["cancel_reason_text"] == "Stop requested by user"
 
 
 def test_ui_action_delete(tmp_path, monkeypatch):

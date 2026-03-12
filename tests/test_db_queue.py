@@ -36,9 +36,13 @@ from lan_app.constants import (
     RECORDING_STATUS_QUARANTINE,
     RECORDING_STATUS_QUEUED,
     RECORDING_STATUS_READY,
+    RECORDING_STATUS_STOPPED,
+    RECORDING_STATUS_STOPPING,
 )
 from lan_app.db import (
+    acknowledge_recording_cancel_request,
     clear_recording_progress,
+    clear_recording_cancel_request,
     connect,
     connect_db,
     create_job,
@@ -49,6 +53,7 @@ from lan_app.db import (
     get_recording,
     init_db,
     list_jobs,
+    set_recording_cancel_request,
     set_recording_duration,
     set_recording_progress,
     set_recording_status,
@@ -218,6 +223,62 @@ def test_recording_duration_and_review_reason_helpers(tmp_path: Path) -> None:
     assert set_recording_duration("rec-review-helpers-1", None, settings=cfg)
     duration_cleared = get_recording("rec-review-helpers-1", settings=cfg) or {}
     assert duration_cleared["duration_sec"] is None
+
+
+def test_recording_stop_status_and_cancel_helpers_round_trip(tmp_path: Path) -> None:
+    cfg = _test_settings(tmp_path)
+    init_db(cfg)
+    create_recording(
+        "rec-stop-helpers-1",
+        source="test",
+        source_filename="stop.wav",
+        status=RECORDING_STATUS_PROCESSING,
+        settings=cfg,
+    )
+
+    assert set_recording_cancel_request(
+        "rec-stop-helpers-1",
+        requested_by="user",
+        reason_code="user_stop",
+        reason_text="Stop requested by user",
+        settings=cfg,
+    )
+    assert set_recording_status(
+        "rec-stop-helpers-1",
+        RECORDING_STATUS_STOPPING,
+        settings=cfg,
+    )
+
+    requested = get_recording("rec-stop-helpers-1", settings=cfg) or {}
+    assert requested["status"] == RECORDING_STATUS_STOPPING
+    assert requested["cancel_requested_at"]
+    assert requested["cancel_requested_by"] == "user"
+    assert requested["cancel_reason_code"] == "user_stop"
+    assert requested["cancel_reason_text"] == "Stop requested by user"
+
+    assert acknowledge_recording_cancel_request(
+        "rec-stop-helpers-1",
+        reason_code="user_stop",
+        reason_text="Cancelled by user",
+        settings=cfg,
+    )
+    assert set_recording_status(
+        "rec-stop-helpers-1",
+        RECORDING_STATUS_STOPPED,
+        settings=cfg,
+    )
+
+    stopped = get_recording("rec-stop-helpers-1", settings=cfg) or {}
+    assert stopped["status"] == RECORDING_STATUS_STOPPED
+    assert stopped["cancel_reason_code"] == "user_stop"
+    assert stopped["cancel_reason_text"] == "Cancelled by user"
+
+    assert clear_recording_cancel_request("rec-stop-helpers-1", settings=cfg)
+    cleared = get_recording("rec-stop-helpers-1", settings=cfg) or {}
+    assert cleared["cancel_requested_at"] is None
+    assert cleared["cancel_requested_by"] is None
+    assert cleared["cancel_reason_code"] is None
+    assert cleared["cancel_reason_text"] is None
 
 
 def test_set_recording_duration_can_skip_updated_at_mutation(
@@ -1527,6 +1588,44 @@ def test_enqueue_sets_recording_status_to_queued_on_success(tmp_path: Path, monk
     assert recording["status"] == RECORDING_STATUS_QUEUED
 
 
+def test_enqueue_clears_cancel_request_markers_on_success(tmp_path: Path, monkeypatch):
+    cfg = _test_settings(tmp_path)
+    init_db(cfg)
+    create_recording(
+        "rec-requeue-stop-1",
+        source="test",
+        source_filename="retry-stop.mp3",
+        status=RECORDING_STATUS_STOPPED,
+        settings=cfg,
+    )
+    set_recording_cancel_request(
+        "rec-requeue-stop-1",
+        requested_by="user",
+        reason_code="user_stop",
+        reason_text="Cancelled by user",
+        settings=cfg,
+    )
+
+    class _QueueOK:
+        def enqueue(self, *_args, **_kwargs):
+            return None
+
+    monkeypatch.setattr("lan_app.jobs.get_queue", lambda _cfg: _QueueOK())
+
+    enqueue_recording_job(
+        "rec-requeue-stop-1",
+        job_type=JOB_TYPE_PRECHECK,
+        settings=cfg,
+    )
+    recording = get_recording("rec-requeue-stop-1", settings=cfg)
+    assert recording is not None
+    assert recording["status"] == RECORDING_STATUS_QUEUED
+    assert recording["cancel_requested_at"] is None
+    assert recording["cancel_requested_by"] is None
+    assert recording["cancel_reason_code"] is None
+    assert recording["cancel_reason_text"] is None
+
+
 def test_enqueue_uses_configured_rq_job_timeout(tmp_path: Path, monkeypatch):
     cfg = _test_settings(tmp_path)
     cfg.rq_job_timeout_seconds = 321
@@ -1881,6 +1980,68 @@ def test_worker_precheck_runs_pipeline_when_safe(tmp_path: Path, monkeypatch):
     assert recording["pipeline_updated_at"] is None
     assert job is not None
     assert job["status"] == JOB_STATUS_FINISHED
+
+
+def test_worker_precheck_finishes_with_stopped_status_when_cancel_acknowledged(
+    tmp_path: Path,
+    monkeypatch,
+):
+    cfg = _test_settings(tmp_path)
+    monkeypatch.setenv("LAN_DATA_ROOT", str(cfg.data_root))
+    monkeypatch.setenv("LAN_RECORDINGS_ROOT", str(cfg.recordings_root))
+    monkeypatch.setenv("LAN_DB_PATH", str(cfg.db_path))
+    monkeypatch.setenv("LAN_PROM_SNAPSHOT_PATH", str(cfg.metrics_snapshot_path))
+
+    init_db(cfg)
+    create_recording(
+        "rec-precheck-stop-1",
+        source="test",
+        source_filename="stop.wav",
+        settings=cfg,
+    )
+    create_job(
+        "job-precheck-stop-1",
+        recording_id="rec-precheck-stop-1",
+        job_type=JOB_TYPE_PRECHECK,
+        settings=cfg,
+    )
+    set_recording_cancel_request(
+        "rec-precheck-stop-1",
+        requested_by="user",
+        reason_code="user_stop",
+        reason_text="Stop requested by user",
+        settings=cfg,
+    )
+    set_recording_status(
+        "rec-precheck-stop-1",
+        RECORDING_STATUS_STOPPING,
+        settings=cfg,
+    )
+
+    monkeypatch.setattr(
+        "lan_app.worker_tasks._run_precheck_pipeline",
+        lambda **_kwargs: worker_tasks.PipelineTerminalState(
+            status=RECORDING_STATUS_STOPPED
+        ),
+    )
+
+    result = process_job(
+        "job-precheck-stop-1",
+        "rec-precheck-stop-1",
+        JOB_TYPE_PRECHECK,
+    )
+    assert result["status"] == "ok"
+
+    recording = get_recording("rec-precheck-stop-1", settings=cfg)
+    job = get_job("job-precheck-stop-1", settings=cfg)
+    assert recording is not None
+    assert recording["status"] == RECORDING_STATUS_STOPPED
+    assert recording["cancel_reason_text"] == "Cancelled by user"
+    assert recording["pipeline_stage"] is None
+    assert recording["pipeline_progress"] is None
+    assert job is not None
+    assert job["status"] == JOB_STATUS_FINISHED
+    assert job["error"] == "cancelled_by_user"
 
 
 def test_worker_precheck_falls_back_when_diariser_init_fails(tmp_path: Path, monkeypatch):

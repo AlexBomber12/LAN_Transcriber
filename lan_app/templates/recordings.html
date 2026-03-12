@@ -44,13 +44,17 @@
       <td title="{{ r.source_filename }}">{{ r.source_filename }}</td>
       <td>
         <span class="badge s-{{ r.status }}">{{ r.status }}</span>
-        {% if r.review_reason_text_display %}
-        <span style="display:block;margin-top:4px;color:#92400e">{{ r.review_reason_text_display }}</span>
+        {% if r.status_reason_text_display %}
+        <span style="display:block;margin-top:4px;color:#92400e">{{ r.status_reason_text_display }}</span>
         {% endif %}
       </td>
       <td style="max-width:140px">
         {% if r.status == "Processing" %}
         {{ r.progress_percent }}% {{ r.progress_stage_label }}
+        {% elif r.status == "Stopping" and r.pipeline_progress is not none %}
+        {{ r.progress_percent }}% {{ r.progress_stage_label }}
+        {% elif r.status == "Stopping" %}
+        Stop requested
         {% elif r.status == "Queued" %}
         {{ r.progress_percent }}% {{ r.progress_stage_label }}
         {% elif r.status in ["Ready", "NeedsReview", "Published"] %}

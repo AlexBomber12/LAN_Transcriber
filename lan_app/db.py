@@ -22,6 +22,8 @@ from .constants import (
     RECORDING_STATUS_PUBLISHED,
     RECORDING_STATUS_QUEUED,
     RECORDING_STATUS_QUARANTINE,
+    RECORDING_STATUS_STOPPED,
+    RECORDING_STATUS_STOPPING,
 )
 from .pipeline_stages import (
     stage_order as pipeline_stage_order,
@@ -1759,6 +1761,123 @@ def set_recording_duration(
     return with_db_retry(_update)
 
 
+def set_recording_cancel_request(
+    recording_id: str,
+    *,
+    requested_by: str | None,
+    reason_code: str | None,
+    reason_text: str | None,
+    settings: AppSettings | None = None,
+) -> bool:
+    init_db(settings)
+    now = _utc_now()
+    requested_by_value = str(requested_by or "").strip() or None
+    reason_code_value = str(reason_code or "").strip() or None
+    reason_text_value = str(reason_text or "").strip() or None
+
+    def _update() -> bool:
+        with connect(settings) as conn:
+            updated = conn.execute(
+                """
+                UPDATE recordings
+                SET
+                    cancel_requested_at = ?,
+                    cancel_requested_by = ?,
+                    cancel_reason_code = ?,
+                    cancel_reason_text = ?,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    now,
+                    requested_by_value,
+                    reason_code_value,
+                    reason_text_value,
+                    now,
+                    recording_id,
+                ),
+            )
+            conn.commit()
+            return updated.rowcount > 0
+
+    return with_db_retry(_update)
+
+
+def acknowledge_recording_cancel_request(
+    recording_id: str,
+    *,
+    reason_code: str | None = None,
+    reason_text: str | None = None,
+    settings: AppSettings | None = None,
+) -> bool:
+    init_db(settings)
+    now = _utc_now()
+    reason_code_value = str(reason_code or "").strip() or None
+    reason_text_value = str(reason_text or "").strip() or None
+
+    def _update() -> bool:
+        with connect(settings) as conn:
+            updated = conn.execute(
+                """
+                UPDATE recordings
+                SET
+                    cancel_reason_code = COALESCE(?, cancel_reason_code),
+                    cancel_reason_text = COALESCE(?, cancel_reason_text),
+                    updated_at = ?
+                WHERE id = ?
+                  AND (
+                        cancel_requested_at IS NOT NULL
+                     OR status = ?
+                     OR status = ?
+                  )
+                """,
+                (
+                    reason_code_value,
+                    reason_text_value,
+                    now,
+                    recording_id,
+                    RECORDING_STATUS_STOPPING,
+                    RECORDING_STATUS_STOPPED,
+                ),
+            )
+            conn.commit()
+            return updated.rowcount > 0
+
+    return with_db_retry(_update)
+
+
+def clear_recording_cancel_request(
+    recording_id: str,
+    *,
+    settings: AppSettings | None = None,
+) -> bool:
+    init_db(settings)
+    now = _utc_now()
+
+    def _clear() -> bool:
+        with connect(settings) as conn:
+            updated = conn.execute(
+                """
+                UPDATE recordings
+                SET
+                    cancel_requested_at = NULL,
+                    cancel_requested_by = NULL,
+                    cancel_reason_code = NULL,
+                    cancel_reason_text = NULL,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    now,
+                    recording_id,
+                ),
+            )
+            conn.commit()
+            return updated.rowcount > 0
+
+    return with_db_retry(_clear)
+
+
 def set_recording_status(
     recording_id: str,
     status: str,
@@ -2597,6 +2716,34 @@ def finish_job(
         error=error,
         settings=settings,
     )
+
+
+def finish_job_if_queued(
+    job_id: str,
+    *,
+    settings: AppSettings | None = None,
+    error: str | None = None,
+) -> bool:
+    init_db(settings)
+    now = _utc_now()
+    with connect(settings) as conn:
+        updated = conn.execute(
+            """
+            UPDATE jobs
+            SET status = ?, error = ?, finished_at = ?, updated_at = ?
+            WHERE id = ? AND status = ?
+            """,
+            (
+                JOB_STATUS_FINISHED,
+                error,
+                now,
+                now,
+                job_id,
+                JOB_STATUS_QUEUED,
+            ),
+        )
+        conn.commit()
+    return updated.rowcount > 0
 
 
 def finish_job_if_started(
@@ -4179,6 +4326,9 @@ __all__ = [
     "set_recording_duration",
     "set_recording_progress",
     "clear_recording_progress",
+    "set_recording_cancel_request",
+    "acknowledge_recording_cancel_request",
+    "clear_recording_cancel_request",
     "list_recording_pipeline_stages",
     "upsert_recording_pipeline_stage",
     "mark_recording_pipeline_stage_started",
@@ -4216,6 +4366,7 @@ __all__ = [
     "requeue_job",
     "requeue_job_if_started",
     "finish_job",
+    "finish_job_if_queued",
     "finish_job_if_started",
     "fail_job",
     "fail_job_if_started",

@@ -492,7 +492,7 @@ Queue (in order)
 - Depends on: PR-LLM-CHUNK-COMPACTION-01 and PR-PIPELINE-CHECKPOINTS-RESUME-01
 
 97) PR-STOP-CANCEL-01: Soft Stop from UI: stop button, durable cancel requests, queued-job cancel, and worker cooperative checkpoints
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-STOP-CANCEL-01.md
 - Depends on: PR-LLM-CHUNK-RESUME-TIMEOUTS-01
 

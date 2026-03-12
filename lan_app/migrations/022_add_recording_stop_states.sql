@@ -1,0 +1,133 @@
+PRAGMA foreign_keys = OFF;
+
+CREATE TABLE recordings_new (
+    id TEXT PRIMARY KEY,
+    source TEXT NOT NULL,
+    source_filename TEXT NOT NULL,
+    captured_at TEXT NOT NULL,
+    duration_sec INTEGER,
+    status TEXT NOT NULL CHECK(
+        status IN (
+            'Queued',
+            'Processing',
+            'Stopping',
+            'Stopped',
+            'NeedsReview',
+            'Ready',
+            'Published',
+            'Quarantine',
+            'Failed'
+        )
+    ),
+    quarantine_reason TEXT,
+    language_auto TEXT,
+    language_override TEXT,
+    project_id INTEGER,
+    onenote_page_id TEXT,
+    drive_file_id TEXT,
+    drive_md5 TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    target_summary_language TEXT,
+    onenote_page_url TEXT,
+    suggested_project_id INTEGER,
+    routing_confidence REAL,
+    routing_rationale_json TEXT NOT NULL DEFAULT '[]',
+    project_assignment_source TEXT,
+    pipeline_stage TEXT,
+    pipeline_progress REAL,
+    pipeline_updated_at TEXT,
+    last_warning TEXT,
+    review_reason_code TEXT,
+    review_reason_text TEXT,
+    captured_at_source TEXT,
+    captured_at_timezone TEXT,
+    captured_at_inferred_from_filename INTEGER NOT NULL DEFAULT 0 CHECK(captured_at_inferred_from_filename IN (0, 1)),
+    cancel_requested_at TEXT,
+    cancel_requested_by TEXT,
+    cancel_reason_code TEXT,
+    cancel_reason_text TEXT,
+    FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE SET NULL
+);
+
+INSERT INTO recordings_new (
+    id,
+    source,
+    source_filename,
+    captured_at,
+    duration_sec,
+    status,
+    quarantine_reason,
+    language_auto,
+    language_override,
+    project_id,
+    onenote_page_id,
+    drive_file_id,
+    drive_md5,
+    created_at,
+    updated_at,
+    target_summary_language,
+    onenote_page_url,
+    suggested_project_id,
+    routing_confidence,
+    routing_rationale_json,
+    project_assignment_source,
+    pipeline_stage,
+    pipeline_progress,
+    pipeline_updated_at,
+    last_warning,
+    review_reason_code,
+    review_reason_text,
+    captured_at_source,
+    captured_at_timezone,
+    captured_at_inferred_from_filename,
+    cancel_requested_at,
+    cancel_requested_by,
+    cancel_reason_code,
+    cancel_reason_text
+)
+SELECT
+    id,
+    source,
+    source_filename,
+    captured_at,
+    duration_sec,
+    status,
+    quarantine_reason,
+    language_auto,
+    language_override,
+    project_id,
+    onenote_page_id,
+    drive_file_id,
+    drive_md5,
+    created_at,
+    updated_at,
+    target_summary_language,
+    onenote_page_url,
+    suggested_project_id,
+    routing_confidence,
+    routing_rationale_json,
+    project_assignment_source,
+    pipeline_stage,
+    pipeline_progress,
+    pipeline_updated_at,
+    last_warning,
+    review_reason_code,
+    review_reason_text,
+    captured_at_source,
+    captured_at_timezone,
+    captured_at_inferred_from_filename,
+    NULL,
+    NULL,
+    NULL,
+    NULL
+FROM recordings;
+
+DROP TABLE recordings;
+ALTER TABLE recordings_new RENAME TO recordings;
+
+CREATE INDEX IF NOT EXISTS idx_recordings_status ON recordings(status);
+CREATE INDEX IF NOT EXISTS idx_recordings_created_at ON recordings(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_recordings_suggested_project_id ON recordings(suggested_project_id);
+
+PRAGMA foreign_keys = ON;

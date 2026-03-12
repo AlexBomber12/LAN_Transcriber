@@ -48,6 +48,9 @@ docker compose run --rm api python -m lan_app.healthchecks app
 4. Track upload and processing progress per file on `/upload`.
 5. Open `/recordings/{recording_id}` for transcript, summary, and export actions.
    - `NeedsReview` recordings show an explicit review reason in the recordings list and detail page.
+   - `Stop` on a queued recording removes the queued job immediately and marks the recording `Stopped`.
+   - `Stop` on a running recording changes the status to `Stopping`; the worker exits at the next stage or LLM chunk checkpoint, then finalizes the recording as `Stopped`.
+   - A stopped recording stays stopped until you explicitly `Requeue` it.
    - The server-rendered UI shows timestamps in local Europe/Rome time.
    - Plaud-style filename timestamps are interpreted in `UPLOAD_CAPTURE_TIMEZONE` (default `Europe/Rome`), then stored in UTC in the database.
    - Legacy upload rows created before this fix are backfilled automatically once after upgrade when the app initializes the database.
