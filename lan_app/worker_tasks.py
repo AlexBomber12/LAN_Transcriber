@@ -3222,6 +3222,22 @@ def process_job(job_id: str, recording_id: str, job_type: str) -> dict[str, str]
             ):
                 recording_before_run = get_recording(recording_id, settings=settings) or {}
                 current_status = str(recording_before_run.get("status") or "").strip()
+                if current_status == RECORDING_STATUS_STOPPED:
+                    try:
+                        finish_job_if_started(
+                            job_id,
+                            settings=settings,
+                            error="cancelled_by_user",
+                        )
+                    except Exception:
+                        pass
+                    _log_stale_inflight_execution(
+                        job_id=job_id,
+                        job_type=job_type,
+                        log_path=log_path,
+                        detail=f"recording_status={current_status}",
+                    )
+                    return _ignored_result(job_id, recording_id, job_type)
                 if current_status not in {
                     RECORDING_STATUS_PROCESSING,
                     RECORDING_STATUS_STOPPING,

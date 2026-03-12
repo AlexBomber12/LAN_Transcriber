@@ -2044,6 +2044,60 @@ def test_worker_precheck_finishes_with_stopped_status_when_cancel_acknowledged(
     assert job["error"] == "cancelled_by_user"
 
 
+def test_worker_ignores_stale_start_when_recording_already_stopped(
+    tmp_path: Path,
+    monkeypatch,
+):
+    cfg = _test_settings(tmp_path)
+    monkeypatch.setenv("LAN_DATA_ROOT", str(cfg.data_root))
+    monkeypatch.setenv("LAN_RECORDINGS_ROOT", str(cfg.recordings_root))
+    monkeypatch.setenv("LAN_DB_PATH", str(cfg.db_path))
+    monkeypatch.setenv("LAN_PROM_SNAPSHOT_PATH", str(cfg.metrics_snapshot_path))
+
+    init_db(cfg)
+    create_recording(
+        "rec-precheck-stopped-race-1",
+        source="test",
+        source_filename="stopped-race.wav",
+        status=RECORDING_STATUS_STOPPED,
+        settings=cfg,
+    )
+    create_job(
+        "job-precheck-stopped-race-1",
+        recording_id="rec-precheck-stopped-race-1",
+        job_type=JOB_TYPE_PRECHECK,
+        settings=cfg,
+    )
+
+    monkeypatch.setattr(
+        "lan_app.worker_tasks._run_precheck_pipeline",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("pipeline should not run")),
+    )
+
+    result = process_job(
+        "job-precheck-stopped-race-1",
+        "rec-precheck-stopped-race-1",
+        JOB_TYPE_PRECHECK,
+    )
+    assert result["status"] == "ignored"
+
+    recording = get_recording("rec-precheck-stopped-race-1", settings=cfg)
+    job = get_job("job-precheck-stopped-race-1", settings=cfg)
+    assert recording is not None
+    assert recording["status"] == RECORDING_STATUS_STOPPED
+    assert job is not None
+    assert job["status"] == JOB_STATUS_FINISHED
+    assert job["error"] == "cancelled_by_user"
+    step_log = (
+        cfg.recordings_root
+        / "rec-precheck-stopped-race-1"
+        / "logs"
+        / "step-precheck.log"
+    )
+    assert step_log.exists()
+    assert "ignored stale in-flight execution" in step_log.read_text(encoding="utf-8")
+
+
 def test_worker_precheck_falls_back_when_diariser_init_fails(tmp_path: Path, monkeypatch):
     cfg = _test_settings(tmp_path)
     monkeypatch.setenv("LAN_DATA_ROOT", str(cfg.data_root))

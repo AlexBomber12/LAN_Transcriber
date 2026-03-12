@@ -22,6 +22,7 @@ from lan_app.constants import (
     JOB_TYPE_STT,
     RECORDING_STATUS_QUEUED,
     RECORDING_STATUS_READY,
+    RECORDING_STATUS_STOPPED,
     RECORDING_STATUS_STOPPING,
 )
 from lan_app.db import create_recording, get_recording, init_db, set_recording_cancel_request
@@ -1970,6 +1971,61 @@ def test_process_job_precheck_stale_paths_cover_race_conditions(
         worker_tasks,
         "_job_status",
         lambda *_a, **_k: next(status_iter, JOB_STATUS_STARTED),
+    )
+    monkeypatch.setattr(worker_tasks, "set_recording_status_if_current_in", lambda *_a, **_k: False)
+    monkeypatch.setattr(worker_tasks, "get_recording", lambda *_a, **_k: {"status": RECORDING_STATUS_STOPPED})
+    finish_calls: list[str | None] = []
+    stale_details: list[str] = []
+    monkeypatch.setattr(
+        worker_tasks,
+        "finish_job_if_started",
+        lambda _job_id, *, settings=None, error=None: finish_calls.append(error) or True,
+    )
+    monkeypatch.setattr(
+        worker_tasks,
+        "_log_stale_inflight_execution",
+        lambda **kwargs: stale_details.append(str(kwargs["detail"])),
+    )
+    ignored_stopped = worker_tasks.process_job(
+        "job-precheck-stale-stop",
+        "rec-precheck-stale-stop",
+        JOB_TYPE_PRECHECK,
+    )
+    assert ignored_stopped["status"] == "ignored"
+    assert finish_calls == ["cancelled_by_user"]
+    assert stale_details == ["recording_status=Stopped"]
+
+    status_iter = iter([JOB_STATUS_STARTED, JOB_STATUS_STARTED])
+    monkeypatch.setattr(
+        worker_tasks,
+        "_job_status",
+        lambda *_a, **_k: next(status_iter, JOB_STATUS_STARTED),
+    )
+    monkeypatch.setattr(
+        worker_tasks,
+        "finish_job_if_started",
+        lambda _job_id, settings=None, error=None: (_ for _ in ()).throw(RuntimeError("db race")),
+    )
+    stale_details.clear()
+    ignored_stopped_with_error = worker_tasks.process_job(
+        "job-precheck-stale-stop-error",
+        "rec-precheck-stale-stop-error",
+        JOB_TYPE_PRECHECK,
+    )
+    assert ignored_stopped_with_error["status"] == "ignored"
+    assert stale_details == ["recording_status=Stopped"]
+
+    status_iter = iter([JOB_STATUS_STARTED, JOB_STATUS_STARTED])
+    monkeypatch.setattr(
+        worker_tasks,
+        "_job_status",
+        lambda *_a, **_k: next(status_iter, JOB_STATUS_STARTED),
+    )
+    monkeypatch.setattr(worker_tasks, "set_recording_status_if_current_in", lambda *_a, **_k: True)
+    monkeypatch.setattr(
+        worker_tasks,
+        "set_recording_status_if_current_in_and_job_started",
+        lambda *_a, **_k: False,
     )
     monkeypatch.setattr(worker_tasks, "get_recording", lambda *_a, **_k: {})
     with pytest.raises(ValueError, match="Recording not found"):
