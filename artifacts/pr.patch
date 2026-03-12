@@ -1,181 +1,2302 @@
-diff --git a/lan_app/db.py b/lan_app/db.py
-index d813cd8..da2781d 100644
---- a/lan_app/db.py
-+++ b/lan_app/db.py
-@@ -2487,7 +2487,7 @@ def list_processing_recordings_without_started_job(
-             FROM recordings AS r
-             LEFT JOIN projects AS p ON p.id = r.project_id
-             LEFT JOIN projects AS sp ON sp.id = r.suggested_project_id
--            WHERE r.status = ?
-+            WHERE r.status IN (?, ?)
-               AND (? IS NULL OR r.updated_at < ?)
-               AND NOT EXISTS (
-                     SELECT 1
-@@ -2506,6 +2506,7 @@ def list_processing_recordings_without_started_job(
-                 JOB_STATUS_QUEUED,
-                 JOB_STATUS_STARTED,
-                 RECORDING_STATUS_PROCESSING,
-+                RECORDING_STATUS_STOPPING,
-                 before_updated_at,
-                 before_updated_at,
-                 JOB_STATUS_STARTED,
-diff --git a/lan_app/reaper.py b/lan_app/reaper.py
-index 0ef3085..077b92b 100644
---- a/lan_app/reaper.py
-+++ b/lan_app/reaper.py
-@@ -11,6 +11,7 @@ from .constants import (
-     RECORDING_STATUS_NEEDS_REVIEW,
-     RECORDING_STATUS_PROCESSING,
-     RECORDING_STATUS_QUEUED,
-+    RECORDING_STATUS_STOPPING,
- )
- from .db import (
-     fail_job_if_queued,
-@@ -30,9 +31,13 @@ _RECOVERY_REVIEW_REASON_TEXT = (
- _STALE_DOWNGRADE_STATUSES = (
-     RECORDING_STATUS_QUEUED,
-     RECORDING_STATUS_PROCESSING,
-+    RECORDING_STATUS_STOPPING,
-     RECORDING_STATUS_NEEDS_REVIEW,
- )
--_ORPHAN_DOWNGRADE_STATUSES = (RECORDING_STATUS_PROCESSING,)
-+_ORPHAN_DOWNGRADE_STATUSES = (
-+    RECORDING_STATUS_PROCESSING,
-+    RECORDING_STATUS_STOPPING,
+diff --git a/README.md b/README.md
+index b628b6e..a076133 100644
+--- a/README.md
++++ b/README.md
+@@ -95,7 +95,7 @@ Operational setup, failure handling, backup/restore, and upgrade steps are docum
+    - Automatic worker retries now resume from the first incomplete or invalidated pipeline stage instead of restarting from raw sanitization every time.
+    - Explicit `Requeue` from the UI/API still clears saved stage checkpoints and forces a clean rerun from the beginning.
+    - `Stop` on a queued recording removes the queued job immediately and marks the recording `Stopped`.
+-   - `Stop` on a running recording changes the status to `Stopping`; the worker exits at the next stage or LLM chunk checkpoint, then finalizes the recording as `Stopped`.
++   - `Stop` on a running recording changes the status to `Stopping`; the worker first waits for the current heavy child process to finish cooperatively, then force-terminates it after `LAN_STOP_GRACE_SECONDS` when needed, and finally marks the recording `Stopped`.
+    - A stopped recording stays stopped until you explicitly `Requeue` it.
+    - Displayed timestamps are rendered in local Europe/Rome time in the server-rendered UI.
+    - Plaud-style filename timestamps are interpreted in `UPLOAD_CAPTURE_TIMEZONE` (default `Europe/Rome`), normalized to UTC in the database, and shown back in local time in the UI.
+diff --git a/docs/runbook.md b/docs/runbook.md
+index 0c19d2f..89ca7f0 100644
+--- a/docs/runbook.md
++++ b/docs/runbook.md
+@@ -29,10 +29,13 @@ This runbook covers day-2 operations for LAN deployment:
+    - `LLM_LONG_TRANSCRIPT_THRESHOLD_CHARS=4500`
+    - Optional: `LLM_MERGE_MAX_TOKENS=2048` when the final merge pass needs a larger JSON budget
+ 5. Long transcripts are processed in chunks. Before planning those chunks, the worker compacts the speaker-turn transcript to reduce prompt size while keeping speaker order and chunk-level time ranges. The UI may show `llm_chunk_X_of_Y` followed by `llm_merge`.
+-6. Automatic retries now resume from the failed or incomplete chunk set instead of starting long-transcript processing from chunk 1. Completed chunk extracts are validated before reuse, and a timed-out chunk can split into smaller child chunks automatically when it is still large enough.
+-7. Debug artifacts for that flow live under `derived/`, including `llm_compact_transcript.txt`, `llm_compact_transcript.json`, `llm_chunks_plan.json`, `llm_merge_input.json`, per-chunk `llm_chunk_*_{raw,extract,error}.json`, and `llm_merge_error.json` when the merge pass fails.
+-8. If you see `finish_reason=length` or empty `message.content`, increase `LLM_MAX_TOKENS` and `LLM_TIMEOUT_SECONDS` (and optionally `LLM_MERGE_MAX_TOKENS`).
+-9. Validate connectivity:
++6. Stop handling now has two levels:
++   - soft stop at the next safe checkpoint
++   - hard-stop escalation for the current heavy child process after `LAN_STOP_GRACE_SECONDS` (default `5`)
++7. Automatic retries now resume from the failed or incomplete chunk set instead of starting long-transcript processing from chunk 1. Completed chunk extracts are validated before reuse, and a timed-out chunk can split into smaller child chunks automatically when it is still large enough.
++8. Debug artifacts for that flow live under `derived/`, including `llm_compact_transcript.txt`, `llm_compact_transcript.json`, `llm_chunks_plan.json`, `llm_merge_input.json`, per-chunk `llm_chunk_*_{raw,extract,error}.json`, and `llm_merge_error.json` when the merge pass fails.
++9. If you see `finish_reason=length` or empty `message.content`, increase `LLM_MAX_TOKENS` and `LLM_TIMEOUT_SECONDS` (and optionally `LLM_MERGE_MAX_TOKENS`).
++10. Validate connectivity:
+ 
+ ```bash
+ docker compose run --rm api python -m lan_app.healthchecks app
+@@ -49,7 +52,7 @@ docker compose run --rm api python -m lan_app.healthchecks app
+ 5. Open `/recordings/{recording_id}` for transcript, summary, and export actions.
+    - `NeedsReview` recordings show an explicit review reason in the recordings list and detail page.
+    - `Stop` on a queued recording removes the queued job immediately and marks the recording `Stopped`.
+-   - `Stop` on a running recording changes the status to `Stopping`; the worker exits at the next stage or LLM chunk checkpoint, then finalizes the recording as `Stopped`.
++   - `Stop` on a running recording changes the status to `Stopping`; the worker first waits for the current heavy child process to exit cooperatively and then force-terminates it after `LAN_STOP_GRACE_SECONDS` when needed, before finalizing the recording as `Stopped`.
+    - A stopped recording stays stopped until you explicitly `Requeue` it.
+    - The server-rendered UI shows timestamps in local Europe/Rome time.
+    - Plaud-style filename timestamps are interpreted in `UPLOAD_CAPTURE_TIMEZONE` (default `Europe/Rome`), then stored in UTC in the database.
+diff --git a/lan_app/config.py b/lan_app/config.py
+index 6952805..e3e7347 100644
+--- a/lan_app/config.py
++++ b/lan_app/config.py
+@@ -166,6 +166,15 @@ class AppSettings(BaseSettings):
+             "RQ_JOB_TIMEOUT_SECONDS",
+         ),
+     )
++    stop_grace_seconds: float = Field(
++        default=5.0,
++        gt=0.0,
++        validation_alias=AliasChoices(
++            "stop_grace_seconds",
++            "LAN_STOP_GRACE_SECONDS",
++            "STOP_GRACE_SECONDS",
++        ),
++    )
+     max_job_attempts: int = Field(
+         default=3,
+         ge=1,
+diff --git a/lan_app/worker_tasks.py b/lan_app/worker_tasks.py
+index 5e500b0..1ad31c6 100644
+--- a/lan_app/worker_tasks.py
++++ b/lan_app/worker_tasks.py
+@@ -1,14 +1,17 @@
+ from __future__ import annotations
+ 
+ import asyncio
++from contextlib import contextmanager
+ from dataclasses import dataclass, field
+ from datetime import datetime, timezone
+ import inspect
+ import json
+ import logging
++import multiprocessing as mp
+ import os
+ from pathlib import Path
+ import re
++import shutil
+ import time
+ from types import SimpleNamespace
+ from typing import Any
+@@ -137,6 +140,16 @@ from .routing import refresh_recording_routing
+ 
+ _logger = logging.getLogger(__name__)
+ _ORIGINAL_RUN_PIPELINE = run_pipeline
++_ORIGINAL_LLM_CLIENT_CLASS = LLMClient
++_ORIGINAL_RUN_LANGUAGE_AWARE_ASR = run_language_aware_asr
++_ORIGINAL_BUILD_WHISPERX_TRANSCRIBER = pipeline_orchestrator._build_whisperx_transcriber
++_ORIGINAL_GLOSSARY_RUNTIME_METADATA = pipeline_orchestrator._glossary_runtime_metadata
++_ORIGINAL_MAYBE_RETRY_DIALOG_DIARIZATION = (
++    pipeline_orchestrator._maybe_retry_dialog_diarization
 +)
++_ORIGINAL_DIARISER_RUNTIME_METADATA = pipeline_orchestrator._diariser_runtime_metadata
++_ORIGINAL_DIARIZATION_SEGMENTS = _diarization_segments
++_FORCED_STOP_REASON_TEXT = "Force-stopped after grace timeout"
  
  
- def _utc_now() -> datetime:
-diff --git a/tests/test_reaper.py b/tests/test_reaper.py
-index 1151cff..da30058 100644
---- a/tests/test_reaper.py
-+++ b/tests/test_reaper.py
-@@ -13,6 +13,7 @@ from lan_app.constants import (
-     RECORDING_STATUS_PROCESSING,
-     RECORDING_STATUS_QUEUED,
-     RECORDING_STATUS_READY,
-+    RECORDING_STATUS_STOPPING,
- )
- from lan_app import db as db_module
- from lan_app.db import (
-@@ -190,6 +191,57 @@ def test_reaper_recovers_stale_started_job_when_recording_status_is_queued(
-     assert recording["status"] == RECORDING_STATUS_NEEDS_REVIEW
+ def _utc_now() -> str:
+@@ -329,17 +342,23 @@ class RecordingStopRequested(RuntimeError):
+         stop_request: _RecordingStopRequest,
+         chunk_index: str | None = None,
+         chunk_total: int | None = None,
++        forced: bool = False,
++        acknowledged_reason_text: str | None = None,
+     ) -> None:
+         self.stage_name = stage_name
+         self.checkpoint = checkpoint
+         self.stop_request = stop_request
+         self.chunk_index = chunk_index
+         self.chunk_total = chunk_total
++        self.forced = forced
++        self.acknowledged_reason_text = acknowledged_reason_text
+         detail = f"stage={stage_name} checkpoint={checkpoint}"
+         if chunk_index is not None:
+             detail += f" chunk_index={chunk_index}"
+         if chunk_total is not None:
+             detail += f" chunk_total={chunk_total}"
++        if forced:
++            detail += " forced=true"
+         super().__init__(detail)
  
  
-+def test_reaper_recovers_stale_started_job_when_recording_status_is_stopping(
-+    tmp_path: Path,
-+):
-+    cfg = _test_settings(tmp_path)
-+    init_db(cfg)
-+    create_recording(
-+        "rec-reaper-stale-stopping-1",
-+        source="test",
-+        source_filename="stale-stopping.wav",
-+        status=RECORDING_STATUS_STOPPING,
-+        settings=cfg,
+@@ -389,11 +408,12 @@ def _acknowledge_stop_requested(
+     *,
+     recording_id: str,
+     settings: AppSettings,
++    reason_text: str | None = None,
+ ) -> None:
+     acknowledge_recording_cancel_request(
+         recording_id,
+         reason_code=_STOP_REASON_CODE,
+-        reason_text=_STOPPED_REASON_TEXT,
++        reason_text=reason_text or _STOPPED_REASON_TEXT,
+         settings=settings,
+     )
+ 
+@@ -402,9 +422,18 @@ def _stop_terminal_state(
+     *,
+     recording_id: str,
+     settings: AppSettings,
++    reason_text: str | None = None,
+ ) -> PipelineTerminalState:
+-    _acknowledge_stop_requested(recording_id=recording_id, settings=settings)
+-    return PipelineTerminalState(status=RECORDING_STATUS_STOPPED)
++    resolved_reason_text = reason_text or _STOPPED_REASON_TEXT
++    _acknowledge_stop_requested(
++        recording_id=recording_id,
++        settings=settings,
++        reason_text=resolved_reason_text,
 +    )
-+    create_job(
-+        "job-reaper-stale-stopping-1",
-+        recording_id="rec-reaper-stale-stopping-1",
-+        job_type=JOB_TYPE_PRECHECK,
-+        status=JOB_STATUS_STARTED,
-+        settings=cfg,
-+        attempt=1,
++    return PipelineTerminalState(
++        status=RECORDING_STATUS_STOPPED,
++        stop_reason_text=resolved_reason_text,
 +    )
-+    with connect(cfg) as conn:
-+        conn.execute(
-+            """
-+            UPDATE jobs
-+            SET started_at = ?, updated_at = ?
-+            WHERE id = ?
-+            """,
-+            (
-+                "2026-02-22T00:00:00Z",
-+                "2026-02-22T00:00:00Z",
-+                "job-reaper-stale-stopping-1",
+ 
+ 
+ def _cancelled_stage_metadata(
+@@ -418,7 +447,13 @@ def _cancelled_stage_metadata(
+         "cancel_checkpoint": stop.checkpoint,
+         "cancel_requested_by": stop.stop_request.requested_by or _STOP_REQUESTED_BY,
+         "cancel_reason_code": stop.stop_request.reason_code or _STOP_REASON_CODE,
+-        "cancel_reason_text": stop.stop_request.reason_text or _STOPPED_REASON_TEXT,
++        "cancel_reason_text": (
++            stop.acknowledged_reason_text
++            or stop.stop_request.reason_text
++            or _STOPPED_REASON_TEXT
++        ),
++        "force_stopped": stop.forced,
++        "stop_mode": "forced" if stop.forced else "soft",
+     }
+     if stop.stop_request.requested_at:
+         metadata["cancel_requested_at"] = stop.stop_request.requested_at
+@@ -445,9 +480,230 @@ def _log_stop_requested(
+         message += f" chunk_index={stop.chunk_index}"
+     if stop.chunk_total is not None:
+         message += f" chunk_total={stop.chunk_total}"
++    if stop.forced:
++        message += " forced=true"
+     _append_step_log(log_path, message)
+ 
+ 
++@dataclass(frozen=True)
++class _LLMRequestContext:
++    checkpoint: str
++    chunk_index: str | None = None
++    chunk_total: int | None = None
++
++
++def _stage_temp_root(
++    *,
++    recording_id: str,
++    stage_name: str,
++    settings: AppSettings,
++) -> Path:
++    return settings.data_root / "tmp" / "hard_stop" / recording_id / stage_name
++
++
++def _cleanup_stage_temp_root(path: Path) -> None:
++    shutil.rmtree(path, ignore_errors=True)
++
++
++def _pipeline_settings_payload(cfg: PipelineSettings) -> dict[str, Any]:
++    return cfg.model_dump(mode="json")
++
++
++def _pipeline_settings_from_payload(payload: dict[str, Any]) -> PipelineSettings:
++    return PipelineSettings.model_validate(payload)
++
++
++class _ChildOperationError(RuntimeError):
++    def __init__(
++        self,
++        *,
++        operation_name: str,
++        error_type: str,
++        error_message: str,
++    ) -> None:
++        self.operation_name = operation_name
++        self.error_type = error_type
++        self.error_message = error_message
++        super().__init__(error_message or error_type or operation_name)
++
++
++def _rehydrate_child_operation_error(
++    *,
++    operation_name: str,
++    error_type: str,
++    error_message: str,
++) -> Exception:
++    message = error_message or error_type or operation_name
++    if operation_name == "llm_generate":
++        if error_type in {
++            "ConnectError",
++            "ReadError",
++            "RemoteProtocolError",
++            "ConnectionError",
++        }:
++            return ConnectionError(message)
++        if error_type in {
++            "TimeoutError",
++            "ReadTimeout",
++            "WriteTimeout",
++            "PoolTimeout",
++            "TimeoutException",
++        }:
++            return TimeoutError(message)
++        if error_type in {"LLMEmptyContentError", "LLMTruncatedResponseError"}:
++            return RuntimeError(message)
++    builtins_ns = __builtins__ if isinstance(__builtins__, dict) else vars(__builtins__)
++    builtin_exc = builtins_ns.get(error_type)
++    if isinstance(builtin_exc, type) and issubclass(builtin_exc, Exception):
++        return builtin_exc(message)
++    return _ChildOperationError(
++        operation_name=operation_name,
++        error_type=error_type,
++        error_message=message,
++    )
++
++
++def _child_stage_operation_process_main(
++    operation_name: str,
++    payload: dict[str, Any],
++    conn: Any,
++) -> None:
++    try:
++        handler = _CHILD_STAGE_OPERATION_HANDLERS[operation_name]
++        conn.send({"status": "ok", "payload": handler(payload)})
++    except BaseException as exc:  # pragma: no cover - exercised via parent integration
++        conn.send(
++            {
++                "status": "error",
++                "error_type": type(exc).__name__,
++                "error_message": str(exc) or type(exc).__name__,
++            }
++        )
++    finally:
++        conn.close()
++
++
++async def _run_child_stage_operation(
++    *,
++    operation_name: str,
++    payload: dict[str, Any],
++    stage_name: str,
++    stop_request_getter: Any,
++    grace_seconds: float,
++    log_path: Path,
++    checkpoint: str,
++    chunk_index: str | None = None,
++    chunk_total: int | None = None,
++    on_force_stop: Any = None,
++) -> Any:
++    ctx = mp.get_context("spawn")
++    parent_conn, child_conn = ctx.Pipe(duplex=False)
++    process = ctx.Process(
++        target=_child_stage_operation_process_main,
++        args=(operation_name, payload, child_conn),
++    )
++    process.start()
++    child_conn.close()
++    stop_request: _RecordingStopRequest | None = None
++    stop_deadline: float | None = None
++
++    def _force_stop_process(reason: _RecordingStopRequest) -> None:
++        _append_step_log(
++            log_path,
++            f"force terminating child stage={stage_name} pid={process.pid}",
++        )
++        process.terminate()
++        process.join(timeout=1.0)
++        if process.is_alive():
++            process.kill()
++            process.join(timeout=1.0)
++        if callable(on_force_stop):
++            on_force_stop()
++        _append_step_log(log_path, f"stage terminated by user stop stage={stage_name}")
++        raise RecordingStopRequested(
++            stage_name=stage_name,
++            checkpoint=checkpoint,
++            stop_request=reason,
++            chunk_index=chunk_index,
++            chunk_total=chunk_total,
++            forced=True,
++            acknowledged_reason_text=_FORCED_STOP_REASON_TEXT,
++        )
++
++    try:
++        while True:
++            if parent_conn.poll():
++                message = parent_conn.recv()
++                process.join(timeout=1.0)
++                if str(message.get("status") or "") == "ok":
++                    if stop_request is not None:
++                        _append_step_log(
++                            log_path,
++                            f"stop completed cooperatively stage={stage_name} pid={process.pid}",
++                        )
++                    return message.get("payload")
++                raise _rehydrate_child_operation_error(
++                    operation_name=operation_name,
++                    error_type=str(message.get("error_type") or "RuntimeError"),
++                    error_message=str(message.get("error_message") or ""),
++                )
++            if not process.is_alive():
++                process.join(timeout=1.0)
++                if parent_conn.poll():
++                    continue
++                raise RuntimeError(
++                    f"child stage exited without result stage={stage_name} exitcode={process.exitcode}"
++                )
++            if stop_request is None:
++                current_stop = stop_request_getter()
++                if current_stop is not None:
++                    stop_request = current_stop
++                    _append_step_log(log_path, f"stop requested stage={stage_name} pid={process.pid}")
++                    _append_step_log(
++                        log_path,
++                        (
++                            "waiting for cooperative stop "
++                            f"grace={grace_seconds:g}s stage={stage_name} pid={process.pid}"
++                        ),
++                    )
++                    stop_deadline = time.monotonic() + grace_seconds
++            if stop_request is not None and stop_deadline is not None and time.monotonic() >= stop_deadline:
++                _force_stop_process(stop_request)
++            await asyncio.sleep(0.05)
++    except asyncio.CancelledError:
++        if process.is_alive():
++            process.terminate()
++            process.join(timeout=1.0)
++            if process.is_alive():
++                process.kill()
++                process.join(timeout=1.0)
++        raise
++    finally:
++        parent_conn.close()
++
++
++def _should_use_child_asr_execution() -> bool:
++    return (
++        pipeline_orchestrator._whisperx_asr is pipeline_orchestrator._DEFAULT_WHISPERX_ASR
++        and run_language_aware_asr is _ORIGINAL_RUN_LANGUAGE_AWARE_ASR
++        and pipeline_orchestrator._build_whisperx_transcriber
++        is _ORIGINAL_BUILD_WHISPERX_TRANSCRIBER
++        and pipeline_orchestrator._glossary_runtime_metadata
++        is _ORIGINAL_GLOSSARY_RUNTIME_METADATA
++    )
++
++
++def _should_use_child_diarization_execution() -> bool:
++    return (
++        _build_diariser is _ORIGINAL_BUILD_DIARISER
++        and pipeline_orchestrator._maybe_retry_dialog_diarization
++        is _ORIGINAL_MAYBE_RETRY_DIALOG_DIARIZATION
++        and pipeline_orchestrator._diariser_runtime_metadata
++        is _ORIGINAL_DIARISER_RUNTIME_METADATA
++        and _diarization_segments is _ORIGINAL_DIARIZATION_SEGMENTS
++    )
++
++
+ class _CancelAwareChunkStateStore:
+     def __init__(
+         self,
+@@ -521,6 +777,27 @@ class _CancelAwareChunkStateStore:
+         return self._base_store.clear_states(chunk_group=chunk_group)
+ 
+ 
++def _cancel_inflight_llm_chunk_state(
++    *,
++    recording_id: str,
++    settings: AppSettings,
++    chunk_index: str | None,
++    chunk_total: int | None,
++) -> None:
++    if chunk_index is None or chunk_total is None:
++        return
++    try:
++        mark_recording_llm_chunk_cancelled(
++            recording_id,
++            chunk_group="extract",
++            chunk_index=chunk_index,
++            chunk_total=chunk_total,
++            settings=settings,
++        )
++    except Exception:
++        return
++
++
+ class _CancelAwareLLMClient:
+     def __init__(
+         self,
+@@ -529,26 +806,105 @@ class _CancelAwareLLMClient:
+         recording_id: str,
+         settings: AppSettings,
+         stage_name: str,
++        log_path: Path,
+     ) -> None:
+         self._base_client = base_client
+         self._recording_id = recording_id
+         self._settings = settings
+         self._stage_name = stage_name
++        self._log_path = log_path
++        self._request_context = _LLMRequestContext(checkpoint="before_llm_request")
+ 
+     def __getattr__(self, name: str) -> Any:
+         return getattr(self._base_client, name)
+ 
++    @contextmanager
++    def request_context(
++        self,
++        *,
++        checkpoint: str,
++        chunk_index: str | None = None,
++        chunk_total: int | None = None,
++    ):
++        previous = self._request_context
++        self._request_context = _LLMRequestContext(
++            checkpoint=checkpoint,
++            chunk_index=chunk_index,
++            chunk_total=chunk_total,
++        )
++        try:
++            yield self
++        finally:
++            self._request_context = previous
++
++    async def _generate_in_child(self, *args: Any, **kwargs: Any) -> Any:
++        system_prompt = kwargs.get("system_prompt")
++        user_prompt = kwargs.get("user_prompt")
++        if system_prompt is None and args:
++            system_prompt = args[0]
++        if user_prompt is None and len(args) > 1:
++            user_prompt = args[1]
++        request_context = self._request_context
++        return await _run_child_stage_operation(
++            operation_name="llm_generate",
++            payload={
++                "base_url": getattr(self._base_client, "base_url", None),
++                "api_key": getattr(self._base_client, "api_key", None),
++                "timeout": getattr(self._base_client, "timeout", None),
++                "mock_response_path": (
++                    str(getattr(self._base_client, "mock_response_path"))
++                    if getattr(self._base_client, "mock_response_path", None) is not None
++                    else None
++                ),
++                "default_max_tokens": getattr(self._base_client, "max_tokens", None),
++                "default_max_tokens_retry": getattr(
++                    self._base_client,
++                    "max_tokens_retry",
++                    None,
++                ),
++                "system_prompt": system_prompt,
++                "user_prompt": user_prompt,
++                "model": kwargs.get("model"),
++                "response_format": kwargs.get("response_format"),
++                "max_tokens": kwargs.get("max_tokens"),
++                "max_tokens_retry": kwargs.get("max_tokens_retry"),
++            },
++            stage_name=self._stage_name,
++            stop_request_getter=lambda: _recording_stop_request(
++                self._recording_id,
++                settings=self._settings,
++            ),
++            grace_seconds=self._settings.stop_grace_seconds,
++            log_path=self._log_path,
++            checkpoint=request_context.checkpoint,
++            chunk_index=request_context.chunk_index,
++            chunk_total=request_context.chunk_total,
++            on_force_stop=lambda: _cancel_inflight_llm_chunk_state(
++                recording_id=self._recording_id,
++                settings=self._settings,
++                chunk_index=request_context.chunk_index,
++                chunk_total=request_context.chunk_total,
 +            ),
 +        )
-+        conn.commit()
 +
-+    summary = run_stuck_job_reaper_once(
-+        settings=cfg,
-+        now=datetime(2026, 2, 23, 0, 0, 0, tzinfo=timezone.utc),
+     def generate(self, *args: Any, **kwargs: Any) -> Any:
++        request_context = self._request_context
+         _raise_if_stop_requested(
+             recording_id=self._recording_id,
+             settings=self._settings,
+             stage_name=self._stage_name,
+-            checkpoint="before_llm_request",
++            checkpoint=request_context.checkpoint,
++            chunk_index=request_context.chunk_index,
++            chunk_total=request_context.chunk_total,
+         )
++        if isinstance(self._base_client, _ORIGINAL_LLM_CLIENT_CLASS):
++            return self._generate_in_child(*args, **kwargs)
+         result = self._base_client.generate(*args, **kwargs)
+         if inspect.isawaitable(result):
++
+             async def _await_result() -> Any:
+                 return await result
++
+             return _await_result()
+         return result
+ 
+@@ -559,6 +915,7 @@ class PipelineTerminalState:
+     quarantine_reason: str | None = None
+     review_reason_code: str | None = None
+     review_reason_text: str | None = None
++    stop_reason_text: str | None = None
+ 
+ 
+ def _retry_policy(job_type: str) -> RetryPolicy:
+@@ -1497,6 +1854,9 @@ def _build_diariser(
+     )
+ 
+ 
++_ORIGINAL_BUILD_DIARISER = _build_diariser
++
++
+ def _write_diarization_status_artifact(
+     *,
+     recording_id: str,
+@@ -1518,12 +1878,11 @@ def _write_diarization_status_artifact(
+         pass
+ 
+ 
+-def _log_gpu_execution_policy(
++def _gpu_execution_policy_message(
+     *,
+     pipeline_settings: PipelineSettings,
+     diariser: Any,
+-    log_path: Path,
+-) -> None:
++) -> str:
+     diariser_mode = str(getattr(diariser, "mode", "") or "").strip().lower()
+     scheduler_plan = resolve_scheduler_decision(
+         pipeline_settings.gpu_scheduler_mode,
+@@ -1533,7 +1892,7 @@ def _log_gpu_execution_policy(
+         cuda_facts=collect_cuda_runtime_facts(),
+     )
+     facts = scheduler_plan.cuda_facts
+-    message = (
++    return (
+         "gpu policy "
+         f"asr_device={scheduler_plan.asr_device} "
+         f"diarization_device={scheduler_plan.diarization_device} "
+@@ -1545,10 +1904,266 @@ def _log_gpu_execution_policy(
+         f"visible_devices={facts.visible_devices or 'unset'} "
+         f"torch_cuda={facts.torch_cuda_version or 'none'}"
+     )
++
++
++def _log_gpu_execution_policy(
++    *,
++    pipeline_settings: PipelineSettings,
++    diariser: Any,
++    log_path: Path,
++) -> None:
++    message = _gpu_execution_policy_message(
++        pipeline_settings=pipeline_settings,
++        diariser=diariser,
++    )
+     _logger.info(message)
+     _append_step_log(log_path, message)
+ 
+ 
++def _emit_child_step_logs(log_path: Path, messages: list[str]) -> None:
++    for message in messages:
++        _append_step_log(log_path, message)
++
++
++def _best_effort_step_log_callback(callback: Any, message: str) -> None:
++    if callback is None:
++        return
++    try:
++        callback(message)
++    except Exception:
++        return
++
++
++def _execute_asr_workflow(
++    *,
++    working_audio_path: Path,
++    pipeline_settings: PipelineSettings,
++    transcript_language_override: str | None,
++    asr_glossary: dict[str, Any] | None,
++    step_log_callback: Any = None,
++) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, Any]]:
++    def _transcribe_chunk(
++        chunk_audio_path: Path,
++        chunk_language_hint: str | None,
++    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
++        return pipeline_orchestrator._whisperx_asr(
++            chunk_audio_path,
++            override_lang=chunk_language_hint,
++            cfg=pipeline_settings,
++            step_log_callback=step_log_callback,
++        )
++
++    if pipeline_orchestrator._whisperx_asr is not pipeline_orchestrator._DEFAULT_WHISPERX_ASR:
++        return run_language_aware_asr(
++            working_audio_path,
++            override_lang=transcript_language_override,
++            configured_mode=pipeline_settings.asr_multilingual_mode,
++            tmp_root=pipeline_settings.tmp_root,
++            transcribe_fn=_transcribe_chunk,
++            step_log_callback=step_log_callback,
++        )
++
++    previous_transcriber = getattr(
++        pipeline_orchestrator._whisperx_transcriber_state,
++        "transcribe_audio",
++        None,
++    )
++    previous_session_flag = bool(
++        getattr(
++            pipeline_orchestrator._whisperx_transcriber_state,
++            "use_session_transcriber",
++            False,
++        )
++    )
++    transcribe_audio = pipeline_orchestrator._build_whisperx_transcriber(
++        cfg=pipeline_settings,
++        step_log_callback=step_log_callback,
++        asr_glossary=asr_glossary,
++    )
++    pipeline_orchestrator._whisperx_transcriber_state.transcribe_audio = transcribe_audio
++    pipeline_orchestrator._whisperx_transcriber_state.use_session_transcriber = True
++    try:
++        segments, info, payload = run_language_aware_asr(
++            working_audio_path,
++            override_lang=transcript_language_override,
++            configured_mode=pipeline_settings.asr_multilingual_mode,
++            tmp_root=pipeline_settings.tmp_root,
++            transcribe_fn=_transcribe_chunk,
++            step_log_callback=step_log_callback,
++        )
++        runtime_metadata = pipeline_orchestrator._glossary_runtime_metadata(transcribe_audio)
++        if runtime_metadata:
++            payload = dict(payload)
++            payload["glossary_runtime"] = runtime_metadata
++        return segments, info, payload
++    finally:
++        if previous_transcriber is None:
++            if hasattr(pipeline_orchestrator._whisperx_transcriber_state, "transcribe_audio"):
++                delattr(pipeline_orchestrator._whisperx_transcriber_state, "transcribe_audio")
++        else:
++            pipeline_orchestrator._whisperx_transcriber_state.transcribe_audio = previous_transcriber
++        if previous_session_flag:
++            pipeline_orchestrator._whisperx_transcriber_state.use_session_transcriber = True
++        elif hasattr(pipeline_orchestrator._whisperx_transcriber_state, "use_session_transcriber"):
++            delattr(pipeline_orchestrator._whisperx_transcriber_state, "use_session_transcriber")
++
++
++def _run_default_asr_child_operation(payload: dict[str, Any]) -> dict[str, Any]:
++    pipeline_settings = _pipeline_settings_from_payload(payload["pipeline_settings"])
++    step_logs: list[str] = []
++    segments, info, execution = _execute_asr_workflow(
++        working_audio_path=Path(payload["working_audio_path"]),
++        pipeline_settings=pipeline_settings,
++        transcript_language_override=payload.get("transcript_language_override"),
++        asr_glossary=payload.get("asr_glossary"),
++        step_log_callback=step_logs.append,
++    )
++    return {
++        "segments": normalise_asr_segments(segments),
++        "info": dict(info or {}),
++        "execution": dict(execution or {}),
++        "step_logs": step_logs,
++    }
++
++
++def _execute_diarization_workflow(
++    *,
++    working_audio_path: Path,
++    asr_segments: list[dict[str, Any]],
++    precheck_result: PrecheckResult,
++    pipeline_settings: PipelineSettings,
++    diarization_model_id: str | None,
++    step_log_callback: Any = None,
++) -> dict[str, Any]:
++    diarization_mode = "pyannote"
++    diarization_reason: str | None = None
++    try:
++        diariser = _build_diariser(
++            precheck_result.duration_sec,
++            model_id=diarization_model_id,
++            settings=pipeline_settings,
++        )
++        if isinstance(diariser, _FallbackDiariser):
++            diarization_mode = "fallback"
++            diarization_reason = "pyannote_unavailable"
++            _best_effort_step_log_callback(
++                step_log_callback,
++                "diariser mode=fallback reason=pyannote_unavailable",
++            )
++        else:
++            _best_effort_step_log_callback(step_log_callback, "diariser mode=pyannote")
++    except Exception as exc:
++        _best_effort_step_log_callback(
++            step_log_callback,
++            f"diariser init failed, falling back: {type(exc).__name__}: {exc}",
++        )
++        diariser = _FallbackDiariser(precheck_result.duration_sec)
++        diarization_mode = "fallback"
++        diarization_reason = f"{type(exc).__name__}: {exc}"
++        _best_effort_step_log_callback(
++            step_log_callback,
++            "diariser mode=fallback reason=init_failed",
++        )
++
++    _best_effort_step_log_callback(
++        step_log_callback,
++        _gpu_execution_policy_message(
++            pipeline_settings=pipeline_settings,
++            diariser=diariser,
++        ),
++    )
++    diarization = asyncio.run(diariser(working_audio_path))
++    diarization = asyncio.run(
++        pipeline_orchestrator._maybe_retry_dialog_diarization(
++            diariser=diariser,
++            audio_path=working_audio_path,
++            diarization=diarization,
++            asr_segments=asr_segments,
++            precheck_result=precheck_result,
++            step_log_callback=step_log_callback,
++        )
++    )
++    diarization_segments = _diarization_segments(diarization)
++    used_dummy_fallback = False
++    if not diarization_segments and asr_segments:
++        fallback_end = max(safe_float(seg.get("end")) for seg in asr_segments)
++        used_dummy_fallback = True
++        _best_effort_step_log_callback(
++            step_log_callback,
++            "diarization output empty; using fallback single-speaker annotation",
++        )
++        diarization_segments = _diarization_segments(
++            pipeline_orchestrator._fallback_diarization(max(fallback_end, 0.1))
++        )
++    diarization_runtime = pipeline_orchestrator._diariser_runtime_metadata(diariser)
++    diarization_runtime["used_dummy_fallback"] = used_dummy_fallback
++    diarization_runtime["mode"] = pipeline_orchestrator._diariser_mode(diariser)
++    return {
++        "diarization_segments": diarization_segments,
++        "diarization_runtime": diarization_runtime,
++        "used_dummy_fallback": used_dummy_fallback,
++        "diarization_mode": diarization_mode,
++        "diarization_reason": diarization_reason,
++    }
++
++
++def _run_default_diarization_child_operation(payload: dict[str, Any]) -> dict[str, Any]:
++    pipeline_settings = _pipeline_settings_from_payload(payload["pipeline_settings"])
++    precheck_result = PrecheckResult(
++        duration_sec=payload["precheck_result"].get("duration_sec"),
++        speech_ratio=payload["precheck_result"].get("speech_ratio"),
++        quarantine_reason=payload["precheck_result"].get("quarantine_reason"),
++    )
++    step_logs: list[str] = []
++    result = _execute_diarization_workflow(
++        working_audio_path=Path(payload["working_audio_path"]),
++        asr_segments=list(payload.get("asr_segments") or []),
++        precheck_result=precheck_result,
++        pipeline_settings=pipeline_settings,
++        diarization_model_id=payload.get("diarization_model_id"),
++        step_log_callback=step_logs.append,
++    )
++    result["step_logs"] = step_logs
++    return result
++
++
++def _run_llm_generate_child_operation(payload: dict[str, Any]) -> dict[str, Any]:
++    client = LLMClient(
++        base_url=payload.get("base_url"),
++        api_key=payload.get("api_key"),
++        timeout=payload.get("timeout"),
++        mock_response_path=payload.get("mock_response_path"),
++        max_tokens=payload.get("default_max_tokens"),
++        max_tokens_retry=payload.get("default_max_tokens_retry"),
++    )
++    return asyncio.run(
++        client.generate(
++            system_prompt=str(payload.get("system_prompt") or ""),
++            user_prompt=str(payload.get("user_prompt") or ""),
++            model=payload.get("model"),
++            response_format=payload.get("response_format"),
++            max_tokens=payload.get("max_tokens"),
++            max_tokens_retry=payload.get("max_tokens_retry"),
++        )
 +    )
 +
-+    job = get_job("job-reaper-stale-stopping-1", settings=cfg)
-+    recording = get_recording("rec-reaper-stale-stopping-1", settings=cfg)
-+    assert job is not None
-+    assert recording is not None
-+    assert summary["stale_started_jobs"] == 1
-+    assert summary["recovered_jobs"] == 1
-+    assert summary["recovered_recordings"] == 1
-+    assert job["status"] == JOB_STATUS_FAILED
-+    assert recording["status"] == RECORDING_STATUS_NEEDS_REVIEW
++
++def _run_test_sleep_child_operation(payload: dict[str, Any]) -> dict[str, Any] | str | None:
++    time.sleep(max(float(payload.get("sleep_seconds") or 0.0), 0.0))
++    error_message = str(payload.get("error_message") or "").strip()
++    if error_message:
++        raise RuntimeError(error_message)
++    return payload.get("result")
 +
 +
- def test_reaper_does_not_downgrade_ready_recording_when_clearing_stale_started_job(
-     tmp_path: Path,
- ):
-@@ -473,6 +525,62 @@ def test_reaper_does_not_recover_recent_processing_without_started_job(tmp_path:
-     assert recording["status"] == RECORDING_STATUS_PROCESSING
++_CHILD_STAGE_OPERATION_HANDLERS: dict[str, Any] = {
++    "asr_default": _run_default_asr_child_operation,
++    "diarization_default": _run_default_diarization_child_operation,
++    "llm_generate": _run_llm_generate_child_operation,
++    "test_sleep": _run_test_sleep_child_operation,
++}
++
++
+ @dataclass(frozen=True)
+ class _StageResult:
+     status: str
+@@ -1890,73 +2505,55 @@ def _stage_asr(ctx: _PipelineExecutionContext) -> _StageResult:
+ 
+     def _step_log_callback(message: str) -> None:
+         _append_step_log(ctx.log_path, message)
+-
+-    def _run_asr_workflow() -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, Any]]:
+-        def _transcribe_chunk(
+-            chunk_audio_path: Path,
+-            chunk_language_hint: str | None,
+-        ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+-            return pipeline_orchestrator._whisperx_asr(
+-                chunk_audio_path,
+-                override_lang=chunk_language_hint,
+-                cfg=ctx.pipeline_settings,
+-                step_log_callback=_step_log_callback,
++    stage_tmp_root = _stage_temp_root(
++        recording_id=ctx.recording_id,
++        stage_name="asr",
++        settings=ctx.settings,
++    )
++    _cleanup_stage_temp_root(stage_tmp_root)
++    if _should_use_child_asr_execution():
++        child_settings = ctx.pipeline_settings.model_copy(update={"tmp_root": stage_tmp_root})
++        try:
++            child_result = asyncio.run(
++                _run_child_stage_operation(
++                    operation_name="asr_default",
++                    payload={
++                        "working_audio_path": str(working_audio_path),
++                        "pipeline_settings": _pipeline_settings_payload(child_settings),
++                        "transcript_language_override": ctx.transcript_language_override,
++                        "asr_glossary": ctx.asr_glossary,
++                    },
++                    stage_name="asr",
++                    stop_request_getter=lambda: _recording_stop_request(
++                        ctx.recording_id,
++                        settings=ctx.settings,
++                    ),
++                    grace_seconds=ctx.settings.stop_grace_seconds,
++                    log_path=ctx.log_path,
++                    checkpoint="during_heavy_stage",
++                    on_force_stop=lambda: _cleanup_stage_temp_root(stage_tmp_root),
++                )
+             )
+-
+-        if pipeline_orchestrator._whisperx_asr is not pipeline_orchestrator._DEFAULT_WHISPERX_ASR:
+-            return run_language_aware_asr(
+-                working_audio_path,
+-                override_lang=ctx.transcript_language_override,
+-                configured_mode=ctx.pipeline_settings.asr_multilingual_mode,
+-                tmp_root=ctx.pipeline_settings.tmp_root,
+-                transcribe_fn=_transcribe_chunk,
+-                step_log_callback=_step_log_callback,
++            _emit_child_step_logs(
++                ctx.log_path,
++                list(child_result.get("step_logs") or []),
+             )
+-
+-        previous_transcriber = getattr(
+-            pipeline_orchestrator._whisperx_transcriber_state,
+-            "transcribe_audio",
+-            None,
+-        )
+-        previous_session_flag = bool(
+-            getattr(pipeline_orchestrator._whisperx_transcriber_state, "use_session_transcriber", False)
+-        )
+-        transcribe_audio = pipeline_orchestrator._build_whisperx_transcriber(
+-            cfg=ctx.pipeline_settings,
+-            step_log_callback=_step_log_callback,
++            ctx.asr_segments = list(child_result.get("segments") or [])
++            ctx.asr_info = dict(child_result.get("info") or {})
++            ctx.asr_execution = dict(child_result.get("execution") or {})
++        finally:
++            _cleanup_stage_temp_root(stage_tmp_root)
++    else:
++        raw_segments, info, asr_execution = _execute_asr_workflow(
++            working_audio_path=working_audio_path,
++            pipeline_settings=ctx.pipeline_settings,
++            transcript_language_override=ctx.transcript_language_override,
+             asr_glossary=ctx.asr_glossary,
++            step_log_callback=_step_log_callback,
+         )
+-        pipeline_orchestrator._whisperx_transcriber_state.transcribe_audio = transcribe_audio
+-        pipeline_orchestrator._whisperx_transcriber_state.use_session_transcriber = True
+-        try:
+-            segments, info, payload = run_language_aware_asr(
+-                working_audio_path,
+-                override_lang=ctx.transcript_language_override,
+-                configured_mode=ctx.pipeline_settings.asr_multilingual_mode,
+-                tmp_root=ctx.pipeline_settings.tmp_root,
+-                transcribe_fn=_transcribe_chunk,
+-                step_log_callback=_step_log_callback,
+-            )
+-            runtime_metadata = pipeline_orchestrator._glossary_runtime_metadata(transcribe_audio)
+-            if runtime_metadata:
+-                payload = dict(payload)
+-                payload["glossary_runtime"] = runtime_metadata
+-            return segments, info, payload
+-        finally:
+-            if previous_transcriber is None:
+-                if hasattr(pipeline_orchestrator._whisperx_transcriber_state, "transcribe_audio"):
+-                    delattr(pipeline_orchestrator._whisperx_transcriber_state, "transcribe_audio")
+-            else:
+-                pipeline_orchestrator._whisperx_transcriber_state.transcribe_audio = previous_transcriber
+-            if previous_session_flag:
+-                pipeline_orchestrator._whisperx_transcriber_state.use_session_transcriber = True
+-            elif hasattr(pipeline_orchestrator._whisperx_transcriber_state, "use_session_transcriber"):
+-                delattr(pipeline_orchestrator._whisperx_transcriber_state, "use_session_transcriber")
+-
+-    raw_segments, info, asr_execution = _run_asr_workflow()
+-    ctx.asr_segments = normalise_asr_segments(raw_segments)
+-    ctx.asr_info = dict(info or {})
+-    ctx.asr_execution = dict(asr_execution or {})
++        ctx.asr_segments = normalise_asr_segments(raw_segments)
++        ctx.asr_info = dict(info or {})
++        ctx.asr_execution = dict(asr_execution or {})
+     pipeline_orchestrator._write_asr_glossary_artifact(
+         derived_dir=ctx.artifacts.derived_dir,
+         recording_id=ctx.recording_id,
+@@ -1989,83 +2586,66 @@ def _stage_diarization(ctx: _PipelineExecutionContext) -> _StageResult:
+     if precheck_result.quarantine_reason:
+         return _build_skip_result("quarantined_precheck")
+ 
+-    diarization_mode = "pyannote"
+-    diarization_reason: str | None = None
+-    try:
+-        diariser = _build_diariser(
+-            precheck_result.duration_sec,
+-            model_id=ctx.settings.diarization_model_id,
+-            settings=ctx.pipeline_settings,
+-        )
+-        if isinstance(diariser, _FallbackDiariser):
+-            diarization_mode = "fallback"
+-            diarization_reason = "pyannote_unavailable"
+-            _append_step_log(
+-                ctx.log_path,
+-                "diariser mode=fallback reason=pyannote_unavailable",
++    working_audio_path = _working_audio_path(ctx)
++    if working_audio_path is None:
++        raise RuntimeError("Missing sanitized audio")
++    ctx.asr_segments = _load_json_list(ctx.artifacts.asr_segments_json_path)
++    if _should_use_child_diarization_execution():
++        child_result = asyncio.run(
++            _run_child_stage_operation(
++                operation_name="diarization_default",
++                payload={
++                    "working_audio_path": str(working_audio_path),
++                    "asr_segments": ctx.asr_segments,
++                    "precheck_result": {
++                        "duration_sec": precheck_result.duration_sec,
++                        "speech_ratio": precheck_result.speech_ratio,
++                        "quarantine_reason": precheck_result.quarantine_reason,
++                    },
++                    "pipeline_settings": _pipeline_settings_payload(ctx.pipeline_settings),
++                    "diarization_model_id": ctx.settings.diarization_model_id,
++                },
++                stage_name="diarization",
++                stop_request_getter=lambda: _recording_stop_request(
++                    ctx.recording_id,
++                    settings=ctx.settings,
++                ),
++                grace_seconds=ctx.settings.stop_grace_seconds,
++                log_path=ctx.log_path,
++                checkpoint="during_heavy_stage",
+             )
+-        else:
+-            _append_step_log(ctx.log_path, "diariser mode=pyannote")
+-    except Exception as exc:
+-        _append_step_log(
+-            ctx.log_path,
+-            (
+-                "diariser init failed, falling back: "
+-                f"{type(exc).__name__}: {exc}"
+-            ),
+         )
+-        diariser = _FallbackDiariser(precheck_result.duration_sec)
+-        diarization_mode = "fallback"
+-        diarization_reason = f"{type(exc).__name__}: {exc}"
+-        _append_step_log(
++        _emit_child_step_logs(
+             ctx.log_path,
+-            "diariser mode=fallback reason=init_failed",
++            list(child_result.get("step_logs") or []),
++        )
++        diarization_mode = str(child_result.get("diarization_mode") or "pyannote")
++        diarization_reason = str(child_result.get("diarization_reason") or "").strip() or None
++        ctx.diarization_segments = list(child_result.get("diarization_segments") or [])
++        ctx.diarization_runtime = dict(child_result.get("diarization_runtime") or {})
++        used_dummy_fallback = bool(child_result.get("used_dummy_fallback"))
++    else:
++        diarization_result = _execute_diarization_workflow(
++            working_audio_path=working_audio_path,
++            asr_segments=ctx.asr_segments,
++            precheck_result=precheck_result,
++            pipeline_settings=ctx.pipeline_settings,
++            diarization_model_id=ctx.settings.diarization_model_id,
++            step_log_callback=lambda message: _append_step_log(ctx.log_path, message),
+         )
++        diarization_mode = str(diarization_result.get("diarization_mode") or "pyannote")
++        diarization_reason = (
++            str(diarization_result.get("diarization_reason") or "").strip() or None
++        )
++        ctx.diarization_segments = list(diarization_result.get("diarization_segments") or [])
++        ctx.diarization_runtime = dict(diarization_result.get("diarization_runtime") or {})
++        used_dummy_fallback = bool(diarization_result.get("used_dummy_fallback"))
+     _write_diarization_status_artifact(
+         recording_id=ctx.recording_id,
+         mode=diarization_mode,
+         reason=diarization_reason,
+         settings=ctx.settings,
+     )
+-    _log_gpu_execution_policy(
+-        pipeline_settings=ctx.pipeline_settings,
+-        diariser=diariser,
+-        log_path=ctx.log_path,
+-    )
+-    working_audio_path = _working_audio_path(ctx)
+-    if working_audio_path is None:
+-        raise RuntimeError("Missing sanitized audio")
+-    ctx.asr_segments = _load_json_list(ctx.artifacts.asr_segments_json_path)
+-
+-    def _step_log_callback(message: str) -> None:
+-        _append_step_log(ctx.log_path, message)
+-
+-    diarization = asyncio.run(diariser(working_audio_path))
+-    diarization = asyncio.run(
+-        pipeline_orchestrator._maybe_retry_dialog_diarization(
+-            diariser=diariser,
+-            audio_path=working_audio_path,
+-            diarization=diarization,
+-            asr_segments=ctx.asr_segments,
+-            precheck_result=precheck_result,
+-            step_log_callback=_step_log_callback,
+-        )
+-    )
+-    ctx.diarization_segments = _diarization_segments(diarization)
+-    used_dummy_fallback = False
+-    if not ctx.diarization_segments and ctx.asr_segments:
+-        fallback_end = max(safe_float(seg.get("end")) for seg in ctx.asr_segments)
+-        used_dummy_fallback = True
+-        _append_step_log(
+-            ctx.log_path,
+-            "diarization output empty; using fallback single-speaker annotation",
+-        )
+-        ctx.diarization_segments = _diarization_segments(
+-            pipeline_orchestrator._fallback_diarization(max(fallback_end, 0.1))
+-        )
+-    ctx.diarization_runtime = pipeline_orchestrator._diariser_runtime_metadata(diariser)
+-    ctx.diarization_runtime["used_dummy_fallback"] = used_dummy_fallback
+-    ctx.diarization_runtime["mode"] = pipeline_orchestrator._diariser_mode(diariser)
+     atomic_write_json(ctx.artifacts.diarization_segments_json_path, ctx.diarization_segments)
+     atomic_write_json(ctx.artifacts.diarization_runtime_json_path, ctx.diarization_runtime)
+     return _StageResult(
+@@ -2268,6 +2848,7 @@ def _stage_llm_extract(ctx: _PipelineExecutionContext) -> _StageResult:
+         recording_id=ctx.recording_id,
+         settings=ctx.settings,
+         stage_name="llm_extract",
++        log_path=ctx.log_path,
+     )
+ 
+     def _progress_callback(stage: str, progress: float) -> None:
+@@ -3004,7 +3585,11 @@ def _run_precheck_pipeline(
+             )
+         except RecordingStopRequested as stop:
+             _log_stop_requested(log_path=log_path, stop=stop)
+-            return _stop_terminal_state(recording_id=recording_id, settings=settings)
++            return _stop_terminal_state(
++                recording_id=recording_id,
++                settings=settings,
++                reason_text=stop.acknowledged_reason_text,
++            )
+         _append_step_log(log_path, "pipeline artifacts generated")
+         return _terminal_state_from_stage_artifacts(ctx=ctx)
+ 
+@@ -3048,7 +3633,11 @@ def _run_precheck_pipeline(
+                     settings=settings,
+                 )
+             _log_stop_requested(log_path=log_path, stop=stop)
+-            return _stop_terminal_state(recording_id=recording_id, settings=settings)
++            return _stop_terminal_state(
++                recording_id=recording_id,
++                settings=settings,
++                reason_text=stop.acknowledged_reason_text,
++            )
+         except Exception as exc:
+             mark_recording_pipeline_stage_failed(
+                 recording_id,
+@@ -3084,7 +3673,11 @@ def _run_precheck_pipeline(
+                 )
+             except RecordingStopRequested as stop:
+                 _log_stop_requested(log_path=log_path, stop=stop)
+-                return _stop_terminal_state(recording_id=recording_id, settings=settings)
++                return _stop_terminal_state(
++                    recording_id=recording_id,
++                    settings=settings,
++                    reason_text=stop.acknowledged_reason_text,
++                )
+             continue
+ 
+         row = mark_recording_pipeline_stage_completed(
+@@ -3110,7 +3703,11 @@ def _run_precheck_pipeline(
+             )
+         except RecordingStopRequested as stop:
+             _log_stop_requested(log_path=log_path, stop=stop)
+-            return _stop_terminal_state(recording_id=recording_id, settings=settings)
++            return _stop_terminal_state(
++                recording_id=recording_id,
++                settings=settings,
++                reason_text=stop.acknowledged_reason_text,
++            )
+ 
+     try:
+         _raise_if_stop_requested(
+@@ -3121,7 +3718,11 @@ def _run_precheck_pipeline(
+         )
+     except RecordingStopRequested as stop:
+         _log_stop_requested(log_path=log_path, stop=stop)
+-        return _stop_terminal_state(recording_id=recording_id, settings=settings)
++        return _stop_terminal_state(
++            recording_id=recording_id,
++            settings=settings,
++            reason_text=stop.acknowledged_reason_text,
++        )
+     _append_step_log(log_path, "pipeline artifacts generated")
+     return _terminal_state_from_stage_artifacts(ctx=ctx)
+ 
+@@ -3257,6 +3858,7 @@ def process_job(job_id: str, recording_id: str, job_type: str) -> dict[str, str]
+                 _acknowledge_stop_requested(
+                     recording_id=recording_id,
+                     settings=settings,
++                    reason_text=terminal_state.stop_reason_text,
+                 )
+             if (
+                 terminal_state.status != RECORDING_STATUS_STOPPED
+diff --git a/lan_transcriber/pipeline_steps/orchestrator.py b/lan_transcriber/pipeline_steps/orchestrator.py
+index 1ac438a..944456b 100644
+--- a/lan_transcriber/pipeline_steps/orchestrator.py
++++ b/lan_transcriber/pipeline_steps/orchestrator.py
+@@ -1,6 +1,7 @@
+ from __future__ import annotations
+ 
+ import asyncio
++from contextlib import nullcontext
+ from dataclasses import dataclass
+ import gc
+ import hashlib
+@@ -2216,16 +2217,27 @@ async def _run_chunked_llm_summary(
+         start_perf = time.perf_counter()
+ 
+         try:
+-            raw_chunk = await _generate_llm_message(
+-                llm,
+-                system_prompt=chunk_sys_prompt,
+-                user_prompt=chunk_user_prompt,
+-                model=llm_model,
+-                response_format={"type": "json_object"},
+-                max_tokens=cfg.llm_max_tokens,
+-                max_tokens_retry=cfg.llm_max_tokens_retry,
+-                timeout_seconds=cfg.llm_chunk_timeout_seconds,
++            request_context = getattr(llm, "request_context", None)
++            context_manager = (
++                request_context(
++                    checkpoint="llm_chunk_request",
++                    chunk_index=chunk.chunk_id,
++                    chunk_total=total,
++                )
++                if callable(request_context)
++                else nullcontext()
+             )
++            with context_manager:
++                raw_chunk = await _generate_llm_message(
++                    llm,
++                    system_prompt=chunk_sys_prompt,
++                    user_prompt=chunk_user_prompt,
++                    model=llm_model,
++                    response_format={"type": "json_object"},
++                    max_tokens=cfg.llm_max_tokens,
++                    max_tokens_retry=cfg.llm_max_tokens_retry,
++                    timeout_seconds=cfg.llm_chunk_timeout_seconds,
++                )
+         except asyncio.TimeoutError:
+             reason_code = _LLM_CHUNK_REASON_TIMEOUT
+             message = _llm_timeout_message(cfg.llm_chunk_timeout_seconds)
+@@ -2443,15 +2455,25 @@ async def _run_chunked_llm_summary(
+     merge_reason_code: str | None = None
+     merge_message: str | None = None
+     try:
+-        raw_merge = await _generate_llm_message(
+-            llm,
+-            system_prompt=merge_sys_prompt,
+-            user_prompt=merge_user_prompt,
+-            model=llm_model,
+-            response_format={"type": "json_object"},
+-            max_tokens=merge_max_tokens,
+-            max_tokens_retry=max(cfg.llm_max_tokens_retry, merge_max_tokens),
++        request_context = getattr(llm, "request_context", None)
++        context_manager = (
++            request_context(
++                checkpoint="llm_merge_request",
++                chunk_total=len(chunk_results),
++            )
++            if callable(request_context)
++            else nullcontext()
+         )
++        with context_manager:
++            raw_merge = await _generate_llm_message(
++                llm,
++                system_prompt=merge_sys_prompt,
++                user_prompt=merge_user_prompt,
++                model=llm_model,
++                response_format={"type": "json_object"},
++                max_tokens=merge_max_tokens,
++                max_tokens_retry=max(cfg.llm_max_tokens_retry, merge_max_tokens),
++            )
+     except asyncio.TimeoutError:
+         merge_reason_code = _LLM_MERGE_REASON_TIMEOUT
+         merge_message = _llm_timeout_message(cfg.llm_chunk_timeout_seconds)
+diff --git a/tasks/QUEUE.md b/tasks/QUEUE.md
+index 0fcf912..23a60b2 100644
+--- a/tasks/QUEUE.md
++++ b/tasks/QUEUE.md
+@@ -497,7 +497,7 @@ Queue (in order)
+ - Depends on: PR-LLM-CHUNK-RESUME-TIMEOUTS-01
+ 
+ 98) PR-STOP-CANCEL-HARD-01: Hard-stop escalation for long-running heavy stages via child processes and bounded termination grace period
+-- Status: TODO
++- Status: DONE
+ - Tasks file: tasks/PR-STOP-CANCEL-HARD-01.md
+ - Depends on: PR-STOP-CANCEL-01
+ 
+diff --git a/tests/test_app_config.py b/tests/test_app_config.py
+index 3beea69..23c906c 100644
+--- a/tests/test_app_config.py
++++ b/tests/test_app_config.py
+@@ -100,12 +100,14 @@ def test_upload_capture_timezone_invalid_fails_clearly(monkeypatch):
+ 
+ def test_worker_and_reaper_settings_from_env(monkeypatch):
+     monkeypatch.setenv("LAN_RQ_JOB_TIMEOUT_SECONDS", "1800")
++    monkeypatch.setenv("LAN_STOP_GRACE_SECONDS", "7.5")
+     monkeypatch.setenv("LAN_MAX_JOB_ATTEMPTS", "5")
+     monkeypatch.setenv("LAN_STUCK_JOB_SECONDS", "900")
+     monkeypatch.setenv("LAN_REAPER_INTERVAL_SECONDS", "60")
+ 
+     cfg = AppSettings()
+     assert cfg.rq_job_timeout_seconds == 1800
++    assert cfg.stop_grace_seconds == 7.5
+     assert cfg.max_job_attempts == 5
+     assert cfg.stuck_job_seconds == 900
+     assert cfg.reaper_interval_seconds == 60
+@@ -252,6 +254,19 @@ def test_llm_chunking_settings_defaults_and_env_override(monkeypatch):
+         AppSettings()
  
  
-+def test_reaper_recovers_stopping_recording_without_started_job(
-+    tmp_path: Path,
-+    monkeypatch,
++def test_stop_grace_seconds_defaults_and_validation(monkeypatch):
++    monkeypatch.delenv("LAN_STOP_GRACE_SECONDS", raising=False)
++    monkeypatch.delenv("STOP_GRACE_SECONDS", raising=False)
++    assert AppSettings().stop_grace_seconds == 5.0
++
++    monkeypatch.setenv("STOP_GRACE_SECONDS", "2.25")
++    assert AppSettings().stop_grace_seconds == 2.25
++
++    monkeypatch.setenv("STOP_GRACE_SECONDS", "0")
++    with pytest.raises(ValueError, match="STOP_GRACE_SECONDS|stop_grace_seconds"):
++        AppSettings()
++
++
+ def test_dev_missing_urls_allows_import():
+     env = os.environ.copy()
+     env["LAN_ENV"] = "dev"
+diff --git a/tests/test_cov_lan_app_worker_tasks_branches.py b/tests/test_cov_lan_app_worker_tasks_branches.py
+index f78b85e..5e6f775 100644
+--- a/tests/test_cov_lan_app_worker_tasks_branches.py
++++ b/tests/test_cov_lan_app_worker_tasks_branches.py
+@@ -7,6 +7,7 @@ from pathlib import Path
+ import sqlite3
+ import sys
+ from types import ModuleType, SimpleNamespace
++from typing import Any
+ import wave
+ 
+ import pytest
+@@ -223,6 +224,7 @@ def test_cancel_aware_helpers_stop_llm_requests_and_chunk_terminal_paths(
+         recording_id="rec-stop-helper-2",
+         settings=cfg,
+         stage_name="llm_extract",
++        log_path=tmp_path / "logs" / "llm.log",
+     )
+     assert sync_client.generate() == {"status": "ok"}
+     assert sync_client.identity == "sync-client"
+@@ -332,6 +334,8 @@ def test_stop_request_helpers_cover_optional_metadata_and_log_paths(tmp_path: Pa
+         "cancel_requested_by": "user",
+         "cancel_reason_code": "user_stop",
+         "cancel_reason_text": "Cancelled by user",
++        "force_stopped": False,
++        "stop_mode": "soft",
+     }
+ 
+     log_path = tmp_path / "logs" / "step.log"
+@@ -341,6 +345,951 @@ def test_stop_request_helpers_cover_optional_metadata_and_log_paths(tmp_path: Pa
+     )
+ 
+ 
++def _fake_child_runtime(
++    *,
++    parent_polls: list[bool],
++    parent_messages: list[dict[str, Any]] | None = None,
++    process_alive: list[bool] | None = None,
++    exitcode: int = 0,
 +):
-+    cfg = _test_settings(tmp_path)
++    class _Conn:
++        def __init__(self, polls: list[bool], messages: list[dict[str, Any]]):
++            self._polls = list(polls)
++            self._messages = list(messages)
++            self.closed = False
++
++        def poll(self):
++            if self._polls:
++                return self._polls.pop(0)
++            return bool(self._messages)
++
++        def recv(self):
++            return self._messages.pop(0)
++
++        def send(self, payload):
++            self._messages.append(payload)
++
++        def close(self):
++            self.closed = True
++
++    class _Process:
++        def __init__(self):
++            self.pid = 12345
++            self.exitcode = exitcode
++            self.started = False
++            self.terminate_calls = 0
++            self.kill_calls = 0
++            self.join_calls: list[float | None] = []
++            self._alive = list(process_alive or [True])
++
++        def start(self):
++            self.started = True
++
++        def join(self, timeout=None):
++            self.join_calls.append(timeout)
++
++        def terminate(self):
++            self.terminate_calls += 1
++
++        def kill(self):
++            self.kill_calls += 1
++
++        def is_alive(self):
++            if self._alive:
++                return self._alive.pop(0)
++            return False
++
++    parent_conn = _Conn(parent_polls, list(parent_messages or []))
++    child_conn = _Conn([], [])
++    process = _Process()
++
++    class _Context:
++        def Pipe(self, duplex=False):
++            del duplex
++            return parent_conn, child_conn
++
++        def Process(self, target, args):
++            self.target = target
++            self.args = args
++            return process
++
++    return _Context(), process, parent_conn, child_conn
++
++
++def test_run_child_stage_operation_allows_cooperative_stop(
++    tmp_path: Path,
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    log_path = tmp_path / "logs" / "step.log"
++    stop_request = worker_tasks._RecordingStopRequest(  # noqa: SLF001
++        requested_at="2026-03-12T10:00:00Z",
++        requested_by="user",
++        reason_code="user_stop",
++        reason_text="Stop requested by user",
++    )
++    fake_ctx, process, parent_conn, child_conn = _fake_child_runtime(
++        parent_polls=[False, True],
++        parent_messages=[{"status": "ok", "payload": {"status": "ok"}}],
++        process_alive=[True, True],
++    )
++    checks = {"count": 0}
++
++    def _stop_request_getter():
++        checks["count"] += 1
++        return stop_request if checks["count"] == 1 else None
++
++    async def _fast_sleep(_seconds: float):
++        return None
++
++    monkeypatch.setattr(worker_tasks.mp, "get_context", lambda _name: fake_ctx)
++    monkeypatch.setattr(worker_tasks.asyncio, "sleep", _fast_sleep)
++
++    result = asyncio.run(
++        worker_tasks._run_child_stage_operation(  # noqa: SLF001
++            operation_name="noop",
++            payload={},
++            stage_name="asr",
++            stop_request_getter=_stop_request_getter,
++            grace_seconds=0.5,
++            log_path=log_path,
++            checkpoint="during_heavy_stage",
++        )
++    )
++
++    assert result == {"status": "ok"}
++    assert process.started is True
++    assert parent_conn.closed is True
++    assert child_conn.closed is True
++    log_text = log_path.read_text(encoding="utf-8")
++    assert "waiting for cooperative stop grace=0.5s stage=asr" in log_text
++    assert "stop completed cooperatively stage=asr" in log_text
++    assert "force terminating child stage=asr" not in log_text
++
++
++def test_run_child_stage_operation_force_terminates_after_grace(
++    tmp_path: Path,
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    log_path = tmp_path / "logs" / "step.log"
++    stop_request = worker_tasks._RecordingStopRequest(  # noqa: SLF001
++        requested_at="2026-03-12T10:00:00Z",
++        requested_by="user",
++        reason_code="user_stop",
++        reason_text="Stop requested by user",
++    )
++    fake_ctx, process, _parent_conn, _child_conn = _fake_child_runtime(
++        parent_polls=[False, False],
++        process_alive=[True, True, True],
++    )
++    times = iter([1.0, 1.0, 2.0])
++    force_stop_calls: list[str] = []
++
++    async def _fast_sleep(_seconds: float):
++        return None
++
++    def _next_time() -> float:
++        return next(times, 2.0)
++
++    monkeypatch.setattr(worker_tasks.mp, "get_context", lambda _name: fake_ctx)
++    monkeypatch.setattr(worker_tasks.asyncio, "sleep", _fast_sleep)
++    monkeypatch.setattr(worker_tasks.time, "monotonic", _next_time)
++
++    with pytest.raises(worker_tasks.RecordingStopRequested) as exc_info:
++        asyncio.run(
++            worker_tasks._run_child_stage_operation(  # noqa: SLF001
++                operation_name="noop",
++                payload={},
++                stage_name="diarization",
++                stop_request_getter=lambda: stop_request,
++                grace_seconds=0.1,
++                log_path=log_path,
++                checkpoint="during_heavy_stage",
++                on_force_stop=lambda: force_stop_calls.append("cleanup"),
++            )
++        )
++
++    assert exc_info.value.forced is True
++    assert exc_info.value.acknowledged_reason_text == "Force-stopped after grace timeout"
++    assert process.terminate_calls == 1
++    assert process.kill_calls == 1
++    assert force_stop_calls == ["cleanup"]
++    worker_tasks._log_stop_requested(log_path=log_path, stop=exc_info.value)  # noqa: SLF001
++    log_text = log_path.read_text(encoding="utf-8")
++    assert "force terminating child stage=diarization" in log_text
++    assert "stage terminated by user stop stage=diarization" in log_text
++    assert "forced=true" in log_text
++
++
++def test_run_child_stage_operation_maps_error_and_exit_without_result(
++    tmp_path: Path,
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    log_path = tmp_path / "logs" / "step.log"
++    error_ctx, _process, _parent_conn, _child_conn = _fake_child_runtime(
++        parent_polls=[True],
++        parent_messages=[{"status": "error", "error_type": "ConnectError", "error_message": "boom"}],
++        process_alive=[True],
++    )
++    monkeypatch.setattr(worker_tasks.mp, "get_context", lambda _name: error_ctx)
++
++    with pytest.raises(ConnectionError, match="boom"):
++        asyncio.run(
++            worker_tasks._run_child_stage_operation(  # noqa: SLF001
++                operation_name="llm_generate",
++                payload={},
++                stage_name="llm_extract",
++                stop_request_getter=lambda: None,
++                grace_seconds=1.0,
++                log_path=log_path,
++                checkpoint="llm_chunk_request",
++            )
++        )
++
++    exit_ctx, _process, _parent_conn, _child_conn = _fake_child_runtime(
++        parent_polls=[False, False],
++        process_alive=[False],
++        exitcode=17,
++    )
++    monkeypatch.setattr(worker_tasks.mp, "get_context", lambda _name: exit_ctx)
++
++    with pytest.raises(RuntimeError, match="exitcode=17"):
++        asyncio.run(
++            worker_tasks._run_child_stage_operation(  # noqa: SLF001
++                operation_name="llm_generate",
++                payload={},
++                stage_name="llm_extract",
++                stop_request_getter=lambda: None,
++                grace_seconds=1.0,
++                log_path=log_path,
++                checkpoint="llm_chunk_request",
++            )
++        )
++
++
++def test_run_child_stage_operation_returns_ok_without_stop_and_after_exit_race(
++    tmp_path: Path,
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    log_path = tmp_path / "logs" / "step.log"
++    ok_ctx, _process, _parent_conn, _child_conn = _fake_child_runtime(
++        parent_polls=[True],
++        parent_messages=[{"status": "ok", "payload": {"status": "ok"}}],
++        process_alive=[True],
++    )
++    monkeypatch.setattr(worker_tasks.mp, "get_context", lambda _name: ok_ctx)
++
++    result = asyncio.run(
++        worker_tasks._run_child_stage_operation(  # noqa: SLF001
++            operation_name="llm_generate",
++            payload={},
++            stage_name="llm_extract",
++            stop_request_getter=lambda: None,
++            grace_seconds=1.0,
++            log_path=log_path,
++            checkpoint="llm_chunk_request",
++        )
++    )
++    assert result == {"status": "ok"}
++
++    race_ctx, _process, _parent_conn, _child_conn = _fake_child_runtime(
++        parent_polls=[False, True],
++        parent_messages=[{"status": "ok", "payload": {"status": "late"}}],
++        process_alive=[False],
++    )
++    monkeypatch.setattr(worker_tasks.mp, "get_context", lambda _name: race_ctx)
++
++    result = asyncio.run(
++        worker_tasks._run_child_stage_operation(  # noqa: SLF001
++            operation_name="llm_generate",
++            payload={},
++            stage_name="llm_extract",
++            stop_request_getter=lambda: None,
++            grace_seconds=1.0,
++            log_path=log_path,
++            checkpoint="llm_chunk_request",
++        )
++    )
++    assert result == {"status": "late"}
++
++
++def test_run_child_stage_operation_waits_with_latched_stop_before_result(
++    tmp_path: Path,
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    log_path = tmp_path / "logs" / "step.log"
++    stop_request = worker_tasks._RecordingStopRequest(  # noqa: SLF001
++        requested_at="2026-03-12T10:00:00Z",
++        requested_by="user",
++        reason_code="user_stop",
++        reason_text="Stop requested by user",
++    )
++    fake_ctx, _process, _parent_conn, _child_conn = _fake_child_runtime(
++        parent_polls=[False, False, True],
++        parent_messages=[{"status": "ok", "payload": {"status": "graceful"}}],
++        process_alive=[True, True, True],
++    )
++    checks = {"count": 0}
++    times = iter([1.0, 1.0, 1.05, 1.05])
++
++    async def _fast_sleep(_seconds: float):
++        return None
++
++    def _stop_request_getter():
++        checks["count"] += 1
++        return stop_request if checks["count"] == 1 else None
++
++    monkeypatch.setattr(worker_tasks.mp, "get_context", lambda _name: fake_ctx)
++    monkeypatch.setattr(worker_tasks.asyncio, "sleep", _fast_sleep)
++    monkeypatch.setattr(worker_tasks.time, "monotonic", lambda: next(times, 1.05))
++
++    result = asyncio.run(
++        worker_tasks._run_child_stage_operation(  # noqa: SLF001
++            operation_name="noop",
++            payload={},
++            stage_name="asr",
++            stop_request_getter=_stop_request_getter,
++            grace_seconds=0.5,
++            log_path=log_path,
++            checkpoint="during_heavy_stage",
++        )
++    )
++
++    assert result == {"status": "graceful"}
++    assert checks["count"] == 1
++
++
++def test_run_child_stage_operation_force_terminates_without_kill_or_callback(
++    tmp_path: Path,
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    log_path = tmp_path / "logs" / "step.log"
++    stop_request = worker_tasks._RecordingStopRequest(  # noqa: SLF001
++        requested_at="2026-03-12T10:00:00Z",
++        requested_by="user",
++        reason_code="user_stop",
++        reason_text="Stop requested by user",
++    )
++    fake_ctx, process, _parent_conn, _child_conn = _fake_child_runtime(
++        parent_polls=[False, False],
++        process_alive=[True],
++    )
++    times = iter([1.0, 1.0, 2.0])
++
++    async def _fast_sleep(_seconds: float):
++        return None
++
++    def _alive_until_terminate() -> bool:
++        return process.terminate_calls == 0
++
++    monkeypatch.setattr(worker_tasks.mp, "get_context", lambda _name: fake_ctx)
++    monkeypatch.setattr(worker_tasks.asyncio, "sleep", _fast_sleep)
++    monkeypatch.setattr(worker_tasks.time, "monotonic", lambda: next(times, 2.0))
++    monkeypatch.setattr(process, "is_alive", _alive_until_terminate)
++
++    with pytest.raises(worker_tasks.RecordingStopRequested) as exc_info:
++        asyncio.run(
++            worker_tasks._run_child_stage_operation(  # noqa: SLF001
++                operation_name="noop",
++                payload={},
++                stage_name="asr",
++                stop_request_getter=lambda: stop_request,
++                grace_seconds=0.1,
++                log_path=log_path,
++                checkpoint="during_heavy_stage",
++            )
++        )
++
++    assert exc_info.value.forced is True
++    assert process.terminate_calls == 1
++    assert process.kill_calls == 0
++
++
++def test_run_child_stage_operation_cleans_up_on_async_cancel(
++    tmp_path: Path,
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    log_path = tmp_path / "logs" / "step.log"
++    cancel_ctx, process, _parent_conn, _child_conn = _fake_child_runtime(
++        parent_polls=[False, False, False],
++        process_alive=[True, True, True],
++    )
++    real_sleep = asyncio.sleep
++
++    async def _yield_once(_seconds: float):
++        await real_sleep(0)
++
++    monkeypatch.setattr(worker_tasks.mp, "get_context", lambda _name: cancel_ctx)
++    monkeypatch.setattr(worker_tasks.asyncio, "sleep", _yield_once)
++
++    async def _exercise() -> None:
++        task = asyncio.create_task(
++            worker_tasks._run_child_stage_operation(  # noqa: SLF001
++                operation_name="llm_generate",
++                payload={},
++                stage_name="llm_extract",
++                stop_request_getter=lambda: None,
++                grace_seconds=1.0,
++                log_path=log_path,
++                checkpoint="llm_chunk_request",
++            )
++        )
++        await asyncio.sleep(0)
++        task.cancel()
++        with pytest.raises(asyncio.CancelledError):
++            await task
++
++    asyncio.run(_exercise())
++    assert process.terminate_calls == 1
++    assert process.kill_calls == 1
++
++
++def test_run_child_stage_operation_cancel_cleanup_handles_exit_without_kill(
++    tmp_path: Path,
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    log_path = tmp_path / "logs" / "step.log"
++    cancel_ctx, process, _parent_conn, _child_conn = _fake_child_runtime(
++        parent_polls=[False, False, False],
++        process_alive=[True],
++    )
++    real_sleep = asyncio.sleep
++
++    async def _yield_once(_seconds: float):
++        await real_sleep(0)
++
++    def _alive_until_terminate() -> bool:
++        return process.terminate_calls == 0
++
++    monkeypatch.setattr(worker_tasks.mp, "get_context", lambda _name: cancel_ctx)
++    monkeypatch.setattr(worker_tasks.asyncio, "sleep", _yield_once)
++    monkeypatch.setattr(process, "is_alive", _alive_until_terminate)
++
++    async def _exercise() -> None:
++        task = asyncio.create_task(
++            worker_tasks._run_child_stage_operation(  # noqa: SLF001
++                operation_name="llm_generate",
++                payload={},
++                stage_name="llm_extract",
++                stop_request_getter=lambda: None,
++                grace_seconds=1.0,
++                log_path=log_path,
++                checkpoint="llm_chunk_request",
++            )
++        )
++        await asyncio.sleep(0)
++        task.cancel()
++        with pytest.raises(asyncio.CancelledError):
++            await task
++
++    asyncio.run(_exercise())
++    assert process.terminate_calls == 1
++    assert process.kill_calls == 0
++
++
++def test_run_child_stage_operation_cancel_cleanup_skips_terminate_when_dead(
++    tmp_path: Path,
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    log_path = tmp_path / "logs" / "step.log"
++    cancel_ctx, process, _parent_conn, _child_conn = _fake_child_runtime(
++        parent_polls=[False, False],
++        process_alive=[True],
++    )
++    real_sleep = asyncio.sleep
++
++    async def _yield_once(_seconds: float):
++        await real_sleep(0)
++
++    alive_checks = {"count": 0}
++
++    def _alive_once() -> bool:
++        alive_checks["count"] += 1
++        return alive_checks["count"] == 1
++
++    monkeypatch.setattr(worker_tasks.mp, "get_context", lambda _name: cancel_ctx)
++    monkeypatch.setattr(worker_tasks.asyncio, "sleep", _yield_once)
++    monkeypatch.setattr(process, "is_alive", _alive_once)
++
++    async def _exercise() -> None:
++        task = asyncio.create_task(
++            worker_tasks._run_child_stage_operation(  # noqa: SLF001
++                operation_name="llm_generate",
++                payload={},
++                stage_name="llm_extract",
++                stop_request_getter=lambda: None,
++                grace_seconds=1.0,
++                log_path=log_path,
++                checkpoint="llm_chunk_request",
++            )
++        )
++        await asyncio.sleep(0)
++        task.cancel()
++        with pytest.raises(asyncio.CancelledError):
++            await task
++
++    asyncio.run(_exercise())
++    assert process.terminate_calls == 0
++    assert process.kill_calls == 0
++
++
++def test_cancel_inflight_llm_chunk_state_preserves_completed_rows(tmp_path: Path) -> None:
++    cfg = _db_settings(tmp_path)
 +    init_db(cfg)
 +    create_recording(
-+        "rec-reaper-stopping-orphan-1",
++        "rec-stop-hard-chunk-1",
 +        source="test",
-+        source_filename="stopping-orphan.wav",
-+        status=RECORDING_STATUS_STOPPING,
++        source_filename="chunk.wav",
 +        settings=cfg,
 +    )
-+    create_job(
-+        "job-reaper-stopping-orphan-1",
-+        recording_id="rec-reaper-stopping-orphan-1",
-+        job_type=JOB_TYPE_PRECHECK,
-+        status=JOB_STATUS_QUEUED,
++    worker_tasks.mark_recording_llm_chunk_started(
++        "rec-stop-hard-chunk-1",
++        chunk_group="extract",
++        chunk_index="1",
++        chunk_total=2,
++        metadata={"chunk_id": "1"},
 +        settings=cfg,
 +    )
-+    with connect(cfg) as conn:
-+        conn.execute(
-+            """
-+            UPDATE recordings
-+            SET updated_at = ?
-+            WHERE id = ?
-+            """,
-+            ("2026-02-22T00:00:00Z", "rec-reaper-stopping-orphan-1"),
++    worker_tasks.mark_recording_llm_chunk_completed(
++        "rec-stop-hard-chunk-1",
++        chunk_group="extract",
++        chunk_index="1",
++        chunk_total=2,
++        metadata={"chunk_id": "1"},
++        settings=cfg,
++    )
++    worker_tasks.mark_recording_llm_chunk_started(
++        "rec-stop-hard-chunk-1",
++        chunk_group="extract",
++        chunk_index="2",
++        chunk_total=2,
++        metadata={"chunk_id": "2"},
++        settings=cfg,
++    )
++
++    worker_tasks._cancel_inflight_llm_chunk_state(  # noqa: SLF001
++        recording_id="rec-stop-hard-chunk-1",
++        settings=cfg,
++        chunk_index="2",
++        chunk_total=2,
++    )
++
++    rows = worker_tasks.list_recording_llm_chunk_states(  # noqa: SLF001
++        "rec-stop-hard-chunk-1",
++        settings=cfg,
++    )
++    assert [(row["chunk_index"], row["status"]) for row in rows] == [
++        ("1", "completed"),
++        ("2", "cancelled"),
++    ]
++
++
++def test_cancel_inflight_llm_chunk_state_ignores_missing_and_db_errors(
++    tmp_path: Path,
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    cfg = _db_settings(tmp_path)
++    worker_tasks._cancel_inflight_llm_chunk_state(  # noqa: SLF001
++        recording_id="rec-stop-hard-missing",
++        settings=cfg,
++        chunk_index=None,
++        chunk_total=1,
++    )
++    monkeypatch.setattr(
++        worker_tasks,
++        "mark_recording_llm_chunk_cancelled",
++        lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("db boom")),
++    )
++    worker_tasks._cancel_inflight_llm_chunk_state(  # noqa: SLF001
++        recording_id="rec-stop-hard-error",
++        settings=cfg,
++        chunk_index="1",
++        chunk_total=1,
++    )
++
++
++def test_cancel_aware_llm_client_passes_chunk_context_to_child(
++    tmp_path: Path,
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    cfg = _db_settings(tmp_path)
++    init_db(cfg)
++    create_recording(
++        "rec-stop-child-llm-1",
++        source="test",
++        source_filename="llm.wav",
++        settings=cfg,
++    )
++    captured: dict[str, Any] = {}
++
++    async def _fake_run_child_stage_operation(**kwargs):
++        captured.update(kwargs)
++        return {"role": "assistant", "content": "{}"}
++
++    monkeypatch.setattr(worker_tasks, "_run_child_stage_operation", _fake_run_child_stage_operation)
++    llm_client = worker_tasks._CancelAwareLLMClient(  # noqa: SLF001
++        base_client=worker_tasks.LLMClient(
++            base_url="http://127.0.0.1:8000",
++            api_key="token",
++            timeout=1.0,
++            max_tokens=512,
++            max_tokens_retry=768,
++        ),
++        recording_id="rec-stop-child-llm-1",
++        settings=cfg,
++        stage_name="llm_extract",
++        log_path=tmp_path / "logs" / "llm.log",
++    )
++
++    with llm_client.request_context(
++        checkpoint="llm_chunk_request",
++        chunk_index="2",
++        chunk_total=5,
++    ):
++        result = asyncio.run(
++            llm_client.generate(
++                system_prompt="sys",
++                user_prompt="user",
++                model="test-model",
++                response_format={"type": "json_object"},
++                max_tokens=333,
++                max_tokens_retry=444,
++            )
 +        )
-+        conn.commit()
 +
-+    cancelled_job_ids: list[str] = []
++    assert result == {"role": "assistant", "content": "{}"}
++    assert captured["operation_name"] == "llm_generate"
++    assert captured["checkpoint"] == "llm_chunk_request"
++    assert captured["chunk_index"] == "2"
++    assert captured["chunk_total"] == 5
++    assert captured["payload"]["max_tokens"] == 333
++    assert captured["payload"]["max_tokens_retry"] == 444
 +
-+    def _cancel_pending(job_id: str, *, settings=None) -> bool:
-+        cancelled_job_ids.append(job_id)
-+        return True
 +
-+    monkeypatch.setattr("lan_app.reaper.cancel_pending_queue_job", _cancel_pending)
++def test_hard_stop_helper_utilities_cover_payloads_error_mapping_and_child_helpers(
++    tmp_path: Path,
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    cfg = _db_settings(tmp_path)
++    pipeline_cfg = worker_tasks._build_pipeline_settings(cfg)  # noqa: SLF001
++    payload = worker_tasks._pipeline_settings_payload(pipeline_cfg)  # noqa: SLF001
++    restored = worker_tasks._pipeline_settings_from_payload(payload)  # noqa: SLF001
++    assert restored.tmp_root == pipeline_cfg.tmp_root
 +
-+    summary = run_stuck_job_reaper_once(
++    stage_tmp = worker_tasks._stage_temp_root(  # noqa: SLF001
++        recording_id="rec-stop-root-1",
++        stage_name="asr",
 +        settings=cfg,
-+        now=datetime(2026, 2, 23, 0, 0, 1, tzinfo=timezone.utc),
++    )
++    stage_tmp.mkdir(parents=True, exist_ok=True)
++    (stage_tmp / "temp.txt").write_text("x", encoding="utf-8")
++    worker_tasks._cleanup_stage_temp_root(stage_tmp)  # noqa: SLF001
++    assert stage_tmp.exists() is False
++
++    log_path = tmp_path / "logs" / "helpers.log"
++    worker_tasks._emit_child_step_logs(log_path, ["one", "two"])  # noqa: SLF001
++    assert "one" in log_path.read_text(encoding="utf-8")
++
++    worker_tasks._best_effort_step_log_callback(None, "noop")  # noqa: SLF001
++    worker_tasks._best_effort_step_log_callback(lambda _message: (_ for _ in ()).throw(RuntimeError("boom")), "ignored")  # noqa: SLF001
++
++    assert isinstance(
++        worker_tasks._rehydrate_child_operation_error(  # noqa: SLF001
++            operation_name="llm_generate",
++            error_type="ConnectError",
++            error_message="connect",
++        ),
++        ConnectionError,
++    )
++    assert isinstance(
++        worker_tasks._rehydrate_child_operation_error(  # noqa: SLF001
++            operation_name="llm_generate",
++            error_type="TimeoutException",
++            error_message="timeout",
++        ),
++        TimeoutError,
++    )
++    assert isinstance(
++        worker_tasks._rehydrate_child_operation_error(  # noqa: SLF001
++            operation_name="llm_generate",
++            error_type="LLMEmptyContentError",
++            error_message="empty",
++        ),
++        RuntimeError,
++    )
++    assert isinstance(
++        worker_tasks._rehydrate_child_operation_error(  # noqa: SLF001
++            operation_name="llm_generate",
++            error_type="ValueError",
++            error_message="bad llm value",
++        ),
++        ValueError,
++    )
++    assert isinstance(
++        worker_tasks._rehydrate_child_operation_error(  # noqa: SLF001
++            operation_name="other",
++            error_type="ValueError",
++            error_message="bad",
++        ),
++        ValueError,
++    )
++    unknown = worker_tasks._rehydrate_child_operation_error(  # noqa: SLF001
++        operation_name="other",
++        error_type="CustomError",
++        error_message="custom",
++    )
++    assert isinstance(unknown, worker_tasks._ChildOperationError)  # noqa: SLF001
++    assert unknown.operation_name == "other"
++
++    class _Conn:
++        def __init__(self):
++            self.messages: list[dict[str, Any]] = []
++            self.closed = False
++
++        def send(self, payload):
++            self.messages.append(payload)
++
++        def close(self):
++            self.closed = True
++
++    ok_conn = _Conn()
++    worker_tasks._child_stage_operation_process_main("test_sleep", {"sleep_seconds": 0.0, "result": "ok"}, ok_conn)  # noqa: SLF001
++    assert ok_conn.messages[0] == {"status": "ok", "payload": "ok"}
++    err_conn = _Conn()
++    worker_tasks._child_stage_operation_process_main("missing", {}, err_conn)  # noqa: SLF001
++    assert err_conn.messages[0]["status"] == "error"
++
++    monkeypatch.setattr(
++        worker_tasks,
++        "_execute_asr_workflow",
++        lambda **_kwargs: ([{"start": 0.0, "end": 1.0, "text": "hi"}], {"language": "en"}, {"used_multilingual_path": False}),
++    )
++    asr_child = worker_tasks._run_default_asr_child_operation(  # noqa: SLF001
++        {
++            "pipeline_settings": payload,
++            "working_audio_path": str(tmp_path / "audio.wav"),
++            "transcript_language_override": "en",
++            "asr_glossary": {"entry_count": 0},
++        }
++    )
++    assert asr_child["segments"][0]["text"] == "hi"
++
++    monkeypatch.setattr(
++        worker_tasks,
++        "_execute_diarization_workflow",
++        lambda **_kwargs: {
++            "diarization_segments": [{"speaker": "S1", "start": 0.0, "end": 1.0}],
++            "diarization_runtime": {"mode": "fallback"},
++            "used_dummy_fallback": True,
++            "diarization_mode": "fallback",
++            "diarization_reason": "pyannote_unavailable",
++        },
++    )
++    diar_child = worker_tasks._run_default_diarization_child_operation(  # noqa: SLF001
++        {
++            "pipeline_settings": payload,
++            "working_audio_path": str(tmp_path / "audio.wav"),
++            "asr_segments": [],
++            "precheck_result": {"duration_sec": 1.0, "speech_ratio": 0.2, "quarantine_reason": None},
++            "diarization_model_id": "repo/model",
++        }
++    )
++    assert diar_child["diarization_mode"] == "fallback"
++
++    class _FakeChildLLM:
++        def __init__(self, **kwargs):
++            self.kwargs = kwargs
++
++        async def generate(self, **kwargs):
++            return {"role": "assistant", "content": json.dumps(kwargs, sort_keys=True)}
++
++    monkeypatch.setattr(worker_tasks, "LLMClient", _FakeChildLLM)
++    llm_child = worker_tasks._run_llm_generate_child_operation(  # noqa: SLF001
++        {
++            "base_url": "http://127.0.0.1:8000",
++            "api_key": "token",
++            "timeout": 1.0,
++            "mock_response_path": None,
++            "default_max_tokens": 512,
++            "default_max_tokens_retry": 768,
++            "system_prompt": "sys",
++            "user_prompt": "user",
++            "model": "test-model",
++            "response_format": {"type": "json_object"},
++            "max_tokens": 123,
++            "max_tokens_retry": 456,
++        }
++    )
++    assert "\"max_tokens\": 123" in llm_child["content"]
++    assert worker_tasks._run_test_sleep_child_operation({"sleep_seconds": 0.0, "result": "slept"}) == "slept"  # noqa: SLF001
++    with pytest.raises(RuntimeError, match="boom"):
++        worker_tasks._run_test_sleep_child_operation({"sleep_seconds": 0.0, "error_message": "boom"})  # noqa: SLF001
++
++
++def test_cancel_aware_llm_client_supports_positional_prompts_for_child(
++    tmp_path: Path,
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    cfg = _db_settings(tmp_path)
++    init_db(cfg)
++    create_recording(
++        "rec-stop-child-llm-2",
++        source="test",
++        source_filename="llm2.wav",
++        settings=cfg,
++    )
++    captured: dict[str, Any] = {}
++
++    async def _fake_run_child_stage_operation(**kwargs):
++        captured.update(kwargs)
++        return {"role": "assistant", "content": "{}"}
++
++    monkeypatch.setattr(worker_tasks, "_run_child_stage_operation", _fake_run_child_stage_operation)
++    llm_client = worker_tasks._CancelAwareLLMClient(  # noqa: SLF001
++        base_client=worker_tasks._ORIGINAL_LLM_CLIENT_CLASS(  # noqa: SLF001
++            base_url="http://127.0.0.1:8000",
++            api_key="token",
++            timeout=1.0,
++            max_tokens=512,
++            max_tokens_retry=768,
++        ),
++        recording_id="rec-stop-child-llm-2",
++        settings=cfg,
++        stage_name="llm_extract",
++        log_path=tmp_path / "logs" / "llm2.log",
 +    )
 +
-+    job = get_job("job-reaper-stopping-orphan-1", settings=cfg)
-+    recording = get_recording("rec-reaper-stopping-orphan-1", settings=cfg)
-+    assert job is not None
-+    assert recording is not None
-+    assert summary["processing_without_started"] == 1
-+    assert summary["recovered_jobs"] == 1
-+    assert summary["recovered_recordings"] == 1
-+    assert job["status"] == JOB_STATUS_FAILED
-+    assert recording["status"] == RECORDING_STATUS_NEEDS_REVIEW
-+    assert cancelled_job_ids == ["job-reaper-stopping-orphan-1"]
++    result = asyncio.run(llm_client.generate("sys-pos", "user-pos", model="test-model"))
++    assert result == {"role": "assistant", "content": "{}"}
++    assert captured["payload"]["system_prompt"] == "sys-pos"
++    assert captured["payload"]["user_prompt"] == "user-pos"
 +
 +
- def test_reaper_skips_orphan_recovery_when_active_job_is_no_longer_queued(
-     tmp_path: Path,
-     monkeypatch,
++def test_execute_diarization_workflow_direct_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
++    cfg = worker_tasks._build_pipeline_settings(_db_settings(tmp_path))  # noqa: SLF001
++    annotation = object()
++
++    class _Diariser:
++        mode = "pyannote"
++        last_run_metadata = {}
++
++        async def __call__(self, _audio_path: Path):
++            return annotation
++
++    monkeypatch.setattr(worker_tasks, "_build_diariser", lambda *_a, **_k: _Diariser())
++    monkeypatch.setattr(worker_tasks, "_gpu_execution_policy_message", lambda **_kwargs: "gpu policy test")
++    monkeypatch.setattr(worker_tasks, "_diarization_segments", lambda _ann: [{"speaker": "S1", "start": 0.0, "end": 1.0}] if _ann is annotation else [])
++    monkeypatch.setattr(worker_tasks.pipeline_orchestrator, "_diariser_runtime_metadata", lambda _diariser: {})
++    monkeypatch.setattr(worker_tasks.pipeline_orchestrator, "_diariser_mode", lambda _diariser: "pyannote")
++
++    async def _fake_retry_dialog_diarization(**kwargs):
++        return kwargs["diarization"]
++
++    monkeypatch.setattr(
++        worker_tasks.pipeline_orchestrator,
++        "_maybe_retry_dialog_diarization",
++        _fake_retry_dialog_diarization,
++    )
++    messages: list[str] = []
++    result = worker_tasks._execute_diarization_workflow(  # noqa: SLF001
++        working_audio_path=tmp_path / "audio.wav",
++        asr_segments=[{"start": 0.0, "end": 1.0, "text": "hello"}],
++        precheck_result=PrecheckResult(1.0, 0.2, None),
++        pipeline_settings=cfg,
++        diarization_model_id="repo/model",
++        step_log_callback=messages.append,
++    )
++    assert result["diarization_mode"] == "pyannote"
++    assert result["used_dummy_fallback"] is False
++    assert "gpu policy test" in messages
++
++
++def test_stage_asr_uses_child_operation_path(
++    tmp_path: Path,
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    cfg = _db_settings(tmp_path)
++    init_db(cfg)
++    create_recording("rec-asr-child", source="test", source_filename="audio.wav", settings=cfg)
++    raw_audio_path = cfg.recordings_root / "rec-asr-child" / "raw" / "audio.wav"
++    _write_pcm_wav(raw_audio_path)
++    ctx = worker_tasks._new_pipeline_context(  # noqa: SLF001
++        recording_id="rec-asr-child",
++        settings=cfg,
++        log_path=worker_tasks._step_log_path("rec-asr-child", JOB_TYPE_PRECHECK, cfg),  # noqa: SLF001
++    )
++    ctx.precheck_result = PrecheckResult(10.0, 0.5, None)
++    ctx.raw_audio_path = raw_audio_path
++    monkeypatch.setattr(worker_tasks, "_load_calendar_summary_context", lambda *_a, **_k: ("Weekly Sync", []))
++    monkeypatch.setattr(
++        worker_tasks,
++        "build_recording_asr_glossary",
++        lambda *_a, **_k: {"entry_count": 0, "term_count": 0, "truncated": False},
++    )
++    monkeypatch.setattr(worker_tasks, "_should_use_child_asr_execution", lambda: True)
++    monkeypatch.setattr(
++        worker_tasks.pipeline_orchestrator,
++        "_write_asr_glossary_artifact",
++        lambda **_kwargs: None,
++    )
++    cleanup_calls: list[Path] = []
++
++    async def _fake_run_child_stage_operation(**_kwargs):
++        return {
++            "segments": [{"start": 0.0, "end": 1.0, "text": "hello"}],
++            "info": {"language": "en"},
++            "execution": {"used_multilingual_path": True},
++            "step_logs": ["child asr"],
++        }
++
++    monkeypatch.setattr(worker_tasks, "_run_child_stage_operation", _fake_run_child_stage_operation)
++    monkeypatch.setattr(worker_tasks, "_cleanup_stage_temp_root", lambda path: cleanup_calls.append(path))
++
++    result = worker_tasks._stage_asr(ctx)  # noqa: SLF001
++    assert result.metadata["used_multilingual_path"] is True
++    assert result.metadata["segment_count"] == 1
++    assert cleanup_calls
++    assert "child asr" in ctx.log_path.read_text(encoding="utf-8")
++
++
++def test_stage_diarization_uses_child_operation_path(
++    tmp_path: Path,
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    cfg = _db_settings(tmp_path)
++    init_db(cfg)
++    create_recording("rec-diar-child", source="test", source_filename="audio.wav", settings=cfg)
++    raw_audio_path = cfg.recordings_root / "rec-diar-child" / "raw" / "audio.wav"
++    _write_pcm_wav(raw_audio_path)
++    ctx = worker_tasks._new_pipeline_context(  # noqa: SLF001
++        recording_id="rec-diar-child",
++        settings=cfg,
++        log_path=worker_tasks._step_log_path("rec-diar-child", JOB_TYPE_PRECHECK, cfg),  # noqa: SLF001
++    )
++    ctx.precheck_result = PrecheckResult(10.0, 0.5, None)
++    ctx.raw_audio_path = raw_audio_path
++    ctx.artifacts.asr_segments_json_path.write_text(
++        json.dumps([{"start": 0.0, "end": 1.0, "text": "hello"}]),
++        encoding="utf-8",
++    )
++    monkeypatch.setattr(worker_tasks, "_should_use_child_diarization_execution", lambda: True)
++
++    async def _fake_run_child_stage_operation(**_kwargs):
++        return {
++            "step_logs": ["child diarization"],
++            "diarization_mode": "fallback",
++            "diarization_reason": "pyannote_unavailable",
++            "diarization_segments": [{"speaker": "S1", "start": 0.0, "end": 1.0}],
++            "diarization_runtime": {"mode": "fallback", "used_dummy_fallback": False},
++            "used_dummy_fallback": True,
++        }
++
++    monkeypatch.setattr(worker_tasks, "_run_child_stage_operation", _fake_run_child_stage_operation)
++    result = worker_tasks._stage_diarization(ctx)  # noqa: SLF001
++    assert result.metadata["mode"] == "fallback"
++    assert result.metadata["used_dummy_fallback"] is True
++    assert "child diarization" in ctx.log_path.read_text(encoding="utf-8")
++
++
+ def test_job_attempt_returns_zero_for_invalid_attempt(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+     cfg = _db_settings(tmp_path)
+     monkeypatch.setattr(worker_tasks, "get_job", lambda *_a, **_k: {"attempt": "oops"})

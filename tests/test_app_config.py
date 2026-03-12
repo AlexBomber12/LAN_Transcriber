@@ -100,12 +100,14 @@ def test_upload_capture_timezone_invalid_fails_clearly(monkeypatch):
 
 def test_worker_and_reaper_settings_from_env(monkeypatch):
     monkeypatch.setenv("LAN_RQ_JOB_TIMEOUT_SECONDS", "1800")
+    monkeypatch.setenv("LAN_STOP_GRACE_SECONDS", "7.5")
     monkeypatch.setenv("LAN_MAX_JOB_ATTEMPTS", "5")
     monkeypatch.setenv("LAN_STUCK_JOB_SECONDS", "900")
     monkeypatch.setenv("LAN_REAPER_INTERVAL_SECONDS", "60")
 
     cfg = AppSettings()
     assert cfg.rq_job_timeout_seconds == 1800
+    assert cfg.stop_grace_seconds == 7.5
     assert cfg.max_job_attempts == 5
     assert cfg.stuck_job_seconds == 900
     assert cfg.reaper_interval_seconds == 60
@@ -249,6 +251,19 @@ def test_llm_chunking_settings_defaults_and_env_override(monkeypatch):
 
     monkeypatch.setenv("LLM_CHUNK_TIMEOUT_SECONDS", "0")
     with pytest.raises(ValueError, match="LLM_CHUNK_TIMEOUT_SECONDS|llm_chunk_timeout_seconds"):
+        AppSettings()
+
+
+def test_stop_grace_seconds_defaults_and_validation(monkeypatch):
+    monkeypatch.delenv("LAN_STOP_GRACE_SECONDS", raising=False)
+    monkeypatch.delenv("STOP_GRACE_SECONDS", raising=False)
+    assert AppSettings().stop_grace_seconds == 5.0
+
+    monkeypatch.setenv("STOP_GRACE_SECONDS", "2.25")
+    assert AppSettings().stop_grace_seconds == 2.25
+
+    monkeypatch.setenv("STOP_GRACE_SECONDS", "0")
+    with pytest.raises(ValueError, match="STOP_GRACE_SECONDS|stop_grace_seconds"):
         AppSettings()
 
 

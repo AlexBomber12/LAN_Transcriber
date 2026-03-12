@@ -166,6 +166,15 @@ class AppSettings(BaseSettings):
             "RQ_JOB_TIMEOUT_SECONDS",
         ),
     )
+    stop_grace_seconds: float = Field(
+        default=5.0,
+        gt=0.0,
+        validation_alias=AliasChoices(
+            "stop_grace_seconds",
+            "LAN_STOP_GRACE_SECONDS",
+            "STOP_GRACE_SECONDS",
+        ),
+    )
     max_job_attempts: int = Field(
         default=3,
         ge=1,

@@ -497,7 +497,7 @@ Queue (in order)
 - Depends on: PR-LLM-CHUNK-RESUME-TIMEOUTS-01
 
 98) PR-STOP-CANCEL-HARD-01: Hard-stop escalation for long-running heavy stages via child processes and bounded termination grace period
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-STOP-CANCEL-HARD-01.md
 - Depends on: PR-STOP-CANCEL-01
 

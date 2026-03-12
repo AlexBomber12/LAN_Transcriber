@@ -29,10 +29,13 @@ This runbook covers day-2 operations for LAN deployment:
    - `LLM_LONG_TRANSCRIPT_THRESHOLD_CHARS=4500`
    - Optional: `LLM_MERGE_MAX_TOKENS=2048` when the final merge pass needs a larger JSON budget
 5. Long transcripts are processed in chunks. Before planning those chunks, the worker compacts the speaker-turn transcript to reduce prompt size while keeping speaker order and chunk-level time ranges. The UI may show `llm_chunk_X_of_Y` followed by `llm_merge`.
-6. Automatic retries now resume from the failed or incomplete chunk set instead of starting long-transcript processing from chunk 1. Completed chunk extracts are validated before reuse, and a timed-out chunk can split into smaller child chunks automatically when it is still large enough.
-7. Debug artifacts for that flow live under `derived/`, including `llm_compact_transcript.txt`, `llm_compact_transcript.json`, `llm_chunks_plan.json`, `llm_merge_input.json`, per-chunk `llm_chunk_*_{raw,extract,error}.json`, and `llm_merge_error.json` when the merge pass fails.
-8. If you see `finish_reason=length` or empty `message.content`, increase `LLM_MAX_TOKENS` and `LLM_TIMEOUT_SECONDS` (and optionally `LLM_MERGE_MAX_TOKENS`).
-9. Validate connectivity:
+6. Stop handling now has two levels:
+   - soft stop at the next safe checkpoint
+   - hard-stop escalation for the current heavy child process after `LAN_STOP_GRACE_SECONDS` (default `5`)
+7. Automatic retries now resume from the failed or incomplete chunk set instead of starting long-transcript processing from chunk 1. Completed chunk extracts are validated before reuse, and a timed-out chunk can split into smaller child chunks automatically when it is still large enough.
+8. Debug artifacts for that flow live under `derived/`, including `llm_compact_transcript.txt`, `llm_compact_transcript.json`, `llm_chunks_plan.json`, `llm_merge_input.json`, per-chunk `llm_chunk_*_{raw,extract,error}.json`, and `llm_merge_error.json` when the merge pass fails.
+9. If you see `finish_reason=length` or empty `message.content`, increase `LLM_MAX_TOKENS` and `LLM_TIMEOUT_SECONDS` (and optionally `LLM_MERGE_MAX_TOKENS`).
+10. Validate connectivity:
 
 ```bash
 docker compose run --rm api python -m lan_app.healthchecks app
@@ -49,7 +52,7 @@ docker compose run --rm api python -m lan_app.healthchecks app
 5. Open `/recordings/{recording_id}` for transcript, summary, and export actions.
    - `NeedsReview` recordings show an explicit review reason in the recordings list and detail page.
    - `Stop` on a queued recording removes the queued job immediately and marks the recording `Stopped`.
-   - `Stop` on a running recording changes the status to `Stopping`; the worker exits at the next stage or LLM chunk checkpoint, then finalizes the recording as `Stopped`.
+   - `Stop` on a running recording changes the status to `Stopping`; the worker first waits for the current heavy child process to exit cooperatively and then force-terminates it after `LAN_STOP_GRACE_SECONDS` when needed, before finalizing the recording as `Stopped`.
    - A stopped recording stays stopped until you explicitly `Requeue` it.
    - The server-rendered UI shows timestamps in local Europe/Rome time.
    - Plaud-style filename timestamps are interpreted in `UPLOAD_CAPTURE_TIMEZONE` (default `Europe/Rome`), then stored in UTC in the database.
