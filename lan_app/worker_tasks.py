@@ -283,6 +283,9 @@ class _DbChunkStateStore:
         )
 
     def mark_cancelled(self, **kwargs: Any) -> dict[str, Any] | None:
+        kwargs = dict(kwargs)
+        kwargs.pop("error_code", None)
+        kwargs.pop("error_text", None)
         return mark_recording_llm_chunk_cancelled(
             self.recording_id,
             settings=self.settings,

@@ -2808,6 +2808,17 @@ async def ui_action_stop(
         )
         return RedirectResponse(redirect_path, status_code=303)
 
+    if not set_recording_status_if_current_in(
+        recording_id,
+        RECORDING_STATUS_STOPPED,
+        current_statuses=(
+            RECORDING_STATUS_QUEUED,
+            RECORDING_STATUS_PROCESSING,
+            RECORDING_STATUS_STOPPING,
+        ),
+        settings=_settings,
+    ):
+        return RedirectResponse(redirect_path, status_code=303)
     if not str(rec.get("cancel_requested_at") or "").strip():
         set_recording_cancel_request(
             recording_id,
@@ -2823,11 +2834,6 @@ async def ui_action_stop(
             reason_text=_STOPPED_REASON_TEXT,
             settings=_settings,
         )
-    set_recording_status(
-        recording_id,
-        RECORDING_STATUS_STOPPED,
-        settings=_settings,
-    )
     clear_recording_progress(recording_id, settings=_settings)
     return RedirectResponse(redirect_path, status_code=303)
 

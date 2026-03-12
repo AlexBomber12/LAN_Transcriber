@@ -2351,3 +2351,45 @@ def test_process_job_converts_completed_terminal_state_to_stopped_when_stop_requ
         "status": "Stopped",
         "error": "cancelled_by_user",
     }
+
+
+def test_cancel_aware_chunk_store_marks_cancelled_with_error_kwargs_against_db_store(
+    tmp_path: Path,
+) -> None:
+    cfg = _db_settings(tmp_path)
+    init_db(cfg)
+    create_recording(
+        "rec-stop-helper-db-cancel",
+        source="test",
+        source_filename="stop-db.wav",
+        settings=cfg,
+    )
+    set_recording_cancel_request(
+        "rec-stop-helper-db-cancel",
+        requested_by="user",
+        reason_code="user_stop",
+        reason_text="Stop requested by user",
+        settings=cfg,
+    )
+
+    store = worker_tasks._CancelAwareChunkStateStore(  # noqa: SLF001
+        base_store=worker_tasks._DbChunkStateStore("rec-stop-helper-db-cancel", cfg),  # noqa: SLF001
+        recording_id="rec-stop-helper-db-cancel",
+        settings=cfg,
+        stage_name="llm_extract",
+    )
+
+    with pytest.raises(worker_tasks.RecordingStopRequested):
+        store.mark_failed(
+            chunk_group="extract",
+            chunk_index="1",
+            chunk_total=1,
+            error_code="llm_chunk_timeout",
+            error_text="boom",
+            metadata={"order_path": [1], "text": "chunk one", "base_text": "chunk one"},
+        )
+
+    rows = worker_tasks._DbChunkStateStore("rec-stop-helper-db-cancel", cfg).list_states(  # noqa: SLF001
+        chunk_group="extract"
+    )
+    assert [(row["chunk_index"], row["status"]) for row in rows] == [("1", "cancelled")]

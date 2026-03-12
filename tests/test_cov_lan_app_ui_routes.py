@@ -315,12 +315,50 @@ def test_ui_action_stop_helper_edge_paths(
         "acknowledge_recording_cancel_request",
         lambda *_a, **_k: calls.append("ack") or True,
     )
-    monkeypatch.setattr(ui_routes, "set_recording_status", lambda *_a, **_k: calls.append("status") or True)
+    monkeypatch.setattr(
+        ui_routes,
+        "set_recording_status_if_current_in",
+        lambda *_a, **_k: calls.append("status") or True,
+    )
     monkeypatch.setattr(ui_routes, "clear_recording_progress", lambda *_a, **_k: calls.append("clear") or True)
     acknowledged = asyncio.run(ui_routes.ui_action_stop("rec-stopping", tab="overview"))
     assert acknowledged.status_code == 303
     assert acknowledged.headers["location"] == "/recordings/rec-stopping"
-    assert calls == ["ack", "status", "clear"]
+    assert calls == ["status", "ack", "clear"]
+
+    race_calls: list[str] = []
+    monkeypatch.setattr(
+        ui_routes,
+        "get_recording",
+        lambda *_a, **_k: {"id": "rec-race", "status": RECORDING_STATUS_QUEUED},
+    )
+    monkeypatch.setattr(ui_routes, "list_jobs", lambda **_kwargs: ([], 0))
+    monkeypatch.setattr(ui_routes, "purge_pending_recording_jobs", lambda *_a, **_k: 0)
+    monkeypatch.setattr(ui_routes, "has_started_job_for_recording", lambda *_a, **_k: False)
+    monkeypatch.setattr(
+        ui_routes,
+        "set_recording_status_if_current_in",
+        lambda *_a, **_k: False,
+    )
+    monkeypatch.setattr(
+        ui_routes,
+        "set_recording_cancel_request",
+        lambda *_a, **_k: race_calls.append("set_cancel") or True,
+    )
+    monkeypatch.setattr(
+        ui_routes,
+        "acknowledge_recording_cancel_request",
+        lambda *_a, **_k: race_calls.append("ack") or True,
+    )
+    monkeypatch.setattr(
+        ui_routes,
+        "clear_recording_progress",
+        lambda *_a, **_k: race_calls.append("clear") or True,
+    )
+    raced = asyncio.run(ui_routes.ui_action_stop("rec-race", tab="overview"))
+    assert raced.status_code == 303
+    assert raced.headers["location"] == "/recordings/rec-race"
+    assert race_calls == []
 
 
 def test_load_json_and_chunk_helpers_cover_error_paths(tmp_path: Path) -> None:

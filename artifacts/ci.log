@@ -102,8 +102,8 @@ Requirement already satisfied: pytz>2021.1 in ./.venv-ci/lib/python3.12/site-pac
 Building wheels for collected packages: lan-transcriber
   Building editable for lan-transcriber (pyproject.toml): started
   Building editable for lan-transcriber (pyproject.toml): finished with status 'done'
-  Created wheel for lan-transcriber: filename=lan_transcriber-0.1.0-0.editable-py3-none-any.whl size=15425 sha256=d91fc79e25d63e9640dc4c5e4151b2d2f38f4542e8cf43bac7d7b5f826952fcb
-  Stored in directory: /tmp/pip-ephem-wheel-cache-05bz61qh/wheels/d5/8a/5c/f7178f7e49aa5ae12b2320ec66b5c310f4f2f63d1bd301b7fb
+  Created wheel for lan-transcriber: filename=lan_transcriber-0.1.0-0.editable-py3-none-any.whl size=15425 sha256=07679fe0bb6a6dbc45ea65bfccf35b9f51692effa550f8666dd275f8c07f8a47
+  Stored in directory: /tmp/pip-ephem-wheel-cache-7klhnw3z/wheels/d5/8a/5c/f7178f7e49aa5ae12b2320ec66b5c310f4f2f63d1bd301b7fb
 Successfully built lan-transcriber
 Installing collected packages: lan-transcriber
   Attempting uninstall: lan-transcriber
@@ -126,10 +126,10 @@ The event loop scope for asynchronous fixtures will default to the fixture cachi
 ........................................................................ [ 56%]
 ........................................................................ [ 64%]
 ........................................................................ [ 72%]
-........................................................................ [ 81%]
-.......s................................................................ [ 89%]
+........................................................................ [ 80%]
+........s............................................................... [ 89%]
 ........................................................................ [ 97%]
-........................                                                 [100%]
+.........................                                                [100%]
 =============================== warnings summary ===============================
 lan_transcriber/pipeline_steps/precheck.py:3
   /home/alexey/LAN_Transcriber/lan_transcriber/pipeline_steps/precheck.py:3: DeprecationWarning: 'audioop' is deprecated and slated for removal in Python 3.13
@@ -165,13 +165,13 @@ tests/test_warm_models.py::test_warm_models_module_main_guard
 ---------- coverage: platform linux, python 3.12.3-final-0 -----------
 Name    Stmts   Miss Branch BrPart  Cover   Missing
 ---------------------------------------------------
-TOTAL   11311      0   3534      0   100%
+TOTAL   11315      0   3536      0   100%
 
 59 files skipped due to complete coverage.
 Coverage HTML written to dir htmlcov
 
 Required test coverage of 100% reached. Total coverage: 100.00%
-887 passed, 3 skipped, 10 warnings in 74.31s (0:01:14)
+888 passed, 3 skipped, 10 warnings in 71.73s (0:01:11)
 Name                                                    Stmts   Miss Branch BrPart  Cover
 -----------------------------------------------------------------------------------------
 lan_transcriber/__init__.py                                 8      0      0      0   100%
@@ -232,10 +232,10 @@ lan_app/speaker_bank.py             107      0     34      0   100%
 lan_app/tools/__init__.py             1      0      0      0   100%
 lan_app/tools/warm_models.py         47      0     10      0   100%
 lan_app/ui.py                        59      0     10      0   100%
-lan_app/ui_routes.py               1466      0    496      0   100%
+lan_app/ui_routes.py               1467      0    498      0   100%
 lan_app/uploads.py                   79      0     14      0   100%
 lan_app/worker.py                    28      0      2      0   100%
-lan_app/worker_tasks.py            1330      0    370      0   100%
+lan_app/worker_tasks.py            1333      0    370      0   100%
 lan_app/workers.py                   10      0      0      0   100%
 -------------------------------------------------------------------
-TOTAL                              7245      0   2170      0   100%
+TOTAL                              7249      0   2172      0   100%

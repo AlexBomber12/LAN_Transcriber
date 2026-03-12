@@ -1,166 +1,155 @@
+diff --git a/lan_app/ui_routes.py b/lan_app/ui_routes.py
+index e923c91..fc60361 100644
+--- a/lan_app/ui_routes.py
++++ b/lan_app/ui_routes.py
+@@ -2808,6 +2808,17 @@ async def ui_action_stop(
+         )
+         return RedirectResponse(redirect_path, status_code=303)
+ 
++    if not set_recording_status_if_current_in(
++        recording_id,
++        RECORDING_STATUS_STOPPED,
++        current_statuses=(
++            RECORDING_STATUS_QUEUED,
++            RECORDING_STATUS_PROCESSING,
++            RECORDING_STATUS_STOPPING,
++        ),
++        settings=_settings,
++    ):
++        return RedirectResponse(redirect_path, status_code=303)
+     if not str(rec.get("cancel_requested_at") or "").strip():
+         set_recording_cancel_request(
+             recording_id,
+@@ -2823,11 +2834,6 @@ async def ui_action_stop(
+             reason_text=_STOPPED_REASON_TEXT,
+             settings=_settings,
+         )
+-    set_recording_status(
+-        recording_id,
+-        RECORDING_STATUS_STOPPED,
+-        settings=_settings,
+-    )
+     clear_recording_progress(recording_id, settings=_settings)
+     return RedirectResponse(redirect_path, status_code=303)
+ 
 diff --git a/lan_app/worker_tasks.py b/lan_app/worker_tasks.py
-index 4e7cb2f..e834fa5 100644
+index e834fa5..5e500b0 100644
 --- a/lan_app/worker_tasks.py
 +++ b/lan_app/worker_tasks.py
-@@ -3222,6 +3222,22 @@ def process_job(job_id: str, recording_id: str, job_type: str) -> dict[str, str]
-             ):
-                 recording_before_run = get_recording(recording_id, settings=settings) or {}
-                 current_status = str(recording_before_run.get("status") or "").strip()
-+                if current_status == RECORDING_STATUS_STOPPED:
-+                    try:
-+                        finish_job_if_started(
-+                            job_id,
-+                            settings=settings,
-+                            error="cancelled_by_user",
-+                        )
-+                    except Exception:
-+                        pass
-+                    _log_stale_inflight_execution(
-+                        job_id=job_id,
-+                        job_type=job_type,
-+                        log_path=log_path,
-+                        detail=f"recording_status={current_status}",
-+                    )
-+                    return _ignored_result(job_id, recording_id, job_type)
-                 if current_status not in {
-                     RECORDING_STATUS_PROCESSING,
-                     RECORDING_STATUS_STOPPING,
-diff --git a/tests/test_cov_lan_app_worker_tasks_branches.py b/tests/test_cov_lan_app_worker_tasks_branches.py
-index c3a9206..f5f1b6c 100644
---- a/tests/test_cov_lan_app_worker_tasks_branches.py
-+++ b/tests/test_cov_lan_app_worker_tasks_branches.py
-@@ -22,6 +22,7 @@ from lan_app.constants import (
-     JOB_TYPE_STT,
-     RECORDING_STATUS_QUEUED,
-     RECORDING_STATUS_READY,
-+    RECORDING_STATUS_STOPPED,
-     RECORDING_STATUS_STOPPING,
- )
- from lan_app.db import create_recording, get_recording, init_db, set_recording_cancel_request
-@@ -1971,6 +1972,61 @@ def test_process_job_precheck_stale_paths_cover_race_conditions(
-         "_job_status",
-         lambda *_a, **_k: next(status_iter, JOB_STATUS_STARTED),
+@@ -283,6 +283,9 @@ class _DbChunkStateStore:
+         )
+ 
+     def mark_cancelled(self, **kwargs: Any) -> dict[str, Any] | None:
++        kwargs = dict(kwargs)
++        kwargs.pop("error_code", None)
++        kwargs.pop("error_text", None)
+         return mark_recording_llm_chunk_cancelled(
+             self.recording_id,
+             settings=self.settings,
+diff --git a/tests/test_cov_lan_app_ui_routes.py b/tests/test_cov_lan_app_ui_routes.py
+index 3eed3c6..cbaa1e0 100644
+--- a/tests/test_cov_lan_app_ui_routes.py
++++ b/tests/test_cov_lan_app_ui_routes.py
+@@ -315,12 +315,50 @@ def test_ui_action_stop_helper_edge_paths(
+         "acknowledge_recording_cancel_request",
+         lambda *_a, **_k: calls.append("ack") or True,
      )
-+    monkeypatch.setattr(worker_tasks, "set_recording_status_if_current_in", lambda *_a, **_k: False)
-+    monkeypatch.setattr(worker_tasks, "get_recording", lambda *_a, **_k: {"status": RECORDING_STATUS_STOPPED})
-+    finish_calls: list[str | None] = []
-+    stale_details: list[str] = []
+-    monkeypatch.setattr(ui_routes, "set_recording_status", lambda *_a, **_k: calls.append("status") or True)
 +    monkeypatch.setattr(
-+        worker_tasks,
-+        "finish_job_if_started",
-+        lambda _job_id, *, settings=None, error=None: finish_calls.append(error) or True,
++        ui_routes,
++        "set_recording_status_if_current_in",
++        lambda *_a, **_k: calls.append("status") or True,
 +    )
-+    monkeypatch.setattr(
-+        worker_tasks,
-+        "_log_stale_inflight_execution",
-+        lambda **kwargs: stale_details.append(str(kwargs["detail"])),
-+    )
-+    ignored_stopped = worker_tasks.process_job(
-+        "job-precheck-stale-stop",
-+        "rec-precheck-stale-stop",
-+        JOB_TYPE_PRECHECK,
-+    )
-+    assert ignored_stopped["status"] == "ignored"
-+    assert finish_calls == ["cancelled_by_user"]
-+    assert stale_details == ["recording_status=Stopped"]
+     monkeypatch.setattr(ui_routes, "clear_recording_progress", lambda *_a, **_k: calls.append("clear") or True)
+     acknowledged = asyncio.run(ui_routes.ui_action_stop("rec-stopping", tab="overview"))
+     assert acknowledged.status_code == 303
+     assert acknowledged.headers["location"] == "/recordings/rec-stopping"
+-    assert calls == ["ack", "status", "clear"]
++    assert calls == ["status", "ack", "clear"]
 +
-+    status_iter = iter([JOB_STATUS_STARTED, JOB_STATUS_STARTED])
++    race_calls: list[str] = []
 +    monkeypatch.setattr(
-+        worker_tasks,
-+        "_job_status",
-+        lambda *_a, **_k: next(status_iter, JOB_STATUS_STARTED),
++        ui_routes,
++        "get_recording",
++        lambda *_a, **_k: {"id": "rec-race", "status": RECORDING_STATUS_QUEUED},
 +    )
++    monkeypatch.setattr(ui_routes, "list_jobs", lambda **_kwargs: ([], 0))
++    monkeypatch.setattr(ui_routes, "purge_pending_recording_jobs", lambda *_a, **_k: 0)
++    monkeypatch.setattr(ui_routes, "has_started_job_for_recording", lambda *_a, **_k: False)
 +    monkeypatch.setattr(
-+        worker_tasks,
-+        "finish_job_if_started",
-+        lambda _job_id, settings=None, error=None: (_ for _ in ()).throw(RuntimeError("db race")),
-+    )
-+    stale_details.clear()
-+    ignored_stopped_with_error = worker_tasks.process_job(
-+        "job-precheck-stale-stop-error",
-+        "rec-precheck-stale-stop-error",
-+        JOB_TYPE_PRECHECK,
-+    )
-+    assert ignored_stopped_with_error["status"] == "ignored"
-+    assert stale_details == ["recording_status=Stopped"]
-+
-+    status_iter = iter([JOB_STATUS_STARTED, JOB_STATUS_STARTED])
-+    monkeypatch.setattr(
-+        worker_tasks,
-+        "_job_status",
-+        lambda *_a, **_k: next(status_iter, JOB_STATUS_STARTED),
-+    )
-+    monkeypatch.setattr(worker_tasks, "set_recording_status_if_current_in", lambda *_a, **_k: True)
-+    monkeypatch.setattr(
-+        worker_tasks,
-+        "set_recording_status_if_current_in_and_job_started",
++        ui_routes,
++        "set_recording_status_if_current_in",
 +        lambda *_a, **_k: False,
 +    )
-     monkeypatch.setattr(worker_tasks, "get_recording", lambda *_a, **_k: {})
-     with pytest.raises(ValueError, match="Recording not found"):
-         worker_tasks.process_job("job-precheck-stale-3", "rec-precheck-stale-3", JOB_TYPE_PRECHECK)
-diff --git a/tests/test_db_queue.py b/tests/test_db_queue.py
-index a1195ee..d4bf7eb 100644
---- a/tests/test_db_queue.py
-+++ b/tests/test_db_queue.py
-@@ -2044,6 +2044,60 @@ def test_worker_precheck_finishes_with_stopped_status_when_cancel_acknowledged(
-     assert job["error"] == "cancelled_by_user"
++    monkeypatch.setattr(
++        ui_routes,
++        "set_recording_cancel_request",
++        lambda *_a, **_k: race_calls.append("set_cancel") or True,
++    )
++    monkeypatch.setattr(
++        ui_routes,
++        "acknowledge_recording_cancel_request",
++        lambda *_a, **_k: race_calls.append("ack") or True,
++    )
++    monkeypatch.setattr(
++        ui_routes,
++        "clear_recording_progress",
++        lambda *_a, **_k: race_calls.append("clear") or True,
++    )
++    raced = asyncio.run(ui_routes.ui_action_stop("rec-race", tab="overview"))
++    assert raced.status_code == 303
++    assert raced.headers["location"] == "/recordings/rec-race"
++    assert race_calls == []
  
  
-+def test_worker_ignores_stale_start_when_recording_already_stopped(
-+    tmp_path: Path,
-+    monkeypatch,
-+):
-+    cfg = _test_settings(tmp_path)
-+    monkeypatch.setenv("LAN_DATA_ROOT", str(cfg.data_root))
-+    monkeypatch.setenv("LAN_RECORDINGS_ROOT", str(cfg.recordings_root))
-+    monkeypatch.setenv("LAN_DB_PATH", str(cfg.db_path))
-+    monkeypatch.setenv("LAN_PROM_SNAPSHOT_PATH", str(cfg.metrics_snapshot_path))
+ def test_load_json_and_chunk_helpers_cover_error_paths(tmp_path: Path) -> None:
+diff --git a/tests/test_cov_lan_app_worker_tasks_branches.py b/tests/test_cov_lan_app_worker_tasks_branches.py
+index f5f1b6c..f78b85e 100644
+--- a/tests/test_cov_lan_app_worker_tasks_branches.py
++++ b/tests/test_cov_lan_app_worker_tasks_branches.py
+@@ -2351,3 +2351,45 @@ def test_process_job_converts_completed_terminal_state_to_stopped_when_stop_requ
+         "status": "Stopped",
+         "error": "cancelled_by_user",
+     }
 +
++
++def test_cancel_aware_chunk_store_marks_cancelled_with_error_kwargs_against_db_store(
++    tmp_path: Path,
++) -> None:
++    cfg = _db_settings(tmp_path)
 +    init_db(cfg)
 +    create_recording(
-+        "rec-precheck-stopped-race-1",
++        "rec-stop-helper-db-cancel",
 +        source="test",
-+        source_filename="stopped-race.wav",
-+        status=RECORDING_STATUS_STOPPED,
++        source_filename="stop-db.wav",
 +        settings=cfg,
 +    )
-+    create_job(
-+        "job-precheck-stopped-race-1",
-+        recording_id="rec-precheck-stopped-race-1",
-+        job_type=JOB_TYPE_PRECHECK,
++    set_recording_cancel_request(
++        "rec-stop-helper-db-cancel",
++        requested_by="user",
++        reason_code="user_stop",
++        reason_text="Stop requested by user",
 +        settings=cfg,
 +    )
 +
-+    monkeypatch.setattr(
-+        "lan_app.worker_tasks._run_precheck_pipeline",
-+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("pipeline should not run")),
++    store = worker_tasks._CancelAwareChunkStateStore(  # noqa: SLF001
++        base_store=worker_tasks._DbChunkStateStore("rec-stop-helper-db-cancel", cfg),  # noqa: SLF001
++        recording_id="rec-stop-helper-db-cancel",
++        settings=cfg,
++        stage_name="llm_extract",
 +    )
 +
-+    result = process_job(
-+        "job-precheck-stopped-race-1",
-+        "rec-precheck-stopped-race-1",
-+        JOB_TYPE_PRECHECK,
++    with pytest.raises(worker_tasks.RecordingStopRequested):
++        store.mark_failed(
++            chunk_group="extract",
++            chunk_index="1",
++            chunk_total=1,
++            error_code="llm_chunk_timeout",
++            error_text="boom",
++            metadata={"order_path": [1], "text": "chunk one", "base_text": "chunk one"},
++        )
++
++    rows = worker_tasks._DbChunkStateStore("rec-stop-helper-db-cancel", cfg).list_states(  # noqa: SLF001
++        chunk_group="extract"
 +    )
-+    assert result["status"] == "ignored"
-+
-+    recording = get_recording("rec-precheck-stopped-race-1", settings=cfg)
-+    job = get_job("job-precheck-stopped-race-1", settings=cfg)
-+    assert recording is not None
-+    assert recording["status"] == RECORDING_STATUS_STOPPED
-+    assert job is not None
-+    assert job["status"] == JOB_STATUS_FINISHED
-+    assert job["error"] == "cancelled_by_user"
-+    step_log = (
-+        cfg.recordings_root
-+        / "rec-precheck-stopped-race-1"
-+        / "logs"
-+        / "step-precheck.log"
-+    )
-+    assert step_log.exists()
-+    assert "ignored stale in-flight execution" in step_log.read_text(encoding="utf-8")
-+
-+
- def test_worker_precheck_falls_back_when_diariser_init_fails(tmp_path: Path, monkeypatch):
-     cfg = _test_settings(tmp_path)
-     monkeypatch.setenv("LAN_DATA_ROOT", str(cfg.data_root))
++    assert [(row["chunk_index"], row["status"]) for row in rows] == [("1", "cancelled")]
