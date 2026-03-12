@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import json
 import logging
@@ -12,7 +12,14 @@ import time
 from types import SimpleNamespace
 from typing import Any
 
-from lan_transcriber.artifacts import atomic_write_json
+from lan_transcriber import normalizer
+from lan_transcriber.aliases import load_aliases as load_speaker_aliases
+from lan_transcriber.aliases import save_aliases as save_speaker_aliases
+from lan_transcriber.artifacts import (
+    atomic_write_json,
+    atomic_write_text,
+    build_recording_artifacts,
+)
 from lan_transcriber.audio_sanitize import (
     AudioSanitizeError,
     sanitize_audio_for_pipeline,
@@ -23,7 +30,8 @@ from lan_transcriber.llm_client import (
     LLMEmptyContentError,
     LLMTruncatedResponseError,
 )
-from lan_transcriber.pipeline import Settings as PipelineSettings
+from lan_transcriber.pipeline_steps import orchestrator as pipeline_orchestrator
+from lan_transcriber.pipeline import PrecheckResult, Settings as PipelineSettings
 from lan_transcriber.pipeline import run_pipeline, run_precheck
 from lan_transcriber.gpu_policy import (
     collect_cuda_runtime_facts,
@@ -34,9 +42,32 @@ from lan_transcriber.pipeline_steps.diarization_quality import (
     AUTO_PROFILE_DEFAULT_INITIAL_PROFILE,
     DEFAULT_DIALOG_RETRY_MIN_DURATION_SECONDS,
     DEFAULT_DIALOG_RETRY_MIN_TURNS,
+    SpeakerTurnSmoothingResult,
     annotation_speaker_count,
     profile_default_speaker_hints,
+    smooth_speaker_turns,
 )
+from lan_transcriber.pipeline_steps.language import (
+    analyse_languages,
+    resolve_target_summary_language,
+)
+from lan_transcriber.pipeline_steps.multilingual_asr import run_language_aware_asr
+from lan_transcriber.pipeline_steps import summary_builder as pipeline_summary_builder
+from lan_transcriber.pipeline_steps.snippets import (
+    SnippetExportRequest,
+    export_speaker_snippets,
+    write_empty_snippets_manifest,
+)
+from lan_transcriber.pipeline_steps.speaker_turns import (
+    _diarization_segments,
+    build_speaker_turns,
+    normalise_asr_segments,
+)
+from lan_transcriber.pipeline_steps.summary_builder import (
+    build_structured_summary_prompts,
+    build_summary_payload,
+)
+from lan_transcriber.utils import normalise_language_code, safe_float
 
 from .asr_glossary import build_recording_asr_glossary
 from .calendar.matching import calendar_summary_context, refresh_recording_calendar_match
@@ -60,6 +91,7 @@ from .constants import (
 )
 from .db import (
     clear_recording_progress,
+    clear_recording_pipeline_stages,
     fail_job,
     fail_job_if_started,
     finish_job_if_started,
@@ -67,6 +99,11 @@ from .db import (
     get_recording,
     init_db,
     list_jobs,
+    list_recording_pipeline_stages,
+    mark_recording_pipeline_stage_completed,
+    mark_recording_pipeline_stage_failed,
+    mark_recording_pipeline_stage_skipped,
+    mark_recording_pipeline_stage_started,
     requeue_job_if_started,
     set_recording_progress,
     set_recording_duration,
@@ -76,9 +113,16 @@ from .db import (
     start_job,
 )
 from .diarization_loader import load_pyannote_pipeline
+from .pipeline_stages import (
+    PIPELINE_STAGE_DEFINITIONS,
+    PIPELINE_STAGE_DONE_STATUSES,
+    PIPELINE_STAGE_STATUS_SKIPPED,
+    validate_stage_artifacts,
+)
 from .routing import refresh_recording_routing
 
 _logger = logging.getLogger(__name__)
+_ORIGINAL_RUN_PIPELINE = run_pipeline
 
 
 def _utc_now() -> str:
@@ -410,6 +454,18 @@ def _load_json_dict(path: Path) -> dict[str, Any]:
     return payload
 
 
+def _load_json_list(path: Path) -> list[Any]:
+    if not path.exists():
+        return []
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    if not isinstance(payload, list):
+        return []
+    return list(payload)
+
+
 def _review_reason_from_exception(exc: Exception) -> tuple[str, str]:
     message = str(exc).strip()
     lowered = message.lower()
@@ -608,6 +664,105 @@ def _load_calendar_summary_context(
     return calendar_summary_context(
         recording_id,
         settings=settings,
+    )
+
+
+@dataclass(frozen=True)
+class _PipelineArtifacts:
+    recording_id: str
+    derived_dir: Path
+    sanitized_audio_path: Path
+    audio_sanitize_json_path: Path
+    precheck_json_path: Path
+    calendar_refresh_json_path: Path
+    asr_segments_json_path: Path
+    asr_info_json_path: Path
+    asr_execution_json_path: Path
+    diarization_segments_json_path: Path
+    diarization_runtime_json_path: Path
+    language_analysis_json_path: Path
+    routing_json_path: Path
+    recording_artifacts: Any
+
+
+@dataclass
+class _PipelineExecutionContext:
+    recording_id: str
+    settings: AppSettings
+    log_path: Path
+    artifacts: _PipelineArtifacts
+    pipeline_settings: PipelineSettings
+    recording: dict[str, Any]
+    transcript_language_override: str | None
+    target_summary_language: str | None
+    has_explicit_summary_target: bool
+    raw_audio_path: Path | None = None
+    precheck_result: Any | None = None
+    calendar_title: str | None = None
+    calendar_attendees: list[str] = field(default_factory=list)
+    asr_glossary: dict[str, Any] | None = None
+    asr_segments: list[dict[str, Any]] = field(default_factory=list)
+    asr_info: dict[str, Any] = field(default_factory=dict)
+    asr_execution: dict[str, Any] = field(default_factory=dict)
+    language_payload: dict[str, Any] = field(default_factory=dict)
+    diarization_segments: list[dict[str, Any]] = field(default_factory=list)
+    diarization_runtime: dict[str, Any] = field(default_factory=dict)
+    speaker_turns: list[dict[str, Any]] = field(default_factory=list)
+    summary_payload: dict[str, Any] | None = None
+    clean_text: str = ""
+    friendly: int = 0
+    routing_payload: dict[str, Any] | None = None
+
+
+def _build_pipeline_artifacts(
+    recording_id: str,
+    *,
+    settings: AppSettings,
+) -> _PipelineArtifacts:
+    raw_audio_path = _resolve_raw_audio_path(recording_id, settings)
+    recording_artifacts = build_recording_artifacts(
+        settings.recordings_root,
+        recording_id,
+        raw_audio_path.suffix if raw_audio_path is not None else ".bin",
+    )
+    derived_dir = recording_artifacts.summary_json_path.parent
+    return _PipelineArtifacts(
+        recording_id=recording_id,
+        derived_dir=derived_dir,
+        sanitized_audio_path=derived_dir / "audio_sanitized.wav",
+        audio_sanitize_json_path=derived_dir / "audio_sanitize.json",
+        precheck_json_path=derived_dir / "precheck.json",
+        calendar_refresh_json_path=derived_dir / "calendar_refresh.json",
+        asr_segments_json_path=derived_dir / "asr_segments.json",
+        asr_info_json_path=derived_dir / "asr_info.json",
+        asr_execution_json_path=derived_dir / "asr_execution.json",
+        diarization_segments_json_path=derived_dir / "diarization_segments.json",
+        diarization_runtime_json_path=derived_dir / "diarization_runtime.json",
+        language_analysis_json_path=derived_dir / "language_analysis.json",
+        routing_json_path=derived_dir / "routing.json",
+        recording_artifacts=recording_artifacts,
+    )
+
+
+def _new_pipeline_context(
+    *,
+    recording_id: str,
+    settings: AppSettings,
+    log_path: Path,
+) -> _PipelineExecutionContext:
+    recording = get_recording(recording_id, settings=settings) or {}
+    transcript_language_override = _clean_language_value(recording.get("language_override"))
+    target_summary_language = _clean_language_value(recording.get("target_summary_language"))
+    return _PipelineExecutionContext(
+        recording_id=recording_id,
+        settings=settings,
+        log_path=log_path,
+        artifacts=_build_pipeline_artifacts(recording_id, settings=settings),
+        pipeline_settings=_build_pipeline_settings(settings),
+        recording=recording,
+        transcript_language_override=transcript_language_override,
+        target_summary_language=target_summary_language,
+        has_explicit_summary_target=target_summary_language is not None,
     )
 
 
@@ -1069,7 +1224,1151 @@ def _log_gpu_execution_policy(
     _append_step_log(log_path, message)
 
 
-def _run_precheck_pipeline(
+@dataclass(frozen=True)
+class _StageResult:
+    status: str
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+def _stage_rows_by_name(
+    recording_id: str,
+    *,
+    settings: AppSettings,
+) -> dict[str, dict[str, Any]]:
+    return {
+        str(row.get("stage_name") or ""): row
+        for row in list_recording_pipeline_stages(recording_id, settings=settings)
+    }
+
+
+def _stage_metadata(row: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(row, dict):
+        return {}
+    payload = row.get("metadata_json")
+    if isinstance(payload, dict):
+        return dict(payload)
+    return {}
+
+
+def _log_stage_started(log_path: Path, stage_name: str, *, resumed: bool = False) -> None:
+    verb = "resumed" if resumed else "started"
+    _append_step_log(log_path, f"stage {verb}: {stage_name}")
+
+
+def _log_stage_completed(
+    log_path: Path,
+    stage_name: str,
+    *,
+    duration_ms: int | None,
+) -> None:
+    if duration_ms is None:
+        _append_step_log(log_path, f"stage completed: {stage_name}")
+        return
+    _append_step_log(
+        log_path,
+        f"stage completed: {stage_name} elapsed={duration_ms / 1000:.3f}s",
+    )
+
+
+def _log_stage_skipped(
+    log_path: Path,
+    stage_name: str,
+    *,
+    reason: str,
+) -> None:
+    _append_step_log(log_path, f"stage skipped: {stage_name} reason={reason}")
+
+
+def _log_stage_invalidated(
+    log_path: Path,
+    stage_name: str,
+    *,
+    reason: str,
+) -> None:
+    _append_step_log(log_path, f"stage invalidated: {stage_name} {reason}, rerunning")
+
+
+def _recording_pipeline_progress_stage(stage_name: str) -> str:
+    return stage_name
+
+
+def _build_skip_result(reason: str, **metadata: Any) -> _StageResult:
+    payload = {"skip_reason": reason}
+    payload.update(metadata)
+    return _StageResult(status=PIPELINE_STAGE_STATUS_SKIPPED, metadata=payload)
+
+
+def _load_precheck_artifact(ctx: _PipelineExecutionContext) -> PrecheckResult | None:
+    payload = _load_json_dict(ctx.artifacts.precheck_json_path)
+    if not payload:
+        return None
+    return PrecheckResult(
+        duration_sec=safe_float(payload.get("duration_sec"), default=0.0)
+        if payload.get("duration_sec") is not None
+        else None,
+        speech_ratio=safe_float(payload.get("speech_ratio"), default=0.0)
+        if payload.get("speech_ratio") is not None
+        else None,
+        quarantine_reason=_clean_language_value(payload.get("quarantine_reason")),
+    )
+
+
+def _load_language_analysis_artifact(ctx: _PipelineExecutionContext) -> dict[str, Any]:
+    return _load_json_dict(ctx.artifacts.language_analysis_json_path)
+
+
+def _load_summary_payload(ctx: _PipelineExecutionContext) -> dict[str, Any]:
+    return _load_json_dict(ctx.artifacts.recording_artifacts.summary_json_path)
+
+
+def _load_diarization_runtime(ctx: _PipelineExecutionContext) -> dict[str, Any]:
+    return _load_json_dict(ctx.artifacts.diarization_runtime_json_path)
+
+
+def _load_asr_execution(ctx: _PipelineExecutionContext) -> dict[str, Any]:
+    return _load_json_dict(ctx.artifacts.asr_execution_json_path)
+
+
+def _working_audio_path(ctx: _PipelineExecutionContext) -> Path | None:
+    sanitize_payload = _load_json_dict(ctx.artifacts.audio_sanitize_json_path)
+    configured_output = str(sanitize_payload.get("output_path") or "").strip()
+    if configured_output:
+        output_path = Path(configured_output)
+        if output_path.exists():
+            return output_path
+    if ctx.artifacts.sanitized_audio_path.exists():
+        return ctx.artifacts.sanitized_audio_path
+    if ctx.raw_audio_path is not None and ctx.raw_audio_path.exists():
+        return ctx.raw_audio_path
+    resolved_raw = _resolve_raw_audio_path(ctx.recording_id, ctx.settings)
+    if resolved_raw is not None and resolved_raw.exists():
+        ctx.raw_audio_path = resolved_raw
+        return resolved_raw
+    return None
+
+
+def _build_diarization_metadata_payload(
+    *,
+    runtime: dict[str, Any],
+    cfg: PipelineSettings,
+    smoothing_result: SpeakerTurnSmoothingResult,
+) -> dict[str, Any]:
+    diariser_mode = str(runtime.get("mode") or "unknown").strip().lower() or "unknown"
+    effective_hints = runtime.get("effective_hints")
+    if not isinstance(effective_hints, dict):
+        effective_hints = {}
+    initial_hints = runtime.get("initial_hints")
+    if not isinstance(initial_hints, dict):
+        initial_hints = {}
+    profile_selection = runtime.get("profile_selection")
+    if not isinstance(profile_selection, dict):
+        profile_selection = {}
+    selected_profile = str(
+        profile_selection.get("selected_profile")
+        or runtime.get("selected_profile")
+        or runtime.get("initial_profile")
+        or runtime.get("diarization_profile")
+        or cfg.diarization_profile
+    )
+    initial_metrics = profile_selection.get("initial_metrics")
+    if not isinstance(initial_metrics, dict):
+        initial_metrics = {}
+    payload: dict[str, Any] = {
+        "version": 1,
+        "mode": diariser_mode,
+        "degraded": bool(runtime.get("used_dummy_fallback")) or diariser_mode not in {"pyannote", "unknown"},
+        "diarization_profile": str(runtime.get("diarization_profile") or cfg.diarization_profile),
+        "requested_profile": str(
+            runtime.get("requested_profile")
+            or runtime.get("diarization_profile")
+            or cfg.diarization_profile
+        ),
+        "effective_device": str(runtime.get("effective_device") or cfg.diarization_device),
+        "scheduler_mode": str(runtime.get("scheduler_mode") or cfg.gpu_scheduler_mode),
+        "scheduler_reason": runtime.get("scheduler_reason"),
+        "initial_profile": str(runtime.get("initial_profile") or cfg.diarization_profile),
+        "selected_profile": selected_profile,
+        "selected_result": str(profile_selection.get("selected_result") or "initial_pass"),
+        "auto_profile_enabled": bool(runtime.get("auto_profile_enabled", False)),
+        "profile_override_reason": runtime.get("override_reason"),
+        "hints_applied": effective_hints,
+        "dialog_retry_attempted": bool(
+            profile_selection.get(
+                "dialog_retry_attempted",
+                runtime.get("dialog_retry_used", False),
+            )
+        ),
+        "dialog_retry_used": bool(runtime.get("dialog_retry_used", False)),
+        "speaker_count_before_retry": runtime.get("speaker_count_before_retry"),
+        "speaker_count_after_retry": runtime.get("speaker_count_after_retry"),
+        "initial_speaker_count": initial_metrics.get(
+            "speaker_count",
+            runtime.get("speaker_count_before_retry"),
+        ),
+        "initial_top_two_coverage": initial_metrics.get("top_two_coverage"),
+        "used_dummy_fallback": bool(runtime.get("used_dummy_fallback", False)),
+        "smoothing_applied": bool(diariser_mode == "pyannote" and not runtime.get("used_dummy_fallback")),
+        "merge_gap_seconds": cfg.diarization_merge_gap_seconds,
+        "min_turn_seconds": cfg.diarization_min_turn_seconds,
+        "speaker_count_before_smoothing": smoothing_result.speaker_count_before,
+        "speaker_count_after_smoothing": smoothing_result.speaker_count_after,
+        "turn_count_before_smoothing": smoothing_result.turn_count_before,
+        "turn_count_after_smoothing": smoothing_result.turn_count_after,
+        "adjacent_merges": smoothing_result.adjacent_merges,
+        "micro_turn_absorptions": smoothing_result.micro_turn_absorptions,
+    }
+    if initial_hints != effective_hints:
+        payload["initial_hints"] = initial_hints
+    if profile_selection:
+        payload["profile_selection"] = profile_selection
+    return payload
+
+
+def _stage_sanitize_audio(ctx: _PipelineExecutionContext) -> _StageResult:
+    raw_audio_path = _resolve_raw_audio_path(ctx.recording_id, ctx.settings)
+    ctx.raw_audio_path = raw_audio_path
+    if raw_audio_path is None:
+        return _build_skip_result("raw_audio_missing")
+    _set_recording_progress_best_effort(
+        ctx.recording_id,
+        stage="precheck",
+        progress=0.01,
+        settings=ctx.settings,
+    )
+    working_path = _sanitize_audio_for_worker(
+        recording_id=ctx.recording_id,
+        audio_path=raw_audio_path,
+        settings=ctx.settings,
+    )
+    return _StageResult(
+        status="completed",
+        metadata={
+            "raw_audio_path": str(raw_audio_path),
+            "sanitized_path": str(working_path),
+        },
+    )
+
+
+def _stage_precheck(ctx: _PipelineExecutionContext) -> _StageResult:
+    audio_path = _working_audio_path(ctx)
+    if audio_path is None:
+        ctx.precheck_result = PrecheckResult(
+            duration_sec=None,
+            speech_ratio=None,
+            quarantine_reason="raw_audio_missing",
+        )
+    else:
+        ctx.precheck_result = run_precheck(audio_path, ctx.pipeline_settings)
+        if ctx.precheck_result.duration_sec is not None:
+            _set_recording_duration_best_effort(
+                ctx.recording_id,
+                duration_sec=ctx.precheck_result.duration_sec,
+                settings=ctx.settings,
+            )
+    atomic_write_json(
+        ctx.artifacts.precheck_json_path,
+        {
+            "duration_sec": ctx.precheck_result.duration_sec,
+            "speech_ratio": ctx.precheck_result.speech_ratio,
+            "quarantine_reason": ctx.precheck_result.quarantine_reason,
+        },
+    )
+    _append_step_log(
+        ctx.log_path,
+        (
+            "precheck "
+            f"duration_sec={ctx.precheck_result.duration_sec} "
+            f"speech_ratio={ctx.precheck_result.speech_ratio}"
+        ),
+    )
+    return _StageResult(
+        status="completed",
+        metadata={
+            "duration_sec": ctx.precheck_result.duration_sec,
+            "speech_ratio": ctx.precheck_result.speech_ratio,
+            "quarantine_reason": ctx.precheck_result.quarantine_reason,
+        },
+    )
+
+
+def _stage_calendar_refresh(ctx: _PipelineExecutionContext) -> _StageResult:
+    warning: str | None = None
+    try:
+        refresh_recording_calendar_match(
+            ctx.recording_id,
+            settings=ctx.settings,
+        )
+    except Exception as exc:
+        warning = str(exc) or exc.__class__.__name__
+        _logger.warning(
+            "calendar matching refresh failed for recording %s",
+            ctx.recording_id,
+            exc_info=True,
+        )
+    ctx.calendar_title, ctx.calendar_attendees = _load_calendar_summary_context(
+        ctx.recording_id,
+        ctx.settings,
+    )
+    atomic_write_json(
+        ctx.artifacts.calendar_refresh_json_path,
+        {
+            "calendar_title": ctx.calendar_title,
+            "calendar_attendees": ctx.calendar_attendees,
+            "warning": warning,
+        },
+    )
+    return _StageResult(
+        status="completed",
+        metadata={
+            "calendar_title": ctx.calendar_title,
+            "attendee_count": len(ctx.calendar_attendees),
+            "warning": warning,
+        },
+    )
+
+
+def _stage_asr(ctx: _PipelineExecutionContext) -> _StageResult:
+    precheck_result = ctx.precheck_result or _load_precheck_artifact(ctx)
+    ctx.precheck_result = precheck_result
+    if precheck_result is None:
+        raise RuntimeError("Missing precheck artifact")
+    if precheck_result.quarantine_reason:
+        pipeline_orchestrator._write_asr_glossary_artifact(
+            derived_dir=ctx.artifacts.derived_dir,
+            recording_id=ctx.recording_id,
+            asr_glossary=None,
+        )
+        return _build_skip_result("quarantined_precheck")
+
+    ctx.calendar_title, ctx.calendar_attendees = _load_calendar_summary_context(
+        ctx.recording_id,
+        ctx.settings,
+    )
+    working_audio_path = _working_audio_path(ctx)
+    if working_audio_path is None:
+        raise RuntimeError("Missing sanitized audio")
+    ctx.asr_glossary = build_recording_asr_glossary(
+        ctx.recording_id,
+        calendar_title=ctx.calendar_title,
+        calendar_attendees=ctx.calendar_attendees,
+        settings=ctx.settings,
+    )
+    _append_step_log(
+        ctx.log_path,
+        (
+            "asr glossary "
+            f"entries={int(ctx.asr_glossary.get('entry_count') or 0)} "
+            f"terms={int(ctx.asr_glossary.get('term_count') or 0)} "
+            f"truncated={bool(ctx.asr_glossary.get('truncated'))}"
+        ),
+    )
+
+    def _step_log_callback(message: str) -> None:
+        _append_step_log(ctx.log_path, message)
+
+    def _run_asr_workflow() -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, Any]]:
+        def _transcribe_chunk(
+            chunk_audio_path: Path,
+            chunk_language_hint: str | None,
+        ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+            return pipeline_orchestrator._whisperx_asr(
+                chunk_audio_path,
+                override_lang=chunk_language_hint,
+                cfg=ctx.pipeline_settings,
+                step_log_callback=_step_log_callback,
+            )
+
+        if pipeline_orchestrator._whisperx_asr is not pipeline_orchestrator._DEFAULT_WHISPERX_ASR:
+            return run_language_aware_asr(
+                working_audio_path,
+                override_lang=ctx.transcript_language_override,
+                configured_mode=ctx.pipeline_settings.asr_multilingual_mode,
+                tmp_root=ctx.pipeline_settings.tmp_root,
+                transcribe_fn=_transcribe_chunk,
+                step_log_callback=_step_log_callback,
+            )
+
+        previous_transcriber = getattr(
+            pipeline_orchestrator._whisperx_transcriber_state,
+            "transcribe_audio",
+            None,
+        )
+        previous_session_flag = bool(
+            getattr(pipeline_orchestrator._whisperx_transcriber_state, "use_session_transcriber", False)
+        )
+        transcribe_audio = pipeline_orchestrator._build_whisperx_transcriber(
+            cfg=ctx.pipeline_settings,
+            step_log_callback=_step_log_callback,
+            asr_glossary=ctx.asr_glossary,
+        )
+        pipeline_orchestrator._whisperx_transcriber_state.transcribe_audio = transcribe_audio
+        pipeline_orchestrator._whisperx_transcriber_state.use_session_transcriber = True
+        try:
+            segments, info, payload = run_language_aware_asr(
+                working_audio_path,
+                override_lang=ctx.transcript_language_override,
+                configured_mode=ctx.pipeline_settings.asr_multilingual_mode,
+                tmp_root=ctx.pipeline_settings.tmp_root,
+                transcribe_fn=_transcribe_chunk,
+                step_log_callback=_step_log_callback,
+            )
+            runtime_metadata = pipeline_orchestrator._glossary_runtime_metadata(transcribe_audio)
+            if runtime_metadata:
+                payload = dict(payload)
+                payload["glossary_runtime"] = runtime_metadata
+            return segments, info, payload
+        finally:
+            if previous_transcriber is None:
+                if hasattr(pipeline_orchestrator._whisperx_transcriber_state, "transcribe_audio"):
+                    delattr(pipeline_orchestrator._whisperx_transcriber_state, "transcribe_audio")
+            else:
+                pipeline_orchestrator._whisperx_transcriber_state.transcribe_audio = previous_transcriber
+            if previous_session_flag:
+                pipeline_orchestrator._whisperx_transcriber_state.use_session_transcriber = True
+            elif hasattr(pipeline_orchestrator._whisperx_transcriber_state, "use_session_transcriber"):
+                delattr(pipeline_orchestrator._whisperx_transcriber_state, "use_session_transcriber")
+
+    raw_segments, info, asr_execution = _run_asr_workflow()
+    ctx.asr_segments = normalise_asr_segments(raw_segments)
+    ctx.asr_info = dict(info or {})
+    ctx.asr_execution = dict(asr_execution or {})
+    pipeline_orchestrator._write_asr_glossary_artifact(
+        derived_dir=ctx.artifacts.derived_dir,
+        recording_id=ctx.recording_id,
+        asr_glossary=pipeline_orchestrator._effective_asr_glossary_artifact(
+            asr_glossary=ctx.asr_glossary,
+            runtime_metadata=(
+                ctx.asr_execution.get("glossary_runtime")
+                if isinstance(ctx.asr_execution, dict)
+                else None
+            ),
+        ),
+    )
+    atomic_write_json(ctx.artifacts.asr_segments_json_path, ctx.asr_segments)
+    atomic_write_json(ctx.artifacts.asr_info_json_path, ctx.asr_info)
+    atomic_write_json(ctx.artifacts.asr_execution_json_path, ctx.asr_execution)
+    return _StageResult(
+        status="completed",
+        metadata={
+            "segment_count": len(ctx.asr_segments),
+            "used_multilingual_path": bool(ctx.asr_execution.get("used_multilingual_path")),
+        },
+    )
+
+
+def _stage_diarization(ctx: _PipelineExecutionContext) -> _StageResult:
+    precheck_result = ctx.precheck_result or _load_precheck_artifact(ctx)
+    ctx.precheck_result = precheck_result
+    if precheck_result is None:
+        raise RuntimeError("Missing precheck artifact")
+    if precheck_result.quarantine_reason:
+        return _build_skip_result("quarantined_precheck")
+
+    diarization_mode = "pyannote"
+    diarization_reason: str | None = None
+    try:
+        diariser = _build_diariser(
+            precheck_result.duration_sec,
+            model_id=ctx.settings.diarization_model_id,
+            settings=ctx.pipeline_settings,
+        )
+        if isinstance(diariser, _FallbackDiariser):
+            diarization_mode = "fallback"
+            diarization_reason = "pyannote_unavailable"
+            _append_step_log(
+                ctx.log_path,
+                "diariser mode=fallback reason=pyannote_unavailable",
+            )
+        else:
+            _append_step_log(ctx.log_path, "diariser mode=pyannote")
+    except Exception as exc:
+        _append_step_log(
+            ctx.log_path,
+            (
+                "diariser init failed, falling back: "
+                f"{type(exc).__name__}: {exc}"
+            ),
+        )
+        diariser = _FallbackDiariser(precheck_result.duration_sec)
+        diarization_mode = "fallback"
+        diarization_reason = f"{type(exc).__name__}: {exc}"
+        _append_step_log(
+            ctx.log_path,
+            "diariser mode=fallback reason=init_failed",
+        )
+    _write_diarization_status_artifact(
+        recording_id=ctx.recording_id,
+        mode=diarization_mode,
+        reason=diarization_reason,
+        settings=ctx.settings,
+    )
+    _log_gpu_execution_policy(
+        pipeline_settings=ctx.pipeline_settings,
+        diariser=diariser,
+        log_path=ctx.log_path,
+    )
+    working_audio_path = _working_audio_path(ctx)
+    if working_audio_path is None:
+        raise RuntimeError("Missing sanitized audio")
+    ctx.asr_segments = _load_json_list(ctx.artifacts.asr_segments_json_path)
+
+    def _step_log_callback(message: str) -> None:
+        _append_step_log(ctx.log_path, message)
+
+    diarization = asyncio.run(diariser(working_audio_path))
+    diarization = asyncio.run(
+        pipeline_orchestrator._maybe_retry_dialog_diarization(
+            diariser=diariser,
+            audio_path=working_audio_path,
+            diarization=diarization,
+            asr_segments=ctx.asr_segments,
+            precheck_result=precheck_result,
+            step_log_callback=_step_log_callback,
+        )
+    )
+    ctx.diarization_segments = _diarization_segments(diarization)
+    used_dummy_fallback = False
+    if not ctx.diarization_segments and ctx.asr_segments:
+        fallback_end = max(safe_float(seg.get("end")) for seg in ctx.asr_segments)
+        used_dummy_fallback = True
+        _append_step_log(
+            ctx.log_path,
+            "diarization output empty; using fallback single-speaker annotation",
+        )
+        ctx.diarization_segments = _diarization_segments(
+            pipeline_orchestrator._fallback_diarization(max(fallback_end, 0.1))
+        )
+    ctx.diarization_runtime = pipeline_orchestrator._diariser_runtime_metadata(diariser)
+    ctx.diarization_runtime["used_dummy_fallback"] = used_dummy_fallback
+    ctx.diarization_runtime["mode"] = pipeline_orchestrator._diariser_mode(diariser)
+    atomic_write_json(ctx.artifacts.diarization_segments_json_path, ctx.diarization_segments)
+    atomic_write_json(ctx.artifacts.diarization_runtime_json_path, ctx.diarization_runtime)
+    return _StageResult(
+        status="completed",
+        metadata={
+            "segment_count": len(ctx.diarization_segments),
+            "mode": ctx.diarization_runtime.get("mode"),
+            "used_dummy_fallback": used_dummy_fallback,
+        },
+    )
+
+
+def _stage_language_analysis(ctx: _PipelineExecutionContext) -> _StageResult:
+    precheck_result = ctx.precheck_result or _load_precheck_artifact(ctx)
+    ctx.precheck_result = precheck_result
+    if precheck_result is None:
+        raise RuntimeError("Missing precheck artifact")
+    if precheck_result.quarantine_reason:
+        return _build_skip_result("quarantined_precheck")
+
+    ctx.asr_segments = _load_json_list(ctx.artifacts.asr_segments_json_path)
+    ctx.asr_info = _load_json_dict(ctx.artifacts.asr_info_json_path)
+    ctx.asr_execution = _load_asr_execution(ctx)
+    language_info = pipeline_orchestrator._language_payload(ctx.asr_info)
+    detected_language = (
+        normalise_language_code(language_info.get("detected"))
+        if str(language_info.get("detected") or "") != "unknown"
+        else None
+    )
+    language_analysis = analyse_languages(
+        ctx.asr_segments,
+        detected_language=(
+            None if ctx.asr_execution.get("used_multilingual_path") else detected_language
+        ),
+        transcript_language_override=ctx.transcript_language_override,
+    )
+    if (
+        ctx.asr_execution.get("used_multilingual_path")
+        or language_info.get("detected") == "unknown"
+    ) and language_analysis.dominant_language != "unknown":
+        language_info["detected"] = language_analysis.dominant_language
+        dominant_percent = language_analysis.distribution.get(
+            language_analysis.dominant_language
+        )
+        if dominant_percent is not None:
+            language_info["confidence"] = round(dominant_percent / 100.0, 4)
+    summary_lang = resolve_target_summary_language(
+        ctx.target_summary_language,
+        dominant_language=language_analysis.dominant_language,
+        detected_language=detected_language,
+    )
+    ctx.language_payload = {
+        "language": language_info,
+        "dominant_language": language_analysis.dominant_language,
+        "language_distribution": language_analysis.distribution,
+        "language_spans": language_analysis.spans,
+        "target_summary_language": summary_lang,
+        "transcript_language_override": ctx.transcript_language_override,
+        "segments": language_analysis.segments,
+        "review": {
+            "required": bool(language_analysis.review_required),
+            "reason_code": language_analysis.review_reason_code,
+            "reason_text": language_analysis.review_reason_text,
+            "uncertain_segment_count": language_analysis.uncertain_segment_count,
+            "conflict_segment_count": language_analysis.conflict_segment_count,
+        },
+    }
+    atomic_write_json(ctx.artifacts.language_analysis_json_path, ctx.language_payload)
+    return _StageResult(
+        status="completed",
+        metadata={
+            "dominant_language": language_analysis.dominant_language,
+            "review_required": bool(language_analysis.review_required),
+        },
+    )
+
+
+def _stage_speaker_turns(ctx: _PipelineExecutionContext) -> _StageResult:
+    precheck_result = ctx.precheck_result or _load_precheck_artifact(ctx)
+    ctx.precheck_result = precheck_result
+    if precheck_result is None:
+        raise RuntimeError("Missing precheck artifact")
+    if precheck_result.quarantine_reason:
+        return _build_skip_result("quarantined_precheck")
+
+    ctx.language_payload = _load_language_analysis_artifact(ctx)
+    if not ctx.language_payload:
+        raise RuntimeError("Missing language analysis artifact")
+    ctx.diarization_segments = _load_json_list(ctx.artifacts.diarization_segments_json_path)
+    ctx.diarization_runtime = _load_diarization_runtime(ctx)
+    language_segments = [
+        row
+        for row in ctx.language_payload.get("segments", [])
+        if isinstance(row, dict)
+    ]
+    dominant_language = str(ctx.language_payload.get("dominant_language") or "unknown")
+    detected_language = normalise_language_code(
+        (ctx.language_payload.get("language") or {}).get("detected")
+    )
+    unsmoothed_speaker_turns = build_speaker_turns(
+        language_segments,
+        ctx.diarization_segments,
+        default_language=(
+            dominant_language if dominant_language != "unknown" else detected_language
+        ),
+    )
+    diariser_mode = str(ctx.diarization_runtime.get("mode") or "unknown").strip().lower()
+    if diariser_mode == "pyannote" and not ctx.diarization_runtime.get("used_dummy_fallback"):
+        smoothing_result = smooth_speaker_turns(
+            unsmoothed_speaker_turns,
+            merge_gap_seconds=ctx.pipeline_settings.diarization_merge_gap_seconds,
+            min_turn_seconds=ctx.pipeline_settings.diarization_min_turn_seconds,
+        )
+        ctx.speaker_turns = smoothing_result.turns
+    else:
+        ctx.speaker_turns = unsmoothed_speaker_turns
+        speaker_count = len(
+            {
+                str(turn.get("speaker") or "S1")
+                for turn in ctx.speaker_turns
+            }
+        )
+        smoothing_result = SpeakerTurnSmoothingResult(
+            turns=ctx.speaker_turns,
+            adjacent_merges=0,
+            micro_turn_absorptions=0,
+            turn_count_before=len(ctx.speaker_turns),
+            turn_count_after=len(ctx.speaker_turns),
+            speaker_count_before=speaker_count,
+            speaker_count_after=speaker_count,
+        )
+    diarization_metadata = _build_diarization_metadata_payload(
+        runtime=ctx.diarization_runtime,
+        cfg=ctx.pipeline_settings,
+        smoothing_result=smoothing_result,
+    )
+    atomic_write_json(
+        ctx.artifacts.recording_artifacts.segments_json_path,
+        ctx.diarization_segments,
+    )
+    atomic_write_json(
+        ctx.artifacts.recording_artifacts.speaker_turns_json_path,
+        ctx.speaker_turns,
+    )
+    atomic_write_json(
+        ctx.artifacts.recording_artifacts.diarization_metadata_json_path,
+        diarization_metadata,
+    )
+    aliases = load_speaker_aliases(ctx.pipeline_settings.speaker_db)
+    for row in ctx.diarization_segments:
+        aliases.setdefault(str(row.get("speaker") or "S1"), str(row.get("speaker") or "S1"))
+    save_speaker_aliases(aliases, ctx.pipeline_settings.speaker_db)
+    return _StageResult(
+        status="completed",
+        metadata={
+            "turn_count": len(ctx.speaker_turns),
+            "speaker_count": len({str(turn.get('speaker') or 'S1') for turn in ctx.speaker_turns}),
+        },
+    )
+
+
+def _stage_llm_extract(ctx: _PipelineExecutionContext) -> _StageResult:
+    precheck_result = ctx.precheck_result or _load_precheck_artifact(ctx)
+    ctx.precheck_result = precheck_result
+    if precheck_result is None:
+        raise RuntimeError("Missing precheck artifact")
+    if precheck_result.quarantine_reason:
+        return _build_skip_result("quarantined_precheck")
+
+    ctx.language_payload = _load_language_analysis_artifact(ctx)
+    ctx.speaker_turns = _load_json_list(ctx.artifacts.recording_artifacts.speaker_turns_json_path)
+    language_segments = [
+        row
+        for row in ctx.language_payload.get("segments", [])
+        if isinstance(row, dict)
+    ]
+    asr_text = " ".join(str(seg.get("text") or "").strip() for seg in language_segments).strip()
+    ctx.clean_text = normalizer.dedup(asr_text)
+    if not ctx.clean_text:
+        return _build_skip_result("no_speech")
+
+    ctx.calendar_title, ctx.calendar_attendees = _load_calendar_summary_context(
+        ctx.recording_id,
+        ctx.settings,
+    )
+    llm_model = pipeline_orchestrator._require_llm_model(ctx.pipeline_settings.llm_model)
+    summary_lang = str(
+        ctx.language_payload.get("target_summary_language")
+        or ctx.target_summary_language
+        or "en"
+    )
+    aliases = load_speaker_aliases(ctx.pipeline_settings.speaker_db)
+    ctx.friendly = pipeline_orchestrator._sentiment_score(ctx.clean_text)
+    llm_prompt_text = pipeline_orchestrator._speaker_turn_prompt_text(
+        ctx.speaker_turns,
+        aliases=aliases,
+    )
+
+    def _progress_callback(stage: str, progress: float) -> None:
+        _set_recording_progress_best_effort(
+            ctx.recording_id,
+            stage=stage,
+            progress=progress,
+            settings=ctx.settings,
+        )
+
+    if pipeline_orchestrator._use_chunked_llm(llm_prompt_text, ctx.pipeline_settings):
+        ctx.summary_payload = asyncio.run(
+            pipeline_orchestrator._run_chunked_llm_summary(
+                transcript_text=llm_prompt_text or ctx.clean_text,
+                derived_dir=ctx.artifacts.derived_dir,
+                llm=LLMClient(),
+                cfg=ctx.pipeline_settings,
+                llm_model=llm_model,
+                target_summary_language=summary_lang,
+                friendly=ctx.friendly,
+                default_topic=ctx.calendar_title or "Meeting summary",
+                calendar_title=ctx.calendar_title,
+                calendar_attendees=ctx.calendar_attendees,
+                progress_callback=_progress_callback,
+            )
+        )
+    else:
+        sys_prompt, user_prompt = build_structured_summary_prompts(
+            ctx.speaker_turns,
+            summary_lang,
+            calendar_title=ctx.calendar_title,
+            calendar_attendees=ctx.calendar_attendees,
+        )
+        _set_recording_progress_best_effort(
+            ctx.recording_id,
+            stage="llm",
+            progress=0.90,
+            settings=ctx.settings,
+        )
+        msg = asyncio.run(
+            pipeline_orchestrator._generate_llm_message(
+                LLMClient(),
+                system_prompt=sys_prompt,
+                user_prompt=user_prompt,
+                model=llm_model,
+                response_format={"type": "json_object"},
+                max_tokens=ctx.pipeline_settings.llm_max_tokens,
+                max_tokens_retry=ctx.pipeline_settings.llm_max_tokens_retry,
+            )
+        )
+        ctx.summary_payload = build_summary_payload(
+            raw_llm_content=str(msg.get("content") or ""),
+            model=llm_model,
+            target_summary_language=summary_lang,
+            friendly=ctx.friendly,
+            default_topic=ctx.calendar_title or "Meeting summary",
+            derived_dir=ctx.artifacts.derived_dir,
+        )
+    atomic_write_json(
+        ctx.artifacts.recording_artifacts.summary_json_path,
+        ctx.summary_payload,
+    )
+    return _StageResult(
+        status="completed",
+        metadata={
+            "summary_status": str((ctx.summary_payload or {}).get("status") or "ok"),
+            "friendly": ctx.friendly,
+        },
+    )
+
+
+def _stage_export_artifacts(ctx: _PipelineExecutionContext) -> _StageResult:
+    precheck_result = ctx.precheck_result or _load_precheck_artifact(ctx)
+    ctx.precheck_result = precheck_result
+    if precheck_result is None:
+        raise RuntimeError("Missing precheck artifact")
+    ctx.calendar_title, ctx.calendar_attendees = _load_calendar_summary_context(
+        ctx.recording_id,
+        ctx.settings,
+    )
+    ctx.language_payload = _load_language_analysis_artifact(ctx)
+    ctx.asr_execution = _load_asr_execution(ctx)
+    ctx.diarization_segments = _load_json_list(ctx.artifacts.diarization_segments_json_path)
+    ctx.speaker_turns = _load_json_list(ctx.artifacts.recording_artifacts.speaker_turns_json_path)
+    llm_model = pipeline_orchestrator._require_llm_model(ctx.pipeline_settings.llm_model)
+    aliases = load_speaker_aliases(ctx.pipeline_settings.speaker_db)
+    summary_lang = str(
+        ctx.language_payload.get("target_summary_language")
+        or ctx.target_summary_language
+        or "en"
+    )
+    working_audio_path = _working_audio_path(ctx)
+    language_info = ctx.language_payload.get("language")
+    if not isinstance(language_info, dict):
+        language_info = {"detected": "unknown", "confidence": None}
+
+    if precheck_result.quarantine_reason:
+        write_empty_snippets_manifest(
+            snippets_dir=ctx.artifacts.recording_artifacts.snippets_dir,
+            pad_seconds=ctx.pipeline_settings.snippet_pad_seconds,
+            max_clip_duration_sec=ctx.pipeline_settings.snippet_max_duration_seconds,
+            min_clip_duration_sec=ctx.pipeline_settings.snippet_min_duration_seconds,
+            max_snippets_per_speaker=ctx.pipeline_settings.snippet_max_per_speaker,
+        )
+        atomic_write_text(ctx.artifacts.recording_artifacts.transcript_txt_path, "")
+        atomic_write_json(
+            ctx.artifacts.recording_artifacts.transcript_json_path,
+            pipeline_orchestrator._base_transcript_payload(
+                recording_id=ctx.recording_id,
+                language={"detected": "unknown", "confidence": None},
+                dominant_language="unknown",
+                language_distribution={},
+                language_spans=[],
+                target_summary_language=summary_lang,
+                transcript_language_override=ctx.transcript_language_override,
+                calendar_title=ctx.calendar_title,
+                calendar_attendees=ctx.calendar_attendees,
+                segments=[],
+                speakers=[],
+                text="",
+            ),
+        )
+        atomic_write_json(ctx.artifacts.recording_artifacts.segments_json_path, [])
+        atomic_write_json(ctx.artifacts.recording_artifacts.speaker_turns_json_path, [])
+        atomic_write_json(
+            ctx.artifacts.recording_artifacts.summary_json_path,
+            pipeline_summary_builder._build_structured_summary_payload(
+                model=llm_model,
+                target_summary_language=summary_lang,
+                friendly=0,
+                topic="Quarantined recording",
+                summary_bullets=["Recording was quarantined before transcription."],
+                decisions=[],
+                action_items=[],
+                emotional_summary="No emotional summary available.",
+                questions=pipeline_orchestrator._empty_questions(),
+                status="quarantined",
+                reason=precheck_result.quarantine_reason,
+            ),
+        )
+        return _StageResult(
+            status="completed",
+            metadata={"output_status": "quarantined"},
+        )
+
+    language_segments = [
+        row
+        for row in ctx.language_payload.get("segments", [])
+        if isinstance(row, dict)
+    ]
+    ctx.clean_text = normalizer.dedup(
+        " ".join(str(seg.get("text") or "").strip() for seg in language_segments).strip()
+    )
+    if not ctx.clean_text:
+        write_empty_snippets_manifest(
+            snippets_dir=ctx.artifacts.recording_artifacts.snippets_dir,
+            pad_seconds=ctx.pipeline_settings.snippet_pad_seconds,
+            max_clip_duration_sec=ctx.pipeline_settings.snippet_max_duration_seconds,
+            min_clip_duration_sec=ctx.pipeline_settings.snippet_min_duration_seconds,
+            max_snippets_per_speaker=ctx.pipeline_settings.snippet_max_per_speaker,
+        )
+        speakers = sorted(
+            {
+                aliases.get(str(row.get("speaker") or "S1"), str(row.get("speaker") or "S1"))
+                for row in ctx.diarization_segments
+            }
+        )
+        atomic_write_text(ctx.artifacts.recording_artifacts.transcript_txt_path, "")
+        atomic_write_json(
+            ctx.artifacts.recording_artifacts.transcript_json_path,
+            pipeline_orchestrator._base_transcript_payload(
+                recording_id=ctx.recording_id,
+                language=language_info,
+                dominant_language=str(ctx.language_payload.get("dominant_language") or "unknown"),
+                language_distribution=dict(ctx.language_payload.get("language_distribution") or {}),
+                language_spans=list(ctx.language_payload.get("language_spans") or []),
+                target_summary_language=summary_lang,
+                transcript_language_override=ctx.transcript_language_override,
+                calendar_title=ctx.calendar_title,
+                calendar_attendees=ctx.calendar_attendees,
+                segments=language_segments,
+                speakers=speakers,
+                text="",
+            ),
+        )
+        atomic_write_json(ctx.artifacts.recording_artifacts.segments_json_path, ctx.diarization_segments)
+        atomic_write_json(ctx.artifacts.recording_artifacts.speaker_turns_json_path, ctx.speaker_turns)
+        atomic_write_json(
+            ctx.artifacts.recording_artifacts.summary_json_path,
+            pipeline_summary_builder._build_structured_summary_payload(
+                model=llm_model,
+                target_summary_language=summary_lang,
+                friendly=0,
+                topic="No speech detected",
+                summary_bullets=["No speech detected."],
+                decisions=[],
+                action_items=[],
+                emotional_summary="No emotional summary available.",
+                questions=pipeline_orchestrator._empty_questions(),
+                status="no_speech",
+            ),
+        )
+        return _StageResult(
+            status="completed",
+            metadata={"output_status": "no_speech"},
+        )
+
+    ctx.summary_payload = _load_summary_payload(ctx)
+    snippet_paths = export_speaker_snippets(
+        SnippetExportRequest(
+            audio_path=working_audio_path or ctx.artifacts.recording_artifacts.raw_audio_path,
+            diar_segments=ctx.diarization_segments,
+            snippets_dir=ctx.artifacts.recording_artifacts.snippets_dir,
+            duration_sec=precheck_result.duration_sec,
+            speaker_turns=ctx.speaker_turns,
+            degraded_diarization=bool(_load_json_dict(ctx.artifacts.recording_artifacts.diarization_metadata_json_path).get("degraded")),
+            pad_seconds=ctx.pipeline_settings.snippet_pad_seconds,
+            max_clip_duration_sec=ctx.pipeline_settings.snippet_max_duration_seconds,
+            min_clip_duration_sec=ctx.pipeline_settings.snippet_min_duration_seconds,
+            max_snippets_per_speaker=ctx.pipeline_settings.snippet_max_per_speaker,
+        )
+    )
+    speaker_lines = pipeline_orchestrator._merge_similar(
+        [
+            f"[{safe_float(turn.get('start')):.2f}-{safe_float(turn.get('end')):.2f}] **{aliases.get(str(turn.get('speaker') or 'S1'), str(turn.get('speaker') or 'S1'))}:** {str(turn.get('text') or '').strip()}"
+            for turn in ctx.speaker_turns
+        ],
+        ctx.pipeline_settings.merge_similar,
+    )
+    transcript_payload = pipeline_orchestrator._base_transcript_payload(
+        recording_id=ctx.recording_id,
+        language=language_info,
+        dominant_language=str(ctx.language_payload.get("dominant_language") or "unknown"),
+        language_distribution=dict(ctx.language_payload.get("language_distribution") or {}),
+        language_spans=list(ctx.language_payload.get("language_spans") or []),
+        target_summary_language=summary_lang,
+        transcript_language_override=ctx.transcript_language_override,
+        calendar_title=ctx.calendar_title,
+        calendar_attendees=ctx.calendar_attendees,
+        segments=language_segments,
+        speakers=sorted(
+            {
+                aliases.get(str(turn.get("speaker") or "S1"), str(turn.get("speaker") or "S1"))
+                for turn in ctx.speaker_turns
+            }
+        ),
+        text=ctx.clean_text,
+    )
+    transcript_payload["speaker_lines"] = speaker_lines
+    transcript_payload["multilingual_asr"] = dict(ctx.asr_execution)
+    transcript_payload["review"] = dict(ctx.language_payload.get("review") or {})
+    atomic_write_text(ctx.artifacts.recording_artifacts.transcript_txt_path, ctx.clean_text)
+    atomic_write_json(ctx.artifacts.recording_artifacts.transcript_json_path, transcript_payload)
+    atomic_write_json(ctx.artifacts.recording_artifacts.segments_json_path, ctx.diarization_segments)
+    atomic_write_json(ctx.artifacts.recording_artifacts.speaker_turns_json_path, ctx.speaker_turns)
+    atomic_write_json(ctx.artifacts.recording_artifacts.summary_json_path, ctx.summary_payload)
+    return _StageResult(
+        status="completed",
+        metadata={
+            "output_status": "ok",
+            "snippets": len(snippet_paths),
+        },
+    )
+
+
+def _stage_metrics(ctx: _PipelineExecutionContext) -> _StageResult:
+    metrics_payload = refresh_recording_metrics(
+        ctx.recording_id,
+        settings=ctx.settings,
+    )
+    _append_step_log(
+        ctx.log_path,
+        (
+            "metrics refreshed "
+            f"participants={len(metrics_payload.get('participants', []))} "
+            f"interruptions={metrics_payload.get('meeting', {}).get('total_interruptions', 0)}"
+        ),
+    )
+    dominant_language, resolved_target_language = _load_transcript_language_payload(
+        ctx.recording_id,
+        ctx.settings,
+    )
+    update_payload: dict[str, str] = {}
+    if dominant_language:
+        update_payload["language_auto"] = dominant_language
+    if ctx.has_explicit_summary_target and resolved_target_language:
+        update_payload["target_summary_language"] = resolved_target_language
+    if update_payload:
+        set_recording_language_settings(
+            ctx.recording_id,
+            settings=ctx.settings,
+            **update_payload,
+        )
+    precheck_result = ctx.precheck_result or _load_precheck_artifact(ctx)
+    summary_payload = _load_summary_payload(ctx)
+    language_payload = _load_language_analysis_artifact(ctx)
+    asr_execution = _load_asr_execution(ctx)
+    diar_segments = _load_json_list(ctx.artifacts.recording_artifacts.segments_json_path)
+    speaker_turns = _load_json_list(ctx.artifacts.recording_artifacts.speaker_turns_json_path)
+    snippets_manifest = _load_json_dict(ctx.artifacts.recording_artifacts.snippets_dir.parent / "snippets_manifest.json")
+    metrics_status = "ok"
+    if precheck_result is not None and precheck_result.quarantine_reason:
+        metrics_status = "quarantined"
+    elif str(summary_payload.get("status") or "") == "no_speech":
+        metrics_status = "no_speech"
+    atomic_write_json(
+        ctx.artifacts.recording_artifacts.metrics_json_path,
+        {
+            "status": metrics_status,
+            "version": 1,
+            "precheck": {
+                "duration_sec": precheck_result.duration_sec if precheck_result else None,
+                "speech_ratio": precheck_result.speech_ratio if precheck_result else None,
+                "quarantine_reason": (
+                    precheck_result.quarantine_reason
+                    if metrics_status == "quarantined" and precheck_result is not None
+                    else None
+                ),
+            },
+            "language": language_payload.get("language") or {"detected": "unknown", "confidence": None},
+            "asr_segments": len(language_payload.get("segments") or []),
+            "diar_segments": len(diar_segments),
+            "speaker_turns": len(speaker_turns),
+            "snippets": len(snippets_manifest.get("speakers") or {}),
+            "multilingual_asr": {
+                "used_multilingual_path": bool(asr_execution.get("used_multilingual_path")),
+                "selected_mode": asr_execution.get("selected_mode"),
+            },
+            "review_required": bool((language_payload.get("review") or {}).get("required")),
+        },
+    )
+    return _StageResult(
+        status="completed",
+        metadata={"metrics_status": metrics_status},
+    )
+
+
+def _stage_routing(ctx: _PipelineExecutionContext) -> _StageResult:
+    precheck_result = ctx.precheck_result or _load_precheck_artifact(ctx)
+    ctx.precheck_result = precheck_result
+    if precheck_result is None:
+        raise RuntimeError("Missing precheck artifact")
+    if precheck_result.quarantine_reason:
+        return _build_skip_result(
+            "quarantined_precheck",
+            status_after_routing=RECORDING_STATUS_QUARANTINE,
+        )
+    ctx.routing_payload = refresh_recording_routing(
+        ctx.recording_id,
+        settings=ctx.settings,
+        apply_workflow=True,
+    )
+    _append_step_log(
+        ctx.log_path,
+        (
+            "routing "
+            f"suggested_project_id={ctx.routing_payload.get('suggested_project_id')} "
+            f"confidence={float(ctx.routing_payload.get('confidence') or 0.0):.2f} "
+            f"threshold={float(ctx.routing_payload.get('threshold') or 0.0):.2f} "
+            f"auto_selected={bool(ctx.routing_payload.get('auto_selected'))} "
+            f"status_after={ctx.routing_payload.get('status_after_routing')}"
+        ),
+    )
+    atomic_write_json(ctx.artifacts.routing_json_path, ctx.routing_payload)
+    return _StageResult(
+        status="completed",
+        metadata={
+            "status_after_routing": ctx.routing_payload.get("status_after_routing"),
+        },
+    )
+
+
+_PIPELINE_STAGE_RUNNERS: dict[str, Any] = {
+    "sanitize_audio": _stage_sanitize_audio,
+    "precheck": _stage_precheck,
+    "calendar_refresh": _stage_calendar_refresh,
+    "asr": _stage_asr,
+    "diarization": _stage_diarization,
+    "language_analysis": _stage_language_analysis,
+    "speaker_turns": _stage_speaker_turns,
+    "llm_extract": _stage_llm_extract,
+    "export_artifacts": _stage_export_artifacts,
+    "metrics": _stage_metrics,
+    "routing": _stage_routing,
+}
+
+
+def _clear_later_stage_rows(
+    recording_id: str,
+    *,
+    current_index: int,
+    settings: AppSettings,
+) -> None:
+    if current_index + 1 >= len(PIPELINE_STAGE_DEFINITIONS):
+        return
+    clear_recording_pipeline_stages(
+        recording_id,
+        settings=settings,
+        from_stage=PIPELINE_STAGE_DEFINITIONS[current_index + 1].name,
+    )
+
+
+def _terminal_state_from_stage_artifacts(
+    *,
+    ctx: _PipelineExecutionContext,
+) -> PipelineTerminalState:
+    precheck_result = ctx.precheck_result or _load_precheck_artifact(ctx)
+    if precheck_result is not None and precheck_result.quarantine_reason:
+        _append_step_log(
+            ctx.log_path,
+            f"quarantined reason={precheck_result.quarantine_reason}",
+        )
+        return PipelineTerminalState(
+            status=RECORDING_STATUS_QUARANTINE,
+            quarantine_reason=precheck_result.quarantine_reason,
+        )
+    routing_payload = ctx.routing_payload or _load_json_dict(ctx.artifacts.routing_json_path)
+    if routing_payload.get("status_after_routing") == RECORDING_STATUS_NEEDS_REVIEW:
+        review_reason_code, review_reason_text = _review_reason_from_routing(
+            recording_id=ctx.recording_id,
+            settings=ctx.settings,
+            routing=routing_payload,
+        )
+        return PipelineTerminalState(
+            status=RECORDING_STATUS_NEEDS_REVIEW,
+            review_reason_code=review_reason_code,
+            review_reason_text=review_reason_text,
+        )
+    return PipelineTerminalState(status=RECORDING_STATUS_READY)
+
+
+def _run_precheck_pipeline_legacy(
     *,
     recording_id: str,
     settings: AppSettings,
@@ -1299,6 +2598,125 @@ def _run_precheck_pipeline(
             review_reason_text=review_reason_text,
         )
     return PipelineTerminalState(status=RECORDING_STATUS_READY)
+
+def _run_precheck_pipeline(
+    *,
+    recording_id: str,
+    settings: AppSettings,
+    log_path: Path,
+) -> PipelineTerminalState:
+    if run_pipeline is not _ORIGINAL_RUN_PIPELINE:
+        return _run_precheck_pipeline_legacy(
+            recording_id=recording_id,
+            settings=settings,
+            log_path=log_path,
+        )
+
+    ctx = _new_pipeline_context(
+        recording_id=recording_id,
+        settings=settings,
+        log_path=log_path,
+    )
+    stage_rows = _stage_rows_by_name(recording_id, settings=settings)
+    start_index: int | None = None
+
+    for index, stage in enumerate(PIPELINE_STAGE_DEFINITIONS):
+        row = stage_rows.get(stage.name)
+        status = str(row.get("status") or "").strip().lower() if row is not None else ""
+        metadata = _stage_metadata(row)
+        if status in PIPELINE_STAGE_DONE_STATUSES:
+            valid, reason = validate_stage_artifacts(
+                recording_id,
+                stage_name=stage.name,
+                status=status,
+                metadata=metadata,
+                settings=settings,
+            )
+            if valid:
+                continue
+            _log_stage_invalidated(log_path, stage.name, reason=reason or "artifact missing")
+            _clear_later_stage_rows(
+                recording_id,
+                current_index=index,
+                settings=settings,
+            )
+            start_index = index
+            break
+        start_index = index
+        if row is not None:
+            _clear_later_stage_rows(
+                recording_id,
+                current_index=index,
+                settings=settings,
+            )
+        break
+
+    if start_index is None:
+        _append_step_log(log_path, "pipeline artifacts generated")
+        return _terminal_state_from_stage_artifacts(ctx=ctx)
+
+    for index in range(start_index, len(PIPELINE_STAGE_DEFINITIONS)):
+        stage = PIPELINE_STAGE_DEFINITIONS[index]
+        resumed = index == start_index and start_index > 0
+        _log_stage_started(log_path, stage.name, resumed=resumed)
+        mark_recording_pipeline_stage_started(
+            recording_id,
+            stage_name=stage.name,
+            metadata={"label": stage.label},
+            settings=settings,
+        )
+        _set_recording_progress_best_effort(
+            recording_id,
+            stage=_recording_pipeline_progress_stage(stage.name),
+            progress=stage.progress,
+            settings=settings,
+        )
+        runner = _PIPELINE_STAGE_RUNNERS[stage.name]
+        try:
+            result = runner(ctx)
+        except Exception as exc:
+            mark_recording_pipeline_stage_failed(
+                recording_id,
+                stage_name=stage.name,
+                error_code=type(exc).__name__,
+                error_text=str(exc) or type(exc).__name__,
+                metadata={"label": stage.label},
+                settings=settings,
+            )
+            raise
+
+        metadata = dict(result.metadata)
+        metadata.setdefault("label", stage.label)
+        if result.status == PIPELINE_STAGE_STATUS_SKIPPED:
+            row = mark_recording_pipeline_stage_skipped(
+                recording_id,
+                stage_name=stage.name,
+                metadata=metadata,
+                settings=settings,
+            )
+            _log_stage_skipped(
+                log_path,
+                stage.name,
+                reason=str(metadata.get("skip_reason") or "skipped"),
+            )
+            continue
+
+        row = mark_recording_pipeline_stage_completed(
+            recording_id,
+            stage_name=stage.name,
+            metadata=metadata,
+            settings=settings,
+        )
+        duration_ms = None
+        if isinstance(row, dict):
+            try:
+                duration_ms = int(row.get("duration_ms"))
+            except (TypeError, ValueError):
+                duration_ms = None
+        _log_stage_completed(log_path, stage.name, duration_ms=duration_ms)
+
+    _append_step_log(log_path, "pipeline artifacts generated")
+    return _terminal_state_from_stage_artifacts(ctx=ctx)
 
 
 def process_job(job_id: str, recording_id: str, job_type: str) -> dict[str, str]:

@@ -70,6 +70,7 @@ from .db import (
     list_glossary_entries,
     list_participant_metrics,
     list_jobs,
+    list_recording_pipeline_stages,
     list_projects,
     list_recordings,
     list_speaker_assignments,
@@ -146,14 +147,23 @@ _TERMINAL_RECORDING_STATUSES = frozenset(RECORDING_STATUSES) - {
     RECORDING_STATUS_QUEUED,
 }
 _PIPELINE_STAGE_LABELS = {
+    "sanitize_audio": "Sanitize Audio",
     "precheck": "Sanitize & Precheck",
+    "calendar_refresh": "Calendar Refresh",
+    "asr": "ASR / VAD",
     "stt": "ASR / VAD",
+    "diarization": "Diarization",
     "diarize": "Diarization",
     "align": "Word Alignment",
+    "speaker_turns": "Speaker Turns",
     "language": "Language Analysis",
+    "language_analysis": "Language Analysis",
+    "llm_extract": "LLM Summary",
     "llm": "LLM Summary",
     "llm_merge": "LLM Merge",
+    "export_artifacts": "Export Artifacts",
     "metrics": "Post-process & Metrics",
+    "routing": "Routing",
     "done": "Done",
 }
 
@@ -214,6 +224,33 @@ def _pipeline_stage_label(stage: object) -> str:
         if len(parts) == 5 and parts[3] == "of":
             return f"LLM Chunk {parts[2]} of {parts[4]}"
     return text.replace("_", " ").title()
+
+
+def _pipeline_stage_rows_for_display(recording_id: str) -> list[dict[str, Any]]:
+    rows = list_recording_pipeline_stages(recording_id, settings=_settings)
+    display_rows: list[dict[str, Any]] = []
+    for row in rows:
+        stage_name = str(row.get("stage_name") or "").strip()
+        status = str(row.get("status") or "").strip()
+        display_rows.append(
+            {
+                "stage_name": stage_name,
+                "stage_label": _pipeline_stage_label(stage_name),
+                "status": status,
+                "status_label": status.replace("_", " ").title() if status else "Unknown",
+                "attempt": int(row.get("attempt") or 0),
+                "updated_at_display": _format_local_timestamp(row.get("updated_at")),
+                "started_at_display": _format_local_timestamp(row.get("started_at")),
+                "finished_at_display": _format_local_timestamp(row.get("finished_at")),
+                "duration_seconds": (
+                    round(float(row.get("duration_ms") or 0) / 1000.0, 3)
+                    if row.get("duration_ms") is not None
+                    else None
+                ),
+                "error_text": str(row.get("error_text") or "").strip(),
+            }
+        )
+    return display_rows
 
 
 def _safe_duration_seconds(value: object) -> float | None:
@@ -1876,6 +1913,7 @@ async def ui_recording_detail(
     project: dict[str, Any] | None = None
     glossary: dict[str, Any] | None = None
     export_text = ""
+    pipeline_stages = _pipeline_stage_rows_for_display(recording_id)
     if current_tab == "calendar":
         calendar = _calendar_tab_context(recording_id, _settings)
         if calendar_error.strip():
@@ -1916,6 +1954,7 @@ async def ui_recording_detail(
             "project": project,
             "glossary": glossary,
             "export_text": export_text,
+            "pipeline_stages": pipeline_stages,
         },
     )
 
@@ -2660,7 +2699,11 @@ async def ui_action_requeue(recording_id: str) -> Any:
     if get_recording(recording_id, settings=_settings) is None:
         return HTMLResponse("Not found", status_code=404)
     try:
-        enqueue_recording_job(recording_id, settings=_settings)
+        enqueue_recording_job(
+            recording_id,
+            reset_pipeline_state=True,
+            settings=_settings,
+        )
     except DuplicateRecordingJobError as exc:
         return HTMLResponse(
             f"Requeue skipped: precheck job already active ({exc.job_id}).",
@@ -2823,6 +2866,7 @@ async def ui_retranscribe_language(
         enqueue_recording_job(
             recording_id,
             job_type=JOB_TYPE_PRECHECK,
+            reset_pipeline_state=True,
             settings=_settings,
         )
     except ValueError as exc:

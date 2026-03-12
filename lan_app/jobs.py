@@ -16,6 +16,8 @@ from .constants import (
     RECORDING_STATUS_QUEUED,
 )
 from .db import (
+    clear_recording_pipeline_stages,
+    clear_recording_progress,
     create_job_if_no_active_for_recording,
     create_job,
     fail_job,
@@ -139,6 +141,7 @@ def enqueue_recording_job(
     recording_id: str,
     *,
     job_type: str = DEFAULT_REQUEUE_JOB_TYPE,
+    reset_pipeline_state: bool = False,
     settings: AppSettings | None = None,
 ) -> RecordingJob:
     cfg = settings or AppSettings()
@@ -172,6 +175,10 @@ def enqueue_recording_job(
         )
 
     from .worker_tasks import process_job
+
+    if job_type == DEFAULT_REQUEUE_JOB_TYPE and reset_pipeline_state:
+        clear_recording_pipeline_stages(recording_id, settings=cfg)
+        clear_recording_progress(recording_id, settings=cfg)
 
     queue = get_queue(cfg)
     try:

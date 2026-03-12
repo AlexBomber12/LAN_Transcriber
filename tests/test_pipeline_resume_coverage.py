@@ -1,0 +1,930 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from types import SimpleNamespace
+import wave
+
+import pytest
+
+from lan_app import db as db_module
+from lan_app import pipeline_stages
+from lan_app import worker_tasks
+from lan_app.config import AppSettings
+from lan_app.constants import (
+    JOB_TYPE_PRECHECK,
+    RECORDING_STATUS_NEEDS_REVIEW,
+    RECORDING_STATUS_QUARANTINE,
+    RECORDING_STATUS_READY,
+)
+from lan_app.db import (
+    create_recording,
+    init_db,
+    mark_recording_pipeline_stage_completed,
+    mark_recording_pipeline_stage_skipped,
+)
+from lan_transcriber.pipeline import PrecheckResult
+from lan_transcriber.pipeline_steps.diarization_quality import SpeakerTurnSmoothingResult
+
+
+def _cfg(tmp_path: Path) -> AppSettings:
+    cfg = AppSettings(
+        data_root=tmp_path,
+        recordings_root=tmp_path / "recordings",
+        db_path=tmp_path / "db" / "app.db",
+    )
+    cfg.llm_model = "test-model"
+    cfg.metrics_snapshot_path = tmp_path / "metrics.snap"
+    cfg.max_job_attempts = 3
+    return cfg
+
+
+def _write_pcm_wav(path: Path, *, sample_rate: int = 16000, duration_sec: float = 0.1) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    frames = max(int(sample_rate * duration_sec), 1)
+    with wave.open(str(path), "wb") as wav_file:
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(sample_rate)
+        wav_file.writeframes(b"\x00\x00" * frames)
+
+
+def _new_ctx(
+    tmp_path: Path,
+    recording_id: str,
+    *,
+    create_raw_audio: bool = False,
+) -> tuple[AppSettings, worker_tasks._PipelineExecutionContext]:
+    cfg = _cfg(tmp_path)
+    init_db(cfg)
+    create_recording(
+        recording_id,
+        source="test",
+        source_filename=f"{recording_id}.wav",
+        settings=cfg,
+    )
+    if create_raw_audio:
+        _write_pcm_wav(cfg.recordings_root / recording_id / "raw" / "audio.wav")
+    ctx = worker_tasks._new_pipeline_context(
+        recording_id=recording_id,
+        settings=cfg,
+        log_path=worker_tasks._step_log_path(recording_id, JOB_TYPE_PRECHECK, cfg),
+    )
+    ctx.pipeline_settings.speaker_db = tmp_path / "aliases.json"
+    return cfg, ctx
+
+
+def test_db_pipeline_stage_internal_guard_paths(tmp_path: Path) -> None:
+    cfg = _cfg(tmp_path)
+    init_db(cfg)
+    create_recording("rec-db-guard", source="test", source_filename="db.wav", settings=cfg)
+
+    assert db_module._normalise_pipeline_stage_metadata({"bad": {1}}) == {}  # noqa: SLF001
+    assert db_module._duration_ms_between("bad-start", "bad-finish") is None  # noqa: SLF001
+
+    with pytest.raises(ValueError, match="Terminal stage status must not be running"):
+        db_module._mark_recording_pipeline_stage_terminal(  # noqa: SLF001
+            "rec-db-guard",
+            stage_name="precheck",
+            status="running",
+            settings=cfg,
+        )
+
+
+def test_pipeline_stage_validation_and_artifact_edge_cases(tmp_path: Path) -> None:
+    cfg = _cfg(tmp_path)
+
+    assert pipeline_stages.stage_progress("metrics") == 0.98
+    assert pipeline_stages.stage_label("routing") == "Routing"
+
+    with pytest.raises(ValueError, match="Unsupported pipeline stage"):
+        pipeline_stages.validate_pipeline_stage_name("bad-stage")
+    with pytest.raises(ValueError, match="Unsupported pipeline stage status"):
+        pipeline_stages.validate_pipeline_stage_status("bad-status")
+
+    bad_json = tmp_path / "bad.json"
+    bad_json.write_text("{bad", encoding="utf-8")
+    assert pipeline_stages._load_json(bad_json) is None  # noqa: SLF001
+
+    wav_path = tmp_path / "sample.wav"
+    wav_path.write_bytes(b"wav")
+    assert pipeline_stages._validate_path_payload(wav_path) is True  # noqa: SLF001
+
+    ok, reason = pipeline_stages.validate_stage_artifacts(
+        "rec-stage-edge",
+        stage_name="routing",
+        status="skipped",
+        metadata={},
+        settings=cfg,
+    )
+    assert ok is False
+    assert reason == "routing missing skip_reason metadata"
+
+    ok, reason = pipeline_stages.validate_stage_artifacts(
+        "rec-stage-edge",
+        stage_name="sanitize_audio",
+        status="completed",
+        metadata={"raw_audio_missing": True},
+        settings=cfg,
+    )
+    assert ok is True
+    assert reason is None
+
+    artifacts = pipeline_stages.stage_artifact_paths("rec-stage-edge", settings=cfg)
+    artifacts["sanitize_audio"][1].parent.mkdir(parents=True, exist_ok=True)
+    artifacts["sanitize_audio"][1].write_text(
+        json.dumps({"output_path": str(tmp_path / "missing.wav")}),
+        encoding="utf-8",
+    )
+    ok, reason = pipeline_stages.validate_stage_artifacts(
+        "rec-stage-edge",
+        stage_name="sanitize_audio",
+        status="completed",
+        metadata={},
+        settings=cfg,
+    )
+    assert ok is False
+    assert reason == "sanitize_audio missing artifact audio_sanitized.wav"
+
+
+def test_worker_helper_functions_cover_loading_logging_and_audio_resolution(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg, ctx = _new_ctx(tmp_path, "rec-helper-1", create_raw_audio=True)
+    raw_audio_path = cfg.recordings_root / "rec-helper-1" / "raw" / "audio.wav"
+
+    bad_json = tmp_path / "list-bad.json"
+    bad_json.write_text("{bad", encoding="utf-8")
+    as_dict = tmp_path / "list-dict.json"
+    as_dict.write_text(json.dumps({"a": 1}), encoding="utf-8")
+    assert worker_tasks._load_json_list(bad_json) == []  # noqa: SLF001
+    assert worker_tasks._load_json_list(as_dict) == []  # noqa: SLF001
+    assert worker_tasks._stage_metadata({"metadata_json": []}) == {}  # noqa: SLF001
+    assert worker_tasks._load_precheck_artifact(ctx) is None  # noqa: SLF001
+
+    logged: list[str] = []
+    monkeypatch.setattr(worker_tasks, "_append_step_log", lambda _path, message: logged.append(message))
+    worker_tasks._log_stage_completed(tmp_path / "stage.log", "asr", duration_ms=None)  # noqa: SLF001
+    worker_tasks._log_stage_invalidated(tmp_path / "stage.log", "precheck", reason="artifact missing")  # noqa: SLF001
+    assert logged == [
+        "stage completed: asr",
+        "stage invalidated: precheck artifact missing, rerunning",
+    ]
+
+    ctx.artifacts.audio_sanitize_json_path.write_text(
+        json.dumps({"output_path": str(tmp_path / "missing.wav")}),
+        encoding="utf-8",
+    )
+    ctx.artifacts.sanitized_audio_path.write_bytes(b"wav")
+    assert worker_tasks._working_audio_path(ctx) == ctx.artifacts.sanitized_audio_path  # noqa: SLF001
+
+    ctx.artifacts.sanitized_audio_path.unlink()
+    ctx.raw_audio_path = raw_audio_path
+    assert worker_tasks._working_audio_path(ctx) == raw_audio_path  # noqa: SLF001
+
+    ctx.raw_audio_path = None
+    assert worker_tasks._working_audio_path(ctx) == raw_audio_path  # noqa: SLF001
+
+
+def test_build_diarization_metadata_payload_normalizes_optional_fields(tmp_path: Path) -> None:
+    cfg = worker_tasks._build_pipeline_settings(_cfg(tmp_path))  # noqa: SLF001
+    smoothing_result = SpeakerTurnSmoothingResult(
+        turns=[{"speaker": "S1", "start": 0.0, "end": 1.0, "text": "hello"}],
+        adjacent_merges=0,
+        micro_turn_absorptions=0,
+        turn_count_before=1,
+        turn_count_after=1,
+        speaker_count_before=1,
+        speaker_count_after=1,
+    )
+
+    payload = worker_tasks._build_diarization_metadata_payload(  # noqa: SLF001
+        runtime={
+            "mode": "fallback",
+            "effective_hints": "bad",
+            "initial_hints": "bad",
+            "profile_selection": "bad",
+        },
+        cfg=cfg,
+        smoothing_result=smoothing_result,
+    )
+    assert payload["hints_applied"] == {}
+    assert "initial_hints" not in payload
+    assert "profile_selection" not in payload
+
+    payload = worker_tasks._build_diarization_metadata_payload(  # noqa: SLF001
+        runtime={
+            "mode": "pyannote",
+            "effective_hints": {"min_speakers": 2},
+            "initial_hints": {"min_speakers": 1},
+            "profile_selection": {},
+        },
+        cfg=cfg,
+        smoothing_result=smoothing_result,
+    )
+    assert payload["initial_hints"] == {"min_speakers": 1}
+    assert "profile_selection" not in payload
+
+
+def test_stage_precheck_with_missing_duration_and_calendar_refresh_warning(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg, ctx = _new_ctx(tmp_path, "rec-precheck-edge", create_raw_audio=True)
+    ctx.raw_audio_path = cfg.recordings_root / "rec-precheck-edge" / "raw" / "audio.wav"
+
+    duration_updates: list[float] = []
+    monkeypatch.setattr(
+        worker_tasks,
+        "run_precheck",
+        lambda *_a, **_k: PrecheckResult(None, 0.33, None),
+    )
+    monkeypatch.setattr(
+        worker_tasks,
+        "_set_recording_duration_best_effort",
+        lambda _recording_id, duration_sec, settings: duration_updates.append(duration_sec),
+    )
+    result = worker_tasks._stage_precheck(ctx)  # noqa: SLF001
+    assert result.status == "completed"
+    assert duration_updates == []
+
+    monkeypatch.setattr(
+        worker_tasks,
+        "refresh_recording_calendar_match",
+        lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("calendar boom")),
+    )
+    monkeypatch.setattr(
+        worker_tasks,
+        "_load_calendar_summary_context",
+        lambda *_a, **_k: ("Weekly Sync", ["Ada"]),
+    )
+    result = worker_tasks._stage_calendar_refresh(ctx)  # noqa: SLF001
+    assert result.metadata["warning"] == "calendar boom"
+
+
+@pytest.mark.parametrize(
+    ("stage_fn", "recording_id"),
+    [
+        (worker_tasks._stage_asr, "rec-missing-asr"),
+        (worker_tasks._stage_diarization, "rec-missing-diar"),
+        (worker_tasks._stage_language_analysis, "rec-missing-lang"),
+        (worker_tasks._stage_speaker_turns, "rec-missing-turns"),
+        (worker_tasks._stage_llm_extract, "rec-missing-llm"),
+        (worker_tasks._stage_export_artifacts, "rec-missing-export"),
+        (worker_tasks._stage_routing, "rec-missing-routing"),
+    ],
+)
+def test_stage_functions_require_precheck_artifact(
+    tmp_path: Path,
+    stage_fn,
+    recording_id: str,
+) -> None:
+    _cfg_value, ctx = _new_ctx(tmp_path, recording_id)
+    with pytest.raises(RuntimeError, match="Missing precheck artifact"):
+        stage_fn(ctx)
+
+
+def test_stage_asr_raises_when_working_audio_is_missing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _cfg_value, ctx = _new_ctx(tmp_path, "rec-asr-no-audio")
+    ctx.precheck_result = PrecheckResult(10.0, 0.5, None)
+    monkeypatch.setattr(
+        worker_tasks,
+        "_load_calendar_summary_context",
+        lambda *_a, **_k: ("Weekly Sync", []),
+    )
+
+    with pytest.raises(RuntimeError, match="Missing sanitized audio"):
+        worker_tasks._stage_asr(ctx)  # noqa: SLF001
+
+
+def test_stage_asr_uses_custom_whisperx_path_when_monkeypatched(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg, ctx = _new_ctx(tmp_path, "rec-asr-custom", create_raw_audio=True)
+    ctx.precheck_result = PrecheckResult(10.0, 0.5, None)
+    ctx.raw_audio_path = cfg.recordings_root / "rec-asr-custom" / "raw" / "audio.wav"
+
+    monkeypatch.setattr(
+        worker_tasks,
+        "_load_calendar_summary_context",
+        lambda *_a, **_k: ("Weekly Sync", ["Ada"]),
+    )
+    monkeypatch.setattr(
+        worker_tasks,
+        "build_recording_asr_glossary",
+        lambda *_a, **_k: {"entry_count": 0, "term_count": 0, "truncated": False},
+    )
+    monkeypatch.setattr(
+        worker_tasks.pipeline_orchestrator,
+        "_write_asr_glossary_artifact",
+        lambda **_kwargs: None,
+    )
+
+    def _fake_custom_whisperx(
+        _audio_path: Path,
+        *,
+        override_lang: str | None,
+        cfg,
+        step_log_callback=None,
+    ):
+        if step_log_callback is not None:
+            step_log_callback(f"custom whisperx lang={override_lang}")
+        return (
+            [{"start": 0.0, "end": 1.0, "text": "hello"}],
+            {"language": "en"},
+        )
+
+    def _fake_run_language_aware_asr(
+        audio_path: Path,
+        *,
+        transcribe_fn,
+        step_log_callback=None,
+        **_kwargs,
+    ):
+        if step_log_callback is not None:
+            step_log_callback("language-aware")
+        segments, info = transcribe_fn(audio_path, "en")
+        return segments, info, {"used_multilingual_path": False}
+
+    monkeypatch.setattr(worker_tasks.pipeline_orchestrator, "_whisperx_asr", _fake_custom_whisperx)
+    monkeypatch.setattr(worker_tasks, "run_language_aware_asr", _fake_run_language_aware_asr)
+
+    result = worker_tasks._stage_asr(ctx)  # noqa: SLF001
+    assert result.status == "completed"
+    assert result.metadata["segment_count"] == 1
+
+
+def test_stage_asr_restores_existing_whisperx_state_and_runtime_metadata(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg, ctx = _new_ctx(tmp_path, "rec-asr-default", create_raw_audio=True)
+    ctx.precheck_result = PrecheckResult(10.0, 0.5, None)
+    ctx.raw_audio_path = cfg.recordings_root / "rec-asr-default" / "raw" / "audio.wav"
+
+    monkeypatch.setattr(
+        worker_tasks,
+        "_load_calendar_summary_context",
+        lambda *_a, **_k: ("Weekly Sync", ["Ada"]),
+    )
+    monkeypatch.setattr(
+        worker_tasks,
+        "build_recording_asr_glossary",
+        lambda *_a, **_k: {"entry_count": 0, "term_count": 0, "truncated": False},
+    )
+    monkeypatch.setattr(
+        worker_tasks.pipeline_orchestrator,
+        "_write_asr_glossary_artifact",
+        lambda **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        worker_tasks.pipeline_orchestrator,
+        "_build_whisperx_transcriber",
+        lambda **_kwargs: object(),
+    )
+    monkeypatch.setattr(
+        worker_tasks.pipeline_orchestrator,
+        "_glossary_runtime_metadata",
+        lambda _transcribe_audio: {"used_prompt": True},
+    )
+
+    def _fake_default_whisperx(
+        _audio_path: Path,
+        *,
+        override_lang: str | None,
+        cfg,
+        step_log_callback=None,
+    ):
+        if step_log_callback is not None:
+            step_log_callback(f"default whisperx lang={override_lang}")
+        return (
+            [{"start": 0.0, "end": 1.0, "text": "hello"}],
+            {"language": "en"},
+        )
+
+    def _fake_run_language_aware_asr(
+        audio_path: Path,
+        *,
+        transcribe_fn,
+        step_log_callback=None,
+        **_kwargs,
+    ):
+        if step_log_callback is not None:
+            step_log_callback("language-aware")
+        segments, info = transcribe_fn(audio_path, "en")
+        return segments, info, {"used_multilingual_path": False}
+
+    state = worker_tasks.pipeline_orchestrator._whisperx_transcriber_state
+    previous_transcriber = object()
+    monkeypatch.setattr(state, "transcribe_audio", previous_transcriber, raising=False)
+    monkeypatch.setattr(state, "use_session_transcriber", True, raising=False)
+    monkeypatch.setattr(worker_tasks.pipeline_orchestrator, "_whisperx_asr", _fake_default_whisperx)
+    monkeypatch.setattr(
+        worker_tasks.pipeline_orchestrator,
+        "_DEFAULT_WHISPERX_ASR",
+        _fake_default_whisperx,
+    )
+    monkeypatch.setattr(worker_tasks, "run_language_aware_asr", _fake_run_language_aware_asr)
+
+    result = worker_tasks._stage_asr(ctx)  # noqa: SLF001
+
+    assert result.status == "completed"
+    assert ctx.asr_execution["glossary_runtime"] == {"used_prompt": True}
+    assert state.transcribe_audio is previous_transcriber
+    assert state.use_session_transcriber is True
+
+
+def test_stage_asr_default_path_handles_missing_session_transcriber_attr(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg, ctx = _new_ctx(tmp_path, "rec-asr-default-cleanup", create_raw_audio=True)
+    ctx.precheck_result = PrecheckResult(10.0, 0.5, None)
+    ctx.raw_audio_path = cfg.recordings_root / "rec-asr-default-cleanup" / "raw" / "audio.wav"
+
+    monkeypatch.setattr(
+        worker_tasks,
+        "_load_calendar_summary_context",
+        lambda *_a, **_k: ("Weekly Sync", []),
+    )
+    monkeypatch.setattr(
+        worker_tasks,
+        "build_recording_asr_glossary",
+        lambda *_a, **_k: {"entry_count": 0, "term_count": 0, "truncated": False},
+    )
+    monkeypatch.setattr(
+        worker_tasks.pipeline_orchestrator,
+        "_write_asr_glossary_artifact",
+        lambda **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        worker_tasks.pipeline_orchestrator,
+        "_build_whisperx_transcriber",
+        lambda **_kwargs: object(),
+    )
+    monkeypatch.setattr(
+        worker_tasks.pipeline_orchestrator,
+        "_glossary_runtime_metadata",
+        lambda _transcribe_audio: {},
+    )
+
+    def _fake_default_whisperx(
+        _audio_path: Path,
+        *,
+        override_lang: str | None,
+        cfg,
+        step_log_callback=None,
+    ):
+        if step_log_callback is not None:
+            step_log_callback(f"default whisperx lang={override_lang}")
+        return (
+            [{"start": 0.0, "end": 1.0, "text": "hello"}],
+            {"language": "en"},
+        )
+
+    def _fake_run_language_aware_asr(
+        audio_path: Path,
+        *,
+        transcribe_fn,
+        step_log_callback=None,
+        **_kwargs,
+    ):
+        state = worker_tasks.pipeline_orchestrator._whisperx_transcriber_state
+        if hasattr(state, "transcribe_audio"):
+            delattr(state, "transcribe_audio")
+        if step_log_callback is not None:
+            step_log_callback("language-aware")
+        segments, info = transcribe_fn(audio_path, "en")
+        return segments, info, {"used_multilingual_path": False}
+
+    state = worker_tasks.pipeline_orchestrator._whisperx_transcriber_state
+    if hasattr(state, "transcribe_audio"):
+        delattr(state, "transcribe_audio")
+    if hasattr(state, "use_session_transcriber"):
+        delattr(state, "use_session_transcriber")
+
+    monkeypatch.setattr(worker_tasks.pipeline_orchestrator, "_whisperx_asr", _fake_default_whisperx)
+    monkeypatch.setattr(
+        worker_tasks.pipeline_orchestrator,
+        "_DEFAULT_WHISPERX_ASR",
+        _fake_default_whisperx,
+    )
+    monkeypatch.setattr(worker_tasks, "run_language_aware_asr", _fake_run_language_aware_asr)
+
+    result = worker_tasks._stage_asr(ctx)  # noqa: SLF001
+
+    assert result.status == "completed"
+    assert hasattr(state, "transcribe_audio") is False
+    assert hasattr(state, "use_session_transcriber") is False
+
+
+def test_stage_diarization_fallback_and_dummy_fallback_paths(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg, ctx = _new_ctx(tmp_path, "rec-diar-fallback", create_raw_audio=True)
+    ctx.precheck_result = PrecheckResult(10.0, 0.5, None)
+    ctx.raw_audio_path = cfg.recordings_root / "rec-diar-fallback" / "raw" / "audio.wav"
+    ctx.artifacts.asr_segments_json_path.write_text(
+        json.dumps([{"start": 0.0, "end": 1.0, "text": "hello"}]),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(worker_tasks, "_build_diariser", lambda *_a, **_k: worker_tasks._FallbackDiariser(1.0))
+    monkeypatch.setattr(worker_tasks, "_log_gpu_execution_policy", lambda **_kwargs: None)
+    monkeypatch.setattr(
+        worker_tasks.pipeline_orchestrator,
+        "_diariser_runtime_metadata",
+        lambda _diariser: {},
+    )
+
+    async def _fake_retry_dialog_diarization(**kwargs):
+        kwargs["step_log_callback"]("retry diarization")
+        return kwargs["diarization"]
+
+    calls = {"count": 0}
+
+    def _fake_diarization_segments(_annotation):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return []
+        return [{"speaker": "S1", "start": 0.0, "end": 1.0}]
+
+    monkeypatch.setattr(
+        worker_tasks.pipeline_orchestrator,
+        "_maybe_retry_dialog_diarization",
+        _fake_retry_dialog_diarization,
+    )
+    monkeypatch.setattr(worker_tasks, "_diarization_segments", _fake_diarization_segments)
+
+    result = worker_tasks._stage_diarization(ctx)  # noqa: SLF001
+    assert result.metadata["mode"] == "fallback"
+    assert result.metadata["used_dummy_fallback"] is True
+
+
+def test_stage_diarization_init_failure_falls_back(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg, ctx = _new_ctx(tmp_path, "rec-diar-init-fail", create_raw_audio=True)
+    ctx.precheck_result = PrecheckResult(10.0, 0.5, None)
+    ctx.raw_audio_path = cfg.recordings_root / "rec-diar-init-fail" / "raw" / "audio.wav"
+    ctx.artifacts.asr_segments_json_path.write_text("[]", encoding="utf-8")
+
+    monkeypatch.setattr(
+        worker_tasks,
+        "_build_diariser",
+        lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("diariser boom")),
+    )
+    monkeypatch.setattr(worker_tasks, "_log_gpu_execution_policy", lambda **_kwargs: None)
+    monkeypatch.setattr(
+        worker_tasks.pipeline_orchestrator,
+        "_diariser_runtime_metadata",
+        lambda _diariser: {},
+    )
+    monkeypatch.setattr(
+        worker_tasks,
+        "_diarization_segments",
+        lambda _annotation: [{"speaker": "S1", "start": 0.0, "end": 1.0}],
+    )
+
+    async def _fake_retry_dialog_diarization(**kwargs):
+        return kwargs["diarization"]
+
+    monkeypatch.setattr(
+        worker_tasks.pipeline_orchestrator,
+        "_maybe_retry_dialog_diarization",
+        _fake_retry_dialog_diarization,
+    )
+
+    result = worker_tasks._stage_diarization(ctx)  # noqa: SLF001
+    assert result.metadata["mode"] == "fallback"
+
+
+def test_stage_diarization_raises_when_working_audio_is_missing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _cfg_value, ctx = _new_ctx(tmp_path, "rec-diar-no-audio")
+    ctx.precheck_result = PrecheckResult(10.0, 0.5, None)
+    monkeypatch.setattr(worker_tasks, "_build_diariser", lambda *_a, **_k: worker_tasks._FallbackDiariser(1.0))
+    monkeypatch.setattr(worker_tasks, "_log_gpu_execution_policy", lambda **_kwargs: None)
+
+    with pytest.raises(RuntimeError, match="Missing sanitized audio"):
+        worker_tasks._stage_diarization(ctx)  # noqa: SLF001
+
+
+def test_stage_language_analysis_updates_detected_language_from_distribution(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _cfg_value, ctx = _new_ctx(tmp_path, "rec-language-analysis")
+    ctx.precheck_result = PrecheckResult(10.0, 0.5, None)
+    ctx.artifacts.asr_segments_json_path.write_text(
+        json.dumps([{"start": 0.0, "end": 1.0, "text": "hola"}]),
+        encoding="utf-8",
+    )
+    ctx.artifacts.asr_info_json_path.write_text(json.dumps({"language": "unknown"}), encoding="utf-8")
+    ctx.artifacts.asr_execution_json_path.write_text(
+        json.dumps({"used_multilingual_path": False}),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        worker_tasks,
+        "analyse_languages",
+        lambda *_a, **_k: SimpleNamespace(
+            dominant_language="es",
+            distribution={"es": 88.0},
+            spans=[{"start": 0.0, "end": 1.0, "language": "es"}],
+            segments=[{"start": 0.0, "end": 1.0, "text": "hola", "language": "es"}],
+            review_required=False,
+            review_reason_code=None,
+            review_reason_text=None,
+            uncertain_segment_count=0,
+            conflict_segment_count=0,
+        ),
+    )
+    monkeypatch.setattr(
+        worker_tasks,
+        "resolve_target_summary_language",
+        lambda *_a, **_k: "es",
+    )
+
+    result = worker_tasks._stage_language_analysis(ctx)  # noqa: SLF001
+    assert result.status == "completed"
+    assert ctx.language_payload["language"]["detected"] == "es"
+    assert ctx.language_payload["language"]["confidence"] == 0.88
+
+    _cfg_value, ctx_missing_percent = _new_ctx(tmp_path, "rec-language-analysis-missing-percent")
+    ctx_missing_percent.precheck_result = PrecheckResult(10.0, 0.5, None)
+    ctx_missing_percent.artifacts.asr_segments_json_path.write_text(
+        json.dumps([{"start": 0.0, "end": 1.0, "text": "hola"}]),
+        encoding="utf-8",
+    )
+    ctx_missing_percent.artifacts.asr_info_json_path.write_text(
+        json.dumps({"language": "unknown"}),
+        encoding="utf-8",
+    )
+    ctx_missing_percent.artifacts.asr_execution_json_path.write_text(
+        json.dumps({"used_multilingual_path": False}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        worker_tasks,
+        "analyse_languages",
+        lambda *_a, **_k: SimpleNamespace(
+            dominant_language="es",
+            distribution={"fr": 100.0},
+            spans=[],
+            segments=[{"start": 0.0, "end": 1.0, "text": "hola", "language": "es"}],
+            review_required=False,
+            review_reason_code=None,
+            review_reason_text=None,
+            uncertain_segment_count=0,
+            conflict_segment_count=0,
+        ),
+    )
+
+    result = worker_tasks._stage_language_analysis(ctx_missing_percent)  # noqa: SLF001
+    assert result.status == "completed"
+    assert ctx_missing_percent.language_payload["language"]["detected"] == "es"
+    assert ctx_missing_percent.language_payload["language"]["confidence"] is None
+
+
+def test_stage_speaker_turns_requires_language_artifact_and_supports_unsmoothed_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _cfg_value, ctx = _new_ctx(tmp_path, "rec-speaker-turns")
+    ctx.precheck_result = PrecheckResult(10.0, 0.5, None)
+
+    with pytest.raises(RuntimeError, match="Missing language analysis artifact"):
+        worker_tasks._stage_speaker_turns(ctx)  # noqa: SLF001
+
+    ctx.artifacts.language_analysis_json_path.write_text(
+        json.dumps(
+            {
+                "dominant_language": "en",
+                "language": {"detected": "en", "confidence": 0.95},
+                "segments": [{"start": 0.0, "end": 1.0, "text": "hello", "language": "en"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    ctx.artifacts.diarization_segments_json_path.write_text(
+        json.dumps([{"speaker": "S2", "start": 0.0, "end": 1.0}]),
+        encoding="utf-8",
+    )
+    ctx.artifacts.diarization_runtime_json_path.write_text(
+        json.dumps({"mode": "fallback", "used_dummy_fallback": False}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        worker_tasks,
+        "build_speaker_turns",
+        lambda *_a, **_k: [{"speaker": "S2", "start": 0.0, "end": 1.0, "text": "hello"}],
+    )
+    monkeypatch.setattr(
+        worker_tasks,
+        "smooth_speaker_turns",
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("should not smooth")),
+    )
+
+    result = worker_tasks._stage_speaker_turns(ctx)  # noqa: SLF001
+    assert result.metadata == {"turn_count": 1, "speaker_count": 1}
+
+
+def test_stage_llm_extract_chunked_summary_invokes_progress_callback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _cfg_value, ctx = _new_ctx(tmp_path, "rec-llm-chunked")
+    ctx.precheck_result = PrecheckResult(10.0, 0.5, None)
+    ctx.artifacts.language_analysis_json_path.write_text(
+        json.dumps(
+            {
+                "segments": [{"start": 0.0, "end": 1.0, "text": "Discussed the work plan."}],
+                "target_summary_language": "en",
+            }
+        ),
+        encoding="utf-8",
+    )
+    ctx.artifacts.recording_artifacts.speaker_turns_json_path.write_text(
+        json.dumps([{"speaker": "S1", "start": 0.0, "end": 1.0, "text": "Discussed the work plan."}]),
+        encoding="utf-8",
+    )
+
+    progress_updates: list[tuple[str, float]] = []
+    chunked_kwargs: dict[str, object] = {}
+    monkeypatch.setattr(worker_tasks.pipeline_orchestrator, "_require_llm_model", lambda _model: "test-model")
+    monkeypatch.setattr(worker_tasks, "LLMClient", lambda: object())
+    monkeypatch.setattr(worker_tasks, "load_speaker_aliases", lambda _path: {})
+    monkeypatch.setattr(worker_tasks.pipeline_orchestrator, "_sentiment_score", lambda _text: 3)
+    monkeypatch.setattr(worker_tasks.pipeline_orchestrator, "_speaker_turn_prompt_text", lambda *_a, **_k: "Prompt text")
+    monkeypatch.setattr(worker_tasks.pipeline_orchestrator, "_use_chunked_llm", lambda *_a, **_k: True)
+    monkeypatch.setattr(
+        worker_tasks,
+        "_load_calendar_summary_context",
+        lambda *_a, **_k: ("Weekly Sync", ["Ada", "Bob"]),
+    )
+    monkeypatch.setattr(
+        worker_tasks,
+        "_set_recording_progress_best_effort",
+        lambda _recording_id, stage, progress, settings: progress_updates.append((stage, progress)),
+    )
+
+    async def _fake_run_chunked_llm_summary(*, progress_callback, **_kwargs):
+        chunked_kwargs.update(_kwargs)
+        progress_callback("llm_chunk_1", 0.91)
+        return {"status": "ok", "topic": "Weekly Sync"}
+
+    monkeypatch.setattr(
+        worker_tasks.pipeline_orchestrator,
+        "_run_chunked_llm_summary",
+        _fake_run_chunked_llm_summary,
+    )
+
+    result = worker_tasks._stage_llm_extract(ctx)  # noqa: SLF001
+    assert result.status == "completed"
+    assert ("llm_chunk_1", 0.91) in progress_updates
+    assert chunked_kwargs["calendar_title"] == "Weekly Sync"
+    assert chunked_kwargs["calendar_attendees"] == ["Ada", "Bob"]
+
+
+def test_stage_metrics_updates_language_settings_only_when_payload_exists(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg, ctx = _new_ctx(tmp_path, "rec-metrics-update")
+    ctx.has_explicit_summary_target = True
+    calls: list[dict[str, str]] = []
+    monkeypatch.setattr(
+        worker_tasks,
+        "refresh_recording_metrics",
+        lambda *_a, **_k: {"participants": [], "meeting": {"total_interruptions": 0}},
+    )
+    monkeypatch.setattr(
+        worker_tasks,
+        "set_recording_language_settings",
+        lambda _recording_id, settings, **kwargs: calls.append(kwargs),
+    )
+
+    ctx.artifacts.recording_artifacts.transcript_json_path.write_text(
+        json.dumps({"target_summary_language": "it"}),
+        encoding="utf-8",
+    )
+    result = worker_tasks._stage_metrics(ctx)  # noqa: SLF001
+    assert result.status == "completed"
+    assert calls == [{"target_summary_language": "it"}]
+
+    _cfg_value, ctx_no_update = _new_ctx(tmp_path, "rec-metrics-no-update")
+    ctx_no_update.has_explicit_summary_target = False
+    monkeypatch.setattr(
+        worker_tasks,
+        "set_recording_language_settings",
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("unexpected update")),
+    )
+    ctx_no_update.artifacts.recording_artifacts.transcript_json_path.write_text("{}", encoding="utf-8")
+    result = worker_tasks._stage_metrics(ctx_no_update)  # noqa: SLF001
+    assert result.status == "completed"
+
+
+def test_terminal_state_and_legacy_pipeline_handle_review_and_missing_audio(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg, ctx = _new_ctx(tmp_path, "rec-terminal-review")
+    ctx.routing_payload = {"status_after_routing": RECORDING_STATUS_NEEDS_REVIEW}
+    monkeypatch.setattr(
+        worker_tasks,
+        "_review_reason_from_routing",
+        lambda **_kwargs: ("routing_review", "Routing requires review"),
+    )
+
+    outcome = worker_tasks._terminal_state_from_stage_artifacts(ctx=ctx)  # noqa: SLF001
+    assert outcome.status == RECORDING_STATUS_NEEDS_REVIEW
+    assert outcome.review_reason_code == "routing_review"
+
+    cfg_missing, _ctx_unused = _new_ctx(tmp_path, "rec-legacy-missing-audio")
+    legacy_outcome = worker_tasks._run_precheck_pipeline_legacy(  # noqa: SLF001
+        recording_id="rec-legacy-missing-audio",
+        settings=cfg_missing,
+        log_path=worker_tasks._step_log_path("rec-legacy-missing-audio", JOB_TYPE_PRECHECK, cfg_missing),
+    )
+    assert legacy_outcome.status == RECORDING_STATUS_QUARANTINE
+    assert legacy_outcome.quarantine_reason == "raw_audio_missing"
+
+
+def test_run_precheck_pipeline_covers_all_valid_and_invalidated_stage_rows(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = _cfg(tmp_path)
+    init_db(cfg)
+    stage = pipeline_stages.PIPELINE_STAGE_DEFINITIONS[0]
+    monkeypatch.setattr(worker_tasks, "PIPELINE_STAGE_DEFINITIONS", (stage,))
+
+    create_recording("rec-pipeline-valid", source="test", source_filename="valid.wav", settings=cfg)
+    mark_recording_pipeline_stage_skipped(
+        "rec-pipeline-valid",
+        stage_name=stage.name,
+        metadata={"skip_reason": "already_done"},
+        settings=cfg,
+    )
+    monkeypatch.setattr(
+        worker_tasks,
+        "_terminal_state_from_stage_artifacts",
+        lambda **_kwargs: worker_tasks.PipelineTerminalState(status=RECORDING_STATUS_READY),
+    )
+    outcome = worker_tasks._run_precheck_pipeline(  # noqa: SLF001
+        recording_id="rec-pipeline-valid",
+        settings=cfg,
+        log_path=worker_tasks._step_log_path("rec-pipeline-valid", JOB_TYPE_PRECHECK, cfg),
+    )
+    assert outcome.status == RECORDING_STATUS_READY
+
+    create_recording("rec-pipeline-invalid", source="test", source_filename="invalid.wav", settings=cfg)
+    mark_recording_pipeline_stage_completed(
+        "rec-pipeline-invalid",
+        stage_name=stage.name,
+        metadata={"label": stage.label},
+        settings=cfg,
+    )
+    monkeypatch.setitem(
+        worker_tasks._PIPELINE_STAGE_RUNNERS,
+        stage.name,
+        lambda _ctx: worker_tasks._StageResult(status="completed"),
+    )
+    monkeypatch.setattr(
+        worker_tasks,
+        "mark_recording_pipeline_stage_completed",
+        lambda *_a, **_k: {"duration_ms": "bad"},
+    )
+    outcome = worker_tasks._run_precheck_pipeline(  # noqa: SLF001
+        recording_id="rec-pipeline-invalid",
+        settings=cfg,
+        log_path=worker_tasks._step_log_path("rec-pipeline-invalid", JOB_TYPE_PRECHECK, cfg),
+    )
+    assert outcome.status == RECORDING_STATUS_READY
+
+    log_text = (
+        cfg.recordings_root / "rec-pipeline-invalid" / "logs" / "step-precheck.log"
+    ).read_text(encoding="utf-8")
+    assert "stage invalidated: sanitize_audio" in log_text
+    assert "stage completed: sanitize_audio" in log_text
+
+    create_recording("rec-pipeline-none-row", source="test", source_filename="none.wav", settings=cfg)
+    monkeypatch.setattr(
+        worker_tasks,
+        "mark_recording_pipeline_stage_completed",
+        lambda *_a, **_k: None,
+    )
+    outcome = worker_tasks._run_precheck_pipeline(  # noqa: SLF001
+        recording_id="rec-pipeline-none-row",
+        settings=cfg,
+        log_path=worker_tasks._step_log_path("rec-pipeline-none-row", JOB_TYPE_PRECHECK, cfg),
+    )
+    assert outcome.status == RECORDING_STATUS_READY

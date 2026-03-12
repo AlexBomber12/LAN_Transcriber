@@ -323,6 +323,7 @@ async def api_requeue_recording(
         job = enqueue_recording_job(
             recording_id,
             job_type=DEFAULT_REQUEUE_JOB_TYPE,
+            reset_pipeline_state=True,
             settings=_settings,
         )
     except DuplicateRecordingJobError as exc:

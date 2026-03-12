@@ -477,7 +477,7 @@ Queue (in order)
 - Depends on: PR-GPU-SCHEDULER-01 and PR-CALENDAR-MATCHING-ICS-01
 
 94) PR-PIPELINE-CHECKPOINTS-RESUME-01: Durable pipeline stage checkpoints and resume from first incomplete/invalid stage under the single-job model
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-PIPELINE-CHECKPOINTS-RESUME-01.md
 - Depends on: PR-CAPTURE-TIME-SEMANTICS-01
 
