@@ -479,7 +479,7 @@ def test_run_child_stage_operation_force_terminates_after_grace(
     )
     fake_ctx, process, _parent_conn, _child_conn = _fake_child_runtime(
         parent_polls=[False, False],
-        process_alive=[True, True, True],
+        process_alive=[True],
     )
     times = iter([1.0, 1.0, 2.0])
     force_stop_calls: list[str] = []
@@ -490,9 +490,13 @@ def test_run_child_stage_operation_force_terminates_after_grace(
     def _next_time() -> float:
         return next(times, 2.0)
 
+    def _alive_until_kill() -> bool:
+        return process.kill_calls == 0
+
     monkeypatch.setattr(worker_tasks.mp, "get_context", lambda _name: fake_ctx)
     monkeypatch.setattr(worker_tasks.asyncio, "sleep", _fast_sleep)
     monkeypatch.setattr(worker_tasks.time, "monotonic", _next_time)
+    monkeypatch.setattr(process, "is_alive", _alive_until_kill)
 
     with pytest.raises(worker_tasks.RecordingStopRequested) as exc_info:
         asyncio.run(
@@ -818,7 +822,7 @@ def test_run_child_stage_operation_cleans_up_on_async_cancel(
     log_path = tmp_path / "logs" / "step.log"
     cancel_ctx, process, _parent_conn, _child_conn = _fake_child_runtime(
         parent_polls=[False, False, False],
-        process_alive=[True, True, True],
+        process_alive=[True, True, True, False],
     )
     real_sleep = asyncio.sleep
 
@@ -937,6 +941,131 @@ def test_run_child_stage_operation_cancel_cleanup_skips_terminate_when_dead(
     asyncio.run(_exercise())
     assert process.terminate_calls == 0
     assert process.kill_calls == 0
+
+
+def test_run_child_stage_operation_cancel_after_cleanup_started_skips_repeat_cleanup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    log_path = tmp_path / "logs" / "step.log"
+    cancel_ctx, process, _parent_conn, _child_conn = _fake_child_runtime(
+        parent_polls=[True],
+        parent_messages=[{"status": "ok", "payload": {"status": "late"}}],
+        process_alive=[True],
+    )
+    join_calls = {"count": 0}
+
+    def _join_then_cancel(timeout=None):
+        process.join_calls.append(timeout)
+        join_calls["count"] += 1
+        if join_calls["count"] == 2:
+            raise asyncio.CancelledError
+
+    monkeypatch.setattr(worker_tasks.mp, "get_context", lambda _name: cancel_ctx)
+    monkeypatch.setattr(process, "is_alive", lambda: True)
+    monkeypatch.setattr(process, "join", _join_then_cancel)
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(
+            worker_tasks._run_child_stage_operation(  # noqa: SLF001
+                operation_name="llm_generate",
+                payload={},
+                stage_name="llm_extract",
+                stop_request_getter=lambda: None,
+                grace_seconds=5.0,
+                log_path=log_path,
+                checkpoint="llm_chunk_request",
+            )
+        )
+
+    assert process.terminate_calls == 1
+    assert process.kill_calls == 0
+
+
+def test_run_child_stage_operation_force_stop_raises_if_child_survives_kill(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    log_path = tmp_path / "logs" / "step.log"
+    stop_request = worker_tasks._RecordingStopRequest(  # noqa: SLF001
+        requested_at="2026-03-12T10:00:00Z",
+        requested_by="user",
+        reason_code="user_stop",
+        reason_text="Stop requested by user",
+    )
+    fake_ctx, process, _parent_conn, _child_conn = _fake_child_runtime(
+        parent_polls=[False, False],
+        process_alive=[True],
+    )
+    times = iter([1.0, 1.0, 2.0])
+    force_stop_calls: list[str] = []
+    real_sleep = asyncio.sleep
+
+    async def _yield_once(_seconds: float):
+        await real_sleep(0)
+
+    monkeypatch.setattr(worker_tasks.mp, "get_context", lambda _name: fake_ctx)
+    monkeypatch.setattr(worker_tasks.asyncio, "sleep", _yield_once)
+    monkeypatch.setattr(worker_tasks.time, "monotonic", lambda: next(times, 2.0))
+    monkeypatch.setattr(process, "is_alive", lambda: True)
+
+    with pytest.raises(RuntimeError, match="did not exit after forced stop"):
+        asyncio.run(
+            worker_tasks._run_child_stage_operation(  # noqa: SLF001
+                operation_name="noop",
+                payload={},
+                stage_name="asr",
+                stop_request_getter=lambda: stop_request,
+                grace_seconds=0.1,
+                log_path=log_path,
+                checkpoint="during_heavy_stage",
+                on_force_stop=lambda: force_stop_calls.append("cleanup"),
+            )
+        )
+
+    assert process.terminate_calls == 1
+    assert process.kill_calls == 1
+    assert force_stop_calls == []
+
+
+def test_run_child_stage_operation_cleans_up_on_parent_exception_with_best_effort_logging(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    log_path = tmp_path / "logs" / "step.log"
+    error_ctx, process, parent_conn, child_conn = _fake_child_runtime(
+        parent_polls=[False],
+        process_alive=[True],
+    )
+
+    def _alive_until_kill() -> bool:
+        return process.kill_calls == 0
+
+    monkeypatch.setattr(worker_tasks.mp, "get_context", lambda _name: error_ctx)
+    monkeypatch.setattr(process, "is_alive", _alive_until_kill)
+    monkeypatch.setattr(
+        worker_tasks,
+        "_append_step_log",
+        lambda *_a, **_k: (_ for _ in ()).throw(OSError("disk full")),
+    )
+
+    with pytest.raises(ValueError, match="db down"):
+        asyncio.run(
+            worker_tasks._run_child_stage_operation(  # noqa: SLF001
+                operation_name="llm_generate",
+                payload={},
+                stage_name="llm_extract",
+                stop_request_getter=lambda: (_ for _ in ()).throw(ValueError("db down")),
+                grace_seconds=1.0,
+                log_path=log_path,
+                checkpoint="llm_chunk_request",
+            )
+        )
+
+    assert process.terminate_calls == 1
+    assert process.kill_calls == 1
+    assert parent_conn.closed is True
+    assert child_conn.closed is True
 
 
 def test_cancel_inflight_llm_chunk_state_preserves_completed_rows(tmp_path: Path) -> None:

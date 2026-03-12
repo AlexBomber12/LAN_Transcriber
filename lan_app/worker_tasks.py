@@ -606,17 +606,41 @@ async def _run_child_stage_operation(
     child_conn.close()
     stop_request: _RecordingStopRequest | None = None
     stop_deadline: float | None = None
+    cleanup_attempted = False
 
-    def _force_stop_process(reason: _RecordingStopRequest) -> None:
-        _append_step_log(
-            log_path,
-            f"force terminating child stage={stage_name} pid={process.pid}",
-        )
+    def _append_step_log_best_effort(message: str) -> None:
+        try:
+            _append_step_log(log_path, message)
+        except OSError:
+            return
+
+    def _terminate_child_process(
+        *,
+        reason: str,
+        terminate_message: str,
+        kill_message: str,
+    ) -> None:
+        nonlocal cleanup_attempted
+        cleanup_attempted = True
+        if not process.is_alive():
+            return
+        _append_step_log_best_effort(terminate_message)
         process.terminate()
         process.join(timeout=1.0)
+        if not process.is_alive():
+            return
+        _append_step_log_best_effort(kill_message)
+        process.kill()
+        process.join(timeout=1.0)
         if process.is_alive():
-            process.kill()
-            process.join(timeout=1.0)
+            raise RuntimeError(f"child stage did not exit {reason} stage={stage_name} pid={process.pid}")
+
+    def _force_stop_process(reason: _RecordingStopRequest) -> None:
+        _terminate_child_process(
+            reason="after forced stop",
+            terminate_message=f"force terminating child stage={stage_name} pid={process.pid}",
+            kill_message=f"force killing child stage={stage_name} pid={process.pid}",
+        )
         if callable(on_force_stop):
             on_force_stop()
         _append_step_log(log_path, f"stage terminated by user stop stage={stage_name}")
@@ -634,30 +658,17 @@ async def _run_child_stage_operation(
         process.join(timeout=max(1.0, grace_seconds))
         if not process.is_alive():
             return
-        _append_step_log(
-            log_path,
-            (
+        _terminate_child_process(
+            reason=f"after result status={message_status}",
+            terminate_message=(
                 "force terminating lingering child after result "
                 f"stage={stage_name} pid={process.pid} status={message_status}"
             ),
+            kill_message=(
+                "force killing lingering child after result "
+                f"stage={stage_name} pid={process.pid} status={message_status}"
+            ),
         )
-        process.terminate()
-        process.join(timeout=1.0)
-        if process.is_alive():
-            _append_step_log(
-                log_path,
-                (
-                    "force killing lingering child after result "
-                    f"stage={stage_name} pid={process.pid} status={message_status}"
-                ),
-            )
-            process.kill()
-            process.join(timeout=1.0)
-            if process.is_alive():
-                raise RuntimeError(
-                    "child stage did not exit after result "
-                    f"stage={stage_name} pid={process.pid} status={message_status}"
-                )
 
     try:
         while True:
@@ -701,12 +712,28 @@ async def _run_child_stage_operation(
                 _force_stop_process(stop_request)
             await asyncio.sleep(0.05)
     except asyncio.CancelledError:
-        if process.is_alive():
-            process.terminate()
-            process.join(timeout=1.0)
-            if process.is_alive():
-                process.kill()
-                process.join(timeout=1.0)
+        if not cleanup_attempted:
+            _terminate_child_process(
+                reason="after parent cancellation",
+                terminate_message=(
+                    f"force terminating child after parent cancellation stage={stage_name} pid={process.pid}"
+                ),
+                kill_message=(
+                    f"force killing child after parent cancellation stage={stage_name} pid={process.pid}"
+                ),
+            )
+        raise
+    except BaseException:
+        if not cleanup_attempted:
+            _terminate_child_process(
+                reason="after parent exception",
+                terminate_message=(
+                    f"force terminating child after parent exception stage={stage_name} pid={process.pid}"
+                ),
+                kill_message=(
+                    f"force killing child after parent exception stage={stage_name} pid={process.pid}"
+                ),
+            )
         raise
     finally:
         parent_conn.close()
