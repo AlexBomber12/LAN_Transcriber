@@ -13,6 +13,7 @@ from lan_app.constants import (
     RECORDING_STATUS_PROCESSING,
     RECORDING_STATUS_QUEUED,
     RECORDING_STATUS_READY,
+    RECORDING_STATUS_STOPPING,
 )
 from lan_app import db as db_module
 from lan_app.db import (
@@ -181,6 +182,57 @@ def test_reaper_recovers_stale_started_job_when_recording_status_is_queued(
 
     job = get_job("job-reaper-stale-queued-1", settings=cfg)
     recording = get_recording("rec-reaper-stale-queued-1", settings=cfg)
+    assert job is not None
+    assert recording is not None
+    assert summary["stale_started_jobs"] == 1
+    assert summary["recovered_jobs"] == 1
+    assert summary["recovered_recordings"] == 1
+    assert job["status"] == JOB_STATUS_FAILED
+    assert recording["status"] == RECORDING_STATUS_NEEDS_REVIEW
+
+
+def test_reaper_recovers_stale_started_job_when_recording_status_is_stopping(
+    tmp_path: Path,
+):
+    cfg = _test_settings(tmp_path)
+    init_db(cfg)
+    create_recording(
+        "rec-reaper-stale-stopping-1",
+        source="test",
+        source_filename="stale-stopping.wav",
+        status=RECORDING_STATUS_STOPPING,
+        settings=cfg,
+    )
+    create_job(
+        "job-reaper-stale-stopping-1",
+        recording_id="rec-reaper-stale-stopping-1",
+        job_type=JOB_TYPE_PRECHECK,
+        status=JOB_STATUS_STARTED,
+        settings=cfg,
+        attempt=1,
+    )
+    with connect(cfg) as conn:
+        conn.execute(
+            """
+            UPDATE jobs
+            SET started_at = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                "2026-02-22T00:00:00Z",
+                "2026-02-22T00:00:00Z",
+                "job-reaper-stale-stopping-1",
+            ),
+        )
+        conn.commit()
+
+    summary = run_stuck_job_reaper_once(
+        settings=cfg,
+        now=datetime(2026, 2, 23, 0, 0, 0, tzinfo=timezone.utc),
+    )
+
+    job = get_job("job-reaper-stale-stopping-1", settings=cfg)
+    recording = get_recording("rec-reaper-stale-stopping-1", settings=cfg)
     assert job is not None
     assert recording is not None
     assert summary["stale_started_jobs"] == 1
@@ -471,6 +523,62 @@ def test_reaper_does_not_recover_recent_processing_without_started_job(tmp_path:
     assert summary["recovered_jobs"] == 0
     assert job["status"] == JOB_STATUS_QUEUED
     assert recording["status"] == RECORDING_STATUS_PROCESSING
+
+
+def test_reaper_recovers_stopping_recording_without_started_job(
+    tmp_path: Path,
+    monkeypatch,
+):
+    cfg = _test_settings(tmp_path)
+    init_db(cfg)
+    create_recording(
+        "rec-reaper-stopping-orphan-1",
+        source="test",
+        source_filename="stopping-orphan.wav",
+        status=RECORDING_STATUS_STOPPING,
+        settings=cfg,
+    )
+    create_job(
+        "job-reaper-stopping-orphan-1",
+        recording_id="rec-reaper-stopping-orphan-1",
+        job_type=JOB_TYPE_PRECHECK,
+        status=JOB_STATUS_QUEUED,
+        settings=cfg,
+    )
+    with connect(cfg) as conn:
+        conn.execute(
+            """
+            UPDATE recordings
+            SET updated_at = ?
+            WHERE id = ?
+            """,
+            ("2026-02-22T00:00:00Z", "rec-reaper-stopping-orphan-1"),
+        )
+        conn.commit()
+
+    cancelled_job_ids: list[str] = []
+
+    def _cancel_pending(job_id: str, *, settings=None) -> bool:
+        cancelled_job_ids.append(job_id)
+        return True
+
+    monkeypatch.setattr("lan_app.reaper.cancel_pending_queue_job", _cancel_pending)
+
+    summary = run_stuck_job_reaper_once(
+        settings=cfg,
+        now=datetime(2026, 2, 23, 0, 0, 1, tzinfo=timezone.utc),
+    )
+
+    job = get_job("job-reaper-stopping-orphan-1", settings=cfg)
+    recording = get_recording("rec-reaper-stopping-orphan-1", settings=cfg)
+    assert job is not None
+    assert recording is not None
+    assert summary["processing_without_started"] == 1
+    assert summary["recovered_jobs"] == 1
+    assert summary["recovered_recordings"] == 1
+    assert job["status"] == JOB_STATUS_FAILED
+    assert recording["status"] == RECORDING_STATUS_NEEDS_REVIEW
+    assert cancelled_job_ids == ["job-reaper-stopping-orphan-1"]
 
 
 def test_reaper_skips_orphan_recovery_when_active_job_is_no_longer_queued(

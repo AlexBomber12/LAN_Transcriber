@@ -2487,7 +2487,7 @@ def list_processing_recordings_without_started_job(
             FROM recordings AS r
             LEFT JOIN projects AS p ON p.id = r.project_id
             LEFT JOIN projects AS sp ON sp.id = r.suggested_project_id
-            WHERE r.status = ?
+            WHERE r.status IN (?, ?)
               AND (? IS NULL OR r.updated_at < ?)
               AND NOT EXISTS (
                     SELECT 1
@@ -2506,6 +2506,7 @@ def list_processing_recordings_without_started_job(
                 JOB_STATUS_QUEUED,
                 JOB_STATUS_STARTED,
                 RECORDING_STATUS_PROCESSING,
+                RECORDING_STATUS_STOPPING,
                 before_updated_at,
                 before_updated_at,
                 JOB_STATUS_STARTED,

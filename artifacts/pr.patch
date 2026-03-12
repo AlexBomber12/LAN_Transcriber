@@ -1,155 +1,181 @@
-diff --git a/lan_app/ui_routes.py b/lan_app/ui_routes.py
-index e923c91..fc60361 100644
---- a/lan_app/ui_routes.py
-+++ b/lan_app/ui_routes.py
-@@ -2808,6 +2808,17 @@ async def ui_action_stop(
-         )
-         return RedirectResponse(redirect_path, status_code=303)
- 
-+    if not set_recording_status_if_current_in(
-+        recording_id,
-+        RECORDING_STATUS_STOPPED,
-+        current_statuses=(
-+            RECORDING_STATUS_QUEUED,
-+            RECORDING_STATUS_PROCESSING,
-+            RECORDING_STATUS_STOPPING,
-+        ),
-+        settings=_settings,
-+    ):
-+        return RedirectResponse(redirect_path, status_code=303)
-     if not str(rec.get("cancel_requested_at") or "").strip():
-         set_recording_cancel_request(
-             recording_id,
-@@ -2823,11 +2834,6 @@ async def ui_action_stop(
-             reason_text=_STOPPED_REASON_TEXT,
-             settings=_settings,
-         )
--    set_recording_status(
--        recording_id,
--        RECORDING_STATUS_STOPPED,
--        settings=_settings,
--    )
-     clear_recording_progress(recording_id, settings=_settings)
-     return RedirectResponse(redirect_path, status_code=303)
- 
-diff --git a/lan_app/worker_tasks.py b/lan_app/worker_tasks.py
-index e834fa5..5e500b0 100644
---- a/lan_app/worker_tasks.py
-+++ b/lan_app/worker_tasks.py
-@@ -283,6 +283,9 @@ class _DbChunkStateStore:
-         )
- 
-     def mark_cancelled(self, **kwargs: Any) -> dict[str, Any] | None:
-+        kwargs = dict(kwargs)
-+        kwargs.pop("error_code", None)
-+        kwargs.pop("error_text", None)
-         return mark_recording_llm_chunk_cancelled(
-             self.recording_id,
-             settings=self.settings,
-diff --git a/tests/test_cov_lan_app_ui_routes.py b/tests/test_cov_lan_app_ui_routes.py
-index 3eed3c6..cbaa1e0 100644
---- a/tests/test_cov_lan_app_ui_routes.py
-+++ b/tests/test_cov_lan_app_ui_routes.py
-@@ -315,12 +315,50 @@ def test_ui_action_stop_helper_edge_paths(
-         "acknowledge_recording_cancel_request",
-         lambda *_a, **_k: calls.append("ack") or True,
-     )
--    monkeypatch.setattr(ui_routes, "set_recording_status", lambda *_a, **_k: calls.append("status") or True)
-+    monkeypatch.setattr(
-+        ui_routes,
-+        "set_recording_status_if_current_in",
-+        lambda *_a, **_k: calls.append("status") or True,
-+    )
-     monkeypatch.setattr(ui_routes, "clear_recording_progress", lambda *_a, **_k: calls.append("clear") or True)
-     acknowledged = asyncio.run(ui_routes.ui_action_stop("rec-stopping", tab="overview"))
-     assert acknowledged.status_code == 303
-     assert acknowledged.headers["location"] == "/recordings/rec-stopping"
--    assert calls == ["ack", "status", "clear"]
-+    assert calls == ["status", "ack", "clear"]
-+
-+    race_calls: list[str] = []
-+    monkeypatch.setattr(
-+        ui_routes,
-+        "get_recording",
-+        lambda *_a, **_k: {"id": "rec-race", "status": RECORDING_STATUS_QUEUED},
-+    )
-+    monkeypatch.setattr(ui_routes, "list_jobs", lambda **_kwargs: ([], 0))
-+    monkeypatch.setattr(ui_routes, "purge_pending_recording_jobs", lambda *_a, **_k: 0)
-+    monkeypatch.setattr(ui_routes, "has_started_job_for_recording", lambda *_a, **_k: False)
-+    monkeypatch.setattr(
-+        ui_routes,
-+        "set_recording_status_if_current_in",
-+        lambda *_a, **_k: False,
-+    )
-+    monkeypatch.setattr(
-+        ui_routes,
-+        "set_recording_cancel_request",
-+        lambda *_a, **_k: race_calls.append("set_cancel") or True,
-+    )
-+    monkeypatch.setattr(
-+        ui_routes,
-+        "acknowledge_recording_cancel_request",
-+        lambda *_a, **_k: race_calls.append("ack") or True,
-+    )
-+    monkeypatch.setattr(
-+        ui_routes,
-+        "clear_recording_progress",
-+        lambda *_a, **_k: race_calls.append("clear") or True,
-+    )
-+    raced = asyncio.run(ui_routes.ui_action_stop("rec-race", tab="overview"))
-+    assert raced.status_code == 303
-+    assert raced.headers["location"] == "/recordings/rec-race"
-+    assert race_calls == []
+diff --git a/lan_app/db.py b/lan_app/db.py
+index d813cd8..da2781d 100644
+--- a/lan_app/db.py
++++ b/lan_app/db.py
+@@ -2487,7 +2487,7 @@ def list_processing_recordings_without_started_job(
+             FROM recordings AS r
+             LEFT JOIN projects AS p ON p.id = r.project_id
+             LEFT JOIN projects AS sp ON sp.id = r.suggested_project_id
+-            WHERE r.status = ?
++            WHERE r.status IN (?, ?)
+               AND (? IS NULL OR r.updated_at < ?)
+               AND NOT EXISTS (
+                     SELECT 1
+@@ -2506,6 +2506,7 @@ def list_processing_recordings_without_started_job(
+                 JOB_STATUS_QUEUED,
+                 JOB_STATUS_STARTED,
+                 RECORDING_STATUS_PROCESSING,
++                RECORDING_STATUS_STOPPING,
+                 before_updated_at,
+                 before_updated_at,
+                 JOB_STATUS_STARTED,
+diff --git a/lan_app/reaper.py b/lan_app/reaper.py
+index 0ef3085..077b92b 100644
+--- a/lan_app/reaper.py
++++ b/lan_app/reaper.py
+@@ -11,6 +11,7 @@ from .constants import (
+     RECORDING_STATUS_NEEDS_REVIEW,
+     RECORDING_STATUS_PROCESSING,
+     RECORDING_STATUS_QUEUED,
++    RECORDING_STATUS_STOPPING,
+ )
+ from .db import (
+     fail_job_if_queued,
+@@ -30,9 +31,13 @@ _RECOVERY_REVIEW_REASON_TEXT = (
+ _STALE_DOWNGRADE_STATUSES = (
+     RECORDING_STATUS_QUEUED,
+     RECORDING_STATUS_PROCESSING,
++    RECORDING_STATUS_STOPPING,
+     RECORDING_STATUS_NEEDS_REVIEW,
+ )
+-_ORPHAN_DOWNGRADE_STATUSES = (RECORDING_STATUS_PROCESSING,)
++_ORPHAN_DOWNGRADE_STATUSES = (
++    RECORDING_STATUS_PROCESSING,
++    RECORDING_STATUS_STOPPING,
++)
  
  
- def test_load_json_and_chunk_helpers_cover_error_paths(tmp_path: Path) -> None:
-diff --git a/tests/test_cov_lan_app_worker_tasks_branches.py b/tests/test_cov_lan_app_worker_tasks_branches.py
-index f5f1b6c..f78b85e 100644
---- a/tests/test_cov_lan_app_worker_tasks_branches.py
-+++ b/tests/test_cov_lan_app_worker_tasks_branches.py
-@@ -2351,3 +2351,45 @@ def test_process_job_converts_completed_terminal_state_to_stopped_when_stop_requ
-         "status": "Stopped",
-         "error": "cancelled_by_user",
-     }
-+
-+
-+def test_cancel_aware_chunk_store_marks_cancelled_with_error_kwargs_against_db_store(
+ def _utc_now() -> datetime:
+diff --git a/tests/test_reaper.py b/tests/test_reaper.py
+index 1151cff..da30058 100644
+--- a/tests/test_reaper.py
++++ b/tests/test_reaper.py
+@@ -13,6 +13,7 @@ from lan_app.constants import (
+     RECORDING_STATUS_PROCESSING,
+     RECORDING_STATUS_QUEUED,
+     RECORDING_STATUS_READY,
++    RECORDING_STATUS_STOPPING,
+ )
+ from lan_app import db as db_module
+ from lan_app.db import (
+@@ -190,6 +191,57 @@ def test_reaper_recovers_stale_started_job_when_recording_status_is_queued(
+     assert recording["status"] == RECORDING_STATUS_NEEDS_REVIEW
+ 
+ 
++def test_reaper_recovers_stale_started_job_when_recording_status_is_stopping(
 +    tmp_path: Path,
-+) -> None:
-+    cfg = _db_settings(tmp_path)
++):
++    cfg = _test_settings(tmp_path)
 +    init_db(cfg)
 +    create_recording(
-+        "rec-stop-helper-db-cancel",
++        "rec-reaper-stale-stopping-1",
 +        source="test",
-+        source_filename="stop-db.wav",
++        source_filename="stale-stopping.wav",
++        status=RECORDING_STATUS_STOPPING,
 +        settings=cfg,
 +    )
-+    set_recording_cancel_request(
-+        "rec-stop-helper-db-cancel",
-+        requested_by="user",
-+        reason_code="user_stop",
-+        reason_text="Stop requested by user",
++    create_job(
++        "job-reaper-stale-stopping-1",
++        recording_id="rec-reaper-stale-stopping-1",
++        job_type=JOB_TYPE_PRECHECK,
++        status=JOB_STATUS_STARTED,
 +        settings=cfg,
++        attempt=1,
 +    )
-+
-+    store = worker_tasks._CancelAwareChunkStateStore(  # noqa: SLF001
-+        base_store=worker_tasks._DbChunkStateStore("rec-stop-helper-db-cancel", cfg),  # noqa: SLF001
-+        recording_id="rec-stop-helper-db-cancel",
-+        settings=cfg,
-+        stage_name="llm_extract",
-+    )
-+
-+    with pytest.raises(worker_tasks.RecordingStopRequested):
-+        store.mark_failed(
-+            chunk_group="extract",
-+            chunk_index="1",
-+            chunk_total=1,
-+            error_code="llm_chunk_timeout",
-+            error_text="boom",
-+            metadata={"order_path": [1], "text": "chunk one", "base_text": "chunk one"},
++    with connect(cfg) as conn:
++        conn.execute(
++            """
++            UPDATE jobs
++            SET started_at = ?, updated_at = ?
++            WHERE id = ?
++            """,
++            (
++                "2026-02-22T00:00:00Z",
++                "2026-02-22T00:00:00Z",
++                "job-reaper-stale-stopping-1",
++            ),
 +        )
++        conn.commit()
 +
-+    rows = worker_tasks._DbChunkStateStore("rec-stop-helper-db-cancel", cfg).list_states(  # noqa: SLF001
-+        chunk_group="extract"
++    summary = run_stuck_job_reaper_once(
++        settings=cfg,
++        now=datetime(2026, 2, 23, 0, 0, 0, tzinfo=timezone.utc),
 +    )
-+    assert [(row["chunk_index"], row["status"]) for row in rows] == [("1", "cancelled")]
++
++    job = get_job("job-reaper-stale-stopping-1", settings=cfg)
++    recording = get_recording("rec-reaper-stale-stopping-1", settings=cfg)
++    assert job is not None
++    assert recording is not None
++    assert summary["stale_started_jobs"] == 1
++    assert summary["recovered_jobs"] == 1
++    assert summary["recovered_recordings"] == 1
++    assert job["status"] == JOB_STATUS_FAILED
++    assert recording["status"] == RECORDING_STATUS_NEEDS_REVIEW
++
++
+ def test_reaper_does_not_downgrade_ready_recording_when_clearing_stale_started_job(
+     tmp_path: Path,
+ ):
+@@ -473,6 +525,62 @@ def test_reaper_does_not_recover_recent_processing_without_started_job(tmp_path:
+     assert recording["status"] == RECORDING_STATUS_PROCESSING
+ 
+ 
++def test_reaper_recovers_stopping_recording_without_started_job(
++    tmp_path: Path,
++    monkeypatch,
++):
++    cfg = _test_settings(tmp_path)
++    init_db(cfg)
++    create_recording(
++        "rec-reaper-stopping-orphan-1",
++        source="test",
++        source_filename="stopping-orphan.wav",
++        status=RECORDING_STATUS_STOPPING,
++        settings=cfg,
++    )
++    create_job(
++        "job-reaper-stopping-orphan-1",
++        recording_id="rec-reaper-stopping-orphan-1",
++        job_type=JOB_TYPE_PRECHECK,
++        status=JOB_STATUS_QUEUED,
++        settings=cfg,
++    )
++    with connect(cfg) as conn:
++        conn.execute(
++            """
++            UPDATE recordings
++            SET updated_at = ?
++            WHERE id = ?
++            """,
++            ("2026-02-22T00:00:00Z", "rec-reaper-stopping-orphan-1"),
++        )
++        conn.commit()
++
++    cancelled_job_ids: list[str] = []
++
++    def _cancel_pending(job_id: str, *, settings=None) -> bool:
++        cancelled_job_ids.append(job_id)
++        return True
++
++    monkeypatch.setattr("lan_app.reaper.cancel_pending_queue_job", _cancel_pending)
++
++    summary = run_stuck_job_reaper_once(
++        settings=cfg,
++        now=datetime(2026, 2, 23, 0, 0, 1, tzinfo=timezone.utc),
++    )
++
++    job = get_job("job-reaper-stopping-orphan-1", settings=cfg)
++    recording = get_recording("rec-reaper-stopping-orphan-1", settings=cfg)
++    assert job is not None
++    assert recording is not None
++    assert summary["processing_without_started"] == 1
++    assert summary["recovered_jobs"] == 1
++    assert summary["recovered_recordings"] == 1
++    assert job["status"] == JOB_STATUS_FAILED
++    assert recording["status"] == RECORDING_STATUS_NEEDS_REVIEW
++    assert cancelled_job_ids == ["job-reaper-stopping-orphan-1"]
++
++
+ def test_reaper_skips_orphan_recovery_when_active_job_is_no_longer_queued(
+     tmp_path: Path,
+     monkeypatch,
