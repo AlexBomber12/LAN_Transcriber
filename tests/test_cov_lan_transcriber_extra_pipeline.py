@@ -41,6 +41,17 @@ def _annotation_from_segments(*segments: tuple[float, float, str]):
     )
 
 
+def _llm_chunk_turns(text: str = "single chunk transcript") -> list[dict[str, Any]]:
+    return [
+        {
+            "speaker": "S1",
+            "start": 0.0,
+            "end": 1.0,
+            "text": text,
+        }
+    ]
+
+
 def test_pipeline_settings_reads_llm_model_from_env(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -540,11 +551,13 @@ async def test_run_chunked_llm_summary_rejects_empty_chunk_plan(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(pipeline, "plan_transcript_chunks", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(pipeline, "plan_compact_transcript_chunks", lambda *_args, **_kwargs: [])
 
     with pytest.raises(RuntimeError, match="produced no chunks"):
         await pipeline._run_chunked_llm_summary(
             transcript_text="hello world",
+            speaker_turns=_llm_chunk_turns("hello world"),
+            aliases={},
             derived_dir=tmp_path / "derived",
             llm=object(),
             cfg=_settings(tmp_path, llm_model="model"),
@@ -559,6 +572,119 @@ async def test_run_chunked_llm_summary_rejects_empty_chunk_plan(
 
 
 @pytest.mark.asyncio
+async def test_run_chunked_llm_summary_rejects_empty_compacted_transcript(tmp_path: Path) -> None:
+    with pytest.raises(RuntimeError, match="compaction produced no usable content"):
+        await pipeline._run_chunked_llm_summary(
+            transcript_text="legacy transcript",
+            speaker_turns=[{"speaker": "S1", "start": 0.0, "end": 0.2, "text": "..."}],
+            aliases={},
+            derived_dir=tmp_path / "derived",
+            llm=object(),
+            cfg=_settings(tmp_path, llm_model="model"),
+            llm_model="model",
+            target_summary_language="en",
+            friendly=0,
+            default_topic="Meeting summary",
+            calendar_title=None,
+            calendar_attendees=[],
+            progress_callback=None,
+        )
+
+
+@pytest.mark.asyncio
+async def test_run_chunked_llm_summary_writes_compact_artifacts_and_keeps_calendar_context(
+    tmp_path: Path,
+) -> None:
+    prompts: list[dict[str, Any]] = []
+
+    class _CompactLLM:
+        async def generate(self, **kwargs: Any) -> dict[str, str]:
+            payload = json.loads(kwargs["user_prompt"])
+            prompts.append(payload)
+            if "chunk" in payload:
+                return {
+                    "content": json.dumps(
+                        {
+                            "topic_candidates": ["Weekly Sync"],
+                            "summary_bullets": ["Reviewed blockers"],
+                            "decisions": [],
+                            "action_items": [],
+                            "emotional_cues": ["Focused"],
+                            "questions": {"total_count": 0, "types": {}, "extracted": []},
+                        }
+                    )
+                }
+            return {
+                "content": json.dumps(
+                    {
+                        "topic": "Merged topic",
+                        "summary_bullets": ["Merged summary bullet"],
+                        "decisions": [],
+                        "action_items": [],
+                        "emotional_summary": "Focused.",
+                        "questions": {"total_count": 0, "types": {}, "extracted": []},
+                    }
+                )
+            }
+
+    result = await pipeline._run_chunked_llm_summary(
+        transcript_text="legacy transcript",
+        speaker_turns=[
+            {
+                "speaker": "SPEAKER_00",
+                "start": 0.0,
+                "end": 1.0,
+                "text": "discussion item zero " * 4,
+            },
+            {
+                "speaker": "SPEAKER_00",
+                "start": 1.2,
+                "end": 2.0,
+                "text": "follow up details " * 3,
+            },
+            {
+                "speaker": "SPEAKER_01",
+                "start": 3.0,
+                "end": 4.0,
+                "text": "response and owner alignment " * 3,
+            },
+        ],
+        aliases={"SPEAKER_00": "Alex", "SPEAKER_01": "Priya"},
+        derived_dir=tmp_path / "derived",
+        llm=_CompactLLM(),
+        cfg=_settings(
+            tmp_path,
+            llm_model="model",
+            llm_chunk_max_chars=60,
+            llm_chunk_overlap_chars=12,
+        ),
+        llm_model="model",
+        target_summary_language="en",
+        friendly=0,
+        default_topic="Meeting summary",
+        calendar_title="Weekly Sync",
+        calendar_attendees=["Alex", "Priya"],
+        progress_callback=None,
+    )
+
+    derived = tmp_path / "derived"
+    plan_payload = json.loads((derived / "llm_chunks_plan.json").read_text(encoding="utf-8"))
+    compact_payload = json.loads((derived / "llm_compact_transcript.json").read_text(encoding="utf-8"))
+    compact_text = (derived / "llm_compact_transcript.txt").read_text(encoding="utf-8")
+
+    assert result["topic"] == "Merged topic"
+    assert plan_payload["source_chars"] > plan_payload["compact_chars"]
+    assert plan_payload["compaction"]["speaker_mapping"]
+    assert compact_payload["compact_turn_count"] == 2
+    assert compact_text.startswith("Alex:")
+    assert "[" not in compact_text
+    assert prompts[0]["calendar"] == {"title": "Weekly Sync", "attendees": ["Alex", "Priya"]}
+    assert prompts[0]["speaker_mapping"]
+    assert prompts[0]["chunk"]["time_range"]["start_seconds"] == 0.0
+    assert prompts[-1]["calendar"] == {"title": "Weekly Sync", "attendees": ["Alex", "Priya"]}
+
+
+@pytest.mark.asyncio
 async def test_run_chunked_llm_summary_timeout_writes_error_artifact(tmp_path: Path) -> None:
     class _SlowLLM:
         async def generate(self, **_kwargs: Any) -> dict[str, str]:
@@ -569,6 +695,8 @@ async def test_run_chunked_llm_summary_timeout_writes_error_artifact(tmp_path: P
     with pytest.raises(RuntimeError, match=r"LLM chunk 1/1 failed: timed out after 0.001s"):
         await pipeline._run_chunked_llm_summary(
             transcript_text="single chunk transcript",
+            speaker_turns=_llm_chunk_turns(),
+            aliases={},
             derived_dir=derived,
             llm=_SlowLLM(),
             cfg=_settings(
@@ -605,6 +733,8 @@ async def test_run_chunked_llm_summary_asyncio_timeout_writes_error_artifact(
     with pytest.raises(RuntimeError, match=r"LLM chunk 1/1 failed: timed out after 0.001s"):
         await pipeline._run_chunked_llm_summary(
             transcript_text="single chunk transcript",
+            speaker_turns=_llm_chunk_turns(),
+            aliases={},
             derived_dir=derived,
             llm=object(),
             cfg=_settings(
@@ -639,6 +769,8 @@ async def test_run_chunked_llm_summary_timeout_sentinel_writes_error_artifact(
     with pytest.raises(RuntimeError, match=r"LLM chunk 1/1 failed: timed out after 0.001s"):
         await pipeline._run_chunked_llm_summary(
             transcript_text="single chunk transcript",
+            speaker_turns=_llm_chunk_turns(),
+            aliases={},
             derived_dir=derived,
             llm=_TimeoutSentinelLLM(),
             cfg=_settings(
@@ -690,6 +822,8 @@ async def test_run_chunked_llm_summary_merge_timeout_sentinel_fails(tmp_path: Pa
     with pytest.raises(RuntimeError, match=r"LLM merge failed: timed out after 12s"):
         await pipeline._run_chunked_llm_summary(
             transcript_text="single chunk transcript",
+            speaker_turns=_llm_chunk_turns(),
+            aliases={},
             derived_dir=derived,
             llm=_MergeTimeoutSentinelLLM(),
             cfg=_settings(
@@ -747,6 +881,8 @@ async def test_run_chunked_llm_summary_passes_merge_retry_budget(tmp_path: Path)
 
     await pipeline._run_chunked_llm_summary(
         transcript_text="single chunk transcript",
+        speaker_turns=_llm_chunk_turns(),
+        aliases={},
         derived_dir=tmp_path / "derived",
         llm=_MergeBudgetLLM(),
         cfg=_settings(

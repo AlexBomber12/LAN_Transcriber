@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 
 from lan_transcriber.utils import normalise_text_items, safe_float
 
@@ -33,6 +33,91 @@ _LANGUAGE_NAME_MAP: dict[str, str] = {
     "zh": "Chinese",
 }
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
+_GENERIC_SPEAKER_RE = re.compile(r"^(?:speaker|spk|s)[\s_-]*\d+$", flags=re.IGNORECASE)
+_MAX_CONCISE_SPEAKER_LABEL_CHARS = 10
+_MAX_CONCISE_SPEAKER_LABEL_WORDS = 2
+DEFAULT_COMPACT_MERGE_GAP_SECONDS = 1.0
+
+
+@dataclass(frozen=True)
+class CompactSpeakerMapping:
+    compact_label: str
+    original_speaker: str
+    display_name: str
+
+    def prompt_payload(self) -> dict[str, str]:
+        payload = {"label": self.compact_label, "speaker": self.display_name}
+        if self.original_speaker != self.display_name:
+            payload["original_speaker"] = self.original_speaker
+        return payload
+
+    def artifact_payload(self) -> dict[str, str]:
+        return {
+            "compact_label": self.compact_label,
+            "original_speaker": self.original_speaker,
+            "display_name": self.display_name,
+        }
+
+
+@dataclass(frozen=True)
+class CompactTranscriptUnit:
+    speaker_label: str
+    original_speaker: str
+    display_name: str
+    start_seconds: float
+    end_seconds: float
+    text: str
+    source_turn_count: int
+
+    @property
+    def line(self) -> str:
+        return f"{self.speaker_label}: {self.text}"
+
+    def artifact_payload(self) -> dict[str, Any]:
+        return {
+            "speaker_label": self.speaker_label,
+            "original_speaker": self.original_speaker,
+            "display_name": self.display_name,
+            "start_seconds": round(self.start_seconds, 3),
+            "end_seconds": round(self.end_seconds, 3),
+            "text": self.text,
+            "chars": len(self.line),
+            "source_turn_count": self.source_turn_count,
+        }
+
+
+@dataclass(frozen=True)
+class CompactTranscript:
+    text: str
+    source_chars: int
+    compact_chars: int
+    merge_gap_seconds: float
+    source_turn_count: int
+    compact_turn_count: int
+    speaker_mapping: tuple[CompactSpeakerMapping, ...]
+    units: tuple[CompactTranscriptUnit, ...]
+
+    def prompt_speaker_mapping(self) -> list[dict[str, str]]:
+        return [
+            item.prompt_payload()
+            for item in self.speaker_mapping
+            if item.compact_label != item.display_name or item.original_speaker != item.display_name
+        ]
+
+    def artifact_payload(self) -> dict[str, Any]:
+        reduction_chars = max(self.source_chars - self.compact_chars, 0)
+        reduction_ratio = 0.0 if self.source_chars <= 0 else round(reduction_chars / self.source_chars, 4)
+        return {
+            "source_chars": self.source_chars,
+            "compact_chars": self.compact_chars,
+            "reduction_chars": reduction_chars,
+            "reduction_ratio": reduction_ratio,
+            "merge_gap_seconds": self.merge_gap_seconds,
+            "source_turn_count": self.source_turn_count,
+            "compact_turn_count": self.compact_turn_count,
+            "speaker_mapping": [item.artifact_payload() for item in self.speaker_mapping],
+            "units": [item.artifact_payload() for item in self.units],
+        }
 
 
 @dataclass(frozen=True)
@@ -42,20 +127,198 @@ class TranscriptChunk:
     text: str
     base_text: str
     overlap_prefix: str = ""
+    start_seconds: float | None = None
+    end_seconds: float | None = None
 
     def plan_payload(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "chunk_index": self.index,
             "chunk_total": self.total,
             "chars": len(self.text),
+            "effective_chars": len(self.text),
             "base_chars": len(self.base_text),
             "overlap_chars": len(self.overlap_prefix),
             "text": self.text,
         }
+        if self.start_seconds is not None and self.end_seconds is not None:
+            payload["time_range"] = {
+                "start_seconds": round(self.start_seconds, 3),
+                "end_seconds": round(self.end_seconds, 3),
+            }
+        return payload
+
+
+@dataclass(frozen=True)
+class _PlannedChunkUnit:
+    text: str
+    start_seconds: float
+    end_seconds: float
 
 
 def _language_name(code: str) -> str:
     return _LANGUAGE_NAME_MAP.get(code, code.upper())
+
+
+def _normalise_compact_text(text: str) -> str:
+    return " ".join(str(text).replace("\r", " ").replace("\n", " ").split()).strip()
+
+
+def _has_substantive_content(text: str) -> bool:
+    return any(char.isalnum() for char in text)
+
+
+def _normalise_source_turns(
+    speaker_turns: Sequence[dict[str, Any]],
+    *,
+    aliases: Mapping[str, str] | None,
+) -> list[dict[str, Any]]:
+    resolved_aliases = aliases or {}
+    turns: list[dict[str, Any]] = []
+    for row in speaker_turns:
+        speaker_key = str(row.get("speaker") or "S1").strip() or "S1"
+        display_name = str(resolved_aliases.get(speaker_key, speaker_key)).strip() or speaker_key
+        text = _normalise_compact_text(row.get("text") or "")
+        if not text:
+            continue
+        start = round(safe_float(row.get("start"), default=0.0), 3)
+        end = round(max(start, safe_float(row.get("end"), default=start)), 3)
+        turns.append(
+            {
+                "speaker": speaker_key,
+                "display_name": display_name,
+                "start": start,
+                "end": end,
+                "text": text,
+            }
+        )
+    turns.sort(key=lambda item: (item["start"], item["end"], item["speaker"]))
+    return turns
+
+
+def _render_source_turn_text(turns: Sequence[dict[str, Any]]) -> str:
+    return "\n".join(
+        f"[{turn['start']:.2f}-{turn['end']:.2f}] {turn['display_name']}: {turn['text']}"
+        for turn in turns
+    ).strip()
+
+
+def _is_concise_speaker_label(label: str) -> bool:
+    normalized = " ".join(str(label).split())
+    if not normalized:
+        return False
+    if len(normalized) > _MAX_CONCISE_SPEAKER_LABEL_CHARS:
+        return False
+    if len(normalized.split()) > _MAX_CONCISE_SPEAKER_LABEL_WORDS:
+        return False
+    if _GENERIC_SPEAKER_RE.match(normalized):
+        return False
+    return all(char.isalnum() or char in {" ", "-", "_", "'"} for char in normalized)
+
+
+def build_compact_transcript(
+    speaker_turns: Sequence[dict[str, Any]],
+    *,
+    aliases: Mapping[str, str] | None = None,
+    merge_gap_seconds: float = DEFAULT_COMPACT_MERGE_GAP_SECONDS,
+) -> CompactTranscript:
+    normalized_turns = _normalise_source_turns(speaker_turns, aliases=aliases)
+    if not normalized_turns:
+        raise ValueError("LLM transcript compaction produced no usable content")
+
+    safe_gap = max(merge_gap_seconds, 0.0)
+    speaker_mapping_by_key: dict[str, CompactSpeakerMapping] = {}
+    used_labels: set[str] = set()
+    compact_units: list[CompactTranscriptUnit] = []
+    current: CompactTranscriptUnit | None = None
+
+    def _mapping_for(turn: dict[str, Any]) -> CompactSpeakerMapping:
+        speaker_key = str(turn["speaker"])
+        existing = speaker_mapping_by_key.get(speaker_key)
+        if existing is not None:
+            return existing
+
+        display_name = str(turn["display_name"])
+        order = len(speaker_mapping_by_key) + 1
+        preferred = display_name if _is_concise_speaker_label(display_name) else ""
+        compact_label = preferred if preferred and preferred not in used_labels else f"S{order}"
+        used_labels.add(compact_label)
+        mapping = CompactSpeakerMapping(
+            compact_label=compact_label,
+            original_speaker=speaker_key,
+            display_name=display_name,
+        )
+        speaker_mapping_by_key[speaker_key] = mapping
+        return mapping
+
+    def _flush(unit: CompactTranscriptUnit | None) -> None:
+        if unit is None:
+            return
+        cleaned = _normalise_compact_text(unit.text)
+        if not cleaned:
+            return
+        compact_units.append(
+            CompactTranscriptUnit(
+                speaker_label=unit.speaker_label,
+                original_speaker=unit.original_speaker,
+                display_name=unit.display_name,
+                start_seconds=round(unit.start_seconds, 3),
+                end_seconds=round(max(unit.start_seconds, unit.end_seconds), 3),
+                text=cleaned,
+                source_turn_count=unit.source_turn_count,
+            )
+        )
+
+    for turn in normalized_turns:
+        text = str(turn["text"])
+        if not _has_substantive_content(text):
+            continue
+        mapping = _mapping_for(turn)
+        start_seconds = safe_float(turn["start"], default=0.0)
+        end_seconds = max(start_seconds, safe_float(turn["end"], default=start_seconds))
+        if (
+            current is not None
+            and current.original_speaker == mapping.original_speaker
+            and start_seconds - current.end_seconds <= safe_gap
+        ):
+            current = CompactTranscriptUnit(
+                speaker_label=current.speaker_label,
+                original_speaker=current.original_speaker,
+                display_name=current.display_name,
+                start_seconds=current.start_seconds,
+                end_seconds=max(current.end_seconds, end_seconds),
+                text=f"{current.text} {text}".strip(),
+                source_turn_count=current.source_turn_count + 1,
+            )
+            continue
+
+        _flush(current)
+        current = CompactTranscriptUnit(
+            speaker_label=mapping.compact_label,
+            original_speaker=mapping.original_speaker,
+            display_name=mapping.display_name,
+            start_seconds=start_seconds,
+            end_seconds=end_seconds,
+            text=text,
+            source_turn_count=1,
+        )
+
+    _flush(current)
+
+    if not compact_units:
+        raise ValueError("LLM transcript compaction produced no usable content")
+
+    compact_text = "\n".join(unit.line for unit in compact_units).strip()
+    source_text = _render_source_turn_text(normalized_turns)
+    return CompactTranscript(
+        text=compact_text,
+        source_chars=len(source_text),
+        compact_chars=len(compact_text),
+        merge_gap_seconds=safe_gap,
+        source_turn_count=len(normalized_turns),
+        compact_turn_count=len(compact_units),
+        speaker_mapping=tuple(speaker_mapping_by_key[key] for key in speaker_mapping_by_key),
+        units=tuple(compact_units),
+    )
 
 
 def _split_words_to_fit(text: str, *, max_chars: int) -> list[str]:
@@ -202,6 +465,104 @@ def plan_transcript_chunks(
     return chunks
 
 
+def _split_compact_unit_to_fit(
+    unit: CompactTranscriptUnit,
+    *,
+    max_chars: int,
+) -> list[_PlannedChunkUnit]:
+    line = unit.line
+    if len(line) <= max_chars:
+        return [
+            _PlannedChunkUnit(
+                text=line,
+                start_seconds=unit.start_seconds,
+                end_seconds=unit.end_seconds,
+            )
+        ]
+
+    prefix = f"{unit.speaker_label}: "
+    content_limit = max_chars - len(prefix)
+    if content_limit <= 0:
+        return [
+            _PlannedChunkUnit(
+                text=fragment,
+                start_seconds=unit.start_seconds,
+                end_seconds=unit.end_seconds,
+            )
+            for fragment in _split_words_to_fit(line, max_chars=max_chars)
+        ]
+
+    return [
+        _PlannedChunkUnit(
+            text=f"{prefix}{fragment}",
+            start_seconds=unit.start_seconds,
+            end_seconds=unit.end_seconds,
+        )
+        for fragment in _split_unit_to_fit(unit.text, max_chars=content_limit)
+    ]
+
+
+def plan_compact_transcript_chunks(
+    compact_transcript: CompactTranscript,
+    *,
+    max_chars: int,
+    overlap_chars: int,
+) -> list[TranscriptChunk]:
+    if max_chars < 1:
+        raise ValueError("max_chars must be >= 1")
+    if overlap_chars < 0:
+        raise ValueError("overlap_chars must be >= 0")
+    if not compact_transcript.text.strip():
+        return []
+
+    safe_overlap = min(overlap_chars, max(max_chars - 1, 0))
+    planned_units: list[_PlannedChunkUnit] = []
+    for unit in compact_transcript.units:
+        planned_units.extend(_split_compact_unit_to_fit(unit, max_chars=max_chars))
+
+    if not planned_units:
+        return []
+
+    base_chunks: list[tuple[str, float, float]] = []
+    current_lines: list[str] = []
+    current_start: float | None = None
+    current_end: float | None = None
+    for unit in planned_units:
+        candidate = "\n".join([*current_lines, unit.text]).strip() if current_lines else unit.text
+        if current_lines and len(candidate) > max_chars:
+            base_chunks.append(("\n".join(current_lines), current_start or 0.0, current_end or current_start or 0.0))
+            current_lines = [unit.text]
+            current_start = unit.start_seconds
+            current_end = unit.end_seconds
+            continue
+
+        current_lines.append(unit.text)
+        current_start = unit.start_seconds if current_start is None else current_start
+        current_end = unit.end_seconds
+
+    base_chunks.append(("\n".join(current_lines), current_start or 0.0, current_end or current_start or 0.0))
+
+    total = len(base_chunks)
+    chunks: list[TranscriptChunk] = []
+    for index, (base_text, start_seconds, end_seconds) in enumerate(base_chunks, start=1):
+        overlap_prefix = ""
+        if safe_overlap > 0 and index > 1:
+            overlap_prefix = _tail_text(base_chunks[index - 2][0], max_chars=safe_overlap)
+        text_with_overlap = base_text if not overlap_prefix else f"{overlap_prefix}\n{base_text}"
+        chunks.append(
+            TranscriptChunk(
+                index=index,
+                total=total,
+                text=text_with_overlap,
+                base_text=base_text,
+                overlap_prefix=overlap_prefix,
+                start_seconds=start_seconds,
+                end_seconds=end_seconds,
+            )
+        )
+    return chunks
+
+
 def split_transcript_for_llm(
     text: str,
     *,
@@ -217,6 +578,7 @@ def build_chunk_prompt(
     target_summary_language: str,
     calendar_title: str | None = None,
     calendar_attendees: Sequence[str] | None = None,
+    speaker_mapping: Sequence[dict[str, str]] | None = None,
 ) -> tuple[str, str]:
     language_name = _language_name(target_summary_language)
     sys_prompt = (
@@ -227,11 +589,23 @@ def build_chunk_prompt(
     )
     payload = {
         "target_summary_language": target_summary_language,
-        "chunk": {"index": chunk.index, "total": chunk.total},
+        "chunk": {
+            "index": chunk.index,
+            "total": chunk.total,
+            "time_range": (
+                {
+                    "start_seconds": round(chunk.start_seconds, 3),
+                    "end_seconds": round(chunk.end_seconds, 3),
+                }
+                if chunk.start_seconds is not None and chunk.end_seconds is not None
+                else None
+            ),
+        },
         "calendar": {
             "title": (calendar_title or "").strip() or None,
             "attendees": [str(item).strip() for item in (calendar_attendees or []) if str(item).strip()],
         },
+        "speaker_mapping": [dict(item) for item in (speaker_mapping or [])],
         "transcript_chunk": chunk.text,
         "required_schema": {
             "topic_candidates": ["string"],
@@ -503,11 +877,17 @@ def build_merge_prompt(
 
 
 __all__ = [
+    "CompactSpeakerMapping",
+    "CompactTranscript",
+    "CompactTranscriptUnit",
+    "DEFAULT_COMPACT_MERGE_GAP_SECONDS",
     "TranscriptChunk",
+    "build_compact_transcript",
     "build_chunk_prompt",
     "build_merge_prompt",
     "merge_chunk_results",
     "parse_chunk_extract",
+    "plan_compact_transcript_chunks",
     "plan_transcript_chunks",
     "split_transcript_for_llm",
 ]

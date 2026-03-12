@@ -26,11 +26,12 @@ from ..compat.call_compat import (
 )
 from ..compat.pyannote_compat import patch_pyannote_inference_ignore_use_auth_token
 from ..llm_chunking import (
+    build_compact_transcript,
     build_chunk_prompt,
     build_merge_prompt,
     merge_chunk_results,
     parse_chunk_extract,
-    plan_transcript_chunks,
+    plan_compact_transcript_chunks,
 )
 from ..llm_client import LLMClient
 from ..metrics import error_rate_total, p95_latency_seconds
@@ -1425,6 +1426,8 @@ def _use_chunked_llm(transcript_text: str, cfg: Settings) -> bool:
 async def _run_chunked_llm_summary(
     *,
     transcript_text: str,
+    speaker_turns: Sequence[dict[str, Any]],
+    aliases: dict[str, str],
     derived_dir: Path,
     llm: LLMClient,
     cfg: Settings,
@@ -1436,17 +1439,43 @@ async def _run_chunked_llm_summary(
     calendar_attendees: Sequence[str],
     progress_callback: ProgressCallback | None,
 ) -> dict[str, Any]:
-    chunks = plan_transcript_chunks(
-        transcript_text,
+    try:
+        compact_transcript = build_compact_transcript(
+            speaker_turns,
+            aliases=aliases,
+        )
+    except ValueError as exc:
+        raise RuntimeError(str(exc)) from exc
+    source_chars = compact_transcript.source_chars
+    compact_chars = compact_transcript.compact_chars
+    speaker_mapping = compact_transcript.prompt_speaker_mapping()
+    atomic_write_text(derived_dir / "llm_compact_transcript.txt", compact_transcript.text)
+    atomic_write_json(
+        derived_dir / "llm_compact_transcript.json",
+        compact_transcript.artifact_payload(),
+    )
+    chunks = plan_compact_transcript_chunks(
+        compact_transcript,
         max_chars=cfg.llm_chunk_max_chars,
         overlap_chars=cfg.llm_chunk_overlap_chars,
     )
     atomic_write_json(
         derived_dir / "llm_chunks_plan.json",
         {
+            "source_chars": source_chars,
+            "compact_chars": compact_chars,
             "chunk_max_chars": cfg.llm_chunk_max_chars,
             "chunk_overlap_chars": cfg.llm_chunk_overlap_chars,
             "long_transcript_threshold_chars": cfg.llm_long_transcript_threshold_chars,
+            "source_transcript_chars": len(transcript_text.strip()),
+            "compaction": {
+                "merge_gap_seconds": compact_transcript.merge_gap_seconds,
+                "source_turn_count": compact_transcript.source_turn_count,
+                "compact_turn_count": compact_transcript.compact_turn_count,
+                "speaker_mapping": [
+                    item.artifact_payload() for item in compact_transcript.speaker_mapping
+                ],
+            },
             "chunks": [chunk.plan_payload() for chunk in chunks],
         },
     )
@@ -1465,6 +1494,7 @@ async def _run_chunked_llm_summary(
             target_summary_language=target_summary_language,
             calendar_title=calendar_title,
             calendar_attendees=calendar_attendees,
+            speaker_mapping=speaker_mapping,
         )
         error_path = derived_dir / f"llm_chunk_{chunk.index:03d}_error.json"
         try:
@@ -1920,6 +1950,8 @@ async def run_pipeline(
         if _use_chunked_llm(llm_prompt_text, cfg):
             summary_payload = await _run_chunked_llm_summary(
                 transcript_text=llm_prompt_text or clean_text,
+                speaker_turns=speaker_turns,
+                aliases=aliases,
                 derived_dir=artifacts.summary_json_path.parent,
                 llm=llm,
                 cfg=cfg,
