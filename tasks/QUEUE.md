@@ -451,62 +451,17 @@ Queue (in order)
 - Tasks file: tasks/PR-SPEAKER-UX-01.md
 - Depends on: PR-ASR-MULTILINGUAL-01
 
-89) PR-SNIPPETS-PURITY-01: Pure speaker snippets: single-speaker clip selection, snippet manifest, no silence fallback, and explicit snippet choice for Add sample
-- Status: DONE
-- Tasks file: tasks/PR-SNIPPETS-PURITY-01.md
-- Depends on: PR-SPEAKER-UX-01 and PR-SPEAKER-BANK-CANONICAL-01
+101) PR-SNIPPETS-STAGE-REORDER-01: Reorder pipeline so snippets are generated as an earlier dedicated stage before llm_extract
+- Status: TODO
+- Tasks file: tasks/PR-SNIPPETS-STAGE-REORDER-01.md
+- Depends on: PR-SNIPPETS-PURITY-01 and PR-PIPELINE-CHECKPOINTS-RESUME-01 and PR-OBSERVABILITY-ROOT-CAUSE-01
 
-90) PR-GLOSSARY-CORRECTIONS-01: Multi-source ASR glossary and correction memory: manual glossary UI, speaker/calendar seeds, safe ASR prompt injection, and per-recording glossary artifacts
-- Status: DONE
-- Tasks file: tasks/PR-GLOSSARY-CORRECTIONS-01.md
-- Depends on: PR-SNIPPETS-PURITY-01 and PR-ASR-MULTILINGUAL-01 and PR-CALENDAR-ICS-01
+102) PR-SNIPPETS-UI-STATE-01: Snippet-aware Speakers UI states during processing: pending, generating, ready, failed, and no-clean-snippets messaging
+- Status: TODO
+- Tasks file: tasks/PR-SNIPPETS-UI-STATE-01.md
+- Depends on: PR-SNIPPETS-STAGE-REORDER-01 and PR-OBSERVABILITY-ROOT-CAUSE-01
 
-91) PR-CALENDAR-MATCHING-ICS-01: Reliable ICS calendar matching: attendee parsing, sync boundary fixes, runtime calendar_matches population, manual override UI, and downstream summary/glossary context
-- Status: DONE
-- Tasks file: tasks/PR-CALENDAR-MATCHING-ICS-01.md
-- Depends on: PR-GLOSSARY-CORRECTIONS-01 and PR-CALENDAR-ICS-01
-
-92) PR-GPU-SCHEDULER-01: GPU scheduling foundation: lazy diarization, sequential single-GPU execution, warm ASR cache, GPU OOM review reason, and HH:MM:SS duration formatting
-- Status: DONE
-- Tasks file: tasks/PR-GPU-SCHEDULER-01.md
-- Depends on: PR-CALENDAR-MATCHING-ICS-01 and PR-DIARIZATION-GPU-01 and PR-UI-PIPELINE-UX-01
-
-93) PR-CAPTURE-TIME-SEMANTICS-01: Correct upload/Plaud capture-time semantics: local source time -> UTC normalization, provenance fields, and safe legacy backfill
-- Status: DONE
-- Tasks file: tasks/PR-CAPTURE-TIME-SEMANTICS-01.md
-- Depends on: PR-GPU-SCHEDULER-01 and PR-CALENDAR-MATCHING-ICS-01
-
-94) PR-PIPELINE-CHECKPOINTS-RESUME-01: Durable pipeline stage checkpoints and resume from first incomplete/invalid stage under the single-job model
-- Status: DONE
-- Tasks file: tasks/PR-PIPELINE-CHECKPOINTS-RESUME-01.md
-- Depends on: PR-CAPTURE-TIME-SEMANTICS-01
-
-95) PR-LLM-CHUNK-COMPACTION-01: Compact long-transcript LLM input: merged speaker blocks, no per-line timestamps, compact speaker labels, and richer chunk plan metadata
-- Status: DONE
-- Tasks file: tasks/PR-LLM-CHUNK-COMPACTION-01.md
-- Depends on: PR-PIPELINE-CHECKPOINTS-RESUME-01 and PR-LLM-CHUNKING-01
-
-96) PR-LLM-CHUNK-RESUME-TIMEOUTS-01: Chunk-level state, resume, adaptive split-on-timeout, and specific chunk failure reasons for long-transcript LLM processing
-- Status: DONE
-- Tasks file: tasks/PR-LLM-CHUNK-RESUME-TIMEOUTS-01.md
-- Depends on: PR-LLM-CHUNK-COMPACTION-01 and PR-PIPELINE-CHECKPOINTS-RESUME-01
-
-97) PR-STOP-CANCEL-01: Soft Stop from UI: stop button, durable cancel requests, queued-job cancel, and worker cooperative checkpoints
-- Status: DONE
-- Tasks file: tasks/PR-STOP-CANCEL-01.md
-- Depends on: PR-LLM-CHUNK-RESUME-TIMEOUTS-01
-
-98) PR-STOP-CANCEL-HARD-01: Hard-stop escalation for long-running heavy stages via child processes and bounded termination grace period
-- Status: DONE
-- Tasks file: tasks/PR-STOP-CANCEL-HARD-01.md
-- Depends on: PR-STOP-CANCEL-01
-
-99) PR-OBSERVABILITY-ROOT-CAUSE-01: Root-cause-first UI/log diagnostics: current stage, chunk N/M, primary error reason, and stop visibility
-- Status: DONE
-- Tasks file: tasks/PR-OBSERVABILITY-ROOT-CAUSE-01.md
-- Depends on: PR-STOP-CANCEL-HARD-01
-
-100) PR-CALENDAR-MATCHING-STABILIZATION-01: Stabilize calendar matching after corrected capture times: safer scoring, ambiguity handling, and clearer operator warnings
-- Status: DONE
-- Tasks file: tasks/PR-CALENDAR-MATCHING-STABILIZATION-01.md
-- Depends on: PR-CAPTURE-TIME-SEMANTICS-01 and PR-OBSERVABILITY-ROOT-CAUSE-01
+103) PR-SNIPPETS-REPAIR-BACKFILL-01: Regenerate missing snippet artifacts for legacy recordings via targeted repair and optional batch backfill
+- Status: TODO
+- Tasks file: tasks/PR-SNIPPETS-REPAIR-BACKFILL-01.md
+- Depends on: PR-SNIPPETS-STAGE-REORDER-01 and PR-SNIPPETS-UI-STATE-01
