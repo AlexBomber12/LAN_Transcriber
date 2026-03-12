@@ -476,6 +476,51 @@ def test_recording_detail_calendar_tab_renders_selected_candidate_and_rationale(
     assert "Selected" in response.text
 
 
+def test_recording_detail_calendar_tab_shows_weak_and_ambiguous_warnings(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    init_db(cfg)
+    create_recording(
+        "rec-ui-calendar-warning-1",
+        source="upload",
+        source_filename="meeting.wav",
+        captured_at="2026-03-01T09:05:00Z",
+        captured_at_timezone="Europe/Rome",
+        captured_at_inferred_from_filename=False,
+        status=RECORDING_STATUS_READY,
+        settings=cfg,
+    )
+    upsert_calendar_match(
+        recording_id="rec-ui-calendar-warning-1",
+        candidates=[
+            {
+                "event_id": "evt-a",
+                "subject": "Planning A",
+                "starts_at": "2026-03-01T09:00:00Z",
+                "ends_at": "2026-03-01T10:00:00Z",
+                "confidence": 0.81,
+            },
+            {
+                "event_id": "evt-b",
+                "subject": "Planning B",
+                "starts_at": "2026-03-01T09:03:00Z",
+                "ends_at": "2026-03-01T10:03:00Z",
+                "confidence": 0.76,
+            },
+        ],
+        selected_event_id=None,
+        selected_confidence=None,
+        settings=cfg,
+    )
+
+    c = TestClient(api.app, follow_redirects=True)
+    response = c.get("/recordings/rec-ui-calendar-warning-1?tab=calendar")
+    assert response.status_code == 200
+    assert "used receipt time instead of a filename capture timestamp" in response.text
+    assert "Multiple nearby calendar candidates scored too closely" in response.text
+
+
 def test_recording_detail_calendar_selection_and_clear_persist(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
     monkeypatch.setattr(api, "_settings", cfg)

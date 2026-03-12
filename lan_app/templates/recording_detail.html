@@ -292,6 +292,13 @@
     {{ cal.error_message }}
   </p>
   {% endif %}
+  {% if cal.warnings %}
+    {% for warning in cal.warnings %}
+  <p style="margin:0 0 10px 0;padding:8px 10px;border:1px solid #f59e0b;background:#fffbeb;color:#92400e">
+    {{ warning }}
+  </p>
+    {% endfor %}
+  {% endif %}
 
   <div class="section" style="margin-top:10px">
     <h3 style="margin-top:0">Selected Event</h3>

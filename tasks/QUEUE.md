@@ -507,6 +507,6 @@ Queue (in order)
 - Depends on: PR-STOP-CANCEL-HARD-01
 
 100) PR-CALENDAR-MATCHING-STABILIZATION-01: Stabilize calendar matching after corrected capture times: safer scoring, ambiguity handling, and clearer operator warnings
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-CALENDAR-MATCHING-STABILIZATION-01.md
 - Depends on: PR-CAPTURE-TIME-SEMANTICS-01 and PR-OBSERVABILITY-ROOT-CAUSE-01
