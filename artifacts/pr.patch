@@ -1,1036 +1,264 @@
-diff --git a/README.md b/README.md
-index ba347b5..a33e932 100644
---- a/README.md
-+++ b/README.md
-@@ -229,7 +229,7 @@ models are cached across runs.
- 
- If LLM responses fail with `finish_reason=length` or empty `message.content`, increase `LLM_MAX_TOKENS` and `LLM_TIMEOUT_SECONDS` (and optionally `LLM_MAX_TOKENS_RETRY`).
- 
--Long transcripts are processed with a chunked map-reduce LLM flow. During that phase the UI may show progress stages like `llm_chunk_1_of_5` and `llm_merge`, and debug artifacts are written under `derived/` for chunk planning and merge inspection.
-+Long transcripts are processed with a chunked map-reduce LLM flow. Before chunk planning, the worker compacts speaker turns into an LLM-ready transcript with shorter speaker labels, merged adjacent same-speaker turns, and chunk-level time ranges instead of per-line timestamps. During that phase the UI may show progress stages like `llm_chunk_1_of_5` and `llm_merge`, and debug artifacts are written under `derived/`, including `llm_compact_transcript.txt`, `llm_compact_transcript.json`, `llm_chunks_plan.json`, and merge inspection files.
- 
- For diarization quality tuning, keep `LAN_DIARIZATION_PROFILE=auto` for mixed workloads. In `auto`, the worker runs a meeting-oriented first pass, classifies the result from deterministic speaker-share/alternation/overlap heuristics, and retries once with `min_speakers=2` and `max_speakers=2` only when the recording looks dialog-like. Use `dialog` or `meeting` only to force one behavior, and note that explicit `LAN_DIARIZATION_MIN_SPEAKERS` / `LAN_DIARIZATION_MAX_SPEAKERS` overrides bypass auto selection. Each processed recording writes `derived/diarization_metadata.json` with the requested profile, selected profile, initial top-two coverage, retry attempt/winner, applied hints, and smoothing stats.
- 
-diff --git a/docs/runbook.md b/docs/runbook.md
-index e9de2c2..d83876a 100644
---- a/docs/runbook.md
-+++ b/docs/runbook.md
-@@ -26,7 +26,7 @@ This runbook covers day-2 operations for LAN deployment:
-    - `LLM_CHUNK_TIMEOUT_SECONDS=120`
-    - `LLM_LONG_TRANSCRIPT_THRESHOLD_CHARS=6000`
-    - Optional: `LLM_MERGE_MAX_TOKENS=2048` when the final merge pass needs a larger JSON budget
--5. Long transcripts are processed in chunks. The UI may show `llm_chunk_X_of_Y` followed by `llm_merge` while the worker writes chunk debug artifacts under `derived/`.
-+5. Long transcripts are processed in chunks. Before planning those chunks, the worker compacts the speaker-turn transcript to reduce prompt size while keeping speaker order and chunk-level time ranges. The UI may show `llm_chunk_X_of_Y` followed by `llm_merge` while the worker writes debug artifacts under `derived/`, including `llm_compact_transcript.txt`, `llm_compact_transcript.json`, and `llm_chunks_plan.json`.
- 6. If you see `finish_reason=length` or empty `message.content`, increase `LLM_MAX_TOKENS` and `LLM_TIMEOUT_SECONDS` (and optionally `LLM_MERGE_MAX_TOKENS`).
- 7. Validate connectivity:
- 
+diff --git a/lan_app/worker_tasks.py b/lan_app/worker_tasks.py
+index 39cedd0..ebdb8e5 100644
+--- a/lan_app/worker_tasks.py
++++ b/lan_app/worker_tasks.py
+@@ -1951,6 +1951,8 @@ def _stage_llm_extract(ctx: _PipelineExecutionContext) -> _StageResult:
+         ctx.summary_payload = asyncio.run(
+             pipeline_orchestrator._run_chunked_llm_summary(
+                 transcript_text=llm_prompt_text or ctx.clean_text,
++                speaker_turns=ctx.speaker_turns,
++                aliases=aliases,
+                 derived_dir=ctx.artifacts.derived_dir,
+                 llm=LLMClient(),
+                 cfg=ctx.pipeline_settings,
 diff --git a/lan_transcriber/llm_chunking.py b/lan_transcriber/llm_chunking.py
-index 83687d1..3f9e3c2 100644
+index 3f9e3c2..932c320 100644
 --- a/lan_transcriber/llm_chunking.py
 +++ b/lan_transcriber/llm_chunking.py
-@@ -3,7 +3,7 @@ from __future__ import annotations
- import json
- import re
- from dataclasses import dataclass
--from typing import Any, Sequence
-+from typing import Any, Mapping, Sequence
+@@ -269,10 +269,10 @@ def build_compact_transcript(
+         )
  
- from lan_transcriber.utils import normalise_text_items, safe_float
- 
-@@ -33,6 +33,91 @@ _LANGUAGE_NAME_MAP: dict[str, str] = {
-     "zh": "Chinese",
- }
- _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
-+_GENERIC_SPEAKER_RE = re.compile(r"^(?:speaker|spk|s)[\s_-]*\d+$", flags=re.IGNORECASE)
-+_MAX_CONCISE_SPEAKER_LABEL_CHARS = 10
-+_MAX_CONCISE_SPEAKER_LABEL_WORDS = 2
-+DEFAULT_COMPACT_MERGE_GAP_SECONDS = 1.0
-+
-+
-+@dataclass(frozen=True)
-+class CompactSpeakerMapping:
-+    compact_label: str
-+    original_speaker: str
-+    display_name: str
-+
-+    def prompt_payload(self) -> dict[str, str]:
-+        payload = {"label": self.compact_label, "speaker": self.display_name}
-+        if self.original_speaker != self.display_name:
-+            payload["original_speaker"] = self.original_speaker
-+        return payload
-+
-+    def artifact_payload(self) -> dict[str, str]:
-+        return {
-+            "compact_label": self.compact_label,
-+            "original_speaker": self.original_speaker,
-+            "display_name": self.display_name,
-+        }
-+
-+
-+@dataclass(frozen=True)
-+class CompactTranscriptUnit:
-+    speaker_label: str
-+    original_speaker: str
-+    display_name: str
-+    start_seconds: float
-+    end_seconds: float
-+    text: str
-+    source_turn_count: int
-+
-+    @property
-+    def line(self) -> str:
-+        return f"{self.speaker_label}: {self.text}"
-+
-+    def artifact_payload(self) -> dict[str, Any]:
-+        return {
-+            "speaker_label": self.speaker_label,
-+            "original_speaker": self.original_speaker,
-+            "display_name": self.display_name,
-+            "start_seconds": round(self.start_seconds, 3),
-+            "end_seconds": round(self.end_seconds, 3),
-+            "text": self.text,
-+            "chars": len(self.line),
-+            "source_turn_count": self.source_turn_count,
-+        }
-+
-+
-+@dataclass(frozen=True)
-+class CompactTranscript:
-+    text: str
-+    source_chars: int
-+    compact_chars: int
-+    merge_gap_seconds: float
-+    source_turn_count: int
-+    compact_turn_count: int
-+    speaker_mapping: tuple[CompactSpeakerMapping, ...]
-+    units: tuple[CompactTranscriptUnit, ...]
-+
-+    def prompt_speaker_mapping(self) -> list[dict[str, str]]:
-+        return [
-+            item.prompt_payload()
-+            for item in self.speaker_mapping
-+            if item.compact_label != item.display_name or item.original_speaker != item.display_name
-+        ]
-+
-+    def artifact_payload(self) -> dict[str, Any]:
-+        reduction_chars = max(self.source_chars - self.compact_chars, 0)
-+        reduction_ratio = 0.0 if self.source_chars <= 0 else round(reduction_chars / self.source_chars, 4)
-+        return {
-+            "source_chars": self.source_chars,
-+            "compact_chars": self.compact_chars,
-+            "reduction_chars": reduction_chars,
-+            "reduction_ratio": reduction_ratio,
-+            "merge_gap_seconds": self.merge_gap_seconds,
-+            "source_turn_count": self.source_turn_count,
-+            "compact_turn_count": self.compact_turn_count,
-+            "speaker_mapping": [item.artifact_payload() for item in self.speaker_mapping],
-+            "units": [item.artifact_payload() for item in self.units],
-+        }
- 
- 
- @dataclass(frozen=True)
-@@ -42,22 +127,200 @@ class TranscriptChunk:
-     text: str
-     base_text: str
-     overlap_prefix: str = ""
-+    start_seconds: float | None = None
-+    end_seconds: float | None = None
- 
-     def plan_payload(self) -> dict[str, Any]:
--        return {
-+        payload: dict[str, Any] = {
-             "chunk_index": self.index,
-             "chunk_total": self.total,
-             "chars": len(self.text),
-+            "effective_chars": len(self.text),
-             "base_chars": len(self.base_text),
-             "overlap_chars": len(self.overlap_prefix),
-             "text": self.text,
-         }
-+        if self.start_seconds is not None and self.end_seconds is not None:
-+            payload["time_range"] = {
-+                "start_seconds": round(self.start_seconds, 3),
-+                "end_seconds": round(self.end_seconds, 3),
-+            }
-+        return payload
-+
-+
-+@dataclass(frozen=True)
-+class _PlannedChunkUnit:
-+    text: str
-+    start_seconds: float
-+    end_seconds: float
- 
- 
- def _language_name(code: str) -> str:
-     return _LANGUAGE_NAME_MAP.get(code, code.upper())
- 
- 
-+def _normalise_compact_text(text: str) -> str:
-+    return " ".join(str(text).replace("\r", " ").replace("\n", " ").split()).strip()
-+
-+
-+def _has_substantive_content(text: str) -> bool:
-+    return any(char.isalnum() for char in text)
-+
-+
-+def _normalise_source_turns(
-+    speaker_turns: Sequence[dict[str, Any]],
-+    *,
-+    aliases: Mapping[str, str] | None,
-+) -> list[dict[str, Any]]:
-+    resolved_aliases = aliases or {}
-+    turns: list[dict[str, Any]] = []
-+    for row in speaker_turns:
-+        speaker_key = str(row.get("speaker") or "S1").strip() or "S1"
-+        display_name = str(resolved_aliases.get(speaker_key, speaker_key)).strip() or speaker_key
-+        text = _normalise_compact_text(row.get("text") or "")
-+        if not text:
-+            continue
-+        start = round(safe_float(row.get("start"), default=0.0), 3)
-+        end = round(max(start, safe_float(row.get("end"), default=start)), 3)
-+        turns.append(
-+            {
-+                "speaker": speaker_key,
-+                "display_name": display_name,
-+                "start": start,
-+                "end": end,
-+                "text": text,
-+            }
-+        )
-+    turns.sort(key=lambda item: (item["start"], item["end"], item["speaker"]))
-+    return turns
-+
-+
-+def _render_source_turn_text(turns: Sequence[dict[str, Any]]) -> str:
-+    return "\n".join(
-+        f"[{turn['start']:.2f}-{turn['end']:.2f}] {turn['display_name']}: {turn['text']}"
-+        for turn in turns
-+    ).strip()
-+
-+
-+def _is_concise_speaker_label(label: str) -> bool:
-+    normalized = " ".join(str(label).split())
-+    if not normalized:
-+        return False
-+    if len(normalized) > _MAX_CONCISE_SPEAKER_LABEL_CHARS:
-+        return False
-+    if len(normalized.split()) > _MAX_CONCISE_SPEAKER_LABEL_WORDS:
-+        return False
-+    if _GENERIC_SPEAKER_RE.match(normalized):
-+        return False
-+    return all(char.isalnum() or char in {" ", "-", "_", "'"} for char in normalized)
-+
-+
-+def build_compact_transcript(
-+    speaker_turns: Sequence[dict[str, Any]],
-+    *,
-+    aliases: Mapping[str, str] | None = None,
-+    merge_gap_seconds: float = DEFAULT_COMPACT_MERGE_GAP_SECONDS,
-+) -> CompactTranscript:
-+    normalized_turns = _normalise_source_turns(speaker_turns, aliases=aliases)
-+    if not normalized_turns:
-+        raise ValueError("LLM transcript compaction produced no usable content")
-+
-+    safe_gap = max(merge_gap_seconds, 0.0)
-+    speaker_mapping_by_key: dict[str, CompactSpeakerMapping] = {}
-+    used_labels: set[str] = set()
-+    compact_units: list[CompactTranscriptUnit] = []
-+    current: CompactTranscriptUnit | None = None
-+
-+    def _mapping_for(turn: dict[str, Any]) -> CompactSpeakerMapping:
-+        speaker_key = str(turn["speaker"])
-+        existing = speaker_mapping_by_key.get(speaker_key)
-+        if existing is not None:
-+            return existing
-+
-+        display_name = str(turn["display_name"])
-+        order = len(speaker_mapping_by_key) + 1
-+        preferred = display_name if _is_concise_speaker_label(display_name) else ""
-+        compact_label = preferred if preferred and preferred not in used_labels else f"S{order}"
-+        used_labels.add(compact_label)
-+        mapping = CompactSpeakerMapping(
-+            compact_label=compact_label,
-+            original_speaker=speaker_key,
-+            display_name=display_name,
-+        )
-+        speaker_mapping_by_key[speaker_key] = mapping
-+        return mapping
-+
-+    def _flush(unit: CompactTranscriptUnit | None) -> None:
-+        if unit is None:
-+            return
-+        cleaned = _normalise_compact_text(unit.text)
-+        if not cleaned:
-+            return
-+        compact_units.append(
-+            CompactTranscriptUnit(
-+                speaker_label=unit.speaker_label,
-+                original_speaker=unit.original_speaker,
-+                display_name=unit.display_name,
-+                start_seconds=round(unit.start_seconds, 3),
-+                end_seconds=round(max(unit.start_seconds, unit.end_seconds), 3),
-+                text=cleaned,
-+                source_turn_count=unit.source_turn_count,
-+            )
-+        )
-+
-+    for turn in normalized_turns:
+     for turn in normalized_turns:
+-        mapping = _mapping_for(turn)
+         text = str(turn["text"])
+         if not _has_substantive_content(text):
+             continue
 +        mapping = _mapping_for(turn)
-+        text = str(turn["text"])
-+        if not _has_substantive_content(text):
-+            continue
-+        start_seconds = safe_float(turn["start"], default=0.0)
-+        end_seconds = max(start_seconds, safe_float(turn["end"], default=start_seconds))
-+        if (
-+            current is not None
-+            and current.original_speaker == mapping.original_speaker
-+            and start_seconds - current.end_seconds <= safe_gap
-+        ):
-+            current = CompactTranscriptUnit(
-+                speaker_label=current.speaker_label,
-+                original_speaker=current.original_speaker,
-+                display_name=current.display_name,
-+                start_seconds=current.start_seconds,
-+                end_seconds=max(current.end_seconds, end_seconds),
-+                text=f"{current.text} {text}".strip(),
-+                source_turn_count=current.source_turn_count + 1,
-+            )
-+            continue
-+
-+        _flush(current)
-+        current = CompactTranscriptUnit(
-+            speaker_label=mapping.compact_label,
-+            original_speaker=mapping.original_speaker,
-+            display_name=mapping.display_name,
-+            start_seconds=start_seconds,
-+            end_seconds=end_seconds,
-+            text=text,
-+            source_turn_count=1,
-+        )
-+
-+    _flush(current)
-+
-+    if not compact_units:
-+        raise ValueError("LLM transcript compaction produced no usable content")
-+
-+    compact_text = "\n".join(unit.line for unit in compact_units).strip()
-+    source_text = _render_source_turn_text(normalized_turns)
-+    return CompactTranscript(
-+        text=compact_text,
-+        source_chars=len(source_text),
-+        compact_chars=len(compact_text),
-+        merge_gap_seconds=safe_gap,
-+        source_turn_count=len(normalized_turns),
-+        compact_turn_count=len(compact_units),
-+        speaker_mapping=tuple(speaker_mapping_by_key[key] for key in speaker_mapping_by_key),
-+        units=tuple(compact_units),
-+    )
-+
-+
- def _split_words_to_fit(text: str, *, max_chars: int) -> list[str]:
-     normalized = " ".join(text.split())
-     if not normalized:
-@@ -202,6 +465,104 @@ def plan_transcript_chunks(
-     return chunks
- 
- 
-+def _split_compact_unit_to_fit(
-+    unit: CompactTranscriptUnit,
-+    *,
-+    max_chars: int,
-+) -> list[_PlannedChunkUnit]:
-+    line = unit.line
-+    if len(line) <= max_chars:
-+        return [
-+            _PlannedChunkUnit(
-+                text=line,
-+                start_seconds=unit.start_seconds,
-+                end_seconds=unit.end_seconds,
-+            )
-+        ]
-+
-+    prefix = f"{unit.speaker_label}: "
-+    content_limit = max_chars - len(prefix)
-+    if content_limit <= 0:
-+        return [
-+            _PlannedChunkUnit(
-+                text=fragment,
-+                start_seconds=unit.start_seconds,
-+                end_seconds=unit.end_seconds,
-+            )
-+            for fragment in _split_words_to_fit(line, max_chars=max_chars)
-+        ]
-+
-+    return [
-+        _PlannedChunkUnit(
-+            text=f"{prefix}{fragment}",
-+            start_seconds=unit.start_seconds,
-+            end_seconds=unit.end_seconds,
-+        )
-+        for fragment in _split_unit_to_fit(unit.text, max_chars=content_limit)
-+    ]
-+
-+
-+def plan_compact_transcript_chunks(
-+    compact_transcript: CompactTranscript,
-+    *,
-+    max_chars: int,
-+    overlap_chars: int,
-+) -> list[TranscriptChunk]:
-+    if max_chars < 1:
-+        raise ValueError("max_chars must be >= 1")
-+    if overlap_chars < 0:
-+        raise ValueError("overlap_chars must be >= 0")
-+    if not compact_transcript.text.strip():
-+        return []
-+
-+    safe_overlap = min(overlap_chars, max(max_chars - 1, 0))
-+    planned_units: list[_PlannedChunkUnit] = []
-+    for unit in compact_transcript.units:
-+        planned_units.extend(_split_compact_unit_to_fit(unit, max_chars=max_chars))
-+
-+    if not planned_units:
-+        return []
-+
-+    base_chunks: list[tuple[str, float, float]] = []
-+    current_lines: list[str] = []
-+    current_start: float | None = None
-+    current_end: float | None = None
-+    for unit in planned_units:
-+        candidate = "\n".join([*current_lines, unit.text]).strip() if current_lines else unit.text
-+        if current_lines and len(candidate) > max_chars:
-+            base_chunks.append(("\n".join(current_lines), current_start or 0.0, current_end or current_start or 0.0))
-+            current_lines = [unit.text]
-+            current_start = unit.start_seconds
-+            current_end = unit.end_seconds
-+            continue
-+
-+        current_lines.append(unit.text)
-+        current_start = unit.start_seconds if current_start is None else current_start
-+        current_end = unit.end_seconds
-+
-+    base_chunks.append(("\n".join(current_lines), current_start or 0.0, current_end or current_start or 0.0))
-+
-+    total = len(base_chunks)
-+    chunks: list[TranscriptChunk] = []
-+    for index, (base_text, start_seconds, end_seconds) in enumerate(base_chunks, start=1):
-+        overlap_prefix = ""
-+        if safe_overlap > 0 and index > 1:
-+            overlap_prefix = _tail_text(base_chunks[index - 2][0], max_chars=safe_overlap)
-+        text_with_overlap = base_text if not overlap_prefix else f"{overlap_prefix}\n{base_text}"
-+        chunks.append(
-+            TranscriptChunk(
-+                index=index,
-+                total=total,
-+                text=text_with_overlap,
-+                base_text=base_text,
-+                overlap_prefix=overlap_prefix,
-+                start_seconds=start_seconds,
-+                end_seconds=end_seconds,
-+            )
-+        )
-+    return chunks
-+
-+
- def split_transcript_for_llm(
-     text: str,
-     *,
-@@ -217,6 +578,7 @@ def build_chunk_prompt(
-     target_summary_language: str,
-     calendar_title: str | None = None,
-     calendar_attendees: Sequence[str] | None = None,
-+    speaker_mapping: Sequence[dict[str, str]] | None = None,
- ) -> tuple[str, str]:
-     language_name = _language_name(target_summary_language)
-     sys_prompt = (
-@@ -227,11 +589,23 @@ def build_chunk_prompt(
-     )
-     payload = {
-         "target_summary_language": target_summary_language,
--        "chunk": {"index": chunk.index, "total": chunk.total},
-+        "chunk": {
-+            "index": chunk.index,
-+            "total": chunk.total,
-+            "time_range": (
-+                {
-+                    "start_seconds": round(chunk.start_seconds, 3),
-+                    "end_seconds": round(chunk.end_seconds, 3),
-+                }
-+                if chunk.start_seconds is not None and chunk.end_seconds is not None
-+                else None
-+            ),
-+        },
-         "calendar": {
-             "title": (calendar_title or "").strip() or None,
-             "attendees": [str(item).strip() for item in (calendar_attendees or []) if str(item).strip()],
-         },
-+        "speaker_mapping": [dict(item) for item in (speaker_mapping or [])],
-         "transcript_chunk": chunk.text,
-         "required_schema": {
-             "topic_candidates": ["string"],
-@@ -503,11 +877,17 @@ def build_merge_prompt(
- 
- 
- __all__ = [
-+    "CompactSpeakerMapping",
-+    "CompactTranscript",
-+    "CompactTranscriptUnit",
-+    "DEFAULT_COMPACT_MERGE_GAP_SECONDS",
-     "TranscriptChunk",
-+    "build_compact_transcript",
-     "build_chunk_prompt",
-     "build_merge_prompt",
-     "merge_chunk_results",
-     "parse_chunk_extract",
-+    "plan_compact_transcript_chunks",
-     "plan_transcript_chunks",
-     "split_transcript_for_llm",
- ]
+         start_seconds = safe_float(turn["start"], default=0.0)
+         end_seconds = max(start_seconds, safe_float(turn["end"], default=start_seconds))
+         if (
 diff --git a/lan_transcriber/pipeline_steps/orchestrator.py b/lan_transcriber/pipeline_steps/orchestrator.py
-index 2b4337c..d7bd1aa 100644
+index d7bd1aa..433f8f2 100644
 --- a/lan_transcriber/pipeline_steps/orchestrator.py
 +++ b/lan_transcriber/pipeline_steps/orchestrator.py
-@@ -26,10 +26,12 @@ from ..compat.call_compat import (
- )
- from ..compat.pyannote_compat import patch_pyannote_inference_ignore_use_auth_token
- from ..llm_chunking import (
-+    build_compact_transcript,
-     build_chunk_prompt,
-     build_merge_prompt,
+@@ -32,7 +32,6 @@ from ..llm_chunking import (
      merge_chunk_results,
      parse_chunk_extract,
-+    plan_compact_transcript_chunks,
-     plan_transcript_chunks,
+     plan_compact_transcript_chunks,
+-    plan_transcript_chunks,
  )
  from ..llm_client import LLMClient
-@@ -1425,6 +1427,8 @@ def _use_chunked_llm(transcript_text: str, cfg: Settings) -> bool:
+ from ..metrics import error_rate_total, p95_latency_seconds
+@@ -1427,8 +1426,8 @@ def _use_chunked_llm(transcript_text: str, cfg: Settings) -> bool:
  async def _run_chunked_llm_summary(
      *,
      transcript_text: str,
-+    speaker_turns: Sequence[dict[str, Any]] | None = None,
-+    aliases: dict[str, str] | None = None,
+-    speaker_turns: Sequence[dict[str, Any]] | None = None,
+-    aliases: dict[str, str] | None = None,
++    speaker_turns: Sequence[dict[str, Any]],
++    aliases: dict[str, str],
      derived_dir: Path,
      llm: LLMClient,
      cfg: Settings,
-@@ -1436,17 +1440,57 @@ async def _run_chunked_llm_summary(
+@@ -1440,37 +1439,26 @@ async def _run_chunked_llm_summary(
      calendar_attendees: Sequence[str],
      progress_callback: ProgressCallback | None,
  ) -> dict[str, Any]:
--    chunks = plan_transcript_chunks(
--        transcript_text,
--        max_chars=cfg.llm_chunk_max_chars,
--        overlap_chars=cfg.llm_chunk_overlap_chars,
--    )
-+    compact_transcript = None
-+    speaker_mapping: list[dict[str, str]] = []
-+    source_chars = len(transcript_text.strip())
-+    compact_chars = source_chars
-+    if speaker_turns is not None:
-+        try:
-+            compact_transcript = build_compact_transcript(
-+                speaker_turns,
-+                aliases=aliases,
-+            )
-+        except ValueError as exc:
-+            raise RuntimeError(str(exc)) from exc
-+        source_chars = compact_transcript.source_chars
-+        compact_chars = compact_transcript.compact_chars
-+        speaker_mapping = compact_transcript.prompt_speaker_mapping()
-+        atomic_write_text(derived_dir / "llm_compact_transcript.txt", compact_transcript.text)
-+        atomic_write_json(
-+            derived_dir / "llm_compact_transcript.json",
-+            compact_transcript.artifact_payload(),
-+        )
-+        chunks = plan_compact_transcript_chunks(
-+            compact_transcript,
-+            max_chars=cfg.llm_chunk_max_chars,
-+            overlap_chars=cfg.llm_chunk_overlap_chars,
-+        )
-+    else:
-+        chunks = plan_transcript_chunks(
-+            transcript_text,
-+            max_chars=cfg.llm_chunk_max_chars,
-+            overlap_chars=cfg.llm_chunk_overlap_chars,
-+        )
+-    compact_transcript = None
+-    speaker_mapping: list[dict[str, str]] = []
+-    source_chars = len(transcript_text.strip())
+-    compact_chars = source_chars
+-    if speaker_turns is not None:
+-        try:
+-            compact_transcript = build_compact_transcript(
+-                speaker_turns,
+-                aliases=aliases,
+-            )
+-        except ValueError as exc:
+-            raise RuntimeError(str(exc)) from exc
+-        source_chars = compact_transcript.source_chars
+-        compact_chars = compact_transcript.compact_chars
+-        speaker_mapping = compact_transcript.prompt_speaker_mapping()
+-        atomic_write_text(derived_dir / "llm_compact_transcript.txt", compact_transcript.text)
+-        atomic_write_json(
+-            derived_dir / "llm_compact_transcript.json",
+-            compact_transcript.artifact_payload(),
+-        )
+-        chunks = plan_compact_transcript_chunks(
+-            compact_transcript,
+-            max_chars=cfg.llm_chunk_max_chars,
+-            overlap_chars=cfg.llm_chunk_overlap_chars,
+-        )
+-    else:
+-        chunks = plan_transcript_chunks(
+-            transcript_text,
+-            max_chars=cfg.llm_chunk_max_chars,
+-            overlap_chars=cfg.llm_chunk_overlap_chars,
++    try:
++        compact_transcript = build_compact_transcript(
++            speaker_turns,
++            aliases=aliases,
+         )
++    except ValueError as exc:
++        raise RuntimeError(str(exc)) from exc
++    source_chars = compact_transcript.source_chars
++    compact_chars = compact_transcript.compact_chars
++    speaker_mapping = compact_transcript.prompt_speaker_mapping()
++    atomic_write_text(derived_dir / "llm_compact_transcript.txt", compact_transcript.text)
++    atomic_write_json(
++        derived_dir / "llm_compact_transcript.json",
++        compact_transcript.artifact_payload(),
++    )
++    chunks = plan_compact_transcript_chunks(
++        compact_transcript,
++        max_chars=cfg.llm_chunk_max_chars,
++        overlap_chars=cfg.llm_chunk_overlap_chars,
++    )
      atomic_write_json(
          derived_dir / "llm_chunks_plan.json",
          {
-+            "source_chars": source_chars,
-+            "compact_chars": compact_chars,
+@@ -1479,18 +1467,15 @@ async def _run_chunked_llm_summary(
              "chunk_max_chars": cfg.llm_chunk_max_chars,
              "chunk_overlap_chars": cfg.llm_chunk_overlap_chars,
              "long_transcript_threshold_chars": cfg.llm_long_transcript_threshold_chars,
-+            "compaction": (
-+                {
-+                    "merge_gap_seconds": compact_transcript.merge_gap_seconds,
-+                    "source_turn_count": compact_transcript.source_turn_count,
-+                    "compact_turn_count": compact_transcript.compact_turn_count,
-+                    "speaker_mapping": [
-+                        item.artifact_payload() for item in compact_transcript.speaker_mapping
-+                    ],
-+                }
-+                if compact_transcript is not None
-+                else None
-+            ),
+-            "compaction": (
+-                {
+-                    "merge_gap_seconds": compact_transcript.merge_gap_seconds,
+-                    "source_turn_count": compact_transcript.source_turn_count,
+-                    "compact_turn_count": compact_transcript.compact_turn_count,
+-                    "speaker_mapping": [
+-                        item.artifact_payload() for item in compact_transcript.speaker_mapping
+-                    ],
+-                }
+-                if compact_transcript is not None
+-                else None
+-            ),
++            "source_transcript_chars": len(transcript_text.strip()),
++            "compaction": {
++                "merge_gap_seconds": compact_transcript.merge_gap_seconds,
++                "source_turn_count": compact_transcript.source_turn_count,
++                "compact_turn_count": compact_transcript.compact_turn_count,
++                "speaker_mapping": [
++                    item.artifact_payload() for item in compact_transcript.speaker_mapping
++                ],
++            },
              "chunks": [chunk.plan_payload() for chunk in chunks],
          },
      )
-@@ -1465,6 +1509,7 @@ async def _run_chunked_llm_summary(
-             target_summary_language=target_summary_language,
-             calendar_title=calendar_title,
-             calendar_attendees=calendar_attendees,
-+            speaker_mapping=speaker_mapping,
-         )
-         error_path = derived_dir / f"llm_chunk_{chunk.index:03d}_error.json"
-         try:
-@@ -1920,6 +1965,8 @@ async def run_pipeline(
-         if _use_chunked_llm(llm_prompt_text, cfg):
-             summary_payload = await _run_chunked_llm_summary(
-                 transcript_text=llm_prompt_text or clean_text,
-+                speaker_turns=speaker_turns,
-+                aliases=aliases,
-                 derived_dir=artifacts.summary_json_path.parent,
-                 llm=llm,
-                 cfg=cfg,
-diff --git a/tasks/QUEUE.md b/tasks/QUEUE.md
-index 3f4e92d..43693b3 100644
---- a/tasks/QUEUE.md
-+++ b/tasks/QUEUE.md
-@@ -482,7 +482,7 @@ Queue (in order)
- - Depends on: PR-CAPTURE-TIME-SEMANTICS-01
- 
- 95) PR-LLM-CHUNK-COMPACTION-01: Compact long-transcript LLM input: merged speaker blocks, no per-line timestamps, compact speaker labels, and richer chunk plan metadata
--- Status: TODO
-+- Status: DONE
- - Tasks file: tasks/PR-LLM-CHUNK-COMPACTION-01.md
- - Depends on: PR-PIPELINE-CHECKPOINTS-RESUME-01 and PR-LLM-CHUNKING-01
- 
 diff --git a/tests/test_cov_lan_transcriber_extra_pipeline.py b/tests/test_cov_lan_transcriber_extra_pipeline.py
-index 50ea6d3..7e8a844 100644
+index 7e8a844..096002a 100644
 --- a/tests/test_cov_lan_transcriber_extra_pipeline.py
 +++ b/tests/test_cov_lan_transcriber_extra_pipeline.py
-@@ -558,6 +558,119 @@ async def test_run_chunked_llm_summary_rejects_empty_chunk_plan(
-         )
+@@ -41,6 +41,17 @@ def _annotation_from_segments(*segments: tuple[float, float, str]):
+     )
  
  
-+@pytest.mark.asyncio
-+async def test_run_chunked_llm_summary_rejects_empty_compacted_transcript(tmp_path: Path) -> None:
-+    with pytest.raises(RuntimeError, match="compaction produced no usable content"):
-+        await pipeline._run_chunked_llm_summary(
-+            transcript_text="legacy transcript",
-+            speaker_turns=[{"speaker": "S1", "start": 0.0, "end": 0.2, "text": "..."}],
++def _llm_chunk_turns(text: str = "single chunk transcript") -> list[dict[str, Any]]:
++    return [
++        {
++            "speaker": "S1",
++            "start": 0.0,
++            "end": 1.0,
++            "text": text,
++        }
++    ]
++
++
+ def test_pipeline_settings_reads_llm_model_from_env(
+     monkeypatch: pytest.MonkeyPatch,
+     tmp_path: Path,
+@@ -540,11 +551,13 @@ async def test_run_chunked_llm_summary_rejects_empty_chunk_plan(
+     tmp_path: Path,
+     monkeypatch: pytest.MonkeyPatch,
+ ) -> None:
+-    monkeypatch.setattr(pipeline, "plan_transcript_chunks", lambda *_args, **_kwargs: [])
++    monkeypatch.setattr(pipeline, "plan_compact_transcript_chunks", lambda *_args, **_kwargs: [])
+ 
+     with pytest.raises(RuntimeError, match="produced no chunks"):
+         await pipeline._run_chunked_llm_summary(
+             transcript_text="hello world",
++            speaker_turns=_llm_chunk_turns("hello world"),
 +            aliases={},
-+            derived_dir=tmp_path / "derived",
-+            llm=object(),
-+            cfg=_settings(tmp_path, llm_model="model"),
-+            llm_model="model",
-+            target_summary_language="en",
-+            friendly=0,
-+            default_topic="Meeting summary",
-+            calendar_title=None,
-+            calendar_attendees=[],
-+            progress_callback=None,
-+        )
-+
-+
-+@pytest.mark.asyncio
-+async def test_run_chunked_llm_summary_writes_compact_artifacts_and_keeps_calendar_context(
-+    tmp_path: Path,
-+) -> None:
-+    prompts: list[dict[str, Any]] = []
-+
-+    class _CompactLLM:
-+        async def generate(self, **kwargs: Any) -> dict[str, str]:
-+            payload = json.loads(kwargs["user_prompt"])
-+            prompts.append(payload)
-+            if "chunk" in payload:
-+                return {
-+                    "content": json.dumps(
-+                        {
-+                            "topic_candidates": ["Weekly Sync"],
-+                            "summary_bullets": ["Reviewed blockers"],
-+                            "decisions": [],
-+                            "action_items": [],
-+                            "emotional_cues": ["Focused"],
-+                            "questions": {"total_count": 0, "types": {}, "extracted": []},
-+                        }
-+                    )
-+                }
-+            return {
-+                "content": json.dumps(
-+                    {
-+                        "topic": "Merged topic",
-+                        "summary_bullets": ["Merged summary bullet"],
-+                        "decisions": [],
-+                        "action_items": [],
-+                        "emotional_summary": "Focused.",
-+                        "questions": {"total_count": 0, "types": {}, "extracted": []},
-+                    }
-+                )
-+            }
-+
-+    result = await pipeline._run_chunked_llm_summary(
-+        transcript_text="legacy transcript",
-+        speaker_turns=[
-+            {
-+                "speaker": "SPEAKER_00",
-+                "start": 0.0,
-+                "end": 1.0,
-+                "text": "discussion item zero " * 4,
-+            },
-+            {
-+                "speaker": "SPEAKER_00",
-+                "start": 1.2,
-+                "end": 2.0,
-+                "text": "follow up details " * 3,
-+            },
-+            {
-+                "speaker": "SPEAKER_01",
-+                "start": 3.0,
-+                "end": 4.0,
-+                "text": "response and owner alignment " * 3,
-+            },
-+        ],
-+        aliases={"SPEAKER_00": "Alex", "SPEAKER_01": "Priya"},
-+        derived_dir=tmp_path / "derived",
-+        llm=_CompactLLM(),
-+        cfg=_settings(
-+            tmp_path,
-+            llm_model="model",
-+            llm_chunk_max_chars=60,
-+            llm_chunk_overlap_chars=12,
-+        ),
-+        llm_model="model",
-+        target_summary_language="en",
-+        friendly=0,
-+        default_topic="Meeting summary",
-+        calendar_title="Weekly Sync",
-+        calendar_attendees=["Alex", "Priya"],
-+        progress_callback=None,
-+    )
-+
-+    derived = tmp_path / "derived"
-+    plan_payload = json.loads((derived / "llm_chunks_plan.json").read_text(encoding="utf-8"))
-+    compact_payload = json.loads((derived / "llm_compact_transcript.json").read_text(encoding="utf-8"))
-+    compact_text = (derived / "llm_compact_transcript.txt").read_text(encoding="utf-8")
-+
-+    assert result["topic"] == "Merged topic"
-+    assert plan_payload["source_chars"] > plan_payload["compact_chars"]
-+    assert plan_payload["compaction"]["speaker_mapping"]
-+    assert compact_payload["compact_turn_count"] == 2
-+    assert compact_text.startswith("Alex:")
-+    assert "[" not in compact_text
-+    assert prompts[0]["calendar"] == {"title": "Weekly Sync", "attendees": ["Alex", "Priya"]}
-+    assert prompts[0]["speaker_mapping"]
-+    assert prompts[0]["chunk"]["time_range"]["start_seconds"] == 0.0
-+    assert prompts[-1]["calendar"] == {"title": "Weekly Sync", "attendees": ["Alex", "Priya"]}
-+
-+
- @pytest.mark.asyncio
- async def test_run_chunked_llm_summary_timeout_writes_error_artifact(tmp_path: Path) -> None:
-     class _SlowLLM:
+             derived_dir=tmp_path / "derived",
+             llm=object(),
+             cfg=_settings(tmp_path, llm_model="model"),
+@@ -682,6 +695,8 @@ async def test_run_chunked_llm_summary_timeout_writes_error_artifact(tmp_path: P
+     with pytest.raises(RuntimeError, match=r"LLM chunk 1/1 failed: timed out after 0.001s"):
+         await pipeline._run_chunked_llm_summary(
+             transcript_text="single chunk transcript",
++            speaker_turns=_llm_chunk_turns(),
++            aliases={},
+             derived_dir=derived,
+             llm=_SlowLLM(),
+             cfg=_settings(
+@@ -718,6 +733,8 @@ async def test_run_chunked_llm_summary_asyncio_timeout_writes_error_artifact(
+     with pytest.raises(RuntimeError, match=r"LLM chunk 1/1 failed: timed out after 0.001s"):
+         await pipeline._run_chunked_llm_summary(
+             transcript_text="single chunk transcript",
++            speaker_turns=_llm_chunk_turns(),
++            aliases={},
+             derived_dir=derived,
+             llm=object(),
+             cfg=_settings(
+@@ -752,6 +769,8 @@ async def test_run_chunked_llm_summary_timeout_sentinel_writes_error_artifact(
+     with pytest.raises(RuntimeError, match=r"LLM chunk 1/1 failed: timed out after 0.001s"):
+         await pipeline._run_chunked_llm_summary(
+             transcript_text="single chunk transcript",
++            speaker_turns=_llm_chunk_turns(),
++            aliases={},
+             derived_dir=derived,
+             llm=_TimeoutSentinelLLM(),
+             cfg=_settings(
+@@ -803,6 +822,8 @@ async def test_run_chunked_llm_summary_merge_timeout_sentinel_fails(tmp_path: Pa
+     with pytest.raises(RuntimeError, match=r"LLM merge failed: timed out after 12s"):
+         await pipeline._run_chunked_llm_summary(
+             transcript_text="single chunk transcript",
++            speaker_turns=_llm_chunk_turns(),
++            aliases={},
+             derived_dir=derived,
+             llm=_MergeTimeoutSentinelLLM(),
+             cfg=_settings(
+@@ -860,6 +881,8 @@ async def test_run_chunked_llm_summary_passes_merge_retry_budget(tmp_path: Path)
+ 
+     await pipeline._run_chunked_llm_summary(
+         transcript_text="single chunk transcript",
++        speaker_turns=_llm_chunk_turns(),
++        aliases={},
+         derived_dir=tmp_path / "derived",
+         llm=_MergeBudgetLLM(),
+         cfg=_settings(
 diff --git a/tests/test_llm_chunking.py b/tests/test_llm_chunking.py
-index a5d9856..f2c6cef 100644
+index f2c6cef..f885385 100644
 --- a/tests/test_llm_chunking.py
 +++ b/tests/test_llm_chunking.py
-@@ -80,25 +80,238 @@ def test_tail_text_and_plan_transcript_chunks_empty_units_branch(monkeypatch: py
-     assert llm_chunking.plan_transcript_chunks("first line\n\nsecond line", max_chars=10, overlap_chars=0) == []
+@@ -150,6 +150,25 @@ def test_build_compact_transcript_uses_stable_reversible_speaker_mapping() -> No
+     ]
  
  
-+def test_build_compact_transcript_merges_adjacent_turns_and_drops_noise() -> None:
++def test_build_compact_transcript_ignores_noise_only_speakers_when_assigning_labels() -> None:
 +    compact = llm_chunking.build_compact_transcript(
 +        [
-+            {"speaker": "SPEAKER_00", "start": 0.0, "end": 0.8, "text": "  hello   there  "},
-+            {"speaker": "SPEAKER_00", "start": 1.2, "end": 1.9, "text": "again"},
-+            {"speaker": "SPEAKER_00", "start": 3.5, "end": 4.0, "text": "Later update"},
-+            {"speaker": "SPEAKER_01", "start": 4.1, "end": 4.3, "text": "..."},
-+            {"speaker": "SPEAKER_01", "start": 4.5, "end": 5.0, "text": "   replied clearly   "},
-+        ],
-+        aliases={"SPEAKER_00": "Alex", "SPEAKER_01": "Priya"},
-+    )
-+
-+    assert compact.source_turn_count == 5
-+    assert compact.compact_turn_count == 3
-+    assert compact.source_chars > compact.compact_chars
-+    assert compact.text.splitlines() == [
-+        "Alex: hello there again",
-+        "Alex: Later update",
-+        "Priya: replied clearly",
-+    ]
-+    assert compact.artifact_payload()["speaker_mapping"] == [
-+        {
-+            "compact_label": "Alex",
-+            "original_speaker": "SPEAKER_00",
-+            "display_name": "Alex",
-+        },
-+        {
-+            "compact_label": "Priya",
-+            "original_speaker": "SPEAKER_01",
-+            "display_name": "Priya",
-+        },
-+    ]
-+    assert compact.prompt_speaker_mapping() == [
-+        {"label": "Alex", "speaker": "Alex", "original_speaker": "SPEAKER_00"},
-+        {"label": "Priya", "speaker": "Priya", "original_speaker": "SPEAKER_01"},
-+    ]
-+
-+
-+def test_build_compact_transcript_uses_stable_reversible_speaker_mapping() -> None:
-+    compact = llm_chunking.build_compact_transcript(
-+        [
-+            {"speaker": "SPEAKER_05", "start": 0.0, "end": 0.8, "text": "First update"},
-+            {"speaker": "SPEAKER_99", "start": 1.0, "end": 1.4, "text": "Second update"},
-+            {"speaker": "SPEAKER_05", "start": 2.0, "end": 2.4, "text": "Third update"},
++            {"speaker": "SPEAKER_01", "start": 0.0, "end": 0.2, "text": "..."},
++            {"speaker": "SPEAKER_02", "start": 0.3, "end": 1.0, "text": "Real update"},
++            {"speaker": "SPEAKER_03", "start": 1.1, "end": 1.8, "text": "Second speaker"},
 +        ]
 +    )
 +
 +    assert compact.text.splitlines() == [
-+        "S1: First update",
-+        "S2: Second update",
-+        "S1: Third update",
++        "S1: Real update",
++        "S2: Second speaker",
 +    ]
 +    assert compact.prompt_speaker_mapping() == [
-+        {"label": "S1", "speaker": "SPEAKER_05"},
-+        {"label": "S2", "speaker": "SPEAKER_99"},
-+    ]
-+    assert compact.artifact_payload()["speaker_mapping"] == [
-+        {
-+            "compact_label": "S1",
-+            "original_speaker": "SPEAKER_05",
-+            "display_name": "SPEAKER_05",
-+        },
-+        {
-+            "compact_label": "S2",
-+            "original_speaker": "SPEAKER_99",
-+            "display_name": "SPEAKER_99",
-+        },
++        {"label": "S1", "speaker": "SPEAKER_02"},
++        {"label": "S2", "speaker": "SPEAKER_03"},
 +    ]
 +
 +
-+def test_build_compact_transcript_rejects_noise_only_rows() -> None:
-+    with pytest.raises(ValueError, match="produced no usable content"):
-+        llm_chunking.build_compact_transcript(
-+            [
-+                {"speaker": "S1", "start": 0.0, "end": 0.1, "text": "..."},
-+                {"speaker": "S2", "start": 0.2, "end": 0.3, "text": "???!"},
-+            ]
-+        )
-+
-+
-+def test_compact_helpers_cover_edge_cases_and_validation() -> None:
-+    assert not llm_chunking._is_concise_speaker_label("")
-+    assert not llm_chunking._is_concise_speaker_label("SPEAKER_02")
-+    assert not llm_chunking._is_concise_speaker_label("This Alias Is Too Long")
-+    assert not llm_chunking._is_concise_speaker_label("a b c")
-+
-+    with pytest.raises(ValueError, match="produced no usable content"):
-+        llm_chunking.build_compact_transcript([{"speaker": "S1", "start": 0.0, "end": 0.1, "text": "   "}])
-+
-+    compact = llm_chunking.build_compact_transcript(
-+        [{"speaker": "Alex", "start": 0.0, "end": 1.0, "text": "hello"}]
-+    )
-+    assert compact.prompt_speaker_mapping() == []
-+
-+    split = llm_chunking._split_compact_unit_to_fit(  # noqa: SLF001
-+        llm_chunking.CompactTranscriptUnit(
-+            speaker_label="LONG",
-+            original_speaker="LONG",
-+            display_name="LONG",
-+            start_seconds=0.0,
-+            end_seconds=1.0,
-+            text="alpha beta",
-+            source_turn_count=1,
-+        ),
-+        max_chars=3,
-+    )
-+    assert split
-+    assert all(len(item.text) <= 3 for item in split)
-+
-+    prefixed = llm_chunking._split_compact_unit_to_fit(  # noqa: SLF001
-+        llm_chunking.CompactTranscriptUnit(
-+            speaker_label="S1",
-+            original_speaker="S1",
-+            display_name="S1",
-+            start_seconds=0.0,
-+            end_seconds=1.0,
-+            text="alpha beta gamma",
-+            source_turn_count=1,
-+        ),
-+        max_chars=8,
-+    )
-+    assert prefixed
-+    assert all(item.text.startswith("S1: ") for item in prefixed)
-+    assert all(len(item.text) <= 8 for item in prefixed)
-+
-+    empty_compact = llm_chunking.CompactTranscript(
-+        text="   ",
-+        source_chars=0,
-+        compact_chars=0,
-+        merge_gap_seconds=llm_chunking.DEFAULT_COMPACT_MERGE_GAP_SECONDS,
-+        source_turn_count=0,
-+        compact_turn_count=0,
-+        speaker_mapping=(),
-+        units=(),
-+    )
-+    assert llm_chunking.plan_compact_transcript_chunks(empty_compact, max_chars=10, overlap_chars=0) == []
-+
-+    with pytest.raises(ValueError, match="max_chars"):
-+        llm_chunking.plan_compact_transcript_chunks(compact, max_chars=0, overlap_chars=0)
-+    with pytest.raises(ValueError, match="overlap_chars"):
-+        llm_chunking.plan_compact_transcript_chunks(compact, max_chars=10, overlap_chars=-1)
-+
-+
-+def test_build_compact_transcript_flushes_blank_current_and_compact_plan_empty_units(
-+    monkeypatch: pytest.MonkeyPatch,
-+) -> None:
-+    monkeypatch.setattr(llm_chunking, "_has_substantive_content", lambda _text: True)
-+    monkeypatch.setattr(
-+        llm_chunking,
-+        "_normalise_source_turns",
-+        lambda *_a, **_k: [
-+            {
-+                "speaker": "S1",
-+                "display_name": "S1",
-+                "start": 0.0,
-+                "end": 1.0,
-+                "text": "   ",
-+            }
-+        ],
-+    )
-+    with pytest.raises(ValueError, match="produced no usable content"):
-+        llm_chunking.build_compact_transcript([{"speaker": "S1", "text": "ignored"}])
-+
-+    compact = llm_chunking.CompactTranscript(
-+        text="S1: hello",
-+        source_chars=9,
-+        compact_chars=9,
-+        merge_gap_seconds=llm_chunking.DEFAULT_COMPACT_MERGE_GAP_SECONDS,
-+        source_turn_count=1,
-+        compact_turn_count=1,
-+        speaker_mapping=(),
-+        units=(
-+            llm_chunking.CompactTranscriptUnit(
-+                speaker_label="S1",
-+                original_speaker="S1",
-+                display_name="S1",
-+                start_seconds=0.0,
-+                end_seconds=1.0,
-+                text="hello",
-+                source_turn_count=1,
-+            ),
-+        ),
-+    )
-+    monkeypatch.setattr(llm_chunking, "_split_compact_unit_to_fit", lambda *_a, **_k: [])
-+    assert llm_chunking.plan_compact_transcript_chunks(compact, max_chars=10, overlap_chars=0) == []
-+
-+
-+def test_plan_compact_transcript_chunks_records_effective_sizes_and_time_ranges() -> None:
-+    compact = llm_chunking.build_compact_transcript(
-+        [
-+            {"speaker": "SPEAKER_00", "start": 0.0, "end": 1.0, "text": "alpha beta gamma delta"},
-+            {"speaker": "SPEAKER_01", "start": 2.0, "end": 3.0, "text": "epsilon zeta eta theta"},
-+            {"speaker": "SPEAKER_00", "start": 4.0, "end": 5.0, "text": "iota kappa lambda mu"},
-+        ]
-+    )
-+
-+    chunks = llm_chunking.plan_compact_transcript_chunks(compact, max_chars=28, overlap_chars=8)
-+
-+    assert len(chunks) >= 2
-+    assert all("[" not in chunk.text for chunk in chunks)
-+    assert chunks[0].plan_payload()["time_range"] == {"start_seconds": 0.0, "end_seconds": 1.0}
-+    assert chunks[1].plan_payload()["effective_chars"] >= chunks[1].plan_payload()["base_chars"]
-+    assert chunks[1].plan_payload()["overlap_chars"] == len(chunks[1].overlap_prefix)
-+
-+
- def test_build_chunk_prompt_and_parse_chunk_extract() -> None:
-     chunk = llm_chunking.TranscriptChunk(
-         index=2,
-         total=4,
--        text="[0.00-1.00] Alex: review blockers",
--        base_text="[0.00-1.00] Alex: review blockers",
-+        text="Alex: review blockers",
-+        base_text="Alex: review blockers",
-+        start_seconds=12.0,
-+        end_seconds=18.0,
-     )
-     system_prompt, user_prompt = llm_chunking.build_chunk_prompt(
-         chunk,
-         target_summary_language="es",
-         calendar_title="Roadmap Review",
-         calendar_attendees=["Alex", "Priya"],
-+        speaker_mapping=[{"label": "S1", "speaker": "Alex"}],
-     )
-     prompt_payload = json.loads(user_prompt)
+ def test_build_compact_transcript_rejects_noise_only_rows() -> None:
+     with pytest.raises(ValueError, match="produced no usable content"):
+         llm_chunking.build_compact_transcript(
+diff --git a/tests/test_pipeline_resume_coverage.py b/tests/test_pipeline_resume_coverage.py
+index 8ef17d3..4529922 100644
+--- a/tests/test_pipeline_resume_coverage.py
++++ b/tests/test_pipeline_resume_coverage.py
+@@ -790,6 +790,10 @@ def test_stage_llm_extract_chunked_summary_invokes_progress_callback(
+     result = worker_tasks._stage_llm_extract(ctx)  # noqa: SLF001
+     assert result.status == "completed"
+     assert ("llm_chunk_1", 0.91) in progress_updates
++    assert chunked_kwargs["speaker_turns"] == [
++        {"speaker": "S1", "start": 0.0, "end": 1.0, "text": "Discussed the work plan."}
++    ]
++    assert chunked_kwargs["aliases"] == {}
+     assert chunked_kwargs["calendar_title"] == "Weekly Sync"
+     assert chunked_kwargs["calendar_attendees"] == ["Ada", "Bob"]
  
-     assert "strict JSON" in system_prompt
--    assert prompt_payload["chunk"] == {"index": 2, "total": 4}
-+    assert prompt_payload["chunk"] == {
-+        "index": 2,
-+        "total": 4,
-+        "time_range": {"start_seconds": 12.0, "end_seconds": 18.0},
-+    }
-     assert prompt_payload["calendar"]["title"] == "Roadmap Review"
-     assert prompt_payload["calendar"]["attendees"] == ["Alex", "Priya"]
-+    assert prompt_payload["speaker_mapping"] == [{"label": "S1", "speaker": "Alex"}]
- 
-     parsed = llm_chunking.parse_chunk_extract(
-         """```json
-diff --git a/tests/test_pipeline.py b/tests/test_pipeline.py
-index 4fe5e96..55a25b0 100644
---- a/tests/test_pipeline.py
-+++ b/tests/test_pipeline.py
-@@ -535,6 +535,7 @@ async def test_pipeline_long_transcript_uses_chunked_llm_progress_and_artifacts(
- 
-     events: list[tuple[str, float]] = []
-     merge_payload: dict[str, object] = {}
-+    chunk_payloads: list[dict[str, object]] = []
- 
-     class _ChunkedLLM:
-         async def generate(
-@@ -548,6 +549,7 @@ async def test_pipeline_long_transcript_uses_chunked_llm_progress_and_artifacts(
-             del system_prompt, model, response_format
-             payload = json.loads(user_prompt)
-             if "chunk" in payload:
-+                chunk_payloads.append(payload)
-                 index = int(payload["chunk"]["index"])
-                 return {
-                     "content": json.dumps(
-@@ -618,10 +620,19 @@ async def test_pipeline_long_transcript_uses_chunked_llm_progress_and_artifacts(
-     derived = cfg.recordings_root / "rec-chunked-1" / "derived"
-     plan_payload = json.loads((derived / "llm_chunks_plan.json").read_text(encoding="utf-8"))
-     total_chunks = len(plan_payload["chunks"])
-+    compact_payload = json.loads((derived / "llm_compact_transcript.json").read_text(encoding="utf-8"))
-+    compact_text = (derived / "llm_compact_transcript.txt").read_text(encoding="utf-8")
-     stage_names = [stage for stage, _progress in events]
-     summary_payload = json.loads((derived / "summary.json").read_text(encoding="utf-8"))
- 
-     assert total_chunks > 1
-+    assert plan_payload["source_chars"] > plan_payload["compact_chars"]
-+    assert compact_payload["source_chars"] == plan_payload["source_chars"]
-+    assert compact_payload["compact_chars"] == plan_payload["compact_chars"]
-+    assert compact_payload["speaker_mapping"]
-+    assert "[" not in compact_text
-+    assert all(chunk["effective_chars"] >= chunk["base_chars"] for chunk in plan_payload["chunks"])
-+    assert all("time_range" in chunk for chunk in plan_payload["chunks"])
-     assert stage_names[:6] == [
-         "precheck",
-         "stt",
-@@ -634,8 +645,17 @@ async def test_pipeline_long_transcript_uses_chunked_llm_progress_and_artifacts(
-     assert stage_names[6 + total_chunks] == "llm_merge"
-     assert stage_names[-1] == "metrics"
-     assert merge_payload["payload"]["merge_input"]["chunk_count"] == total_chunks
-+    assert chunk_payloads[0]["calendar"] == {
-+        "title": None,
-+        "attendees": [],
-+    }
-+    assert chunk_payloads[0]["chunk"]["time_range"]["start_seconds"] == 0.0
-+    assert "speaker_mapping" in chunk_payloads[0]
-+    assert "[" not in str(chunk_payloads[0]["transcript_chunk"])
-     assert (derived / "llm_chunk_001_raw.json").exists()
-     assert (derived / f"llm_chunk_{total_chunks:03d}_extract.json").exists()
-+    assert (derived / "llm_compact_transcript.txt").exists()
-+    assert (derived / "llm_compact_transcript.json").exists()
-     assert (derived / "llm_merge_input.json").exists()
-     assert (derived / "llm_merge_raw.json").exists()
-     assert summary_payload["topic"] == "Merged topic"

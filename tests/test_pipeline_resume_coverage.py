@@ -790,6 +790,10 @@ def test_stage_llm_extract_chunked_summary_invokes_progress_callback(
     result = worker_tasks._stage_llm_extract(ctx)  # noqa: SLF001
     assert result.status == "completed"
     assert ("llm_chunk_1", 0.91) in progress_updates
+    assert chunked_kwargs["speaker_turns"] == [
+        {"speaker": "S1", "start": 0.0, "end": 1.0, "text": "Discussed the work plan."}
+    ]
+    assert chunked_kwargs["aliases"] == {}
     assert chunked_kwargs["calendar_title"] == "Weekly Sync"
     assert chunked_kwargs["calendar_attendees"] == ["Ada", "Bob"]
 

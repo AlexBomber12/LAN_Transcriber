@@ -41,6 +41,17 @@ def _annotation_from_segments(*segments: tuple[float, float, str]):
     )
 
 
+def _llm_chunk_turns(text: str = "single chunk transcript") -> list[dict[str, Any]]:
+    return [
+        {
+            "speaker": "S1",
+            "start": 0.0,
+            "end": 1.0,
+            "text": text,
+        }
+    ]
+
+
 def test_pipeline_settings_reads_llm_model_from_env(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -540,11 +551,13 @@ async def test_run_chunked_llm_summary_rejects_empty_chunk_plan(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(pipeline, "plan_transcript_chunks", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(pipeline, "plan_compact_transcript_chunks", lambda *_args, **_kwargs: [])
 
     with pytest.raises(RuntimeError, match="produced no chunks"):
         await pipeline._run_chunked_llm_summary(
             transcript_text="hello world",
+            speaker_turns=_llm_chunk_turns("hello world"),
+            aliases={},
             derived_dir=tmp_path / "derived",
             llm=object(),
             cfg=_settings(tmp_path, llm_model="model"),
@@ -682,6 +695,8 @@ async def test_run_chunked_llm_summary_timeout_writes_error_artifact(tmp_path: P
     with pytest.raises(RuntimeError, match=r"LLM chunk 1/1 failed: timed out after 0.001s"):
         await pipeline._run_chunked_llm_summary(
             transcript_text="single chunk transcript",
+            speaker_turns=_llm_chunk_turns(),
+            aliases={},
             derived_dir=derived,
             llm=_SlowLLM(),
             cfg=_settings(
@@ -718,6 +733,8 @@ async def test_run_chunked_llm_summary_asyncio_timeout_writes_error_artifact(
     with pytest.raises(RuntimeError, match=r"LLM chunk 1/1 failed: timed out after 0.001s"):
         await pipeline._run_chunked_llm_summary(
             transcript_text="single chunk transcript",
+            speaker_turns=_llm_chunk_turns(),
+            aliases={},
             derived_dir=derived,
             llm=object(),
             cfg=_settings(
@@ -752,6 +769,8 @@ async def test_run_chunked_llm_summary_timeout_sentinel_writes_error_artifact(
     with pytest.raises(RuntimeError, match=r"LLM chunk 1/1 failed: timed out after 0.001s"):
         await pipeline._run_chunked_llm_summary(
             transcript_text="single chunk transcript",
+            speaker_turns=_llm_chunk_turns(),
+            aliases={},
             derived_dir=derived,
             llm=_TimeoutSentinelLLM(),
             cfg=_settings(
@@ -803,6 +822,8 @@ async def test_run_chunked_llm_summary_merge_timeout_sentinel_fails(tmp_path: Pa
     with pytest.raises(RuntimeError, match=r"LLM merge failed: timed out after 12s"):
         await pipeline._run_chunked_llm_summary(
             transcript_text="single chunk transcript",
+            speaker_turns=_llm_chunk_turns(),
+            aliases={},
             derived_dir=derived,
             llm=_MergeTimeoutSentinelLLM(),
             cfg=_settings(
@@ -860,6 +881,8 @@ async def test_run_chunked_llm_summary_passes_merge_retry_budget(tmp_path: Path)
 
     await pipeline._run_chunked_llm_summary(
         transcript_text="single chunk transcript",
+        speaker_turns=_llm_chunk_turns(),
+        aliases={},
         derived_dir=tmp_path / "derived",
         llm=_MergeBudgetLLM(),
         cfg=_settings(

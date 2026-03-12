@@ -12,18 +12,18 @@ The event loop scope for asynchronous fixtures will default to the fixture cachi
 ........................................................................ [ 60%]
 ........................................................................ [ 68%]
 ........................................................................ [ 77%]
-......................................s................................. [ 85%]
+.......................................s................................ [ 85%]
 ........................................................................ [ 94%]
-...............................................                          [100%]
+................................................                         [100%]
 =============================== warnings summary ===============================
 lan_transcriber/pipeline_steps/precheck.py:3
   /home/alexey/LAN_Transcriber/lan_transcriber/pipeline_steps/precheck.py:3: DeprecationWarning: 'audioop' is deprecated and slated for removal in Python 3.13
     import audioop
 
-lan_transcriber/pipeline_steps/orchestrator.py:105
+lan_transcriber/pipeline_steps/orchestrator.py:104
 tests/test_imports.py::test_imports[lan_transcriber.pipeline_steps.orchestrator]
 tests/test_imports.py::test_orchestrator_import_does_not_import_whisperx
-  /home/alexey/LAN_Transcriber/lan_transcriber/pipeline_steps/orchestrator.py:105: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+  /home/alexey/LAN_Transcriber/lan_transcriber/pipeline_steps/orchestrator.py:104: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
     class Settings(BaseSettings):
 
 lan_app/config.py:42
@@ -50,13 +50,13 @@ tests/test_warm_models.py::test_warm_models_module_main_guard
 ---------- coverage: platform linux, python 3.12.3-final-0 -----------
 Name    Stmts   Miss Branch BrPart  Cover   Missing
 ---------------------------------------------------
-TOTAL   10553      0   3332      0   100%
+TOTAL   10547      0   3330      0   100%
 
 59 files skipped due to complete coverage.
 Coverage HTML written to dir htmlcov
 
 Required test coverage of 100% reached. Total coverage: 100.00%
-838 passed, 3 skipped, 10 warnings in 64.28s (0:01:04)
+839 passed, 3 skipped, 10 warnings in 63.40s (0:01:03)
 Name                                                    Stmts   Miss Branch BrPart  Cover
 -----------------------------------------------------------------------------------------
 lan_transcriber/__init__.py                                 8      0      0      0   100%
@@ -79,7 +79,7 @@ lan_transcriber/pipeline_steps/artifacts.py                19      0      0     
 lan_transcriber/pipeline_steps/diarization_quality.py     268      0     98      0   100%
 lan_transcriber/pipeline_steps/language.py                155      0     64      0   100%
 lan_transcriber/pipeline_steps/multilingual_asr.py        239      0     88      0   100%
-lan_transcriber/pipeline_steps/orchestrator.py            789      0    200      0   100%
+lan_transcriber/pipeline_steps/orchestrator.py            783      0    198      0   100%
 lan_transcriber/pipeline_steps/precheck.py                116      0     46      0   100%
 lan_transcriber/pipeline_steps/snippets.py                231      0     84      0   100%
 lan_transcriber/pipeline_steps/speaker_turns.py           199      0    106      0   100%
@@ -88,7 +88,7 @@ lan_transcriber/runtime_paths.py                           21      0      4     
 lan_transcriber/torch_safe_globals.py                     126      0     40      0   100%
 lan_transcriber/utils.py                                   50      0     30      0   100%
 -----------------------------------------------------------------------------------------
-TOTAL                                                    3693      0   1230      0   100%
+TOTAL                                                    3687      0   1228      0   100%
 Name                              Stmts   Miss Branch BrPart  Cover
 -------------------------------------------------------------------
 lan_app/__init__.py                   1      0      0      0   100%

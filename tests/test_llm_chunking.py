@@ -150,6 +150,25 @@ def test_build_compact_transcript_uses_stable_reversible_speaker_mapping() -> No
     ]
 
 
+def test_build_compact_transcript_ignores_noise_only_speakers_when_assigning_labels() -> None:
+    compact = llm_chunking.build_compact_transcript(
+        [
+            {"speaker": "SPEAKER_01", "start": 0.0, "end": 0.2, "text": "..."},
+            {"speaker": "SPEAKER_02", "start": 0.3, "end": 1.0, "text": "Real update"},
+            {"speaker": "SPEAKER_03", "start": 1.1, "end": 1.8, "text": "Second speaker"},
+        ]
+    )
+
+    assert compact.text.splitlines() == [
+        "S1: Real update",
+        "S2: Second speaker",
+    ]
+    assert compact.prompt_speaker_mapping() == [
+        {"label": "S1", "speaker": "SPEAKER_02"},
+        {"label": "S2", "speaker": "SPEAKER_03"},
+    ]
+
+
 def test_build_compact_transcript_rejects_noise_only_rows() -> None:
     with pytest.raises(ValueError, match="produced no usable content"):
         llm_chunking.build_compact_transcript(

@@ -269,10 +269,10 @@ def build_compact_transcript(
         )
 
     for turn in normalized_turns:
-        mapping = _mapping_for(turn)
         text = str(turn["text"])
         if not _has_substantive_content(text):
             continue
+        mapping = _mapping_for(turn)
         start_seconds = safe_float(turn["start"], default=0.0)
         end_seconds = max(start_seconds, safe_float(turn["end"], default=start_seconds))
         if (

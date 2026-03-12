@@ -32,7 +32,6 @@ from ..llm_chunking import (
     merge_chunk_results,
     parse_chunk_extract,
     plan_compact_transcript_chunks,
-    plan_transcript_chunks,
 )
 from ..llm_client import LLMClient
 from ..metrics import error_rate_total, p95_latency_seconds
@@ -1427,8 +1426,8 @@ def _use_chunked_llm(transcript_text: str, cfg: Settings) -> bool:
 async def _run_chunked_llm_summary(
     *,
     transcript_text: str,
-    speaker_turns: Sequence[dict[str, Any]] | None = None,
-    aliases: dict[str, str] | None = None,
+    speaker_turns: Sequence[dict[str, Any]],
+    aliases: dict[str, str],
     derived_dir: Path,
     llm: LLMClient,
     cfg: Settings,
@@ -1440,37 +1439,26 @@ async def _run_chunked_llm_summary(
     calendar_attendees: Sequence[str],
     progress_callback: ProgressCallback | None,
 ) -> dict[str, Any]:
-    compact_transcript = None
-    speaker_mapping: list[dict[str, str]] = []
-    source_chars = len(transcript_text.strip())
-    compact_chars = source_chars
-    if speaker_turns is not None:
-        try:
-            compact_transcript = build_compact_transcript(
-                speaker_turns,
-                aliases=aliases,
-            )
-        except ValueError as exc:
-            raise RuntimeError(str(exc)) from exc
-        source_chars = compact_transcript.source_chars
-        compact_chars = compact_transcript.compact_chars
-        speaker_mapping = compact_transcript.prompt_speaker_mapping()
-        atomic_write_text(derived_dir / "llm_compact_transcript.txt", compact_transcript.text)
-        atomic_write_json(
-            derived_dir / "llm_compact_transcript.json",
-            compact_transcript.artifact_payload(),
+    try:
+        compact_transcript = build_compact_transcript(
+            speaker_turns,
+            aliases=aliases,
         )
-        chunks = plan_compact_transcript_chunks(
-            compact_transcript,
-            max_chars=cfg.llm_chunk_max_chars,
-            overlap_chars=cfg.llm_chunk_overlap_chars,
-        )
-    else:
-        chunks = plan_transcript_chunks(
-            transcript_text,
-            max_chars=cfg.llm_chunk_max_chars,
-            overlap_chars=cfg.llm_chunk_overlap_chars,
-        )
+    except ValueError as exc:
+        raise RuntimeError(str(exc)) from exc
+    source_chars = compact_transcript.source_chars
+    compact_chars = compact_transcript.compact_chars
+    speaker_mapping = compact_transcript.prompt_speaker_mapping()
+    atomic_write_text(derived_dir / "llm_compact_transcript.txt", compact_transcript.text)
+    atomic_write_json(
+        derived_dir / "llm_compact_transcript.json",
+        compact_transcript.artifact_payload(),
+    )
+    chunks = plan_compact_transcript_chunks(
+        compact_transcript,
+        max_chars=cfg.llm_chunk_max_chars,
+        overlap_chars=cfg.llm_chunk_overlap_chars,
+    )
     atomic_write_json(
         derived_dir / "llm_chunks_plan.json",
         {
@@ -1479,18 +1467,15 @@ async def _run_chunked_llm_summary(
             "chunk_max_chars": cfg.llm_chunk_max_chars,
             "chunk_overlap_chars": cfg.llm_chunk_overlap_chars,
             "long_transcript_threshold_chars": cfg.llm_long_transcript_threshold_chars,
-            "compaction": (
-                {
-                    "merge_gap_seconds": compact_transcript.merge_gap_seconds,
-                    "source_turn_count": compact_transcript.source_turn_count,
-                    "compact_turn_count": compact_transcript.compact_turn_count,
-                    "speaker_mapping": [
-                        item.artifact_payload() for item in compact_transcript.speaker_mapping
-                    ],
-                }
-                if compact_transcript is not None
-                else None
-            ),
+            "source_transcript_chars": len(transcript_text.strip()),
+            "compaction": {
+                "merge_gap_seconds": compact_transcript.merge_gap_seconds,
+                "source_turn_count": compact_transcript.source_turn_count,
+                "compact_turn_count": compact_transcript.compact_turn_count,
+                "speaker_mapping": [
+                    item.artifact_payload() for item in compact_transcript.speaker_mapping
+                ],
+            },
             "chunks": [chunk.plan_payload() for chunk in chunks],
         },
     )

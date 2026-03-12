@@ -1951,6 +1951,8 @@ def _stage_llm_extract(ctx: _PipelineExecutionContext) -> _StageResult:
         ctx.summary_payload = asyncio.run(
             pipeline_orchestrator._run_chunked_llm_summary(
                 transcript_text=llm_prompt_text or ctx.clean_text,
+                speaker_turns=ctx.speaker_turns,
+                aliases=aliases,
                 derived_dir=ctx.artifacts.derived_dir,
                 llm=LLMClient(),
                 cfg=ctx.pipeline_settings,
