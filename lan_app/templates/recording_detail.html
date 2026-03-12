@@ -71,6 +71,23 @@
 {% if current_tab == 'overview' %}
   {% set summary_data = summary or {} %}
   {% set glossary_data = glossary or {} %}
+  <div class="section" style="margin-bottom:10px">
+    <h2 style="margin-top:0">Diagnostics</h2>
+    <div class="info-grid">
+      <span class="k">Primary reason</span><span class="v">{{ diagnostics.primary_reason_text or '—' }}</span>
+      <span class="k">Reason code</span><span class="v">{{ diagnostics.primary_reason_code or '—' }}</span>
+      <span class="k">Current / last stage</span><span class="v">{{ diagnostics.current_stage_label or '—' }}</span>
+      <span class="k">Stage status</span><span class="v">{{ diagnostics.current_stage_status_label or '—' }}</span>
+      <span class="k">Chunk</span><span class="v">{{ diagnostics.chunk_text or '—' }}</span>
+      <span class="k">Stage attempt</span><span class="v">{{ diagnostics.stage_attempt_text or '—' }}</span>
+      <span class="k">Chunk attempt</span><span class="v">{{ diagnostics.chunk_attempt_text or '—' }}</span>
+      <span class="k">Stage elapsed</span><span class="v">{{ diagnostics.stage_elapsed_display or '—' }}</span>
+      <span class="k">Chunk elapsed</span><span class="v">{{ diagnostics.chunk_elapsed_display or '—' }}</span>
+      <span class="k">Stop mode</span><span class="v">{{ diagnostics.stop_mode or '—' }}</span>
+      <span class="k">Retry wrapper</span><span class="v">{{ diagnostics.wrapper_reason_text or '—' }}</span>
+      <span class="k">Reason detail</span><span class="v">{{ diagnostics.primary_reason_detail or diagnostics.stop_reason_text or '—' }}</span>
+    </div>
+  </div>
   <div class="info-grid">
     <span class="k">ID</span><span class="v">{{ rec.id }}</span>
     <span class="k">Filename</span><span class="v">{{ rec.source_filename }}</span>
@@ -134,7 +151,15 @@
           <td>{{ stage.attempt }}</td>
           <td>{{ stage.updated_at_display }}</td>
           <td>
-            {% if stage.error_text %}
+            {% if stage.root_cause_text %}
+            {{ stage.root_cause_text }}{% if stage.root_cause_code %} (<code>{{ stage.root_cause_code }}</code>){% endif %}
+            {% if stage.chunk_index and stage.chunk_total %}
+            &nbsp;chunk {{ stage.chunk_index }}/{{ stage.chunk_total }}
+            {% endif %}
+            {% if stage.stop_mode %}
+            &nbsp;mode={{ stage.stop_mode }}
+            {% endif %}
+            {% elif stage.error_text %}
             {{ stage.error_text }}
             {% elif stage.duration_seconds is not none %}
             {{ '%.3f'|format(stage.duration_seconds) }}s

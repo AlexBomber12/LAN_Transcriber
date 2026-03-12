@@ -1,294 +1,2065 @@
+diff --git a/README.md b/README.md
+index a076133..35e18a0 100644
+--- a/README.md
++++ b/README.md
+@@ -240,6 +240,8 @@ Chunk extraction now resumes from the failed or incomplete chunk set on the next
+ 
+ Chunk debug artifacts are written under `derived/`, including `llm_compact_transcript.txt`, `llm_compact_transcript.json`, `llm_chunks_plan.json`, `llm_merge_input.json`, per-chunk `llm_chunk_*_{raw,extract,error}.json`, and `llm_merge_error.json` when the merge pass fails. The worker also persists per-chunk state in SQLite so automatic job retries can resume safely.
+ 
++The recording detail page now includes a compact diagnostics block that shows the primary root cause, current or last stage, chunk `N/M`, elapsed stage or chunk time when available, and any retry-wrapper note separately. For example, a long-transcript failure should now surface `llm_chunk_timeout` or `llm_merge_*` directly instead of only a generic retry-limit message, and stopped recordings show whether the stop stayed soft or escalated to a force-stop.
++
+ For diarization quality tuning, keep `LAN_DIARIZATION_PROFILE=auto` for mixed workloads. In `auto`, the worker runs a meeting-oriented first pass, classifies the result from deterministic speaker-share/alternation/overlap heuristics, and retries once with `min_speakers=2` and `max_speakers=2` only when the recording looks dialog-like. Use `dialog` or `meeting` only to force one behavior, and note that explicit `LAN_DIARIZATION_MIN_SPEAKERS` / `LAN_DIARIZATION_MAX_SPEAKERS` overrides bypass auto selection. Each processed recording writes `derived/diarization_metadata.json` with the requested profile, selected profile, initial top-two coverage, retry attempt/winner, applied hints, and smoothing stats.
+ 
+ Mixed-language ASR defaults to `LAN_ASR_MULTILINGUAL_MODE=auto`. When the pipeline sees credible language switches, it retranscribes grouped chunks with per-chunk language hints, writes `language_spans` plus multilingual execution metadata into `derived/transcript.json`, and keeps the recording in `NeedsReview` when chunk-level language ID remains conflicted or low-confidence.
+diff --git a/docs/runbook.md b/docs/runbook.md
+index 89ca7f0..c4fee05 100644
+--- a/docs/runbook.md
++++ b/docs/runbook.md
+@@ -35,7 +35,12 @@ This runbook covers day-2 operations for LAN deployment:
+ 7. Automatic retries now resume from the failed or incomplete chunk set instead of starting long-transcript processing from chunk 1. Completed chunk extracts are validated before reuse, and a timed-out chunk can split into smaller child chunks automatically when it is still large enough.
+ 8. Debug artifacts for that flow live under `derived/`, including `llm_compact_transcript.txt`, `llm_compact_transcript.json`, `llm_chunks_plan.json`, `llm_merge_input.json`, per-chunk `llm_chunk_*_{raw,extract,error}.json`, and `llm_merge_error.json` when the merge pass fails.
+ 9. If you see `finish_reason=length` or empty `message.content`, increase `LLM_MAX_TOKENS` and `LLM_TIMEOUT_SECONDS` (and optionally `LLM_MERGE_MAX_TOKENS`).
+-10. Validate connectivity:
++10. Use the recording detail `Diagnostics` block for first-pass triage:
++   - primary reason = normalized root cause shown to operators
++   - retry wrapper = generic retry-limit context, if present
++   - current or last stage + chunk `N/M` + elapsed time = where the pipeline actually got stuck
++   - stopped recordings show whether the stop stayed soft or escalated to a force-stop
++11. Validate connectivity:
+ 
+ ```bash
+ docker compose run --rm api python -m lan_app.healthchecks app
+diff --git a/lan_app/templates/partials/recording_progress.html b/lan_app/templates/partials/recording_progress.html
+index 342f69e..31924ef 100644
+--- a/lan_app/templates/partials/recording_progress.html
++++ b/lan_app/templates/partials/recording_progress.html
+@@ -1,16 +1,39 @@
+ <div style="border:1px solid #ccd;background:#fff;padding:8px 10px">
+   <div style="display:flex;gap:8px;align-items:center;justify-content:space-between;margin-bottom:6px;font-size:12px">
+-    <span><strong>Pipeline:</strong> {{ stage_label }}</span>
++    <span><strong>Pipeline:</strong> {{ diagnostics.current_stage_label or stage_label }}</span>
+     <span>{{ progress_percent }}%</span>
+   </div>
+   <div style="width:100%;max-width:520px;height:14px;border:1px solid #99b;background:#eef2ff">
+     <div style="height:100%;background:#4a6080;width:{{ progress_percent }}%"></div>
+   </div>
++  <div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:6px;font-size:11px;color:#334155">
++    <span><strong>Stage:</strong> {{ diagnostics.current_stage_status_label }}</span>
++    {% if diagnostics.chunk_text != '—' %}
++    <span><strong>Chunk:</strong> {{ diagnostics.chunk_text }}</span>
++    {% endif %}
++    {% if diagnostics.stage_elapsed_display != '—' %}
++    <span><strong>Stage elapsed:</strong> {{ diagnostics.stage_elapsed_display }}</span>
++    {% endif %}
++    {% if diagnostics.chunk_elapsed_display != '—' %}
++    <span><strong>Chunk elapsed:</strong> {{ diagnostics.chunk_elapsed_display }}</span>
++    {% endif %}
++    {% if diagnostics.is_resuming %}
++    <span><strong>Mode:</strong> resuming</span>
++    {% endif %}
++    {% if diagnostics.is_stopping %}
++    <span><strong>Stop:</strong> requested</span>
++    {% endif %}
++  </div>
+   <div style="font-size:11px;color:#555;margin-top:5px">
+     stage=<code>{{ stage_code }}</code>
+     {% if updated_at_display and updated_at_display != '—' %}
+     &nbsp;updated={{ updated_at_display }}
+     {% endif %}
++    {% if diagnostics.primary_reason_text and diagnostics.is_stopping %}
++    &nbsp;reason={{ diagnostics.primary_reason_text }}
++    {% elif diagnostics.stop_reason_text and diagnostics.is_stopping %}
++    &nbsp;reason={{ diagnostics.stop_reason_text }}
++    {% endif %}
+     {% if warning %}
+     &nbsp;warning={{ warning }}
+     {% endif %}
+diff --git a/lan_app/templates/recording_detail.html b/lan_app/templates/recording_detail.html
+index 387aba6..b328617 100644
+--- a/lan_app/templates/recording_detail.html
++++ b/lan_app/templates/recording_detail.html
+@@ -71,6 +71,23 @@
+ {% if current_tab == 'overview' %}
+   {% set summary_data = summary or {} %}
+   {% set glossary_data = glossary or {} %}
++  <div class="section" style="margin-bottom:10px">
++    <h2 style="margin-top:0">Diagnostics</h2>
++    <div class="info-grid">
++      <span class="k">Primary reason</span><span class="v">{{ diagnostics.primary_reason_text or '—' }}</span>
++      <span class="k">Reason code</span><span class="v">{{ diagnostics.primary_reason_code or '—' }}</span>
++      <span class="k">Current / last stage</span><span class="v">{{ diagnostics.current_stage_label or '—' }}</span>
++      <span class="k">Stage status</span><span class="v">{{ diagnostics.current_stage_status_label or '—' }}</span>
++      <span class="k">Chunk</span><span class="v">{{ diagnostics.chunk_text or '—' }}</span>
++      <span class="k">Stage attempt</span><span class="v">{{ diagnostics.stage_attempt_text or '—' }}</span>
++      <span class="k">Chunk attempt</span><span class="v">{{ diagnostics.chunk_attempt_text or '—' }}</span>
++      <span class="k">Stage elapsed</span><span class="v">{{ diagnostics.stage_elapsed_display or '—' }}</span>
++      <span class="k">Chunk elapsed</span><span class="v">{{ diagnostics.chunk_elapsed_display or '—' }}</span>
++      <span class="k">Stop mode</span><span class="v">{{ diagnostics.stop_mode or '—' }}</span>
++      <span class="k">Retry wrapper</span><span class="v">{{ diagnostics.wrapper_reason_text or '—' }}</span>
++      <span class="k">Reason detail</span><span class="v">{{ diagnostics.primary_reason_detail or diagnostics.stop_reason_text or '—' }}</span>
++    </div>
++  </div>
+   <div class="info-grid">
+     <span class="k">ID</span><span class="v">{{ rec.id }}</span>
+     <span class="k">Filename</span><span class="v">{{ rec.source_filename }}</span>
+@@ -134,7 +151,15 @@
+           <td>{{ stage.attempt }}</td>
+           <td>{{ stage.updated_at_display }}</td>
+           <td>
+-            {% if stage.error_text %}
++            {% if stage.root_cause_text %}
++            {{ stage.root_cause_text }}{% if stage.root_cause_code %} (<code>{{ stage.root_cause_code }}</code>){% endif %}
++            {% if stage.chunk_index and stage.chunk_total %}
++            &nbsp;chunk {{ stage.chunk_index }}/{{ stage.chunk_total }}
++            {% endif %}
++            {% if stage.stop_mode %}
++            &nbsp;mode={{ stage.stop_mode }}
++            {% endif %}
++            {% elif stage.error_text %}
+             {{ stage.error_text }}
+             {% elif stage.duration_seconds is not none %}
+             {{ '%.3f'|format(stage.duration_seconds) }}s
+diff --git a/lan_app/ui_routes.py b/lan_app/ui_routes.py
+index fc60361..a41ddff 100644
+--- a/lan_app/ui_routes.py
++++ b/lan_app/ui_routes.py
+@@ -51,6 +51,7 @@ from .constants import (
+     RECORDING_STATUS_STOPPED,
+     RECORDING_STATUS_STOPPING,
+ )
++from .diagnostics import build_recording_diagnostics, root_cause_from_stage_row
+ from .db import (
+     acknowledge_recording_cancel_request,
+     clear_recording_progress,
+@@ -77,6 +78,7 @@ from .db import (
+     list_glossary_entries,
+     list_participant_metrics,
+     list_jobs,
++    list_recording_llm_chunk_states,
+     list_recording_pipeline_stages,
+     list_projects,
+     list_recordings,
+@@ -260,12 +262,39 @@ def _pipeline_stage_label(stage: object) -> str:
+     return text.replace("_", " ").title()
+ 
+ 
+-def _pipeline_stage_rows_for_display(recording_id: str) -> list[dict[str, Any]]:
+-    rows = list_recording_pipeline_stages(recording_id, settings=_settings)
++def _pipeline_stage_rows_for_display(
++    recording_id: str,
++    *,
++    rows: list[dict[str, Any]] | None = None,
++) -> list[dict[str, Any]]:
++    resolved_rows = (
++        list(rows)
++        if rows is not None
++        else list_recording_pipeline_stages(recording_id, settings=_settings)
++    )
+     display_rows: list[dict[str, Any]] = []
+-    for row in rows:
++    for row in resolved_rows:
+         stage_name = str(row.get("stage_name") or "").strip()
+         status = str(row.get("status") or "").strip()
++        cause = root_cause_from_stage_row(row)
++        metadata = row.get("metadata_json") if isinstance(row.get("metadata_json"), dict) else {}
++        chunk_index = str(
++            (
++                metadata.get("cancel_chunk_index")
++                if metadata.get("cancel_chunk_index") is not None
++                else metadata.get("chunk_index")
++            )
++            or ""
++        ).strip() or None
++        chunk_total = None
++        for key in ("cancel_chunk_total", "chunk_total"):
++            if metadata.get(key) is None:
++                continue
++            try:
++                chunk_total = int(metadata.get(key))
++            except (TypeError, ValueError):
++                chunk_total = None
++            break
+         display_rows.append(
+             {
+                 "stage_name": stage_name,
+@@ -282,6 +311,12 @@ def _pipeline_stage_rows_for_display(recording_id: str) -> list[dict[str, Any]]:
+                     else None
+                 ),
+                 "error_text": str(row.get("error_text") or "").strip(),
++                "root_cause_code": str((cause or {}).get("code") or "").strip(),
++                "root_cause_text": str((cause or {}).get("text") or "").strip(),
++                "chunk_index": chunk_index,
++                "chunk_total": chunk_total,
++                "resumed": bool(metadata.get("resumed")),
++                "stop_mode": str(metadata.get("stop_mode") or "").strip(),
+             }
+         )
+     return display_rows
+@@ -307,6 +342,15 @@ def _format_duration_seconds(value: object) -> str:
+     return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+ 
+ 
++def _format_elapsed_seconds(value: object) -> str:
++    duration = _safe_duration_seconds(value)
++    if duration is None:
++        return "—"
++    if duration < 10:
++        return f"{duration:.1f}s"
++    return _format_duration_seconds(duration)
++
++
+ def _display_timezone() -> ZoneInfo | timezone:
+     try:
+         return ZoneInfo(_DISPLAY_TIMEZONE)
+@@ -399,6 +443,48 @@ def _prepare_recording_for_display(
+     return item
+ 
+ 
++def _recording_diagnostics_context(
++    *,
++    recording: dict[str, Any],
++    stage_rows: list[dict[str, Any]],
++    chunk_rows: list[dict[str, Any]],
++    jobs: list[dict[str, Any]],
++) -> dict[str, Any]:
++    diagnostics = build_recording_diagnostics(
++        recording=recording,
++        stage_rows=stage_rows,
++        chunk_rows=chunk_rows,
++        jobs=jobs,
++    )
++    current_stage_code = str(diagnostics.get("current_stage_code") or "waiting").strip() or "waiting"
++    current_chunk_index = str(diagnostics.get("current_chunk_index") or "").strip() or None
++    current_chunk_total = diagnostics.get("current_chunk_total")
++    if current_chunk_index is not None and current_chunk_total is not None:
++        chunk_text = f"{current_chunk_index}/{int(current_chunk_total)}"
++    elif current_chunk_index is not None:
++        chunk_text = current_chunk_index
++    else:
++        chunk_text = "—"
++    stage_attempt = int(diagnostics.get("current_stage_attempt") or 0)
++    chunk_attempt = int(diagnostics.get("current_chunk_attempt") or 0)
++    diagnostics["current_stage_code"] = current_stage_code
++    diagnostics["current_stage_label"] = _pipeline_stage_label(current_stage_code)
++    diagnostics["current_stage_status_label"] = (
++        str(diagnostics.get("current_stage_status") or "").replace("_", " ").title() or "Unknown"
++    )
++    diagnostics["chunk_text"] = chunk_text
++    diagnostics["stage_elapsed_display"] = _format_elapsed_seconds(diagnostics.get("stage_elapsed_seconds"))
++    diagnostics["chunk_elapsed_display"] = _format_elapsed_seconds(diagnostics.get("chunk_elapsed_seconds"))
++    diagnostics["stage_attempt_text"] = str(stage_attempt) if stage_attempt > 0 else "—"
++    diagnostics["chunk_attempt_text"] = str(chunk_attempt) if chunk_attempt > 0 else "—"
++    diagnostics["primary_reason_code"] = str(diagnostics.get("primary_reason_code") or "").strip()
++    diagnostics["primary_reason_text"] = str(diagnostics.get("primary_reason_text") or "").strip()
++    diagnostics["primary_reason_detail"] = str(diagnostics.get("primary_reason_detail") or "").strip()
++    diagnostics["wrapper_reason_text"] = str(diagnostics.get("wrapper_reason_text") or "").strip()
++    diagnostics["stop_reason_text"] = str(diagnostics.get("stop_reason_text") or "").strip()
++    return diagnostics
++
++
+ def _load_json_dict(path: Path) -> dict[str, Any]:
+     if not path.exists():
+         return {}
+@@ -1963,7 +2049,17 @@ async def ui_recording_detail(
+     project: dict[str, Any] | None = None
+     glossary: dict[str, Any] | None = None
+     export_text = ""
+-    pipeline_stages = _pipeline_stage_rows_for_display(recording_id)
++    stage_rows = list_recording_pipeline_stages(recording_id, settings=_settings)
++    chunk_rows = list_recording_llm_chunk_states(recording_id, settings=_settings)
++    pipeline_stages = _pipeline_stage_rows_for_display(recording_id, rows=stage_rows)
++    diagnostics = _recording_diagnostics_context(
++        recording=rec,
++        stage_rows=stage_rows,
++        chunk_rows=chunk_rows,
++        jobs=jobs,
++    )
++    if diagnostics["primary_reason_text"]:
++        rec["status_reason_text_display"] = diagnostics["primary_reason_text"]
+     if current_tab == "calendar":
+         calendar = _calendar_tab_context(recording_id, _settings)
+         if calendar_error.strip():
+@@ -2005,6 +2101,7 @@ async def ui_recording_detail(
+             "glossary": glossary,
+             "export_text": export_text,
+             "pipeline_stages": pipeline_stages,
++            "diagnostics": diagnostics,
+         },
+     )
+ 
+@@ -2019,6 +2116,14 @@ async def ui_recording_progress(
+     if rec is None:
+         return HTMLResponse("Not found", status_code=404)
+     rec = _prepare_recording_for_display(rec, settings=_settings)
++    stage_rows = list_recording_pipeline_stages(recording_id, settings=_settings)
++    chunk_rows = list_recording_llm_chunk_states(recording_id, settings=_settings)
++    diagnostics = _recording_diagnostics_context(
++        recording=rec,
++        stage_rows=stage_rows,
++        chunk_rows=chunk_rows,
++        jobs=[],
++    )
+     progress_ratio = _safe_pipeline_progress(rec.get("pipeline_progress"))
+     progress_percent = int(round(progress_ratio * 100))
+     response = templates.TemplateResponse(
+@@ -2033,6 +2138,7 @@ async def ui_recording_progress(
+             "updated_at": str(rec.get("pipeline_updated_at") or "").strip(),
+             "updated_at_display": rec.get("pipeline_updated_at_display"),
+             "warning": str(rec.get("last_warning") or "").strip(),
++            "diagnostics": diagnostics,
+             "is_processing": (
+                 str(rec.get("status") or "").strip()
+                 in _ACTIVE_RECORDING_PROGRESS_STATUSES
 diff --git a/lan_app/worker_tasks.py b/lan_app/worker_tasks.py
-index 4233665..4e6a001 100644
+index 4e6a001..a9ed151 100644
 --- a/lan_app/worker_tasks.py
 +++ b/lan_app/worker_tasks.py
-@@ -606,17 +606,41 @@ async def _run_child_stage_operation(
-     child_conn.close()
-     stop_request: _RecordingStopRequest | None = None
-     stop_deadline: float | None = None
-+    cleanup_attempted = False
+@@ -29,11 +29,7 @@ from lan_transcriber.audio_sanitize import (
+     sanitize_audio_for_pipeline,
+ )
+ from lan_transcriber.compat.call_compat import call_with_supported_kwargs
+-from lan_transcriber.llm_client import (
+-    LLMClient,
+-    LLMEmptyContentError,
+-    LLMTruncatedResponseError,
+-)
++from lan_transcriber.llm_client import LLMClient
+ from lan_transcriber.pipeline_steps import orchestrator as pipeline_orchestrator
+ from lan_transcriber.pipeline import PrecheckResult, Settings as PipelineSettings
+ from lan_transcriber.pipeline import run_pipeline, run_precheck
+@@ -95,6 +91,7 @@ from .constants import (
+     RECORDING_STATUS_STOPPED,
+     RECORDING_STATUS_STOPPING,
+ )
++from .diagnostics import root_cause_from_exception
+ from .db import (
+     acknowledge_recording_cancel_request,
+     clear_recording_progress,
+@@ -441,6 +438,12 @@ def _cancelled_stage_metadata(
+     label: str,
+     stop: RecordingStopRequested,
+ ) -> dict[str, Any]:
++    root_cause_code = "force_stopped_by_user" if stop.forced else "cancelled_by_user"
++    root_cause_text = (
++        stop.acknowledged_reason_text
++        or stop.stop_request.reason_text
++        or (_FORCED_STOP_REASON_TEXT if stop.forced else _STOPPED_REASON_TEXT)
++    )
+     metadata: dict[str, Any] = {
+         "label": label,
+         "cancelled_by_user": True,
+@@ -448,12 +451,12 @@ def _cancelled_stage_metadata(
+         "cancel_requested_by": stop.stop_request.requested_by or _STOP_REQUESTED_BY,
+         "cancel_reason_code": stop.stop_request.reason_code or _STOP_REASON_CODE,
+         "cancel_reason_text": (
+-            stop.acknowledged_reason_text
+-            or stop.stop_request.reason_text
+-            or _STOPPED_REASON_TEXT
++            root_cause_text
+         ),
+         "force_stopped": stop.forced,
+         "stop_mode": "forced" if stop.forced else "soft",
++        "root_cause_code": root_cause_code,
++        "root_cause_text": root_cause_text,
+     }
+     if stop.stop_request.requested_at:
+         metadata["cancel_requested_at"] = stop.stop_request.requested_at
+@@ -469,10 +472,12 @@ def _log_stop_requested(
+     log_path: Path,
+     stop: RecordingStopRequested,
+ ) -> None:
++    root_cause_code = "force_stopped_by_user" if stop.forced else "cancelled_by_user"
+     message = (
+         "cancelled_by_user "
+         f"stage={stop.stage_name} checkpoint={stop.checkpoint} "
+-        f"requested_by={stop.stop_request.requested_by or _STOP_REQUESTED_BY}"
++        f"requested_by={stop.stop_request.requested_by or _STOP_REQUESTED_BY} "
++        f"root_cause={root_cause_code} stop_mode={'forced' if stop.forced else 'soft'}"
+     )
+     if stop.stop_request.requested_at:
+         message += f" requested_at={stop.stop_request.requested_at}"
+@@ -485,6 +490,26 @@ def _log_stop_requested(
+     _append_step_log(log_path, message)
  
--    def _force_stop_process(reason: _RecordingStopRequest) -> None:
--        _append_step_log(
--            log_path,
--            f"force terminating child stage={stage_name} pid={process.pid}",
--        )
-+    def _append_step_log_best_effort(message: str) -> None:
-+        try:
-+            _append_step_log(log_path, message)
-+        except OSError:
-+            return
-+
-+    def _terminate_child_process(
-+        *,
-+        reason: str,
-+        terminate_message: str,
-+        kill_message: str,
-+    ) -> None:
-+        nonlocal cleanup_attempted
-+        cleanup_attempted = True
-+        if not process.is_alive():
-+            return
-+        _append_step_log_best_effort(terminate_message)
-         process.terminate()
-         process.join(timeout=1.0)
-+        if not process.is_alive():
-+            return
-+        _append_step_log_best_effort(kill_message)
-+        process.kill()
-+        process.join(timeout=1.0)
-         if process.is_alive():
--            process.kill()
--            process.join(timeout=1.0)
-+            raise RuntimeError(f"child stage did not exit {reason} stage={stage_name} pid={process.pid}")
-+
-+    def _force_stop_process(reason: _RecordingStopRequest) -> None:
-+        _terminate_child_process(
-+            reason="after forced stop",
-+            terminate_message=f"force terminating child stage={stage_name} pid={process.pid}",
-+            kill_message=f"force killing child stage={stage_name} pid={process.pid}",
-+        )
-         if callable(on_force_stop):
-             on_force_stop()
-         _append_step_log(log_path, f"stage terminated by user stop stage={stage_name}")
-@@ -634,30 +658,17 @@ async def _run_child_stage_operation(
-         process.join(timeout=max(1.0, grace_seconds))
-         if not process.is_alive():
-             return
--        _append_step_log(
--            log_path,
--            (
-+        _terminate_child_process(
-+            reason=f"after result status={message_status}",
-+            terminate_message=(
-                 "force terminating lingering child after result "
-                 f"stage={stage_name} pid={process.pid} status={message_status}"
-             ),
-+            kill_message=(
-+                "force killing lingering child after result "
-+                f"stage={stage_name} pid={process.pid} status={message_status}"
-+            ),
-         )
--        process.terminate()
--        process.join(timeout=1.0)
--        if process.is_alive():
--            _append_step_log(
--                log_path,
--                (
--                    "force killing lingering child after result "
--                    f"stage={stage_name} pid={process.pid} status={message_status}"
--                ),
--            )
--            process.kill()
--            process.join(timeout=1.0)
--            if process.is_alive():
--                raise RuntimeError(
--                    "child stage did not exit after result "
--                    f"stage={stage_name} pid={process.pid} status={message_status}"
--                )
  
++def _stage_failure_metadata(
++    *,
++    label: str,
++    exc: Exception,
++) -> dict[str, Any]:
++    cause = root_cause_from_exception(exc)
++    metadata: dict[str, Any] = {
++        "label": label,
++        "root_cause_code": cause.get("code"),
++        "root_cause_text": cause.get("text"),
++    }
++    if cause.get("detail"):
++        metadata["root_cause_detail"] = cause["detail"]
++    if cause.get("chunk_index") is not None:
++        metadata["chunk_index"] = cause["chunk_index"]
++    if cause.get("chunk_total") is not None:
++        metadata["chunk_total"] = cause["chunk_total"]
++    return metadata
++
++
+ @dataclass(frozen=True)
+ class _LLMRequestContext:
+     checkpoint: str
+@@ -1075,6 +1100,7 @@ def _record_retry(
+     exc: Exception,
+ ) -> bool:
+     error = str(exc)
++    root_cause = root_cause_from_exception(exc)
      try:
-         while True:
-@@ -701,12 +712,28 @@ async def _run_child_stage_operation(
-                 _force_stop_process(stop_request)
-             await asyncio.sleep(0.05)
-     except asyncio.CancelledError:
--        if process.is_alive():
--            process.terminate()
--            process.join(timeout=1.0)
--            if process.is_alive():
--                process.kill()
--                process.join(timeout=1.0)
-+        if not cleanup_attempted:
-+            _terminate_child_process(
-+                reason="after parent cancellation",
-+                terminate_message=(
-+                    f"force terminating child after parent cancellation stage={stage_name} pid={process.pid}"
+         requeued = requeue_job_if_started(
+             job_id,
+@@ -1095,7 +1121,9 @@ def _record_retry(
+             (
+                 f"retrying job={job_id} type={job_type} "
+                 f"attempt={attempt}/{max_attempts} "
+-                f"delay_seconds={delay_seconds} error={error}"
++                f"delay_seconds={delay_seconds} "
++                f"root_cause={root_cause.get('code') or 'processing_runtime_error'} "
++                f"error={error}"
+             ),
+         )
+     except Exception:
+@@ -1114,6 +1142,7 @@ def _record_failure(
+ ) -> None:
+     error = str(exc)
+     review_reason_code, review_reason_text = _review_reason_from_exception(exc)
++    root_cause = root_cause_from_exception(exc)
+     terminal_status = (
+         RECORDING_STATUS_NEEDS_REVIEW
+         if review_reason_code == "gpu_oom"
+@@ -1138,7 +1167,14 @@ def _record_failure(
+     except Exception:
+         pass
+     try:
+-        _append_step_log(log_path, f"failed job={job_id} type={job_type}: {error}")
++        _append_step_log(
++            log_path,
++            (
++                f"failed job={job_id} type={job_type} "
++                f"root_cause={root_cause.get('code') or 'processing_runtime_error'} "
++                f"error={error}"
++            ),
++        )
+     except Exception:
+         pass
+ 
+@@ -1153,6 +1189,7 @@ def _record_max_attempts_exceeded(
+     exc: Exception,
+ ) -> None:
+     review_reason_code, review_reason_text = _review_reason_from_exception(exc)
++    root_cause = root_cause_from_exception(exc)
+     try:
+         fail_job(job_id, _MAX_ATTEMPTS_ERROR, settings=settings)
+     except Exception:
+@@ -1172,7 +1209,8 @@ def _record_max_attempts_exceeded(
+             log_path,
+             (
+                 f"terminal failure job={job_id} type={job_type}: "
+-                f"{_MAX_ATTEMPTS_ERROR}"
++                f"wrapper={_MAX_ATTEMPTS_ERROR} "
++                f"root_cause={root_cause.get('code') or review_reason_code or 'processing_runtime_error'}"
+             ),
+         )
+     except Exception:
+@@ -1204,37 +1242,10 @@ def _load_json_list(path: Path) -> list[Any]:
+ 
+ 
+ def _review_reason_from_exception(exc: Exception) -> tuple[str, str]:
+-    message = str(exc).strip()
+-    lowered = message.lower()
+-    if is_gpu_oom_error(exc):
+-        return (
+-            "gpu_oom",
+-            (
+-                "The worker ran out of GPU memory while loading or running a heavy "
+-                "model; manual review required."
+-            ),
+-        )
+-    if isinstance(exc, LLMTruncatedResponseError) or "finish_reason=length" in lowered:
+-        return (
+-            "llm_truncated",
+-            "LLM output was truncated repeatedly; manual review required.",
+-        )
+-    if isinstance(exc, LLMEmptyContentError) or "empty message.content" in lowered:
+-        return (
+-            "llm_empty_content",
+-            "LLM returned empty content repeatedly; manual review required.",
+-        )
+-    if message == _MAX_ATTEMPTS_ERROR:
+-        return (
+-            "job_retry_limit_reached",
+-            "Processing hit the retry limit; manual review required.",
+-        )
++    cause = root_cause_from_exception(exc)
+     return (
+-        "job_retry_limit_reached",
+-        (
+-            "Processing hit the retry limit after repeated errors "
+-            f"({type(exc).__name__}); manual review required."
+-        ),
++        str(cause.get("code") or "processing_runtime_error"),
++        str(cause.get("text") or "Processing failed with a runtime error."),
+     )
+ 
+ 
+@@ -2267,6 +2278,28 @@ def _log_stage_completed(
+     )
+ 
+ 
++def _log_stage_failed(
++    log_path: Path,
++    stage_name: str,
++    *,
++    root_cause_code: str,
++    duration_ms: int | None,
++    chunk_index: str | None = None,
++    chunk_total: int | None = None,
++    attempt: int | None = None,
++) -> None:
++    message = f"stage failed: {stage_name} root_cause={root_cause_code}"
++    if chunk_index is not None:
++        message += f" chunk_index={chunk_index}"
++    if chunk_total is not None:
++        message += f" chunk_total={chunk_total}"
++    if attempt is not None:
++        message += f" attempt={attempt}"
++    if duration_ms is not None:
++        message += f" elapsed={duration_ms / 1000:.3f}s"
++    _append_step_log(log_path, message)
++
++
+ def _log_stage_skipped(
+     log_path: Path,
+     stage_name: str,
+@@ -3667,7 +3700,7 @@ def _run_precheck_pipeline(
+             mark_recording_pipeline_stage_started(
+                 recording_id,
+                 stage_name=stage.name,
+-                metadata={"label": stage.label},
++                metadata={"label": stage.label, "resumed": resumed},
+                 settings=settings,
+             )
+             stage_started = True
+@@ -3696,14 +3729,39 @@ def _run_precheck_pipeline(
+                 reason_text=stop.acknowledged_reason_text,
+             )
+         except Exception as exc:
+-            mark_recording_pipeline_stage_failed(
++            cause = root_cause_from_exception(exc)
++            row = mark_recording_pipeline_stage_failed(
+                 recording_id,
+                 stage_name=stage.name,
+-                error_code=type(exc).__name__,
+-                error_text=str(exc) or type(exc).__name__,
+-                metadata={"label": stage.label},
++                error_code=str(cause.get("code") or type(exc).__name__),
++                error_text=str(cause.get("detail") or str(exc) or type(exc).__name__),
++                metadata=_stage_failure_metadata(label=stage.label, exc=exc),
+                 settings=settings,
+             )
++            duration_ms = None
++            attempt = None
++            if isinstance(row, dict):
++                try:
++                    duration_ms = int(row.get("duration_ms"))
++                except (TypeError, ValueError):
++                    duration_ms = None
++                try:
++                    attempt = int(row.get("attempt"))
++                except (TypeError, ValueError):
++                    attempt = None
++            _log_stage_failed(
++                log_path,
++                stage.name,
++                root_cause_code=str(cause.get("code") or "processing_runtime_error"),
++                duration_ms=duration_ms,
++                chunk_index=str(cause.get("chunk_index") or "").strip() or None,
++                chunk_total=(
++                    int(cause["chunk_total"])
++                    if cause.get("chunk_total") is not None
++                    else None
 +                ),
-+                kill_message=(
-+                    f"force killing child after parent cancellation stage={stage_name} pid={process.pid}"
-+                ),
++                attempt=attempt,
 +            )
-+        raise
-+    except BaseException:
-+        if not cleanup_attempted:
-+            _terminate_child_process(
-+                reason="after parent exception",
-+                terminate_message=(
-+                    f"force terminating child after parent exception stage={stage_name} pid={process.pid}"
-+                ),
-+                kill_message=(
-+                    f"force killing child after parent exception stage={stage_name} pid={process.pid}"
-+                ),
-+            )
-         raise
-     finally:
-         parent_conn.close()
+             raise
+ 
+         metadata = dict(result.metadata)
+diff --git a/tasks/QUEUE.md b/tasks/QUEUE.md
+index 23a60b2..b99a192 100644
+--- a/tasks/QUEUE.md
++++ b/tasks/QUEUE.md
+@@ -502,7 +502,7 @@ Queue (in order)
+ - Depends on: PR-STOP-CANCEL-01
+ 
+ 99) PR-OBSERVABILITY-ROOT-CAUSE-01: Root-cause-first UI/log diagnostics: current stage, chunk N/M, primary error reason, and stop visibility
+-- Status: TODO
++- Status: DONE
+ - Tasks file: tasks/PR-OBSERVABILITY-ROOT-CAUSE-01.md
+ - Depends on: PR-STOP-CANCEL-HARD-01
+ 
+diff --git a/tests/test_cov_lan_app_ui_routes.py b/tests/test_cov_lan_app_ui_routes.py
+index cbaa1e0..129a792 100644
+--- a/tests/test_cov_lan_app_ui_routes.py
++++ b/tests/test_cov_lan_app_ui_routes.py
+@@ -216,6 +216,58 @@ def test_display_helpers_cover_timezone_duration_and_prepare_recording(
+     assert prepared_stopped["stop_eligible"] is False
+ 
+ 
++def test_stage_rows_and_diagnostics_context_cover_new_observability_helpers() -> None:
++    rows = ui_routes._pipeline_stage_rows_for_display(  # noqa: SLF001
++        "rec-observability-1",
++        rows=[
++            {
++                "stage_name": "llm_extract",
++                "status": "failed",
++                "attempt": 2,
++                "updated_at": "2026-03-12T12:00:04Z",
++                "started_at": "2026-03-12T12:00:00Z",
++                "finished_at": "2026-03-12T12:00:04Z",
++                "duration_ms": 4000,
++                "error_text": "LLM chunk 3/10 failed [llm_chunk_timeout]: timed out after 120s",
++                "metadata_json": {
++                    "root_cause_code": "llm_chunk_timeout",
++                    "root_cause_text": "LLM chunk 3/10 timed out.",
++                    "cancel_chunk_total": "bad",
++                },
++            }
++        ],
++    )
++    assert rows[0]["root_cause_code"] == "llm_chunk_timeout"
++    assert rows[0]["chunk_total"] is None
++    assert ui_routes._format_elapsed_seconds(12.2) == "00:00:12"  # noqa: SLF001
++
++    diagnostics_payload = ui_routes._recording_diagnostics_context(  # noqa: SLF001
++        recording={"status": "Processing"},
++        stage_rows=[],
++        chunk_rows=[],
++        jobs=[],
++    )
++    assert diagnostics_payload["chunk_text"] == "—"
++
++    diagnostics_payload = ui_routes._recording_diagnostics_context(  # noqa: SLF001
++        recording={
++            "status": "Processing",
++            "pipeline_stage": "llm_chunk_3",
++        },
++        stage_rows=[],
++        chunk_rows=[
++            {
++                "chunk_index": "3",
++                "chunk_total": None,
++                "status": "running",
++                "attempt": 1,
++            }
++        ],
++        jobs=[],
++    )
++    assert diagnostics_payload["chunk_text"] == "3"
++
++
+ def test_prepare_recording_for_display_ignores_duration_backfill_write_errors(
+     tmp_path: Path,
+     monkeypatch: pytest.MonkeyPatch,
 diff --git a/tests/test_cov_lan_app_worker_tasks_branches.py b/tests/test_cov_lan_app_worker_tasks_branches.py
-index 52171fa..b382a3b 100644
+index b382a3b..c6a2076 100644
 --- a/tests/test_cov_lan_app_worker_tasks_branches.py
 +++ b/tests/test_cov_lan_app_worker_tasks_branches.py
-@@ -479,7 +479,7 @@ def test_run_child_stage_operation_force_terminates_after_grace(
-     )
-     fake_ctx, process, _parent_conn, _child_conn = _fake_child_runtime(
-         parent_polls=[False, False],
--        process_alive=[True, True, True],
-+        process_alive=[True],
-     )
-     times = iter([1.0, 1.0, 2.0])
-     force_stop_calls: list[str] = []
-@@ -490,9 +490,13 @@ def test_run_child_stage_operation_force_terminates_after_grace(
-     def _next_time() -> float:
-         return next(times, 2.0)
+@@ -336,12 +336,38 @@ def test_stop_request_helpers_cover_optional_metadata_and_log_paths(tmp_path: Pa
+         "cancel_reason_text": "Cancelled by user",
+         "force_stopped": False,
+         "stop_mode": "soft",
++        "root_cause_code": "cancelled_by_user",
++        "root_cause_text": "Cancelled by user",
+     }
  
-+    def _alive_until_kill() -> bool:
-+        return process.kill_calls == 0
-+
-     monkeypatch.setattr(worker_tasks.mp, "get_context", lambda _name: fake_ctx)
-     monkeypatch.setattr(worker_tasks.asyncio, "sleep", _fast_sleep)
-     monkeypatch.setattr(worker_tasks.time, "monotonic", _next_time)
-+    monkeypatch.setattr(process, "is_alive", _alive_until_kill)
- 
-     with pytest.raises(worker_tasks.RecordingStopRequested) as exc_info:
-         asyncio.run(
-@@ -818,7 +822,7 @@ def test_run_child_stage_operation_cleans_up_on_async_cancel(
      log_path = tmp_path / "logs" / "step.log"
-     cancel_ctx, process, _parent_conn, _child_conn = _fake_child_runtime(
-         parent_polls=[False, False, False],
--        process_alive=[True, True, True],
-+        process_alive=[True, True, True, False],
+     worker_tasks._log_stop_requested(log_path=log_path, stop=stop)  # noqa: SLF001
+-    assert log_path.read_text(encoding="utf-8").strip().endswith(
+-        "cancelled_by_user stage=llm_extract checkpoint=before_llm_request requested_by=user"
++    assert (
++        "cancelled_by_user stage=llm_extract checkpoint=before_llm_request "
++        "requested_by=user root_cause=cancelled_by_user stop_mode=soft"
++    ) in log_path.read_text(encoding="utf-8")
++
++
++def test_stage_failure_helpers_cover_optional_metadata_and_log_paths(tmp_path: Path) -> None:
++    metadata = worker_tasks._stage_failure_metadata(  # noqa: SLF001
++        label="LLM Summary",
++        exc=RuntimeError(),
++    )
++    assert metadata == {
++        "label": "LLM Summary",
++        "root_cause_code": "processing_runtime_error",
++        "root_cause_text": "Processing failed with RuntimeError.",
++    }
++
++    log_path = tmp_path / "logs" / "stage-failed.log"
++    worker_tasks._log_stage_failed(  # noqa: SLF001
++        log_path,
++        "llm_extract",
++        root_cause_code="processing_runtime_error",
++        duration_ms=None,
++    )
++    assert "stage failed: llm_extract root_cause=processing_runtime_error" in log_path.read_text(
++        encoding="utf-8"
      )
-     real_sleep = asyncio.sleep
- 
-@@ -939,6 +943,131 @@ def test_run_child_stage_operation_cancel_cleanup_skips_terminate_when_dead(
-     assert process.kill_calls == 0
  
  
-+def test_run_child_stage_operation_cancel_after_cleanup_started_skips_repeat_cleanup(
-+    tmp_path: Path,
+@@ -2821,11 +2847,22 @@ def test_review_reason_helpers_cover_exception_and_routing_paths(tmp_path: Path)
+     )
+     assert gpu_oom == (
+         "gpu_oom",
+-        "The worker ran out of GPU memory while loading or running a heavy model; manual review required.",
++        "The worker ran out of GPU memory while loading or running a heavy model.",
+     )
+ 
+     generic = worker_tasks._review_reason_from_exception(RuntimeError("boom"))  # noqa: SLF001
+-    assert generic[0] == "job_retry_limit_reached"
++    assert generic == (
++        "processing_runtime_error",
++        "Processing failed with RuntimeError: boom",
++    )
++
++    chunk_timeout = worker_tasks._review_reason_from_exception(  # noqa: SLF001
++        RuntimeError("LLM chunk 3/10 failed [llm_chunk_timeout]: timed out after 120s")
++    )
++    assert chunk_timeout == (
++        "llm_chunk_timeout",
++        "LLM chunk 3/10 timed out.",
++    )
+ 
+     derived = cfg.recordings_root / "rec-review-reason-1" / "derived"
+     derived.mkdir(parents=True, exist_ok=True)
+@@ -3448,6 +3485,64 @@ def test_run_precheck_pipeline_stops_after_skipped_stage_when_stop_requested(
+     assert outcome.status == "Stopped"
+ 
+ 
++def test_run_precheck_pipeline_failure_path_handles_non_numeric_stage_row_values(
 +    monkeypatch: pytest.MonkeyPatch,
-+) -> None:
-+    log_path = tmp_path / "logs" / "step.log"
-+    cancel_ctx, process, _parent_conn, _child_conn = _fake_child_runtime(
-+        parent_polls=[True],
-+        parent_messages=[{"status": "ok", "payload": {"status": "late"}}],
-+        process_alive=[True],
-+    )
-+    join_calls = {"count": 0}
-+
-+    def _join_then_cancel(timeout=None):
-+        process.join_calls.append(timeout)
-+        join_calls["count"] += 1
-+        if join_calls["count"] == 2:
-+            raise asyncio.CancelledError
-+
-+    monkeypatch.setattr(worker_tasks.mp, "get_context", lambda _name: cancel_ctx)
-+    monkeypatch.setattr(process, "is_alive", lambda: True)
-+    monkeypatch.setattr(process, "join", _join_then_cancel)
-+
-+    with pytest.raises(asyncio.CancelledError):
-+        asyncio.run(
-+            worker_tasks._run_child_stage_operation(  # noqa: SLF001
-+                operation_name="llm_generate",
-+                payload={},
-+                stage_name="llm_extract",
-+                stop_request_getter=lambda: None,
-+                grace_seconds=5.0,
-+                log_path=log_path,
-+                checkpoint="llm_chunk_request",
-+            )
-+        )
-+
-+    assert process.terminate_calls == 1
-+    assert process.kill_calls == 0
-+
-+
-+def test_run_child_stage_operation_force_stop_raises_if_child_survives_kill(
 +    tmp_path: Path,
-+    monkeypatch: pytest.MonkeyPatch,
 +) -> None:
-+    log_path = tmp_path / "logs" / "step.log"
-+    stop_request = worker_tasks._RecordingStopRequest(  # noqa: SLF001
-+        requested_at="2026-03-12T10:00:00Z",
-+        requested_by="user",
-+        reason_code="user_stop",
-+        reason_text="Stop requested by user",
++    cfg = _db_settings(tmp_path)
++    init_db(cfg)
++    create_recording("rec-stage-failure-bad-row", source="test", source_filename="bad-row.wav", settings=cfg)
++    stage = worker_tasks.PIPELINE_STAGE_DEFINITIONS[0]
++    monkeypatch.setattr(worker_tasks, "PIPELINE_STAGE_DEFINITIONS", (stage,))
++    monkeypatch.setattr(worker_tasks, "_raise_if_stop_requested", lambda **_kwargs: None)
++    monkeypatch.setitem(
++        worker_tasks._PIPELINE_STAGE_RUNNERS,
++        stage.name,
++        lambda _ctx: (_ for _ in ()).throw(RuntimeError("boom")),
 +    )
-+    fake_ctx, process, _parent_conn, _child_conn = _fake_child_runtime(
-+        parent_polls=[False, False],
-+        process_alive=[True],
-+    )
-+    times = iter([1.0, 1.0, 2.0])
-+    force_stop_calls: list[str] = []
-+    real_sleep = asyncio.sleep
-+
-+    async def _yield_once(_seconds: float):
-+        await real_sleep(0)
-+
-+    monkeypatch.setattr(worker_tasks.mp, "get_context", lambda _name: fake_ctx)
-+    monkeypatch.setattr(worker_tasks.asyncio, "sleep", _yield_once)
-+    monkeypatch.setattr(worker_tasks.time, "monotonic", lambda: next(times, 2.0))
-+    monkeypatch.setattr(process, "is_alive", lambda: True)
-+
-+    with pytest.raises(RuntimeError, match="did not exit after forced stop"):
-+        asyncio.run(
-+            worker_tasks._run_child_stage_operation(  # noqa: SLF001
-+                operation_name="noop",
-+                payload={},
-+                stage_name="asr",
-+                stop_request_getter=lambda: stop_request,
-+                grace_seconds=0.1,
-+                log_path=log_path,
-+                checkpoint="during_heavy_stage",
-+                on_force_stop=lambda: force_stop_calls.append("cleanup"),
-+            )
-+        )
-+
-+    assert process.terminate_calls == 1
-+    assert process.kill_calls == 1
-+    assert force_stop_calls == []
-+
-+
-+def test_run_child_stage_operation_cleans_up_on_parent_exception_with_best_effort_logging(
-+    tmp_path: Path,
-+    monkeypatch: pytest.MonkeyPatch,
-+) -> None:
-+    log_path = tmp_path / "logs" / "step.log"
-+    error_ctx, process, parent_conn, child_conn = _fake_child_runtime(
-+        parent_polls=[False],
-+        process_alive=[True],
-+    )
-+
-+    def _alive_until_kill() -> bool:
-+        return process.kill_calls == 0
-+
-+    monkeypatch.setattr(worker_tasks.mp, "get_context", lambda _name: error_ctx)
-+    monkeypatch.setattr(process, "is_alive", _alive_until_kill)
 +    monkeypatch.setattr(
 +        worker_tasks,
-+        "_append_step_log",
-+        lambda *_a, **_k: (_ for _ in ()).throw(OSError("disk full")),
++        "mark_recording_pipeline_stage_failed",
++        lambda *_a, **_k: {"duration_ms": "bad", "attempt": "bad"},
 +    )
 +
-+    with pytest.raises(ValueError, match="db down"):
-+        asyncio.run(
-+            worker_tasks._run_child_stage_operation(  # noqa: SLF001
-+                operation_name="llm_generate",
-+                payload={},
-+                stage_name="llm_extract",
-+                stop_request_getter=lambda: (_ for _ in ()).throw(ValueError("db down")),
-+                grace_seconds=1.0,
-+                log_path=log_path,
-+                checkpoint="llm_chunk_request",
-+            )
++    with pytest.raises(RuntimeError, match="boom"):
++        worker_tasks._run_precheck_pipeline(  # noqa: SLF001
++            recording_id="rec-stage-failure-bad-row",
++            settings=cfg,
++            log_path=worker_tasks._step_log_path("rec-stage-failure-bad-row", JOB_TYPE_PRECHECK, cfg),
 +        )
 +
-+    assert process.terminate_calls == 1
-+    assert process.kill_calls == 1
-+    assert parent_conn.closed is True
-+    assert child_conn.closed is True
++
++def test_run_precheck_pipeline_failure_path_handles_missing_stage_row(
++    monkeypatch: pytest.MonkeyPatch,
++    tmp_path: Path,
++) -> None:
++    cfg = _db_settings(tmp_path)
++    init_db(cfg)
++    create_recording("rec-stage-failure-no-row", source="test", source_filename="no-row.wav", settings=cfg)
++    stage = worker_tasks.PIPELINE_STAGE_DEFINITIONS[0]
++    monkeypatch.setattr(worker_tasks, "PIPELINE_STAGE_DEFINITIONS", (stage,))
++    monkeypatch.setattr(worker_tasks, "_raise_if_stop_requested", lambda **_kwargs: None)
++    monkeypatch.setitem(
++        worker_tasks._PIPELINE_STAGE_RUNNERS,
++        stage.name,
++        lambda _ctx: (_ for _ in ()).throw(RuntimeError("boom")),
++    )
++    monkeypatch.setattr(
++        worker_tasks,
++        "mark_recording_pipeline_stage_failed",
++        lambda *_a, **_k: None,
++    )
++
++    with pytest.raises(RuntimeError, match="boom"):
++        worker_tasks._run_precheck_pipeline(  # noqa: SLF001
++            recording_id="rec-stage-failure-no-row",
++            settings=cfg,
++            log_path=worker_tasks._step_log_path("rec-stage-failure-no-row", JOB_TYPE_PRECHECK, cfg),
++        )
 +
 +
- def test_cancel_inflight_llm_chunk_state_preserves_completed_rows(tmp_path: Path) -> None:
-     cfg = _db_settings(tmp_path)
-     init_db(cfg)
+ def test_run_precheck_pipeline_stop_during_final_finalize_branch(
+     monkeypatch: pytest.MonkeyPatch,
+     tmp_path: Path,
+diff --git a/tests/test_db_queue.py b/tests/test_db_queue.py
+index d4bf7eb..4c2f9b0 100644
+--- a/tests/test_db_queue.py
++++ b/tests/test_db_queue.py
+@@ -1509,7 +1509,56 @@ def test_worker_retry_terminal_uses_effective_max_attempts_cap(
+     assert job["status"] == JOB_STATUS_FAILED
+     assert job["error"] == "max attempts exceeded"
+     assert recording["status"] == RECORDING_STATUS_NEEDS_REVIEW
+-    assert recording["review_reason_code"] == "job_retry_limit_reached"
++    assert recording["review_reason_code"] == "processing_runtime_error"
++    assert "retry failure" in str(recording["review_reason_text"])
++
++
++def test_worker_retry_limit_keeps_specific_llm_chunk_reason(tmp_path: Path, monkeypatch) -> None:
++    cfg = _test_settings(tmp_path)
++    monkeypatch.setenv("LAN_DATA_ROOT", str(cfg.data_root))
++    monkeypatch.setenv("LAN_RECORDINGS_ROOT", str(cfg.recordings_root))
++    monkeypatch.setenv("LAN_DB_PATH", str(cfg.db_path))
++    monkeypatch.setenv("LAN_PROM_SNAPSHOT_PATH", str(cfg.metrics_snapshot_path))
++    monkeypatch.setenv("LAN_MAX_JOB_ATTEMPTS", "3")
++
++    init_db(cfg)
++    create_recording(
++        "rec-worker-retry-specific-1",
++        source="test",
++        source_filename="retry-specific.wav",
++        settings=cfg,
++    )
++    create_job(
++        "job-worker-retry-specific-1",
++        recording_id="rec-worker-retry-specific-1",
++        job_type=JOB_TYPE_PRECHECK,
++        settings=cfg,
++    )
++
++    raw_audio = cfg.recordings_root / "rec-worker-retry-specific-1" / "raw" / "audio.wav"
++    raw_audio.parent.mkdir(parents=True, exist_ok=True)
++    _write_pcm_wav(raw_audio)
++    monkeypatch.setattr("lan_app.worker_tasks._resolve_raw_audio_path", lambda *_a, **_k: raw_audio)
++    monkeypatch.setattr(
++        "lan_app.worker_tasks.run_precheck",
++        lambda *_a, **_k: (_ for _ in ()).throw(
++            RuntimeError("LLM chunk 3/10 failed [llm_chunk_timeout]: timed out after 120s")
++        ),
++    )
++    monkeypatch.setattr("lan_app.worker_tasks.time.sleep", lambda _seconds: None)
++
++    with pytest.raises(RuntimeError, match="llm_chunk_timeout"):
++        process_job(
++            "job-worker-retry-specific-1",
++            "rec-worker-retry-specific-1",
++            JOB_TYPE_PRECHECK,
++        )
++
++    recording = get_recording("rec-worker-retry-specific-1", settings=cfg)
++    assert recording is not None
++    assert recording["status"] == RECORDING_STATUS_NEEDS_REVIEW
++    assert recording["review_reason_code"] == "llm_chunk_timeout"
++    assert recording["review_reason_text"] == "LLM chunk 3/10 timed out."
+ 
+ 
+ def test_worker_max_attempts_exceeded_before_processing_sets_terminal_state(
+diff --git a/tests/test_ui_routes.py b/tests/test_ui_routes.py
+index f9f166c..6a00fa5 100644
+--- a/tests/test_ui_routes.py
++++ b/tests/test_ui_routes.py
+@@ -25,6 +25,9 @@ from lan_app.db import (
+     get_calendar_match,
+     get_glossary_entry,
+     get_recording,
++    mark_recording_llm_chunk_started,
++    mark_recording_pipeline_stage_failed,
++    mark_recording_pipeline_stage_started,
+     list_glossary_entries,
+     list_speaker_assignments,
+     list_voice_samples,
+@@ -567,6 +570,46 @@ def test_recording_progress_endpoint_renders_expected_html(tmp_path, monkeypatch
+     assert "stage=<code>diarize</code>" in r.text
+ 
+ 
++def test_recording_progress_endpoint_shows_llm_chunk_diagnostics(tmp_path, monkeypatch):
++    cfg = _cfg(tmp_path)
++    monkeypatch.setattr(api, "_settings", cfg)
++    monkeypatch.setattr(ui_routes, "_settings", cfg)
++    init_db(cfg)
++    create_recording(
++        "rec-ui-progress-llm-1",
++        source="drive",
++        source_filename="progress-llm.mp3",
++        status=RECORDING_STATUS_PROCESSING,
++        settings=cfg,
++    )
++    set_recording_progress(
++        "rec-ui-progress-llm-1",
++        stage="llm_chunk_2_of_4",
++        progress=0.87,
++        settings=cfg,
++    )
++    mark_recording_pipeline_stage_started(
++        "rec-ui-progress-llm-1",
++        stage_name="llm_extract",
++        metadata={"label": "LLM Summary", "resumed": True},
++        settings=cfg,
++    )
++    mark_recording_llm_chunk_started(
++        "rec-ui-progress-llm-1",
++        chunk_group="extract",
++        chunk_index="2",
++        chunk_total=4,
++        settings=cfg,
++    )
++
++    c = TestClient(api.app, follow_redirects=True)
++    r = c.get("/ui/recordings/rec-ui-progress-llm-1/progress")
++    assert r.status_code == 200
++    assert "LLM Chunk 2 of 4" in r.text
++    assert "Chunk:</strong> 2/4" in r.text
++    assert "Mode:</strong> resuming" in r.text
++
++
+ def test_recording_progress_endpoint_redirects_when_terminal(tmp_path, monkeypatch):
+     cfg = _cfg(tmp_path)
+     monkeypatch.setattr(api, "_settings", cfg)
+@@ -612,6 +655,54 @@ def test_recording_detail_shows_review_reason_and_local_timestamp(tmp_path, monk
+     assert "2026-01-10 11:00:00 CET" in r.text
+ 
+ 
++def test_recording_detail_shows_primary_diagnostics_section(tmp_path, monkeypatch):
++    cfg = _cfg(tmp_path)
++    monkeypatch.setattr(api, "_settings", cfg)
++    monkeypatch.setattr(ui_routes, "_settings", cfg)
++    init_db(cfg)
++    create_recording(
++        "rec-ui-diagnostics-1",
++        source="upload",
++        source_filename="diagnostics.wav",
++        status=RECORDING_STATUS_NEEDS_REVIEW,
++        review_reason_code="job_retry_limit_reached",
++        review_reason_text="Processing hit the retry limit after repeated failures.",
++        settings=cfg,
++    )
++    create_job(
++        "job-ui-diagnostics-1",
++        recording_id="rec-ui-diagnostics-1",
++        job_type=JOB_TYPE_PRECHECK,
++        status=JOB_STATUS_FAILED,
++        error="max attempts exceeded",
++        settings=cfg,
++    )
++    mark_recording_pipeline_stage_failed(
++        "rec-ui-diagnostics-1",
++        stage_name="llm_extract",
++        error_code="llm_chunk_timeout",
++        error_text="LLM chunk 3/10 failed [llm_chunk_timeout]: timed out after 120s",
++        metadata={
++            "label": "LLM Summary",
++            "root_cause_code": "llm_chunk_timeout",
++            "root_cause_text": "LLM chunk 3/10 timed out.",
++            "root_cause_detail": "timed out after 120s",
++            "chunk_index": "3",
++            "chunk_total": 10,
++            "resumed": True,
++        },
++        settings=cfg,
++    )
++
++    c = TestClient(api.app, follow_redirects=True)
++    r = c.get("/recordings/rec-ui-diagnostics-1")
++    assert r.status_code == 200
++    assert "Diagnostics" in r.text
++    assert "LLM chunk 3/10 timed out." in r.text
++    assert "<code>llm_chunk_timeout</code>" in r.text
++    assert "Automatic retries hit the configured retry limit." in r.text
++
++
+ def test_recording_detail_persists_duration_from_sanitized_audio(tmp_path, monkeypatch):
+     cfg = _cfg(tmp_path)
+     monkeypatch.setattr(api, "_settings", cfg)
+diff --git a/lan_app/diagnostics.py b/lan_app/diagnostics.py
+new file mode 100644
+index 0000000..9a8fafa
+--- /dev/null
++++ b/lan_app/diagnostics.py
+@@ -0,0 +1,566 @@
++from __future__ import annotations
++
++from datetime import datetime, timezone
++import re
++from typing import Any, Sequence
++
++from lan_transcriber.gpu_policy import is_gpu_oom_error
++from lan_transcriber.llm_client import LLMEmptyContentError, LLMTruncatedResponseError
++
++_LLM_CHUNK_FAILURE_RE = re.compile(
++    r"^LLM chunk (?P<chunk_index>[^/]+)/(?P<chunk_total>\d+) failed "
++    r"\[(?P<code>[^\]]+)\]: (?P<detail>.+)$"
++)
++_LLM_MERGE_FAILURE_RE = re.compile(
++    r"^LLM merge failed \[(?P<code>[^\]]+)\]: (?P<detail>.+)$"
++)
++_LLM_PROGRESS_STAGE_RE = re.compile(r"^llm_chunk_(?P<chunk_index>[^_]+)_of_(?P<chunk_total>\d+)$")
++_WRAPPER_ONLY_CODES = {"job_retry_limit_reached"}
++_GENERIC_CODES = {"processing_runtime_error"}
++
++
++def _clean_text(value: object) -> str | None:
++    text = str(value or "").strip()
++    return text or None
++
++
++def _int_or_none(value: object) -> int | None:
++    try:
++        return int(value)
++    except (TypeError, ValueError):
++        return None
++
++
++def _parse_timestamp(value: object) -> datetime | None:
++    text = _clean_text(value)
++    if text is None:
++        return None
++    try:
++        return datetime.fromisoformat(text.replace("Z", "+00:00"))
++    except ValueError:
++        return None
++
++
++def _elapsed_seconds(
++    *,
++    started_at: object,
++    duration_ms: object,
++    now: datetime,
++    is_running: bool,
++) -> float | None:
++    duration_value = _int_or_none(duration_ms)
++    if duration_value is not None and duration_value >= 0:
++        return round(duration_value / 1000.0, 3)
++    if not is_running:
++        return None
++    started = _parse_timestamp(started_at)
++    if started is None:
++        return None
++    delta = (now - started).total_seconds()
++    return round(max(delta, 0.0), 3)
++
++
++def _metadata_payload(row: dict[str, Any] | None) -> dict[str, Any]:
++    if not isinstance(row, dict):
++        return {}
++    payload = row.get("metadata_json")
++    return dict(payload) if isinstance(payload, dict) else {}
++
++
++def _sort_key(row: dict[str, Any]) -> tuple[str, str, str]:
++    return (
++        str(row.get("updated_at") or ""),
++        str(row.get("finished_at") or ""),
++        str(row.get("started_at") or ""),
++    )
++
++
++def _progress_stage_chunk_position(stage_code: object) -> tuple[str | None, int | None]:
++    text = _clean_text(stage_code)
++    if text is None:
++        return None, None
++    match = _LLM_PROGRESS_STAGE_RE.fullmatch(text)
++    if match is None:
++        return None, None
++    return match.group("chunk_index"), _int_or_none(match.group("chunk_total"))
++
++
++def stage_name_for_progress(stage_code: object) -> str | None:
++    text = _clean_text(stage_code)
++    if text is None:
++        return None
++    if text.startswith("llm_chunk_") or text in {"llm", "llm_extract", "llm_merge"}:
++        return "llm_extract"
++    return text
++
++
++def _cause_specificity(code: str | None) -> int:
++    if code in _WRAPPER_ONLY_CODES:
++        return 0
++    if code in _GENERIC_CODES:
++        return 1
++    if code:
++        return 2
++    return -1
++
++
++def _humanize_unknown_code(code: str | None) -> str:
++    if code is None:
++        return "Processing issue"
++    return code.replace("_", " ").strip().capitalize() or "Processing issue"
++
++
++def root_cause_summary(
++    code: str | None,
++    *,
++    explicit_text: str | None = None,
++    chunk_index: str | None = None,
++    chunk_total: int | None = None,
++) -> str:
++    if code == "gpu_oom":
++        return "The worker ran out of GPU memory while loading or running a heavy model."
++    if code == "llm_chunk_timeout":
++        if chunk_index and chunk_total:
++            return f"LLM chunk {chunk_index}/{chunk_total} timed out."
++        return "An LLM chunk timed out."
++    if code == "llm_chunk_request_timeout":
++        if chunk_index and chunk_total:
++            return f"LLM chunk {chunk_index}/{chunk_total} timed out waiting on the model service."
++        return "An LLM chunk request timed out waiting on the model service."
++    if code == "llm_chunk_parse_error":
++        if chunk_index and chunk_total:
++            return f"LLM chunk {chunk_index}/{chunk_total} returned an invalid response."
++        return "An LLM chunk returned an invalid response."
++    if code == "llm_chunk_connection_error":
++        if chunk_index and chunk_total:
++            return f"LLM chunk {chunk_index}/{chunk_total} lost the model connection."
++        return "An LLM chunk lost the model connection."
++    if code == "llm_chunk_runtime_error":
++        if chunk_index and chunk_total:
++            return f"LLM chunk {chunk_index}/{chunk_total} failed during processing."
++        return "An LLM chunk failed during processing."
++    if code == "llm_merge_timeout":
++        return "The final LLM merge step timed out."
++    if code == "llm_merge_request_timeout":
++        return "The final LLM merge request timed out waiting on the model service."
++    if code == "llm_merge_connection_error":
++        return "The final LLM merge step lost the model connection."
++    if code in {"llm_merge_parse_error", "llm_merge_error"}:
++        return "The final LLM merge response could not be parsed."
++    if code == "cancelled_by_user":
++        return "Processing was cancelled by the user."
++    if code == "force_stopped_by_user":
++        return "Processing had to be force-stopped after the grace timeout."
++    if code == "calendar_time_mismatch":
++        return "The recording time does not match the selected calendar event closely enough."
++    if code == "suspicious_capture_time":
++        return "The recording capture time looks suspicious and should be checked."
++    if code == "llm_truncated":
++        return "The LLM output was truncated repeatedly."
++    if code == "llm_empty_content":
++        return "The LLM returned empty content repeatedly."
++    if code == "processing_runtime_error":
++        return explicit_text or "Processing failed with a runtime error."
++    if code == "job_retry_limit_reached":
++        return explicit_text or "Processing hit the retry limit after repeated failures."
++    if explicit_text:
++        return explicit_text
++    return _humanize_unknown_code(code)
++
++
++def _root_cause_payload(
++    *,
++    code: str | None,
++    explicit_text: str | None = None,
++    detail_text: str | None = None,
++    chunk_index: str | None = None,
++    chunk_total: int | None = None,
++    source: str,
++) -> dict[str, Any]:
++    summary = root_cause_summary(
++        code,
++        explicit_text=explicit_text,
++        chunk_index=chunk_index,
++        chunk_total=chunk_total,
++    )
++    detail = detail_text or explicit_text
++    if detail == summary:
++        detail = None
++    return {
++        "code": code,
++        "text": summary,
++        "detail": detail,
++        "chunk_index": chunk_index,
++        "chunk_total": chunk_total,
++        "source": source,
++    }
++
++
++def root_cause_from_exception(exc: Exception) -> dict[str, Any]:
++    message = _clean_text(str(exc))
++    lowered = (message or "").lower()
++    if is_gpu_oom_error(exc):
++        return _root_cause_payload(
++            code="gpu_oom",
++            explicit_text=message,
++            detail_text=message,
++            source="exception",
++        )
++    if isinstance(exc, LLMTruncatedResponseError) or "finish_reason=length" in lowered:
++        return _root_cause_payload(
++            code="llm_truncated",
++            explicit_text="The LLM output was truncated repeatedly; manual review required.",
++            detail_text=message,
++            source="exception",
++        )
++    if isinstance(exc, LLMEmptyContentError) or "empty message.content" in lowered:
++        return _root_cause_payload(
++            code="llm_empty_content",
++            explicit_text="The LLM returned empty content repeatedly; manual review required.",
++            detail_text=message,
++            source="exception",
++        )
++    if message:
++        match = _LLM_CHUNK_FAILURE_RE.fullmatch(message)
++        if match is not None:
++            return _root_cause_payload(
++                code=match.group("code"),
++                detail_text=match.group("detail"),
++                chunk_index=match.group("chunk_index"),
++                chunk_total=_int_or_none(match.group("chunk_total")),
++                source="exception",
++            )
++        match = _LLM_MERGE_FAILURE_RE.fullmatch(message)
++        if match is not None:
++            return _root_cause_payload(
++                code=match.group("code"),
++                detail_text=match.group("detail"),
++                source="exception",
++            )
++    if message == "max attempts exceeded":
++        return _root_cause_payload(
++            code="job_retry_limit_reached",
++            explicit_text="Processing hit the retry limit; manual review required.",
++            detail_text=message,
++            source="exception",
++        )
++    return _root_cause_payload(
++        code="processing_runtime_error",
++        explicit_text=(
++            f"Processing failed with {type(exc).__name__}: {message}"
++            if message
++            else f"Processing failed with {type(exc).__name__}."
++        ),
++        detail_text=message,
++        source="exception",
++    )
++
++
++def root_cause_from_stage_row(row: dict[str, Any] | None) -> dict[str, Any] | None:
++    if not isinstance(row, dict):
++        return None
++    metadata = _metadata_payload(row)
++    status = _clean_text(row.get("status")) or ""
++    if status == "cancelled" or metadata.get("cancelled_by_user"):
++        code = _clean_text(metadata.get("root_cause_code"))
++        if code is None:
++            code = "force_stopped_by_user" if metadata.get("force_stopped") else "cancelled_by_user"
++        return _root_cause_payload(
++            code=code,
++            explicit_text=_clean_text(metadata.get("root_cause_text"))
++            or _clean_text(metadata.get("cancel_reason_text")),
++            detail_text=_clean_text(metadata.get("root_cause_detail"))
++            or _clean_text(metadata.get("cancel_reason_text")),
++            chunk_index=_clean_text(metadata.get("cancel_chunk_index"))
++            or _clean_text(metadata.get("chunk_index")),
++            chunk_total=_int_or_none(metadata.get("cancel_chunk_total"))
++            or _int_or_none(metadata.get("chunk_total")),
++            source="stage",
++        )
++    code = _clean_text(metadata.get("root_cause_code"))
++    text = _clean_text(metadata.get("root_cause_text"))
++    detail = _clean_text(metadata.get("root_cause_detail")) or _clean_text(row.get("error_text"))
++    chunk_index = _clean_text(metadata.get("chunk_index"))
++    chunk_total = _int_or_none(metadata.get("chunk_total"))
++    if code is None and detail:
++        parsed = root_cause_from_message(detail, source="stage")
++        code = parsed.get("code")
++        text = parsed.get("text")
++        detail = parsed.get("detail")
++        chunk_index = parsed.get("chunk_index") or chunk_index
++        chunk_total = parsed.get("chunk_total") or chunk_total
++    if code is None and status != "failed":
++        return None
++    return _root_cause_payload(
++        code=code or _clean_text(row.get("error_code")) or "processing_runtime_error",
++        explicit_text=text,
++        detail_text=detail,
++        chunk_index=chunk_index,
++        chunk_total=chunk_total,
++        source="stage",
++    )
++
++
++def root_cause_from_chunk_row(row: dict[str, Any] | None) -> dict[str, Any] | None:
++    if not isinstance(row, dict):
++        return None
++    status = _clean_text(row.get("status")) or ""
++    if status not in {"failed", "cancelled", "split"}:
++        return None
++    code = _clean_text(row.get("error_code"))
++    if status == "cancelled":
++        code = "cancelled_by_user"
++    return _root_cause_payload(
++        code=code or "processing_runtime_error",
++        detail_text=_clean_text(row.get("error_text")),
++        chunk_index=_clean_text(row.get("chunk_index")),
++        chunk_total=_int_or_none(row.get("chunk_total")),
++        source="chunk",
++    )
++
++
++def root_cause_from_message(message: str, *, source: str) -> dict[str, Any]:
++    text = _clean_text(message)
++    if text is None:
++        return _root_cause_payload(
++            code="processing_runtime_error",
++            explicit_text="Processing failed with a runtime error.",
++            source=source,
++        )
++    chunk_match = _LLM_CHUNK_FAILURE_RE.fullmatch(text)
++    if chunk_match is not None:
++        return _root_cause_payload(
++            code=chunk_match.group("code"),
++            detail_text=chunk_match.group("detail"),
++            chunk_index=chunk_match.group("chunk_index"),
++            chunk_total=_int_or_none(chunk_match.group("chunk_total")),
++            source=source,
++        )
++    merge_match = _LLM_MERGE_FAILURE_RE.fullmatch(text)
++    if merge_match is not None:
++        return _root_cause_payload(
++            code=merge_match.group("code"),
++            detail_text=merge_match.group("detail"),
++            source=source,
++        )
++    return _root_cause_payload(
++        code="processing_runtime_error",
++        explicit_text=text,
++        detail_text=text,
++        source=source,
++    )
++
++
++def _recording_review_cause(recording: dict[str, Any]) -> dict[str, Any] | None:
++    code = _clean_text(recording.get("review_reason_code"))
++    text = _clean_text(recording.get("review_reason_text"))
++    if code is None and text is None:
++        return None
++    return _root_cause_payload(
++        code=code,
++        explicit_text=text,
++        detail_text=text,
++        source="recording",
++    )
++
++
++def _recording_stop_cause(recording: dict[str, Any]) -> dict[str, Any] | None:
++    status = _clean_text(recording.get("status")) or ""
++    if status != "Stopped":
++        return None
++    reason_text = _clean_text(recording.get("cancel_reason_text"))
++    forced = bool(reason_text and "force-stopped" in reason_text.lower())
++    return _root_cause_payload(
++        code="force_stopped_by_user" if forced else "cancelled_by_user",
++        explicit_text=reason_text,
++        detail_text=reason_text,
++        source="recording",
++    )
++
++
++def _latest_job_wrapper(jobs: Sequence[dict[str, Any]]) -> str | None:
++    for job in jobs:
++        error = _clean_text(job.get("error"))
++        if error is None:
++            continue
++        if error == "cancelled_by_user":
++            continue
++        if error == "max attempts exceeded":
++            return "Automatic retries hit the configured retry limit."
++        return error
++    return None
++
++
++def _select_current_stage_row(
++    recording: dict[str, Any],
++    stage_rows: Sequence[dict[str, Any]],
++) -> dict[str, Any] | None:
++    target_stage = stage_name_for_progress(recording.get("pipeline_stage"))
++    if target_stage is not None:
++        for row in stage_rows:
++            if _clean_text(row.get("stage_name")) == target_stage:
++                return row
++    if not stage_rows:
++        return None
++    return max(stage_rows, key=_sort_key)
++
++
++def _select_current_chunk_row(
++    recording: dict[str, Any],
++    chunk_rows: Sequence[dict[str, Any]],
++) -> dict[str, Any] | None:
++    if not chunk_rows:
++        return None
++    chunk_index, _chunk_total = _progress_stage_chunk_position(recording.get("pipeline_stage"))
++    if chunk_index is not None:
++        for row in chunk_rows:
++            if _clean_text(row.get("chunk_index")) == chunk_index:
++                return row
++    priority = {"running": 5, "cancelled": 4, "failed": 3, "split": 2, "completed": 1}
++    return max(
++        chunk_rows,
++        key=lambda row: (
++            priority.get(_clean_text(row.get("status")) or "", 0),
++            _sort_key(row),
++        ),
++    )
++
++
++def build_recording_diagnostics(
++    *,
++    recording: dict[str, Any],
++    stage_rows: Sequence[dict[str, Any]],
++    chunk_rows: Sequence[dict[str, Any]],
++    jobs: Sequence[dict[str, Any]],
++    now: datetime | None = None,
++) -> dict[str, Any]:
++    current_time = now or datetime.now(tz=timezone.utc)
++    current_stage_row = _select_current_stage_row(recording, stage_rows)
++    current_chunk_row = _select_current_chunk_row(recording, chunk_rows)
++    current_stage_code = (
++        _clean_text(recording.get("pipeline_stage"))
++        or _clean_text(current_stage_row.get("stage_name") if current_stage_row else None)
++        or "waiting"
++    )
++    current_chunk_index, current_chunk_total = _progress_stage_chunk_position(current_stage_code)
++    if current_chunk_row is not None:
++        current_chunk_index = _clean_text(current_chunk_row.get("chunk_index")) or current_chunk_index
++        current_chunk_total = _int_or_none(current_chunk_row.get("chunk_total")) or current_chunk_total
++
++    stop_requested = bool(
++        _clean_text(recording.get("cancel_requested_at"))
++        or (_clean_text(recording.get("status")) in {"Stopping", "Stopped"})
++    )
++    stop_mode = None
++    stop_reason_text = _clean_text(recording.get("cancel_reason_text"))
++    if stop_reason_text and "force-stopped" in stop_reason_text.lower():
++        stop_mode = "forced"
++    elif stop_requested:
++        stop_mode = "soft"
++
++    recording_cause = _recording_review_cause(recording)
++    stop_cause = _recording_stop_cause(recording)
++    stage_cause = next(
++        (
++            root_cause_from_stage_row(row)
++            for row in sorted(stage_rows, key=_sort_key, reverse=True)
++            if root_cause_from_stage_row(row) is not None
++        ),
++        None,
++    )
++    chunk_cause = next(
++        (
++            root_cause_from_chunk_row(row)
++            for row in sorted(chunk_rows, key=_sort_key, reverse=True)
++            if root_cause_from_chunk_row(row) is not None
++        ),
++        None,
++    )
++
++    candidates = [candidate for candidate in (recording_cause, stage_cause, chunk_cause) if candidate is not None]
++    primary = stop_cause
++    if primary is None and candidates:
++        prioritized: list[tuple[int, int, dict[str, Any]]] = []
++        source_priority = {"recording": 3, "stage": 2, "chunk": 1}
++        for candidate in candidates:
++            prioritized.append(
++                (
++                    _cause_specificity(candidate.get("code")),
++                    source_priority.get(str(candidate.get("source") or ""), 0),
++                    candidate,
++                )
++            )
++        prioritized.sort(key=lambda item: (item[0], item[1]), reverse=True)
++        primary = prioritized[0][2]
++
++    wrapper_text = None
++    latest_wrapper = _latest_job_wrapper(jobs)
++    if (
++        recording_cause is not None
++        and recording_cause.get("code") in _WRAPPER_ONLY_CODES
++        and (primary or {}).get("code") != recording_cause.get("code")
++    ):
++        wrapper_text = latest_wrapper or str(recording_cause.get("text") or "")
++    elif latest_wrapper is not None and latest_wrapper != (primary or {}).get("detail"):
++        wrapper_text = latest_wrapper
++
++    current_stage_status = _clean_text(
++        current_stage_row.get("status") if current_stage_row else None
++    ) or ("running" if _clean_text(recording.get("status")) in {"Processing", "Stopping"} else None)
++    is_resuming = False
++    if current_stage_row is not None and (_int_or_none(current_stage_row.get("attempt")) or 0) > 1:
++        is_resuming = True
++    elif current_chunk_row is not None and (_int_or_none(current_chunk_row.get("attempt")) or 0) > 1:
++        is_resuming = True
++    elif current_stage_row is not None and bool(_metadata_payload(current_stage_row).get("resumed")):
++        is_resuming = True
++
++    return {
++        "current_stage_code": current_stage_code,
++        "current_stage_status": current_stage_status,
++        "current_stage_attempt": (
++            max(_int_or_none(current_stage_row.get("attempt")) or 0, 0)
++            if current_stage_row is not None
++            else 0
++        ),
++        "stage_elapsed_seconds": _elapsed_seconds(
++            started_at=current_stage_row.get("started_at") if current_stage_row else None,
++            duration_ms=current_stage_row.get("duration_ms") if current_stage_row else None,
++            now=current_time,
++            is_running=current_stage_status == "running",
++        ),
++        "current_chunk_index": current_chunk_index,
++        "current_chunk_total": current_chunk_total,
++        "current_chunk_attempt": (
++            max(_int_or_none(current_chunk_row.get("attempt")) or 0, 0)
++            if current_chunk_row is not None
++            else 0
++        ),
++        "chunk_elapsed_seconds": _elapsed_seconds(
++            started_at=current_chunk_row.get("started_at") if current_chunk_row else None,
++            duration_ms=current_chunk_row.get("duration_ms") if current_chunk_row else None,
++            now=current_time,
++            is_running=_clean_text(current_chunk_row.get("status") if current_chunk_row else None) == "running",
++        ),
++        "is_resuming": is_resuming,
++        "is_stopping": _clean_text(recording.get("status")) == "Stopping",
++        "is_stopped": _clean_text(recording.get("status")) == "Stopped",
++        "stop_requested": stop_requested,
++        "stop_mode": stop_mode,
++        "stop_reason_text": stop_reason_text or ("Stop requested by user." if stop_requested else None),
++        "primary_reason_code": _clean_text(primary.get("code")) if primary else None,
++        "primary_reason_text": _clean_text(primary.get("text")) if primary else None,
++        "primary_reason_detail": _clean_text(primary.get("detail")) if primary else None,
++        "wrapper_reason_text": _clean_text(wrapper_text),
++    }
++
++
++__all__ = [
++    "build_recording_diagnostics",
++    "root_cause_from_chunk_row",
++    "root_cause_from_exception",
++    "root_cause_from_message",
++    "root_cause_from_stage_row",
++    "root_cause_summary",
++    "stage_name_for_progress",
++]
+diff --git a/tests/test_diagnostics.py b/tests/test_diagnostics.py
+new file mode 100644
+index 0000000..61e0ce6
+--- /dev/null
++++ b/tests/test_diagnostics.py
+@@ -0,0 +1,507 @@
++from __future__ import annotations
++
++from datetime import datetime, timezone
++
++from lan_app import diagnostics
++from lan_transcriber.llm_client import LLMEmptyContentError, LLMTruncatedResponseError
++
++
++def test_diagnostics_internal_helpers_cover_scalar_and_time_paths() -> None:
++    now = datetime(2026, 3, 12, 12, 0, 5, tzinfo=timezone.utc)
++
++    assert diagnostics._clean_text("  hello  ") == "hello"  # noqa: SLF001
++    assert diagnostics._clean_text("   ") is None  # noqa: SLF001
++    assert diagnostics._int_or_none("7") == 7  # noqa: SLF001
++    assert diagnostics._int_or_none("bad") is None  # noqa: SLF001
++    assert diagnostics._parse_timestamp("2026-03-12T12:00:00Z") == datetime(  # noqa: SLF001
++        2026,
++        3,
++        12,
++        12,
++        0,
++        0,
++        tzinfo=timezone.utc,
++    )
++    assert diagnostics._parse_timestamp("bad") is None  # noqa: SLF001
++    assert diagnostics._elapsed_seconds(  # noqa: SLF001
++        started_at="2026-03-12T12:00:00Z",
++        duration_ms=1500,
++        now=now,
++        is_running=False,
++    ) == 1.5
++    assert diagnostics._elapsed_seconds(  # noqa: SLF001
++        started_at="2026-03-12T12:00:00Z",
++        duration_ms=None,
++        now=now,
++        is_running=False,
++    ) is None
++    assert diagnostics._elapsed_seconds(  # noqa: SLF001
++        started_at="2026-03-12T12:00:00Z",
++        duration_ms=None,
++        now=now,
++        is_running=True,
++    ) == 5.0
++    assert diagnostics._elapsed_seconds(  # noqa: SLF001
++        started_at="not-a-time",
++        duration_ms=None,
++        now=now,
++        is_running=True,
++    ) is None
++    assert diagnostics._metadata_payload(None) == {}  # noqa: SLF001
++    assert diagnostics._metadata_payload({"metadata_json": []}) == {}  # noqa: SLF001
++    assert diagnostics._metadata_payload({"metadata_json": {"a": 1}}) == {"a": 1}  # noqa: SLF001
++    assert diagnostics._sort_key({"updated_at": "u", "finished_at": "f", "started_at": "s"}) == (  # noqa: SLF001
++        "u",
++        "f",
++        "s",
++    )
++    assert diagnostics._progress_stage_chunk_position("llm_chunk_2_of_5") == ("2", 5)  # noqa: SLF001
++    assert diagnostics._progress_stage_chunk_position("diarize") == (None, None)  # noqa: SLF001
++    assert diagnostics.stage_name_for_progress("llm_chunk_2_of_5") == "llm_extract"
++    assert diagnostics.stage_name_for_progress("llm_merge") == "llm_extract"
++    assert diagnostics.stage_name_for_progress("diarize") == "diarize"
++    assert diagnostics.stage_name_for_progress(None) is None
++    assert diagnostics._cause_specificity("job_retry_limit_reached") == 0  # noqa: SLF001
++    assert diagnostics._cause_specificity("processing_runtime_error") == 1  # noqa: SLF001
++    assert diagnostics._cause_specificity("gpu_oom") == 2  # noqa: SLF001
++    assert diagnostics._cause_specificity(None) == -1  # noqa: SLF001
++    assert diagnostics._humanize_unknown_code(None) == "Processing issue"  # noqa: SLF001
++    assert diagnostics._humanize_unknown_code("chunk_parse_error") == "Chunk parse error"  # noqa: SLF001
++
++
++def test_root_cause_summary_and_message_paths() -> None:
++    assert diagnostics.root_cause_summary("gpu_oom") == (
++        "The worker ran out of GPU memory while loading or running a heavy model."
++    )
++    assert diagnostics.root_cause_summary(
++        "llm_chunk_timeout",
++        chunk_index="3",
++        chunk_total=10,
++    ) == "LLM chunk 3/10 timed out."
++    assert diagnostics.root_cause_summary("llm_chunk_timeout") == "An LLM chunk timed out."
++    assert diagnostics.root_cause_summary("llm_chunk_request_timeout") == (
++        "An LLM chunk request timed out waiting on the model service."
++    )
++    assert diagnostics.root_cause_summary(
++        "llm_chunk_request_timeout",
++        chunk_index="4",
++        chunk_total=8,
++    ) == "LLM chunk 4/8 timed out waiting on the model service."
++    assert diagnostics.root_cause_summary("llm_chunk_parse_error") == (
++        "An LLM chunk returned an invalid response."
++    )
++    assert diagnostics.root_cause_summary("llm_chunk_connection_error") == (
++        "An LLM chunk lost the model connection."
++    )
++    assert diagnostics.root_cause_summary("llm_chunk_runtime_error") == (
++        "An LLM chunk failed during processing."
++    )
++    assert diagnostics.root_cause_summary(
++        "llm_chunk_runtime_error",
++        chunk_index="6",
++        chunk_total=9,
++    ) == "LLM chunk 6/9 failed during processing."
++    assert diagnostics.root_cause_summary("llm_merge_request_timeout") == (
++        "The final LLM merge request timed out waiting on the model service."
++    )
++    assert diagnostics.root_cause_summary("calendar_time_mismatch") == (
++        "The recording time does not match the selected calendar event closely enough."
++    )
++    assert diagnostics.root_cause_summary("suspicious_capture_time") == (
++        "The recording capture time looks suspicious and should be checked."
++    )
++    assert diagnostics.root_cause_summary("llm_merge_error") == (
++        "The final LLM merge response could not be parsed."
++    )
++    assert diagnostics.root_cause_summary(
++        "processing_runtime_error",
++        explicit_text="boom",
++    ) == "boom"
++    assert diagnostics.root_cause_summary("job_retry_limit_reached") == (
++        "Processing hit the retry limit after repeated failures."
++    )
++    assert diagnostics.root_cause_summary("custom_reason", explicit_text="custom text") == "custom text"
++
++    empty = diagnostics.root_cause_from_message("", source="stage")
++    assert empty["code"] == "processing_runtime_error"
++    assert empty["text"] == "Processing failed with a runtime error."
++    assert empty["detail"] is None
++
++    chunk = diagnostics.root_cause_from_message(
++        "LLM chunk 3/10 failed [llm_chunk_timeout]: timed out after 12s",
++        source="stage",
++    )
++    assert chunk == {
++        "code": "llm_chunk_timeout",
++        "text": "LLM chunk 3/10 timed out.",
++        "detail": "timed out after 12s",
++        "chunk_index": "3",
++        "chunk_total": 10,
++        "source": "stage",
++    }
++
++    merge = diagnostics.root_cause_from_message(
++        "LLM merge failed [llm_merge_connection_error]: network down",
++        source="chunk",
++    )
++    assert merge["code"] == "llm_merge_connection_error"
++    assert merge["text"] == "The final LLM merge step lost the model connection."
++    assert merge["detail"] == "network down"
++
++    generic = diagnostics.root_cause_from_message("plain boom", source="stage")
++    assert generic["code"] == "processing_runtime_error"
++    assert generic["text"] == "plain boom"
++    assert generic["detail"] is None
++    assert diagnostics.root_cause_summary("mystery_code") == "Mystery code"
++
++
++def test_root_cause_from_exception_covers_specific_and_fallback_paths() -> None:
++    truncated = diagnostics.root_cause_from_exception(
++        LLMTruncatedResponseError(
++            host="localhost",
++            model="test-model",
++            max_tokens=123,
++            request_id="req-1",
++            raw_response={},
++        )
++    )
++    assert truncated["code"] == "llm_truncated"
++    assert truncated["detail"]
++
++    empty = diagnostics.root_cause_from_exception(
++        LLMEmptyContentError(
++            host="localhost",
++            model="test-model",
++            max_tokens=123,
++            finish_reason="stop",
++            request_id="req-2",
++            raw_response={},
++        )
++    )
++    assert empty["code"] == "llm_empty_content"
++    assert empty["detail"]
++
++    gpu = diagnostics.root_cause_from_exception(
++        RuntimeError("CUDA out of memory while loading faster-whisper")
++    )
++    assert gpu["code"] == "gpu_oom"
++    assert gpu["detail"] == "CUDA out of memory while loading faster-whisper"
++
++    chunk = diagnostics.root_cause_from_exception(
++        RuntimeError("LLM chunk 2/4 failed [llm_chunk_parse_error]: json_object_not_found")
++    )
++    assert chunk["code"] == "llm_chunk_parse_error"
++    assert chunk["chunk_index"] == "2"
++    assert chunk["chunk_total"] == 4
++
++    merge = diagnostics.root_cause_from_exception(
++        RuntimeError("LLM merge failed [llm_merge_timeout]: timed out after 20s")
++    )
++    assert merge["code"] == "llm_merge_timeout"
++    assert merge["detail"] == "timed out after 20s"
++
++    retry_limit = diagnostics.root_cause_from_exception(RuntimeError("max attempts exceeded"))
++    assert retry_limit["code"] == "job_retry_limit_reached"
++
++    generic = diagnostics.root_cause_from_exception(RuntimeError())
++    assert generic["code"] == "processing_runtime_error"
++    assert generic["text"] == "Processing failed with RuntimeError."
++    assert generic["detail"] is None
++
++
++def test_root_cause_from_stage_and_chunk_rows_cover_cancelled_and_fallbacks() -> None:
++    assert diagnostics.root_cause_from_stage_row(None) is None
++    assert diagnostics.root_cause_from_chunk_row(None) is None
++
++    forced_cancel = diagnostics.root_cause_from_stage_row(
++        {
++            "status": "cancelled",
++            "metadata_json": {
++                "cancelled_by_user": True,
++                "force_stopped": True,
++                "cancel_reason_text": "Force-stopped after grace timeout",
++                "cancel_chunk_index": "4",
++                "cancel_chunk_total": 8,
++            },
++        }
++    )
++    assert forced_cancel == {
++        "code": "force_stopped_by_user",
++        "text": "Processing had to be force-stopped after the grace timeout.",
++        "detail": "Force-stopped after grace timeout",
++        "chunk_index": "4",
++        "chunk_total": 8,
++        "source": "stage",
++    }
++
++    stage_metadata = diagnostics.root_cause_from_stage_row(
++        {
++            "status": "failed",
++            "error_code": "RuntimeError",
++            "error_text": "plain failure",
++            "metadata_json": {
++                "root_cause_code": "llm_merge_parse_error",
++                "root_cause_text": "The final LLM merge response could not be parsed.",
++                "root_cause_detail": "json_object_not_found",
++            },
++        }
++    )
++    assert stage_metadata["code"] == "llm_merge_parse_error"
++    assert stage_metadata["detail"] == "json_object_not_found"
++
++    parsed_stage = diagnostics.root_cause_from_stage_row(
++        {
++            "status": "failed",
++            "error_code": "RuntimeError",
++            "error_text": "LLM chunk 5/9 failed [llm_chunk_connection_error]: network down",
++            "metadata_json": {},
++        }
++    )
++    assert parsed_stage["code"] == "llm_chunk_connection_error"
++    assert parsed_stage["chunk_index"] == "5"
++    assert parsed_stage["chunk_total"] == 9
++
++    assert diagnostics.root_cause_from_stage_row(
++        {"status": "completed", "error_text": None, "metadata_json": {}}
++    ) is None
++
++    assert diagnostics.root_cause_from_chunk_row(
++        {"status": "running", "chunk_index": "1", "chunk_total": 2}
++    ) is None
++    cancelled_chunk = diagnostics.root_cause_from_chunk_row(
++        {"status": "cancelled", "chunk_index": "7", "chunk_total": 9, "error_text": "ignored"}
++    )
++    assert cancelled_chunk["code"] == "cancelled_by_user"
++    split_chunk = diagnostics.root_cause_from_chunk_row(
++        {
++            "status": "split",
++            "error_code": "llm_chunk_timeout",
++            "error_text": "timed out after 20s",
++            "chunk_index": "3",
++            "chunk_total": 6,
++        }
++    )
++    assert split_chunk["code"] == "llm_chunk_timeout"
++    assert split_chunk["detail"] == "timed out after 20s"
++
++
++def test_build_recording_diagnostics_prefers_specific_stage_cause_over_retry_wrapper() -> None:
++    now = datetime(2026, 3, 12, 12, 0, 5, tzinfo=timezone.utc)
++    diagnostics_payload = diagnostics.build_recording_diagnostics(
++        recording={
++            "status": "NeedsReview",
++            "review_reason_code": "job_retry_limit_reached",
++            "review_reason_text": "Processing hit the retry limit after repeated failures.",
++            "pipeline_stage": None,
++        },
++        stage_rows=[
++            {
++                "stage_name": "llm_extract",
++                "status": "failed",
++                "attempt": 2,
++                "started_at": "2026-03-12T12:00:00Z",
++                "duration_ms": 3000,
++                "updated_at": "2026-03-12T12:00:03Z",
++                "error_code": "llm_chunk_timeout",
++                "error_text": "LLM chunk 3/10 failed [llm_chunk_timeout]: timed out after 120s",
++                "metadata_json": {
++                    "root_cause_code": "llm_chunk_timeout",
++                    "root_cause_text": "LLM chunk 3/10 timed out.",
++                    "root_cause_detail": "timed out after 120s",
++                    "chunk_index": "3",
++                    "chunk_total": 10,
++                    "resumed": True,
++                },
++            }
++        ],
++        chunk_rows=[
++            {
++                "chunk_index": "3",
++                "chunk_total": 10,
++                "status": "failed",
++                "attempt": 2,
++                "started_at": "2026-03-12T12:00:01Z",
++                "duration_ms": 2000,
++                "updated_at": "2026-03-12T12:00:03Z",
++                "error_code": "llm_chunk_timeout",
++                "error_text": "timed out after 120s",
++            }
++        ],
++        jobs=[{"error": "max attempts exceeded"}],
++        now=now,
++    )
++
++    assert diagnostics_payload["current_stage_code"] == "llm_extract"
++    assert diagnostics_payload["current_stage_status"] == "failed"
++    assert diagnostics_payload["current_stage_attempt"] == 2
++    assert diagnostics_payload["stage_elapsed_seconds"] == 3.0
++    assert diagnostics_payload["current_chunk_index"] == "3"
++    assert diagnostics_payload["current_chunk_total"] == 10
++    assert diagnostics_payload["current_chunk_attempt"] == 2
++    assert diagnostics_payload["chunk_elapsed_seconds"] == 2.0
++    assert diagnostics_payload["is_resuming"] is True
++    assert diagnostics_payload["primary_reason_code"] == "llm_chunk_timeout"
++    assert diagnostics_payload["primary_reason_text"] == "LLM chunk 3/10 timed out."
++    assert diagnostics_payload["primary_reason_detail"] == "timed out after 120s"
++    assert diagnostics_payload["wrapper_reason_text"] == "Automatic retries hit the configured retry limit."
++
++
++def test_build_recording_diagnostics_stopping_and_stopped_paths() -> None:
++    now = datetime(2026, 3, 12, 12, 0, 5, tzinfo=timezone.utc)
++
++    stopping = diagnostics.build_recording_diagnostics(
++        recording={
++            "status": "Stopping",
++            "pipeline_stage": "llm_chunk_2_of_4",
++            "cancel_requested_at": "2026-03-12T12:00:04Z",
++            "cancel_reason_text": None,
++        },
++        stage_rows=[
++            {
++                "stage_name": "llm_extract",
++                "status": "running",
++                "attempt": 1,
++                "started_at": "2026-03-12T12:00:00Z",
++                "duration_ms": None,
++                "updated_at": "2026-03-12T12:00:04Z",
++                "metadata_json": {},
++            }
++        ],
++        chunk_rows=[
++            {
++                "chunk_index": "2",
++                "chunk_total": 4,
++                "status": "running",
++                "attempt": 1,
++                "started_at": "2026-03-12T12:00:02Z",
++                "duration_ms": None,
++                "updated_at": "2026-03-12T12:00:04Z",
++            }
++        ],
++        jobs=[{"error": "cancelled_by_user"}],
++        now=now,
++    )
++    assert stopping["current_stage_code"] == "llm_chunk_2_of_4"
++    assert stopping["current_chunk_index"] == "2"
++    assert stopping["current_chunk_total"] == 4
++    assert stopping["stop_requested"] is True
++    assert stopping["stop_mode"] == "soft"
++    assert stopping["stop_reason_text"] == "Stop requested by user."
++    assert stopping["primary_reason_code"] is None
++    assert stopping["wrapper_reason_text"] is None
++    assert stopping["stage_elapsed_seconds"] == 5.0
++    assert stopping["chunk_elapsed_seconds"] == 3.0
++
++    stopped = diagnostics.build_recording_diagnostics(
++        recording={
++            "status": "Stopped",
++            "pipeline_stage": None,
++            "cancel_reason_text": "Force-stopped after grace timeout",
++        },
++        stage_rows=[
++            {
++                "stage_name": "llm_extract",
++                "status": "cancelled",
++                "attempt": 1,
++                "started_at": "2026-03-12T12:00:00Z",
++                "duration_ms": 4000,
++                "updated_at": "2026-03-12T12:00:04Z",
++                "metadata_json": {
++                    "cancelled_by_user": True,
++                    "force_stopped": True,
++                    "cancel_reason_text": "Force-stopped after grace timeout",
++                    "root_cause_code": "force_stopped_by_user",
++                    "root_cause_text": "Processing had to be force-stopped after the grace timeout.",
++                },
++            }
++        ],
++        chunk_rows=[],
++        jobs=[{"error": "cancelled_by_user"}],
++        now=now,
++    )
++    assert stopped["current_stage_code"] == "llm_extract"
++    assert stopped["stop_requested"] is True
++    assert stopped["stop_mode"] == "forced"
++    assert stopped["primary_reason_code"] == "force_stopped_by_user"
++    assert stopped["primary_reason_text"] == (
++        "Processing had to be force-stopped after the grace timeout."
++    )
++    assert stopped["wrapper_reason_text"] is None
++
++
++def test_diagnostics_selection_helpers_cover_match_and_fallback_paths() -> None:
++    assert diagnostics._select_current_stage_row(  # noqa: SLF001
++        {"pipeline_stage": "llm_merge"},
++        [
++            {"stage_name": "asr", "updated_at": "2026-03-12T12:00:01Z"},
++            {"stage_name": "llm_extract", "updated_at": "2026-03-12T12:00:02Z"},
++        ],
++    )["stage_name"] == "llm_extract"
++    assert diagnostics._select_current_stage_row(  # noqa: SLF001
++        {"pipeline_stage": None},
++        [
++            {"stage_name": "asr", "updated_at": "2026-03-12T12:00:01Z"},
++            {"stage_name": "llm_extract", "updated_at": "2026-03-12T12:00:03Z"},
++        ],
++    )["stage_name"] == "llm_extract"
++    assert diagnostics._select_current_stage_row({"pipeline_stage": "missing"}, []) is None  # noqa: SLF001
++
++    assert diagnostics._select_current_chunk_row(  # noqa: SLF001
++        {"pipeline_stage": "llm_chunk_2_of_4"},
++        [
++            {"chunk_index": "1", "status": "completed", "updated_at": "1"},
++            {"chunk_index": "2", "status": "running", "updated_at": "2"},
++        ],
++    )["chunk_index"] == "2"
++    assert diagnostics._select_current_chunk_row(  # noqa: SLF001
++        {"pipeline_stage": "llm_chunk_3_of_4"},
++        [
++            {"chunk_index": "1", "status": "completed", "updated_at": "1"},
++            {"chunk_index": "2", "status": "failed", "updated_at": "2"},
++        ],
++    )["chunk_index"] == "2"
++    assert diagnostics._select_current_chunk_row({"pipeline_stage": "asr"}, []) is None  # noqa: SLF001
++    assert diagnostics._select_current_chunk_row(  # noqa: SLF001
++        {"pipeline_stage": "asr"},
++        [
++            {"chunk_index": "1", "status": "completed", "updated_at": "1"},
++            {"chunk_index": "2", "status": "failed", "updated_at": "2"},
++        ],
++    )["chunk_index"] == "2"
++
++    empty = diagnostics.build_recording_diagnostics(
++        recording={"status": "Queued", "pipeline_stage": None},
++        stage_rows=[],
++        chunk_rows=[],
++        jobs=[],
++        now=datetime(2026, 3, 12, 12, 0, 0, tzinfo=timezone.utc),
++    )
++    assert empty["current_stage_attempt"] == 0
++    assert empty["current_stage_code"] == "waiting"
++
++    chunk_resume = diagnostics.build_recording_diagnostics(
++        recording={"status": "Processing", "pipeline_stage": "llm_chunk_1_of_2"},
++        stage_rows=[
++            {
++                "stage_name": "llm_extract",
++                "status": "running",
++                "attempt": 1,
++                "started_at": "2026-03-12T12:00:00Z",
++                "updated_at": "2026-03-12T12:00:01Z",
++                "metadata_json": {},
++            }
++        ],
++        chunk_rows=[
++            {
++                "chunk_index": "1",
++                "chunk_total": 2,
++                "status": "running",
++                "attempt": 2,
++                "started_at": "2026-03-12T12:00:01Z",
++                "updated_at": "2026-03-12T12:00:02Z",
++            }
++        ],
++        jobs=[],
++        now=datetime(2026, 3, 12, 12, 0, 3, tzinfo=timezone.utc),
++    )
++    assert chunk_resume["is_resuming"] is True

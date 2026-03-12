@@ -25,6 +25,9 @@ from lan_app.db import (
     get_calendar_match,
     get_glossary_entry,
     get_recording,
+    mark_recording_llm_chunk_started,
+    mark_recording_pipeline_stage_failed,
+    mark_recording_pipeline_stage_started,
     list_glossary_entries,
     list_speaker_assignments,
     list_voice_samples,
@@ -567,6 +570,46 @@ def test_recording_progress_endpoint_renders_expected_html(tmp_path, monkeypatch
     assert "stage=<code>diarize</code>" in r.text
 
 
+def test_recording_progress_endpoint_shows_llm_chunk_diagnostics(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    init_db(cfg)
+    create_recording(
+        "rec-ui-progress-llm-1",
+        source="drive",
+        source_filename="progress-llm.mp3",
+        status=RECORDING_STATUS_PROCESSING,
+        settings=cfg,
+    )
+    set_recording_progress(
+        "rec-ui-progress-llm-1",
+        stage="llm_chunk_2_of_4",
+        progress=0.87,
+        settings=cfg,
+    )
+    mark_recording_pipeline_stage_started(
+        "rec-ui-progress-llm-1",
+        stage_name="llm_extract",
+        metadata={"label": "LLM Summary", "resumed": True},
+        settings=cfg,
+    )
+    mark_recording_llm_chunk_started(
+        "rec-ui-progress-llm-1",
+        chunk_group="extract",
+        chunk_index="2",
+        chunk_total=4,
+        settings=cfg,
+    )
+
+    c = TestClient(api.app, follow_redirects=True)
+    r = c.get("/ui/recordings/rec-ui-progress-llm-1/progress")
+    assert r.status_code == 200
+    assert "LLM Chunk 2 of 4" in r.text
+    assert "Chunk:</strong> 2/4" in r.text
+    assert "Mode:</strong> resuming" in r.text
+
+
 def test_recording_progress_endpoint_redirects_when_terminal(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
     monkeypatch.setattr(api, "_settings", cfg)
@@ -610,6 +653,54 @@ def test_recording_detail_shows_review_reason_and_local_timestamp(tmp_path, monk
     assert r.status_code == 200
     assert "Project routing confidence is too low." in r.text
     assert "2026-01-10 11:00:00 CET" in r.text
+
+
+def test_recording_detail_shows_primary_diagnostics_section(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    init_db(cfg)
+    create_recording(
+        "rec-ui-diagnostics-1",
+        source="upload",
+        source_filename="diagnostics.wav",
+        status=RECORDING_STATUS_NEEDS_REVIEW,
+        review_reason_code="job_retry_limit_reached",
+        review_reason_text="Processing hit the retry limit after repeated failures.",
+        settings=cfg,
+    )
+    create_job(
+        "job-ui-diagnostics-1",
+        recording_id="rec-ui-diagnostics-1",
+        job_type=JOB_TYPE_PRECHECK,
+        status=JOB_STATUS_FAILED,
+        error="max attempts exceeded",
+        settings=cfg,
+    )
+    mark_recording_pipeline_stage_failed(
+        "rec-ui-diagnostics-1",
+        stage_name="llm_extract",
+        error_code="llm_chunk_timeout",
+        error_text="LLM chunk 3/10 failed [llm_chunk_timeout]: timed out after 120s",
+        metadata={
+            "label": "LLM Summary",
+            "root_cause_code": "llm_chunk_timeout",
+            "root_cause_text": "LLM chunk 3/10 timed out.",
+            "root_cause_detail": "timed out after 120s",
+            "chunk_index": "3",
+            "chunk_total": 10,
+            "resumed": True,
+        },
+        settings=cfg,
+    )
+
+    c = TestClient(api.app, follow_redirects=True)
+    r = c.get("/recordings/rec-ui-diagnostics-1")
+    assert r.status_code == 200
+    assert "Diagnostics" in r.text
+    assert "LLM chunk 3/10 timed out." in r.text
+    assert "<code>llm_chunk_timeout</code>" in r.text
+    assert "Automatic retries hit the configured retry limit." in r.text
 
 
 def test_recording_detail_persists_duration_from_sanitized_audio(tmp_path, monkeypatch):

@@ -336,12 +336,38 @@ def test_stop_request_helpers_cover_optional_metadata_and_log_paths(tmp_path: Pa
         "cancel_reason_text": "Cancelled by user",
         "force_stopped": False,
         "stop_mode": "soft",
+        "root_cause_code": "cancelled_by_user",
+        "root_cause_text": "Cancelled by user",
     }
 
     log_path = tmp_path / "logs" / "step.log"
     worker_tasks._log_stop_requested(log_path=log_path, stop=stop)  # noqa: SLF001
-    assert log_path.read_text(encoding="utf-8").strip().endswith(
-        "cancelled_by_user stage=llm_extract checkpoint=before_llm_request requested_by=user"
+    assert (
+        "cancelled_by_user stage=llm_extract checkpoint=before_llm_request "
+        "requested_by=user root_cause=cancelled_by_user stop_mode=soft"
+    ) in log_path.read_text(encoding="utf-8")
+
+
+def test_stage_failure_helpers_cover_optional_metadata_and_log_paths(tmp_path: Path) -> None:
+    metadata = worker_tasks._stage_failure_metadata(  # noqa: SLF001
+        label="LLM Summary",
+        exc=RuntimeError(),
+    )
+    assert metadata == {
+        "label": "LLM Summary",
+        "root_cause_code": "processing_runtime_error",
+        "root_cause_text": "Processing failed with RuntimeError.",
+    }
+
+    log_path = tmp_path / "logs" / "stage-failed.log"
+    worker_tasks._log_stage_failed(  # noqa: SLF001
+        log_path,
+        "llm_extract",
+        root_cause_code="processing_runtime_error",
+        duration_ms=None,
+    )
+    assert "stage failed: llm_extract root_cause=processing_runtime_error" in log_path.read_text(
+        encoding="utf-8"
     )
 
 
@@ -2821,11 +2847,22 @@ def test_review_reason_helpers_cover_exception_and_routing_paths(tmp_path: Path)
     )
     assert gpu_oom == (
         "gpu_oom",
-        "The worker ran out of GPU memory while loading or running a heavy model; manual review required.",
+        "The worker ran out of GPU memory while loading or running a heavy model.",
     )
 
     generic = worker_tasks._review_reason_from_exception(RuntimeError("boom"))  # noqa: SLF001
-    assert generic[0] == "job_retry_limit_reached"
+    assert generic == (
+        "processing_runtime_error",
+        "Processing failed with RuntimeError: boom",
+    )
+
+    chunk_timeout = worker_tasks._review_reason_from_exception(  # noqa: SLF001
+        RuntimeError("LLM chunk 3/10 failed [llm_chunk_timeout]: timed out after 120s")
+    )
+    assert chunk_timeout == (
+        "llm_chunk_timeout",
+        "LLM chunk 3/10 timed out.",
+    )
 
     derived = cfg.recordings_root / "rec-review-reason-1" / "derived"
     derived.mkdir(parents=True, exist_ok=True)
@@ -3446,6 +3483,64 @@ def test_run_precheck_pipeline_stops_after_skipped_stage_when_stop_requested(
         log_path=worker_tasks._step_log_path("rec-stop-skipped-stage", JOB_TYPE_PRECHECK, cfg),
     )
     assert outcome.status == "Stopped"
+
+
+def test_run_precheck_pipeline_failure_path_handles_non_numeric_stage_row_values(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    cfg = _db_settings(tmp_path)
+    init_db(cfg)
+    create_recording("rec-stage-failure-bad-row", source="test", source_filename="bad-row.wav", settings=cfg)
+    stage = worker_tasks.PIPELINE_STAGE_DEFINITIONS[0]
+    monkeypatch.setattr(worker_tasks, "PIPELINE_STAGE_DEFINITIONS", (stage,))
+    monkeypatch.setattr(worker_tasks, "_raise_if_stop_requested", lambda **_kwargs: None)
+    monkeypatch.setitem(
+        worker_tasks._PIPELINE_STAGE_RUNNERS,
+        stage.name,
+        lambda _ctx: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+    monkeypatch.setattr(
+        worker_tasks,
+        "mark_recording_pipeline_stage_failed",
+        lambda *_a, **_k: {"duration_ms": "bad", "attempt": "bad"},
+    )
+
+    with pytest.raises(RuntimeError, match="boom"):
+        worker_tasks._run_precheck_pipeline(  # noqa: SLF001
+            recording_id="rec-stage-failure-bad-row",
+            settings=cfg,
+            log_path=worker_tasks._step_log_path("rec-stage-failure-bad-row", JOB_TYPE_PRECHECK, cfg),
+        )
+
+
+def test_run_precheck_pipeline_failure_path_handles_missing_stage_row(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    cfg = _db_settings(tmp_path)
+    init_db(cfg)
+    create_recording("rec-stage-failure-no-row", source="test", source_filename="no-row.wav", settings=cfg)
+    stage = worker_tasks.PIPELINE_STAGE_DEFINITIONS[0]
+    monkeypatch.setattr(worker_tasks, "PIPELINE_STAGE_DEFINITIONS", (stage,))
+    monkeypatch.setattr(worker_tasks, "_raise_if_stop_requested", lambda **_kwargs: None)
+    monkeypatch.setitem(
+        worker_tasks._PIPELINE_STAGE_RUNNERS,
+        stage.name,
+        lambda _ctx: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+    monkeypatch.setattr(
+        worker_tasks,
+        "mark_recording_pipeline_stage_failed",
+        lambda *_a, **_k: None,
+    )
+
+    with pytest.raises(RuntimeError, match="boom"):
+        worker_tasks._run_precheck_pipeline(  # noqa: SLF001
+            recording_id="rec-stage-failure-no-row",
+            settings=cfg,
+            log_path=worker_tasks._step_log_path("rec-stage-failure-no-row", JOB_TYPE_PRECHECK, cfg),
+        )
 
 
 def test_run_precheck_pipeline_stop_during_final_finalize_branch(

@@ -1509,7 +1509,56 @@ def test_worker_retry_terminal_uses_effective_max_attempts_cap(
     assert job["status"] == JOB_STATUS_FAILED
     assert job["error"] == "max attempts exceeded"
     assert recording["status"] == RECORDING_STATUS_NEEDS_REVIEW
-    assert recording["review_reason_code"] == "job_retry_limit_reached"
+    assert recording["review_reason_code"] == "processing_runtime_error"
+    assert "retry failure" in str(recording["review_reason_text"])
+
+
+def test_worker_retry_limit_keeps_specific_llm_chunk_reason(tmp_path: Path, monkeypatch) -> None:
+    cfg = _test_settings(tmp_path)
+    monkeypatch.setenv("LAN_DATA_ROOT", str(cfg.data_root))
+    monkeypatch.setenv("LAN_RECORDINGS_ROOT", str(cfg.recordings_root))
+    monkeypatch.setenv("LAN_DB_PATH", str(cfg.db_path))
+    monkeypatch.setenv("LAN_PROM_SNAPSHOT_PATH", str(cfg.metrics_snapshot_path))
+    monkeypatch.setenv("LAN_MAX_JOB_ATTEMPTS", "3")
+
+    init_db(cfg)
+    create_recording(
+        "rec-worker-retry-specific-1",
+        source="test",
+        source_filename="retry-specific.wav",
+        settings=cfg,
+    )
+    create_job(
+        "job-worker-retry-specific-1",
+        recording_id="rec-worker-retry-specific-1",
+        job_type=JOB_TYPE_PRECHECK,
+        settings=cfg,
+    )
+
+    raw_audio = cfg.recordings_root / "rec-worker-retry-specific-1" / "raw" / "audio.wav"
+    raw_audio.parent.mkdir(parents=True, exist_ok=True)
+    _write_pcm_wav(raw_audio)
+    monkeypatch.setattr("lan_app.worker_tasks._resolve_raw_audio_path", lambda *_a, **_k: raw_audio)
+    monkeypatch.setattr(
+        "lan_app.worker_tasks.run_precheck",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            RuntimeError("LLM chunk 3/10 failed [llm_chunk_timeout]: timed out after 120s")
+        ),
+    )
+    monkeypatch.setattr("lan_app.worker_tasks.time.sleep", lambda _seconds: None)
+
+    with pytest.raises(RuntimeError, match="llm_chunk_timeout"):
+        process_job(
+            "job-worker-retry-specific-1",
+            "rec-worker-retry-specific-1",
+            JOB_TYPE_PRECHECK,
+        )
+
+    recording = get_recording("rec-worker-retry-specific-1", settings=cfg)
+    assert recording is not None
+    assert recording["status"] == RECORDING_STATUS_NEEDS_REVIEW
+    assert recording["review_reason_code"] == "llm_chunk_timeout"
+    assert recording["review_reason_text"] == "LLM chunk 3/10 timed out."
 
 
 def test_worker_max_attempts_exceeded_before_processing_sets_terminal_state(

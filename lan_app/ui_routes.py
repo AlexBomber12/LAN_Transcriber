@@ -51,6 +51,7 @@ from .constants import (
     RECORDING_STATUS_STOPPED,
     RECORDING_STATUS_STOPPING,
 )
+from .diagnostics import build_recording_diagnostics, root_cause_from_stage_row
 from .db import (
     acknowledge_recording_cancel_request,
     clear_recording_progress,
@@ -77,6 +78,7 @@ from .db import (
     list_glossary_entries,
     list_participant_metrics,
     list_jobs,
+    list_recording_llm_chunk_states,
     list_recording_pipeline_stages,
     list_projects,
     list_recordings,
@@ -260,12 +262,39 @@ def _pipeline_stage_label(stage: object) -> str:
     return text.replace("_", " ").title()
 
 
-def _pipeline_stage_rows_for_display(recording_id: str) -> list[dict[str, Any]]:
-    rows = list_recording_pipeline_stages(recording_id, settings=_settings)
+def _pipeline_stage_rows_for_display(
+    recording_id: str,
+    *,
+    rows: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    resolved_rows = (
+        list(rows)
+        if rows is not None
+        else list_recording_pipeline_stages(recording_id, settings=_settings)
+    )
     display_rows: list[dict[str, Any]] = []
-    for row in rows:
+    for row in resolved_rows:
         stage_name = str(row.get("stage_name") or "").strip()
         status = str(row.get("status") or "").strip()
+        cause = root_cause_from_stage_row(row)
+        metadata = row.get("metadata_json") if isinstance(row.get("metadata_json"), dict) else {}
+        chunk_index = str(
+            (
+                metadata.get("cancel_chunk_index")
+                if metadata.get("cancel_chunk_index") is not None
+                else metadata.get("chunk_index")
+            )
+            or ""
+        ).strip() or None
+        chunk_total = None
+        for key in ("cancel_chunk_total", "chunk_total"):
+            if metadata.get(key) is None:
+                continue
+            try:
+                chunk_total = int(metadata.get(key))
+            except (TypeError, ValueError):
+                chunk_total = None
+            break
         display_rows.append(
             {
                 "stage_name": stage_name,
@@ -282,6 +311,12 @@ def _pipeline_stage_rows_for_display(recording_id: str) -> list[dict[str, Any]]:
                     else None
                 ),
                 "error_text": str(row.get("error_text") or "").strip(),
+                "root_cause_code": str((cause or {}).get("code") or "").strip(),
+                "root_cause_text": str((cause or {}).get("text") or "").strip(),
+                "chunk_index": chunk_index,
+                "chunk_total": chunk_total,
+                "resumed": bool(metadata.get("resumed")),
+                "stop_mode": str(metadata.get("stop_mode") or "").strip(),
             }
         )
     return display_rows
@@ -305,6 +340,15 @@ def _format_duration_seconds(value: object) -> str:
     hours, remainder = divmod(total_seconds, 3600)
     minutes, seconds = divmod(remainder, 60)
     return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+
+
+def _format_elapsed_seconds(value: object) -> str:
+    duration = _safe_duration_seconds(value)
+    if duration is None:
+        return "—"
+    if duration < 10:
+        return f"{duration:.1f}s"
+    return _format_duration_seconds(duration)
 
 
 def _display_timezone() -> ZoneInfo | timezone:
@@ -397,6 +441,48 @@ def _prepare_recording_for_display(
         str(item.get("status") or "").strip() == RECORDING_STATUS_STOPPING
     )
     return item
+
+
+def _recording_diagnostics_context(
+    *,
+    recording: dict[str, Any],
+    stage_rows: list[dict[str, Any]],
+    chunk_rows: list[dict[str, Any]],
+    jobs: list[dict[str, Any]],
+) -> dict[str, Any]:
+    diagnostics = build_recording_diagnostics(
+        recording=recording,
+        stage_rows=stage_rows,
+        chunk_rows=chunk_rows,
+        jobs=jobs,
+    )
+    current_stage_code = str(diagnostics.get("current_stage_code") or "waiting").strip() or "waiting"
+    current_chunk_index = str(diagnostics.get("current_chunk_index") or "").strip() or None
+    current_chunk_total = diagnostics.get("current_chunk_total")
+    if current_chunk_index is not None and current_chunk_total is not None:
+        chunk_text = f"{current_chunk_index}/{int(current_chunk_total)}"
+    elif current_chunk_index is not None:
+        chunk_text = current_chunk_index
+    else:
+        chunk_text = "—"
+    stage_attempt = int(diagnostics.get("current_stage_attempt") or 0)
+    chunk_attempt = int(diagnostics.get("current_chunk_attempt") or 0)
+    diagnostics["current_stage_code"] = current_stage_code
+    diagnostics["current_stage_label"] = _pipeline_stage_label(current_stage_code)
+    diagnostics["current_stage_status_label"] = (
+        str(diagnostics.get("current_stage_status") or "").replace("_", " ").title() or "Unknown"
+    )
+    diagnostics["chunk_text"] = chunk_text
+    diagnostics["stage_elapsed_display"] = _format_elapsed_seconds(diagnostics.get("stage_elapsed_seconds"))
+    diagnostics["chunk_elapsed_display"] = _format_elapsed_seconds(diagnostics.get("chunk_elapsed_seconds"))
+    diagnostics["stage_attempt_text"] = str(stage_attempt) if stage_attempt > 0 else "—"
+    diagnostics["chunk_attempt_text"] = str(chunk_attempt) if chunk_attempt > 0 else "—"
+    diagnostics["primary_reason_code"] = str(diagnostics.get("primary_reason_code") or "").strip()
+    diagnostics["primary_reason_text"] = str(diagnostics.get("primary_reason_text") or "").strip()
+    diagnostics["primary_reason_detail"] = str(diagnostics.get("primary_reason_detail") or "").strip()
+    diagnostics["wrapper_reason_text"] = str(diagnostics.get("wrapper_reason_text") or "").strip()
+    diagnostics["stop_reason_text"] = str(diagnostics.get("stop_reason_text") or "").strip()
+    return diagnostics
 
 
 def _load_json_dict(path: Path) -> dict[str, Any]:
@@ -1963,7 +2049,17 @@ async def ui_recording_detail(
     project: dict[str, Any] | None = None
     glossary: dict[str, Any] | None = None
     export_text = ""
-    pipeline_stages = _pipeline_stage_rows_for_display(recording_id)
+    stage_rows = list_recording_pipeline_stages(recording_id, settings=_settings)
+    chunk_rows = list_recording_llm_chunk_states(recording_id, settings=_settings)
+    pipeline_stages = _pipeline_stage_rows_for_display(recording_id, rows=stage_rows)
+    diagnostics = _recording_diagnostics_context(
+        recording=rec,
+        stage_rows=stage_rows,
+        chunk_rows=chunk_rows,
+        jobs=jobs,
+    )
+    if diagnostics["primary_reason_text"]:
+        rec["status_reason_text_display"] = diagnostics["primary_reason_text"]
     if current_tab == "calendar":
         calendar = _calendar_tab_context(recording_id, _settings)
         if calendar_error.strip():
@@ -2005,6 +2101,7 @@ async def ui_recording_detail(
             "glossary": glossary,
             "export_text": export_text,
             "pipeline_stages": pipeline_stages,
+            "diagnostics": diagnostics,
         },
     )
 
@@ -2019,6 +2116,14 @@ async def ui_recording_progress(
     if rec is None:
         return HTMLResponse("Not found", status_code=404)
     rec = _prepare_recording_for_display(rec, settings=_settings)
+    stage_rows = list_recording_pipeline_stages(recording_id, settings=_settings)
+    chunk_rows = list_recording_llm_chunk_states(recording_id, settings=_settings)
+    diagnostics = _recording_diagnostics_context(
+        recording=rec,
+        stage_rows=stage_rows,
+        chunk_rows=chunk_rows,
+        jobs=[],
+    )
     progress_ratio = _safe_pipeline_progress(rec.get("pipeline_progress"))
     progress_percent = int(round(progress_ratio * 100))
     response = templates.TemplateResponse(
@@ -2033,6 +2138,7 @@ async def ui_recording_progress(
             "updated_at": str(rec.get("pipeline_updated_at") or "").strip(),
             "updated_at_display": rec.get("pipeline_updated_at_display"),
             "warning": str(rec.get("last_warning") or "").strip(),
+            "diagnostics": diagnostics,
             "is_processing": (
                 str(rec.get("status") or "").strip()
                 in _ACTIVE_RECORDING_PROGRESS_STATUSES

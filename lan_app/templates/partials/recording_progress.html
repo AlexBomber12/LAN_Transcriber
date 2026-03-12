@@ -1,15 +1,38 @@
 <div style="border:1px solid #ccd;background:#fff;padding:8px 10px">
   <div style="display:flex;gap:8px;align-items:center;justify-content:space-between;margin-bottom:6px;font-size:12px">
-    <span><strong>Pipeline:</strong> {{ stage_label }}</span>
+    <span><strong>Pipeline:</strong> {{ diagnostics.current_stage_label or stage_label }}</span>
     <span>{{ progress_percent }}%</span>
   </div>
   <div style="width:100%;max-width:520px;height:14px;border:1px solid #99b;background:#eef2ff">
     <div style="height:100%;background:#4a6080;width:{{ progress_percent }}%"></div>
   </div>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:6px;font-size:11px;color:#334155">
+    <span><strong>Stage:</strong> {{ diagnostics.current_stage_status_label }}</span>
+    {% if diagnostics.chunk_text != '—' %}
+    <span><strong>Chunk:</strong> {{ diagnostics.chunk_text }}</span>
+    {% endif %}
+    {% if diagnostics.stage_elapsed_display != '—' %}
+    <span><strong>Stage elapsed:</strong> {{ diagnostics.stage_elapsed_display }}</span>
+    {% endif %}
+    {% if diagnostics.chunk_elapsed_display != '—' %}
+    <span><strong>Chunk elapsed:</strong> {{ diagnostics.chunk_elapsed_display }}</span>
+    {% endif %}
+    {% if diagnostics.is_resuming %}
+    <span><strong>Mode:</strong> resuming</span>
+    {% endif %}
+    {% if diagnostics.is_stopping %}
+    <span><strong>Stop:</strong> requested</span>
+    {% endif %}
+  </div>
   <div style="font-size:11px;color:#555;margin-top:5px">
     stage=<code>{{ stage_code }}</code>
     {% if updated_at_display and updated_at_display != '—' %}
     &nbsp;updated={{ updated_at_display }}
+    {% endif %}
+    {% if diagnostics.primary_reason_text and diagnostics.is_stopping %}
+    &nbsp;reason={{ diagnostics.primary_reason_text }}
+    {% elif diagnostics.stop_reason_text and diagnostics.is_stopping %}
+    &nbsp;reason={{ diagnostics.stop_reason_text }}
     {% endif %}
     {% if warning %}
     &nbsp;warning={{ warning }}
