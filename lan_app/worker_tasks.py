@@ -630,12 +630,42 @@ async def _run_child_stage_operation(
             acknowledged_reason_text=_FORCED_STOP_REASON_TEXT,
         )
 
+    def _wait_for_child_exit_after_message(message_status: str) -> None:
+        process.join(timeout=max(1.0, grace_seconds))
+        if not process.is_alive():
+            return
+        _append_step_log(
+            log_path,
+            (
+                "force terminating lingering child after result "
+                f"stage={stage_name} pid={process.pid} status={message_status}"
+            ),
+        )
+        process.terminate()
+        process.join(timeout=1.0)
+        if process.is_alive():
+            _append_step_log(
+                log_path,
+                (
+                    "force killing lingering child after result "
+                    f"stage={stage_name} pid={process.pid} status={message_status}"
+                ),
+            )
+            process.kill()
+            process.join(timeout=1.0)
+            if process.is_alive():
+                raise RuntimeError(
+                    "child stage did not exit after result "
+                    f"stage={stage_name} pid={process.pid} status={message_status}"
+                )
+
     try:
         while True:
             if parent_conn.poll():
                 message = parent_conn.recv()
-                process.join(timeout=1.0)
-                if str(message.get("status") or "") == "ok":
+                message_status = str(message.get("status") or "")
+                _wait_for_child_exit_after_message(message_status)
+                if message_status == "ok":
                     if stop_request is not None:
                         _append_step_log(
                             log_path,

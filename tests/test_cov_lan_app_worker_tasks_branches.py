@@ -430,7 +430,7 @@ def test_run_child_stage_operation_allows_cooperative_stop(
     fake_ctx, process, parent_conn, child_conn = _fake_child_runtime(
         parent_polls=[False, True],
         parent_messages=[{"status": "ok", "payload": {"status": "ok"}}],
-        process_alive=[True, True],
+        process_alive=[True, False],
     )
     checks = {"count": 0}
 
@@ -528,7 +528,7 @@ def test_run_child_stage_operation_maps_error_and_exit_without_result(
     error_ctx, _process, _parent_conn, _child_conn = _fake_child_runtime(
         parent_polls=[True],
         parent_messages=[{"status": "error", "error_type": "ConnectError", "error_message": "boom"}],
-        process_alive=[True],
+        process_alive=[False],
     )
     monkeypatch.setattr(worker_tasks.mp, "get_context", lambda _name: error_ctx)
 
@@ -574,7 +574,7 @@ def test_run_child_stage_operation_returns_ok_without_stop_and_after_exit_race(
     ok_ctx, _process, _parent_conn, _child_conn = _fake_child_runtime(
         parent_polls=[True],
         parent_messages=[{"status": "ok", "payload": {"status": "ok"}}],
-        process_alive=[True],
+        process_alive=[False],
     )
     monkeypatch.setattr(worker_tasks.mp, "get_context", lambda _name: ok_ctx)
 
@@ -594,7 +594,7 @@ def test_run_child_stage_operation_returns_ok_without_stop_and_after_exit_race(
     race_ctx, _process, _parent_conn, _child_conn = _fake_child_runtime(
         parent_polls=[False, True],
         parent_messages=[{"status": "ok", "payload": {"status": "late"}}],
-        process_alive=[False],
+        process_alive=[False, False],
     )
     monkeypatch.setattr(worker_tasks.mp, "get_context", lambda _name: race_ctx)
 
@@ -626,7 +626,7 @@ def test_run_child_stage_operation_waits_with_latched_stop_before_result(
     fake_ctx, _process, _parent_conn, _child_conn = _fake_child_runtime(
         parent_polls=[False, False, True],
         parent_messages=[{"status": "ok", "payload": {"status": "graceful"}}],
-        process_alive=[True, True, True],
+        process_alive=[True, True, False],
     )
     checks = {"count": 0}
     times = iter([1.0, 1.0, 1.05, 1.05])
@@ -656,6 +656,113 @@ def test_run_child_stage_operation_waits_with_latched_stop_before_result(
 
     assert result == {"status": "graceful"}
     assert checks["count"] == 1
+
+
+def test_run_child_stage_operation_terminates_lingering_child_after_result(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    log_path = tmp_path / "logs" / "step.log"
+    fake_ctx, process, _parent_conn, _child_conn = _fake_child_runtime(
+        parent_polls=[True],
+        parent_messages=[{"status": "ok", "payload": {"status": "ok"}}],
+        process_alive=[True],
+    )
+
+    def _alive_until_terminate() -> bool:
+        return process.terminate_calls == 0
+
+    monkeypatch.setattr(worker_tasks.mp, "get_context", lambda _name: fake_ctx)
+    monkeypatch.setattr(process, "is_alive", _alive_until_terminate)
+
+    result = asyncio.run(
+        worker_tasks._run_child_stage_operation(  # noqa: SLF001
+            operation_name="llm_generate",
+            payload={},
+            stage_name="llm_extract",
+            stop_request_getter=lambda: None,
+            grace_seconds=5.0,
+            log_path=log_path,
+            checkpoint="llm_chunk_request",
+        )
+    )
+
+    assert result == {"status": "ok"}
+    assert process.terminate_calls == 1
+    assert process.kill_calls == 0
+    assert "force terminating lingering child after result stage=llm_extract" in log_path.read_text(
+        encoding="utf-8"
+    )
+
+
+def test_run_child_stage_operation_kills_lingering_child_after_result(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    log_path = tmp_path / "logs" / "step.log"
+    fake_ctx, process, _parent_conn, _child_conn = _fake_child_runtime(
+        parent_polls=[True],
+        parent_messages=[{"status": "ok", "payload": {"status": "ok"}}],
+        process_alive=[True],
+    )
+
+    def _alive_until_kill() -> bool:
+        if process.kill_calls > 0:
+            return False
+        return True
+
+    monkeypatch.setattr(worker_tasks.mp, "get_context", lambda _name: fake_ctx)
+    monkeypatch.setattr(process, "is_alive", _alive_until_kill)
+
+    result = asyncio.run(
+        worker_tasks._run_child_stage_operation(  # noqa: SLF001
+            operation_name="llm_generate",
+            payload={},
+            stage_name="llm_extract",
+            stop_request_getter=lambda: None,
+            grace_seconds=5.0,
+            log_path=log_path,
+            checkpoint="llm_chunk_request",
+        )
+    )
+
+    assert result == {"status": "ok"}
+    assert process.terminate_calls == 1
+    assert process.kill_calls == 1
+    log_text = log_path.read_text(encoding="utf-8")
+    assert "force terminating lingering child after result stage=llm_extract" in log_text
+    assert "force killing lingering child after result stage=llm_extract" in log_text
+
+
+def test_run_child_stage_operation_raises_when_child_survives_result_kill(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    log_path = tmp_path / "logs" / "step.log"
+    fake_ctx, process, _parent_conn, _child_conn = _fake_child_runtime(
+        parent_polls=[True],
+        parent_messages=[{"status": "ok", "payload": {"status": "ok"}}],
+        process_alive=[True],
+    )
+
+    monkeypatch.setattr(worker_tasks.mp, "get_context", lambda _name: fake_ctx)
+    monkeypatch.setattr(process, "is_alive", lambda: True)
+
+    with pytest.raises(RuntimeError, match="did not exit after result"):
+        asyncio.run(
+            worker_tasks._run_child_stage_operation(  # noqa: SLF001
+                operation_name="llm_generate",
+                payload={},
+                stage_name="llm_extract",
+                stop_request_getter=lambda: None,
+                grace_seconds=5.0,
+                log_path=log_path,
+                checkpoint="llm_chunk_request",
+            )
+        )
+
+    assert process.terminate_calls == 1
+    assert process.kill_calls == 1
 
 
 def test_run_child_stage_operation_force_terminates_without_kill_or_callback(
