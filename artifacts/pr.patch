@@ -1,177 +1,25 @@
-diff --git a/lan_app/api.py b/lan_app/api.py
-index 6a47869..1a0dcad 100644
---- a/lan_app/api.py
-+++ b/lan_app/api.py
-@@ -323,6 +323,7 @@ async def api_requeue_recording(
-         job = enqueue_recording_job(
+diff --git a/lan_app/ui_routes.py b/lan_app/ui_routes.py
+index c3dc36b..93aeb02 100644
+--- a/lan_app/ui_routes.py
++++ b/lan_app/ui_routes.py
+@@ -2866,6 +2866,7 @@ async def ui_retranscribe_language(
+         enqueue_recording_job(
              recording_id,
-             job_type=DEFAULT_REQUEUE_JOB_TYPE,
+             job_type=JOB_TYPE_PRECHECK,
 +            reset_pipeline_state=True,
              settings=_settings,
          )
-     except DuplicateRecordingJobError as exc:
-diff --git a/lan_app/jobs.py b/lan_app/jobs.py
-index ddcb29d..1892cb5 100644
---- a/lan_app/jobs.py
-+++ b/lan_app/jobs.py
-@@ -141,6 +141,7 @@ def enqueue_recording_job(
-     recording_id: str,
-     *,
-     job_type: str = DEFAULT_REQUEUE_JOB_TYPE,
-+    reset_pipeline_state: bool = False,
-     settings: AppSettings | None = None,
- ) -> RecordingJob:
-     cfg = settings or AppSettings()
-@@ -175,7 +176,7 @@ def enqueue_recording_job(
- 
-     from .worker_tasks import process_job
- 
--    if job_type == DEFAULT_REQUEUE_JOB_TYPE:
-+    if job_type == DEFAULT_REQUEUE_JOB_TYPE and reset_pipeline_state:
-         clear_recording_pipeline_stages(recording_id, settings=cfg)
-         clear_recording_progress(recording_id, settings=cfg)
- 
-diff --git a/lan_app/ui_routes.py b/lan_app/ui_routes.py
-index 62b5049..c3dc36b 100644
---- a/lan_app/ui_routes.py
-+++ b/lan_app/ui_routes.py
-@@ -2699,7 +2699,11 @@ async def ui_action_requeue(recording_id: str) -> Any:
-     if get_recording(recording_id, settings=_settings) is None:
-         return HTMLResponse("Not found", status_code=404)
-     try:
--        enqueue_recording_job(recording_id, settings=_settings)
-+        enqueue_recording_job(
-+            recording_id,
-+            reset_pipeline_state=True,
-+            settings=_settings,
-+        )
-     except DuplicateRecordingJobError as exc:
-         return HTMLResponse(
-             f"Requeue skipped: precheck job already active ({exc.job_id}).",
-diff --git a/tests/test_db_queue.py b/tests/test_db_queue.py
-index 37589b5..8f60de2 100644
---- a/tests/test_db_queue.py
-+++ b/tests/test_db_queue.py
-@@ -987,8 +987,10 @@ def test_recordings_and_jobs_api_actions(tmp_path: Path, monkeypatch):
-         recording_id: str,
-         *,
-         job_type: str = JOB_TYPE_PRECHECK,
-+        reset_pipeline_state: bool = False,
-         settings: AppSettings | None = None,
-     ) -> RecordingJob:
-+        assert reset_pipeline_state is True
-         effective = settings or cfg
-         create_job(
-             "job-api-1",
-diff --git a/tests/test_pipeline_checkpoints_resume.py b/tests/test_pipeline_checkpoints_resume.py
-index 84070c5..f29c3ca 100644
---- a/tests/test_pipeline_checkpoints_resume.py
-+++ b/tests/test_pipeline_checkpoints_resume.py
-@@ -500,6 +500,7 @@ def test_enqueue_recording_job_clears_existing_pipeline_stage_rows(tmp_path: Pat
-     job = jobs_module.enqueue_recording_job(
-         "rec-requeue-1",
-         job_type=JOB_TYPE_PRECHECK,
-+        reset_pipeline_state=True,
-         settings=cfg,
-     )
- 
-@@ -507,6 +508,43 @@ def test_enqueue_recording_job_clears_existing_pipeline_stage_rows(tmp_path: Pat
-     assert list_recording_pipeline_stages("rec-requeue-1", settings=cfg) == []
- 
- 
-+def test_enqueue_recording_job_preserves_stage_rows_for_retry_resume(
-+    tmp_path: Path,
-+    monkeypatch: pytest.MonkeyPatch,
-+) -> None:
-+    cfg = _cfg(tmp_path)
-+    init_db(cfg)
-+    create_recording("rec-retry-keep-1", source="test", source_filename="retry.wav", settings=cfg)
-+    mark_recording_pipeline_stage_started(
-+        "rec-retry-keep-1",
-+        stage_name="sanitize_audio",
-+        settings=cfg,
-+    )
-+    mark_recording_pipeline_stage_completed(
-+        "rec-retry-keep-1",
-+        stage_name="sanitize_audio",
-+        settings=cfg,
-+    )
-+
-+    observed: dict[str, list[dict[str, object]]] = {}
-+
-+    class _Queue:
-+        def enqueue(self, *_args, **_kwargs) -> None:
-+            observed["rows"] = list_recording_pipeline_stages("rec-retry-keep-1", settings=cfg)
-+            return None
-+
-+    monkeypatch.setattr(jobs_module, "get_queue", lambda _cfg=None: _Queue())
-+
-+    job = jobs_module.enqueue_recording_job(
-+        "rec-retry-keep-1",
-+        job_type=JOB_TYPE_PRECHECK,
-+        settings=cfg,
-+    )
-+
-+    assert job.job_type == JOB_TYPE_PRECHECK
-+    assert [row["stage_name"] for row in observed["rows"]] == ["sanitize_audio"]
-+
-+
- def test_ui_recording_detail_renders_pipeline_stages_table(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-     cfg = _cfg(tmp_path)
-     init_db(cfg)
+     except ValueError as exc:
 diff --git a/tests/test_ui_routes.py b/tests/test_ui_routes.py
-index cf017c0..ed7aa96 100644
+index ed7aa96..b5f167d 100644
 --- a/tests/test_ui_routes.py
 +++ b/tests/test_ui_routes.py
-@@ -1630,13 +1630,29 @@ def test_ui_action_requeue(tmp_path, monkeypatch):
-     init_db(cfg)
-     create_recording("rec-rq-1", source="drive", source_filename="y.mp3", settings=cfg)
- 
--    def _fake_enqueue(recording_id: str, *, settings=None, job_type=JOB_TYPE_PRECHECK):
-+    observed: dict[str, object] = {}
-+
-+    def _fake_enqueue(
-+        recording_id: str,
-+        *,
-+        settings=None,
-+        job_type=JOB_TYPE_PRECHECK,
-+        reset_pipeline_state: bool = False,
-+    ):
-+        observed["recording_id"] = recording_id
-+        observed["job_type"] = job_type
-+        observed["reset_pipeline_state"] = reset_pipeline_state
-         return None
- 
-     monkeypatch.setattr(ui_routes, "enqueue_recording_job", _fake_enqueue)
-     c = TestClient(api.app, follow_redirects=False)
-     r = c.post("/ui/recordings/rec-rq-1/requeue")
-     assert r.status_code in (200, 307, 302)
-+    assert observed == {
-+        "recording_id": "rec-rq-1",
-+        "job_type": JOB_TYPE_PRECHECK,
-+        "reset_pipeline_state": True,
-+    }
- 
- 
- def test_ui_action_requeue_not_found(client):
-@@ -1651,7 +1667,13 @@ def test_ui_action_requeue_failure_returns_503(tmp_path, monkeypatch):
-     init_db(cfg)
-     create_recording("rec-rqf-1", source="drive", source_filename="z.mp3", settings=cfg)
- 
--    def _fail_enqueue(recording_id: str, *, settings=None, job_type=JOB_TYPE_PRECHECK):
-+    def _fail_enqueue(
-+        recording_id: str,
-+        *,
-+        settings=None,
-+        job_type=JOB_TYPE_PRECHECK,
-+        reset_pipeline_state: bool = False,
-+    ):
-         raise RuntimeError("redis down")
- 
-     monkeypatch.setattr(ui_routes, "enqueue_recording_job", _fail_enqueue)
-@@ -1677,9 +1699,16 @@ def test_ui_action_retry_failed_step(tmp_path, monkeypatch):
- 
-     observed: dict[str, str] = {}
+@@ -1929,11 +1929,18 @@ def test_ui_language_retranscribe_enqueues_precheck_and_saves_overrides(tmp_path
+         status=RECORDING_STATUS_READY,
+         settings=cfg,
+     )
+-    called: dict[str, str] = {}
++    called: dict[str, object] = {}
  
 -    def _fake_enqueue(recording_id: str, *, settings=None, job_type=JOB_TYPE_PRECHECK):
 +    def _fake_enqueue(
@@ -181,17 +29,17 @@ index cf017c0..ed7aa96 100644
 +        job_type=JOB_TYPE_PRECHECK,
 +        reset_pipeline_state: bool = False,
 +    ):
-         observed["recording_id"] = recording_id
-         observed["job_type"] = job_type
-+        observed["reset_pipeline_state"] = reset_pipeline_state
+         called["recording_id"] = recording_id
+         called["job_type"] = job_type
++        called["reset_pipeline_state"] = reset_pipeline_state
          return None
  
      monkeypatch.setattr(ui_routes, "enqueue_recording_job", _fake_enqueue)
-@@ -1691,6 +1720,7 @@ def test_ui_action_retry_failed_step(tmp_path, monkeypatch):
-     assert observed == {
-         "recording_id": "rec-rtry-1",
-         "job_type": JOB_TYPE_PRECHECK,
-+        "reset_pipeline_state": False,
-     }
+@@ -1948,6 +1955,7 @@ def test_ui_language_retranscribe_enqueues_precheck_and_saves_overrides(tmp_path
+     assert r.status_code == 303
+     assert called["recording_id"] == "rec-lang-rtr-1"
+     assert called["job_type"] == JOB_TYPE_PRECHECK
++    assert called["reset_pipeline_state"] is True
  
- 
+     recording = get_recording("rec-lang-rtr-1", settings=cfg)
+     assert recording is not None

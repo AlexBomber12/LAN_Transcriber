@@ -1929,11 +1929,18 @@ def test_ui_language_retranscribe_enqueues_precheck_and_saves_overrides(tmp_path
         status=RECORDING_STATUS_READY,
         settings=cfg,
     )
-    called: dict[str, str] = {}
+    called: dict[str, object] = {}
 
-    def _fake_enqueue(recording_id: str, *, settings=None, job_type=JOB_TYPE_PRECHECK):
+    def _fake_enqueue(
+        recording_id: str,
+        *,
+        settings=None,
+        job_type=JOB_TYPE_PRECHECK,
+        reset_pipeline_state: bool = False,
+    ):
         called["recording_id"] = recording_id
         called["job_type"] = job_type
+        called["reset_pipeline_state"] = reset_pipeline_state
         return None
 
     monkeypatch.setattr(ui_routes, "enqueue_recording_job", _fake_enqueue)
@@ -1948,6 +1955,7 @@ def test_ui_language_retranscribe_enqueues_precheck_and_saves_overrides(tmp_path
     assert r.status_code == 303
     assert called["recording_id"] == "rec-lang-rtr-1"
     assert called["job_type"] == JOB_TYPE_PRECHECK
+    assert called["reset_pipeline_state"] is True
 
     recording = get_recording("rec-lang-rtr-1", settings=cfg)
     assert recording is not None

@@ -2866,6 +2866,7 @@ async def ui_retranscribe_language(
         enqueue_recording_job(
             recording_id,
             job_type=JOB_TYPE_PRECHECK,
+            reset_pipeline_state=True,
             settings=_settings,
         )
     except ValueError as exc:
