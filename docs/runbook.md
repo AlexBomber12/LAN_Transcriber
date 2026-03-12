@@ -21,14 +21,18 @@ This runbook covers day-2 operations for LAN deployment:
    - `LLM_MAX_TOKENS=1024`
    - `LLM_MAX_TOKENS_RETRY=2048`
    - `LLM_TIMEOUT_SECONDS=600` (recommended for larger local models)
-   - `LLM_CHUNK_MAX_CHARS=6000`
-   - `LLM_CHUNK_OVERLAP_CHARS=600`
+   - `LLM_CHUNK_MAX_CHARS=4500`
+   - `LLM_CHUNK_OVERLAP_CHARS=300`
    - `LLM_CHUNK_TIMEOUT_SECONDS=120`
-   - `LLM_LONG_TRANSCRIPT_THRESHOLD_CHARS=6000`
+   - `LLM_CHUNK_SPLIT_MIN_CHARS=1200`
+   - `LLM_CHUNK_SPLIT_MAX_DEPTH=2`
+   - `LLM_LONG_TRANSCRIPT_THRESHOLD_CHARS=4500`
    - Optional: `LLM_MERGE_MAX_TOKENS=2048` when the final merge pass needs a larger JSON budget
-5. Long transcripts are processed in chunks. Before planning those chunks, the worker compacts the speaker-turn transcript to reduce prompt size while keeping speaker order and chunk-level time ranges. The UI may show `llm_chunk_X_of_Y` followed by `llm_merge` while the worker writes debug artifacts under `derived/`, including `llm_compact_transcript.txt`, `llm_compact_transcript.json`, and `llm_chunks_plan.json`.
-6. If you see `finish_reason=length` or empty `message.content`, increase `LLM_MAX_TOKENS` and `LLM_TIMEOUT_SECONDS` (and optionally `LLM_MERGE_MAX_TOKENS`).
-7. Validate connectivity:
+5. Long transcripts are processed in chunks. Before planning those chunks, the worker compacts the speaker-turn transcript to reduce prompt size while keeping speaker order and chunk-level time ranges. The UI may show `llm_chunk_X_of_Y` followed by `llm_merge`.
+6. Automatic retries now resume from the failed or incomplete chunk set instead of starting long-transcript processing from chunk 1. Completed chunk extracts are validated before reuse, and a timed-out chunk can split into smaller child chunks automatically when it is still large enough.
+7. Debug artifacts for that flow live under `derived/`, including `llm_compact_transcript.txt`, `llm_compact_transcript.json`, `llm_chunks_plan.json`, `llm_merge_input.json`, per-chunk `llm_chunk_*_{raw,extract,error}.json`, and `llm_merge_error.json` when the merge pass fails.
+8. If you see `finish_reason=length` or empty `message.content`, increase `LLM_MAX_TOKENS` and `LLM_TIMEOUT_SECONDS` (and optionally `LLM_MERGE_MAX_TOKENS`).
+9. Validate connectivity:
 
 ```bash
 docker compose run --rm api python -m lan_app.healthchecks app

@@ -24,12 +24,15 @@ from lan_app.db import (
     create_recording,
     get_recording,
     init_db,
+    list_recording_llm_chunk_states,
     list_recording_pipeline_stages,
+    mark_recording_llm_chunk_completed,
     mark_recording_pipeline_stage_cancelled,
     mark_recording_pipeline_stage_completed,
     mark_recording_pipeline_stage_failed,
     mark_recording_pipeline_stage_started,
     mark_recording_pipeline_stage_skipped,
+    upsert_recording_llm_chunk_state,
     upsert_recording_pipeline_stage,
 )
 from lan_app.pipeline_stages import (
@@ -489,10 +492,28 @@ def test_enqueue_recording_job_clears_existing_pipeline_stage_rows(tmp_path: Pat
         stage_name="sanitize_audio",
         settings=cfg,
     )
+    upsert_recording_llm_chunk_state(
+        "rec-requeue-1",
+        chunk_group="extract",
+        chunk_index="1",
+        chunk_total=1,
+        status="planned",
+        metadata={"order_path": [1], "text": "chunk one", "base_text": "chunk one"},
+        settings=cfg,
+    )
+    mark_recording_llm_chunk_completed(
+        "rec-requeue-1",
+        chunk_group="extract",
+        chunk_index="1",
+        chunk_total=1,
+        metadata={"order_path": [1], "text": "chunk one", "base_text": "chunk one"},
+        settings=cfg,
+    )
 
     class _Queue:
         def enqueue(self, *_args, **_kwargs) -> None:
             assert list_recording_pipeline_stages("rec-requeue-1", settings=cfg) == []
+            assert list_recording_llm_chunk_states("rec-requeue-1", settings=cfg) == []
             return None
 
     monkeypatch.setattr(jobs_module, "get_queue", lambda _cfg=None: _Queue())
@@ -506,6 +527,7 @@ def test_enqueue_recording_job_clears_existing_pipeline_stage_rows(tmp_path: Pat
 
     assert job.job_type == JOB_TYPE_PRECHECK
     assert list_recording_pipeline_stages("rec-requeue-1", settings=cfg) == []
+    assert list_recording_llm_chunk_states("rec-requeue-1", settings=cfg) == []
 
 
 def test_enqueue_recording_job_preserves_stage_rows_for_retry_resume(

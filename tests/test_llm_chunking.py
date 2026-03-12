@@ -326,6 +326,7 @@ def test_build_chunk_prompt_and_parse_chunk_extract() -> None:
     assert prompt_payload["chunk"] == {
         "index": 2,
         "total": 4,
+        "id": "2",
         "time_range": {"start_seconds": 12.0, "end_seconds": 18.0},
     }
     assert prompt_payload["calendar"]["title"] == "Roadmap Review"

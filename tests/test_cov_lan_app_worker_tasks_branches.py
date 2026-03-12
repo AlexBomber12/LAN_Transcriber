@@ -328,6 +328,8 @@ def test_build_pipeline_settings_propagates_runtime_llm_and_vad_settings(tmp_pat
         llm_chunk_max_chars=4096,
         llm_chunk_overlap_chars=256,
         llm_chunk_timeout_seconds=45.0,
+        llm_chunk_split_min_chars=900,
+        llm_chunk_split_max_depth=3,
         llm_long_transcript_threshold_chars=8192,
         llm_merge_max_tokens=2048,
         diarization_profile="meeting",
@@ -349,15 +351,78 @@ def test_build_pipeline_settings_propagates_runtime_llm_and_vad_settings(tmp_pat
     assert pipeline_cfg.llm_chunk_max_chars == 4096
     assert pipeline_cfg.llm_chunk_overlap_chars == 256
     assert pipeline_cfg.llm_chunk_timeout_seconds == 45.0
+    assert pipeline_cfg.llm_chunk_split_min_chars == 900
+    assert pipeline_cfg.llm_chunk_split_max_depth == 3
     assert pipeline_cfg.llm_long_transcript_threshold_chars == 8192
     assert pipeline_cfg.llm_merge_max_tokens == 2048
+    assert pipeline_cfg.diarization_merge_gap_seconds == 0.6
+    assert pipeline_cfg.diarization_min_turn_seconds == 0.4
     assert pipeline_cfg.diarization_profile == "meeting"
     assert pipeline_cfg.diarization_min_speakers == 3
     assert pipeline_cfg.diarization_max_speakers == 5
     assert pipeline_cfg.diarization_dialog_retry_min_duration_seconds == 12.0
     assert pipeline_cfg.diarization_dialog_retry_min_turns == 4
-    assert pipeline_cfg.diarization_merge_gap_seconds == 0.6
-    assert pipeline_cfg.diarization_min_turn_seconds == 0.4
+
+
+def test_db_chunk_state_store_wrapper_round_trips(tmp_path: Path) -> None:
+    cfg = AppSettings(
+        data_root=tmp_path,
+        recordings_root=tmp_path / "recordings",
+        db_path=tmp_path / "db" / "app.db",
+    )
+    cfg.metrics_snapshot_path = tmp_path / "metrics.snap"
+    worker_tasks.init_db(cfg)
+    from lan_app.db import create_recording
+
+    create_recording(
+        "rec-store-1",
+        source="upload",
+        source_filename="input.wav",
+        settings=cfg,
+    )
+    store = worker_tasks._DbChunkStateStore("rec-store-1", cfg)  # noqa: SLF001
+
+    assert store.list_states(chunk_group="extract") == []
+    planned = store.upsert_state(
+        chunk_group="extract",
+        chunk_index="1",
+        chunk_total=1,
+        status="planned",
+        metadata={"order_path": [1], "text": "chunk one", "base_text": "chunk one"},
+    )
+    assert planned is not None
+    started = store.mark_started(
+        chunk_group="extract",
+        chunk_index="1",
+        chunk_total=1,
+    )
+    assert started is not None
+    completed = store.mark_completed(
+        chunk_group="extract",
+        chunk_index="1",
+        chunk_total=1,
+    )
+    assert completed is not None
+    failed = store.mark_failed(
+        chunk_group="extract",
+        chunk_index="2",
+        chunk_total=2,
+        error_code="llm_chunk_timeout",
+        error_text="boom",
+        metadata={"order_path": [2], "text": "chunk two", "base_text": "chunk two"},
+    )
+    assert failed is not None
+    split = store.mark_split(
+        chunk_group="extract",
+        chunk_index="3",
+        chunk_total=3,
+        error_code="llm_chunk_timeout",
+        error_text="split",
+        metadata={"order_path": [3], "text": "chunk three", "base_text": "chunk three"},
+    )
+    assert split is not None
+    assert len(store.list_states(chunk_group="extract")) == 3
+    assert store.clear_states(chunk_group="extract") == 3
 
 
 def test_load_transcript_language_payload_parses_valid_and_invalid_json(tmp_path: Path):

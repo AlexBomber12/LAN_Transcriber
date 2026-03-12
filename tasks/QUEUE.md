@@ -487,7 +487,7 @@ Queue (in order)
 - Depends on: PR-PIPELINE-CHECKPOINTS-RESUME-01 and PR-LLM-CHUNKING-01
 
 96) PR-LLM-CHUNK-RESUME-TIMEOUTS-01: Chunk-level state, resume, adaptive split-on-timeout, and specific chunk failure reasons for long-transcript LLM processing
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-LLM-CHUNK-RESUME-TIMEOUTS-01.md
 - Depends on: PR-LLM-CHUNK-COMPACTION-01 and PR-PIPELINE-CHECKPOINTS-RESUME-01
 
