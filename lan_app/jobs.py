@@ -141,6 +141,7 @@ def enqueue_recording_job(
     recording_id: str,
     *,
     job_type: str = DEFAULT_REQUEUE_JOB_TYPE,
+    reset_pipeline_state: bool = False,
     settings: AppSettings | None = None,
 ) -> RecordingJob:
     cfg = settings or AppSettings()
@@ -175,7 +176,7 @@ def enqueue_recording_job(
 
     from .worker_tasks import process_job
 
-    if job_type == DEFAULT_REQUEUE_JOB_TYPE:
+    if job_type == DEFAULT_REQUEUE_JOB_TYPE and reset_pipeline_state:
         clear_recording_pipeline_stages(recording_id, settings=cfg)
         clear_recording_progress(recording_id, settings=cfg)
 

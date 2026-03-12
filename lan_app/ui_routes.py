@@ -2699,7 +2699,11 @@ async def ui_action_requeue(recording_id: str) -> Any:
     if get_recording(recording_id, settings=_settings) is None:
         return HTMLResponse("Not found", status_code=404)
     try:
-        enqueue_recording_job(recording_id, settings=_settings)
+        enqueue_recording_job(
+            recording_id,
+            reset_pipeline_state=True,
+            settings=_settings,
+        )
     except DuplicateRecordingJobError as exc:
         return HTMLResponse(
             f"Requeue skipped: precheck job already active ({exc.job_id}).",

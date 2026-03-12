@@ -500,11 +500,49 @@ def test_enqueue_recording_job_clears_existing_pipeline_stage_rows(tmp_path: Pat
     job = jobs_module.enqueue_recording_job(
         "rec-requeue-1",
         job_type=JOB_TYPE_PRECHECK,
+        reset_pipeline_state=True,
         settings=cfg,
     )
 
     assert job.job_type == JOB_TYPE_PRECHECK
     assert list_recording_pipeline_stages("rec-requeue-1", settings=cfg) == []
+
+
+def test_enqueue_recording_job_preserves_stage_rows_for_retry_resume(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = _cfg(tmp_path)
+    init_db(cfg)
+    create_recording("rec-retry-keep-1", source="test", source_filename="retry.wav", settings=cfg)
+    mark_recording_pipeline_stage_started(
+        "rec-retry-keep-1",
+        stage_name="sanitize_audio",
+        settings=cfg,
+    )
+    mark_recording_pipeline_stage_completed(
+        "rec-retry-keep-1",
+        stage_name="sanitize_audio",
+        settings=cfg,
+    )
+
+    observed: dict[str, list[dict[str, object]]] = {}
+
+    class _Queue:
+        def enqueue(self, *_args, **_kwargs) -> None:
+            observed["rows"] = list_recording_pipeline_stages("rec-retry-keep-1", settings=cfg)
+            return None
+
+    monkeypatch.setattr(jobs_module, "get_queue", lambda _cfg=None: _Queue())
+
+    job = jobs_module.enqueue_recording_job(
+        "rec-retry-keep-1",
+        job_type=JOB_TYPE_PRECHECK,
+        settings=cfg,
+    )
+
+    assert job.job_type == JOB_TYPE_PRECHECK
+    assert [row["stage_name"] for row in observed["rows"]] == ["sanitize_audio"]
 
 
 def test_ui_recording_detail_renders_pipeline_stages_table(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

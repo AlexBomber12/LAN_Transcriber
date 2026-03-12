@@ -1630,13 +1630,29 @@ def test_ui_action_requeue(tmp_path, monkeypatch):
     init_db(cfg)
     create_recording("rec-rq-1", source="drive", source_filename="y.mp3", settings=cfg)
 
-    def _fake_enqueue(recording_id: str, *, settings=None, job_type=JOB_TYPE_PRECHECK):
+    observed: dict[str, object] = {}
+
+    def _fake_enqueue(
+        recording_id: str,
+        *,
+        settings=None,
+        job_type=JOB_TYPE_PRECHECK,
+        reset_pipeline_state: bool = False,
+    ):
+        observed["recording_id"] = recording_id
+        observed["job_type"] = job_type
+        observed["reset_pipeline_state"] = reset_pipeline_state
         return None
 
     monkeypatch.setattr(ui_routes, "enqueue_recording_job", _fake_enqueue)
     c = TestClient(api.app, follow_redirects=False)
     r = c.post("/ui/recordings/rec-rq-1/requeue")
     assert r.status_code in (200, 307, 302)
+    assert observed == {
+        "recording_id": "rec-rq-1",
+        "job_type": JOB_TYPE_PRECHECK,
+        "reset_pipeline_state": True,
+    }
 
 
 def test_ui_action_requeue_not_found(client):
@@ -1651,7 +1667,13 @@ def test_ui_action_requeue_failure_returns_503(tmp_path, monkeypatch):
     init_db(cfg)
     create_recording("rec-rqf-1", source="drive", source_filename="z.mp3", settings=cfg)
 
-    def _fail_enqueue(recording_id: str, *, settings=None, job_type=JOB_TYPE_PRECHECK):
+    def _fail_enqueue(
+        recording_id: str,
+        *,
+        settings=None,
+        job_type=JOB_TYPE_PRECHECK,
+        reset_pipeline_state: bool = False,
+    ):
         raise RuntimeError("redis down")
 
     monkeypatch.setattr(ui_routes, "enqueue_recording_job", _fail_enqueue)
@@ -1677,9 +1699,16 @@ def test_ui_action_retry_failed_step(tmp_path, monkeypatch):
 
     observed: dict[str, str] = {}
 
-    def _fake_enqueue(recording_id: str, *, settings=None, job_type=JOB_TYPE_PRECHECK):
+    def _fake_enqueue(
+        recording_id: str,
+        *,
+        settings=None,
+        job_type=JOB_TYPE_PRECHECK,
+        reset_pipeline_state: bool = False,
+    ):
         observed["recording_id"] = recording_id
         observed["job_type"] = job_type
+        observed["reset_pipeline_state"] = reset_pipeline_state
         return None
 
     monkeypatch.setattr(ui_routes, "enqueue_recording_job", _fake_enqueue)
@@ -1691,6 +1720,7 @@ def test_ui_action_retry_failed_step(tmp_path, monkeypatch):
     assert observed == {
         "recording_id": "rec-rtry-1",
         "job_type": JOB_TYPE_PRECHECK,
+        "reset_pipeline_state": False,
     }
 
 

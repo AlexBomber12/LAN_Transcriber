@@ -987,8 +987,10 @@ def test_recordings_and_jobs_api_actions(tmp_path: Path, monkeypatch):
         recording_id: str,
         *,
         job_type: str = JOB_TYPE_PRECHECK,
+        reset_pipeline_state: bool = False,
         settings: AppSettings | None = None,
     ) -> RecordingJob:
+        assert reset_pipeline_state is True
         effective = settings or cfg
         create_job(
             "job-api-1",
