@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+import inspect
 import json
 import logging
 import os
@@ -88,8 +89,11 @@ from .constants import (
     RECORDING_STATUS_QUARANTINE,
     RECORDING_STATUS_QUEUED,
     RECORDING_STATUS_READY,
+    RECORDING_STATUS_STOPPED,
+    RECORDING_STATUS_STOPPING,
 )
 from .db import (
+    acknowledge_recording_cancel_request,
     clear_recording_progress,
     clear_recording_llm_chunk_states,
     clear_recording_pipeline_stages,
@@ -103,9 +107,11 @@ from .db import (
     list_recording_llm_chunk_states,
     list_recording_pipeline_stages,
     mark_recording_llm_chunk_completed,
+    mark_recording_llm_chunk_cancelled,
     mark_recording_llm_chunk_failed,
     mark_recording_llm_chunk_split,
     mark_recording_llm_chunk_started,
+    mark_recording_pipeline_stage_cancelled,
     mark_recording_pipeline_stage_completed,
     mark_recording_pipeline_stage_failed,
     mark_recording_pipeline_stage_skipped,
@@ -115,6 +121,7 @@ from .db import (
     set_recording_duration,
     set_recording_language_settings,
     set_recording_status,
+    set_recording_status_if_current_in,
     set_recording_status_if_current_in_and_job_started,
     start_job,
     upsert_recording_llm_chunk_state,
@@ -275,6 +282,16 @@ class _DbChunkStateStore:
             **kwargs,
         )
 
+    def mark_cancelled(self, **kwargs: Any) -> dict[str, Any] | None:
+        kwargs = dict(kwargs)
+        kwargs.pop("error_code", None)
+        kwargs.pop("error_text", None)
+        return mark_recording_llm_chunk_cancelled(
+            self.recording_id,
+            settings=self.settings,
+            **kwargs,
+        )
+
     def clear_states(self, *, chunk_group: str | None = None) -> int:
         return clear_recording_llm_chunk_states(
             self.recording_id,
@@ -290,6 +307,250 @@ _JOB_RETRY_POLICIES: dict[str, RetryPolicy] = {
     JOB_TYPE_CLEANUP: RetryPolicy(max_attempts=2, backoff_seconds=(5,)),
 }
 _MAX_ATTEMPTS_ERROR = "max attempts exceeded"
+_STOP_REQUESTED_BY = "user"
+_STOP_REASON_CODE = "user_stop"
+_STOPPED_REASON_TEXT = "Cancelled by user"
+
+
+@dataclass(frozen=True)
+class _RecordingStopRequest:
+    requested_at: str | None
+    requested_by: str | None
+    reason_code: str | None
+    reason_text: str | None
+
+
+class RecordingStopRequested(RuntimeError):
+    def __init__(
+        self,
+        *,
+        stage_name: str,
+        checkpoint: str,
+        stop_request: _RecordingStopRequest,
+        chunk_index: str | None = None,
+        chunk_total: int | None = None,
+    ) -> None:
+        self.stage_name = stage_name
+        self.checkpoint = checkpoint
+        self.stop_request = stop_request
+        self.chunk_index = chunk_index
+        self.chunk_total = chunk_total
+        detail = f"stage={stage_name} checkpoint={checkpoint}"
+        if chunk_index is not None:
+            detail += f" chunk_index={chunk_index}"
+        if chunk_total is not None:
+            detail += f" chunk_total={chunk_total}"
+        super().__init__(detail)
+
+
+def _recording_stop_request(
+    recording_id: str,
+    *,
+    settings: AppSettings,
+) -> _RecordingStopRequest | None:
+    row = get_recording(recording_id, settings=settings) or {}
+    requested_at = str(row.get("cancel_requested_at") or "").strip() or None
+    requested_by = str(row.get("cancel_requested_by") or "").strip() or None
+    reason_code = str(row.get("cancel_reason_code") or "").strip() or None
+    reason_text = str(row.get("cancel_reason_text") or "").strip() or None
+    status = str(row.get("status") or "").strip()
+    if requested_at is None and status != RECORDING_STATUS_STOPPING:
+        return None
+    return _RecordingStopRequest(
+        requested_at=requested_at,
+        requested_by=requested_by,
+        reason_code=reason_code,
+        reason_text=reason_text,
+    )
+
+
+def _raise_if_stop_requested(
+    *,
+    recording_id: str,
+    settings: AppSettings,
+    stage_name: str,
+    checkpoint: str,
+    chunk_index: str | None = None,
+    chunk_total: int | None = None,
+) -> None:
+    stop_request = _recording_stop_request(recording_id, settings=settings)
+    if stop_request is None:
+        return
+    raise RecordingStopRequested(
+        stage_name=stage_name,
+        checkpoint=checkpoint,
+        stop_request=stop_request,
+        chunk_index=chunk_index,
+        chunk_total=chunk_total,
+    )
+
+
+def _acknowledge_stop_requested(
+    *,
+    recording_id: str,
+    settings: AppSettings,
+) -> None:
+    acknowledge_recording_cancel_request(
+        recording_id,
+        reason_code=_STOP_REASON_CODE,
+        reason_text=_STOPPED_REASON_TEXT,
+        settings=settings,
+    )
+
+
+def _stop_terminal_state(
+    *,
+    recording_id: str,
+    settings: AppSettings,
+) -> PipelineTerminalState:
+    _acknowledge_stop_requested(recording_id=recording_id, settings=settings)
+    return PipelineTerminalState(status=RECORDING_STATUS_STOPPED)
+
+
+def _cancelled_stage_metadata(
+    *,
+    label: str,
+    stop: RecordingStopRequested,
+) -> dict[str, Any]:
+    metadata: dict[str, Any] = {
+        "label": label,
+        "cancelled_by_user": True,
+        "cancel_checkpoint": stop.checkpoint,
+        "cancel_requested_by": stop.stop_request.requested_by or _STOP_REQUESTED_BY,
+        "cancel_reason_code": stop.stop_request.reason_code or _STOP_REASON_CODE,
+        "cancel_reason_text": stop.stop_request.reason_text or _STOPPED_REASON_TEXT,
+    }
+    if stop.stop_request.requested_at:
+        metadata["cancel_requested_at"] = stop.stop_request.requested_at
+    if stop.chunk_index is not None:
+        metadata["cancel_chunk_index"] = stop.chunk_index
+    if stop.chunk_total is not None:
+        metadata["cancel_chunk_total"] = stop.chunk_total
+    return metadata
+
+
+def _log_stop_requested(
+    *,
+    log_path: Path,
+    stop: RecordingStopRequested,
+) -> None:
+    message = (
+        "cancelled_by_user "
+        f"stage={stop.stage_name} checkpoint={stop.checkpoint} "
+        f"requested_by={stop.stop_request.requested_by or _STOP_REQUESTED_BY}"
+    )
+    if stop.stop_request.requested_at:
+        message += f" requested_at={stop.stop_request.requested_at}"
+    if stop.chunk_index is not None:
+        message += f" chunk_index={stop.chunk_index}"
+    if stop.chunk_total is not None:
+        message += f" chunk_total={stop.chunk_total}"
+    _append_step_log(log_path, message)
+
+
+class _CancelAwareChunkStateStore:
+    def __init__(
+        self,
+        *,
+        base_store: _DbChunkStateStore,
+        recording_id: str,
+        settings: AppSettings,
+        stage_name: str,
+    ) -> None:
+        self._base_store = base_store
+        self._recording_id = recording_id
+        self._settings = settings
+        self._stage_name = stage_name
+
+    def list_states(self, *, chunk_group: str) -> list[dict[str, Any]]:
+        return self._base_store.list_states(chunk_group=chunk_group)
+
+    def upsert_state(self, **kwargs: Any) -> dict[str, Any] | None:
+        return self._base_store.upsert_state(**kwargs)
+
+    def mark_started(self, **kwargs: Any) -> dict[str, Any] | None:
+        _raise_if_stop_requested(
+            recording_id=self._recording_id,
+            settings=self._settings,
+            stage_name=self._stage_name,
+            checkpoint="before_llm_chunk",
+            chunk_index=str(kwargs.get("chunk_index") or "").strip() or None,
+            chunk_total=int(kwargs.get("chunk_total")) if kwargs.get("chunk_total") is not None else None,
+        )
+        return self._base_store.mark_started(**kwargs)
+
+    def mark_completed(self, **kwargs: Any) -> dict[str, Any] | None:
+        row = self._base_store.mark_completed(**kwargs)
+        _raise_if_stop_requested(
+            recording_id=self._recording_id,
+            settings=self._settings,
+            stage_name=self._stage_name,
+            checkpoint="after_llm_chunk",
+            chunk_index=str(kwargs.get("chunk_index") or "").strip() or None,
+            chunk_total=int(kwargs.get("chunk_total")) if kwargs.get("chunk_total") is not None else None,
+        )
+        return row
+
+    def mark_failed(self, **kwargs: Any) -> dict[str, Any] | None:
+        stop_request = _recording_stop_request(self._recording_id, settings=self._settings)
+        if stop_request is not None:
+            self._base_store.mark_cancelled(**kwargs)
+            raise RecordingStopRequested(
+                stage_name=self._stage_name,
+                checkpoint="after_llm_chunk",
+                stop_request=stop_request,
+                chunk_index=str(kwargs.get("chunk_index") or "").strip() or None,
+                chunk_total=int(kwargs.get("chunk_total")) if kwargs.get("chunk_total") is not None else None,
+            )
+        return self._base_store.mark_failed(**kwargs)
+
+    def mark_split(self, **kwargs: Any) -> dict[str, Any] | None:
+        stop_request = _recording_stop_request(self._recording_id, settings=self._settings)
+        if stop_request is not None:
+            self._base_store.mark_cancelled(**kwargs)
+            raise RecordingStopRequested(
+                stage_name=self._stage_name,
+                checkpoint="after_llm_chunk",
+                stop_request=stop_request,
+                chunk_index=str(kwargs.get("chunk_index") or "").strip() or None,
+                chunk_total=int(kwargs.get("chunk_total")) if kwargs.get("chunk_total") is not None else None,
+            )
+        return self._base_store.mark_split(**kwargs)
+
+    def clear_states(self, *, chunk_group: str | None = None) -> int:
+        return self._base_store.clear_states(chunk_group=chunk_group)
+
+
+class _CancelAwareLLMClient:
+    def __init__(
+        self,
+        *,
+        base_client: Any,
+        recording_id: str,
+        settings: AppSettings,
+        stage_name: str,
+    ) -> None:
+        self._base_client = base_client
+        self._recording_id = recording_id
+        self._settings = settings
+        self._stage_name = stage_name
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._base_client, name)
+
+    def generate(self, *args: Any, **kwargs: Any) -> Any:
+        _raise_if_stop_requested(
+            recording_id=self._recording_id,
+            settings=self._settings,
+            stage_name=self._stage_name,
+            checkpoint="before_llm_request",
+        )
+        result = self._base_client.generate(*args, **kwargs)
+        if inspect.isawaitable(result):
+            async def _await_result() -> Any:
+                return await result
+            return _await_result()
+        return result
 
 
 @dataclass(frozen=True)
@@ -2002,6 +2263,12 @@ def _stage_llm_extract(ctx: _PipelineExecutionContext) -> _StageResult:
         ctx.speaker_turns,
         aliases=aliases,
     )
+    cancel_aware_llm = _CancelAwareLLMClient(
+        base_client=LLMClient(),
+        recording_id=ctx.recording_id,
+        settings=ctx.settings,
+        stage_name="llm_extract",
+    )
 
     def _progress_callback(stage: str, progress: float) -> None:
         _set_recording_progress_best_effort(
@@ -2018,7 +2285,7 @@ def _stage_llm_extract(ctx: _PipelineExecutionContext) -> _StageResult:
                 speaker_turns=ctx.speaker_turns,
                 aliases=aliases,
                 derived_dir=ctx.artifacts.derived_dir,
-                llm=LLMClient(),
+                llm=cancel_aware_llm,
                 cfg=ctx.pipeline_settings,
                 llm_model=llm_model,
                 target_summary_language=summary_lang,
@@ -2027,9 +2294,14 @@ def _stage_llm_extract(ctx: _PipelineExecutionContext) -> _StageResult:
                 calendar_title=ctx.calendar_title,
                 calendar_attendees=ctx.calendar_attendees,
                 progress_callback=_progress_callback,
-                chunk_state_store=_DbChunkStateStore(
+                chunk_state_store=_CancelAwareChunkStateStore(
+                    base_store=_DbChunkStateStore(
+                        recording_id=ctx.recording_id,
+                        settings=ctx.settings,
+                    ),
                     recording_id=ctx.recording_id,
                     settings=ctx.settings,
+                    stage_name="llm_extract",
                 ),
                 step_log_callback=lambda message: _append_step_log(ctx.log_path, message),
             )
@@ -2049,7 +2321,7 @@ def _stage_llm_extract(ctx: _PipelineExecutionContext) -> _StageResult:
         )
         msg = asyncio.run(
             pipeline_orchestrator._generate_llm_message(
-                LLMClient(),
+                cancel_aware_llm,
                 system_prompt=sys_prompt,
                 user_prompt=user_prompt,
                 model=llm_model,
@@ -2723,28 +2995,60 @@ def _run_precheck_pipeline(
         break
 
     if start_index is None:
+        try:
+            _raise_if_stop_requested(
+                recording_id=recording_id,
+                settings=settings,
+                stage_name="finalize",
+                checkpoint="before_finalization",
+            )
+        except RecordingStopRequested as stop:
+            _log_stop_requested(log_path=log_path, stop=stop)
+            return _stop_terminal_state(recording_id=recording_id, settings=settings)
         _append_step_log(log_path, "pipeline artifacts generated")
         return _terminal_state_from_stage_artifacts(ctx=ctx)
 
     for index in range(start_index, len(PIPELINE_STAGE_DEFINITIONS)):
         stage = PIPELINE_STAGE_DEFINITIONS[index]
         resumed = index == start_index and start_index > 0
-        _log_stage_started(log_path, stage.name, resumed=resumed)
-        mark_recording_pipeline_stage_started(
-            recording_id,
-            stage_name=stage.name,
-            metadata={"label": stage.label},
-            settings=settings,
-        )
-        _set_recording_progress_best_effort(
-            recording_id,
-            stage=_recording_pipeline_progress_stage(stage.name),
-            progress=stage.progress,
-            settings=settings,
-        )
         runner = _PIPELINE_STAGE_RUNNERS[stage.name]
+        stage_started = False
+        stage_finalized = False
         try:
+            _raise_if_stop_requested(
+                recording_id=recording_id,
+                settings=settings,
+                stage_name=stage.name,
+                checkpoint="before_stage",
+            )
+            _log_stage_started(log_path, stage.name, resumed=resumed)
+            mark_recording_pipeline_stage_started(
+                recording_id,
+                stage_name=stage.name,
+                metadata={"label": stage.label},
+                settings=settings,
+            )
+            stage_started = True
+            _set_recording_progress_best_effort(
+                recording_id,
+                stage=_recording_pipeline_progress_stage(stage.name),
+                progress=stage.progress,
+                settings=settings,
+            )
             result = runner(ctx)
+        except RecordingStopRequested as stop:
+            if stage_started and not stage_finalized:
+                mark_recording_pipeline_stage_cancelled(
+                    recording_id,
+                    stage_name=stage.name,
+                    metadata=_cancelled_stage_metadata(
+                        label=stage.label,
+                        stop=stop,
+                    ),
+                    settings=settings,
+                )
+            _log_stop_requested(log_path=log_path, stop=stop)
+            return _stop_terminal_state(recording_id=recording_id, settings=settings)
         except Exception as exc:
             mark_recording_pipeline_stage_failed(
                 recording_id,
@@ -2765,11 +3069,22 @@ def _run_precheck_pipeline(
                 metadata=metadata,
                 settings=settings,
             )
+            stage_finalized = True
             _log_stage_skipped(
                 log_path,
                 stage.name,
                 reason=str(metadata.get("skip_reason") or "skipped"),
             )
+            try:
+                _raise_if_stop_requested(
+                    recording_id=recording_id,
+                    settings=settings,
+                    stage_name=stage.name,
+                    checkpoint="after_stage",
+                )
+            except RecordingStopRequested as stop:
+                _log_stop_requested(log_path=log_path, stop=stop)
+                return _stop_terminal_state(recording_id=recording_id, settings=settings)
             continue
 
         row = mark_recording_pipeline_stage_completed(
@@ -2778,6 +3093,7 @@ def _run_precheck_pipeline(
             metadata=metadata,
             settings=settings,
         )
+        stage_finalized = True
         duration_ms = None
         if isinstance(row, dict):
             try:
@@ -2785,7 +3101,27 @@ def _run_precheck_pipeline(
             except (TypeError, ValueError):
                 duration_ms = None
         _log_stage_completed(log_path, stage.name, duration_ms=duration_ms)
+        try:
+            _raise_if_stop_requested(
+                recording_id=recording_id,
+                settings=settings,
+                stage_name=stage.name,
+                checkpoint="after_stage",
+            )
+        except RecordingStopRequested as stop:
+            _log_stop_requested(log_path=log_path, stop=stop)
+            return _stop_terminal_state(recording_id=recording_id, settings=settings)
 
+    try:
+        _raise_if_stop_requested(
+            recording_id=recording_id,
+            settings=settings,
+            stage_name="finalize",
+            checkpoint="before_finalization",
+        )
+    except RecordingStopRequested as stop:
+        _log_stop_requested(log_path=log_path, stop=stop)
+        return _stop_terminal_state(recording_id=recording_id, settings=settings)
     _append_step_log(log_path, "pipeline artifacts generated")
     return _terminal_state_from_stage_artifacts(ctx=ctx)
 
@@ -2881,12 +3217,35 @@ def process_job(job_id: str, recording_id: str, job_type: str) -> dict[str, str]
             attempt = _job_attempt(job_id, settings)
             if attempt > max_attempts:
                 raise RuntimeError(_MAX_ATTEMPTS_ERROR)
-            if not set_recording_status(
+            if not set_recording_status_if_current_in(
                 recording_id,
                 RECORDING_STATUS_PROCESSING,
+                current_statuses=(RECORDING_STATUS_QUEUED,),
                 settings=settings,
             ):
-                raise ValueError(f"Recording not found: {recording_id}")
+                recording_before_run = get_recording(recording_id, settings=settings) or {}
+                current_status = str(recording_before_run.get("status") or "").strip()
+                if current_status == RECORDING_STATUS_STOPPED:
+                    try:
+                        finish_job_if_started(
+                            job_id,
+                            settings=settings,
+                            error="cancelled_by_user",
+                        )
+                    except Exception:
+                        pass
+                    _log_stale_inflight_execution(
+                        job_id=job_id,
+                        job_type=job_type,
+                        log_path=log_path,
+                        detail=f"recording_status={current_status}",
+                    )
+                    return _ignored_result(job_id, recording_id, job_type)
+                if current_status not in {
+                    RECORDING_STATUS_PROCESSING,
+                    RECORDING_STATUS_STOPPING,
+                }:
+                    raise ValueError(f"Recording not found: {recording_id}")
             _append_step_log(log_path, f"started job={job_id} type={job_type}")
 
             terminal_state = _run_precheck_pipeline(
@@ -2894,6 +3253,19 @@ def process_job(job_id: str, recording_id: str, job_type: str) -> dict[str, str]
                 settings=settings,
                 log_path=log_path,
             )
+            if terminal_state.status == RECORDING_STATUS_STOPPED:
+                _acknowledge_stop_requested(
+                    recording_id=recording_id,
+                    settings=settings,
+                )
+            if (
+                terminal_state.status != RECORDING_STATUS_STOPPED
+                and _recording_stop_request(recording_id, settings=settings) is not None
+            ):
+                terminal_state = _stop_terminal_state(
+                    recording_id=recording_id,
+                    settings=settings,
+                )
 
             current_job_status = _job_status(job_id, settings)
             if current_job_status != JOB_STATUS_STARTED:
@@ -2909,7 +3281,14 @@ def process_job(job_id: str, recording_id: str, job_type: str) -> dict[str, str]
                 recording_id,
                 terminal_state.status,
                 job_id=job_id,
-                current_statuses=(RECORDING_STATUS_PROCESSING,),
+                current_statuses=(
+                    (
+                        RECORDING_STATUS_PROCESSING,
+                        RECORDING_STATUS_STOPPING,
+                    )
+                    if terminal_state.status == RECORDING_STATUS_STOPPED
+                    else (RECORDING_STATUS_PROCESSING,)
+                ),
                 settings=settings,
                 quarantine_reason=terminal_state.quarantine_reason,
                 review_reason_code=terminal_state.review_reason_code,
@@ -2946,7 +3325,15 @@ def process_job(job_id: str, recording_id: str, job_type: str) -> dict[str, str]
                     )
                     return _ignored_result(job_id, recording_id, job_type)
                 raise ValueError(f"Recording not found: {recording_id}")
-            if not finish_job_if_started(job_id, settings=settings):
+            if not finish_job_if_started(
+                job_id,
+                settings=settings,
+                error=(
+                    "cancelled_by_user"
+                    if terminal_state.status == RECORDING_STATUS_STOPPED
+                    else None
+                ),
+            ):
                 job_status = _job_status(job_id, settings)
                 if job_status and job_status != JOB_STATUS_STARTED:
                     _log_stale_inflight_execution(

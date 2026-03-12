@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import timezone
 import json
 from pathlib import Path
@@ -14,7 +15,10 @@ from lan_app.calendar.service import CalendarSyncError
 from lan_app.config import AppSettings
 from lan_app.constants import (
     JOB_STATUS_FAILED,
+    RECORDING_STATUS_QUEUED,
     RECORDING_STATUS_READY,
+    RECORDING_STATUS_STOPPED,
+    RECORDING_STATUS_STOPPING,
 )
 from lan_app.db import (
     create_calendar_source,
@@ -153,6 +157,9 @@ def test_display_helpers_cover_timezone_duration_and_prepare_recording(
     assert prepared["updated_at_display"] == "bad"
     assert prepared["pipeline_updated_at_display"].endswith("CET")
     assert prepared["review_reason_text_display"] == "Needs a closer look."
+    assert prepared["status_reason_text_display"] == "Needs a closer look."
+    assert prepared["stop_eligible"] is False
+    assert prepared["stop_in_progress"] is False
 
     observed_update.clear()
     prepared_existing_duration = ui_routes._prepare_recording_for_display(  # noqa: SLF001
@@ -169,6 +176,44 @@ def test_display_helpers_cover_timezone_duration_and_prepare_recording(
     )
     assert observed_update == {}
     assert prepared_existing_duration["duration_display"] == "00:00:01"
+
+    prepared_stopping = ui_routes._prepare_recording_for_display(  # noqa: SLF001
+        {
+            "id": "rec-helper-3",
+            "status": RECORDING_STATUS_STOPPING,
+            "duration_sec": 1.0,
+            "captured_at": None,
+            "created_at": None,
+            "updated_at": None,
+            "pipeline_updated_at": None,
+            "cancel_requested_at": "2026-01-10T10:06:00Z",
+            "cancel_requested_by": "user",
+            "cancel_reason_text": "Stop requested by user",
+        },
+        settings=cfg,
+    )
+    assert prepared_stopping["status_reason_text_display"] == "Stop requested by user"
+    assert prepared_stopping["cancel_requested_at_display"].endswith("CET")
+    assert prepared_stopping["stop_eligible"] is True
+    assert prepared_stopping["stop_in_progress"] is True
+
+    prepared_stopped = ui_routes._prepare_recording_for_display(  # noqa: SLF001
+        {
+            "id": "rec-helper-4",
+            "status": RECORDING_STATUS_STOPPED,
+            "duration_sec": 1.0,
+            "captured_at": None,
+            "created_at": None,
+            "updated_at": None,
+            "pipeline_updated_at": None,
+            "cancel_requested_at": None,
+            "cancel_requested_by": None,
+            "cancel_reason_text": "Cancelled by user",
+        },
+        settings=cfg,
+    )
+    assert prepared_stopped["status_reason_text_display"] == "Cancelled by user"
+    assert prepared_stopped["stop_eligible"] is False
 
 
 def test_prepare_recording_for_display_ignores_duration_backfill_write_errors(
@@ -216,6 +261,104 @@ def test_prepare_recording_for_display_ignores_duration_backfill_write_errors(
         raising=False,
     )
     assert ui_routes._display_timezone() is timezone.utc  # noqa: SLF001
+
+
+def test_ui_action_stop_helper_edge_paths(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+
+    monkeypatch.setattr(ui_routes, "get_recording", lambda *_a, **_k: None)
+    missing = asyncio.run(ui_routes.ui_action_stop("rec-missing", tab="overview"))
+    assert missing.status_code == 404
+    assert missing.body.decode("utf-8") == "Not found"
+
+    monkeypatch.setattr(
+        ui_routes,
+        "get_recording",
+        lambda *_a, **_k: {"id": "rec-ready", "status": RECORDING_STATUS_READY},
+    )
+    not_eligible = asyncio.run(ui_routes.ui_action_stop("rec-ready", tab="calendar"))
+    assert not_eligible.status_code == 303
+    assert not_eligible.headers["location"] == "/recordings/rec-ready?tab=calendar"
+
+    monkeypatch.setattr(
+        ui_routes,
+        "get_recording",
+        lambda *_a, **_k: {"id": "rec-queued", "status": RECORDING_STATUS_QUEUED},
+    )
+    monkeypatch.setattr(ui_routes, "list_jobs", lambda **_kwargs: ([], 0))
+    monkeypatch.setattr(
+        ui_routes,
+        "purge_pending_recording_jobs",
+        lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("queue unavailable")),
+    )
+    queue_error = asyncio.run(ui_routes.ui_action_stop("rec-queued", tab="overview"))
+    assert queue_error.status_code == 503
+    assert queue_error.body.decode("utf-8") == "Stop failed (queue unavailable): queue unavailable"
+
+    calls: list[str] = []
+    monkeypatch.setattr(
+        ui_routes,
+        "get_recording",
+        lambda *_a, **_k: {
+            "id": "rec-stopping",
+            "status": RECORDING_STATUS_STOPPING,
+            "cancel_requested_at": "2026-01-10T10:06:00Z",
+        },
+    )
+    monkeypatch.setattr(ui_routes, "has_started_job_for_recording", lambda *_a, **_k: False)
+    monkeypatch.setattr(
+        ui_routes,
+        "acknowledge_recording_cancel_request",
+        lambda *_a, **_k: calls.append("ack") or True,
+    )
+    monkeypatch.setattr(
+        ui_routes,
+        "set_recording_status_if_current_in",
+        lambda *_a, **_k: calls.append("status") or True,
+    )
+    monkeypatch.setattr(ui_routes, "clear_recording_progress", lambda *_a, **_k: calls.append("clear") or True)
+    acknowledged = asyncio.run(ui_routes.ui_action_stop("rec-stopping", tab="overview"))
+    assert acknowledged.status_code == 303
+    assert acknowledged.headers["location"] == "/recordings/rec-stopping"
+    assert calls == ["status", "ack", "clear"]
+
+    race_calls: list[str] = []
+    monkeypatch.setattr(
+        ui_routes,
+        "get_recording",
+        lambda *_a, **_k: {"id": "rec-race", "status": RECORDING_STATUS_QUEUED},
+    )
+    monkeypatch.setattr(ui_routes, "list_jobs", lambda **_kwargs: ([], 0))
+    monkeypatch.setattr(ui_routes, "purge_pending_recording_jobs", lambda *_a, **_k: 0)
+    monkeypatch.setattr(ui_routes, "has_started_job_for_recording", lambda *_a, **_k: False)
+    monkeypatch.setattr(
+        ui_routes,
+        "set_recording_status_if_current_in",
+        lambda *_a, **_k: False,
+    )
+    monkeypatch.setattr(
+        ui_routes,
+        "set_recording_cancel_request",
+        lambda *_a, **_k: race_calls.append("set_cancel") or True,
+    )
+    monkeypatch.setattr(
+        ui_routes,
+        "acknowledge_recording_cancel_request",
+        lambda *_a, **_k: race_calls.append("ack") or True,
+    )
+    monkeypatch.setattr(
+        ui_routes,
+        "clear_recording_progress",
+        lambda *_a, **_k: race_calls.append("clear") or True,
+    )
+    raced = asyncio.run(ui_routes.ui_action_stop("rec-race", tab="overview"))
+    assert raced.status_code == 303
+    assert raced.headers["location"] == "/recordings/rec-race"
+    assert race_calls == []
 
 
 def test_load_json_and_chunk_helpers_cover_error_paths(tmp_path: Path) -> None:

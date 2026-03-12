@@ -22,8 +22,10 @@ from lan_app.constants import (
     JOB_TYPE_STT,
     RECORDING_STATUS_QUEUED,
     RECORDING_STATUS_READY,
+    RECORDING_STATUS_STOPPED,
+    RECORDING_STATUS_STOPPING,
 )
-from lan_app.db import create_recording, get_recording, init_db
+from lan_app.db import create_recording, get_recording, init_db, set_recording_cancel_request
 from lan_transcriber.llm_client import LLMEmptyContentError, LLMTruncatedResponseError
 from lan_transcriber.pipeline import PrecheckResult
 
@@ -79,7 +81,8 @@ def _patch_precheck_happy_path(
         lambda **_kwargs: True,
     )
     monkeypatch.setattr(worker_tasks, "_job_attempt", lambda *_args, **_kwargs: 1)
-    monkeypatch.setattr(worker_tasks, "set_recording_status", lambda *_a, **_k: True)
+    monkeypatch.setattr(worker_tasks, "set_recording_status_if_current_in", lambda *_a, **_k: True)
+    monkeypatch.setattr(worker_tasks, "get_recording", lambda *_a, **_k: {})
     monkeypatch.setattr(worker_tasks, "_append_step_log", lambda *_a, **_k: None)
     monkeypatch.setattr(
         worker_tasks,
@@ -152,6 +155,190 @@ def test_success_status_mapping_covers_all_single_job_outputs():
     assert worker_tasks._success_status(JOB_TYPE_PUBLISH) == "Published"
     assert worker_tasks._success_status(JOB_TYPE_CLEANUP) == "Quarantine"
     assert worker_tasks._success_status(JOB_TYPE_PRECHECK) == "Ready"
+
+
+def test_stop_request_helpers_build_metadata_and_log_output(tmp_path: Path) -> None:
+    cfg = _db_settings(tmp_path)
+    init_db(cfg)
+    create_recording(
+        "rec-stop-helper-1",
+        source="test",
+        source_filename="stop.wav",
+        status=RECORDING_STATUS_STOPPING,
+        settings=cfg,
+    )
+    set_recording_cancel_request(
+        "rec-stop-helper-1",
+        requested_by="user",
+        reason_code="user_stop",
+        reason_text="Stop requested by user",
+        settings=cfg,
+    )
+
+    stop_request = worker_tasks._recording_stop_request(  # noqa: SLF001
+        "rec-stop-helper-1",
+        settings=cfg,
+    )
+    assert stop_request is not None
+    stop = worker_tasks.RecordingStopRequested(
+        stage_name="llm_extract",
+        checkpoint="after_llm_chunk",
+        stop_request=stop_request,
+        chunk_index="1",
+        chunk_total=2,
+    )
+
+    metadata = worker_tasks._cancelled_stage_metadata(label="LLM Extract", stop=stop)  # noqa: SLF001
+    assert metadata["cancelled_by_user"] is True
+    assert metadata["cancel_chunk_index"] == "1"
+    assert metadata["cancel_chunk_total"] == 2
+
+    log_path = tmp_path / "logs" / "step.log"
+    worker_tasks._log_stop_requested(log_path=log_path, stop=stop)  # noqa: SLF001
+    assert "cancelled_by_user stage=llm_extract checkpoint=after_llm_chunk" in log_path.read_text(
+        encoding="utf-8"
+    )
+
+
+def test_cancel_aware_helpers_stop_llm_requests_and_chunk_terminal_paths(
+    tmp_path: Path,
+) -> None:
+    cfg = _db_settings(tmp_path)
+    init_db(cfg)
+    create_recording(
+        "rec-stop-helper-2",
+        source="test",
+        source_filename="stop2.wav",
+        settings=cfg,
+    )
+
+    class _SyncClient:
+        identity = "sync-client"
+
+        def generate(self, *_args, **_kwargs):
+            return {"status": "ok"}
+
+    sync_client = worker_tasks._CancelAwareLLMClient(  # noqa: SLF001
+        base_client=_SyncClient(),
+        recording_id="rec-stop-helper-2",
+        settings=cfg,
+        stage_name="llm_extract",
+    )
+    assert sync_client.generate() == {"status": "ok"}
+    assert sync_client.identity == "sync-client"
+
+    class _BaseStore:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        def list_states(self, *, chunk_group: str):
+            self.calls.append(f"list:{chunk_group}")
+            return []
+
+        def upsert_state(self, **kwargs):
+            self.calls.append(f"upsert:{kwargs['chunk_index']}")
+            return None
+
+        def mark_started(self, **kwargs):
+            self.calls.append(f"started:{kwargs['chunk_index']}")
+            return {"status": "running"}
+
+        def mark_completed(self, **kwargs):
+            self.calls.append(f"completed:{kwargs['chunk_index']}")
+            return {"status": "completed"}
+
+        def mark_failed(self, **kwargs):
+            self.calls.append(f"failed:{kwargs['chunk_index']}")
+            return {"status": "failed"}
+
+        def mark_split(self, **kwargs):
+            self.calls.append(f"split:{kwargs['chunk_index']}")
+            return {"status": "split"}
+
+        def mark_cancelled(self, **kwargs):
+            self.calls.append(f"cancelled:{kwargs['chunk_index']}")
+            return {"status": "cancelled"}
+
+        def clear_states(self, *, chunk_group: str | None = None):
+            self.calls.append(f"clear:{chunk_group}")
+            return 0
+
+    base_store = _BaseStore()
+    store = worker_tasks._CancelAwareChunkStateStore(  # noqa: SLF001
+        base_store=base_store,
+        recording_id="rec-stop-helper-2",
+        settings=cfg,
+        stage_name="llm_extract",
+    )
+
+    assert store.list_states(chunk_group="extract") == []
+    assert (
+        store.upsert_state(
+            chunk_group="extract",
+            chunk_index="0",
+            chunk_total=2,
+            metadata={"chunk_id": "0"},
+        )
+        is None
+    )
+    assert store.mark_started(chunk_group="extract", chunk_index="1", chunk_total=2) == {
+        "status": "running"
+    }
+    assert store.mark_completed(chunk_group="extract", chunk_index="1", chunk_total=2) == {
+        "status": "completed"
+    }
+    assert store.mark_failed(chunk_group="extract", chunk_index="1b", chunk_total=2) == {
+        "status": "failed"
+    }
+    assert store.mark_split(chunk_group="extract", chunk_index="1c", chunk_total=2) == {
+        "status": "split"
+    }
+    assert store.clear_states(chunk_group="extract") == 0
+
+    set_recording_cancel_request(
+        "rec-stop-helper-2",
+        requested_by="user",
+        reason_code="user_stop",
+        reason_text="Stop requested by user",
+        settings=cfg,
+    )
+    with pytest.raises(worker_tasks.RecordingStopRequested):
+        sync_client.generate()
+    with pytest.raises(worker_tasks.RecordingStopRequested):
+        store.mark_failed(chunk_group="extract", chunk_index="2", chunk_total=2)
+    with pytest.raises(worker_tasks.RecordingStopRequested):
+        store.mark_split(chunk_group="extract", chunk_index="3", chunk_total=3)
+    assert "cancelled:2" in base_store.calls
+    assert "cancelled:3" in base_store.calls
+
+
+def test_stop_request_helpers_cover_optional_metadata_and_log_paths(tmp_path: Path) -> None:
+    stop = worker_tasks.RecordingStopRequested(
+        stage_name="llm_extract",
+        checkpoint="before_llm_request",
+        stop_request=worker_tasks._RecordingStopRequest(  # noqa: SLF001
+            requested_at=None,
+            requested_by=None,
+            reason_code=None,
+            reason_text=None,
+        ),
+    )
+
+    metadata = worker_tasks._cancelled_stage_metadata(label="LLM Extract", stop=stop)  # noqa: SLF001
+    assert metadata == {
+        "label": "LLM Extract",
+        "cancelled_by_user": True,
+        "cancel_checkpoint": "before_llm_request",
+        "cancel_requested_by": "user",
+        "cancel_reason_code": "user_stop",
+        "cancel_reason_text": "Cancelled by user",
+    }
+
+    log_path = tmp_path / "logs" / "step.log"
+    worker_tasks._log_stop_requested(log_path=log_path, stop=stop)  # noqa: SLF001
+    assert log_path.read_text(encoding="utf-8").strip().endswith(
+        "cancelled_by_user stage=llm_extract checkpoint=before_llm_request requested_by=user"
+    )
 
 
 def test_job_attempt_returns_zero_for_invalid_attempt(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
@@ -421,8 +608,15 @@ def test_db_chunk_state_store_wrapper_round_trips(tmp_path: Path) -> None:
         metadata={"order_path": [3], "text": "chunk three", "base_text": "chunk three"},
     )
     assert split is not None
-    assert len(store.list_states(chunk_group="extract")) == 3
-    assert store.clear_states(chunk_group="extract") == 3
+    cancelled = store.mark_cancelled(
+        chunk_group="extract",
+        chunk_index="4",
+        chunk_total=4,
+        metadata={"order_path": [4], "text": "chunk four", "base_text": "chunk four"},
+    )
+    assert cancelled is not None
+    assert len(store.list_states(chunk_group="extract")) == 4
+    assert store.clear_states(chunk_group="extract") == 4
 
 
 def test_load_transcript_language_payload_parses_valid_and_invalid_json(tmp_path: Path):
@@ -1720,7 +1914,8 @@ def test_process_job_precheck_raises_when_recording_status_update_fails(
         lambda **_kwargs: True,
     )
     monkeypatch.setattr(worker_tasks, "_job_attempt", lambda *_a, **_k: 1)
-    monkeypatch.setattr(worker_tasks, "set_recording_status", lambda *_a, **_k: False)
+    monkeypatch.setattr(worker_tasks, "set_recording_status_if_current_in", lambda *_a, **_k: False)
+    monkeypatch.setattr(worker_tasks, "get_recording", lambda *_a, **_k: {})
     monkeypatch.setattr(worker_tasks, "clear_recording_progress", lambda *_a, **_k: True)
     monkeypatch.setattr(worker_tasks, "_job_status", lambda *_a, **_k: JOB_STATUS_STARTED)
     monkeypatch.setattr(worker_tasks, "_is_retryable_exception", lambda _exc: False)
@@ -1777,6 +1972,61 @@ def test_process_job_precheck_stale_paths_cover_race_conditions(
         "_job_status",
         lambda *_a, **_k: next(status_iter, JOB_STATUS_STARTED),
     )
+    monkeypatch.setattr(worker_tasks, "set_recording_status_if_current_in", lambda *_a, **_k: False)
+    monkeypatch.setattr(worker_tasks, "get_recording", lambda *_a, **_k: {"status": RECORDING_STATUS_STOPPED})
+    finish_calls: list[str | None] = []
+    stale_details: list[str] = []
+    monkeypatch.setattr(
+        worker_tasks,
+        "finish_job_if_started",
+        lambda _job_id, *, settings=None, error=None: finish_calls.append(error) or True,
+    )
+    monkeypatch.setattr(
+        worker_tasks,
+        "_log_stale_inflight_execution",
+        lambda **kwargs: stale_details.append(str(kwargs["detail"])),
+    )
+    ignored_stopped = worker_tasks.process_job(
+        "job-precheck-stale-stop",
+        "rec-precheck-stale-stop",
+        JOB_TYPE_PRECHECK,
+    )
+    assert ignored_stopped["status"] == "ignored"
+    assert finish_calls == ["cancelled_by_user"]
+    assert stale_details == ["recording_status=Stopped"]
+
+    status_iter = iter([JOB_STATUS_STARTED, JOB_STATUS_STARTED])
+    monkeypatch.setattr(
+        worker_tasks,
+        "_job_status",
+        lambda *_a, **_k: next(status_iter, JOB_STATUS_STARTED),
+    )
+    monkeypatch.setattr(
+        worker_tasks,
+        "finish_job_if_started",
+        lambda _job_id, settings=None, error=None: (_ for _ in ()).throw(RuntimeError("db race")),
+    )
+    stale_details.clear()
+    ignored_stopped_with_error = worker_tasks.process_job(
+        "job-precheck-stale-stop-error",
+        "rec-precheck-stale-stop-error",
+        JOB_TYPE_PRECHECK,
+    )
+    assert ignored_stopped_with_error["status"] == "ignored"
+    assert stale_details == ["recording_status=Stopped"]
+
+    status_iter = iter([JOB_STATUS_STARTED, JOB_STATUS_STARTED])
+    monkeypatch.setattr(
+        worker_tasks,
+        "_job_status",
+        lambda *_a, **_k: next(status_iter, JOB_STATUS_STARTED),
+    )
+    monkeypatch.setattr(worker_tasks, "set_recording_status_if_current_in", lambda *_a, **_k: True)
+    monkeypatch.setattr(
+        worker_tasks,
+        "set_recording_status_if_current_in_and_job_started",
+        lambda *_a, **_k: False,
+    )
     monkeypatch.setattr(worker_tasks, "get_recording", lambda *_a, **_k: {})
     with pytest.raises(ValueError, match="Recording not found"):
         worker_tasks.process_job("job-precheck-stale-3", "rec-precheck-stale-3", JOB_TYPE_PRECHECK)
@@ -1825,7 +2075,7 @@ def test_process_job_precheck_exception_paths_cover_stale_and_retry_edges(
         lambda **_kwargs: True,
     )
     monkeypatch.setattr(worker_tasks, "_job_attempt", lambda *_a, **_k: 1)
-    monkeypatch.setattr(worker_tasks, "set_recording_status", lambda *_a, **_k: True)
+    monkeypatch.setattr(worker_tasks, "set_recording_status_if_current_in", lambda *_a, **_k: True)
     monkeypatch.setattr(worker_tasks, "_append_step_log", lambda *_a, **_k: None)
     monkeypatch.setattr(worker_tasks, "clear_recording_progress", lambda *_a, **_k: True)
     monkeypatch.setattr(
@@ -1872,3 +2122,274 @@ def test_process_job_precheck_exception_paths_cover_stale_and_retry_edges(
     monkeypatch.setattr(worker_tasks, "_record_failure", lambda **_kwargs: None)
     with pytest.raises(RuntimeError, match="boom"):
         worker_tasks.process_job("job-precheck-exc-4", "rec-precheck-exc-4", JOB_TYPE_PRECHECK)
+
+
+def test_run_precheck_pipeline_stop_before_finalization_when_no_stages_pending(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    cfg = _db_settings(tmp_path)
+    init_db(cfg)
+    create_recording("rec-stop-finalize-empty", source="test", source_filename="empty.wav", settings=cfg)
+    monkeypatch.setattr(worker_tasks, "PIPELINE_STAGE_DEFINITIONS", ())
+
+    stop = worker_tasks.RecordingStopRequested(
+        stage_name="finalize",
+        checkpoint="before_finalization",
+        stop_request=worker_tasks._RecordingStopRequest(  # noqa: SLF001
+            requested_at=None,
+            requested_by="user",
+            reason_code="user_stop",
+            reason_text="Stop requested by user",
+        ),
+    )
+
+    def _raise_if_stop_requested(**kwargs):
+        if kwargs["stage_name"] == "finalize":
+            raise stop
+
+    monkeypatch.setattr(worker_tasks, "_raise_if_stop_requested", _raise_if_stop_requested)
+
+    outcome = worker_tasks._run_precheck_pipeline(  # noqa: SLF001
+        recording_id="rec-stop-finalize-empty",
+        settings=cfg,
+        log_path=worker_tasks._step_log_path("rec-stop-finalize-empty", JOB_TYPE_PRECHECK, cfg),
+    )
+    assert outcome.status == "Stopped"
+
+
+def test_run_precheck_pipeline_marks_started_stage_cancelled_on_stop_exception(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    cfg = _db_settings(tmp_path)
+    init_db(cfg)
+    create_recording("rec-stop-cancelled-stage", source="test", source_filename="cancel.wav", settings=cfg)
+    stage = worker_tasks.PIPELINE_STAGE_DEFINITIONS[0]
+    monkeypatch.setattr(worker_tasks, "PIPELINE_STAGE_DEFINITIONS", (stage,))
+    monkeypatch.setattr(worker_tasks, "_raise_if_stop_requested", lambda **_kwargs: None)
+
+    stop = worker_tasks.RecordingStopRequested(
+        stage_name=stage.name,
+        checkpoint="after_llm_chunk",
+        stop_request=worker_tasks._RecordingStopRequest(  # noqa: SLF001
+            requested_at="2026-01-10T10:06:00Z",
+            requested_by="user",
+            reason_code="user_stop",
+            reason_text="Stop requested by user",
+        ),
+        chunk_index="1",
+        chunk_total=2,
+    )
+    monkeypatch.setitem(
+        worker_tasks._PIPELINE_STAGE_RUNNERS,
+        stage.name,
+        lambda _ctx: (_ for _ in ()).throw(stop),
+    )
+
+    outcome = worker_tasks._run_precheck_pipeline(  # noqa: SLF001
+        recording_id="rec-stop-cancelled-stage",
+        settings=cfg,
+        log_path=worker_tasks._step_log_path("rec-stop-cancelled-stage", JOB_TYPE_PRECHECK, cfg),
+    )
+    assert outcome.status == "Stopped"
+    rows = worker_tasks.list_recording_pipeline_stages("rec-stop-cancelled-stage", settings=cfg)
+    assert rows[0]["status"] == "cancelled"
+
+
+def test_run_precheck_pipeline_stop_before_stage_skips_cancelled_marker(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    cfg = _db_settings(tmp_path)
+    init_db(cfg)
+    create_recording("rec-stop-before-stage", source="test", source_filename="before.wav", settings=cfg)
+    stage = worker_tasks.PIPELINE_STAGE_DEFINITIONS[0]
+    monkeypatch.setattr(worker_tasks, "PIPELINE_STAGE_DEFINITIONS", (stage,))
+
+    stop = worker_tasks.RecordingStopRequested(
+        stage_name=stage.name,
+        checkpoint="before_stage",
+        stop_request=worker_tasks._RecordingStopRequest(  # noqa: SLF001
+            requested_at=None,
+            requested_by="user",
+            reason_code="user_stop",
+            reason_text="Stop requested by user",
+        ),
+    )
+
+    def _raise_if_stop_requested(**kwargs):
+        if kwargs["stage_name"] == stage.name and kwargs["checkpoint"] == "before_stage":
+            raise stop
+
+    monkeypatch.setattr(worker_tasks, "_raise_if_stop_requested", _raise_if_stop_requested)
+
+    outcome = worker_tasks._run_precheck_pipeline(  # noqa: SLF001
+        recording_id="rec-stop-before-stage",
+        settings=cfg,
+        log_path=worker_tasks._step_log_path("rec-stop-before-stage", JOB_TYPE_PRECHECK, cfg),
+    )
+    assert outcome.status == "Stopped"
+    assert worker_tasks.list_recording_pipeline_stages("rec-stop-before-stage", settings=cfg) == []
+
+
+def test_run_precheck_pipeline_stops_after_skipped_stage_when_stop_requested(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = _db_settings(tmp_path)
+    init_db(cfg)
+    create_recording("rec-stop-skipped-stage", source="test", source_filename="skip.wav", settings=cfg)
+    stage = worker_tasks.PIPELINE_STAGE_DEFINITIONS[0]
+    monkeypatch.setattr(worker_tasks, "PIPELINE_STAGE_DEFINITIONS", (stage,))
+
+    def _runner(_ctx):
+        set_recording_cancel_request(
+            "rec-stop-skipped-stage",
+            requested_by="user",
+            reason_code="user_stop",
+            reason_text="Stop requested by user",
+            settings=cfg,
+        )
+        return worker_tasks._StageResult(status="skipped", metadata={"skip_reason": "manual"})  # noqa: SLF001
+
+    monkeypatch.setitem(worker_tasks._PIPELINE_STAGE_RUNNERS, stage.name, _runner)
+
+    outcome = worker_tasks._run_precheck_pipeline(  # noqa: SLF001
+        recording_id="rec-stop-skipped-stage",
+        settings=cfg,
+        log_path=worker_tasks._step_log_path("rec-stop-skipped-stage", JOB_TYPE_PRECHECK, cfg),
+    )
+    assert outcome.status == "Stopped"
+
+
+def test_run_precheck_pipeline_stop_during_final_finalize_branch(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    cfg = _db_settings(tmp_path)
+    init_db(cfg)
+    create_recording("rec-stop-finalize-tail", source="test", source_filename="final.wav", settings=cfg)
+    stage = worker_tasks.PIPELINE_STAGE_DEFINITIONS[0]
+    monkeypatch.setattr(worker_tasks, "PIPELINE_STAGE_DEFINITIONS", (stage,))
+    monkeypatch.setitem(
+        worker_tasks._PIPELINE_STAGE_RUNNERS,
+        stage.name,
+        lambda _ctx: worker_tasks._StageResult(status="completed"),
+    )
+
+    stop = worker_tasks.RecordingStopRequested(
+        stage_name="finalize",
+        checkpoint="before_finalization",
+        stop_request=worker_tasks._RecordingStopRequest(  # noqa: SLF001
+            requested_at=None,
+            requested_by="user",
+            reason_code="user_stop",
+            reason_text="Stop requested by user",
+        ),
+    )
+
+    def _raise_if_stop_requested(**kwargs):
+        if kwargs["stage_name"] == "finalize":
+            raise stop
+
+    monkeypatch.setattr(worker_tasks, "_raise_if_stop_requested", _raise_if_stop_requested)
+
+    outcome = worker_tasks._run_precheck_pipeline(  # noqa: SLF001
+        recording_id="rec-stop-finalize-tail",
+        settings=cfg,
+        log_path=worker_tasks._step_log_path("rec-stop-finalize-tail", JOB_TYPE_PRECHECK, cfg),
+    )
+    assert outcome.status == "Stopped"
+
+
+def test_process_job_converts_completed_terminal_state_to_stopped_when_stop_request_exists(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _patch_lightweight_process_job_env(monkeypatch, tmp_path)
+    _patch_precheck_happy_path(monkeypatch, final_status=RECORDING_STATUS_READY)
+
+    stop_request = worker_tasks._RecordingStopRequest(  # noqa: SLF001
+        requested_at=None,
+        requested_by="user",
+        reason_code="user_stop",
+        reason_text="Stop requested by user",
+    )
+    monkeypatch.setattr(worker_tasks, "_recording_stop_request", lambda *_a, **_k: stop_request)
+
+    captured: dict[str, str | None] = {}
+
+    def _set_terminal_status(_recording_id, status, **_kwargs):
+        captured["status"] = status
+        return True
+
+    def _finish_job(_job_id, *, settings=None, error=None):
+        captured["error"] = error
+        return True
+
+    monkeypatch.setattr(
+        worker_tasks,
+        "set_recording_status_if_current_in_and_job_started",
+        _set_terminal_status,
+    )
+    monkeypatch.setattr(worker_tasks, "finish_job_if_started", _finish_job)
+    monkeypatch.setattr(
+        worker_tasks,
+        "_stop_terminal_state",
+        lambda **_kwargs: worker_tasks.PipelineTerminalState(status="Stopped"),
+    )
+    monkeypatch.setattr(worker_tasks, "_job_status", lambda *_a, **_k: JOB_STATUS_STARTED)
+
+    result = worker_tasks.process_job(
+        "job-precheck-stop-after-pipeline",
+        "rec-precheck-stop-after-pipeline",
+        JOB_TYPE_PRECHECK,
+    )
+    assert result["status"] == "ok"
+    assert captured == {
+        "status": "Stopped",
+        "error": "cancelled_by_user",
+    }
+
+
+def test_cancel_aware_chunk_store_marks_cancelled_with_error_kwargs_against_db_store(
+    tmp_path: Path,
+) -> None:
+    cfg = _db_settings(tmp_path)
+    init_db(cfg)
+    create_recording(
+        "rec-stop-helper-db-cancel",
+        source="test",
+        source_filename="stop-db.wav",
+        settings=cfg,
+    )
+    set_recording_cancel_request(
+        "rec-stop-helper-db-cancel",
+        requested_by="user",
+        reason_code="user_stop",
+        reason_text="Stop requested by user",
+        settings=cfg,
+    )
+
+    store = worker_tasks._CancelAwareChunkStateStore(  # noqa: SLF001
+        base_store=worker_tasks._DbChunkStateStore("rec-stop-helper-db-cancel", cfg),  # noqa: SLF001
+        recording_id="rec-stop-helper-db-cancel",
+        settings=cfg,
+        stage_name="llm_extract",
+    )
+
+    with pytest.raises(worker_tasks.RecordingStopRequested):
+        store.mark_failed(
+            chunk_group="extract",
+            chunk_index="1",
+            chunk_total=1,
+            error_code="llm_chunk_timeout",
+            error_text="boom",
+            metadata={"order_path": [1], "text": "chunk one", "base_text": "chunk one"},
+        )
+
+    rows = worker_tasks._DbChunkStateStore("rec-stop-helper-db-cancel", cfg).list_states(  # noqa: SLF001
+        chunk_group="extract"
+    )
+    assert [(row["chunk_index"], row["status"]) for row in rows] == [("1", "cancelled")]

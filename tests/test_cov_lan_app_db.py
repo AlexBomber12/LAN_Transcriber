@@ -16,6 +16,7 @@ from lan_app.constants import (
     RECORDING_STATUS_PUBLISHED,
     RECORDING_STATUS_QUEUED,
     RECORDING_STATUS_QUARANTINE,
+    RECORDING_STATUS_STOPPING,
 )
 
 
@@ -182,6 +183,56 @@ def test_init_db_skips_already_applied_live_migration_and_db_path_default(
     env_db = tmp_path / "env-default.db"
     monkeypatch.setenv("LAN_DB_PATH", str(env_db))
     assert db_module.db_path() == env_db
+
+
+def test_recording_cancel_and_finish_if_queued_helpers_cover_false_paths(tmp_path: Path) -> None:
+    cfg = _cfg(tmp_path)
+    db_module.init_db(cfg)
+    db_module.create_recording(
+        "rec-cancel-db-1",
+        source="test",
+        source_filename="cancel.wav",
+        status=RECORDING_STATUS_PROCESSING,
+        settings=cfg,
+    )
+    db_module.create_job(
+        "job-cancel-db-1",
+        recording_id="rec-cancel-db-1",
+        job_type=JOB_TYPE_PRECHECK,
+        settings=cfg,
+        status=JOB_STATUS_FINISHED,
+    )
+
+    assert (
+        db_module.acknowledge_recording_cancel_request(
+            "rec-cancel-db-1",
+            reason_text="Cancelled by user",
+            settings=cfg,
+        )
+        is False
+    )
+    assert db_module.finish_job_if_queued("job-cancel-db-1", settings=cfg) is False
+
+    assert db_module.set_recording_cancel_request(
+        "rec-cancel-db-1",
+        requested_by="user",
+        reason_code="user_stop",
+        reason_text="Stop requested by user",
+        settings=cfg,
+    )
+    assert db_module.set_recording_status(
+        "rec-cancel-db-1",
+        RECORDING_STATUS_STOPPING,
+        settings=cfg,
+    )
+    assert (
+        db_module.acknowledge_recording_cancel_request(
+            "rec-cancel-db-1",
+            reason_text="Cancelled by user",
+            settings=cfg,
+        )
+        is True
+    )
 
 
 def test_glossary_entry_helpers_cover_crud_and_validation_paths(tmp_path: Path) -> None:

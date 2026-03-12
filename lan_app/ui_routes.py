@@ -42,13 +42,18 @@ from .constants import (
     DEFAULT_REQUEUE_JOB_TYPE,
     JOB_STATUS_FAILED,
     JOB_STATUSES,
+    JOB_STATUS_QUEUED,
     JOB_TYPE_PRECHECK,
     RECORDING_STATUSES,
     RECORDING_STATUS_PROCESSING,
     RECORDING_STATUS_QUEUED,
     RECORDING_STATUS_QUARANTINE,
+    RECORDING_STATUS_STOPPED,
+    RECORDING_STATUS_STOPPING,
 )
 from .db import (
+    acknowledge_recording_cancel_request,
+    clear_recording_progress,
     create_calendar_source,
     create_glossary_entry,
     count_routing_training_examples,
@@ -60,10 +65,12 @@ from .db import (
     get_glossary_entry,
     delete_project,
     delete_voice_profile,
+    finish_job_if_queued,
     get_calendar_match,
     get_meeting_metrics,
     get_job,
     get_recording,
+    has_started_job_for_recording,
     get_voice_sample,
     list_calendar_events,
     list_calendar_sources,
@@ -76,12 +83,14 @@ from .db import (
     list_speaker_assignments,
     list_voice_samples,
     list_voice_profiles,
+    set_recording_cancel_request,
     set_calendar_match_selection,
     set_recording_duration,
     set_recording_project,
     set_speaker_assignment,
     set_recording_language_settings,
     set_recording_status,
+    set_recording_status_if_current_in,
     update_glossary_entry,
 )
 from .exporter import build_export_zip_bytes, build_onenote_markdown
@@ -145,7 +154,25 @@ _GLOSSARY_SOURCE_OPTIONS = (
 _TERMINAL_RECORDING_STATUSES = frozenset(RECORDING_STATUSES) - {
     RECORDING_STATUS_PROCESSING,
     RECORDING_STATUS_QUEUED,
+    RECORDING_STATUS_STOPPING,
 }
+_ACTIVE_RECORDING_PROGRESS_STATUSES = frozenset(
+    {
+        RECORDING_STATUS_PROCESSING,
+        RECORDING_STATUS_STOPPING,
+    }
+)
+_STOP_ELIGIBLE_RECORDING_STATUSES = frozenset(
+    {
+        RECORDING_STATUS_QUEUED,
+        RECORDING_STATUS_PROCESSING,
+        RECORDING_STATUS_STOPPING,
+    }
+)
+_STOP_REQUESTED_BY = "user"
+_STOP_REASON_CODE = "user_stop"
+_STOP_REQUEST_REASON_TEXT = "Stop requested by user"
+_STOPPED_REASON_TEXT = "Cancelled by user"
 _PIPELINE_STAGE_LABELS = {
     "sanitize_audio": "Sanitize Audio",
     "precheck": "Sanitize & Precheck",
@@ -203,6 +230,13 @@ def _recording_recovery_warning(jobs: list[dict[str, Any]]) -> str | None:
             )
         return "Warning: this recording was recovered from a stuck job."
     return None
+
+
+def _recording_status_reason_text(recording: dict[str, Any]) -> str:
+    status = str(recording.get("status") or "").strip()
+    if status in {RECORDING_STATUS_STOPPING, RECORDING_STATUS_STOPPED}:
+        return str(recording.get("cancel_reason_text") or "").strip()
+    return str(recording.get("review_reason_text") or "").strip()
 
 
 def _safe_pipeline_progress(value: object) -> float:
@@ -343,9 +377,25 @@ def _prepare_recording_for_display(
     item["pipeline_updated_at_display"] = _format_local_timestamp(
         item.get("pipeline_updated_at")
     )
+    item["cancel_requested_at_display"] = _format_local_timestamp(
+        item.get("cancel_requested_at")
+    )
+    item["cancel_requested_by_display"] = str(
+        item.get("cancel_requested_by") or ""
+    ).strip()
+    item["cancel_reason_text_display"] = str(
+        item.get("cancel_reason_text") or ""
+    ).strip()
     item["review_reason_text_display"] = str(
         item.get("review_reason_text") or ""
     ).strip()
+    item["status_reason_text_display"] = _recording_status_reason_text(item)
+    item["stop_eligible"] = (
+        str(item.get("status") or "").strip() in _STOP_ELIGIBLE_RECORDING_STATUSES
+    )
+    item["stop_in_progress"] = (
+        str(item.get("status") or "").strip() == RECORDING_STATUS_STOPPING
+    )
     return item
 
 
@@ -1983,7 +2033,10 @@ async def ui_recording_progress(
             "updated_at": str(rec.get("pipeline_updated_at") or "").strip(),
             "updated_at_display": rec.get("pipeline_updated_at_display"),
             "warning": str(rec.get("last_warning") or "").strip(),
-            "is_processing": str(rec.get("status") or "") == RECORDING_STATUS_PROCESSING,
+            "is_processing": (
+                str(rec.get("status") or "").strip()
+                in _ACTIVE_RECORDING_PROGRESS_STATUSES
+            ),
         },
     )
     if (
@@ -2692,6 +2745,97 @@ async def ui_sync_calendar_source(source_id: int) -> Any:
 # ---------------------------------------------------------------------------
 # Inline recording actions (HTMX targets returning HX-Redirect)
 # ---------------------------------------------------------------------------
+
+
+def _recording_detail_path(recording_id: str, *, tab: str = "overview") -> str:
+    safe_tab = str(tab or "overview").strip() or "overview"
+    if safe_tab == "overview":
+        return f"/recordings/{recording_id}"
+    return f"/recordings/{recording_id}?tab={quote(safe_tab, safe='')}"
+
+
+@ui_router.post("/ui/recordings/{recording_id}/stop", response_class=HTMLResponse)
+async def ui_action_stop(
+    recording_id: str,
+    tab: str = Form(default="overview"),
+) -> Any:
+    rec = get_recording(recording_id, settings=_settings)
+    if rec is None:
+        return HTMLResponse("Not found", status_code=404)
+
+    redirect_path = _recording_detail_path(recording_id, tab=tab)
+    current_status = str(rec.get("status") or "").strip()
+    if current_status not in _STOP_ELIGIBLE_RECORDING_STATUSES:
+        return RedirectResponse(redirect_path, status_code=303)
+
+    if current_status == RECORDING_STATUS_QUEUED:
+        queued_jobs, _ = list_jobs(
+            settings=_settings,
+            status=JOB_STATUS_QUEUED,
+            recording_id=recording_id,
+            limit=500,
+            offset=0,
+        )
+        try:
+            purge_pending_recording_jobs(recording_id, settings=_settings)
+        except Exception as exc:
+            return HTMLResponse(f"Stop failed (queue unavailable): {exc}", status_code=503)
+        for row in queued_jobs:
+            finish_job_if_queued(
+                str(row.get("id") or ""),
+                error="cancelled_by_user",
+                settings=_settings,
+            )
+
+    if has_started_job_for_recording(recording_id, settings=_settings):
+        if not str(rec.get("cancel_requested_at") or "").strip():
+            set_recording_cancel_request(
+                recording_id,
+                requested_by=_STOP_REQUESTED_BY,
+                reason_code=_STOP_REASON_CODE,
+                reason_text=_STOP_REQUEST_REASON_TEXT,
+                settings=_settings,
+            )
+        set_recording_status_if_current_in(
+            recording_id,
+            RECORDING_STATUS_STOPPING,
+            current_statuses=(
+                RECORDING_STATUS_QUEUED,
+                RECORDING_STATUS_PROCESSING,
+                RECORDING_STATUS_STOPPING,
+            ),
+            settings=_settings,
+        )
+        return RedirectResponse(redirect_path, status_code=303)
+
+    if not set_recording_status_if_current_in(
+        recording_id,
+        RECORDING_STATUS_STOPPED,
+        current_statuses=(
+            RECORDING_STATUS_QUEUED,
+            RECORDING_STATUS_PROCESSING,
+            RECORDING_STATUS_STOPPING,
+        ),
+        settings=_settings,
+    ):
+        return RedirectResponse(redirect_path, status_code=303)
+    if not str(rec.get("cancel_requested_at") or "").strip():
+        set_recording_cancel_request(
+            recording_id,
+            requested_by=_STOP_REQUESTED_BY,
+            reason_code=_STOP_REASON_CODE,
+            reason_text=_STOPPED_REASON_TEXT,
+            settings=_settings,
+        )
+    else:
+        acknowledge_recording_cancel_request(
+            recording_id,
+            reason_code=_STOP_REASON_CODE,
+            reason_text=_STOPPED_REASON_TEXT,
+            settings=_settings,
+        )
+    clear_recording_progress(recording_id, settings=_settings)
+    return RedirectResponse(redirect_path, status_code=303)
 
 
 @ui_router.post("/ui/recordings/{recording_id}/requeue")

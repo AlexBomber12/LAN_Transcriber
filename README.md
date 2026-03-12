@@ -94,6 +94,9 @@ Operational setup, failure handling, backup/restore, and upgrade steps are docum
    - `NeedsReview` recordings now show an explicit review reason in both the list and detail UI.
    - Automatic worker retries now resume from the first incomplete or invalidated pipeline stage instead of restarting from raw sanitization every time.
    - Explicit `Requeue` from the UI/API still clears saved stage checkpoints and forces a clean rerun from the beginning.
+   - `Stop` on a queued recording removes the queued job immediately and marks the recording `Stopped`.
+   - `Stop` on a running recording changes the status to `Stopping`; the worker exits at the next stage or LLM chunk checkpoint, then finalizes the recording as `Stopped`.
+   - A stopped recording stays stopped until you explicitly `Requeue` it.
    - Displayed timestamps are rendered in local Europe/Rome time in the server-rendered UI.
    - Plaud-style filename timestamps are interpreted in `UPLOAD_CAPTURE_TIMEZONE` (default `Europe/Rome`), normalized to UTC in the database, and shown back in local time in the UI.
    - Legacy upload rows created before this fix are backfilled automatically on upgrade once, using the configured upload capture timezone.

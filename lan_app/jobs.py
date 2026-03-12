@@ -16,6 +16,7 @@ from .constants import (
     RECORDING_STATUS_QUEUED,
 )
 from .db import (
+    clear_recording_cancel_request,
     clear_recording_pipeline_stages,
     clear_recording_progress,
     create_job_if_no_active_for_recording,
@@ -205,6 +206,10 @@ def enqueue_recording_job(
     set_recording_status(
         recording_id,
         RECORDING_STATUS_QUEUED,
+        settings=cfg,
+    )
+    clear_recording_cancel_request(
+        recording_id,
         settings=cfg,
     )
     return RecordingJob(job_id=job_id, recording_id=recording_id, job_type=job_type)
