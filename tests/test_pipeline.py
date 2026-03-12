@@ -535,6 +535,7 @@ async def test_pipeline_long_transcript_uses_chunked_llm_progress_and_artifacts(
 
     events: list[tuple[str, float]] = []
     merge_payload: dict[str, object] = {}
+    chunk_payloads: list[dict[str, object]] = []
 
     class _ChunkedLLM:
         async def generate(
@@ -548,6 +549,7 @@ async def test_pipeline_long_transcript_uses_chunked_llm_progress_and_artifacts(
             del system_prompt, model, response_format
             payload = json.loads(user_prompt)
             if "chunk" in payload:
+                chunk_payloads.append(payload)
                 index = int(payload["chunk"]["index"])
                 return {
                     "content": json.dumps(
@@ -618,10 +620,19 @@ async def test_pipeline_long_transcript_uses_chunked_llm_progress_and_artifacts(
     derived = cfg.recordings_root / "rec-chunked-1" / "derived"
     plan_payload = json.loads((derived / "llm_chunks_plan.json").read_text(encoding="utf-8"))
     total_chunks = len(plan_payload["chunks"])
+    compact_payload = json.loads((derived / "llm_compact_transcript.json").read_text(encoding="utf-8"))
+    compact_text = (derived / "llm_compact_transcript.txt").read_text(encoding="utf-8")
     stage_names = [stage for stage, _progress in events]
     summary_payload = json.loads((derived / "summary.json").read_text(encoding="utf-8"))
 
     assert total_chunks > 1
+    assert plan_payload["source_chars"] > plan_payload["compact_chars"]
+    assert compact_payload["source_chars"] == plan_payload["source_chars"]
+    assert compact_payload["compact_chars"] == plan_payload["compact_chars"]
+    assert compact_payload["speaker_mapping"]
+    assert "[" not in compact_text
+    assert all(chunk["effective_chars"] >= chunk["base_chars"] for chunk in plan_payload["chunks"])
+    assert all("time_range" in chunk for chunk in plan_payload["chunks"])
     assert stage_names[:6] == [
         "precheck",
         "stt",
@@ -634,8 +645,17 @@ async def test_pipeline_long_transcript_uses_chunked_llm_progress_and_artifacts(
     assert stage_names[6 + total_chunks] == "llm_merge"
     assert stage_names[-1] == "metrics"
     assert merge_payload["payload"]["merge_input"]["chunk_count"] == total_chunks
+    assert chunk_payloads[0]["calendar"] == {
+        "title": None,
+        "attendees": [],
+    }
+    assert chunk_payloads[0]["chunk"]["time_range"]["start_seconds"] == 0.0
+    assert "speaker_mapping" in chunk_payloads[0]
+    assert "[" not in str(chunk_payloads[0]["transcript_chunk"])
     assert (derived / "llm_chunk_001_raw.json").exists()
     assert (derived / f"llm_chunk_{total_chunks:03d}_extract.json").exists()
+    assert (derived / "llm_compact_transcript.txt").exists()
+    assert (derived / "llm_compact_transcript.json").exists()
     assert (derived / "llm_merge_input.json").exists()
     assert (derived / "llm_merge_raw.json").exists()
     assert summary_payload["topic"] == "Merged topic"

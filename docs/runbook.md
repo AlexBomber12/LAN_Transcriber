@@ -26,7 +26,7 @@ This runbook covers day-2 operations for LAN deployment:
    - `LLM_CHUNK_TIMEOUT_SECONDS=120`
    - `LLM_LONG_TRANSCRIPT_THRESHOLD_CHARS=6000`
    - Optional: `LLM_MERGE_MAX_TOKENS=2048` when the final merge pass needs a larger JSON budget
-5. Long transcripts are processed in chunks. The UI may show `llm_chunk_X_of_Y` followed by `llm_merge` while the worker writes chunk debug artifacts under `derived/`.
+5. Long transcripts are processed in chunks. Before planning those chunks, the worker compacts the speaker-turn transcript to reduce prompt size while keeping speaker order and chunk-level time ranges. The UI may show `llm_chunk_X_of_Y` followed by `llm_merge` while the worker writes debug artifacts under `derived/`, including `llm_compact_transcript.txt`, `llm_compact_transcript.json`, and `llm_chunks_plan.json`.
 6. If you see `finish_reason=length` or empty `message.content`, increase `LLM_MAX_TOKENS` and `LLM_TIMEOUT_SECONDS` (and optionally `LLM_MERGE_MAX_TOKENS`).
 7. Validate connectivity:
 

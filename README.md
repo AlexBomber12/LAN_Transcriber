@@ -229,7 +229,7 @@ models are cached across runs.
 
 If LLM responses fail with `finish_reason=length` or empty `message.content`, increase `LLM_MAX_TOKENS` and `LLM_TIMEOUT_SECONDS` (and optionally `LLM_MAX_TOKENS_RETRY`).
 
-Long transcripts are processed with a chunked map-reduce LLM flow. During that phase the UI may show progress stages like `llm_chunk_1_of_5` and `llm_merge`, and debug artifacts are written under `derived/` for chunk planning and merge inspection.
+Long transcripts are processed with a chunked map-reduce LLM flow. Before chunk planning, the worker compacts speaker turns into an LLM-ready transcript with shorter speaker labels, merged adjacent same-speaker turns, and chunk-level time ranges instead of per-line timestamps. During that phase the UI may show progress stages like `llm_chunk_1_of_5` and `llm_merge`, and debug artifacts are written under `derived/`, including `llm_compact_transcript.txt`, `llm_compact_transcript.json`, `llm_chunks_plan.json`, and merge inspection files.
 
 For diarization quality tuning, keep `LAN_DIARIZATION_PROFILE=auto` for mixed workloads. In `auto`, the worker runs a meeting-oriented first pass, classifies the result from deterministic speaker-share/alternation/overlap heuristics, and retries once with `min_speakers=2` and `max_speakers=2` only when the recording looks dialog-like. Use `dialog` or `meeting` only to force one behavior, and note that explicit `LAN_DIARIZATION_MIN_SPEAKERS` / `LAN_DIARIZATION_MAX_SPEAKERS` overrides bypass auto selection. Each processed recording writes `derived/diarization_metadata.json` with the requested profile, selected profile, initial top-two coverage, retry attempt/winner, applied hints, and smoothing stats.
 

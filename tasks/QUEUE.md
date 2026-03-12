@@ -482,7 +482,7 @@ Queue (in order)
 - Depends on: PR-CAPTURE-TIME-SEMANTICS-01
 
 95) PR-LLM-CHUNK-COMPACTION-01: Compact long-transcript LLM input: merged speaker blocks, no per-line timestamps, compact speaker labels, and richer chunk plan metadata
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-LLM-CHUNK-COMPACTION-01.md
 - Depends on: PR-PIPELINE-CHECKPOINTS-RESUME-01 and PR-LLM-CHUNKING-01
 

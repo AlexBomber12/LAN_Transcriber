@@ -80,25 +80,238 @@ def test_tail_text_and_plan_transcript_chunks_empty_units_branch(monkeypatch: py
     assert llm_chunking.plan_transcript_chunks("first line\n\nsecond line", max_chars=10, overlap_chars=0) == []
 
 
+def test_build_compact_transcript_merges_adjacent_turns_and_drops_noise() -> None:
+    compact = llm_chunking.build_compact_transcript(
+        [
+            {"speaker": "SPEAKER_00", "start": 0.0, "end": 0.8, "text": "  hello   there  "},
+            {"speaker": "SPEAKER_00", "start": 1.2, "end": 1.9, "text": "again"},
+            {"speaker": "SPEAKER_00", "start": 3.5, "end": 4.0, "text": "Later update"},
+            {"speaker": "SPEAKER_01", "start": 4.1, "end": 4.3, "text": "..."},
+            {"speaker": "SPEAKER_01", "start": 4.5, "end": 5.0, "text": "   replied clearly   "},
+        ],
+        aliases={"SPEAKER_00": "Alex", "SPEAKER_01": "Priya"},
+    )
+
+    assert compact.source_turn_count == 5
+    assert compact.compact_turn_count == 3
+    assert compact.source_chars > compact.compact_chars
+    assert compact.text.splitlines() == [
+        "Alex: hello there again",
+        "Alex: Later update",
+        "Priya: replied clearly",
+    ]
+    assert compact.artifact_payload()["speaker_mapping"] == [
+        {
+            "compact_label": "Alex",
+            "original_speaker": "SPEAKER_00",
+            "display_name": "Alex",
+        },
+        {
+            "compact_label": "Priya",
+            "original_speaker": "SPEAKER_01",
+            "display_name": "Priya",
+        },
+    ]
+    assert compact.prompt_speaker_mapping() == [
+        {"label": "Alex", "speaker": "Alex", "original_speaker": "SPEAKER_00"},
+        {"label": "Priya", "speaker": "Priya", "original_speaker": "SPEAKER_01"},
+    ]
+
+
+def test_build_compact_transcript_uses_stable_reversible_speaker_mapping() -> None:
+    compact = llm_chunking.build_compact_transcript(
+        [
+            {"speaker": "SPEAKER_05", "start": 0.0, "end": 0.8, "text": "First update"},
+            {"speaker": "SPEAKER_99", "start": 1.0, "end": 1.4, "text": "Second update"},
+            {"speaker": "SPEAKER_05", "start": 2.0, "end": 2.4, "text": "Third update"},
+        ]
+    )
+
+    assert compact.text.splitlines() == [
+        "S1: First update",
+        "S2: Second update",
+        "S1: Third update",
+    ]
+    assert compact.prompt_speaker_mapping() == [
+        {"label": "S1", "speaker": "SPEAKER_05"},
+        {"label": "S2", "speaker": "SPEAKER_99"},
+    ]
+    assert compact.artifact_payload()["speaker_mapping"] == [
+        {
+            "compact_label": "S1",
+            "original_speaker": "SPEAKER_05",
+            "display_name": "SPEAKER_05",
+        },
+        {
+            "compact_label": "S2",
+            "original_speaker": "SPEAKER_99",
+            "display_name": "SPEAKER_99",
+        },
+    ]
+
+
+def test_build_compact_transcript_rejects_noise_only_rows() -> None:
+    with pytest.raises(ValueError, match="produced no usable content"):
+        llm_chunking.build_compact_transcript(
+            [
+                {"speaker": "S1", "start": 0.0, "end": 0.1, "text": "..."},
+                {"speaker": "S2", "start": 0.2, "end": 0.3, "text": "???!"},
+            ]
+        )
+
+
+def test_compact_helpers_cover_edge_cases_and_validation() -> None:
+    assert not llm_chunking._is_concise_speaker_label("")
+    assert not llm_chunking._is_concise_speaker_label("SPEAKER_02")
+    assert not llm_chunking._is_concise_speaker_label("This Alias Is Too Long")
+    assert not llm_chunking._is_concise_speaker_label("a b c")
+
+    with pytest.raises(ValueError, match="produced no usable content"):
+        llm_chunking.build_compact_transcript([{"speaker": "S1", "start": 0.0, "end": 0.1, "text": "   "}])
+
+    compact = llm_chunking.build_compact_transcript(
+        [{"speaker": "Alex", "start": 0.0, "end": 1.0, "text": "hello"}]
+    )
+    assert compact.prompt_speaker_mapping() == []
+
+    split = llm_chunking._split_compact_unit_to_fit(  # noqa: SLF001
+        llm_chunking.CompactTranscriptUnit(
+            speaker_label="LONG",
+            original_speaker="LONG",
+            display_name="LONG",
+            start_seconds=0.0,
+            end_seconds=1.0,
+            text="alpha beta",
+            source_turn_count=1,
+        ),
+        max_chars=3,
+    )
+    assert split
+    assert all(len(item.text) <= 3 for item in split)
+
+    prefixed = llm_chunking._split_compact_unit_to_fit(  # noqa: SLF001
+        llm_chunking.CompactTranscriptUnit(
+            speaker_label="S1",
+            original_speaker="S1",
+            display_name="S1",
+            start_seconds=0.0,
+            end_seconds=1.0,
+            text="alpha beta gamma",
+            source_turn_count=1,
+        ),
+        max_chars=8,
+    )
+    assert prefixed
+    assert all(item.text.startswith("S1: ") for item in prefixed)
+    assert all(len(item.text) <= 8 for item in prefixed)
+
+    empty_compact = llm_chunking.CompactTranscript(
+        text="   ",
+        source_chars=0,
+        compact_chars=0,
+        merge_gap_seconds=llm_chunking.DEFAULT_COMPACT_MERGE_GAP_SECONDS,
+        source_turn_count=0,
+        compact_turn_count=0,
+        speaker_mapping=(),
+        units=(),
+    )
+    assert llm_chunking.plan_compact_transcript_chunks(empty_compact, max_chars=10, overlap_chars=0) == []
+
+    with pytest.raises(ValueError, match="max_chars"):
+        llm_chunking.plan_compact_transcript_chunks(compact, max_chars=0, overlap_chars=0)
+    with pytest.raises(ValueError, match="overlap_chars"):
+        llm_chunking.plan_compact_transcript_chunks(compact, max_chars=10, overlap_chars=-1)
+
+
+def test_build_compact_transcript_flushes_blank_current_and_compact_plan_empty_units(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(llm_chunking, "_has_substantive_content", lambda _text: True)
+    monkeypatch.setattr(
+        llm_chunking,
+        "_normalise_source_turns",
+        lambda *_a, **_k: [
+            {
+                "speaker": "S1",
+                "display_name": "S1",
+                "start": 0.0,
+                "end": 1.0,
+                "text": "   ",
+            }
+        ],
+    )
+    with pytest.raises(ValueError, match="produced no usable content"):
+        llm_chunking.build_compact_transcript([{"speaker": "S1", "text": "ignored"}])
+
+    compact = llm_chunking.CompactTranscript(
+        text="S1: hello",
+        source_chars=9,
+        compact_chars=9,
+        merge_gap_seconds=llm_chunking.DEFAULT_COMPACT_MERGE_GAP_SECONDS,
+        source_turn_count=1,
+        compact_turn_count=1,
+        speaker_mapping=(),
+        units=(
+            llm_chunking.CompactTranscriptUnit(
+                speaker_label="S1",
+                original_speaker="S1",
+                display_name="S1",
+                start_seconds=0.0,
+                end_seconds=1.0,
+                text="hello",
+                source_turn_count=1,
+            ),
+        ),
+    )
+    monkeypatch.setattr(llm_chunking, "_split_compact_unit_to_fit", lambda *_a, **_k: [])
+    assert llm_chunking.plan_compact_transcript_chunks(compact, max_chars=10, overlap_chars=0) == []
+
+
+def test_plan_compact_transcript_chunks_records_effective_sizes_and_time_ranges() -> None:
+    compact = llm_chunking.build_compact_transcript(
+        [
+            {"speaker": "SPEAKER_00", "start": 0.0, "end": 1.0, "text": "alpha beta gamma delta"},
+            {"speaker": "SPEAKER_01", "start": 2.0, "end": 3.0, "text": "epsilon zeta eta theta"},
+            {"speaker": "SPEAKER_00", "start": 4.0, "end": 5.0, "text": "iota kappa lambda mu"},
+        ]
+    )
+
+    chunks = llm_chunking.plan_compact_transcript_chunks(compact, max_chars=28, overlap_chars=8)
+
+    assert len(chunks) >= 2
+    assert all("[" not in chunk.text for chunk in chunks)
+    assert chunks[0].plan_payload()["time_range"] == {"start_seconds": 0.0, "end_seconds": 1.0}
+    assert chunks[1].plan_payload()["effective_chars"] >= chunks[1].plan_payload()["base_chars"]
+    assert chunks[1].plan_payload()["overlap_chars"] == len(chunks[1].overlap_prefix)
+
+
 def test_build_chunk_prompt_and_parse_chunk_extract() -> None:
     chunk = llm_chunking.TranscriptChunk(
         index=2,
         total=4,
-        text="[0.00-1.00] Alex: review blockers",
-        base_text="[0.00-1.00] Alex: review blockers",
+        text="Alex: review blockers",
+        base_text="Alex: review blockers",
+        start_seconds=12.0,
+        end_seconds=18.0,
     )
     system_prompt, user_prompt = llm_chunking.build_chunk_prompt(
         chunk,
         target_summary_language="es",
         calendar_title="Roadmap Review",
         calendar_attendees=["Alex", "Priya"],
+        speaker_mapping=[{"label": "S1", "speaker": "Alex"}],
     )
     prompt_payload = json.loads(user_prompt)
 
     assert "strict JSON" in system_prompt
-    assert prompt_payload["chunk"] == {"index": 2, "total": 4}
+    assert prompt_payload["chunk"] == {
+        "index": 2,
+        "total": 4,
+        "time_range": {"start_seconds": 12.0, "end_seconds": 18.0},
+    }
     assert prompt_payload["calendar"]["title"] == "Roadmap Review"
     assert prompt_payload["calendar"]["attendees"] == ["Alex", "Priya"]
+    assert prompt_payload["speaker_mapping"] == [{"label": "S1", "speaker": "Alex"}]
 
     parsed = llm_chunking.parse_chunk_extract(
         """```json
