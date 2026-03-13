@@ -510,7 +510,7 @@ Queue (in order)
 - Depends on: PR-SNIPPETS-PURITY-01 and PR-PIPELINE-CHECKPOINTS-RESUME-01 and PR-OBSERVABILITY-ROOT-CAUSE-01
 
 102) PR-SNIPPETS-UI-STATE-01: Improve snippet UI states during processing (not started/running/failed/ready) and make Speakers tab truthful before terminal completion
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-SNIPPETS-UI-STATE-01.md
 - Depends on: PR-SNIPPETS-STAGE-REORDER-01 and PR-OBSERVABILITY-ROOT-CAUSE-01 and PR-SPEAKER-UX-01
 

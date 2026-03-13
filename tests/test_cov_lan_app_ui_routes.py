@@ -15,6 +15,7 @@ from lan_app.calendar.service import CalendarSyncError
 from lan_app.config import AppSettings
 from lan_app.constants import (
     JOB_STATUS_FAILED,
+    RECORDING_STATUS_PROCESSING,
     RECORDING_STATUS_QUEUED,
     RECORDING_STATUS_READY,
     RECORDING_STATUS_STOPPED,
@@ -963,6 +964,185 @@ def test_snippet_message_helpers_and_display_backfill_edges(
     )
     assert ui_routes._no_clean_snippet_message([{"status": "rejected_rank_limit"}]) == (  # noqa: SLF001
         "No accepted clean snippets are available for this speaker."
+    )
+
+
+def test_snippet_ui_state_helper_covers_manifest_and_stage_edges() -> None:
+    assert ui_routes._pipeline_stage_order("not-a-stage") is None  # noqa: SLF001
+    assert ui_routes._stage_row_metadata(None) == {}  # noqa: SLF001
+    assert ui_routes._snippet_manifest_warning_messages(  # noqa: SLF001
+        {"warnings": ["skip", {"message": ""}, {"message": "boom"}]}
+    ) == ["boom"]
+    assert ui_routes._snippet_ready_message(  # noqa: SLF001
+        {"status": RECORDING_STATUS_PROCESSING, "pipeline_stage": "snippet_export"}
+    ) == "Clean clips are ready while processing continues."
+    assert ui_routes._snippet_completed_without_clean_message(None) == (  # noqa: SLF001
+        "Snippet export completed, but no accepted clean snippets are available for this speaker."
+    )
+    assert ui_routes._snippet_completed_without_clean_message(  # noqa: SLF001
+        "No snippet quality data is available for this speaker yet."
+    ) == "Snippet export completed, but no accepted clean snippets are available for this speaker."
+    assert ui_routes._snippet_completed_without_clean_message("state unavailable") == (  # noqa: SLF001
+        "Snippet export completed, but state unavailable"
+    )
+
+    running_state = ui_routes._resolve_speaker_snippet_ui_state(  # noqa: SLF001
+        recording={"status": RECORDING_STATUS_PROCESSING, "pipeline_stage": "snippet_export"},
+        stage_rows=[],
+        manifest_exists=False,
+        manifest={},
+        entries=[],
+        clean_snippets=[],
+        no_clean_snippet_message=None,
+    )
+    assert running_state["code"] == "running"
+
+    failed_no_warning = ui_routes._resolve_speaker_snippet_ui_state(  # noqa: SLF001
+        recording={"status": RECORDING_STATUS_READY},
+        stage_rows=[
+            {
+                "stage_name": "snippet_export",
+                "status": "failed",
+                "metadata_json": {},
+                "error_text": "",
+            }
+        ],
+        manifest_exists=False,
+        manifest={},
+        entries=[],
+        clean_snippets=[],
+        no_clean_snippet_message=None,
+    )
+    assert failed_no_warning["detail"] == (
+        "Snippet export failed, so no clean clips are available for this speaker."
+    )
+
+    accepted_missing = ui_routes._resolve_speaker_snippet_ui_state(  # noqa: SLF001
+        recording={"status": RECORDING_STATUS_READY, "pipeline_stage": "llm_extract"},
+        stage_rows=[
+            {
+                "stage_name": "snippet_export",
+                "status": "completed",
+                "metadata_json": {"manifest_status": "ok"},
+            }
+        ],
+        manifest_exists=True,
+        manifest={"manifest_status": "ok"},
+        entries=[{"status": "accepted"}],
+        clean_snippets=[],
+        no_clean_snippet_message=None,
+    )
+    assert accepted_missing["code"] == "unavailable"
+    assert "audio files are missing from disk" in accepted_missing["detail"]
+
+    unreadable = ui_routes._resolve_speaker_snippet_ui_state(  # noqa: SLF001
+        recording={"status": RECORDING_STATUS_READY},
+        stage_rows=[],
+        manifest_exists=True,
+        manifest={},
+        entries=[],
+        clean_snippets=[],
+        no_clean_snippet_message=None,
+    )
+    assert unreadable["code"] == "unavailable"
+    assert "could not be read" in unreadable["detail"]
+
+    unavailable = ui_routes._resolve_speaker_snippet_ui_state(  # noqa: SLF001
+        recording={"status": RECORDING_STATUS_READY},
+        stage_rows=[
+            {
+                "stage_name": "snippet_export",
+                "status": "completed",
+                "metadata_json": {"manifest_status": "no_usable_speech"},
+            }
+        ],
+        manifest_exists=True,
+        manifest={
+            "manifest_status": "no_usable_speech",
+            "warnings": [{"message": "No speaker turns were available."}],
+        },
+        entries=[],
+        clean_snippets=[],
+        no_clean_snippet_message=None,
+    )
+    assert unavailable["code"] == "unavailable"
+    assert unavailable["detail"] == "No speaker turns were available."
+
+    cancelled = ui_routes._resolve_speaker_snippet_ui_state(  # noqa: SLF001
+        recording={"status": RECORDING_STATUS_READY},
+        stage_rows=[
+            {
+                "stage_name": "snippet_export",
+                "status": "cancelled",
+                "metadata_json": {},
+            }
+        ],
+        manifest_exists=False,
+        manifest={},
+        entries=[],
+        clean_snippets=[],
+        no_clean_snippet_message=None,
+    )
+    assert cancelled["code"] == "unavailable"
+    assert "cancelled" in cancelled["detail"]
+
+    legacy = ui_routes._resolve_speaker_snippet_ui_state(  # noqa: SLF001
+        recording={"status": RECORDING_STATUS_READY},
+        stage_rows=[],
+        manifest_exists=False,
+        manifest={},
+        entries=[],
+        clean_snippets=[],
+        no_clean_snippet_message=None,
+    )
+    assert legacy["code"] == "legacy_missing_manifest"
+
+    missing_after_stage = ui_routes._resolve_speaker_snippet_ui_state(  # noqa: SLF001
+        recording={"status": RECORDING_STATUS_PROCESSING, "pipeline_stage": "llm_extract"},
+        stage_rows=[
+            {
+                "stage_name": "snippet_export",
+                "status": "completed",
+                "metadata_json": {"manifest_status": "ok"},
+            }
+        ],
+        manifest_exists=False,
+        manifest={},
+        entries=[],
+        clean_snippets=[],
+        no_clean_snippet_message=None,
+    )
+    assert missing_after_stage["code"] == "unavailable"
+
+    no_clean_ready = ui_routes._resolve_speaker_snippet_ui_state(  # noqa: SLF001
+        recording={"status": RECORDING_STATUS_READY},
+        stage_rows=[
+            {
+                "stage_name": "snippet_export",
+                "status": "completed",
+                "metadata_json": {"manifest_status": "no_clean_snippets"},
+            }
+        ],
+        manifest_exists=True,
+        manifest={"manifest_status": "no_clean_snippets"},
+        entries=[],
+        clean_snippets=[],
+        no_clean_snippet_message="No clean snippets are available because every candidate overlaps another speaker.",
+    )
+    assert no_clean_ready["code"] == "ready_no_clean_snippets"
+    assert "every candidate overlaps another speaker" in no_clean_ready["detail"]
+
+    unknown_manifest = ui_routes._resolve_speaker_snippet_ui_state(  # noqa: SLF001
+        recording={"status": RECORDING_STATUS_READY},
+        stage_rows=[],
+        manifest_exists=True,
+        manifest={"manifest_status": "mystery"},
+        entries=[],
+        clean_snippets=[],
+        no_clean_snippet_message=None,
+    )
+    assert unknown_manifest["detail"] == (
+        "Snippet export finished, but its manifest state is unavailable."
     )
 
 

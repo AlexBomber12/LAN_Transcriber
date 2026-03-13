@@ -103,6 +103,7 @@ from .jobs import (
     purge_pending_recording_jobs,
 )
 from .ops import RecordingDeleteError, delete_recording_with_artifacts
+from .pipeline_stages import PIPELINE_STAGE_DONE_STATUSES, stage_order
 from .routing import refresh_recording_routing, train_routing_from_manual_selection
 from .speaker_bank import DEFAULT_ASSIGNMENT_THRESHOLD, merge_canonical_speakers
 from lan_transcriber.artifacts import atomic_write_json
@@ -977,8 +978,13 @@ def _speaker_snippet_manifest_entries(
     speaker_label: str,
     *,
     settings: AppSettings,
+    manifest: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
-    payload = _load_json_dict(_snippets_manifest_path(recording_id, settings=settings))
+    payload = (
+        manifest
+        if isinstance(manifest, dict)
+        else _load_json_dict(_snippets_manifest_path(recording_id, settings=settings))
+    )
     speakers_payload = payload.get("speakers")
     if not isinstance(speakers_payload, dict):
         return []
@@ -1072,20 +1078,279 @@ def _no_clean_snippet_message(entries: list[dict[str, Any]]) -> str:
     return "No snippet quality data is available for this speaker yet."
 
 
+def _pipeline_stage_order(value: object) -> int | None:
+    stage_name = str(value or "").strip()
+    if not stage_name:
+        return None
+    try:
+        return stage_order(stage_name)
+    except ValueError:
+        return None
+
+
+def _stage_row_metadata(row: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(row, dict):
+        return {}
+    metadata = row.get("metadata_json")
+    return metadata if isinstance(metadata, dict) else {}
+
+
+def _snippet_export_stage_row(stage_rows: list[dict[str, Any]]) -> dict[str, Any]:
+    return next(
+        (
+            row
+            for row in stage_rows
+            if str(row.get("stage_name") or "").strip() == "snippet_export"
+        ),
+        {},
+    )
+
+
+def _snippet_manifest_warning_messages(manifest: dict[str, Any]) -> list[str]:
+    warnings_payload = manifest.get("warnings")
+    if not isinstance(warnings_payload, list):
+        return []
+    messages: list[str] = []
+    for warning in warnings_payload:
+        if not isinstance(warning, dict):
+            continue
+        message = str(warning.get("message") or "").strip()
+        if message:
+            messages.append(message)
+    return messages
+
+
+def _snippet_ready_message(recording: dict[str, Any]) -> str:
+    recording_status = str(recording.get("status") or "").strip()
+    if recording_status not in _ACTIVE_RECORDING_PROGRESS_STATUSES:
+        return "Clean clips are ready for this speaker."
+    current_stage = str(recording.get("pipeline_stage") or "").strip()
+    if current_stage and current_stage != "snippet_export":
+        return (
+            "Clean clips are ready while processing continues in "
+            f"{_pipeline_stage_label(current_stage)}."
+        )
+    return "Clean clips are ready while processing continues."
+
+
+def _snippet_completed_without_clean_message(no_clean_snippet_message: str | None) -> str:
+    detail = str(no_clean_snippet_message or "").strip()
+    if not detail:
+        return "Snippet export completed, but no accepted clean snippets are available for this speaker."
+    if detail == "No snippet quality data is available for this speaker yet.":
+        return "Snippet export completed, but no accepted clean snippets are available for this speaker."
+    if detail.startswith("No "):
+        return f"Snippet export completed, but {detail[0].lower()}{detail[1:]}"
+    return f"Snippet export completed, but {detail}"
+
+
+def _resolve_speaker_snippet_ui_state(
+    *,
+    recording: dict[str, Any],
+    stage_rows: list[dict[str, Any]],
+    manifest_exists: bool,
+    manifest: dict[str, Any],
+    entries: list[dict[str, Any]],
+    clean_snippets: list[dict[str, Any]],
+    no_clean_snippet_message: str | None,
+) -> dict[str, str]:
+    recording_status = str(recording.get("status") or "").strip()
+    current_stage = str(recording.get("pipeline_stage") or "").strip()
+    current_stage_order = _pipeline_stage_order(current_stage)
+    snippet_stage_order = stage_order("snippet_export")
+    reached_snippet_stage = (
+        current_stage_order is not None and current_stage_order >= snippet_stage_order
+    )
+    stage_row = _snippet_export_stage_row(stage_rows)
+    stage_status = str(stage_row.get("status") or "").strip().lower()
+    stage_metadata = _stage_row_metadata(stage_row)
+    manifest_status = str(
+        manifest.get("manifest_status") or stage_metadata.get("manifest_status") or ""
+    ).strip().lower()
+    manifest_warning_messages = _snippet_manifest_warning_messages(manifest)
+    warning_detail = (
+        manifest_warning_messages[0]
+        if manifest_warning_messages
+        else str(stage_metadata.get("warning") or stage_row.get("error_text") or "").strip()
+    )
+    accepted_entry_count = sum(
+        1
+        for entry in entries
+        if str(entry.get("status") or "").strip() == "accepted"
+    )
+    pipeline_active = recording_status in _STOP_ELIGIBLE_RECORDING_STATUSES
+
+    if manifest_status == "export_failed" or stage_status == "failed":
+        detail = "Snippet export failed, so no clean clips are available for this speaker."
+        if recording_status == RECORDING_STATUS_PROCESSING:
+            detail += " The rest of processing continues."
+        if warning_detail:
+            detail = f"{detail} {warning_detail}"
+        return {
+            "code": "failed_nonfatal",
+            "label": "Failed",
+            "detail": detail,
+            "color": "#92400e",
+            "add_sample_message": detail,
+        }
+
+    if stage_status == "cancelled":
+        detail = "Snippet export was cancelled before clean clips were finalized."
+        return {
+            "code": "unavailable",
+            "label": "Unavailable",
+            "detail": detail,
+            "color": "#92400e",
+            "add_sample_message": detail,
+        }
+
+    if stage_status == "running" or (
+        pipeline_active and current_stage == "snippet_export"
+    ):
+        detail = "Snippet export is currently generating clean clips for this recording."
+        return {
+            "code": "running",
+            "label": "Generating",
+            "detail": detail,
+            "color": "#1d4ed8",
+            "add_sample_message": "Add sample will be available when clean clips finish generating.",
+        }
+
+    if stage_status in {"", "pending"} and (
+        recording_status == RECORDING_STATUS_QUEUED
+        or (pipeline_active and not reached_snippet_stage)
+    ):
+        detail = "The pipeline has not reached Snippet Export yet."
+        return {
+            "code": "not_started",
+            "label": "Pending",
+            "detail": detail,
+            "color": "#555",
+            "add_sample_message": "Add sample will be available after Snippet Export runs.",
+        }
+
+    if clean_snippets:
+        return {
+            "code": "ready_with_clean_snippets",
+            "label": "Ready",
+            "detail": _snippet_ready_message(recording),
+            "color": "#166534",
+            "add_sample_message": "",
+        }
+
+    if accepted_entry_count > 0:
+        detail = (
+            "Snippet export accepted clean clips for this speaker, but the audio files are "
+            "missing from disk."
+        )
+        return {
+            "code": "unavailable",
+            "label": "Unavailable",
+            "detail": detail,
+            "color": "#92400e",
+            "add_sample_message": detail,
+        }
+
+    if manifest_exists and not manifest:
+        detail = "The snippets manifest exists but could not be read."
+        return {
+            "code": "unavailable",
+            "label": "Unavailable",
+            "detail": detail,
+            "color": "#92400e",
+            "add_sample_message": detail,
+        }
+
+    if manifest:
+        if manifest_status in {"quarantined_precheck", "no_usable_speech"}:
+            detail = warning_detail or "Snippet export completed without usable speaker turns."
+            return {
+                "code": "unavailable",
+                "label": "Unavailable",
+                "detail": detail,
+                "color": "#92400e",
+                "add_sample_message": detail,
+            }
+        if manifest_status in {"ok", "partial", "degraded", "no_clean_snippets"} or (
+            stage_status in PIPELINE_STAGE_DONE_STATUSES
+        ):
+            add_sample_message = str(no_clean_snippet_message or "").strip()
+            if (
+                not add_sample_message
+                or add_sample_message
+                == "No snippet quality data is available for this speaker yet."
+            ):
+                add_sample_message = "No accepted clean snippets are available for this speaker."
+            return {
+                "code": "ready_no_clean_snippets",
+                "label": "Ready",
+                "detail": _snippet_completed_without_clean_message(add_sample_message),
+                "color": "#92400e",
+                "add_sample_message": add_sample_message,
+            }
+        detail = "Snippet export finished, but its manifest state is unavailable."
+        return {
+            "code": "unavailable",
+            "label": "Unavailable",
+            "detail": detail,
+            "color": "#92400e",
+            "add_sample_message": detail,
+        }
+
+    if recording_status in _TERMINAL_RECORDING_STATUSES and not stage_row:
+        detail = (
+            "This older recording has no snippets manifest yet. A repair/backfill run can "
+            "regenerate speaker clips later."
+        )
+        return {
+            "code": "legacy_missing_manifest",
+            "label": "Legacy",
+            "detail": detail,
+            "color": "#92400e",
+            "add_sample_message": detail,
+        }
+
+    if stage_status in PIPELINE_STAGE_DONE_STATUSES or reached_snippet_stage:
+        detail = "Snippet export should already be available, but the snippets manifest is missing."
+        return {
+            "code": "unavailable",
+            "label": "Unavailable",
+            "detail": detail,
+            "color": "#92400e",
+            "add_sample_message": detail,
+        }
+
+    detail = "The pipeline has not reached Snippet Export yet."
+    return {
+        "code": "not_started",
+        "label": "Pending",
+        "detail": detail,
+        "color": "#555",
+        "add_sample_message": "Add sample will be available after Snippet Export runs.",
+    }
+
+
 def _speaker_snippet_context(
     recording_id: str,
     speaker_label: str,
     *,
     settings: AppSettings,
+    recording: dict[str, Any] | None = None,
+    stage_rows: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     snippets_root = settings.recordings_root / recording_id / "derived" / "snippets"
-    expected_prefix = f"{_speaker_slug(speaker_label)}/"
-    clean_snippets: list[dict[str, Any]] = []
-    for entry in _speaker_snippet_manifest_entries(
+    manifest_path = _snippets_manifest_path(recording_id, settings=settings)
+    manifest_exists = manifest_path.exists()
+    manifest = _load_json_dict(manifest_path)
+    entries = _speaker_snippet_manifest_entries(
         recording_id,
         speaker_label,
         settings=settings,
-    ):
+        manifest=manifest,
+    )
+    expected_prefix = f"{_speaker_slug(speaker_label)}/"
+    clean_snippets: list[dict[str, Any]] = []
+    for entry in entries:
         if str(entry.get("status") or "").strip() != "accepted":
             continue
         relative_path = str(entry.get("relative_path") or "").strip()
@@ -1117,16 +1382,27 @@ def _speaker_snippet_context(
             }
         )
 
-    entries = _speaker_snippet_manifest_entries(
-        recording_id,
-        speaker_label,
-        settings=settings,
+    recording_payload = dict(
+        recording or get_recording(recording_id, settings=settings) or {}
     )
+    resolved_stage_rows = (
+        list(stage_rows)
+        if stage_rows is not None
+        else list_recording_pipeline_stages(recording_id, settings=settings)
+    )
+    no_clean_snippet_message = None if clean_snippets else _no_clean_snippet_message(entries)
     return {
         "clean_snippets": clean_snippets,
         "snippet_warnings": _snippet_warning_messages(entries),
-        "no_clean_snippet_message": (
-            None if clean_snippets else _no_clean_snippet_message(entries)
+        "no_clean_snippet_message": no_clean_snippet_message,
+        "snippet_ui_state": _resolve_speaker_snippet_ui_state(
+            recording=recording_payload,
+            stage_rows=resolved_stage_rows,
+            manifest_exists=manifest_exists,
+            manifest=manifest,
+            entries=entries,
+            clean_snippets=clean_snippets,
+            no_clean_snippet_message=no_clean_snippet_message,
         ),
     }
 
@@ -1312,10 +1588,22 @@ def _speaker_review_notices(
     return notices
 
 
-def _speakers_tab_context(recording_id: str, settings: AppSettings) -> dict[str, Any]:
+def _speakers_tab_context(
+    recording_id: str,
+    settings: AppSettings,
+    *,
+    recording: dict[str, Any] | None = None,
+    stage_rows: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     transcript_path, _summary_path = _recording_derived_paths(recording_id, settings)
     speaker_turns_path = transcript_path.parent / "speaker_turns.json"
     transcript_payload = _load_json_dict(transcript_path)
+    resolved_recording = dict(recording or get_recording(recording_id, settings=settings) or {})
+    resolved_stage_rows = (
+        list(stage_rows)
+        if stage_rows is not None
+        else list_recording_pipeline_stages(recording_id, settings=settings)
+    )
 
     speaker_turns_raw = _load_json_list(speaker_turns_path)
     speaker_turns = [row for row in speaker_turns_raw if isinstance(row, dict)]
@@ -1364,7 +1652,13 @@ def _speakers_tab_context(recording_id: str, settings: AppSettings) -> dict[str,
     low_confidence_count = 0
     for speaker in sorted(per_speaker):
         row = per_speaker[speaker]
-        snippet_context = _speaker_snippet_context(recording_id, speaker, settings=settings)
+        snippet_context = _speaker_snippet_context(
+            recording_id,
+            speaker,
+            settings=settings,
+            recording=resolved_recording,
+            stage_rows=resolved_stage_rows,
+        )
         assignment = assignment_by_speaker.get(speaker, {})
         profile_id_raw = assignment.get("voice_profile_id")
         try:
@@ -1392,6 +1686,7 @@ def _speakers_tab_context(recording_id: str, settings: AppSettings) -> dict[str,
                 "clean_snippets": snippet_context["clean_snippets"],
                 "snippet_warnings": snippet_context["snippet_warnings"],
                 "no_clean_snippet_message": snippet_context["no_clean_snippet_message"],
+                "snippet_ui_state": snippet_context["snippet_ui_state"],
                 "voice_profile_id": profile_id,
                 "voice_profile_name": voice_profile_name,
                 "confidence": max(0.0, min(confidence, 1.0)),
@@ -2075,7 +2370,12 @@ async def ui_recording_detail(
     if current_tab == "language":
         language = _language_tab_context(recording_id, rec, _settings)
     if current_tab == "speakers":
-        speakers = _speakers_tab_context(recording_id, _settings)
+        speakers = _speakers_tab_context(
+            recording_id,
+            _settings,
+            recording=rec,
+            stage_rows=stage_rows,
+        )
     if current_tab == "project":
         project = _project_tab_context(recording_id, rec, _settings)
         rec = _prepare_recording_for_display(

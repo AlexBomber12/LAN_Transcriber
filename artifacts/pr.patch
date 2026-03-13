@@ -1,35 +1,1000 @@
-diff --git a/lan_app/pipeline_stages.py b/lan_app/pipeline_stages.py
-index 6a65ccd..b87820e 100644
---- a/lan_app/pipeline_stages.py
-+++ b/lan_app/pipeline_stages.py
-@@ -47,11 +47,11 @@ PIPELINE_STAGE_DEFINITIONS = (
-     PipelineStageDefinition("diarization", 50, 0.60, "Diarization"),
-     PipelineStageDefinition("language_analysis", 60, 0.75, "Language Analysis"),
-     PipelineStageDefinition("speaker_turns", 70, 0.80, "Speaker Turns"),
--    PipelineStageDefinition("snippet_export", 80, 0.84, "Snippet Export"),
--    PipelineStageDefinition("llm_extract", 90, 0.90, "LLM Extract"),
--    PipelineStageDefinition("export_artifacts", 100, 0.95, "Export Artifacts"),
--    PipelineStageDefinition("metrics", 110, 0.98, "Metrics"),
--    PipelineStageDefinition("routing", 120, 0.99, "Routing"),
-+    PipelineStageDefinition("snippet_export", 75, 0.84, "Snippet Export"),
-+    PipelineStageDefinition("llm_extract", 80, 0.90, "LLM Extract"),
-+    PipelineStageDefinition("export_artifacts", 90, 0.95, "Export Artifacts"),
-+    PipelineStageDefinition("metrics", 100, 0.98, "Metrics"),
-+    PipelineStageDefinition("routing", 110, 0.99, "Routing"),
+diff --git a/README.md b/README.md
+index 710a3c3..4a21b12 100644
+--- a/README.md
++++ b/README.md
+@@ -122,6 +122,7 @@ Operational setup, failure handling, backup/restore, and upgrade steps are docum
+ - `/recordings/{recording_id}?tab=speakers` lets you remap diarized labels (`S1`, `S2`, ...) to canonical speakers or leave them unmatched; exports render the corrected canonical names as `Name (Sx)`.
+ - Speaker snippets are now purity-ranked voice samples built from single-speaker material instead of wide playback windows.
+ - Snippet export now runs immediately after `speaker_turns`, before LLM summarization, so `derived/snippets_manifest.json` and clean clips can appear while long summaries are still processing.
++- The Speakers tab now labels snippet state as pending, generating, ready, failed, or legacy/unavailable instead of collapsing empty states into one generic placeholder.
+ - Add sample now requires an explicit clean snippet choice from the speakers tab; if no clean snippet exists, the UI explains why and blocks the action.
+ - Synthetic silence fallback was removed on purpose. Inspect `derived/snippets_manifest.json` to see accepted clips, rejected candidates, overlap, and extraction failures.
+ - When diarization falls back to degraded mode or a speaker match is low confidence, the recording detail page shows an explicit warning instead of silently trusting the labels.
+diff --git a/docs/runbook.md b/docs/runbook.md
+index 1a7b515..6de282c 100644
+--- a/docs/runbook.md
++++ b/docs/runbook.md
+@@ -73,6 +73,7 @@ docker compose run --rm api python -m lan_app.healthchecks app
+    - Use the `speakers` tab to remap `S1`/`S2` diarization labels to canonical speakers or leave them unmatched; the export preview updates to the corrected `Name (Sx)` labels.
+    - Speaker snippets are purity-ranked voice samples. Add sample now requires selecting an explicit clean clip instead of silently taking the first snippet.
+    - Snippet export runs right after `speaker_turns` and before `llm_extract`, so `derived/snippets_manifest.json` and accepted clips can show up while long LLM work is still running.
++   - The Speakers tab labels snippet state as pending, generating, ready, failed, or legacy/unavailable so operators can tell whether Add sample should be usable yet.
+    - Silence fallback for failed snippet extraction was removed intentionally. Inspect `derived/snippets_manifest.json` for accepted clips, overlap rejections, degraded-mode blocks, and extraction failures.
+    - If diarization fell back to degraded mode or a match stayed low confidence, the speakers tab shows a visible warning badge/message.
+ 6. Download export bundle from `GET /ui/recordings/{recording_id}/export.zip`.
+diff --git a/lan_app/templates/recording_detail.html b/lan_app/templates/recording_detail.html
+index d1ec747..a101f40 100644
+--- a/lan_app/templates/recording_detail.html
++++ b/lan_app/templates/recording_detail.html
+@@ -504,6 +504,11 @@
+           {% endif %}
+         </td>
+         <td style="white-space:normal;max-width:320px">
++          {% if row.snippet_ui_state %}
++          <div style="margin:0 0 6px 0;font-size:11px;color:{{ row.snippet_ui_state.color }}">
++            <strong>{{ row.snippet_ui_state.label }}:</strong> {{ row.snippet_ui_state.detail }}
++          </div>
++          {% endif %}
+           {% if row.clean_snippets %}
+             {% for snippet in row.clean_snippets %}
+             <div style="margin-bottom:8px;padding:6px;border:1px solid #ddd;border-radius:6px">
+@@ -528,9 +533,6 @@
+             <div style="margin-top:4px;font-size:11px;color:#92400e">{{ warning }}</div>
+             {% endfor %}
+           {% endif %}
+-          {% if not row.clean_snippets and not row.snippet_warnings %}
+-          <span class="placeholder" style="padding:0">No snippet quality data found.</span>
+-          {% endif %}
+         </td>
+         <td style="white-space:normal;max-width:260px">
+           {% if profiles %}
+@@ -563,7 +565,9 @@
+               {% endfor %}
+             </select>
+             <button class="btn" type="submit" {% if not row.clean_snippets %}disabled{% endif %}>Add sample from this recording</button>
+-            {% if row.no_clean_snippet_message %}
++            {% if not row.clean_snippets and row.snippet_ui_state.add_sample_message %}
++            <div style="margin-top:4px;font-size:11px;color:#92400e">{{ row.snippet_ui_state.add_sample_message }}</div>
++            {% elif row.no_clean_snippet_message %}
+             <div style="margin-top:4px;font-size:11px;color:#92400e">{{ row.no_clean_snippet_message }}</div>
+             {% endif %}
+           </form>
+diff --git a/lan_app/ui_routes.py b/lan_app/ui_routes.py
+index 4e71308..3084839 100644
+--- a/lan_app/ui_routes.py
++++ b/lan_app/ui_routes.py
+@@ -103,6 +103,7 @@ from .jobs import (
+     purge_pending_recording_jobs,
  )
+ from .ops import RecordingDeleteError, delete_recording_with_artifacts
++from .pipeline_stages import PIPELINE_STAGE_DONE_STATUSES, stage_order
+ from .routing import refresh_recording_routing, train_routing_from_manual_selection
+ from .speaker_bank import DEFAULT_ASSIGNMENT_THRESHOLD, merge_canonical_speakers
+ from lan_transcriber.artifacts import atomic_write_json
+@@ -977,8 +978,13 @@ def _speaker_snippet_manifest_entries(
+     speaker_label: str,
+     *,
+     settings: AppSettings,
++    manifest: dict[str, Any] | None = None,
+ ) -> list[dict[str, Any]]:
+-    payload = _load_json_dict(_snippets_manifest_path(recording_id, settings=settings))
++    payload = (
++        manifest
++        if isinstance(manifest, dict)
++        else _load_json_dict(_snippets_manifest_path(recording_id, settings=settings))
++    )
+     speakers_payload = payload.get("speakers")
+     if not isinstance(speakers_payload, dict):
+         return []
+@@ -1072,20 +1078,279 @@ def _no_clean_snippet_message(entries: list[dict[str, Any]]) -> str:
+     return "No snippet quality data is available for this speaker yet."
  
- PIPELINE_STAGE_BY_NAME = {
-diff --git a/tests/test_pipeline_resume_coverage.py b/tests/test_pipeline_resume_coverage.py
-index c11f511..9b2d1ca 100644
---- a/tests/test_pipeline_resume_coverage.py
-+++ b/tests/test_pipeline_resume_coverage.py
-@@ -100,6 +100,9 @@ def test_pipeline_stage_validation_and_artifact_edge_cases(tmp_path: Path) -> No
+ 
++def _pipeline_stage_order(value: object) -> int | None:
++    stage_name = str(value or "").strip()
++    if not stage_name:
++        return None
++    try:
++        return stage_order(stage_name)
++    except ValueError:
++        return None
++
++
++def _stage_row_metadata(row: dict[str, Any] | None) -> dict[str, Any]:
++    if not isinstance(row, dict):
++        return {}
++    metadata = row.get("metadata_json")
++    return metadata if isinstance(metadata, dict) else {}
++
++
++def _snippet_export_stage_row(stage_rows: list[dict[str, Any]]) -> dict[str, Any]:
++    return next(
++        (
++            row
++            for row in stage_rows
++            if str(row.get("stage_name") or "").strip() == "snippet_export"
++        ),
++        {},
++    )
++
++
++def _snippet_manifest_warning_messages(manifest: dict[str, Any]) -> list[str]:
++    warnings_payload = manifest.get("warnings")
++    if not isinstance(warnings_payload, list):
++        return []
++    messages: list[str] = []
++    for warning in warnings_payload:
++        if not isinstance(warning, dict):
++            continue
++        message = str(warning.get("message") or "").strip()
++        if message:
++            messages.append(message)
++    return messages
++
++
++def _snippet_ready_message(recording: dict[str, Any]) -> str:
++    recording_status = str(recording.get("status") or "").strip()
++    if recording_status not in _ACTIVE_RECORDING_PROGRESS_STATUSES:
++        return "Clean clips are ready for this speaker."
++    current_stage = str(recording.get("pipeline_stage") or "").strip()
++    if current_stage and current_stage != "snippet_export":
++        return (
++            "Clean clips are ready while processing continues in "
++            f"{_pipeline_stage_label(current_stage)}."
++        )
++    return "Clean clips are ready while processing continues."
++
++
++def _snippet_completed_without_clean_message(no_clean_snippet_message: str | None) -> str:
++    detail = str(no_clean_snippet_message or "").strip()
++    if not detail:
++        return "Snippet export completed, but no accepted clean snippets are available for this speaker."
++    if detail == "No snippet quality data is available for this speaker yet.":
++        return "Snippet export completed, but no accepted clean snippets are available for this speaker."
++    if detail.startswith("No "):
++        return f"Snippet export completed, but {detail[0].lower()}{detail[1:]}"
++    return f"Snippet export completed, but {detail}"
++
++
++def _resolve_speaker_snippet_ui_state(
++    *,
++    recording: dict[str, Any],
++    stage_rows: list[dict[str, Any]],
++    manifest_exists: bool,
++    manifest: dict[str, Any],
++    entries: list[dict[str, Any]],
++    clean_snippets: list[dict[str, Any]],
++    no_clean_snippet_message: str | None,
++) -> dict[str, str]:
++    recording_status = str(recording.get("status") or "").strip()
++    current_stage = str(recording.get("pipeline_stage") or "").strip()
++    current_stage_order = _pipeline_stage_order(current_stage)
++    snippet_stage_order = stage_order("snippet_export")
++    reached_snippet_stage = (
++        current_stage_order is not None and current_stage_order >= snippet_stage_order
++    )
++    stage_row = _snippet_export_stage_row(stage_rows)
++    stage_status = str(stage_row.get("status") or "").strip().lower()
++    stage_metadata = _stage_row_metadata(stage_row)
++    manifest_status = str(
++        manifest.get("manifest_status") or stage_metadata.get("manifest_status") or ""
++    ).strip().lower()
++    manifest_warning_messages = _snippet_manifest_warning_messages(manifest)
++    warning_detail = (
++        manifest_warning_messages[0]
++        if manifest_warning_messages
++        else str(stage_metadata.get("warning") or stage_row.get("error_text") or "").strip()
++    )
++    accepted_entry_count = sum(
++        1
++        for entry in entries
++        if str(entry.get("status") or "").strip() == "accepted"
++    )
++    pipeline_active = recording_status in _STOP_ELIGIBLE_RECORDING_STATUSES
++
++    if manifest_status == "export_failed" or stage_status == "failed":
++        detail = "Snippet export failed, so no clean clips are available for this speaker."
++        if recording_status == RECORDING_STATUS_PROCESSING:
++            detail += " The rest of processing continues."
++        if warning_detail:
++            detail = f"{detail} {warning_detail}"
++        return {
++            "code": "failed_nonfatal",
++            "label": "Failed",
++            "detail": detail,
++            "color": "#92400e",
++            "add_sample_message": detail,
++        }
++
++    if stage_status == "cancelled":
++        detail = "Snippet export was cancelled before clean clips were finalized."
++        return {
++            "code": "unavailable",
++            "label": "Unavailable",
++            "detail": detail,
++            "color": "#92400e",
++            "add_sample_message": detail,
++        }
++
++    if stage_status == "running" or (
++        pipeline_active and current_stage == "snippet_export"
++    ):
++        detail = "Snippet export is currently generating clean clips for this recording."
++        return {
++            "code": "running",
++            "label": "Generating",
++            "detail": detail,
++            "color": "#1d4ed8",
++            "add_sample_message": "Add sample will be available when clean clips finish generating.",
++        }
++
++    if stage_status in {"", "pending"} and (
++        recording_status == RECORDING_STATUS_QUEUED
++        or (pipeline_active and not reached_snippet_stage)
++    ):
++        detail = "The pipeline has not reached Snippet Export yet."
++        return {
++            "code": "not_started",
++            "label": "Pending",
++            "detail": detail,
++            "color": "#555",
++            "add_sample_message": "Add sample will be available after Snippet Export runs.",
++        }
++
++    if clean_snippets:
++        return {
++            "code": "ready_with_clean_snippets",
++            "label": "Ready",
++            "detail": _snippet_ready_message(recording),
++            "color": "#166534",
++            "add_sample_message": "",
++        }
++
++    if accepted_entry_count > 0:
++        detail = (
++            "Snippet export accepted clean clips for this speaker, but the audio files are "
++            "missing from disk."
++        )
++        return {
++            "code": "unavailable",
++            "label": "Unavailable",
++            "detail": detail,
++            "color": "#92400e",
++            "add_sample_message": detail,
++        }
++
++    if manifest_exists and not manifest:
++        detail = "The snippets manifest exists but could not be read."
++        return {
++            "code": "unavailable",
++            "label": "Unavailable",
++            "detail": detail,
++            "color": "#92400e",
++            "add_sample_message": detail,
++        }
++
++    if manifest:
++        if manifest_status in {"quarantined_precheck", "no_usable_speech"}:
++            detail = warning_detail or "Snippet export completed without usable speaker turns."
++            return {
++                "code": "unavailable",
++                "label": "Unavailable",
++                "detail": detail,
++                "color": "#92400e",
++                "add_sample_message": detail,
++            }
++        if manifest_status in {"ok", "partial", "degraded", "no_clean_snippets"} or (
++            stage_status in PIPELINE_STAGE_DONE_STATUSES
++        ):
++            add_sample_message = str(no_clean_snippet_message or "").strip()
++            if (
++                not add_sample_message
++                or add_sample_message
++                == "No snippet quality data is available for this speaker yet."
++            ):
++                add_sample_message = "No accepted clean snippets are available for this speaker."
++            return {
++                "code": "ready_no_clean_snippets",
++                "label": "Ready",
++                "detail": _snippet_completed_without_clean_message(add_sample_message),
++                "color": "#92400e",
++                "add_sample_message": add_sample_message,
++            }
++        detail = "Snippet export finished, but its manifest state is unavailable."
++        return {
++            "code": "unavailable",
++            "label": "Unavailable",
++            "detail": detail,
++            "color": "#92400e",
++            "add_sample_message": detail,
++        }
++
++    if recording_status in _TERMINAL_RECORDING_STATUSES and not stage_row:
++        detail = (
++            "This older recording has no snippets manifest yet. A repair/backfill run can "
++            "regenerate speaker clips later."
++        )
++        return {
++            "code": "legacy_missing_manifest",
++            "label": "Legacy",
++            "detail": detail,
++            "color": "#92400e",
++            "add_sample_message": detail,
++        }
++
++    if stage_status in PIPELINE_STAGE_DONE_STATUSES or reached_snippet_stage:
++        detail = "Snippet export should already be available, but the snippets manifest is missing."
++        return {
++            "code": "unavailable",
++            "label": "Unavailable",
++            "detail": detail,
++            "color": "#92400e",
++            "add_sample_message": detail,
++        }
++
++    detail = "The pipeline has not reached Snippet Export yet."
++    return {
++        "code": "not_started",
++        "label": "Pending",
++        "detail": detail,
++        "color": "#555",
++        "add_sample_message": "Add sample will be available after Snippet Export runs.",
++    }
++
++
+ def _speaker_snippet_context(
+     recording_id: str,
+     speaker_label: str,
+     *,
+     settings: AppSettings,
++    recording: dict[str, Any] | None = None,
++    stage_rows: list[dict[str, Any]] | None = None,
+ ) -> dict[str, Any]:
+     snippets_root = settings.recordings_root / recording_id / "derived" / "snippets"
+-    expected_prefix = f"{_speaker_slug(speaker_label)}/"
+-    clean_snippets: list[dict[str, Any]] = []
+-    for entry in _speaker_snippet_manifest_entries(
++    manifest_path = _snippets_manifest_path(recording_id, settings=settings)
++    manifest_exists = manifest_path.exists()
++    manifest = _load_json_dict(manifest_path)
++    entries = _speaker_snippet_manifest_entries(
+         recording_id,
+         speaker_label,
+         settings=settings,
+-    ):
++        manifest=manifest,
++    )
++    expected_prefix = f"{_speaker_slug(speaker_label)}/"
++    clean_snippets: list[dict[str, Any]] = []
++    for entry in entries:
+         if str(entry.get("status") or "").strip() != "accepted":
+             continue
+         relative_path = str(entry.get("relative_path") or "").strip()
+@@ -1117,16 +1382,27 @@ def _speaker_snippet_context(
+             }
+         )
+ 
+-    entries = _speaker_snippet_manifest_entries(
+-        recording_id,
+-        speaker_label,
+-        settings=settings,
++    recording_payload = dict(
++        recording or get_recording(recording_id, settings=settings) or {}
+     )
++    resolved_stage_rows = (
++        list(stage_rows)
++        if stage_rows is not None
++        else list_recording_pipeline_stages(recording_id, settings=settings)
++    )
++    no_clean_snippet_message = None if clean_snippets else _no_clean_snippet_message(entries)
+     return {
+         "clean_snippets": clean_snippets,
+         "snippet_warnings": _snippet_warning_messages(entries),
+-        "no_clean_snippet_message": (
+-            None if clean_snippets else _no_clean_snippet_message(entries)
++        "no_clean_snippet_message": no_clean_snippet_message,
++        "snippet_ui_state": _resolve_speaker_snippet_ui_state(
++            recording=recording_payload,
++            stage_rows=resolved_stage_rows,
++            manifest_exists=manifest_exists,
++            manifest=manifest,
++            entries=entries,
++            clean_snippets=clean_snippets,
++            no_clean_snippet_message=no_clean_snippet_message,
+         ),
+     }
+ 
+@@ -1312,10 +1588,22 @@ def _speaker_review_notices(
+     return notices
+ 
+ 
+-def _speakers_tab_context(recording_id: str, settings: AppSettings) -> dict[str, Any]:
++def _speakers_tab_context(
++    recording_id: str,
++    settings: AppSettings,
++    *,
++    recording: dict[str, Any] | None = None,
++    stage_rows: list[dict[str, Any]] | None = None,
++) -> dict[str, Any]:
+     transcript_path, _summary_path = _recording_derived_paths(recording_id, settings)
+     speaker_turns_path = transcript_path.parent / "speaker_turns.json"
+     transcript_payload = _load_json_dict(transcript_path)
++    resolved_recording = dict(recording or get_recording(recording_id, settings=settings) or {})
++    resolved_stage_rows = (
++        list(stage_rows)
++        if stage_rows is not None
++        else list_recording_pipeline_stages(recording_id, settings=settings)
++    )
+ 
+     speaker_turns_raw = _load_json_list(speaker_turns_path)
+     speaker_turns = [row for row in speaker_turns_raw if isinstance(row, dict)]
+@@ -1364,7 +1652,13 @@ def _speakers_tab_context(recording_id: str, settings: AppSettings) -> dict[str,
+     low_confidence_count = 0
+     for speaker in sorted(per_speaker):
+         row = per_speaker[speaker]
+-        snippet_context = _speaker_snippet_context(recording_id, speaker, settings=settings)
++        snippet_context = _speaker_snippet_context(
++            recording_id,
++            speaker,
++            settings=settings,
++            recording=resolved_recording,
++            stage_rows=resolved_stage_rows,
++        )
+         assignment = assignment_by_speaker.get(speaker, {})
+         profile_id_raw = assignment.get("voice_profile_id")
+         try:
+@@ -1392,6 +1686,7 @@ def _speakers_tab_context(recording_id: str, settings: AppSettings) -> dict[str,
+                 "clean_snippets": snippet_context["clean_snippets"],
+                 "snippet_warnings": snippet_context["snippet_warnings"],
+                 "no_clean_snippet_message": snippet_context["no_clean_snippet_message"],
++                "snippet_ui_state": snippet_context["snippet_ui_state"],
+                 "voice_profile_id": profile_id,
+                 "voice_profile_name": voice_profile_name,
+                 "confidence": max(0.0, min(confidence, 1.0)),
+@@ -2075,7 +2370,12 @@ async def ui_recording_detail(
+     if current_tab == "language":
+         language = _language_tab_context(recording_id, rec, _settings)
+     if current_tab == "speakers":
+-        speakers = _speakers_tab_context(recording_id, _settings)
++        speakers = _speakers_tab_context(
++            recording_id,
++            _settings,
++            recording=rec,
++            stage_rows=stage_rows,
++        )
+     if current_tab == "project":
+         project = _project_tab_context(recording_id, rec, _settings)
+         rec = _prepare_recording_for_display(
+diff --git a/tasks/QUEUE.md b/tasks/QUEUE.md
+index 1f84362..5597a41 100644
+--- a/tasks/QUEUE.md
++++ b/tasks/QUEUE.md
+@@ -510,7 +510,7 @@ Queue (in order)
+ - Depends on: PR-SNIPPETS-PURITY-01 and PR-PIPELINE-CHECKPOINTS-RESUME-01 and PR-OBSERVABILITY-ROOT-CAUSE-01
+ 
+ 102) PR-SNIPPETS-UI-STATE-01: Improve snippet UI states during processing (not started/running/failed/ready) and make Speakers tab truthful before terminal completion
+-- Status: TODO
++- Status: DONE
+ - Tasks file: tasks/PR-SNIPPETS-UI-STATE-01.md
+ - Depends on: PR-SNIPPETS-STAGE-REORDER-01 and PR-OBSERVABILITY-ROOT-CAUSE-01 and PR-SPEAKER-UX-01
+ 
+diff --git a/tests/test_cov_lan_app_ui_routes.py b/tests/test_cov_lan_app_ui_routes.py
+index a847637..dc06bf0 100644
+--- a/tests/test_cov_lan_app_ui_routes.py
++++ b/tests/test_cov_lan_app_ui_routes.py
+@@ -15,6 +15,7 @@ from lan_app.calendar.service import CalendarSyncError
+ from lan_app.config import AppSettings
+ from lan_app.constants import (
+     JOB_STATUS_FAILED,
++    RECORDING_STATUS_PROCESSING,
+     RECORDING_STATUS_QUEUED,
+     RECORDING_STATUS_READY,
+     RECORDING_STATUS_STOPPED,
+@@ -966,6 +967,185 @@ def test_snippet_message_helpers_and_display_backfill_edges(
+     )
+ 
+ 
++def test_snippet_ui_state_helper_covers_manifest_and_stage_edges() -> None:
++    assert ui_routes._pipeline_stage_order("not-a-stage") is None  # noqa: SLF001
++    assert ui_routes._stage_row_metadata(None) == {}  # noqa: SLF001
++    assert ui_routes._snippet_manifest_warning_messages(  # noqa: SLF001
++        {"warnings": ["skip", {"message": ""}, {"message": "boom"}]}
++    ) == ["boom"]
++    assert ui_routes._snippet_ready_message(  # noqa: SLF001
++        {"status": RECORDING_STATUS_PROCESSING, "pipeline_stage": "snippet_export"}
++    ) == "Clean clips are ready while processing continues."
++    assert ui_routes._snippet_completed_without_clean_message(None) == (  # noqa: SLF001
++        "Snippet export completed, but no accepted clean snippets are available for this speaker."
++    )
++    assert ui_routes._snippet_completed_without_clean_message(  # noqa: SLF001
++        "No snippet quality data is available for this speaker yet."
++    ) == "Snippet export completed, but no accepted clean snippets are available for this speaker."
++    assert ui_routes._snippet_completed_without_clean_message("state unavailable") == (  # noqa: SLF001
++        "Snippet export completed, but state unavailable"
++    )
++
++    running_state = ui_routes._resolve_speaker_snippet_ui_state(  # noqa: SLF001
++        recording={"status": RECORDING_STATUS_PROCESSING, "pipeline_stage": "snippet_export"},
++        stage_rows=[],
++        manifest_exists=False,
++        manifest={},
++        entries=[],
++        clean_snippets=[],
++        no_clean_snippet_message=None,
++    )
++    assert running_state["code"] == "running"
++
++    failed_no_warning = ui_routes._resolve_speaker_snippet_ui_state(  # noqa: SLF001
++        recording={"status": RECORDING_STATUS_READY},
++        stage_rows=[
++            {
++                "stage_name": "snippet_export",
++                "status": "failed",
++                "metadata_json": {},
++                "error_text": "",
++            }
++        ],
++        manifest_exists=False,
++        manifest={},
++        entries=[],
++        clean_snippets=[],
++        no_clean_snippet_message=None,
++    )
++    assert failed_no_warning["detail"] == (
++        "Snippet export failed, so no clean clips are available for this speaker."
++    )
++
++    accepted_missing = ui_routes._resolve_speaker_snippet_ui_state(  # noqa: SLF001
++        recording={"status": RECORDING_STATUS_READY, "pipeline_stage": "llm_extract"},
++        stage_rows=[
++            {
++                "stage_name": "snippet_export",
++                "status": "completed",
++                "metadata_json": {"manifest_status": "ok"},
++            }
++        ],
++        manifest_exists=True,
++        manifest={"manifest_status": "ok"},
++        entries=[{"status": "accepted"}],
++        clean_snippets=[],
++        no_clean_snippet_message=None,
++    )
++    assert accepted_missing["code"] == "unavailable"
++    assert "audio files are missing from disk" in accepted_missing["detail"]
++
++    unreadable = ui_routes._resolve_speaker_snippet_ui_state(  # noqa: SLF001
++        recording={"status": RECORDING_STATUS_READY},
++        stage_rows=[],
++        manifest_exists=True,
++        manifest={},
++        entries=[],
++        clean_snippets=[],
++        no_clean_snippet_message=None,
++    )
++    assert unreadable["code"] == "unavailable"
++    assert "could not be read" in unreadable["detail"]
++
++    unavailable = ui_routes._resolve_speaker_snippet_ui_state(  # noqa: SLF001
++        recording={"status": RECORDING_STATUS_READY},
++        stage_rows=[
++            {
++                "stage_name": "snippet_export",
++                "status": "completed",
++                "metadata_json": {"manifest_status": "no_usable_speech"},
++            }
++        ],
++        manifest_exists=True,
++        manifest={
++            "manifest_status": "no_usable_speech",
++            "warnings": [{"message": "No speaker turns were available."}],
++        },
++        entries=[],
++        clean_snippets=[],
++        no_clean_snippet_message=None,
++    )
++    assert unavailable["code"] == "unavailable"
++    assert unavailable["detail"] == "No speaker turns were available."
++
++    cancelled = ui_routes._resolve_speaker_snippet_ui_state(  # noqa: SLF001
++        recording={"status": RECORDING_STATUS_READY},
++        stage_rows=[
++            {
++                "stage_name": "snippet_export",
++                "status": "cancelled",
++                "metadata_json": {},
++            }
++        ],
++        manifest_exists=False,
++        manifest={},
++        entries=[],
++        clean_snippets=[],
++        no_clean_snippet_message=None,
++    )
++    assert cancelled["code"] == "unavailable"
++    assert "cancelled" in cancelled["detail"]
++
++    legacy = ui_routes._resolve_speaker_snippet_ui_state(  # noqa: SLF001
++        recording={"status": RECORDING_STATUS_READY},
++        stage_rows=[],
++        manifest_exists=False,
++        manifest={},
++        entries=[],
++        clean_snippets=[],
++        no_clean_snippet_message=None,
++    )
++    assert legacy["code"] == "legacy_missing_manifest"
++
++    missing_after_stage = ui_routes._resolve_speaker_snippet_ui_state(  # noqa: SLF001
++        recording={"status": RECORDING_STATUS_PROCESSING, "pipeline_stage": "llm_extract"},
++        stage_rows=[
++            {
++                "stage_name": "snippet_export",
++                "status": "completed",
++                "metadata_json": {"manifest_status": "ok"},
++            }
++        ],
++        manifest_exists=False,
++        manifest={},
++        entries=[],
++        clean_snippets=[],
++        no_clean_snippet_message=None,
++    )
++    assert missing_after_stage["code"] == "unavailable"
++
++    no_clean_ready = ui_routes._resolve_speaker_snippet_ui_state(  # noqa: SLF001
++        recording={"status": RECORDING_STATUS_READY},
++        stage_rows=[
++            {
++                "stage_name": "snippet_export",
++                "status": "completed",
++                "metadata_json": {"manifest_status": "no_clean_snippets"},
++            }
++        ],
++        manifest_exists=True,
++        manifest={"manifest_status": "no_clean_snippets"},
++        entries=[],
++        clean_snippets=[],
++        no_clean_snippet_message="No clean snippets are available because every candidate overlaps another speaker.",
++    )
++    assert no_clean_ready["code"] == "ready_no_clean_snippets"
++    assert "every candidate overlaps another speaker" in no_clean_ready["detail"]
++
++    unknown_manifest = ui_routes._resolve_speaker_snippet_ui_state(  # noqa: SLF001
++        recording={"status": RECORDING_STATUS_READY},
++        stage_rows=[],
++        manifest_exists=True,
++        manifest={"manifest_status": "mystery"},
++        entries=[],
++        clean_snippets=[],
++        no_clean_snippet_message=None,
++    )
++    assert unknown_manifest["detail"] == (
++        "Snippet export finished, but its manifest state is unavailable."
++    )
++
++
+ def test_speaker_helper_paths_cover_duplicates_labels_and_notices(
+     tmp_path: Path,
+     monkeypatch: pytest.MonkeyPatch,
+diff --git a/tests/test_ui_routes.py b/tests/test_ui_routes.py
+index f2ba83f..2a769ff 100644
+--- a/tests/test_ui_routes.py
++++ b/tests/test_ui_routes.py
+@@ -26,6 +26,7 @@ from lan_app.db import (
+     get_glossary_entry,
+     get_recording,
+     mark_recording_llm_chunk_started,
++    mark_recording_pipeline_stage_completed,
+     mark_recording_pipeline_stage_failed,
+     mark_recording_pipeline_stage_started,
+     list_glossary_entries,
+@@ -182,6 +183,37 @@ def _seed_speaker_artifacts(cfg: AppSettings, recording_id: str) -> None:
+     )
+ 
+ 
++def _seed_speaker_turns_only(cfg: AppSettings, recording_id: str) -> None:
++    derived = cfg.recordings_root / recording_id / "derived"
++    derived.mkdir(parents=True, exist_ok=True)
++    (derived / "transcript.json").write_text(
++        json.dumps({"text": "hello from S1 and S2"}),
++        encoding="utf-8",
++    )
++    (derived / "speaker_turns.json").write_text(
++        json.dumps(
++            [
++                {"start": 0.0, "end": 1.2, "speaker": "S1", "text": "hello team"},
++                {"start": 1.3, "end": 2.1, "speaker": "S2", "text": "hi there"},
++            ]
++        ),
++        encoding="utf-8",
++    )
++
++
++def _write_snippets_manifest(
++    cfg: AppSettings,
++    recording_id: str,
++    payload: dict[str, object],
++) -> None:
++    derived = cfg.recordings_root / recording_id / "derived"
++    derived.mkdir(parents=True, exist_ok=True)
++    (derived / "snippets_manifest.json").write_text(
++        json.dumps(payload),
++        encoding="utf-8",
++    )
++
++
+ def _write_pcm_wav(path: Path, *, duration_sec: float, sample_rate: int = 16000) -> None:
+     path.parent.mkdir(parents=True, exist_ok=True)
+     frames = max(int(sample_rate * duration_sec), 1)
+@@ -1032,41 +1064,46 @@ def test_recording_detail_speakers_no_clean_snippet_shows_clear_message(tmp_path
+         settings=cfg,
+     )
+     _seed_speaker_artifacts(cfg, "rec-speakers-no-clean-1")
+-    derived = cfg.recordings_root / "rec-speakers-no-clean-1" / "derived"
+-    (derived / "snippets_manifest.json").write_text(
+-        json.dumps(
+-            {
+-                "version": 1,
+-                "source_kind": "turn",
+-                "degraded_diarization": False,
+-                "pad_seconds": 0.25,
+-                "max_clip_duration_seconds": 8.0,
+-                "min_clip_duration_seconds": 0.8,
+-                "max_snippets_per_speaker": 3,
+-                "speakers": {
+-                    "S1": [
+-                        {
+-                            "snippet_id": "S1-01",
+-                            "speaker": "S1",
+-                            "source_kind": "turn",
+-                            "source_start": 0.0,
+-                            "source_end": 1.2,
+-                            "clip_start": 0.0,
+-                            "clip_end": 1.45,
+-                            "duration_seconds": 1.45,
+-                            "overlap_seconds": 0.31,
+-                            "overlap_ratio": 0.2138,
+-                            "purity_score": 0.62,
+-                            "ranking_position": 1,
+-                            "status": "rejected_overlap",
+-                            "recommended": False,
+-                            "extraction_backend": "none",
+-                        }
+-                    ]
+-                },
+-            }
+-        ),
+-        encoding="utf-8",
++    _write_snippets_manifest(
++        cfg,
++        "rec-speakers-no-clean-1",
++        {
++            "version": 1,
++            "source_kind": "turn",
++            "degraded_diarization": False,
++            "pad_seconds": 0.25,
++            "max_clip_duration_seconds": 8.0,
++            "min_clip_duration_seconds": 0.8,
++            "max_snippets_per_speaker": 3,
++            "manifest_status": "no_clean_snippets",
++            "speakers": {
++                "S1": [
++                    {
++                        "snippet_id": "S1-01",
++                        "speaker": "S1",
++                        "source_kind": "turn",
++                        "source_start": 0.0,
++                        "source_end": 1.2,
++                        "clip_start": 0.0,
++                        "clip_end": 1.45,
++                        "duration_seconds": 1.45,
++                        "overlap_seconds": 0.31,
++                        "overlap_ratio": 0.2138,
++                        "purity_score": 0.62,
++                        "ranking_position": 1,
++                        "status": "rejected_overlap",
++                        "recommended": False,
++                        "extraction_backend": "none",
++                    }
++                ]
++            },
++        },
++    )
++    mark_recording_pipeline_stage_completed(
++        "rec-speakers-no-clean-1",
++        stage_name="snippet_export",
++        metadata={"manifest_status": "no_clean_snippets"},
++        settings=cfg,
+     )
+     profile = create_voice_profile("Blocked Sample", settings=cfg)
+ 
+@@ -1074,8 +1111,10 @@ def test_recording_detail_speakers_no_clean_snippet_shows_clear_message(tmp_path
+         "/recordings/rec-speakers-no-clean-1?tab=speakers"
+     )
+     assert page.status_code == 200
++    assert "Snippet export completed, but no clean snippets are available because every candidate overlaps another speaker." in page.text
+     assert "No clean snippets are available because every candidate overlaps another speaker." in page.text
+     assert "rejected because it overlaps another speaker" in page.text
++    assert "No snippet quality data found." not in page.text
+ 
+     blocked = TestClient(api.app, follow_redirects=False).post(
+         "/ui/recordings/rec-speakers-no-clean-1/speakers/add-sample",
+@@ -1089,6 +1128,178 @@ def test_recording_detail_speakers_no_clean_snippet_shows_clear_message(tmp_path
+     assert "snippet_path is required" in blocked.text
+ 
+ 
++def test_recording_detail_speakers_snippet_not_started_message(tmp_path, monkeypatch):
++    cfg = _cfg(tmp_path)
++    monkeypatch.setattr(api, "_settings", cfg)
++    monkeypatch.setattr(ui_routes, "_settings", cfg)
++    init_db(cfg)
++    create_recording(
++        "rec-speakers-pending-1",
++        source="upload",
++        source_filename="pending.wav",
++        status=RECORDING_STATUS_PROCESSING,
++        settings=cfg,
++    )
++    _seed_speaker_turns_only(cfg, "rec-speakers-pending-1")
++    set_recording_progress(
++        "rec-speakers-pending-1",
++        stage="speaker_turns",
++        progress=0.8,
++        settings=cfg,
++    )
++    create_voice_profile("Pending Sample", settings=cfg)
++
++    page = TestClient(api.app, follow_redirects=True).get(
++        "/recordings/rec-speakers-pending-1?tab=speakers"
++    )
++    assert page.status_code == 200
++    assert "Pending:</strong> The pipeline has not reached Snippet Export yet." in page.text
++    assert "Add sample will be available after Snippet Export runs." in page.text
++    assert 'name="snippet_path" style="width:220px" disabled' in page.text
++
++
++def test_recording_detail_speakers_snippet_running_message(tmp_path, monkeypatch):
++    cfg = _cfg(tmp_path)
++    monkeypatch.setattr(api, "_settings", cfg)
++    monkeypatch.setattr(ui_routes, "_settings", cfg)
++    init_db(cfg)
++    create_recording(
++        "rec-speakers-running-1",
++        source="upload",
++        source_filename="running.wav",
++        status=RECORDING_STATUS_PROCESSING,
++        settings=cfg,
++    )
++    _seed_speaker_turns_only(cfg, "rec-speakers-running-1")
++    set_recording_progress(
++        "rec-speakers-running-1",
++        stage="snippet_export",
++        progress=0.84,
++        settings=cfg,
++    )
++    mark_recording_pipeline_stage_started(
++        "rec-speakers-running-1",
++        stage_name="snippet_export",
++        settings=cfg,
++    )
++    create_voice_profile("Running Sample", settings=cfg)
++
++    page = TestClient(api.app, follow_redirects=True).get(
++        "/recordings/rec-speakers-running-1?tab=speakers"
++    )
++    assert page.status_code == 200
++    assert "Generating:</strong> Snippet export is currently generating clean clips for this recording." in page.text
++    assert "Add sample will be available when clean clips finish generating." in page.text
++
++
++def test_recording_detail_speakers_ready_during_processing_keeps_snippets_usable(tmp_path, monkeypatch):
++    cfg = _cfg(tmp_path)
++    monkeypatch.setattr(api, "_settings", cfg)
++    monkeypatch.setattr(ui_routes, "_settings", cfg)
++    init_db(cfg)
++    create_recording(
++        "rec-speakers-processing-ready-1",
++        source="upload",
++        source_filename="processing-ready.wav",
++        status=RECORDING_STATUS_PROCESSING,
++        settings=cfg,
++    )
++    _seed_speaker_artifacts(cfg, "rec-speakers-processing-ready-1")
++    set_recording_progress(
++        "rec-speakers-processing-ready-1",
++        stage="llm_extract",
++        progress=0.9,
++        settings=cfg,
++    )
++    mark_recording_pipeline_stage_completed(
++        "rec-speakers-processing-ready-1",
++        stage_name="snippet_export",
++        metadata={"manifest_status": "partial", "accepted_snippets": 2},
++        settings=cfg,
++    )
++    create_voice_profile("Ready Sample", settings=cfg)
++
++    page = TestClient(api.app, follow_redirects=True).get(
++        "/recordings/rec-speakers-processing-ready-1?tab=speakers"
++    )
++    assert page.status_code == 200
++    assert "Ready:</strong> Clean clips are ready while processing continues in LLM Summary." in page.text
++    assert "/ui/recordings/rec-speakers-processing-ready-1/snippets/S1/1.wav" in page.text
++    assert "Add sample from this recording" in page.text
++    assert 'name="snippet_path" style="width:220px" disabled' not in page.text
++    assert 'type="submit" disabled>Add sample from this recording' not in page.text
++
++
++def test_recording_detail_speakers_nonfatal_snippet_failure_message(tmp_path, monkeypatch):
++    cfg = _cfg(tmp_path)
++    monkeypatch.setattr(api, "_settings", cfg)
++    monkeypatch.setattr(ui_routes, "_settings", cfg)
++    init_db(cfg)
++    create_recording(
++        "rec-speakers-failed-1",
++        source="upload",
++        source_filename="failed.wav",
++        status=RECORDING_STATUS_PROCESSING,
++        settings=cfg,
++    )
++    _seed_speaker_turns_only(cfg, "rec-speakers-failed-1")
++    set_recording_progress(
++        "rec-speakers-failed-1",
++        stage="llm_extract",
++        progress=0.9,
++        settings=cfg,
++    )
++    _write_snippets_manifest(
++        cfg,
++        "rec-speakers-failed-1",
++        {
++            "version": 1,
++            "speakers": {},
++            "manifest_status": "export_failed",
++            "warnings": [{"code": "RuntimeError", "message": "snippet boom"}],
++        },
++    )
++    mark_recording_pipeline_stage_completed(
++        "rec-speakers-failed-1",
++        stage_name="snippet_export",
++        metadata={"manifest_status": "export_failed", "warning": "snippet boom"},
++        settings=cfg,
++    )
++    create_voice_profile("Failed Sample", settings=cfg)
++
++    page = TestClient(api.app, follow_redirects=True).get(
++        "/recordings/rec-speakers-failed-1?tab=speakers"
++    )
++    assert page.status_code == 200
++    assert "Failed:</strong> Snippet export failed, so no clean clips are available for this speaker. The rest of processing continues. snippet boom" in page.text
++    assert "Add sample is unavailable because snippet export failed" not in page.text
++    assert "snippet boom" in page.text
++
++
++def test_recording_detail_speakers_legacy_missing_manifest_message(tmp_path, monkeypatch):
++    cfg = _cfg(tmp_path)
++    monkeypatch.setattr(api, "_settings", cfg)
++    monkeypatch.setattr(ui_routes, "_settings", cfg)
++    init_db(cfg)
++    create_recording(
++        "rec-speakers-legacy-1",
++        source="upload",
++        source_filename="legacy.wav",
++        status=RECORDING_STATUS_READY,
++        settings=cfg,
++    )
++    _seed_speaker_turns_only(cfg, "rec-speakers-legacy-1")
++    create_voice_profile("Legacy Sample", settings=cfg)
++
++    page = TestClient(api.app, follow_redirects=True).get(
++        "/recordings/rec-speakers-legacy-1?tab=speakers"
++    )
++    assert page.status_code == 200
++    assert "Legacy:</strong> This older recording has no snippets manifest yet." in page.text
++    assert "repair/backfill run can regenerate speaker clips later" in page.text
++    assert "Generating:</strong>" not in page.text
++
++
+ def test_recording_detail_speakers_show_degraded_notice_and_low_confidence(tmp_path, monkeypatch):
      cfg = _cfg(tmp_path)
- 
-     assert pipeline_stages.stage_progress("snippet_export") == 0.84
-+    assert pipeline_stages.stage_order("snippet_export") == 75
-+    assert pipeline_stages.stage_order("llm_extract") == 80
-+    assert pipeline_stages.stage_order("export_artifacts") == 90
-     assert pipeline_stages.stage_progress("metrics") == 0.98
-     assert pipeline_stages.stage_label("snippet_export") == "Snippet Export"
-     assert pipeline_stages.stage_label("routing") == "Routing"
+     monkeypatch.setattr(api, "_settings", cfg)
