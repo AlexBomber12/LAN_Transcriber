@@ -1,97 +1,54 @@
-diff --git a/lan_app/snippet_repair.py b/lan_app/snippet_repair.py
-index dd52624..d0e3ee4 100644
---- a/lan_app/snippet_repair.py
-+++ b/lan_app/snippet_repair.py
-@@ -751,18 +751,13 @@ def backfill_missing_snippets(
-         if not recording_id:
-             continue
-         artifact_state = snippet_artifact_state(recording_id, settings=cfg)
--        if artifact_state != "missing":
-+        if artifact_state == "present":
-             skipped += 1
--            detail = (
--                "snippets already exist"
--                if artifact_state == "present"
--                else "snippet artifacts are stale but not missing"
--            )
-             items.append(
-                 SnippetRepairBatchItem(
-                     recording_id=recording_id,
-                     outcome="skipped",
--                    detail=detail,
-+                    detail="snippets already exist",
-                 )
+diff --git a/lan_app/tools/repair_snippets.py b/lan_app/tools/repair_snippets.py
+index 1fefc6c..fbfc1f4 100644
+--- a/lan_app/tools/repair_snippets.py
++++ b/lan_app/tools/repair_snippets.py
+@@ -29,14 +29,18 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
+ 
+ def main(argv: Sequence[str] | None = None) -> int:
+     args = _parse_args(argv)
+-    if args.recording_id:
++    if args.recording_id is not None:
++        recording_id = str(args.recording_id).strip()
++        if not recording_id:
++            print("FAILED recording-id invalid: blank recording id")
++            return 1
+         try:
+             result = repair_recording_snippets(
+-                args.recording_id,
++                recording_id,
+                 origin="cli_single",
              )
-             continue
+         except SnippetRepairError as exc:
+-            print(f"FAILED {args.recording_id} {exc.code}: {exc}")
++            print(f"FAILED {recording_id} {exc.code}: {exc}")
+             return 1
+         print(
+             "REGENERATED "
 diff --git a/tests/test_snippet_repair.py b/tests/test_snippet_repair.py
-index 8432b3e..31c4cb1 100644
+index 31c4cb1..2b16e4b 100644
 --- a/tests/test_snippet_repair.py
 +++ b/tests/test_snippet_repair.py
-@@ -259,11 +259,12 @@ def test_repair_recording_snippets_keeps_existing_artifacts_when_export_fails(
-     assert snippet_path.read_bytes() == original_bytes
+@@ -957,6 +957,23 @@ def test_repair_snippets_cli_failure_paths(
+     assert "FAILED rec-fail-batch boom" in capsys.readouterr().out
  
  
--def test_backfill_missing_snippets_reports_regenerated_skipped_and_present(tmp_path: Path) -> None:
-+def test_backfill_missing_snippets_repairs_missing_and_stale_artifacts(tmp_path: Path) -> None:
-     cfg = _cfg(tmp_path)
-     init_db(cfg)
-     for recording_id in (
-         "rec-batch-missing-1",
-+        "rec-batch-stale-1",
-         "rec-batch-ineligible-1",
-         "rec-batch-present-1",
-     ):
-@@ -275,12 +276,16 @@ def test_backfill_missing_snippets_reports_regenerated_skipped_and_present(tmp_p
-             settings=cfg,
-         )
-     _seed_repair_artifacts(cfg, "rec-batch-missing-1")
-+    _seed_repair_artifacts(cfg, "rec-batch-stale-1")
-     _seed_repair_artifacts(
-         cfg,
-         "rec-batch-ineligible-1",
-         include_speaker_turns=False,
-     )
-     _seed_repair_artifacts(cfg, "rec-batch-present-1")
-+    stale_snippets = cfg.recordings_root / "rec-batch-stale-1" / "derived" / "snippets" / "S1"
-+    stale_snippets.mkdir(parents=True, exist_ok=True)
-+    (stale_snippets / "1.wav").write_bytes(b"stale")
-     _write_existing_manifest(cfg, "rec-batch-present-1")
- 
-     summary = snippet_repair.backfill_missing_snippets(
-@@ -288,14 +293,18 @@ def test_backfill_missing_snippets_reports_regenerated_skipped_and_present(tmp_p
-         origin="pytest_batch",
-     )
- 
--    assert summary.regenerated == 1
-+    assert summary.regenerated == 2
-     assert summary.skipped == 2
-     assert summary.failed == 0
-     items = {item.recording_id: item for item in summary.items}
-     assert items["rec-batch-missing-1"].outcome == "regenerated"
-+    assert items["rec-batch-stale-1"].outcome == "regenerated"
-     assert items["rec-batch-ineligible-1"].outcome == "skipped"
-     assert "speaker_turns.json" in items["rec-batch-ineligible-1"].detail
-     assert items["rec-batch-present-1"].detail == "snippets already exist"
-+    assert (
-+        cfg.recordings_root / "rec-batch-stale-1" / "derived" / "snippets_manifest.json"
-+    ).exists()
- 
- 
- def test_snippet_repair_helpers_cover_edge_branches(
-@@ -841,10 +850,12 @@ def test_iter_terminal_recordings_and_backfill_failure_branch(
-         ),
-     )
-     summary = snippet_repair.backfill_missing_snippets(settings=cfg, origin="pytest")
--    assert summary.skipped == 1
--    assert summary.failed == 1
--    assert summary.items[0].detail == "snippet artifacts are stale but not missing"
--    assert summary.items[1].detail == "boom: failed repair"
-+    assert summary.skipped == 0
-+    assert summary.failed == 2
-+    assert [(item.recording_id, item.detail) for item in summary.items] == [
-+        ("rec-stale-1", "boom: failed repair"),
-+        ("rec-terminal-1", "boom: failed repair"),
-+    ]
- 
- 
- def test_iter_terminal_recordings_breaks_on_empty_page(monkeypatch: pytest.MonkeyPatch) -> None:
++def test_repair_snippets_cli_rejects_blank_recording_id(
++    monkeypatch: pytest.MonkeyPatch,
++    capsys: pytest.CaptureFixture[str],
++) -> None:
++    called = {"batch": False}
++
++    def _unexpected_backfill(*_args, **_kwargs):
++        called["batch"] = True
++        raise AssertionError("batch backfill should not run for blank recording ids")
++
++    monkeypatch.setattr(repair_snippets_tool, "backfill_missing_snippets", _unexpected_backfill)
++
++    assert repair_snippets_tool.main(["--recording-id", ""]) == 1
++    assert called["batch"] is False
++    assert "FAILED recording-id invalid: blank recording id" in capsys.readouterr().out
++
++
+ def test_backfill_missing_snippets_uses_default_settings_and_regenerated_branch(
+     tmp_path: Path,
+     monkeypatch: pytest.MonkeyPatch,

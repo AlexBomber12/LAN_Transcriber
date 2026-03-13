@@ -29,14 +29,18 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parse_args(argv)
-    if args.recording_id:
+    if args.recording_id is not None:
+        recording_id = str(args.recording_id).strip()
+        if not recording_id:
+            print("FAILED recording-id invalid: blank recording id")
+            return 1
         try:
             result = repair_recording_snippets(
-                args.recording_id,
+                recording_id,
                 origin="cli_single",
             )
         except SnippetRepairError as exc:
-            print(f"FAILED {args.recording_id} {exc.code}: {exc}")
+            print(f"FAILED {recording_id} {exc.code}: {exc}")
             return 1
         print(
             "REGENERATED "

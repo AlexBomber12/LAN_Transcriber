@@ -957,6 +957,23 @@ def test_repair_snippets_cli_failure_paths(
     assert "FAILED rec-fail-batch boom" in capsys.readouterr().out
 
 
+def test_repair_snippets_cli_rejects_blank_recording_id(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    called = {"batch": False}
+
+    def _unexpected_backfill(*_args, **_kwargs):
+        called["batch"] = True
+        raise AssertionError("batch backfill should not run for blank recording ids")
+
+    monkeypatch.setattr(repair_snippets_tool, "backfill_missing_snippets", _unexpected_backfill)
+
+    assert repair_snippets_tool.main(["--recording-id", ""]) == 1
+    assert called["batch"] is False
+    assert "FAILED recording-id invalid: blank recording id" in capsys.readouterr().out
+
+
 def test_backfill_missing_snippets_uses_default_settings_and_regenerated_branch(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

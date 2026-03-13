@@ -102,8 +102,8 @@ Requirement already satisfied: pytz>2021.1 in ./.venv-ci/lib/python3.12/site-pac
 Building wheels for collected packages: lan-transcriber
   Building editable for lan-transcriber (pyproject.toml): started
   Building editable for lan-transcriber (pyproject.toml): finished with status 'done'
-  Created wheel for lan-transcriber: filename=lan_transcriber-0.1.0-0.editable-py3-none-any.whl size=15425 sha256=81b619b8362b333912cef58d5130f97c82c2db5ce2ce0fd3c9b30bfd3e00e0b4
-  Stored in directory: /tmp/pip-ephem-wheel-cache-8of6kvgy/wheels/d5/8a/5c/f7178f7e49aa5ae12b2320ec66b5c310f4f2f63d1bd301b7fb
+  Created wheel for lan-transcriber: filename=lan_transcriber-0.1.0-0.editable-py3-none-any.whl size=15425 sha256=b476ad7c45e4de49ce275d68c6f20da511951c64a48ce7a31a60e10b5f8605a9
+  Stored in directory: /tmp/pip-ephem-wheel-cache-c_w_hc5m/wheels/d5/8a/5c/f7178f7e49aa5ae12b2320ec66b5c310f4f2f63d1bd301b7fb
 Successfully built lan-transcriber
 Installing collected packages: lan-transcriber
   Attempting uninstall: lan-transcriber
@@ -127,10 +127,10 @@ The event loop scope for asynchronous fixtures will default to the fixture cachi
 ........................................................................ [ 58%]
 ........................................................................ [ 66%]
 ........................................................................ [ 73%]
-.............................................................s.......... [ 81%]
+.............................................................s.......... [ 80%]
 ........................................................................ [ 88%]
 ........................................................................ [ 95%]
-.........................................                                [100%]
+..........................................                               [100%]
 =============================== warnings summary ===============================
 lan_transcriber/pipeline_steps/precheck.py:3
   /home/alexey/LAN_Transcriber/lan_transcriber/pipeline_steps/precheck.py:3: DeprecationWarning: 'audioop' is deprecated and slated for removal in Python 3.13
@@ -169,13 +169,13 @@ tests/test_warm_models.py::test_warm_models_module_main_guard
 ---------- coverage: platform linux, python 3.12.3-final-0 -----------
 Name    Stmts   Miss Branch BrPart  Cover   Missing
 ---------------------------------------------------
-TOTAL   12712      0   4090      0   100%
+TOTAL   12716      0   4092      0   100%
 
 62 files skipped due to complete coverage.
 Coverage HTML written to dir htmlcov
 
 Required test coverage of 100% reached. Total coverage: 100.00%
-976 passed, 3 skipped, 11 warnings in 90.91s (0:01:30)
+977 passed, 3 skipped, 11 warnings in 74.68s (0:01:14)
 Name                                                    Stmts   Miss Branch BrPart  Cover
 -----------------------------------------------------------------------------------------
 lan_transcriber/__init__.py                                 8      0      0      0   100%
@@ -236,7 +236,7 @@ lan_app/routing.py                   257      0    102      0   100%
 lan_app/snippet_repair.py            373      0    114      0   100%
 lan_app/speaker_bank.py              107      0     34      0   100%
 lan_app/tools/__init__.py              1      0      0      0   100%
-lan_app/tools/repair_snippets.py      32      0     10      0   100%
+lan_app/tools/repair_snippets.py      36      0     12      0   100%
 lan_app/tools/warm_models.py          47      0     10      0   100%
 lan_app/ui.py                         59      0     10      0   100%
 lan_app/ui_routes.py                1665      0    580      0   100%
@@ -245,4 +245,4 @@ lan_app/worker.py                     28      0      2      0   100%
 lan_app/worker_tasks.py             1694      0    490      0   100%
 lan_app/workers.py                    10      0      0      0   100%
 --------------------------------------------------------------------
-TOTAL                               8639      0   2726      0   100%
+TOTAL                               8643      0   2728      0   100%
