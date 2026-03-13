@@ -751,18 +751,13 @@ def backfill_missing_snippets(
         if not recording_id:
             continue
         artifact_state = snippet_artifact_state(recording_id, settings=cfg)
-        if artifact_state != "missing":
+        if artifact_state == "present":
             skipped += 1
-            detail = (
-                "snippets already exist"
-                if artifact_state == "present"
-                else "snippet artifacts are stale but not missing"
-            )
             items.append(
                 SnippetRepairBatchItem(
                     recording_id=recording_id,
                     outcome="skipped",
-                    detail=detail,
+                    detail="snippets already exist",
                 )
             )
             continue

@@ -259,11 +259,12 @@ def test_repair_recording_snippets_keeps_existing_artifacts_when_export_fails(
     assert snippet_path.read_bytes() == original_bytes
 
 
-def test_backfill_missing_snippets_reports_regenerated_skipped_and_present(tmp_path: Path) -> None:
+def test_backfill_missing_snippets_repairs_missing_and_stale_artifacts(tmp_path: Path) -> None:
     cfg = _cfg(tmp_path)
     init_db(cfg)
     for recording_id in (
         "rec-batch-missing-1",
+        "rec-batch-stale-1",
         "rec-batch-ineligible-1",
         "rec-batch-present-1",
     ):
@@ -275,12 +276,16 @@ def test_backfill_missing_snippets_reports_regenerated_skipped_and_present(tmp_p
             settings=cfg,
         )
     _seed_repair_artifacts(cfg, "rec-batch-missing-1")
+    _seed_repair_artifacts(cfg, "rec-batch-stale-1")
     _seed_repair_artifacts(
         cfg,
         "rec-batch-ineligible-1",
         include_speaker_turns=False,
     )
     _seed_repair_artifacts(cfg, "rec-batch-present-1")
+    stale_snippets = cfg.recordings_root / "rec-batch-stale-1" / "derived" / "snippets" / "S1"
+    stale_snippets.mkdir(parents=True, exist_ok=True)
+    (stale_snippets / "1.wav").write_bytes(b"stale")
     _write_existing_manifest(cfg, "rec-batch-present-1")
 
     summary = snippet_repair.backfill_missing_snippets(
@@ -288,14 +293,18 @@ def test_backfill_missing_snippets_reports_regenerated_skipped_and_present(tmp_p
         origin="pytest_batch",
     )
 
-    assert summary.regenerated == 1
+    assert summary.regenerated == 2
     assert summary.skipped == 2
     assert summary.failed == 0
     items = {item.recording_id: item for item in summary.items}
     assert items["rec-batch-missing-1"].outcome == "regenerated"
+    assert items["rec-batch-stale-1"].outcome == "regenerated"
     assert items["rec-batch-ineligible-1"].outcome == "skipped"
     assert "speaker_turns.json" in items["rec-batch-ineligible-1"].detail
     assert items["rec-batch-present-1"].detail == "snippets already exist"
+    assert (
+        cfg.recordings_root / "rec-batch-stale-1" / "derived" / "snippets_manifest.json"
+    ).exists()
 
 
 def test_snippet_repair_helpers_cover_edge_branches(
@@ -841,10 +850,12 @@ def test_iter_terminal_recordings_and_backfill_failure_branch(
         ),
     )
     summary = snippet_repair.backfill_missing_snippets(settings=cfg, origin="pytest")
-    assert summary.skipped == 1
-    assert summary.failed == 1
-    assert summary.items[0].detail == "snippet artifacts are stale but not missing"
-    assert summary.items[1].detail == "boom: failed repair"
+    assert summary.skipped == 0
+    assert summary.failed == 2
+    assert [(item.recording_id, item.detail) for item in summary.items] == [
+        ("rec-stale-1", "boom: failed repair"),
+        ("rec-terminal-1", "boom: failed repair"),
+    ]
 
 
 def test_iter_terminal_recordings_breaks_on_empty_page(monkeypatch: pytest.MonkeyPatch) -> None:
