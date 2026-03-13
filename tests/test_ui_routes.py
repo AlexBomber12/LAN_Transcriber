@@ -53,6 +53,7 @@ from lan_app.constants import (
     JOB_STATUS_STARTED,
     JOB_TYPE_PRECHECK,
     JOB_TYPE_STT,
+    RECORDING_STATUS_FAILED,
     RECORDING_STATUS_NEEDS_REVIEW,
     RECORDING_STATUS_PROCESSING,
     RECORDING_STATUS_READY,
@@ -1331,6 +1332,63 @@ def test_recording_detail_speakers_stopped_before_snippet_export_is_unavailable(
     )
     assert "Legacy:</strong>" not in page.text
     assert "Pending:</strong> The pipeline has not reached Snippet Export yet." not in page.text
+
+
+def test_recording_detail_speakers_needs_review_without_snippets_is_unavailable(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    init_db(cfg)
+    create_recording(
+        "rec-speakers-needs-review-1",
+        source="upload",
+        source_filename="needs-review.wav",
+        status=RECORDING_STATUS_NEEDS_REVIEW,
+        settings=cfg,
+    )
+    _seed_speaker_turns_only(cfg, "rec-speakers-needs-review-1")
+    create_voice_profile("Needs Review Sample", settings=cfg)
+
+    page = TestClient(api.app, follow_redirects=True).get(
+        "/recordings/rec-speakers-needs-review-1?tab=speakers"
+    )
+    assert page.status_code == 200
+    assert (
+        "Unavailable:</strong> This recording is no longer processing and did not reach "
+        "Snippet Export, so no clean clips are available for this speaker." in page.text
+    )
+    assert "Legacy:</strong>" not in page.text
+
+
+def test_recording_detail_speakers_terminal_running_stage_is_not_generating(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    init_db(cfg)
+    create_recording(
+        "rec-speakers-running-terminal-1",
+        source="upload",
+        source_filename="running-terminal.wav",
+        status=RECORDING_STATUS_FAILED,
+        settings=cfg,
+    )
+    _seed_speaker_turns_only(cfg, "rec-speakers-running-terminal-1")
+    mark_recording_pipeline_stage_started(
+        "rec-speakers-running-terminal-1",
+        stage_name="snippet_export",
+        settings=cfg,
+    )
+    create_voice_profile("Terminal Running Sample", settings=cfg)
+
+    page = TestClient(api.app, follow_redirects=True).get(
+        "/recordings/rec-speakers-running-terminal-1?tab=speakers"
+    )
+    assert page.status_code == 200
+    assert "Generating:</strong>" not in page.text
+    assert (
+        "Unavailable:</strong> This recording is no longer processing and did not reach "
+        "Snippet Export, so no clean clips are available for this speaker." in page.text
+    )
 
 
 def test_recording_detail_speakers_llm_alias_progress_is_not_pending(tmp_path, monkeypatch):

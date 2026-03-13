@@ -16,6 +16,7 @@ from lan_app.config import AppSettings
 from lan_app.constants import (
     JOB_STATUS_FAILED,
     RECORDING_STATUS_FAILED,
+    RECORDING_STATUS_NEEDS_REVIEW,
     RECORDING_STATUS_PROCESSING,
     RECORDING_STATUS_QUEUED,
     RECORDING_STATUS_READY,
@@ -1124,6 +1125,34 @@ def test_snippet_ui_state_helper_covers_manifest_and_stage_edges() -> None:
         no_clean_snippet_message=None,
     )
     assert failed_before_snippets["code"] == "unavailable"
+
+    stale_running_terminal = ui_routes._resolve_speaker_snippet_ui_state(  # noqa: SLF001
+        recording={"status": RECORDING_STATUS_FAILED, "pipeline_stage": "snippet_export"},
+        stage_rows=[
+            {
+                "stage_name": "snippet_export",
+                "status": "running",
+                "metadata_json": {},
+            }
+        ],
+        manifest_exists=False,
+        manifest={},
+        entries=[],
+        clean_snippets=[],
+        no_clean_snippet_message=None,
+    )
+    assert stale_running_terminal["code"] == "unavailable"
+
+    needs_review_without_stage = ui_routes._resolve_speaker_snippet_ui_state(  # noqa: SLF001
+        recording={"status": RECORDING_STATUS_NEEDS_REVIEW, "pipeline_stage": "speaker_turns"},
+        stage_rows=[],
+        manifest_exists=False,
+        manifest={},
+        entries=[],
+        clean_snippets=[],
+        no_clean_snippet_message=None,
+    )
+    assert needs_review_without_stage["code"] == "unavailable"
 
     llm_alias = ui_routes._resolve_speaker_snippet_ui_state(  # noqa: SLF001
         recording={"status": RECORDING_STATUS_PROCESSING, "pipeline_stage": "llm"},

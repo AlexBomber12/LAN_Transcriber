@@ -45,7 +45,6 @@ from .constants import (
     JOB_STATUSES,
     JOB_STATUS_QUEUED,
     JOB_TYPE_PRECHECK,
-    RECORDING_STATUS_NEEDS_REVIEW,
     RECORDING_STATUSES,
     RECORDING_STATUS_PUBLISHED,
     RECORDING_STATUS_PROCESSING,
@@ -182,7 +181,6 @@ _STOP_ELIGIBLE_RECORDING_STATUSES = frozenset(
 )
 _LEGACY_SNIPPET_RECORDING_STATUSES = frozenset(
     {
-        RECORDING_STATUS_NEEDS_REVIEW,
         RECORDING_STATUS_PUBLISHED,
         RECORDING_STATUS_READY,
     }
@@ -1224,8 +1222,8 @@ def _resolve_speaker_snippet_ui_state(
             "add_sample_message": detail,
         }
 
-    if stage_status == "running" or (
-        pipeline_active and current_stage == "snippet_export"
+    if pipeline_active and (
+        stage_status == "running" or current_stage == "snippet_export"
     ):
         detail = "Snippet export is currently generating clean clips for this recording."
         return {
