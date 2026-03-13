@@ -1340,6 +1340,19 @@ def _resolve_speaker_snippet_ui_state(
             "add_sample_message": detail,
         }
 
+    if recording_status in _TERMINAL_RECORDING_STATUSES:
+        detail = (
+            "This recording is no longer processing and did not reach Snippet Export, "
+            "so no clean clips are available for this speaker."
+        )
+        return {
+            "code": "unavailable",
+            "label": "Unavailable",
+            "detail": detail,
+            "color": "#92400e",
+            "add_sample_message": detail,
+        }
+
     detail = "The pipeline has not reached Snippet Export yet."
     return {
         "code": "not_started",

@@ -1300,7 +1300,7 @@ def test_recording_detail_speakers_legacy_missing_manifest_message(tmp_path, mon
     assert "Generating:</strong>" not in page.text
 
 
-def test_recording_detail_speakers_stopped_before_snippet_export_is_not_legacy(tmp_path, monkeypatch):
+def test_recording_detail_speakers_stopped_before_snippet_export_is_unavailable(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
     monkeypatch.setattr(api, "_settings", cfg)
     monkeypatch.setattr(ui_routes, "_settings", cfg)
@@ -1325,8 +1325,12 @@ def test_recording_detail_speakers_stopped_before_snippet_export_is_not_legacy(t
         "/recordings/rec-speakers-stopped-1?tab=speakers"
     )
     assert page.status_code == 200
-    assert "Pending:</strong> The pipeline has not reached Snippet Export yet." in page.text
+    assert (
+        "Unavailable:</strong> This recording is no longer processing and did not reach "
+        "Snippet Export, so no clean clips are available for this speaker." in page.text
+    )
     assert "Legacy:</strong>" not in page.text
+    assert "Pending:</strong> The pipeline has not reached Snippet Export yet." not in page.text
 
 
 def test_recording_detail_speakers_llm_alias_progress_is_not_pending(tmp_path, monkeypatch):

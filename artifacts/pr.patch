@@ -1,179 +1,87 @@
 diff --git a/lan_app/ui_routes.py b/lan_app/ui_routes.py
-index 3084839..ca79568 100644
+index ca79568..98c3c72 100644
 --- a/lan_app/ui_routes.py
 +++ b/lan_app/ui_routes.py
-@@ -45,14 +45,21 @@ from .constants import (
-     JOB_STATUSES,
-     JOB_STATUS_QUEUED,
-     JOB_TYPE_PRECHECK,
-+    RECORDING_STATUS_NEEDS_REVIEW,
-     RECORDING_STATUSES,
-+    RECORDING_STATUS_PUBLISHED,
-     RECORDING_STATUS_PROCESSING,
-     RECORDING_STATUS_QUEUED,
-     RECORDING_STATUS_QUARANTINE,
-+    RECORDING_STATUS_READY,
-     RECORDING_STATUS_STOPPED,
-     RECORDING_STATUS_STOPPING,
- )
--from .diagnostics import build_recording_diagnostics, root_cause_from_stage_row
-+from .diagnostics import (
-+    build_recording_diagnostics,
-+    root_cause_from_stage_row,
-+    stage_name_for_progress,
-+)
- from .db import (
-     acknowledge_recording_cancel_request,
-     clear_recording_progress,
-@@ -173,10 +180,22 @@ _STOP_ELIGIBLE_RECORDING_STATUSES = frozenset(
-         RECORDING_STATUS_STOPPING,
-     }
- )
-+_LEGACY_SNIPPET_RECORDING_STATUSES = frozenset(
-+    {
-+        RECORDING_STATUS_NEEDS_REVIEW,
-+        RECORDING_STATUS_PUBLISHED,
-+        RECORDING_STATUS_READY,
-+    }
-+)
- _STOP_REQUESTED_BY = "user"
- _STOP_REASON_CODE = "user_stop"
- _STOP_REQUEST_REASON_TEXT = "Stop requested by user"
- _STOPPED_REASON_TEXT = "Cancelled by user"
-+_PIPELINE_STAGE_ORDER_ALIASES = {
-+    "diarize": "diarization",
-+    "language": "language_analysis",
-+    "stt": "asr",
-+}
- _PIPELINE_STAGE_LABELS = {
-     "sanitize_audio": "Sanitize Audio",
-     "precheck": "Sanitize & Precheck",
-@@ -1079,7 +1098,8 @@ def _no_clean_snippet_message(entries: list[dict[str, Any]]) -> str:
- 
- 
- def _pipeline_stage_order(value: object) -> int | None:
--    stage_name = str(value or "").strip()
-+    stage_name = stage_name_for_progress(value) or str(value or "").strip()
-+    stage_name = _PIPELINE_STAGE_ORDER_ALIASES.get(stage_name, stage_name)
-     if not stage_name:
-         return None
-     try:
-@@ -1297,7 +1317,7 @@ def _resolve_speaker_snippet_ui_state(
+@@ -1340,6 +1340,19 @@ def _resolve_speaker_snippet_ui_state(
              "add_sample_message": detail,
          }
  
--    if recording_status in _TERMINAL_RECORDING_STATUSES and not stage_row:
-+    if recording_status in _LEGACY_SNIPPET_RECORDING_STATUSES and not stage_row:
-         detail = (
-             "This older recording has no snippets manifest yet. A repair/backfill run can "
-             "regenerate speaker clips later."
++    if recording_status in _TERMINAL_RECORDING_STATUSES:
++        detail = (
++            "This recording is no longer processing and did not reach Snippet Export, "
++            "so no clean clips are available for this speaker."
++        )
++        return {
++            "code": "unavailable",
++            "label": "Unavailable",
++            "detail": detail,
++            "color": "#92400e",
++            "add_sample_message": detail,
++        }
++
+     detail = "The pipeline has not reached Snippet Export yet."
+     return {
+         "code": "not_started",
 diff --git a/tests/test_cov_lan_app_ui_routes.py b/tests/test_cov_lan_app_ui_routes.py
-index dc06bf0..819ae0a 100644
+index 819ae0a..4ae3780 100644
 --- a/tests/test_cov_lan_app_ui_routes.py
 +++ b/tests/test_cov_lan_app_ui_routes.py
-@@ -969,6 +969,7 @@ def test_snippet_message_helpers_and_display_backfill_edges(
- 
- def test_snippet_ui_state_helper_covers_manifest_and_stage_edges() -> None:
-     assert ui_routes._pipeline_stage_order("not-a-stage") is None  # noqa: SLF001
-+    assert ui_routes._pipeline_stage_order("llm") == ui_routes._pipeline_stage_order("llm_extract")  # noqa: SLF001
-     assert ui_routes._stage_row_metadata(None) == {}  # noqa: SLF001
-     assert ui_routes._snippet_manifest_warning_messages(  # noqa: SLF001
-         {"warnings": ["skip", {"message": ""}, {"message": "boom"}]}
-@@ -1097,6 +1098,28 @@ def test_snippet_ui_state_helper_covers_manifest_and_stage_edges() -> None:
+@@ -15,6 +15,7 @@ from lan_app.calendar.service import CalendarSyncError
+ from lan_app.config import AppSettings
+ from lan_app.constants import (
+     JOB_STATUS_FAILED,
++    RECORDING_STATUS_FAILED,
+     RECORDING_STATUS_PROCESSING,
+     RECORDING_STATUS_QUEUED,
+     RECORDING_STATUS_READY,
+@@ -1107,7 +1108,22 @@ def test_snippet_ui_state_helper_covers_manifest_and_stage_edges() -> None:
+         clean_snippets=[],
+         no_clean_snippet_message=None,
      )
-     assert legacy["code"] == "legacy_missing_manifest"
+-    assert stopped_before_snippets["code"] == "not_started"
++    assert stopped_before_snippets["code"] == "unavailable"
++    assert (
++        stopped_before_snippets["detail"]
++        == "This recording is no longer processing and did not reach Snippet Export, so no clean clips are available for this speaker."
++    )
++
++    failed_before_snippets = ui_routes._resolve_speaker_snippet_ui_state(  # noqa: SLF001
++        recording={"status": RECORDING_STATUS_FAILED, "pipeline_stage": "speaker_turns"},
++        stage_rows=[],
++        manifest_exists=False,
++        manifest={},
++        entries=[],
++        clean_snippets=[],
++        no_clean_snippet_message=None,
++    )
++    assert failed_before_snippets["code"] == "unavailable"
  
-+    stopped_before_snippets = ui_routes._resolve_speaker_snippet_ui_state(  # noqa: SLF001
-+        recording={"status": RECORDING_STATUS_STOPPED, "pipeline_stage": "speaker_turns"},
-+        stage_rows=[],
-+        manifest_exists=False,
-+        manifest={},
-+        entries=[],
-+        clean_snippets=[],
-+        no_clean_snippet_message=None,
-+    )
-+    assert stopped_before_snippets["code"] == "not_started"
-+
-+    llm_alias = ui_routes._resolve_speaker_snippet_ui_state(  # noqa: SLF001
-+        recording={"status": RECORDING_STATUS_PROCESSING, "pipeline_stage": "llm"},
-+        stage_rows=[],
-+        manifest_exists=False,
-+        manifest={},
-+        entries=[],
-+        clean_snippets=[],
-+        no_clean_snippet_message=None,
-+    )
-+    assert llm_alias["code"] == "unavailable"
-+
-     missing_after_stage = ui_routes._resolve_speaker_snippet_ui_state(  # noqa: SLF001
-         recording={"status": RECORDING_STATUS_PROCESSING, "pipeline_stage": "llm_extract"},
-         stage_rows=[
+     llm_alias = ui_routes._resolve_speaker_snippet_ui_state(  # noqa: SLF001
+         recording={"status": RECORDING_STATUS_PROCESSING, "pipeline_stage": "llm"},
 diff --git a/tests/test_ui_routes.py b/tests/test_ui_routes.py
-index 2a769ff..3e48969 100644
+index 3e48969..7d20bcb 100644
 --- a/tests/test_ui_routes.py
 +++ b/tests/test_ui_routes.py
-@@ -1300,6 +1300,64 @@ def test_recording_detail_speakers_legacy_missing_manifest_message(tmp_path, mon
+@@ -1300,7 +1300,7 @@ def test_recording_detail_speakers_legacy_missing_manifest_message(tmp_path, mon
      assert "Generating:</strong>" not in page.text
  
  
-+def test_recording_detail_speakers_stopped_before_snippet_export_is_not_legacy(tmp_path, monkeypatch):
-+    cfg = _cfg(tmp_path)
-+    monkeypatch.setattr(api, "_settings", cfg)
-+    monkeypatch.setattr(ui_routes, "_settings", cfg)
-+    init_db(cfg)
-+    create_recording(
-+        "rec-speakers-stopped-1",
-+        source="upload",
-+        source_filename="stopped.wav",
-+        status=RECORDING_STATUS_STOPPED,
-+        settings=cfg,
-+    )
-+    _seed_speaker_turns_only(cfg, "rec-speakers-stopped-1")
-+    set_recording_progress(
-+        "rec-speakers-stopped-1",
-+        stage="speaker_turns",
-+        progress=0.8,
-+        settings=cfg,
-+    )
-+    create_voice_profile("Stopped Sample", settings=cfg)
-+
-+    page = TestClient(api.app, follow_redirects=True).get(
-+        "/recordings/rec-speakers-stopped-1?tab=speakers"
-+    )
-+    assert page.status_code == 200
-+    assert "Pending:</strong> The pipeline has not reached Snippet Export yet." in page.text
-+    assert "Legacy:</strong>" not in page.text
-+
-+
-+def test_recording_detail_speakers_llm_alias_progress_is_not_pending(tmp_path, monkeypatch):
-+    cfg = _cfg(tmp_path)
-+    monkeypatch.setattr(api, "_settings", cfg)
-+    monkeypatch.setattr(ui_routes, "_settings", cfg)
-+    init_db(cfg)
-+    create_recording(
-+        "rec-speakers-llm-alias-1",
-+        source="upload",
-+        source_filename="llm-alias.wav",
-+        status=RECORDING_STATUS_PROCESSING,
-+        settings=cfg,
-+    )
-+    _seed_speaker_turns_only(cfg, "rec-speakers-llm-alias-1")
-+    set_recording_progress(
-+        "rec-speakers-llm-alias-1",
-+        stage="llm",
-+        progress=0.9,
-+        settings=cfg,
-+    )
-+    create_voice_profile("Alias Sample", settings=cfg)
-+
-+    page = TestClient(api.app, follow_redirects=True).get(
-+        "/recordings/rec-speakers-llm-alias-1?tab=speakers"
-+    )
-+    assert page.status_code == 200
-+    assert "Snippet export should already be available, but the snippets manifest is missing." in page.text
-+    assert "Pending:</strong> The pipeline has not reached Snippet Export yet." not in page.text
-+
-+
- def test_recording_detail_speakers_show_degraded_notice_and_low_confidence(tmp_path, monkeypatch):
+-def test_recording_detail_speakers_stopped_before_snippet_export_is_not_legacy(tmp_path, monkeypatch):
++def test_recording_detail_speakers_stopped_before_snippet_export_is_unavailable(tmp_path, monkeypatch):
      cfg = _cfg(tmp_path)
      monkeypatch.setattr(api, "_settings", cfg)
+     monkeypatch.setattr(ui_routes, "_settings", cfg)
+@@ -1325,8 +1325,12 @@ def test_recording_detail_speakers_stopped_before_snippet_export_is_not_legacy(t
+         "/recordings/rec-speakers-stopped-1?tab=speakers"
+     )
+     assert page.status_code == 200
+-    assert "Pending:</strong> The pipeline has not reached Snippet Export yet." in page.text
++    assert (
++        "Unavailable:</strong> This recording is no longer processing and did not reach "
++        "Snippet Export, so no clean clips are available for this speaker." in page.text
++    )
+     assert "Legacy:</strong>" not in page.text
++    assert "Pending:</strong> The pipeline has not reached Snippet Export yet." not in page.text
+ 
+ 
+ def test_recording_detail_speakers_llm_alias_progress_is_not_pending(tmp_path, monkeypatch):

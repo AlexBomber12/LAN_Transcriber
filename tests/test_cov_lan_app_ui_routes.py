@@ -15,6 +15,7 @@ from lan_app.calendar.service import CalendarSyncError
 from lan_app.config import AppSettings
 from lan_app.constants import (
     JOB_STATUS_FAILED,
+    RECORDING_STATUS_FAILED,
     RECORDING_STATUS_PROCESSING,
     RECORDING_STATUS_QUEUED,
     RECORDING_STATUS_READY,
@@ -1107,7 +1108,22 @@ def test_snippet_ui_state_helper_covers_manifest_and_stage_edges() -> None:
         clean_snippets=[],
         no_clean_snippet_message=None,
     )
-    assert stopped_before_snippets["code"] == "not_started"
+    assert stopped_before_snippets["code"] == "unavailable"
+    assert (
+        stopped_before_snippets["detail"]
+        == "This recording is no longer processing and did not reach Snippet Export, so no clean clips are available for this speaker."
+    )
+
+    failed_before_snippets = ui_routes._resolve_speaker_snippet_ui_state(  # noqa: SLF001
+        recording={"status": RECORDING_STATUS_FAILED, "pipeline_stage": "speaker_turns"},
+        stage_rows=[],
+        manifest_exists=False,
+        manifest={},
+        entries=[],
+        clean_snippets=[],
+        no_clean_snippet_message=None,
+    )
+    assert failed_before_snippets["code"] == "unavailable"
 
     llm_alias = ui_routes._resolve_speaker_snippet_ui_state(  # noqa: SLF001
         recording={"status": RECORDING_STATUS_PROCESSING, "pipeline_stage": "llm"},
