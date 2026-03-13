@@ -1300,6 +1300,64 @@ def test_recording_detail_speakers_legacy_missing_manifest_message(tmp_path, mon
     assert "Generating:</strong>" not in page.text
 
 
+def test_recording_detail_speakers_stopped_before_snippet_export_is_not_legacy(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    init_db(cfg)
+    create_recording(
+        "rec-speakers-stopped-1",
+        source="upload",
+        source_filename="stopped.wav",
+        status=RECORDING_STATUS_STOPPED,
+        settings=cfg,
+    )
+    _seed_speaker_turns_only(cfg, "rec-speakers-stopped-1")
+    set_recording_progress(
+        "rec-speakers-stopped-1",
+        stage="speaker_turns",
+        progress=0.8,
+        settings=cfg,
+    )
+    create_voice_profile("Stopped Sample", settings=cfg)
+
+    page = TestClient(api.app, follow_redirects=True).get(
+        "/recordings/rec-speakers-stopped-1?tab=speakers"
+    )
+    assert page.status_code == 200
+    assert "Pending:</strong> The pipeline has not reached Snippet Export yet." in page.text
+    assert "Legacy:</strong>" not in page.text
+
+
+def test_recording_detail_speakers_llm_alias_progress_is_not_pending(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    init_db(cfg)
+    create_recording(
+        "rec-speakers-llm-alias-1",
+        source="upload",
+        source_filename="llm-alias.wav",
+        status=RECORDING_STATUS_PROCESSING,
+        settings=cfg,
+    )
+    _seed_speaker_turns_only(cfg, "rec-speakers-llm-alias-1")
+    set_recording_progress(
+        "rec-speakers-llm-alias-1",
+        stage="llm",
+        progress=0.9,
+        settings=cfg,
+    )
+    create_voice_profile("Alias Sample", settings=cfg)
+
+    page = TestClient(api.app, follow_redirects=True).get(
+        "/recordings/rec-speakers-llm-alias-1?tab=speakers"
+    )
+    assert page.status_code == 200
+    assert "Snippet export should already be available, but the snippets manifest is missing." in page.text
+    assert "Pending:</strong> The pipeline has not reached Snippet Export yet." not in page.text
+
+
 def test_recording_detail_speakers_show_degraded_notice_and_low_confidence(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
     monkeypatch.setattr(api, "_settings", cfg)

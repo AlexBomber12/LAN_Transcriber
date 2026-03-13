@@ -45,14 +45,21 @@ from .constants import (
     JOB_STATUSES,
     JOB_STATUS_QUEUED,
     JOB_TYPE_PRECHECK,
+    RECORDING_STATUS_NEEDS_REVIEW,
     RECORDING_STATUSES,
+    RECORDING_STATUS_PUBLISHED,
     RECORDING_STATUS_PROCESSING,
     RECORDING_STATUS_QUEUED,
     RECORDING_STATUS_QUARANTINE,
+    RECORDING_STATUS_READY,
     RECORDING_STATUS_STOPPED,
     RECORDING_STATUS_STOPPING,
 )
-from .diagnostics import build_recording_diagnostics, root_cause_from_stage_row
+from .diagnostics import (
+    build_recording_diagnostics,
+    root_cause_from_stage_row,
+    stage_name_for_progress,
+)
 from .db import (
     acknowledge_recording_cancel_request,
     clear_recording_progress,
@@ -173,10 +180,22 @@ _STOP_ELIGIBLE_RECORDING_STATUSES = frozenset(
         RECORDING_STATUS_STOPPING,
     }
 )
+_LEGACY_SNIPPET_RECORDING_STATUSES = frozenset(
+    {
+        RECORDING_STATUS_NEEDS_REVIEW,
+        RECORDING_STATUS_PUBLISHED,
+        RECORDING_STATUS_READY,
+    }
+)
 _STOP_REQUESTED_BY = "user"
 _STOP_REASON_CODE = "user_stop"
 _STOP_REQUEST_REASON_TEXT = "Stop requested by user"
 _STOPPED_REASON_TEXT = "Cancelled by user"
+_PIPELINE_STAGE_ORDER_ALIASES = {
+    "diarize": "diarization",
+    "language": "language_analysis",
+    "stt": "asr",
+}
 _PIPELINE_STAGE_LABELS = {
     "sanitize_audio": "Sanitize Audio",
     "precheck": "Sanitize & Precheck",
@@ -1079,7 +1098,8 @@ def _no_clean_snippet_message(entries: list[dict[str, Any]]) -> str:
 
 
 def _pipeline_stage_order(value: object) -> int | None:
-    stage_name = str(value or "").strip()
+    stage_name = stage_name_for_progress(value) or str(value or "").strip()
+    stage_name = _PIPELINE_STAGE_ORDER_ALIASES.get(stage_name, stage_name)
     if not stage_name:
         return None
     try:
@@ -1297,7 +1317,7 @@ def _resolve_speaker_snippet_ui_state(
             "add_sample_message": detail,
         }
 
-    if recording_status in _TERMINAL_RECORDING_STATUSES and not stage_row:
+    if recording_status in _LEGACY_SNIPPET_RECORDING_STATUSES and not stage_row:
         detail = (
             "This older recording has no snippets manifest yet. A repair/backfill run can "
             "regenerate speaker clips later."

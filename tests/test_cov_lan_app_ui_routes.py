@@ -969,6 +969,7 @@ def test_snippet_message_helpers_and_display_backfill_edges(
 
 def test_snippet_ui_state_helper_covers_manifest_and_stage_edges() -> None:
     assert ui_routes._pipeline_stage_order("not-a-stage") is None  # noqa: SLF001
+    assert ui_routes._pipeline_stage_order("llm") == ui_routes._pipeline_stage_order("llm_extract")  # noqa: SLF001
     assert ui_routes._stage_row_metadata(None) == {}  # noqa: SLF001
     assert ui_routes._snippet_manifest_warning_messages(  # noqa: SLF001
         {"warnings": ["skip", {"message": ""}, {"message": "boom"}]}
@@ -1096,6 +1097,28 @@ def test_snippet_ui_state_helper_covers_manifest_and_stage_edges() -> None:
         no_clean_snippet_message=None,
     )
     assert legacy["code"] == "legacy_missing_manifest"
+
+    stopped_before_snippets = ui_routes._resolve_speaker_snippet_ui_state(  # noqa: SLF001
+        recording={"status": RECORDING_STATUS_STOPPED, "pipeline_stage": "speaker_turns"},
+        stage_rows=[],
+        manifest_exists=False,
+        manifest={},
+        entries=[],
+        clean_snippets=[],
+        no_clean_snippet_message=None,
+    )
+    assert stopped_before_snippets["code"] == "not_started"
+
+    llm_alias = ui_routes._resolve_speaker_snippet_ui_state(  # noqa: SLF001
+        recording={"status": RECORDING_STATUS_PROCESSING, "pipeline_stage": "llm"},
+        stage_rows=[],
+        manifest_exists=False,
+        manifest={},
+        entries=[],
+        clean_snippets=[],
+        no_clean_snippet_message=None,
+    )
+    assert llm_alias["code"] == "unavailable"
 
     missing_after_stage = ui_routes._resolve_speaker_snippet_ui_state(  # noqa: SLF001
         recording={"status": RECORDING_STATUS_PROCESSING, "pipeline_stage": "llm_extract"},
