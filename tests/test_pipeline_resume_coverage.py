@@ -100,6 +100,9 @@ def test_pipeline_stage_validation_and_artifact_edge_cases(tmp_path: Path) -> No
     cfg = _cfg(tmp_path)
 
     assert pipeline_stages.stage_progress("snippet_export") == 0.84
+    assert pipeline_stages.stage_order("snippet_export") == 75
+    assert pipeline_stages.stage_order("llm_extract") == 80
+    assert pipeline_stages.stage_order("export_artifacts") == 90
     assert pipeline_stages.stage_progress("metrics") == 0.98
     assert pipeline_stages.stage_label("snippet_export") == "Snippet Export"
     assert pipeline_stages.stage_label("routing") == "Routing"

@@ -47,11 +47,11 @@ PIPELINE_STAGE_DEFINITIONS = (
     PipelineStageDefinition("diarization", 50, 0.60, "Diarization"),
     PipelineStageDefinition("language_analysis", 60, 0.75, "Language Analysis"),
     PipelineStageDefinition("speaker_turns", 70, 0.80, "Speaker Turns"),
-    PipelineStageDefinition("snippet_export", 80, 0.84, "Snippet Export"),
-    PipelineStageDefinition("llm_extract", 90, 0.90, "LLM Extract"),
-    PipelineStageDefinition("export_artifacts", 100, 0.95, "Export Artifacts"),
-    PipelineStageDefinition("metrics", 110, 0.98, "Metrics"),
-    PipelineStageDefinition("routing", 120, 0.99, "Routing"),
+    PipelineStageDefinition("snippet_export", 75, 0.84, "Snippet Export"),
+    PipelineStageDefinition("llm_extract", 80, 0.90, "LLM Extract"),
+    PipelineStageDefinition("export_artifacts", 90, 0.95, "Export Artifacts"),
+    PipelineStageDefinition("metrics", 100, 0.98, "Metrics"),
+    PipelineStageDefinition("routing", 110, 0.99, "Routing"),
 )
 
 PIPELINE_STAGE_BY_NAME = {
