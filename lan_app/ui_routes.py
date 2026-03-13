@@ -2081,6 +2081,194 @@ def _job_counts(settings: AppSettings) -> dict[str, int]:
     return counts
 
 
+def _status_summary_strip_context(*, title: str, counts: dict[str, int]) -> dict[str, Any]:
+    return {
+        "title": title,
+        "counts": counts,
+    }
+
+
+def _dashboard_status_context(settings: AppSettings) -> dict[str, Any]:
+    recent, _ = list_recordings(settings=settings, limit=10)
+    return {
+        "recordings_summary_strip": _status_summary_strip_context(
+            title="Recordings by status",
+            counts=_status_counts(settings),
+        ),
+        "jobs_summary_strip": _status_summary_strip_context(
+            title="Queue by status",
+            counts=_job_counts(settings),
+        ),
+        "recent": recent,
+    }
+
+
+def _recordings_list_items_context(
+    items: list[dict[str, Any]],
+    *,
+    settings: AppSettings,
+) -> list[dict[str, Any]]:
+    prepared_items: list[dict[str, Any]] = []
+    for item in items:
+        prepared = _prepare_recording_for_display(item, settings=settings)
+        progress_ratio = _safe_pipeline_progress(prepared.get("pipeline_progress"))
+        prepared["progress_percent"] = int(round(progress_ratio * 100))
+        prepared["progress_stage_label"] = _pipeline_stage_label(prepared.get("pipeline_stage"))
+        prepared_items.append(prepared)
+    return prepared_items
+
+
+def _recordings_filters_context(
+    *,
+    status_filter: str,
+    limit: int,
+) -> dict[str, Any]:
+    return {
+        "action": "/recordings",
+        "hx_get": "/recordings",
+        "hx_target": "body",
+        "hx_push_url": "true",
+        "status_filter": status_filter,
+        "statuses": RECORDING_STATUSES,
+        "limit": limit,
+        "limit_options": [25, 50, 100, 200],
+        "offset_reset": 0,
+    }
+
+
+def _recordings_table_context(
+    *,
+    items: list[dict[str, Any]],
+    total: int,
+    limit: int,
+    offset: int,
+    status_filter: str,
+) -> dict[str, Any]:
+    return {
+        "rows": items,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "status_filter": status_filter,
+        "prev_offset": max(offset - limit, 0),
+        "next_offset": offset + limit,
+        "has_prev": offset > 0,
+        "has_next": offset + limit < total,
+    }
+
+
+def _recordings_list_context(
+    settings: AppSettings,
+    *,
+    status: str | None,
+    limit: int,
+    offset: int,
+) -> dict[str, Any]:
+    valid_status = status if status in RECORDING_STATUSES else None
+    items, total = list_recordings(
+        settings=settings,
+        status=valid_status,
+        limit=limit,
+        offset=offset,
+    )
+    status_filter = valid_status or ""
+    prepared_items = _recordings_list_items_context(items, settings=settings)
+    return {
+        "total": total,
+        "recordings_filters": _recordings_filters_context(
+            status_filter=status_filter,
+            limit=limit,
+        ),
+        "recordings_table": _recordings_table_context(
+            items=prepared_items,
+            total=total,
+            limit=limit,
+            offset=offset,
+            status_filter=status_filter,
+        ),
+    }
+
+
+def _upload_shell_context() -> dict[str, Any]:
+    return {
+        "file_input_id": "file-input",
+        "pick_files_button_id": "pick-files-btn",
+        "dropzone_id": "dropzone",
+        "upload_rows_id": "upload-rows",
+        "empty_row_id": "upload-empty",
+        "queue_empty_colspan": 6,
+    }
+
+
+def _page_notice_context(message: str) -> dict[str, str]:
+    return {
+        "message": message.strip(),
+    }
+
+
+def _inspector_action_bar_context(
+    recording: dict[str, Any],
+    *,
+    current_tab: str,
+) -> dict[str, Any]:
+    return {
+        "rec": recording,
+        "current_tab": current_tab,
+        "back_href": "/recordings",
+    }
+
+
+def _selected_recording_summary_shell_context(
+    recording: dict[str, Any],
+    *,
+    current_tab: str,
+    recovery_warning: str | None,
+) -> dict[str, Any]:
+    notices: list[dict[str, str]] = []
+    if recovery_warning:
+        notices.append(_page_notice_context(recovery_warning))
+    return {
+        "action_bar": _inspector_action_bar_context(recording, current_tab=current_tab),
+        "notices": notices,
+    }
+
+
+def _empty_inspector_shell_context() -> dict[str, str]:
+    return {
+        "title": "Select a recording",
+        "message": (
+            "Choose a recording from the list to inspect actions, diagnostics, and export "
+            "controls."
+        ),
+    }
+
+
+def _compact_glossary_summary_context(
+    settings: AppSettings,
+    *,
+    limit: int = 5,
+) -> dict[str, Any]:
+    items = list_glossary_entries(settings=settings)
+    compact_entries: list[dict[str, Any]] = []
+    for item in items[:limit]:
+        aliases = item.get("aliases_json")
+        compact_entries.append(
+            {
+                "id": item.get("id"),
+                "canonical_text": item.get("canonical_text"),
+                "kind": item.get("kind") or "term",
+                "aliases": aliases if isinstance(aliases, list) else [],
+                "source_label": str(item.get("source") or "manual").replace("_", " "),
+            }
+        )
+    return {
+        "entry_count": len(items),
+        "entries": compact_entries,
+        "has_more": len(items) > limit,
+        "manage_href": "/glossary",
+    }
+
+
 def _utc_iso(value: datetime) -> str:
     return value.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace(
         "+00:00", "Z"
@@ -2338,17 +2526,37 @@ async def ui_logout() -> Any:
 
 @ui_router.get("/", response_class=HTMLResponse)
 async def ui_dashboard(request: Request) -> Any:
-    rec_counts = _status_counts(_settings)
-    job_counts = _job_counts(_settings)
-    recent, _ = list_recordings(settings=_settings, limit=10)
+    dashboard_context = _dashboard_status_context(_settings)
     return templates.TemplateResponse(
         request,
         "dashboard.html",
         {
             "active": "dashboard",
-            "rec_counts": rec_counts,
-            "job_counts": job_counts,
-            "recent": recent,
+            **dashboard_context,
+        },
+    )
+
+
+@ui_router.get("/ui/control-center/dashboard/recordings-summary", response_class=HTMLResponse)
+async def ui_control_center_dashboard_recordings_summary(request: Request) -> Any:
+    dashboard_context = _dashboard_status_context(_settings)
+    return templates.TemplateResponse(
+        request,
+        "partials/control_center/status_summary_strip.html",
+        {
+            "summary_strip": dashboard_context["recordings_summary_strip"],
+        },
+    )
+
+
+@ui_router.get("/ui/control-center/dashboard/jobs-summary", response_class=HTMLResponse)
+async def ui_control_center_dashboard_jobs_summary(request: Request) -> Any:
+    dashboard_context = _dashboard_status_context(_settings)
+    return templates.TemplateResponse(
+        request,
+        "partials/control_center/status_summary_strip.html",
+        {
+            "summary_strip": dashboard_context["jobs_summary_strip"],
         },
     )
 
@@ -2365,34 +2573,72 @@ async def ui_recordings(
     limit: int = Query(default=50, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
 ) -> Any:
-    valid_status = status if status in RECORDING_STATUSES else None
-    items, total = list_recordings(
-        settings=_settings,
-        status=valid_status,
+    list_context = _recordings_list_context(
+        _settings,
+        status=status,
         limit=limit,
         offset=offset,
     )
-    for idx, item in enumerate(items):
-        item = _prepare_recording_for_display(item, settings=_settings)
-        progress_ratio = _safe_pipeline_progress(item.get("pipeline_progress"))
-        item["progress_percent"] = int(round(progress_ratio * 100))
-        item["progress_stage_label"] = _pipeline_stage_label(item.get("pipeline_stage"))
-        items[idx] = item
     return templates.TemplateResponse(
         request,
         "recordings.html",
         {
             "active": "recordings",
-            "items": items,
-            "total": total,
-            "limit": limit,
-            "offset": offset,
-            "status_filter": valid_status or "",
-            "statuses": RECORDING_STATUSES,
-            "prev_offset": max(offset - limit, 0),
-            "next_offset": offset + limit,
-            "has_prev": offset > 0,
-            "has_next": offset + limit < total,
+            **list_context,
+        },
+    )
+
+
+@ui_router.get("/ui/control-center/recordings/filters", response_class=HTMLResponse)
+async def ui_control_center_recordings_filters(
+    request: Request,
+    status: str | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=500),
+) -> Any:
+    list_context = _recordings_list_context(
+        _settings,
+        status=status,
+        limit=limit,
+        offset=0,
+    )
+    return templates.TemplateResponse(
+        request,
+        "partials/control_center/recordings_filters.html",
+        {
+            "recordings_filters": list_context["recordings_filters"],
+        },
+    )
+
+
+@ui_router.get("/ui/control-center/recordings/table", response_class=HTMLResponse)
+async def ui_control_center_recordings_table(
+    request: Request,
+    status: str | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+) -> Any:
+    list_context = _recordings_list_context(
+        _settings,
+        status=status,
+        limit=limit,
+        offset=offset,
+    )
+    return templates.TemplateResponse(
+        request,
+        "partials/control_center/recordings_table.html",
+        {
+            "recordings_table": list_context["recordings_table"],
+        },
+    )
+
+
+@ui_router.get("/ui/control-center/inspector-empty", response_class=HTMLResponse)
+async def ui_control_center_inspector_empty(request: Request) -> Any:
+    return templates.TemplateResponse(
+        request,
+        "partials/control_center/inspector_empty.html",
+        {
+            "empty_inspector": _empty_inspector_shell_context(),
         },
     )
 
@@ -2461,6 +2707,11 @@ async def ui_recording_detail(
         glossary = _asr_glossary_context(recording_id, _settings)
     if current_tab == "metrics":
         metrics = _metrics_tab_context(recording_id, _settings)
+    selected_recording_shell = _selected_recording_summary_shell_context(
+        rec,
+        current_tab=current_tab,
+        recovery_warning=recovery_warning,
+    )
 
     return templates.TemplateResponse(
         request,
@@ -2470,6 +2721,7 @@ async def ui_recording_detail(
             "rec": rec,
             "jobs": jobs,
             "recovery_warning": recovery_warning,
+            "selected_recording_shell": selected_recording_shell,
             "tabs": tabs,
             "current_tab": current_tab,
             "calendar": calendar,
@@ -2482,6 +2734,30 @@ async def ui_recording_detail(
             "export_text": export_text,
             "pipeline_stages": pipeline_stages,
             "diagnostics": diagnostics,
+        },
+    )
+
+
+@ui_router.get("/ui/control-center/recordings/{recording_id}/shell", response_class=HTMLResponse)
+async def ui_control_center_recording_shell(
+    request: Request,
+    recording_id: str,
+    tab: str = Query(default="overview"),
+) -> Any:
+    rec = get_recording(recording_id, settings=_settings)
+    if rec is None:
+        return HTMLResponse("Not found", status_code=404)
+    rec = _prepare_recording_for_display(rec, settings=_settings)
+    jobs, _ = list_jobs(settings=_settings, recording_id=recording_id, limit=100)
+    return templates.TemplateResponse(
+        request,
+        "partials/control_center/selected_recording_shell.html",
+        {
+            "selected_recording_shell": _selected_recording_summary_shell_context(
+                rec,
+                current_tab=tab,
+                recovery_warning=_recording_recovery_warning(jobs),
+            ),
         },
     )
 
@@ -2903,6 +3179,17 @@ async def ui_glossary(
     )
 
 
+@ui_router.get("/ui/control-center/glossary-summary", response_class=HTMLResponse)
+async def ui_control_center_glossary_summary(request: Request) -> Any:
+    return templates.TemplateResponse(
+        request,
+        "partials/control_center/glossary_summary.html",
+        {
+            "glossary_summary": _compact_glossary_summary_context(_settings),
+        },
+    )
+
+
 @ui_router.post("/glossary", response_class=HTMLResponse)
 async def ui_create_glossary(
     canonical_text: str = Form(...),
@@ -3178,6 +3465,18 @@ async def ui_upload(request: Request) -> Any:
         "upload.html",
         {
             "active": "upload",
+            "upload_shell": _upload_shell_context(),
+        },
+    )
+
+
+@ui_router.get("/ui/control-center/upload/panel", response_class=HTMLResponse)
+async def ui_control_center_upload_panel(request: Request) -> Any:
+    return templates.TemplateResponse(
+        request,
+        "partials/control_center/upload_panel.html",
+        {
+            "upload_shell": _upload_shell_context(),
         },
     )
 

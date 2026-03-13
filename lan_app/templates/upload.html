@@ -3,40 +3,7 @@
 {% block content %}
 <h1>Upload</h1>
 
-<div class="section">
-  <div class="form-row" style="margin-bottom:8px">
-    <label for="file-input">Files</label>
-    <input type="file" id="file-input" multiple>
-    <button type="button" class="btn" id="pick-files-btn">Choose files</button>
-  </div>
-  <div
-    id="dropzone"
-    style="background:#fff;border:2px dashed #99b;padding:14px;max-width:720px;color:#555;user-select:none"
-    tabindex="0"
-  >
-    Drop files here to upload (or use the file picker).
-  </div>
-</div>
-
-<div class="section">
-  <table>
-    <thead>
-      <tr>
-        <th>Filename</th>
-        <th>Size</th>
-        <th>Upload progress</th>
-        <th>Processing progress</th>
-        <th>Status</th>
-        <th>Link</th>
-      </tr>
-    </thead>
-    <tbody id="upload-rows">
-      <tr id="upload-empty">
-        <td colspan="6" class="placeholder">No files queued.</td>
-      </tr>
-    </tbody>
-  </table>
-</div>
+{% include "partials/control_center/upload_panel.html" %}
 
 <script>
 var TERMINAL_STATUSES = new Set([
@@ -119,7 +86,7 @@ function setPercent(progress, percent) {
 }
 
 function removePlaceholderRow() {
-  var row = document.getElementById("upload-empty");
+  var row = document.getElementById("{{ upload_shell.empty_row_id }}");
   if (row) {
     row.remove();
   }
@@ -127,7 +94,7 @@ function removePlaceholderRow() {
 
 function addFileRow(file) {
   removePlaceholderRow();
-  var rows = document.getElementById("upload-rows");
+  var rows = document.getElementById("{{ upload_shell.upload_rows_id }}");
   var tr = document.createElement("tr");
 
   var nameCell = document.createElement("td");
@@ -350,9 +317,9 @@ function enqueueFiles(fileList) {
   drainUploadQueue();
 }
 
-var fileInput = document.getElementById("file-input");
-var pickFilesButton = document.getElementById("pick-files-btn");
-var dropzone = document.getElementById("dropzone");
+var fileInput = document.getElementById("{{ upload_shell.file_input_id }}");
+var pickFilesButton = document.getElementById("{{ upload_shell.pick_files_button_id }}");
+var dropzone = document.getElementById("{{ upload_shell.dropzone_id }}");
 
 fileInput.addEventListener("change", function() {
   enqueueFiles(fileInput.files);

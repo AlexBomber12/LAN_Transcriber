@@ -1,0 +1,11 @@
+<div class="section">
+  <h2>{{ summary_strip.title }}</h2>
+  <div class="stats-row">
+    {% for status, count in summary_strip.counts.items() %}
+    <div class="stat-card">
+      <div class="num">{{ count }}</div>
+      <div class="lbl"><span class="badge s-{{ status }}">{{ status }}</span></div>
+    </div>
+    {% endfor %}
+  </div>
+</div>

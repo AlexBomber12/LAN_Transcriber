@@ -3,29 +3,11 @@
 {% block content %}
 <h1>Dashboard</h1>
 
-<div class="section">
-  <h2>Recordings by status</h2>
-  <div class="stats-row">
-    {% for status, count in rec_counts.items() %}
-    <div class="stat-card">
-      <div class="num">{{ count }}</div>
-      <div class="lbl"><span class="badge s-{{ status }}">{{ status }}</span></div>
-    </div>
-    {% endfor %}
-  </div>
-</div>
+{% set summary_strip = recordings_summary_strip %}
+{% include "partials/control_center/status_summary_strip.html" %}
 
-<div class="section">
-  <h2>Queue by status</h2>
-  <div class="stats-row">
-    {% for status, count in job_counts.items() %}
-    <div class="stat-card">
-      <div class="num">{{ count }}</div>
-      <div class="lbl"><span class="badge s-{{ status }}">{{ status }}</span></div>
-    </div>
-    {% endfor %}
-  </div>
-</div>
+{% set summary_strip = jobs_summary_strip %}
+{% include "partials/control_center/status_summary_strip.html" %}
 
 <div class="section">
   <h2>Recent recordings</h2>

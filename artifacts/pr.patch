@@ -1,54 +1,1376 @@
-diff --git a/lan_app/tools/repair_snippets.py b/lan_app/tools/repair_snippets.py
-index 1fefc6c..fbfc1f4 100644
---- a/lan_app/tools/repair_snippets.py
-+++ b/lan_app/tools/repair_snippets.py
-@@ -29,14 +29,18 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
+diff --git a/README.md b/README.md
+index 006f119..d339d28 100644
+--- a/README.md
++++ b/README.md
+@@ -113,6 +113,11 @@ Operational setup, failure handling, backup/restore, and upgrade steps are docum
+    - Export content appears automatically once the recording reaches a terminal state; no manual refresh is needed.
+ 7. Deleting a recording from the UI/API removes the DB row and the recording directory under `/data/recordings/<recording_id>`. If disk cleanup fails, delete returns an error instead of silently succeeding.
  
- def main(argv: Sequence[str] | None = None) -> int:
-     args = _parse_args(argv)
--    if args.recording_id:
-+    if args.recording_id is not None:
-+        recording_id = str(args.recording_id).strip()
-+        if not recording_id:
-+            print("FAILED recording-id invalid: blank recording id")
-+            return 1
-         try:
-             result = repair_recording_snippets(
--                args.recording_id,
-+                recording_id,
-                 origin="cli_single",
-             )
-         except SnippetRepairError as exc:
--            print(f"FAILED {args.recording_id} {exc.code}: {exc}")
-+            print(f"FAILED {recording_id} {exc.code}: {exc}")
-             return 1
-         print(
-             "REGENERATED "
-diff --git a/tests/test_snippet_repair.py b/tests/test_snippet_repair.py
-index 31c4cb1..2b16e4b 100644
---- a/tests/test_snippet_repair.py
-+++ b/tests/test_snippet_repair.py
-@@ -957,6 +957,23 @@ def test_repair_snippets_cli_failure_paths(
-     assert "FAILED rec-fail-batch boom" in capsys.readouterr().out
++## UI composition
++
++- Reusable server-rendered Control Center building blocks live under `lan_app/templates/partials/control_center/`.
++- `lan_app/ui_routes.py` exposes matching context helpers plus fragment endpoints under `/ui/control-center/...`; future 1-page workflow PRs should compose those fragments instead of copying page markup.
++
+ ## Speaker bank
+ 
+ - `voice_profiles` now represent canonical speakers: one real person should map to one active record.
+diff --git a/lan_app/templates/dashboard.html b/lan_app/templates/dashboard.html
+index fa369f5..8044ad2 100644
+--- a/lan_app/templates/dashboard.html
++++ b/lan_app/templates/dashboard.html
+@@ -3,29 +3,11 @@
+ {% block content %}
+ <h1>Dashboard</h1>
+ 
+-<div class="section">
+-  <h2>Recordings by status</h2>
+-  <div class="stats-row">
+-    {% for status, count in rec_counts.items() %}
+-    <div class="stat-card">
+-      <div class="num">{{ count }}</div>
+-      <div class="lbl"><span class="badge s-{{ status }}">{{ status }}</span></div>
+-    </div>
+-    {% endfor %}
+-  </div>
+-</div>
++{% set summary_strip = recordings_summary_strip %}
++{% include "partials/control_center/status_summary_strip.html" %}
+ 
+-<div class="section">
+-  <h2>Queue by status</h2>
+-  <div class="stats-row">
+-    {% for status, count in job_counts.items() %}
+-    <div class="stat-card">
+-      <div class="num">{{ count }}</div>
+-      <div class="lbl"><span class="badge s-{{ status }}">{{ status }}</span></div>
+-    </div>
+-    {% endfor %}
+-  </div>
+-</div>
++{% set summary_strip = jobs_summary_strip %}
++{% include "partials/control_center/status_summary_strip.html" %}
+ 
+ <div class="section">
+   <h2>Recent recordings</h2>
+diff --git a/lan_app/templates/glossary.html b/lan_app/templates/glossary.html
+index 09ab238..caba20c 100644
+--- a/lan_app/templates/glossary.html
++++ b/lan_app/templates/glossary.html
+@@ -4,9 +4,10 @@
+ {% set editing = editing_entry or {} %}
+ <h1>Glossary</h1>
+ 
+-<p style="margin:0 0 12px 0;color:#555">
+-  Manage manual ASR terms and correction memory. Store canonical spellings plus observed wrong variants so future recordings can reuse them without model retraining.
+-</p>
++{% set helper_message = {
++  "text": "Manage manual ASR terms and correction memory. Store canonical spellings plus observed wrong variants so future recordings can reuse them without model retraining."
++} %}
++{% include "partials/control_center/helper_message.html" %}
+ 
+ <div class="section">
+   <h2>{% if editing %}Edit entry #{{ editing.id }}{% else %}Create glossary entry{% endif %}</h2>
+diff --git a/lan_app/templates/recording_detail.html b/lan_app/templates/recording_detail.html
+index 04753c1..4a4d3e8 100644
+--- a/lan_app/templates/recording_detail.html
++++ b/lan_app/templates/recording_detail.html
+@@ -9,44 +9,7 @@
+   {% endif %}
+ </h1>
+ 
+-<div class="filters" style="margin-bottom:10px">
+-  <select
+-    class="action-sel"
+-    style="font-size:12px"
+-    data-rid="{{ rec.id }}"
+-    data-rlabel="{{ rec.source_filename or rec.id }}"
+-    data-rcaptured="{{ '' if rec.captured_at_display == '—' else rec.captured_at_display }}"
+-    onchange="doRecAction(this)"
+-  >
+-    <option value="">Actions…</option>
+-    <option value="requeue">Requeue</option>
+-    <option value="quarantine">Quarantine</option>
+-    <option value="delete">Delete</option>
+-  </select>
+-  {% if rec.stop_eligible %}
+-    {% if rec.stop_in_progress %}
+-    <button type="button" class="btn btn-danger" disabled>Stopping...</button>
+-    {% else %}
+-    <form
+-      method="post"
+-      action="/ui/recordings/{{ rec.id }}/stop"
+-      style="display:inline"
+-      hx-boost="false"
+-      onsubmit="return confirm('Stop processing for this recording?')"
+-    >
+-      <input type="hidden" name="tab" value="{{ current_tab }}">
+-      <button type="submit" class="btn btn-danger">Stop</button>
+-    </form>
+-    {% endif %}
+-  {% endif %}
+-  <a href="/recordings" class="btn" style="text-decoration:none">&#8592; Back</a>
+-</div>
+-
+-{% if recovery_warning %}
+-<p style="margin:0 0 10px 0;padding:8px 10px;border:1px solid #f59e0b;background:#fffbeb;color:#92400e">
+-  {{ recovery_warning }}
+-</p>
+-{% endif %}
++{% include "partials/control_center/selected_recording_shell.html" %}
+ 
+ {% if rec.status in ['Processing', 'Stopping'] %}
+ <div
+diff --git a/lan_app/templates/recordings.html b/lan_app/templates/recordings.html
+index 7977666..26876a4 100644
+--- a/lan_app/templates/recordings.html
++++ b/lan_app/templates/recordings.html
+@@ -3,117 +3,7 @@
+ {% block content %}
+ <h1>Recordings <small style="font-weight:normal;color:#666">({{ total }} total)</small></h1>
+ 
+-<form class="filters" method="get" action="/recordings">
+-  <label>Status:</label>
+-  <select name="status" hx-get="/recordings" hx-push-url="true" hx-target="body" hx-trigger="change">
+-    <option value="">All</option>
+-    {% for s in statuses %}
+-    <option value="{{ s }}" {% if status_filter == s %}selected{% endif %}>{{ s }}</option>
+-    {% endfor %}
+-  </select>
+-  <label>Limit:</label>
+-  <select name="limit">
+-    {% for n in [25, 50, 100, 200] %}
+-    <option value="{{ n }}" {% if limit == n %}selected{% endif %}>{{ n }}</option>
+-    {% endfor %}
+-  </select>
+-  <input type="hidden" name="offset" value="0">
+-  <button class="btn" type="submit">Filter</button>
+-</form>
++{% include "partials/control_center/recordings_filters.html" %}
+ 
+-{% if items %}
+-<table>
+-  <thead>
+-    <tr>
+-      <th>ID</th>
+-      <th>Filename</th>
+-      <th>Status</th>
+-      <th style="width:140px">Progress</th>
+-      <th>Suggested Project</th>
+-      <th>Confidence</th>
+-      <th>Captured</th>
+-      <th>Duration</th>
+-      <th>Source</th>
+-      <th>Actions</th>
+-    </tr>
+-  </thead>
+-  <tbody>
+-    {% for r in items %}
+-    <tr>
+-      <td title="{{ r.id }}"><a href="/recordings/{{ r.id }}" style="text-decoration:none;color:#1d4ed8">{{ r.id[:16] }}…</a></td>
+-      <td title="{{ r.source_filename }}">{{ r.source_filename }}</td>
+-      <td>
+-        <span class="badge s-{{ r.status }}">{{ r.status }}</span>
+-        {% if r.status_reason_text_display %}
+-        <span style="display:block;margin-top:4px;color:#92400e">{{ r.status_reason_text_display }}</span>
+-        {% endif %}
+-      </td>
+-      <td style="max-width:140px">
+-        {% if r.status == "Processing" %}
+-        {{ r.progress_percent }}% {{ r.progress_stage_label }}
+-        {% elif r.status == "Stopping" and r.pipeline_progress is not none %}
+-        {{ r.progress_percent }}% {{ r.progress_stage_label }}
+-        {% elif r.status == "Stopping" %}
+-        Stop requested
+-        {% elif r.status == "Queued" %}
+-        {{ r.progress_percent }}% {{ r.progress_stage_label }}
+-        {% elif r.status in ["Ready", "NeedsReview", "Published"] %}
+-        100% Done
+-        {% elif r.pipeline_progress is not none %}
+-        {{ r.progress_percent }}% {{ r.progress_stage_label }}
+-        {% else %}
+-        —
+-        {% endif %}
+-      </td>
+-      <td>
+-        {% if r.suggested_project_name %}
+-        {{ r.suggested_project_name }}
+-        {% elif r.suggested_project_id %}
+-        #{{ r.suggested_project_id }}
+-        {% else %}
+-        —
+-        {% endif %}
+-      </td>
+-      <td>
+-        {% if r.routing_confidence is not none %}
+-        {{ '%.2f'|format(r.routing_confidence) }}
+-        {% else %}
+-        —
+-        {% endif %}
+-      </td>
+-      <td>{{ r.captured_at_display }}</td>
+-      <td>{{ r.duration_display }}</td>
+-      <td>{{ r.source }}</td>
+-      <td>
+-        <select
+-          class="action-sel"
+-          data-rid="{{ r.id }}"
+-          data-rlabel="{{ r.source_filename or r.id }}"
+-          data-rcaptured="{{ '' if r.captured_at_display == '—' else r.captured_at_display }}"
+-          onchange="doRecAction(this)"
+-        >
+-          <option value="">Actions</option>
+-          <option value="open">Open</option>
+-          <option value="requeue">Requeue</option>
+-          <option value="quarantine">Quarantine</option>
+-          <option value="delete">Delete</option>
+-        </select>
+-      </td>
+-    </tr>
+-    {% endfor %}
+-  </tbody>
+-</table>
+-
+-<div class="pager">
+-  {% if has_prev %}
+-  <a href="/recordings?status={{ status_filter }}&limit={{ limit }}&offset={{ prev_offset }}">&#171; Prev</a>
+-  {% endif %}
+-  <span>{{ offset + 1 }}–{{ [offset + limit, total] | min }} of {{ total }}</span>
+-  {% if has_next %}
+-  <a href="/recordings?status={{ status_filter }}&limit={{ limit }}&offset={{ next_offset }}">Next &#187;</a>
+-  {% endif %}
+-</div>
+-{% else %}
+-<p class="placeholder">No recordings{% if status_filter %} with status <strong>{{ status_filter }}</strong>{% endif %}.</p>
+-{% endif %}
++{% include "partials/control_center/recordings_table.html" %}
+ {% endblock %}
+diff --git a/lan_app/templates/upload.html b/lan_app/templates/upload.html
+index 03d2cd6..c1353ca 100644
+--- a/lan_app/templates/upload.html
++++ b/lan_app/templates/upload.html
+@@ -3,40 +3,7 @@
+ {% block content %}
+ <h1>Upload</h1>
+ 
+-<div class="section">
+-  <div class="form-row" style="margin-bottom:8px">
+-    <label for="file-input">Files</label>
+-    <input type="file" id="file-input" multiple>
+-    <button type="button" class="btn" id="pick-files-btn">Choose files</button>
+-  </div>
+-  <div
+-    id="dropzone"
+-    style="background:#fff;border:2px dashed #99b;padding:14px;max-width:720px;color:#555;user-select:none"
+-    tabindex="0"
+-  >
+-    Drop files here to upload (or use the file picker).
+-  </div>
+-</div>
+-
+-<div class="section">
+-  <table>
+-    <thead>
+-      <tr>
+-        <th>Filename</th>
+-        <th>Size</th>
+-        <th>Upload progress</th>
+-        <th>Processing progress</th>
+-        <th>Status</th>
+-        <th>Link</th>
+-      </tr>
+-    </thead>
+-    <tbody id="upload-rows">
+-      <tr id="upload-empty">
+-        <td colspan="6" class="placeholder">No files queued.</td>
+-      </tr>
+-    </tbody>
+-  </table>
+-</div>
++{% include "partials/control_center/upload_panel.html" %}
+ 
+ <script>
+ var TERMINAL_STATUSES = new Set([
+@@ -119,7 +86,7 @@ function setPercent(progress, percent) {
+ }
+ 
+ function removePlaceholderRow() {
+-  var row = document.getElementById("upload-empty");
++  var row = document.getElementById("{{ upload_shell.empty_row_id }}");
+   if (row) {
+     row.remove();
+   }
+@@ -127,7 +94,7 @@ function removePlaceholderRow() {
+ 
+ function addFileRow(file) {
+   removePlaceholderRow();
+-  var rows = document.getElementById("upload-rows");
++  var rows = document.getElementById("{{ upload_shell.upload_rows_id }}");
+   var tr = document.createElement("tr");
+ 
+   var nameCell = document.createElement("td");
+@@ -350,9 +317,9 @@ function enqueueFiles(fileList) {
+   drainUploadQueue();
+ }
+ 
+-var fileInput = document.getElementById("file-input");
+-var pickFilesButton = document.getElementById("pick-files-btn");
+-var dropzone = document.getElementById("dropzone");
++var fileInput = document.getElementById("{{ upload_shell.file_input_id }}");
++var pickFilesButton = document.getElementById("{{ upload_shell.pick_files_button_id }}");
++var dropzone = document.getElementById("{{ upload_shell.dropzone_id }}");
+ 
+ fileInput.addEventListener("change", function() {
+   enqueueFiles(fileInput.files);
+diff --git a/lan_app/templates/voices.html b/lan_app/templates/voices.html
+index 1ece680..72b86bf 100644
+--- a/lan_app/templates/voices.html
++++ b/lan_app/templates/voices.html
+@@ -3,9 +3,10 @@
+ {% block content %}
+ <h1>Canonical Speakers</h1>
+ 
+-<p style="margin:0 0 12px 0;color:#555">
+-  Manage one canonical person per real speaker, inspect linked samples, and safely merge duplicates.
+-</p>
++{% set helper_message = {
++  "text": "Manage one canonical person per real speaker, inspect linked samples, and safely merge duplicates."
++} %}
++{% include "partials/control_center/helper_message.html" %}
+ 
+ <div class="section">
+   <h2>Add canonical speaker</h2>
+diff --git a/lan_app/ui_routes.py b/lan_app/ui_routes.py
+index 561270f..2a275c1 100644
+--- a/lan_app/ui_routes.py
++++ b/lan_app/ui_routes.py
+@@ -2081,6 +2081,194 @@ def _job_counts(settings: AppSettings) -> dict[str, int]:
+     return counts
  
  
-+def test_repair_snippets_cli_rejects_blank_recording_id(
++def _status_summary_strip_context(*, title: str, counts: dict[str, int]) -> dict[str, Any]:
++    return {
++        "title": title,
++        "counts": counts,
++    }
++
++
++def _dashboard_status_context(settings: AppSettings) -> dict[str, Any]:
++    recent, _ = list_recordings(settings=settings, limit=10)
++    return {
++        "recordings_summary_strip": _status_summary_strip_context(
++            title="Recordings by status",
++            counts=_status_counts(settings),
++        ),
++        "jobs_summary_strip": _status_summary_strip_context(
++            title="Queue by status",
++            counts=_job_counts(settings),
++        ),
++        "recent": recent,
++    }
++
++
++def _recordings_list_items_context(
++    items: list[dict[str, Any]],
++    *,
++    settings: AppSettings,
++) -> list[dict[str, Any]]:
++    prepared_items: list[dict[str, Any]] = []
++    for item in items:
++        prepared = _prepare_recording_for_display(item, settings=settings)
++        progress_ratio = _safe_pipeline_progress(prepared.get("pipeline_progress"))
++        prepared["progress_percent"] = int(round(progress_ratio * 100))
++        prepared["progress_stage_label"] = _pipeline_stage_label(prepared.get("pipeline_stage"))
++        prepared_items.append(prepared)
++    return prepared_items
++
++
++def _recordings_filters_context(
++    *,
++    status_filter: str,
++    limit: int,
++) -> dict[str, Any]:
++    return {
++        "action": "/recordings",
++        "hx_get": "/recordings",
++        "hx_target": "body",
++        "hx_push_url": "true",
++        "status_filter": status_filter,
++        "statuses": RECORDING_STATUSES,
++        "limit": limit,
++        "limit_options": [25, 50, 100, 200],
++        "offset_reset": 0,
++    }
++
++
++def _recordings_table_context(
++    *,
++    items: list[dict[str, Any]],
++    total: int,
++    limit: int,
++    offset: int,
++    status_filter: str,
++) -> dict[str, Any]:
++    return {
++        "rows": items,
++        "total": total,
++        "limit": limit,
++        "offset": offset,
++        "status_filter": status_filter,
++        "prev_offset": max(offset - limit, 0),
++        "next_offset": offset + limit,
++        "has_prev": offset > 0,
++        "has_next": offset + limit < total,
++    }
++
++
++def _recordings_list_context(
++    settings: AppSettings,
++    *,
++    status: str | None,
++    limit: int,
++    offset: int,
++) -> dict[str, Any]:
++    valid_status = status if status in RECORDING_STATUSES else None
++    items, total = list_recordings(
++        settings=settings,
++        status=valid_status,
++        limit=limit,
++        offset=offset,
++    )
++    status_filter = valid_status or ""
++    prepared_items = _recordings_list_items_context(items, settings=settings)
++    return {
++        "total": total,
++        "recordings_filters": _recordings_filters_context(
++            status_filter=status_filter,
++            limit=limit,
++        ),
++        "recordings_table": _recordings_table_context(
++            items=prepared_items,
++            total=total,
++            limit=limit,
++            offset=offset,
++            status_filter=status_filter,
++        ),
++    }
++
++
++def _upload_shell_context() -> dict[str, Any]:
++    return {
++        "file_input_id": "file-input",
++        "pick_files_button_id": "pick-files-btn",
++        "dropzone_id": "dropzone",
++        "upload_rows_id": "upload-rows",
++        "empty_row_id": "upload-empty",
++        "queue_empty_colspan": 6,
++    }
++
++
++def _page_notice_context(message: str) -> dict[str, str]:
++    return {
++        "message": message.strip(),
++    }
++
++
++def _inspector_action_bar_context(
++    recording: dict[str, Any],
++    *,
++    current_tab: str,
++) -> dict[str, Any]:
++    return {
++        "rec": recording,
++        "current_tab": current_tab,
++        "back_href": "/recordings",
++    }
++
++
++def _selected_recording_summary_shell_context(
++    recording: dict[str, Any],
++    *,
++    current_tab: str,
++    recovery_warning: str | None,
++) -> dict[str, Any]:
++    notices: list[dict[str, str]] = []
++    if recovery_warning:
++        notices.append(_page_notice_context(recovery_warning))
++    return {
++        "action_bar": _inspector_action_bar_context(recording, current_tab=current_tab),
++        "notices": notices,
++    }
++
++
++def _empty_inspector_shell_context() -> dict[str, str]:
++    return {
++        "title": "Select a recording",
++        "message": (
++            "Choose a recording from the list to inspect actions, diagnostics, and export "
++            "controls."
++        ),
++    }
++
++
++def _compact_glossary_summary_context(
++    settings: AppSettings,
++    *,
++    limit: int = 5,
++) -> dict[str, Any]:
++    items = list_glossary_entries(settings=settings)
++    compact_entries: list[dict[str, Any]] = []
++    for item in items[:limit]:
++        aliases = item.get("aliases_json")
++        compact_entries.append(
++            {
++                "id": item.get("id"),
++                "canonical_text": item.get("canonical_text"),
++                "kind": item.get("kind") or "term",
++                "aliases": aliases if isinstance(aliases, list) else [],
++                "source_label": str(item.get("source") or "manual").replace("_", " "),
++            }
++        )
++    return {
++        "entry_count": len(items),
++        "entries": compact_entries,
++        "has_more": len(items) > limit,
++        "manage_href": "/glossary",
++    }
++
++
+ def _utc_iso(value: datetime) -> str:
+     return value.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace(
+         "+00:00", "Z"
+@@ -2338,17 +2526,37 @@ async def ui_logout() -> Any:
+ 
+ @ui_router.get("/", response_class=HTMLResponse)
+ async def ui_dashboard(request: Request) -> Any:
+-    rec_counts = _status_counts(_settings)
+-    job_counts = _job_counts(_settings)
+-    recent, _ = list_recordings(settings=_settings, limit=10)
++    dashboard_context = _dashboard_status_context(_settings)
+     return templates.TemplateResponse(
+         request,
+         "dashboard.html",
+         {
+             "active": "dashboard",
+-            "rec_counts": rec_counts,
+-            "job_counts": job_counts,
+-            "recent": recent,
++            **dashboard_context,
++        },
++    )
++
++
++@ui_router.get("/ui/control-center/dashboard/recordings-summary", response_class=HTMLResponse)
++async def ui_control_center_dashboard_recordings_summary(request: Request) -> Any:
++    dashboard_context = _dashboard_status_context(_settings)
++    return templates.TemplateResponse(
++        request,
++        "partials/control_center/status_summary_strip.html",
++        {
++            "summary_strip": dashboard_context["recordings_summary_strip"],
++        },
++    )
++
++
++@ui_router.get("/ui/control-center/dashboard/jobs-summary", response_class=HTMLResponse)
++async def ui_control_center_dashboard_jobs_summary(request: Request) -> Any:
++    dashboard_context = _dashboard_status_context(_settings)
++    return templates.TemplateResponse(
++        request,
++        "partials/control_center/status_summary_strip.html",
++        {
++            "summary_strip": dashboard_context["jobs_summary_strip"],
+         },
+     )
+ 
+@@ -2365,34 +2573,72 @@ async def ui_recordings(
+     limit: int = Query(default=50, ge=1, le=500),
+     offset: int = Query(default=0, ge=0),
+ ) -> Any:
+-    valid_status = status if status in RECORDING_STATUSES else None
+-    items, total = list_recordings(
+-        settings=_settings,
+-        status=valid_status,
++    list_context = _recordings_list_context(
++        _settings,
++        status=status,
+         limit=limit,
+         offset=offset,
+     )
+-    for idx, item in enumerate(items):
+-        item = _prepare_recording_for_display(item, settings=_settings)
+-        progress_ratio = _safe_pipeline_progress(item.get("pipeline_progress"))
+-        item["progress_percent"] = int(round(progress_ratio * 100))
+-        item["progress_stage_label"] = _pipeline_stage_label(item.get("pipeline_stage"))
+-        items[idx] = item
+     return templates.TemplateResponse(
+         request,
+         "recordings.html",
+         {
+             "active": "recordings",
+-            "items": items,
+-            "total": total,
+-            "limit": limit,
+-            "offset": offset,
+-            "status_filter": valid_status or "",
+-            "statuses": RECORDING_STATUSES,
+-            "prev_offset": max(offset - limit, 0),
+-            "next_offset": offset + limit,
+-            "has_prev": offset > 0,
+-            "has_next": offset + limit < total,
++            **list_context,
++        },
++    )
++
++
++@ui_router.get("/ui/control-center/recordings/filters", response_class=HTMLResponse)
++async def ui_control_center_recordings_filters(
++    request: Request,
++    status: str | None = Query(default=None),
++    limit: int = Query(default=50, ge=1, le=500),
++) -> Any:
++    list_context = _recordings_list_context(
++        _settings,
++        status=status,
++        limit=limit,
++        offset=0,
++    )
++    return templates.TemplateResponse(
++        request,
++        "partials/control_center/recordings_filters.html",
++        {
++            "recordings_filters": list_context["recordings_filters"],
++        },
++    )
++
++
++@ui_router.get("/ui/control-center/recordings/table", response_class=HTMLResponse)
++async def ui_control_center_recordings_table(
++    request: Request,
++    status: str | None = Query(default=None),
++    limit: int = Query(default=50, ge=1, le=500),
++    offset: int = Query(default=0, ge=0),
++) -> Any:
++    list_context = _recordings_list_context(
++        _settings,
++        status=status,
++        limit=limit,
++        offset=offset,
++    )
++    return templates.TemplateResponse(
++        request,
++        "partials/control_center/recordings_table.html",
++        {
++            "recordings_table": list_context["recordings_table"],
++        },
++    )
++
++
++@ui_router.get("/ui/control-center/inspector-empty", response_class=HTMLResponse)
++async def ui_control_center_inspector_empty(request: Request) -> Any:
++    return templates.TemplateResponse(
++        request,
++        "partials/control_center/inspector_empty.html",
++        {
++            "empty_inspector": _empty_inspector_shell_context(),
+         },
+     )
+ 
+@@ -2461,6 +2707,11 @@ async def ui_recording_detail(
+         glossary = _asr_glossary_context(recording_id, _settings)
+     if current_tab == "metrics":
+         metrics = _metrics_tab_context(recording_id, _settings)
++    selected_recording_shell = _selected_recording_summary_shell_context(
++        rec,
++        current_tab=current_tab,
++        recovery_warning=recovery_warning,
++    )
+ 
+     return templates.TemplateResponse(
+         request,
+@@ -2470,6 +2721,7 @@ async def ui_recording_detail(
+             "rec": rec,
+             "jobs": jobs,
+             "recovery_warning": recovery_warning,
++            "selected_recording_shell": selected_recording_shell,
+             "tabs": tabs,
+             "current_tab": current_tab,
+             "calendar": calendar,
+@@ -2486,6 +2738,30 @@ async def ui_recording_detail(
+     )
+ 
+ 
++@ui_router.get("/ui/control-center/recordings/{recording_id}/shell", response_class=HTMLResponse)
++async def ui_control_center_recording_shell(
++    request: Request,
++    recording_id: str,
++    tab: str = Query(default="overview"),
++) -> Any:
++    rec = get_recording(recording_id, settings=_settings)
++    if rec is None:
++        return HTMLResponse("Not found", status_code=404)
++    rec = _prepare_recording_for_display(rec, settings=_settings)
++    jobs, _ = list_jobs(settings=_settings, recording_id=recording_id, limit=100)
++    return templates.TemplateResponse(
++        request,
++        "partials/control_center/selected_recording_shell.html",
++        {
++            "selected_recording_shell": _selected_recording_summary_shell_context(
++                rec,
++                current_tab=tab,
++                recovery_warning=_recording_recovery_warning(jobs),
++            ),
++        },
++    )
++
++
+ @ui_router.get("/ui/recordings/{recording_id}/progress", response_class=HTMLResponse)
+ async def ui_recording_progress(
+     request: Request,
+@@ -2903,6 +3179,17 @@ async def ui_glossary(
+     )
+ 
+ 
++@ui_router.get("/ui/control-center/glossary-summary", response_class=HTMLResponse)
++async def ui_control_center_glossary_summary(request: Request) -> Any:
++    return templates.TemplateResponse(
++        request,
++        "partials/control_center/glossary_summary.html",
++        {
++            "glossary_summary": _compact_glossary_summary_context(_settings),
++        },
++    )
++
++
+ @ui_router.post("/glossary", response_class=HTMLResponse)
+ async def ui_create_glossary(
+     canonical_text: str = Form(...),
+@@ -3178,6 +3465,18 @@ async def ui_upload(request: Request) -> Any:
+         "upload.html",
+         {
+             "active": "upload",
++            "upload_shell": _upload_shell_context(),
++        },
++    )
++
++
++@ui_router.get("/ui/control-center/upload/panel", response_class=HTMLResponse)
++async def ui_control_center_upload_panel(request: Request) -> Any:
++    return templates.TemplateResponse(
++        request,
++        "partials/control_center/upload_panel.html",
++        {
++            "upload_shell": _upload_shell_context(),
+         },
+     )
+ 
+diff --git a/tasks/QUEUE.md b/tasks/QUEUE.md
+index 29d112e..2f0902e 100644
+--- a/tasks/QUEUE.md
++++ b/tasks/QUEUE.md
+@@ -520,7 +520,7 @@ Queue (in order)
+ - Depends on: PR-SNIPPETS-STAGE-REORDER-01 and PR-SNIPPETS-UI-STATE-01
+ 
+ 104) PR-UI-CONTROL-CENTER-01: Extract reusable UI partials and HTMX-friendly render paths for the future 1-page Control Center workflow
+-- Status: TODO
++- Status: DONE
+ - Tasks file: tasks/PR-UI-CONTROL-CENTER-01.md
+ - Depends on: PR-SNIPPETS-REPAIR-BACKFILL-01 and PR-GLOSSARY-CORRECTIONS-01 and PR-SPEAKER-UX-01
+ 
+diff --git a/tests/test_cov_lan_app_ui_routes.py b/tests/test_cov_lan_app_ui_routes.py
+index cc7c37b..85d9042 100644
+--- a/tests/test_cov_lan_app_ui_routes.py
++++ b/tests/test_cov_lan_app_ui_routes.py
+@@ -98,6 +98,117 @@ def test_language_and_json_helper_edge_paths() -> None:
+     ]
+ 
+ 
++def test_control_center_helper_contexts_cover_fragment_builders(
++    tmp_path: Path,
 +    monkeypatch: pytest.MonkeyPatch,
-+    capsys: pytest.CaptureFixture[str],
 +) -> None:
-+    called = {"batch": False}
++    cfg = _cfg(tmp_path)
++    monkeypatch.setattr(ui_routes, "_status_counts", lambda settings: {"Ready": 1})
++    monkeypatch.setattr(ui_routes, "_job_counts", lambda settings: {"queued": 2})
++    monkeypatch.setattr(
++        ui_routes,
++        "list_recordings",
++        lambda *, settings, status=None, limit=10, offset=0: ([{"id": "rec-helper-1"}], 3),
++    )
++    dashboard = ui_routes._dashboard_status_context(cfg)  # noqa: SLF001
++    assert dashboard["recordings_summary_strip"]["title"] == "Recordings by status"
++    assert dashboard["jobs_summary_strip"]["counts"] == {"queued": 2}
++    assert dashboard["recent"] == [{"id": "rec-helper-1"}]
 +
-+    def _unexpected_backfill(*_args, **_kwargs):
-+        called["batch"] = True
-+        raise AssertionError("batch backfill should not run for blank recording ids")
++    monkeypatch.setattr(
++        ui_routes,
++        "_recordings_list_items_context",
++        lambda items, *, settings: [{"id": item["id"], "status": "Ready"} for item in items],
++    )
++    list_context = ui_routes._recordings_list_context(  # noqa: SLF001
++        cfg,
++        status="Ready",
++        limit=25,
++        offset=0,
++    )
++    assert list_context["total"] == 3
++    assert list_context["recordings_filters"]["status_filter"] == "Ready"
++    assert list_context["recordings_table"]["rows"] == [{"id": "rec-helper-1", "status": "Ready"}]
 +
-+    monkeypatch.setattr(repair_snippets_tool, "backfill_missing_snippets", _unexpected_backfill)
++    filters = ui_routes._recordings_filters_context(status_filter="", limit=50)  # noqa: SLF001
++    assert filters["limit_options"] == [25, 50, 100, 200]
++    assert filters["hx_target"] == "body"
 +
-+    assert repair_snippets_tool.main(["--recording-id", ""]) == 1
-+    assert called["batch"] is False
-+    assert "FAILED recording-id invalid: blank recording id" in capsys.readouterr().out
++    table = ui_routes._recordings_table_context(  # noqa: SLF001
++        items=[{"id": "rec-helper-1"}],
++        total=3,
++        limit=2,
++        offset=0,
++        status_filter="",
++    )
++    assert table["has_prev"] is False
++    assert table["has_next"] is True
++
++    upload_shell = ui_routes._upload_shell_context()  # noqa: SLF001
++    assert upload_shell["file_input_id"] == "file-input"
++    assert upload_shell["empty_row_id"] == "upload-empty"
++
++    page_notice = ui_routes._page_notice_context("  Recovered from a stuck job.  ")  # noqa: SLF001
++    assert page_notice == {"message": "Recovered from a stuck job."}
++
++    selected_shell = ui_routes._selected_recording_summary_shell_context(  # noqa: SLF001
++        {
++            "id": "rec-helper-1",
++            "source_filename": "meeting.wav",
++            "captured_at_display": "—",
++            "stop_eligible": False,
++            "stop_in_progress": False,
++        },
++        current_tab="overview",
++        recovery_warning=None,
++    )
++    assert selected_shell["notices"] == []
++    assert selected_shell["action_bar"]["current_tab"] == "overview"
++
++    selected_shell_warning = ui_routes._selected_recording_summary_shell_context(  # noqa: SLF001
++        {
++            "id": "rec-helper-2",
++            "source_filename": "meeting.wav",
++            "captured_at_display": "2026-01-10 11:00:00 CET",
++            "stop_eligible": True,
++            "stop_in_progress": True,
++        },
++        current_tab="log",
++        recovery_warning="Recovered from a stuck job.",
++    )
++    assert selected_shell_warning["notices"] == [{"message": "Recovered from a stuck job."}]
++    assert selected_shell_warning["action_bar"]["back_href"] == "/recordings"
++
++    empty_shell = ui_routes._empty_inspector_shell_context()  # noqa: SLF001
++    assert empty_shell["title"] == "Select a recording"
++
++    monkeypatch.setattr(
++        ui_routes,
++        "list_glossary_entries",
++        lambda settings: [
++            {
++                "id": 1,
++                "canonical_text": "Sander",
++                "kind": "person",
++                "aliases_json": ["Sandia"],
++                "source": "speaker_bank",
++            },
++            {
++                "id": 2,
++                "canonical_text": "Roadmap",
++                "kind": "project",
++                "aliases_json": "invalid",
++                "source": None,
++            },
++        ],
++    )
++    glossary_summary = ui_routes._compact_glossary_summary_context(cfg, limit=2)  # noqa: SLF001
++    assert glossary_summary["entry_count"] == 2
++    assert glossary_summary["entries"][0]["aliases"] == ["Sandia"]
++    assert glossary_summary["entries"][1]["aliases"] == []
++    assert glossary_summary["entries"][1]["source_label"] == "manual"
 +
 +
- def test_backfill_missing_snippets_uses_default_settings_and_regenerated_branch(
+ def test_display_helpers_cover_timezone_duration_and_prepare_recording(
      tmp_path: Path,
      monkeypatch: pytest.MonkeyPatch,
+diff --git a/tests/test_ui_routes.py b/tests/test_ui_routes.py
+index 249160c..f37d4df 100644
+--- a/tests/test_ui_routes.py
++++ b/tests/test_ui_routes.py
+@@ -17,6 +17,7 @@ from lan_app.ops import RecordingDeleteError
+ from lan_app.snippet_repair import SnippetRepairEligibility, SnippetRepairResult
+ from lan_app.db import (
+     create_calendar_source,
++    create_glossary_entry,
+     count_routing_training_examples,
+     create_voice_sample,
+     create_job,
+@@ -286,9 +287,25 @@ def test_dashboard_with_data(tmp_path, monkeypatch):
+     c = TestClient(api.app, follow_redirects=True)
+     r = c.get("/")
+     assert r.status_code == 200
++    assert "Recordings by status" in r.text
++    assert "Queue by status" in r.text
+     assert "rec-dash-1" in r.text or "a.mp3" in r.text
+ 
+ 
++def test_dashboard_summary_fragment_endpoints(seeded_client):
++    recordings_summary = seeded_client.get("/ui/control-center/dashboard/recordings-summary")
++    assert recordings_summary.status_code == 200
++    assert "Recordings by status" in recordings_summary.text
++    assert "stat-card" in recordings_summary.text
++    assert "<html" not in recordings_summary.text
++
++    jobs_summary = seeded_client.get("/ui/control-center/dashboard/jobs-summary")
++    assert jobs_summary.status_code == 200
++    assert "Queue by status" in jobs_summary.text
++    assert "stat-card" in jobs_summary.text
++    assert "<nav" not in jobs_summary.text
++
++
+ # ---------------------------------------------------------------------------
+ # Recordings list
+ # ---------------------------------------------------------------------------
+@@ -336,6 +353,59 @@ def test_recordings_list_shows_progress_column_and_percent(tmp_path, monkeypatch
+     assert "50%" in r.text
+ 
+ 
++def test_recordings_fragment_endpoints_render_filters_table_and_pagination(
++    tmp_path: Path,
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    cfg = _cfg(tmp_path)
++    monkeypatch.setattr(api, "_settings", cfg)
++    monkeypatch.setattr(ui_routes, "_settings", cfg)
++    init_db(cfg)
++    create_recording(
++        "rec-ui-fragment-1",
++        source="upload",
++        source_filename="fragment-a.wav",
++        status=RECORDING_STATUS_PROCESSING,
++        settings=cfg,
++    )
++    create_recording(
++        "rec-ui-fragment-2",
++        source="upload",
++        source_filename="fragment-b.wav",
++        status=RECORDING_STATUS_READY,
++        settings=cfg,
++    )
++    create_recording(
++        "rec-ui-fragment-3",
++        source="upload",
++        source_filename="fragment-c.wav",
++        status=RECORDING_STATUS_READY,
++        settings=cfg,
++    )
++    set_recording_progress(
++        "rec-ui-fragment-1",
++        stage="diarize",
++        progress=0.5,
++        settings=cfg,
++    )
++
++    c = TestClient(api.app, follow_redirects=True)
++    filters = c.get("/ui/control-center/recordings/filters?status=Ready&limit=25")
++    assert filters.status_code == 200
++    assert '<form class="filters"' in filters.text
++    assert 'hx-get="/recordings"' in filters.text
++    assert '<option value="Ready" selected>' in filters.text
++    assert "<html" not in filters.text
++
++    table = c.get("/ui/control-center/recordings/table?limit=2&offset=0")
++    assert table.status_code == 200
++    assert "fragment-a.wav" in table.text
++    assert "50%" in table.text
++    assert "Next &#187;" in table.text
++    assert "Delete" in table.text
++    assert "<nav" not in table.text
++
++
+ def test_recordings_list_shows_review_reason_text(tmp_path, monkeypatch):
+     cfg = _cfg(tmp_path)
+     monkeypatch.setattr(api, "_settings", cfg)
+@@ -391,6 +461,24 @@ def test_recording_detail_overview(seeded_client):
+     assert 'hx-boost="false"' in r.text
+ 
+ 
++def test_recording_shell_and_empty_inspector_fragment_endpoints(seeded_client):
++    shell = seeded_client.get("/ui/control-center/recordings/rec-ui-1/shell?tab=overview")
++    assert shell.status_code == 200
++    assert 'data-rid="rec-ui-1"' in shell.text
++    assert "Actions…" in shell.text
++    assert "&#8592; Back" in shell.text
++    assert "<html" not in shell.text
++
++    empty = seeded_client.get("/ui/control-center/inspector-empty")
++    assert empty.status_code == 200
++    assert "Select a recording" in empty.text
++    assert "diagnostics, and export controls" in empty.text
++    assert "<nav" not in empty.text
++
++    missing = seeded_client.get("/ui/control-center/recordings/missing/shell")
++    assert missing.status_code == 404
++
++
+ @pytest.mark.parametrize(
+     ("status", "expects_stop", "expects_disabled"),
+     [
+@@ -2058,6 +2146,29 @@ def test_glossary_page_create_edit_and_delete(tmp_path, monkeypatch):
+     assert list_glossary_entries(settings=cfg) == []
+ 
+ 
++def test_glossary_summary_fragment_endpoint(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
++    cfg = _cfg(tmp_path)
++    monkeypatch.setattr(api, "_settings", cfg)
++    monkeypatch.setattr(ui_routes, "_settings", cfg)
++    init_db(cfg)
++    create_glossary_entry(
++        "Sander",
++        aliases=["Sandia"],
++        term_kind="person",
++        source="manual",
++        settings=cfg,
++    )
++
++    c = TestClient(api.app, follow_redirects=True)
++    r = c.get("/ui/control-center/glossary-summary")
++    assert r.status_code == 200
++    assert "Glossary Snapshot" in r.text
++    assert "Sander" in r.text
++    assert "Sandia" in r.text
++    assert "Manage glossary" in r.text
++    assert "<html" not in r.text
++
++
+ # ---------------------------------------------------------------------------
+ # Voices
+ # ---------------------------------------------------------------------------
+@@ -2213,6 +2324,17 @@ def test_upload_page(client):
+     assert r.status_code == 200
+     assert "Upload" in r.text
+     assert 'id="file-input"' in r.text
++    assert "Drop files here to upload" in r.text
++    assert "No files queued." in r.text
++
++
++def test_upload_panel_fragment_endpoint(client):
++    r = client.get("/ui/control-center/upload/panel")
++    assert r.status_code == 200
++    assert 'id="file-input"' in r.text
++    assert 'id="upload-rows"' in r.text
++    assert "No files queued." in r.text
++    assert "<html" not in r.text
+ 
+ 
+ def test_ui_root_redirects_to_login_when_auth_enabled(tmp_path, monkeypatch):
+diff --git a/lan_app/templates/partials/control_center/glossary_summary.html b/lan_app/templates/partials/control_center/glossary_summary.html
+new file mode 100644
+index 0000000..64bc277
+--- /dev/null
++++ b/lan_app/templates/partials/control_center/glossary_summary.html
+@@ -0,0 +1,33 @@
++<div class="section">
++  <h2>Glossary Snapshot <small style="font-weight:normal;color:#666">({{ glossary_summary.entry_count }} entries)</small></h2>
++  {% if glossary_summary.entries %}
++  <table>
++    <thead>
++      <tr>
++        <th>Canonical</th>
++        <th>Aliases</th>
++        <th>Kind</th>
++        <th>Source</th>
++      </tr>
++    </thead>
++    <tbody>
++      {% for item in glossary_summary.entries %}
++      <tr>
++        <td>{{ item.canonical_text }}</td>
++        <td>{{ item.aliases|join(', ') if item.aliases else '—' }}</td>
++        <td>{{ item.kind }}</td>
++        <td>{{ item.source_label }}</td>
++      </tr>
++      {% endfor %}
++    </tbody>
++  </table>
++  {% if glossary_summary.has_more %}
++  <p style="margin:8px 0 0 0;color:#555">More entries are available in the full glossary.</p>
++  {% endif %}
++  {% else %}
++  <p class="placeholder">No glossary entries yet.</p>
++  {% endif %}
++  <p style="margin:8px 0 0 0">
++    <a href="{{ glossary_summary.manage_href }}" class="btn" style="text-decoration:none">Manage glossary</a>
++  </p>
++</div>
+diff --git a/lan_app/templates/partials/control_center/helper_message.html b/lan_app/templates/partials/control_center/helper_message.html
+new file mode 100644
+index 0000000..1208d3a
+--- /dev/null
++++ b/lan_app/templates/partials/control_center/helper_message.html
+@@ -0,0 +1,3 @@
++<p style="margin:0 0 12px 0;color:#555">
++  {{ helper_message.text }}
++</p>
+diff --git a/lan_app/templates/partials/control_center/inspector_action_bar.html b/lan_app/templates/partials/control_center/inspector_action_bar.html
+new file mode 100644
+index 0000000..8bbb6a4
+--- /dev/null
++++ b/lan_app/templates/partials/control_center/inspector_action_bar.html
+@@ -0,0 +1,32 @@
++<div class="filters" style="margin-bottom:10px">
++  <select
++    class="action-sel"
++    style="font-size:12px"
++    data-rid="{{ inspector_action_bar.rec.id }}"
++    data-rlabel="{{ inspector_action_bar.rec.source_filename or inspector_action_bar.rec.id }}"
++    data-rcaptured="{{ '' if inspector_action_bar.rec.captured_at_display == '—' else inspector_action_bar.rec.captured_at_display }}"
++    onchange="doRecAction(this)"
++  >
++    <option value="">Actions…</option>
++    <option value="requeue">Requeue</option>
++    <option value="quarantine">Quarantine</option>
++    <option value="delete">Delete</option>
++  </select>
++  {% if inspector_action_bar.rec.stop_eligible %}
++    {% if inspector_action_bar.rec.stop_in_progress %}
++    <button type="button" class="btn btn-danger" disabled>Stopping...</button>
++    {% else %}
++    <form
++      method="post"
++      action="/ui/recordings/{{ inspector_action_bar.rec.id }}/stop"
++      style="display:inline"
++      hx-boost="false"
++      onsubmit="return confirm('Stop processing for this recording?')"
++    >
++      <input type="hidden" name="tab" value="{{ inspector_action_bar.current_tab }}">
++      <button type="submit" class="btn btn-danger">Stop</button>
++    </form>
++    {% endif %}
++  {% endif %}
++  <a href="{{ inspector_action_bar.back_href }}" class="btn" style="text-decoration:none">&#8592; Back</a>
++</div>
+diff --git a/lan_app/templates/partials/control_center/inspector_empty.html b/lan_app/templates/partials/control_center/inspector_empty.html
+new file mode 100644
+index 0000000..22f1dbe
+--- /dev/null
++++ b/lan_app/templates/partials/control_center/inspector_empty.html
+@@ -0,0 +1,4 @@
++<div class="section">
++  <h2>{{ empty_inspector.title }}</h2>
++  <p class="placeholder" style="padding:8px 0 0 0">{{ empty_inspector.message }}</p>
++</div>
+diff --git a/lan_app/templates/partials/control_center/page_notice.html b/lan_app/templates/partials/control_center/page_notice.html
+new file mode 100644
+index 0000000..97999b5
+--- /dev/null
++++ b/lan_app/templates/partials/control_center/page_notice.html
+@@ -0,0 +1,3 @@
++<p style="margin:0 0 10px 0;padding:8px 10px;border:1px solid #f59e0b;background:#fffbeb;color:#92400e">
++  {{ page_notice.message }}
++</p>
+diff --git a/lan_app/templates/partials/control_center/recordings_filters.html b/lan_app/templates/partials/control_center/recordings_filters.html
+new file mode 100644
+index 0000000..353d24d
+--- /dev/null
++++ b/lan_app/templates/partials/control_center/recordings_filters.html
+@@ -0,0 +1,23 @@
++<form class="filters" method="get" action="{{ recordings_filters.action }}">
++  <label>Status:</label>
++  <select
++    name="status"
++    hx-get="{{ recordings_filters.hx_get }}"
++    hx-push-url="{{ recordings_filters.hx_push_url }}"
++    hx-target="{{ recordings_filters.hx_target }}"
++    hx-trigger="change"
++  >
++    <option value="">All</option>
++    {% for s in recordings_filters.statuses %}
++    <option value="{{ s }}" {% if recordings_filters.status_filter == s %}selected{% endif %}>{{ s }}</option>
++    {% endfor %}
++  </select>
++  <label>Limit:</label>
++  <select name="limit">
++    {% for n in recordings_filters.limit_options %}
++    <option value="{{ n }}" {% if recordings_filters.limit == n %}selected{% endif %}>{{ n }}</option>
++    {% endfor %}
++  </select>
++  <input type="hidden" name="offset" value="{{ recordings_filters.offset_reset }}">
++  <button class="btn" type="submit">Filter</button>
++</form>
+diff --git a/lan_app/templates/partials/control_center/recordings_table.html b/lan_app/templates/partials/control_center/recordings_table.html
+new file mode 100644
+index 0000000..67d84bd
+--- /dev/null
++++ b/lan_app/templates/partials/control_center/recordings_table.html
+@@ -0,0 +1,95 @@
++{% if recordings_table.rows %}
++<table>
++  <thead>
++    <tr>
++      <th>ID</th>
++      <th>Filename</th>
++      <th>Status</th>
++      <th style="width:140px">Progress</th>
++      <th>Suggested Project</th>
++      <th>Confidence</th>
++      <th>Captured</th>
++      <th>Duration</th>
++      <th>Source</th>
++      <th>Actions</th>
++    </tr>
++  </thead>
++  <tbody>
++    {% for r in recordings_table.rows %}
++    <tr>
++      <td title="{{ r.id }}"><a href="/recordings/{{ r.id }}" style="text-decoration:none;color:#1d4ed8">{{ r.id[:16] }}…</a></td>
++      <td title="{{ r.source_filename }}">{{ r.source_filename }}</td>
++      <td>
++        <span class="badge s-{{ r.status }}">{{ r.status }}</span>
++        {% if r.status_reason_text_display %}
++        <span style="display:block;margin-top:4px;color:#92400e">{{ r.status_reason_text_display }}</span>
++        {% endif %}
++      </td>
++      <td style="max-width:140px">
++        {% if r.status == "Processing" %}
++        {{ r.progress_percent }}% {{ r.progress_stage_label }}
++        {% elif r.status == "Stopping" and r.pipeline_progress is not none %}
++        {{ r.progress_percent }}% {{ r.progress_stage_label }}
++        {% elif r.status == "Stopping" %}
++        Stop requested
++        {% elif r.status == "Queued" %}
++        {{ r.progress_percent }}% {{ r.progress_stage_label }}
++        {% elif r.status in ["Ready", "NeedsReview", "Published"] %}
++        100% Done
++        {% elif r.pipeline_progress is not none %}
++        {{ r.progress_percent }}% {{ r.progress_stage_label }}
++        {% else %}
++        —
++        {% endif %}
++      </td>
++      <td>
++        {% if r.suggested_project_name %}
++        {{ r.suggested_project_name }}
++        {% elif r.suggested_project_id %}
++        #{{ r.suggested_project_id }}
++        {% else %}
++        —
++        {% endif %}
++      </td>
++      <td>
++        {% if r.routing_confidence is not none %}
++        {{ '%.2f'|format(r.routing_confidence) }}
++        {% else %}
++        —
++        {% endif %}
++      </td>
++      <td>{{ r.captured_at_display }}</td>
++      <td>{{ r.duration_display }}</td>
++      <td>{{ r.source }}</td>
++      <td>
++        <select
++          class="action-sel"
++          data-rid="{{ r.id }}"
++          data-rlabel="{{ r.source_filename or r.id }}"
++          data-rcaptured="{{ '' if r.captured_at_display == '—' else r.captured_at_display }}"
++          onchange="doRecAction(this)"
++        >
++          <option value="">Actions</option>
++          <option value="open">Open</option>
++          <option value="requeue">Requeue</option>
++          <option value="quarantine">Quarantine</option>
++          <option value="delete">Delete</option>
++        </select>
++      </td>
++    </tr>
++    {% endfor %}
++  </tbody>
++</table>
++
++<div class="pager">
++  {% if recordings_table.has_prev %}
++  <a href="/recordings?status={{ recordings_table.status_filter }}&limit={{ recordings_table.limit }}&offset={{ recordings_table.prev_offset }}">&#171; Prev</a>
++  {% endif %}
++  <span>{{ recordings_table.offset + 1 }}–{{ [recordings_table.offset + recordings_table.limit, recordings_table.total] | min }} of {{ recordings_table.total }}</span>
++  {% if recordings_table.has_next %}
++  <a href="/recordings?status={{ recordings_table.status_filter }}&limit={{ recordings_table.limit }}&offset={{ recordings_table.next_offset }}">Next &#187;</a>
++  {% endif %}
++</div>
++{% else %}
++<p class="placeholder">No recordings{% if recordings_table.status_filter %} with status <strong>{{ recordings_table.status_filter }}</strong>{% endif %}.</p>
++{% endif %}
+diff --git a/lan_app/templates/partials/control_center/selected_recording_shell.html b/lan_app/templates/partials/control_center/selected_recording_shell.html
+new file mode 100644
+index 0000000..2f40e58
+--- /dev/null
++++ b/lan_app/templates/partials/control_center/selected_recording_shell.html
+@@ -0,0 +1,7 @@
++{% set inspector_action_bar = selected_recording_shell.action_bar %}
++{% include "partials/control_center/inspector_action_bar.html" %}
++
++{% for notice in selected_recording_shell.notices %}
++  {% set page_notice = notice %}
++  {% include "partials/control_center/page_notice.html" %}
++{% endfor %}
+diff --git a/lan_app/templates/partials/control_center/status_summary_strip.html b/lan_app/templates/partials/control_center/status_summary_strip.html
+new file mode 100644
+index 0000000..002eaf4
+--- /dev/null
++++ b/lan_app/templates/partials/control_center/status_summary_strip.html
+@@ -0,0 +1,11 @@
++<div class="section">
++  <h2>{{ summary_strip.title }}</h2>
++  <div class="stats-row">
++    {% for status, count in summary_strip.counts.items() %}
++    <div class="stat-card">
++      <div class="num">{{ count }}</div>
++      <div class="lbl"><span class="badge s-{{ status }}">{{ status }}</span></div>
++    </div>
++    {% endfor %}
++  </div>
++</div>
+diff --git a/lan_app/templates/partials/control_center/upload_panel.html b/lan_app/templates/partials/control_center/upload_panel.html
+new file mode 100644
+index 0000000..29c0cb9
+--- /dev/null
++++ b/lan_app/templates/partials/control_center/upload_panel.html
+@@ -0,0 +1,34 @@
++<div class="section">
++  <div class="form-row" style="margin-bottom:8px">
++    <label for="{{ upload_shell.file_input_id }}">Files</label>
++    <input type="file" id="{{ upload_shell.file_input_id }}" multiple>
++    <button type="button" class="btn" id="{{ upload_shell.pick_files_button_id }}">Choose files</button>
++  </div>
++  <div
++    id="{{ upload_shell.dropzone_id }}"
++    style="background:#fff;border:2px dashed #99b;padding:14px;max-width:720px;color:#555;user-select:none"
++    tabindex="0"
++  >
++    Drop files here to upload (or use the file picker).
++  </div>
++</div>
++
++<div class="section">
++  <table>
++    <thead>
++      <tr>
++        <th>Filename</th>
++        <th>Size</th>
++        <th>Upload progress</th>
++        <th>Processing progress</th>
++        <th>Status</th>
++        <th>Link</th>
++      </tr>
++    </thead>
++    <tbody id="{{ upload_shell.upload_rows_id }}">
++      <tr id="{{ upload_shell.empty_row_id }}">
++        <td colspan="{{ upload_shell.queue_empty_colspan }}" class="placeholder">No files queued.</td>
++      </tr>
++    </tbody>
++  </table>
++</div>

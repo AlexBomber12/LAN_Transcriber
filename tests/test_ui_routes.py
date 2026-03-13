@@ -17,6 +17,7 @@ from lan_app.ops import RecordingDeleteError
 from lan_app.snippet_repair import SnippetRepairEligibility, SnippetRepairResult
 from lan_app.db import (
     create_calendar_source,
+    create_glossary_entry,
     count_routing_training_examples,
     create_voice_sample,
     create_job,
@@ -286,7 +287,23 @@ def test_dashboard_with_data(tmp_path, monkeypatch):
     c = TestClient(api.app, follow_redirects=True)
     r = c.get("/")
     assert r.status_code == 200
+    assert "Recordings by status" in r.text
+    assert "Queue by status" in r.text
     assert "rec-dash-1" in r.text or "a.mp3" in r.text
+
+
+def test_dashboard_summary_fragment_endpoints(seeded_client):
+    recordings_summary = seeded_client.get("/ui/control-center/dashboard/recordings-summary")
+    assert recordings_summary.status_code == 200
+    assert "Recordings by status" in recordings_summary.text
+    assert "stat-card" in recordings_summary.text
+    assert "<html" not in recordings_summary.text
+
+    jobs_summary = seeded_client.get("/ui/control-center/dashboard/jobs-summary")
+    assert jobs_summary.status_code == 200
+    assert "Queue by status" in jobs_summary.text
+    assert "stat-card" in jobs_summary.text
+    assert "<nav" not in jobs_summary.text
 
 
 # ---------------------------------------------------------------------------
@@ -334,6 +351,59 @@ def test_recordings_list_shows_progress_column_and_percent(tmp_path, monkeypatch
     assert r.status_code == 200
     assert "Progress" in r.text
     assert "50%" in r.text
+
+
+def test_recordings_fragment_endpoints_render_filters_table_and_pagination(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    init_db(cfg)
+    create_recording(
+        "rec-ui-fragment-1",
+        source="upload",
+        source_filename="fragment-a.wav",
+        status=RECORDING_STATUS_PROCESSING,
+        settings=cfg,
+    )
+    create_recording(
+        "rec-ui-fragment-2",
+        source="upload",
+        source_filename="fragment-b.wav",
+        status=RECORDING_STATUS_READY,
+        settings=cfg,
+    )
+    create_recording(
+        "rec-ui-fragment-3",
+        source="upload",
+        source_filename="fragment-c.wav",
+        status=RECORDING_STATUS_READY,
+        settings=cfg,
+    )
+    set_recording_progress(
+        "rec-ui-fragment-1",
+        stage="diarize",
+        progress=0.5,
+        settings=cfg,
+    )
+
+    c = TestClient(api.app, follow_redirects=True)
+    filters = c.get("/ui/control-center/recordings/filters?status=Ready&limit=25")
+    assert filters.status_code == 200
+    assert '<form class="filters"' in filters.text
+    assert 'hx-get="/recordings"' in filters.text
+    assert '<option value="Ready" selected>' in filters.text
+    assert "<html" not in filters.text
+
+    table = c.get("/ui/control-center/recordings/table?limit=2&offset=0")
+    assert table.status_code == 200
+    assert "fragment-a.wav" in table.text
+    assert "50%" in table.text
+    assert "Next &#187;" in table.text
+    assert "Delete" in table.text
+    assert "<nav" not in table.text
 
 
 def test_recordings_list_shows_review_reason_text(tmp_path, monkeypatch):
@@ -389,6 +459,24 @@ def test_recording_detail_overview(seeded_client):
     assert 'data-rlabel="meeting.mp3"' in r.text
     assert 'href="/ui/recordings/rec-ui-1/export.zip"' in r.text
     assert 'hx-boost="false"' in r.text
+
+
+def test_recording_shell_and_empty_inspector_fragment_endpoints(seeded_client):
+    shell = seeded_client.get("/ui/control-center/recordings/rec-ui-1/shell?tab=overview")
+    assert shell.status_code == 200
+    assert 'data-rid="rec-ui-1"' in shell.text
+    assert "Actions…" in shell.text
+    assert "&#8592; Back" in shell.text
+    assert "<html" not in shell.text
+
+    empty = seeded_client.get("/ui/control-center/inspector-empty")
+    assert empty.status_code == 200
+    assert "Select a recording" in empty.text
+    assert "diagnostics, and export controls" in empty.text
+    assert "<nav" not in empty.text
+
+    missing = seeded_client.get("/ui/control-center/recordings/missing/shell")
+    assert missing.status_code == 404
 
 
 @pytest.mark.parametrize(
@@ -2058,6 +2146,29 @@ def test_glossary_page_create_edit_and_delete(tmp_path, monkeypatch):
     assert list_glossary_entries(settings=cfg) == []
 
 
+def test_glossary_summary_fragment_endpoint(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    init_db(cfg)
+    create_glossary_entry(
+        "Sander",
+        aliases=["Sandia"],
+        term_kind="person",
+        source="manual",
+        settings=cfg,
+    )
+
+    c = TestClient(api.app, follow_redirects=True)
+    r = c.get("/ui/control-center/glossary-summary")
+    assert r.status_code == 200
+    assert "Glossary Snapshot" in r.text
+    assert "Sander" in r.text
+    assert "Sandia" in r.text
+    assert "Manage glossary" in r.text
+    assert "<html" not in r.text
+
+
 # ---------------------------------------------------------------------------
 # Voices
 # ---------------------------------------------------------------------------
@@ -2213,6 +2324,17 @@ def test_upload_page(client):
     assert r.status_code == 200
     assert "Upload" in r.text
     assert 'id="file-input"' in r.text
+    assert "Drop files here to upload" in r.text
+    assert "No files queued." in r.text
+
+
+def test_upload_panel_fragment_endpoint(client):
+    r = client.get("/ui/control-center/upload/panel")
+    assert r.status_code == 200
+    assert 'id="file-input"' in r.text
+    assert 'id="upload-rows"' in r.text
+    assert "No files queued." in r.text
+    assert "<html" not in r.text
 
 
 def test_ui_root_redirects_to_login_when_auth_enabled(tmp_path, monkeypatch):
