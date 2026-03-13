@@ -26,6 +26,7 @@ from lan_app.db import (
     get_glossary_entry,
     get_recording,
     mark_recording_llm_chunk_started,
+    mark_recording_pipeline_stage_completed,
     mark_recording_pipeline_stage_failed,
     mark_recording_pipeline_stage_started,
     list_glossary_entries,
@@ -52,6 +53,7 @@ from lan_app.constants import (
     JOB_STATUS_STARTED,
     JOB_TYPE_PRECHECK,
     JOB_TYPE_STT,
+    RECORDING_STATUS_FAILED,
     RECORDING_STATUS_NEEDS_REVIEW,
     RECORDING_STATUS_PROCESSING,
     RECORDING_STATUS_READY,
@@ -178,6 +180,37 @@ def _seed_speaker_artifacts(cfg: AppSettings, recording_id: str) -> None:
                 },
             }
         ),
+        encoding="utf-8",
+    )
+
+
+def _seed_speaker_turns_only(cfg: AppSettings, recording_id: str) -> None:
+    derived = cfg.recordings_root / recording_id / "derived"
+    derived.mkdir(parents=True, exist_ok=True)
+    (derived / "transcript.json").write_text(
+        json.dumps({"text": "hello from S1 and S2"}),
+        encoding="utf-8",
+    )
+    (derived / "speaker_turns.json").write_text(
+        json.dumps(
+            [
+                {"start": 0.0, "end": 1.2, "speaker": "S1", "text": "hello team"},
+                {"start": 1.3, "end": 2.1, "speaker": "S2", "text": "hi there"},
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+
+def _write_snippets_manifest(
+    cfg: AppSettings,
+    recording_id: str,
+    payload: dict[str, object],
+) -> None:
+    derived = cfg.recordings_root / recording_id / "derived"
+    derived.mkdir(parents=True, exist_ok=True)
+    (derived / "snippets_manifest.json").write_text(
+        json.dumps(payload),
         encoding="utf-8",
     )
 
@@ -1032,41 +1065,46 @@ def test_recording_detail_speakers_no_clean_snippet_shows_clear_message(tmp_path
         settings=cfg,
     )
     _seed_speaker_artifacts(cfg, "rec-speakers-no-clean-1")
-    derived = cfg.recordings_root / "rec-speakers-no-clean-1" / "derived"
-    (derived / "snippets_manifest.json").write_text(
-        json.dumps(
-            {
-                "version": 1,
-                "source_kind": "turn",
-                "degraded_diarization": False,
-                "pad_seconds": 0.25,
-                "max_clip_duration_seconds": 8.0,
-                "min_clip_duration_seconds": 0.8,
-                "max_snippets_per_speaker": 3,
-                "speakers": {
-                    "S1": [
-                        {
-                            "snippet_id": "S1-01",
-                            "speaker": "S1",
-                            "source_kind": "turn",
-                            "source_start": 0.0,
-                            "source_end": 1.2,
-                            "clip_start": 0.0,
-                            "clip_end": 1.45,
-                            "duration_seconds": 1.45,
-                            "overlap_seconds": 0.31,
-                            "overlap_ratio": 0.2138,
-                            "purity_score": 0.62,
-                            "ranking_position": 1,
-                            "status": "rejected_overlap",
-                            "recommended": False,
-                            "extraction_backend": "none",
-                        }
-                    ]
-                },
-            }
-        ),
-        encoding="utf-8",
+    _write_snippets_manifest(
+        cfg,
+        "rec-speakers-no-clean-1",
+        {
+            "version": 1,
+            "source_kind": "turn",
+            "degraded_diarization": False,
+            "pad_seconds": 0.25,
+            "max_clip_duration_seconds": 8.0,
+            "min_clip_duration_seconds": 0.8,
+            "max_snippets_per_speaker": 3,
+            "manifest_status": "no_clean_snippets",
+            "speakers": {
+                "S1": [
+                    {
+                        "snippet_id": "S1-01",
+                        "speaker": "S1",
+                        "source_kind": "turn",
+                        "source_start": 0.0,
+                        "source_end": 1.2,
+                        "clip_start": 0.0,
+                        "clip_end": 1.45,
+                        "duration_seconds": 1.45,
+                        "overlap_seconds": 0.31,
+                        "overlap_ratio": 0.2138,
+                        "purity_score": 0.62,
+                        "ranking_position": 1,
+                        "status": "rejected_overlap",
+                        "recommended": False,
+                        "extraction_backend": "none",
+                    }
+                ]
+            },
+        },
+    )
+    mark_recording_pipeline_stage_completed(
+        "rec-speakers-no-clean-1",
+        stage_name="snippet_export",
+        metadata={"manifest_status": "no_clean_snippets"},
+        settings=cfg,
     )
     profile = create_voice_profile("Blocked Sample", settings=cfg)
 
@@ -1074,8 +1112,10 @@ def test_recording_detail_speakers_no_clean_snippet_shows_clear_message(tmp_path
         "/recordings/rec-speakers-no-clean-1?tab=speakers"
     )
     assert page.status_code == 200
+    assert "Snippet export completed, but no clean snippets are available because every candidate overlaps another speaker." in page.text
     assert "No clean snippets are available because every candidate overlaps another speaker." in page.text
     assert "rejected because it overlaps another speaker" in page.text
+    assert "No snippet quality data found." not in page.text
 
     blocked = TestClient(api.app, follow_redirects=False).post(
         "/ui/recordings/rec-speakers-no-clean-1/speakers/add-sample",
@@ -1087,6 +1127,297 @@ def test_recording_detail_speakers_no_clean_snippet_shows_clear_message(tmp_path
     )
     assert blocked.status_code == 422
     assert "snippet_path is required" in blocked.text
+
+
+def test_recording_detail_speakers_snippet_not_started_message(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    init_db(cfg)
+    create_recording(
+        "rec-speakers-pending-1",
+        source="upload",
+        source_filename="pending.wav",
+        status=RECORDING_STATUS_PROCESSING,
+        settings=cfg,
+    )
+    _seed_speaker_turns_only(cfg, "rec-speakers-pending-1")
+    set_recording_progress(
+        "rec-speakers-pending-1",
+        stage="speaker_turns",
+        progress=0.8,
+        settings=cfg,
+    )
+    create_voice_profile("Pending Sample", settings=cfg)
+
+    page = TestClient(api.app, follow_redirects=True).get(
+        "/recordings/rec-speakers-pending-1?tab=speakers"
+    )
+    assert page.status_code == 200
+    assert "Pending:</strong> The pipeline has not reached Snippet Export yet." in page.text
+    assert "Add sample will be available after Snippet Export runs." in page.text
+    assert 'name="snippet_path" style="width:220px" disabled' in page.text
+
+
+def test_recording_detail_speakers_snippet_running_message(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    init_db(cfg)
+    create_recording(
+        "rec-speakers-running-1",
+        source="upload",
+        source_filename="running.wav",
+        status=RECORDING_STATUS_PROCESSING,
+        settings=cfg,
+    )
+    _seed_speaker_turns_only(cfg, "rec-speakers-running-1")
+    set_recording_progress(
+        "rec-speakers-running-1",
+        stage="snippet_export",
+        progress=0.84,
+        settings=cfg,
+    )
+    mark_recording_pipeline_stage_started(
+        "rec-speakers-running-1",
+        stage_name="snippet_export",
+        settings=cfg,
+    )
+    create_voice_profile("Running Sample", settings=cfg)
+
+    page = TestClient(api.app, follow_redirects=True).get(
+        "/recordings/rec-speakers-running-1?tab=speakers"
+    )
+    assert page.status_code == 200
+    assert "Generating:</strong> Snippet export is currently generating clean clips for this recording." in page.text
+    assert "Add sample will be available when clean clips finish generating." in page.text
+
+
+def test_recording_detail_speakers_ready_during_processing_keeps_snippets_usable(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    init_db(cfg)
+    create_recording(
+        "rec-speakers-processing-ready-1",
+        source="upload",
+        source_filename="processing-ready.wav",
+        status=RECORDING_STATUS_PROCESSING,
+        settings=cfg,
+    )
+    _seed_speaker_artifacts(cfg, "rec-speakers-processing-ready-1")
+    set_recording_progress(
+        "rec-speakers-processing-ready-1",
+        stage="llm_extract",
+        progress=0.9,
+        settings=cfg,
+    )
+    mark_recording_pipeline_stage_completed(
+        "rec-speakers-processing-ready-1",
+        stage_name="snippet_export",
+        metadata={"manifest_status": "partial", "accepted_snippets": 2},
+        settings=cfg,
+    )
+    create_voice_profile("Ready Sample", settings=cfg)
+
+    page = TestClient(api.app, follow_redirects=True).get(
+        "/recordings/rec-speakers-processing-ready-1?tab=speakers"
+    )
+    assert page.status_code == 200
+    assert "Ready:</strong> Clean clips are ready while processing continues in LLM Summary." in page.text
+    assert "/ui/recordings/rec-speakers-processing-ready-1/snippets/S1/1.wav" in page.text
+    assert "Add sample from this recording" in page.text
+    assert 'name="snippet_path" style="width:220px" disabled' not in page.text
+    assert 'type="submit" disabled>Add sample from this recording' not in page.text
+
+
+def test_recording_detail_speakers_nonfatal_snippet_failure_message(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    init_db(cfg)
+    create_recording(
+        "rec-speakers-failed-1",
+        source="upload",
+        source_filename="failed.wav",
+        status=RECORDING_STATUS_PROCESSING,
+        settings=cfg,
+    )
+    _seed_speaker_turns_only(cfg, "rec-speakers-failed-1")
+    set_recording_progress(
+        "rec-speakers-failed-1",
+        stage="llm_extract",
+        progress=0.9,
+        settings=cfg,
+    )
+    _write_snippets_manifest(
+        cfg,
+        "rec-speakers-failed-1",
+        {
+            "version": 1,
+            "speakers": {},
+            "manifest_status": "export_failed",
+            "warnings": [{"code": "RuntimeError", "message": "snippet boom"}],
+        },
+    )
+    mark_recording_pipeline_stage_completed(
+        "rec-speakers-failed-1",
+        stage_name="snippet_export",
+        metadata={"manifest_status": "export_failed", "warning": "snippet boom"},
+        settings=cfg,
+    )
+    create_voice_profile("Failed Sample", settings=cfg)
+
+    page = TestClient(api.app, follow_redirects=True).get(
+        "/recordings/rec-speakers-failed-1?tab=speakers"
+    )
+    assert page.status_code == 200
+    assert "Failed:</strong> Snippet export failed, so no clean clips are available for this speaker. The rest of processing continues. snippet boom" in page.text
+    assert "Add sample is unavailable because snippet export failed" not in page.text
+    assert "snippet boom" in page.text
+
+
+def test_recording_detail_speakers_legacy_missing_manifest_message(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    init_db(cfg)
+    create_recording(
+        "rec-speakers-legacy-1",
+        source="upload",
+        source_filename="legacy.wav",
+        status=RECORDING_STATUS_READY,
+        settings=cfg,
+    )
+    _seed_speaker_turns_only(cfg, "rec-speakers-legacy-1")
+    create_voice_profile("Legacy Sample", settings=cfg)
+
+    page = TestClient(api.app, follow_redirects=True).get(
+        "/recordings/rec-speakers-legacy-1?tab=speakers"
+    )
+    assert page.status_code == 200
+    assert "Legacy:</strong> This older recording has no snippets manifest yet." in page.text
+    assert "repair/backfill run can regenerate speaker clips later" in page.text
+    assert "Generating:</strong>" not in page.text
+
+
+def test_recording_detail_speakers_stopped_before_snippet_export_is_unavailable(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    init_db(cfg)
+    create_recording(
+        "rec-speakers-stopped-1",
+        source="upload",
+        source_filename="stopped.wav",
+        status=RECORDING_STATUS_STOPPED,
+        settings=cfg,
+    )
+    _seed_speaker_turns_only(cfg, "rec-speakers-stopped-1")
+    set_recording_progress(
+        "rec-speakers-stopped-1",
+        stage="speaker_turns",
+        progress=0.8,
+        settings=cfg,
+    )
+    create_voice_profile("Stopped Sample", settings=cfg)
+
+    page = TestClient(api.app, follow_redirects=True).get(
+        "/recordings/rec-speakers-stopped-1?tab=speakers"
+    )
+    assert page.status_code == 200
+    assert (
+        "Unavailable:</strong> This recording is no longer processing and did not reach "
+        "Snippet Export, so no clean clips are available for this speaker." in page.text
+    )
+    assert "Legacy:</strong>" not in page.text
+    assert "Pending:</strong> The pipeline has not reached Snippet Export yet." not in page.text
+
+
+def test_recording_detail_speakers_needs_review_without_snippets_is_unavailable(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    init_db(cfg)
+    create_recording(
+        "rec-speakers-needs-review-1",
+        source="upload",
+        source_filename="needs-review.wav",
+        status=RECORDING_STATUS_NEEDS_REVIEW,
+        settings=cfg,
+    )
+    _seed_speaker_turns_only(cfg, "rec-speakers-needs-review-1")
+    create_voice_profile("Needs Review Sample", settings=cfg)
+
+    page = TestClient(api.app, follow_redirects=True).get(
+        "/recordings/rec-speakers-needs-review-1?tab=speakers"
+    )
+    assert page.status_code == 200
+    assert (
+        "Unavailable:</strong> This recording is no longer processing and did not reach "
+        "Snippet Export, so no clean clips are available for this speaker." in page.text
+    )
+    assert "Legacy:</strong>" not in page.text
+
+
+def test_recording_detail_speakers_terminal_running_stage_is_not_generating(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    init_db(cfg)
+    create_recording(
+        "rec-speakers-running-terminal-1",
+        source="upload",
+        source_filename="running-terminal.wav",
+        status=RECORDING_STATUS_FAILED,
+        settings=cfg,
+    )
+    _seed_speaker_turns_only(cfg, "rec-speakers-running-terminal-1")
+    mark_recording_pipeline_stage_started(
+        "rec-speakers-running-terminal-1",
+        stage_name="snippet_export",
+        settings=cfg,
+    )
+    create_voice_profile("Terminal Running Sample", settings=cfg)
+
+    page = TestClient(api.app, follow_redirects=True).get(
+        "/recordings/rec-speakers-running-terminal-1?tab=speakers"
+    )
+    assert page.status_code == 200
+    assert "Generating:</strong>" not in page.text
+    assert (
+        "Unavailable:</strong> This recording is no longer processing and did not reach "
+        "Snippet Export, so no clean clips are available for this speaker." in page.text
+    )
+
+
+def test_recording_detail_speakers_llm_alias_progress_is_not_pending(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    init_db(cfg)
+    create_recording(
+        "rec-speakers-llm-alias-1",
+        source="upload",
+        source_filename="llm-alias.wav",
+        status=RECORDING_STATUS_PROCESSING,
+        settings=cfg,
+    )
+    _seed_speaker_turns_only(cfg, "rec-speakers-llm-alias-1")
+    set_recording_progress(
+        "rec-speakers-llm-alias-1",
+        stage="llm",
+        progress=0.9,
+        settings=cfg,
+    )
+    create_voice_profile("Alias Sample", settings=cfg)
+
+    page = TestClient(api.app, follow_redirects=True).get(
+        "/recordings/rec-speakers-llm-alias-1?tab=speakers"
+    )
+    assert page.status_code == 200
+    assert "Snippet export should already be available, but the snippets manifest is missing." in page.text
+    assert "Pending:</strong> The pipeline has not reached Snippet Export yet." not in page.text
 
 
 def test_recording_detail_speakers_show_degraded_notice_and_low_confidence(tmp_path, monkeypatch):

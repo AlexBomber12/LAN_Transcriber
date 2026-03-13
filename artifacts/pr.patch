@@ -1,35 +1,154 @@
-diff --git a/lan_app/pipeline_stages.py b/lan_app/pipeline_stages.py
-index 6a65ccd..b87820e 100644
---- a/lan_app/pipeline_stages.py
-+++ b/lan_app/pipeline_stages.py
-@@ -47,11 +47,11 @@ PIPELINE_STAGE_DEFINITIONS = (
-     PipelineStageDefinition("diarization", 50, 0.60, "Diarization"),
-     PipelineStageDefinition("language_analysis", 60, 0.75, "Language Analysis"),
-     PipelineStageDefinition("speaker_turns", 70, 0.80, "Speaker Turns"),
--    PipelineStageDefinition("snippet_export", 80, 0.84, "Snippet Export"),
--    PipelineStageDefinition("llm_extract", 90, 0.90, "LLM Extract"),
--    PipelineStageDefinition("export_artifacts", 100, 0.95, "Export Artifacts"),
--    PipelineStageDefinition("metrics", 110, 0.98, "Metrics"),
--    PipelineStageDefinition("routing", 120, 0.99, "Routing"),
-+    PipelineStageDefinition("snippet_export", 75, 0.84, "Snippet Export"),
-+    PipelineStageDefinition("llm_extract", 80, 0.90, "LLM Extract"),
-+    PipelineStageDefinition("export_artifacts", 90, 0.95, "Export Artifacts"),
-+    PipelineStageDefinition("metrics", 100, 0.98, "Metrics"),
-+    PipelineStageDefinition("routing", 110, 0.99, "Routing"),
+diff --git a/lan_app/ui_routes.py b/lan_app/ui_routes.py
+index 98c3c72..61744ca 100644
+--- a/lan_app/ui_routes.py
++++ b/lan_app/ui_routes.py
+@@ -45,7 +45,6 @@ from .constants import (
+     JOB_STATUSES,
+     JOB_STATUS_QUEUED,
+     JOB_TYPE_PRECHECK,
+-    RECORDING_STATUS_NEEDS_REVIEW,
+     RECORDING_STATUSES,
+     RECORDING_STATUS_PUBLISHED,
+     RECORDING_STATUS_PROCESSING,
+@@ -182,7 +181,6 @@ _STOP_ELIGIBLE_RECORDING_STATUSES = frozenset(
  )
+ _LEGACY_SNIPPET_RECORDING_STATUSES = frozenset(
+     {
+-        RECORDING_STATUS_NEEDS_REVIEW,
+         RECORDING_STATUS_PUBLISHED,
+         RECORDING_STATUS_READY,
+     }
+@@ -1224,8 +1222,8 @@ def _resolve_speaker_snippet_ui_state(
+             "add_sample_message": detail,
+         }
  
- PIPELINE_STAGE_BY_NAME = {
-diff --git a/tests/test_pipeline_resume_coverage.py b/tests/test_pipeline_resume_coverage.py
-index c11f511..9b2d1ca 100644
---- a/tests/test_pipeline_resume_coverage.py
-+++ b/tests/test_pipeline_resume_coverage.py
-@@ -100,6 +100,9 @@ def test_pipeline_stage_validation_and_artifact_edge_cases(tmp_path: Path) -> No
+-    if stage_status == "running" or (
+-        pipeline_active and current_stage == "snippet_export"
++    if pipeline_active and (
++        stage_status == "running" or current_stage == "snippet_export"
+     ):
+         detail = "Snippet export is currently generating clean clips for this recording."
+         return {
+diff --git a/tests/test_cov_lan_app_ui_routes.py b/tests/test_cov_lan_app_ui_routes.py
+index 4ae3780..cc7c37b 100644
+--- a/tests/test_cov_lan_app_ui_routes.py
++++ b/tests/test_cov_lan_app_ui_routes.py
+@@ -16,6 +16,7 @@ from lan_app.config import AppSettings
+ from lan_app.constants import (
+     JOB_STATUS_FAILED,
+     RECORDING_STATUS_FAILED,
++    RECORDING_STATUS_NEEDS_REVIEW,
+     RECORDING_STATUS_PROCESSING,
+     RECORDING_STATUS_QUEUED,
+     RECORDING_STATUS_READY,
+@@ -1125,6 +1126,34 @@ def test_snippet_ui_state_helper_covers_manifest_and_stage_edges() -> None:
+     )
+     assert failed_before_snippets["code"] == "unavailable"
+ 
++    stale_running_terminal = ui_routes._resolve_speaker_snippet_ui_state(  # noqa: SLF001
++        recording={"status": RECORDING_STATUS_FAILED, "pipeline_stage": "snippet_export"},
++        stage_rows=[
++            {
++                "stage_name": "snippet_export",
++                "status": "running",
++                "metadata_json": {},
++            }
++        ],
++        manifest_exists=False,
++        manifest={},
++        entries=[],
++        clean_snippets=[],
++        no_clean_snippet_message=None,
++    )
++    assert stale_running_terminal["code"] == "unavailable"
++
++    needs_review_without_stage = ui_routes._resolve_speaker_snippet_ui_state(  # noqa: SLF001
++        recording={"status": RECORDING_STATUS_NEEDS_REVIEW, "pipeline_stage": "speaker_turns"},
++        stage_rows=[],
++        manifest_exists=False,
++        manifest={},
++        entries=[],
++        clean_snippets=[],
++        no_clean_snippet_message=None,
++    )
++    assert needs_review_without_stage["code"] == "unavailable"
++
+     llm_alias = ui_routes._resolve_speaker_snippet_ui_state(  # noqa: SLF001
+         recording={"status": RECORDING_STATUS_PROCESSING, "pipeline_stage": "llm"},
+         stage_rows=[],
+diff --git a/tests/test_ui_routes.py b/tests/test_ui_routes.py
+index 7d20bcb..9cd6af1 100644
+--- a/tests/test_ui_routes.py
++++ b/tests/test_ui_routes.py
+@@ -53,6 +53,7 @@ from lan_app.constants import (
+     JOB_STATUS_STARTED,
+     JOB_TYPE_PRECHECK,
+     JOB_TYPE_STT,
++    RECORDING_STATUS_FAILED,
+     RECORDING_STATUS_NEEDS_REVIEW,
+     RECORDING_STATUS_PROCESSING,
+     RECORDING_STATUS_READY,
+@@ -1333,6 +1334,63 @@ def test_recording_detail_speakers_stopped_before_snippet_export_is_unavailable(
+     assert "Pending:</strong> The pipeline has not reached Snippet Export yet." not in page.text
+ 
+ 
++def test_recording_detail_speakers_needs_review_without_snippets_is_unavailable(tmp_path, monkeypatch):
++    cfg = _cfg(tmp_path)
++    monkeypatch.setattr(api, "_settings", cfg)
++    monkeypatch.setattr(ui_routes, "_settings", cfg)
++    init_db(cfg)
++    create_recording(
++        "rec-speakers-needs-review-1",
++        source="upload",
++        source_filename="needs-review.wav",
++        status=RECORDING_STATUS_NEEDS_REVIEW,
++        settings=cfg,
++    )
++    _seed_speaker_turns_only(cfg, "rec-speakers-needs-review-1")
++    create_voice_profile("Needs Review Sample", settings=cfg)
++
++    page = TestClient(api.app, follow_redirects=True).get(
++        "/recordings/rec-speakers-needs-review-1?tab=speakers"
++    )
++    assert page.status_code == 200
++    assert (
++        "Unavailable:</strong> This recording is no longer processing and did not reach "
++        "Snippet Export, so no clean clips are available for this speaker." in page.text
++    )
++    assert "Legacy:</strong>" not in page.text
++
++
++def test_recording_detail_speakers_terminal_running_stage_is_not_generating(tmp_path, monkeypatch):
++    cfg = _cfg(tmp_path)
++    monkeypatch.setattr(api, "_settings", cfg)
++    monkeypatch.setattr(ui_routes, "_settings", cfg)
++    init_db(cfg)
++    create_recording(
++        "rec-speakers-running-terminal-1",
++        source="upload",
++        source_filename="running-terminal.wav",
++        status=RECORDING_STATUS_FAILED,
++        settings=cfg,
++    )
++    _seed_speaker_turns_only(cfg, "rec-speakers-running-terminal-1")
++    mark_recording_pipeline_stage_started(
++        "rec-speakers-running-terminal-1",
++        stage_name="snippet_export",
++        settings=cfg,
++    )
++    create_voice_profile("Terminal Running Sample", settings=cfg)
++
++    page = TestClient(api.app, follow_redirects=True).get(
++        "/recordings/rec-speakers-running-terminal-1?tab=speakers"
++    )
++    assert page.status_code == 200
++    assert "Generating:</strong>" not in page.text
++    assert (
++        "Unavailable:</strong> This recording is no longer processing and did not reach "
++        "Snippet Export, so no clean clips are available for this speaker." in page.text
++    )
++
++
+ def test_recording_detail_speakers_llm_alias_progress_is_not_pending(tmp_path, monkeypatch):
      cfg = _cfg(tmp_path)
- 
-     assert pipeline_stages.stage_progress("snippet_export") == 0.84
-+    assert pipeline_stages.stage_order("snippet_export") == 75
-+    assert pipeline_stages.stage_order("llm_extract") == 80
-+    assert pipeline_stages.stage_order("export_artifacts") == 90
-     assert pipeline_stages.stage_progress("metrics") == 0.98
-     assert pipeline_stages.stage_label("snippet_export") == "Snippet Export"
-     assert pipeline_stages.stage_label("routing") == "Routing"
+     monkeypatch.setattr(api, "_settings", cfg)

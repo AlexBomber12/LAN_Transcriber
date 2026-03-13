@@ -504,6 +504,11 @@
           {% endif %}
         </td>
         <td style="white-space:normal;max-width:320px">
+          {% if row.snippet_ui_state %}
+          <div style="margin:0 0 6px 0;font-size:11px;color:{{ row.snippet_ui_state.color }}">
+            <strong>{{ row.snippet_ui_state.label }}:</strong> {{ row.snippet_ui_state.detail }}
+          </div>
+          {% endif %}
           {% if row.clean_snippets %}
             {% for snippet in row.clean_snippets %}
             <div style="margin-bottom:8px;padding:6px;border:1px solid #ddd;border-radius:6px">
@@ -527,9 +532,6 @@
             {% for warning in row.snippet_warnings %}
             <div style="margin-top:4px;font-size:11px;color:#92400e">{{ warning }}</div>
             {% endfor %}
-          {% endif %}
-          {% if not row.clean_snippets and not row.snippet_warnings %}
-          <span class="placeholder" style="padding:0">No snippet quality data found.</span>
           {% endif %}
         </td>
         <td style="white-space:normal;max-width:260px">
@@ -563,7 +565,9 @@
               {% endfor %}
             </select>
             <button class="btn" type="submit" {% if not row.clean_snippets %}disabled{% endif %}>Add sample from this recording</button>
-            {% if row.no_clean_snippet_message %}
+            {% if not row.clean_snippets and row.snippet_ui_state.add_sample_message %}
+            <div style="margin-top:4px;font-size:11px;color:#92400e">{{ row.snippet_ui_state.add_sample_message }}</div>
+            {% elif row.no_clean_snippet_message %}
             <div style="margin-top:4px;font-size:11px;color:#92400e">{{ row.no_clean_snippet_message }}</div>
             {% endif %}
           </form>
