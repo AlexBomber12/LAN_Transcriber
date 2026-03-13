@@ -515,6 +515,6 @@ Queue (in order)
 - Depends on: PR-SNIPPETS-STAGE-REORDER-01 and PR-OBSERVABILITY-ROOT-CAUSE-01 and PR-SPEAKER-UX-01
 
 103) PR-SNIPPETS-REPAIR-BACKFILL-01: Add repair/backfill paths to regenerate missing snippets for completed recordings and support lazy/admin re-generation
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-SNIPPETS-REPAIR-BACKFILL-01.md
 - Depends on: PR-SNIPPETS-STAGE-REORDER-01 and PR-SNIPPETS-UI-STATE-01
