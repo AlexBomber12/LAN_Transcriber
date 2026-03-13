@@ -2377,6 +2377,107 @@ def _working_audio_path(ctx: _PipelineExecutionContext) -> Path | None:
     return None
 
 
+def _snippets_manifest_path(ctx: _PipelineExecutionContext) -> Path:
+    return ctx.artifacts.recording_artifacts.snippets_dir.parent / "snippets_manifest.json"
+
+
+def _snippet_manifest_counts(manifest: dict[str, Any]) -> dict[str, int]:
+    accepted_snippets = 0
+    speaker_count = 0
+    warning_count = 0
+    speakers_payload = manifest.get("speakers")
+    if isinstance(speakers_payload, dict):
+        for entries in speakers_payload.values():
+            if not isinstance(entries, list):
+                continue
+            speaker_count += 1
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                status = str(entry.get("status") or "").strip()
+                if status == "accepted":
+                    accepted_snippets += 1
+                elif status:
+                    warning_count += 1
+    warnings_payload = manifest.get("warnings")
+    if isinstance(warnings_payload, list):
+        warning_count += sum(1 for item in warnings_payload if isinstance(item, dict))
+    return {
+        "accepted_snippets": accepted_snippets,
+        "speaker_count": speaker_count,
+        "warning_count": warning_count,
+    }
+
+
+def _finalize_snippets_manifest(
+    ctx: _PipelineExecutionContext,
+    *,
+    manifest_status: str,
+    degraded_diarization: bool | None = None,
+    warnings: list[dict[str, str]] | None = None,
+) -> dict[str, Any]:
+    manifest_path = _snippets_manifest_path(ctx)
+    manifest = _load_json_dict(manifest_path)
+    if not manifest:
+        raise RuntimeError("Missing snippets manifest")
+    normalized_warnings: list[dict[str, str]] = []
+    for warning in warnings or []:
+        if not isinstance(warning, dict):
+            continue
+        code = str(warning.get("code") or "").strip()
+        message = str(warning.get("message") or "").strip()
+        payload: dict[str, str] = {}
+        if code:
+            payload["code"] = code
+        if message:
+            payload["message"] = message
+        if payload:
+            normalized_warnings.append(payload)
+    if normalized_warnings:
+        manifest["warnings"] = normalized_warnings
+    else:
+        manifest.pop("warnings", None)
+    if degraded_diarization is not None:
+        manifest["degraded_diarization"] = bool(degraded_diarization)
+    manifest["manifest_status"] = str(manifest_status or "ok")
+    manifest.update(_snippet_manifest_counts(manifest))
+    atomic_write_json(manifest_path, manifest)
+    return manifest
+
+
+def _write_empty_snippet_manifest(
+    ctx: _PipelineExecutionContext,
+    *,
+    manifest_status: str,
+    degraded_diarization: bool = False,
+    warnings: list[dict[str, str]] | None = None,
+) -> dict[str, Any]:
+    write_empty_snippets_manifest(
+        snippets_dir=ctx.artifacts.recording_artifacts.snippets_dir,
+        pad_seconds=ctx.pipeline_settings.snippet_pad_seconds,
+        max_clip_duration_sec=ctx.pipeline_settings.snippet_max_duration_seconds,
+        min_clip_duration_sec=ctx.pipeline_settings.snippet_min_duration_seconds,
+        max_snippets_per_speaker=ctx.pipeline_settings.snippet_max_per_speaker,
+    )
+    return _finalize_snippets_manifest(
+        ctx,
+        manifest_status=manifest_status,
+        degraded_diarization=degraded_diarization,
+        warnings=warnings,
+    )
+
+
+def _snippet_export_result_metadata(manifest: dict[str, Any]) -> dict[str, Any]:
+    counts = _snippet_manifest_counts(manifest)
+    return {
+        "manifest_status": str(manifest.get("manifest_status") or "ok"),
+        "accepted_snippets": counts["accepted_snippets"],
+        "speaker_count": counts["speaker_count"],
+        "warning_count": counts["warning_count"],
+        "degraded_diarization": bool(manifest.get("degraded_diarization")),
+    }
+
+
 def _build_diarization_metadata_payload(
     *,
     runtime: dict[str, Any],
@@ -2897,6 +2998,165 @@ def _stage_speaker_turns(ctx: _PipelineExecutionContext) -> _StageResult:
     )
 
 
+def _stage_snippet_export(ctx: _PipelineExecutionContext) -> _StageResult:
+    precheck_result = ctx.precheck_result or _load_precheck_artifact(ctx)
+    ctx.precheck_result = precheck_result
+    if precheck_result is None:
+        raise RuntimeError("Missing precheck artifact")
+    if precheck_result.quarantine_reason:
+        manifest = _write_empty_snippet_manifest(
+            ctx,
+            manifest_status="quarantined_precheck",
+            warnings=[
+                {
+                    "code": "quarantined_precheck",
+                    "message": "Snippet export skipped because the recording was quarantined during precheck.",
+                }
+            ],
+        )
+        metadata = _snippet_export_result_metadata(manifest)
+        _append_step_log(
+            ctx.log_path,
+            (
+                "snippet export result "
+                f"status={metadata['manifest_status']} "
+                f"accepted={metadata['accepted_snippets']} "
+                f"speakers={metadata['speaker_count']} "
+                f"warnings={metadata['warning_count']}"
+            ),
+        )
+        return _StageResult(status="completed", metadata=metadata)
+
+    working_audio_path = _working_audio_path(ctx)
+    if working_audio_path is None:
+        raise RuntimeError("Missing sanitized audio")
+    if not ctx.artifacts.diarization_segments_json_path.exists():
+        raise RuntimeError("Missing diarization segments artifact")
+    if not ctx.artifacts.recording_artifacts.speaker_turns_json_path.exists():
+        raise RuntimeError("Missing speaker turns artifact")
+    if not ctx.artifacts.recording_artifacts.diarization_metadata_json_path.exists():
+        raise RuntimeError("Missing diarization metadata artifact")
+
+    ctx.diarization_segments = _load_json_list(ctx.artifacts.diarization_segments_json_path)
+    ctx.speaker_turns = _load_json_list(ctx.artifacts.recording_artifacts.speaker_turns_json_path)
+    diarization_metadata = _load_json_dict(ctx.artifacts.recording_artifacts.diarization_metadata_json_path)
+    degraded_diarization = bool(diarization_metadata.get("degraded"))
+    speaker_labels = {
+        str(turn.get("speaker") or "S1")
+        for turn in ctx.speaker_turns
+        if isinstance(turn, dict)
+    }
+    _append_step_log(
+        ctx.log_path,
+        (
+            "snippet export start "
+            f"speakers={len(speaker_labels)} "
+            f"turns={len(ctx.speaker_turns)} "
+            f"degraded={degraded_diarization}"
+        ),
+    )
+    if not ctx.speaker_turns:
+        manifest = _write_empty_snippet_manifest(
+            ctx,
+            manifest_status="no_usable_speech",
+            degraded_diarization=degraded_diarization,
+            warnings=[
+                {
+                    "code": "no_speaker_turns",
+                    "message": "No speaker turns were available, so snippet export produced no clips.",
+                }
+            ],
+        )
+        metadata = _snippet_export_result_metadata(manifest)
+        _append_step_log(
+            ctx.log_path,
+            (
+                "snippet export result "
+                f"status={metadata['manifest_status']} "
+                f"accepted={metadata['accepted_snippets']} "
+                f"speakers={metadata['speaker_count']} "
+                f"warnings={metadata['warning_count']}"
+            ),
+        )
+        return _StageResult(status="completed", metadata=metadata)
+
+    try:
+        export_speaker_snippets(
+            SnippetExportRequest(
+                audio_path=working_audio_path,
+                diar_segments=ctx.diarization_segments,
+                snippets_dir=ctx.artifacts.recording_artifacts.snippets_dir,
+                duration_sec=precheck_result.duration_sec,
+                speaker_turns=ctx.speaker_turns,
+                degraded_diarization=degraded_diarization,
+                pad_seconds=ctx.pipeline_settings.snippet_pad_seconds,
+                max_clip_duration_sec=ctx.pipeline_settings.snippet_max_duration_seconds,
+                min_clip_duration_sec=ctx.pipeline_settings.snippet_min_duration_seconds,
+                max_snippets_per_speaker=ctx.pipeline_settings.snippet_max_per_speaker,
+            )
+        )
+    except Exception as exc:
+        _logger.warning(
+            "snippet export failed for recording %s",
+            ctx.recording_id,
+            exc_info=True,
+        )
+        manifest = _write_empty_snippet_manifest(
+            ctx,
+            manifest_status="export_failed",
+            degraded_diarization=degraded_diarization,
+            warnings=[
+                {
+                    "code": type(exc).__name__,
+                    "message": str(exc) or type(exc).__name__,
+                }
+            ],
+        )
+        metadata = _snippet_export_result_metadata(manifest)
+        metadata["warning"] = str(exc) or type(exc).__name__
+        _append_step_log(
+            ctx.log_path,
+            f"snippet export warning error={type(exc).__name__}: {exc}",
+        )
+        _append_step_log(
+            ctx.log_path,
+            (
+                "snippet export result "
+                f"status={metadata['manifest_status']} "
+                f"accepted={metadata['accepted_snippets']} "
+                f"speakers={metadata['speaker_count']} "
+                f"warnings={metadata['warning_count']}"
+            ),
+        )
+        return _StageResult(status="completed", metadata=metadata)
+
+    manifest_path = _snippets_manifest_path(ctx)
+    manifest = _load_json_dict(manifest_path)
+    counts = _snippet_manifest_counts(manifest)
+    manifest_status = "ok"
+    if counts["accepted_snippets"] == 0:
+        manifest_status = "degraded" if degraded_diarization else "no_clean_snippets"
+    elif counts["warning_count"] > 0:
+        manifest_status = "partial"
+    manifest = _finalize_snippets_manifest(
+        ctx,
+        manifest_status=manifest_status,
+        degraded_diarization=degraded_diarization,
+    )
+    metadata = _snippet_export_result_metadata(manifest)
+    _append_step_log(
+        ctx.log_path,
+        (
+            "snippet export result "
+            f"status={metadata['manifest_status']} "
+            f"accepted={metadata['accepted_snippets']} "
+            f"speakers={metadata['speaker_count']} "
+            f"warnings={metadata['warning_count']}"
+        ),
+    )
+    return _StageResult(status="completed", metadata=metadata)
+
+
 def _stage_llm_extract(ctx: _PipelineExecutionContext) -> _StageResult:
     precheck_result = ctx.precheck_result or _load_precheck_artifact(ctx)
     ctx.precheck_result = precheck_result
@@ -3042,19 +3302,14 @@ def _stage_export_artifacts(ctx: _PipelineExecutionContext) -> _StageResult:
         or ctx.target_summary_language
         or "en"
     )
-    working_audio_path = _working_audio_path(ctx)
     language_info = ctx.language_payload.get("language")
     if not isinstance(language_info, dict):
         language_info = {"detected": "unknown", "confidence": None}
+    snippet_metadata = _snippet_export_result_metadata(
+        _load_json_dict(_snippets_manifest_path(ctx))
+    )
 
     if precheck_result.quarantine_reason:
-        write_empty_snippets_manifest(
-            snippets_dir=ctx.artifacts.recording_artifacts.snippets_dir,
-            pad_seconds=ctx.pipeline_settings.snippet_pad_seconds,
-            max_clip_duration_sec=ctx.pipeline_settings.snippet_max_duration_seconds,
-            min_clip_duration_sec=ctx.pipeline_settings.snippet_min_duration_seconds,
-            max_snippets_per_speaker=ctx.pipeline_settings.snippet_max_per_speaker,
-        )
         atomic_write_text(ctx.artifacts.recording_artifacts.transcript_txt_path, "")
         atomic_write_json(
             ctx.artifacts.recording_artifacts.transcript_json_path,
@@ -3093,7 +3348,10 @@ def _stage_export_artifacts(ctx: _PipelineExecutionContext) -> _StageResult:
         )
         return _StageResult(
             status="completed",
-            metadata={"output_status": "quarantined"},
+            metadata={
+                "output_status": "quarantined",
+                "snippets": snippet_metadata["accepted_snippets"],
+            },
         )
 
     language_segments = [
@@ -3105,13 +3363,6 @@ def _stage_export_artifacts(ctx: _PipelineExecutionContext) -> _StageResult:
         " ".join(str(seg.get("text") or "").strip() for seg in language_segments).strip()
     )
     if not ctx.clean_text:
-        write_empty_snippets_manifest(
-            snippets_dir=ctx.artifacts.recording_artifacts.snippets_dir,
-            pad_seconds=ctx.pipeline_settings.snippet_pad_seconds,
-            max_clip_duration_sec=ctx.pipeline_settings.snippet_max_duration_seconds,
-            min_clip_duration_sec=ctx.pipeline_settings.snippet_min_duration_seconds,
-            max_snippets_per_speaker=ctx.pipeline_settings.snippet_max_per_speaker,
-        )
         speakers = sorted(
             {
                 aliases.get(str(row.get("speaker") or "S1"), str(row.get("speaker") or "S1"))
@@ -3155,24 +3406,13 @@ def _stage_export_artifacts(ctx: _PipelineExecutionContext) -> _StageResult:
         )
         return _StageResult(
             status="completed",
-            metadata={"output_status": "no_speech"},
+            metadata={
+                "output_status": "no_speech",
+                "snippets": snippet_metadata["accepted_snippets"],
+            },
         )
 
     ctx.summary_payload = _load_summary_payload(ctx)
-    snippet_paths = export_speaker_snippets(
-        SnippetExportRequest(
-            audio_path=working_audio_path or ctx.artifacts.recording_artifacts.raw_audio_path,
-            diar_segments=ctx.diarization_segments,
-            snippets_dir=ctx.artifacts.recording_artifacts.snippets_dir,
-            duration_sec=precheck_result.duration_sec,
-            speaker_turns=ctx.speaker_turns,
-            degraded_diarization=bool(_load_json_dict(ctx.artifacts.recording_artifacts.diarization_metadata_json_path).get("degraded")),
-            pad_seconds=ctx.pipeline_settings.snippet_pad_seconds,
-            max_clip_duration_sec=ctx.pipeline_settings.snippet_max_duration_seconds,
-            min_clip_duration_sec=ctx.pipeline_settings.snippet_min_duration_seconds,
-            max_snippets_per_speaker=ctx.pipeline_settings.snippet_max_per_speaker,
-        )
-    )
     speaker_lines = pipeline_orchestrator._merge_similar(
         [
             f"[{safe_float(turn.get('start')):.2f}-{safe_float(turn.get('end')):.2f}] **{aliases.get(str(turn.get('speaker') or 'S1'), str(turn.get('speaker') or 'S1'))}:** {str(turn.get('text') or '').strip()}"
@@ -3211,7 +3451,7 @@ def _stage_export_artifacts(ctx: _PipelineExecutionContext) -> _StageResult:
         status="completed",
         metadata={
             "output_status": "ok",
-            "snippets": len(snippet_paths),
+            "snippets": snippet_metadata["accepted_snippets"],
         },
     )
 
@@ -3331,6 +3571,7 @@ _PIPELINE_STAGE_RUNNERS: dict[str, Any] = {
     "diarization": _stage_diarization,
     "language_analysis": _stage_language_analysis,
     "speaker_turns": _stage_speaker_turns,
+    "snippet_export": _stage_snippet_export,
     "llm_extract": _stage_llm_extract,
     "export_artifacts": _stage_export_artifacts,
     "metrics": _stage_metrics,

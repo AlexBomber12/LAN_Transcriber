@@ -47,6 +47,7 @@ PIPELINE_STAGE_DEFINITIONS = (
     PipelineStageDefinition("diarization", 50, 0.60, "Diarization"),
     PipelineStageDefinition("language_analysis", 60, 0.75, "Language Analysis"),
     PipelineStageDefinition("speaker_turns", 70, 0.80, "Speaker Turns"),
+    PipelineStageDefinition("snippet_export", 75, 0.84, "Snippet Export"),
     PipelineStageDefinition("llm_extract", 80, 0.90, "LLM Extract"),
     PipelineStageDefinition("export_artifacts", 90, 0.95, "Export Artifacts"),
     PipelineStageDefinition("metrics", 100, 0.98, "Metrics"),
@@ -120,6 +121,7 @@ def stage_artifact_paths(
             derived / "segments.json",
             derived / "diarization_metadata.json",
         ),
+        "snippet_export": (derived / "snippets_manifest.json",),
         "llm_extract": (derived / "summary.json",),
         "export_artifacts": (
             derived / "transcript.json",
@@ -127,7 +129,6 @@ def stage_artifact_paths(
             derived / "summary.json",
             derived / "segments.json",
             derived / "speaker_turns.json",
-            derived / "snippets_manifest.json",
         ),
         "metrics": (derived / "metrics.json",),
         "routing": (derived / "routing.json",),

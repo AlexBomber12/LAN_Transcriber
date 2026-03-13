@@ -99,7 +99,12 @@ def test_db_pipeline_stage_internal_guard_paths(tmp_path: Path) -> None:
 def test_pipeline_stage_validation_and_artifact_edge_cases(tmp_path: Path) -> None:
     cfg = _cfg(tmp_path)
 
+    assert pipeline_stages.stage_progress("snippet_export") == 0.84
+    assert pipeline_stages.stage_order("snippet_export") == 75
+    assert pipeline_stages.stage_order("llm_extract") == 80
+    assert pipeline_stages.stage_order("export_artifacts") == 90
     assert pipeline_stages.stage_progress("metrics") == 0.98
+    assert pipeline_stages.stage_label("snippet_export") == "Snippet Export"
     assert pipeline_stages.stage_label("routing") == "Routing"
 
     with pytest.raises(ValueError, match="Unsupported pipeline stage"):
@@ -136,6 +141,8 @@ def test_pipeline_stage_validation_and_artifact_edge_cases(tmp_path: Path) -> No
     assert reason is None
 
     artifacts = pipeline_stages.stage_artifact_paths("rec-stage-edge", settings=cfg)
+    assert artifacts["snippet_export"][0].name == "snippets_manifest.json"
+    assert artifacts["snippet_export"][0] not in artifacts["export_artifacts"]
     artifacts["sanitize_audio"][1].parent.mkdir(parents=True, exist_ok=True)
     artifacts["sanitize_audio"][1].write_text(
         json.dumps({"output_path": str(tmp_path / "missing.wav")}),
@@ -275,6 +282,7 @@ def test_stage_precheck_with_missing_duration_and_calendar_refresh_warning(
         (worker_tasks._stage_diarization, "rec-missing-diar"),
         (worker_tasks._stage_language_analysis, "rec-missing-lang"),
         (worker_tasks._stage_speaker_turns, "rec-missing-turns"),
+        (worker_tasks._stage_snippet_export, "rec-missing-snippets"),
         (worker_tasks._stage_llm_extract, "rec-missing-llm"),
         (worker_tasks._stage_export_artifacts, "rec-missing-export"),
         (worker_tasks._stage_routing, "rec-missing-routing"),
@@ -740,6 +748,314 @@ def test_stage_speaker_turns_requires_language_artifact_and_supports_unsmoothed_
 
     result = worker_tasks._stage_speaker_turns(ctx)  # noqa: SLF001
     assert result.metadata == {"turn_count": 1, "speaker_count": 1}
+
+
+def test_stage_snippet_export_writes_manifest_metadata_and_counts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _cfg_value, ctx = _new_ctx(tmp_path, "rec-snippet-stage", create_raw_audio=True)
+    ctx.precheck_result = PrecheckResult(10.0, 0.5, None)
+    _write_pcm_wav(ctx.artifacts.sanitized_audio_path, duration_sec=0.2)
+    ctx.artifacts.audio_sanitize_json_path.write_text(
+        json.dumps({"output_path": str(ctx.artifacts.sanitized_audio_path)}),
+        encoding="utf-8",
+    )
+    ctx.artifacts.diarization_segments_json_path.write_text(
+        json.dumps([{"speaker": "S1", "start": 0.0, "end": 1.0}]),
+        encoding="utf-8",
+    )
+    ctx.artifacts.recording_artifacts.speaker_turns_json_path.write_text(
+        json.dumps([{"speaker": "S1", "start": 0.0, "end": 1.0, "text": "hello"}]),
+        encoding="utf-8",
+    )
+    ctx.artifacts.recording_artifacts.diarization_metadata_json_path.write_text(
+        json.dumps({"degraded": False}),
+        encoding="utf-8",
+    )
+
+    def _fake_export(request):
+        request.snippets_dir.mkdir(parents=True, exist_ok=True)
+        (request.snippets_dir / "S1").mkdir(parents=True, exist_ok=True)
+        (request.snippets_dir / "S1" / "1.wav").write_bytes(b"clip")
+        (request.snippets_dir.parent / "snippets_manifest.json").write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "speakers": {
+                        "S1": [
+                            {"status": "accepted", "relative_path": "S1/1.wav"},
+                            {"status": "rejected_overlap"},
+                        ]
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        return [request.snippets_dir / "S1" / "1.wav"]
+
+    monkeypatch.setattr(worker_tasks, "export_speaker_snippets", _fake_export)
+
+    result = worker_tasks._stage_snippet_export(ctx)  # noqa: SLF001
+
+    assert result.status == "completed"
+    assert result.metadata == {
+        "manifest_status": "partial",
+        "accepted_snippets": 1,
+        "speaker_count": 1,
+        "warning_count": 1,
+        "degraded_diarization": False,
+    }
+    manifest = json.loads(worker_tasks._snippets_manifest_path(ctx).read_text(encoding="utf-8"))  # noqa: SLF001
+    assert manifest["manifest_status"] == "partial"
+    assert manifest["accepted_snippets"] == 1
+    assert manifest["warning_count"] == 1
+
+
+def test_snippet_manifest_helpers_cover_edge_cases(tmp_path: Path) -> None:
+    _cfg_value, ctx = _new_ctx(tmp_path, "rec-snippet-helper")
+
+    with pytest.raises(RuntimeError, match="Missing snippets manifest"):
+        worker_tasks._finalize_snippets_manifest(ctx, manifest_status="ok")  # noqa: SLF001
+
+    assert worker_tasks._snippet_manifest_counts({"speakers": []}) == {  # noqa: SLF001
+        "accepted_snippets": 0,
+        "speaker_count": 0,
+        "warning_count": 0,
+    }
+
+    counts = worker_tasks._snippet_manifest_counts(  # noqa: SLF001
+        {
+            "speakers": {
+                "S1": "bad",
+                "S2": [{}, "bad", {"status": "accepted"}, {"status": "rejected_overlap"}],
+            },
+            "warnings": ["bad", {"code": "warn"}],
+        }
+    )
+    assert counts == {"accepted_snippets": 1, "speaker_count": 1, "warning_count": 2}
+
+    manifest_path = worker_tasks._snippets_manifest_path(ctx)  # noqa: SLF001
+    manifest_path.write_text(json.dumps({"version": 1, "speakers": {}, "warnings": [{"code": "stale"}]}), encoding="utf-8")
+    manifest = worker_tasks._finalize_snippets_manifest(  # noqa: SLF001
+        ctx,
+        manifest_status="",
+        warnings=[
+            {"code": "only_code"},
+            {"message": "only message"},
+            {"code": "", "message": ""},
+            "bad",  # type: ignore[list-item]
+        ],
+    )
+    assert manifest["manifest_status"] == "ok"
+    assert manifest["warnings"] == [
+        {"code": "only_code"},
+        {"message": "only message"},
+    ]
+    assert "degraded_diarization" not in manifest
+
+    manifest_path.write_text(json.dumps({"version": 1, "speakers": {}, "warnings": [{"code": "stale"}]}), encoding="utf-8")
+    manifest = worker_tasks._finalize_snippets_manifest(ctx, manifest_status="clean", degraded_diarization=True)  # noqa: SLF001
+    assert manifest["manifest_status"] == "clean"
+    assert manifest["degraded_diarization"] is True
+    assert "warnings" not in manifest
+
+
+def test_stage_snippet_export_handles_empty_turns_and_export_failures(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _cfg_value, ctx_no_turns = _new_ctx(tmp_path, "rec-snippet-empty", create_raw_audio=True)
+    ctx_no_turns.precheck_result = PrecheckResult(10.0, 0.5, None)
+    _write_pcm_wav(ctx_no_turns.artifacts.sanitized_audio_path, duration_sec=0.2)
+    ctx_no_turns.artifacts.audio_sanitize_json_path.write_text(
+        json.dumps({"output_path": str(ctx_no_turns.artifacts.sanitized_audio_path)}),
+        encoding="utf-8",
+    )
+    ctx_no_turns.artifacts.diarization_segments_json_path.write_text(
+        json.dumps([]),
+        encoding="utf-8",
+    )
+    ctx_no_turns.artifacts.recording_artifacts.speaker_turns_json_path.write_text(
+        "[]",
+        encoding="utf-8",
+    )
+    ctx_no_turns.artifacts.recording_artifacts.diarization_metadata_json_path.write_text(
+        json.dumps({"degraded": True}),
+        encoding="utf-8",
+    )
+
+    empty_result = worker_tasks._stage_snippet_export(ctx_no_turns)  # noqa: SLF001
+    assert empty_result.metadata["manifest_status"] == "no_usable_speech"
+    assert empty_result.metadata["degraded_diarization"] is True
+    empty_manifest = json.loads(worker_tasks._snippets_manifest_path(ctx_no_turns).read_text(encoding="utf-8"))  # noqa: SLF001
+    assert empty_manifest["warnings"][0]["code"] == "no_speaker_turns"
+
+    _cfg_value, ctx_fail = _new_ctx(tmp_path, "rec-snippet-fail", create_raw_audio=True)
+    ctx_fail.precheck_result = PrecheckResult(10.0, 0.5, None)
+    _write_pcm_wav(ctx_fail.artifacts.sanitized_audio_path, duration_sec=0.2)
+    ctx_fail.artifacts.audio_sanitize_json_path.write_text(
+        json.dumps({"output_path": str(ctx_fail.artifacts.sanitized_audio_path)}),
+        encoding="utf-8",
+    )
+    ctx_fail.artifacts.diarization_segments_json_path.write_text(
+        json.dumps([{"speaker": "S1", "start": 0.0, "end": 1.0}]),
+        encoding="utf-8",
+    )
+    ctx_fail.artifacts.recording_artifacts.speaker_turns_json_path.write_text(
+        json.dumps([{"speaker": "S1", "start": 0.0, "end": 1.0, "text": "hello"}]),
+        encoding="utf-8",
+    )
+    ctx_fail.artifacts.recording_artifacts.diarization_metadata_json_path.write_text(
+        json.dumps({"degraded": False}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        worker_tasks,
+        "export_speaker_snippets",
+        lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+
+    failed_result = worker_tasks._stage_snippet_export(ctx_fail)  # noqa: SLF001
+    assert failed_result.metadata["manifest_status"] == "export_failed"
+    assert failed_result.metadata["warning_count"] == 1
+    failed_manifest = json.loads(worker_tasks._snippets_manifest_path(ctx_fail).read_text(encoding="utf-8"))  # noqa: SLF001
+    assert failed_manifest["warnings"][0]["message"] == "boom"
+
+
+def test_stage_snippet_export_requires_audio_and_upstream_artifacts(tmp_path: Path) -> None:
+    _cfg_value, ctx = _new_ctx(tmp_path, "rec-snippet-missing")
+    ctx.precheck_result = PrecheckResult(10.0, 0.5, None)
+
+    with pytest.raises(RuntimeError, match="Missing sanitized audio"):
+        worker_tasks._stage_snippet_export(ctx)  # noqa: SLF001
+
+    _write_pcm_wav(ctx.artifacts.sanitized_audio_path, duration_sec=0.2)
+    ctx.artifacts.audio_sanitize_json_path.write_text(
+        json.dumps({"output_path": str(ctx.artifacts.sanitized_audio_path)}),
+        encoding="utf-8",
+    )
+    with pytest.raises(RuntimeError, match="Missing diarization segments artifact"):
+        worker_tasks._stage_snippet_export(ctx)  # noqa: SLF001
+
+    ctx.artifacts.diarization_segments_json_path.write_text("[]", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="Missing speaker turns artifact"):
+        worker_tasks._stage_snippet_export(ctx)  # noqa: SLF001
+
+    ctx.artifacts.recording_artifacts.speaker_turns_json_path.write_text("[]", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="Missing diarization metadata artifact"):
+        worker_tasks._stage_snippet_export(ctx)  # noqa: SLF001
+
+
+def test_stage_snippet_export_reports_no_clean_and_degraded_statuses(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _prepare_ctx(recording_id: str, *, degraded: bool) -> worker_tasks._PipelineExecutionContext:
+        _cfg_value, ctx = _new_ctx(tmp_path, recording_id, create_raw_audio=True)
+        ctx.precheck_result = PrecheckResult(10.0, 0.5, None)
+        _write_pcm_wav(ctx.artifacts.sanitized_audio_path, duration_sec=0.2)
+        ctx.artifacts.audio_sanitize_json_path.write_text(
+            json.dumps({"output_path": str(ctx.artifacts.sanitized_audio_path)}),
+            encoding="utf-8",
+        )
+        ctx.artifacts.diarization_segments_json_path.write_text(
+            json.dumps([{"speaker": "S1", "start": 0.0, "end": 1.0}]),
+            encoding="utf-8",
+        )
+        ctx.artifacts.recording_artifacts.speaker_turns_json_path.write_text(
+            json.dumps([{"speaker": "S1", "start": 0.0, "end": 1.0, "text": "hello"}]),
+            encoding="utf-8",
+        )
+        ctx.artifacts.recording_artifacts.diarization_metadata_json_path.write_text(
+            json.dumps({"degraded": degraded}),
+            encoding="utf-8",
+        )
+        return ctx
+
+    def _fake_export(request):
+        request.snippets_dir.mkdir(parents=True, exist_ok=True)
+        (request.snippets_dir.parent / "snippets_manifest.json").write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "speakers": {"S1": [{"status": "rejected_overlap"}]},
+                }
+            ),
+            encoding="utf-8",
+        )
+        return []
+
+    monkeypatch.setattr(worker_tasks, "export_speaker_snippets", _fake_export)
+
+    clean_ctx = _prepare_ctx("rec-snippet-no-clean", degraded=False)
+    clean_result = worker_tasks._stage_snippet_export(clean_ctx)  # noqa: SLF001
+    assert clean_result.metadata["manifest_status"] == "no_clean_snippets"
+
+    degraded_ctx = _prepare_ctx("rec-snippet-degraded", degraded=True)
+    degraded_result = worker_tasks._stage_snippet_export(degraded_ctx)  # noqa: SLF001
+    assert degraded_result.metadata["manifest_status"] == "degraded"
+
+
+def test_stage_export_artifacts_uses_existing_snippet_manifest_only(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _cfg_value, ctx = _new_ctx(tmp_path, "rec-export-stage")
+    ctx.precheck_result = PrecheckResult(10.0, 0.5, None)
+    ctx.pipeline_settings.llm_model = "test-model"
+    ctx.artifacts.diarization_segments_json_path.write_text(
+        json.dumps([{"speaker": "S1", "start": 0.0, "end": 1.0}]),
+        encoding="utf-8",
+    )
+    ctx.artifacts.recording_artifacts.speaker_turns_json_path.write_text(
+        json.dumps([{"speaker": "S1", "start": 0.0, "end": 1.0, "text": "hello"}]),
+        encoding="utf-8",
+    )
+    ctx.artifacts.recording_artifacts.summary_json_path.write_text(
+        json.dumps({"status": "ok", "topic": "Weekly Sync"}),
+        encoding="utf-8",
+    )
+    worker_tasks._snippets_manifest_path(ctx).write_text(  # noqa: SLF001
+        json.dumps(
+            {
+                "version": 1,
+                "manifest_status": "ok",
+                "accepted_snippets": 1,
+                "speaker_count": 1,
+                "warning_count": 0,
+                "speakers": {"S1": [{"status": "accepted", "relative_path": "S1/1.wav"}]},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        worker_tasks,
+        "_load_calendar_summary_context",
+        lambda *_a, **_k: ("Weekly Sync", ["Ada"]),
+    )
+    monkeypatch.setattr(
+        worker_tasks,
+        "_load_language_analysis_artifact",
+        lambda _ctx: {
+            "language": {"detected": "en", "confidence": 0.95},
+            "dominant_language": "en",
+            "language_distribution": {"en": 100.0},
+            "language_spans": [],
+            "target_summary_language": "en",
+            "segments": [{"start": 0.0, "end": 1.0, "text": "hello"}],
+            "review": {},
+        },
+    )
+    monkeypatch.setattr(worker_tasks, "_load_asr_execution", lambda _ctx: {})
+    monkeypatch.setattr(worker_tasks.pipeline_orchestrator, "_require_llm_model", lambda _model: "test-model")
+    monkeypatch.setattr(worker_tasks, "load_speaker_aliases", lambda _path: {})
+    monkeypatch.setattr(worker_tasks, "export_speaker_snippets", lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("unexpected export")))
+
+    result = worker_tasks._stage_export_artifacts(ctx)  # noqa: SLF001
+
+    assert result.status == "completed"
+    assert result.metadata["snippets"] == 1
 
 
 def test_stage_llm_extract_chunked_summary_invokes_progress_callback(

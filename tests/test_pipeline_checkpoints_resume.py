@@ -98,7 +98,7 @@ def _patch_pipeline_dependencies(
     routing_status: str = RECORDING_STATUS_READY,
     routing_confidence: float = 0.91,
 ) -> dict[str, int]:
-    counters = {"asr": 0, "diarization": 0, "llm": 0}
+    counters = {"asr": 0, "diarization": 0, "llm": 0, "snippet_export": 0}
     llm_values = iter(llm_outcomes or [_valid_llm_json()])
 
     monkeypatch.setattr(worker_tasks, "AppSettings", lambda: cfg)
@@ -238,6 +238,7 @@ def _patch_pipeline_dependencies(
     )
 
     def _fake_export(request):
+        counters["snippet_export"] += 1
         request.snippets_dir.mkdir(parents=True, exist_ok=True)
         clip_path = request.snippets_dir / "s1-1.wav"
         clip_path.write_bytes(b"clip")
@@ -250,7 +251,14 @@ def _patch_pipeline_dependencies(
             "max_clip_duration_seconds": request.max_clip_duration_sec,
             "min_clip_duration_seconds": request.min_clip_duration_sec,
             "max_snippets_per_speaker": request.max_snippets_per_speaker,
-            "speakers": {"S1": [{"path": clip_path.name}]},
+            "speakers": {
+                "S1": [
+                    {
+                        "status": "accepted",
+                        "relative_path": clip_path.name,
+                    }
+                ]
+            },
         }
         manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
         return [clip_path]
@@ -304,10 +312,12 @@ def test_process_job_resumes_from_failed_llm_stage_and_persists_stage_attempts(
     assert counters["asr"] == 1
     assert counters["diarization"] == 1
     assert counters["llm"] == 2
+    assert counters["snippet_export"] == 1
 
     stages = {row["stage_name"]: row for row in list_recording_pipeline_stages("rec-resume-1", settings=cfg)}
     assert stages["asr"]["attempt"] == 1
     assert stages["diarization"]["attempt"] == 1
+    assert stages["snippet_export"]["attempt"] == 1
     assert stages["llm_extract"]["attempt"] == 2
     assert stages["routing"]["status"] == "completed"
     assert get_recording("rec-resume-1", settings=cfg)["status"] == RECORDING_STATUS_READY
@@ -340,9 +350,14 @@ def test_run_precheck_pipeline_quarantine_skips_downstream_stages_and_writes_out
     summary_payload = json.loads(
         (cfg.recordings_root / "rec-quarantine-1" / "derived" / "summary.json").read_text(encoding="utf-8")
     )
+    manifest_payload = json.loads(
+        (cfg.recordings_root / "rec-quarantine-1" / "derived" / "snippets_manifest.json").read_text(encoding="utf-8")
+    )
     assert summary_payload["status"] == "quarantined"
+    assert manifest_payload["manifest_status"] == "quarantined_precheck"
     stages = {row["stage_name"]: row for row in list_recording_pipeline_stages("rec-quarantine-1", settings=cfg)}
     assert stages["asr"]["status"] == "skipped"
+    assert stages["snippet_export"]["status"] == "completed"
     assert stages["routing"]["status"] == "skipped"
 
 
@@ -370,9 +385,51 @@ def test_run_precheck_pipeline_no_speech_skips_llm_and_writes_no_speech_outputs(
     summary_payload = json.loads(
         (cfg.recordings_root / "rec-no-speech-1" / "derived" / "summary.json").read_text(encoding="utf-8")
     )
+    manifest_payload = json.loads(
+        (cfg.recordings_root / "rec-no-speech-1" / "derived" / "snippets_manifest.json").read_text(encoding="utf-8")
+    )
     assert summary_payload["status"] == "no_speech"
+    assert manifest_payload["manifest_status"] == "no_usable_speech"
     stages = {row["stage_name"]: row for row in list_recording_pipeline_stages("rec-no-speech-1", settings=cfg)}
+    assert stages["snippet_export"]["status"] == "completed"
     assert stages["llm_extract"]["status"] == "skipped"
+
+
+def test_process_job_snippet_export_failure_is_non_fatal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = _cfg(tmp_path)
+    init_db(cfg)
+    create_recording("rec-snippet-fail-1", source="test", source_filename="fail.wav", settings=cfg)
+    _write_pcm_wav(cfg.recordings_root / "rec-snippet-fail-1" / "raw" / "audio.wav")
+    create_job(
+        job_id="job-snippet-fail-1",
+        recording_id="rec-snippet-fail-1",
+        job_type=JOB_TYPE_PRECHECK,
+        status=JOB_STATUS_QUEUED,
+        settings=cfg,
+    )
+    _patch_pipeline_dependencies(monkeypatch, cfg=cfg)
+    monkeypatch.setattr(
+        worker_tasks,
+        "export_speaker_snippets",
+        lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("snippet boom")),
+    )
+
+    result = worker_tasks.process_job("job-snippet-fail-1", "rec-snippet-fail-1", JOB_TYPE_PRECHECK)
+
+    assert result["status"] == "ok"
+    stages = {row["stage_name"]: row for row in list_recording_pipeline_stages("rec-snippet-fail-1", settings=cfg)}
+    assert stages["snippet_export"]["status"] == "completed"
+    assert stages["llm_extract"]["status"] == "completed"
+    assert stages["routing"]["status"] == "completed"
+    manifest_payload = json.loads(
+        (cfg.recordings_root / "rec-snippet-fail-1" / "derived" / "snippets_manifest.json").read_text(encoding="utf-8")
+    )
+    assert manifest_payload["manifest_status"] == "export_failed"
+    assert manifest_payload["warning_count"] == 1
+    assert manifest_payload["warnings"][0]["message"] == "snippet boom"
 
 
 def test_pipeline_stage_db_helpers_and_ui_display_paths(tmp_path: Path) -> None:
@@ -453,6 +510,25 @@ def test_pipeline_stage_db_helpers_and_ui_display_paths(tmp_path: Path) -> None:
     assert reason is None
     ok, reason = validate_stage_artifacts(
         "rec-stage-db-1",
+        stage_name="snippet_export",
+        status="completed",
+        metadata={},
+        settings=cfg,
+    )
+    assert ok is False
+    assert reason == "snippet_export missing artifact snippets_manifest.json"
+    artifacts["snippet_export"][0].write_text(json.dumps({"version": 1, "speakers": {}}), encoding="utf-8")
+    ok, reason = validate_stage_artifacts(
+        "rec-stage-db-1",
+        stage_name="snippet_export",
+        status="completed",
+        metadata={},
+        settings=cfg,
+    )
+    assert ok is True
+    assert reason is None
+    ok, reason = validate_stage_artifacts(
+        "rec-stage-db-1",
         stage_name="llm_extract",
         status="completed",
         metadata={},
@@ -476,6 +552,54 @@ def test_pipeline_stage_db_helpers_and_ui_display_paths(tmp_path: Path) -> None:
         from_stage="metrics",
     )
     assert cleared == 2
+
+
+def test_clear_pipeline_from_snippet_export_preserves_earlier_stages(
+    tmp_path: Path,
+) -> None:
+    cfg = _cfg(tmp_path)
+    init_db(cfg)
+    create_recording("rec-clear-snippets-1", source="test", source_filename="clear.wav", settings=cfg)
+    for stage_name in ("speaker_turns", "snippet_export", "llm_extract", "metrics"):
+        mark_recording_pipeline_stage_started(
+            "rec-clear-snippets-1",
+            stage_name=stage_name,
+            settings=cfg,
+        )
+        mark_recording_pipeline_stage_completed(
+            "rec-clear-snippets-1",
+            stage_name=stage_name,
+            settings=cfg,
+        )
+    upsert_recording_llm_chunk_state(
+        "rec-clear-snippets-1",
+        chunk_group="extract",
+        chunk_index="1",
+        chunk_total=1,
+        status="completed",
+        metadata={"order_path": [1], "text": "chunk one", "base_text": "chunk one"},
+        settings=cfg,
+    )
+    mark_recording_llm_chunk_completed(
+        "rec-clear-snippets-1",
+        chunk_group="extract",
+        chunk_index="1",
+        chunk_total=1,
+        metadata={"order_path": [1], "text": "chunk one", "base_text": "chunk one"},
+        settings=cfg,
+    )
+
+    cleared = clear_recording_pipeline_stages(
+        "rec-clear-snippets-1",
+        settings=cfg,
+        from_stage="snippet_export",
+    )
+
+    assert cleared == 3
+    assert [row["stage_name"] for row in list_recording_pipeline_stages("rec-clear-snippets-1", settings=cfg)] == [
+        "speaker_turns"
+    ]
+    assert list_recording_llm_chunk_states("rec-clear-snippets-1", settings=cfg) == []
 
 
 def test_enqueue_recording_job_clears_existing_pipeline_stage_rows(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

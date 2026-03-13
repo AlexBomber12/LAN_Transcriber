@@ -186,6 +186,7 @@ _PIPELINE_STAGE_LABELS = {
     "diarize": "Diarization",
     "align": "Word Alignment",
     "speaker_turns": "Speaker Turns",
+    "snippet_export": "Snippet Export",
     "language": "Language Analysis",
     "language_analysis": "Language Analysis",
     "llm_extract": "LLM Summary",

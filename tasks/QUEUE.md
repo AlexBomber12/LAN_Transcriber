@@ -505,7 +505,7 @@ Queue (in order)
 - Depends on: PR-CAPTURE-TIME-SEMANTICS-01 and PR-OBSERVABILITY-ROOT-CAUSE-01
 
 101) PR-SNIPPETS-STAGE-REORDER-01: Move snippet generation to its own earlier pipeline stage right after speaker_turns so snippets are available during long LLM processing
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-SNIPPETS-STAGE-REORDER-01.md
 - Depends on: PR-SNIPPETS-PURITY-01 and PR-PIPELINE-CHECKPOINTS-RESUME-01 and PR-OBSERVABILITY-ROOT-CAUSE-01
 

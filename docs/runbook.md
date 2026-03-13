@@ -72,6 +72,7 @@ docker compose run --rm api python -m lan_app.healthchecks app
    - Canonical speaker records keep one active person entry with many samples; low-confidence matches stay reviewable instead of auto-merging.
    - Use the `speakers` tab to remap `S1`/`S2` diarization labels to canonical speakers or leave them unmatched; the export preview updates to the corrected `Name (Sx)` labels.
    - Speaker snippets are purity-ranked voice samples. Add sample now requires selecting an explicit clean clip instead of silently taking the first snippet.
+   - Snippet export runs right after `speaker_turns` and before `llm_extract`, so `derived/snippets_manifest.json` and accepted clips can show up while long LLM work is still running.
    - Silence fallback for failed snippet extraction was removed intentionally. Inspect `derived/snippets_manifest.json` for accepted clips, overlap rejections, degraded-mode blocks, and extraction failures.
    - If diarization fell back to degraded mode or a match stayed low confidence, the speakers tab shows a visible warning badge/message.
 6. Download export bundle from `GET /ui/recordings/{recording_id}/export.zip`.
