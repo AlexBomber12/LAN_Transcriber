@@ -518,3 +518,38 @@ Queue (in order)
 - Status: DONE
 - Tasks file: tasks/PR-SNIPPETS-REPAIR-BACKFILL-01.md
 - Depends on: PR-SNIPPETS-STAGE-REORDER-01 and PR-SNIPPETS-UI-STATE-01
+
+104) PR-UI-CONTROL-CENTER-01: Extract reusable UI partials and HTMX-friendly render paths for the future 1-page Control Center workflow
+- Status: TODO
+- Tasks file: tasks/PR-UI-CONTROL-CENTER-01.md
+- Depends on: PR-SNIPPETS-REPAIR-BACKFILL-01 and PR-GLOSSARY-CORRECTIONS-01 and PR-SPEAKER-UX-01
+
+105) PR-UI-CONTROL-CENTER-02: Replace the passive dashboard landing page with a real Control Center shell on /
+- Status: TODO
+- Tasks file: tasks/PR-UI-CONTROL-CENTER-02.md
+- Depends on: PR-UI-CONTROL-CENTER-01
+
+106) PR-UI-CONTROL-CENTER-03: Unify Upload + status filters + live Recordings list in the Control Center left pane
+- Status: TODO
+- Tasks file: tasks/PR-UI-CONTROL-CENTER-03.md
+- Depends on: PR-UI-CONTROL-CENTER-02 and PR-UI-UPLOAD-02 and PR-UI-PROGRESS-02
+
+107) PR-UI-CONTROL-CENTER-04: Embed the recording inspector into the Control Center right pane while keeping /recordings/{id} as a full-page fallback
+- Status: TODO
+- Tasks file: tasks/PR-UI-CONTROL-CENTER-04.md
+- Depends on: PR-UI-CONTROL-CENTER-03
+
+108) PR-SPEAKER-REVIEW-01: Add explicit speaker decisions: confirm canonical match, keep unknown, local label only, and separate trusted-sample training
+- Status: TODO
+- Tasks file: tasks/PR-SPEAKER-REVIEW-01.md
+- Depends on: PR-UI-CONTROL-CENTER-04 and PR-SPEAKER-UX-01 and PR-SPEAKER-BANK-CANONICAL-01 and PR-SNIPPETS-UI-STATE-01
+
+109) PR-CORRECTIONS-UX-01: Redesign Glossary into a simpler Corrections / ASR Memory operator UX with quick-entry from recordings
+- Status: TODO
+- Tasks file: tasks/PR-CORRECTIONS-UX-01.md
+- Depends on: PR-UI-CONTROL-CENTER-04 and PR-GLOSSARY-CORRECTIONS-01
+
+110) PR-UI-WORKFLOW-01: Final 1-page workflow polish, navigation cleanup, and smoke coverage centered on the Control Center
+- Status: TODO
+- Tasks file: tasks/PR-UI-WORKFLOW-01.md
+- Depends on: PR-SPEAKER-REVIEW-01 and PR-CORRECTIONS-UX-01
