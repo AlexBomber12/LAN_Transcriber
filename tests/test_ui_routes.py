@@ -14,6 +14,7 @@ from lan_app import api, ui_routes
 from lan_app.auth import AUTH_COOKIE_NAME
 from lan_app.config import AppSettings
 from lan_app.ops import RecordingDeleteError
+from lan_app.snippet_repair import SnippetRepairEligibility, SnippetRepairResult
 from lan_app.db import (
     create_calendar_source,
     count_routing_training_examples,
@@ -223,6 +224,45 @@ def _write_pcm_wav(path: Path, *, duration_sec: float, sample_rate: int = 16000)
         wav_file.setsampwidth(2)
         wav_file.setframerate(sample_rate)
         wav_file.writeframes(b"\x00\x00" * frames)
+
+
+def _seed_snippet_repair_artifacts(
+    cfg: AppSettings,
+    recording_id: str,
+    *,
+    include_speaker_turns: bool = True,
+) -> None:
+    derived = cfg.recordings_root / recording_id / "derived"
+    derived.mkdir(parents=True, exist_ok=True)
+    _write_pcm_wav(derived / "audio_sanitized.wav", duration_sec=3.0)
+    (derived / "precheck.json").write_text(
+        json.dumps({"duration_sec": 3.0, "speech_ratio": 0.8, "quarantine_reason": None}),
+        encoding="utf-8",
+    )
+    (derived / "diarization_segments.json").write_text(
+        json.dumps(
+            [
+                {"speaker": "S1", "start": 0.0, "end": 1.2},
+                {"speaker": "S2", "start": 1.3, "end": 2.2},
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (derived / "diarization_metadata.json").write_text(
+        json.dumps({"degraded": False}),
+        encoding="utf-8",
+    )
+    if include_speaker_turns:
+        (derived / "speaker_turns.json").write_text(
+            json.dumps(
+                [
+                    {"speaker": "S1", "start": 0.0, "end": 1.2, "text": "hello team"},
+                    {"speaker": "S2", "start": 1.3, "end": 2.1, "text": "hi there"},
+                    {"speaker": "S1", "start": 2.2, "end": 2.9, "text": "follow up"},
+                ]
+            ),
+            encoding="utf-8",
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1297,8 +1337,175 @@ def test_recording_detail_speakers_legacy_missing_manifest_message(tmp_path, mon
     )
     assert page.status_code == 200
     assert "Legacy:</strong> This older recording has no snippets manifest yet." in page.text
-    assert "repair/backfill run can regenerate speaker clips later" in page.text
-    assert "Generating:</strong>" not in page.text
+    assert "Missing sanitized audio and no raw audio fallback is available." in page.text
+
+
+def test_recording_detail_speakers_regenerate_snippets_repairs_missing_manifest(
+    tmp_path,
+    monkeypatch,
+):
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    init_db(cfg)
+    create_recording(
+        "rec-speakers-repair-1",
+        source="upload",
+        source_filename="repair.wav",
+        status=RECORDING_STATUS_READY,
+        settings=cfg,
+    )
+    _seed_snippet_repair_artifacts(cfg, "rec-speakers-repair-1")
+    create_voice_profile("Repair Sample", settings=cfg)
+
+    client = TestClient(api.app, follow_redirects=True)
+    page = client.post("/ui/recordings/rec-speakers-repair-1/speakers/regenerate-snippets")
+
+    assert page.status_code == 200
+    assert "Regenerated" in page.text
+    assert "/ui/recordings/rec-speakers-repair-1/snippets/S1/1.wav" in page.text
+    assert (cfg.recordings_root / "rec-speakers-repair-1" / "derived" / "snippets_manifest.json").exists()
+
+
+def test_recording_detail_speakers_regenerate_snippets_reports_missing_prereq(
+    tmp_path,
+    monkeypatch,
+):
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    init_db(cfg)
+    create_recording(
+        "rec-speakers-repair-missing-1",
+        source="upload",
+        source_filename="repair-missing.wav",
+        status=RECORDING_STATUS_READY,
+        settings=cfg,
+    )
+    _seed_snippet_repair_artifacts(
+        cfg,
+        "rec-speakers-repair-missing-1",
+        include_speaker_turns=False,
+    )
+
+    client = TestClient(api.app, follow_redirects=True)
+    page = client.post(
+        "/ui/recordings/rec-speakers-repair-missing-1/speakers/regenerate-snippets"
+    )
+
+    assert page.status_code == 200
+    assert "Missing or unreadable derived/speaker_turns.json." in page.text
+    assert "Regenerate snippets" not in page.text
+
+
+def test_speakers_tab_repair_context_messages_cover_missing_stale_and_blank_reason(
+    tmp_path,
+    monkeypatch,
+):
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    init_db(cfg)
+    create_recording(
+        "rec-speakers-context-1",
+        source="upload",
+        source_filename="context.wav",
+        status=RECORDING_STATUS_READY,
+        settings=cfg,
+    )
+    _seed_speaker_turns_only(cfg, "rec-speakers-context-1")
+
+    monkeypatch.setattr(
+        ui_routes,
+        "assess_snippet_repair",
+        lambda *_a, **_k: SnippetRepairEligibility(
+            recording_id="rec-speakers-context-1",
+            available=True,
+            artifact_state="missing",
+        ),
+    )
+    context = ui_routes._speakers_tab_context(  # noqa: SLF001
+        "rec-speakers-context-1",
+        cfg,
+    )
+    assert "no snippets manifest yet" in context["snippet_repair"]["detail"]
+
+    monkeypatch.setattr(
+        ui_routes,
+        "assess_snippet_repair",
+        lambda *_a, **_k: SnippetRepairEligibility(
+            recording_id="rec-speakers-context-1",
+            available=True,
+            artifact_state="stale",
+        ),
+    )
+    context = ui_routes._speakers_tab_context(  # noqa: SLF001
+        "rec-speakers-context-1",
+        cfg,
+    )
+    assert "look incomplete" in context["snippet_repair"]["detail"]
+
+    monkeypatch.setattr(
+        ui_routes,
+        "assess_snippet_repair",
+        lambda *_a, **_k: SnippetRepairEligibility(
+            recording_id="rec-speakers-context-1",
+            available=False,
+            artifact_state="missing",
+            reason_text="",
+        ),
+    )
+    context = ui_routes._speakers_tab_context(  # noqa: SLF001
+        "rec-speakers-context-1",
+        cfg,
+    )
+    assert context["snippet_repair"]["detail"] == ""
+
+
+def test_snippet_repair_notice_message_and_missing_recording_route(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    init_db(cfg)
+
+    assert (
+        ui_routes._snippet_repair_notice_message(  # noqa: SLF001
+            SnippetRepairResult(
+                recording_id="rec-1",
+                manifest_status="no_usable_speech",
+                accepted_snippets=0,
+                speaker_count=0,
+                warning_count=0,
+                degraded_diarization=False,
+                audio_source="sanitized_audio",
+                duration_sec=1.0,
+                artifact_state_before="missing",
+            )
+        )
+        == "Snippet manifest regenerated, but no speaker turns produced usable clips."
+    )
+    assert (
+        ui_routes._snippet_repair_notice_message(  # noqa: SLF001
+            SnippetRepairResult(
+                recording_id="rec-2",
+                manifest_status="no_clean_snippets",
+                accepted_snippets=0,
+                speaker_count=1,
+                warning_count=1,
+                degraded_diarization=False,
+                audio_source="sanitized_audio",
+                duration_sec=1.0,
+                artifact_state_before="missing",
+            )
+        )
+        == "Snippet manifest regenerated. No accepted clean clips were available."
+    )
+
+    response = TestClient(api.app, follow_redirects=True).post(
+        "/ui/recordings/missing-recording/speakers/regenerate-snippets"
+    )
+    assert response.status_code == 404
+    assert response.text == "Recording not found"
 
 
 def test_recording_detail_speakers_stopped_before_snippet_export_is_unavailable(tmp_path, monkeypatch):

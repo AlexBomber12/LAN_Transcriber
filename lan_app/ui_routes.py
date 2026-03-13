@@ -112,6 +112,12 @@ from .ops import RecordingDeleteError, delete_recording_with_artifacts
 from .pipeline_stages import PIPELINE_STAGE_DONE_STATUSES, stage_order
 from .routing import refresh_recording_routing, train_routing_from_manual_selection
 from .speaker_bank import DEFAULT_ASSIGNMENT_THRESHOLD, merge_canonical_speakers
+from .snippet_repair import (
+    SnippetRepairError,
+    SnippetRepairResult,
+    assess_snippet_repair,
+    repair_recording_snippets,
+)
 from lan_transcriber.artifacts import atomic_write_json
 from lan_transcriber.llm_client import LLMClient
 from lan_transcriber.pipeline import Settings as PipelineSettings
@@ -1625,6 +1631,8 @@ def _speakers_tab_context(
     *,
     recording: dict[str, Any] | None = None,
     stage_rows: list[dict[str, Any]] | None = None,
+    notice_message: str = "",
+    error_message: str = "",
 ) -> dict[str, Any]:
     transcript_path, _summary_path = _recording_derived_paths(recording_id, settings)
     speaker_turns_path = transcript_path.parent / "speaker_turns.json"
@@ -1734,6 +1742,27 @@ def _speakers_tab_context(
             }
         )
 
+    repair_eligibility = assess_snippet_repair(recording_id, settings=settings)
+    repair_detail = ""
+    if repair_eligibility.available:
+        if repair_eligibility.artifact_state == "missing":
+            repair_detail = (
+                "This recording has no snippets manifest yet. Regenerate speaker clips "
+                "from saved artifacts without rerunning ASR or LLM."
+            )
+        elif repair_eligibility.artifact_state == "stale":
+            repair_detail = (
+                "Stored snippet artifacts look incomplete. Regeneration will replace the "
+                "current clips only if the repair succeeds."
+            )
+        else:
+            repair_detail = (
+                "Regenerate speaker clips from saved artifacts. Existing clips are "
+                "replaced only if the repair succeeds."
+            )
+    elif repair_eligibility.reason_text:
+        repair_detail = repair_eligibility.reason_text
+
     return {
         "speaker_rows": speaker_rows,
         "voice_profiles": voice_profiles,
@@ -1742,6 +1771,14 @@ def _speakers_tab_context(
             low_confidence_count=low_confidence_count,
             settings=settings,
         ),
+        "notice_message": notice_message.strip(),
+        "error_message": error_message.strip(),
+        "snippet_repair": {
+            "available": repair_eligibility.available,
+            "artifact_state": repair_eligibility.artifact_state,
+            "detail": repair_detail,
+            "button_label": "Regenerate snippets",
+        },
     }
 
 
@@ -2366,6 +2403,8 @@ async def ui_recording_detail(
     recording_id: str,
     tab: str = Query(default="overview"),
     calendar_error: str = Query(default=""),
+    speakers_notice: str = Query(default=""),
+    speakers_error: str = Query(default=""),
 ) -> Any:
     rec = get_recording(recording_id, settings=_settings)
     if rec is None:
@@ -2406,6 +2445,8 @@ async def ui_recording_detail(
             _settings,
             recording=rec,
             stage_rows=stage_rows,
+            notice_message=speakers_notice,
+            error_message=speakers_error,
         )
     if current_tab == "project":
         project = _project_tab_context(recording_id, rec, _settings)
@@ -2578,6 +2619,48 @@ async def ui_recording_snippet_audio(
     if safe_file is None or not safe_file.exists() or not safe_file.is_file():
         return HTMLResponse("Snippet not found", status_code=404)
     return FileResponse(path=str(safe_file), media_type="audio/wav", filename=safe_file.name)
+
+
+def _snippet_repair_notice_message(result: SnippetRepairResult) -> str:
+    if result.manifest_status == "no_usable_speech":
+        return "Snippet manifest regenerated, but no speaker turns produced usable clips."
+    if result.accepted_snippets == 0:
+        return "Snippet manifest regenerated. No accepted clean clips were available."
+    noun = "clip" if result.accepted_snippets == 1 else "clips"
+    return (
+        f"Regenerated {result.accepted_snippets} clean {noun} across "
+        f"{result.speaker_count} speaker(s) without rerunning the pipeline."
+    )
+
+
+@ui_router.post("/ui/recordings/{recording_id}/speakers/regenerate-snippets")
+async def ui_recording_regenerate_snippets(
+    recording_id: str,
+) -> Any:
+    if get_recording(recording_id, settings=_settings) is None:
+        return HTMLResponse("Recording not found", status_code=404)
+    try:
+        result = await run_in_threadpool(
+            repair_recording_snippets,
+            recording_id,
+            settings=_settings,
+            origin="ui_speakers",
+        )
+    except SnippetRepairError as exc:
+        return RedirectResponse(
+            (
+                f"/recordings/{recording_id}?tab=speakers&speakers_error="
+                f"{quote(str(exc), safe='')}"
+            ),
+            status_code=303,
+        )
+    return RedirectResponse(
+        (
+            f"/recordings/{recording_id}?tab=speakers&speakers_notice="
+            f"{quote(_snippet_repair_notice_message(result), safe='')}"
+        ),
+        status_code=303,
+    )
 
 
 @ui_router.post("/ui/recordings/{recording_id}/speakers/assign")

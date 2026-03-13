@@ -123,6 +123,7 @@ Operational setup, failure handling, backup/restore, and upgrade steps are docum
 - Speaker snippets are now purity-ranked voice samples built from single-speaker material instead of wide playback windows.
 - Snippet export now runs immediately after `speaker_turns`, before LLM summarization, so `derived/snippets_manifest.json` and clean clips can appear while long summaries are still processing.
 - The Speakers tab now labels snippet state as pending, generating, ready, failed, or legacy/unavailable instead of collapsing empty states into one generic placeholder.
+- Older recordings can regenerate snippet artifacts from the Speakers tab without rerunning ASR/LLM; for batch repair use `python -m lan_app.tools.repair_snippets --scan-missing`, or target one recording with `python -m lan_app.tools.repair_snippets --recording-id <recording_id>`.
 - Add sample now requires an explicit clean snippet choice from the speakers tab; if no clean snippet exists, the UI explains why and blocks the action.
 - Synthetic silence fallback was removed on purpose. Inspect `derived/snippets_manifest.json` to see accepted clips, rejected candidates, overlap, and extraction failures.
 - When diarization falls back to degraded mode or a speaker match is low confidence, the recording detail page shows an explicit warning instead of silently trusting the labels.

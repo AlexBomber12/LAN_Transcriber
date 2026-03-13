@@ -74,6 +74,7 @@ docker compose run --rm api python -m lan_app.healthchecks app
    - Speaker snippets are purity-ranked voice samples. Add sample now requires selecting an explicit clean clip instead of silently taking the first snippet.
    - Snippet export runs right after `speaker_turns` and before `llm_extract`, so `derived/snippets_manifest.json` and accepted clips can show up while long LLM work is still running.
    - The Speakers tab labels snippet state as pending, generating, ready, failed, or legacy/unavailable so operators can tell whether Add sample should be usable yet.
+   - Legacy recordings missing snippet artifacts can be repaired from the Speakers tab without rerunning ASR/LLM. For admin backfill, run `python -m lan_app.tools.repair_snippets --scan-missing`; to repair exactly one recording, run `python -m lan_app.tools.repair_snippets --recording-id <recording_id>`.
    - Silence fallback for failed snippet extraction was removed intentionally. Inspect `derived/snippets_manifest.json` for accepted clips, overlap rejections, degraded-mode blocks, and extraction failures.
    - If diarization fell back to degraded mode or a match stayed low confidence, the speakers tab shows a visible warning badge/message.
 6. Download export bundle from `GET /ui/recordings/{recording_id}/export.zip`.
