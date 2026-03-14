@@ -4,7 +4,12 @@ from functools import lru_cache
 from typing import Any, Sequence
 
 from .config import AppSettings
-from .db import create_voice_sample, merge_voice_profiles, set_speaker_assignment
+from .db import (
+    SPEAKER_REVIEW_STATE_SYSTEM_SUGGESTED,
+    create_voice_sample,
+    merge_voice_profiles,
+    set_speaker_assignment,
+)
 
 DEFAULT_ASSIGNMENT_THRESHOLD = 0.75
 DEFAULT_SAMPLE_ATTACH_THRESHOLD = 0.85
@@ -219,8 +224,10 @@ def assign_speakers_to_recording(
     )
     persisted: list[dict[str, Any]] = []
     for decision in decisions:
-        keep_unmatched = decision["voice_profile_id"] is None and bool(
-            decision["candidate_matches"]
+        resolved_review_state = (
+            SPEAKER_REVIEW_STATE_SYSTEM_SUGGESTED
+            if decision["voice_profile_id"] is not None or decision["candidate_matches"]
+            else None
         )
         row = set_speaker_assignment(
             recording_id=recording_id,
@@ -229,7 +236,7 @@ def assign_speakers_to_recording(
             confidence=float(decision["confidence"]),
             candidate_matches=decision["candidate_matches"],
             low_confidence=bool(decision["low_confidence"]),
-            keep_unmatched=keep_unmatched,
+            review_state=resolved_review_state,
             settings=settings,
         )
         persisted.append(

@@ -403,6 +403,11 @@
     </p>
     {% endfor %}
   {% endif %}
+  <div style="margin:0 0 10px 0;padding:8px 10px;border:1px solid #ccd;background:#f8f9ff;color:#222">
+    Confirm global match only when you want a canonical speaker identity across recordings.
+    Use <strong>Keep unknown</strong> to close review without naming the speaker, or <strong>Local label only</strong> to name this speaker just for the current recording and its export.
+    <strong>Add sample</strong> stays separate and should be used only for trusted clean clips.
+  </div>
   {% if rows %}
   <table>
     <thead>
@@ -411,11 +416,11 @@
         <th>Turns</th>
         <th>Duration (s)</th>
         <th>Preview</th>
-        <th>Current mapping</th>
-        <th>Confidence</th>
+        <th>Current decision</th>
+        <th>Review state</th>
         <th>Snippets</th>
-        <th>Remap</th>
-        <th>Samples</th>
+        <th>Decide</th>
+        <th>Sample training</th>
       </tr>
     </thead>
     <tbody>
@@ -426,15 +431,11 @@
         <td>{{ '%.2f'|format(row.duration_sec or 0.0) }}</td>
         <td title="{{ row.preview_text }}" style="white-space:normal;max-width:300px">{{ row.preview_text or '—' }}</td>
         <td style="white-space:normal;max-width:260px">
-          {% if row.voice_profile_name %}
-          <div><strong>{{ row.voice_profile_name }}</strong></div>
-          <div style="margin-top:4px;color:#555">Displays as {{ row.display_label }} in exports.</div>
-          {% else %}
-          <span class="placeholder" style="padding:0">Leave unmatched</span>
-          {% endif %}
+          <div><strong>{{ row.mapping_title }}</strong></div>
+          <div style="margin-top:4px;color:#555">{{ row.mapping_detail }}</div>
           {% if row.candidate_matches %}
           <div style="margin-top:6px;font-size:11px;color:#555">
-            Candidates:
+            Suggestions:
             {% for candidate in row.candidate_matches %}
             <span>{{ candidate.display_name }} ({{ '%.2f'|format(candidate.score) }}){% if not loop.last %}, {% endif %}</span>
             {% endfor %}
@@ -442,15 +443,12 @@
           {% endif %}
         </td>
         <td style="white-space:normal;max-width:220px">
-          {% if row.low_confidence %}
-          <span class="badge s-NeedsReview">Low confidence</span>
-          {% elif row.voice_profile_name %}
-          <span class="badge s-Ready">Mapped</span>
-          {% else %}
-          <span class="badge s-Queued">Unmatched</span>
+          <span class="badge {{ row.state_badge_class }}">{{ row.state_badge_label }}</span>
+          <div style="margin-top:4px;color:#555">{{ row.state_detail }}</div>
+          {% if row.review_state == 'system_suggested' %}
+          <div style="margin-top:4px;color:#555">Best suggestion score {{ '%.2f'|format(row.confidence or 0.0) }}</div>
           {% endif %}
-          <div style="margin-top:4px;color:#555">{{ '%.2f'|format(row.confidence or 0.0) }}</div>
-          {% if row.needs_review and row.assignment_threshold %}
+          {% if row.low_confidence and row.assignment_threshold %}
           <div style="margin-top:4px;font-size:11px;color:#92400e">
             Below auto-match threshold {{ '%.2f'|format(row.assignment_threshold) }}.
           </div>
@@ -491,25 +489,49 @@
           {% if profiles %}
           <form method="post" action="/ui/recordings/{{ rec.id }}/speakers/assign{{ recording_inspector.embedded_return_queries.speakers }}">
             <input type="hidden" name="diar_speaker_label" value="{{ row.speaker }}">
+            <div style="margin-bottom:6px;font-size:11px;color:#555">Confirm canonical speaker</div>
             <select name="voice_profile_id" style="width:180px">
-              <option value="">Leave unmatched</option>
+              <option value="">Choose canonical speaker</option>
               {% for vp in profiles %}
-              <option value="{{ vp.id }}" {% if row.voice_profile_id == vp.id %}selected{% endif %}>{{ vp.display_name }}</option>
+              <option value="{{ vp.id }}" {% if row.global_voice_profile_id == vp.id %}selected{% endif %}>{{ vp.display_name }}</option>
               {% endfor %}
             </select>
-            <button class="btn" type="submit">Save remap</button>
+            <button class="btn" type="submit">Confirm global match</button>
           </form>
           {% else %}
-          <span class="placeholder" style="padding:0">No voice profiles yet.</span>
+          <div class="placeholder" style="padding:0;margin-bottom:8px">No canonical speakers yet.</div>
           {% endif %}
+          <form method="post" action="/ui/recordings/{{ rec.id }}/speakers/keep-unknown{{ recording_inspector.embedded_return_queries.speakers }}" style="margin-top:8px">
+            <input type="hidden" name="diar_speaker_label" value="{{ row.speaker }}">
+            <button class="btn" type="submit">Keep unknown</button>
+          </form>
+          <form method="post" action="/ui/recordings/{{ rec.id }}/speakers/local-label{{ recording_inspector.embedded_return_queries.speakers }}" style="margin-top:8px">
+            <input type="hidden" name="diar_speaker_label" value="{{ row.speaker }}">
+            <input
+              type="text"
+              name="local_display_name"
+              value="{{ row.local_display_name }}"
+              maxlength="120"
+              placeholder="Recording-only name"
+              style="width:180px"
+            >
+            <button class="btn" type="submit">Save local label</button>
+          </form>
+          <div style="margin-top:6px;font-size:11px;color:#555">
+            Global match affects the canonical speaker bank. Local label only affects this recording and its exports.
+          </div>
         </td>
         <td style="white-space:normal;max-width:260px">
+          <div style="margin-bottom:6px;font-size:11px;color:#555">
+            Add a trusted clean clip to the speaker bank. This does not change the current review decision.
+          </div>
           {% if profiles %}
           <form method="post" action="/ui/recordings/{{ rec.id }}/speakers/add-sample{{ recording_inspector.embedded_return_queries.speakers }}">
             <input type="hidden" name="diar_speaker_label" value="{{ row.speaker }}">
             <select name="voice_profile_id" style="width:180px">
+              <option value="">Choose canonical speaker</option>
               {% for vp in profiles %}
-              <option value="{{ vp.id }}" {% if row.voice_profile_id == vp.id %}selected{% endif %}>{{ vp.display_name }}</option>
+              <option value="{{ vp.id }}" {% if row.sample_voice_profile_id == vp.id %}selected{% endif %}>{{ vp.display_name }}</option>
               {% endfor %}
             </select>
             <select name="snippet_path" style="width:220px" {% if not row.clean_snippets %}disabled{% endif %}>
@@ -525,7 +547,7 @@
             {% endif %}
           </form>
           {% else %}
-          <span class="placeholder" style="padding:0">Create a profile first.</span>
+          <span class="placeholder" style="padding:0">Create a canonical speaker first.</span>
           {% endif %}
         </td>
       </tr>
@@ -536,7 +558,7 @@
   <p class="placeholder">No speaker turns available yet. Run diarization first.</p>
   {% endif %}
 
-  <h2>Create and Assign New Profile</h2>
+  <h2>Create Canonical Speaker and Confirm Global Match</h2>
   {% if rows %}
   <form method="post" action="/ui/recordings/{{ rec.id }}/speakers/create-and-assign{{ recording_inspector.embedded_return_queries.speakers }}">
     <div class="form-row">
@@ -557,7 +579,7 @@
     </div>
     <div class="form-row">
       <label></label>
-      <button class="btn" type="submit">Create and assign</button>
+      <button class="btn" type="submit">Create canonical speaker</button>
     </div>
   </form>
   {% else %}

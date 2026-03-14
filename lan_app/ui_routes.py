@@ -60,6 +60,10 @@ from .diagnostics import (
     stage_name_for_progress,
 )
 from .db import (
+    SPEAKER_REVIEW_STATE_CONFIRMED_CANONICAL,
+    SPEAKER_REVIEW_STATE_KEPT_UNKNOWN,
+    SPEAKER_REVIEW_STATE_LOCAL_LABEL,
+    SPEAKER_REVIEW_STATE_SYSTEM_SUGGESTED,
     acknowledge_recording_cancel_request,
     clear_recording_progress,
     create_calendar_source,
@@ -1539,10 +1543,95 @@ def _recording_speaker_name_map(
     name_map: dict[str, str] = {}
     for row in list_speaker_assignments(recording_id, settings=settings):
         diar_label = str(row.get("diar_speaker_label") or "").strip()
-        display_name = str(row.get("voice_profile_name") or "").strip()
+        display_name = _speaker_assignment_display_name(row)
         if diar_label and display_name:
             name_map[diar_label] = display_name
     return name_map
+
+
+def _speaker_review_state(row: dict[str, Any]) -> str:
+    review_state = str(row.get("review_state") or "").strip().lower()
+    if review_state in {
+        SPEAKER_REVIEW_STATE_SYSTEM_SUGGESTED,
+        SPEAKER_REVIEW_STATE_CONFIRMED_CANONICAL,
+        SPEAKER_REVIEW_STATE_KEPT_UNKNOWN,
+        SPEAKER_REVIEW_STATE_LOCAL_LABEL,
+    }:
+        return review_state
+    local_display_name = str(row.get("local_display_name") or "").strip()
+    if local_display_name:
+        return SPEAKER_REVIEW_STATE_LOCAL_LABEL
+    if _as_int(row.get("voice_profile_id")) is not None and str(
+        row.get("voice_profile_name") or ""
+    ).strip():
+        return SPEAKER_REVIEW_STATE_CONFIRMED_CANONICAL
+    if bool(row.get("candidate_matches_json")) or bool(row.get("low_confidence")):
+        return SPEAKER_REVIEW_STATE_SYSTEM_SUGGESTED
+    return SPEAKER_REVIEW_STATE_SYSTEM_SUGGESTED
+
+
+def _speaker_assignment_display_name(row: dict[str, Any]) -> str:
+    review_state = _speaker_review_state(row)
+    if review_state == SPEAKER_REVIEW_STATE_LOCAL_LABEL:
+        return str(row.get("local_display_name") or "").strip()
+    if review_state == SPEAKER_REVIEW_STATE_CONFIRMED_CANONICAL:
+        return str(row.get("voice_profile_name") or "").strip()
+    return ""
+
+
+def _speaker_assignment_status_context(
+    diar_label: str,
+    row: dict[str, Any],
+) -> dict[str, str]:
+    review_state = _speaker_review_state(row)
+    voice_profile_name = str(row.get("voice_profile_name") or "").strip()
+    local_display_name = str(row.get("local_display_name") or "").strip()
+    display_label = _speaker_display_label(
+        diar_label,
+        speaker_name_map={diar_label: _speaker_assignment_display_name(row)},
+    )
+    if review_state == SPEAKER_REVIEW_STATE_CONFIRMED_CANONICAL:
+        return {
+            "mapping_title": voice_profile_name or "Canonical match confirmed",
+            "mapping_detail": f"Global speaker confirmed. Exports display {display_label}.",
+            "badge_class": "s-Ready",
+            "badge_label": "Mapped globally",
+            "status_detail": "This diarized speaker is explicitly linked to a canonical person.",
+        }
+    if review_state == SPEAKER_REVIEW_STATE_LOCAL_LABEL:
+        return {
+            "mapping_title": local_display_name or "Local label only",
+            "mapping_detail": f"Recording-only label. Exports display {display_label}.",
+            "badge_class": "s-Published",
+            "badge_label": "Local label only",
+            "status_detail": "This name applies only to the current recording.",
+        }
+    if review_state == SPEAKER_REVIEW_STATE_KEPT_UNKNOWN:
+        return {
+            "mapping_title": "Unknown by choice",
+            "mapping_detail": "Operator kept this speaker unmatched on purpose.",
+            "badge_class": "s-Queued",
+            "badge_label": "Unknown by choice",
+            "status_detail": "No canonical speaker or local label is stored for this diarized speaker.",
+        }
+    if voice_profile_name:
+        return {
+            "mapping_title": f"Suggested global match: {voice_profile_name}",
+            "mapping_detail": (
+                f"Still unreviewed. Exports keep {diar_label} until you confirm a global match "
+                "or set a local label."
+            ),
+            "badge_class": "s-NeedsReview",
+            "badge_label": "Needs review",
+            "status_detail": "Review this suggestion before treating it as a canonical identity.",
+        }
+    return {
+        "mapping_title": "Needs review",
+        "mapping_detail": "No explicit operator decision is stored for this speaker yet.",
+        "badge_class": "s-NeedsReview",
+        "badge_label": "Needs review",
+        "status_detail": "Choose keep unknown or set a local label when you do not want a global match.",
+    }
 
 
 def _speaker_display_label(
@@ -1722,10 +1811,14 @@ def _speakers_tab_context(
             assignment.get("candidate_matches_json"),
             voice_profiles_by_id=voice_profiles_by_id,
         )
+        review_state = _speaker_review_state(assignment)
         low_confidence = bool(assignment.get("low_confidence"))
-        if low_confidence:
+        needs_review = review_state == SPEAKER_REVIEW_STATE_SYSTEM_SUGGESTED
+        if low_confidence and needs_review:
             low_confidence_count += 1
-        voice_profile_name = str(assignment.get("voice_profile_name") or "")
+        voice_profile_name = str(assignment.get("voice_profile_name") or "").strip()
+        local_display_name = str(assignment.get("local_display_name") or "").strip()
+        status_context = _speaker_assignment_status_context(speaker, assignment)
         speaker_rows.append(
             {
                 "speaker": speaker,
@@ -1738,17 +1831,28 @@ def _speakers_tab_context(
                 "snippet_ui_state": snippet_context["snippet_ui_state"],
                 "voice_profile_id": profile_id,
                 "voice_profile_name": voice_profile_name,
+                "local_display_name": local_display_name,
                 "confidence": max(0.0, min(confidence, 1.0)),
                 "candidate_matches": candidate_matches,
                 "low_confidence": low_confidence,
+                "review_state": review_state,
                 "display_label": _speaker_display_label(
                     speaker,
-                    speaker_name_map={speaker: voice_profile_name.strip()},
+                    speaker_name_map={speaker: _speaker_assignment_display_name(assignment)},
                 ),
-                "needs_review": low_confidence or (
-                    profile_id is None and bool(candidate_matches)
-                ),
+                "needs_review": needs_review,
                 "assignment_threshold": DEFAULT_ASSIGNMENT_THRESHOLD,
+                "mapping_title": status_context["mapping_title"],
+                "mapping_detail": status_context["mapping_detail"],
+                "state_badge_class": status_context["badge_class"],
+                "state_badge_label": status_context["badge_label"],
+                "state_detail": status_context["status_detail"],
+                "global_voice_profile_id": profile_id,
+                "sample_voice_profile_id": (
+                    profile_id
+                    if review_state == SPEAKER_REVIEW_STATE_CONFIRMED_CANONICAL
+                    else None
+                ),
             }
         )
 
@@ -3845,6 +3949,20 @@ def _snippet_repair_notice_message(result: SnippetRepairResult) -> str:
     )
 
 
+def _speaker_assignment_for_recording(
+    recording_id: str,
+    diar_label: str,
+) -> dict[str, Any]:
+    return next(
+        (
+            row
+            for row in list_speaker_assignments(recording_id, settings=_settings)
+            if str(row.get("diar_speaker_label") or "").strip() == diar_label
+        ),
+        {},
+    )
+
+
 @ui_router.post("/ui/recordings/{recording_id}/speakers/regenerate-snippets")
 async def ui_recording_regenerate_snippets(
     recording_id: str,
@@ -3912,37 +4030,22 @@ async def ui_assign_speaker(
         return HTMLResponse("diar_speaker_label is required", status_code=422)
 
     profile_token = voice_profile_id.strip()
-    profile_id: int | None = None
-    if profile_token:
-        try:
-            profile_id = int(profile_token)
-        except ValueError:
-            return HTMLResponse("voice_profile_id must be an integer", status_code=422)
-    existing_assignment = next(
-        (
-            row
-            for row in list_speaker_assignments(recording_id, settings=_settings)
-            if str(row.get("diar_speaker_label") or "").strip() == diar_label
-        ),
-        {},
-    )
+    if not profile_token:
+        return HTMLResponse("voice_profile_id is required", status_code=422)
+    try:
+        profile_id = int(profile_token)
+    except ValueError:
+        return HTMLResponse("voice_profile_id must be an integer", status_code=422)
+    existing_assignment = _speaker_assignment_for_recording(recording_id, diar_label)
     try:
         set_speaker_assignment(
             recording_id=recording_id,
             diar_speaker_label=diar_label,
             voice_profile_id=profile_id,
-            confidence=(
-                1.0
-                if profile_id is not None
-                else float(existing_assignment.get("confidence") or 0.0)
-            ),
+            confidence=1.0,
             candidate_matches=existing_assignment.get("candidate_matches_json"),
-            low_confidence=(
-                False if profile_id is not None else existing_assignment.get("low_confidence")
-            ),
-            keep_unmatched=(
-                profile_id is None and bool(existing_assignment.get("candidate_matches_json"))
-            ),
+            low_confidence=False,
+            review_state=SPEAKER_REVIEW_STATE_CONFIRMED_CANONICAL,
             settings=_settings,
         )
     except sqlite3.IntegrityError:
@@ -3965,6 +4068,104 @@ async def ui_assign_speaker(
             q=q,
             limit=limit,
             offset=offset,
+            speakers_notice=f"Confirmed {diar_label} as a global speaker match.",
+        ),
+        status_code=303,
+    )
+
+
+@ui_router.post("/ui/recordings/{recording_id}/speakers/keep-unknown")
+async def ui_keep_unknown_speaker(
+    recording_id: str,
+    diar_speaker_label: str = Form(...),
+    return_to: str = Query(default=""),
+    return_tab: str = Query(default="speakers"),
+    status: str | None = Query(default=None),
+    q: str = Query(default=""),
+    limit: int = Query(default=_CONTROL_CENTER_LIST_LIMIT, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+) -> Any:
+    if get_recording(recording_id, settings=_settings) is None:
+        return HTMLResponse("Not found", status_code=404)
+    diar_label = diar_speaker_label.strip()
+    if not diar_label:
+        return HTMLResponse("diar_speaker_label is required", status_code=422)
+
+    existing_assignment = _speaker_assignment_for_recording(recording_id, diar_label)
+    try:
+        set_speaker_assignment(
+            recording_id=recording_id,
+            diar_speaker_label=diar_label,
+            voice_profile_id=None,
+            confidence=float(existing_assignment.get("confidence") or 0.0),
+            candidate_matches=existing_assignment.get("candidate_matches_json"),
+            low_confidence=False,
+            review_state=SPEAKER_REVIEW_STATE_KEPT_UNKNOWN,
+            settings=_settings,
+        )
+    except ValueError as exc:
+        return HTMLResponse(str(exc), status_code=422)
+    return RedirectResponse(
+        _recording_inspector_return_path(
+            recording_id,
+            return_to=return_to,
+            return_tab=return_tab or "speakers",
+            status=status,
+            q=q,
+            limit=limit,
+            offset=offset,
+            speakers_notice=f"Marked {diar_label} as unknown by choice.",
+        ),
+        status_code=303,
+    )
+
+
+@ui_router.post("/ui/recordings/{recording_id}/speakers/local-label")
+async def ui_set_local_speaker_label(
+    recording_id: str,
+    diar_speaker_label: str = Form(...),
+    local_display_name: str = Form(...),
+    return_to: str = Query(default=""),
+    return_tab: str = Query(default="speakers"),
+    status: str | None = Query(default=None),
+    q: str = Query(default=""),
+    limit: int = Query(default=_CONTROL_CENTER_LIST_LIMIT, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+) -> Any:
+    if get_recording(recording_id, settings=_settings) is None:
+        return HTMLResponse("Not found", status_code=404)
+    diar_label = diar_speaker_label.strip()
+    if not diar_label:
+        return HTMLResponse("diar_speaker_label is required", status_code=422)
+    clean_local_label = " ".join(local_display_name.split()).strip()
+    if not clean_local_label:
+        return HTMLResponse("local_display_name is required", status_code=422)
+
+    existing_assignment = _speaker_assignment_for_recording(recording_id, diar_label)
+    try:
+        set_speaker_assignment(
+            recording_id=recording_id,
+            diar_speaker_label=diar_label,
+            voice_profile_id=None,
+            confidence=float(existing_assignment.get("confidence") or 0.0),
+            candidate_matches=existing_assignment.get("candidate_matches_json"),
+            low_confidence=False,
+            review_state=SPEAKER_REVIEW_STATE_LOCAL_LABEL,
+            local_display_name=clean_local_label,
+            settings=_settings,
+        )
+    except ValueError as exc:
+        return HTMLResponse(str(exc), status_code=422)
+    return RedirectResponse(
+        _recording_inspector_return_path(
+            recording_id,
+            return_to=return_to,
+            return_tab=return_tab or "speakers",
+            status=status,
+            q=q,
+            limit=limit,
+            offset=offset,
+            speakers_notice=f"Saved a recording-only label for {diar_label}.",
         ),
         status_code=303,
     )
@@ -4002,6 +4203,7 @@ async def ui_create_and_assign_speaker(
         diar_speaker_label=diar_label,
         voice_profile_id=profile_id,
         confidence=1.0,
+        review_state=SPEAKER_REVIEW_STATE_CONFIRMED_CANONICAL,
         settings=_settings,
     )
     _LOG.info(
@@ -4019,6 +4221,7 @@ async def ui_create_and_assign_speaker(
             q=q,
             limit=limit,
             offset=offset,
+            speakers_notice=f"Created canonical speaker {clean_name} and confirmed {diar_label}.",
         ),
         status_code=303,
     )

@@ -129,7 +129,11 @@ Operational setup, failure handling, backup/restore, and upgrade steps are docum
 - `voice_samples` can store many samples per canonical speaker, including provenance and review metadata for low-confidence matches.
 - Duplicate speakers can be merged backend-side without losing samples, assignments, or routing references.
 - `/voices` is the canonical speaker management page: inspect linked samples, review likely duplicates, and merge duplicate speakers into the surviving canonical record.
-- `/recordings/{recording_id}?tab=speakers` lets you remap diarized labels (`S1`, `S2`, ...) to canonical speakers or leave them unmatched; exports render the corrected canonical names as `Name (Sx)`.
+- `/recordings/{recording_id}?tab=speakers` now makes speaker review explicit:
+  - `Confirm global match` links the diarized label to a canonical speaker across recordings.
+  - `Keep unknown` closes review without creating or linking a canonical identity.
+  - `Local label only` names the speaker just for the current recording and its export.
+  - `Add sample` stays separate from mapping and should be used only for trusted clean clips.
 - Speaker snippets are now purity-ranked voice samples built from single-speaker material instead of wide playback windows.
 - Snippet export now runs immediately after `speaker_turns`, before LLM summarization, so `derived/snippets_manifest.json` and clean clips can appear while long summaries are still processing.
 - The Speakers tab now labels snippet state as pending, generating, ready, failed, or legacy/unavailable instead of collapsing empty states into one generic placeholder.

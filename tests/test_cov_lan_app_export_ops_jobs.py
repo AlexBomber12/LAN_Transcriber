@@ -136,20 +136,43 @@ def test_exporter_section_helpers_cover_optional_paths(monkeypatch: pytest.Monke
         exporter,
         "list_speaker_assignments",
         lambda *_a, **_k: [
-            {"diar_speaker_label": "S1", "voice_profile_name": "Alex"},
+            {
+                "diar_speaker_label": "S1",
+                "voice_profile_name": "Alex",
+                "review_state": "confirmed_canonical",
+            },
+            {
+                "diar_speaker_label": "S2",
+                "local_display_name": "Meeting Guest",
+                "review_state": "local_label",
+            },
+            {
+                "diar_speaker_label": "S3",
+                "voice_profile_name": "Suggested",
+                "review_state": "system_suggested",
+            },
             {"diar_speaker_label": " ", "voice_profile_name": "skip"},
-            {"diar_speaker_label": "S2", "voice_profile_name": " "},
         ],
     )
-    assert exporter._speaker_name_map("rec-1", settings=SimpleNamespace()) == {"S1": "Alex"}
+    assert exporter._speaker_name_map("rec-1", settings=SimpleNamespace()) == {
+        "S1": "Alex",
+        "S2": "Meeting Guest",
+    }
+    assert exporter._speaker_review_state({"local_display_name": "Meeting Guest"}) == "local_label"
+    assert exporter._speaker_review_state(  # noqa: SLF001
+        {"voice_profile_id": 1, "voice_profile_name": "Alex"}
+    ) == "confirmed_canonical"
+    assert exporter._speaker_review_state(  # noqa: SLF001
+        {"candidate_matches_json": [{"voice_profile_id": 1, "score": 0.4}]}
+    ) == "system_suggested"
     assert exporter._speaker_display_label("S1", speaker_name_map={"S1": "Alex"}) == "Alex (S1)"
     assert exporter._speaker_display_label("S2", speaker_name_map={"S1": "Alex"}) == "S2"
     mapped_transcript = exporter._transcript_section(
         {"text": "fallback transcript"},
-        [{"speaker": "S1", "text": "hello"}],
-        speaker_name_map={"S1": "Alex"},
+        [{"speaker": "S2", "text": "hello"}],
+        speaker_name_map={"S2": "Meeting Guest"},
     )
-    assert mapped_transcript == ["## Transcript", "- **Alex (S1):** hello"]
+    assert mapped_transcript == ["## Transcript", "- **Meeting Guest (S2):** hello"]
 
 
 def test_build_onenote_markdown_language_detection_paths(tmp_path: Path):

@@ -10,7 +10,14 @@ import zipfile
 from typing import Any
 
 from .config import AppSettings
-from .db import get_recording, list_speaker_assignments
+from .db import (
+    SPEAKER_REVIEW_STATE_CONFIRMED_CANONICAL,
+    SPEAKER_REVIEW_STATE_KEPT_UNKNOWN,
+    SPEAKER_REVIEW_STATE_LOCAL_LABEL,
+    SPEAKER_REVIEW_STATE_SYSTEM_SUGGESTED,
+    get_recording,
+    list_speaker_assignments,
+)
 
 _OPTIONAL_DERIVED_FILES = (
     "summary.json",
@@ -190,10 +197,39 @@ def _speaker_name_map(
     name_map: dict[str, str] = {}
     for row in list_speaker_assignments(recording_id, settings=settings):
         diar_label = _normalize_text(row.get("diar_speaker_label") or "")
-        display_name = _normalize_text(row.get("voice_profile_name") or "")
+        display_name = _normalize_text(_speaker_assignment_display_name(row))
         if diar_label and display_name:
             name_map[diar_label] = display_name
     return name_map
+
+
+def _speaker_review_state(row: dict[str, Any]) -> str:
+    review_state = _normalize_text(row.get("review_state") or "").lower()
+    if review_state in {
+        SPEAKER_REVIEW_STATE_SYSTEM_SUGGESTED,
+        SPEAKER_REVIEW_STATE_CONFIRMED_CANONICAL,
+        SPEAKER_REVIEW_STATE_KEPT_UNKNOWN,
+        SPEAKER_REVIEW_STATE_LOCAL_LABEL,
+    }:
+        return review_state
+    if _normalize_text(row.get("local_display_name") or ""):
+        return SPEAKER_REVIEW_STATE_LOCAL_LABEL
+    if row.get("voice_profile_id") is not None and _normalize_text(
+        row.get("voice_profile_name") or ""
+    ):
+        return SPEAKER_REVIEW_STATE_CONFIRMED_CANONICAL
+    if row.get("low_confidence") or bool(row.get("candidate_matches_json")):
+        return SPEAKER_REVIEW_STATE_SYSTEM_SUGGESTED
+    return SPEAKER_REVIEW_STATE_SYSTEM_SUGGESTED
+
+
+def _speaker_assignment_display_name(row: dict[str, Any]) -> str:
+    review_state = _speaker_review_state(row)
+    if review_state == SPEAKER_REVIEW_STATE_LOCAL_LABEL:
+        return _normalize_text(row.get("local_display_name") or "")
+    if review_state == SPEAKER_REVIEW_STATE_CONFIRMED_CANONICAL:
+        return _normalize_text(row.get("voice_profile_name") or "")
+    return ""
 
 
 def _speaker_display_label(

@@ -43,6 +43,16 @@ _GLOSSARY_SOURCES = {
     "speaker_bank",
     "system",
 }
+SPEAKER_REVIEW_STATE_SYSTEM_SUGGESTED = "system_suggested"
+SPEAKER_REVIEW_STATE_CONFIRMED_CANONICAL = "confirmed_canonical"
+SPEAKER_REVIEW_STATE_KEPT_UNKNOWN = "kept_unknown"
+SPEAKER_REVIEW_STATE_LOCAL_LABEL = "local_label"
+_SPEAKER_REVIEW_STATES = {
+    SPEAKER_REVIEW_STATE_SYSTEM_SUGGESTED,
+    SPEAKER_REVIEW_STATE_CONFIRMED_CANONICAL,
+    SPEAKER_REVIEW_STATE_KEPT_UNKNOWN,
+    SPEAKER_REVIEW_STATE_LOCAL_LABEL,
+}
 _LLM_CHUNK_STATUSES = {
     "planned",
     "running",
@@ -91,6 +101,8 @@ SELECT
     sa.confidence,
     sa.candidate_matches_json,
     sa.low_confidence,
+    sa.review_state,
+    sa.local_display_name,
     sa.updated_at,
     vp.display_name AS voice_profile_name
 FROM speaker_assignments AS sa
@@ -397,6 +409,47 @@ def _normalise_candidate_matches(
             int(item["voice_profile_id"]),
         ),
     )
+
+
+def _normalise_local_display_name(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = " ".join(str(value).split()).strip()
+    return normalized or None
+
+
+def _normalise_speaker_review_state(
+    review_state: str | None,
+    *,
+    voice_profile_id: int | None,
+    local_display_name: str | None,
+    keep_unmatched: bool,
+) -> str | None:
+    if review_state is None:
+        if local_display_name and voice_profile_id is not None:
+            raise ValueError("local_display_name cannot be combined with voice_profile_id")
+        if local_display_name:
+            return SPEAKER_REVIEW_STATE_LOCAL_LABEL
+        if voice_profile_id is not None:
+            return SPEAKER_REVIEW_STATE_CONFIRMED_CANONICAL
+        if keep_unmatched:
+            return SPEAKER_REVIEW_STATE_KEPT_UNKNOWN
+        return None
+
+    normalized = str(review_state).strip().lower()
+    if normalized not in _SPEAKER_REVIEW_STATES:
+        options = ", ".join(sorted(_SPEAKER_REVIEW_STATES))
+        raise ValueError(f"Unsupported speaker review_state: {normalized} ({options})")
+    if normalized == SPEAKER_REVIEW_STATE_CONFIRMED_CANONICAL and voice_profile_id is None:
+        raise ValueError("confirmed_canonical requires voice_profile_id")
+    if normalized == SPEAKER_REVIEW_STATE_LOCAL_LABEL:
+        if voice_profile_id is not None:
+            raise ValueError("local_label cannot set voice_profile_id")
+        if not local_display_name:
+            raise ValueError("local_label requires local_display_name")
+    if normalized == SPEAKER_REVIEW_STATE_KEPT_UNKNOWN and voice_profile_id is not None:
+        raise ValueError("kept_unknown cannot set voice_profile_id")
+    return normalized
 
 
 def _normalise_embedding(embedding: Sequence[float] | None) -> list[float] | None:
@@ -3408,6 +3461,8 @@ def set_speaker_assignment(
     confidence: float = 1.0,
     candidate_matches: Sequence[dict[str, Any]] | None = None,
     low_confidence: bool | None = None,
+    review_state: str | None = None,
+    local_display_name: str | None = None,
     keep_unmatched: bool = False,
     settings: AppSettings | None = None,
 ) -> dict[str, Any] | None:
@@ -3415,10 +3470,22 @@ def set_speaker_assignment(
     diar_label = str(diar_speaker_label).strip()
     if not diar_label:
         raise ValueError("diar_speaker_label is required")
+    profile_id = None if voice_profile_id is None else int(voice_profile_id)
     normalized_candidates = _normalise_candidate_matches(candidate_matches)
+    normalized_local_display_name = _normalise_local_display_name(local_display_name)
+    resolved_review_state = _normalise_speaker_review_state(
+        review_state,
+        voice_profile_id=profile_id,
+        local_display_name=normalized_local_display_name,
+        keep_unmatched=keep_unmatched,
+    )
     score = round(_clamp_score(confidence, default=0.0), 4)
     with connect(settings) as conn:
-        if voice_profile_id is None and not keep_unmatched:
+        if (
+            profile_id is None
+            and normalized_local_display_name is None
+            and resolved_review_state is None
+        ):
             conn.execute(
                 """
                 DELETE FROM speaker_assignments
@@ -3428,12 +3495,13 @@ def set_speaker_assignment(
             )
             conn.commit()
             return None
-        profile_id = None if voice_profile_id is None else int(voice_profile_id)
-        resolved_low_confidence = (
-            bool(low_confidence)
-            if low_confidence is not None
-            else profile_id is None and bool(normalized_candidates)
-        )
+        resolved_low_confidence = False
+        if resolved_review_state == SPEAKER_REVIEW_STATE_SYSTEM_SUGGESTED:
+            resolved_low_confidence = (
+                bool(low_confidence)
+                if low_confidence is not None
+                else profile_id is None and bool(normalized_candidates)
+            )
         now = _utc_now()
         conn.execute(
             """
@@ -3444,14 +3512,18 @@ def set_speaker_assignment(
                 confidence,
                 candidate_matches_json,
                 low_confidence,
+                review_state,
+                local_display_name,
                 updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(recording_id, diar_speaker_label) DO UPDATE SET
                 voice_profile_id = excluded.voice_profile_id,
                 confidence = excluded.confidence,
                 candidate_matches_json = excluded.candidate_matches_json,
                 low_confidence = excluded.low_confidence,
+                review_state = excluded.review_state,
+                local_display_name = excluded.local_display_name,
                 updated_at = excluded.updated_at
             """,
             (
@@ -3461,6 +3533,12 @@ def set_speaker_assignment(
                 score,
                 json.dumps(normalized_candidates, ensure_ascii=True),
                 1 if resolved_low_confidence else 0,
+                resolved_review_state or SPEAKER_REVIEW_STATE_KEPT_UNKNOWN,
+                (
+                    normalized_local_display_name
+                    if resolved_review_state == SPEAKER_REVIEW_STATE_LOCAL_LABEL
+                    else None
+                ),
                 now,
             ),
         )
@@ -4410,6 +4488,10 @@ __all__ = [
     "create_glossary_entry",
     "update_glossary_entry",
     "delete_glossary_entry",
+    "SPEAKER_REVIEW_STATE_SYSTEM_SUGGESTED",
+    "SPEAKER_REVIEW_STATE_CONFIRMED_CANONICAL",
+    "SPEAKER_REVIEW_STATE_KEPT_UNKNOWN",
+    "SPEAKER_REVIEW_STATE_LOCAL_LABEL",
     "list_voice_profiles",
     "get_voice_profile",
     "create_voice_profile",

@@ -176,6 +176,7 @@ def test_assign_speakers_to_recording_persists_matches_and_skips_empty_rows(tmp_
     stored_rows = list_speaker_assignments("rec-speaker-bank-1", settings=cfg)
     assert len(stored_rows) == 2
     assert [row["voice_profile_id"] for row in stored_rows] == [left["id"], right["id"]]
+    assert {row["review_state"] for row in stored_rows} == {"system_suggested"}
 
 
 def test_register_voice_sample_attaches_or_defers_based_on_confidence(tmp_path: Path):
