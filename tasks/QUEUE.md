@@ -545,7 +545,7 @@ Queue (in order)
 - Depends on: PR-UI-CONTROL-CENTER-04 and PR-SPEAKER-UX-01 and PR-SPEAKER-BANK-CANONICAL-01 and PR-SNIPPETS-UI-STATE-01
 
 109) PR-CORRECTIONS-UX-01: Redesign Glossary into a simpler Corrections / ASR Memory operator UX with quick-entry from recordings
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-CORRECTIONS-UX-01.md
 - Depends on: PR-UI-CONTROL-CENTER-04 and PR-GLOSSARY-CORRECTIONS-01
 

@@ -411,7 +411,9 @@ def test_recordings_panel_context_clamps_offset_to_last_available_page(
     assert glossary_summary["entry_count"] == 2
     assert glossary_summary["entries"][0]["aliases"] == ["Sandia"]
     assert glossary_summary["entries"][1]["aliases"] == []
-    assert glossary_summary["entries"][1]["source_label"] == "manual"
+    assert glossary_summary["entries"][0]["kind"] == "Person or speaker name"
+    assert glossary_summary["entries"][1]["kind"] == "Project"
+    assert glossary_summary["entries"][1]["source_label"] == "Always-on memory"
 
 
 def test_display_helpers_cover_timezone_duration_and_prepare_recording(
@@ -940,6 +942,8 @@ def test_asr_glossary_context_and_route_error_paths(
     assert glossary_ctx["entries"][0]["sources_label"] == "correction, speaker bank"
     assert glossary_ctx["entry_count"] == 1
     assert glossary_ctx["term_count"] == 2
+    assert glossary_ctx["manage_href"] == "/glossary"
+    assert glossary_ctx["quick_add_href"] == f"/glossary?recording_id={recording_id}"
 
     (derived / "asr_glossary.json").write_text(
         json.dumps({"entries": "bad"}),
@@ -948,6 +952,7 @@ def test_asr_glossary_context_and_route_error_paths(
     glossary_ctx_no_entries = ui_routes._asr_glossary_context(recording_id, cfg)  # noqa: SLF001
     assert glossary_ctx_no_entries["available"] is True
     assert glossary_ctx_no_entries["entries"] == []
+    assert glossary_ctx_no_entries["quick_add_href"].endswith(recording_id)
 
     assert (
         c.post(
@@ -1000,6 +1005,48 @@ def test_asr_glossary_context_and_route_error_paths(
         existing_metadata={"recording_id": "rec-1", "import_source": "csv"},
     )
     assert payload["metadata"] == {"import_source": "csv"}
+    assert ui_routes._glossary_kind_label(None) == "General term"  # noqa: SLF001
+    assert ui_routes._glossary_kind_label("term") == "General term"  # noqa: SLF001
+    assert ui_routes._glossary_kind_label("custom_value") == "Custom Value"  # noqa: SLF001
+    assert ui_routes._glossary_source_label(None) == "Always-on memory"  # noqa: SLF001
+    assert ui_routes._glossary_source_label("custom_value") == "Custom Value"  # noqa: SLF001
+    assert ui_routes._glossary_quick_entry_href() == "/glossary"  # noqa: SLF001
+    assert ui_routes._glossary_quick_entry_href(  # noqa: SLF001
+        recording_id=" rec-quick-1 ",
+        canonical_text=" Sander ",
+        aliases_text="Sandia",
+        kind="person",
+        source="manual",
+        notes=" Seen on call ",
+    ) == (
+        "/glossary?recording_id=rec-quick-1&canonical_text=Sander&"
+        "aliases_text=Sandia&kind=person&source=manual&notes=Seen+on+call"
+    )
+    defaults = ui_routes._glossary_form_defaults(  # noqa: SLF001
+        canonical_text="  Sander  ",
+        aliases_text=" Sandia ",
+        kind="unsupported",
+        source="unsupported",
+        notes=" Seen on call ",
+        recording_id=" rec-quick-2 ",
+    )
+    assert defaults == {
+        "canonical_text": "Sander",
+        "aliases_text": "Sandia",
+        "kind": "term",
+        "source": "correction",
+        "enabled": True,
+        "notes": "Seen on call",
+        "recording_id": "rec-quick-2",
+        "advanced_open": True,
+        "prefill_notice": (
+            "Prefilled from recording rec-quick-2. "
+            "The recording link is already attached under Advanced."
+        ),
+    }
+    blank_defaults = ui_routes._glossary_form_defaults()  # noqa: SLF001
+    assert blank_defaults["advanced_open"] is False
+    assert blank_defaults["prefill_notice"] is None
 
 
 def test_fallback_turns_and_path_helpers(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

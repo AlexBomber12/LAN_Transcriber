@@ -109,9 +109,9 @@ Operational setup, failure handling, backup/restore, and upgrade steps are docum
    - Uploaded/processed recordings are matched automatically to nearby calendar events using the corrected upload capture time when filename provenance is available.
    - Weak or suspicious capture timestamps keep calendar matching conservative; ambiguous candidates remain reviewable and manually overrideable on the recording `calendar` tab.
    - Duration is taken from `derived/audio_sanitized.wav` when present, then falls back to the raw upload.
-   - The app now uses glossary/correction memory instead of ASR model training: manage manual terms and future corrections on `/glossary`.
-   - Glossary sources are merged deterministically from stored manual/correction entries, canonical speaker names, selected calendar context, and the current project name/keywords when available.
-   - Each processed recording writes `derived/asr_glossary.json`, and the overview page shows which glossary terms were actually forwarded to ASR.
+   - The app now uses Corrections / ASR memory instead of ASR model training: manage manual terms and future corrections on `/glossary` (labeled `Corrections` in the UI).
+   - Corrections sources are merged deterministically from stored manual/correction entries, canonical speaker names, selected calendar context, and the current project name/keywords when available.
+   - Each processed recording writes `derived/asr_glossary.json`, and the overview page shows which saved terms were actually forwarded to ASR. From recording detail, `Add correction from this recording` opens `/glossary` with the recording context prefilled.
 6. Export results:
    - Copy markdown from the export tab for manual OneNote paste.
    - Download ZIP from `/ui/recordings/{recording_id}/export.zip`.
@@ -142,10 +142,12 @@ Operational setup, failure handling, backup/restore, and upgrade steps are docum
 - Synthetic silence fallback was removed on purpose. Inspect `derived/snippets_manifest.json` to see accepted clips, rejected candidates, overlap, and extraction failures.
 - When diarization falls back to degraded mode or a speaker match is low confidence, the recording detail page shows an explicit warning instead of silently trusting the labels.
 
-## ASR glossary and correction memory
+## Corrections / ASR memory
 
-- `/glossary` stores manual ASR hints and correction-memory entries as a canonical term plus aliases / observed wrong spellings.
+- `/glossary` stores manual ASR hints and correction-memory entries as a canonical term plus aliases / observed wrong spellings. The route stays `/glossary`, but the operator-facing UI labels it `Corrections`.
+- The page is intentionally split into a basic flow for `Correct term`, `Wrong variants`, and an optional note, plus an advanced section for source/type/recording linkage.
 - Use `source=manual` for domain terms you always want available and `source=correction` for previously mis-transcribed names such as `canonical=Sander`, `aliases=[Sandia]`.
+- From a recording overview, use `Add correction from this recording` to open the form with the current `recording_id` already attached.
 - The worker builds a bounded per-recording glossary from stored entries, speaker bank names, selected calendar data, and project context, then forwards that context to WhisperX when the active transcribe callable supports `initial_prompt` and/or `hotwords`.
 - The resulting per-recording artifact lives at `derived/asr_glossary.json` for inspection and troubleshooting.
 

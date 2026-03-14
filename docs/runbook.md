@@ -67,9 +67,9 @@ docker compose run --rm api python -m lan_app.healthchecks app
    - Uploaded and processed recordings are matched automatically to nearby calendar events using the corrected upload capture time when filename provenance is available.
    - Weak or suspicious capture timestamps keep calendar matching conservative; use the recording `calendar` tab to review candidates and manually override the selected event when needed.
    - Duration is sourced from `derived/audio_sanitized.wav` when it exists, otherwise from the raw upload.
-   - The app uses glossary/correction memory instead of ASR model training. Manage manual terms and saved corrections on `/glossary`.
-   - Glossary sources are merged deterministically from stored manual/correction entries, speaker-bank names, selected calendar context, and project context when available.
-   - Each processed recording writes `derived/asr_glossary.json`, and the overview page shows the glossary terms that were actually sent to ASR.
+   - The app uses Corrections / ASR memory instead of ASR model training. Manage manual terms and saved corrections on `/glossary` (labeled `Corrections` in the UI).
+   - Corrections sources are merged deterministically from stored manual/correction entries, speaker-bank names, selected calendar context, and project context when available.
+   - Each processed recording writes `derived/asr_glossary.json`, and the overview page shows the saved terms that were actually sent to ASR. Use `Add correction from this recording` to jump into `/glossary` with recording context prefilled.
    - Canonical speaker records keep one active person entry with many samples; low-confidence matches stay reviewable instead of auto-merging.
    - Use the `speakers` tab to make an explicit review decision per diarized speaker:
      - `Confirm global match` when the identity should map to a canonical person across recordings.
@@ -86,13 +86,14 @@ docker compose run --rm api python -m lan_app.healthchecks app
 6. Download export bundle from `GET /ui/recordings/{recording_id}/export.zip`.
 7. Deleting a recording removes the DB row plus `/data/recordings/<recording_id>/raw`, `derived`, `logs`, and other remaining files under that recording root. If cleanup fails, delete returns an error.
 
-### 1.2.2 Glossary and correction-memory workflow
+### 1.2.2 Corrections / ASR memory workflow
 
 1. Open `/glossary`.
-2. Add a canonical term and optional aliases / observed wrong spellings.
+2. In the basic section, add the correct term, wrong variants / observed wrong spellings, and an optional operator note.
 3. Use `source=manual` for always-on domain terminology and `source=correction` for future ASR memory.
-4. Optional metadata like `Observed in recording` can point back to the recording where you noticed the issue.
-5. After processing a recording, inspect `derived/asr_glossary.json` or the recording overview page to confirm the terms that were applied.
+4. Expand `Advanced fields` when you need to link the correction to a recording, change the entry type, or pause it without deleting it.
+5. From a recording overview, use `Add correction from this recording` to prefill the recording link automatically.
+6. After processing a recording, inspect `derived/asr_glossary.json` or the recording overview page to confirm the terms that were applied.
 
 ### 1.2.1 Canonical speaker merges
 

@@ -1,96 +1,121 @@
 {% extends "base.html" %}
-{% block title %}Glossary – LAN Transcriber{% endblock %}
+{% block title %}Corrections – LAN Transcriber{% endblock %}
 {% block content %}
-{% set editing = editing_entry or {} %}
-<h1>Glossary</h1>
+{% set form_state = form_entry or {} %}
+{% set is_editing = editing_entry is not none %}
+<h1>Corrections / ASR Memory</h1>
 
 {% set helper_message = {
-  "text": "Manage manual ASR terms and correction memory. Store canonical spellings plus observed wrong variants so future recordings can reuse them without model retraining."
+  "text": "Save the right spelling once, then let future recordings reuse it. This page remembers names, project terms, and common ASR mistakes for later ASR prompts. It does not retrain the model."
 } %}
 {% include "partials/control_center/helper_message.html" %}
 
 <div class="section">
-  <h2>{% if editing %}Edit entry #{{ editing.id }}{% else %}Create glossary entry{% endif %}</h2>
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:10px;max-width:920px">
+    <div style="background:#fff;border:1px solid #ccc;padding:10px">
+      <h2 style="margin-top:0">What to save here</h2>
+      <p>Store the correct term plus the wrong spellings or phrases operators keep seeing in transcripts.</p>
+    </div>
+    <div style="background:#fff;border:1px solid #ccc;padding:10px">
+      <h2 style="margin-top:0">What it changes</h2>
+      <p>These entries help future recordings reuse known spellings. They do not edit old transcripts or retrain models.</p>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h2>{% if is_editing %}Edit correction #{{ editing_entry.id }}{% else %}Add correction{% endif %}</h2>
   <form
+    id="glossary-form"
     method="post"
-    action="{% if editing %}/glossary/{{ editing.id }}{% else %}/glossary{% endif %}"
+    action="{% if is_editing %}/glossary/{{ editing_entry.id }}{% else %}/glossary{% endif %}"
     style="background:#fff;border:1px solid #ccc;padding:10px;max-width:920px"
   >
+    {% if form_state.prefill_notice %}
+    <p style="margin:0 0 10px 0;padding:8px 10px;border:1px solid #99b;background:#f8f9ff;color:#334155">{{ form_state.prefill_notice }}</p>
+    {% endif %}
     <div class="form-row">
-      <label for="glossary-canonical">Canonical term</label>
+      <label for="glossary-canonical">Correct term</label>
       <input
         id="glossary-canonical"
         name="canonical_text"
         type="text"
         required
         maxlength="160"
-        value="{{ editing.canonical_text or '' }}"
+        value="{{ form_state.canonical_text or '' }}"
+        placeholder="Example: Sander"
         style="min-width:320px"
       >
     </div>
     <div class="form-row" style="align-items:flex-start">
-      <label for="glossary-aliases">Aliases / variants</label>
+      <label for="glossary-aliases">Wrong variants</label>
       <textarea
         id="glossary-aliases"
         name="aliases_text"
         rows="4"
         style="min-width:320px"
-        placeholder="One alias per line, or comma-separated"
-      >{{ editing.aliases_text or '' }}</textarea>
+        placeholder="One per line, or comma-separated"
+      >{{ form_state.aliases_text or '' }}</textarea>
     </div>
     <div class="form-row">
-      <label for="glossary-kind">Kind</label>
-      <select id="glossary-kind" name="kind">
-        {% for option in kind_options %}
-        <option value="{{ option }}" {% if (editing.kind or 'term') == option %}selected{% endif %}>{{ option }}</option>
-        {% endfor %}
-      </select>
-    </div>
-    <div class="form-row">
-      <label for="glossary-source">Source</label>
-      <select id="glossary-source" name="source">
-        {% for option in source_options %}
-        <option value="{{ option }}" {% if (editing.source or 'manual') == option %}selected{% endif %}>{{ option }}</option>
-        {% endfor %}
-      </select>
-    </div>
-    <div class="form-row">
-      <label for="glossary-notes">Notes</label>
+      <label for="glossary-notes">Operator note</label>
       <input
         id="glossary-notes"
         name="notes"
         type="text"
         maxlength="240"
-        value="{{ editing.notes or '' }}"
+        value="{{ form_state.notes or '' }}"
+        placeholder="Optional reminder for reviewers"
         style="min-width:420px"
       >
     </div>
-    <div class="form-row">
-      <label for="glossary-recording">Observed in recording</label>
-      <input
-        id="glossary-recording"
-        name="recording_id"
-        type="text"
-        maxlength="160"
-        value="{{ editing.recording_id or '' }}"
-        placeholder="Optional recording ID"
-        style="min-width:280px"
-      >
-    </div>
-    <div class="form-row">
-      <label for="glossary-enabled">Enabled</label>
-      <input
-        id="glossary-enabled"
-        type="checkbox"
-        name="enabled"
-        value="1"
-        {% if editing.enabled is not defined or editing.enabled %}checked{% endif %}
-      >
-      <span style="font-size:12px;color:#555">Disabled entries stay stored but are omitted from new ASR prompts.</span>
-    </div>
+    <p style="margin:6px 0 0 0;color:#555">Basic mode is usually enough: save the correct term, the common mistakes, and an optional note.</p>
+    <details style="margin-top:10px" {% if form_state.advanced_open %}open{% endif %}>
+      <summary style="cursor:pointer;font-weight:bold">Advanced fields</summary>
+      <p style="margin:8px 0;color:#555">Use these when you need to change the category, track where the correction came from, or pause it without deleting it.</p>
+      <div class="form-row">
+        <label for="glossary-kind">Entry type</label>
+        <select id="glossary-kind" name="kind">
+          {% for option in kind_options %}
+          <option value="{{ option.value }}" {% if (form_state.kind or 'term') == option.value %}selected{% endif %}>{{ option.label }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="form-row">
+        <label for="glossary-source">Entry source</label>
+        <select id="glossary-source" name="source">
+          {% for option in source_options %}
+          <option value="{{ option.value }}" {% if (form_state.source or 'correction') == option.value %}selected{% endif %}>{{ option.label }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="form-row">
+        <label for="glossary-recording">Linked recording</label>
+        <input
+          id="glossary-recording"
+          name="recording_id"
+          type="text"
+          maxlength="160"
+          value="{{ form_state.recording_id or '' }}"
+          placeholder="Optional recording ID"
+          style="min-width:280px"
+        >
+      </div>
+      <div class="form-row">
+        <label for="glossary-enabled">Use in future recordings</label>
+        <input
+          id="glossary-enabled"
+          type="checkbox"
+          name="enabled"
+          value="1"
+          {% if form_state.enabled is not defined or form_state.enabled %}checked{% endif %}
+        >
+        <span style="font-size:12px;color:#555">Uncheck to keep it saved but paused.</span>
+      </div>
+    </details>
     <div class="filters" style="margin-top:8px">
-      <button class="btn" type="submit">{% if editing %}Save entry{% else %}Add entry{% endif %}</button>
-      {% if editing %}
+      <button class="btn" type="submit">{% if is_editing %}Save correction{% else %}Save correction{% endif %}</button>
+      {% if is_editing %}
       <a href="/glossary" class="btn" style="text-decoration:none">Cancel edit</a>
       {% endif %}
     </div>
@@ -98,18 +123,16 @@
 </div>
 
 <div class="section">
-  <h2>Stored entries</h2>
+  <h2>Saved corrections</h2>
   {% if items %}
   <table>
     <thead>
       <tr>
-        <th>ID</th>
-        <th>Canonical</th>
-        <th>Aliases</th>
-        <th>Kind</th>
-        <th>Source</th>
-        <th>Status</th>
-        <th>Observed in</th>
+        <th>Correct term</th>
+        <th>Common mistakes</th>
+        <th>Type</th>
+        <th>Where it came from</th>
+        <th>Future use</th>
         <th>Notes</th>
         <th>Updated</th>
         <th>Actions</th>
@@ -118,18 +141,30 @@
     <tbody>
       {% for item in items %}
       <tr id="glossary-{{ item.id }}">
-        <td>{{ item.id }}</td>
         <td>{{ item.canonical_text }}</td>
-        <td>{{ item.aliases|join(', ') if item.aliases else '—' }}</td>
-        <td>{{ item.kind }}</td>
-        <td>{{ item.source_label }}</td>
-        <td>{% if item.enabled %}Enabled{% else %}Disabled{% endif %}</td>
-        <td>{{ item.recording_id or '—' }}</td>
-        <td>{{ item.notes or '—' }}</td>
+        <td style="white-space:normal;max-width:260px">
+          {% if item.aliases %}
+            {% for alias in item.aliases %}
+            <div>{{ alias }}</div>
+            {% endfor %}
+          {% else %}
+          <span style="color:#666">No saved mistakes yet</span>
+          {% endif %}
+        </td>
+        <td>{{ item.kind_label }}</td>
+        <td style="white-space:normal;max-width:220px">
+          <div>{{ item.source_label }}</div>
+          <div style="color:#666">{{ item.origin_context }}</div>
+        </td>
+        <td style="white-space:normal;max-width:220px">
+          <div>{{ item.status_label }}</div>
+          <div style="color:#666">{{ item.status_hint }}</div>
+        </td>
+        <td style="white-space:normal;max-width:260px">{{ item.notes or '—' }}</td>
         <td>{{ item.updated_at[:19].replace('T', ' ') if item.updated_at else '—' }}</td>
         <td style="white-space:nowrap">
           <a href="/glossary?edit_id={{ item.id }}#glossary-{{ item.id }}" class="btn" style="text-decoration:none">Edit</a>
-          <form method="post" action="/glossary/{{ item.id }}/delete" style="display:inline" onsubmit="return confirm('Delete glossary entry ' + this.dataset.name + '?')" data-name="{{ item.canonical_text }}">
+          <form method="post" action="/glossary/{{ item.id }}/delete" style="display:inline" onsubmit="return confirm('Delete correction ' + this.dataset.name + '?')" data-name="{{ item.canonical_text }}">
             <button class="btn btn-danger" type="submit">Delete</button>
           </form>
         </td>
@@ -138,7 +173,7 @@
     </tbody>
   </table>
   {% else %}
-  <p class="placeholder">No glossary entries yet. Add a manual term or a correction-memory entry above.</p>
+  <p class="placeholder">No corrections saved yet. Add a remembered spelling or common mistake above.</p>
   {% endif %}
 </div>
 {% endblock %}

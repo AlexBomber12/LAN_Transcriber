@@ -765,8 +765,10 @@ def test_recording_detail_overview_shows_asr_glossary_context(tmp_path, monkeypa
     c = TestClient(api.app, follow_redirects=True)
     r = c.get("/recordings/rec-ui-glossary-1")
     assert r.status_code == 200
-    assert "ASR Glossary" in r.text
-    assert "Manage glossary" in r.text
+    assert "Corrections / ASR Memory" in r.text
+    assert "Manage corrections" in r.text
+    assert "Add correction from this recording" in r.text
+    assert "/glossary?recording_id=rec-ui-glossary-1#glossary-form" in r.text
     assert "Sander" in r.text
     assert "Sandia" in r.text
     assert "correction, speaker bank" in r.text
@@ -2457,6 +2459,17 @@ def test_glossary_page_create_edit_and_delete(tmp_path, monkeypatch):
     init_db(cfg)
     c = TestClient(api.app, follow_redirects=False)
 
+    prefilled = TestClient(api.app, follow_redirects=True).get(
+        "/glossary?recording_id=rec-ui-glossary-create-1&source=correction&kind=project&notes=Seen+on+call"
+    )
+    assert prefilled.status_code == 200
+    assert "Corrections / ASR Memory" in prefilled.text
+    assert "Prefilled from recording rec-ui-glossary-create-1." in prefilled.text
+    assert "Add correction" in prefilled.text
+    assert "Advanced fields" in prefilled.text
+    assert 'value="Seen on call"' in prefilled.text
+    assert 'value="rec-ui-glossary-create-1"' in prefilled.text
+
     created = c.post(
         "/glossary",
         data={
@@ -2488,7 +2501,7 @@ def test_glossary_page_create_edit_and_delete(tmp_path, monkeypatch):
         f"/glossary?edit_id={created_entry['id']}"
     )
     assert edit_page.status_code == 200
-    assert "Edit entry" in edit_page.text
+    assert "Edit correction" in edit_page.text
 
     updated = c.post(
         f"/glossary/{created_entry['id']}",
@@ -2515,9 +2528,11 @@ def test_glossary_page_create_edit_and_delete(tmp_path, monkeypatch):
 
     listing = TestClient(api.app, follow_redirects=True).get("/glossary")
     assert listing.status_code == 200
-    assert "Glossary" in listing.text
+    assert "Corrections / ASR Memory" in listing.text
     assert "Sander Van Doorn" in listing.text
-    assert "Disabled" in listing.text
+    assert "Always-on memory" in listing.text
+    assert "Saved but paused" in listing.text
+    assert "Linked to recording rec-ui-glossary-create-2" in listing.text
 
     deleted = c.post(f"/glossary/{created_entry['id']}/delete")
     assert deleted.status_code == 303
@@ -2540,10 +2555,11 @@ def test_glossary_summary_fragment_endpoint(tmp_path: Path, monkeypatch: pytest.
     c = TestClient(api.app, follow_redirects=True)
     r = c.get("/ui/control-center/glossary-summary")
     assert r.status_code == 200
-    assert "Glossary Snapshot" in r.text
+    assert "Corrections Snapshot" in r.text
     assert "Sander" in r.text
     assert "Sandia" in r.text
-    assert "Manage glossary" in r.text
+    assert "Always-on memory" in r.text
+    assert "Manage corrections" in r.text
     assert "<html" not in r.text
 
 
