@@ -174,14 +174,16 @@
   <p style="white-space:pre-wrap">{{ summary_data.emotional_summary or '—' }}</p>
 
   <div class="section" style="margin-top:10px">
-    <h2 style="margin-top:0">ASR Glossary</h2>
+    <h2 style="margin-top:0">Corrections / ASR Memory</h2>
     <div class="filters" style="margin-bottom:6px">
-      <a href="/glossary" class="btn" style="text-decoration:none">Manage glossary</a>
+      <a href="{{ glossary_data.manage_href or '/glossary' }}" class="btn" style="text-decoration:none">Manage corrections</a>
+      <a href="{{ glossary_data.quick_add_href or '/glossary' }}#glossary-form" class="btn" style="text-decoration:none">Add correction from this recording</a>
     </div>
+    <p style="margin:0 0 8px 0;color:#555">Saved spellings and remembered mistakes feed future ASR prompts for later recordings. They do not retrain the model.</p>
     {% if glossary_data.available and glossary_data.entries %}
     <p style="margin:0 0 8px 0;color:#555">
-      {{ glossary_data.term_count }} term{{ '' if glossary_data.term_count == 1 else 's' }}
-      used across {{ glossary_data.entry_count }} entry{{ '' if glossary_data.entry_count == 1 else 'ies' }}.
+      {{ glossary_data.term_count }} saved term{{ '' if glossary_data.term_count == 1 else 's' }}
+      were forwarded to ASR from {{ glossary_data.entry_count }} memor{{ 'y' if glossary_data.entry_count == 1 else 'ies' }}.
       {% if glossary_data.truncated %}
       Prompt budget reached; only the highest-priority terms were forwarded to ASR.
       {% endif %}
@@ -189,10 +191,10 @@
     <table>
       <thead>
         <tr>
-          <th>Canonical</th>
-          <th>Aliases</th>
-          <th>Kind</th>
-          <th>Sources</th>
+          <th>Correct term</th>
+          <th>Remembered variants</th>
+          <th>Type</th>
+          <th>Memory sources</th>
         </tr>
       </thead>
       <tbody>
@@ -207,9 +209,9 @@
       </tbody>
     </table>
     {% elif glossary_data.available %}
-    <p class="placeholder">This recording wrote an ASR glossary artifact, but no terms were selected.</p>
+    <p class="placeholder">This recording wrote an ASR memory artifact, but no saved terms were selected.</p>
     {% else %}
-    <p class="placeholder">No ASR glossary artifact is available for this recording yet.</p>
+    <p class="placeholder">No ASR memory artifact is available for this recording yet.</p>
     {% endif %}
   </div>
 

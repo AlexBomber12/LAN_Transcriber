@@ -181,6 +181,21 @@ _GLOSSARY_SOURCE_OPTIONS = (
     "calendar",
     "project",
 )
+_GLOSSARY_KIND_LABELS = {
+    "person": "Person or speaker name",
+    "company": "Company",
+    "product": "Product",
+    "project": "Project",
+    "term": "General term",
+}
+_GLOSSARY_SOURCE_LABELS = {
+    "manual": "Always-on memory",
+    "correction": "Correction from review",
+    "system": "System-generated",
+    "speaker_bank": "Speaker bank",
+    "calendar": "Calendar context",
+    "project": "Project context",
+}
 _TERMINAL_RECORDING_STATUSES = frozenset(RECORDING_STATUSES) - {
     RECORDING_STATUS_PROCESSING,
     RECORDING_STATUS_QUEUED,
@@ -761,6 +776,7 @@ def _metrics_tab_context(recording_id: str, settings: AppSettings) -> dict[str, 
 def _asr_glossary_context(recording_id: str, settings: AppSettings) -> dict[str, Any]:
     derived = settings.recordings_root / recording_id / "derived"
     payload = _load_json_dict(derived / "asr_glossary.json")
+    quick_add_href = _glossary_quick_entry_href(recording_id=recording_id)
     if not payload:
         return {
             "available": False,
@@ -768,6 +784,8 @@ def _asr_glossary_context(recording_id: str, settings: AppSettings) -> dict[str,
             "entry_count": 0,
             "term_count": 0,
             "truncated": False,
+            "manage_href": "/glossary",
+            "quick_add_href": quick_add_href,
         }
 
     entry_rows: list[dict[str, Any]] = []
@@ -827,6 +845,92 @@ def _asr_glossary_context(recording_id: str, settings: AppSettings) -> dict[str,
             default=sum(1 + len(row["aliases"]) for row in entry_rows),
         ),
         "truncated": bool(payload.get("truncated")),
+        "manage_href": "/glossary",
+        "quick_add_href": quick_add_href,
+    }
+
+
+def _glossary_kind_label(value: object) -> str:
+    key = " ".join(str(value or "").strip().split()).lower()
+    if not key:
+        return _GLOSSARY_KIND_LABELS["term"]
+    return _GLOSSARY_KIND_LABELS.get(key, key.replace("_", " ").title())
+
+
+def _glossary_source_label(value: object) -> str:
+    key = " ".join(str(value or "").strip().split()).lower()
+    if not key:
+        return _GLOSSARY_SOURCE_LABELS["manual"]
+    return _GLOSSARY_SOURCE_LABELS.get(key, key.replace("_", " ").title())
+
+
+def _glossary_quick_entry_href(
+    *,
+    recording_id: str = "",
+    canonical_text: str = "",
+    aliases_text: str = "",
+    kind: str = "term",
+    source: str = "correction",
+    notes: str = "",
+) -> str:
+    params: dict[str, str] = {}
+    clean_recording_id = " ".join(str(recording_id or "").strip().split())
+    clean_canonical_text = " ".join(str(canonical_text or "").strip().split())
+    clean_aliases_text = str(aliases_text or "").strip()
+    clean_kind = " ".join(str(kind or "").strip().split()).lower() or "term"
+    clean_source = " ".join(str(source or "").strip().split()).lower() or "correction"
+    clean_notes = " ".join(str(notes or "").strip().split())
+    if clean_recording_id:
+        params["recording_id"] = clean_recording_id
+    if clean_canonical_text:
+        params["canonical_text"] = clean_canonical_text
+    if clean_aliases_text:
+        params["aliases_text"] = clean_aliases_text
+    if clean_kind and clean_kind != "term":
+        params["kind"] = clean_kind
+    if clean_source and clean_source != "correction":
+        params["source"] = clean_source
+    if clean_notes:
+        params["notes"] = clean_notes
+    return f"/glossary?{urlencode(params)}" if params else "/glossary"
+
+
+def _glossary_form_defaults(
+    *,
+    canonical_text: str = "",
+    aliases_text: str = "",
+    kind: str = "term",
+    source: str = "correction",
+    notes: str = "",
+    recording_id: str = "",
+) -> dict[str, Any]:
+    clean_kind = " ".join(str(kind or "").strip().split()).lower() or "term"
+    if clean_kind not in _GLOSSARY_KIND_OPTIONS:
+        clean_kind = "term"
+    clean_source = " ".join(str(source or "").strip().split()).lower() or "correction"
+    if clean_source not in _GLOSSARY_SOURCE_OPTIONS:
+        clean_source = "correction"
+    clean_recording_id = " ".join(str(recording_id or "").strip().split())
+    prefill_notice = None
+    if clean_recording_id:
+        prefill_notice = (
+            f"Prefilled from recording {clean_recording_id}. "
+            "The recording link is already attached under Advanced."
+        )
+    return {
+        "canonical_text": " ".join(str(canonical_text or "").strip().split()),
+        "aliases_text": str(aliases_text or "").strip(),
+        "kind": clean_kind,
+        "source": clean_source,
+        "enabled": True,
+        "notes": " ".join(str(notes or "").strip().split()),
+        "recording_id": clean_recording_id,
+        "advanced_open": bool(
+            clean_recording_id
+            or clean_kind != "term"
+            or clean_source != "correction"
+        ),
+        "prefill_notice": prefill_notice,
     }
 
 
@@ -3095,9 +3199,9 @@ def _compact_glossary_summary_context(
             {
                 "id": item.get("id"),
                 "canonical_text": item.get("canonical_text"),
-                "kind": item.get("kind") or "term",
+                "kind": _glossary_kind_label(item.get("kind")),
                 "aliases": aliases if isinstance(aliases, list) else [],
-                "source_label": str(item.get("source") or "manual").replace("_", " "),
+                "source_label": _glossary_source_label(item.get("source")),
             }
         )
     return {
@@ -4371,6 +4475,12 @@ async def ui_set_recording_project(
 async def ui_glossary(
     request: Request,
     edit_id: int | None = Query(default=None),
+    canonical_text: str = Query(default=""),
+    aliases_text: str = Query(default=""),
+    kind: str = Query(default="term"),
+    source: str = Query(default="correction"),
+    notes: str = Query(default=""),
+    recording_id: str = Query(default=""),
 ) -> Any:
     items = list_glossary_entries(settings=_settings)
     for item in items:
@@ -4380,7 +4490,19 @@ async def ui_glossary(
         metadata = item.get("metadata_json")
         item["metadata"] = metadata if isinstance(metadata, dict) else {}
         item["recording_id"] = str(item["metadata"].get("recording_id") or "").strip()
-        item["source_label"] = str(item.get("source") or "").replace("_", " ")
+        item["kind_label"] = _glossary_kind_label(item.get("kind"))
+        item["source_label"] = _glossary_source_label(item.get("source"))
+        if item.get("enabled"):
+            item["status_label"] = "Active for future recordings"
+            item["status_hint"] = "Included when the app builds new ASR prompts."
+        else:
+            item["status_label"] = "Saved but paused"
+            item["status_hint"] = "Kept for reference and excluded from new ASR prompts."
+        item["origin_context"] = (
+            f"Linked to recording {item['recording_id']}"
+            if item["recording_id"]
+            else "Available across recordings"
+        )
     editing_entry = None if edit_id is None else get_glossary_entry(edit_id, settings=_settings)
     if isinstance(editing_entry, dict):
         aliases = editing_entry.get("aliases_json")
@@ -4391,6 +4513,20 @@ async def ui_glossary(
         editing_entry["recording_id"] = str(
             editing_entry["metadata"].get("recording_id") or ""
         ).strip()
+        editing_entry["advanced_open"] = True
+        editing_entry["prefill_notice"] = None
+    form_entry = (
+        editing_entry
+        if isinstance(editing_entry, dict)
+        else _glossary_form_defaults(
+            canonical_text=canonical_text,
+            aliases_text=aliases_text,
+            kind=kind,
+            source=source,
+            notes=notes,
+            recording_id=recording_id,
+        )
+    )
     return templates.TemplateResponse(
         request,
         "glossary.html",
@@ -4398,8 +4534,15 @@ async def ui_glossary(
             "active": "glossary",
             "items": items,
             "editing_entry": editing_entry,
-            "kind_options": _GLOSSARY_KIND_OPTIONS,
-            "source_options": _GLOSSARY_SOURCE_OPTIONS,
+            "form_entry": form_entry,
+            "kind_options": [
+                {"value": option, "label": _glossary_kind_label(option)}
+                for option in _GLOSSARY_KIND_OPTIONS
+            ],
+            "source_options": [
+                {"value": option, "label": _glossary_source_label(option)}
+                for option in _GLOSSARY_SOURCE_OPTIONS
+            ],
         },
     )
 
