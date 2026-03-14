@@ -216,6 +216,12 @@ def _as_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
     return out
 
 
+def _sqlite_casefold(value: Any) -> str:
+    if value is None:
+        return ""
+    return str(value).casefold()
+
+
 def _validate_recording_status(status: str) -> None:
     if status not in RECORDING_STATUSES:
         raise ValueError(f"Unsupported recording status: {status}")
@@ -549,6 +555,7 @@ def connect_db(
     db_file.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(db_file, timeout=timeout)
     conn.row_factory = sqlite3.Row
+    conn.create_function("CASEFOLD", 1, _sqlite_casefold, deterministic=True)
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA synchronous = NORMAL")
@@ -728,8 +735,8 @@ def list_recordings(
         pattern = _sqlite_like_query(search_query)
         filters.append(
             "("
-            "LOWER(r.id) LIKE LOWER(?) ESCAPE '\\' "
-            "OR LOWER(COALESCE(r.source_filename, '')) LIKE LOWER(?) ESCAPE '\\'"
+            "CASEFOLD(r.id) LIKE CASEFOLD(?) ESCAPE '\\' "
+            "OR CASEFOLD(COALESCE(r.source_filename, '')) LIKE CASEFOLD(?) ESCAPE '\\'"
             ")"
         )
         params.extend([pattern, pattern])

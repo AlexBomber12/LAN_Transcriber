@@ -81,6 +81,8 @@ def test_db_internal_helpers_and_validation_paths():
     ) == [{"voice_profile_id": 2, "score": 0.9}]
     assert db_module._sqlite_like_query(" A_B% ") == r"%A\_B\%%"  # noqa: SLF001
     assert db_module._sqlite_like_query(" Straße ") == "%Straße%"  # noqa: SLF001
+    assert db_module._sqlite_casefold(None) == ""  # noqa: SLF001
+    assert db_module._sqlite_casefold("Ärger") == "ärger"  # noqa: SLF001
 
     with pytest.raises(ValueError, match="Unsupported recording status"):
         db_module._validate_recording_status("bad-status")  # noqa: SLF001
@@ -311,6 +313,13 @@ def test_list_recordings_q_search_is_conservative_and_escaped(tmp_path: Path) ->
     )
     assert total_by_upper_unicode == 1
     assert [row["id"] for row in by_upper_unicode] == ["rec-db-search-4"]
+
+    by_casefold_unicode, total_by_casefold_unicode = db_module.list_recordings(
+        settings=cfg,
+        q="är",
+    )
+    assert total_by_casefold_unicode == 1
+    assert [row["source_filename"] for row in by_casefold_unicode] == ["Ärger.wav"]
 
 
 def test_glossary_entry_helpers_cover_crud_and_validation_paths(tmp_path: Path) -> None:

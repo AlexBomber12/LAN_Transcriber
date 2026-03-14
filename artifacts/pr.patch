@@ -1,68 +1,62 @@
 diff --git a/lan_app/db.py b/lan_app/db.py
-index 2222cf2..f4fd95b 100644
+index f4fd95b..e041ef7 100644
 --- a/lan_app/db.py
 +++ b/lan_app/db.py
-@@ -703,8 +703,7 @@ def get_recording(
+@@ -216,6 +216,12 @@ def _as_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
+     return out
  
  
- def _sqlite_like_query(value: str) -> str:
--    # Match SQLite LOWER(...) normalization so non-ASCII searches stay consistent.
--    escaped = str(value).strip().lower()
-+    escaped = str(value).strip()
-     escaped = escaped.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-     return f"%{escaped}%"
- 
-@@ -728,7 +727,10 @@ def list_recordings(
-     if search_query:
++def _sqlite_casefold(value: Any) -> str:
++    if value is None:
++        return ""
++    return str(value).casefold()
++
++
+ def _validate_recording_status(status: str) -> None:
+     if status not in RECORDING_STATUSES:
+         raise ValueError(f"Unsupported recording status: {status}")
+@@ -549,6 +555,7 @@ def connect_db(
+     db_file.parent.mkdir(parents=True, exist_ok=True)
+     conn = sqlite3.connect(db_file, timeout=timeout)
+     conn.row_factory = sqlite3.Row
++    conn.create_function("CASEFOLD", 1, _sqlite_casefold, deterministic=True)
+     conn.execute("PRAGMA foreign_keys = ON")
+     conn.execute("PRAGMA journal_mode = WAL")
+     conn.execute("PRAGMA synchronous = NORMAL")
+@@ -728,8 +735,8 @@ def list_recordings(
          pattern = _sqlite_like_query(search_query)
          filters.append(
--            "(LOWER(r.id) LIKE ? ESCAPE '\\' OR LOWER(COALESCE(r.source_filename, '')) LIKE ? ESCAPE '\\')"
-+            "("
-+            "LOWER(r.id) LIKE LOWER(?) ESCAPE '\\' "
-+            "OR LOWER(COALESCE(r.source_filename, '')) LIKE LOWER(?) ESCAPE '\\'"
-+            ")"
+             "("
+-            "LOWER(r.id) LIKE LOWER(?) ESCAPE '\\' "
+-            "OR LOWER(COALESCE(r.source_filename, '')) LIKE LOWER(?) ESCAPE '\\'"
++            "CASEFOLD(r.id) LIKE CASEFOLD(?) ESCAPE '\\' "
++            "OR CASEFOLD(COALESCE(r.source_filename, '')) LIKE CASEFOLD(?) ESCAPE '\\'"
+             ")"
          )
          params.extend([pattern, pattern])
- 
 diff --git a/tests/test_cov_lan_app_db.py b/tests/test_cov_lan_app_db.py
-index 93fe79c..7e1f53b 100644
+index 7e1f53b..fe83185 100644
 --- a/tests/test_cov_lan_app_db.py
 +++ b/tests/test_cov_lan_app_db.py
-@@ -79,8 +79,8 @@ def test_db_internal_helpers_and_validation_paths():
-         source_profile_id=1,
-         target_profile_id=2,
+@@ -81,6 +81,8 @@ def test_db_internal_helpers_and_validation_paths():
      ) == [{"voice_profile_id": 2, "score": 0.9}]
--    assert db_module._sqlite_like_query(" A_B% ") == r"%a\_b\%%"  # noqa: SLF001
--    assert db_module._sqlite_like_query(" Straße ") == "%straße%"  # noqa: SLF001
-+    assert db_module._sqlite_like_query(" A_B% ") == r"%A\_B\%%"  # noqa: SLF001
-+    assert db_module._sqlite_like_query(" Straße ") == "%Straße%"  # noqa: SLF001
+     assert db_module._sqlite_like_query(" A_B% ") == r"%A\_B\%%"  # noqa: SLF001
+     assert db_module._sqlite_like_query(" Straße ") == "%Straße%"  # noqa: SLF001
++    assert db_module._sqlite_casefold(None) == ""  # noqa: SLF001
++    assert db_module._sqlite_casefold("Ärger") == "ärger"  # noqa: SLF001
  
      with pytest.raises(ValueError, match="Unsupported recording status"):
          db_module._validate_recording_status("bad-status")  # noqa: SLF001
-@@ -262,6 +262,13 @@ def test_list_recordings_q_search_is_conservative_and_escaped(tmp_path: Path) ->
-         status=RECORDING_STATUS_READY,
-         settings=cfg,
-     )
-+    db_module.create_recording(
-+        "rec-db-search-4",
-+        source="upload",
-+        source_filename="Ärger.wav",
-+        status=RECORDING_STATUS_READY,
-+        settings=cfg,
-+    )
+@@ -312,6 +314,13 @@ def test_list_recordings_q_search_is_conservative_and_escaped(tmp_path: Path) ->
+     assert total_by_upper_unicode == 1
+     assert [row["id"] for row in by_upper_unicode] == ["rec-db-search-4"]
  
-     by_filename, total_by_filename = db_module.list_recordings(
-         settings=cfg,
-@@ -298,6 +305,13 @@ def test_list_recordings_q_search_is_conservative_and_escaped(tmp_path: Path) ->
-     assert total_by_unicode_fragment == 1
-     assert [row["source_filename"] for row in by_unicode_fragment] == ["Straße.wav"]
- 
-+    by_upper_unicode, total_by_upper_unicode = db_module.list_recordings(
++    by_casefold_unicode, total_by_casefold_unicode = db_module.list_recordings(
 +        settings=cfg,
-+        q="Ä",
++        q="är",
 +    )
-+    assert total_by_upper_unicode == 1
-+    assert [row["id"] for row in by_upper_unicode] == ["rec-db-search-4"]
++    assert total_by_casefold_unicode == 1
++    assert [row["source_filename"] for row in by_casefold_unicode] == ["Ärger.wav"]
 +
  
  def test_glossary_entry_helpers_cover_crud_and_validation_paths(tmp_path: Path) -> None:
