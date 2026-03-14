@@ -525,7 +525,7 @@ Queue (in order)
 - Depends on: PR-SNIPPETS-REPAIR-BACKFILL-01 and PR-GLOSSARY-CORRECTIONS-01 and PR-SPEAKER-UX-01
 
 105) PR-UI-CONTROL-CENTER-02: Replace the passive dashboard landing page with a real Control Center shell on /
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-UI-CONTROL-CENTER-02.md
 - Depends on: PR-UI-CONTROL-CENTER-01
 

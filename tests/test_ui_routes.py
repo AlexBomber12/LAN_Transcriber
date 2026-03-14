@@ -274,7 +274,10 @@ def _seed_snippet_repair_artifacts(
 def test_dashboard_empty(client):
     r = client.get("/")
     assert r.status_code == 200
-    assert "Dashboard" in r.text
+    assert "Control Center" in r.text
+    assert 'id="control-center-work-pane"' in r.text
+    assert 'id="control-center-inspector-pane"' in r.text
+    assert "Select a recording from the left pane" in r.text
     assert "LAN Transcriber" in r.text
 
 
@@ -289,6 +292,7 @@ def test_dashboard_with_data(tmp_path, monkeypatch):
     assert r.status_code == 200
     assert "Recordings by status" in r.text
     assert "Queue by status" in r.text
+    assert "Previewing recent recordings only." in r.text
     assert "rec-dash-1" in r.text or "a.mp3" in r.text
 
 
@@ -304,6 +308,44 @@ def test_dashboard_summary_fragment_endpoints(seeded_client):
     assert "Queue by status" in jobs_summary.text
     assert "stat-card" in jobs_summary.text
     assert "<nav" not in jobs_summary.text
+
+
+def test_control_center_query_state_and_direct_routes(seeded_client):
+    r = seeded_client.get("/?selected=rec-ui-1&status=Ready&q=meeting&tab=speakers")
+    assert r.status_code == 200
+    assert 'value="meeting"' in r.text
+    assert 'value="Ready" selected' in r.text
+    assert 'value="speakers" selected' in r.text
+    assert 'name="selected" value="rec-ui-1"' in r.text
+    assert "/recordings/rec-ui-1?tab=speakers" in r.text
+    assert "Open full-page recording" in r.text
+
+    upload = seeded_client.get("/upload")
+    assert upload.status_code == 200
+
+    recordings = seeded_client.get("/recordings")
+    assert recordings.status_code == 200
+
+    detail = seeded_client.get("/recordings/rec-ui-1")
+    assert detail.status_code == 200
+    assert "Recording:" in detail.text
+
+
+def test_control_center_pane_fragment_endpoints(seeded_client):
+    work_pane = seeded_client.get(
+        "/ui/control-center/work-pane?selected=rec-ui-1&status=Ready&q=meeting&tab=speakers"
+    )
+    assert work_pane.status_code == 200
+    assert "Work Pane" in work_pane.text
+    assert "meeting.mp3" in work_pane.text
+    assert "<html" not in work_pane.text
+
+    inspector = seeded_client.get("/ui/control-center/inspector-pane?selected=rec-ui-1&tab=speakers")
+    assert inspector.status_code == 200
+    assert "Inspector Pane" in inspector.text
+    assert "rec-ui-1" in inspector.text
+    assert "Speakers" in inspector.text
+    assert "<nav" not in inspector.text
 
 
 # ---------------------------------------------------------------------------

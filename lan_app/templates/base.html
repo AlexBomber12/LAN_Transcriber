@@ -78,12 +78,27 @@ tr:hover{background:#e8ecf8}
 .modal-context{font-size:12px;color:#555;margin-bottom:10px;white-space:normal;word-break:break-word}
 .modal-error{font-size:12px;color:#b00;min-height:18px;margin-bottom:8px}
 .modal-actions{display:flex;justify-content:flex-end;gap:6px}
+.control-center-shell{display:grid;gap:12px}
+.control-center-lede{margin:0 0 12px 0;color:#555;max-width:80ch}
+.control-center-summary-grid{display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));align-items:start}
+.control-center-panel,.control-center-pane{background:#fff;border:1px solid #ccc;padding:12px;min-width:0}
+.control-center-panel .section,.control-center-pane .section{margin-bottom:0}
+.control-center-main{display:grid;gap:12px;grid-template-columns:minmax(420px,1.15fr) minmax(320px,.85fr);align-items:start}
+.control-center-pane-head{display:flex;justify-content:space-between;gap:8px;align-items:flex-start;flex-wrap:wrap;margin-bottom:10px}
+.control-center-pane-copy{color:#555;max-width:62ch}
+.control-center-state-list{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
+.control-center-state-pill{display:inline-block;padding:2px 6px;border:1px solid #99b;background:#f8f9ff;font-size:11px}
+.control-center-preview-note{margin:0 0 10px 0;color:#555}
+.control-center-row-actions{display:flex;gap:6px;flex-wrap:wrap}
+@media (max-width: 980px){
+  .control-center-main{grid-template-columns:1fr}
+}
 </style>
 </head>
 <body hx-boost="true">
 <nav>
   <span class="nav-logo">LAN Transcriber</span>
-  <a href="/" {% if active=='dashboard' %}class="active"{% endif %}>Dashboard</a>
+  <a href="/" {% if active=='dashboard' %}class="active"{% endif %}>Control Center</a>
   <a href="/upload" {% if active=='upload' %}class="active"{% endif %}>Upload</a>
   <a href="/recordings" {% if active=='recordings' %}class="active"{% endif %}>Recordings</a>
   <a href="/calendars" {% if active=='calendars' %}class="active"{% endif %}>Calendars</a>

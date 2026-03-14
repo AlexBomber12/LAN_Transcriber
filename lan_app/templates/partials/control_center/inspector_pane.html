@@ -1,0 +1,36 @@
+<div class="control-center-pane-head">
+  <div>
+    <h2 style="margin-top:0">Inspector Pane</h2>
+    <p class="control-center-pane-copy">
+      The embedded inspector lands in a later PR. This shell already keeps the target recording and tab stable in the URL.
+    </p>
+  </div>
+  <div class="filters" style="margin:0">
+    <a href="/recordings" class="btn" style="text-decoration:none">Full recordings page</a>
+  </div>
+</div>
+
+{% if control_center_state.selected %}
+<div class="section">
+  <div class="info-grid">
+    <span class="k">Selected recording</span><span class="v"><code>{{ control_center_state.selected }}</code></span>
+    <span class="k">Inspector tab</span><span class="v">{{ control_center_state.tab_label }}</span>
+    <span class="k">Shell state</span><span class="v">Ready for embedded inspector wiring</span>
+  </div>
+  <p style="margin:10px 0 0 0;color:#555">
+    Reload-safe URL state is active. Use the full-page recording view until the embedded inspector arrives.
+  </p>
+  <div class="filters" style="margin:10px 0 0 0">
+    <a href="{{ control_center_state.selected_detail_href }}" class="btn" style="text-decoration:none">Open full-page recording</a>
+    <a href="{{ control_center_state.clear_selection_href }}" class="btn" style="text-decoration:none">Clear selection</a>
+    <a href="/upload" class="btn" style="text-decoration:none">Upload file</a>
+  </div>
+</div>
+{% else %}
+{% set empty_inspector = control_center_empty_inspector %}
+{% include "partials/control_center/inspector_empty.html" %}
+<div class="filters" style="margin:10px 0 0 0">
+  <a href="/upload" class="btn" style="text-decoration:none">Upload file</a>
+  <a href="/recordings" class="btn" style="text-decoration:none">Open full recordings page</a>
+</div>
+{% endif %}

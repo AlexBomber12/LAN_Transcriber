@@ -84,6 +84,9 @@ Operational setup, failure handling, backup/restore, and upgrade steps are docum
 
 ## Workflow (Upload -> Processing -> Export)
 
+1. Open `/` for the Control Center shell.
+   - This is now the primary operator surface: summary strip on top, work-pane preview on the left, inspector shell on the right.
+   - `/upload`, `/recordings`, and `/recordings/{recording_id}` remain available as direct fallback pages while the 1-page workflow is still being assembled.
 1. Open `/upload` and add one or more audio files.
 2. Uploaded audio is normalized automatically to 16 kHz mono WAV before VAD/ASR/diarization (raw upload is preserved; no user conversion needed).
 3. Mixed-language handling now happens automatically in `LAN_ASR_MULTILINGUAL_MODE=auto`.

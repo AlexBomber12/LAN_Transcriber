@@ -115,6 +115,44 @@ def test_control_center_helper_contexts_cover_fragment_builders(
     assert dashboard["jobs_summary_strip"]["counts"] == {"queued": 2}
     assert dashboard["recent"] == [{"id": "rec-helper-1"}]
 
+    state = ui_routes._control_center_state_context(  # noqa: SLF001
+        selected=" rec-helper-1 ",
+        status="Ready",
+        q=" helper ",
+        tab="speakers",
+    )
+    assert state["selected"] == "rec-helper-1"
+    assert state["status"] == "Ready"
+    assert state["q"] == "helper"
+    assert state["tab"] == "speakers"
+    assert state["selected_detail_href"] == "/recordings/rec-helper-1?tab=speakers"
+    assert "status=Ready" in state["work_pane_url"]
+
+    fallback_state = ui_routes._control_center_state_context(  # noqa: SLF001
+        selected=None,
+        status="unknown",
+        q=None,
+        tab="mystery",
+    )
+    assert fallback_state["status"] == ""
+    assert fallback_state["tab"] == "overview"
+    assert fallback_state["clear_selection_href"] == "/"
+
+    assert ui_routes._control_center_shell_href(  # noqa: SLF001
+        selected="rec helper",
+        status_filter="Ready",
+        search_query="demo",
+        tab="log",
+    ) == "/?selected=rec+helper&status=Ready&q=demo&tab=log"
+    assert ui_routes._control_center_matches_query(  # noqa: SLF001
+        {"id": "rec-helper-1", "source_filename": "meeting.wav", "status": "Ready"},
+        "meeting",
+    )
+    assert not ui_routes._control_center_matches_query(  # noqa: SLF001
+        {"id": "rec-helper-1", "source_filename": "meeting.wav", "status": "Ready"},
+        "absent",
+    )
+
     monkeypatch.setattr(
         ui_routes,
         "_recordings_list_items_context",
@@ -129,6 +167,43 @@ def test_control_center_helper_contexts_cover_fragment_builders(
     assert list_context["total"] == 3
     assert list_context["recordings_filters"]["status_filter"] == "Ready"
     assert list_context["recordings_table"]["rows"] == [{"id": "rec-helper-1", "status": "Ready"}]
+
+    work_pane = ui_routes._control_center_work_pane_context(  # noqa: SLF001
+        cfg,
+        state=state,
+    )
+    assert work_pane["rows"][0]["selected"] is True
+    assert work_pane["rows"][0]["detail_href"] == "/recordings/rec-helper-1?tab=speakers"
+    assert work_pane["preview_limit"] == 8
+
+    hidden_selection = ui_routes._control_center_work_pane_context(  # noqa: SLF001
+        cfg,
+        state={**state, "selected": "missing"},
+    )
+    assert "outside the current preview set" in hidden_selection["preview_message"]
+
+    monkeypatch.setattr(
+        ui_routes,
+        "_recordings_list_items_context",
+        lambda items, *, settings: [
+            {"id": "", "status": "Ready", "source_filename": "match-empty.wav"},
+            {"id": "skip-me", "status": "Ready", "source_filename": "other.wav"},
+            *[
+                {
+                    "id": f"match-{index}",
+                    "status": "Ready",
+                    "source_filename": f"match-{index}.wav",
+                }
+                for index in range(10)
+            ],
+        ],
+    )
+    bounded_work_pane = ui_routes._control_center_work_pane_context(  # noqa: SLF001
+        cfg,
+        state={**state, "selected": "", "q": "match"},
+    )
+    assert len(bounded_work_pane["rows"]) == 8
+    assert all(row["id"].startswith("match-") for row in bounded_work_pane["rows"])
 
     filters = ui_routes._recordings_filters_context(status_filter="", limit=50)  # noqa: SLF001
     assert filters["limit_options"] == [25, 50, 100, 200]
@@ -181,6 +256,9 @@ def test_control_center_helper_contexts_cover_fragment_builders(
 
     empty_shell = ui_routes._empty_inspector_shell_context()  # noqa: SLF001
     assert empty_shell["title"] == "Select a recording"
+
+    control_center_empty = ui_routes._control_center_empty_inspector_context()  # noqa: SLF001
+    assert control_center_empty["title"] == "Select a recording from the left pane"
 
     monkeypatch.setattr(
         ui_routes,
