@@ -323,6 +323,8 @@ def test_control_center_query_state_and_direct_routes(seeded_client):
     assert 'id="control-center-recordings-panel"' in r.text
     assert "/recordings/rec-ui-1?tab=speakers" in r.text
     assert "Open full-page recording" in r.text
+    assert "htmx.trigger(document.body, 'refresh-control-center-inspector');" in r.text
+    assert "params.delete('selected');" in r.text
 
     upload = seeded_client.get("/upload")
     assert upload.status_code == 200

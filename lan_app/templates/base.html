@@ -133,12 +133,23 @@ tr:hover{background:#e8ecf8}
 <script>
 var deleteDialogState = {recordingId: '', inFlight: false, returnFocus: null, returnTo: ''};
 
-function refreshControlCenterPanels() {
+function refreshControlCenterPanels(options) {
+  var params = new URLSearchParams(window.location.search || '');
+  if (
+    options &&
+    options.clearSelected &&
+    params.get('selected') === options.clearSelected
+  ) {
+    params.delete('selected');
+    window.location = params.toString() ? ('/?' + params.toString()) : '/';
+    return;
+  }
   if (!window.htmx || !document.body) {
     return;
   }
   htmx.trigger(document.body, 'refresh-control-center-recordings');
   htmx.trigger(document.body, 'refresh-control-center-summary');
+  htmx.trigger(document.body, 'refresh-control-center-inspector');
 }
 
 function recordingActionUrl(recordingId, action, returnTo) {
@@ -223,12 +234,13 @@ function confirmDeleteDialog() {
         throw new Error(result.body || ('Delete failed (' + result.resp.status + ').'));
       }
       if (deleteDialogState.returnTo === 'control-center') {
+        var deletedRecordingId = deleteDialogState.recordingId;
         deleteDialogState.inFlight = false;
         el.backdrop.hidden = true;
         deleteDialogState.recordingId = '';
         deleteDialogState.returnFocus = null;
         deleteDialogState.returnTo = '';
-        refreshControlCenterPanels();
+        refreshControlCenterPanels({clearSelected: deletedRecordingId});
         return;
       }
       var redirect = result.resp.headers.get('HX-Redirect');
