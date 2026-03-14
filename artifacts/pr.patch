@@ -1,104 +1,48 @@
-diff --git a/tests_playwright/test_ui_smoke_playwright.py b/tests_playwright/test_ui_smoke_playwright.py
-index aa98267..3da491f 100644
---- a/tests_playwright/test_ui_smoke_playwright.py
-+++ b/tests_playwright/test_ui_smoke_playwright.py
-@@ -52,18 +52,6 @@ def _remaining_timeout_ms(deadline: float) -> int:
-     return max(1, int(remaining_seconds * 1000))
+diff --git a/lan_app/db.py b/lan_app/db.py
+index 5b0c667..54f9d7d 100644
+--- a/lan_app/db.py
++++ b/lan_app/db.py
+@@ -440,6 +440,8 @@ def _normalise_speaker_review_state(
+     if normalized not in _SPEAKER_REVIEW_STATES:
+         options = ", ".join(sorted(_SPEAKER_REVIEW_STATES))
+         raise ValueError(f"Unsupported speaker review_state: {normalized} ({options})")
++    if local_display_name and normalized != SPEAKER_REVIEW_STATE_LOCAL_LABEL:
++        raise ValueError("local_display_name requires review_state=local_label")
+     if normalized == SPEAKER_REVIEW_STATE_CONFIRMED_CANONICAL and voice_profile_id is None:
+         raise ValueError("confirmed_canonical requires voice_profile_id")
+     if normalized == SPEAKER_REVIEW_STATE_LOCAL_LABEL:
+diff --git a/tests/test_cov_lan_app_db.py b/tests/test_cov_lan_app_db.py
+index 772a955..910e667 100644
+--- a/tests/test_cov_lan_app_db.py
++++ b/tests/test_cov_lan_app_db.py
+@@ -840,6 +840,30 @@ def test_speaker_assignments_and_voice_samples_paths(tmp_path: Path):
+             review_state="kept_unknown",
+             settings=cfg,
+         )
++    with pytest.raises(
++        ValueError,
++        match="local_display_name requires review_state=local_label",
++    ):
++        db_module.set_speaker_assignment(
++            recording_id="rec-db-cov-voice-1",
++            diar_speaker_label="S0",
++            voice_profile_id=profile_id,
++            review_state="confirmed_canonical",
++            local_display_name="Guest",
++            settings=cfg,
++        )
++    with pytest.raises(
++        ValueError,
++        match="local_display_name requires review_state=local_label",
++    ):
++        db_module.set_speaker_assignment(
++            recording_id="rec-db-cov-voice-1",
++            diar_speaker_label="S0",
++            voice_profile_id=None,
++            review_state="kept_unknown",
++            local_display_name="Guest",
++            settings=cfg,
++        )
  
- 
--def _wait_for_location(page, expected_path: str, *, deadline: float) -> None:
--    page.wait_for_function(
--        """
--        expectedPath => (
--            window.location.pathname + window.location.search
--        ) === expectedPath
--        """,
--        arg=expected_path,
--        timeout=_remaining_timeout_ms(deadline),
--    )
--
--
- def _read_process_output(process: subprocess.Popen[str]) -> str:
-     if process.stdout is None:
-         return ""
-@@ -207,12 +195,13 @@ def test_control_center_embedded_inspector_and_export_zip_smoke(tmp_path: Path)
-                 assert href
-                 recording_id = parse_qs(urlparse(href).query).get("selected", [""])[0]
-                 assert recording_id
-+                control_center_recording_url = f"{base_url}/?selected={recording_id}"
- 
--                page.click(
--                    f"#control-center-recordings-panel a[href='/?selected={recording_id}']",
-+                page.goto(
-+                    control_center_recording_url,
-+                    wait_until="networkidle",
-                     timeout=_remaining_timeout_ms(deadline),
-                 )
--                _wait_for_location(page, f"/?selected={recording_id}", deadline=deadline)
-                 page.wait_for_selector(
-                     "#control-center-inspector-pane",
-                     state="visible",
-@@ -224,39 +213,31 @@ def test_control_center_embedded_inspector_and_export_zip_smoke(tmp_path: Path)
-                     timeout=_remaining_timeout_ms(deadline),
-                 )
- 
--                page.click(
--                    "#control-center-inspector-pane a:has-text('Speakers')",
-+                page.goto(
-+                    f"{control_center_recording_url}&tab=speakers",
-+                    wait_until="networkidle",
-                     timeout=_remaining_timeout_ms(deadline),
-                 )
--                _wait_for_location(
--                    page,
--                    f"/?selected={recording_id}&tab=speakers",
--                    deadline=deadline,
--                )
-                 page.wait_for_selector(
-                     "#control-center-inspector-pane .tab.active:has-text('Speakers')",
-                     state="visible",
-                     timeout=_remaining_timeout_ms(deadline),
-                 )
--                page.click(
--                    "#control-center-inspector-pane a:has-text('Log')",
-+                page.goto(
-+                    f"{control_center_recording_url}&tab=log",
-+                    wait_until="networkidle",
-                     timeout=_remaining_timeout_ms(deadline),
-                 )
--                _wait_for_location(
--                    page,
--                    f"/?selected={recording_id}&tab=log",
--                    deadline=deadline,
--                )
-                 page.wait_for_selector(
-                     "#control-center-inspector-pane .tab.active:has-text('Log')",
-                     state="visible",
-                     timeout=_remaining_timeout_ms(deadline),
-                 )
--                page.click(
--                    "#control-center-inspector-pane a:has-text('Overview')",
-+                page.goto(
-+                    control_center_recording_url,
-+                    wait_until="networkidle",
-                     timeout=_remaining_timeout_ms(deadline),
-                 )
--                _wait_for_location(page, f"/?selected={recording_id}", deadline=deadline)
-                 page.wait_for_selector(
-                     "#control-center-inspector-pane .tab.active:has-text('Overview')",
-                     state="visible",
-@@ -276,11 +257,11 @@ def test_control_center_embedded_inspector_and_export_zip_smoke(tmp_path: Path)
-                 download = download_info.value
-                 download.save_as(str(zip_download_path))
- 
--                page.click(
--                    "#control-center-inspector-pane a:has-text('Open full-page recording')",
-+                page.goto(
-+                    f"{base_url}/recordings/{recording_id}",
-+                    wait_until="networkidle",
-                     timeout=_remaining_timeout_ms(deadline),
-                 )
--                _wait_for_location(page, f"/recordings/{recording_id}", deadline=deadline)
-                 page.wait_for_selector(
-                     "a:has-text('Download ZIP')",
-                     state="visible",
+     assigned = db_module.set_speaker_assignment(
+         recording_id="rec-db-cov-voice-1",

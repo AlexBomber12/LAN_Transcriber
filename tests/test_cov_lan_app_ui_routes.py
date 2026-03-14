@@ -1603,16 +1603,51 @@ def test_speaker_helper_paths_cover_duplicates_labels_and_notices(
         ui_routes,
         "list_speaker_assignments",
         lambda *_a, **_k: [
-            {"diar_speaker_label": "S1", "voice_profile_name": "Alex"},
+            {
+                "diar_speaker_label": "S1",
+                "voice_profile_name": "Alex",
+                "review_state": "confirmed_canonical",
+            },
+            {
+                "diar_speaker_label": "S2",
+                "local_display_name": "Meeting Guest",
+                "review_state": "local_label",
+            },
+            {
+                "diar_speaker_label": "S3",
+                "voice_profile_name": "Suggested",
+                "review_state": "system_suggested",
+            },
             {"diar_speaker_label": " ", "voice_profile_name": "skip"},
-            {"diar_speaker_label": "S2", "voice_profile_name": " "},
         ],
     )
     assert ui_routes._recording_speaker_name_map(recording_id, settings=cfg) == {  # noqa: SLF001
-        "S1": "Alex"
+        "S1": "Alex",
+        "S2": "Meeting Guest",
     }
     assert ui_routes._speaker_display_label("S1", speaker_name_map={"S1": "Alex"}) == "Alex (S1)"  # noqa: SLF001
     assert ui_routes._speaker_display_label("S2", speaker_name_map={"S1": "Alex"}) == "S2"  # noqa: SLF001
+    assert ui_routes._speaker_review_state({"local_display_name": "Meeting Guest"}) == "local_label"  # noqa: SLF001
+    assert ui_routes._speaker_review_state(  # noqa: SLF001
+        {"voice_profile_id": 1, "voice_profile_name": "Alex"}
+    ) == "confirmed_canonical"
+    assert ui_routes._speaker_review_state(  # noqa: SLF001
+        {"candidate_matches_json": [{"voice_profile_id": 1, "score": 0.4}]}
+    ) == "system_suggested"
+    assert ui_routes._speaker_review_state({"review_state": "bad"}) == "system_suggested"  # noqa: SLF001
+    assert ui_routes._speaker_assignment_display_name(  # noqa: SLF001
+        {"review_state": "system_suggested", "voice_profile_name": "Suggested"}
+    ) == ""
+    status_ctx = ui_routes._speaker_assignment_status_context(  # noqa: SLF001
+        "S1",
+        {"review_state": "local_label", "local_display_name": "Meeting Guest"},
+    )
+    assert status_ctx["badge_label"] == "Local label only"
+    suggested_ctx = ui_routes._speaker_assignment_status_context(  # noqa: SLF001
+        "S3",
+        {"voice_profile_name": "Suggested"},
+    )
+    assert suggested_ctx["mapping_title"] == "Suggested global match: Suggested"
 
     duplicates = ui_routes._voice_duplicate_candidates(  # noqa: SLF001
         voice_samples=[
@@ -2132,6 +2167,7 @@ def test_assign_speaker_validation_and_error_paths(
         data={"diar_speaker_label": "S1", "voice_profile_id": ""},
     ).status_code == 404
     assert c.post(base, data={"diar_speaker_label": " ", "voice_profile_id": ""}).status_code == 422
+    assert c.post(base, data={"diar_speaker_label": "S1", "voice_profile_id": ""}).status_code == 422
     assert c.post(base, data={"diar_speaker_label": "S1", "voice_profile_id": "bad"}).status_code == 422
 
     monkeypatch.setattr(
@@ -2151,8 +2187,67 @@ def test_assign_speaker_validation_and_error_paths(
     assert "bad assignment" in failed.text
 
     monkeypatch.setattr(ui_routes, "set_speaker_assignment", lambda *_a, **_k: None)
-    ok = c.post(base, data={"diar_speaker_label": "S1", "voice_profile_id": ""})
+    ok = c.post(base, data={"diar_speaker_label": "S1", "voice_profile_id": "1"})
     assert ok.status_code == 303
+
+
+def test_keep_unknown_and_local_label_validation_paths(
+    client: tuple[AppSettings, TestClient],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg, c = client
+    recording_id = _seed_recording(cfg, "rec-speaker-decisions-1")
+    keep_unknown_base = f"/ui/recordings/{recording_id}/speakers/keep-unknown"
+    local_label_base = f"/ui/recordings/{recording_id}/speakers/local-label"
+
+    assert c.post(
+        "/ui/recordings/missing/speakers/keep-unknown",
+        data={"diar_speaker_label": "S1"},
+    ).status_code == 404
+    assert c.post(keep_unknown_base, data={"diar_speaker_label": " "}).status_code == 422
+
+    monkeypatch.setattr(
+        ui_routes,
+        "set_speaker_assignment",
+        lambda *_a, **_k: (_ for _ in ()).throw(ValueError("unknown failed")),
+    )
+    failed_keep_unknown = c.post(keep_unknown_base, data={"diar_speaker_label": "S1"})
+    assert failed_keep_unknown.status_code == 422
+    assert "unknown failed" in failed_keep_unknown.text
+
+    monkeypatch.setattr(ui_routes, "set_speaker_assignment", lambda *_a, **_k: None)
+    assert c.post(keep_unknown_base, data={"diar_speaker_label": "S1"}).status_code == 303
+
+    assert c.post(
+        "/ui/recordings/missing/speakers/local-label",
+        data={"diar_speaker_label": "S1", "local_display_name": "Guest"},
+    ).status_code == 404
+    assert c.post(
+        local_label_base,
+        data={"diar_speaker_label": " ", "local_display_name": "Guest"},
+    ).status_code == 422
+    assert c.post(
+        local_label_base,
+        data={"diar_speaker_label": "S1", "local_display_name": " "},
+    ).status_code == 422
+
+    monkeypatch.setattr(
+        ui_routes,
+        "set_speaker_assignment",
+        lambda *_a, **_k: (_ for _ in ()).throw(ValueError("local failed")),
+    )
+    failed_local_label = c.post(
+        local_label_base,
+        data={"diar_speaker_label": "S1", "local_display_name": "Guest"},
+    )
+    assert failed_local_label.status_code == 422
+    assert "local failed" in failed_local_label.text
+
+    monkeypatch.setattr(ui_routes, "set_speaker_assignment", lambda *_a, **_k: None)
+    assert c.post(
+        local_label_base,
+        data={"diar_speaker_label": "S1", "local_display_name": "Guest"},
+    ).status_code == 303
 
 
 def test_create_and_assign_speaker_validation_paths(

@@ -71,8 +71,13 @@ docker compose run --rm api python -m lan_app.healthchecks app
    - Glossary sources are merged deterministically from stored manual/correction entries, speaker-bank names, selected calendar context, and project context when available.
    - Each processed recording writes `derived/asr_glossary.json`, and the overview page shows the glossary terms that were actually sent to ASR.
    - Canonical speaker records keep one active person entry with many samples; low-confidence matches stay reviewable instead of auto-merging.
-   - Use the `speakers` tab to remap `S1`/`S2` diarization labels to canonical speakers or leave them unmatched; the export preview updates to the corrected `Name (Sx)` labels.
-   - Speaker snippets are purity-ranked voice samples. Add sample now requires selecting an explicit clean clip instead of silently taking the first snippet.
+   - Use the `speakers` tab to make an explicit review decision per diarized speaker:
+     - `Confirm global match` when the identity should map to a canonical person across recordings.
+     - `Keep unknown` when the speaker should stay intentionally unnamed.
+     - `Local label only` when the speaker needs a recording-specific name without creating a canonical speaker.
+     - `Add sample` only for trusted clean clips; it stays separate from mapping decisions.
+   - Exports now show only explicit speaker decisions: confirmed canonical names or local labels render as `Name (Sx)`, while unresolved/system-suggested speakers stay on `Sx`.
+   - Speaker snippets are purity-ranked voice samples. Add sample requires selecting an explicit clean clip instead of silently taking the first snippet.
    - Snippet export runs right after `speaker_turns` and before `llm_extract`, so `derived/snippets_manifest.json` and accepted clips can show up while long LLM work is still running.
    - The Speakers tab labels snippet state as pending, generating, ready, failed, or legacy/unavailable so operators can tell whether Add sample should be usable yet.
    - Legacy recordings missing snippet artifacts can be repaired from the Speakers tab without rerunning ASR/LLM. For admin backfill, run `python -m lan_app.tools.repair_snippets --scan-missing`; to repair exactly one recording, run `python -m lan_app.tools.repair_snippets --recording-id <recording_id>`.

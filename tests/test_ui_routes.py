@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import io
 import json
 from pathlib import Path
 import wave
+import zipfile
 
 import pytest
 from fastapi.testclient import TestClient
@@ -1299,6 +1301,7 @@ def test_recording_detail_speakers_tab_assignment_persists(tmp_path, monkeypatch
     assert len(assignments) == 1
     assert assignments[0]["diar_speaker_label"] == "S1"
     assert assignments[0]["voice_profile_id"] == profile["id"]
+    assert assignments[0]["review_state"] == "confirmed_canonical"
 
     page = TestClient(api.app, follow_redirects=True).get(
         "/recordings/rec-speakers-1?tab=speakers"
@@ -1306,7 +1309,8 @@ def test_recording_detail_speakers_tab_assignment_persists(tmp_path, monkeypatch
     assert page.status_code == 200
     assert "Speaker Assignments" in page.text
     assert "Alice Example" in page.text
-    assert "Save remap" in page.text
+    assert "Confirm global match" in page.text
+    assert "Mapped globally" in page.text
     assert "Add sample from this recording" in page.text
     assert "Recommended" in page.text
     assert "purity 88%" in page.text
@@ -1347,6 +1351,115 @@ def test_recording_detail_speakers_create_and_assign(tmp_path, monkeypatch):
     assert len(assignments) == 1
     assert assignments[0]["diar_speaker_label"] == "S2"
     assert assignments[0]["voice_profile_name"] == "Bob New"
+    assert assignments[0]["review_state"] == "confirmed_canonical"
+
+
+def test_recording_detail_speakers_keep_unknown_persists_intentional_review(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    init_db(cfg)
+    create_recording(
+        "rec-speakers-unknown-1",
+        source="drive",
+        source_filename="speakers-unknown.mp3",
+        status=RECORDING_STATUS_READY,
+        settings=cfg,
+    )
+    _seed_speaker_artifacts(cfg, "rec-speakers-unknown-1")
+    profile = create_voice_profile("Unknown Candidate", settings=cfg)
+    set_speaker_assignment(
+        recording_id="rec-speakers-unknown-1",
+        diar_speaker_label="S1",
+        voice_profile_id=None,
+        confidence=0.61,
+        candidate_matches=[{"voice_profile_id": profile["id"], "score": 0.61}],
+        low_confidence=True,
+        review_state="system_suggested",
+        settings=cfg,
+    )
+
+    c = TestClient(api.app, follow_redirects=False)
+    r = c.post(
+        "/ui/recordings/rec-speakers-unknown-1/speakers/keep-unknown",
+        data={"diar_speaker_label": "S1"},
+    )
+    assert r.status_code == 303
+
+    assignments = list_speaker_assignments("rec-speakers-unknown-1", settings=cfg)
+    assert len(assignments) == 1
+    assert assignments[0]["voice_profile_id"] is None
+    assert assignments[0]["review_state"] == "kept_unknown"
+    assert assignments[0]["low_confidence"] == 0
+
+    page = TestClient(api.app, follow_redirects=True).get(
+        "/recordings/rec-speakers-unknown-1?tab=speakers"
+    )
+    assert page.status_code == 200
+    assert "Unknown by choice" in page.text
+    assert "Below auto-match threshold 0.75" not in page.text
+
+
+def test_recording_detail_speakers_local_label_shows_in_detail_and_export(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    init_db(cfg)
+    create_recording(
+        "rec-speakers-local-1",
+        source="drive",
+        source_filename="speakers-local.mp3",
+        status=RECORDING_STATUS_READY,
+        settings=cfg,
+    )
+    _seed_speaker_artifacts(cfg, "rec-speakers-local-1")
+    derived = cfg.recordings_root / "rec-speakers-local-1" / "derived"
+    (derived / "summary.json").write_text(
+        json.dumps({"topic": "Speaker review", "summary_bullets": ["Discussed labels."]}),
+        encoding="utf-8",
+    )
+    (derived / "speaker_turns.json").write_text(
+        json.dumps([{"speaker": "S1", "text": "I am only named for this meeting."}]),
+        encoding="utf-8",
+    )
+
+    c = TestClient(api.app, follow_redirects=False)
+    r = c.post(
+        "/ui/recordings/rec-speakers-local-1/speakers/local-label",
+        data={
+            "diar_speaker_label": "S1",
+            "local_display_name": "Design Lead",
+        },
+    )
+    assert r.status_code == 303
+
+    assignments = list_speaker_assignments("rec-speakers-local-1", settings=cfg)
+    assert len(assignments) == 1
+    assert assignments[0]["voice_profile_id"] is None
+    assert assignments[0]["review_state"] == "local_label"
+    assert assignments[0]["local_display_name"] == "Design Lead"
+    assert list_voice_profiles(settings=cfg) == []
+
+    speakers_page = TestClient(api.app, follow_redirects=True).get(
+        "/recordings/rec-speakers-local-1?tab=speakers"
+    )
+    assert speakers_page.status_code == 200
+    assert "Local label only" in speakers_page.text
+    assert "Design Lead" in speakers_page.text
+
+    overview = TestClient(api.app, follow_redirects=True).get(
+        "/recordings/rec-speakers-local-1"
+    )
+    assert overview.status_code == 200
+    assert "Design Lead (S1)" in overview.text
+
+    export_resp = TestClient(api.app, follow_redirects=True).get(
+        "/ui/recordings/rec-speakers-local-1/export.zip"
+    )
+    assert export_resp.status_code == 200
+    archive = zipfile.ZipFile(io.BytesIO(export_resp.content))
+    markdown = archive.read("onenote.md").decode("utf-8")
+    assert "Design Lead (S1)" in markdown
 
 
 def test_recording_detail_speakers_add_sample_links_snippet_and_audio_route(tmp_path, monkeypatch):
@@ -1399,6 +1512,50 @@ def test_recording_detail_speakers_add_sample_links_snippet_and_audio_route(tmp_
     )
     assert audio_resp.status_code == 200
     assert audio_resp.headers["content-type"].startswith("audio/wav")
+
+
+def test_recording_detail_speakers_add_sample_keeps_local_label_decision(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    init_db(cfg)
+    create_recording(
+        "rec-speakers-local-sample-1",
+        source="drive",
+        source_filename="speakers-local-sample.mp3",
+        status=RECORDING_STATUS_READY,
+        settings=cfg,
+    )
+    _seed_speaker_artifacts(cfg, "rec-speakers-local-sample-1")
+    profile = create_voice_profile("Trusted Canonical", settings=cfg)
+    set_speaker_assignment(
+        recording_id="rec-speakers-local-sample-1",
+        diar_speaker_label="S1",
+        voice_profile_id=None,
+        review_state="local_label",
+        local_display_name="Guest Speaker",
+        settings=cfg,
+    )
+
+    c = TestClient(api.app, follow_redirects=False)
+    r = c.post(
+        "/ui/recordings/rec-speakers-local-sample-1/speakers/add-sample",
+        data={
+            "diar_speaker_label": "S1",
+            "voice_profile_id": str(profile["id"]),
+            "snippet_path": "S1/1.wav",
+        },
+    )
+    assert r.status_code == 303
+
+    assignments = list_speaker_assignments("rec-speakers-local-sample-1", settings=cfg)
+    assert len(assignments) == 1
+    assert assignments[0]["review_state"] == "local_label"
+    assert assignments[0]["voice_profile_id"] is None
+    assert assignments[0]["local_display_name"] == "Guest Speaker"
+    samples = list_voice_samples(settings=cfg)
+    assert len(samples) == 1
+    assert samples[0]["voice_profile_id"] == profile["id"]
 
 
 def test_recording_detail_speakers_no_clean_snippet_shows_clear_message(tmp_path, monkeypatch):
@@ -1957,7 +2114,7 @@ def test_recording_detail_speakers_show_degraded_notice_and_low_confidence(tmp_p
         confidence=0.61,
         candidate_matches=[{"voice_profile_id": profile["id"], "score": 0.61}],
         low_confidence=True,
-        keep_unmatched=True,
+        review_state="system_suggested",
         settings=cfg,
     )
     derived = cfg.recordings_root / "rec-speakers-review-1" / "derived"
@@ -1976,7 +2133,7 @@ def test_recording_detail_speakers_show_degraded_notice_and_low_confidence(tmp_p
     r = c.get("/recordings/rec-speakers-review-1?tab=speakers")
     assert r.status_code == 200
     assert "degraded fallback mode" in r.text
-    assert "Low confidence" in r.text
+    assert "Needs review" in r.text
     assert "Below auto-match threshold 0.75" in r.text
     assert "Review Candidate (0.61)" in r.text
 

@@ -788,6 +788,82 @@ def test_speaker_assignments_and_voice_samples_paths(tmp_path: Path):
             voice_profile_id=profile_id,
             settings=cfg,
         )
+    with pytest.raises(ValueError, match="Unsupported speaker review_state"):
+        db_module.set_speaker_assignment(
+            recording_id="rec-db-cov-voice-1",
+            diar_speaker_label="S0",
+            voice_profile_id=profile_id,
+            review_state="bad",
+            settings=cfg,
+        )
+    with pytest.raises(ValueError, match="confirmed_canonical requires voice_profile_id"):
+        db_module.set_speaker_assignment(
+            recording_id="rec-db-cov-voice-1",
+            diar_speaker_label="S0",
+            voice_profile_id=None,
+            review_state="confirmed_canonical",
+            settings=cfg,
+        )
+    with pytest.raises(ValueError, match="local_label requires local_display_name"):
+        db_module.set_speaker_assignment(
+            recording_id="rec-db-cov-voice-1",
+            diar_speaker_label="S0",
+            voice_profile_id=None,
+            review_state="local_label",
+            settings=cfg,
+        )
+    with pytest.raises(
+        ValueError,
+        match="local_display_name cannot be combined with voice_profile_id",
+    ):
+        db_module.set_speaker_assignment(
+            recording_id="rec-db-cov-voice-1",
+            diar_speaker_label="S0",
+            voice_profile_id=profile_id,
+            local_display_name="Guest",
+            settings=cfg,
+        )
+    with pytest.raises(ValueError, match="local_label cannot set voice_profile_id"):
+        db_module.set_speaker_assignment(
+            recording_id="rec-db-cov-voice-1",
+            diar_speaker_label="S0",
+            voice_profile_id=profile_id,
+            review_state="local_label",
+            local_display_name="Guest",
+            settings=cfg,
+        )
+    with pytest.raises(ValueError, match="kept_unknown cannot set voice_profile_id"):
+        db_module.set_speaker_assignment(
+            recording_id="rec-db-cov-voice-1",
+            diar_speaker_label="S0",
+            voice_profile_id=profile_id,
+            review_state="kept_unknown",
+            settings=cfg,
+        )
+    with pytest.raises(
+        ValueError,
+        match="local_display_name requires review_state=local_label",
+    ):
+        db_module.set_speaker_assignment(
+            recording_id="rec-db-cov-voice-1",
+            diar_speaker_label="S0",
+            voice_profile_id=profile_id,
+            review_state="confirmed_canonical",
+            local_display_name="Guest",
+            settings=cfg,
+        )
+    with pytest.raises(
+        ValueError,
+        match="local_display_name requires review_state=local_label",
+    ):
+        db_module.set_speaker_assignment(
+            recording_id="rec-db-cov-voice-1",
+            diar_speaker_label="S0",
+            voice_profile_id=None,
+            review_state="kept_unknown",
+            local_display_name="Guest",
+            settings=cfg,
+        )
 
     assigned = db_module.set_speaker_assignment(
         recording_id="rec-db-cov-voice-1",
@@ -798,6 +874,8 @@ def test_speaker_assignments_and_voice_samples_paths(tmp_path: Path):
     )
     assert assigned is not None
     assert assigned["confidence"] == 1.0
+    assert assigned["review_state"] == "confirmed_canonical"
+    assert assigned["local_display_name"] is None
     unmatched = db_module.set_speaker_assignment(
         recording_id="rec-db-cov-voice-1",
         diar_speaker_label="S2",
@@ -814,10 +892,21 @@ def test_speaker_assignments_and_voice_samples_paths(tmp_path: Path):
     )
     assert unmatched is not None
     assert unmatched["voice_profile_id"] is None
-    assert unmatched["low_confidence"] == 1
+    assert unmatched["low_confidence"] == 0
+    assert unmatched["review_state"] == "kept_unknown"
     assert unmatched["candidate_matches_json"] == [
         {"voice_profile_id": profile_id, "score": 0.42, "display_name": "Voice A"}
     ]
+    local_only = db_module.set_speaker_assignment(
+        recording_id="rec-db-cov-voice-1",
+        diar_speaker_label="S3",
+        voice_profile_id=None,
+        local_display_name="Meeting Guest",
+        settings=cfg,
+    )
+    assert local_only is not None
+    assert local_only["review_state"] == "local_label"
+    assert local_only["local_display_name"] == "Meeting Guest"
     assert (
         db_module.set_speaker_assignment(
             recording_id="rec-db-cov-voice-1",
@@ -976,6 +1065,8 @@ def test_canonical_speaker_migration_from_legacy_schema(
     assert assignment[0]["confidence"] == 0.93
     assert assignment[0]["candidate_matches_json"] == []
     assert assignment[0]["low_confidence"] == 0
+    assert assignment[0]["review_state"] == "confirmed_canonical"
+    assert assignment[0]["local_display_name"] is None
     assert assignment[0]["voice_profile_name"] == "Legacy Voice"
     assert assignment[0]["updated_at"]
     sample = db_module.get_voice_sample(1, settings=cfg)
@@ -984,6 +1075,127 @@ def test_canonical_speaker_migration_from_legacy_schema(
     assert sample["candidate_matches_json"] == []
     assert sample["needs_review"] == 0
     assert sample["confidence"] == 1.0
+
+
+def test_speaker_review_state_migration_from_pre_023_schema(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    cfg = _cfg(tmp_path)
+    all_migrations = db_module._migration_files()  # noqa: SLF001
+    legacy_migrations = [item for item in all_migrations if item[0] < 23]
+
+    monkeypatch.setattr(db_module, "_migration_files", lambda: legacy_migrations)  # noqa: SLF001
+    db_module.init_db(cfg)
+    with db_module.connect(cfg) as conn:
+        conn.execute(
+            """
+            INSERT INTO recordings (
+                id,
+                source,
+                source_filename,
+                captured_at,
+                status,
+                created_at,
+                updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "rec-db-cov-review-migration-1",
+                "upload",
+                "review.wav",
+                "2026-03-01T10:00:00Z",
+                "Queued",
+                "2026-03-01T10:00:00Z",
+                "2026-03-01T10:00:00Z",
+            ),
+        )
+        conn.execute(
+            "INSERT INTO voice_profiles (id, display_name, notes) VALUES (?, ?, ?)",
+            (1, "Legacy Canonical", "notes"),
+        )
+        conn.execute(
+            """
+            INSERT INTO speaker_assignments (
+                recording_id,
+                diar_speaker_label,
+                voice_profile_id,
+                confidence,
+                candidate_matches_json,
+                low_confidence,
+                updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "rec-db-cov-review-migration-1",
+                "S1",
+                1,
+                0.95,
+                "[]",
+                0,
+                "2026-03-01T10:00:00Z",
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO speaker_assignments (
+                recording_id,
+                diar_speaker_label,
+                voice_profile_id,
+                confidence,
+                candidate_matches_json,
+                low_confidence,
+                updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "rec-db-cov-review-migration-1",
+                "S2",
+                None,
+                0.44,
+                json.dumps([{"voice_profile_id": 1, "score": 0.44}]),
+                1,
+                "2026-03-01T10:00:00Z",
+            ),
+        )
+        conn.commit()
+
+    monkeypatch.setattr(db_module, "_migration_files", lambda: all_migrations)  # noqa: SLF001
+    db_module.init_db(cfg)
+
+    assignments = db_module.list_speaker_assignments(
+        "rec-db-cov-review-migration-1",
+        settings=cfg,
+    )
+    assert assignments == [
+        {
+            "recording_id": "rec-db-cov-review-migration-1",
+            "diar_speaker_label": "S1",
+            "voice_profile_id": 1,
+            "confidence": 0.95,
+            "candidate_matches_json": [],
+            "low_confidence": 0,
+            "review_state": "confirmed_canonical",
+            "local_display_name": None,
+            "updated_at": "2026-03-01T10:00:00Z",
+            "voice_profile_name": "Legacy Canonical",
+        },
+        {
+            "recording_id": "rec-db-cov-review-migration-1",
+            "diar_speaker_label": "S2",
+            "voice_profile_id": None,
+            "confidence": 0.44,
+            "candidate_matches_json": [{"voice_profile_id": 1, "score": 0.44}],
+            "low_confidence": 1,
+            "review_state": "system_suggested",
+            "local_display_name": None,
+            "updated_at": "2026-03-01T10:00:00Z",
+            "voice_profile_name": None,
+        },
+    ]
 
 
 def test_merge_voice_profiles_moves_references_and_rewrites_candidates(tmp_path: Path):

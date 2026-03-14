@@ -540,7 +540,7 @@ Queue (in order)
 - Depends on: PR-UI-CONTROL-CENTER-03
 
 108) PR-SPEAKER-REVIEW-01: Add explicit speaker decisions: confirm canonical match, keep unknown, local label only, and separate trusted-sample training
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-SPEAKER-REVIEW-01.md
 - Depends on: PR-UI-CONTROL-CENTER-04 and PR-SPEAKER-UX-01 and PR-SPEAKER-BANK-CANONICAL-01 and PR-SNIPPETS-UI-STATE-01
 
