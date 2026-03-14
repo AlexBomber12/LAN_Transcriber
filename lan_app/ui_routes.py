@@ -12,7 +12,7 @@ import logging
 import sqlite3
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, Form, Query, Request
@@ -158,6 +158,16 @@ _LANGUAGE_NAME_MAP: dict[str, str] = {
 _COMMON_LANGUAGE_CODES = ("en", "es", "fr", "de", "pt", "it", "zh", "ja", "ko", "ru")
 _STUCK_JOB_RECOVERY_ERROR = "stuck job recovered"
 _DISPLAY_TIMEZONE = "Europe/Rome"
+_CONTROL_CENTER_TABS = (
+    "overview",
+    "calendar",
+    "project",
+    "speakers",
+    "language",
+    "metrics",
+    "log",
+)
+_CONTROL_CENTER_PREVIEW_LIMIT = 8
 _GLOSSARY_KIND_OPTIONS = ("person", "company", "product", "project", "term")
 _GLOSSARY_SOURCE_OPTIONS = (
     "manual",
@@ -2103,6 +2113,149 @@ def _dashboard_status_context(settings: AppSettings) -> dict[str, Any]:
     }
 
 
+def _control_center_shell_href(
+    *,
+    selected: str = "",
+    status_filter: str = "",
+    search_query: str = "",
+    tab: str = "overview",
+) -> str:
+    params: list[tuple[str, str]] = []
+    if selected:
+        params.append(("selected", selected))
+    if status_filter:
+        params.append(("status", status_filter))
+    if search_query:
+        params.append(("q", search_query))
+    if tab and tab != "overview":
+        params.append(("tab", tab))
+    if not params:
+        return "/"
+    return f"/?{urlencode(params)}"
+
+
+def _control_center_state_context(
+    *,
+    selected: str | None,
+    status: str | None,
+    q: str | None,
+    tab: str | None,
+) -> dict[str, Any]:
+    selected_id = str(selected or "").strip()
+    status_filter = status if status in RECORDING_STATUSES else ""
+    search_query = str(q or "").strip()
+    current_tab = str(tab or "overview").strip().lower() or "overview"
+    if current_tab not in _CONTROL_CENTER_TABS:
+        current_tab = "overview"
+    state_params = {
+        "selected": selected_id,
+        "status": status_filter,
+        "q": search_query,
+        "tab": current_tab,
+    }
+    return {
+        **state_params,
+        "tab_label": current_tab.capitalize(),
+        "tab_options": [
+            {
+                "value": value,
+                "label": value.capitalize(),
+                "selected": value == current_tab,
+            }
+            for value in _CONTROL_CENTER_TABS
+        ],
+        "status_options": RECORDING_STATUSES,
+        "recordings_href": f"/recordings?status={quote(status_filter)}"
+        if status_filter
+        else "/recordings",
+        "selected_detail_href": f"/recordings/{quote(selected_id)}?tab={current_tab}"
+        if selected_id
+        else "",
+        "clear_selection_href": _control_center_shell_href(
+            status_filter=status_filter,
+            search_query=search_query,
+            tab=current_tab,
+        ),
+        "reset_href": "/",
+        "work_pane_url": f"/ui/control-center/work-pane?{urlencode(state_params)}",
+        "inspector_pane_url": f"/ui/control-center/inspector-pane?{urlencode(state_params)}",
+    }
+
+
+def _control_center_matches_query(recording: dict[str, Any], search_query: str) -> bool:
+    needle = search_query.strip().casefold()
+    if not needle:
+        return True
+    searchable_values = (
+        recording.get("id"),
+        recording.get("source_filename"),
+        recording.get("source"),
+        recording.get("status"),
+        recording.get("project_name"),
+        recording.get("suggested_project_name"),
+    )
+    return any(needle in str(value or "").casefold() for value in searchable_values)
+
+
+def _control_center_work_pane_context(
+    settings: AppSettings,
+    *,
+    state: dict[str, Any],
+) -> dict[str, Any]:
+    items, _ = list_recordings(
+        settings=settings,
+        status=state["status"] or None,
+        limit=_CONTROL_CENTER_PREVIEW_LIMIT * 2,
+    )
+    prepared_items = _recordings_list_items_context(items, settings=settings)
+    rows: list[dict[str, Any]] = []
+    for item in prepared_items:
+        if not _control_center_matches_query(item, state["q"]):
+            continue
+        recording_id = str(item.get("id") or "").strip()
+        if not recording_id:
+            continue
+        rows.append(
+            {
+                **item,
+                "selected": recording_id == state["selected"],
+                "select_href": _control_center_shell_href(
+                    selected=recording_id,
+                    status_filter=state["status"],
+                    search_query=state["q"],
+                    tab=state["tab"],
+                ),
+                "detail_href": f"/recordings/{quote(recording_id)}?tab={state['tab']}",
+            }
+        )
+        if len(rows) >= _CONTROL_CENTER_PREVIEW_LIMIT:
+            break
+    preview_message = (
+        "Previewing recent recordings only. The full live operator list arrives in the "
+        "next Control Center PR."
+    )
+    if state["selected"] and not any(row["selected"] for row in rows):
+        preview_message = (
+            "Selected recording is outside the current preview set. The inspector pane "
+            "still keeps the URL state."
+        )
+    return {
+        "rows": rows,
+        "preview_limit": _CONTROL_CENTER_PREVIEW_LIMIT,
+        "preview_message": preview_message,
+    }
+
+
+def _control_center_empty_inspector_context() -> dict[str, str]:
+    return {
+        "title": "Select a recording from the left pane",
+        "message": (
+            "Use the preview list to pin a recording here, upload a file to begin, or "
+            "open a full-page recording view if preferred."
+        ),
+    }
+
+
 def _recordings_list_items_context(
     items: list[dict[str, Any]],
     *,
@@ -2525,14 +2678,32 @@ async def ui_logout() -> Any:
 
 
 @ui_router.get("/", response_class=HTMLResponse)
-async def ui_dashboard(request: Request) -> Any:
+async def ui_dashboard(
+    request: Request,
+    selected: str = Query(default=""),
+    status: str | None = Query(default=None),
+    q: str = Query(default=""),
+    tab: str = Query(default="overview"),
+) -> Any:
     dashboard_context = _dashboard_status_context(_settings)
+    control_center_state = _control_center_state_context(
+        selected=selected,
+        status=status,
+        q=q,
+        tab=tab,
+    )
     return templates.TemplateResponse(
         request,
-        "dashboard.html",
+        "control_center.html",
         {
             "active": "dashboard",
             **dashboard_context,
+            "control_center_state": control_center_state,
+            "control_center_work_pane": _control_center_work_pane_context(
+                _settings,
+                state=control_center_state,
+            ),
+            "control_center_empty_inspector": _control_center_empty_inspector_context(),
         },
     )
 
@@ -2557,6 +2728,57 @@ async def ui_control_center_dashboard_jobs_summary(request: Request) -> Any:
         "partials/control_center/status_summary_strip.html",
         {
             "summary_strip": dashboard_context["jobs_summary_strip"],
+        },
+    )
+
+
+@ui_router.get("/ui/control-center/work-pane", response_class=HTMLResponse)
+async def ui_control_center_work_pane(
+    request: Request,
+    selected: str = Query(default=""),
+    status: str | None = Query(default=None),
+    q: str = Query(default=""),
+    tab: str = Query(default="overview"),
+) -> Any:
+    control_center_state = _control_center_state_context(
+        selected=selected,
+        status=status,
+        q=q,
+        tab=tab,
+    )
+    return templates.TemplateResponse(
+        request,
+        "partials/control_center/work_pane.html",
+        {
+            "control_center_state": control_center_state,
+            "control_center_work_pane": _control_center_work_pane_context(
+                _settings,
+                state=control_center_state,
+            ),
+        },
+    )
+
+
+@ui_router.get("/ui/control-center/inspector-pane", response_class=HTMLResponse)
+async def ui_control_center_inspector_pane(
+    request: Request,
+    selected: str = Query(default=""),
+    status: str | None = Query(default=None),
+    q: str = Query(default=""),
+    tab: str = Query(default="overview"),
+) -> Any:
+    control_center_state = _control_center_state_context(
+        selected=selected,
+        status=status,
+        q=q,
+        tab=tab,
+    )
+    return templates.TemplateResponse(
+        request,
+        "partials/control_center/inspector_pane.html",
+        {
+            "control_center_state": control_center_state,
+            "control_center_empty_inspector": _control_center_empty_inspector_context(),
         },
     )
 

@@ -1,0 +1,82 @@
+{% extends "base.html" %}
+{% block title %}Control Center – LAN Transcriber{% endblock %}
+{% block content %}
+<h1>Control Center</h1>
+<p class="control-center-lede">
+  Primary operator workspace for queue health, selection state, and the upcoming 1-page workflow.
+</p>
+
+<div class="control-center-shell">
+  <div id="control-center-top-strip" class="control-center-summary-grid">
+    <div
+      id="control-center-recordings-summary"
+      class="control-center-panel"
+      hx-get="/ui/control-center/dashboard/recordings-summary"
+      hx-trigger="refresh-control-center-summary from:body"
+      hx-target="this"
+      hx-swap="innerHTML"
+    >
+      {% set summary_strip = recordings_summary_strip %}
+      {% include "partials/control_center/status_summary_strip.html" %}
+    </div>
+
+    <div
+      id="control-center-jobs-summary"
+      class="control-center-panel"
+      hx-get="/ui/control-center/dashboard/jobs-summary"
+      hx-trigger="refresh-control-center-summary from:body"
+      hx-target="this"
+      hx-swap="innerHTML"
+    >
+      {% set summary_strip = jobs_summary_strip %}
+      {% include "partials/control_center/status_summary_strip.html" %}
+    </div>
+
+    <section class="control-center-panel">
+      <div class="section">
+        <h2>Operator context</h2>
+        <p class="control-center-pane-copy">
+          The landing page now keeps selection, filter, search, and tab state in the URL so reloads stay in context.
+        </p>
+        <div class="control-center-state-list">
+          <span class="control-center-state-pill">Status: {{ control_center_state.status or "All" }}</span>
+          <span class="control-center-state-pill">Search: {{ control_center_state.q or "None" }}</span>
+          <span class="control-center-state-pill">Tab: {{ control_center_state.tab_label }}</span>
+          <span class="control-center-state-pill">Selected: {{ control_center_state.selected or "None" }}</span>
+        </div>
+        <div class="filters" style="margin:10px 0 0 0">
+          <a href="/upload" class="btn" style="text-decoration:none">Upload</a>
+          <a href="{{ control_center_state.recordings_href }}" class="btn" style="text-decoration:none">Open recordings</a>
+          {% if control_center_state.selected_detail_href %}
+          <a href="{{ control_center_state.selected_detail_href }}" class="btn" style="text-decoration:none">Open selected page</a>
+          {% endif %}
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <div class="control-center-main">
+    <section
+      id="control-center-work-pane"
+      class="control-center-pane"
+      hx-get="{{ control_center_state.work_pane_url }}"
+      hx-trigger="refresh-control-center-work from:body"
+      hx-target="this"
+      hx-swap="innerHTML"
+    >
+      {% include "partials/control_center/work_pane.html" %}
+    </section>
+
+    <section
+      id="control-center-inspector-pane"
+      class="control-center-pane"
+      hx-get="{{ control_center_state.inspector_pane_url }}"
+      hx-trigger="refresh-control-center-inspector from:body"
+      hx-target="this"
+      hx-swap="innerHTML"
+    >
+      {% include "partials/control_center/inspector_pane.html" %}
+    </section>
+  </div>
+</div>
+{% endblock %}
