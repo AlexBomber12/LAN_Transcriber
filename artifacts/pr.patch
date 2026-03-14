@@ -1,108 +1,3501 @@
+diff --git a/README.md b/README.md
+index fc1408c..6131e82 100644
+--- a/README.md
++++ b/README.md
+@@ -85,15 +85,17 @@ Operational setup, failure handling, backup/restore, and upgrade steps are docum
+ ## Workflow (Upload -> Processing -> Export)
+ 
+ 1. Open `/` for the Control Center shell.
+-   - This is now the primary operator surface: summary strip on top, embedded upload + live recordings queue on the left, inspector shell on the right.
+-   - `/upload`, `/recordings`, and `/recordings/{recording_id}` remain available as direct fallback pages while the 1-page workflow is still being assembled.
++   - This is now the primary operator surface: summary strip on top, embedded upload + live recordings queue on the left, and the shared recording inspector on the right.
++   - `/upload` and `/recordings/{recording_id}` remain available as direct fallback pages, but the main review flow now stays on `/`.
+ 1. Upload one or more audio files from `/` or the fallback `/upload` page.
+ 2. Uploaded audio is normalized automatically to 16 kHz mono WAV before VAD/ASR/diarization (raw upload is preserved; no user conversion needed).
+ 3. Mixed-language handling now happens automatically in `LAN_ASR_MULTILINGUAL_MODE=auto`.
+    - `derived/transcript.json` can include chunk-level `language_spans` and multilingual execution metadata.
+    - When chunk language ID remains conflicted or low-confidence, the recording stays in `NeedsReview` with an explicit review reason.
+ 4. Track per-file upload progress and processing progress from `/`; the left-pane queue refreshes as new recordings appear and processing status changes.
+-5. Open the recording detail page at `/recordings/{recording_id}`.
++5. Select a recording from `/` and review it in the embedded inspector.
++   - Use the inspector tabs on `/` for overview, speakers, language, project, calendar, metrics, and log without losing queue context.
++   - `/recordings/{recording_id}` remains available as a standalone fallback for the same shared inspector.
+    - `NeedsReview` recordings now show an explicit review reason in both the list and detail UI.
+    - Automatic worker retries now resume from the first incomplete or invalidated pipeline stage instead of restarting from raw sanitization every time.
+    - Explicit `Requeue` from the UI/API still clears saved stage checkpoints and forces a clean rerun from the beginning.
+@@ -119,7 +121,7 @@ Operational setup, failure handling, backup/restore, and upgrade steps are docum
+ ## UI composition
+ 
+ - Reusable server-rendered Control Center building blocks live under `lan_app/templates/partials/control_center/`.
+-- `lan_app/ui_routes.py` exposes matching context helpers plus fragment endpoints under `/ui/control-center/...`; future 1-page workflow PRs should compose those fragments instead of copying page markup.
++- `lan_app/ui_routes.py` exposes matching context helpers plus fragment endpoints under `/ui/control-center/...` and `/ui/recordings/{recording_id}/inspector`; future 1-page workflow PRs should compose those fragments instead of copying page markup.
+ 
+ ## Speaker bank
+ 
+diff --git a/docs/runbook.md b/docs/runbook.md
+index 1659901..6f7644b 100644
+--- a/docs/runbook.md
++++ b/docs/runbook.md
+@@ -54,7 +54,8 @@ docker compose run --rm api python -m lan_app.healthchecks app
+    - `derived/transcript.json` can include `language_spans`, multilingual chunk metadata, and multilingual review metadata.
+    - If chunk-level language ID stays conflicted or low-confidence, the recording remains in `NeedsReview` with an explicit review reason.
+ 4. Track upload and processing progress per file from `/`; the Control Center queue updates as new recordings appear and statuses change. `/upload` remains available as a direct fallback.
+-5. Open `/recordings/{recording_id}` for transcript, summary, and export actions.
++5. Select the recording on `/` and use the embedded inspector for transcript, summary, routing, speaker review, and export actions.
++   - `/recordings/{recording_id}` remains available as a standalone fallback for the same inspector when you need a direct link or full-page view.
+    - `NeedsReview` recordings show an explicit review reason in the recordings list and detail page.
+    - `Stop` on a queued recording removes the queued job immediately and marks the recording `Stopped`.
+    - `Stop` on a running recording changes the status to `Stopping`; the worker first waits for the current heavy child process to exit cooperatively and then force-terminates it after `LAN_STOP_GRACE_SECONDS` when needed, before finalizing the recording as `Stopped`.
+diff --git a/lan_app/templates/base.html b/lan_app/templates/base.html
+index 706f8c4..a42e00b 100644
+--- a/lan_app/templates/base.html
++++ b/lan_app/templates/base.html
+@@ -301,6 +301,60 @@ function postControlCenterAction(sel, action) {
+     });
+ }
+ 
++function triggerRecordingAction(btn) {
++  if (!btn || btn.disabled) return;
++  var url = btn.dataset.actionUrl || '';
++  if (!url) return;
++  var confirmMessage = btn.dataset.confirmMessage || '';
++  if (confirmMessage && !confirm(confirmMessage)) {
++    return;
++  }
++  var returnTo = btn.dataset.returnTo || '';
++  var body = btn.dataset.actionBody || '';
++  var headers = {'HX-Request': 'true'};
++  if (body) {
++    headers['Content-Type'] = 'application/x-www-form-urlencoded';
++  }
++  var originalText = btn.textContent;
++  var pendingLabel = btn.dataset.pendingLabel || originalText;
++  btn.disabled = true;
++  btn.textContent = pendingLabel;
++  fetch(url, {
++    method: 'POST',
++    headers: headers,
++    body: body || undefined
++  })
++    .then(function(resp) {
++      return resp.text().then(function(payload) {
++        return {resp: resp, body: payload};
++      });
++    })
++    .then(function(result) {
++      if (!result.resp.ok) {
++        throw new Error(result.body || ('Action failed (' + result.resp.status + ').'));
++      }
++      if (returnTo === 'control-center') {
++        refreshControlCenterPanels();
++        return;
++      }
++      var redirect = result.resp.headers.get('HX-Redirect');
++      if (redirect) {
++        window.location = redirect;
++        return;
++      }
++      window.location.reload();
++    })
++    .catch(function(err) {
++      window.alert(err && err.message ? err.message : 'Action failed.');
++    })
++    .finally(function() {
++      if (document.body.contains(btn)) {
++        btn.disabled = false;
++        btn.textContent = originalText;
++      }
++    });
++}
++
+ function doRecAction(sel) {
+   var act = sel.value;
+   var id = sel.dataset.rid;
+diff --git a/lan_app/templates/control_center.html b/lan_app/templates/control_center.html
+index 7a2dd1a..1fd3f9b 100644
+--- a/lan_app/templates/control_center.html
++++ b/lan_app/templates/control_center.html
+@@ -60,16 +60,7 @@
+       {% include "partials/control_center/work_pane.html" %}
+     </section>
+ 
+-    <section
+-      id="control-center-inspector-pane"
+-      class="control-center-pane"
+-      hx-get="{{ control_center_state.inspector_pane_url }}"
+-      hx-trigger="refresh-control-center-inspector from:body"
+-      hx-target="this"
+-      hx-swap="innerHTML"
+-    >
+-      {% include "partials/control_center/inspector_pane.html" %}
+-    </section>
++    {% include "partials/control_center/inspector_pane.html" %}
+   </div>
+ </div>
+ {% endblock %}
+diff --git a/lan_app/templates/partials/control_center/inspector_action_bar.html b/lan_app/templates/partials/control_center/inspector_action_bar.html
+index 8bbb6a4..0aebb07 100644
+--- a/lan_app/templates/partials/control_center/inspector_action_bar.html
++++ b/lan_app/templates/partials/control_center/inspector_action_bar.html
+@@ -1,32 +1,49 @@
+ <div class="filters" style="margin-bottom:10px">
+-  <select
+-    class="action-sel"
+-    style="font-size:12px"
++  <button
++    type="button"
++    class="btn"
++    data-action-url="{{ inspector_action_bar.requeue_url }}"
++    data-return-to="{{ inspector_action_bar.return_to }}"
++    data-pending-label="Requeueing..."
++    onclick="triggerRecordingAction(this)"
++  >Requeue</button>
++  <button
++    type="button"
++    class="btn"
++    data-action-url="{{ inspector_action_bar.quarantine_url }}"
++    data-return-to="{{ inspector_action_bar.return_to }}"
++    data-confirm-message="Quarantine this recording?"
++    data-pending-label="Quarantining..."
++    onclick="triggerRecordingAction(this)"
++  >Quarantine</button>
++  <button
++    type="button"
++    class="btn btn-danger"
+     data-rid="{{ inspector_action_bar.rec.id }}"
+     data-rlabel="{{ inspector_action_bar.rec.source_filename or inspector_action_bar.rec.id }}"
+     data-rcaptured="{{ '' if inspector_action_bar.rec.captured_at_display == '—' else inspector_action_bar.rec.captured_at_display }}"
+-    onchange="doRecAction(this)"
+-  >
+-    <option value="">Actions…</option>
+-    <option value="requeue">Requeue</option>
+-    <option value="quarantine">Quarantine</option>
+-    <option value="delete">Delete</option>
+-  </select>
++    data-return-to="{{ inspector_action_bar.return_to }}"
++    onclick="openDeleteDialog({recordingId: this.dataset.rid, recordingLabel: this.dataset.rlabel || '', capturedAt: this.dataset.rcaptured || '', returnTo: this.dataset.returnTo || '', returnFocus: this});"
++  >Delete</button>
+   {% if inspector_action_bar.rec.stop_eligible %}
+     {% if inspector_action_bar.rec.stop_in_progress %}
+     <button type="button" class="btn btn-danger" disabled>Stopping...</button>
+     {% else %}
+-    <form
+-      method="post"
+-      action="/ui/recordings/{{ inspector_action_bar.rec.id }}/stop"
+-      style="display:inline"
+-      hx-boost="false"
+-      onsubmit="return confirm('Stop processing for this recording?')"
+-    >
+-      <input type="hidden" name="tab" value="{{ inspector_action_bar.current_tab }}">
+-      <button type="submit" class="btn btn-danger">Stop</button>
+-    </form>
++    <button
++      type="button"
++      class="btn btn-danger"
++      data-action-url="{{ inspector_action_bar.stop_url }}"
++      data-action-body="{{ inspector_action_bar.stop_body }}"
++      data-return-to="{{ inspector_action_bar.return_to }}"
++      data-confirm-message="Stop processing for this recording?"
++      data-pending-label="Submitting stop..."
++      onclick="triggerRecordingAction(this)"
++    >Stop</button>
+     {% endif %}
+   {% endif %}
+-  <a href="{{ inspector_action_bar.back_href }}" class="btn" style="text-decoration:none">&#8592; Back</a>
++  <a href="{{ inspector_action_bar.download_zip_href }}" class="btn" style="text-decoration:none" hx-boost="false">Download ZIP</a>
++  {% if inspector_action_bar.embedded %}
++  <a href="{{ inspector_action_bar.open_full_page_href }}" class="btn" style="text-decoration:none">Open full-page recording</a>
++  {% endif %}
++  <a href="{{ inspector_action_bar.back_href }}" class="btn" style="text-decoration:none">{{ inspector_action_bar.back_label }}</a>
+ </div>
+diff --git a/lan_app/templates/partials/control_center/inspector_pane.html b/lan_app/templates/partials/control_center/inspector_pane.html
+index bf97413..f8c71bd 100644
+--- a/lan_app/templates/partials/control_center/inspector_pane.html
++++ b/lan_app/templates/partials/control_center/inspector_pane.html
+@@ -1,36 +1,30 @@
+-<div class="control-center-pane-head">
+-  <div>
+-    <h2 style="margin-top:0">Inspector Pane</h2>
+-    <p class="control-center-pane-copy">
+-      The embedded inspector lands in a later PR. This shell already keeps the target recording and tab stable in the URL.
+-    </p>
++<section
++  id="control-center-inspector-pane"
++  class="control-center-pane"
++  hx-get="{{ control_center_state.inspector_pane_url }}"
++  hx-trigger="refresh-control-center-inspector from:body"
++  hx-target="this"
++  hx-swap="outerHTML"
++>
++  {% if recording_inspector %}
++  {% include "partials/recording_inspector.html" %}
++  {% else %}
++  <div class="control-center-pane-head">
++    <div>
++      <h2 style="margin-top:0">Recording Inspector</h2>
++      <p class="control-center-pane-copy">
++        Keep the selected recording on the right while the queue and uploads stay live on the left.
++      </p>
++    </div>
++    <div class="filters" style="margin:0">
++      <a href="/recordings" class="btn" style="text-decoration:none">Open recordings page</a>
++    </div>
+   </div>
+-  <div class="filters" style="margin:0">
+-    <a href="/recordings" class="btn" style="text-decoration:none">Full recordings page</a>
+-  </div>
+-</div>
+-
+-{% if control_center_state.selected %}
+-<div class="section">
+-  <div class="info-grid">
+-    <span class="k">Selected recording</span><span class="v"><code>{{ control_center_state.selected }}</code></span>
+-    <span class="k">Inspector tab</span><span class="v">{{ control_center_state.tab_label }}</span>
+-    <span class="k">Shell state</span><span class="v">Ready for embedded inspector wiring</span>
+-  </div>
+-  <p style="margin:10px 0 0 0;color:#555">
+-    Reload-safe URL state is active. Use the full-page recording view until the embedded inspector arrives.
+-  </p>
++  {% set empty_inspector = control_center_empty_inspector %}
++  {% include "partials/control_center/inspector_empty.html" %}
+   <div class="filters" style="margin:10px 0 0 0">
+-    <a href="{{ control_center_state.selected_detail_href }}" class="btn" style="text-decoration:none">Open full-page recording</a>
+-    <a href="{{ control_center_state.clear_selection_href }}" class="btn" style="text-decoration:none">Clear selection</a>
+     <a href="/upload" class="btn" style="text-decoration:none">Upload file</a>
++    <a href="/recordings" class="btn" style="text-decoration:none">Open full recordings page</a>
+   </div>
+-</div>
+-{% else %}
+-{% set empty_inspector = control_center_empty_inspector %}
+-{% include "partials/control_center/inspector_empty.html" %}
+-<div class="filters" style="margin:10px 0 0 0">
+-  <a href="/upload" class="btn" style="text-decoration:none">Upload file</a>
+-  <a href="/recordings" class="btn" style="text-decoration:none">Open full recordings page</a>
+-</div>
+-{% endif %}
++  {% endif %}
++</section>
+diff --git a/lan_app/templates/recording_detail.html b/lan_app/templates/recording_detail.html
+index 4a4d3e8..6f7e7f3 100644
+--- a/lan_app/templates/recording_detail.html
++++ b/lan_app/templates/recording_detail.html
+@@ -1,855 +1,5 @@
+ {% extends "base.html" %}
+ {% block title %}{{ rec.id[:20] }} – LAN Transcriber{% endblock %}
+ {% block content %}
+-<h1>
+-  Recording: <code>{{ rec.id }}</code>
+-  &nbsp;<span class="badge s-{{ rec.status }}">{{ rec.status }}</span>
+-  {% if rec.status_reason_text_display %}
+-  <span style="font-size:14px;color:#92400e">{{ rec.status_reason_text_display }}</span>
+-  {% endif %}
+-</h1>
+-
+-{% include "partials/control_center/selected_recording_shell.html" %}
+-
+-{% if rec.status in ['Processing', 'Stopping'] %}
+-<div
+-  id="recording-progress"
+-  hx-get="/ui/recordings/{{ rec.id }}/progress?tab={{ current_tab }}"
+-  hx-trigger="load, every 2s"
+-  hx-swap="innerHTML"
+-  style="margin:0 0 10px 0"
+->
+-  <div class="placeholder" style="padding:8px 10px">Loading pipeline progress…</div>
+-</div>
+-{% endif %}
+-
+-<div class="tabs">
+-  {% for t in tabs %}
+-  <a href="/recordings/{{ rec.id }}?tab={{ t }}" class="tab {% if current_tab == t %}active{% endif %}">{{ t|capitalize }}</a>
+-  {% endfor %}
+-</div>
+-
+-<div class="tab-content">
+-
+-{% if current_tab == 'overview' %}
+-  {% set summary_data = summary or {} %}
+-  {% set glossary_data = glossary or {} %}
+-  <div class="section" style="margin-bottom:10px">
+-    <h2 style="margin-top:0">Diagnostics</h2>
+-    <div class="info-grid">
+-      <span class="k">Primary reason</span><span class="v">{{ diagnostics.primary_reason_text or '—' }}</span>
+-      <span class="k">Reason code</span><span class="v">{{ diagnostics.primary_reason_code or '—' }}</span>
+-      <span class="k">Current / last stage</span><span class="v">{{ diagnostics.current_stage_label or '—' }}</span>
+-      <span class="k">Stage status</span><span class="v">{{ diagnostics.current_stage_status_label or '—' }}</span>
+-      <span class="k">Chunk</span><span class="v">{{ diagnostics.chunk_text or '—' }}</span>
+-      <span class="k">Stage attempt</span><span class="v">{{ diagnostics.stage_attempt_text or '—' }}</span>
+-      <span class="k">Chunk attempt</span><span class="v">{{ diagnostics.chunk_attempt_text or '—' }}</span>
+-      <span class="k">Stage elapsed</span><span class="v">{{ diagnostics.stage_elapsed_display or '—' }}</span>
+-      <span class="k">Chunk elapsed</span><span class="v">{{ diagnostics.chunk_elapsed_display or '—' }}</span>
+-      <span class="k">Stop mode</span><span class="v">{{ diagnostics.stop_mode or '—' }}</span>
+-      <span class="k">Retry wrapper</span><span class="v">{{ diagnostics.wrapper_reason_text or '—' }}</span>
+-      <span class="k">Reason detail</span><span class="v">{{ diagnostics.primary_reason_detail or diagnostics.stop_reason_text or '—' }}</span>
+-    </div>
+-  </div>
+-  <div class="info-grid">
+-    <span class="k">ID</span><span class="v">{{ rec.id }}</span>
+-    <span class="k">Filename</span><span class="v">{{ rec.source_filename }}</span>
+-    <span class="k">Source</span><span class="v">{{ rec.source }}</span>
+-    <span class="k">Status</span>
+-    <span class="v">
+-      <span class="badge s-{{ rec.status }}">{{ rec.status }}</span>
+-      {% if rec.status_reason_text_display %}
+-      <span style="color:#92400e">{{ rec.status_reason_text_display }}</span>
+-      {% endif %}
+-    </span>
+-    <span class="k">Captured at</span><span class="v">{{ rec.captured_at_display }}</span>
+-    <span class="k">Duration</span><span class="v">{{ rec.duration_display }}</span>
+-    <span class="k">Project</span><span class="v">{{ rec.project_name or (rec.project_id and ('#' ~ rec.project_id)) or '—' }}</span>
+-    <span class="k">Suggested project</span><span class="v">{{ rec.suggested_project_name or (rec.suggested_project_id and ('#' ~ rec.suggested_project_id)) or '—' }}</span>
+-    <span class="k">Routing confidence</span>
+-    <span class="v">
+-      {% if rec.routing_confidence is not none %}
+-      {{ '%.2f'|format(rec.routing_confidence) }}
+-      {% else %}
+-      —
+-      {% endif %}
+-    </span>
+-    <span class="k">Language (auto)</span><span class="v">{{ rec.language_auto or '—' }}</span>
+-    <span class="k">Transcript language override</span><span class="v">{{ rec.language_override or '—' }}</span>
+-    <span class="k">Target summary language</span><span class="v">{{ rec.target_summary_language or '—' }}</span>
+-    <span class="k">Drive file ID</span><span class="v">{{ rec.drive_file_id or '—' }}</span>
+-    <span class="k">Quarantine reason</span><span class="v">{{ rec.quarantine_reason or '—' }}</span>
+-    <span class="k">Review reason</span><span class="v">{{ rec.review_reason_text_display or '—' }}</span>
+-    <span class="k">Stop requested</span>
+-    <span class="v">
+-      {% if rec.cancel_requested_at_display != '—' %}
+-      {{ rec.cancel_requested_at_display }}{% if rec.cancel_requested_by_display %} by {{ rec.cancel_requested_by_display }}{% endif %}
+-      {% else %}
+-      —
+-      {% endif %}
+-    </span>
+-    <span class="k">Stop reason</span><span class="v">{{ rec.cancel_reason_text_display or '—' }}</span>
+-    <span class="k">Created at</span><span class="v">{{ rec.created_at_display }}</span>
+-    <span class="k">Updated at</span><span class="v">{{ rec.updated_at_display }}</span>
+-  </div>
+-
+-  {% if pipeline_stages %}
+-  <div class="section" style="margin-top:10px">
+-    <h2 style="margin-top:0">Pipeline Stages</h2>
+-    <table>
+-      <thead>
+-        <tr>
+-          <th>Stage</th>
+-          <th>Status</th>
+-          <th>Attempt</th>
+-          <th>Updated</th>
+-          <th>Notes</th>
+-        </tr>
+-      </thead>
+-      <tbody>
+-        {% for stage in pipeline_stages %}
+-        <tr>
+-          <td>{{ stage.stage_label }}</td>
+-          <td>{{ stage.status_label }}</td>
+-          <td>{{ stage.attempt }}</td>
+-          <td>{{ stage.updated_at_display }}</td>
+-          <td>
+-            {% if stage.root_cause_text %}
+-            {{ stage.root_cause_text }}{% if stage.root_cause_code %} (<code>{{ stage.root_cause_code }}</code>){% endif %}
+-            {% if stage.chunk_index and stage.chunk_total %}
+-            &nbsp;chunk {{ stage.chunk_index }}/{{ stage.chunk_total }}
+-            {% endif %}
+-            {% if stage.stop_mode %}
+-            &nbsp;mode={{ stage.stop_mode }}
+-            {% endif %}
+-            {% elif stage.error_text %}
+-            {{ stage.error_text }}
+-            {% elif stage.duration_seconds is not none %}
+-            {{ '%.3f'|format(stage.duration_seconds) }}s
+-            {% else %}
+-            —
+-            {% endif %}
+-          </td>
+-        </tr>
+-        {% endfor %}
+-      </tbody>
+-    </table>
+-  </div>
+-  {% endif %}
+-
+-  <div class="section" style="margin-top:10px">
+-    <h2 style="margin-top:0">Export</h2>
+-    <div class="filters" style="margin-bottom:6px">
+-      <button type="button" class="btn" onclick="copyExportText()">Copy</button>
+-      <a
+-        href="/ui/recordings/{{ rec.id }}/export.zip"
+-        class="btn"
+-        style="text-decoration:none"
+-        hx-boost="false"
+-      >Download ZIP</a>
+-    </div>
+-    <textarea
+-      id="export-text"
+-      readonly
+-      style="width:100%;min-height:220px;resize:vertical"
+-    >{{ export_text or '' }}</textarea>
+-    <p id="export-copy-status" class="placeholder" style="padding:6px 0 0 0">
+-      Copy the markdown or download a ZIP with the available artifacts.
+-    </p>
+-  </div>
+-
+-  <script>
+-  function copyExportText() {
+-    var textarea = document.getElementById('export-text');
+-    var status = document.getElementById('export-copy-status');
+-    if (!textarea) return;
+-    var setStatus = function(msg) {
+-      if (status) status.textContent = msg;
+-    };
+-    var fallback = function() {
+-      textarea.focus();
+-      textarea.select();
+-      try {
+-        document.execCommand('copy');
+-        setStatus('Copied export markdown.');
+-      } catch (_err) {
+-        setStatus('Copy failed. Select the text and copy manually.');
+-      }
+-    };
+-    if (navigator.clipboard && navigator.clipboard.writeText) {
+-      navigator.clipboard.writeText(textarea.value).then(
+-        function() { setStatus('Copied export markdown.'); },
+-        fallback
+-      );
+-      return;
+-    }
+-    fallback();
+-  }
+-  </script>
+-
+-  <h2>Topic</h2>
+-  <p>{{ summary_data.topic or '—' }}</p>
+-
+-  <h2>Summary</h2>
+-  {% if summary_data.summary_bullets %}
+-  <ul>
+-    {% for bullet in summary_data.summary_bullets %}
+-    <li>{{ bullet }}</li>
+-    {% endfor %}
+-  </ul>
+-  {% elif summary_data.summary_text %}
+-  <pre style="white-space:pre-wrap;background:#f8f9ff;border:1px solid #ccd;padding:8px;font:12px/1.4 'Courier New',monospace;max-height:240px;overflow:auto">{{ summary_data.summary_text }}</pre>
+-  {% else %}
+-  <p class="placeholder">No summary available yet.</p>
+-  {% endif %}
+-
+-  <h2>Emotional Summary</h2>
+-  <p style="white-space:pre-wrap">{{ summary_data.emotional_summary or '—' }}</p>
+-
+-  <div class="section" style="margin-top:10px">
+-    <h2 style="margin-top:0">ASR Glossary</h2>
+-    <div class="filters" style="margin-bottom:6px">
+-      <a href="/glossary" class="btn" style="text-decoration:none">Manage glossary</a>
+-    </div>
+-    {% if glossary_data.available and glossary_data.entries %}
+-    <p style="margin:0 0 8px 0;color:#555">
+-      {{ glossary_data.term_count }} term{{ '' if glossary_data.term_count == 1 else 's' }}
+-      used across {{ glossary_data.entry_count }} entry{{ '' if glossary_data.entry_count == 1 else 'ies' }}.
+-      {% if glossary_data.truncated %}
+-      Prompt budget reached; only the highest-priority terms were forwarded to ASR.
+-      {% endif %}
+-    </p>
+-    <table>
+-      <thead>
+-        <tr>
+-          <th>Canonical</th>
+-          <th>Aliases</th>
+-          <th>Kind</th>
+-          <th>Sources</th>
+-        </tr>
+-      </thead>
+-      <tbody>
+-        {% for row in glossary_data.entries %}
+-        <tr>
+-          <td>{{ row.canonical_text }}</td>
+-          <td>{{ row.aliases|join(', ') if row.aliases else '—' }}</td>
+-          <td>{{ row.kind }}</td>
+-          <td>{{ row.sources_label }}</td>
+-        </tr>
+-        {% endfor %}
+-      </tbody>
+-    </table>
+-    {% elif glossary_data.available %}
+-    <p class="placeholder">This recording wrote an ASR glossary artifact, but no terms were selected.</p>
+-    {% else %}
+-    <p class="placeholder">No ASR glossary artifact is available for this recording yet.</p>
+-    {% endif %}
+-  </div>
+-
+-{% elif current_tab == 'calendar' %}
+-  {% set cal = calendar or {} %}
+-
+-  <h2>Calendar Match</h2>
+-  {% if cal.error_message %}
+-  <p style="margin:0 0 10px 0;padding:8px 10px;border:1px solid #f59e0b;background:#fffbeb;color:#92400e">
+-    {{ cal.error_message }}
+-  </p>
+-  {% endif %}
+-  {% if cal.warnings %}
+-    {% for warning in cal.warnings %}
+-  <p style="margin:0 0 10px 0;padding:8px 10px;border:1px solid #f59e0b;background:#fffbeb;color:#92400e">
+-    {{ warning }}
+-  </p>
+-    {% endfor %}
+-  {% endif %}
+-
+-  <div class="section" style="margin-top:10px">
+-    <h3 style="margin-top:0">Selected Event</h3>
+-    {% if cal.selected %}
+-    <div style="border:1px solid #d5d9e6;background:#f8f9ff;padding:10px;border-radius:6px">
+-      <div><strong>{{ cal.selected.subject_display }}</strong></div>
+-      <div style="margin-top:4px;color:#555">{{ cal.selected.starts_at_display }} → {{ cal.selected.ends_at_display }}</div>
+-      <div style="margin-top:4px">Source: {{ cal.selected.source_label }}</div>
+-      <div style="margin-top:4px">Confidence: {{ cal.selected.confidence_display }}</div>
+-      <div style="margin-top:4px">Organizer: {{ cal.selected.organizer_display }}</div>
+-      <div style="margin-top:4px">Attendees: {{ cal.selected.attendees_label }}</div>
+-      {% if cal.selected.rationale_rows %}
+-      <ul style="margin:8px 0 0 18px">
+-        {% for reason in cal.selected.rationale_rows %}
+-        <li>{{ reason }}</li>
+-        {% endfor %}
+-      </ul>
+-      {% endif %}
+-      <form method="post" action="/ui/recordings/{{ rec.id }}/calendar/select" style="margin-top:8px">
+-        <button type="submit" class="btn">Clear selection</button>
+-      </form>
+-    </div>
+-    {% else %}
+-    <p class="placeholder">No calendar event is currently selected for this recording.</p>
+-    {% endif %}
+-  </div>
+-
+-  <div class="section" style="margin-top:10px">
+-    <h3 style="margin-top:0">Candidates</h3>
+-    {% if cal.candidates %}
+-    <table>
+-      <thead>
+-        <tr>
+-          <th>Event</th>
+-          <th>When</th>
+-          <th>Source</th>
+-          <th>Confidence</th>
+-          <th>Attendees</th>
+-          <th>Rationale</th>
+-          <th>Action</th>
+-        </tr>
+-      </thead>
+-      <tbody>
+-        {% for candidate in cal.candidates %}
+-        <tr>
+-          <td style="white-space:normal;max-width:220px">
+-            <div><strong>{{ candidate.subject_display }}</strong></div>
+-            <div style="margin-top:4px;color:#555">Organizer: {{ candidate.organizer_display }}</div>
+-          </td>
+-          <td>{{ candidate.starts_at_display }} → {{ candidate.ends_at_display }}</td>
+-          <td>{{ candidate.source_label }}</td>
+-          <td>
+-            {{ candidate.confidence_display }}
+-            {% if candidate.selected %}
+-            <div style="margin-top:4px"><span class="badge s-Ready">Selected</span></div>
+-            {% endif %}
+-          </td>
+-          <td title="{{ candidate.attendees_label }}">{{ candidate.attendees_label }}</td>
+-          <td style="white-space:normal;max-width:320px">
+-            {% if candidate.rationale_rows %}
+-              {% for reason in candidate.rationale_rows %}
+-              <div>{{ reason }}</div>
+-              {% endfor %}
+-            {% else %}
+-            —
+-            {% endif %}
+-          </td>
+-          <td>
+-            {% if candidate.selected %}
+-            <span class="placeholder" style="padding:0">Current</span>
+-            {% else %}
+-            <form method="post" action="/ui/recordings/{{ rec.id }}/calendar/select">
+-              <input type="hidden" name="event_id" value="{{ candidate.event_id }}">
+-              <button type="submit" class="btn">Choose</button>
+-            </form>
+-            {% endif %}
+-          </td>
+-        </tr>
+-        {% endfor %}
+-      </tbody>
+-    </table>
+-    {% else %}
+-    <p class="placeholder">No calendar candidates are stored for this recording yet.</p>
+-    {% endif %}
+-  </div>
+-
+-{% elif current_tab == 'project' %}
+-  {% set prj = project or {} %}
+-  {% set project_items = prj.projects or [] %}
+-
+-  <h2>Project Assignment</h2>
+-  <div class="info-grid">
+-    <span class="k">Current project</span><span class="v">{{ prj.selected_project_name or (prj.selected_project_id and ('#' ~ prj.selected_project_id)) or 'Unassigned' }}</span>
+-    <span class="k">Suggested project</span><span class="v">{{ prj.suggested_project_name or (prj.suggested_project_id and ('#' ~ prj.suggested_project_id)) or '—' }}</span>
+-    <span class="k">Confidence</span><span class="v">{{ '%.2f'|format(prj.confidence or 0.0) }}</span>
+-    <span class="k">Auto-select threshold</span><span class="v">{{ '%.2f'|format(prj.threshold or 0.0) }}</span>
+-    <span class="k">Training examples (total)</span><span class="v">{{ prj.training_examples_total or 0 }}</span>
+-    <span class="k">Training examples (this project)</span><span class="v">{{ prj.training_examples_selected_project or 0 }}</span>
+-  </div>
+-
+-  {% if (prj.confidence or 0.0) < (prj.threshold or 0.0) %}
+-  <p style="margin-top:8px;color:#92400e">
+-    Confidence is below threshold; this recording should remain in manual review.
+-  </p>
+-  {% endif %}
+-
+-  <form method="post" action="/ui/recordings/{{ rec.id }}/project" style="margin-top:10px">
+-    <div class="form-row">
+-      <label for="project_id">Project</label>
+-      <select id="project_id" name="project_id" style="width:280px">
+-        <option value="">Unassigned</option>
+-        {% for p in project_items %}
+-        <option value="{{ p.id }}" {% if prj.selected_project_id == p.id %}selected{% endif %}>{{ p.name }}</option>
+-        {% endfor %}
+-      </select>
+-    </div>
+-    <div class="form-row">
+-      <label for="train_routing">Train routing</label>
+-      <input id="train_routing" type="checkbox" name="train_routing" value="1" checked>
+-      <span style="font-size:12px;color:#555">Store this manual choice as a routing training example.</span>
+-    </div>
+-    <div class="filters" style="margin-top:8px">
+-      <button type="submit" class="btn">Save project</button>
+-    </div>
+-  </form>
+-
+-  <h2>Routing Rationale</h2>
+-  {% if prj.rationale %}
+-  <ul>
+-    {% for reason in prj.rationale %}
+-    <li>{{ reason }}</li>
+-    {% endfor %}
+-  </ul>
+-  {% else %}
+-  <p class="placeholder">No routing rationale available yet.</p>
+-  {% endif %}
+-
+-{% elif current_tab == 'speakers' %}
+-  {% set sp = speakers or {} %}
+-  {% set rows = sp.speaker_rows or [] %}
+-  {% set profiles = sp.voice_profiles or [] %}
+-  {% set notices = sp.review_notices or [] %}
+-  {% set repair = sp.snippet_repair or {} %}
+-
+-  <h2>Speaker Assignments</h2>
+-  {% if sp.notice_message %}
+-  <p style="margin:0 0 10px 0;padding:8px 10px;border:1px solid #86efac;background:#f0fdf4;color:#166534">
+-    {{ sp.notice_message }}
+-  </p>
+-  {% endif %}
+-  {% if sp.error_message %}
+-  <p style="margin:0 0 10px 0;padding:8px 10px;border:1px solid #f59e0b;background:#fffbeb;color:#92400e">
+-    {{ sp.error_message }}
+-  </p>
+-  {% endif %}
+-  {% if repair.detail %}
+-  <div style="margin:0 0 10px 0;padding:8px 10px;border:1px solid #ccd;background:#f8f9ff;color:#222">
+-    <div style="margin-bottom:{% if repair.available %}8px{% else %}0{% endif %}">
+-      {{ repair.detail }}
+-    </div>
+-    {% if repair.available %}
+-    <form method="post" action="/ui/recordings/{{ rec.id }}/speakers/regenerate-snippets">
+-      <button class="btn" type="submit">{{ repair.button_label }}</button>
+-    </form>
+-    {% endif %}
+-  </div>
+-  {% endif %}
+-  {% if notices %}
+-    {% for notice in notices %}
+-    <p style="margin:0 0 10px 0;padding:8px 10px;border:1px solid #f59e0b;background:#fffbeb;color:#92400e">
+-      {{ notice }}
+-    </p>
+-    {% endfor %}
+-  {% endif %}
+-  {% if rows %}
+-  <table>
+-    <thead>
+-      <tr>
+-        <th>Speaker</th>
+-        <th>Turns</th>
+-        <th>Duration (s)</th>
+-        <th>Preview</th>
+-        <th>Current mapping</th>
+-        <th>Confidence</th>
+-        <th>Snippets</th>
+-        <th>Remap</th>
+-        <th>Samples</th>
+-      </tr>
+-    </thead>
+-    <tbody>
+-      {% for row in rows %}
+-      <tr>
+-        <td><code>{{ row.speaker }}</code></td>
+-        <td>{{ row.turn_count }}</td>
+-        <td>{{ '%.2f'|format(row.duration_sec or 0.0) }}</td>
+-        <td title="{{ row.preview_text }}" style="white-space:normal;max-width:300px">{{ row.preview_text or '—' }}</td>
+-        <td style="white-space:normal;max-width:260px">
+-          {% if row.voice_profile_name %}
+-          <div><strong>{{ row.voice_profile_name }}</strong></div>
+-          <div style="margin-top:4px;color:#555">Displays as {{ row.display_label }} in exports.</div>
+-          {% else %}
+-          <span class="placeholder" style="padding:0">Leave unmatched</span>
+-          {% endif %}
+-          {% if row.candidate_matches %}
+-          <div style="margin-top:6px;font-size:11px;color:#555">
+-            Candidates:
+-            {% for candidate in row.candidate_matches %}
+-            <span>{{ candidate.display_name }} ({{ '%.2f'|format(candidate.score) }}){% if not loop.last %}, {% endif %}</span>
+-            {% endfor %}
+-          </div>
+-          {% endif %}
+-        </td>
+-        <td style="white-space:normal;max-width:220px">
+-          {% if row.low_confidence %}
+-          <span class="badge s-NeedsReview">Low confidence</span>
+-          {% elif row.voice_profile_name %}
+-          <span class="badge s-Ready">Mapped</span>
+-          {% else %}
+-          <span class="badge s-Queued">Unmatched</span>
+-          {% endif %}
+-          <div style="margin-top:4px;color:#555">{{ '%.2f'|format(row.confidence or 0.0) }}</div>
+-          {% if row.needs_review and row.assignment_threshold %}
+-          <div style="margin-top:4px;font-size:11px;color:#92400e">
+-            Below auto-match threshold {{ '%.2f'|format(row.assignment_threshold) }}.
+-          </div>
+-          {% endif %}
+-        </td>
+-        <td style="white-space:normal;max-width:320px">
+-          {% if row.snippet_ui_state %}
+-          <div style="margin:0 0 6px 0;font-size:11px;color:{{ row.snippet_ui_state.color }}">
+-            <strong>{{ row.snippet_ui_state.label }}:</strong> {{ row.snippet_ui_state.detail }}
+-          </div>
+-          {% endif %}
+-          {% if row.clean_snippets %}
+-            {% for snippet in row.clean_snippets %}
+-            <div style="margin-bottom:8px;padding:6px;border:1px solid #ddd;border-radius:6px">
+-              <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:4px">
+-                {% if snippet.recommended %}
+-                <span class="badge s-Ready">Recommended</span>
+-                {% else %}
+-                <span class="badge s-Published">Clean</span>
+-                {% endif %}
+-                <span>{{ snippet.clip_label }}</span>
+-                <span style="color:#555">from {{ snippet.source_label }}</span>
+-                <span style="color:#555">purity {{ snippet.purity_label }}</span>
+-              </div>
+-              <audio controls preload="none" style="height:26px;max-width:280px">
+-                <source src="{{ snippet.audio_url }}" type="audio/wav">
+-              </audio>
+-            </div>
+-            {% endfor %}
+-          {% endif %}
+-          {% if row.snippet_warnings %}
+-            {% for warning in row.snippet_warnings %}
+-            <div style="margin-top:4px;font-size:11px;color:#92400e">{{ warning }}</div>
+-            {% endfor %}
+-          {% endif %}
+-        </td>
+-        <td style="white-space:normal;max-width:260px">
+-          {% if profiles %}
+-          <form method="post" action="/ui/recordings/{{ rec.id }}/speakers/assign">
+-            <input type="hidden" name="diar_speaker_label" value="{{ row.speaker }}">
+-            <select name="voice_profile_id" style="width:180px">
+-              <option value="">Leave unmatched</option>
+-              {% for vp in profiles %}
+-              <option value="{{ vp.id }}" {% if row.voice_profile_id == vp.id %}selected{% endif %}>{{ vp.display_name }}</option>
+-              {% endfor %}
+-            </select>
+-            <button class="btn" type="submit">Save remap</button>
+-          </form>
+-          {% else %}
+-          <span class="placeholder" style="padding:0">No voice profiles yet.</span>
+-          {% endif %}
+-        </td>
+-        <td style="white-space:normal;max-width:260px">
+-          {% if profiles %}
+-          <form method="post" action="/ui/recordings/{{ rec.id }}/speakers/add-sample">
+-            <input type="hidden" name="diar_speaker_label" value="{{ row.speaker }}">
+-            <select name="voice_profile_id" style="width:180px">
+-              {% for vp in profiles %}
+-              <option value="{{ vp.id }}" {% if row.voice_profile_id == vp.id %}selected{% endif %}>{{ vp.display_name }}</option>
+-              {% endfor %}
+-            </select>
+-            <select name="snippet_path" style="width:220px" {% if not row.clean_snippets %}disabled{% endif %}>
+-              {% for snippet in row.clean_snippets %}
+-              <option value="{{ snippet.relative_path }}" {% if snippet.recommended %}selected{% endif %}>{{ snippet.choice_label }}</option>
+-              {% endfor %}
+-            </select>
+-            <button class="btn" type="submit" {% if not row.clean_snippets %}disabled{% endif %}>Add sample from this recording</button>
+-            {% if not row.clean_snippets and row.snippet_ui_state.add_sample_message %}
+-            <div style="margin-top:4px;font-size:11px;color:#92400e">{{ row.snippet_ui_state.add_sample_message }}</div>
+-            {% elif row.no_clean_snippet_message %}
+-            <div style="margin-top:4px;font-size:11px;color:#92400e">{{ row.no_clean_snippet_message }}</div>
+-            {% endif %}
+-          </form>
+-          {% else %}
+-          <span class="placeholder" style="padding:0">Create a profile first.</span>
+-          {% endif %}
+-        </td>
+-      </tr>
+-      {% endfor %}
+-    </tbody>
+-  </table>
+-  {% else %}
+-  <p class="placeholder">No speaker turns available yet. Run diarization first.</p>
+-  {% endif %}
+-
+-  <h2>Create and Assign New Profile</h2>
+-  {% if rows %}
+-  <form method="post" action="/ui/recordings/{{ rec.id }}/speakers/create-and-assign">
+-    <div class="form-row">
+-      <label for="diar_speaker_label">Speaker label</label>
+-      <select id="diar_speaker_label" name="diar_speaker_label" style="width:180px">
+-        {% for row in rows %}
+-        <option value="{{ row.speaker }}">{{ row.speaker }}</option>
+-        {% endfor %}
+-      </select>
+-    </div>
+-    <div class="form-row">
+-      <label for="display_name">Display name</label>
+-      <input id="display_name" type="text" name="display_name" maxlength="120" required placeholder="Person name" style="width:260px">
+-    </div>
+-    <div class="form-row">
+-      <label for="notes">Notes</label>
+-      <input id="notes" type="text" name="notes" maxlength="240" placeholder="Optional notes" style="width:360px">
+-    </div>
+-    <div class="form-row">
+-      <label></label>
+-      <button class="btn" type="submit">Create and assign</button>
+-    </div>
+-  </form>
+-  {% else %}
+-  <p class="placeholder">No diarization labels available for assignment.</p>
+-  {% endif %}
+-
+-{% elif current_tab == 'language' %}
+-  {% set lang = language or {} %}
+-
+-  <h2>Detected Languages</h2>
+-  <div class="info-grid">
+-    <span class="k">Detected language</span><span class="v">{{ lang.detected_label or '—' }}</span>
+-    <span class="k">Dominant language</span><span class="v">{{ lang.dominant_label or '—' }}</span>
+-    <span class="k">Mixed-language meeting</span><span class="v">{{ 'Yes' if lang.is_mixed else 'No' }}</span>
+-    <span class="k">Current summary target</span><span class="v">{{ lang.target_summary_language_label or '—' }}</span>
+-    <span class="k">Transcript override</span><span class="v">{{ lang.transcript_language_override_label or '—' }}</span>
+-  </div>
+-
+-  <h2>Language Distribution</h2>
+-  {% if lang.distribution %}
+-  <table>
+-    <thead>
+-      <tr>
+-        <th>Language</th>
+-        <th>Share (%)</th>
+-      </tr>
+-    </thead>
+-    <tbody>
+-      {% for row in lang.distribution %}
+-      <tr>
+-        <td>{{ row.label }}</td>
+-        <td>{{ '%.2f'|format(row.percent) }}</td>
+-      </tr>
+-      {% endfor %}
+-    </tbody>
+-  </table>
+-  {% else %}
+-  <p class="placeholder">No language distribution available yet.</p>
+-  {% endif %}
+-
+-  <h2>Language Spans</h2>
+-  {% if lang.spans %}
+-  <table>
+-    <thead>
+-      <tr>
+-        <th>Start</th>
+-        <th>End</th>
+-        <th>Language</th>
+-      </tr>
+-    </thead>
+-    <tbody>
+-      {% for span in lang.spans %}
+-      <tr>
+-        <td>{{ '%.3f'|format(span.start) }}</td>
+-        <td>{{ '%.3f'|format(span.end) }}</td>
+-        <td>{{ span.label }}</td>
+-      </tr>
+-      {% endfor %}
+-    </tbody>
+-  </table>
+-  {% else %}
+-  <p class="placeholder">No language spans available yet.</p>
+-  {% endif %}
+-
+-  <h2>Overrides and Reprocess</h2>
+-  <form method="post" action="/ui/recordings/{{ rec.id }}/language/settings">
+-    <div class="form-row">
+-      <label for="target_summary_language">target_summary_language</label>
+-      <select id="target_summary_language" name="target_summary_language">
+-        <option value="" {% if not lang.target_summary_language %}selected{% endif %}>Auto (dominant language)</option>
+-        {% for opt in lang.options or [] %}
+-        <option value="{{ opt.code }}" {% if lang.target_summary_language == opt.code %}selected{% endif %}>{{ opt.label }}</option>
+-        {% endfor %}
+-      </select>
+-    </div>
+-    <div class="form-row">
+-      <label for="transcript_language_override">transcript_language_override</label>
+-      <select id="transcript_language_override" name="transcript_language_override">
+-        <option value="">None (auto detect)</option>
+-        {% for opt in lang.options or [] %}
+-        <option value="{{ opt.code }}" {% if lang.transcript_language_override == opt.code %}selected{% endif %}>{{ opt.label }}</option>
+-        {% endfor %}
+-      </select>
+-    </div>
+-    <div class="filters" style="margin-top:8px">
+-      <button type="submit" class="btn">Save overrides</button>
+-      <button
+-        type="submit"
+-        class="btn"
+-        formaction="/ui/recordings/{{ rec.id }}/language/resummarize"
+-      >
+-        Re-summarize (LLM only)
+-      </button>
+-      <button
+-        type="submit"
+-        class="btn btn-danger"
+-        formaction="/ui/recordings/{{ rec.id }}/language/retranscribe"
+-        onclick="return confirm('Re-transcribe reruns STT and diarization. Continue?')"
+-      >
+-        Re-transcribe (STT again)
+-      </button>
+-    </div>
+-  </form>
+-
+-  {% if lang.summary_preview %}
+-  <h2>Latest Summary</h2>
+-  <pre style="white-space:pre-wrap;background:#f8f9ff;border:1px solid #ccd;padding:8px;font:12px/1.4 'Courier New',monospace;max-height:240px;overflow:auto">{{ lang.summary_preview }}</pre>
+-  {% endif %}
+-
+-{% elif current_tab == 'metrics' %}
+-  {% set summary_data = summary or {} %}
+-  {% set metrics_data = metrics or {} %}
+-  {% set meeting = metrics_data.meeting or {} %}
+-  {% set participants = metrics_data.participants or [] %}
+-  {% set questions = summary_data.questions or {} %}
+-  {% set question_types = questions.types or {} %}
+-
+-  <h2>Meeting Metrics</h2>
+-  <div class="info-grid">
+-    <span class="k">Total speech time</span><span class="v">{{ '%.1f'|format(meeting.total_speech_time_seconds or 0.0) }}s</span>
+-    <span class="k">Interruptions</span><span class="v">{{ meeting.total_interruptions or 0 }}</span>
+-    <span class="k">Questions</span><span class="v">{{ meeting.total_questions or 0 }}</span>
+-    <span class="k">Decisions</span><span class="v">{{ meeting.decisions_count or 0 }}</span>
+-    <span class="k">Action items</span><span class="v">{{ meeting.action_items_count or 0 }}</span>
+-    <span class="k">Actionability</span><span class="v">{{ '%.1f'|format((meeting.actionability_ratio or 0.0) * 100.0) }}%</span>
+-    <span class="k">Emotional summary</span><span class="v">{{ meeting.emotional_summary or '—' }}</span>
+-  </div>
+-
+-  <h2>Participants</h2>
+-  {% if participants %}
+-  <table>
+-    <thead>
+-      <tr>
+-        <th>Speaker</th>
+-        <th>Airtime (s)</th>
+-        <th>Share (%)</th>
+-        <th>Turns</th>
+-        <th>Interruptions done</th>
+-        <th>Interruptions received</th>
+-        <th>Questions</th>
+-        <th>Role</th>
+-      </tr>
+-    </thead>
+-    <tbody>
+-      {% for row in participants %}
+-      <tr>
+-        <td>{{ row.speaker }}</td>
+-        <td>{{ '%.2f'|format(row.airtime_seconds or 0.0) }}</td>
+-        <td>{{ '%.2f'|format((row.airtime_share or 0.0) * 100.0) }}</td>
+-        <td>{{ row.turns or 0 }}</td>
+-        <td>{{ row.interruptions_done or 0 }}</td>
+-        <td>{{ row.interruptions_received or 0 }}</td>
+-        <td>{{ row.questions_count or 0 }}</td>
+-        <td>{{ row.role_hint or '—' }}</td>
+-      </tr>
+-      {% endfor %}
+-    </tbody>
+-  </table>
+-  {% else %}
+-  <p class="placeholder">No participant metrics available yet.</p>
+-  {% endif %}
+-
+-  <h2>Decisions</h2>
+-  {% if summary_data.decisions %}
+-  <ul>
+-    {% for decision in summary_data.decisions %}
+-    <li>{{ decision }}</li>
+-    {% endfor %}
+-  </ul>
+-  {% else %}
+-  <p class="placeholder">No decisions extracted.</p>
+-  {% endif %}
+-
+-  <h2>Action Items</h2>
+-  {% if summary_data.action_items %}
+-  <table>
+-    <thead>
+-      <tr>
+-        <th>Task</th>
+-        <th>Owner</th>
+-        <th>Deadline</th>
+-        <th>Confidence</th>
+-      </tr>
+-    </thead>
+-    <tbody>
+-      {% for item in summary_data.action_items %}
+-      <tr>
+-        <td>{{ item.task }}</td>
+-        <td>{{ item.owner or '—' }}</td>
+-        <td>{{ item.deadline or '—' }}</td>
+-        <td>{{ '%.2f'|format(item.confidence or 0.0) }}</td>
+-      </tr>
+-      {% endfor %}
+-    </tbody>
+-  </table>
+-  {% else %}
+-  <p class="placeholder">No action items extracted.</p>
+-  {% endif %}
+-
+-  <h2>Questions</h2>
+-  <div class="info-grid">
+-    <span class="k">Total</span><span class="v">{{ questions.total_count or 0 }}</span>
+-    <span class="k">Open</span><span class="v">{{ question_types.open or 0 }}</span>
+-    <span class="k">Yes/No</span><span class="v">{{ question_types.yes_no or 0 }}</span>
+-    <span class="k">Clarification</span><span class="v">{{ question_types.clarification or 0 }}</span>
+-    <span class="k">Status</span><span class="v">{{ question_types.status or 0 }}</span>
+-    <span class="k">Decision-seeking</span><span class="v">{{ question_types.decision_seeking or 0 }}</span>
+-  </div>
+-  {% if questions.extracted %}
+-  <h3>Extracted Questions</h3>
+-  <ul>
+-    {% for question in questions.extracted %}
+-    <li>{{ question }}</li>
+-    {% endfor %}
+-  </ul>
+-  {% endif %}
+-
+-{% elif current_tab == 'log' %}
+-  {% if jobs %}
+-  <table>
+-    <thead>
+-      <tr>
+-        <th>Job ID</th>
+-        <th>Type</th>
+-        <th>Status</th>
+-        <th>Attempt</th>
+-        <th>Started</th>
+-        <th>Finished</th>
+-        <th>Error</th>
+-        <th>Action</th>
+-      </tr>
+-    </thead>
+-    <tbody>
+-      {% for j in jobs %}
+-      <tr>
+-        <td title="{{ j.id }}">{{ j.id[:16] }}…</td>
+-        <td>{{ j.type }}</td>
+-        <td><span class="badge s-{{ j.status }}">{{ j.status }}</span></td>
+-        <td>{{ j.attempt }}</td>
+-        <td>{{ j.started_at[:19].replace('T',' ') if j.started_at else '—' }}</td>
+-        <td>{{ j.finished_at[:19].replace('T',' ') if j.finished_at else '—' }}</td>
+-        <td title="{{ j.error or '' }}">{{ (j.error or '')[:40] }}{% if j.error and j.error|length > 40 %}…{% endif %}</td>
+-        <td>
+-          {% if j.status == 'failed' %}
+-          <form method="post" action="/ui/recordings/{{ rec.id }}/jobs/{{ j.id }}/retry">
+-            <button type="submit" class="btn">Retry step</button>
+-          </form>
+-          {% else %}
+-          <span class="placeholder">—</span>
+-          {% endif %}
+-        </td>
+-      </tr>
+-      {% endfor %}
+-    </tbody>
+-  </table>
+-  {% else %}
+-  <p class="placeholder">No jobs for this recording.</p>
+-  {% endif %}
+-{% endif %}
+-
+-</div>
++{% include "partials/recording_inspector.html" %}
+ {% endblock %}
 diff --git a/lan_app/ui_routes.py b/lan_app/ui_routes.py
-index 901e3e7..7bfd7f4 100644
+index 7bfd7f4..0f8bed6 100644
 --- a/lan_app/ui_routes.py
 +++ b/lan_app/ui_routes.py
-@@ -2436,17 +2436,39 @@ def _recordings_table_context(
-         "next_offset": next_offset,
-         "has_prev": offset > 0,
-         "has_next": offset + limit < total,
--        "prev_href": _recordings_page_href(
--            status_filter=status_filter,
--            search_query=search_query,
--            limit=limit,
--            offset=prev_offset,
-+        "prev_href": (
-+            _control_center_shell_href(
-+                selected=selected,
-+                status_filter=status_filter,
-+                search_query=search_query,
-+                tab=tab,
-+                limit=limit,
-+                offset=prev_offset,
-+            )
-+            if is_control_center
-+            else _recordings_page_href(
-+                status_filter=status_filter,
-+                search_query=search_query,
-+                limit=limit,
-+                offset=prev_offset,
-+            )
+@@ -2121,6 +2121,9 @@ def _control_center_shell_href(
+     tab: str = "overview",
+     limit: int | None = None,
+     offset: int | None = None,
++    calendar_error: str = "",
++    speakers_notice: str = "",
++    speakers_error: str = "",
+ ) -> str:
+     params: list[tuple[str, str]] = []
+     safe_limit = max(1, min(limit, 500)) if limit is not None else None
+@@ -2141,6 +2144,12 @@ def _control_center_shell_href(
+         params.append(("limit", str(safe_limit)))
+     if safe_offset > 0:
+         params.append(("offset", str(safe_offset)))
++    if calendar_error:
++        params.append(("calendar_error", calendar_error))
++    if speakers_notice:
++        params.append(("speakers_notice", speakers_notice))
++    if speakers_error:
++        params.append(("speakers_error", speakers_error))
+     if not params:
+         return "/"
+     return f"/?{urlencode(params)}"
+@@ -2198,10 +2207,170 @@ def _control_center_state_context(
          ),
--        "next_href": _recordings_page_href(
--            status_filter=status_filter,
--            search_query=search_query,
--            limit=limit,
--            offset=next_offset,
-+        "next_href": (
-+            _control_center_shell_href(
-+                selected=selected,
+         "reset_href": "/",
+         "work_pane_url": f"/ui/control-center/work-pane?{urlencode(state_params)}",
+-        "inspector_pane_url": f"/ui/control-center/inspector-pane?{urlencode(state_params)}",
++        "inspector_pane_url": (
++            _control_center_inspector_path(
++                selected_id,
 +                status_filter=status_filter,
 +                search_query=search_query,
-+                tab=tab,
-+                limit=limit,
-+                offset=next_offset,
++                tab=current_tab,
++                limit=safe_limit,
++                offset=safe_offset,
 +            )
-+            if is_control_center
-+            else _recordings_page_href(
-+                status_filter=status_filter,
-+                search_query=search_query,
-+                limit=limit,
-+                offset=next_offset,
-+            )
-         ),
-         "prev_hx_get": (
-             _control_center_recordings_panel_url(
-diff --git a/tests/test_cov_lan_app_ui_routes.py b/tests/test_cov_lan_app_ui_routes.py
-index 6d3d70d..70c6fff 100644
---- a/tests/test_cov_lan_app_ui_routes.py
-+++ b/tests/test_cov_lan_app_ui_routes.py
-@@ -234,12 +234,29 @@ def test_control_center_helper_contexts_cover_fragment_builders(
-     )
-     assert table["has_prev"] is False
-     assert table["has_next"] is True
-+    assert table["next_href"] == "/?selected=rec-helper-1&status=Ready&q=helper&tab=speakers&limit=2&offset=2"
-     assert table["next_hx_get"].endswith("limit=2&offset=2")
-     assert table["rows"][0]["select_href"] == (
-         "/?selected=rec-helper-1&status=Ready&q=helper&tab=speakers&limit=2"
-     )
-     assert table["rows"][0]["selected"] is True
++            if selected_id
++            else f"/ui/control-center/inspector-pane?{urlencode(state_params)}"
++        ),
+     }
  
-+    paged_table = ui_routes._recordings_table_context(  # noqa: SLF001
-+        mode="control_center",
-+        selected="rec-helper-1",
-+        items=[{"id": "rec-helper-2"}],
-+        total=5,
-+        limit=2,
-+        offset=2,
-+        status_filter="Ready",
-+        search_query="helper",
-+        tab="speakers",
-+    )
-+    assert paged_table["prev_href"] == "/?selected=rec-helper-1&status=Ready&q=helper&tab=speakers&limit=2"
-+    assert paged_table["next_href"] == (
-+        "/?selected=rec-helper-1&status=Ready&q=helper&tab=speakers&limit=2&offset=4"
+ 
++def _control_center_inspector_path(
++    recording_id: str,
++    *,
++    status_filter: str = "",
++    search_query: str = "",
++    tab: str = "overview",
++    limit: int | None = None,
++    offset: int | None = None,
++) -> str:
++    params: list[tuple[str, str]] = []
++    safe_tab = str(tab or "overview").strip().lower() or "overview"
++    safe_limit = max(1, min(limit, 500)) if limit is not None else None
++    safe_offset = max(int(offset or 0), 0)
++    if safe_tab not in _CONTROL_CENTER_TABS:
++        safe_tab = "overview"
++    if status_filter:
++        params.append(("status", status_filter))
++    if search_query:
++        params.append(("q", search_query))
++    if safe_tab != "overview":
++        params.append(("tab", safe_tab))
++    if safe_limit is not None and (
++        safe_limit != _CONTROL_CENTER_LIST_LIMIT or safe_offset > 0
++    ):
++        params.append(("limit", str(safe_limit)))
++    if safe_offset > 0:
++        params.append(("offset", str(safe_offset)))
++    query = f"?{urlencode(params)}" if params else ""
++    return f"/ui/recordings/{quote(recording_id, safe='')}/inspector{query}"
++
++
++def _control_center_return_query(
++    *,
++    status_filter: str = "",
++    search_query: str = "",
++    return_tab: str = "overview",
++    limit: int | None = None,
++    offset: int | None = None,
++) -> str:
++    params: list[tuple[str, str]] = [("return_to", "control-center")]
++    safe_tab = str(return_tab or "overview").strip().lower() or "overview"
++    safe_limit = max(1, min(limit, 500)) if limit is not None else None
++    safe_offset = max(int(offset or 0), 0)
++    if safe_tab not in _CONTROL_CENTER_TABS:
++        safe_tab = "overview"
++    params.append(("return_tab", safe_tab))
++    if status_filter:
++        params.append(("status", status_filter))
++    if search_query:
++        params.append(("q", search_query))
++    if safe_limit is not None and (
++        safe_limit != _CONTROL_CENTER_LIST_LIMIT or safe_offset > 0
++    ):
++        params.append(("limit", str(safe_limit)))
++    if safe_offset > 0:
++        params.append(("offset", str(safe_offset)))
++    return f"?{urlencode(params)}"
++
++
++def _recording_inspector_return_path(
++    recording_id: str,
++    *,
++    return_to: str = "",
++    return_tab: str = "overview",
++    status: str | None = None,
++    q: str | None = "",
++    limit: int | None = None,
++    offset: int | None = None,
++    calendar_error: str = "",
++    speakers_notice: str = "",
++    speakers_error: str = "",
++) -> str:
++    safe_tab = str(return_tab or "overview").strip().lower() or "overview"
++    if safe_tab not in _CONTROL_CENTER_TABS:
++        safe_tab = "overview"
++    if return_to != "control-center":
++        params: list[tuple[str, str]] = []
++        if safe_tab != "overview":
++            params.append(("tab", safe_tab))
++        if calendar_error:
++            params.append(("calendar_error", calendar_error))
++        if speakers_notice:
++            params.append(("speakers_notice", speakers_notice))
++        if speakers_error:
++            params.append(("speakers_error", speakers_error))
++        if not params:
++            return _recording_detail_path(recording_id, tab=safe_tab)
++        return (
++            f"/recordings/{quote(recording_id, safe='')}?{urlencode(params)}"
++        )
++    return _control_center_shell_href(
++        selected=recording_id,
++        status_filter=status if status in RECORDING_STATUSES else "",
++        search_query=str(q or "").strip(),
++        tab=safe_tab,
++        limit=limit,
++        offset=offset,
++        calendar_error=calendar_error,
++        speakers_notice=speakers_notice,
++        speakers_error=speakers_error,
 +    )
 +
-     upload_shell = ui_routes._upload_shell_context()  # noqa: SLF001
-     assert upload_shell["file_input_id"] == "file-input"
-     assert upload_shell["empty_row_id"] == "upload-empty"
++
++def _recording_inspector_tabs_context(
++    recording_id: str,
++    *,
++    current_tab: str,
++    inspector_mode: str,
++    control_center_state: dict[str, Any] | None = None,
++) -> list[dict[str, Any]]:
++    tabs: list[dict[str, Any]] = []
++    is_embedded = inspector_mode == "embedded" and control_center_state is not None
++    for value in _CONTROL_CENTER_TABS:
++        full_page_href = _recording_detail_path(recording_id, tab=value)
++        shell_href = full_page_href
++        inspector_href = ""
++        if is_embedded:
++            shell_href = _control_center_shell_href(
++                selected=recording_id,
++                status_filter=control_center_state["status"],
++                search_query=control_center_state["q"],
++                tab=value,
++                limit=control_center_state["limit"],
++                offset=control_center_state["offset"],
++            )
++            inspector_href = _control_center_inspector_path(
++                recording_id,
++                status_filter=control_center_state["status"],
++                search_query=control_center_state["q"],
++                tab=value,
++                limit=control_center_state["limit"],
++                offset=control_center_state["offset"],
++            )
++        tabs.append(
++            {
++                "value": value,
++                "label": value.capitalize(),
++                "active": value == current_tab,
++                "href": shell_href,
++                "full_page_href": full_page_href,
++                "hx_get": inspector_href,
++                "hx_target": "#control-center-inspector-pane" if is_embedded else "",
++                "hx_swap": "outerHTML" if is_embedded else "",
++                "hx_push_url": shell_href if is_embedded else "",
++            }
++        )
++    return tabs
++
++
+ def _control_center_work_pane_context(
+     settings: AppSettings,
+     *,
+@@ -2610,11 +2779,42 @@ def _inspector_action_bar_context(
+     recording: dict[str, Any],
+     *,
+     current_tab: str,
++    inspector_mode: str = "full_page",
++    control_center_state: dict[str, Any] | None = None,
+ ) -> dict[str, Any]:
++    recording_id = str(recording.get("id") or "").strip()
++    is_embedded = inspector_mode == "embedded" and control_center_state is not None
++    return_query = (
++        _control_center_return_query(
++            status_filter=control_center_state["status"],
++            search_query=control_center_state["q"],
++            return_tab=current_tab,
++            limit=control_center_state["limit"],
++            offset=control_center_state["offset"],
++        )
++        if is_embedded
++        else ""
++    )
+     return {
+         "rec": recording,
+         "current_tab": current_tab,
+-        "back_href": "/recordings",
++        "embedded": is_embedded,
++        "return_to": "control-center" if is_embedded else "",
++        "back_href": (
++            control_center_state["clear_selection_href"]
++            if is_embedded
++            else "/recordings"
++        ),
++        "back_label": "Clear selection" if is_embedded else "Back to recordings",
++        "open_full_page_href": _recording_detail_path(recording_id, tab=current_tab),
++        "download_zip_href": f"/ui/recordings/{quote(recording_id, safe='')}/export.zip",
++        "requeue_url": f"/ui/recordings/{quote(recording_id, safe='')}/requeue{return_query}",
++        "quarantine_url": (
++            f"/ui/recordings/{quote(recording_id, safe='')}/quarantine{return_query}"
++        ),
++        "delete_url": f"/ui/recordings/{quote(recording_id, safe='')}/delete{return_query}",
++        "stop_url": f"/ui/recordings/{quote(recording_id, safe='')}/stop{return_query}",
++        "stop_body": urlencode([("tab", current_tab)]),
+     }
+ 
+ 
+@@ -2623,12 +2823,19 @@ def _selected_recording_summary_shell_context(
+     *,
+     current_tab: str,
+     recovery_warning: str | None,
++    inspector_mode: str = "full_page",
++    control_center_state: dict[str, Any] | None = None,
+ ) -> dict[str, Any]:
+     notices: list[dict[str, str]] = []
+     if recovery_warning:
+         notices.append(_page_notice_context(recovery_warning))
+     return {
+-        "action_bar": _inspector_action_bar_context(recording, current_tab=current_tab),
++        "action_bar": _inspector_action_bar_context(
++            recording,
++            current_tab=current_tab,
++            inspector_mode=inspector_mode,
++            control_center_state=control_center_state,
++        ),
+         "notices": notices,
+     }
+ 
+@@ -2643,6 +2850,134 @@ def _empty_inspector_shell_context() -> dict[str, str]:
+     }
+ 
+ 
++def _recording_inspector_context(
++    recording_id: str,
++    *,
++    current_tab: str,
++    calendar_error: str = "",
++    speakers_notice: str = "",
++    speakers_error: str = "",
++    inspector_mode: str = "full_page",
++    control_center_state: dict[str, Any] | None = None,
++) -> dict[str, Any] | None:
++    rec = get_recording(recording_id, settings=_settings)
++    if rec is None:
++        return None
++    rec = _prepare_recording_for_display(rec, settings=_settings)
++    jobs, _ = list_jobs(settings=_settings, recording_id=recording_id, limit=100)
++    recovery_warning = _recording_recovery_warning(jobs)
++    safe_tab = current_tab if current_tab in _CONTROL_CENTER_TABS else "overview"
++    calendar: dict[str, Any] | None = None
++    language: dict[str, Any] | None = None
++    summary: dict[str, Any] | None = None
++    metrics: dict[str, Any] | None = None
++    speakers: dict[str, Any] | None = None
++    project: dict[str, Any] | None = None
++    glossary: dict[str, Any] | None = None
++    export_text = ""
++    stage_rows = list_recording_pipeline_stages(recording_id, settings=_settings)
++    chunk_rows = list_recording_llm_chunk_states(recording_id, settings=_settings)
++    pipeline_stages = _pipeline_stage_rows_for_display(recording_id, rows=stage_rows)
++    diagnostics = _recording_diagnostics_context(
++        recording=rec,
++        stage_rows=stage_rows,
++        chunk_rows=chunk_rows,
++        jobs=jobs,
++    )
++    if diagnostics["primary_reason_text"]:
++        rec["status_reason_text_display"] = diagnostics["primary_reason_text"]
++    if safe_tab == "calendar":
++        calendar = _calendar_tab_context(recording_id, _settings)
++        if calendar_error.strip():
++            calendar["error_message"] = calendar_error.strip()
++    if safe_tab == "language":
++        language = _language_tab_context(recording_id, rec, _settings)
++    if safe_tab == "speakers":
++        speakers = _speakers_tab_context(
++            recording_id,
++            _settings,
++            recording=rec,
++            stage_rows=stage_rows,
++            notice_message=speakers_notice,
++            error_message=speakers_error,
++        )
++    if safe_tab == "project":
++        project = _project_tab_context(recording_id, rec, _settings)
++        rec = _prepare_recording_for_display(
++            get_recording(recording_id, settings=_settings) or rec,
++            settings=_settings,
++        )
++    if safe_tab in {"overview", "metrics"}:
++        summary = _summary_context(recording_id, _settings)
++    if safe_tab == "overview":
++        export_text = build_onenote_markdown(rec, settings=_settings)
++        glossary = _asr_glossary_context(recording_id, _settings)
++    if safe_tab == "metrics":
++        metrics = _metrics_tab_context(recording_id, _settings)
++    is_embedded = inspector_mode == "embedded" and control_center_state is not None
++    progress_url = (
++        f"/ui/recordings/{quote(recording_id, safe='')}/progress?tab="
++        f"{quote(safe_tab, safe='')}"
++    )
++    embedded_return_queries = {value: "" for value in _CONTROL_CENTER_TABS}
++    if is_embedded:
++        current_return_query = _control_center_return_query(
++            status_filter=control_center_state["status"],
++            search_query=control_center_state["q"],
++            return_tab=safe_tab,
++            limit=control_center_state["limit"],
++            offset=control_center_state["offset"],
++        )
++        progress_url = f"{progress_url}&{current_return_query.lstrip('?')}"
++        embedded_return_queries = {
++            value: _control_center_return_query(
++                status_filter=control_center_state["status"],
++                search_query=control_center_state["q"],
++                return_tab=value,
++                limit=control_center_state["limit"],
++                offset=control_center_state["offset"],
++            )
++            for value in _CONTROL_CENTER_TABS
++        }
++    selected_recording_shell = _selected_recording_summary_shell_context(
++        rec,
++        current_tab=safe_tab,
++        recovery_warning=recovery_warning,
++        inspector_mode=inspector_mode,
++        control_center_state=control_center_state,
++    )
++    return {
++        "rec": rec,
++        "jobs": jobs,
++        "recovery_warning": recovery_warning,
++        "selected_recording_shell": selected_recording_shell,
++        "tabs": _CONTROL_CENTER_TABS,
++        "current_tab": safe_tab,
++        "calendar": calendar,
++        "language": language,
++        "summary": summary,
++        "metrics": metrics,
++        "speakers": speakers,
++        "project": project,
++        "glossary": glossary,
++        "export_text": export_text,
++        "pipeline_stages": pipeline_stages,
++        "diagnostics": diagnostics,
++        "recording_inspector": {
++            "mode": inspector_mode,
++            "embedded": is_embedded,
++            "tabs": _recording_inspector_tabs_context(
++                recording_id,
++                current_tab=safe_tab,
++                inspector_mode=inspector_mode,
++                control_center_state=control_center_state,
++            ),
++            "progress_url": progress_url,
++            "embedded_return_queries": embedded_return_queries,
++        },
++    }
++
++
+ def _compact_glossary_summary_context(
+     settings: AppSettings,
+     *,
+@@ -2933,6 +3268,9 @@ async def ui_dashboard(
+     tab: str = Query(default="overview"),
+     limit: int = Query(default=_CONTROL_CENTER_LIST_LIMIT, ge=1, le=500),
+     offset: int = Query(default=0, ge=0),
++    calendar_error: str = Query(default=""),
++    speakers_notice: str = Query(default=""),
++    speakers_error: str = Query(default=""),
+ ) -> Any:
+     dashboard_context = _dashboard_status_context(_settings)
+     control_center_state = _control_center_state_context(
+@@ -2943,19 +3281,40 @@ async def ui_dashboard(
+         limit=limit,
+         offset=offset,
+     )
++    control_center_empty_inspector = _control_center_empty_inspector_context()
++    control_center_inspector = None
++    if control_center_state["selected"]:
++        control_center_inspector = _recording_inspector_context(
++            control_center_state["selected"],
++            current_tab=control_center_state["tab"],
++            calendar_error=calendar_error,
++            speakers_notice=speakers_notice,
++            speakers_error=speakers_error,
++            inspector_mode="embedded",
++            control_center_state=control_center_state,
++        )
++        if control_center_inspector is None:
++            control_center_empty_inspector = {
++                "title": "Selected recording not found",
++                "message": (
++                    "The selected recording no longer exists. Clear the selection and "
++                    "choose another recording from the queue."
++                ),
++            }
+     return templates.TemplateResponse(
+         request,
+         "control_center.html",
+         {
+             "active": "dashboard",
+             **dashboard_context,
++            **(control_center_inspector or {}),
+             "control_center_state": control_center_state,
+             "upload_shell": _upload_shell_context(),
+             "control_center_work_pane": _control_center_work_pane_context(
+                 _settings,
+                 state=control_center_state,
+             ),
+-            "control_center_empty_inspector": _control_center_empty_inspector_context(),
++            "control_center_empty_inspector": control_center_empty_inspector,
+         },
+     )
+ 
+@@ -3025,6 +3384,9 @@ async def ui_control_center_inspector_pane(
+     tab: str = Query(default="overview"),
+     limit: int = Query(default=_CONTROL_CENTER_LIST_LIMIT, ge=1, le=500),
+     offset: int = Query(default=0, ge=0),
++    calendar_error: str = Query(default=""),
++    speakers_notice: str = Query(default=""),
++    speakers_error: str = Query(default=""),
+ ) -> Any:
+     control_center_state = _control_center_state_context(
+         selected=selected,
+@@ -3034,12 +3396,83 @@ async def ui_control_center_inspector_pane(
+         limit=limit,
+         offset=offset,
+     )
++    control_center_empty_inspector = _control_center_empty_inspector_context()
++    control_center_inspector = None
++    if control_center_state["selected"]:
++        control_center_inspector = _recording_inspector_context(
++            control_center_state["selected"],
++            current_tab=control_center_state["tab"],
++            calendar_error=calendar_error,
++            speakers_notice=speakers_notice,
++            speakers_error=speakers_error,
++            inspector_mode="embedded",
++            control_center_state=control_center_state,
++        )
++        if control_center_inspector is None:
++            control_center_empty_inspector = {
++                "title": "Selected recording not found",
++                "message": (
++                    "The selected recording no longer exists. Clear the selection and "
++                    "choose another recording from the queue."
++                ),
++            }
+     return templates.TemplateResponse(
+         request,
+         "partials/control_center/inspector_pane.html",
+         {
+             "control_center_state": control_center_state,
+-            "control_center_empty_inspector": _control_center_empty_inspector_context(),
++            "control_center_empty_inspector": control_center_empty_inspector,
++            **(control_center_inspector or {}),
++        },
++    )
++
++
++@ui_router.get("/ui/recordings/{recording_id}/inspector", response_class=HTMLResponse)
++async def ui_recording_inspector(
++    request: Request,
++    recording_id: str,
++    status: str | None = Query(default=None),
++    q: str = Query(default=""),
++    tab: str = Query(default="overview"),
++    limit: int = Query(default=_CONTROL_CENTER_LIST_LIMIT, ge=1, le=500),
++    offset: int = Query(default=0, ge=0),
++    calendar_error: str = Query(default=""),
++    speakers_notice: str = Query(default=""),
++    speakers_error: str = Query(default=""),
++) -> Any:
++    control_center_state = _control_center_state_context(
++        selected=recording_id,
++        status=status,
++        q=q,
++        tab=tab,
++        limit=limit,
++        offset=offset,
++    )
++    control_center_inspector = _recording_inspector_context(
++        recording_id,
++        current_tab=control_center_state["tab"],
++        calendar_error=calendar_error,
++        speakers_notice=speakers_notice,
++        speakers_error=speakers_error,
++        inspector_mode="embedded",
++        control_center_state=control_center_state,
++    )
++    control_center_empty_inspector = _control_center_empty_inspector_context()
++    if control_center_inspector is None:
++        control_center_empty_inspector = {
++            "title": "Selected recording not found",
++            "message": (
++                "The selected recording no longer exists. Clear the selection and "
++                "choose another recording from the queue."
++            ),
++        }
++    return templates.TemplateResponse(
++        request,
++        "partials/control_center/inspector_pane.html",
++        {
++            "control_center_state": control_center_state,
++            "control_center_empty_inspector": control_center_empty_inspector,
++            **(control_center_inspector or {}),
+         },
+     )
+ 
+@@ -3191,88 +3624,21 @@ async def ui_recording_detail(
+     speakers_notice: str = Query(default=""),
+     speakers_error: str = Query(default=""),
+ ) -> Any:
+-    rec = get_recording(recording_id, settings=_settings)
+-    if rec is None:
+-        return HTMLResponse("<h1>404 – Recording not found</h1>", status_code=404)
+-    rec = _prepare_recording_for_display(rec, settings=_settings)
+-    jobs, _ = list_jobs(settings=_settings, recording_id=recording_id, limit=100)
+-    recovery_warning = _recording_recovery_warning(jobs)
+-    tabs = ["overview", "calendar", "project", "speakers", "language", "metrics", "log"]
+-    current_tab = tab if tab in tabs else "overview"
+-    calendar: dict[str, Any] | None = None
+-    language: dict[str, Any] | None = None
+-    summary: dict[str, Any] | None = None
+-    metrics: dict[str, Any] | None = None
+-    speakers: dict[str, Any] | None = None
+-    project: dict[str, Any] | None = None
+-    glossary: dict[str, Any] | None = None
+-    export_text = ""
+-    stage_rows = list_recording_pipeline_stages(recording_id, settings=_settings)
+-    chunk_rows = list_recording_llm_chunk_states(recording_id, settings=_settings)
+-    pipeline_stages = _pipeline_stage_rows_for_display(recording_id, rows=stage_rows)
+-    diagnostics = _recording_diagnostics_context(
+-        recording=rec,
+-        stage_rows=stage_rows,
+-        chunk_rows=chunk_rows,
+-        jobs=jobs,
+-    )
+-    if diagnostics["primary_reason_text"]:
+-        rec["status_reason_text_display"] = diagnostics["primary_reason_text"]
+-    if current_tab == "calendar":
+-        calendar = _calendar_tab_context(recording_id, _settings)
+-        if calendar_error.strip():
+-            calendar["error_message"] = calendar_error.strip()
+-    if current_tab == "language":
+-        language = _language_tab_context(recording_id, rec, _settings)
+-    if current_tab == "speakers":
+-        speakers = _speakers_tab_context(
+-            recording_id,
+-            _settings,
+-            recording=rec,
+-            stage_rows=stage_rows,
+-            notice_message=speakers_notice,
+-            error_message=speakers_error,
+-        )
+-    if current_tab == "project":
+-        project = _project_tab_context(recording_id, rec, _settings)
+-        rec = _prepare_recording_for_display(
+-            get_recording(recording_id, settings=_settings) or rec,
+-            settings=_settings,
+-        )
+-    if current_tab in {"overview", "metrics"}:
+-        summary = _summary_context(recording_id, _settings)
+-    if current_tab == "overview":
+-        export_text = build_onenote_markdown(rec, settings=_settings)
+-        glossary = _asr_glossary_context(recording_id, _settings)
+-    if current_tab == "metrics":
+-        metrics = _metrics_tab_context(recording_id, _settings)
+-    selected_recording_shell = _selected_recording_summary_shell_context(
+-        rec,
+-        current_tab=current_tab,
+-        recovery_warning=recovery_warning,
++    inspector_context = _recording_inspector_context(
++        recording_id,
++        current_tab=tab,
++        calendar_error=calendar_error,
++        speakers_notice=speakers_notice,
++        speakers_error=speakers_error,
+     )
+-
++    if inspector_context is None:
++        return HTMLResponse("<h1>404 – Recording not found</h1>", status_code=404)
+     return templates.TemplateResponse(
+         request,
+         "recording_detail.html",
+         {
+             "active": "recordings",
+-            "rec": rec,
+-            "jobs": jobs,
+-            "recovery_warning": recovery_warning,
+-            "selected_recording_shell": selected_recording_shell,
+-            "tabs": tabs,
+-            "current_tab": current_tab,
+-            "calendar": calendar,
+-            "language": language,
+-            "summary": summary,
+-            "metrics": metrics,
+-            "speakers": speakers,
+-            "project": project,
+-            "glossary": glossary,
+-            "export_text": export_text,
+-            "pipeline_stages": pipeline_stages,
+-            "diagnostics": diagnostics,
++            **inspector_context,
+         },
+     )
+ 
+@@ -3306,6 +3672,12 @@ async def ui_recording_progress(
+     request: Request,
+     recording_id: str,
+     tab: str = Query(default="overview"),
++    return_to: str = Query(default=""),
++    status: str | None = Query(default=None),
++    q: str = Query(default=""),
++    return_tab: str = Query(default=""),
++    limit: int = Query(default=_CONTROL_CENTER_LIST_LIMIT, ge=1, le=500),
++    offset: int = Query(default=0, ge=0),
+ ) -> Any:
+     rec = get_recording(recording_id, settings=_settings)
+     if rec is None:
+@@ -3344,7 +3716,15 @@ async def ui_recording_progress(
+         request.headers.get("HX-Request") == "true"
+         and str(rec.get("status") or "") in _TERMINAL_RECORDING_STATUSES
+     ):
+-        response.headers["HX-Redirect"] = f"/recordings/{recording_id}?tab={quote(tab)}"
++        response.headers["HX-Redirect"] = _recording_inspector_return_path(
++            recording_id,
++            return_to=return_to,
++            return_tab=return_tab or tab,
++            status=status,
++            q=q,
++            limit=limit,
++            offset=offset,
++        )
+     return response
+ 
+ 
+@@ -3378,6 +3758,12 @@ async def ui_recording_export_zip(
+ async def ui_select_calendar_match(
+     recording_id: str,
+     event_id: str = Form(default=""),
++    return_to: str = Query(default=""),
++    return_tab: str = Query(default="calendar"),
++    status: str | None = Query(default=None),
++    q: str = Query(default=""),
++    limit: int = Query(default=_CONTROL_CENTER_LIST_LIMIT, ge=1, le=500),
++    offset: int = Query(default=0, ge=0),
+ ) -> Any:
+     if get_recording(recording_id, settings=_settings) is None:
+         return HTMLResponse("Not found", status_code=404)
+@@ -3410,7 +3796,18 @@ async def ui_select_calendar_match(
+         settings=_settings,
+         apply_workflow=False,
+     )
+-    return RedirectResponse(f"/recordings/{recording_id}?tab=calendar", status_code=303)
++    return RedirectResponse(
++        _recording_inspector_return_path(
++            recording_id,
++            return_to=return_to,
++            return_tab=return_tab or "calendar",
++            status=status,
++            q=q,
++            limit=limit,
++            offset=offset,
++        ),
++        status_code=303,
++    )
+ 
+ 
+ # ---------------------------------------------------------------------------
+@@ -3451,6 +3848,12 @@ def _snippet_repair_notice_message(result: SnippetRepairResult) -> str:
+ @ui_router.post("/ui/recordings/{recording_id}/speakers/regenerate-snippets")
+ async def ui_recording_regenerate_snippets(
+     recording_id: str,
++    return_to: str = Query(default=""),
++    return_tab: str = Query(default="speakers"),
++    status: str | None = Query(default=None),
++    q: str = Query(default=""),
++    limit: int = Query(default=_CONTROL_CENTER_LIST_LIMIT, ge=1, le=500),
++    offset: int = Query(default=0, ge=0),
+ ) -> Any:
+     if get_recording(recording_id, settings=_settings) is None:
+         return HTMLResponse("Recording not found", status_code=404)
+@@ -3463,16 +3866,28 @@ async def ui_recording_regenerate_snippets(
+         )
+     except SnippetRepairError as exc:
+         return RedirectResponse(
+-            (
+-                f"/recordings/{recording_id}?tab=speakers&speakers_error="
+-                f"{quote(str(exc), safe='')}"
++            _recording_inspector_return_path(
++                recording_id,
++                return_to=return_to,
++                return_tab=return_tab or "speakers",
++                status=status,
++                q=q,
++                limit=limit,
++                offset=offset,
++                speakers_error=str(exc),
+             ),
+             status_code=303,
+         )
+     return RedirectResponse(
+-        (
+-            f"/recordings/{recording_id}?tab=speakers&speakers_notice="
+-            f"{quote(_snippet_repair_notice_message(result), safe='')}"
++        _recording_inspector_return_path(
++            recording_id,
++            return_to=return_to,
++            return_tab=return_tab or "speakers",
++            status=status,
++            q=q,
++            limit=limit,
++            offset=offset,
++            speakers_notice=_snippet_repair_notice_message(result),
+         ),
+         status_code=303,
+     )
+@@ -3483,6 +3898,12 @@ async def ui_assign_speaker(
+     recording_id: str,
+     diar_speaker_label: str = Form(...),
+     voice_profile_id: str = Form(default=""),
++    return_to: str = Query(default=""),
++    return_tab: str = Query(default="speakers"),
++    status: str | None = Query(default=None),
++    q: str = Query(default=""),
++    limit: int = Query(default=_CONTROL_CENTER_LIST_LIMIT, ge=1, le=500),
++    offset: int = Query(default=0, ge=0),
+ ) -> Any:
+     if get_recording(recording_id, settings=_settings) is None:
+         return HTMLResponse("Not found", status_code=404)
+@@ -3535,7 +3956,18 @@ async def ui_assign_speaker(
+         existing_assignment.get("voice_profile_id"),
+         profile_id,
+     )
+-    return RedirectResponse(f"/recordings/{recording_id}?tab=speakers", status_code=303)
++    return RedirectResponse(
++        _recording_inspector_return_path(
++            recording_id,
++            return_to=return_to,
++            return_tab=return_tab or "speakers",
++            status=status,
++            q=q,
++            limit=limit,
++            offset=offset,
++        ),
++        status_code=303,
++    )
+ 
+ 
+ @ui_router.post("/ui/recordings/{recording_id}/speakers/create-and-assign")
+@@ -3544,6 +3976,12 @@ async def ui_create_and_assign_speaker(
+     diar_speaker_label: str = Form(...),
+     display_name: str = Form(...),
+     notes: str = Form(default=""),
++    return_to: str = Query(default=""),
++    return_tab: str = Query(default="speakers"),
++    status: str | None = Query(default=None),
++    q: str = Query(default=""),
++    limit: int = Query(default=_CONTROL_CENTER_LIST_LIMIT, ge=1, le=500),
++    offset: int = Query(default=0, ge=0),
+ ) -> Any:
+     if get_recording(recording_id, settings=_settings) is None:
+         return HTMLResponse("Not found", status_code=404)
+@@ -3572,7 +4010,18 @@ async def ui_create_and_assign_speaker(
+         diar_label,
+         profile_id,
+     )
+-    return RedirectResponse(f"/recordings/{recording_id}?tab=speakers", status_code=303)
++    return RedirectResponse(
++        _recording_inspector_return_path(
++            recording_id,
++            return_to=return_to,
++            return_tab=return_tab or "speakers",
++            status=status,
++            q=q,
++            limit=limit,
++            offset=offset,
++        ),
++        status_code=303,
++    )
+ 
+ 
+ @ui_router.post("/ui/recordings/{recording_id}/speakers/add-sample")
+@@ -3581,6 +4030,12 @@ async def ui_add_speaker_sample(
+     diar_speaker_label: str = Form(...),
+     voice_profile_id: str = Form(default=""),
+     snippet_path: str = Form(default=""),
++    return_to: str = Query(default=""),
++    return_tab: str = Query(default="speakers"),
++    status: str | None = Query(default=None),
++    q: str = Query(default=""),
++    limit: int = Query(default=_CONTROL_CENTER_LIST_LIMIT, ge=1, le=500),
++    offset: int = Query(default=0, ge=0),
+ ) -> Any:
+     if get_recording(recording_id, settings=_settings) is None:
+         return HTMLResponse("Not found", status_code=404)
+@@ -3627,7 +4082,18 @@ async def ui_add_speaker_sample(
+         profile_id,
+         rel_path,
+     )
+-    return RedirectResponse(f"/recordings/{recording_id}?tab=speakers", status_code=303)
++    return RedirectResponse(
++        _recording_inspector_return_path(
++            recording_id,
++            return_to=return_to,
++            return_tab=return_tab or "speakers",
++            status=status,
++            q=q,
++            limit=limit,
++            offset=offset,
++        ),
++        status_code=303,
++    )
+ 
+ 
+ @ui_router.post("/ui/recordings/{recording_id}/project")
+@@ -3635,6 +4101,12 @@ async def ui_set_recording_project(
+     recording_id: str,
+     project_id: str = Form(default=""),
+     train_routing: str = Form(default=""),
++    return_to: str = Query(default=""),
++    return_tab: str = Query(default="project"),
++    status: str | None = Query(default=None),
++    q: str = Query(default=""),
++    limit: int = Query(default=_CONTROL_CENTER_LIST_LIMIT, ge=1, le=500),
++    offset: int = Query(default=0, ge=0),
+ ) -> Any:
+     if get_recording(recording_id, settings=_settings) is None:
+         return HTMLResponse("Not found", status_code=404)
+@@ -3673,7 +4145,18 @@ async def ui_set_recording_project(
+         settings=_settings,
+         apply_workflow=False,
+     )
+-    return RedirectResponse(f"/recordings/{recording_id}?tab=project", status_code=303)
++    return RedirectResponse(
++        _recording_inspector_return_path(
++            recording_id,
++            return_to=return_to,
++            return_tab=return_tab or "project",
++            status=status,
++            q=q,
++            limit=limit,
++            offset=offset,
++        ),
++        status_code=303,
++    )
+ 
+ 
+ # ---------------------------------------------------------------------------
+@@ -4127,10 +4610,23 @@ def _ui_recording_action_response(*, return_to: str, redirect_to: str) -> HTMLRe
+     return response
+ 
+ 
++def _ui_recording_post_response(
++    request: Request,
++    *,
++    return_to: str,
++    redirect_to: str,
++) -> HTMLResponse | RedirectResponse:
++    if request.headers.get("HX-Request") == "true":
++        return _ui_recording_action_response(return_to=return_to, redirect_to=redirect_to)
++    return RedirectResponse(redirect_to, status_code=303)
++
++
+ @ui_router.post("/ui/recordings/{recording_id}/stop", response_class=HTMLResponse)
+ async def ui_action_stop(
+     recording_id: str,
++    request: Request,
+     tab: str = Form(default="overview"),
++    return_to: str = Query(default=""),
+ ) -> Any:
+     rec = get_recording(recording_id, settings=_settings)
+     if rec is None:
+@@ -4139,7 +4635,11 @@ async def ui_action_stop(
+     redirect_path = _recording_detail_path(recording_id, tab=tab)
+     current_status = str(rec.get("status") or "").strip()
+     if current_status not in _STOP_ELIGIBLE_RECORDING_STATUSES:
+-        return RedirectResponse(redirect_path, status_code=303)
++        return _ui_recording_post_response(
++            request,
++            return_to=return_to,
++            redirect_to=redirect_path,
++        )
+ 
+     if current_status == RECORDING_STATUS_QUEUED:
+         queued_jobs, _ = list_jobs(
+@@ -4179,7 +4679,11 @@ async def ui_action_stop(
+             ),
+             settings=_settings,
+         )
+-        return RedirectResponse(redirect_path, status_code=303)
++        return _ui_recording_post_response(
++            request,
++            return_to=return_to,
++            redirect_to=redirect_path,
++        )
+ 
+     if not set_recording_status_if_current_in(
+         recording_id,
+@@ -4191,7 +4695,11 @@ async def ui_action_stop(
+         ),
+         settings=_settings,
+     ):
+-        return RedirectResponse(redirect_path, status_code=303)
++        return _ui_recording_post_response(
++            request,
++            return_to=return_to,
++            redirect_to=redirect_path,
++        )
+     if not str(rec.get("cancel_requested_at") or "").strip():
+         set_recording_cancel_request(
+             recording_id,
+@@ -4208,7 +4716,11 @@ async def ui_action_stop(
+             settings=_settings,
+         )
+     clear_recording_progress(recording_id, settings=_settings)
+-    return RedirectResponse(redirect_path, status_code=303)
++    return _ui_recording_post_response(
++        request,
++        return_to=return_to,
++        redirect_to=redirect_path,
++    )
+ 
+ 
+ @ui_router.post("/ui/recordings/{recording_id}/requeue")
+@@ -4238,7 +4750,16 @@ async def ui_action_requeue(
+ 
+ 
+ @ui_router.post("/ui/recordings/{recording_id}/jobs/{job_id}/retry")
+-async def ui_action_retry_failed_step(recording_id: str, job_id: str) -> Any:
++async def ui_action_retry_failed_step(
++    recording_id: str,
++    job_id: str,
++    return_to: str = Query(default=""),
++    return_tab: str = Query(default="log"),
++    status: str | None = Query(default=None),
++    q: str = Query(default=""),
++    limit: int = Query(default=_CONTROL_CENTER_LIST_LIMIT, ge=1, le=500),
++    offset: int = Query(default=0, ge=0),
++) -> Any:
+     if get_recording(recording_id, settings=_settings) is None:
+         return HTMLResponse("Not found", status_code=404)
+     job = get_job(job_id, settings=_settings)
+@@ -4259,7 +4780,18 @@ async def ui_action_retry_failed_step(recording_id: str, job_id: str) -> Any:
+         )
+     except Exception as exc:
+         return HTMLResponse(f"Retry failed: {exc}", status_code=503)
+-    return RedirectResponse(f"/recordings/{recording_id}?tab=log", status_code=303)
++    return RedirectResponse(
++        _recording_inspector_return_path(
++            recording_id,
++            return_to=return_to,
++            return_tab=return_tab or "log",
++            status=status,
++            q=q,
++            limit=limit,
++            offset=offset,
++        ),
++        status_code=303,
++    )
+ 
+ 
+ @ui_router.post("/ui/recordings/{recording_id}/quarantine")
+@@ -4337,6 +4869,12 @@ async def ui_save_language_settings(
+     recording_id: str,
+     target_summary_language: str = Form(default=""),
+     transcript_language_override: str = Form(default=""),
++    return_to: str = Query(default=""),
++    return_tab: str = Query(default="language"),
++    status: str | None = Query(default=None),
++    q: str = Query(default=""),
++    limit: int = Query(default=_CONTROL_CENTER_LIST_LIMIT, ge=1, le=500),
++    offset: int = Query(default=0, ge=0),
+ ) -> Any:
+     if get_recording(recording_id, settings=_settings) is None:
+         return HTMLResponse("Not found", status_code=404)
+@@ -4348,7 +4886,18 @@ async def ui_save_language_settings(
+         )
+     except ValueError as exc:
+         return HTMLResponse(str(exc), status_code=422)
+-    return RedirectResponse(f"/recordings/{recording_id}?tab=language", status_code=303)
++    return RedirectResponse(
++        _recording_inspector_return_path(
++            recording_id,
++            return_to=return_to,
++            return_tab=return_tab or "language",
++            status=status,
++            q=q,
++            limit=limit,
++            offset=offset,
++        ),
++        status_code=303,
++    )
+ 
+ 
+ @ui_router.post("/ui/recordings/{recording_id}/language/resummarize")
+@@ -4356,6 +4905,12 @@ async def ui_resummarize_language(
+     recording_id: str,
+     target_summary_language: str = Form(default=""),
+     transcript_language_override: str = Form(default=""),
++    return_to: str = Query(default=""),
++    return_tab: str = Query(default="language"),
++    status: str | None = Query(default=None),
++    q: str = Query(default=""),
++    limit: int = Query(default=_CONTROL_CENTER_LIST_LIMIT, ge=1, le=500),
++    offset: int = Query(default=0, ge=0),
+ ) -> Any:
+     if get_recording(recording_id, settings=_settings) is None:
+         return HTMLResponse("Not found", status_code=404)
+@@ -4375,7 +4930,18 @@ async def ui_resummarize_language(
+         return HTMLResponse(str(exc), status_code=422)
+     except Exception as exc:
+         return HTMLResponse(f"Re-summarize failed: {exc}", status_code=503)
+-    return RedirectResponse(f"/recordings/{recording_id}?tab=language", status_code=303)
++    return RedirectResponse(
++        _recording_inspector_return_path(
++            recording_id,
++            return_to=return_to,
++            return_tab=return_tab or "language",
++            status=status,
++            q=q,
++            limit=limit,
++            offset=offset,
++        ),
++        status_code=303,
++    )
+ 
+ 
+ @ui_router.post("/ui/recordings/{recording_id}/language/retranscribe")
+@@ -4383,6 +4949,12 @@ async def ui_retranscribe_language(
+     recording_id: str,
+     target_summary_language: str = Form(default=""),
+     transcript_language_override: str = Form(default=""),
++    return_to: str = Query(default=""),
++    return_tab: str = Query(default="log"),
++    status: str | None = Query(default=None),
++    q: str = Query(default=""),
++    limit: int = Query(default=_CONTROL_CENTER_LIST_LIMIT, ge=1, le=500),
++    offset: int = Query(default=0, ge=0),
+ ) -> Any:
+     if get_recording(recording_id, settings=_settings) is None:
+         return HTMLResponse("Not found", status_code=404)
+@@ -4402,4 +4974,15 @@ async def ui_retranscribe_language(
+         return HTMLResponse(str(exc), status_code=422)
+     except Exception as exc:
+         return HTMLResponse(f"Re-transcribe failed: {exc}", status_code=503)
+-    return RedirectResponse(f"/recordings/{recording_id}?tab=log", status_code=303)
++    return RedirectResponse(
++        _recording_inspector_return_path(
++            recording_id,
++            return_to=return_to,
++            return_tab=return_tab or "log",
++            status=status,
++            q=q,
++            limit=limit,
++            offset=offset,
++        ),
++        status_code=303,
++    )
+diff --git a/tasks/QUEUE.md b/tasks/QUEUE.md
+index d1b8bd8..cae20d1 100644
+--- a/tasks/QUEUE.md
++++ b/tasks/QUEUE.md
+@@ -535,7 +535,7 @@ Queue (in order)
+ - Depends on: PR-UI-CONTROL-CENTER-02 and PR-UI-UPLOAD-02 and PR-UI-PROGRESS-02
+ 
+ 107) PR-UI-CONTROL-CENTER-04: Embed the recording inspector into the Control Center right pane while keeping /recordings/{id} as a full-page fallback
+-- Status: TODO
++- Status: DONE
+ - Tasks file: tasks/PR-UI-CONTROL-CENTER-04.md
+ - Depends on: PR-UI-CONTROL-CENTER-03
+ 
+diff --git a/tests/test_cov_lan_app_ui_routes.py b/tests/test_cov_lan_app_ui_routes.py
+index 70c6fff..0d65d70 100644
+--- a/tests/test_cov_lan_app_ui_routes.py
++++ b/tests/test_cov_lan_app_ui_routes.py
+@@ -9,6 +9,7 @@ from typing import Any
+ 
+ from fastapi.testclient import TestClient
+ import pytest
++from starlette.requests import Request
+ 
+ from lan_app import api, ui_routes
+ from lan_app.calendar.service import CalendarSyncError
+@@ -156,6 +157,15 @@ def test_control_center_helper_contexts_cover_fragment_builders(
+         selected="rec helper",
+         offset=25,
+     ) == "/?selected=rec+helper&limit=25&offset=25"
++    assert ui_routes._control_center_shell_href(  # noqa: SLF001
++        selected="rec-helper-1",
++        calendar_error="calendar drift",
++        speakers_notice="snippets fixed",
++        speakers_error="speaker mismatch",
++    ) == (
++        "/?selected=rec-helper-1&calendar_error=calendar+drift&"
++        "speakers_notice=snippets+fixed&speakers_error=speaker+mismatch"
++    )
+     assert ui_routes._control_center_recordings_panel_url(  # noqa: SLF001
+         selected="rec-helper-1",
+         status_filter="Ready",
+@@ -167,6 +177,39 @@ def test_control_center_helper_contexts_cover_fragment_builders(
+         "/ui/control-center/recordings/panel?"
+         "selected=rec-helper-1&status=Ready&q=demo&tab=log&limit=25&offset=2"
+     )
++    assert ui_routes._control_center_inspector_path(  # noqa: SLF001
++        "rec helper",
++        status_filter="Ready",
++        search_query="demo",
++        tab="mystery",
++        limit=25,
++        offset=2,
++    ) == "/ui/recordings/rec%20helper/inspector?status=Ready&q=demo&limit=25&offset=2"
++    assert ui_routes._control_center_return_query(  # noqa: SLF001
++        status_filter="Ready",
++        search_query="demo",
++        return_tab="mystery",
++        limit=25,
++        offset=2,
++    ) == "?return_to=control-center&return_tab=overview&status=Ready&q=demo&limit=25&offset=2"
++    assert ui_routes._recording_inspector_return_path(  # noqa: SLF001
++        "rec-helper-1",
++        return_tab="mystery",
++    ) == "/recordings/rec-helper-1"
++    assert ui_routes._recording_inspector_return_path(  # noqa: SLF001
++        "rec-helper-1",
++        return_tab="overview",
++        calendar_error="calendar drift",
++    ) == "/recordings/rec-helper-1?calendar_error=calendar+drift"
++    assert ui_routes._recording_inspector_return_path(  # noqa: SLF001
++        "rec-helper-1",
++        return_to="control-center",
++        return_tab="speakers",
++        status="Ready",
++        q="helper",
++        limit=25,
++        offset=2,
++    ) == "/?selected=rec-helper-1&status=Ready&q=helper&tab=speakers&limit=25&offset=2"
+ 
+     monkeypatch.setattr(
+         ui_routes,
+@@ -598,9 +641,10 @@ def test_ui_action_stop_helper_edge_paths(
+ ) -> None:
+     cfg = _cfg(tmp_path)
+     monkeypatch.setattr(ui_routes, "_settings", cfg)
++    request = Request({"type": "http", "method": "POST", "path": "/", "headers": []})
+ 
+     monkeypatch.setattr(ui_routes, "get_recording", lambda *_a, **_k: None)
+-    missing = asyncio.run(ui_routes.ui_action_stop("rec-missing", tab="overview"))
++    missing = asyncio.run(ui_routes.ui_action_stop("rec-missing", request=request, tab="overview"))
+     assert missing.status_code == 404
+     assert missing.body.decode("utf-8") == "Not found"
+ 
+@@ -609,7 +653,9 @@ def test_ui_action_stop_helper_edge_paths(
+         "get_recording",
+         lambda *_a, **_k: {"id": "rec-ready", "status": RECORDING_STATUS_READY},
+     )
+-    not_eligible = asyncio.run(ui_routes.ui_action_stop("rec-ready", tab="calendar"))
++    not_eligible = asyncio.run(
++        ui_routes.ui_action_stop("rec-ready", request=request, tab="calendar")
++    )
+     assert not_eligible.status_code == 303
+     assert not_eligible.headers["location"] == "/recordings/rec-ready?tab=calendar"
+ 
+@@ -624,7 +670,9 @@ def test_ui_action_stop_helper_edge_paths(
+         "purge_pending_recording_jobs",
+         lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("queue unavailable")),
+     )
+-    queue_error = asyncio.run(ui_routes.ui_action_stop("rec-queued", tab="overview"))
++    queue_error = asyncio.run(
++        ui_routes.ui_action_stop("rec-queued", request=request, tab="overview")
++    )
+     assert queue_error.status_code == 503
+     assert queue_error.body.decode("utf-8") == "Stop failed (queue unavailable): queue unavailable"
+ 
+@@ -650,7 +698,9 @@ def test_ui_action_stop_helper_edge_paths(
+         lambda *_a, **_k: calls.append("status") or True,
+     )
+     monkeypatch.setattr(ui_routes, "clear_recording_progress", lambda *_a, **_k: calls.append("clear") or True)
+-    acknowledged = asyncio.run(ui_routes.ui_action_stop("rec-stopping", tab="overview"))
++    acknowledged = asyncio.run(
++        ui_routes.ui_action_stop("rec-stopping", request=request, tab="overview")
++    )
+     assert acknowledged.status_code == 303
+     assert acknowledged.headers["location"] == "/recordings/rec-stopping"
+     assert calls == ["status", "ack", "clear"]
+@@ -684,11 +734,42 @@ def test_ui_action_stop_helper_edge_paths(
+         "clear_recording_progress",
+         lambda *_a, **_k: race_calls.append("clear") or True,
+     )
+-    raced = asyncio.run(ui_routes.ui_action_stop("rec-race", tab="overview"))
++    raced = asyncio.run(ui_routes.ui_action_stop("rec-race", request=request, tab="overview"))
+     assert raced.status_code == 303
+     assert raced.headers["location"] == "/recordings/rec-race"
+     assert race_calls == []
+ 
++    htmx_request = Request(
++        {
++            "type": "http",
++            "method": "POST",
++            "path": "/",
++            "headers": [(b"hx-request", b"true")],
++        }
++    )
++    htmx_response = ui_routes._ui_recording_post_response(  # noqa: SLF001
++        htmx_request,
++        return_to="",
++        redirect_to="/recordings/rec-helper-1?tab=log",
++    )
++    assert htmx_response.headers["HX-Redirect"] == "/recordings/rec-helper-1?tab=log"
++
++
++def test_control_center_inspector_routes_handle_missing_selection(client):
++    _cfg_obj, c = client
++
++    page = c.get("/?selected=missing")
++    assert page.status_code == 200
++    assert "Selected recording not found" in page.text
++
++    pane = c.get("/ui/control-center/inspector-pane?selected=missing")
++    assert pane.status_code == 200
++    assert "Selected recording not found" in pane.text
++
++    focused = c.get("/ui/recordings/missing/inspector")
++    assert focused.status_code == 200
++    assert "Selected recording not found" in focused.text
++
+ 
+ def test_load_json_and_chunk_helpers_cover_error_paths(tmp_path: Path) -> None:
+     broken = tmp_path / "broken.json"
 diff --git a/tests/test_ui_routes.py b/tests/test_ui_routes.py
-index 1912a13..8842ce5 100644
+index 8842ce5..1ef24cc 100644
 --- a/tests/test_ui_routes.py
 +++ b/tests/test_ui_routes.py
-@@ -431,6 +431,7 @@ def test_control_center_selection_preserves_pagination_state(
-     panel = c.get("/ui/control-center/recordings/panel?status=Ready&limit=25&offset=25&tab=speakers")
-     assert panel.status_code == 200
-     assert panel.headers["HX-Push-Url"] == "/?status=Ready&tab=speakers&limit=25&offset=25"
-+    assert 'href="/?status=Ready&amp;tab=speakers"' in panel.text
-     assert (
-         f'href="/?selected={selected_id}&amp;status=Ready&amp;tab=speakers&amp;'
-         "limit=25&amp;offset=25\""
-@@ -438,6 +439,7 @@ def test_control_center_selection_preserves_pagination_state(
+@@ -355,6 +355,32 @@ def test_control_center_pane_fragment_endpoints(seeded_client):
+     assert "Speakers" in inspector.text
+     assert "<nav" not in inspector.text
  
-     selected_page = c.get(f"/?selected={selected_id}&status=Ready&limit=25&offset=25&tab=speakers")
-     assert selected_page.status_code == 200
-+    assert f'href="/?selected={selected_id}&amp;status=Ready&amp;tab=speakers"' in selected_page.text
-     assert f'name="selected" value="{selected_id}"' in selected_page.text
-     assert 'value="25" selected' in selected_page.text
-     assert ">26–26 of 26<" in selected_page.text
++    empty_inspector = seeded_client.get("/ui/control-center/inspector-pane")
++    assert empty_inspector.status_code == 200
++    assert "Select a recording from the left pane" in empty_inspector.text
++
++
++def test_control_center_selected_recording_renders_embedded_inspector_actions(seeded_client):
++    r = seeded_client.get("/?selected=rec-ui-1&status=Ready&q=meeting&tab=overview")
++    assert r.status_code == 200
++    assert 'id="control-center-inspector-pane"' in r.text
++    assert "Inspector Pane" in r.text
++    assert "Requeue" in r.text
++    assert "Quarantine" in r.text
++    assert "Delete" in r.text
++    assert "Download ZIP" in r.text
++    assert "Open full-page recording" in r.text
++    assert "/ui/recordings/rec-ui-1/inspector?status=Ready&amp;q=meeting" in r.text
++
++
++def test_control_center_embedded_inspector_tab_links_preserve_shell_state(seeded_client):
++    inspector = seeded_client.get("/ui/recordings/rec-ui-1/inspector?status=Ready&q=meeting&tab=speakers")
++    assert inspector.status_code == 200
++    assert 'hx-get="/ui/recordings/rec-ui-1/inspector?status=Ready&amp;q=meeting"' in inspector.text
++    assert 'hx-get="/ui/recordings/rec-ui-1/inspector?status=Ready&amp;q=meeting&amp;tab=language"' in inspector.text
++    assert 'hx-push-url="/?selected=rec-ui-1&amp;status=Ready&amp;q=meeting&amp;tab=language"' in inspector.text
++    assert 'href="/?selected=rec-ui-1&amp;status=Ready&amp;q=meeting&amp;tab=speakers"' in inspector.text
++
+ 
+ def test_control_center_recordings_panel_filters_search_and_actions(
+     tmp_path: Path,
+@@ -630,8 +656,9 @@ def test_recording_shell_and_empty_inspector_fragment_endpoints(seeded_client):
+     shell = seeded_client.get("/ui/control-center/recordings/rec-ui-1/shell?tab=overview")
+     assert shell.status_code == 200
+     assert 'data-rid="rec-ui-1"' in shell.text
+-    assert "Actions…" in shell.text
+-    assert "&#8592; Back" in shell.text
++    assert "Requeue" in shell.text
++    assert "Download ZIP" in shell.text
++    assert "Back to recordings" in shell.text
+     assert "<html" not in shell.text
+ 
+     empty = seeded_client.get("/ui/control-center/inspector-empty")
+@@ -1003,6 +1030,35 @@ def test_recording_progress_endpoint_redirects_when_terminal(tmp_path, monkeypat
+     assert r.headers["HX-Redirect"] == "/recordings/rec-ui-terminal-1?tab=metrics"
+ 
+ 
++def test_recording_progress_endpoint_redirects_to_control_center_when_embedded_terminal(
++    tmp_path,
++    monkeypatch,
++):
++    cfg = _cfg(tmp_path)
++    monkeypatch.setattr(api, "_settings", cfg)
++    monkeypatch.setattr(ui_routes, "_settings", cfg)
++    init_db(cfg)
++    create_recording(
++        "rec-ui-terminal-embedded-1",
++        source="upload",
++        source_filename="terminal-embedded.wav",
++        status=RECORDING_STATUS_READY,
++        settings=cfg,
++    )
++
++    c = TestClient(api.app, follow_redirects=False)
++    r = c.get(
++        "/ui/recordings/rec-ui-terminal-embedded-1/progress?"
++        "tab=metrics&return_to=control-center&status=Ready&q=meeting&return_tab=metrics",
++        headers={"HX-Request": "true"},
++    )
++    assert r.status_code == 200
++    assert (
++        r.headers["HX-Redirect"]
++        == "/?selected=rec-ui-terminal-embedded-1&status=Ready&q=meeting&tab=metrics"
++    )
++
++
+ def test_recording_detail_shows_review_reason_and_local_timestamp(tmp_path, monkeypatch):
+     cfg = _cfg(tmp_path)
+     monkeypatch.setattr(api, "_settings", cfg)
+diff --git a/tests_playwright/test_ui_smoke_playwright.py b/tests_playwright/test_ui_smoke_playwright.py
+index 4d3bb91..b0e22d1 100644
+--- a/tests_playwright/test_ui_smoke_playwright.py
++++ b/tests_playwright/test_ui_smoke_playwright.py
+@@ -93,7 +93,7 @@ def _stop_process(process: subprocess.Popen[str]) -> None:
+             process.wait(timeout=5)
+ 
+ 
+-def test_upload_recordings_detail_and_export_zip_smoke(tmp_path: Path) -> None:
++def test_control_center_embedded_inspector_and_export_zip_smoke(tmp_path: Path) -> None:
+     deadline = time.monotonic() + 120
+     base_port = _find_free_port()
+     base_url = f"http://127.0.0.1:{base_port}"
+@@ -173,7 +173,7 @@ def test_upload_recordings_detail_and_export_zip_smoke(tmp_path: Path) -> None:
+                     timeout=_remaining_timeout_ms(deadline),
+                 )
+                 page.wait_for_selector(
+-                    f"#control-center-recordings-panel a[href='/recordings/{recording_id}']",
++                    "#control-center-recordings-panel a[href^='/?selected=']",
+                     state="visible",
+                     timeout=_remaining_timeout_ms(deadline),
+                 )
+@@ -184,42 +184,76 @@ def test_upload_recordings_detail_and_export_zip_smoke(tmp_path: Path) -> None:
+                     timeout=_remaining_timeout_ms(deadline),
+                 )
+ 
+-                page.goto(
+-                    f"{base_url}/recordings",
+-                    wait_until="networkidle",
++                page.click(
++                    f"#control-center-recordings-panel a[href='/?selected={recording_id}']",
++                    timeout=_remaining_timeout_ms(deadline),
++                )
++                page.wait_for_url(
++                    f"{base_url}/?selected={recording_id}",
+                     timeout=_remaining_timeout_ms(deadline),
+                 )
+                 page.wait_for_selector(
+-                    f"a[href='/recordings/{recording_id}']",
++                    "#control-center-inspector-pane",
+                     state="visible",
+                     timeout=_remaining_timeout_ms(deadline),
+                 )
+                 page.wait_for_selector(
+-                    f"text={wav_path.name}",
++                    "#control-center-inspector-pane a:has-text('Open full-page recording')",
+                     state="visible",
+                     timeout=_remaining_timeout_ms(deadline),
+                 )
++
+                 page.click(
+-                    f"a[href='/recordings/{recording_id}']",
++                    "#control-center-inspector-pane a:has-text('Speakers')",
+                     timeout=_remaining_timeout_ms(deadline),
+                 )
+                 page.wait_for_url(
+-                    f"{base_url}/recordings/{recording_id}",
++                    f"{base_url}/?selected={recording_id}&tab=speakers",
++                    timeout=_remaining_timeout_ms(deadline),
++                )
++                page.click(
++                    "#control-center-inspector-pane a:has-text('Log')",
++                    timeout=_remaining_timeout_ms(deadline),
++                )
++                page.wait_for_url(
++                    f"{base_url}/?selected={recording_id}&tab=log",
++                    timeout=_remaining_timeout_ms(deadline),
++                )
++                page.click(
++                    "#control-center-inspector-pane a:has-text('Overview')",
++                    timeout=_remaining_timeout_ms(deadline),
++                )
++                page.wait_for_url(
++                    f"{base_url}/?selected={recording_id}",
+                     timeout=_remaining_timeout_ms(deadline),
+                 )
+ 
+                 page.wait_for_selector(
+-                    "a:has-text('Download ZIP')",
++                    "#control-center-inspector-pane a:has-text('Download ZIP')",
+                     state="visible",
+                     timeout=_remaining_timeout_ms(deadline),
+                 )
+                 with page.expect_download(timeout=_remaining_timeout_ms(deadline)) as download_info:
+                     page.click(
+-                        "a:has-text('Download ZIP')",
++                        "#control-center-inspector-pane a:has-text('Download ZIP')",
+                         timeout=_remaining_timeout_ms(deadline),
+                     )
+                 download = download_info.value
+                 download.save_as(str(zip_download_path))
++
++                page.click(
++                    "#control-center-inspector-pane a:has-text('Open full-page recording')",
++                    timeout=_remaining_timeout_ms(deadline),
++                )
++                page.wait_for_url(
++                    f"{base_url}/recordings/{recording_id}",
++                    timeout=_remaining_timeout_ms(deadline),
++                )
++                page.wait_for_selector(
++                    "a:has-text('Download ZIP')",
++                    state="visible",
++                    timeout=_remaining_timeout_ms(deadline),
++                )
+             finally:
+                 context.close()
+                 browser.close()
+diff --git a/lan_app/templates/partials/recording_inspector.html b/lan_app/templates/partials/recording_inspector.html
+new file mode 100644
+index 0000000..d1e70ef
+--- /dev/null
++++ b/lan_app/templates/partials/recording_inspector.html
+@@ -0,0 +1,19 @@
++{% include "partials/recording_inspector_header.html" %}
++
++{% if rec.status in ['Processing', 'Stopping'] %}
++<div
++  id="recording-progress"
++  hx-get="{{ recording_inspector.progress_url }}"
++  hx-trigger="load, every 2s"
++  hx-swap="innerHTML"
++  style="margin:0 0 10px 0"
++>
++  <div class="placeholder" style="padding:8px 10px">Loading pipeline progress…</div>
++</div>
++{% endif %}
++
++{% include "partials/recording_inspector_tabs.html" %}
++
++<div class="tab-content">
++  {% include "partials/recording_inspector_body.html" %}
++</div>
+diff --git a/lan_app/templates/partials/recording_inspector_body.html b/lan_app/templates/partials/recording_inspector_body.html
+new file mode 100644
+index 0000000..6d2b746
+--- /dev/null
++++ b/lan_app/templates/partials/recording_inspector_body.html
+@@ -0,0 +1,819 @@
++{% if current_tab == 'overview' %}
++  {% set summary_data = summary or {} %}
++  {% set glossary_data = glossary or {} %}
++  <div class="section" style="margin-bottom:10px">
++    <h2 style="margin-top:0">Diagnostics</h2>
++    <div class="info-grid">
++      <span class="k">Primary reason</span><span class="v">{{ diagnostics.primary_reason_text or '—' }}</span>
++      <span class="k">Reason code</span><span class="v">{{ diagnostics.primary_reason_code or '—' }}</span>
++      <span class="k">Current / last stage</span><span class="v">{{ diagnostics.current_stage_label or '—' }}</span>
++      <span class="k">Stage status</span><span class="v">{{ diagnostics.current_stage_status_label or '—' }}</span>
++      <span class="k">Chunk</span><span class="v">{{ diagnostics.chunk_text or '—' }}</span>
++      <span class="k">Stage attempt</span><span class="v">{{ diagnostics.stage_attempt_text or '—' }}</span>
++      <span class="k">Chunk attempt</span><span class="v">{{ diagnostics.chunk_attempt_text or '—' }}</span>
++      <span class="k">Stage elapsed</span><span class="v">{{ diagnostics.stage_elapsed_display or '—' }}</span>
++      <span class="k">Chunk elapsed</span><span class="v">{{ diagnostics.chunk_elapsed_display or '—' }}</span>
++      <span class="k">Stop mode</span><span class="v">{{ diagnostics.stop_mode or '—' }}</span>
++      <span class="k">Retry wrapper</span><span class="v">{{ diagnostics.wrapper_reason_text or '—' }}</span>
++      <span class="k">Reason detail</span><span class="v">{{ diagnostics.primary_reason_detail or diagnostics.stop_reason_text or '—' }}</span>
++    </div>
++  </div>
++  <div class="info-grid">
++    <span class="k">ID</span><span class="v">{{ rec.id }}</span>
++    <span class="k">Filename</span><span class="v">{{ rec.source_filename }}</span>
++    <span class="k">Source</span><span class="v">{{ rec.source }}</span>
++    <span class="k">Status</span>
++    <span class="v">
++      <span class="badge s-{{ rec.status }}">{{ rec.status }}</span>
++      {% if rec.status_reason_text_display %}
++      <span style="color:#92400e">{{ rec.status_reason_text_display }}</span>
++      {% endif %}
++    </span>
++    <span class="k">Captured at</span><span class="v">{{ rec.captured_at_display }}</span>
++    <span class="k">Duration</span><span class="v">{{ rec.duration_display }}</span>
++    <span class="k">Project</span><span class="v">{{ rec.project_name or (rec.project_id and ('#' ~ rec.project_id)) or '—' }}</span>
++    <span class="k">Suggested project</span><span class="v">{{ rec.suggested_project_name or (rec.suggested_project_id and ('#' ~ rec.suggested_project_id)) or '—' }}</span>
++    <span class="k">Routing confidence</span>
++    <span class="v">
++      {% if rec.routing_confidence is not none %}
++      {{ '%.2f'|format(rec.routing_confidence) }}
++      {% else %}
++      —
++      {% endif %}
++    </span>
++    <span class="k">Language (auto)</span><span class="v">{{ rec.language_auto or '—' }}</span>
++    <span class="k">Transcript language override</span><span class="v">{{ rec.language_override or '—' }}</span>
++    <span class="k">Target summary language</span><span class="v">{{ rec.target_summary_language or '—' }}</span>
++    <span class="k">Drive file ID</span><span class="v">{{ rec.drive_file_id or '—' }}</span>
++    <span class="k">Quarantine reason</span><span class="v">{{ rec.quarantine_reason or '—' }}</span>
++    <span class="k">Review reason</span><span class="v">{{ rec.review_reason_text_display or '—' }}</span>
++    <span class="k">Stop requested</span>
++    <span class="v">
++      {% if rec.cancel_requested_at_display != '—' %}
++      {{ rec.cancel_requested_at_display }}{% if rec.cancel_requested_by_display %} by {{ rec.cancel_requested_by_display }}{% endif %}
++      {% else %}
++      —
++      {% endif %}
++    </span>
++    <span class="k">Stop reason</span><span class="v">{{ rec.cancel_reason_text_display or '—' }}</span>
++    <span class="k">Created at</span><span class="v">{{ rec.created_at_display }}</span>
++    <span class="k">Updated at</span><span class="v">{{ rec.updated_at_display }}</span>
++  </div>
++
++  {% if pipeline_stages %}
++  <div class="section" style="margin-top:10px">
++    <h2 style="margin-top:0">Pipeline Stages</h2>
++    <table>
++      <thead>
++        <tr>
++          <th>Stage</th>
++          <th>Status</th>
++          <th>Attempt</th>
++          <th>Updated</th>
++          <th>Notes</th>
++        </tr>
++      </thead>
++      <tbody>
++        {% for stage in pipeline_stages %}
++        <tr>
++          <td>{{ stage.stage_label }}</td>
++          <td>{{ stage.status_label }}</td>
++          <td>{{ stage.attempt }}</td>
++          <td>{{ stage.updated_at_display }}</td>
++          <td>
++            {% if stage.root_cause_text %}
++            {{ stage.root_cause_text }}{% if stage.root_cause_code %} (<code>{{ stage.root_cause_code }}</code>){% endif %}
++            {% if stage.chunk_index and stage.chunk_total %}
++            &nbsp;chunk {{ stage.chunk_index }}/{{ stage.chunk_total }}
++            {% endif %}
++            {% if stage.stop_mode %}
++            &nbsp;mode={{ stage.stop_mode }}
++            {% endif %}
++            {% elif stage.error_text %}
++            {{ stage.error_text }}
++            {% elif stage.duration_seconds is not none %}
++            {{ '%.3f'|format(stage.duration_seconds) }}s
++            {% else %}
++            —
++            {% endif %}
++          </td>
++        </tr>
++        {% endfor %}
++      </tbody>
++    </table>
++  </div>
++  {% endif %}
++
++  <div class="section" style="margin-top:10px">
++    <h2 style="margin-top:0">Export</h2>
++    <div class="filters" style="margin-bottom:6px">
++      <button type="button" class="btn" onclick="copyExportText()">Copy</button>
++      <a
++        href="/ui/recordings/{{ rec.id }}/export.zip"
++        class="btn"
++        style="text-decoration:none"
++        hx-boost="false"
++      >Download ZIP</a>
++    </div>
++    <textarea
++      id="export-text"
++      readonly
++      style="width:100%;min-height:220px;resize:vertical"
++    >{{ export_text or '' }}</textarea>
++    <p id="export-copy-status" class="placeholder" style="padding:6px 0 0 0">
++      Copy the markdown or download a ZIP with the available artifacts.
++    </p>
++  </div>
++
++  <script>
++  function copyExportText() {
++    var textarea = document.getElementById('export-text');
++    var status = document.getElementById('export-copy-status');
++    if (!textarea) return;
++    var setStatus = function(msg) {
++      if (status) status.textContent = msg;
++    };
++    var fallback = function() {
++      textarea.focus();
++      textarea.select();
++      try {
++        document.execCommand('copy');
++        setStatus('Copied export markdown.');
++      } catch (_err) {
++        setStatus('Copy failed. Select the text and copy manually.');
++      }
++    };
++    if (navigator.clipboard && navigator.clipboard.writeText) {
++      navigator.clipboard.writeText(textarea.value).then(
++        function() { setStatus('Copied export markdown.'); },
++        fallback
++      );
++      return;
++    }
++    fallback();
++  }
++  </script>
++
++  <h2>Topic</h2>
++  <p>{{ summary_data.topic or '—' }}</p>
++
++  <h2>Summary</h2>
++  {% if summary_data.summary_bullets %}
++  <ul>
++    {% for bullet in summary_data.summary_bullets %}
++    <li>{{ bullet }}</li>
++    {% endfor %}
++  </ul>
++  {% elif summary_data.summary_text %}
++  <pre style="white-space:pre-wrap;background:#f8f9ff;border:1px solid #ccd;padding:8px;font:12px/1.4 'Courier New',monospace;max-height:240px;overflow:auto">{{ summary_data.summary_text }}</pre>
++  {% else %}
++  <p class="placeholder">No summary available yet.</p>
++  {% endif %}
++
++  <h2>Emotional Summary</h2>
++  <p style="white-space:pre-wrap">{{ summary_data.emotional_summary or '—' }}</p>
++
++  <div class="section" style="margin-top:10px">
++    <h2 style="margin-top:0">ASR Glossary</h2>
++    <div class="filters" style="margin-bottom:6px">
++      <a href="/glossary" class="btn" style="text-decoration:none">Manage glossary</a>
++    </div>
++    {% if glossary_data.available and glossary_data.entries %}
++    <p style="margin:0 0 8px 0;color:#555">
++      {{ glossary_data.term_count }} term{{ '' if glossary_data.term_count == 1 else 's' }}
++      used across {{ glossary_data.entry_count }} entry{{ '' if glossary_data.entry_count == 1 else 'ies' }}.
++      {% if glossary_data.truncated %}
++      Prompt budget reached; only the highest-priority terms were forwarded to ASR.
++      {% endif %}
++    </p>
++    <table>
++      <thead>
++        <tr>
++          <th>Canonical</th>
++          <th>Aliases</th>
++          <th>Kind</th>
++          <th>Sources</th>
++        </tr>
++      </thead>
++      <tbody>
++        {% for row in glossary_data.entries %}
++        <tr>
++          <td>{{ row.canonical_text }}</td>
++          <td>{{ row.aliases|join(', ') if row.aliases else '—' }}</td>
++          <td>{{ row.kind }}</td>
++          <td>{{ row.sources_label }}</td>
++        </tr>
++        {% endfor %}
++      </tbody>
++    </table>
++    {% elif glossary_data.available %}
++    <p class="placeholder">This recording wrote an ASR glossary artifact, but no terms were selected.</p>
++    {% else %}
++    <p class="placeholder">No ASR glossary artifact is available for this recording yet.</p>
++    {% endif %}
++  </div>
++
++{% elif current_tab == 'calendar' %}
++  {% set cal = calendar or {} %}
++
++  <h2>Calendar Match</h2>
++  {% if cal.error_message %}
++  <p style="margin:0 0 10px 0;padding:8px 10px;border:1px solid #f59e0b;background:#fffbeb;color:#92400e">
++    {{ cal.error_message }}
++  </p>
++  {% endif %}
++  {% if cal.warnings %}
++    {% for warning in cal.warnings %}
++  <p style="margin:0 0 10px 0;padding:8px 10px;border:1px solid #f59e0b;background:#fffbeb;color:#92400e">
++    {{ warning }}
++  </p>
++    {% endfor %}
++  {% endif %}
++
++  <div class="section" style="margin-top:10px">
++    <h3 style="margin-top:0">Selected Event</h3>
++    {% if cal.selected %}
++    <div style="border:1px solid #d5d9e6;background:#f8f9ff;padding:10px;border-radius:6px">
++      <div><strong>{{ cal.selected.subject_display }}</strong></div>
++      <div style="margin-top:4px;color:#555">{{ cal.selected.starts_at_display }} → {{ cal.selected.ends_at_display }}</div>
++      <div style="margin-top:4px">Source: {{ cal.selected.source_label }}</div>
++      <div style="margin-top:4px">Confidence: {{ cal.selected.confidence_display }}</div>
++      <div style="margin-top:4px">Organizer: {{ cal.selected.organizer_display }}</div>
++      <div style="margin-top:4px">Attendees: {{ cal.selected.attendees_label }}</div>
++      {% if cal.selected.rationale_rows %}
++      <ul style="margin:8px 0 0 18px">
++        {% for reason in cal.selected.rationale_rows %}
++        <li>{{ reason }}</li>
++        {% endfor %}
++      </ul>
++      {% endif %}
++      <form method="post" action="/ui/recordings/{{ rec.id }}/calendar/select{{ recording_inspector.embedded_return_queries.calendar }}" style="margin-top:8px">
++        <button type="submit" class="btn">Clear selection</button>
++      </form>
++    </div>
++    {% else %}
++    <p class="placeholder">No calendar event is currently selected for this recording.</p>
++    {% endif %}
++  </div>
++
++  <div class="section" style="margin-top:10px">
++    <h3 style="margin-top:0">Candidates</h3>
++    {% if cal.candidates %}
++    <table>
++      <thead>
++        <tr>
++          <th>Event</th>
++          <th>When</th>
++          <th>Source</th>
++          <th>Confidence</th>
++          <th>Attendees</th>
++          <th>Rationale</th>
++          <th>Action</th>
++        </tr>
++      </thead>
++      <tbody>
++        {% for candidate in cal.candidates %}
++        <tr>
++          <td style="white-space:normal;max-width:220px">
++            <div><strong>{{ candidate.subject_display }}</strong></div>
++            <div style="margin-top:4px;color:#555">Organizer: {{ candidate.organizer_display }}</div>
++          </td>
++          <td>{{ candidate.starts_at_display }} → {{ candidate.ends_at_display }}</td>
++          <td>{{ candidate.source_label }}</td>
++          <td>
++            {{ candidate.confidence_display }}
++            {% if candidate.selected %}
++            <div style="margin-top:4px"><span class="badge s-Ready">Selected</span></div>
++            {% endif %}
++          </td>
++          <td title="{{ candidate.attendees_label }}">{{ candidate.attendees_label }}</td>
++          <td style="white-space:normal;max-width:320px">
++            {% if candidate.rationale_rows %}
++              {% for reason in candidate.rationale_rows %}
++              <div>{{ reason }}</div>
++              {% endfor %}
++            {% else %}
++            —
++            {% endif %}
++          </td>
++          <td>
++            {% if candidate.selected %}
++            <span class="placeholder" style="padding:0">Current</span>
++            {% else %}
++            <form method="post" action="/ui/recordings/{{ rec.id }}/calendar/select{{ recording_inspector.embedded_return_queries.calendar }}">
++              <input type="hidden" name="event_id" value="{{ candidate.event_id }}">
++              <button type="submit" class="btn">Choose</button>
++            </form>
++            {% endif %}
++          </td>
++        </tr>
++        {% endfor %}
++      </tbody>
++    </table>
++    {% else %}
++    <p class="placeholder">No calendar candidates are stored for this recording yet.</p>
++    {% endif %}
++  </div>
++
++{% elif current_tab == 'project' %}
++  {% set prj = project or {} %}
++  {% set project_items = prj.projects or [] %}
++
++  <h2>Project Assignment</h2>
++  <div class="info-grid">
++    <span class="k">Current project</span><span class="v">{{ prj.selected_project_name or (prj.selected_project_id and ('#' ~ prj.selected_project_id)) or 'Unassigned' }}</span>
++    <span class="k">Suggested project</span><span class="v">{{ prj.suggested_project_name or (prj.suggested_project_id and ('#' ~ prj.suggested_project_id)) or '—' }}</span>
++    <span class="k">Confidence</span><span class="v">{{ '%.2f'|format(prj.confidence or 0.0) }}</span>
++    <span class="k">Auto-select threshold</span><span class="v">{{ '%.2f'|format(prj.threshold or 0.0) }}</span>
++    <span class="k">Training examples (total)</span><span class="v">{{ prj.training_examples_total or 0 }}</span>
++    <span class="k">Training examples (this project)</span><span class="v">{{ prj.training_examples_selected_project or 0 }}</span>
++  </div>
++
++  {% if (prj.confidence or 0.0) < (prj.threshold or 0.0) %}
++  <p style="margin-top:8px;color:#92400e">
++    Confidence is below threshold; this recording should remain in manual review.
++  </p>
++  {% endif %}
++
++  <form method="post" action="/ui/recordings/{{ rec.id }}/project{{ recording_inspector.embedded_return_queries.project }}" style="margin-top:10px">
++    <div class="form-row">
++      <label for="project_id">Project</label>
++      <select id="project_id" name="project_id" style="width:280px">
++        <option value="">Unassigned</option>
++        {% for p in project_items %}
++        <option value="{{ p.id }}" {% if prj.selected_project_id == p.id %}selected{% endif %}>{{ p.name }}</option>
++        {% endfor %}
++      </select>
++    </div>
++    <div class="form-row">
++      <label for="train_routing">Train routing</label>
++      <input id="train_routing" type="checkbox" name="train_routing" value="1" checked>
++      <span style="font-size:12px;color:#555">Store this manual choice as a routing training example.</span>
++    </div>
++    <div class="filters" style="margin-top:8px">
++      <button type="submit" class="btn">Save project</button>
++    </div>
++  </form>
++
++  <h2>Routing Rationale</h2>
++  {% if prj.rationale %}
++  <ul>
++    {% for reason in prj.rationale %}
++    <li>{{ reason }}</li>
++    {% endfor %}
++  </ul>
++  {% else %}
++  <p class="placeholder">No routing rationale available yet.</p>
++  {% endif %}
++
++{% elif current_tab == 'speakers' %}
++  {% set sp = speakers or {} %}
++  {% set rows = sp.speaker_rows or [] %}
++  {% set profiles = sp.voice_profiles or [] %}
++  {% set notices = sp.review_notices or [] %}
++  {% set repair = sp.snippet_repair or {} %}
++
++  <h2>Speaker Assignments</h2>
++  {% if sp.notice_message %}
++  <p style="margin:0 0 10px 0;padding:8px 10px;border:1px solid #86efac;background:#f0fdf4;color:#166534">
++    {{ sp.notice_message }}
++  </p>
++  {% endif %}
++  {% if sp.error_message %}
++  <p style="margin:0 0 10px 0;padding:8px 10px;border:1px solid #f59e0b;background:#fffbeb;color:#92400e">
++    {{ sp.error_message }}
++  </p>
++  {% endif %}
++  {% if repair.detail %}
++  <div style="margin:0 0 10px 0;padding:8px 10px;border:1px solid #ccd;background:#f8f9ff;color:#222">
++    <div style="margin-bottom:{% if repair.available %}8px{% else %}0{% endif %}">
++      {{ repair.detail }}
++    </div>
++    {% if repair.available %}
++    <form method="post" action="/ui/recordings/{{ rec.id }}/speakers/regenerate-snippets{{ recording_inspector.embedded_return_queries.speakers }}">
++      <button class="btn" type="submit">{{ repair.button_label }}</button>
++    </form>
++    {% endif %}
++  </div>
++  {% endif %}
++  {% if notices %}
++    {% for notice in notices %}
++    <p style="margin:0 0 10px 0;padding:8px 10px;border:1px solid #f59e0b;background:#fffbeb;color:#92400e">
++      {{ notice }}
++    </p>
++    {% endfor %}
++  {% endif %}
++  {% if rows %}
++  <table>
++    <thead>
++      <tr>
++        <th>Speaker</th>
++        <th>Turns</th>
++        <th>Duration (s)</th>
++        <th>Preview</th>
++        <th>Current mapping</th>
++        <th>Confidence</th>
++        <th>Snippets</th>
++        <th>Remap</th>
++        <th>Samples</th>
++      </tr>
++    </thead>
++    <tbody>
++      {% for row in rows %}
++      <tr>
++        <td><code>{{ row.speaker }}</code></td>
++        <td>{{ row.turn_count }}</td>
++        <td>{{ '%.2f'|format(row.duration_sec or 0.0) }}</td>
++        <td title="{{ row.preview_text }}" style="white-space:normal;max-width:300px">{{ row.preview_text or '—' }}</td>
++        <td style="white-space:normal;max-width:260px">
++          {% if row.voice_profile_name %}
++          <div><strong>{{ row.voice_profile_name }}</strong></div>
++          <div style="margin-top:4px;color:#555">Displays as {{ row.display_label }} in exports.</div>
++          {% else %}
++          <span class="placeholder" style="padding:0">Leave unmatched</span>
++          {% endif %}
++          {% if row.candidate_matches %}
++          <div style="margin-top:6px;font-size:11px;color:#555">
++            Candidates:
++            {% for candidate in row.candidate_matches %}
++            <span>{{ candidate.display_name }} ({{ '%.2f'|format(candidate.score) }}){% if not loop.last %}, {% endif %}</span>
++            {% endfor %}
++          </div>
++          {% endif %}
++        </td>
++        <td style="white-space:normal;max-width:220px">
++          {% if row.low_confidence %}
++          <span class="badge s-NeedsReview">Low confidence</span>
++          {% elif row.voice_profile_name %}
++          <span class="badge s-Ready">Mapped</span>
++          {% else %}
++          <span class="badge s-Queued">Unmatched</span>
++          {% endif %}
++          <div style="margin-top:4px;color:#555">{{ '%.2f'|format(row.confidence or 0.0) }}</div>
++          {% if row.needs_review and row.assignment_threshold %}
++          <div style="margin-top:4px;font-size:11px;color:#92400e">
++            Below auto-match threshold {{ '%.2f'|format(row.assignment_threshold) }}.
++          </div>
++          {% endif %}
++        </td>
++        <td style="white-space:normal;max-width:320px">
++          {% if row.snippet_ui_state %}
++          <div style="margin:0 0 6px 0;font-size:11px;color:{{ row.snippet_ui_state.color }}">
++            <strong>{{ row.snippet_ui_state.label }}:</strong> {{ row.snippet_ui_state.detail }}
++          </div>
++          {% endif %}
++          {% if row.clean_snippets %}
++            {% for snippet in row.clean_snippets %}
++            <div style="margin-bottom:8px;padding:6px;border:1px solid #ddd;border-radius:6px">
++              <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:4px">
++                {% if snippet.recommended %}
++                <span class="badge s-Ready">Recommended</span>
++                {% else %}
++                <span class="badge s-Published">Clean</span>
++                {% endif %}
++                <span>{{ snippet.clip_label }}</span>
++                <span style="color:#555">from {{ snippet.source_label }}</span>
++                <span style="color:#555">purity {{ snippet.purity_label }}</span>
++              </div>
++              <audio controls preload="none" style="height:26px;max-width:280px">
++                <source src="{{ snippet.audio_url }}" type="audio/wav">
++              </audio>
++            </div>
++            {% endfor %}
++          {% endif %}
++          {% if row.snippet_warnings %}
++            {% for warning in row.snippet_warnings %}
++            <div style="margin-top:4px;font-size:11px;color:#92400e">{{ warning }}</div>
++            {% endfor %}
++          {% endif %}
++        </td>
++        <td style="white-space:normal;max-width:260px">
++          {% if profiles %}
++          <form method="post" action="/ui/recordings/{{ rec.id }}/speakers/assign{{ recording_inspector.embedded_return_queries.speakers }}">
++            <input type="hidden" name="diar_speaker_label" value="{{ row.speaker }}">
++            <select name="voice_profile_id" style="width:180px">
++              <option value="">Leave unmatched</option>
++              {% for vp in profiles %}
++              <option value="{{ vp.id }}" {% if row.voice_profile_id == vp.id %}selected{% endif %}>{{ vp.display_name }}</option>
++              {% endfor %}
++            </select>
++            <button class="btn" type="submit">Save remap</button>
++          </form>
++          {% else %}
++          <span class="placeholder" style="padding:0">No voice profiles yet.</span>
++          {% endif %}
++        </td>
++        <td style="white-space:normal;max-width:260px">
++          {% if profiles %}
++          <form method="post" action="/ui/recordings/{{ rec.id }}/speakers/add-sample{{ recording_inspector.embedded_return_queries.speakers }}">
++            <input type="hidden" name="diar_speaker_label" value="{{ row.speaker }}">
++            <select name="voice_profile_id" style="width:180px">
++              {% for vp in profiles %}
++              <option value="{{ vp.id }}" {% if row.voice_profile_id == vp.id %}selected{% endif %}>{{ vp.display_name }}</option>
++              {% endfor %}
++            </select>
++            <select name="snippet_path" style="width:220px" {% if not row.clean_snippets %}disabled{% endif %}>
++              {% for snippet in row.clean_snippets %}
++              <option value="{{ snippet.relative_path }}" {% if snippet.recommended %}selected{% endif %}>{{ snippet.choice_label }}</option>
++              {% endfor %}
++            </select>
++            <button class="btn" type="submit" {% if not row.clean_snippets %}disabled{% endif %}>Add sample from this recording</button>
++            {% if not row.clean_snippets and row.snippet_ui_state.add_sample_message %}
++            <div style="margin-top:4px;font-size:11px;color:#92400e">{{ row.snippet_ui_state.add_sample_message }}</div>
++            {% elif row.no_clean_snippet_message %}
++            <div style="margin-top:4px;font-size:11px;color:#92400e">{{ row.no_clean_snippet_message }}</div>
++            {% endif %}
++          </form>
++          {% else %}
++          <span class="placeholder" style="padding:0">Create a profile first.</span>
++          {% endif %}
++        </td>
++      </tr>
++      {% endfor %}
++    </tbody>
++  </table>
++  {% else %}
++  <p class="placeholder">No speaker turns available yet. Run diarization first.</p>
++  {% endif %}
++
++  <h2>Create and Assign New Profile</h2>
++  {% if rows %}
++  <form method="post" action="/ui/recordings/{{ rec.id }}/speakers/create-and-assign{{ recording_inspector.embedded_return_queries.speakers }}">
++    <div class="form-row">
++      <label for="diar_speaker_label">Speaker label</label>
++      <select id="diar_speaker_label" name="diar_speaker_label" style="width:180px">
++        {% for row in rows %}
++        <option value="{{ row.speaker }}">{{ row.speaker }}</option>
++        {% endfor %}
++      </select>
++    </div>
++    <div class="form-row">
++      <label for="display_name">Display name</label>
++      <input id="display_name" type="text" name="display_name" maxlength="120" required placeholder="Person name" style="width:260px">
++    </div>
++    <div class="form-row">
++      <label for="notes">Notes</label>
++      <input id="notes" type="text" name="notes" maxlength="240" placeholder="Optional notes" style="width:360px">
++    </div>
++    <div class="form-row">
++      <label></label>
++      <button class="btn" type="submit">Create and assign</button>
++    </div>
++  </form>
++  {% else %}
++  <p class="placeholder">No diarization labels available for assignment.</p>
++  {% endif %}
++
++{% elif current_tab == 'language' %}
++  {% set lang = language or {} %}
++
++  <h2>Detected Languages</h2>
++  <div class="info-grid">
++    <span class="k">Detected language</span><span class="v">{{ lang.detected_label or '—' }}</span>
++    <span class="k">Dominant language</span><span class="v">{{ lang.dominant_label or '—' }}</span>
++    <span class="k">Mixed-language meeting</span><span class="v">{{ 'Yes' if lang.is_mixed else 'No' }}</span>
++    <span class="k">Current summary target</span><span class="v">{{ lang.target_summary_language_label or '—' }}</span>
++    <span class="k">Transcript override</span><span class="v">{{ lang.transcript_language_override_label or '—' }}</span>
++  </div>
++
++  <h2>Language Distribution</h2>
++  {% if lang.distribution %}
++  <table>
++    <thead>
++      <tr>
++        <th>Language</th>
++        <th>Share (%)</th>
++      </tr>
++    </thead>
++    <tbody>
++      {% for row in lang.distribution %}
++      <tr>
++        <td>{{ row.label }}</td>
++        <td>{{ '%.2f'|format(row.percent) }}</td>
++      </tr>
++      {% endfor %}
++    </tbody>
++  </table>
++  {% else %}
++  <p class="placeholder">No language distribution available yet.</p>
++  {% endif %}
++
++  <h2>Language Spans</h2>
++  {% if lang.spans %}
++  <table>
++    <thead>
++      <tr>
++        <th>Start</th>
++        <th>End</th>
++        <th>Language</th>
++      </tr>
++    </thead>
++    <tbody>
++      {% for span in lang.spans %}
++      <tr>
++        <td>{{ '%.3f'|format(span.start) }}</td>
++        <td>{{ '%.3f'|format(span.end) }}</td>
++        <td>{{ span.label }}</td>
++      </tr>
++      {% endfor %}
++    </tbody>
++  </table>
++  {% else %}
++  <p class="placeholder">No language spans available yet.</p>
++  {% endif %}
++
++  <h2>Overrides and Reprocess</h2>
++  <form method="post" action="/ui/recordings/{{ rec.id }}/language/settings{{ recording_inspector.embedded_return_queries.language }}">
++    <div class="form-row">
++      <label for="target_summary_language">target_summary_language</label>
++      <select id="target_summary_language" name="target_summary_language">
++        <option value="" {% if not lang.target_summary_language %}selected{% endif %}>Auto (dominant language)</option>
++        {% for opt in lang.options or [] %}
++        <option value="{{ opt.code }}" {% if lang.target_summary_language == opt.code %}selected{% endif %}>{{ opt.label }}</option>
++        {% endfor %}
++      </select>
++    </div>
++    <div class="form-row">
++      <label for="transcript_language_override">transcript_language_override</label>
++      <select id="transcript_language_override" name="transcript_language_override">
++        <option value="">None (auto detect)</option>
++        {% for opt in lang.options or [] %}
++        <option value="{{ opt.code }}" {% if lang.transcript_language_override == opt.code %}selected{% endif %}>{{ opt.label }}</option>
++        {% endfor %}
++      </select>
++    </div>
++    <div class="filters" style="margin-top:8px">
++      <button type="submit" class="btn">Save overrides</button>
++      <button
++        type="submit"
++        class="btn"
++        formaction="/ui/recordings/{{ rec.id }}/language/resummarize{{ recording_inspector.embedded_return_queries.language }}"
++      >
++        Re-summarize (LLM only)
++      </button>
++      <button
++        type="submit"
++        class="btn btn-danger"
++        formaction="/ui/recordings/{{ rec.id }}/language/retranscribe{{ recording_inspector.embedded_return_queries.log }}"
++        onclick="return confirm('Re-transcribe reruns STT and diarization. Continue?')"
++      >
++        Re-transcribe (STT again)
++      </button>
++    </div>
++  </form>
++
++  {% if lang.summary_preview %}
++  <h2>Latest Summary</h2>
++  <pre style="white-space:pre-wrap;background:#f8f9ff;border:1px solid #ccd;padding:8px;font:12px/1.4 'Courier New',monospace;max-height:240px;overflow:auto">{{ lang.summary_preview }}</pre>
++  {% endif %}
++
++{% elif current_tab == 'metrics' %}
++  {% set summary_data = summary or {} %}
++  {% set metrics_data = metrics or {} %}
++  {% set meeting = metrics_data.meeting or {} %}
++  {% set participants = metrics_data.participants or [] %}
++  {% set questions = summary_data.questions or {} %}
++  {% set question_types = questions.types or {} %}
++
++  <h2>Meeting Metrics</h2>
++  <div class="info-grid">
++    <span class="k">Total speech time</span><span class="v">{{ '%.1f'|format(meeting.total_speech_time_seconds or 0.0) }}s</span>
++    <span class="k">Interruptions</span><span class="v">{{ meeting.total_interruptions or 0 }}</span>
++    <span class="k">Questions</span><span class="v">{{ meeting.total_questions or 0 }}</span>
++    <span class="k">Decisions</span><span class="v">{{ meeting.decisions_count or 0 }}</span>
++    <span class="k">Action items</span><span class="v">{{ meeting.action_items_count or 0 }}</span>
++    <span class="k">Actionability</span><span class="v">{{ '%.1f'|format((meeting.actionability_ratio or 0.0) * 100.0) }}%</span>
++    <span class="k">Emotional summary</span><span class="v">{{ meeting.emotional_summary or '—' }}</span>
++  </div>
++
++  <h2>Participants</h2>
++  {% if participants %}
++  <table>
++    <thead>
++      <tr>
++        <th>Speaker</th>
++        <th>Airtime (s)</th>
++        <th>Share (%)</th>
++        <th>Turns</th>
++        <th>Interruptions done</th>
++        <th>Interruptions received</th>
++        <th>Questions</th>
++        <th>Role</th>
++      </tr>
++    </thead>
++    <tbody>
++      {% for row in participants %}
++      <tr>
++        <td>{{ row.speaker }}</td>
++        <td>{{ '%.2f'|format(row.airtime_seconds or 0.0) }}</td>
++        <td>{{ '%.2f'|format((row.airtime_share or 0.0) * 100.0) }}</td>
++        <td>{{ row.turns or 0 }}</td>
++        <td>{{ row.interruptions_done or 0 }}</td>
++        <td>{{ row.interruptions_received or 0 }}</td>
++        <td>{{ row.questions_count or 0 }}</td>
++        <td>{{ row.role_hint or '—' }}</td>
++      </tr>
++      {% endfor %}
++    </tbody>
++  </table>
++  {% else %}
++  <p class="placeholder">No participant metrics available yet.</p>
++  {% endif %}
++
++  <h2>Decisions</h2>
++  {% if summary_data.decisions %}
++  <ul>
++    {% for decision in summary_data.decisions %}
++    <li>{{ decision }}</li>
++    {% endfor %}
++  </ul>
++  {% else %}
++  <p class="placeholder">No decisions extracted.</p>
++  {% endif %}
++
++  <h2>Action Items</h2>
++  {% if summary_data.action_items %}
++  <table>
++    <thead>
++      <tr>
++        <th>Task</th>
++        <th>Owner</th>
++        <th>Deadline</th>
++        <th>Confidence</th>
++      </tr>
++    </thead>
++    <tbody>
++      {% for item in summary_data.action_items %}
++      <tr>
++        <td>{{ item.task }}</td>
++        <td>{{ item.owner or '—' }}</td>
++        <td>{{ item.deadline or '—' }}</td>
++        <td>{{ '%.2f'|format(item.confidence or 0.0) }}</td>
++      </tr>
++      {% endfor %}
++    </tbody>
++  </table>
++  {% else %}
++  <p class="placeholder">No action items extracted.</p>
++  {% endif %}
++
++  <h2>Questions</h2>
++  <div class="info-grid">
++    <span class="k">Total</span><span class="v">{{ questions.total_count or 0 }}</span>
++    <span class="k">Open</span><span class="v">{{ question_types.open or 0 }}</span>
++    <span class="k">Yes/No</span><span class="v">{{ question_types.yes_no or 0 }}</span>
++    <span class="k">Clarification</span><span class="v">{{ question_types.clarification or 0 }}</span>
++    <span class="k">Status</span><span class="v">{{ question_types.status or 0 }}</span>
++    <span class="k">Decision-seeking</span><span class="v">{{ question_types.decision_seeking or 0 }}</span>
++  </div>
++  {% if questions.extracted %}
++  <h3>Extracted Questions</h3>
++  <ul>
++    {% for question in questions.extracted %}
++    <li>{{ question }}</li>
++    {% endfor %}
++  </ul>
++  {% endif %}
++
++{% elif current_tab == 'log' %}
++  {% if jobs %}
++  <table>
++    <thead>
++      <tr>
++        <th>Job ID</th>
++        <th>Type</th>
++        <th>Status</th>
++        <th>Attempt</th>
++        <th>Started</th>
++        <th>Finished</th>
++        <th>Error</th>
++        <th>Action</th>
++      </tr>
++    </thead>
++    <tbody>
++      {% for j in jobs %}
++      <tr>
++        <td title="{{ j.id }}">{{ j.id[:16] }}…</td>
++        <td>{{ j.type }}</td>
++        <td><span class="badge s-{{ j.status }}">{{ j.status }}</span></td>
++        <td>{{ j.attempt }}</td>
++        <td>{{ j.started_at[:19].replace('T',' ') if j.started_at else '—' }}</td>
++        <td>{{ j.finished_at[:19].replace('T',' ') if j.finished_at else '—' }}</td>
++        <td title="{{ j.error or '' }}">{{ (j.error or '')[:40] }}{% if j.error and j.error|length > 40 %}…{% endif %}</td>
++        <td>
++          {% if j.status == 'failed' %}
++          <form method="post" action="/ui/recordings/{{ rec.id }}/jobs/{{ j.id }}/retry{{ recording_inspector.embedded_return_queries.log }}">
++            <button type="submit" class="btn">Retry step</button>
++          </form>
++          {% else %}
++          <span class="placeholder">—</span>
++          {% endif %}
++        </td>
++      </tr>
++      {% endfor %}
++    </tbody>
++  </table>
++  {% else %}
++  <p class="placeholder">No jobs for this recording.</p>
++  {% endif %}
++{% endif %}
+diff --git a/lan_app/templates/partials/recording_inspector_header.html b/lan_app/templates/partials/recording_inspector_header.html
+new file mode 100644
+index 0000000..6737ab3
+--- /dev/null
++++ b/lan_app/templates/partials/recording_inspector_header.html
+@@ -0,0 +1,27 @@
++<div class="control-center-pane-head">
++  <div>
++    {% if recording_inspector.embedded %}
++    <h2 style="margin-top:0">Inspector Pane</h2>
++    <p class="control-center-pane-copy">
++      Review <code>{{ rec.id }}</code> from the Control Center without losing queue context.
++    </p>
++    {% else %}
++    <h1>
++      Recording: <code>{{ rec.id }}</code>
++      &nbsp;<span class="badge s-{{ rec.status }}">{{ rec.status }}</span>
++      {% if rec.status_reason_text_display %}
++      <span style="font-size:14px;color:#92400e">{{ rec.status_reason_text_display }}</span>
++      {% endif %}
++    </h1>
++    {% endif %}
++  </div>
++  {% if recording_inspector.embedded %}
++  <div class="control-center-state-list" style="margin-top:0">
++    <span class="control-center-state-pill">Status: {{ rec.status }}</span>
++    <span class="control-center-state-pill">Tab: {{ current_tab|capitalize }}</span>
++    <span class="control-center-state-pill">Captured: {{ rec.captured_at_display }}</span>
++  </div>
++  {% endif %}
++</div>
++
++{% include "partials/control_center/selected_recording_shell.html" %}
+diff --git a/lan_app/templates/partials/recording_inspector_tabs.html b/lan_app/templates/partials/recording_inspector_tabs.html
+new file mode 100644
+index 0000000..49e1740
+--- /dev/null
++++ b/lan_app/templates/partials/recording_inspector_tabs.html
+@@ -0,0 +1,14 @@
++<div class="tabs">
++  {% for inspector_tab in recording_inspector.tabs %}
++  <a
++    href="{{ inspector_tab.href }}"
++    class="tab {% if inspector_tab.active %}active{% endif %}"
++    {% if inspector_tab.hx_get %}
++    hx-get="{{ inspector_tab.hx_get }}"
++    hx-target="{{ inspector_tab.hx_target }}"
++    hx-swap="{{ inspector_tab.hx_swap }}"
++    hx-push-url="{{ inspector_tab.hx_push_url }}"
++    {% endif %}
++  >{{ inspector_tab.label }}</a>
++  {% endfor %}
++</div>

@@ -93,7 +93,7 @@ def _stop_process(process: subprocess.Popen[str]) -> None:
             process.wait(timeout=5)
 
 
-def test_upload_recordings_detail_and_export_zip_smoke(tmp_path: Path) -> None:
+def test_control_center_embedded_inspector_and_export_zip_smoke(tmp_path: Path) -> None:
     deadline = time.monotonic() + 120
     base_port = _find_free_port()
     base_url = f"http://127.0.0.1:{base_port}"
@@ -173,7 +173,7 @@ def test_upload_recordings_detail_and_export_zip_smoke(tmp_path: Path) -> None:
                     timeout=_remaining_timeout_ms(deadline),
                 )
                 page.wait_for_selector(
-                    f"#control-center-recordings-panel a[href='/recordings/{recording_id}']",
+                    "#control-center-recordings-panel a[href^='/?selected=']",
                     state="visible",
                     timeout=_remaining_timeout_ms(deadline),
                 )
@@ -184,42 +184,76 @@ def test_upload_recordings_detail_and_export_zip_smoke(tmp_path: Path) -> None:
                     timeout=_remaining_timeout_ms(deadline),
                 )
 
-                page.goto(
-                    f"{base_url}/recordings",
-                    wait_until="networkidle",
+                page.click(
+                    f"#control-center-recordings-panel a[href='/?selected={recording_id}']",
+                    timeout=_remaining_timeout_ms(deadline),
+                )
+                page.wait_for_url(
+                    f"{base_url}/?selected={recording_id}",
                     timeout=_remaining_timeout_ms(deadline),
                 )
                 page.wait_for_selector(
-                    f"a[href='/recordings/{recording_id}']",
+                    "#control-center-inspector-pane",
                     state="visible",
                     timeout=_remaining_timeout_ms(deadline),
                 )
                 page.wait_for_selector(
-                    f"text={wav_path.name}",
+                    "#control-center-inspector-pane a:has-text('Open full-page recording')",
                     state="visible",
+                    timeout=_remaining_timeout_ms(deadline),
+                )
+
+                page.click(
+                    "#control-center-inspector-pane a:has-text('Speakers')",
+                    timeout=_remaining_timeout_ms(deadline),
+                )
+                page.wait_for_url(
+                    f"{base_url}/?selected={recording_id}&tab=speakers",
                     timeout=_remaining_timeout_ms(deadline),
                 )
                 page.click(
-                    f"a[href='/recordings/{recording_id}']",
+                    "#control-center-inspector-pane a:has-text('Log')",
+                    timeout=_remaining_timeout_ms(deadline),
+                )
+                page.wait_for_url(
+                    f"{base_url}/?selected={recording_id}&tab=log",
+                    timeout=_remaining_timeout_ms(deadline),
+                )
+                page.click(
+                    "#control-center-inspector-pane a:has-text('Overview')",
+                    timeout=_remaining_timeout_ms(deadline),
+                )
+                page.wait_for_url(
+                    f"{base_url}/?selected={recording_id}",
+                    timeout=_remaining_timeout_ms(deadline),
+                )
+
+                page.wait_for_selector(
+                    "#control-center-inspector-pane a:has-text('Download ZIP')",
+                    state="visible",
+                    timeout=_remaining_timeout_ms(deadline),
+                )
+                with page.expect_download(timeout=_remaining_timeout_ms(deadline)) as download_info:
+                    page.click(
+                        "#control-center-inspector-pane a:has-text('Download ZIP')",
+                        timeout=_remaining_timeout_ms(deadline),
+                    )
+                download = download_info.value
+                download.save_as(str(zip_download_path))
+
+                page.click(
+                    "#control-center-inspector-pane a:has-text('Open full-page recording')",
                     timeout=_remaining_timeout_ms(deadline),
                 )
                 page.wait_for_url(
                     f"{base_url}/recordings/{recording_id}",
                     timeout=_remaining_timeout_ms(deadline),
                 )
-
                 page.wait_for_selector(
                     "a:has-text('Download ZIP')",
                     state="visible",
                     timeout=_remaining_timeout_ms(deadline),
                 )
-                with page.expect_download(timeout=_remaining_timeout_ms(deadline)) as download_info:
-                    page.click(
-                        "a:has-text('Download ZIP')",
-                        timeout=_remaining_timeout_ms(deadline),
-                    )
-                download = download_info.value
-                download.save_as(str(zip_download_path))
             finally:
                 context.close()
                 browser.close()

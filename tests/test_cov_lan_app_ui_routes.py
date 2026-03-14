@@ -9,6 +9,7 @@ from typing import Any
 
 from fastapi.testclient import TestClient
 import pytest
+from starlette.requests import Request
 
 from lan_app import api, ui_routes
 from lan_app.calendar.service import CalendarSyncError
@@ -156,6 +157,15 @@ def test_control_center_helper_contexts_cover_fragment_builders(
         selected="rec helper",
         offset=25,
     ) == "/?selected=rec+helper&limit=25&offset=25"
+    assert ui_routes._control_center_shell_href(  # noqa: SLF001
+        selected="rec-helper-1",
+        calendar_error="calendar drift",
+        speakers_notice="snippets fixed",
+        speakers_error="speaker mismatch",
+    ) == (
+        "/?selected=rec-helper-1&calendar_error=calendar+drift&"
+        "speakers_notice=snippets+fixed&speakers_error=speaker+mismatch"
+    )
     assert ui_routes._control_center_recordings_panel_url(  # noqa: SLF001
         selected="rec-helper-1",
         status_filter="Ready",
@@ -167,6 +177,39 @@ def test_control_center_helper_contexts_cover_fragment_builders(
         "/ui/control-center/recordings/panel?"
         "selected=rec-helper-1&status=Ready&q=demo&tab=log&limit=25&offset=2"
     )
+    assert ui_routes._control_center_inspector_path(  # noqa: SLF001
+        "rec helper",
+        status_filter="Ready",
+        search_query="demo",
+        tab="mystery",
+        limit=25,
+        offset=2,
+    ) == "/ui/recordings/rec%20helper/inspector?status=Ready&q=demo&limit=25&offset=2"
+    assert ui_routes._control_center_return_query(  # noqa: SLF001
+        status_filter="Ready",
+        search_query="demo",
+        return_tab="mystery",
+        limit=25,
+        offset=2,
+    ) == "?return_to=control-center&return_tab=overview&status=Ready&q=demo&limit=25&offset=2"
+    assert ui_routes._recording_inspector_return_path(  # noqa: SLF001
+        "rec-helper-1",
+        return_tab="mystery",
+    ) == "/recordings/rec-helper-1"
+    assert ui_routes._recording_inspector_return_path(  # noqa: SLF001
+        "rec-helper-1",
+        return_tab="overview",
+        calendar_error="calendar drift",
+    ) == "/recordings/rec-helper-1?calendar_error=calendar+drift"
+    assert ui_routes._recording_inspector_return_path(  # noqa: SLF001
+        "rec-helper-1",
+        return_to="control-center",
+        return_tab="speakers",
+        status="Ready",
+        q="helper",
+        limit=25,
+        offset=2,
+    ) == "/?selected=rec-helper-1&status=Ready&q=helper&tab=speakers&limit=25&offset=2"
 
     monkeypatch.setattr(
         ui_routes,
@@ -598,9 +641,10 @@ def test_ui_action_stop_helper_edge_paths(
 ) -> None:
     cfg = _cfg(tmp_path)
     monkeypatch.setattr(ui_routes, "_settings", cfg)
+    request = Request({"type": "http", "method": "POST", "path": "/", "headers": []})
 
     monkeypatch.setattr(ui_routes, "get_recording", lambda *_a, **_k: None)
-    missing = asyncio.run(ui_routes.ui_action_stop("rec-missing", tab="overview"))
+    missing = asyncio.run(ui_routes.ui_action_stop("rec-missing", request=request, tab="overview"))
     assert missing.status_code == 404
     assert missing.body.decode("utf-8") == "Not found"
 
@@ -609,7 +653,9 @@ def test_ui_action_stop_helper_edge_paths(
         "get_recording",
         lambda *_a, **_k: {"id": "rec-ready", "status": RECORDING_STATUS_READY},
     )
-    not_eligible = asyncio.run(ui_routes.ui_action_stop("rec-ready", tab="calendar"))
+    not_eligible = asyncio.run(
+        ui_routes.ui_action_stop("rec-ready", request=request, tab="calendar")
+    )
     assert not_eligible.status_code == 303
     assert not_eligible.headers["location"] == "/recordings/rec-ready?tab=calendar"
 
@@ -624,7 +670,9 @@ def test_ui_action_stop_helper_edge_paths(
         "purge_pending_recording_jobs",
         lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("queue unavailable")),
     )
-    queue_error = asyncio.run(ui_routes.ui_action_stop("rec-queued", tab="overview"))
+    queue_error = asyncio.run(
+        ui_routes.ui_action_stop("rec-queued", request=request, tab="overview")
+    )
     assert queue_error.status_code == 503
     assert queue_error.body.decode("utf-8") == "Stop failed (queue unavailable): queue unavailable"
 
@@ -650,7 +698,9 @@ def test_ui_action_stop_helper_edge_paths(
         lambda *_a, **_k: calls.append("status") or True,
     )
     monkeypatch.setattr(ui_routes, "clear_recording_progress", lambda *_a, **_k: calls.append("clear") or True)
-    acknowledged = asyncio.run(ui_routes.ui_action_stop("rec-stopping", tab="overview"))
+    acknowledged = asyncio.run(
+        ui_routes.ui_action_stop("rec-stopping", request=request, tab="overview")
+    )
     assert acknowledged.status_code == 303
     assert acknowledged.headers["location"] == "/recordings/rec-stopping"
     assert calls == ["status", "ack", "clear"]
@@ -684,10 +734,41 @@ def test_ui_action_stop_helper_edge_paths(
         "clear_recording_progress",
         lambda *_a, **_k: race_calls.append("clear") or True,
     )
-    raced = asyncio.run(ui_routes.ui_action_stop("rec-race", tab="overview"))
+    raced = asyncio.run(ui_routes.ui_action_stop("rec-race", request=request, tab="overview"))
     assert raced.status_code == 303
     assert raced.headers["location"] == "/recordings/rec-race"
     assert race_calls == []
+
+    htmx_request = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/",
+            "headers": [(b"hx-request", b"true")],
+        }
+    )
+    htmx_response = ui_routes._ui_recording_post_response(  # noqa: SLF001
+        htmx_request,
+        return_to="",
+        redirect_to="/recordings/rec-helper-1?tab=log",
+    )
+    assert htmx_response.headers["HX-Redirect"] == "/recordings/rec-helper-1?tab=log"
+
+
+def test_control_center_inspector_routes_handle_missing_selection(client):
+    _cfg_obj, c = client
+
+    page = c.get("/?selected=missing")
+    assert page.status_code == 200
+    assert "Selected recording not found" in page.text
+
+    pane = c.get("/ui/control-center/inspector-pane?selected=missing")
+    assert pane.status_code == 200
+    assert "Selected recording not found" in pane.text
+
+    focused = c.get("/ui/recordings/missing/inspector")
+    assert focused.status_code == 200
+    assert "Selected recording not found" in focused.text
 
 
 def test_load_json_and_chunk_helpers_cover_error_paths(tmp_path: Path) -> None:
