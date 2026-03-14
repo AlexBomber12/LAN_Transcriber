@@ -36,6 +36,7 @@ from lan_app.db import (
     list_voice_samples,
     init_db,
     list_projects,
+    list_recordings,
     list_calendar_sources,
     list_project_keyword_weights,
     replace_calendar_events_for_window,
@@ -396,6 +397,48 @@ def test_control_center_recordings_panel_filters_search_and_actions(
     assert conservative.status_code == 200
     assert "alpha.wav" not in conservative.text
     assert "beta.wav" not in conservative.text
+
+
+def test_control_center_selection_preserves_pagination_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    init_db(cfg)
+    for index in range(26):
+        create_recording(
+            f"rec-cc-page-{index:02d}",
+            source="upload",
+            source_filename=f"page-{index:02d}.wav",
+            status=RECORDING_STATUS_READY,
+            settings=cfg,
+        )
+
+    paged_rows, total = list_recordings(
+        settings=cfg,
+        status=RECORDING_STATUS_READY,
+        limit=25,
+        offset=25,
+    )
+    assert total == 26
+    selected_id = paged_rows[0]["id"]
+
+    c = TestClient(api.app, follow_redirects=True)
+    panel = c.get("/ui/control-center/recordings/panel?status=Ready&limit=25&offset=25&tab=speakers")
+    assert panel.status_code == 200
+    assert panel.headers["HX-Push-Url"] == "/?status=Ready&tab=speakers&limit=25&offset=25"
+    assert (
+        f'href="/?selected={selected_id}&amp;status=Ready&amp;tab=speakers&amp;'
+        "limit=25&amp;offset=25\""
+    ) in panel.text
+
+    selected_page = c.get(f"/?selected={selected_id}&status=Ready&limit=25&offset=25&tab=speakers")
+    assert selected_page.status_code == 200
+    assert f'name="selected" value="{selected_id}"' in selected_page.text
+    assert 'value="25" selected' in selected_page.text
+    assert ">26–26 of 26<" in selected_page.text
 
 
 # ---------------------------------------------------------------------------

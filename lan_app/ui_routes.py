@@ -2119,8 +2119,14 @@ def _control_center_shell_href(
     status_filter: str = "",
     search_query: str = "",
     tab: str = "overview",
+    limit: int | None = None,
+    offset: int | None = None,
 ) -> str:
     params: list[tuple[str, str]] = []
+    safe_limit = max(1, min(limit, 500)) if limit is not None else None
+    safe_offset = max(int(offset or 0), 0)
+    if safe_offset > 0 and safe_limit is None:
+        safe_limit = _CONTROL_CENTER_LIST_LIMIT
     if selected:
         params.append(("selected", selected))
     if status_filter:
@@ -2129,6 +2135,12 @@ def _control_center_shell_href(
         params.append(("q", search_query))
     if tab and tab != "overview":
         params.append(("tab", tab))
+    if safe_limit is not None and (
+        safe_limit != _CONTROL_CENTER_LIST_LIMIT or safe_offset > 0
+    ):
+        params.append(("limit", str(safe_limit)))
+    if safe_offset > 0:
+        params.append(("offset", str(safe_offset)))
     if not params:
         return "/"
     return f"/?{urlencode(params)}"
@@ -2140,11 +2152,15 @@ def _control_center_state_context(
     status: str | None,
     q: str | None,
     tab: str | None,
+    limit: int | None = None,
+    offset: int | None = None,
 ) -> dict[str, Any]:
     selected_id = str(selected or "").strip()
     status_filter = status if status in RECORDING_STATUSES else ""
     search_query = str(q or "").strip()
     current_tab = str(tab or "overview").strip().lower() or "overview"
+    safe_limit = max(1, min(limit or _CONTROL_CENTER_LIST_LIMIT, 500))
+    safe_offset = max(int(offset or 0), 0)
     if current_tab not in _CONTROL_CENTER_TABS:
         current_tab = "overview"
     state_params = {
@@ -2152,6 +2168,8 @@ def _control_center_state_context(
         "status": status_filter,
         "q": search_query,
         "tab": current_tab,
+        "limit": safe_limit,
+        "offset": safe_offset,
     }
     return {
         **state_params,
@@ -2175,6 +2193,8 @@ def _control_center_state_context(
             status_filter=status_filter,
             search_query=search_query,
             tab=current_tab,
+            limit=safe_limit,
+            offset=safe_offset,
         ),
         "reset_href": "/",
         "work_pane_url": f"/ui/control-center/work-pane?{urlencode(state_params)}",
@@ -2197,8 +2217,8 @@ def _control_center_work_pane_context(
             settings,
             status=state["status"] or None,
             q=state["q"],
-            limit=_CONTROL_CENTER_LIST_LIMIT,
-            offset=0,
+            limit=state["limit"],
+            offset=state["offset"],
             mode="control_center",
             selected=state["selected"],
             tab=state["tab"],
@@ -2305,6 +2325,7 @@ def _recordings_status_cards_context(
                 status_filter=status,
                 search_query=search_query,
                 tab=tab,
+                limit=limit,
             )
             fragment_href = _control_center_recordings_panel_url(
                 selected=selected,
@@ -2356,7 +2377,7 @@ def _recordings_filters_context(
             else []
         ),
         "reset_href": (
-            _control_center_shell_href(selected=selected, tab=tab)
+            _control_center_shell_href(selected=selected, tab=tab, limit=limit)
             if is_control_center
             else "/recordings"
         ),
@@ -2392,6 +2413,8 @@ def _recordings_table_context(
                         status_filter=status_filter,
                         search_query=search_query,
                         tab=tab,
+                        limit=limit,
+                        offset=offset,
                     )
                     if is_control_center
                     else ""
@@ -2886,6 +2909,8 @@ async def ui_dashboard(
     status: str | None = Query(default=None),
     q: str = Query(default=""),
     tab: str = Query(default="overview"),
+    limit: int = Query(default=_CONTROL_CENTER_LIST_LIMIT, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
 ) -> Any:
     dashboard_context = _dashboard_status_context(_settings)
     control_center_state = _control_center_state_context(
@@ -2893,6 +2918,8 @@ async def ui_dashboard(
         status=status,
         q=q,
         tab=tab,
+        limit=limit,
+        offset=offset,
     )
     return templates.TemplateResponse(
         request,
@@ -2942,12 +2969,16 @@ async def ui_control_center_work_pane(
     status: str | None = Query(default=None),
     q: str = Query(default=""),
     tab: str = Query(default="overview"),
+    limit: int = Query(default=_CONTROL_CENTER_LIST_LIMIT, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
 ) -> Any:
     control_center_state = _control_center_state_context(
         selected=selected,
         status=status,
         q=q,
         tab=tab,
+        limit=limit,
+        offset=offset,
     )
     return templates.TemplateResponse(
         request,
@@ -2970,12 +3001,16 @@ async def ui_control_center_inspector_pane(
     status: str | None = Query(default=None),
     q: str = Query(default=""),
     tab: str = Query(default="overview"),
+    limit: int = Query(default=_CONTROL_CENTER_LIST_LIMIT, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
 ) -> Any:
     control_center_state = _control_center_state_context(
         selected=selected,
         status=status,
         q=q,
         tab=tab,
+        limit=limit,
+        offset=offset,
     )
     return templates.TemplateResponse(
         request,
@@ -3108,6 +3143,8 @@ async def ui_control_center_recordings_panel(
         status_filter=panel_context["recordings_filters"]["status_filter"],
         search_query=panel_context["recordings_filters"]["search_query"],
         tab=tab,
+        limit=panel_context["recordings_table"]["limit"],
+        offset=panel_context["recordings_table"]["offset"],
     )
     return response
 

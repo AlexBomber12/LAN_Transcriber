@@ -120,13 +120,19 @@ def test_control_center_helper_contexts_cover_fragment_builders(
         status="Ready",
         q=" helper ",
         tab="speakers",
+        limit=100,
+        offset=25,
     )
     assert state["selected"] == "rec-helper-1"
     assert state["status"] == "Ready"
     assert state["q"] == "helper"
     assert state["tab"] == "speakers"
+    assert state["limit"] == 100
+    assert state["offset"] == 25
     assert state["selected_detail_href"] == "/recordings/rec-helper-1?tab=speakers"
     assert "status=Ready" in state["work_pane_url"]
+    assert "limit=100" in state["work_pane_url"]
+    assert "offset=25" in state["clear_selection_href"]
 
     fallback_state = ui_routes._control_center_state_context(  # noqa: SLF001
         selected=None,
@@ -143,7 +149,13 @@ def test_control_center_helper_contexts_cover_fragment_builders(
         status_filter="Ready",
         search_query="demo",
         tab="log",
-    ) == "/?selected=rec+helper&status=Ready&q=demo&tab=log"
+        limit=100,
+        offset=25,
+    ) == "/?selected=rec+helper&status=Ready&q=demo&tab=log&limit=100&offset=25"
+    assert ui_routes._control_center_shell_href(  # noqa: SLF001
+        selected="rec helper",
+        offset=25,
+    ) == "/?selected=rec+helper&limit=25&offset=25"
     assert ui_routes._control_center_recordings_panel_url(  # noqa: SLF001
         selected="rec-helper-1",
         status_filter="Ready",
@@ -196,6 +208,7 @@ def test_control_center_helper_contexts_cover_fragment_builders(
     )
     assert work_pane["recordings_panel"]["panel_id"] == "control-center-recordings-panel"
     assert "without switching away" in work_pane["preview_message"]
+    assert work_pane["recordings_panel"]["recordings_filters"]["limit"] == 100
 
     filters = ui_routes._recordings_filters_context(  # noqa: SLF001
         mode="control_center",
@@ -223,7 +236,7 @@ def test_control_center_helper_contexts_cover_fragment_builders(
     assert table["has_next"] is True
     assert table["next_hx_get"].endswith("limit=2&offset=2")
     assert table["rows"][0]["select_href"] == (
-        "/?selected=rec-helper-1&status=Ready&q=helper&tab=speakers"
+        "/?selected=rec-helper-1&status=Ready&q=helper&tab=speakers&limit=2"
     )
     assert table["rows"][0]["selected"] is True
 
