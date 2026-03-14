@@ -530,7 +530,7 @@ Queue (in order)
 - Depends on: PR-UI-CONTROL-CENTER-01
 
 106) PR-UI-CONTROL-CENTER-03: Unify Upload + status filters + live Recordings list in the Control Center left pane
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-UI-CONTROL-CENTER-03.md
 - Depends on: PR-UI-CONTROL-CENTER-02 and PR-UI-UPLOAD-02 and PR-UI-PROGRESS-02
 

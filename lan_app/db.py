@@ -216,6 +216,12 @@ def _as_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
     return out
 
 
+def _sqlite_casefold(value: Any) -> str:
+    if value is None:
+        return ""
+    return str(value).casefold()
+
+
 def _validate_recording_status(status: str) -> None:
     if status not in RECORDING_STATUSES:
         raise ValueError(f"Unsupported recording status: {status}")
@@ -549,6 +555,7 @@ def connect_db(
     db_file.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(db_file, timeout=timeout)
     conn.row_factory = sqlite3.Row
+    conn.create_function("CASEFOLD", 1, _sqlite_casefold, deterministic=True)
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA synchronous = NORMAL")
@@ -702,10 +709,17 @@ def get_recording(
     return _as_dict(row)
 
 
+def _sqlite_like_query(value: str) -> str:
+    escaped = str(value).strip()
+    escaped = escaped.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{escaped}%"
+
+
 def list_recordings(
     *,
     settings: AppSettings | None = None,
     status: str | None = None,
+    q: str = "",
     limit: int = 50,
     offset: int = 0,
 ) -> tuple[list[dict[str, Any]], int]:
@@ -716,6 +730,16 @@ def list_recordings(
         _validate_recording_status(status)
         filters.append("r.status = ?")
         params.append(status)
+    search_query = str(q or "").strip()
+    if search_query:
+        pattern = _sqlite_like_query(search_query)
+        filters.append(
+            "("
+            "CASEFOLD(r.id) LIKE CASEFOLD(?) ESCAPE '\\' "
+            "OR CASEFOLD(COALESCE(r.source_filename, '')) LIKE CASEFOLD(?) ESCAPE '\\'"
+            ")"
+        )
+        params.extend([pattern, pattern])
 
     where_sql = f"WHERE {' AND '.join(filters)}" if filters else ""
     safe_limit = max(1, min(limit, 500))

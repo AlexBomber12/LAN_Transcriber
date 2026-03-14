@@ -1,729 +1,108 @@
-diff --git a/README.md b/README.md
-index d339d28..684e45c 100644
---- a/README.md
-+++ b/README.md
-@@ -84,6 +84,9 @@ Operational setup, failure handling, backup/restore, and upgrade steps are docum
- 
- ## Workflow (Upload -> Processing -> Export)
- 
-+1. Open `/` for the Control Center shell.
-+   - This is now the primary operator surface: summary strip on top, work-pane preview on the left, inspector shell on the right.
-+   - `/upload`, `/recordings`, and `/recordings/{recording_id}` remain available as direct fallback pages while the 1-page workflow is still being assembled.
- 1. Open `/upload` and add one or more audio files.
- 2. Uploaded audio is normalized automatically to 16 kHz mono WAV before VAD/ASR/diarization (raw upload is preserved; no user conversion needed).
- 3. Mixed-language handling now happens automatically in `LAN_ASR_MULTILINGUAL_MODE=auto`.
-diff --git a/lan_app/templates/base.html b/lan_app/templates/base.html
-index 947e4c0..929ff1a 100644
---- a/lan_app/templates/base.html
-+++ b/lan_app/templates/base.html
-@@ -78,12 +78,27 @@ tr:hover{background:#e8ecf8}
- .modal-context{font-size:12px;color:#555;margin-bottom:10px;white-space:normal;word-break:break-word}
- .modal-error{font-size:12px;color:#b00;min-height:18px;margin-bottom:8px}
- .modal-actions{display:flex;justify-content:flex-end;gap:6px}
-+.control-center-shell{display:grid;gap:12px}
-+.control-center-lede{margin:0 0 12px 0;color:#555;max-width:80ch}
-+.control-center-summary-grid{display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));align-items:start}
-+.control-center-panel,.control-center-pane{background:#fff;border:1px solid #ccc;padding:12px;min-width:0}
-+.control-center-panel .section,.control-center-pane .section{margin-bottom:0}
-+.control-center-main{display:grid;gap:12px;grid-template-columns:minmax(420px,1.15fr) minmax(320px,.85fr);align-items:start}
-+.control-center-pane-head{display:flex;justify-content:space-between;gap:8px;align-items:flex-start;flex-wrap:wrap;margin-bottom:10px}
-+.control-center-pane-copy{color:#555;max-width:62ch}
-+.control-center-state-list{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
-+.control-center-state-pill{display:inline-block;padding:2px 6px;border:1px solid #99b;background:#f8f9ff;font-size:11px}
-+.control-center-preview-note{margin:0 0 10px 0;color:#555}
-+.control-center-row-actions{display:flex;gap:6px;flex-wrap:wrap}
-+@media (max-width: 980px){
-+  .control-center-main{grid-template-columns:1fr}
-+}
- </style>
- </head>
- <body hx-boost="true">
- <nav>
-   <span class="nav-logo">LAN Transcriber</span>
--  <a href="/" {% if active=='dashboard' %}class="active"{% endif %}>Dashboard</a>
-+  <a href="/" {% if active=='dashboard' %}class="active"{% endif %}>Control Center</a>
-   <a href="/upload" {% if active=='upload' %}class="active"{% endif %}>Upload</a>
-   <a href="/recordings" {% if active=='recordings' %}class="active"{% endif %}>Recordings</a>
-   <a href="/calendars" {% if active=='calendars' %}class="active"{% endif %}>Calendars</a>
 diff --git a/lan_app/ui_routes.py b/lan_app/ui_routes.py
-index 2a275c1..ae246cd 100644
+index 901e3e7..7bfd7f4 100644
 --- a/lan_app/ui_routes.py
 +++ b/lan_app/ui_routes.py
-@@ -12,7 +12,7 @@ import logging
- import sqlite3
- from pathlib import Path
- from typing import Any
--from urllib.parse import quote
-+from urllib.parse import quote, urlencode
- from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
- 
- from fastapi import APIRouter, Form, Query, Request
-@@ -158,6 +158,16 @@ _LANGUAGE_NAME_MAP: dict[str, str] = {
- _COMMON_LANGUAGE_CODES = ("en", "es", "fr", "de", "pt", "it", "zh", "ja", "ko", "ru")
- _STUCK_JOB_RECOVERY_ERROR = "stuck job recovered"
- _DISPLAY_TIMEZONE = "Europe/Rome"
-+_CONTROL_CENTER_TABS = (
-+    "overview",
-+    "calendar",
-+    "project",
-+    "speakers",
-+    "language",
-+    "metrics",
-+    "log",
-+)
-+_CONTROL_CENTER_PREVIEW_LIMIT = 8
- _GLOSSARY_KIND_OPTIONS = ("person", "company", "product", "project", "term")
- _GLOSSARY_SOURCE_OPTIONS = (
-     "manual",
-@@ -2103,6 +2113,149 @@ def _dashboard_status_context(settings: AppSettings) -> dict[str, Any]:
-     }
- 
- 
-+def _control_center_shell_href(
-+    *,
-+    selected: str = "",
-+    status_filter: str = "",
-+    search_query: str = "",
-+    tab: str = "overview",
-+) -> str:
-+    params: list[tuple[str, str]] = []
-+    if selected:
-+        params.append(("selected", selected))
-+    if status_filter:
-+        params.append(("status", status_filter))
-+    if search_query:
-+        params.append(("q", search_query))
-+    if tab and tab != "overview":
-+        params.append(("tab", tab))
-+    if not params:
-+        return "/"
-+    return f"/?{urlencode(params)}"
-+
-+
-+def _control_center_state_context(
-+    *,
-+    selected: str | None,
-+    status: str | None,
-+    q: str | None,
-+    tab: str | None,
-+) -> dict[str, Any]:
-+    selected_id = str(selected or "").strip()
-+    status_filter = status if status in RECORDING_STATUSES else ""
-+    search_query = str(q or "").strip()
-+    current_tab = str(tab or "overview").strip().lower() or "overview"
-+    if current_tab not in _CONTROL_CENTER_TABS:
-+        current_tab = "overview"
-+    state_params = {
-+        "selected": selected_id,
-+        "status": status_filter,
-+        "q": search_query,
-+        "tab": current_tab,
-+    }
-+    return {
-+        **state_params,
-+        "tab_label": current_tab.capitalize(),
-+        "tab_options": [
-+            {
-+                "value": value,
-+                "label": value.capitalize(),
-+                "selected": value == current_tab,
-+            }
-+            for value in _CONTROL_CENTER_TABS
-+        ],
-+        "status_options": RECORDING_STATUSES,
-+        "recordings_href": f"/recordings?status={quote(status_filter)}"
-+        if status_filter
-+        else "/recordings",
-+        "selected_detail_href": f"/recordings/{quote(selected_id)}?tab={current_tab}"
-+        if selected_id
-+        else "",
-+        "clear_selection_href": _control_center_shell_href(
-+            status_filter=status_filter,
-+            search_query=search_query,
-+            tab=current_tab,
-+        ),
-+        "reset_href": "/",
-+        "work_pane_url": f"/ui/control-center/work-pane?{urlencode(state_params)}",
-+        "inspector_pane_url": f"/ui/control-center/inspector-pane?{urlencode(state_params)}",
-+    }
-+
-+
-+def _control_center_matches_query(recording: dict[str, Any], search_query: str) -> bool:
-+    needle = search_query.strip().casefold()
-+    if not needle:
-+        return True
-+    searchable_values = (
-+        recording.get("id"),
-+        recording.get("source_filename"),
-+        recording.get("source"),
-+        recording.get("status"),
-+        recording.get("project_name"),
-+        recording.get("suggested_project_name"),
-+    )
-+    return any(needle in str(value or "").casefold() for value in searchable_values)
-+
-+
-+def _control_center_work_pane_context(
-+    settings: AppSettings,
-+    *,
-+    state: dict[str, Any],
-+) -> dict[str, Any]:
-+    items, _ = list_recordings(
-+        settings=settings,
-+        status=state["status"] or None,
-+        limit=_CONTROL_CENTER_PREVIEW_LIMIT * 2,
-+    )
-+    prepared_items = _recordings_list_items_context(items, settings=settings)
-+    rows: list[dict[str, Any]] = []
-+    for item in prepared_items:
-+        if not _control_center_matches_query(item, state["q"]):
-+            continue
-+        recording_id = str(item.get("id") or "").strip()
-+        if not recording_id:
-+            continue
-+        rows.append(
-+            {
-+                **item,
-+                "selected": recording_id == state["selected"],
-+                "select_href": _control_center_shell_href(
-+                    selected=recording_id,
-+                    status_filter=state["status"],
-+                    search_query=state["q"],
-+                    tab=state["tab"],
-+                ),
-+                "detail_href": f"/recordings/{quote(recording_id)}?tab={state['tab']}",
-+            }
-+        )
-+        if len(rows) >= _CONTROL_CENTER_PREVIEW_LIMIT:
-+            break
-+    preview_message = (
-+        "Previewing recent recordings only. The full live operator list arrives in the "
-+        "next Control Center PR."
-+    )
-+    if state["selected"] and not any(row["selected"] for row in rows):
-+        preview_message = (
-+            "Selected recording is outside the current preview set. The inspector pane "
-+            "still keeps the URL state."
-+        )
-+    return {
-+        "rows": rows,
-+        "preview_limit": _CONTROL_CENTER_PREVIEW_LIMIT,
-+        "preview_message": preview_message,
-+    }
-+
-+
-+def _control_center_empty_inspector_context() -> dict[str, str]:
-+    return {
-+        "title": "Select a recording from the left pane",
-+        "message": (
-+            "Use the preview list to pin a recording here, upload a file to begin, or "
-+            "open a full-page recording view if preferred."
-+        ),
-+    }
-+
-+
- def _recordings_list_items_context(
-     items: list[dict[str, Any]],
-     *,
-@@ -2525,14 +2678,32 @@ async def ui_logout() -> Any:
- 
- 
- @ui_router.get("/", response_class=HTMLResponse)
--async def ui_dashboard(request: Request) -> Any:
-+async def ui_dashboard(
-+    request: Request,
-+    selected: str = Query(default=""),
-+    status: str | None = Query(default=None),
-+    q: str = Query(default=""),
-+    tab: str = Query(default="overview"),
-+) -> Any:
-     dashboard_context = _dashboard_status_context(_settings)
-+    control_center_state = _control_center_state_context(
-+        selected=selected,
-+        status=status,
-+        q=q,
-+        tab=tab,
-+    )
-     return templates.TemplateResponse(
-         request,
--        "dashboard.html",
-+        "control_center.html",
-         {
-             "active": "dashboard",
-             **dashboard_context,
-+            "control_center_state": control_center_state,
-+            "control_center_work_pane": _control_center_work_pane_context(
-+                _settings,
-+                state=control_center_state,
-+            ),
-+            "control_center_empty_inspector": _control_center_empty_inspector_context(),
-         },
-     )
- 
-@@ -2561,6 +2732,57 @@ async def ui_control_center_dashboard_jobs_summary(request: Request) -> Any:
-     )
- 
- 
-+@ui_router.get("/ui/control-center/work-pane", response_class=HTMLResponse)
-+async def ui_control_center_work_pane(
-+    request: Request,
-+    selected: str = Query(default=""),
-+    status: str | None = Query(default=None),
-+    q: str = Query(default=""),
-+    tab: str = Query(default="overview"),
-+) -> Any:
-+    control_center_state = _control_center_state_context(
-+        selected=selected,
-+        status=status,
-+        q=q,
-+        tab=tab,
-+    )
-+    return templates.TemplateResponse(
-+        request,
-+        "partials/control_center/work_pane.html",
-+        {
-+            "control_center_state": control_center_state,
-+            "control_center_work_pane": _control_center_work_pane_context(
-+                _settings,
-+                state=control_center_state,
-+            ),
-+        },
-+    )
-+
-+
-+@ui_router.get("/ui/control-center/inspector-pane", response_class=HTMLResponse)
-+async def ui_control_center_inspector_pane(
-+    request: Request,
-+    selected: str = Query(default=""),
-+    status: str | None = Query(default=None),
-+    q: str = Query(default=""),
-+    tab: str = Query(default="overview"),
-+) -> Any:
-+    control_center_state = _control_center_state_context(
-+        selected=selected,
-+        status=status,
-+        q=q,
-+        tab=tab,
-+    )
-+    return templates.TemplateResponse(
-+        request,
-+        "partials/control_center/inspector_pane.html",
-+        {
-+            "control_center_state": control_center_state,
-+            "control_center_empty_inspector": _control_center_empty_inspector_context(),
-+        },
-+    )
-+
-+
- # ---------------------------------------------------------------------------
- # Recordings
- # ---------------------------------------------------------------------------
-diff --git a/tasks/QUEUE.md b/tasks/QUEUE.md
-index 2f0902e..ce4cef1 100644
---- a/tasks/QUEUE.md
-+++ b/tasks/QUEUE.md
-@@ -525,7 +525,7 @@ Queue (in order)
- - Depends on: PR-SNIPPETS-REPAIR-BACKFILL-01 and PR-GLOSSARY-CORRECTIONS-01 and PR-SPEAKER-UX-01
- 
- 105) PR-UI-CONTROL-CENTER-02: Replace the passive dashboard landing page with a real Control Center shell on /
--- Status: TODO
-+- Status: DONE
- - Tasks file: tasks/PR-UI-CONTROL-CENTER-02.md
- - Depends on: PR-UI-CONTROL-CENTER-01
- 
+@@ -2436,17 +2436,39 @@ def _recordings_table_context(
+         "next_offset": next_offset,
+         "has_prev": offset > 0,
+         "has_next": offset + limit < total,
+-        "prev_href": _recordings_page_href(
+-            status_filter=status_filter,
+-            search_query=search_query,
+-            limit=limit,
+-            offset=prev_offset,
++        "prev_href": (
++            _control_center_shell_href(
++                selected=selected,
++                status_filter=status_filter,
++                search_query=search_query,
++                tab=tab,
++                limit=limit,
++                offset=prev_offset,
++            )
++            if is_control_center
++            else _recordings_page_href(
++                status_filter=status_filter,
++                search_query=search_query,
++                limit=limit,
++                offset=prev_offset,
++            )
+         ),
+-        "next_href": _recordings_page_href(
+-            status_filter=status_filter,
+-            search_query=search_query,
+-            limit=limit,
+-            offset=next_offset,
++        "next_href": (
++            _control_center_shell_href(
++                selected=selected,
++                status_filter=status_filter,
++                search_query=search_query,
++                tab=tab,
++                limit=limit,
++                offset=next_offset,
++            )
++            if is_control_center
++            else _recordings_page_href(
++                status_filter=status_filter,
++                search_query=search_query,
++                limit=limit,
++                offset=next_offset,
++            )
+         ),
+         "prev_hx_get": (
+             _control_center_recordings_panel_url(
 diff --git a/tests/test_cov_lan_app_ui_routes.py b/tests/test_cov_lan_app_ui_routes.py
-index 85d9042..d315b8e 100644
+index 6d3d70d..70c6fff 100644
 --- a/tests/test_cov_lan_app_ui_routes.py
 +++ b/tests/test_cov_lan_app_ui_routes.py
-@@ -115,6 +115,44 @@ def test_control_center_helper_contexts_cover_fragment_builders(
-     assert dashboard["jobs_summary_strip"]["counts"] == {"queued": 2}
-     assert dashboard["recent"] == [{"id": "rec-helper-1"}]
+@@ -234,12 +234,29 @@ def test_control_center_helper_contexts_cover_fragment_builders(
+     )
+     assert table["has_prev"] is False
+     assert table["has_next"] is True
++    assert table["next_href"] == "/?selected=rec-helper-1&status=Ready&q=helper&tab=speakers&limit=2&offset=2"
+     assert table["next_hx_get"].endswith("limit=2&offset=2")
+     assert table["rows"][0]["select_href"] == (
+         "/?selected=rec-helper-1&status=Ready&q=helper&tab=speakers&limit=2"
+     )
+     assert table["rows"][0]["selected"] is True
  
-+    state = ui_routes._control_center_state_context(  # noqa: SLF001
-+        selected=" rec-helper-1 ",
-+        status="Ready",
-+        q=" helper ",
++    paged_table = ui_routes._recordings_table_context(  # noqa: SLF001
++        mode="control_center",
++        selected="rec-helper-1",
++        items=[{"id": "rec-helper-2"}],
++        total=5,
++        limit=2,
++        offset=2,
++        status_filter="Ready",
++        search_query="helper",
 +        tab="speakers",
 +    )
-+    assert state["selected"] == "rec-helper-1"
-+    assert state["status"] == "Ready"
-+    assert state["q"] == "helper"
-+    assert state["tab"] == "speakers"
-+    assert state["selected_detail_href"] == "/recordings/rec-helper-1?tab=speakers"
-+    assert "status=Ready" in state["work_pane_url"]
-+
-+    fallback_state = ui_routes._control_center_state_context(  # noqa: SLF001
-+        selected=None,
-+        status="unknown",
-+        q=None,
-+        tab="mystery",
-+    )
-+    assert fallback_state["status"] == ""
-+    assert fallback_state["tab"] == "overview"
-+    assert fallback_state["clear_selection_href"] == "/"
-+
-+    assert ui_routes._control_center_shell_href(  # noqa: SLF001
-+        selected="rec helper",
-+        status_filter="Ready",
-+        search_query="demo",
-+        tab="log",
-+    ) == "/?selected=rec+helper&status=Ready&q=demo&tab=log"
-+    assert ui_routes._control_center_matches_query(  # noqa: SLF001
-+        {"id": "rec-helper-1", "source_filename": "meeting.wav", "status": "Ready"},
-+        "meeting",
-+    )
-+    assert not ui_routes._control_center_matches_query(  # noqa: SLF001
-+        {"id": "rec-helper-1", "source_filename": "meeting.wav", "status": "Ready"},
-+        "absent",
++    assert paged_table["prev_href"] == "/?selected=rec-helper-1&status=Ready&q=helper&tab=speakers&limit=2"
++    assert paged_table["next_href"] == (
++        "/?selected=rec-helper-1&status=Ready&q=helper&tab=speakers&limit=2&offset=4"
 +    )
 +
-     monkeypatch.setattr(
-         ui_routes,
-         "_recordings_list_items_context",
-@@ -130,6 +168,43 @@ def test_control_center_helper_contexts_cover_fragment_builders(
-     assert list_context["recordings_filters"]["status_filter"] == "Ready"
-     assert list_context["recordings_table"]["rows"] == [{"id": "rec-helper-1", "status": "Ready"}]
- 
-+    work_pane = ui_routes._control_center_work_pane_context(  # noqa: SLF001
-+        cfg,
-+        state=state,
-+    )
-+    assert work_pane["rows"][0]["selected"] is True
-+    assert work_pane["rows"][0]["detail_href"] == "/recordings/rec-helper-1?tab=speakers"
-+    assert work_pane["preview_limit"] == 8
-+
-+    hidden_selection = ui_routes._control_center_work_pane_context(  # noqa: SLF001
-+        cfg,
-+        state={**state, "selected": "missing"},
-+    )
-+    assert "outside the current preview set" in hidden_selection["preview_message"]
-+
-+    monkeypatch.setattr(
-+        ui_routes,
-+        "_recordings_list_items_context",
-+        lambda items, *, settings: [
-+            {"id": "", "status": "Ready", "source_filename": "match-empty.wav"},
-+            {"id": "skip-me", "status": "Ready", "source_filename": "other.wav"},
-+            *[
-+                {
-+                    "id": f"match-{index}",
-+                    "status": "Ready",
-+                    "source_filename": f"match-{index}.wav",
-+                }
-+                for index in range(10)
-+            ],
-+        ],
-+    )
-+    bounded_work_pane = ui_routes._control_center_work_pane_context(  # noqa: SLF001
-+        cfg,
-+        state={**state, "selected": "", "q": "match"},
-+    )
-+    assert len(bounded_work_pane["rows"]) == 8
-+    assert all(row["id"].startswith("match-") for row in bounded_work_pane["rows"])
-+
-     filters = ui_routes._recordings_filters_context(status_filter="", limit=50)  # noqa: SLF001
-     assert filters["limit_options"] == [25, 50, 100, 200]
-     assert filters["hx_target"] == "body"
-@@ -182,6 +257,9 @@ def test_control_center_helper_contexts_cover_fragment_builders(
-     empty_shell = ui_routes._empty_inspector_shell_context()  # noqa: SLF001
-     assert empty_shell["title"] == "Select a recording"
- 
-+    control_center_empty = ui_routes._control_center_empty_inspector_context()  # noqa: SLF001
-+    assert control_center_empty["title"] == "Select a recording from the left pane"
-+
-     monkeypatch.setattr(
-         ui_routes,
-         "list_glossary_entries",
+     upload_shell = ui_routes._upload_shell_context()  # noqa: SLF001
+     assert upload_shell["file_input_id"] == "file-input"
+     assert upload_shell["empty_row_id"] == "upload-empty"
 diff --git a/tests/test_ui_routes.py b/tests/test_ui_routes.py
-index f37d4df..32791c9 100644
+index 1912a13..8842ce5 100644
 --- a/tests/test_ui_routes.py
 +++ b/tests/test_ui_routes.py
-@@ -274,7 +274,10 @@ def _seed_snippet_repair_artifacts(
- def test_dashboard_empty(client):
-     r = client.get("/")
-     assert r.status_code == 200
--    assert "Dashboard" in r.text
-+    assert "Control Center" in r.text
-+    assert 'id="control-center-work-pane"' in r.text
-+    assert 'id="control-center-inspector-pane"' in r.text
-+    assert "Select a recording from the left pane" in r.text
-     assert "LAN Transcriber" in r.text
+@@ -431,6 +431,7 @@ def test_control_center_selection_preserves_pagination_state(
+     panel = c.get("/ui/control-center/recordings/panel?status=Ready&limit=25&offset=25&tab=speakers")
+     assert panel.status_code == 200
+     assert panel.headers["HX-Push-Url"] == "/?status=Ready&tab=speakers&limit=25&offset=25"
++    assert 'href="/?status=Ready&amp;tab=speakers"' in panel.text
+     assert (
+         f'href="/?selected={selected_id}&amp;status=Ready&amp;tab=speakers&amp;'
+         "limit=25&amp;offset=25\""
+@@ -438,6 +439,7 @@ def test_control_center_selection_preserves_pagination_state(
  
- 
-@@ -289,6 +292,7 @@ def test_dashboard_with_data(tmp_path, monkeypatch):
-     assert r.status_code == 200
-     assert "Recordings by status" in r.text
-     assert "Queue by status" in r.text
-+    assert "Previewing recent recordings only." in r.text
-     assert "rec-dash-1" in r.text or "a.mp3" in r.text
- 
- 
-@@ -306,6 +310,44 @@ def test_dashboard_summary_fragment_endpoints(seeded_client):
-     assert "<nav" not in jobs_summary.text
- 
- 
-+def test_control_center_query_state_and_direct_routes(seeded_client):
-+    r = seeded_client.get("/?selected=rec-ui-1&status=Ready&q=meeting&tab=speakers")
-+    assert r.status_code == 200
-+    assert 'value="meeting"' in r.text
-+    assert 'value="Ready" selected' in r.text
-+    assert 'value="speakers" selected' in r.text
-+    assert 'name="selected" value="rec-ui-1"' in r.text
-+    assert "/recordings/rec-ui-1?tab=speakers" in r.text
-+    assert "Open full-page recording" in r.text
-+
-+    upload = seeded_client.get("/upload")
-+    assert upload.status_code == 200
-+
-+    recordings = seeded_client.get("/recordings")
-+    assert recordings.status_code == 200
-+
-+    detail = seeded_client.get("/recordings/rec-ui-1")
-+    assert detail.status_code == 200
-+    assert "Recording:" in detail.text
-+
-+
-+def test_control_center_pane_fragment_endpoints(seeded_client):
-+    work_pane = seeded_client.get(
-+        "/ui/control-center/work-pane?selected=rec-ui-1&status=Ready&q=meeting&tab=speakers"
-+    )
-+    assert work_pane.status_code == 200
-+    assert "Work Pane" in work_pane.text
-+    assert "meeting.mp3" in work_pane.text
-+    assert "<html" not in work_pane.text
-+
-+    inspector = seeded_client.get("/ui/control-center/inspector-pane?selected=rec-ui-1&tab=speakers")
-+    assert inspector.status_code == 200
-+    assert "Inspector Pane" in inspector.text
-+    assert "rec-ui-1" in inspector.text
-+    assert "Speakers" in inspector.text
-+    assert "<nav" not in inspector.text
-+
-+
- # ---------------------------------------------------------------------------
- # Recordings list
- # ---------------------------------------------------------------------------
-diff --git a/lan_app/templates/control_center.html b/lan_app/templates/control_center.html
-new file mode 100644
-index 0000000..e165def
---- /dev/null
-+++ b/lan_app/templates/control_center.html
-@@ -0,0 +1,82 @@
-+{% extends "base.html" %}
-+{% block title %}Control Center – LAN Transcriber{% endblock %}
-+{% block content %}
-+<h1>Control Center</h1>
-+<p class="control-center-lede">
-+  Primary operator workspace for queue health, selection state, and the upcoming 1-page workflow.
-+</p>
-+
-+<div class="control-center-shell">
-+  <div id="control-center-top-strip" class="control-center-summary-grid">
-+    <div
-+      id="control-center-recordings-summary"
-+      class="control-center-panel"
-+      hx-get="/ui/control-center/dashboard/recordings-summary"
-+      hx-trigger="refresh-control-center-summary from:body"
-+      hx-target="this"
-+      hx-swap="innerHTML"
-+    >
-+      {% set summary_strip = recordings_summary_strip %}
-+      {% include "partials/control_center/status_summary_strip.html" %}
-+    </div>
-+
-+    <div
-+      id="control-center-jobs-summary"
-+      class="control-center-panel"
-+      hx-get="/ui/control-center/dashboard/jobs-summary"
-+      hx-trigger="refresh-control-center-summary from:body"
-+      hx-target="this"
-+      hx-swap="innerHTML"
-+    >
-+      {% set summary_strip = jobs_summary_strip %}
-+      {% include "partials/control_center/status_summary_strip.html" %}
-+    </div>
-+
-+    <section class="control-center-panel">
-+      <div class="section">
-+        <h2>Operator context</h2>
-+        <p class="control-center-pane-copy">
-+          The landing page now keeps selection, filter, search, and tab state in the URL so reloads stay in context.
-+        </p>
-+        <div class="control-center-state-list">
-+          <span class="control-center-state-pill">Status: {{ control_center_state.status or "All" }}</span>
-+          <span class="control-center-state-pill">Search: {{ control_center_state.q or "None" }}</span>
-+          <span class="control-center-state-pill">Tab: {{ control_center_state.tab_label }}</span>
-+          <span class="control-center-state-pill">Selected: {{ control_center_state.selected or "None" }}</span>
-+        </div>
-+        <div class="filters" style="margin:10px 0 0 0">
-+          <a href="/upload" class="btn" style="text-decoration:none">Upload</a>
-+          <a href="{{ control_center_state.recordings_href }}" class="btn" style="text-decoration:none">Open recordings</a>
-+          {% if control_center_state.selected_detail_href %}
-+          <a href="{{ control_center_state.selected_detail_href }}" class="btn" style="text-decoration:none">Open selected page</a>
-+          {% endif %}
-+        </div>
-+      </div>
-+    </section>
-+  </div>
-+
-+  <div class="control-center-main">
-+    <section
-+      id="control-center-work-pane"
-+      class="control-center-pane"
-+      hx-get="{{ control_center_state.work_pane_url }}"
-+      hx-trigger="refresh-control-center-work from:body"
-+      hx-target="this"
-+      hx-swap="innerHTML"
-+    >
-+      {% include "partials/control_center/work_pane.html" %}
-+    </section>
-+
-+    <section
-+      id="control-center-inspector-pane"
-+      class="control-center-pane"
-+      hx-get="{{ control_center_state.inspector_pane_url }}"
-+      hx-trigger="refresh-control-center-inspector from:body"
-+      hx-target="this"
-+      hx-swap="innerHTML"
-+    >
-+      {% include "partials/control_center/inspector_pane.html" %}
-+    </section>
-+  </div>
-+</div>
-+{% endblock %}
-diff --git a/lan_app/templates/partials/control_center/inspector_pane.html b/lan_app/templates/partials/control_center/inspector_pane.html
-new file mode 100644
-index 0000000..bf97413
---- /dev/null
-+++ b/lan_app/templates/partials/control_center/inspector_pane.html
-@@ -0,0 +1,36 @@
-+<div class="control-center-pane-head">
-+  <div>
-+    <h2 style="margin-top:0">Inspector Pane</h2>
-+    <p class="control-center-pane-copy">
-+      The embedded inspector lands in a later PR. This shell already keeps the target recording and tab stable in the URL.
-+    </p>
-+  </div>
-+  <div class="filters" style="margin:0">
-+    <a href="/recordings" class="btn" style="text-decoration:none">Full recordings page</a>
-+  </div>
-+</div>
-+
-+{% if control_center_state.selected %}
-+<div class="section">
-+  <div class="info-grid">
-+    <span class="k">Selected recording</span><span class="v"><code>{{ control_center_state.selected }}</code></span>
-+    <span class="k">Inspector tab</span><span class="v">{{ control_center_state.tab_label }}</span>
-+    <span class="k">Shell state</span><span class="v">Ready for embedded inspector wiring</span>
-+  </div>
-+  <p style="margin:10px 0 0 0;color:#555">
-+    Reload-safe URL state is active. Use the full-page recording view until the embedded inspector arrives.
-+  </p>
-+  <div class="filters" style="margin:10px 0 0 0">
-+    <a href="{{ control_center_state.selected_detail_href }}" class="btn" style="text-decoration:none">Open full-page recording</a>
-+    <a href="{{ control_center_state.clear_selection_href }}" class="btn" style="text-decoration:none">Clear selection</a>
-+    <a href="/upload" class="btn" style="text-decoration:none">Upload file</a>
-+  </div>
-+</div>
-+{% else %}
-+{% set empty_inspector = control_center_empty_inspector %}
-+{% include "partials/control_center/inspector_empty.html" %}
-+<div class="filters" style="margin:10px 0 0 0">
-+  <a href="/upload" class="btn" style="text-decoration:none">Upload file</a>
-+  <a href="/recordings" class="btn" style="text-decoration:none">Open full recordings page</a>
-+</div>
-+{% endif %}
-diff --git a/lan_app/templates/partials/control_center/work_pane.html b/lan_app/templates/partials/control_center/work_pane.html
-new file mode 100644
-index 0000000..bcca7ee
---- /dev/null
-+++ b/lan_app/templates/partials/control_center/work_pane.html
-@@ -0,0 +1,88 @@
-+<div class="control-center-pane-head">
-+  <div>
-+    <h2 style="margin-top:0">Work Pane</h2>
-+    <p class="control-center-pane-copy">
-+      This pane will become the live operator list. For now it previews recent recordings and preserves list state in the URL.
-+    </p>
-+  </div>
-+  <div class="filters" style="margin:0">
-+    <a href="/upload" class="btn" style="text-decoration:none">Upload file</a>
-+    <a href="{{ control_center_state.recordings_href }}" class="btn" style="text-decoration:none">Full list</a>
-+  </div>
-+</div>
-+
-+<form id="control-center-state-form" class="filters" method="get" action="/" hx-boost="false">
-+  <label for="control-center-status">Status:</label>
-+  <select id="control-center-status" name="status">
-+    <option value="">All</option>
-+    {% for status_option in control_center_state.status_options %}
-+    <option value="{{ status_option }}" {% if control_center_state.status == status_option %}selected{% endif %}>{{ status_option }}</option>
-+    {% endfor %}
-+  </select>
-+
-+  <label for="control-center-search">Search:</label>
-+  <input
-+    id="control-center-search"
-+    type="search"
-+    name="q"
-+    value="{{ control_center_state.q }}"
-+    placeholder="ID or filename"
-+  >
-+
-+  <label for="control-center-tab">Inspector tab:</label>
-+  <select id="control-center-tab" name="tab">
-+    {% for tab_option in control_center_state.tab_options %}
-+    <option value="{{ tab_option.value }}" {% if tab_option.selected %}selected{% endif %}>{{ tab_option.label }}</option>
-+    {% endfor %}
-+  </select>
-+
-+  <input type="hidden" name="selected" value="{{ control_center_state.selected }}">
-+  <button class="btn" type="submit">Apply</button>
-+  <a href="{{ control_center_state.reset_href }}" class="btn" style="text-decoration:none">Reset</a>
-+</form>
-+
-+<p class="control-center-preview-note">{{ control_center_work_pane.preview_message }}</p>
-+
-+{% if control_center_work_pane.rows %}
-+<table>
-+  <thead>
-+    <tr>
-+      <th>Pick</th>
-+      <th>Recording</th>
-+      <th>Status</th>
-+      <th>Captured</th>
-+      <th>Open</th>
-+    </tr>
-+  </thead>
-+  <tbody>
-+    {% for row in control_center_work_pane.rows %}
-+    <tr>
-+      <td>
-+        {% if row.selected %}
-+        <span class="badge s-Ready">Selected</span>
-+        {% else %}
-+        <a href="{{ row.select_href }}" class="btn" style="text-decoration:none">Select</a>
-+        {% endif %}
-+      </td>
-+      <td title="{{ row.id }}">
-+        <strong>{{ row.source_filename or row.id }}</strong><br>
-+        <span style="color:#666">{{ row.id }}</span>
-+      </td>
-+      <td><span class="badge s-{{ row.status }}">{{ row.status }}</span></td>
-+      <td>{{ row.captured_at_display }}</td>
-+      <td>
-+        <div class="control-center-row-actions">
-+          <a href="{{ row.detail_href }}" class="btn" style="text-decoration:none">Full page</a>
-+        </div>
-+      </td>
-+    </tr>
-+    {% endfor %}
-+  </tbody>
-+</table>
-+{% else %}
-+<p class="placeholder">No recent recordings match this preview. Upload a file or open the full recordings page.</p>
-+{% endif %}
-+
-+<p class="control-center-preview-note" style="margin-top:10px">
-+  Preview limit: {{ control_center_work_pane.preview_limit }} rows.
-+</p>
+     selected_page = c.get(f"/?selected={selected_id}&status=Ready&limit=25&offset=25&tab=speakers")
+     assert selected_page.status_code == 200
++    assert f'href="/?selected={selected_id}&amp;status=Ready&amp;tab=speakers"' in selected_page.text
+     assert f'name="selected" value="{selected_id}"' in selected_page.text
+     assert 'value="25" selected' in selected_page.text
+     assert ">26–26 of 26<" in selected_page.text

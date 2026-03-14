@@ -49,6 +49,9 @@ tr:hover{background:#e8ecf8}
 .stat-card{background:#fff;border:1px solid #ccc;padding:8px 12px;min-width:80px;cursor:default}
 .stat-card .num{font-size:20px;font-weight:bold;line-height:1.2}
 .stat-card .lbl{font-size:10px;color:#666;text-transform:uppercase;letter-spacing:.5px}
+.stat-card-link{display:block;text-decoration:none;color:inherit;cursor:pointer}
+.stat-card-link:hover{background:#eef2ff;border-color:#8aa1bf}
+.stat-card-active{background:#eef2ff;border-color:#4a6080}
 .section{margin-bottom:16px}
 .tabs{display:flex;gap:2px;border-bottom:2px solid #c0cfe0;margin-bottom:0}
 .tab{padding:4px 12px;border:1px solid #ccc;border-bottom:none;font-size:12px;text-decoration:none;color:#333;background:#e8e8e8}
@@ -128,7 +131,34 @@ tr:hover{background:#e8ecf8}
   </div>
 </div>
 <script>
-var deleteDialogState = {recordingId: '', inFlight: false, returnFocus: null};
+var deleteDialogState = {recordingId: '', inFlight: false, returnFocus: null, returnTo: ''};
+
+function refreshControlCenterPanels(options) {
+  var params = new URLSearchParams(window.location.search || '');
+  if (
+    options &&
+    options.clearSelected &&
+    params.get('selected') === options.clearSelected
+  ) {
+    params.delete('selected');
+    window.location = params.toString() ? ('/?' + params.toString()) : '/';
+    return;
+  }
+  if (!window.htmx || !document.body) {
+    return;
+  }
+  htmx.trigger(document.body, 'refresh-control-center-recordings');
+  htmx.trigger(document.body, 'refresh-control-center-summary');
+  htmx.trigger(document.body, 'refresh-control-center-inspector');
+}
+
+function recordingActionUrl(recordingId, action, returnTo) {
+  var url = '/ui/recordings/' + encodeURIComponent(recordingId) + '/' + action;
+  if (returnTo) {
+    url += '?return_to=' + encodeURIComponent(returnTo);
+  }
+  return url;
+}
 
 function _deleteDialogElements() {
   return {
@@ -155,6 +185,7 @@ function openDeleteDialog(meta) {
   deleteDialogState.recordingId = meta.recordingId;
   deleteDialogState.inFlight = false;
   deleteDialogState.returnFocus = meta.returnFocus || null;
+  deleteDialogState.returnTo = meta.returnTo || '';
   el.context.textContent = _deleteDialogContext(meta);
   el.error.textContent = '';
   el.confirmBtn.disabled = false;
@@ -173,6 +204,7 @@ function closeDeleteDialog() {
   el.backdrop.hidden = true;
   deleteDialogState.recordingId = '';
   deleteDialogState.returnFocus = null;
+  deleteDialogState.returnTo = '';
   if (focusTarget && typeof focusTarget.focus === 'function') {
     focusTarget.focus();
   }
@@ -188,7 +220,7 @@ function confirmDeleteDialog() {
   el.cancelBtn.disabled = true;
   el.confirmBtn.textContent = 'Deleting...';
 
-  fetch('/ui/recordings/' + encodeURIComponent(targetId) + '/delete', {
+  fetch(recordingActionUrl(targetId, 'delete', deleteDialogState.returnTo), {
     method: 'POST',
     headers: {'HX-Request': 'true'}
   })
@@ -200,6 +232,16 @@ function confirmDeleteDialog() {
     .then(function(result) {
       if (!result.resp.ok) {
         throw new Error(result.body || ('Delete failed (' + result.resp.status + ').'));
+      }
+      if (deleteDialogState.returnTo === 'control-center') {
+        var deletedRecordingId = deleteDialogState.recordingId;
+        deleteDialogState.inFlight = false;
+        el.backdrop.hidden = true;
+        deleteDialogState.recordingId = '';
+        deleteDialogState.returnFocus = null;
+        deleteDialogState.returnTo = '';
+        refreshControlCenterPanels({clearSelected: deletedRecordingId});
+        return;
       }
       var redirect = result.resp.headers.get('HX-Redirect');
       if (redirect) {
@@ -229,21 +271,59 @@ if (!window.__deleteDialogEscapeBound) {
   window.__deleteDialogEscapeBound = true;
 }
 
+function postControlCenterAction(sel, action) {
+  var id = sel.dataset.rid;
+  var returnTo = sel.dataset.returnTo || '';
+  if (!id || !returnTo) {
+    return;
+  }
+  sel.disabled = true;
+  fetch(recordingActionUrl(id, action, returnTo), {
+    method: 'POST',
+    headers: {'HX-Request': 'true'}
+  })
+    .then(function(resp) {
+      return resp.text().then(function(body) {
+        return {resp: resp, body: body};
+      });
+    })
+    .then(function(result) {
+      if (!result.resp.ok) {
+        throw new Error(result.body || ('Action failed (' + result.resp.status + ').'));
+      }
+      refreshControlCenterPanels();
+    })
+    .catch(function(err) {
+      window.alert(err && err.message ? err.message : 'Action failed.');
+    })
+    .finally(function() {
+      sel.disabled = false;
+    });
+}
+
 function doRecAction(sel) {
   var act = sel.value;
   var id = sel.dataset.rid;
   sel.value = '';
   if (!act || !id) return;
-  if (act === 'open') { window.location = '/recordings/' + encodeURIComponent(id); return; }
+  if (act === 'open') {
+    window.location = sel.dataset.openHref || ('/recordings/' + encodeURIComponent(id));
+    return;
+  }
   if (act === 'delete') {
     openDeleteDialog({
       recordingId: id,
       recordingLabel: sel.dataset.rlabel || '',
       capturedAt: sel.dataset.rcaptured || '',
+      returnTo: sel.dataset.returnTo || '',
       returnFocus: sel
     });
     return;
   } else if (act === 'quarantine' && !confirm('Quarantine this recording?')) {
+    return;
+  }
+  if (sel.dataset.returnTo === 'control-center') {
+    postControlCenterAction(sel, act);
     return;
   }
   htmx.ajax('POST', '/ui/recordings/' + encodeURIComponent(id) + '/' + act, {swap: 'none'});

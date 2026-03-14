@@ -85,12 +85,22 @@ def test_ui_pages_render_for_new_recording(client: TestClient):
     payload = _upload_recording(client)
     recording_id = str(payload["recording_id"])
 
+    control_center_page = client.get("/")
+    assert control_center_page.status_code == 200
+    assert 'id="file-input"' in control_center_page.text
+    assert 'id="control-center-recordings-panel"' in control_center_page.text
+
+    control_center_panel = client.get("/ui/control-center/recordings/panel")
+    assert control_center_panel.status_code == 200
+    assert recording_id in control_center_panel.text or "meeting-flow.mp3" in control_center_panel.text
+
     upload_page = client.get("/upload")
     assert upload_page.status_code == 200
     assert 'id="file-input"' in upload_page.text
 
     recordings_page = client.get("/recordings")
     assert recordings_page.status_code == 200
+    assert 'id="recordings-page-panel"' in recordings_page.text
     assert recording_id in recordings_page.text or "meeting-flow.mp3" in recordings_page.text
 
     detail_page = client.get(f"/recordings/{recording_id}")

@@ -36,6 +36,7 @@ from lan_app.db import (
     list_voice_samples,
     init_db,
     list_projects,
+    list_recordings,
     list_calendar_sources,
     list_project_keyword_weights,
     replace_calendar_events_for_window,
@@ -277,6 +278,8 @@ def test_dashboard_empty(client):
     assert "Control Center" in r.text
     assert 'id="control-center-work-pane"' in r.text
     assert 'id="control-center-inspector-pane"' in r.text
+    assert 'id="file-input"' in r.text
+    assert 'id="control-center-recordings-panel"' in r.text
     assert "Select a recording from the left pane" in r.text
     assert "LAN Transcriber" in r.text
 
@@ -292,7 +295,7 @@ def test_dashboard_with_data(tmp_path, monkeypatch):
     assert r.status_code == 200
     assert "Recordings by status" in r.text
     assert "Queue by status" in r.text
-    assert "Previewing recent recordings only." in r.text
+    assert "Live recordings queue" in r.text
     assert "rec-dash-1" in r.text or "a.mp3" in r.text
 
 
@@ -315,10 +318,13 @@ def test_control_center_query_state_and_direct_routes(seeded_client):
     assert r.status_code == 200
     assert 'value="meeting"' in r.text
     assert 'value="Ready" selected' in r.text
-    assert 'value="speakers" selected' in r.text
     assert 'name="selected" value="rec-ui-1"' in r.text
+    assert 'name="tab" value="speakers"' in r.text
+    assert 'id="control-center-recordings-panel"' in r.text
     assert "/recordings/rec-ui-1?tab=speakers" in r.text
     assert "Open full-page recording" in r.text
+    assert "htmx.trigger(document.body, 'refresh-control-center-inspector');" in r.text
+    assert "params.delete('selected');" in r.text
 
     upload = seeded_client.get("/upload")
     assert upload.status_code == 200
@@ -337,7 +343,9 @@ def test_control_center_pane_fragment_endpoints(seeded_client):
     )
     assert work_pane.status_code == 200
     assert "Work Pane" in work_pane.text
+    assert "Upload Queue" in work_pane.text
     assert "meeting.mp3" in work_pane.text
+    assert 'id="control-center-recordings-panel"' in work_pane.text
     assert "<html" not in work_pane.text
 
     inspector = seeded_client.get("/ui/control-center/inspector-pane?selected=rec-ui-1&tab=speakers")
@@ -346,6 +354,95 @@ def test_control_center_pane_fragment_endpoints(seeded_client):
     assert "rec-ui-1" in inspector.text
     assert "Speakers" in inspector.text
     assert "<nav" not in inspector.text
+
+
+def test_control_center_recordings_panel_filters_search_and_actions(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    init_db(cfg)
+    create_recording(
+        "rec-cc-panel-1",
+        source="upload",
+        source_filename="alpha.wav",
+        status=RECORDING_STATUS_READY,
+        settings=cfg,
+    )
+    create_recording(
+        "rec-cc-panel-2",
+        source="upload",
+        source_filename="beta.wav",
+        status=RECORDING_STATUS_PROCESSING,
+        settings=cfg,
+    )
+
+    c = TestClient(api.app, follow_redirects=True)
+    panel = c.get("/ui/control-center/recordings/panel?status=Ready&q=alpha&tab=speakers")
+    assert panel.status_code == 200
+    assert 'id="control-center-recordings-panel"' in panel.text
+    assert 'value="alpha"' in panel.text
+    assert 'value="Ready" selected' in panel.text
+    assert "alpha.wav" in panel.text
+    assert "beta.wav" not in panel.text
+    assert 'data-return-to="control-center"' in panel.text
+    assert 'href="/?selected=rec-cc-panel-1&amp;status=Ready&amp;q=alpha&amp;tab=speakers"' in panel.text
+    assert panel.headers["HX-Push-Url"] == "/?status=Ready&q=alpha&tab=speakers"
+
+    selected_panel = c.get("/ui/control-center/recordings/panel?selected=rec-cc-panel-1&tab=speakers")
+    assert selected_panel.status_code == 200
+    assert "Selected" in selected_panel.text
+
+    conservative = c.get("/ui/control-center/recordings/panel?q=upload")
+    assert conservative.status_code == 200
+    assert "alpha.wav" not in conservative.text
+    assert "beta.wav" not in conservative.text
+
+
+def test_control_center_selection_preserves_pagination_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    init_db(cfg)
+    for index in range(26):
+        create_recording(
+            f"rec-cc-page-{index:02d}",
+            source="upload",
+            source_filename=f"page-{index:02d}.wav",
+            status=RECORDING_STATUS_READY,
+            settings=cfg,
+        )
+
+    paged_rows, total = list_recordings(
+        settings=cfg,
+        status=RECORDING_STATUS_READY,
+        limit=25,
+        offset=25,
+    )
+    assert total == 26
+    selected_id = paged_rows[0]["id"]
+
+    c = TestClient(api.app, follow_redirects=True)
+    panel = c.get("/ui/control-center/recordings/panel?status=Ready&limit=25&offset=25&tab=speakers")
+    assert panel.status_code == 200
+    assert panel.headers["HX-Push-Url"] == "/?status=Ready&tab=speakers&limit=25&offset=25"
+    assert 'href="/?status=Ready&amp;tab=speakers"' in panel.text
+    assert (
+        f'href="/?selected={selected_id}&amp;status=Ready&amp;tab=speakers&amp;'
+        "limit=25&amp;offset=25\""
+    ) in panel.text
+
+    selected_page = c.get(f"/?selected={selected_id}&status=Ready&limit=25&offset=25&tab=speakers")
+    assert selected_page.status_code == 200
+    assert f'href="/?selected={selected_id}&amp;status=Ready&amp;tab=speakers"' in selected_page.text
+    assert f'name="selected" value="{selected_id}"' in selected_page.text
+    assert 'value="25" selected' in selected_page.text
+    assert ">26–26 of 26<" in selected_page.text
 
 
 # ---------------------------------------------------------------------------
@@ -363,6 +460,7 @@ def test_recordings_with_data(seeded_client):
     r = seeded_client.get("/recordings")
     assert r.status_code == 200
     assert "meeting.mp3" in r.text
+    assert 'id="recordings-page-panel"' in r.text
     assert "Delete record?" in r.text
     assert 'id="delete-confirm-backdrop"' in r.text
     assert 'data-rlabel="meeting.mp3"' in r.text
@@ -434,17 +532,19 @@ def test_recordings_fragment_endpoints_render_filters_table_and_pagination(
     c = TestClient(api.app, follow_redirects=True)
     filters = c.get("/ui/control-center/recordings/filters?status=Ready&limit=25")
     assert filters.status_code == 200
-    assert '<form class="filters"' in filters.text
-    assert 'hx-get="/recordings"' in filters.text
+    assert 'class="filters"' in filters.text
+    assert 'hx-get="/ui/control-center/recordings/panel"' in filters.text
     assert '<option value="Ready" selected>' in filters.text
+    assert 'placeholder="ID or filename"' in filters.text
     assert "<html" not in filters.text
 
-    table = c.get("/ui/control-center/recordings/table?limit=2&offset=0")
+    table = c.get("/ui/control-center/recordings/table?q=fragment&limit=2&offset=0")
     assert table.status_code == 200
     assert "fragment-a.wav" in table.text
     assert "50%" in table.text
     assert "Next &#187;" in table.text
     assert "Delete" in table.text
+    assert 'data-return-to="control-center"' in table.text
     assert "<nav" not in table.text
 
 
@@ -473,6 +573,29 @@ def test_recordings_status_filter(seeded_client):
     r = seeded_client.get("/recordings?status=Ready")
     assert r.status_code == 200
     assert "meeting.mp3" in r.text
+
+
+def test_recordings_q_search_is_conservative(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    init_db(cfg)
+    create_recording(
+        "rec-ui-search-1",
+        source="upload",
+        source_filename="search-me.wav",
+        status=RECORDING_STATUS_READY,
+        settings=cfg,
+    )
+
+    c = TestClient(api.app, follow_redirects=True)
+    by_filename = c.get("/recordings?q=search-me")
+    assert by_filename.status_code == 200
+    assert "search-me.wav" in by_filename.text
+
+    by_source = c.get("/recordings?q=upload")
+    assert by_source.status_code == 200
+    assert "search-me.wav" not in by_source.text
 
 
 def test_recordings_invalid_status_filter_shows_all(seeded_client):
@@ -2473,6 +2596,12 @@ def test_ui_action_quarantine(seeded_client):
     assert r.status_code == 200
 
 
+def test_ui_action_quarantine_control_center_stays_on_root(seeded_client):
+    r = seeded_client.post("/ui/recordings/rec-ui-1/quarantine?return_to=control-center")
+    assert r.status_code == 200
+    assert "HX-Redirect" not in r.headers
+
+
 def test_ui_action_quarantine_not_found(client):
     r = client.post("/ui/recordings/no-such-rec/quarantine")
     assert r.status_code == 404
@@ -2650,6 +2779,25 @@ def test_ui_action_delete_does_not_require_confirmation(tmp_path, monkeypatch):
     assert get_recording("rec-del-confirm-1", settings=cfg) is None
 
 
+def test_ui_action_delete_control_center_stays_on_root(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    init_db(cfg)
+    create_recording("rec-del-control-center-1", source="drive", source_filename="x.mp3", settings=cfg)
+    monkeypatch.setattr(
+        ui_routes,
+        "purge_pending_recording_jobs",
+        lambda *_args, **_kwargs: 0,
+    )
+
+    c = TestClient(api.app, follow_redirects=False)
+    r = c.post("/ui/recordings/rec-del-control-center-1/delete?return_to=control-center")
+    assert r.status_code == 200
+    assert "HX-Redirect" not in r.headers
+    assert get_recording("rec-del-control-center-1", settings=cfg) is None
+
+
 def test_ui_action_requeue(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
     monkeypatch.setattr(api, "_settings", cfg)
@@ -2680,6 +2828,24 @@ def test_ui_action_requeue(tmp_path, monkeypatch):
         "job_type": JOB_TYPE_PRECHECK,
         "reset_pipeline_state": True,
     }
+
+
+def test_ui_action_requeue_control_center_stays_on_root(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    init_db(cfg)
+    create_recording("rec-rq-control-center-1", source="drive", source_filename="y.mp3", settings=cfg)
+
+    monkeypatch.setattr(
+        ui_routes,
+        "enqueue_recording_job",
+        lambda *_args, **_kwargs: None,
+    )
+    c = TestClient(api.app, follow_redirects=False)
+    r = c.post("/ui/recordings/rec-rq-control-center-1/requeue?return_to=control-center")
+    assert r.status_code == 200
+    assert "HX-Redirect" not in r.headers
 
 
 def test_ui_action_requeue_not_found(client):

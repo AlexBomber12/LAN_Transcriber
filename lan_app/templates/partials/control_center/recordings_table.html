@@ -17,8 +17,25 @@
   <tbody>
     {% for r in recordings_table.rows %}
     <tr>
-      <td title="{{ r.id }}"><a href="/recordings/{{ r.id }}" style="text-decoration:none;color:#1d4ed8">{{ r.id[:16] }}…</a></td>
-      <td title="{{ r.source_filename }}">{{ r.source_filename }}</td>
+      <td title="{{ r.id }}">
+        <a href="{{ r.detail_href }}" style="text-decoration:none;color:#1d4ed8">{{ r.id[:16] }}…</a>
+        {% if r.select_href %}
+        <div style="margin-top:6px">
+          {% if r.selected %}
+          <span class="badge s-Ready">Selected</span>
+          {% else %}
+          <a href="{{ r.select_href }}" class="btn" style="text-decoration:none">Select</a>
+          {% endif %}
+        </div>
+        {% endif %}
+      </td>
+      <td title="{{ r.source_filename }}">
+        {% if r.select_href %}
+        <a href="{{ r.select_href }}" style="text-decoration:none;color:inherit">{{ r.source_filename }}</a>
+        {% else %}
+        {{ r.source_filename }}
+        {% endif %}
+      </td>
       <td>
         <span class="badge s-{{ r.status }}">{{ r.status }}</span>
         {% if r.status_reason_text_display %}
@@ -67,6 +84,8 @@
           data-rid="{{ r.id }}"
           data-rlabel="{{ r.source_filename or r.id }}"
           data-rcaptured="{{ '' if r.captured_at_display == '—' else r.captured_at_display }}"
+          data-open-href="{{ r.detail_href }}"
+          data-return-to="{{ recordings_table.action_return_to }}"
           onchange="doRecAction(this)"
         >
           <option value="">Actions</option>
@@ -83,13 +102,29 @@
 
 <div class="pager">
   {% if recordings_table.has_prev %}
-  <a href="/recordings?status={{ recordings_table.status_filter }}&limit={{ recordings_table.limit }}&offset={{ recordings_table.prev_offset }}">&#171; Prev</a>
+  <a
+    href="{{ recordings_table.prev_href }}"
+    {% if recordings_table.prev_hx_get %}
+    hx-get="{{ recordings_table.prev_hx_get }}"
+    hx-target="{{ recordings_table.hx_target }}"
+    hx-swap="{{ recordings_table.hx_swap }}"
+    {% endif %}
+  >&#171; Prev</a>
   {% endif %}
   <span>{{ recordings_table.offset + 1 }}–{{ [recordings_table.offset + recordings_table.limit, recordings_table.total] | min }} of {{ recordings_table.total }}</span>
   {% if recordings_table.has_next %}
-  <a href="/recordings?status={{ recordings_table.status_filter }}&limit={{ recordings_table.limit }}&offset={{ recordings_table.next_offset }}">Next &#187;</a>
+  <a
+    href="{{ recordings_table.next_href }}"
+    {% if recordings_table.next_hx_get %}
+    hx-get="{{ recordings_table.next_hx_get }}"
+    hx-target="{{ recordings_table.hx_target }}"
+    hx-swap="{{ recordings_table.hx_swap }}"
+    {% endif %}
+  >Next &#187;</a>
   {% endif %}
 </div>
 {% else %}
-<p class="placeholder">No recordings{% if recordings_table.status_filter %} with status <strong>{{ recordings_table.status_filter }}</strong>{% endif %}.</p>
+<p class="placeholder">
+  No recordings{% if recordings_table.status_filter %} with status <strong>{{ recordings_table.status_filter }}</strong>{% endif %}{% if recordings_table.search_query %} matching <strong>{{ recordings_table.search_query }}</strong>{% endif %}.
+</p>
 {% endif %}

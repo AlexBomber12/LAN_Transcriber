@@ -48,12 +48,12 @@ docker compose run --rm api python -m lan_app.healthchecks app
 
 ### 1.2 Upload and export flow
 
-1. Open `/upload` and upload one or more files (UI sends multipart to `POST /api/uploads`).
+1. Open `/` and upload one or more files from the Control Center left pane (fallback: `/upload`). The UI sends multipart uploads to `POST /api/uploads`.
 2. Uploaded audio is normalized automatically to 16 kHz mono WAV before VAD/ASR/diarization; no manual conversion is required.
 3. Mixed-language handling now runs automatically when `LAN_ASR_MULTILINGUAL_MODE=auto`.
    - `derived/transcript.json` can include `language_spans`, multilingual chunk metadata, and multilingual review metadata.
    - If chunk-level language ID stays conflicted or low-confidence, the recording remains in `NeedsReview` with an explicit review reason.
-4. Track upload and processing progress per file on `/upload`.
+4. Track upload and processing progress per file from `/`; the Control Center queue updates as new recordings appear and statuses change. `/upload` remains available as a direct fallback.
 5. Open `/recordings/{recording_id}` for transcript, summary, and export actions.
    - `NeedsReview` recordings show an explicit review reason in the recordings list and detail page.
    - `Stop` on a queued recording removes the queued job immediately and marks the recording `Stopped`.
