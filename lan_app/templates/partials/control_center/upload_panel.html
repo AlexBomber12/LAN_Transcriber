@@ -1,0 +1,34 @@
+<div class="section">
+  <div class="form-row" style="margin-bottom:8px">
+    <label for="{{ upload_shell.file_input_id }}">Files</label>
+    <input type="file" id="{{ upload_shell.file_input_id }}" multiple>
+    <button type="button" class="btn" id="{{ upload_shell.pick_files_button_id }}">Choose files</button>
+  </div>
+  <div
+    id="{{ upload_shell.dropzone_id }}"
+    style="background:#fff;border:2px dashed #99b;padding:14px;max-width:720px;color:#555;user-select:none"
+    tabindex="0"
+  >
+    Drop files here to upload (or use the file picker).
+  </div>
+</div>
+
+<div class="section">
+  <table>
+    <thead>
+      <tr>
+        <th>Filename</th>
+        <th>Size</th>
+        <th>Upload progress</th>
+        <th>Processing progress</th>
+        <th>Status</th>
+        <th>Link</th>
+      </tr>
+    </thead>
+    <tbody id="{{ upload_shell.upload_rows_id }}">
+      <tr id="{{ upload_shell.empty_row_id }}">
+        <td colspan="{{ upload_shell.queue_empty_colspan }}" class="placeholder">No files queued.</td>
+      </tr>
+    </tbody>
+  </table>
+</div>

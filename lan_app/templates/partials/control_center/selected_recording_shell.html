@@ -1,0 +1,7 @@
+{% set inspector_action_bar = selected_recording_shell.action_bar %}
+{% include "partials/control_center/inspector_action_bar.html" %}
+
+{% for notice in selected_recording_shell.notices %}
+  {% set page_notice = notice %}
+  {% include "partials/control_center/page_notice.html" %}
+{% endfor %}

@@ -1,0 +1,32 @@
+<div class="filters" style="margin-bottom:10px">
+  <select
+    class="action-sel"
+    style="font-size:12px"
+    data-rid="{{ inspector_action_bar.rec.id }}"
+    data-rlabel="{{ inspector_action_bar.rec.source_filename or inspector_action_bar.rec.id }}"
+    data-rcaptured="{{ '' if inspector_action_bar.rec.captured_at_display == '—' else inspector_action_bar.rec.captured_at_display }}"
+    onchange="doRecAction(this)"
+  >
+    <option value="">Actions…</option>
+    <option value="requeue">Requeue</option>
+    <option value="quarantine">Quarantine</option>
+    <option value="delete">Delete</option>
+  </select>
+  {% if inspector_action_bar.rec.stop_eligible %}
+    {% if inspector_action_bar.rec.stop_in_progress %}
+    <button type="button" class="btn btn-danger" disabled>Stopping...</button>
+    {% else %}
+    <form
+      method="post"
+      action="/ui/recordings/{{ inspector_action_bar.rec.id }}/stop"
+      style="display:inline"
+      hx-boost="false"
+      onsubmit="return confirm('Stop processing for this recording?')"
+    >
+      <input type="hidden" name="tab" value="{{ inspector_action_bar.current_tab }}">
+      <button type="submit" class="btn btn-danger">Stop</button>
+    </form>
+    {% endif %}
+  {% endif %}
+  <a href="{{ inspector_action_bar.back_href }}" class="btn" style="text-decoration:none">&#8592; Back</a>
+</div>

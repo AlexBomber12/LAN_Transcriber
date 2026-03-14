@@ -4,9 +4,10 @@
 {% set editing = editing_entry or {} %}
 <h1>Glossary</h1>
 
-<p style="margin:0 0 12px 0;color:#555">
-  Manage manual ASR terms and correction memory. Store canonical spellings plus observed wrong variants so future recordings can reuse them without model retraining.
-</p>
+{% set helper_message = {
+  "text": "Manage manual ASR terms and correction memory. Store canonical spellings plus observed wrong variants so future recordings can reuse them without model retraining."
+} %}
+{% include "partials/control_center/helper_message.html" %}
 
 <div class="section">
   <h2>{% if editing %}Edit entry #{{ editing.id }}{% else %}Create glossary entry{% endif %}</h2>

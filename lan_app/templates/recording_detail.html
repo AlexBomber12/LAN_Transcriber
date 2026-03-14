@@ -9,44 +9,7 @@
   {% endif %}
 </h1>
 
-<div class="filters" style="margin-bottom:10px">
-  <select
-    class="action-sel"
-    style="font-size:12px"
-    data-rid="{{ rec.id }}"
-    data-rlabel="{{ rec.source_filename or rec.id }}"
-    data-rcaptured="{{ '' if rec.captured_at_display == '—' else rec.captured_at_display }}"
-    onchange="doRecAction(this)"
-  >
-    <option value="">Actions…</option>
-    <option value="requeue">Requeue</option>
-    <option value="quarantine">Quarantine</option>
-    <option value="delete">Delete</option>
-  </select>
-  {% if rec.stop_eligible %}
-    {% if rec.stop_in_progress %}
-    <button type="button" class="btn btn-danger" disabled>Stopping...</button>
-    {% else %}
-    <form
-      method="post"
-      action="/ui/recordings/{{ rec.id }}/stop"
-      style="display:inline"
-      hx-boost="false"
-      onsubmit="return confirm('Stop processing for this recording?')"
-    >
-      <input type="hidden" name="tab" value="{{ current_tab }}">
-      <button type="submit" class="btn btn-danger">Stop</button>
-    </form>
-    {% endif %}
-  {% endif %}
-  <a href="/recordings" class="btn" style="text-decoration:none">&#8592; Back</a>
-</div>
-
-{% if recovery_warning %}
-<p style="margin:0 0 10px 0;padding:8px 10px;border:1px solid #f59e0b;background:#fffbeb;color:#92400e">
-  {{ recovery_warning }}
-</p>
-{% endif %}
+{% include "partials/control_center/selected_recording_shell.html" %}
 
 {% if rec.status in ['Processing', 'Stopping'] %}
 <div

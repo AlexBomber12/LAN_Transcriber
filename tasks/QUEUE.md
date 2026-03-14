@@ -520,7 +520,7 @@ Queue (in order)
 - Depends on: PR-SNIPPETS-STAGE-REORDER-01 and PR-SNIPPETS-UI-STATE-01
 
 104) PR-UI-CONTROL-CENTER-01: Extract reusable UI partials and HTMX-friendly render paths for the future 1-page Control Center workflow
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-UI-CONTROL-CENTER-01.md
 - Depends on: PR-SNIPPETS-REPAIR-BACKFILL-01 and PR-GLOSSARY-CORRECTIONS-01 and PR-SPEAKER-UX-01
 

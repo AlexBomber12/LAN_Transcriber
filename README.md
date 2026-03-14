@@ -113,6 +113,11 @@ Operational setup, failure handling, backup/restore, and upgrade steps are docum
    - Export content appears automatically once the recording reaches a terminal state; no manual refresh is needed.
 7. Deleting a recording from the UI/API removes the DB row and the recording directory under `/data/recordings/<recording_id>`. If disk cleanup fails, delete returns an error instead of silently succeeding.
 
+## UI composition
+
+- Reusable server-rendered Control Center building blocks live under `lan_app/templates/partials/control_center/`.
+- `lan_app/ui_routes.py` exposes matching context helpers plus fragment endpoints under `/ui/control-center/...`; future 1-page workflow PRs should compose those fragments instead of copying page markup.
+
 ## Speaker bank
 
 - `voice_profiles` now represent canonical speakers: one real person should map to one active record.

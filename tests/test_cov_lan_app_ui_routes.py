@@ -98,6 +98,117 @@ def test_language_and_json_helper_edge_paths() -> None:
     ]
 
 
+def test_control_center_helper_contexts_cover_fragment_builders(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(ui_routes, "_status_counts", lambda settings: {"Ready": 1})
+    monkeypatch.setattr(ui_routes, "_job_counts", lambda settings: {"queued": 2})
+    monkeypatch.setattr(
+        ui_routes,
+        "list_recordings",
+        lambda *, settings, status=None, limit=10, offset=0: ([{"id": "rec-helper-1"}], 3),
+    )
+    dashboard = ui_routes._dashboard_status_context(cfg)  # noqa: SLF001
+    assert dashboard["recordings_summary_strip"]["title"] == "Recordings by status"
+    assert dashboard["jobs_summary_strip"]["counts"] == {"queued": 2}
+    assert dashboard["recent"] == [{"id": "rec-helper-1"}]
+
+    monkeypatch.setattr(
+        ui_routes,
+        "_recordings_list_items_context",
+        lambda items, *, settings: [{"id": item["id"], "status": "Ready"} for item in items],
+    )
+    list_context = ui_routes._recordings_list_context(  # noqa: SLF001
+        cfg,
+        status="Ready",
+        limit=25,
+        offset=0,
+    )
+    assert list_context["total"] == 3
+    assert list_context["recordings_filters"]["status_filter"] == "Ready"
+    assert list_context["recordings_table"]["rows"] == [{"id": "rec-helper-1", "status": "Ready"}]
+
+    filters = ui_routes._recordings_filters_context(status_filter="", limit=50)  # noqa: SLF001
+    assert filters["limit_options"] == [25, 50, 100, 200]
+    assert filters["hx_target"] == "body"
+
+    table = ui_routes._recordings_table_context(  # noqa: SLF001
+        items=[{"id": "rec-helper-1"}],
+        total=3,
+        limit=2,
+        offset=0,
+        status_filter="",
+    )
+    assert table["has_prev"] is False
+    assert table["has_next"] is True
+
+    upload_shell = ui_routes._upload_shell_context()  # noqa: SLF001
+    assert upload_shell["file_input_id"] == "file-input"
+    assert upload_shell["empty_row_id"] == "upload-empty"
+
+    page_notice = ui_routes._page_notice_context("  Recovered from a stuck job.  ")  # noqa: SLF001
+    assert page_notice == {"message": "Recovered from a stuck job."}
+
+    selected_shell = ui_routes._selected_recording_summary_shell_context(  # noqa: SLF001
+        {
+            "id": "rec-helper-1",
+            "source_filename": "meeting.wav",
+            "captured_at_display": "—",
+            "stop_eligible": False,
+            "stop_in_progress": False,
+        },
+        current_tab="overview",
+        recovery_warning=None,
+    )
+    assert selected_shell["notices"] == []
+    assert selected_shell["action_bar"]["current_tab"] == "overview"
+
+    selected_shell_warning = ui_routes._selected_recording_summary_shell_context(  # noqa: SLF001
+        {
+            "id": "rec-helper-2",
+            "source_filename": "meeting.wav",
+            "captured_at_display": "2026-01-10 11:00:00 CET",
+            "stop_eligible": True,
+            "stop_in_progress": True,
+        },
+        current_tab="log",
+        recovery_warning="Recovered from a stuck job.",
+    )
+    assert selected_shell_warning["notices"] == [{"message": "Recovered from a stuck job."}]
+    assert selected_shell_warning["action_bar"]["back_href"] == "/recordings"
+
+    empty_shell = ui_routes._empty_inspector_shell_context()  # noqa: SLF001
+    assert empty_shell["title"] == "Select a recording"
+
+    monkeypatch.setattr(
+        ui_routes,
+        "list_glossary_entries",
+        lambda settings: [
+            {
+                "id": 1,
+                "canonical_text": "Sander",
+                "kind": "person",
+                "aliases_json": ["Sandia"],
+                "source": "speaker_bank",
+            },
+            {
+                "id": 2,
+                "canonical_text": "Roadmap",
+                "kind": "project",
+                "aliases_json": "invalid",
+                "source": None,
+            },
+        ],
+    )
+    glossary_summary = ui_routes._compact_glossary_summary_context(cfg, limit=2)  # noqa: SLF001
+    assert glossary_summary["entry_count"] == 2
+    assert glossary_summary["entries"][0]["aliases"] == ["Sandia"]
+    assert glossary_summary["entries"][1]["aliases"] == []
+    assert glossary_summary["entries"][1]["source_label"] == "manual"
+
+
 def test_display_helpers_cover_timezone_duration_and_prepare_recording(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
