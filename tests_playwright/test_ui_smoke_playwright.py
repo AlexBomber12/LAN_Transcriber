@@ -119,24 +119,28 @@ def _start_redis_for_smoke(*, deadline: float) -> tuple[str, str | None]:
 
     redis_port = _find_free_port()
     container_name = f"lan-transcriber-playwright-redis-{os.getpid()}-{redis_port}"
-    subprocess.run(
-        [
-            "docker",
-            "run",
-            "--detach",
-            "--rm",
-            "--name",
-            container_name,
-            "--publish",
-            f"127.0.0.1:{redis_port}:6379",
-            "redis:7-alpine",
-        ],
-        check=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-    _wait_for_tcp_port(host="127.0.0.1", port=redis_port, deadline=deadline)
+    try:
+        subprocess.run(
+            [
+                "docker",
+                "run",
+                "--detach",
+                "--rm",
+                "--name",
+                container_name,
+                "--publish",
+                f"127.0.0.1:{redis_port}:6379",
+                "redis:7-alpine",
+            ],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        _wait_for_tcp_port(host="127.0.0.1", port=redis_port, deadline=deadline)
+    except (subprocess.CalledProcessError, TimeoutError):
+        _stop_redis_for_smoke(container_name)
+        pytest.skip("Playwright smoke could not start ephemeral Redis via docker")
     return f"redis://127.0.0.1:{redis_port}/14", container_name
 
 
