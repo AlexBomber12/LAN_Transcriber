@@ -16,6 +16,7 @@ from lan_app.constants import (
     RECORDING_STATUS_PUBLISHED,
     RECORDING_STATUS_QUEUED,
     RECORDING_STATUS_QUARANTINE,
+    RECORDING_STATUS_READY,
     RECORDING_STATUS_STOPPING,
 )
 
@@ -79,6 +80,7 @@ def test_db_internal_helpers_and_validation_paths():
         target_profile_id=2,
     ) == [{"voice_profile_id": 2, "score": 0.9}]
     assert db_module._sqlite_like_query(" A_B% ") == r"%a\_b\%%"  # noqa: SLF001
+    assert db_module._sqlite_like_query(" Straße ") == "%straße%"  # noqa: SLF001
 
     with pytest.raises(ValueError, match="Unsupported recording status"):
         db_module._validate_recording_status("bad-status")  # noqa: SLF001
@@ -253,6 +255,13 @@ def test_list_recordings_q_search_is_conservative_and_escaped(tmp_path: Path) ->
         status=RECORDING_STATUS_PUBLISHED,
         settings=cfg,
     )
+    db_module.create_recording(
+        "rec-db-search-3",
+        source="upload",
+        source_filename="Straße.wav",
+        status=RECORDING_STATUS_READY,
+        settings=cfg,
+    )
 
     by_filename, total_by_filename = db_module.list_recordings(
         settings=cfg,
@@ -274,6 +283,20 @@ def test_list_recordings_q_search_is_conservative_and_escaped(tmp_path: Path) ->
     )
     assert total_by_source == 0
     assert by_source == []
+
+    by_unicode_filename, total_by_unicode_filename = db_module.list_recordings(
+        settings=cfg,
+        q="straße",
+    )
+    assert total_by_unicode_filename == 1
+    assert [row["id"] for row in by_unicode_filename] == ["rec-db-search-3"]
+
+    by_unicode_fragment, total_by_unicode_fragment = db_module.list_recordings(
+        settings=cfg,
+        q="ß",
+    )
+    assert total_by_unicode_fragment == 1
+    assert [row["source_filename"] for row in by_unicode_fragment] == ["Straße.wav"]
 
 
 def test_glossary_entry_helpers_cover_crud_and_validation_paths(tmp_path: Path) -> None:

@@ -703,7 +703,8 @@ def get_recording(
 
 
 def _sqlite_like_query(value: str) -> str:
-    escaped = str(value).strip().casefold()
+    # Match SQLite LOWER(...) normalization so non-ASCII searches stay consistent.
+    escaped = str(value).strip().lower()
     escaped = escaped.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
     return f"%{escaped}%"
 

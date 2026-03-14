@@ -1,110 +1,69 @@
-diff --git a/lan_app/templates/partials/control_center/recordings_table.html b/lan_app/templates/partials/control_center/recordings_table.html
-index 6a10eee..24717d2 100644
---- a/lan_app/templates/partials/control_center/recordings_table.html
-+++ b/lan_app/templates/partials/control_center/recordings_table.html
-@@ -17,8 +17,25 @@
-   <tbody>
-     {% for r in recordings_table.rows %}
-     <tr>
--      <td title="{{ r.id }}"><a href="{{ r.detail_href }}" style="text-decoration:none;color:#1d4ed8">{{ r.id[:16] }}…</a></td>
--      <td title="{{ r.source_filename }}">{{ r.source_filename }}</td>
-+      <td title="{{ r.id }}">
-+        <a href="{{ r.detail_href }}" style="text-decoration:none;color:#1d4ed8">{{ r.id[:16] }}…</a>
-+        {% if r.select_href %}
-+        <div style="margin-top:6px">
-+          {% if r.selected %}
-+          <span class="badge s-Ready">Selected</span>
-+          {% else %}
-+          <a href="{{ r.select_href }}" class="btn" style="text-decoration:none">Select</a>
-+          {% endif %}
-+        </div>
-+        {% endif %}
-+      </td>
-+      <td title="{{ r.source_filename }}">
-+        {% if r.select_href %}
-+        <a href="{{ r.select_href }}" style="text-decoration:none;color:inherit">{{ r.source_filename }}</a>
-+        {% else %}
-+        {{ r.source_filename }}
-+        {% endif %}
-+      </td>
-       <td>
-         <span class="badge s-{{ r.status }}">{{ r.status }}</span>
-         {% if r.status_reason_text_display %}
-diff --git a/lan_app/ui_routes.py b/lan_app/ui_routes.py
-index 6261b00..1322824 100644
---- a/lan_app/ui_routes.py
-+++ b/lan_app/ui_routes.py
-@@ -2376,6 +2376,7 @@ def _recordings_table_context(
-     tab: str,
- ) -> dict[str, Any]:
-     rows: list[dict[str, Any]] = []
-+    is_control_center = mode == "control_center"
-     for item in items:
-         recording_id = str(item.get("id") or "").strip()
-         detail_href = f"/recordings/{quote(recording_id)}"
-@@ -2385,10 +2386,20 @@ def _recordings_table_context(
-             {
-                 **item,
-                 "detail_href": detail_href,
-+                "select_href": (
-+                    _control_center_shell_href(
-+                        selected=recording_id,
-+                        status_filter=status_filter,
-+                        search_query=search_query,
-+                        tab=tab,
-+                    )
-+                    if is_control_center
-+                    else ""
-+                ),
-+                "selected": is_control_center and recording_id == selected,
-             }
-         )
+diff --git a/lan_app/db.py b/lan_app/db.py
+index 6d590d1..2222cf2 100644
+--- a/lan_app/db.py
++++ b/lan_app/db.py
+@@ -703,7 +703,8 @@ def get_recording(
  
--    is_control_center = mode == "control_center"
-     prev_offset = max(offset - limit, 0)
-     next_offset = offset + limit
-     return {
-diff --git a/tests/test_cov_lan_app_ui_routes.py b/tests/test_cov_lan_app_ui_routes.py
-index 6584bf3..875fa0a 100644
---- a/tests/test_cov_lan_app_ui_routes.py
-+++ b/tests/test_cov_lan_app_ui_routes.py
-@@ -184,6 +184,10 @@ def test_control_center_helper_contexts_cover_fragment_builders(
-     assert panel_context["recordings_table"]["rows"][0]["detail_href"] == (
-         "/recordings/rec-helper-1?tab=speakers"
+ 
+ def _sqlite_like_query(value: str) -> str:
+-    escaped = str(value).strip().casefold()
++    # Match SQLite LOWER(...) normalization so non-ASCII searches stay consistent.
++    escaped = str(value).strip().lower()
+     escaped = escaped.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+     return f"%{escaped}%"
+ 
+diff --git a/tests/test_cov_lan_app_db.py b/tests/test_cov_lan_app_db.py
+index 4679fd1..93fe79c 100644
+--- a/tests/test_cov_lan_app_db.py
++++ b/tests/test_cov_lan_app_db.py
+@@ -16,6 +16,7 @@ from lan_app.constants import (
+     RECORDING_STATUS_PUBLISHED,
+     RECORDING_STATUS_QUEUED,
+     RECORDING_STATUS_QUARANTINE,
++    RECORDING_STATUS_READY,
+     RECORDING_STATUS_STOPPING,
+ )
+ 
+@@ -79,6 +80,7 @@ def test_db_internal_helpers_and_validation_paths():
+         target_profile_id=2,
+     ) == [{"voice_profile_id": 2, "score": 0.9}]
+     assert db_module._sqlite_like_query(" A_B% ") == r"%a\_b\%%"  # noqa: SLF001
++    assert db_module._sqlite_like_query(" Straße ") == "%straße%"  # noqa: SLF001
+ 
+     with pytest.raises(ValueError, match="Unsupported recording status"):
+         db_module._validate_recording_status("bad-status")  # noqa: SLF001
+@@ -253,6 +255,13 @@ def test_list_recordings_q_search_is_conservative_and_escaped(tmp_path: Path) ->
+         status=RECORDING_STATUS_PUBLISHED,
+         settings=cfg,
      )
-+    assert panel_context["recordings_table"]["rows"][0]["select_href"] == (
-+        "/?selected=rec-helper-1&status=Ready&q=helper&tab=speakers"
++    db_module.create_recording(
++        "rec-db-search-3",
++        source="upload",
++        source_filename="Straße.wav",
++        status=RECORDING_STATUS_READY,
++        settings=cfg,
 +    )
-+    assert panel_context["recordings_table"]["rows"][0]["selected"] is True
-     assert any(card["status"] == "Ready" and card["active"] for card in panel_context["status_cards"])
  
-     work_pane = ui_routes._control_center_work_pane_context(  # noqa: SLF001
-@@ -218,6 +222,10 @@ def test_control_center_helper_contexts_cover_fragment_builders(
-     assert table["has_prev"] is False
-     assert table["has_next"] is True
-     assert table["next_hx_get"].endswith("limit=2&offset=2")
-+    assert table["rows"][0]["select_href"] == (
-+        "/?selected=rec-helper-1&status=Ready&q=helper&tab=speakers"
+     by_filename, total_by_filename = db_module.list_recordings(
+         settings=cfg,
+@@ -275,6 +284,20 @@ def test_list_recordings_q_search_is_conservative_and_escaped(tmp_path: Path) ->
+     assert total_by_source == 0
+     assert by_source == []
+ 
++    by_unicode_filename, total_by_unicode_filename = db_module.list_recordings(
++        settings=cfg,
++        q="straße",
 +    )
-+    assert table["rows"][0]["selected"] is True
- 
-     upload_shell = ui_routes._upload_shell_context()  # noqa: SLF001
-     assert upload_shell["file_input_id"] == "file-input"
-diff --git a/tests/test_ui_routes.py b/tests/test_ui_routes.py
-index 1876323..220c312 100644
---- a/tests/test_ui_routes.py
-+++ b/tests/test_ui_routes.py
-@@ -385,8 +385,13 @@ def test_control_center_recordings_panel_filters_search_and_actions(
-     assert "alpha.wav" in panel.text
-     assert "beta.wav" not in panel.text
-     assert 'data-return-to="control-center"' in panel.text
-+    assert 'href="/?selected=rec-cc-panel-1&amp;status=Ready&amp;q=alpha&amp;tab=speakers"' in panel.text
-     assert panel.headers["HX-Push-Url"] == "/?status=Ready&q=alpha&tab=speakers"
- 
-+    selected_panel = c.get("/ui/control-center/recordings/panel?selected=rec-cc-panel-1&tab=speakers")
-+    assert selected_panel.status_code == 200
-+    assert "Selected" in selected_panel.text
++    assert total_by_unicode_filename == 1
++    assert [row["id"] for row in by_unicode_filename] == ["rec-db-search-3"]
 +
-     conservative = c.get("/ui/control-center/recordings/panel?q=upload")
-     assert conservative.status_code == 200
-     assert "alpha.wav" not in conservative.text
++    by_unicode_fragment, total_by_unicode_fragment = db_module.list_recordings(
++        settings=cfg,
++        q="ß",
++    )
++    assert total_by_unicode_fragment == 1
++    assert [row["source_filename"] for row in by_unicode_fragment] == ["Straße.wav"]
++
+ 
+ def test_glossary_entry_helpers_cover_crud_and_validation_paths(tmp_path: Path) -> None:
+     cfg = _cfg(tmp_path)
