@@ -11,20 +11,16 @@
   <div class="control-center-pane-head">
     <div>
       <h2 style="margin-top:0">{{ recordings_panel.title }}</h2>
-      <p class="control-center-pane-copy">{{ recordings_panel.description }}</p>
     </div>
     <div class="control-center-state-list" style="margin-top:0">
       <span class="control-center-state-pill">Rows: {{ recordings_panel.total }}</span>
       <span class="control-center-state-pill">Limit: {{ recordings_panel.recordings_table.limit }}</span>
-      <span class="control-center-state-pill">
-        Search: {{ recordings_panel.recordings_filters.search_query or "None" }}
-      </span>
     </div>
   </div>
 
-  {% include "partials/control_center/recordings_status_cards.html" %}
   {% set recordings_filters = recordings_panel.recordings_filters %}
   {% include "partials/control_center/recordings_filters.html" %}
+  {% include "partials/control_center/recordings_status_cards.html" %}
   {% set recordings_table = recordings_panel.recordings_table %}
   {% include "partials/control_center/recordings_table.html" %}
 </div>

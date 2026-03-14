@@ -2332,6 +2332,7 @@ def _control_center_shell_href(
     calendar_error: str = "",
     speakers_notice: str = "",
     speakers_error: str = "",
+    workflow_notice: str = "",
 ) -> str:
     params: list[tuple[str, str]] = []
     safe_limit = max(1, min(limit, 500)) if limit is not None else None
@@ -2358,6 +2359,8 @@ def _control_center_shell_href(
         params.append(("speakers_notice", speakers_notice))
     if speakers_error:
         params.append(("speakers_error", speakers_error))
+    if workflow_notice:
+        params.append(("workflow_notice", workflow_notice))
     if not params:
         return "/"
     return f"/?{urlencode(params)}"
@@ -2779,11 +2782,8 @@ def _control_center_work_pane_context(
 
 def _control_center_empty_inspector_context() -> dict[str, str]:
     return {
-        "title": "No recording selected yet",
-        "message": (
-            "Pick a row from the left-hand queue to keep review on this page. Uploads, "
-            "filters, and fallback pages stay available when you need them."
-        ),
+        "title": "Select a recording",
+        "message": "",
     }
 
 
@@ -3090,9 +3090,9 @@ def _recordings_panel_context(
         "panel_id": panel_id,
         "mode": mode,
         "total": total,
-        "title": "Live recordings queue" if is_control_center else "Recordings list",
+        "title": "Recordings" if is_control_center else "Recordings list",
         "description": (
-            "Status counters, conservative search, and the working list stay together."
+            "Filter, triage, and select a recording without leaving the queue."
             if is_control_center
             else "Use the same queue, filters, and row actions as the Control Center."
         ),
@@ -3205,12 +3205,15 @@ def _selected_recording_summary_shell_context(
     *,
     current_tab: str,
     recovery_warning: str | None,
+    workflow_notice: str = "",
     inspector_mode: str = "full_page",
     control_center_state: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     notices: list[dict[str, str]] = []
     if recovery_warning:
         notices.append(_page_notice_context(recovery_warning))
+    if workflow_notice.strip():
+        notices.append(_page_notice_context(workflow_notice))
     return {
         "action_bar": _inspector_action_bar_context(
             recording,
@@ -3225,10 +3228,7 @@ def _selected_recording_summary_shell_context(
 def _empty_inspector_shell_context() -> dict[str, str]:
     return {
         "title": "Select a recording",
-        "message": (
-            "Choose a recording from the list to inspect actions, diagnostics, and export "
-            "controls."
-        ),
+        "message": "",
     }
 
 
@@ -3239,6 +3239,7 @@ def _recording_inspector_context(
     calendar_error: str = "",
     speakers_notice: str = "",
     speakers_error: str = "",
+    workflow_notice: str = "",
     inspector_mode: str = "full_page",
     control_center_state: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
@@ -3344,6 +3345,40 @@ def _recording_inspector_context(
                 offset=control_center_state["offset"],
                 extra_params=[("recording_id", recording_id)],
             )
+            glossary["workflow_form"] = {
+                "action": "/glossary",
+                "hidden_fields": [
+                    {"name": "kind", "value": "term"},
+                    {"name": "source", "value": "correction"},
+                    {"name": "enabled", "value": "1"},
+                    {"name": "recording_id", "value": recording_id},
+                    {"name": "return_to", "value": "control-center"},
+                    {"name": "return_after_save", "value": "control-center"},
+                    {"name": "selected", "value": recording_id},
+                    {"name": "tab", "value": safe_tab},
+                    *(
+                        [{"name": "status", "value": control_center_state["status"]}]
+                        if control_center_state["status"]
+                        else []
+                    ),
+                    *(
+                        [{"name": "q", "value": control_center_state["q"]}]
+                        if control_center_state["q"]
+                        else []
+                    ),
+                    *(
+                        [{"name": "limit", "value": str(control_center_state["limit"])}]
+                        if control_center_state["limit"] != _CONTROL_CENTER_LIST_LIMIT
+                        or control_center_state["offset"] > 0
+                        else []
+                    ),
+                    *(
+                        [{"name": "offset", "value": str(control_center_state["offset"])}]
+                        if control_center_state["offset"] > 0
+                        else []
+                    ),
+                ],
+            }
         if speakers is not None:
             speakers["manage_voices_href"] = _workflow_page_href(
                 "/voices",
@@ -3359,6 +3394,7 @@ def _recording_inspector_context(
         rec,
         current_tab=safe_tab,
         recovery_warning=recovery_warning,
+        workflow_notice=workflow_notice,
         inspector_mode=inspector_mode,
         control_center_state=control_center_state,
     )
@@ -3728,8 +3764,8 @@ async def ui_dashboard(
     calendar_error: str = Query(default=""),
     speakers_notice: str = Query(default=""),
     speakers_error: str = Query(default=""),
+    workflow_notice: str = Query(default=""),
 ) -> Any:
-    dashboard_context = _dashboard_status_context(_settings)
     control_center_state = _control_center_state_context(
         selected=selected,
         status=status,
@@ -3747,6 +3783,7 @@ async def ui_dashboard(
             calendar_error=calendar_error,
             speakers_notice=speakers_notice,
             speakers_error=speakers_error,
+            workflow_notice=workflow_notice,
             inspector_mode="embedded",
             control_center_state=control_center_state,
         )
@@ -3763,7 +3800,6 @@ async def ui_dashboard(
         "control_center.html",
         {
             "active": "dashboard",
-            **dashboard_context,
             **(control_center_inspector or {}),
             "control_center_state": control_center_state,
             "upload_shell": _upload_shell_context(),
@@ -3844,6 +3880,7 @@ async def ui_control_center_inspector_pane(
     calendar_error: str = Query(default=""),
     speakers_notice: str = Query(default=""),
     speakers_error: str = Query(default=""),
+    workflow_notice: str = Query(default=""),
 ) -> Any:
     control_center_state = _control_center_state_context(
         selected=selected,
@@ -3862,6 +3899,7 @@ async def ui_control_center_inspector_pane(
             calendar_error=calendar_error,
             speakers_notice=speakers_notice,
             speakers_error=speakers_error,
+            workflow_notice=workflow_notice,
             inspector_mode="embedded",
             control_center_state=control_center_state,
         )
@@ -3896,6 +3934,7 @@ async def ui_recording_inspector(
     calendar_error: str = Query(default=""),
     speakers_notice: str = Query(default=""),
     speakers_error: str = Query(default=""),
+    workflow_notice: str = Query(default=""),
 ) -> Any:
     control_center_state = _control_center_state_context(
         selected=recording_id,
@@ -3911,6 +3950,7 @@ async def ui_recording_inspector(
         calendar_error=calendar_error,
         speakers_notice=speakers_notice,
         speakers_error=speakers_error,
+        workflow_notice=workflow_notice,
         inspector_mode="embedded",
         control_center_state=control_center_state,
     )
@@ -4841,6 +4881,7 @@ async def ui_create_glossary(
     tab: str = Form(default="overview"),
     limit: int | None = Form(default=None),
     offset: int | None = Form(default=None),
+    return_after_save: str = Form(default=""),
 ) -> Any:
     payload = _glossary_form_payload(
         canonical_text=canonical_text,
@@ -4855,6 +4896,22 @@ async def ui_create_glossary(
         created_entry = create_glossary_entry(settings=_settings, **payload)
     except ValueError as exc:
         return HTMLResponse(str(exc), status_code=422)
+    selected_recording = " ".join(str(selected or recording_id or "").split())
+    if return_to == "control-center" and return_after_save == "control-center":
+        return RedirectResponse(
+            _control_center_shell_href(
+                selected=selected_recording,
+                status_filter=status if status in RECORDING_STATUSES else "",
+                search_query=str(q or "").strip(),
+                tab=tab,
+                limit=limit,
+                offset=offset,
+                workflow_notice=(
+                    f"Saved correction for {payload['canonical_text']}."
+                ),
+            ),
+            status_code=303,
+        )
     redirect_to = _workflow_page_href(
         "/glossary",
         return_to=return_to,

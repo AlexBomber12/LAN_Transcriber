@@ -554,6 +554,6 @@ Queue (in order)
 - Tasks file: tasks/PR-UI-WORKFLOW-01.md
 - Depends on: PR-SPEAKER-REVIEW-01 and PR-CORRECTIONS-UX-01
 111) PR-UI-CONTROL-CENTER-RECOVERY-01: Rebuild the broken Control Center into a minimal 2-column daily workspace and remove duplicate dashboard/fallback clutter
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-UI-CONTROL-CENTER-RECOVERY-01.md
 - Depends on: PR-UI-WORKFLOW-01 and PR-SPEAKER-REVIEW-01 and PR-CORRECTIONS-UX-01

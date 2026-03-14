@@ -174,6 +174,69 @@
   <p style="white-space:pre-wrap">{{ summary_data.emotional_summary or '—' }}</p>
 
   <div class="section" style="margin-top:10px">
+    {% if recording_inspector.embedded %}
+    {% set correction_form = glossary_data.workflow_form or {} %}
+    <h2 style="margin-top:0">Corrections</h2>
+    <div class="control-center-compact-card">
+      <p style="margin:0 0 8px 0;color:#555">
+        Save a remembered spelling or phrase without leaving this recording.
+      </p>
+      <form method="post" action="{{ correction_form.action or '/glossary' }}">
+        {% for field in correction_form.hidden_fields or [] %}
+        <input type="hidden" name="{{ field.name }}" value="{{ field.value }}">
+        {% endfor %}
+        <div class="control-center-compact-grid">
+          <div>
+            <label for="workflow-correction-canonical-{{ rec.id }}" style="display:block;margin-bottom:4px">Correct term</label>
+            <input
+              id="workflow-correction-canonical-{{ rec.id }}"
+              type="text"
+              name="canonical_text"
+              maxlength="160"
+              required
+              placeholder="Example: Sander"
+              style="width:100%"
+            >
+          </div>
+          <div>
+            <label for="workflow-correction-aliases-{{ rec.id }}" style="display:block;margin-bottom:4px">Wrong variant</label>
+            <input
+              id="workflow-correction-aliases-{{ rec.id }}"
+              type="text"
+              name="aliases_text"
+              maxlength="240"
+              placeholder="What the transcript got wrong"
+              style="width:100%"
+            >
+          </div>
+        </div>
+        <div class="form-row" style="align-items:flex-start;margin-top:8px">
+          <label for="workflow-correction-notes-{{ rec.id }}">Note</label>
+          <input
+            id="workflow-correction-notes-{{ rec.id }}"
+            type="text"
+            name="notes"
+            maxlength="240"
+            placeholder="Optional reminder"
+            style="width:100%;max-width:420px"
+          >
+        </div>
+        <div class="filters" style="margin:8px 0 0 0">
+          <button class="btn" type="submit">Save as correction</button>
+          <a href="{{ glossary_data.manage_href or '/glossary' }}" class="btn" style="text-decoration:none">Manage corrections</a>
+        </div>
+      </form>
+      {% if glossary_data.available %}
+      <p style="margin:8px 0 0 0;color:#555">
+        {{ glossary_data.entry_count }} saved memor{{ 'y' if glossary_data.entry_count == 1 else 'ies' }}
+        and {{ glossary_data.term_count }} prompt term{{ '' if glossary_data.term_count == 1 else 's' }}
+        are already attached to this recording.
+      </p>
+      {% else %}
+      <p style="margin:8px 0 0 0;color:#555">No saved ASR memory is attached to this recording yet.</p>
+      {% endif %}
+    </div>
+    {% else %}
     <h2 style="margin-top:0">Corrections / ASR Memory</h2>
     <div class="filters" style="margin-bottom:6px">
       <a href="{{ glossary_data.manage_href or '/glossary' }}" class="btn" style="text-decoration:none">Manage corrections</a>
@@ -212,6 +275,7 @@
     <p class="placeholder">This recording wrote an ASR memory artifact, but no saved terms were selected.</p>
     {% else %}
     <p class="placeholder">No ASR memory artifact is available for this recording yet.</p>
+    {% endif %}
     {% endif %}
   </div>
 
@@ -406,13 +470,15 @@
     {% endfor %}
   {% endif %}
   <div style="margin:0 0 10px 0;padding:8px 10px;border:1px solid #ccd;background:#f8f9ff;color:#222">
-    Confirm global match only when you want a canonical speaker identity across recordings.
+    Confirm match only when you want a canonical speaker identity across recordings.
     Use <strong>Keep unknown</strong> to close review without naming the speaker, or <strong>Local label only</strong> to name this speaker just for the current recording and its export.
-    <strong>Add sample</strong> stays separate and should be used only for trusted clean clips.
+    <strong>Add trusted sample</strong> stays separate and should be used only for trusted clean clips.
   </div>
+  {% if not recording_inspector.embedded %}
   <div class="filters" style="margin:0 0 10px 0">
     <a href="{{ sp.manage_voices_href or '/voices' }}" class="btn" style="text-decoration:none">Open canonical speakers page</a>
   </div>
+  {% endif %}
   {% if rows %}
   <table>
     <thead>
@@ -424,8 +490,8 @@
         <th>Current decision</th>
         <th>Review state</th>
         <th>Snippets</th>
-        <th>Decide</th>
-        <th>Sample training</th>
+        <th>Speaker decision</th>
+        <th>Trusted sample</th>
       </tr>
     </thead>
     <tbody>
@@ -494,14 +560,14 @@
           {% if profiles %}
           <form method="post" action="/ui/recordings/{{ rec.id }}/speakers/assign{{ recording_inspector.embedded_return_queries.speakers }}">
             <input type="hidden" name="diar_speaker_label" value="{{ row.speaker }}">
-            <div style="margin-bottom:6px;font-size:11px;color:#555">Confirm canonical speaker</div>
+            <div style="margin-bottom:6px;font-size:11px;color:#555">Confirm match</div>
             <select name="voice_profile_id" style="width:180px">
               <option value="">Choose canonical speaker</option>
               {% for vp in profiles %}
               <option value="{{ vp.id }}" {% if row.global_voice_profile_id == vp.id %}selected{% endif %}>{{ vp.display_name }}</option>
               {% endfor %}
             </select>
-            <button class="btn" type="submit">Confirm global match</button>
+            <button class="btn" type="submit">Confirm match</button>
           </form>
           {% else %}
           <div class="placeholder" style="padding:0;margin-bottom:8px">No canonical speakers yet.</div>
@@ -512,6 +578,7 @@
           </form>
           <form method="post" action="/ui/recordings/{{ rec.id }}/speakers/local-label{{ recording_inspector.embedded_return_queries.speakers }}" style="margin-top:8px">
             <input type="hidden" name="diar_speaker_label" value="{{ row.speaker }}">
+            <div style="margin-bottom:6px;font-size:11px;color:#555">Local label only</div>
             <input
               type="text"
               name="local_display_name"
@@ -520,7 +587,7 @@
               placeholder="Recording-only name"
               style="width:180px"
             >
-            <button class="btn" type="submit">Save local label</button>
+            <button class="btn" type="submit">Local label only</button>
           </form>
           <div style="margin-top:6px;font-size:11px;color:#555">
             Global match affects the canonical speaker bank. Local label only affects this recording and its exports.
@@ -528,7 +595,7 @@
         </td>
         <td style="white-space:normal;max-width:260px">
           <div style="margin-bottom:6px;font-size:11px;color:#555">
-            Add a trusted clean clip to the speaker bank. This does not change the current review decision.
+            Add trusted sample uses a clean clip without changing the current review decision.
           </div>
           {% if profiles %}
           <form method="post" action="/ui/recordings/{{ rec.id }}/speakers/add-sample{{ recording_inspector.embedded_return_queries.speakers }}">
@@ -544,7 +611,7 @@
               <option value="{{ snippet.relative_path }}" {% if snippet.recommended %}selected{% endif %}>{{ snippet.choice_label }}</option>
               {% endfor %}
             </select>
-            <button class="btn" type="submit" {% if not row.clean_snippets %}disabled{% endif %}>Add sample from this recording</button>
+            <button class="btn" type="submit" {% if not row.clean_snippets %}disabled{% endif %}>Add trusted sample</button>
             {% if not row.clean_snippets and row.snippet_ui_state.add_sample_message %}
             <div style="margin-top:4px;font-size:11px;color:#92400e">{{ row.snippet_ui_state.add_sample_message }}</div>
             {% elif row.no_clean_snippet_message %}
@@ -563,7 +630,7 @@
   <p class="placeholder">No speaker turns available yet. Run diarization first.</p>
   {% endif %}
 
-  <h2>Create Canonical Speaker and Confirm Global Match</h2>
+  <h2>Create Canonical Speaker</h2>
   {% if rows %}
   <form method="post" action="/ui/recordings/{{ rec.id }}/speakers/create-and-assign{{ recording_inspector.embedded_return_queries.speakers }}">
     <div class="form-row">
@@ -584,7 +651,7 @@
     </div>
     <div class="form-row">
       <label></label>
-      <button class="btn" type="submit">Create canonical speaker</button>
+      <button class="btn" type="submit">Create and confirm match</button>
     </div>
   </form>
   {% else %}
