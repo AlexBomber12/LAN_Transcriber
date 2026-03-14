@@ -2121,6 +2121,9 @@ def _control_center_shell_href(
     tab: str = "overview",
     limit: int | None = None,
     offset: int | None = None,
+    calendar_error: str = "",
+    speakers_notice: str = "",
+    speakers_error: str = "",
 ) -> str:
     params: list[tuple[str, str]] = []
     safe_limit = max(1, min(limit, 500)) if limit is not None else None
@@ -2141,6 +2144,12 @@ def _control_center_shell_href(
         params.append(("limit", str(safe_limit)))
     if safe_offset > 0:
         params.append(("offset", str(safe_offset)))
+    if calendar_error:
+        params.append(("calendar_error", calendar_error))
+    if speakers_notice:
+        params.append(("speakers_notice", speakers_notice))
+    if speakers_error:
+        params.append(("speakers_error", speakers_error))
     if not params:
         return "/"
     return f"/?{urlencode(params)}"
@@ -2198,8 +2207,168 @@ def _control_center_state_context(
         ),
         "reset_href": "/",
         "work_pane_url": f"/ui/control-center/work-pane?{urlencode(state_params)}",
-        "inspector_pane_url": f"/ui/control-center/inspector-pane?{urlencode(state_params)}",
+        "inspector_pane_url": (
+            _control_center_inspector_path(
+                selected_id,
+                status_filter=status_filter,
+                search_query=search_query,
+                tab=current_tab,
+                limit=safe_limit,
+                offset=safe_offset,
+            )
+            if selected_id
+            else f"/ui/control-center/inspector-pane?{urlencode(state_params)}"
+        ),
     }
+
+
+def _control_center_inspector_path(
+    recording_id: str,
+    *,
+    status_filter: str = "",
+    search_query: str = "",
+    tab: str = "overview",
+    limit: int | None = None,
+    offset: int | None = None,
+) -> str:
+    params: list[tuple[str, str]] = []
+    safe_tab = str(tab or "overview").strip().lower() or "overview"
+    safe_limit = max(1, min(limit, 500)) if limit is not None else None
+    safe_offset = max(int(offset or 0), 0)
+    if safe_tab not in _CONTROL_CENTER_TABS:
+        safe_tab = "overview"
+    if status_filter:
+        params.append(("status", status_filter))
+    if search_query:
+        params.append(("q", search_query))
+    if safe_tab != "overview":
+        params.append(("tab", safe_tab))
+    if safe_limit is not None and (
+        safe_limit != _CONTROL_CENTER_LIST_LIMIT or safe_offset > 0
+    ):
+        params.append(("limit", str(safe_limit)))
+    if safe_offset > 0:
+        params.append(("offset", str(safe_offset)))
+    query = f"?{urlencode(params)}" if params else ""
+    return f"/ui/recordings/{quote(recording_id, safe='')}/inspector{query}"
+
+
+def _control_center_return_query(
+    *,
+    status_filter: str = "",
+    search_query: str = "",
+    return_tab: str = "overview",
+    limit: int | None = None,
+    offset: int | None = None,
+) -> str:
+    params: list[tuple[str, str]] = [("return_to", "control-center")]
+    safe_tab = str(return_tab or "overview").strip().lower() or "overview"
+    safe_limit = max(1, min(limit, 500)) if limit is not None else None
+    safe_offset = max(int(offset or 0), 0)
+    if safe_tab not in _CONTROL_CENTER_TABS:
+        safe_tab = "overview"
+    params.append(("return_tab", safe_tab))
+    if status_filter:
+        params.append(("status", status_filter))
+    if search_query:
+        params.append(("q", search_query))
+    if safe_limit is not None and (
+        safe_limit != _CONTROL_CENTER_LIST_LIMIT or safe_offset > 0
+    ):
+        params.append(("limit", str(safe_limit)))
+    if safe_offset > 0:
+        params.append(("offset", str(safe_offset)))
+    return f"?{urlencode(params)}"
+
+
+def _recording_inspector_return_path(
+    recording_id: str,
+    *,
+    return_to: str = "",
+    return_tab: str = "overview",
+    status: str | None = None,
+    q: str | None = "",
+    limit: int | None = None,
+    offset: int | None = None,
+    calendar_error: str = "",
+    speakers_notice: str = "",
+    speakers_error: str = "",
+) -> str:
+    safe_tab = str(return_tab or "overview").strip().lower() or "overview"
+    if safe_tab not in _CONTROL_CENTER_TABS:
+        safe_tab = "overview"
+    if return_to != "control-center":
+        params: list[tuple[str, str]] = []
+        if safe_tab != "overview":
+            params.append(("tab", safe_tab))
+        if calendar_error:
+            params.append(("calendar_error", calendar_error))
+        if speakers_notice:
+            params.append(("speakers_notice", speakers_notice))
+        if speakers_error:
+            params.append(("speakers_error", speakers_error))
+        if not params:
+            return _recording_detail_path(recording_id, tab=safe_tab)
+        return (
+            f"/recordings/{quote(recording_id, safe='')}?{urlencode(params)}"
+        )
+    return _control_center_shell_href(
+        selected=recording_id,
+        status_filter=status if status in RECORDING_STATUSES else "",
+        search_query=str(q or "").strip(),
+        tab=safe_tab,
+        limit=limit,
+        offset=offset,
+        calendar_error=calendar_error,
+        speakers_notice=speakers_notice,
+        speakers_error=speakers_error,
+    )
+
+
+def _recording_inspector_tabs_context(
+    recording_id: str,
+    *,
+    current_tab: str,
+    inspector_mode: str,
+    control_center_state: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    tabs: list[dict[str, Any]] = []
+    is_embedded = inspector_mode == "embedded" and control_center_state is not None
+    for value in _CONTROL_CENTER_TABS:
+        full_page_href = _recording_detail_path(recording_id, tab=value)
+        shell_href = full_page_href
+        inspector_href = ""
+        if is_embedded:
+            shell_href = _control_center_shell_href(
+                selected=recording_id,
+                status_filter=control_center_state["status"],
+                search_query=control_center_state["q"],
+                tab=value,
+                limit=control_center_state["limit"],
+                offset=control_center_state["offset"],
+            )
+            inspector_href = _control_center_inspector_path(
+                recording_id,
+                status_filter=control_center_state["status"],
+                search_query=control_center_state["q"],
+                tab=value,
+                limit=control_center_state["limit"],
+                offset=control_center_state["offset"],
+            )
+        tabs.append(
+            {
+                "value": value,
+                "label": value.capitalize(),
+                "active": value == current_tab,
+                "href": shell_href,
+                "full_page_href": full_page_href,
+                "hx_get": inspector_href,
+                "hx_target": "#control-center-inspector-pane" if is_embedded else "",
+                "hx_swap": "outerHTML" if is_embedded else "",
+                "hx_push_url": shell_href if is_embedded else "",
+            }
+        )
+    return tabs
 
 
 def _control_center_work_pane_context(
@@ -2610,11 +2779,42 @@ def _inspector_action_bar_context(
     recording: dict[str, Any],
     *,
     current_tab: str,
+    inspector_mode: str = "full_page",
+    control_center_state: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    recording_id = str(recording.get("id") or "").strip()
+    is_embedded = inspector_mode == "embedded" and control_center_state is not None
+    return_query = (
+        _control_center_return_query(
+            status_filter=control_center_state["status"],
+            search_query=control_center_state["q"],
+            return_tab=current_tab,
+            limit=control_center_state["limit"],
+            offset=control_center_state["offset"],
+        )
+        if is_embedded
+        else ""
+    )
     return {
         "rec": recording,
         "current_tab": current_tab,
-        "back_href": "/recordings",
+        "embedded": is_embedded,
+        "return_to": "control-center" if is_embedded else "",
+        "back_href": (
+            control_center_state["clear_selection_href"]
+            if is_embedded
+            else "/recordings"
+        ),
+        "back_label": "Clear selection" if is_embedded else "Back to recordings",
+        "open_full_page_href": _recording_detail_path(recording_id, tab=current_tab),
+        "download_zip_href": f"/ui/recordings/{quote(recording_id, safe='')}/export.zip",
+        "requeue_url": f"/ui/recordings/{quote(recording_id, safe='')}/requeue{return_query}",
+        "quarantine_url": (
+            f"/ui/recordings/{quote(recording_id, safe='')}/quarantine{return_query}"
+        ),
+        "delete_url": f"/ui/recordings/{quote(recording_id, safe='')}/delete{return_query}",
+        "stop_url": f"/ui/recordings/{quote(recording_id, safe='')}/stop{return_query}",
+        "stop_body": urlencode([("tab", current_tab)]),
     }
 
 
@@ -2623,12 +2823,19 @@ def _selected_recording_summary_shell_context(
     *,
     current_tab: str,
     recovery_warning: str | None,
+    inspector_mode: str = "full_page",
+    control_center_state: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     notices: list[dict[str, str]] = []
     if recovery_warning:
         notices.append(_page_notice_context(recovery_warning))
     return {
-        "action_bar": _inspector_action_bar_context(recording, current_tab=current_tab),
+        "action_bar": _inspector_action_bar_context(
+            recording,
+            current_tab=current_tab,
+            inspector_mode=inspector_mode,
+            control_center_state=control_center_state,
+        ),
         "notices": notices,
     }
 
@@ -2640,6 +2847,134 @@ def _empty_inspector_shell_context() -> dict[str, str]:
             "Choose a recording from the list to inspect actions, diagnostics, and export "
             "controls."
         ),
+    }
+
+
+def _recording_inspector_context(
+    recording_id: str,
+    *,
+    current_tab: str,
+    calendar_error: str = "",
+    speakers_notice: str = "",
+    speakers_error: str = "",
+    inspector_mode: str = "full_page",
+    control_center_state: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    rec = get_recording(recording_id, settings=_settings)
+    if rec is None:
+        return None
+    rec = _prepare_recording_for_display(rec, settings=_settings)
+    jobs, _ = list_jobs(settings=_settings, recording_id=recording_id, limit=100)
+    recovery_warning = _recording_recovery_warning(jobs)
+    safe_tab = current_tab if current_tab in _CONTROL_CENTER_TABS else "overview"
+    calendar: dict[str, Any] | None = None
+    language: dict[str, Any] | None = None
+    summary: dict[str, Any] | None = None
+    metrics: dict[str, Any] | None = None
+    speakers: dict[str, Any] | None = None
+    project: dict[str, Any] | None = None
+    glossary: dict[str, Any] | None = None
+    export_text = ""
+    stage_rows = list_recording_pipeline_stages(recording_id, settings=_settings)
+    chunk_rows = list_recording_llm_chunk_states(recording_id, settings=_settings)
+    pipeline_stages = _pipeline_stage_rows_for_display(recording_id, rows=stage_rows)
+    diagnostics = _recording_diagnostics_context(
+        recording=rec,
+        stage_rows=stage_rows,
+        chunk_rows=chunk_rows,
+        jobs=jobs,
+    )
+    if diagnostics["primary_reason_text"]:
+        rec["status_reason_text_display"] = diagnostics["primary_reason_text"]
+    if safe_tab == "calendar":
+        calendar = _calendar_tab_context(recording_id, _settings)
+        if calendar_error.strip():
+            calendar["error_message"] = calendar_error.strip()
+    if safe_tab == "language":
+        language = _language_tab_context(recording_id, rec, _settings)
+    if safe_tab == "speakers":
+        speakers = _speakers_tab_context(
+            recording_id,
+            _settings,
+            recording=rec,
+            stage_rows=stage_rows,
+            notice_message=speakers_notice,
+            error_message=speakers_error,
+        )
+    if safe_tab == "project":
+        project = _project_tab_context(recording_id, rec, _settings)
+        rec = _prepare_recording_for_display(
+            get_recording(recording_id, settings=_settings) or rec,
+            settings=_settings,
+        )
+    if safe_tab in {"overview", "metrics"}:
+        summary = _summary_context(recording_id, _settings)
+    if safe_tab == "overview":
+        export_text = build_onenote_markdown(rec, settings=_settings)
+        glossary = _asr_glossary_context(recording_id, _settings)
+    if safe_tab == "metrics":
+        metrics = _metrics_tab_context(recording_id, _settings)
+    is_embedded = inspector_mode == "embedded" and control_center_state is not None
+    progress_url = (
+        f"/ui/recordings/{quote(recording_id, safe='')}/progress?tab="
+        f"{quote(safe_tab, safe='')}"
+    )
+    embedded_return_queries = {value: "" for value in _CONTROL_CENTER_TABS}
+    if is_embedded:
+        current_return_query = _control_center_return_query(
+            status_filter=control_center_state["status"],
+            search_query=control_center_state["q"],
+            return_tab=safe_tab,
+            limit=control_center_state["limit"],
+            offset=control_center_state["offset"],
+        )
+        progress_url = f"{progress_url}&{current_return_query.lstrip('?')}"
+        embedded_return_queries = {
+            value: _control_center_return_query(
+                status_filter=control_center_state["status"],
+                search_query=control_center_state["q"],
+                return_tab=value,
+                limit=control_center_state["limit"],
+                offset=control_center_state["offset"],
+            )
+            for value in _CONTROL_CENTER_TABS
+        }
+    selected_recording_shell = _selected_recording_summary_shell_context(
+        rec,
+        current_tab=safe_tab,
+        recovery_warning=recovery_warning,
+        inspector_mode=inspector_mode,
+        control_center_state=control_center_state,
+    )
+    return {
+        "rec": rec,
+        "jobs": jobs,
+        "recovery_warning": recovery_warning,
+        "selected_recording_shell": selected_recording_shell,
+        "tabs": _CONTROL_CENTER_TABS,
+        "current_tab": safe_tab,
+        "calendar": calendar,
+        "language": language,
+        "summary": summary,
+        "metrics": metrics,
+        "speakers": speakers,
+        "project": project,
+        "glossary": glossary,
+        "export_text": export_text,
+        "pipeline_stages": pipeline_stages,
+        "diagnostics": diagnostics,
+        "recording_inspector": {
+            "mode": inspector_mode,
+            "embedded": is_embedded,
+            "tabs": _recording_inspector_tabs_context(
+                recording_id,
+                current_tab=safe_tab,
+                inspector_mode=inspector_mode,
+                control_center_state=control_center_state,
+            ),
+            "progress_url": progress_url,
+            "embedded_return_queries": embedded_return_queries,
+        },
     }
 
 
@@ -2933,6 +3268,9 @@ async def ui_dashboard(
     tab: str = Query(default="overview"),
     limit: int = Query(default=_CONTROL_CENTER_LIST_LIMIT, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
+    calendar_error: str = Query(default=""),
+    speakers_notice: str = Query(default=""),
+    speakers_error: str = Query(default=""),
 ) -> Any:
     dashboard_context = _dashboard_status_context(_settings)
     control_center_state = _control_center_state_context(
@@ -2943,19 +3281,40 @@ async def ui_dashboard(
         limit=limit,
         offset=offset,
     )
+    control_center_empty_inspector = _control_center_empty_inspector_context()
+    control_center_inspector = None
+    if control_center_state["selected"]:
+        control_center_inspector = _recording_inspector_context(
+            control_center_state["selected"],
+            current_tab=control_center_state["tab"],
+            calendar_error=calendar_error,
+            speakers_notice=speakers_notice,
+            speakers_error=speakers_error,
+            inspector_mode="embedded",
+            control_center_state=control_center_state,
+        )
+        if control_center_inspector is None:
+            control_center_empty_inspector = {
+                "title": "Selected recording not found",
+                "message": (
+                    "The selected recording no longer exists. Clear the selection and "
+                    "choose another recording from the queue."
+                ),
+            }
     return templates.TemplateResponse(
         request,
         "control_center.html",
         {
             "active": "dashboard",
             **dashboard_context,
+            **(control_center_inspector or {}),
             "control_center_state": control_center_state,
             "upload_shell": _upload_shell_context(),
             "control_center_work_pane": _control_center_work_pane_context(
                 _settings,
                 state=control_center_state,
             ),
-            "control_center_empty_inspector": _control_center_empty_inspector_context(),
+            "control_center_empty_inspector": control_center_empty_inspector,
         },
     )
 
@@ -3025,6 +3384,9 @@ async def ui_control_center_inspector_pane(
     tab: str = Query(default="overview"),
     limit: int = Query(default=_CONTROL_CENTER_LIST_LIMIT, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
+    calendar_error: str = Query(default=""),
+    speakers_notice: str = Query(default=""),
+    speakers_error: str = Query(default=""),
 ) -> Any:
     control_center_state = _control_center_state_context(
         selected=selected,
@@ -3034,12 +3396,83 @@ async def ui_control_center_inspector_pane(
         limit=limit,
         offset=offset,
     )
+    control_center_empty_inspector = _control_center_empty_inspector_context()
+    control_center_inspector = None
+    if control_center_state["selected"]:
+        control_center_inspector = _recording_inspector_context(
+            control_center_state["selected"],
+            current_tab=control_center_state["tab"],
+            calendar_error=calendar_error,
+            speakers_notice=speakers_notice,
+            speakers_error=speakers_error,
+            inspector_mode="embedded",
+            control_center_state=control_center_state,
+        )
+        if control_center_inspector is None:
+            control_center_empty_inspector = {
+                "title": "Selected recording not found",
+                "message": (
+                    "The selected recording no longer exists. Clear the selection and "
+                    "choose another recording from the queue."
+                ),
+            }
     return templates.TemplateResponse(
         request,
         "partials/control_center/inspector_pane.html",
         {
             "control_center_state": control_center_state,
-            "control_center_empty_inspector": _control_center_empty_inspector_context(),
+            "control_center_empty_inspector": control_center_empty_inspector,
+            **(control_center_inspector or {}),
+        },
+    )
+
+
+@ui_router.get("/ui/recordings/{recording_id}/inspector", response_class=HTMLResponse)
+async def ui_recording_inspector(
+    request: Request,
+    recording_id: str,
+    status: str | None = Query(default=None),
+    q: str = Query(default=""),
+    tab: str = Query(default="overview"),
+    limit: int = Query(default=_CONTROL_CENTER_LIST_LIMIT, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    calendar_error: str = Query(default=""),
+    speakers_notice: str = Query(default=""),
+    speakers_error: str = Query(default=""),
+) -> Any:
+    control_center_state = _control_center_state_context(
+        selected=recording_id,
+        status=status,
+        q=q,
+        tab=tab,
+        limit=limit,
+        offset=offset,
+    )
+    control_center_inspector = _recording_inspector_context(
+        recording_id,
+        current_tab=control_center_state["tab"],
+        calendar_error=calendar_error,
+        speakers_notice=speakers_notice,
+        speakers_error=speakers_error,
+        inspector_mode="embedded",
+        control_center_state=control_center_state,
+    )
+    control_center_empty_inspector = _control_center_empty_inspector_context()
+    if control_center_inspector is None:
+        control_center_empty_inspector = {
+            "title": "Selected recording not found",
+            "message": (
+                "The selected recording no longer exists. Clear the selection and "
+                "choose another recording from the queue."
+            ),
+        }
+    return templates.TemplateResponse(
+        request,
+        "partials/control_center/inspector_pane.html",
+        {
+            "control_center_state": control_center_state,
+            "control_center_empty_inspector": control_center_empty_inspector,
+            **(control_center_inspector or {}),
         },
     )
 
@@ -3191,88 +3624,21 @@ async def ui_recording_detail(
     speakers_notice: str = Query(default=""),
     speakers_error: str = Query(default=""),
 ) -> Any:
-    rec = get_recording(recording_id, settings=_settings)
-    if rec is None:
+    inspector_context = _recording_inspector_context(
+        recording_id,
+        current_tab=tab,
+        calendar_error=calendar_error,
+        speakers_notice=speakers_notice,
+        speakers_error=speakers_error,
+    )
+    if inspector_context is None:
         return HTMLResponse("<h1>404 – Recording not found</h1>", status_code=404)
-    rec = _prepare_recording_for_display(rec, settings=_settings)
-    jobs, _ = list_jobs(settings=_settings, recording_id=recording_id, limit=100)
-    recovery_warning = _recording_recovery_warning(jobs)
-    tabs = ["overview", "calendar", "project", "speakers", "language", "metrics", "log"]
-    current_tab = tab if tab in tabs else "overview"
-    calendar: dict[str, Any] | None = None
-    language: dict[str, Any] | None = None
-    summary: dict[str, Any] | None = None
-    metrics: dict[str, Any] | None = None
-    speakers: dict[str, Any] | None = None
-    project: dict[str, Any] | None = None
-    glossary: dict[str, Any] | None = None
-    export_text = ""
-    stage_rows = list_recording_pipeline_stages(recording_id, settings=_settings)
-    chunk_rows = list_recording_llm_chunk_states(recording_id, settings=_settings)
-    pipeline_stages = _pipeline_stage_rows_for_display(recording_id, rows=stage_rows)
-    diagnostics = _recording_diagnostics_context(
-        recording=rec,
-        stage_rows=stage_rows,
-        chunk_rows=chunk_rows,
-        jobs=jobs,
-    )
-    if diagnostics["primary_reason_text"]:
-        rec["status_reason_text_display"] = diagnostics["primary_reason_text"]
-    if current_tab == "calendar":
-        calendar = _calendar_tab_context(recording_id, _settings)
-        if calendar_error.strip():
-            calendar["error_message"] = calendar_error.strip()
-    if current_tab == "language":
-        language = _language_tab_context(recording_id, rec, _settings)
-    if current_tab == "speakers":
-        speakers = _speakers_tab_context(
-            recording_id,
-            _settings,
-            recording=rec,
-            stage_rows=stage_rows,
-            notice_message=speakers_notice,
-            error_message=speakers_error,
-        )
-    if current_tab == "project":
-        project = _project_tab_context(recording_id, rec, _settings)
-        rec = _prepare_recording_for_display(
-            get_recording(recording_id, settings=_settings) or rec,
-            settings=_settings,
-        )
-    if current_tab in {"overview", "metrics"}:
-        summary = _summary_context(recording_id, _settings)
-    if current_tab == "overview":
-        export_text = build_onenote_markdown(rec, settings=_settings)
-        glossary = _asr_glossary_context(recording_id, _settings)
-    if current_tab == "metrics":
-        metrics = _metrics_tab_context(recording_id, _settings)
-    selected_recording_shell = _selected_recording_summary_shell_context(
-        rec,
-        current_tab=current_tab,
-        recovery_warning=recovery_warning,
-    )
-
     return templates.TemplateResponse(
         request,
         "recording_detail.html",
         {
             "active": "recordings",
-            "rec": rec,
-            "jobs": jobs,
-            "recovery_warning": recovery_warning,
-            "selected_recording_shell": selected_recording_shell,
-            "tabs": tabs,
-            "current_tab": current_tab,
-            "calendar": calendar,
-            "language": language,
-            "summary": summary,
-            "metrics": metrics,
-            "speakers": speakers,
-            "project": project,
-            "glossary": glossary,
-            "export_text": export_text,
-            "pipeline_stages": pipeline_stages,
-            "diagnostics": diagnostics,
+            **inspector_context,
         },
     )
 
@@ -3306,6 +3672,12 @@ async def ui_recording_progress(
     request: Request,
     recording_id: str,
     tab: str = Query(default="overview"),
+    return_to: str = Query(default=""),
+    status: str | None = Query(default=None),
+    q: str = Query(default=""),
+    return_tab: str = Query(default=""),
+    limit: int = Query(default=_CONTROL_CENTER_LIST_LIMIT, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
 ) -> Any:
     rec = get_recording(recording_id, settings=_settings)
     if rec is None:
@@ -3344,7 +3716,15 @@ async def ui_recording_progress(
         request.headers.get("HX-Request") == "true"
         and str(rec.get("status") or "") in _TERMINAL_RECORDING_STATUSES
     ):
-        response.headers["HX-Redirect"] = f"/recordings/{recording_id}?tab={quote(tab)}"
+        response.headers["HX-Redirect"] = _recording_inspector_return_path(
+            recording_id,
+            return_to=return_to,
+            return_tab=return_tab or tab,
+            status=status,
+            q=q,
+            limit=limit,
+            offset=offset,
+        )
     return response
 
 
@@ -3378,6 +3758,12 @@ async def ui_recording_export_zip(
 async def ui_select_calendar_match(
     recording_id: str,
     event_id: str = Form(default=""),
+    return_to: str = Query(default=""),
+    return_tab: str = Query(default="calendar"),
+    status: str | None = Query(default=None),
+    q: str = Query(default=""),
+    limit: int = Query(default=_CONTROL_CENTER_LIST_LIMIT, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
 ) -> Any:
     if get_recording(recording_id, settings=_settings) is None:
         return HTMLResponse("Not found", status_code=404)
@@ -3410,7 +3796,18 @@ async def ui_select_calendar_match(
         settings=_settings,
         apply_workflow=False,
     )
-    return RedirectResponse(f"/recordings/{recording_id}?tab=calendar", status_code=303)
+    return RedirectResponse(
+        _recording_inspector_return_path(
+            recording_id,
+            return_to=return_to,
+            return_tab=return_tab or "calendar",
+            status=status,
+            q=q,
+            limit=limit,
+            offset=offset,
+        ),
+        status_code=303,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -3451,6 +3848,12 @@ def _snippet_repair_notice_message(result: SnippetRepairResult) -> str:
 @ui_router.post("/ui/recordings/{recording_id}/speakers/regenerate-snippets")
 async def ui_recording_regenerate_snippets(
     recording_id: str,
+    return_to: str = Query(default=""),
+    return_tab: str = Query(default="speakers"),
+    status: str | None = Query(default=None),
+    q: str = Query(default=""),
+    limit: int = Query(default=_CONTROL_CENTER_LIST_LIMIT, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
 ) -> Any:
     if get_recording(recording_id, settings=_settings) is None:
         return HTMLResponse("Recording not found", status_code=404)
@@ -3463,16 +3866,28 @@ async def ui_recording_regenerate_snippets(
         )
     except SnippetRepairError as exc:
         return RedirectResponse(
-            (
-                f"/recordings/{recording_id}?tab=speakers&speakers_error="
-                f"{quote(str(exc), safe='')}"
+            _recording_inspector_return_path(
+                recording_id,
+                return_to=return_to,
+                return_tab=return_tab or "speakers",
+                status=status,
+                q=q,
+                limit=limit,
+                offset=offset,
+                speakers_error=str(exc),
             ),
             status_code=303,
         )
     return RedirectResponse(
-        (
-            f"/recordings/{recording_id}?tab=speakers&speakers_notice="
-            f"{quote(_snippet_repair_notice_message(result), safe='')}"
+        _recording_inspector_return_path(
+            recording_id,
+            return_to=return_to,
+            return_tab=return_tab or "speakers",
+            status=status,
+            q=q,
+            limit=limit,
+            offset=offset,
+            speakers_notice=_snippet_repair_notice_message(result),
         ),
         status_code=303,
     )
@@ -3483,6 +3898,12 @@ async def ui_assign_speaker(
     recording_id: str,
     diar_speaker_label: str = Form(...),
     voice_profile_id: str = Form(default=""),
+    return_to: str = Query(default=""),
+    return_tab: str = Query(default="speakers"),
+    status: str | None = Query(default=None),
+    q: str = Query(default=""),
+    limit: int = Query(default=_CONTROL_CENTER_LIST_LIMIT, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
 ) -> Any:
     if get_recording(recording_id, settings=_settings) is None:
         return HTMLResponse("Not found", status_code=404)
@@ -3535,7 +3956,18 @@ async def ui_assign_speaker(
         existing_assignment.get("voice_profile_id"),
         profile_id,
     )
-    return RedirectResponse(f"/recordings/{recording_id}?tab=speakers", status_code=303)
+    return RedirectResponse(
+        _recording_inspector_return_path(
+            recording_id,
+            return_to=return_to,
+            return_tab=return_tab or "speakers",
+            status=status,
+            q=q,
+            limit=limit,
+            offset=offset,
+        ),
+        status_code=303,
+    )
 
 
 @ui_router.post("/ui/recordings/{recording_id}/speakers/create-and-assign")
@@ -3544,6 +3976,12 @@ async def ui_create_and_assign_speaker(
     diar_speaker_label: str = Form(...),
     display_name: str = Form(...),
     notes: str = Form(default=""),
+    return_to: str = Query(default=""),
+    return_tab: str = Query(default="speakers"),
+    status: str | None = Query(default=None),
+    q: str = Query(default=""),
+    limit: int = Query(default=_CONTROL_CENTER_LIST_LIMIT, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
 ) -> Any:
     if get_recording(recording_id, settings=_settings) is None:
         return HTMLResponse("Not found", status_code=404)
@@ -3572,7 +4010,18 @@ async def ui_create_and_assign_speaker(
         diar_label,
         profile_id,
     )
-    return RedirectResponse(f"/recordings/{recording_id}?tab=speakers", status_code=303)
+    return RedirectResponse(
+        _recording_inspector_return_path(
+            recording_id,
+            return_to=return_to,
+            return_tab=return_tab or "speakers",
+            status=status,
+            q=q,
+            limit=limit,
+            offset=offset,
+        ),
+        status_code=303,
+    )
 
 
 @ui_router.post("/ui/recordings/{recording_id}/speakers/add-sample")
@@ -3581,6 +4030,12 @@ async def ui_add_speaker_sample(
     diar_speaker_label: str = Form(...),
     voice_profile_id: str = Form(default=""),
     snippet_path: str = Form(default=""),
+    return_to: str = Query(default=""),
+    return_tab: str = Query(default="speakers"),
+    status: str | None = Query(default=None),
+    q: str = Query(default=""),
+    limit: int = Query(default=_CONTROL_CENTER_LIST_LIMIT, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
 ) -> Any:
     if get_recording(recording_id, settings=_settings) is None:
         return HTMLResponse("Not found", status_code=404)
@@ -3627,7 +4082,18 @@ async def ui_add_speaker_sample(
         profile_id,
         rel_path,
     )
-    return RedirectResponse(f"/recordings/{recording_id}?tab=speakers", status_code=303)
+    return RedirectResponse(
+        _recording_inspector_return_path(
+            recording_id,
+            return_to=return_to,
+            return_tab=return_tab or "speakers",
+            status=status,
+            q=q,
+            limit=limit,
+            offset=offset,
+        ),
+        status_code=303,
+    )
 
 
 @ui_router.post("/ui/recordings/{recording_id}/project")
@@ -3635,6 +4101,12 @@ async def ui_set_recording_project(
     recording_id: str,
     project_id: str = Form(default=""),
     train_routing: str = Form(default=""),
+    return_to: str = Query(default=""),
+    return_tab: str = Query(default="project"),
+    status: str | None = Query(default=None),
+    q: str = Query(default=""),
+    limit: int = Query(default=_CONTROL_CENTER_LIST_LIMIT, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
 ) -> Any:
     if get_recording(recording_id, settings=_settings) is None:
         return HTMLResponse("Not found", status_code=404)
@@ -3673,7 +4145,18 @@ async def ui_set_recording_project(
         settings=_settings,
         apply_workflow=False,
     )
-    return RedirectResponse(f"/recordings/{recording_id}?tab=project", status_code=303)
+    return RedirectResponse(
+        _recording_inspector_return_path(
+            recording_id,
+            return_to=return_to,
+            return_tab=return_tab or "project",
+            status=status,
+            q=q,
+            limit=limit,
+            offset=offset,
+        ),
+        status_code=303,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -4127,10 +4610,23 @@ def _ui_recording_action_response(*, return_to: str, redirect_to: str) -> HTMLRe
     return response
 
 
+def _ui_recording_post_response(
+    request: Request,
+    *,
+    return_to: str,
+    redirect_to: str,
+) -> HTMLResponse | RedirectResponse:
+    if request.headers.get("HX-Request") == "true":
+        return _ui_recording_action_response(return_to=return_to, redirect_to=redirect_to)
+    return RedirectResponse(redirect_to, status_code=303)
+
+
 @ui_router.post("/ui/recordings/{recording_id}/stop", response_class=HTMLResponse)
 async def ui_action_stop(
     recording_id: str,
+    request: Request,
     tab: str = Form(default="overview"),
+    return_to: str = Query(default=""),
 ) -> Any:
     rec = get_recording(recording_id, settings=_settings)
     if rec is None:
@@ -4139,7 +4635,11 @@ async def ui_action_stop(
     redirect_path = _recording_detail_path(recording_id, tab=tab)
     current_status = str(rec.get("status") or "").strip()
     if current_status not in _STOP_ELIGIBLE_RECORDING_STATUSES:
-        return RedirectResponse(redirect_path, status_code=303)
+        return _ui_recording_post_response(
+            request,
+            return_to=return_to,
+            redirect_to=redirect_path,
+        )
 
     if current_status == RECORDING_STATUS_QUEUED:
         queued_jobs, _ = list_jobs(
@@ -4179,7 +4679,11 @@ async def ui_action_stop(
             ),
             settings=_settings,
         )
-        return RedirectResponse(redirect_path, status_code=303)
+        return _ui_recording_post_response(
+            request,
+            return_to=return_to,
+            redirect_to=redirect_path,
+        )
 
     if not set_recording_status_if_current_in(
         recording_id,
@@ -4191,7 +4695,11 @@ async def ui_action_stop(
         ),
         settings=_settings,
     ):
-        return RedirectResponse(redirect_path, status_code=303)
+        return _ui_recording_post_response(
+            request,
+            return_to=return_to,
+            redirect_to=redirect_path,
+        )
     if not str(rec.get("cancel_requested_at") or "").strip():
         set_recording_cancel_request(
             recording_id,
@@ -4208,7 +4716,11 @@ async def ui_action_stop(
             settings=_settings,
         )
     clear_recording_progress(recording_id, settings=_settings)
-    return RedirectResponse(redirect_path, status_code=303)
+    return _ui_recording_post_response(
+        request,
+        return_to=return_to,
+        redirect_to=redirect_path,
+    )
 
 
 @ui_router.post("/ui/recordings/{recording_id}/requeue")
@@ -4238,7 +4750,16 @@ async def ui_action_requeue(
 
 
 @ui_router.post("/ui/recordings/{recording_id}/jobs/{job_id}/retry")
-async def ui_action_retry_failed_step(recording_id: str, job_id: str) -> Any:
+async def ui_action_retry_failed_step(
+    recording_id: str,
+    job_id: str,
+    return_to: str = Query(default=""),
+    return_tab: str = Query(default="log"),
+    status: str | None = Query(default=None),
+    q: str = Query(default=""),
+    limit: int = Query(default=_CONTROL_CENTER_LIST_LIMIT, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+) -> Any:
     if get_recording(recording_id, settings=_settings) is None:
         return HTMLResponse("Not found", status_code=404)
     job = get_job(job_id, settings=_settings)
@@ -4259,7 +4780,18 @@ async def ui_action_retry_failed_step(recording_id: str, job_id: str) -> Any:
         )
     except Exception as exc:
         return HTMLResponse(f"Retry failed: {exc}", status_code=503)
-    return RedirectResponse(f"/recordings/{recording_id}?tab=log", status_code=303)
+    return RedirectResponse(
+        _recording_inspector_return_path(
+            recording_id,
+            return_to=return_to,
+            return_tab=return_tab or "log",
+            status=status,
+            q=q,
+            limit=limit,
+            offset=offset,
+        ),
+        status_code=303,
+    )
 
 
 @ui_router.post("/ui/recordings/{recording_id}/quarantine")
@@ -4337,6 +4869,12 @@ async def ui_save_language_settings(
     recording_id: str,
     target_summary_language: str = Form(default=""),
     transcript_language_override: str = Form(default=""),
+    return_to: str = Query(default=""),
+    return_tab: str = Query(default="language"),
+    status: str | None = Query(default=None),
+    q: str = Query(default=""),
+    limit: int = Query(default=_CONTROL_CENTER_LIST_LIMIT, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
 ) -> Any:
     if get_recording(recording_id, settings=_settings) is None:
         return HTMLResponse("Not found", status_code=404)
@@ -4348,7 +4886,18 @@ async def ui_save_language_settings(
         )
     except ValueError as exc:
         return HTMLResponse(str(exc), status_code=422)
-    return RedirectResponse(f"/recordings/{recording_id}?tab=language", status_code=303)
+    return RedirectResponse(
+        _recording_inspector_return_path(
+            recording_id,
+            return_to=return_to,
+            return_tab=return_tab or "language",
+            status=status,
+            q=q,
+            limit=limit,
+            offset=offset,
+        ),
+        status_code=303,
+    )
 
 
 @ui_router.post("/ui/recordings/{recording_id}/language/resummarize")
@@ -4356,6 +4905,12 @@ async def ui_resummarize_language(
     recording_id: str,
     target_summary_language: str = Form(default=""),
     transcript_language_override: str = Form(default=""),
+    return_to: str = Query(default=""),
+    return_tab: str = Query(default="language"),
+    status: str | None = Query(default=None),
+    q: str = Query(default=""),
+    limit: int = Query(default=_CONTROL_CENTER_LIST_LIMIT, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
 ) -> Any:
     if get_recording(recording_id, settings=_settings) is None:
         return HTMLResponse("Not found", status_code=404)
@@ -4375,7 +4930,18 @@ async def ui_resummarize_language(
         return HTMLResponse(str(exc), status_code=422)
     except Exception as exc:
         return HTMLResponse(f"Re-summarize failed: {exc}", status_code=503)
-    return RedirectResponse(f"/recordings/{recording_id}?tab=language", status_code=303)
+    return RedirectResponse(
+        _recording_inspector_return_path(
+            recording_id,
+            return_to=return_to,
+            return_tab=return_tab or "language",
+            status=status,
+            q=q,
+            limit=limit,
+            offset=offset,
+        ),
+        status_code=303,
+    )
 
 
 @ui_router.post("/ui/recordings/{recording_id}/language/retranscribe")
@@ -4383,6 +4949,12 @@ async def ui_retranscribe_language(
     recording_id: str,
     target_summary_language: str = Form(default=""),
     transcript_language_override: str = Form(default=""),
+    return_to: str = Query(default=""),
+    return_tab: str = Query(default="log"),
+    status: str | None = Query(default=None),
+    q: str = Query(default=""),
+    limit: int = Query(default=_CONTROL_CENTER_LIST_LIMIT, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
 ) -> Any:
     if get_recording(recording_id, settings=_settings) is None:
         return HTMLResponse("Not found", status_code=404)
@@ -4402,4 +4974,15 @@ async def ui_retranscribe_language(
         return HTMLResponse(str(exc), status_code=422)
     except Exception as exc:
         return HTMLResponse(f"Re-transcribe failed: {exc}", status_code=503)
-    return RedirectResponse(f"/recordings/{recording_id}?tab=log", status_code=303)
+    return RedirectResponse(
+        _recording_inspector_return_path(
+            recording_id,
+            return_to=return_to,
+            return_tab=return_tab or "log",
+            status=status,
+            q=q,
+            limit=limit,
+            offset=offset,
+        ),
+        status_code=303,
+    )

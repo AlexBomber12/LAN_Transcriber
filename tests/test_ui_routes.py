@@ -355,6 +355,32 @@ def test_control_center_pane_fragment_endpoints(seeded_client):
     assert "Speakers" in inspector.text
     assert "<nav" not in inspector.text
 
+    empty_inspector = seeded_client.get("/ui/control-center/inspector-pane")
+    assert empty_inspector.status_code == 200
+    assert "Select a recording from the left pane" in empty_inspector.text
+
+
+def test_control_center_selected_recording_renders_embedded_inspector_actions(seeded_client):
+    r = seeded_client.get("/?selected=rec-ui-1&status=Ready&q=meeting&tab=overview")
+    assert r.status_code == 200
+    assert 'id="control-center-inspector-pane"' in r.text
+    assert "Inspector Pane" in r.text
+    assert "Requeue" in r.text
+    assert "Quarantine" in r.text
+    assert "Delete" in r.text
+    assert "Download ZIP" in r.text
+    assert "Open full-page recording" in r.text
+    assert "/ui/recordings/rec-ui-1/inspector?status=Ready&amp;q=meeting" in r.text
+
+
+def test_control_center_embedded_inspector_tab_links_preserve_shell_state(seeded_client):
+    inspector = seeded_client.get("/ui/recordings/rec-ui-1/inspector?status=Ready&q=meeting&tab=speakers")
+    assert inspector.status_code == 200
+    assert 'hx-get="/ui/recordings/rec-ui-1/inspector?status=Ready&amp;q=meeting"' in inspector.text
+    assert 'hx-get="/ui/recordings/rec-ui-1/inspector?status=Ready&amp;q=meeting&amp;tab=language"' in inspector.text
+    assert 'hx-push-url="/?selected=rec-ui-1&amp;status=Ready&amp;q=meeting&amp;tab=language"' in inspector.text
+    assert 'href="/?selected=rec-ui-1&amp;status=Ready&amp;q=meeting&amp;tab=speakers"' in inspector.text
+
 
 def test_control_center_recordings_panel_filters_search_and_actions(
     tmp_path: Path,
@@ -630,8 +656,9 @@ def test_recording_shell_and_empty_inspector_fragment_endpoints(seeded_client):
     shell = seeded_client.get("/ui/control-center/recordings/rec-ui-1/shell?tab=overview")
     assert shell.status_code == 200
     assert 'data-rid="rec-ui-1"' in shell.text
-    assert "Actions…" in shell.text
-    assert "&#8592; Back" in shell.text
+    assert "Requeue" in shell.text
+    assert "Download ZIP" in shell.text
+    assert "Back to recordings" in shell.text
     assert "<html" not in shell.text
 
     empty = seeded_client.get("/ui/control-center/inspector-empty")
@@ -1001,6 +1028,35 @@ def test_recording_progress_endpoint_redirects_when_terminal(tmp_path, monkeypat
     )
     assert r.status_code == 200
     assert r.headers["HX-Redirect"] == "/recordings/rec-ui-terminal-1?tab=metrics"
+
+
+def test_recording_progress_endpoint_redirects_to_control_center_when_embedded_terminal(
+    tmp_path,
+    monkeypatch,
+):
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    init_db(cfg)
+    create_recording(
+        "rec-ui-terminal-embedded-1",
+        source="upload",
+        source_filename="terminal-embedded.wav",
+        status=RECORDING_STATUS_READY,
+        settings=cfg,
+    )
+
+    c = TestClient(api.app, follow_redirects=False)
+    r = c.get(
+        "/ui/recordings/rec-ui-terminal-embedded-1/progress?"
+        "tab=metrics&return_to=control-center&status=Ready&q=meeting&return_tab=metrics",
+        headers={"HX-Request": "true"},
+    )
+    assert r.status_code == 200
+    assert (
+        r.headers["HX-Redirect"]
+        == "/?selected=rec-ui-terminal-embedded-1&status=Ready&q=meeting&tab=metrics"
+    )
 
 
 def test_recording_detail_shows_review_reason_and_local_timestamp(tmp_path, monkeypatch):

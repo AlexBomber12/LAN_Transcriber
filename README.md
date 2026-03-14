@@ -85,15 +85,17 @@ Operational setup, failure handling, backup/restore, and upgrade steps are docum
 ## Workflow (Upload -> Processing -> Export)
 
 1. Open `/` for the Control Center shell.
-   - This is now the primary operator surface: summary strip on top, embedded upload + live recordings queue on the left, inspector shell on the right.
-   - `/upload`, `/recordings`, and `/recordings/{recording_id}` remain available as direct fallback pages while the 1-page workflow is still being assembled.
+   - This is now the primary operator surface: summary strip on top, embedded upload + live recordings queue on the left, and the shared recording inspector on the right.
+   - `/upload` and `/recordings/{recording_id}` remain available as direct fallback pages, but the main review flow now stays on `/`.
 1. Upload one or more audio files from `/` or the fallback `/upload` page.
 2. Uploaded audio is normalized automatically to 16 kHz mono WAV before VAD/ASR/diarization (raw upload is preserved; no user conversion needed).
 3. Mixed-language handling now happens automatically in `LAN_ASR_MULTILINGUAL_MODE=auto`.
    - `derived/transcript.json` can include chunk-level `language_spans` and multilingual execution metadata.
    - When chunk language ID remains conflicted or low-confidence, the recording stays in `NeedsReview` with an explicit review reason.
 4. Track per-file upload progress and processing progress from `/`; the left-pane queue refreshes as new recordings appear and processing status changes.
-5. Open the recording detail page at `/recordings/{recording_id}`.
+5. Select a recording from `/` and review it in the embedded inspector.
+   - Use the inspector tabs on `/` for overview, speakers, language, project, calendar, metrics, and log without losing queue context.
+   - `/recordings/{recording_id}` remains available as a standalone fallback for the same shared inspector.
    - `NeedsReview` recordings now show an explicit review reason in both the list and detail UI.
    - Automatic worker retries now resume from the first incomplete or invalidated pipeline stage instead of restarting from raw sanitization every time.
    - Explicit `Requeue` from the UI/API still clears saved stage checkpoints and forces a clean rerun from the beginning.
@@ -119,7 +121,7 @@ Operational setup, failure handling, backup/restore, and upgrade steps are docum
 ## UI composition
 
 - Reusable server-rendered Control Center building blocks live under `lan_app/templates/partials/control_center/`.
-- `lan_app/ui_routes.py` exposes matching context helpers plus fragment endpoints under `/ui/control-center/...`; future 1-page workflow PRs should compose those fragments instead of copying page markup.
+- `lan_app/ui_routes.py` exposes matching context helpers plus fragment endpoints under `/ui/control-center/...` and `/ui/recordings/{recording_id}/inspector`; future 1-page workflow PRs should compose those fragments instead of copying page markup.
 
 ## Speaker bank
 

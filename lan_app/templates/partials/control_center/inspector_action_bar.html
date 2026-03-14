@@ -1,32 +1,49 @@
 <div class="filters" style="margin-bottom:10px">
-  <select
-    class="action-sel"
-    style="font-size:12px"
+  <button
+    type="button"
+    class="btn"
+    data-action-url="{{ inspector_action_bar.requeue_url }}"
+    data-return-to="{{ inspector_action_bar.return_to }}"
+    data-pending-label="Requeueing..."
+    onclick="triggerRecordingAction(this)"
+  >Requeue</button>
+  <button
+    type="button"
+    class="btn"
+    data-action-url="{{ inspector_action_bar.quarantine_url }}"
+    data-return-to="{{ inspector_action_bar.return_to }}"
+    data-confirm-message="Quarantine this recording?"
+    data-pending-label="Quarantining..."
+    onclick="triggerRecordingAction(this)"
+  >Quarantine</button>
+  <button
+    type="button"
+    class="btn btn-danger"
     data-rid="{{ inspector_action_bar.rec.id }}"
     data-rlabel="{{ inspector_action_bar.rec.source_filename or inspector_action_bar.rec.id }}"
     data-rcaptured="{{ '' if inspector_action_bar.rec.captured_at_display == '—' else inspector_action_bar.rec.captured_at_display }}"
-    onchange="doRecAction(this)"
-  >
-    <option value="">Actions…</option>
-    <option value="requeue">Requeue</option>
-    <option value="quarantine">Quarantine</option>
-    <option value="delete">Delete</option>
-  </select>
+    data-return-to="{{ inspector_action_bar.return_to }}"
+    onclick="openDeleteDialog({recordingId: this.dataset.rid, recordingLabel: this.dataset.rlabel || '', capturedAt: this.dataset.rcaptured || '', returnTo: this.dataset.returnTo || '', returnFocus: this});"
+  >Delete</button>
   {% if inspector_action_bar.rec.stop_eligible %}
     {% if inspector_action_bar.rec.stop_in_progress %}
     <button type="button" class="btn btn-danger" disabled>Stopping...</button>
     {% else %}
-    <form
-      method="post"
-      action="/ui/recordings/{{ inspector_action_bar.rec.id }}/stop"
-      style="display:inline"
-      hx-boost="false"
-      onsubmit="return confirm('Stop processing for this recording?')"
-    >
-      <input type="hidden" name="tab" value="{{ inspector_action_bar.current_tab }}">
-      <button type="submit" class="btn btn-danger">Stop</button>
-    </form>
+    <button
+      type="button"
+      class="btn btn-danger"
+      data-action-url="{{ inspector_action_bar.stop_url }}"
+      data-action-body="{{ inspector_action_bar.stop_body }}"
+      data-return-to="{{ inspector_action_bar.return_to }}"
+      data-confirm-message="Stop processing for this recording?"
+      data-pending-label="Submitting stop..."
+      onclick="triggerRecordingAction(this)"
+    >Stop</button>
     {% endif %}
   {% endif %}
-  <a href="{{ inspector_action_bar.back_href }}" class="btn" style="text-decoration:none">&#8592; Back</a>
+  <a href="{{ inspector_action_bar.download_zip_href }}" class="btn" style="text-decoration:none" hx-boost="false">Download ZIP</a>
+  {% if inspector_action_bar.embedded %}
+  <a href="{{ inspector_action_bar.open_full_page_href }}" class="btn" style="text-decoration:none">Open full-page recording</a>
+  {% endif %}
+  <a href="{{ inspector_action_bar.back_href }}" class="btn" style="text-decoration:none">{{ inspector_action_bar.back_label }}</a>
 </div>

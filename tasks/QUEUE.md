@@ -535,7 +535,7 @@ Queue (in order)
 - Depends on: PR-UI-CONTROL-CENTER-02 and PR-UI-UPLOAD-02 and PR-UI-PROGRESS-02
 
 107) PR-UI-CONTROL-CENTER-04: Embed the recording inspector into the Control Center right pane while keeping /recordings/{id} as a full-page fallback
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-UI-CONTROL-CENTER-04.md
 - Depends on: PR-UI-CONTROL-CENTER-03
 

@@ -54,7 +54,8 @@ docker compose run --rm api python -m lan_app.healthchecks app
    - `derived/transcript.json` can include `language_spans`, multilingual chunk metadata, and multilingual review metadata.
    - If chunk-level language ID stays conflicted or low-confidence, the recording remains in `NeedsReview` with an explicit review reason.
 4. Track upload and processing progress per file from `/`; the Control Center queue updates as new recordings appear and statuses change. `/upload` remains available as a direct fallback.
-5. Open `/recordings/{recording_id}` for transcript, summary, and export actions.
+5. Select the recording on `/` and use the embedded inspector for transcript, summary, routing, speaker review, and export actions.
+   - `/recordings/{recording_id}` remains available as a standalone fallback for the same inspector when you need a direct link or full-page view.
    - `NeedsReview` recordings show an explicit review reason in the recordings list and detail page.
    - `Stop` on a queued recording removes the queued job immediately and marks the recording `Stopped`.
    - `Stop` on a running recording changes the status to `Stopping`; the worker first waits for the current heavy child process to exit cooperatively and then force-terminates it after `LAN_STOP_GRACE_SECONDS` when needed, before finalizing the recording as `Stopped`.

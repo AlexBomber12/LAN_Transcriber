@@ -1,0 +1,19 @@
+{% include "partials/recording_inspector_header.html" %}
+
+{% if rec.status in ['Processing', 'Stopping'] %}
+<div
+  id="recording-progress"
+  hx-get="{{ recording_inspector.progress_url }}"
+  hx-trigger="load, every 2s"
+  hx-swap="innerHTML"
+  style="margin:0 0 10px 0"
+>
+  <div class="placeholder" style="padding:8px 10px">Loading pipeline progress…</div>
+</div>
+{% endif %}
+
+{% include "partials/recording_inspector_tabs.html" %}
+
+<div class="tab-content">
+  {% include "partials/recording_inspector_body.html" %}
+</div>

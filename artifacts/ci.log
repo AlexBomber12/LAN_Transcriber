@@ -1,5 +1,5 @@
 All checks passed!
-/home/alexey/LAN_Transcriber/.venv-ci/lib/python3.12/site-packages/pytest_asyncio/plugin.py:211: PytestDeprecationWarning: The configuration option "asyncio_default_fixture_loop_scope" is unset.
+/home/alexey/LAN_Transcriber/.venv-ci-clean/lib/python3.12/site-packages/pytest_asyncio/plugin.py:211: PytestDeprecationWarning: The configuration option "asyncio_default_fixture_loop_scope" is unset.
 The event loop scope for asynchronous fixtures will default to the fixture caching scope. Future versions of pytest-asyncio will default the loop scope for asynchronous fixtures to function scope. Set the default fixture loop scope explicitly in order to avoid unexpected behavior in the future. Valid fixture loop scopes are: "function", "class", "module", "package", "session"
 
   warnings.warn(PytestDeprecationWarning(_DEFAULT_FIXTURE_LOOP_SCOPE_UNSET))
@@ -11,12 +11,12 @@ The event loop scope for asynchronous fixtures will default to the fixture cachi
 ........................................................................ [ 43%]
 ........................................................................ [ 50%]
 ........................................................................ [ 57%]
-........................................................................ [ 65%]
+........................................................................ [ 64%]
 ........................................................................ [ 72%]
-................................................................s....... [ 79%]
+.................................................................s...... [ 79%]
 ........................................................................ [ 86%]
-........................................................................ [ 94%]
-..........................................................               [100%]
+........................................................................ [ 93%]
+..............................................................           [100%]
 =============================== warnings summary ===============================
 lan_transcriber/pipeline_steps/precheck.py:3
   /home/alexey/LAN_Transcriber/lan_transcriber/pipeline_steps/precheck.py:3: DeprecationWarning: 'audioop' is deprecated and slated for removal in Python 3.13
@@ -55,13 +55,13 @@ tests/test_warm_models.py::test_warm_models_module_main_guard
 ---------- coverage: platform linux, python 3.12.3-final-0 -----------
 Name    Stmts   Miss Branch BrPart  Cover   Missing
 ---------------------------------------------------
-TOTAL   12907      0   4150      0   100%
+TOTAL   13017      0   4212      0   100%
 
 62 files skipped due to complete coverage.
 Coverage HTML written to dir htmlcov
 
 Required test coverage of 100% reached. Total coverage: 100.00%
-993 passed, 3 skipped, 11 warnings in 78.56s (0:01:18)
+997 passed, 3 skipped, 11 warnings in 80.64s (0:01:20)
 Name                                                    Stmts   Miss Branch BrPart  Cover
 -----------------------------------------------------------------------------------------
 lan_transcriber/__init__.py                                 8      0      0      0   100%
@@ -125,10 +125,10 @@ lan_app/tools/__init__.py              1      0      0      0   100%
 lan_app/tools/repair_snippets.py      36      0     12      0   100%
 lan_app/tools/warm_models.py          47      0     10      0   100%
 lan_app/ui.py                         59      0     10      0   100%
-lan_app/ui_routes.py                1842      0    634      0   100%
+lan_app/ui_routes.py                1952      0    696      0   100%
 lan_app/uploads.py                    79      0     14      0   100%
 lan_app/worker.py                     28      0      2      0   100%
 lan_app/worker_tasks.py             1694      0    490      0   100%
 lan_app/workers.py                    10      0      0      0   100%
 --------------------------------------------------------------------
-TOTAL                               8834      0   2786      0   100%
+TOTAL                               8944      0   2848      0   100%

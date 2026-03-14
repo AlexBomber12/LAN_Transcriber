@@ -60,16 +60,7 @@
       {% include "partials/control_center/work_pane.html" %}
     </section>
 
-    <section
-      id="control-center-inspector-pane"
-      class="control-center-pane"
-      hx-get="{{ control_center_state.inspector_pane_url }}"
-      hx-trigger="refresh-control-center-inspector from:body"
-      hx-target="this"
-      hx-swap="innerHTML"
-    >
-      {% include "partials/control_center/inspector_pane.html" %}
-    </section>
+    {% include "partials/control_center/inspector_pane.html" %}
   </div>
 </div>
 {% endblock %}

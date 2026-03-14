@@ -1,0 +1,14 @@
+<div class="tabs">
+  {% for inspector_tab in recording_inspector.tabs %}
+  <a
+    href="{{ inspector_tab.href }}"
+    class="tab {% if inspector_tab.active %}active{% endif %}"
+    {% if inspector_tab.hx_get %}
+    hx-get="{{ inspector_tab.hx_get }}"
+    hx-target="{{ inspector_tab.hx_target }}"
+    hx-swap="{{ inspector_tab.hx_swap }}"
+    hx-push-url="{{ inspector_tab.hx_push_url }}"
+    {% endif %}
+  >{{ inspector_tab.label }}</a>
+  {% endfor %}
+</div>

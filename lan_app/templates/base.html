@@ -301,6 +301,60 @@ function postControlCenterAction(sel, action) {
     });
 }
 
+function triggerRecordingAction(btn) {
+  if (!btn || btn.disabled) return;
+  var url = btn.dataset.actionUrl || '';
+  if (!url) return;
+  var confirmMessage = btn.dataset.confirmMessage || '';
+  if (confirmMessage && !confirm(confirmMessage)) {
+    return;
+  }
+  var returnTo = btn.dataset.returnTo || '';
+  var body = btn.dataset.actionBody || '';
+  var headers = {'HX-Request': 'true'};
+  if (body) {
+    headers['Content-Type'] = 'application/x-www-form-urlencoded';
+  }
+  var originalText = btn.textContent;
+  var pendingLabel = btn.dataset.pendingLabel || originalText;
+  btn.disabled = true;
+  btn.textContent = pendingLabel;
+  fetch(url, {
+    method: 'POST',
+    headers: headers,
+    body: body || undefined
+  })
+    .then(function(resp) {
+      return resp.text().then(function(payload) {
+        return {resp: resp, body: payload};
+      });
+    })
+    .then(function(result) {
+      if (!result.resp.ok) {
+        throw new Error(result.body || ('Action failed (' + result.resp.status + ').'));
+      }
+      if (returnTo === 'control-center') {
+        refreshControlCenterPanels();
+        return;
+      }
+      var redirect = result.resp.headers.get('HX-Redirect');
+      if (redirect) {
+        window.location = redirect;
+        return;
+      }
+      window.location.reload();
+    })
+    .catch(function(err) {
+      window.alert(err && err.message ? err.message : 'Action failed.');
+    })
+    .finally(function() {
+      if (document.body.contains(btn)) {
+        btn.disabled = false;
+        btn.textContent = originalText;
+      }
+    });
+}
+
 function doRecAction(sel) {
   var act = sel.value;
   var id = sel.dataset.rid;

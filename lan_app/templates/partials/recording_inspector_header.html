@@ -1,0 +1,27 @@
+<div class="control-center-pane-head">
+  <div>
+    {% if recording_inspector.embedded %}
+    <h2 style="margin-top:0">Inspector Pane</h2>
+    <p class="control-center-pane-copy">
+      Review <code>{{ rec.id }}</code> from the Control Center without losing queue context.
+    </p>
+    {% else %}
+    <h1>
+      Recording: <code>{{ rec.id }}</code>
+      &nbsp;<span class="badge s-{{ rec.status }}">{{ rec.status }}</span>
+      {% if rec.status_reason_text_display %}
+      <span style="font-size:14px;color:#92400e">{{ rec.status_reason_text_display }}</span>
+      {% endif %}
+    </h1>
+    {% endif %}
+  </div>
+  {% if recording_inspector.embedded %}
+  <div class="control-center-state-list" style="margin-top:0">
+    <span class="control-center-state-pill">Status: {{ rec.status }}</span>
+    <span class="control-center-state-pill">Tab: {{ current_tab|capitalize }}</span>
+    <span class="control-center-state-pill">Captured: {{ rec.captured_at_display }}</span>
+  </div>
+  {% endif %}
+</div>
+
+{% include "partials/control_center/selected_recording_shell.html" %}
