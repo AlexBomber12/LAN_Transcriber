@@ -1,17 +1,30 @@
-<form class="filters" method="get" action="{{ recordings_filters.action }}">
+<form
+  class="filters"
+  method="get"
+  action="{{ recordings_filters.action }}"
+  {% if recordings_filters.hx_get %}
+  hx-get="{{ recordings_filters.hx_get }}"
+  hx-target="{{ recordings_filters.hx_target }}"
+  hx-swap="{{ recordings_filters.hx_swap }}"
+  {% endif %}
+>
+  {% for hidden_field in recordings_filters.hidden_fields %}
+  <input type="hidden" name="{{ hidden_field.name }}" value="{{ hidden_field.value }}">
+  {% endfor %}
   <label>Status:</label>
-  <select
-    name="status"
-    hx-get="{{ recordings_filters.hx_get }}"
-    hx-push-url="{{ recordings_filters.hx_push_url }}"
-    hx-target="{{ recordings_filters.hx_target }}"
-    hx-trigger="change"
-  >
+  <select name="status">
     <option value="">All</option>
     {% for s in recordings_filters.statuses %}
     <option value="{{ s }}" {% if recordings_filters.status_filter == s %}selected{% endif %}>{{ s }}</option>
     {% endfor %}
   </select>
+  <label>Search:</label>
+  <input
+    type="search"
+    name="q"
+    value="{{ recordings_filters.search_query }}"
+    placeholder="ID or filename"
+  >
   <label>Limit:</label>
   <select name="limit">
     {% for n in recordings_filters.limit_options %}
@@ -19,5 +32,6 @@
     {% endfor %}
   </select>
   <input type="hidden" name="offset" value="{{ recordings_filters.offset_reset }}">
-  <button class="btn" type="submit">Filter</button>
+  <button class="btn" type="submit">Apply</button>
+  <a href="{{ recordings_filters.reset_href }}" class="btn" style="text-decoration:none">Reset</a>
 </form>

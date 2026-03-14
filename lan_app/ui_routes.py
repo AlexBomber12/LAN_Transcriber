@@ -167,7 +167,7 @@ _CONTROL_CENTER_TABS = (
     "metrics",
     "log",
 )
-_CONTROL_CENTER_PREVIEW_LIMIT = 8
+_CONTROL_CENTER_LIST_LIMIT = 25
 _GLOSSARY_KIND_OPTIONS = ("person", "company", "product", "project", "term")
 _GLOSSARY_SOURCE_OPTIONS = (
     "manual",
@@ -2182,67 +2182,27 @@ def _control_center_state_context(
     }
 
 
-def _control_center_matches_query(recording: dict[str, Any], search_query: str) -> bool:
-    needle = search_query.strip().casefold()
-    if not needle:
-        return True
-    searchable_values = (
-        recording.get("id"),
-        recording.get("source_filename"),
-        recording.get("source"),
-        recording.get("status"),
-        recording.get("project_name"),
-        recording.get("suggested_project_name"),
-    )
-    return any(needle in str(value or "").casefold() for value in searchable_values)
-
-
 def _control_center_work_pane_context(
     settings: AppSettings,
     *,
     state: dict[str, Any],
 ) -> dict[str, Any]:
-    items, _ = list_recordings(
-        settings=settings,
-        status=state["status"] or None,
-        limit=_CONTROL_CENTER_PREVIEW_LIMIT * 2,
-    )
-    prepared_items = _recordings_list_items_context(items, settings=settings)
-    rows: list[dict[str, Any]] = []
-    for item in prepared_items:
-        if not _control_center_matches_query(item, state["q"]):
-            continue
-        recording_id = str(item.get("id") or "").strip()
-        if not recording_id:
-            continue
-        rows.append(
-            {
-                **item,
-                "selected": recording_id == state["selected"],
-                "select_href": _control_center_shell_href(
-                    selected=recording_id,
-                    status_filter=state["status"],
-                    search_query=state["q"],
-                    tab=state["tab"],
-                ),
-                "detail_href": f"/recordings/{quote(recording_id)}?tab={state['tab']}",
-            }
-        )
-        if len(rows) >= _CONTROL_CENTER_PREVIEW_LIMIT:
-            break
     preview_message = (
-        "Previewing recent recordings only. The full live operator list arrives in the "
-        "next Control Center PR."
+        "Upload, filter, and monitor recordings here without switching away from the "
+        "Control Center."
     )
-    if state["selected"] and not any(row["selected"] for row in rows):
-        preview_message = (
-            "Selected recording is outside the current preview set. The inspector pane "
-            "still keeps the URL state."
-        )
     return {
-        "rows": rows,
-        "preview_limit": _CONTROL_CENTER_PREVIEW_LIMIT,
         "preview_message": preview_message,
+        "recordings_panel": _recordings_panel_context(
+            settings,
+            status=state["status"] or None,
+            q=state["q"],
+            limit=_CONTROL_CENTER_LIST_LIMIT,
+            offset=0,
+            mode="control_center",
+            selected=state["selected"],
+            tab=state["tab"],
+        ),
     }
 
 
@@ -2271,73 +2231,293 @@ def _recordings_list_items_context(
     return prepared_items
 
 
-def _recordings_filters_context(
+def _control_center_recordings_panel_url(
+    *,
+    selected: str,
+    status_filter: str,
+    search_query: str,
+    tab: str,
+    limit: int,
+    offset: int,
+) -> str:
+    params: list[tuple[str, str]] = []
+    if selected:
+        params.append(("selected", selected))
+    if status_filter:
+        params.append(("status", status_filter))
+    if search_query:
+        params.append(("q", search_query))
+    if tab and tab != "overview":
+        params.append(("tab", tab))
+    params.extend(
+        [
+            ("limit", str(limit)),
+            ("offset", str(offset)),
+        ]
+    )
+    return f"/ui/control-center/recordings/panel?{urlencode(params)}"
+
+
+def _recordings_page_href(
     *,
     status_filter: str,
+    search_query: str,
+    limit: int,
+    offset: int,
+) -> str:
+    params: list[tuple[str, str]] = []
+    if status_filter:
+        params.append(("status", status_filter))
+    if search_query:
+        params.append(("q", search_query))
+    if limit != 50:
+        params.append(("limit", str(limit)))
+    if offset:
+        params.append(("offset", str(offset)))
+    if not params:
+        return "/recordings"
+    return f"/recordings?{urlencode(params)}"
+
+
+def _recordings_status_cards_context(
+    settings: AppSettings,
+    *,
+    mode: str,
+    selected: str,
+    status_filter: str,
+    search_query: str,
+    tab: str,
+    limit: int,
+) -> list[dict[str, Any]]:
+    counts = _status_counts(settings)
+    cards: list[dict[str, Any]] = []
+    for status in RECORDING_STATUSES:
+        fragment_href = ""
+        href = _recordings_page_href(
+            status_filter=status,
+            search_query=search_query,
+            limit=limit,
+            offset=0,
+        )
+        if mode == "control_center":
+            href = _control_center_shell_href(
+                selected=selected,
+                status_filter=status,
+                search_query=search_query,
+                tab=tab,
+            )
+            fragment_href = _control_center_recordings_panel_url(
+                selected=selected,
+                status_filter=status,
+                search_query=search_query,
+                tab=tab,
+                limit=limit,
+                offset=0,
+            )
+        cards.append(
+            {
+                "status": status,
+                "count": counts.get(status, 0),
+                "active": status == status_filter,
+                "href": href,
+                "hx_get": fragment_href,
+            }
+        )
+    return cards
+
+
+def _recordings_filters_context(
+    *,
+    mode: str,
+    selected: str,
+    status_filter: str,
+    search_query: str,
+    tab: str,
     limit: int,
 ) -> dict[str, Any]:
+    is_control_center = mode == "control_center"
     return {
-        "action": "/recordings",
-        "hx_get": "/recordings",
-        "hx_target": "body",
-        "hx_push_url": "true",
+        "action": "/" if is_control_center else "/recordings",
+        "hx_get": "/ui/control-center/recordings/panel" if is_control_center else "",
+        "hx_target": "#control-center-recordings-panel" if is_control_center else "",
+        "hx_swap": "outerHTML" if is_control_center else "",
         "status_filter": status_filter,
+        "search_query": search_query,
         "statuses": RECORDING_STATUSES,
         "limit": limit,
         "limit_options": [25, 50, 100, 200],
         "offset_reset": 0,
+        "hidden_fields": (
+            [
+                {"name": "selected", "value": selected},
+                {"name": "tab", "value": tab},
+            ]
+            if is_control_center
+            else []
+        ),
+        "reset_href": (
+            _control_center_shell_href(selected=selected, tab=tab)
+            if is_control_center
+            else "/recordings"
+        ),
     }
 
 
 def _recordings_table_context(
     *,
+    mode: str,
+    selected: str,
     items: list[dict[str, Any]],
     total: int,
     limit: int,
     offset: int,
     status_filter: str,
+    search_query: str,
+    tab: str,
 ) -> dict[str, Any]:
+    rows: list[dict[str, Any]] = []
+    for item in items:
+        recording_id = str(item.get("id") or "").strip()
+        detail_href = f"/recordings/{quote(recording_id)}"
+        if tab and tab != "overview":
+            detail_href = f"{detail_href}?tab={tab}"
+        rows.append(
+            {
+                **item,
+                "detail_href": detail_href,
+            }
+        )
+
+    is_control_center = mode == "control_center"
+    prev_offset = max(offset - limit, 0)
+    next_offset = offset + limit
     return {
-        "rows": items,
+        "rows": rows,
         "total": total,
         "limit": limit,
         "offset": offset,
         "status_filter": status_filter,
-        "prev_offset": max(offset - limit, 0),
-        "next_offset": offset + limit,
+        "search_query": search_query,
+        "prev_offset": prev_offset,
+        "next_offset": next_offset,
         "has_prev": offset > 0,
         "has_next": offset + limit < total,
+        "prev_href": _recordings_page_href(
+            status_filter=status_filter,
+            search_query=search_query,
+            limit=limit,
+            offset=prev_offset,
+        ),
+        "next_href": _recordings_page_href(
+            status_filter=status_filter,
+            search_query=search_query,
+            limit=limit,
+            offset=next_offset,
+        ),
+        "prev_hx_get": (
+            _control_center_recordings_panel_url(
+                selected=selected,
+                status_filter=status_filter,
+                search_query=search_query,
+                tab=tab,
+                limit=limit,
+                offset=prev_offset,
+            )
+            if is_control_center
+            else ""
+        ),
+        "next_hx_get": (
+            _control_center_recordings_panel_url(
+                selected=selected,
+                status_filter=status_filter,
+                search_query=search_query,
+                tab=tab,
+                limit=limit,
+                offset=next_offset,
+            )
+            if is_control_center
+            else ""
+        ),
+        "hx_target": "#control-center-recordings-panel" if is_control_center else "",
+        "hx_swap": "outerHTML" if is_control_center else "",
+        "action_return_to": "control-center" if is_control_center else "",
     }
 
 
-def _recordings_list_context(
+def _recordings_panel_context(
     settings: AppSettings,
     *,
+    mode: str,
+    selected: str = "",
     status: str | None,
+    q: str,
     limit: int,
     offset: int,
+    tab: str = "overview",
 ) -> dict[str, Any]:
     valid_status = status if status in RECORDING_STATUSES else None
+    search_query = str(q or "").strip()
     items, total = list_recordings(
         settings=settings,
         status=valid_status,
+        q=search_query,
         limit=limit,
         offset=offset,
     )
     status_filter = valid_status or ""
     prepared_items = _recordings_list_items_context(items, settings=settings)
+    is_control_center = mode == "control_center"
+    panel_id = "control-center-recordings-panel" if is_control_center else "recordings-page-panel"
     return {
+        "panel_id": panel_id,
+        "mode": mode,
         "total": total,
-        "recordings_filters": _recordings_filters_context(
+        "title": "Live recordings queue" if is_control_center else "Recordings list",
+        "description": (
+            "Status counters, conservative search, and the working list stay together."
+            if is_control_center
+            else "Use the same queue, filters, and row actions as the Control Center."
+        ),
+        "refresh_url": (
+            _control_center_recordings_panel_url(
+                selected=selected,
+                status_filter=status_filter,
+                search_query=search_query,
+                tab=tab,
+                limit=limit,
+                offset=offset,
+            )
+            if is_control_center
+            else ""
+        ),
+        "refresh_trigger": "refresh-control-center-recordings from:body" if is_control_center else "",
+        "status_cards": _recordings_status_cards_context(
+            settings,
+            mode=mode,
+            selected=selected,
             status_filter=status_filter,
+            search_query=search_query,
+            tab=tab,
+            limit=limit,
+        ),
+        "recordings_filters": _recordings_filters_context(
+            mode=mode,
+            selected=selected,
+            status_filter=status_filter,
+            search_query=search_query,
+            tab=tab,
             limit=limit,
         ),
         "recordings_table": _recordings_table_context(
+            mode=mode,
+            selected=selected,
             items=prepared_items,
             total=total,
             limit=limit,
             offset=offset,
             status_filter=status_filter,
+            search_query=search_query,
+            tab=tab,
         ),
     }
 
@@ -2699,6 +2879,7 @@ async def ui_dashboard(
             "active": "dashboard",
             **dashboard_context,
             "control_center_state": control_center_state,
+            "upload_shell": _upload_shell_context(),
             "control_center_work_pane": _control_center_work_pane_context(
                 _settings,
                 state=control_center_state,
@@ -2751,6 +2932,7 @@ async def ui_control_center_work_pane(
         "partials/control_center/work_pane.html",
         {
             "control_center_state": control_center_state,
+            "upload_shell": _upload_shell_context(),
             "control_center_work_pane": _control_center_work_pane_context(
                 _settings,
                 state=control_center_state,
@@ -2792,12 +2974,15 @@ async def ui_control_center_inspector_pane(
 async def ui_recordings(
     request: Request,
     status: str | None = Query(default=None),
+    q: str = Query(default=""),
     limit: int = Query(default=50, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
 ) -> Any:
-    list_context = _recordings_list_context(
+    recordings_panel = _recordings_panel_context(
         _settings,
+        mode="recordings",
         status=status,
+        q=q,
         limit=limit,
         offset=offset,
     )
@@ -2806,7 +2991,8 @@ async def ui_recordings(
         "recordings.html",
         {
             "active": "recordings",
-            **list_context,
+            "recordings_panel": recordings_panel,
+            "total": recordings_panel["total"],
         },
     )
 
@@ -2814,20 +3000,27 @@ async def ui_recordings(
 @ui_router.get("/ui/control-center/recordings/filters", response_class=HTMLResponse)
 async def ui_control_center_recordings_filters(
     request: Request,
+    selected: str = Query(default=""),
     status: str | None = Query(default=None),
+    q: str = Query(default=""),
+    tab: str = Query(default="overview"),
     limit: int = Query(default=50, ge=1, le=500),
 ) -> Any:
-    list_context = _recordings_list_context(
+    panel_context = _recordings_panel_context(
         _settings,
+        mode="control_center",
+        selected=selected,
         status=status,
+        q=q,
         limit=limit,
         offset=0,
+        tab=tab,
     )
     return templates.TemplateResponse(
         request,
         "partials/control_center/recordings_filters.html",
         {
-            "recordings_filters": list_context["recordings_filters"],
+            "recordings_filters": panel_context["recordings_filters"],
         },
     )
 
@@ -2835,23 +3028,66 @@ async def ui_control_center_recordings_filters(
 @ui_router.get("/ui/control-center/recordings/table", response_class=HTMLResponse)
 async def ui_control_center_recordings_table(
     request: Request,
+    selected: str = Query(default=""),
     status: str | None = Query(default=None),
+    q: str = Query(default=""),
+    tab: str = Query(default="overview"),
     limit: int = Query(default=50, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
 ) -> Any:
-    list_context = _recordings_list_context(
+    panel_context = _recordings_panel_context(
         _settings,
+        mode="control_center",
+        selected=selected,
         status=status,
+        q=q,
         limit=limit,
         offset=offset,
+        tab=tab,
     )
     return templates.TemplateResponse(
         request,
         "partials/control_center/recordings_table.html",
         {
-            "recordings_table": list_context["recordings_table"],
+            "recordings_table": panel_context["recordings_table"],
         },
     )
+
+
+@ui_router.get("/ui/control-center/recordings/panel", response_class=HTMLResponse)
+async def ui_control_center_recordings_panel(
+    request: Request,
+    selected: str = Query(default=""),
+    status: str | None = Query(default=None),
+    q: str = Query(default=""),
+    tab: str = Query(default="overview"),
+    limit: int = Query(default=_CONTROL_CENTER_LIST_LIMIT, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+) -> Any:
+    panel_context = _recordings_panel_context(
+        _settings,
+        mode="control_center",
+        selected=selected,
+        status=status,
+        q=q,
+        limit=limit,
+        offset=offset,
+        tab=tab,
+    )
+    response = templates.TemplateResponse(
+        request,
+        "partials/control_center/recordings_panel.html",
+        {
+            "recordings_panel": panel_context,
+        },
+    )
+    response.headers["HX-Push-Url"] = _control_center_shell_href(
+        selected=selected,
+        status_filter=panel_context["recordings_filters"]["status_filter"],
+        search_query=panel_context["recordings_filters"]["search_query"],
+        tab=tab,
+    )
+    return response
 
 
 @ui_router.get("/ui/control-center/inspector-empty", response_class=HTMLResponse)
@@ -3803,6 +4039,13 @@ def _recording_detail_path(recording_id: str, *, tab: str = "overview") -> str:
     return f"/recordings/{recording_id}?tab={quote(safe_tab, safe='')}"
 
 
+def _ui_recording_action_response(*, return_to: str, redirect_to: str) -> HTMLResponse:
+    response = HTMLResponse("")
+    if return_to != "control-center":
+        response.headers["HX-Redirect"] = redirect_to
+    return response
+
+
 @ui_router.post("/ui/recordings/{recording_id}/stop", response_class=HTMLResponse)
 async def ui_action_stop(
     recording_id: str,
@@ -3888,7 +4131,10 @@ async def ui_action_stop(
 
 
 @ui_router.post("/ui/recordings/{recording_id}/requeue")
-async def ui_action_requeue(recording_id: str) -> Any:
+async def ui_action_requeue(
+    recording_id: str,
+    return_to: str = Query(default=""),
+) -> Any:
     if get_recording(recording_id, settings=_settings) is None:
         return HTMLResponse("Not found", status_code=404)
     try:
@@ -3904,9 +4150,10 @@ async def ui_action_requeue(recording_id: str) -> Any:
         )
     except Exception as exc:
         return HTMLResponse(f"Requeue failed: {exc}", status_code=503)
-    resp = HTMLResponse("")
-    resp.headers["HX-Redirect"] = f"/recordings/{recording_id}"
-    return resp
+    return _ui_recording_action_response(
+        return_to=return_to,
+        redirect_to=f"/recordings/{recording_id}",
+    )
 
 
 @ui_router.post("/ui/recordings/{recording_id}/jobs/{job_id}/retry")
@@ -3935,7 +4182,10 @@ async def ui_action_retry_failed_step(recording_id: str, job_id: str) -> Any:
 
 
 @ui_router.post("/ui/recordings/{recording_id}/quarantine")
-async def ui_action_quarantine(recording_id: str) -> Any:
+async def ui_action_quarantine(
+    recording_id: str,
+    return_to: str = Query(default=""),
+) -> Any:
     if get_recording(recording_id, settings=_settings) is None:
         return HTMLResponse("Not found", status_code=404)
     set_recording_status(
@@ -3943,13 +4193,17 @@ async def ui_action_quarantine(recording_id: str) -> Any:
         RECORDING_STATUS_QUARANTINE,
         settings=_settings,
     )
-    resp = HTMLResponse("")
-    resp.headers["HX-Redirect"] = f"/recordings/{recording_id}"
-    return resp
+    return _ui_recording_action_response(
+        return_to=return_to,
+        redirect_to=f"/recordings/{recording_id}",
+    )
 
 
 @ui_router.post("/ui/recordings/{recording_id}/delete")
-async def ui_action_delete(recording_id: str) -> Any:
+async def ui_action_delete(
+    recording_id: str,
+    return_to: str = Query(default=""),
+) -> Any:
     if get_recording(recording_id, settings=_settings) is None:
         return HTMLResponse("Not found", status_code=404)
     try:
@@ -3962,9 +4216,10 @@ async def ui_action_delete(recording_id: str) -> Any:
         return HTMLResponse(str(exc), status_code=500)
     if not deleted:
         return HTMLResponse("Not found", status_code=404)
-    resp = HTMLResponse("")
-    resp.headers["HX-Redirect"] = "/recordings"
-    return resp
+    return _ui_recording_action_response(
+        return_to=return_to,
+        redirect_to="/recordings",
+    )
 
 
 def _save_language_settings(

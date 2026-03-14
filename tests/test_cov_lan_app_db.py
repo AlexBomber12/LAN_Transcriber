@@ -78,6 +78,7 @@ def test_db_internal_helpers_and_validation_paths():
         source_profile_id=1,
         target_profile_id=2,
     ) == [{"voice_profile_id": 2, "score": 0.9}]
+    assert db_module._sqlite_like_query(" A_B% ") == r"%a\_b\%%"  # noqa: SLF001
 
     with pytest.raises(ValueError, match="Unsupported recording status"):
         db_module._validate_recording_status("bad-status")  # noqa: SLF001
@@ -233,6 +234,46 @@ def test_recording_cancel_and_finish_if_queued_helpers_cover_false_paths(tmp_pat
         )
         is True
     )
+
+
+def test_list_recordings_q_search_is_conservative_and_escaped(tmp_path: Path) -> None:
+    cfg = _cfg(tmp_path)
+    db_module.init_db(cfg)
+    db_module.create_recording(
+        "rec-db-search-1",
+        source="upload",
+        source_filename="Budget_100%.wav",
+        status=RECORDING_STATUS_PROCESSING,
+        settings=cfg,
+    )
+    db_module.create_recording(
+        "rec-db-search-2",
+        source="upload",
+        source_filename="notes.wav",
+        status=RECORDING_STATUS_PUBLISHED,
+        settings=cfg,
+    )
+
+    by_filename, total_by_filename = db_module.list_recordings(
+        settings=cfg,
+        q="Budget_100%",
+    )
+    assert total_by_filename == 1
+    assert [row["id"] for row in by_filename] == ["rec-db-search-1"]
+
+    by_id, total_by_id = db_module.list_recordings(
+        settings=cfg,
+        q="search-2",
+    )
+    assert total_by_id == 1
+    assert [row["source_filename"] for row in by_id] == ["notes.wav"]
+
+    by_source, total_by_source = db_module.list_recordings(
+        settings=cfg,
+        q="upload",
+    )
+    assert total_by_source == 0
+    assert by_source == []
 
 
 def test_glossary_entry_helpers_cover_crud_and_validation_paths(tmp_path: Path) -> None:

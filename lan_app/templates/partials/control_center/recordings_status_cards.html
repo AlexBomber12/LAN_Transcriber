@@ -1,0 +1,16 @@
+<div class="stats-row" style="margin-bottom:10px">
+  {% for card in recordings_panel.status_cards %}
+  <a
+    href="{{ card.href }}"
+    class="stat-card stat-card-link{% if card.active %} stat-card-active{% endif %}"
+    {% if card.hx_get %}
+    hx-get="{{ card.hx_get }}"
+    hx-target="#{{ recordings_panel.panel_id }}"
+    hx-swap="outerHTML"
+    {% endif %}
+  >
+    <div class="num">{{ card.count }}</div>
+    <div class="lbl"><span class="badge s-{{ card.status }}">{{ card.status }}</span></div>
+  </a>
+  {% endfor %}
+</div>

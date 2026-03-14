@@ -150,7 +150,7 @@ def test_upload_recordings_detail_and_export_zip_smoke(tmp_path: Path) -> None:
                 page = context.new_page()
 
                 page.goto(
-                    f"{base_url}/upload",
+                    f"{base_url}/",
                     wait_until="networkidle",
                     timeout=_remaining_timeout_ms(deadline),
                 )
@@ -167,6 +167,21 @@ def test_upload_recordings_detail_and_export_zip_smoke(tmp_path: Path) -> None:
                 assert href and href.startswith("/recordings/")
                 recording_id = href.removeprefix("/recordings/")
                 assert recording_id
+                page.wait_for_selector(
+                    "#control-center-recordings-panel",
+                    state="visible",
+                    timeout=_remaining_timeout_ms(deadline),
+                )
+                page.wait_for_selector(
+                    f"#control-center-recordings-panel a[href='/recordings/{recording_id}']",
+                    state="visible",
+                    timeout=_remaining_timeout_ms(deadline),
+                )
+                page.wait_for_selector(
+                    f"#control-center-recordings-panel text={wav_path.name}",
+                    state="visible",
+                    timeout=_remaining_timeout_ms(deadline),
+                )
 
                 page.goto(
                     f"{base_url}/recordings",

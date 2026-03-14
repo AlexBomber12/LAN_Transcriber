@@ -85,14 +85,14 @@ Operational setup, failure handling, backup/restore, and upgrade steps are docum
 ## Workflow (Upload -> Processing -> Export)
 
 1. Open `/` for the Control Center shell.
-   - This is now the primary operator surface: summary strip on top, work-pane preview on the left, inspector shell on the right.
+   - This is now the primary operator surface: summary strip on top, embedded upload + live recordings queue on the left, inspector shell on the right.
    - `/upload`, `/recordings`, and `/recordings/{recording_id}` remain available as direct fallback pages while the 1-page workflow is still being assembled.
-1. Open `/upload` and add one or more audio files.
+1. Upload one or more audio files from `/` or the fallback `/upload` page.
 2. Uploaded audio is normalized automatically to 16 kHz mono WAV before VAD/ASR/diarization (raw upload is preserved; no user conversion needed).
 3. Mixed-language handling now happens automatically in `LAN_ASR_MULTILINGUAL_MODE=auto`.
    - `derived/transcript.json` can include chunk-level `language_spans` and multilingual execution metadata.
    - When chunk language ID remains conflicted or low-confidence, the recording stays in `NeedsReview` with an explicit review reason.
-4. Track per-file upload progress and processing progress on the same page.
+4. Track per-file upload progress and processing progress from `/`; the left-pane queue refreshes as new recordings appear and processing status changes.
 5. Open the recording detail page at `/recordings/{recording_id}`.
    - `NeedsReview` recordings now show an explicit review reason in both the list and detail UI.
    - Automatic worker retries now resume from the first incomplete or invalidated pipeline stage instead of restarting from raw sanitization every time.

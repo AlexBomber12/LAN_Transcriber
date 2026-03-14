@@ -702,10 +702,17 @@ def get_recording(
     return _as_dict(row)
 
 
+def _sqlite_like_query(value: str) -> str:
+    escaped = str(value).strip().casefold()
+    escaped = escaped.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{escaped}%"
+
+
 def list_recordings(
     *,
     settings: AppSettings | None = None,
     status: str | None = None,
+    q: str = "",
     limit: int = 50,
     offset: int = 0,
 ) -> tuple[list[dict[str, Any]], int]:
@@ -716,6 +723,13 @@ def list_recordings(
         _validate_recording_status(status)
         filters.append("r.status = ?")
         params.append(status)
+    search_query = str(q or "").strip()
+    if search_query:
+        pattern = _sqlite_like_query(search_query)
+        filters.append(
+            "(LOWER(r.id) LIKE ? ESCAPE '\\' OR LOWER(COALESCE(r.source_filename, '')) LIKE ? ESCAPE '\\')"
+        )
+        params.extend([pattern, pattern])
 
     where_sql = f"WHERE {' AND '.join(filters)}" if filters else ""
     safe_limit = max(1, min(limit, 500))

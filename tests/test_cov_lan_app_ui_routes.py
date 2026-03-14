@@ -108,7 +108,7 @@ def test_control_center_helper_contexts_cover_fragment_builders(
     monkeypatch.setattr(
         ui_routes,
         "list_recordings",
-        lambda *, settings, status=None, limit=10, offset=0: ([{"id": "rec-helper-1"}], 3),
+        lambda **_kwargs: ([{"id": "rec-helper-1"}], 3),
     )
     dashboard = ui_routes._dashboard_status_context(cfg)  # noqa: SLF001
     assert dashboard["recordings_summary_strip"]["title"] == "Recordings by status"
@@ -144,80 +144,80 @@ def test_control_center_helper_contexts_cover_fragment_builders(
         search_query="demo",
         tab="log",
     ) == "/?selected=rec+helper&status=Ready&q=demo&tab=log"
-    assert ui_routes._control_center_matches_query(  # noqa: SLF001
-        {"id": "rec-helper-1", "source_filename": "meeting.wav", "status": "Ready"},
-        "meeting",
-    )
-    assert not ui_routes._control_center_matches_query(  # noqa: SLF001
-        {"id": "rec-helper-1", "source_filename": "meeting.wav", "status": "Ready"},
-        "absent",
-    )
-
-    monkeypatch.setattr(
-        ui_routes,
-        "_recordings_list_items_context",
-        lambda items, *, settings: [{"id": item["id"], "status": "Ready"} for item in items],
-    )
-    list_context = ui_routes._recordings_list_context(  # noqa: SLF001
-        cfg,
-        status="Ready",
+    assert ui_routes._control_center_recordings_panel_url(  # noqa: SLF001
+        selected="rec-helper-1",
+        status_filter="Ready",
+        search_query="demo",
+        tab="log",
         limit=25,
-        offset=0,
+        offset=2,
+    ) == (
+        "/ui/control-center/recordings/panel?"
+        "selected=rec-helper-1&status=Ready&q=demo&tab=log&limit=25&offset=2"
     )
-    assert list_context["total"] == 3
-    assert list_context["recordings_filters"]["status_filter"] == "Ready"
-    assert list_context["recordings_table"]["rows"] == [{"id": "rec-helper-1", "status": "Ready"}]
-
-    work_pane = ui_routes._control_center_work_pane_context(  # noqa: SLF001
-        cfg,
-        state=state,
-    )
-    assert work_pane["rows"][0]["selected"] is True
-    assert work_pane["rows"][0]["detail_href"] == "/recordings/rec-helper-1?tab=speakers"
-    assert work_pane["preview_limit"] == 8
-
-    hidden_selection = ui_routes._control_center_work_pane_context(  # noqa: SLF001
-        cfg,
-        state={**state, "selected": "missing"},
-    )
-    assert "outside the current preview set" in hidden_selection["preview_message"]
 
     monkeypatch.setattr(
         ui_routes,
         "_recordings_list_items_context",
         lambda items, *, settings: [
-            {"id": "", "status": "Ready", "source_filename": "match-empty.wav"},
-            {"id": "skip-me", "status": "Ready", "source_filename": "other.wav"},
-            *[
-                {
-                    "id": f"match-{index}",
-                    "status": "Ready",
-                    "source_filename": f"match-{index}.wav",
-                }
-                for index in range(10)
-            ],
+            {
+                "id": item["id"],
+                "status": "Ready",
+                "source_filename": "helper.wav",
+            }
+            for item in items
         ],
     )
-    bounded_work_pane = ui_routes._control_center_work_pane_context(  # noqa: SLF001
+    panel_context = ui_routes._recordings_panel_context(  # noqa: SLF001
         cfg,
-        state={**state, "selected": "", "q": "match"},
+        mode="control_center",
+        selected="rec-helper-1",
+        status="Ready",
+        q="helper",
+        limit=25,
+        offset=0,
+        tab="speakers",
     )
-    assert len(bounded_work_pane["rows"]) == 8
-    assert all(row["id"].startswith("match-") for row in bounded_work_pane["rows"])
+    assert panel_context["total"] == 3
+    assert panel_context["recordings_filters"]["status_filter"] == "Ready"
+    assert panel_context["recordings_filters"]["hidden_fields"][0]["value"] == "rec-helper-1"
+    assert panel_context["recordings_table"]["rows"][0]["detail_href"] == (
+        "/recordings/rec-helper-1?tab=speakers"
+    )
+    assert any(card["status"] == "Ready" and card["active"] for card in panel_context["status_cards"])
 
-    filters = ui_routes._recordings_filters_context(status_filter="", limit=50)  # noqa: SLF001
+    work_pane = ui_routes._control_center_work_pane_context(  # noqa: SLF001
+        cfg,
+        state=state,
+    )
+    assert work_pane["recordings_panel"]["panel_id"] == "control-center-recordings-panel"
+    assert "without switching away" in work_pane["preview_message"]
+
+    filters = ui_routes._recordings_filters_context(  # noqa: SLF001
+        mode="control_center",
+        selected="rec-helper-1",
+        status_filter="Ready",
+        search_query="helper",
+        tab="speakers",
+        limit=25,
+    )
     assert filters["limit_options"] == [25, 50, 100, 200]
-    assert filters["hx_target"] == "body"
+    assert filters["hx_target"] == "#control-center-recordings-panel"
 
     table = ui_routes._recordings_table_context(  # noqa: SLF001
+        mode="control_center",
+        selected="rec-helper-1",
         items=[{"id": "rec-helper-1"}],
         total=3,
         limit=2,
         offset=0,
-        status_filter="",
+        status_filter="Ready",
+        search_query="helper",
+        tab="speakers",
     )
     assert table["has_prev"] is False
     assert table["has_next"] is True
+    assert table["next_hx_get"].endswith("limit=2&offset=2")
 
     upload_shell = ui_routes._upload_shell_context()  # noqa: SLF001
     assert upload_shell["file_input_id"] == "file-input"
