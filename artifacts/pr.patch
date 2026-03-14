@@ -1,68 +1,68 @@
 diff --git a/lan_app/db.py b/lan_app/db.py
-index 6d590d1..2222cf2 100644
+index 2222cf2..f4fd95b 100644
 --- a/lan_app/db.py
 +++ b/lan_app/db.py
-@@ -703,7 +703,8 @@ def get_recording(
+@@ -703,8 +703,7 @@ def get_recording(
  
  
  def _sqlite_like_query(value: str) -> str:
--    escaped = str(value).strip().casefold()
-+    # Match SQLite LOWER(...) normalization so non-ASCII searches stay consistent.
-+    escaped = str(value).strip().lower()
+-    # Match SQLite LOWER(...) normalization so non-ASCII searches stay consistent.
+-    escaped = str(value).strip().lower()
++    escaped = str(value).strip()
      escaped = escaped.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
      return f"%{escaped}%"
  
+@@ -728,7 +727,10 @@ def list_recordings(
+     if search_query:
+         pattern = _sqlite_like_query(search_query)
+         filters.append(
+-            "(LOWER(r.id) LIKE ? ESCAPE '\\' OR LOWER(COALESCE(r.source_filename, '')) LIKE ? ESCAPE '\\')"
++            "("
++            "LOWER(r.id) LIKE LOWER(?) ESCAPE '\\' "
++            "OR LOWER(COALESCE(r.source_filename, '')) LIKE LOWER(?) ESCAPE '\\'"
++            ")"
+         )
+         params.extend([pattern, pattern])
+ 
 diff --git a/tests/test_cov_lan_app_db.py b/tests/test_cov_lan_app_db.py
-index 4679fd1..93fe79c 100644
+index 93fe79c..7e1f53b 100644
 --- a/tests/test_cov_lan_app_db.py
 +++ b/tests/test_cov_lan_app_db.py
-@@ -16,6 +16,7 @@ from lan_app.constants import (
-     RECORDING_STATUS_PUBLISHED,
-     RECORDING_STATUS_QUEUED,
-     RECORDING_STATUS_QUARANTINE,
-+    RECORDING_STATUS_READY,
-     RECORDING_STATUS_STOPPING,
- )
- 
-@@ -79,6 +80,7 @@ def test_db_internal_helpers_and_validation_paths():
+@@ -79,8 +79,8 @@ def test_db_internal_helpers_and_validation_paths():
+         source_profile_id=1,
          target_profile_id=2,
      ) == [{"voice_profile_id": 2, "score": 0.9}]
-     assert db_module._sqlite_like_query(" A_B% ") == r"%a\_b\%%"  # noqa: SLF001
-+    assert db_module._sqlite_like_query(" Straße ") == "%straße%"  # noqa: SLF001
+-    assert db_module._sqlite_like_query(" A_B% ") == r"%a\_b\%%"  # noqa: SLF001
+-    assert db_module._sqlite_like_query(" Straße ") == "%straße%"  # noqa: SLF001
++    assert db_module._sqlite_like_query(" A_B% ") == r"%A\_B\%%"  # noqa: SLF001
++    assert db_module._sqlite_like_query(" Straße ") == "%Straße%"  # noqa: SLF001
  
      with pytest.raises(ValueError, match="Unsupported recording status"):
          db_module._validate_recording_status("bad-status")  # noqa: SLF001
-@@ -253,6 +255,13 @@ def test_list_recordings_q_search_is_conservative_and_escaped(tmp_path: Path) ->
-         status=RECORDING_STATUS_PUBLISHED,
+@@ -262,6 +262,13 @@ def test_list_recordings_q_search_is_conservative_and_escaped(tmp_path: Path) ->
+         status=RECORDING_STATUS_READY,
          settings=cfg,
      )
 +    db_module.create_recording(
-+        "rec-db-search-3",
++        "rec-db-search-4",
 +        source="upload",
-+        source_filename="Straße.wav",
++        source_filename="Ärger.wav",
 +        status=RECORDING_STATUS_READY,
 +        settings=cfg,
 +    )
  
      by_filename, total_by_filename = db_module.list_recordings(
          settings=cfg,
-@@ -275,6 +284,20 @@ def test_list_recordings_q_search_is_conservative_and_escaped(tmp_path: Path) ->
-     assert total_by_source == 0
-     assert by_source == []
+@@ -298,6 +305,13 @@ def test_list_recordings_q_search_is_conservative_and_escaped(tmp_path: Path) ->
+     assert total_by_unicode_fragment == 1
+     assert [row["source_filename"] for row in by_unicode_fragment] == ["Straße.wav"]
  
-+    by_unicode_filename, total_by_unicode_filename = db_module.list_recordings(
++    by_upper_unicode, total_by_upper_unicode = db_module.list_recordings(
 +        settings=cfg,
-+        q="straße",
++        q="Ä",
 +    )
-+    assert total_by_unicode_filename == 1
-+    assert [row["id"] for row in by_unicode_filename] == ["rec-db-search-3"]
-+
-+    by_unicode_fragment, total_by_unicode_fragment = db_module.list_recordings(
-+        settings=cfg,
-+        q="ß",
-+    )
-+    assert total_by_unicode_fragment == 1
-+    assert [row["source_filename"] for row in by_unicode_fragment] == ["Straße.wav"]
++    assert total_by_upper_unicode == 1
++    assert [row["id"] for row in by_upper_unicode] == ["rec-db-search-4"]
 +
  
  def test_glossary_entry_helpers_cover_crud_and_validation_paths(tmp_path: Path) -> None:

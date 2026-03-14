@@ -703,8 +703,7 @@ def get_recording(
 
 
 def _sqlite_like_query(value: str) -> str:
-    # Match SQLite LOWER(...) normalization so non-ASCII searches stay consistent.
-    escaped = str(value).strip().lower()
+    escaped = str(value).strip()
     escaped = escaped.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
     return f"%{escaped}%"
 
@@ -728,7 +727,10 @@ def list_recordings(
     if search_query:
         pattern = _sqlite_like_query(search_query)
         filters.append(
-            "(LOWER(r.id) LIKE ? ESCAPE '\\' OR LOWER(COALESCE(r.source_filename, '')) LIKE ? ESCAPE '\\')"
+            "("
+            "LOWER(r.id) LIKE LOWER(?) ESCAPE '\\' "
+            "OR LOWER(COALESCE(r.source_filename, '')) LIKE LOWER(?) ESCAPE '\\'"
+            ")"
         )
         params.extend([pattern, pattern])
 
