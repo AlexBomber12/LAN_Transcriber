@@ -1,16 +1,110 @@
-diff --git a/tests_playwright/test_ui_smoke_playwright.py b/tests_playwright/test_ui_smoke_playwright.py
-index 8cf04eb..4d3bb91 100644
---- a/tests_playwright/test_ui_smoke_playwright.py
-+++ b/tests_playwright/test_ui_smoke_playwright.py
-@@ -177,8 +177,9 @@ def test_upload_recordings_detail_and_export_zip_smoke(tmp_path: Path) -> None:
-                     state="visible",
-                     timeout=_remaining_timeout_ms(deadline),
-                 )
--                page.wait_for_selector(
--                    f"#control-center-recordings-panel text={wav_path.name}",
-+                page.locator("#control-center-recordings-panel").get_by_text(
-+                    wav_path.name
-+                ).wait_for(
-                     state="visible",
-                     timeout=_remaining_timeout_ms(deadline),
-                 )
+diff --git a/lan_app/templates/partials/control_center/recordings_table.html b/lan_app/templates/partials/control_center/recordings_table.html
+index 6a10eee..24717d2 100644
+--- a/lan_app/templates/partials/control_center/recordings_table.html
++++ b/lan_app/templates/partials/control_center/recordings_table.html
+@@ -17,8 +17,25 @@
+   <tbody>
+     {% for r in recordings_table.rows %}
+     <tr>
+-      <td title="{{ r.id }}"><a href="{{ r.detail_href }}" style="text-decoration:none;color:#1d4ed8">{{ r.id[:16] }}…</a></td>
+-      <td title="{{ r.source_filename }}">{{ r.source_filename }}</td>
++      <td title="{{ r.id }}">
++        <a href="{{ r.detail_href }}" style="text-decoration:none;color:#1d4ed8">{{ r.id[:16] }}…</a>
++        {% if r.select_href %}
++        <div style="margin-top:6px">
++          {% if r.selected %}
++          <span class="badge s-Ready">Selected</span>
++          {% else %}
++          <a href="{{ r.select_href }}" class="btn" style="text-decoration:none">Select</a>
++          {% endif %}
++        </div>
++        {% endif %}
++      </td>
++      <td title="{{ r.source_filename }}">
++        {% if r.select_href %}
++        <a href="{{ r.select_href }}" style="text-decoration:none;color:inherit">{{ r.source_filename }}</a>
++        {% else %}
++        {{ r.source_filename }}
++        {% endif %}
++      </td>
+       <td>
+         <span class="badge s-{{ r.status }}">{{ r.status }}</span>
+         {% if r.status_reason_text_display %}
+diff --git a/lan_app/ui_routes.py b/lan_app/ui_routes.py
+index 6261b00..1322824 100644
+--- a/lan_app/ui_routes.py
++++ b/lan_app/ui_routes.py
+@@ -2376,6 +2376,7 @@ def _recordings_table_context(
+     tab: str,
+ ) -> dict[str, Any]:
+     rows: list[dict[str, Any]] = []
++    is_control_center = mode == "control_center"
+     for item in items:
+         recording_id = str(item.get("id") or "").strip()
+         detail_href = f"/recordings/{quote(recording_id)}"
+@@ -2385,10 +2386,20 @@ def _recordings_table_context(
+             {
+                 **item,
+                 "detail_href": detail_href,
++                "select_href": (
++                    _control_center_shell_href(
++                        selected=recording_id,
++                        status_filter=status_filter,
++                        search_query=search_query,
++                        tab=tab,
++                    )
++                    if is_control_center
++                    else ""
++                ),
++                "selected": is_control_center and recording_id == selected,
+             }
+         )
+ 
+-    is_control_center = mode == "control_center"
+     prev_offset = max(offset - limit, 0)
+     next_offset = offset + limit
+     return {
+diff --git a/tests/test_cov_lan_app_ui_routes.py b/tests/test_cov_lan_app_ui_routes.py
+index 6584bf3..875fa0a 100644
+--- a/tests/test_cov_lan_app_ui_routes.py
++++ b/tests/test_cov_lan_app_ui_routes.py
+@@ -184,6 +184,10 @@ def test_control_center_helper_contexts_cover_fragment_builders(
+     assert panel_context["recordings_table"]["rows"][0]["detail_href"] == (
+         "/recordings/rec-helper-1?tab=speakers"
+     )
++    assert panel_context["recordings_table"]["rows"][0]["select_href"] == (
++        "/?selected=rec-helper-1&status=Ready&q=helper&tab=speakers"
++    )
++    assert panel_context["recordings_table"]["rows"][0]["selected"] is True
+     assert any(card["status"] == "Ready" and card["active"] for card in panel_context["status_cards"])
+ 
+     work_pane = ui_routes._control_center_work_pane_context(  # noqa: SLF001
+@@ -218,6 +222,10 @@ def test_control_center_helper_contexts_cover_fragment_builders(
+     assert table["has_prev"] is False
+     assert table["has_next"] is True
+     assert table["next_hx_get"].endswith("limit=2&offset=2")
++    assert table["rows"][0]["select_href"] == (
++        "/?selected=rec-helper-1&status=Ready&q=helper&tab=speakers"
++    )
++    assert table["rows"][0]["selected"] is True
+ 
+     upload_shell = ui_routes._upload_shell_context()  # noqa: SLF001
+     assert upload_shell["file_input_id"] == "file-input"
+diff --git a/tests/test_ui_routes.py b/tests/test_ui_routes.py
+index 1876323..220c312 100644
+--- a/tests/test_ui_routes.py
++++ b/tests/test_ui_routes.py
+@@ -385,8 +385,13 @@ def test_control_center_recordings_panel_filters_search_and_actions(
+     assert "alpha.wav" in panel.text
+     assert "beta.wav" not in panel.text
+     assert 'data-return-to="control-center"' in panel.text
++    assert 'href="/?selected=rec-cc-panel-1&amp;status=Ready&amp;q=alpha&amp;tab=speakers"' in panel.text
+     assert panel.headers["HX-Push-Url"] == "/?status=Ready&q=alpha&tab=speakers"
+ 
++    selected_panel = c.get("/ui/control-center/recordings/panel?selected=rec-cc-panel-1&tab=speakers")
++    assert selected_panel.status_code == 200
++    assert "Selected" in selected_panel.text
++
+     conservative = c.get("/ui/control-center/recordings/panel?q=upload")
+     assert conservative.status_code == 200
+     assert "alpha.wav" not in conservative.text

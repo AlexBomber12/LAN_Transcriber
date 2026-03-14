@@ -184,6 +184,10 @@ def test_control_center_helper_contexts_cover_fragment_builders(
     assert panel_context["recordings_table"]["rows"][0]["detail_href"] == (
         "/recordings/rec-helper-1?tab=speakers"
     )
+    assert panel_context["recordings_table"]["rows"][0]["select_href"] == (
+        "/?selected=rec-helper-1&status=Ready&q=helper&tab=speakers"
+    )
+    assert panel_context["recordings_table"]["rows"][0]["selected"] is True
     assert any(card["status"] == "Ready" and card["active"] for card in panel_context["status_cards"])
 
     work_pane = ui_routes._control_center_work_pane_context(  # noqa: SLF001
@@ -218,6 +222,10 @@ def test_control_center_helper_contexts_cover_fragment_builders(
     assert table["has_prev"] is False
     assert table["has_next"] is True
     assert table["next_hx_get"].endswith("limit=2&offset=2")
+    assert table["rows"][0]["select_href"] == (
+        "/?selected=rec-helper-1&status=Ready&q=helper&tab=speakers"
+    )
+    assert table["rows"][0]["selected"] is True
 
     upload_shell = ui_routes._upload_shell_context()  # noqa: SLF001
     assert upload_shell["file_input_id"] == "file-input"

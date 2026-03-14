@@ -17,8 +17,25 @@
   <tbody>
     {% for r in recordings_table.rows %}
     <tr>
-      <td title="{{ r.id }}"><a href="{{ r.detail_href }}" style="text-decoration:none;color:#1d4ed8">{{ r.id[:16] }}…</a></td>
-      <td title="{{ r.source_filename }}">{{ r.source_filename }}</td>
+      <td title="{{ r.id }}">
+        <a href="{{ r.detail_href }}" style="text-decoration:none;color:#1d4ed8">{{ r.id[:16] }}…</a>
+        {% if r.select_href %}
+        <div style="margin-top:6px">
+          {% if r.selected %}
+          <span class="badge s-Ready">Selected</span>
+          {% else %}
+          <a href="{{ r.select_href }}" class="btn" style="text-decoration:none">Select</a>
+          {% endif %}
+        </div>
+        {% endif %}
+      </td>
+      <td title="{{ r.source_filename }}">
+        {% if r.select_href %}
+        <a href="{{ r.select_href }}" style="text-decoration:none;color:inherit">{{ r.source_filename }}</a>
+        {% else %}
+        {{ r.source_filename }}
+        {% endif %}
+      </td>
       <td>
         <span class="badge s-{{ r.status }}">{{ r.status }}</span>
         {% if r.status_reason_text_display %}

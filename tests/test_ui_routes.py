@@ -385,7 +385,12 @@ def test_control_center_recordings_panel_filters_search_and_actions(
     assert "alpha.wav" in panel.text
     assert "beta.wav" not in panel.text
     assert 'data-return-to="control-center"' in panel.text
+    assert 'href="/?selected=rec-cc-panel-1&amp;status=Ready&amp;q=alpha&amp;tab=speakers"' in panel.text
     assert panel.headers["HX-Push-Url"] == "/?status=Ready&q=alpha&tab=speakers"
+
+    selected_panel = c.get("/ui/control-center/recordings/panel?selected=rec-cc-panel-1&tab=speakers")
+    assert selected_panel.status_code == 200
+    assert "Selected" in selected_panel.text
 
     conservative = c.get("/ui/control-center/recordings/panel?q=upload")
     assert conservative.status_code == 200

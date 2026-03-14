@@ -2376,6 +2376,7 @@ def _recordings_table_context(
     tab: str,
 ) -> dict[str, Any]:
     rows: list[dict[str, Any]] = []
+    is_control_center = mode == "control_center"
     for item in items:
         recording_id = str(item.get("id") or "").strip()
         detail_href = f"/recordings/{quote(recording_id)}"
@@ -2385,10 +2386,20 @@ def _recordings_table_context(
             {
                 **item,
                 "detail_href": detail_href,
+                "select_href": (
+                    _control_center_shell_href(
+                        selected=recording_id,
+                        status_filter=status_filter,
+                        search_query=search_query,
+                        tab=tab,
+                    )
+                    if is_control_center
+                    else ""
+                ),
+                "selected": is_control_center and recording_id == selected,
             }
         )
 
-    is_control_center = mode == "control_center"
     prev_offset = max(offset - limit, 0)
     next_offset = offset + limit
     return {
