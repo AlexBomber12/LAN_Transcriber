@@ -33,7 +33,13 @@ if os.getenv("CI") == "true":  # pragma: no cover - CI stub
             return False
 
     class _Stub(types.ModuleType):
+        def __init__(self, name):
+            super().__init__(name)
+            self.__file__ = __file__
+
         def __getattr__(self, _name):
+            if _name.startswith("__"):
+                raise AttributeError(_name)
             return _Dummy()
 
     def _fake(mod: str) -> None:
