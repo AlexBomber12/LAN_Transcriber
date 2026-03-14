@@ -177,8 +177,9 @@ def test_upload_recordings_detail_and_export_zip_smoke(tmp_path: Path) -> None:
                     state="visible",
                     timeout=_remaining_timeout_ms(deadline),
                 )
-                page.wait_for_selector(
-                    f"#control-center-recordings-panel text={wav_path.name}",
+                page.locator("#control-center-recordings-panel").get_by_text(
+                    wav_path.name
+                ).wait_for(
                     state="visible",
                     timeout=_remaining_timeout_ms(deadline),
                 )
