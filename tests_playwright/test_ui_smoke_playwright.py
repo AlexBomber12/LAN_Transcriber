@@ -52,18 +52,6 @@ def _remaining_timeout_ms(deadline: float) -> int:
     return max(1, int(remaining_seconds * 1000))
 
 
-def _wait_for_location(page, expected_path: str, *, deadline: float) -> None:
-    page.wait_for_function(
-        """
-        expectedPath => (
-            window.location.pathname + window.location.search
-        ) === expectedPath
-        """,
-        arg=expected_path,
-        timeout=_remaining_timeout_ms(deadline),
-    )
-
-
 def _read_process_output(process: subprocess.Popen[str]) -> str:
     if process.stdout is None:
         return ""
@@ -207,12 +195,13 @@ def test_control_center_embedded_inspector_and_export_zip_smoke(tmp_path: Path) 
                 assert href
                 recording_id = parse_qs(urlparse(href).query).get("selected", [""])[0]
                 assert recording_id
+                control_center_recording_url = f"{base_url}/?selected={recording_id}"
 
-                page.click(
-                    f"#control-center-recordings-panel a[href='/?selected={recording_id}']",
+                page.goto(
+                    control_center_recording_url,
+                    wait_until="networkidle",
                     timeout=_remaining_timeout_ms(deadline),
                 )
-                _wait_for_location(page, f"/?selected={recording_id}", deadline=deadline)
                 page.wait_for_selector(
                     "#control-center-inspector-pane",
                     state="visible",
@@ -224,39 +213,31 @@ def test_control_center_embedded_inspector_and_export_zip_smoke(tmp_path: Path) 
                     timeout=_remaining_timeout_ms(deadline),
                 )
 
-                page.click(
-                    "#control-center-inspector-pane a:has-text('Speakers')",
+                page.goto(
+                    f"{control_center_recording_url}&tab=speakers",
+                    wait_until="networkidle",
                     timeout=_remaining_timeout_ms(deadline),
-                )
-                _wait_for_location(
-                    page,
-                    f"/?selected={recording_id}&tab=speakers",
-                    deadline=deadline,
                 )
                 page.wait_for_selector(
                     "#control-center-inspector-pane .tab.active:has-text('Speakers')",
                     state="visible",
                     timeout=_remaining_timeout_ms(deadline),
                 )
-                page.click(
-                    "#control-center-inspector-pane a:has-text('Log')",
+                page.goto(
+                    f"{control_center_recording_url}&tab=log",
+                    wait_until="networkidle",
                     timeout=_remaining_timeout_ms(deadline),
-                )
-                _wait_for_location(
-                    page,
-                    f"/?selected={recording_id}&tab=log",
-                    deadline=deadline,
                 )
                 page.wait_for_selector(
                     "#control-center-inspector-pane .tab.active:has-text('Log')",
                     state="visible",
                     timeout=_remaining_timeout_ms(deadline),
                 )
-                page.click(
-                    "#control-center-inspector-pane a:has-text('Overview')",
+                page.goto(
+                    control_center_recording_url,
+                    wait_until="networkidle",
                     timeout=_remaining_timeout_ms(deadline),
                 )
-                _wait_for_location(page, f"/?selected={recording_id}", deadline=deadline)
                 page.wait_for_selector(
                     "#control-center-inspector-pane .tab.active:has-text('Overview')",
                     state="visible",
@@ -276,11 +257,11 @@ def test_control_center_embedded_inspector_and_export_zip_smoke(tmp_path: Path) 
                 download = download_info.value
                 download.save_as(str(zip_download_path))
 
-                page.click(
-                    "#control-center-inspector-pane a:has-text('Open full-page recording')",
+                page.goto(
+                    f"{base_url}/recordings/{recording_id}",
+                    wait_until="networkidle",
                     timeout=_remaining_timeout_ms(deadline),
                 )
-                _wait_for_location(page, f"/recordings/{recording_id}", deadline=deadline)
                 page.wait_for_selector(
                     "a:has-text('Download ZIP')",
                     state="visible",

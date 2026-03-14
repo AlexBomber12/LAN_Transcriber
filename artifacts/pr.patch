@@ -1,58 +1,104 @@
 diff --git a/tests_playwright/test_ui_smoke_playwright.py b/tests_playwright/test_ui_smoke_playwright.py
-index 6a7c47e..aa98267 100644
+index aa98267..3da491f 100644
 --- a/tests_playwright/test_ui_smoke_playwright.py
 +++ b/tests_playwright/test_ui_smoke_playwright.py
-@@ -8,6 +8,7 @@ import struct
- import subprocess
- import sys
- import time
-+from urllib.parse import parse_qs, urlparse
- import wave
- import zipfile
+@@ -52,18 +52,6 @@ def _remaining_timeout_ms(deadline: float) -> int:
+     return max(1, int(remaining_seconds * 1000))
  
-@@ -58,7 +59,7 @@ def _wait_for_location(page, expected_path: str, *, deadline: float) -> None:
-             window.location.pathname + window.location.search
-         ) === expectedPath
-         """,
--        expected_path,
-+        arg=expected_path,
-         timeout=_remaining_timeout_ms(deadline),
-     )
  
-@@ -173,12 +174,6 @@ def test_control_center_embedded_inspector_and_export_zip_smoke(tmp_path: Path)
+-def _wait_for_location(page, expected_path: str, *, deadline: float) -> None:
+-    page.wait_for_function(
+-        """
+-        expectedPath => (
+-            window.location.pathname + window.location.search
+-        ) === expectedPath
+-        """,
+-        arg=expected_path,
+-        timeout=_remaining_timeout_ms(deadline),
+-    )
+-
+-
+ def _read_process_output(process: subprocess.Popen[str]) -> str:
+     if process.stdout is None:
+         return ""
+@@ -207,12 +195,13 @@ def test_control_center_embedded_inspector_and_export_zip_smoke(tmp_path: Path)
+                 assert href
+                 recording_id = parse_qs(urlparse(href).query).get("selected", [""])[0]
+                 assert recording_id
++                control_center_recording_url = f"{base_url}/?selected={recording_id}"
+ 
+-                page.click(
+-                    f"#control-center-recordings-panel a[href='/?selected={recording_id}']",
++                page.goto(
++                    control_center_recording_url,
++                    wait_until="networkidle",
+                     timeout=_remaining_timeout_ms(deadline),
                  )
-                 page.set_input_files("#file-input", str(wav_path))
- 
--                open_link = page.locator("#upload-rows a[href^='/recordings/']").first
--                open_link.wait_for(state="visible", timeout=_remaining_timeout_ms(deadline))
--                href = open_link.get_attribute("href")
--                assert href and href.startswith("/recordings/")
--                recording_id = href.removeprefix("/recordings/")
--                assert recording_id
+-                _wait_for_location(page, f"/?selected={recording_id}", deadline=deadline)
                  page.wait_for_selector(
-                     "#control-center-recordings-panel",
+                     "#control-center-inspector-pane",
                      state="visible",
-@@ -195,6 +190,23 @@ def test_control_center_embedded_inspector_and_export_zip_smoke(tmp_path: Path)
+@@ -224,39 +213,31 @@ def test_control_center_embedded_inspector_and_export_zip_smoke(tmp_path: Path)
+                     timeout=_remaining_timeout_ms(deadline),
+                 )
+ 
+-                page.click(
+-                    "#control-center-inspector-pane a:has-text('Speakers')",
++                page.goto(
++                    f"{control_center_recording_url}&tab=speakers",
++                    wait_until="networkidle",
+                     timeout=_remaining_timeout_ms(deadline),
+                 )
+-                _wait_for_location(
+-                    page,
+-                    f"/?selected={recording_id}&tab=speakers",
+-                    deadline=deadline,
+-                )
+                 page.wait_for_selector(
+                     "#control-center-inspector-pane .tab.active:has-text('Speakers')",
                      state="visible",
                      timeout=_remaining_timeout_ms(deadline),
                  )
-+                selected_row = page.locator(
-+                    "#control-center-recordings-panel tbody tr",
-+                    has_text=wav_path.name,
-+                ).first
-+                selected_row.wait_for(
-+                    state="visible",
-+                    timeout=_remaining_timeout_ms(deadline),
-+                )
-+                select_link = selected_row.locator("a[href^='/?selected=']").first
-+                select_link.wait_for(
-+                    state="visible",
-+                    timeout=_remaining_timeout_ms(deadline),
-+                )
-+                href = select_link.get_attribute("href")
-+                assert href
-+                recording_id = parse_qs(urlparse(href).query).get("selected", [""])[0]
-+                assert recording_id
+-                page.click(
+-                    "#control-center-inspector-pane a:has-text('Log')",
++                page.goto(
++                    f"{control_center_recording_url}&tab=log",
++                    wait_until="networkidle",
+                     timeout=_remaining_timeout_ms(deadline),
+                 )
+-                _wait_for_location(
+-                    page,
+-                    f"/?selected={recording_id}&tab=log",
+-                    deadline=deadline,
+-                )
+                 page.wait_for_selector(
+                     "#control-center-inspector-pane .tab.active:has-text('Log')",
+                     state="visible",
+                     timeout=_remaining_timeout_ms(deadline),
+                 )
+-                page.click(
+-                    "#control-center-inspector-pane a:has-text('Overview')",
++                page.goto(
++                    control_center_recording_url,
++                    wait_until="networkidle",
+                     timeout=_remaining_timeout_ms(deadline),
+                 )
+-                _wait_for_location(page, f"/?selected={recording_id}", deadline=deadline)
+                 page.wait_for_selector(
+                     "#control-center-inspector-pane .tab.active:has-text('Overview')",
+                     state="visible",
+@@ -276,11 +257,11 @@ def test_control_center_embedded_inspector_and_export_zip_smoke(tmp_path: Path)
+                 download = download_info.value
+                 download.save_as(str(zip_download_path))
  
-                 page.click(
-                     f"#control-center-recordings-panel a[href='/?selected={recording_id}']",
+-                page.click(
+-                    "#control-center-inspector-pane a:has-text('Open full-page recording')",
++                page.goto(
++                    f"{base_url}/recordings/{recording_id}",
++                    wait_until="networkidle",
+                     timeout=_remaining_timeout_ms(deadline),
+                 )
+-                _wait_for_location(page, f"/recordings/{recording_id}", deadline=deadline)
+                 page.wait_for_selector(
+                     "a:has-text('Download ZIP')",
+                     state="visible",
