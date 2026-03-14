@@ -248,6 +248,52 @@ def test_control_center_helper_contexts_cover_fragment_builders(
     assert selected_shell["notices"] == []
     assert selected_shell["action_bar"]["current_tab"] == "overview"
 
+
+def test_recordings_panel_context_clamps_offset_to_last_available_page(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = _cfg(tmp_path)
+    calls: list[int] = []
+
+    def _list_recordings(**kwargs):
+        offset = int(kwargs["offset"])
+        calls.append(offset)
+        if offset == 25:
+            return [], 25
+        return [{"id": "rec-helper-1"}], 25
+
+    monkeypatch.setattr(ui_routes, "list_recordings", _list_recordings)
+    monkeypatch.setattr(ui_routes, "_status_counts", lambda settings: {"Ready": 25})
+    monkeypatch.setattr(
+        ui_routes,
+        "_recordings_list_items_context",
+        lambda items, *, settings: [
+            {
+                "id": item["id"],
+                "status": "Ready",
+                "source_filename": "helper.wav",
+            }
+            for item in items
+        ],
+    )
+
+    panel_context = ui_routes._recordings_panel_context(  # noqa: SLF001
+        cfg,
+        mode="control_center",
+        selected="rec-helper-1",
+        status="Ready",
+        q="helper",
+        limit=25,
+        offset=25,
+        tab="speakers",
+    )
+
+    assert calls[:2] == [25, 0]
+    assert panel_context["recordings_table"]["offset"] == 0
+    assert panel_context["recordings_table"]["rows"][0]["id"] == "rec-helper-1"
+    assert panel_context["refresh_url"].endswith("limit=25&offset=0")
+
     selected_shell_warning = ui_routes._selected_recording_summary_shell_context(  # noqa: SLF001
         {
             "id": "rec-helper-2",

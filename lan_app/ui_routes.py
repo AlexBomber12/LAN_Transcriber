@@ -2468,13 +2468,24 @@ def _recordings_panel_context(
 ) -> dict[str, Any]:
     valid_status = status if status in RECORDING_STATUSES else None
     search_query = str(q or "").strip()
+    safe_limit = max(1, min(limit, 500))
+    safe_offset = max(offset, 0)
     items, total = list_recordings(
         settings=settings,
         status=valid_status,
         q=search_query,
-        limit=limit,
-        offset=offset,
+        limit=safe_limit,
+        offset=safe_offset,
     )
+    if total > 0 and safe_offset >= total:
+        safe_offset = ((total - 1) // safe_limit) * safe_limit
+        items, total = list_recordings(
+            settings=settings,
+            status=valid_status,
+            q=search_query,
+            limit=safe_limit,
+            offset=safe_offset,
+        )
     status_filter = valid_status or ""
     prepared_items = _recordings_list_items_context(items, settings=settings)
     is_control_center = mode == "control_center"
@@ -2495,8 +2506,8 @@ def _recordings_panel_context(
                 status_filter=status_filter,
                 search_query=search_query,
                 tab=tab,
-                limit=limit,
-                offset=offset,
+                limit=safe_limit,
+                offset=safe_offset,
             )
             if is_control_center
             else ""
@@ -2524,8 +2535,8 @@ def _recordings_panel_context(
             selected=selected,
             items=prepared_items,
             total=total,
-            limit=limit,
-            offset=offset,
+            limit=safe_limit,
+            offset=safe_offset,
             status_filter=status_filter,
             search_query=search_query,
             tab=tab,

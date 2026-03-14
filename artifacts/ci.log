@@ -13,10 +13,10 @@ The event loop scope for asynchronous fixtures will default to the fixture cachi
 ........................................................................ [ 58%]
 ........................................................................ [ 65%]
 ........................................................................ [ 72%]
-...............................................................s........ [ 79%]
+................................................................s....... [ 79%]
 ........................................................................ [ 87%]
 ........................................................................ [ 94%]
-........................................................                 [100%]
+.........................................................                [100%]
 =============================== warnings summary ===============================
 lan_transcriber/pipeline_steps/precheck.py:3
   /home/alexey/LAN_Transcriber/lan_transcriber/pipeline_steps/precheck.py:3: DeprecationWarning: 'audioop' is deprecated and slated for removal in Python 3.13
@@ -55,13 +55,13 @@ tests/test_warm_models.py::test_warm_models_module_main_guard
 ---------- coverage: platform linux, python 3.12.3-final-0 -----------
 Name    Stmts   Miss Branch BrPart  Cover   Missing
 ---------------------------------------------------
-TOTAL   12892      0   4142      0   100%
+TOTAL   12897      0   4144      0   100%
 
 62 files skipped due to complete coverage.
 Coverage HTML written to dir htmlcov
 
 Required test coverage of 100% reached. Total coverage: 100.00%
-991 passed, 3 skipped, 11 warnings in 77.14s (0:01:17)
+992 passed, 3 skipped, 11 warnings in 78.44s (0:01:18)
 Name                                                    Stmts   Miss Branch BrPart  Cover
 -----------------------------------------------------------------------------------------
 lan_transcriber/__init__.py                                 8      0      0      0   100%
@@ -125,10 +125,10 @@ lan_app/tools/__init__.py              1      0      0      0   100%
 lan_app/tools/repair_snippets.py      36      0     12      0   100%
 lan_app/tools/warm_models.py          47      0     10      0   100%
 lan_app/ui.py                         59      0     10      0   100%
-lan_app/ui_routes.py                1827      0    626      0   100%
+lan_app/ui_routes.py                1832      0    628      0   100%
 lan_app/uploads.py                    79      0     14      0   100%
 lan_app/worker.py                     28      0      2      0   100%
 lan_app/worker_tasks.py             1694      0    490      0   100%
 lan_app/workers.py                    10      0      0      0   100%
 --------------------------------------------------------------------
-TOTAL                               8819      0   2778      0   100%
+TOTAL                               8824      0   2780      0   100%
