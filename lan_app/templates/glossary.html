@@ -6,9 +6,24 @@
 <h1>Corrections / ASR Memory</h1>
 
 {% set helper_message = {
-  "text": "Save the right spelling once, then let future recordings reuse it. This page remembers names, project terms, and common ASR mistakes for later ASR prompts. It does not retrain the model."
+  "text": "Use this admin page when the embedded workflow needs a remembered spelling or ASR correction. Save the right term once, then let future recordings reuse it."
 } %}
 {% include "partials/control_center/helper_message.html" %}
+{% if return_context.active %}
+<div style="margin:0 0 12px 0;padding:8px 10px;border:1px solid #99b;background:#f8f9ff;color:#334155;max-width:920px">
+  <p style="margin:0 0 8px 0">{{ return_context.message }}</p>
+  <div class="filters" style="margin:0">
+    <a href="{{ return_context.href }}" class="btn" style="text-decoration:none">Return to Control Center</a>
+    {% if return_context.selected_detail_href %}
+    <a href="{{ return_context.selected_detail_href }}" class="btn" style="text-decoration:none">Open selected recording</a>
+    {% endif %}
+  </div>
+</div>
+{% else %}
+<div class="filters" style="margin-bottom:10px">
+  <a href="/" class="btn" style="text-decoration:none">Open Control Center</a>
+</div>
+{% endif %}
 
 <div class="section">
   <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:10px;max-width:920px">
@@ -34,6 +49,9 @@
     {% if form_state.prefill_notice %}
     <p style="margin:0 0 10px 0;padding:8px 10px;border:1px solid #99b;background:#f8f9ff;color:#334155">{{ form_state.prefill_notice }}</p>
     {% endif %}
+    {% for field in return_context.hidden_fields %}
+    <input type="hidden" name="{{ field.name }}" value="{{ field.value }}">
+    {% endfor %}
     <div class="form-row">
       <label for="glossary-canonical">Correct term</label>
       <input
@@ -116,7 +134,7 @@
     <div class="filters" style="margin-top:8px">
       <button class="btn" type="submit">{% if is_editing %}Save correction{% else %}Save correction{% endif %}</button>
       {% if is_editing %}
-      <a href="/glossary" class="btn" style="text-decoration:none">Cancel edit</a>
+      <a href="/glossary{% if return_context.query_string %}?{{ return_context.query_string }}{% endif %}" class="btn" style="text-decoration:none">Cancel edit</a>
       {% endif %}
     </div>
   </form>
@@ -163,8 +181,15 @@
         <td style="white-space:normal;max-width:260px">{{ item.notes or '—' }}</td>
         <td>{{ item.updated_at[:19].replace('T', ' ') if item.updated_at else '—' }}</td>
         <td style="white-space:nowrap">
-          <a href="/glossary?edit_id={{ item.id }}#glossary-{{ item.id }}" class="btn" style="text-decoration:none">Edit</a>
+          <a
+            href="/glossary?edit_id={{ item.id }}{% if return_context.query_string %}&{{ return_context.query_string }}{% endif %}#glossary-{{ item.id }}"
+            class="btn"
+            style="text-decoration:none"
+          >Edit</a>
           <form method="post" action="/glossary/{{ item.id }}/delete" style="display:inline" onsubmit="return confirm('Delete correction ' + this.dataset.name + '?')" data-name="{{ item.canonical_text }}">
+            {% for field in return_context.hidden_fields %}
+            <input type="hidden" name="{{ field.name }}" value="{{ field.value }}">
+            {% endfor %}
             <button class="btn btn-danger" type="submit">Delete</button>
           </form>
         </td>
@@ -173,7 +198,7 @@
     </tbody>
   </table>
   {% else %}
-  <p class="placeholder">No corrections saved yet. Add a remembered spelling or common mistake above.</p>
+  <p class="placeholder">No corrections saved yet. Add one here only when a spelling or term keeps repeating across recordings.</p>
   {% endif %}
 </div>
 {% endblock %}

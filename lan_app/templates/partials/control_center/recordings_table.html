@@ -24,7 +24,13 @@
           {% if r.selected %}
           <span class="badge s-Ready">Selected</span>
           {% else %}
-          <a href="{{ r.select_href }}" class="btn" style="text-decoration:none">Select</a>
+          <a
+            href="{{ r.select_href }}"
+            class="btn"
+            style="text-decoration:none"
+            data-testid="control-center-select-recording"
+            data-recording-id="{{ r.id }}"
+          >Select</a>
           {% endif %}
         </div>
         {% endif %}
@@ -125,6 +131,10 @@
 </div>
 {% else %}
 <p class="placeholder">
-  No recordings{% if recordings_table.status_filter %} with status <strong>{{ recordings_table.status_filter }}</strong>{% endif %}{% if recordings_table.search_query %} matching <strong>{{ recordings_table.search_query }}</strong>{% endif %}.
+  {% if not recordings_table.total and not recordings_table.status_filter and not recordings_table.search_query %}
+  No recordings yet. Upload from the Control Center or use the fallback Upload page.
+  {% else %}
+  No recordings{% if recordings_table.status_filter %} with status <strong>{{ recordings_table.status_filter }}</strong>{% endif %}{% if recordings_table.search_query %} matching <strong>{{ recordings_table.search_query }}</strong>{% endif %}. Clear the filters to widen the queue.
+  {% endif %}
 </p>
 {% endif %}

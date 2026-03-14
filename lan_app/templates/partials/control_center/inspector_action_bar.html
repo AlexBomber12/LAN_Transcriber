@@ -41,9 +41,20 @@
     >Stop</button>
     {% endif %}
   {% endif %}
-  <a href="{{ inspector_action_bar.download_zip_href }}" class="btn" style="text-decoration:none" hx-boost="false">Download ZIP</a>
+  <a
+    href="{{ inspector_action_bar.download_zip_href }}"
+    class="btn"
+    style="text-decoration:none"
+    hx-boost="false"
+    data-testid="recording-inspector-download-zip"
+  >Download ZIP</a>
   {% if inspector_action_bar.embedded %}
-  <a href="{{ inspector_action_bar.open_full_page_href }}" class="btn" style="text-decoration:none">Open full-page recording</a>
+  <a
+    href="{{ inspector_action_bar.open_full_page_href }}"
+    class="btn"
+    style="text-decoration:none"
+    data-testid="recording-inspector-open-full-page"
+  >Open full-page recording</a>
   {% endif %}
   <a href="{{ inspector_action_bar.back_href }}" class="btn" style="text-decoration:none">{{ inspector_action_bar.back_label }}</a>
 </div>

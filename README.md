@@ -87,6 +87,7 @@ Operational setup, failure handling, backup/restore, and upgrade steps are docum
 1. Open `/` for the Control Center shell.
    - This is now the primary operator surface: summary strip on top, embedded upload + live recordings queue on the left, and the shared recording inspector on the right.
    - `/upload` and `/recordings/{recording_id}` remain available as direct fallback pages, but the main review flow now stays on `/`.
+   - `/glossary` and `/voices` remain available as secondary admin pages. When you open them from `/`, the UI preserves the selected recording and lets you jump back to the same Control Center state.
 1. Upload one or more audio files from `/` or the fallback `/upload` page.
 2. Uploaded audio is normalized automatically to 16 kHz mono WAV before VAD/ASR/diarization (raw upload is preserved; no user conversion needed).
 3. Mixed-language handling now happens automatically in `LAN_ASR_MULTILINGUAL_MODE=auto`.
@@ -96,6 +97,7 @@ Operational setup, failure handling, backup/restore, and upgrade steps are docum
 5. Select a recording from `/` and review it in the embedded inspector.
    - Use the inspector tabs on `/` for overview, speakers, language, project, calendar, metrics, and log without losing queue context.
    - `/recordings/{recording_id}` remains available as a standalone fallback for the same shared inspector.
+   - Use `Corrections` or `Canonical speakers` from `/` only when the embedded workflow needs admin work; both direct pages preserve a return path back to the selected recording.
    - `NeedsReview` recordings now show an explicit review reason in both the list and detail UI.
    - Automatic worker retries now resume from the first incomplete or invalidated pipeline stage instead of restarting from raw sanitization every time.
    - Explicit `Requeue` from the UI/API still clears saved stage checkpoints and forces a clean rerun from the beginning.

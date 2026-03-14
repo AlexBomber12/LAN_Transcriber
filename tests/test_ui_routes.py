@@ -282,7 +282,7 @@ def test_dashboard_empty(client):
     assert 'id="control-center-inspector-pane"' in r.text
     assert 'id="file-input"' in r.text
     assert 'id="control-center-recordings-panel"' in r.text
-    assert "Select a recording from the left pane" in r.text
+    assert "No recording selected yet" in r.text
     assert "LAN Transcriber" in r.text
 
 
@@ -344,8 +344,10 @@ def test_control_center_pane_fragment_endpoints(seeded_client):
         "/ui/control-center/work-pane?selected=rec-ui-1&status=Ready&q=meeting&tab=speakers"
     )
     assert work_pane.status_code == 200
-    assert "Work Pane" in work_pane.text
+    assert "Daily Workflow" in work_pane.text
     assert "Upload Queue" in work_pane.text
+    assert "Corrections admin" in work_pane.text
+    assert "Canonical Speakers" in work_pane.text
     assert "meeting.mp3" in work_pane.text
     assert 'id="control-center-recordings-panel"' in work_pane.text
     assert "<html" not in work_pane.text
@@ -359,7 +361,7 @@ def test_control_center_pane_fragment_endpoints(seeded_client):
 
     empty_inspector = seeded_client.get("/ui/control-center/inspector-pane")
     assert empty_inspector.status_code == 200
-    assert "Select a recording from the left pane" in empty_inspector.text
+    assert "No recording selected yet" in empty_inspector.text
 
 
 def test_control_center_selected_recording_renders_embedded_inspector_actions(seeded_client):
@@ -382,6 +384,22 @@ def test_control_center_embedded_inspector_tab_links_preserve_shell_state(seeded
     assert 'hx-get="/ui/recordings/rec-ui-1/inspector?status=Ready&amp;q=meeting&amp;tab=language"' in inspector.text
     assert 'hx-push-url="/?selected=rec-ui-1&amp;status=Ready&amp;q=meeting&amp;tab=language"' in inspector.text
     assert 'href="/?selected=rec-ui-1&amp;status=Ready&amp;q=meeting&amp;tab=speakers"' in inspector.text
+
+
+def test_control_center_embedded_admin_links_preserve_shell_state(seeded_client):
+    overview = seeded_client.get("/?selected=rec-ui-1&status=Ready&q=meeting&tab=overview")
+    assert overview.status_code == 200
+    assert (
+        'href="/glossary?return_to=control-center&amp;selected=rec-ui-1&amp;status=Ready&amp;q=meeting&amp;recording_id=rec-ui-1#glossary-form"'
+        in overview.text
+    )
+
+    speakers = seeded_client.get("/?selected=rec-ui-1&status=Ready&q=meeting&tab=speakers")
+    assert speakers.status_code == 200
+    assert (
+        'href="/voices?return_to=control-center&amp;selected=rec-ui-1&amp;status=Ready&amp;q=meeting&amp;tab=speakers"'
+        in speakers.text
+    )
 
 
 def test_control_center_recordings_panel_filters_search_and_actions(
@@ -2539,6 +2557,107 @@ def test_glossary_page_create_edit_and_delete(tmp_path, monkeypatch):
     assert list_glossary_entries(settings=cfg) == []
 
 
+def test_glossary_return_context_links_and_redirects(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    init_db(cfg)
+    entry = create_glossary_entry(
+        "Sander",
+        aliases=["Sandia"],
+        term_kind="person",
+        source="manual",
+        settings=cfg,
+    )
+    return_query = (
+        "return_to=control-center&selected=rec-ui-1&status=Ready&q=meeting&tab=speakers"
+    )
+
+    page = TestClient(api.app, follow_redirects=True).get(f"/glossary?{return_query}")
+    assert page.status_code == 200
+    assert "Return to Control Center" in page.text
+    assert 'href="/recordings/rec-ui-1?tab=speakers"' in page.text
+    assert (
+        f'href="/glossary?edit_id={entry["id"]}&return_to=control-center&amp;'
+        "selected=rec-ui-1&amp;status=Ready&amp;q=meeting&amp;tab=speakers#glossary-"
+        f'{entry["id"]}"'
+    ) in page.text
+
+    c = TestClient(api.app, follow_redirects=False)
+    created = c.post(
+        "/glossary",
+        data={
+            "canonical_text": "Alex",
+            "aliases_text": "Alek",
+            "kind": "person",
+            "source": "manual",
+            "return_to": "control-center",
+            "selected": "rec-ui-1",
+            "status": "Ready",
+            "q": "meeting",
+            "tab": "speakers",
+        },
+    )
+    assert created.status_code == 303
+    assert created.headers["location"] == f"/glossary?{return_query}#glossary-2"
+
+    updated = c.post(
+        f"/glossary/{entry['id']}",
+        data={
+            "canonical_text": "Sander Updated",
+            "aliases_text": "Sandia",
+            "kind": "person",
+            "source": "manual",
+            "return_to": "control-center",
+            "selected": "rec-ui-1",
+            "status": "Ready",
+            "q": "meeting",
+            "tab": "speakers",
+        },
+    )
+    assert updated.status_code == 303
+    assert updated.headers["location"] == f"/glossary?{return_query}#glossary-{entry['id']}"
+
+    deleted = c.post(
+        f"/glossary/{entry['id']}/delete",
+        data={
+            "return_to": "control-center",
+            "selected": "rec-ui-1",
+            "status": "Ready",
+            "q": "meeting",
+            "tab": "speakers",
+        },
+    )
+    assert deleted.status_code == 303
+    assert deleted.headers["location"] == f"/glossary?{return_query}"
+
+
+def test_glossary_create_redirect_without_entry_anchor_when_backend_returns_no_id(
+    tmp_path,
+    monkeypatch,
+):
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    init_db(cfg)
+    monkeypatch.setattr(ui_routes, "create_glossary_entry", lambda **_kwargs: {})
+
+    c = TestClient(api.app, follow_redirects=False)
+    response = c.post(
+        "/glossary",
+        data={
+            "canonical_text": "Sander",
+            "aliases_text": "Sandia",
+            "kind": "person",
+            "source": "manual",
+            "return_to": "control-center",
+            "status": "Ready",
+        },
+    )
+    assert response.status_code == 303
+    assert response.headers["location"] == "/glossary?return_to=control-center&status=Ready"
+
+
 def test_glossary_summary_fragment_endpoint(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     cfg = _cfg(tmp_path)
     monkeypatch.setattr(api, "_settings", cfg)
@@ -2609,6 +2728,67 @@ def test_voices_delete(tmp_path, monkeypatch):
     r = c.post(f"/voices/{vp['id']}/delete")
     assert r.status_code == 200
     assert list_voice_profiles(settings=cfg) == []
+
+
+def test_voices_return_context_links_and_redirects(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    init_db(cfg)
+    source = create_voice_profile("Source Voice", settings=cfg)
+    target = create_voice_profile("Target Voice", settings=cfg)
+    return_query = (
+        "return_to=control-center&selected=rec-ui-1&status=Ready&q=meeting&tab=speakers"
+    )
+
+    page = TestClient(api.app, follow_redirects=True).get(f"/voices?{return_query}")
+    assert page.status_code == 200
+    assert "Return to Control Center" in page.text
+    assert 'href="/recordings/rec-ui-1?tab=speakers"' in page.text
+
+    c = TestClient(api.app, follow_redirects=False)
+    created = c.post(
+        "/voices",
+        data={
+            "display_name": "Alex Speaker",
+            "notes": "host",
+            "return_to": "control-center",
+            "selected": "rec-ui-1",
+            "status": "Ready",
+            "q": "meeting",
+            "tab": "speakers",
+        },
+    )
+    assert created.status_code == 303
+    assert created.headers["location"] == f"/voices?{return_query}#voice-3"
+    created_profile_id = max(int(profile["id"]) for profile in list_voice_profiles(settings=cfg))
+
+    merged = c.post(
+        f"/voices/{source['id']}/merge",
+        data={
+            "target_profile_id": str(target["id"]),
+            "return_to": "control-center",
+            "selected": "rec-ui-1",
+            "status": "Ready",
+            "q": "meeting",
+            "tab": "speakers",
+        },
+    )
+    assert merged.status_code == 303
+    assert merged.headers["location"] == f"/voices?{return_query}#voice-{target['id']}"
+
+    deleted = c.post(
+        f"/voices/{created_profile_id}/delete",
+        data={
+            "return_to": "control-center",
+            "selected": "rec-ui-1",
+            "status": "Ready",
+            "q": "meeting",
+            "tab": "speakers",
+        },
+    )
+    assert deleted.status_code == 303
+    assert deleted.headers["location"] == f"/voices?{return_query}"
 
 
 def test_voices_page_renders_duplicate_candidates_and_sample_inspection(tmp_path, monkeypatch):
@@ -2719,7 +2899,7 @@ def test_upload_page(client):
     assert "Upload" in r.text
     assert 'id="file-input"' in r.text
     assert "Drop files here to upload" in r.text
-    assert "No files queued." in r.text
+    assert "No files queued yet. Drop audio here or use Choose files." in r.text
 
 
 def test_upload_panel_fragment_endpoint(client):
@@ -2727,7 +2907,7 @@ def test_upload_panel_fragment_endpoint(client):
     assert r.status_code == 200
     assert 'id="file-input"' in r.text
     assert 'id="upload-rows"' in r.text
-    assert "No files queued." in r.text
+    assert "No files queued yet. Drop audio here or use Choose files." in r.text
     assert "<html" not in r.text
 
 

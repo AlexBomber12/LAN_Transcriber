@@ -1,17 +1,72 @@
 <div class="control-center-pane-head">
   <div>
-    <h2 style="margin-top:0">Work Pane</h2>
+    <h2 style="margin-top:0">Daily Workflow</h2>
     <p class="control-center-pane-copy">
-      Upload files, tighten the queue with filters, and watch recordings update in the same left-hand workflow.
+      Keep upload, queue triage, and embedded review in one loop. Use standalone pages only when a
+      task needs a dedicated screen.
     </p>
   </div>
   <div class="filters" style="margin:0">
-    <a href="/upload" class="btn" style="text-decoration:none">Open upload page</a>
-    <a href="{{ control_center_state.recordings_href }}" class="btn" style="text-decoration:none">Open recordings page</a>
+    <a href="{{ control_center_work_pane.workflow_links.upload_href }}" class="btn" style="text-decoration:none">Upload fallback</a>
+    <a href="{{ control_center_work_pane.workflow_links.recordings_href }}" class="btn" style="text-decoration:none">Recordings fallback</a>
+    {% if control_center_work_pane.workflow_links.selected_detail_href %}
+    <a href="{{ control_center_work_pane.workflow_links.selected_detail_href }}" class="btn" style="text-decoration:none">Selected full page</a>
+    {% endif %}
   </div>
 </div>
 
 <p class="control-center-preview-note">{{ control_center_work_pane.preview_message }}</p>
+
+<div class="control-center-quick-grid">
+  <section class="control-center-panel">
+    <h2 style="margin-top:0">Use This Page First</h2>
+    <ol class="control-center-step-list">
+      <li>Upload on the left or pick an existing recording from the queue.</li>
+      <li>Keep the selected recording pinned on the right while filters and uploads stay live.</li>
+      <li>Open Corrections or Canonical Speakers only when the embedded workflow needs admin work.</li>
+      <li>Export from the inspector when the recording is ready to hand off.</li>
+    </ol>
+    <div class="filters" style="margin:10px 0 0 0">
+      <a href="{{ control_center_work_pane.workflow_links.corrections_href }}" class="btn" style="text-decoration:none">
+        {% if control_center_work_pane.workflow_links.selected_detail_href %}Corrections for selection{% else %}Corrections{% endif %}
+      </a>
+      <a href="{{ control_center_work_pane.workflow_links.voices_href }}" class="btn" style="text-decoration:none">Canonical speakers</a>
+    </div>
+  </section>
+
+  <section class="control-center-panel">
+    <h2 style="margin-top:0">Fallback and Admin Pages</h2>
+    <div class="control-center-link-list">
+      <div class="control-center-link-card">
+        <a href="{{ control_center_work_pane.workflow_links.upload_href }}" class="btn" style="text-decoration:none">Standalone upload</a>
+        <p>Use when you only need to drop files without keeping the inspector open.</p>
+      </div>
+      <div class="control-center-link-card">
+        <a href="{{ control_center_work_pane.workflow_links.recordings_href }}" class="btn" style="text-decoration:none">Standalone recordings</a>
+        <p>Use when you want the queue on its own page or need a direct fallback link.</p>
+      </div>
+      <div class="control-center-link-card">
+        <a href="{{ control_center_work_pane.workflow_links.corrections_href }}" class="btn" style="text-decoration:none">Corrections admin</a>
+        <p>Use for broader ASR-memory edits. Returning keeps the same Control Center state.</p>
+      </div>
+      <div class="control-center-link-card">
+        <a href="{{ control_center_work_pane.workflow_links.voices_href }}" class="btn" style="text-decoration:none">Speaker admin</a>
+        <p>Use for merge/delete work on canonical speakers. Daily speaker decisions stay in the embedded tab.</p>
+      </div>
+    </div>
+  </section>
+</div>
+
+<div class="control-center-subgrid" style="margin:12px 0">
+  <section class="control-center-panel">
+    {% set glossary_summary = control_center_work_pane.glossary_summary %}
+    {% include "partials/control_center/glossary_summary.html" %}
+  </section>
+  <section class="control-center-panel">
+    {% set voice_summary = control_center_work_pane.voice_summary %}
+    {% include "partials/control_center/voices_summary.html" %}
+  </section>
+</div>
 
 <div class="section">
   <h2>Upload Queue</h2>

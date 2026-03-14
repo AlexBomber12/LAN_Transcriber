@@ -8,10 +8,14 @@
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{font:13px/1.5 'Courier New',monospace;background:#f0f0f0;color:#222}
-nav{background:#2c3e50;color:#fff;padding:5px 12px;display:flex;gap:0;align-items:center;flex-wrap:wrap}
-.nav-logo{font-weight:bold;color:#fff;margin-right:14px;letter-spacing:.5px}
+nav{background:#2c3e50;color:#fff;padding:5px 12px;display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+.nav-logo{font-weight:bold;color:#fff;margin-right:10px;letter-spacing:.5px}
+.nav-section{display:flex;gap:0;align-items:center;flex-wrap:wrap}
+.nav-section-label{font-size:10px;color:#cbd5e1;text-transform:uppercase;letter-spacing:.7px;margin-left:4px}
 nav a{color:#bdc3c7;text-decoration:none;padding:4px 10px;border:1px solid transparent;font-size:12px}
 nav a:hover,nav a.active{color:#fff;background:#34495e;border-color:#4a6080}
+.nav-primary-link{font-weight:bold;color:#fff}
+.nav-primary-link:not(.active){background:#34495e;border-color:#4a6080}
 main{padding:12px}
 h1{font-size:14px;font-weight:bold;margin-bottom:10px;padding-bottom:4px;border-bottom:1px solid #ccc}
 h2{font-size:13px;font-weight:bold;margin:12px 0 6px}
@@ -93,6 +97,12 @@ tr:hover{background:#e8ecf8}
 .control-center-state-pill{display:inline-block;padding:2px 6px;border:1px solid #99b;background:#f8f9ff;font-size:11px}
 .control-center-preview-note{margin:0 0 10px 0;color:#555}
 .control-center-row-actions{display:flex;gap:6px;flex-wrap:wrap}
+.control-center-quick-grid,.control-center-subgrid{display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));align-items:start}
+.control-center-link-list{display:grid;gap:8px}
+.control-center-link-card{border:1px solid #ccd;background:#f8f9ff;padding:10px}
+.control-center-link-card p{margin:4px 0 0 0;color:#555}
+.control-center-step-list{margin:8px 0 0 18px}
+.control-center-step-list li{margin:4px 0}
 @media (max-width: 980px){
   .control-center-main{grid-template-columns:1fr}
 }
@@ -101,14 +111,22 @@ tr:hover{background:#e8ecf8}
 <body hx-boost="true">
 <nav>
   <span class="nav-logo">LAN Transcriber</span>
-  <a href="/" {% if active=='dashboard' %}class="active"{% endif %}>Control Center</a>
-  <a href="/upload" {% if active=='upload' %}class="active"{% endif %}>Upload</a>
-  <a href="/recordings" {% if active=='recordings' %}class="active"{% endif %}>Recordings</a>
-  <a href="/calendars" {% if active=='calendars' %}class="active"{% endif %}>Calendars</a>
-  <a href="/queue" {% if active=='queue' %}class="active"{% endif %}>Queue</a>
-  <a href="/projects" {% if active=='projects' %}class="active"{% endif %}>Projects</a>
-  <a href="/glossary" {% if active=='glossary' %}class="active"{% endif %}>Corrections</a>
-  <a href="/voices" {% if active=='voices' %}class="active"{% endif %}>Voices</a>
+  <div class="nav-section">
+    <a href="/" class="nav-primary-link {% if active=='dashboard' %}active{% endif %}">Control Center</a>
+  </div>
+  <span class="nav-section-label">Fallback</span>
+  <div class="nav-section">
+    <a href="/upload" {% if active=='upload' %}class="active"{% endif %}>Upload</a>
+    <a href="/recordings" {% if active=='recordings' %}class="active"{% endif %}>Recordings</a>
+  </div>
+  <span class="nav-section-label">Admin</span>
+  <div class="nav-section">
+    <a href="/glossary" {% if active=='glossary' %}class="active"{% endif %}>Corrections</a>
+    <a href="/voices" {% if active=='voices' %}class="active"{% endif %}>Voices</a>
+    <a href="/calendars" {% if active=='calendars' %}class="active"{% endif %}>Calendars</a>
+    <a href="/projects" {% if active=='projects' %}class="active"{% endif %}>Projects</a>
+    <a href="/queue" {% if active=='queue' %}class="active"{% endif %}>Queue</a>
+  </div>
 </nav>
 <main>
 {% block content %}{% endblock %}

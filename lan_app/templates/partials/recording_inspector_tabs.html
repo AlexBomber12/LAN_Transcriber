@@ -3,6 +3,7 @@
   <a
     href="{{ inspector_tab.href }}"
     class="tab {% if inspector_tab.active %}active{% endif %}"
+    data-testid="recording-inspector-tab-{{ inspector_tab.value }}"
     {% if inspector_tab.hx_get %}
     hx-get="{{ inspector_tab.hx_get }}"
     hx-target="{{ inspector_tab.hx_target }}"
