@@ -49,6 +49,7 @@ docker compose run --rm api python -m lan_app.healthchecks app
 ### 1.2 Upload and export flow
 
 1. Open `/` and upload one or more files from the Control Center left pane (fallback: `/upload`). The UI sends multipart uploads to `POST /api/uploads`.
+   - Treat `/` as the main daily workspace. `/upload` and `/recordings/{recording_id}` stay available as direct fallback pages, while `/glossary` and `/voices` stay available as secondary admin pages.
 2. Uploaded audio is normalized automatically to 16 kHz mono WAV before VAD/ASR/diarization; no manual conversion is required.
 3. Mixed-language handling now runs automatically when `LAN_ASR_MULTILINGUAL_MODE=auto`.
    - `derived/transcript.json` can include `language_spans`, multilingual chunk metadata, and multilingual review metadata.
@@ -56,6 +57,7 @@ docker compose run --rm api python -m lan_app.healthchecks app
 4. Track upload and processing progress per file from `/`; the Control Center queue updates as new recordings appear and statuses change. `/upload` remains available as a direct fallback.
 5. Select the recording on `/` and use the embedded inspector for transcript, summary, routing, speaker review, and export actions.
    - `/recordings/{recording_id}` remains available as a standalone fallback for the same inspector when you need a direct link or full-page view.
+   - Open `Corrections` or `Canonical Speakers` from `/` only when the embedded workflow needs admin work; those direct pages preserve a return path back to the same selected recording.
    - `NeedsReview` recordings show an explicit review reason in the recordings list and detail page.
    - `Stop` on a queued recording removes the queued job immediately and marks the recording `Stopped`.
    - `Stop` on a running recording changes the status to `Stopping`; the worker first waits for the current heavy child process to exit cooperatively and then force-terminates it after `LAN_STOP_GRACE_SECONDS` when needed, before finalizing the recording as `Stopped`.

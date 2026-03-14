@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import os
 from pathlib import Path
+import shutil
 import socket
 import struct
 import subprocess
@@ -84,6 +85,20 @@ def _wait_for_app_ready(*, base_url: str, process: subprocess.Popen[str], deadli
     raise TimeoutError(f"Timed out waiting for {health_url}: {last_error}")
 
 
+def _wait_for_tcp_port(*, host: str, port: int, deadline: float) -> None:
+    last_error = f"{host}:{port} did not become reachable"
+    while time.monotonic() < deadline:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.settimeout(1.0)
+            try:
+                sock.connect((host, port))
+                return
+            except OSError as exc:
+                last_error = str(exc)
+        time.sleep(0.2)
+    raise TimeoutError(f"Timed out waiting for {host}:{port}: {last_error}")
+
+
 def _stop_process(process: subprocess.Popen[str]) -> None:
     if process.poll() is None:
         process.terminate()
@@ -94,10 +109,54 @@ def _stop_process(process: subprocess.Popen[str]) -> None:
             process.wait(timeout=5)
 
 
+def _start_redis_for_smoke(*, deadline: float) -> tuple[str, str | None]:
+    configured_url = os.getenv("LAN_REDIS_URL", "").strip()
+    if configured_url:
+        return configured_url, None
+
+    if shutil.which("docker") is None:
+        pytest.skip("Playwright smoke needs LAN_REDIS_URL or local docker for ephemeral Redis")
+
+    redis_port = _find_free_port()
+    container_name = f"lan-transcriber-playwright-redis-{os.getpid()}-{redis_port}"
+    subprocess.run(
+        [
+            "docker",
+            "run",
+            "--detach",
+            "--rm",
+            "--name",
+            container_name,
+            "--publish",
+            f"127.0.0.1:{redis_port}:6379",
+            "redis:7-alpine",
+        ],
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    _wait_for_tcp_port(host="127.0.0.1", port=redis_port, deadline=deadline)
+    return f"redis://127.0.0.1:{redis_port}/14", container_name
+
+
+def _stop_redis_for_smoke(container_name: str | None) -> None:
+    if not container_name:
+        return
+    subprocess.run(
+        ["docker", "rm", "--force", container_name],
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+
 def test_control_center_embedded_inspector_and_export_zip_smoke(tmp_path: Path) -> None:
     deadline = time.monotonic() + 120
     base_port = _find_free_port()
     base_url = f"http://127.0.0.1:{base_port}"
+    redis_url, redis_container = _start_redis_for_smoke(deadline=deadline)
 
     runtime_root = tmp_path / "runtime"
     recordings_root = runtime_root / "recordings"
@@ -116,7 +175,7 @@ def test_control_center_embedded_inspector_and_export_zip_smoke(tmp_path: Path) 
             "LAN_RECORDINGS_ROOT": str(recordings_root),
             "LAN_DB_PATH": str(db_path),
             "LAN_PROM_SNAPSHOT_PATH": str(metrics_snapshot_path),
-            "LAN_REDIS_URL": os.getenv("LAN_REDIS_URL", "redis://127.0.0.1:6379/14"),
+            "LAN_REDIS_URL": redis_url,
             "LLM_MODEL": os.getenv("LLM_MODEL", "test-llm-model"),
         }
     )
@@ -167,11 +226,6 @@ def test_control_center_embedded_inspector_and_export_zip_smoke(tmp_path: Path) 
                     state="visible",
                     timeout=_remaining_timeout_ms(deadline),
                 )
-                page.wait_for_selector(
-                    "#control-center-recordings-panel a[href^='/?selected=']",
-                    state="visible",
-                    timeout=_remaining_timeout_ms(deadline),
-                )
                 page.locator("#control-center-recordings-panel").get_by_text(
                     wav_path.name
                 ).wait_for(
@@ -186,7 +240,7 @@ def test_control_center_embedded_inspector_and_export_zip_smoke(tmp_path: Path) 
                     state="visible",
                     timeout=_remaining_timeout_ms(deadline),
                 )
-                select_link = selected_row.locator("a[href^='/?selected=']").first
+                select_link = selected_row.get_by_test_id("control-center-select-recording")
                 select_link.wait_for(
                     state="visible",
                     timeout=_remaining_timeout_ms(deadline),
@@ -195,11 +249,9 @@ def test_control_center_embedded_inspector_and_export_zip_smoke(tmp_path: Path) 
                 assert href
                 recording_id = parse_qs(urlparse(href).query).get("selected", [""])[0]
                 assert recording_id
-                control_center_recording_url = f"{base_url}/?selected={recording_id}"
-
-                page.goto(
-                    control_center_recording_url,
-                    wait_until="networkidle",
+                select_link.click(timeout=_remaining_timeout_ms(deadline))
+                page.wait_for_url(
+                    f"**/?selected={recording_id}",
                     timeout=_remaining_timeout_ms(deadline),
                 )
                 page.wait_for_selector(
@@ -208,14 +260,17 @@ def test_control_center_embedded_inspector_and_export_zip_smoke(tmp_path: Path) 
                     timeout=_remaining_timeout_ms(deadline),
                 )
                 page.wait_for_selector(
-                    "#control-center-inspector-pane a:has-text('Open full-page recording')",
+                    "#control-center-inspector-pane [data-testid='recording-inspector-open-full-page']",
                     state="visible",
                     timeout=_remaining_timeout_ms(deadline),
                 )
+                assert urlparse(page.url).path == "/"
 
-                page.goto(
-                    f"{control_center_recording_url}&tab=speakers",
-                    wait_until="networkidle",
+                page.get_by_test_id("recording-inspector-tab-speakers").click(
+                    timeout=_remaining_timeout_ms(deadline),
+                )
+                page.wait_for_url(
+                    f"**/?selected={recording_id}&tab=speakers",
                     timeout=_remaining_timeout_ms(deadline),
                 )
                 page.wait_for_selector(
@@ -223,9 +278,13 @@ def test_control_center_embedded_inspector_and_export_zip_smoke(tmp_path: Path) 
                     state="visible",
                     timeout=_remaining_timeout_ms(deadline),
                 )
-                page.goto(
-                    f"{control_center_recording_url}&tab=log",
-                    wait_until="networkidle",
+                assert urlparse(page.url).path == "/"
+
+                page.get_by_test_id("recording-inspector-tab-log").click(
+                    timeout=_remaining_timeout_ms(deadline),
+                )
+                page.wait_for_url(
+                    f"**/?selected={recording_id}&tab=log",
                     timeout=_remaining_timeout_ms(deadline),
                 )
                 page.wait_for_selector(
@@ -233,9 +292,13 @@ def test_control_center_embedded_inspector_and_export_zip_smoke(tmp_path: Path) 
                     state="visible",
                     timeout=_remaining_timeout_ms(deadline),
                 )
-                page.goto(
-                    control_center_recording_url,
-                    wait_until="networkidle",
+                assert urlparse(page.url).path == "/"
+
+                page.get_by_test_id("recording-inspector-tab-overview").click(
+                    timeout=_remaining_timeout_ms(deadline),
+                )
+                page.wait_for_url(
+                    f"**/?selected={recording_id}",
                     timeout=_remaining_timeout_ms(deadline),
                 )
                 page.wait_for_selector(
@@ -243,15 +306,16 @@ def test_control_center_embedded_inspector_and_export_zip_smoke(tmp_path: Path) 
                     state="visible",
                     timeout=_remaining_timeout_ms(deadline),
                 )
+                assert urlparse(page.url).path == "/"
 
                 page.wait_for_selector(
-                    "#control-center-inspector-pane a:has-text('Download ZIP')",
+                    "#control-center-inspector-pane [data-testid='recording-inspector-download-zip']",
                     state="visible",
                     timeout=_remaining_timeout_ms(deadline),
                 )
                 with page.expect_download(timeout=_remaining_timeout_ms(deadline)) as download_info:
                     page.click(
-                        "#control-center-inspector-pane a:has-text('Download ZIP')",
+                        "#control-center-inspector-pane [data-testid='recording-inspector-download-zip']",
                         timeout=_remaining_timeout_ms(deadline),
                     )
                 download = download_info.value
@@ -277,3 +341,4 @@ def test_control_center_embedded_inspector_and_export_zip_smoke(tmp_path: Path) 
             assert "onenote.md" in names
     finally:
         _stop_process(process)
+        _stop_redis_for_smoke(redis_container)

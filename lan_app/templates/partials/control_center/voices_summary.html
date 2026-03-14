@@ -1,0 +1,33 @@
+<div class="section">
+  <h2>Canonical Speakers <small style="font-weight:normal;color:#666">({{ voice_summary.profile_count }} profiles / {{ voice_summary.sample_count }} samples)</small></h2>
+  {% if voice_summary.profiles %}
+  <table>
+    <thead>
+      <tr>
+        <th>Name</th>
+        <th>Samples</th>
+        <th>Updated</th>
+        <th>Notes</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for item in voice_summary.profiles %}
+      <tr>
+        <td>{{ item.display_name }}</td>
+        <td>{{ item.sample_count }}</td>
+        <td>{{ item.updated_at_display }}</td>
+        <td>{{ item.notes or '—' }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% if voice_summary.has_more %}
+  <p style="margin:8px 0 0 0;color:#555">More canonical speakers are available on the full admin page.</p>
+  {% endif %}
+  {% else %}
+  <p class="placeholder">No canonical speakers yet. Stay in the embedded speakers tab for most decisions; open the admin page only when you need reusable person records.</p>
+  {% endif %}
+  <p style="margin:8px 0 0 0">
+    <a href="{{ voice_summary.manage_href }}" class="btn" style="text-decoration:none">Manage canonical speakers</a>
+  </p>
+</div>

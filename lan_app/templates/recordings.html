@@ -2,6 +2,13 @@
 {% block title %}Recordings – LAN Transcriber{% endblock %}
 {% block content %}
 <h1>Recordings <small style="font-weight:normal;color:#666">({{ total }} total)</small></h1>
+{% set helper_message = {
+  "text": "Direct fallback page. Use / for the main upload -> inspect -> export loop, and use this page when you want the queue on its own."
+} %}
+{% include "partials/control_center/helper_message.html" %}
+<div class="filters" style="margin-bottom:10px">
+  <a href="/" class="btn" style="text-decoration:none">Open Control Center</a>
+</div>
 
 {% include "partials/control_center/recordings_panel.html" %}
 {% endblock %}

@@ -111,6 +111,36 @@ def test_control_center_helper_contexts_cover_fragment_builders(
         "list_recordings",
         lambda **_kwargs: ([{"id": "rec-helper-1"}], 3),
     )
+    monkeypatch.setattr(
+        ui_routes,
+        "list_glossary_entries",
+        lambda settings: [
+            {
+                "id": 1,
+                "canonical_text": "Sander",
+                "aliases_json": ["Sandia"],
+                "kind": "person",
+                "source": "manual",
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        ui_routes,
+        "list_voice_profiles",
+        lambda settings: [
+            {
+                "id": 7,
+                "display_name": "Alex Helper",
+                "notes": "host",
+                "updated_at": "2026-01-02T03:04:05Z",
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        ui_routes,
+        "list_voice_samples",
+        lambda settings: [{"id": 4, "voice_profile_id": 7}, {"id": 5, "voice_profile_id": None}],
+    )
     dashboard = ui_routes._dashboard_status_context(cfg)  # noqa: SLF001
     assert dashboard["recordings_summary_strip"]["title"] == "Recordings by status"
     assert dashboard["jobs_summary_strip"]["counts"] == {"queued": 2}
@@ -192,6 +222,81 @@ def test_control_center_helper_contexts_cover_fragment_builders(
         limit=25,
         offset=2,
     ) == "?return_to=control-center&return_tab=overview&status=Ready&q=demo&limit=25&offset=2"
+    assert ui_routes._workflow_return_query_pairs(  # noqa: SLF001
+        return_to="control-center",
+        selected="rec-helper-1",
+        status="Ready",
+        q="helper",
+        tab="speakers",
+        limit=100,
+        offset=25,
+    ) == [
+        ("return_to", "control-center"),
+        ("selected", "rec-helper-1"),
+        ("status", "Ready"),
+        ("q", "helper"),
+        ("tab", "speakers"),
+        ("limit", "100"),
+        ("offset", "25"),
+    ]
+    assert ui_routes._workflow_page_href(  # noqa: SLF001
+        "/glossary",
+        return_to="control-center",
+        selected="rec-helper-1",
+        status="Ready",
+        q="helper",
+        tab="speakers",
+        limit=100,
+        offset=25,
+        extra_params=[("recording_id", "rec-helper-1")],
+    ) == (
+        "/glossary?return_to=control-center&selected=rec-helper-1&status=Ready&"
+        "q=helper&tab=speakers&limit=100&offset=25&recording_id=rec-helper-1"
+    )
+    assert ui_routes._workflow_page_href(  # noqa: SLF001
+        "/glossary",
+        return_to="control-center",
+        selected="",
+        status="Ready",
+        q="",
+        tab="overview",
+        extra_params=[("recording_id", "")],
+    ) == "/glossary?return_to=control-center&status=Ready"
+    workflow_return = ui_routes._workflow_return_context(  # noqa: SLF001
+        return_to="control-center",
+        selected="rec-helper-1",
+        status="Ready",
+        q="helper",
+        tab="speakers",
+        limit=100,
+        offset=25,
+        default_href="/glossary",
+    )
+    assert workflow_return["active"] is True
+    assert workflow_return["href"] == "/?selected=rec-helper-1&status=Ready&q=helper&tab=speakers&limit=100&offset=25"
+    assert workflow_return["selected_detail_href"] == "/recordings/rec-helper-1?tab=speakers"
+    queue_return = ui_routes._workflow_return_context(  # noqa: SLF001
+        return_to="control-center",
+        selected="",
+        status="Ready",
+        q="",
+        tab="overview",
+        default_href="/glossary",
+    )
+    assert queue_return["active"] is True
+    assert "same queue state" in queue_return["message"]
+    inactive_return = ui_routes._workflow_return_context(  # noqa: SLF001
+        return_to="",
+        selected="rec-helper-1",
+        status="Ready",
+        q="helper",
+        tab="speakers",
+        limit=100,
+        offset=25,
+        default_href="/glossary",
+    )
+    assert inactive_return["active"] is False
+    assert inactive_return["href"] == "/glossary"
     assert ui_routes._recording_inspector_return_path(  # noqa: SLF001
         "rec-helper-1",
         return_tab="mystery",
@@ -250,8 +355,18 @@ def test_control_center_helper_contexts_cover_fragment_builders(
         state=state,
     )
     assert work_pane["recordings_panel"]["panel_id"] == "control-center-recordings-panel"
-    assert "without switching away" in work_pane["preview_message"]
+    assert "daily loop" in work_pane["preview_message"]
     assert work_pane["recordings_panel"]["recordings_filters"]["limit"] == 100
+    assert work_pane["workflow_links"]["selected_detail_href"] == "/recordings/rec-helper-1?tab=speakers"
+    assert work_pane["workflow_links"]["corrections_href"] == (
+        "/glossary?return_to=control-center&selected=rec-helper-1&status=Ready&"
+        "q=helper&tab=speakers&limit=100&offset=25&recording_id=rec-helper-1"
+    )
+    assert work_pane["glossary_summary"]["manage_href"] == work_pane["workflow_links"]["corrections_href"]
+    assert work_pane["voice_summary"]["profile_count"] == 1
+    assert work_pane["voice_summary"]["sample_count"] == 2
+    assert work_pane["voice_summary"]["profiles"][0]["display_name"] == "Alex Helper"
+    assert work_pane["voice_summary"]["profiles"][0]["sample_count"] == 1
 
     filters = ui_routes._recordings_filters_context(  # noqa: SLF001
         mode="control_center",
@@ -385,7 +500,7 @@ def test_recordings_panel_context_clamps_offset_to_last_available_page(
     assert empty_shell["title"] == "Select a recording"
 
     control_center_empty = ui_routes._control_center_empty_inspector_context()  # noqa: SLF001
-    assert control_center_empty["title"] == "Select a recording from the left pane"
+    assert control_center_empty["title"] == "No recording selected yet"
 
     monkeypatch.setattr(
         ui_routes,

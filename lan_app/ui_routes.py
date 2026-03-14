@@ -2489,6 +2489,140 @@ def _control_center_return_query(
     return f"?{urlencode(params)}"
 
 
+def _workflow_return_query_pairs(
+    *,
+    return_to: str,
+    selected: str = "",
+    status: str = "",
+    q: str = "",
+    tab: str = "overview",
+    limit: int | None = None,
+    offset: int | None = None,
+) -> list[tuple[str, str]]:
+    if return_to != "control-center":
+        return []
+    state = _control_center_state_context(
+        selected=selected,
+        status=status,
+        q=q,
+        tab=tab,
+        limit=limit,
+        offset=offset,
+    )
+    params: list[tuple[str, str]] = [("return_to", "control-center")]
+    if state["selected"]:
+        params.append(("selected", state["selected"]))
+    if state["status"]:
+        params.append(("status", state["status"]))
+    if state["q"]:
+        params.append(("q", state["q"]))
+    if state["tab"] != "overview":
+        params.append(("tab", state["tab"]))
+    if state["limit"] != _CONTROL_CENTER_LIST_LIMIT or state["offset"] > 0:
+        params.append(("limit", str(state["limit"])))
+    if state["offset"] > 0:
+        params.append(("offset", str(state["offset"])))
+    return params
+
+
+def _workflow_page_href(
+    path: str,
+    *,
+    return_to: str = "",
+    selected: str = "",
+    status: str = "",
+    q: str = "",
+    tab: str = "overview",
+    limit: int | None = None,
+    offset: int | None = None,
+    extra_params: list[tuple[str, str]] | None = None,
+) -> str:
+    params = _workflow_return_query_pairs(
+        return_to=return_to,
+        selected=selected,
+        status=status,
+        q=q,
+        tab=tab,
+        limit=limit,
+        offset=offset,
+    )
+    for name, value in extra_params or []:
+        text = str(value or "").strip()
+        if not text:
+            continue
+        params.append((name, text))
+    if not params:
+        return path
+    return f"{path}?{urlencode(params)}"
+
+
+def _workflow_return_context(
+    *,
+    return_to: str,
+    selected: str = "",
+    status: str = "",
+    q: str = "",
+    tab: str = "overview",
+    limit: int | None = None,
+    offset: int | None = None,
+    default_href: str,
+) -> dict[str, Any]:
+    params = _workflow_return_query_pairs(
+        return_to=return_to,
+        selected=selected,
+        status=status,
+        q=q,
+        tab=tab,
+        limit=limit,
+        offset=offset,
+    )
+    active = bool(params)
+    state = _control_center_state_context(
+        selected=selected,
+        status=status,
+        q=q,
+        tab=tab,
+        limit=limit,
+        offset=offset,
+    )
+    message = ""
+    if active:
+        if state["selected"]:
+            message = (
+                "Opened from the Control Center. Finish the quick admin change here, then "
+                "return to the same selected recording."
+            )
+        else:
+            message = (
+                "Opened from the Control Center. Finish the quick admin change here, then "
+                "return to the same queue state."
+            )
+    return {
+        "active": active,
+        "href": (
+            _control_center_shell_href(
+                selected=state["selected"],
+                status_filter=state["status"],
+                search_query=state["q"],
+                tab=state["tab"],
+                limit=state["limit"],
+                offset=state["offset"],
+            )
+            if active
+            else default_href
+        ),
+        "query_string": urlencode(params) if params else "",
+        "hidden_fields": [{"name": name, "value": value} for name, value in params],
+        "message": message,
+        "selected": state["selected"],
+        "selected_detail_href": (
+            _recording_detail_path(state["selected"], tab=state["tab"])
+            if state["selected"]
+            else ""
+        ),
+    }
+
+
 def _recording_inspector_return_path(
     recording_id: str,
     *,
@@ -2579,17 +2713,57 @@ def _recording_inspector_tabs_context(
     return tabs
 
 
+def _control_center_workflow_links_context(*, state: dict[str, Any]) -> dict[str, str]:
+    corrections_params = [("recording_id", state["selected"])] if state["selected"] else []
+    return {
+        "upload_href": "/upload",
+        "recordings_href": state["recordings_href"],
+        "selected_detail_href": state["selected_detail_href"],
+        "corrections_href": _workflow_page_href(
+            "/glossary",
+            return_to="control-center",
+            selected=state["selected"],
+            status=state["status"],
+            q=state["q"],
+            tab=state["tab"],
+            limit=state["limit"],
+            offset=state["offset"],
+            extra_params=corrections_params,
+        ),
+        "voices_href": _workflow_page_href(
+            "/voices",
+            return_to="control-center",
+            selected=state["selected"],
+            status=state["status"],
+            q=state["q"],
+            tab="speakers" if state["selected"] else state["tab"],
+            limit=state["limit"],
+            offset=state["offset"],
+        ),
+    }
+
+
 def _control_center_work_pane_context(
     settings: AppSettings,
     *,
     state: dict[str, Any],
 ) -> dict[str, Any]:
     preview_message = (
-        "Upload, filter, and monitor recordings here without switching away from the "
-        "Control Center."
+        "Use / as the daily loop: upload or pick a recording, review it on the right, "
+        "and open direct pages only for fallback or admin work."
     )
+    workflow_links = _control_center_workflow_links_context(state=state)
     return {
         "preview_message": preview_message,
+        "workflow_links": workflow_links,
+        "glossary_summary": _compact_glossary_summary_context(
+            settings,
+            manage_href=workflow_links["corrections_href"],
+        ),
+        "voice_summary": _compact_voice_summary_context(
+            settings,
+            manage_href=workflow_links["voices_href"],
+        ),
         "recordings_panel": _recordings_panel_context(
             settings,
             status=state["status"] or None,
@@ -2605,10 +2779,10 @@ def _control_center_work_pane_context(
 
 def _control_center_empty_inspector_context() -> dict[str, str]:
     return {
-        "title": "Select a recording from the left pane",
+        "title": "No recording selected yet",
         "message": (
-            "Use the preview list to pin a recording here, upload a file to begin, or "
-            "open a full-page recording view if preferred."
+            "Pick a row from the left-hand queue to keep review on this page. Uploads, "
+            "filters, and fallback pages stay available when you need them."
         ),
     }
 
@@ -3109,6 +3283,7 @@ def _recording_inspector_context(
             notice_message=speakers_notice,
             error_message=speakers_error,
         )
+        speakers["manage_voices_href"] = "/voices"
     if safe_tab == "project":
         project = _project_tab_context(recording_id, rec, _settings)
         rec = _prepare_recording_for_display(
@@ -3147,6 +3322,39 @@ def _recording_inspector_context(
             )
             for value in _CONTROL_CENTER_TABS
         }
+        if glossary is not None:
+            glossary["manage_href"] = _workflow_page_href(
+                "/glossary",
+                return_to="control-center",
+                selected=recording_id,
+                status=control_center_state["status"],
+                q=control_center_state["q"],
+                tab=safe_tab,
+                limit=control_center_state["limit"],
+                offset=control_center_state["offset"],
+            )
+            glossary["quick_add_href"] = _workflow_page_href(
+                "/glossary",
+                return_to="control-center",
+                selected=recording_id,
+                status=control_center_state["status"],
+                q=control_center_state["q"],
+                tab=safe_tab,
+                limit=control_center_state["limit"],
+                offset=control_center_state["offset"],
+                extra_params=[("recording_id", recording_id)],
+            )
+        if speakers is not None:
+            speakers["manage_voices_href"] = _workflow_page_href(
+                "/voices",
+                return_to="control-center",
+                selected=recording_id,
+                status=control_center_state["status"],
+                q=control_center_state["q"],
+                tab="speakers",
+                limit=control_center_state["limit"],
+                offset=control_center_state["offset"],
+            )
     selected_recording_shell = _selected_recording_summary_shell_context(
         rec,
         current_tab=safe_tab,
@@ -3190,6 +3398,7 @@ def _compact_glossary_summary_context(
     settings: AppSettings,
     *,
     limit: int = 5,
+    manage_href: str = "/glossary",
 ) -> dict[str, Any]:
     items = list_glossary_entries(settings=settings)
     compact_entries: list[dict[str, Any]] = []
@@ -3208,7 +3417,47 @@ def _compact_glossary_summary_context(
         "entry_count": len(items),
         "entries": compact_entries,
         "has_more": len(items) > limit,
-        "manage_href": "/glossary",
+        "manage_href": manage_href,
+    }
+
+
+def _compact_voice_summary_context(
+    settings: AppSettings,
+    *,
+    limit: int = 5,
+    manage_href: str = "/voices",
+) -> dict[str, Any]:
+    profiles = list_voice_profiles(settings=settings)
+    samples = list_voice_samples(settings=settings)
+    sample_counts: dict[int, int] = {}
+    for sample in samples:
+        profile_id = _as_int(sample.get("voice_profile_id"))
+        if profile_id is None:
+            continue
+        sample_counts[profile_id] = sample_counts.get(profile_id, 0) + 1
+
+    compact_profiles: list[dict[str, Any]] = []
+    for profile in profiles[:limit]:
+        profile_id = _as_int(profile.get("id"))
+        compact_profiles.append(
+            {
+                "id": profile.get("id"),
+                "display_name": profile.get("display_name"),
+                "notes": profile.get("notes"),
+                "sample_count": sample_counts.get(profile_id or -1, 0),
+                "updated_at_display": (
+                    _format_local_timestamp(str(profile.get("updated_at") or ""))
+                    if profile.get("updated_at")
+                    else "—"
+                ),
+            }
+        )
+    return {
+        "profile_count": len(profiles),
+        "sample_count": len(samples),
+        "profiles": compact_profiles,
+        "has_more": len(profiles) > limit,
+        "manage_href": manage_href,
     }
 
 
@@ -4481,6 +4730,13 @@ async def ui_glossary(
     source: str = Query(default="correction"),
     notes: str = Query(default=""),
     recording_id: str = Query(default=""),
+    return_to: str = Query(default=""),
+    selected: str = Query(default=""),
+    status: str = Query(default=""),
+    q: str = Query(default=""),
+    tab: str = Query(default="overview"),
+    limit: int | None = Query(default=None),
+    offset: int | None = Query(default=None),
 ) -> Any:
     items = list_glossary_entries(settings=_settings)
     for item in items:
@@ -4527,6 +4783,16 @@ async def ui_glossary(
             recording_id=recording_id,
         )
     )
+    return_context = _workflow_return_context(
+        return_to=return_to,
+        selected=selected,
+        status=status,
+        q=q,
+        tab=tab,
+        limit=limit,
+        offset=offset,
+        default_href="/glossary",
+    )
     return templates.TemplateResponse(
         request,
         "glossary.html",
@@ -4543,6 +4809,7 @@ async def ui_glossary(
                 {"value": option, "label": _glossary_source_label(option)}
                 for option in _GLOSSARY_SOURCE_OPTIONS
             ],
+            "return_context": return_context,
         },
     )
 
@@ -4567,6 +4834,13 @@ async def ui_create_glossary(
     enabled: str = Form(default=""),
     notes: str = Form(default=""),
     recording_id: str = Form(default=""),
+    return_to: str = Form(default=""),
+    selected: str = Form(default=""),
+    status: str = Form(default=""),
+    q: str = Form(default=""),
+    tab: str = Form(default="overview"),
+    limit: int | None = Form(default=None),
+    offset: int | None = Form(default=None),
 ) -> Any:
     payload = _glossary_form_payload(
         canonical_text=canonical_text,
@@ -4578,10 +4852,23 @@ async def ui_create_glossary(
         recording_id=recording_id,
     )
     try:
-        create_glossary_entry(settings=_settings, **payload)
+        created_entry = create_glossary_entry(settings=_settings, **payload)
     except ValueError as exc:
         return HTMLResponse(str(exc), status_code=422)
-    return RedirectResponse("/glossary", status_code=303)
+    redirect_to = _workflow_page_href(
+        "/glossary",
+        return_to=return_to,
+        selected=selected,
+        status=status,
+        q=q,
+        tab=tab,
+        limit=limit,
+        offset=offset,
+    )
+    entry_id = _as_int(created_entry.get("id"))
+    if entry_id is not None:
+        redirect_to = f"{redirect_to}#glossary-{entry_id}"
+    return RedirectResponse(redirect_to, status_code=303)
 
 
 @ui_router.post("/glossary/{entry_id}", response_class=HTMLResponse)
@@ -4594,6 +4881,13 @@ async def ui_update_glossary(
     enabled: str = Form(default=""),
     notes: str = Form(default=""),
     recording_id: str = Form(default=""),
+    return_to: str = Form(default=""),
+    selected: str = Form(default=""),
+    status: str = Form(default=""),
+    q: str = Form(default=""),
+    tab: str = Form(default="overview"),
+    limit: int | None = Form(default=None),
+    offset: int | None = Form(default=None),
 ) -> Any:
     existing_entry = get_glossary_entry(entry_id, settings=_settings)
     if existing_entry is None:
@@ -4616,13 +4910,44 @@ async def ui_update_glossary(
         update_glossary_entry(entry_id, settings=_settings, **payload)
     except ValueError as exc:
         return HTMLResponse(str(exc), status_code=422)
-    return RedirectResponse("/glossary", status_code=303)
+    redirect_to = _workflow_page_href(
+        "/glossary",
+        return_to=return_to,
+        selected=selected,
+        status=status,
+        q=q,
+        tab=tab,
+        limit=limit,
+        offset=offset,
+    )
+    return RedirectResponse(f"{redirect_to}#glossary-{entry_id}", status_code=303)
 
 
 @ui_router.post("/glossary/{entry_id}/delete", response_class=HTMLResponse)
-async def ui_delete_glossary(entry_id: int) -> Any:
+async def ui_delete_glossary(
+    entry_id: int,
+    return_to: str = Form(default=""),
+    selected: str = Form(default=""),
+    status: str = Form(default=""),
+    q: str = Form(default=""),
+    tab: str = Form(default="overview"),
+    limit: int | None = Form(default=None),
+    offset: int | None = Form(default=None),
+) -> Any:
     delete_glossary_entry(entry_id, settings=_settings)
-    return RedirectResponse("/glossary", status_code=303)
+    return RedirectResponse(
+        _workflow_page_href(
+            "/glossary",
+            return_to=return_to,
+            selected=selected,
+            status=status,
+            q=q,
+            tab=tab,
+            limit=limit,
+            offset=offset,
+        ),
+        status_code=303,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -4668,7 +4993,16 @@ async def ui_delete_project(project_id: int) -> Any:
 
 
 @ui_router.get("/voices", response_class=HTMLResponse)
-async def ui_voices(request: Request) -> Any:
+async def ui_voices(
+    request: Request,
+    return_to: str = Query(default=""),
+    selected: str = Query(default=""),
+    status: str = Query(default=""),
+    q: str = Query(default=""),
+    tab: str = Query(default="overview"),
+    limit: int | None = Query(default=None),
+    offset: int | None = Query(default=None),
+) -> Any:
     items = list_voice_profiles(settings=_settings)
     samples = list_voice_samples(settings=_settings)
     for sample in samples:
@@ -4704,6 +5038,16 @@ async def ui_voices(request: Request) -> Any:
             for target in items
             if _as_int(target.get("id")) is not None and int(target["id"]) != profile_id
         ]
+    return_context = _workflow_return_context(
+        return_to=return_to,
+        selected=selected,
+        status=status,
+        q=q,
+        tab=tab,
+        limit=limit,
+        offset=offset,
+        default_href="/voices",
+    )
     return templates.TemplateResponse(
         request,
         "voices.html",
@@ -4711,6 +5055,7 @@ async def ui_voices(request: Request) -> Any:
             "active": "voices",
             "items": items,
             "samples": samples,
+            "return_context": return_context,
         },
     )
 
@@ -4719,17 +5064,49 @@ async def ui_voices(request: Request) -> Any:
 async def ui_create_voice(
     display_name: str = Form(...),
     notes: str = Form(default=""),
+    return_to: str = Form(default=""),
+    selected: str = Form(default=""),
+    status: str = Form(default=""),
+    q: str = Form(default=""),
+    tab: str = Form(default="overview"),
+    limit: int | None = Form(default=None),
+    offset: int | None = Form(default=None),
 ) -> Any:
     display_name = display_name.strip()
+    created_profile_id: int | None = None
     if display_name:
-        create_voice_profile(display_name, notes.strip() or None, settings=_settings)
-    return RedirectResponse("/voices", status_code=303)
+        created_profile = create_voice_profile(
+            display_name,
+            notes.strip() or None,
+            settings=_settings,
+        )
+        created_profile_id = _as_int(created_profile.get("id"))
+    redirect_to = _workflow_page_href(
+        "/voices",
+        return_to=return_to,
+        selected=selected,
+        status=status,
+        q=q,
+        tab=tab,
+        limit=limit,
+        offset=offset,
+    )
+    if created_profile_id is not None:
+        redirect_to = f"{redirect_to}#voice-{created_profile_id}"
+    return RedirectResponse(redirect_to, status_code=303)
 
 
 @ui_router.post("/voices/{profile_id}/merge", response_class=HTMLResponse)
 async def ui_merge_voice(
     profile_id: int,
     target_profile_id: str = Form(default=""),
+    return_to: str = Form(default=""),
+    selected: str = Form(default=""),
+    status: str = Form(default=""),
+    q: str = Form(default=""),
+    tab: str = Form(default="overview"),
+    limit: int | None = Form(default=None),
+    offset: int | None = Form(default=None),
 ) -> Any:
     target_token = target_profile_id.strip()
     if not target_token:
@@ -4754,13 +5131,44 @@ async def ui_merge_voice(
         target_id,
         merged,
     )
-    return RedirectResponse(f"/voices#voice-{target_id}", status_code=303)
+    redirect_to = _workflow_page_href(
+        "/voices",
+        return_to=return_to,
+        selected=selected,
+        status=status,
+        q=q,
+        tab=tab,
+        limit=limit,
+        offset=offset,
+    )
+    return RedirectResponse(f"{redirect_to}#voice-{target_id}", status_code=303)
 
 
 @ui_router.post("/voices/{profile_id}/delete", response_class=HTMLResponse)
-async def ui_delete_voice(profile_id: int) -> Any:
+async def ui_delete_voice(
+    profile_id: int,
+    return_to: str = Form(default=""),
+    selected: str = Form(default=""),
+    status: str = Form(default=""),
+    q: str = Form(default=""),
+    tab: str = Form(default="overview"),
+    limit: int | None = Form(default=None),
+    offset: int | None = Form(default=None),
+) -> Any:
     delete_voice_profile(profile_id, settings=_settings)
-    return RedirectResponse("/voices", status_code=303)
+    return RedirectResponse(
+        _workflow_page_href(
+            "/voices",
+            return_to=return_to,
+            selected=selected,
+            status=status,
+            q=q,
+            tab=tab,
+            limit=limit,
+            offset=offset,
+        ),
+        status_code=303,
+    )
 
 
 @ui_router.get("/ui/voice-samples/{sample_id}/audio")

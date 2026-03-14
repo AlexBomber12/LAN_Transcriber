@@ -410,6 +410,9 @@
     Use <strong>Keep unknown</strong> to close review without naming the speaker, or <strong>Local label only</strong> to name this speaker just for the current recording and its export.
     <strong>Add sample</strong> stays separate and should be used only for trusted clean clips.
   </div>
+  <div class="filters" style="margin:0 0 10px 0">
+    <a href="{{ sp.manage_voices_href or '/voices' }}" class="btn" style="text-decoration:none">Open canonical speakers page</a>
+  </div>
   {% if rows %}
   <table>
     <thead>

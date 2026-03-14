@@ -2,6 +2,13 @@
 {% block title %}Upload – LAN Transcriber{% endblock %}
 {% block content %}
 <h1>Upload</h1>
+{% set helper_message = {
+  "text": "Direct fallback page. The main daily workflow lives on /, but this page stays available when you only need standalone uploads."
+} %}
+{% include "partials/control_center/helper_message.html" %}
+<div class="filters" style="margin-bottom:10px">
+  <a href="/" class="btn" style="text-decoration:none">Open Control Center</a>
+</div>
 
 {% include "partials/control_center/upload_panel.html" %}
 {% include "partials/control_center/upload_script.html" %}

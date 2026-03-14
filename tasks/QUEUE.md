@@ -550,6 +550,6 @@ Queue (in order)
 - Depends on: PR-UI-CONTROL-CENTER-04 and PR-GLOSSARY-CORRECTIONS-01
 
 110) PR-UI-WORKFLOW-01: Final 1-page workflow polish, navigation cleanup, and smoke coverage centered on the Control Center
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-UI-WORKFLOW-01.md
 - Depends on: PR-SPEAKER-REVIEW-01 and PR-CORRECTIONS-UX-01
