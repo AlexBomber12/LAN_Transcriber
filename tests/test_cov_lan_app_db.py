@@ -812,6 +812,17 @@ def test_speaker_assignments_and_voice_samples_paths(tmp_path: Path):
             review_state="local_label",
             settings=cfg,
         )
+    with pytest.raises(
+        ValueError,
+        match="local_display_name cannot be combined with voice_profile_id",
+    ):
+        db_module.set_speaker_assignment(
+            recording_id="rec-db-cov-voice-1",
+            diar_speaker_label="S0",
+            voice_profile_id=profile_id,
+            local_display_name="Guest",
+            settings=cfg,
+        )
     with pytest.raises(ValueError, match="local_label cannot set voice_profile_id"):
         db_module.set_speaker_assignment(
             recording_id="rec-db-cov-voice-1",

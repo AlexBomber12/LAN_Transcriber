@@ -426,6 +426,8 @@ def _normalise_speaker_review_state(
     keep_unmatched: bool,
 ) -> str | None:
     if review_state is None:
+        if local_display_name and voice_profile_id is not None:
+            raise ValueError("local_display_name cannot be combined with voice_profile_id")
         if local_display_name:
             return SPEAKER_REVIEW_STATE_LOCAL_LABEL
         if voice_profile_id is not None:

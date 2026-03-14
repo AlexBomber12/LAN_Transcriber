@@ -102,8 +102,8 @@ Requirement already satisfied: pytz>2021.1 in ./.venv-ci/lib/python3.12/site-pac
 Building wheels for collected packages: lan-transcriber
   Building editable for lan-transcriber (pyproject.toml): started
   Building editable for lan-transcriber (pyproject.toml): finished with status 'done'
-  Created wheel for lan-transcriber: filename=lan_transcriber-0.1.0-0.editable-py3-none-any.whl size=15446 sha256=27260ef7cbb31b0773c677f665e5a7240e2b2be3cf25eccb536a63f9d98ba413
-  Stored in directory: /tmp/pip-ephem-wheel-cache-gjpe5j6u/wheels/d5/8a/5c/f7178f7e49aa5ae12b2320ec66b5c310f4f2f63d1bd301b7fb
+  Created wheel for lan-transcriber: filename=lan_transcriber-0.1.0-0.editable-py3-none-any.whl size=15446 sha256=89d749289c27d2351392575af102fe3841c59cad0c136eea88a1d963eb624f6a
+  Stored in directory: /tmp/pip-ephem-wheel-cache-orahfdu1/wheels/d5/8a/5c/f7178f7e49aa5ae12b2320ec66b5c310f4f2f63d1bd301b7fb
 Successfully built lan-transcriber
 Installing collected packages: lan-transcriber
   Attempting uninstall: lan-transcriber
@@ -169,13 +169,13 @@ tests/test_warm_models.py::test_warm_models_module_main_guard
 ---------- coverage: platform linux, python 3.12.3-final-0 -----------
 Name    Stmts   Miss Branch BrPart  Cover   Missing
 ---------------------------------------------------
-TOTAL   13140      0   4278      0   100%
+TOTAL   13142      0   4280      0   100%
 
 62 files skipped due to complete coverage.
 Coverage HTML written to dir htmlcov
 
 Required test coverage of 100% reached. Total coverage: 100.00%
-1005 passed, 1 skipped, 11 warnings in 92.17s (0:01:32)
+1005 passed, 1 skipped, 11 warnings in 90.37s (0:01:30)
 Name                                                    Stmts   Miss Branch BrPart  Cover
 -----------------------------------------------------------------------------------------
 lan_transcriber/__init__.py                                 8      0      0      0   100%
@@ -221,7 +221,7 @@ lan_app/calendar/service.py           66      0     12      0   100%
 lan_app/config.py                    106      0     16      0   100%
 lan_app/constants.py                  30      0      0      0   100%
 lan_app/conversation_metrics.py      380      0    150      0   100%
-lan_app/db.py                       1426      0    314      0   100%
+lan_app/db.py                       1428      0    316      0   100%
 lan_app/db_init.py                     9      0      2      0   100%
 lan_app/diagnostics.py               281      0    160      0   100%
 lan_app/diarization_loader.py        144      0     54      0   100%
@@ -245,4 +245,4 @@ lan_app/worker.py                     28      0      2      0   100%
 lan_app/worker_tasks.py             1694      0    490      0   100%
 lan_app/workers.py                    10      0      0      0   100%
 --------------------------------------------------------------------
-TOTAL                               9067      0   2914      0   100%
+TOTAL                               9069      0   2916      0   100%
