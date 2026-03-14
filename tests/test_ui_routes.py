@@ -431,6 +431,7 @@ def test_control_center_selection_preserves_pagination_state(
     panel = c.get("/ui/control-center/recordings/panel?status=Ready&limit=25&offset=25&tab=speakers")
     assert panel.status_code == 200
     assert panel.headers["HX-Push-Url"] == "/?status=Ready&tab=speakers&limit=25&offset=25"
+    assert 'href="/?status=Ready&amp;tab=speakers"' in panel.text
     assert (
         f'href="/?selected={selected_id}&amp;status=Ready&amp;tab=speakers&amp;'
         "limit=25&amp;offset=25\""
@@ -438,6 +439,7 @@ def test_control_center_selection_preserves_pagination_state(
 
     selected_page = c.get(f"/?selected={selected_id}&status=Ready&limit=25&offset=25&tab=speakers")
     assert selected_page.status_code == 200
+    assert f'href="/?selected={selected_id}&amp;status=Ready&amp;tab=speakers"' in selected_page.text
     assert f'name="selected" value="{selected_id}"' in selected_page.text
     assert 'value="25" selected' in selected_page.text
     assert ">26–26 of 26<" in selected_page.text

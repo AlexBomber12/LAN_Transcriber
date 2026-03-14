@@ -234,11 +234,28 @@ def test_control_center_helper_contexts_cover_fragment_builders(
     )
     assert table["has_prev"] is False
     assert table["has_next"] is True
+    assert table["next_href"] == "/?selected=rec-helper-1&status=Ready&q=helper&tab=speakers&limit=2&offset=2"
     assert table["next_hx_get"].endswith("limit=2&offset=2")
     assert table["rows"][0]["select_href"] == (
         "/?selected=rec-helper-1&status=Ready&q=helper&tab=speakers&limit=2"
     )
     assert table["rows"][0]["selected"] is True
+
+    paged_table = ui_routes._recordings_table_context(  # noqa: SLF001
+        mode="control_center",
+        selected="rec-helper-1",
+        items=[{"id": "rec-helper-2"}],
+        total=5,
+        limit=2,
+        offset=2,
+        status_filter="Ready",
+        search_query="helper",
+        tab="speakers",
+    )
+    assert paged_table["prev_href"] == "/?selected=rec-helper-1&status=Ready&q=helper&tab=speakers&limit=2"
+    assert paged_table["next_href"] == (
+        "/?selected=rec-helper-1&status=Ready&q=helper&tab=speakers&limit=2&offset=4"
+    )
 
     upload_shell = ui_routes._upload_shell_context()  # noqa: SLF001
     assert upload_shell["file_input_id"] == "file-input"

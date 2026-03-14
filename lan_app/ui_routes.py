@@ -2436,17 +2436,39 @@ def _recordings_table_context(
         "next_offset": next_offset,
         "has_prev": offset > 0,
         "has_next": offset + limit < total,
-        "prev_href": _recordings_page_href(
-            status_filter=status_filter,
-            search_query=search_query,
-            limit=limit,
-            offset=prev_offset,
+        "prev_href": (
+            _control_center_shell_href(
+                selected=selected,
+                status_filter=status_filter,
+                search_query=search_query,
+                tab=tab,
+                limit=limit,
+                offset=prev_offset,
+            )
+            if is_control_center
+            else _recordings_page_href(
+                status_filter=status_filter,
+                search_query=search_query,
+                limit=limit,
+                offset=prev_offset,
+            )
         ),
-        "next_href": _recordings_page_href(
-            status_filter=status_filter,
-            search_query=search_query,
-            limit=limit,
-            offset=next_offset,
+        "next_href": (
+            _control_center_shell_href(
+                selected=selected,
+                status_filter=status_filter,
+                search_query=search_query,
+                tab=tab,
+                limit=limit,
+                offset=next_offset,
+            )
+            if is_control_center
+            else _recordings_page_href(
+                status_filter=status_filter,
+                search_query=search_query,
+                limit=limit,
+                offset=next_offset,
+            )
         ),
         "prev_hx_get": (
             _control_center_recordings_panel_url(
