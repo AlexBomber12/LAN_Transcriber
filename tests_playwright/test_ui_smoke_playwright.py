@@ -8,6 +8,7 @@ import struct
 import subprocess
 import sys
 import time
+from urllib.parse import parse_qs, urlparse
 import wave
 import zipfile
 
@@ -58,7 +59,7 @@ def _wait_for_location(page, expected_path: str, *, deadline: float) -> None:
             window.location.pathname + window.location.search
         ) === expectedPath
         """,
-        expected_path,
+        arg=expected_path,
         timeout=_remaining_timeout_ms(deadline),
     )
 
@@ -173,12 +174,6 @@ def test_control_center_embedded_inspector_and_export_zip_smoke(tmp_path: Path) 
                 )
                 page.set_input_files("#file-input", str(wav_path))
 
-                open_link = page.locator("#upload-rows a[href^='/recordings/']").first
-                open_link.wait_for(state="visible", timeout=_remaining_timeout_ms(deadline))
-                href = open_link.get_attribute("href")
-                assert href and href.startswith("/recordings/")
-                recording_id = href.removeprefix("/recordings/")
-                assert recording_id
                 page.wait_for_selector(
                     "#control-center-recordings-panel",
                     state="visible",
@@ -195,6 +190,23 @@ def test_control_center_embedded_inspector_and_export_zip_smoke(tmp_path: Path) 
                     state="visible",
                     timeout=_remaining_timeout_ms(deadline),
                 )
+                selected_row = page.locator(
+                    "#control-center-recordings-panel tbody tr",
+                    has_text=wav_path.name,
+                ).first
+                selected_row.wait_for(
+                    state="visible",
+                    timeout=_remaining_timeout_ms(deadline),
+                )
+                select_link = selected_row.locator("a[href^='/?selected=']").first
+                select_link.wait_for(
+                    state="visible",
+                    timeout=_remaining_timeout_ms(deadline),
+                )
+                href = select_link.get_attribute("href")
+                assert href
+                recording_id = parse_qs(urlparse(href).query).get("selected", [""])[0]
+                assert recording_id
 
                 page.click(
                     f"#control-center-recordings-panel a[href='/?selected={recording_id}']",
