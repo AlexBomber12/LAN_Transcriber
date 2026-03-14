@@ -440,6 +440,8 @@ def _normalise_speaker_review_state(
     if normalized not in _SPEAKER_REVIEW_STATES:
         options = ", ".join(sorted(_SPEAKER_REVIEW_STATES))
         raise ValueError(f"Unsupported speaker review_state: {normalized} ({options})")
+    if local_display_name and normalized != SPEAKER_REVIEW_STATE_LOCAL_LABEL:
+        raise ValueError("local_display_name requires review_state=local_label")
     if normalized == SPEAKER_REVIEW_STATE_CONFIRMED_CANONICAL and voice_profile_id is None:
         raise ValueError("confirmed_canonical requires voice_profile_id")
     if normalized == SPEAKER_REVIEW_STATE_LOCAL_LABEL:

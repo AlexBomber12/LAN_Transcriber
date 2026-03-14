@@ -840,6 +840,30 @@ def test_speaker_assignments_and_voice_samples_paths(tmp_path: Path):
             review_state="kept_unknown",
             settings=cfg,
         )
+    with pytest.raises(
+        ValueError,
+        match="local_display_name requires review_state=local_label",
+    ):
+        db_module.set_speaker_assignment(
+            recording_id="rec-db-cov-voice-1",
+            diar_speaker_label="S0",
+            voice_profile_id=profile_id,
+            review_state="confirmed_canonical",
+            local_display_name="Guest",
+            settings=cfg,
+        )
+    with pytest.raises(
+        ValueError,
+        match="local_display_name requires review_state=local_label",
+    ):
+        db_module.set_speaker_assignment(
+            recording_id="rec-db-cov-voice-1",
+            diar_speaker_label="S0",
+            voice_profile_id=None,
+            review_state="kept_unknown",
+            local_display_name="Guest",
+            settings=cfg,
+        )
 
     assigned = db_module.set_speaker_assignment(
         recording_id="rec-db-cov-voice-1",

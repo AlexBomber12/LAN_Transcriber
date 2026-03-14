@@ -1,35 +1,48 @@
 diff --git a/lan_app/db.py b/lan_app/db.py
-index 55f234f..5b0c667 100644
+index 5b0c667..54f9d7d 100644
 --- a/lan_app/db.py
 +++ b/lan_app/db.py
-@@ -426,6 +426,8 @@ def _normalise_speaker_review_state(
-     keep_unmatched: bool,
- ) -> str | None:
-     if review_state is None:
-+        if local_display_name and voice_profile_id is not None:
-+            raise ValueError("local_display_name cannot be combined with voice_profile_id")
-         if local_display_name:
-             return SPEAKER_REVIEW_STATE_LOCAL_LABEL
-         if voice_profile_id is not None:
+@@ -440,6 +440,8 @@ def _normalise_speaker_review_state(
+     if normalized not in _SPEAKER_REVIEW_STATES:
+         options = ", ".join(sorted(_SPEAKER_REVIEW_STATES))
+         raise ValueError(f"Unsupported speaker review_state: {normalized} ({options})")
++    if local_display_name and normalized != SPEAKER_REVIEW_STATE_LOCAL_LABEL:
++        raise ValueError("local_display_name requires review_state=local_label")
+     if normalized == SPEAKER_REVIEW_STATE_CONFIRMED_CANONICAL and voice_profile_id is None:
+         raise ValueError("confirmed_canonical requires voice_profile_id")
+     if normalized == SPEAKER_REVIEW_STATE_LOCAL_LABEL:
 diff --git a/tests/test_cov_lan_app_db.py b/tests/test_cov_lan_app_db.py
-index 38f8420..772a955 100644
+index 772a955..910e667 100644
 --- a/tests/test_cov_lan_app_db.py
 +++ b/tests/test_cov_lan_app_db.py
-@@ -812,6 +812,17 @@ def test_speaker_assignments_and_voice_samples_paths(tmp_path: Path):
-             review_state="local_label",
+@@ -840,6 +840,30 @@ def test_speaker_assignments_and_voice_samples_paths(tmp_path: Path):
+             review_state="kept_unknown",
              settings=cfg,
          )
 +    with pytest.raises(
 +        ValueError,
-+        match="local_display_name cannot be combined with voice_profile_id",
++        match="local_display_name requires review_state=local_label",
 +    ):
 +        db_module.set_speaker_assignment(
 +            recording_id="rec-db-cov-voice-1",
 +            diar_speaker_label="S0",
 +            voice_profile_id=profile_id,
++            review_state="confirmed_canonical",
 +            local_display_name="Guest",
 +            settings=cfg,
 +        )
-     with pytest.raises(ValueError, match="local_label cannot set voice_profile_id"):
-         db_module.set_speaker_assignment(
-             recording_id="rec-db-cov-voice-1",
++    with pytest.raises(
++        ValueError,
++        match="local_display_name requires review_state=local_label",
++    ):
++        db_module.set_speaker_assignment(
++            recording_id="rec-db-cov-voice-1",
++            diar_speaker_label="S0",
++            voice_profile_id=None,
++            review_state="kept_unknown",
++            local_display_name="Guest",
++            settings=cfg,
++        )
+ 
+     assigned = db_module.set_speaker_assignment(
+         recording_id="rec-db-cov-voice-1",
