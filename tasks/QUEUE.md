@@ -563,3 +563,43 @@ Queue (in order)
 - Status: DONE
 - Tasks file: tasks/PR-UI-STITCH-CONTROL-CENTER-01.md
 - Depends on: PR-UI-CONTROL-CENTER-RECOVERY-01
+
+113) PR-UI-STITCH-CONTROL-CENTER-02: Rebuild the Control Center shell into a compact operator workspace and move DGX/GPU visibility into the bottom system-bar foundation
+- Status: TODO
+- Tasks file: tasks/PR-UI-STITCH-CONTROL-CENTER-02.md
+- Depends on: PR-UI-STITCH-CONTROL-CENTER-01
+
+114) PR-OPS-SYSTEM-BAR-01: Add real DGX Spark and GPU runtime status to the persistent bottom system bar
+- Status: TODO
+- Tasks file: tasks/PR-OPS-SYSTEM-BAR-01.md
+- Depends on: PR-UI-STITCH-CONTROL-CENTER-02 and PR-GPU-SCHEDULER-01 and PR-DIARIZATION-GPU-01 and PR-FIX-SENTIMENT-GPU-01
+
+115) PR-UI-STITCH-WORKLIST-01: Refine the Control Center left worklist, replace Confidence with Progress, and remove bulky filter and status clutter
+- Status: TODO
+- Tasks file: tasks/PR-UI-STITCH-WORKLIST-01.md
+- Depends on: PR-UI-STITCH-CONTROL-CENTER-02 and PR-OPS-SYSTEM-BAR-01
+
+116) PR-UI-STITCH-INSPECTOR-COMPACT-01: Build a compact daily inspector for Control Center with next-action-focused overview and no deep-detail overload
+- Status: TODO
+- Tasks file: tasks/PR-UI-STITCH-INSPECTOR-COMPACT-01.md
+- Depends on: PR-UI-STITCH-WORKLIST-01
+
+117) PR-SPEAKER-DECISIONS-02: Harden speaker review state model for confirm match, keep unknown, local label only, and separate trusted-sample actions
+- Status: TODO
+- Tasks file: tasks/PR-SPEAKER-DECISIONS-02.md
+- Depends on: PR-UI-STITCH-INSPECTOR-COMPACT-01 and PR-SPEAKER-REVIEW-01
+
+118) PR-SPEAKER-SNIPPET-UX-02: Redesign Speakers into a snippet-first review workspace in compact and full-page modes
+- Status: TODO
+- Tasks file: tasks/PR-SPEAKER-SNIPPET-UX-02.md
+- Depends on: PR-SPEAKER-DECISIONS-02 and PR-SNIPPETS-UI-STATE-01 and PR-SNIPPETS-REPAIR-BACKFILL-01
+
+119) PR-INSPECTOR-FULL-PAGE-02: Rebuild the full-page recording inspector around Overview, Speakers, Transcript, Summary, Diagnostics, and Export
+- Status: TODO
+- Tasks file: tasks/PR-INSPECTOR-FULL-PAGE-02.md
+- Depends on: PR-SPEAKER-SNIPPET-UX-02 and PR-UI-STITCH-INSPECTOR-COMPACT-01
+
+120) PR-UI-STITCH-POLISH-02: Final Stitch-aligned cleanup, consistency polish, and workflow test hardening for the operator-centric UI
+- Status: TODO
+- Tasks file: tasks/PR-UI-STITCH-POLISH-02.md
+- Depends on: PR-INSPECTOR-FULL-PAGE-02 and PR-OPS-SYSTEM-BAR-01
