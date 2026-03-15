@@ -122,6 +122,7 @@ from .snippet_repair import (
     assess_snippet_repair,
     repair_recording_snippets,
 )
+from .system_status import collect_control_center_runtime_status
 from lan_transcriber.artifacts import atomic_write_json
 from lan_transcriber.llm_client import LLMClient
 from lan_transcriber.pipeline import Settings as PipelineSettings
@@ -2819,51 +2820,25 @@ def _control_center_system_bar_context(
     *,
     state: dict[str, Any],
     recordings_panel: dict[str, Any],
+    runtime_status: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     queue_detail = state["status"] or "All statuses"
     if state["q"]:
         queue_detail = f"{queue_detail} · search: {state['q']}"
+    if runtime_status is None:
+        runtime_status = collect_control_center_runtime_status(settings)
     return {
         "primary_items": [
             {
                 "label": "Queue view",
                 "value": f"{recordings_panel['total']} visible",
                 "detail": queue_detail,
+                "tone": "neutral",
             },
-            {
-                "label": "Compact inspector",
-                "value": state["selected"] or "Idle",
-                "detail": (
-                    f"{state['tab_label']} tab"
-                    if state["selected"]
-                    else "Select a recording to review"
-                ),
-            },
+            runtime_status["active_jobs_item"],
         ],
-        "secondary_items": [
-            {
-                "label": "DGX / Spark",
-                "value": "Telemetry pending",
-                "detail": "Safe placeholder until runtime wiring lands",
-                "placeholder": True,
-            },
-            {
-                "label": "GPU runtime",
-                "value": "Telemetry pending",
-                "detail": "Safe placeholder until runtime wiring lands",
-                "placeholder": True,
-            },
-            {
-                "label": "Data root",
-                "value": str(settings.data_root),
-                "detail": "Persistent runtime state",
-                "placeholder": False,
-            },
-        ],
-        "note": (
-            "System bar foundation only. Live DGX, Spark, and GPU telemetry is "
-            "intentionally deferred to the next PR."
-        ),
+        "secondary_items": runtime_status["secondary_items"],
+        "note": runtime_status["note"],
     }
 
 
@@ -3923,6 +3898,10 @@ async def ui_dashboard(
                     "choose another recording from the queue."
                 ),
             }
+    runtime_status = await run_in_threadpool(
+        collect_control_center_runtime_status,
+        _settings,
+    )
     return templates.TemplateResponse(
         request,
         "control_center.html",
@@ -3937,6 +3916,7 @@ async def ui_dashboard(
                 _settings,
                 state=control_center_state,
                 recordings_panel=control_center_work_pane["recordings_panel"],
+                runtime_status=runtime_status,
             ),
             "control_center_empty_inspector": control_center_empty_inspector,
         },
@@ -3992,6 +3972,10 @@ async def ui_control_center_system_bar(
         limit=limit,
         offset=offset,
     )
+    runtime_status = await run_in_threadpool(
+        collect_control_center_runtime_status,
+        _settings,
+    )
     return templates.TemplateResponse(
         request,
         "partials/control_center/system_bar.html",
@@ -4006,6 +3990,7 @@ async def ui_control_center_system_bar(
                         state=control_center_state,
                     )
                 },
+                runtime_status=runtime_status,
             ),
         },
     )

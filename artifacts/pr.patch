@@ -1,102 +1,163 @@
-diff --git a/lan_app/templates/base.html b/lan_app/templates/base.html
-index 53238f1..1279427 100644
---- a/lan_app/templates/base.html
-+++ b/lan_app/templates/base.html
-@@ -1068,6 +1068,44 @@ function syncControlCenterShellRefreshUrlsFromPanel() {
-   }
- }
+diff --git a/lan_app/system_status.py b/lan_app/system_status.py
+index b898aa2..24ae42e 100644
+--- a/lan_app/system_status.py
++++ b/lan_app/system_status.py
+@@ -209,6 +209,20 @@ def _safe_is_gpu_device(device: str | None) -> bool:
+         return False
  
-+function syncControlCenterShellRefreshUrlsFromStateParams(stateParams) {
-+  if (!stateParams) {
-+    return;
-+  }
-+  var normalizedParams = new URLSearchParams();
-+  normalizedParams.set('selected', stateParams.get('selected') || '');
-+  normalizedParams.set('status', stateParams.get('status') || '');
-+  normalizedParams.set('q', stateParams.get('q') || '');
-+  normalizedParams.set('tab', stateParams.get('tab') || 'overview');
-+  normalizedParams.set('limit', stateParams.get('limit') || '25');
-+  normalizedParams.set('offset', stateParams.get('offset') || '0');
-+  var workspaceHeaderUrl = '/ui/control-center/workspace-header?' + normalizedParams.toString();
-+  var systemBarUrl = '/ui/control-center/system-bar?' + normalizedParams.toString();
-+  var panel = document.getElementById('control-center-recordings-panel');
-+  var header = document.getElementById('control-center-workspace-header');
-+  var systemBar = document.getElementById('control-center-system-bar');
-+  if (panel) {
-+    panel.setAttribute('data-workspace-header-url', workspaceHeaderUrl);
-+    panel.setAttribute('data-system-bar-url', systemBarUrl);
-+  }
-+  if (header) {
-+    header.setAttribute('hx-get', workspaceHeaderUrl);
-+  }
-+  if (systemBar) {
-+    systemBar.setAttribute('hx-get', systemBarUrl);
-+  }
-+}
+ 
++def _safe_get_recording(
++    recording_id: str,
++    *,
++    settings: AppSettings,
++) -> dict[str, Any] | None:
++    if not recording_id:
++        return None
++    try:
++        recording = get_recording(recording_id, settings=settings)
++    except Exception:
++        return None
++    return recording if isinstance(recording, dict) else None
 +
-+function syncControlCenterShellRefreshUrlsFromHref(href) {
-+  if (!href) {
-+    syncControlCenterShellRefreshUrlsFromStateParams(new URLSearchParams(window.location.search || ''));
-+    return;
-+  }
-+  syncControlCenterShellRefreshUrlsFromStateParams(
-+    new URL(href, window.location.origin).searchParams
-+  );
-+}
 +
- function refreshControlCenterShellFromPanel() {
-   syncControlCenterShellRefreshUrlsFromPanel();
-   if (!window.htmx || !document.body) {
-@@ -1077,14 +1115,32 @@ function refreshControlCenterShellFromPanel() {
-   htmx.trigger(document.body, 'refresh-control-center-system-bar');
- }
- 
--if (document.body) {
-+function refreshControlCenterShellFromHref(href) {
-+  syncControlCenterShellRefreshUrlsFromHref(href);
-+  if (!window.htmx || !document.body) {
-+    return;
-+  }
-+  htmx.trigger(document.body, 'refresh-control-center-header');
-+  htmx.trigger(document.body, 'refresh-control-center-system-bar');
-+}
+ def _active_job_snapshot(settings: AppSettings) -> dict[str, Any]:
+     try:
+         started_rows, started_total = list_jobs(
+@@ -239,7 +253,7 @@ def _active_job_snapshot(settings: AppSettings) -> dict[str, Any]:
+     queued_job = queued_rows[0] if queued_rows else None
+     active_recording = None
+     if isinstance(active_job, dict):
+-        active_recording = get_recording(
++        active_recording = _safe_get_recording(
+             str(active_job.get("recording_id") or ""),
+             settings=settings,
+         )
+@@ -256,7 +270,7 @@ def _active_job_snapshot(settings: AppSettings) -> dict[str, Any]:
+             f"· {_stage_label(active_stage)}"
+         )
+     elif isinstance(queued_job, dict):
+-        queued_recording = get_recording(
++        queued_recording = _safe_get_recording(
+             str(queued_job.get("recording_id") or ""),
+             settings=settings,
+         )
+diff --git a/lan_app/ui_routes.py b/lan_app/ui_routes.py
+index 6337bf2..e7414b9 100644
+--- a/lan_app/ui_routes.py
++++ b/lan_app/ui_routes.py
+@@ -2820,11 +2820,13 @@ def _control_center_system_bar_context(
+     *,
+     state: dict[str, Any],
+     recordings_panel: dict[str, Any],
++    runtime_status: dict[str, Any] | None = None,
+ ) -> dict[str, Any]:
+     queue_detail = state["status"] or "All statuses"
+     if state["q"]:
+         queue_detail = f"{queue_detail} · search: {state['q']}"
+-    runtime_status = collect_control_center_runtime_status(settings)
++    if runtime_status is None:
++        runtime_status = collect_control_center_runtime_status(settings)
+     return {
+         "primary_items": [
+             {
+@@ -3896,6 +3898,10 @@ async def ui_dashboard(
+                     "choose another recording from the queue."
+                 ),
+             }
++    runtime_status = await run_in_threadpool(
++        collect_control_center_runtime_status,
++        _settings,
++    )
+     return templates.TemplateResponse(
+         request,
+         "control_center.html",
+@@ -3910,6 +3916,7 @@ async def ui_dashboard(
+                 _settings,
+                 state=control_center_state,
+                 recordings_panel=control_center_work_pane["recordings_panel"],
++                runtime_status=runtime_status,
+             ),
+             "control_center_empty_inspector": control_center_empty_inspector,
+         },
+@@ -3965,6 +3972,10 @@ async def ui_control_center_system_bar(
+         limit=limit,
+         offset=offset,
+     )
++    runtime_status = await run_in_threadpool(
++        collect_control_center_runtime_status,
++        _settings,
++    )
+     return templates.TemplateResponse(
+         request,
+         "partials/control_center/system_bar.html",
+@@ -3979,6 +3990,7 @@ async def ui_control_center_system_bar(
+                         state=control_center_state,
+                     )
+                 },
++                runtime_status=runtime_status,
+             ),
+         },
+     )
+diff --git a/tests/test_cov_lan_app_ui_routes.py b/tests/test_cov_lan_app_ui_routes.py
+index e53aa75..4e9c39b 100644
+--- a/tests/test_cov_lan_app_ui_routes.py
++++ b/tests/test_cov_lan_app_ui_routes.py
+@@ -572,9 +572,11 @@ def test_control_center_system_bar_route_avoids_work_pane_builder(
+         *,
+         state: dict[str, Any],
+         recordings_panel: dict[str, Any],
++        runtime_status: dict[str, Any] | None = None,
+     ) -> dict[str, Any]:
+         assert settings is seen["settings"]
+         assert recordings_panel == {"total": 7}
++        assert runtime_status == {"active_jobs_item": {}, "secondary_items": [], "note": "test runtime note"}
+         return {
+             "primary_items": [
+                 {
+@@ -590,6 +592,12 @@ def test_control_center_system_bar_route_avoids_work_pane_builder(
+     monkeypatch.setattr(ui_routes, "_control_center_work_pane_context", _unexpected_work_pane)
+     monkeypatch.setattr(ui_routes, "_control_center_recordings_panel_context", _unexpected_recordings_panel)
+     monkeypatch.setattr(ui_routes, "list_recordings", _fake_list_recordings)
++    async def _fake_run_in_threadpool(func, settings):
++        assert func is ui_routes.collect_control_center_runtime_status
++        assert settings is ui_routes._settings  # noqa: SLF001
++        return {"active_jobs_item": {}, "secondary_items": [], "note": "test runtime note"}
 +
-+if (document.body && !window.__controlCenterShellAfterSwapBound) {
-   document.body.addEventListener('htmx:afterSwap', function (event) {
-     var target = event && event.detail ? event.detail.target : null;
--    if (!target || target.id !== 'control-center-recordings-panel') {
-+    if (!target) {
-+      return;
-+    }
-+    if (target.id === 'control-center-recordings-panel') {
-+      refreshControlCenterShellFromPanel();
-+      return;
-+    }
-+    if (target.id !== 'control-center-inspector-pane') {
-       return;
-     }
--    refreshControlCenterShellFromPanel();
-+    var activeTab = target.querySelector('.tab.active');
-+    refreshControlCenterShellFromHref(activeTab ? activeTab.getAttribute('href') : '');
-   });
-+  window.__controlCenterShellAfterSwapBound = true;
- }
++    monkeypatch.setattr(ui_routes, "run_in_threadpool", _fake_run_in_threadpool)
+     monkeypatch.setattr(ui_routes, "_control_center_system_bar_context", _fake_system_bar_context)
  
- function refreshControlCenterPanels(options) {
-diff --git a/tests/test_ui_routes.py b/tests/test_ui_routes.py
-index 2a9ea4e..b6e33d5 100644
---- a/tests/test_ui_routes.py
-+++ b/tests/test_ui_routes.py
-@@ -370,8 +370,12 @@ def test_control_center_query_state_and_direct_routes(seeded_client):
-     assert "refresh-control-center-header" in r.text
-     assert "refresh-control-center-system-bar" in r.text
-     assert "syncControlCenterShellRefreshUrlsFromPanel" in r.text
-+    assert "syncControlCenterShellRefreshUrlsFromHref" in r.text
-     assert "refreshControlCenterShellFromPanel" in r.text
-+    assert "refreshControlCenterShellFromHref" in r.text
-     assert "htmx:afterSwap" in r.text
-+    assert "window.__controlCenterShellAfterSwapBound" in r.text
-+    assert "target.id !== 'control-center-inspector-pane'" in r.text
-     assert "htmx.trigger(document.body, 'refresh-control-center-inspector');" in r.text
-     assert "params.delete('selected');" in r.text
+     response = c.get(
+diff --git a/tests/test_system_status.py b/tests/test_system_status.py
+index 0ebd419..f91a530 100644
+--- a/tests/test_system_status.py
++++ b/tests/test_system_status.py
+@@ -106,6 +106,7 @@ def test_system_status_small_helpers_cover_edge_cases(tmp_path, monkeypatch):
+     assert system_status._extract_model_ids([]) == []  # noqa: SLF001
+     assert system_status._safe_is_gpu_device("cuda:0") is True  # noqa: SLF001
+     assert system_status._safe_is_gpu_device("bogus") is False  # noqa: SLF001
++    assert system_status._safe_get_recording("", settings=_settings(tmp_path)) is None  # noqa: SLF001
  
+ 
+ def test_probe_spark_runtime_variants(tmp_path, monkeypatch):
+@@ -218,6 +219,21 @@ def test_active_job_snapshot_paths(tmp_path, monkeypatch):
+     failed = system_status._active_job_snapshot(_settings(tmp_path))  # noqa: SLF001
+     assert failed["error"] == "db unavailable"
+ 
++    monkeypatch.setattr(system_status, "list_jobs", _list_jobs_started)
++    monkeypatch.setattr(
++        system_status,
++        "get_recording",
++        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("lookup unavailable")),
++    )
++    started_lookup_failed = system_status._active_job_snapshot(_settings(tmp_path))  # noqa: SLF001
++    assert started_lookup_failed["error"] is None
++    assert started_lookup_failed["active_detail"] == "rec-started-1 · Precheck"
++
++    monkeypatch.setattr(system_status, "list_jobs", _list_jobs_queued)
++    queued_lookup_failed = system_status._active_job_snapshot(_settings(tmp_path))  # noqa: SLF001
++    assert queued_lookup_failed["error"] is None
++    assert queued_lookup_failed["active_detail"] == "Next: rec-queued-1"
++
+ 
+ def test_active_runtime_metadata_prefers_diarization_metadata(tmp_path):
+     settings = _settings(tmp_path)

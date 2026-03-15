@@ -786,9 +786,22 @@ textarea:focus{
   border:1px solid rgba(148,163,184,.18);
   background:rgba(255,255,255,.04);
 }
-.control-center-system-item.placeholder{
-  background:rgba(36,99,235,.08);
-  border-color:rgba(96,165,250,.28);
+.control-center-system-item--neutral{
+  background:rgba(255,255,255,.04);
+  border-color:rgba(148,163,184,.18);
+}
+.control-center-system-item--healthy{
+  background:rgba(22,101,52,.18);
+  border-color:rgba(134,239,172,.28);
+}
+.control-center-system-item--busy,
+.control-center-system-item--degraded{
+  background:rgba(180,83,9,.16);
+  border-color:rgba(251,191,36,.3);
+}
+.control-center-system-item--offline{
+  background:rgba(127,29,29,.24);
+  border-color:rgba(248,113,113,.32);
 }
 .control-center-system-label{
   font-size:10px;
@@ -797,16 +810,28 @@ textarea:focus{
   text-transform:uppercase;
   color:#93aac8;
 }
+.control-center-system-item--healthy .control-center-system-label{color:#b9ebc8}
+.control-center-system-item--busy .control-center-system-label,
+.control-center-system-item--degraded .control-center-system-label{color:#f7d18b}
+.control-center-system-item--offline .control-center-system-label{color:#f6b0b0}
 .control-center-system-value{
   font-size:14px;
   font-weight:700;
   color:#fff;
   overflow-wrap:anywhere;
 }
+.control-center-system-item--healthy .control-center-system-value{color:#f0fdf4}
+.control-center-system-item--busy .control-center-system-value,
+.control-center-system-item--degraded .control-center-system-value{color:#fff7d6}
+.control-center-system-item--offline .control-center-system-value{color:#fee2e2}
 .control-center-system-detail{
   font-size:11px;
   color:#b7c6db;
 }
+.control-center-system-item--healthy .control-center-system-detail{color:#d5f3de}
+.control-center-system-item--busy .control-center-system-detail,
+.control-center-system-item--degraded .control-center-system-detail{color:#f8dfae}
+.control-center-system-item--offline .control-center-system-detail{color:#fecaca}
 .control-center-system-note{
   margin:0;
   font-size:11px;

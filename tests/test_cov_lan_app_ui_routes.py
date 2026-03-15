@@ -36,6 +36,44 @@ from lan_app.db import (
 from lan_app.jobs import DuplicateRecordingJobError
 
 
+def _stub_runtime_status() -> dict[str, object]:
+    return {
+        "active_jobs_item": {
+            "label": "Active jobs",
+            "value": "Idle",
+            "detail": "worker 'test-worker' heartbeat 5s ago",
+            "tone": "healthy",
+        },
+        "secondary_items": [
+            {
+                "label": "DGX / Spark",
+                "value": "Online",
+                "detail": "dgx.local responded to /v1/models",
+                "tone": "healthy",
+            },
+            {
+                "label": "GPU runtime",
+                "value": "GPU ready",
+                "detail": "1 visible · torch CUDA 12.6",
+                "tone": "healthy",
+            },
+            {
+                "label": "Inference mode",
+                "value": "GPU path",
+                "detail": "ASR cuda · Diarization cuda · sequential",
+                "tone": "healthy",
+            },
+            {
+                "label": "Inference target",
+                "value": "gpt-oss:120b",
+                "detail": "dgx.local · advertised by Spark",
+                "tone": "healthy",
+            },
+        ],
+        "note": "test runtime note",
+    }
+
+
 def _cfg(tmp_path: Path) -> AppSettings:
     cfg = AppSettings(
         data_root=tmp_path,
@@ -51,6 +89,11 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[AppSettings
     cfg = _cfg(tmp_path)
     monkeypatch.setattr(api, "_settings", cfg)
     monkeypatch.setattr(ui_routes, "_settings", cfg)
+    monkeypatch.setattr(
+        ui_routes,
+        "collect_control_center_runtime_status",
+        lambda _settings: _stub_runtime_status(),
+    )
     init_db(cfg)
     return cfg, TestClient(api.app, follow_redirects=False)
 
@@ -104,6 +147,11 @@ def test_control_center_helper_contexts_cover_fragment_builders(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     cfg = _cfg(tmp_path)
+    monkeypatch.setattr(
+        ui_routes,
+        "collect_control_center_runtime_status",
+        lambda _settings: _stub_runtime_status(),
+    )
     monkeypatch.setattr(ui_routes, "_status_counts", lambda settings: {"Ready": 1})
     monkeypatch.setattr(ui_routes, "_job_counts", lambda settings: {"queued": 2})
     monkeypatch.setattr(
@@ -397,9 +445,10 @@ def test_control_center_helper_contexts_cover_fragment_builders(
     )
     assert system_bar["primary_items"][0]["value"] == "3 visible"
     assert system_bar["primary_items"][0]["detail"] == "Ready · search: helper"
-    assert system_bar["secondary_items"][0]["placeholder"] is True
-    assert str(cfg.data_root) == system_bar["secondary_items"][2]["value"]
-    assert "next PR" in system_bar["note"]
+    assert system_bar["primary_items"][1]["label"] == "Active jobs"
+    assert system_bar["secondary_items"][0]["value"] == "Online"
+    assert system_bar["secondary_items"][1]["value"] == "GPU ready"
+    assert system_bar["note"] == "test runtime note"
 
     header = ui_routes._control_center_workspace_header_context(  # noqa: SLF001
         cfg,
@@ -523,9 +572,11 @@ def test_control_center_system_bar_route_avoids_work_pane_builder(
         *,
         state: dict[str, Any],
         recordings_panel: dict[str, Any],
+        runtime_status: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         assert settings is seen["settings"]
         assert recordings_panel == {"total": 7}
+        assert runtime_status == {"active_jobs_item": {}, "secondary_items": [], "note": "test runtime note"}
         return {
             "primary_items": [
                 {
@@ -541,6 +592,12 @@ def test_control_center_system_bar_route_avoids_work_pane_builder(
     monkeypatch.setattr(ui_routes, "_control_center_work_pane_context", _unexpected_work_pane)
     monkeypatch.setattr(ui_routes, "_control_center_recordings_panel_context", _unexpected_recordings_panel)
     monkeypatch.setattr(ui_routes, "list_recordings", _fake_list_recordings)
+    async def _fake_run_in_threadpool(func, settings):
+        assert func is ui_routes.collect_control_center_runtime_status
+        assert settings is ui_routes._settings  # noqa: SLF001
+        return {"active_jobs_item": {}, "secondary_items": [], "note": "test runtime note"}
+
+    monkeypatch.setattr(ui_routes, "run_in_threadpool", _fake_run_in_threadpool)
     monkeypatch.setattr(ui_routes, "_control_center_system_bar_context", _fake_system_bar_context)
 
     response = c.get(
