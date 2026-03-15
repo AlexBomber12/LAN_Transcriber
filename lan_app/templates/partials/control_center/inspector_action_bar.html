@@ -1,4 +1,4 @@
-<div class="filters" style="margin-bottom:10px">
+<div class="inspector-action-bar">
   <button
     type="button"
     class="btn"
@@ -44,7 +44,6 @@
   <a
     href="{{ inspector_action_bar.download_zip_href }}"
     class="btn"
-    style="text-decoration:none"
     hx-boost="false"
     data-testid="recording-inspector-download-zip"
   >Download ZIP</a>
@@ -52,9 +51,8 @@
   <a
     href="{{ inspector_action_bar.open_full_page_href }}"
     class="btn"
-    style="text-decoration:none"
     data-testid="recording-inspector-open-full-page"
   >Open full-page recording</a>
   {% endif %}
-  <a href="{{ inspector_action_bar.back_href }}" class="btn" style="text-decoration:none">{{ inspector_action_bar.back_label }}</a>
+  <a href="{{ inspector_action_bar.back_href }}" class="btn">{{ inspector_action_bar.back_label }}</a>
 </div>

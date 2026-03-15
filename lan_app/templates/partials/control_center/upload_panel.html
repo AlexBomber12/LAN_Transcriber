@@ -1,34 +1,41 @@
-<div class="section">
-  <div class="form-row" style="margin-bottom:8px">
-    <label for="{{ upload_shell.file_input_id }}">Files</label>
-    <input type="file" id="{{ upload_shell.file_input_id }}" multiple>
-    <button type="button" class="btn" id="{{ upload_shell.pick_files_button_id }}">Choose files</button>
+<div class="control-center-upload-grid">
+  <div>
+    <input type="file" id="{{ upload_shell.file_input_id }}" multiple hidden>
+    <div
+      id="{{ upload_shell.dropzone_id }}"
+      class="control-center-upload-dropzone"
+      tabindex="0"
+    >
+      <p class="eyebrow">Drop Audio</p>
+      <h3>Drag files in or start from your device</h3>
+      <p class="upload-caption">MP3, WAV, FLAC and similar formats are accepted. Files enter the live queue immediately after upload.</p>
+      <button type="button" class="btn" id="{{ upload_shell.pick_files_button_id }}">Choose files</button>
+      <p class="upload-caption">Drop audio files here or use Choose files.</p>
+    </div>
   </div>
-  <div
-    id="{{ upload_shell.dropzone_id }}"
-    class="control-center-upload-dropzone"
-    tabindex="0"
-  >
-    Drop audio files here or use Choose files.
+  <div class="upload-queue-shell">
+    <div>
+      <p class="eyebrow">Queue Preview</p>
+      <h3>Recent uploads and processing progress</h3>
+    </div>
+    <div class="upload-queue-table">
+      <table>
+        <thead>
+          <tr>
+            <th>Filename</th>
+            <th>Size</th>
+            <th>Upload progress</th>
+            <th>Processing progress</th>
+            <th>Status</th>
+            <th>Link</th>
+          </tr>
+        </thead>
+        <tbody id="{{ upload_shell.upload_rows_id }}">
+          <tr id="{{ upload_shell.empty_row_id }}">
+            <td colspan="{{ upload_shell.queue_empty_colspan }}" class="placeholder">No files queued yet.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
   </div>
-</div>
-
-<div class="section">
-  <table>
-    <thead>
-      <tr>
-        <th>Filename</th>
-        <th>Size</th>
-        <th>Upload progress</th>
-        <th>Processing progress</th>
-        <th>Status</th>
-        <th>Link</th>
-      </tr>
-    </thead>
-    <tbody id="{{ upload_shell.upload_rows_id }}">
-      <tr id="{{ upload_shell.empty_row_id }}">
-        <td colspan="{{ upload_shell.queue_empty_colspan }}" class="placeholder">No files queued yet.</td>
-      </tr>
-    </tbody>
-  </table>
 </div>

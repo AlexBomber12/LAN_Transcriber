@@ -1,6 +1,6 @@
 <div
   id="{{ recordings_panel.panel_id }}"
-  class="section"
+  class="recordings-panel recordings-panel-frame"
   {% if recordings_panel.refresh_url %}
   hx-get="{{ recordings_panel.refresh_url }}"
   hx-trigger="{{ recordings_panel.refresh_trigger }}"
@@ -10,9 +10,11 @@
 >
   <div class="control-center-pane-head">
     <div>
-      <h2 style="margin-top:0">{{ recordings_panel.title }}</h2>
+      <p class="eyebrow">Worklist</p>
+      <h2>{{ recordings_panel.title }}</h2>
+      <p class="control-center-pane-copy">{{ recordings_panel.description }}</p>
     </div>
-    <div class="control-center-state-list" style="margin-top:0">
+    <div class="control-center-state-list">
       <span class="control-center-state-pill">Rows: {{ recordings_panel.total }}</span>
       <span class="control-center-state-pill">Limit: {{ recordings_panel.recordings_table.limit }}</span>
     </div>

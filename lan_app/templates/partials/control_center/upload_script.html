@@ -32,30 +32,18 @@ function formatSize(bytes) {
 
 function makeProgressCell() {
   var wrap = document.createElement("div");
-  wrap.style.display = "flex";
-  wrap.style.alignItems = "center";
-  wrap.style.gap = "6px";
-  wrap.style.minWidth = "140px";
+  wrap.className = "upload-progress-wrap";
 
   var bar = document.createElement("div");
-  bar.style.width = "90px";
-  bar.style.height = "8px";
-  bar.style.border = "1px solid #99b";
-  bar.style.background = "#f3f4f6";
-  bar.style.position = "relative";
+  bar.className = "upload-progress-track";
 
   var fill = document.createElement("div");
-  fill.style.position = "absolute";
-  fill.style.left = "0";
-  fill.style.top = "0";
-  fill.style.bottom = "0";
-  fill.style.width = "0%";
-  fill.style.background = "#4a6080";
+  fill.className = "upload-progress-fill";
   bar.appendChild(fill);
 
   var label = document.createElement("span");
+  label.className = "upload-progress-label";
   label.textContent = "0%";
-  label.style.fontSize = "11px";
 
   wrap.appendChild(bar);
   wrap.appendChild(label);
@@ -335,7 +323,9 @@ if (fileInput && pickFilesButton && dropzone && fileInput.dataset.uploadBound !=
     fileInput.value = "";
   });
 
-  pickFilesButton.addEventListener("click", function() {
+  pickFilesButton.addEventListener("click", function(event) {
+    event.preventDefault();
+    event.stopPropagation();
     fileInput.click();
   });
 

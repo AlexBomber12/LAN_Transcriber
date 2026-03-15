@@ -2783,7 +2783,7 @@ def _control_center_work_pane_context(
 def _control_center_empty_inspector_context() -> dict[str, str]:
     return {
         "title": "Select a recording",
-        "message": "",
+        "message": "The compact inspector appears here after you pick something from the queue.",
     }
 
 
@@ -3185,9 +3185,9 @@ def _inspector_action_bar_context(
         "back_href": (
             control_center_state["clear_selection_href"]
             if is_embedded
-            else "/recordings"
+            else "/"
         ),
-        "back_label": "Clear selection" if is_embedded else "Back to recordings",
+        "back_label": "Clear selection" if is_embedded else "Back to Control Center",
         "open_full_page_href": _recording_detail_path(recording_id, tab=current_tab),
         "download_zip_href": f"/ui/recordings/{quote(recording_id, safe='')}/export.zip",
         "requeue_url": f"/ui/recordings/{quote(recording_id, safe='')}/requeue{return_query}",
@@ -3228,7 +3228,7 @@ def _selected_recording_summary_shell_context(
 def _empty_inspector_shell_context() -> dict[str, str]:
     return {
         "title": "Select a recording",
-        "message": "",
+        "message": "Choose a row from the worklist to open a compact review pane here.",
     }
 
 

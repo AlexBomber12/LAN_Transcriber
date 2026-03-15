@@ -1,0 +1,15 @@
+diff --git a/lan_app/templates/partials/control_center/upload_script.html b/lan_app/templates/partials/control_center/upload_script.html
+index d985ba3..e919a71 100644
+--- a/lan_app/templates/partials/control_center/upload_script.html
++++ b/lan_app/templates/partials/control_center/upload_script.html
+@@ -323,7 +323,9 @@ if (fileInput && pickFilesButton && dropzone && fileInput.dataset.uploadBound !=
+     fileInput.value = "";
+   });
+ 
+-  pickFilesButton.addEventListener("click", function() {
++  pickFilesButton.addEventListener("click", function(event) {
++    event.preventDefault();
++    event.stopPropagation();
+     fileInput.click();
+   });
+ 
