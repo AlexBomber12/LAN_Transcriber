@@ -2761,6 +2761,21 @@ def _control_center_workspace_header_context(
                 selected_recording,
                 settings=settings,
             )
+    return {
+        "focus_recording": selected_recording,
+        "visible_total": _control_center_visible_total(
+            settings,
+            state=state,
+        ),
+        "workflow_links": _control_center_workflow_links_context(state=state),
+    }
+
+
+def _control_center_visible_total(
+    settings: AppSettings,
+    *,
+    state: dict[str, Any],
+) -> int:
     _, visible_total = list_recordings(
         settings=settings,
         status=state["status"] or None,
@@ -2768,11 +2783,7 @@ def _control_center_workspace_header_context(
         limit=1,
         offset=0,
     )
-    return {
-        "focus_recording": selected_recording,
-        "visible_total": visible_total,
-        "workflow_links": _control_center_workflow_links_context(state=state),
-    }
+    return visible_total
 
 
 def _control_center_work_pane_context(
@@ -3981,10 +3992,6 @@ async def ui_control_center_system_bar(
         limit=limit,
         offset=offset,
     )
-    recordings_panel = _control_center_recordings_panel_context(
-        _settings,
-        state=control_center_state,
-    )
     return templates.TemplateResponse(
         request,
         "partials/control_center/system_bar.html",
@@ -3993,7 +4000,12 @@ async def ui_control_center_system_bar(
             "control_center_system_bar": _control_center_system_bar_context(
                 _settings,
                 state=control_center_state,
-                recordings_panel=recordings_panel,
+                recordings_panel={
+                    "total": _control_center_visible_total(
+                        _settings,
+                        state=control_center_state,
+                    )
+                },
             ),
         },
     )

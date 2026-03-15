@@ -497,30 +497,26 @@ def test_control_center_system_bar_route_avoids_work_pane_builder(
 
     seen: dict[str, Any] = {}
 
-    def _fake_recordings_panel(
+    def _unexpected_recordings_panel(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        raise AssertionError("_control_center_recordings_panel_context should not run here")
+
+    def _fake_list_recordings(
         settings: AppSettings,
-        *,
-        mode: str,
-        selected: str = "",
-        status: str | None,
-        q: str,
-        limit: int,
-        offset: int,
-        tab: str = "overview",
-    ) -> dict[str, Any]:
+        status: str | None = None,
+        q: str = "",
+        limit: int = 100,
+        offset: int = 0,
+    ) -> tuple[list[dict[str, Any]], int]:
         seen.update(
             {
                 "settings": settings,
-                "mode": mode,
-                "selected": selected,
                 "status": status,
                 "q": q,
                 "limit": limit,
                 "offset": offset,
-                "tab": tab,
             }
         )
-        return {"total": 7}
+        return ([], 7)
 
     def _fake_system_bar_context(
         settings: AppSettings,
@@ -543,7 +539,8 @@ def test_control_center_system_bar_route_avoids_work_pane_builder(
         }
 
     monkeypatch.setattr(ui_routes, "_control_center_work_pane_context", _unexpected_work_pane)
-    monkeypatch.setattr(ui_routes, "_recordings_panel_context", _fake_recordings_panel)
+    monkeypatch.setattr(ui_routes, "_control_center_recordings_panel_context", _unexpected_recordings_panel)
+    monkeypatch.setattr(ui_routes, "list_recordings", _fake_list_recordings)
     monkeypatch.setattr(ui_routes, "_control_center_system_bar_context", _fake_system_bar_context)
 
     response = c.get(
@@ -554,13 +551,10 @@ def test_control_center_system_bar_route_avoids_work_pane_builder(
     assert response.status_code == 200
     assert seen == {
         "settings": ui_routes._settings,  # noqa: SLF001
-        "mode": "control_center",
-        "selected": "rec-route-1",
         "status": "Ready",
         "q": "meeting",
-        "limit": 100,
-        "offset": 25,
-        "tab": "speakers",
+        "limit": 1,
+        "offset": 0,
     }
     assert 'id="control-center-system-bar"' in response.text
     assert "7 visible" in response.text
