@@ -179,6 +179,10 @@ def test_control_center_helper_contexts_cover_fragment_builders(
         "/ui/control-center/workspace-header?"
         "selected=rec-helper-1&status=Ready&q=helper&tab=speakers&limit=100&offset=25"
     )
+    assert state["system_bar_url"] == (
+        "/ui/control-center/system-bar?"
+        "selected=rec-helper-1&status=Ready&q=helper&tab=speakers&limit=100&offset=25"
+    )
     assert "status=Ready" in state["work_pane_url"]
     assert "limit=100" in state["work_pane_url"]
     assert "offset=25" in state["clear_selection_href"]

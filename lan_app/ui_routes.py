@@ -2419,6 +2419,7 @@ def _control_center_state_context(
         "reset_href": "/",
         "workspace_header_url": f"/ui/control-center/workspace-header?{urlencode(state_params)}",
         "work_pane_url": f"/ui/control-center/work-pane?{urlencode(state_params)}",
+        "system_bar_url": f"/ui/control-center/system-bar?{urlencode(state_params)}",
         "inspector_pane_url": (
             _control_center_inspector_path(
                 selected_id,
@@ -3930,6 +3931,42 @@ async def ui_control_center_workspace_header(
             "control_center_header": _control_center_workspace_header_context(
                 _settings,
                 state=control_center_state,
+            ),
+        },
+    )
+
+
+@ui_router.get("/ui/control-center/system-bar", response_class=HTMLResponse)
+async def ui_control_center_system_bar(
+    request: Request,
+    selected: str = Query(default=""),
+    status: str | None = Query(default=None),
+    q: str = Query(default=""),
+    tab: str = Query(default="overview"),
+    limit: int = Query(default=_CONTROL_CENTER_LIST_LIMIT, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+) -> Any:
+    control_center_state = _control_center_state_context(
+        selected=selected,
+        status=status,
+        q=q,
+        tab=tab,
+        limit=limit,
+        offset=offset,
+    )
+    control_center_work_pane = _control_center_work_pane_context(
+        _settings,
+        state=control_center_state,
+    )
+    return templates.TemplateResponse(
+        request,
+        "partials/control_center/system_bar.html",
+        {
+            "control_center_state": control_center_state,
+            "control_center_system_bar": _control_center_system_bar_context(
+                _settings,
+                state=control_center_state,
+                recordings_panel=control_center_work_pane["recordings_panel"],
             ),
         },
     )

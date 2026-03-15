@@ -368,6 +368,7 @@ def test_control_center_query_state_and_direct_routes(seeded_client):
     assert "/recordings/rec-ui-1?tab=speakers" in r.text
     assert "Open full-page recording" in r.text
     assert "refresh-control-center-header" in r.text
+    assert "refresh-control-center-system-bar" in r.text
     assert "htmx.trigger(document.body, 'refresh-control-center-inspector');" in r.text
     assert "params.delete('selected');" in r.text
 
@@ -392,6 +393,16 @@ def test_control_center_pane_fragment_endpoints(seeded_client):
     assert "meeting.mp3" in workspace_header.text
     assert "/recordings/rec-ui-1?tab=speakers" in workspace_header.text
     assert "<html" not in workspace_header.text
+
+    system_bar = seeded_client.get(
+        "/ui/control-center/system-bar?selected=rec-ui-1&status=Ready&q=meeting&tab=speakers"
+    )
+    assert system_bar.status_code == 200
+    assert 'id="control-center-system-bar"' in system_bar.text
+    assert 'hx-trigger="refresh-control-center-system-bar from:body"' in system_bar.text
+    assert "Queue view" in system_bar.text
+    assert "Compact inspector" in system_bar.text
+    assert "<html" not in system_bar.text
 
     work_pane = seeded_client.get(
         "/ui/control-center/work-pane?selected=rec-ui-1&status=Ready&q=meeting&tab=speakers"

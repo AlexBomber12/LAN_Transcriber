@@ -1,138 +1,50 @@
 diff --git a/lan_app/templates/base.html b/lan_app/templates/base.html
-index 2bd7046..4519e55 100644
+index 4519e55..2318b9b 100644
 --- a/lan_app/templates/base.html
 +++ b/lan_app/templates/base.html
-@@ -1067,6 +1067,7 @@ function refreshControlCenterPanels(options) {
-   }
+@@ -1068,6 +1068,7 @@ function refreshControlCenterPanels(options) {
    htmx.trigger(document.body, 'refresh-control-center-recordings');
    htmx.trigger(document.body, 'refresh-control-center-summary');
-+  htmx.trigger(document.body, 'refresh-control-center-header');
+   htmx.trigger(document.body, 'refresh-control-center-header');
++  htmx.trigger(document.body, 'refresh-control-center-system-bar');
    htmx.trigger(document.body, 'refresh-control-center-inspector');
  }
  
-diff --git a/lan_app/templates/partials/control_center/workspace_header.html b/lan_app/templates/partials/control_center/workspace_header.html
-index 0df86c6..e84ccca 100644
---- a/lan_app/templates/partials/control_center/workspace_header.html
-+++ b/lan_app/templates/partials/control_center/workspace_header.html
-@@ -1,4 +1,12 @@
--<section id="control-center-workspace-header" class="control-center-workspace-header">
-+<section
-+  id="control-center-workspace-header"
-+  class="control-center-workspace-header"
-+  hx-get="{{ control_center_state.workspace_header_url }}"
-+  hx-trigger="refresh-control-center-header from:body"
+diff --git a/lan_app/templates/partials/control_center/system_bar.html b/lan_app/templates/partials/control_center/system_bar.html
+index 5f55994..718e697 100644
+--- a/lan_app/templates/partials/control_center/system_bar.html
++++ b/lan_app/templates/partials/control_center/system_bar.html
+@@ -1,4 +1,11 @@
+-<footer id="control-center-system-bar" class="control-center-system-bar">
++<footer
++  id="control-center-system-bar"
++  class="control-center-system-bar"
++  hx-get="{{ control_center_state.system_bar_url }}"
++  hx-trigger="refresh-control-center-system-bar from:body"
 +  hx-target="this"
 +  hx-swap="outerHTML"
 +>
-+  {% set focus_recording = control_center_header.focus_recording %}
-   <div class="control-center-workspace-copy">
-     <p class="eyebrow">Daily workspace</p>
-     <h1>Control Center</h1>
-@@ -16,10 +24,10 @@
-       </span>
-     </div>
- 
--    {% if control_center_state.selected and rec is defined %}
--    <strong class="control-center-focus-title">{{ rec.source_filename }}</strong>
-+    {% if control_center_state.selected and focus_recording %}
-+    <strong class="control-center-focus-title">{{ focus_recording.source_filename }}</strong>
-     <p class="control-center-focus-copy">
--      <code>{{ rec.id }}</code> · {{ rec.status }} · {{ control_center_state.tab_label }} tab
-+      <code>{{ focus_recording.id }}</code> · {{ focus_recording.status }} · {{ control_center_state.tab_label }} tab
-     </p>
-     {% elif control_center_state.selected %}
-     <strong class="control-center-focus-title">{{ control_center_state.selected }}</strong>
-@@ -30,7 +38,7 @@
-     {% endif %}
- 
-     <div class="control-center-focus-pills">
--      <span class="control-center-focus-pill">{{ control_center_work_pane.recordings_panel.total }} visible</span>
-+      <span class="control-center-focus-pill">{{ control_center_header.visible_total }} visible</span>
-       <span class="control-center-focus-pill">{{ control_center_state.status or "All statuses" }}</span>
-       {% if control_center_state.q %}
-       <span class="control-center-focus-pill">Search: {{ control_center_state.q }}</span>
-@@ -44,8 +52,8 @@
-       {% if control_center_state.status or control_center_state.q %}
-       <a href="{{ control_center_state.reset_href }}" class="btn">Reset queue view</a>
-       {% endif %}
--      {% if control_center_work_pane.workflow_links.selected_detail_href %}
--      <a href="{{ control_center_work_pane.workflow_links.selected_detail_href }}" class="btn">Open full-page inspector</a>
-+      {% if control_center_header.workflow_links.selected_detail_href %}
-+      <a href="{{ control_center_header.workflow_links.selected_detail_href }}" class="btn">Open full-page inspector</a>
-       {% endif %}
-     </div>
-   </aside>
+   <div class="control-center-system-group">
+     {% for item in control_center_system_bar.primary_items %}
+     <div class="control-center-system-item">
 diff --git a/lan_app/ui_routes.py b/lan_app/ui_routes.py
-index 2bf9258..f5fcb12 100644
+index f5fcb12..73987d0 100644
 --- a/lan_app/ui_routes.py
 +++ b/lan_app/ui_routes.py
-@@ -2417,6 +2417,7 @@ def _control_center_state_context(
-             offset=safe_offset,
-         ),
+@@ -2419,6 +2419,7 @@ def _control_center_state_context(
          "reset_href": "/",
-+        "workspace_header_url": f"/ui/control-center/workspace-header?{urlencode(state_params)}",
+         "workspace_header_url": f"/ui/control-center/workspace-header?{urlencode(state_params)}",
          "work_pane_url": f"/ui/control-center/work-pane?{urlencode(state_params)}",
++        "system_bar_url": f"/ui/control-center/system-bar?{urlencode(state_params)}",
          "inspector_pane_url": (
              _control_center_inspector_path(
-@@ -2746,6 +2747,33 @@ def _control_center_workflow_links_context(*, state: dict[str, Any]) -> dict[str
-     }
- 
- 
-+def _control_center_workspace_header_context(
-+    settings: AppSettings,
-+    *,
-+    state: dict[str, Any],
-+) -> dict[str, Any]:
-+    selected_recording = None
-+    if state["selected"]:
-+        selected_recording = get_recording(state["selected"], settings=settings)
-+        if selected_recording is not None:
-+            selected_recording = _prepare_recording_for_display(
-+                selected_recording,
-+                settings=settings,
-+            )
-+    _, visible_total = list_recordings(
-+        settings=settings,
-+        status=state["status"] or None,
-+        q=state["q"],
-+        limit=1,
-+        offset=0,
-+    )
-+    return {
-+        "focus_recording": selected_recording,
-+        "visible_total": visible_total,
-+        "workflow_links": _control_center_workflow_links_context(state=state),
-+    }
-+
-+
- def _control_center_work_pane_context(
-     settings: AppSettings,
-     *,
-@@ -3829,6 +3857,10 @@ async def ui_dashboard(
-     )
-     control_center_empty_inspector = _control_center_empty_inspector_context()
-     control_center_inspector = None
-+    control_center_header = _control_center_workspace_header_context(
-+        _settings,
-+        state=control_center_state,
-+    )
-     control_center_work_pane = _control_center_work_pane_context(
-         _settings,
-         state=control_center_state,
-@@ -3859,6 +3891,7 @@ async def ui_dashboard(
-             "active": "dashboard",
-             **(control_center_inspector or {}),
-             "control_center_state": control_center_state,
-+            "control_center_header": control_center_header,
-             "upload_shell": _upload_shell_context(),
-             "control_center_work_pane": control_center_work_pane,
-             "control_center_system_bar": _control_center_system_bar_context(
-@@ -3871,6 +3904,37 @@ async def ui_dashboard(
+                 selected_id,
+@@ -3935,6 +3936,42 @@ async def ui_control_center_workspace_header(
      )
  
  
-+@ui_router.get("/ui/control-center/workspace-header", response_class=HTMLResponse)
-+async def ui_control_center_workspace_header(
++@ui_router.get("/ui/control-center/system-bar", response_class=HTMLResponse)
++async def ui_control_center_system_bar(
 +    request: Request,
 +    selected: str = Query(default=""),
 +    status: str | None = Query(default=None),
@@ -149,14 +61,19 @@ index 2bf9258..f5fcb12 100644
 +        limit=limit,
 +        offset=offset,
 +    )
++    control_center_work_pane = _control_center_work_pane_context(
++        _settings,
++        state=control_center_state,
++    )
 +    return templates.TemplateResponse(
 +        request,
-+        "partials/control_center/workspace_header.html",
++        "partials/control_center/system_bar.html",
 +        {
 +            "control_center_state": control_center_state,
-+            "control_center_header": _control_center_workspace_header_context(
++            "control_center_system_bar": _control_center_system_bar_context(
 +                _settings,
 +                state=control_center_state,
++                recordings_panel=control_center_work_pane["recordings_panel"],
 +            ),
 +        },
 +    )
@@ -166,81 +83,45 @@ index 2bf9258..f5fcb12 100644
  async def ui_control_center_dashboard_recordings_summary(request: Request) -> Any:
      dashboard_context = _dashboard_status_context(_settings)
 diff --git a/tests/test_cov_lan_app_ui_routes.py b/tests/test_cov_lan_app_ui_routes.py
-index f153c07..a3a64ed 100644
+index a3a64ed..b41ae06 100644
 --- a/tests/test_cov_lan_app_ui_routes.py
 +++ b/tests/test_cov_lan_app_ui_routes.py
-@@ -141,6 +141,20 @@ def test_control_center_helper_contexts_cover_fragment_builders(
-         "list_voice_samples",
-         lambda settings: [{"id": 4, "voice_profile_id": 7}, {"id": 5, "voice_profile_id": None}],
+@@ -179,6 +179,10 @@ def test_control_center_helper_contexts_cover_fragment_builders(
+         "/ui/control-center/workspace-header?"
+         "selected=rec-helper-1&status=Ready&q=helper&tab=speakers&limit=100&offset=25"
      )
-+    monkeypatch.setattr(
-+        ui_routes,
-+        "get_recording",
-+        lambda recording_id, settings: {
-+            "id": recording_id,
-+            "source": "upload",
-+            "source_filename": "helper.wav",
-+            "status": "Ready",
-+            "captured_at": "2026-01-02T03:04:05Z",
-+            "created_at": "2026-01-02T03:04:05Z",
-+            "updated_at": "2026-01-02T03:04:05Z",
-+            "duration_sec": 12.0,
-+        },
-+    )
-     dashboard = ui_routes._dashboard_status_context(cfg)  # noqa: SLF001
-     assert dashboard["recordings_summary_strip"]["title"] == "Recordings by status"
-     assert dashboard["jobs_summary_strip"]["counts"] == {"queued": 2}
-@@ -161,6 +175,10 @@ def test_control_center_helper_contexts_cover_fragment_builders(
-     assert state["limit"] == 100
-     assert state["offset"] == 25
-     assert state["selected_detail_href"] == "/recordings/rec-helper-1?tab=speakers"
-+    assert state["workspace_header_url"] == (
-+        "/ui/control-center/workspace-header?"
++    assert state["system_bar_url"] == (
++        "/ui/control-center/system-bar?"
 +        "selected=rec-helper-1&status=Ready&q=helper&tab=speakers&limit=100&offset=25"
 +    )
      assert "status=Ready" in state["work_pane_url"]
      assert "limit=100" in state["work_pane_url"]
      assert "offset=25" in state["clear_selection_href"]
-@@ -379,6 +397,14 @@ def test_control_center_helper_contexts_cover_fragment_builders(
-     assert str(cfg.data_root) == system_bar["secondary_items"][2]["value"]
-     assert "next PR" in system_bar["note"]
- 
-+    header = ui_routes._control_center_workspace_header_context(  # noqa: SLF001
-+        cfg,
-+        state=state,
-+    )
-+    assert header["visible_total"] == 3
-+    assert header["focus_recording"]["source_filename"] == "helper.wav"
-+    assert header["workflow_links"]["selected_detail_href"] == "/recordings/rec-helper-1?tab=speakers"
-+
-     filters = ui_routes._recordings_filters_context(  # noqa: SLF001
-         mode="control_center",
-         selected="rec-helper-1",
 diff --git a/tests/test_ui_routes.py b/tests/test_ui_routes.py
-index 57e4b5b..08de074 100644
+index 08de074..c2b609d 100644
 --- a/tests/test_ui_routes.py
 +++ b/tests/test_ui_routes.py
-@@ -367,6 +367,7 @@ def test_control_center_query_state_and_direct_routes(seeded_client):
-     assert 'id="control-center-recordings-panel"' in r.text
+@@ -368,6 +368,7 @@ def test_control_center_query_state_and_direct_routes(seeded_client):
      assert "/recordings/rec-ui-1?tab=speakers" in r.text
      assert "Open full-page recording" in r.text
-+    assert "refresh-control-center-header" in r.text
+     assert "refresh-control-center-header" in r.text
++    assert "refresh-control-center-system-bar" in r.text
      assert "htmx.trigger(document.body, 'refresh-control-center-inspector');" in r.text
      assert "params.delete('selected');" in r.text
  
-@@ -382,6 +383,16 @@ def test_control_center_query_state_and_direct_routes(seeded_client):
+@@ -393,6 +394,16 @@ def test_control_center_pane_fragment_endpoints(seeded_client):
+     assert "/recordings/rec-ui-1?tab=speakers" in workspace_header.text
+     assert "<html" not in workspace_header.text
  
- 
- def test_control_center_pane_fragment_endpoints(seeded_client):
-+    workspace_header = seeded_client.get(
-+        "/ui/control-center/workspace-header?selected=rec-ui-1&status=Ready&q=meeting&tab=speakers"
++    system_bar = seeded_client.get(
++        "/ui/control-center/system-bar?selected=rec-ui-1&status=Ready&q=meeting&tab=speakers"
 +    )
-+    assert workspace_header.status_code == 200
-+    assert 'id="control-center-workspace-header"' in workspace_header.text
-+    assert 'hx-trigger="refresh-control-center-header from:body"' in workspace_header.text
-+    assert "meeting.mp3" in workspace_header.text
-+    assert "/recordings/rec-ui-1?tab=speakers" in workspace_header.text
-+    assert "<html" not in workspace_header.text
++    assert system_bar.status_code == 200
++    assert 'id="control-center-system-bar"' in system_bar.text
++    assert 'hx-trigger="refresh-control-center-system-bar from:body"' in system_bar.text
++    assert "Queue view" in system_bar.text
++    assert "Compact inspector" in system_bar.text
++    assert "<html" not in system_bar.text
 +
      work_pane = seeded_client.get(
          "/ui/control-center/work-pane?selected=rec-ui-1&status=Ready&q=meeting&tab=speakers"
