@@ -2796,15 +2796,9 @@ def _control_center_work_pane_context(
             settings,
             manage_href=workflow_links["voices_href"],
         ),
-        "recordings_panel": _recordings_panel_context(
+        "recordings_panel": _control_center_recordings_panel_context(
             settings,
-            status=state["status"] or None,
-            q=state["q"],
-            limit=state["limit"],
-            offset=state["offset"],
-            mode="control_center",
-            selected=state["selected"],
-            tab=state["tab"],
+            state=state,
         ),
     }
 
@@ -2860,6 +2854,23 @@ def _control_center_system_bar_context(
             "intentionally deferred to the next PR."
         ),
     }
+
+
+def _control_center_recordings_panel_context(
+    settings: AppSettings,
+    *,
+    state: dict[str, Any],
+) -> dict[str, Any]:
+    return _recordings_panel_context(
+        settings,
+        status=state["status"] or None,
+        q=state["q"],
+        limit=state["limit"],
+        offset=state["offset"],
+        mode="control_center",
+        selected=state["selected"],
+        tab=state["tab"],
+    )
 
 
 def _control_center_empty_inspector_context() -> dict[str, str]:
@@ -3954,7 +3965,7 @@ async def ui_control_center_system_bar(
         limit=limit,
         offset=offset,
     )
-    control_center_work_pane = _control_center_work_pane_context(
+    recordings_panel = _control_center_recordings_panel_context(
         _settings,
         state=control_center_state,
     )
@@ -3966,7 +3977,7 @@ async def ui_control_center_system_bar(
             "control_center_system_bar": _control_center_system_bar_context(
                 _settings,
                 state=control_center_state,
-                recordings_panel=control_center_work_pane["recordings_panel"],
+                recordings_panel=recordings_panel,
             ),
         },
     )

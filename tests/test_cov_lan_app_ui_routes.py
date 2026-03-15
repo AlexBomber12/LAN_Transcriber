@@ -478,6 +478,87 @@ def test_control_center_helper_contexts_cover_fragment_builders(
     assert selected_shell["action_bar"]["current_tab"] == "overview"
 
 
+def test_control_center_system_bar_route_avoids_work_pane_builder(
+    client: tuple[AppSettings, TestClient],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _cfg, c = client
+
+    def _unexpected_work_pane(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        raise AssertionError("_control_center_work_pane_context should not run here")
+
+    seen: dict[str, Any] = {}
+
+    def _fake_recordings_panel(
+        settings: AppSettings,
+        *,
+        mode: str,
+        selected: str = "",
+        status: str | None,
+        q: str,
+        limit: int,
+        offset: int,
+        tab: str = "overview",
+    ) -> dict[str, Any]:
+        seen.update(
+            {
+                "settings": settings,
+                "mode": mode,
+                "selected": selected,
+                "status": status,
+                "q": q,
+                "limit": limit,
+                "offset": offset,
+                "tab": tab,
+            }
+        )
+        return {"total": 7}
+
+    def _fake_system_bar_context(
+        settings: AppSettings,
+        *,
+        state: dict[str, Any],
+        recordings_panel: dict[str, Any],
+    ) -> dict[str, Any]:
+        assert settings is seen["settings"]
+        assert recordings_panel == {"total": 7}
+        return {
+            "primary_items": [
+                {
+                    "label": "Queue view",
+                    "value": f"{recordings_panel['total']} visible",
+                    "detail": state["status"] or "All statuses",
+                }
+            ],
+            "secondary_items": [],
+            "note": "test note",
+        }
+
+    monkeypatch.setattr(ui_routes, "_control_center_work_pane_context", _unexpected_work_pane)
+    monkeypatch.setattr(ui_routes, "_recordings_panel_context", _fake_recordings_panel)
+    monkeypatch.setattr(ui_routes, "_control_center_system_bar_context", _fake_system_bar_context)
+
+    response = c.get(
+        "/ui/control-center/system-bar"
+        "?selected=rec-route-1&status=Ready&q=meeting&tab=speakers&limit=100&offset=25"
+    )
+
+    assert response.status_code == 200
+    assert seen == {
+        "settings": ui_routes._settings,  # noqa: SLF001
+        "mode": "control_center",
+        "selected": "rec-route-1",
+        "status": "Ready",
+        "q": "meeting",
+        "limit": 100,
+        "offset": 25,
+        "tab": "speakers",
+    }
+    assert 'id="control-center-system-bar"' in response.text
+    assert "7 visible" in response.text
+    assert "test note" in response.text
+
+
 def test_recordings_panel_context_clamps_offset_to_last_available_page(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
