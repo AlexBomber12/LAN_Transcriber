@@ -1051,6 +1051,42 @@ textarea:focus{
 <script>
 var deleteDialogState = {recordingId: '', inFlight: false, returnFocus: null, returnTo: ''};
 
+function syncControlCenterShellRefreshUrlsFromPanel() {
+  var panel = document.getElementById('control-center-recordings-panel');
+  if (!panel) {
+    return;
+  }
+  var workspaceHeaderUrl = panel.getAttribute('data-workspace-header-url');
+  var systemBarUrl = panel.getAttribute('data-system-bar-url');
+  var header = document.getElementById('control-center-workspace-header');
+  var systemBar = document.getElementById('control-center-system-bar');
+  if (header && workspaceHeaderUrl) {
+    header.setAttribute('hx-get', workspaceHeaderUrl);
+  }
+  if (systemBar && systemBarUrl) {
+    systemBar.setAttribute('hx-get', systemBarUrl);
+  }
+}
+
+function refreshControlCenterShellFromPanel() {
+  syncControlCenterShellRefreshUrlsFromPanel();
+  if (!window.htmx || !document.body) {
+    return;
+  }
+  htmx.trigger(document.body, 'refresh-control-center-header');
+  htmx.trigger(document.body, 'refresh-control-center-system-bar');
+}
+
+if (document.body) {
+  document.body.addEventListener('htmx:afterSwap', function (event) {
+    var target = event && event.detail ? event.detail.target : null;
+    if (!target || target.id !== 'control-center-recordings-panel') {
+      return;
+    }
+    refreshControlCenterShellFromPanel();
+  });
+}
+
 function refreshControlCenterPanels(options) {
   var params = new URLSearchParams(window.location.search || '');
   if (
@@ -1067,8 +1103,6 @@ function refreshControlCenterPanels(options) {
   }
   htmx.trigger(document.body, 'refresh-control-center-recordings');
   htmx.trigger(document.body, 'refresh-control-center-summary');
-  htmx.trigger(document.body, 'refresh-control-center-header');
-  htmx.trigger(document.body, 'refresh-control-center-system-bar');
   htmx.trigger(document.body, 'refresh-control-center-inspector');
 }
 

@@ -3179,6 +3179,18 @@ def _recordings_panel_context(
     prepared_items = _recordings_list_items_context(items, settings=settings)
     is_control_center = mode == "control_center"
     panel_id = "control-center-recordings-panel" if is_control_center else "recordings-page-panel"
+    control_center_state = (
+        _control_center_state_context(
+            selected=selected,
+            status=status_filter,
+            q=search_query,
+            tab=tab,
+            limit=safe_limit,
+            offset=safe_offset,
+        )
+        if is_control_center
+        else None
+    )
     return {
         "panel_id": panel_id,
         "mode": mode,
@@ -3202,6 +3214,10 @@ def _recordings_panel_context(
             else ""
         ),
         "refresh_trigger": "refresh-control-center-recordings from:body" if is_control_center else "",
+        "workspace_header_url": (
+            control_center_state["workspace_header_url"] if control_center_state else ""
+        ),
+        "system_bar_url": control_center_state["system_bar_url"] if control_center_state else "",
         "status_cards": _recordings_status_cards_context(
             settings,
             mode=mode,

@@ -369,6 +369,9 @@ def test_control_center_query_state_and_direct_routes(seeded_client):
     assert "Open full-page recording" in r.text
     assert "refresh-control-center-header" in r.text
     assert "refresh-control-center-system-bar" in r.text
+    assert "syncControlCenterShellRefreshUrlsFromPanel" in r.text
+    assert "refreshControlCenterShellFromPanel" in r.text
+    assert "htmx:afterSwap" in r.text
     assert "htmx.trigger(document.body, 'refresh-control-center-inspector');" in r.text
     assert "params.delete('selected');" in r.text
 
@@ -413,8 +416,14 @@ def test_control_center_pane_fragment_endpoints(seeded_client):
     assert "Fallback and Admin Pages" not in work_pane.text
     assert "meeting.mp3" in work_pane.text
     assert 'id="control-center-recordings-panel"' in work_pane.text
-    assert "htmx.trigger(document.body, 'refresh-control-center-header');" in work_pane.text
-    assert "htmx.trigger(document.body, 'refresh-control-center-system-bar');" in work_pane.text
+    assert (
+        'data-workspace-header-url="/ui/control-center/workspace-header?selected=rec-ui-1&amp;'
+        'status=Ready&amp;q=meeting&amp;tab=speakers&amp;limit=25&amp;offset=0"'
+    ) in work_pane.text
+    assert (
+        'data-system-bar-url="/ui/control-center/system-bar?selected=rec-ui-1&amp;status=Ready&amp;'
+        'q=meeting&amp;tab=speakers&amp;limit=25&amp;offset=0"'
+    ) in work_pane.text
     assert "<html" not in work_pane.text
 
     inspector = seeded_client.get("/ui/control-center/inspector-pane?selected=rec-ui-1&tab=speakers")
@@ -576,6 +585,14 @@ def test_control_center_recordings_panel_filters_search_and_actions(
     assert "alpha.wav" in panel.text
     assert "beta.wav" not in panel.text
     assert 'data-return-to="control-center"' in panel.text
+    assert (
+        'data-workspace-header-url="/ui/control-center/workspace-header?selected=&amp;status=Ready&amp;'
+        'q=alpha&amp;tab=speakers&amp;limit=25&amp;offset=0"'
+    ) in panel.text
+    assert (
+        'data-system-bar-url="/ui/control-center/system-bar?selected=&amp;status=Ready&amp;q=alpha&amp;'
+        'tab=speakers&amp;limit=25&amp;offset=0"'
+    ) in panel.text
     assert 'href="/?selected=rec-cc-panel-1&amp;status=Ready&amp;q=alpha&amp;tab=speakers"' in panel.text
     assert panel.headers["HX-Push-Url"] == "/?status=Ready&q=alpha&tab=speakers"
 
