@@ -370,8 +370,12 @@ def test_control_center_query_state_and_direct_routes(seeded_client):
     assert "refresh-control-center-header" in r.text
     assert "refresh-control-center-system-bar" in r.text
     assert "syncControlCenterShellRefreshUrlsFromPanel" in r.text
+    assert "syncControlCenterShellRefreshUrlsFromHref" in r.text
     assert "refreshControlCenterShellFromPanel" in r.text
+    assert "refreshControlCenterShellFromHref" in r.text
     assert "htmx:afterSwap" in r.text
+    assert "window.__controlCenterShellAfterSwapBound" in r.text
+    assert "target.id !== 'control-center-inspector-pane'" in r.text
     assert "htmx.trigger(document.body, 'refresh-control-center-inspector');" in r.text
     assert "params.delete('selected');" in r.text
 

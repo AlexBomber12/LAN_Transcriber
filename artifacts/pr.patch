@@ -1,13 +1,102 @@
-diff --git a/ci-requirements.txt b/ci-requirements.txt
-index d98f417..1d87a63 100644
---- a/ci-requirements.txt
-+++ b/ci-requirements.txt
-@@ -19,7 +19,7 @@ certifi==2026.2.25
-     #   httpcore
-     #   httpx
-     #   requests
--charset-normalizer==3.4.5
-+charset-normalizer==3.4.6
-     # via requests
- click==8.3.1
-     # via
+diff --git a/lan_app/templates/base.html b/lan_app/templates/base.html
+index 53238f1..1279427 100644
+--- a/lan_app/templates/base.html
++++ b/lan_app/templates/base.html
+@@ -1068,6 +1068,44 @@ function syncControlCenterShellRefreshUrlsFromPanel() {
+   }
+ }
+ 
++function syncControlCenterShellRefreshUrlsFromStateParams(stateParams) {
++  if (!stateParams) {
++    return;
++  }
++  var normalizedParams = new URLSearchParams();
++  normalizedParams.set('selected', stateParams.get('selected') || '');
++  normalizedParams.set('status', stateParams.get('status') || '');
++  normalizedParams.set('q', stateParams.get('q') || '');
++  normalizedParams.set('tab', stateParams.get('tab') || 'overview');
++  normalizedParams.set('limit', stateParams.get('limit') || '25');
++  normalizedParams.set('offset', stateParams.get('offset') || '0');
++  var workspaceHeaderUrl = '/ui/control-center/workspace-header?' + normalizedParams.toString();
++  var systemBarUrl = '/ui/control-center/system-bar?' + normalizedParams.toString();
++  var panel = document.getElementById('control-center-recordings-panel');
++  var header = document.getElementById('control-center-workspace-header');
++  var systemBar = document.getElementById('control-center-system-bar');
++  if (panel) {
++    panel.setAttribute('data-workspace-header-url', workspaceHeaderUrl);
++    panel.setAttribute('data-system-bar-url', systemBarUrl);
++  }
++  if (header) {
++    header.setAttribute('hx-get', workspaceHeaderUrl);
++  }
++  if (systemBar) {
++    systemBar.setAttribute('hx-get', systemBarUrl);
++  }
++}
++
++function syncControlCenterShellRefreshUrlsFromHref(href) {
++  if (!href) {
++    syncControlCenterShellRefreshUrlsFromStateParams(new URLSearchParams(window.location.search || ''));
++    return;
++  }
++  syncControlCenterShellRefreshUrlsFromStateParams(
++    new URL(href, window.location.origin).searchParams
++  );
++}
++
+ function refreshControlCenterShellFromPanel() {
+   syncControlCenterShellRefreshUrlsFromPanel();
+   if (!window.htmx || !document.body) {
+@@ -1077,14 +1115,32 @@ function refreshControlCenterShellFromPanel() {
+   htmx.trigger(document.body, 'refresh-control-center-system-bar');
+ }
+ 
+-if (document.body) {
++function refreshControlCenterShellFromHref(href) {
++  syncControlCenterShellRefreshUrlsFromHref(href);
++  if (!window.htmx || !document.body) {
++    return;
++  }
++  htmx.trigger(document.body, 'refresh-control-center-header');
++  htmx.trigger(document.body, 'refresh-control-center-system-bar');
++}
++
++if (document.body && !window.__controlCenterShellAfterSwapBound) {
+   document.body.addEventListener('htmx:afterSwap', function (event) {
+     var target = event && event.detail ? event.detail.target : null;
+-    if (!target || target.id !== 'control-center-recordings-panel') {
++    if (!target) {
++      return;
++    }
++    if (target.id === 'control-center-recordings-panel') {
++      refreshControlCenterShellFromPanel();
++      return;
++    }
++    if (target.id !== 'control-center-inspector-pane') {
+       return;
+     }
+-    refreshControlCenterShellFromPanel();
++    var activeTab = target.querySelector('.tab.active');
++    refreshControlCenterShellFromHref(activeTab ? activeTab.getAttribute('href') : '');
+   });
++  window.__controlCenterShellAfterSwapBound = true;
+ }
+ 
+ function refreshControlCenterPanels(options) {
+diff --git a/tests/test_ui_routes.py b/tests/test_ui_routes.py
+index 2a9ea4e..b6e33d5 100644
+--- a/tests/test_ui_routes.py
++++ b/tests/test_ui_routes.py
+@@ -370,8 +370,12 @@ def test_control_center_query_state_and_direct_routes(seeded_client):
+     assert "refresh-control-center-header" in r.text
+     assert "refresh-control-center-system-bar" in r.text
+     assert "syncControlCenterShellRefreshUrlsFromPanel" in r.text
++    assert "syncControlCenterShellRefreshUrlsFromHref" in r.text
+     assert "refreshControlCenterShellFromPanel" in r.text
++    assert "refreshControlCenterShellFromHref" in r.text
+     assert "htmx:afterSwap" in r.text
++    assert "window.__controlCenterShellAfterSwapBound" in r.text
++    assert "target.id !== 'control-center-inspector-pane'" in r.text
+     assert "htmx.trigger(document.body, 'refresh-control-center-inspector');" in r.text
+     assert "params.delete('selected');" in r.text
+ 
