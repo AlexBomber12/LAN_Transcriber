@@ -141,6 +141,20 @@ def test_control_center_helper_contexts_cover_fragment_builders(
         "list_voice_samples",
         lambda settings: [{"id": 4, "voice_profile_id": 7}, {"id": 5, "voice_profile_id": None}],
     )
+    monkeypatch.setattr(
+        ui_routes,
+        "get_recording",
+        lambda recording_id, settings: {
+            "id": recording_id,
+            "source": "upload",
+            "source_filename": "helper.wav",
+            "status": "Ready",
+            "captured_at": "2026-01-02T03:04:05Z",
+            "created_at": "2026-01-02T03:04:05Z",
+            "updated_at": "2026-01-02T03:04:05Z",
+            "duration_sec": 12.0,
+        },
+    )
     dashboard = ui_routes._dashboard_status_context(cfg)  # noqa: SLF001
     assert dashboard["recordings_summary_strip"]["title"] == "Recordings by status"
     assert dashboard["jobs_summary_strip"]["counts"] == {"queued": 2}
@@ -161,6 +175,14 @@ def test_control_center_helper_contexts_cover_fragment_builders(
     assert state["limit"] == 100
     assert state["offset"] == 25
     assert state["selected_detail_href"] == "/recordings/rec-helper-1?tab=speakers"
+    assert state["workspace_header_url"] == (
+        "/ui/control-center/workspace-header?"
+        "selected=rec-helper-1&status=Ready&q=helper&tab=speakers&limit=100&offset=25"
+    )
+    assert state["system_bar_url"] == (
+        "/ui/control-center/system-bar?"
+        "selected=rec-helper-1&status=Ready&q=helper&tab=speakers&limit=100&offset=25"
+    )
     assert "status=Ready" in state["work_pane_url"]
     assert "limit=100" in state["work_pane_url"]
     assert "offset=25" in state["clear_selection_href"]
@@ -368,6 +390,25 @@ def test_control_center_helper_contexts_cover_fragment_builders(
     assert work_pane["voice_summary"]["profiles"][0]["display_name"] == "Alex Helper"
     assert work_pane["voice_summary"]["profiles"][0]["sample_count"] == 1
 
+    system_bar = ui_routes._control_center_system_bar_context(  # noqa: SLF001
+        cfg,
+        state=state,
+        recordings_panel=work_pane["recordings_panel"],
+    )
+    assert system_bar["primary_items"][0]["value"] == "3 visible"
+    assert system_bar["primary_items"][0]["detail"] == "Ready · search: helper"
+    assert system_bar["secondary_items"][0]["placeholder"] is True
+    assert str(cfg.data_root) == system_bar["secondary_items"][2]["value"]
+    assert "next PR" in system_bar["note"]
+
+    header = ui_routes._control_center_workspace_header_context(  # noqa: SLF001
+        cfg,
+        state=state,
+    )
+    assert header["visible_total"] == 3
+    assert header["focus_recording"]["source_filename"] == "helper.wav"
+    assert header["workflow_links"]["selected_detail_href"] == "/recordings/rec-helper-1?tab=speakers"
+
     filters = ui_routes._recordings_filters_context(  # noqa: SLF001
         mode="control_center",
         selected="rec-helper-1",
@@ -378,6 +419,14 @@ def test_control_center_helper_contexts_cover_fragment_builders(
     )
     assert filters["limit_options"] == [25, 50, 100, 200]
     assert filters["hx_target"] == "#control-center-recordings-panel"
+    assert work_pane["recordings_panel"]["workspace_header_url"] == (
+        "/ui/control-center/workspace-header?"
+        "selected=rec-helper-1&status=Ready&q=helper&tab=speakers&limit=100&offset=0"
+    )
+    assert work_pane["recordings_panel"]["system_bar_url"] == (
+        "/ui/control-center/system-bar?"
+        "selected=rec-helper-1&status=Ready&q=helper&tab=speakers&limit=100&offset=0"
+    )
 
     table = ui_routes._recordings_table_context(  # noqa: SLF001
         mode="control_center",
@@ -435,6 +484,81 @@ def test_control_center_helper_contexts_cover_fragment_builders(
     )
     assert selected_shell["notices"] == []
     assert selected_shell["action_bar"]["current_tab"] == "overview"
+
+
+def test_control_center_system_bar_route_avoids_work_pane_builder(
+    client: tuple[AppSettings, TestClient],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _cfg, c = client
+
+    def _unexpected_work_pane(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        raise AssertionError("_control_center_work_pane_context should not run here")
+
+    seen: dict[str, Any] = {}
+
+    def _unexpected_recordings_panel(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        raise AssertionError("_control_center_recordings_panel_context should not run here")
+
+    def _fake_list_recordings(
+        settings: AppSettings,
+        status: str | None = None,
+        q: str = "",
+        limit: int = 100,
+        offset: int = 0,
+    ) -> tuple[list[dict[str, Any]], int]:
+        seen.update(
+            {
+                "settings": settings,
+                "status": status,
+                "q": q,
+                "limit": limit,
+                "offset": offset,
+            }
+        )
+        return ([], 7)
+
+    def _fake_system_bar_context(
+        settings: AppSettings,
+        *,
+        state: dict[str, Any],
+        recordings_panel: dict[str, Any],
+    ) -> dict[str, Any]:
+        assert settings is seen["settings"]
+        assert recordings_panel == {"total": 7}
+        return {
+            "primary_items": [
+                {
+                    "label": "Queue view",
+                    "value": f"{recordings_panel['total']} visible",
+                    "detail": state["status"] or "All statuses",
+                }
+            ],
+            "secondary_items": [],
+            "note": "test note",
+        }
+
+    monkeypatch.setattr(ui_routes, "_control_center_work_pane_context", _unexpected_work_pane)
+    monkeypatch.setattr(ui_routes, "_control_center_recordings_panel_context", _unexpected_recordings_panel)
+    monkeypatch.setattr(ui_routes, "list_recordings", _fake_list_recordings)
+    monkeypatch.setattr(ui_routes, "_control_center_system_bar_context", _fake_system_bar_context)
+
+    response = c.get(
+        "/ui/control-center/system-bar"
+        "?selected=rec-route-1&status=Ready&q=meeting&tab=speakers&limit=100&offset=25"
+    )
+
+    assert response.status_code == 200
+    assert seen == {
+        "settings": ui_routes._settings,  # noqa: SLF001
+        "status": "Ready",
+        "q": "meeting",
+        "limit": 1,
+        "offset": 0,
+    }
+    assert 'id="control-center-system-bar"' in response.text
+    assert "7 visible" in response.text
+    assert "test note" in response.text
 
 
 def test_recordings_panel_context_clamps_offset_to_last_available_page(

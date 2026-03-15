@@ -311,11 +311,14 @@ def test_dashboard_empty(client):
     r = client.get("/")
     assert r.status_code == 200
     assert "Control Center" in r.text
+    assert 'id="control-center-workspace-header"' in r.text
     assert 'id="control-center-work-pane"' in r.text
     assert 'id="control-center-inspector-pane"' in r.text
+    assert 'id="control-center-system-bar"' in r.text
     assert 'id="file-input"' in r.text
     assert 'id="control-center-recordings-panel"' in r.text
     assert "Select a recording" in r.text
+    assert 'id="control-center-top-strip"' not in r.text
     assert 'href="/upload"' not in r.text
     assert 'href="/recordings"' not in r.text
     assert "LAN Transcriber" in r.text
@@ -330,8 +333,9 @@ def test_dashboard_with_data(tmp_path, monkeypatch):
     c = TestClient(api.app, follow_redirects=True)
     r = c.get("/")
     assert r.status_code == 200
-    assert "Recordings" in r.text
+    assert "Recording worklist" in r.text
     assert "Drop audio files here or use Choose files." in r.text
+    assert "Telemetry pending" in r.text
     assert "Daily workflow" not in r.text
     assert "Fallback and Admin Pages" not in r.text
     assert "rec-dash-1" in r.text or "a.mp3" in r.text
@@ -354,6 +358,8 @@ def test_dashboard_summary_fragment_endpoints(seeded_client):
 def test_control_center_query_state_and_direct_routes(seeded_client):
     r = seeded_client.get("/?selected=rec-ui-1&status=Ready&q=meeting&tab=speakers")
     assert r.status_code == 200
+    assert 'id="control-center-workspace-header"' in r.text
+    assert 'id="control-center-system-bar"' in r.text
     assert 'value="meeting"' in r.text
     assert 'value="Ready" selected' in r.text
     assert 'name="selected" value="rec-ui-1"' in r.text
@@ -361,6 +367,15 @@ def test_control_center_query_state_and_direct_routes(seeded_client):
     assert 'id="control-center-recordings-panel"' in r.text
     assert "/recordings/rec-ui-1?tab=speakers" in r.text
     assert "Open full-page recording" in r.text
+    assert "refresh-control-center-header" in r.text
+    assert "refresh-control-center-system-bar" in r.text
+    assert "syncControlCenterShellRefreshUrlsFromPanel" in r.text
+    assert "syncControlCenterShellRefreshUrlsFromHref" in r.text
+    assert "refreshControlCenterShellFromPanel" in r.text
+    assert "refreshControlCenterShellFromHref" in r.text
+    assert "htmx:afterSwap" in r.text
+    assert "window.__controlCenterShellAfterSwapBound" in r.text
+    assert "target.id !== 'control-center-inspector-pane'" in r.text
     assert "htmx.trigger(document.body, 'refresh-control-center-inspector');" in r.text
     assert "params.delete('selected');" in r.text
 
@@ -376,15 +391,43 @@ def test_control_center_query_state_and_direct_routes(seeded_client):
 
 
 def test_control_center_pane_fragment_endpoints(seeded_client):
+    workspace_header = seeded_client.get(
+        "/ui/control-center/workspace-header?selected=rec-ui-1&status=Ready&q=meeting&tab=speakers"
+    )
+    assert workspace_header.status_code == 200
+    assert 'id="control-center-workspace-header"' in workspace_header.text
+    assert 'hx-trigger="refresh-control-center-header from:body"' in workspace_header.text
+    assert "meeting.mp3" in workspace_header.text
+    assert "/recordings/rec-ui-1?tab=speakers" in workspace_header.text
+    assert "<html" not in workspace_header.text
+
+    system_bar = seeded_client.get(
+        "/ui/control-center/system-bar?selected=rec-ui-1&status=Ready&q=meeting&tab=speakers"
+    )
+    assert system_bar.status_code == 200
+    assert 'id="control-center-system-bar"' in system_bar.text
+    assert 'hx-trigger="refresh-control-center-system-bar from:body"' in system_bar.text
+    assert "Queue view" in system_bar.text
+    assert "Compact inspector" in system_bar.text
+    assert "<html" not in system_bar.text
+
     work_pane = seeded_client.get(
         "/ui/control-center/work-pane?selected=rec-ui-1&status=Ready&q=meeting&tab=speakers"
     )
     assert work_pane.status_code == 200
-    assert "Upload" in work_pane.text
-    assert "Recordings" in work_pane.text
+    assert "Bring new audio into today" in work_pane.text
+    assert "Recording worklist" in work_pane.text
     assert "Fallback and Admin Pages" not in work_pane.text
     assert "meeting.mp3" in work_pane.text
     assert 'id="control-center-recordings-panel"' in work_pane.text
+    assert (
+        'data-workspace-header-url="/ui/control-center/workspace-header?selected=rec-ui-1&amp;'
+        'status=Ready&amp;q=meeting&amp;tab=speakers&amp;limit=25&amp;offset=0"'
+    ) in work_pane.text
+    assert (
+        'data-system-bar-url="/ui/control-center/system-bar?selected=rec-ui-1&amp;status=Ready&amp;'
+        'q=meeting&amp;tab=speakers&amp;limit=25&amp;offset=0"'
+    ) in work_pane.text
     assert "<html" not in work_pane.text
 
     inspector = seeded_client.get("/ui/control-center/inspector-pane?selected=rec-ui-1&tab=speakers")
@@ -546,6 +589,14 @@ def test_control_center_recordings_panel_filters_search_and_actions(
     assert "alpha.wav" in panel.text
     assert "beta.wav" not in panel.text
     assert 'data-return-to="control-center"' in panel.text
+    assert (
+        'data-workspace-header-url="/ui/control-center/workspace-header?selected=&amp;status=Ready&amp;'
+        'q=alpha&amp;tab=speakers&amp;limit=25&amp;offset=0"'
+    ) in panel.text
+    assert (
+        'data-system-bar-url="/ui/control-center/system-bar?selected=&amp;status=Ready&amp;q=alpha&amp;'
+        'tab=speakers&amp;limit=25&amp;offset=0"'
+    ) in panel.text
     assert 'href="/?selected=rec-cc-panel-1&amp;status=Ready&amp;q=alpha&amp;tab=speakers"' in panel.text
     assert panel.headers["HX-Push-Url"] == "/?status=Ready&q=alpha&tab=speakers"
 

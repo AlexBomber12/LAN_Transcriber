@@ -1,6 +1,10 @@
 <div
   id="{{ recordings_panel.panel_id }}"
   class="recordings-panel recordings-panel-frame"
+  {% if recordings_panel.workspace_header_url %}
+  data-workspace-header-url="{{ recordings_panel.workspace_header_url }}"
+  data-system-bar-url="{{ recordings_panel.system_bar_url }}"
+  {% endif %}
   {% if recordings_panel.refresh_url %}
   hx-get="{{ recordings_panel.refresh_url }}"
   hx-trigger="{{ recordings_panel.refresh_trigger }}"
@@ -8,15 +12,15 @@
   hx-swap="outerHTML"
   {% endif %}
 >
-  <div class="control-center-pane-head">
+  <div class="control-center-pane-head control-center-pane-head-tight">
     <div>
       <p class="eyebrow">Worklist</p>
       <h2>{{ recordings_panel.title }}</h2>
       <p class="control-center-pane-copy">{{ recordings_panel.description }}</p>
     </div>
-    <div class="control-center-state-list">
-      <span class="control-center-state-pill">Rows: {{ recordings_panel.total }}</span>
-      <span class="control-center-state-pill">Limit: {{ recordings_panel.recordings_table.limit }}</span>
+    <div class="control-center-worklist-summary">
+      <span class="control-center-worklist-count">{{ recordings_panel.total }}</span>
+      <span class="control-center-worklist-label">matching recordings</span>
     </div>
   </div>
 

@@ -2417,7 +2417,9 @@ def _control_center_state_context(
             offset=safe_offset,
         ),
         "reset_href": "/",
+        "workspace_header_url": f"/ui/control-center/workspace-header?{urlencode(state_params)}",
         "work_pane_url": f"/ui/control-center/work-pane?{urlencode(state_params)}",
+        "system_bar_url": f"/ui/control-center/system-bar?{urlencode(state_params)}",
         "inspector_pane_url": (
             _control_center_inspector_path(
                 selected_id,
@@ -2746,6 +2748,44 @@ def _control_center_workflow_links_context(*, state: dict[str, Any]) -> dict[str
     }
 
 
+def _control_center_workspace_header_context(
+    settings: AppSettings,
+    *,
+    state: dict[str, Any],
+) -> dict[str, Any]:
+    selected_recording = None
+    if state["selected"]:
+        selected_recording = get_recording(state["selected"], settings=settings)
+        if selected_recording is not None:
+            selected_recording = _prepare_recording_for_display(
+                selected_recording,
+                settings=settings,
+            )
+    return {
+        "focus_recording": selected_recording,
+        "visible_total": _control_center_visible_total(
+            settings,
+            state=state,
+        ),
+        "workflow_links": _control_center_workflow_links_context(state=state),
+    }
+
+
+def _control_center_visible_total(
+    settings: AppSettings,
+    *,
+    state: dict[str, Any],
+) -> int:
+    _, visible_total = list_recordings(
+        settings=settings,
+        status=state["status"] or None,
+        q=state["q"],
+        limit=1,
+        offset=0,
+    )
+    return visible_total
+
+
 def _control_center_work_pane_context(
     settings: AppSettings,
     *,
@@ -2767,23 +2807,87 @@ def _control_center_work_pane_context(
             settings,
             manage_href=workflow_links["voices_href"],
         ),
-        "recordings_panel": _recordings_panel_context(
+        "recordings_panel": _control_center_recordings_panel_context(
             settings,
-            status=state["status"] or None,
-            q=state["q"],
-            limit=state["limit"],
-            offset=state["offset"],
-            mode="control_center",
-            selected=state["selected"],
-            tab=state["tab"],
+            state=state,
         ),
     }
+
+
+def _control_center_system_bar_context(
+    settings: AppSettings,
+    *,
+    state: dict[str, Any],
+    recordings_panel: dict[str, Any],
+) -> dict[str, Any]:
+    queue_detail = state["status"] or "All statuses"
+    if state["q"]:
+        queue_detail = f"{queue_detail} · search: {state['q']}"
+    return {
+        "primary_items": [
+            {
+                "label": "Queue view",
+                "value": f"{recordings_panel['total']} visible",
+                "detail": queue_detail,
+            },
+            {
+                "label": "Compact inspector",
+                "value": state["selected"] or "Idle",
+                "detail": (
+                    f"{state['tab_label']} tab"
+                    if state["selected"]
+                    else "Select a recording to review"
+                ),
+            },
+        ],
+        "secondary_items": [
+            {
+                "label": "DGX / Spark",
+                "value": "Telemetry pending",
+                "detail": "Safe placeholder until runtime wiring lands",
+                "placeholder": True,
+            },
+            {
+                "label": "GPU runtime",
+                "value": "Telemetry pending",
+                "detail": "Safe placeholder until runtime wiring lands",
+                "placeholder": True,
+            },
+            {
+                "label": "Data root",
+                "value": str(settings.data_root),
+                "detail": "Persistent runtime state",
+                "placeholder": False,
+            },
+        ],
+        "note": (
+            "System bar foundation only. Live DGX, Spark, and GPU telemetry is "
+            "intentionally deferred to the next PR."
+        ),
+    }
+
+
+def _control_center_recordings_panel_context(
+    settings: AppSettings,
+    *,
+    state: dict[str, Any],
+) -> dict[str, Any]:
+    return _recordings_panel_context(
+        settings,
+        status=state["status"] or None,
+        q=state["q"],
+        limit=state["limit"],
+        offset=state["offset"],
+        mode="control_center",
+        selected=state["selected"],
+        tab=state["tab"],
+    )
 
 
 def _control_center_empty_inspector_context() -> dict[str, str]:
     return {
         "title": "Select a recording",
-        "message": "The compact inspector appears here after you pick something from the queue.",
+        "message": "Pick something from the worklist to open the compact inspector here.",
     }
 
 
@@ -3086,13 +3190,25 @@ def _recordings_panel_context(
     prepared_items = _recordings_list_items_context(items, settings=settings)
     is_control_center = mode == "control_center"
     panel_id = "control-center-recordings-panel" if is_control_center else "recordings-page-panel"
+    control_center_state = (
+        _control_center_state_context(
+            selected=selected,
+            status=status_filter,
+            q=search_query,
+            tab=tab,
+            limit=safe_limit,
+            offset=safe_offset,
+        )
+        if is_control_center
+        else None
+    )
     return {
         "panel_id": panel_id,
         "mode": mode,
         "total": total,
-        "title": "Recordings" if is_control_center else "Recordings list",
+        "title": "Recording worklist" if is_control_center else "Recordings list",
         "description": (
-            "Filter, triage, and select a recording without leaving the queue."
+            "Filter, triage, and select a recording without leaving the operator workspace."
             if is_control_center
             else "Use the same queue, filters, and row actions as the Control Center."
         ),
@@ -3109,6 +3225,10 @@ def _recordings_panel_context(
             else ""
         ),
         "refresh_trigger": "refresh-control-center-recordings from:body" if is_control_center else "",
+        "workspace_header_url": (
+            control_center_state["workspace_header_url"] if control_center_state else ""
+        ),
+        "system_bar_url": control_center_state["system_bar_url"] if control_center_state else "",
         "status_cards": _recordings_status_cards_context(
             settings,
             mode=mode,
@@ -3776,6 +3896,14 @@ async def ui_dashboard(
     )
     control_center_empty_inspector = _control_center_empty_inspector_context()
     control_center_inspector = None
+    control_center_header = _control_center_workspace_header_context(
+        _settings,
+        state=control_center_state,
+    )
+    control_center_work_pane = _control_center_work_pane_context(
+        _settings,
+        state=control_center_state,
+    )
     if control_center_state["selected"]:
         control_center_inspector = _recording_inspector_context(
             control_center_state["selected"],
@@ -3802,12 +3930,83 @@ async def ui_dashboard(
             "active": "dashboard",
             **(control_center_inspector or {}),
             "control_center_state": control_center_state,
+            "control_center_header": control_center_header,
             "upload_shell": _upload_shell_context(),
-            "control_center_work_pane": _control_center_work_pane_context(
+            "control_center_work_pane": control_center_work_pane,
+            "control_center_system_bar": _control_center_system_bar_context(
+                _settings,
+                state=control_center_state,
+                recordings_panel=control_center_work_pane["recordings_panel"],
+            ),
+            "control_center_empty_inspector": control_center_empty_inspector,
+        },
+    )
+
+
+@ui_router.get("/ui/control-center/workspace-header", response_class=HTMLResponse)
+async def ui_control_center_workspace_header(
+    request: Request,
+    selected: str = Query(default=""),
+    status: str | None = Query(default=None),
+    q: str = Query(default=""),
+    tab: str = Query(default="overview"),
+    limit: int = Query(default=_CONTROL_CENTER_LIST_LIMIT, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+) -> Any:
+    control_center_state = _control_center_state_context(
+        selected=selected,
+        status=status,
+        q=q,
+        tab=tab,
+        limit=limit,
+        offset=offset,
+    )
+    return templates.TemplateResponse(
+        request,
+        "partials/control_center/workspace_header.html",
+        {
+            "control_center_state": control_center_state,
+            "control_center_header": _control_center_workspace_header_context(
                 _settings,
                 state=control_center_state,
             ),
-            "control_center_empty_inspector": control_center_empty_inspector,
+        },
+    )
+
+
+@ui_router.get("/ui/control-center/system-bar", response_class=HTMLResponse)
+async def ui_control_center_system_bar(
+    request: Request,
+    selected: str = Query(default=""),
+    status: str | None = Query(default=None),
+    q: str = Query(default=""),
+    tab: str = Query(default="overview"),
+    limit: int = Query(default=_CONTROL_CENTER_LIST_LIMIT, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+) -> Any:
+    control_center_state = _control_center_state_context(
+        selected=selected,
+        status=status,
+        q=q,
+        tab=tab,
+        limit=limit,
+        offset=offset,
+    )
+    return templates.TemplateResponse(
+        request,
+        "partials/control_center/system_bar.html",
+        {
+            "control_center_state": control_center_state,
+            "control_center_system_bar": _control_center_system_bar_context(
+                _settings,
+                state=control_center_state,
+                recordings_panel={
+                    "total": _control_center_visible_total(
+                        _settings,
+                        state=control_center_state,
+                    )
+                },
+            ),
         },
     )
 

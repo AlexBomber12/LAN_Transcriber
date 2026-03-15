@@ -565,7 +565,7 @@ Queue (in order)
 - Depends on: PR-UI-CONTROL-CENTER-RECOVERY-01
 
 113) PR-UI-STITCH-CONTROL-CENTER-02: Rebuild the Control Center shell into a compact operator workspace and move DGX/GPU visibility into the bottom system-bar foundation
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-UI-STITCH-CONTROL-CENTER-02.md
 - Depends on: PR-UI-STITCH-CONTROL-CENTER-01
 
