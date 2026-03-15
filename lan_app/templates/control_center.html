@@ -2,39 +2,16 @@
 {% block title %}Control Center – LAN Transcriber{% endblock %}
 {% block content %}
 <div class="control-center-shell">
-  <section id="control-center-top-strip" class="control-center-hero">
-    <div class="control-center-hero-copy">
-      <p class="eyebrow">Daily Workspace</p>
-      <h1>Control Center</h1>
-      <p>Upload audio, watch the queue, select a recording, and review it on the right without leaving the day-to-day workflow.</p>
-    </div>
-    <div class="control-center-toolbar">
-      <div class="control-center-top-state">
-        <span class="control-center-state-pill">Status: {{ control_center_state.status or "All recordings" }}</span>
-        <span class="control-center-state-pill">Search: {{ control_center_state.q or "No filter" }}</span>
-        <span class="control-center-state-pill">Inspector: {{ control_center_state.tab_label }}</span>
-        <span class="control-center-state-pill">Selected: {{ control_center_state.selected or "None" }}</span>
-      </div>
-      <div class="control-center-toolbar-actions">
-      {% if control_center_state.selected %}
-        <a href="{{ control_center_state.clear_selection_href }}" class="btn">Clear selection</a>
-      {% endif %}
-      {% if control_center_state.status or control_center_state.q %}
-        <a href="{{ control_center_state.reset_href }}" class="btn">Reset filters</a>
-      {% endif %}
-      {% if control_center_work_pane.workflow_links.selected_detail_href %}
-        <a href="{{ control_center_work_pane.workflow_links.selected_detail_href }}" class="btn">Open full-page inspector</a>
-      {% endif %}
-      </div>
-    </div>
-  </section>
+  {% include "partials/control_center/workspace_header.html" %}
 
   <div class="control-center-main">
-    <section id="control-center-work-pane" class="control-center-pane">
+    <section id="control-center-work-pane" class="control-center-work-column">
       {% include "partials/control_center/work_pane.html" %}
     </section>
 
     {% include "partials/control_center/inspector_pane.html" %}
   </div>
+
+  {% include "partials/control_center/system_bar.html" %}
 </div>
 {% endblock %}

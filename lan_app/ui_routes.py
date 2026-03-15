@@ -2780,10 +2780,63 @@ def _control_center_work_pane_context(
     }
 
 
+def _control_center_system_bar_context(
+    settings: AppSettings,
+    *,
+    state: dict[str, Any],
+    recordings_panel: dict[str, Any],
+) -> dict[str, Any]:
+    queue_detail = state["status"] or "All statuses"
+    if state["q"]:
+        queue_detail = f"{queue_detail} · search: {state['q']}"
+    return {
+        "primary_items": [
+            {
+                "label": "Queue view",
+                "value": f"{recordings_panel['total']} visible",
+                "detail": queue_detail,
+            },
+            {
+                "label": "Compact inspector",
+                "value": state["selected"] or "Idle",
+                "detail": (
+                    f"{state['tab_label']} tab"
+                    if state["selected"]
+                    else "Select a recording to review"
+                ),
+            },
+        ],
+        "secondary_items": [
+            {
+                "label": "DGX / Spark",
+                "value": "Telemetry pending",
+                "detail": "Safe placeholder until runtime wiring lands",
+                "placeholder": True,
+            },
+            {
+                "label": "GPU runtime",
+                "value": "Telemetry pending",
+                "detail": "Safe placeholder until runtime wiring lands",
+                "placeholder": True,
+            },
+            {
+                "label": "Data root",
+                "value": str(settings.data_root),
+                "detail": "Persistent runtime state",
+                "placeholder": False,
+            },
+        ],
+        "note": (
+            "System bar foundation only. Live DGX, Spark, and GPU telemetry is "
+            "intentionally deferred to the next PR."
+        ),
+    }
+
+
 def _control_center_empty_inspector_context() -> dict[str, str]:
     return {
         "title": "Select a recording",
-        "message": "The compact inspector appears here after you pick something from the queue.",
+        "message": "Pick something from the worklist to open the compact inspector here.",
     }
 
 
@@ -3090,9 +3143,9 @@ def _recordings_panel_context(
         "panel_id": panel_id,
         "mode": mode,
         "total": total,
-        "title": "Recordings" if is_control_center else "Recordings list",
+        "title": "Recording worklist" if is_control_center else "Recordings list",
         "description": (
-            "Filter, triage, and select a recording without leaving the queue."
+            "Filter, triage, and select a recording without leaving the operator workspace."
             if is_control_center
             else "Use the same queue, filters, and row actions as the Control Center."
         ),
@@ -3776,6 +3829,10 @@ async def ui_dashboard(
     )
     control_center_empty_inspector = _control_center_empty_inspector_context()
     control_center_inspector = None
+    control_center_work_pane = _control_center_work_pane_context(
+        _settings,
+        state=control_center_state,
+    )
     if control_center_state["selected"]:
         control_center_inspector = _recording_inspector_context(
             control_center_state["selected"],
@@ -3803,9 +3860,11 @@ async def ui_dashboard(
             **(control_center_inspector or {}),
             "control_center_state": control_center_state,
             "upload_shell": _upload_shell_context(),
-            "control_center_work_pane": _control_center_work_pane_context(
+            "control_center_work_pane": control_center_work_pane,
+            "control_center_system_bar": _control_center_system_bar_context(
                 _settings,
                 state=control_center_state,
+                recordings_panel=control_center_work_pane["recordings_panel"],
             ),
             "control_center_empty_inspector": control_center_empty_inspector,
         },

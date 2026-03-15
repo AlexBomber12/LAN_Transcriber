@@ -311,11 +311,14 @@ def test_dashboard_empty(client):
     r = client.get("/")
     assert r.status_code == 200
     assert "Control Center" in r.text
+    assert 'id="control-center-workspace-header"' in r.text
     assert 'id="control-center-work-pane"' in r.text
     assert 'id="control-center-inspector-pane"' in r.text
+    assert 'id="control-center-system-bar"' in r.text
     assert 'id="file-input"' in r.text
     assert 'id="control-center-recordings-panel"' in r.text
     assert "Select a recording" in r.text
+    assert 'id="control-center-top-strip"' not in r.text
     assert 'href="/upload"' not in r.text
     assert 'href="/recordings"' not in r.text
     assert "LAN Transcriber" in r.text
@@ -330,8 +333,9 @@ def test_dashboard_with_data(tmp_path, monkeypatch):
     c = TestClient(api.app, follow_redirects=True)
     r = c.get("/")
     assert r.status_code == 200
-    assert "Recordings" in r.text
+    assert "Recording worklist" in r.text
     assert "Drop audio files here or use Choose files." in r.text
+    assert "Telemetry pending" in r.text
     assert "Daily workflow" not in r.text
     assert "Fallback and Admin Pages" not in r.text
     assert "rec-dash-1" in r.text or "a.mp3" in r.text
@@ -354,6 +358,8 @@ def test_dashboard_summary_fragment_endpoints(seeded_client):
 def test_control_center_query_state_and_direct_routes(seeded_client):
     r = seeded_client.get("/?selected=rec-ui-1&status=Ready&q=meeting&tab=speakers")
     assert r.status_code == 200
+    assert 'id="control-center-workspace-header"' in r.text
+    assert 'id="control-center-system-bar"' in r.text
     assert 'value="meeting"' in r.text
     assert 'value="Ready" selected' in r.text
     assert 'name="selected" value="rec-ui-1"' in r.text
@@ -380,8 +386,8 @@ def test_control_center_pane_fragment_endpoints(seeded_client):
         "/ui/control-center/work-pane?selected=rec-ui-1&status=Ready&q=meeting&tab=speakers"
     )
     assert work_pane.status_code == 200
-    assert "Upload" in work_pane.text
-    assert "Recordings" in work_pane.text
+    assert "Bring new audio into today" in work_pane.text
+    assert "Recording worklist" in work_pane.text
     assert "Fallback and Admin Pages" not in work_pane.text
     assert "meeting.mp3" in work_pane.text
     assert 'id="control-center-recordings-panel"' in work_pane.text

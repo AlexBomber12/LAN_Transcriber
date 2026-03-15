@@ -1,0 +1,23 @@
+<footer id="control-center-system-bar" class="control-center-system-bar">
+  <div class="control-center-system-group">
+    {% for item in control_center_system_bar.primary_items %}
+    <div class="control-center-system-item">
+      <span class="control-center-system-label">{{ item.label }}</span>
+      <strong class="control-center-system-value">{{ item.value }}</strong>
+      <span class="control-center-system-detail">{{ item.detail }}</span>
+    </div>
+    {% endfor %}
+  </div>
+
+  <div class="control-center-system-group control-center-system-group-secondary">
+    {% for item in control_center_system_bar.secondary_items %}
+    <div class="control-center-system-item{% if item.placeholder %} placeholder{% endif %}">
+      <span class="control-center-system-label">{{ item.label }}</span>
+      <strong class="control-center-system-value">{{ item.value }}</strong>
+      <span class="control-center-system-detail">{{ item.detail }}</span>
+    </div>
+    {% endfor %}
+  </div>
+
+  <p class="control-center-system-note">{{ control_center_system_bar.note }}</p>
+</footer>

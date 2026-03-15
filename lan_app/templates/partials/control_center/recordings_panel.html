@@ -8,15 +8,15 @@
   hx-swap="outerHTML"
   {% endif %}
 >
-  <div class="control-center-pane-head">
+  <div class="control-center-pane-head control-center-pane-head-tight">
     <div>
       <p class="eyebrow">Worklist</p>
       <h2>{{ recordings_panel.title }}</h2>
       <p class="control-center-pane-copy">{{ recordings_panel.description }}</p>
     </div>
-    <div class="control-center-state-list">
-      <span class="control-center-state-pill">Rows: {{ recordings_panel.total }}</span>
-      <span class="control-center-state-pill">Limit: {{ recordings_panel.recordings_table.limit }}</span>
+    <div class="control-center-worklist-summary">
+      <span class="control-center-worklist-count">{{ recordings_panel.total }}</span>
+      <span class="control-center-worklist-label">matching recordings</span>
     </div>
   </div>
 

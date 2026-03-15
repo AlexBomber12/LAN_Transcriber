@@ -368,6 +368,17 @@ def test_control_center_helper_contexts_cover_fragment_builders(
     assert work_pane["voice_summary"]["profiles"][0]["display_name"] == "Alex Helper"
     assert work_pane["voice_summary"]["profiles"][0]["sample_count"] == 1
 
+    system_bar = ui_routes._control_center_system_bar_context(  # noqa: SLF001
+        cfg,
+        state=state,
+        recordings_panel=work_pane["recordings_panel"],
+    )
+    assert system_bar["primary_items"][0]["value"] == "3 visible"
+    assert system_bar["primary_items"][0]["detail"] == "Ready · search: helper"
+    assert system_bar["secondary_items"][0]["placeholder"] is True
+    assert str(cfg.data_root) == system_bar["secondary_items"][2]["value"]
+    assert "next PR" in system_bar["note"]
+
     filters = ui_routes._recordings_filters_context(  # noqa: SLF001
         mode="control_center",
         selected="rec-helper-1",
