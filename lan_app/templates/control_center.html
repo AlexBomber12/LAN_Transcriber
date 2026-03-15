@@ -2,62 +2,26 @@
 {% block title %}Control Center – LAN Transcriber{% endblock %}
 {% block content %}
 <h1>Control Center</h1>
-<p class="control-center-lede">
-  Daily operator workspace. Upload or pick a recording, review it in the embedded inspector, and
-  open direct pages only when you need a fallback or admin screen.
-</p>
-
 <div class="control-center-shell">
-  <div id="control-center-top-strip" class="control-center-summary-grid">
-    <div
-      id="control-center-recordings-summary"
-      class="control-center-panel"
-      hx-get="/ui/control-center/dashboard/recordings-summary"
-      hx-trigger="refresh-control-center-summary from:body"
-      hx-target="this"
-      hx-swap="innerHTML"
-    >
-      {% set summary_strip = recordings_summary_strip %}
-      {% include "partials/control_center/status_summary_strip.html" %}
+  <section id="control-center-top-strip" class="control-center-pane control-center-top-strip">
+    <div class="control-center-top-state">
+      <span class="control-center-state-pill">Status: {{ control_center_state.status or "All" }}</span>
+      <span class="control-center-state-pill">Search: {{ control_center_state.q or "None" }}</span>
+      <span class="control-center-state-pill">Tab: {{ control_center_state.tab_label }}</span>
+      <span class="control-center-state-pill">Selected: {{ control_center_state.selected or "None" }}</span>
     </div>
-
-    <div
-      id="control-center-jobs-summary"
-      class="control-center-panel"
-      hx-get="/ui/control-center/dashboard/jobs-summary"
-      hx-trigger="refresh-control-center-summary from:body"
-      hx-target="this"
-      hx-swap="innerHTML"
-    >
-      {% set summary_strip = jobs_summary_strip %}
-      {% include "partials/control_center/status_summary_strip.html" %}
+    <div class="filters" style="margin:0">
+      {% if control_center_state.selected %}
+      <a href="{{ control_center_state.clear_selection_href }}" class="btn" style="text-decoration:none">Clear selection</a>
+      {% endif %}
+      {% if control_center_state.status or control_center_state.q %}
+      <a href="{{ control_center_state.reset_href }}" class="btn" style="text-decoration:none">Reset filters</a>
+      {% endif %}
+      {% if control_center_work_pane.workflow_links.selected_detail_href %}
+      <a href="{{ control_center_work_pane.workflow_links.selected_detail_href }}" class="btn" style="text-decoration:none">Open full page</a>
+      {% endif %}
     </div>
-
-    <section class="control-center-panel">
-      <div class="section">
-        <h2>Daily workflow</h2>
-        <p class="control-center-pane-copy">
-          The Control Center keeps selection, filters, and the active inspector tab in the URL so
-          reloads and fallback jumps return to the same place.
-        </p>
-        <div class="control-center-state-list">
-          <span class="control-center-state-pill">Status: {{ control_center_state.status or "All" }}</span>
-          <span class="control-center-state-pill">Search: {{ control_center_state.q or "None" }}</span>
-          <span class="control-center-state-pill">Tab: {{ control_center_state.tab_label }}</span>
-          <span class="control-center-state-pill">Selected: {{ control_center_state.selected or "None" }}</span>
-        </div>
-        <div class="filters" style="margin:10px 0 0 0">
-          <a href="{{ control_center_work_pane.workflow_links.upload_href }}" class="btn" style="text-decoration:none">Upload fallback</a>
-          <a href="{{ control_center_work_pane.workflow_links.recordings_href }}" class="btn" style="text-decoration:none">Recordings fallback</a>
-          <a href="{{ control_center_work_pane.workflow_links.corrections_href }}" class="btn" style="text-decoration:none">Corrections</a>
-          <a href="{{ control_center_work_pane.workflow_links.voices_href }}" class="btn" style="text-decoration:none">Voices</a>
-          {% if control_center_work_pane.workflow_links.selected_detail_href %}
-          <a href="{{ control_center_work_pane.workflow_links.selected_detail_href }}" class="btn" style="text-decoration:none">Selected full page</a>
-          {% endif %}
-        </div>
-      </div>
-    </section>
-  </div>
+  </section>
 
   <div class="control-center-main">
     <section id="control-center-work-pane" class="control-center-pane">

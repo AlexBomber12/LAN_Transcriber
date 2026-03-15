@@ -44,6 +44,7 @@ from lan_app.db import (
     replace_calendar_events_for_window,
     replace_participant_metrics,
     list_voice_profiles,
+    set_recording_status,
     set_recording_cancel_request,
     set_recording_progress,
     set_speaker_assignment,
@@ -51,6 +52,7 @@ from lan_app.db import (
     upsert_calendar_match,
     upsert_meeting_metrics,
 )
+from lan_app.jobs import RecordingJob
 from lan_app.constants import (
     JOB_STATUS_FAILED,
     JOB_STATUS_FINISHED,
@@ -189,6 +191,37 @@ def _seed_speaker_artifacts(cfg: AppSettings, recording_id: str) -> None:
     )
 
 
+def _stub_upload_enqueue(monkeypatch: pytest.MonkeyPatch, cfg: AppSettings) -> None:
+    def _fake_enqueue(
+        recording_id: str,
+        *,
+        job_type: str = JOB_TYPE_PRECHECK,
+        settings: AppSettings | None = None,
+        **_kwargs: object,
+    ) -> RecordingJob:
+        effective = settings or cfg
+        job_id = f"job-upload-{recording_id[-6:]}"
+        create_job(
+            job_id=job_id,
+            recording_id=recording_id,
+            job_type=job_type,
+            status=JOB_STATUS_QUEUED,
+            settings=effective,
+        )
+        set_recording_status(
+            recording_id,
+            RECORDING_STATUS_QUEUED,
+            settings=effective,
+        )
+        return RecordingJob(
+            job_id=job_id,
+            recording_id=recording_id,
+            job_type=job_type,
+        )
+
+    monkeypatch.setattr(api, "enqueue_recording_job", _fake_enqueue)
+
+
 def _seed_speaker_turns_only(cfg: AppSettings, recording_id: str) -> None:
     derived = cfg.recordings_root / recording_id / "derived"
     derived.mkdir(parents=True, exist_ok=True)
@@ -282,7 +315,9 @@ def test_dashboard_empty(client):
     assert 'id="control-center-inspector-pane"' in r.text
     assert 'id="file-input"' in r.text
     assert 'id="control-center-recordings-panel"' in r.text
-    assert "No recording selected yet" in r.text
+    assert "Select a recording" in r.text
+    assert 'href="/upload"' not in r.text
+    assert 'href="/recordings"' not in r.text
     assert "LAN Transcriber" in r.text
 
 
@@ -295,9 +330,10 @@ def test_dashboard_with_data(tmp_path, monkeypatch):
     c = TestClient(api.app, follow_redirects=True)
     r = c.get("/")
     assert r.status_code == 200
-    assert "Recordings by status" in r.text
-    assert "Queue by status" in r.text
-    assert "Live recordings queue" in r.text
+    assert "Recordings" in r.text
+    assert "Drop audio files here or use Choose files." in r.text
+    assert "Daily workflow" not in r.text
+    assert "Fallback and Admin Pages" not in r.text
     assert "rec-dash-1" in r.text or "a.mp3" in r.text
 
 
@@ -344,31 +380,30 @@ def test_control_center_pane_fragment_endpoints(seeded_client):
         "/ui/control-center/work-pane?selected=rec-ui-1&status=Ready&q=meeting&tab=speakers"
     )
     assert work_pane.status_code == 200
-    assert "Daily Workflow" in work_pane.text
-    assert "Upload Queue" in work_pane.text
-    assert "Corrections admin" in work_pane.text
-    assert "Canonical Speakers" in work_pane.text
+    assert "Upload" in work_pane.text
+    assert "Recordings" in work_pane.text
+    assert "Fallback and Admin Pages" not in work_pane.text
     assert "meeting.mp3" in work_pane.text
     assert 'id="control-center-recordings-panel"' in work_pane.text
     assert "<html" not in work_pane.text
 
     inspector = seeded_client.get("/ui/control-center/inspector-pane?selected=rec-ui-1&tab=speakers")
     assert inspector.status_code == 200
-    assert "Inspector Pane" in inspector.text
+    assert "Selected recording" in inspector.text
     assert "rec-ui-1" in inspector.text
     assert "Speakers" in inspector.text
     assert "<nav" not in inspector.text
 
     empty_inspector = seeded_client.get("/ui/control-center/inspector-pane")
     assert empty_inspector.status_code == 200
-    assert "No recording selected yet" in empty_inspector.text
+    assert "Select a recording" in empty_inspector.text
 
 
 def test_control_center_selected_recording_renders_embedded_inspector_actions(seeded_client):
     r = seeded_client.get("/?selected=rec-ui-1&status=Ready&q=meeting&tab=overview")
     assert r.status_code == 200
     assert 'id="control-center-inspector-pane"' in r.text
-    assert "Inspector Pane" in r.text
+    assert "Selected recording" in r.text
     assert "Requeue" in r.text
     assert "Quarantine" in r.text
     assert "Delete" in r.text
@@ -390,16 +425,92 @@ def test_control_center_embedded_admin_links_preserve_shell_state(seeded_client)
     overview = seeded_client.get("/?selected=rec-ui-1&status=Ready&q=meeting&tab=overview")
     assert overview.status_code == 200
     assert (
-        'href="/glossary?return_to=control-center&amp;selected=rec-ui-1&amp;status=Ready&amp;q=meeting&amp;recording_id=rec-ui-1#glossary-form"'
+        'href="/glossary?return_to=control-center&amp;selected=rec-ui-1&amp;status=Ready&amp;q=meeting"'
         in overview.text
     )
+    assert "Save as correction" in overview.text
 
     speakers = seeded_client.get("/?selected=rec-ui-1&status=Ready&q=meeting&tab=speakers")
     assert speakers.status_code == 200
-    assert (
-        'href="/voices?return_to=control-center&amp;selected=rec-ui-1&amp;status=Ready&amp;q=meeting&amp;tab=speakers"'
-        in speakers.text
+    assert "Open canonical speakers page" not in speakers.text
+
+
+def test_control_center_workflow_upload_select_speaker_decision_and_correction(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    init_db(cfg)
+    _stub_upload_enqueue(monkeypatch, cfg)
+
+    c = TestClient(api.app, follow_redirects=True)
+    upload = c.post(
+        "/api/uploads",
+        files={"file": ("2026-03-15 10_30_00.mp3", b"abc", "audio/mpeg")},
     )
+    assert upload.status_code == 200
+    recording_id = upload.json()["recording_id"]
+
+    home = c.get("/")
+    assert home.status_code == 200
+    assert f'data-recording-id="{recording_id}"' in home.text
+    assert "Select a recording" in home.text
+
+    _seed_speaker_artifacts(cfg, recording_id)
+    set_recording_status(recording_id, RECORDING_STATUS_READY, settings=cfg)
+
+    speakers = c.get(f"/?selected={recording_id}&tab=speakers")
+    assert speakers.status_code == 200
+    assert "Selected recording" in speakers.text
+    assert "Local label only" in speakers.text
+    assert "Add trusted sample" in speakers.text
+
+    updated_speakers = c.post(
+        f"/ui/recordings/{recording_id}/speakers/local-label?return_to=control-center&return_tab=speakers",
+        data={
+            "diar_speaker_label": "S1",
+            "local_display_name": "Guest Reviewer",
+        },
+    )
+    assert updated_speakers.status_code == 200
+    assert "Guest Reviewer" in updated_speakers.text
+
+    assignments = list_speaker_assignments(recording_id, settings=cfg)
+    assert len(assignments) == 1
+    assert assignments[0]["review_state"] == "local_label"
+    assert assignments[0]["local_display_name"] == "Guest Reviewer"
+
+    overview = c.get(f"/?selected={recording_id}")
+    assert overview.status_code == 200
+    assert "Save as correction" in overview.text
+
+    correction = c.post(
+        "/glossary",
+        data={
+            "canonical_text": "Sander",
+            "aliases_text": "Sandia",
+            "kind": "term",
+            "source": "correction",
+            "enabled": "1",
+            "notes": "from workflow",
+            "recording_id": recording_id,
+            "return_to": "control-center",
+            "return_after_save": "control-center",
+            "selected": recording_id,
+            "tab": "overview",
+        },
+    )
+    assert correction.status_code == 200
+    assert "Saved correction for Sander." in correction.text
+    assert "Save as correction" in correction.text
+
+    entries = list_glossary_entries(settings=cfg)
+    assert len(entries) == 1
+    assert entries[0]["canonical_text"] == "Sander"
+    assert entries[0]["aliases_json"] == ["Sandia"]
+    assert entries[0]["metadata_json"] == {"recording_id": recording_id}
 
 
 def test_control_center_recordings_panel_filters_search_and_actions(
@@ -684,7 +795,6 @@ def test_recording_shell_and_empty_inspector_fragment_endpoints(seeded_client):
     empty = seeded_client.get("/ui/control-center/inspector-empty")
     assert empty.status_code == 200
     assert "Select a recording" in empty.text
-    assert "diagnostics, and export controls" in empty.text
     assert "<nav" not in empty.text
 
     missing = seeded_client.get("/ui/control-center/recordings/missing/shell")
@@ -1329,9 +1439,9 @@ def test_recording_detail_speakers_tab_assignment_persists(tmp_path, monkeypatch
     assert page.status_code == 200
     assert "Speaker Assignments" in page.text
     assert "Alice Example" in page.text
-    assert "Confirm global match" in page.text
+    assert "Confirm match" in page.text
     assert "Mapped globally" in page.text
-    assert "Add sample from this recording" in page.text
+    assert "Add trusted sample" in page.text
     assert "Recommended" in page.text
     assert "purity 88%" in page.text
 
@@ -1752,9 +1862,9 @@ def test_recording_detail_speakers_ready_during_processing_keeps_snippets_usable
     assert page.status_code == 200
     assert "Ready:</strong> Clean clips are ready while processing continues in LLM Summary." in page.text
     assert "/ui/recordings/rec-speakers-processing-ready-1/snippets/S1/1.wav" in page.text
-    assert "Add sample from this recording" in page.text
+    assert "Add trusted sample" in page.text
     assert 'name="snippet_path" style="width:220px" disabled' not in page.text
-    assert 'type="submit" disabled>Add sample from this recording' not in page.text
+    assert 'type="submit" disabled>Add trusted sample' not in page.text
 
 
 def test_recording_detail_speakers_nonfatal_snippet_failure_message(tmp_path, monkeypatch):
@@ -2898,8 +3008,8 @@ def test_upload_page(client):
     assert r.status_code == 200
     assert "Upload" in r.text
     assert 'id="file-input"' in r.text
-    assert "Drop files here to upload" in r.text
-    assert "No files queued yet. Drop audio here or use Choose files." in r.text
+    assert "Drop audio files here or use Choose files." in r.text
+    assert "No files queued yet." in r.text
 
 
 def test_upload_panel_fragment_endpoint(client):
@@ -2907,7 +3017,7 @@ def test_upload_panel_fragment_endpoint(client):
     assert r.status_code == 200
     assert 'id="file-input"' in r.text
     assert 'id="upload-rows"' in r.text
-    assert "No files queued yet. Drop audio here or use Choose files." in r.text
+    assert "No files queued yet." in r.text
     assert "<html" not in r.text
 
 

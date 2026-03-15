@@ -132,7 +132,7 @@
 {% else %}
 <p class="placeholder">
   {% if not recordings_table.total and not recordings_table.status_filter and not recordings_table.search_query %}
-  No recordings yet. Upload from the Control Center or use the fallback Upload page.
+  No recordings yet. Upload audio to start the queue.
   {% else %}
   No recordings{% if recordings_table.status_filter %} with status <strong>{{ recordings_table.status_filter }}</strong>{% endif %}{% if recordings_table.search_query %} matching <strong>{{ recordings_table.search_query }}</strong>{% endif %}. Clear the filters to widen the queue.
   {% endif %}

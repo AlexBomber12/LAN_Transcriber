@@ -1,4 +1,6 @@
-<div class="section">
-  <h2>{{ empty_inspector.title }}</h2>
-  <p class="placeholder" style="padding:8px 0 0 0">{{ empty_inspector.message }}</p>
+<div class="control-center-empty-state">
+  <strong>{{ empty_inspector.title }}</strong>
+  {% if empty_inspector.message %}
+  <p class="placeholder" style="padding:6px 0 0 0">{{ empty_inspector.message }}</p>
+  {% endif %}
 </div>

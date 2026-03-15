@@ -9,22 +9,7 @@
   {% if recording_inspector %}
   {% include "partials/recording_inspector.html" %}
   {% else %}
-  <div class="control-center-pane-head">
-    <div>
-      <h2 style="margin-top:0">Recording Inspector</h2>
-      <p class="control-center-pane-copy">
-        Keep the selected recording on the right while the queue and uploads stay live on the left.
-      </p>
-    </div>
-    <div class="filters" style="margin:0">
-      <a href="/recordings" class="btn" style="text-decoration:none">Open recordings page</a>
-    </div>
-  </div>
   {% set empty_inspector = control_center_empty_inspector %}
   {% include "partials/control_center/inspector_empty.html" %}
-  <div class="filters" style="margin:10px 0 0 0">
-    <a href="/upload" class="btn" style="text-decoration:none">Upload file</a>
-    <a href="/recordings" class="btn" style="text-decoration:none">Open full recordings page</a>
-  </div>
   {% endif %}
 </section>

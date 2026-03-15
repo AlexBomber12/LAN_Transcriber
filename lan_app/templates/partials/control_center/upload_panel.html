@@ -6,10 +6,10 @@
   </div>
   <div
     id="{{ upload_shell.dropzone_id }}"
-    style="background:#fff;border:2px dashed #99b;padding:14px;max-width:720px;color:#555;user-select:none"
+    class="control-center-upload-dropzone"
     tabindex="0"
   >
-    Drop files here to upload (or use the file picker).
+    Drop audio files here or use Choose files.
   </div>
 </div>
 
@@ -27,7 +27,7 @@
     </thead>
     <tbody id="{{ upload_shell.upload_rows_id }}">
       <tr id="{{ upload_shell.empty_row_id }}">
-        <td colspan="{{ upload_shell.queue_empty_colspan }}" class="placeholder">No files queued yet. Drop audio here or use Choose files.</td>
+        <td colspan="{{ upload_shell.queue_empty_colspan }}" class="placeholder">No files queued yet.</td>
       </tr>
     </tbody>
   </table>

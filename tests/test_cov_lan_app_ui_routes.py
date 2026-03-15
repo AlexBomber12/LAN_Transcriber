@@ -495,12 +495,27 @@ def test_recordings_panel_context_clamps_offset_to_last_available_page(
     )
     assert selected_shell_warning["notices"] == [{"message": "Recovered from a stuck job."}]
     assert selected_shell_warning["action_bar"]["back_href"] == "/recordings"
+    selected_shell_notice = ui_routes._selected_recording_summary_shell_context(  # noqa: SLF001
+        {
+            "id": "rec-helper-2",
+            "source_filename": "meeting.wav",
+            "captured_at_display": "2026-01-10 11:00:00 CET",
+            "stop_eligible": False,
+            "stop_in_progress": False,
+        },
+        current_tab="overview",
+        recovery_warning=None,
+        workflow_notice="Saved correction for Sander.",
+    )
+    assert selected_shell_notice["notices"] == [
+        {"message": "Saved correction for Sander."}
+    ]
 
     empty_shell = ui_routes._empty_inspector_shell_context()  # noqa: SLF001
     assert empty_shell["title"] == "Select a recording"
 
     control_center_empty = ui_routes._control_center_empty_inspector_context()  # noqa: SLF001
-    assert control_center_empty["title"] == "No recording selected yet"
+    assert control_center_empty["title"] == "Select a recording"
 
     monkeypatch.setattr(
         ui_routes,

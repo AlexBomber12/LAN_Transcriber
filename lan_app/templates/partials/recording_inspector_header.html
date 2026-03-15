@@ -1,9 +1,9 @@
 <div class="control-center-pane-head">
   <div>
     {% if recording_inspector.embedded %}
-    <h2 style="margin-top:0">Inspector Pane</h2>
+    <h2 style="margin-top:0">Selected recording</h2>
     <p class="control-center-pane-copy">
-      Review <code>{{ rec.id }}</code> from the Control Center without losing queue context.
+      <code>{{ rec.id }}</code> · {{ rec.source_filename }}
     </p>
     {% else %}
     <h1>
