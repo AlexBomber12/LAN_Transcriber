@@ -1,110 +1,125 @@
 {% if recordings_table.rows %}
-<table>
-  <thead>
-    <tr>
-      <th>ID</th>
-      <th>Filename</th>
-      <th>Status</th>
-      <th style="width:140px">Progress</th>
-      <th>Suggested Project</th>
-      <th>Confidence</th>
-      <th>Captured</th>
-      <th>Duration</th>
-      <th>Source</th>
-      <th>Actions</th>
-    </tr>
-  </thead>
-  <tbody>
-    {% for r in recordings_table.rows %}
-    <tr>
-      <td title="{{ r.id }}">
-        <a href="{{ r.detail_href }}" style="text-decoration:none;color:#1d4ed8">{{ r.id[:16] }}…</a>
-        {% if r.select_href %}
-        <div style="margin-top:6px">
-          {% if r.selected %}
-          <span class="badge s-Ready">Selected</span>
-          {% else %}
-          <a
-            href="{{ r.select_href }}"
-            class="btn"
-            style="text-decoration:none"
-            data-testid="control-center-select-recording"
-            data-recording-id="{{ r.id }}"
-          >Select</a>
+<div class="recordings-table-wrap">
+  <table class="recordings-table">
+    <thead>
+      <tr>
+        <th>Recording</th>
+        <th>Status</th>
+        <th style="width:220px">Progress</th>
+        <th>Routing</th>
+        <th>Captured</th>
+        <th>Duration</th>
+        <th style="width:120px">Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for r in recordings_table.rows %}
+      <tr{% if r.selected %} class="recording-row-selected"{% endif %}>
+        <td title="{{ r.source_filename }}">
+          <div class="recording-main">
+            {% if r.select_href %}
+            <a href="{{ r.select_href }}" class="recording-name">{{ r.source_filename }}</a>
+            {% else %}
+            <a href="{{ r.detail_href }}" class="recording-name">{{ r.source_filename }}</a>
+            {% endif %}
+            <div class="recording-meta">
+              <span><code>{{ r.id }}</code></span>
+              <span>{{ r.source }}</span>
+            </div>
+            {% if r.select_href %}
+            <div>
+              {% if r.selected %}
+              <span class="recording-selected-flag">Selected</span>
+              {% else %}
+              <a
+                href="{{ r.select_href }}"
+                class="btn"
+                data-testid="control-center-select-recording"
+                data-recording-id="{{ r.id }}"
+              >Select</a>
+              {% endif %}
+            </div>
+            {% endif %}
+          </div>
+        </td>
+        <td>
+          <span class="badge s-{{ r.status }}">{{ r.status }}</span>
+          {% if r.status_reason_text_display %}
+          <span class="recording-reason">{{ r.status_reason_text_display }}</span>
           {% endif %}
-        </div>
-        {% endif %}
-      </td>
-      <td title="{{ r.source_filename }}">
-        {% if r.select_href %}
-        <a href="{{ r.select_href }}" style="text-decoration:none;color:inherit">{{ r.source_filename }}</a>
-        {% else %}
-        {{ r.source_filename }}
-        {% endif %}
-      </td>
-      <td>
-        <span class="badge s-{{ r.status }}">{{ r.status }}</span>
-        {% if r.status_reason_text_display %}
-        <span style="display:block;margin-top:4px;color:#92400e">{{ r.status_reason_text_display }}</span>
-        {% endif %}
-      </td>
-      <td style="max-width:140px">
-        {% if r.status == "Processing" %}
-        {{ r.progress_percent }}% {{ r.progress_stage_label }}
-        {% elif r.status == "Stopping" and r.pipeline_progress is not none %}
-        {{ r.progress_percent }}% {{ r.progress_stage_label }}
-        {% elif r.status == "Stopping" %}
-        Stop requested
-        {% elif r.status == "Queued" %}
-        {{ r.progress_percent }}% {{ r.progress_stage_label }}
-        {% elif r.status in ["Ready", "NeedsReview", "Published"] %}
-        100% Done
-        {% elif r.pipeline_progress is not none %}
-        {{ r.progress_percent }}% {{ r.progress_stage_label }}
-        {% else %}
-        —
-        {% endif %}
-      </td>
-      <td>
-        {% if r.suggested_project_name %}
-        {{ r.suggested_project_name }}
-        {% elif r.suggested_project_id %}
-        #{{ r.suggested_project_id }}
-        {% else %}
-        —
-        {% endif %}
-      </td>
-      <td>
-        {% if r.routing_confidence is not none %}
-        {{ '%.2f'|format(r.routing_confidence) }}
-        {% else %}
-        —
-        {% endif %}
-      </td>
-      <td>{{ r.captured_at_display }}</td>
-      <td>{{ r.duration_display }}</td>
-      <td>{{ r.source }}</td>
-      <td>
-        <select
-          class="action-sel"
-          data-rid="{{ r.id }}"
-          data-rlabel="{{ r.source_filename or r.id }}"
-          data-rcaptured="{{ '' if r.captured_at_display == '—' else r.captured_at_display }}"
-          data-open-href="{{ r.detail_href }}"
-          data-return-to="{{ recordings_table.action_return_to }}"
-          onchange="doRecAction(this)"
-        >
-          <option value="">Actions</option>
-          <option value="open">Open</option>
-          <option value="requeue">Requeue</option>
-          <option value="quarantine">Quarantine</option>
-          <option value="delete">Delete</option>
-        </select>
-      </td>
-    </tr>
-    {% endfor %}
-  </tbody>
-</table>
+        </td>
+        <td>
+          <div class="recording-progress">
+            {% if r.status == "Processing" %}
+            {% set progress_text = r.progress_percent ~ "% " ~ r.progress_stage_label %}
+            {% elif r.status == "Stopping" and r.pipeline_progress is not none %}
+            {% set progress_text = r.progress_percent ~ "% " ~ r.progress_stage_label %}
+            {% elif r.status == "Stopping" %}
+            {% set progress_text = "Stop requested" %}
+            {% elif r.status == "Queued" %}
+            {% set progress_text = r.progress_percent ~ "% " ~ r.progress_stage_label %}
+            {% elif r.status in ["Ready", "NeedsReview", "Published"] %}
+            {% set progress_text = "100% Done" %}
+            {% elif r.pipeline_progress is not none %}
+            {% set progress_text = r.progress_percent ~ "% " ~ r.progress_stage_label %}
+            {% else %}
+            {% set progress_text = "—" %}
+            {% endif %}
+            <strong>{{ progress_text }}</strong>
+            {% if progress_text != "—" and progress_text != "Stop requested" %}
+            <div class="progress-track">
+              <div class="progress-fill" style="width:{{ 100 if r.status in ['Ready', 'NeedsReview', 'Published'] else r.progress_percent }}%"></div>
+            </div>
+            {% endif %}
+          </div>
+        </td>
+        <td>
+          <div class="recording-main">
+            <strong>
+              {% if r.suggested_project_name %}
+              {{ r.suggested_project_name }}
+              {% elif r.suggested_project_id %}
+              #{{ r.suggested_project_id }}
+              {% else %}
+              —
+              {% endif %}
+            </strong>
+            <div class="recording-meta">
+              <span>
+                Confidence:
+                {% if r.routing_confidence is not none %}
+                {{ '%.2f'|format(r.routing_confidence) }}
+                {% else %}
+                —
+                {% endif %}
+              </span>
+            </div>
+          </div>
+        </td>
+        <td>{{ r.captured_at_display }}</td>
+        <td>{{ r.duration_display }}</td>
+        <td>
+          <select
+            class="action-sel"
+            data-rid="{{ r.id }}"
+            data-rlabel="{{ r.source_filename or r.id }}"
+            data-rcaptured="{{ '' if r.captured_at_display == '—' else r.captured_at_display }}"
+            data-open-href="{{ r.detail_href }}"
+            data-return-to="{{ recordings_table.action_return_to }}"
+            onchange="doRecAction(this)"
+          >
+            <option value="">Actions</option>
+            <option value="open">Open</option>
+            <option value="requeue">Requeue</option>
+            <option value="quarantine">Quarantine</option>
+            <option value="delete">Delete</option>
+          </select>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
 
 <div class="pager">
   {% if recordings_table.has_prev %}

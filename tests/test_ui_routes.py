@@ -372,7 +372,7 @@ def test_control_center_query_state_and_direct_routes(seeded_client):
 
     detail = seeded_client.get("/recordings/rec-ui-1")
     assert detail.status_code == 200
-    assert "Recording:" in detail.text
+    assert "Recording Inspector" in detail.text
 
 
 def test_control_center_pane_fragment_endpoints(seeded_client):
@@ -389,7 +389,7 @@ def test_control_center_pane_fragment_endpoints(seeded_client):
 
     inspector = seeded_client.get("/ui/control-center/inspector-pane?selected=rec-ui-1&tab=speakers")
     assert inspector.status_code == 200
-    assert "Selected recording" in inspector.text
+    assert "Selected Recording" in inspector.text
     assert "rec-ui-1" in inspector.text
     assert "Speakers" in inspector.text
     assert "<nav" not in inspector.text
@@ -403,7 +403,7 @@ def test_control_center_selected_recording_renders_embedded_inspector_actions(se
     r = seeded_client.get("/?selected=rec-ui-1&status=Ready&q=meeting&tab=overview")
     assert r.status_code == 200
     assert 'id="control-center-inspector-pane"' in r.text
-    assert "Selected recording" in r.text
+    assert "Selected Recording" in r.text
     assert "Requeue" in r.text
     assert "Quarantine" in r.text
     assert "Delete" in r.text
@@ -463,7 +463,8 @@ def test_control_center_workflow_upload_select_speaker_decision_and_correction(
 
     speakers = c.get(f"/?selected={recording_id}&tab=speakers")
     assert speakers.status_code == 200
-    assert "Selected recording" in speakers.text
+    assert "Selected Recording" in speakers.text
+    assert "Safe speaker review" in speakers.text
     assert "Local label only" in speakers.text
     assert "Add trusted sample" in speakers.text
 
@@ -689,7 +690,7 @@ def test_recordings_fragment_endpoints_render_filters_table_and_pagination(
     c = TestClient(api.app, follow_redirects=True)
     filters = c.get("/ui/control-center/recordings/filters?status=Ready&limit=25")
     assert filters.status_code == 200
-    assert 'class="filters"' in filters.text
+    assert 'class="recordings-filter-strip filters"' in filters.text
     assert 'hx-get="/ui/control-center/recordings/panel"' in filters.text
     assert '<option value="Ready" selected>' in filters.text
     assert 'placeholder="ID or filename"' in filters.text
@@ -789,7 +790,7 @@ def test_recording_shell_and_empty_inspector_fragment_endpoints(seeded_client):
     assert 'data-rid="rec-ui-1"' in shell.text
     assert "Requeue" in shell.text
     assert "Download ZIP" in shell.text
-    assert "Back to recordings" in shell.text
+    assert "Back to Control Center" in shell.text
     assert "<html" not in shell.text
 
     empty = seeded_client.get("/ui/control-center/inspector-empty")

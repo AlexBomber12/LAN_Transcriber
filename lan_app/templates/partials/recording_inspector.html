@@ -1,19 +1,27 @@
+<article class="inspector-shell{% if recording_inspector.embedded %} inspector-shell-embedded{% else %} inspector-shell-full{% endif %}">
 {% include "partials/recording_inspector_header.html" %}
 
 {% if rec.status in ['Processing', 'Stopping'] %}
 <div
   id="recording-progress"
+  class="inspector-progress-shell"
   hx-get="{{ recording_inspector.progress_url }}"
   hx-trigger="load, every 2s"
   hx-swap="innerHTML"
-  style="margin:0 0 10px 0"
 >
-  <div class="placeholder" style="padding:8px 10px">Loading pipeline progress…</div>
+  <div class="placeholder" style="padding:0">Loading pipeline progress…</div>
 </div>
 {% endif %}
 
+<div class="inspector-tab-shell">
 {% include "partials/recording_inspector_tabs.html" %}
 
 <div class="tab-content">
+  {% if recording_inspector.embedded %}
+  {% include "partials/recording_inspector_embedded_body.html" %}
+  {% else %}
   {% include "partials/recording_inspector_body.html" %}
+  {% endif %}
 </div>
+</div>
+</article>

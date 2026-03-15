@@ -1,27 +1,32 @@
-<div class="control-center-pane-head">
-  <div>
-    {% if recording_inspector.embedded %}
-    <h2 style="margin-top:0">Selected recording</h2>
-    <p class="control-center-pane-copy">
-      <code>{{ rec.id }}</code> · {{ rec.source_filename }}
-    </p>
-    {% else %}
-    <h1>
-      Recording: <code>{{ rec.id }}</code>
-      &nbsp;<span class="badge s-{{ rec.status }}">{{ rec.status }}</span>
-      {% if rec.status_reason_text_display %}
-      <span style="font-size:14px;color:#92400e">{{ rec.status_reason_text_display }}</span>
+<section class="inspector-hero{% if recording_inspector.embedded %} embedded{% endif %}">
+  <div class="inspector-heading">
+    <div class="inspector-title-block">
+      {% if recording_inspector.embedded %}
+      <p class="eyebrow">Selected Recording</p>
+      <h2>{{ rec.source_filename }}</h2>
+      <p class="inspector-subtitle"><code>{{ rec.id }}</code></p>
+      {% else %}
+      <p class="eyebrow">Recording Inspector</p>
+      <h1>{{ rec.source_filename }}</h1>
+      <p class="inspector-subtitle"><code>{{ rec.id }}</code> · deep review, export, and diagnostics</p>
       {% endif %}
-    </h1>
-    {% endif %}
+    </div>
+    <div class="inspector-meta-grid">
+      <span class="badge s-{{ rec.status }}">{{ rec.status }}</span>
+      <span class="inspector-meta-chip">Captured {{ rec.captured_at_display }}</span>
+      <span class="inspector-meta-chip">Duration {{ rec.duration_display }}</span>
+      {% if rec.project_name or rec.project_id %}
+      <span class="inspector-meta-chip">Project {{ rec.project_name or ('#' ~ rec.project_id) }}</span>
+      {% endif %}
+      <span class="inspector-meta-chip">Tab {{ current_tab|capitalize }}</span>
+    </div>
   </div>
-  {% if recording_inspector.embedded %}
-  <div class="control-center-state-list" style="margin-top:0">
-    <span class="control-center-state-pill">Status: {{ rec.status }}</span>
-    <span class="control-center-state-pill">Tab: {{ current_tab|capitalize }}</span>
-    <span class="control-center-state-pill">Captured: {{ rec.captured_at_display }}</span>
-  </div>
+  {% if rec.status_reason_text_display %}
+  <p class="inspector-note">{{ rec.status_reason_text_display }}</p>
   {% endif %}
-</div>
+  {% if not recording_inspector.embedded %}
+  <p class="muted">This full-page mode keeps the richer diagnostics, pipeline visibility, export tools, and broader speaker administration separate from the compact daily workspace.</p>
+  {% endif %}
+</section>
 
 {% include "partials/control_center/selected_recording_shell.html" %}

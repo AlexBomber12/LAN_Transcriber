@@ -218,9 +218,13 @@ def test_control_center_embedded_inspector_and_export_zip_smoke(tmp_path: Path) 
                     wait_until="networkidle",
                     timeout=_remaining_timeout_ms(deadline),
                 )
+                page.get_by_role("button", name="Choose files").wait_for(
+                    state="visible",
+                    timeout=_remaining_timeout_ms(deadline),
+                )
                 page.wait_for_selector(
                     "#file-input",
-                    state="visible",
+                    state="attached",
                     timeout=_remaining_timeout_ms(deadline),
                 )
                 page.set_input_files("#file-input", str(wav_path))

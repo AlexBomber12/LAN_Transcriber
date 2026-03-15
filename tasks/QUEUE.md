@@ -560,6 +560,6 @@ Queue (in order)
 - Depends on: PR-UI-WORKFLOW-01 and PR-SPEAKER-REVIEW-01 and PR-CORRECTIONS-UX-01
 
 112) PR-UI-STITCH-CONTROL-CENTER-01: Implement the approved Google Stitch "Control Center" design as a compact daily workspace plus a separate full-page recording inspector
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-UI-STITCH-CONTROL-CENTER-01.md
 - Depends on: PR-UI-CONTROL-CENTER-RECOVERY-01

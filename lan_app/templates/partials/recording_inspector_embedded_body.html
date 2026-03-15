@@ -1,0 +1,511 @@
+{% if current_tab == 'overview' %}
+  {% set summary_data = summary or {} %}
+  {% set glossary_data = glossary or {} %}
+  <div class="embedded-panel-grid">
+    <section class="embedded-card">
+      <h3>Review snapshot</h3>
+      <div class="info-grid">
+        <span class="k">Status</span><span class="v">{{ rec.status }}</span>
+        <span class="k">Current stage</span><span class="v">{{ diagnostics.current_stage_label or 'Waiting' }}</span>
+        <span class="k">Primary reason</span><span class="v">{{ diagnostics.primary_reason_text or rec.review_reason_text_display or 'No blocker detected' }}</span>
+        <span class="k">Project</span><span class="v">{{ rec.project_name or (rec.project_id and ('#' ~ rec.project_id)) or 'Unassigned' }}</span>
+        <span class="k">Language</span><span class="v">{{ rec.language_auto or 'Unknown' }}</span>
+        <span class="k">Duration</span><span class="v">{{ rec.duration_display }}</span>
+      </div>
+    </section>
+    <section class="embedded-card">
+      <h3>Summary</h3>
+      {% if summary_data.summary_bullets %}
+      <ul>
+        {% for bullet in summary_data.summary_bullets[:4] %}
+        <li>{{ bullet }}</li>
+        {% endfor %}
+      </ul>
+      {% elif summary_data.summary_text %}
+      <p class="muted">{{ summary_data.summary_text[:420] }}{% if summary_data.summary_text|length > 420 %}...{% endif %}</p>
+      {% else %}
+      <p class="placeholder">No summary available yet.</p>
+      {% endif %}
+      <div class="inspector-note" style="margin-top:10px">
+        Topic: {{ summary_data.topic or 'No topic extracted yet.' }}
+      </div>
+    </section>
+  </div>
+  <section class="embedded-card">
+    {% set correction_form = glossary_data.workflow_form or {} %}
+    <h3>Save as correction</h3>
+    <p class="inspector-note" style="margin-bottom:10px">Capture a spelling or phrase here without leaving the review flow.</p>
+    <form method="post" action="{{ correction_form.action or '/glossary' }}">
+      {% for field in correction_form.hidden_fields or [] %}
+      <input type="hidden" name="{{ field.name }}" value="{{ field.value }}">
+      {% endfor %}
+      <div class="control-center-compact-grid">
+        <div class="filter-field">
+          <label for="workflow-correction-canonical-{{ rec.id }}">Correct term</label>
+          <input
+            id="workflow-correction-canonical-{{ rec.id }}"
+            type="text"
+            name="canonical_text"
+            maxlength="160"
+            required
+            placeholder="Example: Sander"
+          >
+        </div>
+        <div class="filter-field">
+          <label for="workflow-correction-aliases-{{ rec.id }}">Wrong variant</label>
+          <input
+            id="workflow-correction-aliases-{{ rec.id }}"
+            type="text"
+            name="aliases_text"
+            maxlength="240"
+            placeholder="What the transcript got wrong"
+          >
+        </div>
+      </div>
+      <div class="form-row" style="margin-top:10px">
+        <label for="workflow-correction-notes-{{ rec.id }}">Note</label>
+        <input
+          id="workflow-correction-notes-{{ rec.id }}"
+          type="text"
+          name="notes"
+          maxlength="240"
+          placeholder="Optional reminder"
+          style="flex:1 1 280px"
+        >
+      </div>
+      <div class="filters" style="margin-top:10px">
+        <button class="btn" type="submit">Save as correction</button>
+        <a href="{{ glossary_data.manage_href or '/glossary' }}" class="btn">Manage corrections</a>
+      </div>
+    </form>
+  </section>
+
+{% elif current_tab == 'speakers' %}
+  {% set sp = speakers or {} %}
+  {% set rows = sp.speaker_rows or [] %}
+  {% set profiles = sp.voice_profiles or [] %}
+  {% set notices = sp.review_notices or [] %}
+  {% set repair = sp.snippet_repair or {} %}
+
+  {% if sp.notice_message %}
+  <div class="page-notice">{{ sp.notice_message }}</div>
+  {% endif %}
+  {% if sp.error_message %}
+  <div class="page-notice">{{ sp.error_message }}</div>
+  {% endif %}
+  {% if repair.detail %}
+  <div class="page-notice">
+    <div>{{ repair.detail }}</div>
+    {% if repair.available %}
+    <form method="post" action="/ui/recordings/{{ rec.id }}/speakers/regenerate-snippets{{ recording_inspector.embedded_return_queries.speakers }}" style="margin-top:10px">
+      <button class="btn" type="submit">{{ repair.button_label }}</button>
+    </form>
+    {% endif %}
+  </div>
+  {% endif %}
+  {% if notices %}
+    {% for notice in notices %}
+    <div class="page-notice">{{ notice }}</div>
+    {% endfor %}
+  {% endif %}
+
+  <section class="embedded-card">
+    <h3>Safe speaker review</h3>
+    <p class="inspector-note">
+      Confirm match only when you want a canonical identity across recordings. Use <strong>Keep unknown</strong> to close review without naming the speaker, <strong>Local label only</strong> for this recording only, and <strong>Add trusted sample</strong> only for clean clips.
+    </p>
+  </section>
+
+  {% if rows %}
+  <div class="speaker-review-list">
+    {% for row in rows %}
+    <section class="speaker-card">
+      <div class="speaker-card-head">
+        <div>
+          <div class="speaker-card-title">
+            <div class="speaker-avatar">{{ row.speaker }}</div>
+            <div>
+              <h3>{{ row.mapping_title }}</h3>
+              <div class="speaker-card-meta">
+                <span>{{ row.turn_count }} turns</span>
+                <span>{{ '%.2f'|format(row.duration_sec or 0.0) }}s</span>
+                <span>{{ row.display_label }}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <span class="badge {{ row.state_badge_class }}">{{ row.state_badge_label }}</span>
+      </div>
+
+      <div class="embedded-panel-grid">
+        <section class="embedded-card">
+          <h3>Current decision</h3>
+          <p>{{ row.mapping_detail }}</p>
+          <p class="inspector-note" style="margin-top:8px">{{ row.state_detail }}</p>
+          {% if row.candidate_matches %}
+          <p class="inspector-note" style="margin-top:8px">
+            Suggestions:
+            {% for candidate in row.candidate_matches %}
+            {{ candidate.display_name }} ({{ '%.2f'|format(candidate.score) }}){% if not loop.last %}, {% endif %}
+            {% endfor %}
+          </p>
+          {% endif %}
+          <p class="inspector-note" style="margin-top:8px">{{ row.preview_text or 'No preview text available.' }}</p>
+        </section>
+
+        <section class="embedded-card">
+          <h3>Clean snippets</h3>
+          {% if row.snippet_ui_state %}
+          <p class="inspector-note" style="margin-bottom:10px;color:{{ row.snippet_ui_state.color }}">
+            <strong>{{ row.snippet_ui_state.label }}:</strong> {{ row.snippet_ui_state.detail }}
+          </p>
+          {% endif %}
+          {% if row.clean_snippets %}
+          <div class="speaker-audio-list">
+            {% for snippet in row.clean_snippets %}
+            <div class="speaker-audio-clip">
+              <div class="speaker-card-meta" style="margin-bottom:8px">
+                <span>{% if snippet.recommended %}Recommended{% else %}Clean{% endif %}</span>
+                <span>{{ snippet.clip_label }}</span>
+                <span>{{ snippet.purity_label }}</span>
+              </div>
+              <audio controls preload="none" style="width:100%">
+                <source src="{{ snippet.audio_url }}" type="audio/wav">
+              </audio>
+            </div>
+            {% endfor %}
+          </div>
+          {% else %}
+          <p class="placeholder">No clean snippets are available for this speaker yet.</p>
+          {% endif %}
+          {% if row.snippet_warnings %}
+            {% for warning in row.snippet_warnings %}
+            <p class="inspector-note" style="margin-top:8px;color:#92400e">{{ warning }}</p>
+            {% endfor %}
+          {% endif %}
+        </section>
+      </div>
+
+      <div class="speaker-actions-grid">
+        <section class="speaker-decision-card">
+          <h3>Confirm match</h3>
+          {% if profiles %}
+          <form method="post" action="/ui/recordings/{{ rec.id }}/speakers/assign{{ recording_inspector.embedded_return_queries.speakers }}">
+            <input type="hidden" name="diar_speaker_label" value="{{ row.speaker }}">
+            <div class="filter-field">
+              <label for="speaker-match-{{ rec.id }}-{{ row.speaker }}">Canonical speaker</label>
+              <select id="speaker-match-{{ rec.id }}-{{ row.speaker }}" name="voice_profile_id">
+                <option value="">Choose canonical speaker</option>
+                {% for vp in profiles %}
+                <option value="{{ vp.id }}" {% if row.global_voice_profile_id == vp.id %}selected{% endif %}>{{ vp.display_name }}</option>
+                {% endfor %}
+              </select>
+            </div>
+            <div class="filters" style="margin-top:10px">
+              <button class="btn" type="submit">Confirm match</button>
+            </div>
+          </form>
+          {% else %}
+          <p class="placeholder">No canonical speakers exist yet. Use the full-page inspector or Voices to create one first.</p>
+          {% endif %}
+        </section>
+
+        <section class="speaker-decision-card">
+          <h3>Keep unknown</h3>
+          <p class="inspector-note">Resolve review without forcing a name or polluting the global speaker bank.</p>
+          <form method="post" action="/ui/recordings/{{ rec.id }}/speakers/keep-unknown{{ recording_inspector.embedded_return_queries.speakers }}" style="margin-top:10px">
+            <input type="hidden" name="diar_speaker_label" value="{{ row.speaker }}">
+            <button class="btn" type="submit">Keep unknown</button>
+          </form>
+        </section>
+
+        <section class="speaker-decision-card">
+          <h3>Local label only</h3>
+          <p class="inspector-note">Name this speaker only inside this recording and its export.</p>
+          <form method="post" action="/ui/recordings/{{ rec.id }}/speakers/local-label{{ recording_inspector.embedded_return_queries.speakers }}" style="margin-top:10px">
+            <input type="hidden" name="diar_speaker_label" value="{{ row.speaker }}">
+            <div class="filter-field">
+              <label for="speaker-local-{{ rec.id }}-{{ row.speaker }}">Recording-only name</label>
+              <input
+                id="speaker-local-{{ rec.id }}-{{ row.speaker }}"
+                type="text"
+                name="local_display_name"
+                value="{{ row.local_display_name }}"
+                maxlength="120"
+                placeholder="Recording-only name"
+              >
+            </div>
+            <div class="filters" style="margin-top:10px">
+              <button class="btn" type="submit">Local label only</button>
+            </div>
+          </form>
+        </section>
+
+        <section class="speaker-decision-card">
+          <h3>Add trusted sample</h3>
+          <p class="inspector-note">Store a clean clip as training data without changing the review decision.</p>
+          {% if profiles %}
+          <form method="post" action="/ui/recordings/{{ rec.id }}/speakers/add-sample{{ recording_inspector.embedded_return_queries.speakers }}" style="margin-top:10px">
+            <input type="hidden" name="diar_speaker_label" value="{{ row.speaker }}">
+            <div class="filter-field">
+              <label for="speaker-sample-profile-{{ rec.id }}-{{ row.speaker }}">Canonical speaker</label>
+              <select id="speaker-sample-profile-{{ rec.id }}-{{ row.speaker }}" name="voice_profile_id">
+                <option value="">Choose canonical speaker</option>
+                {% for vp in profiles %}
+                <option value="{{ vp.id }}" {% if row.sample_voice_profile_id == vp.id %}selected{% endif %}>{{ vp.display_name }}</option>
+                {% endfor %}
+              </select>
+            </div>
+            <div class="filter-field" style="margin-top:10px">
+              <label for="speaker-sample-snippet-{{ rec.id }}-{{ row.speaker }}">Snippet</label>
+              <select id="speaker-sample-snippet-{{ rec.id }}-{{ row.speaker }}" name="snippet_path" {% if not row.clean_snippets %}disabled{% endif %}>
+                {% for snippet in row.clean_snippets %}
+                <option value="{{ snippet.relative_path }}" {% if snippet.recommended %}selected{% endif %}>{{ snippet.choice_label }}</option>
+                {% endfor %}
+              </select>
+            </div>
+            <div class="filters" style="margin-top:10px">
+              <button class="btn" type="submit" {% if not row.clean_snippets %}disabled{% endif %}>Add trusted sample</button>
+            </div>
+            {% if not row.clean_snippets and row.snippet_ui_state.add_sample_message %}
+            <p class="inspector-note" style="margin-top:8px;color:#92400e">{{ row.snippet_ui_state.add_sample_message }}</p>
+            {% elif row.no_clean_snippet_message %}
+            <p class="inspector-note" style="margin-top:8px;color:#92400e">{{ row.no_clean_snippet_message }}</p>
+            {% endif %}
+          </form>
+          {% else %}
+          <p class="placeholder">Create a canonical speaker first, then add trusted samples from clean clips.</p>
+          {% endif %}
+        </section>
+      </div>
+    </section>
+    {% endfor %}
+  </div>
+  {% else %}
+  <p class="placeholder">No speaker turns available yet. Run diarization first.</p>
+  {% endif %}
+
+{% elif current_tab == 'language' %}
+  {% set lang = language or {} %}
+  <div class="metric-card-grid">
+    <section class="metric-card">
+      <h3>Detected language</h3>
+      <p>{{ lang.detected_label or 'Unknown' }}</p>
+      <p class="inspector-note" style="margin-top:8px">Dominant: {{ lang.dominant_label or 'Unknown' }}</p>
+    </section>
+    <section class="metric-card">
+      <h3>Mixed-language meeting</h3>
+      <p>{{ 'Yes' if lang.is_mixed else 'No' }}</p>
+      <p class="inspector-note" style="margin-top:8px">Summary target: {{ lang.target_summary_language_label or 'Auto' }}</p>
+    </section>
+  </div>
+  <section class="embedded-card">
+    <h3>Overrides and reprocess</h3>
+    <form method="post" action="/ui/recordings/{{ rec.id }}/language/settings{{ recording_inspector.embedded_return_queries.language }}">
+      <div class="form-row">
+        <label for="target_summary_language">target_summary_language</label>
+        <select id="target_summary_language" name="target_summary_language">
+          <option value="" {% if not lang.target_summary_language %}selected{% endif %}>Auto (dominant language)</option>
+          {% for opt in lang.options or [] %}
+          <option value="{{ opt.code }}" {% if lang.target_summary_language == opt.code %}selected{% endif %}>{{ opt.label }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="form-row">
+        <label for="transcript_language_override">transcript_language_override</label>
+        <select id="transcript_language_override" name="transcript_language_override">
+          <option value="">None (auto detect)</option>
+          {% for opt in lang.options or [] %}
+          <option value="{{ opt.code }}" {% if lang.transcript_language_override == opt.code %}selected{% endif %}>{{ opt.label }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="filters" style="margin-top:10px">
+        <button type="submit" class="btn">Save overrides</button>
+        <button
+          type="submit"
+          class="btn"
+          formaction="/ui/recordings/{{ rec.id }}/language/resummarize{{ recording_inspector.embedded_return_queries.language }}"
+        >
+          Re-summarize
+        </button>
+      </div>
+    </form>
+  </section>
+
+{% elif current_tab == 'project' %}
+  {% set prj = project or {} %}
+  {% set project_items = prj.projects or [] %}
+  <div class="embedded-panel-grid">
+    <section class="embedded-card">
+      <h3>Assignment</h3>
+      <div class="info-grid">
+        <span class="k">Current</span><span class="v">{{ prj.selected_project_name or (prj.selected_project_id and ('#' ~ prj.selected_project_id)) or 'Unassigned' }}</span>
+        <span class="k">Suggested</span><span class="v">{{ prj.suggested_project_name or (prj.suggested_project_id and ('#' ~ prj.suggested_project_id)) or 'None' }}</span>
+        <span class="k">Confidence</span><span class="v">{{ '%.2f'|format(prj.confidence or 0.0) }}</span>
+      </div>
+    </section>
+    <section class="embedded-card">
+      <h3>Routing memory</h3>
+      <div class="info-grid">
+        <span class="k">Threshold</span><span class="v">{{ '%.2f'|format(prj.threshold or 0.0) }}</span>
+        <span class="k">Examples total</span><span class="v">{{ prj.training_examples_total or 0 }}</span>
+        <span class="k">Examples for project</span><span class="v">{{ prj.training_examples_selected_project or 0 }}</span>
+      </div>
+    </section>
+  </div>
+  <section class="embedded-card">
+    <h3>Save project choice</h3>
+    <form method="post" action="/ui/recordings/{{ rec.id }}/project{{ recording_inspector.embedded_return_queries.project }}">
+      <div class="form-row">
+        <label for="project_id">Project</label>
+        <select id="project_id" name="project_id" style="flex:1 1 280px">
+          <option value="">Unassigned</option>
+          {% for p in project_items %}
+          <option value="{{ p.id }}" {% if prj.selected_project_id == p.id %}selected{% endif %}>{{ p.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="form-row">
+        <label for="train_routing">Train routing</label>
+        <input id="train_routing" type="checkbox" name="train_routing" value="1" checked>
+        <span class="inspector-note">Store this manual choice as a routing training example.</span>
+      </div>
+      <div class="filters" style="margin-top:10px">
+        <button type="submit" class="btn">Save project</button>
+      </div>
+    </form>
+  </section>
+
+{% elif current_tab == 'calendar' %}
+  {% set cal = calendar or {} %}
+  <section class="embedded-card">
+    <h3>Calendar match</h3>
+    {% if cal.error_message %}
+    <div class="page-notice">{{ cal.error_message }}</div>
+    {% endif %}
+    {% if cal.selected %}
+    <div class="embedded-card" style="margin-top:10px">
+      <strong>{{ cal.selected.subject_display }}</strong>
+      <p class="inspector-note" style="margin-top:8px">{{ cal.selected.starts_at_display }} -> {{ cal.selected.ends_at_display }}</p>
+      <p class="inspector-note">Organizer: {{ cal.selected.organizer_display }}</p>
+      <p class="inspector-note">Attendees: {{ cal.selected.attendees_label }}</p>
+    </div>
+    {% else %}
+    <p class="placeholder">No calendar event is selected for this recording.</p>
+    {% endif %}
+    {% if cal.candidates %}
+    <table style="margin-top:12px">
+      <thead>
+        <tr>
+          <th>Event</th>
+          <th>When</th>
+          <th>Confidence</th>
+          <th>Action</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for candidate in cal.candidates %}
+        <tr>
+          <td style="white-space:normal;max-width:260px">{{ candidate.subject_display }}</td>
+          <td>{{ candidate.starts_at_display }}</td>
+          <td>{{ candidate.confidence_display }}</td>
+          <td>
+            {% if candidate.selected %}
+            <span class="recording-selected-flag">Selected</span>
+            {% else %}
+            <form method="post" action="/ui/recordings/{{ rec.id }}/calendar/select{{ recording_inspector.embedded_return_queries.calendar }}">
+              <input type="hidden" name="event_id" value="{{ candidate.event_id }}">
+              <button type="submit" class="btn">Choose</button>
+            </form>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+  </section>
+
+{% elif current_tab == 'metrics' %}
+  {% set summary_data = summary or {} %}
+  {% set metrics_data = metrics or {} %}
+  {% set meeting = metrics_data.meeting or {} %}
+  {% set participants = metrics_data.participants or [] %}
+  {% set questions = summary_data.questions or {} %}
+  {% set question_types = questions.types or {} %}
+  <div class="metric-card-grid">
+    <section class="metric-card">
+      <h3>Total speech</h3>
+      <p>{{ '%.1f'|format(meeting.total_speech_time_seconds or 0.0) }}s</p>
+    </section>
+    <section class="metric-card">
+      <h3>Decisions</h3>
+      <p>{{ meeting.decisions_count or 0 }}</p>
+    </section>
+    <section class="metric-card">
+      <h3>Action items</h3>
+      <p>{{ meeting.action_items_count or 0 }}</p>
+    </section>
+    <section class="metric-card">
+      <h3>Questions</h3>
+      <p>{{ questions.total_count or 0 }}</p>
+      <p class="inspector-note" style="margin-top:8px">Open: {{ question_types.open or 0 }} · Yes/No: {{ question_types.yes_no or 0 }}</p>
+    </section>
+  </div>
+  {% if participants %}
+  <section class="embedded-card">
+    <h3>Top participants</h3>
+    <table>
+      <thead>
+        <tr>
+          <th>Speaker</th>
+          <th>Airtime</th>
+          <th>Share</th>
+          <th>Turns</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in participants[:5] %}
+        <tr>
+          <td>{{ row.speaker }}</td>
+          <td>{{ '%.2f'|format(row.airtime_seconds or 0.0) }}</td>
+          <td>{{ '%.2f'|format((row.airtime_share or 0.0) * 100.0) }}%</td>
+          <td>{{ row.turns or 0 }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+  {% endif %}
+
+{% elif current_tab == 'log' %}
+  <section class="embedded-card">
+    <h3>Job log</h3>
+    <p class="inspector-note">Use the full-page inspector for deeper diagnostics and retry controls.</p>
+    {% if jobs %}
+    <table style="margin-top:12px">
+      <thead>
+        <tr>
+          <th>Job</th>
+          <th>Status</th>
+          <th>Attempt</th>
+          <th>Error</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for j in jobs %}
+        <tr>
+          <td title="{{ j.id }}">{{ j.id[:16] }}…</td>
+          <td><span class="badge s-{{ j.status }}">{{ j.status }}</span></td>
+          <td>{{ j.attempt }}</td>
+          <td title="{{ j.error or '' }}">{{ (j.error or '')[:60] }}{% if j.error and j.error|length > 60 %}...{% endif %}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="placeholder">No jobs for this recording.</p>
+    {% endif %}
+  </section>
+{% endif %}

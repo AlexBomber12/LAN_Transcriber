@@ -1,5 +1,5 @@
 <form
-  class="filters"
+  class="recordings-filter-strip filters"
   method="get"
   action="{{ recordings_filters.action }}"
   {% if recordings_filters.hx_get %}
@@ -11,27 +11,34 @@
   {% for hidden_field in recordings_filters.hidden_fields %}
   <input type="hidden" name="{{ hidden_field.name }}" value="{{ hidden_field.value }}">
   {% endfor %}
-  <label>Status:</label>
-  <select name="status">
-    <option value="">All</option>
-    {% for s in recordings_filters.statuses %}
-    <option value="{{ s }}" {% if recordings_filters.status_filter == s %}selected{% endif %}>{{ s }}</option>
-    {% endfor %}
-  </select>
-  <label>Search:</label>
-  <input
-    type="search"
-    name="q"
-    value="{{ recordings_filters.search_query }}"
-    placeholder="ID or filename"
-  >
-  <label>Limit:</label>
-  <select name="limit">
-    {% for n in recordings_filters.limit_options %}
-    <option value="{{ n }}" {% if recordings_filters.limit == n %}selected{% endif %}>{{ n }}</option>
-    {% endfor %}
-  </select>
+  <div class="filter-field">
+    <label for="recordings-status-filter">Status</label>
+    <select id="recordings-status-filter" name="status">
+      <option value="">All</option>
+      {% for s in recordings_filters.statuses %}
+      <option value="{{ s }}" {% if recordings_filters.status_filter == s %}selected{% endif %}>{{ s }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div class="filter-field filter-field-grow">
+    <label for="recordings-search-filter">Search</label>
+    <input
+      id="recordings-search-filter"
+      type="search"
+      name="q"
+      value="{{ recordings_filters.search_query }}"
+      placeholder="ID or filename"
+    >
+  </div>
+  <div class="filter-field">
+    <label for="recordings-limit-filter">Rows</label>
+    <select id="recordings-limit-filter" name="limit">
+      {% for n in recordings_filters.limit_options %}
+      <option value="{{ n }}" {% if recordings_filters.limit == n %}selected{% endif %}>{{ n }}</option>
+      {% endfor %}
+    </select>
+  </div>
   <input type="hidden" name="offset" value="{{ recordings_filters.offset_reset }}">
-  <button class="btn" type="submit">Apply</button>
-  <a href="{{ recordings_filters.reset_href }}" class="btn" style="text-decoration:none">Reset</a>
+  <button class="btn" type="submit">Apply filters</button>
+  <a href="{{ recordings_filters.reset_href }}" class="btn">Reset</a>
 </form>

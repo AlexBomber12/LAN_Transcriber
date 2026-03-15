@@ -494,7 +494,8 @@ def test_recordings_panel_context_clamps_offset_to_last_available_page(
         recovery_warning="Recovered from a stuck job.",
     )
     assert selected_shell_warning["notices"] == [{"message": "Recovered from a stuck job."}]
-    assert selected_shell_warning["action_bar"]["back_href"] == "/recordings"
+    assert selected_shell_warning["action_bar"]["back_href"] == "/"
+    assert selected_shell_warning["action_bar"]["back_label"] == "Back to Control Center"
     selected_shell_notice = ui_routes._selected_recording_summary_shell_context(  # noqa: SLF001
         {
             "id": "rec-helper-2",
@@ -513,9 +514,11 @@ def test_recordings_panel_context_clamps_offset_to_last_available_page(
 
     empty_shell = ui_routes._empty_inspector_shell_context()  # noqa: SLF001
     assert empty_shell["title"] == "Select a recording"
+    assert "compact review pane" in empty_shell["message"]
 
     control_center_empty = ui_routes._control_center_empty_inspector_context()  # noqa: SLF001
     assert control_center_empty["title"] == "Select a recording"
+    assert "compact inspector" in control_center_empty["message"]
 
     monkeypatch.setattr(
         ui_routes,

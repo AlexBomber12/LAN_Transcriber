@@ -1,25 +1,31 @@
 {% extends "base.html" %}
 {% block title %}Control Center – LAN Transcriber{% endblock %}
 {% block content %}
-<h1>Control Center</h1>
 <div class="control-center-shell">
-  <section id="control-center-top-strip" class="control-center-pane control-center-top-strip">
-    <div class="control-center-top-state">
-      <span class="control-center-state-pill">Status: {{ control_center_state.status or "All" }}</span>
-      <span class="control-center-state-pill">Search: {{ control_center_state.q or "None" }}</span>
-      <span class="control-center-state-pill">Tab: {{ control_center_state.tab_label }}</span>
-      <span class="control-center-state-pill">Selected: {{ control_center_state.selected or "None" }}</span>
+  <section id="control-center-top-strip" class="control-center-hero">
+    <div class="control-center-hero-copy">
+      <p class="eyebrow">Daily Workspace</p>
+      <h1>Control Center</h1>
+      <p>Upload audio, watch the queue, select a recording, and review it on the right without leaving the day-to-day workflow.</p>
     </div>
-    <div class="filters" style="margin:0">
+    <div class="control-center-toolbar">
+      <div class="control-center-top-state">
+        <span class="control-center-state-pill">Status: {{ control_center_state.status or "All recordings" }}</span>
+        <span class="control-center-state-pill">Search: {{ control_center_state.q or "No filter" }}</span>
+        <span class="control-center-state-pill">Inspector: {{ control_center_state.tab_label }}</span>
+        <span class="control-center-state-pill">Selected: {{ control_center_state.selected or "None" }}</span>
+      </div>
+      <div class="control-center-toolbar-actions">
       {% if control_center_state.selected %}
-      <a href="{{ control_center_state.clear_selection_href }}" class="btn" style="text-decoration:none">Clear selection</a>
+        <a href="{{ control_center_state.clear_selection_href }}" class="btn">Clear selection</a>
       {% endif %}
       {% if control_center_state.status or control_center_state.q %}
-      <a href="{{ control_center_state.reset_href }}" class="btn" style="text-decoration:none">Reset filters</a>
+        <a href="{{ control_center_state.reset_href }}" class="btn">Reset filters</a>
       {% endif %}
       {% if control_center_work_pane.workflow_links.selected_detail_href %}
-      <a href="{{ control_center_work_pane.workflow_links.selected_detail_href }}" class="btn" style="text-decoration:none">Open full page</a>
+        <a href="{{ control_center_work_pane.workflow_links.selected_detail_href }}" class="btn">Open full-page inspector</a>
       {% endif %}
+      </div>
     </div>
   </section>
 
