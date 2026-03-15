@@ -570,7 +570,7 @@ Queue (in order)
 - Depends on: PR-UI-STITCH-CONTROL-CENTER-01
 
 114) PR-OPS-SYSTEM-BAR-01: Add real DGX Spark and GPU runtime status to the persistent bottom system bar
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-OPS-SYSTEM-BAR-01.md
 - Depends on: PR-UI-STITCH-CONTROL-CENTER-02 and PR-GPU-SCHEDULER-01 and PR-DIARIZATION-GPU-01 and PR-FIX-SENTIMENT-GPU-01
 

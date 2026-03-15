@@ -70,6 +70,44 @@ from lan_app.constants import (
 )
 
 
+def _stub_runtime_status() -> dict[str, object]:
+    return {
+        "active_jobs_item": {
+            "label": "Active jobs",
+            "value": "Idle",
+            "detail": "worker 'test-worker' heartbeat 5s ago",
+            "tone": "healthy",
+        },
+        "secondary_items": [
+            {
+                "label": "DGX / Spark",
+                "value": "Online",
+                "detail": "dgx.local responded to /v1/models",
+                "tone": "healthy",
+            },
+            {
+                "label": "GPU runtime",
+                "value": "GPU ready",
+                "detail": "1 visible · torch CUDA 12.6",
+                "tone": "healthy",
+            },
+            {
+                "label": "Inference mode",
+                "value": "GPU path",
+                "detail": "ASR cuda · Diarization cuda · sequential",
+                "tone": "healthy",
+            },
+            {
+                "label": "Inference target",
+                "value": "gpt-oss:120b",
+                "detail": "dgx.local · advertised by Spark",
+                "tone": "healthy",
+            },
+        ],
+        "note": "test runtime note",
+    }
+
+
 def _cfg(tmp_path: Path) -> AppSettings:
     cfg = AppSettings(
         data_root=tmp_path,
@@ -85,6 +123,11 @@ def client(tmp_path: Path, monkeypatch):
     cfg = _cfg(tmp_path)
     monkeypatch.setattr(api, "_settings", cfg)
     monkeypatch.setattr(ui_routes, "_settings", cfg)
+    monkeypatch.setattr(
+        ui_routes,
+        "collect_control_center_runtime_status",
+        lambda _settings: _stub_runtime_status(),
+    )
     init_db(cfg)
     return TestClient(api.app, follow_redirects=True)
 
@@ -94,6 +137,11 @@ def seeded_client(tmp_path: Path, monkeypatch):
     cfg = _cfg(tmp_path)
     monkeypatch.setattr(api, "_settings", cfg)
     monkeypatch.setattr(ui_routes, "_settings", cfg)
+    monkeypatch.setattr(
+        ui_routes,
+        "collect_control_center_runtime_status",
+        lambda _settings: _stub_runtime_status(),
+    )
     init_db(cfg)
     create_recording(
         "rec-ui-1",
@@ -328,6 +376,11 @@ def test_dashboard_with_data(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
     monkeypatch.setattr(api, "_settings", cfg)
     monkeypatch.setattr(ui_routes, "_settings", cfg)
+    monkeypatch.setattr(
+        ui_routes,
+        "collect_control_center_runtime_status",
+        lambda _settings: _stub_runtime_status(),
+    )
     init_db(cfg)
     create_recording("rec-dash-1", source="drive", source_filename="a.mp3", settings=cfg)
     c = TestClient(api.app, follow_redirects=True)
@@ -335,7 +388,8 @@ def test_dashboard_with_data(tmp_path, monkeypatch):
     assert r.status_code == 200
     assert "Recording worklist" in r.text
     assert "Drop audio files here or use Choose files." in r.text
-    assert "Telemetry pending" in r.text
+    assert "GPU ready" in r.text
+    assert "gpt-oss:120b" in r.text
     assert "Daily workflow" not in r.text
     assert "Fallback and Admin Pages" not in r.text
     assert "rec-dash-1" in r.text or "a.mp3" in r.text
@@ -406,10 +460,64 @@ def test_control_center_pane_fragment_endpoints(seeded_client):
     )
     assert system_bar.status_code == 200
     assert 'id="control-center-system-bar"' in system_bar.text
-    assert 'hx-trigger="refresh-control-center-system-bar from:body"' in system_bar.text
+    assert (
+        'hx-trigger="every 15s, refresh-control-center-system-bar from:body"'
+        in system_bar.text
+    )
     assert "Queue view" in system_bar.text
-    assert "Compact inspector" in system_bar.text
+    assert "Active jobs" in system_bar.text
+    assert "DGX / Spark" in system_bar.text
+    assert "GPU path" in system_bar.text
     assert "<html" not in system_bar.text
+
+
+def test_control_center_system_bar_renders_degraded_cpu_fallback(seeded_client, monkeypatch):
+    monkeypatch.setattr(
+        ui_routes,
+        "collect_control_center_runtime_status",
+        lambda _settings: {
+            "active_jobs_item": {
+                "label": "Active jobs",
+                "value": "1 active · 0 queued",
+                "detail": "meeting.mp3 · Speaker Turns",
+                "tone": "busy",
+            },
+            "secondary_items": [
+                {
+                    "label": "DGX / Spark",
+                    "value": "Online",
+                    "detail": "dgx.local responded to /v1/models",
+                    "tone": "healthy",
+                },
+                {
+                    "label": "GPU runtime",
+                    "value": "GPU unavailable",
+                    "detail": "visible=default · torch CUDA none",
+                    "tone": "offline",
+                },
+                {
+                    "label": "Inference mode",
+                    "value": "CPU fallback",
+                    "detail": "meeting.mp3 · Speaker Turns · fallback",
+                    "tone": "offline",
+                },
+                {
+                    "label": "Inference target",
+                    "value": "gpt-oss:120b",
+                    "detail": "dgx.local · advertised by Spark",
+                    "tone": "healthy",
+                },
+            ],
+            "note": "test runtime note",
+        },
+    )
+
+    system_bar = seeded_client.get("/ui/control-center/system-bar")
+
+    assert system_bar.status_code == 200
+    assert "CPU fallback" in system_bar.text
+    assert "GPU unavailable" in system_bar.text
+    assert "control-center-system-item--offline" in system_bar.text
 
     work_pane = seeded_client.get(
         "/ui/control-center/work-pane?selected=rec-ui-1&status=Ready&q=meeting&tab=speakers"

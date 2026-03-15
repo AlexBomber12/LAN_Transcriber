@@ -1,102 +1,1566 @@
 diff --git a/lan_app/templates/base.html b/lan_app/templates/base.html
-index 53238f1..1279427 100644
+index 1279427..840fedd 100644
 --- a/lan_app/templates/base.html
 +++ b/lan_app/templates/base.html
-@@ -1068,6 +1068,44 @@ function syncControlCenterShellRefreshUrlsFromPanel() {
-   }
+@@ -786,9 +786,22 @@ textarea:focus{
+   border:1px solid rgba(148,163,184,.18);
+   background:rgba(255,255,255,.04);
  }
- 
-+function syncControlCenterShellRefreshUrlsFromStateParams(stateParams) {
-+  if (!stateParams) {
-+    return;
-+  }
-+  var normalizedParams = new URLSearchParams();
-+  normalizedParams.set('selected', stateParams.get('selected') || '');
-+  normalizedParams.set('status', stateParams.get('status') || '');
-+  normalizedParams.set('q', stateParams.get('q') || '');
-+  normalizedParams.set('tab', stateParams.get('tab') || 'overview');
-+  normalizedParams.set('limit', stateParams.get('limit') || '25');
-+  normalizedParams.set('offset', stateParams.get('offset') || '0');
-+  var workspaceHeaderUrl = '/ui/control-center/workspace-header?' + normalizedParams.toString();
-+  var systemBarUrl = '/ui/control-center/system-bar?' + normalizedParams.toString();
-+  var panel = document.getElementById('control-center-recordings-panel');
-+  var header = document.getElementById('control-center-workspace-header');
-+  var systemBar = document.getElementById('control-center-system-bar');
-+  if (panel) {
-+    panel.setAttribute('data-workspace-header-url', workspaceHeaderUrl);
-+    panel.setAttribute('data-system-bar-url', systemBarUrl);
-+  }
-+  if (header) {
-+    header.setAttribute('hx-get', workspaceHeaderUrl);
-+  }
-+  if (systemBar) {
-+    systemBar.setAttribute('hx-get', systemBarUrl);
-+  }
+-.control-center-system-item.placeholder{
+-  background:rgba(36,99,235,.08);
+-  border-color:rgba(96,165,250,.28);
++.control-center-system-item--neutral{
++  background:rgba(255,255,255,.04);
++  border-color:rgba(148,163,184,.18);
 +}
-+
-+function syncControlCenterShellRefreshUrlsFromHref(href) {
-+  if (!href) {
-+    syncControlCenterShellRefreshUrlsFromStateParams(new URLSearchParams(window.location.search || ''));
-+    return;
-+  }
-+  syncControlCenterShellRefreshUrlsFromStateParams(
-+    new URL(href, window.location.origin).searchParams
-+  );
++.control-center-system-item--healthy{
++  background:rgba(22,101,52,.18);
++  border-color:rgba(134,239,172,.28);
 +}
-+
- function refreshControlCenterShellFromPanel() {
-   syncControlCenterShellRefreshUrlsFromPanel();
-   if (!window.htmx || !document.body) {
-@@ -1077,14 +1115,32 @@ function refreshControlCenterShellFromPanel() {
-   htmx.trigger(document.body, 'refresh-control-center-system-bar');
++.control-center-system-item--busy,
++.control-center-system-item--degraded{
++  background:rgba(180,83,9,.16);
++  border-color:rgba(251,191,36,.3);
++}
++.control-center-system-item--offline{
++  background:rgba(127,29,29,.24);
++  border-color:rgba(248,113,113,.32);
  }
+ .control-center-system-label{
+   font-size:10px;
+@@ -797,16 +810,28 @@ textarea:focus{
+   text-transform:uppercase;
+   color:#93aac8;
+ }
++.control-center-system-item--healthy .control-center-system-label{color:#b9ebc8}
++.control-center-system-item--busy .control-center-system-label,
++.control-center-system-item--degraded .control-center-system-label{color:#f7d18b}
++.control-center-system-item--offline .control-center-system-label{color:#f6b0b0}
+ .control-center-system-value{
+   font-size:14px;
+   font-weight:700;
+   color:#fff;
+   overflow-wrap:anywhere;
+ }
++.control-center-system-item--healthy .control-center-system-value{color:#f0fdf4}
++.control-center-system-item--busy .control-center-system-value,
++.control-center-system-item--degraded .control-center-system-value{color:#fff7d6}
++.control-center-system-item--offline .control-center-system-value{color:#fee2e2}
+ .control-center-system-detail{
+   font-size:11px;
+   color:#b7c6db;
+ }
++.control-center-system-item--healthy .control-center-system-detail{color:#d5f3de}
++.control-center-system-item--busy .control-center-system-detail,
++.control-center-system-item--degraded .control-center-system-detail{color:#f8dfae}
++.control-center-system-item--offline .control-center-system-detail{color:#fecaca}
+ .control-center-system-note{
+   margin:0;
+   font-size:11px;
+diff --git a/lan_app/templates/partials/control_center/system_bar.html b/lan_app/templates/partials/control_center/system_bar.html
+index 718e697..7e6cd28 100644
+--- a/lan_app/templates/partials/control_center/system_bar.html
++++ b/lan_app/templates/partials/control_center/system_bar.html
+@@ -2,13 +2,13 @@
+   id="control-center-system-bar"
+   class="control-center-system-bar"
+   hx-get="{{ control_center_state.system_bar_url }}"
+-  hx-trigger="refresh-control-center-system-bar from:body"
++  hx-trigger="every 15s, refresh-control-center-system-bar from:body"
+   hx-target="this"
+   hx-swap="outerHTML"
+ >
+   <div class="control-center-system-group">
+     {% for item in control_center_system_bar.primary_items %}
+-    <div class="control-center-system-item">
++    <div class="control-center-system-item control-center-system-item--{{ item.tone or 'neutral' }}">
+       <span class="control-center-system-label">{{ item.label }}</span>
+       <strong class="control-center-system-value">{{ item.value }}</strong>
+       <span class="control-center-system-detail">{{ item.detail }}</span>
+@@ -18,7 +18,7 @@
  
--if (document.body) {
-+function refreshControlCenterShellFromHref(href) {
-+  syncControlCenterShellRefreshUrlsFromHref(href);
-+  if (!window.htmx || !document.body) {
-+    return;
-+  }
-+  htmx.trigger(document.body, 'refresh-control-center-header');
-+  htmx.trigger(document.body, 'refresh-control-center-system-bar');
-+}
-+
-+if (document.body && !window.__controlCenterShellAfterSwapBound) {
-   document.body.addEventListener('htmx:afterSwap', function (event) {
-     var target = event && event.detail ? event.detail.target : null;
--    if (!target || target.id !== 'control-center-recordings-panel') {
-+    if (!target) {
-+      return;
-+    }
-+    if (target.id === 'control-center-recordings-panel') {
-+      refreshControlCenterShellFromPanel();
-+      return;
-+    }
-+    if (target.id !== 'control-center-inspector-pane') {
-       return;
+   <div class="control-center-system-group control-center-system-group-secondary">
+     {% for item in control_center_system_bar.secondary_items %}
+-    <div class="control-center-system-item{% if item.placeholder %} placeholder{% endif %}">
++    <div class="control-center-system-item control-center-system-item--{{ item.tone or 'neutral' }}">
+       <span class="control-center-system-label">{{ item.label }}</span>
+       <strong class="control-center-system-value">{{ item.value }}</strong>
+       <span class="control-center-system-detail">{{ item.detail }}</span>
+diff --git a/lan_app/ui_routes.py b/lan_app/ui_routes.py
+index a2f5c7a..6337bf2 100644
+--- a/lan_app/ui_routes.py
++++ b/lan_app/ui_routes.py
+@@ -122,6 +122,7 @@ from .snippet_repair import (
+     assess_snippet_repair,
+     repair_recording_snippets,
+ )
++from .system_status import collect_control_center_runtime_status
+ from lan_transcriber.artifacts import atomic_write_json
+ from lan_transcriber.llm_client import LLMClient
+ from lan_transcriber.pipeline import Settings as PipelineSettings
+@@ -2823,47 +2824,19 @@ def _control_center_system_bar_context(
+     queue_detail = state["status"] or "All statuses"
+     if state["q"]:
+         queue_detail = f"{queue_detail} · search: {state['q']}"
++    runtime_status = collect_control_center_runtime_status(settings)
+     return {
+         "primary_items": [
+             {
+                 "label": "Queue view",
+                 "value": f"{recordings_panel['total']} visible",
+                 "detail": queue_detail,
++                "tone": "neutral",
+             },
+-            {
+-                "label": "Compact inspector",
+-                "value": state["selected"] or "Idle",
+-                "detail": (
+-                    f"{state['tab_label']} tab"
+-                    if state["selected"]
+-                    else "Select a recording to review"
+-                ),
+-            },
++            runtime_status["active_jobs_item"],
+         ],
+-        "secondary_items": [
+-            {
+-                "label": "DGX / Spark",
+-                "value": "Telemetry pending",
+-                "detail": "Safe placeholder until runtime wiring lands",
+-                "placeholder": True,
+-            },
+-            {
+-                "label": "GPU runtime",
+-                "value": "Telemetry pending",
+-                "detail": "Safe placeholder until runtime wiring lands",
+-                "placeholder": True,
+-            },
+-            {
+-                "label": "Data root",
+-                "value": str(settings.data_root),
+-                "detail": "Persistent runtime state",
+-                "placeholder": False,
+-            },
+-        ],
+-        "note": (
+-            "System bar foundation only. Live DGX, Spark, and GPU telemetry is "
+-            "intentionally deferred to the next PR."
+-        ),
++        "secondary_items": runtime_status["secondary_items"],
++        "note": runtime_status["note"],
      }
--    refreshControlCenterShellFromPanel();
-+    var activeTab = target.querySelector('.tab.active');
-+    refreshControlCenterShellFromHref(activeTab ? activeTab.getAttribute('href') : '');
-   });
-+  window.__controlCenterShellAfterSwapBound = true;
- }
  
- function refreshControlCenterPanels(options) {
+ 
+diff --git a/tasks/QUEUE.md b/tasks/QUEUE.md
+index 93714ea..03a2f2e 100644
+--- a/tasks/QUEUE.md
++++ b/tasks/QUEUE.md
+@@ -570,7 +570,7 @@ Queue (in order)
+ - Depends on: PR-UI-STITCH-CONTROL-CENTER-01
+ 
+ 114) PR-OPS-SYSTEM-BAR-01: Add real DGX Spark and GPU runtime status to the persistent bottom system bar
+-- Status: TODO
++- Status: DONE
+ - Tasks file: tasks/PR-OPS-SYSTEM-BAR-01.md
+ - Depends on: PR-UI-STITCH-CONTROL-CENTER-02 and PR-GPU-SCHEDULER-01 and PR-DIARIZATION-GPU-01 and PR-FIX-SENTIMENT-GPU-01
+ 
+diff --git a/tests/test_cov_lan_app_ui_routes.py b/tests/test_cov_lan_app_ui_routes.py
+index b41fc76..e53aa75 100644
+--- a/tests/test_cov_lan_app_ui_routes.py
++++ b/tests/test_cov_lan_app_ui_routes.py
+@@ -36,6 +36,44 @@ from lan_app.db import (
+ from lan_app.jobs import DuplicateRecordingJobError
+ 
+ 
++def _stub_runtime_status() -> dict[str, object]:
++    return {
++        "active_jobs_item": {
++            "label": "Active jobs",
++            "value": "Idle",
++            "detail": "worker 'test-worker' heartbeat 5s ago",
++            "tone": "healthy",
++        },
++        "secondary_items": [
++            {
++                "label": "DGX / Spark",
++                "value": "Online",
++                "detail": "dgx.local responded to /v1/models",
++                "tone": "healthy",
++            },
++            {
++                "label": "GPU runtime",
++                "value": "GPU ready",
++                "detail": "1 visible · torch CUDA 12.6",
++                "tone": "healthy",
++            },
++            {
++                "label": "Inference mode",
++                "value": "GPU path",
++                "detail": "ASR cuda · Diarization cuda · sequential",
++                "tone": "healthy",
++            },
++            {
++                "label": "Inference target",
++                "value": "gpt-oss:120b",
++                "detail": "dgx.local · advertised by Spark",
++                "tone": "healthy",
++            },
++        ],
++        "note": "test runtime note",
++    }
++
++
+ def _cfg(tmp_path: Path) -> AppSettings:
+     cfg = AppSettings(
+         data_root=tmp_path,
+@@ -51,6 +89,11 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[AppSettings
+     cfg = _cfg(tmp_path)
+     monkeypatch.setattr(api, "_settings", cfg)
+     monkeypatch.setattr(ui_routes, "_settings", cfg)
++    monkeypatch.setattr(
++        ui_routes,
++        "collect_control_center_runtime_status",
++        lambda _settings: _stub_runtime_status(),
++    )
+     init_db(cfg)
+     return cfg, TestClient(api.app, follow_redirects=False)
+ 
+@@ -104,6 +147,11 @@ def test_control_center_helper_contexts_cover_fragment_builders(
+     monkeypatch: pytest.MonkeyPatch,
+ ) -> None:
+     cfg = _cfg(tmp_path)
++    monkeypatch.setattr(
++        ui_routes,
++        "collect_control_center_runtime_status",
++        lambda _settings: _stub_runtime_status(),
++    )
+     monkeypatch.setattr(ui_routes, "_status_counts", lambda settings: {"Ready": 1})
+     monkeypatch.setattr(ui_routes, "_job_counts", lambda settings: {"queued": 2})
+     monkeypatch.setattr(
+@@ -397,9 +445,10 @@ def test_control_center_helper_contexts_cover_fragment_builders(
+     )
+     assert system_bar["primary_items"][0]["value"] == "3 visible"
+     assert system_bar["primary_items"][0]["detail"] == "Ready · search: helper"
+-    assert system_bar["secondary_items"][0]["placeholder"] is True
+-    assert str(cfg.data_root) == system_bar["secondary_items"][2]["value"]
+-    assert "next PR" in system_bar["note"]
++    assert system_bar["primary_items"][1]["label"] == "Active jobs"
++    assert system_bar["secondary_items"][0]["value"] == "Online"
++    assert system_bar["secondary_items"][1]["value"] == "GPU ready"
++    assert system_bar["note"] == "test runtime note"
+ 
+     header = ui_routes._control_center_workspace_header_context(  # noqa: SLF001
+         cfg,
 diff --git a/tests/test_ui_routes.py b/tests/test_ui_routes.py
-index 2a9ea4e..b6e33d5 100644
+index b6e33d5..b152712 100644
 --- a/tests/test_ui_routes.py
 +++ b/tests/test_ui_routes.py
-@@ -370,8 +370,12 @@ def test_control_center_query_state_and_direct_routes(seeded_client):
-     assert "refresh-control-center-header" in r.text
-     assert "refresh-control-center-system-bar" in r.text
-     assert "syncControlCenterShellRefreshUrlsFromPanel" in r.text
-+    assert "syncControlCenterShellRefreshUrlsFromHref" in r.text
-     assert "refreshControlCenterShellFromPanel" in r.text
-+    assert "refreshControlCenterShellFromHref" in r.text
-     assert "htmx:afterSwap" in r.text
-+    assert "window.__controlCenterShellAfterSwapBound" in r.text
-+    assert "target.id !== 'control-center-inspector-pane'" in r.text
-     assert "htmx.trigger(document.body, 'refresh-control-center-inspector');" in r.text
-     assert "params.delete('selected');" in r.text
+@@ -70,6 +70,44 @@ from lan_app.constants import (
+ )
  
+ 
++def _stub_runtime_status() -> dict[str, object]:
++    return {
++        "active_jobs_item": {
++            "label": "Active jobs",
++            "value": "Idle",
++            "detail": "worker 'test-worker' heartbeat 5s ago",
++            "tone": "healthy",
++        },
++        "secondary_items": [
++            {
++                "label": "DGX / Spark",
++                "value": "Online",
++                "detail": "dgx.local responded to /v1/models",
++                "tone": "healthy",
++            },
++            {
++                "label": "GPU runtime",
++                "value": "GPU ready",
++                "detail": "1 visible · torch CUDA 12.6",
++                "tone": "healthy",
++            },
++            {
++                "label": "Inference mode",
++                "value": "GPU path",
++                "detail": "ASR cuda · Diarization cuda · sequential",
++                "tone": "healthy",
++            },
++            {
++                "label": "Inference target",
++                "value": "gpt-oss:120b",
++                "detail": "dgx.local · advertised by Spark",
++                "tone": "healthy",
++            },
++        ],
++        "note": "test runtime note",
++    }
++
++
+ def _cfg(tmp_path: Path) -> AppSettings:
+     cfg = AppSettings(
+         data_root=tmp_path,
+@@ -85,6 +123,11 @@ def client(tmp_path: Path, monkeypatch):
+     cfg = _cfg(tmp_path)
+     monkeypatch.setattr(api, "_settings", cfg)
+     monkeypatch.setattr(ui_routes, "_settings", cfg)
++    monkeypatch.setattr(
++        ui_routes,
++        "collect_control_center_runtime_status",
++        lambda _settings: _stub_runtime_status(),
++    )
+     init_db(cfg)
+     return TestClient(api.app, follow_redirects=True)
+ 
+@@ -94,6 +137,11 @@ def seeded_client(tmp_path: Path, monkeypatch):
+     cfg = _cfg(tmp_path)
+     monkeypatch.setattr(api, "_settings", cfg)
+     monkeypatch.setattr(ui_routes, "_settings", cfg)
++    monkeypatch.setattr(
++        ui_routes,
++        "collect_control_center_runtime_status",
++        lambda _settings: _stub_runtime_status(),
++    )
+     init_db(cfg)
+     create_recording(
+         "rec-ui-1",
+@@ -328,6 +376,11 @@ def test_dashboard_with_data(tmp_path, monkeypatch):
+     cfg = _cfg(tmp_path)
+     monkeypatch.setattr(api, "_settings", cfg)
+     monkeypatch.setattr(ui_routes, "_settings", cfg)
++    monkeypatch.setattr(
++        ui_routes,
++        "collect_control_center_runtime_status",
++        lambda _settings: _stub_runtime_status(),
++    )
+     init_db(cfg)
+     create_recording("rec-dash-1", source="drive", source_filename="a.mp3", settings=cfg)
+     c = TestClient(api.app, follow_redirects=True)
+@@ -335,7 +388,8 @@ def test_dashboard_with_data(tmp_path, monkeypatch):
+     assert r.status_code == 200
+     assert "Recording worklist" in r.text
+     assert "Drop audio files here or use Choose files." in r.text
+-    assert "Telemetry pending" in r.text
++    assert "GPU ready" in r.text
++    assert "gpt-oss:120b" in r.text
+     assert "Daily workflow" not in r.text
+     assert "Fallback and Admin Pages" not in r.text
+     assert "rec-dash-1" in r.text or "a.mp3" in r.text
+@@ -406,11 +460,65 @@ def test_control_center_pane_fragment_endpoints(seeded_client):
+     )
+     assert system_bar.status_code == 200
+     assert 'id="control-center-system-bar"' in system_bar.text
+-    assert 'hx-trigger="refresh-control-center-system-bar from:body"' in system_bar.text
++    assert (
++        'hx-trigger="every 15s, refresh-control-center-system-bar from:body"'
++        in system_bar.text
++    )
+     assert "Queue view" in system_bar.text
+-    assert "Compact inspector" in system_bar.text
++    assert "Active jobs" in system_bar.text
++    assert "DGX / Spark" in system_bar.text
++    assert "GPU path" in system_bar.text
+     assert "<html" not in system_bar.text
+ 
++
++def test_control_center_system_bar_renders_degraded_cpu_fallback(seeded_client, monkeypatch):
++    monkeypatch.setattr(
++        ui_routes,
++        "collect_control_center_runtime_status",
++        lambda _settings: {
++            "active_jobs_item": {
++                "label": "Active jobs",
++                "value": "1 active · 0 queued",
++                "detail": "meeting.mp3 · Speaker Turns",
++                "tone": "busy",
++            },
++            "secondary_items": [
++                {
++                    "label": "DGX / Spark",
++                    "value": "Online",
++                    "detail": "dgx.local responded to /v1/models",
++                    "tone": "healthy",
++                },
++                {
++                    "label": "GPU runtime",
++                    "value": "GPU unavailable",
++                    "detail": "visible=default · torch CUDA none",
++                    "tone": "offline",
++                },
++                {
++                    "label": "Inference mode",
++                    "value": "CPU fallback",
++                    "detail": "meeting.mp3 · Speaker Turns · fallback",
++                    "tone": "offline",
++                },
++                {
++                    "label": "Inference target",
++                    "value": "gpt-oss:120b",
++                    "detail": "dgx.local · advertised by Spark",
++                    "tone": "healthy",
++                },
++            ],
++            "note": "test runtime note",
++        },
++    )
++
++    system_bar = seeded_client.get("/ui/control-center/system-bar")
++
++    assert system_bar.status_code == 200
++    assert "CPU fallback" in system_bar.text
++    assert "GPU unavailable" in system_bar.text
++    assert "control-center-system-item--offline" in system_bar.text
++
+     work_pane = seeded_client.get(
+         "/ui/control-center/work-pane?selected=rec-ui-1&status=Ready&q=meeting&tab=speakers"
+     )
+diff --git a/lan_app/system_status.py b/lan_app/system_status.py
+new file mode 100644
+index 0000000..b898aa2
+--- /dev/null
++++ b/lan_app/system_status.py
+@@ -0,0 +1,493 @@
++from __future__ import annotations
++
++import json
++import os
++from pathlib import Path
++from typing import Any
++
++import httpx
++
++from lan_transcriber.gpu_policy import (
++    collect_cuda_runtime_facts,
++    is_gpu_device,
++    resolve_scheduler_decision,
++)
++
++from .config import AppSettings
++from .constants import JOB_STATUS_QUEUED, JOB_STATUS_STARTED
++from .db import get_recording, list_jobs
++from .healthchecks import check_redis_health, check_worker_health
++
++_SPARK_PROBE_TIMEOUT = httpx.Timeout(2.0, connect=0.5)
++
++
++def _stage_label(value: object) -> str:
++    text = str(value or "").strip().replace("-", "_")
++    if not text:
++        return "Unknown"
++    labels: list[str] = []
++    for part in [chunk for chunk in text.split("_") if chunk]:
++        lowered = part.lower()
++        if lowered == "llm":
++            labels.append("LLM")
++        elif lowered == "stt":
++            labels.append("STT")
++        elif part.isdigit():
++            labels.append(part)
++        else:
++            labels.append(part.title())
++    return " ".join(labels) or "Unknown"
++
++
++def _recording_label(recording: dict[str, Any] | None, fallback: str) -> str:
++    if not isinstance(recording, dict):
++        return fallback
++    source_filename = str(recording.get("source_filename") or "").strip()
++    if source_filename:
++        return source_filename
++    recording_id = str(recording.get("id") or "").strip()
++    return recording_id or fallback
++
++
++def _load_json_dict(path: Path) -> dict[str, Any]:
++    try:
++        payload = json.loads(path.read_text(encoding="utf-8"))
++    except (FileNotFoundError, OSError, ValueError):
++        return {}
++    return payload if isinstance(payload, dict) else {}
++
++
++def _base_url_host(base_url: str | None) -> str:
++    normalized = str(base_url or "").strip()
++    if not normalized:
++        return "unconfigured"
++    try:
++        parsed = httpx.URL(normalized)
++    except Exception:
++        return normalized.rstrip("/")
++    host = parsed.host
++    if not host:
++        return normalized.rstrip("/")
++    port = parsed.port
++    if port and port not in {80, 443}:
++        return f"{host}:{port}"
++    return str(host)
++
++
++def _spark_probe_url(base_url: str | None) -> str:
++    normalized = str(base_url or "").strip().rstrip("/")
++    if not normalized:
++        return ""
++    if normalized.endswith("/v1/chat/completions"):
++        prefix = normalized[: -len("/chat/completions")]
++        return f"{prefix}/models"
++    if normalized.endswith("/v1"):
++        return f"{normalized}/models"
++    return f"{normalized}/v1/models"
++
++
++def _extract_model_ids(payload: object) -> list[str]:
++    if not isinstance(payload, dict):
++        return []
++    rows = payload.get("data")
++    if not isinstance(rows, list):
++        return []
++    model_ids: list[str] = []
++    for row in rows:
++        if not isinstance(row, dict):
++            continue
++        model_id = str(row.get("id") or "").strip()
++        if model_id:
++            model_ids.append(model_id)
++    return model_ids
++
++
++def _probe_spark_runtime(settings: AppSettings) -> dict[str, Any]:
++    base_url = str(getattr(settings, "llm_base_url", "") or "").strip()
++    host = _base_url_host(base_url)
++    if not base_url:
++        return {
++            "state": "unknown",
++            "value": "Unknown",
++            "detail": "LLM_BASE_URL is not configured",
++            "host": host,
++            "advertised_models": [],
++            "model_verified": None,
++        }
++
++    headers = {"Accept": "application/json"}
++    api_key = os.getenv("LLM_API_KEY", "").strip()
++    if api_key:
++        headers["Authorization"] = f"Bearer {api_key}"
++
++    try:
++        with httpx.Client(timeout=_SPARK_PROBE_TIMEOUT, follow_redirects=True) as client:
++            response = client.get(_spark_probe_url(base_url), headers=headers)
++    except httpx.TimeoutException:
++        return {
++            "state": "offline",
++            "value": "Offline",
++            "detail": f"{host} timed out",
++            "host": host,
++            "advertised_models": [],
++            "model_verified": None,
++        }
++    except httpx.HTTPError as exc:
++        return {
++            "state": "offline",
++            "value": "Offline",
++            "detail": f"{host} probe failed: {type(exc).__name__}",
++            "host": host,
++            "advertised_models": [],
++            "model_verified": None,
++        }
++
++    if response.status_code == 200:
++        try:
++            payload = response.json()
++        except ValueError:
++            return {
++                "state": "degraded",
++                "value": "Unknown",
++                "detail": f"{host} returned non-JSON from /v1/models",
++                "host": host,
++                "advertised_models": [],
++                "model_verified": None,
++            }
++        model_ids = _extract_model_ids(payload)
++        configured_model = str(getattr(settings, "llm_model", "") or "").strip()
++        return {
++            "state": "healthy",
++            "value": "Online",
++            "detail": f"{host} responded to /v1/models",
++            "host": host,
++            "advertised_models": model_ids,
++            "model_verified": configured_model in model_ids if configured_model else None,
++        }
++
++    if response.status_code in {401, 403}:
++        return {
++            "state": "degraded",
++            "value": "Auth error",
++            "detail": f"{host} rejected the runtime probe",
++            "host": host,
++            "advertised_models": [],
++            "model_verified": None,
++        }
++    if response.status_code in {404, 405}:
++        return {
++            "state": "unknown",
++            "value": "Unknown",
++            "detail": f"{host} responded but /v1/models is unavailable",
++            "host": host,
++            "advertised_models": [],
++            "model_verified": None,
++        }
++    if response.status_code >= 500:
++        return {
++            "state": "offline",
++            "value": "Unavailable",
++            "detail": f"{host} returned HTTP {response.status_code}",
++            "host": host,
++            "advertised_models": [],
++            "model_verified": None,
++        }
++    return {
++        "state": "degraded",
++        "value": "Degraded",
++        "detail": f"{host} returned HTTP {response.status_code}",
++        "host": host,
++        "advertised_models": [],
++        "model_verified": None,
++    }
++
++
++def _safe_is_gpu_device(device: str | None) -> bool:
++    try:
++        return is_gpu_device(device)
++    except ValueError:
++        return False
++
++
++def _active_job_snapshot(settings: AppSettings) -> dict[str, Any]:
++    try:
++        started_rows, started_total = list_jobs(
++            settings=settings,
++            status=JOB_STATUS_STARTED,
++            limit=1,
++            offset=0,
++        )
++        queued_rows, queued_total = list_jobs(
++            settings=settings,
++            status=JOB_STATUS_QUEUED,
++            limit=1,
++            offset=0,
++        )
++    except Exception as exc:
++        return {
++            "started_total": 0,
++            "queued_total": 0,
++            "active_job": None,
++            "queued_job": None,
++            "active_recording": None,
++            "active_detail": None,
++            "active_stage": "",
++            "error": str(exc),
++        }
++
++    active_job = started_rows[0] if started_rows else None
++    queued_job = queued_rows[0] if queued_rows else None
++    active_recording = None
++    if isinstance(active_job, dict):
++        active_recording = get_recording(
++            str(active_job.get("recording_id") or ""),
++            settings=settings,
++        )
++    active_stage = str(
++        (active_recording or {}).get("pipeline_stage")
++        or (active_recording or {}).get("status")
++        or (active_job or {}).get("type")
++        or ""
++    ).strip()
++    active_detail = None
++    if isinstance(active_job, dict):
++        active_detail = (
++            f"{_recording_label(active_recording, str(active_job.get('recording_id') or 'recording'))} "
++            f"· {_stage_label(active_stage)}"
++        )
++    elif isinstance(queued_job, dict):
++        queued_recording = get_recording(
++            str(queued_job.get("recording_id") or ""),
++            settings=settings,
++        )
++        active_detail = (
++            f"Next: {_recording_label(queued_recording, str(queued_job.get('recording_id') or 'recording'))}"
++        )
++
++    return {
++        "started_total": int(started_total),
++        "queued_total": int(queued_total),
++        "active_job": active_job,
++        "queued_job": queued_job,
++        "active_recording": active_recording,
++        "active_detail": active_detail,
++        "active_stage": active_stage,
++        "error": None,
++    }
++
++
++def _active_runtime_metadata(
++    settings: AppSettings,
++    *,
++    recording_id: str,
++) -> dict[str, Any]:
++    if not recording_id:
++        return {}
++    derived_dir = settings.recordings_root / recording_id / "derived"
++    for name in ("diarization_metadata.json", "diarization_status.json"):
++        payload = _load_json_dict(derived_dir / name)
++        if payload:
++            return payload
++    return {}
++
++
++def collect_control_center_runtime_status(settings: AppSettings) -> dict[str, Any]:
++    worker_health = check_worker_health(settings)
++    redis_health = check_redis_health(settings)
++    spark = _probe_spark_runtime(settings)
++    queue = _active_job_snapshot(settings)
++    cuda_facts = collect_cuda_runtime_facts()
++
++    active_stage = str(queue.get("active_stage") or "").strip().lower()
++    active_llm = active_stage.startswith("llm")
++    gpu_busy = bool(queue.get("started_total")) and not active_llm
++    active_detail = str(queue.get("active_detail") or "").strip()
++
++    if queue.get("error"):
++        active_jobs_item = {
++            "label": "Active jobs",
++            "value": "Queue unknown",
++            "detail": str(queue["error"]),
++            "tone": "degraded",
++        }
++    elif not redis_health["ok"]:
++        active_jobs_item = {
++            "label": "Active jobs",
++            "value": "Queue offline",
++            "detail": str(redis_health["detail"]),
++            "tone": "offline",
++        }
++    elif queue["started_total"] or queue["queued_total"]:
++        active_jobs_item = {
++            "label": "Active jobs",
++            "value": f"{queue['started_total']} active · {queue['queued_total']} queued",
++            "detail": active_detail or str(worker_health["detail"]),
++            "tone": "busy" if worker_health["ok"] else "degraded",
++        }
++    else:
++        active_jobs_item = {
++            "label": "Active jobs",
++            "value": "Idle",
++            "detail": str(worker_health["detail"]),
++            "tone": "healthy" if worker_health["ok"] else "degraded",
++        }
++
++    spark_tone = "degraded" if spark["state"] == "unknown" else spark["state"]
++    spark_value = spark["value"]
++    spark_detail = spark["detail"]
++    if spark["state"] == "healthy":
++        spark_tone = "busy" if active_llm else "healthy"
++        spark_value = "Busy" if active_llm else "Online"
++        spark_detail = (
++            f"{active_detail} · {spark['host']}"
++            if active_llm and active_detail
++            else spark["detail"]
++        )
++    spark_item = {
++        "label": "DGX / Spark",
++        "value": spark_value,
++        "detail": spark_detail,
++        "tone": spark_tone,
++    }
++
++    explicit_gpu_requested = _safe_is_gpu_device(getattr(settings, "asr_device", None)) or _safe_is_gpu_device(
++        getattr(settings, "diarization_device", None)
++    )
++    visible_devices = cuda_facts.visible_devices or "default"
++    torch_cuda = cuda_facts.torch_cuda_version or "none"
++    if cuda_facts.is_available and cuda_facts.device_count > 0:
++        gpu_item = {
++            "label": "GPU runtime",
++            "value": "GPU active" if gpu_busy else "GPU ready",
++            "detail": f"{cuda_facts.device_count} visible · torch CUDA {torch_cuda}",
++            "tone": "busy" if gpu_busy else "healthy",
++        }
++    else:
++        gpu_item = {
++            "label": "GPU runtime",
++            "value": "GPU unavailable" if explicit_gpu_requested else "CPU only",
++            "detail": f"visible={visible_devices} · torch CUDA {torch_cuda}",
++            "tone": "offline" if explicit_gpu_requested else "degraded",
++        }
++
++    active_recording = queue.get("active_recording") or {}
++    active_recording_id = str(active_recording.get("id") or "").strip()
++    runtime_metadata = _active_runtime_metadata(
++        settings,
++        recording_id=active_recording_id,
++    )
++    if runtime_metadata:
++        effective_device = str(runtime_metadata.get("effective_device") or "").strip() or None
++        runtime_mode = str(runtime_metadata.get("mode") or "").strip() or "unknown"
++        if _safe_is_gpu_device(effective_device):
++            inference_item = {
++                "label": "Inference mode",
++                "value": "GPU path",
++                "detail": (
++                    f"{_recording_label(active_recording, active_recording_id or 'recording')} "
++                    f"· {_stage_label(active_stage)} · {effective_device}"
++                ),
++                "tone": "busy" if gpu_busy else "healthy",
++            }
++        else:
++            fallback_tone = "offline" if explicit_gpu_requested else "degraded"
++            inference_item = {
++                "label": "Inference mode",
++                "value": "CPU fallback" if runtime_mode != "unknown" else "CPU path",
++                "detail": (
++                    f"{_recording_label(active_recording, active_recording_id or 'recording')} "
++                    f"· {_stage_label(active_stage)} · {runtime_mode}"
++                ),
++                "tone": fallback_tone,
++            }
++    else:
++        try:
++            scheduler = resolve_scheduler_decision(
++                getattr(settings, "gpu_scheduler_mode", "auto"),
++                asr_device=getattr(settings, "asr_device", "auto"),
++                diarization_device=getattr(settings, "diarization_device", "auto"),
++                diarization_is_heavy=True,
++                cuda_facts=cuda_facts,
++            )
++            asr_gpu = _safe_is_gpu_device(scheduler.asr_device)
++            diarization_gpu = _safe_is_gpu_device(scheduler.diarization_device)
++            if asr_gpu and diarization_gpu:
++                inference_item = {
++                    "label": "Inference mode",
++                    "value": "GPU path",
++                    "detail": (
++                        f"ASR {scheduler.asr_device} · Diarization {scheduler.diarization_device} "
++                        f"· {scheduler.effective_mode}"
++                    ),
++                    "tone": "busy" if gpu_busy else "healthy",
++                }
++            elif asr_gpu or diarization_gpu:
++                inference_item = {
++                    "label": "Inference mode",
++                    "value": "Mixed path",
++                    "detail": (
++                        f"ASR {scheduler.asr_device} · Diarization {scheduler.diarization_device} "
++                        f"· {scheduler.effective_mode}"
++                    ),
++                    "tone": "busy" if gpu_busy else "degraded",
++                }
++            else:
++                inference_item = {
++                    "label": "Inference mode",
++                    "value": "CPU fallback" if explicit_gpu_requested else "CPU path",
++                    "detail": (
++                        f"ASR {scheduler.asr_device} · Diarization {scheduler.diarization_device} "
++                        f"· {scheduler.effective_mode}"
++                    ),
++                    "tone": "offline" if explicit_gpu_requested else "degraded",
++                }
++        except Exception as exc:
++            inference_item = {
++                "label": "Inference mode",
++                "value": "Blocked",
++                "detail": str(exc),
++                "tone": "offline",
++            }
++
++    configured_model = str(getattr(settings, "llm_model", "") or "").strip() or "Unknown"
++    if spark["state"] == "healthy":
++        target_tone = "busy" if active_llm else "healthy"
++        if spark["model_verified"] is False:
++            target_tone = "degraded"
++        target_detail = (
++            f"{spark['host']} · advertised by Spark"
++            if spark["model_verified"] is not False
++            else f"{spark['host']} · configured target not advertised"
++        )
++        if active_llm and active_detail:
++            target_detail = f"{active_detail} · {spark['host']}"
++    elif spark["state"] == "offline":
++        target_tone = "offline"
++        target_detail = f"{spark['host']} · configured target only"
++    else:
++        target_tone = "degraded"
++        target_detail = spark["detail"]
++    target_item = {
++        "label": "Inference target",
++        "value": configured_model,
++        "detail": target_detail,
++        "tone": target_tone,
++    }
++
++    return {
++        "active_jobs_item": active_jobs_item,
++        "secondary_items": [
++            spark_item,
++            gpu_item,
++            inference_item,
++            target_item,
++        ],
++        "note": (
++            "Runtime snapshot uses worker heartbeat, DB job rows, local CUDA visibility, "
++            "and a lightweight Spark /v1/models probe. CPU fallback is confirmed from "
++            "active diarization metadata when available and otherwise inferred from settings."
++        ),
++    }
++
++
++__all__ = ["collect_control_center_runtime_status"]
+diff --git a/tests/test_system_status.py b/tests/test_system_status.py
+new file mode 100644
+index 0000000..0ebd419
+--- /dev/null
++++ b/tests/test_system_status.py
+@@ -0,0 +1,645 @@
++from __future__ import annotations
++
++import json
++from types import SimpleNamespace
++
++import httpx
++
++from lan_app import system_status
++from lan_transcriber.gpu_policy import CudaRuntimeFacts
++
++
++def _settings(tmp_path, **overrides):
++    base = {
++        "recordings_root": tmp_path / "recordings",
++        "llm_base_url": "http://dgx.local:8000",
++        "llm_model": "gpt-oss:120b",
++        "asr_device": "auto",
++        "diarization_device": "auto",
++        "gpu_scheduler_mode": "auto",
++    }
++    base.update(overrides)
++    return SimpleNamespace(**base)
++
++
++class _FakeResponse:
++    def __init__(self, status_code: int, payload=None, *, json_error: Exception | None = None):
++        self.status_code = status_code
++        self._payload = payload
++        self._json_error = json_error
++
++    def json(self):
++        if self._json_error is not None:
++            raise self._json_error
++        return self._payload
++
++
++def _client_factory(result, seen_headers: list[dict[str, str]] | None = None):
++    class _FakeClient:
++        def __init__(self, *args, **kwargs):
++            del args, kwargs
++
++        def __enter__(self):
++            return self
++
++        def __exit__(self, exc_type, exc, tb):
++            return False
++
++        def get(self, url: str, headers: dict[str, str] | None = None):
++            del url
++            if seen_headers is not None:
++                seen_headers.append(headers or {})
++            if isinstance(result, Exception):
++                raise result
++            return result
++
++    return _FakeClient
++
++
++def test_system_status_small_helpers_cover_edge_cases(tmp_path, monkeypatch):
++    assert system_status._stage_label("") == "Unknown"  # noqa: SLF001
++    assert system_status._stage_label("llm_chunk_2_of_5") == "LLM Chunk 2 Of 5"  # noqa: SLF001
++    assert system_status._stage_label("stt") == "STT"  # noqa: SLF001
++    assert system_status._recording_label({"source_filename": "meeting.mp3"}, "rec-1") == "meeting.mp3"  # noqa: SLF001
++    assert system_status._recording_label({"id": "rec-2"}, "fallback") == "rec-2"  # noqa: SLF001
++    assert system_status._recording_label(None, "fallback") == "fallback"  # noqa: SLF001
++
++    payload_path = tmp_path / "payload.json"
++    payload_path.write_text(json.dumps({"ok": True}), encoding="utf-8")
++    list_path = tmp_path / "payload-list.json"
++    list_path.write_text(json.dumps([1, 2, 3]), encoding="utf-8")
++    broken_path = tmp_path / "broken.json"
++    broken_path.write_text("{", encoding="utf-8")
++    assert system_status._load_json_dict(payload_path) == {"ok": True}  # noqa: SLF001
++    assert system_status._load_json_dict(list_path) == {}  # noqa: SLF001
++    assert system_status._load_json_dict(broken_path) == {}  # noqa: SLF001
++    assert system_status._load_json_dict(tmp_path / "missing.json") == {}  # noqa: SLF001
++
++    assert system_status._base_url_host(None) == "unconfigured"  # noqa: SLF001
++    assert system_status._base_url_host("http://dgx.local:8000/v1") == "dgx.local:8000"  # noqa: SLF001
++    assert system_status._base_url_host("http://dgx.local") == "dgx.local"  # noqa: SLF001
++    monkeypatch.setattr(
++        system_status.httpx,
++        "URL",
++        lambda _value: SimpleNamespace(host=None, port=None),
++    )
++    assert system_status._base_url_host("http://missing-host") == "http://missing-host"  # noqa: SLF001
++    monkeypatch.undo()
++    monkeypatch.setattr(
++        system_status.httpx,
++        "URL",
++        lambda _value: (_ for _ in ()).throw(ValueError("bad url")),
++    )
++    assert system_status._base_url_host("not-a-url") == "not-a-url"  # noqa: SLF001
++    monkeypatch.undo()
++    assert system_status._spark_probe_url("") == ""  # noqa: SLF001
++    assert system_status._spark_probe_url("http://dgx.local:8000/v1") == "http://dgx.local:8000/v1/models"  # noqa: SLF001
++    assert system_status._spark_probe_url("http://dgx.local:8000/v1/chat/completions") == (  # noqa: SLF001
++        "http://dgx.local:8000/v1/models"
++    )
++    assert system_status._spark_probe_url("http://dgx.local:8000") == "http://dgx.local:8000/v1/models"  # noqa: SLF001
++    assert system_status._extract_model_ids({"data": [{"id": "a"}, "skip", {"id": ""}, {"id": "b"}]}) == [  # noqa: SLF001
++        "a",
++        "b",
++    ]
++    assert system_status._extract_model_ids({"data": "bad"}) == []  # noqa: SLF001
++    assert system_status._extract_model_ids([]) == []  # noqa: SLF001
++    assert system_status._safe_is_gpu_device("cuda:0") is True  # noqa: SLF001
++    assert system_status._safe_is_gpu_device("bogus") is False  # noqa: SLF001
++
++
++def test_probe_spark_runtime_variants(tmp_path, monkeypatch):
++    unknown = system_status._probe_spark_runtime(_settings(tmp_path, llm_base_url=""))
++    assert unknown["state"] == "unknown"
++
++    seen_headers: list[dict[str, str]] = []
++    monkeypatch.setenv("LLM_API_KEY", "secret-token")
++    monkeypatch.setattr(
++        system_status.httpx,
++        "Client",
++        _client_factory(
++            _FakeResponse(200, {"data": [{"id": "gpt-oss:120b"}]}),
++            seen_headers,
++        ),
++    )
++    healthy = system_status._probe_spark_runtime(_settings(tmp_path))
++    assert healthy["state"] == "healthy"
++    assert healthy["model_verified"] is True
++    assert seen_headers[-1]["Authorization"] == "Bearer secret-token"
++
++    monkeypatch.setattr(
++        system_status.httpx,
++        "Client",
++        _client_factory(_FakeResponse(200, None, json_error=ValueError("bad json"))),
++    )
++    assert system_status._probe_spark_runtime(_settings(tmp_path))["state"] == "degraded"
++
++    monkeypatch.setattr(
++        system_status.httpx,
++        "Client",
++        _client_factory(_FakeResponse(401, {})),
++    )
++    assert system_status._probe_spark_runtime(_settings(tmp_path))["value"] == "Auth error"
++
++    monkeypatch.setattr(
++        system_status.httpx,
++        "Client",
++        _client_factory(_FakeResponse(404, {})),
++    )
++    assert system_status._probe_spark_runtime(_settings(tmp_path))["state"] == "unknown"
++
++    monkeypatch.setattr(
++        system_status.httpx,
++        "Client",
++        _client_factory(_FakeResponse(503, {})),
++    )
++    assert system_status._probe_spark_runtime(_settings(tmp_path))["value"] == "Unavailable"
++
++    monkeypatch.setattr(
++        system_status.httpx,
++        "Client",
++        _client_factory(_FakeResponse(418, {})),
++    )
++    assert system_status._probe_spark_runtime(_settings(tmp_path))["value"] == "Degraded"
++
++    monkeypatch.setattr(
++        system_status.httpx,
++        "Client",
++        _client_factory(httpx.ReadTimeout("slow")),
++    )
++    assert system_status._probe_spark_runtime(_settings(tmp_path))["detail"].endswith("timed out")
++
++    monkeypatch.setattr(
++        system_status.httpx,
++        "Client",
++        _client_factory(httpx.HTTPError("boom")),
++    )
++    assert "probe failed" in system_status._probe_spark_runtime(_settings(tmp_path))["detail"]
++
++
++def test_active_job_snapshot_paths(tmp_path, monkeypatch):
++    queued_row = {"recording_id": "rec-queued-1", "type": "precheck"}
++    started_row = {"recording_id": "rec-started-1", "type": "precheck"}
++
++    def _list_jobs_started(*, settings, status, limit, offset):
++        del settings, limit, offset
++        if status == "started":
++            return [started_row], 1
++        return [queued_row], 2
++
++    monkeypatch.setattr(system_status, "list_jobs", _list_jobs_started)
++    monkeypatch.setattr(
++        system_status,
++        "get_recording",
++        lambda recording_id, settings: {
++            "id": recording_id,
++            "source_filename": "meeting.mp3",
++            "pipeline_stage": "speaker_turns",
++        },
++    )
++    started = system_status._active_job_snapshot(_settings(tmp_path))  # noqa: SLF001
++    assert started["active_detail"] == "meeting.mp3 · Speaker Turns"
++
++    def _list_jobs_queued(*, settings, status, limit, offset):
++        del settings, limit, offset
++        if status == "started":
++            return [], 0
++        return [queued_row], 1
++
++    monkeypatch.setattr(system_status, "list_jobs", _list_jobs_queued)
++    queued = system_status._active_job_snapshot(_settings(tmp_path))  # noqa: SLF001
++    assert queued["active_detail"] == "Next: meeting.mp3"
++
++    monkeypatch.setattr(
++        system_status,
++        "list_jobs",
++        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("db unavailable")),
++    )
++    failed = system_status._active_job_snapshot(_settings(tmp_path))  # noqa: SLF001
++    assert failed["error"] == "db unavailable"
++
++
++def test_active_runtime_metadata_prefers_diarization_metadata(tmp_path):
++    settings = _settings(tmp_path)
++    assert system_status._active_runtime_metadata(settings, recording_id="") == {}  # noqa: SLF001
++    assert system_status._active_runtime_metadata(settings, recording_id="rec-missing") == {}  # noqa: SLF001
++
++    derived = settings.recordings_root / "rec-1" / "derived"
++    derived.mkdir(parents=True, exist_ok=True)
++    (derived / "diarization_status.json").write_text(
++        json.dumps({"mode": "fallback"}),
++        encoding="utf-8",
++    )
++    assert system_status._active_runtime_metadata(settings, recording_id="rec-1") == {  # noqa: SLF001
++        "mode": "fallback"
++    }
++
++    (derived / "diarization_metadata.json").write_text(
++        json.dumps({"effective_device": "cuda"}),
++        encoding="utf-8",
++    )
++    assert system_status._active_runtime_metadata(settings, recording_id="rec-1") == {  # noqa: SLF001
++        "effective_device": "cuda"
++    }
++
++
++def test_collect_control_center_runtime_status_healthy_gpu_path(tmp_path, monkeypatch):
++    settings = _settings(tmp_path, asr_device="cuda", diarization_device="cuda")
++    monkeypatch.setattr(
++        system_status,
++        "check_worker_health",
++        lambda _settings: {"ok": True, "detail": "worker 'w1' heartbeat 5s ago"},
++    )
++    monkeypatch.setattr(
++        system_status,
++        "check_redis_health",
++        lambda _settings: {"ok": True, "detail": "ok"},
++    )
++    monkeypatch.setattr(
++        system_status,
++        "_probe_spark_runtime",
++        lambda _settings: {
++            "state": "healthy",
++            "value": "Online",
++            "detail": "dgx.local responded to /v1/models",
++            "host": "dgx.local",
++            "advertised_models": ["gpt-oss:120b"],
++            "model_verified": True,
++        },
++    )
++    monkeypatch.setattr(
++        system_status,
++        "_active_job_snapshot",
++        lambda _settings: {
++            "started_total": 1,
++            "queued_total": 2,
++            "active_job": {"recording_id": "rec-1"},
++            "queued_job": {"recording_id": "rec-2"},
++            "active_recording": {"id": "rec-1", "source_filename": "meeting.mp3"},
++            "active_detail": "meeting.mp3 · Speaker Turns",
++            "active_stage": "speaker_turns",
++            "error": None,
++        },
++    )
++    monkeypatch.setattr(
++        system_status,
++        "collect_cuda_runtime_facts",
++        lambda: CudaRuntimeFacts(
++            is_available=True,
++            device_count=1,
++            visible_devices=None,
++            torch_cuda_version="12.6",
++        ),
++    )
++    monkeypatch.setattr(system_status, "_active_runtime_metadata", lambda *_args, **_kwargs: {})
++    monkeypatch.setattr(
++        system_status,
++        "resolve_scheduler_decision",
++        lambda *args, **kwargs: SimpleNamespace(
++            asr_device="cuda",
++            diarization_device="cuda",
++            effective_mode="sequential",
++        ),
++    )
++
++    payload = system_status.collect_control_center_runtime_status(settings)
++
++    assert payload["active_jobs_item"]["value"] == "1 active · 2 queued"
++    assert payload["secondary_items"][0]["value"] == "Online"
++    assert payload["secondary_items"][1]["value"] == "GPU active"
++    assert payload["secondary_items"][2]["value"] == "GPU path"
++    assert payload["secondary_items"][3]["detail"] == "dgx.local · advertised by Spark"
++
++
++def test_collect_control_center_runtime_status_runtime_metadata_branches(tmp_path, monkeypatch):
++    settings = _settings(tmp_path, asr_device="cuda", diarization_device="cuda")
++    monkeypatch.setattr(
++        system_status,
++        "check_worker_health",
++        lambda _settings: {"ok": True, "detail": "worker 'w1' heartbeat 5s ago"},
++    )
++    monkeypatch.setattr(
++        system_status,
++        "check_redis_health",
++        lambda _settings: {"ok": True, "detail": "ok"},
++    )
++    monkeypatch.setattr(
++        system_status,
++        "_probe_spark_runtime",
++        lambda _settings: {
++            "state": "healthy",
++            "value": "Online",
++            "detail": "dgx.local responded to /v1/models",
++            "host": "dgx.local",
++            "advertised_models": ["gpt-oss:120b"],
++            "model_verified": True,
++        },
++    )
++    monkeypatch.setattr(
++        system_status,
++        "_active_job_snapshot",
++        lambda _settings: {
++            "started_total": 1,
++            "queued_total": 0,
++            "active_job": {"recording_id": "rec-1"},
++            "queued_job": None,
++            "active_recording": {"id": "rec-1", "source_filename": "meeting.mp3"},
++            "active_detail": "meeting.mp3 · Speaker Turns",
++            "active_stage": "speaker_turns",
++            "error": None,
++        },
++    )
++    monkeypatch.setattr(
++        system_status,
++        "collect_cuda_runtime_facts",
++        lambda: CudaRuntimeFacts(
++            is_available=False,
++            device_count=0,
++            visible_devices="default",
++            torch_cuda_version=None,
++        ),
++    )
++    monkeypatch.setattr(
++        system_status,
++        "_active_runtime_metadata",
++        lambda *_args, **_kwargs: {"effective_device": "cpu", "mode": "fallback"},
++    )
++
++    cpu_fallback = system_status.collect_control_center_runtime_status(settings)
++    assert cpu_fallback["secondary_items"][1]["value"] == "GPU unavailable"
++    assert cpu_fallback["secondary_items"][2]["value"] == "CPU fallback"
++    assert cpu_fallback["secondary_items"][2]["tone"] == "offline"
++
++    monkeypatch.setattr(
++        system_status,
++        "_active_runtime_metadata",
++        lambda *_args, **_kwargs: {"effective_device": "cuda:0", "mode": "pyannote"},
++    )
++    gpu_runtime = system_status.collect_control_center_runtime_status(settings)
++    assert gpu_runtime["secondary_items"][2]["value"] == "GPU path"
++    assert gpu_runtime["secondary_items"][2]["tone"] == "busy"
++
++
++def test_collect_control_center_runtime_status_active_llm_and_mixed_target(tmp_path, monkeypatch):
++    settings = _settings(tmp_path)
++    monkeypatch.setattr(
++        system_status,
++        "check_worker_health",
++        lambda _settings: {"ok": True, "detail": "worker 'w1' heartbeat 5s ago"},
++    )
++    monkeypatch.setattr(
++        system_status,
++        "check_redis_health",
++        lambda _settings: {"ok": True, "detail": "ok"},
++    )
++    monkeypatch.setattr(
++        system_status,
++        "_probe_spark_runtime",
++        lambda _settings: {
++            "state": "healthy",
++            "value": "Online",
++            "detail": "dgx.local responded to /v1/models",
++            "host": "dgx.local",
++            "advertised_models": ["other-model"],
++            "model_verified": False,
++        },
++    )
++    monkeypatch.setattr(
++        system_status,
++        "_active_job_snapshot",
++        lambda _settings: {
++            "started_total": 1,
++            "queued_total": 1,
++            "active_job": {"recording_id": "rec-1"},
++            "queued_job": {"recording_id": "rec-2"},
++            "active_recording": {"id": "rec-1", "source_filename": "meeting.mp3"},
++            "active_detail": "meeting.mp3 · LLM Chunk 1 Of 2",
++            "active_stage": "llm_chunk_1_of_2",
++            "error": None,
++        },
++    )
++    monkeypatch.setattr(
++        system_status,
++        "collect_cuda_runtime_facts",
++        lambda: CudaRuntimeFacts(
++            is_available=True,
++            device_count=1,
++            visible_devices=None,
++            torch_cuda_version="12.6",
++        ),
++    )
++    monkeypatch.setattr(system_status, "_active_runtime_metadata", lambda *_args, **_kwargs: {})
++    monkeypatch.setattr(
++        system_status,
++        "resolve_scheduler_decision",
++        lambda *args, **kwargs: SimpleNamespace(
++            asr_device="cuda",
++            diarization_device="cpu",
++            effective_mode="sequential",
++        ),
++    )
++
++    payload = system_status.collect_control_center_runtime_status(settings)
++
++    assert payload["secondary_items"][0]["value"] == "Busy"
++    assert payload["secondary_items"][2]["value"] == "Mixed path"
++    assert payload["secondary_items"][3]["tone"] == "degraded"
++    assert payload["secondary_items"][3]["detail"] == "meeting.mp3 · LLM Chunk 1 Of 2 · dgx.local"
++
++
++def test_collect_control_center_runtime_status_queue_offline_and_scheduler_blocked(
++    tmp_path,
++    monkeypatch,
++):
++    settings = _settings(tmp_path)
++    monkeypatch.setattr(
++        system_status,
++        "check_worker_health",
++        lambda _settings: {"ok": False, "detail": "worker heartbeat is stale"},
++    )
++    monkeypatch.setattr(
++        system_status,
++        "check_redis_health",
++        lambda _settings: {"ok": False, "detail": "redis unavailable"},
++    )
++    monkeypatch.setattr(
++        system_status,
++        "_probe_spark_runtime",
++        lambda _settings: {
++            "state": "offline",
++            "value": "Offline",
++            "detail": "dgx.local timed out",
++            "host": "dgx.local",
++            "advertised_models": [],
++            "model_verified": None,
++        },
++    )
++    monkeypatch.setattr(
++        system_status,
++        "_active_job_snapshot",
++        lambda _settings: {
++            "started_total": 0,
++            "queued_total": 0,
++            "active_job": None,
++            "queued_job": None,
++            "active_recording": None,
++            "active_detail": None,
++            "active_stage": "",
++            "error": None,
++        },
++    )
++    monkeypatch.setattr(
++        system_status,
++        "collect_cuda_runtime_facts",
++        lambda: CudaRuntimeFacts(
++            is_available=False,
++            device_count=0,
++            visible_devices=None,
++            torch_cuda_version=None,
++        ),
++    )
++    monkeypatch.setattr(system_status, "_active_runtime_metadata", lambda *_args, **_kwargs: {})
++    monkeypatch.setattr(
++        system_status,
++        "resolve_scheduler_decision",
++        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("bad config")),
++    )
++
++    payload = system_status.collect_control_center_runtime_status(settings)
++
++    assert payload["active_jobs_item"]["value"] == "Queue offline"
++    assert payload["secondary_items"][1]["value"] == "CPU only"
++    assert payload["secondary_items"][2]["value"] == "Blocked"
++    assert payload["secondary_items"][3]["tone"] == "offline"
++
++
++def test_collect_control_center_runtime_status_queue_unknown(tmp_path, monkeypatch):
++    settings = _settings(tmp_path)
++    monkeypatch.setattr(
++        system_status,
++        "check_worker_health",
++        lambda _settings: {"ok": True, "detail": "worker 'w1' heartbeat 5s ago"},
++    )
++    monkeypatch.setattr(
++        system_status,
++        "check_redis_health",
++        lambda _settings: {"ok": True, "detail": "ok"},
++    )
++    monkeypatch.setattr(
++        system_status,
++        "_probe_spark_runtime",
++        lambda _settings: {
++            "state": "degraded",
++            "value": "Auth error",
++            "detail": "dgx.local rejected the runtime probe",
++            "host": "dgx.local",
++            "advertised_models": [],
++            "model_verified": None,
++        },
++    )
++    monkeypatch.setattr(
++        system_status,
++        "_active_job_snapshot",
++        lambda _settings: {
++            "started_total": 0,
++            "queued_total": 0,
++            "active_job": None,
++            "queued_job": None,
++            "active_recording": None,
++            "active_detail": None,
++            "active_stage": "",
++            "error": "db unavailable",
++        },
++    )
++    monkeypatch.setattr(
++        system_status,
++        "collect_cuda_runtime_facts",
++        lambda: CudaRuntimeFacts(
++            is_available=True,
++            device_count=1,
++            visible_devices=None,
++            torch_cuda_version="12.6",
++        ),
++    )
++    monkeypatch.setattr(system_status, "_active_runtime_metadata", lambda *_args, **_kwargs: {})
++    monkeypatch.setattr(
++        system_status,
++        "resolve_scheduler_decision",
++        lambda *args, **kwargs: SimpleNamespace(
++            asr_device="cpu",
++            diarization_device="cpu",
++            effective_mode="sequential",
++        ),
++    )
++
++    payload = system_status.collect_control_center_runtime_status(settings)
++
++    assert payload["active_jobs_item"]["value"] == "Queue unknown"
++    assert payload["secondary_items"][0]["value"] == "Auth error"
++    assert payload["secondary_items"][2]["value"] == "CPU path"
++    assert payload["secondary_items"][3]["tone"] == "degraded"
++
++
++def test_collect_control_center_runtime_status_idle_and_unknown_spark(tmp_path, monkeypatch):
++    settings = _settings(tmp_path)
++    monkeypatch.setattr(
++        system_status,
++        "check_worker_health",
++        lambda _settings: {"ok": True, "detail": "worker 'w1' heartbeat 5s ago"},
++    )
++    monkeypatch.setattr(
++        system_status,
++        "check_redis_health",
++        lambda _settings: {"ok": True, "detail": "ok"},
++    )
++    monkeypatch.setattr(
++        system_status,
++        "_probe_spark_runtime",
++        lambda _settings: {
++            "state": "unknown",
++            "value": "Unknown",
++            "detail": "dgx.local responded but /v1/models is unavailable",
++            "host": "dgx.local",
++            "advertised_models": [],
++            "model_verified": None,
++        },
++    )
++    monkeypatch.setattr(
++        system_status,
++        "_active_job_snapshot",
++        lambda _settings: {
++            "started_total": 0,
++            "queued_total": 0,
++            "active_job": None,
++            "queued_job": None,
++            "active_recording": None,
++            "active_detail": None,
++            "active_stage": "",
++            "error": None,
++        },
++    )
++    monkeypatch.setattr(
++        system_status,
++        "collect_cuda_runtime_facts",
++        lambda: CudaRuntimeFacts(
++            is_available=True,
++            device_count=1,
++            visible_devices=None,
++            torch_cuda_version="12.6",
++        ),
++    )
++    monkeypatch.setattr(system_status, "_active_runtime_metadata", lambda *_args, **_kwargs: {})
++    monkeypatch.setattr(
++        system_status,
++        "resolve_scheduler_decision",
++        lambda *args, **kwargs: SimpleNamespace(
++            asr_device="cpu",
++            diarization_device="cpu",
++            effective_mode="sequential",
++        ),
++    )
++
++    payload = system_status.collect_control_center_runtime_status(settings)
++
++    assert payload["active_jobs_item"]["value"] == "Idle"
++    assert payload["secondary_items"][0]["tone"] == "degraded"
