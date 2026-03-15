@@ -323,7 +323,9 @@ if (fileInput && pickFilesButton && dropzone && fileInput.dataset.uploadBound !=
     fileInput.value = "";
   });
 
-  pickFilesButton.addEventListener("click", function() {
+  pickFilesButton.addEventListener("click", function(event) {
+    event.preventDefault();
+    event.stopPropagation();
     fileInput.click();
   });
 
