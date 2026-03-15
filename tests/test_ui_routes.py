@@ -413,6 +413,8 @@ def test_control_center_pane_fragment_endpoints(seeded_client):
     assert "Fallback and Admin Pages" not in work_pane.text
     assert "meeting.mp3" in work_pane.text
     assert 'id="control-center-recordings-panel"' in work_pane.text
+    assert "htmx.trigger(document.body, 'refresh-control-center-header');" in work_pane.text
+    assert "htmx.trigger(document.body, 'refresh-control-center-system-bar');" in work_pane.text
     assert "<html" not in work_pane.text
 
     inspector = seeded_client.get("/ui/control-center/inspector-pane?selected=rec-ui-1&tab=speakers")
