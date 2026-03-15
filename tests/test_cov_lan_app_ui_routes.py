@@ -141,6 +141,20 @@ def test_control_center_helper_contexts_cover_fragment_builders(
         "list_voice_samples",
         lambda settings: [{"id": 4, "voice_profile_id": 7}, {"id": 5, "voice_profile_id": None}],
     )
+    monkeypatch.setattr(
+        ui_routes,
+        "get_recording",
+        lambda recording_id, settings: {
+            "id": recording_id,
+            "source": "upload",
+            "source_filename": "helper.wav",
+            "status": "Ready",
+            "captured_at": "2026-01-02T03:04:05Z",
+            "created_at": "2026-01-02T03:04:05Z",
+            "updated_at": "2026-01-02T03:04:05Z",
+            "duration_sec": 12.0,
+        },
+    )
     dashboard = ui_routes._dashboard_status_context(cfg)  # noqa: SLF001
     assert dashboard["recordings_summary_strip"]["title"] == "Recordings by status"
     assert dashboard["jobs_summary_strip"]["counts"] == {"queued": 2}
@@ -161,6 +175,10 @@ def test_control_center_helper_contexts_cover_fragment_builders(
     assert state["limit"] == 100
     assert state["offset"] == 25
     assert state["selected_detail_href"] == "/recordings/rec-helper-1?tab=speakers"
+    assert state["workspace_header_url"] == (
+        "/ui/control-center/workspace-header?"
+        "selected=rec-helper-1&status=Ready&q=helper&tab=speakers&limit=100&offset=25"
+    )
     assert "status=Ready" in state["work_pane_url"]
     assert "limit=100" in state["work_pane_url"]
     assert "offset=25" in state["clear_selection_href"]
@@ -378,6 +396,14 @@ def test_control_center_helper_contexts_cover_fragment_builders(
     assert system_bar["secondary_items"][0]["placeholder"] is True
     assert str(cfg.data_root) == system_bar["secondary_items"][2]["value"]
     assert "next PR" in system_bar["note"]
+
+    header = ui_routes._control_center_workspace_header_context(  # noqa: SLF001
+        cfg,
+        state=state,
+    )
+    assert header["visible_total"] == 3
+    assert header["focus_recording"]["source_filename"] == "helper.wav"
+    assert header["workflow_links"]["selected_detail_href"] == "/recordings/rec-helper-1?tab=speakers"
 
     filters = ui_routes._recordings_filters_context(  # noqa: SLF001
         mode="control_center",

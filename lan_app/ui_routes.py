@@ -2417,6 +2417,7 @@ def _control_center_state_context(
             offset=safe_offset,
         ),
         "reset_href": "/",
+        "workspace_header_url": f"/ui/control-center/workspace-header?{urlencode(state_params)}",
         "work_pane_url": f"/ui/control-center/work-pane?{urlencode(state_params)}",
         "inspector_pane_url": (
             _control_center_inspector_path(
@@ -2743,6 +2744,33 @@ def _control_center_workflow_links_context(*, state: dict[str, Any]) -> dict[str
             limit=state["limit"],
             offset=state["offset"],
         ),
+    }
+
+
+def _control_center_workspace_header_context(
+    settings: AppSettings,
+    *,
+    state: dict[str, Any],
+) -> dict[str, Any]:
+    selected_recording = None
+    if state["selected"]:
+        selected_recording = get_recording(state["selected"], settings=settings)
+        if selected_recording is not None:
+            selected_recording = _prepare_recording_for_display(
+                selected_recording,
+                settings=settings,
+            )
+    _, visible_total = list_recordings(
+        settings=settings,
+        status=state["status"] or None,
+        q=state["q"],
+        limit=1,
+        offset=0,
+    )
+    return {
+        "focus_recording": selected_recording,
+        "visible_total": visible_total,
+        "workflow_links": _control_center_workflow_links_context(state=state),
     }
 
 
@@ -3829,6 +3857,10 @@ async def ui_dashboard(
     )
     control_center_empty_inspector = _control_center_empty_inspector_context()
     control_center_inspector = None
+    control_center_header = _control_center_workspace_header_context(
+        _settings,
+        state=control_center_state,
+    )
     control_center_work_pane = _control_center_work_pane_context(
         _settings,
         state=control_center_state,
@@ -3859,6 +3891,7 @@ async def ui_dashboard(
             "active": "dashboard",
             **(control_center_inspector or {}),
             "control_center_state": control_center_state,
+            "control_center_header": control_center_header,
             "upload_shell": _upload_shell_context(),
             "control_center_work_pane": control_center_work_pane,
             "control_center_system_bar": _control_center_system_bar_context(
@@ -3867,6 +3900,37 @@ async def ui_dashboard(
                 recordings_panel=control_center_work_pane["recordings_panel"],
             ),
             "control_center_empty_inspector": control_center_empty_inspector,
+        },
+    )
+
+
+@ui_router.get("/ui/control-center/workspace-header", response_class=HTMLResponse)
+async def ui_control_center_workspace_header(
+    request: Request,
+    selected: str = Query(default=""),
+    status: str | None = Query(default=None),
+    q: str = Query(default=""),
+    tab: str = Query(default="overview"),
+    limit: int = Query(default=_CONTROL_CENTER_LIST_LIMIT, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+) -> Any:
+    control_center_state = _control_center_state_context(
+        selected=selected,
+        status=status,
+        q=q,
+        tab=tab,
+        limit=limit,
+        offset=offset,
+    )
+    return templates.TemplateResponse(
+        request,
+        "partials/control_center/workspace_header.html",
+        {
+            "control_center_state": control_center_state,
+            "control_center_header": _control_center_workspace_header_context(
+                _settings,
+                state=control_center_state,
+            ),
         },
     )
 

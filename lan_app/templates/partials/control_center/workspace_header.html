@@ -1,4 +1,12 @@
-<section id="control-center-workspace-header" class="control-center-workspace-header">
+<section
+  id="control-center-workspace-header"
+  class="control-center-workspace-header"
+  hx-get="{{ control_center_state.workspace_header_url }}"
+  hx-trigger="refresh-control-center-header from:body"
+  hx-target="this"
+  hx-swap="outerHTML"
+>
+  {% set focus_recording = control_center_header.focus_recording %}
   <div class="control-center-workspace-copy">
     <p class="eyebrow">Daily workspace</p>
     <h1>Control Center</h1>
@@ -16,10 +24,10 @@
       </span>
     </div>
 
-    {% if control_center_state.selected and rec is defined %}
-    <strong class="control-center-focus-title">{{ rec.source_filename }}</strong>
+    {% if control_center_state.selected and focus_recording %}
+    <strong class="control-center-focus-title">{{ focus_recording.source_filename }}</strong>
     <p class="control-center-focus-copy">
-      <code>{{ rec.id }}</code> · {{ rec.status }} · {{ control_center_state.tab_label }} tab
+      <code>{{ focus_recording.id }}</code> · {{ focus_recording.status }} · {{ control_center_state.tab_label }} tab
     </p>
     {% elif control_center_state.selected %}
     <strong class="control-center-focus-title">{{ control_center_state.selected }}</strong>
@@ -30,7 +38,7 @@
     {% endif %}
 
     <div class="control-center-focus-pills">
-      <span class="control-center-focus-pill">{{ control_center_work_pane.recordings_panel.total }} visible</span>
+      <span class="control-center-focus-pill">{{ control_center_header.visible_total }} visible</span>
       <span class="control-center-focus-pill">{{ control_center_state.status or "All statuses" }}</span>
       {% if control_center_state.q %}
       <span class="control-center-focus-pill">Search: {{ control_center_state.q }}</span>
@@ -44,8 +52,8 @@
       {% if control_center_state.status or control_center_state.q %}
       <a href="{{ control_center_state.reset_href }}" class="btn">Reset queue view</a>
       {% endif %}
-      {% if control_center_work_pane.workflow_links.selected_detail_href %}
-      <a href="{{ control_center_work_pane.workflow_links.selected_detail_href }}" class="btn">Open full-page inspector</a>
+      {% if control_center_header.workflow_links.selected_detail_href %}
+      <a href="{{ control_center_header.workflow_links.selected_detail_href }}" class="btn">Open full-page inspector</a>
       {% endif %}
     </div>
   </aside>

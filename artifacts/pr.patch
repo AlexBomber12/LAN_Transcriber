@@ -1,839 +1,247 @@
 diff --git a/lan_app/templates/base.html b/lan_app/templates/base.html
-index 5f596db..2bd7046 100644
+index 2bd7046..4519e55 100644
 --- a/lan_app/templates/base.html
 +++ b/lan_app/templates/base.html
-@@ -380,73 +380,124 @@ textarea:focus{
-   text-transform:uppercase;
+@@ -1067,6 +1067,7 @@ function refreshControlCenterPanels(options) {
+   }
+   htmx.trigger(document.body, 'refresh-control-center-recordings');
+   htmx.trigger(document.body, 'refresh-control-center-summary');
++  htmx.trigger(document.body, 'refresh-control-center-header');
+   htmx.trigger(document.body, 'refresh-control-center-inspector');
  }
- .muted{color:var(--muted)}
--.control-center-shell{display:grid;gap:20px}
--.control-center-pane,
--.control-center-panel{
--  background:rgba(255,255,255,.92);
--  border:1px solid rgba(217,226,239,.9);
--  border-radius:24px;
--  padding:18px;
--  min-width:0;
--  box-shadow:var(--shadow);
--  backdrop-filter:blur(14px);
--}
--.control-center-hero{
--  display:flex;
--  justify-content:space-between;
--  align-items:flex-start;
-+.control-center-shell{
-+  display:grid;
-   gap:18px;
--  padding:22px 24px;
--  border-radius:28px;
--  background:
--    linear-gradient(135deg, rgba(15,23,42,.98) 0%, rgba(30,41,59,.96) 58%, rgba(36,99,235,.9) 100%);
--  color:#fff;
--  box-shadow:0 24px 60px rgba(15,23,42,.18);
-+  padding-bottom:92px;
- }
--.control-center-hero-copy{
-+.control-center-workspace-header{
-   display:grid;
--  gap:10px;
--  max-width:640px;
-+  gap:16px;
-+  grid-template-columns:minmax(0,1.08fr) minmax(320px,.92fr);
-+  align-items:start;
- }
--.control-center-hero-copy .eyebrow{color:#93c5fd}
--.control-center-hero-copy p:last-child{color:#c8d5ea;max-width:60ch}
--.control-center-toolbar{
-+.control-center-workspace-copy{
-   display:grid;
-   gap:10px;
--  justify-items:end;
--  min-width:min(320px,100%);
- }
--.control-center-toolbar-actions{
-+.control-center-workspace-copy p:last-child{
-+  color:var(--muted);
-+  max-width:68ch;
-+}
-+.control-center-focus-card{
-+  display:grid;
-+  gap:14px;
-+  padding:18px 20px;
-+  border:1px solid #d6e2f5;
-+  border-radius:24px;
-+  background:linear-gradient(180deg, #ffffff 0%, #f2f7ff 100%);
-+  box-shadow:var(--shadow-soft);
-+}
-+.control-center-focus-topline{
-   display:flex;
--  gap:8px;
-+  justify-content:space-between;
-+  gap:10px;
-+  align-items:center;
-   flex-wrap:wrap;
--  justify-content:flex-end;
- }
--.control-center-top-state,
--.control-center-state-list{
-+.control-center-focus-label{
-+  font-size:11px;
-+  font-weight:800;
-+  letter-spacing:.12em;
-+  text-transform:uppercase;
-+  color:var(--muted);
-+}
-+.control-center-focus-state{
-+  display:inline-flex;
-+  align-items:center;
-+  padding:5px 10px;
-+  border-radius:999px;
-+  border:1px solid #d7e3f8;
-+  background:#fff;
-+  color:var(--muted);
-+  font-size:11px;
-+  font-weight:800;
-+  letter-spacing:.08em;
-+  text-transform:uppercase;
-+}
-+.control-center-focus-state.active{
-+  background:var(--primary-soft);
-+  border-color:#bdd1f8;
-+  color:var(--primary);
-+}
-+.control-center-focus-title{
-+  font-size:1.05rem;
-+  line-height:1.2;
-+  letter-spacing:-.02em;
-+}
-+.control-center-focus-copy{
-+  color:var(--muted);
-+  font-size:13px;
-+}
-+.control-center-focus-pills{
-   display:flex;
-   gap:8px;
-   flex-wrap:wrap;
--  align-items:center;
- }
--.control-center-state-pill{
-+.control-center-focus-pill{
-   display:inline-flex;
-   align-items:center;
-   gap:6px;
-   padding:6px 10px;
-   border-radius:999px;
--  border:1px solid rgba(148,163,184,.24);
--  background:rgba(255,255,255,.09);
--  color:inherit;
-+  border:1px solid #d8e3f7;
-+  background:#f8fbff;
-+  color:var(--navy-soft);
-   font-size:12px;
-   font-weight:700;
- }
-+.control-center-focus-actions{
-+  display:flex;
-+  gap:8px;
-+  flex-wrap:wrap;
-+}
-+.control-center-pane,
-+.control-center-panel{
-+  background:rgba(255,255,255,.94);
-+  border:1px solid rgba(217,226,239,.92);
-+  border-radius:26px;
-+  padding:18px;
-+  min-width:0;
-+  box-shadow:var(--shadow);
-+  backdrop-filter:blur(14px);
-+}
- .control-center-main{
-   display:grid;
-   gap:18px;
-   grid-template-columns:minmax(0,1.08fr) minmax(360px,.92fr);
-   align-items:start;
- }
-+.control-center-work-column{
-+  display:grid;
-+  gap:18px;
-+  min-width:0;
-+}
-+.control-center-inspector-pane{
-+  position:sticky;
-+  top:94px;
-+  min-height:calc(100vh - 170px);
-+  align-content:start;
-+}
- .control-center-pane-head{
-   display:flex;
-   justify-content:space-between;
-@@ -455,20 +506,25 @@ textarea:focus{
-   flex-wrap:wrap;
-   margin-bottom:14px;
- }
-+.control-center-pane-head-tight{margin-bottom:12px}
- .control-center-pane-copy{color:var(--muted);max-width:62ch}
- .control-center-empty-state{
-   display:grid;
-   gap:8px;
--  min-height:240px;
-+  min-height:220px;
-   align-content:center;
-   justify-items:start;
--  color:var(--muted);
- }
- .control-center-empty-state strong{
--  font-size:1rem;
-+  font-size:1.05rem;
-   font-style:normal;
-   color:var(--text);
- }
-+.control-center-empty-copy{
-+  margin:0;
-+  color:var(--muted);
-+  max-width:32ch;
-+}
- .control-center-compact-card{
-   border:1px solid var(--line);
-   background:var(--panel-soft);
-@@ -483,26 +539,28 @@ textarea:focus{
- .control-center-upload-card{
-   display:grid;
-   gap:16px;
--  padding:18px;
-+  padding:20px;
-   background:linear-gradient(180deg, #fff 0%, #f9fbff 100%);
-   border:1px solid var(--line);
--  border-radius:22px;
-+  border-radius:24px;
-   box-shadow:var(--shadow-soft);
- }
- .control-center-upload-grid{
-   display:grid;
-   gap:14px;
--  grid-template-columns:minmax(0,1.15fr) minmax(0,.85fr);
-+  grid-template-columns:minmax(0,1fr) minmax(280px,.92fr);
- }
- .control-center-upload-dropzone{
-   display:grid;
-   gap:10px;
-+  align-content:center;
-   justify-items:start;
-+  min-height:212px;
-   padding:20px;
--  border-radius:22px;
-+  border-radius:24px;
-   border:2px dashed #b6c8ea;
-   background:
--    linear-gradient(180deg, rgba(255,255,255,.92) 0%, rgba(240,245,255,.96) 100%);
-+    linear-gradient(180deg, rgba(255,255,255,.94) 0%, rgba(238,244,255,.96) 100%);
-   color:var(--muted);
-   user-select:none;
-   transition:border-color .16s ease,transform .16s ease,background .16s ease;
-@@ -521,8 +579,15 @@ textarea:focus{
-   display:grid;
-   gap:12px;
-   align-content:start;
-+  padding:14px;
-+  border:1px solid #dde7f6;
-+  border-radius:20px;
-+  background:rgba(255,255,255,.9);
-+}
-+.upload-queue-table table{
-+  margin:0;
-+  box-shadow:none;
- }
--.upload-queue-table table{margin:0}
- .upload-progress-wrap{
-   display:flex;
-   align-items:center;
-@@ -565,14 +630,16 @@ textarea:focus{
- }
- .recordings-panel-frame{
-   border:1px solid var(--line);
--  border-radius:22px;
-+  border-radius:24px;
-   background:linear-gradient(180deg, #fff 0%, #f9fbff 100%);
--  padding:18px;
-+  padding:20px;
-   box-shadow:var(--shadow-soft);
- }
- .recordings-filter-strip{
-   display:grid;
-   gap:10px;
-+  grid-template-columns:minmax(0,1fr) minmax(0,1.4fr) minmax(120px,.7fr) auto auto;
-+  align-items:end;
- }
- .recordings-filter-strip .filters{align-items:flex-end}
- .filter-field{
-@@ -580,12 +647,61 @@ textarea:focus{
-   gap:6px;
-   min-width:0;
- }
--.filter-field-grow{flex:1 1 240px}
-+.filter-field-grow{min-width:0}
-+.control-center-worklist-summary{
-+  display:grid;
-+  gap:2px;
-+  justify-items:end;
-+  min-width:120px;
-+}
-+.control-center-worklist-count{
-+  font-size:1.7rem;
-+  line-height:1;
-+  font-weight:800;
-+  letter-spacing:-.04em;
-+  color:var(--navy);
-+}
-+.control-center-worklist-label{
-+  font-size:11px;
-+  font-weight:700;
-+  letter-spacing:.08em;
-+  text-transform:uppercase;
-+  color:var(--muted);
-+}
-+.recordings-status-pills{
-+  display:flex;
-+  gap:8px;
-+  flex-wrap:wrap;
-+}
-+.recordings-status-pill{
-+  display:inline-flex;
-+  align-items:center;
-+  gap:8px;
-+  padding:8px 10px;
-+  border-radius:999px;
-+  border:1px solid var(--line);
-+  background:#fff;
-+  text-decoration:none;
-+  color:var(--text);
-+  box-shadow:var(--shadow-soft);
-+}
-+.recordings-status-pill:hover{
-+  background:#f8fbff;
-+  border-color:#9db4da;
-+}
-+.recordings-status-pill.active{
-+  background:var(--primary-soft);
-+  border-color:#b8cdfb;
-+}
-+.recordings-status-pill-count{
-+  font-size:13px;
-+  font-weight:800;
-+}
- .recordings-table-wrap{overflow:auto}
- .recordings-table{
--  min-width:820px;
-+  min-width:840px;
- }
--.recording-row-selected{background:#f1f6ff}
-+.recording-row-selected{background:#eef4ff}
- .recording-main{
-   display:grid;
-   gap:6px;
-@@ -640,6 +756,62 @@ textarea:focus{
-   color:var(--warning);
-   white-space:normal;
- }
-+.control-center-system-bar{
-+  position:sticky;
-+  bottom:10px;
-+  z-index:40;
-+  display:grid;
-+  gap:12px;
-+  padding:14px 16px;
-+  border-radius:24px;
-+  border:1px solid rgba(30,41,59,.18);
-+  background:rgba(15,23,42,.94);
-+  color:#d9e5f8;
-+  box-shadow:0 20px 48px rgba(15,23,42,.24);
-+  backdrop-filter:blur(18px);
-+  pointer-events:none;
-+}
-+.control-center-system-group{
-+  display:flex;
-+  gap:10px;
-+  flex-wrap:wrap;
-+}
-+.control-center-system-group-secondary{justify-content:flex-end}
-+.control-center-system-item{
-+  display:grid;
-+  gap:4px;
-+  min-width:170px;
-+  padding:10px 12px;
-+  border-radius:18px;
-+  border:1px solid rgba(148,163,184,.18);
-+  background:rgba(255,255,255,.04);
-+}
-+.control-center-system-item.placeholder{
-+  background:rgba(36,99,235,.08);
-+  border-color:rgba(96,165,250,.28);
-+}
-+.control-center-system-label{
-+  font-size:10px;
-+  font-weight:800;
-+  letter-spacing:.12em;
-+  text-transform:uppercase;
-+  color:#93aac8;
-+}
-+.control-center-system-value{
-+  font-size:14px;
-+  font-weight:700;
-+  color:#fff;
-+  overflow-wrap:anywhere;
-+}
-+.control-center-system-detail{
-+  font-size:11px;
-+  color:#b7c6db;
-+}
-+.control-center-system-note{
-+  margin:0;
-+  font-size:11px;
-+  color:#93aac8;
-+}
- .inspector-shell{
-   display:grid;
-   gap:16px;
-@@ -811,15 +983,24 @@ textarea:focus{
-   gap:20px;
- }
- @media (max-width: 1180px){
-+  .control-center-workspace-header,
-   .control-center-main{grid-template-columns:1fr}
-+  .control-center-inspector-pane{
-+    position:static;
-+    min-height:auto;
-+  }
-+  .control-center-system-group-secondary{justify-content:flex-start}
- }
- @media (max-width: 860px){
-   .app-nav{align-items:flex-start;flex-direction:column}
-   .app-nav-links{width:100%}
--  .control-center-hero{padding:20px;flex-direction:column}
--  .control-center-toolbar{justify-items:start}
--  .control-center-toolbar-actions{justify-content:flex-start}
-+  .control-center-shell{padding-bottom:0}
-+  .control-center-focus-topline,
-+  .control-center-focus-actions{justify-content:flex-start}
-   .control-center-upload-grid{grid-template-columns:1fr}
-+  .recordings-filter-strip{grid-template-columns:1fr}
-+  .control-center-worklist-summary{justify-items:start}
-+  .control-center-system-bar{position:static}
-   .filters{flex-direction:column;align-items:stretch}
-   .filter-field,.filter-field-grow{width:100%}
-   .form-row{align-items:stretch}
-diff --git a/lan_app/templates/control_center.html b/lan_app/templates/control_center.html
-index a910bd2..7a6a9b4 100644
---- a/lan_app/templates/control_center.html
-+++ b/lan_app/templates/control_center.html
-@@ -2,39 +2,16 @@
- {% block title %}Control Center – LAN Transcriber{% endblock %}
- {% block content %}
- <div class="control-center-shell">
--  <section id="control-center-top-strip" class="control-center-hero">
--    <div class="control-center-hero-copy">
--      <p class="eyebrow">Daily Workspace</p>
--      <h1>Control Center</h1>
--      <p>Upload audio, watch the queue, select a recording, and review it on the right without leaving the day-to-day workflow.</p>
--    </div>
--    <div class="control-center-toolbar">
--      <div class="control-center-top-state">
--        <span class="control-center-state-pill">Status: {{ control_center_state.status or "All recordings" }}</span>
--        <span class="control-center-state-pill">Search: {{ control_center_state.q or "No filter" }}</span>
--        <span class="control-center-state-pill">Inspector: {{ control_center_state.tab_label }}</span>
--        <span class="control-center-state-pill">Selected: {{ control_center_state.selected or "None" }}</span>
--      </div>
--      <div class="control-center-toolbar-actions">
--      {% if control_center_state.selected %}
--        <a href="{{ control_center_state.clear_selection_href }}" class="btn">Clear selection</a>
--      {% endif %}
--      {% if control_center_state.status or control_center_state.q %}
--        <a href="{{ control_center_state.reset_href }}" class="btn">Reset filters</a>
--      {% endif %}
--      {% if control_center_work_pane.workflow_links.selected_detail_href %}
--        <a href="{{ control_center_work_pane.workflow_links.selected_detail_href }}" class="btn">Open full-page inspector</a>
--      {% endif %}
--      </div>
--    </div>
--  </section>
-+  {% include "partials/control_center/workspace_header.html" %}
  
-   <div class="control-center-main">
--    <section id="control-center-work-pane" class="control-center-pane">
-+    <section id="control-center-work-pane" class="control-center-work-column">
-       {% include "partials/control_center/work_pane.html" %}
-     </section>
- 
-     {% include "partials/control_center/inspector_pane.html" %}
-   </div>
-+
-+  {% include "partials/control_center/system_bar.html" %}
- </div>
- {% endblock %}
-diff --git a/lan_app/templates/partials/control_center/inspector_empty.html b/lan_app/templates/partials/control_center/inspector_empty.html
-index 99d07c0..7962614 100644
---- a/lan_app/templates/partials/control_center/inspector_empty.html
-+++ b/lan_app/templates/partials/control_center/inspector_empty.html
-@@ -1,6 +1,7 @@
- <div class="control-center-empty-state">
-+  <p class="eyebrow">Compact inspector</p>
-   <strong>{{ empty_inspector.title }}</strong>
-   {% if empty_inspector.message %}
--  <p class="placeholder" style="padding:6px 0 0 0">{{ empty_inspector.message }}</p>
-+  <p class="control-center-empty-copy">{{ empty_inspector.message }}</p>
-   {% endif %}
- </div>
-diff --git a/lan_app/templates/partials/control_center/inspector_pane.html b/lan_app/templates/partials/control_center/inspector_pane.html
-index 2f34ba0..9e6de86 100644
---- a/lan_app/templates/partials/control_center/inspector_pane.html
-+++ b/lan_app/templates/partials/control_center/inspector_pane.html
-@@ -1,6 +1,6 @@
- <section
-   id="control-center-inspector-pane"
--  class="control-center-pane"
-+  class="control-center-pane control-center-inspector-pane"
-   hx-get="{{ control_center_state.inspector_pane_url }}"
-   hx-trigger="refresh-control-center-inspector from:body"
-   hx-target="this"
-diff --git a/lan_app/templates/partials/control_center/recordings_panel.html b/lan_app/templates/partials/control_center/recordings_panel.html
-index 80e9b02..23912e1 100644
---- a/lan_app/templates/partials/control_center/recordings_panel.html
-+++ b/lan_app/templates/partials/control_center/recordings_panel.html
-@@ -8,15 +8,15 @@
-   hx-swap="outerHTML"
-   {% endif %}
- >
--  <div class="control-center-pane-head">
-+  <div class="control-center-pane-head control-center-pane-head-tight">
-     <div>
-       <p class="eyebrow">Worklist</p>
-       <h2>{{ recordings_panel.title }}</h2>
-       <p class="control-center-pane-copy">{{ recordings_panel.description }}</p>
+diff --git a/lan_app/templates/partials/control_center/workspace_header.html b/lan_app/templates/partials/control_center/workspace_header.html
+index 0df86c6..e84ccca 100644
+--- a/lan_app/templates/partials/control_center/workspace_header.html
++++ b/lan_app/templates/partials/control_center/workspace_header.html
+@@ -1,4 +1,12 @@
+-<section id="control-center-workspace-header" class="control-center-workspace-header">
++<section
++  id="control-center-workspace-header"
++  class="control-center-workspace-header"
++  hx-get="{{ control_center_state.workspace_header_url }}"
++  hx-trigger="refresh-control-center-header from:body"
++  hx-target="this"
++  hx-swap="outerHTML"
++>
++  {% set focus_recording = control_center_header.focus_recording %}
+   <div class="control-center-workspace-copy">
+     <p class="eyebrow">Daily workspace</p>
+     <h1>Control Center</h1>
+@@ -16,10 +24,10 @@
+       </span>
      </div>
--    <div class="control-center-state-list">
--      <span class="control-center-state-pill">Rows: {{ recordings_panel.total }}</span>
--      <span class="control-center-state-pill">Limit: {{ recordings_panel.recordings_table.limit }}</span>
-+    <div class="control-center-worklist-summary">
-+      <span class="control-center-worklist-count">{{ recordings_panel.total }}</span>
-+      <span class="control-center-worklist-label">matching recordings</span>
-     </div>
-   </div>
  
-diff --git a/lan_app/templates/partials/control_center/recordings_status_cards.html b/lan_app/templates/partials/control_center/recordings_status_cards.html
-index 34362e0..2b229cb 100644
---- a/lan_app/templates/partials/control_center/recordings_status_cards.html
-+++ b/lan_app/templates/partials/control_center/recordings_status_cards.html
-@@ -1,16 +1,16 @@
--<div class="stats-row">
-+<div class="recordings-status-pills">
-   {% for card in recordings_panel.status_cards %}
-   <a
-     href="{{ card.href }}"
--    class="stat-card stat-card-link{% if card.active %} stat-card-active{% endif %}"
-+    class="recordings-status-pill{% if card.active %} active{% endif %}"
-     {% if card.hx_get %}
-     hx-get="{{ card.hx_get }}"
-     hx-target="#{{ recordings_panel.panel_id }}"
-     hx-swap="outerHTML"
+-    {% if control_center_state.selected and rec is defined %}
+-    <strong class="control-center-focus-title">{{ rec.source_filename }}</strong>
++    {% if control_center_state.selected and focus_recording %}
++    <strong class="control-center-focus-title">{{ focus_recording.source_filename }}</strong>
+     <p class="control-center-focus-copy">
+-      <code>{{ rec.id }}</code> · {{ rec.status }} · {{ control_center_state.tab_label }} tab
++      <code>{{ focus_recording.id }}</code> · {{ focus_recording.status }} · {{ control_center_state.tab_label }} tab
+     </p>
+     {% elif control_center_state.selected %}
+     <strong class="control-center-focus-title">{{ control_center_state.selected }}</strong>
+@@ -30,7 +38,7 @@
      {% endif %}
-   >
--    <div class="num">{{ card.count }}</div>
--    <div class="lbl"><span class="badge s-{{ card.status }}">{{ card.status }}</span></div>
-+    <span class="recordings-status-pill-count">{{ card.count }}</span>
-+    <span class="badge s-{{ card.status }}">{{ card.status }}</span>
-   </a>
-   {% endfor %}
- </div>
-diff --git a/lan_app/templates/partials/control_center/work_pane.html b/lan_app/templates/partials/control_center/work_pane.html
-index b32f710..678e040 100644
---- a/lan_app/templates/partials/control_center/work_pane.html
-+++ b/lan_app/templates/partials/control_center/work_pane.html
-@@ -1,9 +1,9 @@
- <div class="control-center-upload-card">
-   <div class="control-center-pane-head">
-     <div>
--      <p class="eyebrow">Upload Pipeline</p>
--      <h2>Drop files into today&apos;s queue</h2>
--      <p class="control-center-pane-copy">Start uploads here, then keep working from the recordings list below.</p>
-+      <p class="eyebrow">Intake</p>
-+      <h2>Bring new audio into today&apos;s queue</h2>
-+      <p class="control-center-pane-copy">Uploads stay on the left so you can add files and move straight into triage below.</p>
+ 
+     <div class="control-center-focus-pills">
+-      <span class="control-center-focus-pill">{{ control_center_work_pane.recordings_panel.total }} visible</span>
++      <span class="control-center-focus-pill">{{ control_center_header.visible_total }} visible</span>
+       <span class="control-center-focus-pill">{{ control_center_state.status or "All statuses" }}</span>
+       {% if control_center_state.q %}
+       <span class="control-center-focus-pill">Search: {{ control_center_state.q }}</span>
+@@ -44,8 +52,8 @@
+       {% if control_center_state.status or control_center_state.q %}
+       <a href="{{ control_center_state.reset_href }}" class="btn">Reset queue view</a>
+       {% endif %}
+-      {% if control_center_work_pane.workflow_links.selected_detail_href %}
+-      <a href="{{ control_center_work_pane.workflow_links.selected_detail_href }}" class="btn">Open full-page inspector</a>
++      {% if control_center_header.workflow_links.selected_detail_href %}
++      <a href="{{ control_center_header.workflow_links.selected_detail_href }}" class="btn">Open full-page inspector</a>
+       {% endif %}
      </div>
-     <span class="upload-progress-pill">Live queue</span>
-   </div>
+   </aside>
 diff --git a/lan_app/ui_routes.py b/lan_app/ui_routes.py
-index e2d991c..2bf9258 100644
+index 2bf9258..f5fcb12 100644
 --- a/lan_app/ui_routes.py
 +++ b/lan_app/ui_routes.py
-@@ -2780,10 +2780,63 @@ def _control_center_work_pane_context(
+@@ -2417,6 +2417,7 @@ def _control_center_state_context(
+             offset=safe_offset,
+         ),
+         "reset_href": "/",
++        "workspace_header_url": f"/ui/control-center/workspace-header?{urlencode(state_params)}",
+         "work_pane_url": f"/ui/control-center/work-pane?{urlencode(state_params)}",
+         "inspector_pane_url": (
+             _control_center_inspector_path(
+@@ -2746,6 +2747,33 @@ def _control_center_workflow_links_context(*, state: dict[str, Any]) -> dict[str
      }
  
  
-+def _control_center_system_bar_context(
++def _control_center_workspace_header_context(
 +    settings: AppSettings,
 +    *,
 +    state: dict[str, Any],
-+    recordings_panel: dict[str, Any],
 +) -> dict[str, Any]:
-+    queue_detail = state["status"] or "All statuses"
-+    if state["q"]:
-+        queue_detail = f"{queue_detail} · search: {state['q']}"
++    selected_recording = None
++    if state["selected"]:
++        selected_recording = get_recording(state["selected"], settings=settings)
++        if selected_recording is not None:
++            selected_recording = _prepare_recording_for_display(
++                selected_recording,
++                settings=settings,
++            )
++    _, visible_total = list_recordings(
++        settings=settings,
++        status=state["status"] or None,
++        q=state["q"],
++        limit=1,
++        offset=0,
++    )
 +    return {
-+        "primary_items": [
-+            {
-+                "label": "Queue view",
-+                "value": f"{recordings_panel['total']} visible",
-+                "detail": queue_detail,
-+            },
-+            {
-+                "label": "Compact inspector",
-+                "value": state["selected"] or "Idle",
-+                "detail": (
-+                    f"{state['tab_label']} tab"
-+                    if state["selected"]
-+                    else "Select a recording to review"
-+                ),
-+            },
-+        ],
-+        "secondary_items": [
-+            {
-+                "label": "DGX / Spark",
-+                "value": "Telemetry pending",
-+                "detail": "Safe placeholder until runtime wiring lands",
-+                "placeholder": True,
-+            },
-+            {
-+                "label": "GPU runtime",
-+                "value": "Telemetry pending",
-+                "detail": "Safe placeholder until runtime wiring lands",
-+                "placeholder": True,
-+            },
-+            {
-+                "label": "Data root",
-+                "value": str(settings.data_root),
-+                "detail": "Persistent runtime state",
-+                "placeholder": False,
-+            },
-+        ],
-+        "note": (
-+            "System bar foundation only. Live DGX, Spark, and GPU telemetry is "
-+            "intentionally deferred to the next PR."
-+        ),
++        "focus_recording": selected_recording,
++        "visible_total": visible_total,
++        "workflow_links": _control_center_workflow_links_context(state=state),
 +    }
 +
 +
- def _control_center_empty_inspector_context() -> dict[str, str]:
-     return {
-         "title": "Select a recording",
--        "message": "The compact inspector appears here after you pick something from the queue.",
-+        "message": "Pick something from the worklist to open the compact inspector here.",
-     }
- 
- 
-@@ -3090,9 +3143,9 @@ def _recordings_panel_context(
-         "panel_id": panel_id,
-         "mode": mode,
-         "total": total,
--        "title": "Recordings" if is_control_center else "Recordings list",
-+        "title": "Recording worklist" if is_control_center else "Recordings list",
-         "description": (
--            "Filter, triage, and select a recording without leaving the queue."
-+            "Filter, triage, and select a recording without leaving the operator workspace."
-             if is_control_center
-             else "Use the same queue, filters, and row actions as the Control Center."
-         ),
-@@ -3776,6 +3829,10 @@ async def ui_dashboard(
+ def _control_center_work_pane_context(
+     settings: AppSettings,
+     *,
+@@ -3829,6 +3857,10 @@ async def ui_dashboard(
      )
      control_center_empty_inspector = _control_center_empty_inspector_context()
      control_center_inspector = None
-+    control_center_work_pane = _control_center_work_pane_context(
++    control_center_header = _control_center_workspace_header_context(
 +        _settings,
 +        state=control_center_state,
 +    )
-     if control_center_state["selected"]:
-         control_center_inspector = _recording_inspector_context(
-             control_center_state["selected"],
-@@ -3803,9 +3860,11 @@ async def ui_dashboard(
+     control_center_work_pane = _control_center_work_pane_context(
+         _settings,
+         state=control_center_state,
+@@ -3859,6 +3891,7 @@ async def ui_dashboard(
+             "active": "dashboard",
              **(control_center_inspector or {}),
              "control_center_state": control_center_state,
++            "control_center_header": control_center_header,
              "upload_shell": _upload_shell_context(),
--            "control_center_work_pane": _control_center_work_pane_context(
-+            "control_center_work_pane": control_center_work_pane,
-+            "control_center_system_bar": _control_center_system_bar_context(
-                 _settings,
-                 state=control_center_state,
-+                recordings_panel=control_center_work_pane["recordings_panel"],
-             ),
-             "control_center_empty_inspector": control_center_empty_inspector,
-         },
-diff --git a/tasks/QUEUE.md b/tasks/QUEUE.md
-index d6c61fe..93714ea 100644
---- a/tasks/QUEUE.md
-+++ b/tasks/QUEUE.md
-@@ -565,7 +565,7 @@ Queue (in order)
- - Depends on: PR-UI-CONTROL-CENTER-RECOVERY-01
+             "control_center_work_pane": control_center_work_pane,
+             "control_center_system_bar": _control_center_system_bar_context(
+@@ -3871,6 +3904,37 @@ async def ui_dashboard(
+     )
  
- 113) PR-UI-STITCH-CONTROL-CENTER-02: Rebuild the Control Center shell into a compact operator workspace and move DGX/GPU visibility into the bottom system-bar foundation
--- Status: TODO
-+- Status: DONE
- - Tasks file: tasks/PR-UI-STITCH-CONTROL-CENTER-02.md
- - Depends on: PR-UI-STITCH-CONTROL-CENTER-01
  
++@ui_router.get("/ui/control-center/workspace-header", response_class=HTMLResponse)
++async def ui_control_center_workspace_header(
++    request: Request,
++    selected: str = Query(default=""),
++    status: str | None = Query(default=None),
++    q: str = Query(default=""),
++    tab: str = Query(default="overview"),
++    limit: int = Query(default=_CONTROL_CENTER_LIST_LIMIT, ge=1, le=500),
++    offset: int = Query(default=0, ge=0),
++) -> Any:
++    control_center_state = _control_center_state_context(
++        selected=selected,
++        status=status,
++        q=q,
++        tab=tab,
++        limit=limit,
++        offset=offset,
++    )
++    return templates.TemplateResponse(
++        request,
++        "partials/control_center/workspace_header.html",
++        {
++            "control_center_state": control_center_state,
++            "control_center_header": _control_center_workspace_header_context(
++                _settings,
++                state=control_center_state,
++            ),
++        },
++    )
++
++
+ @ui_router.get("/ui/control-center/dashboard/recordings-summary", response_class=HTMLResponse)
+ async def ui_control_center_dashboard_recordings_summary(request: Request) -> Any:
+     dashboard_context = _dashboard_status_context(_settings)
 diff --git a/tests/test_cov_lan_app_ui_routes.py b/tests/test_cov_lan_app_ui_routes.py
-index 3014305..f153c07 100644
+index f153c07..a3a64ed 100644
 --- a/tests/test_cov_lan_app_ui_routes.py
 +++ b/tests/test_cov_lan_app_ui_routes.py
-@@ -368,6 +368,17 @@ def test_control_center_helper_contexts_cover_fragment_builders(
-     assert work_pane["voice_summary"]["profiles"][0]["display_name"] == "Alex Helper"
-     assert work_pane["voice_summary"]["profiles"][0]["sample_count"] == 1
+@@ -141,6 +141,20 @@ def test_control_center_helper_contexts_cover_fragment_builders(
+         "list_voice_samples",
+         lambda settings: [{"id": 4, "voice_profile_id": 7}, {"id": 5, "voice_profile_id": None}],
+     )
++    monkeypatch.setattr(
++        ui_routes,
++        "get_recording",
++        lambda recording_id, settings: {
++            "id": recording_id,
++            "source": "upload",
++            "source_filename": "helper.wav",
++            "status": "Ready",
++            "captured_at": "2026-01-02T03:04:05Z",
++            "created_at": "2026-01-02T03:04:05Z",
++            "updated_at": "2026-01-02T03:04:05Z",
++            "duration_sec": 12.0,
++        },
++    )
+     dashboard = ui_routes._dashboard_status_context(cfg)  # noqa: SLF001
+     assert dashboard["recordings_summary_strip"]["title"] == "Recordings by status"
+     assert dashboard["jobs_summary_strip"]["counts"] == {"queued": 2}
+@@ -161,6 +175,10 @@ def test_control_center_helper_contexts_cover_fragment_builders(
+     assert state["limit"] == 100
+     assert state["offset"] == 25
+     assert state["selected_detail_href"] == "/recordings/rec-helper-1?tab=speakers"
++    assert state["workspace_header_url"] == (
++        "/ui/control-center/workspace-header?"
++        "selected=rec-helper-1&status=Ready&q=helper&tab=speakers&limit=100&offset=25"
++    )
+     assert "status=Ready" in state["work_pane_url"]
+     assert "limit=100" in state["work_pane_url"]
+     assert "offset=25" in state["clear_selection_href"]
+@@ -379,6 +397,14 @@ def test_control_center_helper_contexts_cover_fragment_builders(
+     assert str(cfg.data_root) == system_bar["secondary_items"][2]["value"]
+     assert "next PR" in system_bar["note"]
  
-+    system_bar = ui_routes._control_center_system_bar_context(  # noqa: SLF001
++    header = ui_routes._control_center_workspace_header_context(  # noqa: SLF001
 +        cfg,
 +        state=state,
-+        recordings_panel=work_pane["recordings_panel"],
 +    )
-+    assert system_bar["primary_items"][0]["value"] == "3 visible"
-+    assert system_bar["primary_items"][0]["detail"] == "Ready · search: helper"
-+    assert system_bar["secondary_items"][0]["placeholder"] is True
-+    assert str(cfg.data_root) == system_bar["secondary_items"][2]["value"]
-+    assert "next PR" in system_bar["note"]
++    assert header["visible_total"] == 3
++    assert header["focus_recording"]["source_filename"] == "helper.wav"
++    assert header["workflow_links"]["selected_detail_href"] == "/recordings/rec-helper-1?tab=speakers"
 +
      filters = ui_routes._recordings_filters_context(  # noqa: SLF001
          mode="control_center",
          selected="rec-helper-1",
 diff --git a/tests/test_ui_routes.py b/tests/test_ui_routes.py
-index 64300ae..57e4b5b 100644
+index 57e4b5b..08de074 100644
 --- a/tests/test_ui_routes.py
 +++ b/tests/test_ui_routes.py
-@@ -311,11 +311,14 @@ def test_dashboard_empty(client):
-     r = client.get("/")
-     assert r.status_code == 200
-     assert "Control Center" in r.text
-+    assert 'id="control-center-workspace-header"' in r.text
-     assert 'id="control-center-work-pane"' in r.text
-     assert 'id="control-center-inspector-pane"' in r.text
-+    assert 'id="control-center-system-bar"' in r.text
-     assert 'id="file-input"' in r.text
+@@ -367,6 +367,7 @@ def test_control_center_query_state_and_direct_routes(seeded_client):
      assert 'id="control-center-recordings-panel"' in r.text
-     assert "Select a recording" in r.text
-+    assert 'id="control-center-top-strip"' not in r.text
-     assert 'href="/upload"' not in r.text
-     assert 'href="/recordings"' not in r.text
-     assert "LAN Transcriber" in r.text
-@@ -330,8 +333,9 @@ def test_dashboard_with_data(tmp_path, monkeypatch):
-     c = TestClient(api.app, follow_redirects=True)
-     r = c.get("/")
-     assert r.status_code == 200
--    assert "Recordings" in r.text
-+    assert "Recording worklist" in r.text
-     assert "Drop audio files here or use Choose files." in r.text
-+    assert "Telemetry pending" in r.text
-     assert "Daily workflow" not in r.text
-     assert "Fallback and Admin Pages" not in r.text
-     assert "rec-dash-1" in r.text or "a.mp3" in r.text
-@@ -354,6 +358,8 @@ def test_dashboard_summary_fragment_endpoints(seeded_client):
- def test_control_center_query_state_and_direct_routes(seeded_client):
-     r = seeded_client.get("/?selected=rec-ui-1&status=Ready&q=meeting&tab=speakers")
-     assert r.status_code == 200
-+    assert 'id="control-center-workspace-header"' in r.text
-+    assert 'id="control-center-system-bar"' in r.text
-     assert 'value="meeting"' in r.text
-     assert 'value="Ready" selected' in r.text
-     assert 'name="selected" value="rec-ui-1"' in r.text
-@@ -380,8 +386,8 @@ def test_control_center_pane_fragment_endpoints(seeded_client):
+     assert "/recordings/rec-ui-1?tab=speakers" in r.text
+     assert "Open full-page recording" in r.text
++    assert "refresh-control-center-header" in r.text
+     assert "htmx.trigger(document.body, 'refresh-control-center-inspector');" in r.text
+     assert "params.delete('selected');" in r.text
+ 
+@@ -382,6 +383,16 @@ def test_control_center_query_state_and_direct_routes(seeded_client):
+ 
+ 
+ def test_control_center_pane_fragment_endpoints(seeded_client):
++    workspace_header = seeded_client.get(
++        "/ui/control-center/workspace-header?selected=rec-ui-1&status=Ready&q=meeting&tab=speakers"
++    )
++    assert workspace_header.status_code == 200
++    assert 'id="control-center-workspace-header"' in workspace_header.text
++    assert 'hx-trigger="refresh-control-center-header from:body"' in workspace_header.text
++    assert "meeting.mp3" in workspace_header.text
++    assert "/recordings/rec-ui-1?tab=speakers" in workspace_header.text
++    assert "<html" not in workspace_header.text
++
+     work_pane = seeded_client.get(
          "/ui/control-center/work-pane?selected=rec-ui-1&status=Ready&q=meeting&tab=speakers"
      )
-     assert work_pane.status_code == 200
--    assert "Upload" in work_pane.text
--    assert "Recordings" in work_pane.text
-+    assert "Bring new audio into today" in work_pane.text
-+    assert "Recording worklist" in work_pane.text
-     assert "Fallback and Admin Pages" not in work_pane.text
-     assert "meeting.mp3" in work_pane.text
-     assert 'id="control-center-recordings-panel"' in work_pane.text
-diff --git a/lan_app/templates/partials/control_center/system_bar.html b/lan_app/templates/partials/control_center/system_bar.html
-new file mode 100644
-index 0000000..5f55994
---- /dev/null
-+++ b/lan_app/templates/partials/control_center/system_bar.html
-@@ -0,0 +1,23 @@
-+<footer id="control-center-system-bar" class="control-center-system-bar">
-+  <div class="control-center-system-group">
-+    {% for item in control_center_system_bar.primary_items %}
-+    <div class="control-center-system-item">
-+      <span class="control-center-system-label">{{ item.label }}</span>
-+      <strong class="control-center-system-value">{{ item.value }}</strong>
-+      <span class="control-center-system-detail">{{ item.detail }}</span>
-+    </div>
-+    {% endfor %}
-+  </div>
-+
-+  <div class="control-center-system-group control-center-system-group-secondary">
-+    {% for item in control_center_system_bar.secondary_items %}
-+    <div class="control-center-system-item{% if item.placeholder %} placeholder{% endif %}">
-+      <span class="control-center-system-label">{{ item.label }}</span>
-+      <strong class="control-center-system-value">{{ item.value }}</strong>
-+      <span class="control-center-system-detail">{{ item.detail }}</span>
-+    </div>
-+    {% endfor %}
-+  </div>
-+
-+  <p class="control-center-system-note">{{ control_center_system_bar.note }}</p>
-+</footer>
-diff --git a/lan_app/templates/partials/control_center/workspace_header.html b/lan_app/templates/partials/control_center/workspace_header.html
-new file mode 100644
-index 0000000..0df86c6
---- /dev/null
-+++ b/lan_app/templates/partials/control_center/workspace_header.html
-@@ -0,0 +1,52 @@
-+<section id="control-center-workspace-header" class="control-center-workspace-header">
-+  <div class="control-center-workspace-copy">
-+    <p class="eyebrow">Daily workspace</p>
-+    <h1>Control Center</h1>
-+    <p>
-+      Upload new audio, work the queue, and keep the current review in view without
-+      falling back to the full-page inspector unless you need deeper diagnostics.
-+    </p>
-+  </div>
-+
-+  <aside class="control-center-focus-card">
-+    <div class="control-center-focus-topline">
-+      <span class="control-center-focus-label">Compact inspector</span>
-+      <span class="control-center-focus-state{% if control_center_state.selected %} active{% endif %}">
-+        {% if control_center_state.selected %}Active{% else %}Waiting{% endif %}
-+      </span>
-+    </div>
-+
-+    {% if control_center_state.selected and rec is defined %}
-+    <strong class="control-center-focus-title">{{ rec.source_filename }}</strong>
-+    <p class="control-center-focus-copy">
-+      <code>{{ rec.id }}</code> · {{ rec.status }} · {{ control_center_state.tab_label }} tab
-+    </p>
-+    {% elif control_center_state.selected %}
-+    <strong class="control-center-focus-title">{{ control_center_state.selected }}</strong>
-+    <p class="control-center-focus-copy">Selected from the worklist. The compact inspector keeps the shell focused here.</p>
-+    {% else %}
-+    <strong class="control-center-focus-title">No recording selected</strong>
-+    <p class="control-center-focus-copy">Pick a row from the worklist to open overview, speakers, and quick actions on the right.</p>
-+    {% endif %}
-+
-+    <div class="control-center-focus-pills">
-+      <span class="control-center-focus-pill">{{ control_center_work_pane.recordings_panel.total }} visible</span>
-+      <span class="control-center-focus-pill">{{ control_center_state.status or "All statuses" }}</span>
-+      {% if control_center_state.q %}
-+      <span class="control-center-focus-pill">Search: {{ control_center_state.q }}</span>
-+      {% endif %}
-+    </div>
-+
-+    <div class="control-center-focus-actions">
-+      {% if control_center_state.selected %}
-+      <a href="{{ control_center_state.clear_selection_href }}" class="btn">Clear selection</a>
-+      {% endif %}
-+      {% if control_center_state.status or control_center_state.q %}
-+      <a href="{{ control_center_state.reset_href }}" class="btn">Reset queue view</a>
-+      {% endif %}
-+      {% if control_center_work_pane.workflow_links.selected_detail_href %}
-+      <a href="{{ control_center_work_pane.workflow_links.selected_detail_href }}" class="btn">Open full-page inspector</a>
-+      {% endif %}
-+    </div>
-+  </aside>
-+</section>
