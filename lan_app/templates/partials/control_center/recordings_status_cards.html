@@ -1,16 +1,19 @@
-<div class="recordings-status-pills">
-  {% for card in recordings_panel.status_cards %}
-  <a
-    href="{{ card.href }}"
-    class="recordings-status-pill{% if card.active %} active{% endif %}"
-    {% if card.hx_get %}
-    hx-get="{{ card.hx_get }}"
-    hx-target="#{{ recordings_panel.panel_id }}"
-    hx-swap="outerHTML"
-    {% endif %}
-  >
-    <span class="recordings-status-pill-count">{{ card.count }}</span>
-    <span class="badge s-{{ card.status }}">{{ card.status }}</span>
-  </a>
-  {% endfor %}
+<div class="recordings-status-strip">
+  <span class="recordings-status-strip-label">Triage</span>
+  <div class="recordings-status-pills">
+    {% for card in recordings_panel.status_cards %}
+    <a
+      href="{{ card.href }}"
+      class="recordings-status-pill recordings-status-pill--{{ card.status_class }}{% if card.active %} active{% endif %}"
+      {% if card.hx_get %}
+      hx-get="{{ card.hx_get }}"
+      hx-target="#{{ recordings_panel.panel_id }}"
+      hx-swap="outerHTML"
+      {% endif %}
+    >
+      <span class="recordings-status-pill-label">{{ card.status }}</span>
+      <span class="recordings-status-pill-count">{{ card.count }}</span>
+    </a>
+    {% endfor %}
+  </div>
 </div>

@@ -1,163 +1,1130 @@
-diff --git a/lan_app/system_status.py b/lan_app/system_status.py
-index b898aa2..24ae42e 100644
---- a/lan_app/system_status.py
-+++ b/lan_app/system_status.py
-@@ -209,6 +209,20 @@ def _safe_is_gpu_device(device: str | None) -> bool:
-         return False
+diff --git a/lan_app/templates/base.html b/lan_app/templates/base.html
+index 840fedd..1f6aba1 100644
+--- a/lan_app/templates/base.html
++++ b/lan_app/templates/base.html
+@@ -548,14 +548,14 @@ textarea:focus{
+ .control-center-upload-grid{
+   display:grid;
+   gap:14px;
+-  grid-template-columns:minmax(0,1fr) minmax(280px,.92fr);
++  grid-template-columns:minmax(0,1.15fr) minmax(280px,.85fr);
+ }
+ .control-center-upload-dropzone{
+   display:grid;
+   gap:10px;
+   align-content:center;
+   justify-items:start;
+-  min-height:212px;
++  min-height:172px;
+   padding:20px;
+   border-radius:24px;
+   border:2px dashed #b6c8ea;
+@@ -571,6 +571,12 @@ textarea:focus{
+   background:#f7faff;
+   transform:translateY(-1px);
+ }
++.upload-dropzone-actions{
++  display:flex;
++  flex-wrap:wrap;
++  gap:10px 12px;
++  align-items:center;
++}
+ .upload-caption{
+   font-size:12px;
+   color:var(--muted);
+@@ -582,20 +588,94 @@ textarea:focus{
+   padding:14px;
+   border:1px solid #dde7f6;
+   border-radius:20px;
+-  background:rgba(255,255,255,.9);
++  background:rgba(255,255,255,.92);
++}
++.upload-queue-head{
++  display:grid;
++  gap:4px;
++}
++.upload-queue-list{
++  display:grid;
++  gap:10px;
+ }
+-.upload-queue-table table{
++.upload-queue-empty{
+   margin:0;
+-  box-shadow:none;
++  padding:14px 16px;
++  border:1px dashed #c8d8f0;
++  border-radius:18px;
++  background:#f7faff;
++  color:var(--muted);
++  font-size:12px;
++}
++.upload-queue-item{
++  display:grid;
++  gap:12px;
++  padding:14px 16px;
++  border-radius:18px;
++  border:1px solid #dbe5f6;
++  background:#fff;
++  box-shadow:var(--shadow-soft);
++}
++.upload-queue-item-head,
++.upload-queue-item-footer{
++  display:flex;
++  gap:10px;
++  align-items:flex-start;
++  justify-content:space-between;
++}
++.upload-queue-item-title{
++  display:block;
++  font-size:13px;
++  line-height:1.35;
++  color:var(--text);
++}
++.upload-queue-item-meta{
++  display:flex;
++  gap:8px;
++  flex-wrap:wrap;
++  font-size:11px;
++  color:var(--muted);
++}
++.upload-queue-status{
++  display:inline-flex;
++  align-items:center;
++  min-height:24px;
++  padding:4px 10px;
++  border-radius:999px;
++  background:#edf4ff;
++  color:var(--primary);
++  font-size:11px;
++  font-weight:800;
++  letter-spacing:.04em;
++}
++.upload-queue-progress-grid{
++  display:grid;
++  gap:10px;
++}
++.upload-queue-progress-group{
++  display:grid;
++  gap:6px;
++}
++.upload-queue-progress-label{
++  font-size:10px;
++  font-weight:800;
++  letter-spacing:.1em;
++  text-transform:uppercase;
++  color:var(--muted);
++}
++.upload-queue-link{
++  font-size:12px;
++  color:var(--muted);
+ }
+ .upload-progress-wrap{
+   display:flex;
+   align-items:center;
+   gap:8px;
+-  min-width:140px;
++  min-width:0;
+ }
+ .upload-progress-track{
+-  width:92px;
++  flex:1 1 auto;
++  width:auto;
+   height:8px;
+   border-radius:999px;
+   background:#e8eef7;
+@@ -638,8 +718,12 @@ textarea:focus{
+ .recordings-filter-strip{
+   display:grid;
+   gap:10px;
+-  grid-template-columns:minmax(0,1fr) minmax(0,1.4fr) minmax(120px,.7fr) auto auto;
++  grid-template-columns:minmax(150px,.85fr) minmax(0,1.4fr) minmax(110px,.55fr) auto;
+   align-items:end;
++  padding:12px 14px;
++  border:1px solid #dde7f6;
++  border-radius:20px;
++  background:rgba(255,255,255,.88);
+ }
+ .recordings-filter-strip .filters{align-items:flex-end}
+ .filter-field{
+@@ -648,6 +732,12 @@ textarea:focus{
+   min-width:0;
+ }
+ .filter-field-grow{min-width:0}
++.recordings-filter-actions{
++  display:flex;
++  gap:8px;
++  align-items:center;
++  justify-content:flex-end;
++}
+ .control-center-worklist-summary{
+   display:grid;
+   gap:2px;
+@@ -668,22 +758,36 @@ textarea:focus{
+   text-transform:uppercase;
+   color:var(--muted);
+ }
++.recordings-status-strip{
++  display:flex;
++  gap:10px;
++  align-items:center;
++  flex-wrap:wrap;
++}
++.recordings-status-strip-label{
++  font-size:10px;
++  font-weight:800;
++  letter-spacing:.12em;
++  text-transform:uppercase;
++  color:var(--muted);
++}
+ .recordings-status-pills{
+   display:flex;
+-  gap:8px;
++  gap:6px;
+   flex-wrap:wrap;
+ }
+ .recordings-status-pill{
+   display:inline-flex;
+   align-items:center;
+   gap:8px;
+-  padding:8px 10px;
++  padding:6px 10px;
+   border-radius:999px;
+   border:1px solid var(--line);
+   background:#fff;
+   text-decoration:none;
+   color:var(--text);
+-  box-shadow:var(--shadow-soft);
++  box-shadow:none;
++  font-size:12px;
+ }
+ .recordings-status-pill:hover{
+   background:#f8fbff;
+@@ -693,24 +797,45 @@ textarea:focus{
+   background:var(--primary-soft);
+   border-color:#b8cdfb;
+ }
++.recordings-status-pill-label{
++  font-weight:700;
++}
+ .recordings-status-pill-count{
+   font-size:13px;
+   font-weight:800;
+ }
+-.recordings-table-wrap{overflow:auto}
++.recordings-table-wrap{
++  overflow:auto;
++  border:1px solid #dbe5f6;
++  border-radius:20px;
++  background:#fff;
++}
+ .recordings-table{
+-  min-width:840px;
++  min-width:1020px;
++}
++.recordings-table td{vertical-align:top}
++.recording-row-selected{
++  background:linear-gradient(90deg, rgba(36,99,235,.08) 0%, rgba(255,255,255,1) 68%);
++}
++.recordings-table .recording-row-selected td:first-child{
++  border-left:4px solid var(--primary);
+ }
+-.recording-row-selected{background:#eef4ff}
+ .recording-main{
+   display:grid;
+   gap:6px;
+ }
++.recording-title-row{
++  display:flex;
++  gap:8px;
++  align-items:center;
++  flex-wrap:wrap;
++}
+ .recording-name{
+   font-weight:700;
+   color:var(--text);
+   text-decoration:none;
+ }
++.recording-row-selected .recording-name{color:var(--primary)}
+ .recording-meta{
+   display:flex;
+   gap:8px;
+@@ -718,10 +843,34 @@ textarea:focus{
+   font-size:12px;
+   color:var(--muted);
+ }
++.recording-row-action{
++  display:flex;
++  align-items:center;
++}
++.recording-select-link{
++  font-size:12px;
++  font-weight:700;
++  color:var(--primary);
++  text-decoration:none;
++}
++.recording-select-link:hover{text-decoration:underline}
++.recording-status-cell{
++  display:grid;
++  gap:8px;
++}
++.recording-status-note{
++  font-size:12px;
++  line-height:1.4;
++  color:var(--muted);
++}
+ .recording-progress{
+   display:grid;
+   gap:6px;
+ }
++.recording-progress-note{
++  font-size:12px;
++  color:var(--muted);
++}
+ .progress-track{
+   height:7px;
+   border-radius:999px;
+@@ -742,6 +891,9 @@ textarea:focus{
+   color:var(--primary);
+   text-transform:uppercase;
+   letter-spacing:.08em;
++  padding:4px 8px;
++  border-radius:999px;
++  background:rgba(36,99,235,.08);
+ }
+ .recording-selected-flag::before{
+   content:"";
+@@ -750,11 +902,13 @@ textarea:focus{
+   border-radius:50%;
+   background:var(--primary);
+ }
+-.recording-reason{
+-  display:block;
+-  margin-top:6px;
+-  color:var(--warning);
+-  white-space:normal;
++.recording-source-cell{
++  display:grid;
++  gap:4px;
++}
++.recording-source-note{
++  font-size:11px;
++  color:var(--muted);
+ }
+ .control-center-system-bar{
+   position:sticky;
+@@ -1024,6 +1178,7 @@ textarea:focus{
+   .control-center-focus-actions{justify-content:flex-start}
+   .control-center-upload-grid{grid-template-columns:1fr}
+   .recordings-filter-strip{grid-template-columns:1fr}
++  .recordings-filter-actions{justify-content:flex-start}
+   .control-center-worklist-summary{justify-items:start}
+   .control-center-system-bar{position:static}
+   .filters{flex-direction:column;align-items:stretch}
+diff --git a/lan_app/templates/partials/control_center/recordings_filters.html b/lan_app/templates/partials/control_center/recordings_filters.html
+index ed71d99..0ed2341 100644
+--- a/lan_app/templates/partials/control_center/recordings_filters.html
++++ b/lan_app/templates/partials/control_center/recordings_filters.html
+@@ -39,6 +39,8 @@
+     </select>
+   </div>
+   <input type="hidden" name="offset" value="{{ recordings_filters.offset_reset }}">
+-  <button class="btn" type="submit">Apply filters</button>
+-  <a href="{{ recordings_filters.reset_href }}" class="btn">Reset</a>
++  <div class="recordings-filter-actions">
++    <button class="btn" type="submit">Apply</button>
++    <a href="{{ recordings_filters.reset_href }}" class="btn">Clear</a>
++  </div>
+ </form>
+diff --git a/lan_app/templates/partials/control_center/recordings_panel.html b/lan_app/templates/partials/control_center/recordings_panel.html
+index c8a45f9..a5fabc3 100644
+--- a/lan_app/templates/partials/control_center/recordings_panel.html
++++ b/lan_app/templates/partials/control_center/recordings_panel.html
+@@ -12,7 +12,7 @@
+   hx-swap="outerHTML"
+   {% endif %}
+ >
+-  <div class="control-center-pane-head control-center-pane-head-tight">
++  <div class="control-center-pane-head control-center-pane-head-tight control-center-pane-head-worklist">
+     <div>
+       <p class="eyebrow">Worklist</p>
+       <h2>{{ recordings_panel.title }}</h2>
+@@ -20,7 +20,7 @@
+     </div>
+     <div class="control-center-worklist-summary">
+       <span class="control-center-worklist-count">{{ recordings_panel.total }}</span>
+-      <span class="control-center-worklist-label">matching recordings</span>
++      <span class="control-center-worklist-label">visible now</span>
+     </div>
+   </div>
  
+diff --git a/lan_app/templates/partials/control_center/recordings_status_cards.html b/lan_app/templates/partials/control_center/recordings_status_cards.html
+index 2b229cb..f44078d 100644
+--- a/lan_app/templates/partials/control_center/recordings_status_cards.html
++++ b/lan_app/templates/partials/control_center/recordings_status_cards.html
+@@ -1,16 +1,19 @@
+-<div class="recordings-status-pills">
+-  {% for card in recordings_panel.status_cards %}
+-  <a
+-    href="{{ card.href }}"
+-    class="recordings-status-pill{% if card.active %} active{% endif %}"
+-    {% if card.hx_get %}
+-    hx-get="{{ card.hx_get }}"
+-    hx-target="#{{ recordings_panel.panel_id }}"
+-    hx-swap="outerHTML"
+-    {% endif %}
+-  >
+-    <span class="recordings-status-pill-count">{{ card.count }}</span>
+-    <span class="badge s-{{ card.status }}">{{ card.status }}</span>
+-  </a>
+-  {% endfor %}
++<div class="recordings-status-strip">
++  <span class="recordings-status-strip-label">Triage</span>
++  <div class="recordings-status-pills">
++    {% for card in recordings_panel.status_cards %}
++    <a
++      href="{{ card.href }}"
++      class="recordings-status-pill recordings-status-pill--{{ card.status_class }}{% if card.active %} active{% endif %}"
++      {% if card.hx_get %}
++      hx-get="{{ card.hx_get }}"
++      hx-target="#{{ recordings_panel.panel_id }}"
++      hx-swap="outerHTML"
++      {% endif %}
++    >
++      <span class="recordings-status-pill-label">{{ card.status }}</span>
++      <span class="recordings-status-pill-count">{{ card.count }}</span>
++    </a>
++    {% endfor %}
++  </div>
+ </div>
+diff --git a/lan_app/templates/partials/control_center/recordings_table.html b/lan_app/templates/partials/control_center/recordings_table.html
+index d9909f2..0cf8b07 100644
+--- a/lan_app/templates/partials/control_center/recordings_table.html
++++ b/lan_app/templates/partials/control_center/recordings_table.html
+@@ -3,69 +3,91 @@
+   <table class="recordings-table">
+     <thead>
+       <tr>
+-        <th>Recording</th>
++        <th>Name</th>
+         <th>Status</th>
+         <th style="width:220px">Progress</th>
+-        <th>Routing</th>
+         <th>Captured</th>
+         <th>Duration</th>
+-        <th style="width:120px">Actions</th>
++        <th>Source</th>
++        <th style="width:120px">Action</th>
+       </tr>
+     </thead>
+     <tbody>
+       {% for r in recordings_table.rows %}
+-      <tr{% if r.selected %} class="recording-row-selected"{% endif %}>
++      <tr class="recording-row{% if r.selected %} recording-row-selected{% endif %}" data-recording-id="{{ r.id }}"{% if r.selected %} data-selected="true"{% endif %}>
+         <td title="{{ r.source_filename }}">
+           <div class="recording-main">
++            <div class="recording-title-row">
+             {% if r.select_href %}
+-            <a href="{{ r.select_href }}" class="recording-name">{{ r.source_filename }}</a>
++            <a href="{{ r.select_href }}" class="recording-name"{% if r.selected %} aria-current="page"{% endif %}>{{ r.source_filename }}</a>
+             {% else %}
+             <a href="{{ r.detail_href }}" class="recording-name">{{ r.source_filename }}</a>
+             {% endif %}
++            {% if r.selected %}
++            <span class="recording-selected-flag">Selected</span>
++            {% endif %}
++            </div>
+             <div class="recording-meta">
+               <span><code>{{ r.id }}</code></span>
+-              <span>{{ r.source }}</span>
++              {% if r.suggested_project_name %}
++              <span>{{ r.suggested_project_name }}</span>
++              {% elif r.suggested_project_id %}
++              <span>Project #{{ r.suggested_project_id }}</span>
++              {% endif %}
+             </div>
+-            {% if r.select_href %}
+-            <div>
+-              {% if r.selected %}
+-              <span class="recording-selected-flag">Selected</span>
+-              {% else %}
++            {% if r.select_href and not r.selected %}
++            <div class="recording-row-action">
+               <a
+                 href="{{ r.select_href }}"
+-                class="btn"
++                class="recording-select-link"
+                 data-testid="control-center-select-recording"
+                 data-recording-id="{{ r.id }}"
+               >Select</a>
+-              {% endif %}
++            </div>
++            {% endif %}
++            {% if r.routing_confidence is not none and r.selected %}
++            <div class="recording-meta">
++              <span>Routing confidence {{ '%.2f'|format(r.routing_confidence) }}</span>
+             </div>
+             {% endif %}
+           </div>
+         </td>
+         <td>
+-          <span class="badge s-{{ r.status }}">{{ r.status }}</span>
+-          {% if r.status_reason_text_display %}
+-          <span class="recording-reason">{{ r.status_reason_text_display }}</span>
++          <div class="recording-status-cell">
++            <span class="badge s-{{ r.status }}">{{ r.status }}</span>
++          {% if r.worklist_hint %}
++            <span class="recording-status-note">{{ r.worklist_hint }}</span>
+           {% endif %}
++          </div>
+         </td>
+         <td>
+           <div class="recording-progress">
+             {% if r.status == "Processing" %}
+-            {% set progress_text = r.progress_percent ~ "% " ~ r.progress_stage_label %}
++            {% set progress_text = r.progress_percent ~ "%" %}
++            {% set progress_note = r.progress_stage_label %}
+             {% elif r.status == "Stopping" and r.pipeline_progress is not none %}
+-            {% set progress_text = r.progress_percent ~ "% " ~ r.progress_stage_label %}
++            {% set progress_text = r.progress_percent ~ "%" %}
++            {% set progress_note = r.progress_stage_label %}
+             {% elif r.status == "Stopping" %}
+             {% set progress_text = "Stop requested" %}
++            {% set progress_note = "" %}
+             {% elif r.status == "Queued" %}
+-            {% set progress_text = r.progress_percent ~ "% " ~ r.progress_stage_label %}
++            {% set progress_text = r.progress_percent ~ "%" %}
++            {% set progress_note = r.progress_stage_label %}
+             {% elif r.status in ["Ready", "NeedsReview", "Published"] %}
+-            {% set progress_text = "100% Done" %}
++            {% set progress_text = "100%" %}
++            {% set progress_note = "Done" %}
+             {% elif r.pipeline_progress is not none %}
+-            {% set progress_text = r.progress_percent ~ "% " ~ r.progress_stage_label %}
++            {% set progress_text = r.progress_percent ~ "%" %}
++            {% set progress_note = r.progress_stage_label %}
+             {% else %}
+             {% set progress_text = "—" %}
++            {% set progress_note = "" %}
+             {% endif %}
+             <strong>{{ progress_text }}</strong>
++            {% if progress_note %}
++            <span class="recording-progress-note">{{ progress_note }}</span>
++            {% endif %}
+             {% if progress_text != "—" and progress_text != "Stop requested" %}
+             <div class="progress-track">
+               <div class="progress-fill" style="width:{{ 100 if r.status in ['Ready', 'NeedsReview', 'Published'] else r.progress_percent }}%"></div>
+@@ -73,31 +95,16 @@
+             {% endif %}
+           </div>
+         </td>
++        <td>{{ r.captured_at_display }}</td>
++        <td>{{ r.duration_display }}</td>
+         <td>
+-          <div class="recording-main">
+-            <strong>
+-              {% if r.suggested_project_name %}
+-              {{ r.suggested_project_name }}
+-              {% elif r.suggested_project_id %}
+-              #{{ r.suggested_project_id }}
+-              {% else %}
+-              —
+-              {% endif %}
+-            </strong>
+-            <div class="recording-meta">
+-              <span>
+-                Confidence:
+-                {% if r.routing_confidence is not none %}
+-                {{ '%.2f'|format(r.routing_confidence) }}
+-                {% else %}
+-                —
+-                {% endif %}
+-              </span>
+-            </div>
++          <div class="recording-source-cell">
++            <strong>{{ r.source_display }}</strong>
++            {% if r.created_at_display != "—" %}
++            <span class="recording-source-note">Added {{ r.created_at_display }}</span>
++            {% endif %}
+           </div>
+         </td>
+-        <td>{{ r.captured_at_display }}</td>
+-        <td>{{ r.duration_display }}</td>
+         <td>
+           <select
+             class="action-sel"
+@@ -147,9 +154,9 @@
+ {% else %}
+ <p class="placeholder">
+   {% if not recordings_table.total and not recordings_table.status_filter and not recordings_table.search_query %}
+-  No recordings yet. Upload audio to start the queue.
++  No recordings yet. Upload audio to start the operator inbox.
+   {% else %}
+-  No recordings{% if recordings_table.status_filter %} with status <strong>{{ recordings_table.status_filter }}</strong>{% endif %}{% if recordings_table.search_query %} matching <strong>{{ recordings_table.search_query }}</strong>{% endif %}. Clear the filters to widen the queue.
++  No recordings{% if recordings_table.status_filter %} with status <strong>{{ recordings_table.status_filter }}</strong>{% endif %}{% if recordings_table.search_query %} matching <strong>{{ recordings_table.search_query }}</strong>{% endif %}. Clear the filters to widen the inbox.
+   {% endif %}
+ </p>
+ {% endif %}
+diff --git a/lan_app/templates/partials/control_center/upload_panel.html b/lan_app/templates/partials/control_center/upload_panel.html
+index bc48bc1..0327c30 100644
+--- a/lan_app/templates/partials/control_center/upload_panel.html
++++ b/lan_app/templates/partials/control_center/upload_panel.html
+@@ -6,36 +6,25 @@
+       class="control-center-upload-dropzone"
+       tabindex="0"
+     >
+-      <p class="eyebrow">Drop Audio</p>
+-      <h3>Drag files in or start from your device</h3>
+-      <p class="upload-caption">MP3, WAV, FLAC and similar formats are accepted. Files enter the live queue immediately after upload.</p>
+-      <button type="button" class="btn" id="{{ upload_shell.pick_files_button_id }}">Choose files</button>
+-      <p class="upload-caption">Drop audio files here or use Choose files.</p>
++      <p class="eyebrow">Quick Intake</p>
++      <h3>Add recordings to today&apos;s operator inbox</h3>
++      <p class="upload-caption">Drop audio here or browse from disk. New recordings land in the main worklist below as soon as upload completes.</p>
++      <div class="upload-dropzone-actions">
++        <button type="button" class="btn" id="{{ upload_shell.pick_files_button_id }}">Choose files</button>
++        <span class="upload-caption">MP3, WAV, FLAC and similar formats.</span>
++      </div>
+     </div>
+   </div>
+   <div class="upload-queue-shell">
+-    <div>
+-      <p class="eyebrow">Queue Preview</p>
+-      <h3>Recent uploads and processing progress</h3>
++    <div class="upload-queue-head">
++      <p class="eyebrow">Live Intake</p>
++      <h3>Only in-flight uploads stay here</h3>
++      <p class="upload-caption">The full queue stays in the worklist below, so this panel only tracks files that are still entering the system.</p>
+     </div>
+-    <div class="upload-queue-table">
+-      <table>
+-        <thead>
+-          <tr>
+-            <th>Filename</th>
+-            <th>Size</th>
+-            <th>Upload progress</th>
+-            <th>Processing progress</th>
+-            <th>Status</th>
+-            <th>Link</th>
+-          </tr>
+-        </thead>
+-        <tbody id="{{ upload_shell.upload_rows_id }}">
+-          <tr id="{{ upload_shell.empty_row_id }}">
+-            <td colspan="{{ upload_shell.queue_empty_colspan }}" class="placeholder">No files queued yet.</td>
+-          </tr>
+-        </tbody>
+-      </table>
++    <div id="{{ upload_shell.upload_rows_id }}" class="upload-queue-list">
++      <div id="{{ upload_shell.empty_row_id }}" class="upload-queue-empty">
++        No active uploads. New files appear here until they enter the main inbox.
++      </div>
+     </div>
+   </div>
+ </div>
+diff --git a/lan_app/templates/partials/control_center/upload_script.html b/lan_app/templates/partials/control_center/upload_script.html
+index e919a71..91423e6 100644
+--- a/lan_app/templates/partials/control_center/upload_script.html
++++ b/lan_app/templates/partials/control_center/upload_script.html
+@@ -73,46 +73,87 @@ function removePlaceholderRow() {
+   }
+ }
  
-+def _safe_get_recording(
-+    recording_id: str,
-+    *,
-+    settings: AppSettings,
-+) -> dict[str, Any] | None:
-+    if not recording_id:
-+        return None
-+    try:
-+        recording = get_recording(recording_id, settings=settings)
-+    except Exception:
-+        return None
-+    return recording if isinstance(recording, dict) else None
++function makeProgressGroup(labelText) {
++  var wrap = document.createElement("div");
++  wrap.className = "upload-queue-progress-group";
 +
++  var label = document.createElement("span");
++  label.className = "upload-queue-progress-label";
++  label.textContent = labelText;
 +
- def _active_job_snapshot(settings: AppSettings) -> dict[str, Any]:
-     try:
-         started_rows, started_total = list_jobs(
-@@ -239,7 +253,7 @@ def _active_job_snapshot(settings: AppSettings) -> dict[str, Any]:
-     queued_job = queued_rows[0] if queued_rows else None
-     active_recording = None
-     if isinstance(active_job, dict):
--        active_recording = get_recording(
-+        active_recording = _safe_get_recording(
-             str(active_job.get("recording_id") or ""),
-             settings=settings,
-         )
-@@ -256,7 +270,7 @@ def _active_job_snapshot(settings: AppSettings) -> dict[str, Any]:
-             f"· {_stage_label(active_stage)}"
-         )
-     elif isinstance(queued_job, dict):
--        queued_recording = get_recording(
-+        queued_recording = _safe_get_recording(
-             str(queued_job.get("recording_id") or ""),
-             settings=settings,
-         )
++  var progress = makeProgressCell();
++  wrap.appendChild(label);
++  wrap.appendChild(progress.node);
++
++  return {node: wrap, progress: progress};
++}
++
+ function addFileRow(file) {
+   removePlaceholderRow();
+   var rows = document.getElementById("{{ upload_shell.upload_rows_id }}");
+-  var tr = document.createElement("tr");
++  var itemNode = document.createElement("article");
++  itemNode.className = "upload-queue-item";
+ 
+-  var nameCell = document.createElement("td");
+-  nameCell.textContent = file.name || "(unnamed)";
+-  nameCell.title = file.name || "";
++  var head = document.createElement("div");
++  head.className = "upload-queue-item-head";
+ 
+-  var sizeCell = document.createElement("td");
+-  sizeCell.textContent = formatSize(file.size);
++  var titleWrap = document.createElement("div");
++  titleWrap.className = "recording-main";
+ 
+-  var uploadCell = document.createElement("td");
+-  var uploadProgress = makeProgressCell();
+-  uploadCell.appendChild(uploadProgress.node);
++  var title = document.createElement("strong");
++  title.className = "upload-queue-item-title";
++  title.textContent = file.name || "(unnamed)";
++  title.title = file.name || "";
+ 
+-  var processCell = document.createElement("td");
+-  var processProgress = makeProgressCell();
+-  processCell.appendChild(processProgress.node);
++  var meta = document.createElement("div");
++  meta.className = "upload-queue-item-meta";
+ 
+-  var statusCell = document.createElement("td");
++  var sizeMeta = document.createElement("span");
++  sizeMeta.textContent = formatSize(file.size);
++  meta.appendChild(sizeMeta);
++
++  var queuedMeta = document.createElement("span");
++  queuedMeta.textContent = "Queued";
++  meta.appendChild(queuedMeta);
++
++  titleWrap.appendChild(title);
++  titleWrap.appendChild(meta);
++
++  var statusCell = document.createElement("span");
++  statusCell.className = "upload-queue-status";
+   statusCell.textContent = "Queued for upload";
+ 
+-  var linkCell = document.createElement("td");
+-  linkCell.textContent = "—";
++  head.appendChild(titleWrap);
++  head.appendChild(statusCell);
++
++  var progressGrid = document.createElement("div");
++  progressGrid.className = "upload-queue-progress-grid";
++
++  var uploadProgress = makeProgressGroup("Upload");
++  progressGrid.appendChild(uploadProgress.node);
++
++  var processProgress = makeProgressGroup("Processing");
++  progressGrid.appendChild(processProgress.node);
++
++  var footer = document.createElement("div");
++  footer.className = "upload-queue-item-footer";
++
++  var linkCell = document.createElement("div");
++  linkCell.className = "upload-queue-link";
++  linkCell.textContent = "Waiting for recording";
++  footer.appendChild(linkCell);
+ 
+-  tr.appendChild(nameCell);
+-  tr.appendChild(sizeCell);
+-  tr.appendChild(uploadCell);
+-  tr.appendChild(processCell);
+-  tr.appendChild(statusCell);
+-  tr.appendChild(linkCell);
+-  rows.appendChild(tr);
++  itemNode.appendChild(head);
++  itemNode.appendChild(progressGrid);
++  itemNode.appendChild(footer);
++  rows.prepend(itemNode);
+ 
+   return {
+     file: file,
+     statusCell: statusCell,
+     linkCell: linkCell,
+-    uploadProgress: uploadProgress,
+-    processProgress: processProgress,
++    uploadProgress: uploadProgress.progress,
++    processProgress: processProgress.progress,
+     lastRefreshSignature: "",
+   };
+ }
+@@ -337,25 +378,25 @@ if (fileInput && pickFilesButton && dropzone && fileInput.dataset.uploadBound !=
+   dropzone.addEventListener("dragenter", function(event) {
+     stopDragDefaults(event);
+     dropzone.style.borderColor = "#4a6080";
+-    dropzone.style.background = "#eef2ff";
++    dropzone.style.background = "#eef4ff";
+   });
+ 
+   dropzone.addEventListener("dragover", function(event) {
+     stopDragDefaults(event);
+     dropzone.style.borderColor = "#4a6080";
+-    dropzone.style.background = "#eef2ff";
++    dropzone.style.background = "#eef4ff";
+   });
+ 
+   dropzone.addEventListener("dragleave", function(event) {
+     stopDragDefaults(event);
+-    dropzone.style.borderColor = "#99b";
+-    dropzone.style.background = "#fff";
++    dropzone.style.borderColor = "#b6c8ea";
++    dropzone.style.background = "";
+   });
+ 
+   dropzone.addEventListener("drop", function(event) {
+     stopDragDefaults(event);
+-    dropzone.style.borderColor = "#99b";
+-    dropzone.style.background = "#fff";
++    dropzone.style.borderColor = "#b6c8ea";
++    dropzone.style.background = "";
+     if (!event.dataTransfer) {
+       return;
+     }
+diff --git a/lan_app/templates/partials/control_center/work_pane.html b/lan_app/templates/partials/control_center/work_pane.html
+index 678e040..440efa7 100644
+--- a/lan_app/templates/partials/control_center/work_pane.html
++++ b/lan_app/templates/partials/control_center/work_pane.html
+@@ -2,10 +2,10 @@
+   <div class="control-center-pane-head">
+     <div>
+       <p class="eyebrow">Intake</p>
+-      <h2>Bring new audio into today&apos;s queue</h2>
+-      <p class="control-center-pane-copy">Uploads stay on the left so you can add files and move straight into triage below.</p>
++      <h2>Drop audio into today&apos;s inbox</h2>
++      <p class="control-center-pane-copy">Add files, keep intake progress visible, and move straight into the operator inbox below.</p>
+     </div>
+-    <span class="upload-progress-pill">Live queue</span>
++    <span class="upload-progress-pill">Live intake</span>
+   </div>
+   {% include "partials/control_center/upload_panel.html" %}
+ </div>
 diff --git a/lan_app/ui_routes.py b/lan_app/ui_routes.py
-index 6337bf2..e7414b9 100644
+index e7414b9..31e65d9 100644
 --- a/lan_app/ui_routes.py
 +++ b/lan_app/ui_routes.py
-@@ -2820,11 +2820,13 @@ def _control_center_system_bar_context(
-     *,
-     state: dict[str, Any],
-     recordings_panel: dict[str, Any],
-+    runtime_status: dict[str, Any] | None = None,
- ) -> dict[str, Any]:
-     queue_detail = state["status"] or "All statuses"
-     if state["q"]:
-         queue_detail = f"{queue_detail} · search: {state['q']}"
--    runtime_status = collect_control_center_runtime_status(settings)
-+    if runtime_status is None:
-+        runtime_status = collect_control_center_runtime_status(settings)
-     return {
-         "primary_items": [
-             {
-@@ -3896,6 +3898,10 @@ async def ui_dashboard(
-                     "choose another recording from the queue."
-                 ),
+@@ -46,6 +46,8 @@ from .constants import (
+     JOB_STATUS_QUEUED,
+     JOB_TYPE_PRECHECK,
+     RECORDING_STATUSES,
++    RECORDING_STATUS_FAILED,
++    RECORDING_STATUS_NEEDS_REVIEW,
+     RECORDING_STATUS_PUBLISHED,
+     RECORDING_STATUS_PROCESSING,
+     RECORDING_STATUS_QUEUED,
+@@ -297,6 +299,49 @@ def _recording_status_reason_text(recording: dict[str, Any]) -> str:
+     return str(recording.get("review_reason_text") or "").strip()
+ 
+ 
++def _recording_source_display(source: object) -> str:
++    label = str(source or "").strip()
++    if not label:
++        return "Unknown"
++    return label.replace("_", " ").title()
++
++
++def _recording_worklist_hint(recording: dict[str, Any]) -> str:
++    reason = str(recording.get("status_reason_text_display") or "").strip()
++    if reason:
++        return reason
++
++    status = str(recording.get("status") or "").strip()
++    stage_label = _pipeline_stage_label(recording.get("pipeline_stage"))
++    confidence = recording.get("routing_confidence")
++    try:
++        confidence_value = float(confidence) if confidence is not None else None
++    except (TypeError, ValueError):
++        confidence_value = None
++
++    if status == RECORDING_STATUS_QUEUED:
++        return "Waiting for the worker to pick this up."
++    if status == RECORDING_STATUS_PROCESSING:
++        return f"Running {stage_label}."
++    if status == RECORDING_STATUS_STOPPING:
++        return "Stop requested. Waiting for a safe checkpoint."
++    if status == RECORDING_STATUS_STOPPED:
++        return "Stopped by an operator."
++    if status == RECORDING_STATUS_NEEDS_REVIEW:
++        if confidence_value is not None:
++            return f"Routing confidence {confidence_value:.2f}. Review before publish."
++        return "Manual review is still required."
++    if status == RECORDING_STATUS_READY:
++        return "Ready for export."
++    if status == RECORDING_STATUS_PUBLISHED:
++        return "Published output is available."
++    if status == RECORDING_STATUS_QUARANTINE:
++        return "Quarantined. Inspect before requeue."
++    if status == RECORDING_STATUS_FAILED:
++        return "Open the recording to inspect the failed stage."
++    return ""
++
++
+ def _safe_pipeline_progress(value: object) -> float:
+     try:
+         progress = float(value)
+@@ -2877,6 +2922,8 @@ def _recordings_list_items_context(
+         progress_ratio = _safe_pipeline_progress(prepared.get("pipeline_progress"))
+         prepared["progress_percent"] = int(round(progress_ratio * 100))
+         prepared["progress_stage_label"] = _pipeline_stage_label(prepared.get("pipeline_stage"))
++        prepared["source_display"] = _recording_source_display(prepared.get("source"))
++        prepared["worklist_hint"] = _recording_worklist_hint(prepared)
+         prepared_items.append(prepared)
+     return prepared_items
+ 
+@@ -2941,6 +2988,39 @@ def _recordings_status_cards_context(
+ ) -> list[dict[str, Any]]:
+     counts = _status_counts(settings)
+     cards: list[dict[str, Any]] = []
++    all_fragment_href = ""
++    all_href = _recordings_page_href(
++        status_filter="",
++        search_query=search_query,
++        limit=limit,
++        offset=0,
++    )
++    if mode == "control_center":
++        all_href = _control_center_shell_href(
++            selected=selected,
++            status_filter="",
++            search_query=search_query,
++            tab=tab,
++            limit=limit,
++        )
++        all_fragment_href = _control_center_recordings_panel_url(
++            selected=selected,
++            status_filter="",
++            search_query=search_query,
++            tab=tab,
++            limit=limit,
++            offset=0,
++        )
++    cards.append(
++        {
++            "status": "All",
++            "count": sum(counts.values()),
++            "active": not status_filter,
++            "href": all_href,
++            "hx_get": all_fragment_href,
++            "status_class": "all",
++        }
++    )
+     for status in RECORDING_STATUSES:
+         fragment_href = ""
+         href = _recordings_page_href(
+@@ -2972,6 +3052,7 @@ def _recordings_status_cards_context(
+                 "active": status == status_filter,
+                 "href": href,
+                 "hx_get": fragment_href,
++                "status_class": status.lower(),
              }
-+    runtime_status = await run_in_threadpool(
-+        collect_control_center_runtime_status,
-+        _settings,
-+    )
-     return templates.TemplateResponse(
-         request,
-         "control_center.html",
-@@ -3910,6 +3916,7 @@ async def ui_dashboard(
-                 _settings,
-                 state=control_center_state,
-                 recordings_panel=control_center_work_pane["recordings_panel"],
-+                runtime_status=runtime_status,
-             ),
-             "control_center_empty_inspector": control_center_empty_inspector,
-         },
-@@ -3965,6 +3972,10 @@ async def ui_control_center_system_bar(
-         limit=limit,
-         offset=offset,
-     )
-+    runtime_status = await run_in_threadpool(
-+        collect_control_center_runtime_status,
-+        _settings,
-+    )
-     return templates.TemplateResponse(
-         request,
-         "partials/control_center/system_bar.html",
-@@ -3979,6 +3990,7 @@ async def ui_control_center_system_bar(
-                         state=control_center_state,
-                     )
-                 },
-+                runtime_status=runtime_status,
-             ),
-         },
-     )
+         )
+     return cards
+@@ -3181,9 +3262,9 @@ def _recordings_panel_context(
+         "panel_id": panel_id,
+         "mode": mode,
+         "total": total,
+-        "title": "Recording worklist" if is_control_center else "Recordings list",
++        "title": "Operator inbox" if is_control_center else "Recordings list",
+         "description": (
+-            "Filter, triage, and select a recording without leaving the operator workspace."
++            "Keep uploads, triage, and selection in one compact daily inbox."
+             if is_control_center
+             else "Use the same queue, filters, and row actions as the Control Center."
+         ),
+diff --git a/tasks/QUEUE.md b/tasks/QUEUE.md
+index 03a2f2e..efb9067 100644
+--- a/tasks/QUEUE.md
++++ b/tasks/QUEUE.md
+@@ -575,7 +575,7 @@ Queue (in order)
+ - Depends on: PR-UI-STITCH-CONTROL-CENTER-02 and PR-GPU-SCHEDULER-01 and PR-DIARIZATION-GPU-01 and PR-FIX-SENTIMENT-GPU-01
+ 
+ 115) PR-UI-STITCH-WORKLIST-01: Refine the Control Center left worklist, replace Confidence with Progress, and remove bulky filter and status clutter
+-- Status: TODO
++- Status: DONE
+ - Tasks file: tasks/PR-UI-STITCH-WORKLIST-01.md
+ - Depends on: PR-UI-STITCH-CONTROL-CENTER-02 and PR-OPS-SYSTEM-BAR-01
+ 
 diff --git a/tests/test_cov_lan_app_ui_routes.py b/tests/test_cov_lan_app_ui_routes.py
-index e53aa75..4e9c39b 100644
+index 4e9c39b..6829456 100644
 --- a/tests/test_cov_lan_app_ui_routes.py
 +++ b/tests/test_cov_lan_app_ui_routes.py
-@@ -572,9 +572,11 @@ def test_control_center_system_bar_route_avoids_work_pane_builder(
-         *,
-         state: dict[str, Any],
-         recordings_panel: dict[str, Any],
-+        runtime_status: dict[str, Any] | None = None,
-     ) -> dict[str, Any]:
-         assert settings is seen["settings"]
-         assert recordings_panel == {"total": 7}
-+        assert runtime_status == {"active_jobs_item": {}, "secondary_items": [], "note": "test runtime note"}
-         return {
-             "primary_items": [
-                 {
-@@ -590,6 +592,12 @@ def test_control_center_system_bar_route_avoids_work_pane_builder(
-     monkeypatch.setattr(ui_routes, "_control_center_work_pane_context", _unexpected_work_pane)
-     monkeypatch.setattr(ui_routes, "_control_center_recordings_panel_context", _unexpected_recordings_panel)
-     monkeypatch.setattr(ui_routes, "list_recordings", _fake_list_recordings)
-+    async def _fake_run_in_threadpool(func, settings):
-+        assert func is ui_routes.collect_control_center_runtime_status
-+        assert settings is ui_routes._settings  # noqa: SLF001
-+        return {"active_jobs_item": {}, "secondary_items": [], "note": "test runtime note"}
+@@ -19,7 +19,9 @@ from lan_app.constants import (
+     RECORDING_STATUS_FAILED,
+     RECORDING_STATUS_NEEDS_REVIEW,
+     RECORDING_STATUS_PROCESSING,
++    RECORDING_STATUS_PUBLISHED,
+     RECORDING_STATUS_QUEUED,
++    RECORDING_STATUS_QUARANTINE,
+     RECORDING_STATUS_READY,
+     RECORDING_STATUS_STOPPED,
+     RECORDING_STATUS_STOPPING,
+@@ -418,6 +420,8 @@ def test_control_center_helper_contexts_cover_fragment_builders(
+         "/?selected=rec-helper-1&status=Ready&q=helper&tab=speakers"
+     )
+     assert panel_context["recordings_table"]["rows"][0]["selected"] is True
++    assert panel_context["status_cards"][0]["status"] == "All"
++    assert panel_context["status_cards"][0]["active"] is False
+     assert any(card["status"] == "Ready" and card["active"] for card in panel_context["status_cards"])
+ 
+     work_pane = ui_routes._control_center_work_pane_context(  # noqa: SLF001
+@@ -425,6 +429,7 @@ def test_control_center_helper_contexts_cover_fragment_builders(
+         state=state,
+     )
+     assert work_pane["recordings_panel"]["panel_id"] == "control-center-recordings-panel"
++    assert work_pane["recordings_panel"]["title"] == "Operator inbox"
+     assert "daily loop" in work_pane["preview_message"]
+     assert work_pane["recordings_panel"]["recordings_filters"]["limit"] == 100
+     assert work_pane["workflow_links"]["selected_detail_href"] == "/recordings/rec-helper-1?tab=speakers"
+@@ -741,6 +746,8 @@ def test_display_helpers_cover_timezone_duration_and_prepare_recording(
+     assert ui_routes._pipeline_stage_label("llm_chunk_2_of_5") == "LLM Chunk 2 of 5"  # noqa: SLF001
+     assert ui_routes._pipeline_stage_label("llm_chunk_bad") == "Llm Chunk Bad"  # noqa: SLF001
+     assert ui_routes._pipeline_stage_label("custom_stage") == "Custom Stage"  # noqa: SLF001
++    assert ui_routes._recording_source_display(None) == "Unknown"  # noqa: SLF001
++    assert ui_routes._recording_source_display("manual_upload") == "Manual Upload"  # noqa: SLF001
+     assert ui_routes._format_duration_seconds(None) == "—"  # noqa: SLF001
+     assert ui_routes._format_duration_seconds(0) == "—"  # noqa: SLF001
+     assert ui_routes._format_duration_seconds(2.0) == "00:00:02"  # noqa: SLF001
+@@ -852,6 +859,81 @@ def test_display_helpers_cover_timezone_duration_and_prepare_recording(
+     assert prepared_stopped["stop_eligible"] is False
+ 
+ 
++@pytest.mark.parametrize(
++    ("recording", "expected"),
++    [
++        ({"status_reason_text_display": "Needs an operator review."}, "Needs an operator review."),
++        ({"status": RECORDING_STATUS_QUEUED}, "Waiting for the worker to pick this up."),
++        (
++            {"status": RECORDING_STATUS_PROCESSING, "pipeline_stage": "diarize"},
++            "Running Diarization.",
++        ),
++        (
++            {"status": RECORDING_STATUS_STOPPING},
++            "Stop requested. Waiting for a safe checkpoint.",
++        ),
++        ({"status": RECORDING_STATUS_STOPPED}, "Stopped by an operator."),
++        (
++            {"status": RECORDING_STATUS_NEEDS_REVIEW, "routing_confidence": 0.42},
++            "Routing confidence 0.42. Review before publish.",
++        ),
++        (
++            {"status": RECORDING_STATUS_NEEDS_REVIEW},
++            "Manual review is still required.",
++        ),
++        (
++            {"status": RECORDING_STATUS_NEEDS_REVIEW, "routing_confidence": "bad"},
++            "Manual review is still required.",
++        ),
++        ({"status": RECORDING_STATUS_READY}, "Ready for export."),
++        ({"status": RECORDING_STATUS_PUBLISHED}, "Published output is available."),
++        (
++            {"status": RECORDING_STATUS_QUARANTINE},
++            "Quarantined. Inspect before requeue.",
++        ),
++        (
++            {"status": RECORDING_STATUS_FAILED},
++            "Open the recording to inspect the failed stage.",
++        ),
++        ({"status": "Unknown"}, ""),
++    ],
++)
++def test_recording_worklist_hint_covers_statuses(
++    recording: dict[str, Any],
++    expected: str,
++) -> None:
++    assert ui_routes._recording_worklist_hint(recording) == expected  # noqa: SLF001
 +
-+    monkeypatch.setattr(ui_routes, "run_in_threadpool", _fake_run_in_threadpool)
-     monkeypatch.setattr(ui_routes, "_control_center_system_bar_context", _fake_system_bar_context)
- 
-     response = c.get(
-diff --git a/tests/test_system_status.py b/tests/test_system_status.py
-index 0ebd419..f91a530 100644
---- a/tests/test_system_status.py
-+++ b/tests/test_system_status.py
-@@ -106,6 +106,7 @@ def test_system_status_small_helpers_cover_edge_cases(tmp_path, monkeypatch):
-     assert system_status._extract_model_ids([]) == []  # noqa: SLF001
-     assert system_status._safe_is_gpu_device("cuda:0") is True  # noqa: SLF001
-     assert system_status._safe_is_gpu_device("bogus") is False  # noqa: SLF001
-+    assert system_status._safe_get_recording("", settings=_settings(tmp_path)) is None  # noqa: SLF001
- 
- 
- def test_probe_spark_runtime_variants(tmp_path, monkeypatch):
-@@ -218,6 +219,21 @@ def test_active_job_snapshot_paths(tmp_path, monkeypatch):
-     failed = system_status._active_job_snapshot(_settings(tmp_path))  # noqa: SLF001
-     assert failed["error"] == "db unavailable"
- 
-+    monkeypatch.setattr(system_status, "list_jobs", _list_jobs_started)
-+    monkeypatch.setattr(
-+        system_status,
-+        "get_recording",
-+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("lookup unavailable")),
++
++def test_recordings_list_items_context_adds_source_and_worklist_fields(tmp_path: Path) -> None:
++    cfg = _cfg(tmp_path)
++
++    items = ui_routes._recordings_list_items_context(  # noqa: SLF001
++        [
++            {
++                "id": "rec-worklist-1",
++                "status": RECORDING_STATUS_NEEDS_REVIEW,
++                "source": "manual_upload",
++                "source_filename": "worklist.wav",
++                "duration_sec": 1.0,
++                "pipeline_progress": 0.5,
++                "pipeline_stage": "diarize",
++                "captured_at": None,
++                "created_at": None,
++                "updated_at": None,
++                "pipeline_updated_at": None,
++                "review_reason_text": None,
++            }
++        ],
++        settings=cfg,
 +    )
-+    started_lookup_failed = system_status._active_job_snapshot(_settings(tmp_path))  # noqa: SLF001
-+    assert started_lookup_failed["error"] is None
-+    assert started_lookup_failed["active_detail"] == "rec-started-1 · Precheck"
 +
-+    monkeypatch.setattr(system_status, "list_jobs", _list_jobs_queued)
-+    queued_lookup_failed = system_status._active_job_snapshot(_settings(tmp_path))  # noqa: SLF001
-+    assert queued_lookup_failed["error"] is None
-+    assert queued_lookup_failed["active_detail"] == "Next: rec-queued-1"
++    assert items[0]["progress_percent"] == 50
++    assert items[0]["progress_stage_label"] == "Diarization"
++    assert items[0]["source_display"] == "Manual Upload"
++    assert items[0]["worklist_hint"] == "Manual review is still required."
 +
++
+ def test_stage_rows_and_diagnostics_context_cover_new_observability_helpers() -> None:
+     rows = ui_routes._pipeline_stage_rows_for_display(  # noqa: SLF001
+         "rec-observability-1",
+diff --git a/tests/test_ui_routes.py b/tests/test_ui_routes.py
+index b152712..6c1c679 100644
+--- a/tests/test_ui_routes.py
++++ b/tests/test_ui_routes.py
+@@ -386,8 +386,8 @@ def test_dashboard_with_data(tmp_path, monkeypatch):
+     c = TestClient(api.app, follow_redirects=True)
+     r = c.get("/")
+     assert r.status_code == 200
+-    assert "Recording worklist" in r.text
+-    assert "Drop audio files here or use Choose files." in r.text
++    assert "Operator inbox" in r.text
++    assert "Drop audio here or browse from disk." in r.text
+     assert "GPU ready" in r.text
+     assert "gpt-oss:120b" in r.text
+     assert "Daily workflow" not in r.text
+@@ -523,8 +523,8 @@ def test_control_center_system_bar_renders_degraded_cpu_fallback(seeded_client,
+         "/ui/control-center/work-pane?selected=rec-ui-1&status=Ready&q=meeting&tab=speakers"
+     )
+     assert work_pane.status_code == 200
+-    assert "Bring new audio into today" in work_pane.text
+-    assert "Recording worklist" in work_pane.text
++    assert "Drop audio into today" in work_pane.text
++    assert "Operator inbox" in work_pane.text
+     assert "Fallback and Admin Pages" not in work_pane.text
+     assert "meeting.mp3" in work_pane.text
+     assert 'id="control-center-recordings-panel"' in work_pane.text
+@@ -696,6 +696,9 @@ def test_control_center_recordings_panel_filters_search_and_actions(
+     assert 'value="Ready" selected' in panel.text
+     assert "alpha.wav" in panel.text
+     assert "beta.wav" not in panel.text
++    assert ">Progress<" in panel.text
++    assert ">Source<" in panel.text
++    assert ">Confidence<" not in panel.text
+     assert 'data-return-to="control-center"' in panel.text
+     assert (
+         'data-workspace-header-url="/ui/control-center/workspace-header?selected=&amp;status=Ready&amp;'
+@@ -711,6 +714,8 @@ def test_control_center_recordings_panel_filters_search_and_actions(
+     selected_panel = c.get("/ui/control-center/recordings/panel?selected=rec-cc-panel-1&tab=speakers")
+     assert selected_panel.status_code == 200
+     assert "Selected" in selected_panel.text
++    assert 'data-selected="true"' in selected_panel.text
++    assert 'aria-current="page"' in selected_panel.text
  
- def test_active_runtime_metadata_prefers_diarization_metadata(tmp_path):
-     settings = _settings(tmp_path)
+     conservative = c.get("/ui/control-center/recordings/panel?q=upload")
+     assert conservative.status_code == 200
+@@ -858,6 +863,9 @@ def test_recordings_fragment_endpoints_render_filters_table_and_pagination(
+     table = c.get("/ui/control-center/recordings/table?q=fragment&limit=2&offset=0")
+     assert table.status_code == 200
+     assert "fragment-a.wav" in table.text
++    assert ">Progress<" in table.text
++    assert ">Source<" in table.text
++    assert ">Confidence<" not in table.text
+     assert "50%" in table.text
+     assert "Next &#187;" in table.text
+     assert "Delete" in table.text
+@@ -3168,8 +3176,8 @@ def test_upload_page(client):
+     assert r.status_code == 200
+     assert "Upload" in r.text
+     assert 'id="file-input"' in r.text
+-    assert "Drop audio files here or use Choose files." in r.text
+-    assert "No files queued yet." in r.text
++    assert "Drop audio here or browse from disk." in r.text
++    assert "No active uploads. New files appear here until they enter the main inbox." in r.text
+ 
+ 
+ def test_upload_panel_fragment_endpoint(client):
+@@ -3177,7 +3185,7 @@ def test_upload_panel_fragment_endpoint(client):
+     assert r.status_code == 200
+     assert 'id="file-input"' in r.text
+     assert 'id="upload-rows"' in r.text
+-    assert "No files queued yet." in r.text
++    assert "No active uploads. New files appear here until they enter the main inbox." in r.text
+     assert "<html" not in r.text
+ 
+ 

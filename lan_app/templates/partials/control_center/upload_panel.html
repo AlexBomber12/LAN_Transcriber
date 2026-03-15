@@ -6,36 +6,25 @@
       class="control-center-upload-dropzone"
       tabindex="0"
     >
-      <p class="eyebrow">Drop Audio</p>
-      <h3>Drag files in or start from your device</h3>
-      <p class="upload-caption">MP3, WAV, FLAC and similar formats are accepted. Files enter the live queue immediately after upload.</p>
-      <button type="button" class="btn" id="{{ upload_shell.pick_files_button_id }}">Choose files</button>
-      <p class="upload-caption">Drop audio files here or use Choose files.</p>
+      <p class="eyebrow">Quick Intake</p>
+      <h3>Add recordings to today&apos;s operator inbox</h3>
+      <p class="upload-caption">Drop audio here or browse from disk. New recordings land in the main worklist below as soon as upload completes.</p>
+      <div class="upload-dropzone-actions">
+        <button type="button" class="btn" id="{{ upload_shell.pick_files_button_id }}">Choose files</button>
+        <span class="upload-caption">MP3, WAV, FLAC and similar formats.</span>
+      </div>
     </div>
   </div>
   <div class="upload-queue-shell">
-    <div>
-      <p class="eyebrow">Queue Preview</p>
-      <h3>Recent uploads and processing progress</h3>
+    <div class="upload-queue-head">
+      <p class="eyebrow">Live Intake</p>
+      <h3>Only in-flight uploads stay here</h3>
+      <p class="upload-caption">The full queue stays in the worklist below, so this panel only tracks files that are still entering the system.</p>
     </div>
-    <div class="upload-queue-table">
-      <table>
-        <thead>
-          <tr>
-            <th>Filename</th>
-            <th>Size</th>
-            <th>Upload progress</th>
-            <th>Processing progress</th>
-            <th>Status</th>
-            <th>Link</th>
-          </tr>
-        </thead>
-        <tbody id="{{ upload_shell.upload_rows_id }}">
-          <tr id="{{ upload_shell.empty_row_id }}">
-            <td colspan="{{ upload_shell.queue_empty_colspan }}" class="placeholder">No files queued yet.</td>
-          </tr>
-        </tbody>
-      </table>
+    <div id="{{ upload_shell.upload_rows_id }}" class="upload-queue-list">
+      <div id="{{ upload_shell.empty_row_id }}" class="upload-queue-empty">
+        No active uploads. New files appear here until they enter the main inbox.
+      </div>
     </div>
   </div>
 </div>

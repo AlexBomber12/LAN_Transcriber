@@ -19,7 +19,9 @@ from lan_app.constants import (
     RECORDING_STATUS_FAILED,
     RECORDING_STATUS_NEEDS_REVIEW,
     RECORDING_STATUS_PROCESSING,
+    RECORDING_STATUS_PUBLISHED,
     RECORDING_STATUS_QUEUED,
+    RECORDING_STATUS_QUARANTINE,
     RECORDING_STATUS_READY,
     RECORDING_STATUS_STOPPED,
     RECORDING_STATUS_STOPPING,
@@ -418,6 +420,8 @@ def test_control_center_helper_contexts_cover_fragment_builders(
         "/?selected=rec-helper-1&status=Ready&q=helper&tab=speakers"
     )
     assert panel_context["recordings_table"]["rows"][0]["selected"] is True
+    assert panel_context["status_cards"][0]["status"] == "All"
+    assert panel_context["status_cards"][0]["active"] is False
     assert any(card["status"] == "Ready" and card["active"] for card in panel_context["status_cards"])
 
     work_pane = ui_routes._control_center_work_pane_context(  # noqa: SLF001
@@ -425,6 +429,7 @@ def test_control_center_helper_contexts_cover_fragment_builders(
         state=state,
     )
     assert work_pane["recordings_panel"]["panel_id"] == "control-center-recordings-panel"
+    assert work_pane["recordings_panel"]["title"] == "Operator inbox"
     assert "daily loop" in work_pane["preview_message"]
     assert work_pane["recordings_panel"]["recordings_filters"]["limit"] == 100
     assert work_pane["workflow_links"]["selected_detail_href"] == "/recordings/rec-helper-1?tab=speakers"
@@ -741,6 +746,8 @@ def test_display_helpers_cover_timezone_duration_and_prepare_recording(
     assert ui_routes._pipeline_stage_label("llm_chunk_2_of_5") == "LLM Chunk 2 of 5"  # noqa: SLF001
     assert ui_routes._pipeline_stage_label("llm_chunk_bad") == "Llm Chunk Bad"  # noqa: SLF001
     assert ui_routes._pipeline_stage_label("custom_stage") == "Custom Stage"  # noqa: SLF001
+    assert ui_routes._recording_source_display(None) == "Unknown"  # noqa: SLF001
+    assert ui_routes._recording_source_display("manual_upload") == "Manual Upload"  # noqa: SLF001
     assert ui_routes._format_duration_seconds(None) == "—"  # noqa: SLF001
     assert ui_routes._format_duration_seconds(0) == "—"  # noqa: SLF001
     assert ui_routes._format_duration_seconds(2.0) == "00:00:02"  # noqa: SLF001
@@ -850,6 +857,81 @@ def test_display_helpers_cover_timezone_duration_and_prepare_recording(
     )
     assert prepared_stopped["status_reason_text_display"] == "Cancelled by user"
     assert prepared_stopped["stop_eligible"] is False
+
+
+@pytest.mark.parametrize(
+    ("recording", "expected"),
+    [
+        ({"status_reason_text_display": "Needs an operator review."}, "Needs an operator review."),
+        ({"status": RECORDING_STATUS_QUEUED}, "Waiting for the worker to pick this up."),
+        (
+            {"status": RECORDING_STATUS_PROCESSING, "pipeline_stage": "diarize"},
+            "Running Diarization.",
+        ),
+        (
+            {"status": RECORDING_STATUS_STOPPING},
+            "Stop requested. Waiting for a safe checkpoint.",
+        ),
+        ({"status": RECORDING_STATUS_STOPPED}, "Stopped by an operator."),
+        (
+            {"status": RECORDING_STATUS_NEEDS_REVIEW, "routing_confidence": 0.42},
+            "Routing confidence 0.42. Review before publish.",
+        ),
+        (
+            {"status": RECORDING_STATUS_NEEDS_REVIEW},
+            "Manual review is still required.",
+        ),
+        (
+            {"status": RECORDING_STATUS_NEEDS_REVIEW, "routing_confidence": "bad"},
+            "Manual review is still required.",
+        ),
+        ({"status": RECORDING_STATUS_READY}, "Ready for export."),
+        ({"status": RECORDING_STATUS_PUBLISHED}, "Published output is available."),
+        (
+            {"status": RECORDING_STATUS_QUARANTINE},
+            "Quarantined. Inspect before requeue.",
+        ),
+        (
+            {"status": RECORDING_STATUS_FAILED},
+            "Open the recording to inspect the failed stage.",
+        ),
+        ({"status": "Unknown"}, ""),
+    ],
+)
+def test_recording_worklist_hint_covers_statuses(
+    recording: dict[str, Any],
+    expected: str,
+) -> None:
+    assert ui_routes._recording_worklist_hint(recording) == expected  # noqa: SLF001
+
+
+def test_recordings_list_items_context_adds_source_and_worklist_fields(tmp_path: Path) -> None:
+    cfg = _cfg(tmp_path)
+
+    items = ui_routes._recordings_list_items_context(  # noqa: SLF001
+        [
+            {
+                "id": "rec-worklist-1",
+                "status": RECORDING_STATUS_NEEDS_REVIEW,
+                "source": "manual_upload",
+                "source_filename": "worklist.wav",
+                "duration_sec": 1.0,
+                "pipeline_progress": 0.5,
+                "pipeline_stage": "diarize",
+                "captured_at": None,
+                "created_at": None,
+                "updated_at": None,
+                "pipeline_updated_at": None,
+                "review_reason_text": None,
+            }
+        ],
+        settings=cfg,
+    )
+
+    assert items[0]["progress_percent"] == 50
+    assert items[0]["progress_stage_label"] == "Diarization"
+    assert items[0]["source_display"] == "Manual Upload"
+    assert items[0]["worklist_hint"] == "Manual review is still required."
 
 
 def test_stage_rows_and_diagnostics_context_cover_new_observability_helpers() -> None:

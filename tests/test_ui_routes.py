@@ -386,8 +386,8 @@ def test_dashboard_with_data(tmp_path, monkeypatch):
     c = TestClient(api.app, follow_redirects=True)
     r = c.get("/")
     assert r.status_code == 200
-    assert "Recording worklist" in r.text
-    assert "Drop audio files here or use Choose files." in r.text
+    assert "Operator inbox" in r.text
+    assert "Drop audio here or browse from disk." in r.text
     assert "GPU ready" in r.text
     assert "gpt-oss:120b" in r.text
     assert "Daily workflow" not in r.text
@@ -523,8 +523,8 @@ def test_control_center_system_bar_renders_degraded_cpu_fallback(seeded_client, 
         "/ui/control-center/work-pane?selected=rec-ui-1&status=Ready&q=meeting&tab=speakers"
     )
     assert work_pane.status_code == 200
-    assert "Bring new audio into today" in work_pane.text
-    assert "Recording worklist" in work_pane.text
+    assert "Drop audio into today" in work_pane.text
+    assert "Operator inbox" in work_pane.text
     assert "Fallback and Admin Pages" not in work_pane.text
     assert "meeting.mp3" in work_pane.text
     assert 'id="control-center-recordings-panel"' in work_pane.text
@@ -696,6 +696,9 @@ def test_control_center_recordings_panel_filters_search_and_actions(
     assert 'value="Ready" selected' in panel.text
     assert "alpha.wav" in panel.text
     assert "beta.wav" not in panel.text
+    assert ">Progress<" in panel.text
+    assert ">Source<" in panel.text
+    assert ">Confidence<" not in panel.text
     assert 'data-return-to="control-center"' in panel.text
     assert (
         'data-workspace-header-url="/ui/control-center/workspace-header?selected=&amp;status=Ready&amp;'
@@ -711,6 +714,8 @@ def test_control_center_recordings_panel_filters_search_and_actions(
     selected_panel = c.get("/ui/control-center/recordings/panel?selected=rec-cc-panel-1&tab=speakers")
     assert selected_panel.status_code == 200
     assert "Selected" in selected_panel.text
+    assert 'data-selected="true"' in selected_panel.text
+    assert 'aria-current="page"' in selected_panel.text
 
     conservative = c.get("/ui/control-center/recordings/panel?q=upload")
     assert conservative.status_code == 200
@@ -858,6 +863,9 @@ def test_recordings_fragment_endpoints_render_filters_table_and_pagination(
     table = c.get("/ui/control-center/recordings/table?q=fragment&limit=2&offset=0")
     assert table.status_code == 200
     assert "fragment-a.wav" in table.text
+    assert ">Progress<" in table.text
+    assert ">Source<" in table.text
+    assert ">Confidence<" not in table.text
     assert "50%" in table.text
     assert "Next &#187;" in table.text
     assert "Delete" in table.text
@@ -3168,8 +3176,8 @@ def test_upload_page(client):
     assert r.status_code == 200
     assert "Upload" in r.text
     assert 'id="file-input"' in r.text
-    assert "Drop audio files here or use Choose files." in r.text
-    assert "No files queued yet." in r.text
+    assert "Drop audio here or browse from disk." in r.text
+    assert "No active uploads. New files appear here until they enter the main inbox." in r.text
 
 
 def test_upload_panel_fragment_endpoint(client):
@@ -3177,7 +3185,7 @@ def test_upload_panel_fragment_endpoint(client):
     assert r.status_code == 200
     assert 'id="file-input"' in r.text
     assert 'id="upload-rows"' in r.text
-    assert "No files queued yet." in r.text
+    assert "No active uploads. New files appear here until they enter the main inbox." in r.text
     assert "<html" not in r.text
 
 

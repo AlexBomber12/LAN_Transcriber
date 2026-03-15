@@ -46,6 +46,8 @@ from .constants import (
     JOB_STATUS_QUEUED,
     JOB_TYPE_PRECHECK,
     RECORDING_STATUSES,
+    RECORDING_STATUS_FAILED,
+    RECORDING_STATUS_NEEDS_REVIEW,
     RECORDING_STATUS_PUBLISHED,
     RECORDING_STATUS_PROCESSING,
     RECORDING_STATUS_QUEUED,
@@ -295,6 +297,49 @@ def _recording_status_reason_text(recording: dict[str, Any]) -> str:
     if status in {RECORDING_STATUS_STOPPING, RECORDING_STATUS_STOPPED}:
         return str(recording.get("cancel_reason_text") or "").strip()
     return str(recording.get("review_reason_text") or "").strip()
+
+
+def _recording_source_display(source: object) -> str:
+    label = str(source or "").strip()
+    if not label:
+        return "Unknown"
+    return label.replace("_", " ").title()
+
+
+def _recording_worklist_hint(recording: dict[str, Any]) -> str:
+    reason = str(recording.get("status_reason_text_display") or "").strip()
+    if reason:
+        return reason
+
+    status = str(recording.get("status") or "").strip()
+    stage_label = _pipeline_stage_label(recording.get("pipeline_stage"))
+    confidence = recording.get("routing_confidence")
+    try:
+        confidence_value = float(confidence) if confidence is not None else None
+    except (TypeError, ValueError):
+        confidence_value = None
+
+    if status == RECORDING_STATUS_QUEUED:
+        return "Waiting for the worker to pick this up."
+    if status == RECORDING_STATUS_PROCESSING:
+        return f"Running {stage_label}."
+    if status == RECORDING_STATUS_STOPPING:
+        return "Stop requested. Waiting for a safe checkpoint."
+    if status == RECORDING_STATUS_STOPPED:
+        return "Stopped by an operator."
+    if status == RECORDING_STATUS_NEEDS_REVIEW:
+        if confidence_value is not None:
+            return f"Routing confidence {confidence_value:.2f}. Review before publish."
+        return "Manual review is still required."
+    if status == RECORDING_STATUS_READY:
+        return "Ready for export."
+    if status == RECORDING_STATUS_PUBLISHED:
+        return "Published output is available."
+    if status == RECORDING_STATUS_QUARANTINE:
+        return "Quarantined. Inspect before requeue."
+    if status == RECORDING_STATUS_FAILED:
+        return "Open the recording to inspect the failed stage."
+    return ""
 
 
 def _safe_pipeline_progress(value: object) -> float:
@@ -2877,6 +2922,8 @@ def _recordings_list_items_context(
         progress_ratio = _safe_pipeline_progress(prepared.get("pipeline_progress"))
         prepared["progress_percent"] = int(round(progress_ratio * 100))
         prepared["progress_stage_label"] = _pipeline_stage_label(prepared.get("pipeline_stage"))
+        prepared["source_display"] = _recording_source_display(prepared.get("source"))
+        prepared["worklist_hint"] = _recording_worklist_hint(prepared)
         prepared_items.append(prepared)
     return prepared_items
 
@@ -2941,6 +2988,39 @@ def _recordings_status_cards_context(
 ) -> list[dict[str, Any]]:
     counts = _status_counts(settings)
     cards: list[dict[str, Any]] = []
+    all_fragment_href = ""
+    all_href = _recordings_page_href(
+        status_filter="",
+        search_query=search_query,
+        limit=limit,
+        offset=0,
+    )
+    if mode == "control_center":
+        all_href = _control_center_shell_href(
+            selected=selected,
+            status_filter="",
+            search_query=search_query,
+            tab=tab,
+            limit=limit,
+        )
+        all_fragment_href = _control_center_recordings_panel_url(
+            selected=selected,
+            status_filter="",
+            search_query=search_query,
+            tab=tab,
+            limit=limit,
+            offset=0,
+        )
+    cards.append(
+        {
+            "status": "All",
+            "count": sum(counts.values()),
+            "active": not status_filter,
+            "href": all_href,
+            "hx_get": all_fragment_href,
+            "status_class": "all",
+        }
+    )
     for status in RECORDING_STATUSES:
         fragment_href = ""
         href = _recordings_page_href(
@@ -2972,6 +3052,7 @@ def _recordings_status_cards_context(
                 "active": status == status_filter,
                 "href": href,
                 "hx_get": fragment_href,
+                "status_class": status.lower(),
             }
         )
     return cards
@@ -3181,9 +3262,9 @@ def _recordings_panel_context(
         "panel_id": panel_id,
         "mode": mode,
         "total": total,
-        "title": "Recording worklist" if is_control_center else "Recordings list",
+        "title": "Operator inbox" if is_control_center else "Recordings list",
         "description": (
-            "Filter, triage, and select a recording without leaving the operator workspace."
+            "Keep uploads, triage, and selection in one compact daily inbox."
             if is_control_center
             else "Use the same queue, filters, and row actions as the Control Center."
         ),
