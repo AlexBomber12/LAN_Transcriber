@@ -2820,11 +2820,13 @@ def _control_center_system_bar_context(
     *,
     state: dict[str, Any],
     recordings_panel: dict[str, Any],
+    runtime_status: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     queue_detail = state["status"] or "All statuses"
     if state["q"]:
         queue_detail = f"{queue_detail} · search: {state['q']}"
-    runtime_status = collect_control_center_runtime_status(settings)
+    if runtime_status is None:
+        runtime_status = collect_control_center_runtime_status(settings)
     return {
         "primary_items": [
             {
@@ -3896,6 +3898,10 @@ async def ui_dashboard(
                     "choose another recording from the queue."
                 ),
             }
+    runtime_status = await run_in_threadpool(
+        collect_control_center_runtime_status,
+        _settings,
+    )
     return templates.TemplateResponse(
         request,
         "control_center.html",
@@ -3910,6 +3916,7 @@ async def ui_dashboard(
                 _settings,
                 state=control_center_state,
                 recordings_panel=control_center_work_pane["recordings_panel"],
+                runtime_status=runtime_status,
             ),
             "control_center_empty_inspector": control_center_empty_inspector,
         },
@@ -3965,6 +3972,10 @@ async def ui_control_center_system_bar(
         limit=limit,
         offset=offset,
     )
+    runtime_status = await run_in_threadpool(
+        collect_control_center_runtime_status,
+        _settings,
+    )
     return templates.TemplateResponse(
         request,
         "partials/control_center/system_bar.html",
@@ -3979,6 +3990,7 @@ async def ui_control_center_system_bar(
                         state=control_center_state,
                     )
                 },
+                runtime_status=runtime_status,
             ),
         },
     )

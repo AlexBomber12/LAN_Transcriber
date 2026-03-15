@@ -209,6 +209,20 @@ def _safe_is_gpu_device(device: str | None) -> bool:
         return False
 
 
+def _safe_get_recording(
+    recording_id: str,
+    *,
+    settings: AppSettings,
+) -> dict[str, Any] | None:
+    if not recording_id:
+        return None
+    try:
+        recording = get_recording(recording_id, settings=settings)
+    except Exception:
+        return None
+    return recording if isinstance(recording, dict) else None
+
+
 def _active_job_snapshot(settings: AppSettings) -> dict[str, Any]:
     try:
         started_rows, started_total = list_jobs(
@@ -239,7 +253,7 @@ def _active_job_snapshot(settings: AppSettings) -> dict[str, Any]:
     queued_job = queued_rows[0] if queued_rows else None
     active_recording = None
     if isinstance(active_job, dict):
-        active_recording = get_recording(
+        active_recording = _safe_get_recording(
             str(active_job.get("recording_id") or ""),
             settings=settings,
         )
@@ -256,7 +270,7 @@ def _active_job_snapshot(settings: AppSettings) -> dict[str, Any]:
             f"· {_stage_label(active_stage)}"
         )
     elif isinstance(queued_job, dict):
-        queued_recording = get_recording(
+        queued_recording = _safe_get_recording(
             str(queued_job.get("recording_id") or ""),
             settings=settings,
         )

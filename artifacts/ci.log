@@ -102,8 +102,8 @@ Requirement already satisfied: pytz>2021.1 in ./.venv-ci/lib/python3.12/site-pac
 Building wheels for collected packages: lan-transcriber
   Building editable for lan-transcriber (pyproject.toml): started
   Building editable for lan-transcriber (pyproject.toml): finished with status 'done'
-  Created wheel for lan-transcriber: filename=lan_transcriber-0.1.0-0.editable-py3-none-any.whl size=15446 sha256=5583b13508c7b44b063d740d561695e489abd006825a01e12734840a74ccbfaa
-  Stored in directory: /tmp/pip-ephem-wheel-cache-scpccipx/wheels/d5/8a/5c/f7178f7e49aa5ae12b2320ec66b5c310f4f2f63d1bd301b7fb
+  Created wheel for lan-transcriber: filename=lan_transcriber-0.1.0-0.editable-py3-none-any.whl size=15446 sha256=e616c2128cd8b32055922ef504115e683aeeb1348fd934195074dafd14e988cf
+  Stored in directory: /tmp/pip-ephem-wheel-cache-qrefh8yz/wheels/d5/8a/5c/f7178f7e49aa5ae12b2320ec66b5c310f4f2f63d1bd301b7fb
 Successfully built lan-transcriber
 Installing collected packages: lan-transcriber
   Attempting uninstall: lan-transcriber
@@ -170,13 +170,13 @@ tests/test_warm_models.py::test_warm_models_module_main_guard
 ---------- coverage: platform linux, python 3.12.3-final-0 -----------
 Name    Stmts   Miss Branch BrPart  Cover   Missing
 ---------------------------------------------------
-TOTAL   13524      0   4442      0   100%
+TOTAL   13535      0   4446      0   100%
 
 63 files skipped due to complete coverage.
 Coverage HTML written to dir htmlcov
 
 Required test coverage of 100% reached. Total coverage: 100.00%
-1021 passed, 2 skipped, 11 warnings in 94.84s (0:01:34)
+1021 passed, 2 skipped, 11 warnings in 97.42s (0:01:37)
 Name                                                    Stmts   Miss Branch BrPart  Cover
 -----------------------------------------------------------------------------------------
 lan_transcriber/__init__.py                                 8      0      0      0   100%
@@ -236,15 +236,15 @@ lan_app/reaper.py                     67      0     18      0   100%
 lan_app/routing.py                   257      0    102      0   100%
 lan_app/snippet_repair.py            373      0    114      0   100%
 lan_app/speaker_bank.py              107      0     34      0   100%
-lan_app/system_status.py             212      0     86      0   100%
+lan_app/system_status.py             220      0     88      0   100%
 lan_app/tools/__init__.py              1      0      0      0   100%
 lan_app/tools/repair_snippets.py      36      0     12      0   100%
 lan_app/tools/warm_models.py          47      0     10      0   100%
 lan_app/ui.py                         59      0     10      0   100%
-lan_app/ui_routes.py                2188      0    800      0   100%
+lan_app/ui_routes.py                2191      0    802      0   100%
 lan_app/uploads.py                    79      0     14      0   100%
 lan_app/worker.py                     28      0      2      0   100%
 lan_app/worker_tasks.py             1694      0    490      0   100%
 lan_app/workers.py                    10      0      0      0   100%
 --------------------------------------------------------------------
-TOTAL                               9451      0   3078      0   100%
+TOTAL                               9462      0   3082      0   100%

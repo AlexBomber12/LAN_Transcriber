@@ -106,6 +106,7 @@ def test_system_status_small_helpers_cover_edge_cases(tmp_path, monkeypatch):
     assert system_status._extract_model_ids([]) == []  # noqa: SLF001
     assert system_status._safe_is_gpu_device("cuda:0") is True  # noqa: SLF001
     assert system_status._safe_is_gpu_device("bogus") is False  # noqa: SLF001
+    assert system_status._safe_get_recording("", settings=_settings(tmp_path)) is None  # noqa: SLF001
 
 
 def test_probe_spark_runtime_variants(tmp_path, monkeypatch):
@@ -217,6 +218,21 @@ def test_active_job_snapshot_paths(tmp_path, monkeypatch):
     )
     failed = system_status._active_job_snapshot(_settings(tmp_path))  # noqa: SLF001
     assert failed["error"] == "db unavailable"
+
+    monkeypatch.setattr(system_status, "list_jobs", _list_jobs_started)
+    monkeypatch.setattr(
+        system_status,
+        "get_recording",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("lookup unavailable")),
+    )
+    started_lookup_failed = system_status._active_job_snapshot(_settings(tmp_path))  # noqa: SLF001
+    assert started_lookup_failed["error"] is None
+    assert started_lookup_failed["active_detail"] == "rec-started-1 · Precheck"
+
+    monkeypatch.setattr(system_status, "list_jobs", _list_jobs_queued)
+    queued_lookup_failed = system_status._active_job_snapshot(_settings(tmp_path))  # noqa: SLF001
+    assert queued_lookup_failed["error"] is None
+    assert queued_lookup_failed["active_detail"] == "Next: rec-queued-1"
 
 
 def test_active_runtime_metadata_prefers_diarization_metadata(tmp_path):

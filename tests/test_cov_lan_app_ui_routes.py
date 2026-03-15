@@ -572,9 +572,11 @@ def test_control_center_system_bar_route_avoids_work_pane_builder(
         *,
         state: dict[str, Any],
         recordings_panel: dict[str, Any],
+        runtime_status: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         assert settings is seen["settings"]
         assert recordings_panel == {"total": 7}
+        assert runtime_status == {"active_jobs_item": {}, "secondary_items": [], "note": "test runtime note"}
         return {
             "primary_items": [
                 {
@@ -590,6 +592,12 @@ def test_control_center_system_bar_route_avoids_work_pane_builder(
     monkeypatch.setattr(ui_routes, "_control_center_work_pane_context", _unexpected_work_pane)
     monkeypatch.setattr(ui_routes, "_control_center_recordings_panel_context", _unexpected_recordings_panel)
     monkeypatch.setattr(ui_routes, "list_recordings", _fake_list_recordings)
+    async def _fake_run_in_threadpool(func, settings):
+        assert func is ui_routes.collect_control_center_runtime_status
+        assert settings is ui_routes._settings  # noqa: SLF001
+        return {"active_jobs_item": {}, "secondary_items": [], "note": "test runtime note"}
+
+    monkeypatch.setattr(ui_routes, "run_in_threadpool", _fake_run_in_threadpool)
     monkeypatch.setattr(ui_routes, "_control_center_system_bar_context", _fake_system_bar_context)
 
     response = c.get(
