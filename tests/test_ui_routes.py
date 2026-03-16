@@ -525,6 +525,8 @@ def test_control_center_system_bar_renders_degraded_cpu_fallback(seeded_client, 
     assert work_pane.status_code == 200
     assert "Drop audio into today" in work_pane.text
     assert "Operator inbox" in work_pane.text
+    assert "Only in-flight uploads stay here" in work_pane.text
+    assert "var removeTerminalItems = true;" in work_pane.text
     assert "Fallback and Admin Pages" not in work_pane.text
     assert "meeting.mp3" in work_pane.text
     assert 'id="control-center-recordings-panel"' in work_pane.text
@@ -3177,7 +3179,10 @@ def test_upload_page(client):
     assert "Upload" in r.text
     assert 'id="file-input"' in r.text
     assert "Drop audio here or browse from disk." in r.text
-    assert "No active uploads. New files appear here until they enter the main inbox." in r.text
+    assert "Recent uploads stay here while you work" in r.text
+    assert "Completed uploads stay listed here so standalone uploads keep their in-page progress and Open recording link." in r.text
+    assert "No uploads yet. New files appear here with upload and processing progress." in r.text
+    assert "var removeTerminalItems = false;" in r.text
 
 
 def test_upload_panel_fragment_endpoint(client):
@@ -3185,6 +3190,8 @@ def test_upload_panel_fragment_endpoint(client):
     assert r.status_code == 200
     assert 'id="file-input"' in r.text
     assert 'id="upload-rows"' in r.text
+    assert "Only in-flight uploads stay here" in r.text
+    assert "Finished recordings move into the main worklist below" in r.text
     assert "No active uploads. New files appear here until they enter the main inbox." in r.text
     assert "<html" not in r.text
 

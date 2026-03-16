@@ -3316,14 +3316,32 @@ def _recordings_panel_context(
     }
 
 
-def _upload_shell_context() -> dict[str, Any]:
+def _upload_shell_context(*, mode: str = "standalone") -> dict[str, Any]:
+    is_control_center = mode == "control_center"
     return {
+        "mode": mode,
         "file_input_id": "file-input",
         "pick_files_button_id": "pick-files-btn",
         "dropzone_id": "dropzone",
         "upload_rows_id": "upload-rows",
         "empty_row_id": "upload-empty",
         "queue_empty_colspan": 6,
+        "remove_terminal_items": is_control_center,
+        "queue_title": (
+            "Only in-flight uploads stay here"
+            if is_control_center
+            else "Recent uploads stay here while you work"
+        ),
+        "queue_caption": (
+            "Finished recordings move into the main worklist below, so this panel only tracks files that are still entering the system."
+            if is_control_center
+            else "Completed uploads stay listed here so standalone uploads keep their in-page progress and Open recording link."
+        ),
+        "empty_state_text": (
+            "No active uploads. New files appear here until they enter the main inbox."
+            if is_control_center
+            else "No uploads yet. New files appear here with upload and processing progress."
+        ),
     }
 
 
@@ -3991,7 +4009,7 @@ async def ui_dashboard(
             **(control_center_inspector or {}),
             "control_center_state": control_center_state,
             "control_center_header": control_center_header,
-            "upload_shell": _upload_shell_context(),
+            "upload_shell": _upload_shell_context(mode="control_center"),
             "control_center_work_pane": control_center_work_pane,
             "control_center_system_bar": _control_center_system_bar_context(
                 _settings,
@@ -4124,7 +4142,7 @@ async def ui_control_center_work_pane(
         "partials/control_center/work_pane.html",
         {
             "control_center_state": control_center_state,
-            "upload_shell": _upload_shell_context(),
+            "upload_shell": _upload_shell_context(mode="control_center"),
             "control_center_work_pane": _control_center_work_pane_context(
                 _settings,
                 state=control_center_state,
@@ -5563,7 +5581,7 @@ async def ui_upload(request: Request) -> Any:
         "upload.html",
         {
             "active": "upload",
-            "upload_shell": _upload_shell_context(),
+            "upload_shell": _upload_shell_context(mode="standalone"),
         },
     )
 
@@ -5574,7 +5592,7 @@ async def ui_control_center_upload_panel(request: Request) -> Any:
         request,
         "partials/control_center/upload_panel.html",
         {
-            "upload_shell": _upload_shell_context(),
+            "upload_shell": _upload_shell_context(mode="control_center"),
         },
     )
 

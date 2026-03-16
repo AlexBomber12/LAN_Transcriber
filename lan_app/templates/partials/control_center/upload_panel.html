@@ -18,12 +18,12 @@
   <div class="upload-queue-shell">
     <div class="upload-queue-head">
       <p class="eyebrow">Live Intake</p>
-      <h3>Only in-flight uploads stay here</h3>
-      <p class="upload-caption">Finished recordings move into the main worklist below, so this panel only tracks files that are still entering the system.</p>
+      <h3>{{ upload_shell.queue_title }}</h3>
+      <p class="upload-caption">{{ upload_shell.queue_caption }}</p>
     </div>
     <div id="{{ upload_shell.upload_rows_id }}" class="upload-queue-list">
       <div id="{{ upload_shell.empty_row_id }}" class="upload-queue-empty">
-        No active uploads. New files appear here until they enter the main inbox.
+        {{ upload_shell.empty_state_text }}
       </div>
     </div>
   </div>

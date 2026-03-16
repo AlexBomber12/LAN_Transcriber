@@ -518,9 +518,14 @@ def test_control_center_helper_contexts_cover_fragment_builders(
         "/?selected=rec-helper-1&status=Ready&q=helper&tab=speakers&limit=2&offset=4"
     )
 
-    upload_shell = ui_routes._upload_shell_context()  # noqa: SLF001
+    upload_shell = ui_routes._upload_shell_context(mode="control_center")  # noqa: SLF001
     assert upload_shell["file_input_id"] == "file-input"
     assert upload_shell["empty_row_id"] == "upload-empty"
+    assert upload_shell["remove_terminal_items"] is True
+    assert upload_shell["queue_title"] == "Only in-flight uploads stay here"
+    standalone_upload_shell = ui_routes._upload_shell_context(mode="standalone")  # noqa: SLF001
+    assert standalone_upload_shell["remove_terminal_items"] is False
+    assert standalone_upload_shell["queue_title"] == "Recent uploads stay here while you work"
 
     page_notice = ui_routes._page_notice_context("  Recovered from a stuck job.  ")  # noqa: SLF001
     assert page_notice == {"message": "Recovered from a stuck job."}

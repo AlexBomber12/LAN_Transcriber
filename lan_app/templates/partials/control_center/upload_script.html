@@ -7,6 +7,8 @@ var TERMINAL_STATUSES = new Set([
   "Quarantine",
   "Failed",
 ]);
+var removeTerminalItems = {{ upload_shell.remove_terminal_items | tojson }};
+var uploadEmptyStateText = {{ upload_shell.empty_state_text | tojson }};
 var uploadQueue = [];
 var queueRunning = false;
 
@@ -84,7 +86,7 @@ function restorePlaceholderRow() {
   var empty = document.createElement("div");
   empty.id = "{{ upload_shell.empty_row_id }}";
   empty.className = "upload-queue-empty";
-  empty.textContent = "No active uploads. New files appear here until they enter the main inbox.";
+  empty.textContent = uploadEmptyStateText;
   rows.appendChild(empty);
 }
 
@@ -308,7 +310,9 @@ function startPolling(item, recordingId) {
 
     if (TERMINAL_STATUSES.has(status)) {
       stop();
-      scheduleUploadItemRemoval(item, 1500);
+      if (removeTerminalItems) {
+        scheduleUploadItemRemoval(item, 1500);
+      }
     }
   }
 
