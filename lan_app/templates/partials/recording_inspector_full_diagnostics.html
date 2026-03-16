@@ -1,0 +1,402 @@
+{% set cal = calendar or {} %}
+{% set prj = project or {} %}
+{% set project_items = prj.projects or [] %}
+{% set lang = language or {} %}
+
+<div class="diagnostics-grid">
+  <section class="inspector-section-card">
+    <div class="inspector-section-head">
+      <div>
+        <p class="eyebrow">Technical Surface</p>
+        <h2>Diagnostics</h2>
+        <p class="inspector-note">Routing, language, pipeline, and retry details live here so the other tabs can stay task-focused.</p>
+      </div>
+    </div>
+    <div class="info-grid">
+      <span class="k">Primary reason</span><span class="v">{{ diagnostics.primary_reason_text or '—' }}</span>
+      <span class="k">Reason code</span><span class="v">{% if diagnostics.primary_reason_code %}<code>{{ diagnostics.primary_reason_code }}</code>{% else %}—{% endif %}</span>
+      <span class="k">Current / last stage</span><span class="v">{{ diagnostics.current_stage_label or '—' }}</span>
+      <span class="k">Stage status</span><span class="v">{{ diagnostics.current_stage_status_label or '—' }}</span>
+      <span class="k">Chunk</span><span class="v">{{ diagnostics.chunk_text or '—' }}</span>
+      <span class="k">Stage attempt</span><span class="v">{{ diagnostics.stage_attempt_text or '—' }}</span>
+      <span class="k">Chunk attempt</span><span class="v">{{ diagnostics.chunk_attempt_text or '—' }}</span>
+      <span class="k">Stage elapsed</span><span class="v">{{ diagnostics.stage_elapsed_display or '—' }}</span>
+      <span class="k">Chunk elapsed</span><span class="v">{{ diagnostics.chunk_elapsed_display or '—' }}</span>
+      <span class="k">Stop mode</span><span class="v">{{ diagnostics.stop_mode or '—' }}</span>
+      <span class="k">Retry wrapper</span><span class="v">{{ diagnostics.wrapper_reason_text or '—' }}</span>
+      <span class="k">Reason detail</span><span class="v">{{ diagnostics.primary_reason_detail or diagnostics.stop_reason_text or '—' }}</span>
+    </div>
+  </section>
+
+  <section class="inspector-section-card">
+    <div class="inspector-section-head">
+      <div>
+        <h2>Project Assignment</h2>
+        <p class="inspector-note">Project choice, calendar context, and routing evidence are grouped here.</p>
+      </div>
+    </div>
+
+    <div class="info-grid">
+      <span class="k">Current project</span><span class="v">{{ prj.selected_project_name or (prj.selected_project_id and ('#' ~ prj.selected_project_id)) or 'Unassigned' }}</span>
+      <span class="k">Suggested project</span><span class="v">{{ prj.suggested_project_name or (prj.suggested_project_id and ('#' ~ prj.suggested_project_id)) or '—' }}</span>
+      <span class="k">Confidence</span><span class="v">{{ '%.2f'|format(prj.confidence or 0.0) }}</span>
+      <span class="k">Auto-select threshold</span><span class="v">{{ '%.2f'|format(prj.threshold or 0.0) }}</span>
+      <span class="k">Training examples (total)</span><span class="v">{{ prj.training_examples_total or 0 }}</span>
+      <span class="k">Training examples (this project)</span><span class="v">{{ prj.training_examples_selected_project or 0 }}</span>
+    </div>
+
+    {% if (prj.confidence or 0.0) < (prj.threshold or 0.0) %}
+    <div class="page-notice">Confidence is below threshold; this recording should remain in manual review.</div>
+    {% endif %}
+
+    <form method="post" action="/ui/recordings/{{ rec.id }}/project" style="margin-top:10px">
+      <div class="form-row">
+        <label for="project_id">Project</label>
+        <select id="project_id" name="project_id" style="width:280px">
+          <option value="">Unassigned</option>
+          {% for p in project_items %}
+          <option value="{{ p.id }}" {% if prj.selected_project_id == p.id %}selected{% endif %}>{{ p.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="form-row">
+        <label for="train_routing">Train routing</label>
+        <input id="train_routing" type="checkbox" name="train_routing" value="1" checked>
+        <span class="inspector-note">Store this manual choice as a routing training example.</span>
+      </div>
+      <div class="filters" style="margin-top:8px">
+        <button type="submit" class="btn">Save project</button>
+      </div>
+    </form>
+
+    <h3>Routing Rationale</h3>
+    {% if prj.rationale %}
+    <ul class="summary-list">
+      {% for reason in prj.rationale %}
+      <li>{{ reason }}</li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p class="placeholder">No routing rationale is available yet.</p>
+    {% endif %}
+
+    {% if cal.error_message %}
+    <div class="page-notice">{{ cal.error_message }}</div>
+    {% endif %}
+    {% if cal.warnings %}
+      {% for warning in cal.warnings %}
+      <div class="page-notice">{{ warning }}</div>
+      {% endfor %}
+    {% endif %}
+
+    <details class="inspector-disclosure"{% if cal.selected or cal.candidates %} open{% endif %}>
+      <summary>Calendar Match</summary>
+      {% if cal.selected %}
+      <div class="speaker-snippet-panel">
+        <div>
+          <strong>{{ cal.selected.subject_display }}</strong>
+          <p class="inspector-note">{{ cal.selected.starts_at_display }} → {{ cal.selected.ends_at_display }}</p>
+        </div>
+        <div class="inspector-detail-list">
+          <div class="inspector-detail-row">
+            <span class="inspector-detail-label">Source</span>
+            <strong class="inspector-detail-value">{{ cal.selected.source_label }}</strong>
+          </div>
+          <div class="inspector-detail-row">
+            <span class="inspector-detail-label">Confidence</span>
+            <strong class="inspector-detail-value">{{ cal.selected.confidence_display }}</strong>
+          </div>
+          <div class="inspector-detail-row">
+            <span class="inspector-detail-label">Organizer</span>
+            <strong class="inspector-detail-value">{{ cal.selected.organizer_display }}</strong>
+          </div>
+          <div class="inspector-detail-row">
+            <span class="inspector-detail-label">Attendees</span>
+            <strong class="inspector-detail-value">{{ cal.selected.attendees_label }}</strong>
+          </div>
+        </div>
+        {% if cal.selected.rationale_rows %}
+        <ul class="summary-list">
+          {% for reason in cal.selected.rationale_rows %}
+          <li>{{ reason }}</li>
+          {% endfor %}
+        </ul>
+        {% endif %}
+        <form method="post" action="/ui/recordings/{{ rec.id }}/calendar/select">
+          <button type="submit" class="btn">Clear selection</button>
+        </form>
+      </div>
+      {% else %}
+      <p class="placeholder">No calendar event is selected for this recording.</p>
+      {% endif %}
+
+      {% if cal.candidates %}
+      <table>
+        <thead>
+          <tr>
+            <th>Event</th>
+            <th>When</th>
+            <th>Source</th>
+            <th>Confidence</th>
+            <th>Attendees</th>
+            <th>Rationale</th>
+            <th>Action</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for candidate in cal.candidates %}
+          <tr>
+            <td style="white-space:normal;max-width:220px">
+              <div><strong>{{ candidate.subject_display }}</strong></div>
+              <div style="margin-top:4px;color:#555">Organizer: {{ candidate.organizer_display }}</div>
+            </td>
+            <td>{{ candidate.starts_at_display }} → {{ candidate.ends_at_display }}</td>
+            <td>{{ candidate.source_label }}</td>
+            <td>
+              {{ candidate.confidence_display }}
+              {% if candidate.selected %}
+              <div style="margin-top:4px"><span class="badge s-Ready">Selected</span></div>
+              {% endif %}
+            </td>
+            <td title="{{ candidate.attendees_label }}">{{ candidate.attendees_label }}</td>
+            <td style="white-space:normal;max-width:320px">
+              {% if candidate.rationale_rows %}
+                {% for reason in candidate.rationale_rows %}
+                <div>{{ reason }}</div>
+                {% endfor %}
+              {% else %}
+              —
+              {% endif %}
+            </td>
+            <td>
+              {% if candidate.selected %}
+              <span class="placeholder" style="padding:0">Current</span>
+              {% else %}
+              <form method="post" action="/ui/recordings/{{ rec.id }}/calendar/select">
+                <input type="hidden" name="event_id" value="{{ candidate.event_id }}">
+                <button type="submit" class="btn">Choose</button>
+              </form>
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% elif not cal.selected %}
+      <p class="placeholder">No calendar candidates are stored for this recording yet.</p>
+      {% endif %}
+    </details>
+  </section>
+</div>
+
+<div class="diagnostics-grid">
+  <section class="inspector-section-card">
+    <div class="inspector-section-head">
+      <div>
+        <h2>Detected Languages</h2>
+        <p class="inspector-note">Language detection, overrides, and reprocessing controls stay in Diagnostics.</p>
+      </div>
+    </div>
+
+    <div class="info-grid">
+      <span class="k">Detected language</span><span class="v">{{ lang.detected_label or '—' }}</span>
+      <span class="k">Dominant language</span><span class="v">{{ lang.dominant_label or '—' }}</span>
+      <span class="k">Mixed-language meeting</span><span class="v">{{ 'Yes' if lang.is_mixed else 'No' }}</span>
+      <span class="k">Current summary target</span><span class="v">{{ lang.target_summary_language_label or '—' }}</span>
+      <span class="k">Transcript override</span><span class="v">{{ lang.transcript_language_override_label or '—' }}</span>
+    </div>
+
+    <form method="post" action="/ui/recordings/{{ rec.id }}/language/settings" style="margin-top:10px">
+      <div class="form-row">
+        <label for="target_summary_language">target_summary_language</label>
+        <select id="target_summary_language" name="target_summary_language">
+          <option value="" {% if not lang.target_summary_language %}selected{% endif %}>Auto (dominant language)</option>
+          {% for opt in lang.options or [] %}
+          <option value="{{ opt.code }}" {% if lang.target_summary_language == opt.code %}selected{% endif %}>{{ opt.label }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="form-row">
+        <label for="transcript_language_override">transcript_language_override</label>
+        <select id="transcript_language_override" name="transcript_language_override">
+          <option value="">None (auto detect)</option>
+          {% for opt in lang.options or [] %}
+          <option value="{{ opt.code }}" {% if lang.transcript_language_override == opt.code %}selected{% endif %}>{{ opt.label }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="filters" style="margin-top:8px">
+        <button type="submit" class="btn">Save overrides</button>
+        <button
+          type="submit"
+          class="btn"
+          formaction="/ui/recordings/{{ rec.id }}/language/resummarize"
+        >
+          Re-summarize (LLM only)
+        </button>
+        <button
+          type="submit"
+          class="btn btn-danger"
+          formaction="/ui/recordings/{{ rec.id }}/language/retranscribe"
+          onclick="return confirm('Re-transcribe reruns STT and diarization. Continue?')"
+        >
+          Re-transcribe (STT again)
+        </button>
+      </div>
+    </form>
+
+    <details class="inspector-disclosure"{% if lang.distribution or lang.spans %} open{% endif %}>
+      <summary>Language Distribution and Spans</summary>
+      {% if lang.distribution %}
+      <h3>Language Distribution</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>Language</th>
+            <th>Share (%)</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in lang.distribution %}
+          <tr>
+            <td>{{ row.label }}</td>
+            <td>{{ '%.2f'|format(row.percent) }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% endif %}
+
+      {% if lang.spans %}
+      <h3>Language Spans</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>Start</th>
+            <th>End</th>
+            <th>Language</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for span in lang.spans %}
+          <tr>
+            <td>{{ '%.3f'|format(span.start) }}</td>
+            <td>{{ '%.3f'|format(span.end) }}</td>
+            <td>{{ span.label }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% elif not lang.distribution %}
+      <p class="placeholder">No language distribution or spans are available yet.</p>
+      {% endif %}
+    </details>
+
+    {% if lang.summary_preview %}
+    <div class="speaker-snippet-panel">
+      <h3>Latest summary preview</h3>
+      <pre class="transcript-plain-text">{{ lang.summary_preview }}</pre>
+    </div>
+    {% endif %}
+  </section>
+
+  <section class="inspector-section-card">
+    <div class="inspector-section-head">
+      <div>
+        <h2>Pipeline stages</h2>
+        <p class="inspector-note">Full stage history stays here so Overview can stay concise.</p>
+      </div>
+    </div>
+    {% if pipeline_stages %}
+    <table>
+      <thead>
+        <tr>
+          <th>Stage</th>
+          <th>Status</th>
+          <th>Attempt</th>
+          <th>Updated</th>
+          <th>Notes</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for stage in pipeline_stages %}
+        <tr>
+          <td>{{ stage.stage_label }}</td>
+          <td>{{ stage.status_label }}</td>
+          <td>{{ stage.attempt }}</td>
+          <td>{{ stage.updated_at_display }}</td>
+          <td>
+            {% if stage.root_cause_text %}
+            {{ stage.root_cause_text }}{% if stage.root_cause_code %} (<code>{{ stage.root_cause_code }}</code>){% endif %}
+            {% if stage.chunk_index and stage.chunk_total %}
+            &nbsp;chunk {{ stage.chunk_index }}/{{ stage.chunk_total }}
+            {% endif %}
+            {% if stage.stop_mode %}
+            &nbsp;mode={{ stage.stop_mode }}
+            {% endif %}
+            {% elif stage.error_text %}
+            {{ stage.error_text }}
+            {% elif stage.duration_seconds is not none %}
+            {{ '%.3f'|format(stage.duration_seconds) }}s
+            {% else %}
+            —
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="placeholder">No pipeline stage history is available for this recording yet.</p>
+    {% endif %}
+  </section>
+</div>
+
+<section class="inspector-section-card">
+  <div class="inspector-section-head">
+    <div>
+      <h2>Job history</h2>
+      <p class="inspector-note">Retry actions and step-level failure history are demoted into Diagnostics instead of getting their own top-level tab.</p>
+    </div>
+  </div>
+  {% if jobs %}
+  <table>
+    <thead>
+      <tr>
+        <th>Job ID</th>
+        <th>Type</th>
+        <th>Status</th>
+        <th>Attempt</th>
+        <th>Started</th>
+        <th>Finished</th>
+        <th>Error</th>
+        <th>Action</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for j in jobs %}
+      <tr>
+        <td title="{{ j.id }}">{{ j.id[:16] }}…</td>
+        <td>{{ j.type }}</td>
+        <td><span class="badge s-{{ j.status }}">{{ j.status }}</span></td>
+        <td>{{ j.attempt }}</td>
+        <td>{{ j.started_at[:19].replace('T',' ') if j.started_at else '—' }}</td>
+        <td>{{ j.finished_at[:19].replace('T',' ') if j.finished_at else '—' }}</td>
+        <td title="{{ j.error or '' }}">{{ (j.error or '')[:40] }}{% if j.error and j.error|length > 40 %}…{% endif %}</td>
+        <td>
+          {% if j.status == 'failed' %}
+          <form method="post" action="/ui/recordings/{{ rec.id }}/jobs/{{ j.id }}/retry">
+            <button type="submit" class="btn">Retry step</button>
+          </form>
+          {% else %}
+          <span class="placeholder">—</span>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="placeholder">No jobs exist for this recording.</p>
+  {% endif %}
+</section>

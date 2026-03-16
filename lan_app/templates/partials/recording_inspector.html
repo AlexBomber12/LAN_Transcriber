@@ -16,7 +16,7 @@
 <div class="inspector-tab-shell">
 {% include "partials/recording_inspector_tabs.html" %}
 
-<div class="tab-content">
+<div class="tab-content{% if not recording_inspector.embedded %} tab-content-full{% endif %}">
   {% if recording_inspector.embedded %}
   {% include "partials/recording_inspector_embedded_body.html" %}
   {% else %}

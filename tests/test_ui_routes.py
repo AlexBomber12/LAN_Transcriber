@@ -1142,7 +1142,9 @@ def test_recording_detail_stop_button_visibility(
         assert "Stopping..." not in r.text
 
 
-def test_recording_detail_overview_shows_asr_glossary_context(tmp_path, monkeypatch):
+def test_recording_detail_transcript_tab_shows_asr_glossary_actions(
+    tmp_path, monkeypatch
+):
     cfg = _cfg(tmp_path)
     monkeypatch.setattr(api, "_settings", cfg)
     monkeypatch.setattr(ui_routes, "_settings", cfg)
@@ -1182,15 +1184,12 @@ def test_recording_detail_overview_shows_asr_glossary_context(tmp_path, monkeypa
     )
 
     c = TestClient(api.app, follow_redirects=True)
-    r = c.get("/recordings/rec-ui-glossary-1")
+    r = c.get("/recordings/rec-ui-glossary-1?tab=transcript")
     assert r.status_code == 200
-    assert "Corrections / ASR Memory" in r.text
+    assert "Transcript" in r.text
     assert "Manage corrections" in r.text
     assert "Add correction from this recording" in r.text
-    assert "/glossary?recording_id=rec-ui-glossary-1#glossary-form" in r.text
-    assert "Sander" in r.text
-    assert "Sandia" in r.text
-    assert "correction, speaker bank" in r.text
+    assert '/glossary?recording_id=rec-ui-glossary-1"' in r.text
 
 
 def test_recording_detail_calendar_tab_renders_selected_candidate_and_rationale(
@@ -1337,7 +1336,7 @@ def test_recording_detail_calendar_selection_and_clear_persist(tmp_path, monkeyp
     assert selected.status_code == 303
     assert (
         selected.headers["location"]
-        == "/recordings/rec-ui-calendar-select-1?tab=calendar"
+        == "/recordings/rec-ui-calendar-select-1?tab=diagnostics"
     )
     match = get_calendar_match("rec-ui-calendar-select-1", settings=cfg)
     assert match is not None
@@ -1346,6 +1345,10 @@ def test_recording_detail_calendar_selection_and_clear_persist(tmp_path, monkeyp
 
     cleared = c.post("/ui/recordings/rec-ui-calendar-select-1/calendar/select", data={})
     assert cleared.status_code == 303
+    assert (
+        cleared.headers["location"]
+        == "/recordings/rec-ui-calendar-select-1?tab=diagnostics"
+    )
     match = get_calendar_match("rec-ui-calendar-select-1", settings=cfg)
     assert match is not None
     assert match["selected_event_id"] is None
@@ -1458,7 +1461,7 @@ def test_recording_progress_endpoint_redirects_when_terminal(tmp_path, monkeypat
         headers={"HX-Request": "true"},
     )
     assert r.status_code == 200
-    assert r.headers["HX-Redirect"] == "/recordings/rec-ui-terminal-1?tab=metrics"
+    assert r.headers["HX-Redirect"] == "/recordings/rec-ui-terminal-1?tab=summary"
 
 
 def test_recording_progress_endpoint_redirects_to_control_center_when_embedded_terminal(
@@ -1555,7 +1558,7 @@ def test_recording_detail_shows_primary_diagnostics_section(tmp_path, monkeypatc
     )
 
     c = TestClient(api.app, follow_redirects=True)
-    r = c.get("/recordings/rec-ui-diagnostics-1")
+    r = c.get("/recordings/rec-ui-diagnostics-1?tab=diagnostics")
     assert r.status_code == 200
     assert "Diagnostics" in r.text
     assert "LLM chunk 3/10 timed out." in r.text
@@ -1689,7 +1692,7 @@ def test_recording_detail_project_assignment_trains_routing(tmp_path, monkeypatc
         },
     )
     assert resp.status_code == 303
-    assert resp.headers["location"] == "/recordings/rec-project-assign-1?tab=project"
+    assert resp.headers["location"] == "/recordings/rec-project-assign-1?tab=diagnostics"
 
     recording = get_recording("rec-project-assign-1", settings=cfg)
     assert recording is not None
@@ -1749,12 +1752,6 @@ def test_recording_detail_speakers_tab_assignment_persists(tmp_path, monkeypatch
     assert "Best match" in page.text
     assert "Purity 88%" in page.text
     assert "Recognition cue" in page.text
-
-    overview = TestClient(api.app, follow_redirects=True).get(
-        "/recordings/rec-speakers-1"
-    )
-    assert overview.status_code == 200
-    assert "Alice Example (S1)" in overview.text
 
 
 def test_recording_detail_speakers_create_and_assign(tmp_path, monkeypatch):
@@ -1889,12 +1886,6 @@ def test_recording_detail_speakers_local_label_shows_in_detail_and_export(
     assert speakers_page.status_code == 200
     assert "Local label only" in speakers_page.text
     assert "Design Lead" in speakers_page.text
-
-    overview = TestClient(api.app, follow_redirects=True).get(
-        "/recordings/rec-speakers-local-1"
-    )
-    assert overview.status_code == 200
-    assert "Design Lead (S1)" in overview.text
 
     export_resp = TestClient(api.app, follow_redirects=True).get(
         "/ui/recordings/rec-speakers-local-1/export.zip"
@@ -2957,7 +2948,7 @@ def test_recording_detail_metrics_tab_backfills_missing_db_side_from_artifact(
     assert "Facilitator" in r.text  # participant row backfilled from artifact
 
 
-def test_recording_detail_overview_shows_topic_and_emotional_summary(
+def test_recording_detail_summary_tab_shows_topic_and_emotional_summary(
     tmp_path, monkeypatch
 ):
     cfg = _cfg(tmp_path)
@@ -2986,7 +2977,7 @@ def test_recording_detail_overview_shows_topic_and_emotional_summary(
     )
 
     c = TestClient(api.app, follow_redirects=True)
-    r = c.get("/recordings/rec-overview-summary-1")
+    r = c.get("/recordings/rec-overview-summary-1?tab=summary")
     assert r.status_code == 200
     assert "Quarterly roadmap" in r.text
     assert "Roadmap reviewed" in r.text
@@ -3791,7 +3782,7 @@ def test_ui_action_stop_processing_recording_sets_stopping_request(
         data={"tab": "log"},
     )
     assert r.status_code == 303
-    assert r.headers["location"] == "/recordings/rec-stop-processing-1?tab=log"
+    assert r.headers["location"] == "/recordings/rec-stop-processing-1?tab=diagnostics"
 
     recording = get_recording("rec-stop-processing-1", settings=cfg) or {}
     job = ui_routes.get_job("job-stop-processing-1", settings=cfg) or {}
@@ -4028,7 +4019,7 @@ def test_ui_action_retry_failed_step(tmp_path, monkeypatch):
 
     r = c.post("/ui/recordings/rec-rtry-1/jobs/job-rtry-1/retry")
     assert r.status_code == 303
-    assert r.headers["location"] == "/recordings/rec-rtry-1?tab=log"
+    assert r.headers["location"] == "/recordings/rec-rtry-1?tab=diagnostics"
     assert observed == {
         "recording_id": "rec-rtry-1",
         "job_type": JOB_TYPE_PRECHECK,

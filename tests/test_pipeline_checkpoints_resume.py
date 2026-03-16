@@ -710,8 +710,8 @@ def test_ui_recording_detail_renders_pipeline_stages_table(tmp_path: Path, monke
     monkeypatch.setattr(ui_routes, "_settings", cfg)
     client = TestClient(api.app)
 
-    response = client.get("/recordings/rec-ui-stage-1")
+    response = client.get("/recordings/rec-ui-stage-1?tab=diagnostics")
 
     assert response.status_code == 200
-    assert "Pipeline Stages" in response.text
+    assert "Pipeline stages" in response.text
     assert "Sanitize Audio" in response.text

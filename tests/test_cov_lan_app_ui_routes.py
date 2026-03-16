@@ -249,7 +249,7 @@ def test_control_center_helper_contexts_cover_fragment_builders(
         tab="summary",
     )
     assert summary_state["tab"] == "summary"
-    assert summary_state["selected_detail_href"] == "/recordings/rec-helper-1"
+    assert summary_state["selected_detail_href"] == "/recordings/rec-helper-1?tab=summary"
     assert summary_state["tab_label"] == "Summary"
 
     fallback_state = ui_routes._control_center_state_context(  # noqa: SLF001
@@ -443,7 +443,7 @@ def test_control_center_helper_contexts_cover_fragment_builders(
     )
     assert (
         ui_routes._recording_detail_path("rec-helper-1", tab="summary")
-        == "/recordings/rec-helper-1"
+        == "/recordings/rec-helper-1?tab=summary"
     )
 
     monkeypatch.setattr(
@@ -987,6 +987,131 @@ def test_compact_inspector_helpers_cover_next_action_branches(tmp_path: Path) ->
     assert fallback["button_label"] == "Open Full Page"
 
 
+def test_full_page_helpers_cover_overview_and_next_action_branches(
+    tmp_path: Path,
+) -> None:
+    cfg = _cfg(tmp_path)
+
+    review_speakers = ui_routes._full_page_overview_next_action_context(  # noqa: SLF001
+        "rec-full-1",
+        recording={"status": RECORDING_STATUS_NEEDS_REVIEW},
+        diagnostics={
+            "current_stage_code": "diarization",
+            "primary_reason_text": "Speaker labels need review",
+        },
+    )
+    assert review_speakers["href"].endswith("tab=speakers")
+
+    failed = ui_routes._full_page_overview_next_action_context(  # noqa: SLF001
+        "rec-full-1",
+        recording={"status": RECORDING_STATUS_FAILED},
+        diagnostics={"current_stage_code": "llm_extract", "primary_reason_text": ""},
+    )
+    assert failed["title"] == "Triage before retrying"
+    assert failed["href"].endswith("tab=diagnostics")
+
+    fallback = ui_routes._full_page_overview_next_action_context(  # noqa: SLF001
+        "rec-full-1",
+        recording={"status": "Mystery"},
+        diagnostics={"current_stage_code": "", "primary_reason_text": ""},
+    )
+    assert fallback["href"].endswith("tab=transcript")
+
+    detailed_overview = ui_routes._full_page_overview_context(  # noqa: SLF001
+        "rec-full-1",
+        recording={
+            "status": RECORDING_STATUS_READY,
+            "pipeline_updated_at_display": "2026-01-02 03:05:00 CET",
+            "captured_at_display": "2026-01-02 03:04:05 CET",
+            "duration_display": "00:00:12",
+            "source": "upload",
+            "project_name": "Roadmap",
+            "suggested_project_name": "Roadmap",
+            "routing_confidence": 0.91,
+            "review_reason_text_display": "Needs a manual check",
+            "quarantine_reason": "Sensitive content",
+            "cancel_requested_at_display": "2026-01-02 03:06:00 CET",
+            "cancel_requested_by_display": "Alex",
+        },
+        diagnostics={
+            "current_stage_label": "LLM Summary",
+            "current_stage_status_label": "Completed",
+            "current_stage_code": "llm_extract",
+            "primary_reason_text": "Primary blocker",
+        },
+        settings=cfg,
+    )
+    assert "Last pipeline update 2026-01-02 03:05:00 CET." in detailed_overview[
+        "state_detail"
+    ]
+    assert "Current stage status: Completed." in detailed_overview["state_detail"]
+    assert detailed_overview["metadata"][-1]["value"] == "Roadmap · 0.91"
+    assert detailed_overview["focus_items"] == [
+        {"label": "Primary reason", "value": "Primary blocker"},
+        {"label": "Review reason", "value": "Needs a manual check"},
+        {"label": "Quarantine reason", "value": "Sensitive content"},
+        {"label": "Routing signal", "value": "Roadmap · 0.91"},
+        {
+            "label": "Stop requested",
+            "value": "2026-01-02 03:06:00 CET by Alex",
+        },
+    ]
+
+    fallback_overview = ui_routes._full_page_overview_context(  # noqa: SLF001
+        "rec-full-1",
+        recording={
+            "status": "Mystery",
+            "pipeline_stage": "sanitize_audio",
+            "captured_at_display": "—",
+            "duration_display": "—",
+            "source": "upload",
+            "routing_confidence": 0.42,
+        },
+        diagnostics={
+            "current_stage_label": "Waiting",
+            "current_stage_status_label": "Queued",
+            "current_stage_code": "",
+            "primary_reason_text": "",
+        },
+        settings=cfg,
+    )
+    assert fallback_overview["state_detail"] == (
+        "Current / last pipeline stage: Sanitize Audio."
+    )
+    assert fallback_overview["metadata"][-1]["value"] == "0.42"
+
+    branch_overview = ui_routes._full_page_overview_context(  # noqa: SLF001
+        "rec-full-1",
+        recording={
+            "status": RECORDING_STATUS_READY,
+            "captured_at_display": "—",
+            "duration_display": "—",
+            "source": "upload",
+            "suggested_project_id": 7,
+            "cancel_requested_at_display": "2026-01-02 03:07:00 CET",
+            "cancel_requested_by_display": "",
+        },
+        diagnostics={
+            "current_stage_label": "Done",
+            "current_stage_status_label": "Ready",
+            "current_stage_code": "done",
+            "primary_reason_text": "",
+        },
+        settings=cfg,
+    )
+    assert branch_overview["metadata"][-1]["value"] == "#7"
+    assert branch_overview["focus_items"] == [
+        {
+            "label": "Routing signal",
+            "value": "#7",
+        },
+        {
+            "label": "Stop requested",
+            "value": "2026-01-02 03:07:00 CET",
+        },
+    ]
+
+
 def test_display_helpers_cover_timezone_duration_and_prepare_recording(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1326,7 +1451,7 @@ def test_ui_action_stop_helper_edge_paths(
         ui_routes.ui_action_stop("rec-ready", request=request, tab="calendar")
     )
     assert not_eligible.status_code == 303
-    assert not_eligible.headers["location"] == "/recordings/rec-ready?tab=calendar"
+    assert not_eligible.headers["location"] == "/recordings/rec-ready?tab=diagnostics"
 
     monkeypatch.setattr(
         ui_routes,
@@ -2650,6 +2775,111 @@ def test_project_language_and_resummarize_helpers(
         ui_routes._resummarize_recording(
             recording_id="empty", settings=cfg, target_summary_language="en"
         )  # noqa: SLF001
+
+
+def test_transcript_tab_context_covers_fallback_turns_and_copy_paths(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = _cfg(tmp_path)
+
+    speaker_recording = cfg.recordings_root / "rec-transcript-fallback" / "derived"
+    speaker_recording.mkdir(parents=True, exist_ok=True)
+    (speaker_recording / "transcript.json").write_text(
+        json.dumps({"text": "raw transcript", "language": {"detected": "es"}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        ui_routes,
+        "_fallback_speaker_turns_from_transcript",
+        lambda *_a, **_k: [
+            {"speaker": "S9", "text": "   "},
+            {"speaker": "", "start": "bad", "end": "", "text": "Hola", "language": "??"},
+            {
+                "speaker": "S2",
+                "start": 1.2,
+                "end": "bad",
+                "text": "Hello",
+                "language": "en",
+            },
+        ],
+    )
+
+    transcript = ui_routes._transcript_tab_context(  # noqa: SLF001
+        "rec-transcript-fallback",
+        cfg,
+    )
+    assert transcript["available"] is True
+    assert transcript["source_label"] == "Speaker-attributed turns"
+    assert transcript["dominant_language_label"] == "Spanish (es)"
+    assert transcript["turn_count"] == 2
+    assert transcript["turns"][0] == {
+        "speaker": "S1",
+        "time_range": "— - —",
+        "text": "Hola",
+        "language_label": "",
+    }
+    assert transcript["turns"][1]["time_range"] == "00:00:01 - 00:00:01"
+    assert transcript["turns"][1]["language_label"] == "English (en)"
+    assert "[— - —] S1: Hola" in transcript["copy_text"]
+    assert "[00:00:01 - 00:00:01] S2: Hello" in transcript["copy_text"]
+
+    raw_only_recording = cfg.recordings_root / "rec-transcript-raw" / "derived"
+    raw_only_recording.mkdir(parents=True, exist_ok=True)
+    (raw_only_recording / "transcript.json").write_text(
+        json.dumps({"text": "raw only", "dominant_language": "en"}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        ui_routes,
+        "_fallback_speaker_turns_from_transcript",
+        lambda *_a, **_k: [],
+    )
+
+    raw_only = ui_routes._transcript_tab_context(  # noqa: SLF001
+        "rec-transcript-raw",
+        cfg,
+    )
+    assert raw_only["available"] is True
+    assert raw_only["source_label"] == "Transcript text"
+    assert raw_only["turn_count"] == 0
+    assert raw_only["turns"] == []
+    assert raw_only["copy_text"] == "raw only"
+    assert raw_only["dominant_language_label"] == "English (en)"
+
+    file_backed_recording = cfg.recordings_root / "rec-transcript-file" / "derived"
+    file_backed_recording.mkdir(parents=True, exist_ok=True)
+    (file_backed_recording / "transcript.json").write_text(
+        json.dumps({"text": "ignored raw", "dominant_language": "en"}),
+        encoding="utf-8",
+    )
+    (file_backed_recording / "speaker_turns.json").write_text(
+        json.dumps(
+            [
+                {
+                    "speaker": "S3",
+                    "start": 2.0,
+                    "end": 3.0,
+                    "text": "From file",
+                    "language": "en",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        ui_routes,
+        "_fallback_speaker_turns_from_transcript",
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("fallback not expected")),
+    )
+
+    file_backed = ui_routes._transcript_tab_context(  # noqa: SLF001
+        "rec-transcript-file",
+        cfg,
+    )
+    assert file_backed["turn_count"] == 1
+    assert file_backed["turns"][0]["speaker"] == "S3"
+    assert file_backed["copy_text"] == "[00:00:02 - 00:00:03] S3: From file"
 
 
 def test_resummarize_recording_default_turn_and_attendees_paths(

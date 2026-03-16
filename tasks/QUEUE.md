@@ -595,7 +595,7 @@ Queue (in order)
 - Depends on: PR-SPEAKER-DECISIONS-02 and PR-SNIPPETS-UI-STATE-01 and PR-SNIPPETS-REPAIR-BACKFILL-01
 
 119) PR-INSPECTOR-FULL-PAGE-02: Rebuild the full-page recording inspector around Overview, Speakers, Transcript, Summary, Diagnostics, and Export
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-INSPECTOR-FULL-PAGE-02.md
 - Depends on: PR-SPEAKER-SNIPPET-UX-02 and PR-UI-STITCH-INSPECTOR-COMPACT-01
 
