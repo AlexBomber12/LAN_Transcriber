@@ -626,7 +626,7 @@ def test_control_center_embedded_inspector_overview_stays_compact(seeded_client)
     )
     assert speakers.status_code == 200
     assert "Open canonical speakers page" not in speakers.text
-    assert "Safe speaker review" in speakers.text
+    assert "Snippet-first speaker review" in speakers.text
 
 
 def test_control_center_embedded_summary_and_export_tabs_render_compact_content(
@@ -717,7 +717,9 @@ def test_control_center_workflow_upload_select_speaker_decision_and_correction(
     speakers = c.get(f"/?selected={recording_id}&tab=speakers")
     assert speakers.status_code == 200
     assert "Compact inspector" in speakers.text
-    assert "Safe speaker review" in speakers.text
+    assert "Snippet-first speaker review" in speakers.text
+    assert "Best snippet candidates" in speakers.text
+    assert "Recognition cue" in speakers.text
     assert "Local label only" in speakers.text
     assert "Add trusted sample" in speakers.text
 
@@ -1739,13 +1741,14 @@ def test_recording_detail_speakers_tab_assignment_persists(tmp_path, monkeypatch
         "/recordings/rec-speakers-1?tab=speakers"
     )
     assert page.status_code == 200
-    assert "Speaker Assignments" in page.text
+    assert "Speaker Review Workspace" in page.text
     assert "Alice Example" in page.text
     assert "Confirm match" in page.text
     assert "Mapped globally" in page.text
     assert "Add trusted sample" in page.text
-    assert "Recommended" in page.text
-    assert "purity 88%" in page.text
+    assert "Best match" in page.text
+    assert "Purity 88%" in page.text
+    assert "Recognition cue" in page.text
 
     overview = TestClient(api.app, follow_redirects=True).get(
         "/recordings/rec-speakers-1"
@@ -2174,7 +2177,7 @@ def test_recording_detail_speakers_snippet_not_started_message(tmp_path, monkeyp
         in page.text
     )
     assert "Add sample will be available after Snippet Export runs." in page.text
-    assert 'name="snippet_path" style="width:220px" disabled' in page.text
+    assert 'name="snippet_path" disabled' in page.text
 
 
 def test_recording_detail_speakers_snippet_running_message(tmp_path, monkeypatch):
@@ -2257,8 +2260,8 @@ def test_recording_detail_speakers_ready_during_processing_keeps_snippets_usable
         "/ui/recordings/rec-speakers-processing-ready-1/snippets/S1/1.wav" in page.text
     )
     assert "Add trusted sample" in page.text
-    assert 'name="snippet_path" style="width:220px" disabled' not in page.text
-    assert 'type="submit" disabled>Add trusted sample' not in page.text
+    assert 'name="snippet_path" disabled' not in page.text
+    assert 'disabled>Add trusted sample' not in page.text
 
 
 def test_recording_detail_speakers_nonfatal_snippet_failure_message(

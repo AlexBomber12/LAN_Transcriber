@@ -590,7 +590,7 @@ Queue (in order)
 - Depends on: PR-UI-STITCH-INSPECTOR-COMPACT-01 and PR-SPEAKER-REVIEW-01
 
 118) PR-SPEAKER-SNIPPET-UX-02: Redesign Speakers into a snippet-first review workspace in compact and full-page modes
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-SPEAKER-SNIPPET-UX-02.md
 - Depends on: PR-SPEAKER-DECISIONS-02 and PR-SNIPPETS-UI-STATE-01 and PR-SNIPPETS-REPAIR-BACKFILL-01
 

@@ -1,29 +1,1008 @@
-diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
-index b733da0..ab493ef 100644
---- a/.github/workflows/ci.yml
-+++ b/.github/workflows/ci.yml
-@@ -58,18 +58,13 @@ jobs:
-     timeout-minutes: 30
-     steps:
-       - uses: actions/checkout@v4
--      - name: Set up Docker Buildx
--        uses: docker/setup-buildx-action@v3
-       - name: Build runtime-lite image
--        uses: docker/build-push-action@v6
--        with:
--          context: .
--          file: ./Dockerfile
--          target: runtime-lite
--          tags: lan-transcriber:pr
--          load: true
--          cache-from: type=gha
--          cache-to: type=gha,mode=max
-+        run: |
-+          DOCKER_BUILDKIT=1 docker build \
-+            --file ./Dockerfile \
-+            --target runtime-lite \
-+            --tag lan-transcriber:pr \
-+            .
-       - name: Set up Python
-         uses: actions/setup-python@v5
-         with:
+diff --git a/lan_app/templates/base.html b/lan_app/templates/base.html
+index f71a603..c8e4a00 100644
+--- a/lan_app/templates/base.html
++++ b/lan_app/templates/base.html
+@@ -1253,6 +1253,218 @@ textarea:focus{
+   background:#fff;
+   padding:12px;
+ }
++.speaker-section-label{
++  color:var(--muted);
++  font-size:11px;
++  font-weight:700;
++  letter-spacing:.06em;
++  text-transform:uppercase;
++}
++.speaker-review-shell{
++  gap:16px;
++}
++.speaker-review-shell-full .speaker-review-shell-body{
++  display:grid;
++  gap:14px;
++  grid-template-columns:minmax(0,1.45fr) minmax(280px,.95fr);
++  align-items:start;
++}
++.speaker-review-shell-compact .speaker-review-shell-body{
++  display:grid;
++  gap:14px;
++}
++.speaker-review-primary{
++  display:grid;
++  gap:12px;
++}
++.speaker-context-grid{
++  display:grid;
++  gap:12px;
++  grid-template-columns:repeat(auto-fit,minmax(220px,1fr));
++}
++.speaker-context-card{
++  display:grid;
++  gap:8px;
++}
++.speaker-context-title{
++  margin:0;
++  font-size:1.05rem;
++  font-weight:800;
++  color:var(--text);
++}
++.speaker-card-title h3{
++  margin:0;
++}
++.speaker-status-stack{
++  display:flex;
++  gap:8px;
++  flex-wrap:wrap;
++  align-items:center;
++}
++.speaker-cue-text{
++  margin:0;
++  padding:10px 12px;
++  border-radius:14px;
++  background:#fff;
++  border:1px solid var(--line);
++  color:var(--text);
++  font-size:13px;
++  line-height:1.55;
++}
++.speaker-snippet-panel{
++  border:1px solid var(--line);
++  border-radius:18px;
++  background:var(--panel-soft);
++  padding:16px;
++  display:grid;
++  gap:12px;
++}
++.speaker-snippet-panel h4{
++  margin:0 0 4px 0;
++  font-size:1rem;
++}
++.speaker-snippet-panel-head{
++  display:flex;
++  justify-content:space-between;
++  gap:12px;
++  align-items:flex-start;
++  flex-wrap:wrap;
++}
++.speaker-snippet-grid{
++  display:grid;
++  gap:12px;
++  grid-template-columns:repeat(auto-fit,minmax(220px,1fr));
++}
++.speaker-review-shell-compact .speaker-snippet-grid{
++  grid-template-columns:repeat(auto-fit,minmax(180px,1fr));
++}
++.speaker-snippet-card{
++  border:1px solid var(--line);
++  border-radius:16px;
++  background:#fff;
++  padding:12px;
++  display:grid;
++  gap:10px;
++}
++.speaker-snippet-card-recommended{
++  border-color:#bfd5ff;
++  box-shadow:0 0 0 1px #dbeafe inset;
++}
++.speaker-snippet-card-head,
++.speaker-action-head{
++  display:flex;
++  justify-content:space-between;
++  gap:10px;
++  align-items:flex-start;
++  flex-wrap:wrap;
++}
++.speaker-chip{
++  display:inline-flex;
++  align-items:center;
++  gap:6px;
++  min-height:24px;
++  padding:4px 10px;
++  border-radius:999px;
++  border:1px solid var(--line);
++  background:#fff;
++  color:var(--text);
++  font-size:11px;
++  font-weight:700;
++}
++.speaker-chip-ready{
++  border-color:#bfdbfe;
++  background:#eff6ff;
++  color:var(--primary);
++}
++.speaker-chip-quality{
++  border-color:#dbeafe;
++  background:#eef4ff;
++  color:#1d4ed8;
++}
++.speaker-chip-muted{
++  color:var(--muted);
++}
++.speaker-snippet-meta,
++.speaker-snippet-choice{
++  margin:0;
++  color:var(--muted);
++  font-size:12px;
++}
++.speaker-snippet-cue{
++  margin:0;
++  padding:10px 12px;
++  border-radius:14px;
++  background:#f8fbff;
++  color:var(--text);
++  font-size:13px;
++  line-height:1.5;
++}
++.speaker-snippet-audio{
++  width:100%;
++  min-width:0;
++}
++.speaker-snippet-empty{
++  border:1px dashed var(--line-strong);
++  border-radius:16px;
++  background:#fff;
++  padding:14px;
++}
++.speaker-snippet-empty-title{
++  margin:0 0 6px 0;
++  font-size:13px;
++  font-weight:800;
++  color:var(--text);
++}
++.speaker-warning-list{
++  display:grid;
++  gap:6px;
++}
++.speaker-warning,
++.speaker-warning-inline{
++  margin:0;
++  color:#92400e;
++  font-size:12px;
++}
++.speaker-action-stack{
++  display:grid;
++  gap:12px;
++}
++.speaker-review-shell-full .speaker-action-stack{
++  grid-template-columns:1fr;
++}
++.speaker-review-shell-compact .speaker-action-stack{
++  grid-template-columns:repeat(auto-fit,minmax(220px,1fr));
++}
++.speaker-decision-card-primary{
++  background:#f7faff;
++}
++.speaker-decision-card-secondary{
++  border-style:dashed;
++  background:#fffdf5;
++}
++.speaker-form-stack{
++  display:grid;
++  gap:10px;
++}
++.speaker-form-stack select,
++.speaker-form-stack input{
++  width:100%;
++}
++.speaker-action-submit{
++  width:100%;
++}
++.speaker-action-submit-primary{
++  border-color:#bfd5ff;
++  background:#eff6ff;
++  color:var(--primary);
++}
++.speaker-trusted-sample-state{
++  margin-bottom:10px;
++  padding:10px 12px;
++  border:1px solid var(--line);
++  border-radius:14px;
++  background:#fff;
++}
+ .speaker-note,
+ .inspector-note{
+   color:var(--muted);
+@@ -1295,6 +1507,11 @@ textarea:focus{
+   .form-row label{min-width:0}
+   .inspector-heading{flex-direction:column}
+   .tabs{overflow:auto;flex-wrap:nowrap;padding-bottom:10px}
++  .speaker-review-shell-full .speaker-review-shell-body,
++  .speaker-review-shell-compact .speaker-action-stack,
++  .speaker-context-grid,
++  .speaker-snippet-grid{grid-template-columns:1fr}
++  .speaker-card-title{align-items:flex-start}
+ }
+ </style>
+ </head>
+diff --git a/lan_app/templates/partials/recording_inspector_body.html b/lan_app/templates/partials/recording_inspector_body.html
+index d74a2c8..086713b 100644
+--- a/lan_app/templates/partials/recording_inspector_body.html
++++ b/lan_app/templates/partials/recording_inspector_body.html
+@@ -439,7 +439,7 @@
+   {% set notices = sp.review_notices or [] %}
+   {% set repair = sp.snippet_repair or {} %}
+ 
+-  <h2>Speaker Assignments</h2>
++  <h2>Speaker Review Workspace</h2>
+   {% if sp.notice_message %}
+   <p style="margin:0 0 10px 0;padding:8px 10px;border:1px solid #86efac;background:#f0fdf4;color:#166534">
+     {{ sp.notice_message }}
+@@ -470,201 +470,51 @@
+     {% endfor %}
+   {% endif %}
+   <div style="margin:0 0 10px 0;padding:8px 10px;border:1px solid #ccd;background:#f8f9ff;color:#222">
+-    Confirm match only when you want a canonical speaker identity across recordings.
+-    Use <strong>Keep unknown</strong> to close review without naming the speaker, or <strong>Local label only</strong> to name this speaker just for the current recording and its export.
+-    <strong>Add trusted sample</strong> stays separate and should be used only for trusted clean clips.
++    Review speakers through their best clean clips first. <strong>Confirm match</strong> changes canonical identity across recordings.
++    Use <strong>Keep unknown</strong> to close review without naming the speaker, <strong>Local label only</strong> to name this speaker only for this recording, and <strong>Add trusted sample</strong> only for trusted clean clips without changing identity mapping.
+   </div>
+   {% if not recording_inspector.embedded %}
+   <div class="filters" style="margin:0 0 10px 0">
+     <a href="{{ sp.manage_voices_href or '/voices' }}" class="btn" style="text-decoration:none">Open canonical speakers page</a>
+   </div>
+   {% endif %}
+-  {% if rows %}
+-  <table>
+-    <thead>
+-      <tr>
+-        <th>Speaker</th>
+-        <th>Turns</th>
+-        <th>Duration (s)</th>
+-        <th>Preview</th>
+-        <th>Current decision</th>
+-        <th>Review state</th>
+-        <th>Snippets</th>
+-        <th>Speaker decision</th>
+-        <th>Trusted sample</th>
+-      </tr>
+-    </thead>
+-    <tbody>
+-      {% for row in rows %}
+-      <tr>
+-        <td><code>{{ row.speaker }}</code></td>
+-        <td>{{ row.turn_count }}</td>
+-        <td>{{ '%.2f'|format(row.duration_sec or 0.0) }}</td>
+-        <td title="{{ row.preview_text }}" style="white-space:normal;max-width:300px">{{ row.preview_text or '—' }}</td>
+-        <td style="white-space:normal;max-width:260px">
+-          <div><strong>{{ row.mapping_title }}</strong></div>
+-          <div style="margin-top:4px;color:#555">{{ row.mapping_detail }}</div>
+-          {% if row.candidate_matches %}
+-          <div style="margin-top:6px;font-size:11px;color:#555">
+-            Suggestions:
+-            {% for candidate in row.candidate_matches %}
+-            <span>{{ candidate.display_name }} ({{ '%.2f'|format(candidate.score) }}){% if not loop.last %}, {% endif %}</span>
+-            {% endfor %}
+-          </div>
+-          {% endif %}
+-        </td>
+-        <td style="white-space:normal;max-width:220px">
+-          <span class="badge {{ row.state_badge_class }}">{{ row.state_badge_label }}</span>
+-          <div style="margin-top:4px;color:#555">{{ row.state_detail }}</div>
+-          {% if row.review_state == 'system_suggested' %}
+-          <div style="margin-top:4px;color:#555">Best suggestion score {{ '%.2f'|format(row.confidence or 0.0) }}</div>
+-          {% endif %}
+-          {% if row.low_confidence and row.assignment_threshold %}
+-          <div style="margin-top:4px;font-size:11px;color:#92400e">
+-            Below auto-match threshold {{ '%.2f'|format(row.assignment_threshold) }}.
+-          </div>
+-          {% endif %}
+-        </td>
+-        <td style="white-space:normal;max-width:320px">
+-          {% if row.snippet_ui_state %}
+-          <div style="margin:0 0 6px 0;font-size:11px;color:{{ row.snippet_ui_state.color }}">
+-            <strong>{{ row.snippet_ui_state.label }}:</strong> {{ row.snippet_ui_state.detail }}
+-          </div>
+-          {% endif %}
+-          {% if row.clean_snippets %}
+-            {% for snippet in row.clean_snippets %}
+-            <div style="margin-bottom:8px;padding:6px;border:1px solid #ddd;border-radius:6px">
+-              <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:4px">
+-                {% if snippet.recommended %}
+-                <span class="badge s-Ready">Recommended</span>
+-                {% else %}
+-                <span class="badge s-Published">Clean</span>
+-                {% endif %}
+-                <span>{{ snippet.clip_label }}</span>
+-                <span style="color:#555">from {{ snippet.source_label }}</span>
+-                <span style="color:#555">purity {{ snippet.purity_label }}</span>
+-              </div>
+-              <audio controls preload="none" style="height:26px;max-width:280px">
+-                <source src="{{ snippet.audio_url }}" type="audio/wav">
+-              </audio>
+-            </div>
+-            {% endfor %}
+-          {% endif %}
+-          {% if row.snippet_warnings %}
+-            {% for warning in row.snippet_warnings %}
+-            <div style="margin-top:4px;font-size:11px;color:#92400e">{{ warning }}</div>
+-            {% endfor %}
+-          {% endif %}
+-        </td>
+-        <td style="white-space:normal;max-width:260px">
+-          {% if profiles %}
+-          <form method="post" action="/ui/recordings/{{ rec.id }}/speakers/assign{{ recording_inspector.embedded_return_queries.speakers }}">
+-            <input type="hidden" name="diar_speaker_label" value="{{ row.speaker }}">
+-            <div style="margin-bottom:6px;font-size:11px;color:#555">Confirm match</div>
+-            <select name="voice_profile_id" style="width:180px">
+-              <option value="">Choose canonical speaker</option>
+-              {% for vp in profiles %}
+-              <option value="{{ vp.id }}" {% if row.global_voice_profile_id == vp.id %}selected{% endif %}>{{ vp.display_name }}</option>
+-              {% endfor %}
+-            </select>
+-            <button class="btn" type="submit">Confirm match</button>
+-          </form>
+-          {% else %}
+-          <div class="placeholder" style="padding:0;margin-bottom:8px">No canonical speakers yet.</div>
+-          {% endif %}
+-          <form method="post" action="/ui/recordings/{{ rec.id }}/speakers/keep-unknown{{ recording_inspector.embedded_return_queries.speakers }}" style="margin-top:8px">
+-            <input type="hidden" name="diar_speaker_label" value="{{ row.speaker }}">
+-            <button class="btn" type="submit">Keep unknown</button>
+-          </form>
+-          <form method="post" action="/ui/recordings/{{ rec.id }}/speakers/local-label{{ recording_inspector.embedded_return_queries.speakers }}" style="margin-top:8px">
+-            <input type="hidden" name="diar_speaker_label" value="{{ row.speaker }}">
+-            <div style="margin-bottom:6px;font-size:11px;color:#555">Local label only</div>
+-            <input
+-              type="text"
+-              name="local_display_name"
+-              value="{{ row.local_display_name }}"
+-              maxlength="120"
+-              placeholder="Recording-only name"
+-              style="width:180px"
+-            >
+-            <button class="btn" type="submit">Local label only</button>
+-          </form>
+-          <div style="margin-top:6px;font-size:11px;color:#555">
+-            Global match affects the canonical speaker bank. Local label only affects this recording and its exports.
+-          </div>
+-        </td>
+-        <td style="white-space:normal;max-width:260px">
+-          <div style="margin-bottom:6px;font-size:11px;color:#555">
+-            Add trusted sample uses a clean clip without changing the current review decision.
+-          </div>
+-          {% if row.trusted_sample_state %}
+-          <div style="margin-bottom:8px;padding:6px;border:1px solid #ddd;border-radius:6px;background:#f8f9ff">
+-            <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+-              <span class="badge s-Ready">{{ row.trusted_sample_state.badge_label }}</span>
+-              <span>{{ row.trusted_sample_state.detail }}</span>
+-            </div>
+-          </div>
+-          {% endif %}
+-          {% if profiles %}
+-          <form method="post" action="/ui/recordings/{{ rec.id }}/speakers/add-sample{{ recording_inspector.embedded_return_queries.speakers }}">
+-            <input type="hidden" name="diar_speaker_label" value="{{ row.speaker }}">
+-            <select name="voice_profile_id" style="width:180px">
+-              <option value="">Choose canonical speaker</option>
+-              {% for vp in profiles %}
+-              <option value="{{ vp.id }}" {% if row.sample_voice_profile_id == vp.id %}selected{% endif %}>{{ vp.display_name }}</option>
+-              {% endfor %}
+-            </select>
+-            <select name="snippet_path" style="width:220px" {% if not row.clean_snippets %}disabled{% endif %}>
+-              {% for snippet in row.clean_snippets %}
+-              <option value="{{ snippet.relative_path }}" {% if snippet.recommended %}selected{% endif %}>{{ snippet.choice_label }}</option>
+-              {% endfor %}
+-            </select>
+-            <button class="btn" type="submit" {% if not row.clean_snippets %}disabled{% endif %}>Add trusted sample</button>
+-            {% if not row.clean_snippets and row.snippet_ui_state.add_sample_message %}
+-            <div style="margin-top:4px;font-size:11px;color:#92400e">{{ row.snippet_ui_state.add_sample_message }}</div>
+-            {% elif row.no_clean_snippet_message %}
+-            <div style="margin-top:4px;font-size:11px;color:#92400e">{{ row.no_clean_snippet_message }}</div>
+-            {% endif %}
+-          </form>
+-          {% else %}
+-          <span class="placeholder" style="padding:0">Create a canonical speaker first.</span>
+-          {% endif %}
+-        </td>
+-      </tr>
+-      {% endfor %}
+-    </tbody>
+-  </table>
+-  {% else %}
+-  <p class="placeholder">No speaker turns available yet. Run diarization first.</p>
+-  {% endif %}
+-
+-  <h2>Create Canonical Speaker</h2>
+-  {% if rows %}
+-  <form method="post" action="/ui/recordings/{{ rec.id }}/speakers/create-and-assign{{ recording_inspector.embedded_return_queries.speakers }}">
+-    <div class="form-row">
+-      <label for="diar_speaker_label">Speaker label</label>
+-      <select id="diar_speaker_label" name="diar_speaker_label" style="width:180px">
+-        {% for row in rows %}
+-        <option value="{{ row.speaker }}">{{ row.speaker }}</option>
+-        {% endfor %}
+-      </select>
+-    </div>
+-    <div class="form-row">
+-      <label for="display_name">Display name</label>
+-      <input id="display_name" type="text" name="display_name" maxlength="120" required placeholder="Person name" style="width:260px">
+-    </div>
+-    <div class="form-row">
+-      <label for="notes">Notes</label>
+-      <input id="notes" type="text" name="notes" maxlength="240" placeholder="Optional notes" style="width:360px">
++  {% set speaker_review_mode = 'full' %}
++  {% include 'partials/speaker_review_cards.html' %}
++
++  <section class="embedded-card">
++    <div class="embedded-card-head">
++      <div>
++        <h2>Create Canonical Speaker</h2>
++        <p class="inspector-note">Create a new canonical person and confirm the diarized match in one step.</p>
++      </div>
+     </div>
+-    <div class="form-row">
+-      <label></label>
+-      <button class="btn" type="submit">Create and confirm match</button>
+-    </div>
+-  </form>
+-  {% else %}
+-  <p class="placeholder">No diarization labels available for assignment.</p>
+-  {% endif %}
++    {% if rows %}
++    <form method="post" action="/ui/recordings/{{ rec.id }}/speakers/create-and-assign{{ recording_inspector.embedded_return_queries.speakers }}">
++      <div class="form-row">
++        <label for="diar_speaker_label">Speaker label</label>
++        <select id="diar_speaker_label" name="diar_speaker_label" style="width:180px">
++          {% for row in rows %}
++          <option value="{{ row.speaker }}">{{ row.speaker }}</option>
++          {% endfor %}
++        </select>
++      </div>
++      <div class="form-row">
++        <label for="display_name">Display name</label>
++        <input id="display_name" type="text" name="display_name" maxlength="120" required placeholder="Person name" style="width:260px">
++      </div>
++      <div class="form-row">
++        <label for="notes">Notes</label>
++        <input id="notes" type="text" name="notes" maxlength="240" placeholder="Optional notes" style="width:360px">
++      </div>
++      <div class="form-row">
++        <label></label>
++        <button class="btn" type="submit">Create and confirm match</button>
++      </div>
++    </form>
++    {% else %}
++    <p class="placeholder">No diarization labels available for assignment.</p>
++    {% endif %}
++  </section>
+ 
+ {% elif current_tab == 'language' %}
+   {% set lang = language or {} %}
+diff --git a/lan_app/templates/partials/recording_inspector_embedded_body.html b/lan_app/templates/partials/recording_inspector_embedded_body.html
+index 1f0ddf0..85cfacb 100644
+--- a/lan_app/templates/partials/recording_inspector_embedded_body.html
++++ b/lan_app/templates/partials/recording_inspector_embedded_body.html
+@@ -69,180 +69,14 @@
+   {% endif %}
+ 
+   <section class="embedded-card">
+-    <h3>Safe speaker review</h3>
++    <h3>Snippet-first speaker review</h3>
+     <p class="inspector-note">
+-      Confirm match only when you want a canonical identity across recordings. Use <strong>Keep unknown</strong> to close review without naming the speaker, <strong>Local label only</strong> for this recording only, and <strong>Add trusted sample</strong> only for clean clips.
++      Review speakers through their best clean clips first. <strong>Confirm match</strong> changes canonical identity across recordings, <strong>Keep unknown</strong> closes review without naming the speaker, <strong>Local label only</strong> keeps the name inside this recording, and <strong>Add trusted sample</strong> stays training-only.
+     </p>
+   </section>
+ 
+-  {% if rows %}
+-  <div class="speaker-review-list">
+-    {% for row in rows %}
+-    <section class="speaker-card">
+-      <div class="speaker-card-head">
+-        <div>
+-          <div class="speaker-card-title">
+-            <div class="speaker-avatar">{{ row.speaker }}</div>
+-            <div>
+-              <h3>{{ row.mapping_title }}</h3>
+-              <div class="speaker-card-meta">
+-                <span>{{ row.turn_count }} turns</span>
+-                <span>{{ '%.2f'|format(row.duration_sec or 0.0) }}s</span>
+-                <span>{{ row.display_label }}</span>
+-              </div>
+-            </div>
+-          </div>
+-        </div>
+-        <span class="badge {{ row.state_badge_class }}">{{ row.state_badge_label }}</span>
+-      </div>
+-
+-      <div class="embedded-panel-grid">
+-        <section class="embedded-card">
+-          <h3>Current decision</h3>
+-          <p>{{ row.mapping_detail }}</p>
+-          <p class="inspector-note" style="margin-top:8px">{{ row.state_detail }}</p>
+-          {% if row.candidate_matches %}
+-          <p class="inspector-note" style="margin-top:8px">
+-            Suggestions:
+-            {% for candidate in row.candidate_matches %}
+-            {{ candidate.display_name }} ({{ '%.2f'|format(candidate.score) }}){% if not loop.last %}, {% endif %}
+-            {% endfor %}
+-          </p>
+-          {% endif %}
+-          <p class="inspector-note" style="margin-top:8px">{{ row.preview_text or 'No preview text available.' }}</p>
+-        </section>
+-
+-        <section class="embedded-card">
+-          <h3>Clean snippets</h3>
+-          {% if row.snippet_ui_state %}
+-          <p class="inspector-note" style="margin-bottom:10px;color:{{ row.snippet_ui_state.color }}">
+-            <strong>{{ row.snippet_ui_state.label }}:</strong> {{ row.snippet_ui_state.detail }}
+-          </p>
+-          {% endif %}
+-          {% if row.clean_snippets %}
+-          <div class="speaker-audio-list">
+-            {% for snippet in row.clean_snippets %}
+-            <div class="speaker-audio-clip">
+-              <div class="speaker-card-meta" style="margin-bottom:8px">
+-                <span>{% if snippet.recommended %}Recommended{% else %}Clean{% endif %}</span>
+-                <span>{{ snippet.clip_label }}</span>
+-                <span>{{ snippet.purity_label }}</span>
+-              </div>
+-              <audio controls preload="none" style="width:100%">
+-                <source src="{{ snippet.audio_url }}" type="audio/wav">
+-              </audio>
+-            </div>
+-            {% endfor %}
+-          </div>
+-          {% else %}
+-          <p class="placeholder">No clean snippets are available for this speaker yet.</p>
+-          {% endif %}
+-          {% if row.snippet_warnings %}
+-            {% for warning in row.snippet_warnings %}
+-            <p class="inspector-note" style="margin-top:8px;color:#92400e">{{ warning }}</p>
+-            {% endfor %}
+-          {% endif %}
+-        </section>
+-      </div>
+-
+-      <div class="speaker-actions-grid">
+-        <section class="speaker-decision-card">
+-          <h3>Confirm match</h3>
+-          {% if profiles %}
+-          <form method="post" action="/ui/recordings/{{ rec.id }}/speakers/assign{{ recording_inspector.embedded_return_queries.speakers }}">
+-            <input type="hidden" name="diar_speaker_label" value="{{ row.speaker }}">
+-            <div class="filter-field">
+-              <label for="speaker-match-{{ rec.id }}-{{ row.speaker }}">Canonical speaker</label>
+-              <select id="speaker-match-{{ rec.id }}-{{ row.speaker }}" name="voice_profile_id">
+-                <option value="">Choose canonical speaker</option>
+-                {% for vp in profiles %}
+-                <option value="{{ vp.id }}" {% if row.global_voice_profile_id == vp.id %}selected{% endif %}>{{ vp.display_name }}</option>
+-                {% endfor %}
+-              </select>
+-            </div>
+-            <div class="filters" style="margin-top:10px">
+-              <button class="btn" type="submit">Confirm match</button>
+-            </div>
+-          </form>
+-          {% else %}
+-          <p class="placeholder">No canonical speakers exist yet. Use the full-page inspector or Voices to create one first.</p>
+-          {% endif %}
+-        </section>
+-
+-        <section class="speaker-decision-card">
+-          <h3>Keep unknown</h3>
+-          <p class="inspector-note">Resolve review without forcing a name or polluting the global speaker bank.</p>
+-          <form method="post" action="/ui/recordings/{{ rec.id }}/speakers/keep-unknown{{ recording_inspector.embedded_return_queries.speakers }}" style="margin-top:10px">
+-            <input type="hidden" name="diar_speaker_label" value="{{ row.speaker }}">
+-            <button class="btn" type="submit">Keep unknown</button>
+-          </form>
+-        </section>
+-
+-        <section class="speaker-decision-card">
+-          <h3>Local label only</h3>
+-          <p class="inspector-note">Name this speaker only inside this recording and its export.</p>
+-          <form method="post" action="/ui/recordings/{{ rec.id }}/speakers/local-label{{ recording_inspector.embedded_return_queries.speakers }}" style="margin-top:10px">
+-            <input type="hidden" name="diar_speaker_label" value="{{ row.speaker }}">
+-            <div class="filter-field">
+-              <label for="speaker-local-{{ rec.id }}-{{ row.speaker }}">Recording-only name</label>
+-              <input
+-                id="speaker-local-{{ rec.id }}-{{ row.speaker }}"
+-                type="text"
+-                name="local_display_name"
+-                value="{{ row.local_display_name }}"
+-                maxlength="120"
+-                placeholder="Recording-only name"
+-              >
+-            </div>
+-            <div class="filters" style="margin-top:10px">
+-              <button class="btn" type="submit">Local label only</button>
+-            </div>
+-          </form>
+-        </section>
+-
+-        <section class="speaker-decision-card">
+-          <h3>Add trusted sample</h3>
+-          <p class="inspector-note">Store a clean clip as training data without changing the review decision.</p>
+-          {% if profiles %}
+-          <form method="post" action="/ui/recordings/{{ rec.id }}/speakers/add-sample{{ recording_inspector.embedded_return_queries.speakers }}" style="margin-top:10px">
+-            <input type="hidden" name="diar_speaker_label" value="{{ row.speaker }}">
+-            <div class="filter-field">
+-              <label for="speaker-sample-profile-{{ rec.id }}-{{ row.speaker }}">Canonical speaker</label>
+-              <select id="speaker-sample-profile-{{ rec.id }}-{{ row.speaker }}" name="voice_profile_id">
+-                <option value="">Choose canonical speaker</option>
+-                {% for vp in profiles %}
+-                <option value="{{ vp.id }}" {% if row.sample_voice_profile_id == vp.id %}selected{% endif %}>{{ vp.display_name }}</option>
+-                {% endfor %}
+-              </select>
+-            </div>
+-            <div class="filter-field" style="margin-top:10px">
+-              <label for="speaker-sample-snippet-{{ rec.id }}-{{ row.speaker }}">Snippet</label>
+-              <select id="speaker-sample-snippet-{{ rec.id }}-{{ row.speaker }}" name="snippet_path" {% if not row.clean_snippets %}disabled{% endif %}>
+-                {% for snippet in row.clean_snippets %}
+-                <option value="{{ snippet.relative_path }}" {% if snippet.recommended %}selected{% endif %}>{{ snippet.choice_label }}</option>
+-                {% endfor %}
+-              </select>
+-            </div>
+-            <div class="filters" style="margin-top:10px">
+-              <button class="btn" type="submit" {% if not row.clean_snippets %}disabled{% endif %}>Add trusted sample</button>
+-            </div>
+-            {% if not row.clean_snippets and row.snippet_ui_state.add_sample_message %}
+-            <p class="inspector-note" style="margin-top:8px;color:#92400e">{{ row.snippet_ui_state.add_sample_message }}</p>
+-            {% elif row.no_clean_snippet_message %}
+-            <p class="inspector-note" style="margin-top:8px;color:#92400e">{{ row.no_clean_snippet_message }}</p>
+-            {% endif %}
+-          </form>
+-          {% else %}
+-          <p class="placeholder">Create a canonical speaker first, then add trusted samples from clean clips.</p>
+-          {% endif %}
+-        </section>
+-      </div>
+-    </section>
+-    {% endfor %}
+-  </div>
+-  {% else %}
+-  <p class="placeholder">No speaker turns available yet. Run diarization first.</p>
+-  {% endif %}
++  {% set speaker_review_mode = 'compact' %}
++  {% include 'partials/speaker_review_cards.html' %}
+ 
+ {% elif current_tab == 'summary' %}
+   {% set summary_data = summary or {} %}
+diff --git a/tasks/QUEUE.md b/tasks/QUEUE.md
+index 846f9c3..4a6fed3 100644
+--- a/tasks/QUEUE.md
++++ b/tasks/QUEUE.md
+@@ -590,7 +590,7 @@ Queue (in order)
+ - Depends on: PR-UI-STITCH-INSPECTOR-COMPACT-01 and PR-SPEAKER-REVIEW-01
+ 
+ 118) PR-SPEAKER-SNIPPET-UX-02: Redesign Speakers into a snippet-first review workspace in compact and full-page modes
+-- Status: TODO
++- Status: DONE
+ - Tasks file: tasks/PR-SPEAKER-SNIPPET-UX-02.md
+ - Depends on: PR-SPEAKER-DECISIONS-02 and PR-SNIPPETS-UI-STATE-01 and PR-SNIPPETS-REPAIR-BACKFILL-01
+ 
+diff --git a/tests/test_ui_routes.py b/tests/test_ui_routes.py
+index 731676a..29dfdba 100644
+--- a/tests/test_ui_routes.py
++++ b/tests/test_ui_routes.py
+@@ -626,7 +626,7 @@ def test_control_center_embedded_inspector_overview_stays_compact(seeded_client)
+     )
+     assert speakers.status_code == 200
+     assert "Open canonical speakers page" not in speakers.text
+-    assert "Safe speaker review" in speakers.text
++    assert "Snippet-first speaker review" in speakers.text
+ 
+ 
+ def test_control_center_embedded_summary_and_export_tabs_render_compact_content(
+@@ -717,7 +717,9 @@ def test_control_center_workflow_upload_select_speaker_decision_and_correction(
+     speakers = c.get(f"/?selected={recording_id}&tab=speakers")
+     assert speakers.status_code == 200
+     assert "Compact inspector" in speakers.text
+-    assert "Safe speaker review" in speakers.text
++    assert "Snippet-first speaker review" in speakers.text
++    assert "Best snippet candidates" in speakers.text
++    assert "Recognition cue" in speakers.text
+     assert "Local label only" in speakers.text
+     assert "Add trusted sample" in speakers.text
+ 
+@@ -1739,13 +1741,14 @@ def test_recording_detail_speakers_tab_assignment_persists(tmp_path, monkeypatch
+         "/recordings/rec-speakers-1?tab=speakers"
+     )
+     assert page.status_code == 200
+-    assert "Speaker Assignments" in page.text
++    assert "Speaker Review Workspace" in page.text
+     assert "Alice Example" in page.text
+     assert "Confirm match" in page.text
+     assert "Mapped globally" in page.text
+     assert "Add trusted sample" in page.text
+-    assert "Recommended" in page.text
+-    assert "purity 88%" in page.text
++    assert "Best match" in page.text
++    assert "Purity 88%" in page.text
++    assert "Recognition cue" in page.text
+ 
+     overview = TestClient(api.app, follow_redirects=True).get(
+         "/recordings/rec-speakers-1"
+@@ -2174,7 +2177,7 @@ def test_recording_detail_speakers_snippet_not_started_message(tmp_path, monkeyp
+         in page.text
+     )
+     assert "Add sample will be available after Snippet Export runs." in page.text
+-    assert 'name="snippet_path" style="width:220px" disabled' in page.text
++    assert 'name="snippet_path" disabled' in page.text
+ 
+ 
+ def test_recording_detail_speakers_snippet_running_message(tmp_path, monkeypatch):
+@@ -2257,8 +2260,8 @@ def test_recording_detail_speakers_ready_during_processing_keeps_snippets_usable
+         "/ui/recordings/rec-speakers-processing-ready-1/snippets/S1/1.wav" in page.text
+     )
+     assert "Add trusted sample" in page.text
+-    assert 'name="snippet_path" style="width:220px" disabled' not in page.text
+-    assert 'type="submit" disabled>Add trusted sample' not in page.text
++    assert 'name="snippet_path" disabled' not in page.text
++    assert 'disabled>Add trusted sample' not in page.text
+ 
+ 
+ def test_recording_detail_speakers_nonfatal_snippet_failure_message(
+diff --git a/lan_app/templates/partials/speaker_review_cards.html b/lan_app/templates/partials/speaker_review_cards.html
+new file mode 100644
+index 0000000..0126077
+--- /dev/null
++++ b/lan_app/templates/partials/speaker_review_cards.html
+@@ -0,0 +1,250 @@
++{% set speaker_review_compact = speaker_review_mode == 'compact' %}
++{% if rows %}
++<div class="speaker-review-list {% if speaker_review_compact %}speaker-review-list-compact{% else %}speaker-review-list-full{% endif %}">
++  {% for row in rows %}
++  <section class="speaker-card speaker-review-shell {% if speaker_review_compact %}speaker-review-shell-compact{% else %}speaker-review-shell-full{% endif %}">
++    <div class="speaker-card-head">
++      <div class="speaker-card-title">
++        <div class="speaker-avatar">{{ row.speaker }}</div>
++        <div>
++          <div class="speaker-section-label">Diarized speaker</div>
++          <h3>{{ row.display_label }}</h3>
++          <div class="speaker-card-meta" style="margin-top:6px">
++            <span>{{ row.turn_count }} turns</span>
++            <span>{{ '%.2f'|format(row.duration_sec or 0.0) }}s active</span>
++            <span>{{ row.mapping_title }}</span>
++          </div>
++        </div>
++      </div>
++      <div class="speaker-status-stack">
++        <span class="badge {{ row.state_badge_class }}">{{ row.state_badge_label }}</span>
++        {% if row.trusted_sample_state %}
++        <span class="speaker-chip speaker-chip-ready">{{ row.trusted_sample_state.badge_label }}</span>
++        {% endif %}
++      </div>
++    </div>
++
++    <div class="speaker-review-shell-body">
++      <div class="speaker-review-primary">
++        <div class="speaker-context-grid">
++          <section class="embedded-card speaker-context-card">
++            <div class="speaker-section-label">Current decision</div>
++            <p class="speaker-context-title">{{ row.mapping_title }}</p>
++            <p>{{ row.mapping_detail }}</p>
++            <p class="inspector-note" style="margin-top:8px">{{ row.state_detail }}</p>
++            {% if row.review_state == 'system_suggested' %}
++            <p class="inspector-note" style="margin-top:8px">Best suggestion score {{ '%.2f'|format(row.confidence or 0.0) }}</p>
++            {% endif %}
++            {% if row.low_confidence and row.assignment_threshold %}
++            <p class="speaker-warning-inline" style="margin-top:8px">
++              Below auto-match threshold {{ '%.2f'|format(row.assignment_threshold) }}.
++            </p>
++            {% endif %}
++            {% if row.candidate_matches %}
++            <p class="inspector-note" style="margin-top:8px">
++              Suggestions:
++              {% for candidate in row.candidate_matches %}
++              {{ candidate.display_name }} ({{ '%.2f'|format(candidate.score) }}){% if not loop.last %}, {% endif %}
++              {% endfor %}
++            </p>
++            {% endif %}
++          </section>
++
++          <section class="embedded-card speaker-context-card">
++            <div class="speaker-section-label">Recognition cue</div>
++            {% if row.preview_text %}
++            <p class="speaker-cue-text">{{ row.preview_text }}</p>
++            {% else %}
++            <p class="placeholder" style="padding:0">No transcript cue is available for this speaker yet.</p>
++            {% endif %}
++            {% if row.snippet_ui_state %}
++            <p class="inspector-note" style="margin-top:10px;color:{{ row.snippet_ui_state.color }}">
++              <strong>{{ row.snippet_ui_state.label }}:</strong> {{ row.snippet_ui_state.detail }}
++            </p>
++            {% endif %}
++          </section>
++        </div>
++
++        <section class="speaker-snippet-panel">
++          <div class="speaker-snippet-panel-head">
++            <div>
++              <h4>Best snippet candidates</h4>
++              <p class="inspector-note">Use the clearest clip to recognize the voice or save a trusted training sample.</p>
++            </div>
++            {% if row.clean_snippets %}
++            <span class="speaker-chip speaker-chip-ready">{{ row.clean_snippets[:3]|length }} ready</span>
++            {% else %}
++            <span class="speaker-chip speaker-chip-muted">No clean clips</span>
++            {% endif %}
++          </div>
++
++          {% if row.clean_snippets %}
++          <div class="speaker-snippet-grid">
++            {% for snippet in row.clean_snippets[:3] %}
++            <article class="speaker-snippet-card{% if snippet.recommended %} speaker-snippet-card-recommended{% endif %}">
++              <div class="speaker-snippet-card-head">
++                <div class="speaker-card-meta">
++                  {% if snippet.recommended %}
++                  <span class="speaker-chip speaker-chip-ready">Best match</span>
++                  {% else %}
++                  <span class="speaker-chip speaker-chip-muted">Clean clip</span>
++                  {% endif %}
++                  <span>{{ snippet.clip_label }}</span>
++                </div>
++                <span class="speaker-chip speaker-chip-quality">Purity {{ snippet.purity_label }}</span>
++              </div>
++              <p class="speaker-snippet-meta">Source {{ snippet.source_label }}</p>
++              {% if row.preview_text %}
++              <p class="speaker-snippet-cue">Cue: {{ row.preview_text }}</p>
++              {% endif %}
++              <audio controls preload="none" class="speaker-snippet-audio">
++                <source src="{{ snippet.audio_url }}" type="audio/wav">
++              </audio>
++              <p class="speaker-snippet-choice">{{ snippet.choice_label }}</p>
++            </article>
++            {% endfor %}
++          </div>
++          {% else %}
++          <div class="speaker-snippet-empty">
++            <p class="speaker-snippet-empty-title">{{ row.snippet_ui_state.label if row.snippet_ui_state else 'Snippets unavailable' }}</p>
++            <p>{{ row.snippet_ui_state.detail if row.snippet_ui_state else (row.no_clean_snippet_message or 'No clean snippets are available for this speaker yet.') }}</p>
++            {% if row.no_clean_snippet_message and row.snippet_ui_state and row.no_clean_snippet_message != row.snippet_ui_state.detail %}
++            <p class="inspector-note" style="margin-top:8px">{{ row.no_clean_snippet_message }}</p>
++            {% endif %}
++          </div>
++          {% endif %}
++
++          {% if row.snippet_warnings %}
++          <div class="speaker-warning-list">
++            {% for warning in row.snippet_warnings %}
++            <p class="speaker-warning">{{ warning }}</p>
++            {% endfor %}
++          </div>
++          {% endif %}
++        </section>
++      </div>
++
++      <div class="speaker-action-stack">
++        <section class="speaker-decision-card speaker-decision-card-primary">
++          <div class="speaker-action-head">
++            <div>
++              <h3>Confirm match</h3>
++              <p class="inspector-note">Assign a canonical identity across recordings.</p>
++            </div>
++          </div>
++          {% if profiles %}
++          <form method="post" action="/ui/recordings/{{ rec.id }}/speakers/assign{{ recording_inspector.embedded_return_queries.speakers }}" class="speaker-form-stack">
++            <input type="hidden" name="diar_speaker_label" value="{{ row.speaker }}">
++            <div class="filter-field">
++              <label for="speaker-match-{{ rec.id }}-{{ row.speaker }}">Canonical speaker</label>
++              <select id="speaker-match-{{ rec.id }}-{{ row.speaker }}" name="voice_profile_id">
++                <option value="">Choose canonical speaker</option>
++                {% for vp in profiles %}
++                <option value="{{ vp.id }}" {% if row.global_voice_profile_id == vp.id %}selected{% endif %}>{{ vp.display_name }}</option>
++                {% endfor %}
++              </select>
++            </div>
++            <button class="btn speaker-action-submit speaker-action-submit-primary" type="submit">Confirm match</button>
++          </form>
++          {% else %}
++          <p class="placeholder" style="padding:0">
++            No canonical speakers exist yet. {% if speaker_review_compact %}Use the full-page inspector or Voices to create one first.{% else %}Use Voices to create one first.{% endif %}
++          </p>
++          {% endif %}
++        </section>
++
++        <section class="speaker-decision-card">
++          <div class="speaker-action-head">
++            <div>
++              <h3>Keep unknown</h3>
++              <p class="inspector-note">Resolve review without naming the speaker or changing the global speaker bank.</p>
++            </div>
++          </div>
++          <form method="post" action="/ui/recordings/{{ rec.id }}/speakers/keep-unknown{{ recording_inspector.embedded_return_queries.speakers }}" class="speaker-form-stack">
++            <input type="hidden" name="diar_speaker_label" value="{{ row.speaker }}">
++            <button class="btn speaker-action-submit" type="submit">Keep unknown</button>
++          </form>
++        </section>
++
++        <section class="speaker-decision-card">
++          <div class="speaker-action-head">
++            <div>
++              <h3>Local label only</h3>
++              <p class="inspector-note">Name this speaker only inside this recording and its export.</p>
++            </div>
++          </div>
++          <form method="post" action="/ui/recordings/{{ rec.id }}/speakers/local-label{{ recording_inspector.embedded_return_queries.speakers }}" class="speaker-form-stack">
++            <input type="hidden" name="diar_speaker_label" value="{{ row.speaker }}">
++            <div class="filter-field">
++              <label for="speaker-local-{{ rec.id }}-{{ row.speaker }}">Recording-only name</label>
++              <input
++                id="speaker-local-{{ rec.id }}-{{ row.speaker }}"
++                type="text"
++                name="local_display_name"
++                value="{{ row.local_display_name }}"
++                maxlength="120"
++                placeholder="Recording-only name"
++              >
++            </div>
++            <button class="btn speaker-action-submit" type="submit">Local label only</button>
++          </form>
++        </section>
++
++        <section class="speaker-decision-card speaker-decision-card-secondary">
++          <div class="speaker-action-head">
++            <div>
++              <div class="speaker-section-label">Training only</div>
++              <h3>Add trusted sample</h3>
++              <p class="inspector-note">Store a clean clip as training data without changing the current review decision.</p>
++            </div>
++          </div>
++
++          {% if row.trusted_sample_state %}
++          <div class="speaker-trusted-sample-state">
++            <div class="speaker-status-stack">
++              <span class="badge s-Ready">{{ row.trusted_sample_state.badge_label }}</span>
++              <span>{{ row.trusted_sample_state.detail }}</span>
++            </div>
++          </div>
++          {% endif %}
++
++          {% if profiles %}
++          <form method="post" action="/ui/recordings/{{ rec.id }}/speakers/add-sample{{ recording_inspector.embedded_return_queries.speakers }}" class="speaker-form-stack">
++            <input type="hidden" name="diar_speaker_label" value="{{ row.speaker }}">
++            <div class="filter-field">
++              <label for="speaker-sample-profile-{{ rec.id }}-{{ row.speaker }}">Canonical speaker</label>
++              <select id="speaker-sample-profile-{{ rec.id }}-{{ row.speaker }}" name="voice_profile_id">
++                <option value="">Choose canonical speaker</option>
++                {% for vp in profiles %}
++                <option value="{{ vp.id }}" {% if row.sample_voice_profile_id == vp.id %}selected{% endif %}>{{ vp.display_name }}</option>
++                {% endfor %}
++              </select>
++            </div>
++            <div class="filter-field">
++              <label for="speaker-sample-snippet-{{ rec.id }}-{{ row.speaker }}">Snippet choice</label>
++              <select id="speaker-sample-snippet-{{ rec.id }}-{{ row.speaker }}" name="snippet_path" {% if not row.clean_snippets %}disabled{% endif %}>
++                {% for snippet in row.clean_snippets[:3] %}
++                <option value="{{ snippet.relative_path }}" {% if snippet.recommended %}selected{% endif %}>{{ snippet.choice_label }}</option>
++                {% endfor %}
++              </select>
++            </div>
++            <button class="btn speaker-action-submit" type="submit" {% if not row.clean_snippets %}disabled{% endif %}>Add trusted sample</button>
++          </form>
++          {% else %}
++          <p class="placeholder" style="padding:0">Create a canonical speaker first, then add trusted samples from clean clips.</p>
++          {% endif %}
++
++          {% if not row.clean_snippets and row.snippet_ui_state and row.snippet_ui_state.add_sample_message %}
++          <p class="speaker-warning-inline" style="margin-top:8px">{{ row.snippet_ui_state.add_sample_message }}</p>
++          {% elif row.no_clean_snippet_message %}
++          <p class="speaker-warning-inline" style="margin-top:8px">{{ row.no_clean_snippet_message }}</p>
++          {% endif %}
++        </section>
++      </div>
++    </div>
++  </section>
++  {% endfor %}
++</div>
++{% else %}
++<p class="placeholder">No speaker turns available yet. Run diarization first.</p>
++{% endif %}
