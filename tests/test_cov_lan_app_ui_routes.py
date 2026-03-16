@@ -87,7 +87,9 @@ def _cfg(tmp_path: Path) -> AppSettings:
 
 
 @pytest.fixture()
-def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[AppSettings, TestClient]:
+def client(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> tuple[AppSettings, TestClient]:
     cfg = _cfg(tmp_path)
     monkeypatch.setattr(api, "_settings", cfg)
     monkeypatch.setattr(ui_routes, "_settings", cfg)
@@ -189,7 +191,10 @@ def test_control_center_helper_contexts_cover_fragment_builders(
     monkeypatch.setattr(
         ui_routes,
         "list_voice_samples",
-        lambda settings: [{"id": 4, "voice_profile_id": 7}, {"id": 5, "voice_profile_id": None}],
+        lambda settings: [
+            {"id": 4, "voice_profile_id": 7},
+            {"id": 5, "voice_profile_id": None},
+        ],
     )
     monkeypatch.setattr(
         ui_routes,
@@ -257,18 +262,24 @@ def test_control_center_helper_contexts_cover_fragment_builders(
     assert fallback_state["tab"] == "overview"
     assert fallback_state["clear_selection_href"] == "/"
 
-    assert ui_routes._control_center_shell_href(  # noqa: SLF001
-        selected="rec helper",
-        status_filter="Ready",
-        search_query="demo",
-        tab="log",
-        limit=100,
-        offset=25,
-    ) == "/?selected=rec+helper&status=Ready&q=demo&limit=100&offset=25"
-    assert ui_routes._control_center_shell_href(  # noqa: SLF001
-        selected="rec helper",
-        offset=25,
-    ) == "/?selected=rec+helper&limit=25&offset=25"
+    assert (
+        ui_routes._control_center_shell_href(  # noqa: SLF001
+            selected="rec helper",
+            status_filter="Ready",
+            search_query="demo",
+            tab="log",
+            limit=100,
+            offset=25,
+        )
+        == "/?selected=rec+helper&status=Ready&q=demo&limit=100&offset=25"
+    )
+    assert (
+        ui_routes._control_center_shell_href(  # noqa: SLF001
+            selected="rec helper",
+            offset=25,
+        )
+        == "/?selected=rec+helper&limit=25&offset=25"
+    )
     assert ui_routes._control_center_shell_href(  # noqa: SLF001
         selected="rec-helper-1",
         calendar_error="calendar drift",
@@ -289,21 +300,27 @@ def test_control_center_helper_contexts_cover_fragment_builders(
         "/ui/control-center/recordings/panel?"
         "selected=rec-helper-1&status=Ready&q=demo&tab=log&limit=25&offset=2"
     )
-    assert ui_routes._control_center_inspector_path(  # noqa: SLF001
-        "rec helper",
-        status_filter="Ready",
-        search_query="demo",
-        tab="mystery",
-        limit=25,
-        offset=2,
-    ) == "/ui/recordings/rec%20helper/inspector?status=Ready&q=demo&limit=25&offset=2"
-    assert ui_routes._control_center_return_query(  # noqa: SLF001
-        status_filter="Ready",
-        search_query="demo",
-        return_tab="mystery",
-        limit=25,
-        offset=2,
-    ) == "?return_to=control-center&return_tab=overview&status=Ready&q=demo&limit=25&offset=2"
+    assert (
+        ui_routes._control_center_inspector_path(  # noqa: SLF001
+            "rec helper",
+            status_filter="Ready",
+            search_query="demo",
+            tab="mystery",
+            limit=25,
+            offset=2,
+        )
+        == "/ui/recordings/rec%20helper/inspector?status=Ready&q=demo&limit=25&offset=2"
+    )
+    assert (
+        ui_routes._control_center_return_query(  # noqa: SLF001
+            status_filter="Ready",
+            search_query="demo",
+            return_tab="mystery",
+            limit=25,
+            offset=2,
+        )
+        == "?return_to=control-center&return_tab=overview&status=Ready&q=demo&limit=25&offset=2"
+    )
     assert ui_routes._workflow_return_query_pairs(  # noqa: SLF001
         return_to="control-center",
         selected="rec-helper-1",
@@ -335,15 +352,18 @@ def test_control_center_helper_contexts_cover_fragment_builders(
         "/glossary?return_to=control-center&selected=rec-helper-1&status=Ready&"
         "q=helper&tab=speakers&limit=100&offset=25&recording_id=rec-helper-1"
     )
-    assert ui_routes._workflow_page_href(  # noqa: SLF001
-        "/glossary",
-        return_to="control-center",
-        selected="",
-        status="Ready",
-        q="",
-        tab="overview",
-        extra_params=[("recording_id", "")],
-    ) == "/glossary?return_to=control-center&status=Ready"
+    assert (
+        ui_routes._workflow_page_href(  # noqa: SLF001
+            "/glossary",
+            return_to="control-center",
+            selected="",
+            status="Ready",
+            q="",
+            tab="overview",
+            extra_params=[("recording_id", "")],
+        )
+        == "/glossary?return_to=control-center&status=Ready"
+    )
     workflow_return = ui_routes._workflow_return_context(  # noqa: SLF001
         return_to="control-center",
         selected="rec-helper-1",
@@ -355,8 +375,14 @@ def test_control_center_helper_contexts_cover_fragment_builders(
         default_href="/glossary",
     )
     assert workflow_return["active"] is True
-    assert workflow_return["href"] == "/?selected=rec-helper-1&status=Ready&q=helper&tab=speakers&limit=100&offset=25"
-    assert workflow_return["selected_detail_href"] == "/recordings/rec-helper-1?tab=speakers"
+    assert (
+        workflow_return["href"]
+        == "/?selected=rec-helper-1&status=Ready&q=helper&tab=speakers&limit=100&offset=25"
+    )
+    assert (
+        workflow_return["selected_detail_href"]
+        == "/recordings/rec-helper-1?tab=speakers"
+    )
     queue_return = ui_routes._workflow_return_context(  # noqa: SLF001
         return_to="control-center",
         selected="",
@@ -379,31 +405,46 @@ def test_control_center_helper_contexts_cover_fragment_builders(
     )
     assert inactive_return["active"] is False
     assert inactive_return["href"] == "/glossary"
-    assert ui_routes._recording_inspector_return_path(  # noqa: SLF001
-        "rec-helper-1",
-        return_tab="mystery",
-    ) == "/recordings/rec-helper-1"
-    assert ui_routes._recording_inspector_return_path(  # noqa: SLF001
-        "rec-helper-1",
-        return_tab="overview",
-        calendar_error="calendar drift",
-    ) == "/recordings/rec-helper-1?calendar_error=calendar+drift"
-    assert ui_routes._recording_inspector_return_path(  # noqa: SLF001
-        "rec-helper-1",
-        return_to="control-center",
-        return_tab="speakers",
-        status="Ready",
-        q="helper",
-        limit=25,
-        offset=2,
-    ) == "/?selected=rec-helper-1&status=Ready&q=helper&tab=speakers&limit=25&offset=2"
-    assert ui_routes._recording_inspector_return_path(  # noqa: SLF001
-        "rec-helper-1",
-        return_to="control-center",
-        return_tab="summary",
-        status="Ready",
-    ) == "/?selected=rec-helper-1&status=Ready&tab=summary"
-    assert ui_routes._recording_detail_path("rec-helper-1", tab="summary") == "/recordings/rec-helper-1"
+    assert (
+        ui_routes._recording_inspector_return_path(  # noqa: SLF001
+            "rec-helper-1",
+            return_tab="mystery",
+        )
+        == "/recordings/rec-helper-1"
+    )
+    assert (
+        ui_routes._recording_inspector_return_path(  # noqa: SLF001
+            "rec-helper-1",
+            return_tab="overview",
+            calendar_error="calendar drift",
+        )
+        == "/recordings/rec-helper-1?calendar_error=calendar+drift"
+    )
+    assert (
+        ui_routes._recording_inspector_return_path(  # noqa: SLF001
+            "rec-helper-1",
+            return_to="control-center",
+            return_tab="speakers",
+            status="Ready",
+            q="helper",
+            limit=25,
+            offset=2,
+        )
+        == "/?selected=rec-helper-1&status=Ready&q=helper&tab=speakers&limit=25&offset=2"
+    )
+    assert (
+        ui_routes._recording_inspector_return_path(  # noqa: SLF001
+            "rec-helper-1",
+            return_to="control-center",
+            return_tab="summary",
+            status="Ready",
+        )
+        == "/?selected=rec-helper-1&status=Ready&tab=summary"
+    )
+    assert (
+        ui_routes._recording_detail_path("rec-helper-1", tab="summary")
+        == "/recordings/rec-helper-1"
+    )
 
     monkeypatch.setattr(
         ui_routes,
@@ -429,7 +470,10 @@ def test_control_center_helper_contexts_cover_fragment_builders(
     )
     assert panel_context["total"] == 3
     assert panel_context["recordings_filters"]["status_filter"] == "Ready"
-    assert panel_context["recordings_filters"]["hidden_fields"][0]["value"] == "rec-helper-1"
+    assert (
+        panel_context["recordings_filters"]["hidden_fields"][0]["value"]
+        == "rec-helper-1"
+    )
     assert panel_context["recordings_table"]["rows"][0]["detail_href"] == (
         "/recordings/rec-helper-1?tab=speakers"
     )
@@ -439,22 +483,33 @@ def test_control_center_helper_contexts_cover_fragment_builders(
     assert panel_context["recordings_table"]["rows"][0]["selected"] is True
     assert panel_context["status_cards"][0]["status"] == "All"
     assert panel_context["status_cards"][0]["active"] is False
-    assert any(card["status"] == "Ready" and card["active"] for card in panel_context["status_cards"])
+    assert any(
+        card["status"] == "Ready" and card["active"]
+        for card in panel_context["status_cards"]
+    )
 
     work_pane = ui_routes._control_center_work_pane_context(  # noqa: SLF001
         cfg,
         state=state,
     )
-    assert work_pane["recordings_panel"]["panel_id"] == "control-center-recordings-panel"
+    assert (
+        work_pane["recordings_panel"]["panel_id"] == "control-center-recordings-panel"
+    )
     assert work_pane["recordings_panel"]["title"] == "Operator inbox"
     assert "daily loop" in work_pane["preview_message"]
     assert work_pane["recordings_panel"]["recordings_filters"]["limit"] == 100
-    assert work_pane["workflow_links"]["selected_detail_href"] == "/recordings/rec-helper-1?tab=speakers"
+    assert (
+        work_pane["workflow_links"]["selected_detail_href"]
+        == "/recordings/rec-helper-1?tab=speakers"
+    )
     assert work_pane["workflow_links"]["corrections_href"] == (
         "/glossary?return_to=control-center&selected=rec-helper-1&status=Ready&"
         "q=helper&tab=speakers&limit=100&offset=25&recording_id=rec-helper-1"
     )
-    assert work_pane["glossary_summary"]["manage_href"] == work_pane["workflow_links"]["corrections_href"]
+    assert (
+        work_pane["glossary_summary"]["manage_href"]
+        == work_pane["workflow_links"]["corrections_href"]
+    )
     assert work_pane["voice_summary"]["profile_count"] == 1
     assert work_pane["voice_summary"]["sample_count"] == 2
     assert work_pane["voice_summary"]["profiles"][0]["display_name"] == "Alex Helper"
@@ -478,7 +533,10 @@ def test_control_center_helper_contexts_cover_fragment_builders(
     )
     assert header["visible_total"] == 3
     assert header["focus_recording"]["source_filename"] == "helper.wav"
-    assert header["workflow_links"]["selected_detail_href"] == "/recordings/rec-helper-1?tab=speakers"
+    assert (
+        header["workflow_links"]["selected_detail_href"]
+        == "/recordings/rec-helper-1?tab=speakers"
+    )
 
     filters = ui_routes._recordings_filters_context(  # noqa: SLF001
         mode="control_center",
@@ -512,7 +570,10 @@ def test_control_center_helper_contexts_cover_fragment_builders(
     )
     assert table["has_prev"] is False
     assert table["has_next"] is True
-    assert table["next_href"] == "/?selected=rec-helper-1&status=Ready&q=helper&tab=speakers&limit=2&offset=2"
+    assert (
+        table["next_href"]
+        == "/?selected=rec-helper-1&status=Ready&q=helper&tab=speakers&limit=2&offset=2"
+    )
     assert table["next_hx_get"].endswith("limit=2&offset=2")
     assert table["rows"][0]["select_href"] == (
         "/?selected=rec-helper-1&status=Ready&q=helper&tab=speakers&limit=2"
@@ -530,7 +591,10 @@ def test_control_center_helper_contexts_cover_fragment_builders(
         search_query="helper",
         tab="speakers",
     )
-    assert paged_table["prev_href"] == "/?selected=rec-helper-1&status=Ready&q=helper&tab=speakers&limit=2"
+    assert (
+        paged_table["prev_href"]
+        == "/?selected=rec-helper-1&status=Ready&q=helper&tab=speakers&limit=2"
+    )
     assert paged_table["next_href"] == (
         "/?selected=rec-helper-1&status=Ready&q=helper&tab=speakers&limit=2&offset=4"
     )
@@ -542,7 +606,10 @@ def test_control_center_helper_contexts_cover_fragment_builders(
     assert upload_shell["queue_title"] == "Only in-flight uploads stay here"
     standalone_upload_shell = ui_routes._upload_shell_context(mode="standalone")  # noqa: SLF001
     assert standalone_upload_shell["remove_terminal_items"] is False
-    assert standalone_upload_shell["queue_title"] == "Recent uploads stay here while you work"
+    assert (
+        standalone_upload_shell["queue_title"]
+        == "Recent uploads stay here while you work"
+    )
 
     page_notice = ui_routes._page_notice_context("  Recovered from a stuck job.  ")  # noqa: SLF001
     assert page_notice == {"message": "Recovered from a stuck job."}
@@ -574,7 +641,9 @@ def test_control_center_system_bar_route_avoids_work_pane_builder(
     seen: dict[str, Any] = {}
 
     def _unexpected_recordings_panel(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
-        raise AssertionError("_control_center_recordings_panel_context should not run here")
+        raise AssertionError(
+            "_control_center_recordings_panel_context should not run here"
+        )
 
     def _fake_list_recordings(
         settings: AppSettings,
@@ -603,7 +672,11 @@ def test_control_center_system_bar_route_avoids_work_pane_builder(
     ) -> dict[str, Any]:
         assert settings is seen["settings"]
         assert recordings_panel == {"total": 7}
-        assert runtime_status == {"active_jobs_item": {}, "secondary_items": [], "note": "test runtime note"}
+        assert runtime_status == {
+            "active_jobs_item": {},
+            "secondary_items": [],
+            "note": "test runtime note",
+        }
         return {
             "primary_items": [
                 {
@@ -616,16 +689,29 @@ def test_control_center_system_bar_route_avoids_work_pane_builder(
             "note": "test note",
         }
 
-    monkeypatch.setattr(ui_routes, "_control_center_work_pane_context", _unexpected_work_pane)
-    monkeypatch.setattr(ui_routes, "_control_center_recordings_panel_context", _unexpected_recordings_panel)
+    monkeypatch.setattr(
+        ui_routes, "_control_center_work_pane_context", _unexpected_work_pane
+    )
+    monkeypatch.setattr(
+        ui_routes,
+        "_control_center_recordings_panel_context",
+        _unexpected_recordings_panel,
+    )
     monkeypatch.setattr(ui_routes, "list_recordings", _fake_list_recordings)
+
     async def _fake_run_in_threadpool(func, settings):
         assert func is ui_routes.collect_control_center_runtime_status
         assert settings is ui_routes._settings  # noqa: SLF001
-        return {"active_jobs_item": {}, "secondary_items": [], "note": "test runtime note"}
+        return {
+            "active_jobs_item": {},
+            "secondary_items": [],
+            "note": "test runtime note",
+        }
 
     monkeypatch.setattr(ui_routes, "run_in_threadpool", _fake_run_in_threadpool)
-    monkeypatch.setattr(ui_routes, "_control_center_system_bar_context", _fake_system_bar_context)
+    monkeypatch.setattr(
+        ui_routes, "_control_center_system_bar_context", _fake_system_bar_context
+    )
 
     response = c.get(
         "/ui/control-center/system-bar"
@@ -701,9 +787,13 @@ def test_recordings_panel_context_clamps_offset_to_last_available_page(
         current_tab="log",
         recovery_warning="Recovered from a stuck job.",
     )
-    assert selected_shell_warning["notices"] == [{"message": "Recovered from a stuck job."}]
+    assert selected_shell_warning["notices"] == [
+        {"message": "Recovered from a stuck job."}
+    ]
     assert selected_shell_warning["action_bar"]["back_href"] == "/"
-    assert selected_shell_warning["action_bar"]["back_label"] == "Back to Control Center"
+    assert (
+        selected_shell_warning["action_bar"]["back_label"] == "Back to Control Center"
+    )
     selected_shell_notice = ui_routes._selected_recording_summary_shell_context(  # noqa: SLF001
         {
             "id": "rec-helper-2",
@@ -813,7 +903,9 @@ def test_compact_inspector_helpers_cover_next_action_branches(tmp_path: Path) ->
         settings=cfg,
     )
     assert processing_overview["stage_label"] == "ASR / VAD"
-    assert processing_overview["stage_detail"] == "The worker is updating this stage live."
+    assert (
+        processing_overview["stage_detail"] == "The worker is updating this stage live."
+    )
 
     blocked_overview = ui_routes._compact_inspector_overview_context(  # noqa: SLF001
         "rec-compact-1",
@@ -837,7 +929,10 @@ def test_compact_inspector_helpers_cover_next_action_branches(tmp_path: Path) ->
 
     review_speakers = ui_routes._compact_inspector_next_action_context(  # noqa: SLF001
         "rec-compact-1",
-        recording={"status": RECORDING_STATUS_NEEDS_REVIEW, "status_reason_text_display": ""},
+        recording={
+            "status": RECORDING_STATUS_NEEDS_REVIEW,
+            "status_reason_text_display": "",
+        },
         diagnostics={
             "current_stage_code": "speaker_turns",
             "primary_reason_text": "Speaker labels need review",
@@ -848,7 +943,10 @@ def test_compact_inspector_helpers_cover_next_action_branches(tmp_path: Path) ->
 
     review_summary = ui_routes._compact_inspector_next_action_context(  # noqa: SLF001
         "rec-compact-1",
-        recording={"status": RECORDING_STATUS_NEEDS_REVIEW, "status_reason_text_display": ""},
+        recording={
+            "status": RECORDING_STATUS_NEEDS_REVIEW,
+            "status_reason_text_display": "",
+        },
         diagnostics={
             "current_stage_code": "llm_merge",
             "primary_reason_text": "Summary output needs review",
@@ -859,7 +957,10 @@ def test_compact_inspector_helpers_cover_next_action_branches(tmp_path: Path) ->
 
     stopped = ui_routes._compact_inspector_next_action_context(  # noqa: SLF001
         "rec-compact-1",
-        recording={"status": RECORDING_STATUS_STOPPED, "status_reason_text_display": ""},
+        recording={
+            "status": RECORDING_STATUS_STOPPED,
+            "status_reason_text_display": "",
+        },
         diagnostics={"current_stage_code": "waiting", "primary_reason_text": ""},
         control_center_state=control_center_state,
     )
@@ -867,7 +968,10 @@ def test_compact_inspector_helpers_cover_next_action_branches(tmp_path: Path) ->
 
     quarantine = ui_routes._compact_inspector_next_action_context(  # noqa: SLF001
         "rec-compact-1",
-        recording={"status": RECORDING_STATUS_QUARANTINE, "status_reason_text_display": ""},
+        recording={
+            "status": RECORDING_STATUS_QUARANTINE,
+            "status_reason_text_display": "",
+        },
         diagnostics={"current_stage_code": "done", "primary_reason_text": ""},
         control_center_state=control_center_state,
     )
@@ -915,7 +1019,11 @@ def test_display_helpers_cover_timezone_duration_and_prepare_recording(
     monkeypatch.setattr(
         ui_routes,
         "set_recording_duration",
-        lambda recording_id, duration_sec, *, settings=None, touch_updated_at=True: observed_update.update(
+        lambda recording_id,
+        duration_sec,
+        *,
+        settings=None,
+        touch_updated_at=True: observed_update.update(
             {
                 "recording_id": recording_id,
                 "duration_sec": duration_sec,
@@ -1010,8 +1118,14 @@ def test_display_helpers_cover_timezone_duration_and_prepare_recording(
 @pytest.mark.parametrize(
     ("recording", "expected"),
     [
-        ({"status_reason_text_display": "Needs an operator review."}, "Needs an operator review."),
-        ({"status": RECORDING_STATUS_QUEUED}, "Waiting for the worker to pick this up."),
+        (
+            {"status_reason_text_display": "Needs an operator review."},
+            "Needs an operator review.",
+        ),
+        (
+            {"status": RECORDING_STATUS_QUEUED},
+            "Waiting for the worker to pick this up.",
+        ),
         (
             {"status": RECORDING_STATUS_PROCESSING, "pipeline_stage": "diarize"},
             "Running Diarization.",
@@ -1053,7 +1167,9 @@ def test_recording_worklist_hint_covers_statuses(
     assert ui_routes._recording_worklist_hint(recording) == expected  # noqa: SLF001
 
 
-def test_recordings_list_items_context_adds_source_and_worklist_fields(tmp_path: Path) -> None:
+def test_recordings_list_items_context_adds_source_and_worklist_fields(
+    tmp_path: Path,
+) -> None:
     cfg = _cfg(tmp_path)
 
     items = ui_routes._recordings_list_items_context(  # noqa: SLF001
@@ -1149,7 +1265,9 @@ def test_prepare_recording_for_display_ignores_duration_backfill_write_errors(
     monkeypatch.setattr(
         ui_routes,
         "set_recording_duration",
-        lambda *_a, **_k: (_ for _ in ()).throw(sqlite3.OperationalError("database is locked")),
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            sqlite3.OperationalError("database is locked")
+        ),
     )
 
     with caplog.at_level("WARNING"):
@@ -1168,7 +1286,10 @@ def test_prepare_recording_for_display_ignores_duration_backfill_write_errors(
 
     assert prepared["duration_sec"] == 4.25
     assert prepared["duration_display"] == "00:00:04"
-    assert "Failed to backfill display duration for recording rec-helper-err-1" in caplog.text
+    assert (
+        "Failed to backfill display duration for recording rec-helper-err-1"
+        in caplog.text
+    )
 
     monkeypatch.setattr(
         ui_routes,
@@ -1190,7 +1311,9 @@ def test_ui_action_stop_helper_edge_paths(
     request = Request({"type": "http", "method": "POST", "path": "/", "headers": []})
 
     monkeypatch.setattr(ui_routes, "get_recording", lambda *_a, **_k: None)
-    missing = asyncio.run(ui_routes.ui_action_stop("rec-missing", request=request, tab="overview"))
+    missing = asyncio.run(
+        ui_routes.ui_action_stop("rec-missing", request=request, tab="overview")
+    )
     assert missing.status_code == 404
     assert missing.body.decode("utf-8") == "Not found"
 
@@ -1220,7 +1343,10 @@ def test_ui_action_stop_helper_edge_paths(
         ui_routes.ui_action_stop("rec-queued", request=request, tab="overview")
     )
     assert queue_error.status_code == 503
-    assert queue_error.body.decode("utf-8") == "Stop failed (queue unavailable): queue unavailable"
+    assert (
+        queue_error.body.decode("utf-8")
+        == "Stop failed (queue unavailable): queue unavailable"
+    )
 
     calls: list[str] = []
     monkeypatch.setattr(
@@ -1232,7 +1358,9 @@ def test_ui_action_stop_helper_edge_paths(
             "cancel_requested_at": "2026-01-10T10:06:00Z",
         },
     )
-    monkeypatch.setattr(ui_routes, "has_started_job_for_recording", lambda *_a, **_k: False)
+    monkeypatch.setattr(
+        ui_routes, "has_started_job_for_recording", lambda *_a, **_k: False
+    )
     monkeypatch.setattr(
         ui_routes,
         "acknowledge_recording_cancel_request",
@@ -1243,7 +1371,11 @@ def test_ui_action_stop_helper_edge_paths(
         "set_recording_status_if_current_in",
         lambda *_a, **_k: calls.append("status") or True,
     )
-    monkeypatch.setattr(ui_routes, "clear_recording_progress", lambda *_a, **_k: calls.append("clear") or True)
+    monkeypatch.setattr(
+        ui_routes,
+        "clear_recording_progress",
+        lambda *_a, **_k: calls.append("clear") or True,
+    )
     acknowledged = asyncio.run(
         ui_routes.ui_action_stop("rec-stopping", request=request, tab="overview")
     )
@@ -1259,7 +1391,9 @@ def test_ui_action_stop_helper_edge_paths(
     )
     monkeypatch.setattr(ui_routes, "list_jobs", lambda **_kwargs: ([], 0))
     monkeypatch.setattr(ui_routes, "purge_pending_recording_jobs", lambda *_a, **_k: 0)
-    monkeypatch.setattr(ui_routes, "has_started_job_for_recording", lambda *_a, **_k: False)
+    monkeypatch.setattr(
+        ui_routes, "has_started_job_for_recording", lambda *_a, **_k: False
+    )
     monkeypatch.setattr(
         ui_routes,
         "set_recording_status_if_current_in",
@@ -1280,7 +1414,9 @@ def test_ui_action_stop_helper_edge_paths(
         "clear_recording_progress",
         lambda *_a, **_k: race_calls.append("clear") or True,
     )
-    raced = asyncio.run(ui_routes.ui_action_stop("rec-race", request=request, tab="overview"))
+    raced = asyncio.run(
+        ui_routes.ui_action_stop("rec-race", request=request, tab="overview")
+    )
     assert raced.status_code == 303
     assert raced.headers["location"] == "/recordings/rec-race"
     assert race_calls == []
@@ -1352,7 +1488,12 @@ def test_summary_context_and_metrics_merge_edge_paths(
                     "bad-row",
                     {},
                     {"task": ""},
-                    {"task": "task-1", "owner": " ", "deadline": " ", "confidence": "bad"},
+                    {
+                        "task": "task-1",
+                        "owner": " ",
+                        "deadline": " ",
+                        "confidence": "bad",
+                    },
                 ],
                 "questions": {
                     "types": {"open": "NaN"},
@@ -1369,7 +1510,9 @@ def test_summary_context_and_metrics_merge_edge_paths(
     assert summary["questions"]["total_count"] == 2
 
     (derived / "summary.json").write_text(
-        json.dumps({"questions": {"types": "bad", "total_count": "x", "extracted": []}}),
+        json.dumps(
+            {"questions": {"types": "bad", "total_count": "x", "extracted": []}}
+        ),
         encoding="utf-8",
     )
     summary_no_types = ui_routes._summary_context(recording_id, cfg)  # noqa: SLF001
@@ -1393,14 +1536,19 @@ def test_summary_context_and_metrics_merge_edge_paths(
         encoding="utf-8",
     )
 
-    monkeypatch.setattr(ui_routes, "get_meeting_metrics", lambda *_a, **_k: {"json": "bad"})
+    monkeypatch.setattr(
+        ui_routes, "get_meeting_metrics", lambda *_a, **_k: {"json": "bad"}
+    )
     monkeypatch.setattr(
         ui_routes,
         "list_participant_metrics",
         lambda *_a, **_k: [
             {"json": "bad", "diar_speaker_label": "Sbad"},
             {"json": {"speaker": ""}, "diar_speaker_label": ""},
-            {"json": {"speaker": "S1", "questions_count": "x"}, "diar_speaker_label": "S1"},
+            {
+                "json": {"speaker": "S1", "questions_count": "x"},
+                "diar_speaker_label": "S1",
+            },
         ],
     )
     metrics = ui_routes._metrics_tab_context(recording_id, cfg)  # noqa: SLF001
@@ -1419,7 +1567,9 @@ def test_summary_context_and_metrics_merge_edge_paths(
 
     # Cover participant skip path in final rendering loop.
     (derived / "metrics.json").write_text(
-        json.dumps({"participants": [{"speaker": ""}, {"speaker": "S9", "airtime_seconds": 1}]}),
+        json.dumps(
+            {"participants": [{"speaker": ""}, {"speaker": "S9", "airtime_seconds": 1}]}
+        ),
         encoding="utf-8",
     )
     metrics_skip_blank = ui_routes._metrics_tab_context(recording_id, cfg)  # noqa: SLF001
@@ -1433,7 +1583,12 @@ def test_summary_context_and_metrics_merge_edge_paths(
     monkeypatch.setattr(
         ui_routes,
         "list_participant_metrics",
-        lambda *_a, **_k: [{"json": {"speaker": "S1", "airtime_seconds": 1.0}, "diar_speaker_label": "S1"}],
+        lambda *_a, **_k: [
+            {
+                "json": {"speaker": "S1", "airtime_seconds": 1.0},
+                "diar_speaker_label": "S1",
+            }
+        ],
     )
     real_str = str
     seen: dict[str, int] = {"count": 0}
@@ -1593,7 +1748,9 @@ def test_asr_glossary_context_and_route_error_paths(
     assert blank_defaults["prefill_notice"] is None
 
 
-def test_fallback_turns_and_path_helpers(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_fallback_turns_and_path_helpers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     turns = ui_routes._fallback_speaker_turns_from_transcript(  # noqa: SLF001
         {
             "segments": [
@@ -1607,13 +1764,18 @@ def test_fallback_turns_and_path_helpers(tmp_path: Path, monkeypatch: pytest.Mon
         {"start": 0.0, "end": 0.0, "speaker": "S1", "text": "hello", "language": None}
     ]
 
-    fallback = ui_routes._fallback_speaker_turns_from_transcript({"text": "hello world"})  # noqa: SLF001
+    fallback = ui_routes._fallback_speaker_turns_from_transcript(
+        {"text": "hello world"}
+    )  # noqa: SLF001
     assert fallback and fallback[0]["speaker"] == "S1"
 
     fallback_with_empty_segments = ui_routes._fallback_speaker_turns_from_transcript(  # noqa: SLF001
         {"segments": ["skip", {"text": "  "}], "text": "from transcript"}
     )
-    assert fallback_with_empty_segments and fallback_with_empty_segments[0]["text"] == "from transcript"
+    assert (
+        fallback_with_empty_segments
+        and fallback_with_empty_segments[0]["text"] == "from transcript"
+    )
 
     def _boom_resolve(_self: Path) -> Path:
         raise OSError("resolve-failed")
@@ -1642,7 +1804,9 @@ def test_audio_snippet_helpers_and_speakers_context_edge_paths(
     ]
     assert ui_routes._as_data_relative_path(Path("/etc/passwd"), settings=cfg) is None  # noqa: SLF001
 
-    (derived / "transcript.json").write_text(json.dumps({"text": "fallback only"}), encoding="utf-8")
+    (derived / "transcript.json").write_text(
+        json.dumps({"text": "fallback only"}), encoding="utf-8"
+    )
     (derived / "speaker_turns.json").write_text("[]", encoding="utf-8")
     monkeypatch.setattr(
         ui_routes,
@@ -1678,7 +1842,11 @@ def test_snippet_manifest_helpers_cover_context_and_validation(tmp_path: Path) -
                 "speakers": {
                     "S1": [
                         "skip",
-                        {"snippet_id": "skip-speaker", "speaker": "S9", "ranking_position": 0},
+                        {
+                            "snippet_id": "skip-speaker",
+                            "speaker": "S9",
+                            "ranking_position": 0,
+                        },
                         {
                             "snippet_id": "S1-02",
                             "speaker": "S1",
@@ -1800,7 +1968,9 @@ def test_snippet_manifest_helpers_cover_context_and_validation(tmp_path: Path) -
     assert ui_routes._snippet_audio_url(recording_id, "S1/1.wav") == (  # noqa: SLF001
         f"/ui/recordings/{recording_id}/snippets/S1/1.wav"
     )
-    assert ui_routes._snippet_choice_label(rows[0]).startswith("Recommended: 0.00s-1.00s")  # noqa: SLF001
+    assert ui_routes._snippet_choice_label(rows[0]).startswith(
+        "Recommended: 0.00s-1.00s"
+    )  # noqa: SLF001
     assert ui_routes._snippet_warning_messages(rows) == [  # noqa: SLF001
         "1 snippet candidate was rejected because it overlaps another speaker.",
         "1 snippet candidate could not be extracted from the sanitized WAV.",
@@ -1832,7 +2002,9 @@ def test_snippet_manifest_helpers_cover_context_and_validation(tmp_path: Path) -
     )
     assert selected == (snippets_root / "S1" / "1.wav").resolve()
 
-    with pytest.raises(ValueError, match="Selected snippet is not a clean snippet for this speaker"):
+    with pytest.raises(
+        ValueError, match="Selected snippet is not a clean snippet for this speaker"
+    ):
         ui_routes._selected_clean_snippet(  # noqa: SLF001
             recording_id,
             "S1",
@@ -1840,7 +2012,9 @@ def test_snippet_manifest_helpers_cover_context_and_validation(tmp_path: Path) -
             settings=cfg,
         )
 
-    with pytest.raises(ValueError, match="Selected snippet does not belong to this speaker"):
+    with pytest.raises(
+        ValueError, match="Selected snippet does not belong to this speaker"
+    ):
         ui_routes._selected_clean_snippet(  # noqa: SLF001
             recording_id,
             "S2",
@@ -1892,18 +2066,22 @@ def test_snippet_message_helpers_and_display_backfill_edges(
     )
     assert item["duration_display"] == "00:00:12"
     assert calls == [raw_dir / "audio.mp3", raw_dir / "audio.wav"]
-    assert ui_routes._snippet_warning_messages([  # noqa: SLF001
-        {"status": "rejected_degraded"},
-        {"status": "rejected_short"},
-        {"status": "rejected_short"},
-    ]) == [
+    assert ui_routes._snippet_warning_messages(
+        [  # noqa: SLF001
+            {"status": "rejected_degraded"},
+            {"status": "rejected_short"},
+            {"status": "rejected_short"},
+        ]
+    ) == [
         "Diarization ran in degraded mode, so snippet samples from this speaker were blocked.",
         "2 snippet candidates were too short to trust as a voice sample.",
     ]
     assert ui_routes._no_clean_snippet_message([{"status": "rejected_degraded"}]) == (  # noqa: SLF001
         "No clean snippets are available because diarization ran in degraded mode."
     )
-    assert ui_routes._no_clean_snippet_message([{"status": "rejected_failed_extract"}]) == (  # noqa: SLF001
+    assert ui_routes._no_clean_snippet_message(
+        [{"status": "rejected_failed_extract"}]
+    ) == (  # noqa: SLF001
         "No clean snippets are available because extraction failed for the clean candidates."
     )
     assert ui_routes._no_clean_snippet_message([{"status": "rejected_short"}]) == (  # noqa: SLF001
@@ -1916,26 +2094,37 @@ def test_snippet_message_helpers_and_display_backfill_edges(
 
 def test_snippet_ui_state_helper_covers_manifest_and_stage_edges() -> None:
     assert ui_routes._pipeline_stage_order("not-a-stage") is None  # noqa: SLF001
-    assert ui_routes._pipeline_stage_order("llm") == ui_routes._pipeline_stage_order("llm_extract")  # noqa: SLF001
+    assert ui_routes._pipeline_stage_order("llm") == ui_routes._pipeline_stage_order(
+        "llm_extract"
+    )  # noqa: SLF001
     assert ui_routes._stage_row_metadata(None) == {}  # noqa: SLF001
     assert ui_routes._snippet_manifest_warning_messages(  # noqa: SLF001
         {"warnings": ["skip", {"message": ""}, {"message": "boom"}]}
     ) == ["boom"]
-    assert ui_routes._snippet_ready_message(  # noqa: SLF001
-        {"status": RECORDING_STATUS_PROCESSING, "pipeline_stage": "snippet_export"}
-    ) == "Clean clips are ready while processing continues."
+    assert (
+        ui_routes._snippet_ready_message(  # noqa: SLF001
+            {"status": RECORDING_STATUS_PROCESSING, "pipeline_stage": "snippet_export"}
+        )
+        == "Clean clips are ready while processing continues."
+    )
     assert ui_routes._snippet_completed_without_clean_message(None) == (  # noqa: SLF001
         "Snippet export completed, but no accepted clean snippets are available for this speaker."
     )
-    assert ui_routes._snippet_completed_without_clean_message(  # noqa: SLF001
-        "No snippet quality data is available for this speaker yet."
-    ) == "Snippet export completed, but no accepted clean snippets are available for this speaker."
+    assert (
+        ui_routes._snippet_completed_without_clean_message(  # noqa: SLF001
+            "No snippet quality data is available for this speaker yet."
+        )
+        == "Snippet export completed, but no accepted clean snippets are available for this speaker."
+    )
     assert ui_routes._snippet_completed_without_clean_message("state unavailable") == (  # noqa: SLF001
         "Snippet export completed, but state unavailable"
     )
 
     running_state = ui_routes._resolve_speaker_snippet_ui_state(  # noqa: SLF001
-        recording={"status": RECORDING_STATUS_PROCESSING, "pipeline_stage": "snippet_export"},
+        recording={
+            "status": RECORDING_STATUS_PROCESSING,
+            "pipeline_stage": "snippet_export",
+        },
         stage_rows=[],
         manifest_exists=False,
         manifest={},
@@ -2046,7 +2235,10 @@ def test_snippet_ui_state_helper_covers_manifest_and_stage_edges() -> None:
     assert legacy["code"] == "legacy_missing_manifest"
 
     stopped_before_snippets = ui_routes._resolve_speaker_snippet_ui_state(  # noqa: SLF001
-        recording={"status": RECORDING_STATUS_STOPPED, "pipeline_stage": "speaker_turns"},
+        recording={
+            "status": RECORDING_STATUS_STOPPED,
+            "pipeline_stage": "speaker_turns",
+        },
         stage_rows=[],
         manifest_exists=False,
         manifest={},
@@ -2061,7 +2253,10 @@ def test_snippet_ui_state_helper_covers_manifest_and_stage_edges() -> None:
     )
 
     failed_before_snippets = ui_routes._resolve_speaker_snippet_ui_state(  # noqa: SLF001
-        recording={"status": RECORDING_STATUS_FAILED, "pipeline_stage": "speaker_turns"},
+        recording={
+            "status": RECORDING_STATUS_FAILED,
+            "pipeline_stage": "speaker_turns",
+        },
         stage_rows=[],
         manifest_exists=False,
         manifest={},
@@ -2072,7 +2267,10 @@ def test_snippet_ui_state_helper_covers_manifest_and_stage_edges() -> None:
     assert failed_before_snippets["code"] == "unavailable"
 
     stale_running_terminal = ui_routes._resolve_speaker_snippet_ui_state(  # noqa: SLF001
-        recording={"status": RECORDING_STATUS_FAILED, "pipeline_stage": "snippet_export"},
+        recording={
+            "status": RECORDING_STATUS_FAILED,
+            "pipeline_stage": "snippet_export",
+        },
         stage_rows=[
             {
                 "stage_name": "snippet_export",
@@ -2089,7 +2287,10 @@ def test_snippet_ui_state_helper_covers_manifest_and_stage_edges() -> None:
     assert stale_running_terminal["code"] == "unavailable"
 
     needs_review_without_stage = ui_routes._resolve_speaker_snippet_ui_state(  # noqa: SLF001
-        recording={"status": RECORDING_STATUS_NEEDS_REVIEW, "pipeline_stage": "speaker_turns"},
+        recording={
+            "status": RECORDING_STATUS_NEEDS_REVIEW,
+            "pipeline_stage": "speaker_turns",
+        },
         stage_rows=[],
         manifest_exists=False,
         manifest={},
@@ -2111,7 +2312,10 @@ def test_snippet_ui_state_helper_covers_manifest_and_stage_edges() -> None:
     assert llm_alias["code"] == "unavailable"
 
     missing_after_stage = ui_routes._resolve_speaker_snippet_ui_state(  # noqa: SLF001
-        recording={"status": RECORDING_STATUS_PROCESSING, "pipeline_stage": "llm_extract"},
+        recording={
+            "status": RECORDING_STATUS_PROCESSING,
+            "pipeline_stage": "llm_extract",
+        },
         stage_rows=[
             {
                 "stage_name": "snippet_export",
@@ -2216,19 +2420,38 @@ def test_speaker_helper_paths_cover_duplicates_labels_and_notices(
         "S1": "Alex",
         "S2": "Meeting Guest",
     }
-    assert ui_routes._speaker_display_label("S1", speaker_name_map={"S1": "Alex"}) == "Alex (S1)"  # noqa: SLF001
-    assert ui_routes._speaker_display_label("S2", speaker_name_map={"S1": "Alex"}) == "S2"  # noqa: SLF001
-    assert ui_routes._speaker_review_state({"local_display_name": "Meeting Guest"}) == "local_label"  # noqa: SLF001
-    assert ui_routes._speaker_review_state(  # noqa: SLF001
-        {"voice_profile_id": 1, "voice_profile_name": "Alex"}
-    ) == "confirmed_canonical"
-    assert ui_routes._speaker_review_state(  # noqa: SLF001
-        {"candidate_matches_json": [{"voice_profile_id": 1, "score": 0.4}]}
-    ) == "system_suggested"
-    assert ui_routes._speaker_review_state({"review_state": "bad"}) == "system_suggested"  # noqa: SLF001
-    assert ui_routes._speaker_assignment_display_name(  # noqa: SLF001
-        {"review_state": "system_suggested", "voice_profile_name": "Suggested"}
-    ) == ""
+    assert (
+        ui_routes._speaker_display_label("S1", speaker_name_map={"S1": "Alex"})
+        == "Alex (S1)"
+    )  # noqa: SLF001
+    assert (
+        ui_routes._speaker_display_label("S2", speaker_name_map={"S1": "Alex"}) == "S2"
+    )  # noqa: SLF001
+    assert (
+        ui_routes._speaker_review_state({"local_display_name": "Meeting Guest"})
+        == "local_label"
+    )  # noqa: SLF001
+    assert (
+        ui_routes._speaker_review_state(  # noqa: SLF001
+            {"voice_profile_id": 1, "voice_profile_name": "Alex"}
+        )
+        == "confirmed_canonical"
+    )
+    assert (
+        ui_routes._speaker_review_state(  # noqa: SLF001
+            {"candidate_matches_json": [{"voice_profile_id": 1, "score": 0.4}]}
+        )
+        == "system_suggested"
+    )
+    assert (
+        ui_routes._speaker_review_state({"review_state": "bad"}) == "system_suggested"
+    )  # noqa: SLF001
+    assert (
+        ui_routes._speaker_assignment_display_name(  # noqa: SLF001
+            {"review_state": "system_suggested", "voice_profile_name": "Suggested"}
+        )
+        == ""
+    )
     status_ctx = ui_routes._speaker_assignment_status_context(  # noqa: SLF001
         "S1",
         {"review_state": "local_label", "local_display_name": "Meeting Guest"},
@@ -2239,6 +2462,34 @@ def test_speaker_helper_paths_cover_duplicates_labels_and_notices(
         {"voice_profile_name": "Suggested"},
     )
     assert suggested_ctx["mapping_title"] == "Suggested global match: Suggested"
+    assert ui_routes._trusted_sample_state([]) is None  # noqa: SLF001
+    assert ui_routes._trusted_sample_state(  # noqa: SLF001
+        [{"voice_profile_id": 1, "voice_profile_name": "Alex"}]
+    ) == {
+        "badge_label": "1 saved",
+        "detail": "Trusted sample saved for Alex.",
+    }
+    assert ui_routes._trusted_sample_state(  # noqa: SLF001
+        [{"voice_profile_id": 3, "voice_profile_name": ""}]
+    ) == {
+        "badge_label": "1 saved",
+        "detail": "Trusted sample saved for Canonical #3.",
+    }
+    assert ui_routes._trusted_sample_state(  # noqa: SLF001
+        [
+            {"voice_profile_id": 1, "voice_profile_name": "Alex"},
+            {"voice_profile_id": 2, "voice_profile_name": "Bea"},
+        ]
+    ) == {
+        "badge_label": "2 saved",
+        "detail": "Trusted samples saved across 2 canonical speakers.",
+    }
+    assert ui_routes._trusted_sample_state(  # noqa: SLF001
+        [{"voice_profile_id": None, "voice_profile_name": ""}]
+    ) == {
+        "badge_label": "1 saved",
+        "detail": "Trusted sample saved from this recording for future matching.",
+    }
 
     duplicates = ui_routes._voice_duplicate_candidates(  # noqa: SLF001
         voice_samples=[
@@ -2250,12 +2501,22 @@ def test_speaker_helper_paths_cover_duplicates_labels_and_notices(
                     {"voice_profile_id": 2, "score": 0.8},
                 ],
             },
-            {"voice_profile_id": None, "candidate_matches_json": [{"voice_profile_id": 2, "score": 0.5}]},
+            {
+                "voice_profile_id": None,
+                "candidate_matches_json": [{"voice_profile_id": 2, "score": 0.5}],
+            },
         ],
         voice_profiles_by_id={1: {"display_name": "Alex"}, 2: {"display_name": "Bea"}},
     )
     assert duplicates == {
-        1: [{"voice_profile_id": 2, "display_name": "Bea", "best_score": 0.81, "match_count": 1}]
+        1: [
+            {
+                "voice_profile_id": 2,
+                "display_name": "Bea",
+                "best_score": 0.81,
+                "match_count": 1,
+            }
+        ]
     }
 
     assert ui_routes._speaker_review_notices(  # noqa: SLF001
@@ -2315,7 +2576,9 @@ def test_project_language_and_resummarize_helpers(
             "routing_rationale_json": [" reason "],
         },
     )
-    monkeypatch.setattr(ui_routes, "list_projects", lambda *_a, **_k: [{"id": 5, "name": "Roadmap"}])
+    monkeypatch.setattr(
+        ui_routes, "list_projects", lambda *_a, **_k: [{"id": 5, "name": "Roadmap"}]
+    )
     monkeypatch.setattr(
         ui_routes,
         "count_routing_training_examples",
@@ -2365,14 +2628,18 @@ def test_project_language_and_resummarize_helpers(
         "language_distribution": {"en": "bad", "fr": 22.5},
         "language_spans": ["skip", {"start": "bad", "end": "bad", "lang": "en"}],
     }
-    (derived / "transcript.json").write_text(json.dumps(transcript_payload), encoding="utf-8")
+    (derived / "transcript.json").write_text(
+        json.dumps(transcript_payload), encoding="utf-8"
+    )
     (derived / "summary.json").write_text("{}", encoding="utf-8")
     lang_ctx = ui_routes._language_tab_context(recording_id, {}, cfg)  # noqa: SLF001
     assert lang_ctx["distribution"][0]["code"] == "fr"
     assert lang_ctx["spans"] == []
 
     with pytest.raises(ValueError, match="No transcript.json"):
-        ui_routes._resummarize_recording(recording_id="missing", settings=cfg, target_summary_language="en")  # noqa: SLF001
+        ui_routes._resummarize_recording(
+            recording_id="missing", settings=cfg, target_summary_language="en"
+        )  # noqa: SLF001
 
     (cfg.recordings_root / "empty" / "derived").mkdir(parents=True, exist_ok=True)
     (cfg.recordings_root / "empty" / "derived" / "transcript.json").write_text(
@@ -2380,7 +2647,9 @@ def test_project_language_and_resummarize_helpers(
         encoding="utf-8",
     )
     with pytest.raises(ValueError, match="Transcript text is empty"):
-        ui_routes._resummarize_recording(recording_id="empty", settings=cfg, target_summary_language="en")  # noqa: SLF001
+        ui_routes._resummarize_recording(
+            recording_id="empty", settings=cfg, target_summary_language="en"
+        )  # noqa: SLF001
 
 
 def test_resummarize_recording_default_turn_and_attendees_paths(
@@ -2400,9 +2669,13 @@ def test_resummarize_recording_default_turn_and_attendees_paths(
         ),
         encoding="utf-8",
     )
-    (derived / "summary.json").write_text(json.dumps({"friendly": "bad"}), encoding="utf-8")
+    (derived / "summary.json").write_text(
+        json.dumps({"friendly": "bad"}), encoding="utf-8"
+    )
 
-    monkeypatch.setattr(ui_routes, "_fallback_speaker_turns_from_transcript", lambda *_a, **_k: [])
+    monkeypatch.setattr(
+        ui_routes, "_fallback_speaker_turns_from_transcript", lambda *_a, **_k: []
+    )
     monkeypatch.setattr(
         ui_routes,
         "PipelineSettings",
@@ -2410,7 +2683,9 @@ def test_resummarize_recording_default_turn_and_attendees_paths(
     )
     prompts_seen: dict[str, Any] = {}
 
-    def _prompts(turns: list[dict[str, Any]], *_a: Any, **kwargs: Any) -> tuple[str, str]:
+    def _prompts(
+        turns: list[dict[str, Any]], *_a: Any, **kwargs: Any
+    ) -> tuple[str, str]:
         prompts_seen["turns"] = turns
         prompts_seen["attendees"] = kwargs.get("calendar_attendees")
         return "sys", "usr"
@@ -2434,7 +2709,9 @@ def test_resummarize_recording_default_turn_and_attendees_paths(
     monkeypatch.setattr(ui_routes, "atomic_write_json", _write_json)
     monkeypatch.setattr(ui_routes, "refresh_recording_metrics", lambda *_a, **_k: None)
 
-    ui_routes._resummarize_recording(recording_id, settings=cfg, target_summary_language=None)  # noqa: SLF001
+    ui_routes._resummarize_recording(
+        recording_id, settings=cfg, target_summary_language=None
+    )  # noqa: SLF001
     assert prompts_seen["turns"][0]["speaker"] == "S1"
     assert prompts_seen["attendees"] == ["Alex", "Priya"]
     assert any(path.name == "summary.json" for path in writes)
@@ -2480,7 +2757,9 @@ def test_resummarize_recording_prefers_selected_calendar_context(
     )
     (derived / "summary.json").write_text(json.dumps({"friendly": 0}), encoding="utf-8")
 
-    monkeypatch.setattr(ui_routes, "_fallback_speaker_turns_from_transcript", lambda *_a, **_k: [])
+    monkeypatch.setattr(
+        ui_routes, "_fallback_speaker_turns_from_transcript", lambda *_a, **_k: []
+    )
     monkeypatch.setattr(
         ui_routes,
         "PipelineSettings",
@@ -2488,7 +2767,9 @@ def test_resummarize_recording_prefers_selected_calendar_context(
     )
     prompts_seen: dict[str, Any] = {}
 
-    def _prompts(turns: list[dict[str, Any]], *_a: Any, **kwargs: Any) -> tuple[str, str]:
+    def _prompts(
+        turns: list[dict[str, Any]], *_a: Any, **kwargs: Any
+    ) -> tuple[str, str]:
         prompts_seen["turns"] = turns
         prompts_seen["title"] = kwargs.get("calendar_title")
         prompts_seen["attendees"] = kwargs.get("calendar_attendees")
@@ -2526,7 +2807,9 @@ def test_resummarize_recording_uses_existing_speaker_turns(
     recording_id = "rec-resummarize-existing-turns"
     derived = cfg.recordings_root / recording_id / "derived"
     derived.mkdir(parents=True, exist_ok=True)
-    (derived / "transcript.json").write_text(json.dumps({"text": "hello"}), encoding="utf-8")
+    (derived / "transcript.json").write_text(
+        json.dumps({"text": "hello"}), encoding="utf-8"
+    )
     (derived / "speaker_turns.json").write_text(
         json.dumps([{"start": 0.0, "end": 1.0, "speaker": "S1", "text": "hello"}]),
         encoding="utf-8",
@@ -2538,7 +2821,9 @@ def test_resummarize_recording_uses_existing_speaker_turns(
         "PipelineSettings",
         lambda **kwargs: type("S", (), {"llm_model": "test-model", **kwargs})(),
     )
-    monkeypatch.setattr(ui_routes, "build_structured_summary_prompts", lambda *_a, **_k: ("sys", "usr"))
+    monkeypatch.setattr(
+        ui_routes, "build_structured_summary_prompts", lambda *_a, **_k: ("sys", "usr")
+    )
 
     class _FakeLLM:
         async def generate(self, **_kwargs: Any) -> dict[str, str]:
@@ -2553,10 +2838,14 @@ def test_resummarize_recording_uses_existing_speaker_turns(
     monkeypatch.setattr(ui_routes, "atomic_write_json", lambda *_a, **_k: None)
     monkeypatch.setattr(ui_routes, "refresh_recording_metrics", lambda *_a, **_k: None)
 
-    ui_routes._resummarize_recording(recording_id, settings=cfg, target_summary_language="en")  # noqa: SLF001
+    ui_routes._resummarize_recording(
+        recording_id, settings=cfg, target_summary_language="en"
+    )  # noqa: SLF001
 
 
-def test_datetime_and_calendar_parse_errors(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_datetime_and_calendar_parse_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     with pytest.raises(ValueError, match="from is required"):
         ui_routes._parse_iso_datetime("", field_name="from")  # noqa: SLF001
     with pytest.raises(ValueError, match="from must be ISO-8601 datetime"):
@@ -2583,7 +2872,9 @@ def test_datetime_and_calendar_parse_errors(tmp_path: Path, monkeypatch: pytest.
         )
 
 
-def test_calendar_ui_helper_context_paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_calendar_ui_helper_context_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     cfg = _cfg(tmp_path)
     init_db(cfg)
     assert ui_routes._calendar_attendee_labels("bad") == []  # noqa: SLF001
@@ -2652,7 +2943,9 @@ def test_calendar_detail_error_and_invalid_confidence_paths(
     )
     monkeypatch.setattr(ui_routes, "selected_calendar_candidate", lambda *_a, **_k: {})
     monkeypatch.setattr(ui_routes, "calendar_match_candidates", lambda *_a, **_k: [])
-    detail = c.get("/recordings/rec-calendar-ui-edge?tab=calendar&calendar_error=Need+review")
+    detail = c.get(
+        "/recordings/rec-calendar-ui-edge?tab=calendar&calendar_error=Need+review"
+    )
     assert detail.status_code == 200
     assert "Need review" in detail.text
 
@@ -2679,7 +2972,9 @@ def test_calendar_detail_error_and_invalid_confidence_paths(
     assert captured["selected_confidence"] is None
 
 
-def test_auth_route_edge_paths(client: tuple[AppSettings, TestClient], monkeypatch: pytest.MonkeyPatch) -> None:
+def test_auth_route_edge_paths(
+    client: tuple[AppSettings, TestClient], monkeypatch: pytest.MonkeyPatch
+) -> None:
     _cfg, c = client
     monkeypatch.setattr(ui_routes, "auth_enabled", lambda *_a, **_k: False)
     assert c.get("/ui").headers["location"] == "/"
@@ -2691,7 +2986,9 @@ def test_auth_route_edge_paths(client: tuple[AppSettings, TestClient], monkeypat
     monkeypatch.setattr(ui_routes, "request_is_authenticated", lambda *_a, **_k: True)
     assert c.get("/ui/login?next=/queue").headers["location"] == "/queue"
 
-    monkeypatch.setattr(ui_routes, "expected_bearer_token", lambda *_a, **_k: "expected")
+    monkeypatch.setattr(
+        ui_routes, "expected_bearer_token", lambda *_a, **_k: "expected"
+    )
     bad_login = c.post("/ui/login", data={"token": "bad", "next": "/ui"})
     assert bad_login.status_code == 401
     assert "Invalid token." in bad_login.text
@@ -2711,7 +3008,10 @@ def test_recording_progress_export_and_snippet_not_found_paths(
     assert c.get("/ui/recordings/missing/progress").status_code == 404
     assert c.get("/ui/recordings/missing/export.zip").status_code == 404
     assert c.get("/ui/recordings/missing/snippets/S1/a.wav").status_code == 404
-    assert c.get(f"/ui/recordings/{recording_id}/snippets/S1/missing.wav").status_code == 404
+    assert (
+        c.get(f"/ui/recordings/{recording_id}/snippets/S1/missing.wav").status_code
+        == 404
+    )
 
 
 def test_recording_export_zip_route_returns_zip_bytes(
@@ -2733,7 +3033,9 @@ def test_recording_export_zip_route_returns_zip_bytes(
         seen["include_snippets"] = include_snippets
         return b"zip-bytes"
 
-    monkeypatch.setattr(ui_routes, "build_export_zip_bytes", _fake_build_export_zip_bytes)
+    monkeypatch.setattr(
+        ui_routes, "build_export_zip_bytes", _fake_build_export_zip_bytes
+    )
     response = c.get(f"/ui/recordings/{recording_id}/export.zip?include_snippets=1")
     assert response.status_code == 200
     assert response.content == b"zip-bytes"
@@ -2753,20 +3055,43 @@ def test_assign_speaker_validation_and_error_paths(
     recording_id = _seed_recording(cfg)
     base = f"/ui/recordings/{recording_id}/speakers/assign"
 
-    assert c.post(
-        "/ui/recordings/missing/speakers/assign",
-        data={"diar_speaker_label": "S1", "voice_profile_id": ""},
-    ).status_code == 404
-    assert c.post(base, data={"diar_speaker_label": " ", "voice_profile_id": ""}).status_code == 422
-    assert c.post(base, data={"diar_speaker_label": "S1", "voice_profile_id": ""}).status_code == 422
-    assert c.post(base, data={"diar_speaker_label": "S1", "voice_profile_id": "bad"}).status_code == 422
+    assert (
+        c.post(
+            "/ui/recordings/missing/speakers/assign",
+            data={"diar_speaker_label": "S1", "voice_profile_id": ""},
+        ).status_code
+        == 404
+    )
+    assert (
+        c.post(
+            base, data={"diar_speaker_label": " ", "voice_profile_id": ""}
+        ).status_code
+        == 422
+    )
+    assert (
+        c.post(
+            base, data={"diar_speaker_label": "S1", "voice_profile_id": ""}
+        ).status_code
+        == 422
+    )
+    assert (
+        c.post(
+            base, data={"diar_speaker_label": "S1", "voice_profile_id": "bad"}
+        ).status_code
+        == 422
+    )
 
     monkeypatch.setattr(
         ui_routes,
         "set_speaker_assignment",
         lambda *_a, **_k: (_ for _ in ()).throw(sqlite3.IntegrityError("missing")),
     )
-    assert c.post(base, data={"diar_speaker_label": "S1", "voice_profile_id": "1"}).status_code == 404
+    assert (
+        c.post(
+            base, data={"diar_speaker_label": "S1", "voice_profile_id": "1"}
+        ).status_code
+        == 404
+    )
 
     monkeypatch.setattr(
         ui_routes,
@@ -2791,11 +3116,16 @@ def test_keep_unknown_and_local_label_validation_paths(
     keep_unknown_base = f"/ui/recordings/{recording_id}/speakers/keep-unknown"
     local_label_base = f"/ui/recordings/{recording_id}/speakers/local-label"
 
-    assert c.post(
-        "/ui/recordings/missing/speakers/keep-unknown",
-        data={"diar_speaker_label": "S1"},
-    ).status_code == 404
-    assert c.post(keep_unknown_base, data={"diar_speaker_label": " "}).status_code == 422
+    assert (
+        c.post(
+            "/ui/recordings/missing/speakers/keep-unknown",
+            data={"diar_speaker_label": "S1"},
+        ).status_code
+        == 404
+    )
+    assert (
+        c.post(keep_unknown_base, data={"diar_speaker_label": " "}).status_code == 422
+    )
 
     monkeypatch.setattr(
         ui_routes,
@@ -2807,20 +3137,31 @@ def test_keep_unknown_and_local_label_validation_paths(
     assert "unknown failed" in failed_keep_unknown.text
 
     monkeypatch.setattr(ui_routes, "set_speaker_assignment", lambda *_a, **_k: None)
-    assert c.post(keep_unknown_base, data={"diar_speaker_label": "S1"}).status_code == 303
+    assert (
+        c.post(keep_unknown_base, data={"diar_speaker_label": "S1"}).status_code == 303
+    )
 
-    assert c.post(
-        "/ui/recordings/missing/speakers/local-label",
-        data={"diar_speaker_label": "S1", "local_display_name": "Guest"},
-    ).status_code == 404
-    assert c.post(
-        local_label_base,
-        data={"diar_speaker_label": " ", "local_display_name": "Guest"},
-    ).status_code == 422
-    assert c.post(
-        local_label_base,
-        data={"diar_speaker_label": "S1", "local_display_name": " "},
-    ).status_code == 422
+    assert (
+        c.post(
+            "/ui/recordings/missing/speakers/local-label",
+            data={"diar_speaker_label": "S1", "local_display_name": "Guest"},
+        ).status_code
+        == 404
+    )
+    assert (
+        c.post(
+            local_label_base,
+            data={"diar_speaker_label": " ", "local_display_name": "Guest"},
+        ).status_code
+        == 422
+    )
+    assert (
+        c.post(
+            local_label_base,
+            data={"diar_speaker_label": "S1", "local_display_name": " "},
+        ).status_code
+        == 422
+    )
 
     monkeypatch.setattr(
         ui_routes,
@@ -2835,10 +3176,13 @@ def test_keep_unknown_and_local_label_validation_paths(
     assert "local failed" in failed_local_label.text
 
     monkeypatch.setattr(ui_routes, "set_speaker_assignment", lambda *_a, **_k: None)
-    assert c.post(
-        local_label_base,
-        data={"diar_speaker_label": "S1", "local_display_name": "Guest"},
-    ).status_code == 303
+    assert (
+        c.post(
+            local_label_base,
+            data={"diar_speaker_label": "S1", "local_display_name": "Guest"},
+        ).status_code
+        == 303
+    )
 
 
 def test_create_and_assign_speaker_validation_paths(
@@ -2849,14 +3193,25 @@ def test_create_and_assign_speaker_validation_paths(
     recording_id = _seed_recording(cfg, "rec-create-assign-1")
     base = f"/ui/recordings/{recording_id}/speakers/create-and-assign"
 
-    assert c.post(
-        "/ui/recordings/missing/speakers/create-and-assign",
-        data={"diar_speaker_label": "S1", "display_name": "Alex"},
-    ).status_code == 404
-    assert c.post(base, data={"diar_speaker_label": " ", "display_name": "A"}).status_code == 422
-    assert c.post(base, data={"diar_speaker_label": "S1", "display_name": " "}).status_code == 422
+    assert (
+        c.post(
+            "/ui/recordings/missing/speakers/create-and-assign",
+            data={"diar_speaker_label": "S1", "display_name": "Alex"},
+        ).status_code
+        == 404
+    )
+    assert (
+        c.post(base, data={"diar_speaker_label": " ", "display_name": "A"}).status_code
+        == 422
+    )
+    assert (
+        c.post(base, data={"diar_speaker_label": "S1", "display_name": " "}).status_code
+        == 422
+    )
 
-    monkeypatch.setattr(ui_routes, "create_voice_profile", lambda *_a, **_k: {"id": "bad"})
+    monkeypatch.setattr(
+        ui_routes, "create_voice_profile", lambda *_a, **_k: {"id": "bad"}
+    )
     resp = c.post(base, data={"diar_speaker_label": "S1", "display_name": "Alex"})
     assert resp.status_code == 503
 
@@ -2876,16 +3231,24 @@ def test_merge_voice_validation_and_error_paths(
     monkeypatch.setattr(
         ui_routes,
         "merge_canonical_speakers",
-        lambda *_a, **_k: (_ for _ in ()).throw(ValueError("target_profile_id was not found")),
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            ValueError("target_profile_id was not found")
+        ),
     )
-    assert c.post(base, data={"target_profile_id": str(target["id"])}).status_code == 404
+    assert (
+        c.post(base, data={"target_profile_id": str(target["id"])}).status_code == 404
+    )
 
     monkeypatch.setattr(
         ui_routes,
         "merge_canonical_speakers",
-        lambda *_a, **_k: (_ for _ in ()).throw(ValueError("source_profile_id and target_profile_id must differ")),
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            ValueError("source_profile_id and target_profile_id must differ")
+        ),
     )
-    assert c.post(base, data={"target_profile_id": str(target["id"])}).status_code == 422
+    assert (
+        c.post(base, data={"target_profile_id": str(target["id"])}).status_code == 422
+    )
 
     monkeypatch.setattr(ui_routes, "merge_canonical_speakers", lambda *_a, **_k: {})
     ok = c.post(base, data={"target_profile_id": str(target["id"])})
@@ -2901,46 +3264,91 @@ def test_add_speaker_sample_validation_and_error_paths(
     recording_id = _seed_recording(cfg, "rec-add-sample-1")
     base = f"/ui/recordings/{recording_id}/speakers/add-sample"
 
-    assert c.post(
-        "/ui/recordings/missing/speakers/add-sample",
-        data={"diar_speaker_label": "S1", "voice_profile_id": "1"},
-    ).status_code == 404
-    assert c.post(base, data={"diar_speaker_label": " ", "voice_profile_id": "1"}).status_code == 422
-    assert c.post(base, data={"diar_speaker_label": "S1", "voice_profile_id": ""}).status_code == 422
-    assert c.post(base, data={"diar_speaker_label": "S1", "voice_profile_id": "bad"}).status_code == 422
-    assert c.post(base, data={"diar_speaker_label": "S1", "voice_profile_id": "1"}).status_code == 422
+    assert (
+        c.post(
+            "/ui/recordings/missing/speakers/add-sample",
+            data={"diar_speaker_label": "S1", "voice_profile_id": "1"},
+        ).status_code
+        == 404
+    )
+    assert (
+        c.post(
+            base, data={"diar_speaker_label": " ", "voice_profile_id": "1"}
+        ).status_code
+        == 422
+    )
+    assert (
+        c.post(
+            base, data={"diar_speaker_label": "S1", "voice_profile_id": ""}
+        ).status_code
+        == 422
+    )
+    assert (
+        c.post(
+            base, data={"diar_speaker_label": "S1", "voice_profile_id": "bad"}
+        ).status_code
+        == 422
+    )
+    assert (
+        c.post(
+            base, data={"diar_speaker_label": "S1", "voice_profile_id": "1"}
+        ).status_code
+        == 422
+    )
 
     rel_bad = tmp_path / "outside.wav"
     rel_bad.write_bytes(b"wav")
     monkeypatch.setattr(
         ui_routes,
         "_selected_clean_snippet",
-        lambda *_a, **_k: (_ for _ in ()).throw(ValueError("Selected snippet path is invalid")),
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            ValueError("Selected snippet path is invalid")
+        ),
     )
     invalid = c.post(
         base,
-        data={"diar_speaker_label": "S1", "voice_profile_id": "1", "snippet_path": "../bad.wav"},
+        data={
+            "diar_speaker_label": "S1",
+            "voice_profile_id": "1",
+            "snippet_path": "../bad.wav",
+        },
     )
     assert invalid.status_code == 422
     assert "Selected snippet path is invalid" in invalid.text
 
     monkeypatch.setattr(ui_routes, "_selected_clean_snippet", lambda *_a, **_k: rel_bad)
     monkeypatch.setattr(ui_routes, "_as_data_relative_path", lambda *_a, **_k: None)
-    assert c.post(
-        base,
-        data={"diar_speaker_label": "S1", "voice_profile_id": "1", "snippet_path": "S1/1.wav"},
-    ).status_code == 422
+    assert (
+        c.post(
+            base,
+            data={
+                "diar_speaker_label": "S1",
+                "voice_profile_id": "1",
+                "snippet_path": "S1/1.wav",
+            },
+        ).status_code
+        == 422
+    )
 
-    monkeypatch.setattr(ui_routes, "_as_data_relative_path", lambda *_a, **_k: "recordings/x.wav")
+    monkeypatch.setattr(
+        ui_routes, "_as_data_relative_path", lambda *_a, **_k: "recordings/x.wav"
+    )
     monkeypatch.setattr(
         ui_routes,
         "create_voice_sample",
         lambda *_a, **_k: (_ for _ in ()).throw(sqlite3.IntegrityError("missing")),
     )
-    assert c.post(
-        base,
-        data={"diar_speaker_label": "S1", "voice_profile_id": "1", "snippet_path": "S1/1.wav"},
-    ).status_code == 404
+    assert (
+        c.post(
+            base,
+            data={
+                "diar_speaker_label": "S1",
+                "voice_profile_id": "1",
+                "snippet_path": "S1/1.wav",
+            },
+        ).status_code
+        == 404
+    )
 
     monkeypatch.setattr(
         ui_routes,
@@ -2949,7 +3357,11 @@ def test_add_speaker_sample_validation_and_error_paths(
     )
     bad_value = c.post(
         base,
-        data={"diar_speaker_label": "S1", "voice_profile_id": "1", "snippet_path": "S1/1.wav"},
+        data={
+            "diar_speaker_label": "S1",
+            "voice_profile_id": "1",
+            "snippet_path": "S1/1.wav",
+        },
     )
     assert bad_value.status_code == 422
     assert "bad snippet" in bad_value.text
@@ -2986,7 +3398,9 @@ def test_set_recording_project_error_paths(
     assert failed_train.status_code == 404
 
     monkeypatch.setattr(ui_routes, "set_recording_project", lambda *_a, **_k: True)
-    monkeypatch.setattr(ui_routes, "refresh_recording_routing", lambda *_a, **_k: {"ok": True})
+    monkeypatch.setattr(
+        ui_routes, "refresh_recording_routing", lambda *_a, **_k: {"ok": True}
+    )
     no_project = c.post(base, data={"project_id": "", "train_routing": "yes"})
     assert no_project.status_code == 303
 
@@ -2997,18 +3411,25 @@ def test_voices_page_and_audio_route_edge_paths(
     tmp_path: Path,
 ) -> None:
     cfg, c = client
-    monkeypatch.setattr(ui_routes, "list_voice_profiles", lambda *_a, **_k: [{"id": "bad"}])
+    monkeypatch.setattr(
+        ui_routes, "list_voice_profiles", lambda *_a, **_k: [{"id": "bad"}]
+    )
     monkeypatch.setattr(
         ui_routes,
         "list_voice_samples",
-        lambda *_a, **_k: [{"id": 1, "voice_profile_id": "bad"}, {"id": 2, "voice_profile_id": "1"}],
+        lambda *_a, **_k: [
+            {"id": 1, "voice_profile_id": "bad"},
+            {"id": 2, "voice_profile_id": "1"},
+        ],
     )
     assert c.get("/voices").status_code == 200
 
     monkeypatch.setattr(ui_routes, "get_voice_sample", lambda *_a, **_k: None)
     assert c.get("/ui/voice-samples/1/audio").status_code == 404
 
-    monkeypatch.setattr(ui_routes, "get_voice_sample", lambda *_a, **_k: {"snippet_path": "  "})
+    monkeypatch.setattr(
+        ui_routes, "get_voice_sample", lambda *_a, **_k: {"snippet_path": "  "}
+    )
     assert c.get("/ui/voice-samples/2/audio").status_code == 404
 
     missing_rel = {"snippet_path": "recordings/missing.wav"}
@@ -3108,7 +3529,9 @@ def test_queue_action_error_paths(
     assert "already active" in requeue.text
 
     assert c.post("/ui/recordings/missing/jobs/job-1/retry").status_code == 404
-    assert c.post(f"/ui/recordings/{recording_id}/jobs/missing/retry").status_code == 404
+    assert (
+        c.post(f"/ui/recordings/{recording_id}/jobs/missing/retry").status_code == 404
+    )
 
     create_job(
         "job-failed-ui-cov",
@@ -3150,7 +3573,9 @@ def test_language_action_error_paths(
     )
     assert bad_settings.status_code == 422
 
-    monkeypatch.setattr(ui_routes, "_save_language_settings", lambda *_a, **_k: ("en", None))
+    monkeypatch.setattr(
+        ui_routes, "_save_language_settings", lambda *_a, **_k: ("en", None)
+    )
     ok_settings = c.post(f"/ui/recordings/{recording_id}/language/settings")
     assert ok_settings.status_code == 303
 
@@ -3180,7 +3605,9 @@ def test_language_action_error_paths(
     retr_bad = c.post(f"/ui/recordings/{recording_id}/language/retranscribe")
     assert retr_bad.status_code == 422
 
-    monkeypatch.setattr(ui_routes, "_save_language_settings", lambda *_a, **_k: (None, None))
+    monkeypatch.setattr(
+        ui_routes, "_save_language_settings", lambda *_a, **_k: (None, None)
+    )
     monkeypatch.setattr(
         ui_routes,
         "enqueue_recording_job",

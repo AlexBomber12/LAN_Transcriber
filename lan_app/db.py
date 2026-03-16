@@ -47,6 +47,10 @@ SPEAKER_REVIEW_STATE_SYSTEM_SUGGESTED = "system_suggested"
 SPEAKER_REVIEW_STATE_CONFIRMED_CANONICAL = "confirmed_canonical"
 SPEAKER_REVIEW_STATE_KEPT_UNKNOWN = "kept_unknown"
 SPEAKER_REVIEW_STATE_LOCAL_LABEL = "local_label"
+VOICE_SAMPLE_SOURCE_MANUAL = "manual"
+VOICE_SAMPLE_SOURCE_AUTO = "auto"
+VOICE_SAMPLE_SOURCE_SPEAKER_BANK = "speaker-bank"
+VOICE_SAMPLE_SOURCE_TRUSTED_SAMPLE = "trusted_sample"
 _SPEAKER_REVIEW_STATES = {
     SPEAKER_REVIEW_STATE_SYSTEM_SUGGESTED,
     SPEAKER_REVIEW_STATE_CONFIRMED_CANONICAL,
@@ -119,15 +123,17 @@ LEFT JOIN voice_profiles AS vp ON vp.id = vs.voice_profile_id
 
 
 def _utc_now() -> str:
-    return datetime.now(tz=timezone.utc).replace(microsecond=0).isoformat().replace(
-        "+00:00", "Z"
+    return (
+        datetime.now(tz=timezone.utc)
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z")
     )
 
 
 def _recording_table_columns(conn: sqlite3.Connection) -> set[str]:
     return {
-        str(row[1])
-        for row in conn.execute("PRAGMA table_info(recordings)").fetchall()
+        str(row[1]) for row in conn.execute("PRAGMA table_info(recordings)").fetchall()
     }
 
 
@@ -141,8 +147,11 @@ def _legacy_buggy_plaud_captured_at(local_datetime: datetime) -> str:
 
 
 def _utc_iso(value: datetime) -> str:
-    return value.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace(
-        "+00:00", "Z"
+    return (
+        value.astimezone(timezone.utc)
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z")
     )
 
 
@@ -178,9 +187,9 @@ def _backfill_legacy_upload_capture_times(
                 local_datetime = parse_plaud_captured_local_datetime(source_filename)
                 if local_datetime is None:
                     continue
-                if str(row["captured_at"] or "").strip() != _legacy_buggy_plaud_captured_at(
-                    local_datetime
-                ):
+                if str(
+                    row["captured_at"] or ""
+                ).strip() != _legacy_buggy_plaud_captured_at(local_datetime):
                     continue
                 conn.execute(
                     """
@@ -249,7 +258,9 @@ def _validate_job_type(job_type: str) -> None:
         raise ValueError(f"Unsupported job type: {job_type}")
 
 
-def _normalise_pipeline_stage_metadata(metadata: dict[str, Any] | None) -> dict[str, Any]:
+def _normalise_pipeline_stage_metadata(
+    metadata: dict[str, Any] | None,
+) -> dict[str, Any]:
     if not isinstance(metadata, dict):
         return {}
     try:
@@ -427,7 +438,9 @@ def _normalise_speaker_review_state(
 ) -> str | None:
     if review_state is None:
         if local_display_name and voice_profile_id is not None:
-            raise ValueError("local_display_name cannot be combined with voice_profile_id")
+            raise ValueError(
+                "local_display_name cannot be combined with voice_profile_id"
+            )
         if local_display_name:
             return SPEAKER_REVIEW_STATE_LOCAL_LABEL
         if voice_profile_id is not None:
@@ -442,7 +455,10 @@ def _normalise_speaker_review_state(
         raise ValueError(f"Unsupported speaker review_state: {normalized} ({options})")
     if local_display_name and normalized != SPEAKER_REVIEW_STATE_LOCAL_LABEL:
         raise ValueError("local_display_name requires review_state=local_label")
-    if normalized == SPEAKER_REVIEW_STATE_CONFIRMED_CANONICAL and voice_profile_id is None:
+    if (
+        normalized == SPEAKER_REVIEW_STATE_CONFIRMED_CANONICAL
+        and voice_profile_id is None
+    ):
         raise ValueError("confirmed_canonical requires voice_profile_id")
     if normalized == SPEAKER_REVIEW_STATE_LOCAL_LABEL:
         if voice_profile_id is not None:
@@ -478,7 +494,9 @@ def _rewrite_voice_profile_ids_for_merge(
             source_values = json.loads(source_values)
         except ValueError:
             source_values = []
-    if not isinstance(source_values, Sequence) or isinstance(source_values, (str, bytes)):
+    if not isinstance(source_values, Sequence) or isinstance(
+        source_values, (str, bytes)
+    ):
         return []
     rewritten: list[int] = []
     for value in source_values:
@@ -486,7 +504,9 @@ def _rewrite_voice_profile_ids_for_merge(
             profile_id = int(value)
         except (TypeError, ValueError):
             continue
-        rewritten.append(target_profile_id if profile_id == source_profile_id else profile_id)
+        rewritten.append(
+            target_profile_id if profile_id == source_profile_id else profile_id
+        )
     return sorted(set(rewritten))
 
 
@@ -502,9 +522,13 @@ def _rewrite_candidate_matches_for_merge(
             source_values = json.loads(source_values)
         except ValueError:
             source_values = []
-    if not source_values or not isinstance(source_values, Sequence) or isinstance(
-        source_values,
-        (str, bytes),
+    if (
+        not source_values
+        or not isinstance(source_values, Sequence)
+        or isinstance(
+            source_values,
+            (str, bytes),
+        )
     ):
         return []
     rewritten: list[dict[str, Any]] = []
@@ -592,10 +616,7 @@ def _executescript_allowing_duplicate_columns(
             try:
                 conn.execute(sql)
             except sqlite3.OperationalError as statement_error:
-                if (
-                    "duplicate column name"
-                    in str(statement_error).strip().lower()
-                ):
+                if "duplicate column name" in str(statement_error).strip().lower():
                     continue
                 raise
 
@@ -1118,7 +1139,9 @@ def _mark_recording_pipeline_stage_terminal(
                 """,
                 (recording_id, normalized_stage),
             ).fetchone()
-            existing_attempt = max(int(existing["attempt"]) if existing is not None else 0, 0)
+            existing_attempt = max(
+                int(existing["attempt"]) if existing is not None else 0, 0
+            )
             started_at_value = (
                 str(existing["started_at"] or "").strip()
                 if existing is not None
@@ -1274,7 +1297,9 @@ def clear_recording_pipeline_stages(
             return int(deleted.rowcount)
 
     deleted = with_db_retry(_clear)
-    if from_stage is None or pipeline_stage_order(validate_pipeline_stage_name(from_stage)) <= pipeline_stage_order("llm_extract"):
+    if from_stage is None or pipeline_stage_order(
+        validate_pipeline_stage_name(from_stage)
+    ) <= pipeline_stage_order("llm_extract"):
         clear_recording_llm_chunk_states(recording_id, settings=settings)
     return deleted
 
@@ -2006,7 +2031,9 @@ def set_recording_status(
                 """,
                 (
                     status,
-                    quarantine_reason if status == RECORDING_STATUS_QUARANTINE else None,
+                    quarantine_reason
+                    if status == RECORDING_STATUS_QUARANTINE
+                    else None,
                     *review_reason_code_params,
                     *review_reason_text_params,
                     now,
@@ -2047,14 +2074,8 @@ def set_recording_status_if_current_in(
             "review_reason_text" if review_reason_text is _UNSET else "?"
         )
         review_reason_params = (
-            ()
-            if review_reason_code is _UNSET
-            else (review_reason_code,)
-        ) + (
-            ()
-            if review_reason_text is _UNSET
-            else (review_reason_text,)
-        )
+            () if review_reason_code is _UNSET else (review_reason_code,)
+        ) + (() if review_reason_text is _UNSET else (review_reason_text,))
     else:
         review_reason_code_sql = "NULL"
         review_reason_text_sql = "NULL"
@@ -2114,14 +2135,8 @@ def set_recording_status_if_current_in_and_no_started_job(
             "review_reason_text" if review_reason_text is _UNSET else "?"
         )
         review_reason_params = (
-            ()
-            if review_reason_code is _UNSET
-            else (review_reason_code,)
-        ) + (
-            ()
-            if review_reason_text is _UNSET
-            else (review_reason_text,)
-        )
+            () if review_reason_code is _UNSET else (review_reason_code,)
+        ) + (() if review_reason_text is _UNSET else (review_reason_text,))
     else:
         review_reason_code_sql = "NULL"
         review_reason_text_sql = "NULL"
@@ -2188,14 +2203,8 @@ def set_recording_status_if_current_in_and_job_started(
             "review_reason_text" if review_reason_text is _UNSET else "?"
         )
         review_reason_params = (
-            ()
-            if review_reason_code is _UNSET
-            else (review_reason_code,)
-        ) + (
-            ()
-            if review_reason_text is _UNSET
-            else (review_reason_text,)
-        )
+            () if review_reason_code is _UNSET else (review_reason_code,)
+        ) + (() if review_reason_text is _UNSET else (review_reason_text,))
     else:
         review_reason_code_sql = "NULL"
         review_reason_text_sql = "NULL"
@@ -3018,7 +3027,9 @@ def delete_project(
             """,
             (now, target_project_id),
         )
-        deleted = conn.execute("DELETE FROM projects WHERE id = ?", (target_project_id,))
+        deleted = conn.execute(
+            "DELETE FROM projects WHERE id = ?", (target_project_id,)
+        )
         conn.commit()
     return deleted.rowcount > 0
 
@@ -3035,9 +3046,15 @@ def create_routing_training_example(
     init_db(settings)
     now = _utc_now()
     normalized_calendar = sorted(
-        {_normalise_keyword(token) for token in calendar_subject_tokens if _normalise_keyword(token)}
+        {
+            _normalise_keyword(token)
+            for token in calendar_subject_tokens
+            if _normalise_keyword(token)
+        }
     )
-    normalized_tags = sorted({_normalise_keyword(token) for token in tags if _normalise_keyword(token)})
+    normalized_tags = sorted(
+        {_normalise_keyword(token) for token in tags if _normalise_keyword(token)}
+    )
     normalized_voice_ids = sorted({int(value) for value in voice_profile_ids})
     with connect(settings) as conn:
         cursor = conn.execute(
@@ -3298,9 +3315,7 @@ def update_glossary_entry(
             current.get("source") if source is _UNSET else str(source)
         )
         resolved_enabled = (
-            bool(current.get("enabled"))
-            if enabled is _UNSET
-            else bool(enabled)
+            bool(current.get("enabled")) if enabled is _UNSET else bool(enabled)
         )
         resolved_notes = (
             current.get("notes")
@@ -3430,9 +3445,7 @@ def delete_voice_profile(
 ) -> bool:
     init_db(settings)
     with connect(settings) as conn:
-        deleted = conn.execute(
-            "DELETE FROM voice_profiles WHERE id = ?", (profile_id,)
-        )
+        deleted = conn.execute("DELETE FROM voice_profiles WHERE id = ?", (profile_id,))
         conn.commit()
     return deleted.rowcount > 0
 
@@ -3587,7 +3600,7 @@ def create_voice_sample(
     snippet_path: str,
     recording_id: str | None = None,
     diar_speaker_label: str | None = None,
-    sample_source: str = "manual",
+    sample_source: str = VOICE_SAMPLE_SOURCE_MANUAL,
     sample_start_sec: float | None = None,
     sample_end_sec: float | None = None,
     embedding: Sequence[float] | None = None,
@@ -3601,11 +3614,15 @@ def create_voice_sample(
     if not snippet:
         raise ValueError("snippet_path is required")
     clean_recording = str(recording_id).strip() if recording_id is not None else None
-    clean_label = str(diar_speaker_label).strip() if diar_speaker_label is not None else None
+    clean_label = (
+        str(diar_speaker_label).strip() if diar_speaker_label is not None else None
+    )
     clean_sample_source = str(sample_source).strip() or "manual"
     normalized_candidates = _normalise_candidate_matches(candidate_matches)
     normalized_embedding = _normalise_embedding(embedding)
-    resolved_needs_review = bool(needs_review) if needs_review is not None else voice_profile_id is None
+    resolved_needs_review = (
+        bool(needs_review) if needs_review is not None else voice_profile_id is None
+    )
     resolved_confidence = (
         round(_clamp_score(confidence, default=0.0), 4)
         if confidence is not None
@@ -4012,13 +4029,15 @@ def update_calendar_source_sync_state(
         assignments.append("last_error = ?")
         params.append(last_error)
     if not assignments:
-        raise ValueError("at least one field must be provided for calendar source update")
+        raise ValueError(
+            "at least one field must be provided for calendar source update"
+        )
     params.append(int(source_id))
     with connect(settings) as conn:
         updated = conn.execute(
             f"""
             UPDATE calendar_sources
-            SET {', '.join(assignments)}
+            SET {", ".join(assignments)}
             WHERE id = ?
             """,
             tuple(params),
@@ -4074,7 +4093,9 @@ def replace_calendar_events_for_window(
                 location = str(event.get("location") or "").strip() or None
                 organizer = str(event.get("organizer") or "").strip() or None
                 organizer_name = str(event.get("organizer_name") or "").strip() or None
-                organizer_email = str(event.get("organizer_email") or "").strip() or None
+                organizer_email = (
+                    str(event.get("organizer_email") or "").strip() or None
+                )
                 attendees = event.get("attendees")
                 attendees_json = json.dumps(
                     attendees if isinstance(attendees, list) else [],
@@ -4494,6 +4515,10 @@ __all__ = [
     "SPEAKER_REVIEW_STATE_CONFIRMED_CANONICAL",
     "SPEAKER_REVIEW_STATE_KEPT_UNKNOWN",
     "SPEAKER_REVIEW_STATE_LOCAL_LABEL",
+    "VOICE_SAMPLE_SOURCE_MANUAL",
+    "VOICE_SAMPLE_SOURCE_AUTO",
+    "VOICE_SAMPLE_SOURCE_SPEAKER_BANK",
+    "VOICE_SAMPLE_SOURCE_TRUSTED_SAMPLE",
     "list_voice_profiles",
     "get_voice_profile",
     "create_voice_profile",
