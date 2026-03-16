@@ -73,6 +73,39 @@ function removePlaceholderRow() {
   }
 }
 
+function restorePlaceholderRow() {
+  var rows = document.getElementById("{{ upload_shell.upload_rows_id }}");
+  if (!rows || rows.querySelector(".upload-queue-item")) {
+    return;
+  }
+  if (document.getElementById("{{ upload_shell.empty_row_id }}")) {
+    return;
+  }
+  var empty = document.createElement("div");
+  empty.id = "{{ upload_shell.empty_row_id }}";
+  empty.className = "upload-queue-empty";
+  empty.textContent = "No active uploads. New files appear here until they enter the main inbox.";
+  rows.appendChild(empty);
+}
+
+function removeUploadItem(item) {
+  if (!item || !item.itemNode || item.removed) {
+    return;
+  }
+  item.removed = true;
+  item.itemNode.remove();
+  restorePlaceholderRow();
+}
+
+function scheduleUploadItemRemoval(item, delayMs) {
+  if (!item || item.removed || item.removalTimer !== null) {
+    return;
+  }
+  item.removalTimer = window.setTimeout(function() {
+    removeUploadItem(item);
+  }, delayMs);
+}
+
 function makeProgressGroup(labelText) {
   var wrap = document.createElement("div");
   wrap.className = "upload-queue-progress-group";
@@ -150,11 +183,14 @@ function addFileRow(file) {
 
   return {
     file: file,
+    itemNode: itemNode,
     statusCell: statusCell,
     linkCell: linkCell,
     uploadProgress: uploadProgress.progress,
     processProgress: processProgress.progress,
     lastRefreshSignature: "",
+    removalTimer: null,
+    removed: false,
   };
 }
 
@@ -272,6 +308,7 @@ function startPolling(item, recordingId) {
 
     if (TERMINAL_STATUSES.has(status)) {
       stop();
+      scheduleUploadItemRemoval(item, 1500);
     }
   }
 
