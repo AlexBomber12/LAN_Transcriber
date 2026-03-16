@@ -365,7 +365,7 @@ def test_dashboard_empty(client):
     assert 'id="control-center-system-bar"' in r.text
     assert 'id="file-input"' in r.text
     assert 'id="control-center-recordings-panel"' in r.text
-    assert "Select a recording" in r.text
+    assert "No recording selected" in r.text
     assert 'id="control-center-top-strip"' not in r.text
     assert 'href="/upload"' not in r.text
     assert 'href="/recordings"' not in r.text
@@ -420,7 +420,7 @@ def test_control_center_query_state_and_direct_routes(seeded_client):
     assert 'name="tab" value="speakers"' in r.text
     assert 'id="control-center-recordings-panel"' in r.text
     assert "/recordings/rec-ui-1?tab=speakers" in r.text
-    assert "Open full-page recording" in r.text
+    assert "Open full-page inspector" in r.text
     assert "refresh-control-center-header" in r.text
     assert "refresh-control-center-system-bar" in r.text
     assert "syncControlCenterShellRefreshUrlsFromPanel" in r.text
@@ -542,26 +542,25 @@ def test_control_center_system_bar_renders_degraded_cpu_fallback(seeded_client, 
 
     inspector = seeded_client.get("/ui/control-center/inspector-pane?selected=rec-ui-1&tab=speakers")
     assert inspector.status_code == 200
-    assert "Selected Recording" in inspector.text
+    assert "Compact inspector" in inspector.text
     assert "rec-ui-1" in inspector.text
     assert "Speakers" in inspector.text
     assert "<nav" not in inspector.text
 
     empty_inspector = seeded_client.get("/ui/control-center/inspector-pane")
     assert empty_inspector.status_code == 200
-    assert "Select a recording" in empty_inspector.text
+    assert "No recording selected" in empty_inspector.text
+    assert "Queue context stays visible" in empty_inspector.text
 
 
 def test_control_center_selected_recording_renders_embedded_inspector_actions(seeded_client):
     r = seeded_client.get("/?selected=rec-ui-1&status=Ready&q=meeting&tab=overview")
     assert r.status_code == 200
     assert 'id="control-center-inspector-pane"' in r.text
-    assert "Selected Recording" in r.text
+    assert "Compact inspector" in r.text
     assert "Requeue" in r.text
-    assert "Quarantine" in r.text
-    assert "Delete" in r.text
     assert "Download ZIP" in r.text
-    assert "Open full-page recording" in r.text
+    assert "Open full-page inspector" in r.text
     assert "/ui/recordings/rec-ui-1/inspector?status=Ready&amp;q=meeting" in r.text
 
 
@@ -569,23 +568,86 @@ def test_control_center_embedded_inspector_tab_links_preserve_shell_state(seeded
     inspector = seeded_client.get("/ui/recordings/rec-ui-1/inspector?status=Ready&q=meeting&tab=speakers")
     assert inspector.status_code == 200
     assert 'hx-get="/ui/recordings/rec-ui-1/inspector?status=Ready&amp;q=meeting"' in inspector.text
-    assert 'hx-get="/ui/recordings/rec-ui-1/inspector?status=Ready&amp;q=meeting&amp;tab=language"' in inspector.text
-    assert 'hx-push-url="/?selected=rec-ui-1&amp;status=Ready&amp;q=meeting&amp;tab=language"' in inspector.text
+    assert 'hx-get="/ui/recordings/rec-ui-1/inspector?status=Ready&amp;q=meeting&amp;tab=summary"' in inspector.text
+    assert 'hx-push-url="/?selected=rec-ui-1&amp;status=Ready&amp;q=meeting&amp;tab=summary"' in inspector.text
     assert 'href="/?selected=rec-ui-1&amp;status=Ready&amp;q=meeting&amp;tab=speakers"' in inspector.text
+    assert 'data-testid="recording-inspector-tab-export"' in inspector.text
+    assert 'data-testid="recording-inspector-tab-language"' not in inspector.text
 
 
-def test_control_center_embedded_admin_links_preserve_shell_state(seeded_client):
+def test_control_center_embedded_inspector_overview_stays_compact(seeded_client):
     overview = seeded_client.get("/?selected=rec-ui-1&status=Ready&q=meeting&tab=overview")
     assert overview.status_code == 200
-    assert (
-        'href="/glossary?return_to=control-center&amp;selected=rec-ui-1&amp;status=Ready&amp;q=meeting"'
-        in overview.text
-    )
-    assert "Save as correction" in overview.text
+    assert "What stage is it in?" in overview.text
+    assert "What is blocking it?" in overview.text
+    assert "What should I do next?" in overview.text
+    assert "Key metadata" in overview.text
+    assert "Pipeline Stages" not in overview.text
+    assert "Diagnostics" not in overview.text
+    assert "Save as correction" not in overview.text
+    assert "Current / last stage" not in overview.text
 
     speakers = seeded_client.get("/?selected=rec-ui-1&status=Ready&q=meeting&tab=speakers")
     assert speakers.status_code == 200
     assert "Open canonical speakers page" not in speakers.text
+    assert "Safe speaker review" in speakers.text
+
+
+def test_control_center_embedded_summary_and_export_tabs_render_compact_content(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    monkeypatch.setattr(
+        ui_routes,
+        "collect_control_center_runtime_status",
+        lambda _settings: _stub_runtime_status(),
+    )
+    init_db(cfg)
+    create_recording(
+        "rec-ui-summary-1",
+        source="upload",
+        source_filename="summary.wav",
+        status=RECORDING_STATUS_READY,
+        settings=cfg,
+    )
+    derived = cfg.recordings_root / "rec-ui-summary-1" / "derived"
+    derived.mkdir(parents=True, exist_ok=True)
+    (derived / "summary.json").write_text(
+        json.dumps(
+            {
+                "topic": "Roadmap review",
+                "summary_bullets": ["Reviewed blockers", "Aligned on next steps"],
+                "decisions": ["Ship compact inspector"],
+                "action_items": [{"task": "Polish export copy", "owner": "Alex"}],
+                "questions": {
+                    "total_count": 1,
+                    "types": {"clarification": 1},
+                    "extracted": ["Should export stay compact?"],
+                },
+                "emotional_summary": "Focused and calm.",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (derived / "transcript.json").write_text(
+        json.dumps({"dominant_language": "en"}),
+        encoding="utf-8",
+    )
+
+    client = TestClient(api.app, follow_redirects=True)
+    summary = client.get("/ui/recordings/rec-ui-summary-1/inspector?tab=summary")
+    assert summary.status_code == 200
+    assert "Roadmap review" in summary.text
+    assert "Ship compact inspector" in summary.text
+    assert "Polish export copy" in summary.text
+    assert "Focused and calm." in summary.text
+    assert "Pipeline Stages" not in summary.text
+
+    export = client.get("/ui/recordings/rec-ui-summary-1/inspector?tab=export")
+    assert export.status_code == 200
+    assert "OneNote-ready markdown" in export.text
+    assert "Download ZIP" in export.text
+    assert "Full-page only" in export.text
 
 
 def test_control_center_workflow_upload_select_speaker_decision_and_correction(
@@ -609,14 +671,14 @@ def test_control_center_workflow_upload_select_speaker_decision_and_correction(
     home = c.get("/")
     assert home.status_code == 200
     assert f'data-recording-id="{recording_id}"' in home.text
-    assert "Select a recording" in home.text
+    assert "No recording selected" in home.text
 
     _seed_speaker_artifacts(cfg, recording_id)
     set_recording_status(recording_id, RECORDING_STATUS_READY, settings=cfg)
 
     speakers = c.get(f"/?selected={recording_id}&tab=speakers")
     assert speakers.status_code == 200
-    assert "Selected Recording" in speakers.text
+    assert "Compact inspector" in speakers.text
     assert "Safe speaker review" in speakers.text
     assert "Local label only" in speakers.text
     assert "Add trusted sample" in speakers.text
@@ -638,7 +700,8 @@ def test_control_center_workflow_upload_select_speaker_decision_and_correction(
 
     overview = c.get(f"/?selected={recording_id}")
     assert overview.status_code == 200
-    assert "Save as correction" in overview.text
+    assert "What should I do next?" in overview.text
+    assert "Save as correction" not in overview.text
 
     correction = c.post(
         "/glossary",
@@ -658,7 +721,7 @@ def test_control_center_workflow_upload_select_speaker_decision_and_correction(
     )
     assert correction.status_code == 200
     assert "Saved correction for Sander." in correction.text
-    assert "Save as correction" in correction.text
+    assert "Compact inspector" in correction.text
 
     entries = list_glossary_entries(settings=cfg)
     assert len(entries) == 1
@@ -964,7 +1027,7 @@ def test_recording_shell_and_empty_inspector_fragment_endpoints(seeded_client):
 
     empty = seeded_client.get("/ui/control-center/inspector-empty")
     assert empty.status_code == 200
-    assert "Select a recording" in empty.text
+    assert "No recording selected" in empty.text
     assert "<nav" not in empty.text
 
     missing = seeded_client.get("/ui/control-center/recordings/missing/shell")
@@ -1357,7 +1420,7 @@ def test_recording_progress_endpoint_redirects_to_control_center_when_embedded_t
     assert r.status_code == 200
     assert (
         r.headers["HX-Redirect"]
-        == "/?selected=rec-ui-terminal-embedded-1&status=Ready&q=meeting&tab=metrics"
+        == "/?selected=rec-ui-terminal-embedded-1&status=Ready&q=meeting"
     )
 
 

@@ -2,9 +2,9 @@
   <div class="inspector-heading">
     <div class="inspector-title-block">
       {% if recording_inspector.embedded %}
-      <p class="eyebrow">Selected Recording</p>
+      <p class="eyebrow">Compact inspector</p>
       <h2>{{ rec.source_filename }}</h2>
-      <p class="inspector-subtitle"><code>{{ rec.id }}</code></p>
+      <p class="inspector-subtitle"><code>{{ rec.id }}</code> · focused daily review for blockers, speakers, summary, and export</p>
       {% else %}
       <p class="eyebrow">Recording Inspector</p>
       <h1>{{ rec.source_filename }}</h1>
@@ -13,12 +13,23 @@
     </div>
     <div class="inspector-meta-grid">
       <span class="badge s-{{ rec.status }}">{{ rec.status }}</span>
+      <span class="inspector-meta-chip">
+        {% if recording_inspector.embedded %}
+        Stage {{ diagnostics.current_stage_label or 'Waiting' }}
+        {% else %}
+        Captured {{ rec.captured_at_display }}
+        {% endif %}
+      </span>
+      {% if recording_inspector.embedded %}
       <span class="inspector-meta-chip">Captured {{ rec.captured_at_display }}</span>
+      <span class="inspector-meta-chip">Source {{ rec.source_display or rec.source }}</span>
+      {% else %}
       <span class="inspector-meta-chip">Duration {{ rec.duration_display }}</span>
       {% if rec.project_name or rec.project_id %}
       <span class="inspector-meta-chip">Project {{ rec.project_name or ('#' ~ rec.project_id) }}</span>
       {% endif %}
       <span class="inspector-meta-chip">Tab {{ current_tab|capitalize }}</span>
+      {% endif %}
     </div>
   </div>
   {% if rec.status_reason_text_display %}

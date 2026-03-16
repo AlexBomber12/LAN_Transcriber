@@ -1,8 +1,8 @@
-<div class="tabs">
+<div class="tabs{% if recording_inspector.embedded %} tabs-embedded{% endif %}">
   {% for inspector_tab in recording_inspector.tabs %}
   <a
     href="{{ inspector_tab.href }}"
-    class="tab {% if inspector_tab.active %}active{% endif %}"
+    class="tab{% if recording_inspector.embedded %} tab-embedded{% endif %} {% if inspector_tab.active %}active{% endif %}"
     data-testid="recording-inspector-tab-{{ inspector_tab.value }}"
     {% if inspector_tab.hx_get %}
     hx-get="{{ inspector_tab.hx_get }}"
