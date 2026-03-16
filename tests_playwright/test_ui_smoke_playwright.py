@@ -328,6 +328,12 @@ def test_control_center_embedded_inspector_and_export_zip_smoke(tmp_path: Path) 
                     )
                 download = download_info.value
                 download.save_as(str(zip_download_path))
+                page.locator("#upload-rows").get_by_text(
+                    "No active uploads. New files appear here until they enter the main inbox."
+                ).wait_for(
+                    state="visible",
+                    timeout=_remaining_timeout_ms(deadline),
+                )
 
                 page.goto(
                     f"{base_url}/recordings/{recording_id}",

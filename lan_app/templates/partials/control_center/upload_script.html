@@ -7,6 +7,8 @@ var TERMINAL_STATUSES = new Set([
   "Quarantine",
   "Failed",
 ]);
+var removeTerminalItems = {{ upload_shell.remove_terminal_items | tojson }};
+var uploadEmptyStateText = {{ upload_shell.empty_state_text | tojson }};
 var uploadQueue = [];
 var queueRunning = false;
 
@@ -73,47 +75,124 @@ function removePlaceholderRow() {
   }
 }
 
+function restorePlaceholderRow() {
+  var rows = document.getElementById("{{ upload_shell.upload_rows_id }}");
+  if (!rows || rows.querySelector(".upload-queue-item")) {
+    return;
+  }
+  if (document.getElementById("{{ upload_shell.empty_row_id }}")) {
+    return;
+  }
+  var empty = document.createElement("div");
+  empty.id = "{{ upload_shell.empty_row_id }}";
+  empty.className = "upload-queue-empty";
+  empty.textContent = uploadEmptyStateText;
+  rows.appendChild(empty);
+}
+
+function removeUploadItem(item) {
+  if (!item || !item.itemNode || item.removed) {
+    return;
+  }
+  item.removed = true;
+  item.itemNode.remove();
+  restorePlaceholderRow();
+}
+
+function scheduleUploadItemRemoval(item, delayMs) {
+  if (!item || item.removed || item.removalTimer !== null) {
+    return;
+  }
+  item.removalTimer = window.setTimeout(function() {
+    removeUploadItem(item);
+  }, delayMs);
+}
+
+function makeProgressGroup(labelText) {
+  var wrap = document.createElement("div");
+  wrap.className = "upload-queue-progress-group";
+
+  var label = document.createElement("span");
+  label.className = "upload-queue-progress-label";
+  label.textContent = labelText;
+
+  var progress = makeProgressCell();
+  wrap.appendChild(label);
+  wrap.appendChild(progress.node);
+
+  return {node: wrap, progress: progress};
+}
+
 function addFileRow(file) {
   removePlaceholderRow();
   var rows = document.getElementById("{{ upload_shell.upload_rows_id }}");
-  var tr = document.createElement("tr");
+  var itemNode = document.createElement("article");
+  itemNode.className = "upload-queue-item";
 
-  var nameCell = document.createElement("td");
-  nameCell.textContent = file.name || "(unnamed)";
-  nameCell.title = file.name || "";
+  var head = document.createElement("div");
+  head.className = "upload-queue-item-head";
 
-  var sizeCell = document.createElement("td");
-  sizeCell.textContent = formatSize(file.size);
+  var titleWrap = document.createElement("div");
+  titleWrap.className = "recording-main";
 
-  var uploadCell = document.createElement("td");
-  var uploadProgress = makeProgressCell();
-  uploadCell.appendChild(uploadProgress.node);
+  var title = document.createElement("strong");
+  title.className = "upload-queue-item-title";
+  title.textContent = file.name || "(unnamed)";
+  title.title = file.name || "";
 
-  var processCell = document.createElement("td");
-  var processProgress = makeProgressCell();
-  processCell.appendChild(processProgress.node);
+  var meta = document.createElement("div");
+  meta.className = "upload-queue-item-meta";
 
-  var statusCell = document.createElement("td");
+  var sizeMeta = document.createElement("span");
+  sizeMeta.textContent = formatSize(file.size);
+  meta.appendChild(sizeMeta);
+
+  var queuedMeta = document.createElement("span");
+  queuedMeta.textContent = "Queued";
+  meta.appendChild(queuedMeta);
+
+  titleWrap.appendChild(title);
+  titleWrap.appendChild(meta);
+
+  var statusCell = document.createElement("span");
+  statusCell.className = "upload-queue-status";
   statusCell.textContent = "Queued for upload";
 
-  var linkCell = document.createElement("td");
-  linkCell.textContent = "—";
+  head.appendChild(titleWrap);
+  head.appendChild(statusCell);
 
-  tr.appendChild(nameCell);
-  tr.appendChild(sizeCell);
-  tr.appendChild(uploadCell);
-  tr.appendChild(processCell);
-  tr.appendChild(statusCell);
-  tr.appendChild(linkCell);
-  rows.appendChild(tr);
+  var progressGrid = document.createElement("div");
+  progressGrid.className = "upload-queue-progress-grid";
+
+  var uploadProgress = makeProgressGroup("Upload");
+  progressGrid.appendChild(uploadProgress.node);
+
+  var processProgress = makeProgressGroup("Processing");
+  progressGrid.appendChild(processProgress.node);
+
+  var footer = document.createElement("div");
+  footer.className = "upload-queue-item-footer";
+
+  var linkCell = document.createElement("div");
+  linkCell.className = "upload-queue-link";
+  linkCell.textContent = "Waiting for recording";
+  footer.appendChild(linkCell);
+
+  itemNode.appendChild(head);
+  itemNode.appendChild(progressGrid);
+  itemNode.appendChild(footer);
+  rows.prepend(itemNode);
 
   return {
     file: file,
+    itemNode: itemNode,
     statusCell: statusCell,
     linkCell: linkCell,
-    uploadProgress: uploadProgress,
-    processProgress: processProgress,
+    uploadProgress: uploadProgress.progress,
+    processProgress: processProgress.progress,
     lastRefreshSignature: "",
+    removalTimer: null,
+    removed: false,
   };
 }
 
@@ -231,6 +310,9 @@ function startPolling(item, recordingId) {
 
     if (TERMINAL_STATUSES.has(status)) {
       stop();
+      if (removeTerminalItems) {
+        scheduleUploadItemRemoval(item, 1500);
+      }
     }
   }
 
@@ -337,25 +419,25 @@ if (fileInput && pickFilesButton && dropzone && fileInput.dataset.uploadBound !=
   dropzone.addEventListener("dragenter", function(event) {
     stopDragDefaults(event);
     dropzone.style.borderColor = "#4a6080";
-    dropzone.style.background = "#eef2ff";
+    dropzone.style.background = "#eef4ff";
   });
 
   dropzone.addEventListener("dragover", function(event) {
     stopDragDefaults(event);
     dropzone.style.borderColor = "#4a6080";
-    dropzone.style.background = "#eef2ff";
+    dropzone.style.background = "#eef4ff";
   });
 
   dropzone.addEventListener("dragleave", function(event) {
     stopDragDefaults(event);
-    dropzone.style.borderColor = "#99b";
-    dropzone.style.background = "#fff";
+    dropzone.style.borderColor = "#b6c8ea";
+    dropzone.style.background = "";
   });
 
   dropzone.addEventListener("drop", function(event) {
     stopDragDefaults(event);
-    dropzone.style.borderColor = "#99b";
-    dropzone.style.background = "#fff";
+    dropzone.style.borderColor = "#b6c8ea";
+    dropzone.style.background = "";
     if (!event.dataTransfer) {
       return;
     }

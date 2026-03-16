@@ -575,7 +575,7 @@ Queue (in order)
 - Depends on: PR-UI-STITCH-CONTROL-CENTER-02 and PR-GPU-SCHEDULER-01 and PR-DIARIZATION-GPU-01 and PR-FIX-SENTIMENT-GPU-01
 
 115) PR-UI-STITCH-WORKLIST-01: Refine the Control Center left worklist, replace Confidence with Progress, and remove bulky filter and status clutter
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-UI-STITCH-WORKLIST-01.md
 - Depends on: PR-UI-STITCH-CONTROL-CENTER-02 and PR-OPS-SYSTEM-BAR-01
 

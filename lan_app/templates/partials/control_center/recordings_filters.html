@@ -39,6 +39,8 @@
     </select>
   </div>
   <input type="hidden" name="offset" value="{{ recordings_filters.offset_reset }}">
-  <button class="btn" type="submit">Apply filters</button>
-  <a href="{{ recordings_filters.reset_href }}" class="btn">Reset</a>
+  <div class="recordings-filter-actions">
+    <button class="btn" type="submit">Apply</button>
+    <a href="{{ recordings_filters.reset_href }}" class="btn">Clear</a>
+  </div>
 </form>
