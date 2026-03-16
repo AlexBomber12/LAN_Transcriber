@@ -976,15 +976,16 @@ textarea:focus{
   pointer-events:none;
 }
 .control-center-system-group{
-  display:flex;
+  display:grid;
   gap:10px;
-  flex-wrap:wrap;
+  grid-template-columns:repeat(auto-fit,minmax(170px,1fr));
 }
-.control-center-system-group-secondary{justify-content:flex-end}
+.control-center-system-group-secondary{grid-template-columns:repeat(auto-fit,minmax(170px,1fr))}
 .control-center-system-item{
   display:grid;
   gap:4px;
-  min-width:170px;
+  min-width:0;
+  height:100%;
   padding:10px 12px;
   border-radius:18px;
   border:1px solid rgba(148,163,184,.18);
@@ -1038,6 +1039,8 @@ textarea:focus{
 .control-center-system-item--offline .control-center-system-detail{color:#fecaca}
 .control-center-system-note{
   margin:0;
+  padding-top:2px;
+  border-top:1px solid rgba(148,163,184,.12);
   font-size:11px;
   color:#93aac8;
 }
@@ -1679,12 +1682,123 @@ textarea:focus{
   color:var(--muted);
   font-size:12px;
 }
+.helper-message{
+  margin:0 0 12px 0;
+  padding:12px 14px;
+  border:1px solid #dbe5f6;
+  border-radius:18px;
+  background:#f7faff;
+  color:var(--muted);
+}
+.placeholder-inline{padding:0}
+.stack-gap-xs{margin-top:8px}
+.stack-gap-sm{margin-top:10px}
+.inspector-note-status{
+  color:var(--inspector-note-accent, var(--muted));
+  font-weight:600;
+}
 .page-notice{
+  margin-bottom:10px;
   border:1px solid #dbe5f6;
   background:#f7faff;
   color:var(--text);
   border-radius:16px;
   padding:12px 14px;
+}
+.standalone-shell{
+  display:grid;
+  gap:18px;
+  max-width:1180px;
+}
+.standalone-header{
+  display:flex;
+  justify-content:space-between;
+  gap:16px;
+  align-items:flex-start;
+  flex-wrap:wrap;
+}
+.standalone-header-copy{
+  display:grid;
+  gap:8px;
+}
+.standalone-header-note{
+  color:var(--muted);
+  max-width:72ch;
+}
+.standalone-header-actions{
+  display:flex;
+  gap:8px;
+  flex-wrap:wrap;
+  align-items:center;
+}
+.context-banner{
+  display:grid;
+  gap:10px;
+  padding:14px 16px;
+  border:1px solid #dbe5f6;
+  border-radius:20px;
+  background:linear-gradient(180deg, #ffffff 0%, #f7faff 100%);
+  box-shadow:var(--shadow-soft);
+}
+.context-banner-copy{
+  color:var(--text);
+  max-width:72ch;
+}
+.context-banner-actions{
+  display:flex;
+  gap:8px;
+  flex-wrap:wrap;
+}
+.btn-primary{
+  background:var(--primary);
+  border-color:var(--primary);
+  color:#fff;
+}
+.btn-primary:hover{
+  background:#1d4ed8;
+  border-color:#1d4ed8;
+  color:#fff;
+}
+.recording-progress-shell{
+  display:grid;
+  gap:10px;
+  padding:12px 14px;
+  border:1px solid #dbe5f6;
+  border-radius:18px;
+  background:linear-gradient(180deg, #ffffff 0%, #f7faff 100%);
+}
+.recording-progress-head{
+  display:flex;
+  gap:10px;
+  align-items:center;
+  justify-content:space-between;
+  flex-wrap:wrap;
+  font-size:12px;
+}
+.recording-progress-track{
+  width:100%;
+  min-height:14px;
+  border-radius:999px;
+  border:1px solid #c4d3ea;
+  background:#eaf0fb;
+  overflow:hidden;
+}
+.recording-progress-fill{
+  height:100%;
+  min-height:14px;
+  border-radius:999px;
+  background:linear-gradient(90deg, #2463eb 0%, #5b8dff 100%);
+}
+.recording-progress-meta{
+  display:flex;
+  flex-wrap:wrap;
+  gap:10px;
+  font-size:11px;
+  color:#334155;
+}
+.recording-progress-footnote{
+  font-size:11px;
+  color:var(--muted);
 }
 .detail-page-shell{
   display:grid;
@@ -1709,6 +1823,9 @@ textarea:focus{
   .app-nav{align-items:flex-start;flex-direction:column}
   .app-nav-links{width:100%}
   .control-center-shell{padding-bottom:0}
+  .standalone-header{align-items:flex-start;flex-direction:column}
+  .standalone-header-actions,
+  .context-banner-actions{width:100%}
   .control-center-focus-topline,
   .control-center-focus-actions{justify-content:flex-start}
   .control-center-upload-grid{grid-template-columns:1fr}
@@ -1742,7 +1859,7 @@ textarea:focus{
     <div class="app-nav-mark">LT</div>
     <div class="app-nav-copy">
       <div class="app-nav-title">LAN Transcriber</div>
-      <div class="app-nav-subtitle">Control Center workspace</div>
+      <div class="app-nav-subtitle">Daily operator workspace</div>
     </div>
   </div>
   <nav class="app-nav-links">

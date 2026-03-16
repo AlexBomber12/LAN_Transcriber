@@ -3383,7 +3383,7 @@ def _control_center_system_bar_context(
     return {
         "primary_items": [
             {
-                "label": "Queue view",
+                "label": "Inbox view",
                 "value": f"{recordings_panel['total']} visible",
                 "detail": queue_detail,
                 "tone": "neutral",

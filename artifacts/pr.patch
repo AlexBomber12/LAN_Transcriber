@@ -1,3079 +1,677 @@
 diff --git a/lan_app/templates/base.html b/lan_app/templates/base.html
-index c8e4a00..471473c 100644
+index 471473c..385a156 100644
 --- a/lan_app/templates/base.html
 +++ b/lan_app/templates/base.html
-@@ -1060,6 +1060,11 @@ textarea:focus{
+@@ -976,15 +976,16 @@ textarea:focus{
+   pointer-events:none;
+ }
+ .control-center-system-group{
+-  display:flex;
++  display:grid;
+   gap:10px;
+-  flex-wrap:wrap;
++  grid-template-columns:repeat(auto-fit,minmax(170px,1fr));
+ }
+-.control-center-system-group-secondary{justify-content:flex-end}
++.control-center-system-group-secondary{grid-template-columns:repeat(auto-fit,minmax(170px,1fr))}
+ .control-center-system-item{
    display:grid;
-   gap:16px;
+   gap:4px;
+-  min-width:170px;
++  min-width:0;
++  height:100%;
+   padding:10px 12px;
+   border-radius:18px;
+   border:1px solid rgba(148,163,184,.18);
+@@ -1038,6 +1039,8 @@ textarea:focus{
+ .control-center-system-item--offline .control-center-system-detail{color:#fecaca}
+ .control-center-system-note{
+   margin:0;
++  padding-top:2px;
++  border-top:1px solid rgba(148,163,184,.12);
+   font-size:11px;
+   color:#93aac8;
  }
-+.inspector-section-card{
-+  padding:22px;
-+  display:grid;
-+  gap:16px;
-+}
- .inspector-hero.embedded{
-   padding:18px;
-   gap:14px;
-@@ -1117,10 +1122,214 @@ textarea:focus{
-   border:1px solid #dbe5f6;
-   background:#f7faff;
+@@ -1679,13 +1682,124 @@ textarea:focus{
+   color:var(--muted);
+   font-size:12px;
  }
-+.tab-content-full{
-+  border-radius:24px;
-+  padding:22px;
-+}
- .inspector-tab-shell{
-   display:grid;
-   gap:14px;
- }
-+.inspector-section-head{
-+  display:flex;
-+  justify-content:space-between;
-+  gap:14px;
-+  align-items:flex-start;
-+  flex-wrap:wrap;
-+}
-+.inspector-overview-grid,
-+.summary-section-grid,
-+.diagnostics-grid{
-+  display:grid;
-+  gap:16px;
-+  grid-template-columns:minmax(0, 1.3fr) minmax(320px, .9fr);
-+  align-items:start;
-+}
-+.summary-section-grid{
-+  grid-template-columns:repeat(2, minmax(0, 1fr));
-+}
-+.diagnostics-grid{
-+  grid-template-columns:repeat(2, minmax(0, 1fr));
-+}
-+.inspector-overview-rail{
-+  display:grid;
-+  gap:16px;
-+}
-+.inspector-detail-list{
-+  display:grid;
-+  gap:10px;
-+}
-+.inspector-detail-row{
-+  display:grid;
-+  gap:4px;
++.helper-message{
++  margin:0 0 12px 0;
 +  padding:12px 14px;
-+  border:1px solid var(--line);
-+  border-radius:16px;
-+  background:var(--panel-soft);
-+}
-+.inspector-detail-label{
-+  color:var(--muted);
-+  font-size:11px;
-+  font-weight:700;
-+  letter-spacing:.06em;
-+  text-transform:uppercase;
-+}
-+.inspector-detail-value{
-+  color:var(--text);
-+  font-size:14px;
-+  line-height:1.45;
-+}
-+.inspector-stage-list{
-+  display:grid;
-+  gap:12px;
-+}
-+.inspector-stage-item{
-+  display:grid;
-+  grid-template-columns:auto minmax(0,1fr) auto;
-+  gap:14px;
-+  align-items:flex-start;
-+  padding:14px 16px;
-+  border:1px solid var(--line);
++  border:1px solid #dbe5f6;
 +  border-radius:18px;
-+  background:var(--panel-soft);
-+}
-+.inspector-stage-marker{
-+  width:14px;
-+  height:14px;
-+  border-radius:999px;
-+  border:2px solid var(--line-strong);
-+  margin-top:4px;
-+  background:#fff;
-+}
-+.inspector-stage-marker-finished{
-+  border-color:#86efac;
-+  background:#dcfce7;
-+}
-+.inspector-stage-marker-started{
-+  border-color:#93c5fd;
-+  background:#eff6ff;
-+}
-+.inspector-stage-marker-failed{
-+  border-color:#fca5a5;
-+  background:#fee2e2;
-+}
-+.inspector-stage-main{
-+  display:grid;
-+  gap:6px;
-+}
-+.inspector-stage-head{
-+  display:flex;
-+  justify-content:space-between;
-+  gap:10px;
-+  align-items:flex-start;
-+  flex-wrap:wrap;
-+}
-+.inspector-stage-meta{
-+  display:grid;
-+  gap:4px;
-+  justify-items:end;
++  background:#f7faff;
 +  color:var(--muted);
-+  font-size:12px;
-+  text-align:right;
 +}
-+.transcript-section-card{
-+  gap:18px;
-+}
-+.transcript-scroll-panel{
-+  min-height:320px;
-+  max-height:72vh;
-+  overflow:auto;
-+  padding:18px;
-+  border:1px solid var(--line);
-+  border-radius:22px;
-+  background:linear-gradient(180deg, #fbfdff 0%, #f7faff 100%);
-+}
-+.transcript-turn{
-+  display:grid;
-+  gap:10px;
-+  padding:14px 0;
-+  border-bottom:1px solid #e4edf8;
-+}
-+.transcript-turn:first-child{
-+  padding-top:0;
-+}
-+.transcript-turn:last-child{
-+  padding-bottom:0;
-+  border-bottom:none;
-+}
-+.transcript-turn-meta{
-+  display:flex;
-+  gap:10px;
-+  flex-wrap:wrap;
-+  color:var(--muted);
-+  font-size:12px;
++.placeholder-inline{padding:0}
++.stack-gap-xs{margin-top:8px}
++.stack-gap-sm{margin-top:10px}
++.inspector-note-status{
++  color:var(--inspector-note-accent, var(--muted));
 +  font-weight:600;
 +}
-+.transcript-turn-speaker{
-+  color:var(--text);
-+  font-size:13px;
-+}
-+.transcript-turn-text{
-+  margin:0;
-+  color:var(--text);
-+  font-size:15px;
-+  line-height:1.7;
-+  white-space:pre-wrap;
-+}
-+.transcript-plain-text{
-+  margin:0;
-+  min-height:240px;
-+  border:1px solid var(--line);
-+  border-radius:20px;
-+  background:#fbfdff;
-+  padding:18px;
-+  color:var(--text);
-+  font:14px/1.7 "Courier New", monospace;
-+  white-space:pre-wrap;
-+}
-+.inspector-copy-store{
-+  position:absolute;
-+  left:-9999px;
-+  width:1px;
-+  height:1px;
-+  opacity:0;
-+}
-+.summary-kpi-grid{
+ .page-notice{
++  margin-bottom:10px;
+   border:1px solid #dbe5f6;
+   background:#f7faff;
+   color:var(--text);
+   border-radius:16px;
+   padding:12px 14px;
+ }
++.standalone-shell{
 +  display:grid;
-+  gap:12px;
-+  grid-template-columns:repeat(auto-fit, minmax(150px, 1fr));
++  gap:18px;
++  max-width:1180px;
 +}
-+.summary-list{
-+  margin:0;
-+  padding-left:18px;
++.standalone-header{
++  display:flex;
++  justify-content:space-between;
++  gap:16px;
++  align-items:flex-start;
++  flex-wrap:wrap;
++}
++.standalone-header-copy{
 +  display:grid;
 +  gap:8px;
 +}
-+.inspector-disclosure{
++.standalone-header-note{
++  color:var(--muted);
++  max-width:72ch;
++}
++.standalone-header-actions{
++  display:flex;
++  gap:8px;
++  flex-wrap:wrap;
++  align-items:center;
++}
++.context-banner{
 +  display:grid;
-+  gap:14px;
-+  margin-top:12px;
++  gap:10px;
 +  padding:14px 16px;
-+  border:1px solid var(--line);
-+  border-radius:18px;
-+  background:var(--panel-soft);
-+}
-+.inspector-disclosure summary{
-+  cursor:pointer;
-+  font-size:13px;
-+  font-weight:700;
-+  color:var(--text);
-+}
-+.full-export-text{
-+  width:100%;
-+  min-height:280px;
-+  resize:vertical;
-+  padding:16px;
-+  border:1px solid var(--line);
++  border:1px solid #dbe5f6;
 +  border-radius:20px;
-+  background:#f8fbff;
-+  font:12px/1.55 "Courier New", monospace;
++  background:linear-gradient(180deg, #ffffff 0%, #f7faff 100%);
++  box-shadow:var(--shadow-soft);
 +}
- .embedded-panel-grid,
- .review-card-grid,
- .metric-card-grid{
-@@ -1480,6 +1689,7 @@ textarea:focus{
++.context-banner-copy{
++  color:var(--text);
++  max-width:72ch;
++}
++.context-banner-actions{
++  display:flex;
++  gap:8px;
++  flex-wrap:wrap;
++}
++.btn-primary{
++  background:var(--primary);
++  border-color:var(--primary);
++  color:#fff;
++}
++.btn-primary:hover{
++  background:#1d4ed8;
++  border-color:#1d4ed8;
++  color:#fff;
++}
++.recording-progress-shell{
++  display:grid;
++  gap:10px;
++  padding:12px 14px;
++  border:1px solid #dbe5f6;
++  border-radius:18px;
++  background:linear-gradient(180deg, #ffffff 0%, #f7faff 100%);
++}
++.recording-progress-head{
++  display:flex;
++  gap:10px;
++  align-items:center;
++  justify-content:space-between;
++  flex-wrap:wrap;
++  font-size:12px;
++}
++.recording-progress-track{
++  width:100%;
++  min-height:14px;
++  border-radius:999px;
++  border:1px solid #c4d3ea;
++  background:#eaf0fb;
++  overflow:hidden;
++}
++.recording-progress-fill{
++  height:100%;
++  min-height:14px;
++  border-radius:999px;
++  background:linear-gradient(90deg, #2463eb 0%, #5b8dff 100%);
++}
++.recording-progress-meta{
++  display:flex;
++  flex-wrap:wrap;
++  gap:10px;
++  font-size:11px;
++  color:#334155;
++}
++.recording-progress-footnote{
++  font-size:11px;
++  color:var(--muted);
++}
  .detail-page-shell{
    display:grid;
    gap:20px;
-+  padding-bottom:120px;
- }
- @media (max-width: 1180px){
-   .control-center-workspace-header,
-@@ -1489,6 +1699,11 @@ textarea:focus{
-     min-height:auto;
-   }
-   .control-center-system-group-secondary{justify-content:flex-start}
-+  .inspector-overview-grid,
-+  .summary-section-grid,
-+  .diagnostics-grid{
-+    grid-template-columns:1fr;
-+  }
- }
- @media (max-width: 860px){
+@@ -1709,6 +1823,9 @@ textarea:focus{
    .app-nav{align-items:flex-start;flex-direction:column}
-@@ -1511,6 +1726,12 @@ textarea:focus{
-   .speaker-review-shell-compact .speaker-action-stack,
-   .speaker-context-grid,
-   .speaker-snippet-grid{grid-template-columns:1fr}
-+  .inspector-stage-item{grid-template-columns:auto 1fr}
-+  .inspector-stage-meta{
-+    grid-column:2;
-+    justify-items:start;
-+    text-align:left;
-+  }
-   .speaker-card-title{align-items:flex-start}
- }
- </style>
-diff --git a/lan_app/templates/partials/recording_inspector.html b/lan_app/templates/partials/recording_inspector.html
-index 2d80587..b667d09 100644
---- a/lan_app/templates/partials/recording_inspector.html
-+++ b/lan_app/templates/partials/recording_inspector.html
-@@ -16,7 +16,7 @@
- <div class="inspector-tab-shell">
- {% include "partials/recording_inspector_tabs.html" %}
- 
--<div class="tab-content">
-+<div class="tab-content{% if not recording_inspector.embedded %} tab-content-full{% endif %}">
-   {% if recording_inspector.embedded %}
-   {% include "partials/recording_inspector_embedded_body.html" %}
-   {% else %}
-diff --git a/lan_app/templates/partials/recording_inspector_body.html b/lan_app/templates/partials/recording_inspector_body.html
-index 086713b..09c24ca 100644
---- a/lan_app/templates/partials/recording_inspector_body.html
-+++ b/lan_app/templates/partials/recording_inspector_body.html
-@@ -1,771 +1,13 @@
- {% if current_tab == 'overview' %}
--  {% set summary_data = summary or {} %}
--  {% set glossary_data = glossary or {} %}
--  <div class="section" style="margin-bottom:10px">
--    <h2 style="margin-top:0">Diagnostics</h2>
--    <div class="info-grid">
--      <span class="k">Primary reason</span><span class="v">{{ diagnostics.primary_reason_text or '—' }}</span>
--      <span class="k">Reason code</span><span class="v">{{ diagnostics.primary_reason_code or '—' }}</span>
--      <span class="k">Current / last stage</span><span class="v">{{ diagnostics.current_stage_label or '—' }}</span>
--      <span class="k">Stage status</span><span class="v">{{ diagnostics.current_stage_status_label or '—' }}</span>
--      <span class="k">Chunk</span><span class="v">{{ diagnostics.chunk_text or '—' }}</span>
--      <span class="k">Stage attempt</span><span class="v">{{ diagnostics.stage_attempt_text or '—' }}</span>
--      <span class="k">Chunk attempt</span><span class="v">{{ diagnostics.chunk_attempt_text or '—' }}</span>
--      <span class="k">Stage elapsed</span><span class="v">{{ diagnostics.stage_elapsed_display or '—' }}</span>
--      <span class="k">Chunk elapsed</span><span class="v">{{ diagnostics.chunk_elapsed_display or '—' }}</span>
--      <span class="k">Stop mode</span><span class="v">{{ diagnostics.stop_mode or '—' }}</span>
--      <span class="k">Retry wrapper</span><span class="v">{{ diagnostics.wrapper_reason_text or '—' }}</span>
--      <span class="k">Reason detail</span><span class="v">{{ diagnostics.primary_reason_detail or diagnostics.stop_reason_text or '—' }}</span>
--    </div>
--  </div>
--  <div class="info-grid">
--    <span class="k">ID</span><span class="v">{{ rec.id }}</span>
--    <span class="k">Filename</span><span class="v">{{ rec.source_filename }}</span>
--    <span class="k">Source</span><span class="v">{{ rec.source }}</span>
--    <span class="k">Status</span>
--    <span class="v">
--      <span class="badge s-{{ rec.status }}">{{ rec.status }}</span>
--      {% if rec.status_reason_text_display %}
--      <span style="color:#92400e">{{ rec.status_reason_text_display }}</span>
--      {% endif %}
--    </span>
--    <span class="k">Captured at</span><span class="v">{{ rec.captured_at_display }}</span>
--    <span class="k">Duration</span><span class="v">{{ rec.duration_display }}</span>
--    <span class="k">Project</span><span class="v">{{ rec.project_name or (rec.project_id and ('#' ~ rec.project_id)) or '—' }}</span>
--    <span class="k">Suggested project</span><span class="v">{{ rec.suggested_project_name or (rec.suggested_project_id and ('#' ~ rec.suggested_project_id)) or '—' }}</span>
--    <span class="k">Routing confidence</span>
--    <span class="v">
--      {% if rec.routing_confidence is not none %}
--      {{ '%.2f'|format(rec.routing_confidence) }}
--      {% else %}
--      —
--      {% endif %}
--    </span>
--    <span class="k">Language (auto)</span><span class="v">{{ rec.language_auto or '—' }}</span>
--    <span class="k">Transcript language override</span><span class="v">{{ rec.language_override or '—' }}</span>
--    <span class="k">Target summary language</span><span class="v">{{ rec.target_summary_language or '—' }}</span>
--    <span class="k">Drive file ID</span><span class="v">{{ rec.drive_file_id or '—' }}</span>
--    <span class="k">Quarantine reason</span><span class="v">{{ rec.quarantine_reason or '—' }}</span>
--    <span class="k">Review reason</span><span class="v">{{ rec.review_reason_text_display or '—' }}</span>
--    <span class="k">Stop requested</span>
--    <span class="v">
--      {% if rec.cancel_requested_at_display != '—' %}
--      {{ rec.cancel_requested_at_display }}{% if rec.cancel_requested_by_display %} by {{ rec.cancel_requested_by_display }}{% endif %}
--      {% else %}
--      —
--      {% endif %}
--    </span>
--    <span class="k">Stop reason</span><span class="v">{{ rec.cancel_reason_text_display or '—' }}</span>
--    <span class="k">Created at</span><span class="v">{{ rec.created_at_display }}</span>
--    <span class="k">Updated at</span><span class="v">{{ rec.updated_at_display }}</span>
--  </div>
--
--  {% if pipeline_stages %}
--  <div class="section" style="margin-top:10px">
--    <h2 style="margin-top:0">Pipeline Stages</h2>
--    <table>
--      <thead>
--        <tr>
--          <th>Stage</th>
--          <th>Status</th>
--          <th>Attempt</th>
--          <th>Updated</th>
--          <th>Notes</th>
--        </tr>
--      </thead>
--      <tbody>
--        {% for stage in pipeline_stages %}
--        <tr>
--          <td>{{ stage.stage_label }}</td>
--          <td>{{ stage.status_label }}</td>
--          <td>{{ stage.attempt }}</td>
--          <td>{{ stage.updated_at_display }}</td>
--          <td>
--            {% if stage.root_cause_text %}
--            {{ stage.root_cause_text }}{% if stage.root_cause_code %} (<code>{{ stage.root_cause_code }}</code>){% endif %}
--            {% if stage.chunk_index and stage.chunk_total %}
--            &nbsp;chunk {{ stage.chunk_index }}/{{ stage.chunk_total }}
--            {% endif %}
--            {% if stage.stop_mode %}
--            &nbsp;mode={{ stage.stop_mode }}
--            {% endif %}
--            {% elif stage.error_text %}
--            {{ stage.error_text }}
--            {% elif stage.duration_seconds is not none %}
--            {{ '%.3f'|format(stage.duration_seconds) }}s
--            {% else %}
--            —
--            {% endif %}
--          </td>
--        </tr>
--        {% endfor %}
--      </tbody>
--    </table>
--  </div>
--  {% endif %}
--
--  <div class="section" style="margin-top:10px">
--    <h2 style="margin-top:0">Export</h2>
--    <div class="filters" style="margin-bottom:6px">
--      <button type="button" class="btn" onclick="copyExportText()">Copy</button>
--      <a
--        href="/ui/recordings/{{ rec.id }}/export.zip"
--        class="btn"
--        style="text-decoration:none"
--        hx-boost="false"
--      >Download ZIP</a>
--    </div>
--    <textarea
--      id="export-text"
--      readonly
--      style="width:100%;min-height:220px;resize:vertical"
--    >{{ export_text or '' }}</textarea>
--    <p id="export-copy-status" class="placeholder" style="padding:6px 0 0 0">
--      Copy the markdown or download a ZIP with the available artifacts.
--    </p>
--  </div>
--
--  <script>
--  function copyExportText() {
--    var textarea = document.getElementById('export-text');
--    var status = document.getElementById('export-copy-status');
--    if (!textarea) return;
--    var setStatus = function(msg) {
--      if (status) status.textContent = msg;
--    };
--    var fallback = function() {
--      textarea.focus();
--      textarea.select();
--      try {
--        document.execCommand('copy');
--        setStatus('Copied export markdown.');
--      } catch (_err) {
--        setStatus('Copy failed. Select the text and copy manually.');
--      }
--    };
--    if (navigator.clipboard && navigator.clipboard.writeText) {
--      navigator.clipboard.writeText(textarea.value).then(
--        function() { setStatus('Copied export markdown.'); },
--        fallback
--      );
--      return;
--    }
--    fallback();
--  }
--  </script>
--
--  <h2>Topic</h2>
--  <p>{{ summary_data.topic or '—' }}</p>
--
--  <h2>Summary</h2>
--  {% if summary_data.summary_bullets %}
--  <ul>
--    {% for bullet in summary_data.summary_bullets %}
--    <li>{{ bullet }}</li>
--    {% endfor %}
--  </ul>
--  {% elif summary_data.summary_text %}
--  <pre style="white-space:pre-wrap;background:#f8f9ff;border:1px solid #ccd;padding:8px;font:12px/1.4 'Courier New',monospace;max-height:240px;overflow:auto">{{ summary_data.summary_text }}</pre>
--  {% else %}
--  <p class="placeholder">No summary available yet.</p>
--  {% endif %}
--
--  <h2>Emotional Summary</h2>
--  <p style="white-space:pre-wrap">{{ summary_data.emotional_summary or '—' }}</p>
--
--  <div class="section" style="margin-top:10px">
--    {% if recording_inspector.embedded %}
--    {% set correction_form = glossary_data.workflow_form or {} %}
--    <h2 style="margin-top:0">Corrections</h2>
--    <div class="control-center-compact-card">
--      <p style="margin:0 0 8px 0;color:#555">
--        Save a remembered spelling or phrase without leaving this recording.
--      </p>
--      <form method="post" action="{{ correction_form.action or '/glossary' }}">
--        {% for field in correction_form.hidden_fields or [] %}
--        <input type="hidden" name="{{ field.name }}" value="{{ field.value }}">
--        {% endfor %}
--        <div class="control-center-compact-grid">
--          <div>
--            <label for="workflow-correction-canonical-{{ rec.id }}" style="display:block;margin-bottom:4px">Correct term</label>
--            <input
--              id="workflow-correction-canonical-{{ rec.id }}"
--              type="text"
--              name="canonical_text"
--              maxlength="160"
--              required
--              placeholder="Example: Sander"
--              style="width:100%"
--            >
--          </div>
--          <div>
--            <label for="workflow-correction-aliases-{{ rec.id }}" style="display:block;margin-bottom:4px">Wrong variant</label>
--            <input
--              id="workflow-correction-aliases-{{ rec.id }}"
--              type="text"
--              name="aliases_text"
--              maxlength="240"
--              placeholder="What the transcript got wrong"
--              style="width:100%"
--            >
--          </div>
--        </div>
--        <div class="form-row" style="align-items:flex-start;margin-top:8px">
--          <label for="workflow-correction-notes-{{ rec.id }}">Note</label>
--          <input
--            id="workflow-correction-notes-{{ rec.id }}"
--            type="text"
--            name="notes"
--            maxlength="240"
--            placeholder="Optional reminder"
--            style="width:100%;max-width:420px"
--          >
--        </div>
--        <div class="filters" style="margin:8px 0 0 0">
--          <button class="btn" type="submit">Save as correction</button>
--          <a href="{{ glossary_data.manage_href or '/glossary' }}" class="btn" style="text-decoration:none">Manage corrections</a>
--        </div>
--      </form>
--      {% if glossary_data.available %}
--      <p style="margin:8px 0 0 0;color:#555">
--        {{ glossary_data.entry_count }} saved memor{{ 'y' if glossary_data.entry_count == 1 else 'ies' }}
--        and {{ glossary_data.term_count }} prompt term{{ '' if glossary_data.term_count == 1 else 's' }}
--        are already attached to this recording.
--      </p>
--      {% else %}
--      <p style="margin:8px 0 0 0;color:#555">No saved ASR memory is attached to this recording yet.</p>
--      {% endif %}
--    </div>
--    {% else %}
--    <h2 style="margin-top:0">Corrections / ASR Memory</h2>
--    <div class="filters" style="margin-bottom:6px">
--      <a href="{{ glossary_data.manage_href or '/glossary' }}" class="btn" style="text-decoration:none">Manage corrections</a>
--      <a href="{{ glossary_data.quick_add_href or '/glossary' }}#glossary-form" class="btn" style="text-decoration:none">Add correction from this recording</a>
--    </div>
--    <p style="margin:0 0 8px 0;color:#555">Saved spellings and remembered mistakes feed future ASR prompts for later recordings. They do not retrain the model.</p>
--    {% if glossary_data.available and glossary_data.entries %}
--    <p style="margin:0 0 8px 0;color:#555">
--      {{ glossary_data.term_count }} saved term{{ '' if glossary_data.term_count == 1 else 's' }}
--      were forwarded to ASR from {{ glossary_data.entry_count }} memor{{ 'y' if glossary_data.entry_count == 1 else 'ies' }}.
--      {% if glossary_data.truncated %}
--      Prompt budget reached; only the highest-priority terms were forwarded to ASR.
--      {% endif %}
--    </p>
--    <table>
--      <thead>
--        <tr>
--          <th>Correct term</th>
--          <th>Remembered variants</th>
--          <th>Type</th>
--          <th>Memory sources</th>
--        </tr>
--      </thead>
--      <tbody>
--        {% for row in glossary_data.entries %}
--        <tr>
--          <td>{{ row.canonical_text }}</td>
--          <td>{{ row.aliases|join(', ') if row.aliases else '—' }}</td>
--          <td>{{ row.kind }}</td>
--          <td>{{ row.sources_label }}</td>
--        </tr>
--        {% endfor %}
--      </tbody>
--    </table>
--    {% elif glossary_data.available %}
--    <p class="placeholder">This recording wrote an ASR memory artifact, but no saved terms were selected.</p>
--    {% else %}
--    <p class="placeholder">No ASR memory artifact is available for this recording yet.</p>
--    {% endif %}
--    {% endif %}
--  </div>
--
--{% elif current_tab == 'calendar' %}
--  {% set cal = calendar or {} %}
--
--  <h2>Calendar Match</h2>
--  {% if cal.error_message %}
--  <p style="margin:0 0 10px 0;padding:8px 10px;border:1px solid #f59e0b;background:#fffbeb;color:#92400e">
--    {{ cal.error_message }}
--  </p>
--  {% endif %}
--  {% if cal.warnings %}
--    {% for warning in cal.warnings %}
--  <p style="margin:0 0 10px 0;padding:8px 10px;border:1px solid #f59e0b;background:#fffbeb;color:#92400e">
--    {{ warning }}
--  </p>
--    {% endfor %}
--  {% endif %}
--
--  <div class="section" style="margin-top:10px">
--    <h3 style="margin-top:0">Selected Event</h3>
--    {% if cal.selected %}
--    <div style="border:1px solid #d5d9e6;background:#f8f9ff;padding:10px;border-radius:6px">
--      <div><strong>{{ cal.selected.subject_display }}</strong></div>
--      <div style="margin-top:4px;color:#555">{{ cal.selected.starts_at_display }} → {{ cal.selected.ends_at_display }}</div>
--      <div style="margin-top:4px">Source: {{ cal.selected.source_label }}</div>
--      <div style="margin-top:4px">Confidence: {{ cal.selected.confidence_display }}</div>
--      <div style="margin-top:4px">Organizer: {{ cal.selected.organizer_display }}</div>
--      <div style="margin-top:4px">Attendees: {{ cal.selected.attendees_label }}</div>
--      {% if cal.selected.rationale_rows %}
--      <ul style="margin:8px 0 0 18px">
--        {% for reason in cal.selected.rationale_rows %}
--        <li>{{ reason }}</li>
--        {% endfor %}
--      </ul>
--      {% endif %}
--      <form method="post" action="/ui/recordings/{{ rec.id }}/calendar/select{{ recording_inspector.embedded_return_queries.calendar }}" style="margin-top:8px">
--        <button type="submit" class="btn">Clear selection</button>
--      </form>
--    </div>
--    {% else %}
--    <p class="placeholder">No calendar event is currently selected for this recording.</p>
--    {% endif %}
--  </div>
--
--  <div class="section" style="margin-top:10px">
--    <h3 style="margin-top:0">Candidates</h3>
--    {% if cal.candidates %}
--    <table>
--      <thead>
--        <tr>
--          <th>Event</th>
--          <th>When</th>
--          <th>Source</th>
--          <th>Confidence</th>
--          <th>Attendees</th>
--          <th>Rationale</th>
--          <th>Action</th>
--        </tr>
--      </thead>
--      <tbody>
--        {% for candidate in cal.candidates %}
--        <tr>
--          <td style="white-space:normal;max-width:220px">
--            <div><strong>{{ candidate.subject_display }}</strong></div>
--            <div style="margin-top:4px;color:#555">Organizer: {{ candidate.organizer_display }}</div>
--          </td>
--          <td>{{ candidate.starts_at_display }} → {{ candidate.ends_at_display }}</td>
--          <td>{{ candidate.source_label }}</td>
--          <td>
--            {{ candidate.confidence_display }}
--            {% if candidate.selected %}
--            <div style="margin-top:4px"><span class="badge s-Ready">Selected</span></div>
--            {% endif %}
--          </td>
--          <td title="{{ candidate.attendees_label }}">{{ candidate.attendees_label }}</td>
--          <td style="white-space:normal;max-width:320px">
--            {% if candidate.rationale_rows %}
--              {% for reason in candidate.rationale_rows %}
--              <div>{{ reason }}</div>
--              {% endfor %}
--            {% else %}
--            —
--            {% endif %}
--          </td>
--          <td>
--            {% if candidate.selected %}
--            <span class="placeholder" style="padding:0">Current</span>
--            {% else %}
--            <form method="post" action="/ui/recordings/{{ rec.id }}/calendar/select{{ recording_inspector.embedded_return_queries.calendar }}">
--              <input type="hidden" name="event_id" value="{{ candidate.event_id }}">
--              <button type="submit" class="btn">Choose</button>
--            </form>
--            {% endif %}
--          </td>
--        </tr>
--        {% endfor %}
--      </tbody>
--    </table>
--    {% else %}
--    <p class="placeholder">No calendar candidates are stored for this recording yet.</p>
--    {% endif %}
--  </div>
--
--{% elif current_tab == 'project' %}
--  {% set prj = project or {} %}
--  {% set project_items = prj.projects or [] %}
--
--  <h2>Project Assignment</h2>
--  <div class="info-grid">
--    <span class="k">Current project</span><span class="v">{{ prj.selected_project_name or (prj.selected_project_id and ('#' ~ prj.selected_project_id)) or 'Unassigned' }}</span>
--    <span class="k">Suggested project</span><span class="v">{{ prj.suggested_project_name or (prj.suggested_project_id and ('#' ~ prj.suggested_project_id)) or '—' }}</span>
--    <span class="k">Confidence</span><span class="v">{{ '%.2f'|format(prj.confidence or 0.0) }}</span>
--    <span class="k">Auto-select threshold</span><span class="v">{{ '%.2f'|format(prj.threshold or 0.0) }}</span>
--    <span class="k">Training examples (total)</span><span class="v">{{ prj.training_examples_total or 0 }}</span>
--    <span class="k">Training examples (this project)</span><span class="v">{{ prj.training_examples_selected_project or 0 }}</span>
--  </div>
--
--  {% if (prj.confidence or 0.0) < (prj.threshold or 0.0) %}
--  <p style="margin-top:8px;color:#92400e">
--    Confidence is below threshold; this recording should remain in manual review.
--  </p>
--  {% endif %}
--
--  <form method="post" action="/ui/recordings/{{ rec.id }}/project{{ recording_inspector.embedded_return_queries.project }}" style="margin-top:10px">
--    <div class="form-row">
--      <label for="project_id">Project</label>
--      <select id="project_id" name="project_id" style="width:280px">
--        <option value="">Unassigned</option>
--        {% for p in project_items %}
--        <option value="{{ p.id }}" {% if prj.selected_project_id == p.id %}selected{% endif %}>{{ p.name }}</option>
--        {% endfor %}
--      </select>
--    </div>
--    <div class="form-row">
--      <label for="train_routing">Train routing</label>
--      <input id="train_routing" type="checkbox" name="train_routing" value="1" checked>
--      <span style="font-size:12px;color:#555">Store this manual choice as a routing training example.</span>
--    </div>
--    <div class="filters" style="margin-top:8px">
--      <button type="submit" class="btn">Save project</button>
--    </div>
--  </form>
--
--  <h2>Routing Rationale</h2>
--  {% if prj.rationale %}
--  <ul>
--    {% for reason in prj.rationale %}
--    <li>{{ reason }}</li>
--    {% endfor %}
--  </ul>
--  {% else %}
--  <p class="placeholder">No routing rationale available yet.</p>
--  {% endif %}
--
-+  {% include "partials/recording_inspector_full_overview.html" %}
- {% elif current_tab == 'speakers' %}
--  {% set sp = speakers or {} %}
--  {% set rows = sp.speaker_rows or [] %}
--  {% set profiles = sp.voice_profiles or [] %}
--  {% set notices = sp.review_notices or [] %}
--  {% set repair = sp.snippet_repair or {} %}
--
--  <h2>Speaker Review Workspace</h2>
--  {% if sp.notice_message %}
--  <p style="margin:0 0 10px 0;padding:8px 10px;border:1px solid #86efac;background:#f0fdf4;color:#166534">
--    {{ sp.notice_message }}
--  </p>
--  {% endif %}
--  {% if sp.error_message %}
--  <p style="margin:0 0 10px 0;padding:8px 10px;border:1px solid #f59e0b;background:#fffbeb;color:#92400e">
--    {{ sp.error_message }}
--  </p>
--  {% endif %}
--  {% if repair.detail %}
--  <div style="margin:0 0 10px 0;padding:8px 10px;border:1px solid #ccd;background:#f8f9ff;color:#222">
--    <div style="margin-bottom:{% if repair.available %}8px{% else %}0{% endif %}">
--      {{ repair.detail }}
--    </div>
--    {% if repair.available %}
--    <form method="post" action="/ui/recordings/{{ rec.id }}/speakers/regenerate-snippets{{ recording_inspector.embedded_return_queries.speakers }}">
--      <button class="btn" type="submit">{{ repair.button_label }}</button>
--    </form>
--    {% endif %}
--  </div>
--  {% endif %}
--  {% if notices %}
--    {% for notice in notices %}
--    <p style="margin:0 0 10px 0;padding:8px 10px;border:1px solid #f59e0b;background:#fffbeb;color:#92400e">
--      {{ notice }}
--    </p>
--    {% endfor %}
--  {% endif %}
--  <div style="margin:0 0 10px 0;padding:8px 10px;border:1px solid #ccd;background:#f8f9ff;color:#222">
--    Review speakers through their best clean clips first. <strong>Confirm match</strong> changes canonical identity across recordings.
--    Use <strong>Keep unknown</strong> to close review without naming the speaker, <strong>Local label only</strong> to name this speaker only for this recording, and <strong>Add trusted sample</strong> only for trusted clean clips without changing identity mapping.
--  </div>
--  {% if not recording_inspector.embedded %}
--  <div class="filters" style="margin:0 0 10px 0">
--    <a href="{{ sp.manage_voices_href or '/voices' }}" class="btn" style="text-decoration:none">Open canonical speakers page</a>
--  </div>
--  {% endif %}
--  {% set speaker_review_mode = 'full' %}
--  {% include 'partials/speaker_review_cards.html' %}
--
--  <section class="embedded-card">
--    <div class="embedded-card-head">
--      <div>
--        <h2>Create Canonical Speaker</h2>
--        <p class="inspector-note">Create a new canonical person and confirm the diarized match in one step.</p>
--      </div>
--    </div>
--    {% if rows %}
--    <form method="post" action="/ui/recordings/{{ rec.id }}/speakers/create-and-assign{{ recording_inspector.embedded_return_queries.speakers }}">
--      <div class="form-row">
--        <label for="diar_speaker_label">Speaker label</label>
--        <select id="diar_speaker_label" name="diar_speaker_label" style="width:180px">
--          {% for row in rows %}
--          <option value="{{ row.speaker }}">{{ row.speaker }}</option>
--          {% endfor %}
--        </select>
--      </div>
--      <div class="form-row">
--        <label for="display_name">Display name</label>
--        <input id="display_name" type="text" name="display_name" maxlength="120" required placeholder="Person name" style="width:260px">
--      </div>
--      <div class="form-row">
--        <label for="notes">Notes</label>
--        <input id="notes" type="text" name="notes" maxlength="240" placeholder="Optional notes" style="width:360px">
--      </div>
--      <div class="form-row">
--        <label></label>
--        <button class="btn" type="submit">Create and confirm match</button>
--      </div>
--    </form>
--    {% else %}
--    <p class="placeholder">No diarization labels available for assignment.</p>
--    {% endif %}
--  </section>
--
--{% elif current_tab == 'language' %}
--  {% set lang = language or {} %}
--
--  <h2>Detected Languages</h2>
--  <div class="info-grid">
--    <span class="k">Detected language</span><span class="v">{{ lang.detected_label or '—' }}</span>
--    <span class="k">Dominant language</span><span class="v">{{ lang.dominant_label or '—' }}</span>
--    <span class="k">Mixed-language meeting</span><span class="v">{{ 'Yes' if lang.is_mixed else 'No' }}</span>
--    <span class="k">Current summary target</span><span class="v">{{ lang.target_summary_language_label or '—' }}</span>
--    <span class="k">Transcript override</span><span class="v">{{ lang.transcript_language_override_label or '—' }}</span>
--  </div>
--
--  <h2>Language Distribution</h2>
--  {% if lang.distribution %}
--  <table>
--    <thead>
--      <tr>
--        <th>Language</th>
--        <th>Share (%)</th>
--      </tr>
--    </thead>
--    <tbody>
--      {% for row in lang.distribution %}
--      <tr>
--        <td>{{ row.label }}</td>
--        <td>{{ '%.2f'|format(row.percent) }}</td>
--      </tr>
--      {% endfor %}
--    </tbody>
--  </table>
--  {% else %}
--  <p class="placeholder">No language distribution available yet.</p>
--  {% endif %}
--
--  <h2>Language Spans</h2>
--  {% if lang.spans %}
--  <table>
--    <thead>
--      <tr>
--        <th>Start</th>
--        <th>End</th>
--        <th>Language</th>
--      </tr>
--    </thead>
--    <tbody>
--      {% for span in lang.spans %}
--      <tr>
--        <td>{{ '%.3f'|format(span.start) }}</td>
--        <td>{{ '%.3f'|format(span.end) }}</td>
--        <td>{{ span.label }}</td>
--      </tr>
--      {% endfor %}
--    </tbody>
--  </table>
--  {% else %}
--  <p class="placeholder">No language spans available yet.</p>
--  {% endif %}
--
--  <h2>Overrides and Reprocess</h2>
--  <form method="post" action="/ui/recordings/{{ rec.id }}/language/settings{{ recording_inspector.embedded_return_queries.language }}">
--    <div class="form-row">
--      <label for="target_summary_language">target_summary_language</label>
--      <select id="target_summary_language" name="target_summary_language">
--        <option value="" {% if not lang.target_summary_language %}selected{% endif %}>Auto (dominant language)</option>
--        {% for opt in lang.options or [] %}
--        <option value="{{ opt.code }}" {% if lang.target_summary_language == opt.code %}selected{% endif %}>{{ opt.label }}</option>
--        {% endfor %}
--      </select>
--    </div>
--    <div class="form-row">
--      <label for="transcript_language_override">transcript_language_override</label>
--      <select id="transcript_language_override" name="transcript_language_override">
--        <option value="">None (auto detect)</option>
--        {% for opt in lang.options or [] %}
--        <option value="{{ opt.code }}" {% if lang.transcript_language_override == opt.code %}selected{% endif %}>{{ opt.label }}</option>
--        {% endfor %}
--      </select>
--    </div>
--    <div class="filters" style="margin-top:8px">
--      <button type="submit" class="btn">Save overrides</button>
--      <button
--        type="submit"
--        class="btn"
--        formaction="/ui/recordings/{{ rec.id }}/language/resummarize{{ recording_inspector.embedded_return_queries.language }}"
--      >
--        Re-summarize (LLM only)
--      </button>
--      <button
--        type="submit"
--        class="btn btn-danger"
--        formaction="/ui/recordings/{{ rec.id }}/language/retranscribe{{ recording_inspector.embedded_return_queries.log }}"
--        onclick="return confirm('Re-transcribe reruns STT and diarization. Continue?')"
--      >
--        Re-transcribe (STT again)
--      </button>
--    </div>
--  </form>
--
--  {% if lang.summary_preview %}
--  <h2>Latest Summary</h2>
--  <pre style="white-space:pre-wrap;background:#f8f9ff;border:1px solid #ccd;padding:8px;font:12px/1.4 'Courier New',monospace;max-height:240px;overflow:auto">{{ lang.summary_preview }}</pre>
--  {% endif %}
--
--{% elif current_tab == 'metrics' %}
--  {% set summary_data = summary or {} %}
--  {% set metrics_data = metrics or {} %}
--  {% set meeting = metrics_data.meeting or {} %}
--  {% set participants = metrics_data.participants or [] %}
--  {% set questions = summary_data.questions or {} %}
--  {% set question_types = questions.types or {} %}
--
--  <h2>Meeting Metrics</h2>
--  <div class="info-grid">
--    <span class="k">Total speech time</span><span class="v">{{ '%.1f'|format(meeting.total_speech_time_seconds or 0.0) }}s</span>
--    <span class="k">Interruptions</span><span class="v">{{ meeting.total_interruptions or 0 }}</span>
--    <span class="k">Questions</span><span class="v">{{ meeting.total_questions or 0 }}</span>
--    <span class="k">Decisions</span><span class="v">{{ meeting.decisions_count or 0 }}</span>
--    <span class="k">Action items</span><span class="v">{{ meeting.action_items_count or 0 }}</span>
--    <span class="k">Actionability</span><span class="v">{{ '%.1f'|format((meeting.actionability_ratio or 0.0) * 100.0) }}%</span>
--    <span class="k">Emotional summary</span><span class="v">{{ meeting.emotional_summary or '—' }}</span>
--  </div>
--
--  <h2>Participants</h2>
--  {% if participants %}
--  <table>
--    <thead>
--      <tr>
--        <th>Speaker</th>
--        <th>Airtime (s)</th>
--        <th>Share (%)</th>
--        <th>Turns</th>
--        <th>Interruptions done</th>
--        <th>Interruptions received</th>
--        <th>Questions</th>
--        <th>Role</th>
--      </tr>
--    </thead>
--    <tbody>
--      {% for row in participants %}
--      <tr>
--        <td>{{ row.speaker }}</td>
--        <td>{{ '%.2f'|format(row.airtime_seconds or 0.0) }}</td>
--        <td>{{ '%.2f'|format((row.airtime_share or 0.0) * 100.0) }}</td>
--        <td>{{ row.turns or 0 }}</td>
--        <td>{{ row.interruptions_done or 0 }}</td>
--        <td>{{ row.interruptions_received or 0 }}</td>
--        <td>{{ row.questions_count or 0 }}</td>
--        <td>{{ row.role_hint or '—' }}</td>
--      </tr>
--      {% endfor %}
--    </tbody>
--  </table>
--  {% else %}
--  <p class="placeholder">No participant metrics available yet.</p>
--  {% endif %}
--
--  <h2>Decisions</h2>
--  {% if summary_data.decisions %}
--  <ul>
--    {% for decision in summary_data.decisions %}
--    <li>{{ decision }}</li>
--    {% endfor %}
--  </ul>
--  {% else %}
--  <p class="placeholder">No decisions extracted.</p>
--  {% endif %}
--
--  <h2>Action Items</h2>
--  {% if summary_data.action_items %}
--  <table>
--    <thead>
--      <tr>
--        <th>Task</th>
--        <th>Owner</th>
--        <th>Deadline</th>
--        <th>Confidence</th>
--      </tr>
--    </thead>
--    <tbody>
--      {% for item in summary_data.action_items %}
--      <tr>
--        <td>{{ item.task }}</td>
--        <td>{{ item.owner or '—' }}</td>
--        <td>{{ item.deadline or '—' }}</td>
--        <td>{{ '%.2f'|format(item.confidence or 0.0) }}</td>
--      </tr>
--      {% endfor %}
--    </tbody>
--  </table>
--  {% else %}
--  <p class="placeholder">No action items extracted.</p>
--  {% endif %}
--
--  <h2>Questions</h2>
--  <div class="info-grid">
--    <span class="k">Total</span><span class="v">{{ questions.total_count or 0 }}</span>
--    <span class="k">Open</span><span class="v">{{ question_types.open or 0 }}</span>
--    <span class="k">Yes/No</span><span class="v">{{ question_types.yes_no or 0 }}</span>
--    <span class="k">Clarification</span><span class="v">{{ question_types.clarification or 0 }}</span>
--    <span class="k">Status</span><span class="v">{{ question_types.status or 0 }}</span>
--    <span class="k">Decision-seeking</span><span class="v">{{ question_types.decision_seeking or 0 }}</span>
--  </div>
--  {% if questions.extracted %}
--  <h3>Extracted Questions</h3>
--  <ul>
--    {% for question in questions.extracted %}
--    <li>{{ question }}</li>
--    {% endfor %}
--  </ul>
--  {% endif %}
--
--{% elif current_tab == 'log' %}
--  {% if jobs %}
--  <table>
--    <thead>
--      <tr>
--        <th>Job ID</th>
--        <th>Type</th>
--        <th>Status</th>
--        <th>Attempt</th>
--        <th>Started</th>
--        <th>Finished</th>
--        <th>Error</th>
--        <th>Action</th>
--      </tr>
--    </thead>
--    <tbody>
--      {% for j in jobs %}
--      <tr>
--        <td title="{{ j.id }}">{{ j.id[:16] }}…</td>
--        <td>{{ j.type }}</td>
--        <td><span class="badge s-{{ j.status }}">{{ j.status }}</span></td>
--        <td>{{ j.attempt }}</td>
--        <td>{{ j.started_at[:19].replace('T',' ') if j.started_at else '—' }}</td>
--        <td>{{ j.finished_at[:19].replace('T',' ') if j.finished_at else '—' }}</td>
--        <td title="{{ j.error or '' }}">{{ (j.error or '')[:40] }}{% if j.error and j.error|length > 40 %}…{% endif %}</td>
--        <td>
--          {% if j.status == 'failed' %}
--          <form method="post" action="/ui/recordings/{{ rec.id }}/jobs/{{ j.id }}/retry{{ recording_inspector.embedded_return_queries.log }}">
--            <button type="submit" class="btn">Retry step</button>
--          </form>
--          {% else %}
--          <span class="placeholder">—</span>
--          {% endif %}
--        </td>
--      </tr>
--      {% endfor %}
--    </tbody>
--  </table>
--  {% else %}
--  <p class="placeholder">No jobs for this recording.</p>
--  {% endif %}
-+  {% include "partials/recording_inspector_full_speakers.html" %}
-+{% elif current_tab == 'transcript' %}
-+  {% include "partials/recording_inspector_full_transcript.html" %}
-+{% elif current_tab == 'summary' %}
-+  {% include "partials/recording_inspector_full_summary.html" %}
-+{% elif current_tab == 'diagnostics' %}
-+  {% include "partials/recording_inspector_full_diagnostics.html" %}
-+{% elif current_tab == 'export' %}
-+  {% include "partials/recording_inspector_full_export.html" %}
- {% endif %}
-diff --git a/lan_app/templates/partials/recording_inspector_header.html b/lan_app/templates/partials/recording_inspector_header.html
-index 92f604b..d157130 100644
---- a/lan_app/templates/partials/recording_inspector_header.html
-+++ b/lan_app/templates/partials/recording_inspector_header.html
-@@ -17,18 +17,19 @@
-         {% if recording_inspector.embedded %}
-         Stage {{ diagnostics.current_stage_label or 'Waiting' }}
-         {% else %}
--        Captured {{ rec.captured_at_display }}
-+        Stage {{ diagnostics.current_stage_label or 'Waiting' }}
-         {% endif %}
-       </span>
-       {% if recording_inspector.embedded %}
-       <span class="inspector-meta-chip">Captured {{ rec.captured_at_display }}</span>
-       <span class="inspector-meta-chip">Source {{ rec.source_display or rec.source }}</span>
-       {% else %}
-+      <span class="inspector-meta-chip">Captured {{ rec.captured_at_display }}</span>
-       <span class="inspector-meta-chip">Duration {{ rec.duration_display }}</span>
-       {% if rec.project_name or rec.project_id %}
-       <span class="inspector-meta-chip">Project {{ rec.project_name or ('#' ~ rec.project_id) }}</span>
-       {% endif %}
--      <span class="inspector-meta-chip">Tab {{ current_tab|capitalize }}</span>
-+      <span class="inspector-meta-chip">Status {{ diagnostics.current_stage_status_label or 'Unknown' }}</span>
-       {% endif %}
+   .app-nav-links{width:100%}
+   .control-center-shell{padding-bottom:0}
++  .standalone-header{align-items:flex-start;flex-direction:column}
++  .standalone-header-actions,
++  .context-banner-actions{width:100%}
+   .control-center-focus-topline,
+   .control-center-focus-actions{justify-content:flex-start}
+   .control-center-upload-grid{grid-template-columns:1fr}
+@@ -1742,7 +1859,7 @@ textarea:focus{
+     <div class="app-nav-mark">LT</div>
+     <div class="app-nav-copy">
+       <div class="app-nav-title">LAN Transcriber</div>
+-      <div class="app-nav-subtitle">Control Center workspace</div>
++      <div class="app-nav-subtitle">Daily operator workspace</div>
      </div>
    </div>
-@@ -36,7 +37,7 @@
-   <p class="inspector-note">{{ rec.status_reason_text_display }}</p>
-   {% endif %}
-   {% if not recording_inspector.embedded %}
--  <p class="muted">This full-page mode keeps the richer diagnostics, pipeline visibility, export tools, and broader speaker administration separate from the compact daily workspace.</p>
-+  <p class="muted">Use this dedicated page for deeper review, transcript reading, export, and diagnostics once the compact workspace signals that a recording needs more attention.</p>
-   {% endif %}
- </section>
- 
-diff --git a/lan_app/templates/recording_detail.html b/lan_app/templates/recording_detail.html
-index 40b82d1..7866c1c 100644
---- a/lan_app/templates/recording_detail.html
-+++ b/lan_app/templates/recording_detail.html
-@@ -3,5 +3,6 @@
- {% block content %}
- <div class="detail-page-shell">
-   {% include "partials/recording_inspector.html" %}
-+  {% include "partials/control_center/system_bar.html" %}
+   <nav class="app-nav-links">
+diff --git a/lan_app/templates/glossary.html b/lan_app/templates/glossary.html
+index 23d1fac..3c7bca8 100644
+--- a/lan_app/templates/glossary.html
++++ b/lan_app/templates/glossary.html
+@@ -10,18 +10,18 @@
+ } %}
+ {% include "partials/control_center/helper_message.html" %}
+ {% if return_context.active %}
+-<div style="margin:0 0 12px 0;padding:8px 10px;border:1px solid #99b;background:#f8f9ff;color:#334155;max-width:920px">
+-  <p style="margin:0 0 8px 0">{{ return_context.message }}</p>
+-  <div class="filters" style="margin:0">
+-    <a href="{{ return_context.href }}" class="btn" style="text-decoration:none">Return to Control Center</a>
++<div class="context-banner">
++  <p class="context-banner-copy">{{ return_context.message }}</p>
++  <div class="context-banner-actions">
++    <a href="{{ return_context.href }}" class="btn">Return to Control Center</a>
+     {% if return_context.selected_detail_href %}
+-    <a href="{{ return_context.selected_detail_href }}" class="btn" style="text-decoration:none">Open selected recording</a>
++    <a href="{{ return_context.selected_detail_href }}" class="btn">Open selected recording</a>
+     {% endif %}
+   </div>
  </div>
+ {% else %}
+-<div class="filters" style="margin-bottom:10px">
+-  <a href="/" class="btn" style="text-decoration:none">Open Control Center</a>
++<div class="standalone-header-actions" style="margin-bottom:10px">
++  <a href="/" class="btn">Open Control Center</a>
+ </div>
+ {% endif %}
+ 
+diff --git a/lan_app/templates/partials/control_center/helper_message.html b/lan_app/templates/partials/control_center/helper_message.html
+index 1208d3a..6f817e2 100644
+--- a/lan_app/templates/partials/control_center/helper_message.html
++++ b/lan_app/templates/partials/control_center/helper_message.html
+@@ -1,3 +1 @@
+-<p style="margin:0 0 12px 0;color:#555">
+-  {{ helper_message.text }}
+-</p>
++<p class="helper-message">{{ helper_message.text }}</p>
+diff --git a/lan_app/templates/partials/control_center/inspector_empty.html b/lan_app/templates/partials/control_center/inspector_empty.html
+index 6a146a0..fd9a552 100644
+--- a/lan_app/templates/partials/control_center/inspector_empty.html
++++ b/lan_app/templates/partials/control_center/inspector_empty.html
+@@ -6,7 +6,7 @@
+     <p class="control-center-empty-copy">{{ empty_inspector.message }}</p>
+     {% endif %}
+     <div class="control-center-empty-hints">
+-      <span class="control-center-empty-hint">Queue context stays visible</span>
++      <span class="control-center-empty-hint">Inbox context stays visible</span>
+       <span class="control-center-empty-hint">Review blockers on the right</span>
+       <span class="control-center-empty-hint">Open full page only for deep work</span>
+     </div>
+diff --git a/lan_app/templates/partials/control_center/page_notice.html b/lan_app/templates/partials/control_center/page_notice.html
+index ebb79ca..dbd095a 100644
+--- a/lan_app/templates/partials/control_center/page_notice.html
++++ b/lan_app/templates/partials/control_center/page_notice.html
+@@ -1,3 +1,3 @@
+-<p class="page-notice" style="margin-bottom:10px">
++<p class="page-notice">
+   {{ page_notice.message }}
+ </p>
+diff --git a/lan_app/templates/partials/control_center/workspace_header.html b/lan_app/templates/partials/control_center/workspace_header.html
+index e84ccca..243c5fc 100644
+--- a/lan_app/templates/partials/control_center/workspace_header.html
++++ b/lan_app/templates/partials/control_center/workspace_header.html
+@@ -50,7 +50,7 @@
+       <a href="{{ control_center_state.clear_selection_href }}" class="btn">Clear selection</a>
+       {% endif %}
+       {% if control_center_state.status or control_center_state.q %}
+-      <a href="{{ control_center_state.reset_href }}" class="btn">Reset queue view</a>
++      <a href="{{ control_center_state.reset_href }}" class="btn">Reset inbox view</a>
+       {% endif %}
+       {% if control_center_header.workflow_links.selected_detail_href %}
+       <a href="{{ control_center_header.workflow_links.selected_detail_href }}" class="btn">Open full-page inspector</a>
+diff --git a/lan_app/templates/partials/recording_inspector.html b/lan_app/templates/partials/recording_inspector.html
+index b667d09..e481d4d 100644
+--- a/lan_app/templates/partials/recording_inspector.html
++++ b/lan_app/templates/partials/recording_inspector.html
+@@ -9,7 +9,7 @@
+   hx-trigger="load, every 2s"
+   hx-swap="innerHTML"
+ >
+-  <div class="placeholder" style="padding:0">Loading pipeline progress…</div>
++  <div class="placeholder placeholder-inline">Loading pipeline progress…</div>
+ </div>
+ {% endif %}
+ 
+diff --git a/lan_app/templates/partials/recording_inspector_embedded_body.html b/lan_app/templates/partials/recording_inspector_embedded_body.html
+index 85cfacb..ee0b6c3 100644
+--- a/lan_app/templates/partials/recording_inspector_embedded_body.html
++++ b/lan_app/templates/partials/recording_inspector_embedded_body.html
+@@ -56,7 +56,7 @@
+   <div class="page-notice">
+     <div>{{ repair.detail }}</div>
+     {% if repair.available %}
+-    <form method="post" action="/ui/recordings/{{ rec.id }}/speakers/regenerate-snippets{{ recording_inspector.embedded_return_queries.speakers }}" style="margin-top:10px">
++    <form method="post" action="/ui/recordings/{{ rec.id }}/speakers/regenerate-snippets{{ recording_inspector.embedded_return_queries.speakers }}" class="stack-gap-sm">
+       <button class="btn" type="submit">{{ repair.button_label }}</button>
+     </form>
+     {% endif %}
+@@ -134,9 +134,9 @@
+ 
+   <section class="embedded-card">
+     <h3>Tone and questions</h3>
+-    <p class="inspector-note" style="margin-bottom:10px">{{ summary_data.emotional_summary or 'No emotional summary extracted.' }}</p>
++    <p class="inspector-note">{{ summary_data.emotional_summary or 'No emotional summary extracted.' }}</p>
+     {% if summary_data.questions and summary_data.questions.extracted %}
+-    <p class="inspector-note" style="margin-bottom:8px">
++    <p class="inspector-note stack-gap-xs">
+       {{ summary_data.questions.total_count }} extracted question{{ '' if summary_data.questions.total_count == 1 else 's' }}.
+     </p>
+     <ul>
+diff --git a/lan_app/templates/partials/recording_progress.html b/lan_app/templates/partials/recording_progress.html
+index 31924ef..4b78179 100644
+--- a/lan_app/templates/partials/recording_progress.html
++++ b/lan_app/templates/partials/recording_progress.html
+@@ -1,12 +1,12 @@
+-<div style="border:1px solid #ccd;background:#fff;padding:8px 10px">
+-  <div style="display:flex;gap:8px;align-items:center;justify-content:space-between;margin-bottom:6px;font-size:12px">
++<div class="recording-progress-shell">
++  <div class="recording-progress-head">
+     <span><strong>Pipeline:</strong> {{ diagnostics.current_stage_label or stage_label }}</span>
+     <span>{{ progress_percent }}%</span>
+   </div>
+-  <div style="width:100%;max-width:520px;height:14px;border:1px solid #99b;background:#eef2ff">
+-    <div style="height:100%;background:#4a6080;width:{{ progress_percent }}%"></div>
++  <div class="recording-progress-track">
++    <div class="recording-progress-fill" style="width:{{ progress_percent }}%"></div>
+   </div>
+-  <div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:6px;font-size:11px;color:#334155">
++  <div class="recording-progress-meta">
+     <span><strong>Stage:</strong> {{ diagnostics.current_stage_status_label }}</span>
+     {% if diagnostics.chunk_text != '—' %}
+     <span><strong>Chunk:</strong> {{ diagnostics.chunk_text }}</span>
+@@ -24,7 +24,7 @@
+     <span><strong>Stop:</strong> requested</span>
+     {% endif %}
+   </div>
+-  <div style="font-size:11px;color:#555;margin-top:5px">
++  <div class="recording-progress-footnote">
+     stage=<code>{{ stage_code }}</code>
+     {% if updated_at_display and updated_at_display != '—' %}
+     &nbsp;updated={{ updated_at_display }}
+diff --git a/lan_app/templates/partials/speaker_review_cards.html b/lan_app/templates/partials/speaker_review_cards.html
+index 012e961..b82b130 100644
+--- a/lan_app/templates/partials/speaker_review_cards.html
++++ b/lan_app/templates/partials/speaker_review_cards.html
+@@ -9,7 +9,7 @@
+         <div>
+           <div class="speaker-section-label">Diarized speaker</div>
+           <h3>{{ row.display_label }}</h3>
+-          <div class="speaker-card-meta" style="margin-top:6px">
++          <div class="speaker-card-meta stack-gap-xs">
+             <span>{{ row.turn_count }} turns</span>
+             <span>{{ '%.2f'|format(row.duration_sec or 0.0) }}s active</span>
+             <span>{{ row.mapping_title }}</span>
+@@ -31,17 +31,17 @@
+             <div class="speaker-section-label">Current decision</div>
+             <p class="speaker-context-title">{{ row.mapping_title }}</p>
+             <p>{{ row.mapping_detail }}</p>
+-            <p class="inspector-note" style="margin-top:8px">{{ row.state_detail }}</p>
++            <p class="inspector-note stack-gap-xs">{{ row.state_detail }}</p>
+             {% if row.review_state == 'system_suggested' %}
+-            <p class="inspector-note" style="margin-top:8px">Best suggestion score {{ '%.2f'|format(row.confidence or 0.0) }}</p>
++            <p class="inspector-note stack-gap-xs">Best suggestion score {{ '%.2f'|format(row.confidence or 0.0) }}</p>
+             {% endif %}
+             {% if row.low_confidence and row.assignment_threshold %}
+-            <p class="speaker-warning-inline" style="margin-top:8px">
++            <p class="speaker-warning-inline stack-gap-xs">
+               Below auto-match threshold {{ '%.2f'|format(row.assignment_threshold) }}.
+             </p>
+             {% endif %}
+             {% if row.candidate_matches %}
+-            <p class="inspector-note" style="margin-top:8px">
++            <p class="inspector-note stack-gap-xs">
+               Suggestions:
+               {% for candidate in row.candidate_matches %}
+               {{ candidate.display_name }} ({{ '%.2f'|format(candidate.score) }}){% if not loop.last %}, {% endif %}
+@@ -55,10 +55,10 @@
+             {% if row.preview_text %}
+             <p class="speaker-cue-text">{{ row.preview_text }}</p>
+             {% else %}
+-            <p class="placeholder" style="padding:0">No transcript cue is available for this speaker yet.</p>
++            <p class="placeholder placeholder-inline">No transcript cue is available for this speaker yet.</p>
+             {% endif %}
+             {% if row.snippet_ui_state %}
+-            <p class="inspector-note" style="margin-top:10px;color:{{ row.snippet_ui_state.color }}">
++            <p class="inspector-note inspector-note-status stack-gap-sm" style="--inspector-note-accent: {{ row.snippet_ui_state.color }}">
+               <strong>{{ row.snippet_ui_state.label }}:</strong> {{ row.snippet_ui_state.detail }}
+             </p>
+             {% endif %}
+@@ -109,7 +109,7 @@
+             <p class="speaker-snippet-empty-title">{{ row.snippet_ui_state.label if row.snippet_ui_state else 'Snippets unavailable' }}</p>
+             <p>{{ row.snippet_ui_state.detail if row.snippet_ui_state else (row.no_clean_snippet_message or 'No clean snippets are available for this speaker yet.') }}</p>
+             {% if row.no_clean_snippet_message and row.snippet_ui_state and row.no_clean_snippet_message != row.snippet_ui_state.detail %}
+-            <p class="inspector-note" style="margin-top:8px">{{ row.no_clean_snippet_message }}</p>
++            <p class="inspector-note stack-gap-xs">{{ row.no_clean_snippet_message }}</p>
+             {% endif %}
+           </div>
+           {% endif %}
+@@ -147,7 +147,7 @@
+             <button class="btn speaker-action-submit speaker-action-submit-primary" type="submit">Confirm match</button>
+           </form>
+           {% else %}
+-          <p class="placeholder" style="padding:0">
++          <p class="placeholder placeholder-inline">
+             No canonical speakers exist yet. {% if speaker_review_compact %}Use the full-page inspector or Voices to create one first.{% else %}Use Voices to create one first.{% endif %}
+           </p>
+           {% endif %}
+@@ -231,13 +231,13 @@
+             <button class="btn speaker-action-submit" type="submit" {% if not row.clean_snippets %}disabled{% endif %}>Add trusted sample</button>
+           </form>
+           {% else %}
+-          <p class="placeholder" style="padding:0">Create a canonical speaker first, then add trusted samples from clean clips.</p>
++          <p class="placeholder placeholder-inline">Create a canonical speaker first, then add trusted samples from clean clips.</p>
+           {% endif %}
+ 
+           {% if not row.clean_snippets and row.snippet_ui_state and row.snippet_ui_state.add_sample_message %}
+-          <p class="speaker-warning-inline" style="margin-top:8px">{{ row.snippet_ui_state.add_sample_message }}</p>
++          <p class="speaker-warning-inline stack-gap-xs">{{ row.snippet_ui_state.add_sample_message }}</p>
+           {% elif row.no_clean_snippet_message %}
+-          <p class="speaker-warning-inline" style="margin-top:8px">{{ row.no_clean_snippet_message }}</p>
++          <p class="speaker-warning-inline stack-gap-xs">{{ row.no_clean_snippet_message }}</p>
+           {% endif %}
+         </section>
+       </div>
+diff --git a/lan_app/templates/recordings.html b/lan_app/templates/recordings.html
+index 6ca32c5..7c1ba3f 100644
+--- a/lan_app/templates/recordings.html
++++ b/lan_app/templates/recordings.html
+@@ -1,14 +1,27 @@
+ {% extends "base.html" %}
+ {% block title %}Recordings – LAN Transcriber{% endblock %}
+ {% block content %}
+-<h1>Recordings <small style="font-weight:normal;color:#666">({{ total }} total)</small></h1>
+-{% set helper_message = {
+-  "text": "Direct fallback page. Use / for the main upload -> inspect -> export loop, and use this page when you want the queue on its own."
+-} %}
+-{% include "partials/control_center/helper_message.html" %}
+-<div class="filters" style="margin-bottom:10px">
+-  <a href="/" class="btn" style="text-decoration:none">Open Control Center</a>
+-</div>
++<div class="standalone-shell">
++  <section class="standalone-header">
++    <div class="standalone-header-copy">
++      <p class="eyebrow">Fallback workspace</p>
++      <h1>Recordings</h1>
++      <p class="standalone-header-note">
++        This page mirrors the operator inbox on its own when you want the worklist
++        without the compact inspector pinned on the right.
++      </p>
++    </div>
++    <div class="standalone-header-actions">
++      <span class="control-center-focus-pill">{{ total }} total</span>
++      <a href="/" class="btn btn-primary">Back to Control Center</a>
++    </div>
++  </section>
++
++  {% set helper_message = {
++    "text": "The same filters, row actions, and status language stay available here. Use / when you want the full daily workflow in one place."
++  } %}
++  {% include "partials/control_center/helper_message.html" %}
+ 
+-{% include "partials/control_center/recordings_panel.html" %}
++  {% include "partials/control_center/recordings_panel.html" %}
++</div>
  {% endblock %}
+diff --git a/lan_app/templates/upload.html b/lan_app/templates/upload.html
+index 2842a58..6e31962 100644
+--- a/lan_app/templates/upload.html
++++ b/lan_app/templates/upload.html
+@@ -1,15 +1,27 @@
+ {% extends "base.html" %}
+ {% block title %}Upload – LAN Transcriber{% endblock %}
+ {% block content %}
+-<h1>Upload</h1>
+-{% set helper_message = {
+-  "text": "Direct fallback page. The main daily workflow lives on /, but this page stays available when you only need standalone uploads."
+-} %}
+-{% include "partials/control_center/helper_message.html" %}
+-<div class="filters" style="margin-bottom:10px">
+-  <a href="/" class="btn" style="text-decoration:none">Open Control Center</a>
+-</div>
++<div class="standalone-shell">
++  <section class="standalone-header">
++    <div class="standalone-header-copy">
++      <p class="eyebrow">Fallback workspace</p>
++      <h1>Standalone Upload</h1>
++      <p class="standalone-header-note">
++        Use this page when you only need intake. The Control Center remains the primary
++        daily loop for upload, review, and export.
++      </p>
++    </div>
++    <div class="standalone-header-actions">
++      <a href="/" class="btn btn-primary">Back to Control Center</a>
++    </div>
++  </section>
++
++  {% set helper_message = {
++    "text": "Completed uploads stay visible here until you leave the page. When you need the worklist and compact inspector together, go back to /."
++  } %}
++  {% include "partials/control_center/helper_message.html" %}
+ 
+-{% include "partials/control_center/upload_panel.html" %}
+-{% include "partials/control_center/upload_script.html" %}
++  {% include "partials/control_center/upload_panel.html" %}
++  {% include "partials/control_center/upload_script.html" %}
++</div>
+ {% endblock %}
+diff --git a/lan_app/templates/voices.html b/lan_app/templates/voices.html
+index 9ecb64f..7927afc 100644
+--- a/lan_app/templates/voices.html
++++ b/lan_app/templates/voices.html
+@@ -8,18 +8,18 @@
+ } %}
+ {% include "partials/control_center/helper_message.html" %}
+ {% if return_context.active %}
+-<div style="margin:0 0 12px 0;padding:8px 10px;border:1px solid #99b;background:#f8f9ff;color:#334155;max-width:960px">
+-  <p style="margin:0 0 8px 0">{{ return_context.message }}</p>
+-  <div class="filters" style="margin:0">
+-    <a href="{{ return_context.href }}" class="btn" style="text-decoration:none">Return to Control Center</a>
++<div class="context-banner">
++  <p class="context-banner-copy">{{ return_context.message }}</p>
++  <div class="context-banner-actions">
++    <a href="{{ return_context.href }}" class="btn">Return to Control Center</a>
+     {% if return_context.selected_detail_href %}
+-    <a href="{{ return_context.selected_detail_href }}" class="btn" style="text-decoration:none">Open selected recording</a>
++    <a href="{{ return_context.selected_detail_href }}" class="btn">Open selected recording</a>
+     {% endif %}
+   </div>
+ </div>
+ {% else %}
+-<div class="filters" style="margin-bottom:10px">
+-  <a href="/" class="btn" style="text-decoration:none">Open Control Center</a>
++<div class="standalone-header-actions" style="margin-bottom:10px">
++  <a href="/" class="btn">Open Control Center</a>
+ </div>
+ {% endif %}
+ 
 diff --git a/lan_app/ui_routes.py b/lan_app/ui_routes.py
-index 8b24456..98ff894 100644
+index 98ff894..c28fdc5 100644
 --- a/lan_app/ui_routes.py
 +++ b/lan_app/ui_routes.py
-@@ -183,29 +183,39 @@ _CONTROL_CENTER_TABS = (
- )
- _FULL_PAGE_RECORDING_INSPECTOR_TABS = (
-     "overview",
--    "calendar",
--    "project",
-     "speakers",
--    "language",
--    "metrics",
--    "log",
-+    "transcript",
-+    "summary",
-+    "diagnostics",
-+    "export",
- )
- _RECORDING_INSPECTOR_TAB_LABELS = {
-     "overview": "Overview",
-+    "diagnostics": "Diagnostics",
-     "calendar": "Calendar",
-     "project": "Project",
-     "speakers": "Speakers",
-+    "transcript": "Transcript",
-     "language": "Language",
-     "metrics": "Metrics",
-     "log": "Diagnostics",
-     "summary": "Summary",
-     "export": "Export",
-+    "artifacts": "Artifacts",
- }
- _COMPACT_TO_FULL_PAGE_TAB = {
-     "overview": "overview",
-     "speakers": "speakers",
--    "summary": "overview",
--    "export": "overview",
-+    "transcript": "transcript",
-+    "summary": "summary",
-+    "diagnostics": "diagnostics",
-+    "export": "export",
-+    "calendar": "diagnostics",
-+    "project": "diagnostics",
-+    "language": "diagnostics",
-+    "metrics": "summary",
-+    "log": "diagnostics",
-+    "artifacts": "export",
- }
- _CONTROL_CENTER_LIST_LIMIT = 25
- _GLOSSARY_KIND_OPTIONS = ("person", "company", "product", "project", "term")
-@@ -785,12 +795,12 @@ def _summary_context(recording_id: str, settings: AppSettings) -> dict[str, Any]
-     topic = str(payload.get("topic") or "").strip()
-     emotional_summary = str(payload.get("emotional_summary") or "").strip()
+@@ -3383,7 +3383,7 @@ def _control_center_system_bar_context(
      return {
--        "topic": topic or "—",
-+        "topic": topic,
-         "summary_bullets": summary_bullets,
-         "summary_text": summary_text,
-         "decisions": decisions,
-         "action_items": action_items,
--        "emotional_summary": emotional_summary or "—",
-+        "emotional_summary": emotional_summary,
-         "questions": {
-             "total_count": questions_total,
-             "types": question_types,
-@@ -799,6 +809,288 @@ def _summary_context(recording_id: str, settings: AppSettings) -> dict[str, Any]
-     }
- 
- 
-+def _full_page_overview_next_action_context(
-+    recording_id: str,
-+    *,
-+    recording: dict[str, Any],
-+    diagnostics: dict[str, Any],
-+) -> dict[str, str]:
-+    status = str(recording.get("status") or "").strip()
-+    reason_text = str(
-+        diagnostics.get("primary_reason_text")
-+        or recording.get("status_reason_text_display")
-+        or ""
-+    ).strip()
-+    stage_code = str(
-+        diagnostics.get("current_stage_code") or recording.get("pipeline_stage") or ""
-+    ).strip()
-+    stage_hint = " ".join((stage_code, reason_text)).lower()
-+    if status in {RECORDING_STATUS_READY, RECORDING_STATUS_PUBLISHED}:
-+        return {
-+            "title": "Finalize the export",
-+            "detail": "Open Export to copy the markdown or download the ZIP bundle.",
-+            "href": _recording_detail_path(recording_id, tab="export"),
-+            "button_label": "Open Export",
-+        }
-+    if status == RECORDING_STATUS_NEEDS_REVIEW:
-+        if "speaker" in stage_hint or stage_code in {
-+            "diarization",
-+            "speaker_turns",
-+            "snippet_export",
-+        }:
-+            return {
-+                "title": "Resolve speaker identity",
-+                "detail": "Use Speakers to confirm matches, keep someone unknown, or apply a local label.",
-+                "href": _recording_detail_path(recording_id, tab="speakers"),
-+                "button_label": "Open Speakers",
-+            }
-+        if any(
-+            token in stage_hint
-+            for token in ("routing", "project", "calendar", "language", "quarantine")
-+        ):
-+            return {
-+                "title": "Review routing and diagnostics",
-+                "detail": "Use Diagnostics to inspect project, language, or calendar context before requeueing.",
-+                "href": _recording_detail_path(recording_id, tab="diagnostics"),
-+                "button_label": "Open Diagnostics",
-+            }
-+        return {
-+            "title": "Review the meeting output",
-+            "detail": "Use Summary first, then move to Diagnostics only if the blocker is still unclear.",
-+            "href": _recording_detail_path(recording_id, tab="summary"),
-+            "button_label": "Open Summary",
-+        }
-+    if status in {
-+        RECORDING_STATUS_QUEUED,
-+        RECORDING_STATUS_PROCESSING,
-+        RECORDING_STATUS_STOPPING,
-+    }:
-+        return {
-+            "title": "Track the active run",
-+            "detail": "Pipeline progress updates live here. Open Diagnostics for the detailed stage and retry history.",
-+            "href": _recording_detail_path(recording_id, tab="diagnostics"),
-+            "button_label": "Open Diagnostics",
-+        }
-+    if status == RECORDING_STATUS_STOPPED:
-+        return {
-+            "title": "Requeue when you are ready",
-+            "detail": "The current run is stopped. Use the action bar to restart it after reviewing Diagnostics.",
-+            "href": _recording_detail_path(recording_id, tab="diagnostics"),
-+            "button_label": "Open Diagnostics",
-+        }
-+    if status in {RECORDING_STATUS_QUARANTINE, RECORDING_STATUS_FAILED}:
-+        return {
-+            "title": "Triage before retrying",
-+            "detail": "Use Diagnostics to inspect the root cause, then requeue only after the blocker is understood.",
-+            "href": _recording_detail_path(recording_id, tab="diagnostics"),
-+            "button_label": "Open Diagnostics",
-+        }
-+    return {
-+        "title": "Read the transcript",
-+        "detail": "Use the dedicated Transcript tab when you need the full conversation in a wider reading surface.",
-+        "href": _recording_detail_path(recording_id, tab="transcript"),
-+        "button_label": "Open Transcript",
-+    }
-+
-+
-+def _full_page_overview_context(
-+    recording_id: str,
-+    *,
-+    recording: dict[str, Any],
-+    diagnostics: dict[str, Any],
-+    settings: AppSettings,
-+) -> dict[str, Any]:
-+    status = str(recording.get("status") or "Unknown").strip() or "Unknown"
-+    stage_label = str(diagnostics.get("current_stage_label") or "").strip()
-+    if not stage_label or stage_label == "Waiting":
-+        stage_label = _pipeline_stage_label(recording.get("pipeline_stage"))
-+    if status in {
-+        RECORDING_STATUS_QUEUED,
-+        RECORDING_STATUS_PROCESSING,
-+        RECORDING_STATUS_STOPPING,
-+    }:
-+        state_detail = f"Stage {stage_label} is active. Live progress stays visible at the top of the page."
-+    elif recording.get("pipeline_updated_at_display") not in {None, "", "—"}:
-+        state_detail = (
-+            f"Last pipeline update {recording['pipeline_updated_at_display']}. "
-+            f"Current stage status: {diagnostics['current_stage_status_label']}."
-+        )
-+    else:
-+        state_detail = f"Current / last pipeline stage: {stage_label}."
-+
-+    blocker_text = str(
-+        diagnostics.get("primary_reason_text")
-+        or recording.get("status_reason_text_display")
-+        or ""
-+    ).strip()
-+    if not blocker_text:
-+        blocker_text = "No blocker detected."
-+    blocker_detail = str(
-+        diagnostics.get("primary_reason_detail")
-+        or recording.get("review_reason_text_display")
-+        or recording.get("quarantine_reason")
-+        or recording.get("cancel_reason_text_display")
-+        or ""
-+    ).strip()
-+    if not blocker_detail:
-+        blocker_detail = f"Current status: {status}."
-+
-+    routing_value = "—"
-+    if recording.get("suggested_project_name") or recording.get("suggested_project_id"):
-+        routing_value = str(
-+            recording.get("suggested_project_name")
-+            or f"#{recording.get('suggested_project_id')}"
-+        )
-+        if recording.get("routing_confidence") is not None:
-+            routing_value = (
-+                f"{routing_value} · {float(recording['routing_confidence']):.2f}"
-+            )
-+    elif recording.get("routing_confidence") is not None:
-+        routing_value = f"{float(recording['routing_confidence']):.2f}"
-+
-+    focus_items: list[dict[str, str]] = []
-+    primary_reason = str(diagnostics.get("primary_reason_text") or "").strip()
-+    if primary_reason:
-+        focus_items.append({"label": "Primary reason", "value": primary_reason})
-+    review_reason = str(recording.get("review_reason_text_display") or "").strip()
-+    if review_reason and review_reason != primary_reason:
-+        focus_items.append({"label": "Review reason", "value": review_reason})
-+    quarantine_reason = str(recording.get("quarantine_reason") or "").strip()
-+    if quarantine_reason:
-+        focus_items.append({"label": "Quarantine reason", "value": quarantine_reason})
-+    if routing_value != "—":
-+        focus_items.append({"label": "Routing signal", "value": routing_value})
-+    if recording.get("cancel_requested_at_display") not in {None, "", "—"}:
-+        requested_by = str(recording.get("cancel_requested_by_display") or "").strip()
-+        cancel_value = str(recording["cancel_requested_at_display"])
-+        if requested_by:
-+            cancel_value = f"{cancel_value} by {requested_by}"
-+        focus_items.append({"label": "Stop requested", "value": cancel_value})
-+
-+    return {
-+        "state_title": status,
-+        "state_detail": state_detail,
-+        "blocker_title": blocker_text,
-+        "blocker_detail": blocker_detail,
-+        "next_action": _full_page_overview_next_action_context(
-+            recording_id,
-+            recording=recording,
-+            diagnostics=diagnostics,
-+        ),
-+        "metadata": [
-+            {
-+                "label": "Captured",
-+                "value": str(recording.get("captured_at_display") or "—"),
-+            },
-+            {
-+                "label": "Duration",
-+                "value": str(recording.get("duration_display") or "—"),
-+            },
-+            {
-+                "label": "Source",
-+                "value": str(
-+                    recording.get("source_display") or recording.get("source") or "—"
-+                ),
-+            },
-+            {
-+                "label": "Dominant language",
-+                "value": _recording_dominant_language_display(
-+                    recording_id,
-+                    recording=recording,
-+                    settings=settings,
-+                ),
-+            },
-+            {
-+                "label": "Project",
-+                "value": str(
-+                    recording.get("project_name")
-+                    or (
-+                        f"#{recording.get('project_id')}"
-+                        if recording.get("project_id")
-+                        else "Unassigned"
-+                    )
-+                ),
-+            },
-+            {
-+                "label": "Suggested route",
-+                "value": routing_value,
-+            },
-+        ],
-+        "focus_items": focus_items,
-+    }
-+
-+
-+def _transcript_tab_context(recording_id: str, settings: AppSettings) -> dict[str, Any]:
-+    transcript_path, _summary_path = _recording_derived_paths(recording_id, settings)
-+    speaker_turns_path = transcript_path.parent / "speaker_turns.json"
-+    transcript_payload = _load_json_dict(transcript_path)
-+    speaker_turns_raw = _load_json_list(speaker_turns_path)
-+    speaker_turns = [row for row in speaker_turns_raw if isinstance(row, dict)]
-+    if not speaker_turns:
-+        speaker_turns = _fallback_speaker_turns_from_transcript(transcript_payload)
-+
-+    dominant_language = _language_display_name(
-+        _normalise_language_code(transcript_payload.get("dominant_language"))
-+    )
-+    if dominant_language == "—":
-+        language_payload = transcript_payload.get("language")
-+        if isinstance(language_payload, dict):
-+            dominant_language = _language_display_name(
-+                _normalise_language_code(language_payload.get("detected"))
-+            )
-+    speaker_name_map = _recording_speaker_name_map(recording_id, settings=settings)
-+    turns: list[dict[str, str]] = []
-+    copy_lines: list[str] = []
-+    for row in speaker_turns:
-+        text = str(row.get("text") or "").strip()
-+        if not text:
-+            continue
-+        speaker = _speaker_display_label(
-+            str(row.get("speaker") or "S1"),
-+            speaker_name_map=speaker_name_map,
-+        )
-+        try:
-+            start_value = float(row.get("start") or 0.0)
-+        except (TypeError, ValueError):
-+            start_value = 0.0
-+        try:
-+            end_value = float(row.get("end") or start_value)
-+        except (TypeError, ValueError):
-+            end_value = start_value
-+        time_range = (
-+            f"{_format_duration_seconds(start_value)} - "
-+            f"{_format_duration_seconds(max(end_value, start_value))}"
-+        )
-+        language_label = _language_display_name(_normalise_language_code(row.get("language")))
-+        turns.append(
-+            {
-+                "speaker": speaker,
-+                "time_range": time_range,
-+                "text": text,
-+                "language_label": language_label if language_label != "—" else "",
-+            }
-+        )
-+        copy_lines.append(f"[{time_range}] {speaker}: {text}")
-+
-+    transcript_text = str(transcript_payload.get("text") or "").strip()
-+    source_label = "Speaker-attributed turns" if turns else "Transcript text"
-+    copy_text = "\n\n".join(copy_lines).strip()
-+    if not copy_text:
-+        copy_text = transcript_text
-+
-+    return {
-+        "available": bool(turns or transcript_text),
-+        "source_label": source_label,
-+        "dominant_language_label": dominant_language if dominant_language != "—" else "Unknown",
-+        "turn_count": len(turns),
-+        "turns": turns,
-+        "raw_text": transcript_text,
-+        "copy_text": copy_text,
-+        "quick_add_href": _glossary_quick_entry_href(recording_id=recording_id),
-+        "manage_corrections_href": "/glossary",
-+    }
-+
-+
- def _metrics_tab_context(recording_id: str, settings: AppSettings) -> dict[str, Any]:
-     def _to_int(value: Any, *, default: int = 0) -> int:
-         try:
-@@ -3858,7 +4150,11 @@ def _recording_inspector_context(
-     rec = _prepare_recording_for_display(rec, settings=_settings)
-     jobs, _ = list_jobs(settings=_settings, recording_id=recording_id, limit=100)
-     recovery_warning = _recording_recovery_warning(jobs)
--    safe_tab = current_tab if current_tab in allowed_tabs else "overview"
-+    safe_tab = (
-+        _control_center_tab(current_tab)
-+        if is_embedded
-+        else _full_page_recording_tab(current_tab)
-+    )
-     calendar: dict[str, Any] | None = None
-     language: dict[str, Any] | None = None
-     summary: dict[str, Any] | None = None
-@@ -3867,6 +4163,8 @@ def _recording_inspector_context(
-     project: dict[str, Any] | None = None
-     glossary: dict[str, Any] | None = None
-     compact_overview: dict[str, Any] | None = None
-+    overview: dict[str, Any] | None = None
-+    transcript: dict[str, Any] | None = None
-     export_text = ""
-     stage_rows = list_recording_pipeline_stages(recording_id, settings=_settings)
-     chunk_rows = list_recording_llm_chunk_states(recording_id, settings=_settings)
-@@ -3879,12 +4177,16 @@ def _recording_inspector_context(
-     )
-     if diagnostics["primary_reason_text"]:
-         rec["status_reason_text_display"] = diagnostics["primary_reason_text"]
--    if not is_embedded and safe_tab == "calendar":
-+    if not is_embedded and safe_tab == "diagnostics":
-         calendar = _calendar_tab_context(recording_id, _settings)
-         if calendar_error.strip():
-             calendar["error_message"] = calendar_error.strip()
--    if not is_embedded and safe_tab == "language":
-         language = _language_tab_context(recording_id, rec, _settings)
-+        project = _project_tab_context(recording_id, rec, _settings)
-+        rec = _prepare_recording_for_display(
-+            get_recording(recording_id, settings=_settings) or rec,
-+            settings=_settings,
-+        )
-     if safe_tab == "speakers":
-         speakers = _speakers_tab_context(
-             recording_id,
-@@ -3895,16 +4197,10 @@ def _recording_inspector_context(
-             error_message=speakers_error,
-         )
-         speakers["manage_voices_href"] = "/voices"
--    if not is_embedded and safe_tab == "project":
--        project = _project_tab_context(recording_id, rec, _settings)
--        rec = _prepare_recording_for_display(
--            get_recording(recording_id, settings=_settings) or rec,
--            settings=_settings,
--        )
--    if safe_tab in {"summary", "metrics"} or (
--        safe_tab == "overview" and not is_embedded
--    ):
-+    if safe_tab == "summary":
-         summary = _summary_context(recording_id, _settings)
-+    if not is_embedded and safe_tab == "summary":
-+        metrics = _metrics_tab_context(recording_id, _settings)
-     if safe_tab == "overview":
-         if is_embedded and control_center_state is not None:
-             compact_overview = _compact_inspector_overview_context(
-@@ -3915,12 +4211,16 @@ def _recording_inspector_context(
-                 settings=_settings,
-             )
-         else:
--            export_text = build_onenote_markdown(rec, settings=_settings)
--            glossary = _asr_glossary_context(recording_id, _settings)
-+            overview = _full_page_overview_context(
-+                recording_id,
-+                recording=rec,
-+                diagnostics=diagnostics,
-+                settings=_settings,
-+            )
-+    if not is_embedded and safe_tab == "transcript":
-+        transcript = _transcript_tab_context(recording_id, _settings)
-     if safe_tab == "export":
-         export_text = build_onenote_markdown(rec, settings=_settings)
--    if not is_embedded and safe_tab == "metrics":
--        metrics = _metrics_tab_context(recording_id, _settings)
-     progress_url = (
-         f"/ui/recordings/{quote(recording_id, safe='')}/progress?tab="
-         f"{quote(safe_tab, safe='')}"
-@@ -3979,6 +4279,8 @@ def _recording_inspector_context(
-         "project": project,
-         "glossary": glossary,
-         "compact_overview": compact_overview,
-+        "overview": overview,
-+        "transcript": transcript,
-         "export_text": export_text,
-         "pipeline_stages": pipeline_stages,
-         "diagnostics": diagnostics,
-@@ -4804,11 +5106,30 @@ async def ui_recording_detail(
-     )
-     if inspector_context is None:
-         return HTMLResponse("<h1>404 – Recording not found</h1>", status_code=404)
-+    detail_state = _control_center_state_context(
-+        selected=recording_id,
-+        status=str(inspector_context["rec"].get("status") or "").strip(),
-+        q="",
-+        tab=inspector_context["current_tab"],
-+        limit=1,
-+        offset=0,
-+    )
-+    runtime_status = await run_in_threadpool(
-+        collect_control_center_runtime_status,
-+        _settings,
-+    )
-     return templates.TemplateResponse(
-         request,
-         "recording_detail.html",
-         {
-             "active": "recordings",
-+            "control_center_state": detail_state,
-+            "control_center_system_bar": _control_center_system_bar_context(
-+                _settings,
-+                state=detail_state,
-+                recordings_panel={"total": 1},
-+                runtime_status=runtime_status,
-+            ),
-             **inspector_context,
-         },
-     )
+         "primary_items": [
+             {
+-                "label": "Queue view",
++                "label": "Inbox view",
+                 "value": f"{recordings_panel['total']} visible",
+                 "detail": queue_detail,
+                 "tone": "neutral",
 diff --git a/tasks/QUEUE.md b/tasks/QUEUE.md
-index 4a6fed3..43dae71 100644
+index 43dae71..782ba59 100644
 --- a/tasks/QUEUE.md
 +++ b/tasks/QUEUE.md
-@@ -595,7 +595,7 @@ Queue (in order)
- - Depends on: PR-SPEAKER-DECISIONS-02 and PR-SNIPPETS-UI-STATE-01 and PR-SNIPPETS-REPAIR-BACKFILL-01
- 
- 119) PR-INSPECTOR-FULL-PAGE-02: Rebuild the full-page recording inspector around Overview, Speakers, Transcript, Summary, Diagnostics, and Export
--- Status: TODO
-+- Status: DONE
- - Tasks file: tasks/PR-INSPECTOR-FULL-PAGE-02.md
+@@ -600,6 +600,6 @@ Queue (in order)
  - Depends on: PR-SPEAKER-SNIPPET-UX-02 and PR-UI-STITCH-INSPECTOR-COMPACT-01
  
+ 120) PR-UI-STITCH-POLISH-02: Final Stitch-aligned cleanup, consistency polish, and workflow test hardening for the operator-centric UI
+-- Status: TODO
++- Status: DONE
+ - Tasks file: tasks/PR-UI-STITCH-POLISH-02.md
+ - Depends on: PR-INSPECTOR-FULL-PAGE-02 and PR-OPS-SYSTEM-BAR-01
 diff --git a/tests/test_cov_lan_app_ui_routes.py b/tests/test_cov_lan_app_ui_routes.py
-index 38de57e..c9b38ea 100644
+index c9b38ea..d85b19d 100644
 --- a/tests/test_cov_lan_app_ui_routes.py
 +++ b/tests/test_cov_lan_app_ui_routes.py
-@@ -249,7 +249,7 @@ def test_control_center_helper_contexts_cover_fragment_builders(
-         tab="summary",
-     )
-     assert summary_state["tab"] == "summary"
--    assert summary_state["selected_detail_href"] == "/recordings/rec-helper-1"
-+    assert summary_state["selected_detail_href"] == "/recordings/rec-helper-1?tab=summary"
-     assert summary_state["tab_label"] == "Summary"
- 
-     fallback_state = ui_routes._control_center_state_context(  # noqa: SLF001
-@@ -443,7 +443,7 @@ def test_control_center_helper_contexts_cover_fragment_builders(
-     )
-     assert (
-         ui_routes._recording_detail_path("rec-helper-1", tab="summary")
--        == "/recordings/rec-helper-1"
-+        == "/recordings/rec-helper-1?tab=summary"
-     )
- 
-     monkeypatch.setattr(
-@@ -987,6 +987,131 @@ def test_compact_inspector_helpers_cover_next_action_branches(tmp_path: Path) ->
-     assert fallback["button_label"] == "Open Full Page"
- 
- 
-+def test_full_page_helpers_cover_overview_and_next_action_branches(
-+    tmp_path: Path,
-+) -> None:
-+    cfg = _cfg(tmp_path)
-+
-+    review_speakers = ui_routes._full_page_overview_next_action_context(  # noqa: SLF001
-+        "rec-full-1",
-+        recording={"status": RECORDING_STATUS_NEEDS_REVIEW},
-+        diagnostics={
-+            "current_stage_code": "diarization",
-+            "primary_reason_text": "Speaker labels need review",
-+        },
-+    )
-+    assert review_speakers["href"].endswith("tab=speakers")
-+
-+    failed = ui_routes._full_page_overview_next_action_context(  # noqa: SLF001
-+        "rec-full-1",
-+        recording={"status": RECORDING_STATUS_FAILED},
-+        diagnostics={"current_stage_code": "llm_extract", "primary_reason_text": ""},
-+    )
-+    assert failed["title"] == "Triage before retrying"
-+    assert failed["href"].endswith("tab=diagnostics")
-+
-+    fallback = ui_routes._full_page_overview_next_action_context(  # noqa: SLF001
-+        "rec-full-1",
-+        recording={"status": "Mystery"},
-+        diagnostics={"current_stage_code": "", "primary_reason_text": ""},
-+    )
-+    assert fallback["href"].endswith("tab=transcript")
-+
-+    detailed_overview = ui_routes._full_page_overview_context(  # noqa: SLF001
-+        "rec-full-1",
-+        recording={
-+            "status": RECORDING_STATUS_READY,
-+            "pipeline_updated_at_display": "2026-01-02 03:05:00 CET",
-+            "captured_at_display": "2026-01-02 03:04:05 CET",
-+            "duration_display": "00:00:12",
-+            "source": "upload",
-+            "project_name": "Roadmap",
-+            "suggested_project_name": "Roadmap",
-+            "routing_confidence": 0.91,
-+            "review_reason_text_display": "Needs a manual check",
-+            "quarantine_reason": "Sensitive content",
-+            "cancel_requested_at_display": "2026-01-02 03:06:00 CET",
-+            "cancel_requested_by_display": "Alex",
-+        },
-+        diagnostics={
-+            "current_stage_label": "LLM Summary",
-+            "current_stage_status_label": "Completed",
-+            "current_stage_code": "llm_extract",
-+            "primary_reason_text": "Primary blocker",
-+        },
-+        settings=cfg,
-+    )
-+    assert "Last pipeline update 2026-01-02 03:05:00 CET." in detailed_overview[
-+        "state_detail"
-+    ]
-+    assert "Current stage status: Completed." in detailed_overview["state_detail"]
-+    assert detailed_overview["metadata"][-1]["value"] == "Roadmap · 0.91"
-+    assert detailed_overview["focus_items"] == [
-+        {"label": "Primary reason", "value": "Primary blocker"},
-+        {"label": "Review reason", "value": "Needs a manual check"},
-+        {"label": "Quarantine reason", "value": "Sensitive content"},
-+        {"label": "Routing signal", "value": "Roadmap · 0.91"},
-+        {
-+            "label": "Stop requested",
-+            "value": "2026-01-02 03:06:00 CET by Alex",
-+        },
-+    ]
-+
-+    fallback_overview = ui_routes._full_page_overview_context(  # noqa: SLF001
-+        "rec-full-1",
-+        recording={
-+            "status": "Mystery",
-+            "pipeline_stage": "sanitize_audio",
-+            "captured_at_display": "—",
-+            "duration_display": "—",
-+            "source": "upload",
-+            "routing_confidence": 0.42,
-+        },
-+        diagnostics={
-+            "current_stage_label": "Waiting",
-+            "current_stage_status_label": "Queued",
-+            "current_stage_code": "",
-+            "primary_reason_text": "",
-+        },
-+        settings=cfg,
-+    )
-+    assert fallback_overview["state_detail"] == (
-+        "Current / last pipeline stage: Sanitize Audio."
-+    )
-+    assert fallback_overview["metadata"][-1]["value"] == "0.42"
-+
-+    branch_overview = ui_routes._full_page_overview_context(  # noqa: SLF001
-+        "rec-full-1",
-+        recording={
-+            "status": RECORDING_STATUS_READY,
-+            "captured_at_display": "—",
-+            "duration_display": "—",
-+            "source": "upload",
-+            "suggested_project_id": 7,
-+            "cancel_requested_at_display": "2026-01-02 03:07:00 CET",
-+            "cancel_requested_by_display": "",
-+        },
-+        diagnostics={
-+            "current_stage_label": "Done",
-+            "current_stage_status_label": "Ready",
-+            "current_stage_code": "done",
-+            "primary_reason_text": "",
-+        },
-+        settings=cfg,
-+    )
-+    assert branch_overview["metadata"][-1]["value"] == "#7"
-+    assert branch_overview["focus_items"] == [
-+        {
-+            "label": "Routing signal",
-+            "value": "#7",
-+        },
-+        {
-+            "label": "Stop requested",
-+            "value": "2026-01-02 03:07:00 CET",
-+        },
-+    ]
-+
-+
- def test_display_helpers_cover_timezone_duration_and_prepare_recording(
-     tmp_path: Path,
-     monkeypatch: pytest.MonkeyPatch,
-@@ -1326,7 +1451,7 @@ def test_ui_action_stop_helper_edge_paths(
-         ui_routes.ui_action_stop("rec-ready", request=request, tab="calendar")
-     )
-     assert not_eligible.status_code == 303
--    assert not_eligible.headers["location"] == "/recordings/rec-ready?tab=calendar"
-+    assert not_eligible.headers["location"] == "/recordings/rec-ready?tab=diagnostics"
- 
-     monkeypatch.setattr(
-         ui_routes,
-@@ -2652,6 +2777,111 @@ def test_project_language_and_resummarize_helpers(
-         )  # noqa: SLF001
- 
- 
-+def test_transcript_tab_context_covers_fallback_turns_and_copy_paths(
-+    tmp_path: Path,
-+    monkeypatch: pytest.MonkeyPatch,
-+) -> None:
-+    cfg = _cfg(tmp_path)
-+
-+    speaker_recording = cfg.recordings_root / "rec-transcript-fallback" / "derived"
-+    speaker_recording.mkdir(parents=True, exist_ok=True)
-+    (speaker_recording / "transcript.json").write_text(
-+        json.dumps({"text": "raw transcript", "language": {"detected": "es"}}),
-+        encoding="utf-8",
-+    )
-+    monkeypatch.setattr(
-+        ui_routes,
-+        "_fallback_speaker_turns_from_transcript",
-+        lambda *_a, **_k: [
-+            {"speaker": "S9", "text": "   "},
-+            {"speaker": "", "start": "bad", "end": "", "text": "Hola", "language": "??"},
-+            {
-+                "speaker": "S2",
-+                "start": 1.2,
-+                "end": "bad",
-+                "text": "Hello",
-+                "language": "en",
-+            },
-+        ],
-+    )
-+
-+    transcript = ui_routes._transcript_tab_context(  # noqa: SLF001
-+        "rec-transcript-fallback",
-+        cfg,
-+    )
-+    assert transcript["available"] is True
-+    assert transcript["source_label"] == "Speaker-attributed turns"
-+    assert transcript["dominant_language_label"] == "Spanish (es)"
-+    assert transcript["turn_count"] == 2
-+    assert transcript["turns"][0] == {
-+        "speaker": "S1",
-+        "time_range": "— - —",
-+        "text": "Hola",
-+        "language_label": "",
-+    }
-+    assert transcript["turns"][1]["time_range"] == "00:00:01 - 00:00:01"
-+    assert transcript["turns"][1]["language_label"] == "English (en)"
-+    assert "[— - —] S1: Hola" in transcript["copy_text"]
-+    assert "[00:00:01 - 00:00:01] S2: Hello" in transcript["copy_text"]
-+
-+    raw_only_recording = cfg.recordings_root / "rec-transcript-raw" / "derived"
-+    raw_only_recording.mkdir(parents=True, exist_ok=True)
-+    (raw_only_recording / "transcript.json").write_text(
-+        json.dumps({"text": "raw only", "dominant_language": "en"}),
-+        encoding="utf-8",
-+    )
-+    monkeypatch.setattr(
-+        ui_routes,
-+        "_fallback_speaker_turns_from_transcript",
-+        lambda *_a, **_k: [],
-+    )
-+
-+    raw_only = ui_routes._transcript_tab_context(  # noqa: SLF001
-+        "rec-transcript-raw",
-+        cfg,
-+    )
-+    assert raw_only["available"] is True
-+    assert raw_only["source_label"] == "Transcript text"
-+    assert raw_only["turn_count"] == 0
-+    assert raw_only["turns"] == []
-+    assert raw_only["copy_text"] == "raw only"
-+    assert raw_only["dominant_language_label"] == "English (en)"
-+
-+    file_backed_recording = cfg.recordings_root / "rec-transcript-file" / "derived"
-+    file_backed_recording.mkdir(parents=True, exist_ok=True)
-+    (file_backed_recording / "transcript.json").write_text(
-+        json.dumps({"text": "ignored raw", "dominant_language": "en"}),
-+        encoding="utf-8",
-+    )
-+    (file_backed_recording / "speaker_turns.json").write_text(
-+        json.dumps(
-+            [
-+                {
-+                    "speaker": "S3",
-+                    "start": 2.0,
-+                    "end": 3.0,
-+                    "text": "From file",
-+                    "language": "en",
-+                }
-+            ]
-+        ),
-+        encoding="utf-8",
-+    )
-+    monkeypatch.setattr(
-+        ui_routes,
-+        "_fallback_speaker_turns_from_transcript",
-+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("fallback not expected")),
-+    )
-+
-+    file_backed = ui_routes._transcript_tab_context(  # noqa: SLF001
-+        "rec-transcript-file",
-+        cfg,
-+    )
-+    assert file_backed["turn_count"] == 1
-+    assert file_backed["turns"][0]["speaker"] == "S3"
-+    assert file_backed["copy_text"] == "[00:00:02 - 00:00:03] S3: From file"
-+
-+
- def test_resummarize_recording_default_turn_and_attendees_paths(
-     tmp_path: Path,
-     monkeypatch: pytest.MonkeyPatch,
-diff --git a/tests/test_pipeline_checkpoints_resume.py b/tests/test_pipeline_checkpoints_resume.py
-index 93990dd..4cc338d 100644
---- a/tests/test_pipeline_checkpoints_resume.py
-+++ b/tests/test_pipeline_checkpoints_resume.py
-@@ -710,8 +710,8 @@ def test_ui_recording_detail_renders_pipeline_stages_table(tmp_path: Path, monke
-     monkeypatch.setattr(ui_routes, "_settings", cfg)
-     client = TestClient(api.app)
- 
--    response = client.get("/recordings/rec-ui-stage-1")
-+    response = client.get("/recordings/rec-ui-stage-1?tab=diagnostics")
- 
-     assert response.status_code == 200
--    assert "Pipeline Stages" in response.text
-+    assert "Pipeline stages" in response.text
-     assert "Sanitize Audio" in response.text
+@@ -680,7 +680,7 @@ def test_control_center_system_bar_route_avoids_work_pane_builder(
+         return {
+             "primary_items": [
+                 {
+-                    "label": "Queue view",
++                    "label": "Inbox view",
+                     "value": f"{recordings_panel['total']} visible",
+                     "detail": state["status"] or "All statuses",
+                 }
 diff --git a/tests/test_ui_routes.py b/tests/test_ui_routes.py
-index b415803..608d53c 100644
+index 608d53c..aa62455 100644
 --- a/tests/test_ui_routes.py
 +++ b/tests/test_ui_routes.py
-@@ -1142,7 +1142,9 @@ def test_recording_detail_stop_button_visibility(
-         assert "Stopping..." not in r.text
- 
- 
--def test_recording_detail_overview_shows_asr_glossary_context(tmp_path, monkeypatch):
-+def test_recording_detail_transcript_tab_shows_asr_glossary_actions(
-+    tmp_path, monkeypatch
-+):
-     cfg = _cfg(tmp_path)
-     monkeypatch.setattr(api, "_settings", cfg)
-     monkeypatch.setattr(ui_routes, "_settings", cfg)
-@@ -1182,15 +1184,12 @@ def test_recording_detail_overview_shows_asr_glossary_context(tmp_path, monkeypa
+@@ -474,7 +474,7 @@ def test_control_center_pane_fragment_endpoints(seeded_client):
+         'hx-trigger="every 15s, refresh-control-center-system-bar from:body"'
+         in system_bar.text
      )
+-    assert "Queue view" in system_bar.text
++    assert "Inbox view" in system_bar.text
+     assert "Active jobs" in system_bar.text
+     assert "DGX / Spark" in system_bar.text
+     assert "GPU path" in system_bar.text
+@@ -564,7 +564,7 @@ def test_control_center_system_bar_renders_degraded_cpu_fallback(
+     empty_inspector = seeded_client.get("/ui/control-center/inspector-pane")
+     assert empty_inspector.status_code == 200
+     assert "No recording selected" in empty_inspector.text
+-    assert "Queue context stays visible" in empty_inspector.text
++    assert "Inbox context stays visible" in empty_inspector.text
  
-     c = TestClient(api.app, follow_redirects=True)
--    r = c.get("/recordings/rec-ui-glossary-1")
-+    r = c.get("/recordings/rec-ui-glossary-1?tab=transcript")
+ 
+ def test_control_center_selected_recording_renders_embedded_inspector_actions(
+@@ -897,6 +897,7 @@ def test_recordings_empty(client):
+     r = client.get("/recordings")
      assert r.status_code == 200
--    assert "Corrections / ASR Memory" in r.text
-+    assert "Transcript" in r.text
-     assert "Manage corrections" in r.text
-     assert "Add correction from this recording" in r.text
--    assert "/glossary?recording_id=rec-ui-glossary-1#glossary-form" in r.text
--    assert "Sander" in r.text
--    assert "Sandia" in r.text
--    assert "correction, speaker bank" in r.text
-+    assert '/glossary?recording_id=rec-ui-glossary-1"' in r.text
+     assert "Recordings" in r.text
++    assert "Back to Control Center" in r.text
  
  
- def test_recording_detail_calendar_tab_renders_selected_candidate_and_rationale(
-@@ -1337,7 +1336,7 @@ def test_recording_detail_calendar_selection_and_clear_persist(tmp_path, monkeyp
-     assert selected.status_code == 303
+ def test_recordings_with_data(seeded_client):
+@@ -3564,7 +3565,8 @@ def test_queue_invalid_status_shows_all(seeded_client):
+ def test_upload_page(client):
+     r = client.get("/upload")
+     assert r.status_code == 200
+-    assert "Upload" in r.text
++    assert "Standalone Upload" in r.text
++    assert "Back to Control Center" in r.text
+     assert 'id="file-input"' in r.text
+     assert "Drop audio here or browse from disk." in r.text
+     assert "Recent uploads stay here while you work" in r.text
+@@ -3572,6 +3574,7 @@ def test_upload_page(client):
+         "Completed uploads stay listed here so standalone uploads keep their in-page progress and Open recording link."
+         in r.text
+     )
++    assert "Completed uploads stay visible here until you leave the page." in r.text
      assert (
-         selected.headers["location"]
--        == "/recordings/rec-ui-calendar-select-1?tab=calendar"
-+        == "/recordings/rec-ui-calendar-select-1?tab=diagnostics"
-     )
-     match = get_calendar_match("rec-ui-calendar-select-1", settings=cfg)
-     assert match is not None
-@@ -1346,6 +1345,10 @@ def test_recording_detail_calendar_selection_and_clear_persist(tmp_path, monkeyp
+         "No uploads yet. New files appear here with upload and processing progress."
+         in r.text
+diff --git a/tests_playwright/test_ui_smoke_playwright.py b/tests_playwright/test_ui_smoke_playwright.py
+index 81ee997..31bebd8 100644
+--- a/tests_playwright/test_ui_smoke_playwright.py
++++ b/tests_playwright/test_ui_smoke_playwright.py
+@@ -272,6 +272,12 @@ def test_control_center_embedded_inspector_and_export_zip_smoke(tmp_path: Path)
+                     state="visible",
+                     timeout=_remaining_timeout_ms(deadline),
+                 )
++                page.locator(
++                    "#control-center-system-bar .control-center-system-label"
++                ).filter(has_text="Inbox view").first.wait_for(
++                    state="visible",
++                    timeout=_remaining_timeout_ms(deadline),
++                )
+                 assert urlparse(page.url).path == "/"
  
-     cleared = c.post("/ui/recordings/rec-ui-calendar-select-1/calendar/select", data={})
-     assert cleared.status_code == 303
-+    assert (
-+        cleared.headers["location"]
-+        == "/recordings/rec-ui-calendar-select-1?tab=diagnostics"
-+    )
-     match = get_calendar_match("rec-ui-calendar-select-1", settings=cfg)
-     assert match is not None
-     assert match["selected_event_id"] is None
-@@ -1458,7 +1461,7 @@ def test_recording_progress_endpoint_redirects_when_terminal(tmp_path, monkeypat
-         headers={"HX-Request": "true"},
-     )
-     assert r.status_code == 200
--    assert r.headers["HX-Redirect"] == "/recordings/rec-ui-terminal-1?tab=metrics"
-+    assert r.headers["HX-Redirect"] == "/recordings/rec-ui-terminal-1?tab=summary"
- 
- 
- def test_recording_progress_endpoint_redirects_to_control_center_when_embedded_terminal(
-@@ -1555,7 +1558,7 @@ def test_recording_detail_shows_primary_diagnostics_section(tmp_path, monkeypatc
-     )
- 
-     c = TestClient(api.app, follow_redirects=True)
--    r = c.get("/recordings/rec-ui-diagnostics-1")
-+    r = c.get("/recordings/rec-ui-diagnostics-1?tab=diagnostics")
-     assert r.status_code == 200
-     assert "Diagnostics" in r.text
-     assert "LLM chunk 3/10 timed out." in r.text
-@@ -1689,7 +1692,7 @@ def test_recording_detail_project_assignment_trains_routing(tmp_path, monkeypatc
-         },
-     )
-     assert resp.status_code == 303
--    assert resp.headers["location"] == "/recordings/rec-project-assign-1?tab=project"
-+    assert resp.headers["location"] == "/recordings/rec-project-assign-1?tab=diagnostics"
- 
-     recording = get_recording("rec-project-assign-1", settings=cfg)
-     assert recording is not None
-@@ -1750,12 +1753,6 @@ def test_recording_detail_speakers_tab_assignment_persists(tmp_path, monkeypatch
-     assert "Purity 88%" in page.text
-     assert "Recognition cue" in page.text
- 
--    overview = TestClient(api.app, follow_redirects=True).get(
--        "/recordings/rec-speakers-1"
--    )
--    assert overview.status_code == 200
--    assert "Alice Example (S1)" in overview.text
+                 page.get_by_test_id("recording-inspector-tab-speakers").click(
+@@ -335,30 +341,44 @@ def test_control_center_embedded_inspector_and_export_zip_smoke(tmp_path: Path)
+                     state="visible",
+                     timeout=_remaining_timeout_ms(deadline),
+                 )
+-                with page.expect_download(timeout=_remaining_timeout_ms(deadline)) as download_info:
+-                    page.click(
+-                        "#control-center-inspector-pane [data-testid='recording-inspector-download-zip']",
+-                        timeout=_remaining_timeout_ms(deadline),
+-                    )
+-                download = download_info.value
+-                download.save_as(str(zip_download_path))
+                 page.locator("#upload-rows").get_by_text(
+                     "No active uploads. New files appear here until they enter the main inbox."
+                 ).wait_for(
+                     state="visible",
+                     timeout=_remaining_timeout_ms(deadline),
+                 )
 -
- 
- def test_recording_detail_speakers_create_and_assign(tmp_path, monkeypatch):
-     cfg = _cfg(tmp_path)
-@@ -1890,12 +1887,6 @@ def test_recording_detail_speakers_local_label_shows_in_detail_and_export(
-     assert "Local label only" in speakers_page.text
-     assert "Design Lead" in speakers_page.text
- 
--    overview = TestClient(api.app, follow_redirects=True).get(
--        "/recordings/rec-speakers-local-1"
--    )
--    assert overview.status_code == 200
--    assert "Design Lead (S1)" in overview.text
--
-     export_resp = TestClient(api.app, follow_redirects=True).get(
-         "/ui/recordings/rec-speakers-local-1/export.zip"
-     )
-@@ -2957,7 +2948,7 @@ def test_recording_detail_metrics_tab_backfills_missing_db_side_from_artifact(
-     assert "Facilitator" in r.text  # participant row backfilled from artifact
- 
- 
--def test_recording_detail_overview_shows_topic_and_emotional_summary(
-+def test_recording_detail_summary_tab_shows_topic_and_emotional_summary(
-     tmp_path, monkeypatch
- ):
-     cfg = _cfg(tmp_path)
-@@ -2986,7 +2977,7 @@ def test_recording_detail_overview_shows_topic_and_emotional_summary(
-     )
- 
-     c = TestClient(api.app, follow_redirects=True)
--    r = c.get("/recordings/rec-overview-summary-1")
-+    r = c.get("/recordings/rec-overview-summary-1?tab=summary")
-     assert r.status_code == 200
-     assert "Quarterly roadmap" in r.text
-     assert "Roadmap reviewed" in r.text
-@@ -3791,7 +3782,7 @@ def test_ui_action_stop_processing_recording_sets_stopping_request(
-         data={"tab": "log"},
-     )
-     assert r.status_code == 303
--    assert r.headers["location"] == "/recordings/rec-stop-processing-1?tab=log"
-+    assert r.headers["location"] == "/recordings/rec-stop-processing-1?tab=diagnostics"
- 
-     recording = get_recording("rec-stop-processing-1", settings=cfg) or {}
-     job = ui_routes.get_job("job-stop-processing-1", settings=cfg) or {}
-@@ -4028,7 +4019,7 @@ def test_ui_action_retry_failed_step(tmp_path, monkeypatch):
- 
-     r = c.post("/ui/recordings/rec-rtry-1/jobs/job-rtry-1/retry")
-     assert r.status_code == 303
--    assert r.headers["location"] == "/recordings/rec-rtry-1?tab=log"
-+    assert r.headers["location"] == "/recordings/rec-rtry-1?tab=diagnostics"
-     assert observed == {
-         "recording_id": "rec-rtry-1",
-         "job_type": JOB_TYPE_PRECHECK,
-diff --git a/lan_app/templates/partials/recording_inspector_full_diagnostics.html b/lan_app/templates/partials/recording_inspector_full_diagnostics.html
-new file mode 100644
-index 0000000..bf22d53
---- /dev/null
-+++ b/lan_app/templates/partials/recording_inspector_full_diagnostics.html
-@@ -0,0 +1,402 @@
-+{% set cal = calendar or {} %}
-+{% set prj = project or {} %}
-+{% set project_items = prj.projects or [] %}
-+{% set lang = language or {} %}
-+
-+<div class="diagnostics-grid">
-+  <section class="inspector-section-card">
-+    <div class="inspector-section-head">
-+      <div>
-+        <p class="eyebrow">Technical Surface</p>
-+        <h2>Diagnostics</h2>
-+        <p class="inspector-note">Routing, language, pipeline, and retry details live here so the other tabs can stay task-focused.</p>
-+      </div>
-+    </div>
-+    <div class="info-grid">
-+      <span class="k">Primary reason</span><span class="v">{{ diagnostics.primary_reason_text or '—' }}</span>
-+      <span class="k">Reason code</span><span class="v">{% if diagnostics.primary_reason_code %}<code>{{ diagnostics.primary_reason_code }}</code>{% else %}—{% endif %}</span>
-+      <span class="k">Current / last stage</span><span class="v">{{ diagnostics.current_stage_label or '—' }}</span>
-+      <span class="k">Stage status</span><span class="v">{{ diagnostics.current_stage_status_label or '—' }}</span>
-+      <span class="k">Chunk</span><span class="v">{{ diagnostics.chunk_text or '—' }}</span>
-+      <span class="k">Stage attempt</span><span class="v">{{ diagnostics.stage_attempt_text or '—' }}</span>
-+      <span class="k">Chunk attempt</span><span class="v">{{ diagnostics.chunk_attempt_text or '—' }}</span>
-+      <span class="k">Stage elapsed</span><span class="v">{{ diagnostics.stage_elapsed_display or '—' }}</span>
-+      <span class="k">Chunk elapsed</span><span class="v">{{ diagnostics.chunk_elapsed_display or '—' }}</span>
-+      <span class="k">Stop mode</span><span class="v">{{ diagnostics.stop_mode or '—' }}</span>
-+      <span class="k">Retry wrapper</span><span class="v">{{ diagnostics.wrapper_reason_text or '—' }}</span>
-+      <span class="k">Reason detail</span><span class="v">{{ diagnostics.primary_reason_detail or diagnostics.stop_reason_text or '—' }}</span>
-+    </div>
-+  </section>
-+
-+  <section class="inspector-section-card">
-+    <div class="inspector-section-head">
-+      <div>
-+        <h2>Project Assignment</h2>
-+        <p class="inspector-note">Project choice, calendar context, and routing evidence are grouped here.</p>
-+      </div>
-+    </div>
-+
-+    <div class="info-grid">
-+      <span class="k">Current project</span><span class="v">{{ prj.selected_project_name or (prj.selected_project_id and ('#' ~ prj.selected_project_id)) or 'Unassigned' }}</span>
-+      <span class="k">Suggested project</span><span class="v">{{ prj.suggested_project_name or (prj.suggested_project_id and ('#' ~ prj.suggested_project_id)) or '—' }}</span>
-+      <span class="k">Confidence</span><span class="v">{{ '%.2f'|format(prj.confidence or 0.0) }}</span>
-+      <span class="k">Auto-select threshold</span><span class="v">{{ '%.2f'|format(prj.threshold or 0.0) }}</span>
-+      <span class="k">Training examples (total)</span><span class="v">{{ prj.training_examples_total or 0 }}</span>
-+      <span class="k">Training examples (this project)</span><span class="v">{{ prj.training_examples_selected_project or 0 }}</span>
-+    </div>
-+
-+    {% if (prj.confidence or 0.0) < (prj.threshold or 0.0) %}
-+    <div class="page-notice">Confidence is below threshold; this recording should remain in manual review.</div>
-+    {% endif %}
-+
-+    <form method="post" action="/ui/recordings/{{ rec.id }}/project" style="margin-top:10px">
-+      <div class="form-row">
-+        <label for="project_id">Project</label>
-+        <select id="project_id" name="project_id" style="width:280px">
-+          <option value="">Unassigned</option>
-+          {% for p in project_items %}
-+          <option value="{{ p.id }}" {% if prj.selected_project_id == p.id %}selected{% endif %}>{{ p.name }}</option>
-+          {% endfor %}
-+        </select>
-+      </div>
-+      <div class="form-row">
-+        <label for="train_routing">Train routing</label>
-+        <input id="train_routing" type="checkbox" name="train_routing" value="1" checked>
-+        <span class="inspector-note">Store this manual choice as a routing training example.</span>
-+      </div>
-+      <div class="filters" style="margin-top:8px">
-+        <button type="submit" class="btn">Save project</button>
-+      </div>
-+    </form>
-+
-+    <h3>Routing Rationale</h3>
-+    {% if prj.rationale %}
-+    <ul class="summary-list">
-+      {% for reason in prj.rationale %}
-+      <li>{{ reason }}</li>
-+      {% endfor %}
-+    </ul>
-+    {% else %}
-+    <p class="placeholder">No routing rationale is available yet.</p>
-+    {% endif %}
-+
-+    {% if cal.error_message %}
-+    <div class="page-notice">{{ cal.error_message }}</div>
-+    {% endif %}
-+    {% if cal.warnings %}
-+      {% for warning in cal.warnings %}
-+      <div class="page-notice">{{ warning }}</div>
-+      {% endfor %}
-+    {% endif %}
-+
-+    <details class="inspector-disclosure"{% if cal.selected or cal.candidates %} open{% endif %}>
-+      <summary>Calendar Match</summary>
-+      {% if cal.selected %}
-+      <div class="speaker-snippet-panel">
-+        <div>
-+          <strong>{{ cal.selected.subject_display }}</strong>
-+          <p class="inspector-note">{{ cal.selected.starts_at_display }} → {{ cal.selected.ends_at_display }}</p>
-+        </div>
-+        <div class="inspector-detail-list">
-+          <div class="inspector-detail-row">
-+            <span class="inspector-detail-label">Source</span>
-+            <strong class="inspector-detail-value">{{ cal.selected.source_label }}</strong>
-+          </div>
-+          <div class="inspector-detail-row">
-+            <span class="inspector-detail-label">Confidence</span>
-+            <strong class="inspector-detail-value">{{ cal.selected.confidence_display }}</strong>
-+          </div>
-+          <div class="inspector-detail-row">
-+            <span class="inspector-detail-label">Organizer</span>
-+            <strong class="inspector-detail-value">{{ cal.selected.organizer_display }}</strong>
-+          </div>
-+          <div class="inspector-detail-row">
-+            <span class="inspector-detail-label">Attendees</span>
-+            <strong class="inspector-detail-value">{{ cal.selected.attendees_label }}</strong>
-+          </div>
-+        </div>
-+        {% if cal.selected.rationale_rows %}
-+        <ul class="summary-list">
-+          {% for reason in cal.selected.rationale_rows %}
-+          <li>{{ reason }}</li>
-+          {% endfor %}
-+        </ul>
-+        {% endif %}
-+        <form method="post" action="/ui/recordings/{{ rec.id }}/calendar/select">
-+          <button type="submit" class="btn">Clear selection</button>
-+        </form>
-+      </div>
-+      {% else %}
-+      <p class="placeholder">No calendar event is selected for this recording.</p>
-+      {% endif %}
-+
-+      {% if cal.candidates %}
-+      <table>
-+        <thead>
-+          <tr>
-+            <th>Event</th>
-+            <th>When</th>
-+            <th>Source</th>
-+            <th>Confidence</th>
-+            <th>Attendees</th>
-+            <th>Rationale</th>
-+            <th>Action</th>
-+          </tr>
-+        </thead>
-+        <tbody>
-+          {% for candidate in cal.candidates %}
-+          <tr>
-+            <td style="white-space:normal;max-width:220px">
-+              <div><strong>{{ candidate.subject_display }}</strong></div>
-+              <div style="margin-top:4px;color:#555">Organizer: {{ candidate.organizer_display }}</div>
-+            </td>
-+            <td>{{ candidate.starts_at_display }} → {{ candidate.ends_at_display }}</td>
-+            <td>{{ candidate.source_label }}</td>
-+            <td>
-+              {{ candidate.confidence_display }}
-+              {% if candidate.selected %}
-+              <div style="margin-top:4px"><span class="badge s-Ready">Selected</span></div>
-+              {% endif %}
-+            </td>
-+            <td title="{{ candidate.attendees_label }}">{{ candidate.attendees_label }}</td>
-+            <td style="white-space:normal;max-width:320px">
-+              {% if candidate.rationale_rows %}
-+                {% for reason in candidate.rationale_rows %}
-+                <div>{{ reason }}</div>
-+                {% endfor %}
-+              {% else %}
-+              —
-+              {% endif %}
-+            </td>
-+            <td>
-+              {% if candidate.selected %}
-+              <span class="placeholder" style="padding:0">Current</span>
-+              {% else %}
-+              <form method="post" action="/ui/recordings/{{ rec.id }}/calendar/select">
-+                <input type="hidden" name="event_id" value="{{ candidate.event_id }}">
-+                <button type="submit" class="btn">Choose</button>
-+              </form>
-+              {% endif %}
-+            </td>
-+          </tr>
-+          {% endfor %}
-+        </tbody>
-+      </table>
-+      {% elif not cal.selected %}
-+      <p class="placeholder">No calendar candidates are stored for this recording yet.</p>
-+      {% endif %}
-+    </details>
-+  </section>
-+</div>
-+
-+<div class="diagnostics-grid">
-+  <section class="inspector-section-card">
-+    <div class="inspector-section-head">
-+      <div>
-+        <h2>Detected Languages</h2>
-+        <p class="inspector-note">Language detection, overrides, and reprocessing controls stay in Diagnostics.</p>
-+      </div>
-+    </div>
-+
-+    <div class="info-grid">
-+      <span class="k">Detected language</span><span class="v">{{ lang.detected_label or '—' }}</span>
-+      <span class="k">Dominant language</span><span class="v">{{ lang.dominant_label or '—' }}</span>
-+      <span class="k">Mixed-language meeting</span><span class="v">{{ 'Yes' if lang.is_mixed else 'No' }}</span>
-+      <span class="k">Current summary target</span><span class="v">{{ lang.target_summary_language_label or '—' }}</span>
-+      <span class="k">Transcript override</span><span class="v">{{ lang.transcript_language_override_label or '—' }}</span>
-+    </div>
-+
-+    <form method="post" action="/ui/recordings/{{ rec.id }}/language/settings" style="margin-top:10px">
-+      <div class="form-row">
-+        <label for="target_summary_language">target_summary_language</label>
-+        <select id="target_summary_language" name="target_summary_language">
-+          <option value="" {% if not lang.target_summary_language %}selected{% endif %}>Auto (dominant language)</option>
-+          {% for opt in lang.options or [] %}
-+          <option value="{{ opt.code }}" {% if lang.target_summary_language == opt.code %}selected{% endif %}>{{ opt.label }}</option>
-+          {% endfor %}
-+        </select>
-+      </div>
-+      <div class="form-row">
-+        <label for="transcript_language_override">transcript_language_override</label>
-+        <select id="transcript_language_override" name="transcript_language_override">
-+          <option value="">None (auto detect)</option>
-+          {% for opt in lang.options or [] %}
-+          <option value="{{ opt.code }}" {% if lang.transcript_language_override == opt.code %}selected{% endif %}>{{ opt.label }}</option>
-+          {% endfor %}
-+        </select>
-+      </div>
-+      <div class="filters" style="margin-top:8px">
-+        <button type="submit" class="btn">Save overrides</button>
-+        <button
-+          type="submit"
-+          class="btn"
-+          formaction="/ui/recordings/{{ rec.id }}/language/resummarize"
-+        >
-+          Re-summarize (LLM only)
-+        </button>
-+        <button
-+          type="submit"
-+          class="btn btn-danger"
-+          formaction="/ui/recordings/{{ rec.id }}/language/retranscribe"
-+          onclick="return confirm('Re-transcribe reruns STT and diarization. Continue?')"
-+        >
-+          Re-transcribe (STT again)
-+        </button>
-+      </div>
-+    </form>
-+
-+    <details class="inspector-disclosure"{% if lang.distribution or lang.spans %} open{% endif %}>
-+      <summary>Language Distribution and Spans</summary>
-+      {% if lang.distribution %}
-+      <h3>Language Distribution</h3>
-+      <table>
-+        <thead>
-+          <tr>
-+            <th>Language</th>
-+            <th>Share (%)</th>
-+          </tr>
-+        </thead>
-+        <tbody>
-+          {% for row in lang.distribution %}
-+          <tr>
-+            <td>{{ row.label }}</td>
-+            <td>{{ '%.2f'|format(row.percent) }}</td>
-+          </tr>
-+          {% endfor %}
-+        </tbody>
-+      </table>
-+      {% endif %}
-+
-+      {% if lang.spans %}
-+      <h3>Language Spans</h3>
-+      <table>
-+        <thead>
-+          <tr>
-+            <th>Start</th>
-+            <th>End</th>
-+            <th>Language</th>
-+          </tr>
-+        </thead>
-+        <tbody>
-+          {% for span in lang.spans %}
-+          <tr>
-+            <td>{{ '%.3f'|format(span.start) }}</td>
-+            <td>{{ '%.3f'|format(span.end) }}</td>
-+            <td>{{ span.label }}</td>
-+          </tr>
-+          {% endfor %}
-+        </tbody>
-+      </table>
-+      {% elif not lang.distribution %}
-+      <p class="placeholder">No language distribution or spans are available yet.</p>
-+      {% endif %}
-+    </details>
-+
-+    {% if lang.summary_preview %}
-+    <div class="speaker-snippet-panel">
-+      <h3>Latest summary preview</h3>
-+      <pre class="transcript-plain-text">{{ lang.summary_preview }}</pre>
-+    </div>
-+    {% endif %}
-+  </section>
-+
-+  <section class="inspector-section-card">
-+    <div class="inspector-section-head">
-+      <div>
-+        <h2>Pipeline stages</h2>
-+        <p class="inspector-note">Full stage history stays here so Overview can stay concise.</p>
-+      </div>
-+    </div>
-+    {% if pipeline_stages %}
-+    <table>
-+      <thead>
-+        <tr>
-+          <th>Stage</th>
-+          <th>Status</th>
-+          <th>Attempt</th>
-+          <th>Updated</th>
-+          <th>Notes</th>
-+        </tr>
-+      </thead>
-+      <tbody>
-+        {% for stage in pipeline_stages %}
-+        <tr>
-+          <td>{{ stage.stage_label }}</td>
-+          <td>{{ stage.status_label }}</td>
-+          <td>{{ stage.attempt }}</td>
-+          <td>{{ stage.updated_at_display }}</td>
-+          <td>
-+            {% if stage.root_cause_text %}
-+            {{ stage.root_cause_text }}{% if stage.root_cause_code %} (<code>{{ stage.root_cause_code }}</code>){% endif %}
-+            {% if stage.chunk_index and stage.chunk_total %}
-+            &nbsp;chunk {{ stage.chunk_index }}/{{ stage.chunk_total }}
-+            {% endif %}
-+            {% if stage.stop_mode %}
-+            &nbsp;mode={{ stage.stop_mode }}
-+            {% endif %}
-+            {% elif stage.error_text %}
-+            {{ stage.error_text }}
-+            {% elif stage.duration_seconds is not none %}
-+            {{ '%.3f'|format(stage.duration_seconds) }}s
-+            {% else %}
-+            —
-+            {% endif %}
-+          </td>
-+        </tr>
-+        {% endfor %}
-+      </tbody>
-+    </table>
-+    {% else %}
-+    <p class="placeholder">No pipeline stage history is available for this recording yet.</p>
-+    {% endif %}
-+  </section>
-+</div>
-+
-+<section class="inspector-section-card">
-+  <div class="inspector-section-head">
-+    <div>
-+      <h2>Job history</h2>
-+      <p class="inspector-note">Retry actions and step-level failure history are demoted into Diagnostics instead of getting their own top-level tab.</p>
-+    </div>
-+  </div>
-+  {% if jobs %}
-+  <table>
-+    <thead>
-+      <tr>
-+        <th>Job ID</th>
-+        <th>Type</th>
-+        <th>Status</th>
-+        <th>Attempt</th>
-+        <th>Started</th>
-+        <th>Finished</th>
-+        <th>Error</th>
-+        <th>Action</th>
-+      </tr>
-+    </thead>
-+    <tbody>
-+      {% for j in jobs %}
-+      <tr>
-+        <td title="{{ j.id }}">{{ j.id[:16] }}…</td>
-+        <td>{{ j.type }}</td>
-+        <td><span class="badge s-{{ j.status }}">{{ j.status }}</span></td>
-+        <td>{{ j.attempt }}</td>
-+        <td>{{ j.started_at[:19].replace('T',' ') if j.started_at else '—' }}</td>
-+        <td>{{ j.finished_at[:19].replace('T',' ') if j.finished_at else '—' }}</td>
-+        <td title="{{ j.error or '' }}">{{ (j.error or '')[:40] }}{% if j.error and j.error|length > 40 %}…{% endif %}</td>
-+        <td>
-+          {% if j.status == 'failed' %}
-+          <form method="post" action="/ui/recordings/{{ rec.id }}/jobs/{{ j.id }}/retry">
-+            <button type="submit" class="btn">Retry step</button>
-+          </form>
-+          {% else %}
-+          <span class="placeholder">—</span>
-+          {% endif %}
-+        </td>
-+      </tr>
-+      {% endfor %}
-+    </tbody>
-+  </table>
-+  {% else %}
-+  <p class="placeholder">No jobs exist for this recording.</p>
-+  {% endif %}
-+</section>
-diff --git a/lan_app/templates/partials/recording_inspector_full_export.html b/lan_app/templates/partials/recording_inspector_full_export.html
-new file mode 100644
-index 0000000..0e0b8c6
---- /dev/null
-+++ b/lan_app/templates/partials/recording_inspector_full_export.html
-@@ -0,0 +1,81 @@
-+<section class="inspector-section-card">
-+  <div class="inspector-section-head">
-+    <div>
-+      <p class="eyebrow">Delivery Surface</p>
-+      <h2>Export</h2>
-+      <p class="inspector-note">Copy the current markdown or download the ZIP bundle without competing with transcript or diagnostics.</p>
-+    </div>
-+    <div class="embedded-card-actions">
-+      <button type="button" class="btn" onclick="copyInspectorFieldText('export-text', 'export-copy-status', 'Copied export markdown.', 'Copy failed. Select the text and copy manually.')">Copy</button>
-+      <a
-+        href="/ui/recordings/{{ rec.id }}/export.zip"
-+        class="btn"
-+        hx-boost="false"
-+      >Download ZIP</a>
-+    </div>
-+  </div>
-+
-+  <textarea
-+    id="export-text"
-+    class="full-export-text"
-+    readonly
-+  >{{ export_text or '' }}</textarea>
-+  <p id="export-copy-status" class="inspector-note">
-+    Copy the markdown or download the ZIP with the available artifacts.
-+  </p>
-+</section>
-+
-+<div class="summary-section-grid">
-+  <section class="inspector-section-card">
-+    <div class="inspector-section-head">
-+      <div>
-+        <h2>What this tab is for</h2>
-+      </div>
-+    </div>
-+    <ul class="summary-list">
-+      <li>Copy the OneNote-ready markdown as-is.</li>
-+      <li>Download a ZIP bundle with the available derived artifacts.</li>
-+      <li>Keep delivery actions separate from review, transcript reading, and diagnostics.</li>
-+    </ul>
-+  </section>
-+
-+  <section class="inspector-section-card">
-+    <div class="inspector-section-head">
-+      <div>
-+        <h2>Bundle behavior</h2>
-+      </div>
-+    </div>
-+    <p class="inspector-note">The export stays available even if some summary or transcript artifacts are still missing. Placeholder sections remain explicit in the generated markdown.</p>
-+  </section>
-+</div>
-+
-+<script>
-+if (!window.copyInspectorFieldText) {
-+  window.copyInspectorFieldText = function(fieldId, statusId, successMessage, failureMessage) {
-+    var textarea = document.getElementById(fieldId);
-+    var status = document.getElementById(statusId);
-+    if (!textarea) return;
-+    var setStatus = function(message) {
-+      if (status) status.textContent = message;
-+    };
-+    var fallback = function() {
-+      textarea.focus();
-+      textarea.select();
-+      try {
-+        document.execCommand('copy');
-+        setStatus(successMessage);
-+      } catch (_err) {
-+        setStatus(failureMessage);
-+      }
-+    };
-+    if (navigator.clipboard && navigator.clipboard.writeText) {
-+      navigator.clipboard.writeText(textarea.value).then(
-+        function() { setStatus(successMessage); },
-+        fallback
-+      );
-+      return;
-+    }
-+    fallback();
-+  };
-+}
-+</script>
-diff --git a/lan_app/templates/partials/recording_inspector_full_overview.html b/lan_app/templates/partials/recording_inspector_full_overview.html
-new file mode 100644
-index 0000000..d8b5914
---- /dev/null
-+++ b/lan_app/templates/partials/recording_inspector_full_overview.html
-@@ -0,0 +1,134 @@
-+{% set ov = overview or {} %}
-+<div class="inspector-overview-grid">
-+  <section class="inspector-section-card">
-+    <div class="inspector-section-head">
-+      <div>
-+        <p class="eyebrow">Deep Review Workspace</p>
-+        <h2>Overview</h2>
-+        <p class="inspector-note">This tab stays focused on state, blocker, next action, and the core context needed before you dive deeper.</p>
-+      </div>
-+    </div>
-+
-+    <div class="embedded-panel-grid">
-+      <section class="embedded-card">
-+        <h3>What state is it in?</h3>
-+        <p class="inspector-answer">{{ ov.state_title or rec.status }}</p>
-+        <p class="inspector-note">{{ ov.state_detail or ('Current stage: ' ~ (diagnostics.current_stage_label or 'Waiting')) }}</p>
-+      </section>
-+      <section class="embedded-card">
-+        <h3>What is blocking completion?</h3>
-+        <p class="inspector-answer">{{ ov.blocker_title or 'No blocker detected.' }}</p>
-+        <p class="inspector-note">{{ ov.blocker_detail or ('Current status: ' ~ rec.status ~ '.') }}</p>
-+      </section>
-+      <section class="embedded-card">
-+        {% set next_action = ov.next_action or {} %}
-+        <h3>What action is next?</h3>
-+        <p class="inspector-answer">{{ next_action.title or 'Open the next working tab' }}</p>
-+        <p class="inspector-note">{{ next_action.detail or 'Use the dedicated tabs below for speakers, transcript, summary, diagnostics, and export.' }}</p>
-+        {% if next_action.href %}
-+        <a href="{{ next_action.href }}" class="btn">{{ next_action.button_label or 'Open' }}</a>
-+        {% endif %}
-+      </section>
-+    </div>
-+
-+    <section class="embedded-card">
-+      <div class="embedded-card-head">
-+        <div>
-+          <h3>Core metadata</h3>
-+          <p class="inspector-note">Keep only the signals that help orient the review.</p>
-+        </div>
-+      </div>
-+      <div class="compact-metadata-grid">
-+        {% for item in ov.metadata or [] %}
-+        <div class="compact-metadata-item">
-+          <span class="compact-metadata-label">{{ item.label }}</span>
-+          <strong class="compact-metadata-value">{{ item.value }}</strong>
-+        </div>
-+        {% endfor %}
-+      </div>
-+    </section>
-+  </section>
-+
-+  <div class="inspector-overview-rail">
-+    <section class="inspector-section-card">
-+      <div class="inspector-section-head">
-+        <div>
-+          <h3>Pipeline signal</h3>
-+          <p class="inspector-note">The high-level processing facts stay visible here without opening Diagnostics.</p>
-+        </div>
-+      </div>
-+      <div class="info-grid">
-+        <span class="k">Current / last stage</span><span class="v">{{ diagnostics.current_stage_label or '—' }}</span>
-+        <span class="k">Stage status</span><span class="v">{{ diagnostics.current_stage_status_label or '—' }}</span>
-+        <span class="k">Chunk</span><span class="v">{{ diagnostics.chunk_text or '—' }}</span>
-+        <span class="k">Stage attempt</span><span class="v">{{ diagnostics.stage_attempt_text or '—' }}</span>
-+        <span class="k">Chunk attempt</span><span class="v">{{ diagnostics.chunk_attempt_text or '—' }}</span>
-+        <span class="k">Updated</span><span class="v">{{ rec.pipeline_updated_at_display or '—' }}</span>
-+      </div>
-+    </section>
-+
-+    <section class="inspector-section-card">
-+      <div class="inspector-section-head">
-+        <div>
-+          <h3>Review focus</h3>
-+          <p class="inspector-note">Reasons that explain why this recording needs attention.</p>
-+        </div>
-+      </div>
-+      {% if ov.focus_items %}
-+      <div class="inspector-detail-list">
-+        {% for item in ov.focus_items %}
-+        <div class="inspector-detail-row">
-+          <span class="inspector-detail-label">{{ item.label }}</span>
-+          <strong class="inspector-detail-value">{{ item.value }}</strong>
-+        </div>
-+        {% endfor %}
-+      </div>
-+      {% else %}
-+      <p class="placeholder">No extra review flags are active right now.</p>
-+      {% endif %}
-+    </section>
-+  </div>
-+</div>
-+
-+<section class="inspector-section-card">
-+  <div class="inspector-section-head">
-+    <div>
-+      <p class="eyebrow">Pipeline Status</p>
-+      <h2>Pipeline status</h2>
-+      <p class="inspector-note">The overview keeps the stage timeline visible without mixing in transcript, summary, or export widgets.</p>
-+    </div>
-+  </div>
-+
-+  {% if pipeline_stages %}
-+  <div class="inspector-stage-list">
-+    {% for stage in pipeline_stages %}
-+    <article class="inspector-stage-item">
-+      <div class="inspector-stage-marker inspector-stage-marker-{{ stage.status or 'unknown' }}"></div>
-+      <div class="inspector-stage-main">
-+        <div class="inspector-stage-head">
-+          <h3>{{ stage.stage_label }}</h3>
-+          <span class="speaker-chip speaker-chip-muted">{{ stage.status_label }}</span>
-+        </div>
-+        <p class="inspector-note">
-+          {% if stage.root_cause_text %}
-+          {{ stage.root_cause_text }}{% if stage.root_cause_code %} ({{ stage.root_cause_code }}){% endif %}
-+          {% elif stage.error_text %}
-+          {{ stage.error_text }}
-+          {% elif stage.duration_seconds is not none %}
-+          Completed in {{ '%.3f'|format(stage.duration_seconds) }}s.
-+          {% else %}
-+          No additional note was stored for this stage.
-+          {% endif %}
-+        </p>
-+      </div>
-+      <div class="inspector-stage-meta">
-+        <span>Attempt {{ stage.attempt }}</span>
-+        <span>{{ stage.updated_at_display }}</span>
-+      </div>
-+    </article>
-+    {% endfor %}
-+  </div>
-+  {% else %}
-+  <p class="placeholder">No pipeline stage history is available for this recording yet.</p>
-+  {% endif %}
-+</section>
-diff --git a/lan_app/templates/partials/recording_inspector_full_speakers.html b/lan_app/templates/partials/recording_inspector_full_speakers.html
-new file mode 100644
-index 0000000..3de858f
---- /dev/null
-+++ b/lan_app/templates/partials/recording_inspector_full_speakers.html
-@@ -0,0 +1,89 @@
-+{% set sp = speakers or {} %}
-+{% set rows = sp.speaker_rows or [] %}
-+{% set profiles = sp.voice_profiles or [] %}
-+{% set notices = sp.review_notices or [] %}
-+{% set repair = sp.snippet_repair or {} %}
-+
-+<section class="inspector-section-card">
-+  <div class="inspector-section-head">
-+    <div>
-+      <p class="eyebrow">Speaker Review Workspace</p>
-+      <h2>Speakers</h2>
-+      <p class="inspector-note">Review speakers through their best clean clips first. The compact Control Center stays faster and smaller; this page keeps the richer review flow.</p>
-+    </div>
-+    <div class="embedded-card-actions">
-+      <a href="{{ sp.manage_voices_href or '/voices' }}" class="btn" style="text-decoration:none">Open canonical speakers page</a>
-+    </div>
-+  </div>
-+
-+  {% if sp.notice_message %}
-+  <div class="page-notice">{{ sp.notice_message }}</div>
-+  {% endif %}
-+  {% if sp.error_message %}
-+  <div class="page-notice">{{ sp.error_message }}</div>
-+  {% endif %}
-+  {% if repair.detail %}
-+  <div class="page-notice">
-+    <div style="margin-bottom:{% if repair.available %}8px{% else %}0{% endif %}">
-+      {{ repair.detail }}
-+    </div>
-+    {% if repair.available %}
-+    <form method="post" action="/ui/recordings/{{ rec.id }}/speakers/regenerate-snippets">
-+      <button class="btn" type="submit">{{ repair.button_label }}</button>
-+    </form>
-+    {% endif %}
-+  </div>
-+  {% endif %}
-+  {% if notices %}
-+    {% for notice in notices %}
-+    <div class="page-notice">{{ notice }}</div>
-+    {% endfor %}
-+  {% endif %}
-+
-+  <section class="embedded-card">
-+    <p class="inspector-note">
-+      <strong>Confirm match</strong> changes canonical identity across recordings.
-+      <strong>Keep unknown</strong> closes review without naming the speaker.
-+      <strong>Local label only</strong> changes the name only for this recording.
-+      <strong>Add trusted sample</strong> is training-only and stays separate from identity mapping.
-+    </p>
-+  </section>
-+
-+  {% set speaker_review_mode = 'full' %}
-+  {% include 'partials/speaker_review_cards.html' %}
-+</section>
-+
-+<section class="inspector-section-card">
-+  <div class="inspector-section-head">
-+    <div>
-+      <h2>Create Canonical Speaker</h2>
-+      <p class="inspector-note">Create a new canonical person and confirm the diarized match in one step.</p>
-+    </div>
-+  </div>
-+  {% if rows %}
-+  <form method="post" action="/ui/recordings/{{ rec.id }}/speakers/create-and-assign">
-+    <div class="form-row">
-+      <label for="diar_speaker_label">Speaker label</label>
-+      <select id="diar_speaker_label" name="diar_speaker_label" style="width:180px">
-+        {% for row in rows %}
-+        <option value="{{ row.speaker }}">{{ row.speaker }}</option>
-+        {% endfor %}
-+      </select>
-+    </div>
-+    <div class="form-row">
-+      <label for="display_name">Display name</label>
-+      <input id="display_name" type="text" name="display_name" maxlength="120" required placeholder="Person name" style="width:260px">
-+    </div>
-+    <div class="form-row">
-+      <label for="notes">Notes</label>
-+      <input id="notes" type="text" name="notes" maxlength="240" placeholder="Optional notes" style="width:360px">
-+    </div>
-+    <div class="form-row">
-+      <label></label>
-+      <button class="btn" type="submit">Create and confirm match</button>
-+    </div>
-+  </form>
-+  {% else %}
-+  <p class="placeholder">No diarization labels are available for assignment.</p>
-+  {% endif %}
-+</section>
-diff --git a/lan_app/templates/partials/recording_inspector_full_summary.html b/lan_app/templates/partials/recording_inspector_full_summary.html
-new file mode 100644
-index 0000000..59361f7
---- /dev/null
-+++ b/lan_app/templates/partials/recording_inspector_full_summary.html
-@@ -0,0 +1,219 @@
-+{% set summary_data = summary or {} %}
-+{% set metrics_data = metrics or {} %}
-+{% set meeting = metrics_data.meeting or {} %}
-+{% set participants = metrics_data.participants or [] %}
-+{% set questions = summary_data.questions or {} %}
-+{% set question_types = questions.types or {} %}
-+
-+<div class="summary-section-grid">
-+  <section class="inspector-section-card">
-+    <div class="inspector-section-head">
-+      <div>
-+        <p class="eyebrow">Meeting Output</p>
-+        <h2>Summary</h2>
-+        <p class="inspector-note">Summary, decisions, actions, questions, and conversation metrics stay together here instead of competing with Overview.</p>
-+      </div>
-+    </div>
-+
-+    <div class="embedded-panel-grid">
-+      <section class="embedded-card">
-+        <h3>Topic</h3>
-+        <p class="inspector-answer">{{ summary_data.topic or '—' }}</p>
-+      </section>
-+      <section class="embedded-card">
-+        <h3>Emotional summary</h3>
-+        <p class="inspector-note">{{ summary_data.emotional_summary or meeting.emotional_summary or 'No emotional summary was extracted.' }}</p>
-+      </section>
-+    </div>
-+
-+    <section class="embedded-card">
-+      <div class="embedded-card-head">
-+        <div>
-+          <h3>Summary bullets</h3>
-+        </div>
-+      </div>
-+      {% if summary_data.summary_bullets %}
-+      <ul class="summary-list">
-+        {% for bullet in summary_data.summary_bullets %}
-+        <li>{{ bullet }}</li>
-+        {% endfor %}
-+      </ul>
-+      {% elif summary_data.summary_text %}
-+      <pre class="transcript-plain-text">{{ summary_data.summary_text }}</pre>
-+      {% else %}
-+      <p class="placeholder">No summary is available yet.</p>
-+      {% endif %}
-+    </section>
-+  </section>
-+
-+  <section class="inspector-section-card">
-+    <div class="inspector-section-head">
-+      <div>
-+        <h2>Meeting Metrics</h2>
-+        <p class="inspector-note">These meeting-level signals stay adjacent to the summary so the page reads as one output surface.</p>
-+      </div>
-+    </div>
-+    <div class="summary-kpi-grid">
-+      <div class="compact-metadata-item">
-+        <span class="compact-metadata-label">Speech time</span>
-+        <strong class="compact-metadata-value">{{ '%.1f'|format(meeting.total_speech_time_seconds or 0.0) }}s</strong>
-+      </div>
-+      <div class="compact-metadata-item">
-+        <span class="compact-metadata-label">Interruptions</span>
-+        <strong class="compact-metadata-value">{{ meeting.total_interruptions or 0 }}</strong>
-+      </div>
-+      <div class="compact-metadata-item">
-+        <span class="compact-metadata-label">Questions</span>
-+        <strong class="compact-metadata-value">{{ meeting.total_questions or 0 }}</strong>
-+      </div>
-+      <div class="compact-metadata-item">
-+        <span class="compact-metadata-label">Decisions</span>
-+        <strong class="compact-metadata-value">{{ meeting.decisions_count or 0 }}</strong>
-+      </div>
-+      <div class="compact-metadata-item">
-+        <span class="compact-metadata-label">Action items</span>
-+        <strong class="compact-metadata-value">{{ meeting.action_items_count or 0 }}</strong>
-+      </div>
-+      <div class="compact-metadata-item">
-+        <span class="compact-metadata-label">Actionability</span>
-+        <strong class="compact-metadata-value">{{ '%.1f'|format((meeting.actionability_ratio or 0.0) * 100.0) }}%</strong>
-+      </div>
-+    </div>
-+  </section>
-+</div>
-+
-+<div class="summary-section-grid">
-+  <section class="inspector-section-card">
-+    <div class="inspector-section-head">
-+      <div>
-+        <h2>Decisions</h2>
-+      </div>
-+    </div>
-+    {% if summary_data.decisions %}
-+    <ul class="summary-list">
-+      {% for decision in summary_data.decisions %}
-+      <li>{{ decision }}</li>
-+      {% endfor %}
-+    </ul>
-+    {% else %}
-+    <p class="placeholder">No decisions were extracted.</p>
-+    {% endif %}
-+  </section>
-+
-+  <section class="inspector-section-card">
-+    <div class="inspector-section-head">
-+      <div>
-+        <h2>Action items</h2>
-+      </div>
-+    </div>
-+    {% if summary_data.action_items %}
-+    <table>
-+      <thead>
-+        <tr>
-+          <th>Task</th>
-+          <th>Owner</th>
-+          <th>Deadline</th>
-+          <th>Confidence</th>
-+        </tr>
-+      </thead>
-+      <tbody>
-+        {% for item in summary_data.action_items %}
-+        <tr>
-+          <td>{{ item.task }}</td>
-+          <td>{{ item.owner or '—' }}</td>
-+          <td>{{ item.deadline or '—' }}</td>
-+          <td>{{ '%.2f'|format(item.confidence or 0.0) }}</td>
-+        </tr>
-+        {% endfor %}
-+      </tbody>
-+    </table>
-+    {% else %}
-+    <p class="placeholder">No action items were extracted.</p>
-+    {% endif %}
-+  </section>
-+</div>
-+
-+<section class="inspector-section-card">
-+  <div class="inspector-section-head">
-+    <div>
-+      <h2>Questions</h2>
-+      <p class="inspector-note">Question types remain part of the extracted meeting output instead of living in the diagnostics surface.</p>
-+    </div>
-+  </div>
-+  <div class="summary-kpi-grid">
-+    <div class="compact-metadata-item">
-+      <span class="compact-metadata-label">Total</span>
-+      <strong class="compact-metadata-value">{{ questions.total_count or 0 }}</strong>
-+    </div>
-+    <div class="compact-metadata-item">
-+      <span class="compact-metadata-label">Open</span>
-+      <strong class="compact-metadata-value">{{ question_types.open or 0 }}</strong>
-+    </div>
-+    <div class="compact-metadata-item">
-+      <span class="compact-metadata-label">Yes / no</span>
-+      <strong class="compact-metadata-value">{{ question_types.yes_no or 0 }}</strong>
-+    </div>
-+    <div class="compact-metadata-item">
-+      <span class="compact-metadata-label">Clarification</span>
-+      <strong class="compact-metadata-value">{{ question_types.clarification or 0 }}</strong>
-+    </div>
-+    <div class="compact-metadata-item">
-+      <span class="compact-metadata-label">Status</span>
-+      <strong class="compact-metadata-value">{{ question_types.status or 0 }}</strong>
-+    </div>
-+    <div class="compact-metadata-item">
-+      <span class="compact-metadata-label">Decision-seeking</span>
-+      <strong class="compact-metadata-value">{{ question_types.decision_seeking or 0 }}</strong>
-+    </div>
-+  </div>
-+  {% if questions.extracted %}
-+  <ul class="summary-list">
-+    {% for question in questions.extracted %}
-+    <li>{{ question }}</li>
-+    {% endfor %}
-+  </ul>
-+  {% else %}
-+  <p class="placeholder">No extracted questions are available.</p>
-+  {% endif %}
-+</section>
-+
-+<section class="inspector-section-card">
-+  <div class="inspector-section-head">
-+    <div>
-+      <h2>Participants</h2>
-+      <p class="inspector-note">Participant metrics stay available here when the conversation metrics artifact exists.</p>
-+    </div>
-+  </div>
-+  {% if participants %}
-+  <table>
-+    <thead>
-+      <tr>
-+        <th>Speaker</th>
-+        <th>Airtime (s)</th>
-+        <th>Share (%)</th>
-+        <th>Turns</th>
-+        <th>Interruptions done</th>
-+        <th>Interruptions received</th>
-+        <th>Questions</th>
-+        <th>Role</th>
-+      </tr>
-+    </thead>
-+    <tbody>
-+      {% for row in participants %}
-+      <tr>
-+        <td>{{ row.speaker }}</td>
-+        <td>{{ '%.2f'|format(row.airtime_seconds or 0.0) }}</td>
-+        <td>{{ '%.2f'|format((row.airtime_share or 0.0) * 100.0) }}</td>
-+        <td>{{ row.turns or 0 }}</td>
-+        <td>{{ row.interruptions_done or 0 }}</td>
-+        <td>{{ row.interruptions_received or 0 }}</td>
-+        <td>{{ row.questions_count or 0 }}</td>
-+        <td>{{ row.role_hint or '—' }}</td>
-+      </tr>
-+      {% endfor %}
-+    </tbody>
-+  </table>
-+  {% else %}
-+  <p class="placeholder">No participant metrics are available yet.</p>
-+  {% endif %}
-+</section>
-diff --git a/lan_app/templates/partials/recording_inspector_full_transcript.html b/lan_app/templates/partials/recording_inspector_full_transcript.html
-new file mode 100644
-index 0000000..cced7ea
---- /dev/null
-+++ b/lan_app/templates/partials/recording_inspector_full_transcript.html
-@@ -0,0 +1,86 @@
-+{% set tr = transcript or {} %}
-+<section class="inspector-section-card transcript-section-card">
-+  <div class="inspector-section-head">
-+    <div>
-+      <p class="eyebrow">Transcript Workspace</p>
-+      <h2>Transcript</h2>
-+      <p class="inspector-note">This tab gives the transcript a wider, calmer reading surface than the compact Control Center pane.</p>
-+    </div>
-+    <div class="embedded-card-actions">
-+      <button type="button" class="btn" onclick="copyInspectorFieldText('transcript-copy-text', 'transcript-copy-status', 'Copied transcript text.', 'Copy failed. Select the text and copy manually.')">Copy transcript</button>
-+      <a href="{{ tr.quick_add_href or ('/glossary?recording_id=' ~ rec.id) }}" class="btn">Add correction from this recording</a>
-+      <a href="{{ tr.manage_corrections_href or '/glossary' }}" class="btn">Manage corrections</a>
-+    </div>
-+  </div>
-+
-+  <div class="compact-metadata-grid">
-+    <div class="compact-metadata-item">
-+      <span class="compact-metadata-label">Source</span>
-+      <strong class="compact-metadata-value">{{ tr.source_label or 'Transcript text' }}</strong>
-+    </div>
-+    <div class="compact-metadata-item">
-+      <span class="compact-metadata-label">Dominant language</span>
-+      <strong class="compact-metadata-value">{{ tr.dominant_language_label or 'Unknown' }}</strong>
-+    </div>
-+    <div class="compact-metadata-item">
-+      <span class="compact-metadata-label">Visible blocks</span>
-+      <strong class="compact-metadata-value">{{ tr.turn_count if tr.turn_count is not none else 0 }}</strong>
-+    </div>
-+  </div>
-+
-+  {% if tr.available %}
-+  <div id="recording-transcript-panel" class="transcript-scroll-panel" data-testid="recording-transcript-panel">
-+    {% if tr.turns %}
-+      {% for turn in tr.turns %}
-+      <article class="transcript-turn">
-+        <div class="transcript-turn-meta">
-+          <strong class="transcript-turn-speaker">{{ turn.speaker }}</strong>
-+          <span>{{ turn.time_range }}</span>
-+          {% if turn.language_label %}
-+          <span>{{ turn.language_label }}</span>
-+          {% endif %}
-+        </div>
-+        <p class="transcript-turn-text">{{ turn.text }}</p>
-+      </article>
-+      {% endfor %}
-+    {% else %}
-+    <pre class="transcript-plain-text">{{ tr.raw_text }}</pre>
-+    {% endif %}
-+  </div>
-+  <textarea id="transcript-copy-text" class="inspector-copy-store" readonly>{{ tr.copy_text or tr.raw_text or '' }}</textarea>
-+  <p id="transcript-copy-status" class="inspector-note">Copy the transcript text or jump to Corrections when a name or phrase needs to be remembered.</p>
-+  {% else %}
-+  <p class="placeholder">Transcript content is not available for this recording yet.</p>
-+  {% endif %}
-+</section>
-+
-+<script>
-+if (!window.copyInspectorFieldText) {
-+  window.copyInspectorFieldText = function(fieldId, statusId, successMessage, failureMessage) {
-+    var textarea = document.getElementById(fieldId);
-+    var status = document.getElementById(statusId);
-+    if (!textarea) return;
-+    var setStatus = function(message) {
-+      if (status) status.textContent = message;
-+    };
-+    var fallback = function() {
-+      textarea.focus();
-+      textarea.select();
-+      try {
-+        document.execCommand('copy');
-+        setStatus(successMessage);
-+      } catch (_err) {
-+        setStatus(failureMessage);
-+      }
-+    };
-+    if (navigator.clipboard && navigator.clipboard.writeText) {
-+      navigator.clipboard.writeText(textarea.value).then(
-+        function() { setStatus(successMessage); },
-+        fallback
-+      );
-+      return;
-+    }
-+    fallback();
-+  };
-+}
-+</script>
+-                page.goto(
+-                    f"{base_url}/recordings/{recording_id}",
+-                    wait_until="networkidle",
++                page.get_by_test_id("recording-inspector-open-full-page").click(
++                    timeout=_remaining_timeout_ms(deadline),
++                )
++                page.wait_for_url(
++                    f"**/recordings/{recording_id}",
++                    timeout=_remaining_timeout_ms(deadline),
++                )
++                page.get_by_test_id("recording-inspector-tab-transcript").click(
++                    timeout=_remaining_timeout_ms(deadline),
++                )
++                page.wait_for_url(
++                    f"**/recordings/{recording_id}?tab=transcript",
+                     timeout=_remaining_timeout_ms(deadline),
+                 )
+                 page.wait_for_selector(
+-                    "a:has-text('Download ZIP')",
++                    "text=Transcript Workspace",
+                     state="visible",
+                     timeout=_remaining_timeout_ms(deadline),
+                 )
++                page.get_by_test_id("recording-inspector-tab-export").click(
++                    timeout=_remaining_timeout_ms(deadline),
++                )
++                page.wait_for_url(
++                    f"**/recordings/{recording_id}?tab=export",
++                    timeout=_remaining_timeout_ms(deadline),
++                )
++                with page.expect_download(timeout=_remaining_timeout_ms(deadline)) as download_info:
++                    page.get_by_test_id("recording-inspector-download-zip").click(
++                        timeout=_remaining_timeout_ms(deadline),
++                    )
++                download = download_info.value
++                download.save_as(str(zip_download_path))
+             finally:
+                 context.close()
+                 browser.close()

@@ -56,7 +56,7 @@
   <div class="page-notice">
     <div>{{ repair.detail }}</div>
     {% if repair.available %}
-    <form method="post" action="/ui/recordings/{{ rec.id }}/speakers/regenerate-snippets{{ recording_inspector.embedded_return_queries.speakers }}" style="margin-top:10px">
+    <form method="post" action="/ui/recordings/{{ rec.id }}/speakers/regenerate-snippets{{ recording_inspector.embedded_return_queries.speakers }}" class="stack-gap-sm">
       <button class="btn" type="submit">{{ repair.button_label }}</button>
     </form>
     {% endif %}
@@ -134,9 +134,9 @@
 
   <section class="embedded-card">
     <h3>Tone and questions</h3>
-    <p class="inspector-note" style="margin-bottom:10px">{{ summary_data.emotional_summary or 'No emotional summary extracted.' }}</p>
+    <p class="inspector-note">{{ summary_data.emotional_summary or 'No emotional summary extracted.' }}</p>
     {% if summary_data.questions and summary_data.questions.extracted %}
-    <p class="inspector-note" style="margin-bottom:8px">
+    <p class="inspector-note stack-gap-xs">
       {{ summary_data.questions.total_count }} extracted question{{ '' if summary_data.questions.total_count == 1 else 's' }}.
     </p>
     <ul>

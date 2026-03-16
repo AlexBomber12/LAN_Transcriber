@@ -680,7 +680,7 @@ def test_control_center_system_bar_route_avoids_work_pane_builder(
         return {
             "primary_items": [
                 {
-                    "label": "Queue view",
+                    "label": "Inbox view",
                     "value": f"{recordings_panel['total']} visible",
                     "detail": state["status"] or "All statuses",
                 }

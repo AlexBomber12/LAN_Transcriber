@@ -8,18 +8,18 @@
 } %}
 {% include "partials/control_center/helper_message.html" %}
 {% if return_context.active %}
-<div style="margin:0 0 12px 0;padding:8px 10px;border:1px solid #99b;background:#f8f9ff;color:#334155;max-width:960px">
-  <p style="margin:0 0 8px 0">{{ return_context.message }}</p>
-  <div class="filters" style="margin:0">
-    <a href="{{ return_context.href }}" class="btn" style="text-decoration:none">Return to Control Center</a>
+<div class="context-banner">
+  <p class="context-banner-copy">{{ return_context.message }}</p>
+  <div class="context-banner-actions">
+    <a href="{{ return_context.href }}" class="btn">Return to Control Center</a>
     {% if return_context.selected_detail_href %}
-    <a href="{{ return_context.selected_detail_href }}" class="btn" style="text-decoration:none">Open selected recording</a>
+    <a href="{{ return_context.selected_detail_href }}" class="btn">Open selected recording</a>
     {% endif %}
   </div>
 </div>
 {% else %}
-<div class="filters" style="margin-bottom:10px">
-  <a href="/" class="btn" style="text-decoration:none">Open Control Center</a>
+<div class="standalone-header-actions" style="margin-bottom:10px">
+  <a href="/" class="btn">Open Control Center</a>
 </div>
 {% endif %}
 
