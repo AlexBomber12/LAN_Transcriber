@@ -626,7 +626,7 @@ def test_control_center_embedded_inspector_overview_stays_compact(seeded_client)
     )
     assert speakers.status_code == 200
     assert "Open canonical speakers page" not in speakers.text
-    assert "Safe speaker review" in speakers.text
+    assert "Snippet-first speaker review" in speakers.text
 
 
 def test_control_center_embedded_summary_and_export_tabs_render_compact_content(
@@ -717,7 +717,9 @@ def test_control_center_workflow_upload_select_speaker_decision_and_correction(
     speakers = c.get(f"/?selected={recording_id}&tab=speakers")
     assert speakers.status_code == 200
     assert "Compact inspector" in speakers.text
-    assert "Safe speaker review" in speakers.text
+    assert "Snippet-first speaker review" in speakers.text
+    assert "Best snippet candidates" in speakers.text
+    assert "Recognition cue" in speakers.text
     assert "Local label only" in speakers.text
     assert "Add trusted sample" in speakers.text
 
@@ -1739,13 +1741,14 @@ def test_recording_detail_speakers_tab_assignment_persists(tmp_path, monkeypatch
         "/recordings/rec-speakers-1?tab=speakers"
     )
     assert page.status_code == 200
-    assert "Speaker Assignments" in page.text
+    assert "Speaker Review Workspace" in page.text
     assert "Alice Example" in page.text
     assert "Confirm match" in page.text
     assert "Mapped globally" in page.text
     assert "Add trusted sample" in page.text
-    assert "Recommended" in page.text
-    assert "purity 88%" in page.text
+    assert "Best match" in page.text
+    assert "Purity 88%" in page.text
+    assert "Recognition cue" in page.text
 
     overview = TestClient(api.app, follow_redirects=True).get(
         "/recordings/rec-speakers-1"
@@ -2174,7 +2177,7 @@ def test_recording_detail_speakers_snippet_not_started_message(tmp_path, monkeyp
         in page.text
     )
     assert "Add sample will be available after Snippet Export runs." in page.text
-    assert 'name="snippet_path" style="width:220px" disabled' in page.text
+    assert 'name="snippet_path" disabled' in page.text
 
 
 def test_recording_detail_speakers_snippet_running_message(tmp_path, monkeypatch):
@@ -2257,8 +2260,107 @@ def test_recording_detail_speakers_ready_during_processing_keeps_snippets_usable
         "/ui/recordings/rec-speakers-processing-ready-1/snippets/S1/1.wav" in page.text
     )
     assert "Add trusted sample" in page.text
-    assert 'name="snippet_path" style="width:220px" disabled' not in page.text
-    assert 'type="submit" disabled>Add trusted sample' not in page.text
+    assert 'name="snippet_path" disabled' not in page.text
+    assert 'disabled>Add trusted sample' not in page.text
+
+
+def test_recording_detail_speakers_add_sample_selector_keeps_all_clean_snippets(
+    tmp_path, monkeypatch
+):
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    init_db(cfg)
+    create_recording(
+        "rec-speakers-many-snippets-1",
+        source="upload",
+        source_filename="many-snippets.wav",
+        status=RECORDING_STATUS_READY,
+        settings=cfg,
+    )
+    _seed_speaker_turns_only(cfg, "rec-speakers-many-snippets-1")
+    derived = cfg.recordings_root / "rec-speakers-many-snippets-1" / "derived"
+    snippets = derived / "snippets" / "S1"
+    snippets.mkdir(parents=True, exist_ok=True)
+    for idx in range(1, 5):
+        (snippets / f"{idx}.wav").write_bytes(f"fake-wav-{idx}".encode("utf-8"))
+    _write_snippets_manifest(
+        cfg,
+        "rec-speakers-many-snippets-1",
+        {
+            "version": 1,
+            "source_kind": "turn",
+            "degraded_diarization": False,
+            "max_snippets_per_speaker": 4,
+            "speakers": {
+                "S1": [
+                    {
+                        "snippet_id": "S1-01",
+                        "speaker": "S1",
+                        "source_kind": "turn",
+                        "source_start": 0.0,
+                        "source_end": 1.0,
+                        "clip_start": 0.0,
+                        "clip_end": 1.0,
+                        "purity_score": 0.95,
+                        "ranking_position": 1,
+                        "status": "accepted",
+                        "recommended": True,
+                        "relative_path": "S1/1.wav",
+                    },
+                    {
+                        "snippet_id": "S1-02",
+                        "speaker": "S1",
+                        "source_kind": "turn",
+                        "source_start": 1.0,
+                        "source_end": 2.0,
+                        "clip_start": 1.0,
+                        "clip_end": 2.0,
+                        "purity_score": 0.91,
+                        "ranking_position": 2,
+                        "status": "accepted",
+                        "recommended": False,
+                        "relative_path": "S1/2.wav",
+                    },
+                    {
+                        "snippet_id": "S1-03",
+                        "speaker": "S1",
+                        "source_kind": "turn",
+                        "source_start": 2.0,
+                        "source_end": 3.0,
+                        "clip_start": 2.0,
+                        "clip_end": 3.0,
+                        "purity_score": 0.88,
+                        "ranking_position": 3,
+                        "status": "accepted",
+                        "recommended": False,
+                        "relative_path": "S1/3.wav",
+                    },
+                    {
+                        "snippet_id": "S1-04",
+                        "speaker": "S1",
+                        "source_kind": "turn",
+                        "source_start": 3.0,
+                        "source_end": 4.0,
+                        "clip_start": 3.0,
+                        "clip_end": 4.0,
+                        "purity_score": 0.84,
+                        "ranking_position": 4,
+                        "status": "accepted",
+                        "recommended": False,
+                        "relative_path": "S1/4.wav",
+                    },
+                ]
+            },
+        },
+    )
+    create_voice_profile("Many Snippets Profile", settings=cfg)
+
+    page = TestClient(api.app, follow_redirects=True).get(
+        "/recordings/rec-speakers-many-snippets-1?tab=speakers"
+    )
+    assert page.status_code == 200
+    assert 'option value="S1/4.wav"' in page.text
 
 
 def test_recording_detail_speakers_nonfatal_snippet_failure_message(
