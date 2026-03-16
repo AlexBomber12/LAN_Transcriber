@@ -223,7 +223,7 @@
             <div class="filter-field">
               <label for="speaker-sample-snippet-{{ rec.id }}-{{ row.speaker }}">Snippet choice</label>
               <select id="speaker-sample-snippet-{{ rec.id }}-{{ row.speaker }}" name="snippet_path" {% if not row.clean_snippets %}disabled{% endif %}>
-                {% for snippet in row.clean_snippets[:3] %}
+                {% for snippet in row.clean_snippets %}
                 <option value="{{ snippet.relative_path }}" {% if snippet.recommended %}selected{% endif %}>{{ snippet.choice_label }}</option>
                 {% endfor %}
               </select>
