@@ -301,7 +301,9 @@ def _write_snippets_manifest(
     )
 
 
-def _write_pcm_wav(path: Path, *, duration_sec: float, sample_rate: int = 16000) -> None:
+def _write_pcm_wav(
+    path: Path, *, duration_sec: float, sample_rate: int = 16000
+) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     frames = max(int(sample_rate * duration_sec), 1)
     with wave.open(str(path), "wb") as wav_file:
@@ -321,7 +323,9 @@ def _seed_snippet_repair_artifacts(
     derived.mkdir(parents=True, exist_ok=True)
     _write_pcm_wav(derived / "audio_sanitized.wav", duration_sec=3.0)
     (derived / "precheck.json").write_text(
-        json.dumps({"duration_sec": 3.0, "speech_ratio": 0.8, "quarantine_reason": None}),
+        json.dumps(
+            {"duration_sec": 3.0, "speech_ratio": 0.8, "quarantine_reason": None}
+        ),
         encoding="utf-8",
     )
     (derived / "diarization_segments.json").write_text(
@@ -382,7 +386,9 @@ def test_dashboard_with_data(tmp_path, monkeypatch):
         lambda _settings: _stub_runtime_status(),
     )
     init_db(cfg)
-    create_recording("rec-dash-1", source="drive", source_filename="a.mp3", settings=cfg)
+    create_recording(
+        "rec-dash-1", source="drive", source_filename="a.mp3", settings=cfg
+    )
     c = TestClient(api.app, follow_redirects=True)
     r = c.get("/")
     assert r.status_code == 200
@@ -396,7 +402,9 @@ def test_dashboard_with_data(tmp_path, monkeypatch):
 
 
 def test_dashboard_summary_fragment_endpoints(seeded_client):
-    recordings_summary = seeded_client.get("/ui/control-center/dashboard/recordings-summary")
+    recordings_summary = seeded_client.get(
+        "/ui/control-center/dashboard/recordings-summary"
+    )
     assert recordings_summary.status_code == 200
     assert "Recordings by status" in recordings_summary.text
     assert "stat-card" in recordings_summary.text
@@ -450,7 +458,9 @@ def test_control_center_pane_fragment_endpoints(seeded_client):
     )
     assert workspace_header.status_code == 200
     assert 'id="control-center-workspace-header"' in workspace_header.text
-    assert 'hx-trigger="refresh-control-center-header from:body"' in workspace_header.text
+    assert (
+        'hx-trigger="refresh-control-center-header from:body"' in workspace_header.text
+    )
     assert "meeting.mp3" in workspace_header.text
     assert "/recordings/rec-ui-1?tab=speakers" in workspace_header.text
     assert "<html" not in workspace_header.text
@@ -471,7 +481,9 @@ def test_control_center_pane_fragment_endpoints(seeded_client):
     assert "<html" not in system_bar.text
 
 
-def test_control_center_system_bar_renders_degraded_cpu_fallback(seeded_client, monkeypatch):
+def test_control_center_system_bar_renders_degraded_cpu_fallback(
+    seeded_client, monkeypatch
+):
     monkeypatch.setattr(
         ui_routes,
         "collect_control_center_runtime_status",
@@ -540,7 +552,9 @@ def test_control_center_system_bar_renders_degraded_cpu_fallback(seeded_client, 
     ) in work_pane.text
     assert "<html" not in work_pane.text
 
-    inspector = seeded_client.get("/ui/control-center/inspector-pane?selected=rec-ui-1&tab=speakers")
+    inspector = seeded_client.get(
+        "/ui/control-center/inspector-pane?selected=rec-ui-1&tab=speakers"
+    )
     assert inspector.status_code == 200
     assert "Compact inspector" in inspector.text
     assert "rec-ui-1" in inspector.text
@@ -553,7 +567,9 @@ def test_control_center_system_bar_renders_degraded_cpu_fallback(seeded_client, 
     assert "Queue context stays visible" in empty_inspector.text
 
 
-def test_control_center_selected_recording_renders_embedded_inspector_actions(seeded_client):
+def test_control_center_selected_recording_renders_embedded_inspector_actions(
+    seeded_client,
+):
     r = seeded_client.get("/?selected=rec-ui-1&status=Ready&q=meeting&tab=overview")
     assert r.status_code == 200
     assert 'id="control-center-inspector-pane"' in r.text
@@ -564,19 +580,37 @@ def test_control_center_selected_recording_renders_embedded_inspector_actions(se
     assert "/ui/recordings/rec-ui-1/inspector?status=Ready&amp;q=meeting" in r.text
 
 
-def test_control_center_embedded_inspector_tab_links_preserve_shell_state(seeded_client):
-    inspector = seeded_client.get("/ui/recordings/rec-ui-1/inspector?status=Ready&q=meeting&tab=speakers")
+def test_control_center_embedded_inspector_tab_links_preserve_shell_state(
+    seeded_client,
+):
+    inspector = seeded_client.get(
+        "/ui/recordings/rec-ui-1/inspector?status=Ready&q=meeting&tab=speakers"
+    )
     assert inspector.status_code == 200
-    assert 'hx-get="/ui/recordings/rec-ui-1/inspector?status=Ready&amp;q=meeting"' in inspector.text
-    assert 'hx-get="/ui/recordings/rec-ui-1/inspector?status=Ready&amp;q=meeting&amp;tab=summary"' in inspector.text
-    assert 'hx-push-url="/?selected=rec-ui-1&amp;status=Ready&amp;q=meeting&amp;tab=summary"' in inspector.text
-    assert 'href="/?selected=rec-ui-1&amp;status=Ready&amp;q=meeting&amp;tab=speakers"' in inspector.text
+    assert (
+        'hx-get="/ui/recordings/rec-ui-1/inspector?status=Ready&amp;q=meeting"'
+        in inspector.text
+    )
+    assert (
+        'hx-get="/ui/recordings/rec-ui-1/inspector?status=Ready&amp;q=meeting&amp;tab=summary"'
+        in inspector.text
+    )
+    assert (
+        'hx-push-url="/?selected=rec-ui-1&amp;status=Ready&amp;q=meeting&amp;tab=summary"'
+        in inspector.text
+    )
+    assert (
+        'href="/?selected=rec-ui-1&amp;status=Ready&amp;q=meeting&amp;tab=speakers"'
+        in inspector.text
+    )
     assert 'data-testid="recording-inspector-tab-export"' in inspector.text
     assert 'data-testid="recording-inspector-tab-language"' not in inspector.text
 
 
 def test_control_center_embedded_inspector_overview_stays_compact(seeded_client):
-    overview = seeded_client.get("/?selected=rec-ui-1&status=Ready&q=meeting&tab=overview")
+    overview = seeded_client.get(
+        "/?selected=rec-ui-1&status=Ready&q=meeting&tab=overview"
+    )
     assert overview.status_code == 200
     assert "What stage is it in?" in overview.text
     assert "What is blocking it?" in overview.text
@@ -587,13 +621,17 @@ def test_control_center_embedded_inspector_overview_stays_compact(seeded_client)
     assert "Save as correction" not in overview.text
     assert "Current / last stage" not in overview.text
 
-    speakers = seeded_client.get("/?selected=rec-ui-1&status=Ready&q=meeting&tab=speakers")
+    speakers = seeded_client.get(
+        "/?selected=rec-ui-1&status=Ready&q=meeting&tab=speakers"
+    )
     assert speakers.status_code == 200
     assert "Open canonical speakers page" not in speakers.text
     assert "Safe speaker review" in speakers.text
 
 
-def test_control_center_embedded_summary_and_export_tabs_render_compact_content(tmp_path, monkeypatch):
+def test_control_center_embedded_summary_and_export_tabs_render_compact_content(
+    tmp_path, monkeypatch
+):
     cfg = _cfg(tmp_path)
     monkeypatch.setattr(api, "_settings", cfg)
     monkeypatch.setattr(ui_routes, "_settings", cfg)
@@ -754,7 +792,9 @@ def test_control_center_recordings_panel_filters_search_and_actions(
     )
 
     c = TestClient(api.app, follow_redirects=True)
-    panel = c.get("/ui/control-center/recordings/panel?status=Ready&q=alpha&tab=speakers")
+    panel = c.get(
+        "/ui/control-center/recordings/panel?status=Ready&q=alpha&tab=speakers"
+    )
     assert panel.status_code == 200
     assert 'id="control-center-recordings-panel"' in panel.text
     assert 'value="alpha"' in panel.text
@@ -773,10 +813,15 @@ def test_control_center_recordings_panel_filters_search_and_actions(
         'data-system-bar-url="/ui/control-center/system-bar?selected=&amp;status=Ready&amp;q=alpha&amp;'
         'tab=speakers&amp;limit=25&amp;offset=0"'
     ) in panel.text
-    assert 'href="/?selected=rec-cc-panel-1&amp;status=Ready&amp;q=alpha&amp;tab=speakers"' in panel.text
+    assert (
+        'href="/?selected=rec-cc-panel-1&amp;status=Ready&amp;q=alpha&amp;tab=speakers"'
+        in panel.text
+    )
     assert panel.headers["HX-Push-Url"] == "/?status=Ready&q=alpha&tab=speakers"
 
-    selected_panel = c.get("/ui/control-center/recordings/panel?selected=rec-cc-panel-1&tab=speakers")
+    selected_panel = c.get(
+        "/ui/control-center/recordings/panel?selected=rec-cc-panel-1&tab=speakers"
+    )
     assert selected_panel.status_code == 200
     assert "Selected" in selected_panel.text
     assert 'data-selected="true"' in selected_panel.text
@@ -815,18 +860,27 @@ def test_control_center_selection_preserves_pagination_state(
     selected_id = paged_rows[0]["id"]
 
     c = TestClient(api.app, follow_redirects=True)
-    panel = c.get("/ui/control-center/recordings/panel?status=Ready&limit=25&offset=25&tab=speakers")
+    panel = c.get(
+        "/ui/control-center/recordings/panel?status=Ready&limit=25&offset=25&tab=speakers"
+    )
     assert panel.status_code == 200
-    assert panel.headers["HX-Push-Url"] == "/?status=Ready&tab=speakers&limit=25&offset=25"
+    assert (
+        panel.headers["HX-Push-Url"] == "/?status=Ready&tab=speakers&limit=25&offset=25"
+    )
     assert 'href="/?status=Ready&amp;tab=speakers"' in panel.text
     assert (
         f'href="/?selected={selected_id}&amp;status=Ready&amp;tab=speakers&amp;'
-        "limit=25&amp;offset=25\""
+        'limit=25&amp;offset=25"'
     ) in panel.text
 
-    selected_page = c.get(f"/?selected={selected_id}&status=Ready&limit=25&offset=25&tab=speakers")
+    selected_page = c.get(
+        f"/?selected={selected_id}&status=Ready&limit=25&offset=25&tab=speakers"
+    )
     assert selected_page.status_code == 200
-    assert f'href="/?selected={selected_id}&amp;status=Ready&amp;tab=speakers"' in selected_page.text
+    assert (
+        f'href="/?selected={selected_id}&amp;status=Ready&amp;tab=speakers"'
+        in selected_page.text
+    )
     assert f'name="selected" value="{selected_id}"' in selected_page.text
     assert 'value="25" selected' in selected_page.text
     assert ">26–26 of 26<" in selected_page.text
@@ -1017,7 +1071,9 @@ def test_recording_detail_overview(seeded_client):
 
 
 def test_recording_shell_and_empty_inspector_fragment_endpoints(seeded_client):
-    shell = seeded_client.get("/ui/control-center/recordings/rec-ui-1/shell?tab=overview")
+    shell = seeded_client.get(
+        "/ui/control-center/recordings/rec-ui-1/shell?tab=overview"
+    )
     assert shell.status_code == 200
     assert 'data-rid="rec-ui-1"' in shell.text
     assert "Requeue" in shell.text
@@ -1165,7 +1221,10 @@ def test_recording_detail_calendar_tab_renders_selected_candidate_and_rationale(
                     {"label": "Marco Rossi"},
                 ],
                 "confidence": 0.92,
-                "rationale": ["Capture time falls inside the event window.", "Final confidence 0.92."],
+                "rationale": [
+                    "Capture time falls inside the event window.",
+                    "Final confidence 0.92.",
+                ],
             },
             {
                 "event_id": "evt-other",
@@ -1194,7 +1253,9 @@ def test_recording_detail_calendar_tab_renders_selected_candidate_and_rationale(
     assert "Selected" in response.text
 
 
-def test_recording_detail_calendar_tab_shows_weak_and_ambiguous_warnings(tmp_path, monkeypatch):
+def test_recording_detail_calendar_tab_shows_weak_and_ambiguous_warnings(
+    tmp_path, monkeypatch
+):
     cfg = _cfg(tmp_path)
     monkeypatch.setattr(api, "_settings", cfg)
     monkeypatch.setattr(ui_routes, "_settings", cfg)
@@ -1272,7 +1333,10 @@ def test_recording_detail_calendar_selection_and_clear_persist(tmp_path, monkeyp
         data={"event_id": "evt-a"},
     )
     assert selected.status_code == 303
-    assert selected.headers["location"] == "/recordings/rec-ui-calendar-select-1?tab=calendar"
+    assert (
+        selected.headers["location"]
+        == "/recordings/rec-ui-calendar-select-1?tab=calendar"
+    )
     match = get_calendar_match("rec-ui-calendar-select-1", settings=cfg)
     assert match is not None
     assert match["selected_event_id"] == "evt-a"
@@ -1424,7 +1488,9 @@ def test_recording_progress_endpoint_redirects_to_control_center_when_embedded_t
     )
 
 
-def test_recording_detail_shows_review_reason_and_local_timestamp(tmp_path, monkeypatch):
+def test_recording_detail_shows_review_reason_and_local_timestamp(
+    tmp_path, monkeypatch
+):
     cfg = _cfg(tmp_path)
     monkeypatch.setattr(api, "_settings", cfg)
     monkeypatch.setattr(ui_routes, "_settings", cfg)
@@ -1632,7 +1698,10 @@ def test_recording_detail_project_assignment_trains_routing(tmp_path, monkeypatc
     assert "cal:roadmap" in keywords
     assert "tag:roadmap" in keywords
     assert f"voice:{profile['id']}" in keywords
-    assert recording["status"] in {RECORDING_STATUS_READY, RECORDING_STATUS_NEEDS_REVIEW}
+    assert recording["status"] in {
+        RECORDING_STATUS_READY,
+        RECORDING_STATUS_NEEDS_REVIEW,
+    }
 
 
 def test_recording_detail_speakers_tab_assignment_persists(tmp_path, monkeypatch):
@@ -1678,7 +1747,9 @@ def test_recording_detail_speakers_tab_assignment_persists(tmp_path, monkeypatch
     assert "Recommended" in page.text
     assert "purity 88%" in page.text
 
-    overview = TestClient(api.app, follow_redirects=True).get("/recordings/rec-speakers-1")
+    overview = TestClient(api.app, follow_redirects=True).get(
+        "/recordings/rec-speakers-1"
+    )
     assert overview.status_code == 200
     assert "Alice Example (S1)" in overview.text
 
@@ -1717,7 +1788,9 @@ def test_recording_detail_speakers_create_and_assign(tmp_path, monkeypatch):
     assert assignments[0]["review_state"] == "confirmed_canonical"
 
 
-def test_recording_detail_speakers_keep_unknown_persists_intentional_review(tmp_path, monkeypatch):
+def test_recording_detail_speakers_keep_unknown_persists_intentional_review(
+    tmp_path, monkeypatch
+):
     cfg = _cfg(tmp_path)
     monkeypatch.setattr(api, "_settings", cfg)
     monkeypatch.setattr(ui_routes, "_settings", cfg)
@@ -1763,7 +1836,9 @@ def test_recording_detail_speakers_keep_unknown_persists_intentional_review(tmp_
     assert "Below auto-match threshold 0.75" not in page.text
 
 
-def test_recording_detail_speakers_local_label_shows_in_detail_and_export(tmp_path, monkeypatch):
+def test_recording_detail_speakers_local_label_shows_in_detail_and_export(
+    tmp_path, monkeypatch
+):
     cfg = _cfg(tmp_path)
     monkeypatch.setattr(api, "_settings", cfg)
     monkeypatch.setattr(ui_routes, "_settings", cfg)
@@ -1778,7 +1853,9 @@ def test_recording_detail_speakers_local_label_shows_in_detail_and_export(tmp_pa
     _seed_speaker_artifacts(cfg, "rec-speakers-local-1")
     derived = cfg.recordings_root / "rec-speakers-local-1" / "derived"
     (derived / "summary.json").write_text(
-        json.dumps({"topic": "Speaker review", "summary_bullets": ["Discussed labels."]}),
+        json.dumps(
+            {"topic": "Speaker review", "summary_bullets": ["Discussed labels."]}
+        ),
         encoding="utf-8",
     )
     (derived / "speaker_turns.json").write_text(
@@ -1825,7 +1902,9 @@ def test_recording_detail_speakers_local_label_shows_in_detail_and_export(tmp_pa
     assert "Design Lead (S1)" in markdown
 
 
-def test_recording_detail_speakers_add_sample_links_snippet_and_audio_route(tmp_path, monkeypatch):
+def test_recording_detail_speakers_add_sample_links_snippet_and_audio_route(
+    tmp_path, monkeypatch
+):
     cfg = _cfg(tmp_path)
     monkeypatch.setattr(api, "_settings", cfg)
     monkeypatch.setattr(ui_routes, "_settings", cfg)
@@ -1862,7 +1941,10 @@ def test_recording_detail_speakers_add_sample_links_snippet_and_audio_route(tmp_
     sample = samples[0]
     assert sample["voice_profile_id"] == profile["id"]
     assert sample["recording_id"] == "rec-speakers-sample-1"
-    assert sample["snippet_path"].startswith("recordings/rec-speakers-sample-1/derived/snippets/S1/")
+    assert sample["sample_source"] == "trusted_sample"
+    assert sample["snippet_path"].startswith(
+        "recordings/rec-speakers-sample-1/derived/snippets/S1/"
+    )
 
     snippet_resp = TestClient(api.app, follow_redirects=True).get(
         "/ui/recordings/rec-speakers-sample-1/snippets/S1/1.wav"
@@ -1876,8 +1958,16 @@ def test_recording_detail_speakers_add_sample_links_snippet_and_audio_route(tmp_
     assert audio_resp.status_code == 200
     assert audio_resp.headers["content-type"].startswith("audio/wav")
 
+    speakers_page = TestClient(api.app, follow_redirects=True).get(
+        "/recordings/rec-speakers-sample-1?tab=speakers"
+    )
+    assert speakers_page.status_code == 200
+    assert "Trusted sample saved for Cara Sample." in speakers_page.text
 
-def test_recording_detail_speakers_add_sample_keeps_local_label_decision(tmp_path, monkeypatch):
+
+def test_recording_detail_speakers_add_sample_keeps_local_label_decision(
+    tmp_path, monkeypatch
+):
     cfg = _cfg(tmp_path)
     monkeypatch.setattr(api, "_settings", cfg)
     monkeypatch.setattr(ui_routes, "_settings", cfg)
@@ -1919,9 +2009,59 @@ def test_recording_detail_speakers_add_sample_keeps_local_label_decision(tmp_pat
     samples = list_voice_samples(settings=cfg)
     assert len(samples) == 1
     assert samples[0]["voice_profile_id"] == profile["id"]
+    assert samples[0]["sample_source"] == "trusted_sample"
+
+    speakers_page = TestClient(api.app, follow_redirects=True).get(
+        "/recordings/rec-speakers-local-sample-1?tab=speakers"
+    )
+    assert speakers_page.status_code == 200
+    assert "Local label only" in speakers_page.text
+    assert "Trusted sample saved for Trusted Canonical." in speakers_page.text
 
 
-def test_recording_detail_speakers_no_clean_snippet_shows_clear_message(tmp_path, monkeypatch):
+def test_recording_detail_speakers_trusted_sample_state_ignores_manual_and_unscoped_samples(
+    tmp_path, monkeypatch
+):
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    init_db(cfg)
+    create_recording(
+        "rec-speakers-ignored-samples-1",
+        source="drive",
+        source_filename="speakers-ignored.mp3",
+        status=RECORDING_STATUS_READY,
+        settings=cfg,
+    )
+    _seed_speaker_artifacts(cfg, "rec-speakers-ignored-samples-1")
+    profile = create_voice_profile("Ignore Me", settings=cfg)
+    create_voice_sample(
+        voice_profile_id=profile["id"],
+        recording_id="rec-speakers-ignored-samples-1",
+        diar_speaker_label="S1",
+        snippet_path="recordings/rec-speakers-ignored-samples-1/derived/snippets/S1/1.wav",
+        sample_source="manual",
+        settings=cfg,
+    )
+    create_voice_sample(
+        voice_profile_id=profile["id"],
+        recording_id="rec-speakers-ignored-samples-1",
+        diar_speaker_label=" ",
+        snippet_path="recordings/rec-speakers-ignored-samples-1/derived/snippets/S1/1.wav",
+        sample_source="trusted_sample",
+        settings=cfg,
+    )
+
+    speakers_page = TestClient(api.app, follow_redirects=True).get(
+        "/recordings/rec-speakers-ignored-samples-1?tab=speakers"
+    )
+    assert speakers_page.status_code == 200
+    assert "Trusted sample saved" not in speakers_page.text
+
+
+def test_recording_detail_speakers_no_clean_snippet_shows_clear_message(
+    tmp_path, monkeypatch
+):
     cfg = _cfg(tmp_path)
     monkeypatch.setattr(api, "_settings", cfg)
     monkeypatch.setattr(ui_routes, "_settings", cfg)
@@ -1981,8 +2121,14 @@ def test_recording_detail_speakers_no_clean_snippet_shows_clear_message(tmp_path
         "/recordings/rec-speakers-no-clean-1?tab=speakers"
     )
     assert page.status_code == 200
-    assert "Snippet export completed, but no clean snippets are available because every candidate overlaps another speaker." in page.text
-    assert "No clean snippets are available because every candidate overlaps another speaker." in page.text
+    assert (
+        "Snippet export completed, but no clean snippets are available because every candidate overlaps another speaker."
+        in page.text
+    )
+    assert (
+        "No clean snippets are available because every candidate overlaps another speaker."
+        in page.text
+    )
     assert "rejected because it overlaps another speaker" in page.text
     assert "No snippet quality data found." not in page.text
 
@@ -2023,7 +2169,10 @@ def test_recording_detail_speakers_snippet_not_started_message(tmp_path, monkeyp
         "/recordings/rec-speakers-pending-1?tab=speakers"
     )
     assert page.status_code == 200
-    assert "Pending:</strong> The pipeline has not reached Snippet Export yet." in page.text
+    assert (
+        "Pending:</strong> The pipeline has not reached Snippet Export yet."
+        in page.text
+    )
     assert "Add sample will be available after Snippet Export runs." in page.text
     assert 'name="snippet_path" style="width:220px" disabled' in page.text
 
@@ -2058,11 +2207,18 @@ def test_recording_detail_speakers_snippet_running_message(tmp_path, monkeypatch
         "/recordings/rec-speakers-running-1?tab=speakers"
     )
     assert page.status_code == 200
-    assert "Generating:</strong> Snippet export is currently generating clean clips for this recording." in page.text
-    assert "Add sample will be available when clean clips finish generating." in page.text
+    assert (
+        "Generating:</strong> Snippet export is currently generating clean clips for this recording."
+        in page.text
+    )
+    assert (
+        "Add sample will be available when clean clips finish generating." in page.text
+    )
 
 
-def test_recording_detail_speakers_ready_during_processing_keeps_snippets_usable(tmp_path, monkeypatch):
+def test_recording_detail_speakers_ready_during_processing_keeps_snippets_usable(
+    tmp_path, monkeypatch
+):
     cfg = _cfg(tmp_path)
     monkeypatch.setattr(api, "_settings", cfg)
     monkeypatch.setattr(ui_routes, "_settings", cfg)
@@ -2093,14 +2249,21 @@ def test_recording_detail_speakers_ready_during_processing_keeps_snippets_usable
         "/recordings/rec-speakers-processing-ready-1?tab=speakers"
     )
     assert page.status_code == 200
-    assert "Ready:</strong> Clean clips are ready while processing continues in LLM Summary." in page.text
-    assert "/ui/recordings/rec-speakers-processing-ready-1/snippets/S1/1.wav" in page.text
+    assert (
+        "Ready:</strong> Clean clips are ready while processing continues in LLM Summary."
+        in page.text
+    )
+    assert (
+        "/ui/recordings/rec-speakers-processing-ready-1/snippets/S1/1.wav" in page.text
+    )
     assert "Add trusted sample" in page.text
     assert 'name="snippet_path" style="width:220px" disabled' not in page.text
     assert 'type="submit" disabled>Add trusted sample' not in page.text
 
 
-def test_recording_detail_speakers_nonfatal_snippet_failure_message(tmp_path, monkeypatch):
+def test_recording_detail_speakers_nonfatal_snippet_failure_message(
+    tmp_path, monkeypatch
+):
     cfg = _cfg(tmp_path)
     monkeypatch.setattr(api, "_settings", cfg)
     monkeypatch.setattr(ui_routes, "_settings", cfg)
@@ -2141,12 +2304,17 @@ def test_recording_detail_speakers_nonfatal_snippet_failure_message(tmp_path, mo
         "/recordings/rec-speakers-failed-1?tab=speakers"
     )
     assert page.status_code == 200
-    assert "Failed:</strong> Snippet export failed, so no clean clips are available for this speaker. The rest of processing continues. snippet boom" in page.text
+    assert (
+        "Failed:</strong> Snippet export failed, so no clean clips are available for this speaker. The rest of processing continues. snippet boom"
+        in page.text
+    )
     assert "Add sample is unavailable because snippet export failed" not in page.text
     assert "snippet boom" in page.text
 
 
-def test_recording_detail_speakers_legacy_missing_manifest_message(tmp_path, monkeypatch):
+def test_recording_detail_speakers_legacy_missing_manifest_message(
+    tmp_path, monkeypatch
+):
     cfg = _cfg(tmp_path)
     monkeypatch.setattr(api, "_settings", cfg)
     monkeypatch.setattr(ui_routes, "_settings", cfg)
@@ -2165,8 +2333,13 @@ def test_recording_detail_speakers_legacy_missing_manifest_message(tmp_path, mon
         "/recordings/rec-speakers-legacy-1?tab=speakers"
     )
     assert page.status_code == 200
-    assert "Legacy:</strong> This older recording has no snippets manifest yet." in page.text
-    assert "Missing sanitized audio and no raw audio fallback is available." in page.text
+    assert (
+        "Legacy:</strong> This older recording has no snippets manifest yet."
+        in page.text
+    )
+    assert (
+        "Missing sanitized audio and no raw audio fallback is available." in page.text
+    )
 
 
 def test_recording_detail_speakers_regenerate_snippets_repairs_missing_manifest(
@@ -2188,12 +2361,19 @@ def test_recording_detail_speakers_regenerate_snippets_repairs_missing_manifest(
     create_voice_profile("Repair Sample", settings=cfg)
 
     client = TestClient(api.app, follow_redirects=True)
-    page = client.post("/ui/recordings/rec-speakers-repair-1/speakers/regenerate-snippets")
+    page = client.post(
+        "/ui/recordings/rec-speakers-repair-1/speakers/regenerate-snippets"
+    )
 
     assert page.status_code == 200
     assert "Regenerated" in page.text
     assert "/ui/recordings/rec-speakers-repair-1/snippets/S1/1.wav" in page.text
-    assert (cfg.recordings_root / "rec-speakers-repair-1" / "derived" / "snippets_manifest.json").exists()
+    assert (
+        cfg.recordings_root
+        / "rec-speakers-repair-1"
+        / "derived"
+        / "snippets_manifest.json"
+    ).exists()
 
 
 def test_recording_detail_speakers_regenerate_snippets_reports_missing_prereq(
@@ -2291,7 +2471,9 @@ def test_speakers_tab_repair_context_messages_cover_missing_stale_and_blank_reas
     assert context["snippet_repair"]["detail"] == ""
 
 
-def test_snippet_repair_notice_message_and_missing_recording_route(tmp_path, monkeypatch):
+def test_snippet_repair_notice_message_and_missing_recording_route(
+    tmp_path, monkeypatch
+):
     cfg = _cfg(tmp_path)
     monkeypatch.setattr(api, "_settings", cfg)
     monkeypatch.setattr(ui_routes, "_settings", cfg)
@@ -2337,7 +2519,9 @@ def test_snippet_repair_notice_message_and_missing_recording_route(tmp_path, mon
     assert response.text == "Recording not found"
 
 
-def test_recording_detail_speakers_stopped_before_snippet_export_is_unavailable(tmp_path, monkeypatch):
+def test_recording_detail_speakers_stopped_before_snippet_export_is_unavailable(
+    tmp_path, monkeypatch
+):
     cfg = _cfg(tmp_path)
     monkeypatch.setattr(api, "_settings", cfg)
     monkeypatch.setattr(ui_routes, "_settings", cfg)
@@ -2367,10 +2551,15 @@ def test_recording_detail_speakers_stopped_before_snippet_export_is_unavailable(
         "Snippet Export, so no clean clips are available for this speaker." in page.text
     )
     assert "Legacy:</strong>" not in page.text
-    assert "Pending:</strong> The pipeline has not reached Snippet Export yet." not in page.text
+    assert (
+        "Pending:</strong> The pipeline has not reached Snippet Export yet."
+        not in page.text
+    )
 
 
-def test_recording_detail_speakers_needs_review_without_snippets_is_unavailable(tmp_path, monkeypatch):
+def test_recording_detail_speakers_needs_review_without_snippets_is_unavailable(
+    tmp_path, monkeypatch
+):
     cfg = _cfg(tmp_path)
     monkeypatch.setattr(api, "_settings", cfg)
     monkeypatch.setattr(ui_routes, "_settings", cfg)
@@ -2396,7 +2585,9 @@ def test_recording_detail_speakers_needs_review_without_snippets_is_unavailable(
     assert "Legacy:</strong>" not in page.text
 
 
-def test_recording_detail_speakers_terminal_running_stage_is_not_generating(tmp_path, monkeypatch):
+def test_recording_detail_speakers_terminal_running_stage_is_not_generating(
+    tmp_path, monkeypatch
+):
     cfg = _cfg(tmp_path)
     monkeypatch.setattr(api, "_settings", cfg)
     monkeypatch.setattr(ui_routes, "_settings", cfg)
@@ -2427,7 +2618,9 @@ def test_recording_detail_speakers_terminal_running_stage_is_not_generating(tmp_
     )
 
 
-def test_recording_detail_speakers_llm_alias_progress_is_not_pending(tmp_path, monkeypatch):
+def test_recording_detail_speakers_llm_alias_progress_is_not_pending(
+    tmp_path, monkeypatch
+):
     cfg = _cfg(tmp_path)
     monkeypatch.setattr(api, "_settings", cfg)
     monkeypatch.setattr(ui_routes, "_settings", cfg)
@@ -2452,11 +2645,19 @@ def test_recording_detail_speakers_llm_alias_progress_is_not_pending(tmp_path, m
         "/recordings/rec-speakers-llm-alias-1?tab=speakers"
     )
     assert page.status_code == 200
-    assert "Snippet export should already be available, but the snippets manifest is missing." in page.text
-    assert "Pending:</strong> The pipeline has not reached Snippet Export yet." not in page.text
+    assert (
+        "Snippet export should already be available, but the snippets manifest is missing."
+        in page.text
+    )
+    assert (
+        "Pending:</strong> The pipeline has not reached Snippet Export yet."
+        not in page.text
+    )
 
 
-def test_recording_detail_speakers_show_degraded_notice_and_low_confidence(tmp_path, monkeypatch):
+def test_recording_detail_speakers_show_degraded_notice_and_low_confidence(
+    tmp_path, monkeypatch
+):
     cfg = _cfg(tmp_path)
     monkeypatch.setattr(api, "_settings", cfg)
     monkeypatch.setattr(ui_routes, "_settings", cfg)
@@ -2522,7 +2723,12 @@ def test_recording_detail_metrics_tab_uses_summary_payload(tmp_path, monkeypatch
                 "summary_bullets": ["Reviewed blockers"],
                 "decisions": ["Ship on Friday"],
                 "action_items": [
-                    {"task": "Send notes", "owner": "Alex", "deadline": "2026-02-23", "confidence": 0.9}
+                    {
+                        "task": "Send notes",
+                        "owner": "Alex",
+                        "deadline": "2026-02-23",
+                        "confidence": 0.9,
+                    }
                 ],
                 "emotional_summary": "Focused.",
                 "questions": {
@@ -2587,7 +2793,9 @@ def test_recording_detail_metrics_tab_uses_summary_payload(tmp_path, monkeypatch
     assert "Is QA complete?" in r.text
 
 
-def test_recording_detail_metrics_tab_backfills_missing_db_side_from_artifact(tmp_path, monkeypatch):
+def test_recording_detail_metrics_tab_backfills_missing_db_side_from_artifact(
+    tmp_path, monkeypatch
+):
     cfg = _cfg(tmp_path)
     monkeypatch.setattr(api, "_settings", cfg)
     monkeypatch.setattr(ui_routes, "_settings", cfg)
@@ -2647,7 +2855,9 @@ def test_recording_detail_metrics_tab_backfills_missing_db_side_from_artifact(tm
     assert "Facilitator" in r.text  # participant row backfilled from artifact
 
 
-def test_recording_detail_overview_shows_topic_and_emotional_summary(tmp_path, monkeypatch):
+def test_recording_detail_overview_shows_topic_and_emotional_summary(
+    tmp_path, monkeypatch
+):
     cfg = _cfg(tmp_path)
     monkeypatch.setattr(api, "_settings", cfg)
     monkeypatch.setattr(ui_routes, "_settings", cfg)
@@ -2718,7 +2928,9 @@ def test_recording_detail_language_tab_renders_spans(tmp_path, monkeypatch):
     assert "Re-summarize (LLM only)" in r.text
 
 
-def test_recording_detail_language_tab_keeps_auto_target_selected_when_unset(tmp_path, monkeypatch):
+def test_recording_detail_language_tab_keeps_auto_target_selected_when_unset(
+    tmp_path, monkeypatch
+):
     cfg = _cfg(tmp_path)
     monkeypatch.setattr(api, "_settings", cfg)
     monkeypatch.setattr(ui_routes, "_settings", cfg)
@@ -2749,7 +2961,9 @@ def test_recording_detail_language_tab_keeps_auto_target_selected_when_unset(tmp
     c = TestClient(api.app, follow_redirects=True)
     r = c.get("/recordings/rec-lang-auto-1?tab=language")
     assert r.status_code == 200
-    target_select = r.text.split('id="target_summary_language"', 1)[1].split("</select>", 1)[0]
+    target_select = r.text.split('id="target_summary_language"', 1)[1].split(
+        "</select>", 1
+    )[0]
     assert 'value="" selected>Auto (dominant language)</option>' in target_select
     assert 'value="es" selected' not in target_select
     assert "Spanish (es)" in r.text
@@ -2846,7 +3060,9 @@ def test_glossary_page_create_edit_and_delete(tmp_path, monkeypatch):
     assert created.status_code == 303
     created_entry = list_glossary_entries(settings=cfg)[0]
     assert created_entry["aliases_json"] == ["Sandia", "Sandoor"]
-    assert created_entry["metadata_json"] == {"recording_id": "rec-ui-glossary-create-1"}
+    assert created_entry["metadata_json"] == {
+        "recording_id": "rec-ui-glossary-create-1"
+    }
     seeded_entry = update_glossary_entry(
         int(created_entry["id"]),
         settings=cfg,
@@ -2959,7 +3175,10 @@ def test_glossary_return_context_links_and_redirects(tmp_path, monkeypatch):
         },
     )
     assert updated.status_code == 303
-    assert updated.headers["location"] == f"/glossary?{return_query}#glossary-{entry['id']}"
+    assert (
+        updated.headers["location"]
+        == f"/glossary?{return_query}#glossary-{entry['id']}"
+    )
 
     deleted = c.post(
         f"/glossary/{entry['id']}/delete",
@@ -2998,10 +3217,15 @@ def test_glossary_create_redirect_without_entry_anchor_when_backend_returns_no_i
         },
     )
     assert response.status_code == 303
-    assert response.headers["location"] == "/glossary?return_to=control-center&status=Ready"
+    assert (
+        response.headers["location"]
+        == "/glossary?return_to=control-center&status=Ready"
+    )
 
 
-def test_glossary_summary_fragment_endpoint(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_glossary_summary_fragment_endpoint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     cfg = _cfg(tmp_path)
     monkeypatch.setattr(api, "_settings", cfg)
     monkeypatch.setattr(ui_routes, "_settings", cfg)
@@ -3104,7 +3328,9 @@ def test_voices_return_context_links_and_redirects(tmp_path, monkeypatch):
     )
     assert created.status_code == 303
     assert created.headers["location"] == f"/voices?{return_query}#voice-3"
-    created_profile_id = max(int(profile["id"]) for profile in list_voice_profiles(settings=cfg))
+    created_profile_id = max(
+        int(profile["id"]) for profile in list_voice_profiles(settings=cfg)
+    )
 
     merged = c.post(
         f"/voices/{source['id']}/merge",
@@ -3134,7 +3360,9 @@ def test_voices_return_context_links_and_redirects(tmp_path, monkeypatch):
     assert deleted.headers["location"] == f"/voices?{return_query}"
 
 
-def test_voices_page_renders_duplicate_candidates_and_sample_inspection(tmp_path, monkeypatch):
+def test_voices_page_renders_duplicate_candidates_and_sample_inspection(
+    tmp_path, monkeypatch
+):
     cfg = _cfg(tmp_path)
     monkeypatch.setattr(api, "_settings", cfg)
     monkeypatch.setattr(ui_routes, "_settings", cfg)
@@ -3170,7 +3398,9 @@ def test_voices_page_renders_duplicate_candidates_and_sample_inspection(tmp_path
     assert "Merge into" in r.text
 
 
-def test_voices_merge_route_calls_backend_and_redirects_to_target_anchor(tmp_path, monkeypatch):
+def test_voices_merge_route_calls_backend_and_redirects_to_target_anchor(
+    tmp_path, monkeypatch
+):
     cfg = _cfg(tmp_path)
     monkeypatch.setattr(api, "_settings", cfg)
     monkeypatch.setattr(ui_routes, "_settings", cfg)
@@ -3179,7 +3409,9 @@ def test_voices_merge_route_calls_backend_and_redirects_to_target_anchor(tmp_pat
     target = create_voice_profile("Target Voice", settings=cfg)
     seen: dict[str, int | AppSettings] = {}
 
-    def _merge(source_profile_id: int, target_profile_id: int, *, settings: AppSettings):
+    def _merge(
+        source_profile_id: int, target_profile_id: int, *, settings: AppSettings
+    ):
         seen["source"] = source_profile_id
         seen["target"] = target_profile_id
         seen["settings"] = settings
@@ -3243,8 +3475,14 @@ def test_upload_page(client):
     assert 'id="file-input"' in r.text
     assert "Drop audio here or browse from disk." in r.text
     assert "Recent uploads stay here while you work" in r.text
-    assert "Completed uploads stay listed here so standalone uploads keep their in-page progress and Open recording link." in r.text
-    assert "No uploads yet. New files appear here with upload and processing progress." in r.text
+    assert (
+        "Completed uploads stay listed here so standalone uploads keep their in-page progress and Open recording link."
+        in r.text
+    )
+    assert (
+        "No uploads yet. New files appear here with upload and processing progress."
+        in r.text
+    )
     assert "var removeTerminalItems = false;" in r.text
 
 
@@ -3255,7 +3493,10 @@ def test_upload_panel_fragment_endpoint(client):
     assert 'id="upload-rows"' in r.text
     assert "Only in-flight uploads stay here" in r.text
     assert "Finished recordings move into the main worklist below" in r.text
-    assert "No active uploads. New files appear here until they enter the main inbox." in r.text
+    assert (
+        "No active uploads. New files appear here until they enter the main inbox."
+        in r.text
+    )
     assert "<html" not in r.text
 
 
@@ -3278,7 +3519,9 @@ def test_ui_login_sets_cookie_and_allows_protected_post(tmp_path, monkeypatch):
     monkeypatch.setattr(api, "_settings", cfg)
     monkeypatch.setattr(ui_routes, "_settings", cfg)
     init_db(cfg)
-    create_recording("rec-auth-ui-1", source="drive", source_filename="auth.mp3", settings=cfg)
+    create_recording(
+        "rec-auth-ui-1", source="drive", source_filename="auth.mp3", settings=cfg
+    )
 
     monkeypatch.setattr(
         ui_routes,
@@ -3354,7 +3597,9 @@ def test_ui_action_quarantine(seeded_client):
 
 
 def test_ui_action_quarantine_control_center_stays_on_root(seeded_client):
-    r = seeded_client.post("/ui/recordings/rec-ui-1/quarantine?return_to=control-center")
+    r = seeded_client.post(
+        "/ui/recordings/rec-ui-1/quarantine?return_to=control-center"
+    )
     assert r.status_code == 200
     assert "HX-Redirect" not in r.headers
 
@@ -3523,7 +3768,9 @@ def test_ui_action_delete_does_not_require_confirmation(tmp_path, monkeypatch):
     monkeypatch.setattr(api, "_settings", cfg)
     monkeypatch.setattr(ui_routes, "_settings", cfg)
     init_db(cfg)
-    create_recording("rec-del-confirm-1", source="drive", source_filename="x.mp3", settings=cfg)
+    create_recording(
+        "rec-del-confirm-1", source="drive", source_filename="x.mp3", settings=cfg
+    )
     monkeypatch.setattr(
         ui_routes,
         "purge_pending_recording_jobs",
@@ -3541,7 +3788,12 @@ def test_ui_action_delete_control_center_stays_on_root(tmp_path, monkeypatch):
     monkeypatch.setattr(api, "_settings", cfg)
     monkeypatch.setattr(ui_routes, "_settings", cfg)
     init_db(cfg)
-    create_recording("rec-del-control-center-1", source="drive", source_filename="x.mp3", settings=cfg)
+    create_recording(
+        "rec-del-control-center-1",
+        source="drive",
+        source_filename="x.mp3",
+        settings=cfg,
+    )
     monkeypatch.setattr(
         ui_routes,
         "purge_pending_recording_jobs",
@@ -3549,7 +3801,9 @@ def test_ui_action_delete_control_center_stays_on_root(tmp_path, monkeypatch):
     )
 
     c = TestClient(api.app, follow_redirects=False)
-    r = c.post("/ui/recordings/rec-del-control-center-1/delete?return_to=control-center")
+    r = c.post(
+        "/ui/recordings/rec-del-control-center-1/delete?return_to=control-center"
+    )
     assert r.status_code == 200
     assert "HX-Redirect" not in r.headers
     assert get_recording("rec-del-control-center-1", settings=cfg) is None
@@ -3592,7 +3846,9 @@ def test_ui_action_requeue_control_center_stays_on_root(tmp_path, monkeypatch):
     monkeypatch.setattr(api, "_settings", cfg)
     monkeypatch.setattr(ui_routes, "_settings", cfg)
     init_db(cfg)
-    create_recording("rec-rq-control-center-1", source="drive", source_filename="y.mp3", settings=cfg)
+    create_recording(
+        "rec-rq-control-center-1", source="drive", source_filename="y.mp3", settings=cfg
+    )
 
     monkeypatch.setattr(
         ui_routes,
@@ -3600,7 +3856,9 @@ def test_ui_action_requeue_control_center_stays_on_root(tmp_path, monkeypatch):
         lambda *_args, **_kwargs: None,
     )
     c = TestClient(api.app, follow_redirects=False)
-    r = c.post("/ui/recordings/rec-rq-control-center-1/requeue?return_to=control-center")
+    r = c.post(
+        "/ui/recordings/rec-rq-control-center-1/requeue?return_to=control-center"
+    )
     assert r.status_code == 200
     assert "HX-Redirect" not in r.headers
 
@@ -3638,7 +3896,9 @@ def test_ui_action_retry_failed_step(tmp_path, monkeypatch):
     monkeypatch.setattr(api, "_settings", cfg)
     monkeypatch.setattr(ui_routes, "_settings", cfg)
     init_db(cfg)
-    create_recording("rec-rtry-1", source="drive", source_filename="retry-step.mp3", settings=cfg)
+    create_recording(
+        "rec-rtry-1", source="drive", source_filename="retry-step.mp3", settings=cfg
+    )
     create_job(
         "job-rtry-1",
         recording_id="rec-rtry-1",
@@ -3679,7 +3939,9 @@ def test_ui_action_retry_failed_step_rejects_non_failed_job(tmp_path, monkeypatc
     monkeypatch.setattr(api, "_settings", cfg)
     monkeypatch.setattr(ui_routes, "_settings", cfg)
     init_db(cfg)
-    create_recording("rec-rtry-2", source="drive", source_filename="retry-step.mp3", settings=cfg)
+    create_recording(
+        "rec-rtry-2", source="drive", source_filename="retry-step.mp3", settings=cfg
+    )
     create_job(
         "job-rtry-2",
         recording_id="rec-rtry-2",
@@ -3794,7 +4056,9 @@ def test_ui_language_resummarize_uses_target_language_override(tmp_path, monkeyp
     assert "in Spanish." in captured["system_prompt"]
 
 
-def test_ui_language_resummarize_without_speaker_turns_uses_full_transcript(tmp_path, monkeypatch):
+def test_ui_language_resummarize_without_speaker_turns_uses_full_transcript(
+    tmp_path, monkeypatch
+):
     cfg = _cfg(tmp_path)
     monkeypatch.setattr(api, "_settings", cfg)
     monkeypatch.setattr(ui_routes, "_settings", cfg)
@@ -3867,7 +4131,9 @@ def test_ui_language_resummarize_without_speaker_turns_uses_full_transcript(tmp_
     assert reconstructed == normalized_long_text
 
 
-def test_ui_language_retranscribe_enqueues_precheck_and_saves_overrides(tmp_path, monkeypatch):
+def test_ui_language_retranscribe_enqueues_precheck_and_saves_overrides(
+    tmp_path, monkeypatch
+):
     cfg = _cfg(tmp_path)
     monkeypatch.setattr(api, "_settings", cfg)
     monkeypatch.setattr(ui_routes, "_settings", cfg)
@@ -3954,7 +4220,9 @@ def test_ui_action_delete_cleanup_failure_returns_500(tmp_path, monkeypatch):
     assert "disk busy" in r.text
 
 
-def test_ui_action_delete_returns_404_when_cleanup_reports_missing(tmp_path, monkeypatch):
+def test_ui_action_delete_returns_404_when_cleanup_reports_missing(
+    tmp_path, monkeypatch
+):
     cfg = _cfg(tmp_path)
     monkeypatch.setattr(api, "_settings", cfg)
     monkeypatch.setattr(ui_routes, "_settings", cfg)
@@ -3967,7 +4235,9 @@ def test_ui_action_delete_returns_404_when_cleanup_reports_missing(tmp_path, mon
     )
 
     monkeypatch.setattr(ui_routes, "purge_pending_recording_jobs", lambda *_a, **_k: 0)
-    monkeypatch.setattr(ui_routes, "delete_recording_with_artifacts", lambda *_a, **_k: False)
+    monkeypatch.setattr(
+        ui_routes, "delete_recording_with_artifacts", lambda *_a, **_k: False
+    )
     c = TestClient(api.app, follow_redirects=False)
     r = c.post("/ui/recordings/rec-del-missing-1/delete")
     assert r.status_code == 404
@@ -3979,7 +4249,9 @@ def test_ui_action_delete_removes_disk_artifacts(tmp_path, monkeypatch):
     monkeypatch.setattr(api, "_settings", cfg)
     monkeypatch.setattr(ui_routes, "_settings", cfg)
     init_db(cfg)
-    create_recording("rec-disk-1", source="drive", source_filename="w.mp3", settings=cfg)
+    create_recording(
+        "rec-disk-1", source="drive", source_filename="w.mp3", settings=cfg
+    )
     rec_dir = cfg.recordings_root / "rec-disk-1"
     rec_dir.mkdir(parents=True)
     (rec_dir / "audio.mp3").write_text("fake")
@@ -4076,6 +4348,7 @@ def test_db_create_and_delete_project(tmp_path):
     assert len(projects) == 1
 
     from lan_app.db import delete_project
+
     assert delete_project(p["id"], settings=cfg) is True
     assert list_projects(settings=cfg) == []
 
@@ -4096,6 +4369,7 @@ def test_db_create_and_delete_voice_profile(tmp_path):
     assert len(profiles) == 1
 
     from lan_app.db import delete_voice_profile
+
     assert delete_voice_profile(vp["id"], settings=cfg) is True
     assert list_voice_profiles(settings=cfg) == []
 

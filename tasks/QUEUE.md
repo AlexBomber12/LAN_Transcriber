@@ -585,7 +585,7 @@ Queue (in order)
 - Depends on: PR-UI-STITCH-WORKLIST-01
 
 117) PR-SPEAKER-DECISIONS-02: Harden speaker review state model for confirm match, keep unknown, local label only, and separate trusted-sample actions
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-SPEAKER-DECISIONS-02.md
 - Depends on: PR-UI-STITCH-INSPECTOR-COMPACT-01 and PR-SPEAKER-REVIEW-01
 

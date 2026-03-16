@@ -37,7 +37,11 @@ from .calendar.matching import (
     calendar_summary_context,
     selected_calendar_candidate,
 )
-from .calendar.service import CalendarSyncError, redacted_calendar_source, sync_calendar_source
+from .calendar.service import (
+    CalendarSyncError,
+    redacted_calendar_source,
+    sync_calendar_source,
+)
 from .conversation_metrics import refresh_recording_metrics
 from .constants import (
     DEFAULT_REQUEUE_JOB_TYPE,
@@ -66,6 +70,7 @@ from .db import (
     SPEAKER_REVIEW_STATE_KEPT_UNKNOWN,
     SPEAKER_REVIEW_STATE_LOCAL_LABEL,
     SPEAKER_REVIEW_STATE_SYSTEM_SUGGESTED,
+    VOICE_SAMPLE_SOURCE_TRUSTED_SAMPLE,
     acknowledge_recording_cancel_request,
     clear_recording_progress,
     create_calendar_source,
@@ -128,12 +133,17 @@ from .system_status import collect_control_center_runtime_status
 from lan_transcriber.artifacts import atomic_write_json
 from lan_transcriber.llm_client import LLMClient
 from lan_transcriber.pipeline import Settings as PipelineSettings
-from lan_transcriber.pipeline import build_structured_summary_prompts, build_summary_payload
+from lan_transcriber.pipeline import (
+    build_structured_summary_prompts,
+    build_summary_payload,
+)
 from lan_transcriber.pipeline_steps.precheck import (
     _audio_duration_from_ffprobe,
     _audio_duration_from_wave,
 )
-from lan_transcriber.utils import normalise_language_code as _normalise_language_code_shared
+from lan_transcriber.utils import (
+    normalise_language_code as _normalise_language_code_shared,
+)
 
 _TEMPLATES_DIR = Path(__file__).parent / "templates"
 _STATIC_DIR = Path(__file__).parent / "static"
@@ -422,15 +432,22 @@ def _pipeline_stage_rows_for_display(
         stage_name = str(row.get("stage_name") or "").strip()
         status = str(row.get("status") or "").strip()
         cause = root_cause_from_stage_row(row)
-        metadata = row.get("metadata_json") if isinstance(row.get("metadata_json"), dict) else {}
-        chunk_index = str(
-            (
-                metadata.get("cancel_chunk_index")
-                if metadata.get("cancel_chunk_index") is not None
-                else metadata.get("chunk_index")
-            )
-            or ""
-        ).strip() or None
+        metadata = (
+            row.get("metadata_json")
+            if isinstance(row.get("metadata_json"), dict)
+            else {}
+        )
+        chunk_index = (
+            str(
+                (
+                    metadata.get("cancel_chunk_index")
+                    if metadata.get("cancel_chunk_index") is not None
+                    else metadata.get("chunk_index")
+                )
+                or ""
+            ).strip()
+            or None
+        )
         chunk_total = None
         for key in ("cancel_chunk_total", "chunk_total"):
             if metadata.get(key) is None:
@@ -445,7 +462,9 @@ def _pipeline_stage_rows_for_display(
                 "stage_name": stage_name,
                 "stage_label": _pipeline_stage_label(stage_name),
                 "status": status,
-                "status_label": status.replace("_", " ").title() if status else "Unknown",
+                "status_label": status.replace("_", " ").title()
+                if status
+                else "Unknown",
                 "attempt": int(row.get("attempt") or 0),
                 "updated_at_display": _format_local_timestamp(row.get("updated_at")),
                 "started_at_display": _format_local_timestamp(row.get("started_at")),
@@ -515,7 +534,9 @@ def _format_local_timestamp(value: object) -> str:
 
 def _recording_audio_candidates(recording_id: str, settings: AppSettings) -> list[Path]:
     candidates: list[Path] = []
-    sanitized = settings.recordings_root / recording_id / "derived" / "audio_sanitized.wav"
+    sanitized = (
+        settings.recordings_root / recording_id / "derived" / "audio_sanitized.wav"
+    )
     if sanitized.exists():
         candidates.append(sanitized)
     raw_dir = settings.recordings_root / recording_id / "raw"
@@ -526,7 +547,8 @@ def _recording_audio_candidates(recording_id: str, settings: AppSettings) -> lis
 
 def _probe_duration_seconds(audio_path: Path) -> float | None:
     return _safe_duration_seconds(
-        _audio_duration_from_wave(audio_path) or _audio_duration_from_ffprobe(audio_path)
+        _audio_duration_from_wave(audio_path)
+        or _audio_duration_from_ffprobe(audio_path)
     )
 
 
@@ -602,8 +624,12 @@ def _recording_diagnostics_context(
         chunk_rows=chunk_rows,
         jobs=jobs,
     )
-    current_stage_code = str(diagnostics.get("current_stage_code") or "waiting").strip() or "waiting"
-    current_chunk_index = str(diagnostics.get("current_chunk_index") or "").strip() or None
+    current_stage_code = (
+        str(diagnostics.get("current_stage_code") or "waiting").strip() or "waiting"
+    )
+    current_chunk_index = (
+        str(diagnostics.get("current_chunk_index") or "").strip() or None
+    )
     current_chunk_total = diagnostics.get("current_chunk_total")
     if current_chunk_index is not None and current_chunk_total is not None:
         chunk_text = f"{current_chunk_index}/{int(current_chunk_total)}"
@@ -616,18 +642,33 @@ def _recording_diagnostics_context(
     diagnostics["current_stage_code"] = current_stage_code
     diagnostics["current_stage_label"] = _pipeline_stage_label(current_stage_code)
     diagnostics["current_stage_status_label"] = (
-        str(diagnostics.get("current_stage_status") or "").replace("_", " ").title() or "Unknown"
+        str(diagnostics.get("current_stage_status") or "").replace("_", " ").title()
+        or "Unknown"
     )
     diagnostics["chunk_text"] = chunk_text
-    diagnostics["stage_elapsed_display"] = _format_elapsed_seconds(diagnostics.get("stage_elapsed_seconds"))
-    diagnostics["chunk_elapsed_display"] = _format_elapsed_seconds(diagnostics.get("chunk_elapsed_seconds"))
+    diagnostics["stage_elapsed_display"] = _format_elapsed_seconds(
+        diagnostics.get("stage_elapsed_seconds")
+    )
+    diagnostics["chunk_elapsed_display"] = _format_elapsed_seconds(
+        diagnostics.get("chunk_elapsed_seconds")
+    )
     diagnostics["stage_attempt_text"] = str(stage_attempt) if stage_attempt > 0 else "—"
     diagnostics["chunk_attempt_text"] = str(chunk_attempt) if chunk_attempt > 0 else "—"
-    diagnostics["primary_reason_code"] = str(diagnostics.get("primary_reason_code") or "").strip()
-    diagnostics["primary_reason_text"] = str(diagnostics.get("primary_reason_text") or "").strip()
-    diagnostics["primary_reason_detail"] = str(diagnostics.get("primary_reason_detail") or "").strip()
-    diagnostics["wrapper_reason_text"] = str(diagnostics.get("wrapper_reason_text") or "").strip()
-    diagnostics["stop_reason_text"] = str(diagnostics.get("stop_reason_text") or "").strip()
+    diagnostics["primary_reason_code"] = str(
+        diagnostics.get("primary_reason_code") or ""
+    ).strip()
+    diagnostics["primary_reason_text"] = str(
+        diagnostics.get("primary_reason_text") or ""
+    ).strip()
+    diagnostics["primary_reason_detail"] = str(
+        diagnostics.get("primary_reason_detail") or ""
+    ).strip()
+    diagnostics["wrapper_reason_text"] = str(
+        diagnostics.get("wrapper_reason_text") or ""
+    ).strip()
+    diagnostics["stop_reason_text"] = str(
+        diagnostics.get("stop_reason_text") or ""
+    ).strip()
     return diagnostics
 
 
@@ -681,7 +722,9 @@ def _summary_context(recording_id: str, settings: AppSettings) -> dict[str, Any]
     _transcript_path, summary_path = _recording_derived_paths(recording_id, settings)
     payload = _load_json_dict(summary_path)
     summary_text = str(payload.get("summary") or "").strip()
-    summary_bullets = _normalise_text_items(payload.get("summary_bullets"), max_items=12)
+    summary_bullets = _normalise_text_items(
+        payload.get("summary_bullets"), max_items=12
+    )
     if not summary_bullets:
         summary_bullets = _normalise_text_items(summary_text, max_items=12)
 
@@ -785,7 +828,9 @@ def _metrics_tab_context(recording_id: str, settings: AppSettings) -> dict[str, 
         if not participant:
             continue
         normalized = dict(participant)
-        speaker = str(normalized.get("speaker") or row.get("diar_speaker_label") or "").strip()
+        speaker = str(
+            normalized.get("speaker") or row.get("diar_speaker_label") or ""
+        ).strip()
         if not speaker:
             continue
         normalized["speaker"] = speaker
@@ -804,7 +849,9 @@ def _metrics_tab_context(recording_id: str, settings: AppSettings) -> dict[str, 
                 for key, value in meeting_raw.items():
                     meeting_payload.setdefault(key, value)
         if isinstance(participants_raw, list):
-            artifact_participants = [row for row in participants_raw if isinstance(row, dict)]
+            artifact_participants = [
+                row for row in participants_raw if isinstance(row, dict)
+            ]
             if not participants_payload:
                 participants_payload = artifact_participants
             else:
@@ -833,7 +880,9 @@ def _metrics_tab_context(recording_id: str, settings: AppSettings) -> dict[str, 
         "action_items_count": _to_int(meeting_payload.get("action_items_count")),
         "actionability_ratio": _to_float(meeting_payload.get("actionability_ratio")),
         "emotional_summary": str(meeting_payload.get("emotional_summary") or "—"),
-        "total_speech_time_seconds": _to_float(meeting_payload.get("total_speech_time_seconds")),
+        "total_speech_time_seconds": _to_float(
+            meeting_payload.get("total_speech_time_seconds")
+        ),
     }
 
     participants: list[dict[str, Any]] = []
@@ -1017,9 +1066,7 @@ def _glossary_form_defaults(
         "notes": " ".join(str(notes or "").strip().split()),
         "recording_id": clean_recording_id,
         "advanced_open": bool(
-            clean_recording_id
-            or clean_kind != "term"
-            or clean_source != "correction"
+            clean_recording_id or clean_kind != "term" or clean_source != "correction"
         ),
         "prefill_notice": prefill_notice,
     }
@@ -1091,7 +1138,9 @@ def _chunk_text_for_turns(text: str, *, chunk_size: int = 450) -> list[str]:
     return chunks
 
 
-def _fallback_speaker_turns_from_transcript(transcript_payload: dict[str, Any]) -> list[dict[str, Any]]:
+def _fallback_speaker_turns_from_transcript(
+    transcript_payload: dict[str, Any],
+) -> list[dict[str, Any]]:
     segments_payload = transcript_payload.get("segments")
     if isinstance(segments_payload, list):
         segment_turns: list[dict[str, Any]] = []
@@ -1136,7 +1185,9 @@ def _fallback_speaker_turns_from_transcript(transcript_payload: dict[str, Any]) 
     return turns
 
 
-def _recording_derived_paths(recording_id: str, settings: AppSettings) -> tuple[Path, Path]:
+def _recording_derived_paths(
+    recording_id: str, settings: AppSettings
+) -> tuple[Path, Path]:
     derived = settings.recordings_root / recording_id / "derived"
     return derived / "transcript.json", derived / "summary.json"
 
@@ -1202,7 +1253,9 @@ def _as_data_relative_path(path: Path, *, settings: AppSettings) -> str | None:
 
 
 def _snippets_manifest_path(recording_id: str, *, settings: AppSettings) -> Path:
-    return settings.recordings_root / recording_id / "derived" / "snippets_manifest.json"
+    return (
+        settings.recordings_root / recording_id / "derived" / "snippets_manifest.json"
+    )
 
 
 def _speaker_snippet_manifest_entries(
@@ -1259,10 +1312,7 @@ def _snippet_choice_label(entry: dict[str, Any]) -> str:
     clip_start = float(entry.get("clip_start") or 0.0)
     clip_end = float(entry.get("clip_end") or clip_start)
     purity = max(0.0, min(float(entry.get("purity_score") or 0.0), 1.0))
-    return (
-        f"{prefix}: {clip_start:.2f}s-{clip_end:.2f}s "
-        f"(purity {purity * 100:.0f}%)"
-    )
+    return f"{prefix}: {clip_start:.2f}s-{clip_end:.2f}s (purity {purity * 100:.0f}%)"
 
 
 def _snippet_warning_messages(entries: list[dict[str, Any]]) -> list[str]:
@@ -1281,7 +1331,9 @@ def _snippet_warning_messages(entries: list[dict[str, Any]]) -> list[str]:
     if counts.get("rejected_overlap"):
         count = counts["rejected_overlap"]
         noun = "candidate was" if count == 1 else "candidates were"
-        messages.append(f"{count} snippet {noun} rejected because it overlaps another speaker.")
+        messages.append(
+            f"{count} snippet {noun} rejected because it overlaps another speaker."
+        )
     if counts.get("rejected_failed_extract"):
         count = counts["rejected_failed_extract"]
         noun = "candidate could" if count == 1 else "candidates could"
@@ -1298,7 +1350,9 @@ def _snippet_warning_messages(entries: list[dict[str, Any]]) -> list[str]:
 def _no_clean_snippet_message(entries: list[dict[str, Any]]) -> str:
     statuses = {str(entry.get("status") or "").strip() for entry in entries}
     if "rejected_degraded" in statuses:
-        return "No clean snippets are available because diarization ran in degraded mode."
+        return (
+            "No clean snippets are available because diarization ran in degraded mode."
+        )
     if "rejected_overlap" in statuses:
         return "No clean snippets are available because every candidate overlaps another speaker."
     if "rejected_failed_extract" in statuses:
@@ -1366,7 +1420,9 @@ def _snippet_ready_message(recording: dict[str, Any]) -> str:
     return "Clean clips are ready while processing continues."
 
 
-def _snippet_completed_without_clean_message(no_clean_snippet_message: str | None) -> str:
+def _snippet_completed_without_clean_message(
+    no_clean_snippet_message: str | None,
+) -> str:
     detail = str(no_clean_snippet_message or "").strip()
     if not detail:
         return "Snippet export completed, but no accepted clean snippets are available for this speaker."
@@ -1397,24 +1453,32 @@ def _resolve_speaker_snippet_ui_state(
     stage_row = _snippet_export_stage_row(stage_rows)
     stage_status = str(stage_row.get("status") or "").strip().lower()
     stage_metadata = _stage_row_metadata(stage_row)
-    manifest_status = str(
-        manifest.get("manifest_status") or stage_metadata.get("manifest_status") or ""
-    ).strip().lower()
+    manifest_status = (
+        str(
+            manifest.get("manifest_status")
+            or stage_metadata.get("manifest_status")
+            or ""
+        )
+        .strip()
+        .lower()
+    )
     manifest_warning_messages = _snippet_manifest_warning_messages(manifest)
     warning_detail = (
         manifest_warning_messages[0]
         if manifest_warning_messages
-        else str(stage_metadata.get("warning") or stage_row.get("error_text") or "").strip()
+        else str(
+            stage_metadata.get("warning") or stage_row.get("error_text") or ""
+        ).strip()
     )
     accepted_entry_count = sum(
-        1
-        for entry in entries
-        if str(entry.get("status") or "").strip() == "accepted"
+        1 for entry in entries if str(entry.get("status") or "").strip() == "accepted"
     )
     pipeline_active = recording_status in _STOP_ELIGIBLE_RECORDING_STATUSES
 
     if manifest_status == "export_failed" or stage_status == "failed":
-        detail = "Snippet export failed, so no clean clips are available for this speaker."
+        detail = (
+            "Snippet export failed, so no clean clips are available for this speaker."
+        )
         if recording_status == RECORDING_STATUS_PROCESSING:
             detail += " The rest of processing continues."
         if warning_detail:
@@ -1440,7 +1504,9 @@ def _resolve_speaker_snippet_ui_state(
     if pipeline_active and (
         stage_status == "running" or current_stage == "snippet_export"
     ):
-        detail = "Snippet export is currently generating clean clips for this recording."
+        detail = (
+            "Snippet export is currently generating clean clips for this recording."
+        )
         return {
             "code": "running",
             "label": "Generating",
@@ -1496,7 +1562,10 @@ def _resolve_speaker_snippet_ui_state(
 
     if manifest:
         if manifest_status in {"quarantined_precheck", "no_usable_speech"}:
-            detail = warning_detail or "Snippet export completed without usable speaker turns."
+            detail = (
+                warning_detail
+                or "Snippet export completed without usable speaker turns."
+            )
             return {
                 "code": "unavailable",
                 "label": "Unavailable",
@@ -1513,7 +1582,9 @@ def _resolve_speaker_snippet_ui_state(
                 or add_sample_message
                 == "No snippet quality data is available for this speaker yet."
             ):
-                add_sample_message = "No accepted clean snippets are available for this speaker."
+                add_sample_message = (
+                    "No accepted clean snippets are available for this speaker."
+                )
             return {
                 "code": "ready_no_clean_snippets",
                 "label": "Ready",
@@ -1636,7 +1707,9 @@ def _speaker_snippet_context(
         if stage_rows is not None
         else list_recording_pipeline_stages(recording_id, settings=settings)
     )
-    no_clean_snippet_message = None if clean_snippets else _no_clean_snippet_message(entries)
+    no_clean_snippet_message = (
+        None if clean_snippets else _no_clean_snippet_message(entries)
+    )
     return {
         "clean_snippets": clean_snippets,
         "snippet_warnings": _snippet_warning_messages(entries),
@@ -1708,11 +1781,14 @@ def _candidate_match_rows(
         except (TypeError, ValueError):
             score = 0.0
         profile = voice_profiles_by_id.get(profile_id, {})
-        display_name = str(
-            row.get("display_name")
-            or profile.get("display_name")
+        display_name = (
+            str(
+                row.get("display_name")
+                or profile.get("display_name")
+                or f"#{profile_id}"
+            ).strip()
             or f"#{profile_id}"
-        ).strip() or f"#{profile_id}"
+        )
         normalized.append(
             {
                 "voice_profile_id": profile_id,
@@ -1756,9 +1832,10 @@ def _speaker_review_state(row: dict[str, Any]) -> str:
     local_display_name = str(row.get("local_display_name") or "").strip()
     if local_display_name:
         return SPEAKER_REVIEW_STATE_LOCAL_LABEL
-    if _as_int(row.get("voice_profile_id")) is not None and str(
-        row.get("voice_profile_name") or ""
-    ).strip():
+    if (
+        _as_int(row.get("voice_profile_id")) is not None
+        and str(row.get("voice_profile_name") or "").strip()
+    ):
         return SPEAKER_REVIEW_STATE_CONFIRMED_CANONICAL
     if bool(row.get("candidate_matches_json")) or bool(row.get("low_confidence")):
         return SPEAKER_REVIEW_STATE_SYSTEM_SUGGESTED
@@ -1772,6 +1849,43 @@ def _speaker_assignment_display_name(row: dict[str, Any]) -> str:
     if review_state == SPEAKER_REVIEW_STATE_CONFIRMED_CANONICAL:
         return str(row.get("voice_profile_name") or "").strip()
     return ""
+
+
+def _trusted_sample_target_label(row: dict[str, Any]) -> str:
+    target_name = str(row.get("voice_profile_name") or "").strip()
+    if target_name:
+        return target_name
+    profile_id = _as_int(row.get("voice_profile_id"))
+    if profile_id is None:
+        return ""
+    return f"Canonical #{profile_id}"
+
+
+def _trusted_sample_state(sample_rows: list[dict[str, Any]]) -> dict[str, Any] | None:
+    if not sample_rows:
+        return None
+
+    target_labels = sorted(
+        {
+            label
+            for label in (_trusted_sample_target_label(row) for row in sample_rows)
+            if label
+        }
+    )
+    sample_count = len(sample_rows)
+    badge_label = "1 saved" if sample_count == 1 else f"{sample_count} saved"
+    if len(target_labels) == 1:
+        detail = f"Trusted sample saved for {target_labels[0]}."
+    elif target_labels:
+        detail = (
+            f"Trusted samples saved across {len(target_labels)} canonical speakers."
+        )
+    else:
+        detail = "Trusted sample saved from this recording for future matching."
+    return {
+        "badge_label": badge_label,
+        "detail": detail,
+    }
 
 
 def _speaker_assignment_status_context(
@@ -1857,7 +1971,10 @@ def _voice_duplicate_candidates(
             voice_profiles_by_id=voice_profiles_by_id,
         ):
             target_profile_id = int(candidate["voice_profile_id"])
-            if target_profile_id == source_profile_id or target_profile_id in seen_targets:
+            if (
+                target_profile_id == source_profile_id
+                or target_profile_id in seen_targets
+            ):
                 continue
             seen_targets.add(target_profile_id)
             slot = evidence.setdefault(
@@ -1898,10 +2015,16 @@ def _speaker_review_notices(
     metadata_payload = _load_json_dict(derived_root / "diarization_metadata.json")
 
     notices: list[str] = []
-    degraded = bool(status_payload.get("degraded")) or bool(metadata_payload.get("degraded"))
+    degraded = bool(status_payload.get("degraded")) or bool(
+        metadata_payload.get("degraded")
+    )
     if degraded:
-        mode = str(status_payload.get("mode") or metadata_payload.get("mode") or "").strip()
-        reason = str(status_payload.get("reason") or metadata_payload.get("reason") or "").strip()
+        mode = str(
+            status_payload.get("mode") or metadata_payload.get("mode") or ""
+        ).strip()
+        reason = str(
+            status_payload.get("reason") or metadata_payload.get("reason") or ""
+        ).strip()
         message = "Diarization ran in degraded fallback mode"
         if mode and mode != "pyannote":
             message += f" ({mode})"
@@ -1931,7 +2054,9 @@ def _speakers_tab_context(
     transcript_path, _summary_path = _recording_derived_paths(recording_id, settings)
     speaker_turns_path = transcript_path.parent / "speaker_turns.json"
     transcript_payload = _load_json_dict(transcript_path)
-    resolved_recording = dict(recording or get_recording(recording_id, settings=settings) or {})
+    resolved_recording = dict(
+        recording or get_recording(recording_id, settings=settings) or {}
+    )
     resolved_stage_rows = (
         list(stage_rows)
         if stage_rows is not None
@@ -1971,9 +2096,19 @@ def _speakers_tab_context(
 
     assignments = list_speaker_assignments(recording_id, settings=settings)
     assignment_by_speaker = {
-        str(row.get("diar_speaker_label") or ""): row
-        for row in assignments
+        str(row.get("diar_speaker_label") or ""): row for row in assignments
     }
+    trusted_samples_by_speaker: dict[str, list[dict[str, Any]]] = {}
+    for sample in list_voice_samples(recording_id=recording_id, settings=settings):
+        if (
+            str(sample.get("sample_source") or "").strip()
+            != VOICE_SAMPLE_SOURCE_TRUSTED_SAMPLE
+        ):
+            continue
+        diar_label = str(sample.get("diar_speaker_label") or "").strip()
+        if not diar_label:
+            continue
+        trusted_samples_by_speaker.setdefault(diar_label, []).append(sample)
     voice_profiles = list_voice_profiles(settings=settings)
     voice_profiles_by_id = {
         int(profile["id"]): profile
@@ -2024,6 +2159,9 @@ def _speakers_tab_context(
                 "snippet_warnings": snippet_context["snippet_warnings"],
                 "no_clean_snippet_message": snippet_context["no_clean_snippet_message"],
                 "snippet_ui_state": snippet_context["snippet_ui_state"],
+                "trusted_sample_state": _trusted_sample_state(
+                    trusted_samples_by_speaker.get(speaker, [])
+                ),
                 "voice_profile_id": profile_id,
                 "voice_profile_name": voice_profile_name,
                 "local_display_name": local_display_name,
@@ -2033,7 +2171,9 @@ def _speakers_tab_context(
                 "review_state": review_state,
                 "display_label": _speaker_display_label(
                     speaker,
-                    speaker_name_map={speaker: _speaker_assignment_display_name(assignment)},
+                    speaker_name_map={
+                        speaker: _speaker_assignment_display_name(assignment)
+                    },
                 ),
                 "needs_review": needs_review,
                 "assignment_threshold": DEFAULT_ASSIGNMENT_THRESHOLD,
@@ -2100,7 +2240,9 @@ def _as_int(value: Any) -> int | None:
         return None
 
 
-def _project_tab_context(recording_id: str, rec: dict[str, Any], settings: AppSettings) -> dict[str, Any]:
+def _project_tab_context(
+    recording_id: str, rec: dict[str, Any], settings: AppSettings
+) -> dict[str, Any]:
     decision = refresh_recording_routing(
         recording_id,
         settings=settings,
@@ -2120,28 +2262,38 @@ def _project_tab_context(recording_id: str, rec: dict[str, Any], settings: AppSe
         suggested_project_id = _as_int(refreshed.get("suggested_project_id"))
     suggested_project_name = str(decision.get("suggested_project_name") or "").strip()
     if not suggested_project_name:
-        suggested_project_name = str(refreshed.get("suggested_project_name") or "").strip()
+        suggested_project_name = str(
+            refreshed.get("suggested_project_name") or ""
+        ).strip()
     confidence_raw = decision.get("confidence", refreshed.get("routing_confidence"))
     try:
         confidence = max(0.0, min(float(confidence_raw), 1.0))
     except (TypeError, ValueError):
         confidence = 0.0
-    threshold = float(decision.get("threshold") or settings.routing_auto_select_threshold)
+    threshold = float(
+        decision.get("threshold") or settings.routing_auto_select_threshold
+    )
 
     rationale_payload = decision.get("rationale")
     if not isinstance(rationale_payload, list):
         rationale_payload = refreshed.get("routing_rationale_json")
-    rationale = [str(item).strip() for item in (rationale_payload or []) if str(item).strip()]
+    rationale = [
+        str(item).strip() for item in (rationale_payload or []) if str(item).strip()
+    ]
 
     selected_training_examples = (
-        count_routing_training_examples(project_id=selected_project_id, settings=settings)
+        count_routing_training_examples(
+            project_id=selected_project_id, settings=settings
+        )
         if selected_project_id is not None
         else 0
     )
     return {
         "projects": projects,
         "selected_project_id": selected_project_id,
-        "selected_project_name": str((selected_project or {}).get("name") or "").strip(),
+        "selected_project_name": str(
+            (selected_project or {}).get("name") or ""
+        ).strip(),
         "suggested_project_id": suggested_project_id,
         "suggested_project_name": suggested_project_name,
         "confidence": confidence,
@@ -2190,26 +2342,30 @@ def _language_options(
         if code not in seen:
             ordered.append(code)
             seen.add(code)
-    return [
-        {"code": code, "label": _language_display_name(code)}
-        for code in ordered
-    ]
+    return [{"code": code, "label": _language_display_name(code)} for code in ordered]
 
 
-def _language_tab_context(recording_id: str, rec: dict[str, Any], settings: AppSettings) -> dict[str, Any]:
+def _language_tab_context(
+    recording_id: str, rec: dict[str, Any], settings: AppSettings
+) -> dict[str, Any]:
     transcript_path, summary_path = _recording_derived_paths(recording_id, settings)
     transcript_payload = _load_json_dict(transcript_path)
     summary_payload = _load_json_dict(summary_path)
 
     language_payload = transcript_payload.get("language")
     language_obj = language_payload if isinstance(language_payload, dict) else {}
-    detected = _normalise_language_code(language_obj.get("detected")) or _normalise_language_code(
-        rec.get("language_auto")
+    detected = _normalise_language_code(
+        language_obj.get("detected")
+    ) or _normalise_language_code(rec.get("language_auto"))
+    dominant = (
+        _normalise_language_code(transcript_payload.get("dominant_language"))
+        or detected
     )
-    dominant = _normalise_language_code(transcript_payload.get("dominant_language")) or detected
 
     distribution_payload = transcript_payload.get("language_distribution")
-    distribution_obj = distribution_payload if isinstance(distribution_payload, dict) else {}
+    distribution_obj = (
+        distribution_payload if isinstance(distribution_payload, dict) else {}
+    )
     distribution_rows: list[dict[str, Any]] = []
     for code_raw, pct_raw in distribution_obj.items():
         code = _normalise_language_code(code_raw) or str(code_raw)
@@ -2237,7 +2393,9 @@ def _language_tab_context(recording_id: str, rec: dict[str, Any], settings: AppS
             end = float(row.get("end", start))
         except (TypeError, ValueError):
             continue
-        code = _normalise_language_code(row.get("lang")) or str(row.get("lang") or "unknown")
+        code = _normalise_language_code(row.get("lang")) or str(
+            row.get("lang") or "unknown"
+        )
         span_rows.append(
             {
                 "start": round(start, 3),
@@ -2248,7 +2406,9 @@ def _language_tab_context(recording_id: str, rec: dict[str, Any], settings: AppS
         )
     span_rows.sort(key=lambda row: (row["start"], row["end"]))
 
-    target_summary_language = _normalise_language_code(rec.get("target_summary_language"))
+    target_summary_language = _normalise_language_code(
+        rec.get("target_summary_language")
+    )
     transcript_target_summary_language = _normalise_language_code(
         transcript_payload.get("target_summary_language")
     )
@@ -2262,7 +2422,9 @@ def _language_tab_context(recording_id: str, rec: dict[str, Any], settings: AppS
     )
 
     distribution_codes = [str(row["code"]) for row in distribution_rows]
-    non_unknown_distribution = [code for code in distribution_codes if code != "unknown"]
+    non_unknown_distribution = [
+        code for code in distribution_codes if code != "unknown"
+    ]
 
     return {
         "detected": detected,
@@ -2273,9 +2435,13 @@ def _language_tab_context(recording_id: str, rec: dict[str, Any], settings: AppS
         "spans": span_rows,
         "is_mixed": len(set(non_unknown_distribution)) >= 2,
         "target_summary_language": target_summary_language or "",
-        "target_summary_language_label": _language_display_name(resolved_target_summary_language),
+        "target_summary_language_label": _language_display_name(
+            resolved_target_summary_language
+        ),
         "transcript_language_override": transcript_language_override or "",
-        "transcript_language_override_label": _language_display_name(transcript_language_override),
+        "transcript_language_override_label": _language_display_name(
+            transcript_language_override
+        ),
         "summary_preview": str(summary_payload.get("summary") or "").strip(),
         "summary_model": str(summary_payload.get("model") or ""),
         "options": _language_options(
@@ -2323,14 +2489,18 @@ def _resummarize_recording(
     if not speaker_turns:
         speaker_turns = _fallback_speaker_turns_from_transcript(transcript_payload)
     if not speaker_turns:
-        speaker_turns = [{"start": 0.0, "end": 0.0, "speaker": "S1", "text": transcript_text}]
+        speaker_turns = [
+            {"start": 0.0, "end": 0.0, "speaker": "S1", "text": transcript_text}
+        ]
 
     calendar_title, calendar_attendees = calendar_summary_context(
         recording_id,
         settings=settings,
     )
     if calendar_title is None and not calendar_attendees:
-        calendar_title = str(transcript_payload.get("calendar_title") or "").strip() or None
+        calendar_title = (
+            str(transcript_payload.get("calendar_title") or "").strip() or None
+        )
         attendees_payload = transcript_payload.get("calendar_attendees")
         if isinstance(attendees_payload, list):
             calendar_attendees = [
@@ -2353,7 +2523,9 @@ def _resummarize_recording(
             response_format={"type": "json_object"},
         )
     )
-    raw_summary = message.get("content", "") if isinstance(message, dict) else str(message)
+    raw_summary = (
+        message.get("content", "") if isinstance(message, dict) else str(message)
+    )
 
     summary_payload = _load_json_dict(summary_path)
     friendly = summary_payload.get("friendly")
@@ -2390,7 +2562,9 @@ def _job_counts(settings: AppSettings) -> dict[str, int]:
     return counts
 
 
-def _status_summary_strip_context(*, title: str, counts: dict[str, int]) -> dict[str, Any]:
+def _status_summary_strip_context(
+    *, title: str, counts: dict[str, int]
+) -> dict[str, Any]:
     return {
         "title": title,
         "counts": counts,
@@ -2497,9 +2671,7 @@ def _control_center_state_context(
         if status_filter
         else "/recordings",
         "selected_detail_href": (
-            _recording_detail_path(selected_id, tab=current_tab)
-            if selected_id
-            else ""
+            _recording_detail_path(selected_id, tab=current_tab) if selected_id else ""
         ),
         "clear_selection_href": _control_center_shell_href(
             status_filter=status_filter,
@@ -2742,9 +2914,7 @@ def _recording_inspector_return_path(
             params.append(("speakers_error", speakers_error))
         if not params:
             return _recording_detail_path(recording_id, tab=safe_tab)
-        return (
-            f"/recordings/{quote(recording_id, safe='')}?{urlencode(params)}"
-        )
+        return f"/recordings/{quote(recording_id, safe='')}?{urlencode(params)}"
     safe_tab = _control_center_tab(return_tab)
     return _control_center_shell_href(
         selected=recording_id,
@@ -2768,7 +2938,9 @@ def _recording_inspector_tabs_context(
 ) -> list[dict[str, Any]]:
     tabs: list[dict[str, Any]] = []
     is_embedded = inspector_mode == "embedded" and control_center_state is not None
-    tab_values = _CONTROL_CENTER_TABS if is_embedded else _FULL_PAGE_RECORDING_INSPECTOR_TABS
+    tab_values = (
+        _CONTROL_CENTER_TABS if is_embedded else _FULL_PAGE_RECORDING_INSPECTOR_TABS
+    )
     for value in tab_values:
         full_page_href = _recording_detail_path(recording_id, tab=value)
         shell_href = full_page_href
@@ -2807,7 +2979,9 @@ def _recording_inspector_tabs_context(
 
 
 def _control_center_workflow_links_context(*, state: dict[str, Any]) -> dict[str, str]:
-    corrections_params = [("recording_id", state["selected"])] if state["selected"] else []
+    corrections_params = (
+        [("recording_id", state["selected"])] if state["selected"] else []
+    )
     return {
         "upload_href": "/upload",
         "recordings_href": state["recordings_href"],
@@ -2963,7 +3137,9 @@ def _recordings_list_items_context(
         prepared = _prepare_recording_for_display(item, settings=settings)
         progress_ratio = _safe_pipeline_progress(prepared.get("pipeline_progress"))
         prepared["progress_percent"] = int(round(progress_ratio * 100))
-        prepared["progress_stage_label"] = _pipeline_stage_label(prepared.get("pipeline_stage"))
+        prepared["progress_stage_label"] = _pipeline_stage_label(
+            prepared.get("pipeline_stage")
+        )
         prepared["source_display"] = _recording_source_display(prepared.get("source"))
         prepared["worklist_hint"] = _recording_worklist_hint(prepared)
         prepared_items.append(prepared)
@@ -3287,7 +3463,11 @@ def _recordings_panel_context(
     status_filter = valid_status or ""
     prepared_items = _recordings_list_items_context(items, settings=settings)
     is_control_center = mode == "control_center"
-    panel_id = "control-center-recordings-panel" if is_control_center else "recordings-page-panel"
+    panel_id = (
+        "control-center-recordings-panel"
+        if is_control_center
+        else "recordings-page-panel"
+    )
     control_center_state = (
         _control_center_state_context(
             selected=selected,
@@ -3322,11 +3502,15 @@ def _recordings_panel_context(
             if is_control_center
             else ""
         ),
-        "refresh_trigger": "refresh-control-center-recordings from:body" if is_control_center else "",
+        "refresh_trigger": "refresh-control-center-recordings from:body"
+        if is_control_center
+        else "",
         "workspace_header_url": (
             control_center_state["workspace_header_url"] if control_center_state else ""
         ),
-        "system_bar_url": control_center_state["system_bar_url"] if control_center_state else "",
+        "system_bar_url": control_center_state["system_bar_url"]
+        if control_center_state
+        else "",
         "status_cards": _recordings_status_cards_context(
             settings,
             mode=mode,
@@ -3422,9 +3606,7 @@ def _compact_inspector_next_action_context(
         or ""
     ).strip()
     stage_code = str(
-        diagnostics.get("current_stage_code")
-        or recording.get("pipeline_stage")
-        or ""
+        diagnostics.get("current_stage_code") or recording.get("pipeline_stage") or ""
     ).strip()
     stage_hint = " ".join((stage_code, reason_text)).lower()
     if status in {RECORDING_STATUS_READY, RECORDING_STATUS_PUBLISHED}:
@@ -3524,17 +3706,20 @@ def _compact_inspector_overview_context(
     stage_label = str(diagnostics.get("current_stage_label") or "").strip()
     if not stage_label or stage_label == "Waiting":
         stage_label = _pipeline_stage_label(recording.get("pipeline_stage"))
-    stage_detail = "The worker is updating this stage live." if str(
-        recording.get("status") or ""
-    ).strip() in {
-        RECORDING_STATUS_QUEUED,
-        RECORDING_STATUS_PROCESSING,
-        RECORDING_STATUS_STOPPING,
-    } else (
-        f"Last pipeline update {recording['pipeline_updated_at_display']}."
-        if recording.get("pipeline_updated_at_display")
-        and recording["pipeline_updated_at_display"] != "—"
-        else "No active worker update is running right now."
+    stage_detail = (
+        "The worker is updating this stage live."
+        if str(recording.get("status") or "").strip()
+        in {
+            RECORDING_STATUS_QUEUED,
+            RECORDING_STATUS_PROCESSING,
+            RECORDING_STATUS_STOPPING,
+        }
+        else (
+            f"Last pipeline update {recording['pipeline_updated_at_display']}."
+            if recording.get("pipeline_updated_at_display")
+            and recording["pipeline_updated_at_display"] != "—"
+            else "No active worker update is running right now."
+        )
     )
     blocker_text = str(
         diagnostics.get("primary_reason_text")
@@ -3602,9 +3787,7 @@ def _inspector_action_bar_context(
         "embedded": is_embedded,
         "return_to": "control-center" if is_embedded else "",
         "back_href": (
-            control_center_state["clear_selection_href"]
-            if is_embedded
-            else "/"
+            control_center_state["clear_selection_href"] if is_embedded else "/"
         ),
         "back_label": "Clear selection" if is_embedded else "Back to Control Center",
         "open_full_page_href": _recording_detail_path(recording_id, tab=current_tab),
@@ -3616,7 +3799,8 @@ def _inspector_action_bar_context(
         "delete_url": f"/ui/recordings/{quote(recording_id, safe='')}/delete{return_query}",
         "stop_url": f"/ui/recordings/{quote(recording_id, safe='')}/stop{return_query}",
         "stop_body": urlencode([("tab", current_tab)]),
-        "show_embedded_requeue": is_embedded and not bool(recording.get("stop_eligible")),
+        "show_embedded_requeue": is_embedded
+        and not bool(recording.get("stop_eligible")),
         "show_embedded_stop": is_embedded and bool(recording.get("stop_eligible")),
     }
 
@@ -3668,7 +3852,9 @@ def _recording_inspector_context(
     if rec is None:
         return None
     is_embedded = inspector_mode == "embedded" and control_center_state is not None
-    allowed_tabs = _CONTROL_CENTER_TABS if is_embedded else _FULL_PAGE_RECORDING_INSPECTOR_TABS
+    allowed_tabs = (
+        _CONTROL_CENTER_TABS if is_embedded else _FULL_PAGE_RECORDING_INSPECTOR_TABS
+    )
     rec = _prepare_recording_for_display(rec, settings=_settings)
     jobs, _ = list_jobs(settings=_settings, recording_id=recording_id, limit=100)
     recovery_warning = _recording_recovery_warning(jobs)
@@ -3715,7 +3901,9 @@ def _recording_inspector_context(
             get_recording(recording_id, settings=_settings) or rec,
             settings=_settings,
         )
-    if safe_tab in {"summary", "metrics"} or (safe_tab == "overview" and not is_embedded):
+    if safe_tab in {"summary", "metrics"} or (
+        safe_tab == "overview" and not is_embedded
+    ):
         summary = _summary_context(recording_id, _settings)
     if safe_tab == "overview":
         if is_embedded and control_center_state is not None:
@@ -3877,8 +4065,11 @@ def _compact_voice_summary_context(
 
 
 def _utc_iso(value: datetime) -> str:
-    return value.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace(
-        "+00:00", "Z"
+    return (
+        value.astimezone(timezone.utc)
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z")
     )
 
 
@@ -3926,12 +4117,16 @@ def _calendar_page_data(
 
     start_dt = datetime.combine(start_date, time.min, tzinfo=timezone.utc)
     # `to` is user-facing inclusive date, while DB query upper bound is exclusive.
-    end_dt = datetime.combine(end_date + timedelta(days=1), time.min, tzinfo=timezone.utc)
+    end_dt = datetime.combine(
+        end_date + timedelta(days=1), time.min, tzinfo=timezone.utc
+    )
 
     sources_raw = list_calendar_sources(settings=settings)
     sources = [redacted_calendar_source(row) for row in sources_raw]
     for source in sources:
-        source["last_synced_at_display"] = _format_local_timestamp(source.get("last_synced_at"))
+        source["last_synced_at_display"] = _format_local_timestamp(
+            source.get("last_synced_at")
+        )
     events = list_calendar_events(
         starts_from=_utc_iso(start_dt),
         ends_to=_utc_iso(end_dt),
@@ -3960,7 +4155,9 @@ def _calendar_attendee_labels(value: object) -> list[str]:
     seen: set[str] = set()
     for row in value:
         if isinstance(row, dict):
-            label = str(row.get("label") or row.get("name") or row.get("email") or "").strip()
+            label = str(
+                row.get("label") or row.get("name") or row.get("email") or ""
+            ).strip()
         else:
             label = str(row or "").strip()
         if not label:
@@ -3982,7 +4179,9 @@ def _calendar_rationale_rows(value: object) -> list[str]:
     return []
 
 
-def _calendar_candidate_context(candidate: dict[str, Any], *, selected_event_id: str) -> dict[str, Any]:
+def _calendar_candidate_context(
+    candidate: dict[str, Any], *, selected_event_id: str
+) -> dict[str, Any]:
     attendees = _calendar_attendee_labels(candidate.get("attendees"))
     if not attendees:
         attendees = _calendar_attendee_labels(candidate.get("attendee_details"))
@@ -3991,18 +4190,23 @@ def _calendar_candidate_context(candidate: dict[str, Any], *, selected_event_id:
         confidence_value = float(confidence_raw)
     except (TypeError, ValueError):
         confidence_value = None
-    organizer_display = str(
-        candidate.get("organizer")
-        or candidate.get("organizer_name")
-        or candidate.get("organizer_email")
-        or ""
-    ).strip() or None
+    organizer_display = (
+        str(
+            candidate.get("organizer")
+            or candidate.get("organizer_name")
+            or candidate.get("organizer_email")
+            or ""
+        ).strip()
+        or None
+    )
     event_id = str(candidate.get("event_id") or "").strip()
     return {
         **candidate,
         "event_id": event_id,
         "selected": event_id == selected_event_id and bool(event_id),
-        "subject_display": str(candidate.get("subject") or candidate.get("summary") or "").strip()
+        "subject_display": str(
+            candidate.get("subject") or candidate.get("summary") or ""
+        ).strip()
         or "Untitled event",
         "starts_at_display": _format_local_timestamp(candidate.get("starts_at")),
         "ends_at_display": _format_local_timestamp(candidate.get("ends_at")),
@@ -4280,7 +4484,9 @@ async def ui_control_center_system_bar(
     )
 
 
-@ui_router.get("/ui/control-center/dashboard/recordings-summary", response_class=HTMLResponse)
+@ui_router.get(
+    "/ui/control-center/dashboard/recordings-summary", response_class=HTMLResponse
+)
 async def ui_control_center_dashboard_recordings_summary(request: Request) -> Any:
     dashboard_context = _dashboard_status_context(_settings)
     return templates.TemplateResponse(
@@ -4608,7 +4814,9 @@ async def ui_recording_detail(
     )
 
 
-@ui_router.get("/ui/control-center/recordings/{recording_id}/shell", response_class=HTMLResponse)
+@ui_router.get(
+    "/ui/control-center/recordings/{recording_id}/shell", response_class=HTMLResponse
+)
 async def ui_control_center_recording_shell(
     request: Request,
     recording_id: str,
@@ -4795,12 +5003,16 @@ async def ui_recording_snippet_audio(
     )
     if safe_file is None or not safe_file.exists() or not safe_file.is_file():
         return HTMLResponse("Snippet not found", status_code=404)
-    return FileResponse(path=str(safe_file), media_type="audio/wav", filename=safe_file.name)
+    return FileResponse(
+        path=str(safe_file), media_type="audio/wav", filename=safe_file.name
+    )
 
 
 def _snippet_repair_notice_message(result: SnippetRepairResult) -> str:
     if result.manifest_status == "no_usable_speech":
-        return "Snippet manifest regenerated, but no speaker turns produced usable clips."
+        return (
+            "Snippet manifest regenerated, but no speaker turns produced usable clips."
+        )
     if result.accepted_snippets == 0:
         return "Snippet manifest regenerated. No accepted clean clips were available."
     noun = "clip" if result.accepted_snippets == 1 else "clips"
@@ -5054,7 +5266,9 @@ async def ui_create_and_assign_speaker(
     if not clean_name:
         return HTMLResponse("display_name is required", status_code=422)
 
-    profile = create_voice_profile(clean_name, notes.strip() or None, settings=_settings)
+    profile = create_voice_profile(
+        clean_name, notes.strip() or None, settings=_settings
+    )
     try:
         profile_id = int(profile.get("id"))
     except (TypeError, ValueError):
@@ -5126,13 +5340,16 @@ async def ui_add_speaker_sample(
 
     rel_path = _as_data_relative_path(selected_snippet, settings=_settings)
     if rel_path is None:
-        return HTMLResponse("Snippet path is outside runtime data root", status_code=422)
+        return HTMLResponse(
+            "Snippet path is outside runtime data root", status_code=422
+        )
     try:
-        create_voice_sample(
+        sample = create_voice_sample(
             voice_profile_id=profile_id,
             snippet_path=rel_path,
             recording_id=recording_id,
             diar_speaker_label=diar_label,
+            sample_source=VOICE_SAMPLE_SOURCE_TRUSTED_SAMPLE,
             settings=_settings,
         )
     except sqlite3.IntegrityError:
@@ -5155,6 +5372,10 @@ async def ui_add_speaker_sample(
             q=q,
             limit=limit,
             offset=offset,
+            speakers_notice=(
+                f"Saved a trusted sample for {diar_label} to "
+                f"{str(sample.get('voice_profile_name') or f'#{profile_id}').strip()}."
+            ),
         ),
         status_code=303,
     )
@@ -5261,13 +5482,17 @@ async def ui_glossary(
             item["status_hint"] = "Included when the app builds new ASR prompts."
         else:
             item["status_label"] = "Saved but paused"
-            item["status_hint"] = "Kept for reference and excluded from new ASR prompts."
+            item["status_hint"] = (
+                "Kept for reference and excluded from new ASR prompts."
+            )
         item["origin_context"] = (
             f"Linked to recording {item['recording_id']}"
             if item["recording_id"]
             else "Available across recordings"
         )
-    editing_entry = None if edit_id is None else get_glossary_entry(edit_id, settings=_settings)
+    editing_entry = (
+        None if edit_id is None else get_glossary_entry(edit_id, settings=_settings)
+    )
     if isinstance(editing_entry, dict):
         aliases = editing_entry.get("aliases_json")
         editing_entry["aliases"] = aliases if isinstance(aliases, list) else []
@@ -5374,9 +5599,7 @@ async def ui_create_glossary(
                 tab=tab,
                 limit=limit,
                 offset=offset,
-                workflow_notice=(
-                    f"Saved correction for {payload['canonical_text']}."
-                ),
+                workflow_notice=(f"Saved correction for {payload['canonical_text']}."),
             ),
             status_code=303,
         )
@@ -5534,9 +5757,7 @@ async def ui_voices(
         sample_id = sample.get("id")
         sample["audio_url"] = f"/ui/voice-samples/{sample_id}/audio"
     voice_profiles_by_id = {
-        int(item["id"]): item
-        for item in items
-        if _as_int(item.get("id")) is not None
+        int(item["id"]): item for item in items if _as_int(item.get("id")) is not None
     }
     samples_by_profile: dict[int, list[dict[str, Any]]] = {}
     for sample in samples:
@@ -5557,7 +5778,9 @@ async def ui_voices(
         item_samples = samples_by_profile.get(profile_id, [])
         item["sample_count"] = len(item_samples)
         item["samples_preview"] = item_samples[:3]
-        item["duplicate_candidates"] = duplicate_candidates_by_profile.get(profile_id, [])
+        item["duplicate_candidates"] = duplicate_candidates_by_profile.get(
+            profile_id, []
+        )
         item["merge_targets"] = [
             target
             for target in items
@@ -5710,7 +5933,9 @@ async def ui_voice_sample_audio(sample_id: int) -> Any:
     safe_path = _safe_audio_path(source_path, root=_settings.data_root)
     if safe_path is None or not safe_path.exists() or not safe_path.is_file():
         return HTMLResponse("Snippet not found", status_code=404)
-    return FileResponse(path=str(safe_path), media_type="audio/wav", filename=safe_path.name)
+    return FileResponse(
+        path=str(safe_path), media_type="audio/wav", filename=safe_path.name
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -5896,7 +6121,9 @@ def _ui_recording_post_response(
     redirect_to: str,
 ) -> HTMLResponse | RedirectResponse:
     if request.headers.get("HX-Request") == "true":
-        return _ui_recording_action_response(return_to=return_to, redirect_to=redirect_to)
+        return _ui_recording_action_response(
+            return_to=return_to, redirect_to=redirect_to
+        )
     return RedirectResponse(redirect_to, status_code=303)
 
 
@@ -5931,7 +6158,9 @@ async def ui_action_stop(
         try:
             purge_pending_recording_jobs(recording_id, settings=_settings)
         except Exception as exc:
-            return HTMLResponse(f"Stop failed (queue unavailable): {exc}", status_code=503)
+            return HTMLResponse(
+                f"Stop failed (queue unavailable): {exc}", status_code=503
+            )
         for row in queued_jobs:
             finish_job_if_queued(
                 str(row.get("id") or ""),
@@ -6101,7 +6330,9 @@ async def ui_action_delete(
     try:
         purge_pending_recording_jobs(recording_id, settings=_settings)
     except Exception as exc:
-        return HTMLResponse(f"Delete failed (queue unavailable): {exc}", status_code=503)
+        return HTMLResponse(
+            f"Delete failed (queue unavailable): {exc}", status_code=503
+        )
     try:
         deleted = delete_recording_with_artifacts(recording_id, settings=_settings)
     except RecordingDeleteError as exc:

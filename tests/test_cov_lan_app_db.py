@@ -34,7 +34,9 @@ def _cfg(tmp_path: Path) -> AppSettings:
 def test_db_internal_helpers_and_validation_paths():
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
-    row = conn.execute("SELECT '{' AS json, '{' AS payload_json, 1 AS number").fetchone()
+    row = conn.execute(
+        "SELECT '{' AS json, '{' AS payload_json, 1 AS number"
+    ).fetchone()
     parsed = db_module._as_dict(row)  # noqa: SLF001
     conn.close()
 
@@ -49,31 +51,43 @@ def test_db_internal_helpers_and_validation_paths():
             {"voice_profile_id": 7, "score": 0.5, "display_name": "Voice 7"},
         ]
     ) == [{"voice_profile_id": 7, "score": 0.5, "display_name": "Voice 7"}]
-    assert db_module._rewrite_voice_profile_ids_for_merge(  # noqa: SLF001
-        "{bad-json",
-        source_profile_id=1,
-        target_profile_id=2,
-    ) == []
-    assert db_module._rewrite_voice_profile_ids_for_merge(  # noqa: SLF001
-        123,
-        source_profile_id=1,
-        target_profile_id=2,
-    ) == []
+    assert (
+        db_module._rewrite_voice_profile_ids_for_merge(  # noqa: SLF001
+            "{bad-json",
+            source_profile_id=1,
+            target_profile_id=2,
+        )
+        == []
+    )
+    assert (
+        db_module._rewrite_voice_profile_ids_for_merge(  # noqa: SLF001
+            123,
+            source_profile_id=1,
+            target_profile_id=2,
+        )
+        == []
+    )
     assert db_module._rewrite_voice_profile_ids_for_merge(  # noqa: SLF001
         [1, "bad", 3],
         source_profile_id=1,
         target_profile_id=2,
     ) == [2, 3]
-    assert db_module._rewrite_candidate_matches_for_merge(  # noqa: SLF001
-        "{bad-json",
-        source_profile_id=1,
-        target_profile_id=2,
-    ) == []
-    assert db_module._rewrite_candidate_matches_for_merge(  # noqa: SLF001
-        123,
-        source_profile_id=1,
-        target_profile_id=2,
-    ) == []
+    assert (
+        db_module._rewrite_candidate_matches_for_merge(  # noqa: SLF001
+            "{bad-json",
+            source_profile_id=1,
+            target_profile_id=2,
+        )
+        == []
+    )
+    assert (
+        db_module._rewrite_candidate_matches_for_merge(  # noqa: SLF001
+            123,
+            source_profile_id=1,
+            target_profile_id=2,
+        )
+        == []
+    )
     assert db_module._rewrite_candidate_matches_for_merge(  # noqa: SLF001
         ["skip", {"voice_profile_id": 1, "score": 0.9}, {"voice_profile_id": "bad"}],
         source_profile_id=1,
@@ -121,7 +135,9 @@ def test_with_db_retry_error_paths_and_unreachable(monkeypatch: pytest.MonkeyPat
         db_module.with_db_retry(lambda: "ok", retries=1, base_sleep_ms=0)
 
 
-def test_migration_file_discovery_edge_cases(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def test_migration_file_discovery_edge_cases(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
     missing_dir = tmp_path / "missing-migrations"
     monkeypatch.setattr(db_module, "_MIGRATIONS_DIR", missing_dir)  # noqa: SLF001
     with pytest.raises(FileNotFoundError, match="Migrations directory not found"):
@@ -166,7 +182,9 @@ def test_init_db_skips_already_applied_live_migration_and_db_path_default(
 ):
     cfg = _cfg(tmp_path)
     migration_path = tmp_path / "001_test.sql"
-    migration_path.write_text("CREATE TABLE IF NOT EXISTS skip_me (id INTEGER);", encoding="utf-8")
+    migration_path.write_text(
+        "CREATE TABLE IF NOT EXISTS skip_me (id INTEGER);", encoding="utf-8"
+    )
 
     monkeypatch.setattr(db_module, "_migration_files", lambda: [(1, migration_path)])  # noqa: SLF001
     versions = iter([0, 1])
@@ -190,7 +208,9 @@ def test_init_db_skips_already_applied_live_migration_and_db_path_default(
     assert db_module.db_path() == env_db
 
 
-def test_recording_cancel_and_finish_if_queued_helpers_cover_false_paths(tmp_path: Path) -> None:
+def test_recording_cancel_and_finish_if_queued_helpers_cover_false_paths(
+    tmp_path: Path,
+) -> None:
     cfg = _cfg(tmp_path)
     db_module.init_db(cfg)
     db_module.create_recording(
@@ -375,20 +395,26 @@ def test_glossary_entry_helpers_cover_crud_and_validation_paths(tmp_path: Path) 
     assert db_module.get_glossary_entry(int(created["id"]), settings=cfg) is None
     assert db_module.delete_glossary_entry(int(created["id"]), settings=cfg) is False
 
-    assert db_module._normalise_glossary_aliases(  # noqa: SLF001
-        123,
-        canonical_text="Sander",
-    ) == []
+    assert (
+        db_module._normalise_glossary_aliases(  # noqa: SLF001
+            123,
+            canonical_text="Sander",
+        )
+        == []
+    )
     assert db_module._normalise_glossary_aliases(  # noqa: SLF001
         ["", "Sandia"],
         canonical_text="Sander",
     ) == ["Sandia"]
-    assert db_module.create_glossary_entry(
-        "fallback-meta",
-        aliases=None,
-        metadata="bad",  # type: ignore[arg-type]
-        settings=cfg,
-    )["metadata_json"] == {}
+    assert (
+        db_module.create_glossary_entry(
+            "fallback-meta",
+            aliases=None,
+            metadata="bad",  # type: ignore[arg-type]
+            settings=cfg,
+        )["metadata_json"]
+        == {}
+    )
 
     with pytest.raises(ValueError, match="canonical_text is required"):
         db_module.create_glossary_entry("   ", settings=cfg)
@@ -491,7 +517,9 @@ def test_recording_status_helpers_language_settings_and_publish_edges(tmp_path: 
     assert rec["routing_confidence"] is None
     assert rec["routing_rationale_json"] == ["first", "second"]
 
-    assert db_module.set_recording_language_settings("rec-db-cov-1", settings=cfg) is False
+    assert (
+        db_module.set_recording_language_settings("rec-db-cov-1", settings=cfg) is False
+    )
     assert db_module.set_recording_language_settings(
         "rec-db-cov-1",
         language_auto="en",
@@ -521,7 +549,9 @@ def test_recording_status_helpers_language_settings_and_publish_edges(tmp_path: 
     assert rec["onenote_page_url"] is None
 
 
-def test_job_helpers_has_find_requeue_finish_and_invalid_terminal_status(tmp_path: Path):
+def test_job_helpers_has_find_requeue_finish_and_invalid_terminal_status(
+    tmp_path: Path,
+):
     cfg = _cfg(tmp_path)
     db_module.init_db(cfg)
     db_module.create_recording(
@@ -538,7 +568,10 @@ def test_job_helpers_has_find_requeue_finish_and_invalid_terminal_status(tmp_pat
         settings=cfg,
     )
 
-    assert db_module.has_started_job_for_recording("rec-db-cov-job-1", settings=cfg) is False
+    assert (
+        db_module.has_started_job_for_recording("rec-db-cov-job-1", settings=cfg)
+        is False
+    )
     active = db_module.find_active_job_for_recording(
         "rec-db-cov-job-1",
         job_type=JOB_TYPE_PRECHECK,
@@ -663,24 +696,33 @@ def test_llm_chunk_state_helpers_and_pipeline_clear_reset(tmp_path: Path) -> Non
     assert [row["chunk_index"] for row in rows] == ["1", "2", "3", "4"]
     assert rows[2]["metadata_json"]["split_child_chunk_indexes"] == ["3a", "3b"]
 
-    assert db_module.clear_recording_pipeline_stages(
-        "rec-db-cov-chunks-1",
-        from_stage="metrics",
-        settings=cfg,
-    ) == 0
-    assert len(
-        db_module.list_recording_llm_chunk_states(
+    assert (
+        db_module.clear_recording_pipeline_stages(
             "rec-db-cov-chunks-1",
-            chunk_group="extract",
+            from_stage="metrics",
             settings=cfg,
         )
-    ) == 4
+        == 0
+    )
+    assert (
+        len(
+            db_module.list_recording_llm_chunk_states(
+                "rec-db-cov-chunks-1",
+                chunk_group="extract",
+                settings=cfg,
+            )
+        )
+        == 4
+    )
 
-    assert db_module.clear_recording_pipeline_stages(
-        "rec-db-cov-chunks-1",
-        from_stage="llm_extract",
-        settings=cfg,
-    ) == 0
+    assert (
+        db_module.clear_recording_pipeline_stages(
+            "rec-db-cov-chunks-1",
+            from_stage="llm_extract",
+            settings=cfg,
+        )
+        == 0
+    )
     assert (
         db_module.list_recording_llm_chunk_states(
             "rec-db-cov-chunks-1",
@@ -716,11 +758,14 @@ def test_llm_chunk_state_helpers_and_pipeline_clear_reset(tmp_path: Path) -> Non
         settings=cfg,
     )
     assert upsert_recording is not None
-    assert db_module.clear_recording_llm_chunk_states(
-        "rec-db-cov-chunks-1",
-        chunk_group="extract",
-        settings=cfg,
-    ) == 1
+    assert (
+        db_module.clear_recording_llm_chunk_states(
+            "rec-db-cov-chunks-1",
+            chunk_group="extract",
+            settings=cfg,
+        )
+        == 1
+    )
 
 
 def test_project_keyword_weights_and_voice_profile_crud_edges(tmp_path: Path):
@@ -740,15 +785,18 @@ def test_project_keyword_weights_and_voice_profile_crud_edges(tmp_path: Path):
     assert mapped["onenote_notebook_id"] == "notebook-1"
     assert mapped["onenote_section_id"] is None
 
-    assert db_module.increment_project_keyword_weights(
-        project_id=project_id,
-        keyword_deltas={
-            "  ": 2.0,
-            "alpha": 0.0,
-            "beta signal": 1.5,
-        },
-        settings=cfg,
-    ) == 1
+    assert (
+        db_module.increment_project_keyword_weights(
+            project_id=project_id,
+            keyword_deltas={
+                "  ": 2.0,
+                "alpha": 0.0,
+                "beta signal": 1.5,
+            },
+            settings=cfg,
+        )
+        == 1
+    )
 
     weights_for_project = db_module.list_project_keyword_weights(
         project_id=project_id,
@@ -796,7 +844,9 @@ def test_speaker_assignments_and_voice_samples_paths(tmp_path: Path):
             review_state="bad",
             settings=cfg,
         )
-    with pytest.raises(ValueError, match="confirmed_canonical requires voice_profile_id"):
+    with pytest.raises(
+        ValueError, match="confirmed_canonical requires voice_profile_id"
+    ):
         db_module.set_speaker_assignment(
             recording_id="rec-db-cov-voice-1",
             diar_speaker_label="S0",
@@ -1071,7 +1121,7 @@ def test_canonical_speaker_migration_from_legacy_schema(
     assert assignment[0]["updated_at"]
     sample = db_module.get_voice_sample(1, settings=cfg)
     assert sample is not None
-    assert sample["sample_source"] == "manual"
+    assert sample["sample_source"] == "trusted_sample"
     assert sample["candidate_matches_json"] == []
     assert sample["needs_review"] == 0
     assert sample["confidence"] == 1.0
@@ -1196,6 +1246,127 @@ def test_speaker_review_state_migration_from_pre_023_schema(
             "voice_profile_name": None,
         },
     ]
+
+
+def test_trusted_sample_migration_from_pre_024_schema(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    cfg = _cfg(tmp_path)
+    all_migrations = db_module._migration_files()  # noqa: SLF001
+    legacy_migrations = [item for item in all_migrations if item[0] < 24]
+
+    monkeypatch.setattr(db_module, "_migration_files", lambda: legacy_migrations)  # noqa: SLF001
+    db_module.init_db(cfg)
+    with db_module.connect(cfg) as conn:
+        conn.execute(
+            """
+            INSERT INTO recordings (
+                id,
+                source,
+                source_filename,
+                captured_at,
+                status,
+                created_at,
+                updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "rec-db-cov-trusted-sample-migration-1",
+                "upload",
+                "trusted.wav",
+                "2026-03-01T10:00:00Z",
+                "Queued",
+                "2026-03-01T10:00:00Z",
+                "2026-03-01T10:00:00Z",
+            ),
+        )
+        conn.execute(
+            "INSERT INTO voice_profiles (id, display_name, notes) VALUES (?, ?, ?)",
+            (1, "Legacy Trusted Target", "notes"),
+        )
+        conn.execute(
+            """
+            INSERT INTO voice_samples (
+                id,
+                voice_profile_id,
+                recording_id,
+                diar_speaker_label,
+                snippet_path,
+                sample_source,
+                sample_start_sec,
+                sample_end_sec,
+                embedding_json,
+                candidate_matches_json,
+                needs_review,
+                confidence,
+                created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                1,
+                1,
+                "rec-db-cov-trusted-sample-migration-1",
+                "S1",
+                "recordings/rec-db-cov-trusted-sample-migration-1/derived/snippets/S1/1.wav",
+                "manual",
+                None,
+                None,
+                None,
+                "[]",
+                0,
+                1.0,
+                "2026-03-01T10:00:00Z",
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO voice_samples (
+                id,
+                voice_profile_id,
+                recording_id,
+                diar_speaker_label,
+                snippet_path,
+                sample_source,
+                sample_start_sec,
+                sample_end_sec,
+                embedding_json,
+                candidate_matches_json,
+                needs_review,
+                confidence,
+                created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                2,
+                1,
+                None,
+                None,
+                "voice-bank/manual.wav",
+                "manual",
+                None,
+                None,
+                None,
+                "[]",
+                0,
+                1.0,
+                "2026-03-01T10:00:00Z",
+            ),
+        )
+        conn.commit()
+
+    monkeypatch.setattr(db_module, "_migration_files", lambda: all_migrations)  # noqa: SLF001
+    db_module.init_db(cfg)
+
+    trusted_sample = db_module.get_voice_sample(1, settings=cfg)
+    manual_sample = db_module.get_voice_sample(2, settings=cfg)
+    assert trusted_sample is not None
+    assert manual_sample is not None
+    assert trusted_sample["sample_source"] == "trusted_sample"
+    assert manual_sample["sample_source"] == "manual"
 
 
 def test_merge_voice_profiles_moves_references_and_rewrites_candidates(tmp_path: Path):
@@ -1487,7 +1658,9 @@ def test_calendar_sources_events_matches_and_metrics_edges(tmp_path: Path):
                 "organizer": " owner@example.com ",
                 "organizer_name": " Owner Example ",
                 "organizer_email": " owner@example.com ",
-                "attendees": [{"name": "Alex", "email": "alex@example.com", "label": "Alex"}],
+                "attendees": [
+                    {"name": "Alex", "email": "alex@example.com", "label": "Alex"}
+                ],
                 "all_day": True,
             },
         ],
