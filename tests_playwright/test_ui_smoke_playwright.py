@@ -288,15 +288,29 @@ def test_control_center_embedded_inspector_and_export_zip_smoke(tmp_path: Path) 
                 )
                 assert urlparse(page.url).path == "/"
 
-                page.get_by_test_id("recording-inspector-tab-log").click(
+                page.get_by_test_id("recording-inspector-tab-summary").click(
                     timeout=_remaining_timeout_ms(deadline),
                 )
                 page.wait_for_url(
-                    f"**/?selected={recording_id}&tab=log",
+                    f"**/?selected={recording_id}&tab=summary",
                     timeout=_remaining_timeout_ms(deadline),
                 )
                 page.wait_for_selector(
-                    "#control-center-inspector-pane .tab.active:has-text('Log')",
+                    "#control-center-inspector-pane .tab.active:has-text('Summary')",
+                    state="visible",
+                    timeout=_remaining_timeout_ms(deadline),
+                )
+                assert urlparse(page.url).path == "/"
+
+                page.get_by_test_id("recording-inspector-tab-export").click(
+                    timeout=_remaining_timeout_ms(deadline),
+                )
+                page.wait_for_url(
+                    f"**/?selected={recording_id}&tab=export",
+                    timeout=_remaining_timeout_ms(deadline),
+                )
+                page.wait_for_selector(
+                    "#control-center-inspector-pane .tab.active:has-text('Export')",
                     state="visible",
                     timeout=_remaining_timeout_ms(deadline),
                 )

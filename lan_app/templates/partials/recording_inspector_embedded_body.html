@@ -1,83 +1,42 @@
 {% if current_tab == 'overview' %}
-  {% set summary_data = summary or {} %}
-  {% set glossary_data = glossary or {} %}
+  {% set compact = compact_overview or {} %}
+  {% set next_action = compact.next_action or {} %}
   <div class="embedded-panel-grid">
     <section class="embedded-card">
-      <h3>Review snapshot</h3>
-      <div class="info-grid">
-        <span class="k">Status</span><span class="v">{{ rec.status }}</span>
-        <span class="k">Current stage</span><span class="v">{{ diagnostics.current_stage_label or 'Waiting' }}</span>
-        <span class="k">Primary reason</span><span class="v">{{ diagnostics.primary_reason_text or rec.review_reason_text_display or 'No blocker detected' }}</span>
-        <span class="k">Project</span><span class="v">{{ rec.project_name or (rec.project_id and ('#' ~ rec.project_id)) or 'Unassigned' }}</span>
-        <span class="k">Language</span><span class="v">{{ rec.language_auto or 'Unknown' }}</span>
-        <span class="k">Duration</span><span class="v">{{ rec.duration_display }}</span>
-      </div>
+      <h3>What stage is it in?</h3>
+      <p class="inspector-answer">{{ compact.stage_label or 'Waiting' }}</p>
+      <p class="inspector-note">{{ compact.stage_detail or 'No active worker update is running right now.' }}</p>
     </section>
     <section class="embedded-card">
-      <h3>Summary</h3>
-      {% if summary_data.summary_bullets %}
-      <ul>
-        {% for bullet in summary_data.summary_bullets[:4] %}
-        <li>{{ bullet }}</li>
-        {% endfor %}
-      </ul>
-      {% elif summary_data.summary_text %}
-      <p class="muted">{{ summary_data.summary_text[:420] }}{% if summary_data.summary_text|length > 420 %}...{% endif %}</p>
-      {% else %}
-      <p class="placeholder">No summary available yet.</p>
+      <h3>What is blocking it?</h3>
+      <p class="inspector-answer">{{ compact.blocker_text or 'No blocker detected.' }}</p>
+      <p class="inspector-note">{{ compact.blocker_detail or ('Current status: ' ~ rec.status ~ '.') }}</p>
+    </section>
+    <section class="embedded-card">
+      <h3>What should I do next?</h3>
+      <p class="inspector-answer">{{ next_action.title or 'Open the full-page inspector' }}</p>
+      <p class="inspector-note">{{ next_action.detail or 'Use the compact tabs for the daily loop and the full page for deeper work.' }}</p>
+      {% if next_action.href %}
+      <a href="{{ next_action.href }}" class="btn"{% if next_action.external %} hx-boost="false"{% endif %}>{{ next_action.button_label or 'Open' }}</a>
       {% endif %}
-      <div class="inspector-note" style="margin-top:10px">
-        Topic: {{ summary_data.topic or 'No topic extracted yet.' }}
-      </div>
     </section>
   </div>
+
   <section class="embedded-card">
-    {% set correction_form = glossary_data.workflow_form or {} %}
-    <h3>Save as correction</h3>
-    <p class="inspector-note" style="margin-bottom:10px">Capture a spelling or phrase here without leaving the review flow.</p>
-    <form method="post" action="{{ correction_form.action or '/glossary' }}">
-      {% for field in correction_form.hidden_fields or [] %}
-      <input type="hidden" name="{{ field.name }}" value="{{ field.value }}">
+    <div class="embedded-card-head">
+      <div>
+        <h3>Key metadata</h3>
+        <p class="inspector-note">Only the signals needed for the daily loop stay here.</p>
+      </div>
+    </div>
+    <div class="compact-metadata-grid">
+      {% for item in compact.metadata or [] %}
+      <div class="compact-metadata-item">
+        <span class="compact-metadata-label">{{ item.label }}</span>
+        <strong class="compact-metadata-value">{{ item.value }}</strong>
+      </div>
       {% endfor %}
-      <div class="control-center-compact-grid">
-        <div class="filter-field">
-          <label for="workflow-correction-canonical-{{ rec.id }}">Correct term</label>
-          <input
-            id="workflow-correction-canonical-{{ rec.id }}"
-            type="text"
-            name="canonical_text"
-            maxlength="160"
-            required
-            placeholder="Example: Sander"
-          >
-        </div>
-        <div class="filter-field">
-          <label for="workflow-correction-aliases-{{ rec.id }}">Wrong variant</label>
-          <input
-            id="workflow-correction-aliases-{{ rec.id }}"
-            type="text"
-            name="aliases_text"
-            maxlength="240"
-            placeholder="What the transcript got wrong"
-          >
-        </div>
-      </div>
-      <div class="form-row" style="margin-top:10px">
-        <label for="workflow-correction-notes-{{ rec.id }}">Note</label>
-        <input
-          id="workflow-correction-notes-{{ rec.id }}"
-          type="text"
-          name="notes"
-          maxlength="240"
-          placeholder="Optional reminder"
-          style="flex:1 1 280px"
-        >
-      </div>
-      <div class="filters" style="margin-top:10px">
-        <button class="btn" type="submit">Save as correction</button>
-        <a href="{{ glossary_data.manage_href or '/glossary' }}" class="btn">Manage corrections</a>
-      </div>
-    </form>
+    </div>
   </section>
 
 {% elif current_tab == 'speakers' %}
@@ -285,227 +244,137 @@
   <p class="placeholder">No speaker turns available yet. Run diarization first.</p>
   {% endif %}
 
-{% elif current_tab == 'language' %}
-  {% set lang = language or {} %}
-  <div class="metric-card-grid">
-    <section class="metric-card">
-      <h3>Detected language</h3>
-      <p>{{ lang.detected_label or 'Unknown' }}</p>
-      <p class="inspector-note" style="margin-top:8px">Dominant: {{ lang.dominant_label or 'Unknown' }}</p>
-    </section>
-    <section class="metric-card">
-      <h3>Mixed-language meeting</h3>
-      <p>{{ 'Yes' if lang.is_mixed else 'No' }}</p>
-      <p class="inspector-note" style="margin-top:8px">Summary target: {{ lang.target_summary_language_label or 'Auto' }}</p>
-    </section>
-  </div>
-  <section class="embedded-card">
-    <h3>Overrides and reprocess</h3>
-    <form method="post" action="/ui/recordings/{{ rec.id }}/language/settings{{ recording_inspector.embedded_return_queries.language }}">
-      <div class="form-row">
-        <label for="target_summary_language">target_summary_language</label>
-        <select id="target_summary_language" name="target_summary_language">
-          <option value="" {% if not lang.target_summary_language %}selected{% endif %}>Auto (dominant language)</option>
-          {% for opt in lang.options or [] %}
-          <option value="{{ opt.code }}" {% if lang.target_summary_language == opt.code %}selected{% endif %}>{{ opt.label }}</option>
-          {% endfor %}
-        </select>
-      </div>
-      <div class="form-row">
-        <label for="transcript_language_override">transcript_language_override</label>
-        <select id="transcript_language_override" name="transcript_language_override">
-          <option value="">None (auto detect)</option>
-          {% for opt in lang.options or [] %}
-          <option value="{{ opt.code }}" {% if lang.transcript_language_override == opt.code %}selected{% endif %}>{{ opt.label }}</option>
-          {% endfor %}
-        </select>
-      </div>
-      <div class="filters" style="margin-top:10px">
-        <button type="submit" class="btn">Save overrides</button>
-        <button
-          type="submit"
-          class="btn"
-          formaction="/ui/recordings/{{ rec.id }}/language/resummarize{{ recording_inspector.embedded_return_queries.language }}"
-        >
-          Re-summarize
-        </button>
-      </div>
-    </form>
-  </section>
-
-{% elif current_tab == 'project' %}
-  {% set prj = project or {} %}
-  {% set project_items = prj.projects or [] %}
+{% elif current_tab == 'summary' %}
+  {% set summary_data = summary or {} %}
   <div class="embedded-panel-grid">
     <section class="embedded-card">
-      <h3>Assignment</h3>
-      <div class="info-grid">
-        <span class="k">Current</span><span class="v">{{ prj.selected_project_name or (prj.selected_project_id and ('#' ~ prj.selected_project_id)) or 'Unassigned' }}</span>
-        <span class="k">Suggested</span><span class="v">{{ prj.suggested_project_name or (prj.suggested_project_id and ('#' ~ prj.suggested_project_id)) or 'None' }}</span>
-        <span class="k">Confidence</span><span class="v">{{ '%.2f'|format(prj.confidence or 0.0) }}</span>
-      </div>
+      <h3>Topic</h3>
+      <p class="inspector-answer">{{ summary_data.topic or 'No topic extracted yet.' }}</p>
     </section>
     <section class="embedded-card">
-      <h3>Routing memory</h3>
-      <div class="info-grid">
-        <span class="k">Threshold</span><span class="v">{{ '%.2f'|format(prj.threshold or 0.0) }}</span>
-        <span class="k">Examples total</span><span class="v">{{ prj.training_examples_total or 0 }}</span>
-        <span class="k">Examples for project</span><span class="v">{{ prj.training_examples_selected_project or 0 }}</span>
-      </div>
+      <h3>Summary</h3>
+      {% if summary_data.summary_bullets %}
+      <ul>
+        {% for bullet in summary_data.summary_bullets[:6] %}
+        <li>{{ bullet }}</li>
+        {% endfor %}
+      </ul>
+      {% elif summary_data.summary_text %}
+      <p>{{ summary_data.summary_text[:520] }}{% if summary_data.summary_text|length > 520 %}...{% endif %}</p>
+      {% else %}
+      <p class="placeholder">No summary is available yet.</p>
+      {% endif %}
     </section>
   </div>
-  <section class="embedded-card">
-    <h3>Save project choice</h3>
-    <form method="post" action="/ui/recordings/{{ rec.id }}/project{{ recording_inspector.embedded_return_queries.project }}">
-      <div class="form-row">
-        <label for="project_id">Project</label>
-        <select id="project_id" name="project_id" style="flex:1 1 280px">
-          <option value="">Unassigned</option>
-          {% for p in project_items %}
-          <option value="{{ p.id }}" {% if prj.selected_project_id == p.id %}selected{% endif %}>{{ p.name }}</option>
-          {% endfor %}
-        </select>
-      </div>
-      <div class="form-row">
-        <label for="train_routing">Train routing</label>
-        <input id="train_routing" type="checkbox" name="train_routing" value="1" checked>
-        <span class="inspector-note">Store this manual choice as a routing training example.</span>
-      </div>
-      <div class="filters" style="margin-top:10px">
-        <button type="submit" class="btn">Save project</button>
-      </div>
-    </form>
-  </section>
 
-{% elif current_tab == 'calendar' %}
-  {% set cal = calendar or {} %}
-  <section class="embedded-card">
-    <h3>Calendar match</h3>
-    {% if cal.error_message %}
-    <div class="page-notice">{{ cal.error_message }}</div>
-    {% endif %}
-    {% if cal.selected %}
-    <div class="embedded-card" style="margin-top:10px">
-      <strong>{{ cal.selected.subject_display }}</strong>
-      <p class="inspector-note" style="margin-top:8px">{{ cal.selected.starts_at_display }} -> {{ cal.selected.ends_at_display }}</p>
-      <p class="inspector-note">Organizer: {{ cal.selected.organizer_display }}</p>
-      <p class="inspector-note">Attendees: {{ cal.selected.attendees_label }}</p>
-    </div>
-    {% else %}
-    <p class="placeholder">No calendar event is selected for this recording.</p>
-    {% endif %}
-    {% if cal.candidates %}
-    <table style="margin-top:12px">
-      <thead>
-        <tr>
-          <th>Event</th>
-          <th>When</th>
-          <th>Confidence</th>
-          <th>Action</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for candidate in cal.candidates %}
-        <tr>
-          <td style="white-space:normal;max-width:260px">{{ candidate.subject_display }}</td>
-          <td>{{ candidate.starts_at_display }}</td>
-          <td>{{ candidate.confidence_display }}</td>
-          <td>
-            {% if candidate.selected %}
-            <span class="recording-selected-flag">Selected</span>
-            {% else %}
-            <form method="post" action="/ui/recordings/{{ rec.id }}/calendar/select{{ recording_inspector.embedded_return_queries.calendar }}">
-              <input type="hidden" name="event_id" value="{{ candidate.event_id }}">
-              <button type="submit" class="btn">Choose</button>
-            </form>
-            {% endif %}
-          </td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-    {% endif %}
-  </section>
-
-{% elif current_tab == 'metrics' %}
-  {% set summary_data = summary or {} %}
-  {% set metrics_data = metrics or {} %}
-  {% set meeting = metrics_data.meeting or {} %}
-  {% set participants = metrics_data.participants or [] %}
-  {% set questions = summary_data.questions or {} %}
-  {% set question_types = questions.types or {} %}
-  <div class="metric-card-grid">
-    <section class="metric-card">
-      <h3>Total speech</h3>
-      <p>{{ '%.1f'|format(meeting.total_speech_time_seconds or 0.0) }}s</p>
-    </section>
-    <section class="metric-card">
+  <div class="embedded-panel-grid">
+    <section class="embedded-card">
       <h3>Decisions</h3>
-      <p>{{ meeting.decisions_count or 0 }}</p>
+      {% if summary_data.decisions %}
+      <ul>
+        {% for item in summary_data.decisions[:5] %}
+        <li>{{ item }}</li>
+        {% endfor %}
+      </ul>
+      {% else %}
+      <p class="placeholder">No decisions were extracted.</p>
+      {% endif %}
     </section>
-    <section class="metric-card">
-      <h3>Action items</h3>
-      <p>{{ meeting.action_items_count or 0 }}</p>
-    </section>
-    <section class="metric-card">
-      <h3>Questions</h3>
-      <p>{{ questions.total_count or 0 }}</p>
-      <p class="inspector-note" style="margin-top:8px">Open: {{ question_types.open or 0 }} · Yes/No: {{ question_types.yes_no or 0 }}</p>
+    <section class="embedded-card">
+      <h3>Actions</h3>
+      {% if summary_data.action_items %}
+      <ul>
+        {% for item in summary_data.action_items[:5] %}
+        <li>
+          {{ item.task }}
+          {% if item.owner %} · {{ item.owner }}{% endif %}
+          {% if item.deadline %} · {{ item.deadline }}{% endif %}
+        </li>
+        {% endfor %}
+      </ul>
+      {% else %}
+      <p class="placeholder">No action items were extracted.</p>
+      {% endif %}
     </section>
   </div>
-  {% if participants %}
-  <section class="embedded-card">
-    <h3>Top participants</h3>
-    <table>
-      <thead>
-        <tr>
-          <th>Speaker</th>
-          <th>Airtime</th>
-          <th>Share</th>
-          <th>Turns</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for row in participants[:5] %}
-        <tr>
-          <td>{{ row.speaker }}</td>
-          <td>{{ '%.2f'|format(row.airtime_seconds or 0.0) }}</td>
-          <td>{{ '%.2f'|format((row.airtime_share or 0.0) * 100.0) }}%</td>
-          <td>{{ row.turns or 0 }}</td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-  </section>
-  {% endif %}
 
-{% elif current_tab == 'log' %}
   <section class="embedded-card">
-    <h3>Job log</h3>
-    <p class="inspector-note">Use the full-page inspector for deeper diagnostics and retry controls.</p>
-    {% if jobs %}
-    <table style="margin-top:12px">
-      <thead>
-        <tr>
-          <th>Job</th>
-          <th>Status</th>
-          <th>Attempt</th>
-          <th>Error</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for j in jobs %}
-        <tr>
-          <td title="{{ j.id }}">{{ j.id[:16] }}…</td>
-          <td><span class="badge s-{{ j.status }}">{{ j.status }}</span></td>
-          <td>{{ j.attempt }}</td>
-          <td title="{{ j.error or '' }}">{{ (j.error or '')[:60] }}{% if j.error and j.error|length > 60 %}...{% endif %}</td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
+    <h3>Tone and questions</h3>
+    <p class="inspector-note" style="margin-bottom:10px">{{ summary_data.emotional_summary or 'No emotional summary extracted.' }}</p>
+    {% if summary_data.questions and summary_data.questions.extracted %}
+    <p class="inspector-note" style="margin-bottom:8px">
+      {{ summary_data.questions.total_count }} extracted question{{ '' if summary_data.questions.total_count == 1 else 's' }}.
+    </p>
+    <ul>
+      {% for item in summary_data.questions.extracted[:4] %}
+      <li>{{ item }}</li>
+      {% endfor %}
+    </ul>
     {% else %}
-    <p class="placeholder">No jobs for this recording.</p>
+    <p class="placeholder">No questions were extracted.</p>
     {% endif %}
   </section>
+
+{% elif current_tab == 'export' %}
+  <section class="embedded-card">
+    <div class="embedded-card-head">
+      <div>
+        <h3>OneNote-ready markdown</h3>
+        <p class="inspector-note">Use the compact export view for copy or ZIP download. Deep diagnostics stay full-page only.</p>
+      </div>
+      <div class="embedded-card-actions">
+        <button type="button" class="btn" onclick="copyCompactExportText('{{ rec.id }}')">Copy</button>
+        <a
+          href="/ui/recordings/{{ rec.id }}/export.zip"
+          class="btn"
+          hx-boost="false"
+        >Download ZIP</a>
+      </div>
+    </div>
+    <textarea
+      id="compact-export-text-{{ rec.id }}"
+      class="compact-export-text"
+      readonly
+    >{{ export_text or '' }}</textarea>
+    <p id="compact-export-status-{{ rec.id }}" class="inspector-note">
+      Copy the markdown or download the ZIP with the available artifacts.
+    </p>
+  </section>
+
+  <section class="embedded-card">
+    <h3>Full-page only</h3>
+    <p class="inspector-note">Deep diagnostics, pipeline tables, and the broader admin surface stay in the full-page inspector so this pane remains compact.</p>
+    <a href="{{ selected_recording_shell.action_bar.open_full_page_href }}" class="btn">Open full-page inspector</a>
+  </section>
+
+  <script>
+  if (!window.copyCompactExportText) {
+    window.copyCompactExportText = function(recordingId) {
+      var textarea = document.getElementById('compact-export-text-' + recordingId);
+      var status = document.getElementById('compact-export-status-' + recordingId);
+      if (!textarea) return;
+      var setStatus = function(message) {
+        if (status) status.textContent = message;
+      };
+      var fallback = function() {
+        textarea.focus();
+        textarea.select();
+        try {
+          document.execCommand('copy');
+          setStatus('Copied export markdown.');
+        } catch (_err) {
+          setStatus('Copy failed. Select the text and copy manually.');
+        }
+      };
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(textarea.value).then(
+          function() { setStatus('Copied export markdown.'); },
+          fallback
+        );
+        return;
+      }
+      fallback();
+    };
+  }
+  </script>
 {% endif %}

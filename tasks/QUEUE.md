@@ -580,7 +580,7 @@ Queue (in order)
 - Depends on: PR-UI-STITCH-CONTROL-CENTER-02 and PR-OPS-SYSTEM-BAR-01
 
 116) PR-UI-STITCH-INSPECTOR-COMPACT-01: Build a compact daily inspector for Control Center with next-action-focused overview and no deep-detail overload
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-UI-STITCH-INSPECTOR-COMPACT-01.md
 - Depends on: PR-UI-STITCH-WORKLIST-01
 

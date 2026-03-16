@@ -1,181 +1,1798 @@
-diff --git a/lan_app/templates/partials/control_center/upload_panel.html b/lan_app/templates/partials/control_center/upload_panel.html
-index 74119e1..86368ae 100644
---- a/lan_app/templates/partials/control_center/upload_panel.html
-+++ b/lan_app/templates/partials/control_center/upload_panel.html
-@@ -18,12 +18,12 @@
-   <div class="upload-queue-shell">
-     <div class="upload-queue-head">
-       <p class="eyebrow">Live Intake</p>
--      <h3>Only in-flight uploads stay here</h3>
--      <p class="upload-caption">Finished recordings move into the main worklist below, so this panel only tracks files that are still entering the system.</p>
-+      <h3>{{ upload_shell.queue_title }}</h3>
-+      <p class="upload-caption">{{ upload_shell.queue_caption }}</p>
-     </div>
-     <div id="{{ upload_shell.upload_rows_id }}" class="upload-queue-list">
-       <div id="{{ upload_shell.empty_row_id }}" class="upload-queue-empty">
--        No active uploads. New files appear here until they enter the main inbox.
-+        {{ upload_shell.empty_state_text }}
+diff --git a/lan_app/templates/base.html b/lan_app/templates/base.html
+index 1f6aba1..f71a603 100644
+--- a/lan_app/templates/base.html
++++ b/lan_app/templates/base.html
+@@ -291,6 +291,12 @@ textarea:focus{
+   border-bottom:1px solid var(--line);
+   padding-bottom:12px;
+ }
++.tabs-embedded{
++  gap:22px;
++  flex-wrap:nowrap;
++  overflow:auto;
++  padding-bottom:0;
++}
+ .tab{
+   padding:9px 14px;
+   border-radius:999px;
+@@ -303,6 +309,24 @@ textarea:focus{
+ }
+ .tab:hover{color:var(--text);background:#f5f8fc;border-color:var(--line)}
+ .tab.active{background:var(--primary-soft);border-color:#b8cdfb;color:var(--primary)}
++.tab-embedded{
++  padding:0 0 12px;
++  border-radius:0;
++  border:none;
++  border-bottom:2px solid transparent;
++  background:transparent;
++  white-space:nowrap;
++}
++.tab-embedded:hover{
++  background:transparent;
++  border-color:transparent;
++  color:var(--text);
++}
++.tab-embedded.active{
++  background:transparent;
++  border-color:#84a9f8;
++  color:var(--text);
++}
+ .tab-content{
+   background:var(--panel);
+   border:1px solid var(--line);
+@@ -515,6 +539,16 @@ textarea:focus{
+   align-content:center;
+   justify-items:start;
+ }
++.control-center-empty-card{
++  width:min(100%, 420px);
++  display:grid;
++  gap:10px;
++  padding:24px;
++  border-radius:24px;
++  border:1px solid var(--line);
++  background:linear-gradient(180deg, #ffffff 0%, #f6f9fe 100%);
++  box-shadow:var(--shadow-soft);
++}
+ .control-center-empty-state strong{
+   font-size:1.05rem;
+   font-style:normal;
+@@ -525,6 +559,22 @@ textarea:focus{
+   color:var(--muted);
+   max-width:32ch;
+ }
++.control-center-empty-hints{
++  display:flex;
++  flex-wrap:wrap;
++  gap:8px;
++}
++.control-center-empty-hint{
++  display:inline-flex;
++  align-items:center;
++  padding:7px 10px;
++  border-radius:999px;
++  border:1px solid #d8e3f5;
++  background:#f8fbff;
++  color:#5c6f8d;
++  font-size:12px;
++  font-weight:700;
++}
+ .control-center-compact-card{
+   border:1px solid var(--line);
+   background:var(--panel-soft);
+@@ -1058,6 +1108,9 @@ textarea:focus{
+   flex-wrap:wrap;
+   align-items:center;
+ }
++.inspector-action-bar-embedded{
++  padding-top:2px;
++}
+ .inspector-progress-shell{
+   padding:14px 16px;
+   border-radius:18px;
+@@ -1088,6 +1141,61 @@ textarea:focus{
+ .metric-card h3,
+ .embedded-card h3,
+ .speaker-decision-card h3{margin-bottom:10px}
++.embedded-card-head{
++  display:flex;
++  justify-content:space-between;
++  gap:12px;
++  align-items:flex-start;
++  flex-wrap:wrap;
++  margin-bottom:12px;
++}
++.embedded-card-actions{
++  display:flex;
++  gap:8px;
++  flex-wrap:wrap;
++}
++.inspector-answer{
++  margin:0 0 8px 0;
++  font-size:1.1rem;
++  font-weight:800;
++  color:var(--text);
++  line-height:1.3;
++}
++.compact-metadata-grid{
++  display:grid;
++  gap:12px;
++  grid-template-columns:repeat(auto-fit,minmax(160px,1fr));
++}
++.compact-metadata-item{
++  display:grid;
++  gap:6px;
++  padding:12px 14px;
++  border-radius:16px;
++  border:1px solid var(--line);
++  background:#fff;
++}
++.compact-metadata-label{
++  color:var(--muted);
++  font-size:11px;
++  font-weight:700;
++  letter-spacing:.06em;
++  text-transform:uppercase;
++}
++.compact-metadata-value{
++  color:var(--text);
++  font-size:14px;
++  line-height:1.4;
++}
++.compact-export-text{
++  width:100%;
++  min-height:220px;
++  resize:vertical;
++  padding:14px;
++  border:1px solid var(--line);
++  border-radius:18px;
++  background:#f8fbff;
++  font:12px/1.55 "Courier New", monospace;
++}
+ .speaker-review-list{
+   display:grid;
+   gap:14px;
+diff --git a/lan_app/templates/partials/control_center/inspector_action_bar.html b/lan_app/templates/partials/control_center/inspector_action_bar.html
+index e4620e7..92af494 100644
+--- a/lan_app/templates/partials/control_center/inspector_action_bar.html
++++ b/lan_app/templates/partials/control_center/inspector_action_bar.html
+@@ -1,4 +1,31 @@
+-<div class="inspector-action-bar">
++<div class="inspector-action-bar{% if inspector_action_bar.embedded %} inspector-action-bar-embedded{% endif %}">
++  {% if inspector_action_bar.embedded %}
++    {% if inspector_action_bar.show_embedded_stop %}
++      {% if inspector_action_bar.rec.stop_in_progress %}
++      <button type="button" class="btn btn-danger" disabled>Stopping...</button>
++      {% else %}
++      <button
++        type="button"
++        class="btn btn-danger"
++        data-action-url="{{ inspector_action_bar.stop_url }}"
++        data-action-body="{{ inspector_action_bar.stop_body }}"
++        data-return-to="{{ inspector_action_bar.return_to }}"
++        data-confirm-message="Stop processing for this recording?"
++        data-pending-label="Submitting stop..."
++        onclick="triggerRecordingAction(this)"
++      >Stop</button>
++      {% endif %}
++    {% elif inspector_action_bar.show_embedded_requeue %}
++    <button
++      type="button"
++      class="btn"
++      data-action-url="{{ inspector_action_bar.requeue_url }}"
++      data-return-to="{{ inspector_action_bar.return_to }}"
++      data-pending-label="Requeueing..."
++      onclick="triggerRecordingAction(this)"
++    >Requeue</button>
++    {% endif %}
++  {% else %}
+   <button
+     type="button"
+     class="btn"
+@@ -25,20 +52,21 @@
+     data-return-to="{{ inspector_action_bar.return_to }}"
+     onclick="openDeleteDialog({recordingId: this.dataset.rid, recordingLabel: this.dataset.rlabel || '', capturedAt: this.dataset.rcaptured || '', returnTo: this.dataset.returnTo || '', returnFocus: this});"
+   >Delete</button>
+-  {% if inspector_action_bar.rec.stop_eligible %}
+-    {% if inspector_action_bar.rec.stop_in_progress %}
+-    <button type="button" class="btn btn-danger" disabled>Stopping...</button>
+-    {% else %}
+-    <button
+-      type="button"
+-      class="btn btn-danger"
+-      data-action-url="{{ inspector_action_bar.stop_url }}"
+-      data-action-body="{{ inspector_action_bar.stop_body }}"
+-      data-return-to="{{ inspector_action_bar.return_to }}"
+-      data-confirm-message="Stop processing for this recording?"
+-      data-pending-label="Submitting stop..."
+-      onclick="triggerRecordingAction(this)"
+-    >Stop</button>
++    {% if inspector_action_bar.rec.stop_eligible %}
++      {% if inspector_action_bar.rec.stop_in_progress %}
++      <button type="button" class="btn btn-danger" disabled>Stopping...</button>
++      {% else %}
++      <button
++        type="button"
++        class="btn btn-danger"
++        data-action-url="{{ inspector_action_bar.stop_url }}"
++        data-action-body="{{ inspector_action_bar.stop_body }}"
++        data-return-to="{{ inspector_action_bar.return_to }}"
++        data-confirm-message="Stop processing for this recording?"
++        data-pending-label="Submitting stop..."
++        onclick="triggerRecordingAction(this)"
++      >Stop</button>
++      {% endif %}
+     {% endif %}
+   {% endif %}
+   <a
+@@ -52,7 +80,7 @@
+     href="{{ inspector_action_bar.open_full_page_href }}"
+     class="btn"
+     data-testid="recording-inspector-open-full-page"
+-  >Open full-page recording</a>
++  >Open full-page inspector</a>
+   {% endif %}
+   <a href="{{ inspector_action_bar.back_href }}" class="btn">{{ inspector_action_bar.back_label }}</a>
+ </div>
+diff --git a/lan_app/templates/partials/control_center/inspector_empty.html b/lan_app/templates/partials/control_center/inspector_empty.html
+index 7962614..6a146a0 100644
+--- a/lan_app/templates/partials/control_center/inspector_empty.html
++++ b/lan_app/templates/partials/control_center/inspector_empty.html
+@@ -1,7 +1,14 @@
+ <div class="control-center-empty-state">
+-  <p class="eyebrow">Compact inspector</p>
+-  <strong>{{ empty_inspector.title }}</strong>
+-  {% if empty_inspector.message %}
+-  <p class="control-center-empty-copy">{{ empty_inspector.message }}</p>
+-  {% endif %}
++  <div class="control-center-empty-card">
++    <p class="eyebrow">Compact inspector</p>
++    <strong>{{ empty_inspector.title }}</strong>
++    {% if empty_inspector.message %}
++    <p class="control-center-empty-copy">{{ empty_inspector.message }}</p>
++    {% endif %}
++    <div class="control-center-empty-hints">
++      <span class="control-center-empty-hint">Queue context stays visible</span>
++      <span class="control-center-empty-hint">Review blockers on the right</span>
++      <span class="control-center-empty-hint">Open full page only for deep work</span>
++    </div>
++  </div>
+ </div>
+diff --git a/lan_app/templates/partials/recording_inspector_embedded_body.html b/lan_app/templates/partials/recording_inspector_embedded_body.html
+index ae1a4a2..1f0ddf0 100644
+--- a/lan_app/templates/partials/recording_inspector_embedded_body.html
++++ b/lan_app/templates/partials/recording_inspector_embedded_body.html
+@@ -1,83 +1,42 @@
+ {% if current_tab == 'overview' %}
+-  {% set summary_data = summary or {} %}
+-  {% set glossary_data = glossary or {} %}
++  {% set compact = compact_overview or {} %}
++  {% set next_action = compact.next_action or {} %}
+   <div class="embedded-panel-grid">
+     <section class="embedded-card">
+-      <h3>Review snapshot</h3>
+-      <div class="info-grid">
+-        <span class="k">Status</span><span class="v">{{ rec.status }}</span>
+-        <span class="k">Current stage</span><span class="v">{{ diagnostics.current_stage_label or 'Waiting' }}</span>
+-        <span class="k">Primary reason</span><span class="v">{{ diagnostics.primary_reason_text or rec.review_reason_text_display or 'No blocker detected' }}</span>
+-        <span class="k">Project</span><span class="v">{{ rec.project_name or (rec.project_id and ('#' ~ rec.project_id)) or 'Unassigned' }}</span>
+-        <span class="k">Language</span><span class="v">{{ rec.language_auto or 'Unknown' }}</span>
+-        <span class="k">Duration</span><span class="v">{{ rec.duration_display }}</span>
+-      </div>
++      <h3>What stage is it in?</h3>
++      <p class="inspector-answer">{{ compact.stage_label or 'Waiting' }}</p>
++      <p class="inspector-note">{{ compact.stage_detail or 'No active worker update is running right now.' }}</p>
+     </section>
+     <section class="embedded-card">
+-      <h3>Summary</h3>
+-      {% if summary_data.summary_bullets %}
+-      <ul>
+-        {% for bullet in summary_data.summary_bullets[:4] %}
+-        <li>{{ bullet }}</li>
+-        {% endfor %}
+-      </ul>
+-      {% elif summary_data.summary_text %}
+-      <p class="muted">{{ summary_data.summary_text[:420] }}{% if summary_data.summary_text|length > 420 %}...{% endif %}</p>
+-      {% else %}
+-      <p class="placeholder">No summary available yet.</p>
++      <h3>What is blocking it?</h3>
++      <p class="inspector-answer">{{ compact.blocker_text or 'No blocker detected.' }}</p>
++      <p class="inspector-note">{{ compact.blocker_detail or ('Current status: ' ~ rec.status ~ '.') }}</p>
++    </section>
++    <section class="embedded-card">
++      <h3>What should I do next?</h3>
++      <p class="inspector-answer">{{ next_action.title or 'Open the full-page inspector' }}</p>
++      <p class="inspector-note">{{ next_action.detail or 'Use the compact tabs for the daily loop and the full page for deeper work.' }}</p>
++      {% if next_action.href %}
++      <a href="{{ next_action.href }}" class="btn"{% if next_action.external %} hx-boost="false"{% endif %}>{{ next_action.button_label or 'Open' }}</a>
+       {% endif %}
+-      <div class="inspector-note" style="margin-top:10px">
+-        Topic: {{ summary_data.topic or 'No topic extracted yet.' }}
+-      </div>
+     </section>
+   </div>
++
+   <section class="embedded-card">
+-    {% set correction_form = glossary_data.workflow_form or {} %}
+-    <h3>Save as correction</h3>
+-    <p class="inspector-note" style="margin-bottom:10px">Capture a spelling or phrase here without leaving the review flow.</p>
+-    <form method="post" action="{{ correction_form.action or '/glossary' }}">
+-      {% for field in correction_form.hidden_fields or [] %}
+-      <input type="hidden" name="{{ field.name }}" value="{{ field.value }}">
+-      {% endfor %}
+-      <div class="control-center-compact-grid">
+-        <div class="filter-field">
+-          <label for="workflow-correction-canonical-{{ rec.id }}">Correct term</label>
+-          <input
+-            id="workflow-correction-canonical-{{ rec.id }}"
+-            type="text"
+-            name="canonical_text"
+-            maxlength="160"
+-            required
+-            placeholder="Example: Sander"
+-          >
+-        </div>
+-        <div class="filter-field">
+-          <label for="workflow-correction-aliases-{{ rec.id }}">Wrong variant</label>
+-          <input
+-            id="workflow-correction-aliases-{{ rec.id }}"
+-            type="text"
+-            name="aliases_text"
+-            maxlength="240"
+-            placeholder="What the transcript got wrong"
+-          >
+-        </div>
++    <div class="embedded-card-head">
++      <div>
++        <h3>Key metadata</h3>
++        <p class="inspector-note">Only the signals needed for the daily loop stay here.</p>
        </div>
+-      <div class="form-row" style="margin-top:10px">
+-        <label for="workflow-correction-notes-{{ rec.id }}">Note</label>
+-        <input
+-          id="workflow-correction-notes-{{ rec.id }}"
+-          type="text"
+-          name="notes"
+-          maxlength="240"
+-          placeholder="Optional reminder"
+-          style="flex:1 1 280px"
+-        >
+-      </div>
+-      <div class="filters" style="margin-top:10px">
+-        <button class="btn" type="submit">Save as correction</button>
+-        <a href="{{ glossary_data.manage_href or '/glossary' }}" class="btn">Manage corrections</a>
++    </div>
++    <div class="compact-metadata-grid">
++      {% for item in compact.metadata or [] %}
++      <div class="compact-metadata-item">
++        <span class="compact-metadata-label">{{ item.label }}</span>
++        <strong class="compact-metadata-value">{{ item.value }}</strong>
+       </div>
+-    </form>
++      {% endfor %}
++    </div>
+   </section>
+ 
+ {% elif current_tab == 'speakers' %}
+@@ -285,227 +244,137 @@
+   <p class="placeholder">No speaker turns available yet. Run diarization first.</p>
+   {% endif %}
+ 
+-{% elif current_tab == 'language' %}
+-  {% set lang = language or {} %}
+-  <div class="metric-card-grid">
+-    <section class="metric-card">
+-      <h3>Detected language</h3>
+-      <p>{{ lang.detected_label or 'Unknown' }}</p>
+-      <p class="inspector-note" style="margin-top:8px">Dominant: {{ lang.dominant_label or 'Unknown' }}</p>
++{% elif current_tab == 'summary' %}
++  {% set summary_data = summary or {} %}
++  <div class="embedded-panel-grid">
++    <section class="embedded-card">
++      <h3>Topic</h3>
++      <p class="inspector-answer">{{ summary_data.topic or 'No topic extracted yet.' }}</p>
+     </section>
+-    <section class="metric-card">
+-      <h3>Mixed-language meeting</h3>
+-      <p>{{ 'Yes' if lang.is_mixed else 'No' }}</p>
+-      <p class="inspector-note" style="margin-top:8px">Summary target: {{ lang.target_summary_language_label or 'Auto' }}</p>
++    <section class="embedded-card">
++      <h3>Summary</h3>
++      {% if summary_data.summary_bullets %}
++      <ul>
++        {% for bullet in summary_data.summary_bullets[:6] %}
++        <li>{{ bullet }}</li>
++        {% endfor %}
++      </ul>
++      {% elif summary_data.summary_text %}
++      <p>{{ summary_data.summary_text[:520] }}{% if summary_data.summary_text|length > 520 %}...{% endif %}</p>
++      {% else %}
++      <p class="placeholder">No summary is available yet.</p>
++      {% endif %}
+     </section>
+   </div>
+-  <section class="embedded-card">
+-    <h3>Overrides and reprocess</h3>
+-    <form method="post" action="/ui/recordings/{{ rec.id }}/language/settings{{ recording_inspector.embedded_return_queries.language }}">
+-      <div class="form-row">
+-        <label for="target_summary_language">target_summary_language</label>
+-        <select id="target_summary_language" name="target_summary_language">
+-          <option value="" {% if not lang.target_summary_language %}selected{% endif %}>Auto (dominant language)</option>
+-          {% for opt in lang.options or [] %}
+-          <option value="{{ opt.code }}" {% if lang.target_summary_language == opt.code %}selected{% endif %}>{{ opt.label }}</option>
+-          {% endfor %}
+-        </select>
+-      </div>
+-      <div class="form-row">
+-        <label for="transcript_language_override">transcript_language_override</label>
+-        <select id="transcript_language_override" name="transcript_language_override">
+-          <option value="">None (auto detect)</option>
+-          {% for opt in lang.options or [] %}
+-          <option value="{{ opt.code }}" {% if lang.transcript_language_override == opt.code %}selected{% endif %}>{{ opt.label }}</option>
+-          {% endfor %}
+-        </select>
+-      </div>
+-      <div class="filters" style="margin-top:10px">
+-        <button type="submit" class="btn">Save overrides</button>
+-        <button
+-          type="submit"
+-          class="btn"
+-          formaction="/ui/recordings/{{ rec.id }}/language/resummarize{{ recording_inspector.embedded_return_queries.language }}"
+-        >
+-          Re-summarize
+-        </button>
+-      </div>
+-    </form>
+-  </section>
+ 
+-{% elif current_tab == 'project' %}
+-  {% set prj = project or {} %}
+-  {% set project_items = prj.projects or [] %}
+   <div class="embedded-panel-grid">
+     <section class="embedded-card">
+-      <h3>Assignment</h3>
+-      <div class="info-grid">
+-        <span class="k">Current</span><span class="v">{{ prj.selected_project_name or (prj.selected_project_id and ('#' ~ prj.selected_project_id)) or 'Unassigned' }}</span>
+-        <span class="k">Suggested</span><span class="v">{{ prj.suggested_project_name or (prj.suggested_project_id and ('#' ~ prj.suggested_project_id)) or 'None' }}</span>
+-        <span class="k">Confidence</span><span class="v">{{ '%.2f'|format(prj.confidence or 0.0) }}</span>
+-      </div>
++      <h3>Decisions</h3>
++      {% if summary_data.decisions %}
++      <ul>
++        {% for item in summary_data.decisions[:5] %}
++        <li>{{ item }}</li>
++        {% endfor %}
++      </ul>
++      {% else %}
++      <p class="placeholder">No decisions were extracted.</p>
++      {% endif %}
+     </section>
+     <section class="embedded-card">
+-      <h3>Routing memory</h3>
+-      <div class="info-grid">
+-        <span class="k">Threshold</span><span class="v">{{ '%.2f'|format(prj.threshold or 0.0) }}</span>
+-        <span class="k">Examples total</span><span class="v">{{ prj.training_examples_total or 0 }}</span>
+-        <span class="k">Examples for project</span><span class="v">{{ prj.training_examples_selected_project or 0 }}</span>
+-      </div>
++      <h3>Actions</h3>
++      {% if summary_data.action_items %}
++      <ul>
++        {% for item in summary_data.action_items[:5] %}
++        <li>
++          {{ item.task }}
++          {% if item.owner %} · {{ item.owner }}{% endif %}
++          {% if item.deadline %} · {{ item.deadline }}{% endif %}
++        </li>
++        {% endfor %}
++      </ul>
++      {% else %}
++      <p class="placeholder">No action items were extracted.</p>
++      {% endif %}
+     </section>
+   </div>
+-  <section class="embedded-card">
+-    <h3>Save project choice</h3>
+-    <form method="post" action="/ui/recordings/{{ rec.id }}/project{{ recording_inspector.embedded_return_queries.project }}">
+-      <div class="form-row">
+-        <label for="project_id">Project</label>
+-        <select id="project_id" name="project_id" style="flex:1 1 280px">
+-          <option value="">Unassigned</option>
+-          {% for p in project_items %}
+-          <option value="{{ p.id }}" {% if prj.selected_project_id == p.id %}selected{% endif %}>{{ p.name }}</option>
+-          {% endfor %}
+-        </select>
+-      </div>
+-      <div class="form-row">
+-        <label for="train_routing">Train routing</label>
+-        <input id="train_routing" type="checkbox" name="train_routing" value="1" checked>
+-        <span class="inspector-note">Store this manual choice as a routing training example.</span>
+-      </div>
+-      <div class="filters" style="margin-top:10px">
+-        <button type="submit" class="btn">Save project</button>
+-      </div>
+-    </form>
+-  </section>
+ 
+-{% elif current_tab == 'calendar' %}
+-  {% set cal = calendar or {} %}
+   <section class="embedded-card">
+-    <h3>Calendar match</h3>
+-    {% if cal.error_message %}
+-    <div class="page-notice">{{ cal.error_message }}</div>
+-    {% endif %}
+-    {% if cal.selected %}
+-    <div class="embedded-card" style="margin-top:10px">
+-      <strong>{{ cal.selected.subject_display }}</strong>
+-      <p class="inspector-note" style="margin-top:8px">{{ cal.selected.starts_at_display }} -> {{ cal.selected.ends_at_display }}</p>
+-      <p class="inspector-note">Organizer: {{ cal.selected.organizer_display }}</p>
+-      <p class="inspector-note">Attendees: {{ cal.selected.attendees_label }}</p>
+-    </div>
++    <h3>Tone and questions</h3>
++    <p class="inspector-note" style="margin-bottom:10px">{{ summary_data.emotional_summary or 'No emotional summary extracted.' }}</p>
++    {% if summary_data.questions and summary_data.questions.extracted %}
++    <p class="inspector-note" style="margin-bottom:8px">
++      {{ summary_data.questions.total_count }} extracted question{{ '' if summary_data.questions.total_count == 1 else 's' }}.
++    </p>
++    <ul>
++      {% for item in summary_data.questions.extracted[:4] %}
++      <li>{{ item }}</li>
++      {% endfor %}
++    </ul>
+     {% else %}
+-    <p class="placeholder">No calendar event is selected for this recording.</p>
+-    {% endif %}
+-    {% if cal.candidates %}
+-    <table style="margin-top:12px">
+-      <thead>
+-        <tr>
+-          <th>Event</th>
+-          <th>When</th>
+-          <th>Confidence</th>
+-          <th>Action</th>
+-        </tr>
+-      </thead>
+-      <tbody>
+-        {% for candidate in cal.candidates %}
+-        <tr>
+-          <td style="white-space:normal;max-width:260px">{{ candidate.subject_display }}</td>
+-          <td>{{ candidate.starts_at_display }}</td>
+-          <td>{{ candidate.confidence_display }}</td>
+-          <td>
+-            {% if candidate.selected %}
+-            <span class="recording-selected-flag">Selected</span>
+-            {% else %}
+-            <form method="post" action="/ui/recordings/{{ rec.id }}/calendar/select{{ recording_inspector.embedded_return_queries.calendar }}">
+-              <input type="hidden" name="event_id" value="{{ candidate.event_id }}">
+-              <button type="submit" class="btn">Choose</button>
+-            </form>
+-            {% endif %}
+-          </td>
+-        </tr>
+-        {% endfor %}
+-      </tbody>
+-    </table>
++    <p class="placeholder">No questions were extracted.</p>
+     {% endif %}
+   </section>
+ 
+-{% elif current_tab == 'metrics' %}
+-  {% set summary_data = summary or {} %}
+-  {% set metrics_data = metrics or {} %}
+-  {% set meeting = metrics_data.meeting or {} %}
+-  {% set participants = metrics_data.participants or [] %}
+-  {% set questions = summary_data.questions or {} %}
+-  {% set question_types = questions.types or {} %}
+-  <div class="metric-card-grid">
+-    <section class="metric-card">
+-      <h3>Total speech</h3>
+-      <p>{{ '%.1f'|format(meeting.total_speech_time_seconds or 0.0) }}s</p>
+-    </section>
+-    <section class="metric-card">
+-      <h3>Decisions</h3>
+-      <p>{{ meeting.decisions_count or 0 }}</p>
+-    </section>
+-    <section class="metric-card">
+-      <h3>Action items</h3>
+-      <p>{{ meeting.action_items_count or 0 }}</p>
+-    </section>
+-    <section class="metric-card">
+-      <h3>Questions</h3>
+-      <p>{{ questions.total_count or 0 }}</p>
+-      <p class="inspector-note" style="margin-top:8px">Open: {{ question_types.open or 0 }} · Yes/No: {{ question_types.yes_no or 0 }}</p>
+-    </section>
+-  </div>
+-  {% if participants %}
++{% elif current_tab == 'export' %}
+   <section class="embedded-card">
+-    <h3>Top participants</h3>
+-    <table>
+-      <thead>
+-        <tr>
+-          <th>Speaker</th>
+-          <th>Airtime</th>
+-          <th>Share</th>
+-          <th>Turns</th>
+-        </tr>
+-      </thead>
+-      <tbody>
+-        {% for row in participants[:5] %}
+-        <tr>
+-          <td>{{ row.speaker }}</td>
+-          <td>{{ '%.2f'|format(row.airtime_seconds or 0.0) }}</td>
+-          <td>{{ '%.2f'|format((row.airtime_share or 0.0) * 100.0) }}%</td>
+-          <td>{{ row.turns or 0 }}</td>
+-        </tr>
+-        {% endfor %}
+-      </tbody>
+-    </table>
++    <div class="embedded-card-head">
++      <div>
++        <h3>OneNote-ready markdown</h3>
++        <p class="inspector-note">Use the compact export view for copy or ZIP download. Deep diagnostics stay full-page only.</p>
++      </div>
++      <div class="embedded-card-actions">
++        <button type="button" class="btn" onclick="copyCompactExportText('{{ rec.id }}')">Copy</button>
++        <a
++          href="/ui/recordings/{{ rec.id }}/export.zip"
++          class="btn"
++          hx-boost="false"
++        >Download ZIP</a>
++      </div>
++    </div>
++    <textarea
++      id="compact-export-text-{{ rec.id }}"
++      class="compact-export-text"
++      readonly
++    >{{ export_text or '' }}</textarea>
++    <p id="compact-export-status-{{ rec.id }}" class="inspector-note">
++      Copy the markdown or download the ZIP with the available artifacts.
++    </p>
+   </section>
+-  {% endif %}
+ 
+-{% elif current_tab == 'log' %}
+   <section class="embedded-card">
+-    <h3>Job log</h3>
+-    <p class="inspector-note">Use the full-page inspector for deeper diagnostics and retry controls.</p>
+-    {% if jobs %}
+-    <table style="margin-top:12px">
+-      <thead>
+-        <tr>
+-          <th>Job</th>
+-          <th>Status</th>
+-          <th>Attempt</th>
+-          <th>Error</th>
+-        </tr>
+-      </thead>
+-      <tbody>
+-        {% for j in jobs %}
+-        <tr>
+-          <td title="{{ j.id }}">{{ j.id[:16] }}…</td>
+-          <td><span class="badge s-{{ j.status }}">{{ j.status }}</span></td>
+-          <td>{{ j.attempt }}</td>
+-          <td title="{{ j.error or '' }}">{{ (j.error or '')[:60] }}{% if j.error and j.error|length > 60 %}...{% endif %}</td>
+-        </tr>
+-        {% endfor %}
+-      </tbody>
+-    </table>
+-    {% else %}
+-    <p class="placeholder">No jobs for this recording.</p>
+-    {% endif %}
++    <h3>Full-page only</h3>
++    <p class="inspector-note">Deep diagnostics, pipeline tables, and the broader admin surface stay in the full-page inspector so this pane remains compact.</p>
++    <a href="{{ selected_recording_shell.action_bar.open_full_page_href }}" class="btn">Open full-page inspector</a>
+   </section>
++
++  <script>
++  if (!window.copyCompactExportText) {
++    window.copyCompactExportText = function(recordingId) {
++      var textarea = document.getElementById('compact-export-text-' + recordingId);
++      var status = document.getElementById('compact-export-status-' + recordingId);
++      if (!textarea) return;
++      var setStatus = function(message) {
++        if (status) status.textContent = message;
++      };
++      var fallback = function() {
++        textarea.focus();
++        textarea.select();
++        try {
++          document.execCommand('copy');
++          setStatus('Copied export markdown.');
++        } catch (_err) {
++          setStatus('Copy failed. Select the text and copy manually.');
++        }
++      };
++      if (navigator.clipboard && navigator.clipboard.writeText) {
++        navigator.clipboard.writeText(textarea.value).then(
++          function() { setStatus('Copied export markdown.'); },
++          fallback
++        );
++        return;
++      }
++      fallback();
++    };
++  }
++  </script>
+ {% endif %}
+diff --git a/lan_app/templates/partials/recording_inspector_header.html b/lan_app/templates/partials/recording_inspector_header.html
+index 0ee8b57..92f604b 100644
+--- a/lan_app/templates/partials/recording_inspector_header.html
++++ b/lan_app/templates/partials/recording_inspector_header.html
+@@ -2,9 +2,9 @@
+   <div class="inspector-heading">
+     <div class="inspector-title-block">
+       {% if recording_inspector.embedded %}
+-      <p class="eyebrow">Selected Recording</p>
++      <p class="eyebrow">Compact inspector</p>
+       <h2>{{ rec.source_filename }}</h2>
+-      <p class="inspector-subtitle"><code>{{ rec.id }}</code></p>
++      <p class="inspector-subtitle"><code>{{ rec.id }}</code> · focused daily review for blockers, speakers, summary, and export</p>
+       {% else %}
+       <p class="eyebrow">Recording Inspector</p>
+       <h1>{{ rec.source_filename }}</h1>
+@@ -13,12 +13,23 @@
+     </div>
+     <div class="inspector-meta-grid">
+       <span class="badge s-{{ rec.status }}">{{ rec.status }}</span>
++      <span class="inspector-meta-chip">
++        {% if recording_inspector.embedded %}
++        Stage {{ diagnostics.current_stage_label or 'Waiting' }}
++        {% else %}
++        Captured {{ rec.captured_at_display }}
++        {% endif %}
++      </span>
++      {% if recording_inspector.embedded %}
+       <span class="inspector-meta-chip">Captured {{ rec.captured_at_display }}</span>
++      <span class="inspector-meta-chip">Source {{ rec.source_display or rec.source }}</span>
++      {% else %}
+       <span class="inspector-meta-chip">Duration {{ rec.duration_display }}</span>
+       {% if rec.project_name or rec.project_id %}
+       <span class="inspector-meta-chip">Project {{ rec.project_name or ('#' ~ rec.project_id) }}</span>
+       {% endif %}
+       <span class="inspector-meta-chip">Tab {{ current_tab|capitalize }}</span>
++      {% endif %}
      </div>
    </div>
-diff --git a/lan_app/templates/partials/control_center/upload_script.html b/lan_app/templates/partials/control_center/upload_script.html
-index 1e4ede9..54ecdb3 100644
---- a/lan_app/templates/partials/control_center/upload_script.html
-+++ b/lan_app/templates/partials/control_center/upload_script.html
-@@ -7,6 +7,8 @@ var TERMINAL_STATUSES = new Set([
-   "Quarantine",
-   "Failed",
- ]);
-+var removeTerminalItems = {{ upload_shell.remove_terminal_items | tojson }};
-+var uploadEmptyStateText = {{ upload_shell.empty_state_text | tojson }};
- var uploadQueue = [];
- var queueRunning = false;
- 
-@@ -84,7 +86,7 @@ function restorePlaceholderRow() {
-   var empty = document.createElement("div");
-   empty.id = "{{ upload_shell.empty_row_id }}";
-   empty.className = "upload-queue-empty";
--  empty.textContent = "No active uploads. New files appear here until they enter the main inbox.";
-+  empty.textContent = uploadEmptyStateText;
-   rows.appendChild(empty);
- }
- 
-@@ -308,7 +310,9 @@ function startPolling(item, recordingId) {
- 
-     if (TERMINAL_STATUSES.has(status)) {
-       stop();
--      scheduleUploadItemRemoval(item, 1500);
-+      if (removeTerminalItems) {
-+        scheduleUploadItemRemoval(item, 1500);
-+      }
-     }
-   }
- 
+   {% if rec.status_reason_text_display %}
+diff --git a/lan_app/templates/partials/recording_inspector_tabs.html b/lan_app/templates/partials/recording_inspector_tabs.html
+index cccc351..a370f06 100644
+--- a/lan_app/templates/partials/recording_inspector_tabs.html
++++ b/lan_app/templates/partials/recording_inspector_tabs.html
+@@ -1,8 +1,8 @@
+-<div class="tabs">
++<div class="tabs{% if recording_inspector.embedded %} tabs-embedded{% endif %}">
+   {% for inspector_tab in recording_inspector.tabs %}
+   <a
+     href="{{ inspector_tab.href }}"
+-    class="tab {% if inspector_tab.active %}active{% endif %}"
++    class="tab{% if recording_inspector.embedded %} tab-embedded{% endif %} {% if inspector_tab.active %}active{% endif %}"
+     data-testid="recording-inspector-tab-{{ inspector_tab.value }}"
+     {% if inspector_tab.hx_get %}
+     hx-get="{{ inspector_tab.hx_get }}"
 diff --git a/lan_app/ui_routes.py b/lan_app/ui_routes.py
-index 31e65d9..40ff279 100644
+index 40ff279..112a12f 100644
 --- a/lan_app/ui_routes.py
 +++ b/lan_app/ui_routes.py
-@@ -3316,14 +3316,32 @@ def _recordings_panel_context(
+@@ -166,6 +166,12 @@ _COMMON_LANGUAGE_CODES = ("en", "es", "fr", "de", "pt", "it", "zh", "ja", "ko",
+ _STUCK_JOB_RECOVERY_ERROR = "stuck job recovered"
+ _DISPLAY_TIMEZONE = "Europe/Rome"
+ _CONTROL_CENTER_TABS = (
++    "overview",
++    "speakers",
++    "summary",
++    "export",
++)
++_FULL_PAGE_RECORDING_INSPECTOR_TABS = (
+     "overview",
+     "calendar",
+     "project",
+@@ -174,6 +180,23 @@ _CONTROL_CENTER_TABS = (
+     "metrics",
+     "log",
+ )
++_RECORDING_INSPECTOR_TAB_LABELS = {
++    "overview": "Overview",
++    "calendar": "Calendar",
++    "project": "Project",
++    "speakers": "Speakers",
++    "language": "Language",
++    "metrics": "Metrics",
++    "log": "Diagnostics",
++    "summary": "Summary",
++    "export": "Export",
++}
++_COMPACT_TO_FULL_PAGE_TAB = {
++    "overview": "overview",
++    "speakers": "speakers",
++    "summary": "overview",
++    "export": "overview",
++}
+ _CONTROL_CENTER_LIST_LIMIT = 25
+ _GLOSSARY_KIND_OPTIONS = ("person", "company", "product", "project", "term")
+ _GLOSSARY_SOURCE_OPTIONS = (
+@@ -306,6 +329,27 @@ def _recording_source_display(source: object) -> str:
+     return label.replace("_", " ").title()
+ 
+ 
++def _recording_tab_label(value: str) -> str:
++    return _RECORDING_INSPECTOR_TAB_LABELS.get(
++        value,
++        value.replace("_", " ").title(),
++    )
++
++
++def _control_center_tab(value: str | None) -> str:
++    current_tab = str(value or "overview").strip().lower() or "overview"
++    if current_tab not in _CONTROL_CENTER_TABS:
++        return "overview"
++    return current_tab
++
++
++def _full_page_recording_tab(value: str | None) -> str:
++    current_tab = str(value or "overview").strip().lower() or "overview"
++    if current_tab in _FULL_PAGE_RECORDING_INSPECTOR_TABS:
++        return current_tab
++    return _COMPACT_TO_FULL_PAGE_TAB.get(current_tab, "overview")
++
++
+ def _recording_worklist_hint(recording: dict[str, Any]) -> str:
+     reason = str(recording.get("status_reason_text_display") or "").strip()
+     if reason:
+@@ -519,6 +563,7 @@ def _prepare_recording_for_display(
+     item["captured_at_display"] = _format_local_timestamp(item.get("captured_at"))
+     item["created_at_display"] = _format_local_timestamp(item.get("created_at"))
+     item["updated_at_display"] = _format_local_timestamp(item.get("updated_at"))
++    item["source_display"] = _recording_source_display(item.get("source"))
+     item["pipeline_updated_at_display"] = _format_local_timestamp(
+         item.get("pipeline_updated_at")
+     )
+@@ -2381,6 +2426,7 @@ def _control_center_shell_href(
+     workflow_notice: str = "",
+ ) -> str:
+     params: list[tuple[str, str]] = []
++    safe_tab = _control_center_tab(tab)
+     safe_limit = max(1, min(limit, 500)) if limit is not None else None
+     safe_offset = max(int(offset or 0), 0)
+     if safe_offset > 0 and safe_limit is None:
+@@ -2391,8 +2437,8 @@ def _control_center_shell_href(
+         params.append(("status", status_filter))
+     if search_query:
+         params.append(("q", search_query))
+-    if tab and tab != "overview":
+-        params.append(("tab", tab))
++    if safe_tab != "overview":
++        params.append(("tab", safe_tab))
+     if safe_limit is not None and (
+         safe_limit != _CONTROL_CENTER_LIST_LIMIT or safe_offset > 0
+     ):
+@@ -2424,11 +2470,9 @@ def _control_center_state_context(
+     selected_id = str(selected or "").strip()
+     status_filter = status if status in RECORDING_STATUSES else ""
+     search_query = str(q or "").strip()
+-    current_tab = str(tab or "overview").strip().lower() or "overview"
++    current_tab = _control_center_tab(tab)
+     safe_limit = max(1, min(limit or _CONTROL_CENTER_LIST_LIMIT, 500))
+     safe_offset = max(int(offset or 0), 0)
+-    if current_tab not in _CONTROL_CENTER_TABS:
+-        current_tab = "overview"
+     state_params = {
+         "selected": selected_id,
+         "status": status_filter,
+@@ -2439,11 +2483,11 @@ def _control_center_state_context(
      }
- 
- 
--def _upload_shell_context() -> dict[str, Any]:
-+def _upload_shell_context(*, mode: str = "standalone") -> dict[str, Any]:
-+    is_control_center = mode == "control_center"
      return {
-+        "mode": mode,
-         "file_input_id": "file-input",
-         "pick_files_button_id": "pick-files-btn",
-         "dropzone_id": "dropzone",
-         "upload_rows_id": "upload-rows",
-         "empty_row_id": "upload-empty",
-         "queue_empty_colspan": 6,
-+        "remove_terminal_items": is_control_center,
-+        "queue_title": (
-+            "Only in-flight uploads stay here"
-+            if is_control_center
-+            else "Recent uploads stay here while you work"
+         **state_params,
+-        "tab_label": current_tab.capitalize(),
++        "tab_label": _recording_tab_label(current_tab),
+         "tab_options": [
+             {
+                 "value": value,
+-                "label": value.capitalize(),
++                "label": _recording_tab_label(value),
+                 "selected": value == current_tab,
+             }
+             for value in _CONTROL_CENTER_TABS
+@@ -2452,9 +2496,11 @@ def _control_center_state_context(
+         "recordings_href": f"/recordings?status={quote(status_filter)}"
+         if status_filter
+         else "/recordings",
+-        "selected_detail_href": f"/recordings/{quote(selected_id)}?tab={current_tab}"
+-        if selected_id
+-        else "",
++        "selected_detail_href": (
++            _recording_detail_path(selected_id, tab=current_tab)
++            if selected_id
++            else ""
 +        ),
-+        "queue_caption": (
-+            "Finished recordings move into the main worklist below, so this panel only tracks files that are still entering the system."
-+            if is_control_center
-+            else "Completed uploads stay listed here so standalone uploads keep their in-page progress and Open recording link."
-+        ),
-+        "empty_state_text": (
-+            "No active uploads. New files appear here until they enter the main inbox."
-+            if is_control_center
-+            else "No uploads yet. New files appear here with upload and processing progress."
-+        ),
+         "clear_selection_href": _control_center_shell_href(
+             status_filter=status_filter,
+             search_query=search_query,
+@@ -2491,11 +2537,9 @@ def _control_center_inspector_path(
+     offset: int | None = None,
+ ) -> str:
+     params: list[tuple[str, str]] = []
+-    safe_tab = str(tab or "overview").strip().lower() or "overview"
++    safe_tab = _control_center_tab(tab)
+     safe_limit = max(1, min(limit, 500)) if limit is not None else None
+     safe_offset = max(int(offset or 0), 0)
+-    if safe_tab not in _CONTROL_CENTER_TABS:
+-        safe_tab = "overview"
+     if status_filter:
+         params.append(("status", status_filter))
+     if search_query:
+@@ -2521,11 +2565,9 @@ def _control_center_return_query(
+     offset: int | None = None,
+ ) -> str:
+     params: list[tuple[str, str]] = [("return_to", "control-center")]
+-    safe_tab = str(return_tab or "overview").strip().lower() or "overview"
++    safe_tab = _control_center_tab(return_tab)
+     safe_limit = max(1, min(limit, 500)) if limit is not None else None
+     safe_offset = max(int(offset or 0), 0)
+-    if safe_tab not in _CONTROL_CENTER_TABS:
+-        safe_tab = "overview"
+     params.append(("return_tab", safe_tab))
+     if status_filter:
+         params.append(("status", status_filter))
+@@ -2687,10 +2729,8 @@ def _recording_inspector_return_path(
+     speakers_notice: str = "",
+     speakers_error: str = "",
+ ) -> str:
+-    safe_tab = str(return_tab or "overview").strip().lower() or "overview"
+-    if safe_tab not in _CONTROL_CENTER_TABS:
+-        safe_tab = "overview"
+     if return_to != "control-center":
++        safe_tab = _full_page_recording_tab(return_tab)
+         params: list[tuple[str, str]] = []
+         if safe_tab != "overview":
+             params.append(("tab", safe_tab))
+@@ -2705,6 +2745,7 @@ def _recording_inspector_return_path(
+         return (
+             f"/recordings/{quote(recording_id, safe='')}?{urlencode(params)}"
+         )
++    safe_tab = _control_center_tab(return_tab)
+     return _control_center_shell_href(
+         selected=recording_id,
+         status_filter=status if status in RECORDING_STATUSES else "",
+@@ -2727,7 +2768,8 @@ def _recording_inspector_tabs_context(
+ ) -> list[dict[str, Any]]:
+     tabs: list[dict[str, Any]] = []
+     is_embedded = inspector_mode == "embedded" and control_center_state is not None
+-    for value in _CONTROL_CENTER_TABS:
++    tab_values = _CONTROL_CENTER_TABS if is_embedded else _FULL_PAGE_RECORDING_INSPECTOR_TABS
++    for value in tab_values:
+         full_page_href = _recording_detail_path(recording_id, tab=value)
+         shell_href = full_page_href
+         inspector_href = ""
+@@ -2751,7 +2793,7 @@ def _recording_inspector_tabs_context(
+         tabs.append(
+             {
+                 "value": value,
+-                "label": value.capitalize(),
++                "label": _recording_tab_label(value),
+                 "active": value == current_tab,
+                 "href": shell_href,
+                 "full_page_href": full_page_href,
+@@ -2906,8 +2948,8 @@ def _control_center_recordings_panel_context(
+ 
+ def _control_center_empty_inspector_context() -> dict[str, str]:
+     return {
+-        "title": "Select a recording",
+-        "message": "Pick something from the worklist to open the compact inspector here.",
++        "title": "No recording selected",
++        "message": "Pick something from the worklist to open the compact inspector here and keep the daily review loop on the right.",
      }
  
  
-@@ -3991,7 +4009,7 @@ async def ui_dashboard(
-             **(control_center_inspector or {}),
-             "control_center_state": control_center_state,
-             "control_center_header": control_center_header,
--            "upload_shell": _upload_shell_context(),
-+            "upload_shell": _upload_shell_context(mode="control_center"),
-             "control_center_work_pane": control_center_work_pane,
-             "control_center_system_bar": _control_center_system_bar_context(
-                 _settings,
-@@ -4124,7 +4142,7 @@ async def ui_control_center_work_pane(
-         "partials/control_center/work_pane.html",
-         {
-             "control_center_state": control_center_state,
--            "upload_shell": _upload_shell_context(),
-+            "upload_shell": _upload_shell_context(mode="control_center"),
-             "control_center_work_pane": _control_center_work_pane_context(
-                 _settings,
-                 state=control_center_state,
-@@ -5563,7 +5581,7 @@ async def ui_upload(request: Request) -> Any:
-         "upload.html",
-         {
-             "active": "upload",
--            "upload_shell": _upload_shell_context(),
-+            "upload_shell": _upload_shell_context(mode="standalone"),
-         },
-     )
+@@ -3351,6 +3393,189 @@ def _page_notice_context(message: str) -> dict[str, str]:
+     }
  
-@@ -5574,7 +5592,7 @@ async def ui_control_center_upload_panel(request: Request) -> Any:
-         request,
-         "partials/control_center/upload_panel.html",
-         {
--            "upload_shell": _upload_shell_context(),
-+            "upload_shell": _upload_shell_context(mode="control_center"),
-         },
+ 
++def _recording_dominant_language_display(
++    recording_id: str,
++    *,
++    recording: dict[str, Any],
++    settings: AppSettings,
++) -> str:
++    transcript_path, _summary_path = _recording_derived_paths(recording_id, settings)
++    transcript_payload = _load_json_dict(transcript_path)
++    dominant = _normalise_language_code(transcript_payload.get("dominant_language"))
++    if dominant is None:
++        dominant = _normalise_language_code(recording.get("language_auto"))
++    label = _language_display_name(dominant)
++    return "Unknown" if label == "—" else label
++
++
++def _compact_inspector_next_action_context(
++    recording_id: str,
++    *,
++    recording: dict[str, Any],
++    diagnostics: dict[str, Any],
++    control_center_state: dict[str, Any],
++) -> dict[str, Any]:
++    status = str(recording.get("status") or "").strip()
++    reason_text = str(
++        diagnostics.get("primary_reason_text")
++        or recording.get("status_reason_text_display")
++        or ""
++    ).strip()
++    stage_code = str(
++        diagnostics.get("current_stage_code")
++        or recording.get("pipeline_stage")
++        or ""
++    ).strip()
++    stage_hint = " ".join((stage_code, reason_text)).lower()
++    if status in {RECORDING_STATUS_READY, RECORDING_STATUS_PUBLISHED}:
++        return {
++            "title": "Open Export",
++            "detail": "Copy the current markdown or download the ZIP while the result is fresh.",
++            "href": _control_center_shell_href(
++                selected=recording_id,
++                status_filter=control_center_state["status"],
++                search_query=control_center_state["q"],
++                tab="export",
++                limit=control_center_state["limit"],
++                offset=control_center_state["offset"],
++            ),
++            "external": False,
++            "button_label": "Go to Export",
++        }
++    if status == RECORDING_STATUS_NEEDS_REVIEW:
++        if "speaker" in stage_hint or stage_code in {
++            "diarization",
++            "speaker_turns",
++            "snippet_export",
++        }:
++            return {
++                "title": "Review speakers",
++                "detail": "Use the Speakers tab to confirm matches, keep speakers unknown, or set a local label.",
++                "href": _control_center_shell_href(
++                    selected=recording_id,
++                    status_filter=control_center_state["status"],
++                    search_query=control_center_state["q"],
++                    tab="speakers",
++                    limit=control_center_state["limit"],
++                    offset=control_center_state["offset"],
++                ),
++                "external": False,
++                "button_label": "Open Speakers",
++            }
++        return {
++            "title": "Review the summary",
++            "detail": "Check the extracted summary first, then open the full-page inspector if the blocker still needs deeper diagnostics.",
++            "href": _control_center_shell_href(
++                selected=recording_id,
++                status_filter=control_center_state["status"],
++                search_query=control_center_state["q"],
++                tab="summary",
++                limit=control_center_state["limit"],
++                offset=control_center_state["offset"],
++            ),
++            "external": False,
++            "button_label": "Open Summary",
++        }
++    if status in {
++        RECORDING_STATUS_QUEUED,
++        RECORDING_STATUS_PROCESSING,
++        RECORDING_STATUS_STOPPING,
++    }:
++        return {
++            "title": "Keep this recording in view",
++            "detail": "Progress updates here automatically. Stop only if this run should be interrupted.",
++            "href": "",
++            "external": False,
++            "button_label": "",
++        }
++    if status == RECORDING_STATUS_STOPPED:
++        return {
++            "title": "Requeue when ready",
++            "detail": "This run is stopped. Start it again from the action bar once you are ready.",
++            "href": "",
++            "external": False,
++            "button_label": "",
++        }
++    if status in {RECORDING_STATUS_QUARANTINE, RECORDING_STATUS_FAILED}:
++        return {
++            "title": "Open the full-page inspector",
++            "detail": "Use the deep view for broader diagnostics and admin actions before requeueing.",
++            "href": _recording_detail_path(recording_id, tab="overview"),
++            "external": True,
++            "button_label": "Open Full Page",
++        }
++    return {
++        "title": "Open the full-page inspector",
++        "detail": "Keep the compact pane for daily review and jump to the full page when you need deeper detail.",
++        "href": _recording_detail_path(recording_id, tab="overview"),
++        "external": True,
++        "button_label": "Open Full Page",
++    }
++
++
++def _compact_inspector_overview_context(
++    recording_id: str,
++    *,
++    recording: dict[str, Any],
++    diagnostics: dict[str, Any],
++    control_center_state: dict[str, Any],
++    settings: AppSettings,
++) -> dict[str, Any]:
++    stage_label = str(diagnostics.get("current_stage_label") or "").strip()
++    if not stage_label or stage_label == "Waiting":
++        stage_label = _pipeline_stage_label(recording.get("pipeline_stage"))
++    stage_detail = "The worker is updating this stage live." if str(
++        recording.get("status") or ""
++    ).strip() in {
++        RECORDING_STATUS_QUEUED,
++        RECORDING_STATUS_PROCESSING,
++        RECORDING_STATUS_STOPPING,
++    } else (
++        f"Last pipeline update {recording['pipeline_updated_at_display']}."
++        if recording.get("pipeline_updated_at_display")
++        and recording["pipeline_updated_at_display"] != "—"
++        else "No active worker update is running right now."
++    )
++    blocker_text = str(
++        diagnostics.get("primary_reason_text")
++        or recording.get("status_reason_text_display")
++        or ""
++    ).strip()
++    if not blocker_text:
++        blocker_text = "No blocker detected."
++    return {
++        "stage_label": stage_label,
++        "stage_detail": stage_detail,
++        "blocker_text": blocker_text,
++        "blocker_detail": f"Current status: {recording.get('status') or 'Unknown'}.",
++        "next_action": _compact_inspector_next_action_context(
++            recording_id,
++            recording=recording,
++            diagnostics=diagnostics,
++            control_center_state=control_center_state,
++        ),
++        "metadata": [
++            {"label": "Status", "value": str(recording.get("status") or "Unknown")},
++            {
++                "label": "Captured",
++                "value": str(recording.get("captured_at_display") or "—"),
++            },
++            {
++                "label": "Dominant language",
++                "value": _recording_dominant_language_display(
++                    recording_id,
++                    recording=recording,
++                    settings=settings,
++                ),
++            },
++            {
++                "label": "Source",
++                "value": _recording_source_display(recording.get("source")),
++            },
++        ],
++    }
++
++
+ def _inspector_action_bar_context(
+     recording: dict[str, Any],
+     *,
+@@ -3391,6 +3616,8 @@ def _inspector_action_bar_context(
+         "delete_url": f"/ui/recordings/{quote(recording_id, safe='')}/delete{return_query}",
+         "stop_url": f"/ui/recordings/{quote(recording_id, safe='')}/stop{return_query}",
+         "stop_body": urlencode([("tab", current_tab)]),
++        "show_embedded_requeue": is_embedded and not bool(recording.get("stop_eligible")),
++        "show_embedded_stop": is_embedded and bool(recording.get("stop_eligible")),
+     }
+ 
+ 
+@@ -3421,7 +3648,7 @@ def _selected_recording_summary_shell_context(
+ 
+ def _empty_inspector_shell_context() -> dict[str, str]:
+     return {
+-        "title": "Select a recording",
++        "title": "No recording selected",
+         "message": "Choose a row from the worklist to open a compact review pane here.",
+     }
+ 
+@@ -3440,10 +3667,12 @@ def _recording_inspector_context(
+     rec = get_recording(recording_id, settings=_settings)
+     if rec is None:
+         return None
++    is_embedded = inspector_mode == "embedded" and control_center_state is not None
++    allowed_tabs = _CONTROL_CENTER_TABS if is_embedded else _FULL_PAGE_RECORDING_INSPECTOR_TABS
+     rec = _prepare_recording_for_display(rec, settings=_settings)
+     jobs, _ = list_jobs(settings=_settings, recording_id=recording_id, limit=100)
+     recovery_warning = _recording_recovery_warning(jobs)
+-    safe_tab = current_tab if current_tab in _CONTROL_CENTER_TABS else "overview"
++    safe_tab = current_tab if current_tab in allowed_tabs else "overview"
+     calendar: dict[str, Any] | None = None
+     language: dict[str, Any] | None = None
+     summary: dict[str, Any] | None = None
+@@ -3451,6 +3680,7 @@ def _recording_inspector_context(
+     speakers: dict[str, Any] | None = None
+     project: dict[str, Any] | None = None
+     glossary: dict[str, Any] | None = None
++    compact_overview: dict[str, Any] | None = None
+     export_text = ""
+     stage_rows = list_recording_pipeline_stages(recording_id, settings=_settings)
+     chunk_rows = list_recording_llm_chunk_states(recording_id, settings=_settings)
+@@ -3463,11 +3693,11 @@ def _recording_inspector_context(
      )
+     if diagnostics["primary_reason_text"]:
+         rec["status_reason_text_display"] = diagnostics["primary_reason_text"]
+-    if safe_tab == "calendar":
++    if not is_embedded and safe_tab == "calendar":
+         calendar = _calendar_tab_context(recording_id, _settings)
+         if calendar_error.strip():
+             calendar["error_message"] = calendar_error.strip()
+-    if safe_tab == "language":
++    if not is_embedded and safe_tab == "language":
+         language = _language_tab_context(recording_id, rec, _settings)
+     if safe_tab == "speakers":
+         speakers = _speakers_tab_context(
+@@ -3479,20 +3709,30 @@ def _recording_inspector_context(
+             error_message=speakers_error,
+         )
+         speakers["manage_voices_href"] = "/voices"
+-    if safe_tab == "project":
++    if not is_embedded and safe_tab == "project":
+         project = _project_tab_context(recording_id, rec, _settings)
+         rec = _prepare_recording_for_display(
+             get_recording(recording_id, settings=_settings) or rec,
+             settings=_settings,
+         )
+-    if safe_tab in {"overview", "metrics"}:
++    if safe_tab in {"summary", "metrics"} or (safe_tab == "overview" and not is_embedded):
+         summary = _summary_context(recording_id, _settings)
+     if safe_tab == "overview":
++        if is_embedded and control_center_state is not None:
++            compact_overview = _compact_inspector_overview_context(
++                recording_id,
++                recording=rec,
++                diagnostics=diagnostics,
++                control_center_state=control_center_state,
++                settings=_settings,
++            )
++        else:
++            export_text = build_onenote_markdown(rec, settings=_settings)
++            glossary = _asr_glossary_context(recording_id, _settings)
++    if safe_tab == "export":
+         export_text = build_onenote_markdown(rec, settings=_settings)
+-        glossary = _asr_glossary_context(recording_id, _settings)
+-    if safe_tab == "metrics":
++    if not is_embedded and safe_tab == "metrics":
+         metrics = _metrics_tab_context(recording_id, _settings)
+-    is_embedded = inspector_mode == "embedded" and control_center_state is not None
+     progress_url = (
+         f"/ui/recordings/{quote(recording_id, safe='')}/progress?tab="
+         f"{quote(safe_tab, safe='')}"
+@@ -3517,62 +3757,6 @@ def _recording_inspector_context(
+             )
+             for value in _CONTROL_CENTER_TABS
+         }
+-        if glossary is not None:
+-            glossary["manage_href"] = _workflow_page_href(
+-                "/glossary",
+-                return_to="control-center",
+-                selected=recording_id,
+-                status=control_center_state["status"],
+-                q=control_center_state["q"],
+-                tab=safe_tab,
+-                limit=control_center_state["limit"],
+-                offset=control_center_state["offset"],
+-            )
+-            glossary["quick_add_href"] = _workflow_page_href(
+-                "/glossary",
+-                return_to="control-center",
+-                selected=recording_id,
+-                status=control_center_state["status"],
+-                q=control_center_state["q"],
+-                tab=safe_tab,
+-                limit=control_center_state["limit"],
+-                offset=control_center_state["offset"],
+-                extra_params=[("recording_id", recording_id)],
+-            )
+-            glossary["workflow_form"] = {
+-                "action": "/glossary",
+-                "hidden_fields": [
+-                    {"name": "kind", "value": "term"},
+-                    {"name": "source", "value": "correction"},
+-                    {"name": "enabled", "value": "1"},
+-                    {"name": "recording_id", "value": recording_id},
+-                    {"name": "return_to", "value": "control-center"},
+-                    {"name": "return_after_save", "value": "control-center"},
+-                    {"name": "selected", "value": recording_id},
+-                    {"name": "tab", "value": safe_tab},
+-                    *(
+-                        [{"name": "status", "value": control_center_state["status"]}]
+-                        if control_center_state["status"]
+-                        else []
+-                    ),
+-                    *(
+-                        [{"name": "q", "value": control_center_state["q"]}]
+-                        if control_center_state["q"]
+-                        else []
+-                    ),
+-                    *(
+-                        [{"name": "limit", "value": str(control_center_state["limit"])}]
+-                        if control_center_state["limit"] != _CONTROL_CENTER_LIST_LIMIT
+-                        or control_center_state["offset"] > 0
+-                        else []
+-                    ),
+-                    *(
+-                        [{"name": "offset", "value": str(control_center_state["offset"])}]
+-                        if control_center_state["offset"] > 0
+-                        else []
+-                    ),
+-                ],
+-            }
+         if speakers is not None:
+             speakers["manage_voices_href"] = _workflow_page_href(
+                 "/voices",
+@@ -3597,7 +3781,7 @@ def _recording_inspector_context(
+         "jobs": jobs,
+         "recovery_warning": recovery_warning,
+         "selected_recording_shell": selected_recording_shell,
+-        "tabs": _CONTROL_CENTER_TABS,
++        "tabs": allowed_tabs,
+         "current_tab": safe_tab,
+         "calendar": calendar,
+         "language": language,
+@@ -3606,6 +3790,7 @@ def _recording_inspector_context(
+         "speakers": speakers,
+         "project": project,
+         "glossary": glossary,
++        "compact_overview": compact_overview,
+         "export_text": export_text,
+         "pipeline_stages": pipeline_stages,
+         "diagnostics": diagnostics,
+@@ -5691,7 +5876,7 @@ async def ui_sync_calendar_source(source_id: int) -> Any:
+ 
+ 
+ def _recording_detail_path(recording_id: str, *, tab: str = "overview") -> str:
+-    safe_tab = str(tab or "overview").strip() or "overview"
++    safe_tab = _full_page_recording_tab(tab)
+     if safe_tab == "overview":
+         return f"/recordings/{recording_id}"
+     return f"/recordings/{recording_id}?tab={quote(safe_tab, safe='')}"
+diff --git a/tasks/QUEUE.md b/tasks/QUEUE.md
+index efb9067..b3016af 100644
+--- a/tasks/QUEUE.md
++++ b/tasks/QUEUE.md
+@@ -580,7 +580,7 @@ Queue (in order)
+ - Depends on: PR-UI-STITCH-CONTROL-CENTER-02 and PR-OPS-SYSTEM-BAR-01
+ 
+ 116) PR-UI-STITCH-INSPECTOR-COMPACT-01: Build a compact daily inspector for Control Center with next-action-focused overview and no deep-detail overload
+-- Status: TODO
++- Status: DOING
+ - Tasks file: tasks/PR-UI-STITCH-INSPECTOR-COMPACT-01.md
+ - Depends on: PR-UI-STITCH-WORKLIST-01
  
 diff --git a/tests/test_cov_lan_app_ui_routes.py b/tests/test_cov_lan_app_ui_routes.py
-index 6829456..d9cc721 100644
+index d9cc721..ccdfae2 100644
 --- a/tests/test_cov_lan_app_ui_routes.py
 +++ b/tests/test_cov_lan_app_ui_routes.py
-@@ -518,9 +518,14 @@ def test_control_center_helper_contexts_cover_fragment_builders(
-         "/?selected=rec-helper-1&status=Ready&q=helper&tab=speakers&limit=2&offset=4"
-     )
+@@ -237,6 +237,16 @@ def test_control_center_helper_contexts_cover_fragment_builders(
+     assert "limit=100" in state["work_pane_url"]
+     assert "offset=25" in state["clear_selection_href"]
  
--    upload_shell = ui_routes._upload_shell_context()  # noqa: SLF001
-+    upload_shell = ui_routes._upload_shell_context(mode="control_center")  # noqa: SLF001
-     assert upload_shell["file_input_id"] == "file-input"
-     assert upload_shell["empty_row_id"] == "upload-empty"
-+    assert upload_shell["remove_terminal_items"] is True
-+    assert upload_shell["queue_title"] == "Only in-flight uploads stay here"
-+    standalone_upload_shell = ui_routes._upload_shell_context(mode="standalone")  # noqa: SLF001
-+    assert standalone_upload_shell["remove_terminal_items"] is False
-+    assert standalone_upload_shell["queue_title"] == "Recent uploads stay here while you work"
++    summary_state = ui_routes._control_center_state_context(  # noqa: SLF001
++        selected="rec-helper-1",
++        status="Ready",
++        q="helper",
++        tab="summary",
++    )
++    assert summary_state["tab"] == "summary"
++    assert summary_state["selected_detail_href"] == "/recordings/rec-helper-1"
++    assert summary_state["tab_label"] == "Summary"
++
+     fallback_state = ui_routes._control_center_state_context(  # noqa: SLF001
+         selected=None,
+         status="unknown",
+@@ -254,7 +264,7 @@ def test_control_center_helper_contexts_cover_fragment_builders(
+         tab="log",
+         limit=100,
+         offset=25,
+-    ) == "/?selected=rec+helper&status=Ready&q=demo&tab=log&limit=100&offset=25"
++    ) == "/?selected=rec+helper&status=Ready&q=demo&limit=100&offset=25"
+     assert ui_routes._control_center_shell_href(  # noqa: SLF001
+         selected="rec helper",
+         offset=25,
+@@ -387,6 +397,13 @@ def test_control_center_helper_contexts_cover_fragment_builders(
+         limit=25,
+         offset=2,
+     ) == "/?selected=rec-helper-1&status=Ready&q=helper&tab=speakers&limit=25&offset=2"
++    assert ui_routes._recording_inspector_return_path(  # noqa: SLF001
++        "rec-helper-1",
++        return_to="control-center",
++        return_tab="summary",
++        status="Ready",
++    ) == "/?selected=rec-helper-1&status=Ready&tab=summary"
++    assert ui_routes._recording_detail_path("rec-helper-1", tab="summary") == "/recordings/rec-helper-1"
  
-     page_notice = ui_routes._page_notice_context("  Recovered from a stuck job.  ")  # noqa: SLF001
-     assert page_notice == {"message": "Recovered from a stuck job."}
+     monkeypatch.setattr(
+         ui_routes,
+@@ -704,11 +721,11 @@ def test_recordings_panel_context_clamps_offset_to_last_available_page(
+     ]
+ 
+     empty_shell = ui_routes._empty_inspector_shell_context()  # noqa: SLF001
+-    assert empty_shell["title"] == "Select a recording"
++    assert empty_shell["title"] == "No recording selected"
+     assert "compact review pane" in empty_shell["message"]
+ 
+     control_center_empty = ui_routes._control_center_empty_inspector_context()  # noqa: SLF001
+-    assert control_center_empty["title"] == "Select a recording"
++    assert control_center_empty["title"] == "No recording selected"
+     assert "compact inspector" in control_center_empty["message"]
+ 
+     monkeypatch.setattr(
+@@ -740,6 +757,132 @@ def test_recordings_panel_context_clamps_offset_to_last_available_page(
+     assert glossary_summary["entries"][1]["source_label"] == "Always-on memory"
+ 
+ 
++def test_compact_inspector_helpers_cover_next_action_branches(tmp_path: Path) -> None:
++    cfg = _cfg(tmp_path)
++    control_center_state = {
++        "status": "Ready",
++        "q": "helper",
++        "limit": 25,
++        "offset": 0,
++    }
++    derived = cfg.recordings_root / "rec-compact-1" / "derived"
++    derived.mkdir(parents=True, exist_ok=True)
++    (derived / "transcript.json").write_text(
++        json.dumps({"dominant_language": "en"}),
++        encoding="utf-8",
++    )
++
++    ready_overview = ui_routes._compact_inspector_overview_context(  # noqa: SLF001
++        "rec-compact-1",
++        recording={
++            "status": RECORDING_STATUS_READY,
++            "captured_at_display": "2026-01-02 03:04:05 CET",
++            "pipeline_updated_at_display": "2026-01-02 03:05:00 CET",
++            "source": "upload",
++            "language_auto": "it",
++            "status_reason_text_display": "",
++        },
++        diagnostics={
++            "current_stage_label": "Done",
++            "current_stage_code": "done",
++            "primary_reason_text": "",
++        },
++        control_center_state=control_center_state,
++        settings=cfg,
++    )
++    assert ready_overview["next_action"]["href"].endswith("tab=export")
++    assert ready_overview["metadata"][2]["value"] == "English (en)"
++
++    processing_overview = ui_routes._compact_inspector_overview_context(  # noqa: SLF001
++        "rec-compact-1",
++        recording={
++            "status": RECORDING_STATUS_PROCESSING,
++            "captured_at_display": "2026-01-02 03:04:05 CET",
++            "pipeline_updated_at_display": "—",
++            "pipeline_stage": "asr",
++            "source": "upload",
++            "language_auto": "it",
++            "status_reason_text_display": "",
++        },
++        diagnostics={
++            "current_stage_label": "Waiting",
++            "current_stage_code": "asr",
++            "primary_reason_text": "",
++        },
++        control_center_state=control_center_state,
++        settings=cfg,
++    )
++    assert processing_overview["stage_label"] == "ASR / VAD"
++    assert processing_overview["stage_detail"] == "The worker is updating this stage live."
++
++    blocked_overview = ui_routes._compact_inspector_overview_context(  # noqa: SLF001
++        "rec-compact-1",
++        recording={
++            "status": RECORDING_STATUS_NEEDS_REVIEW,
++            "captured_at_display": "2026-01-02 03:04:05 CET",
++            "pipeline_updated_at_display": "2026-01-02 03:05:00 CET",
++            "source": "upload",
++            "language_auto": "it",
++            "status_reason_text_display": "Speaker review required.",
++        },
++        diagnostics={
++            "current_stage_label": "Speaker Turns",
++            "current_stage_code": "speaker_turns",
++            "primary_reason_text": "Speaker review required.",
++        },
++        control_center_state=control_center_state,
++        settings=cfg,
++    )
++    assert blocked_overview["blocker_text"] == "Speaker review required."
++
++    review_speakers = ui_routes._compact_inspector_next_action_context(  # noqa: SLF001
++        "rec-compact-1",
++        recording={"status": RECORDING_STATUS_NEEDS_REVIEW, "status_reason_text_display": ""},
++        diagnostics={
++            "current_stage_code": "speaker_turns",
++            "primary_reason_text": "Speaker labels need review",
++        },
++        control_center_state=control_center_state,
++    )
++    assert review_speakers["href"].endswith("tab=speakers")
++
++    review_summary = ui_routes._compact_inspector_next_action_context(  # noqa: SLF001
++        "rec-compact-1",
++        recording={"status": RECORDING_STATUS_NEEDS_REVIEW, "status_reason_text_display": ""},
++        diagnostics={
++            "current_stage_code": "llm_merge",
++            "primary_reason_text": "Summary output needs review",
++        },
++        control_center_state=control_center_state,
++    )
++    assert review_summary["href"].endswith("tab=summary")
++
++    stopped = ui_routes._compact_inspector_next_action_context(  # noqa: SLF001
++        "rec-compact-1",
++        recording={"status": RECORDING_STATUS_STOPPED, "status_reason_text_display": ""},
++        diagnostics={"current_stage_code": "waiting", "primary_reason_text": ""},
++        control_center_state=control_center_state,
++    )
++    assert stopped["title"] == "Requeue when ready"
++
++    quarantine = ui_routes._compact_inspector_next_action_context(  # noqa: SLF001
++        "rec-compact-1",
++        recording={"status": RECORDING_STATUS_QUARANTINE, "status_reason_text_display": ""},
++        diagnostics={"current_stage_code": "done", "primary_reason_text": ""},
++        control_center_state=control_center_state,
++    )
++    assert quarantine["external"] is True
++    assert quarantine["href"] == "/recordings/rec-compact-1"
++
++    fallback = ui_routes._compact_inspector_next_action_context(  # noqa: SLF001
++        "rec-compact-1",
++        recording={"status": "Mystery", "status_reason_text_display": ""},
++        diagnostics={"current_stage_code": "", "primary_reason_text": ""},
++        control_center_state=control_center_state,
++    )
++    assert fallback["button_label"] == "Open Full Page"
++
++
+ def test_display_helpers_cover_timezone_duration_and_prepare_recording(
+     tmp_path: Path,
+     monkeypatch: pytest.MonkeyPatch,
 diff --git a/tests/test_ui_routes.py b/tests/test_ui_routes.py
-index 6c1c679..aac0529 100644
+index aac0529..92ac860 100644
 --- a/tests/test_ui_routes.py
 +++ b/tests/test_ui_routes.py
-@@ -525,6 +525,8 @@ def test_control_center_system_bar_renders_degraded_cpu_fallback(seeded_client,
-     assert work_pane.status_code == 200
-     assert "Drop audio into today" in work_pane.text
-     assert "Operator inbox" in work_pane.text
-+    assert "Only in-flight uploads stay here" in work_pane.text
-+    assert "var removeTerminalItems = true;" in work_pane.text
-     assert "Fallback and Admin Pages" not in work_pane.text
-     assert "meeting.mp3" in work_pane.text
-     assert 'id="control-center-recordings-panel"' in work_pane.text
-@@ -3177,7 +3179,10 @@ def test_upload_page(client):
-     assert "Upload" in r.text
+@@ -365,7 +365,7 @@ def test_dashboard_empty(client):
+     assert 'id="control-center-system-bar"' in r.text
      assert 'id="file-input"' in r.text
-     assert "Drop audio here or browse from disk." in r.text
--    assert "No active uploads. New files appear here until they enter the main inbox." in r.text
-+    assert "Recent uploads stay here while you work" in r.text
-+    assert "Completed uploads stay listed here so standalone uploads keep their in-page progress and Open recording link." in r.text
-+    assert "No uploads yet. New files appear here with upload and processing progress." in r.text
-+    assert "var removeTerminalItems = false;" in r.text
+     assert 'id="control-center-recordings-panel"' in r.text
+-    assert "Select a recording" in r.text
++    assert "No recording selected" in r.text
+     assert 'id="control-center-top-strip"' not in r.text
+     assert 'href="/upload"' not in r.text
+     assert 'href="/recordings"' not in r.text
+@@ -420,7 +420,7 @@ def test_control_center_query_state_and_direct_routes(seeded_client):
+     assert 'name="tab" value="speakers"' in r.text
+     assert 'id="control-center-recordings-panel"' in r.text
+     assert "/recordings/rec-ui-1?tab=speakers" in r.text
+-    assert "Open full-page recording" in r.text
++    assert "Open full-page inspector" in r.text
+     assert "refresh-control-center-header" in r.text
+     assert "refresh-control-center-system-bar" in r.text
+     assert "syncControlCenterShellRefreshUrlsFromPanel" in r.text
+@@ -542,26 +542,25 @@ def test_control_center_system_bar_renders_degraded_cpu_fallback(seeded_client,
+ 
+     inspector = seeded_client.get("/ui/control-center/inspector-pane?selected=rec-ui-1&tab=speakers")
+     assert inspector.status_code == 200
+-    assert "Selected Recording" in inspector.text
++    assert "Compact inspector" in inspector.text
+     assert "rec-ui-1" in inspector.text
+     assert "Speakers" in inspector.text
+     assert "<nav" not in inspector.text
+ 
+     empty_inspector = seeded_client.get("/ui/control-center/inspector-pane")
+     assert empty_inspector.status_code == 200
+-    assert "Select a recording" in empty_inspector.text
++    assert "No recording selected" in empty_inspector.text
++    assert "Queue context stays visible" in empty_inspector.text
  
  
- def test_upload_panel_fragment_endpoint(client):
-@@ -3185,6 +3190,8 @@ def test_upload_panel_fragment_endpoint(client):
+ def test_control_center_selected_recording_renders_embedded_inspector_actions(seeded_client):
+     r = seeded_client.get("/?selected=rec-ui-1&status=Ready&q=meeting&tab=overview")
      assert r.status_code == 200
-     assert 'id="file-input"' in r.text
-     assert 'id="upload-rows"' in r.text
-+    assert "Only in-flight uploads stay here" in r.text
-+    assert "Finished recordings move into the main worklist below" in r.text
-     assert "No active uploads. New files appear here until they enter the main inbox." in r.text
-     assert "<html" not in r.text
+     assert 'id="control-center-inspector-pane"' in r.text
+-    assert "Selected Recording" in r.text
++    assert "Compact inspector" in r.text
+     assert "Requeue" in r.text
+-    assert "Quarantine" in r.text
+-    assert "Delete" in r.text
+     assert "Download ZIP" in r.text
+-    assert "Open full-page recording" in r.text
++    assert "Open full-page inspector" in r.text
+     assert "/ui/recordings/rec-ui-1/inspector?status=Ready&amp;q=meeting" in r.text
  
+ 
+@@ -569,23 +568,86 @@ def test_control_center_embedded_inspector_tab_links_preserve_shell_state(seeded
+     inspector = seeded_client.get("/ui/recordings/rec-ui-1/inspector?status=Ready&q=meeting&tab=speakers")
+     assert inspector.status_code == 200
+     assert 'hx-get="/ui/recordings/rec-ui-1/inspector?status=Ready&amp;q=meeting"' in inspector.text
+-    assert 'hx-get="/ui/recordings/rec-ui-1/inspector?status=Ready&amp;q=meeting&amp;tab=language"' in inspector.text
+-    assert 'hx-push-url="/?selected=rec-ui-1&amp;status=Ready&amp;q=meeting&amp;tab=language"' in inspector.text
++    assert 'hx-get="/ui/recordings/rec-ui-1/inspector?status=Ready&amp;q=meeting&amp;tab=summary"' in inspector.text
++    assert 'hx-push-url="/?selected=rec-ui-1&amp;status=Ready&amp;q=meeting&amp;tab=summary"' in inspector.text
+     assert 'href="/?selected=rec-ui-1&amp;status=Ready&amp;q=meeting&amp;tab=speakers"' in inspector.text
++    assert 'data-testid="recording-inspector-tab-export"' in inspector.text
++    assert 'data-testid="recording-inspector-tab-language"' not in inspector.text
+ 
+ 
+-def test_control_center_embedded_admin_links_preserve_shell_state(seeded_client):
++def test_control_center_embedded_inspector_overview_stays_compact(seeded_client):
+     overview = seeded_client.get("/?selected=rec-ui-1&status=Ready&q=meeting&tab=overview")
+     assert overview.status_code == 200
+-    assert (
+-        'href="/glossary?return_to=control-center&amp;selected=rec-ui-1&amp;status=Ready&amp;q=meeting"'
+-        in overview.text
+-    )
+-    assert "Save as correction" in overview.text
++    assert "What stage is it in?" in overview.text
++    assert "What is blocking it?" in overview.text
++    assert "What should I do next?" in overview.text
++    assert "Key metadata" in overview.text
++    assert "Pipeline Stages" not in overview.text
++    assert "Diagnostics" not in overview.text
++    assert "Save as correction" not in overview.text
++    assert "Current / last stage" not in overview.text
+ 
+     speakers = seeded_client.get("/?selected=rec-ui-1&status=Ready&q=meeting&tab=speakers")
+     assert speakers.status_code == 200
+     assert "Open canonical speakers page" not in speakers.text
++    assert "Safe speaker review" in speakers.text
++
++
++def test_control_center_embedded_summary_and_export_tabs_render_compact_content(tmp_path, monkeypatch):
++    cfg = _cfg(tmp_path)
++    monkeypatch.setattr(api, "_settings", cfg)
++    monkeypatch.setattr(ui_routes, "_settings", cfg)
++    monkeypatch.setattr(
++        ui_routes,
++        "collect_control_center_runtime_status",
++        lambda _settings: _stub_runtime_status(),
++    )
++    init_db(cfg)
++    create_recording(
++        "rec-ui-summary-1",
++        source="upload",
++        source_filename="summary.wav",
++        status=RECORDING_STATUS_READY,
++        settings=cfg,
++    )
++    derived = cfg.recordings_root / "rec-ui-summary-1" / "derived"
++    derived.mkdir(parents=True, exist_ok=True)
++    (derived / "summary.json").write_text(
++        json.dumps(
++            {
++                "topic": "Roadmap review",
++                "summary_bullets": ["Reviewed blockers", "Aligned on next steps"],
++                "decisions": ["Ship compact inspector"],
++                "action_items": [{"task": "Polish export copy", "owner": "Alex"}],
++                "questions": {
++                    "total_count": 1,
++                    "types": {"clarification": 1},
++                    "extracted": ["Should export stay compact?"],
++                },
++                "emotional_summary": "Focused and calm.",
++            }
++        ),
++        encoding="utf-8",
++    )
++    (derived / "transcript.json").write_text(
++        json.dumps({"dominant_language": "en"}),
++        encoding="utf-8",
++    )
++
++    client = TestClient(api.app, follow_redirects=True)
++    summary = client.get("/ui/recordings/rec-ui-summary-1/inspector?tab=summary")
++    assert summary.status_code == 200
++    assert "Roadmap review" in summary.text
++    assert "Ship compact inspector" in summary.text
++    assert "Polish export copy" in summary.text
++    assert "Focused and calm." in summary.text
++    assert "Pipeline Stages" not in summary.text
++
++    export = client.get("/ui/recordings/rec-ui-summary-1/inspector?tab=export")
++    assert export.status_code == 200
++    assert "OneNote-ready markdown" in export.text
++    assert "Download ZIP" in export.text
++    assert "Full-page only" in export.text
+ 
+ 
+ def test_control_center_workflow_upload_select_speaker_decision_and_correction(
+@@ -609,14 +671,14 @@ def test_control_center_workflow_upload_select_speaker_decision_and_correction(
+     home = c.get("/")
+     assert home.status_code == 200
+     assert f'data-recording-id="{recording_id}"' in home.text
+-    assert "Select a recording" in home.text
++    assert "No recording selected" in home.text
+ 
+     _seed_speaker_artifacts(cfg, recording_id)
+     set_recording_status(recording_id, RECORDING_STATUS_READY, settings=cfg)
+ 
+     speakers = c.get(f"/?selected={recording_id}&tab=speakers")
+     assert speakers.status_code == 200
+-    assert "Selected Recording" in speakers.text
++    assert "Compact inspector" in speakers.text
+     assert "Safe speaker review" in speakers.text
+     assert "Local label only" in speakers.text
+     assert "Add trusted sample" in speakers.text
+@@ -638,7 +700,8 @@ def test_control_center_workflow_upload_select_speaker_decision_and_correction(
+ 
+     overview = c.get(f"/?selected={recording_id}")
+     assert overview.status_code == 200
+-    assert "Save as correction" in overview.text
++    assert "What should I do next?" in overview.text
++    assert "Save as correction" not in overview.text
+ 
+     correction = c.post(
+         "/glossary",
+@@ -658,7 +721,7 @@ def test_control_center_workflow_upload_select_speaker_decision_and_correction(
+     )
+     assert correction.status_code == 200
+     assert "Saved correction for Sander." in correction.text
+-    assert "Save as correction" in correction.text
++    assert "Compact inspector" in correction.text
+ 
+     entries = list_glossary_entries(settings=cfg)
+     assert len(entries) == 1
+@@ -964,7 +1027,7 @@ def test_recording_shell_and_empty_inspector_fragment_endpoints(seeded_client):
+ 
+     empty = seeded_client.get("/ui/control-center/inspector-empty")
+     assert empty.status_code == 200
+-    assert "Select a recording" in empty.text
++    assert "No recording selected" in empty.text
+     assert "<nav" not in empty.text
+ 
+     missing = seeded_client.get("/ui/control-center/recordings/missing/shell")
+@@ -1357,7 +1420,7 @@ def test_recording_progress_endpoint_redirects_to_control_center_when_embedded_t
+     assert r.status_code == 200
+     assert (
+         r.headers["HX-Redirect"]
+-        == "/?selected=rec-ui-terminal-embedded-1&status=Ready&q=meeting&tab=metrics"
++        == "/?selected=rec-ui-terminal-embedded-1&status=Ready&q=meeting"
+     )
+ 
+ 
+diff --git a/tests_playwright/test_ui_smoke_playwright.py b/tests_playwright/test_ui_smoke_playwright.py
+index 47352f4..81ee997 100644
+--- a/tests_playwright/test_ui_smoke_playwright.py
++++ b/tests_playwright/test_ui_smoke_playwright.py
+@@ -288,15 +288,29 @@ def test_control_center_embedded_inspector_and_export_zip_smoke(tmp_path: Path)
+                 )
+                 assert urlparse(page.url).path == "/"
+ 
+-                page.get_by_test_id("recording-inspector-tab-log").click(
++                page.get_by_test_id("recording-inspector-tab-summary").click(
+                     timeout=_remaining_timeout_ms(deadline),
+                 )
+                 page.wait_for_url(
+-                    f"**/?selected={recording_id}&tab=log",
++                    f"**/?selected={recording_id}&tab=summary",
+                     timeout=_remaining_timeout_ms(deadline),
+                 )
+                 page.wait_for_selector(
+-                    "#control-center-inspector-pane .tab.active:has-text('Log')",
++                    "#control-center-inspector-pane .tab.active:has-text('Summary')",
++                    state="visible",
++                    timeout=_remaining_timeout_ms(deadline),
++                )
++                assert urlparse(page.url).path == "/"
++
++                page.get_by_test_id("recording-inspector-tab-export").click(
++                    timeout=_remaining_timeout_ms(deadline),
++                )
++                page.wait_for_url(
++                    f"**/?selected={recording_id}&tab=export",
++                    timeout=_remaining_timeout_ms(deadline),
++                )
++                page.wait_for_selector(
++                    "#control-center-inspector-pane .tab.active:has-text('Export')",
+                     state="visible",
+                     timeout=_remaining_timeout_ms(deadline),
+                 )

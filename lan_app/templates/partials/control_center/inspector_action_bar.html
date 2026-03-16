@@ -1,4 +1,31 @@
-<div class="inspector-action-bar">
+<div class="inspector-action-bar{% if inspector_action_bar.embedded %} inspector-action-bar-embedded{% endif %}">
+  {% if inspector_action_bar.embedded %}
+    {% if inspector_action_bar.show_embedded_stop %}
+      {% if inspector_action_bar.rec.stop_in_progress %}
+      <button type="button" class="btn btn-danger" disabled>Stopping...</button>
+      {% else %}
+      <button
+        type="button"
+        class="btn btn-danger"
+        data-action-url="{{ inspector_action_bar.stop_url }}"
+        data-action-body="{{ inspector_action_bar.stop_body }}"
+        data-return-to="{{ inspector_action_bar.return_to }}"
+        data-confirm-message="Stop processing for this recording?"
+        data-pending-label="Submitting stop..."
+        onclick="triggerRecordingAction(this)"
+      >Stop</button>
+      {% endif %}
+    {% elif inspector_action_bar.show_embedded_requeue %}
+    <button
+      type="button"
+      class="btn"
+      data-action-url="{{ inspector_action_bar.requeue_url }}"
+      data-return-to="{{ inspector_action_bar.return_to }}"
+      data-pending-label="Requeueing..."
+      onclick="triggerRecordingAction(this)"
+    >Requeue</button>
+    {% endif %}
+  {% else %}
   <button
     type="button"
     class="btn"
@@ -25,20 +52,21 @@
     data-return-to="{{ inspector_action_bar.return_to }}"
     onclick="openDeleteDialog({recordingId: this.dataset.rid, recordingLabel: this.dataset.rlabel || '', capturedAt: this.dataset.rcaptured || '', returnTo: this.dataset.returnTo || '', returnFocus: this});"
   >Delete</button>
-  {% if inspector_action_bar.rec.stop_eligible %}
-    {% if inspector_action_bar.rec.stop_in_progress %}
-    <button type="button" class="btn btn-danger" disabled>Stopping...</button>
-    {% else %}
-    <button
-      type="button"
-      class="btn btn-danger"
-      data-action-url="{{ inspector_action_bar.stop_url }}"
-      data-action-body="{{ inspector_action_bar.stop_body }}"
-      data-return-to="{{ inspector_action_bar.return_to }}"
-      data-confirm-message="Stop processing for this recording?"
-      data-pending-label="Submitting stop..."
-      onclick="triggerRecordingAction(this)"
-    >Stop</button>
+    {% if inspector_action_bar.rec.stop_eligible %}
+      {% if inspector_action_bar.rec.stop_in_progress %}
+      <button type="button" class="btn btn-danger" disabled>Stopping...</button>
+      {% else %}
+      <button
+        type="button"
+        class="btn btn-danger"
+        data-action-url="{{ inspector_action_bar.stop_url }}"
+        data-action-body="{{ inspector_action_bar.stop_body }}"
+        data-return-to="{{ inspector_action_bar.return_to }}"
+        data-confirm-message="Stop processing for this recording?"
+        data-pending-label="Submitting stop..."
+        onclick="triggerRecordingAction(this)"
+      >Stop</button>
+      {% endif %}
     {% endif %}
   {% endif %}
   <a
@@ -52,7 +80,7 @@
     href="{{ inspector_action_bar.open_full_page_href }}"
     class="btn"
     data-testid="recording-inspector-open-full-page"
-  >Open full-page recording</a>
+  >Open full-page inspector</a>
   {% endif %}
   <a href="{{ inspector_action_bar.back_href }}" class="btn">{{ inspector_action_bar.back_label }}</a>
 </div>

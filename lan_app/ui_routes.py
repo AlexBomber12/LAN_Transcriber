@@ -167,6 +167,12 @@ _STUCK_JOB_RECOVERY_ERROR = "stuck job recovered"
 _DISPLAY_TIMEZONE = "Europe/Rome"
 _CONTROL_CENTER_TABS = (
     "overview",
+    "speakers",
+    "summary",
+    "export",
+)
+_FULL_PAGE_RECORDING_INSPECTOR_TABS = (
+    "overview",
     "calendar",
     "project",
     "speakers",
@@ -174,6 +180,23 @@ _CONTROL_CENTER_TABS = (
     "metrics",
     "log",
 )
+_RECORDING_INSPECTOR_TAB_LABELS = {
+    "overview": "Overview",
+    "calendar": "Calendar",
+    "project": "Project",
+    "speakers": "Speakers",
+    "language": "Language",
+    "metrics": "Metrics",
+    "log": "Diagnostics",
+    "summary": "Summary",
+    "export": "Export",
+}
+_COMPACT_TO_FULL_PAGE_TAB = {
+    "overview": "overview",
+    "speakers": "speakers",
+    "summary": "overview",
+    "export": "overview",
+}
 _CONTROL_CENTER_LIST_LIMIT = 25
 _GLOSSARY_KIND_OPTIONS = ("person", "company", "product", "project", "term")
 _GLOSSARY_SOURCE_OPTIONS = (
@@ -304,6 +327,27 @@ def _recording_source_display(source: object) -> str:
     if not label:
         return "Unknown"
     return label.replace("_", " ").title()
+
+
+def _recording_tab_label(value: str) -> str:
+    return _RECORDING_INSPECTOR_TAB_LABELS.get(
+        value,
+        value.replace("_", " ").title(),
+    )
+
+
+def _control_center_tab(value: str | None) -> str:
+    current_tab = str(value or "overview").strip().lower() or "overview"
+    if current_tab not in _CONTROL_CENTER_TABS:
+        return "overview"
+    return current_tab
+
+
+def _full_page_recording_tab(value: str | None) -> str:
+    current_tab = str(value or "overview").strip().lower() or "overview"
+    if current_tab in _FULL_PAGE_RECORDING_INSPECTOR_TABS:
+        return current_tab
+    return _COMPACT_TO_FULL_PAGE_TAB.get(current_tab, "overview")
 
 
 def _recording_worklist_hint(recording: dict[str, Any]) -> str:
@@ -519,6 +563,7 @@ def _prepare_recording_for_display(
     item["captured_at_display"] = _format_local_timestamp(item.get("captured_at"))
     item["created_at_display"] = _format_local_timestamp(item.get("created_at"))
     item["updated_at_display"] = _format_local_timestamp(item.get("updated_at"))
+    item["source_display"] = _recording_source_display(item.get("source"))
     item["pipeline_updated_at_display"] = _format_local_timestamp(
         item.get("pipeline_updated_at")
     )
@@ -2381,6 +2426,7 @@ def _control_center_shell_href(
     workflow_notice: str = "",
 ) -> str:
     params: list[tuple[str, str]] = []
+    safe_tab = _control_center_tab(tab)
     safe_limit = max(1, min(limit, 500)) if limit is not None else None
     safe_offset = max(int(offset or 0), 0)
     if safe_offset > 0 and safe_limit is None:
@@ -2391,8 +2437,8 @@ def _control_center_shell_href(
         params.append(("status", status_filter))
     if search_query:
         params.append(("q", search_query))
-    if tab and tab != "overview":
-        params.append(("tab", tab))
+    if safe_tab != "overview":
+        params.append(("tab", safe_tab))
     if safe_limit is not None and (
         safe_limit != _CONTROL_CENTER_LIST_LIMIT or safe_offset > 0
     ):
@@ -2424,11 +2470,9 @@ def _control_center_state_context(
     selected_id = str(selected or "").strip()
     status_filter = status if status in RECORDING_STATUSES else ""
     search_query = str(q or "").strip()
-    current_tab = str(tab or "overview").strip().lower() or "overview"
+    current_tab = _control_center_tab(tab)
     safe_limit = max(1, min(limit or _CONTROL_CENTER_LIST_LIMIT, 500))
     safe_offset = max(int(offset or 0), 0)
-    if current_tab not in _CONTROL_CENTER_TABS:
-        current_tab = "overview"
     state_params = {
         "selected": selected_id,
         "status": status_filter,
@@ -2439,11 +2483,11 @@ def _control_center_state_context(
     }
     return {
         **state_params,
-        "tab_label": current_tab.capitalize(),
+        "tab_label": _recording_tab_label(current_tab),
         "tab_options": [
             {
                 "value": value,
-                "label": value.capitalize(),
+                "label": _recording_tab_label(value),
                 "selected": value == current_tab,
             }
             for value in _CONTROL_CENTER_TABS
@@ -2452,9 +2496,11 @@ def _control_center_state_context(
         "recordings_href": f"/recordings?status={quote(status_filter)}"
         if status_filter
         else "/recordings",
-        "selected_detail_href": f"/recordings/{quote(selected_id)}?tab={current_tab}"
-        if selected_id
-        else "",
+        "selected_detail_href": (
+            _recording_detail_path(selected_id, tab=current_tab)
+            if selected_id
+            else ""
+        ),
         "clear_selection_href": _control_center_shell_href(
             status_filter=status_filter,
             search_query=search_query,
@@ -2491,11 +2537,9 @@ def _control_center_inspector_path(
     offset: int | None = None,
 ) -> str:
     params: list[tuple[str, str]] = []
-    safe_tab = str(tab or "overview").strip().lower() or "overview"
+    safe_tab = _control_center_tab(tab)
     safe_limit = max(1, min(limit, 500)) if limit is not None else None
     safe_offset = max(int(offset or 0), 0)
-    if safe_tab not in _CONTROL_CENTER_TABS:
-        safe_tab = "overview"
     if status_filter:
         params.append(("status", status_filter))
     if search_query:
@@ -2521,11 +2565,9 @@ def _control_center_return_query(
     offset: int | None = None,
 ) -> str:
     params: list[tuple[str, str]] = [("return_to", "control-center")]
-    safe_tab = str(return_tab or "overview").strip().lower() or "overview"
+    safe_tab = _control_center_tab(return_tab)
     safe_limit = max(1, min(limit, 500)) if limit is not None else None
     safe_offset = max(int(offset or 0), 0)
-    if safe_tab not in _CONTROL_CENTER_TABS:
-        safe_tab = "overview"
     params.append(("return_tab", safe_tab))
     if status_filter:
         params.append(("status", status_filter))
@@ -2687,10 +2729,8 @@ def _recording_inspector_return_path(
     speakers_notice: str = "",
     speakers_error: str = "",
 ) -> str:
-    safe_tab = str(return_tab or "overview").strip().lower() or "overview"
-    if safe_tab not in _CONTROL_CENTER_TABS:
-        safe_tab = "overview"
     if return_to != "control-center":
+        safe_tab = _full_page_recording_tab(return_tab)
         params: list[tuple[str, str]] = []
         if safe_tab != "overview":
             params.append(("tab", safe_tab))
@@ -2705,6 +2745,7 @@ def _recording_inspector_return_path(
         return (
             f"/recordings/{quote(recording_id, safe='')}?{urlencode(params)}"
         )
+    safe_tab = _control_center_tab(return_tab)
     return _control_center_shell_href(
         selected=recording_id,
         status_filter=status if status in RECORDING_STATUSES else "",
@@ -2727,7 +2768,8 @@ def _recording_inspector_tabs_context(
 ) -> list[dict[str, Any]]:
     tabs: list[dict[str, Any]] = []
     is_embedded = inspector_mode == "embedded" and control_center_state is not None
-    for value in _CONTROL_CENTER_TABS:
+    tab_values = _CONTROL_CENTER_TABS if is_embedded else _FULL_PAGE_RECORDING_INSPECTOR_TABS
+    for value in tab_values:
         full_page_href = _recording_detail_path(recording_id, tab=value)
         shell_href = full_page_href
         inspector_href = ""
@@ -2751,7 +2793,7 @@ def _recording_inspector_tabs_context(
         tabs.append(
             {
                 "value": value,
-                "label": value.capitalize(),
+                "label": _recording_tab_label(value),
                 "active": value == current_tab,
                 "href": shell_href,
                 "full_page_href": full_page_href,
@@ -2906,8 +2948,8 @@ def _control_center_recordings_panel_context(
 
 def _control_center_empty_inspector_context() -> dict[str, str]:
     return {
-        "title": "Select a recording",
-        "message": "Pick something from the worklist to open the compact inspector here.",
+        "title": "No recording selected",
+        "message": "Pick something from the worklist to open the compact inspector here and keep the daily review loop on the right.",
     }
 
 
@@ -3351,6 +3393,189 @@ def _page_notice_context(message: str) -> dict[str, str]:
     }
 
 
+def _recording_dominant_language_display(
+    recording_id: str,
+    *,
+    recording: dict[str, Any],
+    settings: AppSettings,
+) -> str:
+    transcript_path, _summary_path = _recording_derived_paths(recording_id, settings)
+    transcript_payload = _load_json_dict(transcript_path)
+    dominant = _normalise_language_code(transcript_payload.get("dominant_language"))
+    if dominant is None:
+        dominant = _normalise_language_code(recording.get("language_auto"))
+    label = _language_display_name(dominant)
+    return "Unknown" if label == "—" else label
+
+
+def _compact_inspector_next_action_context(
+    recording_id: str,
+    *,
+    recording: dict[str, Any],
+    diagnostics: dict[str, Any],
+    control_center_state: dict[str, Any],
+) -> dict[str, Any]:
+    status = str(recording.get("status") or "").strip()
+    reason_text = str(
+        diagnostics.get("primary_reason_text")
+        or recording.get("status_reason_text_display")
+        or ""
+    ).strip()
+    stage_code = str(
+        diagnostics.get("current_stage_code")
+        or recording.get("pipeline_stage")
+        or ""
+    ).strip()
+    stage_hint = " ".join((stage_code, reason_text)).lower()
+    if status in {RECORDING_STATUS_READY, RECORDING_STATUS_PUBLISHED}:
+        return {
+            "title": "Open Export",
+            "detail": "Copy the current markdown or download the ZIP while the result is fresh.",
+            "href": _control_center_shell_href(
+                selected=recording_id,
+                status_filter=control_center_state["status"],
+                search_query=control_center_state["q"],
+                tab="export",
+                limit=control_center_state["limit"],
+                offset=control_center_state["offset"],
+            ),
+            "external": False,
+            "button_label": "Go to Export",
+        }
+    if status == RECORDING_STATUS_NEEDS_REVIEW:
+        if "speaker" in stage_hint or stage_code in {
+            "diarization",
+            "speaker_turns",
+            "snippet_export",
+        }:
+            return {
+                "title": "Review speakers",
+                "detail": "Use the Speakers tab to confirm matches, keep speakers unknown, or set a local label.",
+                "href": _control_center_shell_href(
+                    selected=recording_id,
+                    status_filter=control_center_state["status"],
+                    search_query=control_center_state["q"],
+                    tab="speakers",
+                    limit=control_center_state["limit"],
+                    offset=control_center_state["offset"],
+                ),
+                "external": False,
+                "button_label": "Open Speakers",
+            }
+        return {
+            "title": "Review the summary",
+            "detail": "Check the extracted summary first, then open the full-page inspector if the blocker still needs deeper diagnostics.",
+            "href": _control_center_shell_href(
+                selected=recording_id,
+                status_filter=control_center_state["status"],
+                search_query=control_center_state["q"],
+                tab="summary",
+                limit=control_center_state["limit"],
+                offset=control_center_state["offset"],
+            ),
+            "external": False,
+            "button_label": "Open Summary",
+        }
+    if status in {
+        RECORDING_STATUS_QUEUED,
+        RECORDING_STATUS_PROCESSING,
+        RECORDING_STATUS_STOPPING,
+    }:
+        return {
+            "title": "Keep this recording in view",
+            "detail": "Progress updates here automatically. Stop only if this run should be interrupted.",
+            "href": "",
+            "external": False,
+            "button_label": "",
+        }
+    if status == RECORDING_STATUS_STOPPED:
+        return {
+            "title": "Requeue when ready",
+            "detail": "This run is stopped. Start it again from the action bar once you are ready.",
+            "href": "",
+            "external": False,
+            "button_label": "",
+        }
+    if status in {RECORDING_STATUS_QUARANTINE, RECORDING_STATUS_FAILED}:
+        return {
+            "title": "Open the full-page inspector",
+            "detail": "Use the deep view for broader diagnostics and admin actions before requeueing.",
+            "href": _recording_detail_path(recording_id, tab="overview"),
+            "external": True,
+            "button_label": "Open Full Page",
+        }
+    return {
+        "title": "Open the full-page inspector",
+        "detail": "Keep the compact pane for daily review and jump to the full page when you need deeper detail.",
+        "href": _recording_detail_path(recording_id, tab="overview"),
+        "external": True,
+        "button_label": "Open Full Page",
+    }
+
+
+def _compact_inspector_overview_context(
+    recording_id: str,
+    *,
+    recording: dict[str, Any],
+    diagnostics: dict[str, Any],
+    control_center_state: dict[str, Any],
+    settings: AppSettings,
+) -> dict[str, Any]:
+    stage_label = str(diagnostics.get("current_stage_label") or "").strip()
+    if not stage_label or stage_label == "Waiting":
+        stage_label = _pipeline_stage_label(recording.get("pipeline_stage"))
+    stage_detail = "The worker is updating this stage live." if str(
+        recording.get("status") or ""
+    ).strip() in {
+        RECORDING_STATUS_QUEUED,
+        RECORDING_STATUS_PROCESSING,
+        RECORDING_STATUS_STOPPING,
+    } else (
+        f"Last pipeline update {recording['pipeline_updated_at_display']}."
+        if recording.get("pipeline_updated_at_display")
+        and recording["pipeline_updated_at_display"] != "—"
+        else "No active worker update is running right now."
+    )
+    blocker_text = str(
+        diagnostics.get("primary_reason_text")
+        or recording.get("status_reason_text_display")
+        or ""
+    ).strip()
+    if not blocker_text:
+        blocker_text = "No blocker detected."
+    return {
+        "stage_label": stage_label,
+        "stage_detail": stage_detail,
+        "blocker_text": blocker_text,
+        "blocker_detail": f"Current status: {recording.get('status') or 'Unknown'}.",
+        "next_action": _compact_inspector_next_action_context(
+            recording_id,
+            recording=recording,
+            diagnostics=diagnostics,
+            control_center_state=control_center_state,
+        ),
+        "metadata": [
+            {"label": "Status", "value": str(recording.get("status") or "Unknown")},
+            {
+                "label": "Captured",
+                "value": str(recording.get("captured_at_display") or "—"),
+            },
+            {
+                "label": "Dominant language",
+                "value": _recording_dominant_language_display(
+                    recording_id,
+                    recording=recording,
+                    settings=settings,
+                ),
+            },
+            {
+                "label": "Source",
+                "value": _recording_source_display(recording.get("source")),
+            },
+        ],
+    }
+
+
 def _inspector_action_bar_context(
     recording: dict[str, Any],
     *,
@@ -3391,6 +3616,8 @@ def _inspector_action_bar_context(
         "delete_url": f"/ui/recordings/{quote(recording_id, safe='')}/delete{return_query}",
         "stop_url": f"/ui/recordings/{quote(recording_id, safe='')}/stop{return_query}",
         "stop_body": urlencode([("tab", current_tab)]),
+        "show_embedded_requeue": is_embedded and not bool(recording.get("stop_eligible")),
+        "show_embedded_stop": is_embedded and bool(recording.get("stop_eligible")),
     }
 
 
@@ -3421,7 +3648,7 @@ def _selected_recording_summary_shell_context(
 
 def _empty_inspector_shell_context() -> dict[str, str]:
     return {
-        "title": "Select a recording",
+        "title": "No recording selected",
         "message": "Choose a row from the worklist to open a compact review pane here.",
     }
 
@@ -3440,10 +3667,12 @@ def _recording_inspector_context(
     rec = get_recording(recording_id, settings=_settings)
     if rec is None:
         return None
+    is_embedded = inspector_mode == "embedded" and control_center_state is not None
+    allowed_tabs = _CONTROL_CENTER_TABS if is_embedded else _FULL_PAGE_RECORDING_INSPECTOR_TABS
     rec = _prepare_recording_for_display(rec, settings=_settings)
     jobs, _ = list_jobs(settings=_settings, recording_id=recording_id, limit=100)
     recovery_warning = _recording_recovery_warning(jobs)
-    safe_tab = current_tab if current_tab in _CONTROL_CENTER_TABS else "overview"
+    safe_tab = current_tab if current_tab in allowed_tabs else "overview"
     calendar: dict[str, Any] | None = None
     language: dict[str, Any] | None = None
     summary: dict[str, Any] | None = None
@@ -3451,6 +3680,7 @@ def _recording_inspector_context(
     speakers: dict[str, Any] | None = None
     project: dict[str, Any] | None = None
     glossary: dict[str, Any] | None = None
+    compact_overview: dict[str, Any] | None = None
     export_text = ""
     stage_rows = list_recording_pipeline_stages(recording_id, settings=_settings)
     chunk_rows = list_recording_llm_chunk_states(recording_id, settings=_settings)
@@ -3463,11 +3693,11 @@ def _recording_inspector_context(
     )
     if diagnostics["primary_reason_text"]:
         rec["status_reason_text_display"] = diagnostics["primary_reason_text"]
-    if safe_tab == "calendar":
+    if not is_embedded and safe_tab == "calendar":
         calendar = _calendar_tab_context(recording_id, _settings)
         if calendar_error.strip():
             calendar["error_message"] = calendar_error.strip()
-    if safe_tab == "language":
+    if not is_embedded and safe_tab == "language":
         language = _language_tab_context(recording_id, rec, _settings)
     if safe_tab == "speakers":
         speakers = _speakers_tab_context(
@@ -3479,20 +3709,30 @@ def _recording_inspector_context(
             error_message=speakers_error,
         )
         speakers["manage_voices_href"] = "/voices"
-    if safe_tab == "project":
+    if not is_embedded and safe_tab == "project":
         project = _project_tab_context(recording_id, rec, _settings)
         rec = _prepare_recording_for_display(
             get_recording(recording_id, settings=_settings) or rec,
             settings=_settings,
         )
-    if safe_tab in {"overview", "metrics"}:
+    if safe_tab in {"summary", "metrics"} or (safe_tab == "overview" and not is_embedded):
         summary = _summary_context(recording_id, _settings)
     if safe_tab == "overview":
+        if is_embedded and control_center_state is not None:
+            compact_overview = _compact_inspector_overview_context(
+                recording_id,
+                recording=rec,
+                diagnostics=diagnostics,
+                control_center_state=control_center_state,
+                settings=_settings,
+            )
+        else:
+            export_text = build_onenote_markdown(rec, settings=_settings)
+            glossary = _asr_glossary_context(recording_id, _settings)
+    if safe_tab == "export":
         export_text = build_onenote_markdown(rec, settings=_settings)
-        glossary = _asr_glossary_context(recording_id, _settings)
-    if safe_tab == "metrics":
+    if not is_embedded and safe_tab == "metrics":
         metrics = _metrics_tab_context(recording_id, _settings)
-    is_embedded = inspector_mode == "embedded" and control_center_state is not None
     progress_url = (
         f"/ui/recordings/{quote(recording_id, safe='')}/progress?tab="
         f"{quote(safe_tab, safe='')}"
@@ -3517,62 +3757,6 @@ def _recording_inspector_context(
             )
             for value in _CONTROL_CENTER_TABS
         }
-        if glossary is not None:
-            glossary["manage_href"] = _workflow_page_href(
-                "/glossary",
-                return_to="control-center",
-                selected=recording_id,
-                status=control_center_state["status"],
-                q=control_center_state["q"],
-                tab=safe_tab,
-                limit=control_center_state["limit"],
-                offset=control_center_state["offset"],
-            )
-            glossary["quick_add_href"] = _workflow_page_href(
-                "/glossary",
-                return_to="control-center",
-                selected=recording_id,
-                status=control_center_state["status"],
-                q=control_center_state["q"],
-                tab=safe_tab,
-                limit=control_center_state["limit"],
-                offset=control_center_state["offset"],
-                extra_params=[("recording_id", recording_id)],
-            )
-            glossary["workflow_form"] = {
-                "action": "/glossary",
-                "hidden_fields": [
-                    {"name": "kind", "value": "term"},
-                    {"name": "source", "value": "correction"},
-                    {"name": "enabled", "value": "1"},
-                    {"name": "recording_id", "value": recording_id},
-                    {"name": "return_to", "value": "control-center"},
-                    {"name": "return_after_save", "value": "control-center"},
-                    {"name": "selected", "value": recording_id},
-                    {"name": "tab", "value": safe_tab},
-                    *(
-                        [{"name": "status", "value": control_center_state["status"]}]
-                        if control_center_state["status"]
-                        else []
-                    ),
-                    *(
-                        [{"name": "q", "value": control_center_state["q"]}]
-                        if control_center_state["q"]
-                        else []
-                    ),
-                    *(
-                        [{"name": "limit", "value": str(control_center_state["limit"])}]
-                        if control_center_state["limit"] != _CONTROL_CENTER_LIST_LIMIT
-                        or control_center_state["offset"] > 0
-                        else []
-                    ),
-                    *(
-                        [{"name": "offset", "value": str(control_center_state["offset"])}]
-                        if control_center_state["offset"] > 0
-                        else []
-                    ),
-                ],
-            }
         if speakers is not None:
             speakers["manage_voices_href"] = _workflow_page_href(
                 "/voices",
@@ -3597,7 +3781,7 @@ def _recording_inspector_context(
         "jobs": jobs,
         "recovery_warning": recovery_warning,
         "selected_recording_shell": selected_recording_shell,
-        "tabs": _CONTROL_CENTER_TABS,
+        "tabs": allowed_tabs,
         "current_tab": safe_tab,
         "calendar": calendar,
         "language": language,
@@ -3606,6 +3790,7 @@ def _recording_inspector_context(
         "speakers": speakers,
         "project": project,
         "glossary": glossary,
+        "compact_overview": compact_overview,
         "export_text": export_text,
         "pipeline_stages": pipeline_stages,
         "diagnostics": diagnostics,
@@ -5691,7 +5876,7 @@ async def ui_sync_calendar_source(source_id: int) -> Any:
 
 
 def _recording_detail_path(recording_id: str, *, tab: str = "overview") -> str:
-    safe_tab = str(tab or "overview").strip() or "overview"
+    safe_tab = _full_page_recording_tab(tab)
     if safe_tab == "overview":
         return f"/recordings/{recording_id}"
     return f"/recordings/{recording_id}?tab={quote(safe_tab, safe='')}"

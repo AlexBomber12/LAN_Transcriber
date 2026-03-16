@@ -237,6 +237,16 @@ def test_control_center_helper_contexts_cover_fragment_builders(
     assert "limit=100" in state["work_pane_url"]
     assert "offset=25" in state["clear_selection_href"]
 
+    summary_state = ui_routes._control_center_state_context(  # noqa: SLF001
+        selected="rec-helper-1",
+        status="Ready",
+        q="helper",
+        tab="summary",
+    )
+    assert summary_state["tab"] == "summary"
+    assert summary_state["selected_detail_href"] == "/recordings/rec-helper-1"
+    assert summary_state["tab_label"] == "Summary"
+
     fallback_state = ui_routes._control_center_state_context(  # noqa: SLF001
         selected=None,
         status="unknown",
@@ -254,7 +264,7 @@ def test_control_center_helper_contexts_cover_fragment_builders(
         tab="log",
         limit=100,
         offset=25,
-    ) == "/?selected=rec+helper&status=Ready&q=demo&tab=log&limit=100&offset=25"
+    ) == "/?selected=rec+helper&status=Ready&q=demo&limit=100&offset=25"
     assert ui_routes._control_center_shell_href(  # noqa: SLF001
         selected="rec helper",
         offset=25,
@@ -387,6 +397,13 @@ def test_control_center_helper_contexts_cover_fragment_builders(
         limit=25,
         offset=2,
     ) == "/?selected=rec-helper-1&status=Ready&q=helper&tab=speakers&limit=25&offset=2"
+    assert ui_routes._recording_inspector_return_path(  # noqa: SLF001
+        "rec-helper-1",
+        return_to="control-center",
+        return_tab="summary",
+        status="Ready",
+    ) == "/?selected=rec-helper-1&status=Ready&tab=summary"
+    assert ui_routes._recording_detail_path("rec-helper-1", tab="summary") == "/recordings/rec-helper-1"
 
     monkeypatch.setattr(
         ui_routes,
@@ -704,11 +721,11 @@ def test_recordings_panel_context_clamps_offset_to_last_available_page(
     ]
 
     empty_shell = ui_routes._empty_inspector_shell_context()  # noqa: SLF001
-    assert empty_shell["title"] == "Select a recording"
+    assert empty_shell["title"] == "No recording selected"
     assert "compact review pane" in empty_shell["message"]
 
     control_center_empty = ui_routes._control_center_empty_inspector_context()  # noqa: SLF001
-    assert control_center_empty["title"] == "Select a recording"
+    assert control_center_empty["title"] == "No recording selected"
     assert "compact inspector" in control_center_empty["message"]
 
     monkeypatch.setattr(
@@ -738,6 +755,132 @@ def test_recordings_panel_context_clamps_offset_to_last_available_page(
     assert glossary_summary["entries"][0]["kind"] == "Person or speaker name"
     assert glossary_summary["entries"][1]["kind"] == "Project"
     assert glossary_summary["entries"][1]["source_label"] == "Always-on memory"
+
+
+def test_compact_inspector_helpers_cover_next_action_branches(tmp_path: Path) -> None:
+    cfg = _cfg(tmp_path)
+    control_center_state = {
+        "status": "Ready",
+        "q": "helper",
+        "limit": 25,
+        "offset": 0,
+    }
+    derived = cfg.recordings_root / "rec-compact-1" / "derived"
+    derived.mkdir(parents=True, exist_ok=True)
+    (derived / "transcript.json").write_text(
+        json.dumps({"dominant_language": "en"}),
+        encoding="utf-8",
+    )
+
+    ready_overview = ui_routes._compact_inspector_overview_context(  # noqa: SLF001
+        "rec-compact-1",
+        recording={
+            "status": RECORDING_STATUS_READY,
+            "captured_at_display": "2026-01-02 03:04:05 CET",
+            "pipeline_updated_at_display": "2026-01-02 03:05:00 CET",
+            "source": "upload",
+            "language_auto": "it",
+            "status_reason_text_display": "",
+        },
+        diagnostics={
+            "current_stage_label": "Done",
+            "current_stage_code": "done",
+            "primary_reason_text": "",
+        },
+        control_center_state=control_center_state,
+        settings=cfg,
+    )
+    assert ready_overview["next_action"]["href"].endswith("tab=export")
+    assert ready_overview["metadata"][2]["value"] == "English (en)"
+
+    processing_overview = ui_routes._compact_inspector_overview_context(  # noqa: SLF001
+        "rec-compact-1",
+        recording={
+            "status": RECORDING_STATUS_PROCESSING,
+            "captured_at_display": "2026-01-02 03:04:05 CET",
+            "pipeline_updated_at_display": "—",
+            "pipeline_stage": "asr",
+            "source": "upload",
+            "language_auto": "it",
+            "status_reason_text_display": "",
+        },
+        diagnostics={
+            "current_stage_label": "Waiting",
+            "current_stage_code": "asr",
+            "primary_reason_text": "",
+        },
+        control_center_state=control_center_state,
+        settings=cfg,
+    )
+    assert processing_overview["stage_label"] == "ASR / VAD"
+    assert processing_overview["stage_detail"] == "The worker is updating this stage live."
+
+    blocked_overview = ui_routes._compact_inspector_overview_context(  # noqa: SLF001
+        "rec-compact-1",
+        recording={
+            "status": RECORDING_STATUS_NEEDS_REVIEW,
+            "captured_at_display": "2026-01-02 03:04:05 CET",
+            "pipeline_updated_at_display": "2026-01-02 03:05:00 CET",
+            "source": "upload",
+            "language_auto": "it",
+            "status_reason_text_display": "Speaker review required.",
+        },
+        diagnostics={
+            "current_stage_label": "Speaker Turns",
+            "current_stage_code": "speaker_turns",
+            "primary_reason_text": "Speaker review required.",
+        },
+        control_center_state=control_center_state,
+        settings=cfg,
+    )
+    assert blocked_overview["blocker_text"] == "Speaker review required."
+
+    review_speakers = ui_routes._compact_inspector_next_action_context(  # noqa: SLF001
+        "rec-compact-1",
+        recording={"status": RECORDING_STATUS_NEEDS_REVIEW, "status_reason_text_display": ""},
+        diagnostics={
+            "current_stage_code": "speaker_turns",
+            "primary_reason_text": "Speaker labels need review",
+        },
+        control_center_state=control_center_state,
+    )
+    assert review_speakers["href"].endswith("tab=speakers")
+
+    review_summary = ui_routes._compact_inspector_next_action_context(  # noqa: SLF001
+        "rec-compact-1",
+        recording={"status": RECORDING_STATUS_NEEDS_REVIEW, "status_reason_text_display": ""},
+        diagnostics={
+            "current_stage_code": "llm_merge",
+            "primary_reason_text": "Summary output needs review",
+        },
+        control_center_state=control_center_state,
+    )
+    assert review_summary["href"].endswith("tab=summary")
+
+    stopped = ui_routes._compact_inspector_next_action_context(  # noqa: SLF001
+        "rec-compact-1",
+        recording={"status": RECORDING_STATUS_STOPPED, "status_reason_text_display": ""},
+        diagnostics={"current_stage_code": "waiting", "primary_reason_text": ""},
+        control_center_state=control_center_state,
+    )
+    assert stopped["title"] == "Requeue when ready"
+
+    quarantine = ui_routes._compact_inspector_next_action_context(  # noqa: SLF001
+        "rec-compact-1",
+        recording={"status": RECORDING_STATUS_QUARANTINE, "status_reason_text_display": ""},
+        diagnostics={"current_stage_code": "done", "primary_reason_text": ""},
+        control_center_state=control_center_state,
+    )
+    assert quarantine["external"] is True
+    assert quarantine["href"] == "/recordings/rec-compact-1"
+
+    fallback = ui_routes._compact_inspector_next_action_context(  # noqa: SLF001
+        "rec-compact-1",
+        recording={"status": "Mystery", "status_reason_text_display": ""},
+        diagnostics={"current_stage_code": "", "primary_reason_text": ""},
+        control_center_state=control_center_state,
+    )
+    assert fallback["button_label"] == "Open Full Page"
 
 
 def test_display_helpers_cover_timezone_duration_and_prepare_recording(
