@@ -1,0 +1,86 @@
+{% set tr = transcript or {} %}
+<section class="inspector-section-card transcript-section-card">
+  <div class="inspector-section-head">
+    <div>
+      <p class="eyebrow">Transcript Workspace</p>
+      <h2>Transcript</h2>
+      <p class="inspector-note">This tab gives the transcript a wider, calmer reading surface than the compact Control Center pane.</p>
+    </div>
+    <div class="embedded-card-actions">
+      <button type="button" class="btn" onclick="copyInspectorFieldText('transcript-copy-text', 'transcript-copy-status', 'Copied transcript text.', 'Copy failed. Select the text and copy manually.')">Copy transcript</button>
+      <a href="{{ tr.quick_add_href or ('/glossary?recording_id=' ~ rec.id) }}" class="btn">Add correction from this recording</a>
+      <a href="{{ tr.manage_corrections_href or '/glossary' }}" class="btn">Manage corrections</a>
+    </div>
+  </div>
+
+  <div class="compact-metadata-grid">
+    <div class="compact-metadata-item">
+      <span class="compact-metadata-label">Source</span>
+      <strong class="compact-metadata-value">{{ tr.source_label or 'Transcript text' }}</strong>
+    </div>
+    <div class="compact-metadata-item">
+      <span class="compact-metadata-label">Dominant language</span>
+      <strong class="compact-metadata-value">{{ tr.dominant_language_label or 'Unknown' }}</strong>
+    </div>
+    <div class="compact-metadata-item">
+      <span class="compact-metadata-label">Visible blocks</span>
+      <strong class="compact-metadata-value">{{ tr.turn_count if tr.turn_count is not none else 0 }}</strong>
+    </div>
+  </div>
+
+  {% if tr.available %}
+  <div id="recording-transcript-panel" class="transcript-scroll-panel" data-testid="recording-transcript-panel">
+    {% if tr.turns %}
+      {% for turn in tr.turns %}
+      <article class="transcript-turn">
+        <div class="transcript-turn-meta">
+          <strong class="transcript-turn-speaker">{{ turn.speaker }}</strong>
+          <span>{{ turn.time_range }}</span>
+          {% if turn.language_label %}
+          <span>{{ turn.language_label }}</span>
+          {% endif %}
+        </div>
+        <p class="transcript-turn-text">{{ turn.text }}</p>
+      </article>
+      {% endfor %}
+    {% else %}
+    <pre class="transcript-plain-text">{{ tr.raw_text }}</pre>
+    {% endif %}
+  </div>
+  <textarea id="transcript-copy-text" class="inspector-copy-store" readonly>{{ tr.copy_text or tr.raw_text or '' }}</textarea>
+  <p id="transcript-copy-status" class="inspector-note">Copy the transcript text or jump to Corrections when a name or phrase needs to be remembered.</p>
+  {% else %}
+  <p class="placeholder">Transcript content is not available for this recording yet.</p>
+  {% endif %}
+</section>
+
+<script>
+if (!window.copyInspectorFieldText) {
+  window.copyInspectorFieldText = function(fieldId, statusId, successMessage, failureMessage) {
+    var textarea = document.getElementById(fieldId);
+    var status = document.getElementById(statusId);
+    if (!textarea) return;
+    var setStatus = function(message) {
+      if (status) status.textContent = message;
+    };
+    var fallback = function() {
+      textarea.focus();
+      textarea.select();
+      try {
+        document.execCommand('copy');
+        setStatus(successMessage);
+      } catch (_err) {
+        setStatus(failureMessage);
+      }
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(textarea.value).then(
+        function() { setStatus(successMessage); },
+        fallback
+      );
+      return;
+    }
+    fallback();
+  };
+}
+</script>

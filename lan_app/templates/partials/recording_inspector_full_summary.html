@@ -1,0 +1,219 @@
+{% set summary_data = summary or {} %}
+{% set metrics_data = metrics or {} %}
+{% set meeting = metrics_data.meeting or {} %}
+{% set participants = metrics_data.participants or [] %}
+{% set questions = summary_data.questions or {} %}
+{% set question_types = questions.types or {} %}
+
+<div class="summary-section-grid">
+  <section class="inspector-section-card">
+    <div class="inspector-section-head">
+      <div>
+        <p class="eyebrow">Meeting Output</p>
+        <h2>Summary</h2>
+        <p class="inspector-note">Summary, decisions, actions, questions, and conversation metrics stay together here instead of competing with Overview.</p>
+      </div>
+    </div>
+
+    <div class="embedded-panel-grid">
+      <section class="embedded-card">
+        <h3>Topic</h3>
+        <p class="inspector-answer">{{ summary_data.topic or '—' }}</p>
+      </section>
+      <section class="embedded-card">
+        <h3>Emotional summary</h3>
+        <p class="inspector-note">{{ summary_data.emotional_summary or meeting.emotional_summary or 'No emotional summary was extracted.' }}</p>
+      </section>
+    </div>
+
+    <section class="embedded-card">
+      <div class="embedded-card-head">
+        <div>
+          <h3>Summary bullets</h3>
+        </div>
+      </div>
+      {% if summary_data.summary_bullets %}
+      <ul class="summary-list">
+        {% for bullet in summary_data.summary_bullets %}
+        <li>{{ bullet }}</li>
+        {% endfor %}
+      </ul>
+      {% elif summary_data.summary_text %}
+      <pre class="transcript-plain-text">{{ summary_data.summary_text }}</pre>
+      {% else %}
+      <p class="placeholder">No summary is available yet.</p>
+      {% endif %}
+    </section>
+  </section>
+
+  <section class="inspector-section-card">
+    <div class="inspector-section-head">
+      <div>
+        <h2>Meeting Metrics</h2>
+        <p class="inspector-note">These meeting-level signals stay adjacent to the summary so the page reads as one output surface.</p>
+      </div>
+    </div>
+    <div class="summary-kpi-grid">
+      <div class="compact-metadata-item">
+        <span class="compact-metadata-label">Speech time</span>
+        <strong class="compact-metadata-value">{{ '%.1f'|format(meeting.total_speech_time_seconds or 0.0) }}s</strong>
+      </div>
+      <div class="compact-metadata-item">
+        <span class="compact-metadata-label">Interruptions</span>
+        <strong class="compact-metadata-value">{{ meeting.total_interruptions or 0 }}</strong>
+      </div>
+      <div class="compact-metadata-item">
+        <span class="compact-metadata-label">Questions</span>
+        <strong class="compact-metadata-value">{{ meeting.total_questions or 0 }}</strong>
+      </div>
+      <div class="compact-metadata-item">
+        <span class="compact-metadata-label">Decisions</span>
+        <strong class="compact-metadata-value">{{ meeting.decisions_count or 0 }}</strong>
+      </div>
+      <div class="compact-metadata-item">
+        <span class="compact-metadata-label">Action items</span>
+        <strong class="compact-metadata-value">{{ meeting.action_items_count or 0 }}</strong>
+      </div>
+      <div class="compact-metadata-item">
+        <span class="compact-metadata-label">Actionability</span>
+        <strong class="compact-metadata-value">{{ '%.1f'|format((meeting.actionability_ratio or 0.0) * 100.0) }}%</strong>
+      </div>
+    </div>
+  </section>
+</div>
+
+<div class="summary-section-grid">
+  <section class="inspector-section-card">
+    <div class="inspector-section-head">
+      <div>
+        <h2>Decisions</h2>
+      </div>
+    </div>
+    {% if summary_data.decisions %}
+    <ul class="summary-list">
+      {% for decision in summary_data.decisions %}
+      <li>{{ decision }}</li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p class="placeholder">No decisions were extracted.</p>
+    {% endif %}
+  </section>
+
+  <section class="inspector-section-card">
+    <div class="inspector-section-head">
+      <div>
+        <h2>Action items</h2>
+      </div>
+    </div>
+    {% if summary_data.action_items %}
+    <table>
+      <thead>
+        <tr>
+          <th>Task</th>
+          <th>Owner</th>
+          <th>Deadline</th>
+          <th>Confidence</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for item in summary_data.action_items %}
+        <tr>
+          <td>{{ item.task }}</td>
+          <td>{{ item.owner or '—' }}</td>
+          <td>{{ item.deadline or '—' }}</td>
+          <td>{{ '%.2f'|format(item.confidence or 0.0) }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="placeholder">No action items were extracted.</p>
+    {% endif %}
+  </section>
+</div>
+
+<section class="inspector-section-card">
+  <div class="inspector-section-head">
+    <div>
+      <h2>Questions</h2>
+      <p class="inspector-note">Question types remain part of the extracted meeting output instead of living in the diagnostics surface.</p>
+    </div>
+  </div>
+  <div class="summary-kpi-grid">
+    <div class="compact-metadata-item">
+      <span class="compact-metadata-label">Total</span>
+      <strong class="compact-metadata-value">{{ questions.total_count or 0 }}</strong>
+    </div>
+    <div class="compact-metadata-item">
+      <span class="compact-metadata-label">Open</span>
+      <strong class="compact-metadata-value">{{ question_types.open or 0 }}</strong>
+    </div>
+    <div class="compact-metadata-item">
+      <span class="compact-metadata-label">Yes / no</span>
+      <strong class="compact-metadata-value">{{ question_types.yes_no or 0 }}</strong>
+    </div>
+    <div class="compact-metadata-item">
+      <span class="compact-metadata-label">Clarification</span>
+      <strong class="compact-metadata-value">{{ question_types.clarification or 0 }}</strong>
+    </div>
+    <div class="compact-metadata-item">
+      <span class="compact-metadata-label">Status</span>
+      <strong class="compact-metadata-value">{{ question_types.status or 0 }}</strong>
+    </div>
+    <div class="compact-metadata-item">
+      <span class="compact-metadata-label">Decision-seeking</span>
+      <strong class="compact-metadata-value">{{ question_types.decision_seeking or 0 }}</strong>
+    </div>
+  </div>
+  {% if questions.extracted %}
+  <ul class="summary-list">
+    {% for question in questions.extracted %}
+    <li>{{ question }}</li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p class="placeholder">No extracted questions are available.</p>
+  {% endif %}
+</section>
+
+<section class="inspector-section-card">
+  <div class="inspector-section-head">
+    <div>
+      <h2>Participants</h2>
+      <p class="inspector-note">Participant metrics stay available here when the conversation metrics artifact exists.</p>
+    </div>
+  </div>
+  {% if participants %}
+  <table>
+    <thead>
+      <tr>
+        <th>Speaker</th>
+        <th>Airtime (s)</th>
+        <th>Share (%)</th>
+        <th>Turns</th>
+        <th>Interruptions done</th>
+        <th>Interruptions received</th>
+        <th>Questions</th>
+        <th>Role</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in participants %}
+      <tr>
+        <td>{{ row.speaker }}</td>
+        <td>{{ '%.2f'|format(row.airtime_seconds or 0.0) }}</td>
+        <td>{{ '%.2f'|format((row.airtime_share or 0.0) * 100.0) }}</td>
+        <td>{{ row.turns or 0 }}</td>
+        <td>{{ row.interruptions_done or 0 }}</td>
+        <td>{{ row.interruptions_received or 0 }}</td>
+        <td>{{ row.questions_count or 0 }}</td>
+        <td>{{ row.role_hint or '—' }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="placeholder">No participant metrics are available yet.</p>
+  {% endif %}
+</section>

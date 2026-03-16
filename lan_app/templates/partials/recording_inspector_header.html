@@ -17,18 +17,19 @@
         {% if recording_inspector.embedded %}
         Stage {{ diagnostics.current_stage_label or 'Waiting' }}
         {% else %}
-        Captured {{ rec.captured_at_display }}
+        Stage {{ diagnostics.current_stage_label or 'Waiting' }}
         {% endif %}
       </span>
       {% if recording_inspector.embedded %}
       <span class="inspector-meta-chip">Captured {{ rec.captured_at_display }}</span>
       <span class="inspector-meta-chip">Source {{ rec.source_display or rec.source }}</span>
       {% else %}
+      <span class="inspector-meta-chip">Captured {{ rec.captured_at_display }}</span>
       <span class="inspector-meta-chip">Duration {{ rec.duration_display }}</span>
       {% if rec.project_name or rec.project_id %}
       <span class="inspector-meta-chip">Project {{ rec.project_name or ('#' ~ rec.project_id) }}</span>
       {% endif %}
-      <span class="inspector-meta-chip">Tab {{ current_tab|capitalize }}</span>
+      <span class="inspector-meta-chip">Status {{ diagnostics.current_stage_status_label or 'Unknown' }}</span>
       {% endif %}
     </div>
   </div>
@@ -36,7 +37,7 @@
   <p class="inspector-note">{{ rec.status_reason_text_display }}</p>
   {% endif %}
   {% if not recording_inspector.embedded %}
-  <p class="muted">This full-page mode keeps the richer diagnostics, pipeline visibility, export tools, and broader speaker administration separate from the compact daily workspace.</p>
+  <p class="muted">Use this dedicated page for deeper review, transcript reading, export, and diagnostics once the compact workspace signals that a recording needs more attention.</p>
   {% endif %}
 </section>
 

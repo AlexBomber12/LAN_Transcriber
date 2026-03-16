@@ -1,0 +1,81 @@
+<section class="inspector-section-card">
+  <div class="inspector-section-head">
+    <div>
+      <p class="eyebrow">Delivery Surface</p>
+      <h2>Export</h2>
+      <p class="inspector-note">Copy the current markdown or download the ZIP bundle without competing with transcript or diagnostics.</p>
+    </div>
+    <div class="embedded-card-actions">
+      <button type="button" class="btn" onclick="copyInspectorFieldText('export-text', 'export-copy-status', 'Copied export markdown.', 'Copy failed. Select the text and copy manually.')">Copy</button>
+      <a
+        href="/ui/recordings/{{ rec.id }}/export.zip"
+        class="btn"
+        hx-boost="false"
+      >Download ZIP</a>
+    </div>
+  </div>
+
+  <textarea
+    id="export-text"
+    class="full-export-text"
+    readonly
+  >{{ export_text or '' }}</textarea>
+  <p id="export-copy-status" class="inspector-note">
+    Copy the markdown or download the ZIP with the available artifacts.
+  </p>
+</section>
+
+<div class="summary-section-grid">
+  <section class="inspector-section-card">
+    <div class="inspector-section-head">
+      <div>
+        <h2>What this tab is for</h2>
+      </div>
+    </div>
+    <ul class="summary-list">
+      <li>Copy the OneNote-ready markdown as-is.</li>
+      <li>Download a ZIP bundle with the available derived artifacts.</li>
+      <li>Keep delivery actions separate from review, transcript reading, and diagnostics.</li>
+    </ul>
+  </section>
+
+  <section class="inspector-section-card">
+    <div class="inspector-section-head">
+      <div>
+        <h2>Bundle behavior</h2>
+      </div>
+    </div>
+    <p class="inspector-note">The export stays available even if some summary or transcript artifacts are still missing. Placeholder sections remain explicit in the generated markdown.</p>
+  </section>
+</div>
+
+<script>
+if (!window.copyInspectorFieldText) {
+  window.copyInspectorFieldText = function(fieldId, statusId, successMessage, failureMessage) {
+    var textarea = document.getElementById(fieldId);
+    var status = document.getElementById(statusId);
+    if (!textarea) return;
+    var setStatus = function(message) {
+      if (status) status.textContent = message;
+    };
+    var fallback = function() {
+      textarea.focus();
+      textarea.select();
+      try {
+        document.execCommand('copy');
+        setStatus(successMessage);
+      } catch (_err) {
+        setStatus(failureMessage);
+      }
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(textarea.value).then(
+        function() { setStatus(successMessage); },
+        fallback
+      );
+      return;
+    }
+    fallback();
+  };
+}
+</script>

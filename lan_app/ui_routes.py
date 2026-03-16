@@ -183,29 +183,39 @@ _CONTROL_CENTER_TABS = (
 )
 _FULL_PAGE_RECORDING_INSPECTOR_TABS = (
     "overview",
-    "calendar",
-    "project",
     "speakers",
-    "language",
-    "metrics",
-    "log",
+    "transcript",
+    "summary",
+    "diagnostics",
+    "export",
 )
 _RECORDING_INSPECTOR_TAB_LABELS = {
     "overview": "Overview",
+    "diagnostics": "Diagnostics",
     "calendar": "Calendar",
     "project": "Project",
     "speakers": "Speakers",
+    "transcript": "Transcript",
     "language": "Language",
     "metrics": "Metrics",
     "log": "Diagnostics",
     "summary": "Summary",
     "export": "Export",
+    "artifacts": "Artifacts",
 }
 _COMPACT_TO_FULL_PAGE_TAB = {
     "overview": "overview",
     "speakers": "speakers",
-    "summary": "overview",
-    "export": "overview",
+    "transcript": "transcript",
+    "summary": "summary",
+    "diagnostics": "diagnostics",
+    "export": "export",
+    "calendar": "diagnostics",
+    "project": "diagnostics",
+    "language": "diagnostics",
+    "metrics": "summary",
+    "log": "diagnostics",
+    "artifacts": "export",
 }
 _CONTROL_CENTER_LIST_LIMIT = 25
 _GLOSSARY_KIND_OPTIONS = ("person", "company", "product", "project", "term")
@@ -785,17 +795,299 @@ def _summary_context(recording_id: str, settings: AppSettings) -> dict[str, Any]
     topic = str(payload.get("topic") or "").strip()
     emotional_summary = str(payload.get("emotional_summary") or "").strip()
     return {
-        "topic": topic or "—",
+        "topic": topic,
         "summary_bullets": summary_bullets,
         "summary_text": summary_text,
         "decisions": decisions,
         "action_items": action_items,
-        "emotional_summary": emotional_summary or "—",
+        "emotional_summary": emotional_summary,
         "questions": {
             "total_count": questions_total,
             "types": question_types,
             "extracted": extracted_questions,
         },
+    }
+
+
+def _full_page_overview_next_action_context(
+    recording_id: str,
+    *,
+    recording: dict[str, Any],
+    diagnostics: dict[str, Any],
+) -> dict[str, str]:
+    status = str(recording.get("status") or "").strip()
+    reason_text = str(
+        diagnostics.get("primary_reason_text")
+        or recording.get("status_reason_text_display")
+        or ""
+    ).strip()
+    stage_code = str(
+        diagnostics.get("current_stage_code") or recording.get("pipeline_stage") or ""
+    ).strip()
+    stage_hint = " ".join((stage_code, reason_text)).lower()
+    if status in {RECORDING_STATUS_READY, RECORDING_STATUS_PUBLISHED}:
+        return {
+            "title": "Finalize the export",
+            "detail": "Open Export to copy the markdown or download the ZIP bundle.",
+            "href": _recording_detail_path(recording_id, tab="export"),
+            "button_label": "Open Export",
+        }
+    if status == RECORDING_STATUS_NEEDS_REVIEW:
+        if "speaker" in stage_hint or stage_code in {
+            "diarization",
+            "speaker_turns",
+            "snippet_export",
+        }:
+            return {
+                "title": "Resolve speaker identity",
+                "detail": "Use Speakers to confirm matches, keep someone unknown, or apply a local label.",
+                "href": _recording_detail_path(recording_id, tab="speakers"),
+                "button_label": "Open Speakers",
+            }
+        if any(
+            token in stage_hint
+            for token in ("routing", "project", "calendar", "language", "quarantine")
+        ):
+            return {
+                "title": "Review routing and diagnostics",
+                "detail": "Use Diagnostics to inspect project, language, or calendar context before requeueing.",
+                "href": _recording_detail_path(recording_id, tab="diagnostics"),
+                "button_label": "Open Diagnostics",
+            }
+        return {
+            "title": "Review the meeting output",
+            "detail": "Use Summary first, then move to Diagnostics only if the blocker is still unclear.",
+            "href": _recording_detail_path(recording_id, tab="summary"),
+            "button_label": "Open Summary",
+        }
+    if status in {
+        RECORDING_STATUS_QUEUED,
+        RECORDING_STATUS_PROCESSING,
+        RECORDING_STATUS_STOPPING,
+    }:
+        return {
+            "title": "Track the active run",
+            "detail": "Pipeline progress updates live here. Open Diagnostics for the detailed stage and retry history.",
+            "href": _recording_detail_path(recording_id, tab="diagnostics"),
+            "button_label": "Open Diagnostics",
+        }
+    if status == RECORDING_STATUS_STOPPED:
+        return {
+            "title": "Requeue when you are ready",
+            "detail": "The current run is stopped. Use the action bar to restart it after reviewing Diagnostics.",
+            "href": _recording_detail_path(recording_id, tab="diagnostics"),
+            "button_label": "Open Diagnostics",
+        }
+    if status in {RECORDING_STATUS_QUARANTINE, RECORDING_STATUS_FAILED}:
+        return {
+            "title": "Triage before retrying",
+            "detail": "Use Diagnostics to inspect the root cause, then requeue only after the blocker is understood.",
+            "href": _recording_detail_path(recording_id, tab="diagnostics"),
+            "button_label": "Open Diagnostics",
+        }
+    return {
+        "title": "Read the transcript",
+        "detail": "Use the dedicated Transcript tab when you need the full conversation in a wider reading surface.",
+        "href": _recording_detail_path(recording_id, tab="transcript"),
+        "button_label": "Open Transcript",
+    }
+
+
+def _full_page_overview_context(
+    recording_id: str,
+    *,
+    recording: dict[str, Any],
+    diagnostics: dict[str, Any],
+    settings: AppSettings,
+) -> dict[str, Any]:
+    status = str(recording.get("status") or "Unknown").strip() or "Unknown"
+    stage_label = str(diagnostics.get("current_stage_label") or "").strip()
+    if not stage_label or stage_label == "Waiting":
+        stage_label = _pipeline_stage_label(recording.get("pipeline_stage"))
+    if status in {
+        RECORDING_STATUS_QUEUED,
+        RECORDING_STATUS_PROCESSING,
+        RECORDING_STATUS_STOPPING,
+    }:
+        state_detail = f"Stage {stage_label} is active. Live progress stays visible at the top of the page."
+    elif recording.get("pipeline_updated_at_display") not in {None, "", "—"}:
+        state_detail = (
+            f"Last pipeline update {recording['pipeline_updated_at_display']}. "
+            f"Current stage status: {diagnostics['current_stage_status_label']}."
+        )
+    else:
+        state_detail = f"Current / last pipeline stage: {stage_label}."
+
+    blocker_text = str(
+        diagnostics.get("primary_reason_text")
+        or recording.get("status_reason_text_display")
+        or ""
+    ).strip()
+    if not blocker_text:
+        blocker_text = "No blocker detected."
+    blocker_detail = str(
+        diagnostics.get("primary_reason_detail")
+        or recording.get("review_reason_text_display")
+        or recording.get("quarantine_reason")
+        or recording.get("cancel_reason_text_display")
+        or ""
+    ).strip()
+    if not blocker_detail:
+        blocker_detail = f"Current status: {status}."
+
+    routing_value = "—"
+    if recording.get("suggested_project_name") or recording.get("suggested_project_id"):
+        routing_value = str(
+            recording.get("suggested_project_name")
+            or f"#{recording.get('suggested_project_id')}"
+        )
+        if recording.get("routing_confidence") is not None:
+            routing_value = (
+                f"{routing_value} · {float(recording['routing_confidence']):.2f}"
+            )
+    elif recording.get("routing_confidence") is not None:
+        routing_value = f"{float(recording['routing_confidence']):.2f}"
+
+    focus_items: list[dict[str, str]] = []
+    primary_reason = str(diagnostics.get("primary_reason_text") or "").strip()
+    if primary_reason:
+        focus_items.append({"label": "Primary reason", "value": primary_reason})
+    review_reason = str(recording.get("review_reason_text_display") or "").strip()
+    if review_reason and review_reason != primary_reason:
+        focus_items.append({"label": "Review reason", "value": review_reason})
+    quarantine_reason = str(recording.get("quarantine_reason") or "").strip()
+    if quarantine_reason:
+        focus_items.append({"label": "Quarantine reason", "value": quarantine_reason})
+    if routing_value != "—":
+        focus_items.append({"label": "Routing signal", "value": routing_value})
+    if recording.get("cancel_requested_at_display") not in {None, "", "—"}:
+        requested_by = str(recording.get("cancel_requested_by_display") or "").strip()
+        cancel_value = str(recording["cancel_requested_at_display"])
+        if requested_by:
+            cancel_value = f"{cancel_value} by {requested_by}"
+        focus_items.append({"label": "Stop requested", "value": cancel_value})
+
+    return {
+        "state_title": status,
+        "state_detail": state_detail,
+        "blocker_title": blocker_text,
+        "blocker_detail": blocker_detail,
+        "next_action": _full_page_overview_next_action_context(
+            recording_id,
+            recording=recording,
+            diagnostics=diagnostics,
+        ),
+        "metadata": [
+            {
+                "label": "Captured",
+                "value": str(recording.get("captured_at_display") or "—"),
+            },
+            {
+                "label": "Duration",
+                "value": str(recording.get("duration_display") or "—"),
+            },
+            {
+                "label": "Source",
+                "value": str(
+                    recording.get("source_display") or recording.get("source") or "—"
+                ),
+            },
+            {
+                "label": "Dominant language",
+                "value": _recording_dominant_language_display(
+                    recording_id,
+                    recording=recording,
+                    settings=settings,
+                ),
+            },
+            {
+                "label": "Project",
+                "value": str(
+                    recording.get("project_name")
+                    or (
+                        f"#{recording.get('project_id')}"
+                        if recording.get("project_id")
+                        else "Unassigned"
+                    )
+                ),
+            },
+            {
+                "label": "Suggested route",
+                "value": routing_value,
+            },
+        ],
+        "focus_items": focus_items,
+    }
+
+
+def _transcript_tab_context(recording_id: str, settings: AppSettings) -> dict[str, Any]:
+    transcript_path, _summary_path = _recording_derived_paths(recording_id, settings)
+    speaker_turns_path = transcript_path.parent / "speaker_turns.json"
+    transcript_payload = _load_json_dict(transcript_path)
+    speaker_turns_raw = _load_json_list(speaker_turns_path)
+    speaker_turns = [row for row in speaker_turns_raw if isinstance(row, dict)]
+    if not speaker_turns:
+        speaker_turns = _fallback_speaker_turns_from_transcript(transcript_payload)
+
+    dominant_language = _language_display_name(
+        _normalise_language_code(transcript_payload.get("dominant_language"))
+    )
+    if dominant_language == "—":
+        language_payload = transcript_payload.get("language")
+        if isinstance(language_payload, dict):
+            dominant_language = _language_display_name(
+                _normalise_language_code(language_payload.get("detected"))
+            )
+    speaker_name_map = _recording_speaker_name_map(recording_id, settings=settings)
+    turns: list[dict[str, str]] = []
+    copy_lines: list[str] = []
+    for row in speaker_turns:
+        text = str(row.get("text") or "").strip()
+        if not text:
+            continue
+        speaker = _speaker_display_label(
+            str(row.get("speaker") or "S1"),
+            speaker_name_map=speaker_name_map,
+        )
+        try:
+            start_value = float(row.get("start") or 0.0)
+        except (TypeError, ValueError):
+            start_value = 0.0
+        try:
+            end_value = float(row.get("end") or start_value)
+        except (TypeError, ValueError):
+            end_value = start_value
+        time_range = (
+            f"{_format_duration_seconds(start_value)} - "
+            f"{_format_duration_seconds(max(end_value, start_value))}"
+        )
+        language_label = _language_display_name(_normalise_language_code(row.get("language")))
+        turns.append(
+            {
+                "speaker": speaker,
+                "time_range": time_range,
+                "text": text,
+                "language_label": language_label if language_label != "—" else "",
+            }
+        )
+        copy_lines.append(f"[{time_range}] {speaker}: {text}")
+
+    transcript_text = str(transcript_payload.get("text") or "").strip()
+    source_label = "Speaker-attributed turns" if turns else "Transcript text"
+    copy_text = "\n\n".join(copy_lines).strip()
+    if not copy_text:
+        copy_text = transcript_text
+
+    return {
+        "available": bool(turns or transcript_text),
+        "source_label": source_label,
+        "dominant_language_label": dominant_language if dominant_language != "—" else "Unknown",
+        "turn_count": len(turns),
+        "turns": turns,
+        "raw_text": transcript_text,
+        "copy_text": copy_text,
+        "quick_add_href": _glossary_quick_entry_href(recording_id=recording_id),
+        "manage_corrections_href": "/glossary",
     }
 
 
@@ -3858,7 +4150,11 @@ def _recording_inspector_context(
     rec = _prepare_recording_for_display(rec, settings=_settings)
     jobs, _ = list_jobs(settings=_settings, recording_id=recording_id, limit=100)
     recovery_warning = _recording_recovery_warning(jobs)
-    safe_tab = current_tab if current_tab in allowed_tabs else "overview"
+    safe_tab = (
+        _control_center_tab(current_tab)
+        if is_embedded
+        else _full_page_recording_tab(current_tab)
+    )
     calendar: dict[str, Any] | None = None
     language: dict[str, Any] | None = None
     summary: dict[str, Any] | None = None
@@ -3867,6 +4163,8 @@ def _recording_inspector_context(
     project: dict[str, Any] | None = None
     glossary: dict[str, Any] | None = None
     compact_overview: dict[str, Any] | None = None
+    overview: dict[str, Any] | None = None
+    transcript: dict[str, Any] | None = None
     export_text = ""
     stage_rows = list_recording_pipeline_stages(recording_id, settings=_settings)
     chunk_rows = list_recording_llm_chunk_states(recording_id, settings=_settings)
@@ -3879,12 +4177,16 @@ def _recording_inspector_context(
     )
     if diagnostics["primary_reason_text"]:
         rec["status_reason_text_display"] = diagnostics["primary_reason_text"]
-    if not is_embedded and safe_tab == "calendar":
+    if not is_embedded and safe_tab == "diagnostics":
         calendar = _calendar_tab_context(recording_id, _settings)
         if calendar_error.strip():
             calendar["error_message"] = calendar_error.strip()
-    if not is_embedded and safe_tab == "language":
         language = _language_tab_context(recording_id, rec, _settings)
+        project = _project_tab_context(recording_id, rec, _settings)
+        rec = _prepare_recording_for_display(
+            get_recording(recording_id, settings=_settings) or rec,
+            settings=_settings,
+        )
     if safe_tab == "speakers":
         speakers = _speakers_tab_context(
             recording_id,
@@ -3895,16 +4197,10 @@ def _recording_inspector_context(
             error_message=speakers_error,
         )
         speakers["manage_voices_href"] = "/voices"
-    if not is_embedded and safe_tab == "project":
-        project = _project_tab_context(recording_id, rec, _settings)
-        rec = _prepare_recording_for_display(
-            get_recording(recording_id, settings=_settings) or rec,
-            settings=_settings,
-        )
-    if safe_tab in {"summary", "metrics"} or (
-        safe_tab == "overview" and not is_embedded
-    ):
+    if safe_tab == "summary":
         summary = _summary_context(recording_id, _settings)
+    if not is_embedded and safe_tab == "summary":
+        metrics = _metrics_tab_context(recording_id, _settings)
     if safe_tab == "overview":
         if is_embedded and control_center_state is not None:
             compact_overview = _compact_inspector_overview_context(
@@ -3915,12 +4211,16 @@ def _recording_inspector_context(
                 settings=_settings,
             )
         else:
-            export_text = build_onenote_markdown(rec, settings=_settings)
-            glossary = _asr_glossary_context(recording_id, _settings)
+            overview = _full_page_overview_context(
+                recording_id,
+                recording=rec,
+                diagnostics=diagnostics,
+                settings=_settings,
+            )
+    if not is_embedded and safe_tab == "transcript":
+        transcript = _transcript_tab_context(recording_id, _settings)
     if safe_tab == "export":
         export_text = build_onenote_markdown(rec, settings=_settings)
-    if not is_embedded and safe_tab == "metrics":
-        metrics = _metrics_tab_context(recording_id, _settings)
     progress_url = (
         f"/ui/recordings/{quote(recording_id, safe='')}/progress?tab="
         f"{quote(safe_tab, safe='')}"
@@ -3979,6 +4279,8 @@ def _recording_inspector_context(
         "project": project,
         "glossary": glossary,
         "compact_overview": compact_overview,
+        "overview": overview,
+        "transcript": transcript,
         "export_text": export_text,
         "pipeline_stages": pipeline_stages,
         "diagnostics": diagnostics,
@@ -4804,11 +5106,30 @@ async def ui_recording_detail(
     )
     if inspector_context is None:
         return HTMLResponse("<h1>404 – Recording not found</h1>", status_code=404)
+    detail_state = _control_center_state_context(
+        selected=recording_id,
+        status=str(inspector_context["rec"].get("status") or "").strip(),
+        q="",
+        tab=inspector_context["current_tab"],
+        limit=1,
+        offset=0,
+    )
+    runtime_status = await run_in_threadpool(
+        collect_control_center_runtime_status,
+        _settings,
+    )
     return templates.TemplateResponse(
         request,
         "recording_detail.html",
         {
             "active": "recordings",
+            "control_center_state": detail_state,
+            "control_center_system_bar": _control_center_system_bar_context(
+                _settings,
+                state=detail_state,
+                recordings_panel={"total": 1},
+                runtime_status=runtime_status,
+            ),
             **inspector_context,
         },
     )

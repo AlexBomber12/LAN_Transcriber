@@ -1,0 +1,89 @@
+{% set sp = speakers or {} %}
+{% set rows = sp.speaker_rows or [] %}
+{% set profiles = sp.voice_profiles or [] %}
+{% set notices = sp.review_notices or [] %}
+{% set repair = sp.snippet_repair or {} %}
+
+<section class="inspector-section-card">
+  <div class="inspector-section-head">
+    <div>
+      <p class="eyebrow">Speaker Review Workspace</p>
+      <h2>Speakers</h2>
+      <p class="inspector-note">Review speakers through their best clean clips first. The compact Control Center stays faster and smaller; this page keeps the richer review flow.</p>
+    </div>
+    <div class="embedded-card-actions">
+      <a href="{{ sp.manage_voices_href or '/voices' }}" class="btn" style="text-decoration:none">Open canonical speakers page</a>
+    </div>
+  </div>
+
+  {% if sp.notice_message %}
+  <div class="page-notice">{{ sp.notice_message }}</div>
+  {% endif %}
+  {% if sp.error_message %}
+  <div class="page-notice">{{ sp.error_message }}</div>
+  {% endif %}
+  {% if repair.detail %}
+  <div class="page-notice">
+    <div style="margin-bottom:{% if repair.available %}8px{% else %}0{% endif %}">
+      {{ repair.detail }}
+    </div>
+    {% if repair.available %}
+    <form method="post" action="/ui/recordings/{{ rec.id }}/speakers/regenerate-snippets">
+      <button class="btn" type="submit">{{ repair.button_label }}</button>
+    </form>
+    {% endif %}
+  </div>
+  {% endif %}
+  {% if notices %}
+    {% for notice in notices %}
+    <div class="page-notice">{{ notice }}</div>
+    {% endfor %}
+  {% endif %}
+
+  <section class="embedded-card">
+    <p class="inspector-note">
+      <strong>Confirm match</strong> changes canonical identity across recordings.
+      <strong>Keep unknown</strong> closes review without naming the speaker.
+      <strong>Local label only</strong> changes the name only for this recording.
+      <strong>Add trusted sample</strong> is training-only and stays separate from identity mapping.
+    </p>
+  </section>
+
+  {% set speaker_review_mode = 'full' %}
+  {% include 'partials/speaker_review_cards.html' %}
+</section>
+
+<section class="inspector-section-card">
+  <div class="inspector-section-head">
+    <div>
+      <h2>Create Canonical Speaker</h2>
+      <p class="inspector-note">Create a new canonical person and confirm the diarized match in one step.</p>
+    </div>
+  </div>
+  {% if rows %}
+  <form method="post" action="/ui/recordings/{{ rec.id }}/speakers/create-and-assign">
+    <div class="form-row">
+      <label for="diar_speaker_label">Speaker label</label>
+      <select id="diar_speaker_label" name="diar_speaker_label" style="width:180px">
+        {% for row in rows %}
+        <option value="{{ row.speaker }}">{{ row.speaker }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="form-row">
+      <label for="display_name">Display name</label>
+      <input id="display_name" type="text" name="display_name" maxlength="120" required placeholder="Person name" style="width:260px">
+    </div>
+    <div class="form-row">
+      <label for="notes">Notes</label>
+      <input id="notes" type="text" name="notes" maxlength="240" placeholder="Optional notes" style="width:360px">
+    </div>
+    <div class="form-row">
+      <label></label>
+      <button class="btn" type="submit">Create and confirm match</button>
+    </div>
+  </form>
+  {% else %}
+  <p class="placeholder">No diarization labels are available for assignment.</p>
+  {% endif %}
+</section>
