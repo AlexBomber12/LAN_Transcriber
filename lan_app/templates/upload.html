@@ -1,15 +1,27 @@
 {% extends "base.html" %}
 {% block title %}Upload – LAN Transcriber{% endblock %}
 {% block content %}
-<h1>Upload</h1>
-{% set helper_message = {
-  "text": "Direct fallback page. The main daily workflow lives on /, but this page stays available when you only need standalone uploads."
-} %}
-{% include "partials/control_center/helper_message.html" %}
-<div class="filters" style="margin-bottom:10px">
-  <a href="/" class="btn" style="text-decoration:none">Open Control Center</a>
-</div>
+<div class="standalone-shell">
+  <section class="standalone-header">
+    <div class="standalone-header-copy">
+      <p class="eyebrow">Fallback workspace</p>
+      <h1>Standalone Upload</h1>
+      <p class="standalone-header-note">
+        Use this page when you only need intake. The Control Center remains the primary
+        daily loop for upload, review, and export.
+      </p>
+    </div>
+    <div class="standalone-header-actions">
+      <a href="/" class="btn btn-primary">Back to Control Center</a>
+    </div>
+  </section>
 
-{% include "partials/control_center/upload_panel.html" %}
-{% include "partials/control_center/upload_script.html" %}
+  {% set helper_message = {
+    "text": "Completed uploads stay visible here until you leave the page. When you need the worklist and compact inspector together, go back to /."
+  } %}
+  {% include "partials/control_center/helper_message.html" %}
+
+  {% include "partials/control_center/upload_panel.html" %}
+  {% include "partials/control_center/upload_script.html" %}
+</div>
 {% endblock %}

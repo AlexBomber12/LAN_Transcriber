@@ -600,6 +600,6 @@ Queue (in order)
 - Depends on: PR-SPEAKER-SNIPPET-UX-02 and PR-UI-STITCH-INSPECTOR-COMPACT-01
 
 120) PR-UI-STITCH-POLISH-02: Final Stitch-aligned cleanup, consistency polish, and workflow test hardening for the operator-centric UI
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-UI-STITCH-POLISH-02.md
 - Depends on: PR-INSPECTOR-FULL-PAGE-02 and PR-OPS-SYSTEM-BAR-01

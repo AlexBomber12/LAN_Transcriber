@@ -474,7 +474,7 @@ def test_control_center_pane_fragment_endpoints(seeded_client):
         'hx-trigger="every 15s, refresh-control-center-system-bar from:body"'
         in system_bar.text
     )
-    assert "Queue view" in system_bar.text
+    assert "Inbox view" in system_bar.text
     assert "Active jobs" in system_bar.text
     assert "DGX / Spark" in system_bar.text
     assert "GPU path" in system_bar.text
@@ -564,7 +564,7 @@ def test_control_center_system_bar_renders_degraded_cpu_fallback(
     empty_inspector = seeded_client.get("/ui/control-center/inspector-pane")
     assert empty_inspector.status_code == 200
     assert "No recording selected" in empty_inspector.text
-    assert "Queue context stays visible" in empty_inspector.text
+    assert "Inbox context stays visible" in empty_inspector.text
 
 
 def test_control_center_selected_recording_renders_embedded_inspector_actions(
@@ -897,6 +897,7 @@ def test_recordings_empty(client):
     r = client.get("/recordings")
     assert r.status_code == 200
     assert "Recordings" in r.text
+    assert "Back to Control Center" in r.text
 
 
 def test_recordings_with_data(seeded_client):
@@ -3564,7 +3565,8 @@ def test_queue_invalid_status_shows_all(seeded_client):
 def test_upload_page(client):
     r = client.get("/upload")
     assert r.status_code == 200
-    assert "Upload" in r.text
+    assert "Standalone Upload" in r.text
+    assert "Back to Control Center" in r.text
     assert 'id="file-input"' in r.text
     assert "Drop audio here or browse from disk." in r.text
     assert "Recent uploads stay here while you work" in r.text
@@ -3572,6 +3574,7 @@ def test_upload_page(client):
         "Completed uploads stay listed here so standalone uploads keep their in-page progress and Open recording link."
         in r.text
     )
+    assert "Completed uploads stay visible here until you leave the page." in r.text
     assert (
         "No uploads yet. New files appear here with upload and processing progress."
         in r.text

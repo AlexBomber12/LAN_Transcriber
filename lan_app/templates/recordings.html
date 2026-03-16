@@ -1,14 +1,27 @@
 {% extends "base.html" %}
 {% block title %}Recordings – LAN Transcriber{% endblock %}
 {% block content %}
-<h1>Recordings <small style="font-weight:normal;color:#666">({{ total }} total)</small></h1>
-{% set helper_message = {
-  "text": "Direct fallback page. Use / for the main upload -> inspect -> export loop, and use this page when you want the queue on its own."
-} %}
-{% include "partials/control_center/helper_message.html" %}
-<div class="filters" style="margin-bottom:10px">
-  <a href="/" class="btn" style="text-decoration:none">Open Control Center</a>
-</div>
+<div class="standalone-shell">
+  <section class="standalone-header">
+    <div class="standalone-header-copy">
+      <p class="eyebrow">Fallback workspace</p>
+      <h1>Recordings</h1>
+      <p class="standalone-header-note">
+        This page mirrors the operator inbox on its own when you want the worklist
+        without the compact inspector pinned on the right.
+      </p>
+    </div>
+    <div class="standalone-header-actions">
+      <span class="control-center-focus-pill">{{ total }} total</span>
+      <a href="/" class="btn btn-primary">Back to Control Center</a>
+    </div>
+  </section>
 
-{% include "partials/control_center/recordings_panel.html" %}
+  {% set helper_message = {
+    "text": "The same filters, row actions, and status language stay available here. Use / when you want the full daily workflow in one place."
+  } %}
+  {% include "partials/control_center/helper_message.html" %}
+
+  {% include "partials/control_center/recordings_panel.html" %}
+</div>
 {% endblock %}

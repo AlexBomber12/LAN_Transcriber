@@ -272,6 +272,12 @@ def test_control_center_embedded_inspector_and_export_zip_smoke(tmp_path: Path) 
                     state="visible",
                     timeout=_remaining_timeout_ms(deadline),
                 )
+                page.locator(
+                    "#control-center-system-bar .control-center-system-label"
+                ).filter(has_text="Inbox view").first.wait_for(
+                    state="visible",
+                    timeout=_remaining_timeout_ms(deadline),
+                )
                 assert urlparse(page.url).path == "/"
 
                 page.get_by_test_id("recording-inspector-tab-speakers").click(
@@ -335,30 +341,44 @@ def test_control_center_embedded_inspector_and_export_zip_smoke(tmp_path: Path) 
                     state="visible",
                     timeout=_remaining_timeout_ms(deadline),
                 )
-                with page.expect_download(timeout=_remaining_timeout_ms(deadline)) as download_info:
-                    page.click(
-                        "#control-center-inspector-pane [data-testid='recording-inspector-download-zip']",
-                        timeout=_remaining_timeout_ms(deadline),
-                    )
-                download = download_info.value
-                download.save_as(str(zip_download_path))
                 page.locator("#upload-rows").get_by_text(
                     "No active uploads. New files appear here until they enter the main inbox."
                 ).wait_for(
                     state="visible",
                     timeout=_remaining_timeout_ms(deadline),
                 )
-
-                page.goto(
-                    f"{base_url}/recordings/{recording_id}",
-                    wait_until="networkidle",
+                page.get_by_test_id("recording-inspector-open-full-page").click(
+                    timeout=_remaining_timeout_ms(deadline),
+                )
+                page.wait_for_url(
+                    f"**/recordings/{recording_id}",
+                    timeout=_remaining_timeout_ms(deadline),
+                )
+                page.get_by_test_id("recording-inspector-tab-transcript").click(
+                    timeout=_remaining_timeout_ms(deadline),
+                )
+                page.wait_for_url(
+                    f"**/recordings/{recording_id}?tab=transcript",
                     timeout=_remaining_timeout_ms(deadline),
                 )
                 page.wait_for_selector(
-                    "a:has-text('Download ZIP')",
+                    "text=Transcript Workspace",
                     state="visible",
                     timeout=_remaining_timeout_ms(deadline),
                 )
+                page.get_by_test_id("recording-inspector-tab-export").click(
+                    timeout=_remaining_timeout_ms(deadline),
+                )
+                page.wait_for_url(
+                    f"**/recordings/{recording_id}?tab=export",
+                    timeout=_remaining_timeout_ms(deadline),
+                )
+                with page.expect_download(timeout=_remaining_timeout_ms(deadline)) as download_info:
+                    page.get_by_test_id("recording-inspector-download-zip").click(
+                        timeout=_remaining_timeout_ms(deadline),
+                    )
+                download = download_info.value
+                download.save_as(str(zip_download_path))
             finally:
                 context.close()
                 browser.close()

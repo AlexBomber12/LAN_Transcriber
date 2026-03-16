@@ -9,7 +9,7 @@
         <div>
           <div class="speaker-section-label">Diarized speaker</div>
           <h3>{{ row.display_label }}</h3>
-          <div class="speaker-card-meta" style="margin-top:6px">
+          <div class="speaker-card-meta stack-gap-xs">
             <span>{{ row.turn_count }} turns</span>
             <span>{{ '%.2f'|format(row.duration_sec or 0.0) }}s active</span>
             <span>{{ row.mapping_title }}</span>
@@ -31,17 +31,17 @@
             <div class="speaker-section-label">Current decision</div>
             <p class="speaker-context-title">{{ row.mapping_title }}</p>
             <p>{{ row.mapping_detail }}</p>
-            <p class="inspector-note" style="margin-top:8px">{{ row.state_detail }}</p>
+            <p class="inspector-note stack-gap-xs">{{ row.state_detail }}</p>
             {% if row.review_state == 'system_suggested' %}
-            <p class="inspector-note" style="margin-top:8px">Best suggestion score {{ '%.2f'|format(row.confidence or 0.0) }}</p>
+            <p class="inspector-note stack-gap-xs">Best suggestion score {{ '%.2f'|format(row.confidence or 0.0) }}</p>
             {% endif %}
             {% if row.low_confidence and row.assignment_threshold %}
-            <p class="speaker-warning-inline" style="margin-top:8px">
+            <p class="speaker-warning-inline stack-gap-xs">
               Below auto-match threshold {{ '%.2f'|format(row.assignment_threshold) }}.
             </p>
             {% endif %}
             {% if row.candidate_matches %}
-            <p class="inspector-note" style="margin-top:8px">
+            <p class="inspector-note stack-gap-xs">
               Suggestions:
               {% for candidate in row.candidate_matches %}
               {{ candidate.display_name }} ({{ '%.2f'|format(candidate.score) }}){% if not loop.last %}, {% endif %}
@@ -55,10 +55,10 @@
             {% if row.preview_text %}
             <p class="speaker-cue-text">{{ row.preview_text }}</p>
             {% else %}
-            <p class="placeholder" style="padding:0">No transcript cue is available for this speaker yet.</p>
+            <p class="placeholder placeholder-inline">No transcript cue is available for this speaker yet.</p>
             {% endif %}
             {% if row.snippet_ui_state %}
-            <p class="inspector-note" style="margin-top:10px;color:{{ row.snippet_ui_state.color }}">
+            <p class="inspector-note inspector-note-status stack-gap-sm" style="--inspector-note-accent: {{ row.snippet_ui_state.color }}">
               <strong>{{ row.snippet_ui_state.label }}:</strong> {{ row.snippet_ui_state.detail }}
             </p>
             {% endif %}
@@ -109,7 +109,7 @@
             <p class="speaker-snippet-empty-title">{{ row.snippet_ui_state.label if row.snippet_ui_state else 'Snippets unavailable' }}</p>
             <p>{{ row.snippet_ui_state.detail if row.snippet_ui_state else (row.no_clean_snippet_message or 'No clean snippets are available for this speaker yet.') }}</p>
             {% if row.no_clean_snippet_message and row.snippet_ui_state and row.no_clean_snippet_message != row.snippet_ui_state.detail %}
-            <p class="inspector-note" style="margin-top:8px">{{ row.no_clean_snippet_message }}</p>
+            <p class="inspector-note stack-gap-xs">{{ row.no_clean_snippet_message }}</p>
             {% endif %}
           </div>
           {% endif %}
@@ -147,7 +147,7 @@
             <button class="btn speaker-action-submit speaker-action-submit-primary" type="submit">Confirm match</button>
           </form>
           {% else %}
-          <p class="placeholder" style="padding:0">
+          <p class="placeholder placeholder-inline">
             No canonical speakers exist yet. {% if speaker_review_compact %}Use the full-page inspector or Voices to create one first.{% else %}Use Voices to create one first.{% endif %}
           </p>
           {% endif %}
@@ -231,13 +231,13 @@
             <button class="btn speaker-action-submit" type="submit" {% if not row.clean_snippets %}disabled{% endif %}>Add trusted sample</button>
           </form>
           {% else %}
-          <p class="placeholder" style="padding:0">Create a canonical speaker first, then add trusted samples from clean clips.</p>
+          <p class="placeholder placeholder-inline">Create a canonical speaker first, then add trusted samples from clean clips.</p>
           {% endif %}
 
           {% if not row.clean_snippets and row.snippet_ui_state and row.snippet_ui_state.add_sample_message %}
-          <p class="speaker-warning-inline" style="margin-top:8px">{{ row.snippet_ui_state.add_sample_message }}</p>
+          <p class="speaker-warning-inline stack-gap-xs">{{ row.snippet_ui_state.add_sample_message }}</p>
           {% elif row.no_clean_snippet_message %}
-          <p class="speaker-warning-inline" style="margin-top:8px">{{ row.no_clean_snippet_message }}</p>
+          <p class="speaker-warning-inline stack-gap-xs">{{ row.no_clean_snippet_message }}</p>
           {% endif %}
         </section>
       </div>
