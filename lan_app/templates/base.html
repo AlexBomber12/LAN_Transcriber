@@ -2346,6 +2346,13 @@ function activateControlCenterRecordingRowFromKey(row, event) {
   if (!event || (event.key !== 'Enter' && event.key !== ' ')) {
     return;
   }
+  var target = event.target;
+  if (
+    target &&
+    target.closest('a, button, summary, details, select, option, input, textarea, [data-recording-actions]')
+  ) {
+    return;
+  }
   event.preventDefault();
   activateControlCenterRecordingRow(row, event);
 }

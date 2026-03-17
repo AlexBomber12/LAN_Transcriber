@@ -102,8 +102,8 @@ Requirement already satisfied: pytz>2021.1 in ./.venv-ci/lib/python3.12/site-pac
 Building wheels for collected packages: lan-transcriber
   Building editable for lan-transcriber (pyproject.toml): started
   Building editable for lan-transcriber (pyproject.toml): finished with status 'done'
-  Created wheel for lan-transcriber: filename=lan_transcriber-0.1.0-0.editable-py3-none-any.whl size=15446 sha256=bd0289903189cb91313055d73c91a27168e0eb97cbb7abce76d638a7c5dd807a
-  Stored in directory: /tmp/pip-ephem-wheel-cache-nvja4iya/wheels/d5/8a/5c/f7178f7e49aa5ae12b2320ec66b5c310f4f2f63d1bd301b7fb
+  Created wheel for lan-transcriber: filename=lan_transcriber-0.1.0-0.editable-py3-none-any.whl size=15446 sha256=2f4b90c88dfce4686f4a65426fdbd555d976fbb02b9888989fba804004422e2b
+  Stored in directory: /tmp/pip-ephem-wheel-cache-wa8fh65s/wheels/d5/8a/5c/f7178f7e49aa5ae12b2320ec66b5c310f4f2f63d1bd301b7fb
 Successfully built lan-transcriber
 Installing collected packages: lan-transcriber
   Attempting uninstall: lan-transcriber
@@ -176,7 +176,7 @@ TOTAL   13857      0   4604      0   100%
 Coverage HTML written to dir htmlcov
 
 Required test coverage of 100% reached. Total coverage: 100.00%
-1045 passed, 2 skipped, 11 warnings in 103.15s (0:01:43)
+1045 passed, 2 skipped, 11 warnings in 102.58s (0:01:42)
 Name                                                    Stmts   Miss Branch BrPart  Cover
 -----------------------------------------------------------------------------------------
 lan_transcriber/__init__.py                                 8      0      0      0   100%
