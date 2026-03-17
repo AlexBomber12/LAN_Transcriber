@@ -3415,7 +3415,7 @@ def _control_center_recordings_panel_context(
 def _control_center_empty_inspector_context() -> dict[str, str]:
     return {
         "title": "No recording selected",
-        "message": "Pick something from the worklist to open the compact inspector here and keep the daily review loop on the right.",
+        "message": "",
     }
 
 

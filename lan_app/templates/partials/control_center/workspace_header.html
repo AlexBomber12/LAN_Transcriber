@@ -8,22 +8,10 @@
 >
   {% set focus_recording = control_center_header.focus_recording %}
   <div class="control-center-workspace-copy">
-    <p class="eyebrow">Daily workspace</p>
     <h1>Control Center</h1>
-    <p>
-      Upload new audio, work the queue, and keep the current review in view without
-      falling back to the full-page inspector unless you need deeper diagnostics.
-    </p>
   </div>
 
   <aside class="control-center-focus-card">
-    <div class="control-center-focus-topline">
-      <span class="control-center-focus-label">Compact inspector</span>
-      <span class="control-center-focus-state{% if control_center_state.selected %} active{% endif %}">
-        {% if control_center_state.selected %}Active{% else %}Waiting{% endif %}
-      </span>
-    </div>
-
     {% if control_center_state.selected and focus_recording %}
     <strong class="control-center-focus-title">{{ focus_recording.source_filename }}</strong>
     <p class="control-center-focus-copy">
@@ -31,10 +19,8 @@
     </p>
     {% elif control_center_state.selected %}
     <strong class="control-center-focus-title">{{ control_center_state.selected }}</strong>
-    <p class="control-center-focus-copy">Selected from the worklist. The compact inspector keeps the shell focused here.</p>
     {% else %}
     <strong class="control-center-focus-title">No recording selected</strong>
-    <p class="control-center-focus-copy">Pick a row from the worklist to open overview, speakers, and quick actions on the right.</p>
     {% endif %}
 
     <div class="control-center-focus-pills">

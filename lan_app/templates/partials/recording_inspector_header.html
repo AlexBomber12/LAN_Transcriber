@@ -2,24 +2,16 @@
   <div class="inspector-heading">
     <div class="inspector-title-block">
       {% if recording_inspector.embedded %}
-      <p class="eyebrow">Compact inspector</p>
       <h2>{{ rec.source_filename }}</h2>
-      <p class="inspector-subtitle"><code>{{ rec.id }}</code> · focused daily review for blockers, speakers, summary, and export</p>
+      <p class="inspector-subtitle"><code>{{ rec.id }}</code></p>
       {% else %}
-      <p class="eyebrow">Recording Inspector</p>
       <h1>{{ rec.source_filename }}</h1>
-      <p class="inspector-subtitle"><code>{{ rec.id }}</code> · deep review, export, and diagnostics</p>
+      <p class="inspector-subtitle"><code>{{ rec.id }}</code></p>
       {% endif %}
     </div>
     <div class="inspector-meta-grid">
       <span class="badge s-{{ rec.status }}">{{ rec.status }}</span>
-      <span class="inspector-meta-chip">
-        {% if recording_inspector.embedded %}
-        Stage {{ diagnostics.current_stage_label or 'Waiting' }}
-        {% else %}
-        Stage {{ diagnostics.current_stage_label or 'Waiting' }}
-        {% endif %}
-      </span>
+      <span class="inspector-meta-chip">Stage {{ diagnostics.current_stage_label or 'Waiting' }}</span>
       {% if recording_inspector.embedded %}
       <span class="inspector-meta-chip">Captured {{ rec.captured_at_display }}</span>
       <span class="inspector-meta-chip">Source {{ rec.source_display or rec.source }}</span>
@@ -35,9 +27,6 @@
   </div>
   {% if rec.status_reason_text_display %}
   <p class="inspector-note">{{ rec.status_reason_text_display }}</p>
-  {% endif %}
-  {% if not recording_inspector.embedded %}
-  <p class="muted">Use this dedicated page for deeper review, transcript reading, export, and diagnostics once the compact workspace signals that a recording needs more attention.</p>
   {% endif %}
 </section>
 
