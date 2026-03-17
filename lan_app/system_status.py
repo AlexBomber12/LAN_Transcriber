@@ -457,14 +457,14 @@ def _gpu_runtime_item(
     if nvidia_smi["available"]:
         detail = nvidia_smi["detail"]
         if torch_cuda != "none":
-            detail = f"{detail} · torch CUDA {torch_cuda}"
+            detail = f"{detail} · torch CUDA {torch_cuda} but torch.cuda.is_available() is false"
         else:
             detail = f"{detail} · torch CUDA unavailable"
         return {
             "label": "GPU runtime",
-            "value": "GPU busy" if nvidia_smi["busy"] else "GPU ready",
+            "value": "GPU unavailable",
             "detail": detail,
-            "tone": "busy" if nvidia_smi["busy"] else "healthy",
+            "tone": "offline",
         }
 
     visible_devices = cuda_facts.visible_devices or "default"

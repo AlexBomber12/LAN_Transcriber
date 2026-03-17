@@ -501,8 +501,6 @@ def test_control_center_helper_contexts_cover_fragment_builders(
 
     system_bar = ui_routes._control_center_system_bar_context(  # noqa: SLF001
         cfg,
-        state=state,
-        recordings_panel=work_pane["recordings_panel"],
     )
     assert len(system_bar["items"]) == 3
     assert system_bar["items"][0]["label"] == "Node status"
@@ -611,47 +609,19 @@ def test_control_center_system_bar_route_avoids_work_pane_builder(
     def _unexpected_work_pane(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
         raise AssertionError("_control_center_work_pane_context should not run here")
 
-    seen: dict[str, Any] = {}
-
-    def _unexpected_recordings_panel(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
-        raise AssertionError(
-            "_control_center_recordings_panel_context should not run here"
-        )
-
-    def _fake_list_recordings(
-        settings: AppSettings,
-        status: str | None = None,
-        q: str = "",
-        limit: int = 100,
-        offset: int = 0,
-    ) -> tuple[list[dict[str, Any]], int]:
-        seen.update(
-            {
-                "settings": settings,
-                "status": status,
-                "q": q,
-                "limit": limit,
-                "offset": offset,
-            }
-        )
-        return ([], 7)
-
     def _fake_system_bar_context(
         settings: AppSettings,
         *,
-        state: dict[str, Any],
-        recordings_panel: dict[str, Any],
         runtime_status: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        assert settings is seen["settings"]
-        assert recordings_panel == {"total": 7}
+        assert settings is ui_routes._settings  # noqa: SLF001
         assert runtime_status == {"items": []}
         return {
             "items": [
                 {
                     "label": "Node status",
                     "value": "Online",
-                    "detail": f"{recordings_panel['total']} visible for {state['status']}",
+                    "detail": "synthetic node detail",
                     "tone": "healthy",
                     "show_dot": True,
                 }
@@ -664,9 +634,17 @@ def test_control_center_system_bar_route_avoids_work_pane_builder(
     monkeypatch.setattr(
         ui_routes,
         "_control_center_recordings_panel_context",
-        _unexpected_recordings_panel,
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("_control_center_recordings_panel_context should not run here")
+        ),
     )
-    monkeypatch.setattr(ui_routes, "list_recordings", _fake_list_recordings)
+    monkeypatch.setattr(
+        ui_routes,
+        "list_recordings",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("list_recordings should not run here")
+        ),
+    )
 
     async def _fake_run_in_threadpool(func, settings):
         assert func is ui_routes.collect_control_center_runtime_status
@@ -684,13 +662,6 @@ def test_control_center_system_bar_route_avoids_work_pane_builder(
     )
 
     assert response.status_code == 200
-    assert seen == {
-        "settings": ui_routes._settings,  # noqa: SLF001
-        "status": "Ready",
-        "q": "meeting",
-        "limit": 1,
-        "offset": 0,
-    }
     assert 'id="control-center-system-bar"' in response.text
     assert "Node status" in response.text
     assert "Online" in response.text

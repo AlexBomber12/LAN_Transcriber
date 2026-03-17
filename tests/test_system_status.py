@@ -452,7 +452,11 @@ def test_collect_control_center_runtime_status_gpu_runtime_detail_branches(tmp_p
         ),
     )
     payload = system_status.collect_control_center_runtime_status(settings)
-    assert payload["items"][1]["detail"].endswith("torch CUDA 12.6")
+    assert payload["items"][1]["value"] == "GPU unavailable"
+    assert payload["items"][1]["tone"] == "offline"
+    assert payload["items"][1]["detail"].endswith(
+        "torch CUDA 12.6 but torch.cuda.is_available() is false"
+    )
 
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "")
     monkeypatch.setattr(
@@ -523,8 +527,8 @@ def test_collect_control_center_runtime_status_runtime_metadata_branches(tmp_pat
         ),
     )
     gpu_runtime = system_status.collect_control_center_runtime_status(settings)
-    assert gpu_runtime["items"][1]["value"] == "GPU ready"
-    assert gpu_runtime["items"][1]["tone"] == "healthy"
+    assert gpu_runtime["items"][1]["value"] == "GPU unavailable"
+    assert gpu_runtime["items"][1]["tone"] == "offline"
 
 
 def test_collect_control_center_runtime_status_active_llm_and_mixed_target(tmp_path, monkeypatch):

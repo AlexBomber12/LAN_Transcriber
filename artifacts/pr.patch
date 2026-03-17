@@ -1,1362 +1,195 @@
 diff --git a/lan_app/system_status.py b/lan_app/system_status.py
-index 24ae42e..359118e 100644
+index 359118e..c50e03b 100644
 --- a/lan_app/system_status.py
 +++ b/lan_app/system_status.py
-@@ -3,6 +3,8 @@ from __future__ import annotations
- import json
- import os
- from pathlib import Path
-+import shutil
-+import subprocess
- from typing import Any
- 
- import httpx
-@@ -10,13 +12,11 @@ import httpx
- from lan_transcriber.gpu_policy import (
-     collect_cuda_runtime_facts,
-     is_gpu_device,
--    resolve_scheduler_decision,
- )
- 
- from .config import AppSettings
- from .constants import JOB_STATUS_QUEUED, JOB_STATUS_STARTED
- from .db import get_recording, list_jobs
--from .healthchecks import check_redis_health, check_worker_health
- 
- _SPARK_PROBE_TIMEOUT = httpx.Timeout(2.0, connect=0.5)
- 
-@@ -223,6 +223,88 @@ def _safe_get_recording(
-     return recording if isinstance(recording, dict) else None
- 
- 
-+def _gpu_visibility_disabled() -> bool:
-+    raw = os.getenv("CUDA_VISIBLE_DEVICES")
-+    if raw is None:
-+        return False
-+    return raw.strip().lower() in {"", "-1", "none", "void"}
-+
-+
-+def _parse_int(value: str | None) -> int | None:
-+    if value is None:
-+        return None
-+    try:
-+        return int(str(value).strip())
-+    except (TypeError, ValueError):
-+        return None
-+
-+
-+def _probe_nvidia_smi() -> dict[str, Any]:
-+    executable = shutil.which("nvidia-smi")
-+    if not executable:
-+        return {
-+            "available": False,
-+            "device_count": 0,
-+            "busy": False,
-+            "detail": "nvidia-smi unavailable",
-+        }
-+
-+    try:
-+        completed = subprocess.run(
-+            [
-+                executable,
-+                "--query-gpu=index,utilization.gpu",
-+                "--format=csv,noheader,nounits",
-+            ],
-+            check=True,
-+            capture_output=True,
-+            text=True,
-+            timeout=2.0,
-+        )
-+    except subprocess.TimeoutExpired:
-+        return {
-+            "available": False,
-+            "device_count": 0,
-+            "busy": False,
-+            "detail": "nvidia-smi timed out",
-+        }
-+    except (OSError, subprocess.CalledProcessError) as exc:
-+        stderr = str(getattr(exc, "stderr", "") or "").strip()
-+        detail = stderr or f"nvidia-smi failed: {type(exc).__name__}"
-+        return {
-+            "available": False,
-+            "device_count": 0,
-+            "busy": False,
-+            "detail": detail,
-+        }
-+
-+    rows = [line.strip() for line in completed.stdout.splitlines() if line.strip()]
-+    if not rows:
-+        return {
-+            "available": False,
-+            "device_count": 0,
-+            "busy": False,
-+            "detail": "nvidia-smi reported no visible GPUs",
-+        }
-+
-+    utilizations = []
-+    for row in rows:
-+        parts = [part.strip() for part in row.split(",")]
-+        utilization = _parse_int(parts[1] if len(parts) > 1 else None)
-+        if utilization is not None:
-+            utilizations.append(max(utilization, 0))
-+
-+    detail = f"nvidia-smi sees {len(rows)} GPU(s)"
-+    if utilizations:
-+        detail = f"{detail} · util up to {max(utilizations)}%"
-+    return {
-+        "available": True,
-+        "device_count": len(rows),
-+        "busy": any(utilization > 0 for utilization in utilizations),
-+        "detail": detail,
-+    }
-+
-+
- def _active_job_snapshot(settings: AppSettings) -> dict[str, Any]:
-     try:
-         started_rows, started_total = list_jobs(
-@@ -305,202 +387,156 @@ def _active_runtime_metadata(
-     return {}
- 
- 
--def collect_control_center_runtime_status(settings: AppSettings) -> dict[str, Any]:
--    worker_health = check_worker_health(settings)
--    redis_health = check_redis_health(settings)
--    spark = _probe_spark_runtime(settings)
--    queue = _active_job_snapshot(settings)
--    cuda_facts = collect_cuda_runtime_facts()
--
--    active_stage = str(queue.get("active_stage") or "").strip().lower()
--    active_llm = active_stage.startswith("llm")
--    gpu_busy = bool(queue.get("started_total")) and not active_llm
--    active_detail = str(queue.get("active_detail") or "").strip()
--
--    if queue.get("error"):
--        active_jobs_item = {
--            "label": "Active jobs",
--            "value": "Queue unknown",
--            "detail": str(queue["error"]),
--            "tone": "degraded",
-+def _node_status_item(
-+    *,
-+    spark: dict[str, Any],
-+    queue: dict[str, Any],
-+    active_llm: bool,
-+    active_detail: str,
-+) -> dict[str, Any]:
-+    if spark["state"] == "healthy":
-+        node_busy = bool(queue.get("started_total")) or active_llm
-+        detail = active_detail if node_busy and active_detail else spark["detail"]
-+        return {
-+            "label": "Node status",
-+            "value": "Busy" if node_busy else "Online",
-+            "detail": detail,
-+            "tone": "busy" if node_busy else "healthy",
-+            "show_dot": True,
-         }
--    elif not redis_health["ok"]:
--        active_jobs_item = {
--            "label": "Active jobs",
--            "value": "Queue offline",
--            "detail": str(redis_health["detail"]),
-+    if spark["state"] == "offline":
-+        return {
-+            "label": "Node status",
-+            "value": "Offline",
-+            "detail": spark["detail"],
-             "tone": "offline",
-+            "show_dot": True,
-         }
--    elif queue["started_total"] or queue["queued_total"]:
--        active_jobs_item = {
--            "label": "Active jobs",
--            "value": f"{queue['started_total']} active · {queue['queued_total']} queued",
--            "detail": active_detail or str(worker_health["detail"]),
--            "tone": "busy" if worker_health["ok"] else "degraded",
--        }
--    else:
--        active_jobs_item = {
--            "label": "Active jobs",
--            "value": "Idle",
--            "detail": str(worker_health["detail"]),
--            "tone": "healthy" if worker_health["ok"] else "degraded",
--        }
--
--    spark_tone = "degraded" if spark["state"] == "unknown" else spark["state"]
--    spark_value = spark["value"]
--    spark_detail = spark["detail"]
--    if spark["state"] == "healthy":
--        spark_tone = "busy" if active_llm else "healthy"
--        spark_value = "Busy" if active_llm else "Online"
--        spark_detail = (
--            f"{active_detail} · {spark['host']}"
--            if active_llm and active_detail
--            else spark["detail"]
--        )
--    spark_item = {
--        "label": "DGX / Spark",
--        "value": spark_value,
--        "detail": spark_detail,
--        "tone": spark_tone,
-+    return {
-+        "label": "Node status",
-+        "value": "Unknown",
-+        "detail": spark["detail"],
-+        "tone": "degraded",
-+        "show_dot": True,
-     }
- 
--    explicit_gpu_requested = _safe_is_gpu_device(getattr(settings, "asr_device", None)) or _safe_is_gpu_device(
--        getattr(settings, "diarization_device", None)
--    )
--    visible_devices = cuda_facts.visible_devices or "default"
-+
-+def _gpu_runtime_item(
-+    *,
-+    settings: AppSettings,
-+    queue: dict[str, Any],
-+    active_llm: bool,
-+    cuda_facts: Any,
-+) -> dict[str, Any]:
-+    explicit_gpu_requested = _safe_is_gpu_device(
-+        getattr(settings, "asr_device", None)
-+    ) or _safe_is_gpu_device(getattr(settings, "diarization_device", None))
-+    gpu_busy = bool(queue.get("started_total")) and not active_llm
-     torch_cuda = cuda_facts.torch_cuda_version or "none"
-+    nvidia_smi = _probe_nvidia_smi()
-+
-     if cuda_facts.is_available and cuda_facts.device_count > 0:
--        gpu_item = {
-+        detail = f"torch sees {cuda_facts.device_count} GPU(s) · CUDA {torch_cuda}"
-+        if nvidia_smi["available"]:
-+            detail = f"{detail} · {nvidia_smi['detail']}"
-+        return {
-             "label": "GPU runtime",
--            "value": "GPU active" if gpu_busy else "GPU ready",
--            "detail": f"{cuda_facts.device_count} visible · torch CUDA {torch_cuda}",
-+            "value": "GPU busy" if gpu_busy else "GPU ready",
-+            "detail": detail,
-             "tone": "busy" if gpu_busy else "healthy",
-         }
--    else:
--        gpu_item = {
-+
-+    if _gpu_visibility_disabled():
-+        return {
-             "label": "GPU runtime",
-             "value": "GPU unavailable" if explicit_gpu_requested else "CPU only",
--            "detail": f"visible={visible_devices} · torch CUDA {torch_cuda}",
-+            "detail": "CUDA_VISIBLE_DEVICES disables GPU visibility for this process",
-             "tone": "offline" if explicit_gpu_requested else "degraded",
-         }
- 
--    active_recording = queue.get("active_recording") or {}
--    active_recording_id = str(active_recording.get("id") or "").strip()
--    runtime_metadata = _active_runtime_metadata(
--        settings,
--        recording_id=active_recording_id,
--    )
--    if runtime_metadata:
--        effective_device = str(runtime_metadata.get("effective_device") or "").strip() or None
--        runtime_mode = str(runtime_metadata.get("mode") or "").strip() or "unknown"
--        if _safe_is_gpu_device(effective_device):
--            inference_item = {
--                "label": "Inference mode",
--                "value": "GPU path",
--                "detail": (
--                    f"{_recording_label(active_recording, active_recording_id or 'recording')} "
--                    f"· {_stage_label(active_stage)} · {effective_device}"
--                ),
--                "tone": "busy" if gpu_busy else "healthy",
--            }
-+    if nvidia_smi["available"]:
-+        detail = nvidia_smi["detail"]
-+        if torch_cuda != "none":
-+            detail = f"{detail} · torch CUDA {torch_cuda}"
+@@ -457,14 +457,14 @@ def _gpu_runtime_item(
+     if nvidia_smi["available"]:
+         detail = nvidia_smi["detail"]
+         if torch_cuda != "none":
+-            detail = f"{detail} · torch CUDA {torch_cuda}"
++            detail = f"{detail} · torch CUDA {torch_cuda} but torch.cuda.is_available() is false"
          else:
--            fallback_tone = "offline" if explicit_gpu_requested else "degraded"
--            inference_item = {
--                "label": "Inference mode",
--                "value": "CPU fallback" if runtime_mode != "unknown" else "CPU path",
--                "detail": (
--                    f"{_recording_label(active_recording, active_recording_id or 'recording')} "
--                    f"· {_stage_label(active_stage)} · {runtime_mode}"
--                ),
--                "tone": fallback_tone,
--            }
--    else:
--        try:
--            scheduler = resolve_scheduler_decision(
--                getattr(settings, "gpu_scheduler_mode", "auto"),
--                asr_device=getattr(settings, "asr_device", "auto"),
--                diarization_device=getattr(settings, "diarization_device", "auto"),
--                diarization_is_heavy=True,
--                cuda_facts=cuda_facts,
--            )
--            asr_gpu = _safe_is_gpu_device(scheduler.asr_device)
--            diarization_gpu = _safe_is_gpu_device(scheduler.diarization_device)
--            if asr_gpu and diarization_gpu:
--                inference_item = {
--                    "label": "Inference mode",
--                    "value": "GPU path",
--                    "detail": (
--                        f"ASR {scheduler.asr_device} · Diarization {scheduler.diarization_device} "
--                        f"· {scheduler.effective_mode}"
--                    ),
--                    "tone": "busy" if gpu_busy else "healthy",
--                }
--            elif asr_gpu or diarization_gpu:
--                inference_item = {
--                    "label": "Inference mode",
--                    "value": "Mixed path",
--                    "detail": (
--                        f"ASR {scheduler.asr_device} · Diarization {scheduler.diarization_device} "
--                        f"· {scheduler.effective_mode}"
--                    ),
--                    "tone": "busy" if gpu_busy else "degraded",
--                }
--            else:
--                inference_item = {
--                    "label": "Inference mode",
--                    "value": "CPU fallback" if explicit_gpu_requested else "CPU path",
--                    "detail": (
--                        f"ASR {scheduler.asr_device} · Diarization {scheduler.diarization_device} "
--                        f"· {scheduler.effective_mode}"
--                    ),
--                    "tone": "offline" if explicit_gpu_requested else "degraded",
--                }
--        except Exception as exc:
--            inference_item = {
--                "label": "Inference mode",
--                "value": "Blocked",
--                "detail": str(exc),
--                "tone": "offline",
--            }
-+            detail = f"{detail} · torch CUDA unavailable"
-+        return {
-+            "label": "GPU runtime",
-+            "value": "GPU busy" if nvidia_smi["busy"] else "GPU ready",
-+            "detail": detail,
-+            "tone": "busy" if nvidia_smi["busy"] else "healthy",
-+        }
+             detail = f"{detail} · torch CUDA unavailable"
+         return {
+             "label": "GPU runtime",
+-            "value": "GPU busy" if nvidia_smi["busy"] else "GPU ready",
++            "value": "GPU unavailable",
+             "detail": detail,
+-            "tone": "busy" if nvidia_smi["busy"] else "healthy",
++            "tone": "offline",
+         }
  
-+    visible_devices = cuda_facts.visible_devices or "default"
-+    return {
-+        "label": "GPU runtime",
-+        "value": "GPU unavailable" if explicit_gpu_requested else "CPU only",
-+        "detail": f"visible={visible_devices} · torch CUDA {torch_cuda}",
-+        "tone": "offline" if explicit_gpu_requested else "degraded",
-+    }
-+
-+
-+def _llm_runtime_item(
-+    *,
-+    settings: AppSettings,
-+    spark: dict[str, Any],
-+    active_llm: bool,
-+) -> dict[str, Any]:
-     configured_model = str(getattr(settings, "llm_model", "") or "").strip() or "Unknown"
-+
-     if spark["state"] == "healthy":
--        target_tone = "busy" if active_llm else "healthy"
-+        tone = "busy" if active_llm else "healthy"
-         if spark["model_verified"] is False:
--            target_tone = "degraded"
--        target_detail = (
--            f"{spark['host']} · advertised by Spark"
-+            tone = "degraded"
-+        detail = (
-+            f"{spark['host']} · configured model is advertised"
-             if spark["model_verified"] is not False
--            else f"{spark['host']} · configured target not advertised"
-+            else f"{spark['host']} · configured model is not advertised"
-         )
--        if active_llm and active_detail:
--            target_detail = f"{active_detail} · {spark['host']}"
-     elif spark["state"] == "offline":
--        target_tone = "offline"
--        target_detail = f"{spark['host']} · configured target only"
-+        tone = "offline"
-+        detail = f"{spark['host']} · endpoint offline"
-     else:
--        target_tone = "degraded"
--        target_detail = spark["detail"]
--    target_item = {
--        "label": "Inference target",
-+        tone = "degraded"
-+        detail = spark["detail"]
-+
-+    return {
-+        "label": "LLM:",
-         "value": configured_model,
--        "detail": target_detail,
--        "tone": target_tone,
-+        "detail": detail,
-+        "tone": tone,
-     }
- 
-+
-+def collect_control_center_runtime_status(settings: AppSettings) -> dict[str, Any]:
-+    spark = _probe_spark_runtime(settings)
-+    queue = _active_job_snapshot(settings)
-+    cuda_facts = collect_cuda_runtime_facts()
-+
-+    active_stage = str(queue.get("active_stage") or "").strip().lower()
-+    active_llm = active_stage.startswith("llm")
-+    active_detail = str(queue.get("active_detail") or "").strip()
-+
-     return {
--        "active_jobs_item": active_jobs_item,
--        "secondary_items": [
--            spark_item,
--            gpu_item,
--            inference_item,
--            target_item,
-+        "items": [
-+            _node_status_item(
-+                spark=spark,
-+                queue=queue,
-+                active_llm=active_llm,
-+                active_detail=active_detail,
-+            ),
-+            _gpu_runtime_item(
-+                settings=settings,
-+                queue=queue,
-+                active_llm=active_llm,
-+                cuda_facts=cuda_facts,
-+            ),
-+            _llm_runtime_item(
-+                settings=settings,
-+                spark=spark,
-+                active_llm=active_llm,
-+            ),
-         ],
--        "note": (
--            "Runtime snapshot uses worker heartbeat, DB job rows, local CUDA visibility, "
--            "and a lightweight Spark /v1/models probe. CPU fallback is confirmed from "
--            "active diarization metadata when available and otherwise inferred from settings."
--        ),
-     }
- 
- 
-diff --git a/lan_app/templates/base.html b/lan_app/templates/base.html
-index d54259d..ea33985 100644
---- a/lan_app/templates/base.html
-+++ b/lan_app/templates/base.html
-@@ -407,7 +407,7 @@ textarea:focus{
- .control-center-shell{
-   display:grid;
-   gap:18px;
--  padding-bottom:92px;
-+  padding-bottom:0;
- }
- .control-center-workspace-header{
-   display:grid;
-@@ -961,88 +961,78 @@ textarea:focus{
-   color:var(--muted);
- }
- .control-center-system-bar{
--  position:sticky;
--  bottom:10px;
--  z-index:40;
--  display:grid;
--  gap:12px;
--  padding:14px 16px;
--  border-radius:24px;
-+  position:static;
-+  display:flex;
-+  flex-wrap:wrap;
-+  align-items:center;
-+  gap:10px;
-+  padding:10px 12px;
-+  border-radius:18px;
-   border:1px solid rgba(30,41,59,.18);
-   background:rgba(15,23,42,.94);
-   color:#d9e5f8;
--  box-shadow:0 20px 48px rgba(15,23,42,.24);
-+  box-shadow:0 16px 34px rgba(15,23,42,.18);
-   backdrop-filter:blur(18px);
--  pointer-events:none;
-+  pointer-events:auto;
- }
--.control-center-system-group{
--  display:grid;
--  gap:10px;
--  grid-template-columns:repeat(auto-fit,minmax(170px,1fr));
--}
--.control-center-system-group-secondary{grid-template-columns:repeat(auto-fit,minmax(170px,1fr))}
- .control-center-system-item{
--  display:grid;
--  gap:4px;
-+  --system-accent:#93aac8;
-+  --system-value:#ffffff;
-+  display:inline-flex;
-+  align-items:center;
-+  gap:8px;
-   min-width:0;
--  height:100%;
--  padding:10px 12px;
--  border-radius:18px;
-+  padding:8px 12px;
-+  border-radius:999px;
-   border:1px solid rgba(148,163,184,.18);
-   background:rgba(255,255,255,.04);
- }
- .control-center-system-item--neutral{
-+  --system-accent:#93aac8;
-+  --system-value:#ffffff;
-   background:rgba(255,255,255,.04);
-   border-color:rgba(148,163,184,.18);
- }
- .control-center-system-item--healthy{
-+  --system-accent:#86efac;
-+  --system-value:#f0fdf4;
-   background:rgba(22,101,52,.18);
-   border-color:rgba(134,239,172,.28);
- }
- .control-center-system-item--busy,
- .control-center-system-item--degraded{
-+  --system-accent:#fbbf24;
-+  --system-value:#fff7d6;
-   background:rgba(180,83,9,.16);
-   border-color:rgba(251,191,36,.3);
- }
- .control-center-system-item--offline{
-+  --system-accent:#f87171;
-+  --system-value:#fee2e2;
-   background:rgba(127,29,29,.24);
-   border-color:rgba(248,113,113,.32);
- }
-+.control-center-system-dot{
-+  width:8px;
-+  height:8px;
-+  flex:none;
-+  border-radius:999px;
-+  background:var(--system-accent);
-+  box-shadow:0 0 0 4px rgba(255,255,255,.06);
-+}
- .control-center-system-label{
--  font-size:10px;
--  font-weight:800;
--  letter-spacing:.12em;
--  text-transform:uppercase;
--  color:#93aac8;
-+  font-size:11px;
-+  font-weight:700;
-+  color:var(--system-accent);
-+  white-space:nowrap;
- }
--.control-center-system-item--healthy .control-center-system-label{color:#b9ebc8}
--.control-center-system-item--busy .control-center-system-label,
--.control-center-system-item--degraded .control-center-system-label{color:#f7d18b}
--.control-center-system-item--offline .control-center-system-label{color:#f6b0b0}
- .control-center-system-value{
--  font-size:14px;
-+  font-size:13px;
-   font-weight:700;
--  color:#fff;
--  overflow-wrap:anywhere;
--}
--.control-center-system-item--healthy .control-center-system-value{color:#f0fdf4}
--.control-center-system-item--busy .control-center-system-value,
--.control-center-system-item--degraded .control-center-system-value{color:#fff7d6}
--.control-center-system-item--offline .control-center-system-value{color:#fee2e2}
--.control-center-system-detail{
--  font-size:11px;
--  color:#b7c6db;
--}
--.control-center-system-item--healthy .control-center-system-detail{color:#d5f3de}
--.control-center-system-item--busy .control-center-system-detail,
--.control-center-system-item--degraded .control-center-system-detail{color:#f8dfae}
--.control-center-system-item--offline .control-center-system-detail{color:#fecaca}
--.control-center-system-note{
--  margin:0;
--  padding-top:2px;
--  border-top:1px solid rgba(148,163,184,.12);
--  font-size:11px;
--  color:#93aac8;
-+  color:var(--system-value);
-+  white-space:nowrap;
-+  overflow:hidden;
-+  text-overflow:ellipsis;
- }
- .inspector-shell{
-   display:grid;
-@@ -1803,7 +1793,7 @@ textarea:focus{
- .detail-page-shell{
-   display:grid;
-   gap:20px;
--  padding-bottom:120px;
-+  padding-bottom:0;
- }
- @media (max-width: 1180px){
-   .control-center-workspace-header,
-diff --git a/lan_app/templates/partials/control_center/system_bar.html b/lan_app/templates/partials/control_center/system_bar.html
-index 7e6cd28..874703e 100644
---- a/lan_app/templates/partials/control_center/system_bar.html
-+++ b/lan_app/templates/partials/control_center/system_bar.html
-@@ -6,25 +6,16 @@
-   hx-target="this"
-   hx-swap="outerHTML"
- >
--  <div class="control-center-system-group">
--    {% for item in control_center_system_bar.primary_items %}
--    <div class="control-center-system-item control-center-system-item--{{ item.tone or 'neutral' }}">
--      <span class="control-center-system-label">{{ item.label }}</span>
--      <strong class="control-center-system-value">{{ item.value }}</strong>
--      <span class="control-center-system-detail">{{ item.detail }}</span>
--    </div>
--    {% endfor %}
-+  {% for item in control_center_system_bar["items"] %}
-+  <div
-+    class="control-center-system-item control-center-system-item--{{ item.tone or 'neutral' }}"
-+    {% if item.detail %}title="{{ item.detail }}"{% endif %}
-+  >
-+    {% if item.show_dot %}
-+    <span class="control-center-system-dot" aria-hidden="true"></span>
-+    {% endif %}
-+    <span class="control-center-system-label">{{ item.label }}</span>
-+    <strong class="control-center-system-value">{{ item.value }}</strong>
-   </div>
--
--  <div class="control-center-system-group control-center-system-group-secondary">
--    {% for item in control_center_system_bar.secondary_items %}
--    <div class="control-center-system-item control-center-system-item--{{ item.tone or 'neutral' }}">
--      <span class="control-center-system-label">{{ item.label }}</span>
--      <strong class="control-center-system-value">{{ item.value }}</strong>
--      <span class="control-center-system-detail">{{ item.detail }}</span>
--    </div>
--    {% endfor %}
--  </div>
--
--  <p class="control-center-system-note">{{ control_center_system_bar.note }}</p>
-+  {% endfor %}
- </footer>
+     visible_devices = cuda_facts.visible_devices or "default"
 diff --git a/lan_app/ui_routes.py b/lan_app/ui_routes.py
-index 70a50f6..407fccd 100644
+index 407fccd..64f26a1 100644
 --- a/lan_app/ui_routes.py
 +++ b/lan_app/ui_routes.py
-@@ -3351,23 +3351,11 @@ def _control_center_system_bar_context(
-     recordings_panel: dict[str, Any],
+@@ -3347,11 +3347,8 @@ def _control_center_work_pane_context(
+ def _control_center_system_bar_context(
+     settings: AppSettings,
+     *,
+-    state: dict[str, Any],
+-    recordings_panel: dict[str, Any],
      runtime_status: dict[str, Any] | None = None,
  ) -> dict[str, Any]:
--    queue_detail = state["status"] or "All statuses"
--    if state["q"]:
--        queue_detail = f"{queue_detail} · search: {state['q']}"
-+    del state, recordings_panel
+-    del state, recordings_panel
      if runtime_status is None:
          runtime_status = collect_control_center_runtime_status(settings)
      return {
--        "primary_items": [
--            {
--                "label": "Inbox view",
--                "value": f"{recordings_panel['total']} visible",
--                "detail": queue_detail,
--                "tone": "neutral",
--            },
--            runtime_status["active_jobs_item"],
--        ],
--        "secondary_items": runtime_status["secondary_items"],
--        "note": runtime_status["note"],
-+        "items": runtime_status["items"],
-     }
- 
- 
-diff --git a/tasks/QUEUE.md b/tasks/QUEUE.md
-index 7377bf6..d5e6a4c 100644
---- a/tasks/QUEUE.md
-+++ b/tasks/QUEUE.md
-@@ -610,7 +610,6 @@ Queue (in order)
- - Depends on: PR-UI-STITCH-POLISH-02
- 
- 122) PR-OPS-SYSTEM-BAR-02: Simplify the bottom system bar to a compact Node/GPU/LLM row and make GPU runtime status truthful
--- Status: TODO
-+- Status: DONE
- - Tasks file: tasks/PR-OPS-SYSTEM-BAR-02.md
- - Depends on: PR-UI-STITCH-REDUCTION-01 and PR-OPS-SYSTEM-BAR-01
--
+@@ -4660,8 +4657,6 @@ async def ui_dashboard(
+             "control_center_work_pane": control_center_work_pane,
+             "control_center_system_bar": _control_center_system_bar_context(
+                 _settings,
+-                state=control_center_state,
+-                recordings_panel=control_center_work_pane["recordings_panel"],
+                 runtime_status=runtime_status,
+             ),
+             "control_center_empty_inspector": control_center_empty_inspector,
+@@ -4725,13 +4720,6 @@ async def ui_control_center_system_bar(
+             "control_center_state": control_center_state,
+             "control_center_system_bar": _control_center_system_bar_context(
+                 _settings,
+-                state=control_center_state,
+-                recordings_panel={
+-                    "total": _control_center_visible_total(
+-                        _settings,
+-                        state=control_center_state,
+-                    )
+-                },
+                 runtime_status=runtime_status,
+             ),
+         },
+@@ -5078,8 +5066,6 @@ async def ui_recording_detail(
+             "control_center_state": detail_state,
+             "control_center_system_bar": _control_center_system_bar_context(
+                 _settings,
+-                state=detail_state,
+-                recordings_panel={"total": 1},
+                 runtime_status=runtime_status,
+             ),
+             **inspector_context,
 diff --git a/tests/test_cov_lan_app_ui_routes.py b/tests/test_cov_lan_app_ui_routes.py
-index 119db6d..0d87406 100644
+index 0d87406..ce8592a 100644
 --- a/tests/test_cov_lan_app_ui_routes.py
 +++ b/tests/test_cov_lan_app_ui_routes.py
-@@ -40,39 +40,27 @@ from lan_app.jobs import DuplicateRecordingJobError
+@@ -501,8 +501,6 @@ def test_control_center_helper_contexts_cover_fragment_builders(
  
- def _stub_runtime_status() -> dict[str, object]:
-     return {
--        "active_jobs_item": {
--            "label": "Active jobs",
--            "value": "Idle",
--            "detail": "worker 'test-worker' heartbeat 5s ago",
--            "tone": "healthy",
--        },
--        "secondary_items": [
-+        "items": [
-             {
--                "label": "DGX / Spark",
-+                "label": "Node status",
-                 "value": "Online",
-                 "detail": "dgx.local responded to /v1/models",
-                 "tone": "healthy",
-+                "show_dot": True,
-             },
-             {
-                 "label": "GPU runtime",
-                 "value": "GPU ready",
--                "detail": "1 visible · torch CUDA 12.6",
--                "tone": "healthy",
--            },
--            {
--                "label": "Inference mode",
--                "value": "GPU path",
--                "detail": "ASR cuda · Diarization cuda · sequential",
-+                "detail": "torch sees 1 GPU(s) · CUDA 12.6",
-                 "tone": "healthy",
-             },
-             {
--                "label": "Inference target",
-+                "label": "LLM:",
-                 "value": "gpt-oss:120b",
--                "detail": "dgx.local · advertised by Spark",
-+                "detail": "dgx.local · configured model is advertised",
-                 "tone": "healthy",
-             },
-         ],
--        "note": "test runtime note",
-     }
- 
- 
-@@ -516,12 +504,11 @@ def test_control_center_helper_contexts_cover_fragment_builders(
-         state=state,
-         recordings_panel=work_pane["recordings_panel"],
-     )
--    assert system_bar["primary_items"][0]["value"] == "3 visible"
--    assert system_bar["primary_items"][0]["detail"] == "Ready · search: helper"
--    assert system_bar["primary_items"][1]["label"] == "Active jobs"
--    assert system_bar["secondary_items"][0]["value"] == "Online"
--    assert system_bar["secondary_items"][1]["value"] == "GPU ready"
--    assert system_bar["note"] == "test runtime note"
-+    assert len(system_bar["items"]) == 3
-+    assert system_bar["items"][0]["label"] == "Node status"
-+    assert system_bar["items"][0]["show_dot"] is True
-+    assert system_bar["items"][1]["value"] == "GPU ready"
-+    assert system_bar["items"][2]["label"] == "LLM:"
- 
-     assert ui_routes._control_center_visible_total(  # noqa: SLF001
+     system_bar = ui_routes._control_center_system_bar_context(  # noqa: SLF001
          cfg,
-@@ -658,21 +645,17 @@ def test_control_center_system_bar_route_avoids_work_pane_builder(
-     ) -> dict[str, Any]:
-         assert settings is seen["settings"]
-         assert recordings_panel == {"total": 7}
--        assert runtime_status == {
--            "active_jobs_item": {},
--            "secondary_items": [],
--            "note": "test runtime note",
--        }
-+        assert runtime_status == {"items": []}
-         return {
--            "primary_items": [
-+            "items": [
-                 {
--                    "label": "Inbox view",
--                    "value": f"{recordings_panel['total']} visible",
--                    "detail": state["status"] or "All statuses",
-+                    "label": "Node status",
-+                    "value": "Online",
-+                    "detail": f"{recordings_panel['total']} visible for {state['status']}",
-+                    "tone": "healthy",
-+                    "show_dot": True,
-                 }
-             ],
--            "secondary_items": [],
--            "note": "test note",
-         }
+-        state=state,
+-        recordings_panel=work_pane["recordings_panel"],
+     )
+     assert len(system_bar["items"]) == 3
+     assert system_bar["items"][0]["label"] == "Node status"
+@@ -611,47 +609,19 @@ def test_control_center_system_bar_route_avoids_work_pane_builder(
+     def _unexpected_work_pane(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+         raise AssertionError("_control_center_work_pane_context should not run here")
  
+-    seen: dict[str, Any] = {}
+-
+-    def _unexpected_recordings_panel(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+-        raise AssertionError(
+-            "_control_center_recordings_panel_context should not run here"
+-        )
+-
+-    def _fake_list_recordings(
+-        settings: AppSettings,
+-        status: str | None = None,
+-        q: str = "",
+-        limit: int = 100,
+-        offset: int = 0,
+-    ) -> tuple[list[dict[str, Any]], int]:
+-        seen.update(
+-            {
+-                "settings": settings,
+-                "status": status,
+-                "q": q,
+-                "limit": limit,
+-                "offset": offset,
+-            }
+-        )
+-        return ([], 7)
+-
+     def _fake_system_bar_context(
+         settings: AppSettings,
+         *,
+-        state: dict[str, Any],
+-        recordings_panel: dict[str, Any],
+         runtime_status: dict[str, Any] | None = None,
+     ) -> dict[str, Any]:
+-        assert settings is seen["settings"]
+-        assert recordings_panel == {"total": 7}
++        assert settings is ui_routes._settings  # noqa: SLF001
+         assert runtime_status == {"items": []}
+         return {
+             "items": [
+                 {
+                     "label": "Node status",
+                     "value": "Online",
+-                    "detail": f"{recordings_panel['total']} visible for {state['status']}",
++                    "detail": "synthetic node detail",
+                     "tone": "healthy",
+                     "show_dot": True,
+                 }
+@@ -664,9 +634,17 @@ def test_control_center_system_bar_route_avoids_work_pane_builder(
      monkeypatch.setattr(
-@@ -688,11 +671,7 @@ def test_control_center_system_bar_route_avoids_work_pane_builder(
+         ui_routes,
+         "_control_center_recordings_panel_context",
+-        _unexpected_recordings_panel,
++        lambda *_args, **_kwargs: (_ for _ in ()).throw(
++            AssertionError("_control_center_recordings_panel_context should not run here")
++        ),
++    )
++    monkeypatch.setattr(
++        ui_routes,
++        "list_recordings",
++        lambda **_kwargs: (_ for _ in ()).throw(
++            AssertionError("list_recordings should not run here")
++        ),
+     )
+-    monkeypatch.setattr(ui_routes, "list_recordings", _fake_list_recordings)
+ 
      async def _fake_run_in_threadpool(func, settings):
          assert func is ui_routes.collect_control_center_runtime_status
-         assert settings is ui_routes._settings  # noqa: SLF001
--        return {
--            "active_jobs_item": {},
--            "secondary_items": [],
--            "note": "test runtime note",
--        }
-+        return {"items": []}
+@@ -684,13 +662,6 @@ def test_control_center_system_bar_route_avoids_work_pane_builder(
+     )
  
-     monkeypatch.setattr(ui_routes, "run_in_threadpool", _fake_run_in_threadpool)
-     monkeypatch.setattr(
-@@ -713,8 +692,8 @@ def test_control_center_system_bar_route_avoids_work_pane_builder(
-         "offset": 0,
-     }
+     assert response.status_code == 200
+-    assert seen == {
+-        "settings": ui_routes._settings,  # noqa: SLF001
+-        "status": "Ready",
+-        "q": "meeting",
+-        "limit": 1,
+-        "offset": 0,
+-    }
      assert 'id="control-center-system-bar"' in response.text
--    assert "7 visible" in response.text
--    assert "test note" in response.text
-+    assert "Node status" in response.text
-+    assert "Online" in response.text
- 
- 
- def test_recordings_panel_context_clamps_offset_to_last_available_page(
+     assert "Node status" in response.text
+     assert "Online" in response.text
 diff --git a/tests/test_system_status.py b/tests/test_system_status.py
-index f91a530..c947544 100644
+index c947544..683ad0b 100644
 --- a/tests/test_system_status.py
 +++ b/tests/test_system_status.py
-@@ -56,6 +56,17 @@ def _client_factory(result, seen_headers: list[dict[str, str]] | None = None):
-     return _FakeClient
- 
- 
-+def _nvidia_smi_probe(**overrides):
-+    probe = {
-+        "available": False,
-+        "device_count": 0,
-+        "busy": False,
-+        "detail": "nvidia-smi unavailable",
-+    }
-+    probe.update(overrides)
-+    return probe
-+
-+
- def test_system_status_small_helpers_cover_edge_cases(tmp_path, monkeypatch):
-     assert system_status._stage_label("") == "Unknown"  # noqa: SLF001
-     assert system_status._stage_label("llm_chunk_2_of_5") == "LLM Chunk 2 Of 5"  # noqa: SLF001
-@@ -107,6 +118,70 @@ def test_system_status_small_helpers_cover_edge_cases(tmp_path, monkeypatch):
-     assert system_status._safe_is_gpu_device("cuda:0") is True  # noqa: SLF001
-     assert system_status._safe_is_gpu_device("bogus") is False  # noqa: SLF001
-     assert system_status._safe_get_recording("", settings=_settings(tmp_path)) is None  # noqa: SLF001
-+    assert system_status._parse_int(None) is None  # noqa: SLF001
-+    assert system_status._parse_int("4") == 4  # noqa: SLF001
-+    assert system_status._parse_int("bad") is None  # noqa: SLF001
-+
-+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
-+    assert system_status._gpu_visibility_disabled() is False  # noqa: SLF001
-+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "")
-+    assert system_status._gpu_visibility_disabled() is True  # noqa: SLF001
-+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0")
-+    assert system_status._gpu_visibility_disabled() is False  # noqa: SLF001
-+
-+    monkeypatch.setattr(system_status.shutil, "which", lambda _name: None)
-+    assert system_status._probe_nvidia_smi()["available"] is False  # noqa: SLF001
-+
-+    monkeypatch.setattr(system_status.shutil, "which", lambda _name: "/usr/bin/nvidia-smi")
-+    monkeypatch.setattr(
-+        system_status.subprocess,
-+        "run",
-+        lambda *args, **kwargs: SimpleNamespace(stdout="0, 0\n1, 76\n"),
-+    )
-+    probe = system_status._probe_nvidia_smi()  # noqa: SLF001
-+    assert probe["available"] is True
-+    assert probe["device_count"] == 2
-+    assert probe["busy"] is True
-+    assert probe["detail"].endswith("76%")
-+
-+    monkeypatch.setattr(
-+        system_status.subprocess,
-+        "run",
-+        lambda *args, **kwargs: (_ for _ in ()).throw(
-+            system_status.subprocess.TimeoutExpired(cmd="nvidia-smi", timeout=2.0)
-+        ),
-+    )
-+    assert system_status._probe_nvidia_smi()["detail"] == "nvidia-smi timed out"  # noqa: SLF001
-+
-+    monkeypatch.setattr(
-+        system_status.subprocess,
-+        "run",
-+        lambda *args, **kwargs: (_ for _ in ()).throw(
-+            system_status.subprocess.CalledProcessError(
-+                1,
-+                ["nvidia-smi"],
-+                stderr="driver mismatch",
-+            )
-+        ),
-+    )
-+    assert system_status._probe_nvidia_smi()["detail"] == "driver mismatch"  # noqa: SLF001
-+
-+    monkeypatch.setattr(
-+        system_status.subprocess,
-+        "run",
-+        lambda *args, **kwargs: SimpleNamespace(stdout=""),
-+    )
-+    assert system_status._probe_nvidia_smi()["detail"] == "nvidia-smi reported no visible GPUs"  # noqa: SLF001
-+
-+    monkeypatch.setattr(
-+        system_status.subprocess,
-+        "run",
-+        lambda *args, **kwargs: SimpleNamespace(stdout="0\n1, not-a-number\n"),
-+    )
-+    probe_without_util = system_status._probe_nvidia_smi()  # noqa: SLF001
-+    assert probe_without_util["available"] is True
-+    assert probe_without_util["busy"] is False
-+    assert probe_without_util["detail"] == "nvidia-smi sees 2 GPU(s)"
- 
- 
- def test_probe_spark_runtime_variants(tmp_path, monkeypatch):
-@@ -261,16 +336,6 @@ def test_active_runtime_metadata_prefers_diarization_metadata(tmp_path):
- 
- def test_collect_control_center_runtime_status_healthy_gpu_path(tmp_path, monkeypatch):
-     settings = _settings(tmp_path, asr_device="cuda", diarization_device="cuda")
--    monkeypatch.setattr(
--        system_status,
--        "check_worker_health",
--        lambda _settings: {"ok": True, "detail": "worker 'w1' heartbeat 5s ago"},
--    )
--    monkeypatch.setattr(
--        system_status,
--        "check_redis_health",
--        lambda _settings: {"ok": True, "detail": "ok"},
--    )
-     monkeypatch.setattr(
-         system_status,
-         "_probe_spark_runtime",
-@@ -307,38 +372,101 @@ def test_collect_control_center_runtime_status_healthy_gpu_path(tmp_path, monkey
-             torch_cuda_version="12.6",
+@@ -452,7 +452,11 @@ def test_collect_control_center_runtime_status_gpu_runtime_detail_branches(tmp_p
          ),
      )
--    monkeypatch.setattr(system_status, "_active_runtime_metadata", lambda *_args, **_kwargs: {})
-     monkeypatch.setattr(
-         system_status,
--        "resolve_scheduler_decision",
--        lambda *args, **kwargs: SimpleNamespace(
--            asr_device="cuda",
--            diarization_device="cuda",
--            effective_mode="sequential",
--        ),
-+        "_probe_nvidia_smi",
-+        lambda: _nvidia_smi_probe(),
-     )
- 
      payload = system_status.collect_control_center_runtime_status(settings)
- 
--    assert payload["active_jobs_item"]["value"] == "1 active · 2 queued"
--    assert payload["secondary_items"][0]["value"] == "Online"
--    assert payload["secondary_items"][1]["value"] == "GPU active"
--    assert payload["secondary_items"][2]["value"] == "GPU path"
--    assert payload["secondary_items"][3]["detail"] == "dgx.local · advertised by Spark"
-+    assert payload["items"][0]["label"] == "Node status"
-+    assert payload["items"][0]["value"] == "Busy"
-+    assert payload["items"][0]["show_dot"] is True
-+    assert payload["items"][1]["value"] == "GPU busy"
-+    assert payload["items"][2]["label"] == "LLM:"
-+    assert payload["items"][2]["detail"] == "dgx.local · configured model is advertised"
- 
- 
--def test_collect_control_center_runtime_status_runtime_metadata_branches(tmp_path, monkeypatch):
-+def test_collect_control_center_runtime_status_gpu_runtime_detail_branches(tmp_path, monkeypatch):
-     settings = _settings(tmp_path, asr_device="cuda", diarization_device="cuda")
-     monkeypatch.setattr(
-         system_status,
--        "check_worker_health",
--        lambda _settings: {"ok": True, "detail": "worker 'w1' heartbeat 5s ago"},
-+        "_probe_spark_runtime",
-+        lambda _settings: {
-+            "state": "healthy",
-+            "value": "Online",
-+            "detail": "dgx.local responded to /v1/models",
-+            "host": "dgx.local",
-+            "advertised_models": ["gpt-oss:120b"],
-+            "model_verified": True,
-+        },
-     )
-     monkeypatch.setattr(
-         system_status,
--        "check_redis_health",
--        lambda _settings: {"ok": True, "detail": "ok"},
-+        "_active_job_snapshot",
-+        lambda _settings: {
-+            "started_total": 0,
-+            "queued_total": 0,
-+            "active_job": None,
-+            "queued_job": None,
-+            "active_recording": None,
-+            "active_detail": "",
-+            "active_stage": "",
-+            "error": None,
-+        },
-+    )
-+    monkeypatch.setattr(
-+        system_status,
-+        "collect_cuda_runtime_facts",
-+        lambda: CudaRuntimeFacts(
-+            is_available=True,
-+            device_count=1,
-+            visible_devices=None,
-+            torch_cuda_version="12.6",
-+        ),
-     )
-+    monkeypatch.setattr(
-+        system_status,
-+        "_probe_nvidia_smi",
-+        lambda: _nvidia_smi_probe(
-+            available=True,
-+            device_count=1,
-+            detail="nvidia-smi sees 1 GPU(s) · util up to 0%",
-+        ),
-+    )
-+
-+    payload = system_status.collect_control_center_runtime_status(settings)
-+    assert payload["items"][1]["detail"].endswith(
-+        "nvidia-smi sees 1 GPU(s) · util up to 0%"
-+    )
-+
-+    monkeypatch.setattr(
-+        system_status,
-+        "collect_cuda_runtime_facts",
-+        lambda: CudaRuntimeFacts(
-+            is_available=False,
-+            device_count=0,
-+            visible_devices=None,
-+            torch_cuda_version="12.6",
-+        ),
-+    )
-+    payload = system_status.collect_control_center_runtime_status(settings)
-+    assert payload["items"][1]["detail"].endswith("torch CUDA 12.6")
-+
-+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "")
-+    monkeypatch.setattr(
-+        system_status,
-+        "_probe_nvidia_smi",
-+        lambda: _nvidia_smi_probe(available=True, device_count=2, busy=True),
-+    )
-+    payload = system_status.collect_control_center_runtime_status(settings)
+-    assert payload["items"][1]["detail"].endswith("torch CUDA 12.6")
 +    assert payload["items"][1]["value"] == "GPU unavailable"
-+    assert payload["items"][1]["detail"] == "CUDA_VISIBLE_DEVICES disables GPU visibility for this process"
-+
-+
-+def test_collect_control_center_runtime_status_runtime_metadata_branches(tmp_path, monkeypatch):
-+    settings = _settings(tmp_path, asr_device="cuda", diarization_device="cuda")
-     monkeypatch.setattr(
-         system_status,
-         "_probe_spark_runtime",
-@@ -377,37 +505,30 @@ def test_collect_control_center_runtime_status_runtime_metadata_branches(tmp_pat
-     )
-     monkeypatch.setattr(
-         system_status,
--        "_active_runtime_metadata",
--        lambda *_args, **_kwargs: {"effective_device": "cpu", "mode": "fallback"},
-+        "_probe_nvidia_smi",
-+        lambda: _nvidia_smi_probe(),
-     )
++    assert payload["items"][1]["tone"] == "offline"
++    assert payload["items"][1]["detail"].endswith(
++        "torch CUDA 12.6 but torch.cuda.is_available() is false"
++    )
  
-     cpu_fallback = system_status.collect_control_center_runtime_status(settings)
--    assert cpu_fallback["secondary_items"][1]["value"] == "GPU unavailable"
--    assert cpu_fallback["secondary_items"][2]["value"] == "CPU fallback"
--    assert cpu_fallback["secondary_items"][2]["tone"] == "offline"
-+    assert cpu_fallback["items"][1]["value"] == "GPU unavailable"
-+    assert cpu_fallback["items"][1]["tone"] == "offline"
- 
+     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "")
      monkeypatch.setattr(
-         system_status,
--        "_active_runtime_metadata",
--        lambda *_args, **_kwargs: {"effective_device": "cuda:0", "mode": "pyannote"},
-+        "_probe_nvidia_smi",
-+        lambda: _nvidia_smi_probe(
-+            available=True,
-+            device_count=1,
-+            detail="nvidia-smi sees 1 GPU(s) · util up to 0%",
-+        ),
+@@ -523,8 +527,8 @@ def test_collect_control_center_runtime_status_runtime_metadata_branches(tmp_pat
+         ),
      )
      gpu_runtime = system_status.collect_control_center_runtime_status(settings)
--    assert gpu_runtime["secondary_items"][2]["value"] == "GPU path"
--    assert gpu_runtime["secondary_items"][2]["tone"] == "busy"
-+    assert gpu_runtime["items"][1]["value"] == "GPU ready"
-+    assert gpu_runtime["items"][1]["tone"] == "healthy"
+-    assert gpu_runtime["items"][1]["value"] == "GPU ready"
+-    assert gpu_runtime["items"][1]["tone"] == "healthy"
++    assert gpu_runtime["items"][1]["value"] == "GPU unavailable"
++    assert gpu_runtime["items"][1]["tone"] == "offline"
  
  
  def test_collect_control_center_runtime_status_active_llm_and_mixed_target(tmp_path, monkeypatch):
-     settings = _settings(tmp_path)
--    monkeypatch.setattr(
--        system_status,
--        "check_worker_health",
--        lambda _settings: {"ok": True, "detail": "worker 'w1' heartbeat 5s ago"},
--    )
--    monkeypatch.setattr(
--        system_status,
--        "check_redis_health",
--        lambda _settings: {"ok": True, "detail": "ok"},
--    )
-     monkeypatch.setattr(
-         system_status,
-         "_probe_spark_runtime",
-@@ -444,23 +565,18 @@ def test_collect_control_center_runtime_status_active_llm_and_mixed_target(tmp_p
-             torch_cuda_version="12.6",
-         ),
-     )
--    monkeypatch.setattr(system_status, "_active_runtime_metadata", lambda *_args, **_kwargs: {})
-     monkeypatch.setattr(
-         system_status,
--        "resolve_scheduler_decision",
--        lambda *args, **kwargs: SimpleNamespace(
--            asr_device="cuda",
--            diarization_device="cpu",
--            effective_mode="sequential",
--        ),
-+        "_probe_nvidia_smi",
-+        lambda: _nvidia_smi_probe(),
-     )
- 
-     payload = system_status.collect_control_center_runtime_status(settings)
- 
--    assert payload["secondary_items"][0]["value"] == "Busy"
--    assert payload["secondary_items"][2]["value"] == "Mixed path"
--    assert payload["secondary_items"][3]["tone"] == "degraded"
--    assert payload["secondary_items"][3]["detail"] == "meeting.mp3 · LLM Chunk 1 Of 2 · dgx.local"
-+    assert payload["items"][0]["value"] == "Busy"
-+    assert payload["items"][1]["value"] == "GPU ready"
-+    assert payload["items"][2]["tone"] == "degraded"
-+    assert payload["items"][2]["detail"] == "dgx.local · configured model is not advertised"
- 
- 
- def test_collect_control_center_runtime_status_queue_offline_and_scheduler_blocked(
-@@ -468,16 +584,6 @@ def test_collect_control_center_runtime_status_queue_offline_and_scheduler_block
-     monkeypatch,
- ):
-     settings = _settings(tmp_path)
--    monkeypatch.setattr(
--        system_status,
--        "check_worker_health",
--        lambda _settings: {"ok": False, "detail": "worker heartbeat is stale"},
--    )
--    monkeypatch.setattr(
--        system_status,
--        "check_redis_health",
--        lambda _settings: {"ok": False, "detail": "redis unavailable"},
--    )
-     monkeypatch.setattr(
-         system_status,
-         "_probe_spark_runtime",
-@@ -514,33 +620,21 @@ def test_collect_control_center_runtime_status_queue_offline_and_scheduler_block
-             torch_cuda_version=None,
-         ),
-     )
--    monkeypatch.setattr(system_status, "_active_runtime_metadata", lambda *_args, **_kwargs: {})
-     monkeypatch.setattr(
-         system_status,
--        "resolve_scheduler_decision",
--        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("bad config")),
-+        "_probe_nvidia_smi",
-+        lambda: _nvidia_smi_probe(),
-     )
- 
-     payload = system_status.collect_control_center_runtime_status(settings)
- 
--    assert payload["active_jobs_item"]["value"] == "Queue offline"
--    assert payload["secondary_items"][1]["value"] == "CPU only"
--    assert payload["secondary_items"][2]["value"] == "Blocked"
--    assert payload["secondary_items"][3]["tone"] == "offline"
-+    assert payload["items"][0]["value"] == "Offline"
-+    assert payload["items"][1]["value"] == "CPU only"
-+    assert payload["items"][2]["tone"] == "offline"
- 
- 
- def test_collect_control_center_runtime_status_queue_unknown(tmp_path, monkeypatch):
-     settings = _settings(tmp_path)
--    monkeypatch.setattr(
--        system_status,
--        "check_worker_health",
--        lambda _settings: {"ok": True, "detail": "worker 'w1' heartbeat 5s ago"},
--    )
--    monkeypatch.setattr(
--        system_status,
--        "check_redis_health",
--        lambda _settings: {"ok": True, "detail": "ok"},
--    )
-     monkeypatch.setattr(
-         system_status,
-         "_probe_spark_runtime",
-@@ -577,37 +671,21 @@ def test_collect_control_center_runtime_status_queue_unknown(tmp_path, monkeypat
-             torch_cuda_version="12.6",
-         ),
-     )
--    monkeypatch.setattr(system_status, "_active_runtime_metadata", lambda *_args, **_kwargs: {})
-     monkeypatch.setattr(
-         system_status,
--        "resolve_scheduler_decision",
--        lambda *args, **kwargs: SimpleNamespace(
--            asr_device="cpu",
--            diarization_device="cpu",
--            effective_mode="sequential",
--        ),
-+        "_probe_nvidia_smi",
-+        lambda: _nvidia_smi_probe(),
-     )
- 
-     payload = system_status.collect_control_center_runtime_status(settings)
- 
--    assert payload["active_jobs_item"]["value"] == "Queue unknown"
--    assert payload["secondary_items"][0]["value"] == "Auth error"
--    assert payload["secondary_items"][2]["value"] == "CPU path"
--    assert payload["secondary_items"][3]["tone"] == "degraded"
-+    assert payload["items"][0]["value"] == "Unknown"
-+    assert payload["items"][1]["value"] == "GPU ready"
-+    assert payload["items"][2]["tone"] == "degraded"
- 
- 
- def test_collect_control_center_runtime_status_idle_and_unknown_spark(tmp_path, monkeypatch):
-     settings = _settings(tmp_path)
--    monkeypatch.setattr(
--        system_status,
--        "check_worker_health",
--        lambda _settings: {"ok": True, "detail": "worker 'w1' heartbeat 5s ago"},
--    )
--    monkeypatch.setattr(
--        system_status,
--        "check_redis_health",
--        lambda _settings: {"ok": True, "detail": "ok"},
--    )
-     monkeypatch.setattr(
-         system_status,
-         "_probe_spark_runtime",
-@@ -644,18 +722,13 @@ def test_collect_control_center_runtime_status_idle_and_unknown_spark(tmp_path,
-             torch_cuda_version="12.6",
-         ),
-     )
--    monkeypatch.setattr(system_status, "_active_runtime_metadata", lambda *_args, **_kwargs: {})
-     monkeypatch.setattr(
-         system_status,
--        "resolve_scheduler_decision",
--        lambda *args, **kwargs: SimpleNamespace(
--            asr_device="cpu",
--            diarization_device="cpu",
--            effective_mode="sequential",
--        ),
-+        "_probe_nvidia_smi",
-+        lambda: _nvidia_smi_probe(),
-     )
- 
-     payload = system_status.collect_control_center_runtime_status(settings)
- 
--    assert payload["active_jobs_item"]["value"] == "Idle"
--    assert payload["secondary_items"][0]["tone"] == "degraded"
-+    assert payload["items"][0]["value"] == "Unknown"
-+    assert payload["items"][0]["tone"] == "degraded"
-diff --git a/tests/test_ui_routes.py b/tests/test_ui_routes.py
-index 86a7b9d..d38e6a8 100644
---- a/tests/test_ui_routes.py
-+++ b/tests/test_ui_routes.py
-@@ -72,39 +72,27 @@ from lan_app.constants import (
- 
- def _stub_runtime_status() -> dict[str, object]:
-     return {
--        "active_jobs_item": {
--            "label": "Active jobs",
--            "value": "Idle",
--            "detail": "worker 'test-worker' heartbeat 5s ago",
--            "tone": "healthy",
--        },
--        "secondary_items": [
-+        "items": [
-             {
--                "label": "DGX / Spark",
-+                "label": "Node status",
-                 "value": "Online",
-                 "detail": "dgx.local responded to /v1/models",
-                 "tone": "healthy",
-+                "show_dot": True,
-             },
-             {
-                 "label": "GPU runtime",
-                 "value": "GPU ready",
--                "detail": "1 visible · torch CUDA 12.6",
--                "tone": "healthy",
--            },
--            {
--                "label": "Inference mode",
--                "value": "GPU path",
--                "detail": "ASR cuda · Diarization cuda · sequential",
-+                "detail": "torch sees 1 GPU(s) · CUDA 12.6",
-                 "tone": "healthy",
-             },
-             {
--                "label": "Inference target",
-+                "label": "LLM:",
-                 "value": "gpt-oss:120b",
--                "detail": "dgx.local · advertised by Spark",
-+                "detail": "dgx.local · configured model is advertised",
-                 "tone": "healthy",
-             },
-         ],
--        "note": "test runtime note",
-     }
- 
- 
-@@ -476,10 +464,12 @@ def test_control_center_pane_fragment_endpoints(seeded_client):
-         'hx-trigger="every 15s, refresh-control-center-system-bar from:body"'
-         in system_bar.text
-     )
--    assert "Inbox view" in system_bar.text
--    assert "Active jobs" in system_bar.text
--    assert "DGX / Spark" in system_bar.text
--    assert "GPU path" in system_bar.text
-+    assert "Node status" in system_bar.text
-+    assert "GPU runtime" in system_bar.text
-+    assert "LLM:" in system_bar.text
-+    assert "Inbox view" not in system_bar.text
-+    assert "Active jobs" not in system_bar.text
-+    assert "Inference mode" not in system_bar.text
-     assert "<html" not in system_bar.text
- 
- 
-@@ -490,18 +480,13 @@ def test_control_center_system_bar_renders_degraded_cpu_fallback(
-         ui_routes,
-         "collect_control_center_runtime_status",
-         lambda _settings: {
--            "active_jobs_item": {
--                "label": "Active jobs",
--                "value": "1 active · 0 queued",
--                "detail": "meeting.mp3 · Speaker Turns",
--                "tone": "busy",
--            },
--            "secondary_items": [
-+            "items": [
-                 {
--                    "label": "DGX / Spark",
-+                    "label": "Node status",
-                     "value": "Online",
-                     "detail": "dgx.local responded to /v1/models",
-                     "tone": "healthy",
-+                    "show_dot": True,
-                 },
-                 {
-                     "label": "GPU runtime",
-@@ -510,27 +495,21 @@ def test_control_center_system_bar_renders_degraded_cpu_fallback(
-                     "tone": "offline",
-                 },
-                 {
--                    "label": "Inference mode",
--                    "value": "CPU fallback",
--                    "detail": "meeting.mp3 · Speaker Turns · fallback",
--                    "tone": "offline",
--                },
--                {
--                    "label": "Inference target",
-+                    "label": "LLM:",
-                     "value": "gpt-oss:120b",
--                    "detail": "dgx.local · advertised by Spark",
-+                    "detail": "dgx.local · configured model is advertised",
-                     "tone": "healthy",
-                 },
-             ],
--            "note": "test runtime note",
-         },
-     )
- 
-     system_bar = seeded_client.get("/ui/control-center/system-bar")
- 
-     assert system_bar.status_code == 200
--    assert "CPU fallback" in system_bar.text
-+    assert "Node status" in system_bar.text
-     assert "GPU unavailable" in system_bar.text
-+    assert "CPU fallback" not in system_bar.text
-     assert "control-center-system-item--offline" in system_bar.text
- 
-     work_pane = seeded_client.get(
-diff --git a/tests_playwright/test_ui_smoke_playwright.py b/tests_playwright/test_ui_smoke_playwright.py
-index cd12691..2c36545 100644
---- a/tests_playwright/test_ui_smoke_playwright.py
-+++ b/tests_playwright/test_ui_smoke_playwright.py
-@@ -274,7 +274,7 @@ def test_control_center_embedded_inspector_and_export_zip_smoke(tmp_path: Path)
-                 )
-                 page.locator(
-                     "#control-center-system-bar .control-center-system-label"
--                ).filter(has_text="Inbox view").first.wait_for(
-+                ).filter(has_text="Node status").first.wait_for(
-                     state="visible",
-                     timeout=_remaining_timeout_ms(deadline),
-                 )
