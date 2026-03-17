@@ -2314,9 +2314,7 @@ def _embedded_speaker_summary_rows(
     }
 
     speaker_labels = {
-        str(row.get("speaker") or "").strip()
-        for row in speaker_turns
-        if str(row.get("speaker") or "").strip()
+        str(row.get("speaker") or "S1").strip() or "S1" for row in speaker_turns
     }
     speaker_labels.update(assignment_by_speaker)
 

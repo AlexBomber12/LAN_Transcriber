@@ -1129,6 +1129,43 @@ def test_embedded_speaker_summary_rows_fall_back_to_transcript_chunks(
     ]
 
 
+def test_embedded_speaker_summary_rows_normalizes_blank_turn_labels(
+    tmp_path: Path,
+) -> None:
+    cfg = _cfg(tmp_path)
+    init_db(cfg)
+    create_recording(
+        "rec-speaker-summary-blank",
+        source="upload",
+        source_filename="speaker-summary-blank.wav",
+        status=RECORDING_STATUS_READY,
+        settings=cfg,
+    )
+    derived = cfg.recordings_root / "rec-speaker-summary-blank" / "derived"
+    derived.mkdir(parents=True, exist_ok=True)
+    (derived / "transcript.json").write_text(
+        json.dumps({"text": "blank speaker label"}),
+        encoding="utf-8",
+    )
+    (derived / "speaker_turns.json").write_text(
+        json.dumps([{"speaker": "", "start": 0.0, "end": 1.0, "text": "hello"}]),
+        encoding="utf-8",
+    )
+
+    rows = ui_routes._embedded_speaker_summary_rows(  # noqa: SLF001
+        "rec-speaker-summary-blank",
+        settings=cfg,
+    )
+
+    assert rows == [
+        {
+            "primary_label": "S1",
+            "secondary_label": "Unknown",
+            "confidence_display": "",
+        }
+    ]
+
+
 def test_compact_inspector_helpers_cover_next_action_branches(tmp_path: Path) -> None:
     cfg = _cfg(tmp_path)
     control_center_state = {

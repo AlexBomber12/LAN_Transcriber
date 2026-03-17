@@ -1,244 +1,51 @@
 diff --git a/lan_app/ui_routes.py b/lan_app/ui_routes.py
-index cdf0284..ee0da2e 100644
+index ee0da2e..95477a4 100644
 --- a/lan_app/ui_routes.py
 +++ b/lan_app/ui_routes.py
-@@ -2293,6 +2293,57 @@ def _recording_speaker_name_map(
-     return name_map
+@@ -2314,9 +2314,7 @@ def _embedded_speaker_summary_rows(
+     }
  
+     speaker_labels = {
+-        str(row.get("speaker") or "").strip()
+-        for row in speaker_turns
+-        if str(row.get("speaker") or "").strip()
++        str(row.get("speaker") or "S1").strip() or "S1" for row in speaker_turns
+     }
+     speaker_labels.update(assignment_by_speaker)
  
-+def _embedded_speaker_summary_rows(
-+    recording_id: str,
-+    *,
-+    settings: AppSettings,
-+) -> list[dict[str, str]]:
-+    transcript_path, _summary_path = _recording_derived_paths(recording_id, settings)
-+    speaker_turns_path = transcript_path.parent / "speaker_turns.json"
-+    transcript_payload = _load_json_dict(transcript_path)
-+    speaker_turns_raw = _load_json_list(speaker_turns_path)
-+    speaker_turns = [row for row in speaker_turns_raw if isinstance(row, dict)]
-+    if not speaker_turns:
-+        speaker_turns = _fallback_speaker_turns_from_transcript(transcript_payload)
-+
-+    assignments = list_speaker_assignments(recording_id, settings=settings)
-+    assignment_by_speaker = {
-+        str(row.get("diar_speaker_label") or "").strip(): row
-+        for row in assignments
-+        if str(row.get("diar_speaker_label") or "").strip()
-+    }
-+
-+    speaker_labels = {
-+        str(row.get("speaker") or "").strip()
-+        for row in speaker_turns
-+        if str(row.get("speaker") or "").strip()
-+    }
-+    speaker_labels.update(assignment_by_speaker)
-+
-+    rows: list[dict[str, str]] = []
-+    for speaker_label in sorted(speaker_labels):
-+        assignment = assignment_by_speaker.get(speaker_label, {})
-+        resolved_name = _speaker_assignment_display_name(assignment)
-+        confidence_display = ""
-+        if resolved_name:
-+            try:
-+                confidence_value = float(assignment.get("confidence"))
-+            except (TypeError, ValueError):
-+                confidence_value = 0.0
-+            if confidence_value > 0:
-+                confidence_display = (
-+                    f"{round(max(0.0, min(confidence_value, 1.0)) * 100):.0f}%"
-+                )
-+        rows.append(
-+            {
-+                "primary_label": resolved_name or speaker_label,
-+                "secondary_label": speaker_label if resolved_name else "Unknown",
-+                "confidence_display": confidence_display,
-+            }
-+        )
-+    return rows
-+
-+
- def _speaker_review_state(row: dict[str, Any]) -> str:
-     review_state = str(row.get("review_state") or "").strip().lower()
-     if review_state in {
-@@ -4331,35 +4382,10 @@ def _embedded_recording_details_context(
-             re.split(r"(?<=[.!?])\s+", tone_text, maxsplit=1)[0].strip() or tone_text
-         )
- 
--    speakers = _speakers_tab_context(
-+    speaker_rows = _embedded_speaker_summary_rows(
-         recording_id,
--        settings,
--        recording=recording,
--        stage_rows=stage_rows,
-+        settings=settings,
-     )
--    speaker_rows = []
--    for row in speakers.get("speaker_rows") or []:
--        diarized_label = str(row.get("speaker") or "").strip() or "Speaker"
--        resolved_name = str(
--            row.get("voice_profile_name") or row.get("local_display_name") or ""
--        ).strip()
--        confidence_display = ""
--        if resolved_name:
--            try:
--                confidence_value = float(row.get("confidence"))
--            except (TypeError, ValueError):
--                confidence_value = 0.0
--            if confidence_value > 0:
--                confidence_display = (
--                    f"{round(max(0.0, min(confidence_value, 1.0)) * 100):.0f}%"
--                )
--        speaker_rows.append(
--            {
--                "primary_label": resolved_name or diarized_label,
--                "secondary_label": diarized_label if resolved_name else "Unknown",
--                "confidence_display": confidence_display,
--            }
--        )
- 
-     dominant_language = _recording_dominant_language_display(
-         recording_id,
 diff --git a/tests/test_cov_lan_app_ui_routes.py b/tests/test_cov_lan_app_ui_routes.py
-index bbc16a6..b07d9b0 100644
+index b07d9b0..2d8dcb7 100644
 --- a/tests/test_cov_lan_app_ui_routes.py
 +++ b/tests/test_cov_lan_app_ui_routes.py
-@@ -955,6 +955,16 @@ def test_embedded_recording_details_context_handles_summary_fallback_and_bad_con
-     monkeypatch: pytest.MonkeyPatch,
- ) -> None:
-     cfg = _cfg(tmp_path)
-+    derived = cfg.recordings_root / "rec-details-edge" / "derived"
-+    derived.mkdir(parents=True, exist_ok=True)
-+    (derived / "transcript.json").write_text(
-+        json.dumps({"text": "edge transcript"}),
-+        encoding="utf-8",
-+    )
-+    (derived / "speaker_turns.json").write_text(
-+        json.dumps([{"speaker": "S1", "start": 0.0, "end": 1.0, "text": "hello"}]),
-+        encoding="utf-8",
-+    )
-     monkeypatch.setattr(
-         ui_routes,
-         "_summary_context",
-@@ -966,17 +976,16 @@ def test_embedded_recording_details_context_handles_summary_fallback_and_bad_con
-     )
-     monkeypatch.setattr(
-         ui_routes,
--        "_speakers_tab_context",
--        lambda *_a, **_k: {
--            "speaker_rows": [
--                {
--                    "speaker": "S1",
--                    "voice_profile_name": "Andrea",
--                    "local_display_name": "",
--                    "confidence": "bad",
--                }
--            ]
--        },
-+        "list_speaker_assignments",
-+        lambda *_a, **_k: [
-+            {
-+                "diar_speaker_label": "S1",
-+                "voice_profile_id": 1,
-+                "voice_profile_name": "Andrea",
-+                "local_display_name": "",
-+                "confidence": "bad",
-+            }
-+        ],
-     )
-     monkeypatch.setattr(
-         ui_routes,
-@@ -1020,6 +1029,106 @@ def test_embedded_recording_details_context_handles_summary_fallback_and_bad_con
+@@ -1129,6 +1129,43 @@ def test_embedded_speaker_summary_rows_fall_back_to_transcript_chunks(
      ]
  
  
-+def test_embedded_speaker_summary_rows_supports_turns_and_assignment_only_speakers(
++def test_embedded_speaker_summary_rows_normalizes_blank_turn_labels(
 +    tmp_path: Path,
 +) -> None:
 +    cfg = _cfg(tmp_path)
 +    init_db(cfg)
 +    create_recording(
-+        "rec-speaker-summary",
++        "rec-speaker-summary-blank",
 +        source="upload",
-+        source_filename="speaker-summary.wav",
++        source_filename="speaker-summary-blank.wav",
 +        status=RECORDING_STATUS_READY,
 +        settings=cfg,
 +    )
-+    derived = cfg.recordings_root / "rec-speaker-summary" / "derived"
++    derived = cfg.recordings_root / "rec-speaker-summary-blank" / "derived"
 +    derived.mkdir(parents=True, exist_ok=True)
 +    (derived / "transcript.json").write_text(
-+        json.dumps({"text": "hello world"}),
++        json.dumps({"text": "blank speaker label"}),
 +        encoding="utf-8",
 +    )
 +    (derived / "speaker_turns.json").write_text(
-+        json.dumps(
-+            [
-+                {"speaker": "S1", "start": 0.0, "end": 1.0, "text": "hello"},
-+                {"speaker": "S2", "start": 1.0, "end": 2.0, "text": "world"},
-+            ]
-+        ),
-+        encoding="utf-8",
-+    )
-+    profile = create_voice_profile("Andrea", settings=cfg)
-+    set_speaker_assignment(
-+        recording_id="rec-speaker-summary",
-+        diar_speaker_label="S1",
-+        voice_profile_id=int(profile["id"]),
-+        confidence=0.98,
-+        settings=cfg,
-+    )
-+    set_speaker_assignment(
-+        recording_id="rec-speaker-summary",
-+        diar_speaker_label="S3",
-+        voice_profile_id=None,
-+        local_display_name="Guest",
-+        settings=cfg,
-+    )
-+
-+    rows = ui_routes._embedded_speaker_summary_rows(  # noqa: SLF001
-+        "rec-speaker-summary",
-+        settings=cfg,
-+    )
-+
-+    assert rows == [
-+        {
-+            "primary_label": "Andrea",
-+            "secondary_label": "S1",
-+            "confidence_display": "98%",
-+        },
-+        {
-+            "primary_label": "S2",
-+            "secondary_label": "Unknown",
-+            "confidence_display": "",
-+        },
-+        {
-+            "primary_label": "Guest",
-+            "secondary_label": "S3",
-+            "confidence_display": "100%",
-+        },
-+    ]
-+
-+
-+def test_embedded_speaker_summary_rows_fall_back_to_transcript_chunks(
-+    tmp_path: Path,
-+) -> None:
-+    cfg = _cfg(tmp_path)
-+    init_db(cfg)
-+    create_recording(
-+        "rec-speaker-summary-fallback",
-+        source="upload",
-+        source_filename="speaker-summary-fallback.wav",
-+        status=RECORDING_STATUS_READY,
-+        settings=cfg,
-+    )
-+    derived = cfg.recordings_root / "rec-speaker-summary-fallback" / "derived"
-+    derived.mkdir(parents=True, exist_ok=True)
-+    (derived / "transcript.json").write_text(
-+        json.dumps({"text": "fallback transcript only"}),
++        json.dumps([{"speaker": "", "start": 0.0, "end": 1.0, "text": "hello"}]),
 +        encoding="utf-8",
 +    )
 +
 +    rows = ui_routes._embedded_speaker_summary_rows(  # noqa: SLF001
-+        "rec-speaker-summary-fallback",
++        "rec-speaker-summary-blank",
 +        settings=cfg,
 +    )
 +
@@ -254,91 +61,3 @@ index bbc16a6..b07d9b0 100644
  def test_compact_inspector_helpers_cover_next_action_branches(tmp_path: Path) -> None:
      cfg = _cfg(tmp_path)
      control_center_state = {
-diff --git a/tests/test_ui_routes.py b/tests/test_ui_routes.py
-index 35b2cb0..188a591 100644
---- a/tests/test_ui_routes.py
-+++ b/tests/test_ui_routes.py
-@@ -596,6 +596,83 @@ def test_control_center_processing_recording_polls_embedded_details_card(
-     assert "every 2s" in inspector.text
- 
- 
-+def test_control_center_inspector_ignores_malformed_snippet_metadata(
-+    tmp_path: Path,
-+    monkeypatch: pytest.MonkeyPatch,
-+) -> None:
-+    cfg = _cfg(tmp_path)
-+    monkeypatch.setattr(api, "_settings", cfg)
-+    monkeypatch.setattr(ui_routes, "_settings", cfg)
-+    monkeypatch.setattr(
-+        ui_routes,
-+        "collect_control_center_runtime_status",
-+        lambda _settings: _stub_runtime_status(),
-+    )
-+    init_db(cfg)
-+    create_recording(
-+        "rec-ui-malformed-snippets",
-+        source="upload",
-+        source_filename="malformed.wav",
-+        status=RECORDING_STATUS_READY,
-+        settings=cfg,
-+    )
-+    derived = cfg.recordings_root / "rec-ui-malformed-snippets" / "derived"
-+    derived.mkdir(parents=True, exist_ok=True)
-+    (derived / "summary.json").write_text(
-+        json.dumps({"summary_bullets": ["Speaker review pending."]}),
-+        encoding="utf-8",
-+    )
-+    (derived / "transcript.json").write_text(
-+        json.dumps({"text": "hello", "dominant_language": "en"}),
-+        encoding="utf-8",
-+    )
-+    (derived / "speaker_turns.json").write_text(
-+        json.dumps([{"speaker": "S1", "start": 0.0, "end": 1.0, "text": "hello"}]),
-+        encoding="utf-8",
-+    )
-+    (derived / "snippets_manifest.json").write_text(
-+        json.dumps(
-+            {
-+                "speakers": {
-+                    "S1": [
-+                        {
-+                            "status": "accepted",
-+                            "relative_path": "S1/1.wav",
-+                            "clip_start": "bad",
-+                            "clip_end": "bad",
-+                            "source_start": "bad",
-+                            "source_end": "bad",
-+                            "purity_score": "bad",
-+                        }
-+                    ]
-+                }
-+            }
-+        ),
-+        encoding="utf-8",
-+    )
-+    snippets = derived / "snippets" / "S1"
-+    snippets.mkdir(parents=True, exist_ok=True)
-+    (snippets / "1.wav").write_bytes(b"fake-wav")
-+    profile = create_voice_profile("Andrea", settings=cfg)
-+    set_speaker_assignment(
-+        recording_id="rec-ui-malformed-snippets",
-+        diar_speaker_label="S1",
-+        voice_profile_id=int(profile["id"]),
-+        confidence=0.98,
-+        settings=cfg,
-+    )
-+
-+    client = TestClient(api.app, follow_redirects=True)
-+    inspector = client.get(
-+        "/ui/control-center/inspector-pane?selected=rec-ui-malformed-snippets"
-+    )
-+
-+    assert inspector.status_code == 200
-+    assert "Recording Details" in inspector.text
-+    assert "Andrea" in inspector.text
-+    assert "98%" in inspector.text
-+
-+
- def test_control_center_embedded_inspector_open_page_link_preserves_shell_state(
-     seeded_client,
- ):
