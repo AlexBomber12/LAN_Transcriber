@@ -579,9 +579,14 @@ def test_control_center_helper_contexts_cover_fragment_builders(
     upload_shell = ui_routes._upload_shell_context(mode="control_center")  # noqa: SLF001
     assert upload_shell["file_input_id"] == "file-input"
     assert upload_shell["empty_row_id"] == "upload-empty"
+    assert upload_shell["show_compact_queue"] is True
+    assert upload_shell["show_empty_state_text"] is False
     assert upload_shell["remove_terminal_items"] is True
-    assert upload_shell["queue_title"] == "Only in-flight uploads stay here"
+    assert upload_shell["section_title"] == "UPLOAD"
+    assert upload_shell["active_counter_id"] == "upload-active-count"
     standalone_upload_shell = ui_routes._upload_shell_context(mode="standalone")  # noqa: SLF001
+    assert standalone_upload_shell["show_compact_queue"] is False
+    assert standalone_upload_shell["show_empty_state_text"] is True
     assert standalone_upload_shell["remove_terminal_items"] is False
     assert (
         standalone_upload_shell["queue_title"]

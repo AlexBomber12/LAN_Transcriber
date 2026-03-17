@@ -167,9 +167,11 @@ def test_control_center_embedded_inspector_and_export_zip_smoke(tmp_path: Path) 
     db_path = runtime_root / "db" / "app.db"
     metrics_snapshot_path = runtime_root / "metrics.snap"
     wav_path = tmp_path / "smoke-upload.wav"
+    queued_wav_path = tmp_path / "smoke-upload-queued.wav"
     zip_download_path = tmp_path / "export.zip"
 
     _write_synthetic_wav(wav_path)
+    _write_synthetic_wav(queued_wav_path)
 
     env = os.environ.copy()
     env.update(
@@ -218,6 +220,13 @@ def test_control_center_embedded_inspector_and_export_zip_smoke(tmp_path: Path) 
                     wait_until="networkidle",
                     timeout=_remaining_timeout_ms(deadline),
                 )
+                assert page.locator("#control-center-workspace-header h1").count() == 0
+                assert page.evaluate(
+                    """() => compactCardItems([
+                        {phase: "uploading", removed: false, file: {name: "active.wav"}},
+                        {phase: "processing", removed: false, file: {name: "processing.wav"}},
+                    ]).map((item) => item.file.name)"""
+                ) == ["active.wav", "processing.wav"]
                 page.get_by_role("button", name="Choose files").wait_for(
                     state="visible",
                     timeout=_remaining_timeout_ms(deadline),
@@ -227,7 +236,24 @@ def test_control_center_embedded_inspector_and_export_zip_smoke(tmp_path: Path) 
                     state="attached",
                     timeout=_remaining_timeout_ms(deadline),
                 )
-                page.set_input_files("#file-input", str(wav_path))
+                page.set_input_files("#file-input", [str(wav_path), str(queued_wav_path)])
+                page.wait_for_function(
+                    "() => document.getElementById('upload-active-count')?.textContent === '2 ACTIVE JOBS'",
+                    timeout=_remaining_timeout_ms(deadline),
+                )
+                page.locator("#upload-rows").get_by_text(wav_path.name).wait_for(
+                    state="visible",
+                    timeout=_remaining_timeout_ms(deadline),
+                )
+                page.locator("#upload-rows").get_by_text(queued_wav_path.name).wait_for(
+                    state="visible",
+                    timeout=_remaining_timeout_ms(deadline),
+                )
+                page.locator("#upload-rows").get_by_text("waiting in queue...").wait_for(
+                    state="visible",
+                    timeout=_remaining_timeout_ms(deadline),
+                )
+                assert page.locator("#upload-rows .upload-queue-card").count() <= 2
 
                 page.wait_for_selector(
                     "#control-center-recordings-panel",
@@ -294,12 +320,11 @@ def test_control_center_embedded_inspector_and_export_zip_smoke(tmp_path: Path) 
                     state="visible",
                     timeout=_remaining_timeout_ms(deadline),
                 )
-                page.locator("#upload-rows").get_by_text(
-                    "No active uploads. New files appear here until they enter the main inbox."
-                ).wait_for(
-                    state="visible",
+                page.wait_for_function(
+                    "() => document.getElementById('upload-active-count')?.textContent === '0 ACTIVE JOBS'",
                     timeout=_remaining_timeout_ms(deadline),
                 )
+                assert page.locator("#upload-rows .upload-queue-card").count() == 0
                 page.get_by_test_id("recording-inspector-open-full-page").click(
                     timeout=_remaining_timeout_ms(deadline),
                 )

@@ -625,6 +625,6 @@ Queue (in order)
 - Depends on: PR-UI-STITCH-WORKLIST-02
 
 125) PR-UI-STITCH-UPLOAD-01: Simplify the Control Center upload area into a compact UPLOAD block with queue cards
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-UI-STITCH-UPLOAD-01.md
 - Depends on: PR-UI-STITCH-WORKLIST-02

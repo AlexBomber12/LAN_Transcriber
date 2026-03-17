@@ -351,6 +351,7 @@ def test_dashboard_empty(client):
     r = client.get("/")
     assert r.status_code == 200
     assert "Control Center" in r.text
+    assert "<h1>Control Center</h1>" not in r.text
     assert 'id="control-center-workspace-header"' in r.text
     assert 'id="control-center-work-pane"' in r.text
     assert 'id="control-center-inspector-pane"' in r.text
@@ -452,7 +453,7 @@ def test_control_center_pane_fragment_endpoints(seeded_client):
     assert workspace_header.status_code == 200
     assert 'id="control-center-workspace-header"' in workspace_header.text
     assert "hx-trigger" not in workspace_header.text
-    assert "<h1>Control Center</h1>" in workspace_header.text
+    assert "<h1>Control Center</h1>" not in workspace_header.text
     assert "control-center-focus-card" not in workspace_header.text
     assert "meeting.mp3" not in workspace_header.text
     assert "/recordings/rec-ui-1?tab=speakers" not in workspace_header.text
@@ -525,9 +526,15 @@ def test_control_center_system_bar_renders_degraded_cpu_fallback(
         "Add files, keep intake progress visible, and move straight into the operator inbox below."
         not in work_pane.text
     )
-    assert "Live intake" in work_pane.text
+    assert "Live intake" not in work_pane.text
     assert "Operator inbox" not in work_pane.text
-    assert "Only in-flight uploads stay here" in work_pane.text
+    assert "Only in-flight uploads stay here" not in work_pane.text
+    assert "Finished recordings move into the main worklist below" not in work_pane.text
+    assert "No active uploads. New files appear here until they enter the main inbox." not in work_pane.text
+    assert "control-center-upload-section-title" in work_pane.text
+    assert "UPLOAD" in work_pane.text
+    assert 'id="upload-active-count"' in work_pane.text
+    assert "0 ACTIVE JOBS" in work_pane.text
     assert "var removeTerminalItems = true;" in work_pane.text
     assert "Fallback and Admin Pages" not in work_pane.text
     assert "meeting.mp3" in work_pane.text
@@ -3743,12 +3750,16 @@ def test_upload_panel_fragment_endpoint(client):
     assert r.status_code == 200
     assert 'id="file-input"' in r.text
     assert 'id="upload-rows"' in r.text
-    assert "Only in-flight uploads stay here" in r.text
-    assert "Finished recordings move into the main worklist below" in r.text
-    assert (
-        "No active uploads. New files appear here until they enter the main inbox."
-        in r.text
-    )
+    assert "Live intake" not in r.text
+    assert "Only in-flight uploads stay here" not in r.text
+    assert "Finished recordings move into the main worklist below" not in r.text
+    assert "No active uploads. New files appear here until they enter the main inbox." not in r.text
+    assert "control-center-upload-section-title" in r.text
+    assert "UPLOAD" in r.text
+    assert 'id="upload-active-count"' in r.text
+    assert "0 ACTIVE JOBS" in r.text
+    assert 'id="upload-empty"' not in r.text
+    assert 'class="upload-queue-card"' not in r.text
     assert "<html" not in r.text
 
 

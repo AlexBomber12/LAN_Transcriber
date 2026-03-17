@@ -1,63 +1,56 @@
-diff --git a/lan_app/ui_routes.py b/lan_app/ui_routes.py
-index ee0da2e..95477a4 100644
---- a/lan_app/ui_routes.py
-+++ b/lan_app/ui_routes.py
-@@ -2314,9 +2314,7 @@ def _embedded_speaker_summary_rows(
+diff --git a/lan_app/templates/partials/control_center/upload_script.html b/lan_app/templates/partials/control_center/upload_script.html
+index 0b5f6ba..c35c2ce 100644
+--- a/lan_app/templates/partials/control_center/upload_script.html
++++ b/lan_app/templates/partials/control_center/upload_script.html
+@@ -156,6 +156,7 @@ function compactCardItems(items) {
+ 
+   var active = null;
+   var queued = null;
++  var fallback = null;
+   var idx = 0;
+ 
+   for (idx = 0; idx < items.length; idx += 1) {
+@@ -176,10 +177,16 @@ function compactCardItems(items) {
+     active = items[0];
+   }
+   for (idx = 0; idx < items.length; idx += 1) {
+-    if (items[idx] !== active && items[idx].phase === "queued") {
++    if (items[idx] === active) {
++      continue;
++    }
++    if (items[idx].phase === "queued") {
+       queued = items[idx];
+       break;
      }
++    if (!fallback) {
++      fallback = items[idx];
++    }
+   }
  
-     speaker_labels = {
--        str(row.get("speaker") or "").strip()
--        for row in speaker_turns
--        if str(row.get("speaker") or "").strip()
-+        str(row.get("speaker") or "S1").strip() or "S1" for row in speaker_turns
-     }
-     speaker_labels.update(assignment_by_speaker)
- 
-diff --git a/tests/test_cov_lan_app_ui_routes.py b/tests/test_cov_lan_app_ui_routes.py
-index b07d9b0..2d8dcb7 100644
---- a/tests/test_cov_lan_app_ui_routes.py
-+++ b/tests/test_cov_lan_app_ui_routes.py
-@@ -1129,6 +1129,43 @@ def test_embedded_speaker_summary_rows_fall_back_to_transcript_chunks(
-     ]
- 
- 
-+def test_embedded_speaker_summary_rows_normalizes_blank_turn_labels(
-+    tmp_path: Path,
-+) -> None:
-+    cfg = _cfg(tmp_path)
-+    init_db(cfg)
-+    create_recording(
-+        "rec-speaker-summary-blank",
-+        source="upload",
-+        source_filename="speaker-summary-blank.wav",
-+        status=RECORDING_STATUS_READY,
-+        settings=cfg,
-+    )
-+    derived = cfg.recordings_root / "rec-speaker-summary-blank" / "derived"
-+    derived.mkdir(parents=True, exist_ok=True)
-+    (derived / "transcript.json").write_text(
-+        json.dumps({"text": "blank speaker label"}),
-+        encoding="utf-8",
-+    )
-+    (derived / "speaker_turns.json").write_text(
-+        json.dumps([{"speaker": "", "start": 0.0, "end": 1.0, "text": "hello"}]),
-+        encoding="utf-8",
-+    )
-+
-+    rows = ui_routes._embedded_speaker_summary_rows(  # noqa: SLF001
-+        "rec-speaker-summary-blank",
-+        settings=cfg,
-+    )
-+
-+    assert rows == [
-+        {
-+            "primary_label": "S1",
-+            "secondary_label": "Unknown",
-+            "confidence_display": "",
-+        }
-+    ]
-+
-+
- def test_compact_inspector_helpers_cover_next_action_branches(tmp_path: Path) -> None:
-     cfg = _cfg(tmp_path)
-     control_center_state = {
+   var visible = [];
+@@ -188,6 +195,8 @@ function compactCardItems(items) {
+   }
+   if (queued) {
+     visible.push(queued);
++  } else if (fallback) {
++    visible.push(fallback);
+   }
+   return visible.slice(0, compactCardLimit || 2);
+ }
+diff --git a/tests_playwright/test_ui_smoke_playwright.py b/tests_playwright/test_ui_smoke_playwright.py
+index fcca8ee..2036ed1 100644
+--- a/tests_playwright/test_ui_smoke_playwright.py
++++ b/tests_playwright/test_ui_smoke_playwright.py
+@@ -221,6 +221,12 @@ def test_control_center_embedded_inspector_and_export_zip_smoke(tmp_path: Path)
+                     timeout=_remaining_timeout_ms(deadline),
+                 )
+                 assert page.locator("#control-center-workspace-header h1").count() == 0
++                assert page.evaluate(
++                    """() => compactCardItems([
++                        {phase: "uploading", removed: false, file: {name: "active.wav"}},
++                        {phase: "processing", removed: false, file: {name: "processing.wav"}},
++                    ]).map((item) => item.file.name)"""
++                ) == ["active.wav", "processing.wav"]
+                 page.get_by_role("button", name="Choose files").wait_for(
+                     state="visible",
+                     timeout=_remaining_timeout_ms(deadline),

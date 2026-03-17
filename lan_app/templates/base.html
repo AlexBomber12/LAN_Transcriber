@@ -415,6 +415,7 @@ textarea:focus{
   grid-template-columns:1fr;
   align-items:start;
 }
+.control-center-workspace-header:empty{display:none}
 .control-center-workspace-copy{
   display:grid;
   gap:10px;
@@ -595,6 +596,35 @@ textarea:focus{
   border-radius:24px;
   box-shadow:var(--shadow-soft);
 }
+.control-center-upload-stack{
+  display:grid;
+  gap:10px;
+}
+.control-center-upload-title-row{
+  display:flex;
+  align-items:center;
+  justify-content:flex-start;
+}
+.control-center-upload-section-title{
+  display:inline-flex;
+  align-items:center;
+  gap:8px;
+}
+.control-center-upload-section-icon{
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  width:20px;
+  height:20px;
+  border-radius:999px;
+  background:rgba(36,99,235,.08);
+  color:var(--primary);
+}
+.control-center-upload-section-icon svg{
+  width:12px;
+  height:12px;
+  display:block;
+}
 .control-center-upload-grid{
   display:grid;
   gap:14px;
@@ -640,14 +670,31 @@ textarea:focus{
   border-radius:20px;
   background:rgba(255,255,255,.92);
 }
+.upload-queue-shell-compact{
+  gap:10px;
+  padding:12px 14px;
+}
 .upload-queue-head{
   display:grid;
   gap:4px;
+}
+.upload-queue-head-compact{
+  display:flex;
+  align-items:center;
+  justify-content:flex-start;
+}
+.upload-queue-counter{
+  font-size:11px;
+  font-weight:800;
+  letter-spacing:.12em;
+  text-transform:uppercase;
+  color:var(--primary);
 }
 .upload-queue-list{
   display:grid;
   gap:10px;
 }
+.upload-queue-list-compact{gap:10px}
 .upload-queue-empty{
   margin:0;
   padding:14px 16px;
@@ -656,6 +703,62 @@ textarea:focus{
   background:#f7faff;
   color:var(--muted);
   font-size:12px;
+}
+.upload-queue-card{
+  display:grid;
+  gap:10px;
+  padding:12px 14px;
+  border-radius:18px;
+  border:1px solid #dbe5f6;
+  background:#fff;
+  box-shadow:var(--shadow-soft);
+}
+.upload-queue-card--queued{
+  background:#f8fbff;
+  border-color:#d8e3f7;
+}
+.upload-queue-card-head{
+  display:flex;
+  gap:10px;
+  align-items:flex-start;
+  justify-content:space-between;
+}
+.upload-queue-card-title{
+  display:block;
+  font-size:13px;
+  line-height:1.35;
+  color:var(--text);
+}
+.upload-queue-card-state{
+  margin:0;
+  font-size:12px;
+  color:var(--muted);
+}
+.upload-queue-card-status{
+  display:inline-flex;
+  align-items:center;
+  min-height:24px;
+  padding:4px 10px;
+  border-radius:999px;
+  background:#edf4ff;
+  color:var(--primary);
+  font-size:10px;
+  font-weight:800;
+  letter-spacing:.08em;
+  text-transform:uppercase;
+}
+.upload-queue-card-status--queued{
+  background:#eef3fb;
+  color:#60718c;
+}
+.upload-progress-track-muted{
+  background:#ebf0f8;
+}
+.upload-progress-fill-muted{
+  background:#d0dbec;
+}
+.upload-progress-label-muted{
+  color:#6b7b93;
 }
 .upload-queue-item{
   display:grid;
