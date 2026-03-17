@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import shutil
+import subprocess
 from typing import Any
 
 import httpx
@@ -10,13 +12,11 @@ import httpx
 from lan_transcriber.gpu_policy import (
     collect_cuda_runtime_facts,
     is_gpu_device,
-    resolve_scheduler_decision,
 )
 
 from .config import AppSettings
 from .constants import JOB_STATUS_QUEUED, JOB_STATUS_STARTED
 from .db import get_recording, list_jobs
-from .healthchecks import check_redis_health, check_worker_health
 
 _SPARK_PROBE_TIMEOUT = httpx.Timeout(2.0, connect=0.5)
 
@@ -223,6 +223,88 @@ def _safe_get_recording(
     return recording if isinstance(recording, dict) else None
 
 
+def _gpu_visibility_disabled() -> bool:
+    raw = os.getenv("CUDA_VISIBLE_DEVICES")
+    if raw is None:
+        return False
+    return raw.strip().lower() in {"", "-1", "none", "void"}
+
+
+def _parse_int(value: str | None) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def _probe_nvidia_smi() -> dict[str, Any]:
+    executable = shutil.which("nvidia-smi")
+    if not executable:
+        return {
+            "available": False,
+            "device_count": 0,
+            "busy": False,
+            "detail": "nvidia-smi unavailable",
+        }
+
+    try:
+        completed = subprocess.run(
+            [
+                executable,
+                "--query-gpu=index,utilization.gpu",
+                "--format=csv,noheader,nounits",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=2.0,
+        )
+    except subprocess.TimeoutExpired:
+        return {
+            "available": False,
+            "device_count": 0,
+            "busy": False,
+            "detail": "nvidia-smi timed out",
+        }
+    except (OSError, subprocess.CalledProcessError) as exc:
+        stderr = str(getattr(exc, "stderr", "") or "").strip()
+        detail = stderr or f"nvidia-smi failed: {type(exc).__name__}"
+        return {
+            "available": False,
+            "device_count": 0,
+            "busy": False,
+            "detail": detail,
+        }
+
+    rows = [line.strip() for line in completed.stdout.splitlines() if line.strip()]
+    if not rows:
+        return {
+            "available": False,
+            "device_count": 0,
+            "busy": False,
+            "detail": "nvidia-smi reported no visible GPUs",
+        }
+
+    utilizations = []
+    for row in rows:
+        parts = [part.strip() for part in row.split(",")]
+        utilization = _parse_int(parts[1] if len(parts) > 1 else None)
+        if utilization is not None:
+            utilizations.append(max(utilization, 0))
+
+    detail = f"nvidia-smi sees {len(rows)} GPU(s)"
+    if utilizations:
+        detail = f"{detail} · util up to {max(utilizations)}%"
+    return {
+        "available": True,
+        "device_count": len(rows),
+        "busy": any(utilization > 0 for utilization in utilizations),
+        "detail": detail,
+    }
+
+
 def _active_job_snapshot(settings: AppSettings) -> dict[str, Any]:
     try:
         started_rows, started_total = list_jobs(
@@ -305,202 +387,156 @@ def _active_runtime_metadata(
     return {}
 
 
+def _node_status_item(
+    *,
+    spark: dict[str, Any],
+    queue: dict[str, Any],
+    active_llm: bool,
+    active_detail: str,
+) -> dict[str, Any]:
+    if spark["state"] == "healthy":
+        node_busy = bool(queue.get("started_total")) or active_llm
+        detail = active_detail if node_busy and active_detail else spark["detail"]
+        return {
+            "label": "Node status",
+            "value": "Busy" if node_busy else "Online",
+            "detail": detail,
+            "tone": "busy" if node_busy else "healthy",
+            "show_dot": True,
+        }
+    if spark["state"] == "offline":
+        return {
+            "label": "Node status",
+            "value": "Offline",
+            "detail": spark["detail"],
+            "tone": "offline",
+            "show_dot": True,
+        }
+    return {
+        "label": "Node status",
+        "value": "Unknown",
+        "detail": spark["detail"],
+        "tone": "degraded",
+        "show_dot": True,
+    }
+
+
+def _gpu_runtime_item(
+    *,
+    settings: AppSettings,
+    queue: dict[str, Any],
+    active_llm: bool,
+    cuda_facts: Any,
+) -> dict[str, Any]:
+    explicit_gpu_requested = _safe_is_gpu_device(
+        getattr(settings, "asr_device", None)
+    ) or _safe_is_gpu_device(getattr(settings, "diarization_device", None))
+    gpu_busy = bool(queue.get("started_total")) and not active_llm
+    torch_cuda = cuda_facts.torch_cuda_version or "none"
+    nvidia_smi = _probe_nvidia_smi()
+
+    if cuda_facts.is_available and cuda_facts.device_count > 0:
+        detail = f"torch sees {cuda_facts.device_count} GPU(s) · CUDA {torch_cuda}"
+        if nvidia_smi["available"]:
+            detail = f"{detail} · {nvidia_smi['detail']}"
+        return {
+            "label": "GPU runtime",
+            "value": "GPU busy" if gpu_busy else "GPU ready",
+            "detail": detail,
+            "tone": "busy" if gpu_busy else "healthy",
+        }
+
+    if _gpu_visibility_disabled():
+        return {
+            "label": "GPU runtime",
+            "value": "GPU unavailable" if explicit_gpu_requested else "CPU only",
+            "detail": "CUDA_VISIBLE_DEVICES disables GPU visibility for this process",
+            "tone": "offline" if explicit_gpu_requested else "degraded",
+        }
+
+    if nvidia_smi["available"]:
+        detail = nvidia_smi["detail"]
+        if torch_cuda != "none":
+            detail = f"{detail} · torch CUDA {torch_cuda}"
+        else:
+            detail = f"{detail} · torch CUDA unavailable"
+        return {
+            "label": "GPU runtime",
+            "value": "GPU busy" if nvidia_smi["busy"] else "GPU ready",
+            "detail": detail,
+            "tone": "busy" if nvidia_smi["busy"] else "healthy",
+        }
+
+    visible_devices = cuda_facts.visible_devices or "default"
+    return {
+        "label": "GPU runtime",
+        "value": "GPU unavailable" if explicit_gpu_requested else "CPU only",
+        "detail": f"visible={visible_devices} · torch CUDA {torch_cuda}",
+        "tone": "offline" if explicit_gpu_requested else "degraded",
+    }
+
+
+def _llm_runtime_item(
+    *,
+    settings: AppSettings,
+    spark: dict[str, Any],
+    active_llm: bool,
+) -> dict[str, Any]:
+    configured_model = str(getattr(settings, "llm_model", "") or "").strip() or "Unknown"
+
+    if spark["state"] == "healthy":
+        tone = "busy" if active_llm else "healthy"
+        if spark["model_verified"] is False:
+            tone = "degraded"
+        detail = (
+            f"{spark['host']} · configured model is advertised"
+            if spark["model_verified"] is not False
+            else f"{spark['host']} · configured model is not advertised"
+        )
+    elif spark["state"] == "offline":
+        tone = "offline"
+        detail = f"{spark['host']} · endpoint offline"
+    else:
+        tone = "degraded"
+        detail = spark["detail"]
+
+    return {
+        "label": "LLM:",
+        "value": configured_model,
+        "detail": detail,
+        "tone": tone,
+    }
+
+
 def collect_control_center_runtime_status(settings: AppSettings) -> dict[str, Any]:
-    worker_health = check_worker_health(settings)
-    redis_health = check_redis_health(settings)
     spark = _probe_spark_runtime(settings)
     queue = _active_job_snapshot(settings)
     cuda_facts = collect_cuda_runtime_facts()
 
     active_stage = str(queue.get("active_stage") or "").strip().lower()
     active_llm = active_stage.startswith("llm")
-    gpu_busy = bool(queue.get("started_total")) and not active_llm
     active_detail = str(queue.get("active_detail") or "").strip()
 
-    if queue.get("error"):
-        active_jobs_item = {
-            "label": "Active jobs",
-            "value": "Queue unknown",
-            "detail": str(queue["error"]),
-            "tone": "degraded",
-        }
-    elif not redis_health["ok"]:
-        active_jobs_item = {
-            "label": "Active jobs",
-            "value": "Queue offline",
-            "detail": str(redis_health["detail"]),
-            "tone": "offline",
-        }
-    elif queue["started_total"] or queue["queued_total"]:
-        active_jobs_item = {
-            "label": "Active jobs",
-            "value": f"{queue['started_total']} active · {queue['queued_total']} queued",
-            "detail": active_detail or str(worker_health["detail"]),
-            "tone": "busy" if worker_health["ok"] else "degraded",
-        }
-    else:
-        active_jobs_item = {
-            "label": "Active jobs",
-            "value": "Idle",
-            "detail": str(worker_health["detail"]),
-            "tone": "healthy" if worker_health["ok"] else "degraded",
-        }
-
-    spark_tone = "degraded" if spark["state"] == "unknown" else spark["state"]
-    spark_value = spark["value"]
-    spark_detail = spark["detail"]
-    if spark["state"] == "healthy":
-        spark_tone = "busy" if active_llm else "healthy"
-        spark_value = "Busy" if active_llm else "Online"
-        spark_detail = (
-            f"{active_detail} · {spark['host']}"
-            if active_llm and active_detail
-            else spark["detail"]
-        )
-    spark_item = {
-        "label": "DGX / Spark",
-        "value": spark_value,
-        "detail": spark_detail,
-        "tone": spark_tone,
-    }
-
-    explicit_gpu_requested = _safe_is_gpu_device(getattr(settings, "asr_device", None)) or _safe_is_gpu_device(
-        getattr(settings, "diarization_device", None)
-    )
-    visible_devices = cuda_facts.visible_devices or "default"
-    torch_cuda = cuda_facts.torch_cuda_version or "none"
-    if cuda_facts.is_available and cuda_facts.device_count > 0:
-        gpu_item = {
-            "label": "GPU runtime",
-            "value": "GPU active" if gpu_busy else "GPU ready",
-            "detail": f"{cuda_facts.device_count} visible · torch CUDA {torch_cuda}",
-            "tone": "busy" if gpu_busy else "healthy",
-        }
-    else:
-        gpu_item = {
-            "label": "GPU runtime",
-            "value": "GPU unavailable" if explicit_gpu_requested else "CPU only",
-            "detail": f"visible={visible_devices} · torch CUDA {torch_cuda}",
-            "tone": "offline" if explicit_gpu_requested else "degraded",
-        }
-
-    active_recording = queue.get("active_recording") or {}
-    active_recording_id = str(active_recording.get("id") or "").strip()
-    runtime_metadata = _active_runtime_metadata(
-        settings,
-        recording_id=active_recording_id,
-    )
-    if runtime_metadata:
-        effective_device = str(runtime_metadata.get("effective_device") or "").strip() or None
-        runtime_mode = str(runtime_metadata.get("mode") or "").strip() or "unknown"
-        if _safe_is_gpu_device(effective_device):
-            inference_item = {
-                "label": "Inference mode",
-                "value": "GPU path",
-                "detail": (
-                    f"{_recording_label(active_recording, active_recording_id or 'recording')} "
-                    f"· {_stage_label(active_stage)} · {effective_device}"
-                ),
-                "tone": "busy" if gpu_busy else "healthy",
-            }
-        else:
-            fallback_tone = "offline" if explicit_gpu_requested else "degraded"
-            inference_item = {
-                "label": "Inference mode",
-                "value": "CPU fallback" if runtime_mode != "unknown" else "CPU path",
-                "detail": (
-                    f"{_recording_label(active_recording, active_recording_id or 'recording')} "
-                    f"· {_stage_label(active_stage)} · {runtime_mode}"
-                ),
-                "tone": fallback_tone,
-            }
-    else:
-        try:
-            scheduler = resolve_scheduler_decision(
-                getattr(settings, "gpu_scheduler_mode", "auto"),
-                asr_device=getattr(settings, "asr_device", "auto"),
-                diarization_device=getattr(settings, "diarization_device", "auto"),
-                diarization_is_heavy=True,
-                cuda_facts=cuda_facts,
-            )
-            asr_gpu = _safe_is_gpu_device(scheduler.asr_device)
-            diarization_gpu = _safe_is_gpu_device(scheduler.diarization_device)
-            if asr_gpu and diarization_gpu:
-                inference_item = {
-                    "label": "Inference mode",
-                    "value": "GPU path",
-                    "detail": (
-                        f"ASR {scheduler.asr_device} · Diarization {scheduler.diarization_device} "
-                        f"· {scheduler.effective_mode}"
-                    ),
-                    "tone": "busy" if gpu_busy else "healthy",
-                }
-            elif asr_gpu or diarization_gpu:
-                inference_item = {
-                    "label": "Inference mode",
-                    "value": "Mixed path",
-                    "detail": (
-                        f"ASR {scheduler.asr_device} · Diarization {scheduler.diarization_device} "
-                        f"· {scheduler.effective_mode}"
-                    ),
-                    "tone": "busy" if gpu_busy else "degraded",
-                }
-            else:
-                inference_item = {
-                    "label": "Inference mode",
-                    "value": "CPU fallback" if explicit_gpu_requested else "CPU path",
-                    "detail": (
-                        f"ASR {scheduler.asr_device} · Diarization {scheduler.diarization_device} "
-                        f"· {scheduler.effective_mode}"
-                    ),
-                    "tone": "offline" if explicit_gpu_requested else "degraded",
-                }
-        except Exception as exc:
-            inference_item = {
-                "label": "Inference mode",
-                "value": "Blocked",
-                "detail": str(exc),
-                "tone": "offline",
-            }
-
-    configured_model = str(getattr(settings, "llm_model", "") or "").strip() or "Unknown"
-    if spark["state"] == "healthy":
-        target_tone = "busy" if active_llm else "healthy"
-        if spark["model_verified"] is False:
-            target_tone = "degraded"
-        target_detail = (
-            f"{spark['host']} · advertised by Spark"
-            if spark["model_verified"] is not False
-            else f"{spark['host']} · configured target not advertised"
-        )
-        if active_llm and active_detail:
-            target_detail = f"{active_detail} · {spark['host']}"
-    elif spark["state"] == "offline":
-        target_tone = "offline"
-        target_detail = f"{spark['host']} · configured target only"
-    else:
-        target_tone = "degraded"
-        target_detail = spark["detail"]
-    target_item = {
-        "label": "Inference target",
-        "value": configured_model,
-        "detail": target_detail,
-        "tone": target_tone,
-    }
-
     return {
-        "active_jobs_item": active_jobs_item,
-        "secondary_items": [
-            spark_item,
-            gpu_item,
-            inference_item,
-            target_item,
+        "items": [
+            _node_status_item(
+                spark=spark,
+                queue=queue,
+                active_llm=active_llm,
+                active_detail=active_detail,
+            ),
+            _gpu_runtime_item(
+                settings=settings,
+                queue=queue,
+                active_llm=active_llm,
+                cuda_facts=cuda_facts,
+            ),
+            _llm_runtime_item(
+                settings=settings,
+                spark=spark,
+                active_llm=active_llm,
+            ),
         ],
-        "note": (
-            "Runtime snapshot uses worker heartbeat, DB job rows, local CUDA visibility, "
-            "and a lightweight Spark /v1/models probe. CPU fallback is confirmed from "
-            "active diarization metadata when available and otherwise inferred from settings."
-        ),
     }
 
 

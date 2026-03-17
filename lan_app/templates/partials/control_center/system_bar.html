@@ -6,25 +6,16 @@
   hx-target="this"
   hx-swap="outerHTML"
 >
-  <div class="control-center-system-group">
-    {% for item in control_center_system_bar.primary_items %}
-    <div class="control-center-system-item control-center-system-item--{{ item.tone or 'neutral' }}">
-      <span class="control-center-system-label">{{ item.label }}</span>
-      <strong class="control-center-system-value">{{ item.value }}</strong>
-      <span class="control-center-system-detail">{{ item.detail }}</span>
-    </div>
-    {% endfor %}
+  {% for item in control_center_system_bar["items"] %}
+  <div
+    class="control-center-system-item control-center-system-item--{{ item.tone or 'neutral' }}"
+    {% if item.detail %}title="{{ item.detail }}"{% endif %}
+  >
+    {% if item.show_dot %}
+    <span class="control-center-system-dot" aria-hidden="true"></span>
+    {% endif %}
+    <span class="control-center-system-label">{{ item.label }}</span>
+    <strong class="control-center-system-value">{{ item.value }}</strong>
   </div>
-
-  <div class="control-center-system-group control-center-system-group-secondary">
-    {% for item in control_center_system_bar.secondary_items %}
-    <div class="control-center-system-item control-center-system-item--{{ item.tone or 'neutral' }}">
-      <span class="control-center-system-label">{{ item.label }}</span>
-      <strong class="control-center-system-value">{{ item.value }}</strong>
-      <span class="control-center-system-detail">{{ item.detail }}</span>
-    </div>
-    {% endfor %}
-  </div>
-
-  <p class="control-center-system-note">{{ control_center_system_bar.note }}</p>
+  {% endfor %}
 </footer>

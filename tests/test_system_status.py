@@ -56,6 +56,17 @@ def _client_factory(result, seen_headers: list[dict[str, str]] | None = None):
     return _FakeClient
 
 
+def _nvidia_smi_probe(**overrides):
+    probe = {
+        "available": False,
+        "device_count": 0,
+        "busy": False,
+        "detail": "nvidia-smi unavailable",
+    }
+    probe.update(overrides)
+    return probe
+
+
 def test_system_status_small_helpers_cover_edge_cases(tmp_path, monkeypatch):
     assert system_status._stage_label("") == "Unknown"  # noqa: SLF001
     assert system_status._stage_label("llm_chunk_2_of_5") == "LLM Chunk 2 Of 5"  # noqa: SLF001
@@ -107,6 +118,70 @@ def test_system_status_small_helpers_cover_edge_cases(tmp_path, monkeypatch):
     assert system_status._safe_is_gpu_device("cuda:0") is True  # noqa: SLF001
     assert system_status._safe_is_gpu_device("bogus") is False  # noqa: SLF001
     assert system_status._safe_get_recording("", settings=_settings(tmp_path)) is None  # noqa: SLF001
+    assert system_status._parse_int(None) is None  # noqa: SLF001
+    assert system_status._parse_int("4") == 4  # noqa: SLF001
+    assert system_status._parse_int("bad") is None  # noqa: SLF001
+
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+    assert system_status._gpu_visibility_disabled() is False  # noqa: SLF001
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "")
+    assert system_status._gpu_visibility_disabled() is True  # noqa: SLF001
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0")
+    assert system_status._gpu_visibility_disabled() is False  # noqa: SLF001
+
+    monkeypatch.setattr(system_status.shutil, "which", lambda _name: None)
+    assert system_status._probe_nvidia_smi()["available"] is False  # noqa: SLF001
+
+    monkeypatch.setattr(system_status.shutil, "which", lambda _name: "/usr/bin/nvidia-smi")
+    monkeypatch.setattr(
+        system_status.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(stdout="0, 0\n1, 76\n"),
+    )
+    probe = system_status._probe_nvidia_smi()  # noqa: SLF001
+    assert probe["available"] is True
+    assert probe["device_count"] == 2
+    assert probe["busy"] is True
+    assert probe["detail"].endswith("76%")
+
+    monkeypatch.setattr(
+        system_status.subprocess,
+        "run",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            system_status.subprocess.TimeoutExpired(cmd="nvidia-smi", timeout=2.0)
+        ),
+    )
+    assert system_status._probe_nvidia_smi()["detail"] == "nvidia-smi timed out"  # noqa: SLF001
+
+    monkeypatch.setattr(
+        system_status.subprocess,
+        "run",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            system_status.subprocess.CalledProcessError(
+                1,
+                ["nvidia-smi"],
+                stderr="driver mismatch",
+            )
+        ),
+    )
+    assert system_status._probe_nvidia_smi()["detail"] == "driver mismatch"  # noqa: SLF001
+
+    monkeypatch.setattr(
+        system_status.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(stdout=""),
+    )
+    assert system_status._probe_nvidia_smi()["detail"] == "nvidia-smi reported no visible GPUs"  # noqa: SLF001
+
+    monkeypatch.setattr(
+        system_status.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(stdout="0\n1, not-a-number\n"),
+    )
+    probe_without_util = system_status._probe_nvidia_smi()  # noqa: SLF001
+    assert probe_without_util["available"] is True
+    assert probe_without_util["busy"] is False
+    assert probe_without_util["detail"] == "nvidia-smi sees 2 GPU(s)"
 
 
 def test_probe_spark_runtime_variants(tmp_path, monkeypatch):
@@ -263,16 +338,6 @@ def test_collect_control_center_runtime_status_healthy_gpu_path(tmp_path, monkey
     settings = _settings(tmp_path, asr_device="cuda", diarization_device="cuda")
     monkeypatch.setattr(
         system_status,
-        "check_worker_health",
-        lambda _settings: {"ok": True, "detail": "worker 'w1' heartbeat 5s ago"},
-    )
-    monkeypatch.setattr(
-        system_status,
-        "check_redis_health",
-        lambda _settings: {"ok": True, "detail": "ok"},
-    )
-    monkeypatch.setattr(
-        system_status,
         "_probe_spark_runtime",
         lambda _settings: {
             "state": "healthy",
@@ -307,38 +372,101 @@ def test_collect_control_center_runtime_status_healthy_gpu_path(tmp_path, monkey
             torch_cuda_version="12.6",
         ),
     )
-    monkeypatch.setattr(system_status, "_active_runtime_metadata", lambda *_args, **_kwargs: {})
     monkeypatch.setattr(
         system_status,
-        "resolve_scheduler_decision",
-        lambda *args, **kwargs: SimpleNamespace(
-            asr_device="cuda",
-            diarization_device="cuda",
-            effective_mode="sequential",
-        ),
+        "_probe_nvidia_smi",
+        lambda: _nvidia_smi_probe(),
     )
 
     payload = system_status.collect_control_center_runtime_status(settings)
 
-    assert payload["active_jobs_item"]["value"] == "1 active · 2 queued"
-    assert payload["secondary_items"][0]["value"] == "Online"
-    assert payload["secondary_items"][1]["value"] == "GPU active"
-    assert payload["secondary_items"][2]["value"] == "GPU path"
-    assert payload["secondary_items"][3]["detail"] == "dgx.local · advertised by Spark"
+    assert payload["items"][0]["label"] == "Node status"
+    assert payload["items"][0]["value"] == "Busy"
+    assert payload["items"][0]["show_dot"] is True
+    assert payload["items"][1]["value"] == "GPU busy"
+    assert payload["items"][2]["label"] == "LLM:"
+    assert payload["items"][2]["detail"] == "dgx.local · configured model is advertised"
+
+
+def test_collect_control_center_runtime_status_gpu_runtime_detail_branches(tmp_path, monkeypatch):
+    settings = _settings(tmp_path, asr_device="cuda", diarization_device="cuda")
+    monkeypatch.setattr(
+        system_status,
+        "_probe_spark_runtime",
+        lambda _settings: {
+            "state": "healthy",
+            "value": "Online",
+            "detail": "dgx.local responded to /v1/models",
+            "host": "dgx.local",
+            "advertised_models": ["gpt-oss:120b"],
+            "model_verified": True,
+        },
+    )
+    monkeypatch.setattr(
+        system_status,
+        "_active_job_snapshot",
+        lambda _settings: {
+            "started_total": 0,
+            "queued_total": 0,
+            "active_job": None,
+            "queued_job": None,
+            "active_recording": None,
+            "active_detail": "",
+            "active_stage": "",
+            "error": None,
+        },
+    )
+    monkeypatch.setattr(
+        system_status,
+        "collect_cuda_runtime_facts",
+        lambda: CudaRuntimeFacts(
+            is_available=True,
+            device_count=1,
+            visible_devices=None,
+            torch_cuda_version="12.6",
+        ),
+    )
+    monkeypatch.setattr(
+        system_status,
+        "_probe_nvidia_smi",
+        lambda: _nvidia_smi_probe(
+            available=True,
+            device_count=1,
+            detail="nvidia-smi sees 1 GPU(s) · util up to 0%",
+        ),
+    )
+
+    payload = system_status.collect_control_center_runtime_status(settings)
+    assert payload["items"][1]["detail"].endswith(
+        "nvidia-smi sees 1 GPU(s) · util up to 0%"
+    )
+
+    monkeypatch.setattr(
+        system_status,
+        "collect_cuda_runtime_facts",
+        lambda: CudaRuntimeFacts(
+            is_available=False,
+            device_count=0,
+            visible_devices=None,
+            torch_cuda_version="12.6",
+        ),
+    )
+    payload = system_status.collect_control_center_runtime_status(settings)
+    assert payload["items"][1]["detail"].endswith("torch CUDA 12.6")
+
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "")
+    monkeypatch.setattr(
+        system_status,
+        "_probe_nvidia_smi",
+        lambda: _nvidia_smi_probe(available=True, device_count=2, busy=True),
+    )
+    payload = system_status.collect_control_center_runtime_status(settings)
+    assert payload["items"][1]["value"] == "GPU unavailable"
+    assert payload["items"][1]["detail"] == "CUDA_VISIBLE_DEVICES disables GPU visibility for this process"
 
 
 def test_collect_control_center_runtime_status_runtime_metadata_branches(tmp_path, monkeypatch):
     settings = _settings(tmp_path, asr_device="cuda", diarization_device="cuda")
-    monkeypatch.setattr(
-        system_status,
-        "check_worker_health",
-        lambda _settings: {"ok": True, "detail": "worker 'w1' heartbeat 5s ago"},
-    )
-    monkeypatch.setattr(
-        system_status,
-        "check_redis_health",
-        lambda _settings: {"ok": True, "detail": "ok"},
-    )
     monkeypatch.setattr(
         system_status,
         "_probe_spark_runtime",
@@ -377,37 +505,30 @@ def test_collect_control_center_runtime_status_runtime_metadata_branches(tmp_pat
     )
     monkeypatch.setattr(
         system_status,
-        "_active_runtime_metadata",
-        lambda *_args, **_kwargs: {"effective_device": "cpu", "mode": "fallback"},
+        "_probe_nvidia_smi",
+        lambda: _nvidia_smi_probe(),
     )
 
     cpu_fallback = system_status.collect_control_center_runtime_status(settings)
-    assert cpu_fallback["secondary_items"][1]["value"] == "GPU unavailable"
-    assert cpu_fallback["secondary_items"][2]["value"] == "CPU fallback"
-    assert cpu_fallback["secondary_items"][2]["tone"] == "offline"
+    assert cpu_fallback["items"][1]["value"] == "GPU unavailable"
+    assert cpu_fallback["items"][1]["tone"] == "offline"
 
     monkeypatch.setattr(
         system_status,
-        "_active_runtime_metadata",
-        lambda *_args, **_kwargs: {"effective_device": "cuda:0", "mode": "pyannote"},
+        "_probe_nvidia_smi",
+        lambda: _nvidia_smi_probe(
+            available=True,
+            device_count=1,
+            detail="nvidia-smi sees 1 GPU(s) · util up to 0%",
+        ),
     )
     gpu_runtime = system_status.collect_control_center_runtime_status(settings)
-    assert gpu_runtime["secondary_items"][2]["value"] == "GPU path"
-    assert gpu_runtime["secondary_items"][2]["tone"] == "busy"
+    assert gpu_runtime["items"][1]["value"] == "GPU ready"
+    assert gpu_runtime["items"][1]["tone"] == "healthy"
 
 
 def test_collect_control_center_runtime_status_active_llm_and_mixed_target(tmp_path, monkeypatch):
     settings = _settings(tmp_path)
-    monkeypatch.setattr(
-        system_status,
-        "check_worker_health",
-        lambda _settings: {"ok": True, "detail": "worker 'w1' heartbeat 5s ago"},
-    )
-    monkeypatch.setattr(
-        system_status,
-        "check_redis_health",
-        lambda _settings: {"ok": True, "detail": "ok"},
-    )
     monkeypatch.setattr(
         system_status,
         "_probe_spark_runtime",
@@ -444,23 +565,18 @@ def test_collect_control_center_runtime_status_active_llm_and_mixed_target(tmp_p
             torch_cuda_version="12.6",
         ),
     )
-    monkeypatch.setattr(system_status, "_active_runtime_metadata", lambda *_args, **_kwargs: {})
     monkeypatch.setattr(
         system_status,
-        "resolve_scheduler_decision",
-        lambda *args, **kwargs: SimpleNamespace(
-            asr_device="cuda",
-            diarization_device="cpu",
-            effective_mode="sequential",
-        ),
+        "_probe_nvidia_smi",
+        lambda: _nvidia_smi_probe(),
     )
 
     payload = system_status.collect_control_center_runtime_status(settings)
 
-    assert payload["secondary_items"][0]["value"] == "Busy"
-    assert payload["secondary_items"][2]["value"] == "Mixed path"
-    assert payload["secondary_items"][3]["tone"] == "degraded"
-    assert payload["secondary_items"][3]["detail"] == "meeting.mp3 · LLM Chunk 1 Of 2 · dgx.local"
+    assert payload["items"][0]["value"] == "Busy"
+    assert payload["items"][1]["value"] == "GPU ready"
+    assert payload["items"][2]["tone"] == "degraded"
+    assert payload["items"][2]["detail"] == "dgx.local · configured model is not advertised"
 
 
 def test_collect_control_center_runtime_status_queue_offline_and_scheduler_blocked(
@@ -468,16 +584,6 @@ def test_collect_control_center_runtime_status_queue_offline_and_scheduler_block
     monkeypatch,
 ):
     settings = _settings(tmp_path)
-    monkeypatch.setattr(
-        system_status,
-        "check_worker_health",
-        lambda _settings: {"ok": False, "detail": "worker heartbeat is stale"},
-    )
-    monkeypatch.setattr(
-        system_status,
-        "check_redis_health",
-        lambda _settings: {"ok": False, "detail": "redis unavailable"},
-    )
     monkeypatch.setattr(
         system_status,
         "_probe_spark_runtime",
@@ -514,33 +620,21 @@ def test_collect_control_center_runtime_status_queue_offline_and_scheduler_block
             torch_cuda_version=None,
         ),
     )
-    monkeypatch.setattr(system_status, "_active_runtime_metadata", lambda *_args, **_kwargs: {})
     monkeypatch.setattr(
         system_status,
-        "resolve_scheduler_decision",
-        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("bad config")),
+        "_probe_nvidia_smi",
+        lambda: _nvidia_smi_probe(),
     )
 
     payload = system_status.collect_control_center_runtime_status(settings)
 
-    assert payload["active_jobs_item"]["value"] == "Queue offline"
-    assert payload["secondary_items"][1]["value"] == "CPU only"
-    assert payload["secondary_items"][2]["value"] == "Blocked"
-    assert payload["secondary_items"][3]["tone"] == "offline"
+    assert payload["items"][0]["value"] == "Offline"
+    assert payload["items"][1]["value"] == "CPU only"
+    assert payload["items"][2]["tone"] == "offline"
 
 
 def test_collect_control_center_runtime_status_queue_unknown(tmp_path, monkeypatch):
     settings = _settings(tmp_path)
-    monkeypatch.setattr(
-        system_status,
-        "check_worker_health",
-        lambda _settings: {"ok": True, "detail": "worker 'w1' heartbeat 5s ago"},
-    )
-    monkeypatch.setattr(
-        system_status,
-        "check_redis_health",
-        lambda _settings: {"ok": True, "detail": "ok"},
-    )
     monkeypatch.setattr(
         system_status,
         "_probe_spark_runtime",
@@ -577,37 +671,21 @@ def test_collect_control_center_runtime_status_queue_unknown(tmp_path, monkeypat
             torch_cuda_version="12.6",
         ),
     )
-    monkeypatch.setattr(system_status, "_active_runtime_metadata", lambda *_args, **_kwargs: {})
     monkeypatch.setattr(
         system_status,
-        "resolve_scheduler_decision",
-        lambda *args, **kwargs: SimpleNamespace(
-            asr_device="cpu",
-            diarization_device="cpu",
-            effective_mode="sequential",
-        ),
+        "_probe_nvidia_smi",
+        lambda: _nvidia_smi_probe(),
     )
 
     payload = system_status.collect_control_center_runtime_status(settings)
 
-    assert payload["active_jobs_item"]["value"] == "Queue unknown"
-    assert payload["secondary_items"][0]["value"] == "Auth error"
-    assert payload["secondary_items"][2]["value"] == "CPU path"
-    assert payload["secondary_items"][3]["tone"] == "degraded"
+    assert payload["items"][0]["value"] == "Unknown"
+    assert payload["items"][1]["value"] == "GPU ready"
+    assert payload["items"][2]["tone"] == "degraded"
 
 
 def test_collect_control_center_runtime_status_idle_and_unknown_spark(tmp_path, monkeypatch):
     settings = _settings(tmp_path)
-    monkeypatch.setattr(
-        system_status,
-        "check_worker_health",
-        lambda _settings: {"ok": True, "detail": "worker 'w1' heartbeat 5s ago"},
-    )
-    monkeypatch.setattr(
-        system_status,
-        "check_redis_health",
-        lambda _settings: {"ok": True, "detail": "ok"},
-    )
     monkeypatch.setattr(
         system_status,
         "_probe_spark_runtime",
@@ -644,18 +722,13 @@ def test_collect_control_center_runtime_status_idle_and_unknown_spark(tmp_path, 
             torch_cuda_version="12.6",
         ),
     )
-    monkeypatch.setattr(system_status, "_active_runtime_metadata", lambda *_args, **_kwargs: {})
     monkeypatch.setattr(
         system_status,
-        "resolve_scheduler_decision",
-        lambda *args, **kwargs: SimpleNamespace(
-            asr_device="cpu",
-            diarization_device="cpu",
-            effective_mode="sequential",
-        ),
+        "_probe_nvidia_smi",
+        lambda: _nvidia_smi_probe(),
     )
 
     payload = system_status.collect_control_center_runtime_status(settings)
 
-    assert payload["active_jobs_item"]["value"] == "Idle"
-    assert payload["secondary_items"][0]["tone"] == "degraded"
+    assert payload["items"][0]["value"] == "Unknown"
+    assert payload["items"][0]["tone"] == "degraded"

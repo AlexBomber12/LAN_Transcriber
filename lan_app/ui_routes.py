@@ -3351,23 +3351,11 @@ def _control_center_system_bar_context(
     recordings_panel: dict[str, Any],
     runtime_status: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    queue_detail = state["status"] or "All statuses"
-    if state["q"]:
-        queue_detail = f"{queue_detail} · search: {state['q']}"
+    del state, recordings_panel
     if runtime_status is None:
         runtime_status = collect_control_center_runtime_status(settings)
     return {
-        "primary_items": [
-            {
-                "label": "Inbox view",
-                "value": f"{recordings_panel['total']} visible",
-                "detail": queue_detail,
-                "tone": "neutral",
-            },
-            runtime_status["active_jobs_item"],
-        ],
-        "secondary_items": runtime_status["secondary_items"],
-        "note": runtime_status["note"],
+        "items": runtime_status["items"],
     }
 
 
