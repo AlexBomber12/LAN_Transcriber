@@ -412,7 +412,7 @@ textarea:focus{
 .control-center-workspace-header{
   display:grid;
   gap:16px;
-  grid-template-columns:minmax(0,1.08fr) minmax(320px,.92fr);
+  grid-template-columns:1fr;
   align-items:start;
 }
 .control-center-workspace-copy{
@@ -605,7 +605,7 @@ textarea:focus{
   gap:10px;
   align-content:center;
   justify-items:start;
-  min-height:172px;
+  min-height:136px;
   padding:20px;
   border-radius:24px;
   border:2px dashed #b6c8ea;
@@ -1859,7 +1859,6 @@ textarea:focus{
     <div class="app-nav-mark">LT</div>
     <div class="app-nav-copy">
       <div class="app-nav-title">LAN Transcriber</div>
-      <div class="app-nav-subtitle">Daily operator workspace</div>
     </div>
   </div>
   <nav class="app-nav-links">
@@ -1899,13 +1898,8 @@ function syncControlCenterShellRefreshUrlsFromPanel() {
   if (!panel) {
     return;
   }
-  var workspaceHeaderUrl = panel.getAttribute('data-workspace-header-url');
   var systemBarUrl = panel.getAttribute('data-system-bar-url');
-  var header = document.getElementById('control-center-workspace-header');
   var systemBar = document.getElementById('control-center-system-bar');
-  if (header && workspaceHeaderUrl) {
-    header.setAttribute('hx-get', workspaceHeaderUrl);
-  }
   if (systemBar && systemBarUrl) {
     systemBar.setAttribute('hx-get', systemBarUrl);
   }
@@ -1922,17 +1916,11 @@ function syncControlCenterShellRefreshUrlsFromStateParams(stateParams) {
   normalizedParams.set('tab', stateParams.get('tab') || 'overview');
   normalizedParams.set('limit', stateParams.get('limit') || '25');
   normalizedParams.set('offset', stateParams.get('offset') || '0');
-  var workspaceHeaderUrl = '/ui/control-center/workspace-header?' + normalizedParams.toString();
   var systemBarUrl = '/ui/control-center/system-bar?' + normalizedParams.toString();
   var panel = document.getElementById('control-center-recordings-panel');
-  var header = document.getElementById('control-center-workspace-header');
   var systemBar = document.getElementById('control-center-system-bar');
   if (panel) {
-    panel.setAttribute('data-workspace-header-url', workspaceHeaderUrl);
     panel.setAttribute('data-system-bar-url', systemBarUrl);
-  }
-  if (header) {
-    header.setAttribute('hx-get', workspaceHeaderUrl);
   }
   if (systemBar) {
     systemBar.setAttribute('hx-get', systemBarUrl);
@@ -1954,7 +1942,6 @@ function refreshControlCenterShellFromPanel() {
   if (!window.htmx || !document.body) {
     return;
   }
-  htmx.trigger(document.body, 'refresh-control-center-header');
   htmx.trigger(document.body, 'refresh-control-center-system-bar');
 }
 
@@ -1963,7 +1950,6 @@ function refreshControlCenterShellFromHref(href) {
   if (!window.htmx || !document.body) {
     return;
   }
-  htmx.trigger(document.body, 'refresh-control-center-header');
   htmx.trigger(document.body, 'refresh-control-center-system-bar');
 }
 
