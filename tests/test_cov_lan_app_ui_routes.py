@@ -230,10 +230,6 @@ def test_control_center_helper_contexts_cover_fragment_builders(
     assert state["limit"] == 100
     assert state["offset"] == 25
     assert state["selected_detail_href"] == "/recordings/rec-helper-1?tab=speakers"
-    assert state["workspace_header_url"] == (
-        "/ui/control-center/workspace-header?"
-        "selected=rec-helper-1&status=Ready&q=helper&tab=speakers&limit=100&offset=25"
-    )
     assert state["system_bar_url"] == (
         "/ui/control-center/system-bar?"
         "selected=rec-helper-1&status=Ready&q=helper&tab=speakers&limit=100&offset=25"
@@ -527,16 +523,10 @@ def test_control_center_helper_contexts_cover_fragment_builders(
     assert system_bar["secondary_items"][1]["value"] == "GPU ready"
     assert system_bar["note"] == "test runtime note"
 
-    header = ui_routes._control_center_workspace_header_context(  # noqa: SLF001
+    assert ui_routes._control_center_visible_total(  # noqa: SLF001
         cfg,
         state=state,
-    )
-    assert header["visible_total"] == 3
-    assert header["focus_recording"]["source_filename"] == "helper.wav"
-    assert (
-        header["workflow_links"]["selected_detail_href"]
-        == "/recordings/rec-helper-1?tab=speakers"
-    )
+    ) == 3
 
     filters = ui_routes._recordings_filters_context(  # noqa: SLF001
         mode="control_center",
@@ -548,10 +538,6 @@ def test_control_center_helper_contexts_cover_fragment_builders(
     )
     assert filters["limit_options"] == [25, 50, 100, 200]
     assert filters["hx_target"] == "#control-center-recordings-panel"
-    assert work_pane["recordings_panel"]["workspace_header_url"] == (
-        "/ui/control-center/workspace-header?"
-        "selected=rec-helper-1&status=Ready&q=helper&tab=speakers&limit=100&offset=0"
-    )
     assert work_pane["recordings_panel"]["system_bar_url"] == (
         "/ui/control-center/system-bar?"
         "selected=rec-helper-1&status=Ready&q=helper&tab=speakers&limit=100&offset=0"

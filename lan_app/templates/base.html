@@ -1898,13 +1898,8 @@ function syncControlCenterShellRefreshUrlsFromPanel() {
   if (!panel) {
     return;
   }
-  var workspaceHeaderUrl = panel.getAttribute('data-workspace-header-url');
   var systemBarUrl = panel.getAttribute('data-system-bar-url');
-  var header = document.getElementById('control-center-workspace-header');
   var systemBar = document.getElementById('control-center-system-bar');
-  if (header && workspaceHeaderUrl) {
-    header.setAttribute('hx-get', workspaceHeaderUrl);
-  }
   if (systemBar && systemBarUrl) {
     systemBar.setAttribute('hx-get', systemBarUrl);
   }
@@ -1921,17 +1916,11 @@ function syncControlCenterShellRefreshUrlsFromStateParams(stateParams) {
   normalizedParams.set('tab', stateParams.get('tab') || 'overview');
   normalizedParams.set('limit', stateParams.get('limit') || '25');
   normalizedParams.set('offset', stateParams.get('offset') || '0');
-  var workspaceHeaderUrl = '/ui/control-center/workspace-header?' + normalizedParams.toString();
   var systemBarUrl = '/ui/control-center/system-bar?' + normalizedParams.toString();
   var panel = document.getElementById('control-center-recordings-panel');
-  var header = document.getElementById('control-center-workspace-header');
   var systemBar = document.getElementById('control-center-system-bar');
   if (panel) {
-    panel.setAttribute('data-workspace-header-url', workspaceHeaderUrl);
     panel.setAttribute('data-system-bar-url', systemBarUrl);
-  }
-  if (header) {
-    header.setAttribute('hx-get', workspaceHeaderUrl);
   }
   if (systemBar) {
     systemBar.setAttribute('hx-get', systemBarUrl);
@@ -1953,7 +1942,6 @@ function refreshControlCenterShellFromPanel() {
   if (!window.htmx || !document.body) {
     return;
   }
-  htmx.trigger(document.body, 'refresh-control-center-header');
   htmx.trigger(document.body, 'refresh-control-center-system-bar');
 }
 
@@ -1962,7 +1950,6 @@ function refreshControlCenterShellFromHref(href) {
   if (!window.htmx || !document.body) {
     return;
   }
-  htmx.trigger(document.body, 'refresh-control-center-header');
   htmx.trigger(document.body, 'refresh-control-center-system-bar');
 }
 

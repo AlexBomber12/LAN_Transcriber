@@ -430,7 +430,7 @@ def test_control_center_query_state_and_direct_routes(seeded_client):
     assert 'id="control-center-recordings-panel"' in r.text
     assert "/recordings/rec-ui-1?tab=speakers" in r.text
     assert "Open full-page inspector" in r.text
-    assert "refresh-control-center-header" in r.text
+    assert "refresh-control-center-header" not in r.text
     assert "refresh-control-center-system-bar" in r.text
     assert "syncControlCenterShellRefreshUrlsFromPanel" in r.text
     assert "syncControlCenterShellRefreshUrlsFromHref" in r.text
@@ -460,9 +460,7 @@ def test_control_center_pane_fragment_endpoints(seeded_client):
     )
     assert workspace_header.status_code == 200
     assert 'id="control-center-workspace-header"' in workspace_header.text
-    assert (
-        'hx-trigger="refresh-control-center-header from:body"' in workspace_header.text
-    )
+    assert "hx-trigger" not in workspace_header.text
     assert "<h1>Control Center</h1>" in workspace_header.text
     assert "control-center-focus-card" not in workspace_header.text
     assert "meeting.mp3" not in workspace_header.text
@@ -552,10 +550,7 @@ def test_control_center_system_bar_renders_degraded_cpu_fallback(
     assert "Fallback and Admin Pages" not in work_pane.text
     assert "meeting.mp3" in work_pane.text
     assert 'id="control-center-recordings-panel"' in work_pane.text
-    assert (
-        'data-workspace-header-url="/ui/control-center/workspace-header?selected=rec-ui-1&amp;'
-        'status=Ready&amp;q=meeting&amp;tab=speakers&amp;limit=25&amp;offset=0"'
-    ) in work_pane.text
+    assert "data-workspace-header-url" not in work_pane.text
     assert (
         'data-system-bar-url="/ui/control-center/system-bar?selected=rec-ui-1&amp;status=Ready&amp;'
         'q=meeting&amp;tab=speakers&amp;limit=25&amp;offset=0"'
@@ -813,10 +808,7 @@ def test_control_center_recordings_panel_filters_search_and_actions(
     assert ">Source<" in panel.text
     assert ">Confidence<" not in panel.text
     assert 'data-return-to="control-center"' in panel.text
-    assert (
-        'data-workspace-header-url="/ui/control-center/workspace-header?selected=&amp;status=Ready&amp;'
-        'q=alpha&amp;tab=speakers&amp;limit=25&amp;offset=0"'
-    ) in panel.text
+    assert "data-workspace-header-url" not in panel.text
     assert (
         'data-system-bar-url="/ui/control-center/system-bar?selected=&amp;status=Ready&amp;q=alpha&amp;'
         'tab=speakers&amp;limit=25&amp;offset=0"'
