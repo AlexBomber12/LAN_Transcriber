@@ -1,0 +1,78 @@
+{% set details = embedded_recording_details or {} %}
+<article class="compact-recording-details">
+  <section class="inspector-section-card compact-recording-details-card">
+    <div class="compact-recording-details-head">
+      <p class="compact-recording-details-eyebrow">{{ details.card_title }}</p>
+      <div class="compact-recording-details-headbar">
+        <div class="compact-recording-details-title-stack">
+          <h2 class="compact-recording-details-primary">{{ details.primary_title }}</h2>
+          <p class="compact-recording-details-secondary">Job ID <code>{{ details.job_id }}</code></p>
+          <p class="compact-recording-details-filename">{{ details.filename }}</p>
+        </div>
+        <a
+          href="{{ details.download_zip_href }}"
+          class="btn"
+          hx-boost="false"
+          data-testid="recording-inspector-download-zip"
+        >Download ZIP</a>
+      </div>
+    </div>
+
+    <section class="compact-recording-details-section">
+      <p class="compact-recording-details-section-label">KEY METADATA</p>
+      <div class="compact-recording-details-list">
+        {% for item in details.metadata_rows or [] %}
+        <div class="compact-recording-details-row">
+          <span class="compact-recording-details-row-label">{{ item.label }}</span>
+          <strong class="compact-recording-details-row-value">{{ item.value }}</strong>
+        </div>
+        {% endfor %}
+      </div>
+    </section>
+
+    <section class="compact-recording-details-section">
+      <p class="compact-recording-details-section-label">SPEAKERS</p>
+      {% if details.speaker_rows %}
+      <div class="compact-recording-details-list">
+        {% for speaker in details.speaker_rows %}
+        <div class="compact-recording-details-row compact-recording-details-row-speaker">
+          <div class="compact-recording-speaker-main">
+            <strong class="compact-recording-details-row-value">{{ speaker.primary_label }}</strong>
+            <span class="compact-recording-speaker-secondary">{{ speaker.secondary_label }}</span>
+          </div>
+          {% if speaker.confidence_display %}
+          <span class="compact-recording-speaker-confidence">{{ speaker.confidence_display }}</span>
+          {% endif %}
+        </div>
+        {% endfor %}
+      </div>
+      {% else %}
+      <p class="compact-recording-details-copy">{{ details.summary_placeholder }}</p>
+      {% endif %}
+    </section>
+
+    <section class="compact-recording-details-section">
+      <p class="compact-recording-details-section-label">TONE</p>
+      <p class="compact-recording-details-copy">{{ details.tone }}</p>
+    </section>
+
+    <section class="compact-recording-details-section">
+      <p class="compact-recording-details-section-label">SUMMARY</p>
+      {% if details.summary_lines %}
+      <div class="compact-recording-summary-lines">
+        {% for line in details.summary_lines %}
+        <p class="compact-recording-details-copy">{{ line }}</p>
+        {% endfor %}
+      </div>
+      {% else %}
+      <p class="compact-recording-details-copy">{{ details.summary_placeholder }}</p>
+      {% endif %}
+    </section>
+
+    <a
+      href="{{ details.open_recording_page_href }}"
+      class="btn compact-recording-details-open"
+      data-testid="recording-inspector-open-full-page"
+    >Open Recording Page</a>
+  </section>
+</article>

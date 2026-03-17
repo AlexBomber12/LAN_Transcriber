@@ -620,7 +620,7 @@ Queue (in order)
 - Depends on: PR-OPS-SYSTEM-BAR-02
 
 124) PR-UI-STITCH-RECORDING-DETAILS-01: Replace the compact right pane with a single Recording Details panel and remove embedded tabs
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-UI-STITCH-RECORDING-DETAILS-01.md
 - Depends on: PR-UI-STITCH-WORKLIST-02
 
