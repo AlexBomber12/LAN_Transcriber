@@ -449,7 +449,8 @@ def test_control_center_query_state_and_direct_routes(seeded_client):
 
     detail = seeded_client.get("/recordings/rec-ui-1")
     assert detail.status_code == 200
-    assert "inspector-hero" in detail.text
+    assert "meeting.mp3" in detail.text
+    assert 'class="inspector-hero"' in detail.text
 
 
 def test_control_center_pane_fragment_endpoints(seeded_client):
@@ -571,7 +572,7 @@ def test_control_center_selected_recording_renders_embedded_inspector_actions(
     r = seeded_client.get("/?selected=rec-ui-1&status=Ready&q=meeting&tab=overview")
     assert r.status_code == 200
     assert 'id="control-center-inspector-pane"' in r.text
-    assert "inspector-hero" in r.text
+    assert 'class="inspector-hero embedded"' in r.text
     assert "Requeue" in r.text
     assert "Download ZIP" in r.text
     assert "Open full-page inspector" in r.text
@@ -682,7 +683,7 @@ def test_control_center_embedded_summary_and_export_tabs_render_compact_content(
     export = client.get("/ui/recordings/rec-ui-summary-1/inspector?tab=export")
     assert export.status_code == 200
     assert "Download ZIP" in export.text
-    assert "export" in export.text.lower()
+    assert 'id="compact-export-text-rec-ui-summary-1"' in export.text
 
 
 def test_control_center_workflow_upload_select_speaker_decision_and_correction(

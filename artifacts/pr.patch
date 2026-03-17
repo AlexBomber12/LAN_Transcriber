@@ -1,22 +1,13 @@
 diff --git a/artifacts/ci.log b/artifacts/ci.log
-index bd79927..b8a7d08 100644
+index bd79927..b9da34a 100644
 --- a/artifacts/ci.log
 +++ b/artifacts/ci.log
-@@ -1,8 +1,4 @@
- All checks passed!
--/home/alexey/LAN_Transcriber/.venv-ci/lib/python3.12/site-packages/pytest_asyncio/plugin.py:211: PytestDeprecationWarning: The configuration option "asyncio_default_fixture_loop_scope" is unset.
--The event loop scope for asynchronous fixtures will default to the fixture caching scope. Future versions of pytest-asyncio will default the loop scope for asynchronous fixtures to function scope. Set the default fixture loop scope explicitly in order to avoid unexpected behavior in the future. Valid fixture loop scopes are: "function", "class", "module", "package", "session"
--
--  warnings.warn(PytestDeprecationWarning(_DEFAULT_FIXTURE_LOOP_SCOPE_UNSET))
- ........................................................................ [  6%]
- ........................................................................ [ 13%]
- ........................................................................ [ 20%]
-@@ -62,7 +58,7 @@ TOTAL   13765      0   4556      0   100%
+@@ -62,7 +62,7 @@ TOTAL   13765      0   4556      0   100%
  Coverage HTML written to dir htmlcov
  
  Required test coverage of 100% reached. Total coverage: 100.00%
 -1042 passed, 2 skipped, 11 warnings in 101.21s (0:01:41)
-+1042 passed, 2 skipped, 11 warnings in 100.45s (0:01:40)
++1042 passed, 2 skipped, 11 warnings in 102.83s (0:01:42)
  Name                                                    Stmts   Miss Branch BrPart  Cover
  -----------------------------------------------------------------------------------------
  lan_transcriber/__init__.py                                 8      0      0      0   100%
@@ -1238,19 +1229,20 @@ index d85b19d..3bedbcd 100644
      monkeypatch.setattr(
          ui_routes,
 diff --git a/tests/test_ui_routes.py b/tests/test_ui_routes.py
-index aa62455..9306181 100644
+index aa62455..c47af68 100644
 --- a/tests/test_ui_routes.py
 +++ b/tests/test_ui_routes.py
-@@ -449,7 +449,7 @@ def test_control_center_query_state_and_direct_routes(seeded_client):
+@@ -449,7 +449,8 @@ def test_control_center_query_state_and_direct_routes(seeded_client):
  
      detail = seeded_client.get("/recordings/rec-ui-1")
      assert detail.status_code == 200
 -    assert "Recording Inspector" in detail.text
-+    assert "inspector-hero" in detail.text
++    assert "meeting.mp3" in detail.text
++    assert 'class="inspector-hero"' in detail.text
  
  
  def test_control_center_pane_fragment_endpoints(seeded_client):
-@@ -556,7 +556,6 @@ def test_control_center_system_bar_renders_degraded_cpu_fallback(
+@@ -556,7 +557,6 @@ def test_control_center_system_bar_renders_degraded_cpu_fallback(
          "/ui/control-center/inspector-pane?selected=rec-ui-1&tab=speakers"
      )
      assert inspector.status_code == 200
@@ -1258,7 +1250,7 @@ index aa62455..9306181 100644
      assert "rec-ui-1" in inspector.text
      assert "Speakers" in inspector.text
      assert "<nav" not in inspector.text
-@@ -564,7 +563,6 @@ def test_control_center_system_bar_renders_degraded_cpu_fallback(
+@@ -564,7 +564,6 @@ def test_control_center_system_bar_renders_degraded_cpu_fallback(
      empty_inspector = seeded_client.get("/ui/control-center/inspector-pane")
      assert empty_inspector.status_code == 200
      assert "No recording selected" in empty_inspector.text
@@ -1266,16 +1258,16 @@ index aa62455..9306181 100644
  
  
  def test_control_center_selected_recording_renders_embedded_inspector_actions(
-@@ -573,7 +571,7 @@ def test_control_center_selected_recording_renders_embedded_inspector_actions(
+@@ -573,7 +572,7 @@ def test_control_center_selected_recording_renders_embedded_inspector_actions(
      r = seeded_client.get("/?selected=rec-ui-1&status=Ready&q=meeting&tab=overview")
      assert r.status_code == 200
      assert 'id="control-center-inspector-pane"' in r.text
 -    assert "Compact inspector" in r.text
-+    assert "inspector-hero" in r.text
++    assert 'class="inspector-hero embedded"' in r.text
      assert "Requeue" in r.text
      assert "Download ZIP" in r.text
      assert "Open full-page inspector" in r.text
-@@ -612,9 +610,9 @@ def test_control_center_embedded_inspector_overview_stays_compact(seeded_client)
+@@ -612,9 +611,9 @@ def test_control_center_embedded_inspector_overview_stays_compact(seeded_client)
          "/?selected=rec-ui-1&status=Ready&q=meeting&tab=overview"
      )
      assert overview.status_code == 200
@@ -1288,7 +1280,7 @@ index aa62455..9306181 100644
      assert "Key metadata" in overview.text
      assert "Pipeline Stages" not in overview.text
      assert "Diagnostics" not in overview.text
-@@ -626,7 +624,7 @@ def test_control_center_embedded_inspector_overview_stays_compact(seeded_client)
+@@ -626,7 +625,7 @@ def test_control_center_embedded_inspector_overview_stays_compact(seeded_client)
      )
      assert speakers.status_code == 200
      assert "Open canonical speakers page" not in speakers.text
@@ -1297,18 +1289,18 @@ index aa62455..9306181 100644
  
  
  def test_control_center_embedded_summary_and_export_tabs_render_compact_content(
-@@ -683,9 +681,8 @@ def test_control_center_embedded_summary_and_export_tabs_render_compact_content(
+@@ -683,9 +682,8 @@ def test_control_center_embedded_summary_and_export_tabs_render_compact_content(
  
      export = client.get("/ui/recordings/rec-ui-summary-1/inspector?tab=export")
      assert export.status_code == 200
 -    assert "OneNote-ready markdown" in export.text
      assert "Download ZIP" in export.text
 -    assert "Full-page only" in export.text
-+    assert "export" in export.text.lower()
++    assert 'id="compact-export-text-rec-ui-summary-1"' in export.text
  
  
  def test_control_center_workflow_upload_select_speaker_decision_and_correction(
-@@ -716,8 +713,7 @@ def test_control_center_workflow_upload_select_speaker_decision_and_correction(
+@@ -716,8 +714,7 @@ def test_control_center_workflow_upload_select_speaker_decision_and_correction(
  
      speakers = c.get(f"/?selected={recording_id}&tab=speakers")
      assert speakers.status_code == 200
@@ -1318,7 +1310,7 @@ index aa62455..9306181 100644
      assert "Best snippet candidates" in speakers.text
      assert "Recognition cue" in speakers.text
      assert "Local label only" in speakers.text
-@@ -740,7 +736,7 @@ def test_control_center_workflow_upload_select_speaker_decision_and_correction(
+@@ -740,7 +737,7 @@ def test_control_center_workflow_upload_select_speaker_decision_and_correction(
  
      overview = c.get(f"/?selected={recording_id}")
      assert overview.status_code == 200
@@ -1327,7 +1319,7 @@ index aa62455..9306181 100644
      assert "Save as correction" not in overview.text
  
      correction = c.post(
-@@ -761,7 +757,7 @@ def test_control_center_workflow_upload_select_speaker_decision_and_correction(
+@@ -761,7 +758,7 @@ def test_control_center_workflow_upload_select_speaker_decision_and_correction(
      )
      assert correction.status_code == 200
      assert "Saved correction for Sander." in correction.text
@@ -1336,7 +1328,7 @@ index aa62455..9306181 100644
  
      entries = list_glossary_entries(settings=cfg)
      assert len(entries) == 1
-@@ -1745,7 +1741,7 @@ def test_recording_detail_speakers_tab_assignment_persists(tmp_path, monkeypatch
+@@ -1745,7 +1742,7 @@ def test_recording_detail_speakers_tab_assignment_persists(tmp_path, monkeypatch
          "/recordings/rec-speakers-1?tab=speakers"
      )
      assert page.status_code == 200
