@@ -610,7 +610,7 @@ Queue (in order)
 - Depends on: PR-UI-STITCH-POLISH-02
 
 122) PR-OPS-SYSTEM-BAR-02: Simplify the bottom system bar to a compact Node/GPU/LLM row and make GPU runtime status truthful
-- Status: DOING
+- Status: DONE
 - Tasks file: tasks/PR-OPS-SYSTEM-BAR-02.md
 - Depends on: PR-UI-STITCH-REDUCTION-01 and PR-OPS-SYSTEM-BAR-01
 
