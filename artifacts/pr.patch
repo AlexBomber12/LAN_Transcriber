@@ -1,257 +1,195 @@
-diff --git a/lan_app/templates/base.html b/lan_app/templates/base.html
-index 9b9f187..d54259d 100644
---- a/lan_app/templates/base.html
-+++ b/lan_app/templates/base.html
-@@ -1898,13 +1898,8 @@ function syncControlCenterShellRefreshUrlsFromPanel() {
-   if (!panel) {
-     return;
-   }
--  var workspaceHeaderUrl = panel.getAttribute('data-workspace-header-url');
-   var systemBarUrl = panel.getAttribute('data-system-bar-url');
--  var header = document.getElementById('control-center-workspace-header');
-   var systemBar = document.getElementById('control-center-system-bar');
--  if (header && workspaceHeaderUrl) {
--    header.setAttribute('hx-get', workspaceHeaderUrl);
--  }
-   if (systemBar && systemBarUrl) {
-     systemBar.setAttribute('hx-get', systemBarUrl);
-   }
-@@ -1921,18 +1916,12 @@ function syncControlCenterShellRefreshUrlsFromStateParams(stateParams) {
-   normalizedParams.set('tab', stateParams.get('tab') || 'overview');
-   normalizedParams.set('limit', stateParams.get('limit') || '25');
-   normalizedParams.set('offset', stateParams.get('offset') || '0');
--  var workspaceHeaderUrl = '/ui/control-center/workspace-header?' + normalizedParams.toString();
-   var systemBarUrl = '/ui/control-center/system-bar?' + normalizedParams.toString();
-   var panel = document.getElementById('control-center-recordings-panel');
--  var header = document.getElementById('control-center-workspace-header');
-   var systemBar = document.getElementById('control-center-system-bar');
-   if (panel) {
--    panel.setAttribute('data-workspace-header-url', workspaceHeaderUrl);
-     panel.setAttribute('data-system-bar-url', systemBarUrl);
-   }
--  if (header) {
--    header.setAttribute('hx-get', workspaceHeaderUrl);
--  }
-   if (systemBar) {
-     systemBar.setAttribute('hx-get', systemBarUrl);
-   }
-@@ -1953,7 +1942,6 @@ function refreshControlCenterShellFromPanel() {
-   if (!window.htmx || !document.body) {
-     return;
-   }
--  htmx.trigger(document.body, 'refresh-control-center-header');
-   htmx.trigger(document.body, 'refresh-control-center-system-bar');
- }
+diff --git a/lan_app/system_status.py b/lan_app/system_status.py
+index 359118e..c50e03b 100644
+--- a/lan_app/system_status.py
++++ b/lan_app/system_status.py
+@@ -457,14 +457,14 @@ def _gpu_runtime_item(
+     if nvidia_smi["available"]:
+         detail = nvidia_smi["detail"]
+         if torch_cuda != "none":
+-            detail = f"{detail} · torch CUDA {torch_cuda}"
++            detail = f"{detail} · torch CUDA {torch_cuda} but torch.cuda.is_available() is false"
+         else:
+             detail = f"{detail} · torch CUDA unavailable"
+         return {
+             "label": "GPU runtime",
+-            "value": "GPU busy" if nvidia_smi["busy"] else "GPU ready",
++            "value": "GPU unavailable",
+             "detail": detail,
+-            "tone": "busy" if nvidia_smi["busy"] else "healthy",
++            "tone": "offline",
+         }
  
-@@ -1962,7 +1950,6 @@ function refreshControlCenterShellFromHref(href) {
-   if (!window.htmx || !document.body) {
-     return;
-   }
--  htmx.trigger(document.body, 'refresh-control-center-header');
-   htmx.trigger(document.body, 'refresh-control-center-system-bar');
- }
- 
-diff --git a/lan_app/templates/partials/control_center/recordings_panel.html b/lan_app/templates/partials/control_center/recordings_panel.html
-index a5fabc3..6dc83e9 100644
---- a/lan_app/templates/partials/control_center/recordings_panel.html
-+++ b/lan_app/templates/partials/control_center/recordings_panel.html
-@@ -1,8 +1,7 @@
- <div
-   id="{{ recordings_panel.panel_id }}"
-   class="recordings-panel recordings-panel-frame"
--  {% if recordings_panel.workspace_header_url %}
--  data-workspace-header-url="{{ recordings_panel.workspace_header_url }}"
-+  {% if recordings_panel.system_bar_url %}
-   data-system-bar-url="{{ recordings_panel.system_bar_url }}"
-   {% endif %}
-   {% if recordings_panel.refresh_url %}
-diff --git a/lan_app/templates/partials/control_center/workspace_header.html b/lan_app/templates/partials/control_center/workspace_header.html
-index 97c8688..a681932 100644
---- a/lan_app/templates/partials/control_center/workspace_header.html
-+++ b/lan_app/templates/partials/control_center/workspace_header.html
-@@ -1,10 +1,6 @@
- <section
-   id="control-center-workspace-header"
-   class="control-center-workspace-header"
--  hx-get="{{ control_center_state.workspace_header_url }}"
--  hx-trigger="refresh-control-center-header from:body"
--  hx-target="this"
--  hx-swap="outerHTML"
- >
-   <div class="control-center-workspace-copy">
-     <h1>Control Center</h1>
+     visible_devices = cuda_facts.visible_devices or "default"
 diff --git a/lan_app/ui_routes.py b/lan_app/ui_routes.py
-index c3df1d3..70a50f6 100644
+index 407fccd..64f26a1 100644
 --- a/lan_app/ui_routes.py
 +++ b/lan_app/ui_routes.py
-@@ -2973,7 +2973,6 @@ def _control_center_state_context(
-             offset=safe_offset,
-         ),
-         "reset_href": "/",
--        "workspace_header_url": f"/ui/control-center/workspace-header?{urlencode(state_params)}",
-         "work_pane_url": f"/ui/control-center/work-pane?{urlencode(state_params)}",
-         "system_bar_url": f"/ui/control-center/system-bar?{urlencode(state_params)}",
-         "inspector_pane_url": (
-@@ -3302,29 +3301,6 @@ def _control_center_workflow_links_context(*, state: dict[str, Any]) -> dict[str
-     }
- 
- 
--def _control_center_workspace_header_context(
--    settings: AppSettings,
--    *,
--    state: dict[str, Any],
--) -> dict[str, Any]:
--    selected_recording = None
--    if state["selected"]:
--        selected_recording = get_recording(state["selected"], settings=settings)
--        if selected_recording is not None:
--            selected_recording = _prepare_recording_for_display(
--                selected_recording,
--                settings=settings,
--            )
--    return {
--        "focus_recording": selected_recording,
--        "visible_total": _control_center_visible_total(
--            settings,
--            state=state,
--        ),
--        "workflow_links": _control_center_workflow_links_context(state=state),
--    }
--
--
- def _control_center_visible_total(
+@@ -3347,11 +3347,8 @@ def _control_center_work_pane_context(
+ def _control_center_system_bar_context(
      settings: AppSettings,
      *,
-@@ -3797,9 +3773,6 @@ def _recordings_panel_context(
-         "refresh_trigger": "refresh-control-center-recordings from:body"
-         if is_control_center
-         else "",
--        "workspace_header_url": (
--            control_center_state["workspace_header_url"] if control_center_state else ""
--        ),
-         "system_bar_url": control_center_state["system_bar_url"]
-         if control_center_state
-         else "",
-@@ -4661,10 +4634,6 @@ async def ui_dashboard(
-     )
-     control_center_empty_inspector = _control_center_empty_inspector_context()
-     control_center_inspector = None
--    control_center_header = _control_center_workspace_header_context(
--        _settings,
--        state=control_center_state,
--    )
-     control_center_work_pane = _control_center_work_pane_context(
-         _settings,
-         state=control_center_state,
-@@ -4699,7 +4668,6 @@ async def ui_dashboard(
-             "active": "dashboard",
-             **(control_center_inspector or {}),
-             "control_center_state": control_center_state,
--            "control_center_header": control_center_header,
-             "upload_shell": _upload_shell_context(mode="control_center"),
+-    state: dict[str, Any],
+-    recordings_panel: dict[str, Any],
+     runtime_status: dict[str, Any] | None = None,
+ ) -> dict[str, Any]:
+-    del state, recordings_panel
+     if runtime_status is None:
+         runtime_status = collect_control_center_runtime_status(settings)
+     return {
+@@ -4660,8 +4657,6 @@ async def ui_dashboard(
              "control_center_work_pane": control_center_work_pane,
              "control_center_system_bar": _control_center_system_bar_context(
-@@ -4736,10 +4704,6 @@ async def ui_control_center_workspace_header(
-         "partials/control_center/workspace_header.html",
-         {
-             "control_center_state": control_center_state,
--            "control_center_header": _control_center_workspace_header_context(
--                _settings,
+                 _settings,
 -                state=control_center_state,
--            ),
+-                recordings_panel=control_center_work_pane["recordings_panel"],
+                 runtime_status=runtime_status,
+             ),
+             "control_center_empty_inspector": control_center_empty_inspector,
+@@ -4725,13 +4720,6 @@ async def ui_control_center_system_bar(
+             "control_center_state": control_center_state,
+             "control_center_system_bar": _control_center_system_bar_context(
+                 _settings,
+-                state=control_center_state,
+-                recordings_panel={
+-                    "total": _control_center_visible_total(
+-                        _settings,
+-                        state=control_center_state,
+-                    )
+-                },
+                 runtime_status=runtime_status,
+             ),
          },
-     )
- 
+@@ -5078,8 +5066,6 @@ async def ui_recording_detail(
+             "control_center_state": detail_state,
+             "control_center_system_bar": _control_center_system_bar_context(
+                 _settings,
+-                state=detail_state,
+-                recordings_panel={"total": 1},
+                 runtime_status=runtime_status,
+             ),
+             **inspector_context,
 diff --git a/tests/test_cov_lan_app_ui_routes.py b/tests/test_cov_lan_app_ui_routes.py
-index 3bedbcd..119db6d 100644
+index 0d87406..ce8592a 100644
 --- a/tests/test_cov_lan_app_ui_routes.py
 +++ b/tests/test_cov_lan_app_ui_routes.py
-@@ -230,10 +230,6 @@ def test_control_center_helper_contexts_cover_fragment_builders(
-     assert state["limit"] == 100
-     assert state["offset"] == 25
-     assert state["selected_detail_href"] == "/recordings/rec-helper-1?tab=speakers"
--    assert state["workspace_header_url"] == (
--        "/ui/control-center/workspace-header?"
--        "selected=rec-helper-1&status=Ready&q=helper&tab=speakers&limit=100&offset=25"
--    )
-     assert state["system_bar_url"] == (
-         "/ui/control-center/system-bar?"
-         "selected=rec-helper-1&status=Ready&q=helper&tab=speakers&limit=100&offset=25"
-@@ -527,16 +523,10 @@ def test_control_center_helper_contexts_cover_fragment_builders(
-     assert system_bar["secondary_items"][1]["value"] == "GPU ready"
-     assert system_bar["note"] == "test runtime note"
+@@ -501,8 +501,6 @@ def test_control_center_helper_contexts_cover_fragment_builders(
  
--    header = ui_routes._control_center_workspace_header_context(  # noqa: SLF001
-+    assert ui_routes._control_center_visible_total(  # noqa: SLF001
+     system_bar = ui_routes._control_center_system_bar_context(  # noqa: SLF001
          cfg,
-         state=state,
--    )
--    assert header["visible_total"] == 3
--    assert header["focus_recording"]["source_filename"] == "helper.wav"
--    assert (
--        header["workflow_links"]["selected_detail_href"]
--        == "/recordings/rec-helper-1?tab=speakers"
--    )
-+    ) == 3
+-        state=state,
+-        recordings_panel=work_pane["recordings_panel"],
+     )
+     assert len(system_bar["items"]) == 3
+     assert system_bar["items"][0]["label"] == "Node status"
+@@ -611,47 +609,19 @@ def test_control_center_system_bar_route_avoids_work_pane_builder(
+     def _unexpected_work_pane(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+         raise AssertionError("_control_center_work_pane_context should not run here")
  
-     filters = ui_routes._recordings_filters_context(  # noqa: SLF001
-         mode="control_center",
-@@ -548,10 +538,6 @@ def test_control_center_helper_contexts_cover_fragment_builders(
+-    seen: dict[str, Any] = {}
+-
+-    def _unexpected_recordings_panel(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+-        raise AssertionError(
+-            "_control_center_recordings_panel_context should not run here"
+-        )
+-
+-    def _fake_list_recordings(
+-        settings: AppSettings,
+-        status: str | None = None,
+-        q: str = "",
+-        limit: int = 100,
+-        offset: int = 0,
+-    ) -> tuple[list[dict[str, Any]], int]:
+-        seen.update(
+-            {
+-                "settings": settings,
+-                "status": status,
+-                "q": q,
+-                "limit": limit,
+-                "offset": offset,
+-            }
+-        )
+-        return ([], 7)
+-
+     def _fake_system_bar_context(
+         settings: AppSettings,
+         *,
+-        state: dict[str, Any],
+-        recordings_panel: dict[str, Any],
+         runtime_status: dict[str, Any] | None = None,
+     ) -> dict[str, Any]:
+-        assert settings is seen["settings"]
+-        assert recordings_panel == {"total": 7}
++        assert settings is ui_routes._settings  # noqa: SLF001
+         assert runtime_status == {"items": []}
+         return {
+             "items": [
+                 {
+                     "label": "Node status",
+                     "value": "Online",
+-                    "detail": f"{recordings_panel['total']} visible for {state['status']}",
++                    "detail": "synthetic node detail",
+                     "tone": "healthy",
+                     "show_dot": True,
+                 }
+@@ -664,9 +634,17 @@ def test_control_center_system_bar_route_avoids_work_pane_builder(
+     monkeypatch.setattr(
+         ui_routes,
+         "_control_center_recordings_panel_context",
+-        _unexpected_recordings_panel,
++        lambda *_args, **_kwargs: (_ for _ in ()).throw(
++            AssertionError("_control_center_recordings_panel_context should not run here")
++        ),
++    )
++    monkeypatch.setattr(
++        ui_routes,
++        "list_recordings",
++        lambda **_kwargs: (_ for _ in ()).throw(
++            AssertionError("list_recordings should not run here")
++        ),
      )
-     assert filters["limit_options"] == [25, 50, 100, 200]
-     assert filters["hx_target"] == "#control-center-recordings-panel"
--    assert work_pane["recordings_panel"]["workspace_header_url"] == (
--        "/ui/control-center/workspace-header?"
--        "selected=rec-helper-1&status=Ready&q=helper&tab=speakers&limit=100&offset=0"
--    )
-     assert work_pane["recordings_panel"]["system_bar_url"] == (
-         "/ui/control-center/system-bar?"
-         "selected=rec-helper-1&status=Ready&q=helper&tab=speakers&limit=100&offset=0"
-diff --git a/tests/test_ui_routes.py b/tests/test_ui_routes.py
-index 948d063..86a7b9d 100644
---- a/tests/test_ui_routes.py
-+++ b/tests/test_ui_routes.py
-@@ -430,7 +430,7 @@ def test_control_center_query_state_and_direct_routes(seeded_client):
-     assert 'id="control-center-recordings-panel"' in r.text
-     assert "/recordings/rec-ui-1?tab=speakers" in r.text
-     assert "Open full-page inspector" in r.text
--    assert "refresh-control-center-header" in r.text
-+    assert "refresh-control-center-header" not in r.text
-     assert "refresh-control-center-system-bar" in r.text
-     assert "syncControlCenterShellRefreshUrlsFromPanel" in r.text
-     assert "syncControlCenterShellRefreshUrlsFromHref" in r.text
-@@ -460,9 +460,7 @@ def test_control_center_pane_fragment_endpoints(seeded_client):
+-    monkeypatch.setattr(ui_routes, "list_recordings", _fake_list_recordings)
+ 
+     async def _fake_run_in_threadpool(func, settings):
+         assert func is ui_routes.collect_control_center_runtime_status
+@@ -684,13 +662,6 @@ def test_control_center_system_bar_route_avoids_work_pane_builder(
      )
-     assert workspace_header.status_code == 200
-     assert 'id="control-center-workspace-header"' in workspace_header.text
--    assert (
--        'hx-trigger="refresh-control-center-header from:body"' in workspace_header.text
--    )
-+    assert "hx-trigger" not in workspace_header.text
-     assert "<h1>Control Center</h1>" in workspace_header.text
-     assert "control-center-focus-card" not in workspace_header.text
-     assert "meeting.mp3" not in workspace_header.text
-@@ -552,10 +550,7 @@ def test_control_center_system_bar_renders_degraded_cpu_fallback(
-     assert "Fallback and Admin Pages" not in work_pane.text
-     assert "meeting.mp3" in work_pane.text
-     assert 'id="control-center-recordings-panel"' in work_pane.text
--    assert (
--        'data-workspace-header-url="/ui/control-center/workspace-header?selected=rec-ui-1&amp;'
--        'status=Ready&amp;q=meeting&amp;tab=speakers&amp;limit=25&amp;offset=0"'
--    ) in work_pane.text
-+    assert "data-workspace-header-url" not in work_pane.text
-     assert (
-         'data-system-bar-url="/ui/control-center/system-bar?selected=rec-ui-1&amp;status=Ready&amp;'
-         'q=meeting&amp;tab=speakers&amp;limit=25&amp;offset=0"'
-@@ -813,10 +808,7 @@ def test_control_center_recordings_panel_filters_search_and_actions(
-     assert ">Source<" in panel.text
-     assert ">Confidence<" not in panel.text
-     assert 'data-return-to="control-center"' in panel.text
--    assert (
--        'data-workspace-header-url="/ui/control-center/workspace-header?selected=&amp;status=Ready&amp;'
--        'q=alpha&amp;tab=speakers&amp;limit=25&amp;offset=0"'
--    ) in panel.text
-+    assert "data-workspace-header-url" not in panel.text
-     assert (
-         'data-system-bar-url="/ui/control-center/system-bar?selected=&amp;status=Ready&amp;q=alpha&amp;'
-         'tab=speakers&amp;limit=25&amp;offset=0"'
+ 
+     assert response.status_code == 200
+-    assert seen == {
+-        "settings": ui_routes._settings,  # noqa: SLF001
+-        "status": "Ready",
+-        "q": "meeting",
+-        "limit": 1,
+-        "offset": 0,
+-    }
+     assert 'id="control-center-system-bar"' in response.text
+     assert "Node status" in response.text
+     assert "Online" in response.text
+diff --git a/tests/test_system_status.py b/tests/test_system_status.py
+index c947544..683ad0b 100644
+--- a/tests/test_system_status.py
++++ b/tests/test_system_status.py
+@@ -452,7 +452,11 @@ def test_collect_control_center_runtime_status_gpu_runtime_detail_branches(tmp_p
+         ),
+     )
+     payload = system_status.collect_control_center_runtime_status(settings)
+-    assert payload["items"][1]["detail"].endswith("torch CUDA 12.6")
++    assert payload["items"][1]["value"] == "GPU unavailable"
++    assert payload["items"][1]["tone"] == "offline"
++    assert payload["items"][1]["detail"].endswith(
++        "torch CUDA 12.6 but torch.cuda.is_available() is false"
++    )
+ 
+     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "")
+     monkeypatch.setattr(
+@@ -523,8 +527,8 @@ def test_collect_control_center_runtime_status_runtime_metadata_branches(tmp_pat
+         ),
+     )
+     gpu_runtime = system_status.collect_control_center_runtime_status(settings)
+-    assert gpu_runtime["items"][1]["value"] == "GPU ready"
+-    assert gpu_runtime["items"][1]["tone"] == "healthy"
++    assert gpu_runtime["items"][1]["value"] == "GPU unavailable"
++    assert gpu_runtime["items"][1]["tone"] == "offline"
+ 
+ 
+ def test_collect_control_center_runtime_status_active_llm_and_mixed_target(tmp_path, monkeypatch):

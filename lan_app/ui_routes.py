@@ -3347,27 +3347,12 @@ def _control_center_work_pane_context(
 def _control_center_system_bar_context(
     settings: AppSettings,
     *,
-    state: dict[str, Any],
-    recordings_panel: dict[str, Any],
     runtime_status: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    queue_detail = state["status"] or "All statuses"
-    if state["q"]:
-        queue_detail = f"{queue_detail} · search: {state['q']}"
     if runtime_status is None:
         runtime_status = collect_control_center_runtime_status(settings)
     return {
-        "primary_items": [
-            {
-                "label": "Inbox view",
-                "value": f"{recordings_panel['total']} visible",
-                "detail": queue_detail,
-                "tone": "neutral",
-            },
-            runtime_status["active_jobs_item"],
-        ],
-        "secondary_items": runtime_status["secondary_items"],
-        "note": runtime_status["note"],
+        "items": runtime_status["items"],
     }
 
 
@@ -4672,8 +4657,6 @@ async def ui_dashboard(
             "control_center_work_pane": control_center_work_pane,
             "control_center_system_bar": _control_center_system_bar_context(
                 _settings,
-                state=control_center_state,
-                recordings_panel=control_center_work_pane["recordings_panel"],
                 runtime_status=runtime_status,
             ),
             "control_center_empty_inspector": control_center_empty_inspector,
@@ -4737,13 +4720,6 @@ async def ui_control_center_system_bar(
             "control_center_state": control_center_state,
             "control_center_system_bar": _control_center_system_bar_context(
                 _settings,
-                state=control_center_state,
-                recordings_panel={
-                    "total": _control_center_visible_total(
-                        _settings,
-                        state=control_center_state,
-                    )
-                },
                 runtime_status=runtime_status,
             ),
         },
@@ -5090,8 +5066,6 @@ async def ui_recording_detail(
             "control_center_state": detail_state,
             "control_center_system_bar": _control_center_system_bar_context(
                 _settings,
-                state=detail_state,
-                recordings_panel={"total": 1},
                 runtime_status=runtime_status,
             ),
             **inspector_context,

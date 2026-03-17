@@ -72,39 +72,27 @@ from lan_app.constants import (
 
 def _stub_runtime_status() -> dict[str, object]:
     return {
-        "active_jobs_item": {
-            "label": "Active jobs",
-            "value": "Idle",
-            "detail": "worker 'test-worker' heartbeat 5s ago",
-            "tone": "healthy",
-        },
-        "secondary_items": [
+        "items": [
             {
-                "label": "DGX / Spark",
+                "label": "Node status",
                 "value": "Online",
                 "detail": "dgx.local responded to /v1/models",
                 "tone": "healthy",
+                "show_dot": True,
             },
             {
                 "label": "GPU runtime",
                 "value": "GPU ready",
-                "detail": "1 visible · torch CUDA 12.6",
+                "detail": "torch sees 1 GPU(s) · CUDA 12.6",
                 "tone": "healthy",
             },
             {
-                "label": "Inference mode",
-                "value": "GPU path",
-                "detail": "ASR cuda · Diarization cuda · sequential",
-                "tone": "healthy",
-            },
-            {
-                "label": "Inference target",
+                "label": "LLM:",
                 "value": "gpt-oss:120b",
-                "detail": "dgx.local · advertised by Spark",
+                "detail": "dgx.local · configured model is advertised",
                 "tone": "healthy",
             },
         ],
-        "note": "test runtime note",
     }
 
 
@@ -476,10 +464,12 @@ def test_control_center_pane_fragment_endpoints(seeded_client):
         'hx-trigger="every 15s, refresh-control-center-system-bar from:body"'
         in system_bar.text
     )
-    assert "Inbox view" in system_bar.text
-    assert "Active jobs" in system_bar.text
-    assert "DGX / Spark" in system_bar.text
-    assert "GPU path" in system_bar.text
+    assert "Node status" in system_bar.text
+    assert "GPU runtime" in system_bar.text
+    assert "LLM:" in system_bar.text
+    assert "Inbox view" not in system_bar.text
+    assert "Active jobs" not in system_bar.text
+    assert "Inference mode" not in system_bar.text
     assert "<html" not in system_bar.text
 
 
@@ -490,18 +480,13 @@ def test_control_center_system_bar_renders_degraded_cpu_fallback(
         ui_routes,
         "collect_control_center_runtime_status",
         lambda _settings: {
-            "active_jobs_item": {
-                "label": "Active jobs",
-                "value": "1 active · 0 queued",
-                "detail": "meeting.mp3 · Speaker Turns",
-                "tone": "busy",
-            },
-            "secondary_items": [
+            "items": [
                 {
-                    "label": "DGX / Spark",
+                    "label": "Node status",
                     "value": "Online",
                     "detail": "dgx.local responded to /v1/models",
                     "tone": "healthy",
+                    "show_dot": True,
                 },
                 {
                     "label": "GPU runtime",
@@ -510,27 +495,21 @@ def test_control_center_system_bar_renders_degraded_cpu_fallback(
                     "tone": "offline",
                 },
                 {
-                    "label": "Inference mode",
-                    "value": "CPU fallback",
-                    "detail": "meeting.mp3 · Speaker Turns · fallback",
-                    "tone": "offline",
-                },
-                {
-                    "label": "Inference target",
+                    "label": "LLM:",
                     "value": "gpt-oss:120b",
-                    "detail": "dgx.local · advertised by Spark",
+                    "detail": "dgx.local · configured model is advertised",
                     "tone": "healthy",
                 },
             ],
-            "note": "test runtime note",
         },
     )
 
     system_bar = seeded_client.get("/ui/control-center/system-bar")
 
     assert system_bar.status_code == 200
-    assert "CPU fallback" in system_bar.text
+    assert "Node status" in system_bar.text
     assert "GPU unavailable" in system_bar.text
+    assert "CPU fallback" not in system_bar.text
     assert "control-center-system-item--offline" in system_bar.text
 
     work_pane = seeded_client.get(

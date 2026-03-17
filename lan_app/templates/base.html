@@ -407,7 +407,7 @@ textarea:focus{
 .control-center-shell{
   display:grid;
   gap:18px;
-  padding-bottom:92px;
+  padding-bottom:0;
 }
 .control-center-workspace-header{
   display:grid;
@@ -961,88 +961,78 @@ textarea:focus{
   color:var(--muted);
 }
 .control-center-system-bar{
-  position:sticky;
-  bottom:10px;
-  z-index:40;
-  display:grid;
-  gap:12px;
-  padding:14px 16px;
-  border-radius:24px;
+  position:static;
+  display:flex;
+  flex-wrap:wrap;
+  align-items:center;
+  gap:10px;
+  padding:10px 12px;
+  border-radius:18px;
   border:1px solid rgba(30,41,59,.18);
   background:rgba(15,23,42,.94);
   color:#d9e5f8;
-  box-shadow:0 20px 48px rgba(15,23,42,.24);
+  box-shadow:0 16px 34px rgba(15,23,42,.18);
   backdrop-filter:blur(18px);
-  pointer-events:none;
+  pointer-events:auto;
 }
-.control-center-system-group{
-  display:grid;
-  gap:10px;
-  grid-template-columns:repeat(auto-fit,minmax(170px,1fr));
-}
-.control-center-system-group-secondary{grid-template-columns:repeat(auto-fit,minmax(170px,1fr))}
 .control-center-system-item{
-  display:grid;
-  gap:4px;
+  --system-accent:#93aac8;
+  --system-value:#ffffff;
+  display:inline-flex;
+  align-items:center;
+  gap:8px;
   min-width:0;
-  height:100%;
-  padding:10px 12px;
-  border-radius:18px;
+  padding:8px 12px;
+  border-radius:999px;
   border:1px solid rgba(148,163,184,.18);
   background:rgba(255,255,255,.04);
 }
 .control-center-system-item--neutral{
+  --system-accent:#93aac8;
+  --system-value:#ffffff;
   background:rgba(255,255,255,.04);
   border-color:rgba(148,163,184,.18);
 }
 .control-center-system-item--healthy{
+  --system-accent:#86efac;
+  --system-value:#f0fdf4;
   background:rgba(22,101,52,.18);
   border-color:rgba(134,239,172,.28);
 }
 .control-center-system-item--busy,
 .control-center-system-item--degraded{
+  --system-accent:#fbbf24;
+  --system-value:#fff7d6;
   background:rgba(180,83,9,.16);
   border-color:rgba(251,191,36,.3);
 }
 .control-center-system-item--offline{
+  --system-accent:#f87171;
+  --system-value:#fee2e2;
   background:rgba(127,29,29,.24);
   border-color:rgba(248,113,113,.32);
 }
+.control-center-system-dot{
+  width:8px;
+  height:8px;
+  flex:none;
+  border-radius:999px;
+  background:var(--system-accent);
+  box-shadow:0 0 0 4px rgba(255,255,255,.06);
+}
 .control-center-system-label{
-  font-size:10px;
-  font-weight:800;
-  letter-spacing:.12em;
-  text-transform:uppercase;
-  color:#93aac8;
-}
-.control-center-system-item--healthy .control-center-system-label{color:#b9ebc8}
-.control-center-system-item--busy .control-center-system-label,
-.control-center-system-item--degraded .control-center-system-label{color:#f7d18b}
-.control-center-system-item--offline .control-center-system-label{color:#f6b0b0}
-.control-center-system-value{
-  font-size:14px;
+  font-size:11px;
   font-weight:700;
-  color:#fff;
-  overflow-wrap:anywhere;
+  color:var(--system-accent);
+  white-space:nowrap;
 }
-.control-center-system-item--healthy .control-center-system-value{color:#f0fdf4}
-.control-center-system-item--busy .control-center-system-value,
-.control-center-system-item--degraded .control-center-system-value{color:#fff7d6}
-.control-center-system-item--offline .control-center-system-value{color:#fee2e2}
-.control-center-system-detail{
-  font-size:11px;
-  color:#b7c6db;
-}
-.control-center-system-item--healthy .control-center-system-detail{color:#d5f3de}
-.control-center-system-item--busy .control-center-system-detail,
-.control-center-system-item--degraded .control-center-system-detail{color:#f8dfae}
-.control-center-system-item--offline .control-center-system-detail{color:#fecaca}
-.control-center-system-note{
-  margin:0;
-  padding-top:2px;
-  border-top:1px solid rgba(148,163,184,.12);
-  font-size:11px;
-  color:#93aac8;
+.control-center-system-value{
+  font-size:13px;
+  font-weight:700;
+  color:var(--system-value);
+  white-space:nowrap;
+  overflow:hidden;
+  text-overflow:ellipsis;
 }
 .inspector-shell{
   display:grid;
@@ -1803,7 +1793,7 @@ textarea:focus{
 .detail-page-shell{
   display:grid;
   gap:20px;
-  padding-bottom:120px;
+  padding-bottom:0;
 }
 @media (max-width: 1180px){
   .control-center-workspace-header,

@@ -274,7 +274,7 @@ def test_control_center_embedded_inspector_and_export_zip_smoke(tmp_path: Path) 
                 )
                 page.locator(
                     "#control-center-system-bar .control-center-system-label"
-                ).filter(has_text="Inbox view").first.wait_for(
+                ).filter(has_text="Node status").first.wait_for(
                     state="visible",
                     timeout=_remaining_timeout_ms(deadline),
                 )

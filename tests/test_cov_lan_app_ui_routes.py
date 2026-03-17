@@ -40,39 +40,27 @@ from lan_app.jobs import DuplicateRecordingJobError
 
 def _stub_runtime_status() -> dict[str, object]:
     return {
-        "active_jobs_item": {
-            "label": "Active jobs",
-            "value": "Idle",
-            "detail": "worker 'test-worker' heartbeat 5s ago",
-            "tone": "healthy",
-        },
-        "secondary_items": [
+        "items": [
             {
-                "label": "DGX / Spark",
+                "label": "Node status",
                 "value": "Online",
                 "detail": "dgx.local responded to /v1/models",
                 "tone": "healthy",
+                "show_dot": True,
             },
             {
                 "label": "GPU runtime",
                 "value": "GPU ready",
-                "detail": "1 visible · torch CUDA 12.6",
+                "detail": "torch sees 1 GPU(s) · CUDA 12.6",
                 "tone": "healthy",
             },
             {
-                "label": "Inference mode",
-                "value": "GPU path",
-                "detail": "ASR cuda · Diarization cuda · sequential",
-                "tone": "healthy",
-            },
-            {
-                "label": "Inference target",
+                "label": "LLM:",
                 "value": "gpt-oss:120b",
-                "detail": "dgx.local · advertised by Spark",
+                "detail": "dgx.local · configured model is advertised",
                 "tone": "healthy",
             },
         ],
-        "note": "test runtime note",
     }
 
 
@@ -513,15 +501,12 @@ def test_control_center_helper_contexts_cover_fragment_builders(
 
     system_bar = ui_routes._control_center_system_bar_context(  # noqa: SLF001
         cfg,
-        state=state,
-        recordings_panel=work_pane["recordings_panel"],
     )
-    assert system_bar["primary_items"][0]["value"] == "3 visible"
-    assert system_bar["primary_items"][0]["detail"] == "Ready · search: helper"
-    assert system_bar["primary_items"][1]["label"] == "Active jobs"
-    assert system_bar["secondary_items"][0]["value"] == "Online"
-    assert system_bar["secondary_items"][1]["value"] == "GPU ready"
-    assert system_bar["note"] == "test runtime note"
+    assert len(system_bar["items"]) == 3
+    assert system_bar["items"][0]["label"] == "Node status"
+    assert system_bar["items"][0]["show_dot"] is True
+    assert system_bar["items"][1]["value"] == "GPU ready"
+    assert system_bar["items"][2]["label"] == "LLM:"
 
     assert ui_routes._control_center_visible_total(  # noqa: SLF001
         cfg,
@@ -624,55 +609,23 @@ def test_control_center_system_bar_route_avoids_work_pane_builder(
     def _unexpected_work_pane(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
         raise AssertionError("_control_center_work_pane_context should not run here")
 
-    seen: dict[str, Any] = {}
-
-    def _unexpected_recordings_panel(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
-        raise AssertionError(
-            "_control_center_recordings_panel_context should not run here"
-        )
-
-    def _fake_list_recordings(
-        settings: AppSettings,
-        status: str | None = None,
-        q: str = "",
-        limit: int = 100,
-        offset: int = 0,
-    ) -> tuple[list[dict[str, Any]], int]:
-        seen.update(
-            {
-                "settings": settings,
-                "status": status,
-                "q": q,
-                "limit": limit,
-                "offset": offset,
-            }
-        )
-        return ([], 7)
-
     def _fake_system_bar_context(
         settings: AppSettings,
         *,
-        state: dict[str, Any],
-        recordings_panel: dict[str, Any],
         runtime_status: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        assert settings is seen["settings"]
-        assert recordings_panel == {"total": 7}
-        assert runtime_status == {
-            "active_jobs_item": {},
-            "secondary_items": [],
-            "note": "test runtime note",
-        }
+        assert settings is ui_routes._settings  # noqa: SLF001
+        assert runtime_status == {"items": []}
         return {
-            "primary_items": [
+            "items": [
                 {
-                    "label": "Inbox view",
-                    "value": f"{recordings_panel['total']} visible",
-                    "detail": state["status"] or "All statuses",
+                    "label": "Node status",
+                    "value": "Online",
+                    "detail": "synthetic node detail",
+                    "tone": "healthy",
+                    "show_dot": True,
                 }
             ],
-            "secondary_items": [],
-            "note": "test note",
         }
 
     monkeypatch.setattr(
@@ -681,18 +634,22 @@ def test_control_center_system_bar_route_avoids_work_pane_builder(
     monkeypatch.setattr(
         ui_routes,
         "_control_center_recordings_panel_context",
-        _unexpected_recordings_panel,
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("_control_center_recordings_panel_context should not run here")
+        ),
     )
-    monkeypatch.setattr(ui_routes, "list_recordings", _fake_list_recordings)
+    monkeypatch.setattr(
+        ui_routes,
+        "list_recordings",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("list_recordings should not run here")
+        ),
+    )
 
     async def _fake_run_in_threadpool(func, settings):
         assert func is ui_routes.collect_control_center_runtime_status
         assert settings is ui_routes._settings  # noqa: SLF001
-        return {
-            "active_jobs_item": {},
-            "secondary_items": [],
-            "note": "test runtime note",
-        }
+        return {"items": []}
 
     monkeypatch.setattr(ui_routes, "run_in_threadpool", _fake_run_in_threadpool)
     monkeypatch.setattr(
@@ -705,16 +662,9 @@ def test_control_center_system_bar_route_avoids_work_pane_builder(
     )
 
     assert response.status_code == 200
-    assert seen == {
-        "settings": ui_routes._settings,  # noqa: SLF001
-        "status": "Ready",
-        "q": "meeting",
-        "limit": 1,
-        "offset": 0,
-    }
     assert 'id="control-center-system-bar"' in response.text
-    assert "7 visible" in response.text
-    assert "test note" in response.text
+    assert "Node status" in response.text
+    assert "Online" in response.text
 
 
 def test_recordings_panel_context_clamps_offset_to_last_available_page(
