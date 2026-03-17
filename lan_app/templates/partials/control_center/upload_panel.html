@@ -1,12 +1,30 @@
 <div class="control-center-upload-grid">
-  <div>
+  <div class="control-center-upload-stack">
+    {% if upload_shell.show_compact_queue %}
+    <div class="control-center-upload-title-row">
+      <span class="eyebrow control-center-upload-section-title">
+        <span class="control-center-upload-section-icon" aria-hidden="true">
+          <svg viewBox="0 0 16 16" focusable="false">
+            <path
+              d="M8 2.5l3 3H9.25v4.75h-2.5V5.5H5L8 2.5zm-4 8.75h8A1.75 1.75 0 0 1 13.75 13v.5h-1.5V13a.25.25 0 0 0-.25-.25H4A.25.25 0 0 0 3.75 13v.5h-1.5V13A1.75 1.75 0 0 1 4 11.25z"
+              fill="currentColor"
+            ></path>
+          </svg>
+        </span>
+        <span>{{ upload_shell.section_title }}</span>
+      </span>
+    </div>
+    {% endif %}
+
     <input type="file" id="{{ upload_shell.file_input_id }}" multiple hidden>
     <div
       id="{{ upload_shell.dropzone_id }}"
       class="control-center-upload-dropzone"
       tabindex="0"
     >
-      <h3>Upload</h3>
+      {% if not upload_shell.show_compact_queue %}
+      <h3>{{ upload_shell.section_title }}</h3>
+      {% endif %}
       <p class="upload-caption">Drop audio here or browse from disk.</p>
       <div class="upload-dropzone-actions">
         <button type="button" class="btn" id="{{ upload_shell.pick_files_button_id }}">Choose files</button>
@@ -14,15 +32,26 @@
       </div>
     </div>
   </div>
-  <div class="upload-queue-shell">
+  <div class="upload-queue-shell{% if upload_shell.show_compact_queue %} upload-queue-shell-compact{% endif %}">
+    {% if upload_shell.show_compact_queue %}
+    <div class="upload-queue-head upload-queue-head-compact">
+      <span id="{{ upload_shell.active_counter_id }}" class="upload-queue-counter">0 ACTIVE JOBS</span>
+    </div>
+    {% else %}
     <div class="upload-queue-head">
       <h3>{{ upload_shell.queue_title }}</h3>
       <p class="upload-caption">{{ upload_shell.queue_caption }}</p>
     </div>
-    <div id="{{ upload_shell.upload_rows_id }}" class="upload-queue-list">
+    {% endif %}
+    <div
+      id="{{ upload_shell.upload_rows_id }}"
+      class="upload-queue-list{% if upload_shell.show_compact_queue %} upload-queue-list-compact{% endif %}"
+    >
+      {% if upload_shell.show_empty_state_text %}
       <div id="{{ upload_shell.empty_row_id }}" class="upload-queue-empty">
         {{ upload_shell.empty_state_text }}
       </div>
+      {% endif %}
     </div>
   </div>
 </div>

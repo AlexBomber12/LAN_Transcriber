@@ -4032,25 +4032,30 @@ def _upload_shell_context(*, mode: str = "standalone") -> dict[str, Any]:
     is_control_center = mode == "control_center"
     return {
         "mode": mode,
+        "show_compact_queue": is_control_center,
+        "show_empty_state_text": not is_control_center,
         "file_input_id": "file-input",
         "pick_files_button_id": "pick-files-btn",
         "dropzone_id": "dropzone",
         "upload_rows_id": "upload-rows",
         "empty_row_id": "upload-empty",
+        "active_counter_id": "upload-active-count",
         "queue_empty_colspan": 6,
+        "max_visible_cards": 2 if is_control_center else 0,
         "remove_terminal_items": is_control_center,
+        "section_title": "UPLOAD" if is_control_center else "Upload",
         "queue_title": (
-            "Only in-flight uploads stay here"
+            ""
             if is_control_center
             else "Recent uploads stay here while you work"
         ),
         "queue_caption": (
-            "Finished recordings move into the main worklist below, so this panel only tracks files that are still entering the system."
+            ""
             if is_control_center
             else "Completed uploads stay listed here so standalone uploads keep their in-page progress and Open recording link."
         ),
         "empty_state_text": (
-            "No active uploads. New files appear here until they enter the main inbox."
+            ""
             if is_control_center
             else "No uploads yet. New files appear here with upload and processing progress."
         ),

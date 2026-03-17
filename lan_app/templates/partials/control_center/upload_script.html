@@ -7,10 +7,15 @@ var TERMINAL_STATUSES = new Set([
   "Quarantine",
   "Failed",
 ]);
+var uploadMode = {{ upload_shell.mode | tojson }};
+var isControlCenterUpload = uploadMode === "control_center";
 var removeTerminalItems = {{ upload_shell.remove_terminal_items | tojson }};
+var showUploadEmptyState = {{ upload_shell.show_empty_state_text | tojson }};
 var uploadEmptyStateText = {{ upload_shell.empty_state_text | tojson }};
+var uploadItems = [];
 var uploadQueue = [];
 var queueRunning = false;
+var compactCardLimit = {{ upload_shell.max_visible_cards | tojson }};
 
 function formatSize(bytes) {
   var value = Number(bytes);
@@ -52,7 +57,7 @@ function makeProgressCell() {
   return {node: wrap, fill: fill, label: label};
 }
 
-function setPercent(progress, percent) {
+function normaliseDisplayPercent(percent) {
   var value = Number(percent);
   if (!Number.isFinite(value)) {
     value = 0;
@@ -63,12 +68,57 @@ function setPercent(progress, percent) {
   if (value > 100) {
     value = 100;
   }
-  var rounded = Math.round(value);
-  progress.fill.style.width = String(rounded) + "%";
-  progress.label.textContent = String(rounded) + "%";
+  return Math.round(value);
+}
+
+function setPercent(progress, percent) {
+  var rounded = normaliseDisplayPercent(percent);
+  if (progress && progress.fill && progress.label) {
+    progress.fill.style.width = String(rounded) + "%";
+    progress.label.textContent = String(rounded) + "%";
+  }
+  return rounded;
+}
+
+function setItemUploadPercent(item, percent) {
+  if (!item) {
+    return;
+  }
+  item.uploadPercent = setPercent(item.uploadProgress, percent);
+}
+
+function setItemProcessPercent(item, percent) {
+  if (!item) {
+    return;
+  }
+  item.processPercent = setPercent(item.processProgress, percent);
+}
+
+function setItemStatus(item, text) {
+  if (!item) {
+    return;
+  }
+  item.statusText = text;
+  if (item.statusCell) {
+    item.statusCell.textContent = text;
+  }
+}
+
+function setUploadCounter(count) {
+  if (!isControlCenterUpload) {
+    return;
+  }
+  var counter = document.getElementById("{{ upload_shell.active_counter_id }}");
+  if (!counter) {
+    return;
+  }
+  counter.textContent = String(count) + " ACTIVE JOBS";
 }
 
 function removePlaceholderRow() {
+  if (!showUploadEmptyState) {
+    return;
+  }
   var row = document.getElementById("{{ upload_shell.empty_row_id }}");
   if (row) {
     row.remove();
@@ -76,6 +126,9 @@ function removePlaceholderRow() {
 }
 
 function restorePlaceholderRow() {
+  if (!showUploadEmptyState) {
+    return;
+  }
   var rows = document.getElementById("{{ upload_shell.upload_rows_id }}");
   if (!rows || rows.querySelector(".upload-queue-item")) {
     return;
@@ -90,13 +143,173 @@ function restorePlaceholderRow() {
   rows.appendChild(empty);
 }
 
+function activeUploadItems() {
+  return uploadItems.filter(function(item) {
+    return !item.removed && item.phase !== "terminal";
+  });
+}
+
+function compactCardItems(items) {
+  if (!isControlCenterUpload) {
+    return [];
+  }
+
+  var active = null;
+  var queued = null;
+  var idx = 0;
+
+  for (idx = 0; idx < items.length; idx += 1) {
+    if (items[idx].phase === "uploading") {
+      active = items[idx];
+      break;
+    }
+  }
+  if (!active) {
+    for (idx = 0; idx < items.length; idx += 1) {
+      if (items[idx].phase === "processing") {
+        active = items[idx];
+        break;
+      }
+    }
+  }
+  if (!active && items.length > 0) {
+    active = items[0];
+  }
+  for (idx = 0; idx < items.length; idx += 1) {
+    if (items[idx] !== active && items[idx].phase === "queued") {
+      queued = items[idx];
+      break;
+    }
+  }
+
+  var visible = [];
+  if (active) {
+    visible.push(active);
+  }
+  if (queued) {
+    visible.push(queued);
+  }
+  return visible.slice(0, compactCardLimit || 2);
+}
+
+function compactCardPercent(item) {
+  if (!item) {
+    return 0;
+  }
+  if (item.phase === "queued") {
+    return 0;
+  }
+  if (item.phase === "processing") {
+    return item.processPercent;
+  }
+  return item.uploadPercent;
+}
+
+function compactCardStateText(item) {
+  if (!item) {
+    return "";
+  }
+  if (item.phase === "queued") {
+    return "waiting in queue...";
+  }
+  return item.statusText || "Uploading";
+}
+
+function buildCompactQueueCard(item) {
+  var percent = compactCardPercent(item);
+  var isQueued = item.phase === "queued";
+
+  var card = document.createElement("article");
+  card.className = "upload-queue-card";
+  if (isQueued) {
+    card.className += " upload-queue-card--queued";
+  }
+
+  var head = document.createElement("div");
+  head.className = "upload-queue-card-head";
+
+  var title = document.createElement("strong");
+  title.className = "upload-queue-card-title";
+  title.textContent = item.file && item.file.name ? item.file.name : "(unnamed)";
+  title.title = title.textContent;
+
+  var status = document.createElement("span");
+  status.className = "upload-queue-card-status";
+  status.textContent = isQueued ? "Queued" : "Active";
+  if (isQueued) {
+    status.className += " upload-queue-card-status--queued";
+  }
+
+  head.appendChild(title);
+  head.appendChild(status);
+
+  var progressWrap = document.createElement("div");
+  progressWrap.className = "upload-progress-wrap";
+
+  var track = document.createElement("div");
+  track.className = "upload-progress-track";
+  if (isQueued) {
+    track.className += " upload-progress-track-muted";
+  }
+
+  var fill = document.createElement("div");
+  fill.className = "upload-progress-fill";
+  if (isQueued) {
+    fill.className += " upload-progress-fill-muted";
+  }
+  fill.style.width = String(percent) + "%";
+  track.appendChild(fill);
+
+  var label = document.createElement("span");
+  label.className = "upload-progress-label";
+  if (isQueued) {
+    label.className += " upload-progress-label-muted";
+    label.textContent = "queued";
+  } else {
+    label.textContent = String(percent) + "%";
+  }
+
+  progressWrap.appendChild(track);
+  progressWrap.appendChild(label);
+
+  var state = document.createElement("p");
+  state.className = "upload-queue-card-state";
+  state.textContent = compactCardStateText(item);
+
+  card.appendChild(head);
+  card.appendChild(progressWrap);
+  card.appendChild(state);
+  return card;
+}
+
+function syncCompactUploadView() {
+  if (!isControlCenterUpload) {
+    return;
+  }
+  var rows = document.getElementById("{{ upload_shell.upload_rows_id }}");
+  if (!rows) {
+    return;
+  }
+
+  var items = activeUploadItems();
+  setUploadCounter(items.length);
+  rows.textContent = "";
+
+  compactCardItems(items).forEach(function(item) {
+    rows.appendChild(buildCompactQueueCard(item));
+  });
+}
+
 function removeUploadItem(item) {
-  if (!item || !item.itemNode || item.removed) {
+  if (!item || item.removed) {
     return;
   }
   item.removed = true;
-  item.itemNode.remove();
+  if (item.itemNode) {
+    item.itemNode.remove();
+  }
   restorePlaceholderRow();
+  syncCompactUploadView();
 }
 
 function scheduleUploadItemRemoval(item, delayMs) {
@@ -124,76 +337,93 @@ function makeProgressGroup(labelText) {
 }
 
 function addFileRow(file) {
-  removePlaceholderRow();
-  var rows = document.getElementById("{{ upload_shell.upload_rows_id }}");
-  var itemNode = document.createElement("article");
-  itemNode.className = "upload-queue-item";
-
-  var head = document.createElement("div");
-  head.className = "upload-queue-item-head";
-
-  var titleWrap = document.createElement("div");
-  titleWrap.className = "recording-main";
-
-  var title = document.createElement("strong");
-  title.className = "upload-queue-item-title";
-  title.textContent = file.name || "(unnamed)";
-  title.title = file.name || "";
-
-  var meta = document.createElement("div");
-  meta.className = "upload-queue-item-meta";
-
-  var sizeMeta = document.createElement("span");
-  sizeMeta.textContent = formatSize(file.size);
-  meta.appendChild(sizeMeta);
-
-  var queuedMeta = document.createElement("span");
-  queuedMeta.textContent = "Queued";
-  meta.appendChild(queuedMeta);
-
-  titleWrap.appendChild(title);
-  titleWrap.appendChild(meta);
-
-  var statusCell = document.createElement("span");
-  statusCell.className = "upload-queue-status";
-  statusCell.textContent = "Queued for upload";
-
-  head.appendChild(titleWrap);
-  head.appendChild(statusCell);
-
-  var progressGrid = document.createElement("div");
-  progressGrid.className = "upload-queue-progress-grid";
-
-  var uploadProgress = makeProgressGroup("Upload");
-  progressGrid.appendChild(uploadProgress.node);
-
-  var processProgress = makeProgressGroup("Processing");
-  progressGrid.appendChild(processProgress.node);
-
-  var footer = document.createElement("div");
-  footer.className = "upload-queue-item-footer";
-
-  var linkCell = document.createElement("div");
-  linkCell.className = "upload-queue-link";
-  linkCell.textContent = "Waiting for recording";
-  footer.appendChild(linkCell);
-
-  itemNode.appendChild(head);
-  itemNode.appendChild(progressGrid);
-  itemNode.appendChild(footer);
-  rows.prepend(itemNode);
-
-  return {
+  var item = {
     file: file,
-    itemNode: itemNode,
-    statusCell: statusCell,
-    linkCell: linkCell,
-    uploadProgress: uploadProgress.progress,
-    processProgress: processProgress.progress,
+    phase: "queued",
+    statusText: "Queued for upload",
+    uploadPercent: 0,
+    processPercent: 0,
+    itemNode: null,
+    statusCell: null,
+    linkCell: null,
+    uploadProgress: null,
+    processProgress: null,
     lastRefreshSignature: "",
     removalTimer: null,
     removed: false,
   };
+
+  uploadItems.push(item);
+
+  if (!isControlCenterUpload) {
+    removePlaceholderRow();
+    var rows = document.getElementById("{{ upload_shell.upload_rows_id }}");
+    var itemNode = document.createElement("article");
+    itemNode.className = "upload-queue-item";
+
+    var head = document.createElement("div");
+    head.className = "upload-queue-item-head";
+
+    var titleWrap = document.createElement("div");
+    titleWrap.className = "recording-main";
+
+    var title = document.createElement("strong");
+    title.className = "upload-queue-item-title";
+    title.textContent = file.name || "(unnamed)";
+    title.title = file.name || "";
+
+    var meta = document.createElement("div");
+    meta.className = "upload-queue-item-meta";
+
+    var sizeMeta = document.createElement("span");
+    sizeMeta.textContent = formatSize(file.size);
+    meta.appendChild(sizeMeta);
+
+    var queuedMeta = document.createElement("span");
+    queuedMeta.textContent = "Queued";
+    meta.appendChild(queuedMeta);
+
+    titleWrap.appendChild(title);
+    titleWrap.appendChild(meta);
+
+    var statusCell = document.createElement("span");
+    statusCell.className = "upload-queue-status";
+    statusCell.textContent = item.statusText;
+
+    head.appendChild(titleWrap);
+    head.appendChild(statusCell);
+
+    var progressGrid = document.createElement("div");
+    progressGrid.className = "upload-queue-progress-grid";
+
+    var uploadProgress = makeProgressGroup("Upload");
+    progressGrid.appendChild(uploadProgress.node);
+
+    var processProgress = makeProgressGroup("Processing");
+    progressGrid.appendChild(processProgress.node);
+
+    var footer = document.createElement("div");
+    footer.className = "upload-queue-item-footer";
+
+    var linkCell = document.createElement("div");
+    linkCell.className = "upload-queue-link";
+    linkCell.textContent = "Waiting for recording";
+    footer.appendChild(linkCell);
+
+    itemNode.appendChild(head);
+    itemNode.appendChild(progressGrid);
+    itemNode.appendChild(footer);
+    rows.prepend(itemNode);
+
+    item.itemNode = itemNode;
+    item.statusCell = statusCell;
+    item.linkCell = linkCell;
+    item.uploadProgress = uploadProgress.progress;
+    item.processProgress = processProgress.progress;
+  }
+
+  syncCompactUploadView();
+  return item;
 }
 
 function normaliseProcessingPercent(value) {
@@ -240,6 +470,9 @@ function payloadDetail(payload) {
 }
 
 function attachRecordingLink(item, recordingId) {
+  if (!item || !item.linkCell) {
+    return;
+  }
   item.linkCell.textContent = "";
   var link = document.createElement("a");
   link.href = "/recordings/" + encodeURIComponent(recordingId);
@@ -276,13 +509,15 @@ function startPolling(item, recordingId) {
     try {
       response = await fetch("/api/recordings/" + encodeURIComponent(recordingId));
     } catch (_err) {
-      item.statusCell.textContent = "polling failed";
+      setItemStatus(item, "polling failed");
+      syncCompactUploadView();
       stop();
       return;
     }
 
     if (!response.ok) {
-      item.statusCell.textContent = "polling failed";
+      setItemStatus(item, "polling failed");
+      syncCompactUploadView();
       stop();
       return;
     }
@@ -291,7 +526,8 @@ function startPolling(item, recordingId) {
     try {
       recording = await response.json();
     } catch (_err) {
-      item.statusCell.textContent = "polling failed";
+      setItemStatus(item, "polling failed");
+      syncCompactUploadView();
       stop();
       return;
     }
@@ -301,8 +537,10 @@ function startPolling(item, recordingId) {
     var processPercent = normaliseProcessingPercent(recording.pipeline_progress);
     var refreshSignature = status + ":" + stage + ":" + String(processPercent);
 
-    setPercent(item.processProgress, processPercent);
-    item.statusCell.textContent = status + " (" + stage + ")";
+    setItemProcessPercent(item, processPercent);
+    setItemStatus(item, status + " (" + stage + ")");
+    item.phase = TERMINAL_STATUSES.has(status) ? "terminal" : "processing";
+    syncCompactUploadView();
     if (item.lastRefreshSignature !== refreshSignature) {
       item.lastRefreshSignature = refreshSignature;
       refreshControlCenterFromUpload();
@@ -325,17 +563,28 @@ function uploadFile(item) {
     var xhr = new XMLHttpRequest();
     xhr.open("POST", "/api/uploads");
     xhr.withCredentials = true;
+    item.phase = "uploading";
+    setItemStatus(item, "Uploading");
+    syncCompactUploadView();
 
     xhr.upload.onprogress = function(event) {
       if (!event.lengthComputable || event.total <= 0) {
         return;
       }
       var percent = (event.loaded / event.total) * 100;
-      setPercent(item.uploadProgress, percent);
+      setItemUploadPercent(item, percent);
+      item.phase = "uploading";
+      setItemStatus(item, "Uploading");
+      syncCompactUploadView();
     };
 
     xhr.onerror = function() {
-      item.statusCell.textContent = "Upload failed";
+      item.phase = "terminal";
+      setItemStatus(item, "Upload failed");
+      syncCompactUploadView();
+      if (removeTerminalItems) {
+        scheduleUploadItemRemoval(item, 1800);
+      }
       resolve();
     };
 
@@ -343,20 +592,32 @@ function uploadFile(item) {
       var payload = parseJsonPayload(xhr.responseText);
       if (xhr.status < 200 || xhr.status >= 300) {
         var reason = payloadDetail(payload) || ("HTTP " + xhr.status);
-        item.statusCell.textContent = "Upload failed: " + reason;
+        item.phase = "terminal";
+        setItemStatus(item, "Upload failed: " + reason);
+        syncCompactUploadView();
+        if (removeTerminalItems) {
+          scheduleUploadItemRemoval(item, 1800);
+        }
         resolve();
         return;
       }
 
       var recordingId = String(payload.recording_id || "").trim();
       if (!recordingId) {
-        item.statusCell.textContent = "Upload failed: missing recording_id";
+        item.phase = "terminal";
+        setItemStatus(item, "Upload failed: missing recording_id");
+        syncCompactUploadView();
+        if (removeTerminalItems) {
+          scheduleUploadItemRemoval(item, 1800);
+        }
         resolve();
         return;
       }
 
-      setPercent(item.uploadProgress, 100);
-      item.statusCell.textContent = "Uploaded";
+      setItemUploadPercent(item, 100);
+      item.phase = "processing";
+      setItemStatus(item, "Uploaded");
+      syncCompactUploadView();
       attachRecordingLink(item, recordingId);
       refreshControlCenterFromUpload();
       startPolling(item, recordingId);
@@ -392,6 +653,8 @@ function enqueueFiles(fileList) {
   }
   drainUploadQueue();
 }
+
+syncCompactUploadView();
 
 var fileInput = document.getElementById("{{ upload_shell.file_input_id }}");
 var pickFilesButton = document.getElementById("{{ upload_shell.pick_files_button_id }}");
