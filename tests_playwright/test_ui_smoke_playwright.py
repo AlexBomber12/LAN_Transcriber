@@ -362,7 +362,7 @@ def test_control_center_embedded_inspector_and_export_zip_smoke(tmp_path: Path) 
                     timeout=_remaining_timeout_ms(deadline),
                 )
                 page.wait_for_selector(
-                    "text=Transcript",
+                    ".transcript-section-card",
                     state="visible",
                     timeout=_remaining_timeout_ms(deadline),
                 )

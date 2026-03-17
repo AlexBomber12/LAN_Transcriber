@@ -625,7 +625,7 @@ def test_control_center_embedded_inspector_overview_stays_compact(seeded_client)
     )
     assert speakers.status_code == 200
     assert "Open canonical speakers page" not in speakers.text
-    assert "speaker-review-list" in speakers.text
+    assert "No speaker turns available yet" in speakers.text
 
 
 def test_control_center_embedded_summary_and_export_tabs_render_compact_content(
@@ -714,7 +714,7 @@ def test_control_center_workflow_upload_select_speaker_decision_and_correction(
 
     speakers = c.get(f"/?selected={recording_id}&tab=speakers")
     assert speakers.status_code == 200
-    assert "speaker-review-list" in speakers.text
+    assert 'class="speaker-review-list speaker-review-list-compact"' in speakers.text
     assert "Best snippet candidates" in speakers.text
     assert "Recognition cue" in speakers.text
     assert "Local label only" in speakers.text
