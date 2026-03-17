@@ -1,5 +1,5 @@
 diff --git a/artifacts/ci.log b/artifacts/ci.log
-index bd79927..ac48b37 100644
+index bd79927..95dcdf1 100644
 --- a/artifacts/ci.log
 +++ b/artifacts/ci.log
 @@ -62,7 +62,7 @@ TOTAL   13765      0   4556      0   100%
@@ -7,7 +7,7 @@ index bd79927..ac48b37 100644
  
  Required test coverage of 100% reached. Total coverage: 100.00%
 -1042 passed, 2 skipped, 11 warnings in 101.21s (0:01:41)
-+1042 passed, 2 skipped, 11 warnings in 100.55s (0:01:40)
++1042 passed, 2 skipped, 11 warnings in 97.48s (0:01:37)
  Name                                                    Stmts   Miss Branch BrPart  Cover
  -----------------------------------------------------------------------------------------
  lan_transcriber/__init__.py                                 8      0      0      0   100%
@@ -1229,7 +1229,7 @@ index d85b19d..3bedbcd 100644
      monkeypatch.setattr(
          ui_routes,
 diff --git a/tests/test_ui_routes.py b/tests/test_ui_routes.py
-index aa62455..089186d 100644
+index aa62455..eb0fb5b 100644
 --- a/tests/test_ui_routes.py
 +++ b/tests/test_ui_routes.py
 @@ -449,7 +449,8 @@ def test_control_center_query_state_and_direct_routes(seeded_client):
@@ -1324,7 +1324,7 @@ index aa62455..089186d 100644
      assert correction.status_code == 200
      assert "Saved correction for Sander." in correction.text
 -    assert "Compact inspector" in correction.text
-+    assert "control-center" in correction.text
++    assert 'id="control-center-inspector-pane"' in correction.text
  
      entries = list_glossary_entries(settings=cfg)
      assert len(entries) == 1

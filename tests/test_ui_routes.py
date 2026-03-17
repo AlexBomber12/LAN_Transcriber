@@ -758,7 +758,7 @@ def test_control_center_workflow_upload_select_speaker_decision_and_correction(
     )
     assert correction.status_code == 200
     assert "Saved correction for Sander." in correction.text
-    assert "control-center" in correction.text
+    assert 'id="control-center-inspector-pane"' in correction.text
 
     entries = list_glossary_entries(settings=cfg)
     assert len(entries) == 1
