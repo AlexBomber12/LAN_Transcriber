@@ -465,6 +465,10 @@ def test_control_center_helper_contexts_cover_fragment_builders(
         "/?selected=rec-helper-1&status=Ready&q=helper&tab=speakers"
     )
     assert panel_context["recordings_table"]["rows"][0]["selected"] is True
+    assert panel_context["recordings_table"]["rows"][0]["meeting_title"] == "helper.wav"
+    assert panel_context["recordings_table"]["rows"][0]["status_dot_tone"] == "ready"
+    assert panel_context["recordings_table"]["rows"][0]["progress_percent"] == 100
+    assert panel_context["recordings_table"]["mode"] == "control_center"
     assert panel_context["status_cards"][0]["status"] == "All"
     assert panel_context["status_cards"][0]["active"] is False
     assert any(
@@ -479,7 +483,7 @@ def test_control_center_helper_contexts_cover_fragment_builders(
     assert (
         work_pane["recordings_panel"]["panel_id"] == "control-center-recordings-panel"
     )
-    assert work_pane["recordings_panel"]["title"] == "Operator inbox"
+    assert work_pane["recordings_panel"]["title"] == ""
     assert "daily loop" in work_pane["preview_message"]
     assert work_pane["recordings_panel"]["recordings_filters"]["limit"] == 100
     assert (
@@ -550,6 +554,7 @@ def test_control_center_helper_contexts_cover_fragment_builders(
         "/?selected=rec-helper-1&status=Ready&q=helper&tab=speakers&limit=2"
     )
     assert table["rows"][0]["selected"] is True
+    assert table["mode"] == "control_center"
 
     paged_table = ui_routes._recordings_table_context(  # noqa: SLF001
         mode="control_center",
@@ -1257,6 +1262,165 @@ def test_recordings_list_items_context_adds_source_and_worklist_fields(
     assert items[0]["progress_stage_label"] == "Diarization"
     assert items[0]["source_display"] == "Manual Upload"
     assert items[0]["worklist_hint"] == "Manual review is still required."
+
+
+def test_control_center_worklist_title_and_progress_helpers(
+    tmp_path: Path,
+) -> None:
+    cfg = _cfg(tmp_path)
+    init_db(cfg)
+
+    create_recording(
+        "rec-title-candidate",
+        source="upload",
+        source_filename="candidate.wav",
+        status=RECORDING_STATUS_READY,
+        settings=cfg,
+    )
+    derived_candidate = cfg.recordings_root / "rec-title-candidate" / "derived"
+    derived_candidate.mkdir(parents=True, exist_ok=True)
+    (derived_candidate / "summary.json").write_text(
+        json.dumps({"topic": "Ignored summary"}),
+        encoding="utf-8",
+    )
+    upsert_calendar_match(
+        recording_id="rec-title-candidate",
+        candidates=[
+            {"event_id": "evt-blank", "subject": "   "},
+            {"event_id": "evt-1", "subject": "Best candidate title"},
+        ],
+        selected_event_id=None,
+        selected_confidence=None,
+        settings=cfg,
+    )
+
+    create_recording(
+        "rec-title-summary-only",
+        source="upload",
+        source_filename="summary-only.wav",
+        status=RECORDING_STATUS_READY,
+        settings=cfg,
+    )
+    derived_summary = cfg.recordings_root / "rec-title-summary-only" / "derived"
+    derived_summary.mkdir(parents=True, exist_ok=True)
+    (derived_summary / "summary.json").write_text(
+        json.dumps({"topic": "Summary fallback title"}),
+        encoding="utf-8",
+    )
+
+    candidate_title = ui_routes._control_center_meeting_title_context(  # noqa: SLF001
+        {"id": "rec-title-candidate", "source_filename": "candidate.wav"},
+        settings=cfg,
+    )
+    assert candidate_title == {
+        "meeting_title": "Best candidate title",
+        "meeting_title_source": "calendar_candidate",
+    }
+
+    summary_title = ui_routes._control_center_meeting_title_context(  # noqa: SLF001
+        {"id": "rec-title-summary-only", "source_filename": "summary-only.wav"},
+        settings=cfg,
+    )
+    assert summary_title == {
+        "meeting_title": "Summary fallback title",
+        "meeting_title_source": "summary_topic",
+    }
+
+    fallback_title = ui_routes._control_center_meeting_title_context(  # noqa: SLF001
+        {"id": "rec-title-fallback", "source_filename": "fallback.wav"},
+        settings=cfg,
+    )
+    assert fallback_title == {
+        "meeting_title": "fallback.wav",
+        "meeting_title_source": "filename",
+    }
+
+    missing_id_title = ui_routes._control_center_meeting_title_context(  # noqa: SLF001
+        {"id": "", "source_filename": ""},
+        settings=cfg,
+    )
+    assert missing_id_title == {
+        "meeting_title": "Recording",
+        "meeting_title_source": "filename",
+    }
+
+    assert ui_routes._control_center_status_dot_tone(  # noqa: SLF001
+        RECORDING_STATUS_NEEDS_REVIEW
+    ) == "review"
+    assert ui_routes._control_center_status_dot_tone(  # noqa: SLF001
+        RECORDING_STATUS_QUARANTINE
+    ) == "quarantine"
+    assert ui_routes._control_center_status_dot_tone(  # noqa: SLF001
+        RECORDING_STATUS_FAILED
+    ) == "failed"
+    assert ui_routes._control_center_status_dot_tone(  # noqa: SLF001
+        RECORDING_STATUS_STOPPED
+    ) == "stopped"
+    assert ui_routes._control_center_status_dot_tone("mystery") == "unknown"  # noqa: SLF001
+
+    queued_progress = ui_routes._control_center_progress_context(  # noqa: SLF001
+        {"status": RECORDING_STATUS_QUEUED, "pipeline_progress": None}
+    )
+    assert queued_progress == {
+        "progress_text": "5%",
+        "progress_note": "Uploaded",
+        "progress_percent": 5,
+        "show_progress_bar": True,
+    }
+
+    processing_progress = ui_routes._control_center_progress_context(  # noqa: SLF001
+        {
+            "status": RECORDING_STATUS_PROCESSING,
+            "pipeline_progress": 0.5,
+            "pipeline_stage": "diarize",
+        }
+    )
+    assert processing_progress == {
+        "progress_text": "52%",
+        "progress_note": "Diarization",
+        "progress_percent": 52,
+        "show_progress_bar": True,
+    }
+
+    stopping_progress = ui_routes._control_center_progress_context(  # noqa: SLF001
+        {"status": RECORDING_STATUS_STOPPING, "pipeline_progress": None}
+    )
+    assert stopping_progress == {
+        "progress_text": "5%",
+        "progress_note": "Stop requested",
+        "progress_percent": 5,
+        "show_progress_bar": True,
+    }
+
+    staged_processing_progress = ui_routes._control_center_progress_context(  # noqa: SLF001
+        {"status": RECORDING_STATUS_PROCESSING, "pipeline_progress": None, "pipeline_stage": "sanitize"}
+    )
+    assert staged_processing_progress == {
+        "progress_text": "5%",
+        "progress_note": "Sanitize",
+        "progress_percent": 5,
+        "show_progress_bar": True,
+    }
+
+    failed_progress = ui_routes._control_center_progress_context(  # noqa: SLF001
+        {"status": RECORDING_STATUS_FAILED, "pipeline_progress": None}
+    )
+    assert failed_progress == {
+        "progress_text": "100%",
+        "progress_note": "Failed",
+        "progress_percent": 100,
+        "show_progress_bar": True,
+    }
+
+    unknown_progress = ui_routes._control_center_progress_context(  # noqa: SLF001
+        {"status": "mystery", "pipeline_progress": None}
+    )
+    assert unknown_progress == {
+        "progress_text": "—",
+        "progress_note": "",
+        "progress_percent": 0,
+        "show_progress_bar": False,
+    }
 
 
 def test_stage_rows_and_diagnostics_context_cover_new_observability_helpers() -> None:

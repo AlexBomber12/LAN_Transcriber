@@ -248,16 +248,11 @@ def test_control_center_embedded_inspector_and_export_zip_smoke(tmp_path: Path) 
                     state="visible",
                     timeout=_remaining_timeout_ms(deadline),
                 )
-                select_link = selected_row.get_by_test_id("control-center-select-recording")
-                select_link.wait_for(
-                    state="visible",
-                    timeout=_remaining_timeout_ms(deadline),
-                )
-                href = select_link.get_attribute("href")
+                href = selected_row.get_attribute("data-select-href")
                 assert href
                 recording_id = parse_qs(urlparse(href).query).get("selected", [""])[0]
                 assert recording_id
-                select_link.click(timeout=_remaining_timeout_ms(deadline))
+                selected_row.click(timeout=_remaining_timeout_ms(deadline))
                 page.wait_for_url(
                     f"**/?selected={recording_id}",
                     timeout=_remaining_timeout_ms(deadline),

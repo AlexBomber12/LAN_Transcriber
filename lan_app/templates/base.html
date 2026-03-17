@@ -952,6 +952,123 @@ textarea:focus{
   border-radius:50%;
   background:var(--primary);
 }
+.recordings-table-wrap-control-center{
+  border-radius:22px;
+}
+.recordings-table-control-center{
+  min-width:900px;
+}
+.recordings-table-control-center td{
+  vertical-align:middle;
+}
+.recording-row-control-center{
+  cursor:pointer;
+}
+.recording-row-control-center:hover{
+  background:#f7faff;
+}
+.recording-row-control-center:focus-visible{
+  outline:2px solid var(--primary);
+  outline-offset:-2px;
+}
+.recording-status-dot-cell{
+  width:24px;
+}
+.recording-status-dot{
+  display:inline-block;
+  width:10px;
+  height:10px;
+  border-radius:50%;
+  background:#94a3b8;
+}
+.recording-status-dot--queued{background:#7b8aa5}
+.recording-status-dot--processing{background:#2463eb}
+.recording-status-dot--review{background:#d97706}
+.recording-status-dot--ready{background:#15803d}
+.recording-status-dot--quarantine{background:#9a3412}
+.recording-status-dot--failed{background:#b42318}
+.recording-status-dot--stopped{background:#64748b}
+.recording-status-dot--unknown{background:#94a3b8}
+.control-center-recording-identity{
+  display:grid;
+  gap:4px;
+  min-width:0;
+}
+.control-center-recording-id code{
+  font-size:12px;
+}
+.control-center-recording-title{
+  min-width:0;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+  font-weight:700;
+  color:var(--text);
+}
+.recording-progress-compact{
+  min-width:160px;
+}
+.recording-actions-cell{
+  width:72px;
+  text-align:right;
+}
+.recording-actions-menu{
+  position:relative;
+  display:inline-block;
+}
+.recording-actions-trigger{
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  width:36px;
+  height:36px;
+  border:1px solid #d6deee;
+  border-radius:999px;
+  background:#fff;
+  color:var(--text);
+  font-size:18px;
+  font-weight:800;
+  line-height:1;
+  cursor:pointer;
+  list-style:none;
+}
+.recording-actions-trigger::-webkit-details-marker{
+  display:none;
+}
+.recording-actions-menu[open] .recording-actions-trigger{
+  border-color:#adc5ee;
+  background:#f7fbff;
+}
+.recording-actions-popover{
+  position:absolute;
+  right:0;
+  top:calc(100% + 6px);
+  z-index:20;
+  display:grid;
+  min-width:138px;
+  gap:2px;
+  padding:6px;
+  border:1px solid #d6deee;
+  border-radius:14px;
+  background:#fff;
+  box-shadow:0 18px 34px rgba(15,23,42,.14);
+}
+.recording-actions-item{
+  border:0;
+  border-radius:10px;
+  background:transparent;
+  color:var(--text);
+  text-align:left;
+  padding:8px 10px;
+  font:inherit;
+  cursor:pointer;
+}
+.recording-actions-item:hover{
+  background:#f3f7ff;
+}
+.recording-actions-item-danger{
+  color:#b42318;
+}
 .recording-source-cell{
   display:grid;
   gap:4px;
@@ -1821,6 +1938,7 @@ textarea:focus{
   .control-center-upload-grid{grid-template-columns:1fr}
   .recordings-filter-strip{grid-template-columns:1fr}
   .recordings-filter-actions{justify-content:flex-start}
+  .recordings-table-control-center{min-width:760px}
   .control-center-worklist-summary{justify-items:start}
   .control-center-system-bar{position:static}
   .filters{flex-direction:column;align-items:stretch}
@@ -2184,32 +2302,66 @@ function triggerRecordingAction(btn) {
     });
 }
 
-function doRecAction(sel) {
-  var act = sel.value;
-  var id = sel.dataset.rid;
-  sel.value = '';
+function handleRecordingActionChoice(control, act) {
+  var id = control.dataset.rid;
   if (!act || !id) return;
   if (act === 'open') {
-    window.location = sel.dataset.openHref || ('/recordings/' + encodeURIComponent(id));
+    window.location = control.dataset.openHref || ('/recordings/' + encodeURIComponent(id));
     return;
   }
   if (act === 'delete') {
     openDeleteDialog({
       recordingId: id,
-      recordingLabel: sel.dataset.rlabel || '',
-      capturedAt: sel.dataset.rcaptured || '',
-      returnTo: sel.dataset.returnTo || '',
-      returnFocus: sel
+      recordingLabel: control.dataset.rlabel || '',
+      capturedAt: control.dataset.rcaptured || '',
+      returnTo: control.dataset.returnTo || '',
+      returnFocus: control
     });
     return;
   } else if (act === 'quarantine' && !confirm('Quarantine this recording?')) {
     return;
   }
-  if (sel.dataset.returnTo === 'control-center') {
-    postControlCenterAction(sel, act);
+  if (control.dataset.returnTo === 'control-center') {
+    postControlCenterAction(control, act);
     return;
   }
   htmx.ajax('POST', '/ui/recordings/' + encodeURIComponent(id) + '/' + act, {swap: 'none'});
+}
+
+function activateControlCenterRecordingRow(row, event) {
+  if (!row || !row.dataset.selectHref) {
+    return;
+  }
+  var target = event && event.target;
+  if (
+    target &&
+    target.closest('a, button, summary, details, select, option, input, textarea, [data-recording-actions]')
+  ) {
+    return;
+  }
+  window.location = row.dataset.selectHref;
+}
+
+function activateControlCenterRecordingRowFromKey(row, event) {
+  if (!event || (event.key !== 'Enter' && event.key !== ' ')) {
+    return;
+  }
+  event.preventDefault();
+  activateControlCenterRecordingRow(row, event);
+}
+
+function runRecordingActionFromMenu(button, act) {
+  var menu = button ? button.closest('details') : null;
+  if (menu) {
+    menu.removeAttribute('open');
+  }
+  handleRecordingActionChoice(button, act);
+}
+
+function doRecAction(sel) {
+  var act = sel.value;
+  sel.value = '';
+  handleRecordingActionChoice(sel, act);
 }
 </script>
 </body>

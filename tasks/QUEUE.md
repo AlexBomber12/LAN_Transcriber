@@ -615,6 +615,6 @@ Queue (in order)
 - Depends on: PR-UI-STITCH-REDUCTION-01 and PR-OPS-SYSTEM-BAR-01
 
 123) PR-UI-STITCH-WORKLIST-02: Flatten the Control Center worklist into a row-click meeting inbox with derived titles, dot status, and no filter chrome
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-UI-STITCH-WORKLIST-02.md
 - Depends on: PR-OPS-SYSTEM-BAR-02
