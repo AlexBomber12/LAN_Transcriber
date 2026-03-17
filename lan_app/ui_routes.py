@@ -268,6 +268,7 @@ _LEGACY_SNIPPET_RECORDING_STATUSES = frozenset(
 )
 _STOP_REQUESTED_BY = "user"
 _STOP_REASON_CODE = "user_stop"
+_CONTROL_CENTER_UPLOAD_BASELINE_RATIO = 0.05
 _STOP_REQUEST_REASON_TEXT = "Stop requested by user"
 _STOPPED_REASON_TEXT = "Cancelled by user"
 _PIPELINE_STAGE_ORDER_ALIASES = {
@@ -347,6 +348,171 @@ def _recording_source_display(source: object) -> str:
     if not label:
         return "Unknown"
     return label.replace("_", " ").title()
+
+
+def _control_center_status_dot_tone(status: object) -> str:
+    text = str(status or "").strip()
+    if text in {RECORDING_STATUS_READY, RECORDING_STATUS_PUBLISHED}:
+        return "ready"
+    if text == RECORDING_STATUS_NEEDS_REVIEW:
+        return "review"
+    if text in {RECORDING_STATUS_PROCESSING, RECORDING_STATUS_STOPPING}:
+        return "processing"
+    if text == RECORDING_STATUS_QUEUED:
+        return "queued"
+    if text == RECORDING_STATUS_QUARANTINE:
+        return "quarantine"
+    if text == RECORDING_STATUS_FAILED:
+        return "failed"
+    if text == RECORDING_STATUS_STOPPED:
+        return "stopped"
+    return "unknown"
+
+
+def _control_center_status_accessible_label(recording: dict[str, Any]) -> str:
+    status = str(recording.get("status") or "Unknown").strip() or "Unknown"
+    hint = str(recording.get("worklist_hint") or "").strip()
+    if hint:
+        return f"{status}. {hint}"
+    return status
+
+
+def _control_center_summary_topic(
+    recording_id: str,
+    *,
+    settings: AppSettings,
+) -> str:
+    _transcript_path, summary_path = _recording_derived_paths(recording_id, settings)
+    return str(_load_json_dict(summary_path).get("topic") or "").strip()
+
+
+def _control_center_meeting_title_context(
+    recording: dict[str, Any],
+    *,
+    settings: AppSettings,
+) -> dict[str, str]:
+    recording_id = str(recording.get("id") or "").strip()
+    source_filename = str(recording.get("source_filename") or "").strip()
+    fallback_title = source_filename or recording_id or "Recording"
+    if not recording_id:
+        return {"meeting_title": fallback_title, "meeting_title_source": "filename"}
+
+    match_row = get_calendar_match(recording_id, settings=settings) or {}
+    selected_event_id = str(match_row.get("selected_event_id") or "").strip()
+    candidates_payload = match_row.get("candidates_json")
+    candidates = (
+        [row for row in candidates_payload if isinstance(row, dict)]
+        if isinstance(candidates_payload, list)
+        else []
+    )
+
+    if selected_event_id:
+        for candidate in candidates:
+            if str(candidate.get("event_id") or "").strip() != selected_event_id:
+                continue
+            selected_title = str(
+                candidate.get("subject") or candidate.get("summary") or ""
+            ).strip()
+            if selected_title:
+                return {
+                    "meeting_title": selected_title,
+                    "meeting_title_source": "calendar_selected",
+                }
+            break
+
+    for candidate in candidates:
+        candidate_title = str(
+            candidate.get("subject") or candidate.get("summary") or ""
+        ).strip()
+        if candidate_title:
+            return {
+                "meeting_title": candidate_title,
+                "meeting_title_source": "calendar_candidate",
+            }
+
+    summary_topic = _control_center_summary_topic(recording_id, settings=settings)
+    if summary_topic:
+        return {
+            "meeting_title": summary_topic,
+            "meeting_title_source": "summary_topic",
+        }
+
+    return {"meeting_title": fallback_title, "meeting_title_source": "filename"}
+
+
+def _control_center_progress_context(recording: dict[str, Any]) -> dict[str, Any]:
+    status = str(recording.get("status") or "").strip()
+    raw_progress = recording.get("pipeline_progress")
+    progress_ratio: float | None = None
+    if raw_progress is not None:
+        progress_ratio = _safe_pipeline_progress(raw_progress)
+
+    note = ""
+    display_ratio: float | None = None
+
+    if status in _TERMINAL_RECORDING_STATUSES:
+        display_ratio = 1.0
+        if status in {
+            RECORDING_STATUS_READY,
+            RECORDING_STATUS_NEEDS_REVIEW,
+            RECORDING_STATUS_PUBLISHED,
+        }:
+            note = "Done"
+        else:
+            note = status.replace("_", " ").title()
+    elif progress_ratio is not None:
+        display_ratio = _CONTROL_CENTER_UPLOAD_BASELINE_RATIO + (
+            (1.0 - _CONTROL_CENTER_UPLOAD_BASELINE_RATIO) * progress_ratio
+        )
+        note = _pipeline_stage_label(recording.get("pipeline_stage"))
+    elif status in {
+        RECORDING_STATUS_QUEUED,
+        RECORDING_STATUS_PROCESSING,
+        RECORDING_STATUS_STOPPING,
+    }:
+        display_ratio = _CONTROL_CENTER_UPLOAD_BASELINE_RATIO
+        if status == RECORDING_STATUS_STOPPING:
+            note = "Stop requested"
+        else:
+            note = _pipeline_stage_label(recording.get("pipeline_stage"))
+            if note == "Waiting":
+                note = "Uploaded"
+
+    if display_ratio is None:
+        return {
+            "progress_text": "—",
+            "progress_note": "",
+            "progress_percent": 0,
+            "show_progress_bar": False,
+        }
+
+    percent = int(round(display_ratio * 100))
+    return {
+        "progress_text": f"{percent}%",
+        "progress_note": note,
+        "progress_percent": percent,
+        "show_progress_bar": True,
+    }
+
+
+def _control_center_recordings_list_items_context(
+    items: list[dict[str, Any]],
+    *,
+    settings: AppSettings,
+) -> list[dict[str, Any]]:
+    prepared_items: list[dict[str, Any]] = []
+    for item in items:
+        prepared = dict(item)
+        prepared.update(_control_center_meeting_title_context(prepared, settings=settings))
+        prepared.update(_control_center_progress_context(prepared))
+        prepared["status_dot_tone"] = _control_center_status_dot_tone(
+            prepared.get("status")
+        )
+        prepared["status_accessible_label"] = _control_center_status_accessible_label(
+            prepared
+        )
+        prepared_items.append(prepared)
+    return prepared_items
 
 
 def _recording_tab_label(value: str) -> str:
@@ -3608,6 +3774,7 @@ def _recordings_table_context(
     prev_offset = max(offset - limit, 0)
     next_offset = offset + limit
     return {
+        "mode": mode,
         "rows": rows,
         "total": total,
         "limit": limit,
@@ -3716,6 +3883,11 @@ def _recordings_panel_context(
     status_filter = valid_status or ""
     prepared_items = _recordings_list_items_context(items, settings=settings)
     is_control_center = mode == "control_center"
+    if is_control_center:
+        prepared_items = _control_center_recordings_list_items_context(
+            prepared_items,
+            settings=settings,
+        )
     panel_id = (
         "control-center-recordings-panel"
         if is_control_center
@@ -3737,9 +3909,9 @@ def _recordings_panel_context(
         "panel_id": panel_id,
         "mode": mode,
         "total": total,
-        "title": "Operator inbox" if is_control_center else "Recordings list",
+        "title": "" if is_control_center else "Recordings list",
         "description": (
-            "Keep uploads, triage, and selection in one compact daily inbox."
+            ""
             if is_control_center
             else "Use the same queue, filters, and row actions as the Control Center."
         ),

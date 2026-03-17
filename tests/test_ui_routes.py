@@ -381,12 +381,14 @@ def test_dashboard_with_data(tmp_path, monkeypatch):
     c = TestClient(api.app, follow_redirects=True)
     r = c.get("/")
     assert r.status_code == 200
-    assert "Operator inbox" in r.text
+    assert "Operator inbox" not in r.text
     assert "Drop audio here or browse from disk." in r.text
     assert "GPU ready" in r.text
     assert "gpt-oss:120b" in r.text
     assert "Daily workflow" not in r.text
     assert "Fallback and Admin Pages" not in r.text
+    assert 'class="recordings-filter-strip filters"' not in r.text
+    assert 'class="recordings-status-strip"' not in r.text
     assert "rec-dash-1" in r.text or "a.mp3" in r.text
 
 
@@ -411,11 +413,12 @@ def test_control_center_query_state_and_direct_routes(seeded_client):
     assert r.status_code == 200
     assert 'id="control-center-workspace-header"' in r.text
     assert 'id="control-center-system-bar"' in r.text
-    assert 'value="meeting"' in r.text
-    assert 'value="Ready" selected' in r.text
-    assert 'name="selected" value="rec-ui-1"' in r.text
-    assert 'name="tab" value="speakers"' in r.text
     assert 'id="control-center-recordings-panel"' in r.text
+    assert 'class="recordings-filter-strip filters"' not in r.text
+    assert 'class="recordings-status-strip"' not in r.text
+    assert 'data-select-href="/?selected=rec-ui-1&amp;status=Ready&amp;q=meeting&amp;tab=speakers"' in r.text
+    assert 'onclick="activateControlCenterRecordingRow(this, event)"' in r.text
+    assert 'data-testid="control-center-select-recording"' not in r.text
     assert "/recordings/rec-ui-1?tab=speakers" in r.text
     assert "Open full-page inspector" in r.text
     assert "refresh-control-center-header" not in r.text
@@ -523,12 +526,14 @@ def test_control_center_system_bar_renders_degraded_cpu_fallback(
         not in work_pane.text
     )
     assert "Live intake" in work_pane.text
-    assert "Operator inbox" in work_pane.text
+    assert "Operator inbox" not in work_pane.text
     assert "Only in-flight uploads stay here" in work_pane.text
     assert "var removeTerminalItems = true;" in work_pane.text
     assert "Fallback and Admin Pages" not in work_pane.text
     assert "meeting.mp3" in work_pane.text
     assert 'id="control-center-recordings-panel"' in work_pane.text
+    assert 'class="recordings-filter-strip filters"' not in work_pane.text
+    assert 'class="recordings-status-strip"' not in work_pane.text
     assert "data-workspace-header-url" not in work_pane.text
     assert (
         'data-system-bar-url="/ui/control-center/system-bar?selected=rec-ui-1&amp;status=Ready&amp;'
@@ -779,14 +784,18 @@ def test_control_center_recordings_panel_filters_search_and_actions(
     )
     assert panel.status_code == 200
     assert 'id="control-center-recordings-panel"' in panel.text
-    assert 'value="alpha"' in panel.text
-    assert 'value="Ready" selected' in panel.text
+    assert 'class="recordings-filter-strip filters"' not in panel.text
+    assert 'class="recordings-status-strip"' not in panel.text
     assert "alpha.wav" in panel.text
     assert "beta.wav" not in panel.text
-    assert ">Progress<" in panel.text
-    assert ">Source<" in panel.text
+    assert ">Meeting<" in panel.text
+    assert ">Recognition<" in panel.text
+    assert ">Source<" not in panel.text
     assert ">Confidence<" not in panel.text
-    assert 'data-return-to="control-center"' in panel.text
+    assert "..." in panel.text
+    assert 'aria-label="Open actions for rec-cc-panel-1"' in panel.text
+    assert 'data-testid="control-center-select-recording"' not in panel.text
+    assert 'data-select-href="/?selected=rec-cc-panel-1&amp;status=Ready&amp;q=alpha&amp;tab=speakers"' in panel.text
     assert "data-workspace-header-url" not in panel.text
     assert (
         'data-system-bar-url="/ui/control-center/system-bar?selected=&amp;status=Ready&amp;q=alpha&amp;'
@@ -802,7 +811,6 @@ def test_control_center_recordings_panel_filters_search_and_actions(
         "/ui/control-center/recordings/panel?selected=rec-cc-panel-1&tab=speakers"
     )
     assert selected_panel.status_code == 200
-    assert "Selected" in selected_panel.text
     assert 'data-selected="true"' in selected_panel.text
     assert 'aria-current="page"' in selected_panel.text
 
@@ -810,6 +818,77 @@ def test_control_center_recordings_panel_filters_search_and_actions(
     assert conservative.status_code == 200
     assert "alpha.wav" not in conservative.text
     assert "beta.wav" not in conservative.text
+
+
+def test_control_center_recordings_panel_derives_meeting_titles(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    init_db(cfg)
+
+    create_recording(
+        "rec-title-calendar",
+        source="upload",
+        source_filename="calendar-fallback.wav",
+        status=RECORDING_STATUS_READY,
+        settings=cfg,
+    )
+    derived_calendar = cfg.recordings_root / "rec-title-calendar" / "derived"
+    derived_calendar.mkdir(parents=True, exist_ok=True)
+    (derived_calendar / "summary.json").write_text(
+        json.dumps({"topic": "Ignored summary topic"}),
+        encoding="utf-8",
+    )
+    upsert_calendar_match(
+        recording_id="rec-title-calendar",
+        candidates=[
+            {
+                "event_id": "evt-calendar",
+                "subject": "Quarterly roadmap",
+                "attendees": ["Alex"],
+            }
+        ],
+        selected_event_id="evt-calendar",
+        selected_confidence=0.96,
+        settings=cfg,
+    )
+
+    create_recording(
+        "rec-title-summary",
+        source="upload",
+        source_filename="summary-fallback.wav",
+        status=RECORDING_STATUS_READY,
+        settings=cfg,
+    )
+    derived_summary = cfg.recordings_root / "rec-title-summary" / "derived"
+    derived_summary.mkdir(parents=True, exist_ok=True)
+    (derived_summary / "summary.json").write_text(
+        json.dumps({"topic": "Weekly summary review"}),
+        encoding="utf-8",
+    )
+
+    create_recording(
+        "rec-title-fallback",
+        source="upload",
+        source_filename="fallback-title.wav",
+        status=RECORDING_STATUS_READY,
+        settings=cfg,
+    )
+
+    c = TestClient(api.app, follow_redirects=True)
+    panel = c.get("/ui/control-center/recordings/panel")
+
+    assert panel.status_code == 200
+    assert "rec-title-calendar" in panel.text
+    assert "Quarterly roadmap" in panel.text
+    assert "Ignored summary topic" not in panel.text
+    assert "rec-title-summary" in panel.text
+    assert "Weekly summary review" in panel.text
+    assert "rec-title-fallback" in panel.text
+    assert "fallback-title.wav" in panel.text
 
 
 def test_control_center_selection_preserves_pagination_state(
@@ -846,9 +925,8 @@ def test_control_center_selection_preserves_pagination_state(
     assert (
         panel.headers["HX-Push-Url"] == "/?status=Ready&tab=speakers&limit=25&offset=25"
     )
-    assert 'href="/?status=Ready&amp;tab=speakers"' in panel.text
     assert (
-        f'href="/?selected={selected_id}&amp;status=Ready&amp;tab=speakers&amp;'
+        f'data-select-href="/?selected={selected_id}&amp;status=Ready&amp;tab=speakers&amp;'
         'limit=25&amp;offset=25"'
     ) in panel.text
 
@@ -856,12 +934,7 @@ def test_control_center_selection_preserves_pagination_state(
         f"/?selected={selected_id}&status=Ready&limit=25&offset=25&tab=speakers"
     )
     assert selected_page.status_code == 200
-    assert (
-        f'href="/?selected={selected_id}&amp;status=Ready&amp;tab=speakers"'
-        in selected_page.text
-    )
-    assert f'name="selected" value="{selected_id}"' in selected_page.text
-    assert 'value="25" selected' in selected_page.text
+    assert 'data-selected="true"' in selected_page.text
     assert ">26–26 of 26<" in selected_page.text
 
 
@@ -962,13 +1035,14 @@ def test_recordings_fragment_endpoints_render_filters_table_and_pagination(
     table = c.get("/ui/control-center/recordings/table?q=fragment&limit=2&offset=0")
     assert table.status_code == 200
     assert "fragment-a.wav" in table.text
-    assert ">Progress<" in table.text
-    assert ">Source<" in table.text
+    assert ">Recognition<" in table.text
+    assert ">Source<" not in table.text
     assert ">Confidence<" not in table.text
-    assert "50%" in table.text
+    assert "52%" in table.text
     assert "Next &#187;" in table.text
     assert "Delete" in table.text
-    assert 'data-return-to="control-center"' in table.text
+    assert 'aria-label="Open actions for rec-ui-fragment-1"' in table.text
+    assert 'data-select-href="/?selected=rec-ui-fragment-1&amp;q=fragment&amp;limit=2"' in table.text
     assert "<nav" not in table.text
 
 

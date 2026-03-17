@@ -12,20 +12,26 @@
   {% endif %}
 >
   <div class="control-center-pane-head control-center-pane-head-tight control-center-pane-head-worklist">
+    {% if recordings_panel.mode != "control_center" %}
     <div>
       <p class="eyebrow">Worklist</p>
       <h2>{{ recordings_panel.title }}</h2>
       <p class="control-center-pane-copy">{{ recordings_panel.description }}</p>
     </div>
+    {% else %}
+    <div></div>
+    {% endif %}
     <div class="control-center-worklist-summary">
       <span class="control-center-worklist-count">{{ recordings_panel.total }}</span>
       <span class="control-center-worklist-label">visible now</span>
     </div>
   </div>
 
+  {% if recordings_panel.mode != "control_center" %}
   {% set recordings_filters = recordings_panel.recordings_filters %}
   {% include "partials/control_center/recordings_filters.html" %}
   {% include "partials/control_center/recordings_status_cards.html" %}
+  {% endif %}
   {% set recordings_table = recordings_panel.recordings_table %}
   {% include "partials/control_center/recordings_table.html" %}
 </div>

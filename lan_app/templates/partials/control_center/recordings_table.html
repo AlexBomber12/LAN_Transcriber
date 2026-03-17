@@ -1,6 +1,115 @@
 {% if recordings_table.rows %}
-<div class="recordings-table-wrap">
-  <table class="recordings-table">
+<div class="recordings-table-wrap{% if recordings_table.mode == 'control_center' %} recordings-table-wrap-control-center{% endif %}">
+  <table class="recordings-table{% if recordings_table.mode == 'control_center' %} recordings-table-control-center{% endif %}">
+    {% if recordings_table.mode == "control_center" %}
+    <thead>
+      <tr>
+        <th aria-hidden="true"></th>
+        <th>Meeting</th>
+        <th>Captured</th>
+        <th>Duration</th>
+        <th style="width:240px">Recognition</th>
+        <th aria-label="Actions"></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for r in recordings_table.rows %}
+      <tr
+        class="recording-row recording-row-control-center{% if r.selected %} recording-row-selected{% endif %}"
+        data-recording-id="{{ r.id }}"
+        data-testid="control-center-recording-row"
+        {% if r.selected %}data-selected="true" aria-current="page"{% endif %}
+        {% if r.select_href %}
+        data-select-href="{{ r.select_href }}"
+        tabindex="0"
+        role="link"
+        onclick="activateControlCenterRecordingRow(this, event)"
+        onkeydown="activateControlCenterRecordingRowFromKey(this, event)"
+        {% endif %}
+      >
+        <td class="recording-status-dot-cell">
+          <span
+            class="recording-status-dot recording-status-dot--{{ r.status_dot_tone }}"
+            aria-label="{{ r.status_accessible_label }}"
+            title="{{ r.status_accessible_label }}"
+          ></span>
+        </td>
+        <td>
+          <div class="control-center-recording-identity">
+            <div class="control-center-recording-id"><code>{{ r.id }}</code></div>
+            <div class="control-center-recording-title" title="{{ r.meeting_title }}">{{ r.meeting_title }}</div>
+          </div>
+        </td>
+        <td>{{ r.captured_at_display }}</td>
+        <td>{{ r.duration_display }}</td>
+        <td>
+          <div class="recording-progress recording-progress-compact">
+            <strong>{{ r.progress_text }}</strong>
+            {% if r.progress_note %}
+            <span class="recording-progress-note">{{ r.progress_note }}</span>
+            {% endif %}
+            {% if r.show_progress_bar %}
+            <div class="progress-track">
+              <div class="progress-fill" style="width:{{ r.progress_percent }}%"></div>
+            </div>
+            {% endif %}
+          </div>
+        </td>
+        <td class="recording-actions-cell" data-recording-actions onclick="event.stopPropagation()">
+          <details class="recording-actions-menu" onclick="event.stopPropagation()">
+            <summary
+              class="recording-actions-trigger"
+              aria-label="Open actions for {{ r.id }}"
+              title="Actions"
+            >...</summary>
+            <div class="recording-actions-popover">
+              <button
+                type="button"
+                class="recording-actions-item"
+                data-rid="{{ r.id }}"
+                data-rlabel="{{ r.source_filename or r.id }}"
+                data-rcaptured="{{ '' if r.captured_at_display == '—' else r.captured_at_display }}"
+                data-open-href="{{ r.detail_href }}"
+                data-return-to="{{ recordings_table.action_return_to }}"
+                onclick="runRecordingActionFromMenu(this, 'open')"
+              >Open</button>
+              <button
+                type="button"
+                class="recording-actions-item"
+                data-rid="{{ r.id }}"
+                data-rlabel="{{ r.source_filename or r.id }}"
+                data-rcaptured="{{ '' if r.captured_at_display == '—' else r.captured_at_display }}"
+                data-open-href="{{ r.detail_href }}"
+                data-return-to="{{ recordings_table.action_return_to }}"
+                onclick="runRecordingActionFromMenu(this, 'requeue')"
+              >Requeue</button>
+              <button
+                type="button"
+                class="recording-actions-item"
+                data-rid="{{ r.id }}"
+                data-rlabel="{{ r.source_filename or r.id }}"
+                data-rcaptured="{{ '' if r.captured_at_display == '—' else r.captured_at_display }}"
+                data-open-href="{{ r.detail_href }}"
+                data-return-to="{{ recordings_table.action_return_to }}"
+                onclick="runRecordingActionFromMenu(this, 'quarantine')"
+              >Quarantine</button>
+              <button
+                type="button"
+                class="recording-actions-item recording-actions-item-danger"
+                data-rid="{{ r.id }}"
+                data-rlabel="{{ r.source_filename or r.id }}"
+                data-rcaptured="{{ '' if r.captured_at_display == '—' else r.captured_at_display }}"
+                data-open-href="{{ r.detail_href }}"
+                data-return-to="{{ recordings_table.action_return_to }}"
+                onclick="runRecordingActionFromMenu(this, 'delete')"
+              >Delete</button>
+            </div>
+          </details>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+    {% else %}
     <thead>
       <tr>
         <th>Name</th>
@@ -125,6 +234,7 @@
       </tr>
       {% endfor %}
     </tbody>
+    {% endif %}
   </table>
 </div>
 
@@ -153,10 +263,18 @@
 </div>
 {% else %}
 <p class="placeholder">
-  {% if not recordings_table.total and not recordings_table.status_filter and not recordings_table.search_query %}
-  No recordings yet. Upload audio to start the operator inbox.
+  {% if recordings_table.mode == "control_center" %}
+    {% if not recordings_table.total and not recordings_table.status_filter and not recordings_table.search_query %}
+  No recordings yet. Upload audio to start.
+    {% else %}
+  No recordings match this view.
+    {% endif %}
   {% else %}
+    {% if not recordings_table.total and not recordings_table.status_filter and not recordings_table.search_query %}
+  No recordings yet. Upload audio to start the operator inbox.
+    {% else %}
   No recordings{% if recordings_table.status_filter %} with status <strong>{{ recordings_table.status_filter }}</strong>{% endif %}{% if recordings_table.search_query %} matching <strong>{{ recordings_table.search_query }}</strong>{% endif %}. Clear the filters to widen the inbox.
+    {% endif %}
   {% endif %}
 </p>
 {% endif %}
