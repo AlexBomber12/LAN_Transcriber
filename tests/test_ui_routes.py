@@ -374,6 +374,7 @@ def test_dashboard_empty(client):
     assert 'href="/upload"' not in r.text
     assert 'href="/recordings"' not in r.text
     assert "LAN Transcriber" in r.text
+    assert "Daily operator workspace" not in r.text
 
 
 def test_dashboard_with_data(tmp_path, monkeypatch):
@@ -462,8 +463,10 @@ def test_control_center_pane_fragment_endpoints(seeded_client):
     assert (
         'hx-trigger="refresh-control-center-header from:body"' in workspace_header.text
     )
-    assert "meeting.mp3" in workspace_header.text
-    assert "/recordings/rec-ui-1?tab=speakers" in workspace_header.text
+    assert "<h1>Control Center</h1>" in workspace_header.text
+    assert "control-center-focus-card" not in workspace_header.text
+    assert "meeting.mp3" not in workspace_header.text
+    assert "/recordings/rec-ui-1?tab=speakers" not in workspace_header.text
     assert "<html" not in workspace_header.text
 
     system_bar = seeded_client.get(
@@ -536,7 +539,13 @@ def test_control_center_system_bar_renders_degraded_cpu_fallback(
         "/ui/control-center/work-pane?selected=rec-ui-1&status=Ready&q=meeting&tab=speakers"
     )
     assert work_pane.status_code == 200
-    assert "Drop audio into today" in work_pane.text
+    assert "Intake" not in work_pane.text
+    assert "Drop audio into today" not in work_pane.text
+    assert (
+        "Add files, keep intake progress visible, and move straight into the operator inbox below."
+        not in work_pane.text
+    )
+    assert "Live intake" in work_pane.text
     assert "Operator inbox" in work_pane.text
     assert "Only in-flight uploads stay here" in work_pane.text
     assert "var removeTerminalItems = true;" in work_pane.text
