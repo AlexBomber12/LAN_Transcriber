@@ -618,3 +618,13 @@ Queue (in order)
 - Status: DONE
 - Tasks file: tasks/PR-UI-STITCH-WORKLIST-02.md
 - Depends on: PR-OPS-SYSTEM-BAR-02
+
+124) PR-UI-STITCH-RECORDING-DETAILS-01: Replace the compact right pane with a single Recording Details panel and remove embedded tabs
+- Status: TODO
+- Tasks file: tasks/PR-UI-STITCH-RECORDING-DETAILS-01.md
+- Depends on: PR-UI-STITCH-WORKLIST-02
+
+125) PR-UI-STITCH-UPLOAD-01: Simplify the Control Center upload area into a compact UPLOAD block with queue cards
+- Status: TODO
+- Tasks file: tasks/PR-UI-STITCH-UPLOAD-01.md
+- Depends on: PR-UI-STITCH-WORKLIST-02
