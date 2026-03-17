@@ -2293,6 +2293,57 @@ def _recording_speaker_name_map(
     return name_map
 
 
+def _embedded_speaker_summary_rows(
+    recording_id: str,
+    *,
+    settings: AppSettings,
+) -> list[dict[str, str]]:
+    transcript_path, _summary_path = _recording_derived_paths(recording_id, settings)
+    speaker_turns_path = transcript_path.parent / "speaker_turns.json"
+    transcript_payload = _load_json_dict(transcript_path)
+    speaker_turns_raw = _load_json_list(speaker_turns_path)
+    speaker_turns = [row for row in speaker_turns_raw if isinstance(row, dict)]
+    if not speaker_turns:
+        speaker_turns = _fallback_speaker_turns_from_transcript(transcript_payload)
+
+    assignments = list_speaker_assignments(recording_id, settings=settings)
+    assignment_by_speaker = {
+        str(row.get("diar_speaker_label") or "").strip(): row
+        for row in assignments
+        if str(row.get("diar_speaker_label") or "").strip()
+    }
+
+    speaker_labels = {
+        str(row.get("speaker") or "").strip()
+        for row in speaker_turns
+        if str(row.get("speaker") or "").strip()
+    }
+    speaker_labels.update(assignment_by_speaker)
+
+    rows: list[dict[str, str]] = []
+    for speaker_label in sorted(speaker_labels):
+        assignment = assignment_by_speaker.get(speaker_label, {})
+        resolved_name = _speaker_assignment_display_name(assignment)
+        confidence_display = ""
+        if resolved_name:
+            try:
+                confidence_value = float(assignment.get("confidence"))
+            except (TypeError, ValueError):
+                confidence_value = 0.0
+            if confidence_value > 0:
+                confidence_display = (
+                    f"{round(max(0.0, min(confidence_value, 1.0)) * 100):.0f}%"
+                )
+        rows.append(
+            {
+                "primary_label": resolved_name or speaker_label,
+                "secondary_label": speaker_label if resolved_name else "Unknown",
+                "confidence_display": confidence_display,
+            }
+        )
+    return rows
+
+
 def _speaker_review_state(row: dict[str, Any]) -> str:
     review_state = str(row.get("review_state") or "").strip().lower()
     if review_state in {
@@ -4331,35 +4382,10 @@ def _embedded_recording_details_context(
             re.split(r"(?<=[.!?])\s+", tone_text, maxsplit=1)[0].strip() or tone_text
         )
 
-    speakers = _speakers_tab_context(
+    speaker_rows = _embedded_speaker_summary_rows(
         recording_id,
-        settings,
-        recording=recording,
-        stage_rows=stage_rows,
+        settings=settings,
     )
-    speaker_rows = []
-    for row in speakers.get("speaker_rows") or []:
-        diarized_label = str(row.get("speaker") or "").strip() or "Speaker"
-        resolved_name = str(
-            row.get("voice_profile_name") or row.get("local_display_name") or ""
-        ).strip()
-        confidence_display = ""
-        if resolved_name:
-            try:
-                confidence_value = float(row.get("confidence"))
-            except (TypeError, ValueError):
-                confidence_value = 0.0
-            if confidence_value > 0:
-                confidence_display = (
-                    f"{round(max(0.0, min(confidence_value, 1.0)) * 100):.0f}%"
-                )
-        speaker_rows.append(
-            {
-                "primary_label": resolved_name or diarized_label,
-                "secondary_label": diarized_label if resolved_name else "Unknown",
-                "confidence_display": confidence_display,
-            }
-        )
 
     dominant_language = _recording_dominant_language_display(
         recording_id,

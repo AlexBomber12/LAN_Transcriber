@@ -596,6 +596,83 @@ def test_control_center_processing_recording_polls_embedded_details_card(
     assert "every 2s" in inspector.text
 
 
+def test_control_center_inspector_ignores_malformed_snippet_metadata(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    monkeypatch.setattr(
+        ui_routes,
+        "collect_control_center_runtime_status",
+        lambda _settings: _stub_runtime_status(),
+    )
+    init_db(cfg)
+    create_recording(
+        "rec-ui-malformed-snippets",
+        source="upload",
+        source_filename="malformed.wav",
+        status=RECORDING_STATUS_READY,
+        settings=cfg,
+    )
+    derived = cfg.recordings_root / "rec-ui-malformed-snippets" / "derived"
+    derived.mkdir(parents=True, exist_ok=True)
+    (derived / "summary.json").write_text(
+        json.dumps({"summary_bullets": ["Speaker review pending."]}),
+        encoding="utf-8",
+    )
+    (derived / "transcript.json").write_text(
+        json.dumps({"text": "hello", "dominant_language": "en"}),
+        encoding="utf-8",
+    )
+    (derived / "speaker_turns.json").write_text(
+        json.dumps([{"speaker": "S1", "start": 0.0, "end": 1.0, "text": "hello"}]),
+        encoding="utf-8",
+    )
+    (derived / "snippets_manifest.json").write_text(
+        json.dumps(
+            {
+                "speakers": {
+                    "S1": [
+                        {
+                            "status": "accepted",
+                            "relative_path": "S1/1.wav",
+                            "clip_start": "bad",
+                            "clip_end": "bad",
+                            "source_start": "bad",
+                            "source_end": "bad",
+                            "purity_score": "bad",
+                        }
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    snippets = derived / "snippets" / "S1"
+    snippets.mkdir(parents=True, exist_ok=True)
+    (snippets / "1.wav").write_bytes(b"fake-wav")
+    profile = create_voice_profile("Andrea", settings=cfg)
+    set_speaker_assignment(
+        recording_id="rec-ui-malformed-snippets",
+        diar_speaker_label="S1",
+        voice_profile_id=int(profile["id"]),
+        confidence=0.98,
+        settings=cfg,
+    )
+
+    client = TestClient(api.app, follow_redirects=True)
+    inspector = client.get(
+        "/ui/control-center/inspector-pane?selected=rec-ui-malformed-snippets"
+    )
+
+    assert inspector.status_code == 200
+    assert "Recording Details" in inspector.text
+    assert "Andrea" in inspector.text
+    assert "98%" in inspector.text
+
+
 def test_control_center_embedded_inspector_open_page_link_preserves_shell_state(
     seeded_client,
 ):

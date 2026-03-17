@@ -955,6 +955,16 @@ def test_embedded_recording_details_context_handles_summary_fallback_and_bad_con
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     cfg = _cfg(tmp_path)
+    derived = cfg.recordings_root / "rec-details-edge" / "derived"
+    derived.mkdir(parents=True, exist_ok=True)
+    (derived / "transcript.json").write_text(
+        json.dumps({"text": "edge transcript"}),
+        encoding="utf-8",
+    )
+    (derived / "speaker_turns.json").write_text(
+        json.dumps([{"speaker": "S1", "start": 0.0, "end": 1.0, "text": "hello"}]),
+        encoding="utf-8",
+    )
     monkeypatch.setattr(
         ui_routes,
         "_summary_context",
@@ -966,17 +976,16 @@ def test_embedded_recording_details_context_handles_summary_fallback_and_bad_con
     )
     monkeypatch.setattr(
         ui_routes,
-        "_speakers_tab_context",
-        lambda *_a, **_k: {
-            "speaker_rows": [
-                {
-                    "speaker": "S1",
-                    "voice_profile_name": "Andrea",
-                    "local_display_name": "",
-                    "confidence": "bad",
-                }
-            ]
-        },
+        "list_speaker_assignments",
+        lambda *_a, **_k: [
+            {
+                "diar_speaker_label": "S1",
+                "voice_profile_id": 1,
+                "voice_profile_name": "Andrea",
+                "local_display_name": "",
+                "confidence": "bad",
+            }
+        ],
     )
     monkeypatch.setattr(
         ui_routes,
@@ -1015,6 +1024,106 @@ def test_embedded_recording_details_context_handles_summary_fallback_and_bad_con
         {
             "primary_label": "Andrea",
             "secondary_label": "S1",
+            "confidence_display": "",
+        }
+    ]
+
+
+def test_embedded_speaker_summary_rows_supports_turns_and_assignment_only_speakers(
+    tmp_path: Path,
+) -> None:
+    cfg = _cfg(tmp_path)
+    init_db(cfg)
+    create_recording(
+        "rec-speaker-summary",
+        source="upload",
+        source_filename="speaker-summary.wav",
+        status=RECORDING_STATUS_READY,
+        settings=cfg,
+    )
+    derived = cfg.recordings_root / "rec-speaker-summary" / "derived"
+    derived.mkdir(parents=True, exist_ok=True)
+    (derived / "transcript.json").write_text(
+        json.dumps({"text": "hello world"}),
+        encoding="utf-8",
+    )
+    (derived / "speaker_turns.json").write_text(
+        json.dumps(
+            [
+                {"speaker": "S1", "start": 0.0, "end": 1.0, "text": "hello"},
+                {"speaker": "S2", "start": 1.0, "end": 2.0, "text": "world"},
+            ]
+        ),
+        encoding="utf-8",
+    )
+    profile = create_voice_profile("Andrea", settings=cfg)
+    set_speaker_assignment(
+        recording_id="rec-speaker-summary",
+        diar_speaker_label="S1",
+        voice_profile_id=int(profile["id"]),
+        confidence=0.98,
+        settings=cfg,
+    )
+    set_speaker_assignment(
+        recording_id="rec-speaker-summary",
+        diar_speaker_label="S3",
+        voice_profile_id=None,
+        local_display_name="Guest",
+        settings=cfg,
+    )
+
+    rows = ui_routes._embedded_speaker_summary_rows(  # noqa: SLF001
+        "rec-speaker-summary",
+        settings=cfg,
+    )
+
+    assert rows == [
+        {
+            "primary_label": "Andrea",
+            "secondary_label": "S1",
+            "confidence_display": "98%",
+        },
+        {
+            "primary_label": "S2",
+            "secondary_label": "Unknown",
+            "confidence_display": "",
+        },
+        {
+            "primary_label": "Guest",
+            "secondary_label": "S3",
+            "confidence_display": "100%",
+        },
+    ]
+
+
+def test_embedded_speaker_summary_rows_fall_back_to_transcript_chunks(
+    tmp_path: Path,
+) -> None:
+    cfg = _cfg(tmp_path)
+    init_db(cfg)
+    create_recording(
+        "rec-speaker-summary-fallback",
+        source="upload",
+        source_filename="speaker-summary-fallback.wav",
+        status=RECORDING_STATUS_READY,
+        settings=cfg,
+    )
+    derived = cfg.recordings_root / "rec-speaker-summary-fallback" / "derived"
+    derived.mkdir(parents=True, exist_ok=True)
+    (derived / "transcript.json").write_text(
+        json.dumps({"text": "fallback transcript only"}),
+        encoding="utf-8",
+    )
+
+    rows = ui_routes._embedded_speaker_summary_rows(  # noqa: SLF001
+        "rec-speaker-summary-fallback",
+        settings=cfg,
+    )
+
+    assert rows == [
+        {
+            "primary_label": "S1",
+            "secondary_label": "Unknown",
             "confidence_display": "",
         }
     ]
