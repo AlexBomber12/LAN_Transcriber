@@ -1,5 +1,5 @@
 diff --git a/artifacts/ci.log b/artifacts/ci.log
-index bd79927..e3cecdf 100644
+index bd79927..b8a7d08 100644
 --- a/artifacts/ci.log
 +++ b/artifacts/ci.log
 @@ -1,8 +1,4 @@
@@ -16,7 +16,7 @@ index bd79927..e3cecdf 100644
  
  Required test coverage of 100% reached. Total coverage: 100.00%
 -1042 passed, 2 skipped, 11 warnings in 101.21s (0:01:41)
-+1042 passed, 2 skipped, 11 warnings in 99.83s (0:01:39)
++1042 passed, 2 skipped, 11 warnings in 100.45s (0:01:40)
  Name                                                    Stmts   Miss Branch BrPart  Cover
  -----------------------------------------------------------------------------------------
  lan_transcriber/__init__.py                                 8      0      0      0   100%
@@ -702,6 +702,19 @@ index 2a49e79..e69de29 100644
 -             finally:
 -                 context.close()
 -                 browser.close()
+diff --git a/ci-requirements.txt b/ci-requirements.txt
+index 1d87a63..b6e6cf6 100644
+--- a/ci-requirements.txt
++++ b/ci-requirements.txt
+@@ -26,7 +26,7 @@ click==8.3.1
+     #   pip-tools
+     #   uvicorn
+     #   x-wr-timezone
+-coverage[toml]==7.13.4
++coverage[toml]==7.13.5
+     # via pytest-cov
+ fastapi==0.116.1
+     # via -r ci-requirements.in
 diff --git a/lan_app/templates/partials/control_center/inspector_empty.html b/lan_app/templates/partials/control_center/inspector_empty.html
 index fd9a552..d9b1293 100644
 --- a/lan_app/templates/partials/control_center/inspector_empty.html
