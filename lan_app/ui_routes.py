@@ -397,14 +397,30 @@ def _control_center_meeting_title_context(
     if not recording_id:
         return {"meeting_title": fallback_title, "meeting_title_source": "filename"}
 
-    selected_title, _attendees = calendar_summary_context(recording_id, settings=settings)
-    if selected_title:
-        return {
-            "meeting_title": selected_title,
-            "meeting_title_source": "calendar_selected",
-        }
+    match_row = get_calendar_match(recording_id, settings=settings) or {}
+    selected_event_id = str(match_row.get("selected_event_id") or "").strip()
+    candidates_payload = match_row.get("candidates_json")
+    candidates = (
+        [row for row in candidates_payload if isinstance(row, dict)]
+        if isinstance(candidates_payload, list)
+        else []
+    )
 
-    for candidate in calendar_match_candidates(recording_id, settings=settings):
+    if selected_event_id:
+        for candidate in candidates:
+            if str(candidate.get("event_id") or "").strip() != selected_event_id:
+                continue
+            selected_title = str(
+                candidate.get("subject") or candidate.get("summary") or ""
+            ).strip()
+            if selected_title:
+                return {
+                    "meeting_title": selected_title,
+                    "meeting_title_source": "calendar_selected",
+                }
+            break
+
+    for candidate in candidates:
         candidate_title = str(
             candidate.get("subject") or candidate.get("summary") or ""
         ).strip()

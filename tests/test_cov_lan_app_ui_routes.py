@@ -1308,6 +1308,55 @@ def test_control_center_worklist_title_and_progress_helpers(
         encoding="utf-8",
     )
 
+    create_recording(
+        "rec-title-selected-missing",
+        source="upload",
+        source_filename="selected-missing.wav",
+        status=RECORDING_STATUS_READY,
+        settings=cfg,
+    )
+    derived_selected_missing = (
+        cfg.recordings_root / "rec-title-selected-missing" / "derived"
+    )
+    derived_selected_missing.mkdir(parents=True, exist_ok=True)
+    (derived_selected_missing / "summary.json").write_text(
+        json.dumps({"topic": "Selected match missing fallback"}),
+        encoding="utf-8",
+    )
+    upsert_calendar_match(
+        recording_id="rec-title-selected-missing",
+        candidates=[
+            {"event_id": "evt-other", "subject": "   "},
+        ],
+        selected_event_id="evt-selected",
+        selected_confidence=0.82,
+        settings=cfg,
+    )
+
+    create_recording(
+        "rec-title-selected-blank",
+        source="upload",
+        source_filename="selected-blank.wav",
+        status=RECORDING_STATUS_READY,
+        settings=cfg,
+    )
+    derived_selected_blank = cfg.recordings_root / "rec-title-selected-blank" / "derived"
+    derived_selected_blank.mkdir(parents=True, exist_ok=True)
+    (derived_selected_blank / "summary.json").write_text(
+        json.dumps({"topic": "Selected blank fallback"}),
+        encoding="utf-8",
+    )
+    upsert_calendar_match(
+        recording_id="rec-title-selected-blank",
+        candidates=[
+            {"event_id": "evt-other", "subject": "   "},
+            {"event_id": "evt-selected", "subject": "   ", "summary": "   "},
+        ],
+        selected_event_id="evt-selected",
+        selected_confidence=0.77,
+        settings=cfg,
+    )
+
     candidate_title = ui_routes._control_center_meeting_title_context(  # noqa: SLF001
         {"id": "rec-title-candidate", "source_filename": "candidate.wav"},
         settings=cfg,
@@ -1323,6 +1372,24 @@ def test_control_center_worklist_title_and_progress_helpers(
     )
     assert summary_title == {
         "meeting_title": "Summary fallback title",
+        "meeting_title_source": "summary_topic",
+    }
+
+    selected_missing_title = ui_routes._control_center_meeting_title_context(  # noqa: SLF001
+        {"id": "rec-title-selected-missing", "source_filename": "selected-missing.wav"},
+        settings=cfg,
+    )
+    assert selected_missing_title == {
+        "meeting_title": "Selected match missing fallback",
+        "meeting_title_source": "summary_topic",
+    }
+
+    selected_blank_title = ui_routes._control_center_meeting_title_context(  # noqa: SLF001
+        {"id": "rec-title-selected-blank", "source_filename": "selected-blank.wav"},
+        settings=cfg,
+    )
+    assert selected_blank_title == {
+        "meeting_title": "Selected blank fallback",
         "meeting_title_source": "summary_topic",
     }
 
