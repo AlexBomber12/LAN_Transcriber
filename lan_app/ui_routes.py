@@ -9,6 +9,7 @@ import asyncio
 from datetime import date, datetime, time, timedelta, timezone
 import json
 import logging
+import re
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -438,6 +439,20 @@ def _control_center_meeting_title_context(
         }
 
     return {"meeting_title": fallback_title, "meeting_title_source": "filename"}
+
+
+def _embedded_recording_confirmed_title(recording: dict[str, Any]) -> str:
+    for key in (
+        "display_title",
+        "title",
+        "meeting_title",
+        "resolved_title",
+        "confirmed_title",
+    ):
+        title = str(recording.get(key) or "").strip()
+        if title:
+            return title
+    return ""
 
 
 def _control_center_progress_context(recording: dict[str, Any]) -> dict[str, Any]:
@@ -3999,6 +4014,13 @@ def _page_notice_context(message: str) -> dict[str, str]:
     }
 
 
+def _compact_recording_value(value: object) -> str:
+    text = str(value or "").strip()
+    if not text or text == "—":
+        return "Not available yet"
+    return text
+
+
 def _recording_dominant_language_display(
     recording_id: str,
     *,
@@ -4255,7 +4277,149 @@ def _selected_recording_summary_shell_context(
 def _empty_inspector_shell_context() -> dict[str, str]:
     return {
         "title": "No recording selected",
-        "message": "Choose a row from the worklist to open a compact review pane here.",
+        "message": "",
+    }
+
+
+def _embedded_recording_details_context(
+    recording_id: str,
+    *,
+    recording: dict[str, Any],
+    diagnostics: dict[str, Any],
+    current_tab: str,
+    stage_rows: list[dict[str, Any]],
+    settings: AppSettings,
+) -> dict[str, Any]:
+    title_context = _control_center_meeting_title_context(recording, settings=settings)
+    title_source = str(title_context.get("meeting_title_source") or "").strip()
+    calendar_title = (
+        str(title_context.get("meeting_title") or "").strip()
+        if title_source in {"calendar_selected", "calendar_candidate"}
+        else ""
+    )
+    primary_title = _embedded_recording_confirmed_title(recording)
+    primary_title_source = "confirmed"
+    if not primary_title:
+        candidate_title = str(title_context.get("meeting_title") or "").strip()
+        if title_source in {"calendar_selected", "calendar_candidate", "summary_topic"}:
+            primary_title = candidate_title
+            primary_title_source = title_source
+        else:
+            primary_title = str(recording.get("id") or "").strip() or "Recording"
+            primary_title_source = "job_id"
+
+    summary = _summary_context(recording_id, settings)
+    summary_lines = [
+        str(line).strip()
+        for line in (summary.get("summary_bullets") or [])
+        if str(line).strip()
+    ][:4]
+    summary_text = str(summary.get("summary_text") or "").strip()
+    if summary_text and (not summary_lines or summary_lines == [summary_text]):
+        summary_lines = [
+            chunk.strip(" -")
+            for chunk in re.split(r"(?<=[.!?])\s+", summary_text)
+            if chunk.strip(" -")
+        ][:4]
+        if not summary_lines:
+            summary_lines = [summary_text]
+
+    tone_text = str(summary.get("emotional_summary") or "").strip()
+    tone_phrase = ""
+    if tone_text:
+        tone_phrase = (
+            re.split(r"(?<=[.!?])\s+", tone_text, maxsplit=1)[0].strip() or tone_text
+        )
+
+    speakers = _speakers_tab_context(
+        recording_id,
+        settings,
+        recording=recording,
+        stage_rows=stage_rows,
+    )
+    speaker_rows = []
+    for row in speakers.get("speaker_rows") or []:
+        diarized_label = str(row.get("speaker") or "").strip() or "Speaker"
+        resolved_name = str(
+            row.get("voice_profile_name") or row.get("local_display_name") or ""
+        ).strip()
+        confidence_display = ""
+        if resolved_name:
+            try:
+                confidence_value = float(row.get("confidence"))
+            except (TypeError, ValueError):
+                confidence_value = 0.0
+            if confidence_value > 0:
+                confidence_display = (
+                    f"{round(max(0.0, min(confidence_value, 1.0)) * 100):.0f}%"
+                )
+        speaker_rows.append(
+            {
+                "primary_label": resolved_name or diarized_label,
+                "secondary_label": diarized_label if resolved_name else "Unknown",
+                "confidence_display": confidence_display,
+            }
+        )
+
+    dominant_language = _recording_dominant_language_display(
+        recording_id,
+        recording=recording,
+        settings=settings,
+    )
+    if dominant_language == "Unknown":
+        dominant_language = "Not available yet"
+    review_blocker = str(
+        diagnostics.get("primary_reason_text")
+        or recording.get("review_reason_text_display")
+        or recording.get("status_reason_text_display")
+        or _recording_worklist_hint(recording)
+        or ""
+    ).strip()
+    metadata_rows = [
+        {
+            "label": "Status",
+            "value": _compact_recording_value(recording.get("status") or "Unknown"),
+        },
+        {
+            "label": "Captured at",
+            "value": _compact_recording_value(recording.get("captured_at_display")),
+        },
+        {
+            "label": "Duration",
+            "value": _compact_recording_value(recording.get("duration_display")),
+        },
+        {
+            "label": "Language",
+            "value": _compact_recording_value(dominant_language),
+        },
+        {
+            "label": "Review blocker / Next action",
+            "value": _compact_recording_value(review_blocker),
+        },
+    ]
+    if calendar_title and calendar_title != primary_title:
+        metadata_rows.append(
+            {
+                "label": "Matched meeting",
+                "value": calendar_title,
+            }
+        )
+
+    return {
+        "card_title": "Recording Details",
+        "primary_title": primary_title,
+        "primary_title_source": primary_title_source,
+        "job_id": str(recording.get("id") or "").strip() or "Recording",
+        "filename": _compact_recording_value(recording.get("source_filename")),
+        "download_zip_href": (
+            f"/ui/recordings/{quote(recording_id, safe='')}/export.zip"
+        ),
+        "metadata_rows": metadata_rows,
+        "speaker_rows": speaker_rows,
+        "tone": tone_phrase or "Not available yet",
+        "summary_lines": summary_lines,
+        "summary_placeholder": "Not available yet",
+        "open_recording_page_href": _recording_detail_path(recording_id, tab=current_tab),
     }
 
 
@@ -4293,6 +4457,7 @@ def _recording_inspector_context(
     project: dict[str, Any] | None = None
     glossary: dict[str, Any] | None = None
     compact_overview: dict[str, Any] | None = None
+    embedded_recording_details: dict[str, Any] | None = None
     overview: dict[str, Any] | None = None
     transcript: dict[str, Any] | None = None
     export_text = ""
@@ -4307,6 +4472,15 @@ def _recording_inspector_context(
     )
     if diagnostics["primary_reason_text"]:
         rec["status_reason_text_display"] = diagnostics["primary_reason_text"]
+    if is_embedded:
+        embedded_recording_details = _embedded_recording_details_context(
+            recording_id,
+            recording=rec,
+            diagnostics=diagnostics,
+            current_tab=safe_tab,
+            stage_rows=stage_rows,
+            settings=_settings,
+        )
     if not is_embedded and safe_tab == "diagnostics":
         calendar = _calendar_tab_context(recording_id, _settings)
         if calendar_error.strip():
@@ -4409,6 +4583,7 @@ def _recording_inspector_context(
         "project": project,
         "glossary": glossary,
         "compact_overview": compact_overview,
+        "embedded_recording_details": embedded_recording_details,
         "overview": overview,
         "transcript": transcript,
         "export_text": export_text,
@@ -4417,6 +4592,15 @@ def _recording_inspector_context(
         "recording_inspector": {
             "mode": inspector_mode,
             "embedded": is_embedded,
+            "auto_refresh": bool(
+                is_embedded
+                and str(rec.get("status") or "").strip()
+                in {
+                    RECORDING_STATUS_QUEUED,
+                    RECORDING_STATUS_PROCESSING,
+                    RECORDING_STATUS_STOPPING,
+                }
+            ),
             "tabs": _recording_inspector_tabs_context(
                 recording_id,
                 current_tab=safe_tab,

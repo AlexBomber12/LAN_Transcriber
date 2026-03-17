@@ -33,6 +33,7 @@ from lan_app.db import (
     create_recording,
     create_voice_profile,
     init_db,
+    set_speaker_assignment,
     upsert_calendar_match,
 )
 from lan_app.jobs import DuplicateRecordingJobError
@@ -753,7 +754,7 @@ def test_recordings_panel_context_clamps_offset_to_last_available_page(
 
     empty_shell = ui_routes._empty_inspector_shell_context()  # noqa: SLF001
     assert empty_shell["title"] == "No recording selected"
-    assert "compact review pane" in empty_shell["message"]
+    assert empty_shell["message"] == ""
 
     control_center_empty = ui_routes._control_center_empty_inspector_context()  # noqa: SLF001
     assert control_center_empty["title"] == "No recording selected"
@@ -786,6 +787,237 @@ def test_recordings_panel_context_clamps_offset_to_last_available_page(
     assert glossary_summary["entries"][0]["kind"] == "Person or speaker name"
     assert glossary_summary["entries"][1]["kind"] == "Project"
     assert glossary_summary["entries"][1]["source_label"] == "Always-on memory"
+
+
+def test_embedded_recording_details_context_prefers_confirmed_title_and_calendar_match(
+    tmp_path: Path,
+) -> None:
+    cfg = _cfg(tmp_path)
+    init_db(cfg)
+    recording = create_recording(
+        "rec-details-confirmed",
+        source="upload",
+        source_filename="meeting.wav",
+        captured_at="2026-03-15T10:30:00Z",
+        duration_sec=65.0,
+        status=RECORDING_STATUS_READY,
+        settings=cfg,
+    )
+    derived = cfg.recordings_root / "rec-details-confirmed" / "derived"
+    derived.mkdir(parents=True, exist_ok=True)
+    (derived / "summary.json").write_text(
+        json.dumps(
+            {
+                "topic": "Ignored summary title",
+                "summary_bullets": ["Reviewed blockers", "Aligned on next steps"],
+                "emotional_summary": "Focused and calm. Everyone aligned.",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (derived / "transcript.json").write_text(
+        json.dumps({"dominant_language": "en"}),
+        encoding="utf-8",
+    )
+    (derived / "speaker_turns.json").write_text(
+        json.dumps([{"speaker": "S1", "start": 0.0, "end": 1.2, "text": "hello"}]),
+        encoding="utf-8",
+    )
+    profile = create_voice_profile("Andrea", settings=cfg)
+    set_speaker_assignment(
+        recording_id="rec-details-confirmed",
+        diar_speaker_label="S1",
+        voice_profile_id=int(profile["id"]),
+        confidence=0.98,
+        settings=cfg,
+    )
+    upsert_calendar_match(
+        recording_id="rec-details-confirmed",
+        candidates=[{"event_id": "evt-1", "subject": "Quarterly roadmap"}],
+        selected_event_id="evt-1",
+        selected_confidence=0.96,
+        settings=cfg,
+    )
+
+    prepared = ui_routes._prepare_recording_for_display(  # noqa: SLF001
+        {**recording, "display_title": "Confirmed daily title"},
+        settings=cfg,
+    )
+    details = ui_routes._embedded_recording_details_context(  # noqa: SLF001
+        "rec-details-confirmed",
+        recording=prepared,
+        diagnostics={"primary_reason_text": ""},
+        current_tab="speakers",
+        stage_rows=[],
+        settings=cfg,
+    )
+
+    assert details["primary_title"] == "Confirmed daily title"
+    assert details["primary_title_source"] == "confirmed"
+    assert details["summary_lines"] == ["Reviewed blockers", "Aligned on next steps"]
+    assert details["tone"] == "Focused and calm."
+    assert details["speaker_rows"] == [
+        {
+            "primary_label": "Andrea",
+            "secondary_label": "S1",
+            "confidence_display": "98%",
+        }
+    ]
+    assert details["metadata_rows"][-1] == {
+        "label": "Matched meeting",
+        "value": "Quarterly roadmap",
+    }
+    assert details["metadata_rows"][4]["value"] == "Ready for export."
+    assert details["open_recording_page_href"] == "/recordings/rec-details-confirmed?tab=speakers"
+
+
+def test_embedded_recording_details_context_summary_and_job_id_fallbacks(
+    tmp_path: Path,
+) -> None:
+    cfg = _cfg(tmp_path)
+    init_db(cfg)
+
+    summary_recording = create_recording(
+        "rec-details-summary",
+        source="upload",
+        source_filename="summary.wav",
+        status=RECORDING_STATUS_READY,
+        settings=cfg,
+    )
+    summary_derived = cfg.recordings_root / "rec-details-summary" / "derived"
+    summary_derived.mkdir(parents=True, exist_ok=True)
+    (summary_derived / "summary.json").write_text(
+        json.dumps(
+            {
+                "topic": "Summary fallback title",
+                "summary": "First sentence. Second sentence. Third sentence.",
+            }
+        ),
+        encoding="utf-8",
+    )
+    summary_prepared = ui_routes._prepare_recording_for_display(  # noqa: SLF001
+        summary_recording,
+        settings=cfg,
+    )
+    summary_details = ui_routes._embedded_recording_details_context(  # noqa: SLF001
+        "rec-details-summary",
+        recording=summary_prepared,
+        diagnostics={"primary_reason_text": ""},
+        current_tab="overview",
+        stage_rows=[],
+        settings=cfg,
+    )
+
+    assert summary_details["primary_title"] == "Summary fallback title"
+    assert summary_details["primary_title_source"] == "summary_topic"
+    assert summary_details["summary_lines"] == [
+        "First sentence.",
+        "Second sentence.",
+        "Third sentence.",
+    ]
+    assert summary_details["tone"] == "Not available yet"
+    assert summary_details["speaker_rows"] == []
+    assert all(
+        row["label"] != "Matched meeting" for row in summary_details["metadata_rows"]
+    )
+
+    job_recording = create_recording(
+        "rec-details-job",
+        source="upload",
+        source_filename="fallback.wav",
+        status=RECORDING_STATUS_PROCESSING,
+        settings=cfg,
+    )
+    job_prepared = ui_routes._prepare_recording_for_display(  # noqa: SLF001
+        job_recording,
+        settings=cfg,
+    )
+    job_details = ui_routes._embedded_recording_details_context(  # noqa: SLF001
+        "rec-details-job",
+        recording=job_prepared,
+        diagnostics={"primary_reason_text": "Check speakers"},
+        current_tab="export",
+        stage_rows=[],
+        settings=cfg,
+    )
+
+    assert job_details["primary_title"] == "rec-details-job"
+    assert job_details["primary_title_source"] == "job_id"
+    assert job_details["filename"] == "fallback.wav"
+    assert job_details["tone"] == "Not available yet"
+    assert job_details["summary_lines"] == []
+    assert job_details["metadata_rows"][4]["value"] == "Check speakers"
+    assert job_details["open_recording_page_href"] == "/recordings/rec-details-job?tab=export"
+
+
+def test_embedded_recording_details_context_handles_summary_fallback_and_bad_confidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(
+        ui_routes,
+        "_summary_context",
+        lambda *_a, **_k: {
+            "summary_text": "-",
+            "summary_bullets": [],
+            "emotional_summary": "",
+        },
+    )
+    monkeypatch.setattr(
+        ui_routes,
+        "_speakers_tab_context",
+        lambda *_a, **_k: {
+            "speaker_rows": [
+                {
+                    "speaker": "S1",
+                    "voice_profile_name": "Andrea",
+                    "local_display_name": "",
+                    "confidence": "bad",
+                }
+            ]
+        },
+    )
+    monkeypatch.setattr(
+        ui_routes,
+        "_control_center_meeting_title_context",
+        lambda *_a, **_k: {
+            "meeting_title": "edge.wav",
+            "meeting_title_source": "filename",
+        },
+    )
+    monkeypatch.setattr(
+        ui_routes,
+        "_recording_dominant_language_display",
+        lambda *_a, **_k: "Unknown",
+    )
+
+    details = ui_routes._embedded_recording_details_context(  # noqa: SLF001
+        "rec-details-edge",
+        recording={
+            "id": "rec-details-edge",
+            "status": RECORDING_STATUS_READY,
+            "captured_at_display": "—",
+            "duration_display": "—",
+            "source_filename": "edge.wav",
+            "review_reason_text_display": "",
+            "status_reason_text_display": "",
+        },
+        diagnostics={"primary_reason_text": ""},
+        current_tab="overview",
+        stage_rows=[],
+        settings=cfg,
+    )
+
+    assert details["primary_title"] == "rec-details-edge"
+    assert details["summary_lines"] == ["-"]
+    assert details["speaker_rows"] == [
+        {
+            "primary_label": "Andrea",
+            "secondary_label": "S1",
+            "confidence_display": "",
+        }
+    ]
 
 
 def test_compact_inspector_helpers_cover_next_action_branches(tmp_path: Path) -> None:

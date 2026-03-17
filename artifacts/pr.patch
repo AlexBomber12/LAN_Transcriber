@@ -1,127 +1,1008 @@
+diff --git a/lan_app/templates/base.html b/lan_app/templates/base.html
+index 5ed84ca..fc8d017 100644
+--- a/lan_app/templates/base.html
++++ b/lan_app/templates/base.html
+@@ -1232,6 +1232,102 @@ textarea:focus{
+   border:1px solid #dbe5f6;
+   background:#f7faff;
+ }
++.compact-recording-details{
++  display:grid;
++}
++.compact-recording-details-card{
++  gap:18px;
++}
++.compact-recording-details-head{
++  display:grid;
++  gap:14px;
++}
++.compact-recording-details-eyebrow,
++.compact-recording-details-section-label{
++  color:var(--muted);
++  font-size:11px;
++  font-weight:700;
++  letter-spacing:.08em;
++  text-transform:uppercase;
++}
++.compact-recording-details-headbar{
++  display:flex;
++  justify-content:space-between;
++  gap:16px;
++  align-items:flex-start;
++  flex-wrap:wrap;
++}
++.compact-recording-details-title-stack{
++  display:grid;
++  gap:6px;
++  min-width:0;
++}
++.compact-recording-details-primary{
++  max-width:24ch;
++  font-size:1.08rem;
++  line-height:1.2;
++  overflow-wrap:anywhere;
++}
++.compact-recording-details-secondary,
++.compact-recording-details-filename,
++.compact-recording-speaker-secondary{
++  color:var(--muted);
++  font-size:13px;
++}
++.compact-recording-details-section{
++  display:grid;
++  gap:12px;
++  padding-top:14px;
++  border-top:1px solid #edf2f7;
++}
++.compact-recording-details-list,
++.compact-recording-summary-lines{
++  display:grid;
++  gap:10px;
++}
++.compact-recording-details-row{
++  display:flex;
++  justify-content:space-between;
++  gap:14px;
++  align-items:flex-start;
++  padding:12px 14px;
++  border:1px solid var(--line);
++  border-radius:16px;
++  background:var(--panel-soft);
++}
++.compact-recording-details-row-speaker{
++  align-items:center;
++}
++.compact-recording-details-row-label{
++  color:var(--muted);
++  font-size:11px;
++  font-weight:700;
++  letter-spacing:.06em;
++  text-transform:uppercase;
++}
++.compact-recording-details-row-value{
++  color:var(--text);
++  text-align:right;
++}
++.compact-recording-speaker-main{
++  display:grid;
++  gap:4px;
++  min-width:0;
++}
++.compact-recording-speaker-confidence{
++  color:var(--muted);
++  font-size:12px;
++  font-weight:700;
++  white-space:nowrap;
++}
++.compact-recording-details-copy{
++  color:var(--text);
++  font-size:13px;
++  line-height:1.5;
++}
++.compact-recording-details-open{
++  width:100%;
++}
+ .tab-content-full{
+   border-radius:24px;
+   padding:22px;
+@@ -1947,6 +2043,10 @@ textarea:focus{
+   .form-row label{min-width:0}
+   .inspector-heading{flex-direction:column}
+   .tabs{overflow:auto;flex-wrap:nowrap;padding-bottom:10px}
++  .compact-recording-details-headbar,
++  .compact-recording-details-row,
++  .compact-recording-details-row-speaker{flex-direction:column}
++  .compact-recording-details-row-value{text-align:left}
+   .speaker-review-shell-full .speaker-review-shell-body,
+   .speaker-review-shell-compact .speaker-action-stack,
+   .speaker-context-grid,
+diff --git a/lan_app/templates/partials/control_center/inspector_pane.html b/lan_app/templates/partials/control_center/inspector_pane.html
+index 9e6de86..1241ec6 100644
+--- a/lan_app/templates/partials/control_center/inspector_pane.html
++++ b/lan_app/templates/partials/control_center/inspector_pane.html
+@@ -2,12 +2,12 @@
+   id="control-center-inspector-pane"
+   class="control-center-pane control-center-inspector-pane"
+   hx-get="{{ control_center_state.inspector_pane_url }}"
+-  hx-trigger="refresh-control-center-inspector from:body"
++  hx-trigger="{% if recording_inspector and recording_inspector.auto_refresh %}refresh-control-center-inspector from:body, every 2s{% else %}refresh-control-center-inspector from:body{% endif %}"
+   hx-target="this"
+   hx-swap="outerHTML"
+ >
+   {% if recording_inspector %}
+-  {% include "partials/recording_inspector.html" %}
++  {% include "partials/control_center/recording_details_card.html" %}
+   {% else %}
+   {% set empty_inspector = control_center_empty_inspector %}
+   {% include "partials/control_center/inspector_empty.html" %}
 diff --git a/lan_app/ui_routes.py b/lan_app/ui_routes.py
-index 53a5daf..07b0f25 100644
+index 07b0f25..cdf0284 100644
 --- a/lan_app/ui_routes.py
 +++ b/lan_app/ui_routes.py
-@@ -397,14 +397,30 @@ def _control_center_meeting_title_context(
-     if not recording_id:
-         return {"meeting_title": fallback_title, "meeting_title_source": "filename"}
+@@ -9,6 +9,7 @@ import asyncio
+ from datetime import date, datetime, time, timedelta, timezone
+ import json
+ import logging
++import re
+ import sqlite3
+ from pathlib import Path
+ from typing import Any
+@@ -440,6 +441,20 @@ def _control_center_meeting_title_context(
+     return {"meeting_title": fallback_title, "meeting_title_source": "filename"}
  
--    selected_title, _attendees = calendar_summary_context(recording_id, settings=settings)
--    if selected_title:
--        return {
--            "meeting_title": selected_title,
--            "meeting_title_source": "calendar_selected",
--        }
-+    match_row = get_calendar_match(recording_id, settings=settings) or {}
-+    selected_event_id = str(match_row.get("selected_event_id") or "").strip()
-+    candidates_payload = match_row.get("candidates_json")
-+    candidates = (
-+        [row for row in candidates_payload if isinstance(row, dict)]
-+        if isinstance(candidates_payload, list)
-+        else []
-+    )
-+
-+    if selected_event_id:
-+        for candidate in candidates:
-+            if str(candidate.get("event_id") or "").strip() != selected_event_id:
-+                continue
-+            selected_title = str(
-+                candidate.get("subject") or candidate.get("summary") or ""
-+            ).strip()
-+            if selected_title:
-+                return {
-+                    "meeting_title": selected_title,
-+                    "meeting_title_source": "calendar_selected",
-+                }
-+            break
  
--    for candidate in calendar_match_candidates(recording_id, settings=settings):
-+    for candidate in candidates:
-         candidate_title = str(
-             candidate.get("subject") or candidate.get("summary") or ""
-         ).strip()
-diff --git a/tests/test_cov_lan_app_ui_routes.py b/tests/test_cov_lan_app_ui_routes.py
-index 4aef5cf..4932bea 100644
---- a/tests/test_cov_lan_app_ui_routes.py
-+++ b/tests/test_cov_lan_app_ui_routes.py
-@@ -1308,6 +1308,55 @@ def test_control_center_worklist_title_and_progress_helpers(
-         encoding="utf-8",
-     )
- 
-+    create_recording(
-+        "rec-title-selected-missing",
-+        source="upload",
-+        source_filename="selected-missing.wav",
-+        status=RECORDING_STATUS_READY,
-+        settings=cfg,
-+    )
-+    derived_selected_missing = (
-+        cfg.recordings_root / "rec-title-selected-missing" / "derived"
-+    )
-+    derived_selected_missing.mkdir(parents=True, exist_ok=True)
-+    (derived_selected_missing / "summary.json").write_text(
-+        json.dumps({"topic": "Selected match missing fallback"}),
-+        encoding="utf-8",
-+    )
-+    upsert_calendar_match(
-+        recording_id="rec-title-selected-missing",
-+        candidates=[
-+            {"event_id": "evt-other", "subject": "   "},
-+        ],
-+        selected_event_id="evt-selected",
-+        selected_confidence=0.82,
-+        settings=cfg,
-+    )
++def _embedded_recording_confirmed_title(recording: dict[str, Any]) -> str:
++    for key in (
++        "display_title",
++        "title",
++        "meeting_title",
++        "resolved_title",
++        "confirmed_title",
++    ):
++        title = str(recording.get(key) or "").strip()
++        if title:
++            return title
++    return ""
 +
-+    create_recording(
-+        "rec-title-selected-blank",
-+        source="upload",
-+        source_filename="selected-blank.wav",
-+        status=RECORDING_STATUS_READY,
-+        settings=cfg,
-+    )
-+    derived_selected_blank = cfg.recordings_root / "rec-title-selected-blank" / "derived"
-+    derived_selected_blank.mkdir(parents=True, exist_ok=True)
-+    (derived_selected_blank / "summary.json").write_text(
-+        json.dumps({"topic": "Selected blank fallback"}),
-+        encoding="utf-8",
-+    )
-+    upsert_calendar_match(
-+        recording_id="rec-title-selected-blank",
-+        candidates=[
-+            {"event_id": "evt-other", "subject": "   "},
-+            {"event_id": "evt-selected", "subject": "   ", "summary": "   "},
-+        ],
-+        selected_event_id="evt-selected",
-+        selected_confidence=0.77,
-+        settings=cfg,
-+    )
 +
-     candidate_title = ui_routes._control_center_meeting_title_context(  # noqa: SLF001
-         {"id": "rec-title-candidate", "source_filename": "candidate.wav"},
-         settings=cfg,
-@@ -1326,6 +1375,24 @@ def test_control_center_worklist_title_and_progress_helpers(
-         "meeting_title_source": "summary_topic",
+ def _control_center_progress_context(recording: dict[str, Any]) -> dict[str, Any]:
+     status = str(recording.get("status") or "").strip()
+     raw_progress = recording.get("pipeline_progress")
+@@ -3999,6 +4014,13 @@ def _page_notice_context(message: str) -> dict[str, str]:
      }
  
-+    selected_missing_title = ui_routes._control_center_meeting_title_context(  # noqa: SLF001
-+        {"id": "rec-title-selected-missing", "source_filename": "selected-missing.wav"},
-+        settings=cfg,
-+    )
-+    assert selected_missing_title == {
-+        "meeting_title": "Selected match missing fallback",
-+        "meeting_title_source": "summary_topic",
+ 
++def _compact_recording_value(value: object) -> str:
++    text = str(value or "").strip()
++    if not text or text == "—":
++        return "Not available yet"
++    return text
++
++
+ def _recording_dominant_language_display(
+     recording_id: str,
+     *,
+@@ -4255,7 +4277,149 @@ def _selected_recording_summary_shell_context(
+ def _empty_inspector_shell_context() -> dict[str, str]:
+     return {
+         "title": "No recording selected",
+-        "message": "Choose a row from the worklist to open a compact review pane here.",
++        "message": "",
 +    }
 +
-+    selected_blank_title = ui_routes._control_center_meeting_title_context(  # noqa: SLF001
-+        {"id": "rec-title-selected-blank", "source_filename": "selected-blank.wav"},
++
++def _embedded_recording_details_context(
++    recording_id: str,
++    *,
++    recording: dict[str, Any],
++    diagnostics: dict[str, Any],
++    current_tab: str,
++    stage_rows: list[dict[str, Any]],
++    settings: AppSettings,
++) -> dict[str, Any]:
++    title_context = _control_center_meeting_title_context(recording, settings=settings)
++    title_source = str(title_context.get("meeting_title_source") or "").strip()
++    calendar_title = (
++        str(title_context.get("meeting_title") or "").strip()
++        if title_source in {"calendar_selected", "calendar_candidate"}
++        else ""
++    )
++    primary_title = _embedded_recording_confirmed_title(recording)
++    primary_title_source = "confirmed"
++    if not primary_title:
++        candidate_title = str(title_context.get("meeting_title") or "").strip()
++        if title_source in {"calendar_selected", "calendar_candidate", "summary_topic"}:
++            primary_title = candidate_title
++            primary_title_source = title_source
++        else:
++            primary_title = str(recording.get("id") or "").strip() or "Recording"
++            primary_title_source = "job_id"
++
++    summary = _summary_context(recording_id, settings)
++    summary_lines = [
++        str(line).strip()
++        for line in (summary.get("summary_bullets") or [])
++        if str(line).strip()
++    ][:4]
++    summary_text = str(summary.get("summary_text") or "").strip()
++    if summary_text and (not summary_lines or summary_lines == [summary_text]):
++        summary_lines = [
++            chunk.strip(" -")
++            for chunk in re.split(r"(?<=[.!?])\s+", summary_text)
++            if chunk.strip(" -")
++        ][:4]
++        if not summary_lines:
++            summary_lines = [summary_text]
++
++    tone_text = str(summary.get("emotional_summary") or "").strip()
++    tone_phrase = ""
++    if tone_text:
++        tone_phrase = (
++            re.split(r"(?<=[.!?])\s+", tone_text, maxsplit=1)[0].strip() or tone_text
++        )
++
++    speakers = _speakers_tab_context(
++        recording_id,
++        settings,
++        recording=recording,
++        stage_rows=stage_rows,
++    )
++    speaker_rows = []
++    for row in speakers.get("speaker_rows") or []:
++        diarized_label = str(row.get("speaker") or "").strip() or "Speaker"
++        resolved_name = str(
++            row.get("voice_profile_name") or row.get("local_display_name") or ""
++        ).strip()
++        confidence_display = ""
++        if resolved_name:
++            try:
++                confidence_value = float(row.get("confidence"))
++            except (TypeError, ValueError):
++                confidence_value = 0.0
++            if confidence_value > 0:
++                confidence_display = (
++                    f"{round(max(0.0, min(confidence_value, 1.0)) * 100):.0f}%"
++                )
++        speaker_rows.append(
++            {
++                "primary_label": resolved_name or diarized_label,
++                "secondary_label": diarized_label if resolved_name else "Unknown",
++                "confidence_display": confidence_display,
++            }
++        )
++
++    dominant_language = _recording_dominant_language_display(
++        recording_id,
++        recording=recording,
++        settings=settings,
++    )
++    if dominant_language == "Unknown":
++        dominant_language = "Not available yet"
++    review_blocker = str(
++        diagnostics.get("primary_reason_text")
++        or recording.get("review_reason_text_display")
++        or recording.get("status_reason_text_display")
++        or _recording_worklist_hint(recording)
++        or ""
++    ).strip()
++    metadata_rows = [
++        {
++            "label": "Status",
++            "value": _compact_recording_value(recording.get("status") or "Unknown"),
++        },
++        {
++            "label": "Captured at",
++            "value": _compact_recording_value(recording.get("captured_at_display")),
++        },
++        {
++            "label": "Duration",
++            "value": _compact_recording_value(recording.get("duration_display")),
++        },
++        {
++            "label": "Language",
++            "value": _compact_recording_value(dominant_language),
++        },
++        {
++            "label": "Review blocker / Next action",
++            "value": _compact_recording_value(review_blocker),
++        },
++    ]
++    if calendar_title and calendar_title != primary_title:
++        metadata_rows.append(
++            {
++                "label": "Matched meeting",
++                "value": calendar_title,
++            }
++        )
++
++    return {
++        "card_title": "Recording Details",
++        "primary_title": primary_title,
++        "primary_title_source": primary_title_source,
++        "job_id": str(recording.get("id") or "").strip() or "Recording",
++        "filename": _compact_recording_value(recording.get("source_filename")),
++        "download_zip_href": (
++            f"/ui/recordings/{quote(recording_id, safe='')}/export.zip"
++        ),
++        "metadata_rows": metadata_rows,
++        "speaker_rows": speaker_rows,
++        "tone": tone_phrase or "Not available yet",
++        "summary_lines": summary_lines,
++        "summary_placeholder": "Not available yet",
++        "open_recording_page_href": _recording_detail_path(recording_id, tab=current_tab),
+     }
+ 
+ 
+@@ -4293,6 +4457,7 @@ def _recording_inspector_context(
+     project: dict[str, Any] | None = None
+     glossary: dict[str, Any] | None = None
+     compact_overview: dict[str, Any] | None = None
++    embedded_recording_details: dict[str, Any] | None = None
+     overview: dict[str, Any] | None = None
+     transcript: dict[str, Any] | None = None
+     export_text = ""
+@@ -4307,6 +4472,15 @@ def _recording_inspector_context(
+     )
+     if diagnostics["primary_reason_text"]:
+         rec["status_reason_text_display"] = diagnostics["primary_reason_text"]
++    if is_embedded:
++        embedded_recording_details = _embedded_recording_details_context(
++            recording_id,
++            recording=rec,
++            diagnostics=diagnostics,
++            current_tab=safe_tab,
++            stage_rows=stage_rows,
++            settings=_settings,
++        )
+     if not is_embedded and safe_tab == "diagnostics":
+         calendar = _calendar_tab_context(recording_id, _settings)
+         if calendar_error.strip():
+@@ -4409,6 +4583,7 @@ def _recording_inspector_context(
+         "project": project,
+         "glossary": glossary,
+         "compact_overview": compact_overview,
++        "embedded_recording_details": embedded_recording_details,
+         "overview": overview,
+         "transcript": transcript,
+         "export_text": export_text,
+@@ -4417,6 +4592,15 @@ def _recording_inspector_context(
+         "recording_inspector": {
+             "mode": inspector_mode,
+             "embedded": is_embedded,
++            "auto_refresh": bool(
++                is_embedded
++                and str(rec.get("status") or "").strip()
++                in {
++                    RECORDING_STATUS_QUEUED,
++                    RECORDING_STATUS_PROCESSING,
++                    RECORDING_STATUS_STOPPING,
++                }
++            ),
+             "tabs": _recording_inspector_tabs_context(
+                 recording_id,
+                 current_tab=safe_tab,
+diff --git a/tasks/QUEUE.md b/tasks/QUEUE.md
+index 837f329..cf77dec 100644
+--- a/tasks/QUEUE.md
++++ b/tasks/QUEUE.md
+@@ -620,7 +620,7 @@ Queue (in order)
+ - Depends on: PR-OPS-SYSTEM-BAR-02
+ 
+ 124) PR-UI-STITCH-RECORDING-DETAILS-01: Replace the compact right pane with a single Recording Details panel and remove embedded tabs
+-- Status: TODO
++- Status: DOING
+ - Tasks file: tasks/PR-UI-STITCH-RECORDING-DETAILS-01.md
+ - Depends on: PR-UI-STITCH-WORKLIST-02
+ 
+diff --git a/tests/test_cov_lan_app_ui_routes.py b/tests/test_cov_lan_app_ui_routes.py
+index 4932bea..bbc16a6 100644
+--- a/tests/test_cov_lan_app_ui_routes.py
++++ b/tests/test_cov_lan_app_ui_routes.py
+@@ -33,6 +33,7 @@ from lan_app.db import (
+     create_recording,
+     create_voice_profile,
+     init_db,
++    set_speaker_assignment,
+     upsert_calendar_match,
+ )
+ from lan_app.jobs import DuplicateRecordingJobError
+@@ -753,7 +754,7 @@ def test_recordings_panel_context_clamps_offset_to_last_available_page(
+ 
+     empty_shell = ui_routes._empty_inspector_shell_context()  # noqa: SLF001
+     assert empty_shell["title"] == "No recording selected"
+-    assert "compact review pane" in empty_shell["message"]
++    assert empty_shell["message"] == ""
+ 
+     control_center_empty = ui_routes._control_center_empty_inspector_context()  # noqa: SLF001
+     assert control_center_empty["title"] == "No recording selected"
+@@ -788,6 +789,237 @@ def test_recordings_panel_context_clamps_offset_to_last_available_page(
+     assert glossary_summary["entries"][1]["source_label"] == "Always-on memory"
+ 
+ 
++def test_embedded_recording_details_context_prefers_confirmed_title_and_calendar_match(
++    tmp_path: Path,
++) -> None:
++    cfg = _cfg(tmp_path)
++    init_db(cfg)
++    recording = create_recording(
++        "rec-details-confirmed",
++        source="upload",
++        source_filename="meeting.wav",
++        captured_at="2026-03-15T10:30:00Z",
++        duration_sec=65.0,
++        status=RECORDING_STATUS_READY,
 +        settings=cfg,
 +    )
-+    assert selected_blank_title == {
-+        "meeting_title": "Selected blank fallback",
-+        "meeting_title_source": "summary_topic",
-+    }
++    derived = cfg.recordings_root / "rec-details-confirmed" / "derived"
++    derived.mkdir(parents=True, exist_ok=True)
++    (derived / "summary.json").write_text(
++        json.dumps(
++            {
++                "topic": "Ignored summary title",
++                "summary_bullets": ["Reviewed blockers", "Aligned on next steps"],
++                "emotional_summary": "Focused and calm. Everyone aligned.",
++            }
++        ),
++        encoding="utf-8",
++    )
++    (derived / "transcript.json").write_text(
++        json.dumps({"dominant_language": "en"}),
++        encoding="utf-8",
++    )
++    (derived / "speaker_turns.json").write_text(
++        json.dumps([{"speaker": "S1", "start": 0.0, "end": 1.2, "text": "hello"}]),
++        encoding="utf-8",
++    )
++    profile = create_voice_profile("Andrea", settings=cfg)
++    set_speaker_assignment(
++        recording_id="rec-details-confirmed",
++        diar_speaker_label="S1",
++        voice_profile_id=int(profile["id"]),
++        confidence=0.98,
++        settings=cfg,
++    )
++    upsert_calendar_match(
++        recording_id="rec-details-confirmed",
++        candidates=[{"event_id": "evt-1", "subject": "Quarterly roadmap"}],
++        selected_event_id="evt-1",
++        selected_confidence=0.96,
++        settings=cfg,
++    )
 +
-     fallback_title = ui_routes._control_center_meeting_title_context(  # noqa: SLF001
-         {"id": "rec-title-fallback", "source_filename": "fallback.wav"},
-         settings=cfg,
++    prepared = ui_routes._prepare_recording_for_display(  # noqa: SLF001
++        {**recording, "display_title": "Confirmed daily title"},
++        settings=cfg,
++    )
++    details = ui_routes._embedded_recording_details_context(  # noqa: SLF001
++        "rec-details-confirmed",
++        recording=prepared,
++        diagnostics={"primary_reason_text": ""},
++        current_tab="speakers",
++        stage_rows=[],
++        settings=cfg,
++    )
++
++    assert details["primary_title"] == "Confirmed daily title"
++    assert details["primary_title_source"] == "confirmed"
++    assert details["summary_lines"] == ["Reviewed blockers", "Aligned on next steps"]
++    assert details["tone"] == "Focused and calm."
++    assert details["speaker_rows"] == [
++        {
++            "primary_label": "Andrea",
++            "secondary_label": "S1",
++            "confidence_display": "98%",
++        }
++    ]
++    assert details["metadata_rows"][-1] == {
++        "label": "Matched meeting",
++        "value": "Quarterly roadmap",
++    }
++    assert details["metadata_rows"][4]["value"] == "Ready for export."
++    assert details["open_recording_page_href"] == "/recordings/rec-details-confirmed?tab=speakers"
++
++
++def test_embedded_recording_details_context_summary_and_job_id_fallbacks(
++    tmp_path: Path,
++) -> None:
++    cfg = _cfg(tmp_path)
++    init_db(cfg)
++
++    summary_recording = create_recording(
++        "rec-details-summary",
++        source="upload",
++        source_filename="summary.wav",
++        status=RECORDING_STATUS_READY,
++        settings=cfg,
++    )
++    summary_derived = cfg.recordings_root / "rec-details-summary" / "derived"
++    summary_derived.mkdir(parents=True, exist_ok=True)
++    (summary_derived / "summary.json").write_text(
++        json.dumps(
++            {
++                "topic": "Summary fallback title",
++                "summary": "First sentence. Second sentence. Third sentence.",
++            }
++        ),
++        encoding="utf-8",
++    )
++    summary_prepared = ui_routes._prepare_recording_for_display(  # noqa: SLF001
++        summary_recording,
++        settings=cfg,
++    )
++    summary_details = ui_routes._embedded_recording_details_context(  # noqa: SLF001
++        "rec-details-summary",
++        recording=summary_prepared,
++        diagnostics={"primary_reason_text": ""},
++        current_tab="overview",
++        stage_rows=[],
++        settings=cfg,
++    )
++
++    assert summary_details["primary_title"] == "Summary fallback title"
++    assert summary_details["primary_title_source"] == "summary_topic"
++    assert summary_details["summary_lines"] == [
++        "First sentence.",
++        "Second sentence.",
++        "Third sentence.",
++    ]
++    assert summary_details["tone"] == "Not available yet"
++    assert summary_details["speaker_rows"] == []
++    assert all(
++        row["label"] != "Matched meeting" for row in summary_details["metadata_rows"]
++    )
++
++    job_recording = create_recording(
++        "rec-details-job",
++        source="upload",
++        source_filename="fallback.wav",
++        status=RECORDING_STATUS_PROCESSING,
++        settings=cfg,
++    )
++    job_prepared = ui_routes._prepare_recording_for_display(  # noqa: SLF001
++        job_recording,
++        settings=cfg,
++    )
++    job_details = ui_routes._embedded_recording_details_context(  # noqa: SLF001
++        "rec-details-job",
++        recording=job_prepared,
++        diagnostics={"primary_reason_text": "Check speakers"},
++        current_tab="export",
++        stage_rows=[],
++        settings=cfg,
++    )
++
++    assert job_details["primary_title"] == "rec-details-job"
++    assert job_details["primary_title_source"] == "job_id"
++    assert job_details["filename"] == "fallback.wav"
++    assert job_details["tone"] == "Not available yet"
++    assert job_details["summary_lines"] == []
++    assert job_details["metadata_rows"][4]["value"] == "Check speakers"
++    assert job_details["open_recording_page_href"] == "/recordings/rec-details-job?tab=export"
++
++
++def test_embedded_recording_details_context_handles_summary_fallback_and_bad_confidence(
++    tmp_path: Path,
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    cfg = _cfg(tmp_path)
++    monkeypatch.setattr(
++        ui_routes,
++        "_summary_context",
++        lambda *_a, **_k: {
++            "summary_text": "-",
++            "summary_bullets": [],
++            "emotional_summary": "",
++        },
++    )
++    monkeypatch.setattr(
++        ui_routes,
++        "_speakers_tab_context",
++        lambda *_a, **_k: {
++            "speaker_rows": [
++                {
++                    "speaker": "S1",
++                    "voice_profile_name": "Andrea",
++                    "local_display_name": "",
++                    "confidence": "bad",
++                }
++            ]
++        },
++    )
++    monkeypatch.setattr(
++        ui_routes,
++        "_control_center_meeting_title_context",
++        lambda *_a, **_k: {
++            "meeting_title": "edge.wav",
++            "meeting_title_source": "filename",
++        },
++    )
++    monkeypatch.setattr(
++        ui_routes,
++        "_recording_dominant_language_display",
++        lambda *_a, **_k: "Unknown",
++    )
++
++    details = ui_routes._embedded_recording_details_context(  # noqa: SLF001
++        "rec-details-edge",
++        recording={
++            "id": "rec-details-edge",
++            "status": RECORDING_STATUS_READY,
++            "captured_at_display": "—",
++            "duration_display": "—",
++            "source_filename": "edge.wav",
++            "review_reason_text_display": "",
++            "status_reason_text_display": "",
++        },
++        diagnostics={"primary_reason_text": ""},
++        current_tab="overview",
++        stage_rows=[],
++        settings=cfg,
++    )
++
++    assert details["primary_title"] == "rec-details-edge"
++    assert details["summary_lines"] == ["-"]
++    assert details["speaker_rows"] == [
++        {
++            "primary_label": "Andrea",
++            "secondary_label": "S1",
++            "confidence_display": "",
++        }
++    ]
++
++
+ def test_compact_inspector_helpers_cover_next_action_branches(tmp_path: Path) -> None:
+     cfg = _cfg(tmp_path)
+     control_center_state = {
+diff --git a/tests/test_ui_routes.py b/tests/test_ui_routes.py
+index b3c648d..35b2cb0 100644
+--- a/tests/test_ui_routes.py
++++ b/tests/test_ui_routes.py
+@@ -420,7 +420,7 @@ def test_control_center_query_state_and_direct_routes(seeded_client):
+     assert 'onclick="activateControlCenterRecordingRow(this, event)"' in r.text
+     assert 'data-testid="control-center-select-recording"' not in r.text
+     assert "/recordings/rec-ui-1?tab=speakers" in r.text
+-    assert "Open full-page inspector" in r.text
++    assert "Open Recording Page" in r.text
+     assert "refresh-control-center-header" not in r.text
+     assert "refresh-control-center-system-bar" in r.text
+     assert "syncControlCenterShellRefreshUrlsFromPanel" in r.text
+@@ -546,7 +546,8 @@ def test_control_center_system_bar_renders_degraded_cpu_fallback(
+     )
+     assert inspector.status_code == 200
+     assert "rec-ui-1" in inspector.text
+-    assert "Speakers" in inspector.text
++    assert "Recording Details" in inspector.text
++    assert "SPEAKERS" in inspector.text
+     assert "<nav" not in inspector.text
+ 
+     empty_inspector = seeded_client.get("/ui/control-center/inspector-pane")
+@@ -560,38 +561,57 @@ def test_control_center_selected_recording_renders_embedded_inspector_actions(
+     r = seeded_client.get("/?selected=rec-ui-1&status=Ready&q=meeting&tab=overview")
+     assert r.status_code == 200
+     assert 'id="control-center-inspector-pane"' in r.text
+-    assert 'class="inspector-hero embedded"' in r.text
+-    assert "Requeue" in r.text
++    assert "Recording Details" in r.text
++    assert 'data-testid="recording-inspector-tab-overview"' not in r.text
+     assert "Download ZIP" in r.text
+-    assert "Open full-page inspector" in r.text
++    assert "Open Recording Page" in r.text
+     assert "/ui/recordings/rec-ui-1/inspector?status=Ready&amp;q=meeting" in r.text
+ 
+ 
+-def test_control_center_embedded_inspector_tab_links_preserve_shell_state(
++def test_control_center_processing_recording_polls_embedded_details_card(
++    tmp_path: Path,
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    cfg = _cfg(tmp_path)
++    monkeypatch.setattr(api, "_settings", cfg)
++    monkeypatch.setattr(ui_routes, "_settings", cfg)
++    monkeypatch.setattr(
++        ui_routes,
++        "collect_control_center_runtime_status",
++        lambda _settings: _stub_runtime_status(),
++    )
++    init_db(cfg)
++    create_recording(
++        "rec-ui-processing-1",
++        source="upload",
++        source_filename="processing.wav",
++        status=RECORDING_STATUS_PROCESSING,
++        settings=cfg,
++    )
++
++    client = TestClient(api.app, follow_redirects=True)
++    inspector = client.get("/ui/control-center/inspector-pane?selected=rec-ui-processing-1")
++    assert inspector.status_code == 200
++    assert "Recording Details" in inspector.text
++    assert "every 2s" in inspector.text
++
++
++def test_control_center_embedded_inspector_open_page_link_preserves_shell_state(
+     seeded_client,
+ ):
+     inspector = seeded_client.get(
+         "/ui/recordings/rec-ui-1/inspector?status=Ready&q=meeting&tab=speakers"
+     )
+     assert inspector.status_code == 200
+-    assert (
+-        'hx-get="/ui/recordings/rec-ui-1/inspector?status=Ready&amp;q=meeting"'
+-        in inspector.text
+-    )
+-    assert (
+-        'hx-get="/ui/recordings/rec-ui-1/inspector?status=Ready&amp;q=meeting&amp;tab=summary"'
+-        in inspector.text
+-    )
+-    assert (
+-        'hx-push-url="/?selected=rec-ui-1&amp;status=Ready&amp;q=meeting&amp;tab=summary"'
+-        in inspector.text
+-    )
+-    assert (
+-        'href="/?selected=rec-ui-1&amp;status=Ready&amp;q=meeting&amp;tab=speakers"'
+-        in inspector.text
++    assert "Recording Details" in inspector.text
++    assert 'data-testid="recording-inspector-tab-overview"' not in inspector.text
++    assert 'href="/recordings/rec-ui-1?tab=speakers"' in inspector.text
++
++    summary_inspector = seeded_client.get(
++        "/ui/recordings/rec-ui-1/inspector?status=Ready&q=meeting&tab=summary"
+     )
+-    assert 'data-testid="recording-inspector-tab-export"' in inspector.text
+-    assert 'data-testid="recording-inspector-tab-language"' not in inspector.text
++    assert summary_inspector.status_code == 200
++    assert 'href="/recordings/rec-ui-1?tab=summary"' in summary_inspector.text
+ 
+ 
+ def test_control_center_embedded_inspector_overview_stays_compact(seeded_client):
+@@ -599,10 +619,14 @@ def test_control_center_embedded_inspector_overview_stays_compact(seeded_client)
+         "/?selected=rec-ui-1&status=Ready&q=meeting&tab=overview"
+     )
+     assert overview.status_code == 200
+-    assert ">Stage<" in overview.text
+-    assert ">Blocker<" in overview.text
+-    assert ">Next action<" in overview.text
+-    assert "Key metadata" in overview.text
++    assert "Recording Details" in overview.text
++    assert "KEY METADATA" in overview.text
++    assert "SPEAKERS" in overview.text
++    assert "TONE" in overview.text
++    assert "SUMMARY" in overview.text
++    assert ">Stage<" not in overview.text
++    assert ">Blocker<" not in overview.text
++    assert ">Next action<" not in overview.text
+     assert "Pipeline Stages" not in overview.text
+     assert "Diagnostics" not in overview.text
+     assert "Save as correction" not in overview.text
+@@ -613,10 +637,10 @@ def test_control_center_embedded_inspector_overview_stays_compact(seeded_client)
+     )
+     assert speakers.status_code == 200
+     assert "Open canonical speakers page" not in speakers.text
+-    assert "No speaker turns available yet" in speakers.text
++    assert "Not available yet" in speakers.text
+ 
+ 
+-def test_control_center_embedded_summary_and_export_tabs_render_compact_content(
++def test_control_center_embedded_details_card_uses_summary_artifacts(
+     tmp_path, monkeypatch
+ ):
+     cfg = _cfg(tmp_path)
+@@ -662,16 +686,22 @@ def test_control_center_embedded_summary_and_export_tabs_render_compact_content(
+     client = TestClient(api.app, follow_redirects=True)
+     summary = client.get("/ui/recordings/rec-ui-summary-1/inspector?tab=summary")
+     assert summary.status_code == 200
++    assert "Recording Details" in summary.text
+     assert "Roadmap review" in summary.text
+-    assert "Ship compact inspector" in summary.text
+-    assert "Polish export copy" in summary.text
++    assert "Reviewed blockers" in summary.text
++    assert "Aligned on next steps" in summary.text
+     assert "Focused and calm." in summary.text
++    assert "Ship compact inspector" not in summary.text
++    assert "Polish export copy" not in summary.text
+     assert "Pipeline Stages" not in summary.text
++    assert "Download ZIP" in summary.text
++    assert 'href="/recordings/rec-ui-summary-1?tab=summary"' in summary.text
+ 
+     export = client.get("/ui/recordings/rec-ui-summary-1/inspector?tab=export")
+     assert export.status_code == 200
++    assert "Recording Details" in export.text
+     assert "Download ZIP" in export.text
+-    assert 'id="compact-export-text-rec-ui-summary-1"' in export.text
++    assert 'href="/recordings/rec-ui-summary-1?tab=export"' in export.text
+ 
+ 
+ def test_control_center_workflow_upload_select_speaker_decision_and_correction(
+@@ -702,11 +732,10 @@ def test_control_center_workflow_upload_select_speaker_decision_and_correction(
+ 
+     speakers = c.get(f"/?selected={recording_id}&tab=speakers")
+     assert speakers.status_code == 200
+-    assert 'class="speaker-review-list speaker-review-list-compact"' in speakers.text
+-    assert "Best snippet candidates" in speakers.text
+-    assert "Recognition cue" in speakers.text
+-    assert "Local label only" in speakers.text
+-    assert "Add trusted sample" in speakers.text
++    assert "Recording Details" in speakers.text
++    assert "SPEAKERS" in speakers.text
++    assert "hello team" not in speakers.text
++    assert "Add trusted sample" not in speakers.text
+ 
+     updated_speakers = c.post(
+         f"/ui/recordings/{recording_id}/speakers/local-label?return_to=control-center&return_tab=speakers",
+@@ -725,7 +754,7 @@ def test_control_center_workflow_upload_select_speaker_decision_and_correction(
+ 
+     overview = c.get(f"/?selected={recording_id}")
+     assert overview.status_code == 200
+-    assert ">Next action<" in overview.text
++    assert "Review blocker / Next action" in overview.text
+     assert "Save as correction" not in overview.text
+ 
+     correction = c.post(
+@@ -745,7 +774,6 @@ def test_control_center_workflow_upload_select_speaker_decision_and_correction(
+         },
+     )
+     assert correction.status_code == 200
+-    assert "Saved correction for Sander." in correction.text
+     assert 'id="control-center-inspector-pane"' in correction.text
+ 
+     entries = list_glossary_entries(settings=cfg)
+diff --git a/tests_playwright/test_ui_smoke_playwright.py b/tests_playwright/test_ui_smoke_playwright.py
+index 850a132..a430326 100644
+--- a/tests_playwright/test_ui_smoke_playwright.py
++++ b/tests_playwright/test_ui_smoke_playwright.py
+@@ -274,61 +274,19 @@ def test_control_center_embedded_inspector_and_export_zip_smoke(tmp_path: Path)
+                     timeout=_remaining_timeout_ms(deadline),
+                 )
+                 assert urlparse(page.url).path == "/"
+-
+-                page.get_by_test_id("recording-inspector-tab-speakers").click(
+-                    timeout=_remaining_timeout_ms(deadline),
+-                )
+-                page.wait_for_url(
+-                    f"**/?selected={recording_id}&tab=speakers",
+-                    timeout=_remaining_timeout_ms(deadline),
+-                )
+-                page.wait_for_selector(
+-                    "#control-center-inspector-pane .tab.active:has-text('Speakers')",
+-                    state="visible",
+-                    timeout=_remaining_timeout_ms(deadline),
+-                )
+-                assert urlparse(page.url).path == "/"
+-
+-                page.get_by_test_id("recording-inspector-tab-summary").click(
+-                    timeout=_remaining_timeout_ms(deadline),
+-                )
+-                page.wait_for_url(
+-                    f"**/?selected={recording_id}&tab=summary",
+-                    timeout=_remaining_timeout_ms(deadline),
+-                )
+-                page.wait_for_selector(
+-                    "#control-center-inspector-pane .tab.active:has-text('Summary')",
+-                    state="visible",
+-                    timeout=_remaining_timeout_ms(deadline),
+-                )
+-                assert urlparse(page.url).path == "/"
+-
+-                page.get_by_test_id("recording-inspector-tab-export").click(
+-                    timeout=_remaining_timeout_ms(deadline),
+-                )
+-                page.wait_for_url(
+-                    f"**/?selected={recording_id}&tab=export",
+-                    timeout=_remaining_timeout_ms(deadline),
+-                )
+-                page.wait_for_selector(
+-                    "#control-center-inspector-pane .tab.active:has-text('Export')",
+-                    state="visible",
+-                    timeout=_remaining_timeout_ms(deadline),
+-                )
+-                assert urlparse(page.url).path == "/"
+-
+-                page.get_by_test_id("recording-inspector-tab-overview").click(
+-                    timeout=_remaining_timeout_ms(deadline),
+-                )
+-                page.wait_for_url(
+-                    f"**/?selected={recording_id}",
+-                    timeout=_remaining_timeout_ms(deadline),
+-                )
+-                page.wait_for_selector(
+-                    "#control-center-inspector-pane .tab.active:has-text('Overview')",
++                page.locator("#control-center-inspector-pane").get_by_text(
++                    "Recording Details"
++                ).wait_for(
+                     state="visible",
+                     timeout=_remaining_timeout_ms(deadline),
+                 )
++                for section_label in ("KEY METADATA", "SPEAKERS", "TONE", "SUMMARY"):
++                    page.locator("#control-center-inspector-pane").get_by_text(
++                        section_label
++                    ).wait_for(
++                        state="visible",
++                        timeout=_remaining_timeout_ms(deadline),
++                    )
+                 assert urlparse(page.url).path == "/"
+ 
+                 page.wait_for_selector(
+diff --git a/lan_app/templates/partials/control_center/recording_details_card.html b/lan_app/templates/partials/control_center/recording_details_card.html
+new file mode 100644
+index 0000000..f284e10
+--- /dev/null
++++ b/lan_app/templates/partials/control_center/recording_details_card.html
+@@ -0,0 +1,78 @@
++{% set details = embedded_recording_details or {} %}
++<article class="compact-recording-details">
++  <section class="inspector-section-card compact-recording-details-card">
++    <div class="compact-recording-details-head">
++      <p class="compact-recording-details-eyebrow">{{ details.card_title }}</p>
++      <div class="compact-recording-details-headbar">
++        <div class="compact-recording-details-title-stack">
++          <h2 class="compact-recording-details-primary">{{ details.primary_title }}</h2>
++          <p class="compact-recording-details-secondary">Job ID <code>{{ details.job_id }}</code></p>
++          <p class="compact-recording-details-filename">{{ details.filename }}</p>
++        </div>
++        <a
++          href="{{ details.download_zip_href }}"
++          class="btn"
++          hx-boost="false"
++          data-testid="recording-inspector-download-zip"
++        >Download ZIP</a>
++      </div>
++    </div>
++
++    <section class="compact-recording-details-section">
++      <p class="compact-recording-details-section-label">KEY METADATA</p>
++      <div class="compact-recording-details-list">
++        {% for item in details.metadata_rows or [] %}
++        <div class="compact-recording-details-row">
++          <span class="compact-recording-details-row-label">{{ item.label }}</span>
++          <strong class="compact-recording-details-row-value">{{ item.value }}</strong>
++        </div>
++        {% endfor %}
++      </div>
++    </section>
++
++    <section class="compact-recording-details-section">
++      <p class="compact-recording-details-section-label">SPEAKERS</p>
++      {% if details.speaker_rows %}
++      <div class="compact-recording-details-list">
++        {% for speaker in details.speaker_rows %}
++        <div class="compact-recording-details-row compact-recording-details-row-speaker">
++          <div class="compact-recording-speaker-main">
++            <strong class="compact-recording-details-row-value">{{ speaker.primary_label }}</strong>
++            <span class="compact-recording-speaker-secondary">{{ speaker.secondary_label }}</span>
++          </div>
++          {% if speaker.confidence_display %}
++          <span class="compact-recording-speaker-confidence">{{ speaker.confidence_display }}</span>
++          {% endif %}
++        </div>
++        {% endfor %}
++      </div>
++      {% else %}
++      <p class="compact-recording-details-copy">{{ details.summary_placeholder }}</p>
++      {% endif %}
++    </section>
++
++    <section class="compact-recording-details-section">
++      <p class="compact-recording-details-section-label">TONE</p>
++      <p class="compact-recording-details-copy">{{ details.tone }}</p>
++    </section>
++
++    <section class="compact-recording-details-section">
++      <p class="compact-recording-details-section-label">SUMMARY</p>
++      {% if details.summary_lines %}
++      <div class="compact-recording-summary-lines">
++        {% for line in details.summary_lines %}
++        <p class="compact-recording-details-copy">{{ line }}</p>
++        {% endfor %}
++      </div>
++      {% else %}
++      <p class="compact-recording-details-copy">{{ details.summary_placeholder }}</p>
++      {% endif %}
++    </section>
++
++    <a
++      href="{{ details.open_recording_page_href }}"
++      class="btn compact-recording-details-open"
++      data-testid="recording-inspector-open-full-page"
++    >Open Recording Page</a>
++  </section>
++</article>

@@ -420,7 +420,7 @@ def test_control_center_query_state_and_direct_routes(seeded_client):
     assert 'onclick="activateControlCenterRecordingRow(this, event)"' in r.text
     assert 'data-testid="control-center-select-recording"' not in r.text
     assert "/recordings/rec-ui-1?tab=speakers" in r.text
-    assert "Open full-page inspector" in r.text
+    assert "Open Recording Page" in r.text
     assert "refresh-control-center-header" not in r.text
     assert "refresh-control-center-system-bar" in r.text
     assert "syncControlCenterShellRefreshUrlsFromPanel" in r.text
@@ -546,7 +546,8 @@ def test_control_center_system_bar_renders_degraded_cpu_fallback(
     )
     assert inspector.status_code == 200
     assert "rec-ui-1" in inspector.text
-    assert "Speakers" in inspector.text
+    assert "Recording Details" in inspector.text
+    assert "SPEAKERS" in inspector.text
     assert "<nav" not in inspector.text
 
     empty_inspector = seeded_client.get("/ui/control-center/inspector-pane")
@@ -560,38 +561,57 @@ def test_control_center_selected_recording_renders_embedded_inspector_actions(
     r = seeded_client.get("/?selected=rec-ui-1&status=Ready&q=meeting&tab=overview")
     assert r.status_code == 200
     assert 'id="control-center-inspector-pane"' in r.text
-    assert 'class="inspector-hero embedded"' in r.text
-    assert "Requeue" in r.text
+    assert "Recording Details" in r.text
+    assert 'data-testid="recording-inspector-tab-overview"' not in r.text
     assert "Download ZIP" in r.text
-    assert "Open full-page inspector" in r.text
+    assert "Open Recording Page" in r.text
     assert "/ui/recordings/rec-ui-1/inspector?status=Ready&amp;q=meeting" in r.text
 
 
-def test_control_center_embedded_inspector_tab_links_preserve_shell_state(
+def test_control_center_processing_recording_polls_embedded_details_card(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    monkeypatch.setattr(
+        ui_routes,
+        "collect_control_center_runtime_status",
+        lambda _settings: _stub_runtime_status(),
+    )
+    init_db(cfg)
+    create_recording(
+        "rec-ui-processing-1",
+        source="upload",
+        source_filename="processing.wav",
+        status=RECORDING_STATUS_PROCESSING,
+        settings=cfg,
+    )
+
+    client = TestClient(api.app, follow_redirects=True)
+    inspector = client.get("/ui/control-center/inspector-pane?selected=rec-ui-processing-1")
+    assert inspector.status_code == 200
+    assert "Recording Details" in inspector.text
+    assert "every 2s" in inspector.text
+
+
+def test_control_center_embedded_inspector_open_page_link_preserves_shell_state(
     seeded_client,
 ):
     inspector = seeded_client.get(
         "/ui/recordings/rec-ui-1/inspector?status=Ready&q=meeting&tab=speakers"
     )
     assert inspector.status_code == 200
-    assert (
-        'hx-get="/ui/recordings/rec-ui-1/inspector?status=Ready&amp;q=meeting"'
-        in inspector.text
+    assert "Recording Details" in inspector.text
+    assert 'data-testid="recording-inspector-tab-overview"' not in inspector.text
+    assert 'href="/recordings/rec-ui-1?tab=speakers"' in inspector.text
+
+    summary_inspector = seeded_client.get(
+        "/ui/recordings/rec-ui-1/inspector?status=Ready&q=meeting&tab=summary"
     )
-    assert (
-        'hx-get="/ui/recordings/rec-ui-1/inspector?status=Ready&amp;q=meeting&amp;tab=summary"'
-        in inspector.text
-    )
-    assert (
-        'hx-push-url="/?selected=rec-ui-1&amp;status=Ready&amp;q=meeting&amp;tab=summary"'
-        in inspector.text
-    )
-    assert (
-        'href="/?selected=rec-ui-1&amp;status=Ready&amp;q=meeting&amp;tab=speakers"'
-        in inspector.text
-    )
-    assert 'data-testid="recording-inspector-tab-export"' in inspector.text
-    assert 'data-testid="recording-inspector-tab-language"' not in inspector.text
+    assert summary_inspector.status_code == 200
+    assert 'href="/recordings/rec-ui-1?tab=summary"' in summary_inspector.text
 
 
 def test_control_center_embedded_inspector_overview_stays_compact(seeded_client):
@@ -599,10 +619,14 @@ def test_control_center_embedded_inspector_overview_stays_compact(seeded_client)
         "/?selected=rec-ui-1&status=Ready&q=meeting&tab=overview"
     )
     assert overview.status_code == 200
-    assert ">Stage<" in overview.text
-    assert ">Blocker<" in overview.text
-    assert ">Next action<" in overview.text
-    assert "Key metadata" in overview.text
+    assert "Recording Details" in overview.text
+    assert "KEY METADATA" in overview.text
+    assert "SPEAKERS" in overview.text
+    assert "TONE" in overview.text
+    assert "SUMMARY" in overview.text
+    assert ">Stage<" not in overview.text
+    assert ">Blocker<" not in overview.text
+    assert ">Next action<" not in overview.text
     assert "Pipeline Stages" not in overview.text
     assert "Diagnostics" not in overview.text
     assert "Save as correction" not in overview.text
@@ -613,10 +637,10 @@ def test_control_center_embedded_inspector_overview_stays_compact(seeded_client)
     )
     assert speakers.status_code == 200
     assert "Open canonical speakers page" not in speakers.text
-    assert "No speaker turns available yet" in speakers.text
+    assert "Not available yet" in speakers.text
 
 
-def test_control_center_embedded_summary_and_export_tabs_render_compact_content(
+def test_control_center_embedded_details_card_uses_summary_artifacts(
     tmp_path, monkeypatch
 ):
     cfg = _cfg(tmp_path)
@@ -662,16 +686,22 @@ def test_control_center_embedded_summary_and_export_tabs_render_compact_content(
     client = TestClient(api.app, follow_redirects=True)
     summary = client.get("/ui/recordings/rec-ui-summary-1/inspector?tab=summary")
     assert summary.status_code == 200
+    assert "Recording Details" in summary.text
     assert "Roadmap review" in summary.text
-    assert "Ship compact inspector" in summary.text
-    assert "Polish export copy" in summary.text
+    assert "Reviewed blockers" in summary.text
+    assert "Aligned on next steps" in summary.text
     assert "Focused and calm." in summary.text
+    assert "Ship compact inspector" not in summary.text
+    assert "Polish export copy" not in summary.text
     assert "Pipeline Stages" not in summary.text
+    assert "Download ZIP" in summary.text
+    assert 'href="/recordings/rec-ui-summary-1?tab=summary"' in summary.text
 
     export = client.get("/ui/recordings/rec-ui-summary-1/inspector?tab=export")
     assert export.status_code == 200
+    assert "Recording Details" in export.text
     assert "Download ZIP" in export.text
-    assert 'id="compact-export-text-rec-ui-summary-1"' in export.text
+    assert 'href="/recordings/rec-ui-summary-1?tab=export"' in export.text
 
 
 def test_control_center_workflow_upload_select_speaker_decision_and_correction(
@@ -702,11 +732,10 @@ def test_control_center_workflow_upload_select_speaker_decision_and_correction(
 
     speakers = c.get(f"/?selected={recording_id}&tab=speakers")
     assert speakers.status_code == 200
-    assert 'class="speaker-review-list speaker-review-list-compact"' in speakers.text
-    assert "Best snippet candidates" in speakers.text
-    assert "Recognition cue" in speakers.text
-    assert "Local label only" in speakers.text
-    assert "Add trusted sample" in speakers.text
+    assert "Recording Details" in speakers.text
+    assert "SPEAKERS" in speakers.text
+    assert "hello team" not in speakers.text
+    assert "Add trusted sample" not in speakers.text
 
     updated_speakers = c.post(
         f"/ui/recordings/{recording_id}/speakers/local-label?return_to=control-center&return_tab=speakers",
@@ -725,7 +754,7 @@ def test_control_center_workflow_upload_select_speaker_decision_and_correction(
 
     overview = c.get(f"/?selected={recording_id}")
     assert overview.status_code == 200
-    assert ">Next action<" in overview.text
+    assert "Review blocker / Next action" in overview.text
     assert "Save as correction" not in overview.text
 
     correction = c.post(
@@ -745,7 +774,6 @@ def test_control_center_workflow_upload_select_speaker_decision_and_correction(
         },
     )
     assert correction.status_code == 200
-    assert "Saved correction for Sander." in correction.text
     assert 'id="control-center-inspector-pane"' in correction.text
 
     entries = list_glossary_entries(settings=cfg)
