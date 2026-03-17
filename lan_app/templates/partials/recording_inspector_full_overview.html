@@ -2,29 +2,25 @@
 <div class="inspector-overview-grid">
   <section class="inspector-section-card">
     <div class="inspector-section-head">
-      <div>
-        <p class="eyebrow">Deep Review Workspace</p>
-        <h2>Overview</h2>
-        <p class="inspector-note">This tab stays focused on state, blocker, next action, and the core context needed before you dive deeper.</p>
-      </div>
+      <h2>Overview</h2>
     </div>
 
     <div class="embedded-panel-grid">
       <section class="embedded-card">
-        <h3>What state is it in?</h3>
+        <h3>State</h3>
         <p class="inspector-answer">{{ ov.state_title or rec.status }}</p>
         <p class="inspector-note">{{ ov.state_detail or ('Current stage: ' ~ (diagnostics.current_stage_label or 'Waiting')) }}</p>
       </section>
       <section class="embedded-card">
-        <h3>What is blocking completion?</h3>
+        <h3>Blocker</h3>
         <p class="inspector-answer">{{ ov.blocker_title or 'No blocker detected.' }}</p>
         <p class="inspector-note">{{ ov.blocker_detail or ('Current status: ' ~ rec.status ~ '.') }}</p>
       </section>
       <section class="embedded-card">
         {% set next_action = ov.next_action or {} %}
-        <h3>What action is next?</h3>
+        <h3>Next action</h3>
         <p class="inspector-answer">{{ next_action.title or 'Open the next working tab' }}</p>
-        <p class="inspector-note">{{ next_action.detail or 'Use the dedicated tabs below for speakers, transcript, summary, diagnostics, and export.' }}</p>
+        <p class="inspector-note">{{ next_action.detail or '' }}</p>
         {% if next_action.href %}
         <a href="{{ next_action.href }}" class="btn">{{ next_action.button_label or 'Open' }}</a>
         {% endif %}
@@ -32,12 +28,7 @@
     </div>
 
     <section class="embedded-card">
-      <div class="embedded-card-head">
-        <div>
-          <h3>Core metadata</h3>
-          <p class="inspector-note">Keep only the signals that help orient the review.</p>
-        </div>
-      </div>
+      <h3>Core metadata</h3>
       <div class="compact-metadata-grid">
         {% for item in ov.metadata or [] %}
         <div class="compact-metadata-item">
@@ -52,10 +43,7 @@
   <div class="inspector-overview-rail">
     <section class="inspector-section-card">
       <div class="inspector-section-head">
-        <div>
-          <h3>Pipeline signal</h3>
-          <p class="inspector-note">The high-level processing facts stay visible here without opening Diagnostics.</p>
-        </div>
+        <h3>Pipeline signal</h3>
       </div>
       <div class="info-grid">
         <span class="k">Current / last stage</span><span class="v">{{ diagnostics.current_stage_label or '—' }}</span>
@@ -69,10 +57,7 @@
 
     <section class="inspector-section-card">
       <div class="inspector-section-head">
-        <div>
-          <h3>Review focus</h3>
-          <p class="inspector-note">Reasons that explain why this recording needs attention.</p>
-        </div>
+        <h3>Review focus</h3>
       </div>
       {% if ov.focus_items %}
       <div class="inspector-detail-list">
@@ -92,11 +77,7 @@
 
 <section class="inspector-section-card">
   <div class="inspector-section-head">
-    <div>
-      <p class="eyebrow">Pipeline Status</p>
-      <h2>Pipeline status</h2>
-      <p class="inspector-note">The overview keeps the stage timeline visible without mixing in transcript, summary, or export widgets.</p>
-    </div>
+    <h2>Pipeline status</h2>
   </div>
 
   {% if pipeline_stages %}
@@ -117,7 +98,7 @@
           {% elif stage.duration_seconds is not none %}
           Completed in {{ '%.3f'|format(stage.duration_seconds) }}s.
           {% else %}
-          No additional note was stored for this stage.
+          —
           {% endif %}
         </p>
       </div>

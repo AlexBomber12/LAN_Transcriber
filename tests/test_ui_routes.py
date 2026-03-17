@@ -449,7 +449,8 @@ def test_control_center_query_state_and_direct_routes(seeded_client):
 
     detail = seeded_client.get("/recordings/rec-ui-1")
     assert detail.status_code == 200
-    assert "Recording Inspector" in detail.text
+    assert "meeting.mp3" in detail.text
+    assert 'class="inspector-hero"' in detail.text
 
 
 def test_control_center_pane_fragment_endpoints(seeded_client):
@@ -556,7 +557,6 @@ def test_control_center_system_bar_renders_degraded_cpu_fallback(
         "/ui/control-center/inspector-pane?selected=rec-ui-1&tab=speakers"
     )
     assert inspector.status_code == 200
-    assert "Compact inspector" in inspector.text
     assert "rec-ui-1" in inspector.text
     assert "Speakers" in inspector.text
     assert "<nav" not in inspector.text
@@ -564,7 +564,6 @@ def test_control_center_system_bar_renders_degraded_cpu_fallback(
     empty_inspector = seeded_client.get("/ui/control-center/inspector-pane")
     assert empty_inspector.status_code == 200
     assert "No recording selected" in empty_inspector.text
-    assert "Inbox context stays visible" in empty_inspector.text
 
 
 def test_control_center_selected_recording_renders_embedded_inspector_actions(
@@ -573,7 +572,7 @@ def test_control_center_selected_recording_renders_embedded_inspector_actions(
     r = seeded_client.get("/?selected=rec-ui-1&status=Ready&q=meeting&tab=overview")
     assert r.status_code == 200
     assert 'id="control-center-inspector-pane"' in r.text
-    assert "Compact inspector" in r.text
+    assert 'class="inspector-hero embedded"' in r.text
     assert "Requeue" in r.text
     assert "Download ZIP" in r.text
     assert "Open full-page inspector" in r.text
@@ -612,9 +611,9 @@ def test_control_center_embedded_inspector_overview_stays_compact(seeded_client)
         "/?selected=rec-ui-1&status=Ready&q=meeting&tab=overview"
     )
     assert overview.status_code == 200
-    assert "What stage is it in?" in overview.text
-    assert "What is blocking it?" in overview.text
-    assert "What should I do next?" in overview.text
+    assert ">Stage<" in overview.text
+    assert ">Blocker<" in overview.text
+    assert ">Next action<" in overview.text
     assert "Key metadata" in overview.text
     assert "Pipeline Stages" not in overview.text
     assert "Diagnostics" not in overview.text
@@ -626,7 +625,7 @@ def test_control_center_embedded_inspector_overview_stays_compact(seeded_client)
     )
     assert speakers.status_code == 200
     assert "Open canonical speakers page" not in speakers.text
-    assert "Snippet-first speaker review" in speakers.text
+    assert "No speaker turns available yet" in speakers.text
 
 
 def test_control_center_embedded_summary_and_export_tabs_render_compact_content(
@@ -683,9 +682,8 @@ def test_control_center_embedded_summary_and_export_tabs_render_compact_content(
 
     export = client.get("/ui/recordings/rec-ui-summary-1/inspector?tab=export")
     assert export.status_code == 200
-    assert "OneNote-ready markdown" in export.text
     assert "Download ZIP" in export.text
-    assert "Full-page only" in export.text
+    assert 'id="compact-export-text-rec-ui-summary-1"' in export.text
 
 
 def test_control_center_workflow_upload_select_speaker_decision_and_correction(
@@ -716,8 +714,7 @@ def test_control_center_workflow_upload_select_speaker_decision_and_correction(
 
     speakers = c.get(f"/?selected={recording_id}&tab=speakers")
     assert speakers.status_code == 200
-    assert "Compact inspector" in speakers.text
-    assert "Snippet-first speaker review" in speakers.text
+    assert 'class="speaker-review-list speaker-review-list-compact"' in speakers.text
     assert "Best snippet candidates" in speakers.text
     assert "Recognition cue" in speakers.text
     assert "Local label only" in speakers.text
@@ -740,7 +737,7 @@ def test_control_center_workflow_upload_select_speaker_decision_and_correction(
 
     overview = c.get(f"/?selected={recording_id}")
     assert overview.status_code == 200
-    assert "What should I do next?" in overview.text
+    assert ">Next action<" in overview.text
     assert "Save as correction" not in overview.text
 
     correction = c.post(
@@ -761,7 +758,7 @@ def test_control_center_workflow_upload_select_speaker_decision_and_correction(
     )
     assert correction.status_code == 200
     assert "Saved correction for Sander." in correction.text
-    assert "Compact inspector" in correction.text
+    assert 'id="control-center-inspector-pane"' in correction.text
 
     entries = list_glossary_entries(settings=cfg)
     assert len(entries) == 1
@@ -1745,7 +1742,7 @@ def test_recording_detail_speakers_tab_assignment_persists(tmp_path, monkeypatch
         "/recordings/rec-speakers-1?tab=speakers"
     )
     assert page.status_code == 200
-    assert "Speaker Review Workspace" in page.text
+    assert ">Speakers<" in page.text
     assert "Alice Example" in page.text
     assert "Confirm match" in page.text
     assert "Mapped globally" in page.text

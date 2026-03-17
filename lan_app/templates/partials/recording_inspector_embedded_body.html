@@ -3,19 +3,19 @@
   {% set next_action = compact.next_action or {} %}
   <div class="embedded-panel-grid">
     <section class="embedded-card">
-      <h3>What stage is it in?</h3>
+      <h3>Stage</h3>
       <p class="inspector-answer">{{ compact.stage_label or 'Waiting' }}</p>
-      <p class="inspector-note">{{ compact.stage_detail or 'No active worker update is running right now.' }}</p>
+      <p class="inspector-note">{{ compact.stage_detail or '' }}</p>
     </section>
     <section class="embedded-card">
-      <h3>What is blocking it?</h3>
-      <p class="inspector-answer">{{ compact.blocker_text or 'No blocker detected.' }}</p>
-      <p class="inspector-note">{{ compact.blocker_detail or ('Current status: ' ~ rec.status ~ '.') }}</p>
+      <h3>Blocker</h3>
+      <p class="inspector-answer">{{ compact.blocker_text or 'None' }}</p>
+      <p class="inspector-note">{{ compact.blocker_detail or '' }}</p>
     </section>
     <section class="embedded-card">
-      <h3>What should I do next?</h3>
-      <p class="inspector-answer">{{ next_action.title or 'Open the full-page inspector' }}</p>
-      <p class="inspector-note">{{ next_action.detail or 'Use the compact tabs for the daily loop and the full page for deeper work.' }}</p>
+      <h3>Next action</h3>
+      <p class="inspector-answer">{{ next_action.title or 'Open full-page inspector' }}</p>
+      <p class="inspector-note">{{ next_action.detail or '' }}</p>
       {% if next_action.href %}
       <a href="{{ next_action.href }}" class="btn"{% if next_action.external %} hx-boost="false"{% endif %}>{{ next_action.button_label or 'Open' }}</a>
       {% endif %}
@@ -23,12 +23,7 @@
   </div>
 
   <section class="embedded-card">
-    <div class="embedded-card-head">
-      <div>
-        <h3>Key metadata</h3>
-        <p class="inspector-note">Only the signals needed for the daily loop stay here.</p>
-      </div>
-    </div>
+    <h3>Key metadata</h3>
     <div class="compact-metadata-grid">
       {% for item in compact.metadata or [] %}
       <div class="compact-metadata-item">
@@ -67,13 +62,6 @@
     <div class="page-notice">{{ notice }}</div>
     {% endfor %}
   {% endif %}
-
-  <section class="embedded-card">
-    <h3>Snippet-first speaker review</h3>
-    <p class="inspector-note">
-      Review speakers through their best clean clips first. <strong>Confirm match</strong> changes canonical identity across recordings, <strong>Keep unknown</strong> closes review without naming the speaker, <strong>Local label only</strong> keeps the name inside this recording, and <strong>Add trusted sample</strong> stays training-only.
-    </p>
-  </section>
 
   {% set speaker_review_mode = 'compact' %}
   {% include 'partials/speaker_review_cards.html' %}
@@ -152,10 +140,7 @@
 {% elif current_tab == 'export' %}
   <section class="embedded-card">
     <div class="embedded-card-head">
-      <div>
-        <h3>OneNote-ready markdown</h3>
-        <p class="inspector-note">Use the compact export view for copy or ZIP download. Deep diagnostics stay full-page only.</p>
-      </div>
+      <h3>Export</h3>
       <div class="embedded-card-actions">
         <button type="button" class="btn" onclick="copyCompactExportText('{{ rec.id }}')">Copy</button>
         <a
@@ -171,14 +156,8 @@
       readonly
     >{{ export_text or '' }}</textarea>
     <p id="compact-export-status-{{ rec.id }}" class="inspector-note">
-      Copy the markdown or download the ZIP with the available artifacts.
+      Copy the markdown or download the ZIP.
     </p>
-  </section>
-
-  <section class="embedded-card">
-    <h3>Full-page only</h3>
-    <p class="inspector-note">Deep diagnostics, pipeline tables, and the broader admin surface stay in the full-page inspector so this pane remains compact.</p>
-    <a href="{{ selected_recording_shell.action_bar.open_full_page_href }}" class="btn">Open full-page inspector</a>
   </section>
 
   <script>

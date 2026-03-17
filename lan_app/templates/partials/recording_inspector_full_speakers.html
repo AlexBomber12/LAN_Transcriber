@@ -7,9 +7,7 @@
 <section class="inspector-section-card">
   <div class="inspector-section-head">
     <div>
-      <p class="eyebrow">Speaker Review Workspace</p>
       <h2>Speakers</h2>
-      <p class="inspector-note">Review speakers through their best clean clips first. The compact Control Center stays faster and smaller; this page keeps the richer review flow.</p>
     </div>
     <div class="embedded-card-actions">
       <a href="{{ sp.manage_voices_href or '/voices' }}" class="btn" style="text-decoration:none">Open canonical speakers page</a>
@@ -40,15 +38,6 @@
     {% endfor %}
   {% endif %}
 
-  <section class="embedded-card">
-    <p class="inspector-note">
-      <strong>Confirm match</strong> changes canonical identity across recordings.
-      <strong>Keep unknown</strong> closes review without naming the speaker.
-      <strong>Local label only</strong> changes the name only for this recording.
-      <strong>Add trusted sample</strong> is training-only and stays separate from identity mapping.
-    </p>
-  </section>
-
   {% set speaker_review_mode = 'full' %}
   {% include 'partials/speaker_review_cards.html' %}
 </section>
@@ -57,7 +46,6 @@
   <div class="inspector-section-head">
     <div>
       <h2>Create Canonical Speaker</h2>
-      <p class="inspector-note">Create a new canonical person and confirm the diarized match in one step.</p>
     </div>
   </div>
   {% if rows %}

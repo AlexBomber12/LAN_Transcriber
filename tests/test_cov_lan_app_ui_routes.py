@@ -816,7 +816,7 @@ def test_recordings_panel_context_clamps_offset_to_last_available_page(
 
     control_center_empty = ui_routes._control_center_empty_inspector_context()  # noqa: SLF001
     assert control_center_empty["title"] == "No recording selected"
-    assert "compact inspector" in control_center_empty["message"]
+    assert control_center_empty["message"] == ""
 
     monkeypatch.setattr(
         ui_routes,

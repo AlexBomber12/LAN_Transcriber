@@ -605,6 +605,6 @@ Queue (in order)
 - Depends on: PR-INSPECTOR-FULL-PAGE-02 and PR-OPS-SYSTEM-BAR-01
 
 121) PR-UI-STITCH-REDUCTION-01: Reduce Control Center clutter to a strict operator contract and keep deep detail full-page only
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-UI-STITCH-REDUCTION-01.md
 - Depends on: PR-UI-STITCH-POLISH-02
