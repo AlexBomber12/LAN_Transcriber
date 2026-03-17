@@ -221,6 +221,12 @@ def test_control_center_embedded_inspector_and_export_zip_smoke(tmp_path: Path) 
                     timeout=_remaining_timeout_ms(deadline),
                 )
                 assert page.locator("#control-center-workspace-header h1").count() == 0
+                assert page.evaluate(
+                    """() => compactCardItems([
+                        {phase: "uploading", removed: false, file: {name: "active.wav"}},
+                        {phase: "processing", removed: false, file: {name: "processing.wav"}},
+                    ]).map((item) => item.file.name)"""
+                ) == ["active.wav", "processing.wav"]
                 page.get_by_role("button", name="Choose files").wait_for(
                     state="visible",
                     timeout=_remaining_timeout_ms(deadline),

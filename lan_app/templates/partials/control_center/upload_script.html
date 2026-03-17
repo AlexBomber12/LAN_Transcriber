@@ -156,6 +156,7 @@ function compactCardItems(items) {
 
   var active = null;
   var queued = null;
+  var fallback = null;
   var idx = 0;
 
   for (idx = 0; idx < items.length; idx += 1) {
@@ -176,9 +177,15 @@ function compactCardItems(items) {
     active = items[0];
   }
   for (idx = 0; idx < items.length; idx += 1) {
-    if (items[idx] !== active && items[idx].phase === "queued") {
+    if (items[idx] === active) {
+      continue;
+    }
+    if (items[idx].phase === "queued") {
       queued = items[idx];
       break;
+    }
+    if (!fallback) {
+      fallback = items[idx];
     }
   }
 
@@ -188,6 +195,8 @@ function compactCardItems(items) {
   }
   if (queued) {
     visible.push(queued);
+  } else if (fallback) {
+    visible.push(fallback);
   }
   return visible.slice(0, compactCardLimit || 2);
 }
