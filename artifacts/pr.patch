@@ -1,5 +1,52 @@
+diff --git a/ci-requirements.txt b/ci-requirements.txt
+index b6e6cf6..745d979 100644
+--- a/ci-requirements.txt
++++ b/ci-requirements.txt
+@@ -8,20 +8,20 @@ annotated-types==0.7.0
+     # via pydantic
+ antlr4-python3-runtime==4.9.3
+     # via omegaconf
+-anyio==4.12.1
++anyio==4.13.0
+     # via
+     #   httpx
+     #   starlette
+-build==1.4.0
++build==1.4.2
+     # via pip-tools
+ certifi==2026.2.25
+     # via
+     #   httpcore
+     #   httpx
+     #   requests
+-charset-normalizer==3.4.6
++charset-normalizer==3.4.7
+     # via requests
+-click==8.3.1
++click==8.3.2
+     # via
+     #   pip-tools
+     #   uvicorn
+@@ -100,7 +100,7 @@ pyyaml==6.0.2
+     #   omegaconf
+ recurring-ical-events==3.8.0
+     # via -r ci-requirements.in
+-requests==2.32.5
++requests==2.33.1
+     # via -r ci-requirements.in
+ respx[router]==0.22.0
+     # via -r ci-requirements.in
+@@ -124,7 +124,7 @@ typing-inspection==0.4.2
+     # via
+     #   pydantic
+     #   pydantic-settings
+-tzdata==2025.3
++tzdata==2026.1
+     # via
+     #   icalendar
+     #   recurring-ical-events
 diff --git a/lan_app/templates/base.html b/lan_app/templates/base.html
-index e2d228f..072f62f 100644
+index e2d228f..f750fee 100644
 --- a/lan_app/templates/base.html
 +++ b/lan_app/templates/base.html
 @@ -5,7 +5,30 @@
@@ -95,8 +142,7 @@ index e2d228f..072f62f 100644
 +</footer>
  <div
    id="delete-confirm-backdrop"
--  class="modal-backdrop"
-+  class="fixed inset-0 bg-slate-900/60 flex items-center justify-center p-3 z-[1000]"
+   class="modal-backdrop"
    hidden
    onclick="if (event.target === this) closeDeleteDialog();"
  >
@@ -116,7 +162,7 @@ index e2d228f..072f62f 100644
        <button id="delete-confirm-btn" class="btn btn-danger" type="button" onclick="confirmDeleteDialog()">Delete</button>
      </div>
 diff --git a/tasks/QUEUE.md b/tasks/QUEUE.md
-index 3a5c4b5..6afc54f 100644
+index 3a5c4b5..6659196 100644
 --- a/tasks/QUEUE.md
 +++ b/tasks/QUEUE.md
 @@ -630,7 +630,7 @@ Queue (in order)
@@ -124,7 +170,7 @@ index 3a5c4b5..6afc54f 100644
  
  126) PR-TAILWIND-BASE-01: Add Tailwind CSS to base.html and migrate navbar, modal, and global elements
 -- Status: TODO
-+- Status: DOING
++- Status: DONE
  - Tasks file: tasks/PR-TAILWIND-BASE-01.md
  - Depends on: PR-UI-STITCH-UPLOAD-01
  
