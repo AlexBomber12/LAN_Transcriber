@@ -2241,15 +2241,15 @@ textarea:focus{
 </style>
 </head>
 <body class="font-display antialiased" hx-boost="true">
-<header class="bg-navy-nav text-white px-6 py-3 flex items-center justify-between border-b border-slate-800">
-  <div class="flex items-center gap-8">
+<header class="bg-navy-nav text-white px-6 py-3 flex flex-wrap items-center justify-between gap-3 border-b border-slate-800">
+  <div class="flex flex-wrap items-center gap-4 md:gap-8">
     <div class="flex items-center gap-3">
       <div class="bg-primary p-1.5 rounded">
         <span class="material-symbols-outlined text-white">settings_input_component</span>
       </div>
       <h1 class="text-lg font-bold tracking-tight">LAN Transcriber</h1>
     </div>
-    <nav class="flex items-center gap-1">
+    <nav class="flex flex-wrap items-center gap-1">
       <a href="/" class="px-3 py-1.5 rounded text-sm font-semibold {% if active in ['dashboard', 'recordings', 'upload'] %}bg-primary/20 text-primary{% else %}text-slate-400 hover:text-white{% endif %}">Control Center</a>
       <a href="/glossary" class="px-3 py-1.5 rounded text-sm font-medium {% if active=='glossary' %}bg-primary/20 text-primary{% else %}text-slate-400 hover:text-white{% endif %}">Corrections</a>
       <a href="/voices" class="px-3 py-1.5 rounded text-sm font-medium {% if active=='voices' %}bg-primary/20 text-primary{% else %}text-slate-400 hover:text-white{% endif %}">Voices</a>
@@ -2259,7 +2259,7 @@ textarea:focus{
     </nav>
   </div>
   <div class="flex items-center gap-4">
-    <div class="relative">
+    <div class="relative hidden md:block">
       <span class="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-slate-500">search</span>
       <input class="bg-slate-800 border-none rounded-lg pl-10 pr-4 py-1.5 text-sm w-64 focus:ring-1 focus:ring-primary" placeholder="Search recordings..." type="text">
     </div>
