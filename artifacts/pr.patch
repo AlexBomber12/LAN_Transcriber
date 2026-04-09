@@ -1,26 +1,20 @@
 diff --git a/lan_app/templates/partials/control_center/recordings_table.html b/lan_app/templates/partials/control_center/recordings_table.html
-index 0929c4c..3ae162c 100644
+index 3ae162c..128c25a 100644
 --- a/lan_app/templates/partials/control_center/recordings_table.html
 +++ b/lan_app/templates/partials/control_center/recordings_table.html
-@@ -4,7 +4,7 @@
-     {% if recordings_table.mode == "control_center" %}
-     <thead class="bg-slate-50 text-[10px] uppercase font-bold text-slate-500 border-b border-slate-200">
-       <tr>
--        <th class="px-4 py-2 w-10"></th>
-+        <th class="px-4 py-2 w-10" aria-label="Status"></th>
-         <th class="px-4 py-2">Meeting</th>
-         <th class="px-4 py-2">Captured</th>
-         <th class="px-4 py-2">Duration</th>
-diff --git a/lan_app/templates/partials/control_center/upload_script.html b/lan_app/templates/partials/control_center/upload_script.html
-index c234b05..385911f 100644
---- a/lan_app/templates/partials/control_center/upload_script.html
-+++ b/lan_app/templates/partials/control_center/upload_script.html
-@@ -229,7 +229,7 @@ function buildCompactQueueCard(item) {
-   var isQueued = item.phase === "queued";
- 
-   var card = document.createElement("article");
--  card.className = "bg-slate-50 p-2 rounded border border-slate-100 flex items-center gap-3";
-+  card.className = "upload-queue-card bg-slate-50 p-2 rounded border border-slate-100 flex items-center gap-3";
- 
-   var indicator = document.createElement("div");
-   indicator.className = "w-1 h-8 rounded-full";
+@@ -176,10 +176,12 @@
+         <td class="px-4 py-3">
+           <div class="flex flex-col gap-0.5">
+             <span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold uppercase
+-              {% if r.status == 'Ready' %}bg-green-100 text-green-700
+-              {% elif r.status == 'Processing' %}bg-amber-100 text-amber-700
+-              {% elif r.status == 'Failed' or r.status == 'Quarantine' %}bg-red-100 text-red-700
++              {% if r.status == 'Ready' or r.status == 'Published' %}bg-green-100 text-green-700
++              {% elif r.status in ['Processing', 'Stopping'] %}bg-amber-100 text-amber-700
+               {% elif r.status == 'NeedsReview' %}bg-amber-100 text-amber-700
++              {% elif r.status == 'Queued' %}bg-blue-100 text-blue-700
++              {% elif r.status in ['Failed', 'Quarantine'] %}bg-red-100 text-red-700
++              {% elif r.status == 'Stopped' %}bg-slate-200 text-slate-700
+               {% else %}bg-slate-100 text-slate-600
+               {% endif %}
+             ">{{ r.status }}</span>
