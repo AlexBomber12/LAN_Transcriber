@@ -18,7 +18,7 @@ Requirement already satisfied: omegaconf==2.3.0 in /home/alexey/.pyenv/versions/
 Requirement already satisfied: packaging==26.0 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from -r ci-requirements.txt (line 57)) (26.0)
 Requirement already satisfied: pip-tools==7.4.1 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from -r ci-requirements.txt (line 61)) (7.4.1)
 Requirement already satisfied: pluggy==1.6.0 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from -r ci-requirements.txt (line 63)) (1.6.0)
-Requirement already satisfied: prometheus-client==0.24.1 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from -r ci-requirements.txt (line 65)) (0.24.1)
+Requirement already satisfied: prometheus-client==0.25.0 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from -r ci-requirements.txt (line 65)) (0.25.0)
 Requirement already satisfied: pydantic==2.12.5 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from -r ci-requirements.txt (line 67)) (2.12.5)
 Requirement already satisfied: pydantic-core==2.41.5 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from -r ci-requirements.txt (line 71)) (2.41.5)
 Requirement already satisfied: pydantic-settings==2.10.1 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from -r ci-requirements.txt (line 73)) (2.10.1)
@@ -58,7 +58,7 @@ Obtaining file:///home/alexey/LAN_Transcriber
   Preparing editable metadata (pyproject.toml): finished with status 'done'
 Requirement already satisfied: httpx in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from lan-transcriber==0.1.0) (0.28.1)
 Requirement already satisfied: tenacity in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from lan-transcriber==0.1.0) (9.1.2)
-Requirement already satisfied: prometheus_client>=0.19.0 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from lan-transcriber==0.1.0) (0.24.1)
+Requirement already satisfied: prometheus_client>=0.19.0 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from lan-transcriber==0.1.0) (0.25.0)
 Requirement already satisfied: anyio in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from lan-transcriber==0.1.0) (4.13.0)
 Requirement already satisfied: fastapi in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from lan-transcriber==0.1.0) (0.116.1)
 Requirement already satisfied: jinja2 in /home/alexey/.pyenv/versions/3.11.9/lib/python3.11/site-packages (from lan-transcriber==0.1.0) (3.1.6)
@@ -102,8 +102,8 @@ Requirement already satisfied: pytz>2021.1 in /home/alexey/.pyenv/versions/3.11.
 Building wheels for collected packages: lan-transcriber
   Building editable for lan-transcriber (pyproject.toml): started
   Building editable for lan-transcriber (pyproject.toml): finished with status 'done'
-  Created wheel for lan-transcriber: filename=lan_transcriber-0.1.0-0.editable-py3-none-any.whl size=15462 sha256=918a4a1c4b0365ad296a1acd22ce723de570b2777acc205077b390337e2fb24e
-  Stored in directory: /tmp/pip-ephem-wheel-cache-ao368pps/wheels/3c/34/21/7d1a99d2a9e86cdb0d7c14d1c0d7dc5a97e0d170dff3df8fb1
+  Created wheel for lan-transcriber: filename=lan_transcriber-0.1.0-0.editable-py3-none-any.whl size=15462 sha256=0881bdaf08fb37c2c1280e6f5077b352128c54236172e0f85005bfa3cc162f1a
+  Stored in directory: /tmp/pip-ephem-wheel-cache-hn6mw36p/wheels/3c/34/21/7d1a99d2a9e86cdb0d7c14d1c0d7dc5a97e0d170dff3df8fb1
 Successfully built lan-transcriber
 Installing collected packages: lan-transcriber
   Attempting uninstall: lan-transcriber
@@ -176,7 +176,7 @@ TOTAL   13940      0   4640      0   100%
 Coverage HTML written to dir htmlcov
 
 Required test coverage of 100% reached. Total coverage: 100.00%
-1053 passed, 3 skipped, 11 warnings in 89.44s (0:01:29)
+1053 passed, 3 skipped, 11 warnings in 91.84s (0:01:31)
 Name                                                    Stmts   Miss Branch BrPart  Cover
 -----------------------------------------------------------------------------------------
 lan_transcriber/__init__.py                                 8      0      0      0   100%

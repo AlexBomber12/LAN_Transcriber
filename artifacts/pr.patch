@@ -1,11 +1,13 @@
-diff --git a/lan_app/templates/control_center.html b/lan_app/templates/control_center.html
-index 9f71b6a..0237677 100644
---- a/lan_app/templates/control_center.html
-+++ b/lan_app/templates/control_center.html
-@@ -15,5 +15,5 @@
- 
-   {% include "partials/control_center/system_bar.html" %}
- </div>
--<script>(function(){var s=document.getElementById('control-center-shell');if(!s)return;function u(){s.style.setProperty('--cc-top',s.getBoundingClientRect().top+'px')}u();window.addEventListener('resize',u);window.addEventListener('orientationchange',u)})()</script>
-+<script>(function(){var s=document.getElementById('control-center-shell');if(!s)return;function u(){if(!document.contains(s)){window.removeEventListener('resize',u);window.removeEventListener('orientationchange',u);return}s.style.setProperty('--cc-top',s.getBoundingClientRect().top+'px')}u();window.addEventListener('resize',u);window.addEventListener('orientationchange',u)})()</script>
- {% endblock %}
+diff --git a/ci-requirements.txt b/ci-requirements.txt
+index 745d979..6803920 100644
+--- a/ci-requirements.txt
++++ b/ci-requirements.txt
+@@ -62,7 +62,7 @@ pip-tools==7.4.1
+     # via -r ci-requirements.in
+ pluggy==1.6.0
+     # via pytest
+-prometheus-client==0.24.1
++prometheus-client==0.25.0
+     # via -r ci-requirements.in
+ pydantic==2.12.5
+     # via
