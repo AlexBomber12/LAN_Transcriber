@@ -1,40 +1,31 @@
 diff --git a/lan_app/templates/partials/control_center/recordings_table.html b/lan_app/templates/partials/control_center/recordings_table.html
-index 6990e97..18f153c 100644
+index 18f153c..9c19330 100644
 --- a/lan_app/templates/partials/control_center/recordings_table.html
 +++ b/lan_app/templates/partials/control_center/recordings_table.html
-@@ -28,14 +28,18 @@
-         {% endif %}
+@@ -29,19 +29,19 @@
        >
          <td class="px-4 py-3">
--          {% if r.status_dot_tone == 'ok' %}
-+          {% if r.status_dot_tone == 'ready' %}
-           <span class="material-symbols-outlined text-green-500" title="{{ r.status_accessible_label }}">check_circle</span>
--          {% elif r.status_dot_tone == 'active' %}
-+          {% elif r.status_dot_tone == 'processing' %}
-           <span class="material-symbols-outlined text-amber-500" title="{{ r.status_accessible_label }}">pending</span>
--          {% elif r.status_dot_tone == 'warn' %}
-+          {% elif r.status_dot_tone == 'review' %}
-           <span class="material-symbols-outlined text-amber-500" title="{{ r.status_accessible_label }}">warning</span>
--          {% elif r.status_dot_tone == 'error' %}
-+          {% elif r.status_dot_tone == 'queued' %}
-+          <span class="material-symbols-outlined text-slate-400" title="{{ r.status_accessible_label }}">schedule</span>
-+          {% elif r.status_dot_tone in ['failed', 'quarantine'] %}
-           <span class="material-symbols-outlined text-red-500" title="{{ r.status_accessible_label }}">error</span>
-+          {% elif r.status_dot_tone == 'stopped' %}
-+          <span class="material-symbols-outlined text-slate-500" title="{{ r.status_accessible_label }}">stop_circle</span>
+           {% if r.status_dot_tone == 'ready' %}
+-          <span class="material-symbols-outlined text-green-500" title="{{ r.status_accessible_label }}">check_circle</span>
++          <span class="material-symbols-outlined text-green-500" role="img" aria-label="{{ r.status_accessible_label }}" title="{{ r.status_accessible_label }}">check_circle</span>
+           {% elif r.status_dot_tone == 'processing' %}
+-          <span class="material-symbols-outlined text-amber-500" title="{{ r.status_accessible_label }}">pending</span>
++          <span class="material-symbols-outlined text-amber-500" role="img" aria-label="{{ r.status_accessible_label }}" title="{{ r.status_accessible_label }}">pending</span>
+           {% elif r.status_dot_tone == 'review' %}
+-          <span class="material-symbols-outlined text-amber-500" title="{{ r.status_accessible_label }}">warning</span>
++          <span class="material-symbols-outlined text-amber-500" role="img" aria-label="{{ r.status_accessible_label }}" title="{{ r.status_accessible_label }}">warning</span>
+           {% elif r.status_dot_tone == 'queued' %}
+-          <span class="material-symbols-outlined text-slate-400" title="{{ r.status_accessible_label }}">schedule</span>
++          <span class="material-symbols-outlined text-slate-400" role="img" aria-label="{{ r.status_accessible_label }}" title="{{ r.status_accessible_label }}">schedule</span>
+           {% elif r.status_dot_tone in ['failed', 'quarantine'] %}
+-          <span class="material-symbols-outlined text-red-500" title="{{ r.status_accessible_label }}">error</span>
++          <span class="material-symbols-outlined text-red-500" role="img" aria-label="{{ r.status_accessible_label }}" title="{{ r.status_accessible_label }}">error</span>
+           {% elif r.status_dot_tone == 'stopped' %}
+-          <span class="material-symbols-outlined text-slate-500" title="{{ r.status_accessible_label }}">stop_circle</span>
++          <span class="material-symbols-outlined text-slate-500" role="img" aria-label="{{ r.status_accessible_label }}" title="{{ r.status_accessible_label }}">stop_circle</span>
            {% else %}
-           <span class="material-symbols-outlined text-slate-400" title="{{ r.status_accessible_label }}">radio_button_unchecked</span>
+-          <span class="material-symbols-outlined text-slate-400" title="{{ r.status_accessible_label }}">radio_button_unchecked</span>
++          <span class="material-symbols-outlined text-slate-400" role="img" aria-label="{{ r.status_accessible_label }}" title="{{ r.status_accessible_label }}">radio_button_unchecked</span>
            {% endif %}
-diff --git a/lan_app/templates/partials/control_center/system_bar.html b/lan_app/templates/partials/control_center/system_bar.html
-index b6c011b..7f296a0 100644
---- a/lan_app/templates/partials/control_center/system_bar.html
-+++ b/lan_app/templates/partials/control_center/system_bar.html
-@@ -13,7 +13,7 @@
-       {% if item.detail %}title="{{ item.detail }}"{% endif %}
-     >
-       {% if item.show_dot %}
--      <span class="w-2 h-2 rounded-full {% if item.tone == 'ok' %}bg-green-500{% elif item.tone == 'warn' %}bg-amber-500{% elif item.tone == 'error' %}bg-red-500{% else %}bg-slate-400{% endif %}" aria-hidden="true"></span>
-+      <span class="w-2 h-2 rounded-full {% if item.tone == 'healthy' %}bg-green-500{% elif item.tone == 'busy' %}bg-amber-500{% elif item.tone == 'degraded' %}bg-amber-500{% elif item.tone == 'offline' %}bg-red-500{% else %}bg-slate-400{% endif %}" aria-hidden="true"></span>
-       {% endif %}
-       <span>{{ item.label }}</span>
-       <strong class="text-slate-700">{{ item.value }}</strong>
+         </td>
+         <td class="px-4 py-3">
