@@ -1,35 +1,35 @@
 {% extends "base.html" %}
 {% block title %}Projects – LAN Transcriber{% endblock %}
 {% block content %}
-<h1>Projects</h1>
+<h1 class="text-3xl font-extrabold tracking-tight mb-5">Projects</h1>
 
-<div class="section">
-  <h2>Create project</h2>
-  <form method="post" action="/projects" style="display:flex;gap:8px;align-items:center">
-    <label style="font-size:12px">Name:</label>
-    <input type="text" name="name" required maxlength="120" placeholder="Project name" style="font:12px 'Courier New',monospace;border:1px solid #999;padding:3px 6px;width:240px">
-    <button class="btn" type="submit">Create</button>
+<div class="mb-5">
+  <h2 class="text-base font-bold tracking-tight mb-2">Create project</h2>
+  <form method="post" action="/projects" class="flex gap-2 items-center">
+    <label class="text-xs text-slate-500 font-bold">Name:</label>
+    <input type="text" name="name" required maxlength="120" placeholder="Project name" class="w-[240px] border border-slate-300 bg-white text-slate-900 rounded-xl px-3 py-2.5 min-h-[40px] text-sm focus:outline-none focus:border-primary/55 focus:ring-4 focus:ring-primary/10">
+    <button class="inline-flex items-center justify-center gap-2 min-h-[40px] px-3.5 py-2 border border-slate-300 rounded-full bg-white text-slate-900 cursor-pointer text-[13px] font-bold no-underline hover:bg-slate-50 transition-colors" type="submit">Create</button>
   </form>
 </div>
 
-<div class="section">
+<div class="mb-5">
   {% if items %}
-  <table>
+  <table class="w-full border-collapse text-sm bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm">
     <thead>
       <tr>
-        <th>ID</th>
-        <th>Name</th>
-        <th></th>
+        <th class="bg-slate-50 text-slate-500 text-[11px] font-bold uppercase tracking-wide px-3.5 py-3 text-left border-b border-slate-200">ID</th>
+        <th class="bg-slate-50 text-slate-500 text-[11px] font-bold uppercase tracking-wide px-3.5 py-3 text-left border-b border-slate-200">Name</th>
+        <th class="bg-slate-50 text-slate-500 text-[11px] font-bold uppercase tracking-wide px-3.5 py-3 text-left border-b border-slate-200"></th>
       </tr>
     </thead>
     <tbody>
       {% for p in items %}
-      <tr>
-        <td>{{ p.id }}</td>
-        <td>{{ p.name }}</td>
-        <td style="white-space:nowrap">
-          <form method="post" action="/projects/{{ p.id }}/delete" style="display:inline" onsubmit="return confirm('Delete project ' + this.dataset.name + '?')" data-name="{{ p.name }}">
-            <button class="btn btn-danger" type="submit">Delete</button>
+      <tr class="hover:bg-slate-50">
+        <td class="px-3.5 py-3 border-b border-slate-100">{{ p.id }}</td>
+        <td class="px-3.5 py-3 border-b border-slate-100">{{ p.name }}</td>
+        <td class="px-3.5 py-3 border-b border-slate-100 whitespace-nowrap">
+          <form method="post" action="/projects/{{ p.id }}/delete" class="inline" onsubmit="return confirm('Delete project ' + this.dataset.name + '?')" data-name="{{ p.name }}">
+            <button class="inline-flex items-center justify-center gap-2 min-h-[40px] px-3.5 py-2 border border-red-200 rounded-full text-red-700 bg-red-50 cursor-pointer text-[13px] font-bold no-underline hover:bg-red-100 transition-colors" type="submit">Delete</button>
           </form>
         </td>
       </tr>
@@ -37,7 +37,7 @@
     </tbody>
   </table>
   {% else %}
-  <p class="placeholder">No projects yet. Create one above.</p>
+  <p class="text-slate-500 italic py-5">No projects yet. Create one above.</p>
   {% endif %}
 </div>
 {% endblock %}

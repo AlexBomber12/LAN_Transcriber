@@ -1,12 +1,12 @@
-<div class="recording-progress-shell">
-  <div class="recording-progress-head">
+<div class="grid gap-2.5 px-3.5 py-3 border border-slate-200 rounded-xl bg-gradient-to-b from-white to-slate-50">
+  <div class="flex gap-2.5 items-center justify-between flex-wrap text-xs">
     <span><strong>Pipeline:</strong> {{ diagnostics.current_stage_label or stage_label }}</span>
     <span>{{ progress_percent }}%</span>
   </div>
-  <div class="recording-progress-track">
-    <div class="recording-progress-fill" style="width:{{ progress_percent }}%"></div>
+  <div class="w-full min-h-[14px] rounded-full border border-slate-300 bg-slate-100 overflow-hidden">
+    <div class="h-full min-h-[14px] rounded-full bg-gradient-to-r from-primary to-blue-400" style="width:{{ progress_percent }}%"></div>
   </div>
-  <div class="recording-progress-meta">
+  <div class="flex flex-wrap gap-2.5 text-[11px] text-slate-700">
     <span><strong>Stage:</strong> {{ diagnostics.current_stage_status_label }}</span>
     {% if diagnostics.chunk_text != '—' %}
     <span><strong>Chunk:</strong> {{ diagnostics.chunk_text }}</span>
@@ -24,7 +24,7 @@
     <span><strong>Stop:</strong> requested</span>
     {% endif %}
   </div>
-  <div class="recording-progress-footnote">
+  <div class="text-[11px] text-slate-500">
     stage=<code>{{ stage_code }}</code>
     {% if updated_at_display and updated_at_display != '—' %}
     &nbsp;updated={{ updated_at_display }}

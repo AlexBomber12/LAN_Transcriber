@@ -1,18 +1,18 @@
 {% extends "base.html" %}
 {% block title %}Upload – LAN Transcriber{% endblock %}
 {% block content %}
-<div class="standalone-shell">
-  <section class="standalone-header">
-    <div class="standalone-header-copy">
-      <p class="eyebrow">Fallback workspace</p>
-      <h1>Standalone Upload</h1>
-      <p class="standalone-header-note">
+<div class="grid gap-5 max-w-[1180px]">
+  <section class="flex justify-between gap-4 items-start flex-wrap">
+    <div class="grid gap-2">
+      <p class="text-primary text-[11px] font-extrabold tracking-[.12em] uppercase">Fallback workspace</p>
+      <h1 class="text-3xl font-extrabold tracking-tight">Standalone Upload</h1>
+      <p class="text-slate-500 max-w-[72ch]">
         Use this page when you only need intake. The Control Center remains the primary
         daily loop for upload, review, and export.
       </p>
     </div>
-    <div class="standalone-header-actions">
-      <a href="/" class="btn btn-primary">Back to Control Center</a>
+    <div class="flex gap-2 flex-wrap items-center">
+      <a href="/" class="inline-flex items-center justify-center gap-2 min-h-[40px] px-3.5 py-2 border border-primary rounded-full bg-primary text-white cursor-pointer text-[13px] font-bold no-underline hover:bg-blue-700 transition-colors">Back to Control Center</a>
     </div>
   </section>
 
