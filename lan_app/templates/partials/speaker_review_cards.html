@@ -1,182 +1,173 @@
 {% set speaker_review_compact = speaker_review_mode == 'compact' %}
 {% if rows %}
-<div class="speaker-review-list {% if speaker_review_compact %}speaker-review-list-compact{% else %}speaker-review-list-full{% endif %}">
+<div class="flex flex-col {% if speaker_review_compact %}gap-4{% else %}gap-6{% endif %}">
   {% for row in rows %}
-  <section class="speaker-card speaker-review-shell {% if speaker_review_compact %}speaker-review-shell-compact{% else %}speaker-review-shell-full{% endif %}">
-    <div class="speaker-card-head">
-      <div class="speaker-card-title">
-        <div class="speaker-avatar">{{ row.speaker }}</div>
+  <section class="{% if speaker_review_compact %}bg-slate-50 rounded-lg border border-slate-100 p-4{% else %}bg-white rounded-xl border border-slate-200 p-5 shadow-sm{% endif %}">
+    <div class="flex flex-wrap justify-between items-start gap-3 mb-4">
+      <div class="flex items-center gap-3">
+        <div class="size-8 bg-primary/10 text-primary rounded-full flex items-center justify-center font-bold text-xs">{{ row.speaker }}</div>
         <div>
-          <div class="speaker-section-label">Diarized speaker</div>
-          <h3>{{ row.display_label }}</h3>
-          <div class="speaker-card-meta stack-gap-xs">
+          {% if not speaker_review_compact %}
+          <div class="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Diarized speaker</div>
+          {% endif %}
+          <h3 class="text-sm font-semibold text-slate-900">{{ row.display_label }}</h3>
+          <div class="flex items-center gap-2 text-xs text-slate-500 mt-0.5">
             <span>{{ row.turn_count }} turns</span>
             <span>{{ '%.2f'|format(row.duration_sec or 0.0) }}s active</span>
             <span>{{ row.mapping_title }}</span>
           </div>
         </div>
       </div>
-      <div class="speaker-status-stack">
-        <span class="badge {{ row.state_badge_class }}">{{ row.state_badge_label }}</span>
+      <div class="flex items-center gap-2">
+        <span class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold border {{ row.state_badge_class }}">{{ row.state_badge_label }}</span>
         {% if row.trusted_sample_state %}
-        <span class="speaker-chip speaker-chip-ready">{{ row.trusted_sample_state.badge_label }}</span>
+        <span class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold bg-green-100 text-green-800 border border-green-200">{{ row.trusted_sample_state.badge_label }}</span>
         {% endif %}
       </div>
     </div>
 
-    <div class="speaker-review-shell-body">
-      <div class="speaker-review-primary">
-        <div class="speaker-context-grid">
-          <section class="embedded-card speaker-context-card">
-            <div class="speaker-section-label">Current decision</div>
-            <p class="speaker-context-title">{{ row.mapping_title }}</p>
-            <p>{{ row.mapping_detail }}</p>
-            <p class="inspector-note stack-gap-xs">{{ row.state_detail }}</p>
+    <div class="{% if speaker_review_compact %}{% else %}grid grid-cols-1 lg:grid-cols-[1fr_300px] gap-6{% endif %}">
+      <div class="flex flex-col gap-4">
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div class="bg-slate-50 rounded-lg border border-slate-100 p-4">
+            <div class="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">Current decision</div>
+            <p class="text-sm font-semibold text-slate-900">{{ row.mapping_title }}</p>
+            <p class="text-xs text-slate-600 mt-1">{{ row.mapping_detail }}</p>
+            <p class="text-xs text-slate-500 mt-1">{{ row.state_detail }}</p>
             {% if row.review_state == 'system_suggested' %}
-            <p class="inspector-note stack-gap-xs">Best suggestion score {{ '%.2f'|format(row.confidence or 0.0) }}</p>
+            <p class="text-xs text-slate-500 mt-1">Best suggestion score {{ '%.2f'|format(row.confidence or 0.0) }}</p>
             {% endif %}
             {% if row.low_confidence and row.assignment_threshold %}
-            <p class="speaker-warning-inline stack-gap-xs">
+            <p class="text-xs text-amber-600 mt-1">
               Below auto-match threshold {{ '%.2f'|format(row.assignment_threshold) }}.
             </p>
             {% endif %}
             {% if row.candidate_matches %}
-            <p class="inspector-note stack-gap-xs">
+            <p class="text-xs text-slate-500 mt-1">
               Suggestions:
               {% for candidate in row.candidate_matches %}
               {{ candidate.display_name }} ({{ '%.2f'|format(candidate.score) }}){% if not loop.last %}, {% endif %}
               {% endfor %}
             </p>
             {% endif %}
-          </section>
+          </div>
 
-          <section class="embedded-card speaker-context-card">
-            <div class="speaker-section-label">Recognition cue</div>
+          <div class="bg-slate-50 rounded-lg border border-slate-100 p-4">
+            <div class="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">Recognition cue</div>
             {% if row.preview_text %}
-            <p class="speaker-cue-text">{{ row.preview_text }}</p>
+            <p class="text-sm text-slate-700 italic">{{ row.preview_text }}</p>
             {% else %}
-            <p class="placeholder placeholder-inline">No transcript cue is available for this speaker yet.</p>
+            <p class="text-sm text-slate-400 italic">No transcript cue is available for this speaker yet.</p>
             {% endif %}
             {% if row.snippet_ui_state %}
-            <p class="inspector-note inspector-note-status stack-gap-sm" style="--inspector-note-accent: {{ row.snippet_ui_state.color }}">
+            <p class="text-xs mt-2" style="color: {{ row.snippet_ui_state.color }}">
               <strong>{{ row.snippet_ui_state.label }}:</strong> {{ row.snippet_ui_state.detail }}
             </p>
             {% endif %}
-          </section>
+          </div>
         </div>
 
-        <section class="speaker-snippet-panel">
-          <div class="speaker-snippet-panel-head">
+        <div class="bg-slate-50 rounded-lg border border-slate-100 p-4">
+          <div class="flex flex-wrap justify-between items-center gap-2 mb-3">
             <div>
-              <h4>Best snippet candidates</h4>
-              <p class="inspector-note">Use the clearest clip to recognize the voice or save a trusted training sample.</p>
+              <h4 class="text-sm font-bold text-slate-900">Best snippet candidates</h4>
+              <p class="text-xs text-slate-500">Use the clearest clip to recognize the voice or save a trusted training sample.</p>
             </div>
             {% if row.clean_snippets %}
-            <span class="speaker-chip speaker-chip-ready">{{ row.clean_snippets[:3]|length }} ready</span>
+            <span class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold bg-green-100 text-green-800 border border-green-200">{{ row.clean_snippets[:3]|length }} ready</span>
             {% else %}
-            <span class="speaker-chip speaker-chip-muted">No clean clips</span>
+            <span class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold bg-slate-100 text-slate-600 border border-slate-200">No clean clips</span>
             {% endif %}
           </div>
 
           {% if row.clean_snippets %}
-          <div class="speaker-snippet-grid">
+          <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
             {% for snippet in row.clean_snippets[:3] %}
-            <article class="speaker-snippet-card{% if snippet.recommended %} speaker-snippet-card-recommended{% endif %}">
-              <div class="speaker-snippet-card-head">
-                <div class="speaker-card-meta">
+            <article class="bg-white rounded-lg border {% if snippet.recommended %}border-primary/30 ring-1 ring-primary/20{% else %}border-slate-200{% endif %} p-3">
+              <div class="flex flex-wrap justify-between items-center gap-1 mb-2">
+                <div class="flex items-center gap-1 text-xs">
                   {% if snippet.recommended %}
-                  <span class="speaker-chip speaker-chip-ready">Best match</span>
+                  <span class="inline-flex items-center rounded-full px-1.5 py-0.5 text-[10px] font-semibold bg-green-100 text-green-800">Best match</span>
                   {% else %}
-                  <span class="speaker-chip speaker-chip-muted">Clean clip</span>
+                  <span class="inline-flex items-center rounded-full px-1.5 py-0.5 text-[10px] font-semibold bg-slate-100 text-slate-600">Clean clip</span>
                   {% endif %}
-                  <span>{{ snippet.clip_label }}</span>
+                  <span class="text-slate-500">{{ snippet.clip_label }}</span>
                 </div>
-                <span class="speaker-chip speaker-chip-quality">Purity {{ snippet.purity_label }}</span>
+                <span class="text-[10px] font-semibold text-primary">Purity {{ snippet.purity_label }}</span>
               </div>
-              <p class="speaker-snippet-meta">Source {{ snippet.source_label }}</p>
+              <p class="text-[10px] text-slate-500 mb-1">Source {{ snippet.source_label }}</p>
               {% if row.preview_text %}
-              <p class="speaker-snippet-cue">Cue: {{ row.preview_text }}</p>
+              <p class="text-[10px] text-slate-400 italic mb-2">Cue: {{ row.preview_text }}</p>
               {% endif %}
-              <audio controls preload="none" class="speaker-snippet-audio">
+              <audio controls preload="none" class="w-full h-8">
                 <source src="{{ snippet.audio_url }}" type="audio/wav">
               </audio>
-              <p class="speaker-snippet-choice">{{ snippet.choice_label }}</p>
+              <p class="text-[10px] text-slate-500 mt-1">{{ snippet.choice_label }}</p>
             </article>
             {% endfor %}
           </div>
           {% else %}
-          <div class="speaker-snippet-empty">
-            <p class="speaker-snippet-empty-title">{{ row.snippet_ui_state.label if row.snippet_ui_state else 'Snippets unavailable' }}</p>
-            <p>{{ row.snippet_ui_state.detail if row.snippet_ui_state else (row.no_clean_snippet_message or 'No clean snippets are available for this speaker yet.') }}</p>
+          <div class="text-center py-4">
+            <p class="text-sm font-semibold text-slate-500">{{ row.snippet_ui_state.label if row.snippet_ui_state else 'Snippets unavailable' }}</p>
+            <p class="text-xs text-slate-400 mt-1">{{ row.snippet_ui_state.detail if row.snippet_ui_state else (row.no_clean_snippet_message or 'No clean snippets are available for this speaker yet.') }}</p>
             {% if row.no_clean_snippet_message and row.snippet_ui_state and row.no_clean_snippet_message != row.snippet_ui_state.detail %}
-            <p class="inspector-note stack-gap-xs">{{ row.no_clean_snippet_message }}</p>
+            <p class="text-xs text-slate-400 mt-1">{{ row.no_clean_snippet_message }}</p>
             {% endif %}
           </div>
           {% endif %}
 
           {% if row.snippet_warnings %}
-          <div class="speaker-warning-list">
+          <div class="mt-3 space-y-1">
             {% for warning in row.snippet_warnings %}
-            <p class="speaker-warning">{{ warning }}</p>
+            <p class="text-xs text-amber-600">{{ warning }}</p>
             {% endfor %}
           </div>
           {% endif %}
-        </section>
+        </div>
       </div>
 
-      <div class="speaker-action-stack">
-        <section class="speaker-decision-card speaker-decision-card-primary">
-          <div class="speaker-action-head">
-            <div>
-              <h3>Confirm match</h3>
-              <p class="inspector-note">Assign a canonical identity across recordings.</p>
-            </div>
-          </div>
+      {% if not speaker_review_compact %}
+      <div class="flex flex-col gap-3">
+        <section class="bg-slate-50 rounded-lg border border-slate-100 p-4">
+          <h3 class="text-sm font-bold text-slate-900 mb-1">Confirm match</h3>
+          <p class="text-xs text-slate-500 mb-3">Assign a canonical identity across recordings.</p>
           {% if profiles %}
-          <form method="post" action="/ui/recordings/{{ rec.id }}/speakers/assign{{ recording_inspector.embedded_return_queries.speakers }}" class="speaker-form-stack">
+          <form method="post" action="/ui/recordings/{{ rec.id }}/speakers/assign{{ recording_inspector.embedded_return_queries.speakers }}" class="flex flex-col gap-2">
             <input type="hidden" name="diar_speaker_label" value="{{ row.speaker }}">
-            <div class="filter-field">
-              <label for="speaker-match-{{ rec.id }}-{{ row.speaker }}">Canonical speaker</label>
-              <select id="speaker-match-{{ rec.id }}-{{ row.speaker }}" name="voice_profile_id">
+            <div>
+              <label for="speaker-match-{{ rec.id }}-{{ row.speaker }}" class="text-xs font-medium text-slate-700">Canonical speaker</label>
+              <select id="speaker-match-{{ rec.id }}-{{ row.speaker }}" name="voice_profile_id" class="w-full bg-white border border-slate-200 rounded text-xs py-1.5 px-2 text-slate-700 focus:ring-1 focus:ring-primary mt-1">
                 <option value="">Choose canonical speaker</option>
                 {% for vp in profiles %}
                 <option value="{{ vp.id }}" {% if row.global_voice_profile_id == vp.id %}selected{% endif %}>{{ vp.display_name }}</option>
                 {% endfor %}
               </select>
             </div>
-            <button class="btn speaker-action-submit speaker-action-submit-primary" type="submit">Confirm match</button>
+            <button class="w-full px-3 py-1.5 bg-primary text-white text-xs font-bold rounded hover:bg-primary/90 transition-colors" type="submit">Confirm match</button>
           </form>
           {% else %}
-          <p class="placeholder placeholder-inline">
+          <p class="text-xs text-slate-400 italic">
             No canonical speakers exist yet. {% if speaker_review_compact %}Use the full-page inspector or Voices to create one first.{% else %}Use Voices to create one first.{% endif %}
           </p>
           {% endif %}
         </section>
 
-        <section class="speaker-decision-card">
-          <div class="speaker-action-head">
-            <div>
-              <h3>Keep unknown</h3>
-              <p class="inspector-note">Resolve review without naming the speaker or changing the global speaker bank.</p>
-            </div>
-          </div>
-          <form method="post" action="/ui/recordings/{{ rec.id }}/speakers/keep-unknown{{ recording_inspector.embedded_return_queries.speakers }}" class="speaker-form-stack">
+        <section class="bg-slate-50 rounded-lg border border-slate-100 p-4">
+          <h3 class="text-sm font-bold text-slate-900 mb-1">Keep unknown</h3>
+          <p class="text-xs text-slate-500 mb-3">Resolve review without naming the speaker or changing the global speaker bank.</p>
+          <form method="post" action="/ui/recordings/{{ rec.id }}/speakers/keep-unknown{{ recording_inspector.embedded_return_queries.speakers }}" class="flex flex-col gap-2">
             <input type="hidden" name="diar_speaker_label" value="{{ row.speaker }}">
-            <button class="btn speaker-action-submit" type="submit">Keep unknown</button>
+            <button class="w-full px-3 py-1.5 bg-white border border-slate-200 text-xs font-bold rounded text-slate-700 hover:bg-slate-50 transition-colors" type="submit">Keep unknown</button>
           </form>
         </section>
 
-        <section class="speaker-decision-card">
-          <div class="speaker-action-head">
-            <div>
-              <h3>Local label only</h3>
-              <p class="inspector-note">Name this speaker only inside this recording and its export.</p>
-            </div>
-          </div>
-          <form method="post" action="/ui/recordings/{{ rec.id }}/speakers/local-label{{ recording_inspector.embedded_return_queries.speakers }}" class="speaker-form-stack">
+        <section class="bg-slate-50 rounded-lg border border-slate-100 p-4">
+          <h3 class="text-sm font-bold text-slate-900 mb-1">Local label only</h3>
+          <p class="text-xs text-slate-500 mb-3">Name this speaker only inside this recording and its export.</p>
+          <form method="post" action="/ui/recordings/{{ rec.id }}/speakers/local-label{{ recording_inspector.embedded_return_queries.speakers }}" class="flex flex-col gap-2">
             <input type="hidden" name="diar_speaker_label" value="{{ row.speaker }}">
-            <div class="filter-field">
-              <label for="speaker-local-{{ rec.id }}-{{ row.speaker }}">Recording-only name</label>
+            <div>
+              <label for="speaker-local-{{ rec.id }}-{{ row.speaker }}" class="text-xs font-medium text-slate-700">Recording-only name</label>
               <input
                 id="speaker-local-{{ rec.id }}-{{ row.speaker }}"
                 type="text"
@@ -184,67 +175,63 @@
                 value="{{ row.local_display_name }}"
                 maxlength="120"
                 placeholder="Recording-only name"
+                class="w-full bg-white border border-slate-200 rounded text-xs py-1.5 px-2 text-slate-700 focus:ring-1 focus:ring-primary mt-1"
               >
             </div>
-            <button class="btn speaker-action-submit" type="submit">Local label only</button>
+            <button class="w-full px-3 py-1.5 bg-white border border-slate-200 text-xs font-bold rounded text-slate-700 hover:bg-slate-50 transition-colors" type="submit">Local label only</button>
           </form>
         </section>
 
-        <section class="speaker-decision-card speaker-decision-card-secondary">
-          <div class="speaker-action-head">
-            <div>
-              <div class="speaker-section-label">Training only</div>
-              <h3>Add trusted sample</h3>
-              <p class="inspector-note">Store a clean clip as training data without changing the current review decision.</p>
-            </div>
-          </div>
+        <section class="bg-slate-50 rounded-lg border border-slate-100 p-4">
+          <div class="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">Training only</div>
+          <h3 class="text-sm font-bold text-slate-900 mb-1">Add trusted sample</h3>
+          <p class="text-xs text-slate-500 mb-3">Store a clean clip as training data without changing the current review decision.</p>
 
           {% if row.trusted_sample_state %}
-          <div class="speaker-trusted-sample-state">
-            <div class="speaker-status-stack">
-              <span class="badge s-Ready">{{ row.trusted_sample_state.badge_label }}</span>
-              <span>{{ row.trusted_sample_state.detail }}</span>
-            </div>
+          <div class="flex items-center gap-2 mb-3">
+            <span class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold bg-green-100 text-green-800 border border-green-200">{{ row.trusted_sample_state.badge_label }}</span>
+            <span class="text-xs text-slate-500">{{ row.trusted_sample_state.detail }}</span>
           </div>
           {% endif %}
 
           {% if profiles %}
-          <form method="post" action="/ui/recordings/{{ rec.id }}/speakers/add-sample{{ recording_inspector.embedded_return_queries.speakers }}" class="speaker-form-stack">
+          <form method="post" action="/ui/recordings/{{ rec.id }}/speakers/add-sample{{ recording_inspector.embedded_return_queries.speakers }}" class="flex flex-col gap-2">
             <input type="hidden" name="diar_speaker_label" value="{{ row.speaker }}">
-            <div class="filter-field">
-              <label for="speaker-sample-profile-{{ rec.id }}-{{ row.speaker }}">Canonical speaker</label>
-              <select id="speaker-sample-profile-{{ rec.id }}-{{ row.speaker }}" name="voice_profile_id">
+            <div>
+              <label for="speaker-sample-profile-{{ rec.id }}-{{ row.speaker }}" class="text-xs font-medium text-slate-700">Canonical speaker</label>
+              <select id="speaker-sample-profile-{{ rec.id }}-{{ row.speaker }}" name="voice_profile_id" class="w-full bg-white border border-slate-200 rounded text-xs py-1.5 px-2 text-slate-700 focus:ring-1 focus:ring-primary mt-1">
                 <option value="">Choose canonical speaker</option>
                 {% for vp in profiles %}
                 <option value="{{ vp.id }}" {% if row.sample_voice_profile_id == vp.id %}selected{% endif %}>{{ vp.display_name }}</option>
                 {% endfor %}
               </select>
             </div>
-            <div class="filter-field">
-              <label for="speaker-sample-snippet-{{ rec.id }}-{{ row.speaker }}">Snippet choice</label>
-              <select id="speaker-sample-snippet-{{ rec.id }}-{{ row.speaker }}" name="snippet_path" {% if not row.clean_snippets %}disabled{% endif %}>
+            <div>
+              <label for="speaker-sample-snippet-{{ rec.id }}-{{ row.speaker }}" class="text-xs font-medium text-slate-700">Snippet choice</label>
+              <select id="speaker-sample-snippet-{{ rec.id }}-{{ row.speaker }}" name="snippet_path" {% if not row.clean_snippets %}disabled{% endif %} class="w-full bg-white border border-slate-200 rounded text-xs py-1.5 px-2 text-slate-700 focus:ring-1 focus:ring-primary mt-1 disabled:opacity-50">
                 {% for snippet in row.clean_snippets %}
                 <option value="{{ snippet.relative_path }}" {% if snippet.recommended %}selected{% endif %}>{{ snippet.choice_label }}</option>
                 {% endfor %}
               </select>
             </div>
-            <button class="btn speaker-action-submit" type="submit" {% if not row.clean_snippets %}disabled{% endif %}>Add trusted sample</button>
+            <button class="w-full px-3 py-1.5 bg-white border border-slate-200 text-xs font-bold rounded text-slate-700 hover:bg-slate-50 transition-colors disabled:opacity-50" type="submit" {% if not row.clean_snippets %}disabled{% endif %}>Add trusted sample</button>
           </form>
           {% else %}
-          <p class="placeholder placeholder-inline">Create a canonical speaker first, then add trusted samples from clean clips.</p>
+          <p class="text-xs text-slate-400 italic">Create a canonical speaker first, then add trusted samples from clean clips.</p>
           {% endif %}
 
           {% if not row.clean_snippets and row.snippet_ui_state and row.snippet_ui_state.add_sample_message %}
-          <p class="speaker-warning-inline stack-gap-xs">{{ row.snippet_ui_state.add_sample_message }}</p>
+          <p class="text-xs text-amber-600 mt-2">{{ row.snippet_ui_state.add_sample_message }}</p>
           {% elif row.no_clean_snippet_message %}
-          <p class="speaker-warning-inline stack-gap-xs">{{ row.no_clean_snippet_message }}</p>
+          <p class="text-xs text-amber-600 mt-2">{{ row.no_clean_snippet_message }}</p>
           {% endif %}
         </section>
       </div>
+      {% endif %}
     </div>
   </section>
   {% endfor %}
 </div>
 {% else %}
-<p class="placeholder">No speaker turns available yet. Run diarization first.</p>
+<p class="text-sm text-slate-400 italic">No speaker turns available yet. Run diarization first.</p>
 {% endif %}

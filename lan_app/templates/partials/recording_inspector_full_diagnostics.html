@@ -3,237 +3,223 @@
 {% set project_items = prj.projects or [] %}
 {% set lang = language or {} %}
 
-<div class="diagnostics-grid">
-  <section class="inspector-section-card">
-    <div class="inspector-section-head">
-      <div>
-        <h2>Diagnostics</h2>
-      </div>
-    </div>
-    <div class="info-grid">
-      <span class="k">Primary reason</span><span class="v">{{ diagnostics.primary_reason_text or '—' }}</span>
-      <span class="k">Reason code</span><span class="v">{% if diagnostics.primary_reason_code %}<code>{{ diagnostics.primary_reason_code }}</code>{% else %}—{% endif %}</span>
-      <span class="k">Current / last stage</span><span class="v">{{ diagnostics.current_stage_label or '—' }}</span>
-      <span class="k">Stage status</span><span class="v">{{ diagnostics.current_stage_status_label or '—' }}</span>
-      <span class="k">Chunk</span><span class="v">{{ diagnostics.chunk_text or '—' }}</span>
-      <span class="k">Stage attempt</span><span class="v">{{ diagnostics.stage_attempt_text or '—' }}</span>
-      <span class="k">Chunk attempt</span><span class="v">{{ diagnostics.chunk_attempt_text or '—' }}</span>
-      <span class="k">Stage elapsed</span><span class="v">{{ diagnostics.stage_elapsed_display or '—' }}</span>
-      <span class="k">Chunk elapsed</span><span class="v">{{ diagnostics.chunk_elapsed_display or '—' }}</span>
-      <span class="k">Stop mode</span><span class="v">{{ diagnostics.stop_mode or '—' }}</span>
-      <span class="k">Retry wrapper</span><span class="v">{{ diagnostics.wrapper_reason_text or '—' }}</span>
-      <span class="k">Reason detail</span><span class="v">{{ diagnostics.primary_reason_detail or diagnostics.stop_reason_text or '—' }}</span>
+<div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+  <!-- Diagnostics -->
+  <section class="bg-white rounded-xl border border-slate-200 p-5 shadow-sm">
+    <h3 class="text-base font-bold text-slate-900 mb-4">Diagnostics</h3>
+    <div class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-sm">
+      <span class="text-slate-500">Primary reason</span><span class="font-medium text-slate-900">{{ diagnostics.primary_reason_text or '—' }}</span>
+      <span class="text-slate-500">Reason code</span><span class="font-medium text-slate-900">{% if diagnostics.primary_reason_code %}<code class="px-1.5 py-0.5 bg-slate-100 rounded text-xs font-mono">{{ diagnostics.primary_reason_code }}</code>{% else %}—{% endif %}</span>
+      <span class="text-slate-500">Current / last stage</span><span class="font-medium text-slate-900">{{ diagnostics.current_stage_label or '—' }}</span>
+      <span class="text-slate-500">Stage status</span><span class="font-medium text-slate-900">{{ diagnostics.current_stage_status_label or '—' }}</span>
+      <span class="text-slate-500">Chunk</span><span class="font-medium text-slate-900">{{ diagnostics.chunk_text or '—' }}</span>
+      <span class="text-slate-500">Stage attempt</span><span class="font-medium text-slate-900">{{ diagnostics.stage_attempt_text or '—' }}</span>
+      <span class="text-slate-500">Chunk attempt</span><span class="font-medium text-slate-900">{{ diagnostics.chunk_attempt_text or '—' }}</span>
+      <span class="text-slate-500">Stage elapsed</span><span class="font-medium text-slate-900">{{ diagnostics.stage_elapsed_display or '—' }}</span>
+      <span class="text-slate-500">Chunk elapsed</span><span class="font-medium text-slate-900">{{ diagnostics.chunk_elapsed_display or '—' }}</span>
+      <span class="text-slate-500">Stop mode</span><span class="font-medium text-slate-900">{{ diagnostics.stop_mode or '—' }}</span>
+      <span class="text-slate-500">Retry wrapper</span><span class="font-medium text-slate-900">{{ diagnostics.wrapper_reason_text or '—' }}</span>
+      <span class="text-slate-500">Reason detail</span><span class="font-medium text-slate-900">{{ diagnostics.primary_reason_detail or diagnostics.stop_reason_text or '—' }}</span>
     </div>
   </section>
 
-  <section class="inspector-section-card">
-    <div class="inspector-section-head">
-      <div>
-        <h2>Project Assignment</h2>
-        <p class="inspector-note">Project choice, calendar context, and routing evidence are grouped here.</p>
-      </div>
+  <!-- Project Assignment -->
+  <section class="bg-white rounded-xl border border-slate-200 p-5 shadow-sm">
+    <div class="mb-4">
+      <h3 class="text-base font-bold text-slate-900">Project Assignment</h3>
+      <p class="text-xs text-slate-500 mt-1">Project choice, calendar context, and routing evidence are grouped here.</p>
     </div>
 
-    <div class="info-grid">
-      <span class="k">Current project</span><span class="v">{{ prj.selected_project_name or (prj.selected_project_id and ('#' ~ prj.selected_project_id)) or 'Unassigned' }}</span>
-      <span class="k">Suggested project</span><span class="v">{{ prj.suggested_project_name or (prj.suggested_project_id and ('#' ~ prj.suggested_project_id)) or '—' }}</span>
-      <span class="k">Confidence</span><span class="v">{{ '%.2f'|format(prj.confidence or 0.0) }}</span>
-      <span class="k">Auto-select threshold</span><span class="v">{{ '%.2f'|format(prj.threshold or 0.0) }}</span>
-      <span class="k">Training examples (total)</span><span class="v">{{ prj.training_examples_total or 0 }}</span>
-      <span class="k">Training examples (this project)</span><span class="v">{{ prj.training_examples_selected_project or 0 }}</span>
+    <div class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-sm mb-4">
+      <span class="text-slate-500">Current project</span><span class="font-medium text-slate-900">{{ prj.selected_project_name or (prj.selected_project_id and ('#' ~ prj.selected_project_id)) or 'Unassigned' }}</span>
+      <span class="text-slate-500">Suggested project</span><span class="font-medium text-slate-900">{{ prj.suggested_project_name or (prj.suggested_project_id and ('#' ~ prj.suggested_project_id)) or '—' }}</span>
+      <span class="text-slate-500">Confidence</span><span class="font-medium text-slate-900">{{ '%.2f'|format(prj.confidence or 0.0) }}</span>
+      <span class="text-slate-500">Auto-select threshold</span><span class="font-medium text-slate-900">{{ '%.2f'|format(prj.threshold or 0.0) }}</span>
+      <span class="text-slate-500">Training examples (total)</span><span class="font-medium text-slate-900">{{ prj.training_examples_total or 0 }}</span>
+      <span class="text-slate-500">Training examples (this project)</span><span class="font-medium text-slate-900">{{ prj.training_examples_selected_project or 0 }}</span>
     </div>
 
     {% if (prj.confidence or 0.0) < (prj.threshold or 0.0) %}
-    <div class="page-notice">Confidence is below threshold; this recording should remain in manual review.</div>
+    <div class="px-4 py-2 bg-amber-50 border border-amber-200 rounded-lg text-xs text-amber-700 mb-4">Confidence is below threshold; this recording should remain in manual review.</div>
     {% endif %}
 
-    <form method="post" action="/ui/recordings/{{ rec.id }}/project" style="margin-top:10px">
-      <div class="form-row">
-        <label for="project_id">Project</label>
-        <select id="project_id" name="project_id" style="width:280px">
+    <form method="post" action="/ui/recordings/{{ rec.id }}/project" class="flex flex-col gap-3 mb-6">
+      <div class="flex items-center gap-3">
+        <label for="project_id" class="text-sm font-medium text-slate-700 w-32">Project</label>
+        <select id="project_id" name="project_id" class="bg-slate-50 border border-slate-200 rounded text-sm py-1.5 px-3 text-slate-700 focus:ring-1 focus:ring-primary focus:border-primary w-72">
           <option value="">Unassigned</option>
           {% for p in project_items %}
           <option value="{{ p.id }}" {% if prj.selected_project_id == p.id %}selected{% endif %}>{{ p.name }}</option>
           {% endfor %}
         </select>
       </div>
-      <div class="form-row">
-        <label for="train_routing">Train routing</label>
-        <input id="train_routing" type="checkbox" name="train_routing" value="1" checked>
-        <span class="inspector-note">Store this manual choice as a routing training example.</span>
+      <div class="flex items-center gap-3">
+        <label for="train_routing" class="text-sm font-medium text-slate-700 w-32">Train routing</label>
+        <input id="train_routing" type="checkbox" name="train_routing" value="1" checked class="rounded border-slate-300 text-primary focus:ring-primary">
+        <span class="text-xs text-slate-500">Store this manual choice as a routing training example.</span>
       </div>
-      <div class="filters" style="margin-top:8px">
-        <button type="submit" class="btn">Save project</button>
+      <div class="flex items-center gap-3 mt-1">
+        <span class="w-32"></span>
+        <button type="submit" class="px-4 py-2 bg-primary text-white text-sm font-bold rounded hover:bg-primary/90 transition-colors">Save project</button>
       </div>
     </form>
 
-    <h3>Routing Rationale</h3>
+    <h4 class="text-sm font-bold text-slate-900 mb-2">Routing Rationale</h4>
     {% if prj.rationale %}
-    <ul class="summary-list">
+    <ul class="list-disc list-inside space-y-1 mb-4">
       {% for reason in prj.rationale %}
-      <li>{{ reason }}</li>
+      <li class="text-sm text-slate-700">{{ reason }}</li>
       {% endfor %}
     </ul>
     {% else %}
-    <p class="placeholder">No routing rationale is available yet.</p>
+    <p class="text-sm text-slate-400 italic mb-4">No routing rationale is available yet.</p>
     {% endif %}
 
     {% if cal.error_message %}
-    <div class="page-notice">{{ cal.error_message }}</div>
+    <div class="px-4 py-2 bg-red-50 border border-red-200 rounded-lg text-xs text-red-700 mb-2">{{ cal.error_message }}</div>
     {% endif %}
     {% if cal.warnings %}
       {% for warning in cal.warnings %}
-      <div class="page-notice">{{ warning }}</div>
+      <div class="px-4 py-2 bg-amber-50 border border-amber-200 rounded-lg text-xs text-amber-700 mb-2">{{ warning }}</div>
       {% endfor %}
     {% endif %}
 
-    <details class="inspector-disclosure"{% if cal.selected or cal.candidates %} open{% endif %}>
-      <summary>Calendar Match</summary>
-      {% if cal.selected %}
-      <div class="speaker-snippet-panel">
-        <div>
-          <strong>{{ cal.selected.subject_display }}</strong>
-          <p class="inspector-note">{{ cal.selected.starts_at_display }} → {{ cal.selected.ends_at_display }}</p>
+    <details class="border border-slate-200 rounded-lg overflow-hidden"{% if cal.selected or cal.candidates %} open{% endif %}>
+      <summary class="px-4 py-3 bg-slate-50 text-sm font-bold text-slate-900 cursor-pointer hover:bg-slate-100 transition-colors">Calendar Match</summary>
+      <div class="p-4">
+        {% if cal.selected %}
+        <div class="bg-slate-50 rounded-lg p-4 border border-slate-100 mb-4">
+          <div class="mb-2">
+            <strong class="text-sm font-semibold text-slate-900">{{ cal.selected.subject_display }}</strong>
+            <p class="text-xs text-slate-500 mt-1">{{ cal.selected.starts_at_display }} → {{ cal.selected.ends_at_display }}</p>
+          </div>
+          <div class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
+            <span class="text-slate-500">Source</span><span class="font-medium text-slate-900">{{ cal.selected.source_label }}</span>
+            <span class="text-slate-500">Confidence</span><span class="font-medium text-slate-900">{{ cal.selected.confidence_display }}</span>
+            <span class="text-slate-500">Organizer</span><span class="font-medium text-slate-900">{{ cal.selected.organizer_display }}</span>
+            <span class="text-slate-500">Attendees</span><span class="font-medium text-slate-900">{{ cal.selected.attendees_label }}</span>
+          </div>
+          {% if cal.selected.rationale_rows %}
+          <ul class="list-disc list-inside space-y-1 mt-3">
+            {% for reason in cal.selected.rationale_rows %}
+            <li class="text-sm text-slate-700">{{ reason }}</li>
+            {% endfor %}
+          </ul>
+          {% endif %}
+          <form method="post" action="/ui/recordings/{{ rec.id }}/calendar/select" class="mt-3">
+            <button type="submit" class="px-3 py-1.5 bg-white border border-slate-200 text-xs font-bold rounded hover:bg-slate-50 transition-colors">Clear selection</button>
+          </form>
         </div>
-        <div class="inspector-detail-list">
-          <div class="inspector-detail-row">
-            <span class="inspector-detail-label">Source</span>
-            <strong class="inspector-detail-value">{{ cal.selected.source_label }}</strong>
-          </div>
-          <div class="inspector-detail-row">
-            <span class="inspector-detail-label">Confidence</span>
-            <strong class="inspector-detail-value">{{ cal.selected.confidence_display }}</strong>
-          </div>
-          <div class="inspector-detail-row">
-            <span class="inspector-detail-label">Organizer</span>
-            <strong class="inspector-detail-value">{{ cal.selected.organizer_display }}</strong>
-          </div>
-          <div class="inspector-detail-row">
-            <span class="inspector-detail-label">Attendees</span>
-            <strong class="inspector-detail-value">{{ cal.selected.attendees_label }}</strong>
-          </div>
-        </div>
-        {% if cal.selected.rationale_rows %}
-        <ul class="summary-list">
-          {% for reason in cal.selected.rationale_rows %}
-          <li>{{ reason }}</li>
-          {% endfor %}
-        </ul>
+        {% else %}
+        <p class="text-sm text-slate-400 italic mb-4">No calendar event is selected for this recording.</p>
         {% endif %}
-        <form method="post" action="/ui/recordings/{{ rec.id }}/calendar/select">
-          <button type="submit" class="btn">Clear selection</button>
-        </form>
-      </div>
-      {% else %}
-      <p class="placeholder">No calendar event is selected for this recording.</p>
-      {% endif %}
 
-      {% if cal.candidates %}
-      <table>
-        <thead>
-          <tr>
-            <th>Event</th>
-            <th>When</th>
-            <th>Source</th>
-            <th>Confidence</th>
-            <th>Attendees</th>
-            <th>Rationale</th>
-            <th>Action</th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for candidate in cal.candidates %}
-          <tr>
-            <td style="white-space:normal;max-width:220px">
-              <div><strong>{{ candidate.subject_display }}</strong></div>
-              <div style="margin-top:4px;color:#555">Organizer: {{ candidate.organizer_display }}</div>
-            </td>
-            <td>{{ candidate.starts_at_display }} → {{ candidate.ends_at_display }}</td>
-            <td>{{ candidate.source_label }}</td>
-            <td>
-              {{ candidate.confidence_display }}
-              {% if candidate.selected %}
-              <div style="margin-top:4px"><span class="badge s-Ready">Selected</span></div>
-              {% endif %}
-            </td>
-            <td title="{{ candidate.attendees_label }}">{{ candidate.attendees_label }}</td>
-            <td style="white-space:normal;max-width:320px">
-              {% if candidate.rationale_rows %}
-                {% for reason in candidate.rationale_rows %}
-                <div>{{ reason }}</div>
-                {% endfor %}
-              {% else %}
-              —
-              {% endif %}
-            </td>
-            <td>
-              {% if candidate.selected %}
-              <span class="placeholder" style="padding:0">Current</span>
-              {% else %}
-              <form method="post" action="/ui/recordings/{{ rec.id }}/calendar/select">
-                <input type="hidden" name="event_id" value="{{ candidate.event_id }}">
-                <button type="submit" class="btn">Choose</button>
-              </form>
-              {% endif %}
-            </td>
-          </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-      {% elif not cal.selected %}
-      <p class="placeholder">No calendar candidates are stored for this recording yet.</p>
-      {% endif %}
+        {% if cal.candidates %}
+        <div class="overflow-x-auto">
+          <table class="w-full text-left text-sm">
+            <thead class="bg-slate-50 text-slate-500 font-semibold text-xs uppercase tracking-wider">
+              <tr>
+                <th class="px-4 py-3">Event</th>
+                <th class="px-4 py-3">When</th>
+                <th class="px-4 py-3">Source</th>
+                <th class="px-4 py-3">Confidence</th>
+                <th class="px-4 py-3">Attendees</th>
+                <th class="px-4 py-3">Rationale</th>
+                <th class="px-4 py-3">Action</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-slate-100">
+              {% for candidate in cal.candidates %}
+              <tr>
+                <td class="px-4 py-3 max-w-[220px]">
+                  <div><strong class="text-sm font-semibold">{{ candidate.subject_display }}</strong></div>
+                  <div class="text-xs text-slate-500 mt-1">Organizer: {{ candidate.organizer_display }}</div>
+                </td>
+                <td class="px-4 py-3 whitespace-nowrap">{{ candidate.starts_at_display }} → {{ candidate.ends_at_display }}</td>
+                <td class="px-4 py-3">{{ candidate.source_label }}</td>
+                <td class="px-4 py-3">
+                  {{ candidate.confidence_display }}
+                  {% if candidate.selected %}
+                  <div class="mt-1"><span class="inline-flex items-center rounded-full bg-green-100 px-2 py-0.5 text-xs font-semibold text-green-800 border border-green-200">Selected</span></div>
+                  {% endif %}
+                </td>
+                <td class="px-4 py-3" title="{{ candidate.attendees_label }}">{{ candidate.attendees_label }}</td>
+                <td class="px-4 py-3 max-w-[320px]">
+                  {% if candidate.rationale_rows %}
+                    {% for reason in candidate.rationale_rows %}
+                    <div class="text-xs text-slate-600">{{ reason }}</div>
+                    {% endfor %}
+                  {% else %}
+                  —
+                  {% endif %}
+                </td>
+                <td class="px-4 py-3">
+                  {% if candidate.selected %}
+                  <span class="text-xs text-slate-400 italic">Current</span>
+                  {% else %}
+                  <form method="post" action="/ui/recordings/{{ rec.id }}/calendar/select">
+                    <input type="hidden" name="event_id" value="{{ candidate.event_id }}">
+                    <button type="submit" class="px-3 py-1.5 bg-primary text-white text-xs font-bold rounded hover:bg-primary/90 transition-colors">Choose</button>
+                  </form>
+                  {% endif %}
+                </td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% elif not cal.selected %}
+        <p class="text-sm text-slate-400 italic">No calendar candidates are stored for this recording yet.</p>
+        {% endif %}
+      </div>
     </details>
   </section>
 </div>
 
-<div class="diagnostics-grid">
-  <section class="inspector-section-card">
-    <div class="inspector-section-head">
-      <div>
-        <h2>Detected Languages</h2>
-      </div>
+<div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mt-6">
+  <!-- Detected Languages -->
+  <section class="bg-white rounded-xl border border-slate-200 p-5 shadow-sm">
+    <h3 class="text-base font-bold text-slate-900 mb-4">Detected Languages</h3>
+
+    <div class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-sm mb-4">
+      <span class="text-slate-500">Detected language</span><span class="font-medium text-slate-900">{{ lang.detected_label or '—' }}</span>
+      <span class="text-slate-500">Dominant language</span><span class="font-medium text-slate-900">{{ lang.dominant_label or '—' }}</span>
+      <span class="text-slate-500">Mixed-language meeting</span><span class="font-medium text-slate-900">{{ 'Yes' if lang.is_mixed else 'No' }}</span>
+      <span class="text-slate-500">Current summary target</span><span class="font-medium text-slate-900">{{ lang.target_summary_language_label or '—' }}</span>
+      <span class="text-slate-500">Transcript override</span><span class="font-medium text-slate-900">{{ lang.transcript_language_override_label or '—' }}</span>
     </div>
 
-    <div class="info-grid">
-      <span class="k">Detected language</span><span class="v">{{ lang.detected_label or '—' }}</span>
-      <span class="k">Dominant language</span><span class="v">{{ lang.dominant_label or '—' }}</span>
-      <span class="k">Mixed-language meeting</span><span class="v">{{ 'Yes' if lang.is_mixed else 'No' }}</span>
-      <span class="k">Current summary target</span><span class="v">{{ lang.target_summary_language_label or '—' }}</span>
-      <span class="k">Transcript override</span><span class="v">{{ lang.transcript_language_override_label or '—' }}</span>
-    </div>
-
-    <form method="post" action="/ui/recordings/{{ rec.id }}/language/settings" style="margin-top:10px">
-      <div class="form-row">
-        <label for="target_summary_language">target_summary_language</label>
-        <select id="target_summary_language" name="target_summary_language">
+    <form method="post" action="/ui/recordings/{{ rec.id }}/language/settings" class="flex flex-col gap-3 mb-6">
+      <div class="flex items-center gap-3">
+        <label for="target_summary_language" class="text-sm font-medium text-slate-700 w-48">target_summary_language</label>
+        <select id="target_summary_language" name="target_summary_language" class="bg-slate-50 border border-slate-200 rounded text-sm py-1.5 px-3 text-slate-700 focus:ring-1 focus:ring-primary focus:border-primary flex-1">
           <option value="" {% if not lang.target_summary_language %}selected{% endif %}>Auto (dominant language)</option>
           {% for opt in lang.options or [] %}
           <option value="{{ opt.code }}" {% if lang.target_summary_language == opt.code %}selected{% endif %}>{{ opt.label }}</option>
           {% endfor %}
         </select>
       </div>
-      <div class="form-row">
-        <label for="transcript_language_override">transcript_language_override</label>
-        <select id="transcript_language_override" name="transcript_language_override">
+      <div class="flex items-center gap-3">
+        <label for="transcript_language_override" class="text-sm font-medium text-slate-700 w-48">transcript_language_override</label>
+        <select id="transcript_language_override" name="transcript_language_override" class="bg-slate-50 border border-slate-200 rounded text-sm py-1.5 px-3 text-slate-700 focus:ring-1 focus:ring-primary focus:border-primary flex-1">
           <option value="">None (auto detect)</option>
           {% for opt in lang.options or [] %}
           <option value="{{ opt.code }}" {% if lang.transcript_language_override == opt.code %}selected{% endif %}>{{ opt.label }}</option>
           {% endfor %}
         </select>
       </div>
-      <div class="filters" style="margin-top:8px">
-        <button type="submit" class="btn">Save overrides</button>
+      <div class="flex items-center gap-2 mt-1">
+        <button type="submit" class="px-4 py-2 bg-primary text-white text-sm font-bold rounded hover:bg-primary/90 transition-colors">Save overrides</button>
         <button
           type="submit"
-          class="btn"
+          class="px-4 py-2 bg-white border border-slate-200 text-sm font-bold rounded text-slate-700 hover:bg-slate-50 transition-colors"
           formaction="/ui/recordings/{{ rec.id }}/language/resummarize"
         >
           Re-summarize (LLM only)
         </button>
         <button
           type="submit"
-          class="btn btn-danger"
+          class="px-4 py-2 bg-red-600 text-white text-sm font-bold rounded hover:bg-red-700 transition-colors"
           formaction="/ui/recordings/{{ rec.id }}/language/retranscribe"
           onclick="return confirm('Re-transcribe reruns STT and diarization. Continue?')"
         >
@@ -242,157 +228,173 @@
       </div>
     </form>
 
-    <details class="inspector-disclosure"{% if lang.distribution or lang.spans %} open{% endif %}>
-      <summary>Language Distribution and Spans</summary>
-      {% if lang.distribution %}
-      <h3>Language Distribution</h3>
-      <table>
-        <thead>
-          <tr>
-            <th>Language</th>
-            <th>Share (%)</th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for row in lang.distribution %}
-          <tr>
-            <td>{{ row.label }}</td>
-            <td>{{ '%.2f'|format(row.percent) }}</td>
-          </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-      {% endif %}
+    <details class="border border-slate-200 rounded-lg overflow-hidden"{% if lang.distribution or lang.spans %} open{% endif %}>
+      <summary class="px-4 py-3 bg-slate-50 text-sm font-bold text-slate-900 cursor-pointer hover:bg-slate-100 transition-colors">Language Distribution and Spans</summary>
+      <div class="p-4">
+        {% if lang.distribution %}
+        <h4 class="text-sm font-bold text-slate-900 mb-2">Language Distribution</h4>
+        <div class="overflow-x-auto mb-4">
+          <table class="w-full text-left text-sm">
+            <thead class="bg-slate-50 text-slate-500 font-semibold text-xs uppercase tracking-wider">
+              <tr>
+                <th class="px-4 py-3">Language</th>
+                <th class="px-4 py-3">Share (%)</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-slate-100">
+              {% for row in lang.distribution %}
+              <tr>
+                <td class="px-4 py-3">{{ row.label }}</td>
+                <td class="px-4 py-3">{{ '%.2f'|format(row.percent) }}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% endif %}
 
-      {% if lang.spans %}
-      <h3>Language Spans</h3>
-      <table>
-        <thead>
-          <tr>
-            <th>Start</th>
-            <th>End</th>
-            <th>Language</th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for span in lang.spans %}
-          <tr>
-            <td>{{ '%.3f'|format(span.start) }}</td>
-            <td>{{ '%.3f'|format(span.end) }}</td>
-            <td>{{ span.label }}</td>
-          </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-      {% elif not lang.distribution %}
-      <p class="placeholder">No language distribution or spans are available yet.</p>
-      {% endif %}
+        {% if lang.spans %}
+        <h4 class="text-sm font-bold text-slate-900 mb-2">Language Spans</h4>
+        <div class="overflow-x-auto">
+          <table class="w-full text-left text-sm">
+            <thead class="bg-slate-50 text-slate-500 font-semibold text-xs uppercase tracking-wider">
+              <tr>
+                <th class="px-4 py-3">Start</th>
+                <th class="px-4 py-3">End</th>
+                <th class="px-4 py-3">Language</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-slate-100">
+              {% for span in lang.spans %}
+              <tr>
+                <td class="px-4 py-3">{{ '%.3f'|format(span.start) }}</td>
+                <td class="px-4 py-3">{{ '%.3f'|format(span.end) }}</td>
+                <td class="px-4 py-3">{{ span.label }}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% elif not lang.distribution %}
+        <p class="text-sm text-slate-400 italic">No language distribution or spans are available yet.</p>
+        {% endif %}
+      </div>
     </details>
 
     {% if lang.summary_preview %}
-    <div class="speaker-snippet-panel">
-      <h3>Latest summary preview</h3>
-      <pre class="transcript-plain-text">{{ lang.summary_preview }}</pre>
+    <div class="mt-4 bg-slate-50 rounded-lg p-4 border border-slate-100">
+      <h4 class="text-sm font-bold text-slate-900 mb-2">Latest summary preview</h4>
+      <pre class="text-xs text-slate-600 font-mono whitespace-pre-wrap leading-relaxed">{{ lang.summary_preview }}</pre>
     </div>
     {% endif %}
   </section>
 
-  <section class="inspector-section-card">
-    <div class="inspector-section-head">
-      <div>
-        <h2>Pipeline stages</h2>
-      </div>
+  <!-- Pipeline Stages -->
+  <section class="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+    <div class="p-5 border-b border-slate-100">
+      <h3 class="text-base font-bold text-slate-900">Pipeline Stages</h3>
     </div>
     {% if pipeline_stages %}
-    <table>
-      <thead>
+    <div class="overflow-x-auto">
+      <table class="w-full text-left text-sm">
+        <thead class="bg-slate-50 text-slate-500 font-semibold text-xs uppercase tracking-wider">
+          <tr>
+            <th class="px-5 py-3">Stage</th>
+            <th class="px-5 py-3">Status</th>
+            <th class="px-5 py-3">Attempt</th>
+            <th class="px-5 py-3">Updated</th>
+            <th class="px-5 py-3">Notes</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-slate-100">
+          {% for stage in pipeline_stages %}
+          <tr>
+            <td class="px-5 py-3 font-medium">{{ stage.stage_label }}</td>
+            <td class="px-5 py-3">{{ stage.status_label }}</td>
+            <td class="px-5 py-3">{{ stage.attempt }}</td>
+            <td class="px-5 py-3">{{ stage.updated_at_display }}</td>
+            <td class="px-5 py-3">
+              {% if stage.root_cause_text %}
+              {{ stage.root_cause_text }}{% if stage.root_cause_code %} (<code class="px-1.5 py-0.5 bg-slate-100 rounded text-xs font-mono">{{ stage.root_cause_code }}</code>){% endif %}
+              {% if stage.chunk_index and stage.chunk_total %}
+              &nbsp;chunk {{ stage.chunk_index }}/{{ stage.chunk_total }}
+              {% endif %}
+              {% if stage.stop_mode %}
+              &nbsp;mode={{ stage.stop_mode }}
+              {% endif %}
+              {% elif stage.error_text %}
+              {{ stage.error_text }}
+              {% elif stage.duration_seconds is not none %}
+              {{ '%.3f'|format(stage.duration_seconds) }}s
+              {% else %}
+              —
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <div class="p-5">
+      <p class="text-sm text-slate-400 italic">No pipeline stage history is available for this recording yet.</p>
+    </div>
+    {% endif %}
+  </section>
+</div>
+
+<!-- Job History -->
+<section class="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden mt-6">
+  <div class="p-5 border-b border-slate-100">
+    <h3 class="text-base font-bold text-slate-900">Job History</h3>
+    <p class="text-xs text-slate-500 mt-1">Retry actions and step-level failure history are demoted into Diagnostics instead of getting their own top-level tab.</p>
+  </div>
+  {% if jobs %}
+  <div class="overflow-x-auto">
+    <table class="w-full text-left text-sm">
+      <thead class="bg-slate-50 text-slate-500 font-semibold text-xs uppercase tracking-wider">
         <tr>
-          <th>Stage</th>
-          <th>Status</th>
-          <th>Attempt</th>
-          <th>Updated</th>
-          <th>Notes</th>
+          <th class="px-5 py-3">Job ID</th>
+          <th class="px-5 py-3">Type</th>
+          <th class="px-5 py-3">Status</th>
+          <th class="px-5 py-3">Attempt</th>
+          <th class="px-5 py-3">Started</th>
+          <th class="px-5 py-3">Finished</th>
+          <th class="px-5 py-3">Error</th>
+          <th class="px-5 py-3">Action</th>
         </tr>
       </thead>
-      <tbody>
-        {% for stage in pipeline_stages %}
+      <tbody class="divide-y divide-slate-100">
+        {% for j in jobs %}
         <tr>
-          <td>{{ stage.stage_label }}</td>
-          <td>{{ stage.status_label }}</td>
-          <td>{{ stage.attempt }}</td>
-          <td>{{ stage.updated_at_display }}</td>
-          <td>
-            {% if stage.root_cause_text %}
-            {{ stage.root_cause_text }}{% if stage.root_cause_code %} (<code>{{ stage.root_cause_code }}</code>){% endif %}
-            {% if stage.chunk_index and stage.chunk_total %}
-            &nbsp;chunk {{ stage.chunk_index }}/{{ stage.chunk_total }}
-            {% endif %}
-            {% if stage.stop_mode %}
-            &nbsp;mode={{ stage.stop_mode }}
-            {% endif %}
-            {% elif stage.error_text %}
-            {{ stage.error_text }}
-            {% elif stage.duration_seconds is not none %}
-            {{ '%.3f'|format(stage.duration_seconds) }}s
+          <td class="px-5 py-3 font-mono text-xs" title="{{ j.id }}">{{ j.id[:16] }}…</td>
+          <td class="px-5 py-3">{{ j.type }}</td>
+          <td class="px-5 py-3">
+            {% set _js = j.status %}
+            <span class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold border
+              {% if _js == 'completed' %}bg-green-100 text-green-800 border-green-200{% elif _js == 'failed' %}bg-red-100 text-red-800 border-red-200{% elif _js == 'running' %}bg-amber-100 text-amber-800 border-amber-200{% else %}bg-slate-100 text-slate-800 border-slate-200{% endif %}">{{ _js }}</span>
+          </td>
+          <td class="px-5 py-3">{{ j.attempt }}</td>
+          <td class="px-5 py-3 whitespace-nowrap">{{ j.started_at[:19].replace('T',' ') if j.started_at else '—' }}</td>
+          <td class="px-5 py-3 whitespace-nowrap">{{ j.finished_at[:19].replace('T',' ') if j.finished_at else '—' }}</td>
+          <td class="px-5 py-3 max-w-[200px] truncate" title="{{ j.error or '' }}">{{ (j.error or '')[:40] }}{% if j.error and j.error|length > 40 %}…{% endif %}</td>
+          <td class="px-5 py-3">
+            {% if j.status == 'failed' %}
+            <form method="post" action="/ui/recordings/{{ rec.id }}/jobs/{{ j.id }}/retry">
+              <button type="submit" class="px-3 py-1.5 bg-primary text-white text-xs font-bold rounded hover:bg-primary/90 transition-colors">Retry step</button>
+            </form>
             {% else %}
-            —
+            <span class="text-xs text-slate-400 italic">—</span>
             {% endif %}
           </td>
         </tr>
         {% endfor %}
       </tbody>
     </table>
-    {% else %}
-    <p class="placeholder">No pipeline stage history is available for this recording yet.</p>
-    {% endif %}
-  </section>
-</div>
-
-<section class="inspector-section-card">
-  <div class="inspector-section-head">
-    <div>
-      <h2>Job history</h2>
-      <p class="inspector-note">Retry actions and step-level failure history are demoted into Diagnostics instead of getting their own top-level tab.</p>
-    </div>
   </div>
-  {% if jobs %}
-  <table>
-    <thead>
-      <tr>
-        <th>Job ID</th>
-        <th>Type</th>
-        <th>Status</th>
-        <th>Attempt</th>
-        <th>Started</th>
-        <th>Finished</th>
-        <th>Error</th>
-        <th>Action</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for j in jobs %}
-      <tr>
-        <td title="{{ j.id }}">{{ j.id[:16] }}…</td>
-        <td>{{ j.type }}</td>
-        <td><span class="badge s-{{ j.status }}">{{ j.status }}</span></td>
-        <td>{{ j.attempt }}</td>
-        <td>{{ j.started_at[:19].replace('T',' ') if j.started_at else '—' }}</td>
-        <td>{{ j.finished_at[:19].replace('T',' ') if j.finished_at else '—' }}</td>
-        <td title="{{ j.error or '' }}">{{ (j.error or '')[:40] }}{% if j.error and j.error|length > 40 %}…{% endif %}</td>
-        <td>
-          {% if j.status == 'failed' %}
-          <form method="post" action="/ui/recordings/{{ rec.id }}/jobs/{{ j.id }}/retry">
-            <button type="submit" class="btn">Retry step</button>
-          </form>
-          {% else %}
-          <span class="placeholder">—</span>
-          {% endif %}
-        </td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
   {% else %}
-  <p class="placeholder">No jobs exist for this recording.</p>
+  <div class="p-5">
+    <p class="text-sm text-slate-400 italic">No jobs exist for this recording.</p>
+  </div>
   {% endif %}
 </section>

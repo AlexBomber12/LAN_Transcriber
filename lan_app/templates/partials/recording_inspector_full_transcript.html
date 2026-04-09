@@ -1,55 +1,55 @@
 {% set tr = transcript or {} %}
-<section class="inspector-section-card transcript-section-card">
-  <div class="inspector-section-head">
-    <div>
-      <h2>Transcript</h2>
-    </div>
-    <div class="embedded-card-actions">
-      <button type="button" class="btn" onclick="copyInspectorFieldText('transcript-copy-text', 'transcript-copy-status', 'Copied transcript text.', 'Copy failed. Select the text and copy manually.')">Copy transcript</button>
-      <a href="{{ tr.quick_add_href or ('/glossary?recording_id=' ~ rec.id) }}" class="btn">Add correction from this recording</a>
-      <a href="{{ tr.manage_corrections_href or '/glossary' }}" class="btn">Manage corrections</a>
+<section class="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+  <div class="p-5 border-b border-slate-100 flex flex-wrap justify-between items-center gap-4">
+    <h3 class="text-base font-bold text-slate-900">Transcript</h3>
+    <div class="flex items-center gap-2">
+      <button type="button" class="px-3 py-1.5 bg-white border border-slate-200 text-xs font-bold rounded hover:bg-slate-50 transition-colors" onclick="copyInspectorFieldText('transcript-copy-text', 'transcript-copy-status', 'Copied transcript text.', 'Copy failed. Select the text and copy manually.')">Copy transcript</button>
+      <a href="{{ tr.quick_add_href or ('/glossary?recording_id=' ~ rec.id) }}" class="px-3 py-1.5 bg-white border border-slate-200 text-xs font-bold rounded hover:bg-slate-50 transition-colors no-underline text-slate-700">Add correction</a>
+      <a href="{{ tr.manage_corrections_href or '/glossary' }}" class="px-3 py-1.5 bg-white border border-slate-200 text-xs font-bold rounded hover:bg-slate-50 transition-colors no-underline text-slate-700">Manage corrections</a>
     </div>
   </div>
 
-  <div class="compact-metadata-grid">
-    <div class="compact-metadata-item">
-      <span class="compact-metadata-label">Source</span>
-      <strong class="compact-metadata-value">{{ tr.source_label or 'Transcript text' }}</strong>
+  <div class="p-5">
+    <div class="grid grid-cols-3 gap-4 mb-6">
+      <div>
+        <span class="text-xs font-bold text-slate-500 uppercase tracking-wider">Source</span>
+        <p class="text-sm font-medium text-slate-900 mt-1">{{ tr.source_label or 'Transcript text' }}</p>
+      </div>
+      <div>
+        <span class="text-xs font-bold text-slate-500 uppercase tracking-wider">Dominant language</span>
+        <p class="text-sm font-medium text-slate-900 mt-1">{{ tr.dominant_language_label or 'Unknown' }}</p>
+      </div>
+      <div>
+        <span class="text-xs font-bold text-slate-500 uppercase tracking-wider">Visible blocks</span>
+        <p class="text-sm font-medium text-slate-900 mt-1">{{ tr.turn_count if tr.turn_count is not none else 0 }}</p>
+      </div>
     </div>
-    <div class="compact-metadata-item">
-      <span class="compact-metadata-label">Dominant language</span>
-      <strong class="compact-metadata-value">{{ tr.dominant_language_label or 'Unknown' }}</strong>
-    </div>
-    <div class="compact-metadata-item">
-      <span class="compact-metadata-label">Visible blocks</span>
-      <strong class="compact-metadata-value">{{ tr.turn_count if tr.turn_count is not none else 0 }}</strong>
-    </div>
-  </div>
 
-  {% if tr.available %}
-  <div id="recording-transcript-panel" class="transcript-scroll-panel" data-testid="recording-transcript-panel">
-    {% if tr.turns %}
-      {% for turn in tr.turns %}
-      <article class="transcript-turn">
-        <div class="transcript-turn-meta">
-          <strong class="transcript-turn-speaker">{{ turn.speaker }}</strong>
-          <span>{{ turn.time_range }}</span>
-          {% if turn.language_label %}
-          <span>{{ turn.language_label }}</span>
-          {% endif %}
-        </div>
-        <p class="transcript-turn-text">{{ turn.text }}</p>
-      </article>
-      {% endfor %}
+    {% if tr.available %}
+    <div id="recording-transcript-panel" class="max-h-[600px] overflow-y-auto border border-slate-100 rounded-lg p-4 bg-slate-50" data-testid="recording-transcript-panel">
+      {% if tr.turns %}
+        {% for turn in tr.turns %}
+        <article class="mb-4 last:mb-0">
+          <div class="flex items-center gap-2 mb-1">
+            <strong class="text-sm font-semibold text-slate-900">{{ turn.speaker }}</strong>
+            <span class="text-xs text-slate-400">{{ turn.time_range }}</span>
+            {% if turn.language_label %}
+            <span class="text-xs text-slate-400">{{ turn.language_label }}</span>
+            {% endif %}
+          </div>
+          <p class="text-sm text-slate-700 leading-relaxed">{{ turn.text }}</p>
+        </article>
+        {% endfor %}
+      {% else %}
+      <pre class="text-xs text-slate-600 font-mono whitespace-pre-wrap leading-relaxed">{{ tr.raw_text }}</pre>
+      {% endif %}
+    </div>
+    <textarea id="transcript-copy-text" class="sr-only" readonly>{{ tr.copy_text or tr.raw_text or '' }}</textarea>
+    <p id="transcript-copy-status" class="text-xs text-slate-500 mt-3">Copy the transcript text or jump to Corrections when a name or phrase needs to be remembered.</p>
     {% else %}
-    <pre class="transcript-plain-text">{{ tr.raw_text }}</pre>
+    <p class="text-sm text-slate-400 italic">Transcript content is not available for this recording yet.</p>
     {% endif %}
   </div>
-  <textarea id="transcript-copy-text" class="inspector-copy-store" readonly>{{ tr.copy_text or tr.raw_text or '' }}</textarea>
-  <p id="transcript-copy-status" class="inspector-note">Copy the transcript text or jump to Corrections when a name or phrase needs to be remembered.</p>
-  {% else %}
-  <p class="placeholder">Transcript content is not available for this recording yet.</p>
-  {% endif %}
 </section>
 
 <script>

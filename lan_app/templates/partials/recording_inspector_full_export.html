@@ -1,26 +1,26 @@
-<section class="inspector-section-card">
-  <div class="inspector-section-head">
-    <div>
-      <h2>Export</h2>
-    </div>
-    <div class="embedded-card-actions">
-      <button type="button" class="btn" onclick="copyInspectorFieldText('export-text', 'export-copy-status', 'Copied export markdown.', 'Copy failed. Select the text and copy manually.')">Copy</button>
+<section class="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+  <div class="p-5 border-b border-slate-100 flex flex-wrap justify-between items-center gap-4">
+    <h3 class="text-base font-bold text-slate-900">Export</h3>
+    <div class="flex items-center gap-2">
+      <button type="button" class="px-3 py-1.5 bg-white border border-slate-200 text-xs font-bold rounded hover:bg-slate-50 transition-colors" onclick="copyInspectorFieldText('export-text', 'export-copy-status', 'Copied export markdown.', 'Copy failed. Select the text and copy manually.')">Copy</button>
       <a
         href="/ui/recordings/{{ rec.id }}/export.zip"
-        class="btn"
+        class="px-3 py-1.5 bg-white border border-slate-200 text-xs font-bold rounded hover:bg-slate-50 transition-colors no-underline text-slate-700"
         hx-boost="false"
       >Download ZIP</a>
     </div>
   </div>
 
-  <textarea
-    id="export-text"
-    class="full-export-text"
-    readonly
-  >{{ export_text or '' }}</textarea>
-  <p id="export-copy-status" class="inspector-note">
-    Copy the markdown or download the ZIP.
-  </p>
+  <div class="p-5">
+    <textarea
+      id="export-text"
+      class="w-full h-96 bg-slate-50 border border-slate-200 rounded-lg p-4 font-mono text-xs text-slate-600 leading-relaxed resize-y focus:ring-1 focus:ring-primary focus:border-primary"
+      readonly
+    >{{ export_text or '' }}</textarea>
+    <p id="export-copy-status" class="text-xs text-slate-500 mt-3">
+      Copy the markdown or download the ZIP.
+    </p>
+  </div>
 </section>
 
 <script>

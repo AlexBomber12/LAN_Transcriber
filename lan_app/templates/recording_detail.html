@@ -1,8 +1,13 @@
 {% extends "base.html" %}
 {% block title %}{{ rec.id[:20] }} – LAN Transcriber{% endblock %}
 {% block content %}
-<div class="detail-page-shell">
+<main class="flex flex-col flex-1 max-w-[1440px] mx-auto w-full px-6 py-6">
+  <nav class="flex items-center gap-2 mb-4 text-sm font-medium">
+    <a class="text-slate-500 hover:text-primary transition-colors" href="/">Control Center</a>
+    <span class="material-symbols-outlined text-slate-400 text-xs">chevron_right</span>
+    <span class="text-slate-900">{{ rec.source_filename }}</span>
+  </nav>
   {% include "partials/recording_inspector.html" %}
-  {% include "partials/control_center/system_bar.html" %}
-</div>
+</main>
+{% include "partials/control_center/system_bar.html" %}
 {% endblock %}

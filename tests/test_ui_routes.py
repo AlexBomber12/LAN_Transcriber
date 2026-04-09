@@ -443,7 +443,7 @@ def test_control_center_query_state_and_direct_routes(seeded_client):
     detail = seeded_client.get("/recordings/rec-ui-1")
     assert detail.status_code == 200
     assert "meeting.mp3" in detail.text
-    assert 'class="inspector-hero"' in detail.text
+    assert 'data-testid="recording-inspector-header"' in detail.text
 
 
 def test_control_center_pane_fragment_endpoints(seeded_client):
@@ -1352,7 +1352,7 @@ def test_recording_detail_transcript_tab_shows_asr_glossary_actions(
     assert r.status_code == 200
     assert "Transcript" in r.text
     assert "Manage corrections" in r.text
-    assert "Add correction from this recording" in r.text
+    assert "Add correction" in r.text
     assert '/glossary?recording_id=rec-ui-glossary-1"' in r.text
 
 
@@ -1726,7 +1726,7 @@ def test_recording_detail_shows_primary_diagnostics_section(tmp_path, monkeypatc
     assert r.status_code == 200
     assert "Diagnostics" in r.text
     assert "LLM chunk 3/10 timed out." in r.text
-    assert "<code>llm_chunk_timeout</code>" in r.text
+    assert "llm_chunk_timeout" in r.text
     assert "Automatic retries hit the configured retry limit." in r.text
 
 

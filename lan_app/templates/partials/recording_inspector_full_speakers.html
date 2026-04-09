@@ -4,74 +4,70 @@
 {% set notices = sp.review_notices or [] %}
 {% set repair = sp.snippet_repair or {} %}
 
-<section class="inspector-section-card">
-  <div class="inspector-section-head">
+<section class="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+  <div class="p-5 border-b border-slate-100 flex justify-between items-center">
     <div>
-      <h2>Speakers</h2>
+      <h3 class="text-base font-bold text-slate-900">Speakers</h3>
     </div>
-    <div class="embedded-card-actions">
-      <a href="{{ sp.manage_voices_href or '/voices' }}" class="btn" style="text-decoration:none">Open canonical speakers page</a>
-    </div>
+    <a href="{{ sp.manage_voices_href or '/voices' }}" class="text-xs font-semibold text-primary hover:underline no-underline">Open canonical speakers page</a>
   </div>
 
   {% if sp.notice_message %}
-  <div class="page-notice">{{ sp.notice_message }}</div>
+  <div class="px-5 py-3 bg-amber-50 border-b border-amber-200 text-xs text-amber-700">{{ sp.notice_message }}</div>
   {% endif %}
   {% if sp.error_message %}
-  <div class="page-notice">{{ sp.error_message }}</div>
+  <div class="px-5 py-3 bg-red-50 border-b border-red-200 text-xs text-red-700">{{ sp.error_message }}</div>
   {% endif %}
   {% if repair.detail %}
-  <div class="page-notice">
-    <div style="margin-bottom:{% if repair.available %}8px{% else %}0{% endif %}">
+  <div class="px-5 py-3 bg-amber-50 border-b border-amber-200 text-xs text-amber-700">
+    <div class="{% if repair.available %}mb-2{% endif %}">
       {{ repair.detail }}
     </div>
     {% if repair.available %}
     <form method="post" action="/ui/recordings/{{ rec.id }}/speakers/regenerate-snippets">
-      <button class="btn" type="submit">{{ repair.button_label }}</button>
+      <button class="px-3 py-1.5 bg-primary text-white text-xs font-bold rounded hover:bg-primary/90 transition-colors" type="submit">{{ repair.button_label }}</button>
     </form>
     {% endif %}
   </div>
   {% endif %}
   {% if notices %}
     {% for notice in notices %}
-    <div class="page-notice">{{ notice }}</div>
+    <div class="px-5 py-3 bg-amber-50 border-b border-amber-200 text-xs text-amber-700">{{ notice }}</div>
     {% endfor %}
   {% endif %}
 
-  {% set speaker_review_mode = 'full' %}
-  {% include 'partials/speaker_review_cards.html' %}
+  <div class="p-5">
+    {% set speaker_review_mode = 'full' %}
+    {% include 'partials/speaker_review_cards.html' %}
+  </div>
 </section>
 
-<section class="inspector-section-card">
-  <div class="inspector-section-head">
-    <div>
-      <h2>Create Canonical Speaker</h2>
-    </div>
-  </div>
+<section class="bg-white rounded-xl border border-slate-200 p-5 shadow-sm mt-6">
+  <h3 class="text-base font-bold text-slate-900 mb-4">Create Canonical Speaker</h3>
   {% if rows %}
-  <form method="post" action="/ui/recordings/{{ rec.id }}/speakers/create-and-assign">
-    <div class="form-row">
-      <label for="diar_speaker_label">Speaker label</label>
-      <select id="diar_speaker_label" name="diar_speaker_label" style="width:180px">
+  <form method="post" action="/ui/recordings/{{ rec.id }}/speakers/create-and-assign" class="flex flex-col gap-4">
+    <div class="flex items-center gap-3">
+      <label for="diar_speaker_label" class="text-sm font-medium text-slate-700 w-32">Speaker label</label>
+      <select id="diar_speaker_label" name="diar_speaker_label" class="bg-slate-50 border border-slate-200 rounded text-sm py-1.5 px-3 text-slate-700 focus:ring-1 focus:ring-primary focus:border-primary w-48">
         {% for row in rows %}
         <option value="{{ row.speaker }}">{{ row.speaker }}</option>
         {% endfor %}
       </select>
     </div>
-    <div class="form-row">
-      <label for="display_name">Display name</label>
-      <input id="display_name" type="text" name="display_name" maxlength="120" required placeholder="Person name" style="width:260px">
+    <div class="flex items-center gap-3">
+      <label for="display_name" class="text-sm font-medium text-slate-700 w-32">Display name</label>
+      <input id="display_name" type="text" name="display_name" maxlength="120" required placeholder="Person name" class="bg-slate-50 border border-slate-200 rounded text-sm py-1.5 px-3 text-slate-700 focus:ring-1 focus:ring-primary focus:border-primary w-64">
     </div>
-    <div class="form-row">
-      <label for="notes">Notes</label>
-      <input id="notes" type="text" name="notes" maxlength="240" placeholder="Optional notes" style="width:360px">
+    <div class="flex items-center gap-3">
+      <label for="notes" class="text-sm font-medium text-slate-700 w-32">Notes</label>
+      <input id="notes" type="text" name="notes" maxlength="240" placeholder="Optional notes" class="bg-slate-50 border border-slate-200 rounded text-sm py-1.5 px-3 text-slate-700 focus:ring-1 focus:ring-primary focus:border-primary w-96">
     </div>
-    <div class="form-row">
-      <label></label>
-      <button class="btn" type="submit">Create and confirm match</button>
+    <div class="flex items-center gap-3">
+      <span class="w-32"></span>
+      <button class="px-4 py-2 bg-primary text-white text-sm font-bold rounded hover:bg-primary/90 transition-colors" type="submit">Create and confirm match</button>
     </div>
   </form>
   {% else %}
-  <p class="placeholder">No diarization labels are available for assignment.</p>
+  <p class="text-sm text-slate-400 italic">No diarization labels are available for assignment.</p>
   {% endif %}
 </section>

@@ -640,7 +640,7 @@ Queue (in order)
 - Depends on: PR-TAILWIND-BASE-01
 
 128) PR-TAILWIND-RECORDING-DETAIL-01: Migrate Recording Detail full-page inspector from legacy CSS to Stitch Tailwind design
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-TAILWIND-RECORDING-DETAIL-01.md
 - Depends on: PR-TAILWIND-BASE-01
 

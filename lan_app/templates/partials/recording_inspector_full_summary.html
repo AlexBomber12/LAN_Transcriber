@@ -5,210 +5,196 @@
 {% set questions = summary_data.questions or {} %}
 {% set question_types = questions.types or {} %}
 
-<div class="summary-section-grid">
-  <section class="inspector-section-card">
-    <div class="inspector-section-head">
-      <div>
-        <h2>Summary</h2>
+<div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+  <!-- Summary -->
+  <section class="bg-white rounded-xl border border-slate-200 p-5 shadow-sm">
+    <h3 class="text-base font-bold text-slate-900 mb-4">Summary</h3>
+
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+      <div class="bg-slate-50 rounded-lg border border-slate-100 p-4">
+        <span class="text-xs font-bold text-slate-500 uppercase tracking-wider">Topic</span>
+        <p class="text-sm font-medium text-slate-900 mt-1">{{ summary_data.topic or '—' }}</p>
+      </div>
+      <div class="bg-slate-50 rounded-lg border border-slate-100 p-4">
+        <span class="text-xs font-bold text-slate-500 uppercase tracking-wider">Emotional Summary</span>
+        <p class="text-xs text-slate-500 mt-1">{{ summary_data.emotional_summary or meeting.emotional_summary or 'No emotional summary was extracted.' }}</p>
       </div>
     </div>
 
-    <div class="embedded-panel-grid">
-      <section class="embedded-card">
-        <h3>Topic</h3>
-        <p class="inspector-answer">{{ summary_data.topic or '—' }}</p>
-      </section>
-      <section class="embedded-card">
-        <h3>Emotional summary</h3>
-        <p class="inspector-note">{{ summary_data.emotional_summary or meeting.emotional_summary or 'No emotional summary was extracted.' }}</p>
-      </section>
-    </div>
-
-    <section class="embedded-card">
-      <div class="embedded-card-head">
-        <div>
-          <h3>Summary bullets</h3>
-        </div>
-      </div>
+    <div class="mb-4">
+      <h4 class="text-sm font-bold text-slate-900 mb-2">Summary Bullets</h4>
       {% if summary_data.summary_bullets %}
-      <ul class="summary-list">
+      <ul class="list-disc list-inside space-y-1">
         {% for bullet in summary_data.summary_bullets %}
-        <li>{{ bullet }}</li>
+        <li class="text-sm text-slate-700">{{ bullet }}</li>
         {% endfor %}
       </ul>
       {% elif summary_data.summary_text %}
-      <pre class="transcript-plain-text">{{ summary_data.summary_text }}</pre>
+      <pre class="text-xs text-slate-600 font-mono whitespace-pre-wrap leading-relaxed bg-slate-50 rounded-lg p-3 border border-slate-100">{{ summary_data.summary_text }}</pre>
       {% else %}
-      <p class="placeholder">No summary is available yet.</p>
+      <p class="text-sm text-slate-400 italic">No summary is available yet.</p>
       {% endif %}
-    </section>
+    </div>
   </section>
 
-  <section class="inspector-section-card">
-    <div class="inspector-section-head">
+  <!-- Meeting Metrics -->
+  <section class="bg-white rounded-xl border border-slate-200 p-5 shadow-sm">
+    <h3 class="text-base font-bold text-slate-900 mb-4">Meeting Metrics</h3>
+    <div class="grid grid-cols-2 md:grid-cols-3 gap-4">
       <div>
-        <h2>Meeting Metrics</h2>
+        <span class="text-xs font-bold text-slate-500 uppercase tracking-wider">Speech time</span>
+        <p class="text-sm font-semibold text-slate-900 mt-1">{{ '%.1f'|format(meeting.total_speech_time_seconds or 0.0) }}s</p>
       </div>
-    </div>
-    <div class="summary-kpi-grid">
-      <div class="compact-metadata-item">
-        <span class="compact-metadata-label">Speech time</span>
-        <strong class="compact-metadata-value">{{ '%.1f'|format(meeting.total_speech_time_seconds or 0.0) }}s</strong>
+      <div>
+        <span class="text-xs font-bold text-slate-500 uppercase tracking-wider">Interruptions</span>
+        <p class="text-sm font-semibold text-slate-900 mt-1">{{ meeting.total_interruptions or 0 }}</p>
       </div>
-      <div class="compact-metadata-item">
-        <span class="compact-metadata-label">Interruptions</span>
-        <strong class="compact-metadata-value">{{ meeting.total_interruptions or 0 }}</strong>
+      <div>
+        <span class="text-xs font-bold text-slate-500 uppercase tracking-wider">Questions</span>
+        <p class="text-sm font-semibold text-slate-900 mt-1">{{ meeting.total_questions or 0 }}</p>
       </div>
-      <div class="compact-metadata-item">
-        <span class="compact-metadata-label">Questions</span>
-        <strong class="compact-metadata-value">{{ meeting.total_questions or 0 }}</strong>
+      <div>
+        <span class="text-xs font-bold text-slate-500 uppercase tracking-wider">Decisions</span>
+        <p class="text-sm font-semibold text-slate-900 mt-1">{{ meeting.decisions_count or 0 }}</p>
       </div>
-      <div class="compact-metadata-item">
-        <span class="compact-metadata-label">Decisions</span>
-        <strong class="compact-metadata-value">{{ meeting.decisions_count or 0 }}</strong>
+      <div>
+        <span class="text-xs font-bold text-slate-500 uppercase tracking-wider">Action items</span>
+        <p class="text-sm font-semibold text-slate-900 mt-1">{{ meeting.action_items_count or 0 }}</p>
       </div>
-      <div class="compact-metadata-item">
-        <span class="compact-metadata-label">Action items</span>
-        <strong class="compact-metadata-value">{{ meeting.action_items_count or 0 }}</strong>
-      </div>
-      <div class="compact-metadata-item">
-        <span class="compact-metadata-label">Actionability</span>
-        <strong class="compact-metadata-value">{{ '%.1f'|format((meeting.actionability_ratio or 0.0) * 100.0) }}%</strong>
+      <div>
+        <span class="text-xs font-bold text-slate-500 uppercase tracking-wider">Actionability</span>
+        <p class="text-sm font-semibold text-slate-900 mt-1">{{ '%.1f'|format((meeting.actionability_ratio or 0.0) * 100.0) }}%</p>
       </div>
     </div>
   </section>
 </div>
 
-<div class="summary-section-grid">
-  <section class="inspector-section-card">
-    <div class="inspector-section-head">
-      <div>
-        <h2>Decisions</h2>
-      </div>
-    </div>
+<div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mt-6">
+  <!-- Decisions -->
+  <section class="bg-white rounded-xl border border-slate-200 p-5 shadow-sm">
+    <h3 class="text-base font-bold text-slate-900 mb-4">Decisions</h3>
     {% if summary_data.decisions %}
-    <ul class="summary-list">
+    <ul class="list-disc list-inside space-y-1">
       {% for decision in summary_data.decisions %}
-      <li>{{ decision }}</li>
+      <li class="text-sm text-slate-700">{{ decision }}</li>
       {% endfor %}
     </ul>
     {% else %}
-    <p class="placeholder">No decisions were extracted.</p>
+    <p class="text-sm text-slate-400 italic">No decisions were extracted.</p>
     {% endif %}
   </section>
 
-  <section class="inspector-section-card">
-    <div class="inspector-section-head">
-      <div>
-        <h2>Action items</h2>
-      </div>
-    </div>
+  <!-- Action Items -->
+  <section class="bg-white rounded-xl border border-slate-200 p-5 shadow-sm">
+    <h3 class="text-base font-bold text-slate-900 mb-4">Action Items</h3>
     {% if summary_data.action_items %}
-    <table>
-      <thead>
+    <div class="overflow-x-auto">
+      <table class="w-full text-left text-sm">
+        <thead class="bg-slate-50 text-slate-500 font-semibold text-xs uppercase tracking-wider">
+          <tr>
+            <th class="px-4 py-3">Task</th>
+            <th class="px-4 py-3">Owner</th>
+            <th class="px-4 py-3">Deadline</th>
+            <th class="px-4 py-3">Confidence</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-slate-100">
+          {% for item in summary_data.action_items %}
+          <tr>
+            <td class="px-4 py-3">{{ item.task }}</td>
+            <td class="px-4 py-3">{{ item.owner or '—' }}</td>
+            <td class="px-4 py-3">{{ item.deadline or '—' }}</td>
+            <td class="px-4 py-3">{{ '%.2f'|format(item.confidence or 0.0) }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <p class="text-sm text-slate-400 italic">No action items were extracted.</p>
+    {% endif %}
+  </section>
+</div>
+
+<!-- Questions -->
+<section class="bg-white rounded-xl border border-slate-200 p-5 shadow-sm mt-6">
+  <h3 class="text-base font-bold text-slate-900 mb-4">Questions</h3>
+  <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4 mb-4">
+    <div>
+      <span class="text-xs font-bold text-slate-500 uppercase tracking-wider">Total</span>
+      <p class="text-sm font-semibold text-slate-900 mt-1">{{ questions.total_count or 0 }}</p>
+    </div>
+    <div>
+      <span class="text-xs font-bold text-slate-500 uppercase tracking-wider">Open</span>
+      <p class="text-sm font-semibold text-slate-900 mt-1">{{ question_types.open or 0 }}</p>
+    </div>
+    <div>
+      <span class="text-xs font-bold text-slate-500 uppercase tracking-wider">Yes / no</span>
+      <p class="text-sm font-semibold text-slate-900 mt-1">{{ question_types.yes_no or 0 }}</p>
+    </div>
+    <div>
+      <span class="text-xs font-bold text-slate-500 uppercase tracking-wider">Clarification</span>
+      <p class="text-sm font-semibold text-slate-900 mt-1">{{ question_types.clarification or 0 }}</p>
+    </div>
+    <div>
+      <span class="text-xs font-bold text-slate-500 uppercase tracking-wider">Status</span>
+      <p class="text-sm font-semibold text-slate-900 mt-1">{{ question_types.status or 0 }}</p>
+    </div>
+    <div>
+      <span class="text-xs font-bold text-slate-500 uppercase tracking-wider">Decision-seeking</span>
+      <p class="text-sm font-semibold text-slate-900 mt-1">{{ question_types.decision_seeking or 0 }}</p>
+    </div>
+  </div>
+  {% if questions.extracted %}
+  <ul class="list-disc list-inside space-y-1">
+    {% for question in questions.extracted %}
+    <li class="text-sm text-slate-700">{{ question }}</li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p class="text-sm text-slate-400 italic">No extracted questions are available.</p>
+  {% endif %}
+</section>
+
+<!-- Participants -->
+<section class="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden mt-6">
+  <div class="p-5 border-b border-slate-100">
+    <h3 class="text-base font-bold text-slate-900">Participants</h3>
+  </div>
+  {% if participants %}
+  <div class="overflow-x-auto">
+    <table class="w-full text-left text-sm">
+      <thead class="bg-slate-50 text-slate-500 font-semibold text-xs uppercase tracking-wider">
         <tr>
-          <th>Task</th>
-          <th>Owner</th>
-          <th>Deadline</th>
-          <th>Confidence</th>
+          <th class="px-5 py-3">Speaker</th>
+          <th class="px-5 py-3">Airtime (s)</th>
+          <th class="px-5 py-3">Share (%)</th>
+          <th class="px-5 py-3">Turns</th>
+          <th class="px-5 py-3">Int. done</th>
+          <th class="px-5 py-3">Int. rcvd</th>
+          <th class="px-5 py-3">Questions</th>
+          <th class="px-5 py-3">Role</th>
         </tr>
       </thead>
-      <tbody>
-        {% for item in summary_data.action_items %}
+      <tbody class="divide-y divide-slate-100">
+        {% for row in participants %}
         <tr>
-          <td>{{ item.task }}</td>
-          <td>{{ item.owner or '—' }}</td>
-          <td>{{ item.deadline or '—' }}</td>
-          <td>{{ '%.2f'|format(item.confidence or 0.0) }}</td>
+          <td class="px-5 py-3 font-medium">{{ row.speaker }}</td>
+          <td class="px-5 py-3">{{ '%.2f'|format(row.airtime_seconds or 0.0) }}</td>
+          <td class="px-5 py-3">{{ '%.2f'|format((row.airtime_share or 0.0) * 100.0) }}</td>
+          <td class="px-5 py-3">{{ row.turns or 0 }}</td>
+          <td class="px-5 py-3">{{ row.interruptions_done or 0 }}</td>
+          <td class="px-5 py-3">{{ row.interruptions_received or 0 }}</td>
+          <td class="px-5 py-3">{{ row.questions_count or 0 }}</td>
+          <td class="px-5 py-3">{{ row.role_hint or '—' }}</td>
         </tr>
         {% endfor %}
       </tbody>
     </table>
-    {% else %}
-    <p class="placeholder">No action items were extracted.</p>
-    {% endif %}
-  </section>
-</div>
-
-<section class="inspector-section-card">
-  <div class="inspector-section-head">
-    <div>
-      <h2>Questions</h2>
-    </div>
   </div>
-  <div class="summary-kpi-grid">
-    <div class="compact-metadata-item">
-      <span class="compact-metadata-label">Total</span>
-      <strong class="compact-metadata-value">{{ questions.total_count or 0 }}</strong>
-    </div>
-    <div class="compact-metadata-item">
-      <span class="compact-metadata-label">Open</span>
-      <strong class="compact-metadata-value">{{ question_types.open or 0 }}</strong>
-    </div>
-    <div class="compact-metadata-item">
-      <span class="compact-metadata-label">Yes / no</span>
-      <strong class="compact-metadata-value">{{ question_types.yes_no or 0 }}</strong>
-    </div>
-    <div class="compact-metadata-item">
-      <span class="compact-metadata-label">Clarification</span>
-      <strong class="compact-metadata-value">{{ question_types.clarification or 0 }}</strong>
-    </div>
-    <div class="compact-metadata-item">
-      <span class="compact-metadata-label">Status</span>
-      <strong class="compact-metadata-value">{{ question_types.status or 0 }}</strong>
-    </div>
-    <div class="compact-metadata-item">
-      <span class="compact-metadata-label">Decision-seeking</span>
-      <strong class="compact-metadata-value">{{ question_types.decision_seeking or 0 }}</strong>
-    </div>
-  </div>
-  {% if questions.extracted %}
-  <ul class="summary-list">
-    {% for question in questions.extracted %}
-    <li>{{ question }}</li>
-    {% endfor %}
-  </ul>
   {% else %}
-  <p class="placeholder">No extracted questions are available.</p>
-  {% endif %}
-</section>
-
-<section class="inspector-section-card">
-  <div class="inspector-section-head">
-    <div>
-      <h2>Participants</h2>
-    </div>
+  <div class="p-5">
+    <p class="text-sm text-slate-400 italic">No participant metrics are available yet.</p>
   </div>
-  {% if participants %}
-  <table>
-    <thead>
-      <tr>
-        <th>Speaker</th>
-        <th>Airtime (s)</th>
-        <th>Share (%)</th>
-        <th>Turns</th>
-        <th>Interruptions done</th>
-        <th>Interruptions received</th>
-        <th>Questions</th>
-        <th>Role</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for row in participants %}
-      <tr>
-        <td>{{ row.speaker }}</td>
-        <td>{{ '%.2f'|format(row.airtime_seconds or 0.0) }}</td>
-        <td>{{ '%.2f'|format((row.airtime_share or 0.0) * 100.0) }}</td>
-        <td>{{ row.turns or 0 }}</td>
-        <td>{{ row.interruptions_done or 0 }}</td>
-        <td>{{ row.interruptions_received or 0 }}</td>
-        <td>{{ row.questions_count or 0 }}</td>
-        <td>{{ row.role_hint or '—' }}</td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
-  {% else %}
-  <p class="placeholder">No participant metrics are available yet.</p>
   {% endif %}
 </section>
