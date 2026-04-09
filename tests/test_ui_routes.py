@@ -399,13 +399,13 @@ def test_dashboard_summary_fragment_endpoints(seeded_client):
     )
     assert recordings_summary.status_code == 200
     assert "Recordings by status" in recordings_summary.text
-    assert "stat-card" in recordings_summary.text
+    assert "font-bold" in recordings_summary.text
     assert "<html" not in recordings_summary.text
 
     jobs_summary = seeded_client.get("/ui/control-center/dashboard/jobs-summary")
     assert jobs_summary.status_code == 200
     assert "Queue by status" in jobs_summary.text
-    assert "stat-card" in jobs_summary.text
+    assert "font-bold" in jobs_summary.text
     assert "<nav" not in jobs_summary.text
 
 
@@ -514,7 +514,7 @@ def test_control_center_system_bar_renders_degraded_cpu_fallback(
     assert "Node status" in system_bar.text
     assert "GPU unavailable" in system_bar.text
     assert "CPU fallback" not in system_bar.text
-    assert "control-center-system-item--offline" in system_bar.text
+    assert "text-red-700" in system_bar.text  # offline tone rendered
 
     work_pane = seeded_client.get(
         "/ui/control-center/work-pane?selected=rec-ui-1&status=Ready&q=meeting&tab=speakers"
@@ -531,7 +531,7 @@ def test_control_center_system_bar_renders_degraded_cpu_fallback(
     assert "Only in-flight uploads stay here" not in work_pane.text
     assert "Finished recordings move into the main worklist below" not in work_pane.text
     assert "No active uploads. New files appear here until they enter the main inbox." not in work_pane.text
-    assert "control-center-upload-section-title" in work_pane.text
+    assert "cloud_upload" in work_pane.text
     assert "UPLOAD" in work_pane.text
     assert 'id="upload-active-count"' in work_pane.text
     assert "0 ACTIVE JOBS" in work_pane.text
@@ -904,7 +904,7 @@ def test_control_center_recordings_panel_filters_search_and_actions(
     assert ">Recognition<" in panel.text
     assert ">Source<" not in panel.text
     assert ">Confidence<" not in panel.text
-    assert "..." in panel.text
+    assert "more_vert" in panel.text
     assert 'aria-label="Open actions for rec-cc-panel-1"' in panel.text
     assert 'data-testid="control-center-select-recording"' not in panel.text
     assert 'data-select-href="/?selected=rec-cc-panel-1&amp;status=Ready&amp;q=alpha&amp;tab=speakers"' in panel.text
@@ -1138,7 +1138,7 @@ def test_recordings_fragment_endpoints_render_filters_table_and_pagination(
     c = TestClient(api.app, follow_redirects=True)
     filters = c.get("/ui/control-center/recordings/filters?status=Ready&limit=25")
     assert filters.status_code == 200
-    assert 'class="recordings-filter-strip filters"' in filters.text
+    assert 'method="get"' in filters.text
     assert 'hx-get="/ui/control-center/recordings/panel"' in filters.text
     assert '<option value="Ready" selected>' in filters.text
     assert 'placeholder="ID or filename"' in filters.text
@@ -3754,12 +3754,11 @@ def test_upload_panel_fragment_endpoint(client):
     assert "Only in-flight uploads stay here" not in r.text
     assert "Finished recordings move into the main worklist below" not in r.text
     assert "No active uploads. New files appear here until they enter the main inbox." not in r.text
-    assert "control-center-upload-section-title" in r.text
+    assert "cloud_upload" in r.text
     assert "UPLOAD" in r.text
     assert 'id="upload-active-count"' in r.text
     assert "0 ACTIVE JOBS" in r.text
     assert 'id="upload-empty"' not in r.text
-    assert 'class="upload-queue-card"' not in r.text
     assert "<html" not in r.text
 
 

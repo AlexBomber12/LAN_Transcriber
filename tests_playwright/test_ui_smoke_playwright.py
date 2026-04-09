@@ -253,7 +253,7 @@ def test_control_center_embedded_inspector_and_export_zip_smoke(tmp_path: Path) 
                     state="visible",
                     timeout=_remaining_timeout_ms(deadline),
                 )
-                assert page.locator("#upload-rows .upload-queue-card").count() <= 2
+                assert page.locator("#upload-rows [data-upload-card]").count() <= 2
 
                 page.wait_for_selector(
                     "#control-center-recordings-panel",
@@ -294,8 +294,8 @@ def test_control_center_embedded_inspector_and_export_zip_smoke(tmp_path: Path) 
                     timeout=_remaining_timeout_ms(deadline),
                 )
                 page.locator(
-                    "#control-center-system-bar .control-center-system-label"
-                ).filter(has_text="Node status").first.wait_for(
+                    "#control-center-system-bar"
+                ).get_by_text("Node status").first.wait_for(
                     state="visible",
                     timeout=_remaining_timeout_ms(deadline),
                 )
@@ -324,7 +324,7 @@ def test_control_center_embedded_inspector_and_export_zip_smoke(tmp_path: Path) 
                     "() => document.getElementById('upload-active-count')?.textContent === '0 ACTIVE JOBS'",
                     timeout=_remaining_timeout_ms(deadline),
                 )
-                assert page.locator("#upload-rows .upload-queue-card").count() == 0
+                assert page.locator("#upload-rows [data-upload-card]").count() == 0
                 page.get_by_test_id("recording-inspector-open-full-page").click(
                     timeout=_remaining_timeout_ms(deadline),
                 )

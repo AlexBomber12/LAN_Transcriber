@@ -1,6 +1,6 @@
 <div
   id="{{ recordings_panel.panel_id }}"
-  class="recordings-panel recordings-panel-frame"
+  class="bg-white rounded-xl border border-slate-200 flex-1 flex flex-col overflow-hidden"
   {% if recordings_panel.system_bar_url %}
   data-system-bar-url="{{ recordings_panel.system_bar_url }}"
   {% endif %}
@@ -11,19 +11,21 @@
   hx-swap="outerHTML"
   {% endif %}
 >
-  <div class="control-center-pane-head control-center-pane-head-tight control-center-pane-head-worklist">
+  <div class="px-4 py-3 border-b border-slate-200 flex items-center justify-between">
     {% if recordings_panel.mode != "control_center" %}
     <div>
-      <p class="eyebrow">Worklist</p>
-      <h2>{{ recordings_panel.title }}</h2>
-      <p class="control-center-pane-copy">{{ recordings_panel.description }}</p>
+      <p class="text-[10px] font-bold text-primary uppercase tracking-[0.1em]">Worklist</p>
+      <h2 class="text-sm font-bold">{{ recordings_panel.title }}</h2>
+      <p class="text-xs text-slate-500">{{ recordings_panel.description }}</p>
     </div>
     {% else %}
-    <div></div>
+    <h3 class="text-sm font-bold uppercase tracking-wider text-slate-500">Recordings Worklist</h3>
     {% endif %}
-    <div class="control-center-worklist-summary">
-      <span class="control-center-worklist-count">{{ recordings_panel.total }}</span>
-      <span class="control-center-worklist-label">visible now</span>
+    <div class="flex items-center gap-2">
+      <span class="text-xs text-slate-500"><span class="font-bold text-slate-700">{{ recordings_panel.total }}</span> visible now</span>
+      {% if recordings_panel.mode == "control_center" %}
+      <button class="p-1.5 text-slate-400 hover:text-slate-600" onclick="if(typeof refreshControlCenterPanels==='function')refreshControlCenterPanels()"><span class="material-symbols-outlined">refresh</span></button>
+      {% endif %}
     </div>
   </div>
 

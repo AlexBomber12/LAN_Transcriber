@@ -635,7 +635,7 @@ Queue (in order)
 - Depends on: PR-UI-STITCH-UPLOAD-01
 
 127) PR-TAILWIND-CONTROL-CENTER-01: Migrate Control Center page and all its partials from legacy CSS to Stitch Tailwind design
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-TAILWIND-CONTROL-CENTER-01.md
 - Depends on: PR-TAILWIND-BASE-01
 

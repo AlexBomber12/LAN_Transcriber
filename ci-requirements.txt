@@ -62,7 +62,7 @@ pip-tools==7.4.1
     # via -r ci-requirements.in
 pluggy==1.6.0
     # via pytest
-prometheus-client==0.24.1
+prometheus-client==0.25.0
     # via -r ci-requirements.in
 pydantic==2.12.5
     # via

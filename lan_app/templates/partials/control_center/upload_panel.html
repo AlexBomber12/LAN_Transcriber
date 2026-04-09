@@ -1,54 +1,45 @@
-<div class="control-center-upload-grid">
-  <div class="control-center-upload-stack">
-    {% if upload_shell.show_compact_queue %}
-    <div class="control-center-upload-title-row">
-      <span class="eyebrow control-center-upload-section-title">
-        <span class="control-center-upload-section-icon" aria-hidden="true">
-          <svg viewBox="0 0 16 16" focusable="false">
-            <path
-              d="M8 2.5l3 3H9.25v4.75h-2.5V5.5H5L8 2.5zm-4 8.75h8A1.75 1.75 0 0 1 13.75 13v.5h-1.5V13a.25.25 0 0 0-.25-.25H4A.25.25 0 0 0 3.75 13v.5h-1.5V13A1.75 1.75 0 0 1 4 11.25z"
-              fill="currentColor"
-            ></path>
-          </svg>
-        </span>
-        <span>{{ upload_shell.section_title }}</span>
-      </span>
-    </div>
-    {% endif %}
+{% if upload_shell.show_compact_queue %}
+<div class="flex items-center justify-between mb-3">
+  <h3 class="text-sm font-bold flex items-center gap-2 uppercase tracking-wider text-slate-500">
+    <span class="material-symbols-outlined text-primary">cloud_upload</span>
+    {{ upload_shell.section_title }}
+  </h3>
+  <span id="{{ upload_shell.active_counter_id }}" class="text-[10px] font-bold bg-primary/10 text-primary px-2 py-0.5 rounded-full">0 ACTIVE JOBS</span>
+</div>
+{% endif %}
 
+<div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+  <div>
     <input type="file" id="{{ upload_shell.file_input_id }}" multiple hidden>
     <div
       id="{{ upload_shell.dropzone_id }}"
-      class="control-center-upload-dropzone"
+      class="border-2 border-dashed border-slate-200 rounded-lg flex flex-col items-center justify-center py-6 px-4 hover:bg-slate-50 transition-colors cursor-pointer group"
       tabindex="0"
     >
+      <span class="material-symbols-outlined text-slate-400 group-hover:text-primary mb-2">add_circle</span>
       {% if not upload_shell.show_compact_queue %}
-      <h3>{{ upload_shell.section_title }}</h3>
+      <p class="text-sm font-semibold text-slate-700 mb-1">{{ upload_shell.section_title }}</p>
       {% endif %}
-      <p class="upload-caption">Drop audio here or browse from disk.</p>
-      <div class="upload-dropzone-actions">
-        <button type="button" class="btn" id="{{ upload_shell.pick_files_button_id }}">Choose files</button>
-        <span class="upload-caption">MP3, WAV, FLAC</span>
+      <p class="text-xs text-slate-600">Drop audio here or browse from disk.</p>
+      <div class="flex items-center gap-2 mt-2">
+        <button type="button" class="px-3 py-1.5 bg-primary text-white text-xs font-bold rounded" id="{{ upload_shell.pick_files_button_id }}">Choose files</button>
+        <span class="text-[10px] text-slate-400">MP3, WAV, FLAC</span>
       </div>
     </div>
   </div>
-  <div class="upload-queue-shell{% if upload_shell.show_compact_queue %} upload-queue-shell-compact{% endif %}">
-    {% if upload_shell.show_compact_queue %}
-    <div class="upload-queue-head upload-queue-head-compact">
-      <span id="{{ upload_shell.active_counter_id }}" class="upload-queue-counter">0 ACTIVE JOBS</span>
-    </div>
-    {% else %}
-    <div class="upload-queue-head">
-      <h3>{{ upload_shell.queue_title }}</h3>
-      <p class="upload-caption">{{ upload_shell.queue_caption }}</p>
+  <div class="{% if upload_shell.show_compact_queue %}space-y-2{% else %}space-y-3{% endif %}">
+    {% if not upload_shell.show_compact_queue %}
+    <div>
+      <h3 class="text-sm font-semibold">{{ upload_shell.queue_title }}</h3>
+      <p class="text-xs text-slate-500">{{ upload_shell.queue_caption }}</p>
     </div>
     {% endif %}
     <div
       id="{{ upload_shell.upload_rows_id }}"
-      class="upload-queue-list{% if upload_shell.show_compact_queue %} upload-queue-list-compact{% endif %}"
+      class="space-y-2"
     >
       {% if upload_shell.show_empty_state_text %}
-      <div id="{{ upload_shell.empty_row_id }}" class="upload-queue-empty">
+      <div id="{{ upload_shell.empty_row_id }}" class="text-xs text-slate-400 py-4 text-center">
         {{ upload_shell.empty_state_text }}
       </div>
       {% endif %}
