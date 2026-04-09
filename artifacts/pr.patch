@@ -1,13 +1,25 @@
-diff --git a/ci-requirements.txt b/ci-requirements.txt
-index 745d979..6803920 100644
---- a/ci-requirements.txt
-+++ b/ci-requirements.txt
-@@ -62,7 +62,7 @@ pip-tools==7.4.1
-     # via -r ci-requirements.in
- pluggy==1.6.0
-     # via pytest
--prometheus-client==0.24.1
-+prometheus-client==0.25.0
-     # via -r ci-requirements.in
- pydantic==2.12.5
-     # via
+diff --git a/lan_app/templates/partials/control_center/status_summary_strip.html b/lan_app/templates/partials/control_center/status_summary_strip.html
+index 865f737..c79106f 100644
+--- a/lan_app/templates/partials/control_center/status_summary_strip.html
++++ b/lan_app/templates/partials/control_center/status_summary_strip.html
+@@ -2,13 +2,16 @@
+   <h2 class="text-sm font-bold">{{ summary_strip.title }}</h2>
+   <div class="flex gap-3 flex-wrap">
+     {% for status, count in summary_strip.counts.items() %}
++    {% set s = status|lower %}
+     <div class="bg-slate-50 border border-slate-200 rounded-lg px-4 py-2 text-center min-w-[80px]">
+       <div class="text-lg font-bold text-slate-700">{{ count }}</div>
+       <div class="text-[10px] font-bold uppercase
+-        {% if status == 'Ready' %}text-green-600
+-        {% elif status == 'Processing' %}text-amber-600
+-        {% elif status == 'Failed' or status == 'Quarantine' %}text-red-600
+-        {% elif status == 'NeedsReview' %}text-amber-600
++        {% if s in ['ready', 'published', 'finished'] %}text-green-600
++        {% elif s in ['processing', 'stopping', 'started'] %}text-amber-600
++        {% elif s in ['failed', 'quarantine'] %}text-red-600
++        {% elif s in ['needsreview'] %}text-amber-600
++        {% elif s in ['queued'] %}text-blue-600
++        {% elif s in ['stopped'] %}text-slate-600
+         {% else %}text-slate-500
+         {% endif %}
+       ">{{ status }}</div>
