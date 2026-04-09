@@ -15,5 +15,5 @@
 
   {% include "partials/control_center/system_bar.html" %}
 </div>
-<script>(function(){var s=document.getElementById('control-center-shell');if(!s)return;function u(){s.style.setProperty('--cc-top',s.getBoundingClientRect().top+'px')}u();window.addEventListener('resize',u);window.addEventListener('orientationchange',u)})()</script>
+<script>(function(){var s=document.getElementById('control-center-shell');if(!s)return;function u(){if(!document.contains(s)){window.removeEventListener('resize',u);window.removeEventListener('orientationchange',u);return}s.style.setProperty('--cc-top',s.getBoundingClientRect().top+'px')}u();window.addEventListener('resize',u);window.addEventListener('orientationchange',u)})()</script>
 {% endblock %}
