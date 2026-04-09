@@ -514,7 +514,7 @@ def test_control_center_system_bar_renders_degraded_cpu_fallback(
     assert "Node status" in system_bar.text
     assert "GPU unavailable" in system_bar.text
     assert "CPU fallback" not in system_bar.text
-    assert "GPU unavailable" in system_bar.text  # offline tone rendered
+    assert "text-red-700" in system_bar.text  # offline tone rendered
 
     work_pane = seeded_client.get(
         "/ui/control-center/work-pane?selected=rec-ui-1&status=Ready&q=meeting&tab=speakers"
