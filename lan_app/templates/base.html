@@ -5,7 +5,30 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{% block title %}LAN Transcriber{% endblock %}</title>
 <script src="/static/htmx.min.js"></script>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&amp;display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet">
+<script>
+tailwind.config = {
+  darkMode: "class",
+  theme: {
+    extend: {
+      colors: {
+        "primary": "#2463eb",
+        "background-light": "#f6f6f8",
+        "background-dark": "#111621",
+        "navy-nav": "#0f172a",
+      },
+      fontFamily: {
+        "display": ["Inter"]
+      },
+      borderRadius: {"DEFAULT": "0.25rem", "lg": "0.5rem", "xl": "0.75rem", "full": "9999px"},
+    },
+  },
+}
+</script>
 <style>
+/* LEGACY CSS - will be removed after full Tailwind migration. See PR-TAILWIND-REMAINING-01. */
 :root{
   --bg:#f6f6f8;
   --bg-accent:#eef3ff;
@@ -2217,38 +2240,60 @@ textarea:focus{
 }
 </style>
 </head>
-<body hx-boost="true">
-<header class="app-nav">
-  <div class="app-nav-brand">
-    <div class="app-nav-mark">LT</div>
-    <div class="app-nav-copy">
-      <div class="app-nav-title">LAN Transcriber</div>
+<body class="font-display antialiased" hx-boost="true">
+<header class="bg-navy-nav text-white px-6 py-3 flex items-center justify-between border-b border-slate-800">
+  <div class="flex items-center gap-8">
+    <div class="flex items-center gap-3">
+      <div class="bg-primary p-1.5 rounded">
+        <span class="material-symbols-outlined text-white">settings_input_component</span>
+      </div>
+      <h1 class="text-lg font-bold tracking-tight">LAN Transcriber</h1>
+    </div>
+    <nav class="flex items-center gap-1">
+      <a href="/" class="px-3 py-1.5 rounded text-sm font-semibold {% if active in ['dashboard', 'recordings', 'upload'] %}bg-primary/20 text-primary{% else %}text-slate-400 hover:text-white{% endif %}">Control Center</a>
+      <a href="/glossary" class="px-3 py-1.5 rounded text-sm font-medium {% if active=='glossary' %}bg-primary/20 text-primary{% else %}text-slate-400 hover:text-white{% endif %}">Corrections</a>
+      <a href="/voices" class="px-3 py-1.5 rounded text-sm font-medium {% if active=='voices' %}bg-primary/20 text-primary{% else %}text-slate-400 hover:text-white{% endif %}">Voices</a>
+      <a href="/calendars" class="px-3 py-1.5 rounded text-sm font-medium {% if active=='calendars' %}bg-primary/20 text-primary{% else %}text-slate-400 hover:text-white{% endif %}">Calendars</a>
+      <a href="/projects" class="px-3 py-1.5 rounded text-sm font-medium {% if active=='projects' %}bg-primary/20 text-primary{% else %}text-slate-400 hover:text-white{% endif %}">Projects</a>
+      <a href="/queue" class="px-3 py-1.5 rounded text-sm font-medium {% if active=='queue' %}bg-primary/20 text-primary{% else %}text-slate-400 hover:text-white{% endif %}">Queue</a>
+    </nav>
+  </div>
+  <div class="flex items-center gap-4">
+    <div class="relative">
+      <span class="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-slate-500">search</span>
+      <input class="bg-slate-800 border-none rounded-lg pl-10 pr-4 py-1.5 text-sm w-64 focus:ring-1 focus:ring-primary" placeholder="Search recordings..." type="text">
+    </div>
+    <button class="p-2 text-slate-400 hover:text-white"><span class="material-symbols-outlined">notifications</span></button>
+    <div class="w-8 h-8 rounded-full bg-primary/30 flex items-center justify-center border border-primary/50">
+      <span class="text-xs font-bold">OP</span>
     </div>
   </div>
-  <nav class="app-nav-links">
-    <a href="/" class="app-nav-link app-nav-link-primary {% if active in ['dashboard', 'recordings', 'upload'] %}active{% endif %}">Control Center</a>
-    <a href="/glossary" class="app-nav-link {% if active=='glossary' %}active{% endif %}">Corrections</a>
-    <a href="/voices" class="app-nav-link {% if active=='voices' %}active{% endif %}">Voices</a>
-    <a href="/calendars" class="app-nav-link {% if active=='calendars' %}active{% endif %}">Calendars</a>
-    <a href="/projects" class="app-nav-link {% if active=='projects' %}active{% endif %}">Projects</a>
-    <a href="/queue" class="app-nav-link {% if active=='queue' %}active{% endif %}">Queue</a>
-  </nav>
 </header>
 <main class="app-main">
 {% block content %}{% endblock %}
 </main>
+<footer class="h-8 bg-slate-100 border-t border-slate-200 px-4 flex items-center justify-between text-[10px] font-medium text-slate-500">
+  <div class="flex gap-4">
+    <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-green-500"></span> LAN Node: Online</span>
+    <span>Local Database</span>
+    <span>Version: LAN Transcriber</span>
+  </div>
+  <div class="flex gap-4">
+    <span>Uptime</span>
+  </div>
+</footer>
 <div
   id="delete-confirm-backdrop"
-  class="modal-backdrop"
+  class="fixed inset-0 bg-slate-900/60 flex items-center justify-center p-3 z-[1000]"
   hidden
   onclick="if (event.target === this) closeDeleteDialog();"
 >
-  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="delete-confirm-title">
-    <h2 id="delete-confirm-title">Delete record?</h2>
-    <p class="modal-copy">This action can&apos;t be undone.</p>
-    <p id="delete-confirm-context" class="modal-context"></p>
-    <p id="delete-confirm-error" class="modal-error"></p>
-    <div class="modal-actions">
+  <div class="bg-white border border-slate-200 rounded-3xl max-w-[460px] w-full p-5 shadow-2xl" role="dialog" aria-modal="true" aria-labelledby="delete-confirm-title">
+    <h2 id="delete-confirm-title" class="text-lg font-bold mb-2">Delete record?</h2>
+    <p class="text-sm text-slate-900 mb-2">This action can&apos;t be undone.</p>
+    <p id="delete-confirm-context" class="text-sm text-slate-500 mb-3 break-words"></p>
+    <p id="delete-confirm-error" class="text-xs text-red-700 min-h-[18px] mb-2"></p>
+    <div class="flex justify-end gap-1.5">
       <button id="delete-cancel-btn" class="btn" type="button" onclick="closeDeleteDialog()">Cancel</button>
       <button id="delete-confirm-btn" class="btn btn-danger" type="button" onclick="confirmDeleteDialog()">Delete</button>
     </div>
