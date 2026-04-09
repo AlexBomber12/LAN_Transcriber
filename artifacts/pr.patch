@@ -46,16 +46,48 @@ index b6e6cf6..745d979 100644
      #   icalendar
      #   recurring-ical-events
 diff --git a/lan_app/templates/base.html b/lan_app/templates/base.html
-index e2d228f..c4cb003 100644
+index e2d228f..cc16461 100644
 --- a/lan_app/templates/base.html
 +++ b/lan_app/templates/base.html
-@@ -5,7 +5,30 @@
+@@ -5,7 +5,62 @@
  <meta name="viewport" content="width=device-width, initial-scale=1">
  <title>{% block title %}LAN Transcriber{% endblock %}</title>
  <script src="/static/htmx.min.js"></script>
-+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
-+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&amp;display=swap" rel="stylesheet">
-+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet">
++<script src="/static/tailwind.js"></script>
+ <style>
++@font-face {
++  font-family: 'Inter';
++  font-style: normal;
++  font-weight: 400 900;
++  font-display: swap;
++  src: url(/static/fonts/inter-latin.woff2) format('woff2');
++  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
++}
++@font-face {
++  font-family: 'Material Symbols Outlined';
++  font-style: normal;
++  font-weight: 100 700;
++  font-display: swap;
++  src: url(/static/fonts/material-symbols-outlined.woff2) format('woff2');
++}
++.material-symbols-outlined {
++  font-family: 'Material Symbols Outlined';
++  font-weight: normal;
++  font-style: normal;
++  font-size: 20px;
++  line-height: 1;
++  letter-spacing: normal;
++  text-transform: none;
++  display: inline-block;
++  white-space: nowrap;
++  word-wrap: normal;
++  direction: ltr;
++  -webkit-font-smoothing: antialiased;
++  -moz-osx-font-smoothing: grayscale;
++  text-rendering: optimizeLegibility;
++  font-feature-settings: 'liga';
++}
++</style>
 +<script>
 +tailwind.config = {
 +  darkMode: "class",
@@ -75,12 +107,12 @@ index e2d228f..c4cb003 100644
 +  },
 +}
 +</script>
- <style>
++<style>
 +/* LEGACY CSS - will be removed after full Tailwind migration. See PR-TAILWIND-REMAINING-01. */
  :root{
    --bg:#f6f6f8;
    --bg-accent:#eef3ff;
-@@ -2217,38 +2240,60 @@ textarea:focus{
+@@ -2217,38 +2272,60 @@ textarea:focus{
  }
  </style>
  </head>
