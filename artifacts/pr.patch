@@ -1,31 +1,15 @@
-diff --git a/lan_app/templates/partials/control_center/recordings_table.html b/lan_app/templates/partials/control_center/recordings_table.html
-index 18f153c..9c19330 100644
---- a/lan_app/templates/partials/control_center/recordings_table.html
-+++ b/lan_app/templates/partials/control_center/recordings_table.html
-@@ -29,19 +29,19 @@
-       >
-         <td class="px-4 py-3">
-           {% if r.status_dot_tone == 'ready' %}
--          <span class="material-symbols-outlined text-green-500" title="{{ r.status_accessible_label }}">check_circle</span>
-+          <span class="material-symbols-outlined text-green-500" role="img" aria-label="{{ r.status_accessible_label }}" title="{{ r.status_accessible_label }}">check_circle</span>
-           {% elif r.status_dot_tone == 'processing' %}
--          <span class="material-symbols-outlined text-amber-500" title="{{ r.status_accessible_label }}">pending</span>
-+          <span class="material-symbols-outlined text-amber-500" role="img" aria-label="{{ r.status_accessible_label }}" title="{{ r.status_accessible_label }}">pending</span>
-           {% elif r.status_dot_tone == 'review' %}
--          <span class="material-symbols-outlined text-amber-500" title="{{ r.status_accessible_label }}">warning</span>
-+          <span class="material-symbols-outlined text-amber-500" role="img" aria-label="{{ r.status_accessible_label }}" title="{{ r.status_accessible_label }}">warning</span>
-           {% elif r.status_dot_tone == 'queued' %}
--          <span class="material-symbols-outlined text-slate-400" title="{{ r.status_accessible_label }}">schedule</span>
-+          <span class="material-symbols-outlined text-slate-400" role="img" aria-label="{{ r.status_accessible_label }}" title="{{ r.status_accessible_label }}">schedule</span>
-           {% elif r.status_dot_tone in ['failed', 'quarantine'] %}
--          <span class="material-symbols-outlined text-red-500" title="{{ r.status_accessible_label }}">error</span>
-+          <span class="material-symbols-outlined text-red-500" role="img" aria-label="{{ r.status_accessible_label }}" title="{{ r.status_accessible_label }}">error</span>
-           {% elif r.status_dot_tone == 'stopped' %}
--          <span class="material-symbols-outlined text-slate-500" title="{{ r.status_accessible_label }}">stop_circle</span>
-+          <span class="material-symbols-outlined text-slate-500" role="img" aria-label="{{ r.status_accessible_label }}" title="{{ r.status_accessible_label }}">stop_circle</span>
-           {% else %}
--          <span class="material-symbols-outlined text-slate-400" title="{{ r.status_accessible_label }}">radio_button_unchecked</span>
-+          <span class="material-symbols-outlined text-slate-400" role="img" aria-label="{{ r.status_accessible_label }}" title="{{ r.status_accessible_label }}">radio_button_unchecked</span>
-           {% endif %}
-         </td>
-         <td class="px-4 py-3">
+diff --git a/tests_playwright/test_ui_smoke_playwright.py b/tests_playwright/test_ui_smoke_playwright.py
+index 2036ed1..f577429 100644
+--- a/tests_playwright/test_ui_smoke_playwright.py
++++ b/tests_playwright/test_ui_smoke_playwright.py
+@@ -294,8 +294,8 @@ def test_control_center_embedded_inspector_and_export_zip_smoke(tmp_path: Path)
+                     timeout=_remaining_timeout_ms(deadline),
+                 )
+                 page.locator(
+-                    "#control-center-system-bar .control-center-system-label"
+-                ).filter(has_text="Node status").first.wait_for(
++                    "#control-center-system-bar"
++                ).get_by_text("Node status").first.wait_for(
+                     state="visible",
+                     timeout=_remaining_timeout_ms(deadline),
+                 )

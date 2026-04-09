@@ -294,8 +294,8 @@ def test_control_center_embedded_inspector_and_export_zip_smoke(tmp_path: Path) 
                     timeout=_remaining_timeout_ms(deadline),
                 )
                 page.locator(
-                    "#control-center-system-bar .control-center-system-label"
-                ).filter(has_text="Node status").first.wait_for(
+                    "#control-center-system-bar"
+                ).get_by_text("Node status").first.wait_for(
                     state="visible",
                     timeout=_remaining_timeout_ms(deadline),
                 )
