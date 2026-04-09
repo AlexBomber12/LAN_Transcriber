@@ -28,14 +28,18 @@
         {% endif %}
       >
         <td class="px-4 py-3">
-          {% if r.status_dot_tone == 'ok' %}
+          {% if r.status_dot_tone == 'ready' %}
           <span class="material-symbols-outlined text-green-500" title="{{ r.status_accessible_label }}">check_circle</span>
-          {% elif r.status_dot_tone == 'active' %}
+          {% elif r.status_dot_tone == 'processing' %}
           <span class="material-symbols-outlined text-amber-500" title="{{ r.status_accessible_label }}">pending</span>
-          {% elif r.status_dot_tone == 'warn' %}
+          {% elif r.status_dot_tone == 'review' %}
           <span class="material-symbols-outlined text-amber-500" title="{{ r.status_accessible_label }}">warning</span>
-          {% elif r.status_dot_tone == 'error' %}
+          {% elif r.status_dot_tone == 'queued' %}
+          <span class="material-symbols-outlined text-slate-400" title="{{ r.status_accessible_label }}">schedule</span>
+          {% elif r.status_dot_tone in ['failed', 'quarantine'] %}
           <span class="material-symbols-outlined text-red-500" title="{{ r.status_accessible_label }}">error</span>
+          {% elif r.status_dot_tone == 'stopped' %}
+          <span class="material-symbols-outlined text-slate-500" title="{{ r.status_accessible_label }}">stop_circle</span>
           {% else %}
           <span class="material-symbols-outlined text-slate-400" title="{{ r.status_accessible_label }}">radio_button_unchecked</span>
           {% endif %}

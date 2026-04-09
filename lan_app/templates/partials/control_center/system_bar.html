@@ -13,7 +13,7 @@
       {% if item.detail %}title="{{ item.detail }}"{% endif %}
     >
       {% if item.show_dot %}
-      <span class="w-2 h-2 rounded-full {% if item.tone == 'ok' %}bg-green-500{% elif item.tone == 'warn' %}bg-amber-500{% elif item.tone == 'error' %}bg-red-500{% else %}bg-slate-400{% endif %}" aria-hidden="true"></span>
+      <span class="w-2 h-2 rounded-full {% if item.tone == 'healthy' %}bg-green-500{% elif item.tone == 'busy' %}bg-amber-500{% elif item.tone == 'degraded' %}bg-amber-500{% elif item.tone == 'offline' %}bg-red-500{% else %}bg-slate-400{% endif %}" aria-hidden="true"></span>
       {% endif %}
       <span>{{ item.label }}</span>
       <strong class="text-slate-700">{{ item.value }}</strong>
