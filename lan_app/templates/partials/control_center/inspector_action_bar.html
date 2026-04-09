@@ -1,12 +1,12 @@
-<div class="inspector-action-bar{% if inspector_action_bar.embedded %} inspector-action-bar-embedded{% endif %}">
+<div class="flex items-center gap-2 flex-wrap {% if inspector_action_bar.embedded %}px-6 py-3 border-b border-slate-200{% else %}p-4 border-b border-slate-200{% endif %}">
   {% if inspector_action_bar.embedded %}
     {% if inspector_action_bar.show_embedded_stop %}
       {% if inspector_action_bar.rec.stop_in_progress %}
-      <button type="button" class="btn btn-danger" disabled>Stopping...</button>
+      <button type="button" class="px-3 py-1.5 bg-red-600 text-white text-xs font-bold rounded opacity-50 cursor-not-allowed" disabled>Stopping...</button>
       {% else %}
       <button
         type="button"
-        class="btn btn-danger"
+        class="px-3 py-1.5 bg-red-600 text-white text-xs font-bold rounded hover:bg-red-700"
         data-action-url="{{ inspector_action_bar.stop_url }}"
         data-action-body="{{ inspector_action_bar.stop_body }}"
         data-return-to="{{ inspector_action_bar.return_to }}"
@@ -18,7 +18,7 @@
     {% elif inspector_action_bar.show_embedded_requeue %}
     <button
       type="button"
-      class="btn"
+      class="px-3 py-1.5 border border-slate-200 text-xs font-bold rounded hover:bg-slate-50"
       data-action-url="{{ inspector_action_bar.requeue_url }}"
       data-return-to="{{ inspector_action_bar.return_to }}"
       data-pending-label="Requeueing..."
@@ -28,7 +28,7 @@
   {% else %}
   <button
     type="button"
-    class="btn"
+    class="px-3 py-1.5 border border-slate-200 text-xs font-bold rounded hover:bg-slate-50"
     data-action-url="{{ inspector_action_bar.requeue_url }}"
     data-return-to="{{ inspector_action_bar.return_to }}"
     data-pending-label="Requeueing..."
@@ -36,7 +36,7 @@
   >Requeue</button>
   <button
     type="button"
-    class="btn"
+    class="px-3 py-1.5 border border-slate-200 text-xs font-bold rounded hover:bg-slate-50"
     data-action-url="{{ inspector_action_bar.quarantine_url }}"
     data-return-to="{{ inspector_action_bar.return_to }}"
     data-confirm-message="Quarantine this recording?"
@@ -45,7 +45,7 @@
   >Quarantine</button>
   <button
     type="button"
-    class="btn btn-danger"
+    class="px-3 py-1.5 bg-red-600 text-white text-xs font-bold rounded hover:bg-red-700"
     data-rid="{{ inspector_action_bar.rec.id }}"
     data-rlabel="{{ inspector_action_bar.rec.source_filename or inspector_action_bar.rec.id }}"
     data-rcaptured="{{ '' if inspector_action_bar.rec.captured_at_display == '—' else inspector_action_bar.rec.captured_at_display }}"
@@ -54,11 +54,11 @@
   >Delete</button>
     {% if inspector_action_bar.rec.stop_eligible %}
       {% if inspector_action_bar.rec.stop_in_progress %}
-      <button type="button" class="btn btn-danger" disabled>Stopping...</button>
+      <button type="button" class="px-3 py-1.5 bg-red-600 text-white text-xs font-bold rounded opacity-50 cursor-not-allowed" disabled>Stopping...</button>
       {% else %}
       <button
         type="button"
-        class="btn btn-danger"
+        class="px-3 py-1.5 bg-red-600 text-white text-xs font-bold rounded hover:bg-red-700"
         data-action-url="{{ inspector_action_bar.stop_url }}"
         data-action-body="{{ inspector_action_bar.stop_body }}"
         data-return-to="{{ inspector_action_bar.return_to }}"
@@ -71,16 +71,16 @@
   {% endif %}
   <a
     href="{{ inspector_action_bar.download_zip_href }}"
-    class="btn"
+    class="px-3 py-1.5 border border-slate-200 text-xs font-bold rounded hover:bg-slate-50"
     hx-boost="false"
     data-testid="recording-inspector-download-zip"
   >Download ZIP</a>
   {% if inspector_action_bar.embedded %}
   <a
     href="{{ inspector_action_bar.open_full_page_href }}"
-    class="btn"
+    class="px-3 py-1.5 border border-slate-200 text-xs font-bold rounded hover:bg-slate-50"
     data-testid="recording-inspector-open-full-page"
   >Open full-page inspector</a>
   {% endif %}
-  <a href="{{ inspector_action_bar.back_href }}" class="btn">{{ inspector_action_bar.back_label }}</a>
+  <a href="{{ inspector_action_bar.back_href }}" class="px-3 py-1.5 border border-slate-200 text-xs font-bold rounded hover:bg-slate-50">{{ inspector_action_bar.back_label }}</a>
 </div>

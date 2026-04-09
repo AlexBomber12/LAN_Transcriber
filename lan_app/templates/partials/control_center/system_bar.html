@@ -1,21 +1,23 @@
 <footer
   id="control-center-system-bar"
-  class="control-center-system-bar"
+  class="h-8 bg-slate-100 border-t border-slate-200 px-4 flex items-center justify-between text-[10px] font-medium text-slate-500"
   hx-get="{{ control_center_state.system_bar_url }}"
   hx-trigger="every 15s, refresh-control-center-system-bar from:body"
   hx-target="this"
   hx-swap="outerHTML"
 >
+  <div class="flex gap-4">
   {% for item in control_center_system_bar["items"] %}
-  <div
-    class="control-center-system-item control-center-system-item--{{ item.tone or 'neutral' }}"
-    {% if item.detail %}title="{{ item.detail }}"{% endif %}
-  >
-    {% if item.show_dot %}
-    <span class="control-center-system-dot" aria-hidden="true"></span>
-    {% endif %}
-    <span class="control-center-system-label">{{ item.label }}</span>
-    <strong class="control-center-system-value">{{ item.value }}</strong>
-  </div>
+    <span
+      class="flex items-center gap-1"
+      {% if item.detail %}title="{{ item.detail }}"{% endif %}
+    >
+      {% if item.show_dot %}
+      <span class="w-2 h-2 rounded-full {% if item.tone == 'ok' %}bg-green-500{% elif item.tone == 'warn' %}bg-amber-500{% elif item.tone == 'error' %}bg-red-500{% else %}bg-slate-400{% endif %}" aria-hidden="true"></span>
+      {% endif %}
+      <span>{{ item.label }}</span>
+      <strong class="text-slate-700">{{ item.value }}</strong>
+    </span>
   {% endfor %}
+  </div>
 </footer>

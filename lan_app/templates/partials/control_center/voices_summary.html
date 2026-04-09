@@ -1,33 +1,35 @@
-<div class="section">
-  <h2>Canonical Speakers <small style="font-weight:normal;color:#666">({{ voice_summary.profile_count }} profiles / {{ voice_summary.sample_count }} samples)</small></h2>
+<div class="space-y-3">
+  <h2 class="text-sm font-bold">Canonical Speakers <span class="font-normal text-slate-500">({{ voice_summary.profile_count }} profiles / {{ voice_summary.sample_count }} samples)</span></h2>
   {% if voice_summary.profiles %}
-  <table>
-    <thead>
-      <tr>
-        <th>Name</th>
-        <th>Samples</th>
-        <th>Updated</th>
-        <th>Notes</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for item in voice_summary.profiles %}
-      <tr>
-        <td>{{ item.display_name }}</td>
-        <td>{{ item.sample_count }}</td>
-        <td>{{ item.updated_at_display }}</td>
-        <td>{{ item.notes or '—' }}</td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
+  <div class="overflow-x-auto">
+    <table class="w-full text-left border-collapse text-xs">
+      <thead class="bg-slate-50 text-[10px] uppercase font-bold text-slate-500 border-b border-slate-200">
+        <tr>
+          <th class="px-3 py-2">Name</th>
+          <th class="px-3 py-2">Samples</th>
+          <th class="px-3 py-2">Updated</th>
+          <th class="px-3 py-2">Notes</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-slate-100">
+        {% for item in voice_summary.profiles %}
+        <tr class="hover:bg-slate-50">
+          <td class="px-3 py-2 font-medium">{{ item.display_name }}</td>
+          <td class="px-3 py-2 text-slate-500">{{ item.sample_count }}</td>
+          <td class="px-3 py-2 text-slate-500">{{ item.updated_at_display }}</td>
+          <td class="px-3 py-2 text-slate-500">{{ item.notes or '—' }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
   {% if voice_summary.has_more %}
-  <p style="margin:8px 0 0 0;color:#555">More canonical speakers are available on the full admin page.</p>
+  <p class="text-xs text-slate-500">More canonical speakers are available on the full admin page.</p>
   {% endif %}
   {% else %}
-  <p class="placeholder">No canonical speakers yet. Stay in the embedded speakers tab for most decisions; open the admin page only when you need reusable person records.</p>
+  <p class="text-xs text-slate-400">No canonical speakers yet. Stay in the embedded speakers tab for most decisions; open the admin page only when you need reusable person records.</p>
   {% endif %}
-  <p style="margin:8px 0 0 0">
-    <a href="{{ voice_summary.manage_href }}" class="btn" style="text-decoration:none">Manage canonical speakers</a>
+  <p>
+    <a href="{{ voice_summary.manage_href }}" class="inline-block px-3 py-1.5 bg-primary text-white text-xs font-bold rounded">Manage canonical speakers</a>
   </p>
 </div>

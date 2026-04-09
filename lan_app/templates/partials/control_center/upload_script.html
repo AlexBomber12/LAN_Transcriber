@@ -39,17 +39,17 @@ function formatSize(bytes) {
 
 function makeProgressCell() {
   var wrap = document.createElement("div");
-  wrap.className = "upload-progress-wrap";
+  wrap.className = "flex items-center gap-2";
 
   var bar = document.createElement("div");
-  bar.className = "upload-progress-track";
+  bar.className = "w-full bg-slate-200 h-1 rounded-full overflow-hidden";
 
   var fill = document.createElement("div");
-  fill.className = "upload-progress-fill";
+  fill.className = "bg-primary h-full";
   bar.appendChild(fill);
 
   var label = document.createElement("span");
-  label.className = "upload-progress-label";
+  label.className = "text-[10px] font-mono text-slate-500";
   label.textContent = "0%";
 
   wrap.appendChild(bar);
@@ -130,7 +130,7 @@ function restorePlaceholderRow() {
     return;
   }
   var rows = document.getElementById("{{ upload_shell.upload_rows_id }}");
-  if (!rows || rows.querySelector(".upload-queue-item")) {
+  if (!rows || rows.querySelector("[data-upload-item]")) {
     return;
   }
   if (document.getElementById("{{ upload_shell.empty_row_id }}")) {
@@ -138,7 +138,7 @@ function restorePlaceholderRow() {
   }
   var empty = document.createElement("div");
   empty.id = "{{ upload_shell.empty_row_id }}";
-  empty.className = "upload-queue-empty";
+  empty.className = "text-xs text-slate-400 py-4 text-center";
   empty.textContent = uploadEmptyStateText;
   rows.appendChild(empty);
 }
@@ -229,65 +229,51 @@ function buildCompactQueueCard(item) {
   var isQueued = item.phase === "queued";
 
   var card = document.createElement("article");
-  card.className = "upload-queue-card";
+  card.className = "bg-slate-50 p-2 rounded border border-slate-100 flex items-center gap-3";
+
+  var indicator = document.createElement("div");
+  indicator.className = "w-1 h-8 rounded-full";
+  indicator.className += isQueued ? " bg-slate-300" : " bg-primary";
+
+  var body = document.createElement("div");
+  body.className = "flex-1 min-w-0";
+
+  var title = document.createElement("p");
+  title.className = "text-[11px] font-bold truncate";
   if (isQueued) {
-    card.className += " upload-queue-card--queued";
+    title.className += " text-slate-500";
   }
-
-  var head = document.createElement("div");
-  head.className = "upload-queue-card-head";
-
-  var title = document.createElement("strong");
-  title.className = "upload-queue-card-title";
   title.textContent = item.file && item.file.name ? item.file.name : "(unnamed)";
   title.title = title.textContent;
+  body.appendChild(title);
 
-  var status = document.createElement("span");
-  status.className = "upload-queue-card-status";
-  status.textContent = isQueued ? "Queued" : "Active";
   if (isQueued) {
-    status.className += " upload-queue-card-status--queued";
-  }
-
-  head.appendChild(title);
-  head.appendChild(status);
-
-  var progressWrap = document.createElement("div");
-  progressWrap.className = "upload-progress-wrap";
-
-  var track = document.createElement("div");
-  track.className = "upload-progress-track";
-  if (isQueued) {
-    track.className += " upload-progress-track-muted";
-  }
-
-  var fill = document.createElement("div");
-  fill.className = "upload-progress-fill";
-  if (isQueued) {
-    fill.className += " upload-progress-fill-muted";
-  }
-  fill.style.width = String(percent) + "%";
-  track.appendChild(fill);
-
-  var label = document.createElement("span");
-  label.className = "upload-progress-label";
-  if (isQueued) {
-    label.className += " upload-progress-label-muted";
-    label.textContent = "queued";
+    var stateText = document.createElement("p");
+    stateText.className = "text-[10px] text-slate-400";
+    stateText.textContent = "Waiting in queue...";
+    body.appendChild(stateText);
   } else {
-    label.textContent = String(percent) + "%";
+    var track = document.createElement("div");
+    track.className = "w-full bg-slate-200 h-1 mt-1.5 rounded-full overflow-hidden";
+    var fill = document.createElement("div");
+    fill.className = "bg-primary h-full";
+    fill.style.width = String(percent) + "%";
+    track.appendChild(fill);
+    body.appendChild(track);
   }
 
-  progressWrap.appendChild(track);
-  progressWrap.appendChild(label);
+  var tail = document.createElement("span");
+  if (isQueued) {
+    tail.className = "material-symbols-outlined text-slate-400";
+    tail.textContent = "schedule";
+  } else {
+    tail.className = "text-[10px] font-mono text-slate-500";
+    tail.textContent = String(percent) + "%";
+  }
 
-  var state = document.createElement("p");
-  state.className = "upload-queue-card-state";
-  state.textContent = compactCardStateText(item);
-
-  card.appendChild(head);
-  card.appendChild(progressWrap);
-  card.appendChild(state);
+  card.appendChild(indicator);
+  card.appendChild(body);
+  card.appendChild(tail);
   return card;
 }
 
@@ -332,10 +318,10 @@ function scheduleUploadItemRemoval(item, delayMs) {
 
 function makeProgressGroup(labelText) {
   var wrap = document.createElement("div");
-  wrap.className = "upload-queue-progress-group";
+  wrap.className = "space-y-1";
 
   var label = document.createElement("span");
-  label.className = "upload-queue-progress-label";
+  label.className = "text-[10px] font-bold uppercase text-slate-400";
   label.textContent = labelText;
 
   var progress = makeProgressCell();
@@ -368,21 +354,22 @@ function addFileRow(file) {
     removePlaceholderRow();
     var rows = document.getElementById("{{ upload_shell.upload_rows_id }}");
     var itemNode = document.createElement("article");
-    itemNode.className = "upload-queue-item";
+    itemNode.className = "bg-white rounded-lg border border-slate-200 p-3 space-y-2";
+    itemNode.setAttribute("data-upload-item", "1");
 
     var head = document.createElement("div");
-    head.className = "upload-queue-item-head";
+    head.className = "flex items-start justify-between gap-2";
 
     var titleWrap = document.createElement("div");
-    titleWrap.className = "recording-main";
+    titleWrap.className = "min-w-0 flex-1";
 
     var title = document.createElement("strong");
-    title.className = "upload-queue-item-title";
+    title.className = "text-sm font-semibold block truncate";
     title.textContent = file.name || "(unnamed)";
     title.title = file.name || "";
 
     var meta = document.createElement("div");
-    meta.className = "upload-queue-item-meta";
+    meta.className = "flex gap-2 text-xs text-slate-500 mt-0.5";
 
     var sizeMeta = document.createElement("span");
     sizeMeta.textContent = formatSize(file.size);
@@ -396,14 +383,14 @@ function addFileRow(file) {
     titleWrap.appendChild(meta);
 
     var statusCell = document.createElement("span");
-    statusCell.className = "upload-queue-status";
+    statusCell.className = "text-xs font-medium text-slate-500";
     statusCell.textContent = item.statusText;
 
     head.appendChild(titleWrap);
     head.appendChild(statusCell);
 
     var progressGrid = document.createElement("div");
-    progressGrid.className = "upload-queue-progress-grid";
+    progressGrid.className = "grid grid-cols-2 gap-3";
 
     var uploadProgress = makeProgressGroup("Upload");
     progressGrid.appendChild(uploadProgress.node);
@@ -412,10 +399,10 @@ function addFileRow(file) {
     progressGrid.appendChild(processProgress.node);
 
     var footer = document.createElement("div");
-    footer.className = "upload-queue-item-footer";
+    footer.className = "pt-1";
 
     var linkCell = document.createElement("div");
-    linkCell.className = "upload-queue-link";
+    linkCell.className = "text-xs text-slate-400";
     linkCell.textContent = "Waiting for recording";
     footer.appendChild(linkCell);
 

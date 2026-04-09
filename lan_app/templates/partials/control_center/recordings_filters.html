@@ -1,5 +1,5 @@
 <form
-  class="recordings-filter-strip filters"
+  class="px-4 py-3 border-b border-slate-200 flex items-end gap-3 flex-wrap"
   method="get"
   action="{{ recordings_filters.action }}"
   {% if recordings_filters.hx_get %}
@@ -11,36 +11,37 @@
   {% for hidden_field in recordings_filters.hidden_fields %}
   <input type="hidden" name="{{ hidden_field.name }}" value="{{ hidden_field.value }}">
   {% endfor %}
-  <div class="filter-field">
-    <label for="recordings-status-filter">Status</label>
-    <select id="recordings-status-filter" name="status">
+  <div class="flex flex-col gap-1">
+    <label for="recordings-status-filter" class="text-[10px] font-bold uppercase text-slate-400">Status</label>
+    <select id="recordings-status-filter" name="status" class="text-xs border border-slate-200 rounded px-2 py-1.5 bg-white">
       <option value="">All</option>
       {% for s in recordings_filters.statuses %}
       <option value="{{ s }}" {% if recordings_filters.status_filter == s %}selected{% endif %}>{{ s }}</option>
       {% endfor %}
     </select>
   </div>
-  <div class="filter-field filter-field-grow">
-    <label for="recordings-search-filter">Search</label>
+  <div class="flex flex-col gap-1 flex-1 min-w-[120px]">
+    <label for="recordings-search-filter" class="text-[10px] font-bold uppercase text-slate-400">Search</label>
     <input
       id="recordings-search-filter"
       type="search"
       name="q"
       value="{{ recordings_filters.search_query }}"
       placeholder="ID or filename"
+      class="text-xs border border-slate-200 rounded px-2 py-1.5 bg-white"
     >
   </div>
-  <div class="filter-field">
-    <label for="recordings-limit-filter">Rows</label>
-    <select id="recordings-limit-filter" name="limit">
+  <div class="flex flex-col gap-1">
+    <label for="recordings-limit-filter" class="text-[10px] font-bold uppercase text-slate-400">Rows</label>
+    <select id="recordings-limit-filter" name="limit" class="text-xs border border-slate-200 rounded px-2 py-1.5 bg-white">
       {% for n in recordings_filters.limit_options %}
       <option value="{{ n }}" {% if recordings_filters.limit == n %}selected{% endif %}>{{ n }}</option>
       {% endfor %}
     </select>
   </div>
   <input type="hidden" name="offset" value="{{ recordings_filters.offset_reset }}">
-  <div class="recordings-filter-actions">
-    <button class="btn" type="submit">Apply</button>
-    <a href="{{ recordings_filters.reset_href }}" class="btn">Clear</a>
+  <div class="flex gap-2">
+    <button class="px-3 py-1.5 bg-primary text-white text-xs font-bold rounded" type="submit">Apply</button>
+    <a href="{{ recordings_filters.reset_href }}" class="px-3 py-1.5 border border-slate-200 text-xs font-medium rounded hover:bg-slate-50">Clear</a>
   </div>
 </form>

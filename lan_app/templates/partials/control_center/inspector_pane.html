@@ -1,6 +1,6 @@
 <section
   id="control-center-inspector-pane"
-  class="control-center-pane control-center-inspector-pane"
+  class="w-[45%] bg-white flex flex-col shadow-xl overflow-hidden"
   hx-get="{{ control_center_state.inspector_pane_url }}"
   hx-trigger="{% if recording_inspector and recording_inspector.auto_refresh %}refresh-control-center-inspector from:body, every 2s{% else %}refresh-control-center-inspector from:body{% endif %}"
   hx-target="this"

@@ -1,78 +1,88 @@
 {% set details = embedded_recording_details or {} %}
-<article class="compact-recording-details">
-  <section class="inspector-section-card compact-recording-details-card">
-    <div class="compact-recording-details-head">
-      <p class="compact-recording-details-eyebrow">{{ details.card_title }}</p>
-      <div class="compact-recording-details-headbar">
-        <div class="compact-recording-details-title-stack">
-          <h2 class="compact-recording-details-primary">{{ details.primary_title }}</h2>
-          <p class="compact-recording-details-secondary">Job ID <code>{{ details.job_id }}</code></p>
-          <p class="compact-recording-details-filename">{{ details.filename }}</p>
-        </div>
+<article class="flex flex-col h-full">
+  <div class="px-6 py-4 border-b border-slate-200 bg-slate-50">
+    <div class="flex items-start justify-between">
+      <div>
+        <p class="text-[10px] font-bold text-primary uppercase tracking-[0.1em] mb-1">{{ details.card_title }}</p>
+        <h2 class="text-xl font-bold">{{ details.primary_title }}</h2>
+        <p class="text-xs text-slate-500 mt-0.5">Job ID <code class="text-[11px]">{{ details.job_id }}</code></p>
+        <p class="text-xs text-slate-400">{{ details.filename }}</p>
+      </div>
+      <div class="flex gap-2">
         <a
           href="{{ details.download_zip_href }}"
-          class="btn"
+          class="p-1.5 border border-slate-200 rounded hover:bg-slate-100"
           hx-boost="false"
           data-testid="recording-inspector-download-zip"
-        >Download ZIP</a>
+          title="Download ZIP"
+        >
+          <span class="material-symbols-outlined">download</span>
+        </a>
       </div>
     </div>
+  </div>
 
-    <section class="compact-recording-details-section">
-      <p class="compact-recording-details-section-label">KEY METADATA</p>
-      <div class="compact-recording-details-list">
+  <div class="flex-1 overflow-y-auto p-6 space-y-6">
+    <div class="space-y-3">
+      <h4 class="text-xs font-bold uppercase tracking-widest text-slate-400">KEY METADATA</h4>
+      <div class="grid grid-cols-2 gap-x-8 gap-y-3">
         {% for item in details.metadata_rows or [] %}
-        <div class="compact-recording-details-row">
-          <span class="compact-recording-details-row-label">{{ item.label }}</span>
-          <strong class="compact-recording-details-row-value">{{ item.value }}</strong>
+        <div>
+          <p class="text-[10px] text-slate-500 uppercase">{{ item.label }}</p>
+          <p class="text-sm font-semibold mt-0.5">{{ item.value }}</p>
         </div>
         {% endfor %}
       </div>
-    </section>
+    </div>
 
-    <section class="compact-recording-details-section">
-      <p class="compact-recording-details-section-label">SPEAKERS</p>
+    <div class="space-y-3">
+      <h4 class="text-xs font-bold uppercase tracking-widest text-slate-400">SPEAKERS</h4>
       {% if details.speaker_rows %}
-      <div class="compact-recording-details-list">
+      <div class="space-y-2">
         {% for speaker in details.speaker_rows %}
-        <div class="compact-recording-details-row compact-recording-details-row-speaker">
-          <div class="compact-recording-speaker-main">
-            <strong class="compact-recording-details-row-value">{{ speaker.primary_label }}</strong>
-            <span class="compact-recording-speaker-secondary">{{ speaker.secondary_label }}</span>
+        <div class="p-3 border border-slate-200 rounded-lg flex items-center justify-between">
+          <div class="flex items-center gap-3">
+            <div class="w-10 h-10 rounded bg-slate-100 flex items-center justify-center font-bold text-slate-500 text-sm">{{ speaker.primary_label[:2] }}</div>
+            <div>
+              <p class="text-sm font-bold">{{ speaker.primary_label }}</p>
+              <p class="text-[10px] text-slate-500">{{ speaker.secondary_label }}</p>
+            </div>
           </div>
           {% if speaker.confidence_display %}
-          <span class="compact-recording-speaker-confidence">{{ speaker.confidence_display }}</span>
+          <span class="text-[10px] font-bold text-slate-500">{{ speaker.confidence_display }}</span>
           {% endif %}
         </div>
         {% endfor %}
       </div>
       {% else %}
-      <p class="compact-recording-details-copy">{{ details.summary_placeholder }}</p>
+      <p class="text-xs text-slate-400">{{ details.summary_placeholder }}</p>
       {% endif %}
-    </section>
+    </div>
 
-    <section class="compact-recording-details-section">
-      <p class="compact-recording-details-section-label">TONE</p>
-      <p class="compact-recording-details-copy">{{ details.tone }}</p>
-    </section>
+    <div class="space-y-3">
+      <h4 class="text-xs font-bold uppercase tracking-widest text-slate-400">TONE</h4>
+      <p class="text-sm text-slate-600">{{ details.tone }}</p>
+    </div>
 
-    <section class="compact-recording-details-section">
-      <p class="compact-recording-details-section-label">SUMMARY</p>
+    <div class="space-y-3">
+      <h4 class="text-xs font-bold uppercase tracking-widest text-slate-400">SUMMARY</h4>
       {% if details.summary_lines %}
-      <div class="compact-recording-summary-lines">
+      <div class="space-y-1">
         {% for line in details.summary_lines %}
-        <p class="compact-recording-details-copy">{{ line }}</p>
+        <p class="text-sm text-slate-600">{{ line }}</p>
         {% endfor %}
       </div>
       {% else %}
-      <p class="compact-recording-details-copy">{{ details.summary_placeholder }}</p>
+      <p class="text-xs text-slate-400">{{ details.summary_placeholder }}</p>
       {% endif %}
-    </section>
+    </div>
+  </div>
 
+  <div class="p-4 border-t border-slate-200">
     <a
       href="{{ details.open_recording_page_href }}"
-      class="btn compact-recording-details-open"
+      class="block w-full py-2.5 bg-slate-900 text-white font-bold rounded-lg text-sm text-center"
       data-testid="recording-inspector-open-full-page"
     >Open Recording Page</a>
-  </section>
+  </div>
 </article>

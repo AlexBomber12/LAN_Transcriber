@@ -1,33 +1,35 @@
-<div class="section">
-  <h2>Corrections Snapshot <small style="font-weight:normal;color:#666">({{ glossary_summary.entry_count }} entries)</small></h2>
+<div class="space-y-3">
+  <h2 class="text-sm font-bold">Corrections Snapshot <span class="font-normal text-slate-500">({{ glossary_summary.entry_count }} entries)</span></h2>
   {% if glossary_summary.entries %}
-  <table>
-    <thead>
-      <tr>
-        <th>Canonical</th>
-        <th>Aliases</th>
-        <th>Kind</th>
-        <th>Source</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for item in glossary_summary.entries %}
-      <tr>
-        <td>{{ item.canonical_text }}</td>
-        <td>{{ item.aliases|join(', ') if item.aliases else '—' }}</td>
-        <td>{{ item.kind }}</td>
-        <td>{{ item.source_label }}</td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
+  <div class="overflow-x-auto">
+    <table class="w-full text-left border-collapse text-xs">
+      <thead class="bg-slate-50 text-[10px] uppercase font-bold text-slate-500 border-b border-slate-200">
+        <tr>
+          <th class="px-3 py-2">Canonical</th>
+          <th class="px-3 py-2">Aliases</th>
+          <th class="px-3 py-2">Kind</th>
+          <th class="px-3 py-2">Source</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-slate-100">
+        {% for item in glossary_summary.entries %}
+        <tr class="hover:bg-slate-50">
+          <td class="px-3 py-2 font-medium">{{ item.canonical_text }}</td>
+          <td class="px-3 py-2 text-slate-500">{{ item.aliases|join(', ') if item.aliases else '—' }}</td>
+          <td class="px-3 py-2 text-slate-500">{{ item.kind }}</td>
+          <td class="px-3 py-2 text-slate-500">{{ item.source_label }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
   {% if glossary_summary.has_more %}
-  <p style="margin:8px 0 0 0;color:#555">More entries are available in the full corrections list.</p>
+  <p class="text-xs text-slate-500">More entries are available in the full corrections list.</p>
   {% endif %}
   {% else %}
-  <p class="placeholder">No corrections saved yet. Keep daily review on / and open the admin page only when a spelling or term needs to be remembered.</p>
+  <p class="text-xs text-slate-400">No corrections saved yet. Keep daily review on / and open the admin page only when a spelling or term needs to be remembered.</p>
   {% endif %}
-  <p style="margin:8px 0 0 0">
-    <a href="{{ glossary_summary.manage_href }}" class="btn" style="text-decoration:none">Manage corrections</a>
+  <p>
+    <a href="{{ glossary_summary.manage_href }}" class="inline-block px-3 py-1.5 bg-primary text-white text-xs font-bold rounded">Manage corrections</a>
   </p>
 </div>

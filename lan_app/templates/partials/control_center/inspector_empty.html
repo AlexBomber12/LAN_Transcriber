@@ -1,8 +1,9 @@
-<div class="control-center-empty-state">
-  <div class="control-center-empty-card">
-    <strong>{{ empty_inspector.title }}</strong>
+<div class="flex-1 flex items-center justify-center p-6">
+  <div class="text-center">
+    <span class="material-symbols-outlined text-slate-300 text-4xl mb-3 block">description</span>
+    <strong class="text-sm text-slate-600 block">{{ empty_inspector.title }}</strong>
     {% if empty_inspector.message %}
-    <p class="control-center-empty-copy">{{ empty_inspector.message }}</p>
+    <p class="text-xs text-slate-400 mt-1">{{ empty_inspector.message }}</p>
     {% endif %}
   </div>
 </div>
