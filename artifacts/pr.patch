@@ -1,15 +1,40 @@
-diff --git a/tests_playwright/test_ui_smoke_playwright.py b/tests_playwright/test_ui_smoke_playwright.py
-index 2036ed1..f577429 100644
---- a/tests_playwright/test_ui_smoke_playwright.py
-+++ b/tests_playwright/test_ui_smoke_playwright.py
-@@ -294,8 +294,8 @@ def test_control_center_embedded_inspector_and_export_zip_smoke(tmp_path: Path)
-                     timeout=_remaining_timeout_ms(deadline),
-                 )
-                 page.locator(
--                    "#control-center-system-bar .control-center-system-label"
--                ).filter(has_text="Node status").first.wait_for(
-+                    "#control-center-system-bar"
-+                ).get_by_text("Node status").first.wait_for(
-                     state="visible",
-                     timeout=_remaining_timeout_ms(deadline),
-                 )
+diff --git a/lan_app/templates/control_center.html b/lan_app/templates/control_center.html
+index 9d7e824..dc1de3f 100644
+--- a/lan_app/templates/control_center.html
++++ b/lan_app/templates/control_center.html
+@@ -4,8 +4,8 @@
+ <div class="flex flex-col" style="height:calc(100vh - 80px)">
+   {% include "partials/control_center/workspace_header.html" %}
+ 
+-  <main class="flex-1 flex overflow-hidden">
+-    <section id="control-center-work-pane" class="w-[55%] flex flex-col border-r border-slate-200 overflow-y-auto p-4 gap-4">
++  <main class="flex-1 flex flex-col lg:flex-row overflow-hidden">
++    <section id="control-center-work-pane" class="w-full lg:w-[55%] flex flex-col border-b lg:border-b-0 lg:border-r border-slate-200 overflow-y-auto p-4 gap-4">
+       {% include "partials/control_center/work_pane.html" %}
+     </section>
+ 
+diff --git a/lan_app/templates/partials/control_center/inspector_pane.html b/lan_app/templates/partials/control_center/inspector_pane.html
+index ac4e54c..f97280f 100644
+--- a/lan_app/templates/partials/control_center/inspector_pane.html
++++ b/lan_app/templates/partials/control_center/inspector_pane.html
+@@ -1,6 +1,6 @@
+ <section
+   id="control-center-inspector-pane"
+-  class="w-[45%] bg-white flex flex-col shadow-xl overflow-hidden"
++  class="w-full lg:w-[45%] bg-white flex flex-col shadow-xl overflow-hidden"
+   hx-get="{{ control_center_state.inspector_pane_url }}"
+   hx-trigger="{% if recording_inspector and recording_inspector.auto_refresh %}refresh-control-center-inspector from:body, every 2s{% else %}refresh-control-center-inspector from:body{% endif %}"
+   hx-target="this"
+diff --git a/lan_app/templates/partials/control_center/upload_panel.html b/lan_app/templates/partials/control_center/upload_panel.html
+index ae41a44..412ad04 100644
+--- a/lan_app/templates/partials/control_center/upload_panel.html
++++ b/lan_app/templates/partials/control_center/upload_panel.html
+@@ -8,7 +8,7 @@
+ </div>
+ {% endif %}
+ 
+-<div class="grid grid-cols-2 gap-4">
++<div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+   <div>
+     <input type="file" id="{{ upload_shell.file_input_id }}" multiple hidden>
+     <div
