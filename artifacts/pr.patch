@@ -1,15 +1,18 @@
 diff --git a/lan_app/templates/control_center.html b/lan_app/templates/control_center.html
-index 633853e..ebb28c9 100644
+index ebb28c9..6541892 100644
 --- a/lan_app/templates/control_center.html
 +++ b/lan_app/templates/control_center.html
-@@ -1,7 +1,9 @@
- {% extends "base.html" %}
+@@ -2,7 +2,6 @@
  {% block title %}Control Center – LAN Transcriber{% endblock %}
  {% block content %}
--<div class="flex flex-col overflow-auto lg:overflow-hidden" style="height:calc(100vh - 80px)">
-+<style>#control-center-shell{height:calc(100dvh - var(--cc-top, 0px))}.app-main:has(#control-center-shell){padding:0;width:100%;max-width:none}</style>
-+<script>document.getElementById('control-center-shell').style.setProperty('--cc-top',document.getElementById('control-center-shell').getBoundingClientRect().top+'px')</script>
-+<div id="control-center-shell" class="flex flex-col overflow-auto lg:overflow-hidden">
+ <style>#control-center-shell{height:calc(100dvh - var(--cc-top, 0px))}.app-main:has(#control-center-shell){padding:0;width:100%;max-width:none}</style>
+-<script>document.getElementById('control-center-shell').style.setProperty('--cc-top',document.getElementById('control-center-shell').getBoundingClientRect().top+'px')</script>
+ <div id="control-center-shell" class="flex flex-col overflow-auto lg:overflow-hidden">
    {% include "partials/control_center/workspace_header.html" %}
  
-   <div class="flex-1 flex flex-col lg:flex-row overflow-visible lg:overflow-hidden">
+@@ -16,4 +15,5 @@
+ 
+   {% include "partials/control_center/system_bar.html" %}
+ </div>
++<script>var _s=document.getElementById('control-center-shell');if(_s)_s.style.setProperty('--cc-top',_s.getBoundingClientRect().top+'px')</script>
+ {% endblock %}

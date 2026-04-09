@@ -2,7 +2,6 @@
 {% block title %}Control Center – LAN Transcriber{% endblock %}
 {% block content %}
 <style>#control-center-shell{height:calc(100dvh - var(--cc-top, 0px))}.app-main:has(#control-center-shell){padding:0;width:100%;max-width:none}</style>
-<script>document.getElementById('control-center-shell').style.setProperty('--cc-top',document.getElementById('control-center-shell').getBoundingClientRect().top+'px')</script>
 <div id="control-center-shell" class="flex flex-col overflow-auto lg:overflow-hidden">
   {% include "partials/control_center/workspace_header.html" %}
 
@@ -16,4 +15,5 @@
 
   {% include "partials/control_center/system_bar.html" %}
 </div>
+<script>var _s=document.getElementById('control-center-shell');if(_s)_s.style.setProperty('--cc-top',_s.getBoundingClientRect().top+'px')</script>
 {% endblock %}
