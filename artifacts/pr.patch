@@ -1,20 +1,13 @@
-diff --git a/lan_app/templates/control_center.html b/lan_app/templates/control_center.html
-index 8599daa..633853e 100644
---- a/lan_app/templates/control_center.html
-+++ b/lan_app/templates/control_center.html
-@@ -4,13 +4,13 @@
- <div class="flex flex-col overflow-auto lg:overflow-hidden" style="height:calc(100vh - 80px)">
-   {% include "partials/control_center/workspace_header.html" %}
- 
--  <main class="flex-1 flex flex-col lg:flex-row overflow-visible lg:overflow-hidden">
-+  <div class="flex-1 flex flex-col lg:flex-row overflow-visible lg:overflow-hidden">
-     <section id="control-center-work-pane" class="w-full lg:w-[55%] flex flex-col border-b lg:border-b-0 lg:border-r border-slate-200 overflow-y-auto p-4 gap-4">
-       {% include "partials/control_center/work_pane.html" %}
-     </section>
- 
-     {% include "partials/control_center/inspector_pane.html" %}
--  </main>
-+  </div>
- 
-   {% include "partials/control_center/system_bar.html" %}
- </div>
+diff --git a/lan_app/templates/partials/control_center/recordings_table.html b/lan_app/templates/partials/control_center/recordings_table.html
+index 9c19330..0929c4c 100644
+--- a/lan_app/templates/partials/control_center/recordings_table.html
++++ b/lan_app/templates/partials/control_center/recordings_table.html
+@@ -9,7 +9,7 @@
+         <th class="px-4 py-2">Captured</th>
+         <th class="px-4 py-2">Duration</th>
+         <th class="px-4 py-2" style="width:240px">Recognition</th>
+-        <th class="px-4 py-2 text-right"></th>
++        <th class="px-4 py-2 text-right" aria-label="Actions"></th>
+       </tr>
+     </thead>
+     <tbody class="text-[12px] divide-y divide-slate-100">
