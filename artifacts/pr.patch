@@ -1,18 +1,25 @@
 diff --git a/lan_app/templates/control_center.html b/lan_app/templates/control_center.html
-index ebb28c9..6541892 100644
+index 6541892..9f71b6a 100644
 --- a/lan_app/templates/control_center.html
 +++ b/lan_app/templates/control_center.html
-@@ -2,7 +2,6 @@
- {% block title %}Control Center – LAN Transcriber{% endblock %}
- {% block content %}
- <style>#control-center-shell{height:calc(100dvh - var(--cc-top, 0px))}.app-main:has(#control-center-shell){padding:0;width:100%;max-width:none}</style>
--<script>document.getElementById('control-center-shell').style.setProperty('--cc-top',document.getElementById('control-center-shell').getBoundingClientRect().top+'px')</script>
- <div id="control-center-shell" class="flex flex-col overflow-auto lg:overflow-hidden">
-   {% include "partials/control_center/workspace_header.html" %}
- 
-@@ -16,4 +15,5 @@
+@@ -15,5 +15,5 @@
  
    {% include "partials/control_center/system_bar.html" %}
  </div>
-+<script>var _s=document.getElementById('control-center-shell');if(_s)_s.style.setProperty('--cc-top',_s.getBoundingClientRect().top+'px')</script>
+-<script>var _s=document.getElementById('control-center-shell');if(_s)_s.style.setProperty('--cc-top',_s.getBoundingClientRect().top+'px')</script>
++<script>(function(){var s=document.getElementById('control-center-shell');if(!s)return;function u(){s.style.setProperty('--cc-top',s.getBoundingClientRect().top+'px')}u();window.addEventListener('resize',u);window.addEventListener('orientationchange',u)})()</script>
  {% endblock %}
+diff --git a/lan_app/templates/partials/control_center/recordings_panel.html b/lan_app/templates/partials/control_center/recordings_panel.html
+index 4b3a6ce..eaa1f44 100644
+--- a/lan_app/templates/partials/control_center/recordings_panel.html
++++ b/lan_app/templates/partials/control_center/recordings_panel.html
+@@ -23,7 +23,9 @@
+     {% endif %}
+     <div class="flex items-center gap-2">
+       <span class="text-xs text-slate-500"><span class="font-bold text-slate-700">{{ recordings_panel.total }}</span> visible now</span>
++      {% if recordings_panel.mode == "control_center" %}
+       <button class="p-1.5 text-slate-400 hover:text-slate-600" onclick="if(typeof refreshControlCenterPanels==='function')refreshControlCenterPanels()"><span class="material-symbols-outlined">refresh</span></button>
++      {% endif %}
+     </div>
+   </div>
+ 

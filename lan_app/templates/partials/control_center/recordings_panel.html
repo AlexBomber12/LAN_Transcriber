@@ -23,7 +23,9 @@
     {% endif %}
     <div class="flex items-center gap-2">
       <span class="text-xs text-slate-500"><span class="font-bold text-slate-700">{{ recordings_panel.total }}</span> visible now</span>
+      {% if recordings_panel.mode == "control_center" %}
       <button class="p-1.5 text-slate-400 hover:text-slate-600" onclick="if(typeof refreshControlCenterPanels==='function')refreshControlCenterPanels()"><span class="material-symbols-outlined">refresh</span></button>
+      {% endif %}
     </div>
   </div>
 
