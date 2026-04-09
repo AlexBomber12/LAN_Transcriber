@@ -229,7 +229,8 @@ function buildCompactQueueCard(item) {
   var isQueued = item.phase === "queued";
 
   var card = document.createElement("article");
-  card.className = "upload-queue-card bg-slate-50 p-2 rounded border border-slate-100 flex items-center gap-3";
+  card.className = "bg-slate-50 p-2 rounded border border-slate-100 flex items-center gap-3";
+  card.setAttribute("data-upload-card", "1");
 
   var indicator = document.createElement("div");
   indicator.className = "w-1 h-8 rounded-full";
