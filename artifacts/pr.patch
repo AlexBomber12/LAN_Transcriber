@@ -1,13 +1,20 @@
-diff --git a/tests/test_ui_routes.py b/tests/test_ui_routes.py
-index 936802c..8fb7dd5 100644
---- a/tests/test_ui_routes.py
-+++ b/tests/test_ui_routes.py
-@@ -514,7 +514,7 @@ def test_control_center_system_bar_renders_degraded_cpu_fallback(
-     assert "Node status" in system_bar.text
-     assert "GPU unavailable" in system_bar.text
-     assert "CPU fallback" not in system_bar.text
--    assert "GPU unavailable" in system_bar.text  # offline tone rendered
-+    assert "text-red-700" in system_bar.text  # offline tone rendered
+diff --git a/lan_app/templates/control_center.html b/lan_app/templates/control_center.html
+index 8599daa..633853e 100644
+--- a/lan_app/templates/control_center.html
++++ b/lan_app/templates/control_center.html
+@@ -4,13 +4,13 @@
+ <div class="flex flex-col overflow-auto lg:overflow-hidden" style="height:calc(100vh - 80px)">
+   {% include "partials/control_center/workspace_header.html" %}
  
-     work_pane = seeded_client.get(
-         "/ui/control-center/work-pane?selected=rec-ui-1&status=Ready&q=meeting&tab=speakers"
+-  <main class="flex-1 flex flex-col lg:flex-row overflow-visible lg:overflow-hidden">
++  <div class="flex-1 flex flex-col lg:flex-row overflow-visible lg:overflow-hidden">
+     <section id="control-center-work-pane" class="w-full lg:w-[55%] flex flex-col border-b lg:border-b-0 lg:border-r border-slate-200 overflow-y-auto p-4 gap-4">
+       {% include "partials/control_center/work_pane.html" %}
+     </section>
+ 
+     {% include "partials/control_center/inspector_pane.html" %}
+-  </main>
++  </div>
+ 
+   {% include "partials/control_center/system_bar.html" %}
+ </div>
