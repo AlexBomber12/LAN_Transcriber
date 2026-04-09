@@ -1,115 +1,132 @@
 {% set ov = overview or {} %}
-<div class="inspector-overview-grid">
-  <section class="inspector-section-card">
-    <div class="inspector-section-head">
-      <h2>Overview</h2>
-    </div>
-
-    <div class="embedded-panel-grid">
-      <section class="embedded-card">
-        <h3>State</h3>
-        <p class="inspector-answer">{{ ov.state_title or rec.status }}</p>
-        <p class="inspector-note">{{ ov.state_detail or ('Current stage: ' ~ (diagnostics.current_stage_label or 'Waiting')) }}</p>
-      </section>
-      <section class="embedded-card">
-        <h3>Blocker</h3>
-        <p class="inspector-answer">{{ ov.blocker_title or 'No blocker detected.' }}</p>
-        <p class="inspector-note">{{ ov.blocker_detail or ('Current status: ' ~ rec.status ~ '.') }}</p>
-      </section>
-      <section class="embedded-card">
-        {% set next_action = ov.next_action or {} %}
-        <h3>Next action</h3>
-        <p class="inspector-answer">{{ next_action.title or 'Open the next working tab' }}</p>
-        <p class="inspector-note">{{ next_action.detail or '' }}</p>
-        {% if next_action.href %}
-        <a href="{{ next_action.href }}" class="btn">{{ next_action.button_label or 'Open' }}</a>
+<div class="grid grid-cols-12 gap-6">
+  <!-- Left column: Pipeline + Metadata -->
+  <div class="col-span-12 lg:col-span-4 flex flex-col gap-6">
+    <!-- Pipeline Status -->
+    <section class="bg-white rounded-xl border border-slate-200 p-5 shadow-sm">
+      <h3 class="text-sm font-bold text-slate-900 mb-4 flex items-center justify-between">
+        Pipeline Status
+        {% if rec.status in ['Processing', 'Stopping'] %}
+        <span class="text-xs font-normal text-primary">Live Updates</span>
         {% endif %}
-      </section>
-    </div>
-
-    <section class="embedded-card">
-      <h3>Core metadata</h3>
-      <div class="compact-metadata-grid">
-        {% for item in ov.metadata or [] %}
-        <div class="compact-metadata-item">
-          <span class="compact-metadata-label">{{ item.label }}</span>
-          <strong class="compact-metadata-value">{{ item.value }}</strong>
-        </div>
-        {% endfor %}
-      </div>
-    </section>
-  </section>
-
-  <div class="inspector-overview-rail">
-    <section class="inspector-section-card">
-      <div class="inspector-section-head">
-        <h3>Pipeline signal</h3>
-      </div>
-      <div class="info-grid">
-        <span class="k">Current / last stage</span><span class="v">{{ diagnostics.current_stage_label or '—' }}</span>
-        <span class="k">Stage status</span><span class="v">{{ diagnostics.current_stage_status_label or '—' }}</span>
-        <span class="k">Chunk</span><span class="v">{{ diagnostics.chunk_text or '—' }}</span>
-        <span class="k">Stage attempt</span><span class="v">{{ diagnostics.stage_attempt_text or '—' }}</span>
-        <span class="k">Chunk attempt</span><span class="v">{{ diagnostics.chunk_attempt_text or '—' }}</span>
-        <span class="k">Updated</span><span class="v">{{ rec.pipeline_updated_at_display or '—' }}</span>
-      </div>
-    </section>
-
-    <section class="inspector-section-card">
-      <div class="inspector-section-head">
-        <h3>Review focus</h3>
-      </div>
-      {% if ov.focus_items %}
-      <div class="inspector-detail-list">
-        {% for item in ov.focus_items %}
-        <div class="inspector-detail-row">
-          <span class="inspector-detail-label">{{ item.label }}</span>
-          <strong class="inspector-detail-value">{{ item.value }}</strong>
+      </h3>
+      {% if pipeline_stages %}
+      <div class="space-y-0">
+        {% for stage in pipeline_stages %}
+        <div class="flex gap-3">
+          <div class="flex flex-col items-center">
+            {% if stage.status == 'completed' or stage.status == 'skipped' %}
+            <span class="material-symbols-outlined text-green-500 text-lg">check_circle</span>
+            {% if not loop.last %}<div class="w-0.5 h-full bg-green-500/30 my-1"></div>{% endif %}
+            {% elif stage.status == 'running' %}
+            <div class="size-5 rounded-full border-2 border-primary border-t-transparent animate-spin my-0.5"></div>
+            {% if not loop.last %}<div class="w-0.5 h-full bg-slate-200 my-1"></div>{% endif %}
+            {% elif stage.status == 'failed' %}
+            <span class="material-symbols-outlined text-red-500 text-lg">error</span>
+            {% if not loop.last %}<div class="w-0.5 h-full bg-red-500/30 my-1"></div>{% endif %}
+            {% elif stage.status == 'cancelled' %}
+            <span class="material-symbols-outlined text-slate-400 text-lg">cancel</span>
+            {% if not loop.last %}<div class="w-0.5 h-full bg-slate-200 my-1"></div>{% endif %}
+            {% else %}
+            <span class="material-symbols-outlined text-slate-300 text-lg">circle</span>
+            {% if not loop.last %}<div class="w-0.5 h-full bg-slate-200 my-1"></div>{% endif %}
+            {% endif %}
+          </div>
+          <div class="flex-1 {% if not loop.last %}pb-4{% endif %}">
+            <div class="flex justify-between items-start mb-1">
+              <p class="text-sm font-semibold {% if stage.status == 'pending' %}text-slate-400{% else %}text-slate-900{% endif %}">{{ stage.stage_label }}</p>
+              <span class="text-[10px] {% if stage.status == 'running' %}text-primary{% elif stage.status == 'failed' %}text-red-500{% else %}text-slate-400{% endif %}">
+                {% if stage.status == 'running' %}In progress{% elif stage.duration_seconds is not none %}{{ '%.1f'|format(stage.duration_seconds) }}s{% else %}{{ stage.status_label }}{% endif %}
+              </span>
+            </div>
+            {% if stage.status == 'running' %}
+            <div class="w-full bg-slate-100 rounded-full h-1.5 mt-2 overflow-hidden">
+              <div class="bg-primary h-full animate-pulse" style="width: 65%;"></div>
+            </div>
+            {% elif stage.root_cause_text %}
+            <p class="text-xs text-slate-500">{{ stage.root_cause_text }}{% if stage.root_cause_code %} ({{ stage.root_cause_code }}){% endif %}</p>
+            {% elif stage.error_text %}
+            <p class="text-xs text-red-500">{{ stage.error_text }}</p>
+            {% elif stage.duration_seconds is not none %}
+            <p class="text-xs text-slate-500">Completed in {{ '%.3f'|format(stage.duration_seconds) }}s</p>
+            {% elif stage.status == 'pending' %}
+            <p class="text-xs text-slate-500 italic">Queued</p>
+            {% endif %}
+          </div>
         </div>
         {% endfor %}
       </div>
       {% else %}
-      <p class="placeholder">No extra review flags are active right now.</p>
+      <p class="text-sm text-slate-400 italic">No pipeline stage history is available for this recording yet.</p>
+      {% endif %}
+    </section>
+
+    <!-- Pipeline Signal -->
+    <section class="bg-white rounded-xl border border-slate-200 p-5 shadow-sm">
+      <h3 class="text-sm font-bold text-slate-900 mb-4">Pipeline Signal</h3>
+      <div class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-sm">
+        <span class="text-slate-500">Current / last stage</span><span class="font-medium text-slate-900">{{ diagnostics.current_stage_label or '—' }}</span>
+        <span class="text-slate-500">Stage status</span><span class="font-medium text-slate-900">{{ diagnostics.current_stage_status_label or '—' }}</span>
+        <span class="text-slate-500">Chunk</span><span class="font-medium text-slate-900">{{ diagnostics.chunk_text or '—' }}</span>
+        <span class="text-slate-500">Stage attempt</span><span class="font-medium text-slate-900">{{ diagnostics.stage_attempt_text or '—' }}</span>
+        <span class="text-slate-500">Chunk attempt</span><span class="font-medium text-slate-900">{{ diagnostics.chunk_attempt_text or '—' }}</span>
+        <span class="text-slate-500">Updated</span><span class="font-medium text-slate-900">{{ rec.pipeline_updated_at_display or '—' }}</span>
+      </div>
+    </section>
+
+    <!-- Metadata Tags -->
+    <section class="bg-white rounded-xl border border-slate-200 p-5 shadow-sm">
+      <h3 class="text-sm font-bold text-slate-900 mb-4">Core Metadata</h3>
+      {% if ov.metadata %}
+      <div class="flex flex-wrap gap-2">
+        {% for item in ov.metadata %}
+        <span class="px-2 py-1 bg-slate-100 text-slate-600 rounded text-xs">{{ item.label }}: {{ item.value }}</span>
+        {% endfor %}
+      </div>
+      {% else %}
+      <p class="text-sm text-slate-400 italic">No metadata available.</p>
+      {% endif %}
+    </section>
+  </div>
+
+  <!-- Right column: Overview cards + Review focus -->
+  <div class="col-span-12 lg:col-span-8 flex flex-col gap-6">
+    <!-- State / Blocker / Next Action -->
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+      <section class="bg-white rounded-xl border border-slate-200 p-5 shadow-sm">
+        <h3 class="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">State</h3>
+        <p class="text-sm font-semibold text-slate-900">{{ ov.state_title or rec.status }}</p>
+        <p class="text-xs text-slate-500 mt-1">{{ ov.state_detail or ('Current stage: ' ~ (diagnostics.current_stage_label or 'Waiting')) }}</p>
+      </section>
+      <section class="bg-white rounded-xl border border-slate-200 p-5 shadow-sm">
+        <h3 class="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Blocker</h3>
+        <p class="text-sm font-semibold text-slate-900">{{ ov.blocker_title or 'No blocker detected.' }}</p>
+        <p class="text-xs text-slate-500 mt-1">{{ ov.blocker_detail or ('Current status: ' ~ rec.status ~ '.') }}</p>
+      </section>
+      <section class="bg-white rounded-xl border border-slate-200 p-5 shadow-sm">
+        {% set next_action = ov.next_action or {} %}
+        <h3 class="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Next Action</h3>
+        <p class="text-sm font-semibold text-slate-900">{{ next_action.title or 'Open the next working tab' }}</p>
+        <p class="text-xs text-slate-500 mt-1">{{ next_action.detail or '' }}</p>
+        {% if next_action.href %}
+        <a href="{{ next_action.href }}" class="inline-flex items-center mt-2 px-3 py-1.5 bg-primary text-white text-xs font-bold rounded hover:bg-primary/90 transition-colors no-underline">{{ next_action.button_label or 'Open' }}</a>
+        {% endif %}
+      </section>
+    </div>
+
+    <!-- Review Focus -->
+    <section class="bg-white rounded-xl border border-slate-200 p-5 shadow-sm">
+      <h3 class="text-sm font-bold text-slate-900 mb-4">Review Focus</h3>
+      {% if ov.focus_items %}
+      <div class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-sm">
+        {% for item in ov.focus_items %}
+        <span class="text-slate-500">{{ item.label }}</span>
+        <span class="font-medium text-slate-900">{{ item.value }}</span>
+        {% endfor %}
+      </div>
+      {% else %}
+      <p class="text-sm text-slate-400 italic">No extra review flags are active right now.</p>
       {% endif %}
     </section>
   </div>
 </div>
-
-<section class="inspector-section-card">
-  <div class="inspector-section-head">
-    <h2>Pipeline status</h2>
-  </div>
-
-  {% if pipeline_stages %}
-  <div class="inspector-stage-list">
-    {% for stage in pipeline_stages %}
-    <article class="inspector-stage-item">
-      <div class="inspector-stage-marker inspector-stage-marker-{{ stage.status or 'unknown' }}"></div>
-      <div class="inspector-stage-main">
-        <div class="inspector-stage-head">
-          <h3>{{ stage.stage_label }}</h3>
-          <span class="speaker-chip speaker-chip-muted">{{ stage.status_label }}</span>
-        </div>
-        <p class="inspector-note">
-          {% if stage.root_cause_text %}
-          {{ stage.root_cause_text }}{% if stage.root_cause_code %} ({{ stage.root_cause_code }}){% endif %}
-          {% elif stage.error_text %}
-          {{ stage.error_text }}
-          {% elif stage.duration_seconds is not none %}
-          Completed in {{ '%.3f'|format(stage.duration_seconds) }}s.
-          {% else %}
-          —
-          {% endif %}
-        </p>
-      </div>
-      <div class="inspector-stage-meta">
-        <span>Attempt {{ stage.attempt }}</span>
-        <span>{{ stage.updated_at_display }}</span>
-      </div>
-    </article>
-    {% endfor %}
-  </div>
-  {% else %}
-  <p class="placeholder">No pipeline stage history is available for this recording yet.</p>
-  {% endif %}
-</section>

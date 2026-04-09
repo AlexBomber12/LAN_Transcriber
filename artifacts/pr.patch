@@ -1,36 +1,20 @@
-diff --git a/lan_app/templates/partials/control_center/upload_script.html b/lan_app/templates/partials/control_center/upload_script.html
-index 385911f..8198bf2 100644
---- a/lan_app/templates/partials/control_center/upload_script.html
-+++ b/lan_app/templates/partials/control_center/upload_script.html
-@@ -229,7 +229,8 @@ function buildCompactQueueCard(item) {
-   var isQueued = item.phase === "queued";
+diff --git a/lan_app/templates/partials/speaker_review_cards.html b/lan_app/templates/partials/speaker_review_cards.html
+index c684bcc..7f1c857 100644
+--- a/lan_app/templates/partials/speaker_review_cards.html
++++ b/lan_app/templates/partials/speaker_review_cards.html
+@@ -126,7 +126,6 @@
+         </div>
+       </div>
  
-   var card = document.createElement("article");
--  card.className = "upload-queue-card bg-slate-50 p-2 rounded border border-slate-100 flex items-center gap-3";
-+  card.className = "bg-slate-50 p-2 rounded border border-slate-100 flex items-center gap-3";
-+  card.setAttribute("data-upload-card", "1");
- 
-   var indicator = document.createElement("div");
-   indicator.className = "w-1 h-8 rounded-full";
-diff --git a/tests_playwright/test_ui_smoke_playwright.py b/tests_playwright/test_ui_smoke_playwright.py
-index f577429..f6944b7 100644
---- a/tests_playwright/test_ui_smoke_playwright.py
-+++ b/tests_playwright/test_ui_smoke_playwright.py
-@@ -253,7 +253,7 @@ def test_control_center_embedded_inspector_and_export_zip_smoke(tmp_path: Path)
-                     state="visible",
-                     timeout=_remaining_timeout_ms(deadline),
-                 )
--                assert page.locator("#upload-rows .upload-queue-card").count() <= 2
-+                assert page.locator("#upload-rows [data-upload-card]").count() <= 2
- 
-                 page.wait_for_selector(
-                     "#control-center-recordings-panel",
-@@ -324,7 +324,7 @@ def test_control_center_embedded_inspector_and_export_zip_smoke(tmp_path: Path)
-                     "() => document.getElementById('upload-active-count')?.textContent === '0 ACTIVE JOBS'",
-                     timeout=_remaining_timeout_ms(deadline),
-                 )
--                assert page.locator("#upload-rows .upload-queue-card").count() == 0
-+                assert page.locator("#upload-rows [data-upload-card]").count() == 0
-                 page.get_by_test_id("recording-inspector-open-full-page").click(
-                     timeout=_remaining_timeout_ms(deadline),
-                 )
+-      {% if not speaker_review_compact %}
+       <div class="flex flex-col gap-3">
+         <section class="bg-slate-50 rounded-lg border border-slate-100 p-4">
+           <h3 class="text-sm font-bold text-slate-900 mb-1">Confirm match</h3>
+@@ -227,7 +226,6 @@
+           {% endif %}
+         </section>
+       </div>
+-      {% endif %}
+     </div>
+   </section>
+   {% endfor %}

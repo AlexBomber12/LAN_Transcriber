@@ -1,33 +1,120 @@
-<section class="inspector-hero{% if recording_inspector.embedded %} embedded{% endif %}">
+{% if recording_inspector.embedded %}
+<section class="inspector-hero embedded">
   <div class="inspector-heading">
     <div class="inspector-title-block">
-      {% if recording_inspector.embedded %}
       <h2>{{ rec.source_filename }}</h2>
       <p class="inspector-subtitle"><code>{{ rec.id }}</code></p>
-      {% else %}
-      <h1>{{ rec.source_filename }}</h1>
-      <p class="inspector-subtitle"><code>{{ rec.id }}</code></p>
-      {% endif %}
     </div>
     <div class="inspector-meta-grid">
       <span class="badge s-{{ rec.status }}">{{ rec.status }}</span>
       <span class="inspector-meta-chip">Stage {{ diagnostics.current_stage_label or 'Waiting' }}</span>
-      {% if recording_inspector.embedded %}
       <span class="inspector-meta-chip">Captured {{ rec.captured_at_display }}</span>
       <span class="inspector-meta-chip">Source {{ rec.source_display or rec.source }}</span>
-      {% else %}
-      <span class="inspector-meta-chip">Captured {{ rec.captured_at_display }}</span>
-      <span class="inspector-meta-chip">Duration {{ rec.duration_display }}</span>
-      {% if rec.project_name or rec.project_id %}
-      <span class="inspector-meta-chip">Project {{ rec.project_name or ('#' ~ rec.project_id) }}</span>
-      {% endif %}
-      <span class="inspector-meta-chip">Status {{ diagnostics.current_stage_status_label or 'Unknown' }}</span>
-      {% endif %}
     </div>
   </div>
   {% if rec.status_reason_text_display %}
   <p class="inspector-note">{{ rec.status_reason_text_display }}</p>
   {% endif %}
 </section>
-
 {% include "partials/control_center/selected_recording_shell.html" %}
+{% else %}
+{% set _ab = selected_recording_shell.action_bar %}
+<section class="flex flex-wrap justify-between items-start gap-4 mb-8" data-testid="recording-inspector-header">
+  <div class="flex flex-col gap-2">
+    <div class="flex items-center gap-3">
+      <h1 class="text-slate-900 text-3xl font-bold tracking-tight">{{ rec.source_filename }}</h1>
+      {% set _s = rec.status %}
+      <span class="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold border
+        {% if _s in ['Processing', 'Stopping'] %}bg-amber-100 text-amber-800 border-amber-200{% elif _s == 'Ready' %}bg-green-100 text-green-800 border-green-200{% elif _s == 'Published' %}bg-blue-100 text-blue-800 border-blue-200{% elif _s == 'Queued' %}bg-slate-100 text-slate-800 border-slate-200{% elif _s == 'NeedsReview' %}bg-purple-100 text-purple-800 border-purple-200{% elif _s in ['Failed', 'Quarantine'] %}bg-red-100 text-red-800 border-red-200{% else %}bg-slate-100 text-slate-800 border-slate-200{% endif %}">
+        {% if _s in ['Processing', 'Stopping'] %}<span class="size-1.5 rounded-full bg-amber-500 mr-1.5 animate-pulse"></span>{% endif %}
+        {{ _s }}
+      </span>
+    </div>
+    <div class="flex items-center gap-4 text-slate-500 text-sm flex-wrap">
+      <span class="flex items-center gap-1"><span class="material-symbols-outlined text-sm">fingerprint</span> {{ rec.id }}</span>
+      <span class="flex items-center gap-1"><span class="material-symbols-outlined text-sm">calendar_today</span> {{ rec.captured_at_display }}</span>
+      <span class="flex items-center gap-1"><span class="material-symbols-outlined text-sm">schedule</span> {{ rec.duration_display }}</span>
+      {% if rec.project_name or rec.project_id %}
+      <span class="flex items-center gap-1"><span class="material-symbols-outlined text-sm">folder</span> {{ rec.project_name or ('#' ~ rec.project_id) }}</span>
+      {% endif %}
+      <span class="flex items-center gap-1"><span class="material-symbols-outlined text-sm">info</span> Stage {{ diagnostics.current_stage_label or 'Waiting' }} · {{ diagnostics.current_stage_status_label or 'Unknown' }}</span>
+    </div>
+    {% if rec.status_reason_text_display %}
+    <p class="text-xs text-slate-500 mt-1">{{ rec.status_reason_text_display }}</p>
+    {% endif %}
+  </div>
+  <div class="flex items-center gap-2">
+    <button
+      type="button"
+      class="flex items-center justify-center gap-2 rounded-lg h-10 px-4 bg-white border border-slate-200 text-slate-700 text-sm font-semibold hover:bg-slate-50 transition-colors"
+      data-action-url="{{ _ab.requeue_url }}"
+      data-return-to="{{ _ab.return_to }}"
+      data-pending-label="Requeueing..."
+      onclick="triggerRecordingAction(this)"
+    >
+      <span class="material-symbols-outlined text-lg">replay</span>
+      Requeue
+    </button>
+    <button
+      type="button"
+      class="flex items-center justify-center gap-2 rounded-lg h-10 px-4 bg-white border border-slate-200 text-slate-700 text-sm font-semibold hover:bg-slate-50 transition-colors"
+      data-action-url="{{ _ab.quarantine_url }}"
+      data-return-to="{{ _ab.return_to }}"
+      data-confirm-message="Quarantine this recording?"
+      data-pending-label="Quarantining..."
+      onclick="triggerRecordingAction(this)"
+    >
+      <span class="material-symbols-outlined text-lg">gpp_maybe</span>
+      Quarantine
+    </button>
+    <a
+      href="{{ _ab.download_zip_href }}"
+      class="flex items-center justify-center gap-2 rounded-lg h-10 px-4 bg-white border border-slate-200 text-slate-700 text-sm font-semibold hover:bg-slate-50 transition-colors no-underline"
+      hx-boost="false"
+      data-testid="recording-inspector-download-zip"
+    >
+      <span class="material-symbols-outlined text-lg">folder_zip</span>
+      ZIP
+    </a>
+    {% if _ab.rec.stop_eligible %}
+      {% if _ab.rec.stop_in_progress %}
+      <button type="button" class="flex items-center justify-center gap-2 rounded-lg h-10 px-4 bg-red-600 text-white text-sm font-semibold opacity-50 cursor-not-allowed" disabled>
+        <span class="material-symbols-outlined text-lg">stop</span>
+        Stopping...
+      </button>
+      {% else %}
+      <button
+        type="button"
+        class="flex items-center justify-center gap-2 rounded-lg h-10 px-4 bg-red-600 text-white text-sm font-semibold hover:bg-red-700 transition-colors"
+        data-action-url="{{ _ab.stop_url }}"
+        data-action-body="{{ _ab.stop_body }}"
+        data-return-to="{{ _ab.return_to }}"
+        data-confirm-message="Stop processing for this recording?"
+        data-pending-label="Submitting stop..."
+        onclick="triggerRecordingAction(this)"
+      >
+        <span class="material-symbols-outlined text-lg">stop</span>
+        Stop
+      </button>
+      {% endif %}
+    {% endif %}
+    <div class="w-px h-6 bg-slate-200 mx-1"></div>
+    <button
+      type="button"
+      class="flex items-center justify-center rounded-lg h-10 w-10 bg-red-50 text-red-600 border border-red-100 hover:bg-red-100 transition-colors"
+      data-rid="{{ _ab.rec.id }}"
+      data-rlabel="{{ _ab.rec.source_filename or _ab.rec.id }}"
+      data-rcaptured="{{ '' if _ab.rec.captured_at_display == '—' else _ab.rec.captured_at_display }}"
+      data-return-to="{{ _ab.return_to }}"
+      onclick="openDeleteDialog({recordingId: this.dataset.rid, recordingLabel: this.dataset.rlabel || '', capturedAt: this.dataset.rcaptured || '', returnTo: this.dataset.returnTo || '', returnFocus: this});"
+    >
+      <span class="material-symbols-outlined text-lg">delete</span>
+    </button>
+  </div>
+</section>
+
+{% for notice in selected_recording_shell.notices %}
+  {% set page_notice = notice %}
+  {% include "partials/control_center/page_notice.html" %}
+{% endfor %}
+{% endif %}
