@@ -1,221 +1,233 @@
+diff --git a/ci-requirements.txt b/ci-requirements.txt
+index b6e6cf6..745d979 100644
+--- a/ci-requirements.txt
++++ b/ci-requirements.txt
+@@ -8,20 +8,20 @@ annotated-types==0.7.0
+     # via pydantic
+ antlr4-python3-runtime==4.9.3
+     # via omegaconf
+-anyio==4.12.1
++anyio==4.13.0
+     # via
+     #   httpx
+     #   starlette
+-build==1.4.0
++build==1.4.2
+     # via pip-tools
+ certifi==2026.2.25
+     # via
+     #   httpcore
+     #   httpx
+     #   requests
+-charset-normalizer==3.4.6
++charset-normalizer==3.4.7
+     # via requests
+-click==8.3.1
++click==8.3.2
+     # via
+     #   pip-tools
+     #   uvicorn
+@@ -100,7 +100,7 @@ pyyaml==6.0.2
+     #   omegaconf
+ recurring-ical-events==3.8.0
+     # via -r ci-requirements.in
+-requests==2.32.5
++requests==2.33.1
+     # via -r ci-requirements.in
+ respx[router]==0.22.0
+     # via -r ci-requirements.in
+@@ -124,7 +124,7 @@ typing-inspection==0.4.2
+     # via
+     #   pydantic
+     #   pydantic-settings
+-tzdata==2025.3
++tzdata==2026.1
+     # via
+     #   icalendar
+     #   recurring-ical-events
 diff --git a/lan_app/templates/base.html b/lan_app/templates/base.html
-index 373dff3..e2d228f 100644
+index e2d228f..cc16461 100644
 --- a/lan_app/templates/base.html
 +++ b/lan_app/templates/base.html
-@@ -27,6 +27,15 @@
-   --shadow-soft:0 8px 18px rgba(15,23,42,.06);
-   --radius:18px;
-   --radius-sm:12px;
-+  --recordings-surface:#f7fafe;
-+  --recordings-surface-strong:#eef4fb;
-+  --recordings-border:#d7e2f1;
-+  --recordings-border-strong:#bfd1e8;
-+  --recordings-heading:#6c7f98;
-+  --recordings-hover:#f4f8ff;
-+  --recordings-selected:#edf4ff;
-+  --recordings-code:#44566f;
-+  --recordings-progress-track:#dbe6f3;
- }
- *{box-sizing:border-box}
- html{min-height:100%}
-@@ -862,11 +871,11 @@ textarea:focus{
-   gap:14px;
- }
- .recordings-panel-frame{
--  border:1px solid var(--line);
-+  border:1px solid var(--recordings-border);
-   border-radius:24px;
--  background:linear-gradient(180deg, #fff 0%, #f9fbff 100%);
-+  background:linear-gradient(180deg, #fff 0%, var(--recordings-surface) 100%);
-   padding:20px;
--  box-shadow:var(--shadow-soft);
-+  box-shadow:0 18px 34px rgba(15,23,42,.08);
- }
- .recordings-filter-strip{
-   display:grid;
-@@ -874,9 +883,9 @@ textarea:focus{
-   grid-template-columns:minmax(150px,.85fr) minmax(0,1.4fr) minmax(110px,.55fr) auto;
-   align-items:end;
-   padding:12px 14px;
--  border:1px solid #dde7f6;
-+  border:1px solid var(--recordings-border);
-   border-radius:20px;
--  background:rgba(255,255,255,.88);
-+  background:linear-gradient(180deg, rgba(255,255,255,.96) 0%, var(--recordings-surface-strong) 100%);
- }
- .recordings-filter-strip .filters{align-items:flex-end}
- .filter-field{
-@@ -935,20 +944,20 @@ textarea:focus{
-   gap:8px;
-   padding:6px 10px;
-   border-radius:999px;
--  border:1px solid var(--line);
--  background:#fff;
-+  border:1px solid var(--recordings-border);
-+  background:rgba(255,255,255,.92);
-   text-decoration:none;
-   color:var(--text);
-   box-shadow:none;
-   font-size:12px;
- }
- .recordings-status-pill:hover{
--  background:#f8fbff;
--  border-color:#9db4da;
-+  background:var(--recordings-hover);
-+  border-color:var(--recordings-border-strong);
- }
- .recordings-status-pill.active{
-   background:var(--primary-soft);
--  border-color:#b8cdfb;
-+  border-color:var(--recordings-border-strong);
- }
- .recordings-status-pill-label{
-   font-weight:700;
-@@ -959,23 +968,55 @@ textarea:focus{
- }
- .recordings-table-wrap{
-   overflow:auto;
--  border:1px solid #dbe5f6;
-+  border:1px solid var(--recordings-border);
-   border-radius:20px;
--  background:#fff;
-+  padding:10px;
-+  background:linear-gradient(180deg, rgba(255,255,255,.86) 0%, var(--recordings-surface-strong) 100%);
- }
- .recordings-table{
-   min-width:1020px;
-+  border:none;
-+  border-spacing:0 8px;
-+  background:transparent;
-+  box-shadow:none;
-+  overflow:visible;
+@@ -5,7 +5,62 @@
+ <meta name="viewport" content="width=device-width, initial-scale=1">
+ <title>{% block title %}LAN Transcriber{% endblock %}</title>
+ <script src="/static/htmx.min.js"></script>
++<script src="/static/tailwind.js"></script>
+ <style>
++@font-face {
++  font-family: 'Inter';
++  font-style: normal;
++  font-weight: 400 900;
++  font-display: swap;
++  src: url(/static/fonts/inter-latin.woff2) format('woff2');
++  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
 +}
-+.recordings-table thead th{
-+  background:transparent;
-+  color:var(--recordings-heading);
-+  border-bottom:none;
-+  padding:0 16px 8px;
++@font-face {
++  font-family: 'Material Symbols Outlined';
++  font-style: normal;
++  font-weight: 100 700;
++  font-display: swap;
++  src: url(/static/fonts/material-symbols-outlined.woff2) format('woff2');
 +}
-+.recordings-table td{
-+  vertical-align:top;
-+  padding:16px;
-+  background:rgba(255,255,255,.94);
-+  border-top:1px solid var(--recordings-border);
-+  border-bottom:1px solid var(--recordings-border);
++.material-symbols-outlined {
++  font-family: 'Material Symbols Outlined';
++  font-weight: normal;
++  font-style: normal;
++  font-size: 20px;
++  line-height: 1;
++  letter-spacing: normal;
++  text-transform: none;
++  display: inline-block;
++  white-space: nowrap;
++  word-wrap: normal;
++  direction: ltr;
++  -webkit-font-smoothing: antialiased;
++  -moz-osx-font-smoothing: grayscale;
++  text-rendering: optimizeLegibility;
++  font-feature-settings: 'liga';
 +}
-+.recordings-table tbody td:first-child{
-+  border-left:1px solid var(--recordings-border);
-+  border-radius:18px 0 0 18px;
++</style>
++<script>
++tailwind.config = {
++  darkMode: "class",
++  theme: {
++    extend: {
++      colors: {
++        "primary": "#2463eb",
++        "background-light": "#f6f6f8",
++        "background-dark": "#111621",
++        "navy-nav": "#0f172a",
++      },
++      fontFamily: {
++        "display": ["Inter"]
++      },
++      borderRadius: {"DEFAULT": "0.25rem", "lg": "0.5rem", "xl": "0.75rem", "full": "9999px"},
++    },
++  },
 +}
-+.recordings-table tbody td:last-child{
-+  border-right:1px solid var(--recordings-border);
-+  border-radius:0 18px 18px 0;
-+}
-+.recordings-table tbody tr:hover td{
-+  background:var(--recordings-hover);
++</script>
++<style>
++/* LEGACY CSS - will be removed after full Tailwind migration. See PR-TAILWIND-REMAINING-01. */
+ :root{
+   --bg:#f6f6f8;
+   --bg-accent:#eef3ff;
+@@ -2217,38 +2272,60 @@ textarea:focus{
  }
--.recordings-table td{vertical-align:top}
- .recording-row-selected{
--  background:linear-gradient(90deg, rgba(36,99,235,.08) 0%, rgba(255,255,255,1) 68%);
-+  background:transparent;
-+}
-+.recordings-table .recording-row-selected td{
-+  background:linear-gradient(90deg, var(--recordings-selected) 0%, rgba(255,255,255,.98) 78%);
- }
- .recordings-table .recording-row-selected td:first-child{
-   border-left:4px solid var(--primary);
- }
- .recording-main{
-   display:grid;
--  gap:6px;
-+  gap:8px;
- }
- .recording-title-row{
-   display:flex;
-@@ -985,6 +1026,8 @@ textarea:focus{
- }
- .recording-name{
-   font-weight:700;
-+  font-size:14px;
-+  letter-spacing:-.01em;
-   color:var(--text);
-   text-decoration:none;
- }
-@@ -993,9 +1036,18 @@ textarea:focus{
-   display:flex;
-   gap:8px;
-   flex-wrap:wrap;
--  font-size:12px;
-+  font-size:11px;
-   color:var(--muted);
- }
-+.recording-meta code,
-+.control-center-recording-id code{
-+  display:inline-flex;
-+  align-items:center;
-+  padding:3px 8px;
-+  border-radius:999px;
-+  background:var(--recordings-surface-strong);
-+  color:var(--recordings-code);
-+}
- .recording-row-action{
-   display:flex;
-   align-items:center;
-@@ -1027,7 +1079,7 @@ textarea:focus{
- .progress-track{
-   height:7px;
-   border-radius:999px;
--  background:#e8eef7;
-+  background:var(--recordings-progress-track);
-   overflow:hidden;
- }
- .progress-fill{
-@@ -1098,7 +1150,7 @@ textarea:focus{
-   min-width:0;
- }
- .control-center-recording-id code{
--  font-size:12px;
-+  font-size:11px;
- }
- .control-center-recording-title{
-   min-width:0;
-@@ -1106,6 +1158,7 @@ textarea:focus{
-   text-overflow:ellipsis;
-   white-space:nowrap;
-   font-weight:700;
-+  letter-spacing:-.01em;
-   color:var(--text);
- }
- .recording-progress-compact{
-@@ -1125,9 +1178,9 @@ textarea:focus{
-   justify-content:center;
-   width:36px;
-   height:36px;
--  border:1px solid #d6deee;
-+  border:1px solid var(--recordings-border);
-   border-radius:999px;
--  background:#fff;
-+  background:rgba(255,255,255,.94);
-   color:var(--text);
-   font-size:18px;
-   font-weight:800;
-@@ -1139,8 +1192,8 @@ textarea:focus{
-   display:none;
- }
- .recording-actions-menu[open] .recording-actions-trigger{
--  border-color:#adc5ee;
--  background:#f7fbff;
-+  border-color:var(--recordings-border-strong);
-+  background:var(--recordings-hover);
- }
- .recording-actions-popover{
-   position:absolute;
-@@ -1151,7 +1204,7 @@ textarea:focus{
-   min-width:138px;
-   gap:2px;
-   padding:6px;
--  border:1px solid #d6deee;
-+  border:1px solid var(--recordings-border);
-   border-radius:14px;
-   background:#fff;
-   box-shadow:0 18px 34px rgba(15,23,42,.14);
+ </style>
+ </head>
+-<body hx-boost="true">
+-<header class="app-nav">
+-  <div class="app-nav-brand">
+-    <div class="app-nav-mark">LT</div>
+-    <div class="app-nav-copy">
+-      <div class="app-nav-title">LAN Transcriber</div>
++<body class="font-display antialiased" hx-boost="true">
++<header class="bg-navy-nav text-white px-6 py-3 flex flex-wrap items-center justify-between gap-3 border-b border-slate-800">
++  <div class="flex flex-wrap items-center gap-4 md:gap-8">
++    <div class="flex items-center gap-3">
++      <div class="bg-primary p-1.5 rounded">
++        <span class="material-symbols-outlined text-white">settings_input_component</span>
++      </div>
++      <h1 class="text-lg font-bold tracking-tight">LAN Transcriber</h1>
++    </div>
++    <nav class="flex flex-wrap items-center gap-1">
++      <a href="/" class="px-3 py-1.5 rounded text-sm font-semibold {% if active in ['dashboard', 'recordings', 'upload'] %}bg-primary/20 text-primary{% else %}text-slate-400 hover:text-white{% endif %}">Control Center</a>
++      <a href="/glossary" class="px-3 py-1.5 rounded text-sm font-medium {% if active=='glossary' %}bg-primary/20 text-primary{% else %}text-slate-400 hover:text-white{% endif %}">Corrections</a>
++      <a href="/voices" class="px-3 py-1.5 rounded text-sm font-medium {% if active=='voices' %}bg-primary/20 text-primary{% else %}text-slate-400 hover:text-white{% endif %}">Voices</a>
++      <a href="/calendars" class="px-3 py-1.5 rounded text-sm font-medium {% if active=='calendars' %}bg-primary/20 text-primary{% else %}text-slate-400 hover:text-white{% endif %}">Calendars</a>
++      <a href="/projects" class="px-3 py-1.5 rounded text-sm font-medium {% if active=='projects' %}bg-primary/20 text-primary{% else %}text-slate-400 hover:text-white{% endif %}">Projects</a>
++      <a href="/queue" class="px-3 py-1.5 rounded text-sm font-medium {% if active=='queue' %}bg-primary/20 text-primary{% else %}text-slate-400 hover:text-white{% endif %}">Queue</a>
++    </nav>
++  </div>
++  <div class="flex items-center gap-4">
++    <div class="relative hidden md:block">
++      <span class="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-slate-500">search</span>
++      <input class="bg-slate-800 border-none rounded-lg pl-10 pr-4 py-1.5 text-sm w-64 focus:ring-1 focus:ring-primary" placeholder="Search recordings..." type="text">
++    </div>
++    <button class="p-2 text-slate-400 hover:text-white"><span class="material-symbols-outlined">notifications</span></button>
++    <div class="w-8 h-8 rounded-full bg-primary/30 flex items-center justify-center border border-primary/50">
++      <span class="text-xs font-bold">OP</span>
+     </div>
+   </div>
+-  <nav class="app-nav-links">
+-    <a href="/" class="app-nav-link app-nav-link-primary {% if active in ['dashboard', 'recordings', 'upload'] %}active{% endif %}">Control Center</a>
+-    <a href="/glossary" class="app-nav-link {% if active=='glossary' %}active{% endif %}">Corrections</a>
+-    <a href="/voices" class="app-nav-link {% if active=='voices' %}active{% endif %}">Voices</a>
+-    <a href="/calendars" class="app-nav-link {% if active=='calendars' %}active{% endif %}">Calendars</a>
+-    <a href="/projects" class="app-nav-link {% if active=='projects' %}active{% endif %}">Projects</a>
+-    <a href="/queue" class="app-nav-link {% if active=='queue' %}active{% endif %}">Queue</a>
+-  </nav>
+ </header>
+ <main class="app-main">
+ {% block content %}{% endblock %}
+ </main>
++<footer class="h-8 bg-slate-100 border-t border-slate-200 px-4 flex items-center justify-between text-[10px] font-medium text-slate-500">
++  <div class="flex gap-4">
++    <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-green-500"></span> LAN Node: Online</span>
++    <span>Local Database</span>
++    <span>Version: LAN Transcriber</span>
++  </div>
++  <div class="flex gap-4">
++    <span>Uptime</span>
++  </div>
++</footer>
+ <div
+   id="delete-confirm-backdrop"
+   class="modal-backdrop"
+   hidden
+   onclick="if (event.target === this) closeDeleteDialog();"
+ >
+-  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="delete-confirm-title">
+-    <h2 id="delete-confirm-title">Delete record?</h2>
+-    <p class="modal-copy">This action can&apos;t be undone.</p>
+-    <p id="delete-confirm-context" class="modal-context"></p>
+-    <p id="delete-confirm-error" class="modal-error"></p>
+-    <div class="modal-actions">
++  <div class="bg-white border border-slate-200 rounded-3xl max-w-[460px] w-full p-5 shadow-2xl" role="dialog" aria-modal="true" aria-labelledby="delete-confirm-title">
++    <h2 id="delete-confirm-title" class="text-lg font-bold mb-2">Delete record?</h2>
++    <p class="text-sm text-slate-900 mb-2">This action can&apos;t be undone.</p>
++    <p id="delete-confirm-context" class="text-sm text-slate-500 mb-3 break-words"></p>
++    <p id="delete-confirm-error" class="text-xs text-red-700 min-h-[18px] mb-2"></p>
++    <div class="flex justify-end gap-1.5">
+       <button id="delete-cancel-btn" class="btn" type="button" onclick="closeDeleteDialog()">Cancel</button>
+       <button id="delete-confirm-btn" class="btn btn-danger" type="button" onclick="confirmDeleteDialog()">Delete</button>
+     </div>
+diff --git a/tasks/QUEUE.md b/tasks/QUEUE.md
+index 3a5c4b5..6659196 100644
+--- a/tasks/QUEUE.md
++++ b/tasks/QUEUE.md
+@@ -630,7 +630,7 @@ Queue (in order)
+ - Depends on: PR-UI-STITCH-WORKLIST-02
+ 
+ 126) PR-TAILWIND-BASE-01: Add Tailwind CSS to base.html and migrate navbar, modal, and global elements
+-- Status: TODO
++- Status: DONE
+ - Tasks file: tasks/PR-TAILWIND-BASE-01.md
+ - Depends on: PR-UI-STITCH-UPLOAD-01
+ 
+diff --git a/tests/test_llm_client.py b/tests/test_llm_client.py
+index f4d7cd1..842e2aa 100644
+--- a/tests/test_llm_client.py
++++ b/tests/test_llm_client.py
+@@ -369,6 +369,20 @@ async def test_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+     assert llm_client.llm_timeouts_total._value.get() >= 1
+ 
+ 
++@pytest.mark.asyncio
++async def test_first_attempt_timeout_returns_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
++    """Cover the first_attempt is None early return (line 438)."""
++    client = llm_client.LLMClient(base_url="http://localhost:1")
++
++    async def _fake_post(**_k: Any) -> dict[str, Any]:
++        raise TimeoutError("first-attempt-timeout")
++
++    monkeypatch.setattr(client, "_post_chat_completion", _fake_post)
++    res = await client.generate("sys", "usr", model="m")
++    assert res["content"] == "**LLM timeout**"
++    assert res["role"] == "assistant"
++
++
+ @pytest.mark.asyncio
+ async def test_mock_response_path(tmp_path: pathlib.Path) -> None:
+     mock_path = tmp_path / "mock-response.json"

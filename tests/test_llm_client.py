@@ -370,6 +370,20 @@ async def test_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_first_attempt_timeout_returns_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Cover the first_attempt is None early return (line 438)."""
+    client = llm_client.LLMClient(base_url="http://localhost:1")
+
+    async def _fake_post(**_k: Any) -> dict[str, Any]:
+        raise TimeoutError("first-attempt-timeout")
+
+    monkeypatch.setattr(client, "_post_chat_completion", _fake_post)
+    res = await client.generate("sys", "usr", model="m")
+    assert res["content"] == "**LLM timeout**"
+    assert res["role"] == "assistant"
+
+
+@pytest.mark.asyncio
 async def test_mock_response_path(tmp_path: pathlib.Path) -> None:
     mock_path = tmp_path / "mock-response.json"
     mock_path.write_text(

@@ -630,7 +630,7 @@ Queue (in order)
 - Depends on: PR-UI-STITCH-WORKLIST-02
 
 126) PR-TAILWIND-BASE-01: Add Tailwind CSS to base.html and migrate navbar, modal, and global elements
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-TAILWIND-BASE-01.md
 - Depends on: PR-UI-STITCH-UPLOAD-01
 

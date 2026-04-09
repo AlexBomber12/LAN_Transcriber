@@ -8,20 +8,20 @@ annotated-types==0.7.0
     # via pydantic
 antlr4-python3-runtime==4.9.3
     # via omegaconf
-anyio==4.12.1
+anyio==4.13.0
     # via
     #   httpx
     #   starlette
-build==1.4.0
+build==1.4.2
     # via pip-tools
 certifi==2026.2.25
     # via
     #   httpcore
     #   httpx
     #   requests
-charset-normalizer==3.4.6
+charset-normalizer==3.4.7
     # via requests
-click==8.3.1
+click==8.3.2
     # via
     #   pip-tools
     #   uvicorn
@@ -100,7 +100,7 @@ pyyaml==6.0.2
     #   omegaconf
 recurring-ical-events==3.8.0
     # via -r ci-requirements.in
-requests==2.32.5
+requests==2.33.1
     # via -r ci-requirements.in
 respx[router]==0.22.0
     # via -r ci-requirements.in
@@ -124,7 +124,7 @@ typing-inspection==0.4.2
     # via
     #   pydantic
     #   pydantic-settings
-tzdata==2025.3
+tzdata==2026.1
     # via
     #   icalendar
     #   recurring-ical-events
