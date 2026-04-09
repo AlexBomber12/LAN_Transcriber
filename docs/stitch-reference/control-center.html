@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+
+<html class="light" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    colors: {
+                        "primary": "#2463eb",
+                        "background-light": "#f6f6f8",
+                        "background-dark": "#111621",
+                        "navy-nav": "#0f172a",
+                    },
+                    fontFamily: {
+                        "display": ["Inter"]
+                    },
+                    borderRadius: {"DEFAULT": "0.25rem", "lg": "0.5rem", "xl": "0.75rem", "full": "9999px"},
+                },
+            },
+        }
+    </script>
+<style>
+        body { font-family: 'Inter', sans-serif; }
+        .material-symbols-outlined { font-size: 20px; }
+    </style>
+</head>
+<body class="bg-background-light dark:bg-background-dark text-slate-900 dark:text-slate-100 min-h-screen flex flex-col">
+<!-- Top Navigation -->
+<header class="bg-navy-nav text-white px-6 py-3 flex items-center justify-between border-b border-slate-800">
+<div class="flex items-center gap-8">
+<div class="flex items-center gap-3">
+<div class="bg-primary p-1.5 rounded">
+<span class="material-symbols-outlined text-white">settings_input_component</span>
+</div>
+<h1 class="text-lg font-bold tracking-tight">LAN Transcriber</h1>
+</div>
+<nav class="flex items-center gap-1">
+<a class="px-3 py-1.5 rounded bg-primary/20 text-primary text-sm font-semibold" href="#">Control Center</a>
+<a class="px-3 py-1.5 rounded text-slate-400 hover:text-white text-sm font-medium" href="#">Corrections</a>
+<a class="px-3 py-1.5 rounded text-slate-400 hover:text-white text-sm font-medium" href="#">Voices</a>
+<a class="px-3 py-1.5 rounded text-slate-400 hover:text-white text-sm font-medium" href="#">Calendars</a>
+<a class="px-3 py-1.5 rounded text-slate-400 hover:text-white text-sm font-medium" href="#">Projects</a>
+<a class="px-3 py-1.5 rounded text-slate-400 hover:text-white text-sm font-medium" href="#">Queue</a>
+</nav>
+</div>
+<div class="flex items-center gap-4">
+<div class="relative">
+<span class="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-slate-500">search</span>
+<input class="bg-slate-800 border-none rounded-lg pl-10 pr-4 py-1.5 text-sm w-64 focus:ring-1 focus:ring-primary" placeholder="Search recordings..." type="text"/>
+</div>
+<button class="p-2 text-slate-400 hover:text-white"><span class="material-symbols-outlined">notifications</span></button>
+<div class="w-8 h-8 rounded-full bg-primary/30 flex items-center justify-center border border-primary/50" data-alt="User avatar placeholder">
+<span class="text-xs font-bold">JD</span>
+</div>
+</div>
+</header>
+<!-- Main Content Area -->
+<main class="flex-1 flex overflow-hidden">
+<!-- Left Column: 55% -->
+<section class="w-[55%] flex flex-col border-r border-slate-200 dark:border-slate-800 overflow-y-auto p-4 gap-4">
+<!-- Compact Upload Panel -->
+<div class="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 p-4">
+<div class="flex items-center justify-between mb-3">
+<h3 class="text-sm font-bold flex items-center gap-2 uppercase tracking-wider text-slate-500">
+<span class="material-symbols-outlined text-primary">cloud_upload</span>
+                        Upload Pipeline
+                    </h3>
+<span class="text-[10px] font-bold bg-primary/10 text-primary px-2 py-0.5 rounded-full">3 ACTIVE JOBS</span>
+</div>
+<div class="grid grid-cols-2 gap-4">
+<div class="border-2 border-dashed border-slate-200 dark:border-slate-700 rounded-lg flex flex-col items-center justify-center py-6 px-4 hover:bg-slate-50 transition-colors cursor-pointer group">
+<span class="material-symbols-outlined text-slate-400 group-hover:text-primary mb-2">add_circle</span>
+<p class="text-xs font-medium text-slate-600">Drop recording or <span class="text-primary">browse</span></p>
+<p class="text-[10px] text-slate-400 mt-1">MP3, WAV, FLAC (Max 500MB)</p>
+</div>
+<div class="space-y-2">
+<div class="bg-slate-50 dark:bg-slate-800 p-2 rounded border border-slate-100 dark:border-slate-700 flex items-center gap-3">
+<div class="w-1 h-8 bg-primary rounded-full"></div>
+<div class="flex-1">
+<p class="text-[11px] font-bold truncate">Project_Alpha_Interview_01.wav</p>
+<div class="w-full bg-slate-200 h-1 mt-1.5 rounded-full overflow-hidden">
+<div class="bg-primary h-full w-[65%]"></div>
+</div>
+</div>
+<span class="text-[10px] font-mono text-slate-500">65%</span>
+</div>
+<div class="bg-slate-50 dark:bg-slate-800 p-2 rounded border border-slate-100 dark:border-slate-700 flex items-center gap-3">
+<div class="w-1 h-8 bg-slate-300 rounded-full"></div>
+<div class="flex-1">
+<p class="text-[11px] font-bold truncate text-slate-500">Board_Meeting_Notes.mp3</p>
+<p class="text-[10px] text-slate-400">Waiting in queue...</p>
+</div>
+<span class="material-symbols-outlined text-slate-400">schedule</span>
+</div>
+</div>
+</div>
+</div>
+<!-- Worklist Table -->
+<div class="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 flex-1 flex flex-col overflow-hidden">
+<div class="px-4 py-3 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
+<h3 class="text-sm font-bold uppercase tracking-wider text-slate-500">Recordings Worklist</h3>
+<div class="flex gap-2">
+<button class="p-1.5 text-slate-400 hover:text-slate-600"><span class="material-symbols-outlined">filter_list</span></button>
+<button class="p-1.5 text-slate-400 hover:text-slate-600"><span class="material-symbols-outlined">refresh</span></button>
+</div>
+</div>
+<div class="overflow-x-auto">
+<table class="w-full text-left border-collapse">
+<thead class="bg-slate-50 dark:bg-slate-800/50 text-[10px] uppercase font-bold text-slate-500 border-b border-slate-200 dark:border-slate-800">
+<tr>
+<th class="px-4 py-2 w-10">Status</th>
+<th class="px-4 py-2">Name</th>
+<th class="px-4 py-2">Date/Time</th>
+<th class="px-4 py-2">Duration</th>
+<th class="px-4 py-2">Confidence</th>
+<th class="px-4 py-2 text-right">Actions</th>
+</tr>
+</thead>
+<tbody class="text-[12px] divide-y divide-slate-100 dark:divide-slate-800">
+<tr class="bg-primary/5 border-l-4 border-l-primary group cursor-pointer">
+<td class="px-4 py-3">
+<span class="material-symbols-outlined text-green-500" title="Completed">check_circle</span>
+</td>
+<td class="px-4 py-3 font-semibold text-primary">Weekly Sync - Sales</td>
+<td class="px-4 py-3 text-slate-500">Oct 24, 09:15 AM</td>
+<td class="px-4 py-3 text-slate-500">42:15</td>
+<td class="px-4 py-3">
+<div class="flex items-center gap-2">
+<div class="w-12 bg-slate-200 h-1.5 rounded-full overflow-hidden">
+<div class="bg-green-500 h-full w-[94%]"></div>
+</div>
+<span class="font-bold">94%</span>
+</div>
+</td>
+<td class="px-4 py-3 text-right">
+<button class="text-slate-400 hover:text-primary"><span class="material-symbols-outlined">more_vert</span></button>
+</td>
+</tr>
+<tr class="hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors cursor-pointer">
+<td class="px-4 py-3">
+<span class="material-symbols-outlined text-amber-500" title="Processing">pending</span>
+</td>
+<td class="px-4 py-3 font-medium">Customer Interview #402</td>
+<td class="px-4 py-3 text-slate-500">Oct 24, 08:30 AM</td>
+<td class="px-4 py-3 text-slate-500">15:04</td>
+<td class="px-4 py-3">
+<span class="text-slate-400">Calculating...</span>
+</td>
+<td class="px-4 py-3 text-right">
+<button class="text-slate-400 hover:text-primary"><span class="material-symbols-outlined">more_vert</span></button>
+</td>
+</tr>
+<tr class="hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors cursor-pointer">
+<td class="px-4 py-3">
+<span class="material-symbols-outlined text-green-500">check_circle</span>
+</td>
+<td class="px-4 py-3 font-medium">Budget Review FY25</td>
+<td class="px-4 py-3 text-slate-500">Oct 23, 04:00 PM</td>
+<td class="px-4 py-3 text-slate-500">58:30</td>
+<td class="px-4 py-3">
+<div class="flex items-center gap-2">
+<div class="w-12 bg-slate-200 h-1.5 rounded-full overflow-hidden">
+<div class="bg-amber-500 h-full w-[82%]"></div>
+</div>
+<span class="font-bold">82%</span>
+</div>
+</td>
+<td class="px-4 py-3 text-right">
+<button class="text-slate-400 hover:text-primary"><span class="material-symbols-outlined">more_vert</span></button>
+</td>
+</tr>
+<tr class="hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors cursor-pointer">
+<td class="px-4 py-3">
+<span class="material-symbols-outlined text-green-500">check_circle</span>
+</td>
+<td class="px-4 py-3 font-medium">Standup_20231023.wav</td>
+<td class="px-4 py-3 text-slate-500">Oct 23, 10:00 AM</td>
+<td class="px-4 py-3 text-slate-500">08:12</td>
+<td class="px-4 py-3">
+<div class="flex items-center gap-2">
+<div class="w-12 bg-slate-200 h-1.5 rounded-full overflow-hidden">
+<div class="bg-green-500 h-full w-[98%]"></div>
+</div>
+<span class="font-bold">98%</span>
+</div>
+</td>
+<td class="px-4 py-3 text-right">
+<button class="text-slate-400 hover:text-primary"><span class="material-symbols-outlined">more_vert</span></button>
+</td>
+</tr>
+</tbody>
+</table>
+</div>
+</div>
+</section>
+<!-- Right Column: 45% (Recording Inspector) -->
+<section class="w-[45%] bg-white dark:bg-slate-900 flex flex-col shadow-xl overflow-hidden">
+<!-- Inspector Header -->
+<div class="px-6 py-4 border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/30">
+<div class="flex items-start justify-between">
+<div>
+<p class="text-[10px] font-bold text-primary uppercase tracking-[0.1em] mb-1">Recording Details</p>
+<h2 class="text-xl font-bold">Selected: Weekly Sync - Sales</h2>
+</div>
+<div class="flex gap-2">
+<button class="px-3 py-1.5 bg-primary text-white text-xs font-bold rounded flex items-center gap-2">
+<span class="material-symbols-outlined text-sm">play_arrow</span> Play
+                        </button>
+<button class="p-1.5 border border-slate-200 dark:border-slate-700 rounded hover:bg-slate-100 dark:hover:bg-slate-800">
+<span class="material-symbols-outlined">download</span>
+</button>
+</div>
+</div>
+<!-- Inspector Tabs -->
+<div class="flex items-center gap-6 mt-6">
+<button class="text-xs font-bold border-b-2 border-primary pb-2 text-slate-900 dark:text-white">Overview</button>
+<button class="text-xs font-bold border-b-2 border-transparent pb-2 text-slate-400 hover:text-slate-600">Speakers</button>
+<button class="text-xs font-bold border-b-2 border-transparent pb-2 text-slate-400 hover:text-slate-600">Language</button>
+<button class="text-xs font-bold border-b-2 border-transparent pb-2 text-slate-400 hover:text-slate-600">Project</button>
+</div>
+</div>
+<div class="flex-1 overflow-y-auto p-6 space-y-8">
+<!-- Overview Section -->
+<div class="space-y-4">
+<h4 class="text-xs font-bold uppercase tracking-widest text-slate-400">Key Metadata</h4>
+<div class="grid grid-cols-2 gap-x-8 gap-y-4">
+<div>
+<p class="text-[10px] text-slate-500 uppercase">Status</p>
+<p class="text-sm font-semibold flex items-center gap-2 mt-0.5">
+<span class="w-2 h-2 rounded-full bg-green-500"></span>
+                                Fully Transcribed
+                            </p>
+</div>
+<div>
+<p class="text-[10px] text-slate-500 uppercase">Engine</p>
+<p class="text-sm font-semibold mt-0.5">Whisper V3-Large (LAN Local)</p>
+</div>
+<div>
+<p class="text-[10px] text-slate-500 uppercase">Created</p>
+<p class="text-sm font-medium mt-0.5">2023-10-24 09:15:22</p>
+</div>
+<div>
+<p class="text-[10px] text-slate-500 uppercase">Source Device</p>
+<p class="text-sm font-medium mt-0.5">Room-HQ-Main-Array</p>
+</div>
+</div>
+</div>
+<!-- Speakers Section -->
+<div class="space-y-4">
+<div class="flex items-center justify-between">
+<h4 class="text-xs font-bold uppercase tracking-widest text-slate-400">Identified Speakers (4)</h4>
+<button class="text-[10px] font-bold text-primary hover:underline">RE-RUN DIARIZATION</button>
+</div>
+<div class="space-y-3">
+<!-- Speaker Card 1 -->
+<div class="p-3 border border-slate-200 dark:border-slate-800 rounded-lg flex flex-col gap-3">
+<div class="flex items-center justify-between">
+<div class="flex items-center gap-3">
+<div class="w-10 h-10 rounded bg-slate-100 dark:bg-slate-800 flex items-center justify-center font-bold text-slate-500">S1</div>
+<div>
+<p class="text-sm font-bold">John Doe</p>
+<p class="text-[10px] text-slate-500">Match Probability: 98%</p>
+</div>
+</div>
+<span class="px-2 py-0.5 bg-green-100 text-green-700 text-[9px] font-bold rounded uppercase">Verified</span>
+</div>
+<div class="grid grid-cols-2 gap-2">
+<button class="px-2 py-1.5 bg-slate-50 dark:bg-slate-800 text-[10px] font-bold rounded border border-slate-200 dark:border-slate-700 hover:bg-primary hover:text-white transition-colors">Confirm Match</button>
+<button class="px-2 py-1.5 bg-slate-50 dark:bg-slate-800 text-[10px] font-bold rounded border border-slate-200 dark:border-slate-700 hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors">Keep Unknown</button>
+<button class="px-2 py-1.5 bg-slate-50 dark:bg-slate-800 text-[10px] font-bold rounded border border-slate-200 dark:border-slate-700 hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors">Local Label Only</button>
+<button class="px-2 py-1.5 bg-slate-50 dark:bg-slate-800 text-[10px] font-bold rounded border border-slate-200 dark:border-slate-700 hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors">Add Trusted Sample</button>
+</div>
+</div>
+<!-- Speaker Card 2 (Unidentified) -->
+<div class="p-3 border border-primary/30 bg-primary/5 rounded-lg flex flex-col gap-3">
+<div class="flex items-center justify-between">
+<div class="flex items-center gap-3">
+<div class="w-10 h-10 rounded bg-primary/10 flex items-center justify-center font-bold text-primary">S2</div>
+<div>
+<p class="text-sm font-bold">Unknown Speaker</p>
+<p class="text-[10px] text-primary">Potential Match: Sarah Miller (62%)</p>
+</div>
+</div>
+<span class="px-2 py-0.5 bg-amber-100 text-amber-700 text-[9px] font-bold rounded uppercase">Needs Action</span>
+</div>
+<div class="grid grid-cols-2 gap-2">
+<button class="px-2 py-1.5 bg-primary text-white text-[10px] font-bold rounded border border-primary shadow-sm">Confirm Match</button>
+<button class="px-2 py-1.5 bg-white dark:bg-slate-800 text-[10px] font-bold rounded border border-slate-200 dark:border-slate-700">Keep Unknown</button>
+<button class="px-2 py-1.5 bg-white dark:bg-slate-800 text-[10px] font-bold rounded border border-slate-200 dark:border-slate-700">Local Label Only</button>
+<button class="px-2 py-1.5 bg-white dark:bg-slate-800 text-[10px] font-bold rounded border border-slate-200 dark:border-slate-700">Add Trusted Sample</button>
+</div>
+</div>
+</div>
+</div>
+<!-- Stats/Language Placeholder -->
+<div class="p-4 bg-slate-50 dark:bg-slate-800/50 rounded-lg border border-slate-100 dark:border-slate-800">
+<div class="flex items-center justify-between mb-2">
+<span class="text-xs font-bold text-slate-500 uppercase tracking-wider">Language Detection</span>
+<span class="text-xs font-bold text-slate-900 dark:text-white">English (US)</span>
+</div>
+<div class="w-full bg-slate-200 dark:bg-slate-700 h-1.5 rounded-full">
+<div class="bg-primary h-full w-[99%]"></div>
+</div>
+</div>
+</div>
+<!-- Inspector Footer Action -->
+<div class="p-4 border-t border-slate-200 dark:border-slate-800">
+<button class="w-full py-2.5 bg-slate-900 dark:bg-slate-100 dark:text-slate-900 text-white font-bold rounded-lg text-sm">
+                    Open Full Correction Editor
+                </button>
+</div>
+</section>
+</main>
+<!-- Footer Bar -->
+<footer class="h-8 bg-slate-100 dark:bg-slate-950 border-t border-slate-200 dark:border-slate-800 px-4 flex items-center justify-between text-[10px] font-medium text-slate-500">
+<div class="flex gap-4">
+<span class="flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-green-500"></span> LAN Node: Online</span>
+<span>Local Database: 1.2GB Free</span>
+<span>Version: 2.4.0-Industrial</span>
+</div>
+<div class="flex gap-4">
+<span>Uptime: 142h 12m</span>
+<span class="text-primary cursor-pointer hover:underline">Documentation</span>
+</div>
+</footer>
+</body></html>

@@ -1,0 +1,426 @@
+<!DOCTYPE html>
+
+<html lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    colors: {
+                        "primary": "#2463eb",
+                        "background-light": "#f6f6f8",
+                        "background-dark": "#111621",
+                        "navy-900": "#0f172a",
+                    },
+                    fontFamily: {
+                        "display": ["Inter"]
+                    },
+                    borderRadius: {"DEFAULT": "0.25rem", "lg": "0.5rem", "xl": "0.75rem", "full": "9999px"},
+                },
+            },
+        }
+    </script>
+<title>Recording Inspector - LAN Transcriber</title>
+</head>
+<body class="bg-background-light dark:bg-background-dark font-display text-slate-900 dark:text-slate-100 antialiased">
+<div class="relative flex h-auto min-h-screen w-full flex-col group/design-root overflow-x-hidden">
+<!-- Top Nav -->
+<header class="flex items-center justify-between whitespace-nowrap bg-navy-900 border-b border-slate-700 px-6 py-3">
+<div class="flex items-center gap-4 text-white">
+<div class="size-6 text-primary flex items-center justify-center">
+<span class="material-symbols-outlined text-3xl">record_voice_over</span>
+</div>
+<h2 class="text-white text-lg font-bold leading-tight tracking-tight">LAN Transcriber</h2>
+<div class="h-6 w-px bg-slate-700 mx-2"></div>
+<span class="text-slate-400 text-sm font-medium">Control Center</span>
+</div>
+<div class="flex flex-1 justify-end gap-4 items-center">
+<label class="flex flex-col min-w-40 h-9 max-w-64">
+<div class="flex w-full flex-1 items-stretch rounded-lg h-full bg-slate-800 border border-slate-700">
+<div class="text-slate-400 flex items-center justify-center pl-3">
+<span class="material-symbols-outlined text-xl">search</span>
+</div>
+<input class="form-input flex w-full min-w-0 flex-1 border-none bg-transparent text-white focus:outline-0 focus:ring-0 placeholder:text-slate-500 text-sm font-normal" placeholder="Quick search..." value=""/>
+</div>
+</label>
+<div class="flex gap-2">
+<button class="flex items-center justify-center rounded-lg h-9 w-9 bg-slate-800 hover:bg-slate-700 text-slate-300 transition-colors">
+<span class="material-symbols-outlined text-xl">settings</span>
+</button>
+<button class="flex items-center justify-center rounded-lg h-9 w-9 bg-slate-800 hover:bg-slate-700 text-slate-300 transition-colors relative">
+<span class="material-symbols-outlined text-xl">notifications</span>
+<span class="absolute top-2 right-2 size-2 bg-primary rounded-full border-2 border-navy-900"></span>
+</button>
+</div>
+<div class="bg-primary/20 border border-primary/30 rounded-full size-8 flex items-center justify-center text-primary font-bold text-xs" data-alt="User avatar profile picture placeholder">JS</div>
+</div>
+</header>
+<div class="layout-container flex h-full grow flex-col">
+<!-- Main Content Wrapper -->
+<main class="flex flex-col flex-1 max-w-[1440px] mx-auto w-full px-6 py-6">
+<!-- Breadcrumbs -->
+<nav class="flex items-center gap-2 mb-4 text-sm font-medium">
+<a class="text-slate-500 hover:text-primary transition-colors" href="#">Control Center</a>
+<span class="material-symbols-outlined text-slate-400 text-xs">chevron_right</span>
+<span class="text-slate-900 dark:text-slate-100">Weekly Sync - Sales</span>
+</nav>
+<!-- Header Section -->
+<div class="flex flex-wrap justify-between items-start gap-4 mb-8">
+<div class="flex flex-col gap-2">
+<div class="flex items-center gap-3">
+<h1 class="text-slate-900 dark:text-slate-100 text-3xl font-bold tracking-tight">Weekly Sync - Sales</h1>
+<span class="inline-flex items-center rounded-full bg-amber-100 dark:bg-amber-900/30 px-2.5 py-0.5 text-xs font-semibold text-amber-800 dark:text-amber-400 border border-amber-200 dark:border-amber-800">
+<span class="size-1.5 rounded-full bg-amber-500 mr-1.5 animate-pulse"></span>
+                            Processing
+                        </span>
+</div>
+<div class="flex items-center gap-4 text-slate-500 text-sm">
+<span class="flex items-center gap-1"><span class="material-symbols-outlined text-sm">fingerprint</span> REC-99283</span>
+<span class="flex items-center gap-1"><span class="material-symbols-outlined text-sm">calendar_today</span> Oct 24, 2023</span>
+<span class="flex items-center gap-1"><span class="material-symbols-outlined text-sm">schedule</span> 45:12 Duration</span>
+<span class="flex items-center gap-1"><span class="material-symbols-outlined text-sm">database</span> 124.5 MB</span>
+</div>
+</div>
+<div class="flex items-center gap-2">
+<button class="flex items-center justify-center gap-2 rounded-lg h-10 px-4 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 text-sm font-semibold hover:bg-slate-50 transition-colors">
+<span class="material-symbols-outlined text-lg">replay</span>
+                        Requeue
+                    </button>
+<button class="flex items-center justify-center gap-2 rounded-lg h-10 px-4 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 text-sm font-semibold hover:bg-slate-50 transition-colors">
+<span class="material-symbols-outlined text-lg">gpp_maybe</span>
+                        Quarantine
+                    </button>
+<button class="flex items-center justify-center gap-2 rounded-lg h-10 px-4 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 text-sm font-semibold hover:bg-slate-50 transition-colors">
+<span class="material-symbols-outlined text-lg">ios_share</span>
+                        Export
+                    </button>
+<button class="flex items-center justify-center gap-2 rounded-lg h-10 px-4 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 text-sm font-semibold hover:bg-slate-50 transition-colors">
+<span class="material-symbols-outlined text-lg">folder_zip</span>
+                        ZIP
+                    </button>
+<div class="w-px h-6 bg-slate-200 dark:bg-slate-700 mx-1"></div>
+<button class="flex items-center justify-center rounded-lg h-10 w-10 bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 border border-red-100 dark:border-red-900/30 hover:bg-red-100 transition-colors">
+<span class="material-symbols-outlined text-lg">delete</span>
+</button>
+</div>
+</div>
+<!-- Tab Navigation -->
+<div class="border-b border-slate-200 dark:border-slate-800 mb-6">
+<nav class="flex gap-8 overflow-x-auto no-scrollbar">
+<a class="border-b-2 border-primary pb-3 text-sm font-bold text-primary whitespace-nowrap" href="#">Overview</a>
+<a class="border-b-2 border-transparent pb-3 text-sm font-bold text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 whitespace-nowrap" href="#">Speakers</a>
+<a class="border-b-2 border-transparent pb-3 text-sm font-bold text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 whitespace-nowrap" href="#">Language</a>
+<a class="border-b-2 border-transparent pb-3 text-sm font-bold text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 whitespace-nowrap" href="#">Project</a>
+<a class="border-b-2 border-transparent pb-3 text-sm font-bold text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 whitespace-nowrap flex items-center gap-1" href="#">
+                        Metrics <span class="text-[10px] bg-slate-100 dark:bg-slate-800 px-1.5 rounded">BETA</span>
+</a>
+<a class="border-b-2 border-transparent pb-3 text-sm font-bold text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 whitespace-nowrap" href="#">Log</a>
+<a class="border-b-2 border-transparent pb-3 text-sm font-bold text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 whitespace-nowrap" href="#">Artifacts</a>
+</nav>
+</div>
+<!-- Main Dashboard Grid -->
+<div class="grid grid-cols-12 gap-6">
+<!-- Pipeline Visibility Left Column -->
+<div class="col-span-12 lg:col-span-4 flex flex-col gap-6">
+<section class="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 p-5 shadow-sm">
+<h3 class="text-sm font-bold text-slate-900 dark:text-slate-100 mb-4 flex items-center justify-between">
+                            Pipeline Status
+                            <span class="text-xs font-normal text-primary">Live Updates</span>
+</h3>
+<div class="space-y-4">
+<!-- Step 1 Done -->
+<div class="flex gap-3">
+<div class="flex flex-col items-center">
+<span class="material-symbols-outlined text-green-500 text-lg">check_circle</span>
+<div class="w-0.5 h-full bg-green-500/30 my-1"></div>
+</div>
+<div class="flex-1 pb-4">
+<div class="flex justify-between items-start mb-1">
+<p class="text-sm font-semibold text-slate-900 dark:text-slate-100">Ingestion</p>
+<span class="text-[10px] text-slate-400">0.4s</span>
+</div>
+<p class="text-xs text-slate-500">File verified &amp; checksum matched</p>
+</div>
+</div>
+<!-- Step 2 Done -->
+<div class="flex gap-3">
+<div class="flex flex-col items-center">
+<span class="material-symbols-outlined text-green-500 text-lg">check_circle</span>
+<div class="w-0.5 h-full bg-green-500/30 my-1"></div>
+</div>
+<div class="flex-1 pb-4">
+<div class="flex justify-between items-start mb-1">
+<p class="text-sm font-semibold text-slate-900 dark:text-slate-100">Diarization</p>
+<span class="text-[10px] text-slate-400">12.1s</span>
+</div>
+<p class="text-xs text-slate-500">3 speakers identified with 98% confidence</p>
+</div>
+</div>
+<!-- Step 3 Active -->
+<div class="flex gap-3">
+<div class="flex flex-col items-center">
+<div class="size-5 rounded-full border-2 border-primary border-t-transparent animate-spin my-0.5"></div>
+<div class="w-0.5 h-full bg-slate-200 dark:bg-slate-700 my-1"></div>
+</div>
+<div class="flex-1 pb-4">
+<div class="flex justify-between items-start mb-1">
+<p class="text-sm font-semibold text-slate-900 dark:text-slate-100">Transcription</p>
+<span class="text-[10px] text-primary">In progress</span>
+</div>
+<div class="w-full bg-slate-100 dark:bg-slate-800 rounded-full h-1.5 mt-2 overflow-hidden">
+<div class="bg-primary h-full w-[65%]" style="width: 65%;"></div>
+</div>
+</div>
+</div>
+<!-- Step 4 Pending -->
+<div class="flex gap-3">
+<div class="flex flex-col items-center">
+<span class="material-symbols-outlined text-slate-300 dark:text-slate-700 text-lg">circle</span>
+</div>
+<div class="flex-1">
+<div class="flex justify-between items-start mb-1">
+<p class="text-sm font-semibold text-slate-400">LLM Summarization</p>
+<span class="text-[10px] text-slate-400">Pending</span>
+</div>
+<p class="text-xs text-slate-500 italic">Queued after transcription</p>
+</div>
+</div>
+</div>
+</section>
+<section class="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 p-5 shadow-sm">
+<h3 class="text-sm font-bold text-slate-900 dark:text-slate-100 mb-4">Metadata Tags</h3>
+<div class="flex flex-wrap gap-2">
+<span class="px-2 py-1 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 rounded text-xs">Department: Sales</span>
+<span class="px-2 py-1 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 rounded text-xs">Priority: High</span>
+<span class="px-2 py-1 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 rounded text-xs">Region: NA-West</span>
+<button class="px-2 py-1 border border-dashed border-slate-300 dark:border-slate-700 text-slate-400 rounded text-xs hover:text-primary hover:border-primary transition-all">+ Add Tag</button>
+</div>
+</section>
+</div>
+<!-- Speakers & Review Center Right Column -->
+<div class="col-span-12 lg:col-span-8 flex flex-col gap-6">
+<section class="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 overflow-hidden shadow-sm">
+<div class="p-5 border-b border-slate-100 dark:border-slate-800 flex justify-between items-center">
+<div>
+<h3 class="text-base font-bold text-slate-900 dark:text-slate-100">Speaker Management</h3>
+<p class="text-xs text-slate-500">Review diarization quality and manage canonical identity</p>
+</div>
+<button class="text-xs font-semibold text-primary hover:underline">Re-run Diarization</button>
+</div>
+<div class="overflow-x-auto">
+<table class="w-full text-left text-sm">
+<thead class="bg-slate-50 dark:bg-slate-800/50 text-slate-500 font-semibold text-xs uppercase tracking-wider">
+<tr>
+<th class="px-5 py-3">Speaker ID</th>
+<th class="px-5 py-3">Label / Canonical</th>
+<th class="px-5 py-3">Quality Snippet</th>
+<th class="px-5 py-3 text-right">Actions</th>
+</tr>
+</thead>
+<tbody class="divide-y divide-slate-100 dark:divide-slate-800">
+<tr>
+<td class="px-5 py-4 whitespace-nowrap">
+<div class="flex items-center gap-2">
+<div class="size-6 bg-blue-100 dark:bg-blue-900/30 rounded text-blue-600 flex items-center justify-center font-bold text-[10px]">S1</div>
+<span class="font-medium">Speaker 01</span>
+</div>
+</td>
+<td class="px-5 py-4">
+<select class="bg-slate-50 dark:bg-slate-800 border-none rounded text-xs font-medium py-1 pr-8 text-slate-700 dark:text-slate-200 focus:ring-1 focus:ring-primary">
+<option>John Smith (Sales)</option>
+<option>Assign New...</option>
+<option>Mark as Noise</option>
+</select>
+</td>
+<td class="px-5 py-4">
+<div class="flex items-center gap-3">
+<button class="size-8 bg-primary/10 text-primary rounded-full flex items-center justify-center hover:bg-primary/20 transition-colors">
+<span class="material-symbols-outlined text-lg">play_arrow</span>
+</button>
+<div class="h-6 w-24 bg-slate-100 dark:bg-slate-800 rounded-sm relative overflow-hidden" data-alt="Abstract waveform visualization">
+<div class="absolute inset-0 flex items-center gap-0.5 px-1">
+<div class="w-0.5 h-2 bg-slate-300 dark:bg-slate-600 rounded-full"></div>
+<div class="w-0.5 h-4 bg-slate-300 dark:bg-slate-600 rounded-full"></div>
+<div class="w-0.5 h-3 bg-slate-300 dark:bg-slate-600 rounded-full"></div>
+<div class="w-0.5 h-5 bg-primary/60 rounded-full"></div>
+<div class="w-0.5 h-4 bg-primary/60 rounded-full"></div>
+<div class="w-0.5 h-3 bg-slate-300 dark:bg-slate-600 rounded-full"></div>
+<div class="w-0.5 h-2 bg-slate-300 dark:bg-slate-600 rounded-full"></div>
+</div>
+</div>
+<span class="text-[10px] text-green-600 dark:text-green-400 font-bold">98.2%</span>
+</div>
+</td>
+<td class="px-5 py-4 text-right">
+<button class="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200">
+<span class="material-symbols-outlined text-lg">more_vert</span>
+</button>
+</td>
+</tr>
+<tr>
+<td class="px-5 py-4 whitespace-nowrap">
+<div class="flex items-center gap-2">
+<div class="size-6 bg-purple-100 dark:bg-purple-900/30 rounded text-purple-600 flex items-center justify-center font-bold text-[10px]">S2</div>
+<span class="font-medium">Speaker 02</span>
+</div>
+</td>
+<td class="px-5 py-4">
+<select class="bg-slate-50 dark:bg-slate-800 border-none rounded text-xs font-medium py-1 pr-8 text-slate-700 dark:text-slate-200 focus:ring-1 focus:ring-primary">
+<option>Sarah Chen (Account)</option>
+<option>Assign New...</option>
+<option>Mark as Noise</option>
+</select>
+</td>
+<td class="px-5 py-4">
+<div class="flex items-center gap-3">
+<button class="size-8 bg-primary/10 text-primary rounded-full flex items-center justify-center hover:bg-primary/20 transition-colors">
+<span class="material-symbols-outlined text-lg">play_arrow</span>
+</button>
+<div class="h-6 w-24 bg-slate-100 dark:bg-slate-800 rounded-sm relative overflow-hidden" data-alt="Abstract waveform visualization">
+<div class="absolute inset-0 flex items-center gap-0.5 px-1">
+<div class="w-0.5 h-1 bg-slate-300 dark:bg-slate-600 rounded-full"></div>
+<div class="w-0.5 h-2 bg-slate-300 dark:bg-slate-600 rounded-full"></div>
+<div class="w-0.5 h-4 bg-primary/60 rounded-full"></div>
+<div class="w-0.5 h-3 bg-primary/60 rounded-full"></div>
+<div class="w-0.5 h-2 bg-slate-300 dark:bg-slate-600 rounded-full"></div>
+<div class="w-0.5 h-3 bg-slate-300 dark:bg-slate-600 rounded-full"></div>
+<div class="w-0.5 h-2 bg-slate-300 dark:bg-slate-600 rounded-full"></div>
+</div>
+</div>
+<span class="text-[10px] text-green-600 dark:text-green-400 font-bold">94.1%</span>
+</div>
+</td>
+<td class="px-5 py-4 text-right">
+<button class="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200">
+<span class="material-symbols-outlined text-lg">more_vert</span>
+</button>
+</td>
+</tr>
+<tr>
+<td class="px-5 py-4 whitespace-nowrap">
+<div class="flex items-center gap-2">
+<div class="size-6 bg-slate-100 dark:bg-slate-800 rounded text-slate-600 flex items-center justify-center font-bold text-[10px]">S3</div>
+<span class="font-medium">Speaker 03</span>
+</div>
+</td>
+<td class="px-5 py-4">
+<select class="bg-slate-50 dark:bg-slate-800 border-none rounded text-xs font-medium py-1 pr-8 text-slate-700 dark:text-slate-200 focus:ring-1 focus:ring-primary">
+<option>Unknown Speaker</option>
+<option>Assign New...</option>
+<option>Mark as Noise</option>
+</select>
+</td>
+<td class="px-5 py-4">
+<div class="flex items-center gap-3">
+<button class="size-8 bg-primary/10 text-primary rounded-full flex items-center justify-center hover:bg-primary/20 transition-colors">
+<span class="material-symbols-outlined text-lg">play_arrow</span>
+</button>
+<div class="h-6 w-24 bg-slate-100 dark:bg-slate-800 rounded-sm relative overflow-hidden" data-alt="Abstract waveform visualization">
+<div class="absolute inset-0 flex items-center gap-0.5 px-1">
+<div class="w-0.5 h-1 bg-slate-300 dark:bg-slate-600 rounded-full"></div>
+<div class="w-0.5 h-1 bg-slate-300 dark:bg-slate-600 rounded-full"></div>
+<div class="w-0.5 h-2 bg-amber-500/60 rounded-full"></div>
+<div class="w-0.5 h-1 bg-amber-500/60 rounded-full"></div>
+<div class="w-0.5 h-1 bg-slate-300 dark:bg-slate-600 rounded-full"></div>
+<div class="w-0.5 h-1 bg-slate-300 dark:bg-slate-600 rounded-full"></div>
+</div>
+</div>
+<span class="text-[10px] text-amber-600 dark:text-amber-400 font-bold">Low Sig</span>
+</div>
+</td>
+<td class="px-5 py-4 text-right">
+<button class="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200">
+<span class="material-symbols-outlined text-lg">more_vert</span>
+</button>
+</td>
+</tr>
+</tbody>
+</table>
+</div>
+</section>
+<!-- Export Artifacts Preview -->
+<section class="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 p-5 shadow-sm">
+<div class="flex justify-between items-center mb-6">
+<h3 class="text-base font-bold text-slate-900 dark:text-slate-100">Quick Artifacts</h3>
+<button class="flex items-center gap-1 text-xs font-semibold text-primary">
+<span class="material-symbols-outlined text-sm">download</span>
+                                Download All
+                            </button>
+</div>
+<div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+<div class="p-4 rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-100 dark:border-slate-700 flex flex-col gap-3">
+<div class="flex justify-between items-center">
+<span class="text-xs font-bold text-slate-500 uppercase tracking-wider">Markdown Transcript</span>
+<button class="text-primary hover:text-primary/80 transition-colors">
+<span class="material-symbols-outlined text-xl">content_copy</span>
+</button>
+</div>
+<div class="bg-white dark:bg-slate-950 p-3 rounded border border-slate-200 dark:border-slate-800 font-mono text-[10px] leading-relaxed line-clamp-4 text-slate-600 dark:text-slate-400">
+                                    ### Recording: Weekly Sync<br/>
+                                    **Speaker 01**: Hey everyone, let's start with the sales report for North America.<br/>
+                                    **Speaker 02**: I've got the data ready. We saw a 12% increase in Q3 conversions.
+                                </div>
+</div>
+<div class="p-4 rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-100 dark:border-slate-700 flex flex-col gap-3">
+<div class="flex justify-between items-center">
+<span class="text-xs font-bold text-slate-500 uppercase tracking-wider">Audio Chunks (Normalized)</span>
+<button class="text-primary hover:text-primary/80 transition-colors">
+<span class="material-symbols-outlined text-xl">download_for_offline</span>
+</button>
+</div>
+<div class="flex flex-col gap-2">
+<div class="flex items-center justify-between text-[11px] bg-white dark:bg-slate-950 px-2 py-1.5 rounded border border-slate-200 dark:border-slate-800">
+<span class="text-slate-600 dark:text-slate-400">chunk_001_s1.wav</span>
+<span class="text-slate-400">1.2MB</span>
+</div>
+<div class="flex items-center justify-between text-[11px] bg-white dark:bg-slate-950 px-2 py-1.5 rounded border border-slate-200 dark:border-slate-800">
+<span class="text-slate-600 dark:text-slate-400">chunk_002_s2.wav</span>
+<span class="text-slate-400">4.5MB</span>
+</div>
+<div class="flex items-center justify-between text-[11px] bg-white dark:bg-slate-950 px-2 py-1.5 rounded border border-slate-200 dark:border-slate-800">
+<span class="text-slate-600 dark:text-slate-400">chunk_003_s1.wav</span>
+<span class="text-slate-400">0.8MB</span>
+</div>
+</div>
+</div>
+</div>
+</section>
+</div>
+</div>
+</main>
+</div>
+<!-- Secondary Bottom Navigation (Contextual) -->
+<footer class="fixed bottom-0 left-0 right-0 bg-white dark:bg-slate-950 border-t border-slate-200 dark:border-slate-800 px-6 py-3 flex items-center justify-between shadow-lg z-50">
+<div class="flex items-center gap-6">
+<div class="flex flex-col">
+<span class="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Active Model</span>
+<span class="text-xs font-semibold text-slate-900 dark:text-slate-100 flex items-center gap-1">
+<span class="material-symbols-outlined text-sm text-primary">auto_awesome</span>
+                    Whisper-v3-Large / Meta-Llama-70B
+                </span>
+</div>
+<div class="w-px h-8 bg-slate-200 dark:bg-slate-800"></div>
+<div class="flex flex-col">
+<span class="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Compute Node</span>
+<span class="text-xs font-semibold text-slate-900 dark:text-slate-100 flex items-center gap-1">
+<span class="material-symbols-outlined text-sm text-green-500">memory</span>
+                    GPU-CLUSTER-04 (Load: 42%)
+                </span>
+</div>
+</div>
+<div class="flex items-center gap-3">
+<span class="text-xs text-slate-500 font-medium">Auto-save: 2 min ago</span>
+<button class="bg-primary hover:bg-primary/90 text-white px-4 py-1.5 rounded-lg text-sm font-bold shadow-sm transition-all flex items-center gap-2">
+<span class="material-symbols-outlined text-lg">publish</span>
+                Publish Result
+            </button>
+</div>
+</footer>
+</div>
+</body></html>

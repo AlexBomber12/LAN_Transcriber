@@ -628,3 +628,23 @@ Queue (in order)
 - Status: DONE
 - Tasks file: tasks/PR-UI-STITCH-UPLOAD-01.md
 - Depends on: PR-UI-STITCH-WORKLIST-02
+
+126) PR-TAILWIND-BASE-01: Add Tailwind CSS to base.html and migrate navbar, modal, and global elements
+- Status: TODO
+- Tasks file: tasks/PR-TAILWIND-BASE-01.md
+- Depends on: PR-UI-STITCH-UPLOAD-01
+
+127) PR-TAILWIND-CONTROL-CENTER-01: Migrate Control Center page and all its partials from legacy CSS to Stitch Tailwind design
+- Status: TODO
+- Tasks file: tasks/PR-TAILWIND-CONTROL-CENTER-01.md
+- Depends on: PR-TAILWIND-BASE-01
+
+128) PR-TAILWIND-RECORDING-DETAIL-01: Migrate Recording Detail full-page inspector from legacy CSS to Stitch Tailwind design
+- Status: TODO
+- Tasks file: tasks/PR-TAILWIND-RECORDING-DETAIL-01.md
+- Depends on: PR-TAILWIND-BASE-01
+
+129) PR-TAILWIND-REMAINING-01: Migrate remaining pages to Tailwind and remove all legacy CSS from base.html
+- Status: TODO
+- Tasks file: tasks/PR-TAILWIND-REMAINING-01.md
+- Depends on: PR-TAILWIND-CONTROL-CENTER-01 and PR-TAILWIND-RECORDING-DETAIL-01
