@@ -16,7 +16,7 @@
       <span class="w-2 h-2 rounded-full {% if item.tone == 'healthy' %}bg-green-500{% elif item.tone == 'busy' %}bg-amber-500{% elif item.tone == 'degraded' %}bg-amber-500{% elif item.tone == 'offline' %}bg-red-500{% else %}bg-slate-400{% endif %}" aria-hidden="true"></span>
       {% endif %}
       <span>{{ item.label }}</span>
-      <strong class="text-slate-700">{{ item.value }}</strong>
+      <strong class="{% if item.tone == 'healthy' %}text-green-700{% elif item.tone == 'busy' %}text-amber-700{% elif item.tone == 'degraded' %}text-amber-700{% elif item.tone == 'offline' %}text-red-700{% else %}text-slate-700{% endif %}">{{ item.value }}</strong>
     </span>
   {% endfor %}
   </div>

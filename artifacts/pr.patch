@@ -1,40 +1,30 @@
 diff --git a/lan_app/templates/control_center.html b/lan_app/templates/control_center.html
-index 9d7e824..dc1de3f 100644
+index dc1de3f..8599daa 100644
 --- a/lan_app/templates/control_center.html
 +++ b/lan_app/templates/control_center.html
-@@ -4,8 +4,8 @@
- <div class="flex flex-col" style="height:calc(100vh - 80px)">
+@@ -1,10 +1,10 @@
+ {% extends "base.html" %}
+ {% block title %}Control Center – LAN Transcriber{% endblock %}
+ {% block content %}
+-<div class="flex flex-col" style="height:calc(100vh - 80px)">
++<div class="flex flex-col overflow-auto lg:overflow-hidden" style="height:calc(100vh - 80px)">
    {% include "partials/control_center/workspace_header.html" %}
  
--  <main class="flex-1 flex overflow-hidden">
--    <section id="control-center-work-pane" class="w-[55%] flex flex-col border-r border-slate-200 overflow-y-auto p-4 gap-4">
-+  <main class="flex-1 flex flex-col lg:flex-row overflow-hidden">
-+    <section id="control-center-work-pane" class="w-full lg:w-[55%] flex flex-col border-b lg:border-b-0 lg:border-r border-slate-200 overflow-y-auto p-4 gap-4">
+-  <main class="flex-1 flex flex-col lg:flex-row overflow-hidden">
++  <main class="flex-1 flex flex-col lg:flex-row overflow-visible lg:overflow-hidden">
+     <section id="control-center-work-pane" class="w-full lg:w-[55%] flex flex-col border-b lg:border-b-0 lg:border-r border-slate-200 overflow-y-auto p-4 gap-4">
        {% include "partials/control_center/work_pane.html" %}
      </section>
- 
-diff --git a/lan_app/templates/partials/control_center/inspector_pane.html b/lan_app/templates/partials/control_center/inspector_pane.html
-index ac4e54c..f97280f 100644
---- a/lan_app/templates/partials/control_center/inspector_pane.html
-+++ b/lan_app/templates/partials/control_center/inspector_pane.html
-@@ -1,6 +1,6 @@
- <section
-   id="control-center-inspector-pane"
--  class="w-[45%] bg-white flex flex-col shadow-xl overflow-hidden"
-+  class="w-full lg:w-[45%] bg-white flex flex-col shadow-xl overflow-hidden"
-   hx-get="{{ control_center_state.inspector_pane_url }}"
-   hx-trigger="{% if recording_inspector and recording_inspector.auto_refresh %}refresh-control-center-inspector from:body, every 2s{% else %}refresh-control-center-inspector from:body{% endif %}"
-   hx-target="this"
-diff --git a/lan_app/templates/partials/control_center/upload_panel.html b/lan_app/templates/partials/control_center/upload_panel.html
-index ae41a44..412ad04 100644
---- a/lan_app/templates/partials/control_center/upload_panel.html
-+++ b/lan_app/templates/partials/control_center/upload_panel.html
-@@ -8,7 +8,7 @@
- </div>
- {% endif %}
- 
--<div class="grid grid-cols-2 gap-4">
-+<div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
-   <div>
-     <input type="file" id="{{ upload_shell.file_input_id }}" multiple hidden>
-     <div
+diff --git a/lan_app/templates/partials/control_center/system_bar.html b/lan_app/templates/partials/control_center/system_bar.html
+index 7f296a0..4cea8e8 100644
+--- a/lan_app/templates/partials/control_center/system_bar.html
++++ b/lan_app/templates/partials/control_center/system_bar.html
+@@ -16,7 +16,7 @@
+       <span class="w-2 h-2 rounded-full {% if item.tone == 'healthy' %}bg-green-500{% elif item.tone == 'busy' %}bg-amber-500{% elif item.tone == 'degraded' %}bg-amber-500{% elif item.tone == 'offline' %}bg-red-500{% else %}bg-slate-400{% endif %}" aria-hidden="true"></span>
+       {% endif %}
+       <span>{{ item.label }}</span>
+-      <strong class="text-slate-700">{{ item.value }}</strong>
++      <strong class="{% if item.tone == 'healthy' %}text-green-700{% elif item.tone == 'busy' %}text-amber-700{% elif item.tone == 'degraded' %}text-amber-700{% elif item.tone == 'offline' %}text-red-700{% else %}text-slate-700{% endif %}">{{ item.value }}</strong>
+     </span>
+   {% endfor %}
+   </div>
