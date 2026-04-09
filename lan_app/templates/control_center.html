@@ -1,7 +1,9 @@
 {% extends "base.html" %}
 {% block title %}Control Center – LAN Transcriber{% endblock %}
 {% block content %}
-<div class="flex flex-col overflow-auto lg:overflow-hidden" style="height:calc(100vh - 80px)">
+<style>#control-center-shell{height:calc(100dvh - var(--cc-top, 0px))}.app-main:has(#control-center-shell){padding:0;width:100%;max-width:none}</style>
+<script>document.getElementById('control-center-shell').style.setProperty('--cc-top',document.getElementById('control-center-shell').getBoundingClientRect().top+'px')</script>
+<div id="control-center-shell" class="flex flex-col overflow-auto lg:overflow-hidden">
   {% include "partials/control_center/workspace_header.html" %}
 
   <div class="flex-1 flex flex-col lg:flex-row overflow-visible lg:overflow-hidden">

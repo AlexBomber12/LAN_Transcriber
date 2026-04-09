@@ -1,20 +1,15 @@
-diff --git a/lan_app/templates/partials/control_center/recordings_table.html b/lan_app/templates/partials/control_center/recordings_table.html
-index 3ae162c..128c25a 100644
---- a/lan_app/templates/partials/control_center/recordings_table.html
-+++ b/lan_app/templates/partials/control_center/recordings_table.html
-@@ -176,10 +176,12 @@
-         <td class="px-4 py-3">
-           <div class="flex flex-col gap-0.5">
-             <span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold uppercase
--              {% if r.status == 'Ready' %}bg-green-100 text-green-700
--              {% elif r.status == 'Processing' %}bg-amber-100 text-amber-700
--              {% elif r.status == 'Failed' or r.status == 'Quarantine' %}bg-red-100 text-red-700
-+              {% if r.status == 'Ready' or r.status == 'Published' %}bg-green-100 text-green-700
-+              {% elif r.status in ['Processing', 'Stopping'] %}bg-amber-100 text-amber-700
-               {% elif r.status == 'NeedsReview' %}bg-amber-100 text-amber-700
-+              {% elif r.status == 'Queued' %}bg-blue-100 text-blue-700
-+              {% elif r.status in ['Failed', 'Quarantine'] %}bg-red-100 text-red-700
-+              {% elif r.status == 'Stopped' %}bg-slate-200 text-slate-700
-               {% else %}bg-slate-100 text-slate-600
-               {% endif %}
-             ">{{ r.status }}</span>
+diff --git a/lan_app/templates/control_center.html b/lan_app/templates/control_center.html
+index 633853e..ebb28c9 100644
+--- a/lan_app/templates/control_center.html
++++ b/lan_app/templates/control_center.html
+@@ -1,7 +1,9 @@
+ {% extends "base.html" %}
+ {% block title %}Control Center – LAN Transcriber{% endblock %}
+ {% block content %}
+-<div class="flex flex-col overflow-auto lg:overflow-hidden" style="height:calc(100vh - 80px)">
++<style>#control-center-shell{height:calc(100dvh - var(--cc-top, 0px))}.app-main:has(#control-center-shell){padding:0;width:100%;max-width:none}</style>
++<script>document.getElementById('control-center-shell').style.setProperty('--cc-top',document.getElementById('control-center-shell').getBoundingClientRect().top+'px')</script>
++<div id="control-center-shell" class="flex flex-col overflow-auto lg:overflow-hidden">
+   {% include "partials/control_center/workspace_header.html" %}
+ 
+   <div class="flex-1 flex flex-col lg:flex-row overflow-visible lg:overflow-hidden">
