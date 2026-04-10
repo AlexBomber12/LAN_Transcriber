@@ -1,31 +1,11 @@
-diff --git a/lan_app/templates/partials/control_center/system_bar.html b/lan_app/templates/partials/control_center/system_bar.html
-index dfb622b..e8e8d87 100644
---- a/lan_app/templates/partials/control_center/system_bar.html
-+++ b/lan_app/templates/partials/control_center/system_bar.html
-@@ -1,10 +1,11 @@
- {% set _system_bar_url = (control_center_state.system_bar_url if control_center_state is defined and control_center_state else '/ui/control-center/system-bar') %}
--{% set _system_bar_items = (control_center_system_bar["items"] if control_center_system_bar is defined and control_center_system_bar else []) %}
-+{% set _system_bar_has_context = control_center_system_bar is defined and control_center_system_bar %}
-+{% set _system_bar_items = (control_center_system_bar["items"] if _system_bar_has_context else []) %}
- <footer
-   id="control-center-system-bar"
-   class="min-h-[2rem] bg-slate-100 border-t border-slate-200 px-4 py-1 flex items-center justify-between text-[10px] font-medium text-slate-500"
-   hx-get="{{ _system_bar_url }}"
--  hx-trigger="load, every 15s, refresh-control-center-system-bar from:body"
-+  hx-trigger="{% if not _system_bar_has_context %}load, {% endif %}every 15s, refresh-control-center-system-bar from:body"
-   hx-target="this"
-   hx-swap="outerHTML"
- >
-diff --git a/tests/test_ui_routes.py b/tests/test_ui_routes.py
-index b6a6f86..f202fab 100644
---- a/tests/test_ui_routes.py
-+++ b/tests/test_ui_routes.py
-@@ -465,7 +465,7 @@ def test_control_center_pane_fragment_endpoints(seeded_client):
-     assert system_bar.status_code == 200
-     assert 'id="control-center-system-bar"' in system_bar.text
-     assert (
--        'hx-trigger="load, every 15s, refresh-control-center-system-bar from:body"'
-+        'hx-trigger="every 15s, refresh-control-center-system-bar from:body"'
-         in system_bar.text
-     )
-     assert "Node status" in system_bar.text
+diff --git a/lan_app/templates/control_center.html b/lan_app/templates/control_center.html
+index 53a8bfc..9994287 100644
+--- a/lan_app/templates/control_center.html
++++ b/lan_app/templates/control_center.html
+@@ -13,5 +13,5 @@
+     {% include "partials/control_center/inspector_pane.html" %}
+   </div>
+ </div>
+-<script>(function(){var s=document.getElementById('control-center-shell');if(!s)return;function u(){if(!document.contains(s)){window.removeEventListener('resize',u);window.removeEventListener('orientationchange',u);return}var top=s.getBoundingClientRect().top;var bar=document.getElementById('control-center-system-bar');var barH=bar?bar.getBoundingClientRect().height:0;s.style.setProperty('--cc-top',top+'px');s.style.height='calc(100dvh - '+top+'px - '+barH+'px)'}u();window.addEventListener('resize',u);window.addEventListener('orientationchange',u)})()</script>
++<script>(function(){var s=document.getElementById('control-center-shell');if(!s)return;function u(){if(!document.contains(s)){window.removeEventListener('resize',u);window.removeEventListener('orientationchange',u);return}var top=s.getBoundingClientRect().top;var bar=document.getElementById('control-center-system-bar');var barH=bar?bar.getBoundingClientRect().height:0;s.style.setProperty('--cc-top',top+'px');s.style.height='calc(100dvh - '+top+'px - '+barH+'px)'}if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded',u,{once:true})}else{u()}window.addEventListener('resize',u);window.addEventListener('orientationchange',u)})()</script>
+ {% endblock %}
