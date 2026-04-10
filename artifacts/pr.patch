@@ -1,11 +1,39 @@
-diff --git a/lan_app/templates/control_center.html b/lan_app/templates/control_center.html
-index 53a8bfc..9994287 100644
---- a/lan_app/templates/control_center.html
-+++ b/lan_app/templates/control_center.html
-@@ -13,5 +13,5 @@
-     {% include "partials/control_center/inspector_pane.html" %}
-   </div>
- </div>
--<script>(function(){var s=document.getElementById('control-center-shell');if(!s)return;function u(){if(!document.contains(s)){window.removeEventListener('resize',u);window.removeEventListener('orientationchange',u);return}var top=s.getBoundingClientRect().top;var bar=document.getElementById('control-center-system-bar');var barH=bar?bar.getBoundingClientRect().height:0;s.style.setProperty('--cc-top',top+'px');s.style.height='calc(100dvh - '+top+'px - '+barH+'px)'}u();window.addEventListener('resize',u);window.addEventListener('orientationchange',u)})()</script>
-+<script>(function(){var s=document.getElementById('control-center-shell');if(!s)return;function u(){if(!document.contains(s)){window.removeEventListener('resize',u);window.removeEventListener('orientationchange',u);return}var top=s.getBoundingClientRect().top;var bar=document.getElementById('control-center-system-bar');var barH=bar?bar.getBoundingClientRect().height:0;s.style.setProperty('--cc-top',top+'px');s.style.height='calc(100dvh - '+top+'px - '+barH+'px)'}if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded',u,{once:true})}else{u()}window.addEventListener('resize',u);window.addEventListener('orientationchange',u)})()</script>
- {% endblock %}
+diff --git a/lan_app/templates/base.html b/lan_app/templates/base.html
+index 8825a2a..0310200 100644
+--- a/lan_app/templates/base.html
++++ b/lan_app/templates/base.html
+@@ -174,13 +174,22 @@ window.__inspectorScrollTops = window.__inspectorScrollTops || {};
+ 
+ if (document.body && !window.__controlCenterShellAfterSwapBound) {
+   document.body.addEventListener('htmx:beforeSwap', function (event) {
+-    var target = event && event.detail ? event.detail.target : null;
++    var detail = event && event.detail ? event.detail : null;
++    var target = detail ? detail.target : null;
+     if (!target || target.id !== 'control-center-inspector-pane') {
+       return;
+     }
+-    var scrollEl = target.querySelector('[data-inspector-scroll]');
+-    if (scrollEl) {
+-      window.__inspectorScrollTops['control-center-inspector-pane'] = scrollEl.scrollTop;
++    // Only preserve scroll for self-initiated refreshes (the inspector
++    // pane's own `every 2s` poll). Tab clicks and other swaps should
++    // render the new content at the top, so clear any stale saved value.
++    var requestElt = detail && detail.requestConfig ? detail.requestConfig.elt : null;
++    if (requestElt && requestElt.id === 'control-center-inspector-pane') {
++      var scrollEl = target.querySelector('[data-inspector-scroll]');
++      if (scrollEl) {
++        window.__inspectorScrollTops['control-center-inspector-pane'] = scrollEl.scrollTop;
++      }
++    } else {
++      delete window.__inspectorScrollTops['control-center-inspector-pane'];
+     }
+   });
+   document.body.addEventListener('htmx:afterSwap', function (event) {
+@@ -201,6 +210,7 @@ if (document.body && !window.__controlCenterShellAfterSwapBound) {
+       if (newScrollEl) {
+         newScrollEl.scrollTop = savedScroll;
+       }
++      delete window.__inspectorScrollTops['control-center-inspector-pane'];
+     }
+     var activeTab = target.querySelector('[data-active-tab="true"]');
+     refreshControlCenterShellFromHref(activeTab ? activeTab.getAttribute('href') : '');
