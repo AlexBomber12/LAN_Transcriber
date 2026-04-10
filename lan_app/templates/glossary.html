@@ -3,57 +3,57 @@
 {% block content %}
 {% set form_state = form_entry or {} %}
 {% set is_editing = editing_entry is not none %}
-<h1>Corrections / ASR Memory</h1>
+<h1 class="text-3xl font-extrabold tracking-tight mb-5">Corrections / ASR Memory</h1>
 
 {% set helper_message = {
   "text": "Use this admin page when the embedded workflow needs a remembered spelling or ASR correction. Save the right term once, then let future recordings reuse it."
 } %}
 {% include "partials/control_center/helper_message.html" %}
 {% if return_context.active %}
-<div class="context-banner">
-  <p class="context-banner-copy">{{ return_context.message }}</p>
-  <div class="context-banner-actions">
-    <a href="{{ return_context.href }}" class="btn">Return to Control Center</a>
+<div class="grid gap-2.5 p-4 border border-slate-200 rounded-xl bg-gradient-to-b from-white to-slate-50 shadow-sm">
+  <p class="text-slate-900 max-w-[72ch]">{{ return_context.message }}</p>
+  <div class="flex gap-2 flex-wrap">
+    <a href="{{ return_context.href }}" class="inline-flex items-center justify-center gap-2 min-h-[40px] px-3.5 py-2 border border-slate-300 rounded-full bg-white text-slate-900 cursor-pointer text-[13px] font-bold no-underline hover:bg-slate-50 transition-colors">Return to Control Center</a>
     {% if return_context.selected_detail_href %}
-    <a href="{{ return_context.selected_detail_href }}" class="btn">Open selected recording</a>
+    <a href="{{ return_context.selected_detail_href }}" class="inline-flex items-center justify-center gap-2 min-h-[40px] px-3.5 py-2 border border-slate-300 rounded-full bg-white text-slate-900 cursor-pointer text-[13px] font-bold no-underline hover:bg-slate-50 transition-colors">Open selected recording</a>
     {% endif %}
   </div>
 </div>
 {% else %}
-<div class="standalone-header-actions" style="margin-bottom:10px">
-  <a href="/" class="btn">Open Control Center</a>
+<div class="flex gap-2 flex-wrap items-center mb-2.5">
+  <a href="/" class="inline-flex items-center justify-center gap-2 min-h-[40px] px-3.5 py-2 border border-slate-300 rounded-full bg-white text-slate-900 cursor-pointer text-[13px] font-bold no-underline hover:bg-slate-50 transition-colors">Open Control Center</a>
 </div>
 {% endif %}
 
-<div class="section">
-  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:10px;max-width:920px">
-    <div style="background:#fff;border:1px solid #ccc;padding:10px">
-      <h2 style="margin-top:0">What to save here</h2>
-      <p>Store the correct term plus the wrong spellings or phrases operators keep seeing in transcripts.</p>
+<div class="mb-5">
+  <div class="grid grid-cols-[repeat(auto-fit,minmax(260px,1fr))] gap-2.5 max-w-[920px]">
+    <div class="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
+      <h2 class="text-base font-bold tracking-tight mb-1">What to save here</h2>
+      <p class="text-sm">Store the correct term plus the wrong spellings or phrases operators keep seeing in transcripts.</p>
     </div>
-    <div style="background:#fff;border:1px solid #ccc;padding:10px">
-      <h2 style="margin-top:0">What it changes</h2>
-      <p>These entries help future recordings reuse known spellings. They do not edit old transcripts or retrain models.</p>
+    <div class="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
+      <h2 class="text-base font-bold tracking-tight mb-1">What it changes</h2>
+      <p class="text-sm">These entries help future recordings reuse known spellings. They do not edit old transcripts or retrain models.</p>
     </div>
   </div>
 </div>
 
-<div class="section">
-  <h2>{% if is_editing %}Edit correction #{{ editing_entry.id }}{% else %}Add correction{% endif %}</h2>
+<div class="mb-5">
+  <h2 class="text-base font-bold tracking-tight mb-2">{% if is_editing %}Edit correction #{{ editing_entry.id }}{% else %}Add correction{% endif %}</h2>
   <form
     id="glossary-form"
     method="post"
     action="{% if is_editing %}/glossary/{{ editing_entry.id }}{% else %}/glossary{% endif %}"
-    style="background:#fff;border:1px solid #ccc;padding:10px;max-width:920px"
+    class="bg-white border border-slate-200 rounded-xl p-4 max-w-[920px] shadow-sm"
   >
     {% if form_state.prefill_notice %}
-    <p style="margin:0 0 10px 0;padding:8px 10px;border:1px solid #99b;background:#f8f9ff;color:#334155">{{ form_state.prefill_notice }}</p>
+    <p class="mb-2.5 px-2.5 py-2 border border-blue-200 bg-blue-50 text-slate-700 rounded-lg text-sm">{{ form_state.prefill_notice }}</p>
     {% endif %}
     {% for field in return_context.hidden_fields %}
     <input type="hidden" name="{{ field.name }}" value="{{ field.value }}">
     {% endfor %}
-    <div class="form-row">
-      <label for="glossary-canonical">Correct term</label>
+    <div class="flex gap-2.5 items-center mb-2.5 flex-wrap">
+      <label for="glossary-canonical" class="text-xs min-w-[120px] text-slate-500 font-bold">Correct term</label>
       <input
         id="glossary-canonical"
         name="canonical_text"
@@ -62,21 +62,21 @@
         maxlength="160"
         value="{{ form_state.canonical_text or '' }}"
         placeholder="Example: Sander"
-        style="min-width:320px"
+        class="min-w-[320px] border border-slate-300 bg-white text-slate-900 rounded-xl px-3 py-2.5 min-h-[40px] text-sm focus:outline-none focus:border-primary/55 focus:ring-4 focus:ring-primary/10"
       >
     </div>
-    <div class="form-row" style="align-items:flex-start">
-      <label for="glossary-aliases">Wrong variants</label>
+    <div class="flex gap-2.5 items-start mb-2.5 flex-wrap">
+      <label for="glossary-aliases" class="text-xs min-w-[120px] text-slate-500 font-bold">Wrong variants</label>
       <textarea
         id="glossary-aliases"
         name="aliases_text"
         rows="4"
-        style="min-width:320px"
+        class="min-w-[320px] border border-slate-300 bg-white text-slate-900 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-primary/55 focus:ring-4 focus:ring-primary/10"
         placeholder="One per line, or comma-separated"
       >{{ form_state.aliases_text or '' }}</textarea>
     </div>
-    <div class="form-row">
-      <label for="glossary-notes">Operator note</label>
+    <div class="flex gap-2.5 items-center mb-2.5 flex-wrap">
+      <label for="glossary-notes" class="text-xs min-w-[120px] text-slate-500 font-bold">Operator note</label>
       <input
         id="glossary-notes"
         name="notes"
@@ -84,31 +84,31 @@
         maxlength="240"
         value="{{ form_state.notes or '' }}"
         placeholder="Optional reminder for reviewers"
-        style="min-width:420px"
+        class="min-w-[420px] border border-slate-300 bg-white text-slate-900 rounded-xl px-3 py-2.5 min-h-[40px] text-sm focus:outline-none focus:border-primary/55 focus:ring-4 focus:ring-primary/10"
       >
     </div>
-    <p style="margin:6px 0 0 0;color:#555">Basic mode is usually enough: save the correct term, the common mistakes, and an optional note.</p>
-    <details style="margin-top:10px" {% if form_state.advanced_open %}open{% endif %}>
-      <summary style="cursor:pointer;font-weight:bold">Advanced fields</summary>
-      <p style="margin:8px 0;color:#555">Use these when you need to change the category, track where the correction came from, or pause it without deleting it.</p>
-      <div class="form-row">
-        <label for="glossary-kind">Entry type</label>
-        <select id="glossary-kind" name="kind">
+    <p class="mt-1.5 text-slate-500 text-sm">Basic mode is usually enough: save the correct term, the common mistakes, and an optional note.</p>
+    <details class="mt-2.5" {% if form_state.advanced_open %}open{% endif %}>
+      <summary class="cursor-pointer font-bold text-sm">Advanced fields</summary>
+      <p class="mt-2 mb-2 text-slate-500 text-sm">Use these when you need to change the category, track where the correction came from, or pause it without deleting it.</p>
+      <div class="flex gap-2.5 items-center mb-2.5 flex-wrap">
+        <label for="glossary-kind" class="text-xs min-w-[120px] text-slate-500 font-bold">Entry type</label>
+        <select id="glossary-kind" name="kind" class="border border-slate-300 bg-white text-slate-900 rounded-xl px-3 py-2.5 min-h-[40px] text-sm focus:outline-none focus:border-primary/55 focus:ring-4 focus:ring-primary/10">
           {% for option in kind_options %}
           <option value="{{ option.value }}" {% if (form_state.kind or 'term') == option.value %}selected{% endif %}>{{ option.label }}</option>
           {% endfor %}
         </select>
       </div>
-      <div class="form-row">
-        <label for="glossary-source">Entry source</label>
-        <select id="glossary-source" name="source">
+      <div class="flex gap-2.5 items-center mb-2.5 flex-wrap">
+        <label for="glossary-source" class="text-xs min-w-[120px] text-slate-500 font-bold">Entry source</label>
+        <select id="glossary-source" name="source" class="border border-slate-300 bg-white text-slate-900 rounded-xl px-3 py-2.5 min-h-[40px] text-sm focus:outline-none focus:border-primary/55 focus:ring-4 focus:ring-primary/10">
           {% for option in source_options %}
           <option value="{{ option.value }}" {% if (form_state.source or 'correction') == option.value %}selected{% endif %}>{{ option.label }}</option>
           {% endfor %}
         </select>
       </div>
-      <div class="form-row">
-        <label for="glossary-recording">Linked recording</label>
+      <div class="flex gap-2.5 items-center mb-2.5 flex-wrap">
+        <label for="glossary-recording" class="text-xs min-w-[120px] text-slate-500 font-bold">Linked recording</label>
         <input
           id="glossary-recording"
           name="recording_id"
@@ -116,11 +116,11 @@
           maxlength="160"
           value="{{ form_state.recording_id or '' }}"
           placeholder="Optional recording ID"
-          style="min-width:280px"
+          class="min-w-[280px] border border-slate-300 bg-white text-slate-900 rounded-xl px-3 py-2.5 min-h-[40px] text-sm focus:outline-none focus:border-primary/55 focus:ring-4 focus:ring-primary/10"
         >
       </div>
-      <div class="form-row">
-        <label for="glossary-enabled">Use in future recordings</label>
+      <div class="flex gap-2.5 items-center mb-2.5 flex-wrap">
+        <label for="glossary-enabled" class="text-xs min-w-[120px] text-slate-500 font-bold">Use in future recordings</label>
         <input
           id="glossary-enabled"
           type="checkbox"
@@ -128,69 +128,68 @@
           value="1"
           {% if form_state.enabled is not defined or form_state.enabled %}checked{% endif %}
         >
-        <span style="font-size:12px;color:#555">Uncheck to keep it saved but paused.</span>
+        <span class="text-xs text-slate-500">Uncheck to keep it saved but paused.</span>
       </div>
     </details>
-    <div class="filters" style="margin-top:8px">
-      <button class="btn" type="submit">{% if is_editing %}Save correction{% else %}Save correction{% endif %}</button>
+    <div class="flex gap-2.5 items-center flex-wrap mt-2">
+      <button class="inline-flex items-center justify-center gap-2 min-h-[40px] px-3.5 py-2 border border-slate-300 rounded-full bg-white text-slate-900 cursor-pointer text-[13px] font-bold no-underline hover:bg-slate-50 transition-colors" type="submit">{% if is_editing %}Save correction{% else %}Save correction{% endif %}</button>
       {% if is_editing %}
-      <a href="/glossary{% if return_context.query_string %}?{{ return_context.query_string }}{% endif %}" class="btn" style="text-decoration:none">Cancel edit</a>
+      <a href="/glossary{% if return_context.query_string %}?{{ return_context.query_string }}{% endif %}" class="inline-flex items-center justify-center gap-2 min-h-[40px] px-3.5 py-2 border border-slate-300 rounded-full bg-white text-slate-900 cursor-pointer text-[13px] font-bold no-underline hover:bg-slate-50 transition-colors">Cancel edit</a>
       {% endif %}
     </div>
   </form>
 </div>
 
-<div class="section">
-  <h2>Saved corrections</h2>
+<div class="mb-5">
+  <h2 class="text-base font-bold tracking-tight mb-2">Saved corrections</h2>
   {% if items %}
-  <table>
+  <table class="w-full border-collapse text-sm bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm">
     <thead>
       <tr>
-        <th>Correct term</th>
-        <th>Common mistakes</th>
-        <th>Type</th>
-        <th>Where it came from</th>
-        <th>Future use</th>
-        <th>Notes</th>
-        <th>Updated</th>
-        <th>Actions</th>
+        <th class="bg-slate-50 text-slate-500 text-[11px] font-bold uppercase tracking-wide px-3.5 py-3 text-left border-b border-slate-200">Correct term</th>
+        <th class="bg-slate-50 text-slate-500 text-[11px] font-bold uppercase tracking-wide px-3.5 py-3 text-left border-b border-slate-200">Common mistakes</th>
+        <th class="bg-slate-50 text-slate-500 text-[11px] font-bold uppercase tracking-wide px-3.5 py-3 text-left border-b border-slate-200">Type</th>
+        <th class="bg-slate-50 text-slate-500 text-[11px] font-bold uppercase tracking-wide px-3.5 py-3 text-left border-b border-slate-200">Where it came from</th>
+        <th class="bg-slate-50 text-slate-500 text-[11px] font-bold uppercase tracking-wide px-3.5 py-3 text-left border-b border-slate-200">Future use</th>
+        <th class="bg-slate-50 text-slate-500 text-[11px] font-bold uppercase tracking-wide px-3.5 py-3 text-left border-b border-slate-200">Notes</th>
+        <th class="bg-slate-50 text-slate-500 text-[11px] font-bold uppercase tracking-wide px-3.5 py-3 text-left border-b border-slate-200">Updated</th>
+        <th class="bg-slate-50 text-slate-500 text-[11px] font-bold uppercase tracking-wide px-3.5 py-3 text-left border-b border-slate-200">Actions</th>
       </tr>
     </thead>
     <tbody>
       {% for item in items %}
-      <tr id="glossary-{{ item.id }}">
-        <td>{{ item.canonical_text }}</td>
-        <td style="white-space:normal;max-width:260px">
+      <tr id="glossary-{{ item.id }}" class="hover:bg-slate-50">
+        <td class="px-3.5 py-3 border-b border-slate-100">{{ item.canonical_text }}</td>
+        <td class="px-3.5 py-3 border-b border-slate-100 whitespace-normal max-w-[260px]">
           {% if item.aliases %}
             {% for alias in item.aliases %}
             <div>{{ alias }}</div>
             {% endfor %}
           {% else %}
-          <span style="color:#666">No saved mistakes yet</span>
+          <span class="text-slate-400">No saved mistakes yet</span>
           {% endif %}
         </td>
-        <td>{{ item.kind_label }}</td>
-        <td style="white-space:normal;max-width:220px">
+        <td class="px-3.5 py-3 border-b border-slate-100">{{ item.kind_label }}</td>
+        <td class="px-3.5 py-3 border-b border-slate-100 whitespace-normal max-w-[220px]">
           <div>{{ item.source_label }}</div>
-          <div style="color:#666">{{ item.origin_context }}</div>
+          <div class="text-slate-400">{{ item.origin_context }}</div>
         </td>
-        <td style="white-space:normal;max-width:220px">
+        <td class="px-3.5 py-3 border-b border-slate-100 whitespace-normal max-w-[220px]">
           <div>{{ item.status_label }}</div>
-          <div style="color:#666">{{ item.status_hint }}</div>
+          <div class="text-slate-400">{{ item.status_hint }}</div>
         </td>
-        <td style="white-space:normal;max-width:260px">{{ item.notes or '—' }}</td>
-        <td>{{ item.updated_at[:19].replace('T', ' ') if item.updated_at else '—' }}</td>
-        <td style="white-space:nowrap">
+        <td class="px-3.5 py-3 border-b border-slate-100 whitespace-normal max-w-[260px]">{{ item.notes or '—' }}</td>
+        <td class="px-3.5 py-3 border-b border-slate-100 whitespace-nowrap">{{ item.updated_at[:19].replace('T', ' ') if item.updated_at else '—' }}</td>
+        <td class="px-3.5 py-3 border-b border-slate-100 whitespace-nowrap">
           <a
             href="/glossary?edit_id={{ item.id }}{% if return_context.query_string %}&{{ return_context.query_string }}{% endif %}#glossary-{{ item.id }}"
-            class="btn"
-            style="text-decoration:none"
+            class="inline-flex items-center justify-center gap-2 min-h-[40px] px-3.5 py-2 border border-slate-300 rounded-full bg-white text-slate-900 cursor-pointer text-[13px] font-bold no-underline hover:bg-slate-50 transition-colors"
           >Edit</a>
-          <form method="post" action="/glossary/{{ item.id }}/delete" style="display:inline" onsubmit="return confirm('Delete correction ' + this.dataset.name + '?')" data-name="{{ item.canonical_text }}">
+          <form method="post" action="/glossary/{{ item.id }}/delete" class="inline" onsubmit="return confirm('Delete correction ' + this.dataset.name + '?')" data-name="{{ item.canonical_text }}">
             {% for field in return_context.hidden_fields %}
             <input type="hidden" name="{{ field.name }}" value="{{ field.value }}">
             {% endfor %}
-            <button class="btn btn-danger" type="submit">Delete</button>
+            <button class="inline-flex items-center justify-center gap-2 min-h-[40px] px-3.5 py-2 border border-red-200 rounded-full text-red-700 bg-red-50 cursor-pointer text-[13px] font-bold no-underline hover:bg-red-100 transition-colors" type="submit">Delete</button>
           </form>
         </td>
       </tr>
@@ -198,7 +197,7 @@
     </tbody>
   </table>
   {% else %}
-  <p class="placeholder">No corrections saved yet. Add one here only when a spelling or term keeps repeating across recordings.</p>
+  <p class="text-slate-500 italic py-5">No corrections saved yet. Add one here only when a spelling or term keeps repeating across recordings.</p>
   {% endif %}
 </div>
 {% endblock %}

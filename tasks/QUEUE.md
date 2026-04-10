@@ -645,6 +645,6 @@ Queue (in order)
 - Depends on: PR-TAILWIND-BASE-01
 
 129) PR-TAILWIND-REMAINING-01: Migrate remaining pages to Tailwind and remove all legacy CSS from base.html
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-TAILWIND-REMAINING-01.md
 - Depends on: PR-TAILWIND-CONTROL-CENTER-01 and PR-TAILWIND-RECORDING-DETAIL-01

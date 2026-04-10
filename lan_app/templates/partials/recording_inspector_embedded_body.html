@@ -1,34 +1,34 @@
 {% if current_tab == 'overview' %}
   {% set compact = compact_overview or {} %}
   {% set next_action = compact.next_action or {} %}
-  <div class="embedded-panel-grid">
-    <section class="embedded-card">
-      <h3>Stage</h3>
-      <p class="inspector-answer">{{ compact.stage_label or 'Waiting' }}</p>
-      <p class="inspector-note">{{ compact.stage_detail or '' }}</p>
+  <div class="grid gap-3.5 grid-cols-[repeat(auto-fit,minmax(180px,1fr))]">
+    <section class="border border-slate-200 rounded-xl bg-slate-50 p-4">
+      <h3 class="text-sm font-bold mb-2">Stage</h3>
+      <p class="mb-2 text-lg font-extrabold text-slate-900 leading-tight">{{ compact.stage_label or 'Waiting' }}</p>
+      <p class="text-slate-500 text-xs">{{ compact.stage_detail or '' }}</p>
     </section>
-    <section class="embedded-card">
-      <h3>Blocker</h3>
-      <p class="inspector-answer">{{ compact.blocker_text or 'None' }}</p>
-      <p class="inspector-note">{{ compact.blocker_detail or '' }}</p>
+    <section class="border border-slate-200 rounded-xl bg-slate-50 p-4">
+      <h3 class="text-sm font-bold mb-2">Blocker</h3>
+      <p class="mb-2 text-lg font-extrabold text-slate-900 leading-tight">{{ compact.blocker_text or 'None' }}</p>
+      <p class="text-slate-500 text-xs">{{ compact.blocker_detail or '' }}</p>
     </section>
-    <section class="embedded-card">
-      <h3>Next action</h3>
-      <p class="inspector-answer">{{ next_action.title or 'Open full-page inspector' }}</p>
-      <p class="inspector-note">{{ next_action.detail or '' }}</p>
+    <section class="border border-slate-200 rounded-xl bg-slate-50 p-4">
+      <h3 class="text-sm font-bold mb-2">Next action</h3>
+      <p class="mb-2 text-lg font-extrabold text-slate-900 leading-tight">{{ next_action.title or 'Open full-page inspector' }}</p>
+      <p class="text-slate-500 text-xs">{{ next_action.detail or '' }}</p>
       {% if next_action.href %}
-      <a href="{{ next_action.href }}" class="btn"{% if next_action.external %} hx-boost="false"{% endif %}>{{ next_action.button_label or 'Open' }}</a>
+      <a href="{{ next_action.href }}" class="inline-flex items-center justify-center gap-2 min-h-[40px] px-3.5 py-2 border border-slate-300 rounded-full bg-white text-slate-900 cursor-pointer text-[13px] font-bold no-underline hover:bg-slate-50 transition-colors mt-2"{% if next_action.external %} hx-boost="false"{% endif %}>{{ next_action.button_label or 'Open' }}</a>
       {% endif %}
     </section>
   </div>
 
-  <section class="embedded-card">
-    <h3>Key metadata</h3>
-    <div class="compact-metadata-grid">
+  <section class="border border-slate-200 rounded-xl bg-slate-50 p-4 mt-3.5">
+    <h3 class="text-sm font-bold mb-2">Key metadata</h3>
+    <div class="grid gap-3 grid-cols-[repeat(auto-fit,minmax(160px,1fr))]">
       {% for item in compact.metadata or [] %}
-      <div class="compact-metadata-item">
-        <span class="compact-metadata-label">{{ item.label }}</span>
-        <strong class="compact-metadata-value">{{ item.value }}</strong>
+      <div class="grid gap-1.5 p-3 rounded-xl border border-slate-200 bg-white">
+        <span class="text-slate-500 text-[11px] font-bold tracking-wide uppercase">{{ item.label }}</span>
+        <strong class="text-slate-900 text-sm leading-snug">{{ item.value }}</strong>
       </div>
       {% endfor %}
     </div>
@@ -42,24 +42,24 @@
   {% set repair = sp.snippet_repair or {} %}
 
   {% if sp.notice_message %}
-  <div class="page-notice">{{ sp.notice_message }}</div>
+  <div class="mb-2.5 border border-slate-200 bg-slate-50 text-slate-900 rounded-xl px-3.5 py-3">{{ sp.notice_message }}</div>
   {% endif %}
   {% if sp.error_message %}
-  <div class="page-notice">{{ sp.error_message }}</div>
+  <div class="mb-2.5 border border-slate-200 bg-slate-50 text-slate-900 rounded-xl px-3.5 py-3">{{ sp.error_message }}</div>
   {% endif %}
   {% if repair.detail %}
-  <div class="page-notice">
+  <div class="mb-2.5 border border-slate-200 bg-slate-50 text-slate-900 rounded-xl px-3.5 py-3">
     <div>{{ repair.detail }}</div>
     {% if repair.available %}
-    <form method="post" action="/ui/recordings/{{ rec.id }}/speakers/regenerate-snippets{{ recording_inspector.embedded_return_queries.speakers }}" class="stack-gap-sm">
-      <button class="btn" type="submit">{{ repair.button_label }}</button>
+    <form method="post" action="/ui/recordings/{{ rec.id }}/speakers/regenerate-snippets{{ recording_inspector.embedded_return_queries.speakers }}" class="mt-2.5">
+      <button class="inline-flex items-center justify-center gap-2 min-h-[40px] px-3.5 py-2 border border-slate-300 rounded-full bg-white text-slate-900 cursor-pointer text-[13px] font-bold no-underline hover:bg-slate-50 transition-colors" type="submit">{{ repair.button_label }}</button>
     </form>
     {% endif %}
   </div>
   {% endif %}
   {% if notices %}
     {% for notice in notices %}
-    <div class="page-notice">{{ notice }}</div>
+    <div class="mb-2.5 border border-slate-200 bg-slate-50 text-slate-900 rounded-xl px-3.5 py-3">{{ notice }}</div>
     {% endfor %}
   {% endif %}
 
@@ -68,13 +68,13 @@
 
 {% elif current_tab == 'summary' %}
   {% set summary_data = summary or {} %}
-  <div class="embedded-panel-grid">
-    <section class="embedded-card">
-      <h3>Topic</h3>
-      <p class="inspector-answer">{{ summary_data.topic or 'No topic extracted yet.' }}</p>
+  <div class="grid gap-3.5 grid-cols-[repeat(auto-fit,minmax(180px,1fr))]">
+    <section class="border border-slate-200 rounded-xl bg-slate-50 p-4">
+      <h3 class="text-sm font-bold mb-2">Topic</h3>
+      <p class="text-lg font-extrabold text-slate-900 leading-tight">{{ summary_data.topic or 'No topic extracted yet.' }}</p>
     </section>
-    <section class="embedded-card">
-      <h3>Summary</h3>
+    <section class="border border-slate-200 rounded-xl bg-slate-50 p-4">
+      <h3 class="text-sm font-bold mb-2">Summary</h3>
       {% if summary_data.summary_bullets %}
       <ul>
         {% for bullet in summary_data.summary_bullets[:6] %}
@@ -84,14 +84,14 @@
       {% elif summary_data.summary_text %}
       <p>{{ summary_data.summary_text[:520] }}{% if summary_data.summary_text|length > 520 %}...{% endif %}</p>
       {% else %}
-      <p class="placeholder">No summary is available yet.</p>
+      <p class="text-slate-500 italic py-5">No summary is available yet.</p>
       {% endif %}
     </section>
   </div>
 
-  <div class="embedded-panel-grid">
-    <section class="embedded-card">
-      <h3>Decisions</h3>
+  <div class="grid gap-3.5 grid-cols-[repeat(auto-fit,minmax(180px,1fr))] mt-3.5">
+    <section class="border border-slate-200 rounded-xl bg-slate-50 p-4">
+      <h3 class="text-sm font-bold mb-2">Decisions</h3>
       {% if summary_data.decisions %}
       <ul>
         {% for item in summary_data.decisions[:5] %}
@@ -99,11 +99,11 @@
         {% endfor %}
       </ul>
       {% else %}
-      <p class="placeholder">No decisions were extracted.</p>
+      <p class="text-slate-500 italic py-5">No decisions were extracted.</p>
       {% endif %}
     </section>
-    <section class="embedded-card">
-      <h3>Actions</h3>
+    <section class="border border-slate-200 rounded-xl bg-slate-50 p-4">
+      <h3 class="text-sm font-bold mb-2">Actions</h3>
       {% if summary_data.action_items %}
       <ul>
         {% for item in summary_data.action_items[:5] %}
@@ -115,16 +115,16 @@
         {% endfor %}
       </ul>
       {% else %}
-      <p class="placeholder">No action items were extracted.</p>
+      <p class="text-slate-500 italic py-5">No action items were extracted.</p>
       {% endif %}
     </section>
   </div>
 
-  <section class="embedded-card">
-    <h3>Tone and questions</h3>
-    <p class="inspector-note">{{ summary_data.emotional_summary or 'No emotional summary extracted.' }}</p>
+  <section class="border border-slate-200 rounded-xl bg-slate-50 p-4 mt-3.5">
+    <h3 class="text-sm font-bold mb-2">Tone and questions</h3>
+    <p class="text-slate-500 text-xs">{{ summary_data.emotional_summary or 'No emotional summary extracted.' }}</p>
     {% if summary_data.questions and summary_data.questions.extracted %}
-    <p class="inspector-note stack-gap-xs">
+    <p class="text-slate-500 text-xs mt-2">
       {{ summary_data.questions.total_count }} extracted question{{ '' if summary_data.questions.total_count == 1 else 's' }}.
     </p>
     <ul>
@@ -133,29 +133,29 @@
       {% endfor %}
     </ul>
     {% else %}
-    <p class="placeholder">No questions were extracted.</p>
+    <p class="text-slate-500 italic py-5">No questions were extracted.</p>
     {% endif %}
   </section>
 
 {% elif current_tab == 'export' %}
-  <section class="embedded-card">
-    <div class="embedded-card-head">
-      <h3>Export</h3>
-      <div class="embedded-card-actions">
-        <button type="button" class="btn" onclick="copyCompactExportText('{{ rec.id }}')">Copy</button>
+  <section class="border border-slate-200 rounded-xl bg-slate-50 p-4">
+    <div class="flex justify-between gap-3 items-start flex-wrap mb-3">
+      <h3 class="text-sm font-bold">Export</h3>
+      <div class="flex gap-2 flex-wrap">
+        <button type="button" class="inline-flex items-center justify-center gap-2 min-h-[40px] px-3.5 py-2 border border-slate-300 rounded-full bg-white text-slate-900 cursor-pointer text-[13px] font-bold no-underline hover:bg-slate-50 transition-colors" onclick="copyCompactExportText('{{ rec.id }}')">Copy</button>
         <a
           href="/ui/recordings/{{ rec.id }}/export.zip"
-          class="btn"
+          class="inline-flex items-center justify-center gap-2 min-h-[40px] px-3.5 py-2 border border-slate-300 rounded-full bg-white text-slate-900 cursor-pointer text-[13px] font-bold no-underline hover:bg-slate-50 transition-colors"
           hx-boost="false"
         >Download ZIP</a>
       </div>
     </div>
     <textarea
       id="compact-export-text-{{ rec.id }}"
-      class="compact-export-text"
+      class="w-full min-h-[220px] resize-y p-3.5 border border-slate-200 rounded-xl bg-blue-50/30 font-mono text-xs leading-relaxed"
       readonly
     >{{ export_text or '' }}</textarea>
-    <p id="compact-export-status-{{ rec.id }}" class="inspector-note">
+    <p id="compact-export-status-{{ rec.id }}" class="text-slate-500 text-xs mt-1">
       Copy the markdown or download the ZIP.
     </p>
   </section>

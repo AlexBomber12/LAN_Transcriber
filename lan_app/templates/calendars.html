@@ -1,73 +1,73 @@
 {% extends "base.html" %}
 {% block title %}Calendars – LAN Transcriber{% endblock %}
 {% block content %}
-<h1>Calendars</h1>
+<h1 class="text-3xl font-extrabold tracking-tight mb-5">Calendars</h1>
 
 {% if error_message %}
-<div style="background:#fee;border:1px solid #f99;color:#700;padding:8px 10px;margin-bottom:10px;max-width:780px">
+<div class="bg-red-50 border border-red-300 text-red-800 px-2.5 py-2 mb-2.5 max-w-[780px] rounded-lg text-sm">
   {{ error_message }}
 </div>
 {% endif %}
 
-<div class="section">
-  <h2>Add Source</h2>
-  <form method="post" action="/calendars/sources" style="background:#fff;border:1px solid #ccc;padding:10px;max-width:780px">
-    <div class="form-row">
-      <label for="calendar-source-name">Name</label>
-      <input id="calendar-source-name" name="name" type="text" required style="min-width:320px">
+<div class="mb-5">
+  <h2 class="text-base font-bold tracking-tight mb-2">Add Source</h2>
+  <form method="post" action="/calendars/sources" class="bg-white border border-slate-200 rounded-xl p-4 max-w-[780px] shadow-sm">
+    <div class="flex gap-2.5 items-center mb-2.5 flex-wrap">
+      <label for="calendar-source-name" class="text-xs min-w-[120px] text-slate-500 font-bold">Name</label>
+      <input id="calendar-source-name" name="name" type="text" required class="min-w-[320px] border border-slate-300 bg-white text-slate-900 rounded-xl px-3 py-2.5 min-h-[40px] text-sm focus:outline-none focus:border-primary/55 focus:ring-4 focus:ring-primary/10">
     </div>
-    <div class="form-row">
-      <label for="calendar-source-kind">Type</label>
-      <select id="calendar-source-kind" name="kind" onchange="toggleCalendarSourceFields(this.value)">
+    <div class="flex gap-2.5 items-center mb-2.5 flex-wrap">
+      <label for="calendar-source-kind" class="text-xs min-w-[120px] text-slate-500 font-bold">Type</label>
+      <select id="calendar-source-kind" name="kind" onchange="toggleCalendarSourceFields(this.value)" class="border border-slate-300 bg-white text-slate-900 rounded-xl px-3 py-2.5 min-h-[40px] text-sm focus:outline-none focus:border-primary/55 focus:ring-4 focus:ring-primary/10">
         <option value="url" selected>URL</option>
         <option value="file">File Text</option>
       </select>
     </div>
-    <div class="form-row" id="calendar-source-url-row">
-      <label for="calendar-source-url">URL</label>
-      <input id="calendar-source-url" name="url" type="url" placeholder="https://example.com/calendar.ics" style="min-width:520px">
+    <div class="flex gap-2.5 items-center mb-2.5 flex-wrap" id="calendar-source-url-row">
+      <label for="calendar-source-url" class="text-xs min-w-[120px] text-slate-500 font-bold">URL</label>
+      <input id="calendar-source-url" name="url" type="url" placeholder="https://example.com/calendar.ics" class="min-w-[520px] border border-slate-300 bg-white text-slate-900 rounded-xl px-3 py-2.5 min-h-[40px] text-sm focus:outline-none focus:border-primary/55 focus:ring-4 focus:ring-primary/10">
     </div>
-    <div class="form-row" id="calendar-source-file-row" style="display:none;align-items:flex-start">
-      <label for="calendar-source-file">ICS text</label>
-      <textarea id="calendar-source-file" name="file" rows="6" style="min-width:520px"></textarea>
+    <div class="flex gap-2.5 items-start mb-2.5 flex-wrap" id="calendar-source-file-row" style="display:none">
+      <label for="calendar-source-file" class="text-xs min-w-[120px] text-slate-500 font-bold">ICS text</label>
+      <textarea id="calendar-source-file" name="file" rows="6" class="min-w-[520px] border border-slate-300 bg-white text-slate-900 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-primary/55 focus:ring-4 focus:ring-primary/10"></textarea>
     </div>
-    <button class="btn" type="submit">Save source</button>
+    <button class="inline-flex items-center justify-center gap-2 min-h-[40px] px-3.5 py-2 border border-slate-300 rounded-full bg-white text-slate-900 cursor-pointer text-[13px] font-bold no-underline hover:bg-slate-50 transition-colors" type="submit">Save source</button>
   </form>
 </div>
 
-<div class="section">
-  <h2>Sources</h2>
+<div class="mb-5">
+  <h2 class="text-base font-bold tracking-tight mb-2">Sources</h2>
   {% if sources %}
-  <table>
+  <table class="w-full border-collapse text-sm bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm">
     <thead>
       <tr>
-        <th>Name</th>
-        <th>Type</th>
-        <th>Configured</th>
-        <th>Events</th>
-        <th>Last sync</th>
-        <th>Last error</th>
-        <th>Action</th>
+        <th class="bg-slate-50 text-slate-500 text-[11px] font-bold uppercase tracking-wide px-3.5 py-3 text-left border-b border-slate-200">Name</th>
+        <th class="bg-slate-50 text-slate-500 text-[11px] font-bold uppercase tracking-wide px-3.5 py-3 text-left border-b border-slate-200">Type</th>
+        <th class="bg-slate-50 text-slate-500 text-[11px] font-bold uppercase tracking-wide px-3.5 py-3 text-left border-b border-slate-200">Configured</th>
+        <th class="bg-slate-50 text-slate-500 text-[11px] font-bold uppercase tracking-wide px-3.5 py-3 text-left border-b border-slate-200">Events</th>
+        <th class="bg-slate-50 text-slate-500 text-[11px] font-bold uppercase tracking-wide px-3.5 py-3 text-left border-b border-slate-200">Last sync</th>
+        <th class="bg-slate-50 text-slate-500 text-[11px] font-bold uppercase tracking-wide px-3.5 py-3 text-left border-b border-slate-200">Last error</th>
+        <th class="bg-slate-50 text-slate-500 text-[11px] font-bold uppercase tracking-wide px-3.5 py-3 text-left border-b border-slate-200">Action</th>
       </tr>
     </thead>
     <tbody>
       {% for source in sources %}
-      <tr>
-        <td>{{ source.name }}</td>
-        <td>{{ source.kind }}</td>
-        <td>
+      <tr class="hover:bg-slate-50">
+        <td class="px-3.5 py-3 border-b border-slate-100">{{ source.name }}</td>
+        <td class="px-3.5 py-3 border-b border-slate-100">{{ source.kind }}</td>
+        <td class="px-3.5 py-3 border-b border-slate-100">
           {% if source.kind == "url" %}
           {% if source.url_configured %}{{ source.url_host or "Configured" }}{% else %}Missing{% endif %}
           {% else %}
           {% if source.file_configured %}Configured{% else %}Missing{% endif %}
           {% endif %}
         </td>
-        <td>{{ source.event_count }}</td>
-        <td>{{ source.last_synced_at_display }}</td>
-        <td title="{{ source.last_error or '' }}">{{ source.last_error or '—' }}</td>
-        <td>
+        <td class="px-3.5 py-3 border-b border-slate-100">{{ source.event_count }}</td>
+        <td class="px-3.5 py-3 border-b border-slate-100">{{ source.last_synced_at_display }}</td>
+        <td class="px-3.5 py-3 border-b border-slate-100" title="{{ source.last_error or '' }}">{{ source.last_error or '—' }}</td>
+        <td class="px-3.5 py-3 border-b border-slate-100">
           <form method="post" action="/calendars/sources/{{ source.id }}/sync">
-            <button class="btn" type="submit">Sync now</button>
+            <button class="inline-flex items-center justify-center gap-2 min-h-[40px] px-3.5 py-2 border border-slate-300 rounded-full bg-white text-slate-900 cursor-pointer text-[13px] font-bold no-underline hover:bg-slate-50 transition-colors" type="submit">Sync now</button>
           </form>
         </td>
       </tr>
@@ -75,56 +75,56 @@
     </tbody>
   </table>
   {% else %}
-  <p class="placeholder">No calendar sources configured.</p>
+  <p class="text-slate-500 italic py-5">No calendar sources configured.</p>
   {% endif %}
 </div>
 
-<div class="section">
-  <h2>Events</h2>
-  <form class="filters" method="get" action="/calendars">
-    <label for="events-from">From</label>
-    <input id="events-from" type="date" name="from" value="{{ date_from }}">
-    <label for="events-to">To</label>
-    <input id="events-to" type="date" name="to" value="{{ date_to }}">
-    <label for="events-source-id">Source</label>
-    <select id="events-source-id" name="source_id">
+<div class="mb-5">
+  <h2 class="text-base font-bold tracking-tight mb-2">Events</h2>
+  <form class="flex gap-2.5 items-center flex-wrap mb-4" method="get" action="/calendars">
+    <label for="events-from" class="text-xs font-semibold text-slate-500">From</label>
+    <input id="events-from" type="date" name="from" value="{{ date_from }}" class="border border-slate-300 bg-white text-slate-900 rounded-xl px-3 py-2.5 min-h-[40px] text-sm focus:outline-none focus:border-primary/55 focus:ring-4 focus:ring-primary/10">
+    <label for="events-to" class="text-xs font-semibold text-slate-500">To</label>
+    <input id="events-to" type="date" name="to" value="{{ date_to }}" class="border border-slate-300 bg-white text-slate-900 rounded-xl px-3 py-2.5 min-h-[40px] text-sm focus:outline-none focus:border-primary/55 focus:ring-4 focus:ring-primary/10">
+    <label for="events-source-id" class="text-xs font-semibold text-slate-500">Source</label>
+    <select id="events-source-id" name="source_id" class="border border-slate-300 bg-white text-slate-900 rounded-xl px-3 py-2.5 min-h-[40px] text-sm focus:outline-none focus:border-primary/55 focus:ring-4 focus:ring-primary/10">
       <option value="">All</option>
       {% for source in sources %}
       <option value="{{ source.id }}" {% if selected_source_id == source.id %}selected{% endif %}>{{ source.name }}</option>
       {% endfor %}
     </select>
-    <button class="btn" type="submit">Load</button>
+    <button class="inline-flex items-center justify-center gap-2 min-h-[40px] px-3.5 py-2 border border-slate-300 rounded-full bg-white text-slate-900 cursor-pointer text-[13px] font-bold no-underline hover:bg-slate-50 transition-colors" type="submit">Load</button>
   </form>
 
   {% if events %}
-  <table>
+  <table class="w-full border-collapse text-sm bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm">
     <thead>
       <tr>
-        <th>Start</th>
-        <th>End</th>
-        <th>Summary</th>
-        <th>Organizer</th>
-        <th>Attendees</th>
-        <th>Location</th>
-        <th>Source</th>
+        <th class="bg-slate-50 text-slate-500 text-[11px] font-bold uppercase tracking-wide px-3.5 py-3 text-left border-b border-slate-200">Start</th>
+        <th class="bg-slate-50 text-slate-500 text-[11px] font-bold uppercase tracking-wide px-3.5 py-3 text-left border-b border-slate-200">End</th>
+        <th class="bg-slate-50 text-slate-500 text-[11px] font-bold uppercase tracking-wide px-3.5 py-3 text-left border-b border-slate-200">Summary</th>
+        <th class="bg-slate-50 text-slate-500 text-[11px] font-bold uppercase tracking-wide px-3.5 py-3 text-left border-b border-slate-200">Organizer</th>
+        <th class="bg-slate-50 text-slate-500 text-[11px] font-bold uppercase tracking-wide px-3.5 py-3 text-left border-b border-slate-200">Attendees</th>
+        <th class="bg-slate-50 text-slate-500 text-[11px] font-bold uppercase tracking-wide px-3.5 py-3 text-left border-b border-slate-200">Location</th>
+        <th class="bg-slate-50 text-slate-500 text-[11px] font-bold uppercase tracking-wide px-3.5 py-3 text-left border-b border-slate-200">Source</th>
       </tr>
     </thead>
     <tbody>
       {% for event in events %}
-      <tr>
-        <td>{{ event.starts_at_display }}</td>
-        <td>{{ event.ends_at_display }}</td>
-        <td title="{{ event.summary or '' }}">{{ event.summary or '—' }}</td>
-        <td>{{ event.organizer or '—' }}</td>
-        <td title="{{ event.attendees_label }}">{{ event.attendees_label }}</td>
-        <td title="{{ event.location or '' }}">{{ event.location or '—' }}</td>
-        <td>{{ event.source_name or ('#' ~ event.source_id) }}</td>
+      <tr class="hover:bg-slate-50">
+        <td class="px-3.5 py-3 border-b border-slate-100 whitespace-nowrap">{{ event.starts_at_display }}</td>
+        <td class="px-3.5 py-3 border-b border-slate-100 whitespace-nowrap">{{ event.ends_at_display }}</td>
+        <td class="px-3.5 py-3 border-b border-slate-100" title="{{ event.summary or '' }}">{{ event.summary or '—' }}</td>
+        <td class="px-3.5 py-3 border-b border-slate-100">{{ event.organizer or '—' }}</td>
+        <td class="px-3.5 py-3 border-b border-slate-100" title="{{ event.attendees_label }}">{{ event.attendees_label }}</td>
+        <td class="px-3.5 py-3 border-b border-slate-100" title="{{ event.location or '' }}">{{ event.location or '—' }}</td>
+        <td class="px-3.5 py-3 border-b border-slate-100">{{ event.source_name or ('#' ~ event.source_id) }}</td>
       </tr>
       {% endfor %}
     </tbody>
   </table>
   {% else %}
-  <p class="placeholder">No events in this date range.</p>
+  <p class="text-slate-500 italic py-5">No events in this date range.</p>
   {% endif %}
 </div>
 

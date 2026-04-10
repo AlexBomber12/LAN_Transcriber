@@ -1,124 +1,124 @@
 {% extends "base.html" %}
 {% block title %}Canonical Speakers – LAN Transcriber{% endblock %}
 {% block content %}
-<h1>Canonical Speakers</h1>
+<h1 class="text-3xl font-extrabold tracking-tight mb-5">Canonical Speakers</h1>
 
 {% set helper_message = {
   "text": "Use this admin page for canonical-speaker cleanup that does not fit in the embedded speakers tab, such as broader merges or sample inspection."
 } %}
 {% include "partials/control_center/helper_message.html" %}
 {% if return_context.active %}
-<div class="context-banner">
-  <p class="context-banner-copy">{{ return_context.message }}</p>
-  <div class="context-banner-actions">
-    <a href="{{ return_context.href }}" class="btn">Return to Control Center</a>
+<div class="grid gap-2.5 p-4 border border-slate-200 rounded-xl bg-gradient-to-b from-white to-slate-50 shadow-sm">
+  <p class="text-slate-900 max-w-[72ch]">{{ return_context.message }}</p>
+  <div class="flex gap-2 flex-wrap">
+    <a href="{{ return_context.href }}" class="inline-flex items-center justify-center gap-2 min-h-[40px] px-3.5 py-2 border border-slate-300 rounded-full bg-white text-slate-900 cursor-pointer text-[13px] font-bold no-underline hover:bg-slate-50 transition-colors">Return to Control Center</a>
     {% if return_context.selected_detail_href %}
-    <a href="{{ return_context.selected_detail_href }}" class="btn">Open selected recording</a>
+    <a href="{{ return_context.selected_detail_href }}" class="inline-flex items-center justify-center gap-2 min-h-[40px] px-3.5 py-2 border border-slate-300 rounded-full bg-white text-slate-900 cursor-pointer text-[13px] font-bold no-underline hover:bg-slate-50 transition-colors">Open selected recording</a>
     {% endif %}
   </div>
 </div>
 {% else %}
-<div class="standalone-header-actions" style="margin-bottom:10px">
-  <a href="/" class="btn">Open Control Center</a>
+<div class="flex gap-2 flex-wrap items-center mb-2.5">
+  <a href="/" class="inline-flex items-center justify-center gap-2 min-h-[40px] px-3.5 py-2 border border-slate-300 rounded-full bg-white text-slate-900 cursor-pointer text-[13px] font-bold no-underline hover:bg-slate-50 transition-colors">Open Control Center</a>
 </div>
 {% endif %}
 
-<div class="section">
-  <h2>Add canonical speaker</h2>
+<div class="mb-5">
+  <h2 class="text-base font-bold tracking-tight mb-2">Add canonical speaker</h2>
   <form method="post" action="/voices">
     {% for field in return_context.hidden_fields %}
     <input type="hidden" name="{{ field.name }}" value="{{ field.value }}">
     {% endfor %}
-    <div class="form-row">
-      <label>Display name:</label>
-      <input type="text" name="display_name" required maxlength="120" placeholder="Full name" style="width:240px">
+    <div class="flex gap-2.5 items-center mb-2.5 flex-wrap">
+      <label class="text-xs min-w-[120px] text-slate-500 font-bold">Display name:</label>
+      <input type="text" name="display_name" required maxlength="120" placeholder="Full name" class="w-[240px] border border-slate-300 bg-white text-slate-900 rounded-xl px-3 py-2.5 min-h-[40px] text-sm focus:outline-none focus:border-primary/55 focus:ring-4 focus:ring-primary/10">
     </div>
-    <div class="form-row">
-      <label>Notes:</label>
-      <input type="text" name="notes" maxlength="240" placeholder="Optional notes" style="width:360px">
+    <div class="flex gap-2.5 items-center mb-2.5 flex-wrap">
+      <label class="text-xs min-w-[120px] text-slate-500 font-bold">Notes:</label>
+      <input type="text" name="notes" maxlength="240" placeholder="Optional notes" class="w-[360px] border border-slate-300 bg-white text-slate-900 rounded-xl px-3 py-2.5 min-h-[40px] text-sm focus:outline-none focus:border-primary/55 focus:ring-4 focus:ring-primary/10">
     </div>
-    <div class="form-row">
-      <label></label>
-      <button class="btn" type="submit">Add</button>
+    <div class="flex gap-2.5 items-center mb-2.5 flex-wrap">
+      <label class="text-xs min-w-[120px] text-slate-500 font-bold"></label>
+      <button class="inline-flex items-center justify-center gap-2 min-h-[40px] px-3.5 py-2 border border-slate-300 rounded-full bg-white text-slate-900 cursor-pointer text-[13px] font-bold no-underline hover:bg-slate-50 transition-colors" type="submit">Add</button>
     </div>
   </form>
 </div>
 
-<div class="section">
+<div class="mb-5">
   {% if items %}
-  <table>
+  <table class="w-full border-collapse text-sm bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm">
     <thead>
       <tr>
-        <th>ID</th>
-        <th>Canonical speaker</th>
-        <th>Notes</th>
-        <th>Updated</th>
-        <th>Samples</th>
-        <th>Potential duplicates</th>
-        <th>Actions</th>
+        <th class="bg-slate-50 text-slate-500 text-[11px] font-bold uppercase tracking-wide px-3.5 py-3 text-left border-b border-slate-200">ID</th>
+        <th class="bg-slate-50 text-slate-500 text-[11px] font-bold uppercase tracking-wide px-3.5 py-3 text-left border-b border-slate-200">Canonical speaker</th>
+        <th class="bg-slate-50 text-slate-500 text-[11px] font-bold uppercase tracking-wide px-3.5 py-3 text-left border-b border-slate-200">Notes</th>
+        <th class="bg-slate-50 text-slate-500 text-[11px] font-bold uppercase tracking-wide px-3.5 py-3 text-left border-b border-slate-200">Updated</th>
+        <th class="bg-slate-50 text-slate-500 text-[11px] font-bold uppercase tracking-wide px-3.5 py-3 text-left border-b border-slate-200">Samples</th>
+        <th class="bg-slate-50 text-slate-500 text-[11px] font-bold uppercase tracking-wide px-3.5 py-3 text-left border-b border-slate-200">Potential duplicates</th>
+        <th class="bg-slate-50 text-slate-500 text-[11px] font-bold uppercase tracking-wide px-3.5 py-3 text-left border-b border-slate-200">Actions</th>
       </tr>
     </thead>
     <tbody>
       {% for v in items %}
-      <tr id="voice-{{ v.id }}">
-        <td>{{ v.id }}</td>
-        <td>{{ v.display_name }}</td>
-        <td>{{ v.notes or '—' }}</td>
-        <td>
+      <tr id="voice-{{ v.id }}" class="hover:bg-slate-50">
+        <td class="px-3.5 py-3 border-b border-slate-100">{{ v.id }}</td>
+        <td class="px-3.5 py-3 border-b border-slate-100">{{ v.display_name }}</td>
+        <td class="px-3.5 py-3 border-b border-slate-100">{{ v.notes or '—' }}</td>
+        <td class="px-3.5 py-3 border-b border-slate-100 whitespace-nowrap">
           {{ v.updated_at[:19].replace('T',' ') if v.updated_at else '—' }}
         </td>
-        <td style="white-space:normal;max-width:320px">
+        <td class="px-3.5 py-3 border-b border-slate-100 whitespace-normal max-w-[320px]">
           {{ v.sample_count or 0 }}
           {% if v.samples_preview %}
-          <details style="margin-top:4px">
-            <summary>Inspect samples</summary>
+          <details class="mt-1">
+            <summary class="cursor-pointer text-sm">Inspect samples</summary>
             {% for s in v.samples_preview %}
-            <div style="margin-top:6px;padding-top:6px;border-top:1px solid #dde">
-              <div style="font-size:11px;color:#555">
+            <div class="mt-1.5 pt-1.5 border-t border-slate-200">
+              <div class="text-[11px] text-slate-500">
                 {{ s.recording_id or 'manual' }} / {{ s.diar_speaker_label or '—' }}
               </div>
-              <audio controls preload="none" style="height:26px;max-width:240px;margin-top:4px">
+              <audio controls preload="none" class="h-[26px] max-w-[240px] mt-1">
                 <source src="{{ s.audio_url }}" type="audio/wav">
               </audio>
             </div>
             {% endfor %}
             {% if (v.sample_count or 0) > (v.samples_preview|length) %}
-            <div style="margin-top:6px;font-size:11px;color:#555">More samples are listed below.</div>
+            <div class="mt-1.5 text-[11px] text-slate-500">More samples are listed below.</div>
             {% endif %}
           </details>
           {% endif %}
         </td>
-        <td style="white-space:normal;max-width:320px">
+        <td class="px-3.5 py-3 border-b border-slate-100 whitespace-normal max-w-[320px]">
           {% if v.duplicate_candidates %}
             {% for candidate in v.duplicate_candidates %}
-            <div style="margin-bottom:4px">
+            <div class="mb-1">
               {{ candidate.display_name }} ({{ candidate.match_count }} samples, {{ '%.2f'|format(candidate.best_score) }})
             </div>
             {% endfor %}
           {% else %}
-          <span class="placeholder" style="padding:0">No duplicate evidence yet.</span>
+          <span class="text-slate-400 italic">No duplicate evidence yet.</span>
           {% endif %}
         </td>
-        <td style="white-space:normal;max-width:360px">
+        <td class="px-3.5 py-3 border-b border-slate-100 whitespace-normal max-w-[360px]">
           {% if v.merge_targets %}
-          <form method="post" action="/voices/{{ v.id }}/merge" onsubmit="return confirm('Merge ' + this.dataset.name + ' into the selected canonical speaker?')" data-name="{{ v.display_name }}" style="margin-bottom:6px">
+          <form method="post" action="/voices/{{ v.id }}/merge" onsubmit="return confirm('Merge ' + this.dataset.name + ' into the selected canonical speaker?')" data-name="{{ v.display_name }}" class="mb-1.5">
             {% for field in return_context.hidden_fields %}
             <input type="hidden" name="{{ field.name }}" value="{{ field.value }}">
             {% endfor %}
-            <select name="target_profile_id" style="width:180px" required>
+            <select name="target_profile_id" class="w-[180px] border border-slate-300 bg-white text-slate-900 rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-primary/55 focus:ring-4 focus:ring-primary/10" required>
               <option value="">Merge into…</option>
               {% for target in v.merge_targets %}
               <option value="{{ target.id }}">{{ target.display_name }}</option>
               {% endfor %}
             </select>
-            <button class="btn" type="submit">Merge</button>
+            <button class="inline-flex items-center justify-center gap-2 min-h-[40px] px-3.5 py-2 border border-slate-300 rounded-full bg-white text-slate-900 cursor-pointer text-[13px] font-bold no-underline hover:bg-slate-50 transition-colors" type="submit">Merge</button>
           </form>
           {% endif %}
-          <form method="post" action="/voices/{{ v.id }}/delete" style="display:inline" onsubmit="return confirm('Delete canonical speaker ' + this.dataset.name + '?')" data-name="{{ v.display_name }}">
+          <form method="post" action="/voices/{{ v.id }}/delete" class="inline" onsubmit="return confirm('Delete canonical speaker ' + this.dataset.name + '?')" data-name="{{ v.display_name }}">
             {% for field in return_context.hidden_fields %}
             <input type="hidden" name="{{ field.name }}" value="{{ field.value }}">
             {% endfor %}
-            <button class="btn btn-danger" type="submit">Delete</button>
+            <button class="inline-flex items-center justify-center gap-2 min-h-[40px] px-3.5 py-2 border border-red-200 rounded-full text-red-700 bg-red-50 cursor-pointer text-[13px] font-bold no-underline hover:bg-red-100 transition-colors" type="submit">Delete</button>
           </form>
         </td>
       </tr>
@@ -126,36 +126,36 @@
     </tbody>
   </table>
   {% else %}
-  <p class="placeholder">No canonical speakers yet. Most daily speaker decisions stay in the embedded recording tab; add a reusable person here only when you need one.</p>
+  <p class="text-slate-500 italic py-5">No canonical speakers yet. Most daily speaker decisions stay in the embedded recording tab; add a reusable person here only when you need one.</p>
   {% endif %}
 </div>
 
-<div class="section">
-  <h2>Linked Samples</h2>
+<div class="mb-5">
+  <h2 class="text-base font-bold tracking-tight mb-2">Linked Samples</h2>
   {% if samples %}
-  <table>
+  <table class="w-full border-collapse text-sm bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm">
     <thead>
       <tr>
-        <th>ID</th>
-        <th>Profile</th>
-        <th>Recording</th>
-        <th>Speaker label</th>
-        <th>Snippet path</th>
-        <th>Created</th>
-        <th>Audio</th>
+        <th class="bg-slate-50 text-slate-500 text-[11px] font-bold uppercase tracking-wide px-3.5 py-3 text-left border-b border-slate-200">ID</th>
+        <th class="bg-slate-50 text-slate-500 text-[11px] font-bold uppercase tracking-wide px-3.5 py-3 text-left border-b border-slate-200">Profile</th>
+        <th class="bg-slate-50 text-slate-500 text-[11px] font-bold uppercase tracking-wide px-3.5 py-3 text-left border-b border-slate-200">Recording</th>
+        <th class="bg-slate-50 text-slate-500 text-[11px] font-bold uppercase tracking-wide px-3.5 py-3 text-left border-b border-slate-200">Speaker label</th>
+        <th class="bg-slate-50 text-slate-500 text-[11px] font-bold uppercase tracking-wide px-3.5 py-3 text-left border-b border-slate-200">Snippet path</th>
+        <th class="bg-slate-50 text-slate-500 text-[11px] font-bold uppercase tracking-wide px-3.5 py-3 text-left border-b border-slate-200">Created</th>
+        <th class="bg-slate-50 text-slate-500 text-[11px] font-bold uppercase tracking-wide px-3.5 py-3 text-left border-b border-slate-200">Audio</th>
       </tr>
     </thead>
     <tbody>
       {% for s in samples %}
-      <tr>
-        <td>{{ s.id }}</td>
-        <td>{{ s.voice_profile_name or ('#' ~ s.voice_profile_id) }}</td>
-        <td>{{ s.recording_id or '—' }}</td>
-        <td>{{ s.diar_speaker_label or '—' }}</td>
-        <td title="{{ s.snippet_path }}" style="white-space:normal;max-width:320px">{{ s.snippet_path }}</td>
-        <td>{{ s.created_at[:19].replace('T',' ') if s.created_at else '—' }}</td>
-        <td>
-          <audio controls preload="none" style="height:26px;max-width:220px">
+      <tr class="hover:bg-slate-50">
+        <td class="px-3.5 py-3 border-b border-slate-100">{{ s.id }}</td>
+        <td class="px-3.5 py-3 border-b border-slate-100">{{ s.voice_profile_name or ('#' ~ s.voice_profile_id) }}</td>
+        <td class="px-3.5 py-3 border-b border-slate-100">{{ s.recording_id or '—' }}</td>
+        <td class="px-3.5 py-3 border-b border-slate-100">{{ s.diar_speaker_label or '—' }}</td>
+        <td class="px-3.5 py-3 border-b border-slate-100 whitespace-normal max-w-[320px]" title="{{ s.snippet_path }}">{{ s.snippet_path }}</td>
+        <td class="px-3.5 py-3 border-b border-slate-100 whitespace-nowrap">{{ s.created_at[:19].replace('T',' ') if s.created_at else '—' }}</td>
+        <td class="px-3.5 py-3 border-b border-slate-100">
+          <audio controls preload="none" class="h-[26px] max-w-[220px]">
             <source src="{{ s.audio_url }}" type="audio/wav">
           </audio>
         </td>
@@ -164,7 +164,7 @@
     </tbody>
   </table>
   {% else %}
-  <p class="placeholder">No linked samples yet. Add samples from a recording speaker row.</p>
+  <p class="text-slate-500 italic py-5">No linked samples yet. Add samples from a recording speaker row.</p>
   {% endif %}
 </div>
 {% endblock %}

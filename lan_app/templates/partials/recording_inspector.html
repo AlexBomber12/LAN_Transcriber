@@ -1,22 +1,22 @@
-<article class="{% if recording_inspector.embedded %}inspector-shell inspector-shell-embedded{% endif %}" data-testid="recording-inspector">
+<article class="{% if recording_inspector.embedded %}grid gap-4{% endif %}" data-testid="recording-inspector">
 {% include "partials/recording_inspector_header.html" %}
 
 {% if rec.status in ['Processing', 'Stopping'] %}
 <div
   id="recording-progress"
-  class="{% if recording_inspector.embedded %}inspector-progress-shell{% else %}mt-4{% endif %}"
+  class="{% if recording_inspector.embedded %}p-3.5 border border-slate-200 rounded-xl bg-slate-50{% else %}mt-4{% endif %}"
   hx-get="{{ recording_inspector.progress_url }}"
   hx-trigger="load, every 2s"
   hx-swap="innerHTML"
 >
-  <div class="{% if recording_inspector.embedded %}placeholder placeholder-inline{% else %}text-sm text-slate-400 italic{% endif %}">Loading pipeline progress…</div>
+  <div class="{% if recording_inspector.embedded %}text-slate-500 italic text-sm{% else %}text-sm text-slate-400 italic{% endif %}">Loading pipeline progress…</div>
 </div>
 {% endif %}
 
-<div class="{% if recording_inspector.embedded %}inspector-tab-shell{% else %}mt-6{% endif %}">
+<div class="{% if recording_inspector.embedded %}grid gap-3.5{% else %}mt-6{% endif %}">
 {% include "partials/recording_inspector_tabs.html" %}
 
-<div class="{% if recording_inspector.embedded %}tab-content{% if not recording_inspector.embedded %} tab-content-full{% endif %}{% else %}mt-6{% endif %}">
+<div class="{% if recording_inspector.embedded %}border border-slate-200 rounded-xl bg-white p-4 shadow-sm{% else %}mt-6{% endif %}">
   {% if recording_inspector.embedded %}
   {% include "partials/recording_inspector_embedded_body.html" %}
   {% else %}
