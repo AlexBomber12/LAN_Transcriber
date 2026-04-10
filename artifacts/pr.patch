@@ -1,5 +1,5 @@
 diff --git a/artifacts/ci.log b/artifacts/ci.log
-index 29e7370..ee1eb32 100644
+index 29e7370..5e340f8 100644
 --- a/artifacts/ci.log
 +++ b/artifacts/ci.log
 @@ -102,8 +102,8 @@ Requirement already satisfied: pytz>2021.1 in /home/alexey/.pyenv/versions/3.11.
@@ -8,8 +8,8 @@ index 29e7370..ee1eb32 100644
    Building editable for lan-transcriber (pyproject.toml): finished with status 'done'
 -  Created wheel for lan-transcriber: filename=lan_transcriber-0.1.0-0.editable-py3-none-any.whl size=15462 sha256=5e44324698d788db3369e48190b9afd6f0082bbf397ee6165ccde94db5ce2508
 -  Stored in directory: /tmp/pip-ephem-wheel-cache-cdi6_mp3/wheels/3c/34/21/7d1a99d2a9e86cdb0d7c14d1c0d7dc5a97e0d170dff3df8fb1
-+  Created wheel for lan-transcriber: filename=lan_transcriber-0.1.0-0.editable-py3-none-any.whl size=15462 sha256=00c03ff1c59c49ee76e85bb12404390c27f644e2cd6b2c95a4462457551c3e8c
-+  Stored in directory: /tmp/pip-ephem-wheel-cache-_453noe7/wheels/3c/34/21/7d1a99d2a9e86cdb0d7c14d1c0d7dc5a97e0d170dff3df8fb1
++  Created wheel for lan-transcriber: filename=lan_transcriber-0.1.0-0.editable-py3-none-any.whl size=15462 sha256=0dc72008180f316a967f8572c06247def9940a8cc03d4e7daebbe6d535f174aa
++  Stored in directory: /tmp/pip-ephem-wheel-cache-rqk63bwl/wheels/3c/34/21/7d1a99d2a9e86cdb0d7c14d1c0d7dc5a97e0d170dff3df8fb1
  Successfully built lan-transcriber
  Installing collected packages: lan-transcriber
    Attempting uninstall: lan-transcriber
@@ -18,7 +18,7 @@ index 29e7370..ee1eb32 100644
  
  Required test coverage of 100% reached. Total coverage: 100.00%
 -1053 passed, 3 skipped, 11 warnings in 91.35s (0:01:31)
-+1053 passed, 3 skipped, 11 warnings in 90.32s (0:01:30)
++1053 passed, 3 skipped, 11 warnings in 90.12s (0:01:30)
  Name                                                    Stmts   Miss Branch BrPart  Cover
  -----------------------------------------------------------------------------------------
  lan_transcriber/__init__.py                                 8      0      0      0   100%
@@ -3236,6 +3236,35 @@ index 4b78179..31539ae 100644
      stage=<code>{{ stage_code }}</code>
      {% if updated_at_display and updated_at_display != '—' %}
      &nbsp;updated={{ updated_at_display }}
+diff --git a/lan_app/templates/partials/speaker_review_cards.html b/lan_app/templates/partials/speaker_review_cards.html
+index 7f1c857..fde0a6c 100644
+--- a/lan_app/templates/partials/speaker_review_cards.html
++++ b/lan_app/templates/partials/speaker_review_cards.html
+@@ -1,4 +1,15 @@
+ {% set speaker_review_compact = speaker_review_mode == 'compact' %}
++{% set _badge_classes = {
++  's-Queued': 'bg-blue-100 border-blue-300 text-blue-800',
++  's-Processing': 'bg-amber-100 border-amber-300 text-amber-800',
++  's-Stopping': 'bg-orange-100 border-orange-300 text-orange-800',
++  's-Stopped': 'bg-slate-100 border-slate-300 text-slate-800',
++  's-NeedsReview': 'bg-yellow-100 border-yellow-300 text-yellow-800',
++  's-Ready': 'bg-green-100 border-green-300 text-green-800',
++  's-Published': 'bg-violet-100 border-violet-300 text-violet-800',
++  's-Quarantine': 'bg-red-100 border-red-300 text-red-800',
++  's-Failed': 'bg-red-100 border-red-300 text-red-800',
++} %}
+ {% if rows %}
+ <div class="flex flex-col {% if speaker_review_compact %}gap-4{% else %}gap-6{% endif %}">
+   {% for row in rows %}
+@@ -19,7 +30,7 @@
+         </div>
+       </div>
+       <div class="flex items-center gap-2">
+-        <span class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold border {{ row.state_badge_class }}">{{ row.state_badge_label }}</span>
++        <span class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold border {{ _badge_classes.get(row.state_badge_class, 'bg-slate-100 border-slate-300 text-slate-800') }}">{{ row.state_badge_label }}</span>
+         {% if row.trusted_sample_state %}
+         <span class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold bg-green-100 text-green-800 border border-green-200">{{ row.trusted_sample_state.badge_label }}</span>
+         {% endif %}
 diff --git a/lan_app/templates/projects.html b/lan_app/templates/projects.html
 index 8e571e3..fe8acd9 100644
 --- a/lan_app/templates/projects.html
