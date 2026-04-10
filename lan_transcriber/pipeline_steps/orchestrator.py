@@ -72,8 +72,11 @@ from .diarization_quality import (
 )
 from .snippets import SnippetExportRequest, export_speaker_snippets, write_empty_snippets_manifest
 from .speaker_turns import (
+    DEFAULT_SPEAKER_TURN_MERGE_GAP_SEC,
+    DEFAULT_SPEAKER_TURN_MIN_WORDS,
     _diarization_segments,
     build_speaker_turns,
+    merge_short_turns,
     normalise_asr_segments,
 )
 from .multilingual_asr import run_language_aware_asr
@@ -386,6 +389,24 @@ class Settings(BaseSettings):
     diarization_min_turn_seconds: float = Field(
         default=DEFAULT_DIARIZATION_MIN_TURN_SECONDS,
         ge=0.0,
+    )
+    speaker_turn_merge_gap_sec: float = Field(
+        default=DEFAULT_SPEAKER_TURN_MERGE_GAP_SEC,
+        ge=0.0,
+        validation_alias=AliasChoices(
+            "speaker_turn_merge_gap_sec",
+            "SPEAKER_TURN_MERGE_GAP_SEC",
+            "LAN_SPEAKER_TURN_MERGE_GAP_SEC",
+        ),
+    )
+    speaker_turn_min_words: int = Field(
+        default=DEFAULT_SPEAKER_TURN_MIN_WORDS,
+        ge=0,
+        validation_alias=AliasChoices(
+            "speaker_turn_min_words",
+            "SPEAKER_TURN_MIN_WORDS",
+            "LAN_SPEAKER_TURN_MIN_WORDS",
+        ),
     )
     snippet_pad_seconds: float = Field(
         default=0.25,
@@ -2796,6 +2817,12 @@ async def run_pipeline(
             language_analysis.segments,
             diar_segments,
             default_language=language_analysis.dominant_language if language_analysis.dominant_language != "unknown" else detected_language,
+            merge_gap_sec=cfg.speaker_turn_merge_gap_sec,
+        )
+        unsmoothed_speaker_turns = merge_short_turns(
+            unsmoothed_speaker_turns,
+            min_words=cfg.speaker_turn_min_words,
+            merge_gap_sec=cfg.speaker_turn_merge_gap_sec,
         )
         diariser_mode = _diariser_mode(diariser)
         if diariser_mode == "pyannote" and not used_dummy_fallback:

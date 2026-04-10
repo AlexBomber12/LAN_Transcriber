@@ -61,6 +61,7 @@ from lan_transcriber.pipeline_steps.snippets import (
 from lan_transcriber.pipeline_steps.speaker_turns import (
     _diarization_segments,
     build_speaker_turns,
+    merge_short_turns,
     normalise_asr_segments,
 )
 from lan_transcriber.pipeline_steps.summary_builder import (
@@ -1881,6 +1882,8 @@ def _build_pipeline_settings(settings: AppSettings) -> PipelineSettings:
         diarization_dialog_retry_min_turns=settings.diarization_dialog_retry_min_turns,
         diarization_merge_gap_seconds=settings.diarization_merge_gap_seconds,
         diarization_min_turn_seconds=settings.diarization_min_turn_seconds,
+        speaker_turn_merge_gap_sec=settings.speaker_turn_merge_gap_sec,
+        speaker_turn_min_words=settings.speaker_turn_min_words,
         vad_method=settings.vad_method,
     )
 
@@ -2942,6 +2945,12 @@ def _stage_speaker_turns(ctx: _PipelineExecutionContext) -> _StageResult:
         default_language=(
             dominant_language if dominant_language != "unknown" else detected_language
         ),
+        merge_gap_sec=ctx.pipeline_settings.speaker_turn_merge_gap_sec,
+    )
+    unsmoothed_speaker_turns = merge_short_turns(
+        unsmoothed_speaker_turns,
+        min_words=ctx.pipeline_settings.speaker_turn_min_words,
+        merge_gap_sec=ctx.pipeline_settings.speaker_turn_merge_gap_sec,
     )
     diariser_mode = str(ctx.diarization_runtime.get("mode") or "unknown").strip().lower()
     if diariser_mode == "pyannote" and not ctx.diarization_runtime.get("used_dummy_fallback"):

@@ -5,6 +5,8 @@ from typing import Any, Sequence
 from lan_transcriber.utils import normalise_language_code, safe_float
 
 DEFAULT_INTERRUPTION_OVERLAP_SEC = 0.3
+DEFAULT_SPEAKER_TURN_MERGE_GAP_SEC = 4.0
+DEFAULT_SPEAKER_TURN_MIN_WORDS = 6
 
 
 def _normalise_word(word: dict[str, Any], seg_start: float, seg_end: float) -> dict[str, Any] | None:
@@ -185,6 +187,7 @@ def build_speaker_turns(
     diar_segments: Sequence[dict[str, Any]],
     *,
     default_language: str | None,
+    merge_gap_sec: float = DEFAULT_SPEAKER_TURN_MERGE_GAP_SEC,
 ) -> list[dict[str, Any]]:
     words = _words_from_segments(asr_segments, default_language=default_language)
     if not words:
@@ -200,7 +203,7 @@ def build_speaker_turns(
         if (
             current is not None
             and current["speaker"] == speaker
-            and start - safe_float(current["end"], default=start) <= 1.0
+            and start - safe_float(current["end"], default=start) <= merge_gap_sec
         ):
             current["end"] = round(max(safe_float(current["end"]), end), 3)
             current["text"] = f"{current['text']} {word['word']}".strip()
@@ -218,6 +221,98 @@ def build_speaker_turns(
     if current is not None:
         turns.append(current)
     return turns
+
+
+def _word_count(text: str) -> int:
+    return len(text.split())
+
+
+def merge_short_turns(
+    turns: Sequence[dict[str, Any]],
+    *,
+    min_words: int = DEFAULT_SPEAKER_TURN_MIN_WORDS,
+    merge_gap_sec: float = DEFAULT_SPEAKER_TURN_MERGE_GAP_SEC,
+) -> list[dict[str, Any]]:
+    """Merge short speaker turns into adjacent turns from the same speaker.
+
+    A turn is considered "short" when its text contains fewer than ``min_words``
+    whitespace-separated words. Short turns are merged backward into the
+    immediately preceding turn (preferred) or forward into the immediately
+    following turn when the previous turn cannot absorb them, but only when the
+    neighbour shares the same speaker and the inter-turn gap is below
+    ``merge_gap_sec`` seconds. Short turns whose neighbours are different
+    speakers are kept as-is so no transcript content is discarded.
+    """
+    out: list[dict[str, Any]] = []
+    pending: list[dict[str, Any]] = [dict(turn) for turn in turns if isinstance(turn, dict)]
+    if not pending:
+        return out
+
+    idx = 0
+    while idx < len(pending):
+        turn = pending[idx]
+        text = str(turn.get("text") or "").strip()
+        if _word_count(text) >= min_words:
+            out.append(turn)
+            idx += 1
+            continue
+
+        prev_turn = out[-1] if out else None
+        prev_same_speaker = (
+            prev_turn is not None
+            and str(prev_turn.get("speaker")) == str(turn.get("speaker"))
+        )
+        prev_gap = (
+            safe_float(turn.get("start"), default=0.0)
+            - safe_float(prev_turn.get("end"), default=0.0)
+            if prev_turn is not None
+            else float("inf")
+        )
+
+        next_turn = pending[idx + 1] if idx + 1 < len(pending) else None
+        next_same_speaker = (
+            next_turn is not None
+            and str(next_turn.get("speaker")) == str(turn.get("speaker"))
+        )
+        next_gap = (
+            safe_float(next_turn.get("start"), default=0.0)
+            - safe_float(turn.get("end"), default=0.0)
+            if next_turn is not None
+            else float("inf")
+        )
+
+        if prev_same_speaker and prev_gap < merge_gap_sec:
+            prev_text = str(prev_turn.get("text") or "").strip()
+            merged_text = f"{prev_text} {text}".strip() if text else prev_text
+            prev_turn["text"] = merged_text
+            prev_turn["end"] = round(
+                max(
+                    safe_float(prev_turn.get("end"), default=0.0),
+                    safe_float(turn.get("end"), default=0.0),
+                ),
+                3,
+            )
+            idx += 1
+            continue
+
+        if next_same_speaker and next_gap < merge_gap_sec:
+            next_text = str(next_turn.get("text") or "").strip()
+            merged_text = f"{text} {next_text}".strip() if next_text else text
+            next_turn["text"] = merged_text
+            next_turn["start"] = round(
+                min(
+                    safe_float(next_turn.get("start"), default=0.0),
+                    safe_float(turn.get("start"), default=0.0),
+                ),
+                3,
+            )
+            idx += 1
+            continue
+
+        out.append(turn)
+        idx += 1
+
+    return out
 
 
 def _normalise_turns(turns: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -301,7 +396,10 @@ def count_interruptions(
 
 __all__ = [
     "DEFAULT_INTERRUPTION_OVERLAP_SEC",
+    "DEFAULT_SPEAKER_TURN_MERGE_GAP_SEC",
+    "DEFAULT_SPEAKER_TURN_MIN_WORDS",
     "normalise_asr_segments",
     "build_speaker_turns",
+    "merge_short_turns",
     "count_interruptions",
 ]

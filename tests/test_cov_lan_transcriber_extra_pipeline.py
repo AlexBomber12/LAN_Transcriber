@@ -2834,6 +2834,7 @@ def test_speaker_turn_helpers_cover_remaining_branches() -> None:
         ],
         [{"start": 0.0, "end": 4.0, "speaker": "S1"}],
         default_language=None,
+        merge_gap_sec=1.0,
     )
     assert len(turns) == 2
 
@@ -2844,6 +2845,7 @@ def test_speaker_turn_helpers_cover_remaining_branches() -> None:
         ],
         [{"start": 0.0, "end": 4.0, "speaker": "S1"}],
         default_language=None,
+        merge_gap_sec=1.0,
     )
     assert len(turns_no_language) == 2
 
