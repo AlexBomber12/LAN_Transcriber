@@ -1,15 +1,22 @@
 <section
   id="control-center-inspector-pane"
-  class="w-full lg:w-[45%] bg-white flex flex-col shadow-xl overflow-hidden"
-  hx-get="{{ control_center_state.inspector_pane_url }}"
-  hx-trigger="{% if recording_inspector and recording_inspector.auto_refresh %}refresh-control-center-inspector from:body, every 2s{% else %}refresh-control-center-inspector from:body{% endif %}"
-  hx-target="this"
-  hx-swap="outerHTML"
+  class="w-full lg:w-[45%] bg-white flex flex-col shadow-xl overflow-y-auto"
 >
-  {% if recording_inspector %}
-  {% include "partials/control_center/recording_details_card.html" %}
-  {% else %}
-  {% set empty_inspector = control_center_empty_inspector %}
-  {% include "partials/control_center/inspector_empty.html" %}
-  {% endif %}
+  <div
+    id="control-center-inspector-pane-content"
+    class="flex flex-col flex-1"
+    hx-get="{{ control_center_state.inspector_pane_url }}"
+    hx-trigger="{% if recording_inspector and recording_inspector.auto_refresh %}refresh-control-center-inspector from:body, every 2s{% else %}refresh-control-center-inspector from:body{% endif %}"
+    hx-target="this"
+    hx-swap="outerHTML"
+    hx-select="#control-center-inspector-pane-content"
+    hx-disinherit="*"
+  >
+    {% if recording_inspector %}
+    {% include "partials/control_center/recording_details_card.html" %}
+    {% else %}
+    {% set empty_inspector = control_center_empty_inspector %}
+    {% include "partials/control_center/inspector_empty.html" %}
+    {% endif %}
+  </div>
 </section>

@@ -1,5 +1,5 @@
 {% set details = embedded_recording_details or {} %}
-<article class="flex flex-col h-full">
+<article class="flex flex-col flex-1">
   <div class="px-6 py-4 border-b border-slate-200 bg-slate-50">
     <div class="flex items-start justify-between">
       <div>
@@ -22,7 +22,7 @@
     </div>
   </div>
 
-  <div class="flex-1 overflow-y-auto p-6 space-y-6" data-inspector-scroll>
+  <div class="flex-1 p-6 space-y-6">
     <div class="space-y-3">
       <h4 class="text-xs font-bold uppercase tracking-widest text-slate-400">KEY METADATA</h4>
       <div class="grid grid-cols-2 gap-x-8 gap-y-3">
@@ -40,9 +40,16 @@
       {% if details.speaker_rows %}
       <div class="space-y-2">
         {% for speaker in details.speaker_rows %}
+        {% set _raw_speaker_label = speaker.primary_label or '' %}
+        {% if _raw_speaker_label[:8] == 'SPEAKER_' %}
+          {% set _speaker_index_digits = _raw_speaker_label[8:] %}
+          {% set _speaker_avatar_label = 'S' ~ (_speaker_index_digits.lstrip('0') or '0') %}
+        {% else %}
+          {% set _speaker_avatar_label = _raw_speaker_label[:2]|upper %}
+        {% endif %}
         <div class="p-3 border border-slate-200 rounded-lg flex items-center justify-between">
           <div class="flex items-center gap-3">
-            <div class="w-10 h-10 rounded bg-slate-100 flex items-center justify-center font-bold text-slate-500 text-sm">{{ speaker.primary_label[:2] }}</div>
+            <div class="w-10 h-10 rounded bg-slate-100 flex items-center justify-center font-bold text-slate-500 text-sm">{{ _speaker_avatar_label }}</div>
             <div>
               <p class="text-sm font-bold">{{ speaker.primary_label }}</p>
               <p class="text-[10px] text-slate-500">{{ speaker.secondary_label }}</p>
