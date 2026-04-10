@@ -17,6 +17,10 @@ from lan_transcriber.pipeline_steps.diarization_quality import (
     DEFAULT_DIARIZATION_MERGE_GAP_SECONDS,
     DEFAULT_DIARIZATION_MIN_TURN_SECONDS,
 )
+from lan_transcriber.pipeline_steps.speaker_merge import (
+    DEFAULT_SPEAKER_MERGE_MAX_SEGMENTS,
+    DEFAULT_SPEAKER_MERGE_SIMILARITY_THRESHOLD,
+)
 from lan_transcriber.pipeline_steps.speaker_turns import (
     DEFAULT_SPEAKER_TURN_MERGE_GAP_SEC,
     DEFAULT_SPEAKER_TURN_MIN_WORDS,
@@ -359,6 +363,30 @@ class AppSettings(BaseSettings):
         validation_alias=AliasChoices(
             "LAN_SPEAKER_TURN_MIN_WORDS",
             "SPEAKER_TURN_MIN_WORDS",
+        ),
+    )
+    speaker_merge_enabled: bool = Field(
+        default=True,
+        validation_alias=AliasChoices(
+            "LAN_SPEAKER_MERGE_ENABLED",
+            "SPEAKER_MERGE_ENABLED",
+        ),
+    )
+    speaker_merge_similarity_threshold: float = Field(
+        default=DEFAULT_SPEAKER_MERGE_SIMILARITY_THRESHOLD,
+        ge=0.0,
+        le=1.0,
+        validation_alias=AliasChoices(
+            "LAN_SPEAKER_MERGE_SIMILARITY_THRESHOLD",
+            "SPEAKER_MERGE_SIMILARITY_THRESHOLD",
+        ),
+    )
+    speaker_merge_max_segments: int = Field(
+        default=DEFAULT_SPEAKER_MERGE_MAX_SEGMENTS,
+        ge=1,
+        validation_alias=AliasChoices(
+            "LAN_SPEAKER_MERGE_MAX_SEGMENTS",
+            "SPEAKER_MERGE_MAX_SEGMENTS",
         ),
     )
     vad_method: Literal["silero", "pyannote"] = "silero"

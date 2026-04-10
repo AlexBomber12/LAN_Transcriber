@@ -389,6 +389,226 @@ async def test_pipeline_writes_diarization_metadata_and_smooths_retry_output(
 
 @pytest.mark.asyncio
 @respx.mock
+async def test_pipeline_applies_speaker_merge_when_centroids_match(
+    tmp_path: Path,
+    mocker,
+):
+    mocker.patch(
+        "whisperx.transcribe",
+        return_value=(
+            [
+                {
+                    "start": 0.0,
+                    "end": 10.0,
+                    "text": "hello team this is the first speaker",
+                    "words": [
+                        {"start": 0.0, "end": 10.0, "word": "hello team this is the first speaker"}
+                    ],
+                },
+                {
+                    "start": 12.0,
+                    "end": 22.0,
+                    "text": "hello team this is the second speaker",
+                    "words": [
+                        {"start": 12.0, "end": 22.0, "word": "hello team this is the second speaker"}
+                    ],
+                },
+            ],
+            {"language": "en", "language_probability": 0.95},
+        ),
+    )
+    respx.post("http://127.0.0.1:8000/v1/chat/completions").mock(
+        return_value=httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": "- summary"}}]},
+        ),
+    )
+    mocker.patch(
+        "transformers.pipeline",
+        lambda *a, **k: lambda text: [{"label": "positive", "score": 0.7}],
+    )
+
+    cfg = pipeline.Settings(
+        speaker_db=tmp_path / "db.yaml",
+        tmp_root=tmp_path,
+        recordings_root=tmp_path / "recordings",
+        speaker_merge_enabled=True,
+        speaker_merge_similarity_threshold=0.5,
+    )
+
+    diariser = TwoSpeakerDiariser()
+    # Inject a cached fake embedding model so the orchestrator skips the
+    # pyannote.audio import path and calls our stub directly.
+    diariser._lan_speaker_embedding_model = (  # type: ignore[attr-defined]
+        lambda audio_path, start, end: [1.0, 0.0]
+    )
+
+    await pipeline.run_pipeline(
+        fake_audio(tmp_path, "merge.mp3"),
+        cfg,
+        llm_client.LLMClient(),
+        diariser,
+        recording_id="rec-merge-1",
+        precheck=precheck_ok(),
+    )
+
+    derived = cfg.recordings_root / "rec-merge-1" / "derived"
+    metadata = json.loads(
+        (derived / "diarization_metadata.json").read_text(encoding="utf-8")
+    )
+    assert metadata["speaker_merges"]
+    # All segments must collapse to a single speaker after the merge.
+    diar_data = json.loads((derived / "segments.json").read_text(encoding="utf-8"))
+    assert len({row["speaker"] for row in diar_data}) == 1
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_pipeline_writes_empty_speaker_merges_when_voices_differ(
+    tmp_path: Path,
+    mocker,
+):
+    mocker.patch(
+        "whisperx.transcribe",
+        return_value=(
+            [
+                {
+                    "start": 0.0,
+                    "end": 10.0,
+                    "text": "alpha beta gamma delta epsilon",
+                    "words": [
+                        {"start": 0.0, "end": 10.0, "word": "alpha beta gamma delta epsilon"}
+                    ],
+                },
+                {
+                    "start": 12.0,
+                    "end": 22.0,
+                    "text": "zeta eta theta iota kappa",
+                    "words": [
+                        {"start": 12.0, "end": 22.0, "word": "zeta eta theta iota kappa"}
+                    ],
+                },
+            ],
+            {"language": "en", "language_probability": 0.95},
+        ),
+    )
+    respx.post("http://127.0.0.1:8000/v1/chat/completions").mock(
+        return_value=httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": "- summary"}}]},
+        ),
+    )
+    mocker.patch(
+        "transformers.pipeline",
+        lambda *a, **k: lambda text: [{"label": "positive", "score": 0.7}],
+    )
+
+    cfg = pipeline.Settings(
+        speaker_db=tmp_path / "db.yaml",
+        tmp_root=tmp_path,
+        recordings_root=tmp_path / "recordings",
+    )
+
+    def _embed(audio_path, start, end):
+        # Two orthogonal vectors so the pair similarity is 0, well below the
+        # threshold. This exercises the "embedding model ran, no merges" path.
+        return [1.0, 0.0] if start < 11.0 else [0.0, 1.0]
+
+    diariser = TwoSpeakerDiariser()
+    diariser._lan_speaker_embedding_model = _embed  # type: ignore[attr-defined]
+
+    await pipeline.run_pipeline(
+        fake_audio(tmp_path, "merge-orthogonal.mp3"),
+        cfg,
+        llm_client.LLMClient(),
+        diariser,
+        recording_id="rec-merge-orthogonal-1",
+        precheck=precheck_ok(),
+    )
+
+    derived = cfg.recordings_root / "rec-merge-orthogonal-1" / "derived"
+    metadata = json.loads(
+        (derived / "diarization_metadata.json").read_text(encoding="utf-8")
+    )
+    assert metadata["speaker_merges"] == {}
+    diar_data = json.loads((derived / "segments.json").read_text(encoding="utf-8"))
+    assert len({row["speaker"] for row in diar_data}) == 2
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_pipeline_respects_speaker_merge_disabled_flag(
+    tmp_path: Path,
+    mocker,
+):
+    mocker.patch(
+        "whisperx.transcribe",
+        return_value=(
+            [
+                {
+                    "start": 0.0,
+                    "end": 10.0,
+                    "text": "alpha beta gamma delta epsilon",
+                    "words": [
+                        {"start": 0.0, "end": 10.0, "word": "alpha beta gamma delta epsilon"}
+                    ],
+                },
+                {
+                    "start": 12.0,
+                    "end": 22.0,
+                    "text": "zeta eta theta iota kappa",
+                    "words": [
+                        {"start": 12.0, "end": 22.0, "word": "zeta eta theta iota kappa"}
+                    ],
+                },
+            ],
+            {"language": "en", "language_probability": 0.95},
+        ),
+    )
+    respx.post("http://127.0.0.1:8000/v1/chat/completions").mock(
+        return_value=httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": "- summary"}}]},
+        ),
+    )
+    mocker.patch(
+        "transformers.pipeline",
+        lambda *a, **k: lambda text: [{"label": "positive", "score": 0.7}],
+    )
+
+    cfg = pipeline.Settings(
+        speaker_db=tmp_path / "db.yaml",
+        tmp_root=tmp_path,
+        recordings_root=tmp_path / "recordings",
+        speaker_merge_enabled=False,
+    )
+
+    diariser = TwoSpeakerDiariser()
+    # Even with identical centroids the disabled flag must short-circuit.
+    diariser._lan_speaker_embedding_model = (  # type: ignore[attr-defined]
+        lambda audio_path, start, end: [1.0, 0.0]
+    )
+
+    await pipeline.run_pipeline(
+        fake_audio(tmp_path, "merge-disabled.mp3"),
+        cfg,
+        llm_client.LLMClient(),
+        diariser,
+        recording_id="rec-merge-disabled-1",
+        precheck=precheck_ok(),
+    )
+
+    derived = cfg.recordings_root / "rec-merge-disabled-1" / "derived"
+    metadata = json.loads(
+        (derived / "diarization_metadata.json").read_text(encoding="utf-8")
+    )
+    assert metadata["speaker_merges"] == {}
+    diar_data = json.loads((derived / "segments.json").read_text(encoding="utf-8"))
+    assert len({row["speaker"] for row in diar_data}) == 2
+
+
+@pytest.mark.asyncio
+@respx.mock
 async def test_pipeline_marks_dummy_fallback_in_diarization_metadata(
     tmp_path: Path,
     mocker,

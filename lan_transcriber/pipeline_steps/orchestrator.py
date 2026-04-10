@@ -74,6 +74,12 @@ from .diarization_quality import (
     smooth_speaker_turns,
 )
 from .snippets import SnippetExportRequest, export_speaker_snippets, write_empty_snippets_manifest
+from .speaker_merge import (
+    DEFAULT_SPEAKER_MERGE_MAX_SEGMENTS,
+    DEFAULT_SPEAKER_MERGE_SIMILARITY_THRESHOLD,
+    EmbeddingModel,
+    merge_similar_speakers,
+)
 from .speaker_turns import (
     DEFAULT_SPEAKER_TURN_MERGE_GAP_SEC,
     DEFAULT_SPEAKER_TURN_MIN_WORDS,
@@ -454,6 +460,33 @@ class Settings(BaseSettings):
     snippet_max_per_speaker: int = Field(
         default=3,
         ge=0,
+    )
+    speaker_merge_enabled: bool = Field(
+        default=True,
+        validation_alias=AliasChoices(
+            "speaker_merge_enabled",
+            "SPEAKER_MERGE_ENABLED",
+            "LAN_SPEAKER_MERGE_ENABLED",
+        ),
+    )
+    speaker_merge_similarity_threshold: float = Field(
+        default=DEFAULT_SPEAKER_MERGE_SIMILARITY_THRESHOLD,
+        ge=0.0,
+        le=1.0,
+        validation_alias=AliasChoices(
+            "speaker_merge_similarity_threshold",
+            "SPEAKER_MERGE_SIMILARITY_THRESHOLD",
+            "LAN_SPEAKER_MERGE_SIMILARITY_THRESHOLD",
+        ),
+    )
+    speaker_merge_max_segments: int = Field(
+        default=DEFAULT_SPEAKER_MERGE_MAX_SEGMENTS,
+        ge=1,
+        validation_alias=AliasChoices(
+            "speaker_merge_max_segments",
+            "SPEAKER_MERGE_MAX_SEGMENTS",
+            "LAN_SPEAKER_MERGE_MAX_SEGMENTS",
+        ),
     )
 
     class Config:
@@ -901,6 +934,89 @@ def _is_degraded_diarization(
     return _diariser_mode(diariser) not in {"pyannote", "unknown"}
 
 
+def _diariser_pipeline_model(diariser: Diariser) -> Any | None:
+    """Best-effort access to the underlying pyannote pipeline model."""
+    for attr in ("_pipeline_model", "pipeline_model", "pipeline"):
+        model = getattr(diariser, attr, None)
+        if model is not None and model is not diariser:
+            return model
+    return None
+
+
+def _resolve_pyannote_embedding_model(diariser: Diariser) -> EmbeddingModel | None:
+    """Resolve a speaker embedding callable from the loaded diarization pipeline.
+
+    Returns a callable ``(audio_path, start, end) -> np.ndarray`` or ``None`` if
+    no usable embedding model can be obtained. Failures are logged and swallowed
+    so the pipeline still runs when the merge step cannot be enabled.
+    """
+
+    cached = getattr(diariser, "_lan_speaker_embedding_model", None)
+    if cached is not None:
+        return cached
+    if getattr(diariser, "_lan_speaker_embedding_unavailable", False):
+        return None
+    pipeline_model = _diariser_pipeline_model(diariser)
+    if pipeline_model is None:
+        setattr(diariser, "_lan_speaker_embedding_unavailable", True)
+        return None
+
+    inference: Any = None
+    embedding_attr: Any = None
+    for attr in ("_embedding", "embedding"):
+        candidate = getattr(pipeline_model, attr, None)
+        if candidate is not None:
+            embedding_attr = candidate
+            break
+
+    if embedding_attr is None:
+        try:
+            from pyannote.audio import Inference  # type: ignore
+        except Exception as exc:
+            _logger.warning(
+                "speaker_merge: pyannote.audio.Inference unavailable; "
+                "skipping merge step (%s)",
+                exc,
+            )
+            setattr(diariser, "_lan_speaker_embedding_unavailable", True)
+            return None
+        model_name = getattr(pipeline_model, "embedding_model", None) or (
+            "pyannote/wespeaker-voxceleb-resnet34-LM"
+        )
+        try:
+            inference = Inference(model_name, window="whole")
+        except Exception as exc:
+            _logger.warning(
+                "speaker_merge: failed to load embedding model %s: %s",
+                model_name,
+                exc,
+            )
+            setattr(diariser, "_lan_speaker_embedding_unavailable", True)
+            return None
+    else:
+        inference = embedding_attr
+
+    def _embed(audio_path: Path, start: float, end: float):
+        try:
+            from pyannote.core import Segment  # type: ignore
+        except Exception:  # pragma: no cover - pyannote missing at runtime
+            return None
+        try:
+            crop = inference.crop(str(audio_path), Segment(float(start), float(end)))
+        except Exception as exc:
+            _logger.debug(
+                "speaker_merge: embedding inference failed: %s (%.3f-%.3f)",
+                exc,
+                start,
+                end,
+            )
+            return None
+        return crop
+
+    setattr(diariser, "_lan_speaker_embedding_model", _embed)
+    return _embed
+
+
 async def _maybe_retry_dialog_diarization(
     *,
     diariser: Diariser,
@@ -1066,6 +1182,7 @@ def _write_diarization_metadata_artifact(
     cfg: Settings,
     smoothing_result,
     used_dummy_fallback: bool,
+    speaker_merges: dict[str, str] | None = None,
 ) -> None:
     metadata = _diariser_runtime_metadata(diariser)
     diariser_mode = _diariser_mode(diariser)
@@ -1140,6 +1257,7 @@ def _write_diarization_metadata_artifact(
         payload["initial_hints"] = initial_hints
     if profile_selection:
         payload["profile_selection"] = profile_selection
+    payload["speaker_merges"] = dict(speaker_merges or {})
     atomic_write_json(artifacts.diarization_metadata_json_path, payload)
 
 
@@ -2880,6 +2998,38 @@ async def run_pipeline(
                 stats["total_seconds"],
                 int(stats["segments"]),
             )
+        speaker_merge_map: dict[str, str] = {}
+        if (
+            cfg.speaker_merge_enabled
+            and not used_dummy_fallback
+            and _diariser_mode(diariser) == "pyannote"
+            and len({str(row.get("speaker") or "") for row in diar_segments}) >= 2
+        ):
+            embedding_model = _resolve_pyannote_embedding_model(diariser)
+            if embedding_model is None:
+                _best_effort_step_log(
+                    step_log_callback,
+                    "speaker_merge skipped: embedding model unavailable",
+                )
+            else:
+                diar_segments, speaker_merge_map = merge_similar_speakers(
+                    diar_segments,
+                    audio_path=audio_path,
+                    embedding_model=embedding_model,
+                    similarity_threshold=cfg.speaker_merge_similarity_threshold,
+                    max_segments_per_speaker=cfg.speaker_merge_max_segments,
+                )
+                if speaker_merge_map:
+                    _best_effort_step_log(
+                        step_log_callback,
+                        (
+                            "speaker_merge applied merges="
+                            + ",".join(
+                                f"{src}->{dst}"
+                                for src, dst in sorted(speaker_merge_map.items())
+                            )
+                        ),
+                    )
         unsmoothed_speaker_turns = build_speaker_turns(
             language_analysis.segments,
             diar_segments,
@@ -2917,6 +3067,7 @@ async def run_pipeline(
             cfg=cfg,
             smoothing_result=smoothing_result,
             used_dummy_fallback=used_dummy_fallback,
+            speaker_merges=speaker_merge_map,
         )
 
         aliases = _load_aliases(cfg.speaker_db)

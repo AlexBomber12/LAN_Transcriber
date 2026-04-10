@@ -4,33 +4,34 @@ The event loop scope for asynchronous fixtures will default to the fixture cachi
 
   warnings.warn(PytestDeprecationWarning(_DEFAULT_FIXTURE_LOOP_SCOPE_UNSET))
 ........................................................................ [  6%]
-........................................................................ [ 13%]
-........................................................................ [ 20%]
-........................................................................ [ 26%]
-........................................................................ [ 33%]
-........................................................................ [ 40%]
-........................................................................ [ 46%]
-........................................................................ [ 53%]
-........................................................................ [ 60%]
-........................................................................ [ 67%]
-........................................................................ [ 73%]
-.......................................s................................ [ 80%]
-........................................................................ [ 87%]
-........................................................................ [ 93%]
-..................................................................       [100%]
+........................................................................ [ 12%]
+........................................................................ [ 19%]
+........................................................................ [ 25%]
+........................................................................ [ 32%]
+........................................................................ [ 38%]
+........................................................................ [ 45%]
+........................................................................ [ 51%]
+........................................................................ [ 57%]
+........................................................................ [ 64%]
+........................................................................ [ 70%]
+..........................................s............................. [ 77%]
+........................................................................ [ 83%]
+........................................................................ [ 90%]
+........................................................................ [ 96%]
+.......................................                                  [100%]
 =============================== warnings summary ===============================
 lan_transcriber/pipeline_steps/precheck.py:3
   /home/alexey/LAN_Transcriber/lan_transcriber/pipeline_steps/precheck.py:3: DeprecationWarning: 'audioop' is deprecated and slated for removal in Python 3.13
     import audioop
 
-lan_transcriber/pipeline_steps/orchestrator.py:250
+lan_transcriber/pipeline_steps/orchestrator.py:256
 tests/test_imports.py::test_imports[lan_transcriber.pipeline_steps.orchestrator]
 tests/test_imports.py::test_orchestrator_import_does_not_import_whisperx
-  /home/alexey/LAN_Transcriber/lan_transcriber/pipeline_steps/orchestrator.py:250: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+  /home/alexey/LAN_Transcriber/lan_transcriber/pipeline_steps/orchestrator.py:256: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
     class Settings(BaseSettings):
 
-lan_app/config.py:49
-  /home/alexey/LAN_Transcriber/lan_app/config.py:49: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+lan_app/config.py:53
+  /home/alexey/LAN_Transcriber/lan_app/config.py:53: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
     class AppSettings(BaseSettings):
 
 tests/test_cov_lan_app_health_worker.py::test_healthchecks_module_main_guard
@@ -56,13 +57,13 @@ tests/test_warm_models.py::test_warm_models_module_main_guard
 ---------- coverage: platform linux, python 3.11.9-final-0 -----------
 Name    Stmts   Miss Branch BrPart  Cover   Missing
 ---------------------------------------------------
-TOTAL   14087      0   4686      0   100%
+TOTAL   14341      0   4800      0   100%
 
-63 files skipped due to complete coverage.
+64 files skipped due to complete coverage.
 Coverage HTML written to dir htmlcov
 
 Required test coverage of 100% reached. Total coverage: 100.00%
-1073 passed, 3 skipped, 11 warnings in 94.86s (0:01:34)
+1118 passed, 3 skipped, 11 warnings in 97.36s (0:01:37)
 Name                                                    Stmts   Miss Branch BrPart  Cover
 -----------------------------------------------------------------------------------------
 lan_transcriber/__init__.py                                 8      0      0      0   100%
@@ -85,16 +86,17 @@ lan_transcriber/pipeline_steps/artifacts.py                19      0      0     
 lan_transcriber/pipeline_steps/diarization_quality.py     318      0    120      0   100%
 lan_transcriber/pipeline_steps/language.py                155      0     64      0   100%
 lan_transcriber/pipeline_steps/multilingual_asr.py        239      0     88      0   100%
-lan_transcriber/pipeline_steps/orchestrator.py           1190      0    340      0   100%
+lan_transcriber/pipeline_steps/orchestrator.py           1252      0    362      0   100%
 lan_transcriber/pipeline_steps/precheck.py                116      0     46      0   100%
 lan_transcriber/pipeline_steps/snippets.py                231      0     84      0   100%
+lan_transcriber/pipeline_steps/speaker_merge.py           188      0     92      0   100%
 lan_transcriber/pipeline_steps/speaker_turns.py           240      0    116      0   100%
 lan_transcriber/pipeline_steps/summary_builder.py         276      0     98      0   100%
 lan_transcriber/runtime_paths.py                           21      0      4      0   100%
 lan_transcriber/torch_safe_globals.py                     126      0     40      0   100%
 lan_transcriber/utils.py                                   50      0     30      0   100%
 -----------------------------------------------------------------------------------------
-TOTAL                                                    4185      0   1402      0   100%
+TOTAL                                                    4435      0   1516      0   100%
 Name                               Stmts   Miss Branch BrPart  Cover
 --------------------------------------------------------------------
 lan_app/__init__.py                    1      0      0      0   100%
@@ -105,7 +107,7 @@ lan_app/calendar/__init__.py           4      0      0      0   100%
 lan_app/calendar/ics.py              235      0     88      0   100%
 lan_app/calendar/matching.py         333      0    132      0   100%
 lan_app/calendar/service.py           66      0     12      0   100%
-lan_app/config.py                    112      0     16      0   100%
+lan_app/config.py                    116      0     16      0   100%
 lan_app/constants.py                  30      0      0      0   100%
 lan_app/conversation_metrics.py      380      0    150      0   100%
 lan_app/db.py                       1434      0    318      0   100%
@@ -133,4 +135,4 @@ lan_app/worker.py                     28      0      2      0   100%
 lan_app/worker_tasks.py             1710      0    496      0   100%
 lan_app/workers.py                    10      0      0      0   100%
 --------------------------------------------------------------------
-TOTAL                               9902      0   3284      0   100%
+TOTAL                               9906      0   3284      0   100%

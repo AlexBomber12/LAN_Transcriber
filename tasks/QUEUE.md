@@ -674,7 +674,7 @@ Queue (in order)
 - Depends on: PR-DIARIZATION-FLICKER-01
 
 135) PR-SPEAKER-MERGE-EMBEDDINGS-01: Auto-merge diarization speakers with similar voice embeddings and no temporal overlap
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-SPEAKER-MERGE-EMBEDDINGS-01.md
 - Depends on: PR-DIARIZATION-FLICKER-01
 136) PR-MERGE-DECAPITALIZE-01: Decapitalize false sentence starts left over from segment merging
