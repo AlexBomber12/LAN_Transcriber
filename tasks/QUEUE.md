@@ -664,7 +664,7 @@ Queue (in order)
 - Depends on: PR-UI-POLISH-02
 
 133) PR-DIARIZATION-FLICKER-01: Filter out flickering diarization speakers that appear briefly surrounded by the same dominant speaker
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-DIARIZATION-FLICKER-01.md
 - Depends on: PR-TRANSCRIPT-MERGE-01
 

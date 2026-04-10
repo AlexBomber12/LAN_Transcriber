@@ -15,6 +15,8 @@ DEFAULT_DIALOG_RETRY_MIN_DURATION_SECONDS = 20.0
 DEFAULT_DIALOG_RETRY_MIN_TURNS = 6
 DEFAULT_DIARIZATION_MERGE_GAP_SECONDS = 0.5
 DEFAULT_DIARIZATION_MIN_TURN_SECONDS = 0.5
+DEFAULT_DIARIZATION_FLICKER_MIN_SECONDS = 3.0
+DEFAULT_DIARIZATION_FLICKER_MAX_CONSECUTIVE = 2
 AUTO_PROFILE_DEFAULT_INITIAL_PROFILE = "meeting"
 AUTO_PROFILE_DIALOG_MAX_SPEAKERS = 4
 AUTO_PROFILE_DIALOG_MIN_TOP_TWO_COVERAGE = 0.85
@@ -557,6 +559,123 @@ def smooth_speaker_turns(
     )
 
 
+def _segment_distance(
+    segment: dict[str, Any],
+    other: dict[str, Any],
+) -> float:
+    seg_start = safe_float(segment.get("start"), default=0.0)
+    seg_end = safe_float(segment.get("end"), default=seg_start)
+    other_start = safe_float(other.get("start"), default=0.0)
+    other_end = safe_float(other.get("end"), default=other_start)
+    if other_end < seg_start:
+        return seg_start - other_end
+    if other_start > seg_end:
+        return other_start - seg_end
+    return 0.0
+
+
+def filter_flickering_speakers(
+    diar_segments: list[dict[str, Any]],
+    *,
+    min_total_seconds: float = DEFAULT_DIARIZATION_FLICKER_MIN_SECONDS,
+    max_consecutive_segments: int = DEFAULT_DIARIZATION_FLICKER_MAX_CONSECUTIVE,
+) -> list[dict[str, Any]]:
+    """Reassign brief, isolated diarization speakers to nearest stable speaker.
+
+    A speaker is considered a "flicker" speaker when both conditions hold:
+    - the speaker's total speech duration across ``diar_segments`` is strictly
+      less than ``min_total_seconds``;
+    - the speaker never appears in more than ``max_consecutive_segments``
+      consecutive diarization segments (i.e. they only show up as brief
+      isolated bursts surrounded by other speakers).
+
+    Each diarization segment whose speaker is a flicker is relabelled with the
+    speaker of the closest non-flicker segment by time proximity. If every
+    speaker in the input is a flicker speaker (e.g. very short recording with
+    only tiny bursts), the original list is returned unchanged so no transcript
+    content is lost.
+
+    The returned list is sorted by start time.
+    """
+
+    if not diar_segments:
+        return []
+
+    sorted_segments = sorted(
+        (dict(seg) for seg in diar_segments),
+        key=lambda row: (
+            safe_float(row.get("start"), default=0.0),
+            safe_float(row.get("end"), default=0.0),
+            str(row.get("speaker") or ""),
+        ),
+    )
+
+    totals: dict[str, float] = {}
+    for seg in sorted_segments:
+        speaker = str(seg.get("speaker") or "")
+        totals[speaker] = totals.get(speaker, 0.0) + _segment_duration(seg)
+
+    max_run: dict[str, int] = {}
+    current_speaker: str | None = None
+    current_run = 0
+    for seg in sorted_segments:
+        speaker = str(seg.get("speaker") or "")
+        if speaker == current_speaker:
+            current_run += 1
+        else:
+            current_speaker = speaker
+            current_run = 1
+        if current_run > max_run.get(speaker, 0):
+            max_run[speaker] = current_run
+
+    safe_min_total = max(safe_float(min_total_seconds, default=0.0), 0.0)
+    safe_max_consecutive = max(int(max_consecutive_segments), 0)
+
+    flicker_speakers = {
+        speaker
+        for speaker, total in totals.items()
+        if total < safe_min_total
+        and max_run.get(speaker, 0) <= safe_max_consecutive
+    }
+
+    if not flicker_speakers:
+        return sorted_segments
+
+    non_flicker_segments = [
+        seg
+        for seg in sorted_segments
+        if str(seg.get("speaker") or "") not in flicker_speakers
+    ]
+    if not non_flicker_segments:
+        return sorted_segments
+
+    cleaned: list[dict[str, Any]] = []
+    for seg in sorted_segments:
+        speaker = str(seg.get("speaker") or "")
+        if speaker in flicker_speakers:
+            nearest = min(
+                non_flicker_segments,
+                key=lambda candidate: (
+                    _segment_distance(seg, candidate),
+                    safe_float(candidate.get("start"), default=0.0),
+                ),
+            )
+            new_segment = dict(seg)
+            new_segment["speaker"] = str(nearest.get("speaker") or "")
+            cleaned.append(new_segment)
+        else:
+            cleaned.append(dict(seg))
+
+    cleaned.sort(
+        key=lambda row: (
+            safe_float(row.get("start"), default=0.0),
+            safe_float(row.get("end"), default=0.0),
+            str(row.get("speaker") or ""),
+        )
+    )
+    return cleaned
+
+
 __all__ = [
     "AUTO_PROFILE_DEFAULT_INITIAL_PROFILE",
     "AUTO_PROFILE_DIALOG_MAX_OVERLAP_RATIO",
@@ -572,6 +691,8 @@ __all__ = [
     "DEFAULT_DIALOG_MIN_SPEAKERS",
     "DEFAULT_DIALOG_RETRY_MIN_DURATION_SECONDS",
     "DEFAULT_DIALOG_RETRY_MIN_TURNS",
+    "DEFAULT_DIARIZATION_FLICKER_MAX_CONSECUTIVE",
+    "DEFAULT_DIARIZATION_FLICKER_MIN_SECONDS",
     "DEFAULT_DIARIZATION_MERGE_GAP_SECONDS",
     "DEFAULT_DIARIZATION_MIN_TURN_SECONDS",
     "DEFAULT_MEETING_MAX_SPEAKERS",
@@ -584,6 +705,7 @@ __all__ = [
     "choose_dialog_retry_winner",
     "classify_diarization_profile",
     "diarization_profile_metrics",
+    "filter_flickering_speakers",
     "profile_default_speaker_hints",
     "smooth_speaker_turns",
 ]

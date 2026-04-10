@@ -63,11 +63,14 @@ from .precheck import PrecheckResult, run_precheck as _run_precheck
 from .diarization_quality import (
     DEFAULT_DIALOG_RETRY_MIN_DURATION_SECONDS,
     DEFAULT_DIALOG_RETRY_MIN_TURNS,
+    DEFAULT_DIARIZATION_FLICKER_MAX_CONSECUTIVE,
+    DEFAULT_DIARIZATION_FLICKER_MIN_SECONDS,
     DEFAULT_DIARIZATION_MERGE_GAP_SECONDS,
     DEFAULT_DIARIZATION_MIN_TURN_SECONDS,
     SpeakerTurnSmoothingResult,
     choose_dialog_retry_winner,
     classify_diarization_profile,
+    filter_flickering_speakers,
     smooth_speaker_turns,
 )
 from .snippets import SnippetExportRequest, export_speaker_snippets, write_empty_snippets_manifest
@@ -390,6 +393,24 @@ class Settings(BaseSettings):
     diarization_min_turn_seconds: float = Field(
         default=DEFAULT_DIARIZATION_MIN_TURN_SECONDS,
         ge=0.0,
+    )
+    diarization_flicker_min_seconds: float = Field(
+        default=DEFAULT_DIARIZATION_FLICKER_MIN_SECONDS,
+        ge=0.0,
+        validation_alias=AliasChoices(
+            "diarization_flicker_min_seconds",
+            "DIARIZATION_FLICKER_MIN_SECONDS",
+            "LAN_DIARIZATION_FLICKER_MIN_SECONDS",
+        ),
+    )
+    diarization_flicker_max_consecutive: int = Field(
+        default=DEFAULT_DIARIZATION_FLICKER_MAX_CONSECUTIVE,
+        ge=0,
+        validation_alias=AliasChoices(
+            "diarization_flicker_max_consecutive",
+            "DIARIZATION_FLICKER_MAX_CONSECUTIVE",
+            "LAN_DIARIZATION_FLICKER_MAX_CONSECUTIVE",
+        ),
     )
     speaker_turn_merge_gap_sec: float = Field(
         default=DEFAULT_SPEAKER_TURN_MERGE_GAP_SEC,
@@ -2823,6 +2844,42 @@ async def run_pipeline(
             used_dummy_fallback = True
             _best_effort_step_log(step_log_callback, "diarization output empty; using fallback single-speaker annotation")
             diar_segments = _diarization_segments(_fallback_diarization(max(fallback_end, 0.1)))
+        diar_segments_before_flicker = sorted(
+            diar_segments,
+            key=lambda row: (
+                safe_float(row.get("start"), default=0.0),
+                safe_float(row.get("end"), default=0.0),
+                str(row.get("speaker") or ""),
+            ),
+        )
+        diar_segments = filter_flickering_speakers(
+            diar_segments_before_flicker,
+            min_total_seconds=cfg.diarization_flicker_min_seconds,
+            max_consecutive_segments=cfg.diarization_flicker_max_consecutive,
+        )
+        flicker_stats: dict[str, dict[str, float]] = {}
+        for before_row, after_row in zip(
+            diar_segments_before_flicker, diar_segments
+        ):
+            before_speaker = str(before_row.get("speaker") or "")
+            after_speaker = str(after_row.get("speaker") or "")
+            if before_speaker == after_speaker:
+                continue
+            stats = flicker_stats.setdefault(
+                before_speaker,
+                {"segments": 0.0, "total_seconds": 0.0},
+            )
+            stats["segments"] += 1.0
+            start = safe_float(before_row.get("start"), default=0.0)
+            end = safe_float(before_row.get("end"), default=start)
+            stats["total_seconds"] += max(end - start, 0.0)
+        for speaker, stats in flicker_stats.items():
+            _logger.warning(
+                "Diarization flicker speaker reassigned: speaker=%s total_seconds=%.3f segments_reassigned=%d",
+                speaker,
+                stats["total_seconds"],
+                int(stats["segments"]),
+            )
         unsmoothed_speaker_turns = build_speaker_turns(
             language_analysis.segments,
             diar_segments,

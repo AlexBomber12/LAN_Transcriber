@@ -750,6 +750,66 @@ def test_stage_speaker_turns_requires_language_artifact_and_supports_unsmoothed_
     assert result.metadata == {"turn_count": 1, "speaker_count": 1}
 
 
+def test_stage_speaker_turns_logs_flicker_speaker_reassignment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    _cfg_value, ctx = _new_ctx(tmp_path, "rec-flicker-stage")
+    ctx.precheck_result = PrecheckResult(10.0, 0.5, None)
+    ctx.artifacts.language_analysis_json_path.write_text(
+        json.dumps(
+            {
+                "dominant_language": "en",
+                "language": {"detected": "en", "confidence": 0.95},
+                "segments": [
+                    {"start": 0.0, "end": 1.0, "text": "hello", "language": "en"}
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    ctx.artifacts.diarization_segments_json_path.write_text(
+        json.dumps(
+            [
+                {"speaker": "S_MAIN", "start": 0.0, "end": 5.0},
+                {"speaker": "S_FLICKER", "start": 1.0, "end": 1.2},
+                {"speaker": "S_MAIN", "start": 5.0, "end": 12.0},
+            ]
+        ),
+        encoding="utf-8",
+    )
+    ctx.artifacts.diarization_runtime_json_path.write_text(
+        json.dumps({"mode": "fallback", "used_dummy_fallback": False}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        worker_tasks,
+        "build_speaker_turns",
+        lambda *_a, **_k: [
+            {"speaker": "S_MAIN", "start": 0.0, "end": 12.0, "text": "hello"}
+        ],
+    )
+    monkeypatch.setattr(
+        worker_tasks,
+        "smooth_speaker_turns",
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("should not smooth")),
+    )
+
+    caplog.set_level("WARNING", logger="lan_app.worker_tasks")
+    result = worker_tasks._stage_speaker_turns(ctx)  # noqa: SLF001
+
+    assert result.status == "completed"
+    assert any(
+        "Diarization flicker speaker reassigned" in record.getMessage()
+        and "S_FLICKER" in record.getMessage()
+        for record in caplog.records
+    )
+    assert all(
+        row["speaker"] != "S_FLICKER" for row in ctx.diarization_segments
+    )
+
+
 def test_stage_snippet_export_writes_manifest_metadata_and_counts(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -3318,6 +3318,61 @@ def test_whisperx_asr_align_typeerror_and_exception_paths(
 
 
 @pytest.mark.asyncio
+async def test_run_pipeline_logs_flicker_speaker_reassignment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.setattr(
+        pipeline,
+        "_whisperx_asr",
+        lambda *_a, **_k: (
+            [
+                {"start": 0.0, "end": 1.0, "text": "alpha beta gamma delta epsilon"},
+                {"start": 1.0, "end": 2.0, "text": "zeta eta theta iota kappa"},
+                {"start": 2.0, "end": 3.0, "text": "lambda mu nu xi omicron"},
+            ],
+            {"language": "en", "language_probability": 0.95},
+        ),
+    )
+    monkeypatch.setattr(pipeline, "_sentiment_score", lambda _text: 50)
+    monkeypatch.setattr(pipeline, "export_speaker_snippets", lambda _req: [])
+    monkeypatch.setattr(pipeline, "_save_aliases", lambda *_a, **_k: None)
+    monkeypatch.setattr(pipeline, "_load_aliases", lambda *_a, **_k: {})
+
+    class _FlickerDiariser:
+        async def __call__(self, _audio_path: Path):
+            return _annotation_from_segments(
+                (0.0, 5.0, "S_MAIN"),
+                (1.0, 1.2, "S_FLICKER"),
+                (5.0, 12.0, "S_MAIN"),
+            )
+
+    cfg = _settings(tmp_path)
+    caplog.set_level("WARNING", logger="lan_transcriber.pipeline_steps.orchestrator")
+    result = await pipeline.run_pipeline(
+        audio_path=_audio_file(tmp_path, "flicker.mp3"),
+        cfg=cfg,
+        llm=_FakeLLM(),
+        diariser=_FlickerDiariser(),
+        recording_id="rec-flicker",
+        precheck=pipeline.PrecheckResult(
+            duration_sec=30.0, speech_ratio=0.8, quarantine_reason=None
+        ),
+    )
+    assert result.summary.strip() == "- ok"
+    assert any(
+        "Diarization flicker speaker reassigned" in record.getMessage()
+        and "S_FLICKER" in record.getMessage()
+        for record in caplog.records
+    )
+
+    derived = cfg.recordings_root / "rec-flicker" / "derived"
+    diar_data = json.loads((derived / "segments.json").read_text(encoding="utf-8"))
+    assert all(row["speaker"] != "S_FLICKER" for row in diar_data)
+
+
+@pytest.mark.asyncio
 async def test_run_pipeline_backfills_detected_language_and_uses_fallback_diarization(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
