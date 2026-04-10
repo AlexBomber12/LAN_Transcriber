@@ -724,6 +724,95 @@ def test_control_center_embedded_inspector_overview_stays_compact(seeded_client)
     assert "Not available yet" in speakers.text
 
 
+def test_pr_ui_polish_02_cyrillic_font_face_present(seeded_client):
+    """PR-UI-POLISH-02 FIX 1: Inter font has a Cyrillic @font-face block."""
+    page = seeded_client.get("/")
+    assert page.status_code == 200
+    assert "/static/fonts/inter-cyrillic.woff2" in page.text
+    assert "U+0400-045F" in page.text
+
+
+def test_pr_ui_polish_02_compact_inspector_avatar_uses_short_speaker_label(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """PR-UI-POLISH-02 FIX 2: SPEAKER_00 / SPEAKER_01 render as S0 / S1 avatars."""
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    monkeypatch.setattr(
+        ui_routes,
+        "collect_control_center_runtime_status",
+        lambda _settings: _stub_runtime_status(),
+    )
+    init_db(cfg)
+    create_recording(
+        "rec-ui-avatar-1",
+        source="upload",
+        source_filename="avatar.wav",
+        status=RECORDING_STATUS_READY,
+        settings=cfg,
+    )
+    derived = cfg.recordings_root / "rec-ui-avatar-1" / "derived"
+    derived.mkdir(parents=True, exist_ok=True)
+    (derived / "transcript.json").write_text(
+        json.dumps({"text": "hello"}),
+        encoding="utf-8",
+    )
+    (derived / "speaker_turns.json").write_text(
+        json.dumps(
+            [
+                {"start": 0.0, "end": 1.0, "speaker": "SPEAKER_00", "text": "hi"},
+                {"start": 1.0, "end": 2.0, "speaker": "SPEAKER_01", "text": "hello"},
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    client = TestClient(api.app, follow_redirects=True)
+    inspector = client.get(
+        "/ui/control-center/inspector-pane?selected=rec-ui-avatar-1&tab=overview"
+    )
+    assert inspector.status_code == 200
+    assert ">S0</div>" in inspector.text
+    assert ">S1</div>" in inspector.text
+    assert ">SP</div>" not in inspector.text
+
+
+def test_pr_ui_polish_02_system_bar_uses_innerhtml_swap(seeded_client):
+    """PR-UI-POLISH-02 FIX 3: system bar swaps inner items, never replaces the footer."""
+    page = seeded_client.get("/")
+    assert page.status_code == 200
+    assert 'id="control-center-system-bar"' in page.text
+    assert 'hx-swap="innerHTML"' in page.text
+    assert 'hx-select="#control-center-system-bar-items"' in page.text
+    assert 'id="control-center-system-bar-items"' in page.text
+
+    system_bar = seeded_client.get("/ui/control-center/system-bar")
+    assert system_bar.status_code == 200
+    assert 'id="control-center-system-bar-items"' in system_bar.text
+
+
+def test_pr_ui_polish_02_inspector_pane_has_static_scroll_container(seeded_client):
+    """PR-UI-POLISH-02 FIX 4: outer inspector section is the scroll container; inner wrapper handles auto-refresh."""
+    page = seeded_client.get("/?selected=rec-ui-1&status=Ready&q=meeting&tab=overview")
+    assert page.status_code == 200
+    # The outer scroll container is the section and is never targeted by hx-swap.
+    assert 'id="control-center-inspector-pane"' in page.text
+    assert "overflow-y-auto" in page.text
+    # The inner wrapper carries hx-get/hx-trigger and self-targets via outerHTML+hx-select.
+    assert 'id="control-center-inspector-pane-content"' in page.text
+    assert 'hx-select="#control-center-inspector-pane-content"' in page.text
+    # The legacy in-card scroll container marker is gone (no longer needed for save/restore).
+    assert "data-inspector-scroll" not in page.text
+
+    inspector = seeded_client.get(
+        "/ui/control-center/inspector-pane?selected=rec-ui-1&tab=overview"
+    )
+    assert inspector.status_code == 200
+    assert 'id="control-center-inspector-pane-content"' in inspector.text
+
+
 def test_control_center_embedded_details_card_uses_summary_artifacts(
     tmp_path, monkeypatch
 ):

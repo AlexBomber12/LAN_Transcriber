@@ -1,0 +1,15 @@
+{% set _system_bar_items = (control_center_system_bar["items"] if control_center_system_bar is defined and control_center_system_bar else []) %}
+<div id="control-center-system-bar-items" class="flex flex-wrap gap-x-4 gap-y-1">
+{% for item in _system_bar_items %}
+  <span
+    class="flex items-center gap-1"
+    {% if item.detail %}title="{{ item.detail }}"{% endif %}
+  >
+    {% if item.show_dot %}
+    <span class="w-2 h-2 rounded-full {% if item.tone == 'healthy' %}bg-green-500{% elif item.tone == 'busy' %}bg-amber-500{% elif item.tone == 'degraded' %}bg-amber-500{% elif item.tone == 'offline' %}bg-red-500{% else %}bg-slate-400{% endif %}" aria-hidden="true"></span>
+    {% endif %}
+    <span>{{ item.label }}</span>
+    <strong class="{% if item.tone == 'healthy' %}text-green-700{% elif item.tone == 'busy' %}text-amber-700{% elif item.tone == 'degraded' %}text-amber-700{% elif item.tone == 'offline' %}text-red-700{% else %}text-slate-700{% endif %}">{{ item.value }}</strong>
+  </span>
+{% endfor %}
+</div>

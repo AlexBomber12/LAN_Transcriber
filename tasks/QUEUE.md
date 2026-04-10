@@ -653,3 +653,8 @@ Queue (in order)
 - Status: DONE
 - Tasks file: tasks/PR-UI-POLISH-POST-TAILWIND-01.md
 - Depends on: PR-TAILWIND-REMAINING-01
+
+131) PR-UI-POLISH-02: Fix Cyrillic font, compact inspector avatar, navbar flicker, and inspector scroll reset
+- Status: DONE
+- Tasks file: tasks/PR-UI-POLISH-02.md
+- Depends on: PR-UI-POLISH-POST-TAILWIND-01
