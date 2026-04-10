@@ -1,3 +1,16 @@
+diff --git a/ci-requirements.txt b/ci-requirements.txt
+index 6803920..2fe65fa 100644
+--- a/ci-requirements.txt
++++ b/ci-requirements.txt
+@@ -12,7 +12,7 @@ anyio==4.13.0
+     # via
+     #   httpx
+     #   starlette
+-build==1.4.2
++build==1.4.3
+     # via pip-tools
+ certifi==2026.2.25
+     # via
 diff --git a/lan_app/exporter.py b/lan_app/exporter.py
 index 4bc2ab2..851b2a2 100644
 --- a/lan_app/exporter.py
