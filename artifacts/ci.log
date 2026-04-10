@@ -56,13 +56,13 @@ tests/test_warm_models.py::test_warm_models_module_main_guard
 ---------- coverage: platform linux, python 3.11.9-final-0 -----------
 Name    Stmts   Miss Branch BrPart  Cover   Missing
 ---------------------------------------------------
-TOTAL   14086      0   4686      0   100%
+TOTAL   14087      0   4686      0   100%
 
 63 files skipped due to complete coverage.
 Coverage HTML written to dir htmlcov
 
 Required test coverage of 100% reached. Total coverage: 100.00%
-1073 passed, 3 skipped, 11 warnings in 94.03s (0:01:34)
+1073 passed, 3 skipped, 11 warnings in 94.86s (0:01:34)
 Name                                                    Stmts   Miss Branch BrPart  Cover
 -----------------------------------------------------------------------------------------
 lan_transcriber/__init__.py                                 8      0      0      0   100%
@@ -127,10 +127,10 @@ lan_app/tools/__init__.py              1      0      0      0   100%
 lan_app/tools/repair_snippets.py      36      0     12      0   100%
 lan_app/tools/warm_models.py          47      0     10      0   100%
 lan_app/ui.py                         59      0     10      0   100%
-lan_app/ui_routes.py                2573      0    988      0   100%
+lan_app/ui_routes.py                2574      0    988      0   100%
 lan_app/uploads.py                    79      0     14      0   100%
 lan_app/worker.py                     28      0      2      0   100%
 lan_app/worker_tasks.py             1710      0    496      0   100%
 lan_app/workers.py                    10      0      0      0   100%
 --------------------------------------------------------------------
-TOTAL                               9901      0   3284      0   100%
+TOTAL                               9902      0   3284      0   100%

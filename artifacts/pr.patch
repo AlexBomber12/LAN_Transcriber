@@ -67,7 +67,7 @@ index 9cc0a52..76a9502 100644
              <span class="text-xs text-slate-400">{{ turn.time_range }}</span>
              {% if turn.language_label %}
 diff --git a/lan_app/ui_routes.py b/lan_app/ui_routes.py
-index bc06319..80c38c6 100644
+index bc06319..4bf3fbc 100644
 --- a/lan_app/ui_routes.py
 +++ b/lan_app/ui_routes.py
 @@ -114,7 +114,7 @@ from .db import (
@@ -79,11 +79,24 @@ index bc06319..80c38c6 100644
  from .jobs import (
      DuplicateRecordingJobError,
      enqueue_recording_job,
-@@ -1242,10 +1242,12 @@ def _transcript_tab_context(recording_id: str, settings: AppSettings) -> dict[st
+@@ -1231,9 +1231,10 @@ def _transcript_tab_context(recording_id: str, settings: AppSettings) -> dict[st
+             speaker_name_map=speaker_name_map,
+         )
+         try:
+-            start_value = float(row.get("start") or 0.0)
++            parsed_start: float | None = float(row.get("start"))
+         except (TypeError, ValueError):
+-            start_value = 0.0
++            parsed_start = None
++        start_value = parsed_start if parsed_start is not None else 0.0
+         try:
+             end_value = float(row.get("end") or start_value)
+         except (TypeError, ValueError):
+@@ -1242,10 +1243,12 @@ def _transcript_tab_context(recording_id: str, settings: AppSettings) -> dict[st
              f"{_format_duration_seconds(start_value)} - "
              f"{_format_duration_seconds(max(end_value, start_value))}"
          )
-+        timestamp = _format_timestamp(start_value)
++        timestamp = _format_timestamp(parsed_start) if parsed_start is not None else ""
          language_label = _language_display_name(_normalise_language_code(row.get("language")))
          turns.append(
              {
@@ -143,14 +156,14 @@ index b1eab67..d0d0811 100644
      target = tmp_path / "payload.bin"
      target.write_bytes(b"payload")
 diff --git a/tests/test_cov_lan_app_ui_routes.py b/tests/test_cov_lan_app_ui_routes.py
-index 5f62cea..dec8658 100644
+index 5f62cea..d5383b7 100644
 --- a/tests/test_cov_lan_app_ui_routes.py
 +++ b/tests/test_cov_lan_app_ui_routes.py
 @@ -3365,11 +3365,13 @@ def test_transcript_tab_context_covers_fallback_turns_and_copy_paths(
      assert transcript["turn_count"] == 2
      assert transcript["turns"][0] == {
          "speaker": "S1",
-+        "timestamp": "00:00",
++        "timestamp": "",
          "time_range": "— - —",
          "text": "Hola",
          "language_label": "",

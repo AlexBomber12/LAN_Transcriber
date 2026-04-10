@@ -1231,9 +1231,10 @@ def _transcript_tab_context(recording_id: str, settings: AppSettings) -> dict[st
             speaker_name_map=speaker_name_map,
         )
         try:
-            start_value = float(row.get("start") or 0.0)
+            parsed_start: float | None = float(row.get("start"))
         except (TypeError, ValueError):
-            start_value = 0.0
+            parsed_start = None
+        start_value = parsed_start if parsed_start is not None else 0.0
         try:
             end_value = float(row.get("end") or start_value)
         except (TypeError, ValueError):
@@ -1242,7 +1243,7 @@ def _transcript_tab_context(recording_id: str, settings: AppSettings) -> dict[st
             f"{_format_duration_seconds(start_value)} - "
             f"{_format_duration_seconds(max(end_value, start_value))}"
         )
-        timestamp = _format_timestamp(start_value)
+        timestamp = _format_timestamp(parsed_start) if parsed_start is not None else ""
         language_label = _language_display_name(_normalise_language_code(row.get("language")))
         turns.append(
             {

@@ -3365,7 +3365,7 @@ def test_transcript_tab_context_covers_fallback_turns_and_copy_paths(
     assert transcript["turn_count"] == 2
     assert transcript["turns"][0] == {
         "speaker": "S1",
-        "timestamp": "00:00",
+        "timestamp": "",
         "time_range": "— - —",
         "text": "Hola",
         "language_label": "",
