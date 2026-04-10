@@ -658,3 +658,17 @@ Queue (in order)
 - Status: DONE
 - Tasks file: tasks/PR-UI-POLISH-02.md
 - Depends on: PR-UI-POLISH-POST-TAILWIND-01
+132) PR-TRANSCRIPT-MERGE-01: Merge short speaker turns and add configurable merge gap to reduce transcript fragmentation
+- Status: DONE
+- Tasks file: tasks/PR-TRANSCRIPT-MERGE-01.md
+- Depends on: PR-UI-POLISH-02
+
+133) PR-DIARIZATION-FLICKER-01: Filter out flickering diarization speakers that appear briefly surrounded by the same dominant speaker
+- Status: TODO
+- Tasks file: tasks/PR-DIARIZATION-FLICKER-01.md
+- Depends on: PR-TRANSCRIPT-MERGE-01
+
+134) PR-TRANSCRIPT-TIMESTAMPS-01: Add timestamps to transcript export and UI as default behavior
+- Status: TODO
+- Tasks file: tasks/PR-TRANSCRIPT-TIMESTAMPS-01.md
+- Depends on: PR-DIARIZATION-FLICKER-01

@@ -15,6 +15,11 @@ from lan_transcriber.pipeline_steps.diarization_quality import (
     DEFAULT_DIARIZATION_MERGE_GAP_SECONDS,
     DEFAULT_DIARIZATION_MIN_TURN_SECONDS,
 )
+from lan_transcriber.pipeline_steps.speaker_turns import (
+    DEFAULT_SPEAKER_TURN_MERGE_GAP_SEC,
+    DEFAULT_SPEAKER_TURN_MIN_WORDS,
+    DEFAULT_SPEAKER_TURN_SHORT_MERGE_GAP_SEC,
+)
 from lan_transcriber.runtime_paths import default_data_root, default_recordings_root
 
 from .diarization_loader import DEFAULT_DIARIZATION_MODEL_ID
@@ -313,6 +318,30 @@ class AppSettings(BaseSettings):
     diarization_min_turn_seconds: float = Field(
         default=DEFAULT_DIARIZATION_MIN_TURN_SECONDS,
         ge=0.0,
+    )
+    speaker_turn_merge_gap_sec: float = Field(
+        default=DEFAULT_SPEAKER_TURN_MERGE_GAP_SEC,
+        ge=0.0,
+        validation_alias=AliasChoices(
+            "LAN_SPEAKER_TURN_MERGE_GAP_SEC",
+            "SPEAKER_TURN_MERGE_GAP_SEC",
+        ),
+    )
+    speaker_turn_short_merge_gap_sec: float = Field(
+        default=DEFAULT_SPEAKER_TURN_SHORT_MERGE_GAP_SEC,
+        ge=0.0,
+        validation_alias=AliasChoices(
+            "LAN_SPEAKER_TURN_SHORT_MERGE_GAP_SEC",
+            "SPEAKER_TURN_SHORT_MERGE_GAP_SEC",
+        ),
+    )
+    speaker_turn_min_words: int = Field(
+        default=DEFAULT_SPEAKER_TURN_MIN_WORDS,
+        ge=0,
+        validation_alias=AliasChoices(
+            "LAN_SPEAKER_TURN_MIN_WORDS",
+            "SPEAKER_TURN_MIN_WORDS",
+        ),
     )
     vad_method: Literal["silero", "pyannote"] = "silero"
 
