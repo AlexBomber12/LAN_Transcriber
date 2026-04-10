@@ -1,10 +1,11 @@
 {% set _system_bar_url = (control_center_state.system_bar_url if control_center_state is defined and control_center_state else '/ui/control-center/system-bar') %}
-{% set _system_bar_items = (control_center_system_bar["items"] if control_center_system_bar is defined and control_center_system_bar else []) %}
+{% set _system_bar_has_context = control_center_system_bar is defined and control_center_system_bar %}
+{% set _system_bar_items = (control_center_system_bar["items"] if _system_bar_has_context else []) %}
 <footer
   id="control-center-system-bar"
   class="min-h-[2rem] bg-slate-100 border-t border-slate-200 px-4 py-1 flex items-center justify-between text-[10px] font-medium text-slate-500"
   hx-get="{{ _system_bar_url }}"
-  hx-trigger="load, every 15s, refresh-control-center-system-bar from:body"
+  hx-trigger="{% if not _system_bar_has_context %}load, {% endif %}every 15s, refresh-control-center-system-bar from:body"
   hx-target="this"
   hx-swap="outerHTML"
 >
