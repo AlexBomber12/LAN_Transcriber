@@ -1,653 +1,202 @@
 diff --git a/lan_app/config.py b/lan_app/config.py
-index e3e7347..0b31487 100644
+index 0b31487..d5b4bfe 100644
 --- a/lan_app/config.py
 +++ b/lan_app/config.py
-@@ -15,6 +15,10 @@ from lan_transcriber.pipeline_steps.diarization_quality import (
-     DEFAULT_DIARIZATION_MERGE_GAP_SECONDS,
-     DEFAULT_DIARIZATION_MIN_TURN_SECONDS,
+@@ -18,6 +18,7 @@ from lan_transcriber.pipeline_steps.diarization_quality import (
+ from lan_transcriber.pipeline_steps.speaker_turns import (
+     DEFAULT_SPEAKER_TURN_MERGE_GAP_SEC,
+     DEFAULT_SPEAKER_TURN_MIN_WORDS,
++    DEFAULT_SPEAKER_TURN_SHORT_MERGE_GAP_SEC,
  )
-+from lan_transcriber.pipeline_steps.speaker_turns import (
-+    DEFAULT_SPEAKER_TURN_MERGE_GAP_SEC,
-+    DEFAULT_SPEAKER_TURN_MIN_WORDS,
-+)
  from lan_transcriber.runtime_paths import default_data_root, default_recordings_root
  
- from .diarization_loader import DEFAULT_DIARIZATION_MODEL_ID
-@@ -314,6 +318,22 @@ class AppSettings(BaseSettings):
-         default=DEFAULT_DIARIZATION_MIN_TURN_SECONDS,
-         ge=0.0,
+@@ -326,6 +327,14 @@ class AppSettings(BaseSettings):
+             "SPEAKER_TURN_MERGE_GAP_SEC",
+         ),
      )
-+    speaker_turn_merge_gap_sec: float = Field(
-+        default=DEFAULT_SPEAKER_TURN_MERGE_GAP_SEC,
++    speaker_turn_short_merge_gap_sec: float = Field(
++        default=DEFAULT_SPEAKER_TURN_SHORT_MERGE_GAP_SEC,
 +        ge=0.0,
 +        validation_alias=AliasChoices(
-+            "LAN_SPEAKER_TURN_MERGE_GAP_SEC",
-+            "SPEAKER_TURN_MERGE_GAP_SEC",
++            "LAN_SPEAKER_TURN_SHORT_MERGE_GAP_SEC",
++            "SPEAKER_TURN_SHORT_MERGE_GAP_SEC",
 +        ),
 +    )
-+    speaker_turn_min_words: int = Field(
-+        default=DEFAULT_SPEAKER_TURN_MIN_WORDS,
-+        ge=0,
-+        validation_alias=AliasChoices(
-+            "LAN_SPEAKER_TURN_MIN_WORDS",
-+            "SPEAKER_TURN_MIN_WORDS",
-+        ),
-+    )
-     vad_method: Literal["silero", "pyannote"] = "silero"
- 
-     @model_validator(mode="after")
+     speaker_turn_min_words: int = Field(
+         default=DEFAULT_SPEAKER_TURN_MIN_WORDS,
+         ge=0,
 diff --git a/lan_app/worker_tasks.py b/lan_app/worker_tasks.py
-index fc34723..258e32a 100644
+index 258e32a..b86c618 100644
 --- a/lan_app/worker_tasks.py
 +++ b/lan_app/worker_tasks.py
-@@ -61,6 +61,7 @@ from lan_transcriber.pipeline_steps.snippets import (
- from lan_transcriber.pipeline_steps.speaker_turns import (
-     _diarization_segments,
-     build_speaker_turns,
-+    merge_short_turns,
-     normalise_asr_segments,
- )
- from lan_transcriber.pipeline_steps.summary_builder import (
-@@ -1881,6 +1882,8 @@ def _build_pipeline_settings(settings: AppSettings) -> PipelineSettings:
-         diarization_dialog_retry_min_turns=settings.diarization_dialog_retry_min_turns,
+@@ -1883,6 +1883,7 @@ def _build_pipeline_settings(settings: AppSettings) -> PipelineSettings:
          diarization_merge_gap_seconds=settings.diarization_merge_gap_seconds,
          diarization_min_turn_seconds=settings.diarization_min_turn_seconds,
-+        speaker_turn_merge_gap_sec=settings.speaker_turn_merge_gap_sec,
-+        speaker_turn_min_words=settings.speaker_turn_min_words,
+         speaker_turn_merge_gap_sec=settings.speaker_turn_merge_gap_sec,
++        speaker_turn_short_merge_gap_sec=settings.speaker_turn_short_merge_gap_sec,
+         speaker_turn_min_words=settings.speaker_turn_min_words,
          vad_method=settings.vad_method,
      )
- 
-@@ -2942,6 +2945,12 @@ def _stage_speaker_turns(ctx: _PipelineExecutionContext) -> _StageResult:
-         default_language=(
-             dominant_language if dominant_language != "unknown" else detected_language
-         ),
-+        merge_gap_sec=ctx.pipeline_settings.speaker_turn_merge_gap_sec,
-+    )
-+    unsmoothed_speaker_turns = merge_short_turns(
-+        unsmoothed_speaker_turns,
-+        min_words=ctx.pipeline_settings.speaker_turn_min_words,
-+        merge_gap_sec=ctx.pipeline_settings.speaker_turn_merge_gap_sec,
+@@ -2950,7 +2951,7 @@ def _stage_speaker_turns(ctx: _PipelineExecutionContext) -> _StageResult:
+     unsmoothed_speaker_turns = merge_short_turns(
+         unsmoothed_speaker_turns,
+         min_words=ctx.pipeline_settings.speaker_turn_min_words,
+-        merge_gap_sec=ctx.pipeline_settings.speaker_turn_merge_gap_sec,
++        merge_gap_sec=ctx.pipeline_settings.speaker_turn_short_merge_gap_sec,
      )
      diariser_mode = str(ctx.diarization_runtime.get("mode") or "unknown").strip().lower()
      if diariser_mode == "pyannote" and not ctx.diarization_runtime.get("used_dummy_fallback"):
 diff --git a/lan_transcriber/pipeline_steps/orchestrator.py b/lan_transcriber/pipeline_steps/orchestrator.py
-index 944456b..9650e1d 100644
+index 9650e1d..105f1c9 100644
 --- a/lan_transcriber/pipeline_steps/orchestrator.py
 +++ b/lan_transcriber/pipeline_steps/orchestrator.py
-@@ -72,8 +72,11 @@ from .diarization_quality import (
- )
- from .snippets import SnippetExportRequest, export_speaker_snippets, write_empty_snippets_manifest
+@@ -74,6 +74,7 @@ from .snippets import SnippetExportRequest, export_speaker_snippets, write_empty
  from .speaker_turns import (
-+    DEFAULT_SPEAKER_TURN_MERGE_GAP_SEC,
-+    DEFAULT_SPEAKER_TURN_MIN_WORDS,
+     DEFAULT_SPEAKER_TURN_MERGE_GAP_SEC,
+     DEFAULT_SPEAKER_TURN_MIN_WORDS,
++    DEFAULT_SPEAKER_TURN_SHORT_MERGE_GAP_SEC,
      _diarization_segments,
      build_speaker_turns,
-+    merge_short_turns,
-     normalise_asr_segments,
- )
- from .multilingual_asr import run_language_aware_asr
-@@ -387,6 +390,24 @@ class Settings(BaseSettings):
-         default=DEFAULT_DIARIZATION_MIN_TURN_SECONDS,
-         ge=0.0,
+     merge_short_turns,
+@@ -399,6 +400,15 @@ class Settings(BaseSettings):
+             "LAN_SPEAKER_TURN_MERGE_GAP_SEC",
+         ),
      )
-+    speaker_turn_merge_gap_sec: float = Field(
-+        default=DEFAULT_SPEAKER_TURN_MERGE_GAP_SEC,
++    speaker_turn_short_merge_gap_sec: float = Field(
++        default=DEFAULT_SPEAKER_TURN_SHORT_MERGE_GAP_SEC,
 +        ge=0.0,
 +        validation_alias=AliasChoices(
-+            "speaker_turn_merge_gap_sec",
-+            "SPEAKER_TURN_MERGE_GAP_SEC",
-+            "LAN_SPEAKER_TURN_MERGE_GAP_SEC",
++            "speaker_turn_short_merge_gap_sec",
++            "SPEAKER_TURN_SHORT_MERGE_GAP_SEC",
++            "LAN_SPEAKER_TURN_SHORT_MERGE_GAP_SEC",
 +        ),
 +    )
-+    speaker_turn_min_words: int = Field(
-+        default=DEFAULT_SPEAKER_TURN_MIN_WORDS,
-+        ge=0,
-+        validation_alias=AliasChoices(
-+            "speaker_turn_min_words",
-+            "SPEAKER_TURN_MIN_WORDS",
-+            "LAN_SPEAKER_TURN_MIN_WORDS",
-+        ),
-+    )
-     snippet_pad_seconds: float = Field(
-         default=0.25,
-         ge=0.0,
-@@ -2796,6 +2817,12 @@ async def run_pipeline(
-             language_analysis.segments,
-             diar_segments,
-             default_language=language_analysis.dominant_language if language_analysis.dominant_language != "unknown" else detected_language,
-+            merge_gap_sec=cfg.speaker_turn_merge_gap_sec,
-+        )
-+        unsmoothed_speaker_turns = merge_short_turns(
-+            unsmoothed_speaker_turns,
-+            min_words=cfg.speaker_turn_min_words,
-+            merge_gap_sec=cfg.speaker_turn_merge_gap_sec,
+     speaker_turn_min_words: int = Field(
+         default=DEFAULT_SPEAKER_TURN_MIN_WORDS,
+         ge=0,
+@@ -2822,7 +2832,7 @@ async def run_pipeline(
+         unsmoothed_speaker_turns = merge_short_turns(
+             unsmoothed_speaker_turns,
+             min_words=cfg.speaker_turn_min_words,
+-            merge_gap_sec=cfg.speaker_turn_merge_gap_sec,
++            merge_gap_sec=cfg.speaker_turn_short_merge_gap_sec,
          )
          diariser_mode = _diariser_mode(diariser)
          if diariser_mode == "pyannote" and not used_dummy_fallback:
 diff --git a/lan_transcriber/pipeline_steps/speaker_turns.py b/lan_transcriber/pipeline_steps/speaker_turns.py
-index 0b5204a..3ca6e8f 100644
+index 3ca6e8f..fb7f5ae 100644
 --- a/lan_transcriber/pipeline_steps/speaker_turns.py
 +++ b/lan_transcriber/pipeline_steps/speaker_turns.py
-@@ -5,6 +5,8 @@ from typing import Any, Sequence
- from lan_transcriber.utils import normalise_language_code, safe_float
- 
+@@ -7,6 +7,15 @@ from lan_transcriber.utils import normalise_language_code, safe_float
  DEFAULT_INTERRUPTION_OVERLAP_SEC = 0.3
-+DEFAULT_SPEAKER_TURN_MERGE_GAP_SEC = 4.0
-+DEFAULT_SPEAKER_TURN_MIN_WORDS = 6
+ DEFAULT_SPEAKER_TURN_MERGE_GAP_SEC = 4.0
+ DEFAULT_SPEAKER_TURN_MIN_WORDS = 6
++# The post-pass that folds short turns into adjacent same-speaker turns must
++# use a strictly larger gap than DEFAULT_SPEAKER_TURN_MERGE_GAP_SEC. By the
++# time merge_short_turns runs, build_speaker_turns has already collapsed every
++# adjacent same-speaker pair whose gap is <= DEFAULT_SPEAKER_TURN_MERGE_GAP_SEC,
++# so any same-speaker neighbours that remain have gaps strictly above that
++# threshold. A larger threshold here lets the short-turn pass actually fire
++# for brief interjections (e.g. "uh-huh", "yeah okay") that sit between
++# longer same-speaker stretches separated by a noticeable silence.
++DEFAULT_SPEAKER_TURN_SHORT_MERGE_GAP_SEC = 8.0
  
  
  def _normalise_word(word: dict[str, Any], seg_start: float, seg_end: float) -> dict[str, Any] | None:
-@@ -185,6 +187,7 @@ def build_speaker_turns(
-     diar_segments: Sequence[dict[str, Any]],
+@@ -231,7 +240,7 @@ def merge_short_turns(
+     turns: Sequence[dict[str, Any]],
      *,
-     default_language: str | None,
-+    merge_gap_sec: float = DEFAULT_SPEAKER_TURN_MERGE_GAP_SEC,
+     min_words: int = DEFAULT_SPEAKER_TURN_MIN_WORDS,
+-    merge_gap_sec: float = DEFAULT_SPEAKER_TURN_MERGE_GAP_SEC,
++    merge_gap_sec: float = DEFAULT_SPEAKER_TURN_SHORT_MERGE_GAP_SEC,
  ) -> list[dict[str, Any]]:
-     words = _words_from_segments(asr_segments, default_language=default_language)
-     if not words:
-@@ -200,7 +203,7 @@ def build_speaker_turns(
-         if (
-             current is not None
-             and current["speaker"] == speaker
--            and start - safe_float(current["end"], default=start) <= 1.0
-+            and start - safe_float(current["end"], default=start) <= merge_gap_sec
-         ):
-             current["end"] = round(max(safe_float(current["end"]), end), 3)
-             current["text"] = f"{current['text']} {word['word']}".strip()
-@@ -220,6 +223,98 @@ def build_speaker_turns(
-     return turns
+     """Merge short speaker turns into adjacent turns from the same speaker.
  
- 
-+def _word_count(text: str) -> int:
-+    return len(text.split())
+@@ -242,6 +251,11 @@ def merge_short_turns(
+     neighbour shares the same speaker and the inter-turn gap is below
+     ``merge_gap_sec`` seconds. Short turns whose neighbours are different
+     speakers are kept as-is so no transcript content is discarded.
 +
-+
-+def merge_short_turns(
-+    turns: Sequence[dict[str, Any]],
-+    *,
-+    min_words: int = DEFAULT_SPEAKER_TURN_MIN_WORDS,
-+    merge_gap_sec: float = DEFAULT_SPEAKER_TURN_MERGE_GAP_SEC,
-+) -> list[dict[str, Any]]:
-+    """Merge short speaker turns into adjacent turns from the same speaker.
-+
-+    A turn is considered "short" when its text contains fewer than ``min_words``
-+    whitespace-separated words. Short turns are merged backward into the
-+    immediately preceding turn (preferred) or forward into the immediately
-+    following turn when the previous turn cannot absorb them, but only when the
-+    neighbour shares the same speaker and the inter-turn gap is below
-+    ``merge_gap_sec`` seconds. Short turns whose neighbours are different
-+    speakers are kept as-is so no transcript content is discarded.
-+    """
-+    out: list[dict[str, Any]] = []
-+    pending: list[dict[str, Any]] = [dict(turn) for turn in turns if isinstance(turn, dict)]
-+    if not pending:
-+        return out
-+
-+    idx = 0
-+    while idx < len(pending):
-+        turn = pending[idx]
-+        text = str(turn.get("text") or "").strip()
-+        if _word_count(text) >= min_words:
-+            out.append(turn)
-+            idx += 1
-+            continue
-+
-+        prev_turn = out[-1] if out else None
-+        prev_same_speaker = (
-+            prev_turn is not None
-+            and str(prev_turn.get("speaker")) == str(turn.get("speaker"))
-+        )
-+        prev_gap = (
-+            safe_float(turn.get("start"), default=0.0)
-+            - safe_float(prev_turn.get("end"), default=0.0)
-+            if prev_turn is not None
-+            else float("inf")
-+        )
-+
-+        next_turn = pending[idx + 1] if idx + 1 < len(pending) else None
-+        next_same_speaker = (
-+            next_turn is not None
-+            and str(next_turn.get("speaker")) == str(turn.get("speaker"))
-+        )
-+        next_gap = (
-+            safe_float(next_turn.get("start"), default=0.0)
-+            - safe_float(turn.get("end"), default=0.0)
-+            if next_turn is not None
-+            else float("inf")
-+        )
-+
-+        if prev_same_speaker and prev_gap < merge_gap_sec:
-+            prev_text = str(prev_turn.get("text") or "").strip()
-+            merged_text = f"{prev_text} {text}".strip() if text else prev_text
-+            prev_turn["text"] = merged_text
-+            prev_turn["end"] = round(
-+                max(
-+                    safe_float(prev_turn.get("end"), default=0.0),
-+                    safe_float(turn.get("end"), default=0.0),
-+                ),
-+                3,
-+            )
-+            idx += 1
-+            continue
-+
-+        if next_same_speaker and next_gap < merge_gap_sec:
-+            next_text = str(next_turn.get("text") or "").strip()
-+            merged_text = f"{text} {next_text}".strip() if next_text else text
-+            next_turn["text"] = merged_text
-+            next_turn["start"] = round(
-+                min(
-+                    safe_float(next_turn.get("start"), default=0.0),
-+                    safe_float(turn.get("start"), default=0.0),
-+                ),
-+                3,
-+            )
-+            idx += 1
-+            continue
-+
-+        out.append(turn)
-+        idx += 1
-+
-+    return out
-+
-+
- def _normalise_turns(turns: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
++    ``merge_gap_sec`` should be strictly larger than the gap used by
++    :func:`build_speaker_turns`, otherwise this post-pass is a no-op: every
++    same-speaker pair within the base merge gap has already been collapsed by
++    that earlier pass.
+     """
      out: list[dict[str, Any]] = []
-     for row in turns:
-@@ -301,7 +396,10 @@ def count_interruptions(
- 
- __all__ = [
+     pending: list[dict[str, Any]] = [dict(turn) for turn in turns if isinstance(turn, dict)]
+@@ -398,6 +412,7 @@ __all__ = [
      "DEFAULT_INTERRUPTION_OVERLAP_SEC",
-+    "DEFAULT_SPEAKER_TURN_MERGE_GAP_SEC",
-+    "DEFAULT_SPEAKER_TURN_MIN_WORDS",
+     "DEFAULT_SPEAKER_TURN_MERGE_GAP_SEC",
+     "DEFAULT_SPEAKER_TURN_MIN_WORDS",
++    "DEFAULT_SPEAKER_TURN_SHORT_MERGE_GAP_SEC",
      "normalise_asr_segments",
      "build_speaker_turns",
-+    "merge_short_turns",
-     "count_interruptions",
- ]
-diff --git a/tasks/PR-DIARIZATION-FLICKER-01.md b/tasks/PR-DIARIZATION-FLICKER-01.md
-new file mode 100644
-index 0000000..1fe96df
---- /dev/null
-+++ b/tasks/PR-DIARIZATION-FLICKER-01.md
-@@ -0,0 +1,65 @@
-+Run PLANNED PR
-+
-+PR_ID: PR-DIARIZATION-FLICKER-01
-+Branch: pr-diarization-flicker-01
-+Title: Filter out flickering diarization speakers that appear briefly and are surrounded by the same dominant speaker
-+
-+Follow AGENTS.md exactly for work mode, queue handling, CI, artifacts, MCP usage, and scope control. This is a focused BIG PR, not a MICRO PR. Keep the scope strict.
-+
-+This task must be executed in 3 internal phases within a single run.
-+
-+Phase 1 - Inspect and map
-+Read and confirm the current state of these files before coding:
-+- lan_transcriber/pipeline_steps/speaker_turns.py (_pick_speaker, _diarization_segments, build_speaker_turns)
-+- lan_transcriber/pipeline_steps/diarization_quality.py (existing quality checks, DiarizationProfileMetrics)
-+- lan_transcriber/pipeline_steps/orchestrator.py (where diarization segments are consumed and speaker_turns are built)
-+- lan_app/config.py (AppSettings)
-+- tests/test_diarization_quality.py (existing test coverage)
-+
-+Phase 2 - Implement
-+Implement exactly these changes. Do not add anything beyond these fixes.
-+
-+CHANGE 1: Add a flicker filter function
-+In lan_transcriber/pipeline_steps/diarization_quality.py, add a new function:
-+
-+def filter_flickering_speakers(
-+    diar_segments: list[dict[str, Any]],
-+    *,
-+    min_total_seconds: float = 3.0,
-+    max_consecutive_segments: int = 2,
-+) -> list[dict[str, Any]]:
-+
-+Logic:
-+- Compute total speech seconds per speaker across all diar_segments.
-+- Identify "flicker" speakers: speakers whose total speech is less than min_total_seconds AND who never appear in more than max_consecutive_segments consecutive diarization segments in a row.
-+- For each diar_segment belonging to a flicker speaker, reassign it to the nearest non-flicker speaker by time proximity (find the closest non-flicker diar_segment by start/end distance and use its speaker label).
-+- If all speakers are flicker speakers (edge case: very short recording), return the original segments unchanged.
-+- Return the cleaned list, sorted by start time.
-+
-+CHANGE 2: Wire into orchestrator
-+In the orchestrator, call filter_flickering_speakers on the raw diarization segments BEFORE passing them to build_speaker_turns. This ensures that the flicker speaker labels never reach the word-level speaker assignment.
-+
-+CHANGE 3: Add config knobs
-+In lan_app/config.py AppSettings (or the pipeline config dict):
-+- Add DIARIZATION_FLICKER_MIN_SECONDS with default 3.0.
-+- Add DIARIZATION_FLICKER_MAX_CONSECUTIVE with default 2.
-+- Wire these values to the orchestrator call.
-+
-+CHANGE 4: Log flicker events
-+When a flicker speaker is detected and reassigned, log a warning with the speaker label, its total seconds, and how many segments were reassigned. Use the existing pipeline logging pattern.
-+
-+Phase 3 - Test and verify
-+- Add tests in tests/test_diarization_quality.py:
-+  - test_flicker_speaker_reassigned: 10 segments from SPEAKER_01, 1 short segment (0.5 sec) from SPEAKER_00 in the middle. After filtering, SPEAKER_00 segment should be reassigned to SPEAKER_01.
-+  - test_legitimate_speaker_kept: 10 segments from SPEAKER_01, 5 segments (total 8 sec) from SPEAKER_00. SPEAKER_00 is NOT a flicker speaker and should be kept.
-+  - test_all_speakers_flicker_unchanged: 2 segments total, each from a different speaker, both under 3 sec. Return unchanged.
-+  - test_empty_segments: empty list returns empty list.
-+  - test_flicker_reassigned_to_nearest: SPEAKER_01 at 0-10s, SPEAKER_00 flicker at 12-12.5s, SPEAKER_02 at 15-25s. SPEAKER_00 should be reassigned to SPEAKER_01 (closer by time).
-+- Run full CI. All existing tests must pass.
-+
-+Success criteria:
-+- Flicker speakers (< 3 sec total, max 2 consecutive segments) are reassigned to the nearest real speaker.
-+- Legitimate multi-segment speakers are never affected.
-+- The false SPEAKER_00 appearance seen in the Plaud vs LAN Transcriber comparison is eliminated.
-+- New tests cover all edge cases.
-+- No existing tests are broken.
-diff --git a/tasks/PR-TRANSCRIPT-MERGE-01.md b/tasks/PR-TRANSCRIPT-MERGE-01.md
-new file mode 100644
-index 0000000..553eb48
---- /dev/null
-+++ b/tasks/PR-TRANSCRIPT-MERGE-01.md
-@@ -0,0 +1,60 @@
-+Run PLANNED PR
-+
-+PR_ID: PR-TRANSCRIPT-MERGE-01
-+Branch: pr-transcript-merge-01
-+Title: Merge short speaker turns and add configurable merge gap to reduce transcript fragmentation
-+
-+Follow AGENTS.md exactly for work mode, queue handling, CI, artifacts, MCP usage, and scope control. This is a focused BIG PR, not a MICRO PR. Keep the scope strict.
-+
-+This task must be executed in 3 internal phases within a single run.
-+
-+Phase 1 - Inspect and map
-+Read and confirm the current state of these files before coding:
-+- lan_transcriber/pipeline_steps/speaker_turns.py (build_speaker_turns, the 1.0 sec gap threshold on line ~203)
-+- lan_transcriber/pipeline_steps/orchestrator.py (where build_speaker_turns is called, what params are passed)
-+- lan_app/config.py (AppSettings, to understand how config values are defined)
-+- tests/test_pipeline_steps_speaker_turns.py (existing test coverage)
-+
-+Phase 2 - Implement
-+Implement exactly these changes. Do not add anything beyond these fixes.
-+
-+CHANGE 1: Make merge gap configurable and raise default
-+In lan_transcriber/pipeline_steps/speaker_turns.py:
-+- Add a module-level constant DEFAULT_SPEAKER_TURN_MERGE_GAP_SEC = 4.0 (was hardcoded 1.0 on line ~203).
-+- Add a parameter merge_gap_sec: float = DEFAULT_SPEAKER_TURN_MERGE_GAP_SEC to build_speaker_turns.
-+- Replace the hardcoded 1.0 comparison with merge_gap_sec in the word-merging loop.
-+
-+CHANGE 2: Post-merge pass for short turns
-+Add a new function merge_short_turns(turns, *, min_words=6, merge_gap_sec=DEFAULT_SPEAKER_TURN_MERGE_GAP_SEC) that runs after build_speaker_turns and:
-+- Iterates through turns in order.
-+- If a turn has fewer than min_words words (count by splitting text on whitespace) AND the previous turn has the same speaker AND the gap between them is less than merge_gap_sec, merge it into the previous turn (concatenate text, extend end timestamp).
-+- If a turn has fewer than min_words AND the next turn has the same speaker AND the gap is less than merge_gap_sec, merge it into the next turn (concatenate text, set start to the short turn's start).
-+- If a turn has fewer than min_words but neighbors are different speakers, keep it as-is (do not discard content).
-+- Return the merged list.
-+
-+CHANGE 3: Wire into orchestrator
-+In the orchestrator where build_speaker_turns result is used:
-+- Call merge_short_turns on the result of build_speaker_turns before saving to speaker_turns.json.
-+- Pass through any config overrides if present.
-+
-+CHANGE 4: Add config knobs
-+In lan_app/config.py AppSettings (or the pipeline config dict if that is how it works):
-+- Add SPEAKER_TURN_MERGE_GAP_SEC with default 4.0.
-+- Add SPEAKER_TURN_MIN_WORDS with default 6.
-+- Wire these values to the orchestrator call.
-+
-+Phase 3 - Test and verify
-+- Add tests in tests/test_pipeline_steps_speaker_turns.py:
-+  - test_merge_gap_default: 2 words from same speaker with 2.5 sec gap should merge into 1 turn (was split with old 1.0 threshold).
-+  - test_merge_gap_exceeded: 2 words from same speaker with 6 sec gap should remain 2 turns.
-+  - test_short_turn_merged_into_previous: a 3-word turn after a 20-word turn from the same speaker with 1 sec gap merges into the 20-word turn.
-+  - test_short_turn_different_speakers_kept: a 2-word turn between turns of different speakers is kept.
-+  - test_merge_short_turns_empty: empty list returns empty list.
-+- Run full CI. All existing tests must pass.
-+
-+Success criteria:
-+- The 1.0 sec hardcoded gap is replaced with a configurable default of 4.0 sec.
-+- Short turns (< 6 words) from the same speaker are merged with their neighbor.
-+- No existing tests are broken.
-+- New tests cover the merge gap and short-turn merging logic.
-+- The transcript of a single-speaker recording has significantly fewer segments compared to the old behavior.
-diff --git a/tasks/PR-TRANSCRIPT-TIMESTAMPS-01.md b/tasks/PR-TRANSCRIPT-TIMESTAMPS-01.md
-new file mode 100644
-index 0000000..7e54982
---- /dev/null
-+++ b/tasks/PR-TRANSCRIPT-TIMESTAMPS-01.md
-@@ -0,0 +1,70 @@
-+Run PLANNED PR
-+
-+PR_ID: PR-TRANSCRIPT-TIMESTAMPS-01
-+Branch: pr-transcript-timestamps-01
-+Title: Add timestamps to transcript export (markdown and JSON) as default behavior
-+
-+Follow AGENTS.md exactly for work mode, queue handling, CI, artifacts, MCP usage, and scope control. This is a focused BIG PR, not a MICRO PR. Keep the scope strict.
-+
-+This task must be executed in 3 internal phases within a single run.
-+
-+Phase 1 - Inspect and map
-+Read and confirm the current state of these files before coding:
-+- lan_app/exporter.py (_transcript_section, build_onenote_markdown)
-+- lan_app/templates/ (any template that renders transcript turns, search for "speaker" and "text" in partials)
-+- lan_app/ui_routes.py (any route that renders transcript for the UI)
-+- tests/test_export.py (existing export tests)
-+- tests/test_cov_lan_app_export_ops_jobs.py (existing coverage tests)
-+
-+Phase 2 - Implement
-+Implement exactly these changes. Do not add anything beyond these fixes.
-+
-+CHANGE 1: Add timestamp formatting helper
-+In lan_app/exporter.py, add a helper function:
-+
-+def _format_timestamp(seconds: float) -> str:
-+    total = max(0, int(seconds))
-+    h = total // 3600
-+    m = (total % 3600) // 60
-+    s = total % 60
-+    if h > 0:
-+        return f"{h:02d}:{m:02d}:{s:02d}"
-+    return f"{m:02d}:{s:02d}"
-+
-+CHANGE 2: Update _transcript_section to include timestamps
-+In lan_app/exporter.py _transcript_section, change the turn rendering line from:
-+  lines.append(f"- **{speaker}:** {text}")
-+to:
-+  start = safe_float(turn.get("start"), default=None)
-+  timestamp = f"{_format_timestamp(start)} " if start is not None else ""
-+  lines.append(f"- **{timestamp}{speaker}:** {text}")
-+
-+Import safe_float from lan_transcriber.utils at the top of exporter.py if not already imported.
-+
-+CHANGE 3: Update transcript UI rendering
-+Find the template(s) that render speaker turns in the recording detail / inspector view. Add the timestamp before the speaker label in the same MM:SS or HH:MM:SS format. Look for the Jinja loop that iterates over speaker_turns and renders speaker + text. Add:
-+  {{ "%02d:%02d"|format(turn.start // 60, turn.start % 60) }}
-+before the speaker name. If turn.start is not available in the template context, ensure the route passes it through.
-+
-+CHANGE 4: Update export ZIP transcript.json
-+No change needed here since speaker_turns.json already contains start/end fields. Confirm this in the inspect phase and skip if already correct.
-+
-+Phase 3 - Test and verify
-+- Update existing export tests to expect timestamps in the markdown output:
-+  - test that a turn with start=65.0 renders as "01:05" in the markdown.
-+  - test that a turn with start=3661.0 renders as "01:01:01" in the markdown.
-+  - test that a turn with no start field renders without timestamp prefix.
-+- Add a new test for _format_timestamp:
-+  - 0 -> "00:00"
-+  - 65 -> "01:05"
-+  - 3661 -> "01:01:01"
-+  - negative -> "00:00"
-+- Run full CI. All existing tests must pass.
-+
-+Success criteria:
-+- Every turn in the markdown export has a timestamp prefix by default (no config flag needed, timestamps are always on).
-+- The UI transcript view shows timestamps next to each speaker turn.
-+- Format is MM:SS for recordings under 1 hour, HH:MM:SS for recordings over 1 hour.
-+- speaker_turns.json already has start/end, so no changes to the JSON artifact.
-+- No existing tests are broken.
-+- New tests cover the timestamp formatting logic.
-diff --git a/tasks/QUEUE.md b/tasks/QUEUE.md
-index 7b586cd..1e8ddaf 100644
---- a/tasks/QUEUE.md
-+++ b/tasks/QUEUE.md
-@@ -657,4 +657,18 @@ Queue (in order)
- 131) PR-UI-POLISH-02: Fix Cyrillic font, compact inspector avatar, navbar flicker, and inspector scroll reset
- - Status: DONE
- - Tasks file: tasks/PR-UI-POLISH-02.md
--- Depends on: PR-UI-POLISH-POST-TAILWIND-01
-\ No newline at end of file
-+- Depends on: PR-UI-POLISH-POST-TAILWIND-01
-+132) PR-TRANSCRIPT-MERGE-01: Merge short speaker turns and add configurable merge gap to reduce transcript fragmentation
-+- Status: DONE
-+- Tasks file: tasks/PR-TRANSCRIPT-MERGE-01.md
-+- Depends on: PR-UI-POLISH-02
-+
-+133) PR-DIARIZATION-FLICKER-01: Filter out flickering diarization speakers that appear briefly surrounded by the same dominant speaker
-+- Status: TODO
-+- Tasks file: tasks/PR-DIARIZATION-FLICKER-01.md
-+- Depends on: PR-TRANSCRIPT-MERGE-01
-+
-+134) PR-TRANSCRIPT-TIMESTAMPS-01: Add timestamps to transcript export and UI as default behavior
-+- Status: TODO
-+- Tasks file: tasks/PR-TRANSCRIPT-TIMESTAMPS-01.md
-+- Depends on: PR-DIARIZATION-FLICKER-01
-diff --git a/tests/test_cov_lan_transcriber_extra_pipeline.py b/tests/test_cov_lan_transcriber_extra_pipeline.py
-index 85ce7fa..c68d75d 100644
---- a/tests/test_cov_lan_transcriber_extra_pipeline.py
-+++ b/tests/test_cov_lan_transcriber_extra_pipeline.py
-@@ -2834,6 +2834,7 @@ def test_speaker_turn_helpers_cover_remaining_branches() -> None:
-         ],
-         [{"start": 0.0, "end": 4.0, "speaker": "S1"}],
-         default_language=None,
-+        merge_gap_sec=1.0,
-     )
-     assert len(turns) == 2
- 
-@@ -2844,6 +2845,7 @@ def test_speaker_turn_helpers_cover_remaining_branches() -> None:
-         ],
-         [{"start": 0.0, "end": 4.0, "speaker": "S1"}],
-         default_language=None,
-+        merge_gap_sec=1.0,
-     )
-     assert len(turns_no_language) == 2
- 
+     "merge_short_turns",
 diff --git a/tests/test_pipeline_steps_speaker_turns.py b/tests/test_pipeline_steps_speaker_turns.py
-index b5940ee..c3616cd 100644
+index c3616cd..f173887 100644
 --- a/tests/test_pipeline_steps_speaker_turns.py
 +++ b/tests/test_pipeline_steps_speaker_turns.py
-@@ -1,8 +1,11 @@
- from __future__ import annotations
- 
+@@ -3,6 +3,7 @@ from __future__ import annotations
  from lan_transcriber.pipeline_steps.speaker_turns import (
-+    DEFAULT_SPEAKER_TURN_MERGE_GAP_SEC,
-+    DEFAULT_SPEAKER_TURN_MIN_WORDS,
+     DEFAULT_SPEAKER_TURN_MERGE_GAP_SEC,
+     DEFAULT_SPEAKER_TURN_MIN_WORDS,
++    DEFAULT_SPEAKER_TURN_SHORT_MERGE_GAP_SEC,
      build_speaker_turns,
      count_interruptions,
-+    merge_short_turns,
-     normalise_asr_segments,
- )
- 
-@@ -62,6 +65,114 @@ def test_build_speaker_turns_assigns_speakers_from_diarization():
-     assert turns[-1]["speaker"] == "S2"
+     merge_short_turns,
+@@ -173,6 +174,57 @@ def test_merge_short_turns_empty():
+     assert merge_short_turns([]) == []
  
  
-+def test_merge_gap_default():
-+    """Two single-word turns from the same speaker with a 2.5s gap should merge.
++def test_merge_short_turns_default_gap_exceeds_base_merge_gap():
++    """The post-pass default must exceed the base merge gap to do real work.
 +
-+    With the legacy 1.0s threshold these stayed separate; with the new 4.0s
-+    default they collapse into a single turn.
++    After ``build_speaker_turns`` runs with the base ``merge_gap_sec``, every
++    surviving same-speaker pair has a gap strictly greater than that base
++    threshold. The short-turn post-pass therefore needs a strictly larger
++    default in order to ever fire on real pipeline output. This test pins both
++    invariants and exercises the case where ``build_speaker_turns`` left a
++    short same-speaker continuation split because the gap exceeded the base
++    merge threshold, and the post-pass still folds it back together.
 +    """
++    assert DEFAULT_SPEAKER_TURN_SHORT_MERGE_GAP_SEC > DEFAULT_SPEAKER_TURN_MERGE_GAP_SEC
++
++    long_text = " ".join(f"word{i}" for i in range(20))
 +    asr_segments = [
 +        {
 +            "start": 0.0,
-+            "end": 0.5,
-+            "text": "hello",
-+            "words": [{"start": 0.0, "end": 0.5, "word": "hello"}],
++            "end": 5.0,
++            "text": long_text,
++            "words": [
++                {"start": float(i) * 0.25, "end": float(i) * 0.25 + 0.2, "word": f"word{i}"}
++                for i in range(20)
++            ],
 +        },
 +        {
-+            "start": 3.0,
-+            "end": 3.5,
-+            "text": "world",
-+            "words": [{"start": 3.0, "end": 3.5, "word": "world"}],
++            "start": 11.0,
++            "end": 11.5,
++            "text": "ok",
++            "words": [{"start": 11.0, "end": 11.5, "word": "ok"}],
 +        },
 +    ]
-+    diar_segments = [{"start": 0.0, "end": 5.0, "speaker": "S1"}]
++    diar_segments = [{"start": 0.0, "end": 12.0, "speaker": "S1"}]
 +
-+    turns = build_speaker_turns(asr_segments, diar_segments, default_language=None)
++    base_turns = build_speaker_turns(
++        asr_segments,
++        diar_segments,
++        default_language=None,
++    )
 +
-+    assert DEFAULT_SPEAKER_TURN_MERGE_GAP_SEC == 4.0
-+    assert len(turns) == 1
-+    assert turns[0]["speaker"] == "S1"
-+    assert turns[0]["text"] == "hello world"
++    # build_speaker_turns left these split because the inter-turn gap (~6s)
++    # exceeds the base merge_gap_sec default (4s).
++    assert len(base_turns) == 2
++    assert base_turns[0]["speaker"] == base_turns[1]["speaker"] == "S1"
 +
-+
-+def test_merge_gap_exceeded():
-+    """Same speaker with a gap above the default threshold remains split."""
-+    asr_segments = [
-+        {
-+            "start": 0.0,
-+            "end": 0.5,
-+            "text": "hello",
-+            "words": [{"start": 0.0, "end": 0.5, "word": "hello"}],
-+        },
-+        {
-+            "start": 6.5,
-+            "end": 7.0,
-+            "text": "world",
-+            "words": [{"start": 6.5, "end": 7.0, "word": "world"}],
-+        },
-+    ]
-+    diar_segments = [{"start": 0.0, "end": 8.0, "speaker": "S1"}]
-+
-+    turns = build_speaker_turns(asr_segments, diar_segments, default_language=None)
-+
-+    assert len(turns) == 2
-+    assert turns[0]["text"] == "hello"
-+    assert turns[1]["text"] == "world"
-+
-+
-+def test_short_turn_merged_into_previous():
-+    """A short follow-up turn from the same speaker merges into the previous turn."""
-+    long_text = " ".join(f"word{i}" for i in range(20))
-+    short_text = "ok thanks bye"
-+    turns = [
-+        {"start": 0.0, "end": 5.0, "speaker": "S1", "text": long_text},
-+        {"start": 6.0, "end": 6.5, "speaker": "S1", "text": short_text},
-+    ]
-+
-+    merged = merge_short_turns(turns, min_words=DEFAULT_SPEAKER_TURN_MIN_WORDS)
-+
++    merged = merge_short_turns(base_turns)
 +    assert len(merged) == 1
-+    assert merged[0]["speaker"] == "S1"
-+    assert merged[0]["text"] == f"{long_text} {short_text}"
++    assert merged[0]["text"].endswith("ok")
 +    assert merged[0]["start"] == 0.0
-+    assert merged[0]["end"] == 6.5
-+
-+
-+def test_short_turn_merged_into_next():
-+    """A short opening turn merges forward into a same-speaker following turn."""
-+    long_text = " ".join(f"word{i}" for i in range(20))
-+    turns = [
-+        {"start": 0.0, "end": 0.5, "speaker": "S1", "text": "hi"},
-+        {"start": 1.0, "end": 5.0, "speaker": "S1", "text": long_text},
-+    ]
-+
-+    merged = merge_short_turns(turns, min_words=DEFAULT_SPEAKER_TURN_MIN_WORDS)
-+
-+    assert len(merged) == 1
-+    assert merged[0]["speaker"] == "S1"
-+    assert merged[0]["start"] == 0.0
-+    assert merged[0]["text"] == f"hi {long_text}"
-+
-+
-+def test_short_turn_different_speakers_kept():
-+    """A short turn between two different speakers is preserved as-is."""
-+    turns = [
-+        {"start": 0.0, "end": 1.0, "speaker": "S1", "text": "hello there partner"},
-+        {"start": 1.2, "end": 1.5, "speaker": "S2", "text": "yes please"},
-+        {"start": 1.7, "end": 3.0, "speaker": "S3", "text": "all right then continue please"},
-+    ]
-+
-+    merged = merge_short_turns(turns, min_words=DEFAULT_SPEAKER_TURN_MIN_WORDS)
-+
-+    assert len(merged) == 3
-+    assert merged[1]["speaker"] == "S2"
-+    assert merged[1]["text"] == "yes please"
-+
-+
-+def test_merge_short_turns_empty():
-+    assert merge_short_turns([]) == []
++    assert merged[0]["end"] == 11.5
 +
 +
  def test_count_interruptions_small_synthetic_case():

@@ -3,6 +3,7 @@ from __future__ import annotations
 from lan_transcriber.pipeline_steps.speaker_turns import (
     DEFAULT_SPEAKER_TURN_MERGE_GAP_SEC,
     DEFAULT_SPEAKER_TURN_MIN_WORDS,
+    DEFAULT_SPEAKER_TURN_SHORT_MERGE_GAP_SEC,
     build_speaker_turns,
     count_interruptions,
     merge_short_turns,
@@ -171,6 +172,57 @@ def test_short_turn_different_speakers_kept():
 
 def test_merge_short_turns_empty():
     assert merge_short_turns([]) == []
+
+
+def test_merge_short_turns_default_gap_exceeds_base_merge_gap():
+    """The post-pass default must exceed the base merge gap to do real work.
+
+    After ``build_speaker_turns`` runs with the base ``merge_gap_sec``, every
+    surviving same-speaker pair has a gap strictly greater than that base
+    threshold. The short-turn post-pass therefore needs a strictly larger
+    default in order to ever fire on real pipeline output. This test pins both
+    invariants and exercises the case where ``build_speaker_turns`` left a
+    short same-speaker continuation split because the gap exceeded the base
+    merge threshold, and the post-pass still folds it back together.
+    """
+    assert DEFAULT_SPEAKER_TURN_SHORT_MERGE_GAP_SEC > DEFAULT_SPEAKER_TURN_MERGE_GAP_SEC
+
+    long_text = " ".join(f"word{i}" for i in range(20))
+    asr_segments = [
+        {
+            "start": 0.0,
+            "end": 5.0,
+            "text": long_text,
+            "words": [
+                {"start": float(i) * 0.25, "end": float(i) * 0.25 + 0.2, "word": f"word{i}"}
+                for i in range(20)
+            ],
+        },
+        {
+            "start": 11.0,
+            "end": 11.5,
+            "text": "ok",
+            "words": [{"start": 11.0, "end": 11.5, "word": "ok"}],
+        },
+    ]
+    diar_segments = [{"start": 0.0, "end": 12.0, "speaker": "S1"}]
+
+    base_turns = build_speaker_turns(
+        asr_segments,
+        diar_segments,
+        default_language=None,
+    )
+
+    # build_speaker_turns left these split because the inter-turn gap (~6s)
+    # exceeds the base merge_gap_sec default (4s).
+    assert len(base_turns) == 2
+    assert base_turns[0]["speaker"] == base_turns[1]["speaker"] == "S1"
+
+    merged = merge_short_turns(base_turns)
+    assert len(merged) == 1
+    assert merged[0]["text"].endswith("ok")
+    assert merged[0]["start"] == 0.0
+    assert merged[0]["end"] == 11.5
 
 
 def test_count_interruptions_small_synthetic_case():

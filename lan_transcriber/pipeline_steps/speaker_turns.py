@@ -7,6 +7,15 @@ from lan_transcriber.utils import normalise_language_code, safe_float
 DEFAULT_INTERRUPTION_OVERLAP_SEC = 0.3
 DEFAULT_SPEAKER_TURN_MERGE_GAP_SEC = 4.0
 DEFAULT_SPEAKER_TURN_MIN_WORDS = 6
+# The post-pass that folds short turns into adjacent same-speaker turns must
+# use a strictly larger gap than DEFAULT_SPEAKER_TURN_MERGE_GAP_SEC. By the
+# time merge_short_turns runs, build_speaker_turns has already collapsed every
+# adjacent same-speaker pair whose gap is <= DEFAULT_SPEAKER_TURN_MERGE_GAP_SEC,
+# so any same-speaker neighbours that remain have gaps strictly above that
+# threshold. A larger threshold here lets the short-turn pass actually fire
+# for brief interjections (e.g. "uh-huh", "yeah okay") that sit between
+# longer same-speaker stretches separated by a noticeable silence.
+DEFAULT_SPEAKER_TURN_SHORT_MERGE_GAP_SEC = 8.0
 
 
 def _normalise_word(word: dict[str, Any], seg_start: float, seg_end: float) -> dict[str, Any] | None:
@@ -231,7 +240,7 @@ def merge_short_turns(
     turns: Sequence[dict[str, Any]],
     *,
     min_words: int = DEFAULT_SPEAKER_TURN_MIN_WORDS,
-    merge_gap_sec: float = DEFAULT_SPEAKER_TURN_MERGE_GAP_SEC,
+    merge_gap_sec: float = DEFAULT_SPEAKER_TURN_SHORT_MERGE_GAP_SEC,
 ) -> list[dict[str, Any]]:
     """Merge short speaker turns into adjacent turns from the same speaker.
 
@@ -242,6 +251,11 @@ def merge_short_turns(
     neighbour shares the same speaker and the inter-turn gap is below
     ``merge_gap_sec`` seconds. Short turns whose neighbours are different
     speakers are kept as-is so no transcript content is discarded.
+
+    ``merge_gap_sec`` should be strictly larger than the gap used by
+    :func:`build_speaker_turns`, otherwise this post-pass is a no-op: every
+    same-speaker pair within the base merge gap has already been collapsed by
+    that earlier pass.
     """
     out: list[dict[str, Any]] = []
     pending: list[dict[str, Any]] = [dict(turn) for turn in turns if isinstance(turn, dict)]
@@ -398,6 +412,7 @@ __all__ = [
     "DEFAULT_INTERRUPTION_OVERLAP_SEC",
     "DEFAULT_SPEAKER_TURN_MERGE_GAP_SEC",
     "DEFAULT_SPEAKER_TURN_MIN_WORDS",
+    "DEFAULT_SPEAKER_TURN_SHORT_MERGE_GAP_SEC",
     "normalise_asr_segments",
     "build_speaker_turns",
     "merge_short_turns",

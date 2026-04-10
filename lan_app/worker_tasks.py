@@ -1883,6 +1883,7 @@ def _build_pipeline_settings(settings: AppSettings) -> PipelineSettings:
         diarization_merge_gap_seconds=settings.diarization_merge_gap_seconds,
         diarization_min_turn_seconds=settings.diarization_min_turn_seconds,
         speaker_turn_merge_gap_sec=settings.speaker_turn_merge_gap_sec,
+        speaker_turn_short_merge_gap_sec=settings.speaker_turn_short_merge_gap_sec,
         speaker_turn_min_words=settings.speaker_turn_min_words,
         vad_method=settings.vad_method,
     )
@@ -2950,7 +2951,7 @@ def _stage_speaker_turns(ctx: _PipelineExecutionContext) -> _StageResult:
     unsmoothed_speaker_turns = merge_short_turns(
         unsmoothed_speaker_turns,
         min_words=ctx.pipeline_settings.speaker_turn_min_words,
-        merge_gap_sec=ctx.pipeline_settings.speaker_turn_merge_gap_sec,
+        merge_gap_sec=ctx.pipeline_settings.speaker_turn_short_merge_gap_sec,
     )
     diariser_mode = str(ctx.diarization_runtime.get("mode") or "unknown").strip().lower()
     if diariser_mode == "pyannote" and not ctx.diarization_runtime.get("used_dummy_fallback"):

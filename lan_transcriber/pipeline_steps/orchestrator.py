@@ -74,6 +74,7 @@ from .snippets import SnippetExportRequest, export_speaker_snippets, write_empty
 from .speaker_turns import (
     DEFAULT_SPEAKER_TURN_MERGE_GAP_SEC,
     DEFAULT_SPEAKER_TURN_MIN_WORDS,
+    DEFAULT_SPEAKER_TURN_SHORT_MERGE_GAP_SEC,
     _diarization_segments,
     build_speaker_turns,
     merge_short_turns,
@@ -397,6 +398,15 @@ class Settings(BaseSettings):
             "speaker_turn_merge_gap_sec",
             "SPEAKER_TURN_MERGE_GAP_SEC",
             "LAN_SPEAKER_TURN_MERGE_GAP_SEC",
+        ),
+    )
+    speaker_turn_short_merge_gap_sec: float = Field(
+        default=DEFAULT_SPEAKER_TURN_SHORT_MERGE_GAP_SEC,
+        ge=0.0,
+        validation_alias=AliasChoices(
+            "speaker_turn_short_merge_gap_sec",
+            "SPEAKER_TURN_SHORT_MERGE_GAP_SEC",
+            "LAN_SPEAKER_TURN_SHORT_MERGE_GAP_SEC",
         ),
     )
     speaker_turn_min_words: int = Field(
@@ -2822,7 +2832,7 @@ async def run_pipeline(
         unsmoothed_speaker_turns = merge_short_turns(
             unsmoothed_speaker_turns,
             min_words=cfg.speaker_turn_min_words,
-            merge_gap_sec=cfg.speaker_turn_merge_gap_sec,
+            merge_gap_sec=cfg.speaker_turn_short_merge_gap_sec,
         )
         diariser_mode = _diariser_mode(diariser)
         if diariser_mode == "pyannote" and not used_dummy_fallback:
