@@ -669,6 +669,6 @@ Queue (in order)
 - Depends on: PR-TRANSCRIPT-MERGE-01
 
 134) PR-TRANSCRIPT-TIMESTAMPS-01: Add timestamps to transcript export and UI as default behavior
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-TRANSCRIPT-TIMESTAMPS-01.md
 - Depends on: PR-DIARIZATION-FLICKER-01

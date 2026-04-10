@@ -222,6 +222,33 @@ def test_build_onenote_markdown_language_detection_paths(tmp_path: Path):
     assert "- Language: en" in markdown_auto
 
 
+def test_format_timestamp_helper_handles_ranges_and_negatives():
+    assert exporter._format_timestamp(0) == "00:00"
+    assert exporter._format_timestamp(65) == "01:05"
+    assert exporter._format_timestamp(3661) == "01:01:01"
+    assert exporter._format_timestamp(-5) == "00:00"
+
+
+def test_transcript_section_renders_timestamps_for_speaker_turns():
+    short_transcript = exporter._transcript_section(
+        {},
+        [{"speaker": "S1", "start": 65.0, "text": "first"}],
+    )
+    assert short_transcript == ["## Transcript", "- **01:05 S1:** first"]
+
+    long_transcript = exporter._transcript_section(
+        {},
+        [{"speaker": "S1", "start": 3661.0, "text": "later"}],
+    )
+    assert long_transcript == ["## Transcript", "- **01:01:01 S1:** later"]
+
+    no_timestamp = exporter._transcript_section(
+        {},
+        [{"speaker": "S1", "text": "no start field"}],
+    )
+    assert no_timestamp == ["## Transcript", "- **S1:** no start field"]
+
+
 def test_try_read_bytes_returns_none_on_oserror(tmp_path: Path, monkeypatch):
     target = tmp_path / "payload.bin"
     target.write_bytes(b"payload")

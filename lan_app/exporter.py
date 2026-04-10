@@ -9,6 +9,8 @@ from pathlib import Path
 import zipfile
 from typing import Any
 
+from lan_transcriber.utils import safe_float
+
 from .config import AppSettings
 from .db import (
     SPEAKER_REVIEW_STATE_CONFIRMED_CANONICAL,
@@ -34,6 +36,16 @@ def _utc_now_iso() -> str:
     return datetime.now(tz=timezone.utc).replace(microsecond=0).isoformat().replace(
         "+00:00", "Z"
     )
+
+
+def _format_timestamp(seconds: float) -> str:
+    total = max(0, int(seconds))
+    h = total // 3600
+    m = (total % 3600) // 60
+    s = total % 60
+    if h > 0:
+        return f"{h:02d}:{m:02d}:{s:02d}"
+    return f"{m:02d}:{s:02d}"
 
 
 def _load_json_dict(path: Path) -> dict[str, Any]:
@@ -262,7 +274,9 @@ def _transcript_section(
             text = _normalize_text(turn.get("text") or "")
             if not text:
                 continue
-            lines.append(f"- **{speaker}:** {text}")
+            start = safe_float(turn.get("start"), default=None)
+            timestamp = f"{_format_timestamp(start)} " if start is not None else ""
+            lines.append(f"- **{timestamp}{speaker}:** {text}")
             wrote_any = True
         if wrote_any:
             return lines

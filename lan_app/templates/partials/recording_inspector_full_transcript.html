@@ -31,6 +31,9 @@
         {% for turn in tr.turns %}
         <article class="mb-4 last:mb-0">
           <div class="flex items-center gap-2 mb-1">
+            {% if turn.timestamp %}
+            <span class="text-xs font-mono text-slate-500" data-testid="transcript-turn-timestamp">{{ turn.timestamp }}</span>
+            {% endif %}
             <strong class="text-sm font-semibold text-slate-900">{{ turn.speaker }}</strong>
             <span class="text-xs text-slate-400">{{ turn.time_range }}</span>
             {% if turn.language_label %}
