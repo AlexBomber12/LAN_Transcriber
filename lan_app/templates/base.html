@@ -170,27 +170,27 @@ function refreshControlCenterShellFromHref(href) {
   htmx.trigger(document.body, 'refresh-control-center-system-bar');
 }
 
-window.__inspectorScrollTops = window.__inspectorScrollTops || {};
+window.__inspectorScrollState = window.__inspectorScrollState || null;
 
 if (document.body && !window.__controlCenterShellAfterSwapBound) {
   document.body.addEventListener('htmx:beforeSwap', function (event) {
-    var detail = event && event.detail ? event.detail : null;
-    var target = detail ? detail.target : null;
+    var target = event && event.detail ? event.detail.target : null;
     if (!target || target.id !== 'control-center-inspector-pane') {
       return;
     }
-    // Only preserve scroll for self-initiated refreshes (the inspector
-    // pane's own `every 2s` poll). Tab clicks and other swaps should
-    // render the new content at the top, so clear any stale saved value.
-    var requestElt = detail && detail.requestConfig ? detail.requestConfig.elt : null;
-    if (requestElt && requestElt.id === 'control-center-inspector-pane') {
-      var scrollEl = target.querySelector('[data-inspector-scroll]');
-      if (scrollEl) {
-        window.__inspectorScrollTops['control-center-inspector-pane'] = scrollEl.scrollTop;
-      }
-    } else {
-      delete window.__inspectorScrollTops['control-center-inspector-pane'];
+    // Capture the OLD inspector view's identity (its self-refresh URL)
+    // and current scroll position. The afterSwap handler only restores
+    // when the NEW inspector pane is the same view (same hx-get URL),
+    // so tab clicks and recording navigation always render at the top.
+    var scrollEl = target.querySelector('[data-inspector-scroll]');
+    if (!scrollEl) {
+      window.__inspectorScrollState = null;
+      return;
     }
+    window.__inspectorScrollState = {
+      url: target.getAttribute('hx-get') || '',
+      scrollTop: scrollEl.scrollTop
+    };
   });
   document.body.addEventListener('htmx:afterSwap', function (event) {
     var target = event && event.detail ? event.detail.target : null;
@@ -204,13 +204,13 @@ if (document.body && !window.__controlCenterShellAfterSwapBound) {
     if (target.id !== 'control-center-inspector-pane') {
       return;
     }
-    var savedScroll = window.__inspectorScrollTops['control-center-inspector-pane'];
-    if (typeof savedScroll === 'number') {
+    var saved = window.__inspectorScrollState;
+    window.__inspectorScrollState = null;
+    if (saved && saved.url && saved.url === (target.getAttribute('hx-get') || '')) {
       var newScrollEl = target.querySelector('[data-inspector-scroll]');
       if (newScrollEl) {
-        newScrollEl.scrollTop = savedScroll;
+        newScrollEl.scrollTop = saved.scrollTop;
       }
-      delete window.__inspectorScrollTops['control-center-inspector-pane'];
     }
     var activeTab = target.querySelector('[data-active-tab="true"]');
     refreshControlCenterShellFromHref(activeTab ? activeTab.getAttribute('href') : '');
