@@ -1,5 +1,5 @@
 diff --git a/artifacts/ci.log b/artifacts/ci.log
-index 29e7370..a406dfd 100644
+index 29e7370..ee1eb32 100644
 --- a/artifacts/ci.log
 +++ b/artifacts/ci.log
 @@ -102,8 +102,8 @@ Requirement already satisfied: pytz>2021.1 in /home/alexey/.pyenv/versions/3.11.
@@ -8,138 +8,45 @@ index 29e7370..a406dfd 100644
    Building editable for lan-transcriber (pyproject.toml): finished with status 'done'
 -  Created wheel for lan-transcriber: filename=lan_transcriber-0.1.0-0.editable-py3-none-any.whl size=15462 sha256=5e44324698d788db3369e48190b9afd6f0082bbf397ee6165ccde94db5ce2508
 -  Stored in directory: /tmp/pip-ephem-wheel-cache-cdi6_mp3/wheels/3c/34/21/7d1a99d2a9e86cdb0d7c14d1c0d7dc5a97e0d170dff3df8fb1
-+  Created wheel for lan-transcriber: filename=lan_transcriber-0.1.0-0.editable-py3-none-any.whl size=15462 sha256=579e9320a17af2ecf048795b3ef018c42bacc4ef2ecb4e3f5c368573ba6dd2dd
-+  Stored in directory: /tmp/pip-ephem-wheel-cache-v55duzlo/wheels/3c/34/21/7d1a99d2a9e86cdb0d7c14d1c0d7dc5a97e0d170dff3df8fb1
++  Created wheel for lan-transcriber: filename=lan_transcriber-0.1.0-0.editable-py3-none-any.whl size=15462 sha256=00c03ff1c59c49ee76e85bb12404390c27f644e2cd6b2c95a4462457551c3e8c
++  Stored in directory: /tmp/pip-ephem-wheel-cache-_453noe7/wheels/3c/34/21/7d1a99d2a9e86cdb0d7c14d1c0d7dc5a97e0d170dff3df8fb1
  Successfully built lan-transcriber
  Installing collected packages: lan-transcriber
    Attempting uninstall: lan-transcriber
-@@ -127,124 +127,4 @@ The event loop scope for asynchronous fixtures will default to the fixture cachi
- ........................................................................ [ 54%]
- ........................................................................ [ 61%]
- ........................................................................ [ 68%]
--........................................................................ [ 75%]
--.......................s................................................ [ 81%]
--........................................................................ [ 88%]
--........................................................................ [ 95%]
--..............................................                           [100%]
--=============================== warnings summary ===============================
--lan_transcriber/pipeline_steps/precheck.py:3
--  /home/alexey/LAN_Transcriber/lan_transcriber/pipeline_steps/precheck.py:3: DeprecationWarning: 'audioop' is deprecated and slated for removal in Python 3.13
--    import audioop
--
--lan_transcriber/pipeline_steps/orchestrator.py:243
--tests/test_imports.py::test_imports[lan_transcriber.pipeline_steps.orchestrator]
--tests/test_imports.py::test_orchestrator_import_does_not_import_whisperx
--  /home/alexey/LAN_Transcriber/lan_transcriber/pipeline_steps/orchestrator.py:243: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
--    class Settings(BaseSettings):
--
--lan_app/config.py:42
--  /home/alexey/LAN_Transcriber/lan_app/config.py:42: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
--    class AppSettings(BaseSettings):
--
--tests/test_cov_lan_app_health_worker.py::test_healthchecks_module_main_guard
--  <frozen runpy>:128: RuntimeWarning: 'lan_app.healthchecks' found in sys.modules after import of package 'lan_app', but prior to execution of 'lan_app.healthchecks'; this may result in unpredictable behaviour
--
--tests/test_cov_lan_app_health_worker.py::test_worker_module_main_guard
--  <frozen runpy>:128: RuntimeWarning: 'lan_app.worker' found in sys.modules after import of package 'lan_app', but prior to execution of 'lan_app.worker'; this may result in unpredictable behaviour
--
--tests/test_cov_lan_app_health_worker.py::test_db_init_main_and_guard
--  <frozen runpy>:128: RuntimeWarning: 'lan_app.db_init' found in sys.modules after import of package 'lan_app', but prior to execution of 'lan_app.db_init'; this may result in unpredictable behaviour
--
--tests/test_cov_lan_app_ui.py::test_ui_module_main_guard_launches
--  <frozen runpy>:128: RuntimeWarning: 'lan_app.ui' found in sys.modules after import of package 'lan_app', but prior to execution of 'lan_app.ui'; this may result in unpredictable behaviour
--
--tests/test_snippet_repair.py::test_repair_snippets_tool_module_main_branch
--  <frozen runpy>:128: RuntimeWarning: 'lan_app.tools.repair_snippets' found in sys.modules after import of package 'lan_app.tools', but prior to execution of 'lan_app.tools.repair_snippets'; this may result in unpredictable behaviour
--
--tests/test_warm_models.py::test_warm_models_module_main_guard
--  <frozen runpy>:128: RuntimeWarning: 'lan_app.tools.warm_models' found in sys.modules after import of package 'lan_app.tools', but prior to execution of 'lan_app.tools.warm_models'; this may result in unpredictable behaviour
--
---- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
--
------------ coverage: platform linux, python 3.11.9-final-0 -----------
--Name    Stmts   Miss Branch BrPart  Cover   Missing
-----------------------------------------------------
--TOTAL   13940      0   4640      0   100%
--
--63 files skipped due to complete coverage.
--Coverage HTML written to dir htmlcov
--
--Required test coverage of 100% reached. Total coverage: 100.00%
+@@ -176,7 +176,7 @@ TOTAL   13940      0   4640      0   100%
+ Coverage HTML written to dir htmlcov
+ 
+ Required test coverage of 100% reached. Total coverage: 100.00%
 -1053 passed, 3 skipped, 11 warnings in 91.35s (0:01:31)
--Name                                                    Stmts   Miss Branch BrPart  Cover
-------------------------------------------------------------------------------------------
--lan_transcriber/__init__.py                                 8      0      0      0   100%
--lan_transcriber/aliases.py                                 17      0      4      0   100%
--lan_transcriber/artifacts.py                               67      0      8      0   100%
--lan_transcriber/audio_sanitize.py                          52      0     18      0   100%
--lan_transcriber/compat/__init__.py                          2      0      0      0   100%
--lan_transcriber/compat/call_compat.py                      57      0     14      0   100%
--lan_transcriber/compat/pyannote_compat.py                  27      0      6      0   100%
--lan_transcriber/gpu_policy.py                             125      0     38      0   100%
--lan_transcriber/llm_chunking.py                           440      0    160      0   100%
--lan_transcriber/llm_client.py                             236      0     74      0   100%
--lan_transcriber/metrics.py                                 12      0      0      0   100%
--lan_transcriber/models.py                                  22      0      0      0   100%
--lan_transcriber/native_fixups.py                          102      0     36      0   100%
--lan_transcriber/normalizer.py                              25      0     14      0   100%
--lan_transcriber/pipeline.py                                 5      0      0      0   100%
--lan_transcriber/pipeline_steps/__init__.py                  7      0      0      0   100%
--lan_transcriber/pipeline_steps/artifacts.py                19      0      0      0   100%
--lan_transcriber/pipeline_steps/diarization_quality.py     268      0     98      0   100%
--lan_transcriber/pipeline_steps/language.py                155      0     64      0   100%
--lan_transcriber/pipeline_steps/multilingual_asr.py        239      0     88      0   100%
--lan_transcriber/pipeline_steps/orchestrator.py           1169      0    334      0   100%
--lan_transcriber/pipeline_steps/precheck.py                116      0     46      0   100%
--lan_transcriber/pipeline_steps/snippets.py                231      0     84      0   100%
--lan_transcriber/pipeline_steps/speaker_turns.py           199      0    106      0   100%
--lan_transcriber/pipeline_steps/summary_builder.py         276      0     98      0   100%
--lan_transcriber/runtime_paths.py                           21      0      4      0   100%
--lan_transcriber/torch_safe_globals.py                     126      0     40      0   100%
--lan_transcriber/utils.py                                   50      0     30      0   100%
-------------------------------------------------------------------------------------------
--TOTAL                                                    4073      0   1364      0   100%
--Name                               Stmts   Miss Branch BrPart  Cover
----------------------------------------------------------------------
--lan_app/__init__.py                    1      0      0      0   100%
--lan_app/api.py                       327      0     78      0   100%
--lan_app/asr_glossary.py              224      0     98      0   100%
--lan_app/auth.py                       58      0     20      0   100%
--lan_app/calendar/__init__.py           4      0      0      0   100%
--lan_app/calendar/ics.py              235      0     88      0   100%
--lan_app/calendar/matching.py         333      0    132      0   100%
--lan_app/calendar/service.py           66      0     12      0   100%
--lan_app/config.py                    106      0     16      0   100%
--lan_app/constants.py                  30      0      0      0   100%
--lan_app/conversation_metrics.py      380      0    150      0   100%
--lan_app/db.py                       1434      0    318      0   100%
--lan_app/db_init.py                     9      0      2      0   100%
--lan_app/diagnostics.py               281      0    160      0   100%
--lan_app/diarization_loader.py        144      0     54      0   100%
--lan_app/exporter.py                  246      0    108      0   100%
--lan_app/healthchecks.py              103      0     38      0   100%
--lan_app/hf_repo.py                     9      0      2      0   100%
--lan_app/jobs.py                      107      0     32      0   100%
--lan_app/ops.py                       116      0     54      0   100%
--lan_app/pipeline_stages.py            84      0     24      0   100%
--lan_app/reaper.py                     67      0     18      0   100%
--lan_app/routing.py                   257      0    102      0   100%
--lan_app/snippet_repair.py            373      0    114      0   100%
--lan_app/speaker_bank.py              107      0     34      0   100%
--lan_app/system_status.py             240      0     96      0   100%
--lan_app/tools/__init__.py              1      0      0      0   100%
--lan_app/tools/repair_snippets.py      36      0     12      0   100%
--lan_app/tools/warm_models.py          47      0     10      0   100%
--lan_app/ui.py                         59      0     10      0   100%
--lan_app/ui_routes.py                2572      0    988      0   100%
--lan_app/uploads.py                    79      0     14      0   100%
--lan_app/worker.py                     28      0      2      0   100%
--lan_app/worker_tasks.py             1694      0    490      0   100%
--lan_app/workers.py                    10      0      0      0   100%
----------------------------------------------------------------------
--TOTAL                               9867      0   3276      0   100%
-+.............................
-\ No newline at end of file
++1053 passed, 3 skipped, 11 warnings in 90.32s (0:01:30)
+ Name                                                    Stmts   Miss Branch BrPart  Cover
+ -----------------------------------------------------------------------------------------
+ lan_transcriber/__init__.py                                 8      0      0      0   100%
+diff --git a/artifacts/pr.patch b/artifacts/pr.patch
+index 4b9e1bc..e69de29 100644
+--- a/artifacts/pr.patch
++++ b/artifacts/pr.patch
+@@ -1,20 +0,0 @@
+-diff --git a/lan_app/templates/partials/speaker_review_cards.html b/lan_app/templates/partials/speaker_review_cards.html
+-index c684bcc..7f1c857 100644
+---- a/lan_app/templates/partials/speaker_review_cards.html
+-+++ b/lan_app/templates/partials/speaker_review_cards.html
+-@@ -126,7 +126,6 @@
+-         </div>
+-       </div>
+- 
+--      {% if not speaker_review_compact %}
+-       <div class="flex flex-col gap-3">
+-         <section class="bg-slate-50 rounded-lg border border-slate-100 p-4">
+-           <h3 class="text-sm font-bold text-slate-900 mb-1">Confirm match</h3>
+-@@ -227,7 +226,6 @@
+-           {% endif %}
+-         </section>
+-       </div>
+--      {% endif %}
+-     </div>
+-   </section>
+-   {% endfor %}
 diff --git a/lan_app/templates/base.html b/lan_app/templates/base.html
 index cc16461..5dff72a 100644
 --- a/lan_app/templates/base.html
@@ -2593,6 +2500,19 @@ index 7f2a1cb..acda8dd 100644
 +  <p class="text-slate-500 italic py-5">No events in this date range.</p>
    {% endif %}
  </div>
+ 
+diff --git a/lan_app/templates/control_center.html b/lan_app/templates/control_center.html
+index 0237677..3f5b3bf 100644
+--- a/lan_app/templates/control_center.html
++++ b/lan_app/templates/control_center.html
+@@ -1,7 +1,7 @@
+ {% extends "base.html" %}
+ {% block title %}Control Center – LAN Transcriber{% endblock %}
+ {% block content %}
+-<style>#control-center-shell{height:calc(100dvh - var(--cc-top, 0px))}.app-main:has(#control-center-shell){padding:0;width:100%;max-width:none}</style>
++<style>#control-center-shell{height:calc(100dvh - var(--cc-top, 0px))}main:has(#control-center-shell){padding:0;width:100%;max-width:none}</style>
+ <div id="control-center-shell" class="flex flex-col overflow-auto lg:overflow-hidden">
+   {% include "partials/control_center/workspace_header.html" %}
  
 diff --git a/lan_app/templates/dashboard.html b/lan_app/templates/dashboard.html
 index 8044ad2..5e88213 100644
