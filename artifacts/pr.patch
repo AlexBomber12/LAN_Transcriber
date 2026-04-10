@@ -1,303 +1,3 @@
-diff --git a/lan_app/templates/base.html b/lan_app/templates/base.html
-index 1136560..76bd6ff 100644
---- a/lan_app/templates/base.html
-+++ b/lan_app/templates/base.html
-@@ -16,6 +16,14 @@
-   src: url(/static/fonts/inter-latin.woff2) format('woff2');
-   unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
- }
-+@font-face {
-+  font-family: 'Inter';
-+  font-style: normal;
-+  font-weight: 400 900;
-+  font-display: swap;
-+  src: url(/static/fonts/inter-cyrillic.woff2) format('woff2');
-+  unicode-range: U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116;
-+}
- @font-face {
-   font-family: 'Material Symbols Outlined';
-   font-style: normal;
-@@ -170,28 +178,7 @@ function refreshControlCenterShellFromHref(href) {
-   htmx.trigger(document.body, 'refresh-control-center-system-bar');
- }
- 
--window.__inspectorScrollState = window.__inspectorScrollState || null;
--
- if (document.body && !window.__controlCenterShellAfterSwapBound) {
--  document.body.addEventListener('htmx:beforeSwap', function (event) {
--    var target = event && event.detail ? event.detail.target : null;
--    if (!target || target.id !== 'control-center-inspector-pane') {
--      return;
--    }
--    // Capture the OLD inspector view's identity (its self-refresh URL)
--    // and current scroll position. The afterSwap handler only restores
--    // when the NEW inspector pane is the same view (same hx-get URL),
--    // so tab clicks and recording navigation always render at the top.
--    var scrollEl = target.querySelector('[data-inspector-scroll]');
--    if (!scrollEl) {
--      window.__inspectorScrollState = null;
--      return;
--    }
--    window.__inspectorScrollState = {
--      url: target.getAttribute('hx-get') || '',
--      scrollTop: scrollEl.scrollTop
--    };
--  });
-   document.body.addEventListener('htmx:afterSwap', function (event) {
-     var target = event && event.detail ? event.detail.target : null;
-     if (!target) {
-@@ -201,17 +188,16 @@ if (document.body && !window.__controlCenterShellAfterSwapBound) {
-       refreshControlCenterShellFromPanel();
-       return;
-     }
--    if (target.id !== 'control-center-inspector-pane') {
-+    if (
-+      target.id !== 'control-center-inspector-pane' &&
-+      target.id !== 'control-center-inspector-pane-content'
-+    ) {
-       return;
-     }
--    var saved = window.__inspectorScrollState;
--    window.__inspectorScrollState = null;
--    if (saved && saved.url && saved.url === (target.getAttribute('hx-get') || '')) {
--      var newScrollEl = target.querySelector('[data-inspector-scroll]');
--      if (newScrollEl) {
--        newScrollEl.scrollTop = saved.scrollTop;
--      }
--    }
-+    // The outer #control-center-inspector-pane section is a static scroll
-+    // container that is never replaced during auto-refresh. Browser-native
-+    // scrollTop is preserved automatically across innerHTML/outerHTML swaps
-+    // of the inner wrapper, so no explicit save/restore is needed here.
-     var activeTab = target.querySelector('[data-active-tab="true"]');
-     refreshControlCenterShellFromHref(activeTab ? activeTab.getAttribute('href') : '');
-   });
-diff --git a/lan_app/templates/partials/control_center/inspector_pane.html b/lan_app/templates/partials/control_center/inspector_pane.html
-index f97280f..47bafea 100644
---- a/lan_app/templates/partials/control_center/inspector_pane.html
-+++ b/lan_app/templates/partials/control_center/inspector_pane.html
-@@ -1,15 +1,21 @@
- <section
-   id="control-center-inspector-pane"
--  class="w-full lg:w-[45%] bg-white flex flex-col shadow-xl overflow-hidden"
--  hx-get="{{ control_center_state.inspector_pane_url }}"
--  hx-trigger="{% if recording_inspector and recording_inspector.auto_refresh %}refresh-control-center-inspector from:body, every 2s{% else %}refresh-control-center-inspector from:body{% endif %}"
--  hx-target="this"
--  hx-swap="outerHTML"
-+  class="w-full lg:w-[45%] bg-white flex flex-col shadow-xl overflow-y-auto"
- >
--  {% if recording_inspector %}
--  {% include "partials/control_center/recording_details_card.html" %}
--  {% else %}
--  {% set empty_inspector = control_center_empty_inspector %}
--  {% include "partials/control_center/inspector_empty.html" %}
--  {% endif %}
-+  <div
-+    id="control-center-inspector-pane-content"
-+    class="flex flex-col flex-1"
-+    hx-get="{{ control_center_state.inspector_pane_url }}"
-+    hx-trigger="{% if recording_inspector and recording_inspector.auto_refresh %}refresh-control-center-inspector from:body, every 2s{% else %}refresh-control-center-inspector from:body{% endif %}"
-+    hx-target="this"
-+    hx-swap="outerHTML"
-+    hx-select="#control-center-inspector-pane-content"
-+  >
-+    {% if recording_inspector %}
-+    {% include "partials/control_center/recording_details_card.html" %}
-+    {% else %}
-+    {% set empty_inspector = control_center_empty_inspector %}
-+    {% include "partials/control_center/inspector_empty.html" %}
-+    {% endif %}
-+  </div>
- </section>
-diff --git a/lan_app/templates/partials/control_center/recording_details_card.html b/lan_app/templates/partials/control_center/recording_details_card.html
-index 0ff0a30..0eda4d1 100644
---- a/lan_app/templates/partials/control_center/recording_details_card.html
-+++ b/lan_app/templates/partials/control_center/recording_details_card.html
-@@ -1,5 +1,5 @@
- {% set details = embedded_recording_details or {} %}
--<article class="flex flex-col h-full">
-+<article class="flex flex-col flex-1">
-   <div class="px-6 py-4 border-b border-slate-200 bg-slate-50">
-     <div class="flex items-start justify-between">
-       <div>
-@@ -22,7 +22,7 @@
-     </div>
-   </div>
- 
--  <div class="flex-1 overflow-y-auto p-6 space-y-6" data-inspector-scroll>
-+  <div class="flex-1 p-6 space-y-6">
-     <div class="space-y-3">
-       <h4 class="text-xs font-bold uppercase tracking-widest text-slate-400">KEY METADATA</h4>
-       <div class="grid grid-cols-2 gap-x-8 gap-y-3">
-@@ -40,9 +40,16 @@
-       {% if details.speaker_rows %}
-       <div class="space-y-2">
-         {% for speaker in details.speaker_rows %}
-+        {% set _raw_speaker_label = speaker.primary_label or '' %}
-+        {% if _raw_speaker_label[:8] == 'SPEAKER_' %}
-+          {% set _speaker_index_digits = _raw_speaker_label[8:] %}
-+          {% set _speaker_avatar_label = 'S' ~ (_speaker_index_digits.lstrip('0') or '0') %}
-+        {% else %}
-+          {% set _speaker_avatar_label = _raw_speaker_label[:2]|upper %}
-+        {% endif %}
-         <div class="p-3 border border-slate-200 rounded-lg flex items-center justify-between">
-           <div class="flex items-center gap-3">
--            <div class="w-10 h-10 rounded bg-slate-100 flex items-center justify-center font-bold text-slate-500 text-sm">{{ speaker.primary_label[:2] }}</div>
-+            <div class="w-10 h-10 rounded bg-slate-100 flex items-center justify-center font-bold text-slate-500 text-sm">{{ _speaker_avatar_label }}</div>
-             <div>
-               <p class="text-sm font-bold">{{ speaker.primary_label }}</p>
-               <p class="text-[10px] text-slate-500">{{ speaker.secondary_label }}</p>
-diff --git a/lan_app/templates/partials/control_center/system_bar.html b/lan_app/templates/partials/control_center/system_bar.html
-index e8e8d87..41e7e82 100644
---- a/lan_app/templates/partials/control_center/system_bar.html
-+++ b/lan_app/templates/partials/control_center/system_bar.html
-@@ -1,26 +1,13 @@
- {% set _system_bar_url = (control_center_state.system_bar_url if control_center_state is defined and control_center_state else '/ui/control-center/system-bar') %}
- {% set _system_bar_has_context = control_center_system_bar is defined and control_center_system_bar %}
--{% set _system_bar_items = (control_center_system_bar["items"] if _system_bar_has_context else []) %}
- <footer
-   id="control-center-system-bar"
-   class="min-h-[2rem] bg-slate-100 border-t border-slate-200 px-4 py-1 flex items-center justify-between text-[10px] font-medium text-slate-500"
-   hx-get="{{ _system_bar_url }}"
-   hx-trigger="{% if not _system_bar_has_context %}load, {% endif %}every 15s, refresh-control-center-system-bar from:body"
-   hx-target="this"
--  hx-swap="outerHTML"
-+  hx-swap="innerHTML"
-+  hx-select="#control-center-system-bar-items"
- >
--  <div class="flex flex-wrap gap-x-4 gap-y-1">
--  {% for item in _system_bar_items %}
--    <span
--      class="flex items-center gap-1"
--      {% if item.detail %}title="{{ item.detail }}"{% endif %}
--    >
--      {% if item.show_dot %}
--      <span class="w-2 h-2 rounded-full {% if item.tone == 'healthy' %}bg-green-500{% elif item.tone == 'busy' %}bg-amber-500{% elif item.tone == 'degraded' %}bg-amber-500{% elif item.tone == 'offline' %}bg-red-500{% else %}bg-slate-400{% endif %}" aria-hidden="true"></span>
--      {% endif %}
--      <span>{{ item.label }}</span>
--      <strong class="{% if item.tone == 'healthy' %}text-green-700{% elif item.tone == 'busy' %}text-amber-700{% elif item.tone == 'degraded' %}text-amber-700{% elif item.tone == 'offline' %}text-red-700{% else %}text-slate-700{% endif %}">{{ item.value }}</strong>
--    </span>
--  {% endfor %}
--  </div>
-+{% include "partials/control_center/system_bar_items.html" %}
- </footer>
-diff --git a/tasks/QUEUE.md b/tasks/QUEUE.md
-index f885a74..7b586cd 100644
---- a/tasks/QUEUE.md
-+++ b/tasks/QUEUE.md
-@@ -652,4 +652,9 @@ Queue (in order)
- 130) PR-UI-POLISH-POST-TAILWIND-01: Fix layout bugs, remove duplicate sections, and clean up post-Tailwind migration issues
- - Status: DONE
- - Tasks file: tasks/PR-UI-POLISH-POST-TAILWIND-01.md
--- Depends on: PR-TAILWIND-REMAINING-01
-\ No newline at end of file
-+- Depends on: PR-TAILWIND-REMAINING-01
-+
-+131) PR-UI-POLISH-02: Fix Cyrillic font, compact inspector avatar, navbar flicker, and inspector scroll reset
-+- Status: DONE
-+- Tasks file: tasks/PR-UI-POLISH-02.md
-+- Depends on: PR-UI-POLISH-POST-TAILWIND-01
-\ No newline at end of file
-diff --git a/tests/test_ui_routes.py b/tests/test_ui_routes.py
-index f202fab..3fec4b3 100644
---- a/tests/test_ui_routes.py
-+++ b/tests/test_ui_routes.py
-@@ -724,6 +724,95 @@ def test_control_center_embedded_inspector_overview_stays_compact(seeded_client)
-     assert "Not available yet" in speakers.text
- 
- 
-+def test_pr_ui_polish_02_cyrillic_font_face_present(seeded_client):
-+    """PR-UI-POLISH-02 FIX 1: Inter font has a Cyrillic @font-face block."""
-+    page = seeded_client.get("/")
-+    assert page.status_code == 200
-+    assert "/static/fonts/inter-cyrillic.woff2" in page.text
-+    assert "U+0400-045F" in page.text
-+
-+
-+def test_pr_ui_polish_02_compact_inspector_avatar_uses_short_speaker_label(
-+    tmp_path: Path,
-+    monkeypatch: pytest.MonkeyPatch,
-+) -> None:
-+    """PR-UI-POLISH-02 FIX 2: SPEAKER_00 / SPEAKER_01 render as S0 / S1 avatars."""
-+    cfg = _cfg(tmp_path)
-+    monkeypatch.setattr(api, "_settings", cfg)
-+    monkeypatch.setattr(ui_routes, "_settings", cfg)
-+    monkeypatch.setattr(
-+        ui_routes,
-+        "collect_control_center_runtime_status",
-+        lambda _settings: _stub_runtime_status(),
-+    )
-+    init_db(cfg)
-+    create_recording(
-+        "rec-ui-avatar-1",
-+        source="upload",
-+        source_filename="avatar.wav",
-+        status=RECORDING_STATUS_READY,
-+        settings=cfg,
-+    )
-+    derived = cfg.recordings_root / "rec-ui-avatar-1" / "derived"
-+    derived.mkdir(parents=True, exist_ok=True)
-+    (derived / "transcript.json").write_text(
-+        json.dumps({"text": "hello"}),
-+        encoding="utf-8",
-+    )
-+    (derived / "speaker_turns.json").write_text(
-+        json.dumps(
-+            [
-+                {"start": 0.0, "end": 1.0, "speaker": "SPEAKER_00", "text": "hi"},
-+                {"start": 1.0, "end": 2.0, "speaker": "SPEAKER_01", "text": "hello"},
-+            ]
-+        ),
-+        encoding="utf-8",
-+    )
-+
-+    client = TestClient(api.app, follow_redirects=True)
-+    inspector = client.get(
-+        "/ui/control-center/inspector-pane?selected=rec-ui-avatar-1&tab=overview"
-+    )
-+    assert inspector.status_code == 200
-+    assert ">S0</div>" in inspector.text
-+    assert ">S1</div>" in inspector.text
-+    assert ">SP</div>" not in inspector.text
-+
-+
-+def test_pr_ui_polish_02_system_bar_uses_innerhtml_swap(seeded_client):
-+    """PR-UI-POLISH-02 FIX 3: system bar swaps inner items, never replaces the footer."""
-+    page = seeded_client.get("/")
-+    assert page.status_code == 200
-+    assert 'id="control-center-system-bar"' in page.text
-+    assert 'hx-swap="innerHTML"' in page.text
-+    assert 'hx-select="#control-center-system-bar-items"' in page.text
-+    assert 'id="control-center-system-bar-items"' in page.text
-+
-+    system_bar = seeded_client.get("/ui/control-center/system-bar")
-+    assert system_bar.status_code == 200
-+    assert 'id="control-center-system-bar-items"' in system_bar.text
-+
-+
-+def test_pr_ui_polish_02_inspector_pane_has_static_scroll_container(seeded_client):
-+    """PR-UI-POLISH-02 FIX 4: outer inspector section is the scroll container; inner wrapper handles auto-refresh."""
-+    page = seeded_client.get("/?selected=rec-ui-1&status=Ready&q=meeting&tab=overview")
-+    assert page.status_code == 200
-+    # The outer scroll container is the section and is never targeted by hx-swap.
-+    assert 'id="control-center-inspector-pane"' in page.text
-+    assert "overflow-y-auto" in page.text
-+    # The inner wrapper carries hx-get/hx-trigger and self-targets via outerHTML+hx-select.
-+    assert 'id="control-center-inspector-pane-content"' in page.text
-+    assert 'hx-select="#control-center-inspector-pane-content"' in page.text
-+    # The legacy in-card scroll container marker is gone (no longer needed for save/restore).
-+    assert "data-inspector-scroll" not in page.text
-+
-+    inspector = seeded_client.get(
-+        "/ui/control-center/inspector-pane?selected=rec-ui-1&tab=overview"
-+    )
-+    assert inspector.status_code == 200
-+    assert 'id="control-center-inspector-pane-content"' in inspector.text
-+
-+
- def test_control_center_embedded_details_card_uses_summary_artifacts(
-     tmp_path, monkeypatch
- ):
 diff --git a/lan_app/static/fonts/inter-cyrillic.woff2 b/lan_app/static/fonts/inter-cyrillic.woff2
 new file mode 100644
 index 0000000000000000000000000000000000000000..891fc5cc5674d6476d96b736d731fff83b5304b0
@@ -1713,6 +1413,191 @@ yZ-r;)%7!mwyANAASU+><C#wC-O8H1;vXpkcN3oe5(y?n~FFxo0IS%Pv0002T?%k&V
 literal 0
 HcmV?d00001
 
+diff --git a/lan_app/templates/base.html b/lan_app/templates/base.html
+index 1136560..76bd6ff 100644
+--- a/lan_app/templates/base.html
++++ b/lan_app/templates/base.html
+@@ -16,6 +16,14 @@
+   src: url(/static/fonts/inter-latin.woff2) format('woff2');
+   unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+ }
++@font-face {
++  font-family: 'Inter';
++  font-style: normal;
++  font-weight: 400 900;
++  font-display: swap;
++  src: url(/static/fonts/inter-cyrillic.woff2) format('woff2');
++  unicode-range: U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116;
++}
+ @font-face {
+   font-family: 'Material Symbols Outlined';
+   font-style: normal;
+@@ -170,28 +178,7 @@ function refreshControlCenterShellFromHref(href) {
+   htmx.trigger(document.body, 'refresh-control-center-system-bar');
+ }
+ 
+-window.__inspectorScrollState = window.__inspectorScrollState || null;
+-
+ if (document.body && !window.__controlCenterShellAfterSwapBound) {
+-  document.body.addEventListener('htmx:beforeSwap', function (event) {
+-    var target = event && event.detail ? event.detail.target : null;
+-    if (!target || target.id !== 'control-center-inspector-pane') {
+-      return;
+-    }
+-    // Capture the OLD inspector view's identity (its self-refresh URL)
+-    // and current scroll position. The afterSwap handler only restores
+-    // when the NEW inspector pane is the same view (same hx-get URL),
+-    // so tab clicks and recording navigation always render at the top.
+-    var scrollEl = target.querySelector('[data-inspector-scroll]');
+-    if (!scrollEl) {
+-      window.__inspectorScrollState = null;
+-      return;
+-    }
+-    window.__inspectorScrollState = {
+-      url: target.getAttribute('hx-get') || '',
+-      scrollTop: scrollEl.scrollTop
+-    };
+-  });
+   document.body.addEventListener('htmx:afterSwap', function (event) {
+     var target = event && event.detail ? event.detail.target : null;
+     if (!target) {
+@@ -201,17 +188,16 @@ if (document.body && !window.__controlCenterShellAfterSwapBound) {
+       refreshControlCenterShellFromPanel();
+       return;
+     }
+-    if (target.id !== 'control-center-inspector-pane') {
++    if (
++      target.id !== 'control-center-inspector-pane' &&
++      target.id !== 'control-center-inspector-pane-content'
++    ) {
+       return;
+     }
+-    var saved = window.__inspectorScrollState;
+-    window.__inspectorScrollState = null;
+-    if (saved && saved.url && saved.url === (target.getAttribute('hx-get') || '')) {
+-      var newScrollEl = target.querySelector('[data-inspector-scroll]');
+-      if (newScrollEl) {
+-        newScrollEl.scrollTop = saved.scrollTop;
+-      }
+-    }
++    // The outer #control-center-inspector-pane section is a static scroll
++    // container that is never replaced during auto-refresh. Browser-native
++    // scrollTop is preserved automatically across innerHTML/outerHTML swaps
++    // of the inner wrapper, so no explicit save/restore is needed here.
+     var activeTab = target.querySelector('[data-active-tab="true"]');
+     refreshControlCenterShellFromHref(activeTab ? activeTab.getAttribute('href') : '');
+   });
+diff --git a/lan_app/templates/partials/control_center/inspector_pane.html b/lan_app/templates/partials/control_center/inspector_pane.html
+index f97280f..7af23a6 100644
+--- a/lan_app/templates/partials/control_center/inspector_pane.html
++++ b/lan_app/templates/partials/control_center/inspector_pane.html
+@@ -1,15 +1,22 @@
+ <section
+   id="control-center-inspector-pane"
+-  class="w-full lg:w-[45%] bg-white flex flex-col shadow-xl overflow-hidden"
+-  hx-get="{{ control_center_state.inspector_pane_url }}"
+-  hx-trigger="{% if recording_inspector and recording_inspector.auto_refresh %}refresh-control-center-inspector from:body, every 2s{% else %}refresh-control-center-inspector from:body{% endif %}"
+-  hx-target="this"
+-  hx-swap="outerHTML"
++  class="w-full lg:w-[45%] bg-white flex flex-col shadow-xl overflow-y-auto"
+ >
+-  {% if recording_inspector %}
+-  {% include "partials/control_center/recording_details_card.html" %}
+-  {% else %}
+-  {% set empty_inspector = control_center_empty_inspector %}
+-  {% include "partials/control_center/inspector_empty.html" %}
+-  {% endif %}
++  <div
++    id="control-center-inspector-pane-content"
++    class="flex flex-col flex-1"
++    hx-get="{{ control_center_state.inspector_pane_url }}"
++    hx-trigger="{% if recording_inspector and recording_inspector.auto_refresh %}refresh-control-center-inspector from:body, every 2s{% else %}refresh-control-center-inspector from:body{% endif %}"
++    hx-target="this"
++    hx-swap="outerHTML"
++    hx-select="#control-center-inspector-pane-content"
++    hx-disinherit="*"
++  >
++    {% if recording_inspector %}
++    {% include "partials/control_center/recording_details_card.html" %}
++    {% else %}
++    {% set empty_inspector = control_center_empty_inspector %}
++    {% include "partials/control_center/inspector_empty.html" %}
++    {% endif %}
++  </div>
+ </section>
+diff --git a/lan_app/templates/partials/control_center/recording_details_card.html b/lan_app/templates/partials/control_center/recording_details_card.html
+index 0ff0a30..0eda4d1 100644
+--- a/lan_app/templates/partials/control_center/recording_details_card.html
++++ b/lan_app/templates/partials/control_center/recording_details_card.html
+@@ -1,5 +1,5 @@
+ {% set details = embedded_recording_details or {} %}
+-<article class="flex flex-col h-full">
++<article class="flex flex-col flex-1">
+   <div class="px-6 py-4 border-b border-slate-200 bg-slate-50">
+     <div class="flex items-start justify-between">
+       <div>
+@@ -22,7 +22,7 @@
+     </div>
+   </div>
+ 
+-  <div class="flex-1 overflow-y-auto p-6 space-y-6" data-inspector-scroll>
++  <div class="flex-1 p-6 space-y-6">
+     <div class="space-y-3">
+       <h4 class="text-xs font-bold uppercase tracking-widest text-slate-400">KEY METADATA</h4>
+       <div class="grid grid-cols-2 gap-x-8 gap-y-3">
+@@ -40,9 +40,16 @@
+       {% if details.speaker_rows %}
+       <div class="space-y-2">
+         {% for speaker in details.speaker_rows %}
++        {% set _raw_speaker_label = speaker.primary_label or '' %}
++        {% if _raw_speaker_label[:8] == 'SPEAKER_' %}
++          {% set _speaker_index_digits = _raw_speaker_label[8:] %}
++          {% set _speaker_avatar_label = 'S' ~ (_speaker_index_digits.lstrip('0') or '0') %}
++        {% else %}
++          {% set _speaker_avatar_label = _raw_speaker_label[:2]|upper %}
++        {% endif %}
+         <div class="p-3 border border-slate-200 rounded-lg flex items-center justify-between">
+           <div class="flex items-center gap-3">
+-            <div class="w-10 h-10 rounded bg-slate-100 flex items-center justify-center font-bold text-slate-500 text-sm">{{ speaker.primary_label[:2] }}</div>
++            <div class="w-10 h-10 rounded bg-slate-100 flex items-center justify-center font-bold text-slate-500 text-sm">{{ _speaker_avatar_label }}</div>
+             <div>
+               <p class="text-sm font-bold">{{ speaker.primary_label }}</p>
+               <p class="text-[10px] text-slate-500">{{ speaker.secondary_label }}</p>
+diff --git a/lan_app/templates/partials/control_center/system_bar.html b/lan_app/templates/partials/control_center/system_bar.html
+index e8e8d87..605b74a 100644
+--- a/lan_app/templates/partials/control_center/system_bar.html
++++ b/lan_app/templates/partials/control_center/system_bar.html
+@@ -1,26 +1,14 @@
+ {% set _system_bar_url = (control_center_state.system_bar_url if control_center_state is defined and control_center_state else '/ui/control-center/system-bar') %}
+ {% set _system_bar_has_context = control_center_system_bar is defined and control_center_system_bar %}
+-{% set _system_bar_items = (control_center_system_bar["items"] if _system_bar_has_context else []) %}
+ <footer
+   id="control-center-system-bar"
+   class="min-h-[2rem] bg-slate-100 border-t border-slate-200 px-4 py-1 flex items-center justify-between text-[10px] font-medium text-slate-500"
+   hx-get="{{ _system_bar_url }}"
+   hx-trigger="{% if not _system_bar_has_context %}load, {% endif %}every 15s, refresh-control-center-system-bar from:body"
+   hx-target="this"
+-  hx-swap="outerHTML"
++  hx-swap="innerHTML"
++  hx-select="#control-center-system-bar-items"
++  hx-disinherit="*"
+ >
+-  <div class="flex flex-wrap gap-x-4 gap-y-1">
+-  {% for item in _system_bar_items %}
+-    <span
+-      class="flex items-center gap-1"
+-      {% if item.detail %}title="{{ item.detail }}"{% endif %}
+-    >
+-      {% if item.show_dot %}
+-      <span class="w-2 h-2 rounded-full {% if item.tone == 'healthy' %}bg-green-500{% elif item.tone == 'busy' %}bg-amber-500{% elif item.tone == 'degraded' %}bg-amber-500{% elif item.tone == 'offline' %}bg-red-500{% else %}bg-slate-400{% endif %}" aria-hidden="true"></span>
+-      {% endif %}
+-      <span>{{ item.label }}</span>
+-      <strong class="{% if item.tone == 'healthy' %}text-green-700{% elif item.tone == 'busy' %}text-amber-700{% elif item.tone == 'degraded' %}text-amber-700{% elif item.tone == 'offline' %}text-red-700{% else %}text-slate-700{% endif %}">{{ item.value }}</strong>
+-    </span>
+-  {% endfor %}
+-  </div>
++{% include "partials/control_center/system_bar_items.html" %}
+ </footer>
 diff --git a/lan_app/templates/partials/control_center/system_bar_items.html b/lan_app/templates/partials/control_center/system_bar_items.html
 new file mode 100644
 index 0000000..2079ae9
@@ -1856,3 +1741,120 @@ index 0000000..4aeeaf4
 +- No visible page flicker or navbar jump during system bar refresh
 +- Inspector scroll position preserved during Processing auto-refresh
 +- CI passes
+diff --git a/tasks/QUEUE.md b/tasks/QUEUE.md
+index f885a74..7b586cd 100644
+--- a/tasks/QUEUE.md
++++ b/tasks/QUEUE.md
+@@ -652,4 +652,9 @@ Queue (in order)
+ 130) PR-UI-POLISH-POST-TAILWIND-01: Fix layout bugs, remove duplicate sections, and clean up post-Tailwind migration issues
+ - Status: DONE
+ - Tasks file: tasks/PR-UI-POLISH-POST-TAILWIND-01.md
+-- Depends on: PR-TAILWIND-REMAINING-01
+\ No newline at end of file
++- Depends on: PR-TAILWIND-REMAINING-01
++
++131) PR-UI-POLISH-02: Fix Cyrillic font, compact inspector avatar, navbar flicker, and inspector scroll reset
++- Status: DONE
++- Tasks file: tasks/PR-UI-POLISH-02.md
++- Depends on: PR-UI-POLISH-POST-TAILWIND-01
+\ No newline at end of file
+diff --git a/tests/test_ui_routes.py b/tests/test_ui_routes.py
+index f202fab..3fec4b3 100644
+--- a/tests/test_ui_routes.py
++++ b/tests/test_ui_routes.py
+@@ -724,6 +724,95 @@ def test_control_center_embedded_inspector_overview_stays_compact(seeded_client)
+     assert "Not available yet" in speakers.text
+ 
+ 
++def test_pr_ui_polish_02_cyrillic_font_face_present(seeded_client):
++    """PR-UI-POLISH-02 FIX 1: Inter font has a Cyrillic @font-face block."""
++    page = seeded_client.get("/")
++    assert page.status_code == 200
++    assert "/static/fonts/inter-cyrillic.woff2" in page.text
++    assert "U+0400-045F" in page.text
++
++
++def test_pr_ui_polish_02_compact_inspector_avatar_uses_short_speaker_label(
++    tmp_path: Path,
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    """PR-UI-POLISH-02 FIX 2: SPEAKER_00 / SPEAKER_01 render as S0 / S1 avatars."""
++    cfg = _cfg(tmp_path)
++    monkeypatch.setattr(api, "_settings", cfg)
++    monkeypatch.setattr(ui_routes, "_settings", cfg)
++    monkeypatch.setattr(
++        ui_routes,
++        "collect_control_center_runtime_status",
++        lambda _settings: _stub_runtime_status(),
++    )
++    init_db(cfg)
++    create_recording(
++        "rec-ui-avatar-1",
++        source="upload",
++        source_filename="avatar.wav",
++        status=RECORDING_STATUS_READY,
++        settings=cfg,
++    )
++    derived = cfg.recordings_root / "rec-ui-avatar-1" / "derived"
++    derived.mkdir(parents=True, exist_ok=True)
++    (derived / "transcript.json").write_text(
++        json.dumps({"text": "hello"}),
++        encoding="utf-8",
++    )
++    (derived / "speaker_turns.json").write_text(
++        json.dumps(
++            [
++                {"start": 0.0, "end": 1.0, "speaker": "SPEAKER_00", "text": "hi"},
++                {"start": 1.0, "end": 2.0, "speaker": "SPEAKER_01", "text": "hello"},
++            ]
++        ),
++        encoding="utf-8",
++    )
++
++    client = TestClient(api.app, follow_redirects=True)
++    inspector = client.get(
++        "/ui/control-center/inspector-pane?selected=rec-ui-avatar-1&tab=overview"
++    )
++    assert inspector.status_code == 200
++    assert ">S0</div>" in inspector.text
++    assert ">S1</div>" in inspector.text
++    assert ">SP</div>" not in inspector.text
++
++
++def test_pr_ui_polish_02_system_bar_uses_innerhtml_swap(seeded_client):
++    """PR-UI-POLISH-02 FIX 3: system bar swaps inner items, never replaces the footer."""
++    page = seeded_client.get("/")
++    assert page.status_code == 200
++    assert 'id="control-center-system-bar"' in page.text
++    assert 'hx-swap="innerHTML"' in page.text
++    assert 'hx-select="#control-center-system-bar-items"' in page.text
++    assert 'id="control-center-system-bar-items"' in page.text
++
++    system_bar = seeded_client.get("/ui/control-center/system-bar")
++    assert system_bar.status_code == 200
++    assert 'id="control-center-system-bar-items"' in system_bar.text
++
++
++def test_pr_ui_polish_02_inspector_pane_has_static_scroll_container(seeded_client):
++    """PR-UI-POLISH-02 FIX 4: outer inspector section is the scroll container; inner wrapper handles auto-refresh."""
++    page = seeded_client.get("/?selected=rec-ui-1&status=Ready&q=meeting&tab=overview")
++    assert page.status_code == 200
++    # The outer scroll container is the section and is never targeted by hx-swap.
++    assert 'id="control-center-inspector-pane"' in page.text
++    assert "overflow-y-auto" in page.text
++    # The inner wrapper carries hx-get/hx-trigger and self-targets via outerHTML+hx-select.
++    assert 'id="control-center-inspector-pane-content"' in page.text
++    assert 'hx-select="#control-center-inspector-pane-content"' in page.text
++    # The legacy in-card scroll container marker is gone (no longer needed for save/restore).
++    assert "data-inspector-scroll" not in page.text
++
++    inspector = seeded_client.get(
++        "/ui/control-center/inspector-pane?selected=rec-ui-1&tab=overview"
++    )
++    assert inspector.status_code == 200
++    assert 'id="control-center-inspector-pane-content"' in inspector.text
++
++
+ def test_control_center_embedded_details_card_uses_summary_artifacts(
+     tmp_path, monkeypatch
+ ):
