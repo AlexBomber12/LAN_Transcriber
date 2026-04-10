@@ -16,6 +16,7 @@ from lan_transcriber.pipeline_steps.diarization_quality import (
     choose_dialog_retry_winner,
     classify_diarization_profile,
     diarization_profile_metrics,
+    filter_flickering_speakers,
     profile_default_speaker_hints,
     smooth_speaker_turns,
 )
@@ -424,6 +425,76 @@ def test_smooth_speaker_turns_absorbs_micro_turns_but_preserves_real_changes():
     assert preserved.micro_turn_absorptions == 0
     assert preserved.turn_count_after == 4
     assert [turn["speaker"] for turn in preserved.turns] == ["S1", "S2", "S1", "S1"]
+
+
+def test_flicker_speaker_reassigned():
+    diar_segments = [
+        {"start": float(idx), "end": float(idx) + 1.0, "speaker": "SPEAKER_01"}
+        for idx in range(5)
+    ]
+    diar_segments.append({"start": 5.0, "end": 5.5, "speaker": "SPEAKER_00"})
+    diar_segments.extend(
+        {"start": float(idx), "end": float(idx) + 1.0, "speaker": "SPEAKER_01"}
+        for idx in range(6, 11)
+    )
+
+    cleaned = filter_flickering_speakers(diar_segments)
+
+    assert len(cleaned) == len(diar_segments)
+    speakers = {row["speaker"] for row in cleaned}
+    assert speakers == {"SPEAKER_01"}
+    flicker_row = next(row for row in cleaned if row["start"] == 5.0 and row["end"] == 5.5)
+    assert flicker_row["speaker"] == "SPEAKER_01"
+
+
+def test_legitimate_speaker_kept():
+    diar_segments = [
+        {"start": float(idx) * 2.0, "end": float(idx) * 2.0 + 1.5, "speaker": "SPEAKER_01"}
+        for idx in range(10)
+    ]
+    diar_segments.extend(
+        {
+            "start": 100.0 + float(idx) * 2.0,
+            "end": 100.0 + float(idx) * 2.0 + 1.6,
+            "speaker": "SPEAKER_00",
+        }
+        for idx in range(5)
+    )
+
+    cleaned = filter_flickering_speakers(diar_segments)
+
+    speakers = {row["speaker"] for row in cleaned}
+    assert speakers == {"SPEAKER_00", "SPEAKER_01"}
+    assert sum(1 for row in cleaned if row["speaker"] == "SPEAKER_00") == 5
+
+
+def test_all_speakers_flicker_unchanged():
+    diar_segments = [
+        {"start": 0.0, "end": 1.0, "speaker": "SPEAKER_00"},
+        {"start": 1.0, "end": 2.0, "speaker": "SPEAKER_01"},
+    ]
+
+    cleaned = filter_flickering_speakers(diar_segments)
+
+    assert cleaned == diar_segments
+
+
+def test_empty_segments():
+    assert filter_flickering_speakers([]) == []
+
+
+def test_flicker_reassigned_to_nearest():
+    diar_segments = [
+        {"start": 0.0, "end": 10.0, "speaker": "SPEAKER_01"},
+        {"start": 12.0, "end": 12.5, "speaker": "SPEAKER_00"},
+        {"start": 15.0, "end": 25.0, "speaker": "SPEAKER_02"},
+    ]
+
+    cleaned = filter_flickering_speakers(diar_segments)
+
+    flicker_row = next(row for row in cleaned if row["start"] == 12.0)
+    assert flicker_row["speaker"] == "SPEAKER_01"
+    assert {row["speaker"] for row in cleaned} == {"SPEAKER_01", "SPEAKER_02"}
 
 
 def test_smooth_speaker_turns_handles_empty_input_and_private_guards():

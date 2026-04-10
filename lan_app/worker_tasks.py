@@ -44,6 +44,7 @@ from lan_transcriber.pipeline_steps.diarization_quality import (
     DEFAULT_DIALOG_RETRY_MIN_TURNS,
     SpeakerTurnSmoothingResult,
     annotation_speaker_count,
+    filter_flickering_speakers,
     profile_default_speaker_hints,
     smooth_speaker_turns,
 )
@@ -1882,6 +1883,8 @@ def _build_pipeline_settings(settings: AppSettings) -> PipelineSettings:
         diarization_dialog_retry_min_turns=settings.diarization_dialog_retry_min_turns,
         diarization_merge_gap_seconds=settings.diarization_merge_gap_seconds,
         diarization_min_turn_seconds=settings.diarization_min_turn_seconds,
+        diarization_flicker_min_seconds=settings.diarization_flicker_min_seconds,
+        diarization_flicker_max_consecutive=settings.diarization_flicker_max_consecutive,
         speaker_turn_merge_gap_sec=settings.speaker_turn_merge_gap_sec,
         speaker_turn_short_merge_gap_sec=settings.speaker_turn_short_merge_gap_sec,
         speaker_turn_min_words=settings.speaker_turn_min_words,
@@ -2940,6 +2943,42 @@ def _stage_speaker_turns(ctx: _PipelineExecutionContext) -> _StageResult:
     detected_language = normalise_language_code(
         (ctx.language_payload.get("language") or {}).get("detected")
     )
+    diarization_segments_before_flicker = sorted(
+        ctx.diarization_segments,
+        key=lambda row: (
+            safe_float(row.get("start"), default=0.0),
+            safe_float(row.get("end"), default=0.0),
+            str(row.get("speaker") or ""),
+        ),
+    )
+    ctx.diarization_segments = filter_flickering_speakers(
+        diarization_segments_before_flicker,
+        min_total_seconds=ctx.pipeline_settings.diarization_flicker_min_seconds,
+        max_consecutive_segments=ctx.pipeline_settings.diarization_flicker_max_consecutive,
+    )
+    flicker_stats: dict[str, dict[str, float]] = {}
+    for before_row, after_row in zip(
+        diarization_segments_before_flicker, ctx.diarization_segments
+    ):
+        before_speaker = str(before_row.get("speaker") or "")
+        after_speaker = str(after_row.get("speaker") or "")
+        if before_speaker == after_speaker:
+            continue
+        stats = flicker_stats.setdefault(
+            before_speaker,
+            {"segments": 0.0, "total_seconds": 0.0},
+        )
+        stats["segments"] += 1.0
+        start = safe_float(before_row.get("start"), default=0.0)
+        end = safe_float(before_row.get("end"), default=start)
+        stats["total_seconds"] += max(end - start, 0.0)
+    for speaker, stats in flicker_stats.items():
+        _logger.warning(
+            "Diarization flicker speaker reassigned: speaker=%s total_seconds=%.3f segments_reassigned=%d",
+            speaker,
+            stats["total_seconds"],
+            int(stats["segments"]),
+        )
     unsmoothed_speaker_turns = build_speaker_turns(
         language_segments,
         ctx.diarization_segments,

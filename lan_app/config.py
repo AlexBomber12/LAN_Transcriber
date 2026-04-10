@@ -12,6 +12,8 @@ from lan_app.constants import DEFAULT_RQ_QUEUE_NAME
 from lan_transcriber.pipeline_steps.diarization_quality import (
     DEFAULT_DIALOG_RETRY_MIN_DURATION_SECONDS,
     DEFAULT_DIALOG_RETRY_MIN_TURNS,
+    DEFAULT_DIARIZATION_FLICKER_MAX_CONSECUTIVE,
+    DEFAULT_DIARIZATION_FLICKER_MIN_SECONDS,
     DEFAULT_DIARIZATION_MERGE_GAP_SECONDS,
     DEFAULT_DIARIZATION_MIN_TURN_SECONDS,
 )
@@ -318,6 +320,22 @@ class AppSettings(BaseSettings):
     diarization_min_turn_seconds: float = Field(
         default=DEFAULT_DIARIZATION_MIN_TURN_SECONDS,
         ge=0.0,
+    )
+    diarization_flicker_min_seconds: float = Field(
+        default=DEFAULT_DIARIZATION_FLICKER_MIN_SECONDS,
+        ge=0.0,
+        validation_alias=AliasChoices(
+            "LAN_DIARIZATION_FLICKER_MIN_SECONDS",
+            "DIARIZATION_FLICKER_MIN_SECONDS",
+        ),
+    )
+    diarization_flicker_max_consecutive: int = Field(
+        default=DEFAULT_DIARIZATION_FLICKER_MAX_CONSECUTIVE,
+        ge=0,
+        validation_alias=AliasChoices(
+            "LAN_DIARIZATION_FLICKER_MAX_CONSECUTIVE",
+            "DIARIZATION_FLICKER_MAX_CONSECUTIVE",
+        ),
     )
     speaker_turn_merge_gap_sec: float = Field(
         default=DEFAULT_SPEAKER_TURN_MERGE_GAP_SEC,
