@@ -201,7 +201,7 @@ if (document.body && !window.__controlCenterShellAfterSwapBound) {
     if (target.id !== 'control-center-inspector-pane') {
       return;
     }
-    var activeTab = target.querySelector('.tab.active');
+    var activeTab = target.querySelector('[data-active-tab="true"]');
     refreshControlCenterShellFromHref(activeTab ? activeTab.getAttribute('href') : '');
   });
   window.__controlCenterShellAfterSwapBound = true;

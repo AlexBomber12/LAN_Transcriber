@@ -1,5 +1,5 @@
 diff --git a/artifacts/ci.log b/artifacts/ci.log
-index 29e7370..5e340f8 100644
+index 29e7370..60a3f27 100644
 --- a/artifacts/ci.log
 +++ b/artifacts/ci.log
 @@ -102,8 +102,8 @@ Requirement already satisfied: pytz>2021.1 in /home/alexey/.pyenv/versions/3.11.
@@ -8,8 +8,8 @@ index 29e7370..5e340f8 100644
    Building editable for lan-transcriber (pyproject.toml): finished with status 'done'
 -  Created wheel for lan-transcriber: filename=lan_transcriber-0.1.0-0.editable-py3-none-any.whl size=15462 sha256=5e44324698d788db3369e48190b9afd6f0082bbf397ee6165ccde94db5ce2508
 -  Stored in directory: /tmp/pip-ephem-wheel-cache-cdi6_mp3/wheels/3c/34/21/7d1a99d2a9e86cdb0d7c14d1c0d7dc5a97e0d170dff3df8fb1
-+  Created wheel for lan-transcriber: filename=lan_transcriber-0.1.0-0.editable-py3-none-any.whl size=15462 sha256=0dc72008180f316a967f8572c06247def9940a8cc03d4e7daebbe6d535f174aa
-+  Stored in directory: /tmp/pip-ephem-wheel-cache-rqk63bwl/wheels/3c/34/21/7d1a99d2a9e86cdb0d7c14d1c0d7dc5a97e0d170dff3df8fb1
++  Created wheel for lan-transcriber: filename=lan_transcriber-0.1.0-0.editable-py3-none-any.whl size=15462 sha256=c3ca861378ee26044722f67588958be336e53fb8f276a662088228c8b645de8b
++  Stored in directory: /tmp/pip-ephem-wheel-cache-pabunov4/wheels/3c/34/21/7d1a99d2a9e86cdb0d7c14d1c0d7dc5a97e0d170dff3df8fb1
  Successfully built lan-transcriber
  Installing collected packages: lan-transcriber
    Attempting uninstall: lan-transcriber
@@ -18,7 +18,7 @@ index 29e7370..5e340f8 100644
  
  Required test coverage of 100% reached. Total coverage: 100.00%
 -1053 passed, 3 skipped, 11 warnings in 91.35s (0:01:31)
-+1053 passed, 3 skipped, 11 warnings in 90.12s (0:01:30)
++1053 passed, 3 skipped, 11 warnings in 93.69s (0:01:33)
  Name                                                    Stmts   Miss Branch BrPart  Cover
  -----------------------------------------------------------------------------------------
  lan_transcriber/__init__.py                                 8      0      0      0   100%
@@ -48,7 +48,7 @@ index 4b9e1bc..e69de29 100644
 -   </section>
 -   {% endfor %}
 diff --git a/lan_app/templates/base.html b/lan_app/templates/base.html
-index cc16461..5dff72a 100644
+index cc16461..7ad0e5e 100644
 --- a/lan_app/templates/base.html
 +++ b/lan_app/templates/base.html
 @@ -60,2216 +60,10 @@ tailwind.config = {
@@ -2301,6 +2301,15 @@ index cc16461..5dff72a 100644
      </div>
    </div>
  </div>
+@@ -2407,7 +201,7 @@ if (document.body && !window.__controlCenterShellAfterSwapBound) {
+     if (target.id !== 'control-center-inspector-pane') {
+       return;
+     }
+-    var activeTab = target.querySelector('.tab.active');
++    var activeTab = target.querySelector('[data-active-tab="true"]');
+     refreshControlCenterShellFromHref(activeTab ? activeTab.getAttribute('href') : '');
+   });
+   window.__controlCenterShellAfterSwapBound = true;
 diff --git a/lan_app/templates/calendars.html b/lan_app/templates/calendars.html
 index 7f2a1cb..acda8dd 100644
 --- a/lan_app/templates/calendars.html
@@ -3190,10 +3199,10 @@ index c8aa0e6..e4f03ba 100644
  </section>
  {% include "partials/control_center/selected_recording_shell.html" %}
 diff --git a/lan_app/templates/partials/recording_inspector_tabs.html b/lan_app/templates/partials/recording_inspector_tabs.html
-index 62e066c..2429a2e 100644
+index 62e066c..4deaa83 100644
 --- a/lan_app/templates/partials/recording_inspector_tabs.html
 +++ b/lan_app/templates/partials/recording_inspector_tabs.html
-@@ -1,9 +1,9 @@
+@@ -1,10 +1,11 @@
  {% if recording_inspector.embedded %}
 -<div class="tabs tabs-embedded">
 +<div class="flex gap-6 border-b border-slate-200">
@@ -3203,8 +3212,18 @@ index 62e066c..2429a2e 100644
 -    class="tab tab-embedded {% if inspector_tab.active %}active{% endif %}"
 +    class="border-b-2 pb-3 text-sm font-bold whitespace-nowrap {% if inspector_tab.active %}border-primary text-primary{% else %}border-transparent text-slate-500 hover:text-slate-700{% endif %}"
      data-testid="recording-inspector-tab-{{ inspector_tab.value }}"
++    {% if inspector_tab.active %}data-active-tab="true"{% endif %}
      {% if inspector_tab.hx_get %}
      hx-get="{{ inspector_tab.hx_get }}"
+     hx-target="{{ inspector_tab.hx_target }}"
+@@ -22,6 +23,7 @@
+       href="{{ inspector_tab.href }}"
+       class="border-b-2 pb-3 text-sm font-bold whitespace-nowrap {% if inspector_tab.active %}border-primary text-primary{% else %}border-transparent text-slate-500 hover:text-slate-700{% endif %}"
+       data-testid="recording-inspector-tab-{{ inspector_tab.value }}"
++      {% if inspector_tab.active %}data-active-tab="true"{% endif %}
+       {% if inspector_tab.hx_get %}
+       hx-get="{{ inspector_tab.hx_get }}"
+       hx-target="{{ inspector_tab.hx_target }}"
 diff --git a/lan_app/templates/partials/recording_progress.html b/lan_app/templates/partials/recording_progress.html
 index 4b78179..31539ae 100644
 --- a/lan_app/templates/partials/recording_progress.html

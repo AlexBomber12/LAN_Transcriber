@@ -5,6 +5,7 @@
     href="{{ inspector_tab.href }}"
     class="border-b-2 pb-3 text-sm font-bold whitespace-nowrap {% if inspector_tab.active %}border-primary text-primary{% else %}border-transparent text-slate-500 hover:text-slate-700{% endif %}"
     data-testid="recording-inspector-tab-{{ inspector_tab.value }}"
+    {% if inspector_tab.active %}data-active-tab="true"{% endif %}
     {% if inspector_tab.hx_get %}
     hx-get="{{ inspector_tab.hx_get }}"
     hx-target="{{ inspector_tab.hx_target }}"
@@ -22,6 +23,7 @@
       href="{{ inspector_tab.href }}"
       class="border-b-2 pb-3 text-sm font-bold whitespace-nowrap {% if inspector_tab.active %}border-primary text-primary{% else %}border-transparent text-slate-500 hover:text-slate-700{% endif %}"
       data-testid="recording-inspector-tab-{{ inspector_tab.value }}"
+      {% if inspector_tab.active %}data-active-tab="true"{% endif %}
       {% if inspector_tab.hx_get %}
       hx-get="{{ inspector_tab.hx_get }}"
       hx-target="{{ inspector_tab.hx_target }}"
