@@ -465,7 +465,7 @@ def test_control_center_pane_fragment_endpoints(seeded_client):
     assert system_bar.status_code == 200
     assert 'id="control-center-system-bar"' in system_bar.text
     assert (
-        'hx-trigger="every 15s, refresh-control-center-system-bar from:body"'
+        'hx-trigger="load, every 15s, refresh-control-center-system-bar from:body"'
         in system_bar.text
     )
     assert "Node status" in system_bar.text

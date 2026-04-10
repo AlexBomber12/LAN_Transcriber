@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "partials/macros.html" import btn_classes, btn_danger_classes %}
 {% block title %}Projects – LAN Transcriber{% endblock %}
 {% block content %}
 <h1 class="text-3xl font-extrabold tracking-tight mb-5">Projects</h1>
@@ -8,7 +9,7 @@
   <form method="post" action="/projects" class="flex gap-2 items-center">
     <label class="text-xs text-slate-500 font-bold">Name:</label>
     <input type="text" name="name" required maxlength="120" placeholder="Project name" class="w-[240px] border border-slate-300 bg-white text-slate-900 rounded-xl px-3 py-2.5 min-h-[40px] text-sm focus:outline-none focus:border-primary/55 focus:ring-4 focus:ring-primary/10">
-    <button class="inline-flex items-center justify-center gap-2 min-h-[40px] px-3.5 py-2 border border-slate-300 rounded-full bg-white text-slate-900 cursor-pointer text-[13px] font-bold no-underline hover:bg-slate-50 transition-colors" type="submit">Create</button>
+    <button class="{{ btn_classes() }}" type="submit">Create</button>
   </form>
 </div>
 
@@ -29,7 +30,7 @@
         <td class="px-3.5 py-3 border-b border-slate-100">{{ p.name }}</td>
         <td class="px-3.5 py-3 border-b border-slate-100 whitespace-nowrap">
           <form method="post" action="/projects/{{ p.id }}/delete" class="inline" onsubmit="return confirm('Delete project ' + this.dataset.name + '?')" data-name="{{ p.name }}">
-            <button class="inline-flex items-center justify-center gap-2 min-h-[40px] px-3.5 py-2 border border-red-200 rounded-full text-red-700 bg-red-50 cursor-pointer text-[13px] font-bold no-underline hover:bg-red-100 transition-colors" type="submit">Delete</button>
+            <button class="{{ btn_danger_classes() }}" type="submit">Delete</button>
           </form>
         </td>
       </tr>

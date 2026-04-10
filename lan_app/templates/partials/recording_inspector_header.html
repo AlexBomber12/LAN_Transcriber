@@ -1,15 +1,5 @@
+{% from "partials/macros.html" import status_badge_classes %}
 {% if recording_inspector.embedded %}
-{% set _badge = {
-  'Queued': 'bg-blue-100 border-blue-300 text-blue-800',
-  'Processing': 'bg-amber-100 border-amber-300 text-amber-800',
-  'Stopping': 'bg-orange-100 border-orange-300 text-orange-800',
-  'Stopped': 'bg-slate-100 border-slate-300 text-slate-800',
-  'NeedsReview': 'bg-yellow-100 border-yellow-300 text-yellow-800',
-  'Ready': 'bg-green-100 border-green-300 text-green-800',
-  'Published': 'bg-violet-100 border-violet-300 text-violet-800',
-  'Quarantine': 'bg-red-100 border-red-300 text-red-800',
-  'Failed': 'bg-red-100 border-red-300 text-red-800',
-} %}
 <section class="bg-white border border-slate-200 rounded-xl p-5 shadow-sm grid gap-4">
   <div class="flex justify-between gap-4 items-start flex-wrap">
     <div class="grid gap-2">
@@ -17,7 +7,7 @@
       <p class="text-slate-500 text-[13px]"><code>{{ rec.id }}</code></p>
     </div>
     <div class="flex flex-wrap gap-2">
-      <span class="inline-flex items-center gap-1.5 px-2.5 py-1 border rounded-full text-[11px] font-bold whitespace-nowrap tracking-wide uppercase {{ _badge.get(rec.status, 'bg-slate-100 border-slate-300 text-slate-800') }}">{{ rec.status }}</span>
+      <span class="inline-flex items-center gap-1.5 px-2.5 py-1 border rounded-full text-[11px] font-bold whitespace-nowrap tracking-wide uppercase {{ status_badge_classes(rec.status) }}">{{ rec.status }}</span>
       <span class="inline-flex items-center gap-1.5 py-1.5 px-2.5 rounded-full border border-slate-200 bg-slate-50 text-slate-500 text-xs font-bold">Stage {{ diagnostics.current_stage_label or 'Waiting' }}</span>
       <span class="inline-flex items-center gap-1.5 py-1.5 px-2.5 rounded-full border border-slate-200 bg-slate-50 text-slate-500 text-xs font-bold">Captured {{ rec.captured_at_display }}</span>
       <span class="inline-flex items-center gap-1.5 py-1.5 px-2.5 rounded-full border border-slate-200 bg-slate-50 text-slate-500 text-xs font-bold">Source {{ rec.source_display or rec.source }}</span>

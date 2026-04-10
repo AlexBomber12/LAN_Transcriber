@@ -12,8 +12,6 @@
 
     {% include "partials/control_center/inspector_pane.html" %}
   </div>
-
-  {% include "partials/control_center/system_bar.html" %}
 </div>
-<script>(function(){var s=document.getElementById('control-center-shell');if(!s)return;function u(){if(!document.contains(s)){window.removeEventListener('resize',u);window.removeEventListener('orientationchange',u);return}s.style.setProperty('--cc-top',s.getBoundingClientRect().top+'px')}u();window.addEventListener('resize',u);window.addEventListener('orientationchange',u)})()</script>
+<script>(function(){var s=document.getElementById('control-center-shell');if(!s)return;function u(){if(!document.contains(s)){window.removeEventListener('resize',u);window.removeEventListener('orientationchange',u);return}var top=s.getBoundingClientRect().top;var bar=document.getElementById('control-center-system-bar');var barH=bar?bar.getBoundingClientRect().height:0;s.style.setProperty('--cc-top',top+'px');s.style.height='calc(100dvh - '+top+'px - '+barH+'px)'}u();window.addEventListener('resize',u);window.addEventListener('orientationchange',u)})()</script>
 {% endblock %}

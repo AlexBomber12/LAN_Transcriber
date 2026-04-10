@@ -1,3 +1,4 @@
+{% from "partials/macros.html" import btn_classes %}
 {% if current_tab == 'overview' %}
   {% set compact = compact_overview or {} %}
   {% set next_action = compact.next_action or {} %}
@@ -17,7 +18,7 @@
       <p class="mb-2 text-lg font-extrabold text-slate-900 leading-tight">{{ next_action.title or 'Open full-page inspector' }}</p>
       <p class="text-slate-500 text-xs">{{ next_action.detail or '' }}</p>
       {% if next_action.href %}
-      <a href="{{ next_action.href }}" class="inline-flex items-center justify-center gap-2 min-h-[40px] px-3.5 py-2 border border-slate-300 rounded-full bg-white text-slate-900 cursor-pointer text-[13px] font-bold no-underline hover:bg-slate-50 transition-colors mt-2"{% if next_action.external %} hx-boost="false"{% endif %}>{{ next_action.button_label or 'Open' }}</a>
+      <a href="{{ next_action.href }}" class="{{ btn_classes() }} mt-2"{% if next_action.external %} hx-boost="false"{% endif %}>{{ next_action.button_label or 'Open' }}</a>
       {% endif %}
     </section>
   </div>
@@ -52,7 +53,7 @@
     <div>{{ repair.detail }}</div>
     {% if repair.available %}
     <form method="post" action="/ui/recordings/{{ rec.id }}/speakers/regenerate-snippets{{ recording_inspector.embedded_return_queries.speakers }}" class="mt-2.5">
-      <button class="inline-flex items-center justify-center gap-2 min-h-[40px] px-3.5 py-2 border border-slate-300 rounded-full bg-white text-slate-900 cursor-pointer text-[13px] font-bold no-underline hover:bg-slate-50 transition-colors" type="submit">{{ repair.button_label }}</button>
+      <button class="{{ btn_classes() }}" type="submit">{{ repair.button_label }}</button>
     </form>
     {% endif %}
   </div>
@@ -142,10 +143,10 @@
     <div class="flex justify-between gap-3 items-start flex-wrap mb-3">
       <h3 class="text-sm font-bold">Export</h3>
       <div class="flex gap-2 flex-wrap">
-        <button type="button" class="inline-flex items-center justify-center gap-2 min-h-[40px] px-3.5 py-2 border border-slate-300 rounded-full bg-white text-slate-900 cursor-pointer text-[13px] font-bold no-underline hover:bg-slate-50 transition-colors" onclick="copyCompactExportText('{{ rec.id }}')">Copy</button>
+        <button type="button" class="{{ btn_classes() }}" onclick="copyCompactExportText('{{ rec.id }}')">Copy</button>
         <a
           href="/ui/recordings/{{ rec.id }}/export.zip"
-          class="inline-flex items-center justify-center gap-2 min-h-[40px] px-3.5 py-2 border border-slate-300 rounded-full bg-white text-slate-900 cursor-pointer text-[13px] font-bold no-underline hover:bg-slate-50 transition-colors"
+          class="{{ btn_classes() }}"
           hx-boost="false"
         >Download ZIP</a>
       </div>

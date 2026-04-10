@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "partials/macros.html" import btn_classes %}
 {% block title %}Calendars – LAN Transcriber{% endblock %}
 {% block content %}
 <h1 class="text-3xl font-extrabold tracking-tight mb-5">Calendars</h1>
@@ -31,7 +32,7 @@
       <label for="calendar-source-file" class="text-xs min-w-[120px] text-slate-500 font-bold">ICS text</label>
       <textarea id="calendar-source-file" name="file" rows="6" class="min-w-[520px] border border-slate-300 bg-white text-slate-900 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-primary/55 focus:ring-4 focus:ring-primary/10"></textarea>
     </div>
-    <button class="inline-flex items-center justify-center gap-2 min-h-[40px] px-3.5 py-2 border border-slate-300 rounded-full bg-white text-slate-900 cursor-pointer text-[13px] font-bold no-underline hover:bg-slate-50 transition-colors" type="submit">Save source</button>
+    <button class="{{ btn_classes() }}" type="submit">Save source</button>
   </form>
 </div>
 
@@ -67,7 +68,7 @@
         <td class="px-3.5 py-3 border-b border-slate-100" title="{{ source.last_error or '' }}">{{ source.last_error or '—' }}</td>
         <td class="px-3.5 py-3 border-b border-slate-100">
           <form method="post" action="/calendars/sources/{{ source.id }}/sync">
-            <button class="inline-flex items-center justify-center gap-2 min-h-[40px] px-3.5 py-2 border border-slate-300 rounded-full bg-white text-slate-900 cursor-pointer text-[13px] font-bold no-underline hover:bg-slate-50 transition-colors" type="submit">Sync now</button>
+            <button class="{{ btn_classes() }}" type="submit">Sync now</button>
           </form>
         </td>
       </tr>
@@ -93,7 +94,7 @@
       <option value="{{ source.id }}" {% if selected_source_id == source.id %}selected{% endif %}>{{ source.name }}</option>
       {% endfor %}
     </select>
-    <button class="inline-flex items-center justify-center gap-2 min-h-[40px] px-3.5 py-2 border border-slate-300 rounded-full bg-white text-slate-900 cursor-pointer text-[13px] font-bold no-underline hover:bg-slate-50 transition-colors" type="submit">Load</button>
+    <button class="{{ btn_classes() }}" type="submit">Load</button>
   </form>
 
   {% if events %}

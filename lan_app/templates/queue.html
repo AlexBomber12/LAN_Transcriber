@@ -1,21 +1,7 @@
 {% extends "base.html" %}
+{% from "partials/macros.html" import status_badge_classes, btn_classes %}
 {% block title %}Queue – LAN Transcriber{% endblock %}
 {% block content %}
-{% set _badge = {
-  'Queued': 'bg-blue-100 border-blue-300 text-blue-800',
-  'Processing': 'bg-amber-100 border-amber-300 text-amber-800',
-  'Stopping': 'bg-orange-100 border-orange-300 text-orange-800',
-  'Stopped': 'bg-slate-100 border-slate-300 text-slate-800',
-  'NeedsReview': 'bg-yellow-100 border-yellow-300 text-yellow-800',
-  'Ready': 'bg-green-100 border-green-300 text-green-800',
-  'Published': 'bg-violet-100 border-violet-300 text-violet-800',
-  'Quarantine': 'bg-red-100 border-red-300 text-red-800',
-  'Failed': 'bg-red-100 border-red-300 text-red-800',
-  'queued': 'bg-blue-100 border-blue-300 text-blue-800',
-  'started': 'bg-amber-100 border-amber-300 text-amber-800',
-  'finished': 'bg-green-100 border-green-300 text-green-800',
-  'failed': 'bg-red-100 border-red-300 text-red-800',
-} %}
 <h1 class="text-3xl font-extrabold tracking-tight mb-5">Queue <small class="font-normal text-slate-500">({{ total }} total)</small></h1>
 
 <form class="flex gap-2.5 items-center flex-wrap mb-4" method="get" action="/queue">
@@ -29,7 +15,7 @@
   <label class="text-xs font-semibold text-slate-500">Recording ID:</label>
   <input type="text" name="recording_id" value="{{ recording_id_filter }}" placeholder="filter by rec id" class="w-[200px] border border-slate-300 bg-white text-slate-900 rounded-xl px-3 py-2.5 min-h-[40px] text-sm focus:outline-none focus:border-primary/55 focus:ring-4 focus:ring-primary/10">
   <input type="hidden" name="offset" value="0">
-  <button class="inline-flex items-center justify-center gap-2 min-h-[40px] px-3.5 py-2 border border-slate-300 rounded-full bg-white text-slate-900 cursor-pointer text-[13px] font-bold no-underline hover:bg-slate-50 transition-colors" type="submit">Filter</button>
+  <button class="{{ btn_classes() }}" type="submit">Filter</button>
 </form>
 
 {% if items %}
@@ -52,7 +38,7 @@
     <tr class="hover:bg-slate-50">
       <td class="px-3.5 py-3 border-b border-slate-100 max-w-[260px] truncate" title="{{ j.id }}">{{ j.id[:16] }}…</td>
       <td class="px-3.5 py-3 border-b border-slate-100">{{ j.type }}</td>
-      <td class="px-3.5 py-3 border-b border-slate-100"><span class="inline-flex items-center gap-1.5 px-2.5 py-1 border rounded-full text-[11px] font-bold whitespace-nowrap tracking-wide uppercase {{ _badge.get(j.status, 'bg-slate-100 border-slate-300 text-slate-800') }}">{{ j.status }}</span></td>
+      <td class="px-3.5 py-3 border-b border-slate-100"><span class="inline-flex items-center gap-1.5 px-2.5 py-1 border rounded-full text-[11px] font-bold whitespace-nowrap tracking-wide uppercase {{ status_badge_classes(j.status) }}">{{ j.status }}</span></td>
       <td class="px-3.5 py-3 border-b border-slate-100"><a href="/recordings/{{ j.recording_id }}" class="no-underline text-primary" title="{{ j.recording_id }}">{{ j.recording_id[:16] }}…</a></td>
       <td class="px-3.5 py-3 border-b border-slate-100">{{ j.attempt }}</td>
       <td class="px-3.5 py-3 border-b border-slate-100 whitespace-nowrap">{{ j.created_at[:19].replace('T',' ') if j.created_at else '—' }}</td>

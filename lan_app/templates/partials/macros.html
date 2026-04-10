@@ -1,0 +1,39 @@
+{#
+  Shared Jinja macros for LAN Transcriber UI templates.
+  Use these macros instead of copy-pasting Tailwind class strings or
+  status->class mapping dictionaries across templates.
+#}
+
+{# -----------------------------------------------------------------
+   Status badge classes
+   ----------------------------------------------------------------- #}
+{% set _status_badge_class_map = {
+  'Queued': 'bg-blue-100 border-blue-300 text-blue-800',
+  'Processing': 'bg-amber-100 border-amber-300 text-amber-800',
+  'Stopping': 'bg-orange-100 border-orange-300 text-orange-800',
+  'Stopped': 'bg-slate-100 border-slate-300 text-slate-800',
+  'NeedsReview': 'bg-yellow-100 border-yellow-300 text-yellow-800',
+  'Ready': 'bg-green-100 border-green-300 text-green-800',
+  'Published': 'bg-violet-100 border-violet-300 text-violet-800',
+  'Quarantine': 'bg-red-100 border-red-300 text-red-800',
+  'Failed': 'bg-red-100 border-red-300 text-red-800',
+  'queued': 'bg-blue-100 border-blue-300 text-blue-800',
+  'started': 'bg-amber-100 border-amber-300 text-amber-800',
+  'finished': 'bg-green-100 border-green-300 text-green-800',
+  'failed': 'bg-red-100 border-red-300 text-red-800',
+} %}
+
+{% macro status_badge_classes(status) -%}
+{{- _status_badge_class_map.get(status, 'bg-slate-100 border-slate-300 text-slate-800') -}}
+{%- endmacro %}
+
+{# -----------------------------------------------------------------
+   Button class strings
+   ----------------------------------------------------------------- #}
+{% macro btn_classes() -%}
+inline-flex items-center justify-center gap-2 min-h-[40px] px-3.5 py-2 border border-slate-300 rounded-full bg-white text-slate-900 cursor-pointer text-[13px] font-bold no-underline hover:bg-slate-50 transition-colors
+{%- endmacro %}
+
+{% macro btn_danger_classes() -%}
+inline-flex items-center justify-center gap-2 min-h-[40px] px-3.5 py-2 border border-red-200 rounded-full text-red-700 bg-red-50 cursor-pointer text-[13px] font-bold no-underline hover:bg-red-100 transition-colors
+{%- endmacro %}

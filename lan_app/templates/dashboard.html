@@ -1,17 +1,7 @@
 {% extends "base.html" %}
+{% from "partials/macros.html" import status_badge_classes %}
 {% block title %}Dashboard – LAN Transcriber{% endblock %}
 {% block content %}
-{% set _badge = {
-  'Queued': 'bg-blue-100 border-blue-300 text-blue-800',
-  'Processing': 'bg-amber-100 border-amber-300 text-amber-800',
-  'Stopping': 'bg-orange-100 border-orange-300 text-orange-800',
-  'Stopped': 'bg-slate-100 border-slate-300 text-slate-800',
-  'NeedsReview': 'bg-yellow-100 border-yellow-300 text-yellow-800',
-  'Ready': 'bg-green-100 border-green-300 text-green-800',
-  'Published': 'bg-violet-100 border-violet-300 text-violet-800',
-  'Quarantine': 'bg-red-100 border-red-300 text-red-800',
-  'Failed': 'bg-red-100 border-red-300 text-red-800',
-} %}
 <h1 class="text-3xl font-extrabold tracking-tight mb-5">Dashboard</h1>
 
 {% set summary_strip = recordings_summary_strip %}
@@ -38,7 +28,7 @@
       <tr class="hover:bg-slate-50">
         <td class="px-3.5 py-3 border-b border-slate-100"><a href="/recordings/{{ r.id }}" class="no-underline text-primary">{{ r.id[:14] }}…</a></td>
         <td class="px-3.5 py-3 border-b border-slate-100" title="{{ r.source_filename }}">{{ r.source_filename }}</td>
-        <td class="px-3.5 py-3 border-b border-slate-100"><span class="inline-flex items-center gap-1.5 px-2.5 py-1 border rounded-full text-[11px] font-bold whitespace-nowrap tracking-wide uppercase {{ _badge.get(r.status, 'bg-slate-100 border-slate-300 text-slate-800') }}">{{ r.status }}</span></td>
+        <td class="px-3.5 py-3 border-b border-slate-100"><span class="inline-flex items-center gap-1.5 px-2.5 py-1 border rounded-full text-[11px] font-bold whitespace-nowrap tracking-wide uppercase {{ status_badge_classes(r.status) }}">{{ r.status }}</span></td>
         <td class="px-3.5 py-3 border-b border-slate-100">{{ r.captured_at[:19].replace('T',' ') if r.captured_at else '—' }}</td>
         <td class="px-3.5 py-3 border-b border-slate-100">{{ r.source }}</td>
       </tr>
