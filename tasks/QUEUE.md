@@ -650,6 +650,6 @@ Queue (in order)
 - Depends on: PR-TAILWIND-CONTROL-CENTER-01 and PR-TAILWIND-RECORDING-DETAIL-01
 
 130) PR-UI-POLISH-POST-TAILWIND-01: Fix layout bugs, remove duplicate sections, and clean up post-Tailwind migration issues
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-UI-POLISH-POST-TAILWIND-01.md
 - Depends on: PR-TAILWIND-REMAINING-01

@@ -1,4 +1,5 @@
 <!DOCTYPE html>
+{% from "partials/macros.html" import btn_classes, btn_danger_classes %}
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -66,7 +67,7 @@ a { color: inherit; }
 [hidden] { display: none !important; }
 </style>
 </head>
-<body class="font-display antialiased" hx-boost="true">
+<body class="font-display antialiased flex flex-col min-h-[100dvh]" hx-boost="true">
 <header class="bg-navy-nav text-white px-6 py-3 flex flex-wrap items-center justify-between gap-3 border-b border-slate-800">
   <div class="flex flex-wrap items-center gap-4 md:gap-8">
     <div class="flex items-center gap-3">
@@ -84,30 +85,11 @@ a { color: inherit; }
       <a href="/queue" class="px-3 py-1.5 rounded text-sm font-medium {% if active=='queue' %}bg-primary/20 text-primary{% else %}text-slate-400 hover:text-white{% endif %}">Queue</a>
     </nav>
   </div>
-  <div class="flex items-center gap-4">
-    <div class="relative hidden md:block">
-      <span class="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-slate-500">search</span>
-      <input class="bg-slate-800 border-none rounded-lg pl-10 pr-4 py-1.5 text-sm w-64 focus:ring-1 focus:ring-primary" placeholder="Search recordings..." type="text">
-    </div>
-    <button class="p-2 text-slate-400 hover:text-white"><span class="material-symbols-outlined">notifications</span></button>
-    <div class="w-8 h-8 rounded-full bg-primary/30 flex items-center justify-center border border-primary/50">
-      <span class="text-xs font-bold">OP</span>
-    </div>
-  </div>
 </header>
-<main class="max-w-[1600px] mx-auto px-[clamp(18px,3vw,32px)] py-6 pb-10">
+<main class="flex-1 w-full max-w-[1600px] mx-auto px-[clamp(18px,3vw,32px)] py-6 pb-10">
 {% block content %}{% endblock %}
 </main>
-<footer class="h-8 bg-slate-100 border-t border-slate-200 px-4 flex items-center justify-between text-[10px] font-medium text-slate-500">
-  <div class="flex gap-4">
-    <span class="flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-green-500"></span> LAN Node: Online</span>
-    <span>Local Database</span>
-    <span>Version: LAN Transcriber</span>
-  </div>
-  <div class="flex gap-4">
-    <span>Uptime</span>
-  </div>
-</footer>
+{% include "partials/control_center/system_bar.html" %}
 <div
   id="delete-confirm-backdrop"
   class="fixed inset-0 bg-slate-900/60 flex items-center justify-center p-3 z-[1000]"
@@ -120,8 +102,8 @@ a { color: inherit; }
     <p id="delete-confirm-context" class="text-sm text-slate-500 mb-3 break-words"></p>
     <p id="delete-confirm-error" class="text-xs text-red-700 min-h-[18px] mb-2"></p>
     <div class="flex justify-end gap-1.5">
-      <button id="delete-cancel-btn" class="inline-flex items-center justify-center gap-2 min-h-[40px] px-3.5 py-2 border border-slate-300 rounded-full bg-white text-slate-900 cursor-pointer text-[13px] font-bold no-underline hover:bg-slate-50 transition-colors" type="button" onclick="closeDeleteDialog()">Cancel</button>
-      <button id="delete-confirm-btn" class="inline-flex items-center justify-center gap-2 min-h-[40px] px-3.5 py-2 border border-red-200 rounded-full text-red-700 bg-red-50 cursor-pointer text-[13px] font-bold no-underline hover:bg-red-100 transition-colors" type="button" onclick="confirmDeleteDialog()">Delete</button>
+      <button id="delete-cancel-btn" class="{{ btn_classes() }}" type="button" onclick="closeDeleteDialog()">Cancel</button>
+      <button id="delete-confirm-btn" class="{{ btn_danger_classes() }}" type="button" onclick="confirmDeleteDialog()">Delete</button>
     </div>
   </div>
 </div>
@@ -188,7 +170,28 @@ function refreshControlCenterShellFromHref(href) {
   htmx.trigger(document.body, 'refresh-control-center-system-bar');
 }
 
+window.__inspectorScrollState = window.__inspectorScrollState || null;
+
 if (document.body && !window.__controlCenterShellAfterSwapBound) {
+  document.body.addEventListener('htmx:beforeSwap', function (event) {
+    var target = event && event.detail ? event.detail.target : null;
+    if (!target || target.id !== 'control-center-inspector-pane') {
+      return;
+    }
+    // Capture the OLD inspector view's identity (its self-refresh URL)
+    // and current scroll position. The afterSwap handler only restores
+    // when the NEW inspector pane is the same view (same hx-get URL),
+    // so tab clicks and recording navigation always render at the top.
+    var scrollEl = target.querySelector('[data-inspector-scroll]');
+    if (!scrollEl) {
+      window.__inspectorScrollState = null;
+      return;
+    }
+    window.__inspectorScrollState = {
+      url: target.getAttribute('hx-get') || '',
+      scrollTop: scrollEl.scrollTop
+    };
+  });
   document.body.addEventListener('htmx:afterSwap', function (event) {
     var target = event && event.detail ? event.detail.target : null;
     if (!target) {
@@ -200,6 +203,14 @@ if (document.body && !window.__controlCenterShellAfterSwapBound) {
     }
     if (target.id !== 'control-center-inspector-pane') {
       return;
+    }
+    var saved = window.__inspectorScrollState;
+    window.__inspectorScrollState = null;
+    if (saved && saved.url && saved.url === (target.getAttribute('hx-get') || '')) {
+      var newScrollEl = target.querySelector('[data-inspector-scroll]');
+      if (newScrollEl) {
+        newScrollEl.scrollTop = saved.scrollTop;
+      }
     }
     var activeTab = target.querySelector('[data-active-tab="true"]');
     refreshControlCenterShellFromHref(activeTab ? activeTab.getAttribute('href') : '');

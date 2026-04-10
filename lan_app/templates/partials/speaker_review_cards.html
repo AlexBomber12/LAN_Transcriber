@@ -1,22 +1,19 @@
+{% from "partials/macros.html" import status_badge_classes %}
 {% set speaker_review_compact = speaker_review_mode == 'compact' %}
-{% set _badge_classes = {
-  's-Queued': 'bg-blue-100 border-blue-300 text-blue-800',
-  's-Processing': 'bg-amber-100 border-amber-300 text-amber-800',
-  's-Stopping': 'bg-orange-100 border-orange-300 text-orange-800',
-  's-Stopped': 'bg-slate-100 border-slate-300 text-slate-800',
-  's-NeedsReview': 'bg-yellow-100 border-yellow-300 text-yellow-800',
-  's-Ready': 'bg-green-100 border-green-300 text-green-800',
-  's-Published': 'bg-violet-100 border-violet-300 text-violet-800',
-  's-Quarantine': 'bg-red-100 border-red-300 text-red-800',
-  's-Failed': 'bg-red-100 border-red-300 text-red-800',
-} %}
 {% if rows %}
 <div class="flex flex-col {% if speaker_review_compact %}gap-4{% else %}gap-6{% endif %}">
   {% for row in rows %}
+  {% set _raw_speaker = row.speaker or '' %}
+  {% if _raw_speaker[:8] == 'SPEAKER_' %}
+    {% set _speaker_index_digits = _raw_speaker[8:] %}
+    {% set _avatar_label = 'S' ~ (_speaker_index_digits.lstrip('0') or '0') %}
+  {% else %}
+    {% set _avatar_label = _raw_speaker[:2]|upper %}
+  {% endif %}
   <section class="{% if speaker_review_compact %}bg-slate-50 rounded-lg border border-slate-100 p-4{% else %}bg-white rounded-xl border border-slate-200 p-5 shadow-sm{% endif %}">
     <div class="flex flex-wrap justify-between items-start gap-3 mb-4">
       <div class="flex items-center gap-3">
-        <div class="size-8 bg-primary/10 text-primary rounded-full flex items-center justify-center font-bold text-xs">{{ row.speaker }}</div>
+        <div class="size-8 bg-primary/10 text-primary rounded-full flex items-center justify-center font-bold text-xs">{{ _avatar_label }}</div>
         <div>
           {% if not speaker_review_compact %}
           <div class="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Diarized speaker</div>
@@ -30,7 +27,7 @@
         </div>
       </div>
       <div class="flex items-center gap-2">
-        <span class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold border {{ _badge_classes.get(row.state_badge_class, 'bg-slate-100 border-slate-300 text-slate-800') }}">{{ row.state_badge_label }}</span>
+        <span class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold border {{ status_badge_classes((row.state_badge_class or '')[2:]) }}">{{ row.state_badge_label }}</span>
         {% if row.trusted_sample_state %}
         <span class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold bg-green-100 text-green-800 border border-green-200">{{ row.trusted_sample_state.badge_label }}</span>
         {% endif %}

@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "partials/macros.html" import btn_classes %}
 {% block title %}Login - LAN Transcriber{% endblock %}
 {% block content %}
 <h1 class="text-3xl font-extrabold tracking-tight mb-5">Login</h1>
@@ -16,7 +17,7 @@
     </div>
     <div class="flex gap-2.5 items-center mb-2.5 flex-wrap">
       <label class="text-xs min-w-[120px] text-slate-500 font-bold"></label>
-      <button type="submit" class="inline-flex items-center justify-center gap-2 min-h-[40px] px-3.5 py-2 border border-slate-300 rounded-full bg-white text-slate-900 cursor-pointer text-[13px] font-bold no-underline hover:bg-slate-50 transition-colors">Log in</button>
+      <button type="submit" class="{{ btn_classes() }}">Log in</button>
     </div>
   </form>
 </div>

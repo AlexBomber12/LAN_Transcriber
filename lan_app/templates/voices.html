@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "partials/macros.html" import btn_classes, btn_danger_classes %}
 {% block title %}Canonical Speakers – LAN Transcriber{% endblock %}
 {% block content %}
 <h1 class="text-3xl font-extrabold tracking-tight mb-5">Canonical Speakers</h1>
@@ -11,15 +12,15 @@
 <div class="grid gap-2.5 p-4 border border-slate-200 rounded-xl bg-gradient-to-b from-white to-slate-50 shadow-sm">
   <p class="text-slate-900 max-w-[72ch]">{{ return_context.message }}</p>
   <div class="flex gap-2 flex-wrap">
-    <a href="{{ return_context.href }}" class="inline-flex items-center justify-center gap-2 min-h-[40px] px-3.5 py-2 border border-slate-300 rounded-full bg-white text-slate-900 cursor-pointer text-[13px] font-bold no-underline hover:bg-slate-50 transition-colors">Return to Control Center</a>
+    <a href="{{ return_context.href }}" class="{{ btn_classes() }}">Return to Control Center</a>
     {% if return_context.selected_detail_href %}
-    <a href="{{ return_context.selected_detail_href }}" class="inline-flex items-center justify-center gap-2 min-h-[40px] px-3.5 py-2 border border-slate-300 rounded-full bg-white text-slate-900 cursor-pointer text-[13px] font-bold no-underline hover:bg-slate-50 transition-colors">Open selected recording</a>
+    <a href="{{ return_context.selected_detail_href }}" class="{{ btn_classes() }}">Open selected recording</a>
     {% endif %}
   </div>
 </div>
 {% else %}
 <div class="flex gap-2 flex-wrap items-center mb-2.5">
-  <a href="/" class="inline-flex items-center justify-center gap-2 min-h-[40px] px-3.5 py-2 border border-slate-300 rounded-full bg-white text-slate-900 cursor-pointer text-[13px] font-bold no-underline hover:bg-slate-50 transition-colors">Open Control Center</a>
+  <a href="/" class="{{ btn_classes() }}">Open Control Center</a>
 </div>
 {% endif %}
 
@@ -39,7 +40,7 @@
     </div>
     <div class="flex gap-2.5 items-center mb-2.5 flex-wrap">
       <label class="text-xs min-w-[120px] text-slate-500 font-bold"></label>
-      <button class="inline-flex items-center justify-center gap-2 min-h-[40px] px-3.5 py-2 border border-slate-300 rounded-full bg-white text-slate-900 cursor-pointer text-[13px] font-bold no-underline hover:bg-slate-50 transition-colors" type="submit">Add</button>
+      <button class="{{ btn_classes() }}" type="submit">Add</button>
     </div>
   </form>
 </div>
@@ -111,14 +112,14 @@
               <option value="{{ target.id }}">{{ target.display_name }}</option>
               {% endfor %}
             </select>
-            <button class="inline-flex items-center justify-center gap-2 min-h-[40px] px-3.5 py-2 border border-slate-300 rounded-full bg-white text-slate-900 cursor-pointer text-[13px] font-bold no-underline hover:bg-slate-50 transition-colors" type="submit">Merge</button>
+            <button class="{{ btn_classes() }}" type="submit">Merge</button>
           </form>
           {% endif %}
           <form method="post" action="/voices/{{ v.id }}/delete" class="inline" onsubmit="return confirm('Delete canonical speaker ' + this.dataset.name + '?')" data-name="{{ v.display_name }}">
             {% for field in return_context.hidden_fields %}
             <input type="hidden" name="{{ field.name }}" value="{{ field.value }}">
             {% endfor %}
-            <button class="inline-flex items-center justify-center gap-2 min-h-[40px] px-3.5 py-2 border border-red-200 rounded-full text-red-700 bg-red-50 cursor-pointer text-[13px] font-bold no-underline hover:bg-red-100 transition-colors" type="submit">Delete</button>
+            <button class="{{ btn_danger_classes() }}" type="submit">Delete</button>
           </form>
         </td>
       </tr>
