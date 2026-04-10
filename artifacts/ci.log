@@ -9,15 +9,15 @@ The event loop scope for asynchronous fixtures will default to the fixture cachi
 ........................................................................ [ 26%]
 ........................................................................ [ 33%]
 ........................................................................ [ 40%]
-........................................................................ [ 47%]
+........................................................................ [ 46%]
 ........................................................................ [ 53%]
 ........................................................................ [ 60%]
 ........................................................................ [ 67%]
 ........................................................................ [ 73%]
-.....................................s.................................. [ 80%]
+.......................................s................................ [ 80%]
 ........................................................................ [ 87%]
-........................................................................ [ 94%]
-................................................................         [100%]
+........................................................................ [ 93%]
+..................................................................       [100%]
 =============================== warnings summary ===============================
 lan_transcriber/pipeline_steps/precheck.py:3
   /home/alexey/LAN_Transcriber/lan_transcriber/pipeline_steps/precheck.py:3: DeprecationWarning: 'audioop' is deprecated and slated for removal in Python 3.13
@@ -56,13 +56,13 @@ tests/test_warm_models.py::test_warm_models_module_main_guard
 ---------- coverage: platform linux, python 3.11.9-final-0 -----------
 Name    Stmts   Miss Branch BrPart  Cover   Missing
 ---------------------------------------------------
-TOTAL   14074      0   4684      0   100%
+TOTAL   14087      0   4686      0   100%
 
 63 files skipped due to complete coverage.
 Coverage HTML written to dir htmlcov
 
 Required test coverage of 100% reached. Total coverage: 100.00%
-1071 passed, 3 skipped, 11 warnings in 96.67s (0:01:36)
+1073 passed, 3 skipped, 11 warnings in 94.86s (0:01:34)
 Name                                                    Stmts   Miss Branch BrPart  Cover
 -----------------------------------------------------------------------------------------
 lan_transcriber/__init__.py                                 8      0      0      0   100%
@@ -112,7 +112,7 @@ lan_app/db.py                       1434      0    318      0   100%
 lan_app/db_init.py                     9      0      2      0   100%
 lan_app/diagnostics.py               281      0    160      0   100%
 lan_app/diarization_loader.py        144      0     54      0   100%
-lan_app/exporter.py                  246      0    108      0   100%
+lan_app/exporter.py                  257      0    110      0   100%
 lan_app/healthchecks.py              103      0     38      0   100%
 lan_app/hf_repo.py                     9      0      2      0   100%
 lan_app/jobs.py                      107      0     32      0   100%
@@ -127,10 +127,10 @@ lan_app/tools/__init__.py              1      0      0      0   100%
 lan_app/tools/repair_snippets.py      36      0     12      0   100%
 lan_app/tools/warm_models.py          47      0     10      0   100%
 lan_app/ui.py                         59      0     10      0   100%
-lan_app/ui_routes.py                2572      0    988      0   100%
+lan_app/ui_routes.py                2574      0    988      0   100%
 lan_app/uploads.py                    79      0     14      0   100%
 lan_app/worker.py                     28      0      2      0   100%
 lan_app/worker_tasks.py             1710      0    496      0   100%
 lan_app/workers.py                    10      0      0      0   100%
 --------------------------------------------------------------------
-TOTAL                               9889      0   3282      0   100%
+TOTAL                               9902      0   3284      0   100%

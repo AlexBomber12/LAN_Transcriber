@@ -1,580 +1,175 @@
-diff --git a/lan_app/config.py b/lan_app/config.py
-index d5b4bfe..2bb2b4d 100644
---- a/lan_app/config.py
-+++ b/lan_app/config.py
-@@ -12,6 +12,8 @@ from lan_app.constants import DEFAULT_RQ_QUEUE_NAME
- from lan_transcriber.pipeline_steps.diarization_quality import (
-     DEFAULT_DIALOG_RETRY_MIN_DURATION_SECONDS,
-     DEFAULT_DIALOG_RETRY_MIN_TURNS,
-+    DEFAULT_DIARIZATION_FLICKER_MAX_CONSECUTIVE,
-+    DEFAULT_DIARIZATION_FLICKER_MIN_SECONDS,
-     DEFAULT_DIARIZATION_MERGE_GAP_SECONDS,
-     DEFAULT_DIARIZATION_MIN_TURN_SECONDS,
- )
-@@ -319,6 +321,22 @@ class AppSettings(BaseSettings):
-         default=DEFAULT_DIARIZATION_MIN_TURN_SECONDS,
-         ge=0.0,
-     )
-+    diarization_flicker_min_seconds: float = Field(
-+        default=DEFAULT_DIARIZATION_FLICKER_MIN_SECONDS,
-+        ge=0.0,
-+        validation_alias=AliasChoices(
-+            "LAN_DIARIZATION_FLICKER_MIN_SECONDS",
-+            "DIARIZATION_FLICKER_MIN_SECONDS",
-+        ),
-+    )
-+    diarization_flicker_max_consecutive: int = Field(
-+        default=DEFAULT_DIARIZATION_FLICKER_MAX_CONSECUTIVE,
-+        ge=0,
-+        validation_alias=AliasChoices(
-+            "LAN_DIARIZATION_FLICKER_MAX_CONSECUTIVE",
-+            "DIARIZATION_FLICKER_MAX_CONSECUTIVE",
-+        ),
-+    )
-     speaker_turn_merge_gap_sec: float = Field(
-         default=DEFAULT_SPEAKER_TURN_MERGE_GAP_SEC,
-         ge=0.0,
-diff --git a/lan_app/worker_tasks.py b/lan_app/worker_tasks.py
-index b86c618..7757728 100644
---- a/lan_app/worker_tasks.py
-+++ b/lan_app/worker_tasks.py
-@@ -44,6 +44,7 @@ from lan_transcriber.pipeline_steps.diarization_quality import (
-     DEFAULT_DIALOG_RETRY_MIN_TURNS,
-     SpeakerTurnSmoothingResult,
-     annotation_speaker_count,
-+    filter_flickering_speakers,
-     profile_default_speaker_hints,
-     smooth_speaker_turns,
- )
-@@ -1882,6 +1883,8 @@ def _build_pipeline_settings(settings: AppSettings) -> PipelineSettings:
-         diarization_dialog_retry_min_turns=settings.diarization_dialog_retry_min_turns,
-         diarization_merge_gap_seconds=settings.diarization_merge_gap_seconds,
-         diarization_min_turn_seconds=settings.diarization_min_turn_seconds,
-+        diarization_flicker_min_seconds=settings.diarization_flicker_min_seconds,
-+        diarization_flicker_max_consecutive=settings.diarization_flicker_max_consecutive,
-         speaker_turn_merge_gap_sec=settings.speaker_turn_merge_gap_sec,
-         speaker_turn_short_merge_gap_sec=settings.speaker_turn_short_merge_gap_sec,
-         speaker_turn_min_words=settings.speaker_turn_min_words,
-@@ -2940,6 +2943,42 @@ def _stage_speaker_turns(ctx: _PipelineExecutionContext) -> _StageResult:
-     detected_language = normalise_language_code(
-         (ctx.language_payload.get("language") or {}).get("detected")
-     )
-+    diarization_segments_before_flicker = sorted(
-+        ctx.diarization_segments,
-+        key=lambda row: (
-+            safe_float(row.get("start"), default=0.0),
-+            safe_float(row.get("end"), default=0.0),
-+            str(row.get("speaker") or ""),
-+        ),
-+    )
-+    ctx.diarization_segments = filter_flickering_speakers(
-+        diarization_segments_before_flicker,
-+        min_total_seconds=ctx.pipeline_settings.diarization_flicker_min_seconds,
-+        max_consecutive_segments=ctx.pipeline_settings.diarization_flicker_max_consecutive,
-+    )
-+    flicker_stats: dict[str, dict[str, float]] = {}
-+    for before_row, after_row in zip(
-+        diarization_segments_before_flicker, ctx.diarization_segments
-+    ):
-+        before_speaker = str(before_row.get("speaker") or "")
-+        after_speaker = str(after_row.get("speaker") or "")
-+        if before_speaker == after_speaker:
-+            continue
-+        stats = flicker_stats.setdefault(
-+            before_speaker,
-+            {"segments": 0.0, "total_seconds": 0.0},
-+        )
-+        stats["segments"] += 1.0
-+        start = safe_float(before_row.get("start"), default=0.0)
-+        end = safe_float(before_row.get("end"), default=start)
-+        stats["total_seconds"] += max(end - start, 0.0)
-+    for speaker, stats in flicker_stats.items():
-+        _logger.warning(
-+            "Diarization flicker speaker reassigned: speaker=%s total_seconds=%.3f segments_reassigned=%d",
-+            speaker,
-+            stats["total_seconds"],
-+            int(stats["segments"]),
-+        )
-     unsmoothed_speaker_turns = build_speaker_turns(
-         language_segments,
-         ctx.diarization_segments,
-diff --git a/lan_transcriber/pipeline_steps/diarization_quality.py b/lan_transcriber/pipeline_steps/diarization_quality.py
-index 32dcaa4..1763111 100644
---- a/lan_transcriber/pipeline_steps/diarization_quality.py
-+++ b/lan_transcriber/pipeline_steps/diarization_quality.py
-@@ -15,6 +15,8 @@ DEFAULT_DIALOG_RETRY_MIN_DURATION_SECONDS = 20.0
- DEFAULT_DIALOG_RETRY_MIN_TURNS = 6
- DEFAULT_DIARIZATION_MERGE_GAP_SECONDS = 0.5
- DEFAULT_DIARIZATION_MIN_TURN_SECONDS = 0.5
-+DEFAULT_DIARIZATION_FLICKER_MIN_SECONDS = 3.0
-+DEFAULT_DIARIZATION_FLICKER_MAX_CONSECUTIVE = 2
- AUTO_PROFILE_DEFAULT_INITIAL_PROFILE = "meeting"
- AUTO_PROFILE_DIALOG_MAX_SPEAKERS = 4
- AUTO_PROFILE_DIALOG_MIN_TOP_TWO_COVERAGE = 0.85
-@@ -557,6 +559,123 @@ def smooth_speaker_turns(
+diff --git a/ci-requirements.txt b/ci-requirements.txt
+index 6803920..2fe65fa 100644
+--- a/ci-requirements.txt
++++ b/ci-requirements.txt
+@@ -12,7 +12,7 @@ anyio==4.13.0
+     # via
+     #   httpx
+     #   starlette
+-build==1.4.2
++build==1.4.3
+     # via pip-tools
+ certifi==2026.2.25
+     # via
+diff --git a/lan_app/exporter.py b/lan_app/exporter.py
+index 4bc2ab2..851b2a2 100644
+--- a/lan_app/exporter.py
++++ b/lan_app/exporter.py
+@@ -9,6 +9,8 @@ from pathlib import Path
+ import zipfile
+ from typing import Any
+ 
++from lan_transcriber.utils import safe_float
++
+ from .config import AppSettings
+ from .db import (
+     SPEAKER_REVIEW_STATE_CONFIRMED_CANONICAL,
+@@ -36,6 +38,16 @@ def _utc_now_iso() -> str:
      )
  
  
-+def _segment_distance(
-+    segment: dict[str, Any],
-+    other: dict[str, Any],
-+) -> float:
-+    seg_start = safe_float(segment.get("start"), default=0.0)
-+    seg_end = safe_float(segment.get("end"), default=seg_start)
-+    other_start = safe_float(other.get("start"), default=0.0)
-+    other_end = safe_float(other.get("end"), default=other_start)
-+    if other_end < seg_start:
-+        return seg_start - other_end
-+    if other_start > seg_end:
-+        return other_start - seg_end
-+    return 0.0
++def _format_timestamp(seconds: float) -> str:
++    total = max(0, int(seconds))
++    h = total // 3600
++    m = (total % 3600) // 60
++    s = total % 60
++    if h > 0:
++        return f"{h:02d}:{m:02d}:{s:02d}"
++    return f"{m:02d}:{s:02d}"
 +
 +
-+def filter_flickering_speakers(
-+    diar_segments: list[dict[str, Any]],
-+    *,
-+    min_total_seconds: float = DEFAULT_DIARIZATION_FLICKER_MIN_SECONDS,
-+    max_consecutive_segments: int = DEFAULT_DIARIZATION_FLICKER_MAX_CONSECUTIVE,
-+) -> list[dict[str, Any]]:
-+    """Reassign brief, isolated diarization speakers to nearest stable speaker.
-+
-+    A speaker is considered a "flicker" speaker when both conditions hold:
-+    - the speaker's total speech duration across ``diar_segments`` is strictly
-+      less than ``min_total_seconds``;
-+    - the speaker never appears in more than ``max_consecutive_segments``
-+      consecutive diarization segments (i.e. they only show up as brief
-+      isolated bursts surrounded by other speakers).
-+
-+    Each diarization segment whose speaker is a flicker is relabelled with the
-+    speaker of the closest non-flicker segment by time proximity. If every
-+    speaker in the input is a flicker speaker (e.g. very short recording with
-+    only tiny bursts), the original list is returned unchanged so no transcript
-+    content is lost.
-+
-+    The returned list is sorted by start time.
-+    """
-+
-+    if not diar_segments:
-+        return []
-+
-+    sorted_segments = sorted(
-+        (dict(seg) for seg in diar_segments),
-+        key=lambda row: (
-+            safe_float(row.get("start"), default=0.0),
-+            safe_float(row.get("end"), default=0.0),
-+            str(row.get("speaker") or ""),
-+        ),
-+    )
-+
-+    totals: dict[str, float] = {}
-+    for seg in sorted_segments:
-+        speaker = str(seg.get("speaker") or "")
-+        totals[speaker] = totals.get(speaker, 0.0) + _segment_duration(seg)
-+
-+    max_run: dict[str, int] = {}
-+    current_speaker: str | None = None
-+    current_run = 0
-+    for seg in sorted_segments:
-+        speaker = str(seg.get("speaker") or "")
-+        if speaker == current_speaker:
-+            current_run += 1
-+        else:
-+            current_speaker = speaker
-+            current_run = 1
-+        if current_run > max_run.get(speaker, 0):
-+            max_run[speaker] = current_run
-+
-+    safe_min_total = max(safe_float(min_total_seconds, default=0.0), 0.0)
-+    safe_max_consecutive = max(int(max_consecutive_segments), 0)
-+
-+    flicker_speakers = {
-+        speaker
-+        for speaker, total in totals.items()
-+        if total < safe_min_total
-+        and max_run.get(speaker, 0) <= safe_max_consecutive
-+    }
-+
-+    if not flicker_speakers:
-+        return sorted_segments
-+
-+    non_flicker_segments = [
-+        seg
-+        for seg in sorted_segments
-+        if str(seg.get("speaker") or "") not in flicker_speakers
-+    ]
-+    if not non_flicker_segments:
-+        return sorted_segments
-+
-+    cleaned: list[dict[str, Any]] = []
-+    for seg in sorted_segments:
-+        speaker = str(seg.get("speaker") or "")
-+        if speaker in flicker_speakers:
-+            nearest = min(
-+                non_flicker_segments,
-+                key=lambda candidate: (
-+                    _segment_distance(seg, candidate),
-+                    safe_float(candidate.get("start"), default=0.0),
-+                ),
-+            )
-+            new_segment = dict(seg)
-+            new_segment["speaker"] = str(nearest.get("speaker") or "")
-+            cleaned.append(new_segment)
-+        else:
-+            cleaned.append(dict(seg))
-+
-+    cleaned.sort(
-+        key=lambda row: (
-+            safe_float(row.get("start"), default=0.0),
-+            safe_float(row.get("end"), default=0.0),
-+            str(row.get("speaker") or ""),
-+        )
-+    )
-+    return cleaned
-+
-+
- __all__ = [
-     "AUTO_PROFILE_DEFAULT_INITIAL_PROFILE",
-     "AUTO_PROFILE_DIALOG_MAX_OVERLAP_RATIO",
-@@ -572,6 +691,8 @@ __all__ = [
-     "DEFAULT_DIALOG_MIN_SPEAKERS",
-     "DEFAULT_DIALOG_RETRY_MIN_DURATION_SECONDS",
-     "DEFAULT_DIALOG_RETRY_MIN_TURNS",
-+    "DEFAULT_DIARIZATION_FLICKER_MAX_CONSECUTIVE",
-+    "DEFAULT_DIARIZATION_FLICKER_MIN_SECONDS",
-     "DEFAULT_DIARIZATION_MERGE_GAP_SECONDS",
-     "DEFAULT_DIARIZATION_MIN_TURN_SECONDS",
-     "DEFAULT_MEETING_MAX_SPEAKERS",
-@@ -584,6 +705,7 @@ __all__ = [
-     "choose_dialog_retry_winner",
-     "classify_diarization_profile",
-     "diarization_profile_metrics",
-+    "filter_flickering_speakers",
-     "profile_default_speaker_hints",
-     "smooth_speaker_turns",
- ]
-diff --git a/lan_transcriber/pipeline_steps/orchestrator.py b/lan_transcriber/pipeline_steps/orchestrator.py
-index 105f1c9..6578926 100644
---- a/lan_transcriber/pipeline_steps/orchestrator.py
-+++ b/lan_transcriber/pipeline_steps/orchestrator.py
-@@ -63,11 +63,14 @@ from .precheck import PrecheckResult, run_precheck as _run_precheck
- from .diarization_quality import (
-     DEFAULT_DIALOG_RETRY_MIN_DURATION_SECONDS,
-     DEFAULT_DIALOG_RETRY_MIN_TURNS,
-+    DEFAULT_DIARIZATION_FLICKER_MAX_CONSECUTIVE,
-+    DEFAULT_DIARIZATION_FLICKER_MIN_SECONDS,
-     DEFAULT_DIARIZATION_MERGE_GAP_SECONDS,
-     DEFAULT_DIARIZATION_MIN_TURN_SECONDS,
-     SpeakerTurnSmoothingResult,
-     choose_dialog_retry_winner,
-     classify_diarization_profile,
-+    filter_flickering_speakers,
-     smooth_speaker_turns,
+ def _load_json_dict(path: Path) -> dict[str, Any]:
+     if not path.exists():
+         return {}
+@@ -262,7 +274,9 @@ def _transcript_section(
+             text = _normalize_text(turn.get("text") or "")
+             if not text:
+                 continue
+-            lines.append(f"- **{speaker}:** {text}")
++            start = safe_float(turn.get("start"), default=None)
++            timestamp = f"{_format_timestamp(start)} " if start is not None else ""
++            lines.append(f"- **{timestamp}{speaker}:** {text}")
+             wrote_any = True
+         if wrote_any:
+             return lines
+diff --git a/lan_app/templates/partials/recording_inspector_full_transcript.html b/lan_app/templates/partials/recording_inspector_full_transcript.html
+index 9cc0a52..76a9502 100644
+--- a/lan_app/templates/partials/recording_inspector_full_transcript.html
++++ b/lan_app/templates/partials/recording_inspector_full_transcript.html
+@@ -31,6 +31,9 @@
+         {% for turn in tr.turns %}
+         <article class="mb-4 last:mb-0">
+           <div class="flex items-center gap-2 mb-1">
++            {% if turn.timestamp %}
++            <span class="text-xs font-mono text-slate-500" data-testid="transcript-turn-timestamp">{{ turn.timestamp }}</span>
++            {% endif %}
+             <strong class="text-sm font-semibold text-slate-900">{{ turn.speaker }}</strong>
+             <span class="text-xs text-slate-400">{{ turn.time_range }}</span>
+             {% if turn.language_label %}
+diff --git a/lan_app/ui_routes.py b/lan_app/ui_routes.py
+index bc06319..4bf3fbc 100644
+--- a/lan_app/ui_routes.py
++++ b/lan_app/ui_routes.py
+@@ -114,7 +114,7 @@ from .db import (
+     set_recording_status_if_current_in,
+     update_glossary_entry,
  )
- from .snippets import SnippetExportRequest, export_speaker_snippets, write_empty_snippets_manifest
-@@ -391,6 +394,24 @@ class Settings(BaseSettings):
-         default=DEFAULT_DIARIZATION_MIN_TURN_SECONDS,
-         ge=0.0,
-     )
-+    diarization_flicker_min_seconds: float = Field(
-+        default=DEFAULT_DIARIZATION_FLICKER_MIN_SECONDS,
-+        ge=0.0,
-+        validation_alias=AliasChoices(
-+            "diarization_flicker_min_seconds",
-+            "DIARIZATION_FLICKER_MIN_SECONDS",
-+            "LAN_DIARIZATION_FLICKER_MIN_SECONDS",
-+        ),
-+    )
-+    diarization_flicker_max_consecutive: int = Field(
-+        default=DEFAULT_DIARIZATION_FLICKER_MAX_CONSECUTIVE,
-+        ge=0,
-+        validation_alias=AliasChoices(
-+            "diarization_flicker_max_consecutive",
-+            "DIARIZATION_FLICKER_MAX_CONSECUTIVE",
-+            "LAN_DIARIZATION_FLICKER_MAX_CONSECUTIVE",
-+        ),
-+    )
-     speaker_turn_merge_gap_sec: float = Field(
-         default=DEFAULT_SPEAKER_TURN_MERGE_GAP_SEC,
-         ge=0.0,
-@@ -2823,6 +2844,42 @@ async def run_pipeline(
-             used_dummy_fallback = True
-             _best_effort_step_log(step_log_callback, "diarization output empty; using fallback single-speaker annotation")
-             diar_segments = _diarization_segments(_fallback_diarization(max(fallback_end, 0.1)))
-+        diar_segments_before_flicker = sorted(
-+            diar_segments,
-+            key=lambda row: (
-+                safe_float(row.get("start"), default=0.0),
-+                safe_float(row.get("end"), default=0.0),
-+                str(row.get("speaker") or ""),
-+            ),
-+        )
-+        diar_segments = filter_flickering_speakers(
-+            diar_segments_before_flicker,
-+            min_total_seconds=cfg.diarization_flicker_min_seconds,
-+            max_consecutive_segments=cfg.diarization_flicker_max_consecutive,
-+        )
-+        flicker_stats: dict[str, dict[str, float]] = {}
-+        for before_row, after_row in zip(
-+            diar_segments_before_flicker, diar_segments
-+        ):
-+            before_speaker = str(before_row.get("speaker") or "")
-+            after_speaker = str(after_row.get("speaker") or "")
-+            if before_speaker == after_speaker:
-+                continue
-+            stats = flicker_stats.setdefault(
-+                before_speaker,
-+                {"segments": 0.0, "total_seconds": 0.0},
-+            )
-+            stats["segments"] += 1.0
-+            start = safe_float(before_row.get("start"), default=0.0)
-+            end = safe_float(before_row.get("end"), default=start)
-+            stats["total_seconds"] += max(end - start, 0.0)
-+        for speaker, stats in flicker_stats.items():
-+            _logger.warning(
-+                "Diarization flicker speaker reassigned: speaker=%s total_seconds=%.3f segments_reassigned=%d",
-+                speaker,
-+                stats["total_seconds"],
-+                int(stats["segments"]),
-+            )
-         unsmoothed_speaker_turns = build_speaker_turns(
-             language_analysis.segments,
-             diar_segments,
+-from .exporter import build_export_zip_bytes, build_onenote_markdown
++from .exporter import _format_timestamp, build_export_zip_bytes, build_onenote_markdown
+ from .jobs import (
+     DuplicateRecordingJobError,
+     enqueue_recording_job,
+@@ -1231,9 +1231,10 @@ def _transcript_tab_context(recording_id: str, settings: AppSettings) -> dict[st
+             speaker_name_map=speaker_name_map,
+         )
+         try:
+-            start_value = float(row.get("start") or 0.0)
++            parsed_start: float | None = float(row.get("start"))
+         except (TypeError, ValueError):
+-            start_value = 0.0
++            parsed_start = None
++        start_value = parsed_start if parsed_start is not None else 0.0
+         try:
+             end_value = float(row.get("end") or start_value)
+         except (TypeError, ValueError):
+@@ -1242,10 +1243,12 @@ def _transcript_tab_context(recording_id: str, settings: AppSettings) -> dict[st
+             f"{_format_duration_seconds(start_value)} - "
+             f"{_format_duration_seconds(max(end_value, start_value))}"
+         )
++        timestamp = _format_timestamp(parsed_start) if parsed_start is not None else ""
+         language_label = _language_display_name(_normalise_language_code(row.get("language")))
+         turns.append(
+             {
+                 "speaker": speaker,
++                "timestamp": timestamp,
+                 "time_range": time_range,
+                 "text": text,
+                 "language_label": language_label if language_label != "—" else "",
 diff --git a/tasks/QUEUE.md b/tasks/QUEUE.md
-index 1e8ddaf..6c2526b 100644
+index 6c2526b..08fb1dc 100644
 --- a/tasks/QUEUE.md
 +++ b/tasks/QUEUE.md
-@@ -664,7 +664,7 @@ Queue (in order)
- - Depends on: PR-UI-POLISH-02
- 
- 133) PR-DIARIZATION-FLICKER-01: Filter out flickering diarization speakers that appear briefly surrounded by the same dominant speaker
--- Status: TODO
-+- Status: DONE
- - Tasks file: tasks/PR-DIARIZATION-FLICKER-01.md
+@@ -669,6 +669,6 @@ Queue (in order)
  - Depends on: PR-TRANSCRIPT-MERGE-01
  
-diff --git a/tests/test_cov_lan_transcriber_extra_pipeline.py b/tests/test_cov_lan_transcriber_extra_pipeline.py
-index c68d75d..1ea242f 100644
---- a/tests/test_cov_lan_transcriber_extra_pipeline.py
-+++ b/tests/test_cov_lan_transcriber_extra_pipeline.py
-@@ -3317,6 +3317,61 @@ def test_whisperx_asr_align_typeerror_and_exception_paths(
-     assert segments[0]["text"] == "a"
+ 134) PR-TRANSCRIPT-TIMESTAMPS-01: Add timestamps to transcript export and UI as default behavior
+-- Status: TODO
++- Status: DONE
+ - Tasks file: tasks/PR-TRANSCRIPT-TIMESTAMPS-01.md
+ - Depends on: PR-DIARIZATION-FLICKER-01
+diff --git a/tests/test_cov_lan_app_export_ops_jobs.py b/tests/test_cov_lan_app_export_ops_jobs.py
+index b1eab67..d0d0811 100644
+--- a/tests/test_cov_lan_app_export_ops_jobs.py
++++ b/tests/test_cov_lan_app_export_ops_jobs.py
+@@ -222,6 +222,33 @@ def test_build_onenote_markdown_language_detection_paths(tmp_path: Path):
+     assert "- Language: en" in markdown_auto
  
  
-+@pytest.mark.asyncio
-+async def test_run_pipeline_logs_flicker_speaker_reassignment(
-+    tmp_path: Path,
-+    monkeypatch: pytest.MonkeyPatch,
-+    caplog: pytest.LogCaptureFixture,
-+) -> None:
-+    monkeypatch.setattr(
-+        pipeline,
-+        "_whisperx_asr",
-+        lambda *_a, **_k: (
-+            [
-+                {"start": 0.0, "end": 1.0, "text": "alpha beta gamma delta epsilon"},
-+                {"start": 1.0, "end": 2.0, "text": "zeta eta theta iota kappa"},
-+                {"start": 2.0, "end": 3.0, "text": "lambda mu nu xi omicron"},
-+            ],
-+            {"language": "en", "language_probability": 0.95},
-+        ),
++def test_format_timestamp_helper_handles_ranges_and_negatives():
++    assert exporter._format_timestamp(0) == "00:00"
++    assert exporter._format_timestamp(65) == "01:05"
++    assert exporter._format_timestamp(3661) == "01:01:01"
++    assert exporter._format_timestamp(-5) == "00:00"
++
++
++def test_transcript_section_renders_timestamps_for_speaker_turns():
++    short_transcript = exporter._transcript_section(
++        {},
++        [{"speaker": "S1", "start": 65.0, "text": "first"}],
 +    )
-+    monkeypatch.setattr(pipeline, "_sentiment_score", lambda _text: 50)
-+    monkeypatch.setattr(pipeline, "export_speaker_snippets", lambda _req: [])
-+    monkeypatch.setattr(pipeline, "_save_aliases", lambda *_a, **_k: None)
-+    monkeypatch.setattr(pipeline, "_load_aliases", lambda *_a, **_k: {})
++    assert short_transcript == ["## Transcript", "- **01:05 S1:** first"]
 +
-+    class _FlickerDiariser:
-+        async def __call__(self, _audio_path: Path):
-+            return _annotation_from_segments(
-+                (0.0, 5.0, "S_MAIN"),
-+                (1.0, 1.2, "S_FLICKER"),
-+                (5.0, 12.0, "S_MAIN"),
-+            )
-+
-+    cfg = _settings(tmp_path)
-+    caplog.set_level("WARNING", logger="lan_transcriber.pipeline_steps.orchestrator")
-+    result = await pipeline.run_pipeline(
-+        audio_path=_audio_file(tmp_path, "flicker.mp3"),
-+        cfg=cfg,
-+        llm=_FakeLLM(),
-+        diariser=_FlickerDiariser(),
-+        recording_id="rec-flicker",
-+        precheck=pipeline.PrecheckResult(
-+            duration_sec=30.0, speech_ratio=0.8, quarantine_reason=None
-+        ),
++    long_transcript = exporter._transcript_section(
++        {},
++        [{"speaker": "S1", "start": 3661.0, "text": "later"}],
 +    )
-+    assert result.summary.strip() == "- ok"
-+    assert any(
-+        "Diarization flicker speaker reassigned" in record.getMessage()
-+        and "S_FLICKER" in record.getMessage()
-+        for record in caplog.records
++    assert long_transcript == ["## Transcript", "- **01:01:01 S1:** later"]
++
++    no_timestamp = exporter._transcript_section(
++        {},
++        [{"speaker": "S1", "text": "no start field"}],
 +    )
-+
-+    derived = cfg.recordings_root / "rec-flicker" / "derived"
-+    diar_data = json.loads((derived / "segments.json").read_text(encoding="utf-8"))
-+    assert all(row["speaker"] != "S_FLICKER" for row in diar_data)
++    assert no_timestamp == ["## Transcript", "- **S1:** no start field"]
 +
 +
- @pytest.mark.asyncio
- async def test_run_pipeline_backfills_detected_language_and_uses_fallback_diarization(
-     tmp_path: Path,
-diff --git a/tests/test_diarization_quality.py b/tests/test_diarization_quality.py
-index 4332396..9cc704e 100644
---- a/tests/test_diarization_quality.py
-+++ b/tests/test_diarization_quality.py
-@@ -16,6 +16,7 @@ from lan_transcriber.pipeline_steps.diarization_quality import (
-     choose_dialog_retry_winner,
-     classify_diarization_profile,
-     diarization_profile_metrics,
-+    filter_flickering_speakers,
-     profile_default_speaker_hints,
-     smooth_speaker_turns,
- )
-@@ -426,6 +427,76 @@ def test_smooth_speaker_turns_absorbs_micro_turns_but_preserves_real_changes():
-     assert [turn["speaker"] for turn in preserved.turns] == ["S1", "S2", "S1", "S1"]
- 
- 
-+def test_flicker_speaker_reassigned():
-+    diar_segments = [
-+        {"start": float(idx), "end": float(idx) + 1.0, "speaker": "SPEAKER_01"}
-+        for idx in range(5)
-+    ]
-+    diar_segments.append({"start": 5.0, "end": 5.5, "speaker": "SPEAKER_00"})
-+    diar_segments.extend(
-+        {"start": float(idx), "end": float(idx) + 1.0, "speaker": "SPEAKER_01"}
-+        for idx in range(6, 11)
-+    )
-+
-+    cleaned = filter_flickering_speakers(diar_segments)
-+
-+    assert len(cleaned) == len(diar_segments)
-+    speakers = {row["speaker"] for row in cleaned}
-+    assert speakers == {"SPEAKER_01"}
-+    flicker_row = next(row for row in cleaned if row["start"] == 5.0 and row["end"] == 5.5)
-+    assert flicker_row["speaker"] == "SPEAKER_01"
-+
-+
-+def test_legitimate_speaker_kept():
-+    diar_segments = [
-+        {"start": float(idx) * 2.0, "end": float(idx) * 2.0 + 1.5, "speaker": "SPEAKER_01"}
-+        for idx in range(10)
-+    ]
-+    diar_segments.extend(
-+        {
-+            "start": 100.0 + float(idx) * 2.0,
-+            "end": 100.0 + float(idx) * 2.0 + 1.6,
-+            "speaker": "SPEAKER_00",
-+        }
-+        for idx in range(5)
-+    )
-+
-+    cleaned = filter_flickering_speakers(diar_segments)
-+
-+    speakers = {row["speaker"] for row in cleaned}
-+    assert speakers == {"SPEAKER_00", "SPEAKER_01"}
-+    assert sum(1 for row in cleaned if row["speaker"] == "SPEAKER_00") == 5
-+
-+
-+def test_all_speakers_flicker_unchanged():
-+    diar_segments = [
-+        {"start": 0.0, "end": 1.0, "speaker": "SPEAKER_00"},
-+        {"start": 1.0, "end": 2.0, "speaker": "SPEAKER_01"},
-+    ]
-+
-+    cleaned = filter_flickering_speakers(diar_segments)
-+
-+    assert cleaned == diar_segments
-+
-+
-+def test_empty_segments():
-+    assert filter_flickering_speakers([]) == []
-+
-+
-+def test_flicker_reassigned_to_nearest():
-+    diar_segments = [
-+        {"start": 0.0, "end": 10.0, "speaker": "SPEAKER_01"},
-+        {"start": 12.0, "end": 12.5, "speaker": "SPEAKER_00"},
-+        {"start": 15.0, "end": 25.0, "speaker": "SPEAKER_02"},
-+    ]
-+
-+    cleaned = filter_flickering_speakers(diar_segments)
-+
-+    flicker_row = next(row for row in cleaned if row["start"] == 12.0)
-+    assert flicker_row["speaker"] == "SPEAKER_01"
-+    assert {row["speaker"] for row in cleaned} == {"SPEAKER_01", "SPEAKER_02"}
-+
-+
- def test_smooth_speaker_turns_handles_empty_input_and_private_guards():
-     result = smooth_speaker_turns([])
- 
-diff --git a/tests/test_pipeline_resume_coverage.py b/tests/test_pipeline_resume_coverage.py
-index 9b2d1ca..b9d06ba 100644
---- a/tests/test_pipeline_resume_coverage.py
-+++ b/tests/test_pipeline_resume_coverage.py
-@@ -750,6 +750,66 @@ def test_stage_speaker_turns_requires_language_artifact_and_supports_unsmoothed_
-     assert result.metadata == {"turn_count": 1, "speaker_count": 1}
- 
- 
-+def test_stage_speaker_turns_logs_flicker_speaker_reassignment(
-+    tmp_path: Path,
-+    monkeypatch: pytest.MonkeyPatch,
-+    caplog: pytest.LogCaptureFixture,
-+) -> None:
-+    _cfg_value, ctx = _new_ctx(tmp_path, "rec-flicker-stage")
-+    ctx.precheck_result = PrecheckResult(10.0, 0.5, None)
-+    ctx.artifacts.language_analysis_json_path.write_text(
-+        json.dumps(
-+            {
-+                "dominant_language": "en",
-+                "language": {"detected": "en", "confidence": 0.95},
-+                "segments": [
-+                    {"start": 0.0, "end": 1.0, "text": "hello", "language": "en"}
-+                ],
-+            }
-+        ),
-+        encoding="utf-8",
-+    )
-+    ctx.artifacts.diarization_segments_json_path.write_text(
-+        json.dumps(
-+            [
-+                {"speaker": "S_MAIN", "start": 0.0, "end": 5.0},
-+                {"speaker": "S_FLICKER", "start": 1.0, "end": 1.2},
-+                {"speaker": "S_MAIN", "start": 5.0, "end": 12.0},
-+            ]
-+        ),
-+        encoding="utf-8",
-+    )
-+    ctx.artifacts.diarization_runtime_json_path.write_text(
-+        json.dumps({"mode": "fallback", "used_dummy_fallback": False}),
-+        encoding="utf-8",
-+    )
-+    monkeypatch.setattr(
-+        worker_tasks,
-+        "build_speaker_turns",
-+        lambda *_a, **_k: [
-+            {"speaker": "S_MAIN", "start": 0.0, "end": 12.0, "text": "hello"}
-+        ],
-+    )
-+    monkeypatch.setattr(
-+        worker_tasks,
-+        "smooth_speaker_turns",
-+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("should not smooth")),
-+    )
-+
-+    caplog.set_level("WARNING", logger="lan_app.worker_tasks")
-+    result = worker_tasks._stage_speaker_turns(ctx)  # noqa: SLF001
-+
-+    assert result.status == "completed"
-+    assert any(
-+        "Diarization flicker speaker reassigned" in record.getMessage()
-+        and "S_FLICKER" in record.getMessage()
-+        for record in caplog.records
-+    )
-+    assert all(
-+        row["speaker"] != "S_FLICKER" for row in ctx.diarization_segments
-+    )
-+
-+
- def test_stage_snippet_export_writes_manifest_metadata_and_counts(
-     tmp_path: Path,
-     monkeypatch: pytest.MonkeyPatch,
+ def test_try_read_bytes_returns_none_on_oserror(tmp_path: Path, monkeypatch):
+     target = tmp_path / "payload.bin"
+     target.write_bytes(b"payload")
+diff --git a/tests/test_cov_lan_app_ui_routes.py b/tests/test_cov_lan_app_ui_routes.py
+index 5f62cea..d5383b7 100644
+--- a/tests/test_cov_lan_app_ui_routes.py
++++ b/tests/test_cov_lan_app_ui_routes.py
+@@ -3365,11 +3365,13 @@ def test_transcript_tab_context_covers_fallback_turns_and_copy_paths(
+     assert transcript["turn_count"] == 2
+     assert transcript["turns"][0] == {
+         "speaker": "S1",
++        "timestamp": "",
+         "time_range": "— - —",
+         "text": "Hola",
+         "language_label": "",
+     }
+     assert transcript["turns"][1]["time_range"] == "00:00:01 - 00:00:01"
++    assert transcript["turns"][1]["timestamp"] == "00:01"
+     assert transcript["turns"][1]["language_label"] == "English (en)"
+     assert "[— - —] S1: Hola" in transcript["copy_text"]
+     assert "[00:00:01 - 00:00:01] S2: Hello" in transcript["copy_text"]
