@@ -85,7 +85,6 @@ from .db import (
     get_glossary_entry,
     delete_project,
     delete_voice_profile,
-    find_active_job_for_recording,
     finish_job_if_queued,
     get_calendar_match,
     get_meeting_metrics,
@@ -7089,32 +7088,26 @@ async def ui_action_force_reprocess(
 ) -> Any:
     if get_recording(recording_id, settings=_settings) is None:
         return HTMLResponse("Not found", status_code=404)
-    existing = find_active_job_for_recording(
-        recording_id,
-        job_type=DEFAULT_REQUEUE_JOB_TYPE,
-        settings=_settings,
-    )
-    if existing is not None:
-        existing_job_id = str(existing.get("id") or "").strip()
-        return HTMLResponse(
-            f"Force reprocess skipped: precheck job already active ({existing_job_id}).",
-            status_code=409,
-        )
-    try:
+
+    def _clear_before_push() -> None:
         clear_derived_artifacts(recording_id, settings=_settings)
-    except ClearDerivedArtifactsError as exc:
-        return HTMLResponse(f"Force reprocess failed: {exc}", status_code=500)
+
     try:
         enqueue_recording_job(
             recording_id,
             reset_pipeline_state=True,
+            before_queue_push=_clear_before_push,
             settings=_settings,
         )
     except DuplicateRecordingJobError as exc:
+        # enqueue_recording_job detects duplicates before the callback runs,
+        # so derived/ is left untouched when another job is already active.
         return HTMLResponse(
             f"Force reprocess skipped: precheck job already active ({exc.job_id}).",
             status_code=409,
         )
+    except ClearDerivedArtifactsError as exc:
+        return HTMLResponse(f"Force reprocess failed: {exc}", status_code=500)
     except Exception as exc:
         return HTMLResponse(f"Force reprocess failed: {exc}", status_code=503)
     return _ui_recording_action_response(

@@ -1,896 +1,465 @@
 diff --git a/lan_app/api.py b/lan_app/api.py
-index 1a0dcad..4519ec7 100644
+index 4519ec7..b5f1d75 100644
 --- a/lan_app/api.py
 +++ b/lan_app/api.py
-@@ -37,6 +37,7 @@ from .db import (
+@@ -37,7 +37,6 @@ from .db import (
      create_calendar_source,
      create_recording,
      delete_recording,
-+    find_active_job_for_recording,
+-    find_active_job_for_recording,
      get_recording,
      init_db,
      list_calendar_events,
-@@ -59,7 +60,12 @@ from .healthchecks import (
-     collect_health_checks,
- )
- from .ops import run_retention_cleanup
--from .ops import RecordingDeleteError, delete_recording_with_artifacts
-+from .ops import (
-+    ClearDerivedArtifactsError,
-+    RecordingDeleteError,
-+    clear_derived_artifacts,
-+    delete_recording_with_artifacts,
-+)
- from .reaper import run_stuck_job_reaper_once
- from .uploads import (
-     ALLOWED_UPLOAD_EXTENSIONS,
-@@ -348,6 +354,62 @@ async def api_requeue_recording(
+@@ -359,34 +358,22 @@ async def api_force_reprocess_recording(recording_id: str) -> dict[str, object]:
+     if get_recording(recording_id, settings=_settings) is None:
+         raise HTTPException(status_code=404, detail="Recording not found")
+ 
+-    existing = find_active_job_for_recording(
+-        recording_id,
+-        job_type=DEFAULT_REQUEUE_JOB_TYPE,
+-        settings=_settings,
+-    )
+-    if existing is not None:
+-        existing_job_id = str(existing.get("id") or "").strip()
+-        raise HTTPException(
+-            status_code=409,
+-            detail={
+-                "message": "A precheck job is already queued or started for this recording.",
+-                "existing_job_id": existing_job_id,
+-            },
+-        )
++    cleared: list[str] = []
+ 
+-    try:
+-        deleted = clear_derived_artifacts(recording_id, settings=_settings)
+-    except ClearDerivedArtifactsError as exc:
+-        raise HTTPException(status_code=500, detail=str(exc)) from exc
++    def _clear_before_push() -> None:
++        cleared.extend(clear_derived_artifacts(recording_id, settings=_settings))
+ 
+     try:
+         job = enqueue_recording_job(
+             recording_id,
+             job_type=DEFAULT_REQUEUE_JOB_TYPE,
+             reset_pipeline_state=True,
++            before_queue_push=_clear_before_push,
+             settings=_settings,
+         )
+     except DuplicateRecordingJobError as exc:
++        # Duplicate is detected by enqueue_recording_job before the callback
++        # runs, so derived/ is untouched when another job is already active.
+         raise HTTPException(
+             status_code=409,
+             detail={
+@@ -394,6 +381,8 @@ async def api_force_reprocess_recording(recording_id: str) -> dict[str, object]:
+                 "existing_job_id": exc.job_id,
+             },
+         )
++    except ClearDerivedArtifactsError as exc:
++        raise HTTPException(status_code=500, detail=str(exc)) from exc
+     except RecordingNotFoundError:
+         raise HTTPException(status_code=404, detail="Recording not found")
+     except ValueError as exc:
+@@ -406,7 +395,7 @@ async def api_force_reprocess_recording(recording_id: str) -> dict[str, object]:
+         "job_id": job.job_id,
+         "job_type": job.job_type,
+         "reprocessed": True,
+-        "cleared_artifacts": deleted,
++        "cleared_artifacts": cleared,
      }
  
  
-+@app.post("/api/recordings/{recording_id}/actions/force-reprocess")
-+async def api_force_reprocess_recording(recording_id: str) -> dict[str, object]:
-+    if get_recording(recording_id, settings=_settings) is None:
-+        raise HTTPException(status_code=404, detail="Recording not found")
-+
-+    existing = find_active_job_for_recording(
-+        recording_id,
-+        job_type=DEFAULT_REQUEUE_JOB_TYPE,
-+        settings=_settings,
-+    )
-+    if existing is not None:
-+        existing_job_id = str(existing.get("id") or "").strip()
-+        raise HTTPException(
-+            status_code=409,
-+            detail={
-+                "message": "A precheck job is already queued or started for this recording.",
-+                "existing_job_id": existing_job_id,
-+            },
-+        )
-+
-+    try:
-+        deleted = clear_derived_artifacts(recording_id, settings=_settings)
-+    except ClearDerivedArtifactsError as exc:
-+        raise HTTPException(status_code=500, detail=str(exc)) from exc
-+
-+    try:
-+        job = enqueue_recording_job(
-+            recording_id,
-+            job_type=DEFAULT_REQUEUE_JOB_TYPE,
-+            reset_pipeline_state=True,
-+            settings=_settings,
-+        )
-+    except DuplicateRecordingJobError as exc:
-+        raise HTTPException(
-+            status_code=409,
-+            detail={
-+                "message": "A precheck job is already queued or started for this recording.",
-+                "existing_job_id": exc.job_id,
-+            },
-+        )
-+    except RecordingNotFoundError:
-+        raise HTTPException(status_code=404, detail="Recording not found")
-+    except ValueError as exc:
-+        raise HTTPException(status_code=422, detail=str(exc))
-+    except Exception as exc:
-+        raise HTTPException(status_code=503, detail=f"Queue unavailable: {exc}")
-+
-+    return {
-+        "recording_id": recording_id,
-+        "job_id": job.job_id,
-+        "job_type": job.job_type,
-+        "reprocessed": True,
-+        "cleared_artifacts": deleted,
-+    }
-+
-+
- @app.post("/api/recordings/{recording_id}/actions/quarantine")
- async def api_quarantine_recording(
-     recording_id: str,
-diff --git a/lan_app/ops.py b/lan_app/ops.py
-index a73932e..6efbab2 100644
---- a/lan_app/ops.py
-+++ b/lan_app/ops.py
-@@ -11,10 +11,20 @@ from .constants import RECORDING_STATUS_QUARANTINE
- from .db import delete_recording, list_recordings
+diff --git a/lan_app/jobs.py b/lan_app/jobs.py
+index 05e0454..c2fda53 100644
+--- a/lan_app/jobs.py
++++ b/lan_app/jobs.py
+@@ -2,6 +2,7 @@ from __future__ import annotations
  
+ from dataclasses import dataclass
+ from pathlib import Path
++from typing import Callable
+ from uuid import uuid4
  
-+DEFAULT_FORCE_REPROCESS_KEEP: tuple[str, ...] = (
-+    "audio_sanitized.wav",
-+    "audio_sanitize.json",
-+)
-+
-+
- class RecordingDeleteError(RuntimeError):
-     """Raised when recording deletion cannot safely remove disk artifacts."""
- 
- 
-+class ClearDerivedArtifactsError(RuntimeError):
-+    """Raised when derived artifact cleanup cannot safely operate on disk."""
-+
-+
- def _parse_utc(value: object) -> datetime | None:
-     if not isinstance(value, str):
-         return None
-@@ -128,6 +138,64 @@ def delete_recording_with_artifacts(
-     return True
- 
- 
-+def clear_derived_artifacts(
-+    recording_id: str,
-+    *,
-+    settings: AppSettings | None = None,
-+    keep: tuple[str, ...] = DEFAULT_FORCE_REPROCESS_KEEP,
-+) -> list[str]:
-+    """Delete all files/directories inside a recording's ``derived/`` directory.
-+
-+    Entries whose immediate name matches ``keep`` are preserved. This is the
-+    foundation for the "Force Full Reprocess" action: callers use it to strip
-+    derived artifacts before re-enqueuing a recording so that the pipeline
-+    cannot short-circuit on stale files that still pass existence checks.
-+
-+    Returns the sorted list of deleted entry names (files and directories).
-+    """
-+
-+    cfg = settings or AppSettings()
-+    try:
-+        recording_root = _recording_root_path(recording_id, cfg)
-+    except RecordingDeleteError as exc:
-+        raise ClearDerivedArtifactsError(str(exc)) from exc
-+    derived = recording_root / "derived"
-+    if derived.is_symlink():
-+        raise ClearDerivedArtifactsError(
-+            "Force reprocess failed: derived path is a symlink."
-+        )
-+    if not derived.exists():
-+        return []
-+    if not derived.is_dir():
-+        raise ClearDerivedArtifactsError(
-+            "Force reprocess failed: derived path is not a directory."
-+        )
-+
-+    keep_set = frozenset(keep)
-+    deleted: list[str] = []
-+    try:
-+        entries = sorted(derived.iterdir(), key=lambda entry: entry.name)
-+    except OSError as exc:
-+        raise ClearDerivedArtifactsError(
-+            f"Force reprocess failed to list derived directory: {exc}"
-+        ) from exc
-+
-+    for entry in entries:
-+        if entry.name in keep_set:
-+            continue
-+        try:
-+            if entry.is_symlink() or entry.is_file():
-+                entry.unlink()
-+            else:
-+                shutil.rmtree(entry)
-+        except OSError as exc:
-+            raise ClearDerivedArtifactsError(
-+                f"Force reprocess failed to delete {entry.name}: {exc}"
-+            ) from exc
-+        deleted.append(entry.name)
-+    return deleted
-+
-+
- def run_retention_cleanup(
+ from redis import Redis
+@@ -143,6 +144,7 @@ def enqueue_recording_job(
      *,
+     job_type: str = DEFAULT_REQUEUE_JOB_TYPE,
+     reset_pipeline_state: bool = False,
++    before_queue_push: Callable[[], None] | None = None,
      settings: AppSettings | None = None,
-@@ -176,7 +244,10 @@ def run_retention_cleanup(
+ ) -> RecordingJob:
+     cfg = settings or AppSettings()
+@@ -181,6 +183,26 @@ def enqueue_recording_job(
+         clear_recording_pipeline_stages(recording_id, settings=cfg)
+         clear_recording_progress(recording_id, settings=cfg)
  
- 
- __all__ = [
-+    "ClearDerivedArtifactsError",
-+    "DEFAULT_FORCE_REPROCESS_KEEP",
-     "RecordingDeleteError",
-+    "clear_derived_artifacts",
-     "delete_recording_with_artifacts",
-     "run_retention_cleanup",
- ]
-diff --git a/lan_app/templates/partials/control_center/inspector_action_bar.html b/lan_app/templates/partials/control_center/inspector_action_bar.html
-index 73e3b38..ba4a212 100644
---- a/lan_app/templates/partials/control_center/inspector_action_bar.html
-+++ b/lan_app/templates/partials/control_center/inspector_action_bar.html
-@@ -34,6 +34,16 @@
-     data-pending-label="Requeueing..."
-     onclick="triggerRecordingAction(this)"
-   >Requeue</button>
-+  <button
-+    type="button"
-+    class="px-3 py-1.5 border border-red-200 text-red-700 text-xs font-bold rounded hover:bg-red-50"
-+    data-action-url="{{ inspector_action_bar.force_reprocess_url }}"
-+    data-return-to="{{ inspector_action_bar.return_to }}"
-+    data-confirm-message="This will delete all processed results and re-run the full pipeline. Continue?"
-+    data-pending-label="Reprocessing..."
-+    data-testid="recording-inspector-force-reprocess-embedded"
-+    onclick="triggerRecordingAction(this)"
-+  >Force Reprocess</button>
-   <button
-     type="button"
-     class="px-3 py-1.5 border border-slate-200 text-xs font-bold rounded hover:bg-slate-50"
-diff --git a/lan_app/templates/partials/recording_inspector_header.html b/lan_app/templates/partials/recording_inspector_header.html
-index f0153bd..a612400 100644
---- a/lan_app/templates/partials/recording_inspector_header.html
-+++ b/lan_app/templates/partials/recording_inspector_header.html
-@@ -57,6 +57,19 @@
-       <span class="material-symbols-outlined text-lg">replay</span>
-       Requeue
-     </button>
-+    <button
-+      type="button"
-+      class="flex items-center justify-center gap-2 rounded-lg h-10 px-4 bg-white border border-red-200 text-red-700 text-sm font-semibold hover:bg-red-50 transition-colors"
-+      data-action-url="{{ _ab.force_reprocess_url }}"
-+      data-return-to="{{ _ab.return_to }}"
-+      data-confirm-message="This will delete all processed results and re-run the full pipeline. Continue?"
-+      data-pending-label="Reprocessing..."
-+      data-testid="recording-inspector-force-reprocess"
-+      onclick="triggerRecordingAction(this)"
-+    >
-+      <span class="material-symbols-outlined text-lg">restart_alt</span>
-+      Force Reprocess
-+    </button>
-     <button
-       type="button"
-       class="flex items-center justify-center gap-2 rounded-lg h-10 px-4 bg-white border border-slate-200 text-slate-700 text-sm font-semibold hover:bg-slate-50 transition-colors"
++    if before_queue_push is not None:
++        # Run caller-supplied cleanup (e.g. Force Reprocess deleting derived
++        # artifacts) AFTER the atomic DB reservation that rejects duplicates,
++        # but BEFORE the Redis push so the worker never observes a job whose
++        # cleanup is still in flight. Any failure marks the DB row FAILED and
++        # propagates so the caller can surface the error; no Redis job is
++        # pushed, so no worker ever picks this reservation up.
++        try:
++            before_queue_push()
++        except Exception as exc:
++            try:
++                fail_job(
++                    job_id,
++                    error=f"pre-enqueue callback failed: {exc}",
++                    settings=cfg,
++                )
++            except Exception:
++                pass
++            raise
++
+     queue = get_queue(cfg)
+     try:
+         queue.enqueue(
 diff --git a/lan_app/ui_routes.py b/lan_app/ui_routes.py
-index 55a447c..a07bd3d 100644
+index a07bd3d..55a1c5b 100644
 --- a/lan_app/ui_routes.py
 +++ b/lan_app/ui_routes.py
-@@ -85,6 +85,7 @@ from .db import (
+@@ -85,7 +85,6 @@ from .db import (
      get_glossary_entry,
      delete_project,
      delete_voice_profile,
-+    find_active_job_for_recording,
+-    find_active_job_for_recording,
      finish_job_if_queued,
      get_calendar_match,
      get_meeting_metrics,
-@@ -121,7 +122,12 @@ from .jobs import (
-     enqueue_recording_job,
-     purge_pending_recording_jobs,
- )
--from .ops import RecordingDeleteError, delete_recording_with_artifacts
-+from .ops import (
-+    ClearDerivedArtifactsError,
-+    RecordingDeleteError,
-+    clear_derived_artifacts,
-+    delete_recording_with_artifacts,
-+)
- from .pipeline_stages import PIPELINE_STAGE_DONE_STATUSES, stage_order
- from .routing import refresh_recording_routing, train_routing_from_manual_selection
- from .speaker_bank import DEFAULT_ASSIGNMENT_THRESHOLD, merge_canonical_speakers
-@@ -4441,6 +4447,9 @@ def _inspector_action_bar_context(
-         "open_full_page_href": _recording_detail_path(recording_id, tab=current_tab),
-         "download_zip_href": f"/ui/recordings/{quote(recording_id, safe='')}/export.zip",
-         "requeue_url": f"/ui/recordings/{quote(recording_id, safe='')}/requeue{return_query}",
-+        "force_reprocess_url": (
-+            f"/ui/recordings/{quote(recording_id, safe='')}/force-reprocess{return_query}"
-+        ),
-         "quarantine_url": (
-             f"/ui/recordings/{quote(recording_id, safe='')}/quarantine{return_query}"
-         ),
-@@ -7073,6 +7082,47 @@ async def ui_action_requeue(
-     )
- 
- 
-+@ui_router.post("/ui/recordings/{recording_id}/force-reprocess")
-+async def ui_action_force_reprocess(
-+    recording_id: str,
-+    return_to: str = Query(default=""),
-+) -> Any:
-+    if get_recording(recording_id, settings=_settings) is None:
-+        return HTMLResponse("Not found", status_code=404)
-+    existing = find_active_job_for_recording(
-+        recording_id,
-+        job_type=DEFAULT_REQUEUE_JOB_TYPE,
-+        settings=_settings,
-+    )
-+    if existing is not None:
-+        existing_job_id = str(existing.get("id") or "").strip()
-+        return HTMLResponse(
-+            f"Force reprocess skipped: precheck job already active ({existing_job_id}).",
-+            status_code=409,
-+        )
-+    try:
-+        clear_derived_artifacts(recording_id, settings=_settings)
+@@ -7089,32 +7088,26 @@ async def ui_action_force_reprocess(
+ ) -> Any:
+     if get_recording(recording_id, settings=_settings) is None:
+         return HTMLResponse("Not found", status_code=404)
+-    existing = find_active_job_for_recording(
+-        recording_id,
+-        job_type=DEFAULT_REQUEUE_JOB_TYPE,
+-        settings=_settings,
+-    )
+-    if existing is not None:
+-        existing_job_id = str(existing.get("id") or "").strip()
+-        return HTMLResponse(
+-            f"Force reprocess skipped: precheck job already active ({existing_job_id}).",
+-            status_code=409,
+-        )
+-    try:
++
++    def _clear_before_push() -> None:
+         clear_derived_artifacts(recording_id, settings=_settings)
+-    except ClearDerivedArtifactsError as exc:
+-        return HTMLResponse(f"Force reprocess failed: {exc}", status_code=500)
++
+     try:
+         enqueue_recording_job(
+             recording_id,
+             reset_pipeline_state=True,
++            before_queue_push=_clear_before_push,
+             settings=_settings,
+         )
+     except DuplicateRecordingJobError as exc:
++        # enqueue_recording_job detects duplicates before the callback runs,
++        # so derived/ is left untouched when another job is already active.
+         return HTMLResponse(
+             f"Force reprocess skipped: precheck job already active ({exc.job_id}).",
+             status_code=409,
+         )
 +    except ClearDerivedArtifactsError as exc:
 +        return HTMLResponse(f"Force reprocess failed: {exc}", status_code=500)
-+    try:
-+        enqueue_recording_job(
-+            recording_id,
-+            reset_pipeline_state=True,
-+            settings=_settings,
-+        )
-+    except DuplicateRecordingJobError as exc:
-+        return HTMLResponse(
-+            f"Force reprocess skipped: precheck job already active ({exc.job_id}).",
-+            status_code=409,
-+        )
-+    except Exception as exc:
-+        return HTMLResponse(f"Force reprocess failed: {exc}", status_code=503)
-+    return _ui_recording_action_response(
-+        return_to=return_to,
-+        redirect_to=f"/recordings/{recording_id}",
-+    )
-+
-+
- @ui_router.post("/ui/recordings/{recording_id}/jobs/{job_id}/retry")
- async def ui_action_retry_failed_step(
-     recording_id: str,
-diff --git a/tasks/QUEUE.md b/tasks/QUEUE.md
-index a32c5ce..a61594b 100644
---- a/tasks/QUEUE.md
-+++ b/tasks/QUEUE.md
-@@ -721,6 +721,6 @@ Queue (in order)
- - Depends on: PR-SPEAKER-MERGE-TORCH-LOAD-FIX-01
- 
- 144) PR-FORCE-REPROCESS-01: Add Force Full Reprocess button that clears derived artifacts and re-runs pipeline from scratch
--- Status: TODO
-+- Status: DONE
- - Tasks file: tasks/PR-FORCE-REPROCESS-01.md
- - Depends on: PR-ARTIFACT-SINGLE-WRITER-01
+     except Exception as exc:
+         return HTMLResponse(f"Force reprocess failed: {exc}", status_code=503)
+     return _ui_recording_action_response(
 diff --git a/tests/test_cov_lan_app_api.py b/tests/test_cov_lan_app_api.py
-index a54d2bc..94e901b 100644
+index 94e901b..7ee8566 100644
 --- a/tests/test_cov_lan_app_api.py
 +++ b/tests/test_cov_lan_app_api.py
-@@ -346,6 +346,125 @@ def test_api_requeue_maps_enqueue_errors(
-     assert response.json()["detail"] == detail_text
- 
- 
-+def test_api_force_reprocess_missing_recording_returns_404(
-+    monkeypatch: pytest.MonkeyPatch,
-+) -> None:
-+    monkeypatch.setattr(api, "get_recording", lambda *_args, **_kwargs: None)
-+    client = TestClient(api.app)
-+
-+    response = client.post("/api/recordings/missing/actions/force-reprocess")
-+    assert response.status_code == 404
-+    assert response.json()["detail"] == "Recording not found"
-+
-+
-+def test_api_force_reprocess_returns_409_when_job_active(
-+    monkeypatch: pytest.MonkeyPatch,
-+) -> None:
-+    monkeypatch.setattr(api, "get_recording", lambda *_args, **_kwargs: {"id": "rec-1"})
-+    monkeypatch.setattr(
-+        api,
-+        "find_active_job_for_recording",
-+        lambda *_args, **_kwargs: {"id": "existing-job-xyz"},
-+    )
-+
-+    def _unexpected_clear(*_args: Any, **_kwargs: Any) -> list[str]:
-+        raise AssertionError("clear_derived_artifacts must not run when job is active")
-+
-+    monkeypatch.setattr(api, "clear_derived_artifacts", _unexpected_clear)
-+    client = TestClient(api.app)
-+
-+    response = client.post("/api/recordings/rec-1/actions/force-reprocess")
-+    assert response.status_code == 409
-+    detail = response.json()["detail"]
-+    assert detail["existing_job_id"] == "existing-job-xyz"
-+    assert "already queued or started" in detail["message"].lower()
-+
-+
-+def test_api_force_reprocess_maps_clear_errors_to_500(
-+    monkeypatch: pytest.MonkeyPatch,
-+) -> None:
-+    from lan_app.ops import ClearDerivedArtifactsError
-+
-+    monkeypatch.setattr(api, "get_recording", lambda *_args, **_kwargs: {"id": "rec-1"})
-+    monkeypatch.setattr(
-+        api,
-+        "find_active_job_for_recording",
-+        lambda *_args, **_kwargs: None,
-+    )
-+
-+    def _raise_clear(*_args: Any, **_kwargs: Any) -> list[str]:
-+        raise ClearDerivedArtifactsError("permission denied")
-+
-+    monkeypatch.setattr(api, "clear_derived_artifacts", _raise_clear)
-+    client = TestClient(api.app)
-+
-+    response = client.post("/api/recordings/rec-1/actions/force-reprocess")
-+    assert response.status_code == 500
-+    assert response.json()["detail"] == "permission denied"
-+
-+
-+def test_api_force_reprocess_duplicate_job_race_returns_409(
-+    monkeypatch: pytest.MonkeyPatch,
-+) -> None:
+@@ -360,17 +360,25 @@ def test_api_force_reprocess_missing_recording_returns_404(
+ def test_api_force_reprocess_returns_409_when_job_active(
+     monkeypatch: pytest.MonkeyPatch,
+ ) -> None:
 +    from lan_app.jobs import DuplicateRecordingJobError
 +
-+    monkeypatch.setattr(api, "get_recording", lambda *_args, **_kwargs: {"id": "rec-1"})
-+    monkeypatch.setattr(
-+        api,
-+        "find_active_job_for_recording",
-+        lambda *_args, **_kwargs: None,
-+    )
-+    monkeypatch.setattr(api, "clear_derived_artifacts", lambda *_a, **_kw: [])
+     monkeypatch.setattr(api, "get_recording", lambda *_args, **_kwargs: {"id": "rec-1"})
+-    monkeypatch.setattr(
+-        api,
+-        "find_active_job_for_recording",
+-        lambda *_args, **_kwargs: {"id": "existing-job-xyz"},
+-    )
+ 
+     def _unexpected_clear(*_args: Any, **_kwargs: Any) -> list[str]:
+         raise AssertionError("clear_derived_artifacts must not run when job is active")
+ 
+     monkeypatch.setattr(api, "clear_derived_artifacts", _unexpected_clear)
 +
-+    def _raise_dupe(*_args: Any, **_kwargs: Any) -> Any:
++    def _raise_dupe(*_args: Any, **kwargs: Any) -> Any:
++        # enqueue_recording_job detects the existing job atomically and raises
++        # before ever invoking the before_queue_push callback.
++        assert "before_queue_push" in kwargs
 +        raise DuplicateRecordingJobError(
 +            recording_id="rec-1",
-+            job_id="race-job-xyz",
++            job_id="existing-job-xyz",
 +        )
 +
 +    monkeypatch.setattr(api, "enqueue_recording_job", _raise_dupe)
-+    client = TestClient(api.app)
-+
-+    response = client.post("/api/recordings/rec-1/actions/force-reprocess")
-+    assert response.status_code == 409
-+    detail = response.json()["detail"]
-+    assert detail["existing_job_id"] == "race-job-xyz"
-+    assert "already queued or started" in detail["message"].lower()
-+
-+
-+@pytest.mark.parametrize(
-+    ("raised", "status_code", "detail_text"),
-+    [
-+        (RecordingNotFoundError("not found"), 404, "Recording not found"),
-+        (ValueError("bad requeue"), 422, "bad requeue"),
-+        (RuntimeError("rq down"), 503, "Queue unavailable: rq down"),
-+    ],
-+)
-+def test_api_force_reprocess_maps_enqueue_errors(
-+    raised: Exception,
-+    status_code: int,
-+    detail_text: str,
-+    monkeypatch: pytest.MonkeyPatch,
-+) -> None:
-+    monkeypatch.setattr(api, "get_recording", lambda *_args, **_kwargs: {"id": "rec-1"})
-+    monkeypatch.setattr(
-+        api,
-+        "find_active_job_for_recording",
-+        lambda *_args, **_kwargs: None,
-+    )
-+    monkeypatch.setattr(api, "clear_derived_artifacts", lambda *_a, **_kw: [])
-+
-+    def _raise(*_args: Any, **_kwargs: Any) -> Any:
-+        raise raised
-+
-+    monkeypatch.setattr(api, "enqueue_recording_job", _raise)
-+    client = TestClient(api.app)
-+
-+    response = client.post("/api/recordings/rec-1/actions/force-reprocess")
-+    assert response.status_code == status_code
-+    assert response.json()["detail"] == detail_text
-+
-+
- def test_api_quarantine_missing_recording_returns_404(monkeypatch: pytest.MonkeyPatch) -> None:
-     monkeypatch.setattr(api, "get_recording", lambda *_args, **_kwargs: None)
      client = TestClient(api.app)
-diff --git a/tests/test_db_queue.py b/tests/test_db_queue.py
-index 4c2f9b0..2b38b13 100644
---- a/tests/test_db_queue.py
-+++ b/tests/test_db_queue.py
-@@ -1178,6 +1178,109 @@ def test_api_requeue_dedupes_active_precheck_job(tmp_path: Path, monkeypatch):
-     assert "already queued or started" in detail["message"].lower()
  
+     response = client.post("/api/recordings/rec-1/actions/force-reprocess")
+@@ -383,19 +391,29 @@ def test_api_force_reprocess_returns_409_when_job_active(
+ def test_api_force_reprocess_maps_clear_errors_to_500(
+     monkeypatch: pytest.MonkeyPatch,
+ ) -> None:
++    from lan_app.jobs import RecordingJob
+     from lan_app.ops import ClearDerivedArtifactsError
  
-+def test_api_force_reprocess_clears_derived_and_enqueues(tmp_path: Path, monkeypatch):
-+    cfg = _test_settings(tmp_path)
-+    monkeypatch.setattr(api, "_settings", cfg)
-+    init_db(cfg)
-+    create_recording(
-+        "rec-force-api-1",
-+        source="test",
-+        source_filename="force.mp3",
-+        status=RECORDING_STATUS_READY,
-+        settings=cfg,
-+    )
-+    derived = cfg.recordings_root / "rec-force-api-1" / "derived"
-+    derived.mkdir(parents=True, exist_ok=True)
-+    (derived / "audio_sanitized.wav").write_bytes(b"\x00")
-+    (derived / "audio_sanitize.json").write_text("{}", encoding="utf-8")
-+    (derived / "summary.json").write_text("{}", encoding="utf-8")
-+    (derived / "transcript.txt").write_text("old", encoding="utf-8")
-+    snippets = derived / "snippets"
-+    snippets.mkdir(parents=True, exist_ok=True)
-+    (snippets / "snippet.wav").write_bytes(b"\x00")
-+
-+    class _FakeQueue:
-+        def enqueue(self, *_args, **_kwargs):
-+            return None
-+
-+    monkeypatch.setattr("lan_app.jobs.get_queue", lambda _cfg: _FakeQueue())
-+
-+    client = TestClient(api.app)
-+    response = client.post("/api/recordings/rec-force-api-1/actions/force-reprocess")
-+    assert response.status_code == 200
-+    payload = response.json()
-+    assert payload["recording_id"] == "rec-force-api-1"
-+    assert payload["reprocessed"] is True
-+    assert payload["job_type"] == JOB_TYPE_PRECHECK
-+    assert payload["job_id"]
-+    cleared = payload["cleared_artifacts"]
-+    assert "summary.json" in cleared
-+    assert "transcript.txt" in cleared
-+    assert "snippets" in cleared
-+    assert "audio_sanitized.wav" not in cleared
-+    assert "audio_sanitize.json" not in cleared
-+
-+    assert (derived / "audio_sanitized.wav").exists()
-+    assert (derived / "audio_sanitize.json").exists()
-+    assert not (derived / "summary.json").exists()
-+    assert not (derived / "transcript.txt").exists()
-+    assert not (derived / "snippets").exists()
-+
-+    rec_after = get_recording("rec-force-api-1", settings=cfg)
-+    assert rec_after is not None
-+    assert rec_after["status"] == RECORDING_STATUS_QUEUED
-+
-+    jobs_after, _total = list_jobs(
-+        settings=cfg,
-+        recording_id="rec-force-api-1",
-+    )
-+    assert any(row["id"] == payload["job_id"] for row in jobs_after)
-+
-+
-+def test_api_force_reprocess_returns_404_for_unknown_recording(tmp_path: Path, monkeypatch):
-+    cfg = _test_settings(tmp_path)
-+    monkeypatch.setattr(api, "_settings", cfg)
-+    init_db(cfg)
-+
-+    client = TestClient(api.app)
-+    response = client.post("/api/recordings/unknown/actions/force-reprocess")
-+    assert response.status_code == 404
-+    assert response.json()["detail"] == "Recording not found"
-+
-+
-+def test_api_force_reprocess_returns_409_when_job_active(tmp_path: Path, monkeypatch):
-+    cfg = _test_settings(tmp_path)
-+    monkeypatch.setattr(api, "_settings", cfg)
-+    init_db(cfg)
-+    create_recording(
-+        "rec-force-api-2",
-+        source="test",
-+        source_filename="force-active.mp3",
-+        status=RECORDING_STATUS_QUEUED,
-+        settings=cfg,
-+    )
-+    create_job(
-+        "existing-force-job",
-+        recording_id="rec-force-api-2",
-+        job_type=JOB_TYPE_PRECHECK,
-+        status=JOB_STATUS_QUEUED,
-+        settings=cfg,
-+    )
-+    derived = cfg.recordings_root / "rec-force-api-2" / "derived"
-+    derived.mkdir(parents=True, exist_ok=True)
-+    guarded_summary = derived / "summary.json"
-+    guarded_summary.write_text("{}", encoding="utf-8")
-+
-+    client = TestClient(api.app)
-+    response = client.post("/api/recordings/rec-force-api-2/actions/force-reprocess")
-+    assert response.status_code == 409
-+    detail = response.json()["detail"]
-+    assert detail["existing_job_id"] == "existing-force-job"
-+    assert "already queued or started" in detail["message"].lower()
-+    # Derived artifacts must not be touched when a job is already active.
-+    assert guarded_summary.exists()
-+
-+
- def test_api_alias_requires_auth_when_token_enabled(tmp_path: Path, monkeypatch):
-     cfg = _test_settings(tmp_path)
-     cfg.api_bearer_token = "alias-secret"
-diff --git a/tests/test_ops.py b/tests/test_ops.py
-index 11e7eda..a1299c8 100644
---- a/tests/test_ops.py
-+++ b/tests/test_ops.py
-@@ -15,7 +15,9 @@ from lan_app.constants import RECORDING_STATUS_QUARANTINE
- from lan_app.db import connect, create_recording, get_recording, init_db
- from lan_app import healthchecks
- from lan_app.ops import (
-+    ClearDerivedArtifactsError,
-     RecordingDeleteError,
-+    clear_derived_artifacts,
-     delete_recording_with_artifacts,
-     run_retention_cleanup,
- )
-@@ -264,6 +266,148 @@ def test_delete_recording_with_artifacts_raises_on_disk_cleanup_failure(
-     assert raw_dir.exists()
+     monkeypatch.setattr(api, "get_recording", lambda *_args, **_kwargs: {"id": "rec-1"})
+-    monkeypatch.setattr(
+-        api,
+-        "find_active_job_for_recording",
+-        lambda *_args, **_kwargs: None,
+-    )
  
+     def _raise_clear(*_args: Any, **_kwargs: Any) -> list[str]:
+         raise ClearDerivedArtifactsError("permission denied")
  
-+def _populate_derived_artifacts(derived: Path) -> None:
-+    derived.mkdir(parents=True, exist_ok=True)
-+    (derived / "audio_sanitized.wav").write_bytes(b"\x00\x01")
-+    (derived / "audio_sanitize.json").write_text("{}", encoding="utf-8")
-+    (derived / "precheck.json").write_text("{}", encoding="utf-8")
-+    (derived / "summary.json").write_text("{}", encoding="utf-8")
-+    (derived / "transcript.txt").write_text("hello", encoding="utf-8")
-+    snippets = derived / "snippets"
-+    snippets.mkdir(parents=True, exist_ok=True)
-+    (snippets / "snippet-001.wav").write_bytes(b"\x00")
-+    nested = snippets / "nested"
-+    nested.mkdir(parents=True, exist_ok=True)
-+    (nested / "leaf.json").write_text("{}", encoding="utf-8")
-+
-+
-+def test_clear_derived_artifacts_preserves_sanitized_audio(tmp_path: Path) -> None:
-+    cfg = _cfg(tmp_path)
-+    derived = cfg.recordings_root / "rec-force-1" / "derived"
-+    _populate_derived_artifacts(derived)
-+
-+    deleted = clear_derived_artifacts("rec-force-1", settings=cfg)
-+
-+    assert "audio_sanitized.wav" not in deleted
-+    assert "audio_sanitize.json" not in deleted
-+    assert "precheck.json" in deleted
-+    assert "summary.json" in deleted
-+    assert "transcript.txt" in deleted
-+    assert "snippets" in deleted
-+    assert deleted == sorted(deleted)
-+    assert (derived / "audio_sanitized.wav").exists()
-+    assert (derived / "audio_sanitize.json").exists()
-+    assert not (derived / "precheck.json").exists()
-+    assert not (derived / "summary.json").exists()
-+    assert not (derived / "transcript.txt").exists()
-+    assert not (derived / "snippets").exists()
-+
-+
-+def test_clear_derived_artifacts_noop_when_derived_missing(tmp_path: Path) -> None:
-+    cfg = _cfg(tmp_path)
-+    (cfg.recordings_root / "rec-force-empty" / "raw").mkdir(parents=True, exist_ok=True)
-+
-+    deleted = clear_derived_artifacts("rec-force-empty", settings=cfg)
-+    assert deleted == []
-+
-+
-+def test_clear_derived_artifacts_rejects_invalid_id(tmp_path: Path) -> None:
-+    cfg = _cfg(tmp_path)
-+    with pytest.raises(ClearDerivedArtifactsError, match="recording id is required"):
-+        clear_derived_artifacts("", settings=cfg)
-+    with pytest.raises(ClearDerivedArtifactsError, match="invalid recording id"):
-+        clear_derived_artifacts("..", settings=cfg)
-+    with pytest.raises(ClearDerivedArtifactsError, match="invalid recording id"):
-+        clear_derived_artifacts("../escape", settings=cfg)
-+
-+
-+def test_clear_derived_artifacts_rejects_symlinked_derived_dir(tmp_path: Path) -> None:
-+    cfg = _cfg(tmp_path)
-+    recording_root = cfg.recordings_root / "rec-force-symlink"
-+    recording_root.mkdir(parents=True, exist_ok=True)
-+    target = tmp_path / "outside_derived"
-+    target.mkdir(parents=True, exist_ok=True)
-+    (target / "precheck.json").write_text("{}", encoding="utf-8")
-+    (recording_root / "derived").symlink_to(target, target_is_directory=True)
-+
-+    with pytest.raises(ClearDerivedArtifactsError, match="symlink"):
-+        clear_derived_artifacts("rec-force-symlink", settings=cfg)
-+
-+    assert (target / "precheck.json").exists()
-+
-+
-+def test_clear_derived_artifacts_rejects_derived_as_file(tmp_path: Path) -> None:
-+    cfg = _cfg(tmp_path)
-+    recording_root = cfg.recordings_root / "rec-force-file"
-+    recording_root.mkdir(parents=True, exist_ok=True)
-+    (recording_root / "derived").write_text("not-a-directory", encoding="utf-8")
-+
-+    with pytest.raises(ClearDerivedArtifactsError, match="not a directory"):
-+        clear_derived_artifacts("rec-force-file", settings=cfg)
-+
-+
-+def test_clear_derived_artifacts_wraps_iterdir_errors(
-+    tmp_path: Path,
-+    monkeypatch: pytest.MonkeyPatch,
-+) -> None:
-+    cfg = _cfg(tmp_path)
-+    derived = cfg.recordings_root / "rec-force-iterdir" / "derived"
-+    derived.mkdir(parents=True, exist_ok=True)
-+    (derived / "precheck.json").write_text("{}", encoding="utf-8")
-+
-+    real_iterdir = Path.iterdir
-+
-+    def _failing_iterdir(self: Path):  # type: ignore[override]
-+        if self == derived:
-+            raise OSError("iterdir denied")
-+        return real_iterdir(self)
-+
-+    monkeypatch.setattr(Path, "iterdir", _failing_iterdir)
-+
-+    with pytest.raises(ClearDerivedArtifactsError, match="list derived directory"):
-+        clear_derived_artifacts("rec-force-iterdir", settings=cfg)
-+
-+
-+def test_clear_derived_artifacts_wraps_delete_errors(
-+    tmp_path: Path,
-+    monkeypatch: pytest.MonkeyPatch,
-+) -> None:
-+    cfg = _cfg(tmp_path)
-+    derived = cfg.recordings_root / "rec-force-unlink" / "derived"
-+    derived.mkdir(parents=True, exist_ok=True)
-+    target = derived / "precheck.json"
-+    target.write_text("{}", encoding="utf-8")
-+
-+    real_unlink = Path.unlink
-+
-+    def _failing_unlink(self: Path, *args, **kwargs):  # type: ignore[override]
-+        if self == target:
-+            raise OSError("unlink denied")
-+        return real_unlink(self, *args, **kwargs)
-+
-+    monkeypatch.setattr(Path, "unlink", _failing_unlink)
-+
-+    with pytest.raises(ClearDerivedArtifactsError, match="precheck.json"):
-+        clear_derived_artifacts("rec-force-unlink", settings=cfg)
-+
-+
-+def test_clear_derived_artifacts_accepts_custom_keep(tmp_path: Path) -> None:
-+    cfg = _cfg(tmp_path)
-+    derived = cfg.recordings_root / "rec-force-keep" / "derived"
-+    _populate_derived_artifacts(derived)
-+
-+    deleted = clear_derived_artifacts(
-+        "rec-force-keep",
-+        settings=cfg,
-+        keep=("precheck.json",),
-+    )
-+    assert "precheck.json" not in deleted
-+    assert "audio_sanitized.wav" in deleted
-+    assert "audio_sanitize.json" in deleted
-+    assert (derived / "precheck.json").exists()
-+    assert not (derived / "audio_sanitized.wav").exists()
-+
-+
- def test_healthz_component_endpoints(tmp_path: Path, monkeypatch):
-     cfg = _cfg(tmp_path)
-     monkeypatch.setattr(api, "_settings", cfg)
-diff --git a/tests/test_ui_routes.py b/tests/test_ui_routes.py
-index 30fb438..1b3f01c 100644
---- a/tests/test_ui_routes.py
-+++ b/tests/test_ui_routes.py
-@@ -4287,6 +4287,153 @@ def test_ui_action_requeue_failure_returns_503(tmp_path, monkeypatch):
-     assert "redis down" in r.text
- 
- 
-+def test_ui_action_force_reprocess_clears_derived_and_enqueues(tmp_path, monkeypatch):
-+    cfg = _cfg(tmp_path)
-+    monkeypatch.setattr(api, "_settings", cfg)
-+    monkeypatch.setattr(ui_routes, "_settings", cfg)
-+    init_db(cfg)
-+    create_recording("rec-force-ui-1", source="drive", source_filename="f.mp3", settings=cfg)
-+    derived = cfg.recordings_root / "rec-force-ui-1" / "derived"
-+    derived.mkdir(parents=True, exist_ok=True)
-+    (derived / "audio_sanitized.wav").write_bytes(b"\x00")
-+    (derived / "audio_sanitize.json").write_text("{}", encoding="utf-8")
-+    (derived / "summary.json").write_text("{}", encoding="utf-8")
-+
-+    observed: dict[str, object] = {}
+     monkeypatch.setattr(api, "clear_derived_artifacts", _raise_clear)
 +
 +    def _fake_enqueue(
-+        recording_id: str,
-+        *,
-+        settings=None,
-+        job_type=JOB_TYPE_PRECHECK,
-+        reset_pipeline_state: bool = False,
-+    ):
-+        observed["recording_id"] = recording_id
-+        observed["job_type"] = job_type
-+        observed["reset_pipeline_state"] = reset_pipeline_state
-+        return None
++        *_args: Any,
++        before_queue_push: Any = None,
++        **_kwargs: Any,
++    ) -> RecordingJob:
++        # Simulate the real enqueue_recording_job contract: the callback runs
++        # after the atomic DB reservation but before the Redis push, and its
++        # exceptions propagate to the caller.
++        assert before_queue_push is not None
++        before_queue_push()
++        raise AssertionError("unreachable: callback must have raised")
 +
-+    monkeypatch.setattr(ui_routes, "enqueue_recording_job", _fake_enqueue)
-+    c = TestClient(api.app, follow_redirects=False)
-+    r = c.post("/ui/recordings/rec-force-ui-1/force-reprocess")
-+    assert r.status_code in (200, 307, 302)
-+    assert observed == {
-+        "recording_id": "rec-force-ui-1",
-+        "job_type": JOB_TYPE_PRECHECK,
-+        "reset_pipeline_state": True,
-+    }
-+    assert (derived / "audio_sanitized.wav").exists()
-+    assert (derived / "audio_sanitize.json").exists()
-+    assert not (derived / "summary.json").exists()
-+
-+
-+def test_ui_action_force_reprocess_not_found(client):
-+    r = client.post("/ui/recordings/no-such-rec/force-reprocess")
-+    assert r.status_code == 404
-+
-+
-+def test_ui_action_force_reprocess_clear_failure_returns_500(tmp_path, monkeypatch):
-+    cfg = _cfg(tmp_path)
-+    monkeypatch.setattr(api, "_settings", cfg)
-+    monkeypatch.setattr(ui_routes, "_settings", cfg)
-+    init_db(cfg)
-+    create_recording("rec-force-ui-clr", source="drive", source_filename="x.mp3", settings=cfg)
-+
-+    from lan_app.ops import ClearDerivedArtifactsError
-+
-+    def _raise_clear(*_args, **_kwargs):
-+        raise ClearDerivedArtifactsError("disk busy")
-+
-+    monkeypatch.setattr(ui_routes, "clear_derived_artifacts", _raise_clear)
-+
-+    def _unexpected_enqueue(*_args, **_kwargs):
-+        raise AssertionError("enqueue must not run when clear fails")
-+
-+    monkeypatch.setattr(ui_routes, "enqueue_recording_job", _unexpected_enqueue)
-+
-+    c = TestClient(api.app, follow_redirects=False)
-+    r = c.post("/ui/recordings/rec-force-ui-clr/force-reprocess")
-+    assert r.status_code == 500
-+    assert "disk busy" in r.text
-+
-+
-+def test_ui_action_force_reprocess_duplicate_job_race_returns_409(tmp_path, monkeypatch):
-+    cfg = _cfg(tmp_path)
-+    monkeypatch.setattr(api, "_settings", cfg)
-+    monkeypatch.setattr(ui_routes, "_settings", cfg)
-+    init_db(cfg)
-+    create_recording("rec-force-ui-race", source="drive", source_filename="r.mp3", settings=cfg)
-+
-+    monkeypatch.setattr(ui_routes, "clear_derived_artifacts", lambda *_a, **_kw: [])
-+
-+    from lan_app.jobs import DuplicateRecordingJobError
-+
-+    def _raise_dupe(*_args, **_kwargs):
-+        raise DuplicateRecordingJobError(
-+            recording_id="rec-force-ui-race",
-+            job_id="race-job-ui",
-+        )
-+
-+    monkeypatch.setattr(ui_routes, "enqueue_recording_job", _raise_dupe)
-+
-+    c = TestClient(api.app, follow_redirects=False)
-+    r = c.post("/ui/recordings/rec-force-ui-race/force-reprocess")
-+    assert r.status_code == 409
-+    assert "race-job-ui" in r.text
-+
-+
-+def test_ui_action_force_reprocess_enqueue_failure_returns_503(tmp_path, monkeypatch):
-+    cfg = _cfg(tmp_path)
-+    monkeypatch.setattr(api, "_settings", cfg)
-+    monkeypatch.setattr(ui_routes, "_settings", cfg)
-+    init_db(cfg)
-+    create_recording("rec-force-ui-503", source="drive", source_filename="q.mp3", settings=cfg)
-+
-+    monkeypatch.setattr(ui_routes, "clear_derived_artifacts", lambda *_a, **_kw: [])
-+
-+    def _fail_enqueue(*_args, **_kwargs):
-+        raise RuntimeError("redis down")
-+
-+    monkeypatch.setattr(ui_routes, "enqueue_recording_job", _fail_enqueue)
-+
-+    c = TestClient(api.app, follow_redirects=False)
-+    r = c.post("/ui/recordings/rec-force-ui-503/force-reprocess")
-+    assert r.status_code == 503
-+    assert "redis down" in r.text
-+
-+
-+def test_ui_action_force_reprocess_returns_409_when_job_active(tmp_path, monkeypatch):
-+    cfg = _cfg(tmp_path)
-+    monkeypatch.setattr(api, "_settings", cfg)
-+    monkeypatch.setattr(ui_routes, "_settings", cfg)
++    monkeypatch.setattr(api, "enqueue_recording_job", _fake_enqueue)
+     client = TestClient(api.app)
+ 
+     response = client.post("/api/recordings/rec-1/actions/force-reprocess")
+@@ -403,35 +421,6 @@ def test_api_force_reprocess_maps_clear_errors_to_500(
+     assert response.json()["detail"] == "permission denied"
+ 
+ 
+-def test_api_force_reprocess_duplicate_job_race_returns_409(
+-    monkeypatch: pytest.MonkeyPatch,
+-) -> None:
+-    from lan_app.jobs import DuplicateRecordingJobError
+-
+-    monkeypatch.setattr(api, "get_recording", lambda *_args, **_kwargs: {"id": "rec-1"})
+-    monkeypatch.setattr(
+-        api,
+-        "find_active_job_for_recording",
+-        lambda *_args, **_kwargs: None,
+-    )
+-    monkeypatch.setattr(api, "clear_derived_artifacts", lambda *_a, **_kw: [])
+-
+-    def _raise_dupe(*_args: Any, **_kwargs: Any) -> Any:
+-        raise DuplicateRecordingJobError(
+-            recording_id="rec-1",
+-            job_id="race-job-xyz",
+-        )
+-
+-    monkeypatch.setattr(api, "enqueue_recording_job", _raise_dupe)
+-    client = TestClient(api.app)
+-
+-    response = client.post("/api/recordings/rec-1/actions/force-reprocess")
+-    assert response.status_code == 409
+-    detail = response.json()["detail"]
+-    assert detail["existing_job_id"] == "race-job-xyz"
+-    assert "already queued or started" in detail["message"].lower()
+-
+-
+ @pytest.mark.parametrize(
+     ("raised", "status_code", "detail_text"),
+     [
+@@ -447,11 +436,6 @@ def test_api_force_reprocess_maps_enqueue_errors(
+     monkeypatch: pytest.MonkeyPatch,
+ ) -> None:
+     monkeypatch.setattr(api, "get_recording", lambda *_args, **_kwargs: {"id": "rec-1"})
+-    monkeypatch.setattr(
+-        api,
+-        "find_active_job_for_recording",
+-        lambda *_args, **_kwargs: None,
+-    )
+     monkeypatch.setattr(api, "clear_derived_artifacts", lambda *_a, **_kw: [])
+ 
+     def _raise(*_args: Any, **_kwargs: Any) -> Any:
+diff --git a/tests/test_db_queue.py b/tests/test_db_queue.py
+index 2b38b13..63a91fb 100644
+--- a/tests/test_db_queue.py
++++ b/tests/test_db_queue.py
+@@ -1304,6 +1304,81 @@ def test_api_alias_requires_auth_when_token_enabled(tmp_path: Path, monkeypatch)
+     assert aliases.load_aliases(alias_path).get("S1") == "Alice"
+ 
+ 
++def test_enqueue_before_queue_push_failure_fails_job_and_skips_queue(
++    tmp_path: Path, monkeypatch
++):
++    cfg = _test_settings(tmp_path)
 +    init_db(cfg)
 +    create_recording(
-+        "rec-force-ui-409", source="drive", source_filename="busy.mp3", settings=cfg
-+    )
-+    create_job(
-+        "force-active-job",
-+        recording_id="rec-force-ui-409",
-+        job_type=JOB_TYPE_PRECHECK,
-+        status=JOB_STATUS_QUEUED,
++        "rec-before-push-fail-1",
++        source="test",
++        source_filename="before-push.mp3",
 +        settings=cfg,
 +    )
-+    derived = cfg.recordings_root / "rec-force-ui-409" / "derived"
++
++    class _TripwireQueue:
++        def enqueue(self, *_args, **_kwargs):
++            raise AssertionError(
++                "queue.enqueue must not be called when before_queue_push fails"
++            )
++
++    monkeypatch.setattr("lan_app.jobs.get_queue", lambda _cfg: _TripwireQueue())
++
++    def _failing_callback() -> None:
++        raise RuntimeError("cleanup exploded")
++
++    with pytest.raises(RuntimeError) as exc_info:
++        enqueue_recording_job(
++            "rec-before-push-fail-1",
++            job_type=JOB_TYPE_PRECHECK,
++            reset_pipeline_state=True,
++            before_queue_push=_failing_callback,
++            settings=cfg,
++        )
++    assert "cleanup exploded" in str(exc_info.value)
++
++    jobs, total = list_jobs(settings=cfg, recording_id="rec-before-push-fail-1")
++    assert total == 1
++    assert jobs[0]["status"] == JOB_STATUS_FAILED
++    assert "pre-enqueue callback failed" in jobs[0]["error"]
++    assert "cleanup exploded" in jobs[0]["error"]
++
++
++def test_enqueue_before_queue_push_failure_ignores_fail_job_errors(
++    tmp_path: Path, monkeypatch
++):
++    cfg = _test_settings(tmp_path)
++    init_db(cfg)
++    create_recording(
++        "rec-before-push-fail-2",
++        source="test",
++        source_filename="before-push-2.mp3",
++        settings=cfg,
++    )
++
++    class _TripwireQueue:
++        def enqueue(self, *_args, **_kwargs):
++            raise AssertionError("queue must not be used")
++
++    monkeypatch.setattr("lan_app.jobs.get_queue", lambda _cfg: _TripwireQueue())
++
++    def _broken_fail_job(*_args, **_kwargs):
++        raise RuntimeError("fail_job unavailable")
++
++    monkeypatch.setattr("lan_app.jobs.fail_job", _broken_fail_job)
++
++    def _failing_callback() -> None:
++        raise ValueError("cleanup busted")
++
++    with pytest.raises(ValueError, match="cleanup busted"):
++        enqueue_recording_job(
++            "rec-before-push-fail-2",
++            job_type=JOB_TYPE_PRECHECK,
++            before_queue_push=_failing_callback,
++            settings=cfg,
++        )
++
++
+ def test_enqueue_marks_job_failed_when_redis_enqueue_fails(tmp_path: Path, monkeypatch):
+     cfg = _test_settings(tmp_path)
+     init_db(cfg)
+diff --git a/tests/test_ui_routes.py b/tests/test_ui_routes.py
+index 1b3f01c..c1a4233 100644
+--- a/tests/test_ui_routes.py
++++ b/tests/test_ui_routes.py
+@@ -4307,10 +4307,16 @@ def test_ui_action_force_reprocess_clears_derived_and_enqueues(tmp_path, monkeyp
+         settings=None,
+         job_type=JOB_TYPE_PRECHECK,
+         reset_pipeline_state: bool = False,
++        before_queue_push=None,
+     ):
+         observed["recording_id"] = recording_id
+         observed["job_type"] = job_type
+         observed["reset_pipeline_state"] = reset_pipeline_state
++        # Emulate the real contract: the callback runs between DB reservation
++        # and the Redis push so derived-artifact cleanup happens only after
++        # duplicates have been rejected.
++        if before_queue_push is not None:
++            before_queue_push()
+         return None
+ 
+     monkeypatch.setattr(ui_routes, "enqueue_recording_job", _fake_enqueue)
+@@ -4346,10 +4352,12 @@ def test_ui_action_force_reprocess_clear_failure_returns_500(tmp_path, monkeypat
+ 
+     monkeypatch.setattr(ui_routes, "clear_derived_artifacts", _raise_clear)
+ 
+-    def _unexpected_enqueue(*_args, **_kwargs):
+-        raise AssertionError("enqueue must not run when clear fails")
++    def _fake_enqueue(*_args, before_queue_push=None, **_kwargs):
++        assert before_queue_push is not None
++        before_queue_push()
++        raise AssertionError("unreachable: callback must have raised")
+ 
+-    monkeypatch.setattr(ui_routes, "enqueue_recording_job", _unexpected_enqueue)
++    monkeypatch.setattr(ui_routes, "enqueue_recording_job", _fake_enqueue)
+ 
+     c = TestClient(api.app, follow_redirects=False)
+     r = c.post("/ui/recordings/rec-force-ui-clr/force-reprocess")
+@@ -4363,12 +4371,22 @@ def test_ui_action_force_reprocess_duplicate_job_race_returns_409(tmp_path, monk
+     monkeypatch.setattr(ui_routes, "_settings", cfg)
+     init_db(cfg)
+     create_recording("rec-force-ui-race", source="drive", source_filename="r.mp3", settings=cfg)
++    derived = cfg.recordings_root / "rec-force-ui-race" / "derived"
 +    derived.mkdir(parents=True, exist_ok=True)
 +    guarded = derived / "summary.json"
 +    guarded.write_text("{}", encoding="utf-8")
+ 
+-    monkeypatch.setattr(ui_routes, "clear_derived_artifacts", lambda *_a, **_kw: [])
++    def _unexpected_clear(*_args, **_kwargs):
++        raise AssertionError(
++            "clear_derived_artifacts must not run when a duplicate is detected"
++        )
 +
-+    def _unexpected_enqueue(*_args, **_kwargs):
-+        raise AssertionError("enqueue must not run when job is active")
-+
-+    monkeypatch.setattr(ui_routes, "enqueue_recording_job", _unexpected_enqueue)
-+
-+    c = TestClient(api.app, follow_redirects=False)
-+    r = c.post("/ui/recordings/rec-force-ui-409/force-reprocess")
-+    assert r.status_code == 409
-+    assert "force-active-job" in r.text
++    monkeypatch.setattr(ui_routes, "clear_derived_artifacts", _unexpected_clear)
+ 
+     from lan_app.jobs import DuplicateRecordingJobError
+ 
+-    def _raise_dupe(*_args, **_kwargs):
++    def _raise_dupe(*_args, **kwargs):
++        assert "before_queue_push" in kwargs
+         raise DuplicateRecordingJobError(
+             recording_id="rec-force-ui-race",
+             job_id="race-job-ui",
+@@ -4380,6 +4398,8 @@ def test_ui_action_force_reprocess_duplicate_job_race_returns_409(tmp_path, monk
+     r = c.post("/ui/recordings/rec-force-ui-race/force-reprocess")
+     assert r.status_code == 409
+     assert "race-job-ui" in r.text
++    # Artifacts must survive the duplicate-detected path.
 +    assert guarded.exists()
-+
-+
- def test_ui_action_retry_failed_step(tmp_path, monkeypatch):
-     cfg = _cfg(tmp_path)
-     monkeypatch.setattr(api, "_settings", cfg)
+ 
+ 
+ def test_ui_action_force_reprocess_enqueue_failure_returns_503(tmp_path, monkeypatch):
+@@ -4422,11 +4442,15 @@ def test_ui_action_force_reprocess_returns_409_when_job_active(tmp_path, monkeyp
+     guarded = derived / "summary.json"
+     guarded.write_text("{}", encoding="utf-8")
+ 
+-    def _unexpected_enqueue(*_args, **_kwargs):
+-        raise AssertionError("enqueue must not run when job is active")
++    def _unexpected_clear(*_args, **_kwargs):
++        raise AssertionError(
++            "clear_derived_artifacts must not run when a precheck job is active"
++        )
+ 
+-    monkeypatch.setattr(ui_routes, "enqueue_recording_job", _unexpected_enqueue)
++    monkeypatch.setattr(ui_routes, "clear_derived_artifacts", _unexpected_clear)
+ 
++    # Do NOT monkeypatch enqueue_recording_job: let the real implementation
++    # detect the active precheck job via its atomic DB reservation path.
+     c = TestClient(api.app, follow_redirects=False)
+     r = c.post("/ui/recordings/rec-force-ui-409/force-reprocess")
+     assert r.status_code == 409

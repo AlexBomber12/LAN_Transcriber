@@ -37,7 +37,6 @@ from .db import (
     create_calendar_source,
     create_recording,
     delete_recording,
-    find_active_job_for_recording,
     get_recording,
     init_db,
     list_calendar_events,
@@ -359,34 +358,22 @@ async def api_force_reprocess_recording(recording_id: str) -> dict[str, object]:
     if get_recording(recording_id, settings=_settings) is None:
         raise HTTPException(status_code=404, detail="Recording not found")
 
-    existing = find_active_job_for_recording(
-        recording_id,
-        job_type=DEFAULT_REQUEUE_JOB_TYPE,
-        settings=_settings,
-    )
-    if existing is not None:
-        existing_job_id = str(existing.get("id") or "").strip()
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "message": "A precheck job is already queued or started for this recording.",
-                "existing_job_id": existing_job_id,
-            },
-        )
+    cleared: list[str] = []
 
-    try:
-        deleted = clear_derived_artifacts(recording_id, settings=_settings)
-    except ClearDerivedArtifactsError as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    def _clear_before_push() -> None:
+        cleared.extend(clear_derived_artifacts(recording_id, settings=_settings))
 
     try:
         job = enqueue_recording_job(
             recording_id,
             job_type=DEFAULT_REQUEUE_JOB_TYPE,
             reset_pipeline_state=True,
+            before_queue_push=_clear_before_push,
             settings=_settings,
         )
     except DuplicateRecordingJobError as exc:
+        # Duplicate is detected by enqueue_recording_job before the callback
+        # runs, so derived/ is untouched when another job is already active.
         raise HTTPException(
             status_code=409,
             detail={
@@ -394,6 +381,8 @@ async def api_force_reprocess_recording(recording_id: str) -> dict[str, object]:
                 "existing_job_id": exc.job_id,
             },
         )
+    except ClearDerivedArtifactsError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
     except RecordingNotFoundError:
         raise HTTPException(status_code=404, detail="Recording not found")
     except ValueError as exc:
@@ -406,7 +395,7 @@ async def api_force_reprocess_recording(recording_id: str) -> dict[str, object]:
         "job_id": job.job_id,
         "job_type": job.job_type,
         "reprocessed": True,
-        "cleared_artifacts": deleted,
+        "cleared_artifacts": cleared,
     }
 
 

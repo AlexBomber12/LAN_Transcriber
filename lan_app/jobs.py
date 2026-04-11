@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 from uuid import uuid4
 
 from redis import Redis
@@ -143,6 +144,7 @@ def enqueue_recording_job(
     *,
     job_type: str = DEFAULT_REQUEUE_JOB_TYPE,
     reset_pipeline_state: bool = False,
+    before_queue_push: Callable[[], None] | None = None,
     settings: AppSettings | None = None,
 ) -> RecordingJob:
     cfg = settings or AppSettings()
@@ -180,6 +182,26 @@ def enqueue_recording_job(
     if job_type == DEFAULT_REQUEUE_JOB_TYPE and reset_pipeline_state:
         clear_recording_pipeline_stages(recording_id, settings=cfg)
         clear_recording_progress(recording_id, settings=cfg)
+
+    if before_queue_push is not None:
+        # Run caller-supplied cleanup (e.g. Force Reprocess deleting derived
+        # artifacts) AFTER the atomic DB reservation that rejects duplicates,
+        # but BEFORE the Redis push so the worker never observes a job whose
+        # cleanup is still in flight. Any failure marks the DB row FAILED and
+        # propagates so the caller can surface the error; no Redis job is
+        # pushed, so no worker ever picks this reservation up.
+        try:
+            before_queue_push()
+        except Exception as exc:
+            try:
+                fail_job(
+                    job_id,
+                    error=f"pre-enqueue callback failed: {exc}",
+                    settings=cfg,
+                )
+            except Exception:
+                pass
+            raise
 
     queue = get_queue(cfg)
     try:

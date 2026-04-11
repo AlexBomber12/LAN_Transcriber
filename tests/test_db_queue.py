@@ -1304,6 +1304,81 @@ def test_api_alias_requires_auth_when_token_enabled(tmp_path: Path, monkeypatch)
     assert aliases.load_aliases(alias_path).get("S1") == "Alice"
 
 
+def test_enqueue_before_queue_push_failure_fails_job_and_skips_queue(
+    tmp_path: Path, monkeypatch
+):
+    cfg = _test_settings(tmp_path)
+    init_db(cfg)
+    create_recording(
+        "rec-before-push-fail-1",
+        source="test",
+        source_filename="before-push.mp3",
+        settings=cfg,
+    )
+
+    class _TripwireQueue:
+        def enqueue(self, *_args, **_kwargs):
+            raise AssertionError(
+                "queue.enqueue must not be called when before_queue_push fails"
+            )
+
+    monkeypatch.setattr("lan_app.jobs.get_queue", lambda _cfg: _TripwireQueue())
+
+    def _failing_callback() -> None:
+        raise RuntimeError("cleanup exploded")
+
+    with pytest.raises(RuntimeError) as exc_info:
+        enqueue_recording_job(
+            "rec-before-push-fail-1",
+            job_type=JOB_TYPE_PRECHECK,
+            reset_pipeline_state=True,
+            before_queue_push=_failing_callback,
+            settings=cfg,
+        )
+    assert "cleanup exploded" in str(exc_info.value)
+
+    jobs, total = list_jobs(settings=cfg, recording_id="rec-before-push-fail-1")
+    assert total == 1
+    assert jobs[0]["status"] == JOB_STATUS_FAILED
+    assert "pre-enqueue callback failed" in jobs[0]["error"]
+    assert "cleanup exploded" in jobs[0]["error"]
+
+
+def test_enqueue_before_queue_push_failure_ignores_fail_job_errors(
+    tmp_path: Path, monkeypatch
+):
+    cfg = _test_settings(tmp_path)
+    init_db(cfg)
+    create_recording(
+        "rec-before-push-fail-2",
+        source="test",
+        source_filename="before-push-2.mp3",
+        settings=cfg,
+    )
+
+    class _TripwireQueue:
+        def enqueue(self, *_args, **_kwargs):
+            raise AssertionError("queue must not be used")
+
+    monkeypatch.setattr("lan_app.jobs.get_queue", lambda _cfg: _TripwireQueue())
+
+    def _broken_fail_job(*_args, **_kwargs):
+        raise RuntimeError("fail_job unavailable")
+
+    monkeypatch.setattr("lan_app.jobs.fail_job", _broken_fail_job)
+
+    def _failing_callback() -> None:
+        raise ValueError("cleanup busted")
+
+    with pytest.raises(ValueError, match="cleanup busted"):
+        enqueue_recording_job(
+            "rec-before-push-fail-2",
+            job_type=JOB_TYPE_PRECHECK,
+            before_queue_push=_failing_callback,
+            settings=cfg,
+        )
+
+
 def test_enqueue_marks_job_failed_when_redis_enqueue_fails(tmp_path: Path, monkeypatch):
     cfg = _test_settings(tmp_path)
     init_db(cfg)

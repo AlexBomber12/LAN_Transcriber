@@ -4307,10 +4307,16 @@ def test_ui_action_force_reprocess_clears_derived_and_enqueues(tmp_path, monkeyp
         settings=None,
         job_type=JOB_TYPE_PRECHECK,
         reset_pipeline_state: bool = False,
+        before_queue_push=None,
     ):
         observed["recording_id"] = recording_id
         observed["job_type"] = job_type
         observed["reset_pipeline_state"] = reset_pipeline_state
+        # Emulate the real contract: the callback runs between DB reservation
+        # and the Redis push so derived-artifact cleanup happens only after
+        # duplicates have been rejected.
+        if before_queue_push is not None:
+            before_queue_push()
         return None
 
     monkeypatch.setattr(ui_routes, "enqueue_recording_job", _fake_enqueue)
@@ -4346,10 +4352,12 @@ def test_ui_action_force_reprocess_clear_failure_returns_500(tmp_path, monkeypat
 
     monkeypatch.setattr(ui_routes, "clear_derived_artifacts", _raise_clear)
 
-    def _unexpected_enqueue(*_args, **_kwargs):
-        raise AssertionError("enqueue must not run when clear fails")
+    def _fake_enqueue(*_args, before_queue_push=None, **_kwargs):
+        assert before_queue_push is not None
+        before_queue_push()
+        raise AssertionError("unreachable: callback must have raised")
 
-    monkeypatch.setattr(ui_routes, "enqueue_recording_job", _unexpected_enqueue)
+    monkeypatch.setattr(ui_routes, "enqueue_recording_job", _fake_enqueue)
 
     c = TestClient(api.app, follow_redirects=False)
     r = c.post("/ui/recordings/rec-force-ui-clr/force-reprocess")
@@ -4363,12 +4371,22 @@ def test_ui_action_force_reprocess_duplicate_job_race_returns_409(tmp_path, monk
     monkeypatch.setattr(ui_routes, "_settings", cfg)
     init_db(cfg)
     create_recording("rec-force-ui-race", source="drive", source_filename="r.mp3", settings=cfg)
+    derived = cfg.recordings_root / "rec-force-ui-race" / "derived"
+    derived.mkdir(parents=True, exist_ok=True)
+    guarded = derived / "summary.json"
+    guarded.write_text("{}", encoding="utf-8")
 
-    monkeypatch.setattr(ui_routes, "clear_derived_artifacts", lambda *_a, **_kw: [])
+    def _unexpected_clear(*_args, **_kwargs):
+        raise AssertionError(
+            "clear_derived_artifacts must not run when a duplicate is detected"
+        )
+
+    monkeypatch.setattr(ui_routes, "clear_derived_artifacts", _unexpected_clear)
 
     from lan_app.jobs import DuplicateRecordingJobError
 
-    def _raise_dupe(*_args, **_kwargs):
+    def _raise_dupe(*_args, **kwargs):
+        assert "before_queue_push" in kwargs
         raise DuplicateRecordingJobError(
             recording_id="rec-force-ui-race",
             job_id="race-job-ui",
@@ -4380,6 +4398,8 @@ def test_ui_action_force_reprocess_duplicate_job_race_returns_409(tmp_path, monk
     r = c.post("/ui/recordings/rec-force-ui-race/force-reprocess")
     assert r.status_code == 409
     assert "race-job-ui" in r.text
+    # Artifacts must survive the duplicate-detected path.
+    assert guarded.exists()
 
 
 def test_ui_action_force_reprocess_enqueue_failure_returns_503(tmp_path, monkeypatch):
@@ -4422,11 +4442,15 @@ def test_ui_action_force_reprocess_returns_409_when_job_active(tmp_path, monkeyp
     guarded = derived / "summary.json"
     guarded.write_text("{}", encoding="utf-8")
 
-    def _unexpected_enqueue(*_args, **_kwargs):
-        raise AssertionError("enqueue must not run when job is active")
+    def _unexpected_clear(*_args, **_kwargs):
+        raise AssertionError(
+            "clear_derived_artifacts must not run when a precheck job is active"
+        )
 
-    monkeypatch.setattr(ui_routes, "enqueue_recording_job", _unexpected_enqueue)
+    monkeypatch.setattr(ui_routes, "clear_derived_artifacts", _unexpected_clear)
 
+    # Do NOT monkeypatch enqueue_recording_job: let the real implementation
+    # detect the active precheck job via its atomic DB reservation path.
     c = TestClient(api.app, follow_redirects=False)
     r = c.post("/ui/recordings/rec-force-ui-409/force-reprocess")
     assert r.status_code == 409
