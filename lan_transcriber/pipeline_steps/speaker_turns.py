@@ -29,7 +29,18 @@ def _decapitalize_join(existing_text: str, appended_text: str) -> str:
     first_word = appended_text.split()[0] if appended_text.split() else ""
     if not first_word or not first_word[0].isupper():
         return f"{existing_text} {appended_text}"
-    if first_word.isupper() and len(first_word) > 1:
+    # Preserve acronym-leading words. This covers plain acronyms ("ISO",
+    # "API") as well as acronym-leading compounds like "API-based" or
+    # "NASA's": the leading run of alphabetic characters, taken before any
+    # punctuation or suffix, must be at least two characters long and fully
+    # uppercase.
+    leading_letters = ""
+    for char in first_word:
+        if char.isalpha():
+            leading_letters += char
+        else:
+            break
+    if len(leading_letters) >= 2 and leading_letters.isupper():
         return f"{existing_text} {appended_text}"
     if first_word == "I":
         return f"{existing_text} {appended_text}"
@@ -188,6 +199,7 @@ def _words_from_segments(
                     "word": str(seg.get("text")),
                 }
             ]
+        seen_first_word = False
         for raw_word in seg_words:
             if not isinstance(raw_word, dict):
                 continue
@@ -205,6 +217,9 @@ def _words_from_segments(
             }
             if language:
                 payload["language"] = language
+            if not seen_first_word:
+                payload["segment_start"] = True
+                seen_first_word = True
             words.append(payload)
     words.sort(key=lambda row: (row["start"], row["end"], row["word"]))
     return words
@@ -234,7 +249,11 @@ def build_speaker_turns(
             and start - safe_float(current["end"], default=start) <= merge_gap_sec
         ):
             current["end"] = round(max(safe_float(current["end"]), end), 3)
-            current["text"] = _decapitalize_join(current["text"], str(word["word"]))
+            appended = str(word["word"])
+            if word.get("segment_start"):
+                current["text"] = _decapitalize_join(current["text"], appended)
+            else:
+                current["text"] = f"{current['text']} {appended}".strip()
         else:
             if current is not None:
                 turns.append(current)

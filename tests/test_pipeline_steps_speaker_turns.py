@@ -256,6 +256,28 @@ def test_keep_acronym():
     assert _decapitalize_join("use the", "API today") == "use the API today"
 
 
+def test_keep_acronym_leading_compound():
+    """Acronym-leading compounds (e.g. ``API-based``, ``NASA's``) are preserved.
+
+    The acronym check must look at the leading run of alphabetic characters
+    rather than the whole word, otherwise common compounds with lowercase
+    suffixes would be incorrectly rewritten to ``aPI-based`` / ``nASA's``.
+    """
+    assert (
+        _decapitalize_join("use an", "API-based approach")
+        == "use an API-based approach"
+    )
+    assert (
+        _decapitalize_join("that is", "NASA's mission")
+        == "that is NASA's mission"
+    )
+    # Three-letter acronym with a suffix.
+    assert (
+        _decapitalize_join("use a", "JSON-encoded payload")
+        == "use a JSON-encoded payload"
+    )
+
+
 def test_keep_english_I():
     """The English pronoun ``I`` is preserved as capitalized."""
     assert _decapitalize_join("think", "I will") == "think I will"
@@ -340,6 +362,60 @@ def test_real_example_build_speaker_turns_decapitalizes_false_starts():
     # No false capitals remain in the middle of the paragraph.
     assert "Половину" not in text
     assert "Нагрузка" not in text
+
+
+def test_build_speaker_turns_preserves_mid_segment_proper_noun():
+    """A proper noun mid-segment is not lowercased when the preceding word is
+    part of the same ASR segment (no false-boundary risk)."""
+    asr_segments = [
+        {
+            "start": 0.0,
+            "end": 2.0,
+            "text": "hello John how are you",
+            "words": [
+                {"start": 0.0, "end": 0.3, "word": "hello"},
+                {"start": 0.3, "end": 0.6, "word": "John"},
+                {"start": 0.6, "end": 0.9, "word": "how"},
+                {"start": 0.9, "end": 1.2, "word": "are"},
+                {"start": 1.2, "end": 1.6, "word": "you"},
+            ],
+        },
+    ]
+    diar_segments = [{"start": 0.0, "end": 3.0, "speaker": "S1"}]
+    turns = build_speaker_turns(asr_segments, diar_segments, default_language=None)
+    assert len(turns) == 1
+    # "John" must remain capitalized — the previous word is inside the same
+    # ASR segment so this is not a segment-boundary merge.
+    assert turns[0]["text"] == "hello John how are you"
+
+
+def test_build_speaker_turns_preserves_acronym_leading_compound_at_boundary():
+    """An acronym-leading compound at a real segment boundary is preserved."""
+    asr_segments = [
+        {
+            "start": 0.0,
+            "end": 1.0,
+            "text": "we chose an",
+            "words": [
+                {"start": 0.0, "end": 0.2, "word": "we"},
+                {"start": 0.2, "end": 0.5, "word": "chose"},
+                {"start": 0.5, "end": 0.8, "word": "an"},
+            ],
+        },
+        {
+            "start": 1.0,
+            "end": 2.0,
+            "text": "API-based approach",
+            "words": [
+                {"start": 1.0, "end": 1.4, "word": "API-based"},
+                {"start": 1.4, "end": 1.8, "word": "approach"},
+            ],
+        },
+    ]
+    diar_segments = [{"start": 0.0, "end": 3.0, "speaker": "S1"}]
+    turns = build_speaker_turns(asr_segments, diar_segments, default_language=None)
+    assert len(turns) == 1
+    assert turns[0]["text"] == "we chose an API-based approach"
 
 
 def test_count_interruptions_small_synthetic_case():

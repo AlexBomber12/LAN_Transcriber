@@ -1,224 +1,147 @@
-diff --git a/lan_transcriber/pipeline_steps/diarization_quality.py b/lan_transcriber/pipeline_steps/diarization_quality.py
-index 1763111..67ba5c0 100644
---- a/lan_transcriber/pipeline_steps/diarization_quality.py
-+++ b/lan_transcriber/pipeline_steps/diarization_quality.py
-@@ -5,7 +5,7 @@ from typing import Any, Literal, Sequence
- 
- from lan_transcriber.utils import normalise_language_code, safe_float
- 
--from .speaker_turns import _diarization_segments
-+from .speaker_turns import _decapitalize_join, _diarization_segments
- 
- DEFAULT_DIALOG_MIN_SPEAKERS = 2
- DEFAULT_DIALOG_MAX_SPEAKERS = 2
-@@ -398,7 +398,7 @@ def _turn_gap(left: dict[str, Any], right: dict[str, Any]) -> float:
- 
- 
- def _join_text(left: str, right: str) -> str:
--    return " ".join(part for part in (left.strip(), right.strip()) if part).strip()
-+    return _decapitalize_join(left.strip(), right.strip())
- 
- 
- def _merge_turns(
 diff --git a/lan_transcriber/pipeline_steps/speaker_turns.py b/lan_transcriber/pipeline_steps/speaker_turns.py
-index fb7f5ae..22f0477 100644
+index 22f0477..8486530 100644
 --- a/lan_transcriber/pipeline_steps/speaker_turns.py
 +++ b/lan_transcriber/pipeline_steps/speaker_turns.py
-@@ -18,6 +18,25 @@ DEFAULT_SPEAKER_TURN_MIN_WORDS = 6
- DEFAULT_SPEAKER_TURN_SHORT_MERGE_GAP_SEC = 8.0
- 
- 
-+def _decapitalize_join(existing_text: str, appended_text: str) -> str:
-+    """Join two text fragments, lowercasing the appended fragment's first letter
-+    when it looks like a false sentence start from segment splitting."""
-+    if not existing_text or not appended_text:
-+        return (existing_text + " " + appended_text).strip()
-+    last_char = existing_text.rstrip()[-1] if existing_text.strip() else ""
-+    if last_char in ".!?":
-+        return f"{existing_text} {appended_text}"
-+    first_word = appended_text.split()[0] if appended_text.split() else ""
-+    if not first_word or not first_word[0].isupper():
-+        return f"{existing_text} {appended_text}"
-+    if first_word.isupper() and len(first_word) > 1:
-+        return f"{existing_text} {appended_text}"
-+    if first_word == "I":
-+        return f"{existing_text} {appended_text}"
-+    fixed = appended_text[0].lower() + appended_text[1:]
-+    return f"{existing_text} {fixed}"
-+
-+
- def _normalise_word(word: dict[str, Any], seg_start: float, seg_end: float) -> dict[str, Any] | None:
-     text = str(word.get("word") or word.get("text") or "").strip()
-     if not text:
-@@ -215,7 +234,7 @@ def build_speaker_turns(
+@@ -29,7 +29,18 @@ def _decapitalize_join(existing_text: str, appended_text: str) -> str:
+     first_word = appended_text.split()[0] if appended_text.split() else ""
+     if not first_word or not first_word[0].isupper():
+         return f"{existing_text} {appended_text}"
+-    if first_word.isupper() and len(first_word) > 1:
++    # Preserve acronym-leading words. This covers plain acronyms ("ISO",
++    # "API") as well as acronym-leading compounds like "API-based" or
++    # "NASA's": the leading run of alphabetic characters, taken before any
++    # punctuation or suffix, must be at least two characters long and fully
++    # uppercase.
++    leading_letters = ""
++    for char in first_word:
++        if char.isalpha():
++            leading_letters += char
++        else:
++            break
++    if len(leading_letters) >= 2 and leading_letters.isupper():
+         return f"{existing_text} {appended_text}"
+     if first_word == "I":
+         return f"{existing_text} {appended_text}"
+@@ -188,6 +199,7 @@ def _words_from_segments(
+                     "word": str(seg.get("text")),
+                 }
+             ]
++        seen_first_word = False
+         for raw_word in seg_words:
+             if not isinstance(raw_word, dict):
+                 continue
+@@ -205,6 +217,9 @@ def _words_from_segments(
+             }
+             if language:
+                 payload["language"] = language
++            if not seen_first_word:
++                payload["segment_start"] = True
++                seen_first_word = True
+             words.append(payload)
+     words.sort(key=lambda row: (row["start"], row["end"], row["word"]))
+     return words
+@@ -234,7 +249,11 @@ def build_speaker_turns(
              and start - safe_float(current["end"], default=start) <= merge_gap_sec
          ):
              current["end"] = round(max(safe_float(current["end"]), end), 3)
--            current["text"] = f"{current['text']} {word['word']}".strip()
-+            current["text"] = _decapitalize_join(current["text"], str(word["word"]))
+-            current["text"] = _decapitalize_join(current["text"], str(word["word"]))
++            appended = str(word["word"])
++            if word.get("segment_start"):
++                current["text"] = _decapitalize_join(current["text"], appended)
++            else:
++                current["text"] = f"{current['text']} {appended}".strip()
          else:
              if current is not None:
                  turns.append(current)
-@@ -297,7 +316,7 @@ def merge_short_turns(
- 
-         if prev_same_speaker and prev_gap < merge_gap_sec:
-             prev_text = str(prev_turn.get("text") or "").strip()
--            merged_text = f"{prev_text} {text}".strip() if text else prev_text
-+            merged_text = _decapitalize_join(prev_text, text) if text else prev_text
-             prev_turn["text"] = merged_text
-             prev_turn["end"] = round(
-                 max(
-@@ -311,7 +330,7 @@ def merge_short_turns(
- 
-         if next_same_speaker and next_gap < merge_gap_sec:
-             next_text = str(next_turn.get("text") or "").strip()
--            merged_text = f"{text} {next_text}".strip() if next_text else text
-+            merged_text = _decapitalize_join(text, next_text) if next_text else text
-             next_turn["text"] = merged_text
-             next_turn["start"] = round(
-                 min(
-diff --git a/tasks/QUEUE.md b/tasks/QUEUE.md
-index 4c7046b..871c847 100644
---- a/tasks/QUEUE.md
-+++ b/tasks/QUEUE.md
-@@ -678,6 +678,6 @@ Queue (in order)
- - Tasks file: tasks/PR-SPEAKER-MERGE-EMBEDDINGS-01.md
- - Depends on: PR-DIARIZATION-FLICKER-01
- 136) PR-MERGE-DECAPITALIZE-01: Decapitalize false sentence starts left over from segment merging
--- Status: TODO
-+- Status: DONE
- - Tasks file: tasks/PR-MERGE-DECAPITALIZE-01.md
- - Depends on: PR-TRANSCRIPT-MERGE-01
 diff --git a/tests/test_pipeline_steps_speaker_turns.py b/tests/test_pipeline_steps_speaker_turns.py
-index f173887..8ccb3c3 100644
+index 8ccb3c3..96dd58e 100644
 --- a/tests/test_pipeline_steps_speaker_turns.py
 +++ b/tests/test_pipeline_steps_speaker_turns.py
-@@ -4,6 +4,7 @@ from lan_transcriber.pipeline_steps.speaker_turns import (
-     DEFAULT_SPEAKER_TURN_MERGE_GAP_SEC,
-     DEFAULT_SPEAKER_TURN_MIN_WORDS,
-     DEFAULT_SPEAKER_TURN_SHORT_MERGE_GAP_SEC,
-+    _decapitalize_join,
-     build_speaker_turns,
-     count_interruptions,
-     merge_short_turns,
-@@ -225,6 +226,122 @@ def test_merge_short_turns_default_gap_exceeds_base_merge_gap():
-     assert merged[0]["end"] == 11.5
+@@ -256,6 +256,28 @@ def test_keep_acronym():
+     assert _decapitalize_join("use the", "API today") == "use the API today"
  
  
-+def test_decapitalize_mid_sentence():
-+    """A capitalized word mid-sentence (no preceding sentence punct) is lowercased."""
++def test_keep_acronym_leading_compound():
++    """Acronym-leading compounds (e.g. ``API-based``, ``NASA's``) are preserved.
++
++    The acronym check must look at the leading run of alphabetic characters
++    rather than the whole word, otherwise common compounds with lowercase
++    suffixes would be incorrectly rewritten to ``aPI-based`` / ``nASA's``.
++    """
 +    assert (
-+        _decapitalize_join("энергии. Он может", "Понизить")
-+        == "энергии. Он может понизить"
++        _decapitalize_join("use an", "API-based approach")
++        == "use an API-based approach"
++    )
++    assert (
++        _decapitalize_join("that is", "NASA's mission")
++        == "that is NASA's mission"
++    )
++    # Three-letter acronym with a suffix.
++    assert (
++        _decapitalize_join("use a", "JSON-encoded payload")
++        == "use a JSON-encoded payload"
 +    )
 +
 +
-+def test_keep_after_period():
-+    """After sentence-ending punctuation the appended capital is preserved."""
-+    assert (
-+        _decapitalize_join("решение.", "Но мы понимаем")
-+        == "решение. Но мы понимаем"
-+    )
+ def test_keep_english_I():
+     """The English pronoun ``I`` is preserved as capitalized."""
+     assert _decapitalize_join("think", "I will") == "think I will"
+@@ -342,6 +364,60 @@ def test_real_example_build_speaker_turns_decapitalizes_false_starts():
+     assert "Нагрузка" not in text
+ 
+ 
++def test_build_speaker_turns_preserves_mid_segment_proper_noun():
++    """A proper noun mid-segment is not lowercased when the preceding word is
++    part of the same ASR segment (no false-boundary risk)."""
++    asr_segments = [
++        {
++            "start": 0.0,
++            "end": 2.0,
++            "text": "hello John how are you",
++            "words": [
++                {"start": 0.0, "end": 0.3, "word": "hello"},
++                {"start": 0.3, "end": 0.6, "word": "John"},
++                {"start": 0.6, "end": 0.9, "word": "how"},
++                {"start": 0.9, "end": 1.2, "word": "are"},
++                {"start": 1.2, "end": 1.6, "word": "you"},
++            ],
++        },
++    ]
++    diar_segments = [{"start": 0.0, "end": 3.0, "speaker": "S1"}]
++    turns = build_speaker_turns(asr_segments, diar_segments, default_language=None)
++    assert len(turns) == 1
++    # "John" must remain capitalized — the previous word is inside the same
++    # ASR segment so this is not a segment-boundary merge.
++    assert turns[0]["text"] == "hello John how are you"
 +
 +
-+def test_keep_after_exclamation():
-+    assert _decapitalize_join("стоп!", "Вперёд") == "стоп! Вперёд"
-+
-+
-+def test_keep_after_question():
-+    assert _decapitalize_join("правда?", "Да") == "правда? Да"
-+
-+
-+def test_keep_acronym():
-+    """All-caps acronyms longer than one char are preserved."""
-+    assert _decapitalize_join("стандарту", "ISO") == "стандарту ISO"
-+    assert _decapitalize_join("use the", "API today") == "use the API today"
-+
-+
-+def test_keep_english_I():
-+    """The English pronoun ``I`` is preserved as capitalized."""
-+    assert _decapitalize_join("think", "I will") == "think I will"
-+
-+
-+def test_keep_already_lowercase():
-+    """An already-lowercase appended fragment is passed through unchanged."""
-+    assert _decapitalize_join("просто", "уходить") == "просто уходить"
-+
-+
-+def test_empty_strings():
-+    """Empty existing or appended text falls back to a plain strip-join."""
-+    assert _decapitalize_join("", "Hello") == "Hello"
-+    assert _decapitalize_join("text", "") == "text"
-+    assert _decapitalize_join("", "") == ""
-+
-+
-+def test_decapitalize_single_capital_letter_lowercased():
-+    """A single capital letter (not ``I``) mid-sentence is still lowercased."""
-+    # Russian "А" (single Cyrillic capital letter) should be lowercased.
-+    assert _decapitalize_join("ну", "А дальше") == "ну а дальше"
-+
-+
-+def test_real_example_build_speaker_turns_decapitalizes_false_starts():
-+    """End-to-end: segment-boundary-capitalized words are decapitalized on merge."""
-+    # Simulate ASR output split into segments where each segment starts with
-+    # a capitalized word even though it is a continuation of the previous
-+    # sentence. The full paragraph has no sentence-ending punctuation between
-+    # the boundaries, so the merged transcript must not contain the false
-+    # capitals.
++def test_build_speaker_turns_preserves_acronym_leading_compound_at_boundary():
++    """An acronym-leading compound at a real segment boundary is preserved."""
 +    asr_segments = [
 +        {
 +            "start": 0.0,
 +            "end": 1.0,
-+            "text": "Компрессор работает на",
++            "text": "we chose an",
 +            "words": [
-+                {"start": 0.0, "end": 0.3, "word": "Компрессор"},
-+                {"start": 0.3, "end": 0.6, "word": "работает"},
-+                {"start": 0.6, "end": 1.0, "word": "на"},
++                {"start": 0.0, "end": 0.2, "word": "we"},
++                {"start": 0.2, "end": 0.5, "word": "chose"},
++                {"start": 0.5, "end": 0.8, "word": "an"},
 +            ],
 +        },
 +        {
 +            "start": 1.0,
 +            "end": 2.0,
-+            "text": "Половину мощности когда",
++            "text": "API-based approach",
 +            "words": [
-+                {"start": 1.0, "end": 1.3, "word": "Половину"},
-+                {"start": 1.3, "end": 1.6, "word": "мощности"},
-+                {"start": 1.6, "end": 2.0, "word": "когда"},
-+            ],
-+        },
-+        {
-+            "start": 2.0,
-+            "end": 3.0,
-+            "text": "Нагрузка падает.",
-+            "words": [
-+                {"start": 2.0, "end": 2.4, "word": "Нагрузка"},
-+                {"start": 2.4, "end": 3.0, "word": "падает."},
-+            ],
-+        },
-+        {
-+            "start": 3.0,
-+            "end": 4.0,
-+            "text": "Потом снова",
-+            "words": [
-+                {"start": 3.0, "end": 3.5, "word": "Потом"},
-+                {"start": 3.5, "end": 4.0, "word": "снова"},
++                {"start": 1.0, "end": 1.4, "word": "API-based"},
++                {"start": 1.4, "end": 1.8, "word": "approach"},
 +            ],
 +        },
 +    ]
-+    diar_segments = [{"start": 0.0, "end": 5.0, "speaker": "S1"}]
++    diar_segments = [{"start": 0.0, "end": 3.0, "speaker": "S1"}]
 +    turns = build_speaker_turns(asr_segments, diar_segments, default_language=None)
 +    assert len(turns) == 1
-+    text = turns[0]["text"]
-+    # Turn start remains capitalized.
-+    assert text.startswith("Компрессор ")
-+    # Mid-sentence boundaries are lowercased.
-+    assert "половину" in text
-+    assert "когда" in text
-+    # After the period, capitalization resumes.
-+    assert "падает. Потом" in text
-+    # No false capitals remain in the middle of the paragraph.
-+    assert "Половину" not in text
-+    assert "Нагрузка" not in text
++    assert turns[0]["text"] == "we chose an API-based approach"
 +
 +
  def test_count_interruptions_small_synthetic_case():
