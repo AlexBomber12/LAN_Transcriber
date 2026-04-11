@@ -1,216 +1,149 @@
-diff --git a/lan_transcriber/pipeline_steps/orchestrator.py b/lan_transcriber/pipeline_steps/orchestrator.py
-index 787d02d..76fe491 100644
---- a/lan_transcriber/pipeline_steps/orchestrator.py
-+++ b/lan_transcriber/pipeline_steps/orchestrator.py
-@@ -943,12 +943,47 @@ def _diariser_pipeline_model(diariser: Diariser) -> Any | None:
-     return None
- 
- 
-+_DEFAULT_SPEAKER_EMBEDDING_MODEL = "pyannote/wespeaker-voxceleb-resnet34-LM"
-+
-+
-+def _build_pyannote_inference(model_or_name: Any) -> Any | None:
-+    """Construct a pyannote ``Inference`` wrapper, returning ``None`` on failure."""
-+    try:
-+        from pyannote.audio import Inference  # type: ignore
-+    except Exception as exc:
-+        _logger.warning(
-+            "speaker_merge: pyannote.audio.Inference unavailable; "
-+            "skipping merge step (%s)",
-+            exc,
-+        )
-+        return None
-+    try:
-+        return Inference(model_or_name, window="whole")
-+    except Exception as exc:
-+        _logger.warning(
-+            "speaker_merge: failed to load embedding model %s: %s",
-+            model_or_name,
-+            exc,
-+        )
-+        return None
-+
-+
- def _resolve_pyannote_embedding_model(diariser: Diariser) -> EmbeddingModel | None:
-     """Resolve a speaker embedding callable from the loaded diarization pipeline.
- 
-     Returns a callable ``(audio_path, start, end) -> np.ndarray`` or ``None`` if
-     no usable embedding model can be obtained. Failures are logged and swallowed
-     so the pipeline still runs when the merge step cannot be enabled.
-+
-+    pyannote-audio >= 3.1 stores the embedding sub-model on
-+    ``SpeakerDiarization._embedding``, but that attribute is a
-+    :class:`PretrainedSpeakerEmbedding` callable — it does **not** expose the
-+    ``.crop(file, segment)`` method we need. We therefore only reuse the
-+    pipeline's attribute when it already looks like an ``Inference`` wrapper
-+    (i.e. exposes ``crop``). Otherwise we construct a fresh
-+    ``Inference(embedding_model, window="whole")`` — using the model identifier
-+    stored on the pipeline when available and falling back to the
-+    wespeaker checkpoint that pyannote-audio bundles by default.
-     """
- 
-     cached = getattr(diariser, "_lan_speaker_embedding_model", None)
-@@ -962,39 +997,22 @@ def _resolve_pyannote_embedding_model(diariser: Diariser) -> EmbeddingModel | No
-         return None
- 
-     inference: Any = None
--    embedding_attr: Any = None
-     for attr in ("_embedding", "embedding"):
-         candidate = getattr(pipeline_model, attr, None)
--        if candidate is not None:
--            embedding_attr = candidate
-+        if candidate is not None and callable(getattr(candidate, "crop", None)):
-+            inference = candidate
-             break
- 
--    if embedding_attr is None:
--        try:
--            from pyannote.audio import Inference  # type: ignore
--        except Exception as exc:
--            _logger.warning(
--                "speaker_merge: pyannote.audio.Inference unavailable; "
--                "skipping merge step (%s)",
--                exc,
--            )
--            setattr(diariser, "_lan_speaker_embedding_unavailable", True)
--            return None
--        model_name = getattr(pipeline_model, "embedding_model", None) or (
--            "pyannote/wespeaker-voxceleb-resnet34-LM"
--        )
--        try:
--            inference = Inference(model_name, window="whole")
--        except Exception as exc:
--            _logger.warning(
--                "speaker_merge: failed to load embedding model %s: %s",
--                model_name,
--                exc,
--            )
-+    if inference is None:
-+        raw_embedding_attr = getattr(pipeline_model, "embedding", None)
-+        if isinstance(raw_embedding_attr, (str, Path)):
-+            model_name: Any = str(raw_embedding_attr)
+diff --git a/lan_transcriber/pipeline_steps/speaker_turns.py b/lan_transcriber/pipeline_steps/speaker_turns.py
+index 22f0477..8486530 100644
+--- a/lan_transcriber/pipeline_steps/speaker_turns.py
++++ b/lan_transcriber/pipeline_steps/speaker_turns.py
+@@ -29,7 +29,18 @@ def _decapitalize_join(existing_text: str, appended_text: str) -> str:
+     first_word = appended_text.split()[0] if appended_text.split() else ""
+     if not first_word or not first_word[0].isupper():
+         return f"{existing_text} {appended_text}"
+-    if first_word.isupper() and len(first_word) > 1:
++    # Preserve acronym-leading words. This covers plain acronyms ("ISO",
++    # "API") as well as acronym-leading compounds like "API-based" or
++    # "NASA's": the leading run of alphabetic characters, taken before any
++    # punctuation or suffix, must be at least two characters long and fully
++    # uppercase.
++    leading_letters = ""
++    for char in first_word:
++        if char.isalpha():
++            leading_letters += char
 +        else:
-+            model_name = _DEFAULT_SPEAKER_EMBEDDING_MODEL
-+        inference = _build_pyannote_inference(model_name)
-+        if inference is None:
-             setattr(diariser, "_lan_speaker_embedding_unavailable", True)
-             return None
--    else:
--        inference = embedding_attr
++            break
++    if len(leading_letters) >= 2 and leading_letters.isupper():
+         return f"{existing_text} {appended_text}"
+     if first_word == "I":
+         return f"{existing_text} {appended_text}"
+@@ -188,6 +199,7 @@ def _words_from_segments(
+                     "word": str(seg.get("text")),
+                 }
+             ]
++        seen_first_word = False
+         for raw_word in seg_words:
+             if not isinstance(raw_word, dict):
+                 continue
+@@ -205,6 +217,9 @@ def _words_from_segments(
+             }
+             if language:
+                 payload["language"] = language
++            if not seen_first_word:
++                payload["segment_start"] = True
++                seen_first_word = True
+             words.append(payload)
+     words.sort(key=lambda row: (row["start"], row["end"], row["word"]))
+     return words
+@@ -234,7 +249,11 @@ def build_speaker_turns(
+             and start - safe_float(current["end"], default=start) <= merge_gap_sec
+         ):
+             current["end"] = round(max(safe_float(current["end"]), end), 3)
+-            current["text"] = _decapitalize_join(current["text"], str(word["word"]))
++            appended = str(word["word"])
++            if word.get("segment_start"):
++                current["text"] = _decapitalize_join(current["text"], appended)
++            else:
++                current["text"] = f"{current['text']} {appended}".strip()
+         else:
+             if current is not None:
+                 turns.append(current)
+diff --git a/tests/test_pipeline_steps_speaker_turns.py b/tests/test_pipeline_steps_speaker_turns.py
+index 8ccb3c3..96dd58e 100644
+--- a/tests/test_pipeline_steps_speaker_turns.py
++++ b/tests/test_pipeline_steps_speaker_turns.py
+@@ -256,6 +256,28 @@ def test_keep_acronym():
+     assert _decapitalize_join("use the", "API today") == "use the API today"
  
-     def _embed(audio_path: Path, start: float, end: float):
-         try:
-diff --git a/tests/test_speaker_merge.py b/tests/test_speaker_merge.py
-index 9077e45..b2b3e00 100644
---- a/tests/test_speaker_merge.py
-+++ b/tests/test_speaker_merge.py
-@@ -6,7 +6,7 @@ import math
- import sys
- import types
- from pathlib import Path
--from typing import Sequence
-+from typing import Any, Sequence
  
- import pytest
- 
-@@ -802,9 +802,11 @@ def test_resolve_pyannote_embedding_model_uses_public_embedding_attr() -> None:
-         assert model_callable(Path("/x.wav"), 0.0, 1.0) is None
- 
- 
--def test_resolve_pyannote_embedding_model_falls_back_to_inference() -> None:
-+def test_resolve_pyannote_embedding_model_falls_back_to_inference_with_pipeline_name() -> None:
-+    # Simulates pyannote ``SpeakerDiarization`` where ``pipeline.embedding``
-+    # stores the model identifier string (not an Inference-like object).
-     pipeline_model = types.SimpleNamespace(
--        embedding_model="pyannote/custom-embed",
-+        embedding="pyannote/custom-embed",
-     )
-     diariser = _StubDiariser(
-         pipeline_model=pipeline_model, pipeline_attr="_pipeline_model"
-@@ -832,6 +834,86 @@ def test_resolve_pyannote_embedding_model_falls_back_to_inference() -> None:
-     assert vector == [0.25, 0.75]
- 
- 
-+def test_resolve_pyannote_embedding_model_falls_back_when_private_embedding_lacks_crop() -> None:
-+    """Covers the real pyannote-audio >= 3.1 case.
++def test_keep_acronym_leading_compound():
++    """Acronym-leading compounds (e.g. ``API-based``, ``NASA's``) are preserved.
 +
-+    ``SpeakerDiarization._embedding`` is a ``PretrainedSpeakerEmbedding``
-+    callable — it takes waveforms, not (file, segment) pairs. Using it as an
-+    Inference substitute causes every ``crop()`` call to raise, silently
-+    disabling the merge step. The resolver must detect the missing ``crop``
-+    method and wrap the pipeline's embedding identifier with a fresh
-+    ``Inference`` instead.
++    The acronym check must look at the leading run of alphabetic characters
++    rather than the whole word, otherwise common compounds with lowercase
++    suffixes would be incorrectly rewritten to ``aPI-based`` / ``nASA's``.
 +    """
-+
-+    class _PretrainedSpeakerEmbedding:
-+        """Callable with no ``crop()`` — mirrors pyannote's internal object."""
-+
-+        def __call__(self, waveforms):
-+            return [[1.0, 0.0]]
-+
-+    pipeline_model = types.SimpleNamespace(
-+        _embedding=_PretrainedSpeakerEmbedding(),
-+        embedding="pyannote/wespeaker-from-pipeline",
++    assert (
++        _decapitalize_join("use an", "API-based approach")
++        == "use an API-based approach"
 +    )
-+    diariser = _StubDiariser(
-+        pipeline_model=pipeline_model, pipeline_attr="_pipeline_model"
++    assert (
++        _decapitalize_join("that is", "NASA's mission")
++        == "that is NASA's mission"
 +    )
-+
-+    build_calls: list[Any] = []
-+
-+    class _FakeInference:
-+        def __init__(self, name, *, window: str) -> None:
-+            build_calls.append((name, window))
-+            self.name = name
-+
-+        def crop(self, path: str, segment):
-+            return [0.5, 0.5]
-+
-+    fake_audio = types.SimpleNamespace(Inference=_FakeInference)
-+    fake_core = types.SimpleNamespace(Segment=lambda *a, **k: (a, k))
-+
-+    with _patched_module("pyannote.audio", fake_audio), _patched_module(
-+        "pyannote.core", fake_core
-+    ):
-+        model_callable = pipeline_orchestrator._resolve_pyannote_embedding_model(
-+            diariser
-+        )
-+        assert callable(model_callable)
-+        vector = model_callable(Path("/z.wav"), 0.0, 1.0)
-+    assert vector == [0.5, 0.5]
-+    # The embedding attr was ignored; we built a fresh Inference by name.
-+    assert build_calls == [("pyannote/wespeaker-from-pipeline", "whole")]
-+
-+
-+def test_resolve_pyannote_embedding_model_uses_default_when_embedding_attr_not_a_string() -> None:
-+    """When pipeline.embedding is neither crop-capable nor a string, use the default."""
-+
-+    class _OpaqueEmbedding:
-+        def __call__(self, *_a, **_k):  # pragma: no cover - not invoked
-+            return None
-+
-+    pipeline_model = types.SimpleNamespace(_embedding=_OpaqueEmbedding())
-+    diariser = _StubDiariser(
-+        pipeline_model=pipeline_model, pipeline_attr="_pipeline_model"
++    # Three-letter acronym with a suffix.
++    assert (
++        _decapitalize_join("use a", "JSON-encoded payload")
++        == "use a JSON-encoded payload"
 +    )
 +
-+    build_calls: list[Any] = []
 +
-+    class _FakeInference:
-+        def __init__(self, name, *, window: str) -> None:
-+            build_calls.append((name, window))
-+
-+        def crop(self, *_a, **_k):  # pragma: no cover - not invoked
-+            return [1.0]
-+
-+    fake_audio = types.SimpleNamespace(Inference=_FakeInference)
-+    with _patched_module("pyannote.audio", fake_audio):
-+        pipeline_orchestrator._resolve_pyannote_embedding_model(diariser)
-+    assert build_calls == [
-+        (pipeline_orchestrator._DEFAULT_SPEAKER_EMBEDDING_MODEL, "whole")
+ def test_keep_english_I():
+     """The English pronoun ``I`` is preserved as capitalized."""
+     assert _decapitalize_join("think", "I will") == "think I will"
+@@ -342,6 +364,60 @@ def test_real_example_build_speaker_turns_decapitalizes_false_starts():
+     assert "Нагрузка" not in text
+ 
+ 
++def test_build_speaker_turns_preserves_mid_segment_proper_noun():
++    """A proper noun mid-segment is not lowercased when the preceding word is
++    part of the same ASR segment (no false-boundary risk)."""
++    asr_segments = [
++        {
++            "start": 0.0,
++            "end": 2.0,
++            "text": "hello John how are you",
++            "words": [
++                {"start": 0.0, "end": 0.3, "word": "hello"},
++                {"start": 0.3, "end": 0.6, "word": "John"},
++                {"start": 0.6, "end": 0.9, "word": "how"},
++                {"start": 0.9, "end": 1.2, "word": "are"},
++                {"start": 1.2, "end": 1.6, "word": "you"},
++            ],
++        },
 +    ]
++    diar_segments = [{"start": 0.0, "end": 3.0, "speaker": "S1"}]
++    turns = build_speaker_turns(asr_segments, diar_segments, default_language=None)
++    assert len(turns) == 1
++    # "John" must remain capitalized — the previous word is inside the same
++    # ASR segment so this is not a segment-boundary merge.
++    assert turns[0]["text"] == "hello John how are you"
 +
 +
- def test_resolve_pyannote_embedding_model_handles_inference_import_error() -> None:
-     pipeline_model = types.SimpleNamespace()
-     diariser = _StubDiariser(
++def test_build_speaker_turns_preserves_acronym_leading_compound_at_boundary():
++    """An acronym-leading compound at a real segment boundary is preserved."""
++    asr_segments = [
++        {
++            "start": 0.0,
++            "end": 1.0,
++            "text": "we chose an",
++            "words": [
++                {"start": 0.0, "end": 0.2, "word": "we"},
++                {"start": 0.2, "end": 0.5, "word": "chose"},
++                {"start": 0.5, "end": 0.8, "word": "an"},
++            ],
++        },
++        {
++            "start": 1.0,
++            "end": 2.0,
++            "text": "API-based approach",
++            "words": [
++                {"start": 1.0, "end": 1.4, "word": "API-based"},
++                {"start": 1.4, "end": 1.8, "word": "approach"},
++            ],
++        },
++    ]
++    diar_segments = [{"start": 0.0, "end": 3.0, "speaker": "S1"}]
++    turns = build_speaker_turns(asr_segments, diar_segments, default_language=None)
++    assert len(turns) == 1
++    assert turns[0]["text"] == "we chose an API-based approach"
++
++
+ def test_count_interruptions_small_synthetic_case():
+     turns = [
+         {"start": 0.0, "end": 4.0, "speaker": "S1", "text": "long turn"},

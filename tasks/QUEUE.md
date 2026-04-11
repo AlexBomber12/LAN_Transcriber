@@ -678,6 +678,6 @@ Queue (in order)
 - Tasks file: tasks/PR-SPEAKER-MERGE-EMBEDDINGS-01.md
 - Depends on: PR-DIARIZATION-FLICKER-01
 136) PR-MERGE-DECAPITALIZE-01: Decapitalize false sentence starts left over from segment merging
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-MERGE-DECAPITALIZE-01.md
 - Depends on: PR-TRANSCRIPT-MERGE-01

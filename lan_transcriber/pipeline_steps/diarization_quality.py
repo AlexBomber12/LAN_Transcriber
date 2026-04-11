@@ -5,7 +5,7 @@ from typing import Any, Literal, Sequence
 
 from lan_transcriber.utils import normalise_language_code, safe_float
 
-from .speaker_turns import _diarization_segments
+from .speaker_turns import _decapitalize_join, _diarization_segments
 
 DEFAULT_DIALOG_MIN_SPEAKERS = 2
 DEFAULT_DIALOG_MAX_SPEAKERS = 2
@@ -398,7 +398,7 @@ def _turn_gap(left: dict[str, Any], right: dict[str, Any]) -> float:
 
 
 def _join_text(left: str, right: str) -> str:
-    return " ".join(part for part in (left.strip(), right.strip()) if part).strip()
+    return _decapitalize_join(left.strip(), right.strip())
 
 
 def _merge_turns(
