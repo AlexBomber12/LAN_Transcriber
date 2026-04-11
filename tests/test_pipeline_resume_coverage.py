@@ -29,6 +29,7 @@ from lan_app.db import (
     set_recording_cancel_request,
 )
 from lan_transcriber.pipeline import PrecheckResult
+from lan_transcriber.pipeline_steps import orchestrator as pipeline_orchestrator
 from lan_transcriber.pipeline_steps.diarization_quality import SpeakerTurnSmoothingResult
 
 
@@ -237,6 +238,142 @@ def test_build_diarization_metadata_payload_normalizes_optional_fields(tmp_path:
     )
     assert payload["initial_hints"] == {"min_speakers": 1}
     assert "profile_selection" not in payload
+
+
+def test_worker_diarization_metadata_wrapper_delegates_to_orchestrator(
+    tmp_path: Path,
+) -> None:
+    """Regression guard for PR-ARTIFACT-SINGLE-WRITER-01.
+
+    Ensures ``worker_tasks._build_diarization_metadata_payload`` is only a
+    thin delegate to ``pipeline_orchestrator._build_diarization_metadata_payload``
+    so that any new key added to the orchestrator's shared builder shows up
+    in the stage-based worker path without a parallel code change. This is
+    the exact bug that PR-SPEAKER-MERGE-DIAGNOSTICS-HOTFIX-01 had to fix by
+    hand before consolidation.
+    """
+
+    cfg = worker_tasks._build_pipeline_settings(_cfg(tmp_path))  # noqa: SLF001
+    smoothing_result = SpeakerTurnSmoothingResult(
+        turns=[{"speaker": "S1", "start": 0.0, "end": 1.0, "text": "hello"}],
+        adjacent_merges=0,
+        micro_turn_absorptions=0,
+        turn_count_before=1,
+        turn_count_after=1,
+        speaker_count_before=1,
+        speaker_count_after=1,
+    )
+    runtime = {
+        "mode": "pyannote",
+        "effective_hints": {"min_speakers": 2},
+        "initial_hints": {"min_speakers": 2},
+        "profile_selection": {},
+        "used_dummy_fallback": False,
+    }
+    speaker_merges = {"S2": "S1"}
+    speaker_merge_diagnostics = {
+        "embedding_model_available": True,
+        "speakers_found": ["S1", "S2"],
+        "centroids_computed": ["S1", "S2"],
+        "pairwise_scores": [{"a": "S1", "b": "S2", "score": 0.93}],
+        "merges_applied": {"S2": "S1"},
+        "skipped_reason": None,
+    }
+    worker_payload = worker_tasks._build_diarization_metadata_payload(  # noqa: SLF001
+        runtime=runtime,
+        cfg=cfg,
+        smoothing_result=smoothing_result,
+        speaker_merges=speaker_merges,
+        speaker_merge_diagnostics=speaker_merge_diagnostics,
+    )
+    orchestrator_payload = pipeline_orchestrator._build_diarization_metadata_payload(  # noqa: SLF001
+        runtime=runtime,
+        cfg=cfg,
+        smoothing_result=smoothing_result,
+        used_dummy_fallback=False,
+        speaker_merges=speaker_merges,
+        speaker_merge_diagnostics=speaker_merge_diagnostics,
+    )
+    assert worker_payload == orchestrator_payload
+    assert worker_payload["speaker_merges"] == speaker_merges
+    assert worker_payload["speaker_merge_diagnostics"] == speaker_merge_diagnostics
+    # Field added by orchestrator is preserved end-to-end.
+    assert "speaker_merge_diagnostics" in worker_payload
+
+
+def test_orchestrator_diarization_metadata_payload_new_field_survives_worker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Simulate the PR-140 scenario: a new field added to the orchestrator's
+    shared builder must survive the full worker_tasks write path.
+
+    We monkeypatch the shared orchestrator builder to add an extra key and
+    then call the worker delegate; the key must be present on the returned
+    payload, proving the worker never rebuilds the payload independently.
+    """
+
+    cfg = worker_tasks._build_pipeline_settings(_cfg(tmp_path))  # noqa: SLF001
+    smoothing_result = SpeakerTurnSmoothingResult(
+        turns=[],
+        adjacent_merges=0,
+        micro_turn_absorptions=0,
+        turn_count_before=0,
+        turn_count_after=0,
+        speaker_count_before=0,
+        speaker_count_after=0,
+    )
+    original_builder = pipeline_orchestrator._build_diarization_metadata_payload  # noqa: SLF001
+
+    def _augmented_builder(**kwargs):
+        payload = original_builder(**kwargs)
+        payload["pr140_simulated_new_field"] = "present"
+        return payload
+
+    monkeypatch.setattr(
+        pipeline_orchestrator,
+        "_build_diarization_metadata_payload",
+        _augmented_builder,
+    )
+
+    payload = worker_tasks._build_diarization_metadata_payload(  # noqa: SLF001
+        runtime={"mode": "pyannote"},
+        cfg=cfg,
+        smoothing_result=smoothing_result,
+    )
+    assert payload["pr140_simulated_new_field"] == "present"
+
+
+def test_finalize_transcript_payload_merges_speaker_lines_and_review() -> None:
+    base = {
+        "recording_id": "rec-1",
+        "segments": [],
+        "speakers": ["S1"],
+        "text": "hello",
+    }
+    finalized = pipeline_orchestrator._finalize_transcript_payload(  # noqa: SLF001
+        base,
+        speaker_lines=["[0.00-1.00] **S1:** hello"],
+        asr_execution={"used_multilingual_path": False, "selected_mode": "mono"},
+        review={"required": True, "reason_code": "low_confidence"},
+    )
+    assert finalized is base  # finalization mutates in place and returns the same dict
+    assert finalized["speaker_lines"] == ["[0.00-1.00] **S1:** hello"]
+    assert finalized["multilingual_asr"] == {
+        "used_multilingual_path": False,
+        "selected_mode": "mono",
+    }
+    assert finalized["review"] == {"required": True, "reason_code": "low_confidence"}
+    # Empty/None asr execution and review collapse to empty dicts.
+    finalized = pipeline_orchestrator._finalize_transcript_payload(  # noqa: SLF001
+        {"recording_id": "rec-2"},
+        speaker_lines=[],
+        asr_execution=None,  # type: ignore[arg-type]
+        review=None,  # type: ignore[arg-type]
+    )
+    assert finalized["speaker_lines"] == []
+    assert finalized["multilingual_asr"] == {}
+    assert finalized["review"] == {}
 
 
 def test_stage_precheck_with_missing_duration_and_calendar_refresh_warning(

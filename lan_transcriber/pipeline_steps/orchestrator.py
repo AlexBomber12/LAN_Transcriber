@@ -1246,75 +1246,108 @@ async def _maybe_retry_dialog_diarization(
     return retry_result if winner_is_retry else diarization
 
 
-def _write_diarization_metadata_artifact(
+# -----------------------------------------------------------------------------
+# Shared artifact payload builders (PR-ARTIFACT-SINGLE-WRITER-01)
+#
+# These helpers exist so that the legacy monolithic ``run_pipeline`` path and
+# the stage-based execution in ``lan_app.worker_tasks`` build derived JSON
+# artifact payloads from a single source. Before PR-ARTIFACT-SINGLE-WRITER-01,
+# ``lan_app.worker_tasks`` had its own parallel implementations that silently
+# dropped fields when orchestrator payloads gained new keys (see
+# PR-SPEAKER-MERGE-DIAGNOSTICS-HOTFIX-01). Always extend these shared builders
+# when adding fields, and call them from both the orchestrator and the worker.
+#
+# Conflict matrix of derived artifacts that can be written by both paths:
+#   diarization_metadata.json : stage path writes in ``_stage_speaker_turns``;
+#                               legacy path writes in ``_write_diarization_metadata_artifact``.
+#                               Shared builder: ``_build_diarization_metadata_payload``.
+#   transcript.json           : stage path writes in ``_stage_export_artifacts``;
+#                               legacy path writes at the end of ``run_pipeline``.
+#                               Shared builder: ``_finalize_transcript_payload``.
+#   segments.json             : list payload copied verbatim from ``diar_segments``.
+#   speaker_turns.json        : list payload copied verbatim from smoothed turns.
+#   summary.json              : dict payload produced by ``build_summary_payload`` or
+#                               ``_build_structured_summary_payload`` (already shared).
+#   transcript.txt            : plain text copy of ``clean_text``.
+#   metrics.json              : independent per-path (legacy: run_pipeline; stage:
+#                               ``_stage_metrics``). Not a dual-write conflict.
+# -----------------------------------------------------------------------------
+
+
+def _build_diarization_metadata_payload(
     *,
-    artifacts,
-    diariser: Diariser,
+    runtime: dict[str, Any],
     cfg: Settings,
     smoothing_result,
     used_dummy_fallback: bool,
     speaker_merges: dict[str, str] | None = None,
     speaker_merge_diagnostics: dict[str, Any] | None = None,
-) -> None:
-    metadata = _diariser_runtime_metadata(diariser)
-    diariser_mode = _diariser_mode(diariser)
-    effective_hints = metadata.get("effective_hints")
+) -> dict[str, Any]:
+    """Build the ``diarization_metadata.json`` payload from a runtime dict.
+
+    This is the single source of truth for diarization metadata fields.
+    Both ``_write_diarization_metadata_artifact`` (legacy monolithic path)
+    and ``lan_app.worker_tasks._stage_speaker_turns`` (stage-based production
+    path) call this function so that payload fields stay in sync.
+    """
+
+    diariser_mode = str(runtime.get("mode") or "unknown").strip().lower() or "unknown"
+    effective_hints = runtime.get("effective_hints")
     if not isinstance(effective_hints, dict):
         effective_hints = {}
-    initial_hints = metadata.get("initial_hints")
+    initial_hints = runtime.get("initial_hints")
     if not isinstance(initial_hints, dict):
         initial_hints = {}
-    profile_selection = metadata.get("profile_selection")
+    profile_selection = runtime.get("profile_selection")
     if not isinstance(profile_selection, dict):
         profile_selection = {}
     selected_profile = str(
         profile_selection.get("selected_profile")
-        or metadata.get("selected_profile")
-        or metadata.get("initial_profile")
-        or metadata.get("diarization_profile")
+        or runtime.get("selected_profile")
+        or runtime.get("initial_profile")
+        or runtime.get("diarization_profile")
         or cfg.diarization_profile
     )
     initial_metrics = profile_selection.get("initial_metrics")
     if not isinstance(initial_metrics, dict):
         initial_metrics = {}
 
+    degraded = bool(used_dummy_fallback) or diariser_mode not in {"pyannote", "unknown"}
+
     payload: dict[str, Any] = {
         "version": 1,
         "mode": diariser_mode,
-        "degraded": _is_degraded_diarization(
-            diariser,
-            used_dummy_fallback=used_dummy_fallback,
-        ),
-        "diarization_profile": str(metadata.get("diarization_profile") or cfg.diarization_profile),
+        "degraded": degraded,
+        "diarization_profile": str(runtime.get("diarization_profile") or cfg.diarization_profile),
         "requested_profile": str(
-            metadata.get("requested_profile")
-            or metadata.get("diarization_profile")
+            runtime.get("requested_profile")
+            or runtime.get("diarization_profile")
             or cfg.diarization_profile
         ),
-        "effective_device": str(metadata.get("effective_device") or cfg.diarization_device),
-        "scheduler_mode": str(metadata.get("scheduler_mode") or cfg.gpu_scheduler_mode),
-        "scheduler_reason": metadata.get("scheduler_reason"),
-        "initial_profile": str(metadata.get("initial_profile") or cfg.diarization_profile),
+        "effective_device": str(runtime.get("effective_device") or cfg.diarization_device),
+        "scheduler_mode": str(runtime.get("scheduler_mode") or cfg.gpu_scheduler_mode),
+        "scheduler_reason": runtime.get("scheduler_reason"),
+        "initial_profile": str(runtime.get("initial_profile") or cfg.diarization_profile),
         "selected_profile": selected_profile,
         "selected_result": str(profile_selection.get("selected_result") or "initial_pass"),
-        "auto_profile_enabled": bool(metadata.get("auto_profile_enabled", False)),
-        "profile_override_reason": metadata.get("override_reason"),
+        "auto_profile_enabled": bool(runtime.get("auto_profile_enabled", False)),
+        "profile_override_reason": runtime.get("override_reason"),
         "hints_applied": effective_hints,
         "dialog_retry_attempted": bool(
             profile_selection.get(
                 "dialog_retry_attempted",
-                metadata.get("dialog_retry_used", False),
+                runtime.get("dialog_retry_used", False),
             )
         ),
-        "dialog_retry_used": bool(metadata.get("dialog_retry_used", False)),
-        "speaker_count_before_retry": metadata.get("speaker_count_before_retry"),
-        "speaker_count_after_retry": metadata.get("speaker_count_after_retry"),
+        "dialog_retry_used": bool(runtime.get("dialog_retry_used", False)),
+        "speaker_count_before_retry": runtime.get("speaker_count_before_retry"),
+        "speaker_count_after_retry": runtime.get("speaker_count_after_retry"),
         "initial_speaker_count": initial_metrics.get(
             "speaker_count",
-            metadata.get("speaker_count_before_retry"),
+            runtime.get("speaker_count_before_retry"),
         ),
         "initial_top_two_coverage": initial_metrics.get("top_two_coverage"),
-        "used_dummy_fallback": used_dummy_fallback,
+        "used_dummy_fallback": bool(used_dummy_fallback),
         "smoothing_applied": bool(diariser_mode == "pyannote" and not used_dummy_fallback),
         "merge_gap_seconds": cfg.diarization_merge_gap_seconds,
         "min_turn_seconds": cfg.diarization_min_turn_seconds,
@@ -1331,6 +1364,50 @@ def _write_diarization_metadata_artifact(
         payload["profile_selection"] = profile_selection
     payload["speaker_merges"] = dict(speaker_merges or {})
     payload["speaker_merge_diagnostics"] = dict(speaker_merge_diagnostics or {})
+    return payload
+
+
+def _finalize_transcript_payload(
+    base_payload: dict[str, Any],
+    *,
+    speaker_lines: list[str],
+    asr_execution: dict[str, Any],
+    review: dict[str, Any],
+) -> dict[str, Any]:
+    """Attach post-processing fields to a transcript payload.
+
+    Shared builder for ``transcript.json``. Both the legacy monolithic
+    ``run_pipeline`` path and the stage-based ``_stage_export_artifacts``
+    path in ``lan_app.worker_tasks`` call this so that any field added
+    here is automatically preserved by every writer.
+    """
+
+    base_payload["speaker_lines"] = list(speaker_lines)
+    base_payload["multilingual_asr"] = dict(asr_execution or {})
+    base_payload["review"] = dict(review or {})
+    return base_payload
+
+
+def _write_diarization_metadata_artifact(
+    *,
+    artifacts,
+    diariser: Diariser,
+    cfg: Settings,
+    smoothing_result,
+    used_dummy_fallback: bool,
+    speaker_merges: dict[str, str] | None = None,
+    speaker_merge_diagnostics: dict[str, Any] | None = None,
+) -> None:
+    runtime = _diariser_runtime_metadata(diariser)
+    runtime["mode"] = _diariser_mode(diariser)
+    payload = _build_diarization_metadata_payload(
+        runtime=runtime,
+        cfg=cfg,
+        smoothing_result=smoothing_result,
+        used_dummy_fallback=used_dummy_fallback,
+        speaker_merges=speaker_merges,
+        speaker_merge_diagnostics=speaker_merge_diagnostics,
+    )
     atomic_write_json(artifacts.diarization_metadata_json_path, payload)
 
 
@@ -3313,29 +3390,31 @@ async def run_pipeline(
         serialised_segments = [SpeakerSegment(start=safe_float(turn["start"]), end=safe_float(turn["end"]), speaker=str(turn["speaker"]), text=str(turn["text"])) for turn in speaker_turns]
         speakers = sorted(set(aliases.get(turn["speaker"], turn["speaker"]) for turn in speaker_turns))
         atomic_write_text(artifacts.transcript_txt_path, clean_text)
-        payload = _base_transcript_payload(
-            recording_id=artifacts.recording_id,
-            language=language_info,
-            dominant_language=language_analysis.dominant_language,
-            language_distribution=language_analysis.distribution,
-            language_spans=language_analysis.spans,
-            target_summary_language=summary_lang,
-            transcript_language_override=override_lang,
-            calendar_title=cal_title,
-            calendar_attendees=cal_attendees,
-            segments=language_analysis.segments,
-            speakers=speakers,
-            text=clean_text,
+        payload = _finalize_transcript_payload(
+            _base_transcript_payload(
+                recording_id=artifacts.recording_id,
+                language=language_info,
+                dominant_language=language_analysis.dominant_language,
+                language_distribution=language_analysis.distribution,
+                language_spans=language_analysis.spans,
+                target_summary_language=summary_lang,
+                transcript_language_override=override_lang,
+                calendar_title=cal_title,
+                calendar_attendees=cal_attendees,
+                segments=language_analysis.segments,
+                speakers=speakers,
+                text=clean_text,
+            ),
+            speaker_lines=speaker_lines,
+            asr_execution=asr_execution,
+            review={
+                "required": bool(language_analysis.review_required),
+                "reason_code": language_analysis.review_reason_code,
+                "reason_text": language_analysis.review_reason_text,
+                "uncertain_segment_count": language_analysis.uncertain_segment_count,
+                "conflict_segment_count": language_analysis.conflict_segment_count,
+            },
         )
-        payload["speaker_lines"] = speaker_lines
-        payload["multilingual_asr"] = dict(asr_execution)
-        payload["review"] = {
-            "required": bool(language_analysis.review_required),
-            "reason_code": language_analysis.review_reason_code,
-            "reason_text": language_analysis.review_reason_text,
-            "uncertain_segment_count": language_analysis.uncertain_segment_count,
-            "conflict_segment_count": language_analysis.conflict_segment_count,
-        }
         atomic_write_json(artifacts.transcript_json_path, payload)
         atomic_write_json(artifacts.segments_json_path, diar_segments)
         atomic_write_json(artifacts.speaker_turns_json_path, speaker_turns)

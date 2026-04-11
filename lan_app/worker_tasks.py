@@ -2574,77 +2574,23 @@ def _build_diarization_metadata_payload(
     speaker_merges: dict[str, str] | None = None,
     speaker_merge_diagnostics: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    diariser_mode = str(runtime.get("mode") or "unknown").strip().lower() or "unknown"
-    effective_hints = runtime.get("effective_hints")
-    if not isinstance(effective_hints, dict):
-        effective_hints = {}
-    initial_hints = runtime.get("initial_hints")
-    if not isinstance(initial_hints, dict):
-        initial_hints = {}
-    profile_selection = runtime.get("profile_selection")
-    if not isinstance(profile_selection, dict):
-        profile_selection = {}
-    selected_profile = str(
-        profile_selection.get("selected_profile")
-        or runtime.get("selected_profile")
-        or runtime.get("initial_profile")
-        or runtime.get("diarization_profile")
-        or cfg.diarization_profile
+    """Thin wrapper that delegates to the orchestrator's shared builder.
+
+    PR-ARTIFACT-SINGLE-WRITER-01 consolidated the diarization metadata
+    payload construction into a single source of truth in
+    ``lan_transcriber.pipeline_steps.orchestrator``. The wrapper is kept
+    so existing tests that reference ``worker_tasks._build_diarization_metadata_payload``
+    continue to hit the same code path the production pipeline uses.
+    """
+
+    return pipeline_orchestrator._build_diarization_metadata_payload(  # noqa: SLF001
+        runtime=runtime,
+        cfg=cfg,
+        smoothing_result=smoothing_result,
+        used_dummy_fallback=bool(runtime.get("used_dummy_fallback", False)),
+        speaker_merges=speaker_merges,
+        speaker_merge_diagnostics=speaker_merge_diagnostics,
     )
-    initial_metrics = profile_selection.get("initial_metrics")
-    if not isinstance(initial_metrics, dict):
-        initial_metrics = {}
-    payload: dict[str, Any] = {
-        "version": 1,
-        "mode": diariser_mode,
-        "degraded": bool(runtime.get("used_dummy_fallback")) or diariser_mode not in {"pyannote", "unknown"},
-        "diarization_profile": str(runtime.get("diarization_profile") or cfg.diarization_profile),
-        "requested_profile": str(
-            runtime.get("requested_profile")
-            or runtime.get("diarization_profile")
-            or cfg.diarization_profile
-        ),
-        "effective_device": str(runtime.get("effective_device") or cfg.diarization_device),
-        "scheduler_mode": str(runtime.get("scheduler_mode") or cfg.gpu_scheduler_mode),
-        "scheduler_reason": runtime.get("scheduler_reason"),
-        "initial_profile": str(runtime.get("initial_profile") or cfg.diarization_profile),
-        "selected_profile": selected_profile,
-        "selected_result": str(profile_selection.get("selected_result") or "initial_pass"),
-        "auto_profile_enabled": bool(runtime.get("auto_profile_enabled", False)),
-        "profile_override_reason": runtime.get("override_reason"),
-        "hints_applied": effective_hints,
-        "dialog_retry_attempted": bool(
-            profile_selection.get(
-                "dialog_retry_attempted",
-                runtime.get("dialog_retry_used", False),
-            )
-        ),
-        "dialog_retry_used": bool(runtime.get("dialog_retry_used", False)),
-        "speaker_count_before_retry": runtime.get("speaker_count_before_retry"),
-        "speaker_count_after_retry": runtime.get("speaker_count_after_retry"),
-        "initial_speaker_count": initial_metrics.get(
-            "speaker_count",
-            runtime.get("speaker_count_before_retry"),
-        ),
-        "initial_top_two_coverage": initial_metrics.get("top_two_coverage"),
-        "used_dummy_fallback": bool(runtime.get("used_dummy_fallback", False)),
-        "smoothing_applied": bool(diariser_mode == "pyannote" and not runtime.get("used_dummy_fallback")),
-        "merge_gap_seconds": cfg.diarization_merge_gap_seconds,
-        "min_turn_seconds": cfg.diarization_min_turn_seconds,
-        "speaker_count_before_smoothing": smoothing_result.speaker_count_before,
-        "speaker_count_after_smoothing": smoothing_result.speaker_count_after,
-        "turn_count_before_smoothing": smoothing_result.turn_count_before,
-        "turn_count_after_smoothing": smoothing_result.turn_count_after,
-        "adjacent_merges": smoothing_result.adjacent_merges,
-        "micro_turn_absorptions": smoothing_result.micro_turn_absorptions,
-    }
-    if initial_hints != effective_hints:
-        payload["initial_hints"] = initial_hints
-    if profile_selection:
-        payload["profile_selection"] = profile_selection
-    payload["speaker_merges"] = dict(speaker_merges or {})
-    payload["speaker_merge_diagnostics"] = dict(speaker_merge_diagnostics or {})
-    return payload
 
 
 def _stage_sanitize_audio(ctx: _PipelineExecutionContext) -> _StageResult:
@@ -3570,28 +3516,30 @@ def _stage_export_artifacts(ctx: _PipelineExecutionContext) -> _StageResult:
         ],
         ctx.pipeline_settings.merge_similar,
     )
-    transcript_payload = pipeline_orchestrator._base_transcript_payload(
-        recording_id=ctx.recording_id,
-        language=language_info,
-        dominant_language=str(ctx.language_payload.get("dominant_language") or "unknown"),
-        language_distribution=dict(ctx.language_payload.get("language_distribution") or {}),
-        language_spans=list(ctx.language_payload.get("language_spans") or []),
-        target_summary_language=summary_lang,
-        transcript_language_override=ctx.transcript_language_override,
-        calendar_title=ctx.calendar_title,
-        calendar_attendees=ctx.calendar_attendees,
-        segments=language_segments,
-        speakers=sorted(
-            {
-                aliases.get(str(turn.get("speaker") or "S1"), str(turn.get("speaker") or "S1"))
-                for turn in ctx.speaker_turns
-            }
+    transcript_payload = pipeline_orchestrator._finalize_transcript_payload(
+        pipeline_orchestrator._base_transcript_payload(
+            recording_id=ctx.recording_id,
+            language=language_info,
+            dominant_language=str(ctx.language_payload.get("dominant_language") or "unknown"),
+            language_distribution=dict(ctx.language_payload.get("language_distribution") or {}),
+            language_spans=list(ctx.language_payload.get("language_spans") or []),
+            target_summary_language=summary_lang,
+            transcript_language_override=ctx.transcript_language_override,
+            calendar_title=ctx.calendar_title,
+            calendar_attendees=ctx.calendar_attendees,
+            segments=language_segments,
+            speakers=sorted(
+                {
+                    aliases.get(str(turn.get("speaker") or "S1"), str(turn.get("speaker") or "S1"))
+                    for turn in ctx.speaker_turns
+                }
+            ),
+            text=ctx.clean_text,
         ),
-        text=ctx.clean_text,
+        speaker_lines=speaker_lines,
+        asr_execution=ctx.asr_execution,
+        review=ctx.language_payload.get("review") or {},
     )
-    transcript_payload["speaker_lines"] = speaker_lines
-    transcript_payload["multilingual_asr"] = dict(ctx.asr_execution)
-    transcript_payload["review"] = dict(ctx.language_payload.get("review") or {})
     atomic_write_text(ctx.artifacts.recording_artifacts.transcript_txt_path, ctx.clean_text)
     atomic_write_json(ctx.artifacts.recording_artifacts.transcript_json_path, transcript_payload)
     atomic_write_json(ctx.artifacts.recording_artifacts.segments_json_path, ctx.diarization_segments)
