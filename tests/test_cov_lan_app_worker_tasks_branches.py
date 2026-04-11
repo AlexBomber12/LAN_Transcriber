@@ -1463,6 +1463,155 @@ def test_execute_diarization_workflow_direct_path(tmp_path: Path, monkeypatch: p
     assert result["diarization_mode"] == "pyannote"
     assert result["used_dummy_fallback"] is False
     assert "gpu policy test" in messages
+    assert result["speaker_merge_map"] == {}
+    assert result["speaker_merge_diagnostics"]["skipped_reason"] == "single_speaker"
+
+
+def test_apply_speaker_merge_step_disabled_by_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = worker_tasks._build_pipeline_settings(_db_settings(tmp_path))  # noqa: SLF001
+    cfg.speaker_merge_enabled = False
+    monkeypatch.setattr(
+        worker_tasks.pipeline_orchestrator,
+        "_diariser_mode",
+        lambda _diariser: "pyannote",
+    )
+    segments, merge_map, diagnostics = worker_tasks._apply_speaker_merge_step(  # noqa: SLF001
+        diarization_segments=[
+            {"speaker": "S1", "start": 0.0, "end": 1.0},
+            {"speaker": "S2", "start": 1.0, "end": 2.0},
+        ],
+        diariser=object(),
+        used_dummy_fallback=False,
+        pipeline_settings=cfg,
+        working_audio_path=tmp_path / "audio.wav",
+        step_log_callback=None,
+    )
+    assert merge_map == {}
+    assert diagnostics["skipped_reason"] == "disabled_by_config"
+    assert len(segments) == 2
+
+
+def test_apply_speaker_merge_step_embedding_model_unavailable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = worker_tasks._build_pipeline_settings(_db_settings(tmp_path))  # noqa: SLF001
+    monkeypatch.setattr(
+        worker_tasks.pipeline_orchestrator,
+        "_diariser_mode",
+        lambda _diariser: "pyannote",
+    )
+    monkeypatch.setattr(
+        worker_tasks.pipeline_orchestrator,
+        "_resolve_pyannote_embedding_model",
+        lambda _diariser: None,
+    )
+    messages: list[str] = []
+    _, merge_map, diagnostics = worker_tasks._apply_speaker_merge_step(  # noqa: SLF001
+        diarization_segments=[
+            {"speaker": "S1", "start": 0.0, "end": 1.0},
+            {"speaker": "S2", "start": 1.0, "end": 2.0},
+        ],
+        diariser=object(),
+        used_dummy_fallback=False,
+        pipeline_settings=cfg,
+        working_audio_path=tmp_path / "audio.wav",
+        step_log_callback=messages.append,
+    )
+    assert merge_map == {}
+    assert diagnostics["skipped_reason"] == "embedding_model_unavailable"
+    assert any("embedding model unavailable" in m for m in messages)
+
+
+def test_apply_speaker_merge_step_applies_merge(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = worker_tasks._build_pipeline_settings(_db_settings(tmp_path))  # noqa: SLF001
+    monkeypatch.setattr(
+        worker_tasks.pipeline_orchestrator,
+        "_diariser_mode",
+        lambda _diariser: "pyannote",
+    )
+    monkeypatch.setattr(
+        worker_tasks.pipeline_orchestrator,
+        "_resolve_pyannote_embedding_model",
+        lambda _diariser: object(),
+    )
+    merged_segments = [
+        {"speaker": "S1", "start": 0.0, "end": 1.0},
+        {"speaker": "S1", "start": 1.0, "end": 2.0},
+    ]
+    run_diagnostics = {
+        "embedding_model_available": True,
+        "speakers_found": ["S1", "S2"],
+        "centroids_computed": ["S1", "S2"],
+        "pairwise_scores": [
+            {
+                "speaker_a": "S1",
+                "speaker_b": "S2",
+                "similarity": 0.95,
+                "overlap": False,
+                "action": "merged",
+            }
+        ],
+        "merges_applied": {"S2": "S1"},
+    }
+    monkeypatch.setattr(
+        worker_tasks,
+        "merge_similar_speakers",
+        lambda *_a, **_k: (merged_segments, {"S2": "S1"}, run_diagnostics),
+    )
+    messages: list[str] = []
+    segments, merge_map, diagnostics = worker_tasks._apply_speaker_merge_step(  # noqa: SLF001
+        diarization_segments=[
+            {"speaker": "S1", "start": 0.0, "end": 1.0},
+            {"speaker": "S2", "start": 1.0, "end": 2.0},
+        ],
+        diariser=object(),
+        used_dummy_fallback=False,
+        pipeline_settings=cfg,
+        working_audio_path=tmp_path / "audio.wav",
+        step_log_callback=messages.append,
+    )
+    assert segments == merged_segments
+    assert merge_map == {"S2": "S1"}
+    assert diagnostics["skipped_reason"] is None
+    assert diagnostics["merges_applied"] == {"S2": "S1"}
+    assert any("speaker_merge applied merges=S2->S1" in m for m in messages)
+
+    # Re-run with merge_similar_speakers returning an empty merge map to
+    # cover the "no merges applied" branch where the step log is not emitted.
+    messages.clear()
+    monkeypatch.setattr(
+        worker_tasks,
+        "merge_similar_speakers",
+        lambda *_a, **_k: (
+            [
+                {"speaker": "S1", "start": 0.0, "end": 1.0},
+                {"speaker": "S2", "start": 1.0, "end": 2.0},
+            ],
+            {},
+            {**run_diagnostics, "merges_applied": {}},
+        ),
+    )
+    _, merge_map_empty, diagnostics_empty = worker_tasks._apply_speaker_merge_step(  # noqa: SLF001
+        diarization_segments=[
+            {"speaker": "S1", "start": 0.0, "end": 1.0},
+            {"speaker": "S2", "start": 1.0, "end": 2.0},
+        ],
+        diariser=object(),
+        used_dummy_fallback=False,
+        pipeline_settings=cfg,
+        working_audio_path=tmp_path / "audio.wav",
+        step_log_callback=messages.append,
+    )
+    assert merge_map_empty == {}
+    assert diagnostics_empty["skipped_reason"] is None
+    assert not any("speaker_merge applied merges=" in m for m in messages)
 
 
 def test_stage_asr_uses_child_operation_path(

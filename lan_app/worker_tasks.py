@@ -59,6 +59,7 @@ from lan_transcriber.pipeline_steps.snippets import (
     export_speaker_snippets,
     write_empty_snippets_manifest,
 )
+from lan_transcriber.pipeline_steps.speaker_merge import merge_similar_speakers
 from lan_transcriber.pipeline_steps.speaker_turns import (
     _diarization_segments,
     build_speaker_turns,
@@ -2176,13 +2177,90 @@ def _execute_diarization_workflow(
     diarization_runtime = pipeline_orchestrator._diariser_runtime_metadata(diariser)
     diarization_runtime["used_dummy_fallback"] = used_dummy_fallback
     diarization_runtime["mode"] = pipeline_orchestrator._diariser_mode(diariser)
+    (
+        diarization_segments,
+        speaker_merge_map,
+        speaker_merge_diagnostics,
+    ) = _apply_speaker_merge_step(
+        diarization_segments=diarization_segments,
+        diariser=diariser,
+        used_dummy_fallback=used_dummy_fallback,
+        pipeline_settings=pipeline_settings,
+        working_audio_path=working_audio_path,
+        step_log_callback=step_log_callback,
+    )
     return {
         "diarization_segments": diarization_segments,
         "diarization_runtime": diarization_runtime,
         "used_dummy_fallback": used_dummy_fallback,
         "diarization_mode": diarization_mode,
         "diarization_reason": diarization_reason,
+        "speaker_merge_map": speaker_merge_map,
+        "speaker_merge_diagnostics": speaker_merge_diagnostics,
     }
+
+
+def _apply_speaker_merge_step(
+    *,
+    diarization_segments: list[dict[str, Any]],
+    diariser: Any,
+    used_dummy_fallback: bool,
+    pipeline_settings: PipelineSettings,
+    working_audio_path: Path,
+    step_log_callback: Any,
+) -> tuple[list[dict[str, Any]], dict[str, str], dict[str, Any]]:
+    speaker_merge_map: dict[str, str] = {}
+    speaker_merge_diagnostics: dict[str, Any] = {
+        "embedding_model_available": False,
+        "speakers_found": [],
+        "centroids_computed": [],
+        "pairwise_scores": [],
+        "merges_applied": {},
+        "skipped_reason": None,
+    }
+    diariser_mode_value = pipeline_orchestrator._diariser_mode(diariser)
+    if not pipeline_settings.speaker_merge_enabled:
+        speaker_merge_diagnostics["skipped_reason"] = "disabled_by_config"
+    elif used_dummy_fallback:
+        speaker_merge_diagnostics["skipped_reason"] = "dummy_fallback"
+    elif diariser_mode_value != "pyannote":
+        speaker_merge_diagnostics["skipped_reason"] = "non_pyannote_diariser"
+    elif len({str(row.get("speaker") or "") for row in diarization_segments}) < 2:
+        speaker_merge_diagnostics["skipped_reason"] = "single_speaker"
+    else:
+        embedding_model = pipeline_orchestrator._resolve_pyannote_embedding_model(diariser)
+        if embedding_model is None:
+            speaker_merge_diagnostics["skipped_reason"] = "embedding_model_unavailable"
+            _best_effort_step_log_callback(
+                step_log_callback,
+                "speaker_merge skipped: embedding model unavailable",
+            )
+        else:
+            (
+                diarization_segments,
+                speaker_merge_map,
+                merge_run_diagnostics,
+            ) = merge_similar_speakers(
+                diarization_segments,
+                audio_path=working_audio_path,
+                embedding_model=embedding_model,
+                similarity_threshold=pipeline_settings.speaker_merge_similarity_threshold,
+                max_segments_per_speaker=pipeline_settings.speaker_merge_max_segments,
+            )
+            speaker_merge_diagnostics.update(merge_run_diagnostics)
+            speaker_merge_diagnostics["skipped_reason"] = None
+            if speaker_merge_map:
+                _best_effort_step_log_callback(
+                    step_log_callback,
+                    (
+                        "speaker_merge applied merges="
+                        + ",".join(
+                            f"{src}->{dst}"
+                            for src, dst in sorted(speaker_merge_map.items())
+                        )
+                    ),
+                )
+    return diarization_segments, speaker_merge_map, speaker_merge_diagnostics
 
 
 def _run_default_diarization_child_operation(payload: dict[str, Any]) -> dict[str, Any]:
@@ -2493,6 +2571,8 @@ def _build_diarization_metadata_payload(
     runtime: dict[str, Any],
     cfg: PipelineSettings,
     smoothing_result: SpeakerTurnSmoothingResult,
+    speaker_merges: dict[str, str] | None = None,
+    speaker_merge_diagnostics: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     diariser_mode = str(runtime.get("mode") or "unknown").strip().lower() or "unknown"
     effective_hints = runtime.get("effective_hints")
@@ -2562,6 +2642,8 @@ def _build_diarization_metadata_payload(
         payload["initial_hints"] = initial_hints
     if profile_selection:
         payload["profile_selection"] = profile_selection
+    payload["speaker_merges"] = dict(speaker_merges or {})
+    payload["speaker_merge_diagnostics"] = dict(speaker_merge_diagnostics or {})
     return payload
 
 
@@ -2825,6 +2907,8 @@ def _stage_diarization(ctx: _PipelineExecutionContext) -> _StageResult:
         ctx.diarization_segments = list(child_result.get("diarization_segments") or [])
         ctx.diarization_runtime = dict(child_result.get("diarization_runtime") or {})
         used_dummy_fallback = bool(child_result.get("used_dummy_fallback"))
+        speaker_merge_map = dict(child_result.get("speaker_merge_map") or {})
+        speaker_merge_diagnostics = dict(child_result.get("speaker_merge_diagnostics") or {})
     else:
         diarization_result = _execute_diarization_workflow(
             working_audio_path=working_audio_path,
@@ -2841,6 +2925,10 @@ def _stage_diarization(ctx: _PipelineExecutionContext) -> _StageResult:
         ctx.diarization_segments = list(diarization_result.get("diarization_segments") or [])
         ctx.diarization_runtime = dict(diarization_result.get("diarization_runtime") or {})
         used_dummy_fallback = bool(diarization_result.get("used_dummy_fallback"))
+        speaker_merge_map = dict(diarization_result.get("speaker_merge_map") or {})
+        speaker_merge_diagnostics = dict(diarization_result.get("speaker_merge_diagnostics") or {})
+    ctx.diarization_runtime["speaker_merges"] = speaker_merge_map
+    ctx.diarization_runtime["speaker_merge_diagnostics"] = speaker_merge_diagnostics
     _write_diarization_status_artifact(
         recording_id=ctx.recording_id,
         mode=diarization_mode,
@@ -3020,10 +3108,20 @@ def _stage_speaker_turns(ctx: _PipelineExecutionContext) -> _StageResult:
             speaker_count_before=speaker_count,
             speaker_count_after=speaker_count,
         )
+    runtime_speaker_merges = ctx.diarization_runtime.get("speaker_merges")
+    runtime_speaker_merge_diagnostics = ctx.diarization_runtime.get(
+        "speaker_merge_diagnostics"
+    )
     diarization_metadata = _build_diarization_metadata_payload(
         runtime=ctx.diarization_runtime,
         cfg=ctx.pipeline_settings,
         smoothing_result=smoothing_result,
+        speaker_merges=runtime_speaker_merges
+        if isinstance(runtime_speaker_merges, dict)
+        else None,
+        speaker_merge_diagnostics=runtime_speaker_merge_diagnostics
+        if isinstance(runtime_speaker_merge_diagnostics, dict)
+        else None,
     )
     atomic_write_json(
         ctx.artifacts.recording_artifacts.segments_json_path,

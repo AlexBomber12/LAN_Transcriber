@@ -1,616 +1,324 @@
-diff --git a/lan_transcriber/pipeline_steps/orchestrator.py b/lan_transcriber/pipeline_steps/orchestrator.py
-index 76fe491..83d214a 100644
---- a/lan_transcriber/pipeline_steps/orchestrator.py
-+++ b/lan_transcriber/pipeline_steps/orchestrator.py
-@@ -997,10 +997,12 @@ def _resolve_pyannote_embedding_model(diariser: Diariser) -> EmbeddingModel | No
-         return None
- 
-     inference: Any = None
-+    resolution_source: str | None = None
-     for attr in ("_embedding", "embedding"):
-         candidate = getattr(pipeline_model, attr, None)
-         if candidate is not None and callable(getattr(candidate, "crop", None)):
-             inference = candidate
-+            resolution_source = "pipeline_attribute"
-             break
- 
-     if inference is None:
-@@ -1013,6 +1015,12 @@ def _resolve_pyannote_embedding_model(diariser: Diariser) -> EmbeddingModel | No
-         if inference is None:
-             setattr(diariser, "_lan_speaker_embedding_unavailable", True)
-             return None
-+        resolution_source = "standalone_inference"
-+
-+    _logger.info(
-+        "speaker_merge: embedding model ready (source=%s)",
-+        resolution_source,
+diff --git a/lan_app/worker_tasks.py b/lan_app/worker_tasks.py
+index 039ad79..743c282 100644
+--- a/lan_app/worker_tasks.py
++++ b/lan_app/worker_tasks.py
+@@ -59,6 +59,7 @@ from lan_transcriber.pipeline_steps.snippets import (
+     export_speaker_snippets,
+     write_empty_snippets_manifest,
+ )
++from lan_transcriber.pipeline_steps.speaker_merge import merge_similar_speakers
+ from lan_transcriber.pipeline_steps.speaker_turns import (
+     _diarization_segments,
+     build_speaker_turns,
+@@ -2176,15 +2177,92 @@ def _execute_diarization_workflow(
+     diarization_runtime = pipeline_orchestrator._diariser_runtime_metadata(diariser)
+     diarization_runtime["used_dummy_fallback"] = used_dummy_fallback
+     diarization_runtime["mode"] = pipeline_orchestrator._diariser_mode(diariser)
++    (
++        diarization_segments,
++        speaker_merge_map,
++        speaker_merge_diagnostics,
++    ) = _apply_speaker_merge_step(
++        diarization_segments=diarization_segments,
++        diariser=diariser,
++        used_dummy_fallback=used_dummy_fallback,
++        pipeline_settings=pipeline_settings,
++        working_audio_path=working_audio_path,
++        step_log_callback=step_log_callback,
 +    )
- 
-     def _embed(audio_path: Path, start: float, end: float):
-         try:
-@@ -1201,6 +1209,7 @@ def _write_diarization_metadata_artifact(
-     smoothing_result,
-     used_dummy_fallback: bool,
-     speaker_merges: dict[str, str] | None = None,
-+    speaker_merge_diagnostics: dict[str, Any] | None = None,
- ) -> None:
-     metadata = _diariser_runtime_metadata(diariser)
-     diariser_mode = _diariser_mode(diariser)
-@@ -1276,6 +1285,7 @@ def _write_diarization_metadata_artifact(
-     if profile_selection:
-         payload["profile_selection"] = profile_selection
-     payload["speaker_merges"] = dict(speaker_merges or {})
-+    payload["speaker_merge_diagnostics"] = dict(speaker_merge_diagnostics or {})
-     atomic_write_json(artifacts.diarization_metadata_json_path, payload)
+     return {
+         "diarization_segments": diarization_segments,
+         "diarization_runtime": diarization_runtime,
+         "used_dummy_fallback": used_dummy_fallback,
+         "diarization_mode": diarization_mode,
+         "diarization_reason": diarization_reason,
++        "speaker_merge_map": speaker_merge_map,
++        "speaker_merge_diagnostics": speaker_merge_diagnostics,
+     }
  
  
-@@ -3017,26 +3027,46 @@ async def run_pipeline(
-                 int(stats["segments"]),
-             )
-         speaker_merge_map: dict[str, str] = {}
--        if (
--            cfg.speaker_merge_enabled
--            and not used_dummy_fallback
--            and _diariser_mode(diariser) == "pyannote"
--            and len({str(row.get("speaker") or "") for row in diar_segments}) >= 2
--        ):
-+        speaker_merge_diagnostics: dict[str, Any] = {
-+            "embedding_model_available": False,
-+            "speakers_found": [],
-+            "centroids_computed": [],
-+            "pairwise_scores": [],
-+            "merges_applied": {},
-+            "skipped_reason": None,
-+        }
-+        if not cfg.speaker_merge_enabled:
-+            speaker_merge_diagnostics["skipped_reason"] = "disabled_by_config"
-+        elif used_dummy_fallback:
-+            speaker_merge_diagnostics["skipped_reason"] = "dummy_fallback"
-+        elif _diariser_mode(diariser) != "pyannote":
-+            speaker_merge_diagnostics["skipped_reason"] = "non_pyannote_diariser"
-+        elif len({str(row.get("speaker") or "") for row in diar_segments}) < 2:
-+            speaker_merge_diagnostics["skipped_reason"] = "single_speaker"
-+        else:
-             embedding_model = _resolve_pyannote_embedding_model(diariser)
-             if embedding_model is None:
-+                speaker_merge_diagnostics["skipped_reason"] = (
-+                    "embedding_model_unavailable"
-+                )
-                 _best_effort_step_log(
-                     step_log_callback,
-                     "speaker_merge skipped: embedding model unavailable",
-                 )
-             else:
--                diar_segments, speaker_merge_map = merge_similar_speakers(
-+                (
-+                    diar_segments,
-+                    speaker_merge_map,
-+                    merge_run_diagnostics,
-+                ) = merge_similar_speakers(
-                     diar_segments,
-                     audio_path=audio_path,
-                     embedding_model=embedding_model,
-                     similarity_threshold=cfg.speaker_merge_similarity_threshold,
-                     max_segments_per_speaker=cfg.speaker_merge_max_segments,
-                 )
-+                speaker_merge_diagnostics.update(merge_run_diagnostics)
-+                speaker_merge_diagnostics["skipped_reason"] = None
-                 if speaker_merge_map:
-                     _best_effort_step_log(
-                         step_log_callback,
-@@ -3086,6 +3116,7 @@ async def run_pipeline(
-             smoothing_result=smoothing_result,
-             used_dummy_fallback=used_dummy_fallback,
-             speaker_merges=speaker_merge_map,
-+            speaker_merge_diagnostics=speaker_merge_diagnostics,
-         )
- 
-         aliases = _load_aliases(cfg.speaker_db)
-diff --git a/lan_transcriber/pipeline_steps/speaker_merge.py b/lan_transcriber/pipeline_steps/speaker_merge.py
-index 4cc1794..976c4ae 100644
---- a/lan_transcriber/pipeline_steps/speaker_merge.py
-+++ b/lan_transcriber/pipeline_steps/speaker_merge.py
-@@ -320,6 +320,19 @@ def _resolve_merge_target(merge_map: dict[str, str], label: str) -> str:
-     return current
- 
- 
-+def _empty_diagnostics(
++def _apply_speaker_merge_step(
 +    *,
-+    embedding_model_available: bool,
-+) -> dict[str, Any]:
-+    return {
-+        "embedding_model_available": embedding_model_available,
++    diarization_segments: list[dict[str, Any]],
++    diariser: Any,
++    used_dummy_fallback: bool,
++    pipeline_settings: PipelineSettings,
++    working_audio_path: Path,
++    step_log_callback: Any,
++) -> tuple[list[dict[str, Any]], dict[str, str], dict[str, Any]]:
++    speaker_merge_map: dict[str, str] = {}
++    speaker_merge_diagnostics: dict[str, Any] = {
++        "embedding_model_available": False,
 +        "speakers_found": [],
 +        "centroids_computed": [],
 +        "pairwise_scores": [],
 +        "merges_applied": {},
++        "skipped_reason": None,
 +    }
++    diariser_mode_value = pipeline_orchestrator._diariser_mode(diariser)
++    if not pipeline_settings.speaker_merge_enabled:
++        speaker_merge_diagnostics["skipped_reason"] = "disabled_by_config"
++    elif used_dummy_fallback:
++        speaker_merge_diagnostics["skipped_reason"] = "dummy_fallback"
++    elif diariser_mode_value != "pyannote":
++        speaker_merge_diagnostics["skipped_reason"] = "non_pyannote_diariser"
++    elif len({str(row.get("speaker") or "") for row in diarization_segments}) < 2:
++        speaker_merge_diagnostics["skipped_reason"] = "single_speaker"
++    else:
++        embedding_model = pipeline_orchestrator._resolve_pyannote_embedding_model(diariser)
++        if embedding_model is None:
++            speaker_merge_diagnostics["skipped_reason"] = "embedding_model_unavailable"
++            _best_effort_step_log_callback(
++                step_log_callback,
++                "speaker_merge skipped: embedding model unavailable",
++            )
++        else:
++            (
++                diarization_segments,
++                speaker_merge_map,
++                merge_run_diagnostics,
++            ) = merge_similar_speakers(
++                diarization_segments,
++                audio_path=working_audio_path,
++                embedding_model=embedding_model,
++                similarity_threshold=pipeline_settings.speaker_merge_similarity_threshold,
++                max_segments_per_speaker=pipeline_settings.speaker_merge_max_segments,
++            )
++            speaker_merge_diagnostics.update(merge_run_diagnostics)
++            speaker_merge_diagnostics["skipped_reason"] = None
++            if speaker_merge_map:
++                _best_effort_step_log_callback(
++                    step_log_callback,
++                    (
++                        "speaker_merge applied merges="
++                        + ",".join(
++                            f"{src}->{dst}"
++                            for src, dst in sorted(speaker_merge_map.items())
++                        )
++                    ),
++                )
++    return diarization_segments, speaker_merge_map, speaker_merge_diagnostics
 +
 +
- def merge_similar_speakers(
-     diar_segments: Sequence[dict[str, Any]],
-     *,
-@@ -329,20 +342,43 @@ def merge_similar_speakers(
-     max_segments_per_speaker: int = DEFAULT_SPEAKER_MERGE_MAX_SEGMENTS,
-     segment_duration_sec: float = DEFAULT_SPEAKER_MERGE_SEGMENT_DURATION_SEC,
-     overlap_tolerance_sec: float = DEFAULT_SPEAKER_MERGE_OVERLAP_TOLERANCE_SEC,
--) -> tuple[list[dict[str, Any]], dict[str, str]]:
-+) -> tuple[list[dict[str, Any]], dict[str, str], dict[str, Any]]:
-     """Merge diarization speakers with similar voices that never overlap.
+ def _run_default_diarization_child_operation(payload: dict[str, Any]) -> dict[str, Any]:
+     pipeline_settings = _pipeline_settings_from_payload(payload["pipeline_settings"])
+     precheck_result = PrecheckResult(
+@@ -2493,6 +2571,8 @@ def _build_diarization_metadata_payload(
+     runtime: dict[str, Any],
+     cfg: PipelineSettings,
+     smoothing_result: SpeakerTurnSmoothingResult,
++    speaker_merges: dict[str, str] | None = None,
++    speaker_merge_diagnostics: dict[str, Any] | None = None,
+ ) -> dict[str, Any]:
+     diariser_mode = str(runtime.get("mode") or "unknown").strip().lower() or "unknown"
+     effective_hints = runtime.get("effective_hints")
+@@ -2562,6 +2642,8 @@ def _build_diarization_metadata_payload(
+         payload["initial_hints"] = initial_hints
+     if profile_selection:
+         payload["profile_selection"] = profile_selection
++    payload["speaker_merges"] = dict(speaker_merges or {})
++    payload["speaker_merge_diagnostics"] = dict(speaker_merge_diagnostics or {})
+     return payload
  
--    Returns a tuple ``(updated_segments, merge_map)`` where ``merge_map`` is a
--    mapping from the merged label to the kept label after transitive merges.
--    When ``embedding_model`` is ``None`` the function is a no-op: it returns
--    the original segments (as a new list) and an empty ``merge_map``.
-+    Returns a tuple ``(updated_segments, merge_map, diagnostics)`` where
-+    ``merge_map`` is a mapping from the merged label to the kept label after
-+    transitive merges and ``diagnostics`` is a dict describing the inputs and
-+    per-pair outcomes so operators can understand why speakers were or were
-+    not merged. When ``embedding_model`` is ``None`` the function is a no-op:
-+    it returns the original segments (as a new list), an empty ``merge_map``,
-+    and a diagnostics dict with ``embedding_model_available=False``.
-     """
  
-     original_segments = [dict(row) for row in diar_segments]
-     if embedding_model is None:
--        return original_segments, {}
-+        return (
-+            original_segments,
-+            {},
-+            _empty_diagnostics(embedding_model_available=False),
-+        )
-+
-+    speakers_found = sorted(
-+        {
-+            str(row.get("speaker") or "")
-+            for row in original_segments
-+            if str(row.get("speaker") or "")
-+        }
+@@ -2825,6 +2907,8 @@ def _stage_diarization(ctx: _PipelineExecutionContext) -> _StageResult:
+         ctx.diarization_segments = list(child_result.get("diarization_segments") or [])
+         ctx.diarization_runtime = dict(child_result.get("diarization_runtime") or {})
+         used_dummy_fallback = bool(child_result.get("used_dummy_fallback"))
++        speaker_merge_map = dict(child_result.get("speaker_merge_map") or {})
++        speaker_merge_diagnostics = dict(child_result.get("speaker_merge_diagnostics") or {})
+     else:
+         diarization_result = _execute_diarization_workflow(
+             working_audio_path=working_audio_path,
+@@ -2841,6 +2925,10 @@ def _stage_diarization(ctx: _PipelineExecutionContext) -> _StageResult:
+         ctx.diarization_segments = list(diarization_result.get("diarization_segments") or [])
+         ctx.diarization_runtime = dict(diarization_result.get("diarization_runtime") or {})
+         used_dummy_fallback = bool(diarization_result.get("used_dummy_fallback"))
++        speaker_merge_map = dict(diarization_result.get("speaker_merge_map") or {})
++        speaker_merge_diagnostics = dict(diarization_result.get("speaker_merge_diagnostics") or {})
++    ctx.diarization_runtime["speaker_merges"] = speaker_merge_map
++    ctx.diarization_runtime["speaker_merge_diagnostics"] = speaker_merge_diagnostics
+     _write_diarization_status_artifact(
+         recording_id=ctx.recording_id,
+         mode=diarization_mode,
+@@ -3020,10 +3108,20 @@ def _stage_speaker_turns(ctx: _PipelineExecutionContext) -> _StageResult:
+             speaker_count_before=speaker_count,
+             speaker_count_after=speaker_count,
+         )
++    runtime_speaker_merges = ctx.diarization_runtime.get("speaker_merges")
++    runtime_speaker_merge_diagnostics = ctx.diarization_runtime.get(
++        "speaker_merge_diagnostics"
 +    )
-+    diagnostics: dict[str, Any] = {
-+        "embedding_model_available": True,
-+        "speakers_found": speakers_found,
-+        "centroids_computed": [],
-+        "pairwise_scores": [],
-+        "merges_applied": {},
-+    }
-+
-     if not original_segments:
--        return original_segments, {}
-+        return original_segments, {}, diagnostics
- 
-     centroids = extract_speaker_embeddings(
-         audio_path,
-@@ -351,8 +387,9 @@ def merge_similar_speakers(
-         max_segments_per_speaker=max_segments_per_speaker,
-         segment_duration_sec=segment_duration_sec,
+     diarization_metadata = _build_diarization_metadata_payload(
+         runtime=ctx.diarization_runtime,
+         cfg=ctx.pipeline_settings,
+         smoothing_result=smoothing_result,
++        speaker_merges=runtime_speaker_merges
++        if isinstance(runtime_speaker_merges, dict)
++        else None,
++        speaker_merge_diagnostics=runtime_speaker_merge_diagnostics
++        if isinstance(runtime_speaker_merge_diagnostics, dict)
++        else None,
      )
-+    diagnostics["centroids_computed"] = sorted(centroids.keys())
-     if len(centroids) < 2:
--        return original_segments, {}
-+        return original_segments, {}, diagnostics
- 
-     pairs = compute_pairwise_similarity(centroids)
-     original_totals = _speaker_total_seconds(original_segments)
-@@ -360,11 +397,36 @@ def merge_similar_speakers(
-     merge_map: dict[str, str] = {}
- 
-     for left_speaker, right_speaker, similarity in pairs:
--        if similarity < similarity_threshold:
--            break
-         left_target = _resolve_merge_target(merge_map, left_speaker)
-         right_target = _resolve_merge_target(merge_map, right_speaker)
-         if left_target == right_target:
-+            diagnostics["pairwise_scores"].append(
-+                {
-+                    "speaker_a": left_speaker,
-+                    "speaker_b": right_speaker,
-+                    "similarity": float(similarity),
-+                    "overlap": False,
-+                    "action": "skipped_already_merged",
-+                }
-+            )
-+            continue
-+        if similarity < similarity_threshold:
-+            _logger.info(
-+                "speaker_merge: skip %s<->%s similarity=%.3f < threshold=%.3f",
-+                left_speaker,
-+                right_speaker,
-+                similarity,
-+                similarity_threshold,
-+            )
-+            diagnostics["pairwise_scores"].append(
-+                {
-+                    "speaker_a": left_speaker,
-+                    "speaker_b": right_speaker,
-+                    "similarity": float(similarity),
-+                    "overlap": False,
-+                    "action": "skipped_low_similarity",
-+                }
-+            )
-             continue
-         # Use a fresh copy of the original segments but with previously decided
-         # merges applied so overlap detection sees the post-merge world.
-@@ -380,6 +442,21 @@ def merge_similar_speakers(
-             overlap_segments,
-             tolerance_sec=overlap_tolerance_sec,
-         ):
-+            _logger.info(
-+                "speaker_merge: skip %s<->%s similarity=%.3f overlap=True",
-+                left_speaker,
-+                right_speaker,
-+                similarity,
-+            )
-+            diagnostics["pairwise_scores"].append(
-+                {
-+                    "speaker_a": left_speaker,
-+                    "speaker_b": right_speaker,
-+                    "similarity": float(similarity),
-+                    "overlap": True,
-+                    "action": "skipped_overlap",
-+                }
-+            )
-             continue
-         left_total = totals.get(left_target, 0.0)
-         right_total = totals.get(right_target, 0.0)
-@@ -393,6 +470,15 @@ def merge_similar_speakers(
-         merge_map[merged] = kept
-         totals[kept] = totals.get(kept, 0.0) + totals.get(merged, 0.0)
-         totals[merged] = 0.0
-+        diagnostics["pairwise_scores"].append(
+     atomic_write_json(
+         ctx.artifacts.recording_artifacts.segments_json_path,
+diff --git a/tests/test_cov_lan_app_worker_tasks_branches.py b/tests/test_cov_lan_app_worker_tasks_branches.py
+index c6a2076..e54907b 100644
+--- a/tests/test_cov_lan_app_worker_tasks_branches.py
++++ b/tests/test_cov_lan_app_worker_tasks_branches.py
+@@ -1463,6 +1463,155 @@ def test_execute_diarization_workflow_direct_path(tmp_path: Path, monkeypatch: p
+     assert result["diarization_mode"] == "pyannote"
+     assert result["used_dummy_fallback"] is False
+     assert "gpu policy test" in messages
++    assert result["speaker_merge_map"] == {}
++    assert result["speaker_merge_diagnostics"]["skipped_reason"] == "single_speaker"
++
++
++def test_apply_speaker_merge_step_disabled_by_config(
++    tmp_path: Path,
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    cfg = worker_tasks._build_pipeline_settings(_db_settings(tmp_path))  # noqa: SLF001
++    cfg.speaker_merge_enabled = False
++    monkeypatch.setattr(
++        worker_tasks.pipeline_orchestrator,
++        "_diariser_mode",
++        lambda _diariser: "pyannote",
++    )
++    segments, merge_map, diagnostics = worker_tasks._apply_speaker_merge_step(  # noqa: SLF001
++        diarization_segments=[
++            {"speaker": "S1", "start": 0.0, "end": 1.0},
++            {"speaker": "S2", "start": 1.0, "end": 2.0},
++        ],
++        diariser=object(),
++        used_dummy_fallback=False,
++        pipeline_settings=cfg,
++        working_audio_path=tmp_path / "audio.wav",
++        step_log_callback=None,
++    )
++    assert merge_map == {}
++    assert diagnostics["skipped_reason"] == "disabled_by_config"
++    assert len(segments) == 2
++
++
++def test_apply_speaker_merge_step_embedding_model_unavailable(
++    tmp_path: Path,
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    cfg = worker_tasks._build_pipeline_settings(_db_settings(tmp_path))  # noqa: SLF001
++    monkeypatch.setattr(
++        worker_tasks.pipeline_orchestrator,
++        "_diariser_mode",
++        lambda _diariser: "pyannote",
++    )
++    monkeypatch.setattr(
++        worker_tasks.pipeline_orchestrator,
++        "_resolve_pyannote_embedding_model",
++        lambda _diariser: None,
++    )
++    messages: list[str] = []
++    _, merge_map, diagnostics = worker_tasks._apply_speaker_merge_step(  # noqa: SLF001
++        diarization_segments=[
++            {"speaker": "S1", "start": 0.0, "end": 1.0},
++            {"speaker": "S2", "start": 1.0, "end": 2.0},
++        ],
++        diariser=object(),
++        used_dummy_fallback=False,
++        pipeline_settings=cfg,
++        working_audio_path=tmp_path / "audio.wav",
++        step_log_callback=messages.append,
++    )
++    assert merge_map == {}
++    assert diagnostics["skipped_reason"] == "embedding_model_unavailable"
++    assert any("embedding model unavailable" in m for m in messages)
++
++
++def test_apply_speaker_merge_step_applies_merge(
++    tmp_path: Path,
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    cfg = worker_tasks._build_pipeline_settings(_db_settings(tmp_path))  # noqa: SLF001
++    monkeypatch.setattr(
++        worker_tasks.pipeline_orchestrator,
++        "_diariser_mode",
++        lambda _diariser: "pyannote",
++    )
++    monkeypatch.setattr(
++        worker_tasks.pipeline_orchestrator,
++        "_resolve_pyannote_embedding_model",
++        lambda _diariser: object(),
++    )
++    merged_segments = [
++        {"speaker": "S1", "start": 0.0, "end": 1.0},
++        {"speaker": "S1", "start": 1.0, "end": 2.0},
++    ]
++    run_diagnostics = {
++        "embedding_model_available": True,
++        "speakers_found": ["S1", "S2"],
++        "centroids_computed": ["S1", "S2"],
++        "pairwise_scores": [
 +            {
-+                "speaker_a": left_speaker,
-+                "speaker_b": right_speaker,
-+                "similarity": float(similarity),
++                "speaker_a": "S1",
++                "speaker_b": "S2",
++                "similarity": 0.95,
 +                "overlap": False,
 +                "action": "merged",
 +            }
-+        )
-         _logger.info(
-             "Merged speaker %s into %s: similarity=%.3f, overlap=False, "
-             "%s_seconds=%.3f, %s_seconds=%.3f",
-@@ -406,7 +492,7 @@ def merge_similar_speakers(
-         )
- 
-     if not merge_map:
--        return original_segments, {}
-+        return original_segments, {}, diagnostics
- 
-     # Apply merges transitively to every segment.
-     updated_segments: list[dict[str, Any]] = []
-@@ -425,7 +511,8 @@ def merge_similar_speakers(
-         if final != label:
-             flattened_map[label] = final
- 
--    return updated_segments, flattened_map
-+    diagnostics["merges_applied"] = dict(flattened_map)
-+    return updated_segments, flattened_map, diagnostics
- 
- 
- __all__ = [
-diff --git a/tasks/QUEUE.md b/tasks/QUEUE.md
-index 24c42ea..0e5584c 100644
---- a/tasks/QUEUE.md
-+++ b/tasks/QUEUE.md
-@@ -701,6 +701,6 @@ Queue (in order)
- - Depends on: PR-TITLE-EDIT-01
- 
- 140) PR-SPEAKER-MERGE-DIAGNOSTICS-01: Add diagnostics to speaker merge step for debugging merge failures
--- Status: TODO
-+- Status: DONE
- - Tasks file: tasks/PR-SPEAKER-MERGE-DIAGNOSTICS-01.md
- - Depends on: PR-SPEAKER-MERGE-EMBEDDINGS-01
-diff --git a/tests/test_speaker_merge.py b/tests/test_speaker_merge.py
-index b2b3e00..824fe62 100644
---- a/tests/test_speaker_merge.py
-+++ b/tests/test_speaker_merge.py
-@@ -272,7 +272,7 @@ def test_merge_identical_embeddings_no_overlap() -> None:
-         {"A": embedding, "B": embedding},
-         {"A": [(0.0, 5.0)], "B": [(6.0, 11.0)]},
-     )
--    updated, merge_map = merge_similar_speakers(
-+    updated, merge_map, _diag = merge_similar_speakers(
-         diar_segments,
-         audio_path=_AUDIO_PATH,
-         embedding_model=model,
-@@ -290,7 +290,7 @@ def test_no_merge_different_embeddings() -> None:
-         {"A": [1.0, 0.0], "B": [0.0, 1.0]},
-         {"A": [(0.0, 5.0)], "B": [(6.0, 11.0)]},
-     )
--    updated, merge_map = merge_similar_speakers(
-+    updated, merge_map, _diag = merge_similar_speakers(
-         diar_segments,
-         audio_path=_AUDIO_PATH,
-         embedding_model=model,
-@@ -309,7 +309,7 @@ def test_no_merge_overlapping_speakers() -> None:
-         {"A": embedding, "B": embedding},
-         {"A": [(0.0, 5.0)], "B": [(2.0, 7.0)]},
-     )
--    updated, merge_map = merge_similar_speakers(
-+    updated, merge_map, _diag = merge_similar_speakers(
-         diar_segments,
-         audio_path=_AUDIO_PATH,
-         embedding_model=model,
-@@ -333,7 +333,7 @@ def test_no_merge_below_threshold() -> None:
-         },
-         {"A": [(0.0, 5.0)], "B": [(6.0, 11.0)]},
-     )
--    updated, merge_map = merge_similar_speakers(
-+    updated, merge_map, _diag = merge_similar_speakers(
-         diar_segments,
-         audio_path=_AUDIO_PATH,
-         embedding_model=model,
-@@ -361,7 +361,7 @@ def test_three_speakers_two_merge() -> None:
-             "C": [(12.0, 17.0)],
-         },
-     )
--    updated, merge_map = merge_similar_speakers(
-+    updated, merge_map, _diag = merge_similar_speakers(
-         diar_segments,
-         audio_path=_AUDIO_PATH,
-         embedding_model=model,
-@@ -396,7 +396,7 @@ def test_transitive_merge_collapses_chain() -> None:
-             "C": [(27.0, 32.0)],
-         },
-     )
--    updated, merge_map = merge_similar_speakers(
-+    updated, merge_map, _diag = merge_similar_speakers(
-         diar_segments,
-         audio_path=_AUDIO_PATH,
-         embedding_model=model,
-@@ -412,7 +412,7 @@ def test_merge_disabled_via_none_model() -> None:
-         _segment("A", 0.0, 5.0),
-         _segment("B", 6.0, 11.0),
-     ]
--    updated, merge_map = merge_similar_speakers(
-+    updated, merge_map, _diag = merge_similar_speakers(
-         diar_segments,
-         audio_path=_AUDIO_PATH,
-         embedding_model=None,
-@@ -433,7 +433,7 @@ def test_merge_ignores_empty_speaker_labels_in_totals() -> None:
-         {"A": [1.0, 0.0], "B": [1.0, 0.0]},
-         {"A": [(6.0, 11.0)], "B": [(12.0, 17.0)]},
-     )
--    updated, merge_map = merge_similar_speakers(
-+    updated, merge_map, _diag = merge_similar_speakers(
-         diar_segments,
-         audio_path=_AUDIO_PATH,
-         embedding_model=model,
-@@ -446,7 +446,7 @@ def test_merge_ignores_empty_speaker_labels_in_totals() -> None:
- 
- 
- def test_merge_empty_segments_noop() -> None:
--    updated, merge_map = merge_similar_speakers(
-+    updated, merge_map, _diag = merge_similar_speakers(
-         [],
-         audio_path=_AUDIO_PATH,
-         embedding_model=_make_embedding_model({}, {}),
-@@ -457,7 +457,7 @@ def test_merge_empty_segments_noop() -> None:
- 
- def test_merge_single_speaker_noop() -> None:
-     diar_segments = [_segment("A", 0.0, 5.0)]
--    updated, merge_map = merge_similar_speakers(
-+    updated, merge_map, _diag = merge_similar_speakers(
-         diar_segments,
-         audio_path=_AUDIO_PATH,
-         embedding_model=_make_embedding_model(
-@@ -480,7 +480,7 @@ def test_merge_ties_break_lexicographically() -> None:
-         },
-         {"A": [(0.0, 5.0)], "B": [(6.0, 11.0)]},
-     )
--    updated, merge_map = merge_similar_speakers(
-+    updated, merge_map, _diag = merge_similar_speakers(
-         diar_segments,
-         audio_path=_AUDIO_PATH,
-         embedding_model=model,
-@@ -502,7 +502,7 @@ def test_merge_larger_speaker_wins() -> None:
-         },
-         {"A": [(0.0, 1.0)], "B": [(2.0, 20.0)]},
-     )
--    updated, merge_map = merge_similar_speakers(
-+    updated, merge_map, _diag = merge_similar_speakers(
-         diar_segments,
-         audio_path=_AUDIO_PATH,
-         embedding_model=model,
-@@ -526,7 +526,7 @@ def test_merge_accepts_objects_with_tolist() -> None:
-         _segment("A", 0.0, 5.0),
-         _segment("B", 6.0, 11.0),
-     ]
--    updated, merge_map = merge_similar_speakers(
-+    updated, merge_map, _diag = merge_similar_speakers(
-         diar_segments,
-         audio_path=_AUDIO_PATH,
-         embedding_model=_model,
-@@ -543,7 +543,7 @@ def test_merge_rejects_unconvertible_values() -> None:
-         _segment("A", 0.0, 5.0),
-         _segment("B", 6.0, 11.0),
-     ]
--    updated, merge_map = merge_similar_speakers(
-+    updated, merge_map, _diag = merge_similar_speakers(
-         diar_segments,
-         audio_path=_AUDIO_PATH,
-         embedding_model=_model,
-@@ -561,7 +561,7 @@ def test_merge_rejects_vectors_with_non_numeric_entries() -> None:
-         _segment("A", 0.0, 5.0),
-         _segment("B", 6.0, 11.0),
-     ]
--    updated, merge_map = merge_similar_speakers(
-+    updated, merge_map, _diag = merge_similar_speakers(
-         diar_segments,
-         audio_path=_AUDIO_PATH,
-         embedding_model=_model,
-@@ -581,7 +581,7 @@ def test_merge_accepts_two_d_single_row_embeddings() -> None:
-         _segment("A", 0.0, 5.0),
-         _segment("B", 6.0, 11.0),
-     ]
--    updated, merge_map = merge_similar_speakers(
-+    updated, merge_map, _diag = merge_similar_speakers(
-         diar_segments,
-         audio_path=_AUDIO_PATH,
-         embedding_model=_model,
-@@ -601,7 +601,7 @@ def test_merge_mean_pools_two_d_multi_row_embeddings() -> None:
-         _segment("A", 0.0, 5.0),
-         _segment("B", 6.0, 11.0),
-     ]
--    updated, merge_map = merge_similar_speakers(
-+    updated, merge_map, _diag = merge_similar_speakers(
-         diar_segments,
-         audio_path=_AUDIO_PATH,
-         embedding_model=_model,
-@@ -618,7 +618,7 @@ def test_merge_rejects_two_d_vectors_with_shape_mismatch() -> None:
-         _segment("A", 0.0, 5.0),
-         _segment("B", 6.0, 11.0),
-     ]
--    updated, merge_map = merge_similar_speakers(
-+    updated, merge_map, _diag = merge_similar_speakers(
-         diar_segments,
-         audio_path=_AUDIO_PATH,
-         embedding_model=_model,
-@@ -634,7 +634,7 @@ def test_merge_rejects_two_d_vectors_with_non_numeric_entries() -> None:
-         _segment("A", 0.0, 5.0),
-         _segment("B", 6.0, 11.0),
-     ]
--    updated, merge_map = merge_similar_speakers(
-+    updated, merge_map, _diag = merge_similar_speakers(
-         diar_segments,
-         audio_path=_AUDIO_PATH,
-         embedding_model=_model,
-@@ -650,7 +650,7 @@ def test_merge_rejects_two_d_vectors_with_empty_rows() -> None:
-         _segment("A", 0.0, 5.0),
-         _segment("B", 6.0, 11.0),
-     ]
--    updated, merge_map = merge_similar_speakers(
-+    updated, merge_map, _diag = merge_similar_speakers(
-         diar_segments,
-         audio_path=_AUDIO_PATH,
-         embedding_model=_model,
-@@ -666,7 +666,7 @@ def test_merge_rejects_two_d_vectors_with_nonfinite_pool_result() -> None:
-         _segment("A", 0.0, 5.0),
-         _segment("B", 6.0, 11.0),
-     ]
--    updated, merge_map = merge_similar_speakers(
-+    updated, merge_map, _diag = merge_similar_speakers(
-         diar_segments,
-         audio_path=_AUDIO_PATH,
-         embedding_model=_model,
-@@ -674,6 +674,120 @@ def test_merge_rejects_two_d_vectors_with_nonfinite_pool_result() -> None:
-     assert merge_map == {}
- 
- 
-+def test_diagnostics_low_similarity() -> None:
-+    diar_segments = [
-+        _segment("A", 0.0, 5.0),
-+        _segment("B", 6.0, 11.0),
-+    ]
-+    sim = 0.75
-+    complement = math.sqrt(1.0 - sim * sim)
-+    model = _make_embedding_model(
-+        {
-+            "A": [1.0, 0.0],
-+            "B": [sim, complement],
-+        },
-+        {"A": [(0.0, 5.0)], "B": [(6.0, 11.0)]},
++        ],
++        "merges_applied": {"S2": "S1"},
++    }
++    monkeypatch.setattr(
++        worker_tasks,
++        "merge_similar_speakers",
++        lambda *_a, **_k: (merged_segments, {"S2": "S1"}, run_diagnostics),
 +    )
-+    _updated, merge_map, diagnostics = merge_similar_speakers(
-+        diar_segments,
-+        audio_path=_AUDIO_PATH,
-+        embedding_model=model,
-+        similarity_threshold=DEFAULT_SPEAKER_MERGE_SIMILARITY_THRESHOLD,
++    messages: list[str] = []
++    segments, merge_map, diagnostics = worker_tasks._apply_speaker_merge_step(  # noqa: SLF001
++        diarization_segments=[
++            {"speaker": "S1", "start": 0.0, "end": 1.0},
++            {"speaker": "S2", "start": 1.0, "end": 2.0},
++        ],
++        diariser=object(),
++        used_dummy_fallback=False,
++        pipeline_settings=cfg,
++        working_audio_path=tmp_path / "audio.wav",
++        step_log_callback=messages.append,
 +    )
-+    assert merge_map == {}
-+    assert diagnostics["embedding_model_available"] is True
-+    assert diagnostics["speakers_found"] == ["A", "B"]
-+    assert diagnostics["centroids_computed"] == ["A", "B"]
-+    actions = [entry["action"] for entry in diagnostics["pairwise_scores"]]
-+    assert "skipped_low_similarity" in actions
-+    low = next(
-+        entry
-+        for entry in diagnostics["pairwise_scores"]
-+        if entry["action"] == "skipped_low_similarity"
-+    )
-+    assert low["similarity"] == pytest.approx(sim)
-+    assert low["overlap"] is False
-+    assert {low["speaker_a"], low["speaker_b"]} == {"A", "B"}
++    assert segments == merged_segments
++    assert merge_map == {"S2": "S1"}
++    assert diagnostics["skipped_reason"] is None
++    assert diagnostics["merges_applied"] == {"S2": "S1"}
++    assert any("speaker_merge applied merges=S2->S1" in m for m in messages)
 +
-+
-+def test_diagnostics_overlap() -> None:
-+    diar_segments = [
-+        _segment("A", 0.0, 5.0),
-+        _segment("B", 2.0, 7.0),  # overlaps with A
-+    ]
-+    embedding = [1.0, 0.0]
-+    model = _make_embedding_model(
-+        {"A": embedding, "B": embedding},
-+        {"A": [(0.0, 5.0)], "B": [(2.0, 7.0)]},
++    # Re-run with merge_similar_speakers returning an empty merge map to
++    # cover the "no merges applied" branch where the step log is not emitted.
++    messages.clear()
++    monkeypatch.setattr(
++        worker_tasks,
++        "merge_similar_speakers",
++        lambda *_a, **_k: (
++            [
++                {"speaker": "S1", "start": 0.0, "end": 1.0},
++                {"speaker": "S2", "start": 1.0, "end": 2.0},
++            ],
++            {},
++            {**run_diagnostics, "merges_applied": {}},
++        ),
 +    )
-+    _updated, merge_map, diagnostics = merge_similar_speakers(
-+        diar_segments,
-+        audio_path=_AUDIO_PATH,
-+        embedding_model=model,
++    _, merge_map_empty, diagnostics_empty = worker_tasks._apply_speaker_merge_step(  # noqa: SLF001
++        diarization_segments=[
++            {"speaker": "S1", "start": 0.0, "end": 1.0},
++            {"speaker": "S2", "start": 1.0, "end": 2.0},
++        ],
++        diariser=object(),
++        used_dummy_fallback=False,
++        pipeline_settings=cfg,
++        working_audio_path=tmp_path / "audio.wav",
++        step_log_callback=messages.append,
 +    )
-+    assert merge_map == {}
-+    actions = [entry["action"] for entry in diagnostics["pairwise_scores"]]
-+    assert "skipped_overlap" in actions
-+    overlap_entry = next(
-+        entry
-+        for entry in diagnostics["pairwise_scores"]
-+        if entry["action"] == "skipped_overlap"
-+    )
-+    assert overlap_entry["overlap"] is True
-+    assert overlap_entry["similarity"] == pytest.approx(1.0)
-+    assert {overlap_entry["speaker_a"], overlap_entry["speaker_b"]} == {"A", "B"}
-+
-+
-+def test_diagnostics_merged() -> None:
-+    diar_segments = [
-+        _segment("A", 0.0, 5.0),
-+        _segment("B", 6.0, 11.0),
-+    ]
-+    embedding = [1.0, 0.0]
-+    model = _make_embedding_model(
-+        {"A": embedding, "B": embedding},
-+        {"A": [(0.0, 5.0)], "B": [(6.0, 11.0)]},
-+    )
-+    _updated, merge_map, diagnostics = merge_similar_speakers(
-+        diar_segments,
-+        audio_path=_AUDIO_PATH,
-+        embedding_model=model,
-+    )
-+    assert merge_map  # something was merged
-+    merged_entries = [
-+        entry
-+        for entry in diagnostics["pairwise_scores"]
-+        if entry["action"] == "merged"
-+    ]
-+    assert len(merged_entries) == 1
-+    entry = merged_entries[0]
-+    assert entry["overlap"] is False
-+    assert entry["similarity"] == pytest.approx(1.0)
-+    assert {entry["speaker_a"], entry["speaker_b"]} == {"A", "B"}
-+    assert diagnostics["merges_applied"] == merge_map
-+    assert diagnostics["centroids_computed"] == ["A", "B"]
-+    assert diagnostics["speakers_found"] == ["A", "B"]
-+
-+
-+def test_diagnostics_no_model() -> None:
-+    diar_segments = [
-+        _segment("A", 0.0, 5.0),
-+        _segment("B", 6.0, 11.0),
-+    ]
-+    updated, merge_map, diagnostics = merge_similar_speakers(
-+        diar_segments,
-+        audio_path=_AUDIO_PATH,
-+        embedding_model=None,
-+    )
-+    assert merge_map == {}
-+    assert updated == diar_segments
-+    assert diagnostics["embedding_model_available"] is False
-+    assert diagnostics["speakers_found"] == []
-+    assert diagnostics["centroids_computed"] == []
-+    assert diagnostics["pairwise_scores"] == []
-+    assert diagnostics["merges_applied"] == {}
-+
-+
- class _StubDiariser:
-     """Simple diariser stub used by orchestrator helper tests."""
++    assert merge_map_empty == {}
++    assert diagnostics_empty["skipped_reason"] is None
++    assert not any("speaker_merge applied merges=" in m for m in messages)
  
+ 
+ def test_stage_asr_uses_child_operation_path(
