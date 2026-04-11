@@ -716,7 +716,7 @@ Queue (in order)
 - Depends on: PR-SPEAKER-MERGE-DIAGNOSTICS-HOTFIX-01
 
 143) PR-ARTIFACT-SINGLE-WRITER-01: Eliminate dual artifact writes: make orchestrator the single source of truth for all derived JSON artifacts
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-ARTIFACT-SINGLE-WRITER-01.md
 - Depends on: PR-SPEAKER-MERGE-TORCH-LOAD-FIX-01
 
