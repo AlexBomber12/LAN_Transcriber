@@ -1,63 +1,64 @@
 {% set ov = overview or {} %}
+{% set preview = ov.transcript_preview or {} %}
+{% set pipeline_block = ov.pipeline_status or {} %}
+{% set pipeline_is_collapsible = pipeline_block.collapsible %}
 <div class="flex flex-col gap-6">
-  <!-- Pipeline Status -->
-  <section class="bg-white rounded-xl border border-slate-200 p-5 shadow-sm">
-    <h3 class="text-sm font-bold text-slate-900 mb-4 flex items-center justify-between">
-      Pipeline Status
-      {% if rec.status in ['Processing', 'Stopping'] %}
-      <span class="text-xs font-normal text-primary">Live Updates</span>
-      {% endif %}
-    </h3>
-    {% if pipeline_stages %}
-    <div class="space-y-0">
-      {% for stage in pipeline_stages %}
-      <div class="flex gap-3">
-        <div class="flex flex-col items-center">
-          {% if stage.status == 'completed' or stage.status == 'skipped' %}
-          <span class="material-symbols-outlined text-green-500 text-lg">check_circle</span>
-          {% if not loop.last %}<div class="w-0.5 h-full bg-green-500/30 my-1"></div>{% endif %}
-          {% elif stage.status == 'running' %}
-          <div class="size-5 rounded-full border-2 border-primary border-t-transparent animate-spin my-0.5"></div>
-          {% if not loop.last %}<div class="w-0.5 h-full bg-slate-200 my-1"></div>{% endif %}
-          {% elif stage.status == 'failed' %}
-          <span class="material-symbols-outlined text-red-500 text-lg">error</span>
-          {% if not loop.last %}<div class="w-0.5 h-full bg-red-500/30 my-1"></div>{% endif %}
-          {% elif stage.status == 'cancelled' %}
-          <span class="material-symbols-outlined text-slate-400 text-lg">cancel</span>
-          {% if not loop.last %}<div class="w-0.5 h-full bg-slate-200 my-1"></div>{% endif %}
-          {% else %}
-          <span class="material-symbols-outlined text-slate-300 text-lg">circle</span>
-          {% if not loop.last %}<div class="w-0.5 h-full bg-slate-200 my-1"></div>{% endif %}
-          {% endif %}
+  <!-- Top row: Pipeline Status + Transcript Preview -->
+  <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+    <!-- Pipeline Status -->
+    {% if pipeline_is_collapsible %}
+    <details class="bg-white rounded-xl border border-slate-200 p-5 shadow-sm group" data-testid="overview-pipeline-status">
+      <summary class="list-none cursor-pointer flex items-center justify-between gap-3">
+        <div class="flex items-center gap-2">
+          <span class="material-symbols-outlined text-slate-500 text-lg transition-transform group-open:rotate-90">chevron_right</span>
+          <h3 class="text-sm font-bold text-slate-900">Pipeline Status</h3>
         </div>
-        <div class="flex-1 {% if not loop.last %}pb-4{% endif %}">
-          <div class="flex justify-between items-start mb-1">
-            <p class="text-sm font-semibold {% if stage.status == 'pending' %}text-slate-400{% else %}text-slate-900{% endif %}">{{ stage.stage_label }}</p>
-            <span class="text-[10px] {% if stage.status == 'running' %}text-primary{% elif stage.status == 'failed' %}text-red-500{% else %}text-slate-400{% endif %}">
-              {% if stage.status == 'running' %}In progress{% elif stage.duration_seconds is not none %}{{ '%.1f'|format(stage.duration_seconds) }}s{% else %}{{ stage.status_label }}{% endif %}
-            </span>
-          </div>
-          {% if stage.status == 'running' %}
-          <div class="w-full bg-slate-100 rounded-full h-1.5 mt-2 overflow-hidden">
-            <div class="bg-primary h-full animate-pulse" style="width: 65%;"></div>
-          </div>
-          {% elif stage.root_cause_text %}
-          <p class="text-xs text-slate-500">{{ stage.root_cause_text }}{% if stage.root_cause_code %} ({{ stage.root_cause_code }}){% endif %}</p>
-          {% elif stage.error_text %}
-          <p class="text-xs text-red-500">{{ stage.error_text }}</p>
-          {% elif stage.duration_seconds is not none %}
-          <p class="text-xs text-slate-500">Completed in {{ '%.3f'|format(stage.duration_seconds) }}s</p>
-          {% elif stage.status == 'pending' %}
-          <p class="text-xs text-slate-500 italic">Queued</p>
-          {% endif %}
-        </div>
+        <span class="text-xs text-slate-500">{{ pipeline_block.summary_text }}</span>
+      </summary>
+      <div class="mt-4">
+        {% include 'partials/recording_inspector_full_overview_pipeline_rows.html' %}
       </div>
-      {% endfor %}
-    </div>
+    </details>
     {% else %}
-    <p class="text-sm text-slate-400 italic">No pipeline stage history is available for this recording yet.</p>
+    <section class="bg-white rounded-xl border border-slate-200 p-5 shadow-sm" data-testid="overview-pipeline-status">
+      <h3 class="text-sm font-bold text-slate-900 mb-4 flex items-center justify-between">
+        Pipeline Status
+        {% if rec.status in ['Processing', 'Stopping'] %}
+        <span class="text-xs font-normal text-primary">Live Updates</span>
+        {% endif %}
+      </h3>
+      {% include 'partials/recording_inspector_full_overview_pipeline_rows.html' %}
+    </section>
     {% endif %}
-  </section>
+
+    <!-- Transcript Preview -->
+    <section class="bg-white rounded-xl border border-slate-200 p-5 shadow-sm" data-testid="overview-transcript-preview">
+      <div class="flex items-center justify-between mb-4">
+        <h3 class="text-sm font-bold text-slate-900">Transcript Preview</h3>
+        {% if preview.available %}
+        <a href="{{ preview.full_transcript_href }}" class="text-xs font-semibold text-primary hover:underline no-underline" data-testid="overview-transcript-preview-full-link">View full transcript</a>
+        {% endif %}
+      </div>
+      {% if preview.available %}
+      <div class="space-y-3 max-h-[420px] overflow-y-auto pr-1" data-testid="overview-transcript-preview-list">
+        {% for turn in preview.turns %}
+        <div class="text-xs leading-relaxed">
+          {% if turn.timestamp %}
+          <span class="font-mono text-slate-500 mr-2">[{{ turn.timestamp }}]</span>
+          {% endif %}
+          <strong class="font-semibold text-slate-900">{{ turn.speaker }}:</strong>
+          <span class="text-slate-700">{{ turn.text }}</span>
+        </div>
+        {% endfor %}
+      </div>
+      {% if preview.has_more %}
+      <p class="text-xs text-slate-400 mt-3">More turns available in the full transcript.</p>
+      {% endif %}
+      {% else %}
+      <p class="text-sm text-slate-400 italic">Not available yet</p>
+      {% endif %}
+    </section>
+  </div>
 
   <!-- Metadata Tags -->
   {% if ov.metadata %}

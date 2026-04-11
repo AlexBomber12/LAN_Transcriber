@@ -1,0 +1,49 @@
+{% if pipeline_stages %}
+<div class="space-y-0">
+  {% for stage in pipeline_stages %}
+  <div class="flex gap-3">
+    <div class="flex flex-col items-center">
+      {% if stage.status == 'completed' or stage.status == 'skipped' %}
+      <span class="material-symbols-outlined text-green-500 text-lg">check_circle</span>
+      {% if not loop.last %}<div class="w-0.5 h-full bg-green-500/30 my-1"></div>{% endif %}
+      {% elif stage.status == 'running' %}
+      <div class="size-5 rounded-full border-2 border-primary border-t-transparent animate-spin my-0.5"></div>
+      {% if not loop.last %}<div class="w-0.5 h-full bg-slate-200 my-1"></div>{% endif %}
+      {% elif stage.status == 'failed' %}
+      <span class="material-symbols-outlined text-red-500 text-lg">error</span>
+      {% if not loop.last %}<div class="w-0.5 h-full bg-red-500/30 my-1"></div>{% endif %}
+      {% elif stage.status == 'cancelled' %}
+      <span class="material-symbols-outlined text-slate-400 text-lg">cancel</span>
+      {% if not loop.last %}<div class="w-0.5 h-full bg-slate-200 my-1"></div>{% endif %}
+      {% else %}
+      <span class="material-symbols-outlined text-slate-300 text-lg">circle</span>
+      {% if not loop.last %}<div class="w-0.5 h-full bg-slate-200 my-1"></div>{% endif %}
+      {% endif %}
+    </div>
+    <div class="flex-1 {% if not loop.last %}pb-4{% endif %}">
+      <div class="flex justify-between items-start mb-1">
+        <p class="text-sm font-semibold {% if stage.status == 'pending' %}text-slate-400{% else %}text-slate-900{% endif %}">{{ stage.stage_label }}</p>
+        <span class="text-[10px] {% if stage.status == 'running' %}text-primary{% elif stage.status == 'failed' %}text-red-500{% else %}text-slate-400{% endif %}">
+          {% if stage.status == 'running' %}In progress{% elif stage.duration_seconds is not none %}{{ '%.1f'|format(stage.duration_seconds) }}s{% else %}{{ stage.status_label }}{% endif %}
+        </span>
+      </div>
+      {% if stage.status == 'running' %}
+      <div class="w-full bg-slate-100 rounded-full h-1.5 mt-2 overflow-hidden">
+        <div class="bg-primary h-full animate-pulse" style="width: 65%;"></div>
+      </div>
+      {% elif stage.root_cause_text %}
+      <p class="text-xs text-slate-500">{{ stage.root_cause_text }}{% if stage.root_cause_code %} ({{ stage.root_cause_code }}){% endif %}</p>
+      {% elif stage.error_text %}
+      <p class="text-xs text-red-500">{{ stage.error_text }}</p>
+      {% elif stage.duration_seconds is not none %}
+      <p class="text-xs text-slate-500">Completed in {{ '%.3f'|format(stage.duration_seconds) }}s</p>
+      {% elif stage.status == 'pending' %}
+      <p class="text-xs text-slate-500 italic">Queued</p>
+      {% endif %}
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% else %}
+<p class="text-sm text-slate-400 italic">No pipeline stage history is available for this recording yet.</p>
+{% endif %}

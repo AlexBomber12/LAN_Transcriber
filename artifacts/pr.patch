@@ -1,146 +1,338 @@
+diff --git a/lan_app/templates/partials/recording_inspector_full_overview.html b/lan_app/templates/partials/recording_inspector_full_overview.html
+index b7aa892..c8ddd20 100644
+--- a/lan_app/templates/partials/recording_inspector_full_overview.html
++++ b/lan_app/templates/partials/recording_inspector_full_overview.html
+@@ -51,8 +51,8 @@
+         </div>
+         {% endfor %}
+       </div>
+-      {% if preview.hidden_turn_count > 0 %}
+-      <p class="text-xs text-slate-400 mt-3">{{ preview.hidden_turn_count }} more turns in the full transcript.</p>
++      {% if preview.has_more %}
++      <p class="text-xs text-slate-400 mt-3">More turns available in the full transcript.</p>
+       {% endif %}
+       {% else %}
+       <p class="text-sm text-slate-400 italic">Not available yet</p>
+diff --git a/lan_app/templates/partials/speaker_review_table.html b/lan_app/templates/partials/speaker_review_table.html
+index 71b5989..c63baa1 100644
+--- a/lan_app/templates/partials/speaker_review_table.html
++++ b/lan_app/templates/partials/speaker_review_table.html
+@@ -94,11 +94,12 @@
+                   data-testid="speaker-review-row-dialog">
+             <div class="flex items-center justify-between px-4 pt-3 pb-2 border-b border-slate-100 sticky top-0 bg-white">
+               <h4 class="text-xs font-bold text-slate-900">Speaker actions · {{ row.speaker }}</h4>
+-              <form method="dialog" class="m-0">
+-                <button type="submit" class="text-slate-400 hover:text-slate-700 inline-flex items-center" aria-label="Close">
+-                  <span class="material-symbols-outlined text-lg">close</span>
+-                </button>
+-              </form>
++              <button type="button"
++                      class="text-slate-400 hover:text-slate-700 inline-flex items-center"
++                      aria-label="Close"
++                      data-speaker-actions-close>
++                <span class="material-symbols-outlined text-lg">close</span>
++              </button>
+             </div>
+             <div class="px-4 py-3 space-y-4 text-left overflow-y-auto" style="max-height: calc(85vh - 3rem);">
+ 
+@@ -195,26 +196,128 @@
+ {% else %}
+ <p class="text-sm text-slate-400 italic">No speaker turns available yet. Run diarization first.</p>
+ {% endif %}
++<style>
++/* Fallback styles for browsers without <dialog> showModal() support.
++   When showModal() is unavailable we toggle the `open` attribute and
++   the `.speaker-actions-dialog--fallback` class so the dialog still
++   renders as a centered overlay with a plain backdrop. Browsers that
++   do not recognise <dialog> at all (very old IE/legacy) still render
++   its children because we force display:block when the class is set. */
++dialog.speaker-actions-dialog--fallback {
++  display: block;
++  position: fixed;
++  left: 50%;
++  top: 50%;
++  transform: translate(-50%, -50%);
++  margin: 0;
++  z-index: 60;
++  background: #ffffff;
++}
++.speaker-actions-fallback-backdrop {
++  position: fixed;
++  inset: 0;
++  background: rgba(15, 23, 42, 0.3);
++  z-index: 59;
++}
++</style>
+ <script>
+ (function () {
+   if (window.__speakerActionsDialogWired) {
+     return;
+   }
+   window.__speakerActionsDialogWired = true;
++
++  function hasNativeModal(dialog) {
++    return (
++      dialog
++      && typeof dialog.showModal === 'function'
++      && typeof dialog.close === 'function'
++    );
++  }
++
++  function ensureFallbackBackdrop() {
++    var backdrop = document.getElementById('speaker-actions-fallback-backdrop');
++    if (!backdrop) {
++      backdrop = document.createElement('div');
++      backdrop.id = 'speaker-actions-fallback-backdrop';
++      backdrop.className = 'speaker-actions-fallback-backdrop';
++      backdrop.setAttribute('data-speaker-actions-backdrop', '');
++      document.body.appendChild(backdrop);
++    }
++    return backdrop;
++  }
++
++  function openDialog(dialog) {
++    if (!dialog || dialog.open) {
++      return;
++    }
++    try {
++      if (hasNativeModal(dialog)) {
++        dialog.showModal();
++        return;
++      }
++    } catch (_err) {
++      /* fall through to manual fallback */
++    }
++    dialog.classList.add('speaker-actions-dialog--fallback');
++    dialog.setAttribute('open', '');
++    ensureFallbackBackdrop().style.display = 'block';
++  }
++
++  function closeDialog(dialog) {
++    if (!dialog) {
++      return;
++    }
++    if (dialog.classList.contains('speaker-actions-dialog--fallback')) {
++      dialog.removeAttribute('open');
++      dialog.classList.remove('speaker-actions-dialog--fallback');
++      var backdrop = document.getElementById('speaker-actions-fallback-backdrop');
++      if (backdrop) {
++        backdrop.style.display = 'none';
++      }
++      return;
++    }
++    if (typeof dialog.close === 'function' && dialog.open) {
++      dialog.close();
++    } else if (dialog.open) {
++      dialog.removeAttribute('open');
++    }
++  }
++
+   document.addEventListener('click', function (event) {
+     var trigger = event.target.closest('[data-speaker-actions-open]');
+     if (trigger) {
+-      var dialogId = trigger.getAttribute('data-speaker-actions-open');
+-      var dialog = document.getElementById(dialogId);
+-      if (dialog && typeof dialog.showModal === 'function' && !dialog.open) {
+-        event.preventDefault();
+-        dialog.showModal();
++      event.preventDefault();
++      openDialog(document.getElementById(trigger.getAttribute('data-speaker-actions-open')));
++      return;
++    }
++    var closer = event.target.closest('[data-speaker-actions-close]');
++    if (closer) {
++      event.preventDefault();
++      closeDialog(closer.closest('dialog.speaker-actions-dialog'));
++      return;
++    }
++    if (event.target && event.target.hasAttribute && event.target.hasAttribute('data-speaker-actions-backdrop')) {
++      var openFallback = document.querySelector('dialog.speaker-actions-dialog--fallback[open]');
++      if (openFallback) {
++        closeDialog(openFallback);
+       }
+       return;
+     }
+     var clickedDialog = event.target.closest('dialog.speaker-actions-dialog');
+-    if (clickedDialog && event.target === clickedDialog) {
+-      clickedDialog.close();
++    if (clickedDialog && event.target === clickedDialog && !clickedDialog.classList.contains('speaker-actions-dialog--fallback')) {
++      closeDialog(clickedDialog);
++    }
++  });
++
++  document.addEventListener('keydown', function (event) {
++    if (event.key !== 'Escape') {
++      return;
++    }
++    var openFallback = document.querySelector('dialog.speaker-actions-dialog--fallback[open]');
++    if (openFallback) {
++      event.preventDefault();
++      closeDialog(openFallback);
+     }
+   });
+ })();
 diff --git a/lan_app/ui_routes.py b/lan_app/ui_routes.py
-index 7a386ee..8a0c753 100644
+index d40f930..55a447c 100644
 --- a/lan_app/ui_routes.py
 +++ b/lan_app/ui_routes.py
-@@ -446,13 +446,19 @@ def _control_center_meeting_title_context(
+@@ -1177,18 +1177,9 @@ def _full_page_overview_context(
+             cancel_value = f"{cancel_value} by {requested_by}"
+         focus_items.append({"label": "Stop requested", "value": cancel_value})
+ 
+-    transcript_tab_ctx = _transcript_tab_context(recording_id, settings)
+-    preview_turns = list(transcript_tab_ctx.get("turns") or [])[:15]
+-    total_turn_count = int(transcript_tab_ctx.get("turn_count") or 0)
+-    transcript_preview = {
+-        "available": bool(preview_turns),
+-        "turns": preview_turns,
+-        "total_turn_count": total_turn_count,
+-        "hidden_turn_count": max(total_turn_count - len(preview_turns), 0),
+-        "full_transcript_href": _recording_detail_path(
+-            recording_id, tab="transcript"
+-        ),
+-    }
++    transcript_preview = _transcript_preview_context(
++        recording_id, settings, limit=15
++    )
+ 
+     stages_list = list(pipeline_stages or [])
+     completed_stage_count = sum(
+@@ -1289,6 +1280,74 @@ def _full_page_overview_context(
+     }
  
  
- def _embedded_recording_confirmed_title(recording: dict[str, Any]) -> str:
-+    # Note: ``resolved_title`` is intentionally NOT in the fallback chain below.
-+    # ``_attach_resolved_title`` populates ``resolved_title`` on every rec flowing
-+    # through the inspector context so both the full-page header and the compact
-+    # card can render a stable title, but that value is auto-derived and must not
-+    # count as a "confirmed" user title here — otherwise the summary_topic /
-+    # job_id fallback branch in ``_embedded_recording_details_context`` becomes
-+    # unreachable and non-user titles are mislabeled as ``confirmed``.
-     display_title = str(recording.get("display_title") or "").strip()
-     if display_title:
-         return display_title
-     for key in (
-         "title",
-         "meeting_title",
--        "resolved_title",
-         "confirmed_title",
-     ):
-         title = str(recording.get(key) or "").strip()
++def _transcript_preview_context(
++    recording_id: str,
++    settings: AppSettings,
++    *,
++    limit: int = 15,
++) -> dict[str, Any]:
++    """Cheap preview-only transcript context used by the Overview tab.
++
++    Unlike _transcript_tab_context, this helper stops processing as soon
++    as ``limit`` non-empty turns have been collected and skips per-turn
++    work (time range formatting, language lookups, copy_text generation)
++    that the Overview preview does not render. It still reports
++    ``has_more`` so the template can surface "more turns in the full
++    transcript" hint without counting every remaining row.
++    """
++    transcript_path, _summary_path = _recording_derived_paths(
++        recording_id, settings
++    )
++    speaker_turns_path = transcript_path.parent / "speaker_turns.json"
++    transcript_payload = _load_json_dict(transcript_path)
++    speaker_turns_raw = _load_json_list(speaker_turns_path)
++    speaker_turns = [row for row in speaker_turns_raw if isinstance(row, dict)]
++    if not speaker_turns:
++        speaker_turns = _fallback_speaker_turns_from_transcript(transcript_payload)
++
++    speaker_name_map: dict[str, str] | None = None
++    preview_turns: list[dict[str, str]] = []
++    has_more = False
++    for row in speaker_turns:
++        text = str(row.get("text") or "").strip()
++        if not text:
++            continue
++        if len(preview_turns) >= limit:
++            has_more = True
++            break
++        if speaker_name_map is None:
++            speaker_name_map = _recording_speaker_name_map(
++                recording_id, settings=settings
++            )
++        speaker = _speaker_display_label(
++            str(row.get("speaker") or "S1"),
++            speaker_name_map=speaker_name_map,
++        )
++        try:
++            parsed_start: float | None = float(row.get("start"))
++        except (TypeError, ValueError):
++            parsed_start = None
++        timestamp = (
++            _format_timestamp(parsed_start) if parsed_start is not None else ""
++        )
++        preview_turns.append(
++            {
++                "speaker": speaker,
++                "timestamp": timestamp,
++                "text": text,
++            }
++        )
++
++    return {
++        "available": bool(preview_turns),
++        "turns": preview_turns,
++        "has_more": has_more,
++        "full_transcript_href": _recording_detail_path(
++            recording_id, tab="transcript"
++        ),
++    }
++
++
+ def _transcript_tab_context(recording_id: str, settings: AppSettings) -> dict[str, Any]:
+     transcript_path, _summary_path = _recording_derived_paths(recording_id, settings)
+     speaker_turns_path = transcript_path.parent / "speaker_turns.json"
 diff --git a/tests/test_cov_lan_app_ui_routes.py b/tests/test_cov_lan_app_ui_routes.py
-index 7a794e4..fc48d09 100644
+index 1f83980..d318d1a 100644
 --- a/tests/test_cov_lan_app_ui_routes.py
 +++ b/tests/test_cov_lan_app_ui_routes.py
-@@ -956,6 +956,100 @@ def test_embedded_recording_details_context_summary_and_job_id_fallbacks(
-     assert job_details["open_recording_page_href"] == "/recordings/rec-details-job?tab=export"
+@@ -1582,6 +1582,59 @@ def test_full_page_helpers_cover_overview_and_next_action_branches(
+     )
  
  
-+def test_embedded_recording_details_context_confirmed_title_key(
++def test_transcript_preview_context_truncates_and_reports_has_more(
 +    tmp_path: Path,
 +) -> None:
-+    """Covers the ``confirmed`` branch that does not route through display_title.
-+
-+    When a recording already has a non-empty ``title`` / ``meeting_title`` /
-+    ``confirmed_title`` key (for example, a confirmed calendar match surfaced
-+    into the recording dict by upstream code), ``_embedded_recording_confirmed_title``
-+    must return it so the compact card primary title is labeled ``confirmed`` and
-+    the fallback branch is skipped.
-+    """
 +    cfg = _cfg(tmp_path)
-+    init_db(cfg)
-+    recording = create_recording(
-+        "rec-details-confirmed-key",
-+        source="upload",
-+        source_filename="m.wav",
-+        status=RECORDING_STATUS_READY,
-+        settings=cfg,
++    derived = cfg.recordings_root / "rec-preview-1" / "derived"
++    derived.mkdir(parents=True, exist_ok=True)
++    (derived / "transcript.json").write_text(
++        json.dumps({"text": "hello"}),
++        encoding="utf-8",
 +    )
-+    prepared = ui_routes._prepare_recording_for_display(  # noqa: SLF001
-+        {**recording, "title": "Upstream confirmed"},
-+        settings=cfg,
-+    )
-+    details = ui_routes._embedded_recording_details_context(  # noqa: SLF001
-+        "rec-details-confirmed-key",
-+        recording=prepared,
-+        diagnostics={"primary_reason_text": ""},
-+        current_tab="overview",
-+        stage_rows=[],
-+        settings=cfg,
-+    )
-+    assert details["primary_title"] == "Upstream confirmed"
-+    assert details["primary_title_source"] == "confirmed"
-+    assert details["primary_title_is_user_set"] is False
-+
-+
-+def test_recording_inspector_context_embedded_preserves_job_id_fallback(
-+    tmp_path: Path,
-+    monkeypatch: pytest.MonkeyPatch,
-+) -> None:
-+    """Regression test for Codex P2.
-+
-+    ``_recording_inspector_context`` calls ``_attach_resolved_title`` which
-+    populates ``rec.resolved_title``. If that key leaks back into
-+    ``_embedded_recording_confirmed_title``'s fallback chain, recordings
-+    without a calendar/summary/user title are mislabeled as ``confirmed``
-+    instead of falling through to the ``job_id`` branch.
-+    """
-+    cfg = _cfg(tmp_path)
-+    monkeypatch.setattr(ui_routes, "_settings", cfg)
-+    monkeypatch.setattr(
-+        ui_routes,
-+        "collect_control_center_runtime_status",
-+        lambda _settings: _stub_runtime_status(),
-+    )
-+    init_db(cfg)
-+
-+    create_recording(
-+        "rec-embedded-fallback",
-+        source="upload",
-+        source_filename="fallback.wav",
-+        status=RECORDING_STATUS_PROCESSING,
-+        settings=cfg,
++    turns_payload: list[dict[str, object]] = [
++        {"start": "nope", "end": 0.5, "speaker": "S1", "text": "no timestamp"},
++        {"start": 0.5, "end": 1.0, "speaker": "S2", "text": ""},
++    ]
++    for idx in range(4):
++        turns_payload.append(
++            {
++                "start": float(idx + 1),
++                "end": float(idx + 2),
++                "speaker": f"S{idx + 1}",
++                "text": f"turn {idx}",
++            }
++        )
++    (derived / "speaker_turns.json").write_text(
++        json.dumps(turns_payload),
++        encoding="utf-8",
 +    )
 +
-+    control_center_state = ui_routes._control_center_state_context(  # noqa: SLF001
-+        selected="rec-embedded-fallback",
-+        status=None,
-+        q="",
-+        tab="overview",
-+        limit=20,
-+        offset=0,
++    preview = ui_routes._transcript_preview_context(  # noqa: SLF001
++        "rec-preview-1", cfg, limit=3
 +    )
-+    context = ui_routes._recording_inspector_context(  # noqa: SLF001
-+        "rec-embedded-fallback",
-+        current_tab="overview",
-+        inspector_mode="embedded",
-+        control_center_state=control_center_state,
++    assert preview["available"] is True
++    assert preview["has_more"] is True
++    assert len(preview["turns"]) == 3
++    assert preview["turns"][0]["timestamp"] == ""
++    assert preview["turns"][0]["text"] == "no timestamp"
++    assert preview["turns"][1]["text"] == "turn 0"
++    assert preview["full_transcript_href"].endswith("tab=transcript")
++
++    preview_all = ui_routes._transcript_preview_context(  # noqa: SLF001
++        "rec-preview-1", cfg, limit=15
 +    )
-+    assert context is not None
-+    rec = context["rec"]
-+    # ``_attach_resolved_title`` populated resolved_title on the rec, but it
-+    # must not short-circuit the embedded title resolution.
-+    assert rec["resolved_title"] == "fallback.wav"
-+    assert rec["title_is_user_set"] is False
++    assert preview_all["has_more"] is False
++    assert len(preview_all["turns"]) == 5
 +
-+    details = context["embedded_recording_details"]
-+    assert details is not None
-+    assert details["primary_title"] == "rec-embedded-fallback"
-+    assert details["primary_title_source"] == "job_id"
-+    assert details["primary_title_is_user_set"] is False
++    empty_preview = ui_routes._transcript_preview_context(  # noqa: SLF001
++        "rec-preview-missing", cfg, limit=15
++    )
++    assert empty_preview["available"] is False
++    assert empty_preview["turns"] == []
++    assert empty_preview["has_more"] is False
 +
 +
- def test_embedded_recording_details_context_handles_summary_fallback_and_bad_confidence(
+ def test_display_helpers_cover_timezone_duration_and_prepare_recording(
      tmp_path: Path,
      monkeypatch: pytest.MonkeyPatch,
-@@ -4625,6 +4719,15 @@ def test_embedded_recording_confirmed_title_display_title_wins() -> None:
-         )
-         == "Fallback"
-     )
-+    # resolved_title is an auto-derived rendering field and must NOT count as a
-+    # confirmed title; otherwise the summary_topic / job_id fallback branch in
-+    # _embedded_recording_details_context becomes unreachable.
-+    assert (
-+        ui_routes._embedded_recording_confirmed_title(  # noqa: SLF001
-+            {"resolved_title": "auto-derived"}
-+        )
-+        == ""
-+    )
-     assert (
-         ui_routes._embedded_recording_confirmed_title({})  # noqa: SLF001
-         == ""

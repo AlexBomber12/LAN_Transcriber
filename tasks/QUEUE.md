@@ -696,7 +696,7 @@ Queue (in order)
 - Depends on: PR-FIX-CYRILLIC-02
 
 139) PR-RECORDING-DETAIL-REDESIGN-01: Redesign full-page Speakers tab to compact table + add transcript preview to Overview + 2-column layout + collapsible pipeline status
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-RECORDING-DETAIL-REDESIGN-01.md
 - Depends on: PR-TITLE-EDIT-01
 

@@ -2047,9 +2047,9 @@ def test_recording_detail_speakers_tab_assignment_persists(tmp_path, monkeypatch
     assert "Confirm match" in page.text
     assert "Mapped globally" in page.text
     assert "Add trusted sample" in page.text
-    assert "Best match" in page.text
-    assert "Purity 88%" in page.text
-    assert "Recognition cue" in page.text
+    assert "speaker-review-table" in page.text
+    assert "speaker-review-row-audio" in page.text
+    assert "speaker-review-row-actions" in page.text
 
 
 def test_recording_detail_speakers_create_and_assign(tmp_path, monkeypatch):

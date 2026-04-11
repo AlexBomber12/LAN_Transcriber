@@ -1530,6 +1530,110 @@ def test_full_page_helpers_cover_overview_and_next_action_branches(
         },
     ]
 
+    all_stages_completed_overview = ui_routes._full_page_overview_context(  # noqa: SLF001
+        "rec-full-1",
+        recording={
+            "status": RECORDING_STATUS_READY,
+            "captured_at_display": "—",
+            "duration_display": "—",
+            "source": "upload",
+        },
+        diagnostics={
+            "current_stage_label": "Done",
+            "current_stage_status_label": "Ready",
+            "current_stage_code": "done",
+            "primary_reason_text": "",
+        },
+        settings=cfg,
+        pipeline_stages=[
+            {"status": "completed", "duration_seconds": 12.5},
+            {"status": "skipped", "duration_seconds": None},
+        ],
+    )
+    assert all_stages_completed_overview["pipeline_status"]["collapsible"] is True
+    assert all_stages_completed_overview["pipeline_status"]["completed_count"] == 2
+    assert all_stages_completed_overview["pipeline_status"]["summary_text"] == (
+        "All 2 stages completed in 00:00:12"
+    )
+
+    partial_stages_overview = ui_routes._full_page_overview_context(  # noqa: SLF001
+        "rec-full-1",
+        recording={
+            "status": RECORDING_STATUS_FAILED,
+            "captured_at_display": "—",
+            "duration_display": "—",
+            "source": "upload",
+        },
+        diagnostics={
+            "current_stage_label": "Failed",
+            "current_stage_status_label": "Failed",
+            "current_stage_code": "llm_extract",
+            "primary_reason_text": "",
+        },
+        settings=cfg,
+        pipeline_stages=[
+            {"status": "completed", "duration_seconds": 0},
+            {"status": "failed", "duration_seconds": 0},
+        ],
+    )
+    assert partial_stages_overview["pipeline_status"]["collapsible"] is True
+    assert partial_stages_overview["pipeline_status"]["summary_text"] == (
+        "1 of 2 stages completed"
+    )
+
+
+def test_transcript_preview_context_truncates_and_reports_has_more(
+    tmp_path: Path,
+) -> None:
+    cfg = _cfg(tmp_path)
+    derived = cfg.recordings_root / "rec-preview-1" / "derived"
+    derived.mkdir(parents=True, exist_ok=True)
+    (derived / "transcript.json").write_text(
+        json.dumps({"text": "hello"}),
+        encoding="utf-8",
+    )
+    turns_payload: list[dict[str, object]] = [
+        {"start": "nope", "end": 0.5, "speaker": "S1", "text": "no timestamp"},
+        {"start": 0.5, "end": 1.0, "speaker": "S2", "text": ""},
+    ]
+    for idx in range(4):
+        turns_payload.append(
+            {
+                "start": float(idx + 1),
+                "end": float(idx + 2),
+                "speaker": f"S{idx + 1}",
+                "text": f"turn {idx}",
+            }
+        )
+    (derived / "speaker_turns.json").write_text(
+        json.dumps(turns_payload),
+        encoding="utf-8",
+    )
+
+    preview = ui_routes._transcript_preview_context(  # noqa: SLF001
+        "rec-preview-1", cfg, limit=3
+    )
+    assert preview["available"] is True
+    assert preview["has_more"] is True
+    assert len(preview["turns"]) == 3
+    assert preview["turns"][0]["timestamp"] == ""
+    assert preview["turns"][0]["text"] == "no timestamp"
+    assert preview["turns"][1]["text"] == "turn 0"
+    assert preview["full_transcript_href"].endswith("tab=transcript")
+
+    preview_all = ui_routes._transcript_preview_context(  # noqa: SLF001
+        "rec-preview-1", cfg, limit=15
+    )
+    assert preview_all["has_more"] is False
+    assert len(preview_all["turns"]) == 5
+
+    empty_preview = ui_routes._transcript_preview_context(  # noqa: SLF001
+        "rec-preview-missing", cfg, limit=15
+    )
+    assert empty_preview["available"] is False
+    assert empty_preview["turns"] == []
+    assert empty_preview["has_more"] is False
+
 
 def test_display_helpers_cover_timezone_duration_and_prepare_recording(
     tmp_path: Path,

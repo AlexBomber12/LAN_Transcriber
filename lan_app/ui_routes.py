@@ -1108,6 +1108,7 @@ def _full_page_overview_context(
     recording: dict[str, Any],
     diagnostics: dict[str, Any],
     settings: AppSettings,
+    pipeline_stages: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     status = str(recording.get("status") or "Unknown").strip() or "Unknown"
     stage_label = str(diagnostics.get("current_stage_label") or "").strip()
@@ -1176,6 +1177,54 @@ def _full_page_overview_context(
             cancel_value = f"{cancel_value} by {requested_by}"
         focus_items.append({"label": "Stop requested", "value": cancel_value})
 
+    transcript_preview = _transcript_preview_context(
+        recording_id, settings, limit=15
+    )
+
+    stages_list = list(pipeline_stages or [])
+    completed_stage_count = sum(
+        1
+        for stage in stages_list
+        if str(stage.get("status") or "").strip() in {"completed", "skipped"}
+    )
+    total_stage_duration = sum(
+        float(stage.get("duration_seconds") or 0.0)
+        for stage in stages_list
+        if stage.get("duration_seconds") is not None
+    )
+    terminal_pipeline_status = status in {
+        RECORDING_STATUS_READY,
+        RECORDING_STATUS_PUBLISHED,
+        RECORDING_STATUS_NEEDS_REVIEW,
+        RECORDING_STATUS_FAILED,
+        RECORDING_STATUS_QUARANTINE,
+        RECORDING_STATUS_STOPPED,
+    }
+    pipeline_status_collapsible = bool(terminal_pipeline_status and stages_list)
+    if pipeline_status_collapsible:
+        summary_stage_label = (
+            f"{completed_stage_count} of {len(stages_list)} stages completed"
+            if completed_stage_count != len(stages_list)
+            else f"All {len(stages_list)} stages completed"
+        )
+        if total_stage_duration > 0:
+            summary_text = (
+                f"{summary_stage_label} in "
+                f"{_format_duration_seconds(total_stage_duration)}"
+            )
+        else:
+            summary_text = summary_stage_label
+    else:
+        summary_text = ""
+    pipeline_status_block = {
+        "collapsible": pipeline_status_collapsible,
+        "terminal": terminal_pipeline_status,
+        "summary_text": summary_text,
+        "total_count": len(stages_list),
+        "completed_count": completed_stage_count,
+        "total_duration_seconds": total_stage_duration,
+    }
+
     return {
         "state_title": status,
         "state_detail": state_detail,
@@ -1226,6 +1275,76 @@ def _full_page_overview_context(
             },
         ],
         "focus_items": focus_items,
+        "transcript_preview": transcript_preview,
+        "pipeline_status": pipeline_status_block,
+    }
+
+
+def _transcript_preview_context(
+    recording_id: str,
+    settings: AppSettings,
+    *,
+    limit: int = 15,
+) -> dict[str, Any]:
+    """Cheap preview-only transcript context used by the Overview tab.
+
+    Unlike _transcript_tab_context, this helper stops processing as soon
+    as ``limit`` non-empty turns have been collected and skips per-turn
+    work (time range formatting, language lookups, copy_text generation)
+    that the Overview preview does not render. It still reports
+    ``has_more`` so the template can surface "more turns in the full
+    transcript" hint without counting every remaining row.
+    """
+    transcript_path, _summary_path = _recording_derived_paths(
+        recording_id, settings
+    )
+    speaker_turns_path = transcript_path.parent / "speaker_turns.json"
+    transcript_payload = _load_json_dict(transcript_path)
+    speaker_turns_raw = _load_json_list(speaker_turns_path)
+    speaker_turns = [row for row in speaker_turns_raw if isinstance(row, dict)]
+    if not speaker_turns:
+        speaker_turns = _fallback_speaker_turns_from_transcript(transcript_payload)
+
+    speaker_name_map: dict[str, str] | None = None
+    preview_turns: list[dict[str, str]] = []
+    has_more = False
+    for row in speaker_turns:
+        text = str(row.get("text") or "").strip()
+        if not text:
+            continue
+        if len(preview_turns) >= limit:
+            has_more = True
+            break
+        if speaker_name_map is None:
+            speaker_name_map = _recording_speaker_name_map(
+                recording_id, settings=settings
+            )
+        speaker = _speaker_display_label(
+            str(row.get("speaker") or "S1"),
+            speaker_name_map=speaker_name_map,
+        )
+        try:
+            parsed_start: float | None = float(row.get("start"))
+        except (TypeError, ValueError):
+            parsed_start = None
+        timestamp = (
+            _format_timestamp(parsed_start) if parsed_start is not None else ""
+        )
+        preview_turns.append(
+            {
+                "speaker": speaker,
+                "timestamp": timestamp,
+                "text": text,
+            }
+        )
+
+    return {
+        "available": bool(preview_turns),
+        "turns": preview_turns,
+        "has_more": has_more,
+        "full_transcript_href": _recording_detail_path(
+            recording_id, tab="transcript"
+        ),
     }
 
 
@@ -4601,6 +4720,7 @@ def _recording_inspector_context(
                 recording=rec,
                 diagnostics=diagnostics,
                 settings=_settings,
+                pipeline_stages=pipeline_stages,
             )
     if not is_embedded and safe_tab == "transcript":
         transcript = _transcript_tab_context(recording_id, _settings)
