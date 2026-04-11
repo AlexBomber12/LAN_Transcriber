@@ -701,6 +701,6 @@ Queue (in order)
 - Depends on: PR-TITLE-EDIT-01
 
 140) PR-SPEAKER-MERGE-DIAGNOSTICS-01: Add diagnostics to speaker merge step for debugging merge failures
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-SPEAKER-MERGE-DIAGNOSTICS-01.md
 - Depends on: PR-SPEAKER-MERGE-EMBEDDINGS-01

@@ -272,7 +272,7 @@ def test_merge_identical_embeddings_no_overlap() -> None:
         {"A": embedding, "B": embedding},
         {"A": [(0.0, 5.0)], "B": [(6.0, 11.0)]},
     )
-    updated, merge_map = merge_similar_speakers(
+    updated, merge_map, _diag = merge_similar_speakers(
         diar_segments,
         audio_path=_AUDIO_PATH,
         embedding_model=model,
@@ -290,7 +290,7 @@ def test_no_merge_different_embeddings() -> None:
         {"A": [1.0, 0.0], "B": [0.0, 1.0]},
         {"A": [(0.0, 5.0)], "B": [(6.0, 11.0)]},
     )
-    updated, merge_map = merge_similar_speakers(
+    updated, merge_map, _diag = merge_similar_speakers(
         diar_segments,
         audio_path=_AUDIO_PATH,
         embedding_model=model,
@@ -309,7 +309,7 @@ def test_no_merge_overlapping_speakers() -> None:
         {"A": embedding, "B": embedding},
         {"A": [(0.0, 5.0)], "B": [(2.0, 7.0)]},
     )
-    updated, merge_map = merge_similar_speakers(
+    updated, merge_map, _diag = merge_similar_speakers(
         diar_segments,
         audio_path=_AUDIO_PATH,
         embedding_model=model,
@@ -333,7 +333,7 @@ def test_no_merge_below_threshold() -> None:
         },
         {"A": [(0.0, 5.0)], "B": [(6.0, 11.0)]},
     )
-    updated, merge_map = merge_similar_speakers(
+    updated, merge_map, _diag = merge_similar_speakers(
         diar_segments,
         audio_path=_AUDIO_PATH,
         embedding_model=model,
@@ -361,7 +361,7 @@ def test_three_speakers_two_merge() -> None:
             "C": [(12.0, 17.0)],
         },
     )
-    updated, merge_map = merge_similar_speakers(
+    updated, merge_map, _diag = merge_similar_speakers(
         diar_segments,
         audio_path=_AUDIO_PATH,
         embedding_model=model,
@@ -396,7 +396,7 @@ def test_transitive_merge_collapses_chain() -> None:
             "C": [(27.0, 32.0)],
         },
     )
-    updated, merge_map = merge_similar_speakers(
+    updated, merge_map, _diag = merge_similar_speakers(
         diar_segments,
         audio_path=_AUDIO_PATH,
         embedding_model=model,
@@ -412,7 +412,7 @@ def test_merge_disabled_via_none_model() -> None:
         _segment("A", 0.0, 5.0),
         _segment("B", 6.0, 11.0),
     ]
-    updated, merge_map = merge_similar_speakers(
+    updated, merge_map, _diag = merge_similar_speakers(
         diar_segments,
         audio_path=_AUDIO_PATH,
         embedding_model=None,
@@ -433,7 +433,7 @@ def test_merge_ignores_empty_speaker_labels_in_totals() -> None:
         {"A": [1.0, 0.0], "B": [1.0, 0.0]},
         {"A": [(6.0, 11.0)], "B": [(12.0, 17.0)]},
     )
-    updated, merge_map = merge_similar_speakers(
+    updated, merge_map, _diag = merge_similar_speakers(
         diar_segments,
         audio_path=_AUDIO_PATH,
         embedding_model=model,
@@ -446,7 +446,7 @@ def test_merge_ignores_empty_speaker_labels_in_totals() -> None:
 
 
 def test_merge_empty_segments_noop() -> None:
-    updated, merge_map = merge_similar_speakers(
+    updated, merge_map, _diag = merge_similar_speakers(
         [],
         audio_path=_AUDIO_PATH,
         embedding_model=_make_embedding_model({}, {}),
@@ -457,7 +457,7 @@ def test_merge_empty_segments_noop() -> None:
 
 def test_merge_single_speaker_noop() -> None:
     diar_segments = [_segment("A", 0.0, 5.0)]
-    updated, merge_map = merge_similar_speakers(
+    updated, merge_map, _diag = merge_similar_speakers(
         diar_segments,
         audio_path=_AUDIO_PATH,
         embedding_model=_make_embedding_model(
@@ -480,7 +480,7 @@ def test_merge_ties_break_lexicographically() -> None:
         },
         {"A": [(0.0, 5.0)], "B": [(6.0, 11.0)]},
     )
-    updated, merge_map = merge_similar_speakers(
+    updated, merge_map, _diag = merge_similar_speakers(
         diar_segments,
         audio_path=_AUDIO_PATH,
         embedding_model=model,
@@ -502,7 +502,7 @@ def test_merge_larger_speaker_wins() -> None:
         },
         {"A": [(0.0, 1.0)], "B": [(2.0, 20.0)]},
     )
-    updated, merge_map = merge_similar_speakers(
+    updated, merge_map, _diag = merge_similar_speakers(
         diar_segments,
         audio_path=_AUDIO_PATH,
         embedding_model=model,
@@ -526,7 +526,7 @@ def test_merge_accepts_objects_with_tolist() -> None:
         _segment("A", 0.0, 5.0),
         _segment("B", 6.0, 11.0),
     ]
-    updated, merge_map = merge_similar_speakers(
+    updated, merge_map, _diag = merge_similar_speakers(
         diar_segments,
         audio_path=_AUDIO_PATH,
         embedding_model=_model,
@@ -543,7 +543,7 @@ def test_merge_rejects_unconvertible_values() -> None:
         _segment("A", 0.0, 5.0),
         _segment("B", 6.0, 11.0),
     ]
-    updated, merge_map = merge_similar_speakers(
+    updated, merge_map, _diag = merge_similar_speakers(
         diar_segments,
         audio_path=_AUDIO_PATH,
         embedding_model=_model,
@@ -561,7 +561,7 @@ def test_merge_rejects_vectors_with_non_numeric_entries() -> None:
         _segment("A", 0.0, 5.0),
         _segment("B", 6.0, 11.0),
     ]
-    updated, merge_map = merge_similar_speakers(
+    updated, merge_map, _diag = merge_similar_speakers(
         diar_segments,
         audio_path=_AUDIO_PATH,
         embedding_model=_model,
@@ -581,7 +581,7 @@ def test_merge_accepts_two_d_single_row_embeddings() -> None:
         _segment("A", 0.0, 5.0),
         _segment("B", 6.0, 11.0),
     ]
-    updated, merge_map = merge_similar_speakers(
+    updated, merge_map, _diag = merge_similar_speakers(
         diar_segments,
         audio_path=_AUDIO_PATH,
         embedding_model=_model,
@@ -601,7 +601,7 @@ def test_merge_mean_pools_two_d_multi_row_embeddings() -> None:
         _segment("A", 0.0, 5.0),
         _segment("B", 6.0, 11.0),
     ]
-    updated, merge_map = merge_similar_speakers(
+    updated, merge_map, _diag = merge_similar_speakers(
         diar_segments,
         audio_path=_AUDIO_PATH,
         embedding_model=_model,
@@ -618,7 +618,7 @@ def test_merge_rejects_two_d_vectors_with_shape_mismatch() -> None:
         _segment("A", 0.0, 5.0),
         _segment("B", 6.0, 11.0),
     ]
-    updated, merge_map = merge_similar_speakers(
+    updated, merge_map, _diag = merge_similar_speakers(
         diar_segments,
         audio_path=_AUDIO_PATH,
         embedding_model=_model,
@@ -634,7 +634,7 @@ def test_merge_rejects_two_d_vectors_with_non_numeric_entries() -> None:
         _segment("A", 0.0, 5.0),
         _segment("B", 6.0, 11.0),
     ]
-    updated, merge_map = merge_similar_speakers(
+    updated, merge_map, _diag = merge_similar_speakers(
         diar_segments,
         audio_path=_AUDIO_PATH,
         embedding_model=_model,
@@ -650,7 +650,7 @@ def test_merge_rejects_two_d_vectors_with_empty_rows() -> None:
         _segment("A", 0.0, 5.0),
         _segment("B", 6.0, 11.0),
     ]
-    updated, merge_map = merge_similar_speakers(
+    updated, merge_map, _diag = merge_similar_speakers(
         diar_segments,
         audio_path=_AUDIO_PATH,
         embedding_model=_model,
@@ -666,12 +666,126 @@ def test_merge_rejects_two_d_vectors_with_nonfinite_pool_result() -> None:
         _segment("A", 0.0, 5.0),
         _segment("B", 6.0, 11.0),
     ]
-    updated, merge_map = merge_similar_speakers(
+    updated, merge_map, _diag = merge_similar_speakers(
         diar_segments,
         audio_path=_AUDIO_PATH,
         embedding_model=_model,
     )
     assert merge_map == {}
+
+
+def test_diagnostics_low_similarity() -> None:
+    diar_segments = [
+        _segment("A", 0.0, 5.0),
+        _segment("B", 6.0, 11.0),
+    ]
+    sim = 0.75
+    complement = math.sqrt(1.0 - sim * sim)
+    model = _make_embedding_model(
+        {
+            "A": [1.0, 0.0],
+            "B": [sim, complement],
+        },
+        {"A": [(0.0, 5.0)], "B": [(6.0, 11.0)]},
+    )
+    _updated, merge_map, diagnostics = merge_similar_speakers(
+        diar_segments,
+        audio_path=_AUDIO_PATH,
+        embedding_model=model,
+        similarity_threshold=DEFAULT_SPEAKER_MERGE_SIMILARITY_THRESHOLD,
+    )
+    assert merge_map == {}
+    assert diagnostics["embedding_model_available"] is True
+    assert diagnostics["speakers_found"] == ["A", "B"]
+    assert diagnostics["centroids_computed"] == ["A", "B"]
+    actions = [entry["action"] for entry in diagnostics["pairwise_scores"]]
+    assert "skipped_low_similarity" in actions
+    low = next(
+        entry
+        for entry in diagnostics["pairwise_scores"]
+        if entry["action"] == "skipped_low_similarity"
+    )
+    assert low["similarity"] == pytest.approx(sim)
+    assert low["overlap"] is False
+    assert {low["speaker_a"], low["speaker_b"]} == {"A", "B"}
+
+
+def test_diagnostics_overlap() -> None:
+    diar_segments = [
+        _segment("A", 0.0, 5.0),
+        _segment("B", 2.0, 7.0),  # overlaps with A
+    ]
+    embedding = [1.0, 0.0]
+    model = _make_embedding_model(
+        {"A": embedding, "B": embedding},
+        {"A": [(0.0, 5.0)], "B": [(2.0, 7.0)]},
+    )
+    _updated, merge_map, diagnostics = merge_similar_speakers(
+        diar_segments,
+        audio_path=_AUDIO_PATH,
+        embedding_model=model,
+    )
+    assert merge_map == {}
+    actions = [entry["action"] for entry in diagnostics["pairwise_scores"]]
+    assert "skipped_overlap" in actions
+    overlap_entry = next(
+        entry
+        for entry in diagnostics["pairwise_scores"]
+        if entry["action"] == "skipped_overlap"
+    )
+    assert overlap_entry["overlap"] is True
+    assert overlap_entry["similarity"] == pytest.approx(1.0)
+    assert {overlap_entry["speaker_a"], overlap_entry["speaker_b"]} == {"A", "B"}
+
+
+def test_diagnostics_merged() -> None:
+    diar_segments = [
+        _segment("A", 0.0, 5.0),
+        _segment("B", 6.0, 11.0),
+    ]
+    embedding = [1.0, 0.0]
+    model = _make_embedding_model(
+        {"A": embedding, "B": embedding},
+        {"A": [(0.0, 5.0)], "B": [(6.0, 11.0)]},
+    )
+    _updated, merge_map, diagnostics = merge_similar_speakers(
+        diar_segments,
+        audio_path=_AUDIO_PATH,
+        embedding_model=model,
+    )
+    assert merge_map  # something was merged
+    merged_entries = [
+        entry
+        for entry in diagnostics["pairwise_scores"]
+        if entry["action"] == "merged"
+    ]
+    assert len(merged_entries) == 1
+    entry = merged_entries[0]
+    assert entry["overlap"] is False
+    assert entry["similarity"] == pytest.approx(1.0)
+    assert {entry["speaker_a"], entry["speaker_b"]} == {"A", "B"}
+    assert diagnostics["merges_applied"] == merge_map
+    assert diagnostics["centroids_computed"] == ["A", "B"]
+    assert diagnostics["speakers_found"] == ["A", "B"]
+
+
+def test_diagnostics_no_model() -> None:
+    diar_segments = [
+        _segment("A", 0.0, 5.0),
+        _segment("B", 6.0, 11.0),
+    ]
+    updated, merge_map, diagnostics = merge_similar_speakers(
+        diar_segments,
+        audio_path=_AUDIO_PATH,
+        embedding_model=None,
+    )
+    assert merge_map == {}
+    assert updated == diar_segments
+    assert diagnostics["embedding_model_available"] is False
+    assert diagnostics["speakers_found"] == []
+    assert diagnostics["centroids_computed"] == []
+    assert diagnostics["pairwise_scores"] == []
+    assert diagnostics["merges_applied"] == {}
 
 
 class _StubDiariser:

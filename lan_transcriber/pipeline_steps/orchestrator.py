@@ -997,10 +997,12 @@ def _resolve_pyannote_embedding_model(diariser: Diariser) -> EmbeddingModel | No
         return None
 
     inference: Any = None
+    resolution_source: str | None = None
     for attr in ("_embedding", "embedding"):
         candidate = getattr(pipeline_model, attr, None)
         if candidate is not None and callable(getattr(candidate, "crop", None)):
             inference = candidate
+            resolution_source = "pipeline_attribute"
             break
 
     if inference is None:
@@ -1013,6 +1015,12 @@ def _resolve_pyannote_embedding_model(diariser: Diariser) -> EmbeddingModel | No
         if inference is None:
             setattr(diariser, "_lan_speaker_embedding_unavailable", True)
             return None
+        resolution_source = "standalone_inference"
+
+    _logger.info(
+        "speaker_merge: embedding model ready (source=%s)",
+        resolution_source,
+    )
 
     def _embed(audio_path: Path, start: float, end: float):
         try:
@@ -1201,6 +1209,7 @@ def _write_diarization_metadata_artifact(
     smoothing_result,
     used_dummy_fallback: bool,
     speaker_merges: dict[str, str] | None = None,
+    speaker_merge_diagnostics: dict[str, Any] | None = None,
 ) -> None:
     metadata = _diariser_runtime_metadata(diariser)
     diariser_mode = _diariser_mode(diariser)
@@ -1276,6 +1285,7 @@ def _write_diarization_metadata_artifact(
     if profile_selection:
         payload["profile_selection"] = profile_selection
     payload["speaker_merges"] = dict(speaker_merges or {})
+    payload["speaker_merge_diagnostics"] = dict(speaker_merge_diagnostics or {})
     atomic_write_json(artifacts.diarization_metadata_json_path, payload)
 
 
@@ -3017,26 +3027,46 @@ async def run_pipeline(
                 int(stats["segments"]),
             )
         speaker_merge_map: dict[str, str] = {}
-        if (
-            cfg.speaker_merge_enabled
-            and not used_dummy_fallback
-            and _diariser_mode(diariser) == "pyannote"
-            and len({str(row.get("speaker") or "") for row in diar_segments}) >= 2
-        ):
+        speaker_merge_diagnostics: dict[str, Any] = {
+            "embedding_model_available": False,
+            "speakers_found": [],
+            "centroids_computed": [],
+            "pairwise_scores": [],
+            "merges_applied": {},
+            "skipped_reason": None,
+        }
+        if not cfg.speaker_merge_enabled:
+            speaker_merge_diagnostics["skipped_reason"] = "disabled_by_config"
+        elif used_dummy_fallback:
+            speaker_merge_diagnostics["skipped_reason"] = "dummy_fallback"
+        elif _diariser_mode(diariser) != "pyannote":
+            speaker_merge_diagnostics["skipped_reason"] = "non_pyannote_diariser"
+        elif len({str(row.get("speaker") or "") for row in diar_segments}) < 2:
+            speaker_merge_diagnostics["skipped_reason"] = "single_speaker"
+        else:
             embedding_model = _resolve_pyannote_embedding_model(diariser)
             if embedding_model is None:
+                speaker_merge_diagnostics["skipped_reason"] = (
+                    "embedding_model_unavailable"
+                )
                 _best_effort_step_log(
                     step_log_callback,
                     "speaker_merge skipped: embedding model unavailable",
                 )
             else:
-                diar_segments, speaker_merge_map = merge_similar_speakers(
+                (
+                    diar_segments,
+                    speaker_merge_map,
+                    merge_run_diagnostics,
+                ) = merge_similar_speakers(
                     diar_segments,
                     audio_path=audio_path,
                     embedding_model=embedding_model,
                     similarity_threshold=cfg.speaker_merge_similarity_threshold,
                     max_segments_per_speaker=cfg.speaker_merge_max_segments,
                 )
+                speaker_merge_diagnostics.update(merge_run_diagnostics)
+                speaker_merge_diagnostics["skipped_reason"] = None
                 if speaker_merge_map:
                     _best_effort_step_log(
                         step_log_callback,
@@ -3086,6 +3116,7 @@ async def run_pipeline(
             smoothing_result=smoothing_result,
             used_dummy_fallback=used_dummy_fallback,
             speaker_merges=speaker_merge_map,
+            speaker_merge_diagnostics=speaker_merge_diagnostics,
         )
 
         aliases = _load_aliases(cfg.speaker_db)

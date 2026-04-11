@@ -320,6 +320,19 @@ def _resolve_merge_target(merge_map: dict[str, str], label: str) -> str:
     return current
 
 
+def _empty_diagnostics(
+    *,
+    embedding_model_available: bool,
+) -> dict[str, Any]:
+    return {
+        "embedding_model_available": embedding_model_available,
+        "speakers_found": [],
+        "centroids_computed": [],
+        "pairwise_scores": [],
+        "merges_applied": {},
+    }
+
+
 def merge_similar_speakers(
     diar_segments: Sequence[dict[str, Any]],
     *,
@@ -329,20 +342,43 @@ def merge_similar_speakers(
     max_segments_per_speaker: int = DEFAULT_SPEAKER_MERGE_MAX_SEGMENTS,
     segment_duration_sec: float = DEFAULT_SPEAKER_MERGE_SEGMENT_DURATION_SEC,
     overlap_tolerance_sec: float = DEFAULT_SPEAKER_MERGE_OVERLAP_TOLERANCE_SEC,
-) -> tuple[list[dict[str, Any]], dict[str, str]]:
+) -> tuple[list[dict[str, Any]], dict[str, str], dict[str, Any]]:
     """Merge diarization speakers with similar voices that never overlap.
 
-    Returns a tuple ``(updated_segments, merge_map)`` where ``merge_map`` is a
-    mapping from the merged label to the kept label after transitive merges.
-    When ``embedding_model`` is ``None`` the function is a no-op: it returns
-    the original segments (as a new list) and an empty ``merge_map``.
+    Returns a tuple ``(updated_segments, merge_map, diagnostics)`` where
+    ``merge_map`` is a mapping from the merged label to the kept label after
+    transitive merges and ``diagnostics`` is a dict describing the inputs and
+    per-pair outcomes so operators can understand why speakers were or were
+    not merged. When ``embedding_model`` is ``None`` the function is a no-op:
+    it returns the original segments (as a new list), an empty ``merge_map``,
+    and a diagnostics dict with ``embedding_model_available=False``.
     """
 
     original_segments = [dict(row) for row in diar_segments]
     if embedding_model is None:
-        return original_segments, {}
+        return (
+            original_segments,
+            {},
+            _empty_diagnostics(embedding_model_available=False),
+        )
+
+    speakers_found = sorted(
+        {
+            str(row.get("speaker") or "")
+            for row in original_segments
+            if str(row.get("speaker") or "")
+        }
+    )
+    diagnostics: dict[str, Any] = {
+        "embedding_model_available": True,
+        "speakers_found": speakers_found,
+        "centroids_computed": [],
+        "pairwise_scores": [],
+        "merges_applied": {},
+    }
+
     if not original_segments:
-        return original_segments, {}
+        return original_segments, {}, diagnostics
 
     centroids = extract_speaker_embeddings(
         audio_path,
@@ -351,8 +387,9 @@ def merge_similar_speakers(
         max_segments_per_speaker=max_segments_per_speaker,
         segment_duration_sec=segment_duration_sec,
     )
+    diagnostics["centroids_computed"] = sorted(centroids.keys())
     if len(centroids) < 2:
-        return original_segments, {}
+        return original_segments, {}, diagnostics
 
     pairs = compute_pairwise_similarity(centroids)
     original_totals = _speaker_total_seconds(original_segments)
@@ -360,11 +397,36 @@ def merge_similar_speakers(
     merge_map: dict[str, str] = {}
 
     for left_speaker, right_speaker, similarity in pairs:
-        if similarity < similarity_threshold:
-            break
         left_target = _resolve_merge_target(merge_map, left_speaker)
         right_target = _resolve_merge_target(merge_map, right_speaker)
         if left_target == right_target:
+            diagnostics["pairwise_scores"].append(
+                {
+                    "speaker_a": left_speaker,
+                    "speaker_b": right_speaker,
+                    "similarity": float(similarity),
+                    "overlap": False,
+                    "action": "skipped_already_merged",
+                }
+            )
+            continue
+        if similarity < similarity_threshold:
+            _logger.info(
+                "speaker_merge: skip %s<->%s similarity=%.3f < threshold=%.3f",
+                left_speaker,
+                right_speaker,
+                similarity,
+                similarity_threshold,
+            )
+            diagnostics["pairwise_scores"].append(
+                {
+                    "speaker_a": left_speaker,
+                    "speaker_b": right_speaker,
+                    "similarity": float(similarity),
+                    "overlap": False,
+                    "action": "skipped_low_similarity",
+                }
+            )
             continue
         # Use a fresh copy of the original segments but with previously decided
         # merges applied so overlap detection sees the post-merge world.
@@ -380,6 +442,21 @@ def merge_similar_speakers(
             overlap_segments,
             tolerance_sec=overlap_tolerance_sec,
         ):
+            _logger.info(
+                "speaker_merge: skip %s<->%s similarity=%.3f overlap=True",
+                left_speaker,
+                right_speaker,
+                similarity,
+            )
+            diagnostics["pairwise_scores"].append(
+                {
+                    "speaker_a": left_speaker,
+                    "speaker_b": right_speaker,
+                    "similarity": float(similarity),
+                    "overlap": True,
+                    "action": "skipped_overlap",
+                }
+            )
             continue
         left_total = totals.get(left_target, 0.0)
         right_total = totals.get(right_target, 0.0)
@@ -393,6 +470,15 @@ def merge_similar_speakers(
         merge_map[merged] = kept
         totals[kept] = totals.get(kept, 0.0) + totals.get(merged, 0.0)
         totals[merged] = 0.0
+        diagnostics["pairwise_scores"].append(
+            {
+                "speaker_a": left_speaker,
+                "speaker_b": right_speaker,
+                "similarity": float(similarity),
+                "overlap": False,
+                "action": "merged",
+            }
+        )
         _logger.info(
             "Merged speaker %s into %s: similarity=%.3f, overlap=False, "
             "%s_seconds=%.3f, %s_seconds=%.3f",
@@ -406,7 +492,7 @@ def merge_similar_speakers(
         )
 
     if not merge_map:
-        return original_segments, {}
+        return original_segments, {}, diagnostics
 
     # Apply merges transitively to every segment.
     updated_segments: list[dict[str, Any]] = []
@@ -425,7 +511,8 @@ def merge_similar_speakers(
         if final != label:
             flattened_map[label] = final
 
-    return updated_segments, flattened_map
+    diagnostics["merges_applied"] = dict(flattened_map)
+    return updated_segments, flattened_map, diagnostics
 
 
 __all__ = [
