@@ -37,37 +37,6 @@
   {% endif %}
 
   <div class="p-5">
-    {% set speaker_review_mode = 'full' %}
-    {% include 'partials/speaker_review_cards.html' %}
+    {% include 'partials/speaker_review_table.html' %}
   </div>
-</section>
-
-<section class="bg-white rounded-xl border border-slate-200 p-5 shadow-sm mt-6">
-  <h3 class="text-base font-bold text-slate-900 mb-4">Create Canonical Speaker</h3>
-  {% if rows %}
-  <form method="post" action="/ui/recordings/{{ rec.id }}/speakers/create-and-assign" class="flex flex-col gap-4">
-    <div class="flex items-center gap-3">
-      <label for="diar_speaker_label" class="text-sm font-medium text-slate-700 w-32">Speaker label</label>
-      <select id="diar_speaker_label" name="diar_speaker_label" class="bg-slate-50 border border-slate-200 rounded text-sm py-1.5 px-3 text-slate-700 focus:ring-1 focus:ring-primary focus:border-primary w-48">
-        {% for row in rows %}
-        <option value="{{ row.speaker }}">{{ row.speaker }}</option>
-        {% endfor %}
-      </select>
-    </div>
-    <div class="flex items-center gap-3">
-      <label for="display_name" class="text-sm font-medium text-slate-700 w-32">Display name</label>
-      <input id="display_name" type="text" name="display_name" maxlength="120" required placeholder="Person name" class="bg-slate-50 border border-slate-200 rounded text-sm py-1.5 px-3 text-slate-700 focus:ring-1 focus:ring-primary focus:border-primary w-64">
-    </div>
-    <div class="flex items-center gap-3">
-      <label for="notes" class="text-sm font-medium text-slate-700 w-32">Notes</label>
-      <input id="notes" type="text" name="notes" maxlength="240" placeholder="Optional notes" class="bg-slate-50 border border-slate-200 rounded text-sm py-1.5 px-3 text-slate-700 focus:ring-1 focus:ring-primary focus:border-primary w-96">
-    </div>
-    <div class="flex items-center gap-3">
-      <span class="w-32"></span>
-      <button class="px-4 py-2 bg-primary text-white text-sm font-bold rounded hover:bg-primary/90 transition-colors" type="submit">Create and confirm match</button>
-    </div>
-  </form>
-  {% else %}
-  <p class="text-sm text-slate-400 italic">No diarization labels are available for assignment.</p>
-  {% endif %}
 </section>

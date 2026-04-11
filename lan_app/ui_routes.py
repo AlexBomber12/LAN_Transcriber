@@ -1108,6 +1108,7 @@ def _full_page_overview_context(
     recording: dict[str, Any],
     diagnostics: dict[str, Any],
     settings: AppSettings,
+    pipeline_stages: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     status = str(recording.get("status") or "Unknown").strip() or "Unknown"
     stage_label = str(diagnostics.get("current_stage_label") or "").strip()
@@ -1176,6 +1177,63 @@ def _full_page_overview_context(
             cancel_value = f"{cancel_value} by {requested_by}"
         focus_items.append({"label": "Stop requested", "value": cancel_value})
 
+    transcript_tab_ctx = _transcript_tab_context(recording_id, settings)
+    preview_turns = list(transcript_tab_ctx.get("turns") or [])[:15]
+    total_turn_count = int(transcript_tab_ctx.get("turn_count") or 0)
+    transcript_preview = {
+        "available": bool(preview_turns),
+        "turns": preview_turns,
+        "total_turn_count": total_turn_count,
+        "hidden_turn_count": max(total_turn_count - len(preview_turns), 0),
+        "full_transcript_href": _recording_detail_path(
+            recording_id, tab="transcript"
+        ),
+    }
+
+    stages_list = list(pipeline_stages or [])
+    completed_stage_count = sum(
+        1
+        for stage in stages_list
+        if str(stage.get("status") or "").strip() in {"completed", "skipped"}
+    )
+    total_stage_duration = sum(
+        float(stage.get("duration_seconds") or 0.0)
+        for stage in stages_list
+        if stage.get("duration_seconds") is not None
+    )
+    terminal_pipeline_status = status in {
+        RECORDING_STATUS_READY,
+        RECORDING_STATUS_PUBLISHED,
+        RECORDING_STATUS_NEEDS_REVIEW,
+        RECORDING_STATUS_FAILED,
+        RECORDING_STATUS_QUARANTINE,
+        RECORDING_STATUS_STOPPED,
+    }
+    pipeline_status_collapsible = bool(terminal_pipeline_status and stages_list)
+    if pipeline_status_collapsible:
+        summary_stage_label = (
+            f"{completed_stage_count} of {len(stages_list)} stages completed"
+            if completed_stage_count != len(stages_list)
+            else f"All {len(stages_list)} stages completed"
+        )
+        if total_stage_duration > 0:
+            summary_text = (
+                f"{summary_stage_label} in "
+                f"{_format_duration_seconds(total_stage_duration)}"
+            )
+        else:
+            summary_text = summary_stage_label
+    else:
+        summary_text = ""
+    pipeline_status_block = {
+        "collapsible": pipeline_status_collapsible,
+        "terminal": terminal_pipeline_status,
+        "summary_text": summary_text,
+        "total_count": len(stages_list),
+        "completed_count": completed_stage_count,
+        "total_duration_seconds": total_stage_duration,
+    }
+
     return {
         "state_title": status,
         "state_detail": state_detail,
@@ -1226,6 +1284,8 @@ def _full_page_overview_context(
             },
         ],
         "focus_items": focus_items,
+        "transcript_preview": transcript_preview,
+        "pipeline_status": pipeline_status_block,
     }
 
 
@@ -4601,6 +4661,7 @@ def _recording_inspector_context(
                 recording=rec,
                 diagnostics=diagnostics,
                 settings=_settings,
+                pipeline_stages=pipeline_stages,
             )
     if not is_embedded and safe_tab == "transcript":
         transcript = _transcript_tab_context(recording_id, _settings)

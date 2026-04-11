@@ -1530,6 +1530,57 @@ def test_full_page_helpers_cover_overview_and_next_action_branches(
         },
     ]
 
+    all_stages_completed_overview = ui_routes._full_page_overview_context(  # noqa: SLF001
+        "rec-full-1",
+        recording={
+            "status": RECORDING_STATUS_READY,
+            "captured_at_display": "—",
+            "duration_display": "—",
+            "source": "upload",
+        },
+        diagnostics={
+            "current_stage_label": "Done",
+            "current_stage_status_label": "Ready",
+            "current_stage_code": "done",
+            "primary_reason_text": "",
+        },
+        settings=cfg,
+        pipeline_stages=[
+            {"status": "completed", "duration_seconds": 12.5},
+            {"status": "skipped", "duration_seconds": None},
+        ],
+    )
+    assert all_stages_completed_overview["pipeline_status"]["collapsible"] is True
+    assert all_stages_completed_overview["pipeline_status"]["completed_count"] == 2
+    assert all_stages_completed_overview["pipeline_status"]["summary_text"] == (
+        "All 2 stages completed in 00:00:12"
+    )
+
+    partial_stages_overview = ui_routes._full_page_overview_context(  # noqa: SLF001
+        "rec-full-1",
+        recording={
+            "status": RECORDING_STATUS_FAILED,
+            "captured_at_display": "—",
+            "duration_display": "—",
+            "source": "upload",
+        },
+        diagnostics={
+            "current_stage_label": "Failed",
+            "current_stage_status_label": "Failed",
+            "current_stage_code": "llm_extract",
+            "primary_reason_text": "",
+        },
+        settings=cfg,
+        pipeline_stages=[
+            {"status": "completed", "duration_seconds": 0},
+            {"status": "failed", "duration_seconds": 0},
+        ],
+    )
+    assert partial_stages_overview["pipeline_status"]["collapsible"] is True
+    assert partial_stages_overview["pipeline_status"]["summary_text"] == (
+        "1 of 2 stages completed"
+    )
+
 
 def test_display_helpers_cover_timezone_duration_and_prepare_recording(
     tmp_path: Path,
