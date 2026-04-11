@@ -1057,3 +1057,247 @@ def test_resolve_pyannote_embedding_model_handles_inference_constructor_error() 
         result = pipeline_orchestrator._resolve_pyannote_embedding_model(diariser)
     assert result is None
     assert getattr(diariser, "_lan_speaker_embedding_unavailable", False) is True
+
+
+def test_build_pyannote_inference_uses_diarization_safe_globals(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The wespeaker checkpoint must be loaded under the trusted safe-globals
+    context to survive ``torch.load(weights_only=True)``."""
+
+    contexts: list[str] = []
+
+    class _FakeInference:
+        def __init__(self, name: str, **kwargs) -> None:
+            self.name = name
+            self.kwargs = kwargs
+
+    fake_audio = types.SimpleNamespace(Inference=_FakeInference)
+
+    import contextlib as _contextlib
+
+    @_contextlib.contextmanager
+    def _fake_ctx(extra_fqns=None):
+        contexts.append("entered")
+        yield
+
+    monkeypatch.setattr(
+        pipeline_orchestrator,
+        "diarization_safe_globals_for_torch_load",
+        _fake_ctx,
+    )
+
+    with _patched_module("pyannote.audio", fake_audio):
+        inference = pipeline_orchestrator._build_pyannote_inference(
+            "pyannote/wespeaker-voxceleb-resnet34-LM"
+        )
+
+    assert isinstance(inference, _FakeInference)
+    assert inference.kwargs == {"window": "whole"}
+    assert contexts == ["entered"]
+
+
+def test_build_pyannote_inference_passes_torch_device_when_gpu(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When a non-CPU device is provided, it must be forwarded as a
+    ``torch.device`` object so the embedding model runs on GPU."""
+
+    class _FakeInference:
+        def __init__(self, name: str, **kwargs) -> None:
+            self.name = name
+            self.kwargs = kwargs
+
+    fake_audio = types.SimpleNamespace(Inference=_FakeInference)
+
+    fake_torch = types.SimpleNamespace(device=lambda spec: ("torch.device", spec))
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+
+    with _patched_module("pyannote.audio", fake_audio):
+        inference = pipeline_orchestrator._build_pyannote_inference(
+            "pyannote/wespeaker-voxceleb-resnet34-LM",
+            device="cuda:0",
+        )
+
+    assert isinstance(inference, _FakeInference)
+    assert inference.kwargs.get("window") == "whole"
+    assert inference.kwargs.get("device") == ("torch.device", "cuda:0")
+
+
+def test_build_pyannote_inference_skips_device_for_cpu(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``device='cpu'`` should not pass a torch.device kwarg (matches
+    pre-existing CPU-only behaviour)."""
+
+    class _FakeInference:
+        def __init__(self, name: str, **kwargs) -> None:
+            self.name = name
+            self.kwargs = kwargs
+
+    fake_audio = types.SimpleNamespace(Inference=_FakeInference)
+
+    with _patched_module("pyannote.audio", fake_audio):
+        inference = pipeline_orchestrator._build_pyannote_inference(
+            "pyannote/wespeaker-voxceleb-resnet34-LM",
+            device="cpu",
+        )
+    assert isinstance(inference, _FakeInference)
+    assert "device" not in inference.kwargs
+
+
+def test_build_pyannote_inference_retries_on_unsupported_global(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If the first load attempt raises ``Unsupported global``, the helper
+    must extract the FQN, allowlist it, and retry — mirroring the diarization
+    pipeline loader's safe-globals retry."""
+
+    attempts: list[list[str]] = []
+
+    class _FakeInference:
+        def __init__(self, name: str, **kwargs) -> None:
+            extras = list(_current_extras["value"])
+            attempts.append(extras)
+            if not extras:
+                raise RuntimeError(
+                    "Unsupported global: GLOBAL omegaconf.base.ContainerMetadata"
+                )
+            self.name = name
+            self.kwargs = kwargs
+
+    fake_audio = types.SimpleNamespace(Inference=_FakeInference)
+
+    _current_extras: dict[str, list[str]] = {"value": []}
+
+    import contextlib as _contextlib
+
+    @_contextlib.contextmanager
+    def _fake_ctx(extra_fqns=None):
+        _current_extras["value"] = list(extra_fqns or [])
+        yield
+
+    monkeypatch.setattr(
+        pipeline_orchestrator,
+        "diarization_safe_globals_for_torch_load",
+        _fake_ctx,
+    )
+    monkeypatch.setattr(
+        pipeline_orchestrator,
+        "import_trusted_diarization_symbol",
+        lambda fqn: object(),
+    )
+
+    with _patched_module("pyannote.audio", fake_audio):
+        inference = pipeline_orchestrator._build_pyannote_inference(
+            "pyannote/wespeaker-voxceleb-resnet34-LM"
+        )
+
+    assert isinstance(inference, _FakeInference)
+    assert attempts[0] == []
+    assert "omegaconf.base.ContainerMetadata" in attempts[1]
+
+
+def test_build_pyannote_inference_breaks_when_retry_fqn_untrusted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If the unsupported-global FQN cannot be imported via the trusted
+    diarization allowlist, the helper must stop retrying and return None."""
+
+    class _FakeInference:
+        def __init__(self, *_args, **_kwargs) -> None:
+            raise RuntimeError(
+                "Unsupported global: GLOBAL omegaconf.base.ContainerMetadata"
+            )
+
+    fake_audio = types.SimpleNamespace(Inference=_FakeInference)
+
+    monkeypatch.setattr(
+        pipeline_orchestrator,
+        "import_trusted_diarization_symbol",
+        lambda fqn: None,
+    )
+
+    with _patched_module("pyannote.audio", fake_audio):
+        result = pipeline_orchestrator._build_pyannote_inference(
+            "pyannote/wespeaker-voxceleb-resnet34-LM"
+        )
+    assert result is None
+
+
+def test_build_pyannote_inference_exhausts_retry_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When every attempt raises with a fresh retryable FQN, the helper must
+    bound retries via the safe-global attempt budget and eventually return
+    None instead of looping forever."""
+
+    suffixes = ["A", "B", "C", "D", "E"]
+    counter = {"i": 0}
+
+    class _FakeInference:
+        def __init__(self, *_args, **_kwargs) -> None:
+            i = counter["i"]
+            counter["i"] += 1
+            sym = suffixes[i]
+            raise RuntimeError(f"Unsupported global: GLOBAL omegaconf.test.{sym}")
+
+    fake_audio = types.SimpleNamespace(Inference=_FakeInference)
+
+    monkeypatch.setattr(
+        pipeline_orchestrator,
+        "import_trusted_diarization_symbol",
+        lambda fqn: object(),
+    )
+
+    with _patched_module("pyannote.audio", fake_audio):
+        result = pipeline_orchestrator._build_pyannote_inference(
+            "pyannote/wespeaker-voxceleb-resnet34-LM"
+        )
+    assert result is None
+    # The helper must respect the retry budget (3) and not loop indefinitely.
+    assert counter["i"] == 3
+
+
+def test_resolve_pyannote_embedding_model_forwards_pipeline_device() -> None:
+    """The embedding model should run on the same device as the diarization
+    pipeline (set via ``_lan_effective_device`` on the pipeline_model)."""
+
+    pipeline_model = types.SimpleNamespace(
+        embedding="pyannote/wespeaker-voxceleb-resnet34-LM",
+        _lan_effective_device="cuda:0",
+    )
+    diariser = _StubDiariser(
+        pipeline_model=pipeline_model, pipeline_attr="_pipeline_model"
+    )
+
+    constructed: list["_FakeInference"] = []
+
+    class _FakeInference:
+        def __init__(self, name: str, **kwargs) -> None:
+            self.name = name
+            self.kwargs = kwargs
+            self.device = kwargs.get("device")
+            constructed.append(self)
+
+        def crop(self, path: str, segment):
+            return [0.1, 0.9]
+
+    fake_audio = types.SimpleNamespace(Inference=_FakeInference)
+    fake_torch = types.SimpleNamespace(device=lambda spec: ("torch.device", spec))
+
+    saved = sys.modules.get("torch")
+    sys.modules["torch"] = fake_torch  # type: ignore[assignment]
+    try:
+        with _patched_module("pyannote.audio", fake_audio):
+            model_callable = pipeline_orchestrator._resolve_pyannote_embedding_model(
+                diariser
+            )
+    finally:
+        if saved is None:
+            sys.modules.pop("torch", None)
+        else:
+            sys.modules["torch"] = saved
+    assert callable(model_callable)
+    assert len(constructed) == 1
+    assert constructed[0].kwargs.get("device") == ("torch.device", "cuda:0")
