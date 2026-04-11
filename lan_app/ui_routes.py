@@ -106,6 +106,7 @@ from .db import (
     list_voice_profiles,
     set_recording_cancel_request,
     set_calendar_match_selection,
+    set_recording_display_title,
     set_recording_duration,
     set_recording_project,
     set_speaker_assignment,
@@ -395,6 +396,9 @@ def _control_center_meeting_title_context(
     recording_id = str(recording.get("id") or "").strip()
     source_filename = str(recording.get("source_filename") or "").strip()
     fallback_title = source_filename or recording_id or "Recording"
+    display_title = str(recording.get("display_title") or "").strip()
+    if display_title:
+        return {"meeting_title": display_title, "meeting_title_source": "user"}
     if not recording_id:
         return {"meeting_title": fallback_title, "meeting_title_source": "filename"}
 
@@ -442,8 +446,10 @@ def _control_center_meeting_title_context(
 
 
 def _embedded_recording_confirmed_title(recording: dict[str, Any]) -> str:
+    display_title = str(recording.get("display_title") or "").strip()
+    if display_title:
+        return display_title
     for key in (
-        "display_title",
         "title",
         "meeting_title",
         "resolved_title",
@@ -453,6 +459,22 @@ def _embedded_recording_confirmed_title(recording: dict[str, Any]) -> str:
         if title:
             return title
     return ""
+
+
+def _attach_resolved_title(
+    recording: dict[str, Any],
+    *,
+    settings: AppSettings,
+) -> dict[str, Any]:
+    title_context = _control_center_meeting_title_context(recording, settings=settings)
+    resolved_title = str(title_context.get("meeting_title") or "").strip()
+    resolved_source = str(title_context.get("meeting_title_source") or "").strip()
+    recording["resolved_title"] = resolved_title or str(
+        recording.get("source_filename") or recording.get("id") or "Recording"
+    )
+    recording["resolved_title_source"] = resolved_source or "filename"
+    recording["title_is_user_set"] = resolved_source == "user"
+    return recording
 
 
 def _control_center_progress_context(recording: dict[str, Any]) -> dict[str, Any]:
@@ -4347,23 +4369,39 @@ def _embedded_recording_details_context(
     stage_rows: list[dict[str, Any]],
     settings: AppSettings,
 ) -> dict[str, Any]:
-    title_context = _control_center_meeting_title_context(recording, settings=settings)
+    # Compute the derived (non-user) title context so we can still surface the
+    # calendar match below even when a user display_title is set.
+    derived_recording = {
+        key: value for key, value in recording.items() if key != "display_title"
+    }
+    title_context = _control_center_meeting_title_context(
+        derived_recording, settings=settings
+    )
     title_source = str(title_context.get("meeting_title_source") or "").strip()
     calendar_title = (
         str(title_context.get("meeting_title") or "").strip()
         if title_source in {"calendar_selected", "calendar_candidate"}
         else ""
     )
-    primary_title = _embedded_recording_confirmed_title(recording)
-    primary_title_source = "confirmed"
-    if not primary_title:
-        candidate_title = str(title_context.get("meeting_title") or "").strip()
-        if title_source in {"calendar_selected", "calendar_candidate", "summary_topic"}:
-            primary_title = candidate_title
-            primary_title_source = title_source
-        else:
-            primary_title = str(recording.get("id") or "").strip() or "Recording"
-            primary_title_source = "job_id"
+    display_title = str(recording.get("display_title") or "").strip()
+    if display_title:
+        primary_title = display_title
+        primary_title_source = "user"
+    else:
+        primary_title = _embedded_recording_confirmed_title(recording)
+        primary_title_source = "confirmed"
+        if not primary_title:
+            candidate_title = str(title_context.get("meeting_title") or "").strip()
+            if title_source in {
+                "calendar_selected",
+                "calendar_candidate",
+                "summary_topic",
+            }:
+                primary_title = candidate_title
+                primary_title_source = title_source
+            else:
+                primary_title = str(recording.get("id") or "").strip() or "Recording"
+                primary_title_source = "job_id"
 
     summary = _summary_context(recording_id, settings)
     summary_lines = [
@@ -4439,8 +4477,11 @@ def _embedded_recording_details_context(
 
     return {
         "card_title": "Recording Details",
+        "recording_id": str(recording.get("id") or "").strip(),
         "primary_title": primary_title,
         "primary_title_source": primary_title_source,
+        "primary_title_is_user_set": primary_title_source == "user"
+        or bool(str(recording.get("display_title") or "").strip()),
         "job_id": str(recording.get("id") or "").strip() or "Recording",
         "filename": _compact_recording_value(recording.get("source_filename")),
         "download_zip_href": (
@@ -4474,6 +4515,7 @@ def _recording_inspector_context(
         _CONTROL_CENTER_TABS if is_embedded else _FULL_PAGE_RECORDING_INSPECTOR_TABS
     )
     rec = _prepare_recording_for_display(rec, settings=_settings)
+    _attach_resolved_title(rec, settings=_settings)
     jobs, _ = list_jobs(settings=_settings, recording_id=recording_id, limit=100)
     recovery_warning = _recording_recovery_warning(jobs)
     safe_tab = (
@@ -4523,6 +4565,7 @@ def _recording_inspector_context(
             get_recording(recording_id, settings=_settings) or rec,
             settings=_settings,
         )
+        _attach_resolved_title(rec, settings=_settings)
     if safe_tab == "speakers":
         speakers = _speakers_tab_context(
             recording_id,
@@ -6964,6 +7007,89 @@ async def ui_action_quarantine(
     return _ui_recording_action_response(
         return_to=return_to,
         redirect_to=f"/recordings/{recording_id}",
+    )
+
+
+_RECORDING_TITLE_EDIT_MODES = ("full_page", "compact")
+_MAX_DISPLAY_TITLE_LENGTH = 200
+
+
+def _normalize_title_edit_mode(mode: str) -> str:
+    candidate = str(mode or "").strip().lower()
+    if candidate in _RECORDING_TITLE_EDIT_MODES:
+        return candidate
+    return "full_page"
+
+
+def _render_recording_title_partial(
+    request: Request,
+    *,
+    recording: dict[str, Any],
+    mode: str,
+    editing: bool,
+) -> HTMLResponse:
+    normalized_mode = _normalize_title_edit_mode(mode)
+    prepared = _prepare_recording_for_display(recording, settings=_settings)
+    _attach_resolved_title(prepared, settings=_settings)
+    return templates.TemplateResponse(
+        request,
+        "partials/recording_title_edit.html",
+        {
+            "title_edit": {
+                "rec": prepared,
+                "mode": normalized_mode,
+                "editing": bool(editing),
+            },
+        },
+    )
+
+
+@ui_router.get("/ui/recordings/{recording_id}/title", response_class=HTMLResponse)
+async def ui_recording_title_view(
+    request: Request,
+    recording_id: str,
+    mode: str = Query(default="full_page"),
+    edit: int = Query(default=0),
+) -> Any:
+    rec = get_recording(recording_id, settings=_settings)
+    if rec is None:
+        return HTMLResponse("Not found", status_code=404)
+    return _render_recording_title_partial(
+        request,
+        recording=rec,
+        mode=mode,
+        editing=bool(edit),
+    )
+
+
+@ui_router.patch("/ui/recordings/{recording_id}/title", response_class=HTMLResponse)
+async def ui_recording_title_update(
+    request: Request,
+    recording_id: str,
+    display_title: str = Form(default=""),
+    mode: str = Query(default="full_page"),
+) -> Any:
+    if get_recording(recording_id, settings=_settings) is None:
+        return HTMLResponse("Not found", status_code=404)
+    raw = str(display_title or "").strip()
+    if len(raw) > _MAX_DISPLAY_TITLE_LENGTH:
+        return HTMLResponse(
+            f"display_title must be at most {_MAX_DISPLAY_TITLE_LENGTH} characters",
+            status_code=422,
+        )
+    new_value = raw or None
+    try:
+        set_recording_display_title(recording_id, new_value, settings=_settings)
+    except ValueError as exc:
+        return HTMLResponse(str(exc), status_code=422)
+    rec = get_recording(recording_id, settings=_settings)
+    if rec is None:
+        return HTMLResponse("Not found", status_code=404)
+    return _render_recording_title_partial(
+        request,
+        recording=rec,
+        mode=mode,
+        editing=False,
     )
 
 

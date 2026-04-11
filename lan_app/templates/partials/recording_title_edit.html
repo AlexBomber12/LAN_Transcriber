@@ -1,0 +1,79 @@
+{#
+  Inline recording title edit partial.
+  Required context:
+    title_edit.rec.id                  str
+    title_edit.rec.resolved_title      str
+    title_edit.rec.title_is_user_set   bool
+    title_edit.mode                    "full_page" | "compact"
+    title_edit.editing                 bool
+#}
+{% set _mode = 'compact' if title_edit.mode == 'compact' else 'full_page' %}
+{% set _rec = title_edit.rec %}
+{% set _dom_id = 'recording-title-' ~ _mode ~ '-' ~ _rec.id %}
+{% set _view_url = '/ui/recordings/' ~ _rec.id ~ '/title?mode=' ~ _mode %}
+{% set _edit_url = _view_url ~ '&edit=1' %}
+{% set _patch_url = _view_url %}
+<div
+  id="{{ _dom_id }}"
+  class="flex items-center gap-2 flex-wrap"
+  data-testid="recording-title-edit-{{ _mode }}"
+>
+  {% if title_edit.editing %}
+  <form
+    class="flex items-center gap-2 flex-wrap w-full"
+    hx-patch="{{ _patch_url }}"
+    hx-target="#{{ _dom_id }}"
+    hx-swap="outerHTML"
+    data-testid="recording-title-edit-form-{{ _mode }}"
+  >
+    <input
+      type="text"
+      name="display_title"
+      value="{{ _rec.resolved_title if _rec.title_is_user_set else '' }}"
+      placeholder="{{ _rec.resolved_title }}"
+      maxlength="200"
+      autofocus
+      autocomplete="off"
+      class="{% if _mode == 'full_page' %}text-2xl font-bold tracking-tight text-slate-900 border border-slate-300 rounded-md px-2 py-1 flex-1 min-w-[240px]{% else %}text-lg font-bold border border-slate-300 rounded-md px-2 py-1 flex-1 min-w-[160px]{% endif %}"
+      data-testid="recording-title-edit-input-{{ _mode }}"
+      onkeydown="if(event.key==='Escape'){event.preventDefault();event.stopPropagation();htmx.ajax('GET','{{ _view_url }}',{target:'#{{ _dom_id }}',swap:'outerHTML'});}"
+    />
+    <button
+      type="submit"
+      class="px-3 py-1 bg-slate-900 text-white text-xs font-bold rounded-md hover:bg-slate-700"
+      data-testid="recording-title-save-{{ _mode }}"
+    >Save</button>
+    <button
+      type="button"
+      class="px-3 py-1 border border-slate-200 text-xs font-bold rounded-md text-slate-600 hover:bg-slate-50"
+      hx-get="{{ _view_url }}"
+      hx-target="#{{ _dom_id }}"
+      hx-swap="outerHTML"
+      data-testid="recording-title-cancel-{{ _mode }}"
+    >Cancel</button>
+  </form>
+  {% else %}
+  {% if _mode == 'full_page' %}
+  <h1 class="text-slate-900 text-3xl font-bold tracking-tight" data-testid="recording-title-display-full_page">{{ _rec.resolved_title }}</h1>
+  {% else %}
+  <h2 class="text-xl font-bold" data-testid="recording-title-display-compact">{{ _rec.resolved_title }}</h2>
+  {% endif %}
+  <button
+    type="button"
+    class="flex items-center justify-center rounded p-1 text-slate-400 hover:text-slate-700 hover:bg-slate-100"
+    hx-get="{{ _edit_url }}"
+    hx-target="#{{ _dom_id }}"
+    hx-swap="outerHTML"
+    aria-label="Edit title"
+    title="Edit title"
+    data-testid="recording-title-edit-button-{{ _mode }}"
+  ><span class="material-symbols-outlined text-base">edit</span></button>
+  {% if not _rec.title_is_user_set %}
+  <span
+    class="text-[11px] text-slate-400 italic"
+    title="Title is auto-derived. Click the pencil to set a custom title."
+    data-testid="recording-title-auto-indicator-{{ _mode }}"
+  >(auto)</span>
+  {% endif %}
+  {% endif %}
+</div>

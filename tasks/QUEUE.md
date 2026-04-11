@@ -691,7 +691,7 @@ Queue (in order)
 - Depends on: PR-MERGE-DECAPITALIZE-01
 
 138) PR-TITLE-EDIT-01: Add inline recording title editing (display_title column + PATCH endpoint + UI pencil icon)
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-TITLE-EDIT-01.md
 - Depends on: PR-FIX-CYRILLIC-02
 

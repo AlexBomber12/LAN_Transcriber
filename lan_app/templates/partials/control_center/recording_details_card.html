@@ -2,9 +2,18 @@
 <article class="flex flex-col flex-1">
   <div class="px-6 py-4 border-b border-slate-200 bg-slate-50">
     <div class="flex items-start justify-between">
-      <div>
+      <div class="min-w-0 flex-1">
         <p class="text-[10px] font-bold text-primary uppercase tracking-[0.1em] mb-1">{{ details.card_title }}</p>
-        <h2 class="text-xl font-bold">{{ details.primary_title }}</h2>
+        {% set title_edit = {
+          'rec': {
+            'id': details.recording_id,
+            'resolved_title': details.primary_title,
+            'title_is_user_set': details.primary_title_is_user_set,
+          },
+          'mode': 'compact',
+          'editing': false,
+        } %}
+        {% include 'partials/recording_title_edit.html' %}
         <p class="text-xs text-slate-500 mt-0.5">Job ID <code class="text-[11px]">{{ details.job_id }}</code></p>
         <p class="text-xs text-slate-400">{{ details.filename }}</p>
       </div>
