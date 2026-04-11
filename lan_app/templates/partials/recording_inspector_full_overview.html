@@ -51,8 +51,8 @@
         </div>
         {% endfor %}
       </div>
-      {% if preview.hidden_turn_count > 0 %}
-      <p class="text-xs text-slate-400 mt-3">{{ preview.hidden_turn_count }} more turns in the full transcript.</p>
+      {% if preview.has_more %}
+      <p class="text-xs text-slate-400 mt-3">More turns available in the full transcript.</p>
       {% endif %}
       {% else %}
       <p class="text-sm text-slate-400 italic">Not available yet</p>

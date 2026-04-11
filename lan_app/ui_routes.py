@@ -1177,18 +1177,9 @@ def _full_page_overview_context(
             cancel_value = f"{cancel_value} by {requested_by}"
         focus_items.append({"label": "Stop requested", "value": cancel_value})
 
-    transcript_tab_ctx = _transcript_tab_context(recording_id, settings)
-    preview_turns = list(transcript_tab_ctx.get("turns") or [])[:15]
-    total_turn_count = int(transcript_tab_ctx.get("turn_count") or 0)
-    transcript_preview = {
-        "available": bool(preview_turns),
-        "turns": preview_turns,
-        "total_turn_count": total_turn_count,
-        "hidden_turn_count": max(total_turn_count - len(preview_turns), 0),
-        "full_transcript_href": _recording_detail_path(
-            recording_id, tab="transcript"
-        ),
-    }
+    transcript_preview = _transcript_preview_context(
+        recording_id, settings, limit=15
+    )
 
     stages_list = list(pipeline_stages or [])
     completed_stage_count = sum(
@@ -1286,6 +1277,74 @@ def _full_page_overview_context(
         "focus_items": focus_items,
         "transcript_preview": transcript_preview,
         "pipeline_status": pipeline_status_block,
+    }
+
+
+def _transcript_preview_context(
+    recording_id: str,
+    settings: AppSettings,
+    *,
+    limit: int = 15,
+) -> dict[str, Any]:
+    """Cheap preview-only transcript context used by the Overview tab.
+
+    Unlike _transcript_tab_context, this helper stops processing as soon
+    as ``limit`` non-empty turns have been collected and skips per-turn
+    work (time range formatting, language lookups, copy_text generation)
+    that the Overview preview does not render. It still reports
+    ``has_more`` so the template can surface "more turns in the full
+    transcript" hint without counting every remaining row.
+    """
+    transcript_path, _summary_path = _recording_derived_paths(
+        recording_id, settings
+    )
+    speaker_turns_path = transcript_path.parent / "speaker_turns.json"
+    transcript_payload = _load_json_dict(transcript_path)
+    speaker_turns_raw = _load_json_list(speaker_turns_path)
+    speaker_turns = [row for row in speaker_turns_raw if isinstance(row, dict)]
+    if not speaker_turns:
+        speaker_turns = _fallback_speaker_turns_from_transcript(transcript_payload)
+
+    speaker_name_map: dict[str, str] | None = None
+    preview_turns: list[dict[str, str]] = []
+    has_more = False
+    for row in speaker_turns:
+        text = str(row.get("text") or "").strip()
+        if not text:
+            continue
+        if len(preview_turns) >= limit:
+            has_more = True
+            break
+        if speaker_name_map is None:
+            speaker_name_map = _recording_speaker_name_map(
+                recording_id, settings=settings
+            )
+        speaker = _speaker_display_label(
+            str(row.get("speaker") or "S1"),
+            speaker_name_map=speaker_name_map,
+        )
+        try:
+            parsed_start: float | None = float(row.get("start"))
+        except (TypeError, ValueError):
+            parsed_start = None
+        timestamp = (
+            _format_timestamp(parsed_start) if parsed_start is not None else ""
+        )
+        preview_turns.append(
+            {
+                "speaker": speaker,
+                "timestamp": timestamp,
+                "text": text,
+            }
+        )
+
+    return {
+        "available": bool(preview_turns),
+        "turns": preview_turns,
+        "has_more": has_more,
+        "full_transcript_href": _recording_detail_path(
+            recording_id, tab="transcript"
+        ),
     }
 
 
