@@ -22,8 +22,9 @@
 {% set _ab = selected_recording_shell.action_bar %}
 <section class="flex flex-wrap justify-between items-start gap-4 mb-8" data-testid="recording-inspector-header">
   <div class="flex flex-col gap-2">
-    <div class="flex items-center gap-3">
-      <h1 class="text-slate-900 text-3xl font-bold tracking-tight">{{ rec.source_filename }}</h1>
+    <div class="flex items-center gap-3 flex-wrap">
+      {% set title_edit = {'rec': rec, 'mode': 'full_page', 'editing': false} %}
+      {% include 'partials/recording_title_edit.html' %}
       {% set _s = rec.status %}
       <span class="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold border
         {% if _s in ['Processing', 'Stopping'] %}bg-amber-100 text-amber-800 border-amber-200{% elif _s == 'Ready' %}bg-green-100 text-green-800 border-green-200{% elif _s == 'Published' %}bg-blue-100 text-blue-800 border-blue-200{% elif _s == 'Queued' %}bg-slate-100 text-slate-800 border-slate-200{% elif _s == 'NeedsReview' %}bg-purple-100 text-purple-800 border-purple-200{% elif _s in ['Failed', 'Quarantine'] %}bg-red-100 text-red-800 border-red-200{% else %}bg-slate-100 text-slate-800 border-slate-200{% endif %}">

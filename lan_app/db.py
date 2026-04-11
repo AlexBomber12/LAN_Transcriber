@@ -1865,6 +1865,38 @@ def set_recording_duration(
     return with_db_retry(_update)
 
 
+def set_recording_display_title(
+    recording_id: str,
+    display_title: str | None,
+    *,
+    settings: AppSettings | None = None,
+) -> bool:
+    init_db(settings)
+    if display_title is None:
+        normalized: str | None = None
+    else:
+        stripped = str(display_title).strip()
+        normalized = stripped or None
+    if normalized is not None and len(normalized) > 200:
+        raise ValueError("display_title must be at most 200 characters")
+    now = _utc_now()
+
+    def _update() -> bool:
+        with connect(settings) as conn:
+            updated = conn.execute(
+                """
+                UPDATE recordings
+                SET display_title = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (normalized, now, recording_id),
+            )
+            conn.commit()
+            return updated.rowcount > 0
+
+    return with_db_retry(_update)
+
+
 def set_recording_cancel_request(
     recording_id: str,
     *,
