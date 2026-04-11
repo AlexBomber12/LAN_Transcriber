@@ -449,6 +449,7 @@ Queue (in order)
 88) PR-SPEAKER-UX-01: Speaker UX: canonical speaker management, duplicate merge UI, per-recording remap UI, degraded diarization visibility
 - Status: DONE
 - Tasks file: tasks/PR-SPEAKER-UX-01.md
+
 90) PR-GLOSSARY-CORRECTIONS-01: Multi-source ASR glossary and correction memory: manual glossary UI, speaker/calendar seeds, safe ASR prompt injection, and per-recording glossary artifacts
 - Status: DONE
 - Tasks file: tasks/PR-GLOSSARY-CORRECTIONS-01.md
@@ -658,6 +659,7 @@ Queue (in order)
 - Status: DONE
 - Tasks file: tasks/PR-UI-POLISH-02.md
 - Depends on: PR-UI-POLISH-POST-TAILWIND-01
+
 132) PR-TRANSCRIPT-MERGE-01: Merge short speaker turns and add configurable merge gap to reduce transcript fragmentation
 - Status: DONE
 - Tasks file: tasks/PR-TRANSCRIPT-MERGE-01.md
@@ -677,7 +679,23 @@ Queue (in order)
 - Status: DONE
 - Tasks file: tasks/PR-SPEAKER-MERGE-EMBEDDINGS-01.md
 - Depends on: PR-DIARIZATION-FLICKER-01
+
 136) PR-MERGE-DECAPITALIZE-01: Decapitalize false sentence starts left over from segment merging
 - Status: DONE
 - Tasks file: tasks/PR-MERGE-DECAPITALIZE-01.md
 - Depends on: PR-TRANSCRIPT-MERGE-01
+
+137) PR-FIX-CYRILLIC-02: Fix Cyrillic font rendering (diagnose and fix Inter woff2 + Tailwind fontFamily mismatch)
+- Status: TODO
+- Tasks file: tasks/PR-FIX-CYRILLIC-02.md
+- Depends on: PR-MERGE-DECAPITALIZE-01
+
+138) PR-TITLE-EDIT-01: Add inline recording title editing (display_title column + PATCH endpoint + UI pencil icon)
+- Status: TODO
+- Tasks file: tasks/PR-TITLE-EDIT-01.md
+- Depends on: PR-FIX-CYRILLIC-02
+
+139) PR-RECORDING-DETAIL-REDESIGN-01: Redesign full-page Speakers tab to compact table + add transcript preview to Overview + 2-column layout + collapsible pipeline status
+- Status: TODO
+- Tasks file: tasks/PR-RECORDING-DETAIL-REDESIGN-01.md
+- Depends on: PR-TITLE-EDIT-01
