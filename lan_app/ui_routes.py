@@ -446,13 +446,19 @@ def _control_center_meeting_title_context(
 
 
 def _embedded_recording_confirmed_title(recording: dict[str, Any]) -> str:
+    # Note: ``resolved_title`` is intentionally NOT in the fallback chain below.
+    # ``_attach_resolved_title`` populates ``resolved_title`` on every rec flowing
+    # through the inspector context so both the full-page header and the compact
+    # card can render a stable title, but that value is auto-derived and must not
+    # count as a "confirmed" user title here — otherwise the summary_topic /
+    # job_id fallback branch in ``_embedded_recording_details_context`` becomes
+    # unreachable and non-user titles are mislabeled as ``confirmed``.
     display_title = str(recording.get("display_title") or "").strip()
     if display_title:
         return display_title
     for key in (
         "title",
         "meeting_title",
-        "resolved_title",
         "confirmed_title",
     ):
         title = str(recording.get(key) or "").strip()

@@ -956,6 +956,100 @@ def test_embedded_recording_details_context_summary_and_job_id_fallbacks(
     assert job_details["open_recording_page_href"] == "/recordings/rec-details-job?tab=export"
 
 
+def test_embedded_recording_details_context_confirmed_title_key(
+    tmp_path: Path,
+) -> None:
+    """Covers the ``confirmed`` branch that does not route through display_title.
+
+    When a recording already has a non-empty ``title`` / ``meeting_title`` /
+    ``confirmed_title`` key (for example, a confirmed calendar match surfaced
+    into the recording dict by upstream code), ``_embedded_recording_confirmed_title``
+    must return it so the compact card primary title is labeled ``confirmed`` and
+    the fallback branch is skipped.
+    """
+    cfg = _cfg(tmp_path)
+    init_db(cfg)
+    recording = create_recording(
+        "rec-details-confirmed-key",
+        source="upload",
+        source_filename="m.wav",
+        status=RECORDING_STATUS_READY,
+        settings=cfg,
+    )
+    prepared = ui_routes._prepare_recording_for_display(  # noqa: SLF001
+        {**recording, "title": "Upstream confirmed"},
+        settings=cfg,
+    )
+    details = ui_routes._embedded_recording_details_context(  # noqa: SLF001
+        "rec-details-confirmed-key",
+        recording=prepared,
+        diagnostics={"primary_reason_text": ""},
+        current_tab="overview",
+        stage_rows=[],
+        settings=cfg,
+    )
+    assert details["primary_title"] == "Upstream confirmed"
+    assert details["primary_title_source"] == "confirmed"
+    assert details["primary_title_is_user_set"] is False
+
+
+def test_recording_inspector_context_embedded_preserves_job_id_fallback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression test for Codex P2.
+
+    ``_recording_inspector_context`` calls ``_attach_resolved_title`` which
+    populates ``rec.resolved_title``. If that key leaks back into
+    ``_embedded_recording_confirmed_title``'s fallback chain, recordings
+    without a calendar/summary/user title are mislabeled as ``confirmed``
+    instead of falling through to the ``job_id`` branch.
+    """
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    monkeypatch.setattr(
+        ui_routes,
+        "collect_control_center_runtime_status",
+        lambda _settings: _stub_runtime_status(),
+    )
+    init_db(cfg)
+
+    create_recording(
+        "rec-embedded-fallback",
+        source="upload",
+        source_filename="fallback.wav",
+        status=RECORDING_STATUS_PROCESSING,
+        settings=cfg,
+    )
+
+    control_center_state = ui_routes._control_center_state_context(  # noqa: SLF001
+        selected="rec-embedded-fallback",
+        status=None,
+        q="",
+        tab="overview",
+        limit=20,
+        offset=0,
+    )
+    context = ui_routes._recording_inspector_context(  # noqa: SLF001
+        "rec-embedded-fallback",
+        current_tab="overview",
+        inspector_mode="embedded",
+        control_center_state=control_center_state,
+    )
+    assert context is not None
+    rec = context["rec"]
+    # ``_attach_resolved_title`` populated resolved_title on the rec, but it
+    # must not short-circuit the embedded title resolution.
+    assert rec["resolved_title"] == "fallback.wav"
+    assert rec["title_is_user_set"] is False
+
+    details = context["embedded_recording_details"]
+    assert details is not None
+    assert details["primary_title"] == "rec-embedded-fallback"
+    assert details["primary_title_source"] == "job_id"
+    assert details["primary_title_is_user_set"] is False
+
+
 def test_embedded_recording_details_context_handles_summary_fallback_and_bad_confidence(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -4624,6 +4718,15 @@ def test_embedded_recording_confirmed_title_display_title_wins() -> None:
             {"display_title": "   ", "title": "Fallback"}
         )
         == "Fallback"
+    )
+    # resolved_title is an auto-derived rendering field and must NOT count as a
+    # confirmed title; otherwise the summary_topic / job_id fallback branch in
+    # _embedded_recording_details_context becomes unreachable.
+    assert (
+        ui_routes._embedded_recording_confirmed_title(  # noqa: SLF001
+            {"resolved_title": "auto-derived"}
+        )
+        == ""
     )
     assert (
         ui_routes._embedded_recording_confirmed_title({})  # noqa: SLF001

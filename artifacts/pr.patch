@@ -1,696 +1,146 @@
-diff --git a/lan_app/db.py b/lan_app/db.py
-index 0649752..fe44080 100644
---- a/lan_app/db.py
-+++ b/lan_app/db.py
-@@ -1865,6 +1865,38 @@ def set_recording_duration(
-     return with_db_retry(_update)
- 
- 
-+def set_recording_display_title(
-+    recording_id: str,
-+    display_title: str | None,
-+    *,
-+    settings: AppSettings | None = None,
-+) -> bool:
-+    init_db(settings)
-+    if display_title is None:
-+        normalized: str | None = None
-+    else:
-+        stripped = str(display_title).strip()
-+        normalized = stripped or None
-+    if normalized is not None and len(normalized) > 200:
-+        raise ValueError("display_title must be at most 200 characters")
-+    now = _utc_now()
-+
-+    def _update() -> bool:
-+        with connect(settings) as conn:
-+            updated = conn.execute(
-+                """
-+                UPDATE recordings
-+                SET display_title = ?, updated_at = ?
-+                WHERE id = ?
-+                """,
-+                (normalized, now, recording_id),
-+            )
-+            conn.commit()
-+            return updated.rowcount > 0
-+
-+    return with_db_retry(_update)
-+
-+
- def set_recording_cancel_request(
-     recording_id: str,
-     *,
-diff --git a/lan_app/templates/partials/control_center/recording_details_card.html b/lan_app/templates/partials/control_center/recording_details_card.html
-index 0eda4d1..ab95a1d 100644
---- a/lan_app/templates/partials/control_center/recording_details_card.html
-+++ b/lan_app/templates/partials/control_center/recording_details_card.html
-@@ -2,9 +2,18 @@
- <article class="flex flex-col flex-1">
-   <div class="px-6 py-4 border-b border-slate-200 bg-slate-50">
-     <div class="flex items-start justify-between">
--      <div>
-+      <div class="min-w-0 flex-1">
-         <p class="text-[10px] font-bold text-primary uppercase tracking-[0.1em] mb-1">{{ details.card_title }}</p>
--        <h2 class="text-xl font-bold">{{ details.primary_title }}</h2>
-+        {% set title_edit = {
-+          'rec': {
-+            'id': details.recording_id,
-+            'resolved_title': details.primary_title,
-+            'title_is_user_set': details.primary_title_is_user_set,
-+          },
-+          'mode': 'compact',
-+          'editing': false,
-+        } %}
-+        {% include 'partials/recording_title_edit.html' %}
-         <p class="text-xs text-slate-500 mt-0.5">Job ID <code class="text-[11px]">{{ details.job_id }}</code></p>
-         <p class="text-xs text-slate-400">{{ details.filename }}</p>
-       </div>
-diff --git a/lan_app/templates/partials/recording_inspector_header.html b/lan_app/templates/partials/recording_inspector_header.html
-index 97db46f..f0153bd 100644
---- a/lan_app/templates/partials/recording_inspector_header.html
-+++ b/lan_app/templates/partials/recording_inspector_header.html
-@@ -22,8 +22,9 @@
- {% set _ab = selected_recording_shell.action_bar %}
- <section class="flex flex-wrap justify-between items-start gap-4 mb-8" data-testid="recording-inspector-header">
-   <div class="flex flex-col gap-2">
--    <div class="flex items-center gap-3">
--      <h1 class="text-slate-900 text-3xl font-bold tracking-tight">{{ rec.source_filename }}</h1>
-+    <div class="flex items-center gap-3 flex-wrap">
-+      {% set title_edit = {'rec': rec, 'mode': 'full_page', 'editing': false} %}
-+      {% include 'partials/recording_title_edit.html' %}
-       {% set _s = rec.status %}
-       <span class="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold border
-         {% if _s in ['Processing', 'Stopping'] %}bg-amber-100 text-amber-800 border-amber-200{% elif _s == 'Ready' %}bg-green-100 text-green-800 border-green-200{% elif _s == 'Published' %}bg-blue-100 text-blue-800 border-blue-200{% elif _s == 'Queued' %}bg-slate-100 text-slate-800 border-slate-200{% elif _s == 'NeedsReview' %}bg-purple-100 text-purple-800 border-purple-200{% elif _s in ['Failed', 'Quarantine'] %}bg-red-100 text-red-800 border-red-200{% else %}bg-slate-100 text-slate-800 border-slate-200{% endif %}">
 diff --git a/lan_app/ui_routes.py b/lan_app/ui_routes.py
-index 4bf3fbc..7a386ee 100644
+index 7a386ee..8a0c753 100644
 --- a/lan_app/ui_routes.py
 +++ b/lan_app/ui_routes.py
-@@ -106,6 +106,7 @@ from .db import (
-     list_voice_profiles,
-     set_recording_cancel_request,
-     set_calendar_match_selection,
-+    set_recording_display_title,
-     set_recording_duration,
-     set_recording_project,
-     set_speaker_assignment,
-@@ -395,6 +396,9 @@ def _control_center_meeting_title_context(
-     recording_id = str(recording.get("id") or "").strip()
-     source_filename = str(recording.get("source_filename") or "").strip()
-     fallback_title = source_filename or recording_id or "Recording"
-+    display_title = str(recording.get("display_title") or "").strip()
-+    if display_title:
-+        return {"meeting_title": display_title, "meeting_title_source": "user"}
-     if not recording_id:
-         return {"meeting_title": fallback_title, "meeting_title_source": "filename"}
- 
-@@ -442,8 +446,10 @@ def _control_center_meeting_title_context(
+@@ -446,13 +446,19 @@ def _control_center_meeting_title_context(
  
  
  def _embedded_recording_confirmed_title(recording: dict[str, Any]) -> str:
-+    display_title = str(recording.get("display_title") or "").strip()
-+    if display_title:
-+        return display_title
++    # Note: ``resolved_title`` is intentionally NOT in the fallback chain below.
++    # ``_attach_resolved_title`` populates ``resolved_title`` on every rec flowing
++    # through the inspector context so both the full-page header and the compact
++    # card can render a stable title, but that value is auto-derived and must not
++    # count as a "confirmed" user title here — otherwise the summary_topic /
++    # job_id fallback branch in ``_embedded_recording_details_context`` becomes
++    # unreachable and non-user titles are mislabeled as ``confirmed``.
+     display_title = str(recording.get("display_title") or "").strip()
+     if display_title:
+         return display_title
      for key in (
--        "display_title",
          "title",
          "meeting_title",
-         "resolved_title",
-@@ -455,6 +461,22 @@ def _embedded_recording_confirmed_title(recording: dict[str, Any]) -> str:
-     return ""
- 
- 
-+def _attach_resolved_title(
-+    recording: dict[str, Any],
-+    *,
-+    settings: AppSettings,
-+) -> dict[str, Any]:
-+    title_context = _control_center_meeting_title_context(recording, settings=settings)
-+    resolved_title = str(title_context.get("meeting_title") or "").strip()
-+    resolved_source = str(title_context.get("meeting_title_source") or "").strip()
-+    recording["resolved_title"] = resolved_title or str(
-+        recording.get("source_filename") or recording.get("id") or "Recording"
-+    )
-+    recording["resolved_title_source"] = resolved_source or "filename"
-+    recording["title_is_user_set"] = resolved_source == "user"
-+    return recording
-+
-+
- def _control_center_progress_context(recording: dict[str, Any]) -> dict[str, Any]:
-     status = str(recording.get("status") or "").strip()
-     raw_progress = recording.get("pipeline_progress")
-@@ -4347,23 +4369,39 @@ def _embedded_recording_details_context(
-     stage_rows: list[dict[str, Any]],
-     settings: AppSettings,
- ) -> dict[str, Any]:
--    title_context = _control_center_meeting_title_context(recording, settings=settings)
-+    # Compute the derived (non-user) title context so we can still surface the
-+    # calendar match below even when a user display_title is set.
-+    derived_recording = {
-+        key: value for key, value in recording.items() if key != "display_title"
-+    }
-+    title_context = _control_center_meeting_title_context(
-+        derived_recording, settings=settings
-+    )
-     title_source = str(title_context.get("meeting_title_source") or "").strip()
-     calendar_title = (
-         str(title_context.get("meeting_title") or "").strip()
-         if title_source in {"calendar_selected", "calendar_candidate"}
-         else ""
-     )
--    primary_title = _embedded_recording_confirmed_title(recording)
--    primary_title_source = "confirmed"
--    if not primary_title:
--        candidate_title = str(title_context.get("meeting_title") or "").strip()
--        if title_source in {"calendar_selected", "calendar_candidate", "summary_topic"}:
--            primary_title = candidate_title
--            primary_title_source = title_source
--        else:
--            primary_title = str(recording.get("id") or "").strip() or "Recording"
--            primary_title_source = "job_id"
-+    display_title = str(recording.get("display_title") or "").strip()
-+    if display_title:
-+        primary_title = display_title
-+        primary_title_source = "user"
-+    else:
-+        primary_title = _embedded_recording_confirmed_title(recording)
-+        primary_title_source = "confirmed"
-+        if not primary_title:
-+            candidate_title = str(title_context.get("meeting_title") or "").strip()
-+            if title_source in {
-+                "calendar_selected",
-+                "calendar_candidate",
-+                "summary_topic",
-+            }:
-+                primary_title = candidate_title
-+                primary_title_source = title_source
-+            else:
-+                primary_title = str(recording.get("id") or "").strip() or "Recording"
-+                primary_title_source = "job_id"
- 
-     summary = _summary_context(recording_id, settings)
-     summary_lines = [
-@@ -4439,8 +4477,11 @@ def _embedded_recording_details_context(
- 
-     return {
-         "card_title": "Recording Details",
-+        "recording_id": str(recording.get("id") or "").strip(),
-         "primary_title": primary_title,
-         "primary_title_source": primary_title_source,
-+        "primary_title_is_user_set": primary_title_source == "user"
-+        or bool(str(recording.get("display_title") or "").strip()),
-         "job_id": str(recording.get("id") or "").strip() or "Recording",
-         "filename": _compact_recording_value(recording.get("source_filename")),
-         "download_zip_href": (
-@@ -4474,6 +4515,7 @@ def _recording_inspector_context(
-         _CONTROL_CENTER_TABS if is_embedded else _FULL_PAGE_RECORDING_INSPECTOR_TABS
-     )
-     rec = _prepare_recording_for_display(rec, settings=_settings)
-+    _attach_resolved_title(rec, settings=_settings)
-     jobs, _ = list_jobs(settings=_settings, recording_id=recording_id, limit=100)
-     recovery_warning = _recording_recovery_warning(jobs)
-     safe_tab = (
-@@ -4523,6 +4565,7 @@ def _recording_inspector_context(
-             get_recording(recording_id, settings=_settings) or rec,
-             settings=_settings,
-         )
-+        _attach_resolved_title(rec, settings=_settings)
-     if safe_tab == "speakers":
-         speakers = _speakers_tab_context(
-             recording_id,
-@@ -6967,6 +7010,89 @@ async def ui_action_quarantine(
-     )
- 
- 
-+_RECORDING_TITLE_EDIT_MODES = ("full_page", "compact")
-+_MAX_DISPLAY_TITLE_LENGTH = 200
-+
-+
-+def _normalize_title_edit_mode(mode: str) -> str:
-+    candidate = str(mode or "").strip().lower()
-+    if candidate in _RECORDING_TITLE_EDIT_MODES:
-+        return candidate
-+    return "full_page"
-+
-+
-+def _render_recording_title_partial(
-+    request: Request,
-+    *,
-+    recording: dict[str, Any],
-+    mode: str,
-+    editing: bool,
-+) -> HTMLResponse:
-+    normalized_mode = _normalize_title_edit_mode(mode)
-+    prepared = _prepare_recording_for_display(recording, settings=_settings)
-+    _attach_resolved_title(prepared, settings=_settings)
-+    return templates.TemplateResponse(
-+        request,
-+        "partials/recording_title_edit.html",
-+        {
-+            "title_edit": {
-+                "rec": prepared,
-+                "mode": normalized_mode,
-+                "editing": bool(editing),
-+            },
-+        },
-+    )
-+
-+
-+@ui_router.get("/ui/recordings/{recording_id}/title", response_class=HTMLResponse)
-+async def ui_recording_title_view(
-+    request: Request,
-+    recording_id: str,
-+    mode: str = Query(default="full_page"),
-+    edit: int = Query(default=0),
-+) -> Any:
-+    rec = get_recording(recording_id, settings=_settings)
-+    if rec is None:
-+        return HTMLResponse("Not found", status_code=404)
-+    return _render_recording_title_partial(
-+        request,
-+        recording=rec,
-+        mode=mode,
-+        editing=bool(edit),
-+    )
-+
-+
-+@ui_router.patch("/ui/recordings/{recording_id}/title", response_class=HTMLResponse)
-+async def ui_recording_title_update(
-+    request: Request,
-+    recording_id: str,
-+    display_title: str = Form(default=""),
-+    mode: str = Query(default="full_page"),
-+) -> Any:
-+    if get_recording(recording_id, settings=_settings) is None:
-+        return HTMLResponse("Not found", status_code=404)
-+    raw = str(display_title or "").strip()
-+    if len(raw) > _MAX_DISPLAY_TITLE_LENGTH:
-+        return HTMLResponse(
-+            f"display_title must be at most {_MAX_DISPLAY_TITLE_LENGTH} characters",
-+            status_code=422,
-+        )
-+    new_value = raw or None
-+    try:
-+        set_recording_display_title(recording_id, new_value, settings=_settings)
-+    except ValueError as exc:
-+        return HTMLResponse(str(exc), status_code=422)
-+    rec = get_recording(recording_id, settings=_settings)
-+    if rec is None:
-+        return HTMLResponse("Not found", status_code=404)
-+    return _render_recording_title_partial(
-+        request,
-+        recording=rec,
-+        mode=mode,
-+        editing=False,
-+    )
-+
-+
- @ui_router.post("/ui/recordings/{recording_id}/delete")
- async def ui_action_delete(
-     recording_id: str,
-diff --git a/tasks/QUEUE.md b/tasks/QUEUE.md
-index 5814e72..8f3b830 100644
---- a/tasks/QUEUE.md
-+++ b/tasks/QUEUE.md
-@@ -691,7 +691,7 @@ Queue (in order)
- - Depends on: PR-MERGE-DECAPITALIZE-01
- 
- 138) PR-TITLE-EDIT-01: Add inline recording title editing (display_title column + PATCH endpoint + UI pencil icon)
--- Status: TODO
-+- Status: DONE
- - Tasks file: tasks/PR-TITLE-EDIT-01.md
- - Depends on: PR-FIX-CYRILLIC-02
- 
+-        "resolved_title",
+         "confirmed_title",
+     ):
+         title = str(recording.get(key) or "").strip()
 diff --git a/tests/test_cov_lan_app_ui_routes.py b/tests/test_cov_lan_app_ui_routes.py
-index d5383b7..7a794e4 100644
+index 7a794e4..fc48d09 100644
 --- a/tests/test_cov_lan_app_ui_routes.py
 +++ b/tests/test_cov_lan_app_ui_routes.py
-@@ -858,7 +858,8 @@ def test_embedded_recording_details_context_prefers_confirmed_title_and_calendar
-     )
+@@ -956,6 +956,100 @@ def test_embedded_recording_details_context_summary_and_job_id_fallbacks(
+     assert job_details["open_recording_page_href"] == "/recordings/rec-details-job?tab=export"
  
-     assert details["primary_title"] == "Confirmed daily title"
--    assert details["primary_title_source"] == "confirmed"
-+    assert details["primary_title_source"] == "user"
-+    assert details["primary_title_is_user_set"] is True
-     assert details["summary_lines"] == ["Reviewed blockers", "Aligned on next steps"]
-     assert details["tone"] == "Focused and calm."
-     assert details["speaker_rows"] == [
-@@ -4397,3 +4398,266 @@ def test_language_action_error_paths(
-     )
-     retr_err = c.post(f"/ui/recordings/{recording_id}/language/retranscribe")
-     assert retr_err.status_code == 503
-+
-+
-+def test_recording_title_edit_view_and_patch(
-+    client: tuple[AppSettings, TestClient],
+ 
++def test_embedded_recording_details_context_confirmed_title_key(
++    tmp_path: Path,
 +) -> None:
-+    cfg, c = client
-+    recording_id = _seed_recording(cfg, "rec-title-edit-1")
++    """Covers the ``confirmed`` branch that does not route through display_title.
 +
-+    missing_view = c.get("/ui/recordings/missing/title")
-+    assert missing_view.status_code == 404
-+
-+    default_view = c.get(f"/ui/recordings/{recording_id}/title")
-+    assert default_view.status_code == 200
-+    assert "recording-title-edit-full_page" in default_view.text
-+    assert "recording-title-display-full_page" in default_view.text
-+    assert "(auto)" in default_view.text
-+    assert "recording-title-edit-button-full_page" in default_view.text
-+
-+    compact_view = c.get(
-+        f"/ui/recordings/{recording_id}/title", params={"mode": "compact"}
++    When a recording already has a non-empty ``title`` / ``meeting_title`` /
++    ``confirmed_title`` key (for example, a confirmed calendar match surfaced
++    into the recording dict by upstream code), ``_embedded_recording_confirmed_title``
++    must return it so the compact card primary title is labeled ``confirmed`` and
++    the fallback branch is skipped.
++    """
++    cfg = _cfg(tmp_path)
++    init_db(cfg)
++    recording = create_recording(
++        "rec-details-confirmed-key",
++        source="upload",
++        source_filename="m.wav",
++        status=RECORDING_STATUS_READY,
++        settings=cfg,
 +    )
-+    assert compact_view.status_code == 200
-+    assert "recording-title-display-compact" in compact_view.text
-+
-+    edit_view = c.get(
-+        f"/ui/recordings/{recording_id}/title",
-+        params={"edit": "1"},
++    prepared = ui_routes._prepare_recording_for_display(  # noqa: SLF001
++        {**recording, "title": "Upstream confirmed"},
++        settings=cfg,
 +    )
-+    assert edit_view.status_code == 200
-+    assert "recording-title-edit-form-full_page" in edit_view.text
-+    assert 'name="display_title"' in edit_view.text
-+    assert "recording-title-save-full_page" in edit_view.text
-+    assert "recording-title-cancel-full_page" in edit_view.text
-+
-+    missing_patch = c.patch(
-+        "/ui/recordings/missing/title",
-+        data={"display_title": "Daily standup"},
++    details = ui_routes._embedded_recording_details_context(  # noqa: SLF001
++        "rec-details-confirmed-key",
++        recording=prepared,
++        diagnostics={"primary_reason_text": ""},
++        current_tab="overview",
++        stage_rows=[],
++        settings=cfg,
 +    )
-+    assert missing_patch.status_code == 404
-+
-+    too_long = c.patch(
-+        f"/ui/recordings/{recording_id}/title",
-+        data={"display_title": "x" * 201},
-+    )
-+    assert too_long.status_code == 422
-+    assert "at most 200" in too_long.text
-+
-+    saved = c.patch(
-+        f"/ui/recordings/{recording_id}/title",
-+        data={"display_title": "  Weekly retro  "},
-+    )
-+    assert saved.status_code == 200
-+    assert "Weekly retro" in saved.text
-+    assert "(auto)" not in saved.text
-+    assert "recording-title-display-full_page" in saved.text
-+
-+    from lan_app.db import get_recording as _get_recording
-+
-+    stored = _get_recording(recording_id, settings=cfg)
-+    assert stored is not None
-+    assert stored.get("display_title") == "Weekly retro"
-+
-+    post_view = c.get(f"/ui/recordings/{recording_id}/title")
-+    assert post_view.status_code == 200
-+    assert "Weekly retro" in post_view.text
-+    assert "(auto)" not in post_view.text
-+
-+    cleared = c.patch(
-+        f"/ui/recordings/{recording_id}/title",
-+        data={"display_title": "   "},
-+    )
-+    assert cleared.status_code == 200
-+    assert "(auto)" in cleared.text
-+    stored_after = _get_recording(recording_id, settings=cfg)
-+    assert stored_after is not None
-+    assert stored_after.get("display_title") in (None, "")
++    assert details["primary_title"] == "Upstream confirmed"
++    assert details["primary_title_source"] == "confirmed"
++    assert details["primary_title_is_user_set"] is False
 +
 +
-+def test_recording_title_patch_error_paths(
-+    client: tuple[AppSettings, TestClient],
++def test_recording_inspector_context_embedded_preserves_job_id_fallback(
++    tmp_path: Path,
 +    monkeypatch: pytest.MonkeyPatch,
 +) -> None:
-+    cfg, c = client
-+    recording_id = _seed_recording(cfg, "rec-title-patch-errors-1")
++    """Regression test for Codex P2.
 +
-+    def _raise_value_error(*_args: Any, **_kwargs: Any) -> bool:
-+        raise ValueError("bad title from db")
-+
-+    monkeypatch.setattr(ui_routes, "set_recording_display_title", _raise_value_error)
-+    raised = c.patch(
-+        f"/ui/recordings/{recording_id}/title",
-+        data={"display_title": "short"},
-+    )
-+    assert raised.status_code == 422
-+    assert "bad title from db" in raised.text
-+
-+    monkeypatch.setattr(ui_routes, "set_recording_display_title", lambda *_a, **_k: True)
-+    real_get_recording = ui_routes.get_recording
-+
-+    def _race_get_recording(
-+        recording_id_arg: str, *, settings: AppSettings | None = None
-+    ) -> dict[str, Any] | None:
-+        if recording_id_arg == recording_id and not _race_state["first_call_done"]:
-+            _race_state["first_call_done"] = True
-+            return real_get_recording(recording_id_arg, settings=settings)
-+        if recording_id_arg == recording_id:
-+            return None
-+        return real_get_recording(recording_id_arg, settings=settings)
-+
-+    _race_state: dict[str, bool] = {"first_call_done": False}
-+    monkeypatch.setattr(ui_routes, "get_recording", _race_get_recording)
-+    race = c.patch(
-+        f"/ui/recordings/{recording_id}/title",
-+        data={"display_title": "vanished"},
-+    )
-+    assert race.status_code == 404
-+
-+
-+def test_recording_title_edit_mode_normalization_and_worklist_title(
-+    client: tuple[AppSettings, TestClient],
-+) -> None:
-+    cfg, c = client
-+    recording_id = _seed_recording(cfg, "rec-title-worklist-1")
-+
-+    from lan_app.db import set_recording_display_title
-+
-+    set_recording_display_title(recording_id, "Ops sync", settings=cfg)
-+
-+    weird_mode = c.get(
-+        f"/ui/recordings/{recording_id}/title", params={"mode": "something-else"}
-+    )
-+    assert weird_mode.status_code == 200
-+    assert "recording-title-edit-full_page" in weird_mode.text
-+
-+    compact_saved = c.patch(
-+        f"/ui/recordings/{recording_id}/title",
-+        params={"mode": "compact"},
-+        data={"display_title": "Ops sync 2"},
-+    )
-+    assert compact_saved.status_code == 200
-+    assert "recording-title-display-compact" in compact_saved.text
-+    assert "Ops sync 2" in compact_saved.text
-+
-+    recording = ui_routes.get_recording(recording_id, settings=cfg)
-+    assert recording is not None
-+    title_context = ui_routes._control_center_meeting_title_context(  # noqa: SLF001
-+        recording, settings=cfg
-+    )
-+    assert title_context == {
-+        "meeting_title": "Ops sync 2",
-+        "meeting_title_source": "user",
-+    }
-+
-+    list_items = ui_routes._control_center_recordings_list_items_context(  # noqa: SLF001
-+        [recording], settings=cfg
-+    )
-+    assert list_items[0]["meeting_title"] == "Ops sync 2"
-+    assert list_items[0]["meeting_title_source"] == "user"
-+
-+
-+def test_set_recording_display_title_db_helper(
-+    tmp_path: Path,
-+) -> None:
-+    from lan_app.db import (
-+        create_recording,
-+        get_recording,
-+        init_db,
-+        set_recording_display_title,
-+    )
-+
++    ``_recording_inspector_context`` calls ``_attach_resolved_title`` which
++    populates ``rec.resolved_title``. If that key leaks back into
++    ``_embedded_recording_confirmed_title``'s fallback chain, recordings
++    without a calendar/summary/user title are mislabeled as ``confirmed``
++    instead of falling through to the ``job_id`` branch.
++    """
 +    cfg = _cfg(tmp_path)
++    monkeypatch.setattr(ui_routes, "_settings", cfg)
++    monkeypatch.setattr(
++        ui_routes,
++        "collect_control_center_runtime_status",
++        lambda _settings: _stub_runtime_status(),
++    )
 +    init_db(cfg)
++
 +    create_recording(
-+        "rec-db-display-title-1",
++        "rec-embedded-fallback",
 +        source="upload",
-+        source_filename="x.wav",
-+        status=RECORDING_STATUS_READY,
++        source_filename="fallback.wav",
++        status=RECORDING_STATUS_PROCESSING,
 +        settings=cfg,
 +    )
 +
-+    assert set_recording_display_title(
-+        "rec-db-display-title-1", "Morning standup", settings=cfg
++    control_center_state = ui_routes._control_center_state_context(  # noqa: SLF001
++        selected="rec-embedded-fallback",
++        status=None,
++        q="",
++        tab="overview",
++        limit=20,
++        offset=0,
 +    )
-+    rec = get_recording("rec-db-display-title-1", settings=cfg)
-+    assert rec is not None
-+    assert rec["display_title"] == "Morning standup"
-+
-+    assert set_recording_display_title(
-+        "rec-db-display-title-1", "   ", settings=cfg
++    context = ui_routes._recording_inspector_context(  # noqa: SLF001
++        "rec-embedded-fallback",
++        current_tab="overview",
++        inspector_mode="embedded",
++        control_center_state=control_center_state,
 +    )
-+    rec = get_recording("rec-db-display-title-1", settings=cfg)
-+    assert rec is not None
-+    assert rec["display_title"] is None
++    assert context is not None
++    rec = context["rec"]
++    # ``_attach_resolved_title`` populated resolved_title on the rec, but it
++    # must not short-circuit the embedded title resolution.
++    assert rec["resolved_title"] == "fallback.wav"
++    assert rec["title_is_user_set"] is False
 +
-+    assert set_recording_display_title(
-+        "rec-db-display-title-1", None, settings=cfg
-+    ) in (True, False)
-+    rec = get_recording("rec-db-display-title-1", settings=cfg)
-+    assert rec is not None
-+    assert rec["display_title"] is None
-+
-+    with pytest.raises(ValueError, match="at most 200"):
-+        set_recording_display_title(
-+            "rec-db-display-title-1", "x" * 201, settings=cfg
-+        )
-+
-+    assert (
-+        set_recording_display_title(
-+            "missing-rec", "title", settings=cfg
-+        )
-+        is False
-+    )
++    details = context["embedded_recording_details"]
++    assert details is not None
++    assert details["primary_title"] == "rec-embedded-fallback"
++    assert details["primary_title_source"] == "job_id"
++    assert details["primary_title_is_user_set"] is False
 +
 +
-+def test_embedded_recording_confirmed_title_display_title_wins() -> None:
-+    assert (
-+        ui_routes._embedded_recording_confirmed_title(  # noqa: SLF001
-+            {"display_title": "Custom display"}
-+        )
-+        == "Custom display"
-+    )
+ def test_embedded_recording_details_context_handles_summary_fallback_and_bad_confidence(
+     tmp_path: Path,
+     monkeypatch: pytest.MonkeyPatch,
+@@ -4625,6 +4719,15 @@ def test_embedded_recording_confirmed_title_display_title_wins() -> None:
+         )
+         == "Fallback"
+     )
++    # resolved_title is an auto-derived rendering field and must NOT count as a
++    # confirmed title; otherwise the summary_topic / job_id fallback branch in
++    # _embedded_recording_details_context becomes unreachable.
 +    assert (
 +        ui_routes._embedded_recording_confirmed_title(  # noqa: SLF001
-+            {"display_title": "   ", "title": "Fallback"}
++            {"resolved_title": "auto-derived"}
 +        )
-+        == "Fallback"
-+    )
-+    assert (
-+        ui_routes._embedded_recording_confirmed_title({})  # noqa: SLF001
 +        == ""
 +    )
-+
-+
-+def test_attach_resolved_title_reflects_user_and_auto_titles(
-+    tmp_path: Path,
-+) -> None:
-+    from lan_app.db import create_recording, init_db
-+
-+    cfg = _cfg(tmp_path)
-+    init_db(cfg)
-+    create_recording(
-+        "rec-attach-title-1",
-+        source="upload",
-+        source_filename="plaud-meeting.wav",
-+        status=RECORDING_STATUS_READY,
-+        settings=cfg,
-+    )
-+
-+    base = {
-+        "id": "rec-attach-title-1",
-+        "source_filename": "plaud-meeting.wav",
-+    }
-+    auto = ui_routes._attach_resolved_title(dict(base), settings=cfg)  # noqa: SLF001
-+    assert auto["title_is_user_set"] is False
-+    assert auto["resolved_title"] == "plaud-meeting.wav"
-+    assert auto["resolved_title_source"] == "filename"
-+
-+    user = ui_routes._attach_resolved_title(  # noqa: SLF001
-+        {**base, "display_title": "Custom title"}, settings=cfg
-+    )
-+    assert user["title_is_user_set"] is True
-+    assert user["resolved_title"] == "Custom title"
-+    assert user["resolved_title_source"] == "user"
-diff --git a/lan_app/migrations/025_add_recording_display_title.sql b/lan_app/migrations/025_add_recording_display_title.sql
-new file mode 100644
-index 0000000..a27cafb
---- /dev/null
-+++ b/lan_app/migrations/025_add_recording_display_title.sql
-@@ -0,0 +1 @@
-+ALTER TABLE recordings ADD COLUMN display_title TEXT;
-diff --git a/lan_app/templates/partials/recording_title_edit.html b/lan_app/templates/partials/recording_title_edit.html
-new file mode 100644
-index 0000000..f7153e7
---- /dev/null
-+++ b/lan_app/templates/partials/recording_title_edit.html
-@@ -0,0 +1,79 @@
-+{#
-+  Inline recording title edit partial.
-+  Required context:
-+    title_edit.rec.id                  str
-+    title_edit.rec.resolved_title      str
-+    title_edit.rec.title_is_user_set   bool
-+    title_edit.mode                    "full_page" | "compact"
-+    title_edit.editing                 bool
-+#}
-+{% set _mode = 'compact' if title_edit.mode == 'compact' else 'full_page' %}
-+{% set _rec = title_edit.rec %}
-+{% set _dom_id = 'recording-title-' ~ _mode ~ '-' ~ _rec.id %}
-+{% set _view_url = '/ui/recordings/' ~ _rec.id ~ '/title?mode=' ~ _mode %}
-+{% set _edit_url = _view_url ~ '&edit=1' %}
-+{% set _patch_url = _view_url %}
-+<div
-+  id="{{ _dom_id }}"
-+  class="flex items-center gap-2 flex-wrap"
-+  data-testid="recording-title-edit-{{ _mode }}"
-+>
-+  {% if title_edit.editing %}
-+  <form
-+    class="flex items-center gap-2 flex-wrap w-full"
-+    hx-patch="{{ _patch_url }}"
-+    hx-target="#{{ _dom_id }}"
-+    hx-swap="outerHTML"
-+    data-testid="recording-title-edit-form-{{ _mode }}"
-+  >
-+    <input
-+      type="text"
-+      name="display_title"
-+      value="{{ _rec.resolved_title if _rec.title_is_user_set else '' }}"
-+      placeholder="{{ _rec.resolved_title }}"
-+      maxlength="200"
-+      autofocus
-+      autocomplete="off"
-+      class="{% if _mode == 'full_page' %}text-2xl font-bold tracking-tight text-slate-900 border border-slate-300 rounded-md px-2 py-1 flex-1 min-w-[240px]{% else %}text-lg font-bold border border-slate-300 rounded-md px-2 py-1 flex-1 min-w-[160px]{% endif %}"
-+      data-testid="recording-title-edit-input-{{ _mode }}"
-+      onkeydown="if(event.key==='Escape'){event.preventDefault();event.stopPropagation();htmx.ajax('GET','{{ _view_url }}',{target:'#{{ _dom_id }}',swap:'outerHTML'});}"
-+    />
-+    <button
-+      type="submit"
-+      class="px-3 py-1 bg-slate-900 text-white text-xs font-bold rounded-md hover:bg-slate-700"
-+      data-testid="recording-title-save-{{ _mode }}"
-+    >Save</button>
-+    <button
-+      type="button"
-+      class="px-3 py-1 border border-slate-200 text-xs font-bold rounded-md text-slate-600 hover:bg-slate-50"
-+      hx-get="{{ _view_url }}"
-+      hx-target="#{{ _dom_id }}"
-+      hx-swap="outerHTML"
-+      data-testid="recording-title-cancel-{{ _mode }}"
-+    >Cancel</button>
-+  </form>
-+  {% else %}
-+  {% if _mode == 'full_page' %}
-+  <h1 class="text-slate-900 text-3xl font-bold tracking-tight" data-testid="recording-title-display-full_page">{{ _rec.resolved_title }}</h1>
-+  {% else %}
-+  <h2 class="text-xl font-bold" data-testid="recording-title-display-compact">{{ _rec.resolved_title }}</h2>
-+  {% endif %}
-+  <button
-+    type="button"
-+    class="flex items-center justify-center rounded p-1 text-slate-400 hover:text-slate-700 hover:bg-slate-100"
-+    hx-get="{{ _edit_url }}"
-+    hx-target="#{{ _dom_id }}"
-+    hx-swap="outerHTML"
-+    aria-label="Edit title"
-+    title="Edit title"
-+    data-testid="recording-title-edit-button-{{ _mode }}"
-+  ><span class="material-symbols-outlined text-base">edit</span></button>
-+  {% if not _rec.title_is_user_set %}
-+  <span
-+    class="text-[11px] text-slate-400 italic"
-+    title="Title is auto-derived. Click the pencil to set a custom title."
-+    data-testid="recording-title-auto-indicator-{{ _mode }}"
-+  >(auto)</span>
-+  {% endif %}
-+  {% endif %}
-+</div>
+     assert (
+         ui_routes._embedded_recording_confirmed_title({})  # noqa: SLF001
+         == ""
