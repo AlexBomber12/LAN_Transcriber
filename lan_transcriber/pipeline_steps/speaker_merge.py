@@ -74,6 +74,11 @@ def _to_vector(value: Any) -> list[float] | None:
     Returns ``None`` when the input is empty, contains non-finite entries, or
     cannot be converted. Accepts plain sequences and any object that supports
     ``tolist()`` (numpy arrays etc).
+
+    Pyannote's ``Inference.crop`` commonly returns a 2-D array of shape
+    ``(n_frames, dim)`` — in ``window="whole"`` mode typically ``(1, dim)``.
+    This function transparently handles that case by mean-pooling along the
+    leading axis so callers always get a single ``(dim,)`` centroid.
     """
 
     if value is None:
@@ -81,6 +86,29 @@ def _to_vector(value: Any) -> list[float] | None:
     tolist = getattr(value, "tolist", None)
     if callable(tolist):
         value = tolist()
+    if (
+        isinstance(value, (list, tuple))
+        and value
+        and all(isinstance(row, (list, tuple)) for row in value)
+    ):
+        rows: list[list[float]] = []
+        for row in value:
+            row_floats: list[float] = []
+            for item in row:
+                try:
+                    row_floats.append(float(item))
+                except (TypeError, ValueError):
+                    return None
+            rows.append(row_floats)
+        dim = len(rows[0])
+        if dim == 0:
+            return None
+        if not all(len(row) == dim for row in rows):
+            return None
+        averaged = [sum(row[i] for row in rows) / len(rows) for i in range(dim)]
+        if not all(math.isfinite(x) for x in averaged):
+            return None
+        return averaged
     try:
         iterator = iter(value)
     except TypeError:

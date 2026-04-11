@@ -570,6 +570,110 @@ def test_merge_rejects_vectors_with_non_numeric_entries() -> None:
     assert {row["speaker"] for row in updated} == {"A", "B"}
 
 
+def test_merge_accepts_two_d_single_row_embeddings() -> None:
+    """Pyannote ``Inference(window="whole").crop`` returns shape (1, dim)."""
+
+    def _model(audio_path: Path, start: float, end: float):
+        # Simulate a numpy-style (1, 2) array via nested list.
+        return [[1.0, 0.0]]
+
+    diar_segments = [
+        _segment("A", 0.0, 5.0),
+        _segment("B", 6.0, 11.0),
+    ]
+    updated, merge_map = merge_similar_speakers(
+        diar_segments,
+        audio_path=_AUDIO_PATH,
+        embedding_model=_model,
+    )
+    assert merge_map == {"B": "A"}
+    assert {row["speaker"] for row in updated} == {"A"}
+
+
+def test_merge_mean_pools_two_d_multi_row_embeddings() -> None:
+    """When inference returns multiple frames we mean-pool along the first axis."""
+
+    def _model(audio_path: Path, start: float, end: float):
+        # Two frames each; mean is [1.0, 0.0] so both speakers share a centroid.
+        return [[1.0, 0.0], [1.0, 0.0]]
+
+    diar_segments = [
+        _segment("A", 0.0, 5.0),
+        _segment("B", 6.0, 11.0),
+    ]
+    updated, merge_map = merge_similar_speakers(
+        diar_segments,
+        audio_path=_AUDIO_PATH,
+        embedding_model=_model,
+    )
+    assert merge_map == {"B": "A"}
+    assert {row["speaker"] for row in updated} == {"A"}
+
+
+def test_merge_rejects_two_d_vectors_with_shape_mismatch() -> None:
+    def _model(audio_path: Path, start: float, end: float):
+        return [[1.0, 0.0], [1.0, 0.0, 0.5]]  # jagged rows
+
+    diar_segments = [
+        _segment("A", 0.0, 5.0),
+        _segment("B", 6.0, 11.0),
+    ]
+    updated, merge_map = merge_similar_speakers(
+        diar_segments,
+        audio_path=_AUDIO_PATH,
+        embedding_model=_model,
+    )
+    assert merge_map == {}
+
+
+def test_merge_rejects_two_d_vectors_with_non_numeric_entries() -> None:
+    def _model(audio_path: Path, start: float, end: float):
+        return [[1.0, "bad"]]
+
+    diar_segments = [
+        _segment("A", 0.0, 5.0),
+        _segment("B", 6.0, 11.0),
+    ]
+    updated, merge_map = merge_similar_speakers(
+        diar_segments,
+        audio_path=_AUDIO_PATH,
+        embedding_model=_model,
+    )
+    assert merge_map == {}
+
+
+def test_merge_rejects_two_d_vectors_with_empty_rows() -> None:
+    def _model(audio_path: Path, start: float, end: float):
+        return [[], []]
+
+    diar_segments = [
+        _segment("A", 0.0, 5.0),
+        _segment("B", 6.0, 11.0),
+    ]
+    updated, merge_map = merge_similar_speakers(
+        diar_segments,
+        audio_path=_AUDIO_PATH,
+        embedding_model=_model,
+    )
+    assert merge_map == {}
+
+
+def test_merge_rejects_two_d_vectors_with_nonfinite_pool_result() -> None:
+    def _model(audio_path: Path, start: float, end: float):
+        return [[float("nan"), 0.0]]
+
+    diar_segments = [
+        _segment("A", 0.0, 5.0),
+        _segment("B", 6.0, 11.0),
+    ]
+    updated, merge_map = merge_similar_speakers(
+        diar_segments,
+        audio_path=_AUDIO_PATH,
+        embedding_model=_model,
+    )
+    assert merge_map == {}
+
+
 class _StubDiariser:
     """Simple diariser stub used by orchestrator helper tests."""
 
