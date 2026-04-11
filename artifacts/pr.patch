@@ -1,175 +1,216 @@
-diff --git a/ci-requirements.txt b/ci-requirements.txt
-index 6803920..2fe65fa 100644
---- a/ci-requirements.txt
-+++ b/ci-requirements.txt
-@@ -12,7 +12,7 @@ anyio==4.13.0
-     # via
-     #   httpx
-     #   starlette
--build==1.4.2
-+build==1.4.3
-     # via pip-tools
- certifi==2026.2.25
-     # via
-diff --git a/lan_app/exporter.py b/lan_app/exporter.py
-index 4bc2ab2..851b2a2 100644
---- a/lan_app/exporter.py
-+++ b/lan_app/exporter.py
-@@ -9,6 +9,8 @@ from pathlib import Path
- import zipfile
- from typing import Any
+diff --git a/lan_transcriber/pipeline_steps/orchestrator.py b/lan_transcriber/pipeline_steps/orchestrator.py
+index 787d02d..76fe491 100644
+--- a/lan_transcriber/pipeline_steps/orchestrator.py
++++ b/lan_transcriber/pipeline_steps/orchestrator.py
+@@ -943,12 +943,47 @@ def _diariser_pipeline_model(diariser: Diariser) -> Any | None:
+     return None
  
-+from lan_transcriber.utils import safe_float
+ 
++_DEFAULT_SPEAKER_EMBEDDING_MODEL = "pyannote/wespeaker-voxceleb-resnet34-LM"
 +
- from .config import AppSettings
- from .db import (
-     SPEAKER_REVIEW_STATE_CONFIRMED_CANONICAL,
-@@ -36,6 +38,16 @@ def _utc_now_iso() -> str:
++
++def _build_pyannote_inference(model_or_name: Any) -> Any | None:
++    """Construct a pyannote ``Inference`` wrapper, returning ``None`` on failure."""
++    try:
++        from pyannote.audio import Inference  # type: ignore
++    except Exception as exc:
++        _logger.warning(
++            "speaker_merge: pyannote.audio.Inference unavailable; "
++            "skipping merge step (%s)",
++            exc,
++        )
++        return None
++    try:
++        return Inference(model_or_name, window="whole")
++    except Exception as exc:
++        _logger.warning(
++            "speaker_merge: failed to load embedding model %s: %s",
++            model_or_name,
++            exc,
++        )
++        return None
++
++
+ def _resolve_pyannote_embedding_model(diariser: Diariser) -> EmbeddingModel | None:
+     """Resolve a speaker embedding callable from the loaded diarization pipeline.
+ 
+     Returns a callable ``(audio_path, start, end) -> np.ndarray`` or ``None`` if
+     no usable embedding model can be obtained. Failures are logged and swallowed
+     so the pipeline still runs when the merge step cannot be enabled.
++
++    pyannote-audio >= 3.1 stores the embedding sub-model on
++    ``SpeakerDiarization._embedding``, but that attribute is a
++    :class:`PretrainedSpeakerEmbedding` callable — it does **not** expose the
++    ``.crop(file, segment)`` method we need. We therefore only reuse the
++    pipeline's attribute when it already looks like an ``Inference`` wrapper
++    (i.e. exposes ``crop``). Otherwise we construct a fresh
++    ``Inference(embedding_model, window="whole")`` — using the model identifier
++    stored on the pipeline when available and falling back to the
++    wespeaker checkpoint that pyannote-audio bundles by default.
+     """
+ 
+     cached = getattr(diariser, "_lan_speaker_embedding_model", None)
+@@ -962,39 +997,22 @@ def _resolve_pyannote_embedding_model(diariser: Diariser) -> EmbeddingModel | No
+         return None
+ 
+     inference: Any = None
+-    embedding_attr: Any = None
+     for attr in ("_embedding", "embedding"):
+         candidate = getattr(pipeline_model, attr, None)
+-        if candidate is not None:
+-            embedding_attr = candidate
++        if candidate is not None and callable(getattr(candidate, "crop", None)):
++            inference = candidate
+             break
+ 
+-    if embedding_attr is None:
+-        try:
+-            from pyannote.audio import Inference  # type: ignore
+-        except Exception as exc:
+-            _logger.warning(
+-                "speaker_merge: pyannote.audio.Inference unavailable; "
+-                "skipping merge step (%s)",
+-                exc,
+-            )
+-            setattr(diariser, "_lan_speaker_embedding_unavailable", True)
+-            return None
+-        model_name = getattr(pipeline_model, "embedding_model", None) or (
+-            "pyannote/wespeaker-voxceleb-resnet34-LM"
+-        )
+-        try:
+-            inference = Inference(model_name, window="whole")
+-        except Exception as exc:
+-            _logger.warning(
+-                "speaker_merge: failed to load embedding model %s: %s",
+-                model_name,
+-                exc,
+-            )
++    if inference is None:
++        raw_embedding_attr = getattr(pipeline_model, "embedding", None)
++        if isinstance(raw_embedding_attr, (str, Path)):
++            model_name: Any = str(raw_embedding_attr)
++        else:
++            model_name = _DEFAULT_SPEAKER_EMBEDDING_MODEL
++        inference = _build_pyannote_inference(model_name)
++        if inference is None:
+             setattr(diariser, "_lan_speaker_embedding_unavailable", True)
+             return None
+-    else:
+-        inference = embedding_attr
+ 
+     def _embed(audio_path: Path, start: float, end: float):
+         try:
+diff --git a/tests/test_speaker_merge.py b/tests/test_speaker_merge.py
+index 9077e45..b2b3e00 100644
+--- a/tests/test_speaker_merge.py
++++ b/tests/test_speaker_merge.py
+@@ -6,7 +6,7 @@ import math
+ import sys
+ import types
+ from pathlib import Path
+-from typing import Sequence
++from typing import Any, Sequence
+ 
+ import pytest
+ 
+@@ -802,9 +802,11 @@ def test_resolve_pyannote_embedding_model_uses_public_embedding_attr() -> None:
+         assert model_callable(Path("/x.wav"), 0.0, 1.0) is None
+ 
+ 
+-def test_resolve_pyannote_embedding_model_falls_back_to_inference() -> None:
++def test_resolve_pyannote_embedding_model_falls_back_to_inference_with_pipeline_name() -> None:
++    # Simulates pyannote ``SpeakerDiarization`` where ``pipeline.embedding``
++    # stores the model identifier string (not an Inference-like object).
+     pipeline_model = types.SimpleNamespace(
+-        embedding_model="pyannote/custom-embed",
++        embedding="pyannote/custom-embed",
      )
+     diariser = _StubDiariser(
+         pipeline_model=pipeline_model, pipeline_attr="_pipeline_model"
+@@ -832,6 +834,86 @@ def test_resolve_pyannote_embedding_model_falls_back_to_inference() -> None:
+     assert vector == [0.25, 0.75]
  
  
-+def _format_timestamp(seconds: float) -> str:
-+    total = max(0, int(seconds))
-+    h = total // 3600
-+    m = (total % 3600) // 60
-+    s = total % 60
-+    if h > 0:
-+        return f"{h:02d}:{m:02d}:{s:02d}"
-+    return f"{m:02d}:{s:02d}"
++def test_resolve_pyannote_embedding_model_falls_back_when_private_embedding_lacks_crop() -> None:
++    """Covers the real pyannote-audio >= 3.1 case.
 +
++    ``SpeakerDiarization._embedding`` is a ``PretrainedSpeakerEmbedding``
++    callable — it takes waveforms, not (file, segment) pairs. Using it as an
++    Inference substitute causes every ``crop()`` call to raise, silently
++    disabling the merge step. The resolver must detect the missing ``crop``
++    method and wrap the pipeline's embedding identifier with a fresh
++    ``Inference`` instead.
++    """
 +
- def _load_json_dict(path: Path) -> dict[str, Any]:
-     if not path.exists():
-         return {}
-@@ -262,7 +274,9 @@ def _transcript_section(
-             text = _normalize_text(turn.get("text") or "")
-             if not text:
-                 continue
--            lines.append(f"- **{speaker}:** {text}")
-+            start = safe_float(turn.get("start"), default=None)
-+            timestamp = f"{_format_timestamp(start)} " if start is not None else ""
-+            lines.append(f"- **{timestamp}{speaker}:** {text}")
-             wrote_any = True
-         if wrote_any:
-             return lines
-diff --git a/lan_app/templates/partials/recording_inspector_full_transcript.html b/lan_app/templates/partials/recording_inspector_full_transcript.html
-index 9cc0a52..76a9502 100644
---- a/lan_app/templates/partials/recording_inspector_full_transcript.html
-+++ b/lan_app/templates/partials/recording_inspector_full_transcript.html
-@@ -31,6 +31,9 @@
-         {% for turn in tr.turns %}
-         <article class="mb-4 last:mb-0">
-           <div class="flex items-center gap-2 mb-1">
-+            {% if turn.timestamp %}
-+            <span class="text-xs font-mono text-slate-500" data-testid="transcript-turn-timestamp">{{ turn.timestamp }}</span>
-+            {% endif %}
-             <strong class="text-sm font-semibold text-slate-900">{{ turn.speaker }}</strong>
-             <span class="text-xs text-slate-400">{{ turn.time_range }}</span>
-             {% if turn.language_label %}
-diff --git a/lan_app/ui_routes.py b/lan_app/ui_routes.py
-index bc06319..4bf3fbc 100644
---- a/lan_app/ui_routes.py
-+++ b/lan_app/ui_routes.py
-@@ -114,7 +114,7 @@ from .db import (
-     set_recording_status_if_current_in,
-     update_glossary_entry,
- )
--from .exporter import build_export_zip_bytes, build_onenote_markdown
-+from .exporter import _format_timestamp, build_export_zip_bytes, build_onenote_markdown
- from .jobs import (
-     DuplicateRecordingJobError,
-     enqueue_recording_job,
-@@ -1231,9 +1231,10 @@ def _transcript_tab_context(recording_id: str, settings: AppSettings) -> dict[st
-             speaker_name_map=speaker_name_map,
-         )
-         try:
--            start_value = float(row.get("start") or 0.0)
-+            parsed_start: float | None = float(row.get("start"))
-         except (TypeError, ValueError):
--            start_value = 0.0
-+            parsed_start = None
-+        start_value = parsed_start if parsed_start is not None else 0.0
-         try:
-             end_value = float(row.get("end") or start_value)
-         except (TypeError, ValueError):
-@@ -1242,10 +1243,12 @@ def _transcript_tab_context(recording_id: str, settings: AppSettings) -> dict[st
-             f"{_format_duration_seconds(start_value)} - "
-             f"{_format_duration_seconds(max(end_value, start_value))}"
-         )
-+        timestamp = _format_timestamp(parsed_start) if parsed_start is not None else ""
-         language_label = _language_display_name(_normalise_language_code(row.get("language")))
-         turns.append(
-             {
-                 "speaker": speaker,
-+                "timestamp": timestamp,
-                 "time_range": time_range,
-                 "text": text,
-                 "language_label": language_label if language_label != "—" else "",
-diff --git a/tasks/QUEUE.md b/tasks/QUEUE.md
-index 6c2526b..08fb1dc 100644
---- a/tasks/QUEUE.md
-+++ b/tasks/QUEUE.md
-@@ -669,6 +669,6 @@ Queue (in order)
- - Depends on: PR-TRANSCRIPT-MERGE-01
- 
- 134) PR-TRANSCRIPT-TIMESTAMPS-01: Add timestamps to transcript export and UI as default behavior
--- Status: TODO
-+- Status: DONE
- - Tasks file: tasks/PR-TRANSCRIPT-TIMESTAMPS-01.md
- - Depends on: PR-DIARIZATION-FLICKER-01
-diff --git a/tests/test_cov_lan_app_export_ops_jobs.py b/tests/test_cov_lan_app_export_ops_jobs.py
-index b1eab67..d0d0811 100644
---- a/tests/test_cov_lan_app_export_ops_jobs.py
-+++ b/tests/test_cov_lan_app_export_ops_jobs.py
-@@ -222,6 +222,33 @@ def test_build_onenote_markdown_language_detection_paths(tmp_path: Path):
-     assert "- Language: en" in markdown_auto
- 
- 
-+def test_format_timestamp_helper_handles_ranges_and_negatives():
-+    assert exporter._format_timestamp(0) == "00:00"
-+    assert exporter._format_timestamp(65) == "01:05"
-+    assert exporter._format_timestamp(3661) == "01:01:01"
-+    assert exporter._format_timestamp(-5) == "00:00"
++    class _PretrainedSpeakerEmbedding:
++        """Callable with no ``crop()`` — mirrors pyannote's internal object."""
 +
++        def __call__(self, waveforms):
++            return [[1.0, 0.0]]
 +
-+def test_transcript_section_renders_timestamps_for_speaker_turns():
-+    short_transcript = exporter._transcript_section(
-+        {},
-+        [{"speaker": "S1", "start": 65.0, "text": "first"}],
++    pipeline_model = types.SimpleNamespace(
++        _embedding=_PretrainedSpeakerEmbedding(),
++        embedding="pyannote/wespeaker-from-pipeline",
 +    )
-+    assert short_transcript == ["## Transcript", "- **01:05 S1:** first"]
-+
-+    long_transcript = exporter._transcript_section(
-+        {},
-+        [{"speaker": "S1", "start": 3661.0, "text": "later"}],
++    diariser = _StubDiariser(
++        pipeline_model=pipeline_model, pipeline_attr="_pipeline_model"
 +    )
-+    assert long_transcript == ["## Transcript", "- **01:01:01 S1:** later"]
 +
-+    no_timestamp = exporter._transcript_section(
-+        {},
-+        [{"speaker": "S1", "text": "no start field"}],
++    build_calls: list[Any] = []
++
++    class _FakeInference:
++        def __init__(self, name, *, window: str) -> None:
++            build_calls.append((name, window))
++            self.name = name
++
++        def crop(self, path: str, segment):
++            return [0.5, 0.5]
++
++    fake_audio = types.SimpleNamespace(Inference=_FakeInference)
++    fake_core = types.SimpleNamespace(Segment=lambda *a, **k: (a, k))
++
++    with _patched_module("pyannote.audio", fake_audio), _patched_module(
++        "pyannote.core", fake_core
++    ):
++        model_callable = pipeline_orchestrator._resolve_pyannote_embedding_model(
++            diariser
++        )
++        assert callable(model_callable)
++        vector = model_callable(Path("/z.wav"), 0.0, 1.0)
++    assert vector == [0.5, 0.5]
++    # The embedding attr was ignored; we built a fresh Inference by name.
++    assert build_calls == [("pyannote/wespeaker-from-pipeline", "whole")]
++
++
++def test_resolve_pyannote_embedding_model_uses_default_when_embedding_attr_not_a_string() -> None:
++    """When pipeline.embedding is neither crop-capable nor a string, use the default."""
++
++    class _OpaqueEmbedding:
++        def __call__(self, *_a, **_k):  # pragma: no cover - not invoked
++            return None
++
++    pipeline_model = types.SimpleNamespace(_embedding=_OpaqueEmbedding())
++    diariser = _StubDiariser(
++        pipeline_model=pipeline_model, pipeline_attr="_pipeline_model"
 +    )
-+    assert no_timestamp == ["## Transcript", "- **S1:** no start field"]
++
++    build_calls: list[Any] = []
++
++    class _FakeInference:
++        def __init__(self, name, *, window: str) -> None:
++            build_calls.append((name, window))
++
++        def crop(self, *_a, **_k):  # pragma: no cover - not invoked
++            return [1.0]
++
++    fake_audio = types.SimpleNamespace(Inference=_FakeInference)
++    with _patched_module("pyannote.audio", fake_audio):
++        pipeline_orchestrator._resolve_pyannote_embedding_model(diariser)
++    assert build_calls == [
++        (pipeline_orchestrator._DEFAULT_SPEAKER_EMBEDDING_MODEL, "whole")
++    ]
 +
 +
- def test_try_read_bytes_returns_none_on_oserror(tmp_path: Path, monkeypatch):
-     target = tmp_path / "payload.bin"
-     target.write_bytes(b"payload")
-diff --git a/tests/test_cov_lan_app_ui_routes.py b/tests/test_cov_lan_app_ui_routes.py
-index 5f62cea..d5383b7 100644
---- a/tests/test_cov_lan_app_ui_routes.py
-+++ b/tests/test_cov_lan_app_ui_routes.py
-@@ -3365,11 +3365,13 @@ def test_transcript_tab_context_covers_fallback_turns_and_copy_paths(
-     assert transcript["turn_count"] == 2
-     assert transcript["turns"][0] == {
-         "speaker": "S1",
-+        "timestamp": "",
-         "time_range": "— - —",
-         "text": "Hola",
-         "language_label": "",
-     }
-     assert transcript["turns"][1]["time_range"] == "00:00:01 - 00:00:01"
-+    assert transcript["turns"][1]["timestamp"] == "00:01"
-     assert transcript["turns"][1]["language_label"] == "English (en)"
-     assert "[— - —] S1: Hola" in transcript["copy_text"]
-     assert "[00:00:01 - 00:00:01] S2: Hello" in transcript["copy_text"]
+ def test_resolve_pyannote_embedding_model_handles_inference_import_error() -> None:
+     pipeline_model = types.SimpleNamespace()
+     diariser = _StubDiariser(
