@@ -1237,6 +1237,71 @@ def test_api_force_reprocess_clears_derived_and_enqueues(tmp_path: Path, monkeyp
     assert any(row["id"] == payload["job_id"] for row in jobs_after)
 
 
+def test_api_force_reprocess_preserves_sanitize_audio_stage_row(
+    tmp_path: Path, monkeypatch
+):
+    from lan_app.db import (
+        list_recording_pipeline_stages,
+        mark_recording_pipeline_stage_completed,
+    )
+
+    cfg = _test_settings(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    init_db(cfg)
+    create_recording(
+        "rec-force-stage-keep",
+        source="test",
+        source_filename="keep.mp3",
+        status=RECORDING_STATUS_READY,
+        settings=cfg,
+    )
+    # Simulate a completed pipeline so we can assert which stage rows the
+    # force-reprocess path preserves vs. clears.
+    for stage_name in (
+        "sanitize_audio",
+        "precheck",
+        "asr",
+        "language_analysis",
+        "speaker_turns",
+        "llm_extract",
+        "metrics",
+    ):
+        mark_recording_pipeline_stage_completed(
+            "rec-force-stage-keep",
+            stage_name=stage_name,
+            settings=cfg,
+        )
+
+    derived = cfg.recordings_root / "rec-force-stage-keep" / "derived"
+    derived.mkdir(parents=True, exist_ok=True)
+    (derived / "audio_sanitized.wav").write_bytes(b"\x00")
+    (derived / "audio_sanitize.json").write_text("{}", encoding="utf-8")
+    (derived / "summary.json").write_text("{}", encoding="utf-8")
+
+    class _FakeQueue:
+        def enqueue(self, *_args, **_kwargs):
+            return None
+
+    monkeypatch.setattr("lan_app.jobs.get_queue", lambda _cfg: _FakeQueue())
+
+    client = TestClient(api.app)
+    response = client.post(
+        "/api/recordings/rec-force-stage-keep/actions/force-reprocess"
+    )
+    assert response.status_code == 200
+
+    remaining_stages = {
+        row["stage_name"]
+        for row in list_recording_pipeline_stages(
+            "rec-force-stage-keep", settings=cfg
+        )
+    }
+    # sanitize_audio must survive so the worker's resume logic skips the
+    # expensive ffmpeg sanitization step; every downstream stage must be
+    # cleared so the pipeline re-runs from precheck onwards.
+    assert remaining_stages == {"sanitize_audio"}
+
+
 def test_api_force_reprocess_returns_404_for_unknown_recording(tmp_path: Path, monkeypatch):
     cfg = _test_settings(tmp_path)
     monkeypatch.setattr(api, "_settings", cfg)
@@ -1344,7 +1409,7 @@ def test_enqueue_before_queue_push_failure_fails_job_and_skips_queue(
     assert "cleanup exploded" in jobs[0]["error"]
 
 
-def test_enqueue_before_queue_push_failure_ignores_fail_job_errors(
+def test_enqueue_before_queue_push_failure_deletes_row_when_fail_job_errors(
     tmp_path: Path, monkeypatch
 ):
     cfg = _test_settings(tmp_path)
@@ -1370,6 +1435,9 @@ def test_enqueue_before_queue_push_failure_ignores_fail_job_errors(
     def _failing_callback() -> None:
         raise ValueError("cleanup busted")
 
+    # When fail_job breaks, the direct-DELETE backstop must remove the
+    # reserved row so future enqueue attempts are not blocked by an orphan
+    # QUEUED reservation.
     with pytest.raises(ValueError, match="cleanup busted"):
         enqueue_recording_job(
             "rec-before-push-fail-2",
@@ -1377,6 +1445,55 @@ def test_enqueue_before_queue_push_failure_ignores_fail_job_errors(
             before_queue_push=_failing_callback,
             settings=cfg,
         )
+    jobs, total = list_jobs(settings=cfg, recording_id="rec-before-push-fail-2")
+    assert total == 0
+    assert jobs == []
+
+
+def test_enqueue_before_queue_push_failure_compound_error_when_backstop_fails(
+    tmp_path: Path, monkeypatch
+):
+    cfg = _test_settings(tmp_path)
+    init_db(cfg)
+    create_recording(
+        "rec-before-push-fail-3",
+        source="test",
+        source_filename="before-push-3.mp3",
+        settings=cfg,
+    )
+
+    class _TripwireQueue:
+        def enqueue(self, *_args, **_kwargs):
+            raise AssertionError("queue must not be used")
+
+    monkeypatch.setattr("lan_app.jobs.get_queue", lambda _cfg: _TripwireQueue())
+    monkeypatch.setattr(
+        "lan_app.jobs.fail_job",
+        lambda *_a, **_kw: (_ for _ in ()).throw(RuntimeError("fail_job broke")),
+    )
+    monkeypatch.setattr(
+        "lan_app.jobs._delete_job_row",
+        lambda *_a, **_kw: (_ for _ in ()).throw(RuntimeError("delete broke")),
+    )
+
+    def _failing_callback() -> None:
+        raise ValueError("cleanup busted")
+
+    # Both fail_job and the direct-DELETE backstop raise, so the caller must
+    # see a compound RuntimeError (no silent orphan reservation).
+    with pytest.raises(RuntimeError) as exc_info:
+        enqueue_recording_job(
+            "rec-before-push-fail-3",
+            job_type=JOB_TYPE_PRECHECK,
+            before_queue_push=_failing_callback,
+            settings=cfg,
+        )
+    message = str(exc_info.value)
+    assert "pre-enqueue callback failed" in message
+    assert "cleanup busted" in message
+    assert "delete broke" in message
+    assert isinstance(exc_info.value.__cause__, ValueError)
+    assert "cleanup busted" in str(exc_info.value.__cause__)
 
 
 def test_enqueue_marks_job_failed_when_redis_enqueue_fails(tmp_path: Path, monkeypatch):

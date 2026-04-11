@@ -20,6 +20,7 @@ from .db import (
     clear_recording_cancel_request,
     clear_recording_pipeline_stages,
     clear_recording_progress,
+    connect,
     create_job_if_no_active_for_recording,
     create_job,
     fail_job,
@@ -48,6 +49,23 @@ class DuplicateRecordingJobError(ValueError):
 def _validate_job_type(job_type: str) -> None:
     if job_type not in JOB_TYPES:
         raise ValueError(f"Unsupported job type: {job_type}")
+
+
+def _delete_job_row(job_id: str, *, settings: AppSettings) -> None:
+    """Raw-SQL backstop used when :func:`fail_job` cannot mark a row terminal.
+
+    This exists specifically for the ``before_queue_push`` failure path:
+    the job row is already reserved in the DB but was never pushed to
+    Redis, so the only terminal states available are FAILED (via
+    ``fail_job``) or removal. If ``fail_job`` itself raises, we fall back
+    to this direct DELETE so that an orphan QUEUED reservation cannot
+    block all future enqueue attempts for the recording indefinitely.
+    """
+
+    init_db(settings)
+    with connect(settings) as conn:
+        conn.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
+        conn.commit()
 
 
 @dataclass(frozen=True)
@@ -187,20 +205,29 @@ def enqueue_recording_job(
         # Run caller-supplied cleanup (e.g. Force Reprocess deleting derived
         # artifacts) AFTER the atomic DB reservation that rejects duplicates,
         # but BEFORE the Redis push so the worker never observes a job whose
-        # cleanup is still in flight. Any failure marks the DB row FAILED and
-        # propagates so the caller can surface the error; no Redis job is
-        # pushed, so no worker ever picks this reservation up.
+        # cleanup is still in flight. On failure we guarantee the DB row
+        # reaches a terminal state (FAILED via fail_job, or removed via a
+        # direct DELETE backstop), so a cleanup crash cannot orphan the
+        # dedupe path with a stale QUEUED row that blocks every future
+        # enqueue for the recording.
         try:
             before_queue_push()
-        except Exception as exc:
+        except Exception as callback_exc:
             try:
                 fail_job(
                     job_id,
-                    error=f"pre-enqueue callback failed: {exc}",
+                    error=f"pre-enqueue callback failed: {callback_exc}",
                     settings=cfg,
                 )
             except Exception:
-                pass
+                try:
+                    _delete_job_row(job_id, settings=cfg)
+                except Exception as backstop_exc:
+                    raise RuntimeError(
+                        f"pre-enqueue callback failed ({callback_exc!r}); "
+                        f"additionally failed to clean up reserved job row "
+                        f"{job_id!r}: {backstop_exc!r}"
+                    ) from callback_exc
             raise
 
     queue = get_queue(cfg)

@@ -4323,10 +4323,13 @@ def test_ui_action_force_reprocess_clears_derived_and_enqueues(tmp_path, monkeyp
     c = TestClient(api.app, follow_redirects=False)
     r = c.post("/ui/recordings/rec-force-ui-1/force-reprocess")
     assert r.status_code in (200, 307, 302)
+    # reset_pipeline_state must be False here — force-reprocess clears stage
+    # rows itself in the callback with from_stage="precheck" so that the
+    # sanitize_audio stage row survives (and the worker can skip ffmpeg).
     assert observed == {
         "recording_id": "rec-force-ui-1",
         "job_type": JOB_TYPE_PRECHECK,
-        "reset_pipeline_state": True,
+        "reset_pipeline_state": False,
     }
     assert (derived / "audio_sanitized.wav").exists()
     assert (derived / "audio_sanitize.json").exists()

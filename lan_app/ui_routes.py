@@ -73,6 +73,7 @@ from .db import (
     SPEAKER_REVIEW_STATE_SYSTEM_SUGGESTED,
     VOICE_SAMPLE_SOURCE_TRUSTED_SAMPLE,
     acknowledge_recording_cancel_request,
+    clear_recording_pipeline_stages,
     clear_recording_progress,
     create_calendar_source,
     create_glossary_entry,
@@ -7090,12 +7091,21 @@ async def ui_action_force_reprocess(
         return HTMLResponse("Not found", status_code=404)
 
     def _clear_before_push() -> None:
+        # Preserve the sanitize_audio stage row so the worker can skip
+        # ffmpeg sanitization on resume; the files audio_sanitized.wav and
+        # audio_sanitize.json are preserved by clear_derived_artifacts for
+        # the same reason.
+        clear_recording_pipeline_stages(
+            recording_id,
+            from_stage="precheck",
+            settings=_settings,
+        )
+        clear_recording_progress(recording_id, settings=_settings)
         clear_derived_artifacts(recording_id, settings=_settings)
 
     try:
         enqueue_recording_job(
             recording_id,
-            reset_pipeline_state=True,
             before_queue_push=_clear_before_push,
             settings=_settings,
         )
