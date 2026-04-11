@@ -85,6 +85,7 @@ from .db import (
     get_glossary_entry,
     delete_project,
     delete_voice_profile,
+    find_active_job_for_recording,
     finish_job_if_queued,
     get_calendar_match,
     get_meeting_metrics,
@@ -121,7 +122,12 @@ from .jobs import (
     enqueue_recording_job,
     purge_pending_recording_jobs,
 )
-from .ops import RecordingDeleteError, delete_recording_with_artifacts
+from .ops import (
+    ClearDerivedArtifactsError,
+    RecordingDeleteError,
+    clear_derived_artifacts,
+    delete_recording_with_artifacts,
+)
 from .pipeline_stages import PIPELINE_STAGE_DONE_STATUSES, stage_order
 from .routing import refresh_recording_routing, train_routing_from_manual_selection
 from .speaker_bank import DEFAULT_ASSIGNMENT_THRESHOLD, merge_canonical_speakers
@@ -4441,6 +4447,9 @@ def _inspector_action_bar_context(
         "open_full_page_href": _recording_detail_path(recording_id, tab=current_tab),
         "download_zip_href": f"/ui/recordings/{quote(recording_id, safe='')}/export.zip",
         "requeue_url": f"/ui/recordings/{quote(recording_id, safe='')}/requeue{return_query}",
+        "force_reprocess_url": (
+            f"/ui/recordings/{quote(recording_id, safe='')}/force-reprocess{return_query}"
+        ),
         "quarantine_url": (
             f"/ui/recordings/{quote(recording_id, safe='')}/quarantine{return_query}"
         ),
@@ -7067,6 +7076,47 @@ async def ui_action_requeue(
         )
     except Exception as exc:
         return HTMLResponse(f"Requeue failed: {exc}", status_code=503)
+    return _ui_recording_action_response(
+        return_to=return_to,
+        redirect_to=f"/recordings/{recording_id}",
+    )
+
+
+@ui_router.post("/ui/recordings/{recording_id}/force-reprocess")
+async def ui_action_force_reprocess(
+    recording_id: str,
+    return_to: str = Query(default=""),
+) -> Any:
+    if get_recording(recording_id, settings=_settings) is None:
+        return HTMLResponse("Not found", status_code=404)
+    existing = find_active_job_for_recording(
+        recording_id,
+        job_type=DEFAULT_REQUEUE_JOB_TYPE,
+        settings=_settings,
+    )
+    if existing is not None:
+        existing_job_id = str(existing.get("id") or "").strip()
+        return HTMLResponse(
+            f"Force reprocess skipped: precheck job already active ({existing_job_id}).",
+            status_code=409,
+        )
+    try:
+        clear_derived_artifacts(recording_id, settings=_settings)
+    except ClearDerivedArtifactsError as exc:
+        return HTMLResponse(f"Force reprocess failed: {exc}", status_code=500)
+    try:
+        enqueue_recording_job(
+            recording_id,
+            reset_pipeline_state=True,
+            settings=_settings,
+        )
+    except DuplicateRecordingJobError as exc:
+        return HTMLResponse(
+            f"Force reprocess skipped: precheck job already active ({exc.job_id}).",
+            status_code=409,
+        )
+    except Exception as exc:
+        return HTMLResponse(f"Force reprocess failed: {exc}", status_code=503)
     return _ui_recording_action_response(
         return_to=return_to,
         redirect_to=f"/recordings/{recording_id}",

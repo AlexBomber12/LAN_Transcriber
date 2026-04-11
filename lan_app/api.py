@@ -37,6 +37,7 @@ from .db import (
     create_calendar_source,
     create_recording,
     delete_recording,
+    find_active_job_for_recording,
     get_recording,
     init_db,
     list_calendar_events,
@@ -59,7 +60,12 @@ from .healthchecks import (
     collect_health_checks,
 )
 from .ops import run_retention_cleanup
-from .ops import RecordingDeleteError, delete_recording_with_artifacts
+from .ops import (
+    ClearDerivedArtifactsError,
+    RecordingDeleteError,
+    clear_derived_artifacts,
+    delete_recording_with_artifacts,
+)
 from .reaper import run_stuck_job_reaper_once
 from .uploads import (
     ALLOWED_UPLOAD_EXTENSIONS,
@@ -345,6 +351,62 @@ async def api_requeue_recording(
         "recording_id": recording_id,
         "job_id": job.job_id,
         "job_type": job.job_type,
+    }
+
+
+@app.post("/api/recordings/{recording_id}/actions/force-reprocess")
+async def api_force_reprocess_recording(recording_id: str) -> dict[str, object]:
+    if get_recording(recording_id, settings=_settings) is None:
+        raise HTTPException(status_code=404, detail="Recording not found")
+
+    existing = find_active_job_for_recording(
+        recording_id,
+        job_type=DEFAULT_REQUEUE_JOB_TYPE,
+        settings=_settings,
+    )
+    if existing is not None:
+        existing_job_id = str(existing.get("id") or "").strip()
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "A precheck job is already queued or started for this recording.",
+                "existing_job_id": existing_job_id,
+            },
+        )
+
+    try:
+        deleted = clear_derived_artifacts(recording_id, settings=_settings)
+    except ClearDerivedArtifactsError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    try:
+        job = enqueue_recording_job(
+            recording_id,
+            job_type=DEFAULT_REQUEUE_JOB_TYPE,
+            reset_pipeline_state=True,
+            settings=_settings,
+        )
+    except DuplicateRecordingJobError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "A precheck job is already queued or started for this recording.",
+                "existing_job_id": exc.job_id,
+            },
+        )
+    except RecordingNotFoundError:
+        raise HTTPException(status_code=404, detail="Recording not found")
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Queue unavailable: {exc}")
+
+    return {
+        "recording_id": recording_id,
+        "job_id": job.job_id,
+        "job_type": job.job_type,
+        "reprocessed": True,
+        "cleared_artifacts": deleted,
     }
 
 

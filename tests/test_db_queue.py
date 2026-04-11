@@ -1178,6 +1178,109 @@ def test_api_requeue_dedupes_active_precheck_job(tmp_path: Path, monkeypatch):
     assert "already queued or started" in detail["message"].lower()
 
 
+def test_api_force_reprocess_clears_derived_and_enqueues(tmp_path: Path, monkeypatch):
+    cfg = _test_settings(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    init_db(cfg)
+    create_recording(
+        "rec-force-api-1",
+        source="test",
+        source_filename="force.mp3",
+        status=RECORDING_STATUS_READY,
+        settings=cfg,
+    )
+    derived = cfg.recordings_root / "rec-force-api-1" / "derived"
+    derived.mkdir(parents=True, exist_ok=True)
+    (derived / "audio_sanitized.wav").write_bytes(b"\x00")
+    (derived / "audio_sanitize.json").write_text("{}", encoding="utf-8")
+    (derived / "summary.json").write_text("{}", encoding="utf-8")
+    (derived / "transcript.txt").write_text("old", encoding="utf-8")
+    snippets = derived / "snippets"
+    snippets.mkdir(parents=True, exist_ok=True)
+    (snippets / "snippet.wav").write_bytes(b"\x00")
+
+    class _FakeQueue:
+        def enqueue(self, *_args, **_kwargs):
+            return None
+
+    monkeypatch.setattr("lan_app.jobs.get_queue", lambda _cfg: _FakeQueue())
+
+    client = TestClient(api.app)
+    response = client.post("/api/recordings/rec-force-api-1/actions/force-reprocess")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["recording_id"] == "rec-force-api-1"
+    assert payload["reprocessed"] is True
+    assert payload["job_type"] == JOB_TYPE_PRECHECK
+    assert payload["job_id"]
+    cleared = payload["cleared_artifacts"]
+    assert "summary.json" in cleared
+    assert "transcript.txt" in cleared
+    assert "snippets" in cleared
+    assert "audio_sanitized.wav" not in cleared
+    assert "audio_sanitize.json" not in cleared
+
+    assert (derived / "audio_sanitized.wav").exists()
+    assert (derived / "audio_sanitize.json").exists()
+    assert not (derived / "summary.json").exists()
+    assert not (derived / "transcript.txt").exists()
+    assert not (derived / "snippets").exists()
+
+    rec_after = get_recording("rec-force-api-1", settings=cfg)
+    assert rec_after is not None
+    assert rec_after["status"] == RECORDING_STATUS_QUEUED
+
+    jobs_after, _total = list_jobs(
+        settings=cfg,
+        recording_id="rec-force-api-1",
+    )
+    assert any(row["id"] == payload["job_id"] for row in jobs_after)
+
+
+def test_api_force_reprocess_returns_404_for_unknown_recording(tmp_path: Path, monkeypatch):
+    cfg = _test_settings(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    init_db(cfg)
+
+    client = TestClient(api.app)
+    response = client.post("/api/recordings/unknown/actions/force-reprocess")
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Recording not found"
+
+
+def test_api_force_reprocess_returns_409_when_job_active(tmp_path: Path, monkeypatch):
+    cfg = _test_settings(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    init_db(cfg)
+    create_recording(
+        "rec-force-api-2",
+        source="test",
+        source_filename="force-active.mp3",
+        status=RECORDING_STATUS_QUEUED,
+        settings=cfg,
+    )
+    create_job(
+        "existing-force-job",
+        recording_id="rec-force-api-2",
+        job_type=JOB_TYPE_PRECHECK,
+        status=JOB_STATUS_QUEUED,
+        settings=cfg,
+    )
+    derived = cfg.recordings_root / "rec-force-api-2" / "derived"
+    derived.mkdir(parents=True, exist_ok=True)
+    guarded_summary = derived / "summary.json"
+    guarded_summary.write_text("{}", encoding="utf-8")
+
+    client = TestClient(api.app)
+    response = client.post("/api/recordings/rec-force-api-2/actions/force-reprocess")
+    assert response.status_code == 409
+    detail = response.json()["detail"]
+    assert detail["existing_job_id"] == "existing-force-job"
+    assert "already queued or started" in detail["message"].lower()
+    # Derived artifacts must not be touched when a job is already active.
+    assert guarded_summary.exists()
+
+
 def test_api_alias_requires_auth_when_token_enabled(tmp_path: Path, monkeypatch):
     cfg = _test_settings(tmp_path)
     cfg.api_bearer_token = "alias-secret"

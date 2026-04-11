@@ -1,567 +1,896 @@
-diff --git a/lan_app/worker_tasks.py b/lan_app/worker_tasks.py
-index 743c282..6778056 100644
---- a/lan_app/worker_tasks.py
-+++ b/lan_app/worker_tasks.py
-@@ -2574,77 +2574,23 @@ def _build_diarization_metadata_payload(
-     speaker_merges: dict[str, str] | None = None,
-     speaker_merge_diagnostics: dict[str, Any] | None = None,
- ) -> dict[str, Any]:
--    diariser_mode = str(runtime.get("mode") or "unknown").strip().lower() or "unknown"
--    effective_hints = runtime.get("effective_hints")
--    if not isinstance(effective_hints, dict):
--        effective_hints = {}
--    initial_hints = runtime.get("initial_hints")
--    if not isinstance(initial_hints, dict):
--        initial_hints = {}
--    profile_selection = runtime.get("profile_selection")
--    if not isinstance(profile_selection, dict):
--        profile_selection = {}
--    selected_profile = str(
--        profile_selection.get("selected_profile")
--        or runtime.get("selected_profile")
--        or runtime.get("initial_profile")
--        or runtime.get("diarization_profile")
--        or cfg.diarization_profile
-+    """Thin wrapper that delegates to the orchestrator's shared builder.
-+
-+    PR-ARTIFACT-SINGLE-WRITER-01 consolidated the diarization metadata
-+    payload construction into a single source of truth in
-+    ``lan_transcriber.pipeline_steps.orchestrator``. The wrapper is kept
-+    so existing tests that reference ``worker_tasks._build_diarization_metadata_payload``
-+    continue to hit the same code path the production pipeline uses.
-+    """
-+
-+    return pipeline_orchestrator._build_diarization_metadata_payload(  # noqa: SLF001
-+        runtime=runtime,
-+        cfg=cfg,
-+        smoothing_result=smoothing_result,
-+        used_dummy_fallback=bool(runtime.get("used_dummy_fallback", False)),
-+        speaker_merges=speaker_merges,
-+        speaker_merge_diagnostics=speaker_merge_diagnostics,
-     )
--    initial_metrics = profile_selection.get("initial_metrics")
--    if not isinstance(initial_metrics, dict):
--        initial_metrics = {}
--    payload: dict[str, Any] = {
--        "version": 1,
--        "mode": diariser_mode,
--        "degraded": bool(runtime.get("used_dummy_fallback")) or diariser_mode not in {"pyannote", "unknown"},
--        "diarization_profile": str(runtime.get("diarization_profile") or cfg.diarization_profile),
--        "requested_profile": str(
--            runtime.get("requested_profile")
--            or runtime.get("diarization_profile")
--            or cfg.diarization_profile
--        ),
--        "effective_device": str(runtime.get("effective_device") or cfg.diarization_device),
--        "scheduler_mode": str(runtime.get("scheduler_mode") or cfg.gpu_scheduler_mode),
--        "scheduler_reason": runtime.get("scheduler_reason"),
--        "initial_profile": str(runtime.get("initial_profile") or cfg.diarization_profile),
--        "selected_profile": selected_profile,
--        "selected_result": str(profile_selection.get("selected_result") or "initial_pass"),
--        "auto_profile_enabled": bool(runtime.get("auto_profile_enabled", False)),
--        "profile_override_reason": runtime.get("override_reason"),
--        "hints_applied": effective_hints,
--        "dialog_retry_attempted": bool(
--            profile_selection.get(
--                "dialog_retry_attempted",
--                runtime.get("dialog_retry_used", False),
--            )
--        ),
--        "dialog_retry_used": bool(runtime.get("dialog_retry_used", False)),
--        "speaker_count_before_retry": runtime.get("speaker_count_before_retry"),
--        "speaker_count_after_retry": runtime.get("speaker_count_after_retry"),
--        "initial_speaker_count": initial_metrics.get(
--            "speaker_count",
--            runtime.get("speaker_count_before_retry"),
--        ),
--        "initial_top_two_coverage": initial_metrics.get("top_two_coverage"),
--        "used_dummy_fallback": bool(runtime.get("used_dummy_fallback", False)),
--        "smoothing_applied": bool(diariser_mode == "pyannote" and not runtime.get("used_dummy_fallback")),
--        "merge_gap_seconds": cfg.diarization_merge_gap_seconds,
--        "min_turn_seconds": cfg.diarization_min_turn_seconds,
--        "speaker_count_before_smoothing": smoothing_result.speaker_count_before,
--        "speaker_count_after_smoothing": smoothing_result.speaker_count_after,
--        "turn_count_before_smoothing": smoothing_result.turn_count_before,
--        "turn_count_after_smoothing": smoothing_result.turn_count_after,
--        "adjacent_merges": smoothing_result.adjacent_merges,
--        "micro_turn_absorptions": smoothing_result.micro_turn_absorptions,
--    }
--    if initial_hints != effective_hints:
--        payload["initial_hints"] = initial_hints
--    if profile_selection:
--        payload["profile_selection"] = profile_selection
--    payload["speaker_merges"] = dict(speaker_merges or {})
--    payload["speaker_merge_diagnostics"] = dict(speaker_merge_diagnostics or {})
--    return payload
+diff --git a/lan_app/api.py b/lan_app/api.py
+index 1a0dcad..4519ec7 100644
+--- a/lan_app/api.py
++++ b/lan_app/api.py
+@@ -37,6 +37,7 @@ from .db import (
+     create_calendar_source,
+     create_recording,
+     delete_recording,
++    find_active_job_for_recording,
+     get_recording,
+     init_db,
+     list_calendar_events,
+@@ -59,7 +60,12 @@ from .healthchecks import (
+     collect_health_checks,
+ )
+ from .ops import run_retention_cleanup
+-from .ops import RecordingDeleteError, delete_recording_with_artifacts
++from .ops import (
++    ClearDerivedArtifactsError,
++    RecordingDeleteError,
++    clear_derived_artifacts,
++    delete_recording_with_artifacts,
++)
+ from .reaper import run_stuck_job_reaper_once
+ from .uploads import (
+     ALLOWED_UPLOAD_EXTENSIONS,
+@@ -348,6 +354,62 @@ async def api_requeue_recording(
+     }
  
  
- def _stage_sanitize_audio(ctx: _PipelineExecutionContext) -> _StageResult:
-@@ -3570,28 +3516,30 @@ def _stage_export_artifacts(ctx: _PipelineExecutionContext) -> _StageResult:
-         ],
-         ctx.pipeline_settings.merge_similar,
-     )
--    transcript_payload = pipeline_orchestrator._base_transcript_payload(
--        recording_id=ctx.recording_id,
--        language=language_info,
--        dominant_language=str(ctx.language_payload.get("dominant_language") or "unknown"),
--        language_distribution=dict(ctx.language_payload.get("language_distribution") or {}),
--        language_spans=list(ctx.language_payload.get("language_spans") or []),
--        target_summary_language=summary_lang,
--        transcript_language_override=ctx.transcript_language_override,
--        calendar_title=ctx.calendar_title,
--        calendar_attendees=ctx.calendar_attendees,
--        segments=language_segments,
--        speakers=sorted(
--            {
--                aliases.get(str(turn.get("speaker") or "S1"), str(turn.get("speaker") or "S1"))
--                for turn in ctx.speaker_turns
--            }
-+    transcript_payload = pipeline_orchestrator._finalize_transcript_payload(
-+        pipeline_orchestrator._base_transcript_payload(
-+            recording_id=ctx.recording_id,
-+            language=language_info,
-+            dominant_language=str(ctx.language_payload.get("dominant_language") or "unknown"),
-+            language_distribution=dict(ctx.language_payload.get("language_distribution") or {}),
-+            language_spans=list(ctx.language_payload.get("language_spans") or []),
-+            target_summary_language=summary_lang,
-+            transcript_language_override=ctx.transcript_language_override,
-+            calendar_title=ctx.calendar_title,
-+            calendar_attendees=ctx.calendar_attendees,
-+            segments=language_segments,
-+            speakers=sorted(
-+                {
-+                    aliases.get(str(turn.get("speaker") or "S1"), str(turn.get("speaker") or "S1"))
-+                    for turn in ctx.speaker_turns
-+                }
-+            ),
-+            text=ctx.clean_text,
-         ),
--        text=ctx.clean_text,
-+        speaker_lines=speaker_lines,
-+        asr_execution=ctx.asr_execution,
-+        review=ctx.language_payload.get("review") or {},
-     )
--    transcript_payload["speaker_lines"] = speaker_lines
--    transcript_payload["multilingual_asr"] = dict(ctx.asr_execution)
--    transcript_payload["review"] = dict(ctx.language_payload.get("review") or {})
-     atomic_write_text(ctx.artifacts.recording_artifacts.transcript_txt_path, ctx.clean_text)
-     atomic_write_json(ctx.artifacts.recording_artifacts.transcript_json_path, transcript_payload)
-     atomic_write_json(ctx.artifacts.recording_artifacts.segments_json_path, ctx.diarization_segments)
-diff --git a/lan_transcriber/pipeline_steps/orchestrator.py b/lan_transcriber/pipeline_steps/orchestrator.py
-index 71f79f2..4e625b6 100644
---- a/lan_transcriber/pipeline_steps/orchestrator.py
-+++ b/lan_transcriber/pipeline_steps/orchestrator.py
-@@ -1246,75 +1246,108 @@ async def _maybe_retry_dialog_diarization(
-     return retry_result if winner_is_retry else diarization
- 
- 
--def _write_diarization_metadata_artifact(
-+# -----------------------------------------------------------------------------
-+# Shared artifact payload builders (PR-ARTIFACT-SINGLE-WRITER-01)
-+#
-+# These helpers exist so that the legacy monolithic ``run_pipeline`` path and
-+# the stage-based execution in ``lan_app.worker_tasks`` build derived JSON
-+# artifact payloads from a single source. Before PR-ARTIFACT-SINGLE-WRITER-01,
-+# ``lan_app.worker_tasks`` had its own parallel implementations that silently
-+# dropped fields when orchestrator payloads gained new keys (see
-+# PR-SPEAKER-MERGE-DIAGNOSTICS-HOTFIX-01). Always extend these shared builders
-+# when adding fields, and call them from both the orchestrator and the worker.
-+#
-+# Conflict matrix of derived artifacts that can be written by both paths:
-+#   diarization_metadata.json : stage path writes in ``_stage_speaker_turns``;
-+#                               legacy path writes in ``_write_diarization_metadata_artifact``.
-+#                               Shared builder: ``_build_diarization_metadata_payload``.
-+#   transcript.json           : stage path writes in ``_stage_export_artifacts``;
-+#                               legacy path writes at the end of ``run_pipeline``.
-+#                               Shared builder: ``_finalize_transcript_payload``.
-+#   segments.json             : list payload copied verbatim from ``diar_segments``.
-+#   speaker_turns.json        : list payload copied verbatim from smoothed turns.
-+#   summary.json              : dict payload produced by ``build_summary_payload`` or
-+#                               ``_build_structured_summary_payload`` (already shared).
-+#   transcript.txt            : plain text copy of ``clean_text``.
-+#   metrics.json              : independent per-path (legacy: run_pipeline; stage:
-+#                               ``_stage_metrics``). Not a dual-write conflict.
-+# -----------------------------------------------------------------------------
++@app.post("/api/recordings/{recording_id}/actions/force-reprocess")
++async def api_force_reprocess_recording(recording_id: str) -> dict[str, object]:
++    if get_recording(recording_id, settings=_settings) is None:
++        raise HTTPException(status_code=404, detail="Recording not found")
 +
-+
-+def _build_diarization_metadata_payload(
-     *,
--    artifacts,
--    diariser: Diariser,
-+    runtime: dict[str, Any],
-     cfg: Settings,
-     smoothing_result,
-     used_dummy_fallback: bool,
-     speaker_merges: dict[str, str] | None = None,
-     speaker_merge_diagnostics: dict[str, Any] | None = None,
--) -> None:
--    metadata = _diariser_runtime_metadata(diariser)
--    diariser_mode = _diariser_mode(diariser)
--    effective_hints = metadata.get("effective_hints")
-+) -> dict[str, Any]:
-+    """Build the ``diarization_metadata.json`` payload from a runtime dict.
-+
-+    This is the single source of truth for diarization metadata fields.
-+    Both ``_write_diarization_metadata_artifact`` (legacy monolithic path)
-+    and ``lan_app.worker_tasks._stage_speaker_turns`` (stage-based production
-+    path) call this function so that payload fields stay in sync.
-+    """
-+
-+    diariser_mode = str(runtime.get("mode") or "unknown").strip().lower() or "unknown"
-+    effective_hints = runtime.get("effective_hints")
-     if not isinstance(effective_hints, dict):
-         effective_hints = {}
--    initial_hints = metadata.get("initial_hints")
-+    initial_hints = runtime.get("initial_hints")
-     if not isinstance(initial_hints, dict):
-         initial_hints = {}
--    profile_selection = metadata.get("profile_selection")
-+    profile_selection = runtime.get("profile_selection")
-     if not isinstance(profile_selection, dict):
-         profile_selection = {}
-     selected_profile = str(
-         profile_selection.get("selected_profile")
--        or metadata.get("selected_profile")
--        or metadata.get("initial_profile")
--        or metadata.get("diarization_profile")
-+        or runtime.get("selected_profile")
-+        or runtime.get("initial_profile")
-+        or runtime.get("diarization_profile")
-         or cfg.diarization_profile
-     )
-     initial_metrics = profile_selection.get("initial_metrics")
-     if not isinstance(initial_metrics, dict):
-         initial_metrics = {}
- 
-+    degraded = bool(used_dummy_fallback) or diariser_mode not in {"pyannote", "unknown"}
-+
-     payload: dict[str, Any] = {
-         "version": 1,
-         "mode": diariser_mode,
--        "degraded": _is_degraded_diarization(
--            diariser,
--            used_dummy_fallback=used_dummy_fallback,
--        ),
--        "diarization_profile": str(metadata.get("diarization_profile") or cfg.diarization_profile),
-+        "degraded": degraded,
-+        "diarization_profile": str(runtime.get("diarization_profile") or cfg.diarization_profile),
-         "requested_profile": str(
--            metadata.get("requested_profile")
--            or metadata.get("diarization_profile")
-+            runtime.get("requested_profile")
-+            or runtime.get("diarization_profile")
-             or cfg.diarization_profile
-         ),
--        "effective_device": str(metadata.get("effective_device") or cfg.diarization_device),
--        "scheduler_mode": str(metadata.get("scheduler_mode") or cfg.gpu_scheduler_mode),
--        "scheduler_reason": metadata.get("scheduler_reason"),
--        "initial_profile": str(metadata.get("initial_profile") or cfg.diarization_profile),
-+        "effective_device": str(runtime.get("effective_device") or cfg.diarization_device),
-+        "scheduler_mode": str(runtime.get("scheduler_mode") or cfg.gpu_scheduler_mode),
-+        "scheduler_reason": runtime.get("scheduler_reason"),
-+        "initial_profile": str(runtime.get("initial_profile") or cfg.diarization_profile),
-         "selected_profile": selected_profile,
-         "selected_result": str(profile_selection.get("selected_result") or "initial_pass"),
--        "auto_profile_enabled": bool(metadata.get("auto_profile_enabled", False)),
--        "profile_override_reason": metadata.get("override_reason"),
-+        "auto_profile_enabled": bool(runtime.get("auto_profile_enabled", False)),
-+        "profile_override_reason": runtime.get("override_reason"),
-         "hints_applied": effective_hints,
-         "dialog_retry_attempted": bool(
-             profile_selection.get(
-                 "dialog_retry_attempted",
--                metadata.get("dialog_retry_used", False),
-+                runtime.get("dialog_retry_used", False),
-             )
-         ),
--        "dialog_retry_used": bool(metadata.get("dialog_retry_used", False)),
--        "speaker_count_before_retry": metadata.get("speaker_count_before_retry"),
--        "speaker_count_after_retry": metadata.get("speaker_count_after_retry"),
-+        "dialog_retry_used": bool(runtime.get("dialog_retry_used", False)),
-+        "speaker_count_before_retry": runtime.get("speaker_count_before_retry"),
-+        "speaker_count_after_retry": runtime.get("speaker_count_after_retry"),
-         "initial_speaker_count": initial_metrics.get(
-             "speaker_count",
--            metadata.get("speaker_count_before_retry"),
-+            runtime.get("speaker_count_before_retry"),
-         ),
-         "initial_top_two_coverage": initial_metrics.get("top_two_coverage"),
--        "used_dummy_fallback": used_dummy_fallback,
-+        "used_dummy_fallback": bool(used_dummy_fallback),
-         "smoothing_applied": bool(diariser_mode == "pyannote" and not used_dummy_fallback),
-         "merge_gap_seconds": cfg.diarization_merge_gap_seconds,
-         "min_turn_seconds": cfg.diarization_min_turn_seconds,
-@@ -1331,6 +1364,50 @@ def _write_diarization_metadata_artifact(
-         payload["profile_selection"] = profile_selection
-     payload["speaker_merges"] = dict(speaker_merges or {})
-     payload["speaker_merge_diagnostics"] = dict(speaker_merge_diagnostics or {})
-+    return payload
-+
-+
-+def _finalize_transcript_payload(
-+    base_payload: dict[str, Any],
-+    *,
-+    speaker_lines: list[str],
-+    asr_execution: dict[str, Any],
-+    review: dict[str, Any],
-+) -> dict[str, Any]:
-+    """Attach post-processing fields to a transcript payload.
-+
-+    Shared builder for ``transcript.json``. Both the legacy monolithic
-+    ``run_pipeline`` path and the stage-based ``_stage_export_artifacts``
-+    path in ``lan_app.worker_tasks`` call this so that any field added
-+    here is automatically preserved by every writer.
-+    """
-+
-+    base_payload["speaker_lines"] = list(speaker_lines)
-+    base_payload["multilingual_asr"] = dict(asr_execution or {})
-+    base_payload["review"] = dict(review or {})
-+    return base_payload
-+
-+
-+def _write_diarization_metadata_artifact(
-+    *,
-+    artifacts,
-+    diariser: Diariser,
-+    cfg: Settings,
-+    smoothing_result,
-+    used_dummy_fallback: bool,
-+    speaker_merges: dict[str, str] | None = None,
-+    speaker_merge_diagnostics: dict[str, Any] | None = None,
-+) -> None:
-+    runtime = _diariser_runtime_metadata(diariser)
-+    runtime["mode"] = _diariser_mode(diariser)
-+    payload = _build_diarization_metadata_payload(
-+        runtime=runtime,
-+        cfg=cfg,
-+        smoothing_result=smoothing_result,
-+        used_dummy_fallback=used_dummy_fallback,
-+        speaker_merges=speaker_merges,
-+        speaker_merge_diagnostics=speaker_merge_diagnostics,
++    existing = find_active_job_for_recording(
++        recording_id,
++        job_type=DEFAULT_REQUEUE_JOB_TYPE,
++        settings=_settings,
 +    )
-     atomic_write_json(artifacts.diarization_metadata_json_path, payload)
- 
- 
-@@ -3313,29 +3390,31 @@ async def run_pipeline(
-         serialised_segments = [SpeakerSegment(start=safe_float(turn["start"]), end=safe_float(turn["end"]), speaker=str(turn["speaker"]), text=str(turn["text"])) for turn in speaker_turns]
-         speakers = sorted(set(aliases.get(turn["speaker"], turn["speaker"]) for turn in speaker_turns))
-         atomic_write_text(artifacts.transcript_txt_path, clean_text)
--        payload = _base_transcript_payload(
--            recording_id=artifacts.recording_id,
--            language=language_info,
--            dominant_language=language_analysis.dominant_language,
--            language_distribution=language_analysis.distribution,
--            language_spans=language_analysis.spans,
--            target_summary_language=summary_lang,
--            transcript_language_override=override_lang,
--            calendar_title=cal_title,
--            calendar_attendees=cal_attendees,
--            segments=language_analysis.segments,
--            speakers=speakers,
--            text=clean_text,
--        )
--        payload["speaker_lines"] = speaker_lines
--        payload["multilingual_asr"] = dict(asr_execution)
--        payload["review"] = {
--            "required": bool(language_analysis.review_required),
--            "reason_code": language_analysis.review_reason_code,
--            "reason_text": language_analysis.review_reason_text,
--            "uncertain_segment_count": language_analysis.uncertain_segment_count,
--            "conflict_segment_count": language_analysis.conflict_segment_count,
--        }
-+        payload = _finalize_transcript_payload(
-+            _base_transcript_payload(
-+                recording_id=artifacts.recording_id,
-+                language=language_info,
-+                dominant_language=language_analysis.dominant_language,
-+                language_distribution=language_analysis.distribution,
-+                language_spans=language_analysis.spans,
-+                target_summary_language=summary_lang,
-+                transcript_language_override=override_lang,
-+                calendar_title=cal_title,
-+                calendar_attendees=cal_attendees,
-+                segments=language_analysis.segments,
-+                speakers=speakers,
-+                text=clean_text,
-+            ),
-+            speaker_lines=speaker_lines,
-+            asr_execution=asr_execution,
-+            review={
-+                "required": bool(language_analysis.review_required),
-+                "reason_code": language_analysis.review_reason_code,
-+                "reason_text": language_analysis.review_reason_text,
-+                "uncertain_segment_count": language_analysis.uncertain_segment_count,
-+                "conflict_segment_count": language_analysis.conflict_segment_count,
++    if existing is not None:
++        existing_job_id = str(existing.get("id") or "").strip()
++        raise HTTPException(
++            status_code=409,
++            detail={
++                "message": "A precheck job is already queued or started for this recording.",
++                "existing_job_id": existing_job_id,
 +            },
 +        )
-         atomic_write_json(artifacts.transcript_json_path, payload)
-         atomic_write_json(artifacts.segments_json_path, diar_segments)
-         atomic_write_json(artifacts.speaker_turns_json_path, speaker_turns)
-diff --git a/tasks/QUEUE.md b/tasks/QUEUE.md
-index e5f1e93..a32c5ce 100644
---- a/tasks/QUEUE.md
-+++ b/tasks/QUEUE.md
-@@ -716,7 +716,7 @@ Queue (in order)
- - Depends on: PR-SPEAKER-MERGE-DIAGNOSTICS-HOTFIX-01
- 
- 143) PR-ARTIFACT-SINGLE-WRITER-01: Eliminate dual artifact writes: make orchestrator the single source of truth for all derived JSON artifacts
--- Status: TODO
-+- Status: DONE
- - Tasks file: tasks/PR-ARTIFACT-SINGLE-WRITER-01.md
- - Depends on: PR-SPEAKER-MERGE-TORCH-LOAD-FIX-01
- 
-diff --git a/tests/test_pipeline_resume_coverage.py b/tests/test_pipeline_resume_coverage.py
-index b9d06ba..9fc8fea 100644
---- a/tests/test_pipeline_resume_coverage.py
-+++ b/tests/test_pipeline_resume_coverage.py
-@@ -29,6 +29,7 @@ from lan_app.db import (
-     set_recording_cancel_request,
- )
- from lan_transcriber.pipeline import PrecheckResult
-+from lan_transcriber.pipeline_steps import orchestrator as pipeline_orchestrator
- from lan_transcriber.pipeline_steps.diarization_quality import SpeakerTurnSmoothingResult
- 
- 
-@@ -239,6 +240,142 @@ def test_build_diarization_metadata_payload_normalizes_optional_fields(tmp_path:
-     assert "profile_selection" not in payload
- 
- 
-+def test_worker_diarization_metadata_wrapper_delegates_to_orchestrator(
-+    tmp_path: Path,
-+) -> None:
-+    """Regression guard for PR-ARTIFACT-SINGLE-WRITER-01.
 +
-+    Ensures ``worker_tasks._build_diarization_metadata_payload`` is only a
-+    thin delegate to ``pipeline_orchestrator._build_diarization_metadata_payload``
-+    so that any new key added to the orchestrator's shared builder shows up
-+    in the stage-based worker path without a parallel code change. This is
-+    the exact bug that PR-SPEAKER-MERGE-DIAGNOSTICS-HOTFIX-01 had to fix by
-+    hand before consolidation.
++    try:
++        deleted = clear_derived_artifacts(recording_id, settings=_settings)
++    except ClearDerivedArtifactsError as exc:
++        raise HTTPException(status_code=500, detail=str(exc)) from exc
++
++    try:
++        job = enqueue_recording_job(
++            recording_id,
++            job_type=DEFAULT_REQUEUE_JOB_TYPE,
++            reset_pipeline_state=True,
++            settings=_settings,
++        )
++    except DuplicateRecordingJobError as exc:
++        raise HTTPException(
++            status_code=409,
++            detail={
++                "message": "A precheck job is already queued or started for this recording.",
++                "existing_job_id": exc.job_id,
++            },
++        )
++    except RecordingNotFoundError:
++        raise HTTPException(status_code=404, detail="Recording not found")
++    except ValueError as exc:
++        raise HTTPException(status_code=422, detail=str(exc))
++    except Exception as exc:
++        raise HTTPException(status_code=503, detail=f"Queue unavailable: {exc}")
++
++    return {
++        "recording_id": recording_id,
++        "job_id": job.job_id,
++        "job_type": job.job_type,
++        "reprocessed": True,
++        "cleared_artifacts": deleted,
++    }
++
++
+ @app.post("/api/recordings/{recording_id}/actions/quarantine")
+ async def api_quarantine_recording(
+     recording_id: str,
+diff --git a/lan_app/ops.py b/lan_app/ops.py
+index a73932e..6efbab2 100644
+--- a/lan_app/ops.py
++++ b/lan_app/ops.py
+@@ -11,10 +11,20 @@ from .constants import RECORDING_STATUS_QUARANTINE
+ from .db import delete_recording, list_recordings
+ 
+ 
++DEFAULT_FORCE_REPROCESS_KEEP: tuple[str, ...] = (
++    "audio_sanitized.wav",
++    "audio_sanitize.json",
++)
++
++
+ class RecordingDeleteError(RuntimeError):
+     """Raised when recording deletion cannot safely remove disk artifacts."""
+ 
+ 
++class ClearDerivedArtifactsError(RuntimeError):
++    """Raised when derived artifact cleanup cannot safely operate on disk."""
++
++
+ def _parse_utc(value: object) -> datetime | None:
+     if not isinstance(value, str):
+         return None
+@@ -128,6 +138,64 @@ def delete_recording_with_artifacts(
+     return True
+ 
+ 
++def clear_derived_artifacts(
++    recording_id: str,
++    *,
++    settings: AppSettings | None = None,
++    keep: tuple[str, ...] = DEFAULT_FORCE_REPROCESS_KEEP,
++) -> list[str]:
++    """Delete all files/directories inside a recording's ``derived/`` directory.
++
++    Entries whose immediate name matches ``keep`` are preserved. This is the
++    foundation for the "Force Full Reprocess" action: callers use it to strip
++    derived artifacts before re-enqueuing a recording so that the pipeline
++    cannot short-circuit on stale files that still pass existence checks.
++
++    Returns the sorted list of deleted entry names (files and directories).
 +    """
 +
-+    cfg = worker_tasks._build_pipeline_settings(_cfg(tmp_path))  # noqa: SLF001
-+    smoothing_result = SpeakerTurnSmoothingResult(
-+        turns=[{"speaker": "S1", "start": 0.0, "end": 1.0, "text": "hello"}],
-+        adjacent_merges=0,
-+        micro_turn_absorptions=0,
-+        turn_count_before=1,
-+        turn_count_after=1,
-+        speaker_count_before=1,
-+        speaker_count_after=1,
-+    )
-+    runtime = {
-+        "mode": "pyannote",
-+        "effective_hints": {"min_speakers": 2},
-+        "initial_hints": {"min_speakers": 2},
-+        "profile_selection": {},
-+        "used_dummy_fallback": False,
-+    }
-+    speaker_merges = {"S2": "S1"}
-+    speaker_merge_diagnostics = {
-+        "embedding_model_available": True,
-+        "speakers_found": ["S1", "S2"],
-+        "centroids_computed": ["S1", "S2"],
-+        "pairwise_scores": [{"a": "S1", "b": "S2", "score": 0.93}],
-+        "merges_applied": {"S2": "S1"},
-+        "skipped_reason": None,
-+    }
-+    worker_payload = worker_tasks._build_diarization_metadata_payload(  # noqa: SLF001
-+        runtime=runtime,
-+        cfg=cfg,
-+        smoothing_result=smoothing_result,
-+        speaker_merges=speaker_merges,
-+        speaker_merge_diagnostics=speaker_merge_diagnostics,
-+    )
-+    orchestrator_payload = pipeline_orchestrator._build_diarization_metadata_payload(  # noqa: SLF001
-+        runtime=runtime,
-+        cfg=cfg,
-+        smoothing_result=smoothing_result,
-+        used_dummy_fallback=False,
-+        speaker_merges=speaker_merges,
-+        speaker_merge_diagnostics=speaker_merge_diagnostics,
-+    )
-+    assert worker_payload == orchestrator_payload
-+    assert worker_payload["speaker_merges"] == speaker_merges
-+    assert worker_payload["speaker_merge_diagnostics"] == speaker_merge_diagnostics
-+    # Field added by orchestrator is preserved end-to-end.
-+    assert "speaker_merge_diagnostics" in worker_payload
++    cfg = settings or AppSettings()
++    try:
++        recording_root = _recording_root_path(recording_id, cfg)
++    except RecordingDeleteError as exc:
++        raise ClearDerivedArtifactsError(str(exc)) from exc
++    derived = recording_root / "derived"
++    if derived.is_symlink():
++        raise ClearDerivedArtifactsError(
++            "Force reprocess failed: derived path is a symlink."
++        )
++    if not derived.exists():
++        return []
++    if not derived.is_dir():
++        raise ClearDerivedArtifactsError(
++            "Force reprocess failed: derived path is not a directory."
++        )
++
++    keep_set = frozenset(keep)
++    deleted: list[str] = []
++    try:
++        entries = sorted(derived.iterdir(), key=lambda entry: entry.name)
++    except OSError as exc:
++        raise ClearDerivedArtifactsError(
++            f"Force reprocess failed to list derived directory: {exc}"
++        ) from exc
++
++    for entry in entries:
++        if entry.name in keep_set:
++            continue
++        try:
++            if entry.is_symlink() or entry.is_file():
++                entry.unlink()
++            else:
++                shutil.rmtree(entry)
++        except OSError as exc:
++            raise ClearDerivedArtifactsError(
++                f"Force reprocess failed to delete {entry.name}: {exc}"
++            ) from exc
++        deleted.append(entry.name)
++    return deleted
 +
 +
-+def test_orchestrator_diarization_metadata_payload_new_field_survives_worker(
+ def run_retention_cleanup(
+     *,
+     settings: AppSettings | None = None,
+@@ -176,7 +244,10 @@ def run_retention_cleanup(
+ 
+ 
+ __all__ = [
++    "ClearDerivedArtifactsError",
++    "DEFAULT_FORCE_REPROCESS_KEEP",
+     "RecordingDeleteError",
++    "clear_derived_artifacts",
+     "delete_recording_with_artifacts",
+     "run_retention_cleanup",
+ ]
+diff --git a/lan_app/templates/partials/control_center/inspector_action_bar.html b/lan_app/templates/partials/control_center/inspector_action_bar.html
+index 73e3b38..ba4a212 100644
+--- a/lan_app/templates/partials/control_center/inspector_action_bar.html
++++ b/lan_app/templates/partials/control_center/inspector_action_bar.html
+@@ -34,6 +34,16 @@
+     data-pending-label="Requeueing..."
+     onclick="triggerRecordingAction(this)"
+   >Requeue</button>
++  <button
++    type="button"
++    class="px-3 py-1.5 border border-red-200 text-red-700 text-xs font-bold rounded hover:bg-red-50"
++    data-action-url="{{ inspector_action_bar.force_reprocess_url }}"
++    data-return-to="{{ inspector_action_bar.return_to }}"
++    data-confirm-message="This will delete all processed results and re-run the full pipeline. Continue?"
++    data-pending-label="Reprocessing..."
++    data-testid="recording-inspector-force-reprocess-embedded"
++    onclick="triggerRecordingAction(this)"
++  >Force Reprocess</button>
+   <button
+     type="button"
+     class="px-3 py-1.5 border border-slate-200 text-xs font-bold rounded hover:bg-slate-50"
+diff --git a/lan_app/templates/partials/recording_inspector_header.html b/lan_app/templates/partials/recording_inspector_header.html
+index f0153bd..a612400 100644
+--- a/lan_app/templates/partials/recording_inspector_header.html
++++ b/lan_app/templates/partials/recording_inspector_header.html
+@@ -57,6 +57,19 @@
+       <span class="material-symbols-outlined text-lg">replay</span>
+       Requeue
+     </button>
++    <button
++      type="button"
++      class="flex items-center justify-center gap-2 rounded-lg h-10 px-4 bg-white border border-red-200 text-red-700 text-sm font-semibold hover:bg-red-50 transition-colors"
++      data-action-url="{{ _ab.force_reprocess_url }}"
++      data-return-to="{{ _ab.return_to }}"
++      data-confirm-message="This will delete all processed results and re-run the full pipeline. Continue?"
++      data-pending-label="Reprocessing..."
++      data-testid="recording-inspector-force-reprocess"
++      onclick="triggerRecordingAction(this)"
++    >
++      <span class="material-symbols-outlined text-lg">restart_alt</span>
++      Force Reprocess
++    </button>
+     <button
+       type="button"
+       class="flex items-center justify-center gap-2 rounded-lg h-10 px-4 bg-white border border-slate-200 text-slate-700 text-sm font-semibold hover:bg-slate-50 transition-colors"
+diff --git a/lan_app/ui_routes.py b/lan_app/ui_routes.py
+index 55a447c..a07bd3d 100644
+--- a/lan_app/ui_routes.py
++++ b/lan_app/ui_routes.py
+@@ -85,6 +85,7 @@ from .db import (
+     get_glossary_entry,
+     delete_project,
+     delete_voice_profile,
++    find_active_job_for_recording,
+     finish_job_if_queued,
+     get_calendar_match,
+     get_meeting_metrics,
+@@ -121,7 +122,12 @@ from .jobs import (
+     enqueue_recording_job,
+     purge_pending_recording_jobs,
+ )
+-from .ops import RecordingDeleteError, delete_recording_with_artifacts
++from .ops import (
++    ClearDerivedArtifactsError,
++    RecordingDeleteError,
++    clear_derived_artifacts,
++    delete_recording_with_artifacts,
++)
+ from .pipeline_stages import PIPELINE_STAGE_DONE_STATUSES, stage_order
+ from .routing import refresh_recording_routing, train_routing_from_manual_selection
+ from .speaker_bank import DEFAULT_ASSIGNMENT_THRESHOLD, merge_canonical_speakers
+@@ -4441,6 +4447,9 @@ def _inspector_action_bar_context(
+         "open_full_page_href": _recording_detail_path(recording_id, tab=current_tab),
+         "download_zip_href": f"/ui/recordings/{quote(recording_id, safe='')}/export.zip",
+         "requeue_url": f"/ui/recordings/{quote(recording_id, safe='')}/requeue{return_query}",
++        "force_reprocess_url": (
++            f"/ui/recordings/{quote(recording_id, safe='')}/force-reprocess{return_query}"
++        ),
+         "quarantine_url": (
+             f"/ui/recordings/{quote(recording_id, safe='')}/quarantine{return_query}"
+         ),
+@@ -7073,6 +7082,47 @@ async def ui_action_requeue(
+     )
+ 
+ 
++@ui_router.post("/ui/recordings/{recording_id}/force-reprocess")
++async def ui_action_force_reprocess(
++    recording_id: str,
++    return_to: str = Query(default=""),
++) -> Any:
++    if get_recording(recording_id, settings=_settings) is None:
++        return HTMLResponse("Not found", status_code=404)
++    existing = find_active_job_for_recording(
++        recording_id,
++        job_type=DEFAULT_REQUEUE_JOB_TYPE,
++        settings=_settings,
++    )
++    if existing is not None:
++        existing_job_id = str(existing.get("id") or "").strip()
++        return HTMLResponse(
++            f"Force reprocess skipped: precheck job already active ({existing_job_id}).",
++            status_code=409,
++        )
++    try:
++        clear_derived_artifacts(recording_id, settings=_settings)
++    except ClearDerivedArtifactsError as exc:
++        return HTMLResponse(f"Force reprocess failed: {exc}", status_code=500)
++    try:
++        enqueue_recording_job(
++            recording_id,
++            reset_pipeline_state=True,
++            settings=_settings,
++        )
++    except DuplicateRecordingJobError as exc:
++        return HTMLResponse(
++            f"Force reprocess skipped: precheck job already active ({exc.job_id}).",
++            status_code=409,
++        )
++    except Exception as exc:
++        return HTMLResponse(f"Force reprocess failed: {exc}", status_code=503)
++    return _ui_recording_action_response(
++        return_to=return_to,
++        redirect_to=f"/recordings/{recording_id}",
++    )
++
++
+ @ui_router.post("/ui/recordings/{recording_id}/jobs/{job_id}/retry")
+ async def ui_action_retry_failed_step(
+     recording_id: str,
+diff --git a/tasks/QUEUE.md b/tasks/QUEUE.md
+index a32c5ce..a61594b 100644
+--- a/tasks/QUEUE.md
++++ b/tasks/QUEUE.md
+@@ -721,6 +721,6 @@ Queue (in order)
+ - Depends on: PR-SPEAKER-MERGE-TORCH-LOAD-FIX-01
+ 
+ 144) PR-FORCE-REPROCESS-01: Add Force Full Reprocess button that clears derived artifacts and re-runs pipeline from scratch
+-- Status: TODO
++- Status: DONE
+ - Tasks file: tasks/PR-FORCE-REPROCESS-01.md
+ - Depends on: PR-ARTIFACT-SINGLE-WRITER-01
+diff --git a/tests/test_cov_lan_app_api.py b/tests/test_cov_lan_app_api.py
+index a54d2bc..94e901b 100644
+--- a/tests/test_cov_lan_app_api.py
++++ b/tests/test_cov_lan_app_api.py
+@@ -346,6 +346,125 @@ def test_api_requeue_maps_enqueue_errors(
+     assert response.json()["detail"] == detail_text
+ 
+ 
++def test_api_force_reprocess_missing_recording_returns_404(
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    monkeypatch.setattr(api, "get_recording", lambda *_args, **_kwargs: None)
++    client = TestClient(api.app)
++
++    response = client.post("/api/recordings/missing/actions/force-reprocess")
++    assert response.status_code == 404
++    assert response.json()["detail"] == "Recording not found"
++
++
++def test_api_force_reprocess_returns_409_when_job_active(
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    monkeypatch.setattr(api, "get_recording", lambda *_args, **_kwargs: {"id": "rec-1"})
++    monkeypatch.setattr(
++        api,
++        "find_active_job_for_recording",
++        lambda *_args, **_kwargs: {"id": "existing-job-xyz"},
++    )
++
++    def _unexpected_clear(*_args: Any, **_kwargs: Any) -> list[str]:
++        raise AssertionError("clear_derived_artifacts must not run when job is active")
++
++    monkeypatch.setattr(api, "clear_derived_artifacts", _unexpected_clear)
++    client = TestClient(api.app)
++
++    response = client.post("/api/recordings/rec-1/actions/force-reprocess")
++    assert response.status_code == 409
++    detail = response.json()["detail"]
++    assert detail["existing_job_id"] == "existing-job-xyz"
++    assert "already queued or started" in detail["message"].lower()
++
++
++def test_api_force_reprocess_maps_clear_errors_to_500(
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    from lan_app.ops import ClearDerivedArtifactsError
++
++    monkeypatch.setattr(api, "get_recording", lambda *_args, **_kwargs: {"id": "rec-1"})
++    monkeypatch.setattr(
++        api,
++        "find_active_job_for_recording",
++        lambda *_args, **_kwargs: None,
++    )
++
++    def _raise_clear(*_args: Any, **_kwargs: Any) -> list[str]:
++        raise ClearDerivedArtifactsError("permission denied")
++
++    monkeypatch.setattr(api, "clear_derived_artifacts", _raise_clear)
++    client = TestClient(api.app)
++
++    response = client.post("/api/recordings/rec-1/actions/force-reprocess")
++    assert response.status_code == 500
++    assert response.json()["detail"] == "permission denied"
++
++
++def test_api_force_reprocess_duplicate_job_race_returns_409(
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    from lan_app.jobs import DuplicateRecordingJobError
++
++    monkeypatch.setattr(api, "get_recording", lambda *_args, **_kwargs: {"id": "rec-1"})
++    monkeypatch.setattr(
++        api,
++        "find_active_job_for_recording",
++        lambda *_args, **_kwargs: None,
++    )
++    monkeypatch.setattr(api, "clear_derived_artifacts", lambda *_a, **_kw: [])
++
++    def _raise_dupe(*_args: Any, **_kwargs: Any) -> Any:
++        raise DuplicateRecordingJobError(
++            recording_id="rec-1",
++            job_id="race-job-xyz",
++        )
++
++    monkeypatch.setattr(api, "enqueue_recording_job", _raise_dupe)
++    client = TestClient(api.app)
++
++    response = client.post("/api/recordings/rec-1/actions/force-reprocess")
++    assert response.status_code == 409
++    detail = response.json()["detail"]
++    assert detail["existing_job_id"] == "race-job-xyz"
++    assert "already queued or started" in detail["message"].lower()
++
++
++@pytest.mark.parametrize(
++    ("raised", "status_code", "detail_text"),
++    [
++        (RecordingNotFoundError("not found"), 404, "Recording not found"),
++        (ValueError("bad requeue"), 422, "bad requeue"),
++        (RuntimeError("rq down"), 503, "Queue unavailable: rq down"),
++    ],
++)
++def test_api_force_reprocess_maps_enqueue_errors(
++    raised: Exception,
++    status_code: int,
++    detail_text: str,
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    monkeypatch.setattr(api, "get_recording", lambda *_args, **_kwargs: {"id": "rec-1"})
++    monkeypatch.setattr(
++        api,
++        "find_active_job_for_recording",
++        lambda *_args, **_kwargs: None,
++    )
++    monkeypatch.setattr(api, "clear_derived_artifacts", lambda *_a, **_kw: [])
++
++    def _raise(*_args: Any, **_kwargs: Any) -> Any:
++        raise raised
++
++    monkeypatch.setattr(api, "enqueue_recording_job", _raise)
++    client = TestClient(api.app)
++
++    response = client.post("/api/recordings/rec-1/actions/force-reprocess")
++    assert response.status_code == status_code
++    assert response.json()["detail"] == detail_text
++
++
+ def test_api_quarantine_missing_recording_returns_404(monkeypatch: pytest.MonkeyPatch) -> None:
+     monkeypatch.setattr(api, "get_recording", lambda *_args, **_kwargs: None)
+     client = TestClient(api.app)
+diff --git a/tests/test_db_queue.py b/tests/test_db_queue.py
+index 4c2f9b0..2b38b13 100644
+--- a/tests/test_db_queue.py
++++ b/tests/test_db_queue.py
+@@ -1178,6 +1178,109 @@ def test_api_requeue_dedupes_active_precheck_job(tmp_path: Path, monkeypatch):
+     assert "already queued or started" in detail["message"].lower()
+ 
+ 
++def test_api_force_reprocess_clears_derived_and_enqueues(tmp_path: Path, monkeypatch):
++    cfg = _test_settings(tmp_path)
++    monkeypatch.setattr(api, "_settings", cfg)
++    init_db(cfg)
++    create_recording(
++        "rec-force-api-1",
++        source="test",
++        source_filename="force.mp3",
++        status=RECORDING_STATUS_READY,
++        settings=cfg,
++    )
++    derived = cfg.recordings_root / "rec-force-api-1" / "derived"
++    derived.mkdir(parents=True, exist_ok=True)
++    (derived / "audio_sanitized.wav").write_bytes(b"\x00")
++    (derived / "audio_sanitize.json").write_text("{}", encoding="utf-8")
++    (derived / "summary.json").write_text("{}", encoding="utf-8")
++    (derived / "transcript.txt").write_text("old", encoding="utf-8")
++    snippets = derived / "snippets"
++    snippets.mkdir(parents=True, exist_ok=True)
++    (snippets / "snippet.wav").write_bytes(b"\x00")
++
++    class _FakeQueue:
++        def enqueue(self, *_args, **_kwargs):
++            return None
++
++    monkeypatch.setattr("lan_app.jobs.get_queue", lambda _cfg: _FakeQueue())
++
++    client = TestClient(api.app)
++    response = client.post("/api/recordings/rec-force-api-1/actions/force-reprocess")
++    assert response.status_code == 200
++    payload = response.json()
++    assert payload["recording_id"] == "rec-force-api-1"
++    assert payload["reprocessed"] is True
++    assert payload["job_type"] == JOB_TYPE_PRECHECK
++    assert payload["job_id"]
++    cleared = payload["cleared_artifacts"]
++    assert "summary.json" in cleared
++    assert "transcript.txt" in cleared
++    assert "snippets" in cleared
++    assert "audio_sanitized.wav" not in cleared
++    assert "audio_sanitize.json" not in cleared
++
++    assert (derived / "audio_sanitized.wav").exists()
++    assert (derived / "audio_sanitize.json").exists()
++    assert not (derived / "summary.json").exists()
++    assert not (derived / "transcript.txt").exists()
++    assert not (derived / "snippets").exists()
++
++    rec_after = get_recording("rec-force-api-1", settings=cfg)
++    assert rec_after is not None
++    assert rec_after["status"] == RECORDING_STATUS_QUEUED
++
++    jobs_after, _total = list_jobs(
++        settings=cfg,
++        recording_id="rec-force-api-1",
++    )
++    assert any(row["id"] == payload["job_id"] for row in jobs_after)
++
++
++def test_api_force_reprocess_returns_404_for_unknown_recording(tmp_path: Path, monkeypatch):
++    cfg = _test_settings(tmp_path)
++    monkeypatch.setattr(api, "_settings", cfg)
++    init_db(cfg)
++
++    client = TestClient(api.app)
++    response = client.post("/api/recordings/unknown/actions/force-reprocess")
++    assert response.status_code == 404
++    assert response.json()["detail"] == "Recording not found"
++
++
++def test_api_force_reprocess_returns_409_when_job_active(tmp_path: Path, monkeypatch):
++    cfg = _test_settings(tmp_path)
++    monkeypatch.setattr(api, "_settings", cfg)
++    init_db(cfg)
++    create_recording(
++        "rec-force-api-2",
++        source="test",
++        source_filename="force-active.mp3",
++        status=RECORDING_STATUS_QUEUED,
++        settings=cfg,
++    )
++    create_job(
++        "existing-force-job",
++        recording_id="rec-force-api-2",
++        job_type=JOB_TYPE_PRECHECK,
++        status=JOB_STATUS_QUEUED,
++        settings=cfg,
++    )
++    derived = cfg.recordings_root / "rec-force-api-2" / "derived"
++    derived.mkdir(parents=True, exist_ok=True)
++    guarded_summary = derived / "summary.json"
++    guarded_summary.write_text("{}", encoding="utf-8")
++
++    client = TestClient(api.app)
++    response = client.post("/api/recordings/rec-force-api-2/actions/force-reprocess")
++    assert response.status_code == 409
++    detail = response.json()["detail"]
++    assert detail["existing_job_id"] == "existing-force-job"
++    assert "already queued or started" in detail["message"].lower()
++    # Derived artifacts must not be touched when a job is already active.
++    assert guarded_summary.exists()
++
++
+ def test_api_alias_requires_auth_when_token_enabled(tmp_path: Path, monkeypatch):
+     cfg = _test_settings(tmp_path)
+     cfg.api_bearer_token = "alias-secret"
+diff --git a/tests/test_ops.py b/tests/test_ops.py
+index 11e7eda..a1299c8 100644
+--- a/tests/test_ops.py
++++ b/tests/test_ops.py
+@@ -15,7 +15,9 @@ from lan_app.constants import RECORDING_STATUS_QUARANTINE
+ from lan_app.db import connect, create_recording, get_recording, init_db
+ from lan_app import healthchecks
+ from lan_app.ops import (
++    ClearDerivedArtifactsError,
+     RecordingDeleteError,
++    clear_derived_artifacts,
+     delete_recording_with_artifacts,
+     run_retention_cleanup,
+ )
+@@ -264,6 +266,148 @@ def test_delete_recording_with_artifacts_raises_on_disk_cleanup_failure(
+     assert raw_dir.exists()
+ 
+ 
++def _populate_derived_artifacts(derived: Path) -> None:
++    derived.mkdir(parents=True, exist_ok=True)
++    (derived / "audio_sanitized.wav").write_bytes(b"\x00\x01")
++    (derived / "audio_sanitize.json").write_text("{}", encoding="utf-8")
++    (derived / "precheck.json").write_text("{}", encoding="utf-8")
++    (derived / "summary.json").write_text("{}", encoding="utf-8")
++    (derived / "transcript.txt").write_text("hello", encoding="utf-8")
++    snippets = derived / "snippets"
++    snippets.mkdir(parents=True, exist_ok=True)
++    (snippets / "snippet-001.wav").write_bytes(b"\x00")
++    nested = snippets / "nested"
++    nested.mkdir(parents=True, exist_ok=True)
++    (nested / "leaf.json").write_text("{}", encoding="utf-8")
++
++
++def test_clear_derived_artifacts_preserves_sanitized_audio(tmp_path: Path) -> None:
++    cfg = _cfg(tmp_path)
++    derived = cfg.recordings_root / "rec-force-1" / "derived"
++    _populate_derived_artifacts(derived)
++
++    deleted = clear_derived_artifacts("rec-force-1", settings=cfg)
++
++    assert "audio_sanitized.wav" not in deleted
++    assert "audio_sanitize.json" not in deleted
++    assert "precheck.json" in deleted
++    assert "summary.json" in deleted
++    assert "transcript.txt" in deleted
++    assert "snippets" in deleted
++    assert deleted == sorted(deleted)
++    assert (derived / "audio_sanitized.wav").exists()
++    assert (derived / "audio_sanitize.json").exists()
++    assert not (derived / "precheck.json").exists()
++    assert not (derived / "summary.json").exists()
++    assert not (derived / "transcript.txt").exists()
++    assert not (derived / "snippets").exists()
++
++
++def test_clear_derived_artifacts_noop_when_derived_missing(tmp_path: Path) -> None:
++    cfg = _cfg(tmp_path)
++    (cfg.recordings_root / "rec-force-empty" / "raw").mkdir(parents=True, exist_ok=True)
++
++    deleted = clear_derived_artifacts("rec-force-empty", settings=cfg)
++    assert deleted == []
++
++
++def test_clear_derived_artifacts_rejects_invalid_id(tmp_path: Path) -> None:
++    cfg = _cfg(tmp_path)
++    with pytest.raises(ClearDerivedArtifactsError, match="recording id is required"):
++        clear_derived_artifacts("", settings=cfg)
++    with pytest.raises(ClearDerivedArtifactsError, match="invalid recording id"):
++        clear_derived_artifacts("..", settings=cfg)
++    with pytest.raises(ClearDerivedArtifactsError, match="invalid recording id"):
++        clear_derived_artifacts("../escape", settings=cfg)
++
++
++def test_clear_derived_artifacts_rejects_symlinked_derived_dir(tmp_path: Path) -> None:
++    cfg = _cfg(tmp_path)
++    recording_root = cfg.recordings_root / "rec-force-symlink"
++    recording_root.mkdir(parents=True, exist_ok=True)
++    target = tmp_path / "outside_derived"
++    target.mkdir(parents=True, exist_ok=True)
++    (target / "precheck.json").write_text("{}", encoding="utf-8")
++    (recording_root / "derived").symlink_to(target, target_is_directory=True)
++
++    with pytest.raises(ClearDerivedArtifactsError, match="symlink"):
++        clear_derived_artifacts("rec-force-symlink", settings=cfg)
++
++    assert (target / "precheck.json").exists()
++
++
++def test_clear_derived_artifacts_rejects_derived_as_file(tmp_path: Path) -> None:
++    cfg = _cfg(tmp_path)
++    recording_root = cfg.recordings_root / "rec-force-file"
++    recording_root.mkdir(parents=True, exist_ok=True)
++    (recording_root / "derived").write_text("not-a-directory", encoding="utf-8")
++
++    with pytest.raises(ClearDerivedArtifactsError, match="not a directory"):
++        clear_derived_artifacts("rec-force-file", settings=cfg)
++
++
++def test_clear_derived_artifacts_wraps_iterdir_errors(
 +    tmp_path: Path,
 +    monkeypatch: pytest.MonkeyPatch,
 +) -> None:
-+    """Simulate the PR-140 scenario: a new field added to the orchestrator's
-+    shared builder must survive the full worker_tasks write path.
++    cfg = _cfg(tmp_path)
++    derived = cfg.recordings_root / "rec-force-iterdir" / "derived"
++    derived.mkdir(parents=True, exist_ok=True)
++    (derived / "precheck.json").write_text("{}", encoding="utf-8")
 +
-+    We monkeypatch the shared orchestrator builder to add an extra key and
-+    then call the worker delegate; the key must be present on the returned
-+    payload, proving the worker never rebuilds the payload independently.
-+    """
++    real_iterdir = Path.iterdir
 +
-+    cfg = worker_tasks._build_pipeline_settings(_cfg(tmp_path))  # noqa: SLF001
-+    smoothing_result = SpeakerTurnSmoothingResult(
-+        turns=[],
-+        adjacent_merges=0,
-+        micro_turn_absorptions=0,
-+        turn_count_before=0,
-+        turn_count_after=0,
-+        speaker_count_before=0,
-+        speaker_count_after=0,
++    def _failing_iterdir(self: Path):  # type: ignore[override]
++        if self == derived:
++            raise OSError("iterdir denied")
++        return real_iterdir(self)
++
++    monkeypatch.setattr(Path, "iterdir", _failing_iterdir)
++
++    with pytest.raises(ClearDerivedArtifactsError, match="list derived directory"):
++        clear_derived_artifacts("rec-force-iterdir", settings=cfg)
++
++
++def test_clear_derived_artifacts_wraps_delete_errors(
++    tmp_path: Path,
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    cfg = _cfg(tmp_path)
++    derived = cfg.recordings_root / "rec-force-unlink" / "derived"
++    derived.mkdir(parents=True, exist_ok=True)
++    target = derived / "precheck.json"
++    target.write_text("{}", encoding="utf-8")
++
++    real_unlink = Path.unlink
++
++    def _failing_unlink(self: Path, *args, **kwargs):  # type: ignore[override]
++        if self == target:
++            raise OSError("unlink denied")
++        return real_unlink(self, *args, **kwargs)
++
++    monkeypatch.setattr(Path, "unlink", _failing_unlink)
++
++    with pytest.raises(ClearDerivedArtifactsError, match="precheck.json"):
++        clear_derived_artifacts("rec-force-unlink", settings=cfg)
++
++
++def test_clear_derived_artifacts_accepts_custom_keep(tmp_path: Path) -> None:
++    cfg = _cfg(tmp_path)
++    derived = cfg.recordings_root / "rec-force-keep" / "derived"
++    _populate_derived_artifacts(derived)
++
++    deleted = clear_derived_artifacts(
++        "rec-force-keep",
++        settings=cfg,
++        keep=("precheck.json",),
 +    )
-+    original_builder = pipeline_orchestrator._build_diarization_metadata_payload  # noqa: SLF001
-+
-+    def _augmented_builder(**kwargs):
-+        payload = original_builder(**kwargs)
-+        payload["pr140_simulated_new_field"] = "present"
-+        return payload
-+
-+    monkeypatch.setattr(
-+        pipeline_orchestrator,
-+        "_build_diarization_metadata_payload",
-+        _augmented_builder,
-+    )
-+
-+    payload = worker_tasks._build_diarization_metadata_payload(  # noqa: SLF001
-+        runtime={"mode": "pyannote"},
-+        cfg=cfg,
-+        smoothing_result=smoothing_result,
-+    )
-+    assert payload["pr140_simulated_new_field"] == "present"
++    assert "precheck.json" not in deleted
++    assert "audio_sanitized.wav" in deleted
++    assert "audio_sanitize.json" in deleted
++    assert (derived / "precheck.json").exists()
++    assert not (derived / "audio_sanitized.wav").exists()
 +
 +
-+def test_finalize_transcript_payload_merges_speaker_lines_and_review() -> None:
-+    base = {
-+        "recording_id": "rec-1",
-+        "segments": [],
-+        "speakers": ["S1"],
-+        "text": "hello",
+ def test_healthz_component_endpoints(tmp_path: Path, monkeypatch):
+     cfg = _cfg(tmp_path)
+     monkeypatch.setattr(api, "_settings", cfg)
+diff --git a/tests/test_ui_routes.py b/tests/test_ui_routes.py
+index 30fb438..1b3f01c 100644
+--- a/tests/test_ui_routes.py
++++ b/tests/test_ui_routes.py
+@@ -4287,6 +4287,153 @@ def test_ui_action_requeue_failure_returns_503(tmp_path, monkeypatch):
+     assert "redis down" in r.text
+ 
+ 
++def test_ui_action_force_reprocess_clears_derived_and_enqueues(tmp_path, monkeypatch):
++    cfg = _cfg(tmp_path)
++    monkeypatch.setattr(api, "_settings", cfg)
++    monkeypatch.setattr(ui_routes, "_settings", cfg)
++    init_db(cfg)
++    create_recording("rec-force-ui-1", source="drive", source_filename="f.mp3", settings=cfg)
++    derived = cfg.recordings_root / "rec-force-ui-1" / "derived"
++    derived.mkdir(parents=True, exist_ok=True)
++    (derived / "audio_sanitized.wav").write_bytes(b"\x00")
++    (derived / "audio_sanitize.json").write_text("{}", encoding="utf-8")
++    (derived / "summary.json").write_text("{}", encoding="utf-8")
++
++    observed: dict[str, object] = {}
++
++    def _fake_enqueue(
++        recording_id: str,
++        *,
++        settings=None,
++        job_type=JOB_TYPE_PRECHECK,
++        reset_pipeline_state: bool = False,
++    ):
++        observed["recording_id"] = recording_id
++        observed["job_type"] = job_type
++        observed["reset_pipeline_state"] = reset_pipeline_state
++        return None
++
++    monkeypatch.setattr(ui_routes, "enqueue_recording_job", _fake_enqueue)
++    c = TestClient(api.app, follow_redirects=False)
++    r = c.post("/ui/recordings/rec-force-ui-1/force-reprocess")
++    assert r.status_code in (200, 307, 302)
++    assert observed == {
++        "recording_id": "rec-force-ui-1",
++        "job_type": JOB_TYPE_PRECHECK,
++        "reset_pipeline_state": True,
 +    }
-+    finalized = pipeline_orchestrator._finalize_transcript_payload(  # noqa: SLF001
-+        base,
-+        speaker_lines=["[0.00-1.00] **S1:** hello"],
-+        asr_execution={"used_multilingual_path": False, "selected_mode": "mono"},
-+        review={"required": True, "reason_code": "low_confidence"},
-+    )
-+    assert finalized is base  # finalization mutates in place and returns the same dict
-+    assert finalized["speaker_lines"] == ["[0.00-1.00] **S1:** hello"]
-+    assert finalized["multilingual_asr"] == {
-+        "used_multilingual_path": False,
-+        "selected_mode": "mono",
-+    }
-+    assert finalized["review"] == {"required": True, "reason_code": "low_confidence"}
-+    # Empty/None asr execution and review collapse to empty dicts.
-+    finalized = pipeline_orchestrator._finalize_transcript_payload(  # noqa: SLF001
-+        {"recording_id": "rec-2"},
-+        speaker_lines=[],
-+        asr_execution=None,  # type: ignore[arg-type]
-+        review=None,  # type: ignore[arg-type]
-+    )
-+    assert finalized["speaker_lines"] == []
-+    assert finalized["multilingual_asr"] == {}
-+    assert finalized["review"] == {}
++    assert (derived / "audio_sanitized.wav").exists()
++    assert (derived / "audio_sanitize.json").exists()
++    assert not (derived / "summary.json").exists()
 +
 +
- def test_stage_precheck_with_missing_duration_and_calendar_refresh_warning(
-     tmp_path: Path,
-     monkeypatch: pytest.MonkeyPatch,
++def test_ui_action_force_reprocess_not_found(client):
++    r = client.post("/ui/recordings/no-such-rec/force-reprocess")
++    assert r.status_code == 404
++
++
++def test_ui_action_force_reprocess_clear_failure_returns_500(tmp_path, monkeypatch):
++    cfg = _cfg(tmp_path)
++    monkeypatch.setattr(api, "_settings", cfg)
++    monkeypatch.setattr(ui_routes, "_settings", cfg)
++    init_db(cfg)
++    create_recording("rec-force-ui-clr", source="drive", source_filename="x.mp3", settings=cfg)
++
++    from lan_app.ops import ClearDerivedArtifactsError
++
++    def _raise_clear(*_args, **_kwargs):
++        raise ClearDerivedArtifactsError("disk busy")
++
++    monkeypatch.setattr(ui_routes, "clear_derived_artifacts", _raise_clear)
++
++    def _unexpected_enqueue(*_args, **_kwargs):
++        raise AssertionError("enqueue must not run when clear fails")
++
++    monkeypatch.setattr(ui_routes, "enqueue_recording_job", _unexpected_enqueue)
++
++    c = TestClient(api.app, follow_redirects=False)
++    r = c.post("/ui/recordings/rec-force-ui-clr/force-reprocess")
++    assert r.status_code == 500
++    assert "disk busy" in r.text
++
++
++def test_ui_action_force_reprocess_duplicate_job_race_returns_409(tmp_path, monkeypatch):
++    cfg = _cfg(tmp_path)
++    monkeypatch.setattr(api, "_settings", cfg)
++    monkeypatch.setattr(ui_routes, "_settings", cfg)
++    init_db(cfg)
++    create_recording("rec-force-ui-race", source="drive", source_filename="r.mp3", settings=cfg)
++
++    monkeypatch.setattr(ui_routes, "clear_derived_artifacts", lambda *_a, **_kw: [])
++
++    from lan_app.jobs import DuplicateRecordingJobError
++
++    def _raise_dupe(*_args, **_kwargs):
++        raise DuplicateRecordingJobError(
++            recording_id="rec-force-ui-race",
++            job_id="race-job-ui",
++        )
++
++    monkeypatch.setattr(ui_routes, "enqueue_recording_job", _raise_dupe)
++
++    c = TestClient(api.app, follow_redirects=False)
++    r = c.post("/ui/recordings/rec-force-ui-race/force-reprocess")
++    assert r.status_code == 409
++    assert "race-job-ui" in r.text
++
++
++def test_ui_action_force_reprocess_enqueue_failure_returns_503(tmp_path, monkeypatch):
++    cfg = _cfg(tmp_path)
++    monkeypatch.setattr(api, "_settings", cfg)
++    monkeypatch.setattr(ui_routes, "_settings", cfg)
++    init_db(cfg)
++    create_recording("rec-force-ui-503", source="drive", source_filename="q.mp3", settings=cfg)
++
++    monkeypatch.setattr(ui_routes, "clear_derived_artifacts", lambda *_a, **_kw: [])
++
++    def _fail_enqueue(*_args, **_kwargs):
++        raise RuntimeError("redis down")
++
++    monkeypatch.setattr(ui_routes, "enqueue_recording_job", _fail_enqueue)
++
++    c = TestClient(api.app, follow_redirects=False)
++    r = c.post("/ui/recordings/rec-force-ui-503/force-reprocess")
++    assert r.status_code == 503
++    assert "redis down" in r.text
++
++
++def test_ui_action_force_reprocess_returns_409_when_job_active(tmp_path, monkeypatch):
++    cfg = _cfg(tmp_path)
++    monkeypatch.setattr(api, "_settings", cfg)
++    monkeypatch.setattr(ui_routes, "_settings", cfg)
++    init_db(cfg)
++    create_recording(
++        "rec-force-ui-409", source="drive", source_filename="busy.mp3", settings=cfg
++    )
++    create_job(
++        "force-active-job",
++        recording_id="rec-force-ui-409",
++        job_type=JOB_TYPE_PRECHECK,
++        status=JOB_STATUS_QUEUED,
++        settings=cfg,
++    )
++    derived = cfg.recordings_root / "rec-force-ui-409" / "derived"
++    derived.mkdir(parents=True, exist_ok=True)
++    guarded = derived / "summary.json"
++    guarded.write_text("{}", encoding="utf-8")
++
++    def _unexpected_enqueue(*_args, **_kwargs):
++        raise AssertionError("enqueue must not run when job is active")
++
++    monkeypatch.setattr(ui_routes, "enqueue_recording_job", _unexpected_enqueue)
++
++    c = TestClient(api.app, follow_redirects=False)
++    r = c.post("/ui/recordings/rec-force-ui-409/force-reprocess")
++    assert r.status_code == 409
++    assert "force-active-job" in r.text
++    assert guarded.exists()
++
++
+ def test_ui_action_retry_failed_step(tmp_path, monkeypatch):
+     cfg = _cfg(tmp_path)
+     monkeypatch.setattr(api, "_settings", cfg)
