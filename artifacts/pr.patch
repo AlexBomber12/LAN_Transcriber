@@ -1,324 +1,377 @@
-diff --git a/lan_app/worker_tasks.py b/lan_app/worker_tasks.py
-index 039ad79..743c282 100644
---- a/lan_app/worker_tasks.py
-+++ b/lan_app/worker_tasks.py
-@@ -59,6 +59,7 @@ from lan_transcriber.pipeline_steps.snippets import (
-     export_speaker_snippets,
-     write_empty_snippets_manifest,
+diff --git a/lan_transcriber/pipeline_steps/orchestrator.py b/lan_transcriber/pipeline_steps/orchestrator.py
+index 83d214a..71f79f2 100644
+--- a/lan_transcriber/pipeline_steps/orchestrator.py
++++ b/lan_transcriber/pipeline_steps/orchestrator.py
+@@ -45,7 +45,10 @@ from ..metrics import error_rate_total, p95_latency_seconds
+ from ..models import SpeakerSegment, TranscriptResult
+ from ..native_fixups import ensure_ctranslate2_no_execstack
+ from ..torch_safe_globals import (
++    diarization_safe_globals_for_torch_load,
++    import_trusted_diarization_symbol,
+     omegaconf_safe_globals_for_torch_load,
++    unsupported_global_diarization_fqn_from_error,
+     unsupported_global_omegaconf_fqn_from_error,
  )
-+from lan_transcriber.pipeline_steps.speaker_merge import merge_similar_speakers
- from lan_transcriber.pipeline_steps.speaker_turns import (
-     _diarization_segments,
-     build_speaker_turns,
-@@ -2176,15 +2177,92 @@ def _execute_diarization_workflow(
-     diarization_runtime = pipeline_orchestrator._diariser_runtime_metadata(diariser)
-     diarization_runtime["used_dummy_fallback"] = used_dummy_fallback
-     diarization_runtime["mode"] = pipeline_orchestrator._diariser_mode(diariser)
-+    (
-+        diarization_segments,
-+        speaker_merge_map,
-+        speaker_merge_diagnostics,
-+    ) = _apply_speaker_merge_step(
-+        diarization_segments=diarization_segments,
-+        diariser=diariser,
-+        used_dummy_fallback=used_dummy_fallback,
-+        pipeline_settings=pipeline_settings,
-+        working_audio_path=working_audio_path,
-+        step_log_callback=step_log_callback,
-+    )
-     return {
-         "diarization_segments": diarization_segments,
-         "diarization_runtime": diarization_runtime,
-         "used_dummy_fallback": used_dummy_fallback,
-         "diarization_mode": diarization_mode,
-         "diarization_reason": diarization_reason,
-+        "speaker_merge_map": speaker_merge_map,
-+        "speaker_merge_diagnostics": speaker_merge_diagnostics,
-     }
+ from .language import analyse_languages, resolve_target_summary_language, segment_language
+@@ -944,10 +947,19 @@ def _diariser_pipeline_model(diariser: Diariser) -> Any | None:
  
  
-+def _apply_speaker_merge_step(
-+    *,
-+    diarization_segments: list[dict[str, Any]],
-+    diariser: Any,
-+    used_dummy_fallback: bool,
-+    pipeline_settings: PipelineSettings,
-+    working_audio_path: Path,
-+    step_log_callback: Any,
-+) -> tuple[list[dict[str, Any]], dict[str, str], dict[str, Any]]:
-+    speaker_merge_map: dict[str, str] = {}
-+    speaker_merge_diagnostics: dict[str, Any] = {
-+        "embedding_model_available": False,
-+        "speakers_found": [],
-+        "centroids_computed": [],
-+        "pairwise_scores": [],
-+        "merges_applied": {},
-+        "skipped_reason": None,
-+    }
-+    diariser_mode_value = pipeline_orchestrator._diariser_mode(diariser)
-+    if not pipeline_settings.speaker_merge_enabled:
-+        speaker_merge_diagnostics["skipped_reason"] = "disabled_by_config"
-+    elif used_dummy_fallback:
-+        speaker_merge_diagnostics["skipped_reason"] = "dummy_fallback"
-+    elif diariser_mode_value != "pyannote":
-+        speaker_merge_diagnostics["skipped_reason"] = "non_pyannote_diariser"
-+    elif len({str(row.get("speaker") or "") for row in diarization_segments}) < 2:
-+        speaker_merge_diagnostics["skipped_reason"] = "single_speaker"
-+    else:
-+        embedding_model = pipeline_orchestrator._resolve_pyannote_embedding_model(diariser)
-+        if embedding_model is None:
-+            speaker_merge_diagnostics["skipped_reason"] = "embedding_model_unavailable"
-+            _best_effort_step_log_callback(
-+                step_log_callback,
-+                "speaker_merge skipped: embedding model unavailable",
-+            )
-+        else:
-+            (
-+                diarization_segments,
-+                speaker_merge_map,
-+                merge_run_diagnostics,
-+            ) = merge_similar_speakers(
-+                diarization_segments,
-+                audio_path=working_audio_path,
-+                embedding_model=embedding_model,
-+                similarity_threshold=pipeline_settings.speaker_merge_similarity_threshold,
-+                max_segments_per_speaker=pipeline_settings.speaker_merge_max_segments,
-+            )
-+            speaker_merge_diagnostics.update(merge_run_diagnostics)
-+            speaker_merge_diagnostics["skipped_reason"] = None
-+            if speaker_merge_map:
-+                _best_effort_step_log_callback(
-+                    step_log_callback,
-+                    (
-+                        "speaker_merge applied merges="
-+                        + ",".join(
-+                            f"{src}->{dst}"
-+                            for src, dst in sorted(speaker_merge_map.items())
-+                        )
-+                    ),
-+                )
-+    return diarization_segments, speaker_merge_map, speaker_merge_diagnostics
+ _DEFAULT_SPEAKER_EMBEDDING_MODEL = "pyannote/wespeaker-voxceleb-resnet34-LM"
++_SPEAKER_EMBEDDING_SAFE_GLOBAL_ATTEMPTS = 3
+ 
+ 
+-def _build_pyannote_inference(model_or_name: Any) -> Any | None:
+-    """Construct a pyannote ``Inference`` wrapper, returning ``None`` on failure."""
++def _build_pyannote_inference(
++    model_or_name: Any, *, device: str | None = None
++) -> Any | None:
++    """Construct a pyannote ``Inference`` wrapper, returning ``None`` on failure.
 +
-+
- def _run_default_diarization_child_operation(payload: dict[str, Any]) -> dict[str, Any]:
-     pipeline_settings = _pipeline_settings_from_payload(payload["pipeline_settings"])
-     precheck_result = PrecheckResult(
-@@ -2493,6 +2571,8 @@ def _build_diarization_metadata_payload(
-     runtime: dict[str, Any],
-     cfg: PipelineSettings,
-     smoothing_result: SpeakerTurnSmoothingResult,
-+    speaker_merges: dict[str, str] | None = None,
-+    speaker_merge_diagnostics: dict[str, Any] | None = None,
- ) -> dict[str, Any]:
-     diariser_mode = str(runtime.get("mode") or "unknown").strip().lower() or "unknown"
-     effective_hints = runtime.get("effective_hints")
-@@ -2562,6 +2642,8 @@ def _build_diarization_metadata_payload(
-         payload["initial_hints"] = initial_hints
-     if profile_selection:
-         payload["profile_selection"] = profile_selection
-+    payload["speaker_merges"] = dict(speaker_merges or {})
-+    payload["speaker_merge_diagnostics"] = dict(speaker_merge_diagnostics or {})
-     return payload
- 
- 
-@@ -2825,6 +2907,8 @@ def _stage_diarization(ctx: _PipelineExecutionContext) -> _StageResult:
-         ctx.diarization_segments = list(child_result.get("diarization_segments") or [])
-         ctx.diarization_runtime = dict(child_result.get("diarization_runtime") or {})
-         used_dummy_fallback = bool(child_result.get("used_dummy_fallback"))
-+        speaker_merge_map = dict(child_result.get("speaker_merge_map") or {})
-+        speaker_merge_diagnostics = dict(child_result.get("speaker_merge_diagnostics") or {})
-     else:
-         diarization_result = _execute_diarization_workflow(
-             working_audio_path=working_audio_path,
-@@ -2841,6 +2925,10 @@ def _stage_diarization(ctx: _PipelineExecutionContext) -> _StageResult:
-         ctx.diarization_segments = list(diarization_result.get("diarization_segments") or [])
-         ctx.diarization_runtime = dict(diarization_result.get("diarization_runtime") or {})
-         used_dummy_fallback = bool(diarization_result.get("used_dummy_fallback"))
-+        speaker_merge_map = dict(diarization_result.get("speaker_merge_map") or {})
-+        speaker_merge_diagnostics = dict(diarization_result.get("speaker_merge_diagnostics") or {})
-+    ctx.diarization_runtime["speaker_merges"] = speaker_merge_map
-+    ctx.diarization_runtime["speaker_merge_diagnostics"] = speaker_merge_diagnostics
-     _write_diarization_status_artifact(
-         recording_id=ctx.recording_id,
-         mode=diarization_mode,
-@@ -3020,10 +3108,20 @@ def _stage_speaker_turns(ctx: _PipelineExecutionContext) -> _StageResult:
-             speaker_count_before=speaker_count,
-             speaker_count_after=speaker_count,
++    Loading the wespeaker checkpoint goes through ``torch.load`` which now
++    defaults to ``weights_only=True``. Wrap the constructor in the same trusted
++    safe-globals context that the diarization pipeline loader uses, with the
++    same bounded retry on ``Unsupported global`` errors.
++    """
+     try:
+         from pyannote.audio import Inference  # type: ignore
+     except Exception as exc:
+@@ -957,15 +969,41 @@ def _build_pyannote_inference(model_or_name: Any) -> Any | None:
+             exc,
          )
-+    runtime_speaker_merges = ctx.diarization_runtime.get("speaker_merges")
-+    runtime_speaker_merge_diagnostics = ctx.diarization_runtime.get(
-+        "speaker_merge_diagnostics"
+         return None
+-    try:
+-        return Inference(model_or_name, window="whole")
+-    except Exception as exc:
+-        _logger.warning(
+-            "speaker_merge: failed to load embedding model %s: %s",
+-            model_or_name,
+-            exc,
+-        )
+-        return None
++
++    kwargs: dict[str, Any] = {"window": "whole"}
++    if device and device != "cpu":
++        try:
++            import torch  # type: ignore
++
++            kwargs["device"] = torch.device(device)
++        except Exception as exc:  # pragma: no cover - torch always present in prod
++            _logger.debug(
++                "speaker_merge: unable to bind embedding model to device %s: %s",
++                device,
++                exc,
++            )
++
++    extra_fqns: list[str] = []
++    last_error: Exception | None = None
++    for _ in range(_SPEAKER_EMBEDDING_SAFE_GLOBAL_ATTEMPTS):
++        try:
++            with diarization_safe_globals_for_torch_load(extra_fqns=extra_fqns):
++                return Inference(model_or_name, **kwargs)
++        except Exception as exc:
++            last_error = exc
++        retry_fqn = unsupported_global_diarization_fqn_from_error(last_error)
++        if retry_fqn is None or retry_fqn in extra_fqns:
++            break
++        if import_trusted_diarization_symbol(retry_fqn) is None:
++            break
++        extra_fqns.append(retry_fqn)
++
++    _logger.warning(
++        "speaker_merge: failed to load embedding model %s: %s",
++        model_or_name,
++        last_error,
 +    )
-     diarization_metadata = _build_diarization_metadata_payload(
-         runtime=ctx.diarization_runtime,
-         cfg=ctx.pipeline_settings,
-         smoothing_result=smoothing_result,
-+        speaker_merges=runtime_speaker_merges
-+        if isinstance(runtime_speaker_merges, dict)
-+        else None,
-+        speaker_merge_diagnostics=runtime_speaker_merge_diagnostics
-+        if isinstance(runtime_speaker_merge_diagnostics, dict)
-+        else None,
++    return None
+ 
+ 
+ def _resolve_pyannote_embedding_model(diariser: Diariser) -> EmbeddingModel | None:
+@@ -1011,15 +1049,22 @@ def _resolve_pyannote_embedding_model(diariser: Diariser) -> EmbeddingModel | No
+             model_name: Any = str(raw_embedding_attr)
+         else:
+             model_name = _DEFAULT_SPEAKER_EMBEDDING_MODEL
+-        inference = _build_pyannote_inference(model_name)
++        # ``_lan_effective_device`` is set on the pyannote pipeline model by
++        # ``load_pyannote_pipeline``. Fall back to ``diariser`` for forward
++        # compatibility with future code that may copy the attribute up.
++        effective_device = getattr(
++            diariser, "_lan_effective_device", None
++        ) or getattr(pipeline_model, "_lan_effective_device", None)
++        inference = _build_pyannote_inference(model_name, device=effective_device)
+         if inference is None:
+             setattr(diariser, "_lan_speaker_embedding_unavailable", True)
+             return None
+         resolution_source = "standalone_inference"
+ 
+     _logger.info(
+-        "speaker_merge: embedding model ready (source=%s)",
++        "speaker_merge: embedding model ready (source=%s, device=%s)",
+         resolution_source,
++        getattr(inference, "device", "unknown"),
      )
-     atomic_write_json(
-         ctx.artifacts.recording_artifacts.segments_json_path,
-diff --git a/tests/test_cov_lan_app_worker_tasks_branches.py b/tests/test_cov_lan_app_worker_tasks_branches.py
-index c6a2076..e54907b 100644
---- a/tests/test_cov_lan_app_worker_tasks_branches.py
-+++ b/tests/test_cov_lan_app_worker_tasks_branches.py
-@@ -1463,6 +1463,155 @@ def test_execute_diarization_workflow_direct_path(tmp_path: Path, monkeypatch: p
-     assert result["diarization_mode"] == "pyannote"
-     assert result["used_dummy_fallback"] is False
-     assert "gpu policy test" in messages
-+    assert result["speaker_merge_map"] == {}
-+    assert result["speaker_merge_diagnostics"]["skipped_reason"] == "single_speaker"
-+
-+
-+def test_apply_speaker_merge_step_disabled_by_config(
-+    tmp_path: Path,
-+    monkeypatch: pytest.MonkeyPatch,
-+) -> None:
-+    cfg = worker_tasks._build_pipeline_settings(_db_settings(tmp_path))  # noqa: SLF001
-+    cfg.speaker_merge_enabled = False
-+    monkeypatch.setattr(
-+        worker_tasks.pipeline_orchestrator,
-+        "_diariser_mode",
-+        lambda _diariser: "pyannote",
-+    )
-+    segments, merge_map, diagnostics = worker_tasks._apply_speaker_merge_step(  # noqa: SLF001
-+        diarization_segments=[
-+            {"speaker": "S1", "start": 0.0, "end": 1.0},
-+            {"speaker": "S2", "start": 1.0, "end": 2.0},
-+        ],
-+        diariser=object(),
-+        used_dummy_fallback=False,
-+        pipeline_settings=cfg,
-+        working_audio_path=tmp_path / "audio.wav",
-+        step_log_callback=None,
-+    )
-+    assert merge_map == {}
-+    assert diagnostics["skipped_reason"] == "disabled_by_config"
-+    assert len(segments) == 2
-+
-+
-+def test_apply_speaker_merge_step_embedding_model_unavailable(
-+    tmp_path: Path,
-+    monkeypatch: pytest.MonkeyPatch,
-+) -> None:
-+    cfg = worker_tasks._build_pipeline_settings(_db_settings(tmp_path))  # noqa: SLF001
-+    monkeypatch.setattr(
-+        worker_tasks.pipeline_orchestrator,
-+        "_diariser_mode",
-+        lambda _diariser: "pyannote",
-+    )
-+    monkeypatch.setattr(
-+        worker_tasks.pipeline_orchestrator,
-+        "_resolve_pyannote_embedding_model",
-+        lambda _diariser: None,
-+    )
-+    messages: list[str] = []
-+    _, merge_map, diagnostics = worker_tasks._apply_speaker_merge_step(  # noqa: SLF001
-+        diarization_segments=[
-+            {"speaker": "S1", "start": 0.0, "end": 1.0},
-+            {"speaker": "S2", "start": 1.0, "end": 2.0},
-+        ],
-+        diariser=object(),
-+        used_dummy_fallback=False,
-+        pipeline_settings=cfg,
-+        working_audio_path=tmp_path / "audio.wav",
-+        step_log_callback=messages.append,
-+    )
-+    assert merge_map == {}
-+    assert diagnostics["skipped_reason"] == "embedding_model_unavailable"
-+    assert any("embedding model unavailable" in m for m in messages)
-+
-+
-+def test_apply_speaker_merge_step_applies_merge(
-+    tmp_path: Path,
-+    monkeypatch: pytest.MonkeyPatch,
-+) -> None:
-+    cfg = worker_tasks._build_pipeline_settings(_db_settings(tmp_path))  # noqa: SLF001
-+    monkeypatch.setattr(
-+        worker_tasks.pipeline_orchestrator,
-+        "_diariser_mode",
-+        lambda _diariser: "pyannote",
-+    )
-+    monkeypatch.setattr(
-+        worker_tasks.pipeline_orchestrator,
-+        "_resolve_pyannote_embedding_model",
-+        lambda _diariser: object(),
-+    )
-+    merged_segments = [
-+        {"speaker": "S1", "start": 0.0, "end": 1.0},
-+        {"speaker": "S1", "start": 1.0, "end": 2.0},
-+    ]
-+    run_diagnostics = {
-+        "embedding_model_available": True,
-+        "speakers_found": ["S1", "S2"],
-+        "centroids_computed": ["S1", "S2"],
-+        "pairwise_scores": [
-+            {
-+                "speaker_a": "S1",
-+                "speaker_b": "S2",
-+                "similarity": 0.95,
-+                "overlap": False,
-+                "action": "merged",
-+            }
-+        ],
-+        "merges_applied": {"S2": "S1"},
-+    }
-+    monkeypatch.setattr(
-+        worker_tasks,
-+        "merge_similar_speakers",
-+        lambda *_a, **_k: (merged_segments, {"S2": "S1"}, run_diagnostics),
-+    )
-+    messages: list[str] = []
-+    segments, merge_map, diagnostics = worker_tasks._apply_speaker_merge_step(  # noqa: SLF001
-+        diarization_segments=[
-+            {"speaker": "S1", "start": 0.0, "end": 1.0},
-+            {"speaker": "S2", "start": 1.0, "end": 2.0},
-+        ],
-+        diariser=object(),
-+        used_dummy_fallback=False,
-+        pipeline_settings=cfg,
-+        working_audio_path=tmp_path / "audio.wav",
-+        step_log_callback=messages.append,
-+    )
-+    assert segments == merged_segments
-+    assert merge_map == {"S2": "S1"}
-+    assert diagnostics["skipped_reason"] is None
-+    assert diagnostics["merges_applied"] == {"S2": "S1"}
-+    assert any("speaker_merge applied merges=S2->S1" in m for m in messages)
-+
-+    # Re-run with merge_similar_speakers returning an empty merge map to
-+    # cover the "no merges applied" branch where the step log is not emitted.
-+    messages.clear()
-+    monkeypatch.setattr(
-+        worker_tasks,
-+        "merge_similar_speakers",
-+        lambda *_a, **_k: (
-+            [
-+                {"speaker": "S1", "start": 0.0, "end": 1.0},
-+                {"speaker": "S2", "start": 1.0, "end": 2.0},
-+            ],
-+            {},
-+            {**run_diagnostics, "merges_applied": {}},
-+        ),
-+    )
-+    _, merge_map_empty, diagnostics_empty = worker_tasks._apply_speaker_merge_step(  # noqa: SLF001
-+        diarization_segments=[
-+            {"speaker": "S1", "start": 0.0, "end": 1.0},
-+            {"speaker": "S2", "start": 1.0, "end": 2.0},
-+        ],
-+        diariser=object(),
-+        used_dummy_fallback=False,
-+        pipeline_settings=cfg,
-+        working_audio_path=tmp_path / "audio.wav",
-+        step_log_callback=messages.append,
-+    )
-+    assert merge_map_empty == {}
-+    assert diagnostics_empty["skipped_reason"] is None
-+    assert not any("speaker_merge applied merges=" in m for m in messages)
  
+     def _embed(audio_path: Path, start: float, end: float):
+diff --git a/tasks/QUEUE.md b/tasks/QUEUE.md
+index 33bf904..30cd77c 100644
+--- a/tasks/QUEUE.md
++++ b/tasks/QUEUE.md
+@@ -711,6 +711,6 @@ Queue (in order)
+ - Depends on: PR-SPEAKER-MERGE-DIAGNOSTICS-01
  
- def test_stage_asr_uses_child_operation_path(
+ 142) PR-SPEAKER-MERGE-TORCH-LOAD-FIX-01: Fix speaker merge embedding model: torch.load weights_only failure and CPU-only device
+-- Status: TODO
++- Status: DOING
+ - Tasks file: tasks/PR-SPEAKER-MERGE-TORCH-LOAD-FIX-01.md
+ - Depends on: PR-SPEAKER-MERGE-DIAGNOSTICS-HOTFIX-01
+diff --git a/tests/test_speaker_merge.py b/tests/test_speaker_merge.py
+index 824fe62..fb7cdf4 100644
+--- a/tests/test_speaker_merge.py
++++ b/tests/test_speaker_merge.py
+@@ -1057,3 +1057,247 @@ def test_resolve_pyannote_embedding_model_handles_inference_constructor_error()
+         result = pipeline_orchestrator._resolve_pyannote_embedding_model(diariser)
+     assert result is None
+     assert getattr(diariser, "_lan_speaker_embedding_unavailable", False) is True
++
++
++def test_build_pyannote_inference_uses_diarization_safe_globals(
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    """The wespeaker checkpoint must be loaded under the trusted safe-globals
++    context to survive ``torch.load(weights_only=True)``."""
++
++    contexts: list[str] = []
++
++    class _FakeInference:
++        def __init__(self, name: str, **kwargs) -> None:
++            self.name = name
++            self.kwargs = kwargs
++
++    fake_audio = types.SimpleNamespace(Inference=_FakeInference)
++
++    import contextlib as _contextlib
++
++    @_contextlib.contextmanager
++    def _fake_ctx(extra_fqns=None):
++        contexts.append("entered")
++        yield
++
++    monkeypatch.setattr(
++        pipeline_orchestrator,
++        "diarization_safe_globals_for_torch_load",
++        _fake_ctx,
++    )
++
++    with _patched_module("pyannote.audio", fake_audio):
++        inference = pipeline_orchestrator._build_pyannote_inference(
++            "pyannote/wespeaker-voxceleb-resnet34-LM"
++        )
++
++    assert isinstance(inference, _FakeInference)
++    assert inference.kwargs == {"window": "whole"}
++    assert contexts == ["entered"]
++
++
++def test_build_pyannote_inference_passes_torch_device_when_gpu(
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    """When a non-CPU device is provided, it must be forwarded as a
++    ``torch.device`` object so the embedding model runs on GPU."""
++
++    class _FakeInference:
++        def __init__(self, name: str, **kwargs) -> None:
++            self.name = name
++            self.kwargs = kwargs
++
++    fake_audio = types.SimpleNamespace(Inference=_FakeInference)
++
++    fake_torch = types.SimpleNamespace(device=lambda spec: ("torch.device", spec))
++    monkeypatch.setitem(sys.modules, "torch", fake_torch)
++
++    with _patched_module("pyannote.audio", fake_audio):
++        inference = pipeline_orchestrator._build_pyannote_inference(
++            "pyannote/wespeaker-voxceleb-resnet34-LM",
++            device="cuda:0",
++        )
++
++    assert isinstance(inference, _FakeInference)
++    assert inference.kwargs.get("window") == "whole"
++    assert inference.kwargs.get("device") == ("torch.device", "cuda:0")
++
++
++def test_build_pyannote_inference_skips_device_for_cpu(
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    """``device='cpu'`` should not pass a torch.device kwarg (matches
++    pre-existing CPU-only behaviour)."""
++
++    class _FakeInference:
++        def __init__(self, name: str, **kwargs) -> None:
++            self.name = name
++            self.kwargs = kwargs
++
++    fake_audio = types.SimpleNamespace(Inference=_FakeInference)
++
++    with _patched_module("pyannote.audio", fake_audio):
++        inference = pipeline_orchestrator._build_pyannote_inference(
++            "pyannote/wespeaker-voxceleb-resnet34-LM",
++            device="cpu",
++        )
++    assert isinstance(inference, _FakeInference)
++    assert "device" not in inference.kwargs
++
++
++def test_build_pyannote_inference_retries_on_unsupported_global(
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    """If the first load attempt raises ``Unsupported global``, the helper
++    must extract the FQN, allowlist it, and retry — mirroring the diarization
++    pipeline loader's safe-globals retry."""
++
++    attempts: list[list[str]] = []
++
++    class _FakeInference:
++        def __init__(self, name: str, **kwargs) -> None:
++            extras = list(_current_extras["value"])
++            attempts.append(extras)
++            if not extras:
++                raise RuntimeError(
++                    "Unsupported global: GLOBAL omegaconf.base.ContainerMetadata"
++                )
++            self.name = name
++            self.kwargs = kwargs
++
++    fake_audio = types.SimpleNamespace(Inference=_FakeInference)
++
++    _current_extras: dict[str, list[str]] = {"value": []}
++
++    import contextlib as _contextlib
++
++    @_contextlib.contextmanager
++    def _fake_ctx(extra_fqns=None):
++        _current_extras["value"] = list(extra_fqns or [])
++        yield
++
++    monkeypatch.setattr(
++        pipeline_orchestrator,
++        "diarization_safe_globals_for_torch_load",
++        _fake_ctx,
++    )
++    monkeypatch.setattr(
++        pipeline_orchestrator,
++        "import_trusted_diarization_symbol",
++        lambda fqn: object(),
++    )
++
++    with _patched_module("pyannote.audio", fake_audio):
++        inference = pipeline_orchestrator._build_pyannote_inference(
++            "pyannote/wespeaker-voxceleb-resnet34-LM"
++        )
++
++    assert isinstance(inference, _FakeInference)
++    assert attempts[0] == []
++    assert "omegaconf.base.ContainerMetadata" in attempts[1]
++
++
++def test_build_pyannote_inference_breaks_when_retry_fqn_untrusted(
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    """If the unsupported-global FQN cannot be imported via the trusted
++    diarization allowlist, the helper must stop retrying and return None."""
++
++    class _FakeInference:
++        def __init__(self, *_args, **_kwargs) -> None:
++            raise RuntimeError(
++                "Unsupported global: GLOBAL omegaconf.base.ContainerMetadata"
++            )
++
++    fake_audio = types.SimpleNamespace(Inference=_FakeInference)
++
++    monkeypatch.setattr(
++        pipeline_orchestrator,
++        "import_trusted_diarization_symbol",
++        lambda fqn: None,
++    )
++
++    with _patched_module("pyannote.audio", fake_audio):
++        result = pipeline_orchestrator._build_pyannote_inference(
++            "pyannote/wespeaker-voxceleb-resnet34-LM"
++        )
++    assert result is None
++
++
++def test_build_pyannote_inference_exhausts_retry_budget(
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    """When every attempt raises with a fresh retryable FQN, the helper must
++    bound retries via the safe-global attempt budget and eventually return
++    None instead of looping forever."""
++
++    suffixes = ["A", "B", "C", "D", "E"]
++    counter = {"i": 0}
++
++    class _FakeInference:
++        def __init__(self, *_args, **_kwargs) -> None:
++            i = counter["i"]
++            counter["i"] += 1
++            sym = suffixes[i]
++            raise RuntimeError(f"Unsupported global: GLOBAL omegaconf.test.{sym}")
++
++    fake_audio = types.SimpleNamespace(Inference=_FakeInference)
++
++    monkeypatch.setattr(
++        pipeline_orchestrator,
++        "import_trusted_diarization_symbol",
++        lambda fqn: object(),
++    )
++
++    with _patched_module("pyannote.audio", fake_audio):
++        result = pipeline_orchestrator._build_pyannote_inference(
++            "pyannote/wespeaker-voxceleb-resnet34-LM"
++        )
++    assert result is None
++    # The helper must respect the retry budget (3) and not loop indefinitely.
++    assert counter["i"] == 3
++
++
++def test_resolve_pyannote_embedding_model_forwards_pipeline_device() -> None:
++    """The embedding model should run on the same device as the diarization
++    pipeline (set via ``_lan_effective_device`` on the pipeline_model)."""
++
++    pipeline_model = types.SimpleNamespace(
++        embedding="pyannote/wespeaker-voxceleb-resnet34-LM",
++        _lan_effective_device="cuda:0",
++    )
++    diariser = _StubDiariser(
++        pipeline_model=pipeline_model, pipeline_attr="_pipeline_model"
++    )
++
++    constructed: list["_FakeInference"] = []
++
++    class _FakeInference:
++        def __init__(self, name: str, **kwargs) -> None:
++            self.name = name
++            self.kwargs = kwargs
++            self.device = kwargs.get("device")
++            constructed.append(self)
++
++        def crop(self, path: str, segment):
++            return [0.1, 0.9]
++
++    fake_audio = types.SimpleNamespace(Inference=_FakeInference)
++    fake_torch = types.SimpleNamespace(device=lambda spec: ("torch.device", spec))
++
++    saved = sys.modules.get("torch")
++    sys.modules["torch"] = fake_torch  # type: ignore[assignment]
++    try:
++        with _patched_module("pyannote.audio", fake_audio):
++            model_callable = pipeline_orchestrator._resolve_pyannote_embedding_model(
++                diariser
++            )
++    finally:
++        if saved is None:
++            sys.modules.pop("torch", None)
++        else:
++            sys.modules["torch"] = saved
++    assert callable(model_callable)
++    assert len(constructed) == 1
++    assert constructed[0].kwargs.get("device") == ("torch.device", "cuda:0")

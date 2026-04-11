@@ -45,7 +45,10 @@ from ..metrics import error_rate_total, p95_latency_seconds
 from ..models import SpeakerSegment, TranscriptResult
 from ..native_fixups import ensure_ctranslate2_no_execstack
 from ..torch_safe_globals import (
+    diarization_safe_globals_for_torch_load,
+    import_trusted_diarization_symbol,
     omegaconf_safe_globals_for_torch_load,
+    unsupported_global_diarization_fqn_from_error,
     unsupported_global_omegaconf_fqn_from_error,
 )
 from .language import analyse_languages, resolve_target_summary_language, segment_language
@@ -944,10 +947,19 @@ def _diariser_pipeline_model(diariser: Diariser) -> Any | None:
 
 
 _DEFAULT_SPEAKER_EMBEDDING_MODEL = "pyannote/wespeaker-voxceleb-resnet34-LM"
+_SPEAKER_EMBEDDING_SAFE_GLOBAL_ATTEMPTS = 3
 
 
-def _build_pyannote_inference(model_or_name: Any) -> Any | None:
-    """Construct a pyannote ``Inference`` wrapper, returning ``None`` on failure."""
+def _build_pyannote_inference(
+    model_or_name: Any, *, device: str | None = None
+) -> Any | None:
+    """Construct a pyannote ``Inference`` wrapper, returning ``None`` on failure.
+
+    Loading the wespeaker checkpoint goes through ``torch.load`` which now
+    defaults to ``weights_only=True``. Wrap the constructor in the same trusted
+    safe-globals context that the diarization pipeline loader uses, with the
+    same bounded retry on ``Unsupported global`` errors.
+    """
     try:
         from pyannote.audio import Inference  # type: ignore
     except Exception as exc:
@@ -957,15 +969,41 @@ def _build_pyannote_inference(model_or_name: Any) -> Any | None:
             exc,
         )
         return None
-    try:
-        return Inference(model_or_name, window="whole")
-    except Exception as exc:
-        _logger.warning(
-            "speaker_merge: failed to load embedding model %s: %s",
-            model_or_name,
-            exc,
-        )
-        return None
+
+    kwargs: dict[str, Any] = {"window": "whole"}
+    if device and device != "cpu":
+        try:
+            import torch  # type: ignore
+
+            kwargs["device"] = torch.device(device)
+        except Exception as exc:  # pragma: no cover - torch always present in prod
+            _logger.debug(
+                "speaker_merge: unable to bind embedding model to device %s: %s",
+                device,
+                exc,
+            )
+
+    extra_fqns: list[str] = []
+    last_error: Exception | None = None
+    for _ in range(_SPEAKER_EMBEDDING_SAFE_GLOBAL_ATTEMPTS):
+        try:
+            with diarization_safe_globals_for_torch_load(extra_fqns=extra_fqns):
+                return Inference(model_or_name, **kwargs)
+        except Exception as exc:
+            last_error = exc
+        retry_fqn = unsupported_global_diarization_fqn_from_error(last_error)
+        if retry_fqn is None or retry_fqn in extra_fqns:
+            break
+        if import_trusted_diarization_symbol(retry_fqn) is None:
+            break
+        extra_fqns.append(retry_fqn)
+
+    _logger.warning(
+        "speaker_merge: failed to load embedding model %s: %s",
+        model_or_name,
+        last_error,
+    )
+    return None
 
 
 def _resolve_pyannote_embedding_model(diariser: Diariser) -> EmbeddingModel | None:
@@ -1011,15 +1049,22 @@ def _resolve_pyannote_embedding_model(diariser: Diariser) -> EmbeddingModel | No
             model_name: Any = str(raw_embedding_attr)
         else:
             model_name = _DEFAULT_SPEAKER_EMBEDDING_MODEL
-        inference = _build_pyannote_inference(model_name)
+        # ``_lan_effective_device`` is set on the pyannote pipeline model by
+        # ``load_pyannote_pipeline``. Fall back to ``diariser`` for forward
+        # compatibility with future code that may copy the attribute up.
+        effective_device = getattr(
+            diariser, "_lan_effective_device", None
+        ) or getattr(pipeline_model, "_lan_effective_device", None)
+        inference = _build_pyannote_inference(model_name, device=effective_device)
         if inference is None:
             setattr(diariser, "_lan_speaker_embedding_unavailable", True)
             return None
         resolution_source = "standalone_inference"
 
     _logger.info(
-        "speaker_merge: embedding model ready (source=%s)",
+        "speaker_merge: embedding model ready (source=%s, device=%s)",
         resolution_source,
+        getattr(inference, "device", "unknown"),
     )
 
     def _embed(audio_path: Path, start: float, end: float):

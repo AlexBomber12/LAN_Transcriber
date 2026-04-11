@@ -711,6 +711,6 @@ Queue (in order)
 - Depends on: PR-SPEAKER-MERGE-DIAGNOSTICS-01
 
 142) PR-SPEAKER-MERGE-TORCH-LOAD-FIX-01: Fix speaker merge embedding model: torch.load weights_only failure and CPU-only device
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-SPEAKER-MERGE-TORCH-LOAD-FIX-01.md
 - Depends on: PR-SPEAKER-MERGE-DIAGNOSTICS-HOTFIX-01
