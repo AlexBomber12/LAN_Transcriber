@@ -1,216 +1,226 @@
-diff --git a/lan_transcriber/pipeline_steps/orchestrator.py b/lan_transcriber/pipeline_steps/orchestrator.py
-index 787d02d..76fe491 100644
---- a/lan_transcriber/pipeline_steps/orchestrator.py
-+++ b/lan_transcriber/pipeline_steps/orchestrator.py
-@@ -943,12 +943,47 @@ def _diariser_pipeline_model(diariser: Diariser) -> Any | None:
-     return None
+diff --git a/lan_transcriber/pipeline_steps/diarization_quality.py b/lan_transcriber/pipeline_steps/diarization_quality.py
+index 1763111..67ba5c0 100644
+--- a/lan_transcriber/pipeline_steps/diarization_quality.py
++++ b/lan_transcriber/pipeline_steps/diarization_quality.py
+@@ -5,7 +5,7 @@ from typing import Any, Literal, Sequence
+ 
+ from lan_transcriber.utils import normalise_language_code, safe_float
+ 
+-from .speaker_turns import _diarization_segments
++from .speaker_turns import _decapitalize_join, _diarization_segments
+ 
+ DEFAULT_DIALOG_MIN_SPEAKERS = 2
+ DEFAULT_DIALOG_MAX_SPEAKERS = 2
+@@ -398,7 +398,7 @@ def _turn_gap(left: dict[str, Any], right: dict[str, Any]) -> float:
  
  
-+_DEFAULT_SPEAKER_EMBEDDING_MODEL = "pyannote/wespeaker-voxceleb-resnet34-LM"
+ def _join_text(left: str, right: str) -> str:
+-    return " ".join(part for part in (left.strip(), right.strip()) if part).strip()
++    return _decapitalize_join(left.strip(), right.strip())
+ 
+ 
+ def _merge_turns(
+diff --git a/lan_transcriber/pipeline_steps/speaker_turns.py b/lan_transcriber/pipeline_steps/speaker_turns.py
+index fb7f5ae..22f0477 100644
+--- a/lan_transcriber/pipeline_steps/speaker_turns.py
++++ b/lan_transcriber/pipeline_steps/speaker_turns.py
+@@ -18,6 +18,25 @@ DEFAULT_SPEAKER_TURN_MIN_WORDS = 6
+ DEFAULT_SPEAKER_TURN_SHORT_MERGE_GAP_SEC = 8.0
+ 
+ 
++def _decapitalize_join(existing_text: str, appended_text: str) -> str:
++    """Join two text fragments, lowercasing the appended fragment's first letter
++    when it looks like a false sentence start from segment splitting."""
++    if not existing_text or not appended_text:
++        return (existing_text + " " + appended_text).strip()
++    last_char = existing_text.rstrip()[-1] if existing_text.strip() else ""
++    if last_char in ".!?":
++        return f"{existing_text} {appended_text}"
++    first_word = appended_text.split()[0] if appended_text.split() else ""
++    if not first_word or not first_word[0].isupper():
++        return f"{existing_text} {appended_text}"
++    if first_word.isupper() and len(first_word) > 1:
++        return f"{existing_text} {appended_text}"
++    if first_word == "I":
++        return f"{existing_text} {appended_text}"
++    fixed = appended_text[0].lower() + appended_text[1:]
++    return f"{existing_text} {fixed}"
 +
 +
-+def _build_pyannote_inference(model_or_name: Any) -> Any | None:
-+    """Construct a pyannote ``Inference`` wrapper, returning ``None`` on failure."""
-+    try:
-+        from pyannote.audio import Inference  # type: ignore
-+    except Exception as exc:
-+        _logger.warning(
-+            "speaker_merge: pyannote.audio.Inference unavailable; "
-+            "skipping merge step (%s)",
-+            exc,
-+        )
-+        return None
-+    try:
-+        return Inference(model_or_name, window="whole")
-+    except Exception as exc:
-+        _logger.warning(
-+            "speaker_merge: failed to load embedding model %s: %s",
-+            model_or_name,
-+            exc,
-+        )
-+        return None
-+
-+
- def _resolve_pyannote_embedding_model(diariser: Diariser) -> EmbeddingModel | None:
-     """Resolve a speaker embedding callable from the loaded diarization pipeline.
+ def _normalise_word(word: dict[str, Any], seg_start: float, seg_end: float) -> dict[str, Any] | None:
+     text = str(word.get("word") or word.get("text") or "").strip()
+     if not text:
+@@ -215,7 +234,7 @@ def build_speaker_turns(
+             and start - safe_float(current["end"], default=start) <= merge_gap_sec
+         ):
+             current["end"] = round(max(safe_float(current["end"]), end), 3)
+-            current["text"] = f"{current['text']} {word['word']}".strip()
++            current["text"] = _decapitalize_join(current["text"], str(word["word"]))
+         else:
+             if current is not None:
+                 turns.append(current)
+@@ -297,7 +316,7 @@ def merge_short_turns(
  
-     Returns a callable ``(audio_path, start, end) -> np.ndarray`` or ``None`` if
-     no usable embedding model can be obtained. Failures are logged and swallowed
-     so the pipeline still runs when the merge step cannot be enabled.
-+
-+    pyannote-audio >= 3.1 stores the embedding sub-model on
-+    ``SpeakerDiarization._embedding``, but that attribute is a
-+    :class:`PretrainedSpeakerEmbedding` callable — it does **not** expose the
-+    ``.crop(file, segment)`` method we need. We therefore only reuse the
-+    pipeline's attribute when it already looks like an ``Inference`` wrapper
-+    (i.e. exposes ``crop``). Otherwise we construct a fresh
-+    ``Inference(embedding_model, window="whole")`` — using the model identifier
-+    stored on the pipeline when available and falling back to the
-+    wespeaker checkpoint that pyannote-audio bundles by default.
-     """
+         if prev_same_speaker and prev_gap < merge_gap_sec:
+             prev_text = str(prev_turn.get("text") or "").strip()
+-            merged_text = f"{prev_text} {text}".strip() if text else prev_text
++            merged_text = _decapitalize_join(prev_text, text) if text else prev_text
+             prev_turn["text"] = merged_text
+             prev_turn["end"] = round(
+                 max(
+@@ -311,7 +330,7 @@ def merge_short_turns(
  
-     cached = getattr(diariser, "_lan_speaker_embedding_model", None)
-@@ -962,39 +997,22 @@ def _resolve_pyannote_embedding_model(diariser: Diariser) -> EmbeddingModel | No
-         return None
- 
-     inference: Any = None
--    embedding_attr: Any = None
-     for attr in ("_embedding", "embedding"):
-         candidate = getattr(pipeline_model, attr, None)
--        if candidate is not None:
--            embedding_attr = candidate
-+        if candidate is not None and callable(getattr(candidate, "crop", None)):
-+            inference = candidate
-             break
- 
--    if embedding_attr is None:
--        try:
--            from pyannote.audio import Inference  # type: ignore
--        except Exception as exc:
--            _logger.warning(
--                "speaker_merge: pyannote.audio.Inference unavailable; "
--                "skipping merge step (%s)",
--                exc,
--            )
--            setattr(diariser, "_lan_speaker_embedding_unavailable", True)
--            return None
--        model_name = getattr(pipeline_model, "embedding_model", None) or (
--            "pyannote/wespeaker-voxceleb-resnet34-LM"
--        )
--        try:
--            inference = Inference(model_name, window="whole")
--        except Exception as exc:
--            _logger.warning(
--                "speaker_merge: failed to load embedding model %s: %s",
--                model_name,
--                exc,
--            )
-+    if inference is None:
-+        raw_embedding_attr = getattr(pipeline_model, "embedding", None)
-+        if isinstance(raw_embedding_attr, (str, Path)):
-+            model_name: Any = str(raw_embedding_attr)
-+        else:
-+            model_name = _DEFAULT_SPEAKER_EMBEDDING_MODEL
-+        inference = _build_pyannote_inference(model_name)
-+        if inference is None:
-             setattr(diariser, "_lan_speaker_embedding_unavailable", True)
-             return None
--    else:
--        inference = embedding_attr
- 
-     def _embed(audio_path: Path, start: float, end: float):
-         try:
-diff --git a/tests/test_speaker_merge.py b/tests/test_speaker_merge.py
-index 9077e45..b2b3e00 100644
---- a/tests/test_speaker_merge.py
-+++ b/tests/test_speaker_merge.py
-@@ -6,7 +6,7 @@ import math
- import sys
- import types
- from pathlib import Path
--from typing import Sequence
-+from typing import Any, Sequence
- 
- import pytest
- 
-@@ -802,9 +802,11 @@ def test_resolve_pyannote_embedding_model_uses_public_embedding_attr() -> None:
-         assert model_callable(Path("/x.wav"), 0.0, 1.0) is None
+         if next_same_speaker and next_gap < merge_gap_sec:
+             next_text = str(next_turn.get("text") or "").strip()
+-            merged_text = f"{text} {next_text}".strip() if next_text else text
++            merged_text = _decapitalize_join(text, next_text) if next_text else text
+             next_turn["text"] = merged_text
+             next_turn["start"] = round(
+                 min(
+diff --git a/tasks/QUEUE.md b/tasks/QUEUE.md
+index 4c7046b..871c847 100644
+--- a/tasks/QUEUE.md
++++ b/tasks/QUEUE.md
+@@ -678,6 +678,6 @@ Queue (in order)
+ - Tasks file: tasks/PR-SPEAKER-MERGE-EMBEDDINGS-01.md
+ - Depends on: PR-DIARIZATION-FLICKER-01
+ 136) PR-MERGE-DECAPITALIZE-01: Decapitalize false sentence starts left over from segment merging
+-- Status: TODO
++- Status: DONE
+ - Tasks file: tasks/PR-MERGE-DECAPITALIZE-01.md
+ - Depends on: PR-TRANSCRIPT-MERGE-01
+diff --git a/tests/test_pipeline_steps_speaker_turns.py b/tests/test_pipeline_steps_speaker_turns.py
+index f173887..8ccb3c3 100644
+--- a/tests/test_pipeline_steps_speaker_turns.py
++++ b/tests/test_pipeline_steps_speaker_turns.py
+@@ -4,6 +4,7 @@ from lan_transcriber.pipeline_steps.speaker_turns import (
+     DEFAULT_SPEAKER_TURN_MERGE_GAP_SEC,
+     DEFAULT_SPEAKER_TURN_MIN_WORDS,
+     DEFAULT_SPEAKER_TURN_SHORT_MERGE_GAP_SEC,
++    _decapitalize_join,
+     build_speaker_turns,
+     count_interruptions,
+     merge_short_turns,
+@@ -225,6 +226,122 @@ def test_merge_short_turns_default_gap_exceeds_base_merge_gap():
+     assert merged[0]["end"] == 11.5
  
  
--def test_resolve_pyannote_embedding_model_falls_back_to_inference() -> None:
-+def test_resolve_pyannote_embedding_model_falls_back_to_inference_with_pipeline_name() -> None:
-+    # Simulates pyannote ``SpeakerDiarization`` where ``pipeline.embedding``
-+    # stores the model identifier string (not an Inference-like object).
-     pipeline_model = types.SimpleNamespace(
--        embedding_model="pyannote/custom-embed",
-+        embedding="pyannote/custom-embed",
-     )
-     diariser = _StubDiariser(
-         pipeline_model=pipeline_model, pipeline_attr="_pipeline_model"
-@@ -832,6 +834,86 @@ def test_resolve_pyannote_embedding_model_falls_back_to_inference() -> None:
-     assert vector == [0.25, 0.75]
- 
- 
-+def test_resolve_pyannote_embedding_model_falls_back_when_private_embedding_lacks_crop() -> None:
-+    """Covers the real pyannote-audio >= 3.1 case.
-+
-+    ``SpeakerDiarization._embedding`` is a ``PretrainedSpeakerEmbedding``
-+    callable — it takes waveforms, not (file, segment) pairs. Using it as an
-+    Inference substitute causes every ``crop()`` call to raise, silently
-+    disabling the merge step. The resolver must detect the missing ``crop``
-+    method and wrap the pipeline's embedding identifier with a fresh
-+    ``Inference`` instead.
-+    """
-+
-+    class _PretrainedSpeakerEmbedding:
-+        """Callable with no ``crop()`` — mirrors pyannote's internal object."""
-+
-+        def __call__(self, waveforms):
-+            return [[1.0, 0.0]]
-+
-+    pipeline_model = types.SimpleNamespace(
-+        _embedding=_PretrainedSpeakerEmbedding(),
-+        embedding="pyannote/wespeaker-from-pipeline",
-+    )
-+    diariser = _StubDiariser(
-+        pipeline_model=pipeline_model, pipeline_attr="_pipeline_model"
++def test_decapitalize_mid_sentence():
++    """A capitalized word mid-sentence (no preceding sentence punct) is lowercased."""
++    assert (
++        _decapitalize_join("энергии. Он может", "Понизить")
++        == "энергии. Он может понизить"
 +    )
 +
-+    build_calls: list[Any] = []
 +
-+    class _FakeInference:
-+        def __init__(self, name, *, window: str) -> None:
-+            build_calls.append((name, window))
-+            self.name = name
-+
-+        def crop(self, path: str, segment):
-+            return [0.5, 0.5]
-+
-+    fake_audio = types.SimpleNamespace(Inference=_FakeInference)
-+    fake_core = types.SimpleNamespace(Segment=lambda *a, **k: (a, k))
-+
-+    with _patched_module("pyannote.audio", fake_audio), _patched_module(
-+        "pyannote.core", fake_core
-+    ):
-+        model_callable = pipeline_orchestrator._resolve_pyannote_embedding_model(
-+            diariser
-+        )
-+        assert callable(model_callable)
-+        vector = model_callable(Path("/z.wav"), 0.0, 1.0)
-+    assert vector == [0.5, 0.5]
-+    # The embedding attr was ignored; we built a fresh Inference by name.
-+    assert build_calls == [("pyannote/wespeaker-from-pipeline", "whole")]
-+
-+
-+def test_resolve_pyannote_embedding_model_uses_default_when_embedding_attr_not_a_string() -> None:
-+    """When pipeline.embedding is neither crop-capable nor a string, use the default."""
-+
-+    class _OpaqueEmbedding:
-+        def __call__(self, *_a, **_k):  # pragma: no cover - not invoked
-+            return None
-+
-+    pipeline_model = types.SimpleNamespace(_embedding=_OpaqueEmbedding())
-+    diariser = _StubDiariser(
-+        pipeline_model=pipeline_model, pipeline_attr="_pipeline_model"
++def test_keep_after_period():
++    """After sentence-ending punctuation the appended capital is preserved."""
++    assert (
++        _decapitalize_join("решение.", "Но мы понимаем")
++        == "решение. Но мы понимаем"
 +    )
 +
-+    build_calls: list[Any] = []
 +
-+    class _FakeInference:
-+        def __init__(self, name, *, window: str) -> None:
-+            build_calls.append((name, window))
++def test_keep_after_exclamation():
++    assert _decapitalize_join("стоп!", "Вперёд") == "стоп! Вперёд"
 +
-+        def crop(self, *_a, **_k):  # pragma: no cover - not invoked
-+            return [1.0]
 +
-+    fake_audio = types.SimpleNamespace(Inference=_FakeInference)
-+    with _patched_module("pyannote.audio", fake_audio):
-+        pipeline_orchestrator._resolve_pyannote_embedding_model(diariser)
-+    assert build_calls == [
-+        (pipeline_orchestrator._DEFAULT_SPEAKER_EMBEDDING_MODEL, "whole")
++def test_keep_after_question():
++    assert _decapitalize_join("правда?", "Да") == "правда? Да"
++
++
++def test_keep_acronym():
++    """All-caps acronyms longer than one char are preserved."""
++    assert _decapitalize_join("стандарту", "ISO") == "стандарту ISO"
++    assert _decapitalize_join("use the", "API today") == "use the API today"
++
++
++def test_keep_english_I():
++    """The English pronoun ``I`` is preserved as capitalized."""
++    assert _decapitalize_join("think", "I will") == "think I will"
++
++
++def test_keep_already_lowercase():
++    """An already-lowercase appended fragment is passed through unchanged."""
++    assert _decapitalize_join("просто", "уходить") == "просто уходить"
++
++
++def test_empty_strings():
++    """Empty existing or appended text falls back to a plain strip-join."""
++    assert _decapitalize_join("", "Hello") == "Hello"
++    assert _decapitalize_join("text", "") == "text"
++    assert _decapitalize_join("", "") == ""
++
++
++def test_decapitalize_single_capital_letter_lowercased():
++    """A single capital letter (not ``I``) mid-sentence is still lowercased."""
++    # Russian "А" (single Cyrillic capital letter) should be lowercased.
++    assert _decapitalize_join("ну", "А дальше") == "ну а дальше"
++
++
++def test_real_example_build_speaker_turns_decapitalizes_false_starts():
++    """End-to-end: segment-boundary-capitalized words are decapitalized on merge."""
++    # Simulate ASR output split into segments where each segment starts with
++    # a capitalized word even though it is a continuation of the previous
++    # sentence. The full paragraph has no sentence-ending punctuation between
++    # the boundaries, so the merged transcript must not contain the false
++    # capitals.
++    asr_segments = [
++        {
++            "start": 0.0,
++            "end": 1.0,
++            "text": "Компрессор работает на",
++            "words": [
++                {"start": 0.0, "end": 0.3, "word": "Компрессор"},
++                {"start": 0.3, "end": 0.6, "word": "работает"},
++                {"start": 0.6, "end": 1.0, "word": "на"},
++            ],
++        },
++        {
++            "start": 1.0,
++            "end": 2.0,
++            "text": "Половину мощности когда",
++            "words": [
++                {"start": 1.0, "end": 1.3, "word": "Половину"},
++                {"start": 1.3, "end": 1.6, "word": "мощности"},
++                {"start": 1.6, "end": 2.0, "word": "когда"},
++            ],
++        },
++        {
++            "start": 2.0,
++            "end": 3.0,
++            "text": "Нагрузка падает.",
++            "words": [
++                {"start": 2.0, "end": 2.4, "word": "Нагрузка"},
++                {"start": 2.4, "end": 3.0, "word": "падает."},
++            ],
++        },
++        {
++            "start": 3.0,
++            "end": 4.0,
++            "text": "Потом снова",
++            "words": [
++                {"start": 3.0, "end": 3.5, "word": "Потом"},
++                {"start": 3.5, "end": 4.0, "word": "снова"},
++            ],
++        },
 +    ]
++    diar_segments = [{"start": 0.0, "end": 5.0, "speaker": "S1"}]
++    turns = build_speaker_turns(asr_segments, diar_segments, default_language=None)
++    assert len(turns) == 1
++    text = turns[0]["text"]
++    # Turn start remains capitalized.
++    assert text.startswith("Компрессор ")
++    # Mid-sentence boundaries are lowercased.
++    assert "половину" in text
++    assert "когда" in text
++    # After the period, capitalization resumes.
++    assert "падает. Потом" in text
++    # No false capitals remain in the middle of the paragraph.
++    assert "Половину" not in text
++    assert "Нагрузка" not in text
 +
 +
- def test_resolve_pyannote_embedding_model_handles_inference_import_error() -> None:
-     pipeline_model = types.SimpleNamespace()
-     diariser = _StubDiariser(
+ def test_count_interruptions_small_synthetic_case():
+     turns = [
+         {"start": 0.0, "end": 4.0, "speaker": "S1", "text": "long turn"},

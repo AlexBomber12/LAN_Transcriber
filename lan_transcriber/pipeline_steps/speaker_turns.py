@@ -18,6 +18,25 @@ DEFAULT_SPEAKER_TURN_MIN_WORDS = 6
 DEFAULT_SPEAKER_TURN_SHORT_MERGE_GAP_SEC = 8.0
 
 
+def _decapitalize_join(existing_text: str, appended_text: str) -> str:
+    """Join two text fragments, lowercasing the appended fragment's first letter
+    when it looks like a false sentence start from segment splitting."""
+    if not existing_text or not appended_text:
+        return (existing_text + " " + appended_text).strip()
+    last_char = existing_text.rstrip()[-1] if existing_text.strip() else ""
+    if last_char in ".!?":
+        return f"{existing_text} {appended_text}"
+    first_word = appended_text.split()[0] if appended_text.split() else ""
+    if not first_word or not first_word[0].isupper():
+        return f"{existing_text} {appended_text}"
+    if first_word.isupper() and len(first_word) > 1:
+        return f"{existing_text} {appended_text}"
+    if first_word == "I":
+        return f"{existing_text} {appended_text}"
+    fixed = appended_text[0].lower() + appended_text[1:]
+    return f"{existing_text} {fixed}"
+
+
 def _normalise_word(word: dict[str, Any], seg_start: float, seg_end: float) -> dict[str, Any] | None:
     text = str(word.get("word") or word.get("text") or "").strip()
     if not text:
@@ -215,7 +234,7 @@ def build_speaker_turns(
             and start - safe_float(current["end"], default=start) <= merge_gap_sec
         ):
             current["end"] = round(max(safe_float(current["end"]), end), 3)
-            current["text"] = f"{current['text']} {word['word']}".strip()
+            current["text"] = _decapitalize_join(current["text"], str(word["word"]))
         else:
             if current is not None:
                 turns.append(current)
@@ -297,7 +316,7 @@ def merge_short_turns(
 
         if prev_same_speaker and prev_gap < merge_gap_sec:
             prev_text = str(prev_turn.get("text") or "").strip()
-            merged_text = f"{prev_text} {text}".strip() if text else prev_text
+            merged_text = _decapitalize_join(prev_text, text) if text else prev_text
             prev_turn["text"] = merged_text
             prev_turn["end"] = round(
                 max(
@@ -311,7 +330,7 @@ def merge_short_turns(
 
         if next_same_speaker and next_gap < merge_gap_sec:
             next_text = str(next_turn.get("text") or "").strip()
-            merged_text = f"{text} {next_text}".strip() if next_text else text
+            merged_text = _decapitalize_join(text, next_text) if next_text else text
             next_turn["text"] = merged_text
             next_turn["start"] = round(
                 min(

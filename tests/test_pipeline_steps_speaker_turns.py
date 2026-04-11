@@ -4,6 +4,7 @@ from lan_transcriber.pipeline_steps.speaker_turns import (
     DEFAULT_SPEAKER_TURN_MERGE_GAP_SEC,
     DEFAULT_SPEAKER_TURN_MIN_WORDS,
     DEFAULT_SPEAKER_TURN_SHORT_MERGE_GAP_SEC,
+    _decapitalize_join,
     build_speaker_turns,
     count_interruptions,
     merge_short_turns,
@@ -223,6 +224,122 @@ def test_merge_short_turns_default_gap_exceeds_base_merge_gap():
     assert merged[0]["text"].endswith("ok")
     assert merged[0]["start"] == 0.0
     assert merged[0]["end"] == 11.5
+
+
+def test_decapitalize_mid_sentence():
+    """A capitalized word mid-sentence (no preceding sentence punct) is lowercased."""
+    assert (
+        _decapitalize_join("энергии. Он может", "Понизить")
+        == "энергии. Он может понизить"
+    )
+
+
+def test_keep_after_period():
+    """After sentence-ending punctuation the appended capital is preserved."""
+    assert (
+        _decapitalize_join("решение.", "Но мы понимаем")
+        == "решение. Но мы понимаем"
+    )
+
+
+def test_keep_after_exclamation():
+    assert _decapitalize_join("стоп!", "Вперёд") == "стоп! Вперёд"
+
+
+def test_keep_after_question():
+    assert _decapitalize_join("правда?", "Да") == "правда? Да"
+
+
+def test_keep_acronym():
+    """All-caps acronyms longer than one char are preserved."""
+    assert _decapitalize_join("стандарту", "ISO") == "стандарту ISO"
+    assert _decapitalize_join("use the", "API today") == "use the API today"
+
+
+def test_keep_english_I():
+    """The English pronoun ``I`` is preserved as capitalized."""
+    assert _decapitalize_join("think", "I will") == "think I will"
+
+
+def test_keep_already_lowercase():
+    """An already-lowercase appended fragment is passed through unchanged."""
+    assert _decapitalize_join("просто", "уходить") == "просто уходить"
+
+
+def test_empty_strings():
+    """Empty existing or appended text falls back to a plain strip-join."""
+    assert _decapitalize_join("", "Hello") == "Hello"
+    assert _decapitalize_join("text", "") == "text"
+    assert _decapitalize_join("", "") == ""
+
+
+def test_decapitalize_single_capital_letter_lowercased():
+    """A single capital letter (not ``I``) mid-sentence is still lowercased."""
+    # Russian "А" (single Cyrillic capital letter) should be lowercased.
+    assert _decapitalize_join("ну", "А дальше") == "ну а дальше"
+
+
+def test_real_example_build_speaker_turns_decapitalizes_false_starts():
+    """End-to-end: segment-boundary-capitalized words are decapitalized on merge."""
+    # Simulate ASR output split into segments where each segment starts with
+    # a capitalized word even though it is a continuation of the previous
+    # sentence. The full paragraph has no sentence-ending punctuation between
+    # the boundaries, so the merged transcript must not contain the false
+    # capitals.
+    asr_segments = [
+        {
+            "start": 0.0,
+            "end": 1.0,
+            "text": "Компрессор работает на",
+            "words": [
+                {"start": 0.0, "end": 0.3, "word": "Компрессор"},
+                {"start": 0.3, "end": 0.6, "word": "работает"},
+                {"start": 0.6, "end": 1.0, "word": "на"},
+            ],
+        },
+        {
+            "start": 1.0,
+            "end": 2.0,
+            "text": "Половину мощности когда",
+            "words": [
+                {"start": 1.0, "end": 1.3, "word": "Половину"},
+                {"start": 1.3, "end": 1.6, "word": "мощности"},
+                {"start": 1.6, "end": 2.0, "word": "когда"},
+            ],
+        },
+        {
+            "start": 2.0,
+            "end": 3.0,
+            "text": "Нагрузка падает.",
+            "words": [
+                {"start": 2.0, "end": 2.4, "word": "Нагрузка"},
+                {"start": 2.4, "end": 3.0, "word": "падает."},
+            ],
+        },
+        {
+            "start": 3.0,
+            "end": 4.0,
+            "text": "Потом снова",
+            "words": [
+                {"start": 3.0, "end": 3.5, "word": "Потом"},
+                {"start": 3.5, "end": 4.0, "word": "снова"},
+            ],
+        },
+    ]
+    diar_segments = [{"start": 0.0, "end": 5.0, "speaker": "S1"}]
+    turns = build_speaker_turns(asr_segments, diar_segments, default_language=None)
+    assert len(turns) == 1
+    text = turns[0]["text"]
+    # Turn start remains capitalized.
+    assert text.startswith("Компрессор ")
+    # Mid-sentence boundaries are lowercased.
+    assert "половину" in text
+    assert "когда" in text
+    # After the period, capitalization resumes.
+    assert "падает. Потом" in text
+    # No false capitals remain in the middle of the paragraph.
+    assert "Половину" not in text
+    assert "Нагрузка" not in text
 
 
 def test_count_interruptions_small_synthetic_case():
