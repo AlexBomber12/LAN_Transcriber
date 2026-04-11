@@ -714,3 +714,13 @@ Queue (in order)
 - Status: DONE
 - Tasks file: tasks/PR-SPEAKER-MERGE-TORCH-LOAD-FIX-01.md
 - Depends on: PR-SPEAKER-MERGE-DIAGNOSTICS-HOTFIX-01
+
+143) PR-ARTIFACT-SINGLE-WRITER-01: Eliminate dual artifact writes: make orchestrator the single source of truth for all derived JSON artifacts
+- Status: TODO
+- Tasks file: tasks/PR-ARTIFACT-SINGLE-WRITER-01.md
+- Depends on: PR-SPEAKER-MERGE-TORCH-LOAD-FIX-01
+
+144) PR-FORCE-REPROCESS-01: Add Force Full Reprocess button that clears derived artifacts and re-runs pipeline from scratch
+- Status: TODO
+- Tasks file: tasks/PR-FORCE-REPROCESS-01.md
+- Depends on: PR-ARTIFACT-SINGLE-WRITER-01
