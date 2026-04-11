@@ -732,6 +732,51 @@ def test_pr_ui_polish_02_cyrillic_font_face_present(seeded_client):
     assert "U+0400-045F" in page.text
 
 
+def test_pr_fix_cyrillic_02_woff2_contains_cyrillic_glyphs():
+    """PR-FIX-CYRILLIC-02: inter-cyrillic.woff2 must actually provide Cyrillic glyphs.
+
+    Regression test for PR-UI-POLISH-02: the shipped file had the right name
+    and @font-face block, but contained zero Cyrillic glyphs, so browsers fell
+    back to the default sans-serif for Russian text.
+    """
+    from fontTools.ttLib import TTFont
+
+    font_path = (
+        Path(__file__).resolve().parent.parent
+        / "lan_app"
+        / "static"
+        / "fonts"
+        / "inter-cyrillic.woff2"
+    )
+    assert font_path.is_file(), f"missing font file: {font_path}"
+    tt = TTFont(str(font_path))
+    assert tt["name"].getDebugName(1) == "Inter"
+    cmap = tt.getBestCmap()
+    cyrillic_present = sum(1 for cp in range(0x0400, 0x0460) if cp in cmap)
+    assert cyrillic_present >= 90, (
+        f"inter-cyrillic.woff2 has only {cyrillic_present}/96 U+0400-U+045F "
+        "glyphs; expected a Cyrillic subset of Inter"
+    )
+    for cp in (0x0410, 0x0411, 0x0412, 0x0430, 0x0431, 0x2116):
+        assert cp in cmap, f"missing codepoint U+{cp:04X} in Cyrillic subset"
+
+
+def test_pr_fix_cyrillic_02_tailwind_font_family_has_fallback(seeded_client):
+    """PR-FIX-CYRILLIC-02: Tailwind fontFamily stack includes system fallbacks.
+
+    Regression test: ensures font-display/font-sans utility classes resolve to
+    Inter with sensible fallbacks so Cyrillic glyphs not covered by the woff2
+    subset still render in a visually similar system font.
+    """
+    page = seeded_client.get("/")
+    assert page.status_code == 200
+    body = page.text
+    assert '"display": ["Inter"' in body
+    assert '"sans": ["Inter"' in body
+    assert '"system-ui"' in body
+    assert '"sans-serif"' in body
+
+
 def test_pr_ui_polish_02_compact_inspector_avatar_uses_short_speaker_label(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

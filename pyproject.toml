@@ -45,6 +45,8 @@ test = [
     "pytest-cov",
     "pytest-mock",
     "respx[router]",
+    "fonttools>=4.0",
+    "brotli",
 ]
 
 [tool.pytest.ini_options]

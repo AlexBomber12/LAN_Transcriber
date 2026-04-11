@@ -686,7 +686,7 @@ Queue (in order)
 - Depends on: PR-TRANSCRIPT-MERGE-01
 
 137) PR-FIX-CYRILLIC-02: Fix Cyrillic font rendering (diagnose and fix Inter woff2 + Tailwind fontFamily mismatch)
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-FIX-CYRILLIC-02.md
 - Depends on: PR-MERGE-DECAPITALIZE-01
 

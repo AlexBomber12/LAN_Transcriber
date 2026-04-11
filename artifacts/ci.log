@@ -15,10 +15,10 @@ The event loop scope for asynchronous fixtures will default to the fixture cachi
 ........................................................................ [ 63%]
 ........................................................................ [ 69%]
 .......................................................s................ [ 75%]
-........................................................................ [ 82%]
+........................................................................ [ 81%]
 ........................................................................ [ 88%]
 ........................................................................ [ 94%]
-............................................................             [100%]
+..............................................................           [100%]
 =============================== warnings summary ===============================
 lan_transcriber/pipeline_steps/precheck.py:3
   /home/alexey/LAN_Transcriber/lan_transcriber/pipeline_steps/precheck.py:3: DeprecationWarning: 'audioop' is deprecated and slated for removal in Python 3.13
@@ -63,7 +63,7 @@ TOTAL   14392      0   4834      0   100%
 Coverage HTML written to dir htmlcov
 
 Required test coverage of 100% reached. Total coverage: 100.00%
-1139 passed, 3 skipped, 11 warnings in 103.23s (0:01:43)
+1141 passed, 3 skipped, 11 warnings in 101.53s (0:01:41)
 Name                                                    Stmts   Miss Branch BrPart  Cover
 -----------------------------------------------------------------------------------------
 lan_transcriber/__init__.py                                 8      0      0      0   100%
