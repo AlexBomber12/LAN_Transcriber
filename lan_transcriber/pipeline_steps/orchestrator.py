@@ -943,12 +943,47 @@ def _diariser_pipeline_model(diariser: Diariser) -> Any | None:
     return None
 
 
+_DEFAULT_SPEAKER_EMBEDDING_MODEL = "pyannote/wespeaker-voxceleb-resnet34-LM"
+
+
+def _build_pyannote_inference(model_or_name: Any) -> Any | None:
+    """Construct a pyannote ``Inference`` wrapper, returning ``None`` on failure."""
+    try:
+        from pyannote.audio import Inference  # type: ignore
+    except Exception as exc:
+        _logger.warning(
+            "speaker_merge: pyannote.audio.Inference unavailable; "
+            "skipping merge step (%s)",
+            exc,
+        )
+        return None
+    try:
+        return Inference(model_or_name, window="whole")
+    except Exception as exc:
+        _logger.warning(
+            "speaker_merge: failed to load embedding model %s: %s",
+            model_or_name,
+            exc,
+        )
+        return None
+
+
 def _resolve_pyannote_embedding_model(diariser: Diariser) -> EmbeddingModel | None:
     """Resolve a speaker embedding callable from the loaded diarization pipeline.
 
     Returns a callable ``(audio_path, start, end) -> np.ndarray`` or ``None`` if
     no usable embedding model can be obtained. Failures are logged and swallowed
     so the pipeline still runs when the merge step cannot be enabled.
+
+    pyannote-audio >= 3.1 stores the embedding sub-model on
+    ``SpeakerDiarization._embedding``, but that attribute is a
+    :class:`PretrainedSpeakerEmbedding` callable — it does **not** expose the
+    ``.crop(file, segment)`` method we need. We therefore only reuse the
+    pipeline's attribute when it already looks like an ``Inference`` wrapper
+    (i.e. exposes ``crop``). Otherwise we construct a fresh
+    ``Inference(embedding_model, window="whole")`` — using the model identifier
+    stored on the pipeline when available and falling back to the
+    wespeaker checkpoint that pyannote-audio bundles by default.
     """
 
     cached = getattr(diariser, "_lan_speaker_embedding_model", None)
@@ -962,39 +997,22 @@ def _resolve_pyannote_embedding_model(diariser: Diariser) -> EmbeddingModel | No
         return None
 
     inference: Any = None
-    embedding_attr: Any = None
     for attr in ("_embedding", "embedding"):
         candidate = getattr(pipeline_model, attr, None)
-        if candidate is not None:
-            embedding_attr = candidate
+        if candidate is not None and callable(getattr(candidate, "crop", None)):
+            inference = candidate
             break
 
-    if embedding_attr is None:
-        try:
-            from pyannote.audio import Inference  # type: ignore
-        except Exception as exc:
-            _logger.warning(
-                "speaker_merge: pyannote.audio.Inference unavailable; "
-                "skipping merge step (%s)",
-                exc,
-            )
+    if inference is None:
+        raw_embedding_attr = getattr(pipeline_model, "embedding", None)
+        if isinstance(raw_embedding_attr, (str, Path)):
+            model_name: Any = str(raw_embedding_attr)
+        else:
+            model_name = _DEFAULT_SPEAKER_EMBEDDING_MODEL
+        inference = _build_pyannote_inference(model_name)
+        if inference is None:
             setattr(diariser, "_lan_speaker_embedding_unavailable", True)
             return None
-        model_name = getattr(pipeline_model, "embedding_model", None) or (
-            "pyannote/wespeaker-voxceleb-resnet34-LM"
-        )
-        try:
-            inference = Inference(model_name, window="whole")
-        except Exception as exc:
-            _logger.warning(
-                "speaker_merge: failed to load embedding model %s: %s",
-                model_name,
-                exc,
-            )
-            setattr(diariser, "_lan_speaker_embedding_unavailable", True)
-            return None
-    else:
-        inference = embedding_attr
 
     def _embed(audio_path: Path, start: float, end: float):
         try:

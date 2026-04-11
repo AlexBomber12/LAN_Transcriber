@@ -1,161 +1,216 @@
-diff --git a/lan_transcriber/pipeline_steps/speaker_merge.py b/lan_transcriber/pipeline_steps/speaker_merge.py
-index 58d2cda..4cc1794 100644
---- a/lan_transcriber/pipeline_steps/speaker_merge.py
-+++ b/lan_transcriber/pipeline_steps/speaker_merge.py
-@@ -74,6 +74,11 @@ def _to_vector(value: Any) -> list[float] | None:
-     Returns ``None`` when the input is empty, contains non-finite entries, or
-     cannot be converted. Accepts plain sequences and any object that supports
-     ``tolist()`` (numpy arrays etc).
+diff --git a/lan_transcriber/pipeline_steps/orchestrator.py b/lan_transcriber/pipeline_steps/orchestrator.py
+index 787d02d..76fe491 100644
+--- a/lan_transcriber/pipeline_steps/orchestrator.py
++++ b/lan_transcriber/pipeline_steps/orchestrator.py
+@@ -943,12 +943,47 @@ def _diariser_pipeline_model(diariser: Diariser) -> Any | None:
+     return None
+ 
+ 
++_DEFAULT_SPEAKER_EMBEDDING_MODEL = "pyannote/wespeaker-voxceleb-resnet34-LM"
 +
-+    Pyannote's ``Inference.crop`` commonly returns a 2-D array of shape
-+    ``(n_frames, dim)`` — in ``window="whole"`` mode typically ``(1, dim)``.
-+    This function transparently handles that case by mean-pooling along the
-+    leading axis so callers always get a single ``(dim,)`` centroid.
++
++def _build_pyannote_inference(model_or_name: Any) -> Any | None:
++    """Construct a pyannote ``Inference`` wrapper, returning ``None`` on failure."""
++    try:
++        from pyannote.audio import Inference  # type: ignore
++    except Exception as exc:
++        _logger.warning(
++            "speaker_merge: pyannote.audio.Inference unavailable; "
++            "skipping merge step (%s)",
++            exc,
++        )
++        return None
++    try:
++        return Inference(model_or_name, window="whole")
++    except Exception as exc:
++        _logger.warning(
++            "speaker_merge: failed to load embedding model %s: %s",
++            model_or_name,
++            exc,
++        )
++        return None
++
++
+ def _resolve_pyannote_embedding_model(diariser: Diariser) -> EmbeddingModel | None:
+     """Resolve a speaker embedding callable from the loaded diarization pipeline.
+ 
+     Returns a callable ``(audio_path, start, end) -> np.ndarray`` or ``None`` if
+     no usable embedding model can be obtained. Failures are logged and swallowed
+     so the pipeline still runs when the merge step cannot be enabled.
++
++    pyannote-audio >= 3.1 stores the embedding sub-model on
++    ``SpeakerDiarization._embedding``, but that attribute is a
++    :class:`PretrainedSpeakerEmbedding` callable — it does **not** expose the
++    ``.crop(file, segment)`` method we need. We therefore only reuse the
++    pipeline's attribute when it already looks like an ``Inference`` wrapper
++    (i.e. exposes ``crop``). Otherwise we construct a fresh
++    ``Inference(embedding_model, window="whole")`` — using the model identifier
++    stored on the pipeline when available and falling back to the
++    wespeaker checkpoint that pyannote-audio bundles by default.
      """
  
-     if value is None:
-@@ -81,6 +86,29 @@ def _to_vector(value: Any) -> list[float] | None:
-     tolist = getattr(value, "tolist", None)
-     if callable(tolist):
-         value = tolist()
-+    if (
-+        isinstance(value, (list, tuple))
-+        and value
-+        and all(isinstance(row, (list, tuple)) for row in value)
-+    ):
-+        rows: list[list[float]] = []
-+        for row in value:
-+            row_floats: list[float] = []
-+            for item in row:
-+                try:
-+                    row_floats.append(float(item))
-+                except (TypeError, ValueError):
-+                    return None
-+            rows.append(row_floats)
-+        dim = len(rows[0])
-+        if dim == 0:
-+            return None
-+        if not all(len(row) == dim for row in rows):
-+            return None
-+        averaged = [sum(row[i] for row in rows) / len(rows) for i in range(dim)]
-+        if not all(math.isfinite(x) for x in averaged):
-+            return None
-+        return averaged
-     try:
-         iterator = iter(value)
-     except TypeError:
+     cached = getattr(diariser, "_lan_speaker_embedding_model", None)
+@@ -962,39 +997,22 @@ def _resolve_pyannote_embedding_model(diariser: Diariser) -> EmbeddingModel | No
+         return None
+ 
+     inference: Any = None
+-    embedding_attr: Any = None
+     for attr in ("_embedding", "embedding"):
+         candidate = getattr(pipeline_model, attr, None)
+-        if candidate is not None:
+-            embedding_attr = candidate
++        if candidate is not None and callable(getattr(candidate, "crop", None)):
++            inference = candidate
+             break
+ 
+-    if embedding_attr is None:
+-        try:
+-            from pyannote.audio import Inference  # type: ignore
+-        except Exception as exc:
+-            _logger.warning(
+-                "speaker_merge: pyannote.audio.Inference unavailable; "
+-                "skipping merge step (%s)",
+-                exc,
+-            )
+-            setattr(diariser, "_lan_speaker_embedding_unavailable", True)
+-            return None
+-        model_name = getattr(pipeline_model, "embedding_model", None) or (
+-            "pyannote/wespeaker-voxceleb-resnet34-LM"
+-        )
+-        try:
+-            inference = Inference(model_name, window="whole")
+-        except Exception as exc:
+-            _logger.warning(
+-                "speaker_merge: failed to load embedding model %s: %s",
+-                model_name,
+-                exc,
+-            )
++    if inference is None:
++        raw_embedding_attr = getattr(pipeline_model, "embedding", None)
++        if isinstance(raw_embedding_attr, (str, Path)):
++            model_name: Any = str(raw_embedding_attr)
++        else:
++            model_name = _DEFAULT_SPEAKER_EMBEDDING_MODEL
++        inference = _build_pyannote_inference(model_name)
++        if inference is None:
+             setattr(diariser, "_lan_speaker_embedding_unavailable", True)
+             return None
+-    else:
+-        inference = embedding_attr
+ 
+     def _embed(audio_path: Path, start: float, end: float):
+         try:
 diff --git a/tests/test_speaker_merge.py b/tests/test_speaker_merge.py
-index 1cbafe4..9077e45 100644
+index 9077e45..b2b3e00 100644
 --- a/tests/test_speaker_merge.py
 +++ b/tests/test_speaker_merge.py
-@@ -570,6 +570,110 @@ def test_merge_rejects_vectors_with_non_numeric_entries() -> None:
-     assert {row["speaker"] for row in updated} == {"A", "B"}
+@@ -6,7 +6,7 @@ import math
+ import sys
+ import types
+ from pathlib import Path
+-from typing import Sequence
++from typing import Any, Sequence
+ 
+ import pytest
+ 
+@@ -802,9 +802,11 @@ def test_resolve_pyannote_embedding_model_uses_public_embedding_attr() -> None:
+         assert model_callable(Path("/x.wav"), 0.0, 1.0) is None
  
  
-+def test_merge_accepts_two_d_single_row_embeddings() -> None:
-+    """Pyannote ``Inference(window="whole").crop`` returns shape (1, dim)."""
-+
-+    def _model(audio_path: Path, start: float, end: float):
-+        # Simulate a numpy-style (1, 2) array via nested list.
-+        return [[1.0, 0.0]]
-+
-+    diar_segments = [
-+        _segment("A", 0.0, 5.0),
-+        _segment("B", 6.0, 11.0),
-+    ]
-+    updated, merge_map = merge_similar_speakers(
-+        diar_segments,
-+        audio_path=_AUDIO_PATH,
-+        embedding_model=_model,
-+    )
-+    assert merge_map == {"B": "A"}
-+    assert {row["speaker"] for row in updated} == {"A"}
-+
-+
-+def test_merge_mean_pools_two_d_multi_row_embeddings() -> None:
-+    """When inference returns multiple frames we mean-pool along the first axis."""
-+
-+    def _model(audio_path: Path, start: float, end: float):
-+        # Two frames each; mean is [1.0, 0.0] so both speakers share a centroid.
-+        return [[1.0, 0.0], [1.0, 0.0]]
-+
-+    diar_segments = [
-+        _segment("A", 0.0, 5.0),
-+        _segment("B", 6.0, 11.0),
-+    ]
-+    updated, merge_map = merge_similar_speakers(
-+        diar_segments,
-+        audio_path=_AUDIO_PATH,
-+        embedding_model=_model,
-+    )
-+    assert merge_map == {"B": "A"}
-+    assert {row["speaker"] for row in updated} == {"A"}
-+
-+
-+def test_merge_rejects_two_d_vectors_with_shape_mismatch() -> None:
-+    def _model(audio_path: Path, start: float, end: float):
-+        return [[1.0, 0.0], [1.0, 0.0, 0.5]]  # jagged rows
-+
-+    diar_segments = [
-+        _segment("A", 0.0, 5.0),
-+        _segment("B", 6.0, 11.0),
-+    ]
-+    updated, merge_map = merge_similar_speakers(
-+        diar_segments,
-+        audio_path=_AUDIO_PATH,
-+        embedding_model=_model,
-+    )
-+    assert merge_map == {}
-+
-+
-+def test_merge_rejects_two_d_vectors_with_non_numeric_entries() -> None:
-+    def _model(audio_path: Path, start: float, end: float):
-+        return [[1.0, "bad"]]
-+
-+    diar_segments = [
-+        _segment("A", 0.0, 5.0),
-+        _segment("B", 6.0, 11.0),
-+    ]
-+    updated, merge_map = merge_similar_speakers(
-+        diar_segments,
-+        audio_path=_AUDIO_PATH,
-+        embedding_model=_model,
-+    )
-+    assert merge_map == {}
-+
-+
-+def test_merge_rejects_two_d_vectors_with_empty_rows() -> None:
-+    def _model(audio_path: Path, start: float, end: float):
-+        return [[], []]
-+
-+    diar_segments = [
-+        _segment("A", 0.0, 5.0),
-+        _segment("B", 6.0, 11.0),
-+    ]
-+    updated, merge_map = merge_similar_speakers(
-+        diar_segments,
-+        audio_path=_AUDIO_PATH,
-+        embedding_model=_model,
-+    )
-+    assert merge_map == {}
-+
-+
-+def test_merge_rejects_two_d_vectors_with_nonfinite_pool_result() -> None:
-+    def _model(audio_path: Path, start: float, end: float):
-+        return [[float("nan"), 0.0]]
-+
-+    diar_segments = [
-+        _segment("A", 0.0, 5.0),
-+        _segment("B", 6.0, 11.0),
-+    ]
-+    updated, merge_map = merge_similar_speakers(
-+        diar_segments,
-+        audio_path=_AUDIO_PATH,
-+        embedding_model=_model,
-+    )
-+    assert merge_map == {}
-+
-+
- class _StubDiariser:
-     """Simple diariser stub used by orchestrator helper tests."""
+-def test_resolve_pyannote_embedding_model_falls_back_to_inference() -> None:
++def test_resolve_pyannote_embedding_model_falls_back_to_inference_with_pipeline_name() -> None:
++    # Simulates pyannote ``SpeakerDiarization`` where ``pipeline.embedding``
++    # stores the model identifier string (not an Inference-like object).
+     pipeline_model = types.SimpleNamespace(
+-        embedding_model="pyannote/custom-embed",
++        embedding="pyannote/custom-embed",
+     )
+     diariser = _StubDiariser(
+         pipeline_model=pipeline_model, pipeline_attr="_pipeline_model"
+@@ -832,6 +834,86 @@ def test_resolve_pyannote_embedding_model_falls_back_to_inference() -> None:
+     assert vector == [0.25, 0.75]
  
+ 
++def test_resolve_pyannote_embedding_model_falls_back_when_private_embedding_lacks_crop() -> None:
++    """Covers the real pyannote-audio >= 3.1 case.
++
++    ``SpeakerDiarization._embedding`` is a ``PretrainedSpeakerEmbedding``
++    callable — it takes waveforms, not (file, segment) pairs. Using it as an
++    Inference substitute causes every ``crop()`` call to raise, silently
++    disabling the merge step. The resolver must detect the missing ``crop``
++    method and wrap the pipeline's embedding identifier with a fresh
++    ``Inference`` instead.
++    """
++
++    class _PretrainedSpeakerEmbedding:
++        """Callable with no ``crop()`` — mirrors pyannote's internal object."""
++
++        def __call__(self, waveforms):
++            return [[1.0, 0.0]]
++
++    pipeline_model = types.SimpleNamespace(
++        _embedding=_PretrainedSpeakerEmbedding(),
++        embedding="pyannote/wespeaker-from-pipeline",
++    )
++    diariser = _StubDiariser(
++        pipeline_model=pipeline_model, pipeline_attr="_pipeline_model"
++    )
++
++    build_calls: list[Any] = []
++
++    class _FakeInference:
++        def __init__(self, name, *, window: str) -> None:
++            build_calls.append((name, window))
++            self.name = name
++
++        def crop(self, path: str, segment):
++            return [0.5, 0.5]
++
++    fake_audio = types.SimpleNamespace(Inference=_FakeInference)
++    fake_core = types.SimpleNamespace(Segment=lambda *a, **k: (a, k))
++
++    with _patched_module("pyannote.audio", fake_audio), _patched_module(
++        "pyannote.core", fake_core
++    ):
++        model_callable = pipeline_orchestrator._resolve_pyannote_embedding_model(
++            diariser
++        )
++        assert callable(model_callable)
++        vector = model_callable(Path("/z.wav"), 0.0, 1.0)
++    assert vector == [0.5, 0.5]
++    # The embedding attr was ignored; we built a fresh Inference by name.
++    assert build_calls == [("pyannote/wespeaker-from-pipeline", "whole")]
++
++
++def test_resolve_pyannote_embedding_model_uses_default_when_embedding_attr_not_a_string() -> None:
++    """When pipeline.embedding is neither crop-capable nor a string, use the default."""
++
++    class _OpaqueEmbedding:
++        def __call__(self, *_a, **_k):  # pragma: no cover - not invoked
++            return None
++
++    pipeline_model = types.SimpleNamespace(_embedding=_OpaqueEmbedding())
++    diariser = _StubDiariser(
++        pipeline_model=pipeline_model, pipeline_attr="_pipeline_model"
++    )
++
++    build_calls: list[Any] = []
++
++    class _FakeInference:
++        def __init__(self, name, *, window: str) -> None:
++            build_calls.append((name, window))
++
++        def crop(self, *_a, **_k):  # pragma: no cover - not invoked
++            return [1.0]
++
++    fake_audio = types.SimpleNamespace(Inference=_FakeInference)
++    with _patched_module("pyannote.audio", fake_audio):
++        pipeline_orchestrator._resolve_pyannote_embedding_model(diariser)
++    assert build_calls == [
++        (pipeline_orchestrator._DEFAULT_SPEAKER_EMBEDDING_MODEL, "whole")
++    ]
++
++
+ def test_resolve_pyannote_embedding_model_handles_inference_import_error() -> None:
+     pipeline_model = types.SimpleNamespace()
+     diariser = _StubDiariser(

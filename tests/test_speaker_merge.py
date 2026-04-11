@@ -6,7 +6,7 @@ import math
 import sys
 import types
 from pathlib import Path
-from typing import Sequence
+from typing import Any, Sequence
 
 import pytest
 
@@ -802,9 +802,11 @@ def test_resolve_pyannote_embedding_model_uses_public_embedding_attr() -> None:
         assert model_callable(Path("/x.wav"), 0.0, 1.0) is None
 
 
-def test_resolve_pyannote_embedding_model_falls_back_to_inference() -> None:
+def test_resolve_pyannote_embedding_model_falls_back_to_inference_with_pipeline_name() -> None:
+    # Simulates pyannote ``SpeakerDiarization`` where ``pipeline.embedding``
+    # stores the model identifier string (not an Inference-like object).
     pipeline_model = types.SimpleNamespace(
-        embedding_model="pyannote/custom-embed",
+        embedding="pyannote/custom-embed",
     )
     diariser = _StubDiariser(
         pipeline_model=pipeline_model, pipeline_attr="_pipeline_model"
@@ -830,6 +832,86 @@ def test_resolve_pyannote_embedding_model_falls_back_to_inference() -> None:
         assert callable(model_callable)
         vector = model_callable(Path("/y.wav"), 3.0, 4.0)
     assert vector == [0.25, 0.75]
+
+
+def test_resolve_pyannote_embedding_model_falls_back_when_private_embedding_lacks_crop() -> None:
+    """Covers the real pyannote-audio >= 3.1 case.
+
+    ``SpeakerDiarization._embedding`` is a ``PretrainedSpeakerEmbedding``
+    callable — it takes waveforms, not (file, segment) pairs. Using it as an
+    Inference substitute causes every ``crop()`` call to raise, silently
+    disabling the merge step. The resolver must detect the missing ``crop``
+    method and wrap the pipeline's embedding identifier with a fresh
+    ``Inference`` instead.
+    """
+
+    class _PretrainedSpeakerEmbedding:
+        """Callable with no ``crop()`` — mirrors pyannote's internal object."""
+
+        def __call__(self, waveforms):
+            return [[1.0, 0.0]]
+
+    pipeline_model = types.SimpleNamespace(
+        _embedding=_PretrainedSpeakerEmbedding(),
+        embedding="pyannote/wespeaker-from-pipeline",
+    )
+    diariser = _StubDiariser(
+        pipeline_model=pipeline_model, pipeline_attr="_pipeline_model"
+    )
+
+    build_calls: list[Any] = []
+
+    class _FakeInference:
+        def __init__(self, name, *, window: str) -> None:
+            build_calls.append((name, window))
+            self.name = name
+
+        def crop(self, path: str, segment):
+            return [0.5, 0.5]
+
+    fake_audio = types.SimpleNamespace(Inference=_FakeInference)
+    fake_core = types.SimpleNamespace(Segment=lambda *a, **k: (a, k))
+
+    with _patched_module("pyannote.audio", fake_audio), _patched_module(
+        "pyannote.core", fake_core
+    ):
+        model_callable = pipeline_orchestrator._resolve_pyannote_embedding_model(
+            diariser
+        )
+        assert callable(model_callable)
+        vector = model_callable(Path("/z.wav"), 0.0, 1.0)
+    assert vector == [0.5, 0.5]
+    # The embedding attr was ignored; we built a fresh Inference by name.
+    assert build_calls == [("pyannote/wespeaker-from-pipeline", "whole")]
+
+
+def test_resolve_pyannote_embedding_model_uses_default_when_embedding_attr_not_a_string() -> None:
+    """When pipeline.embedding is neither crop-capable nor a string, use the default."""
+
+    class _OpaqueEmbedding:
+        def __call__(self, *_a, **_k):  # pragma: no cover - not invoked
+            return None
+
+    pipeline_model = types.SimpleNamespace(_embedding=_OpaqueEmbedding())
+    diariser = _StubDiariser(
+        pipeline_model=pipeline_model, pipeline_attr="_pipeline_model"
+    )
+
+    build_calls: list[Any] = []
+
+    class _FakeInference:
+        def __init__(self, name, *, window: str) -> None:
+            build_calls.append((name, window))
+
+        def crop(self, *_a, **_k):  # pragma: no cover - not invoked
+            return [1.0]
+
+    fake_audio = types.SimpleNamespace(Inference=_FakeInference)
+    with _patched_module("pyannote.audio", fake_audio):
+        pipeline_orchestrator._resolve_pyannote_embedding_model(diariser)
+    assert build_calls == [
+        (pipeline_orchestrator._DEFAULT_SPEAKER_EMBEDDING_MODEL, "whole")
+    ]
 
 
 def test_resolve_pyannote_embedding_model_handles_inference_import_error() -> None:
