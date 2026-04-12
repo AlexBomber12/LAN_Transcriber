@@ -721,6 +721,6 @@ Queue (in order)
 - Depends on: PR-SPEAKER-MERGE-TORCH-LOAD-FIX-01
 
 144) PR-FORCE-REPROCESS-01: Add Force Full Reprocess button that clears derived artifacts and re-runs pipeline from scratch
-- Status: TODO
+- Status: DONE
 - Tasks file: tasks/PR-FORCE-REPROCESS-01.md
 - Depends on: PR-ARTIFACT-SINGLE-WRITER-01

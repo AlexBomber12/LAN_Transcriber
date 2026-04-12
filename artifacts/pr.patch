@@ -1,567 +1,139 @@
 diff --git a/lan_app/worker_tasks.py b/lan_app/worker_tasks.py
-index 743c282..6778056 100644
+index a4394f0..b1dbb97 100644
 --- a/lan_app/worker_tasks.py
 +++ b/lan_app/worker_tasks.py
-@@ -2574,77 +2574,23 @@ def _build_diarization_metadata_payload(
-     speaker_merges: dict[str, str] | None = None,
-     speaker_merge_diagnostics: dict[str, Any] | None = None,
- ) -> dict[str, Any]:
--    diariser_mode = str(runtime.get("mode") or "unknown").strip().lower() or "unknown"
--    effective_hints = runtime.get("effective_hints")
--    if not isinstance(effective_hints, dict):
--        effective_hints = {}
--    initial_hints = runtime.get("initial_hints")
--    if not isinstance(initial_hints, dict):
--        initial_hints = {}
--    profile_selection = runtime.get("profile_selection")
--    if not isinstance(profile_selection, dict):
--        profile_selection = {}
--    selected_profile = str(
--        profile_selection.get("selected_profile")
--        or runtime.get("selected_profile")
--        or runtime.get("initial_profile")
--        or runtime.get("diarization_profile")
--        or cfg.diarization_profile
-+    """Thin wrapper that delegates to the orchestrator's shared builder.
-+
-+    PR-ARTIFACT-SINGLE-WRITER-01 consolidated the diarization metadata
-+    payload construction into a single source of truth in
-+    ``lan_transcriber.pipeline_steps.orchestrator``. The wrapper is kept
-+    so existing tests that reference ``worker_tasks._build_diarization_metadata_payload``
-+    continue to hit the same code path the production pipeline uses.
-+    """
-+
-+    return pipeline_orchestrator._build_diarization_metadata_payload(  # noqa: SLF001
-+        runtime=runtime,
-+        cfg=cfg,
-+        smoothing_result=smoothing_result,
-+        used_dummy_fallback=bool(runtime.get("used_dummy_fallback", False)),
-+        speaker_merges=speaker_merges,
-+        speaker_merge_diagnostics=speaker_merge_diagnostics,
-     )
--    initial_metrics = profile_selection.get("initial_metrics")
--    if not isinstance(initial_metrics, dict):
--        initial_metrics = {}
--    payload: dict[str, Any] = {
--        "version": 1,
--        "mode": diariser_mode,
--        "degraded": bool(runtime.get("used_dummy_fallback")) or diariser_mode not in {"pyannote", "unknown"},
--        "diarization_profile": str(runtime.get("diarization_profile") or cfg.diarization_profile),
--        "requested_profile": str(
--            runtime.get("requested_profile")
--            or runtime.get("diarization_profile")
--            or cfg.diarization_profile
--        ),
--        "effective_device": str(runtime.get("effective_device") or cfg.diarization_device),
--        "scheduler_mode": str(runtime.get("scheduler_mode") or cfg.gpu_scheduler_mode),
--        "scheduler_reason": runtime.get("scheduler_reason"),
--        "initial_profile": str(runtime.get("initial_profile") or cfg.diarization_profile),
--        "selected_profile": selected_profile,
--        "selected_result": str(profile_selection.get("selected_result") or "initial_pass"),
--        "auto_profile_enabled": bool(runtime.get("auto_profile_enabled", False)),
--        "profile_override_reason": runtime.get("override_reason"),
--        "hints_applied": effective_hints,
--        "dialog_retry_attempted": bool(
--            profile_selection.get(
--                "dialog_retry_attempted",
--                runtime.get("dialog_retry_used", False),
--            )
--        ),
--        "dialog_retry_used": bool(runtime.get("dialog_retry_used", False)),
--        "speaker_count_before_retry": runtime.get("speaker_count_before_retry"),
--        "speaker_count_after_retry": runtime.get("speaker_count_after_retry"),
--        "initial_speaker_count": initial_metrics.get(
--            "speaker_count",
--            runtime.get("speaker_count_before_retry"),
--        ),
--        "initial_top_two_coverage": initial_metrics.get("top_two_coverage"),
--        "used_dummy_fallback": bool(runtime.get("used_dummy_fallback", False)),
--        "smoothing_applied": bool(diariser_mode == "pyannote" and not runtime.get("used_dummy_fallback")),
--        "merge_gap_seconds": cfg.diarization_merge_gap_seconds,
--        "min_turn_seconds": cfg.diarization_min_turn_seconds,
--        "speaker_count_before_smoothing": smoothing_result.speaker_count_before,
--        "speaker_count_after_smoothing": smoothing_result.speaker_count_after,
--        "turn_count_before_smoothing": smoothing_result.turn_count_before,
--        "turn_count_after_smoothing": smoothing_result.turn_count_after,
--        "adjacent_merges": smoothing_result.adjacent_merges,
--        "micro_turn_absorptions": smoothing_result.micro_turn_absorptions,
--    }
--    if initial_hints != effective_hints:
--        payload["initial_hints"] = initial_hints
--    if profile_selection:
--        payload["profile_selection"] = profile_selection
--    payload["speaker_merges"] = dict(speaker_merges or {})
--    payload["speaker_merge_diagnostics"] = dict(speaker_merge_diagnostics or {})
--    return payload
+@@ -4344,13 +4344,20 @@ def process_job(
+                     raise ValueError(f"Recording not found: {recording_id}")
+             _append_step_log(log_path, f"started job={job_id} type={job_type}")
+ 
+-            if force_reprocess and attempt == 1:
+-                # Only run the destructive cleanup on the first attempt: if a
+-                # later retry re-ran it, we would wipe stages that the retry
+-                # had already re-executed successfully. Failing to clean up on
+-                # the first attempt fails the job outright, which is the
+-                # recoverable outcome (the user can trigger force reprocess
+-                # again, which mints a fresh job id).
++            if force_reprocess:
++                # Run cleanup on EVERY attempt, not just the first: if an
++                # earlier attempt failed after partial progress, a retry must
++                # wipe that partial state and restart from a fully-cleared
++                # pipeline, not resume against stale files. The ops are
++                # idempotent — on the second attempt clear_derived_artifacts
++                # only deletes whatever (if anything) the retry has recreated,
++                # and clear_recording_pipeline_stages(from_stage="precheck")
++                # still preserves the sanitize_audio row so sanitization is
++                # skipped exactly the same way across retries. Skipping the
++                # cleanup on a retry after a cleanup failure would let
++                # _run_precheck_pipeline silently run against partially
++                # cleared state and report success without honoring the
++                # force-reprocess contract.
+                 try:
+                     _apply_force_reprocess_cleanup(
+                         recording_id=recording_id,
+diff --git a/tests/test_db_queue.py b/tests/test_db_queue.py
+index ea8da07..e1093ea 100644
+--- a/tests/test_db_queue.py
++++ b/tests/test_db_queue.py
+@@ -1370,6 +1370,102 @@ def test_apply_force_reprocess_cleanup_swallows_log_ioerror(
+     assert not (derived / "summary.json").exists()
  
  
- def _stage_sanitize_audio(ctx: _PipelineExecutionContext) -> _StageResult:
-@@ -3570,28 +3516,30 @@ def _stage_export_artifacts(ctx: _PipelineExecutionContext) -> _StageResult:
-         ],
-         ctx.pipeline_settings.merge_similar,
-     )
--    transcript_payload = pipeline_orchestrator._base_transcript_payload(
--        recording_id=ctx.recording_id,
--        language=language_info,
--        dominant_language=str(ctx.language_payload.get("dominant_language") or "unknown"),
--        language_distribution=dict(ctx.language_payload.get("language_distribution") or {}),
--        language_spans=list(ctx.language_payload.get("language_spans") or []),
--        target_summary_language=summary_lang,
--        transcript_language_override=ctx.transcript_language_override,
--        calendar_title=ctx.calendar_title,
--        calendar_attendees=ctx.calendar_attendees,
--        segments=language_segments,
--        speakers=sorted(
--            {
--                aliases.get(str(turn.get("speaker") or "S1"), str(turn.get("speaker") or "S1"))
--                for turn in ctx.speaker_turns
--            }
-+    transcript_payload = pipeline_orchestrator._finalize_transcript_payload(
-+        pipeline_orchestrator._base_transcript_payload(
-+            recording_id=ctx.recording_id,
-+            language=language_info,
-+            dominant_language=str(ctx.language_payload.get("dominant_language") or "unknown"),
-+            language_distribution=dict(ctx.language_payload.get("language_distribution") or {}),
-+            language_spans=list(ctx.language_payload.get("language_spans") or []),
-+            target_summary_language=summary_lang,
-+            transcript_language_override=ctx.transcript_language_override,
-+            calendar_title=ctx.calendar_title,
-+            calendar_attendees=ctx.calendar_attendees,
-+            segments=language_segments,
-+            speakers=sorted(
-+                {
-+                    aliases.get(str(turn.get("speaker") or "S1"), str(turn.get("speaker") or "S1"))
-+                    for turn in ctx.speaker_turns
-+                }
-+            ),
-+            text=ctx.clean_text,
-         ),
--        text=ctx.clean_text,
-+        speaker_lines=speaker_lines,
-+        asr_execution=ctx.asr_execution,
-+        review=ctx.language_payload.get("review") or {},
-     )
--    transcript_payload["speaker_lines"] = speaker_lines
--    transcript_payload["multilingual_asr"] = dict(ctx.asr_execution)
--    transcript_payload["review"] = dict(ctx.language_payload.get("review") or {})
-     atomic_write_text(ctx.artifacts.recording_artifacts.transcript_txt_path, ctx.clean_text)
-     atomic_write_json(ctx.artifacts.recording_artifacts.transcript_json_path, transcript_payload)
-     atomic_write_json(ctx.artifacts.recording_artifacts.segments_json_path, ctx.diarization_segments)
-diff --git a/lan_transcriber/pipeline_steps/orchestrator.py b/lan_transcriber/pipeline_steps/orchestrator.py
-index 71f79f2..4e625b6 100644
---- a/lan_transcriber/pipeline_steps/orchestrator.py
-+++ b/lan_transcriber/pipeline_steps/orchestrator.py
-@@ -1246,75 +1246,108 @@ async def _maybe_retry_dialog_diarization(
-     return retry_result if winner_is_retry else diarization
- 
- 
--def _write_diarization_metadata_artifact(
-+# -----------------------------------------------------------------------------
-+# Shared artifact payload builders (PR-ARTIFACT-SINGLE-WRITER-01)
-+#
-+# These helpers exist so that the legacy monolithic ``run_pipeline`` path and
-+# the stage-based execution in ``lan_app.worker_tasks`` build derived JSON
-+# artifact payloads from a single source. Before PR-ARTIFACT-SINGLE-WRITER-01,
-+# ``lan_app.worker_tasks`` had its own parallel implementations that silently
-+# dropped fields when orchestrator payloads gained new keys (see
-+# PR-SPEAKER-MERGE-DIAGNOSTICS-HOTFIX-01). Always extend these shared builders
-+# when adding fields, and call them from both the orchestrator and the worker.
-+#
-+# Conflict matrix of derived artifacts that can be written by both paths:
-+#   diarization_metadata.json : stage path writes in ``_stage_speaker_turns``;
-+#                               legacy path writes in ``_write_diarization_metadata_artifact``.
-+#                               Shared builder: ``_build_diarization_metadata_payload``.
-+#   transcript.json           : stage path writes in ``_stage_export_artifacts``;
-+#                               legacy path writes at the end of ``run_pipeline``.
-+#                               Shared builder: ``_finalize_transcript_payload``.
-+#   segments.json             : list payload copied verbatim from ``diar_segments``.
-+#   speaker_turns.json        : list payload copied verbatim from smoothed turns.
-+#   summary.json              : dict payload produced by ``build_summary_payload`` or
-+#                               ``_build_structured_summary_payload`` (already shared).
-+#   transcript.txt            : plain text copy of ``clean_text``.
-+#   metrics.json              : independent per-path (legacy: run_pipeline; stage:
-+#                               ``_stage_metrics``). Not a dual-write conflict.
-+# -----------------------------------------------------------------------------
++def test_process_job_force_reprocess_cleanup_runs_on_every_retry(
++    tmp_path: Path, monkeypatch
++):
++    """Retries must re-run cleanup so stale state can never reach the pipeline."""
 +
++    from lan_app.db import mark_recording_pipeline_stage_completed
 +
-+def _build_diarization_metadata_payload(
-     *,
--    artifacts,
--    diariser: Diariser,
-+    runtime: dict[str, Any],
-     cfg: Settings,
-     smoothing_result,
-     used_dummy_fallback: bool,
-     speaker_merges: dict[str, str] | None = None,
-     speaker_merge_diagnostics: dict[str, Any] | None = None,
--) -> None:
--    metadata = _diariser_runtime_metadata(diariser)
--    diariser_mode = _diariser_mode(diariser)
--    effective_hints = metadata.get("effective_hints")
-+) -> dict[str, Any]:
-+    """Build the ``diarization_metadata.json`` payload from a runtime dict.
++    cfg = _test_settings(tmp_path)
++    monkeypatch.setenv("LAN_DATA_ROOT", str(cfg.data_root))
++    monkeypatch.setenv("LAN_RECORDINGS_ROOT", str(cfg.recordings_root))
++    monkeypatch.setenv("LAN_DB_PATH", str(cfg.db_path))
++    monkeypatch.setenv("LAN_PROM_SNAPSHOT_PATH", str(cfg.metrics_snapshot_path))
++    monkeypatch.setenv("LAN_MAX_JOB_ATTEMPTS", "3")
 +
-+    This is the single source of truth for diarization metadata fields.
-+    Both ``_write_diarization_metadata_artifact`` (legacy monolithic path)
-+    and ``lan_app.worker_tasks._stage_speaker_turns`` (stage-based production
-+    path) call this function so that payload fields stay in sync.
-+    """
-+
-+    diariser_mode = str(runtime.get("mode") or "unknown").strip().lower() or "unknown"
-+    effective_hints = runtime.get("effective_hints")
-     if not isinstance(effective_hints, dict):
-         effective_hints = {}
--    initial_hints = metadata.get("initial_hints")
-+    initial_hints = runtime.get("initial_hints")
-     if not isinstance(initial_hints, dict):
-         initial_hints = {}
--    profile_selection = metadata.get("profile_selection")
-+    profile_selection = runtime.get("profile_selection")
-     if not isinstance(profile_selection, dict):
-         profile_selection = {}
-     selected_profile = str(
-         profile_selection.get("selected_profile")
--        or metadata.get("selected_profile")
--        or metadata.get("initial_profile")
--        or metadata.get("diarization_profile")
-+        or runtime.get("selected_profile")
-+        or runtime.get("initial_profile")
-+        or runtime.get("diarization_profile")
-         or cfg.diarization_profile
-     )
-     initial_metrics = profile_selection.get("initial_metrics")
-     if not isinstance(initial_metrics, dict):
-         initial_metrics = {}
- 
-+    degraded = bool(used_dummy_fallback) or diariser_mode not in {"pyannote", "unknown"}
-+
-     payload: dict[str, Any] = {
-         "version": 1,
-         "mode": diariser_mode,
--        "degraded": _is_degraded_diarization(
--            diariser,
--            used_dummy_fallback=used_dummy_fallback,
--        ),
--        "diarization_profile": str(metadata.get("diarization_profile") or cfg.diarization_profile),
-+        "degraded": degraded,
-+        "diarization_profile": str(runtime.get("diarization_profile") or cfg.diarization_profile),
-         "requested_profile": str(
--            metadata.get("requested_profile")
--            or metadata.get("diarization_profile")
-+            runtime.get("requested_profile")
-+            or runtime.get("diarization_profile")
-             or cfg.diarization_profile
-         ),
--        "effective_device": str(metadata.get("effective_device") or cfg.diarization_device),
--        "scheduler_mode": str(metadata.get("scheduler_mode") or cfg.gpu_scheduler_mode),
--        "scheduler_reason": metadata.get("scheduler_reason"),
--        "initial_profile": str(metadata.get("initial_profile") or cfg.diarization_profile),
-+        "effective_device": str(runtime.get("effective_device") or cfg.diarization_device),
-+        "scheduler_mode": str(runtime.get("scheduler_mode") or cfg.gpu_scheduler_mode),
-+        "scheduler_reason": runtime.get("scheduler_reason"),
-+        "initial_profile": str(runtime.get("initial_profile") or cfg.diarization_profile),
-         "selected_profile": selected_profile,
-         "selected_result": str(profile_selection.get("selected_result") or "initial_pass"),
--        "auto_profile_enabled": bool(metadata.get("auto_profile_enabled", False)),
--        "profile_override_reason": metadata.get("override_reason"),
-+        "auto_profile_enabled": bool(runtime.get("auto_profile_enabled", False)),
-+        "profile_override_reason": runtime.get("override_reason"),
-         "hints_applied": effective_hints,
-         "dialog_retry_attempted": bool(
-             profile_selection.get(
-                 "dialog_retry_attempted",
--                metadata.get("dialog_retry_used", False),
-+                runtime.get("dialog_retry_used", False),
-             )
-         ),
--        "dialog_retry_used": bool(metadata.get("dialog_retry_used", False)),
--        "speaker_count_before_retry": metadata.get("speaker_count_before_retry"),
--        "speaker_count_after_retry": metadata.get("speaker_count_after_retry"),
-+        "dialog_retry_used": bool(runtime.get("dialog_retry_used", False)),
-+        "speaker_count_before_retry": runtime.get("speaker_count_before_retry"),
-+        "speaker_count_after_retry": runtime.get("speaker_count_after_retry"),
-         "initial_speaker_count": initial_metrics.get(
-             "speaker_count",
--            metadata.get("speaker_count_before_retry"),
-+            runtime.get("speaker_count_before_retry"),
-         ),
-         "initial_top_two_coverage": initial_metrics.get("top_two_coverage"),
--        "used_dummy_fallback": used_dummy_fallback,
-+        "used_dummy_fallback": bool(used_dummy_fallback),
-         "smoothing_applied": bool(diariser_mode == "pyannote" and not used_dummy_fallback),
-         "merge_gap_seconds": cfg.diarization_merge_gap_seconds,
-         "min_turn_seconds": cfg.diarization_min_turn_seconds,
-@@ -1331,6 +1364,50 @@ def _write_diarization_metadata_artifact(
-         payload["profile_selection"] = profile_selection
-     payload["speaker_merges"] = dict(speaker_merges or {})
-     payload["speaker_merge_diagnostics"] = dict(speaker_merge_diagnostics or {})
-+    return payload
-+
-+
-+def _finalize_transcript_payload(
-+    base_payload: dict[str, Any],
-+    *,
-+    speaker_lines: list[str],
-+    asr_execution: dict[str, Any],
-+    review: dict[str, Any],
-+) -> dict[str, Any]:
-+    """Attach post-processing fields to a transcript payload.
-+
-+    Shared builder for ``transcript.json``. Both the legacy monolithic
-+    ``run_pipeline`` path and the stage-based ``_stage_export_artifacts``
-+    path in ``lan_app.worker_tasks`` call this so that any field added
-+    here is automatically preserved by every writer.
-+    """
-+
-+    base_payload["speaker_lines"] = list(speaker_lines)
-+    base_payload["multilingual_asr"] = dict(asr_execution or {})
-+    base_payload["review"] = dict(review or {})
-+    return base_payload
-+
-+
-+def _write_diarization_metadata_artifact(
-+    *,
-+    artifacts,
-+    diariser: Diariser,
-+    cfg: Settings,
-+    smoothing_result,
-+    used_dummy_fallback: bool,
-+    speaker_merges: dict[str, str] | None = None,
-+    speaker_merge_diagnostics: dict[str, Any] | None = None,
-+) -> None:
-+    runtime = _diariser_runtime_metadata(diariser)
-+    runtime["mode"] = _diariser_mode(diariser)
-+    payload = _build_diarization_metadata_payload(
-+        runtime=runtime,
-+        cfg=cfg,
-+        smoothing_result=smoothing_result,
-+        used_dummy_fallback=used_dummy_fallback,
-+        speaker_merges=speaker_merges,
-+        speaker_merge_diagnostics=speaker_merge_diagnostics,
++    init_db(cfg)
++    create_recording(
++        "rec-worker-force-retry",
++        source="test",
++        source_filename="retry.mp3",
++        status=RECORDING_STATUS_QUEUED,
++        settings=cfg,
 +    )
-     atomic_write_json(artifacts.diarization_metadata_json_path, payload)
- 
- 
-@@ -3313,29 +3390,31 @@ async def run_pipeline(
-         serialised_segments = [SpeakerSegment(start=safe_float(turn["start"]), end=safe_float(turn["end"]), speaker=str(turn["speaker"]), text=str(turn["text"])) for turn in speaker_turns]
-         speakers = sorted(set(aliases.get(turn["speaker"], turn["speaker"]) for turn in speaker_turns))
-         atomic_write_text(artifacts.transcript_txt_path, clean_text)
--        payload = _base_transcript_payload(
--            recording_id=artifacts.recording_id,
--            language=language_info,
--            dominant_language=language_analysis.dominant_language,
--            language_distribution=language_analysis.distribution,
--            language_spans=language_analysis.spans,
--            target_summary_language=summary_lang,
--            transcript_language_override=override_lang,
--            calendar_title=cal_title,
--            calendar_attendees=cal_attendees,
--            segments=language_analysis.segments,
--            speakers=speakers,
--            text=clean_text,
--        )
--        payload["speaker_lines"] = speaker_lines
--        payload["multilingual_asr"] = dict(asr_execution)
--        payload["review"] = {
--            "required": bool(language_analysis.review_required),
--            "reason_code": language_analysis.review_reason_code,
--            "reason_text": language_analysis.review_reason_text,
--            "uncertain_segment_count": language_analysis.uncertain_segment_count,
--            "conflict_segment_count": language_analysis.conflict_segment_count,
--        }
-+        payload = _finalize_transcript_payload(
-+            _base_transcript_payload(
-+                recording_id=artifacts.recording_id,
-+                language=language_info,
-+                dominant_language=language_analysis.dominant_language,
-+                language_distribution=language_analysis.distribution,
-+                language_spans=language_analysis.spans,
-+                target_summary_language=summary_lang,
-+                transcript_language_override=override_lang,
-+                calendar_title=cal_title,
-+                calendar_attendees=cal_attendees,
-+                segments=language_analysis.segments,
-+                speakers=speakers,
-+                text=clean_text,
-+            ),
-+            speaker_lines=speaker_lines,
-+            asr_execution=asr_execution,
-+            review={
-+                "required": bool(language_analysis.review_required),
-+                "reason_code": language_analysis.review_reason_code,
-+                "reason_text": language_analysis.review_reason_text,
-+                "uncertain_segment_count": language_analysis.uncertain_segment_count,
-+                "conflict_segment_count": language_analysis.conflict_segment_count,
-+            },
-+        )
-         atomic_write_json(artifacts.transcript_json_path, payload)
-         atomic_write_json(artifacts.segments_json_path, diar_segments)
-         atomic_write_json(artifacts.speaker_turns_json_path, speaker_turns)
-diff --git a/tasks/QUEUE.md b/tasks/QUEUE.md
-index e5f1e93..a32c5ce 100644
---- a/tasks/QUEUE.md
-+++ b/tasks/QUEUE.md
-@@ -716,7 +716,7 @@ Queue (in order)
- - Depends on: PR-SPEAKER-MERGE-DIAGNOSTICS-HOTFIX-01
- 
- 143) PR-ARTIFACT-SINGLE-WRITER-01: Eliminate dual artifact writes: make orchestrator the single source of truth for all derived JSON artifacts
--- Status: TODO
-+- Status: DONE
- - Tasks file: tasks/PR-ARTIFACT-SINGLE-WRITER-01.md
- - Depends on: PR-SPEAKER-MERGE-TORCH-LOAD-FIX-01
- 
-diff --git a/tests/test_pipeline_resume_coverage.py b/tests/test_pipeline_resume_coverage.py
-index b9d06ba..9fc8fea 100644
---- a/tests/test_pipeline_resume_coverage.py
-+++ b/tests/test_pipeline_resume_coverage.py
-@@ -29,6 +29,7 @@ from lan_app.db import (
-     set_recording_cancel_request,
- )
- from lan_transcriber.pipeline import PrecheckResult
-+from lan_transcriber.pipeline_steps import orchestrator as pipeline_orchestrator
- from lan_transcriber.pipeline_steps.diarization_quality import SpeakerTurnSmoothingResult
- 
- 
-@@ -239,6 +240,142 @@ def test_build_diarization_metadata_payload_normalizes_optional_fields(tmp_path:
-     assert "profile_selection" not in payload
- 
- 
-+def test_worker_diarization_metadata_wrapper_delegates_to_orchestrator(
-+    tmp_path: Path,
-+) -> None:
-+    """Regression guard for PR-ARTIFACT-SINGLE-WRITER-01.
-+
-+    Ensures ``worker_tasks._build_diarization_metadata_payload`` is only a
-+    thin delegate to ``pipeline_orchestrator._build_diarization_metadata_payload``
-+    so that any new key added to the orchestrator's shared builder shows up
-+    in the stage-based worker path without a parallel code change. This is
-+    the exact bug that PR-SPEAKER-MERGE-DIAGNOSTICS-HOTFIX-01 had to fix by
-+    hand before consolidation.
-+    """
-+
-+    cfg = worker_tasks._build_pipeline_settings(_cfg(tmp_path))  # noqa: SLF001
-+    smoothing_result = SpeakerTurnSmoothingResult(
-+        turns=[{"speaker": "S1", "start": 0.0, "end": 1.0, "text": "hello"}],
-+        adjacent_merges=0,
-+        micro_turn_absorptions=0,
-+        turn_count_before=1,
-+        turn_count_after=1,
-+        speaker_count_before=1,
-+        speaker_count_after=1,
++    create_job(
++        "job-worker-force-retry",
++        recording_id="rec-worker-force-retry",
++        job_type=JOB_TYPE_PRECHECK,
++        status=JOB_STATUS_QUEUED,
++        settings=cfg,
 +    )
-+    runtime = {
-+        "mode": "pyannote",
-+        "effective_hints": {"min_speakers": 2},
-+        "initial_hints": {"min_speakers": 2},
-+        "profile_selection": {},
-+        "used_dummy_fallback": False,
-+    }
-+    speaker_merges = {"S2": "S1"}
-+    speaker_merge_diagnostics = {
-+        "embedding_model_available": True,
-+        "speakers_found": ["S1", "S2"],
-+        "centroids_computed": ["S1", "S2"],
-+        "pairwise_scores": [{"a": "S1", "b": "S2", "score": 0.93}],
-+        "merges_applied": {"S2": "S1"},
-+        "skipped_reason": None,
-+    }
-+    worker_payload = worker_tasks._build_diarization_metadata_payload(  # noqa: SLF001
-+        runtime=runtime,
-+        cfg=cfg,
-+        smoothing_result=smoothing_result,
-+        speaker_merges=speaker_merges,
-+        speaker_merge_diagnostics=speaker_merge_diagnostics,
++    mark_recording_pipeline_stage_completed(
++        "rec-worker-force-retry",
++        stage_name="sanitize_audio",
++        settings=cfg,
 +    )
-+    orchestrator_payload = pipeline_orchestrator._build_diarization_metadata_payload(  # noqa: SLF001
-+        runtime=runtime,
-+        cfg=cfg,
-+        smoothing_result=smoothing_result,
-+        used_dummy_fallback=False,
-+        speaker_merges=speaker_merges,
-+        speaker_merge_diagnostics=speaker_merge_diagnostics,
++    mark_recording_pipeline_stage_completed(
++        "rec-worker-force-retry",
++        stage_name="precheck",
++        settings=cfg,
 +    )
-+    assert worker_payload == orchestrator_payload
-+    assert worker_payload["speaker_merges"] == speaker_merges
-+    assert worker_payload["speaker_merge_diagnostics"] == speaker_merge_diagnostics
-+    # Field added by orchestrator is preserved end-to-end.
-+    assert "speaker_merge_diagnostics" in worker_payload
++    derived = cfg.recordings_root / "rec-worker-force-retry" / "derived"
++    derived.mkdir(parents=True, exist_ok=True)
++    (derived / "audio_sanitized.wav").write_bytes(b"\x00")
++    (derived / "audio_sanitize.json").write_text("{}", encoding="utf-8")
++    (derived / "summary.json").write_text("{}", encoding="utf-8")
 +
++    cleanup_calls: list[int] = []
++    real_cleanup = worker_tasks._apply_force_reprocess_cleanup
 +
-+def test_orchestrator_diarization_metadata_payload_new_field_survives_worker(
-+    tmp_path: Path,
-+    monkeypatch: pytest.MonkeyPatch,
-+) -> None:
-+    """Simulate the PR-140 scenario: a new field added to the orchestrator's
-+    shared builder must survive the full worker_tasks write path.
-+
-+    We monkeypatch the shared orchestrator builder to add an extra key and
-+    then call the worker delegate; the key must be present on the returned
-+    payload, proving the worker never rebuilds the payload independently.
-+    """
-+
-+    cfg = worker_tasks._build_pipeline_settings(_cfg(tmp_path))  # noqa: SLF001
-+    smoothing_result = SpeakerTurnSmoothingResult(
-+        turns=[],
-+        adjacent_merges=0,
-+        micro_turn_absorptions=0,
-+        turn_count_before=0,
-+        turn_count_after=0,
-+        speaker_count_before=0,
-+        speaker_count_after=0,
-+    )
-+    original_builder = pipeline_orchestrator._build_diarization_metadata_payload  # noqa: SLF001
-+
-+    def _augmented_builder(**kwargs):
-+        payload = original_builder(**kwargs)
-+        payload["pr140_simulated_new_field"] = "present"
-+        return payload
++    def _counting_cleanup(recording_id, *, settings, log_path):
++        call_number = len(cleanup_calls) + 1
++        cleanup_calls.append(call_number)
++        real_cleanup(recording_id, settings=settings, log_path=log_path)
++        if call_number == 1:
++            # Simulate attempt 1's pipeline writing a stale partial artifact
++            # after cleanup but before failing. The retry's cleanup must
++            # wipe this file — that is the whole point of this test.
++            (derived / "asr_partial.json").write_text("stale", encoding="utf-8")
 +
 +    monkeypatch.setattr(
-+        pipeline_orchestrator,
-+        "_build_diarization_metadata_payload",
-+        _augmented_builder,
++        "lan_app.worker_tasks._apply_force_reprocess_cleanup",
++        _counting_cleanup,
 +    )
 +
-+    payload = worker_tasks._build_diarization_metadata_payload(  # noqa: SLF001
-+        runtime={"mode": "pyannote"},
-+        cfg=cfg,
-+        smoothing_result=smoothing_result,
++    pipeline_calls: list[int] = []
++
++    def _pipeline(*, recording_id, settings, log_path):
++        pipeline_calls.append(len(pipeline_calls) + 1)
++        if len(pipeline_calls) < 2:
++            # First attempt fails with a retryable error so process_job retries.
++            raise RuntimeError("transient pipeline failure")
++        return worker_tasks.PipelineTerminalState(status=RECORDING_STATUS_READY)
++
++    monkeypatch.setattr("lan_app.worker_tasks._run_precheck_pipeline", _pipeline)
++    monkeypatch.setattr("lan_app.worker_tasks.time.sleep", lambda _s: None)
++
++    result = process_job(
++        "job-worker-force-retry",
++        "rec-worker-force-retry",
++        JOB_TYPE_PRECHECK,
++        force_reprocess=True,
 +    )
-+    assert payload["pr140_simulated_new_field"] == "present"
++
++    assert result["status"] == "ok"
++    # Cleanup must have run on both the first attempt AND the retry so that
++    # stale partial-progress state is wiped before every pipeline invocation.
++    assert cleanup_calls == [1, 2]
++    assert pipeline_calls == [1, 2]
++    # Sanitize outputs survive every cleanup pass; the stale partial from
++    # attempt 1 has been wiped by attempt 2's cleanup so the pipeline ran
++    # against a fully-clean state, not the leftover from the first attempt.
++    assert (derived / "audio_sanitized.wav").exists()
++    assert (derived / "audio_sanitize.json").exists()
++    assert not (derived / "asr_partial.json").exists()
++    assert not (derived / "summary.json").exists()
 +
 +
-+def test_finalize_transcript_payload_merges_speaker_lines_and_review() -> None:
-+    base = {
-+        "recording_id": "rec-1",
-+        "segments": [],
-+        "speakers": ["S1"],
-+        "text": "hello",
-+    }
-+    finalized = pipeline_orchestrator._finalize_transcript_payload(  # noqa: SLF001
-+        base,
-+        speaker_lines=["[0.00-1.00] **S1:** hello"],
-+        asr_execution={"used_multilingual_path": False, "selected_mode": "mono"},
-+        review={"required": True, "reason_code": "low_confidence"},
-+    )
-+    assert finalized is base  # finalization mutates in place and returns the same dict
-+    assert finalized["speaker_lines"] == ["[0.00-1.00] **S1:** hello"]
-+    assert finalized["multilingual_asr"] == {
-+        "used_multilingual_path": False,
-+        "selected_mode": "mono",
-+    }
-+    assert finalized["review"] == {"required": True, "reason_code": "low_confidence"}
-+    # Empty/None asr execution and review collapse to empty dicts.
-+    finalized = pipeline_orchestrator._finalize_transcript_payload(  # noqa: SLF001
-+        {"recording_id": "rec-2"},
-+        speaker_lines=[],
-+        asr_execution=None,  # type: ignore[arg-type]
-+        review=None,  # type: ignore[arg-type]
-+    )
-+    assert finalized["speaker_lines"] == []
-+    assert finalized["multilingual_asr"] == {}
-+    assert finalized["review"] == {}
-+
-+
- def test_stage_precheck_with_missing_duration_and_calendar_refresh_warning(
-     tmp_path: Path,
-     monkeypatch: pytest.MonkeyPatch,
+ def test_process_job_force_reprocess_wraps_clear_errors(tmp_path: Path, monkeypatch):
+     from lan_app.ops import ClearDerivedArtifactsError
+ 

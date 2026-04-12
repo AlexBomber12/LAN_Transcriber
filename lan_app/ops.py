@@ -11,8 +11,18 @@ from .constants import RECORDING_STATUS_QUARANTINE
 from .db import delete_recording, list_recordings
 
 
+DEFAULT_FORCE_REPROCESS_KEEP: tuple[str, ...] = (
+    "audio_sanitized.wav",
+    "audio_sanitize.json",
+)
+
+
 class RecordingDeleteError(RuntimeError):
     """Raised when recording deletion cannot safely remove disk artifacts."""
+
+
+class ClearDerivedArtifactsError(RuntimeError):
+    """Raised when derived artifact cleanup cannot safely operate on disk."""
 
 
 def _parse_utc(value: object) -> datetime | None:
@@ -128,6 +138,64 @@ def delete_recording_with_artifacts(
     return True
 
 
+def clear_derived_artifacts(
+    recording_id: str,
+    *,
+    settings: AppSettings | None = None,
+    keep: tuple[str, ...] = DEFAULT_FORCE_REPROCESS_KEEP,
+) -> list[str]:
+    """Delete all files/directories inside a recording's ``derived/`` directory.
+
+    Entries whose immediate name matches ``keep`` are preserved. This is the
+    foundation for the "Force Full Reprocess" action: callers use it to strip
+    derived artifacts before re-enqueuing a recording so that the pipeline
+    cannot short-circuit on stale files that still pass existence checks.
+
+    Returns the sorted list of deleted entry names (files and directories).
+    """
+
+    cfg = settings or AppSettings()
+    try:
+        recording_root = _recording_root_path(recording_id, cfg)
+    except RecordingDeleteError as exc:
+        raise ClearDerivedArtifactsError(str(exc)) from exc
+    derived = recording_root / "derived"
+    if derived.is_symlink():
+        raise ClearDerivedArtifactsError(
+            "Force reprocess failed: derived path is a symlink."
+        )
+    if not derived.exists():
+        return []
+    if not derived.is_dir():
+        raise ClearDerivedArtifactsError(
+            "Force reprocess failed: derived path is not a directory."
+        )
+
+    keep_set = frozenset(keep)
+    deleted: list[str] = []
+    try:
+        entries = sorted(derived.iterdir(), key=lambda entry: entry.name)
+    except OSError as exc:
+        raise ClearDerivedArtifactsError(
+            f"Force reprocess failed to list derived directory: {exc}"
+        ) from exc
+
+    for entry in entries:
+        if entry.name in keep_set:
+            continue
+        try:
+            if entry.is_symlink() or entry.is_file():
+                entry.unlink()
+            else:
+                shutil.rmtree(entry)
+        except OSError as exc:
+            raise ClearDerivedArtifactsError(
+                f"Force reprocess failed to delete {entry.name}: {exc}"
+            ) from exc
+        deleted.append(entry.name)
+    return deleted
+
+
 def run_retention_cleanup(
     *,
     settings: AppSettings | None = None,
@@ -176,7 +244,10 @@ def run_retention_cleanup(
 
 
 __all__ = [
+    "ClearDerivedArtifactsError",
+    "DEFAULT_FORCE_REPROCESS_KEEP",
     "RecordingDeleteError",
+    "clear_derived_artifacts",
     "delete_recording_with_artifacts",
     "run_retention_cleanup",
 ]

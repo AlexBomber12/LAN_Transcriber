@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 from uuid import uuid4
 
 from redis import Redis
@@ -143,6 +144,7 @@ def enqueue_recording_job(
     *,
     job_type: str = DEFAULT_REQUEUE_JOB_TYPE,
     reset_pipeline_state: bool = False,
+    force_reprocess: bool = False,
     settings: AppSettings | None = None,
 ) -> RecordingJob:
     cfg = settings or AppSettings()
@@ -181,6 +183,15 @@ def enqueue_recording_job(
         clear_recording_pipeline_stages(recording_id, settings=cfg)
         clear_recording_progress(recording_id, settings=cfg)
 
+    # Forward force_reprocess to the worker as a process_job kwarg so all
+    # destructive cleanup (derived files + stage rows) happens worker-side
+    # AFTER the job has been safely accepted by Redis. Transient queue
+    # outages therefore leave the recording entirely intact instead of
+    # leaving it with cleared outputs under its old status.
+    forwarded_kwargs: dict[str, Any] = {}
+    if force_reprocess:
+        forwarded_kwargs["force_reprocess"] = True
+
     queue = get_queue(cfg)
     try:
         queue.enqueue(
@@ -190,6 +201,7 @@ def enqueue_recording_job(
             job_type,
             job_id=job_id,
             job_timeout=cfg.rq_job_timeout_seconds,
+            **forwarded_kwargs,
         )
     except Exception as exc:
         # Keep DB queue state terminal when Redis/RQ enqueue fails.

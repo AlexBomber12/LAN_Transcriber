@@ -4287,6 +4287,131 @@ def test_ui_action_requeue_failure_returns_503(tmp_path, monkeypatch):
     assert "redis down" in r.text
 
 
+def test_ui_action_force_reprocess_enqueues_with_force_flag(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    init_db(cfg)
+    create_recording("rec-force-ui-1", source="drive", source_filename="f.mp3", settings=cfg)
+    derived = cfg.recordings_root / "rec-force-ui-1" / "derived"
+    derived.mkdir(parents=True, exist_ok=True)
+    (derived / "summary.json").write_text("{}", encoding="utf-8")
+
+    observed: dict[str, object] = {}
+
+    def _fake_enqueue(
+        recording_id: str,
+        *,
+        settings=None,
+        job_type=JOB_TYPE_PRECHECK,
+        reset_pipeline_state: bool = False,
+        force_reprocess: bool = False,
+    ):
+        observed["recording_id"] = recording_id
+        observed["job_type"] = job_type
+        observed["reset_pipeline_state"] = reset_pipeline_state
+        observed["force_reprocess"] = force_reprocess
+        return None
+
+    monkeypatch.setattr(ui_routes, "enqueue_recording_job", _fake_enqueue)
+    c = TestClient(api.app, follow_redirects=False)
+    r = c.post("/ui/recordings/rec-force-ui-1/force-reprocess")
+    assert r.status_code in (200, 307, 302)
+    # force_reprocess must be forwarded so the worker runs the destructive
+    # cleanup on its side AFTER the job has been accepted by the queue.
+    assert observed == {
+        "recording_id": "rec-force-ui-1",
+        "job_type": JOB_TYPE_PRECHECK,
+        "reset_pipeline_state": False,
+        "force_reprocess": True,
+    }
+    # The UI path must NOT delete any derived artifacts itself — that would
+    # re-introduce the transient-queue-outage destructive failure mode.
+    assert (derived / "summary.json").exists()
+
+
+def test_ui_action_force_reprocess_not_found(client):
+    r = client.post("/ui/recordings/no-such-rec/force-reprocess")
+    assert r.status_code == 404
+
+
+def test_ui_action_force_reprocess_duplicate_job_race_returns_409(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    init_db(cfg)
+    create_recording("rec-force-ui-race", source="drive", source_filename="r.mp3", settings=cfg)
+
+    from lan_app.jobs import DuplicateRecordingJobError
+
+    def _raise_dupe(*_args, **kwargs):
+        assert kwargs.get("force_reprocess") is True
+        raise DuplicateRecordingJobError(
+            recording_id="rec-force-ui-race",
+            job_id="race-job-ui",
+        )
+
+    monkeypatch.setattr(ui_routes, "enqueue_recording_job", _raise_dupe)
+
+    c = TestClient(api.app, follow_redirects=False)
+    r = c.post("/ui/recordings/rec-force-ui-race/force-reprocess")
+    assert r.status_code == 409
+    assert "race-job-ui" in r.text
+
+
+def test_ui_action_force_reprocess_enqueue_failure_returns_503(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    init_db(cfg)
+    create_recording("rec-force-ui-503", source="drive", source_filename="q.mp3", settings=cfg)
+    derived = cfg.recordings_root / "rec-force-ui-503" / "derived"
+    derived.mkdir(parents=True, exist_ok=True)
+    guarded = derived / "summary.json"
+    guarded.write_text("{}", encoding="utf-8")
+
+    def _fail_enqueue(*_args, **_kwargs):
+        raise RuntimeError("redis down")
+
+    monkeypatch.setattr(ui_routes, "enqueue_recording_job", _fail_enqueue)
+
+    c = TestClient(api.app, follow_redirects=False)
+    r = c.post("/ui/recordings/rec-force-ui-503/force-reprocess")
+    assert r.status_code == 503
+    assert "redis down" in r.text
+    # A transient Redis failure must NOT have destroyed any user data.
+    assert guarded.exists()
+
+
+def test_ui_action_force_reprocess_returns_409_when_job_active(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr(api, "_settings", cfg)
+    monkeypatch.setattr(ui_routes, "_settings", cfg)
+    init_db(cfg)
+    create_recording(
+        "rec-force-ui-409", source="drive", source_filename="busy.mp3", settings=cfg
+    )
+    create_job(
+        "force-active-job",
+        recording_id="rec-force-ui-409",
+        job_type=JOB_TYPE_PRECHECK,
+        status=JOB_STATUS_QUEUED,
+        settings=cfg,
+    )
+    derived = cfg.recordings_root / "rec-force-ui-409" / "derived"
+    derived.mkdir(parents=True, exist_ok=True)
+    guarded = derived / "summary.json"
+    guarded.write_text("{}", encoding="utf-8")
+
+    # Do NOT monkeypatch enqueue_recording_job: let the real implementation
+    # detect the active precheck job via its atomic DB reservation path.
+    c = TestClient(api.app, follow_redirects=False)
+    r = c.post("/ui/recordings/rec-force-ui-409/force-reprocess")
+    assert r.status_code == 409
+    assert "force-active-job" in r.text
+    assert guarded.exists()
+
+
 def test_ui_action_retry_failed_step(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
     monkeypatch.setattr(api, "_settings", cfg)

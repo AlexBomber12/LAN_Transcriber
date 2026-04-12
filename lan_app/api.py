@@ -348,6 +348,43 @@ async def api_requeue_recording(
     }
 
 
+@app.post("/api/recordings/{recording_id}/actions/force-reprocess")
+async def api_force_reprocess_recording(recording_id: str) -> dict[str, object]:
+    if get_recording(recording_id, settings=_settings) is None:
+        raise HTTPException(status_code=404, detail="Recording not found")
+
+    try:
+        job = enqueue_recording_job(
+            recording_id,
+            job_type=DEFAULT_REQUEUE_JOB_TYPE,
+            force_reprocess=True,
+            settings=_settings,
+        )
+    except DuplicateRecordingJobError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "A precheck job is already queued or started for this recording.",
+                "existing_job_id": exc.job_id,
+            },
+        )
+    except RecordingNotFoundError:
+        raise HTTPException(status_code=404, detail="Recording not found")
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Queue unavailable: {exc}")
+
+    # Derived-artifact cleanup is deferred to the worker to avoid destroying
+    # user-visible data when the Redis push fails transiently.
+    return {
+        "recording_id": recording_id,
+        "job_id": job.job_id,
+        "job_type": job.job_type,
+        "reprocessed": True,
+    }
+
+
 @app.post("/api/recordings/{recording_id}/actions/quarantine")
 async def api_quarantine_recording(
     recording_id: str,

@@ -36,6 +36,16 @@
   >Requeue</button>
   <button
     type="button"
+    class="px-3 py-1.5 border border-red-200 text-red-700 text-xs font-bold rounded hover:bg-red-50"
+    data-action-url="{{ inspector_action_bar.force_reprocess_url }}"
+    data-return-to="{{ inspector_action_bar.return_to }}"
+    data-confirm-message="This will delete all processed results and re-run the full pipeline. Continue?"
+    data-pending-label="Reprocessing..."
+    data-testid="recording-inspector-force-reprocess-embedded"
+    onclick="triggerRecordingAction(this)"
+  >Force Reprocess</button>
+  <button
+    type="button"
     class="px-3 py-1.5 border border-slate-200 text-xs font-bold rounded hover:bg-slate-50"
     data-action-url="{{ inspector_action_bar.quarantine_url }}"
     data-return-to="{{ inspector_action_bar.return_to }}"

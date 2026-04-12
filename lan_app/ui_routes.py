@@ -4441,6 +4441,9 @@ def _inspector_action_bar_context(
         "open_full_page_href": _recording_detail_path(recording_id, tab=current_tab),
         "download_zip_href": f"/ui/recordings/{quote(recording_id, safe='')}/export.zip",
         "requeue_url": f"/ui/recordings/{quote(recording_id, safe='')}/requeue{return_query}",
+        "force_reprocess_url": (
+            f"/ui/recordings/{quote(recording_id, safe='')}/force-reprocess{return_query}"
+        ),
         "quarantine_url": (
             f"/ui/recordings/{quote(recording_id, safe='')}/quarantine{return_query}"
         ),
@@ -7067,6 +7070,32 @@ async def ui_action_requeue(
         )
     except Exception as exc:
         return HTMLResponse(f"Requeue failed: {exc}", status_code=503)
+    return _ui_recording_action_response(
+        return_to=return_to,
+        redirect_to=f"/recordings/{recording_id}",
+    )
+
+
+@ui_router.post("/ui/recordings/{recording_id}/force-reprocess")
+async def ui_action_force_reprocess(
+    recording_id: str,
+    return_to: str = Query(default=""),
+) -> Any:
+    if get_recording(recording_id, settings=_settings) is None:
+        return HTMLResponse("Not found", status_code=404)
+    try:
+        enqueue_recording_job(
+            recording_id,
+            force_reprocess=True,
+            settings=_settings,
+        )
+    except DuplicateRecordingJobError as exc:
+        return HTMLResponse(
+            f"Force reprocess skipped: precheck job already active ({exc.job_id}).",
+            status_code=409,
+        )
+    except Exception as exc:
+        return HTMLResponse(f"Force reprocess failed: {exc}", status_code=503)
     return _ui_recording_action_response(
         return_to=return_to,
         redirect_to=f"/recordings/{recording_id}",

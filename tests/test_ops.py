@@ -15,7 +15,9 @@ from lan_app.constants import RECORDING_STATUS_QUARANTINE
 from lan_app.db import connect, create_recording, get_recording, init_db
 from lan_app import healthchecks
 from lan_app.ops import (
+    ClearDerivedArtifactsError,
     RecordingDeleteError,
+    clear_derived_artifacts,
     delete_recording_with_artifacts,
     run_retention_cleanup,
 )
@@ -262,6 +264,148 @@ def test_delete_recording_with_artifacts_raises_on_disk_cleanup_failure(
         delete_recording_with_artifacts("rec-delete-fail-1", settings=cfg)
     assert get_recording("rec-delete-fail-1", settings=cfg) is None
     assert raw_dir.exists()
+
+
+def _populate_derived_artifacts(derived: Path) -> None:
+    derived.mkdir(parents=True, exist_ok=True)
+    (derived / "audio_sanitized.wav").write_bytes(b"\x00\x01")
+    (derived / "audio_sanitize.json").write_text("{}", encoding="utf-8")
+    (derived / "precheck.json").write_text("{}", encoding="utf-8")
+    (derived / "summary.json").write_text("{}", encoding="utf-8")
+    (derived / "transcript.txt").write_text("hello", encoding="utf-8")
+    snippets = derived / "snippets"
+    snippets.mkdir(parents=True, exist_ok=True)
+    (snippets / "snippet-001.wav").write_bytes(b"\x00")
+    nested = snippets / "nested"
+    nested.mkdir(parents=True, exist_ok=True)
+    (nested / "leaf.json").write_text("{}", encoding="utf-8")
+
+
+def test_clear_derived_artifacts_preserves_sanitized_audio(tmp_path: Path) -> None:
+    cfg = _cfg(tmp_path)
+    derived = cfg.recordings_root / "rec-force-1" / "derived"
+    _populate_derived_artifacts(derived)
+
+    deleted = clear_derived_artifacts("rec-force-1", settings=cfg)
+
+    assert "audio_sanitized.wav" not in deleted
+    assert "audio_sanitize.json" not in deleted
+    assert "precheck.json" in deleted
+    assert "summary.json" in deleted
+    assert "transcript.txt" in deleted
+    assert "snippets" in deleted
+    assert deleted == sorted(deleted)
+    assert (derived / "audio_sanitized.wav").exists()
+    assert (derived / "audio_sanitize.json").exists()
+    assert not (derived / "precheck.json").exists()
+    assert not (derived / "summary.json").exists()
+    assert not (derived / "transcript.txt").exists()
+    assert not (derived / "snippets").exists()
+
+
+def test_clear_derived_artifacts_noop_when_derived_missing(tmp_path: Path) -> None:
+    cfg = _cfg(tmp_path)
+    (cfg.recordings_root / "rec-force-empty" / "raw").mkdir(parents=True, exist_ok=True)
+
+    deleted = clear_derived_artifacts("rec-force-empty", settings=cfg)
+    assert deleted == []
+
+
+def test_clear_derived_artifacts_rejects_invalid_id(tmp_path: Path) -> None:
+    cfg = _cfg(tmp_path)
+    with pytest.raises(ClearDerivedArtifactsError, match="recording id is required"):
+        clear_derived_artifacts("", settings=cfg)
+    with pytest.raises(ClearDerivedArtifactsError, match="invalid recording id"):
+        clear_derived_artifacts("..", settings=cfg)
+    with pytest.raises(ClearDerivedArtifactsError, match="invalid recording id"):
+        clear_derived_artifacts("../escape", settings=cfg)
+
+
+def test_clear_derived_artifacts_rejects_symlinked_derived_dir(tmp_path: Path) -> None:
+    cfg = _cfg(tmp_path)
+    recording_root = cfg.recordings_root / "rec-force-symlink"
+    recording_root.mkdir(parents=True, exist_ok=True)
+    target = tmp_path / "outside_derived"
+    target.mkdir(parents=True, exist_ok=True)
+    (target / "precheck.json").write_text("{}", encoding="utf-8")
+    (recording_root / "derived").symlink_to(target, target_is_directory=True)
+
+    with pytest.raises(ClearDerivedArtifactsError, match="symlink"):
+        clear_derived_artifacts("rec-force-symlink", settings=cfg)
+
+    assert (target / "precheck.json").exists()
+
+
+def test_clear_derived_artifacts_rejects_derived_as_file(tmp_path: Path) -> None:
+    cfg = _cfg(tmp_path)
+    recording_root = cfg.recordings_root / "rec-force-file"
+    recording_root.mkdir(parents=True, exist_ok=True)
+    (recording_root / "derived").write_text("not-a-directory", encoding="utf-8")
+
+    with pytest.raises(ClearDerivedArtifactsError, match="not a directory"):
+        clear_derived_artifacts("rec-force-file", settings=cfg)
+
+
+def test_clear_derived_artifacts_wraps_iterdir_errors(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = _cfg(tmp_path)
+    derived = cfg.recordings_root / "rec-force-iterdir" / "derived"
+    derived.mkdir(parents=True, exist_ok=True)
+    (derived / "precheck.json").write_text("{}", encoding="utf-8")
+
+    real_iterdir = Path.iterdir
+
+    def _failing_iterdir(self: Path):  # type: ignore[override]
+        if self == derived:
+            raise OSError("iterdir denied")
+        return real_iterdir(self)
+
+    monkeypatch.setattr(Path, "iterdir", _failing_iterdir)
+
+    with pytest.raises(ClearDerivedArtifactsError, match="list derived directory"):
+        clear_derived_artifacts("rec-force-iterdir", settings=cfg)
+
+
+def test_clear_derived_artifacts_wraps_delete_errors(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = _cfg(tmp_path)
+    derived = cfg.recordings_root / "rec-force-unlink" / "derived"
+    derived.mkdir(parents=True, exist_ok=True)
+    target = derived / "precheck.json"
+    target.write_text("{}", encoding="utf-8")
+
+    real_unlink = Path.unlink
+
+    def _failing_unlink(self: Path, *args, **kwargs):  # type: ignore[override]
+        if self == target:
+            raise OSError("unlink denied")
+        return real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", _failing_unlink)
+
+    with pytest.raises(ClearDerivedArtifactsError, match="precheck.json"):
+        clear_derived_artifacts("rec-force-unlink", settings=cfg)
+
+
+def test_clear_derived_artifacts_accepts_custom_keep(tmp_path: Path) -> None:
+    cfg = _cfg(tmp_path)
+    derived = cfg.recordings_root / "rec-force-keep" / "derived"
+    _populate_derived_artifacts(derived)
+
+    deleted = clear_derived_artifacts(
+        "rec-force-keep",
+        settings=cfg,
+        keep=("precheck.json",),
+    )
+    assert "precheck.json" not in deleted
+    assert "audio_sanitized.wav" in deleted
+    assert "audio_sanitize.json" in deleted
+    assert (derived / "precheck.json").exists()
+    assert not (derived / "audio_sanitized.wav").exists()
 
 
 def test_healthz_component_endpoints(tmp_path: Path, monkeypatch):

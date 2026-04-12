@@ -59,6 +59,19 @@
     </button>
     <button
       type="button"
+      class="flex items-center justify-center gap-2 rounded-lg h-10 px-4 bg-white border border-red-200 text-red-700 text-sm font-semibold hover:bg-red-50 transition-colors"
+      data-action-url="{{ _ab.force_reprocess_url }}"
+      data-return-to="{{ _ab.return_to }}"
+      data-confirm-message="This will delete all processed results and re-run the full pipeline. Continue?"
+      data-pending-label="Reprocessing..."
+      data-testid="recording-inspector-force-reprocess"
+      onclick="triggerRecordingAction(this)"
+    >
+      <span class="material-symbols-outlined text-lg">restart_alt</span>
+      Force Reprocess
+    </button>
+    <button
+      type="button"
       class="flex items-center justify-center gap-2 rounded-lg h-10 px-4 bg-white border border-slate-200 text-slate-700 text-sm font-semibold hover:bg-slate-50 transition-colors"
       data-action-url="{{ _ab.quarantine_url }}"
       data-return-to="{{ _ab.return_to }}"

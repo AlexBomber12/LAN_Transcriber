@@ -346,6 +346,70 @@ def test_api_requeue_maps_enqueue_errors(
     assert response.json()["detail"] == detail_text
 
 
+def test_api_force_reprocess_missing_recording_returns_404(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(api, "get_recording", lambda *_args, **_kwargs: None)
+    client = TestClient(api.app)
+
+    response = client.post("/api/recordings/missing/actions/force-reprocess")
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Recording not found"
+
+
+def test_api_force_reprocess_returns_409_when_job_active(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from lan_app.jobs import DuplicateRecordingJobError
+
+    monkeypatch.setattr(api, "get_recording", lambda *_args, **_kwargs: {"id": "rec-1"})
+
+    def _raise_dupe(*_args: Any, **kwargs: Any) -> Any:
+        # enqueue_recording_job atomically detects existing active jobs and
+        # raises before any destructive work happens.
+        assert kwargs.get("force_reprocess") is True
+        raise DuplicateRecordingJobError(
+            recording_id="rec-1",
+            job_id="existing-job-xyz",
+        )
+
+    monkeypatch.setattr(api, "enqueue_recording_job", _raise_dupe)
+    client = TestClient(api.app)
+
+    response = client.post("/api/recordings/rec-1/actions/force-reprocess")
+    assert response.status_code == 409
+    detail = response.json()["detail"]
+    assert detail["existing_job_id"] == "existing-job-xyz"
+    assert "already queued or started" in detail["message"].lower()
+
+
+@pytest.mark.parametrize(
+    ("raised", "status_code", "detail_text"),
+    [
+        (RecordingNotFoundError("not found"), 404, "Recording not found"),
+        (ValueError("bad requeue"), 422, "bad requeue"),
+        (RuntimeError("rq down"), 503, "Queue unavailable: rq down"),
+    ],
+)
+def test_api_force_reprocess_maps_enqueue_errors(
+    raised: Exception,
+    status_code: int,
+    detail_text: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(api, "get_recording", lambda *_args, **_kwargs: {"id": "rec-1"})
+
+    def _raise(*_args: Any, **_kwargs: Any) -> Any:
+        raise raised
+
+    monkeypatch.setattr(api, "enqueue_recording_job", _raise)
+    client = TestClient(api.app)
+
+    response = client.post("/api/recordings/rec-1/actions/force-reprocess")
+    assert response.status_code == status_code
+    assert response.json()["detail"] == detail_text
+
+
 def test_api_quarantine_missing_recording_returns_404(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(api, "get_recording", lambda *_args, **_kwargs: None)
     client = TestClient(api.app)
