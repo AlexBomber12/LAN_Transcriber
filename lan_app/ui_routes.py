@@ -6762,6 +6762,7 @@ async def ui_voice_sample_audio(sample_id: int) -> Any:
 # ---------------------------------------------------------------------------
 
 
+# Hidden debug page, not linked in nav.
 @ui_router.get("/queue", response_class=HTMLResponse)
 async def ui_queue(
     request: Request,
