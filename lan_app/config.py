@@ -20,6 +20,7 @@ from lan_transcriber.pipeline_steps.diarization_quality import (
 from lan_transcriber.pipeline_steps.speaker_merge import (
     DEFAULT_SPEAKER_MERGE_MAX_SEGMENTS,
     DEFAULT_SPEAKER_MERGE_NO_OVERLAP_SIMILARITY_THRESHOLD,
+    DEFAULT_SPEAKER_MERGE_OVERLAP_RATIO_THRESHOLD,
     DEFAULT_SPEAKER_MERGE_SIMILARITY_THRESHOLD,
 )
 from lan_transcriber.pipeline_steps.speaker_turns import (
@@ -397,6 +398,15 @@ class AppSettings(BaseSettings):
         validation_alias=AliasChoices(
             "LAN_SPEAKER_MERGE_MAX_SEGMENTS",
             "SPEAKER_MERGE_MAX_SEGMENTS",
+        ),
+    )
+    speaker_merge_overlap_ratio_threshold: float = Field(
+        default=DEFAULT_SPEAKER_MERGE_OVERLAP_RATIO_THRESHOLD,
+        ge=0.0,
+        le=1.0,
+        validation_alias=AliasChoices(
+            "LAN_SPEAKER_MERGE_OVERLAP_RATIO_THRESHOLD",
+            "SPEAKER_MERGE_OVERLAP_RATIO_THRESHOLD",
         ),
     )
     vad_method: Literal["silero", "pyannote"] = "silero"

@@ -18,6 +18,7 @@ from lan_transcriber.pipeline_steps.speaker_merge import (
     extract_speaker_embeddings,
     merge_similar_speakers,
     speakers_overlap,
+    speakers_overlap_ratio,
 )
 
 
@@ -709,7 +710,8 @@ def test_diagnostics_low_similarity() -> None:
         if entry["action"] == "skipped_low_similarity"
     )
     assert low["similarity"] == pytest.approx(sim)
-    assert low["overlap"] is False
+    assert low["has_meaningful_overlap"] is False
+    assert low["overlap_ratio"] == pytest.approx(0.0)
     assert {low["speaker_a"], low["speaker_b"]} == {"A", "B"}
     assert low["effective_threshold"] == pytest.approx(
         DEFAULT_SPEAKER_MERGE_SIMILARITY_THRESHOLD
@@ -739,7 +741,8 @@ def test_diagnostics_overlap() -> None:
         for entry in diagnostics["pairwise_scores"]
         if entry["action"] == "skipped_overlap"
     )
-    assert overlap_entry["overlap"] is True
+    assert overlap_entry["has_meaningful_overlap"] is True
+    assert overlap_entry["overlap_ratio"] > 0.05
     assert overlap_entry["similarity"] == pytest.approx(1.0)
     assert {overlap_entry["speaker_a"], overlap_entry["speaker_b"]} == {"A", "B"}
     assert overlap_entry["effective_threshold"] == pytest.approx(
@@ -770,7 +773,8 @@ def test_diagnostics_merged() -> None:
     ]
     assert len(merged_entries) == 1
     entry = merged_entries[0]
-    assert entry["overlap"] is False
+    assert entry["has_meaningful_overlap"] is False
+    assert entry["overlap_ratio"] == pytest.approx(0.0)
     assert entry["similarity"] == pytest.approx(1.0)
     assert {entry["speaker_a"], entry["speaker_b"]} == {"A", "B"}
     assert entry["effective_threshold"] == pytest.approx(
@@ -809,7 +813,7 @@ def test_merge_relaxed_threshold_no_overlap() -> None:
 
 
 def test_no_merge_strict_threshold_with_overlap() -> None:
-    """similarity=0.85, overlap=true -> NOT MERGED (overlap blocks)."""
+    """similarity=0.85, meaningful overlap -> NOT MERGED (overlap blocks)."""
     diar_segments = [
         _segment("A", 0.0, 5.0),
         _segment("B", 2.0, 7.0),  # overlaps with A
@@ -832,15 +836,16 @@ def test_no_merge_strict_threshold_with_overlap() -> None:
     overlap_entry = next(
         e for e in diag["pairwise_scores"] if e["action"] == "skipped_overlap"
     )
-    assert overlap_entry["overlap"] is True
+    assert overlap_entry["has_meaningful_overlap"] is True
+    assert overlap_entry["overlap_ratio"] > 0.05
     assert overlap_entry["effective_threshold"] == pytest.approx(0.80)
 
 
 def test_no_merge_between_thresholds_with_overlap() -> None:
-    """similarity=0.75, overlap=true, strict=0.80, relaxed=0.70.
+    """similarity=0.75, meaningful overlap, strict=0.80, relaxed=0.70.
 
-    The pair passes the relaxed guard (0.75 >= 0.70), but overlap pushes
-    the effective threshold to 0.80, and 0.75 < 0.80 -> skipped.
+    The pair passes the relaxed guard (0.75 >= 0.70), but meaningful overlap
+    pushes the effective threshold to 0.80, and 0.75 < 0.80 -> skipped.
     """
     diar_segments = [
         _segment("A", 0.0, 5.0),
@@ -864,7 +869,8 @@ def test_no_merge_between_thresholds_with_overlap() -> None:
     low_entry = next(
         e for e in diag["pairwise_scores"] if e["action"] == "skipped_low_similarity"
     )
-    assert low_entry["overlap"] is True
+    assert low_entry["has_meaningful_overlap"] is True
+    assert low_entry["overlap_ratio"] > 0.05
     assert low_entry["effective_threshold"] == pytest.approx(0.80)
 
 
@@ -895,21 +901,78 @@ def test_no_merge_below_relaxed_threshold() -> None:
     assert low_entry["effective_threshold"] == pytest.approx(0.70)
 
 
-def test_real_case_0786_merges_with_dual_threshold() -> None:
-    """Exact Plaud case: similarity=0.786, no overlap, strict=0.80, relaxed=0.70.
+def test_speakers_overlap_ratio_same_speaker() -> None:
+    segments = [_segment("A", 0.0, 5.0)]
+    assert speakers_overlap_ratio("A", "A", segments) == 0.0
 
-    Before this change the pair was skipped (0.786 < 0.80). With the relaxed
-    no-overlap threshold (0.70) and no temporal overlap, it must now merge.
+
+def test_speakers_overlap_ratio_no_overlap() -> None:
+    segments = [_segment("A", 0.0, 5.0), _segment("B", 6.0, 11.0)]
+    assert speakers_overlap_ratio("A", "B", segments) == pytest.approx(0.0)
+
+
+def test_speakers_overlap_ratio_full_overlap() -> None:
+    segments = [_segment("A", 0.0, 10.0), _segment("B", 0.0, 10.0)]
+    assert speakers_overlap_ratio("A", "B", segments) == pytest.approx(1.0)
+
+
+def test_speakers_overlap_ratio_partial_overlap() -> None:
+    # A: 0-5 (5s), B: 3-8 (5s), overlap: 3-5 = 2s.  ratio = 2/5 = 0.4
+    segments = [_segment("A", 0.0, 5.0), _segment("B", 3.0, 8.0)]
+    assert speakers_overlap_ratio("A", "B", segments) == pytest.approx(0.4)
+
+
+def test_speakers_overlap_ratio_tiny_boundary_noise() -> None:
+    # Simulates the real Plaud case: 0.456s overlap out of 11.575s speech.
+    # overlap_ratio = 0.456 / 11.575 = 0.0394
+    segments = [
+        _segment("SPEAKER_01", 0.0, 443.0),
+        _segment("SPEAKER_00", 443.5, 455.075),  # 11.575s total
+        _segment("SPEAKER_01", 454.619, 455.075),  # 0.456s overlap with SPEAKER_00
+    ]
+    ratio = speakers_overlap_ratio("SPEAKER_01", "SPEAKER_00", segments)
+    assert ratio == pytest.approx(0.456 / 11.575, abs=0.01)
+    assert ratio < 0.05  # below default threshold
+
+
+def test_speakers_overlap_ratio_empty_speaker() -> None:
+    segments = [_segment("A", 0.0, 5.0)]
+    assert speakers_overlap_ratio("A", "B", segments) == 0.0
+
+
+def test_speakers_overlap_ratio_zero_length_segments() -> None:
+    segments = [_segment("A", 1.0, 1.0), _segment("B", 1.0, 2.0)]
+    assert speakers_overlap_ratio("A", "B", segments) == 0.0
+
+
+def test_speakers_overlap_ratio_skips_zero_length_in_loop() -> None:
+    """Zero-length segments are skipped inside the overlap loop."""
+    segments = [
+        _segment("A", 0.0, 5.0),
+        _segment("A", 6.0, 6.0),  # zero-length A
+        _segment("B", 2.0, 4.0),
+        _segment("B", 7.0, 7.0),  # zero-length B
+    ]
+    # A total = 5.0, B total = 2.0, overlap = 2.0, ratio = 2.0 / 2.0 = 1.0
+    assert speakers_overlap_ratio("A", "B", segments) == pytest.approx(1.0)
+
+
+def test_merge_no_meaningful_overlap() -> None:
+    """overlap_ratio=0.001 (0.1%), similarity=0.786, relaxed_threshold=0.70.
+
+    Should MERGE because overlap ratio is below the 0.05 threshold.
     """
+    # SPEAKER_01: 443s, SPEAKER_00: 11.575s, overlap 0.012s (ratio ~0.001)
     diar_segments = [
-        _segment("SPEAKER_00", 0.0, 120.0),
-        _segment("SPEAKER_01", 130.0, 250.0),
+        _segment("SPEAKER_01", 0.0, 443.0),
+        _segment("SPEAKER_00", 443.5, 455.075),
+        _segment("SPEAKER_01", 455.063, 455.075),  # tiny boundary overlap
     ]
     sim = 0.786
     complement = math.sqrt(1.0 - sim * sim)
     model = _make_embedding_model(
         {"SPEAKER_00": [1.0, 0.0], "SPEAKER_01": [sim, complement]},
-        {"SPEAKER_00": [(0.0, 120.0)], "SPEAKER_01": [(130.0, 250.0)]},
+        {"SPEAKER_00": [(443.5, 455.075)], "SPEAKER_01": [(0.0, 443.0), (455.063, 455.075)]},
     )
     updated, merge_map, diag = merge_similar_speakers(
         diar_segments,
@@ -917,6 +980,103 @@ def test_real_case_0786_merges_with_dual_threshold() -> None:
         embedding_model=model,
         similarity_threshold=0.80,
         no_overlap_similarity_threshold=0.70,
+        overlap_ratio_threshold=0.05,
+    )
+    assert merge_map  # merged
+    assert len({row["speaker"] for row in updated}) == 1
+    merged_entry = next(
+        e for e in diag["pairwise_scores"] if e["action"] == "merged"
+    )
+    assert merged_entry["has_meaningful_overlap"] is False
+    assert merged_entry["overlap_ratio"] < 0.05
+    assert merged_entry["effective_threshold"] == pytest.approx(0.70)
+
+
+def test_no_merge_meaningful_overlap() -> None:
+    """overlap_ratio=0.15 (15%), similarity=0.786, strict_threshold=0.80.
+
+    Should NOT MERGE because overlap is meaningful and 0.786 < 0.80.
+    """
+    # A: 0-10 (10s), B: 8.5-10 (1.5s overlap with A out of 11.5s B)
+    # overlap_ratio = 1.5 / min(10, 11.5) = 1.5 / 10 = 0.15
+    diar_segments = [
+        _segment("A", 0.0, 10.0),
+        _segment("B", 8.5, 20.0),
+    ]
+    sim = 0.786
+    complement = math.sqrt(1.0 - sim * sim)
+    model = _make_embedding_model(
+        {"A": [1.0, 0.0], "B": [sim, complement]},
+        {"A": [(0.0, 10.0)], "B": [(8.5, 20.0)]},
+    )
+    updated, merge_map, diag = merge_similar_speakers(
+        diar_segments,
+        audio_path=_AUDIO_PATH,
+        embedding_model=model,
+        similarity_threshold=0.80,
+        no_overlap_similarity_threshold=0.70,
+        overlap_ratio_threshold=0.05,
+    )
+    assert merge_map == {}
+    assert {row["speaker"] for row in updated} == {"A", "B"}
+    entry = diag["pairwise_scores"][0]
+    assert entry["has_meaningful_overlap"] is True
+    assert entry["overlap_ratio"] > 0.05
+
+
+def test_no_merge_below_relaxed() -> None:
+    """similarity=0.65, overlap_ratio=0.0. Should NOT MERGE (below 0.70)."""
+    diar_segments = [
+        _segment("A", 0.0, 5.0),
+        _segment("B", 6.0, 11.0),
+    ]
+    sim = 0.65
+    complement = math.sqrt(1.0 - sim * sim)
+    model = _make_embedding_model(
+        {"A": [1.0, 0.0], "B": [sim, complement]},
+        {"A": [(0.0, 5.0)], "B": [(6.0, 11.0)]},
+    )
+    updated, merge_map, diag = merge_similar_speakers(
+        diar_segments,
+        audio_path=_AUDIO_PATH,
+        embedding_model=model,
+        similarity_threshold=0.80,
+        no_overlap_similarity_threshold=0.70,
+        overlap_ratio_threshold=0.05,
+    )
+    assert merge_map == {}
+    assert {row["speaker"] for row in updated} == {"A", "B"}
+    entry = diag["pairwise_scores"][0]
+    assert entry["action"] == "skipped_low_similarity"
+    assert entry["effective_threshold"] == pytest.approx(0.70)
+
+
+def test_real_case_plaud_single_speaker() -> None:
+    """Exact Plaud scenario: SPEAKER_01 443s, SPEAKER_00 11.575s, overlap 0.456s.
+
+    overlap_ratio = 0.456 / 11.575 = 0.039 < 0.05 threshold.
+    has_meaningful_overlap = false.
+    similarity = 0.786 > 0.70 relaxed threshold.
+    Result: MERGE.
+    """
+    diar_segments = [
+        _segment("SPEAKER_01", 0.0, 443.0),
+        _segment("SPEAKER_00", 443.5, 455.075),
+        _segment("SPEAKER_01", 454.619, 455.075),  # 0.456s overlap with SPEAKER_00
+    ]
+    sim = 0.786
+    complement = math.sqrt(1.0 - sim * sim)
+    model = _make_embedding_model(
+        {"SPEAKER_00": [1.0, 0.0], "SPEAKER_01": [sim, complement]},
+        {"SPEAKER_00": [(443.5, 455.075)], "SPEAKER_01": [(0.0, 443.0), (454.619, 455.075)]},
+    )
+    updated, merge_map, diag = merge_similar_speakers(
+        diar_segments,
+        audio_path=_AUDIO_PATH,
+        embedding_model=model,
+        similarity_threshold=0.80,
+        no_overlap_similarity_threshold=0.70,
+        overlap_ratio_threshold=0.05,
     )
     assert merge_map  # merged
     assert len({row["speaker"] for row in updated}) == 1
@@ -924,6 +1084,8 @@ def test_real_case_0786_merges_with_dual_threshold() -> None:
         e for e in diag["pairwise_scores"] if e["action"] == "merged"
     )
     assert merged_entry["similarity"] == pytest.approx(sim, abs=0.01)
+    assert merged_entry["overlap_ratio"] == pytest.approx(0.039, abs=0.01)
+    assert merged_entry["has_meaningful_overlap"] is False
     assert merged_entry["effective_threshold"] == pytest.approx(0.70)
 
 
